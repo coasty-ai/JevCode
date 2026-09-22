@@ -39,7 +39,7 @@ function pipeRun(args: readonly string[]): { code: number; stdout: string; stder
 }
 
 const TASK = 'probe task';
-/** the scripted mock trajectory is a generator trajectory: `--mode jev-on` (TUI-DESIGN-2 §1.1 makes `jev-only` the default) */
+/** the scripted mock trajectory is a generator trajectory: `--mode jev-on` explicitly, whatever `DEFAULT_MODE` is (TUI-DESIGN-3 §1.10) */
 const MOCK_5 = [...MOCK_RUN_MODE, '--mock', '--mock-steps', '5'] as const;
 
 describe.skipIf(!hasExpect)('pty: --plain, --json and the three-way identity (§1, §8.9, §15.1)', () => {

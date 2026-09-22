@@ -1,0 +1,24 @@
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.6
+send /
+sleep 0.6
+mark slash
+send \r
+sleep 0.6
+mark enter-on-palette
+send \x1b
+sleep 0.4
+send hello @
+sleep 0.8
+mark at-picker
+send \r
+sleep 0.6
+mark enter-on-picker
+send \x1b
+sleep 0.3
+send \x03
+sleep 0.3
+send \x03
+sleep 0.5
+eof

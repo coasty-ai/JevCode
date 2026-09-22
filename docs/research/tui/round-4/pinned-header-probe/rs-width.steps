@@ -1,0 +1,8 @@
+sleep 1.2
+send a
+sleep 0.4
+resize 24 60
+sleep 1.2
+send b
+sleep 0.6
+eof

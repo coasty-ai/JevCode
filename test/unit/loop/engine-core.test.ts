@@ -130,7 +130,9 @@ describe('transcript.log (§10 shared item model)', () => {
     expect(h.store.transcript[0]).toMatch(/^\[run\] start /);
     expect(h.store.transcript.some((l) => /^\[step 1\] intent=investigate p=0\.90 c=/.test(l))).toBe(true);
     expect(h.store.transcript.some((l) => /^\[step 1\] outcome executed: read 1 file\(s\)$/.test(l))).toBe(true);
-    expect(h.store.transcript.at(-2)).toBe('[run] stop: complete at step 2');
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
+    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end complete steps=2 wall=/);
     // pane-only events never produce a line
     expect(h.store.transcript.some((l) => /decision|status|stage:/.test(l))).toBe(false);
@@ -186,6 +188,21 @@ describe('tokens per step by source (§13)', () => {
     expect(last.tokensPerStep).toEqual(r.tokensPerStep);
     expect(last.generatorTokensPerStep).toEqual(r.generatorTokensPerStep);
     expect(last.jevTokensPerStep).toEqual(r.jevTokensPerStep);
+  });
+
+  it('contract 1.4 (§12.0.3): the last prompt\'s chars are persisted at commit and restored on resume', async () => {
+    const h = await build({ turns: [turn({ kind: 'read', paths: ['src/a.py'] })], limits: { maxSteps: 1 } });
+    await h.engine.run();
+    const chars = h.store.last()!.lastPromptChars;
+    expect(chars).toBeGreaterThan(0);
+    // every committed checkpoint carries it, and the resumed process starts from the stored fact
+    expect(h.store.states.every((st) => st.lastPromptChars === undefined || st.lastPromptChars === chars)).toBe(true);
+    // a resume that runs no step of its own still carries the stored fact into its final state
+    const h2 = await build({ store: h.store, runsDir: h.runsDir, resume: { runId: h.engine.runId, force: false }, turns: [turn({ kind: 'done', summary: 'ok' })], limits: { maxSteps: 1 } });
+    const r2 = await h2.engine.run();
+    expect(r2.stopReason).toBe('max_steps');
+    expect(h2.provider.requests).toHaveLength(0);
+    expect(h.store.last()!.lastPromptChars).toBe(chars);
   });
 
   it('resume restores both series; a checkpoint written before the split reads as zeros of the combined length', async () => {

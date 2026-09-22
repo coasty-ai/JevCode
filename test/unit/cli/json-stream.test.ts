@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { EngineEvent } from '../../../src/core/types.js';
-import { JSON_STREAM_SCHEMA, JSON_STREAM_VERSION, IDENTITY_JSON, createJsonRenderer, createSilentDecliner, serializeLine, writeJsonStream, type JsonStreamLine } from '../../../src/cli/json-stream.js';
+import { JSON_STREAM_SCHEMA, JSON_STREAM_VERSION, IDENTITY_JSON, createJsonRenderer, createSilentDecliner, serializeLine, writeJsonStream, type JsonStreamLine, VERBOSE_ONLY_TYPES } from '../../../src/cli/json-stream.js';
 import { fakeEngine, loadRunEvents, mkConfirmRequest } from '../../fixtures/tui/fixtures.js';
 
 class Sink {
@@ -71,6 +71,10 @@ describe('writeJsonStream (§8.9)', () => {
     }
     // the envelope fields lead every line (readability of the raw stream)
     expect(Object.keys(lines[0]!).slice(0, 4)).toEqual(['v', 't', 'runId', 'sessionId']);
+  });
+
+  it('the verbose-only set is exactly status + decompose:skipped (ORCHESTRATION-DESIGN §4.1)', () => {
+    expect([...VERBOSE_ONLY_TYPES].sort()).toEqual(['decompose:skipped', 'status']);
   });
 
   it('status events ride the stream only with --json=verbose; the event\'s own runId/sessionId win over the context', () => {

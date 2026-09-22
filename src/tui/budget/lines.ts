@@ -180,23 +180,27 @@ export function budgetItems(e: BudgetItemEvent): string[] {
 // Follow-up confirm and refusal (§9.3)
 // ---------------------------------------------------------------------------------------
 
-/** TUI-DESIGN §9.1: `remaining = sessionCap − sessionSpent` (+Infinity when uncapped; never below 0 for the box maths). */
-export function sessionRemainingUsd(sessionCapUsd: number, sessionSpentUsd: number): number {
+/**
+ * TUI-DESIGN §9.1: `remaining = sessionCap − sessionSpent − held` (+Infinity when uncapped; never below 0 for the box maths).
+ * `heldUsd` (ORCHESTRATION-DESIGN [D6]) is the session meter's reserved-but-unspent amount for live agents — it gates a new
+ * run exactly like spend; negative or non-finite holds count as 0. Callers without holds keep the two-argument form.
+ */
+export function sessionRemainingUsd(sessionCapUsd: number, sessionSpentUsd: number, heldUsd = 0): number {
   if (sessionCapUsd === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
-  return finite(sessionCapUsd) - Math.max(0, finite(sessionSpentUsd));
+  return finite(sessionCapUsd) - Math.max(0, finite(sessionSpentUsd)) - Math.max(0, finite(heldUsd));
 }
 
 /** TUI-DESIGN §9.1: every run's child cap is `min(runCap, remaining)`, computed before the run's own spend is added. */
-export function childCapUsd(runCapUsd: number, sessionCapUsd: number, sessionSpentUsd: number): number {
-  const remaining = sessionRemainingUsd(sessionCapUsd, sessionSpentUsd);
+export function childCapUsd(runCapUsd: number, sessionCapUsd: number, sessionSpentUsd: number, heldUsd = 0): number {
+  const remaining = sessionRemainingUsd(sessionCapUsd, sessionSpentUsd, heldUsd);
   return Math.max(0, Math.min(finite(runCapUsd), remaining));
 }
 
 export type FollowUpDecision = 'start' | 'confirm' | 'refuse';
 
 /** TUI-DESIGN §9.3: `remaining ≥ runCap` → start; `0 < remaining < runCap` → the y/r/n box; `remaining ≤ 0` → refuse. */
-export function followUpDecision(runCapUsd: number, sessionCapUsd: number, sessionSpentUsd: number): FollowUpDecision {
-  const remaining = sessionRemainingUsd(sessionCapUsd, sessionSpentUsd);
+export function followUpDecision(runCapUsd: number, sessionCapUsd: number, sessionSpentUsd: number, heldUsd = 0): FollowUpDecision {
+  const remaining = sessionRemainingUsd(sessionCapUsd, sessionSpentUsd, heldUsd);
   if (remaining <= 0) return 'refuse';
   return remaining >= finite(runCapUsd) ? 'start' : 'confirm';
 }
@@ -311,6 +315,16 @@ export interface CostBlockInput {
   unpriced?: boolean;
 }
 
+/**
+ * TUI-DESIGN-3 §5.1 rule 6: the per-question figure of `/cost` — `~$0.000006`, six decimals with the trailing zeros
+ * dropped (never scientific notation; `~$0.00002`, `~$0.0`); non-finite → `~$?`.
+ */
+export function eachUsdText(each: number): string {
+  if (!Number.isFinite(each)) return '~$?';
+  const fixed = each.toFixed(6).replace(/0+$/, '');
+  return `~$${fixed.endsWith('.') ? `${fixed}0` : fixed}`;
+}
+
 function median(xs: readonly number[]): number | null {
   const s = xs.filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
   if (s.length === 0) return null;
@@ -338,7 +352,7 @@ export function costBlock(i: CostBlockInput): string[] {
   if (i.mode !== 'jev-only' && i.gen) parts.push(`gen ${money(i.gen.usd)}${i.gen.tablePriced ? ' (~ table-priced)' : ''}`);
   if (i.jev) {
     const each = i.jev.questions > 0 ? i.jev.usd / i.jev.questions : null;
-    const eachText = each === null ? '' : ` (~$${each.toExponential(1)} each${i.jev.p50Ms === null ? '' : `, p50 ${Math.round(i.jev.p50Ms)} ms`})`;
+    const eachText = each === null ? '' : ` (${eachUsdText(each)} each${i.jev.p50Ms === null ? '' : `, p50 ${Math.round(i.jev.p50Ms)} ms`})`;
     parts.push(`jev ${usd3(i.jev.usd)} for ${grouped(i.jev.questions)} questions${eachText}`);
   }
   if (parts.length > 0) out.push(parts.join(' · '));

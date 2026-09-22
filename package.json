@@ -1,7 +1,7 @@
 {
   "name": "jevcode",
-  "version": "0.3.0",
-  "description": "Coding-agent harness where Jev (typesafe/jev-1.13) makes every decision and Claude writes the code. One Ink TUI, sandboxed subprocesses, checkpoints, bench.",
+  "version": "0.4.0",
+  "description": "Coding-agent harness where Jev (typesafe/jev-1.13) makes every decision and the code model writes the code. One Ink TUI, sandboxed subprocesses, checkpoints, bench.",
   "type": "module",
   "license": "MIT",
   "bin": {

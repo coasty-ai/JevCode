@@ -11,6 +11,10 @@ import type { SettingName } from './types.js';
 import { invalid, parseBooleanSetting, parseNumberSetting, type SettingReader } from './validate.js';
 
 export const UI_THEMES = ['dark', 'light', 'daltonized', 'ansi'] as const;
+/** TUI-DESIGN-3 §6 item 5 / §3.2: `ui.wordmark` — the idle sweep, the static mark, or no mark at all */
+export const WORDMARK_MODES = ['sweep', 'static', 'off'] as const;
+/** contract 1.6 (TUI-DESIGN-4 §8 item 5 / §1.3.1): `ui.renderer` — the classic hybrid, or the opt-in pinned-header alternate screen */
+export const RENDERERS = ['classic', 'fullscreen'] as const;
 export const EXIT_CODE_POLICIES = ['zero', 'last-run'] as const;
 export const LOG_LEVELS = ['error', 'warn', 'info', 'debug', 'trace'] as const;
 
@@ -54,6 +58,13 @@ export function resolveUiConfig(reader: SettingReader, launch: LaunchSettings, c
   const levelR = reader.get('log.level');
   const logLevel = levelR ? enumSetting(reader, 'log.level', levelR, LOG_LEVELS) : 'info';
   const keybindings = optionalPath(reader, 'ui.keybindings', ctx.cwd) ?? defaultKeybindingsPath(ctx.home, ctx.env);
+  // TUI-DESIGN-3 §6 item 5: `static` under the SSH launch source, `sweep` otherwise, unless the chain sets it
+  const wordmarkR = reader.get('ui.wordmark');
+  const wordmark = wordmarkR ? enumSetting(reader, 'ui.wordmark', wordmarkR, WORDMARK_MODES) : launch.ssh === true ? 'static' : 'sweep';
+  // contract 1.6 item 5 / §1.3.1: a launch member is copied, never re-resolved — `launch.renderer` is the value Ink actually mounted
+  // with (already past §1.3.1's refusal matrix). The chain answers only for a LaunchSettings that predates the member.
+  const rendererR = reader.get('ui.renderer');
+  const renderer = launch.renderer ?? (rendererR ? enumSetting(reader, 'ui.renderer', rendererR, RENDERERS) : 'classic');
   return {
     fps: launch.fps,
     renderMode: launch.renderMode,
@@ -74,6 +85,11 @@ export function resolveUiConfig(reader: SettingReader, launch: LaunchSettings, c
     logLevel,
     logFile: optionalPath(reader, 'log.file', ctx.cwd),
     keybindingsFile: keybindings,
+    wordmark,
+    renderer,
+    ...(launch.rendererRefusal !== undefined ? { rendererRefusal: launch.rendererRefusal } : {}),
+    // contract 1.6 item 4 / §1.3.4: default on; the reader idiom stays `ui?.fullscreenDump ?? true`
+    fullscreenDump: optionalBoolean(reader, 'ui.fullscreenDump', true),
   };
 }
 

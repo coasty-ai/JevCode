@@ -49,6 +49,47 @@ export function isComplete(completion: number | null, threshold: number): boolea
 /** docs/LLM-JEV-DESIGN.md §6.6: `tests_pass_unparsed` stands in for the parsed counts only when the runner's output could not be parsed. */
 export const TESTS_PASS_UNPARSED_THRESHOLD = 0.85;
 
+/**
+ * The known-failure count the synthesizer declares beside the completion evidence
+ * (`synth/search/index.ts`, from `RepositoryMode.knownFailures`: the scoped tests that already failed
+ * at the base commit). `core/types.ts` owns the shape of `CompletionEvidence`, so the count travels as
+ * an optional structural extension — absent off the repository class, where it is 0.
+ *
+ * Why it exists (experiments/results/llm-jev-headtohead-v2.md §9 class E′): `sympy-11618`'s scoped
+ * suite has **43 pre-existing collection errors** in its environment. The fix landed at step 3, but the
+ * claiming run read `644 passed / 0 failed / 43 errors`, so the fact below — which compared against
+ * zero — never held; the synthesizer then re-claimed `done partial` at steps 5, 6 and 7, the loop
+ * tripped, and the run ended `replan_stop` at step 10 with the correct patch on disk (the evaluator
+ * passed it). Comparing against the baseline's own count ends that run `complete` on the claiming run.
+ */
+export interface KnownFailuresEvidence {
+  /** `failed + errors` of the scoped baseline at the base commit; absent = 0 */
+  knownFailures?: number;
+}
+
+/** What the synthesizer writes on the claiming `run`: the §6.6 facts plus the base commit's known failures. */
+export type ClaimingCompletionEvidence = CompletionEvidence & KnownFailuresEvidence;
+
+/** A declared known-failure count, sanitised: a finite count above 0, else 0 (a missing declaration means "none"). */
+export function knownFailureCount(n: number | undefined): number {
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/** The failures a claiming run may show without contradicting the fact: the ones its evidence declares. */
+export function knownFailuresOf(completion: ClaimingCompletionEvidence | undefined): number {
+  return knownFailureCount(completion?.knownFailures);
+}
+
+/**
+ * Failures a run shows **beyond** the baseline's known ones: `failed + errors − knownFailures`, floored
+ * at 0. Pre-existing failures are not the engineer's to fix and not evidence against a verified patch;
+ * anything above them is. With `knownFailures = 0` (every QuixBugs / ladder run and every repository
+ * workspace whose scoped suite is green at the base) this is the old `failed = errors = 0` test.
+ */
+export function unexpectedFailures(counts: Pick<TestCounts, 'failed' | 'errors'>, knownFailures: number): number {
+  return Math.max(0, counts.failed + counts.errors - Math.max(0, knownFailures));
+}
+
 export interface CompletionFactInput {
   /** the executed proposal's action kind (null: no proposal) */
   action: ActionKind | null;
@@ -57,8 +98,8 @@ export interface CompletionFactInput {
   tests: { command: string; parsed: TestCounts | null; allPassed: boolean | null } | null;
   /** `workspace.testsCurrent`: no workspace change was executed at or after the run (a code fact of `lastChangeStep`) */
   testsCurrent: boolean;
-  /** the synthesizer's declaration that this `run` is the claiming run (`ProposalEvidence.completion`) */
-  completion: CompletionEvidence | undefined;
+  /** the synthesizer's declaration that this `run` is the claiming run (`ProposalEvidence.completion`), with the base commit's `knownFailures` when it declared them */
+  completion: ClaimingCompletionEvidence | undefined;
   /** the recorded `tests_pass_unparsed` answer; null when not asked (parsed run) */
   testsPassUnparsed: number | null;
   /** engine-computed (risk.ts VerifiedCompletion): a `done` claiming nothing remains after the engine's own passing, current run */
@@ -80,10 +121,13 @@ export function completionEvidenceHolds(c: CompletionEvidence, executedCommand: 
 
 /**
  * docs/LLM-JEV-DESIGN.md §6.6 (llm-jev): completion is a code fact declared on the evidence. On the claiming `run` step: the
- * run executed the workspace test command, the parser read `failed = errors = 0` and `passed > 0` (or, when it read nothing,
- * `tests_pass_unparsed` stands in), the run is current, and the synthesizer's `evidence.completion` holds in full
- * (`completionEvidenceHolds`). A `done` completes only when the engine's own passing, current run verifies it (a partial
- * `done` never does). `task_complete` is recorded, never consulted.
+ * run executed the workspace test command, the parser read `passed > 0` and **no failure beyond the baseline's known ones**
+ * (`unexpectedFailures`; with none declared that is the original `failed = errors = 0`, and the runner's own `allPassed` is
+ * required too — with known failures the runner exits non-zero by construction), the run is current, and the synthesizer's
+ * `evidence.completion` holds in full (`completionEvidenceHolds`; on the repository class that includes the reproduction
+ * passing under a code oracle, so a run whose goal is among the pre-existing failures cannot complete on them). When the
+ * parser read nothing, `tests_pass_unparsed` stands in as before. A `done` completes only when the engine's own passing,
+ * current run verifies it (a partial `done` never does). `task_complete` is recorded, never consulted.
  */
 export function isCompleteByFact(i: CompletionFactInput): boolean {
   if (i.action === 'done') return i.outcome === 'noop' && i.verifiedDone;
@@ -91,5 +135,7 @@ export function isCompleteByFact(i: CompletionFactInput): boolean {
   if (!completionEvidenceHolds(i.completion, i.tests.command)) return false;
   const parsed = i.tests.parsed;
   if (parsed === null) return i.testsPassUnparsed !== null && i.testsPassUnparsed >= TESTS_PASS_UNPARSED_THRESHOLD;
-  return i.tests.allPassed === true && parsed.failed === 0 && parsed.errors === 0 && parsed.passed > 0;
+  const known = knownFailuresOf(i.completion);
+  if (parsed.passed === 0 || unexpectedFailures(parsed, known) > 0) return false;
+  return known > 0 || i.tests.allPassed === true;
 }

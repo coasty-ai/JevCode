@@ -6,6 +6,7 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import type { PerfResult } from './main.js';
+import { IDLE_HOLD_MS } from './idle-frames.js';
 import { LAG_MAX_MS, LAG_P95_MS, SPLASH_MS, SPLASH_SETTLE_MS, describeGeometry, type LagGeometry } from './render-lag.js';
 
 export interface Row {
@@ -36,11 +37,19 @@ export function failures(r: PerfResult): string[] {
       if (g.gated && !g.lagOk) out.push(`event-loop lag (${where})`);
       if (g.gated && !g.fpsOk) out.push(`dynamic frame rate (${where})`);
       if (g.gated && !g.splashOk) out.push(`splash frame count (${where})`);
+      if (g.gated && !g.runStartOk) out.push(`run-start frame count (${where})`);
       if (!g.hygieneOk) out.push(`render-lag hygiene (${where})`);
     }
     if (!r.renderLag.clearReSelfTest) out.push('CLEAR_RE self-test');
   }
   if (r.intakeLatency) for (const s of r.intakeLatency.series) if (!s.pass) out.push(`intake latency (${s.name})`);
+  if (r.idleFrames) {
+    for (const g of r.idleFrames.geometries) {
+      if (!g.fpsOk) out.push(`idle frame rate (${g.rows}×${g.columns})`);
+      if (!g.bytesOk) out.push(`idle bytes (${g.rows}×${g.columns})`);
+      if (!g.hygieneOk) out.push(`idle hygiene (${g.rows}×${g.columns})`);
+    }
+  }
   if (r.composerLatency) {
     for (const s of r.composerLatency.series) {
       if (s.pass) continue;
@@ -93,6 +102,10 @@ export function resultRows(r: PerfResult): Row[] {
     rows.push({ measurement: `Harness overhead of the \`run\` steps alone, p95 / p50 (${so.harnessRun.length} steps; they copy the pre-image and carry the p95 above) · every other step p95`, result: `${ms(so.harnessRunP95)} / ${ms(so.harnessRunP50)} · ${ms(so.harnessOtherP95)}`, gate: `report (margin under ${so.gateMs} ms)`, status: so.harnessRunP95 === null ? '–' : `${(so.gateMs - so.harnessRunP95).toFixed(1)} ms margin` });
     rows.push({ measurement: '`imagesMs` p95 / p50 over steps with images · `run`-step p95 (the 15 MiB dirty-set copy)', result: `${ms(so.imagesP95)} / ${ms(so.imagesP50)} · ${ms(so.imagesRunP95)}`, gate: `report only, not a gate (§18 target < ${so.imagesTargetMs} ms; the copy is inside \`harnessMs\`, which is gated)`, status: so.imagesWithinTarget ? 'within target' : 'above target (reported)' });
     rows.push({ measurement: `60 MiB \`run\` artefact: post image written with \`hashSkipped: true\`, nothing hashed (step ${so.artefactStep})`, result: String(so.hashSkipped), gate: 'true', status: pf(so.hashSkipped === true) });
+    // docs/COORDINATION-DESIGN.md §8.9 / §8.3: the relaxed context's own two rows
+    const tiers = so.recentSteps === null ? '' : ` — last build ${so.recentSteps.whole} whole, ${so.recentSteps.clipped} clipped, ${so.recentSteps.oneLine} one-line, ${so.recentSteps.reads} output file(s) opened`;
+    rows.push({ measurement: `\`promptBuildMs\` p95 / p50, warm (the file refresh, the §8.2(a) tier plan and the assembly of one relaxed prompt${tiers})`, result: `${ms(so.promptBuildP95)} / ${ms(so.promptBuildP50)}`, gate: `p95 < ${so.promptBuildGateMs} ms (§8.9)`, status: pf(so.promptBuildWithinGate) });
+    rows.push({ measurement: '`promptBuildMs` cold — the first prompt after `--resume`, when none of the ≤ 6 `outputs/step-n.txt` has been read yet (§8.3)', result: ms(so.coldPromptBuildMs), gate: `< ${so.coldGateMs} ms`, status: so.coldPromptBuildMs === null ? 'not measured' : pf(so.coldWithinGate) });
   }
   if (r.staticAppend) for (const g of r.staticAppend.regions) rows.push({ measurement: `Static append, bytes per committed line — the append frame, median / mean (\`${g.name}\`, ${g.regionRows}-row region at ${g.rows}×${g.columns})`, result: `${n0(g.appendFrameMedian)} / ${n0(g.appendFrameMean)} B`, gate: 'report', status: g.regionRows <= g.rows - 2 ? 'in budget' : 'OVER' });
   const lag = r.renderLag;
@@ -110,6 +123,8 @@ export function resultRows(r: PerfResult): Row[] {
     rows.push({ measurement: `Stress row — the same run at \`JEVCODE_MOCK_STEP_MS=0\` (rows 40; ${n1(st.stepsPerSecond)} steps/s, ${n0(st.staticRowsPerSecond)} \`<Static>\` rows/s, 50–100× any real run): lag p95 net (raw) / max · frames \`static\` · \`key\` · \`dynamic\``, result: `${ms(st.lagNetP95, 2)} (${ms(st.lagP95, 2)}) / ${ms(st.lagMax, 2)} · ${n0(st.fpsStaticMax)} · ${n0(st.fpsKeyMax)} · ${n0(st.fpsDynamicMax)}`, gate: 'report (lag and frame rate not gated under the storm; hygiene below is)', status: st.lagOk && st.fpsOk ? 'within the realistic-rate gates' : 'over the realistic-rate gates (expected)' });
     // TUI-DESIGN-2 §5.3 / §9 "dynamic fps": the splash bucket — the `dynamic` frames within 700 ms of the first frame (the typist waits for the settle), the other classes and the wordmark frames beside them
     rows.push({ measurement: `Splash bucket — \`dynamic\` frames within ${SPLASH_MS} ms of the first frame (no key is sent before ${SPLASH_SETTLE_MS} ms, so the splash settles by itself) · \`static\` · \`key\` frames of the same window · frames of any class carrying the wordmark · first frame is splash frame 0 (${QUAD}; the splash ticks through Ink's \`useAnimation\` at 50 ms, ≤ 15 frames by construction; rows 12 is the flat tier and reduced motion mounts settled, so they draw no wordmark)`, result: lagQuad(r, (g) => `${g.splashFrames} · ${g.splashStaticFrames} · ${g.splashKeyFrames} · ${g.splashWordmarkFrames} · ${String(g.splashInFirstFrame)}${g.splashWindowMs !== SPLASH_MS ? ` (window ${g.splashWindowMs} ms)` : ''}`), gate: `\`dynamic\` ≤ ⌈(maxFps + 1) × ${SPLASH_MS / 1000}⌉ = ${lag.rows40.splashGate} (realistic geometries; stress reported)`, status: pf(geos.every((g) => g.splashOk)) });
+    // TUI-DESIGN-3 §5.2 A5 / §9: the run-start bucket — the rule sweep's frames ride on the spinner and the live flush in the run's first second
+    rows.push({ measurement: `Run-start bucket — \`dynamic\` frames within 1 s of the \`[run] start\` frame (the rule sweep's ≤ 6 frames + the spinner + the live flush; ${QUAD})`, result: lagQuad(r, (g) => (g.runStartFrames < 0 ? '–' : String(g.runStartFrames))), gate: `≤ maxFps + 1 = ${lag.rows40.runStartGate} (realistic geometries; stress reported)`, status: pf(geos.every((g) => g.runStartOk)) });
     rows.push({ measurement: `Terminal clears after the first frame during the live run (${QUAD})`, result: lagQuad(r, (g) => String(g.clears)), gate: '0', status: pf(all.every((g) => g.clears === 0)) });
     rows.push({ measurement: `Dynamic region, tallest painted (${QUAD})`, result: lagQuad(r, (g) => `${g.regionMax} rows`), gate: '≤ rows − 2', status: pf(all.every((g) => g.regionMax <= g.rows - 2)) });
     rows.push({ measurement: `Cursor hides per frame, max · frames not ending with \`ESC[?25h\` · cursor shown at exit (${QUAD})`, result: lagQuad(r, (g) => `${g.cursorHidesMaxPerFrame} · ${g.cursorFramesWithoutShow} · ${String(g.cursorShownAtEnd)}`), gate: '≤ 1 · 0 · true', status: pf(all.every((g) => g.cursorHidesMaxPerFrame <= 1 && g.cursorFramesWithoutShow === 0 && g.cursorShownAtEnd)) });
@@ -134,6 +149,14 @@ export function resultRows(r: PerfResult): Row[] {
       rows.push({ measurement: `Intake reply latency, \`${s.name}\`: Enter → \`[you]\` bubble frame p50 / p95 / max · Enter → \`[jevcode]\` reply frame p50 / p95 / max (${s.messages} greetings and tool questions, ${s.reply.samples} located${s.dropped > 0 ? `, ${s.dropped} Enter${s.dropped === 1 ? '' : 's'} not located` : ''}, ${s.rows}×${s.columns}, mock decider at ${s.jevMs} ms${delay}; \`thinking\` seen for ${s.thinkingSeen}/${s.messages})`, result: `${ms(s.bubble.p50)} / ${ms(s.bubble.p95)} / ${ms(s.bubble.max)} · ${ms(s.reply.p50)} / ${ms(s.reply.p95)} / ${ms(s.reply.max)}${s.jevMs > 0 ? ` (net p95 ${ms(s.replyNet.p95)})` : ''}`, gate: `bubble p95 < ${il.gateBubbleMs} ms · reply p95 ≤ ${il.gateReplyMs} ms${s.jevMs > 0 ? ' net of the delay' : ''} (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's)`, status: pf(s.pass) });
     }
     rows.push({ measurement: `Intake hygiene: runs started by a greeting or a tool question · clears after the first frame · tallest painted region (${il.series.map((s) => `\`${s.name}\``).join(' · ')})`, result: il.series.map((s) => `${s.runsStarted} · ${s.clears} · ${s.regionMax}`).join(' / '), gate: `0 · 0 · ≤ ${il.series[0] ? il.series[0].rows - 2 : '–'}`, status: pf(il.series.every((s) => s.hygieneOk)) });
+  }
+  const idle = r.idleFrames;
+  if (idle) {
+    const geos = idle.geometries.map((g) => `${g.rows}×${g.columns}`).join(' · ');
+    // TUI-DESIGN-3 §3.9 / §9 "idle animation": the wordmark's sweep is the only idle writer, so the budget is absolute
+    rows.push({ measurement: `Idle animation — \`dynamic\` frames per second over the 30 s after the wordmark settles (busiest second · mean; ${geos}; \`chat --mock\` left alone, no key: the sweep's 16 frames per 10 s pass are the only writer)`, result: idle.geometries.map((g) => `${n0(g.fpsMax)} · ${n1(g.fpsMean)}`).join(' / '), gate: `≤ ${idle.fpsPeakGate} in every second · mean ≤ ${idle.fpsMeanGate}/s (TUI-DESIGN-3 §3.9)`, status: pf(idle.geometries.every((g) => g.fpsOk)) });
+    rows.push({ measurement: `Idle animation bytes — busiest second · mean per second · widest frame (${geos})`, result: idle.geometries.map((g) => `${n0(g.bytesMax)} · ${n0(g.bytesMean)} · ${n0(g.frameBytesMax)} B`).join(' / '), gate: `≤ ${idle.bytesPeakGate} B/s peak · ≤ ${idle.bytesMeanGate} B/s mean`, status: pf(idle.geometries.every((g) => g.bytesOk)) });
+    rows.push({ measurement: `Idle animation hygiene — clears after the first frame · tallest painted region · frames carrying the wordmark in the window · child CPU over the window (\`ps -o time\`, reported) (${geos})`, result: idle.geometries.map((g) => `${g.clears} · ${g.regionMax} · ${g.wordmarkFrames} · ${g.cpu === null ? 'n/a' : `${g.cpu.deltaMs} ms (${n1(g.cpu.perSecondMs)} ms/s)`}`).join(' / '), gate: '0 · ≤ rows − 2 · report · report', status: pf(idle.geometries.every((g) => g.hygieneOk)) });
   }
   const st = r.states;
   if (st) {
@@ -191,7 +214,8 @@ export function performanceSection(r: PerfResult): string {
     'as a stress row and reported); composer keystroke → frame p95 < 16 ms in a real pty; zero terminal clears outside a',
     'shrink segment; `dynamic` frames per second ≤ `maxFps` + 1 (frames carrying new `<Static>` rows and the leading-edge',
     'frame of a keystroke are counted separately: Ink renders both outside its throttle by design), the splash\'s frames in its',
-    '700 ms included; an intake reply (Enter → `[jevcode]`) within 40 ms p95 against the mock decider. `npm run perf` measures',
+    '700 ms included; an intake reply (Enter → `[jevcode]`) within 40 ms p95 against the mock decider; the idle wordmark sweep',
+    '(TUI-DESIGN-3 §3.9) at most 4 `dynamic` frames in any idle second and 2/s on average, 12 KB/s peak and 5 KB/s mean. `npm run perf` measures',
     'all of it, writes `perf/results/latest.json` (raw values, per-series arrays, machine and load), rewrites this section',
     'from that file (`src/perf/readme.ts`; the table cannot drift from the JSON) and exits 1 when any gate fails.',
     '`JEVCODE_PERF_KEEP=<dir>` keeps every pty capture and timing file; `JEVCODE_PERF_ONLY=<probe,…>` runs a subset (written',
@@ -330,8 +354,18 @@ export function performanceSection(r: PerfResult): string {
       'provider — is the S6 live scenario\'s (`docs/live/tui/round-2/`), not this probe\'s.',
     ]);
   }
+  const idle2 = r.idleFrames;
+  if (idle2) {
+    const g = idle2.geometries;
+    note([
+      `Idle animation (TUI-DESIGN-3 §3.4, §3.9): \`chat --mock\` at ${g.map((x) => `${x.rows}×${x.columns}`).join(' and ')} is left alone for ${IDLE_HOLD_MS / 1000} s; the window is`,
+      `[settle + ${idle2.windowMs.from / 1000} s, settle + ${idle2.windowMs.to / 1000} s), the settle being the caption frame \`◆ <version>\`. The wordmark's sweep (16 frames per 4 s pass, 6 s rest, period 10 s while`,
+      `attentive) is the only idle writer, so every frame of the window is counted: ${g.map((x) => `${n0(x.fpsMax)} peak · ${n1(x.fpsMean)} mean frames/s and ${n0(x.bytesMax)} B peak · ${n0(x.bytesMean)} B mean per second`).join('; ')} — ${g.every((x) => x.fpsOk && x.bytesOk) ? 'inside the §3.9 budget' : 'OVER the §3.9 budget'}.`,
+      `The child's CPU over the window (\`ps -o time=\`, centiseconds) read ${g.map((x) => (x.cpu === null ? 'n/a' : `${x.cpu.deltaMs} ms (${n1(x.cpu.perSecondMs)} ms/s)`)).join(' / ')} — reported, not gated (the owner lowers \`LOOP_INTERVAL_MS\` above 30 ms/s).`,
+    ]);
+  }
   note(['`renderTime` (Ink\'s `onRender` metric) is not measured: the App registers no `onRender` callback.']);
-  const deviations = [...(comp?.deviations ?? []), ...(lag?.deviations ?? []), ...(r.intakeLatency?.deviations ?? [])];
+  const deviations = [...(comp?.deviations ?? []), ...(lag?.deviations ?? []), ...(r.intakeLatency?.deviations ?? []), ...(r.idleFrames?.deviations ?? [])];
   if (deviations.length > 0) {
     lines.push('', 'Declared deviations from docs/TUI-DESIGN.md §18 and docs/TUI-DESIGN-2.md §9 (also listed in `perf/results/latest.json`):', '');
     for (const d of deviations) lines.push(`- ${d}`);

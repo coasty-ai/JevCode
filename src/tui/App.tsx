@@ -20,7 +20,7 @@
 import { appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Box, Text, render, useApp, useCursor, useInput, usePaste, useStdin, useStdout, useWindowSize } from 'ink';
 import type { Instance, Key } from 'ink';
 import type { BlockingAnswer, BlockingRequest, Engine, EngineMode, LaunchSettings, Renderer, RendererOptions, SecretHit, SessionHost, SessionRow, UiConfig, UiLabel } from '../core/types.js';
@@ -28,20 +28,21 @@ import { VERSION } from '../version.js';
 import { detectSecrets, patternRedact } from '../core/redact.js';
 import { createLog, nullLog, type KeyClass, type Log } from '../core/log.js';
 import { resolveLaunchSettings } from '../config/launch.js';
+import { DEFAULT_MODE } from '../config/defaults.js';
 import type { TrustInputs } from '../config/trust.js';
 import { REWIND_CHOICE, type RewindStep } from '../undo/plan.js';
 import { bannerRow } from './pane/banner.js';
-import { decisionRows } from './pane/decisions.js';
-import { planRows } from './pane/plan.js';
 import { defaultTab, cycleTab } from './pane/model.js';
 import { helpLines, paletteGhost, paletteMatches, type PaletteState } from './commands/palette.js';
 import type { CommandAction, DispatchContext } from './commands/dispatch.js';
+import { completeDraft, dispatchCtxOf, recentCommands } from './commands/local.js';
 import { rank } from './commands/fuzzy.js';
 import { Composer, draftRows, hitSpans, openExternalEditor, promptFor, useComposer, type ComposerMode } from './composer/Composer.js';
 import { Console, pickerConsoleTitle, wizardConsoleTitle } from './Console.js';
 import { consoleInnerWidth } from './console-lines.js';
-import { useMotion } from './motion.js';
-import { SPLASH_MS, WORDMARK_MIN_COLUMNS, brandSpan, splashFrame } from './splash.js';
+import { attentionAt, useIdleLoop, useMotion } from './motion.js';
+import { SPLASH_MS, WORDMARK_MIN_COLUMNS, brandSpan, splashFrame, type GridBand, type SplashSpan } from './splash.js';
+import { wordmarkFrame, wordmarkWanted, type WordmarkSetting } from './wordmark.js';
 import { nextPanel, parsePanelCommand } from './pane/commands.js';
 import { createBuffer, type Snapshot } from './composer/buffer.js';
 import { routeSend, routeSubmit, type SubmitDecision } from './composer/submit.js';
@@ -54,7 +55,7 @@ import { initialKeyState, resolveKey, type Armed, type KeyAction, type KeyEvent,
 import { CAP, chromeRows, computeLayout, composerTop, consoleTop, isCollapsingOverlay, type Layout, type LayoutInput, type OverlayKind } from './layout.js';
 import { createNotifier, createNotifyTimers } from './notify.js';
 import { Overlay, overlayPreviewWant, overlayWant, type IntakeOverlay, type OverlayData } from './Overlay.js';
-import { Pane, paneStateOf, plainRule, ruleRowText } from './Pane.js';
+import { Pane, RULE_MAX_CELLS, paneStateOf, plainRule, ruleRowText } from './Pane.js';
 import { PaneBoundary, RENDER_FAULTS_FIRED, renderFaultFor, type PaneFailure } from './PaneBoundary.js';
 import { INITIAL_PICKER, PICKER_PANE_WANT, moveRunsToTrash, pickerLines, pickerReducer, pickerRule, readPickerPreview, selectedRewindStep, selectedSession, visibleRewindSteps, visibleSessions } from './Picker.js';
 import { IDENTITY_NO_TTY, formatTranscriptItem, headerItem, sanitizeStream, sessionHeaderItem, type TranscriptItem, type TranscriptLevel } from './plain.js';
@@ -68,13 +69,13 @@ import { spinnerActive, useSpinner } from './spinner.js';
 import { kShort, modeBadge, statusLineText, type StatusLineOptions, type StatusLineState } from './status/lines.js';
 import { StatusLine, statusView } from './StatusLine.js';
 import { createResizeDebounce, installTerminalHygiene, processRestoreTerminal, rearmRestoreTerminal, restoreTerminal, suspendProcess, writeCursorShape, type TerminalHygiene } from './terminal.js';
-import { themeFor, textProps, type Theme } from './theme.js';
+import { themeFor, textProps, type ColorRole, type Theme } from './theme.js';
 import { TOAST_ERROR_MS, TOAST_INFO_MS } from './toasts.js';
 import { Transcript } from './Transcript.js';
 import { useGitHead } from './useGitHead.js';
 import { createEventBus, createTuiConfirmer, useEngine, useVisibleItems, type EventBus, type EventSource, type QueueEntry, type RunPhase, type TuiConfirmer, type UiAction, type UiState } from './useEngine.js';
 import { useWizard, type WizardDetect, type WizardHost, type WizardReopenOptions } from './onboarding/Wizard.js';
-import { stepWhyBlocks, whyBlock } from './why.js';
+import { stepWhyBlocks, whyBlock, whyErrorText } from './why.js';
 
 export const DEFAULT_ROWS = 24;
 export const DEFAULT_COLUMNS = 80;
@@ -106,6 +107,36 @@ export const SR_REVIEW_PROMPT = 'Enter selection (1-3):';
 export const BEL = '\x07';
 /** TUI-DESIGN-2 §3.1 row 11 / §12 "Status": Enter while a submission is still thinking. */
 export const STILL_THINKING_TOAST = 'one moment — still thinking';
+/** TUI-DESIGN-3 §5.2 A5: at `run:start` a 12-cell `borderFocus` band travels the rule row's `─` cells left → right for 300 ms (6 frames at 50 ms). */
+export const RUN_START_SWEEP_MS = 300;
+export const RUN_START_SWEEP_CELLS = 12;
+/** TUI-DESIGN-3 §5.2 A6: at `run:end` the console edges fade `borderFocus` → `accent2` → `border` at 70 ms steps (3 frames). */
+export const RUN_END_FADE_MS = 210;
+export const RUN_END_FADE_STEP_MS = 70;
+/** TUI-DESIGN-3 §5.2 A4: the streaming caret blinks at 1 Hz on the 8 fps spinner tick — on while `frame % 8 < 4`. */
+export const STREAM_CARET_PERIOD = 8;
+
+/** TUI-DESIGN-3 §5.2 A5: the `─` cells lit `borderFocus` at elapsed `t` of the run-start sweep — `[from, from + 12)` over the row's cells; null once settled. */
+export function runStartBand(t: number, cells: number, durationMs: number = RUN_START_SWEEP_MS, width: number = RUN_START_SWEEP_CELLS): GridBand | null {
+  if (!Number.isFinite(t) || t < 0 || t >= durationMs || cells <= 0) return null;
+  const travel = Math.max(0, cells - width);
+  const from = Math.round((travel * t) / durationMs);
+  return { from, to: Math.min(cells, from + width) };
+}
+
+/** TUI-DESIGN-3 §5.2 A6: the console edge role at elapsed `t` of the run-end fade — `borderFocus` < 70 · `accent2` < 140 · `border`. */
+export function runEndEdgeRole(t: number): ColorRole {
+  if (!Number.isFinite(t) || t < RUN_END_FADE_STEP_MS) return 'borderFocus';
+  if (t < 2 * RUN_END_FADE_STEP_MS) return 'accent2';
+  return 'border';
+}
+
+/** TUI-DESIGN-3 §5.2 A4: the streaming caret is on for the first half of every 8-frame period (500 ms on / 500 ms off at 8 fps); always on under reduced motion. */
+export function streamCaretOn(spinnerFrame: number, reducedMotion: boolean): boolean {
+  if (reducedMotion) return true;
+  const f = Number.isFinite(spinnerFrame) ? Math.abs(Math.floor(spinnerFrame)) : 0;
+  return f % STREAM_CARET_PERIOD < STREAM_CARET_PERIOD / 2;
+}
 /**
  * TUI-DESIGN-2 §3.1 / §4.9: an engine run owns the session — `live`, `aborting`, `pausing`. `starting` is a submission in
  * flight with no engine yet (the intake, a lookup or a reply under `thinking`, or the window before `run:start`), so it
@@ -122,13 +153,15 @@ export function chatThinking(s: Pick<UiState, 'run' | 'thinking'>): boolean {
 export type IntakeAnswer = 'run' | 'chat' | 'keep';
 
 /**
- * TUI-DESIGN-2 §1.5 / §5.3: the launch members S1's `launch.ts` adds (`modeHint`, `reducedMotion`); read structurally so the
- * first frame follows argv + env as soon as they land and falls back to `jev-only` / `screenReader` until then.
+ * TUI-DESIGN-2 §1.5 / §5.3; TUI-DESIGN-3 §3.8: the launch members `launch.ts` adds (`modeHint`, `reducedMotion`, `ssh`); read
+ * structurally so the first frame follows argv + env as soon as they land and falls back to `DEFAULT_MODE` / `screenReader` until then.
  */
 interface LaunchExtras {
   screenReader: boolean;
   modeHint?: EngineMode;
   reducedMotion?: boolean;
+  /** TUI-DESIGN-3 §3.2 twins: the SSH launch source — `ui.wordmark` defaults to `static` under it */
+  ssh?: boolean;
 }
 
 /** TUI-DESIGN-2 §5.3 (fallback while `launch.reducedMotion` is S1's request): `--no-animation` / `--reduced-motion` on argv, then `JEVCODE_REDUCED_MOTION`, then the screen reader. */
@@ -251,6 +284,8 @@ type BridgeCommand =
   | { type: 'suspend' }
   /** §4.10 / §10.2: the gate row for a task gated outside the composer (argv, --task-file); `resolve(true)` only on an armed `y` */
   | { type: 'secretGate'; hits: readonly SecretHit[]; resolve: (send: boolean) => void }
+  /** TUI-DESIGN-3 §4.4 F10: `Renderer.setBindings` — the effective key table (a `keybindings.json` load or `/help reload`) */
+  | { type: 'bindings'; bindings: Bindings }
   | { type: 'dispatch'; action: UiAction };
 
 /** The renderer ↔ App channel (exported for tests: `createBridge(host, wizardHost)`). */
@@ -383,6 +418,10 @@ interface PaletteUi {
   selected: number;
   /** Esc remembers the token so `/` stays closed while it is unchanged (§5.3) */
   candidates: readonly string[];
+  /** TUI-DESIGN-3 §4.1 rule 6: the Recent group, computed once at palette open (`recentCommands`) */
+  recent?: readonly string[];
+  /** TUI-DESIGN-3 §4.3: the argument stem Tab is cycling over (`completeDraft`); cleared when a value is accepted */
+  stem?: string;
 }
 
 interface PendingGate {
@@ -530,7 +569,8 @@ export function App(p: AppProps): React.JSX.Element {
   const lx: LaunchExtras = launch;
   const ui = bridge.ui;
   const glyphs = glyphSet({ ascii: launch.ascii, screenReader: launch.screenReader });
-  const theme: Theme = themeFor(ui?.theme);
+  // frame 0 honours `--theme` / `JEVCODE_THEME` / COLORFGBG through `launch.themeHint`; the resolved `ui.theme` takes over at setUi
+  const theme: Theme = themeFor(ui?.theme ?? launch.themeHint);
   const { stdout, write } = useStdout();
   const color = colorEnabled({ noColor: launch.noColor || ui?.noColor === true, env, stream: stdout });
   // TUI-DESIGN-2 §4.9: the depth is computed at mount and at `setUi` for `ui.noColor`; Ink downsamples a wrong guess
@@ -550,14 +590,20 @@ export function App(p: AppProps): React.JSX.Element {
   const { isRawModeSupported } = useStdin();
   const { suspendTerminal, waitUntilRenderFlush } = useApp();
   const { setCursorPosition } = useCursor();
-  const bindings = p.bindings ?? DEFAULT_BINDINGS;
+  // TUI-DESIGN-3 §4.4 F10: the effective bindings — the mount prop, then every `setBindings` the controller sends (a `keybindings.json`
+  // load, `/help reload`); `resolveKey` and `helpLines` read this value, so a rebinding is honoured live
+  const [bindings, setBindingsState] = useState<Bindings>(p.bindings ?? DEFAULT_BINDINGS);
+  const propBindings = p.bindings;
+  useEffect(() => {
+    if (propBindings) setBindingsState(propBindings);
+  }, [propBindings]);
 
   const { state, dispatch } = useEngine(p.source, p.confirmer, p.task, p.resumeId, {
     mode,
     now,
     flushMs: reducedMotion ? 250 : 50,
     ...(p.tickMs !== undefined ? { tickMs: p.tickMs } : {}),
-    modeHint: lx.modeHint ?? 'jev-only',
+    modeHint: lx.modeHint ?? DEFAULT_MODE,
     // TUI-DESIGN-2 §5.3: the first frame is splash frame 0 in the boxed tier; reduced motion / a screen reader mount `done`
     splash: boxed && !launchReducedMotion && !launch.screenReader ? 'running' : 'done',
   });
@@ -680,6 +726,13 @@ export function App(p: AppProps): React.JSX.Element {
     d.trigger();
     return () => d.cancel();
   }, [columns]);
+  // TUI-DESIGN-3 §3.6 / §6 item 8: a geometry change is activity for the idle loop's attention clock (never at mount)
+  const geometryRef = useRef({ rows, columns });
+  useEffect(() => {
+    if (geometryRef.current.rows === rows && geometryRef.current.columns === columns) return;
+    geometryRef.current = { rows, columns };
+    dispatch({ type: 'resize' });
+  }, [rows, columns, dispatch]);
 
   // ----- overlay arming (§6.3): every y-gated overlay arms after the first committed frame that shows it; the
   // secret / follow-up / undo / exit-confirm rows additionally never within 150 ms of the Enter that opened them
@@ -798,16 +851,13 @@ export function App(p: AppProps): React.JSX.Element {
   }, [gitHead, dispatch]);
 
   // ----- helpers over the current state
-  const currentStep = (): number => stateRef.current.step;
-  const dispatchCtx = (): DispatchContext => ({
-    run: stateRef.current.run,
-    step: currentStep(),
-    changedSteps: stateRef.current.changedSteps,
-    ...(bridge.host ? { sessions: bridge.host.index().map((s) => ({ id: s.sessionId, title: s.title })) } : {}),
-  });
+  // TUI-DESIGN-3 §4.4 F20 / F14: the host's dispatch context when it exposes one (denylist, `newestRunId ?? sessionId`), else the App's
+  // fold; `run` reads `none` while a chat request is thinking (a chat request is not a run)
+  const dispatchCtx = (): DispatchContext => dispatchCtxOf(bridge.host, stateRef.current);
   const paletteState = (): PaletteState => {
     const s = stateRef.current;
-    return { lastStop: s.done?.stopReason ?? null, unauthorized: s.unauthorized, changedFiles: s.changedSteps.length > 0, rewindMenu: paletteRef.current?.mode === 'rewind', live: s.run !== 'none' };
+    const recent = paletteRef.current?.recent;
+    return { lastStop: s.done?.stopReason ?? null, unauthorized: s.unauthorized, changedFiles: s.changedSteps.length > 0, rewindMenu: paletteRef.current?.mode === 'rewind', live: s.run !== 'none', ...(recent !== undefined ? { recent } : {}) };
   };
   const closeOverlay = (kind: OverlayKind = stateRef.current.overlay): void => {
     if (kind === 'palette') {
@@ -824,7 +874,9 @@ export function App(p: AppProps): React.JSX.Element {
   const openPalette = (paletteMode: PaletteUi['mode']): void => {
     if (paletteMode === 'command' && rememberedToken.current !== null && rememberedToken.current === composer.buffer.text.trim()) return;
     rememberedToken.current = null;
-    setPalette({ mode: paletteMode, selected: 0, candidates: [] });
+    // TUI-DESIGN-3 §4.1 rule 6: the Recent group is read from the history once, at open (never per key)
+    const recent = paletteMode === 'command' ? guard('overlay', () => recentCommands(bridge.host?.history()?.entries('workspace') ?? []), []) : undefined;
+    setPalette({ mode: paletteMode, selected: 0, candidates: [], ...(recent !== undefined ? { recent } : {}) });
     dispatch({ type: 'overlay', overlay: 'palette' });
     if (paletteMode === 'mention') {
       void bridge.host?.workspaceCandidates().then((c) => setPalette((cur) => (cur && cur.mode === 'mention' ? { ...cur, candidates: c.map((x) => x.path) } : cur)));
@@ -908,6 +960,10 @@ export function App(p: AppProps): React.JSX.Element {
         composer.clear();
         submittingRef.current = true;
         dispatch({ type: 'run:starting' });
+        // TUI-DESIGN-3 §5.2 P7: a session submission enters the intake at once — the very first frame after Enter reads
+        // `▓ thinking` / `(thinking…)`, never `starting` + the steer placeholder (the controller's own `thinking('intake')` is idempotent;
+        // `run:start` and `run:idle` clear it). The one-shot argv path has no chat phase.
+        if (mode === 'session') dispatch({ type: 'thinking', phase: 'intake' });
         void h
           .submit(decision.full, { kind: decision.promptKind, secretSpans: decision.secretSpans, pinnedFiles: decision.pinnedFiles })
           .then((outcome) => {
@@ -962,8 +1018,11 @@ export function App(p: AppProps): React.JSX.Element {
           }
         }
         if (d === null) {
-          noteLine(`error: /why: no decision ${ref} in the last ${3} steps`, { label: '[ui]', level: 'warn' });
-          composer.clear(); // a failed /why leaves no command text behind for the next line to append to (docs/STATUS.md "Round 2" finding 16)
+          // TUI-DESIGN-3 §4.4 F8: the App's pane projection is a fast path — a miss falls through to the host, which keeps every decision;
+          // without a host the one shared text (`whyErrorText`) answers, and a failed /why leaves no command text behind (finding 16)
+          if (h) break;
+          noteLine(whyErrorText(ref, 'missing'), { label: '[ui]', level: 'warn' });
+          composer.clear();
           return;
         }
         const block = whyBlock(d, { siblings: all.filter((x) => x.step === d!.step), model: s.done?.resolvedJevModel ?? null }, glyphs);
@@ -971,23 +1030,20 @@ export function App(p: AppProps): React.JSX.Element {
         composer.clear();
         return;
       }
-      case 'decisions': {
-        const lines = decisionRows(paneStateOf(s), action.n, columns, glyphs);
-        noteLine(`decisions (last ${lines.length})`, { label: '[ui]', detail: lines.join('\n') });
-        composer.clear();
-        return;
-      }
-      case 'plan': {
-        const lines = planRows(paneStateOf(s), 40, columns, glyphs);
-        noteLine('plan', { label: '[ui]', detail: lines.join('\n') });
-        composer.clear();
-        return;
-      }
+      // TUI-DESIGN-3 §4.4 F6 / F11: `/decisions` and `/plan` are the host's (one source, identity by construction) — no App case
       case 'theme': {
+        // TUI-DESIGN-3 §4.4 F5: applied at once here (the dynamic region and new items), and forwarded so the host records the override
+        // (`/config` reports it, the next `applyConfig` keeps it) and prints the `[ui]` item; no host yet → local only
         if (bridge.ui) bridge.ui = { ...bridge.ui, theme: action.theme };
         else bridge.ui = { ...launch, theme: action.theme, title: false, reducedMotion: launch.screenReader, notify: launch.screenReader, osc52: false, history: true, noInput: false, trustWorkspace: false, budgetWarnings: true, allowSecretMention: false, exitCode: 'zero', logLevel: 'info', logFile: null, keybindingsFile: null };
         bridge.notify();
         composer.clear();
+        if (h) {
+          void h
+            .command(line)
+            .catch((e: unknown) => noteLine(`error: /theme: ${e instanceof Error ? e.message : String(e)}`, { label: '[ui]', level: 'error' }))
+            .finally(remember);
+        }
         return;
       }
       case 'editor':
@@ -995,6 +1051,13 @@ export function App(p: AppProps): React.JSX.Element {
         return;
       case 'exit':
         composer.clear();
+        // TUI-DESIGN-3 §4.4 F14: `/exit` while a chat request is thinking cancels the request and exits (no confirm: nothing is live)
+        if (chatThinking(s)) {
+          if (h) h.abort('human_abort');
+          else p.onAbort('human_abort');
+          exit(0);
+          return;
+        }
         if (s.run !== 'none') {
           pendingExit.current = (yes) => {
             if (yes) {
@@ -1036,6 +1099,17 @@ export function App(p: AppProps): React.JSX.Element {
         return;
       }
       case 'copy': {
+        // TUI-DESIGN-3 §4.4 F7: `/copy diff` asks the host (it builds the diff exactly as `/diff` does, then `copyFn` + the toast)
+        if (action.what === 'diff') {
+          composer.clear();
+          if (h) {
+            void h
+              .command(line)
+              .catch((e: unknown) => noteLine(`error: /copy: ${e instanceof Error ? e.message : String(e)}`, { label: '[ui]', level: 'error' }))
+              .finally(remember);
+          } else toast('nothing to copy for diff', 'error');
+          return;
+        }
         const payload = action.what === 'draft' ? s.draft.empty ? '' : composer.buffer.text : action.what === 'proposal' ? (s.items.filter((i) => i.kind === 'proposal').at(-1)?.text ?? '') : (s.items.at(-1) ? formatTranscriptItem(s.items.at(-1) as TranscriptItem) : '');
         void copyRedacted(payload, action.what === 'draft' ? (x) => x : redact, { write: (x) => stdout.write(x), osc52: bridge.ui?.osc52 ?? false, env }).then((r) => toast(r.toast, r.ok ? 'ok' : 'error'));
         composer.clear();
@@ -1085,6 +1159,8 @@ export function App(p: AppProps): React.JSX.Element {
       ranBefore: s.runsEnded > 0,
       dispatch: dispatchCtx(),
       expand: (t) => composer.expand(t),
+      // TUI-DESIGN-3 §4.4 F14: `/` lines route while a chat request is thinking (the dispatch context reads `run: 'none'` then)
+      allowCommandsWhileSubmitting: chatThinking(s),
     });
     switch (decision.kind) {
       case 'ignore':
@@ -1100,6 +1176,11 @@ export function App(p: AppProps): React.JSX.Element {
       case 'error':
       case 'chip-missing':
         noteLine(decision.text, { label: decision.label, level: 'warn' });
+        // TUI-DESIGN-3 §4.4 F21 (D-K): a fixable error keeps the draft for editing; an availability error clears it (and closes the palette)
+        if (decision.kind === 'error' && !decision.keepDraft) {
+          composer.clear();
+          if (s.overlay === 'palette') closeOverlay('palette');
+        }
         return;
       case 'hold':
         heldRef.current = true;
@@ -1380,10 +1461,26 @@ export function App(p: AppProps): React.JSX.Element {
           if (pick !== undefined && m) composer.set(`${composer.buffer.text.slice(0, m.index)}@${pick.replace(/ /g, '\\ ')} `);
           return;
         }
-        const matches = paletteMatches(q, paletteState());
-        const pick = matches[pal.selected]?.spec.name;
-        if (pick !== undefined) composer.set(`/${pick} `);
-        return;
+        // TUI-DESIGN-3 §4.3: Tab completes the command name or the argument under the cursor and never wipes a typed argument
+        void q;
+        const dir: 1 | -1 = action.dir === -1 ? -1 : 1;
+        const r = completeDraft(composer.buffer.text, composer.buffer.cursor, dir, { dispatch: dispatchCtx(), palette: paletteState() }, pal.selected, pal.stem);
+        const cycling = (selected: number, stem: string | null): PaletteUi => ({ mode: pal.mode, selected, candidates: pal.candidates, ...(pal.recent !== undefined ? { recent: pal.recent } : {}), ...(stem !== null ? { stem } : {}) });
+        switch (r.kind) {
+          case 'command':
+            composer.set(r.text, r.cursor);
+            setPalette(cycling(pal.selected, null));
+            return;
+          case 'argument':
+            composer.set(r.text, r.cursor);
+            setPalette(r.accepted ? cycling(0, null) : cycling(r.selected + dir, r.stem));
+            return;
+          case 'none':
+            toast(r.toast);
+            return;
+          default:
+            return;
+        }
       }
       case 'palette': {
         const pal = paletteRef.current;
@@ -1610,7 +1707,8 @@ export function App(p: AppProps): React.JSX.Element {
           const pal = paletteRef.current;
           if (pal && pal.mode === 'command') {
             const ghost = paletteGhost(composer.buffer.text.trim(), paletteMatches(composer.buffer.text.trim(), paletteState()));
-            if (ghost) composer.set(`${composer.buffer.text.trimEnd()}${ghost.rest}`);
+            // TUI-DESIGN-3 §4.1 rule 3: an alias ghost (` → /status`) accepts as `/status `; a prefix ghost appends its rest
+            if (ghost) composer.set(ghost.arrow !== undefined ? `${ghost.arrow} ` : `${composer.buffer.text.trimEnd()}${ghost.rest}`);
           }
         }
         // the palette closes when the `/` token is gone or a space follows the command (§5.3)
@@ -1776,6 +1874,11 @@ export function App(p: AppProps): React.JSX.Element {
         case 'restoreDraft':
           composer.set(c.text);
           return;
+        case 'bindings':
+          // TUI-DESIGN-3 §4.4 F10: the table swaps live; a chord in flight resets (its first key belonged to the old table)
+          setBindingsState(c.bindings);
+          armedRef.current = { ...armedRef.current, chord: null };
+          return;
         case 'picker':
           pickerOpenRef.current = c.open;
           pickerDispatch({ type: 'open', kind: c.open.kind, workspace: c.open.workspace, ...(c.open.sessions ? { sessions: c.open.sessions } : {}), ...(c.open.rewindSteps ? { rewindSteps: c.open.rewindSteps } : {}), ...(c.open.sort ? { sort: c.open.sort } : {}) });
@@ -1912,11 +2015,30 @@ export function App(p: AppProps): React.JSX.Element {
   const composerWant = collapsing || state.noteMode ? 1 : guard('composer', () => draftRows(buffer.text, buffer.chips, wrapInner, pickerOpen ? `${promptFor(glyphs)}filter: ` : promptFor(glyphs)), 1);
   const banner = guard('banner', () => bannerRow(state.loop, columns, glyphs), null);
   const liveRows = guard<string[]>('live', () => (state.retrying ? retryLiveLines(state.retrying, state.nowMs, CAP.live, columns, glyphs) : liveLines(state.live, CAP.live, columns, state.toolChars, state.synth, state.sampling)), []);
-  // TUI-DESIGN-2 §5.2 row 14 / §4.2 step 10: the 5-row splash slot only while the wordmark has rows to show (never a blank hole)
-  const splashOn = state.splash === 'running' && motion.time < SPLASH_MS && columns >= WORDMARK_MIN_COLUMNS && boxed;
-  const splash = splashOn ? guard('pane', () => splashFrame(motion.time, columns, glyphs), null) : null;
-  const wordmarkOn = splash !== null && splash.rows.length > 0;
-  // TUI-DESIGN-2 §4.6: 0 (collapsed) · 6 (open) · 12 (full / picker) · 5 (splash)
+  // TUI-DESIGN-2 §5.4 (finding 2): the brand row is the idle rule row until the first `run:ready`; a submission in flight
+  // (`starting`, the chat phase) never swaps it for the strip and back
+  const ranBefore = state.ready !== null || state.done !== null || state.runsEnded > 0;
+  // TUI-DESIGN-3 §3 (D-I): the wordmark is the pane slot's idle tenant. The reveal runs in every boxed frame ≥ 64 columns while the
+  // splash is `running` (16–20 rows included); afterwards `wordmarkWanted` (§3.1) decides the WANT and the layout's whole-or-absent
+  // grant (§3.7) the SHOW. `ui.wordmark` defaults to `static` under the SSH launch source (§3.2 twins).
+  const wordmarkSetting: WordmarkSetting = ui?.wordmark ?? (lx.ssh === true ? 'static' : 'sweep');
+  const splashOn = state.splash === 'running' && motion.time < SPLASH_MS && columns >= WORDMARK_MIN_COLUMNS && boxed && !launch.screenReader;
+  const wanted = wordmarkWanted({ boxed, rows, postRun: ranBefore && !state.postRunKeySeen, columns, screenReader: launch.screenReader, run: state.run, panel: state.panel, pickerOpen, overlay: overlayKind, expanded: state.expanded, setting: wordmarkSetting });
+  // the rows never depend on the band (§3.8 ordering): rows → layout → the loop → `spans(loop.band)` at render
+  const mark: { rows: string[]; spans: (band: GridBand | null) => readonly SplashSpan[] } | null = splashOn
+    ? guard(
+        'pane',
+        () => {
+          const f = splashFrame(motion.time, columns, glyphs, VERSION);
+          return { rows: f.rows, spans: () => f.spans };
+        },
+        null,
+      )
+    : wanted
+      ? guard('pane', () => wordmarkFrame({ columns, version: VERSION, glyphs }), null)
+      : null;
+  const wordmarkOn = mark !== null && mark.rows.length > 0;
+  // TUI-DESIGN-2 §4.6: 0 (collapsed) · 6 (open) · 12 (full / picker) · 5 (the wordmark)
   const paneWant = pickerOpen ? PICKER_PANE_WANT : wordmarkOn ? CAP.splash : state.panel === 'open' ? CAP.panel : state.panel === 'full' ? CAP.pane : 0;
   // TUI-DESIGN-2 §4.2: in the boxed tier the secret gate is a console row, never the `secret` overlay
   const gateUp: 0 | 1 = boxed && overlayKind === 'secret' && gateRef.current !== null ? 1 : 0;
@@ -1935,9 +2057,24 @@ export function App(p: AppProps): React.JSX.Element {
     paneWant,
     chrome,
     gate: gateUp,
+    // TUI-DESIGN-3 §3.7: the mark is granted whole or not at all (never its top rows)
+    paneWhole: wordmarkOn,
   };
   const layout = computeLayout(layoutInput);
   layoutRef.current = layout;
+  const markShown = wordmarkOn && layout.pane > 0;
+  // TUI-DESIGN-3 §3.6: the idle sweep — active only while the mark has rows, after the settle, with motion allowed and attention awake;
+  // the quiet-after-key rule lives inside the hook (never in `isActive`); the App renders `loop.band`, never `loopBand(loop.k)`
+  const attention = attentionAt(state.nowMs, state.lastActivityAt);
+  const loop = useIdleLoop({ shown: markShown && !splashOn, splashRunning: state.splash === 'running', enabled: wordmarkSetting === 'sweep' && !reducedMotion && depth > 0, attention, nowMs: state.nowMs, lastKeystrokeAt: state.lastKeystrokeAt });
+  // Per-row span arrays, memoised on the mark and the band tick: a key frame re-renders the App but the five <SplashRow>s keep
+  // their props (React skips them; Ink's Yoga cache keeps their layout), so the persistent mark costs a key frame nothing.
+  const markRowSpans = useMemo((): readonly (readonly MarkSpan[])[] => {
+    if (mark === null) return [];
+    const all = mark.spans(loop.band);
+    return mark.rows.map((_row, i) => all.filter((sp) => sp.row === i));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mark, loop.phase, loop.k]);
   const top = composerTop(layout);
   // TUI-DESIGN-2 §4.3: the wizard's rows live inside the console (its top edge sits above the overlay allocation)
   const wizardHosted = boxed && overlayKind === 'wizard' && layout.chrome > 0;
@@ -1948,6 +2085,19 @@ export function App(p: AppProps): React.JSX.Element {
   const statusOpts: StatusLineOptions = { ascii: glyphs.mode === 'ascii', reducedMotion, spinnerFrame: spinner, mode, flatBadge: !boxed };
   // TUI-DESIGN-2 §3.1 (finding 1): an engine run — never a submission in flight — colours the border `borderFocus` and the prompt `steer`
   const runLive = runIsLive(state.run);
+  // TUI-DESIGN-3 §5.2 A4: the streaming caret `▍` on the last live row, a 1 Hz blink riding the spinner tick (steady under reduced motion)
+  const streaming = runLive && state.live !== '' && state.retrying === null && liveRows.length > 0;
+  const caret = streaming && streamCaretOn(spinner, reducedMotion) ? (glyphs.mode === 'ascii' ? '|' : (glyphs.eighths[3] ?? '')) : '';
+  // TUI-DESIGN-3 §5.2 A5: the run-start sweep over the rule row's `─` cells (6 frames; none under reduced motion — the edges flip at once)
+  const startSweep = useMotion(runLive && !reducedMotion, RUN_START_SWEEP_MS);
+  const ruleBand = startSweep.settled || !runLive || reducedMotion ? null : runStartBand(startSweep.time, Math.min(columns, RULE_MAX_CELLS));
+  // TUI-DESIGN-3 §5.2 A6: the run-end edge fade — three 70 ms frames after `run:end` (instant under reduced motion); one fade per ended run
+  const fadedRuns = useRef(0);
+  const fadeActive = state.run === 'none' && state.runsEnded > 0 && fadedRuns.current !== state.runsEnded && !reducedMotion;
+  const endFade = useMotion(fadeActive, RUN_END_FADE_MS, RUN_END_FADE_STEP_MS);
+  if (fadeActive && endFade.settled) fadedRuns.current = state.runsEnded;
+  const edgeRole: ColorRole | null = runLive ? null : fadeActive && !endFade.settled ? runEndEdgeRole(endFade.time) : null;
+  const consoleExtra: { edgeRole?: ColorRole } = edgeRole !== null ? { edgeRole } : {};
   const thinking = chatThinking(state);
   const composerMode: ComposerMode = pickerOpen
     ? 'filter'
@@ -1969,16 +2119,13 @@ export function App(p: AppProps): React.JSX.Element {
                 ? 'blocked'
                 : thinking
                   ? 'thinking' // §3.1 row 1 / §4.4: `(thinking…)` while the intake, lookup or reply is in flight (the run is `starting`)
-                  : state.run !== 'none'
-                    ? 'steer'
+                  : runLive
+                    ? 'steer' // TUI-DESIGN-3 §5.2 P7: `starting` without a phase keeps the previous idle placeholder — never the steer one
                     : state.turns > 0 || state.runsEnded > 0 || state.done !== null
                       ? 'followup'
                       : 'task';
   const paneState = guard('pane', () => paneStateOf(state), { tab: state.tab, step: state.step, rows: [], plan: null, timeline: [], synth: null, mode: state.mode });
   const pickerView = pickerOpen ? guard('pane', () => pickerLines(picker, { filter: picker.renaming ? '' : buffer.text, rows: layout.pane, columns, nowMs: state.nowMs, glyphs }), null) : null;
-  // TUI-DESIGN-2 §5.4 (finding 2): the brand row is the idle rule row until the first `run:ready`; a submission in flight
-  // (`starting`, the chat phase) never swaps it for the strip and back
-  const ranBefore = state.ready !== null || state.done !== null || state.runsEnded > 0;
   const rule = guard(
     'rule',
     () =>
@@ -1993,6 +2140,8 @@ export function App(p: AppProps): React.JSX.Element {
         splash: state.splash,
         splashTime: state.splash === 'running' ? motion.time : null,
         ranBefore,
+        // TUI-DESIGN-3 §3.3: the plain rule while the mark has rows (before the first run:ready); the strip keeps the row afterwards
+        wordmark: markShown,
         version: VERSION,
         glyphs,
         pickerHeader: pickerOpen ? pickerRule(picker, columns, glyphs) : null,
@@ -2020,15 +2169,16 @@ export function App(p: AppProps): React.JSX.Element {
       </PaneBoundary>
       {!staticOnly && layout.rule > 0 ? (
         <Box height={layout.rule} overflow="hidden">
-          <RuleRow text={rule} theme={theme} color={depth} glyphs={glyphs} />
+          <RuleRow text={rule} theme={theme} color={depth} glyphs={glyphs} band={ruleBand} />
         </Box>
       ) : null}
       {!staticOnly && layout.live > 0 ? (
         <PaneBoundary pane="live" onFail={onPaneFail} fault={fault} log={logName}>
           <Box flexDirection="column" height={layout.live} overflow="hidden">
-            {liveRows.slice(0, layout.live).map((line, i) => (
-              <Text key={`l${i}`} wrap="truncate" {...(state.retrying ? textProps(theme, 'warn', color) : {})}>
+            {liveRows.slice(0, layout.live).map((line, i, shown) => (
+              <Text key={`l${i}`} wrap="truncate" {...(state.retrying ? textProps(theme, 'warn', depth) : {})}>
                 {line}
+                {caret !== '' && i === shown.length - 1 ? <Text {...textProps(theme, 'sweep', depth)}>{caret}</Text> : null}
               </Text>
             ))}
           </Box>
@@ -2036,15 +2186,15 @@ export function App(p: AppProps): React.JSX.Element {
       ) : null}
       {!staticOnly && layout.banner > 0 && banner !== null ? (
         <Box height={1} overflow="hidden">
-          <Text wrap="truncate" {...textProps(theme, 'warn', color)}>
+          <Text wrap="truncate" {...textProps(theme, 'warn', depth)}>
             {banner}
           </Text>
         </Box>
       ) : null}
-      {!staticOnly && layout.pane > 0 && wordmarkOn && splash !== null ? (
+      {!staticOnly && markShown && mark !== null ? (
         <Box flexDirection="column" height={layout.pane} overflow="hidden">
-          {splash.rows.slice(0, layout.pane).map((row, i) => (
-            <SplashRow key={`s${i}`} row={row} spans={splash.spans.filter((sp) => sp.row === i)} theme={theme} color={depth} />
+          {mark.rows.slice(0, layout.pane).map((row, i) => (
+            <SplashRow key={`s${i}`} row={row} spans={markRowSpans[i] ?? NO_MARK_SPANS} theme={theme} color={depth} />
           ))}
         </Box>
       ) : !staticOnly && layout.pane > 0 ? (
@@ -2055,7 +2205,7 @@ export function App(p: AppProps): React.JSX.Element {
       {!staticOnly && layout.queue > 0 ? (
         <Box flexDirection="column" height={layout.queue} overflow="hidden">
           {queueLines.slice(0, layout.queue).map((line, i) => (
-            <Text key={`q${i}`} wrap="truncate" {...textProps(theme, 'dim', color)}>
+            <Text key={`q${i}`} wrap="truncate" {...textProps(theme, 'dim', depth)}>
               {line}
             </Text>
           ))}
@@ -2106,6 +2256,7 @@ export function App(p: AppProps): React.JSX.Element {
             theme={theme}
             color={depth}
             onScroll={(n) => composer.setScrollTop(n)}
+            {...consoleExtra}
           />
         </PaneBoundary>
       ) : null}
@@ -2137,28 +2288,53 @@ export function App(p: AppProps): React.JSX.Element {
 /**
  * TUI-DESIGN-2 §5.4: the rule row — `◆ jevcode <version>` in `accent` on the brand row, the rest in `rule`. The span comes
  * from `brandSpan`, which accepts the four pulse glyphs (`░ ▒ ▓ ◆`), so the accent holds through the one-line splash
- * below 64 columns (finding 10).
+ * below 64 columns (finding 10). TUI-DESIGN-3 §5.2 A5: `band` lights the row's `─` cells inside `[from, to)` `borderFocus`
+ * (the run-start sweep; colour only — the text never changes). Without a band the three-span form of round 2 is kept verbatim.
  */
-export function RuleRow({ text, theme, color, glyphs }: { text: string; theme: Theme; color: ColorDepth; glyphs: GlyphSet }): React.JSX.Element {
+export function RuleRow({ text, theme, color, glyphs, band = null }: { text: string; theme: Theme; color: ColorDepth; glyphs: GlyphSet; band?: GridBand | null }): React.JSX.Element {
   const span = brandSpan(text, glyphs);
-  if (span === null) {
+  if (band === null) {
+    if (span === null) {
+      return (
+        <Text wrap="truncate" {...textProps(theme, 'rule', color)}>
+          {text}
+        </Text>
+      );
+    }
     return (
-      <Text wrap="truncate" {...textProps(theme, 'rule', color)}>
-        {text}
+      <Text wrap="truncate">
+        <Text {...textProps(theme, 'rule', color)}>{text.slice(0, span.from)}</Text>
+        <Text {...textProps(theme, 'accent', color)}>{text.slice(span.from, span.to)}</Text>
+        <Text {...textProps(theme, 'rule', color)}>{text.slice(span.to)}</Text>
       </Text>
     );
   }
-  return (
-    <Text wrap="truncate">
-      <Text {...textProps(theme, 'rule', color)}>{text.slice(0, span.from)}</Text>
-      <Text {...textProps(theme, 'accent', color)}>{text.slice(span.from, span.to)}</Text>
-      <Text {...textProps(theme, 'rule', color)}>{text.slice(span.to)}</Text>
-    </Text>
-  );
+  const cells = [...text];
+  const roleAt = (i: number): ColorRole => {
+    if (span !== null && i >= span.from && i < span.to) return 'accent';
+    return i >= band.from && i < band.to && cells[i] === glyphs.rule ? 'borderFocus' : 'rule';
+  };
+  const parts: React.JSX.Element[] = [];
+  let at = 0;
+  while (at < cells.length) {
+    const role = roleAt(at);
+    let end = at + 1;
+    while (end < cells.length && roleAt(end) === role) end++;
+    parts.push(
+      <Text key={`r${at}`} {...textProps(theme, role, color)}>
+        {cells.slice(at, end).join('')}
+      </Text>,
+    );
+    at = end;
+  }
+  return <Text wrap="truncate">{parts}</Text>;
 }
 
 /** TUI-DESIGN-2 §5.1: one wordmark row — the text unchanged, its cells coloured by the frame's spans (`accent` JEV, `dim` CODE, `sweep` head / band). */
-function SplashRow({ row, spans, theme, color }: { row: string; spans: readonly { from: number; to: number; role: import('./theme.js').ColorRole }[]; theme: Theme; color: ColorDepth }): React.JSX.Element {
+type MarkSpan = { readonly row: number; readonly from: number; readonly to: number; readonly role: import('./theme.js').ColorRole };
+const NO_MARK_SPANS: readonly MarkSpan[] = [];
+
+function SplashRowImpl({ row, spans, theme, color }: { row: string; spans: readonly { from: number; to: number; role: import('./theme.js').ColorRole }[]; theme: Theme; color: ColorDepth }): React.JSX.Element {
   const cells = [...row];
   const parts: React.JSX.Element[] = [];
   let at = 0;
@@ -2169,10 +2345,12 @@ function SplashRow({ row, spans, theme, color }: { row: string; spans: readonly 
     for (const s of sorted) if (i >= s.from && i < s.to) role = s.role;
     return role;
   };
+  // a run of blanks carries no visible colour: it joins the preceding coloured part instead of opening a part of its own
+  const isBlank = (i: number): boolean => cells[i] === ' ';
   while (at < cells.length) {
     const role = roleAt(at);
     let end = at + 1;
-    while (end < cells.length && roleAt(end) === role) end++;
+    while (end < cells.length && (roleAt(end) === role || (isBlank(end) && role !== null))) end++;
     const text = cells.slice(at, end).join('');
     parts.push(
       <Text key={`p${at}`} {...(role === null ? {} : textProps(theme, role, color))}>
@@ -2187,6 +2365,9 @@ function SplashRow({ row, spans, theme, color }: { row: string; spans: readonly 
     </Box>
   );
 }
+
+/** TUI-DESIGN-3 §3 (integration): memoised by value so a key frame (which re-renders the App) leaves the five mark rows untouched. */
+const SplashRow = memo(SplashRowImpl, (a, b) => a.row === b.row && a.theme === b.theme && a.color === b.color && a.spans.length === b.spans.length && a.spans.every((s, i) => s.from === b.spans[i]!.from && s.to === b.spans[i]!.to && s.role === b.spans[i]!.role));
 
 // ---------------------------------------------------------------------------------------
 // Renderer (§15 item 16)
@@ -2317,6 +2498,9 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
     setHost(host) {
       bridge.host = host;
       bridge.notify();
+    },
+    setBindings(b) {
+      bridge.command({ type: 'bindings', bindings: b });
     },
     setUi(ui) {
       bridge.ui = ui;

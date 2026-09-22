@@ -27,7 +27,8 @@ import { join, relative } from 'node:path';
 
 /** Files whose `.ask(` sites predate the design (§1.2 "the existing non-router uses"), with the reason each is safe. */
 const ALLOW = [
-  { file: 'src/loop/engine.ts', sites: 1, why: 'askRecorded: the one metered, recorded path to the decider — the guard, not a call site' },
+  { file: 'src/loop/engine.ts', sites: 2, why: 'askRecorded, plus the decomposeContext seam that forwards into it (contract 1.5): the one metered, recorded path to the decider — the guard, not call sites' },
+  { file: 'src/loop/stages/decompose.ts', sites: 1, why: 'the `deps.ask` forwarder into ctx.ask/askRecorded (contract 1.5); the Choice is built, floored and guarded in src/orchestrate/split/rank.ts, which carries the four-clause block' },
   { file: 'src/loop/stages/intent.ts', sites: 1, why: 'Q7 intent Choice: escape + paired Nouls, code fallback to investigate (INTENT_FALLBACK)' },
   { file: 'src/loop/stages/context.ts', sites: 1, why: 'Q2–Q6 context Nouls: ordering only, the code pre-filter enumerates the candidates' },
   { file: 'src/loop/stages/risk.ts', sites: 2, why: 'Q19/Q20 harm-only: code deny-list first, a failed ask means ask/decline, never allow' },

@@ -1,6 +1,6 @@
-# `jevcode run` with no task on a terminal (TUI-DESIGN-2 §1.1): the same jev-only session as `jevcode chat`; /exit leaves 0
+# `jevcode run` with no task on a terminal (TUI-DESIGN-2 §1.1): the same default-mode (jev+llm) session as `jevcode chat`; /exit leaves 0
 expect \x1b\[\?25l
-expect ╭─ (?:\x1b\[[0-9;]*m)*jev-only
+expect ╭─ (?:\x1b\[[0-9;]*m)*llm\+jev · verified
 expect Say hi
 expect sess \$
 send /exit

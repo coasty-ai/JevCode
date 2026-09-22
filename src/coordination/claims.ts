@@ -1,0 +1,344 @@
+/**
+ * Claims (review blocker 3) and record authenticity (blockers 5 / 6) — `docs/research/coordination/review-2026-09-21.md`.
+ *
+ * The §9.3 fork rule and `foreignLive` may not compare the Lamport `Stamp`: it folds (`max(n, observed) + 1` on every fold
+ * and every issue) and a heartbeat is ONE file per run overwritten every beat, so intermediate values are never seen and two
+ * engines can both read themselves as the holder (the review's A:48 / B:50 interleaving). A `Claim` is minted once per
+ * process and never changes, so the verdict is a function of the two records alone — stable whatever the sync timing.
+ *
+ * ORDERING (owner decision, design §14 item 18 — this file's revision-4/5 divergence is WITHDRAWN). The holder is the
+ * claim with the **HIGHEST QUALIFIED epoch**, exactly as §3.2 / §9.3 / §10.7 / §11 row 31 state it, and `Claim` is
+ * §3.2's `{ epoch, deviceId, runId, at }` (`pid` stays as display/audit and as the last-resort tiebreak). The
+ * minimum-holder rule this file used to implement inverted the fence: an epoch is minted by the incarnation that READ
+ * its predecessor's state, so the minimum is the process that has already been superseded — a legitimate `/resume` or
+ * `sessions unlock --device` takeover would have been called the fork and told to stop, while the stale writer kept
+ * the run. QUALIFIED means what it means everywhere else a foreign record changes a run (§9.3, §10.3): my own claim,
+ * or a foreign one whose record parsed `ok`, is hmac-`verified` under the key of the device subtree it was read from,
+ * and whose device is in `trusted-devices.json`. An unqualified claim can therefore raise `⚠ forked` and a notice, but
+ * it can never take the run — which is the §11 row 51 rule, now enforced by the holder rule itself rather than by every
+ * caller remembering to check `verified`.
+ *
+ * Authenticity is the second half: §10.3 says only hmac-valid records from a paired device may become `steer` / `pause` /
+ * `resume` / `end`, and the review extends that to the exit-2 fork stop. `hmacOf` is HMAC-SHA256 over the same canonical
+ * text the checksum covers, so a record's identity fields cannot be edited without the paired key.
+ */
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { canonicalText } from './checksum.js';
+import type { Authority, Claim, RecordOrigin } from './types.js';
+
+// ── claims ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** A fresh run's incarnation. */
+export const FIRST_EPOCH = 1;
+/**
+ * §3.2 / §9.3 (design revision 4): `0 ≤ epoch ≤ MAX_CLAIM_EPOCH` or the record is a `bounds` rejection.
+ * `Number.isSafeInteger` alone let a planted `9007199254740990` make every successor unmintable and the run permanently
+ * unresumable on every device. At ~1 claim per resume, 1e9 is not reachable by use.
+ */
+export const MAX_CLAIM_EPOCH = 1_000_000_000;
+/** the pre-revision-4 name, kept so nothing downstream breaks on the rename */
+export const EPOCH_MAX = MAX_CLAIM_EPOCH;
+/**
+ * §3.2 (design revision 4): `RunMeta.claims[]` is capped at 64 — the FIRST entry (the origin incarnation, which is the
+ * provenance) plus the newest 63. Only the origin and the maximum are ever read, so pruning the middle is lossless.
+ */
+export const MAX_CLAIMS_PER_RUN = 64;
+/** the pre-revision-4 name */
+export const CLAIMS_MAX = MAX_CLAIMS_PER_RUN;
+
+/** §3.2: keep the first row and the newest `MAX_CLAIMS_PER_RUN - 1`. */
+export function capClaims<T>(rows: readonly T[], max = MAX_CLAIMS_PER_RUN): T[] {
+  // + re-check (lower 4): `max <= 0` must be the empty set. The old form fell through to `slice(-0)`, which is the
+  // WHOLE array — a "keep nothing" bound that kept everything.
+  if (max <= 0) return [];
+  if (rows.length <= max) return [...rows];
+  if (max === 1) return [rows[rows.length - 1] as T];
+  return [rows[0] as T, ...rows.slice(rows.length - (max - 1))];
+}
+
+/** + re-check (lower 5): a parseable ISO-8601 instant, bounded — the shape `compareClaim` orders on. */
+export function isIsoInstant(v: unknown): boolean {
+  return typeof v === 'string' && v.length >= 20 && v.length <= 32 && Number.isFinite(Date.parse(v));
+}
+
+export function isValidClaim(c: unknown): c is Claim {
+  if (typeof c !== 'object' || c === null) return false;
+  const o = c as Record<string, unknown>;
+  if (!Number.isSafeInteger(o['epoch']) || (o['epoch'] as number) < 1 || (o['epoch'] as number) > MAX_CLAIM_EPOCH) return false;
+  if (!Number.isSafeInteger(o['pid']) || (o['pid'] as number) <= 0) return false;
+  if (typeof o['deviceId'] !== 'string' || typeof o['runId'] !== 'string') return false;
+  // + re-check (lower 5): `at` is a TIEBREAK input of `compareClaim`, so its SHAPE is load-bearing: a forged
+  // `''` sorts before every real instant and would take the tie. Only a parseable ISO instant counts.
+  return isIsoInstant(o['at']);
+}
+
+/**
+ * The total order §3.2 states, as a RANK comparator: **negative means `a` OUTRANKS `b`**, so a `sort(compareClaim)` is
+ * holder-first and `[0]` is the holder. Higher `epoch` wins (the later incarnation), ties by lower `deviceId`, then
+ * lower `runId` — the design's tuple exactly.
+ *
+ * `at` then `pid` are appended as the as-built last resort (§14 item 19): `(epoch, deviceId, runId)` is NOT total for
+ * two processes of ONE device on ONE run, and `compareClaim === 0` for two different processes is the single value the
+ * fork rule cannot break — the very bug the persisted takeback claim of §9.3 was added to fix. They decide nothing any
+ * other case can reach.
+ */
+export function compareClaim(a: Claim, b: Claim): -1 | 0 | 1 {
+  if (a.epoch !== b.epoch) return a.epoch > b.epoch ? -1 : 1; // §3.2: the HIGHER epoch holds
+  if (a.deviceId !== b.deviceId) return a.deviceId < b.deviceId ? -1 : 1;
+  if (a.runId !== b.runId) return a.runId < b.runId ? -1 : 1;
+  if (a.at !== b.at) return a.at < b.at ? -1 : 1;
+  if (a.pid !== b.pid) return a.pid < b.pid ? -1 : 1;
+  return 0;
+}
+
+export function sameClaim(a: Claim, b: Claim): boolean {
+  return compareClaim(a, b) === 0;
+}
+
+/** The holder of a set of claims on one runId (the one that ranks first — the highest epoch), or null for an empty set. */
+export function claimHolder(claims: readonly Claim[]): Claim | null {
+  let best: Claim | null = null;
+  for (const c of claims) if (best === null || compareClaim(c, best) < 0) best = c;
+  return best;
+}
+
+/**
+ * Mint this process's claim: `epoch = max(every epoch already seen for this runId) + 1`, so a resume, a takeover or an
+ * import is always a LATER incarnation than the one it replaces and therefore yields to an origin that is still live.
+ * Minted ONCE (at `createEngine`) and never touched again.
+ */
+export function mintClaim(o: { deviceId: string; runId: string; pid: number; at: string; seenEpochs?: readonly number[] }): Claim {
+  return { epoch: Math.min(MAX_CLAIM_EPOCH, Math.max(FIRST_EPOCH, highEpoch(o.seenEpochs ?? []) + 1)), deviceId: o.deviceId, runId: o.runId, at: o.at, pid: o.pid };
+}
+
+/** The largest epoch worth following: a safe integer inside `[1, EPOCH_MAX]`; everything else is a hostile or torn value. */
+export function highEpoch(epochs: readonly number[]): number {
+  let max = 0;
+  for (const e of epochs) if (Number.isSafeInteger(e) && e > max && e <= MAX_CLAIM_EPOCH) max = e;
+  return max;
+}
+
+/**
+ * + re-review (5): epochs read from a FOREIGN `runs/<dev>/<runId>/run.json` (`claims[]` / `imports[]`) count only when the
+ * record they arrived with is trust-qualified. Without this, `runs/<anydev>/<myRunId>/run.json` with
+ * `claims:[{ epoch: 9007199254740990 }]` makes every `/resume` on every device demand `--force-takeback` whose successor
+ * epoch is unmintable — the run is permanently unresumable, and claims are never GC'd. Bounded to `MAX_CLAIMS_PER_RUN`.
+ *
+ * Revision 5: the rows now COME from somewhere — `readClaimEpochs(ledger, runId)` reads the authenticated
+ * `runs/<deviceId>/<runId>/claims.json` projections through `parseRecord(text, 'claims', { runId, trust })`, so a
+ * foreign epoch can finally be `'trusted'` and the §7.3 1(a) refusal is live rather than fail-safe-and-dead. The
+ * bound below still applies whatever the authority, which is what stops a planted 1e9 either way.
+ */
+export function qualifiedEpochs(rows: readonly { epoch: number; authority: Authority }[], o: { max?: number } = {}): number[] {
+  const out: number[] = [];
+  for (const r of rows.slice(-(o.max ?? CLAIMS_MAX))) {
+    if (r.authority === 'unverified') continue;
+    if (Number.isSafeInteger(r.epoch) && r.epoch >= FIRST_EPOCH && r.epoch <= MAX_CLAIM_EPOCH) out.push(r.epoch);
+  }
+  return out;
+}
+
+/**
+ * `--force-takeback`'s gate: true when a fresh claim can still outrank everything seen. At the ceiling the mint returns
+ * `EPOCH_MAX` again and `compareClaim` falls to `(deviceId, runId, at, pid)`, so the takeback is decided by those — the
+ * caller must say so rather than claim a higher incarnation it cannot mint.
+ */
+export function canMintAbove(seenEpochs: readonly number[]): boolean {
+  return highEpoch(seenEpochs) < MAX_CLAIM_EPOCH;
+}
+
+/**
+ * §9.3 (design revision 5): the `--force-takeback` algebra, exactly as the design states it.
+ *
+ * ```
+ * Q = { local run.json claims[].epoch } ∪ { local imports[].claim.epoch } ∪ { devices/<hostKey>/claims/<runId>.json }
+ *     ∪ { QUALIFIED foreign epochs from runs/*\/<runId>/claims.json }      each filtered to 0 ≤ e ≤ MAX_CLAIM_EPOCH
+ * U = { UNQUALIFIED foreign epochs }                                        each filtered to 0 ≤ e <  MAX_CLAIM_EPOCH
+ * ordinary mint      epoch = max(Q_local) + 1
+ * --force-takeback   epoch = max(Q ∪ U)   + 1
+ * refusal            max(Q) === MAX_CLAIM_EPOCH  →  CoordinationError 'epoch-exhausted'
+ * ```
+ *
+ * `U` is filtered STRICTLY BELOW the bound, so an unqualified epoch planted AT the ceiling is dropped rather than
+ * minted over: an unqualified epoch refuses nothing, so minting above it is a courtesy and a hostile one must not be
+ * able to disable the flag. `Q` is filtered AT the bound, so reaching it is a real state and the honest answer is a
+ * refusal — the alternative (clamping the OUTPUT and minting an epoch EQUAL to the maximum) yields
+ * `compareClaim === 0`, the one value the fork rule cannot break, which is the bug the persisted takeback claim was
+ * added to fix. Revision 4's rule clamped the output, so a planted unqualified `1e9` made the flag mint `1e9 + 1` —
+ * above the parse bound, so every other device then rejected the winner's own records as `bounds`.
+ */
+export interface TakebackInputs {
+  /** local truth: `run.json.claims[]`, `imports[]`, `devices/<hostKey>/claims/<runId>.json` — FILTERED, never refused */
+  local: readonly number[];
+  /** foreign epochs from `runs/*\/<runId>/claims.json` with the authority their parse reported */
+  foreign: readonly { epoch: number; qualified: boolean }[];
+}
+
+export interface TakebackPlan {
+  /** the epoch to mint, or null when the run is epoch-exhausted */
+  epoch: number | null;
+  /** `max(Q) === MAX_CLAIM_EPOCH`: nothing can take this run over any more */
+  exhausted: boolean;
+  /** unqualified epochs dropped for being AT or above the bound — the card says so (§9.3) */
+  droppedUnqualified: number;
+}
+
+export function forceTakebackPlan(o: TakebackInputs): TakebackPlan {
+  const inBand = (e: number, top: 'at' | 'below'): boolean =>
+    Number.isSafeInteger(e) && e >= FIRST_EPOCH && (top === 'at' ? e <= MAX_CLAIM_EPOCH : e < MAX_CLAIM_EPOCH);
+  const q: number[] = [];
+  for (const e of o.local) if (inBand(e, 'at')) q.push(e); // local truth is FILTERED, never refused (§9.3)
+  for (const r of o.foreign) if (r.qualified && inBand(r.epoch, 'at')) q.push(r.epoch);
+  let droppedUnqualified = 0;
+  const u: number[] = [];
+  for (const r of o.foreign) {
+    if (r.qualified) continue;
+    if (inBand(r.epoch, 'below')) u.push(r.epoch);
+    else if (Number.isSafeInteger(r.epoch) && r.epoch >= MAX_CLAIM_EPOCH) droppedUnqualified++;
+  }
+  const maxQ = q.length === 0 ? 0 : Math.max(...q);
+  if (maxQ === MAX_CLAIM_EPOCH) return { epoch: null, exhausted: true, droppedUnqualified };
+  const top = Math.max(maxQ, u.length === 0 ? 0 : Math.max(...u));
+  return { epoch: Math.max(FIRST_EPOCH, top + 1), exhausted: false, droppedUnqualified };
+}
+
+/** §9.3: the ORDINARY mint — local truth only, because the refusal gate guarantees no qualified foreign epoch exceeds it. */
+export function ordinaryMintEpoch(local: readonly number[]): number {
+  return Math.max(FIRST_EPOCH, highEpoch(local) + 1);
+}
+
+/**
+ * `--force-takeback`'s epoch, CLAMPED: a planted `MAX_CLAIM_EPOCH` can never make a takeback mint `MAX_CLAIM_EPOCH + 1`
+ * (which `isValidClaim` would then reject as out of bounds, leaving the run unresumable on every device — the very
+ * outcome the bound exists to prevent). At the ceiling the takeback re-mints the ceiling and `compareClaim` decides on
+ * `(deviceId, runId, at, pid)`; `canMintAbove` is how the caller knows to say so.
+ */
+export function forceTakebackEpoch(seenEpochs: readonly number[]): number {
+  return Math.min(MAX_CLAIM_EPOCH, Math.max(FIRST_EPOCH, highEpoch(seenEpochs) + 1));
+}
+
+export type ForkRole = 'alone' | 'holder' | 'loser';
+
+export interface ForkVerdict {
+  role: ForkRole;
+  /** the QUALIFIED claim that ranks first for this runId — mine, or a trust- and hmac-qualified foreign one (§9.3) */
+  holder: Claim;
+  /** every other claim the reader saw, qualified or not, holder-first — the `⚠ forked` evidence */
+  losers: Claim[];
+  /**
+   * §10.3 + review blocker 5 + §11 row 51: true only when a QUALIFIED foreign claim supersedes mine, which is the one
+   * state that authorises the exit-2 stop. A forged or unpaired record is never qualified, so it can never make this
+   * true — it can only leave a `losers` row, the `⚠ forked` flag and the `[c]/[q]` pane.
+   */
+  verified: boolean;
+  /** §11 row 51: a claim that outranks mine but is NOT qualified — the unverified-fork notice, never a stop */
+  unverifiedFork: boolean;
+}
+
+/**
+ * The fork decision for one runId (review blocker 3 / 5). `others` are the OTHER live records' claims with the authority
+ * the reader derived from their origin. Symmetric: both sides compute the same `holder` from the same immutable claims.
+ *
+ * §3.2 / §9.3 (owner decision, §14 item 18): the holder is the highest QUALIFIED epoch, so the resumer that minted above
+ * the stale process takes the run and the stale process is the loser. An unqualified claim never enters the holder
+ * computation — `role` alone is now enough to gate the stop, and `unverifiedFork` carries the row-51 notice.
+ */
+export function forkVerdict(mine: Claim, others: readonly { claim: Claim; authority: Authority }[]): ForkVerdict {
+  const qualified = others.filter((o) => o.authority !== 'unverified').map((o) => o.claim);
+  const holder = claimHolder([mine, ...qualified]) ?? mine;
+  const losers = [mine, ...others.map((o) => o.claim)].filter((c) => !sameClaim(c, holder)).sort(compareClaim);
+  if (others.length === 0) return { role: 'alone', holder, losers: [], verified: true, unverifiedFork: false };
+  const verified = qualified.some((c) => compareClaim(c, mine) < 0);
+  const unverifiedFork = others.some((o) => o.authority === 'unverified' && compareClaim(o.claim, mine) < 0);
+  return { role: sameClaim(holder, mine) ? 'holder' : 'loser', holder, losers, verified, unverifiedFork };
+}
+
+/**
+ * §7.3 step 1(a) / §9.3: the `/resume` refusal, as one predicate.
+ *
+ * A resume is refused ONLY when a QUALIFIED foreign epoch strictly exceeds this device's local maximum — the run was
+ * legitimately taken over, and `--force-takeback` (`forceTakebackPlan`) is the way back. An unqualified foreign epoch
+ * is a card line and refuses nothing (§11 rows 61 / 66): without that asymmetry, `runs/<anydev>/<myRunId>/claims.json`
+ * with a planted epoch would lock the run out of every device forever. Both sides are filtered to the bound, so a
+ * planted ceiling cannot refuse either.
+ */
+export function claimRefusal(
+  local: readonly number[],
+  foreign: readonly { epoch: number; deviceId: string; qualified: boolean }[],
+): { deviceId: string; epoch: number } | null {
+  const mine = highEpoch(local);
+  let best: { deviceId: string; epoch: number } | null = null;
+  for (const r of foreign) {
+    if (!r.qualified) continue;
+    if (!Number.isSafeInteger(r.epoch) || r.epoch < FIRST_EPOCH || r.epoch > MAX_CLAIM_EPOCH) continue;
+    if (r.epoch <= mine) continue;
+    if (best === null || r.epoch > best.epoch || (r.epoch === best.epoch && r.deviceId < best.deviceId)) best = { deviceId: r.deviceId, epoch: r.epoch };
+  }
+  return best;
+}
+
+// ── authenticity ──────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** §10.3: 32 bytes from the pairing phrase; hex on disk in `coordination/device.key` (0600), never in a published record. */
+export const COMMONS_KEY_BYTES = 32;
+export const COMMONS_KEY_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * `HMAC-SHA256(key, "<writerDeviceId>\n" + canonical)` over the exact text the checksum covers (record minus
+ * `{ checksum, hmac }`).
+ *
+ * + re-review (5): the WRITER'S device id is bound INTO the signature, and the verifier only ever supplies the device id
+ * of the subtree the file was read from. With one group `commonsKey` (the W5 sketch: phrase → scrypt → one key) an
+ * unbound signature lets one paired device forge records under another paired device's id — auto-stop a run, poison a resume,
+ * inject a `steer`, apply `pause`/`end` under `remoteControl:'allow'`. A per-device key still verifies here unchanged;
+ * this is the minimum that holds while the group key exists.
+ */
+export function hmacOf(record: object, keyHex: string, writer: HmacWriter | string): string {
+  const w: HmacWriter = typeof writer === 'string' ? { deviceId: writer, hostKey: (record as { hostKey?: string }).hostKey } : writer;
+  return createHmac('sha256', Buffer.from(keyHex, 'hex')).update(`${w.deviceId}\n${w.hostKey ?? ''}\n${canonicalText(record)}`).digest('hex');
+}
+
+/**
+ * §10.3 (design revision 4): the canonical HMAC text starts with the writer's `deviceId` AND `hostKey`, and the verifier
+ * supplies both from the PATH the file was read at (plus the record's own `hostKey`, which is bound by the id-vs-path
+ * check). The key is found by that path `deviceId`, never by a `keyId` the record carries.
+ */
+export interface HmacWriter {
+  deviceId: string;
+  hostKey?: string | undefined;
+}
+
+/**
+ * Constant-time compare of a record's `hmac` against the key of `deviceId`; false for a missing, short or malformed
+ * value. `deviceId` is the PATH's device component (the subtree the file was read from), never the record's own field.
+ */
+export function hmacValid(record: object, keyHex: string | null | undefined, writer: HmacWriter | string): boolean {
+  if (typeof keyHex !== 'string' || !COMMONS_KEY_RE.test(keyHex)) return false;
+  const got = (record as { hmac?: unknown }).hmac;
+  if (typeof got !== 'string' || got.length !== 64 || !/^[0-9a-f]{64}$/.test(got)) return false;
+  const w: HmacWriter = typeof writer === 'string' ? { deviceId: writer, hostKey: (record as { hostKey?: string }).hostKey } : writer;
+  const want = hmacOf(record, keyHex, w);
+  return timingSafeEqual(Buffer.from(got, 'hex'), Buffer.from(want, 'hex'));
+}
+
+/** `record` with its `hmac` set (after the checksum — both cover the same canonical text, so the order does not matter). */
+export function withHmac<T extends object>(record: T, keyHex: string | null | undefined, writer: HmacWriter | string): T {
+  if (typeof keyHex !== 'string' || !COMMONS_KEY_RE.test(keyHex)) return record;
+  const w: HmacWriter = typeof writer === 'string' ? { deviceId: writer, hostKey: (record as { hostKey?: string }).hostKey } : writer;
+  return { ...record, hmac: hmacOf(record, keyHex, w) };
+}
+
+/**
+ * Review blocker 6: the authority of a record is a function of WHERE it was read and whether its hmac verifies — never of
+ * `record.deviceId` or `from.deviceId`. A file planted at `<sharedDir>/jevcode-commons/inbox/<myDeviceId>/…` is
+ * `'unverified'`, not `'self'`.
+ */
+export function authorityOf(origin: RecordOrigin): Authority {
+  if (origin.self) return 'self';
+  return origin.authenticated ? 'trusted' : 'unverified';
+}
+
+/** The origin of a record read from THIS process's own local subtree. */
+export const SELF_ORIGIN: RecordOrigin = { self: true, source: null, authenticated: true };
+/** The origin a bare in-memory fixture gets: foreign and unverified — the conservative default (blocker 6). */
+export const FOREIGN_ORIGIN: RecordOrigin = { self: false, source: null, authenticated: false };

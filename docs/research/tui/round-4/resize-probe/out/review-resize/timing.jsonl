@@ -1,0 +1,26 @@
+{"t":176,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":1377,"step":2,"op":"sleep","arg":"1.2"}
+{"t":1377,"step":3,"op":"send","arg":"start the probe run"}
+{"t":1577,"step":4,"op":"sleep","arg":"0.2"}
+{"t":1577,"step":5,"op":"send","arg":"\\r"}
+{"t":2589,"step":6,"op":"expect","arg":"\\[y\\] approve"}
+{"t":3391,"step":7,"op":"sleep","arg":"0.8"}
+{"t":3391,"step":8,"op":"mark","arg":"card-up"}
+{"t":3393,"step":9,"op":"resize","arg":"12 60"}
+{"t":4294,"step":10,"op":"sleep","arg":"0.9"}
+{"t":4294,"step":11,"op":"mark","arg":"shrunk"}
+{"t":4298,"step":12,"op":"resize","arg":"8 40"}
+{"t":5200,"step":13,"op":"sleep","arg":"0.9"}
+{"t":5200,"step":14,"op":"mark","arg":"tiny"}
+{"t":5203,"step":15,"op":"resize","arg":"40 120"}
+{"t":6104,"step":16,"op":"sleep","arg":"0.9"}
+{"t":6104,"step":17,"op":"mark","arg":"grown"}
+{"t":6104,"step":18,"op":"send","arg":"y"}
+{"t":7606,"step":19,"op":"sleep","arg":"1.5"}
+{"t":7606,"step":20,"op":"mark","arg":"approved"}
+{"t":7606,"step":21,"op":"send","arg":"\\x03"}
+{"t":7907,"step":22,"op":"sleep","arg":"0.3"}
+{"t":7907,"step":23,"op":"send","arg":"\\x03"}
+{"t":8174,"step":24,"op":"sleep","arg":"0.8"}
+{"t":8174,"step":24,"op":"eof-during-sleep","arg":"0.8"}
+{"t":8174,"step":0,"op":"exit","arg":"130"}

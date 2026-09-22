@@ -6,7 +6,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { COMMAND_TOKENS, argumentCandidates, dispatchCommand, parseCommandLine, resolveRunTarget, unknownCommandText, type DispatchContext } from '../../../../src/tui/commands/dispatch.js';
+import { COMMAND_ACTION_KINDS, COMMAND_TOKENS, argumentCandidates, dispatchCommand, parseCommandLine, resolveRunTarget, unknownCommandText, type CommandAction, type DispatchContext } from '../../../../src/tui/commands/dispatch.js';
 import { parseCommand } from '../../../../src/tui/commands/parse.js';
 import { COMMANDS, findCommand, type CommandSpec } from '../../../../src/tui/commands/registry.js';
 
@@ -23,6 +23,12 @@ function bad(line: string, ctx: DispatchContext = idle): string {
   if (r.ok) throw new Error(`expected an error for ${line}`);
   expect(r.label).toBe('[ui]');
   return r.text;
+}
+/** TUI-DESIGN-3 §4.4 F21: the draft flag of an error */
+function keeps(line: string, ctx: DispatchContext = idle): boolean {
+  const r = dispatchCommand(line, ctx);
+  if (r.ok) throw new Error(`expected an error for ${line}`);
+  return r.keepDraft;
 }
 
 describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
@@ -138,9 +144,10 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     const many = Array.from({ length: 7 }, (_, i) => ({ id: `id${i}`, title: `task ${i}` }));
     expect(resolveRunTarget('task', many)).toMatchObject({ ok: false, reason: expect.stringMatching(/matches 7 sessions: .*, …$/) });
   });
-  it('rest arguments: /rename ≤ 60, /steer and /why ≤ 600 one-line', () => {
+  it('rest arguments: /rename passes whole (the host clips to 60), /steer and /why ≤ 600 one-line', () => {
     expect(ok('/rename fix   parse_date  "tz"')).toEqual({ kind: 'rename', title: 'fix parse_date "tz"' });
-    expect((ok(`/rename ${'x'.repeat(100)}`) as { title: string }).title.length).toBe(60);
+    // TUI-DESIGN-3 §4.4 F13: the dispatcher passes the title whole; the controller clips to 60 once and appends the cut note
+    expect((ok(`/rename ${'x'.repeat(100)}`) as { title: string }).title.length).toBe(100);
     expect(bad('/rename')).toBe('error: /rename: expected <title>');
     expect(bad('/rename    ')).toBe('error: /rename: expected <title>');
     expect(ok('/steer keep the CHANGELOG format', live)).toEqual({ kind: 'steer', text: 'keep the CHANGELOG format' });
@@ -161,7 +168,6 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     expect(bad('/decisions nope')).toMatch(/expected a count or a stage/);
     expect(ok('/provider OpenRouter')).toEqual({ kind: 'provider', provider: 'openrouter' });
     expect(bad('/provider gemini')).toBe('error: /provider: expected one of anthropic|openrouter, got "gemini"');
-    expect(bad('/provider')).toMatch(/expected <p>/);
     expect(ok('/mode jev-only')).toEqual({ kind: 'mode', mode: 'jev-only' });
     // TUI-DESIGN-2 §1.3: `/mode` alone shows (null); `/llm on|off` maps onto the mode action; `/panel` and `/transcript` (§4.6, §4.5)
     expect(ok('/mode')).toEqual({ kind: 'mode', mode: null });
@@ -182,7 +188,10 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     expect(ok('/transcript compact')).toEqual({ kind: 'transcript', view: 'compact' });
     expect(bad('/transcript all')).toBe('error: /transcript: expected one of compact|full, got "all"');
     expect(ok('/model claude-sonnet-5')).toEqual({ kind: 'model', id: 'claude-sonnet-5' });
-    expect(bad('/model')).toBe('error: /model: expected <id>');
+    // TUI-DESIGN-3 §4.4 F15: `/model` and `/provider` alone show the current and pending values (null)
+    expect(ok('/model')).toEqual({ kind: 'model', id: null });
+    expect(ok('/provider')).toEqual({ kind: 'provider', provider: null });
+    expect(ok('/ml claude-sonnet-5')).toEqual({ kind: 'model', id: 'claude-sonnet-5' });
     expect(ok('/theme daltonized')).toEqual({ kind: 'theme', theme: 'daltonized' });
     expect(bad('/theme')).toBe('error: /theme: expected one of dark|light|daltonized|ansi');
     expect(ok('/copy')).toEqual({ kind: 'copy', what: 'last' });
@@ -201,6 +210,19 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     for (const name of ['new', 'plan', 'calibration', 'jev', 'cost', 'config', 'login', 'trust', 'status', 'errors', 'report', 'editor']) {
       expect(ok(`/${name}`)).toEqual({ kind: name });
     }
+    // the no-argument commands by name (G1: every command has its own literal in a test)
+    expect(ok('/trust')).toEqual({ kind: 'trust' });
+    expect(ok('/calibration')).toEqual({ kind: 'calibration' });
+    expect(ok('/report')).toEqual({ kind: 'report' });
+    expect(ok('/errors')).toEqual({ kind: 'errors' });
+    expect(ok('/config')).toEqual({ kind: 'config' });
+    expect(ok('/login')).toEqual({ kind: 'login' });
+    expect(ok('/editor')).toEqual({ kind: 'editor' });
+    expect(ok('/jev')).toEqual({ kind: 'jev' });
+    expect(ok('/plan')).toEqual({ kind: 'plan' });
+    expect(ok('/status')).toEqual({ kind: 'status' });
+    expect(ok('/new')).toEqual({ kind: 'new' });
+    expect(bad('/trust now')).toBe('error: /trust: takes no arguments');
     expect(ok('/unsteer', live)).toEqual({ kind: 'unsteer' });
     expect(ok('/abort', live)).toEqual({ kind: 'abort' });
   });
@@ -209,15 +231,57 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     expect(p.ok).toBe(true);
     if (p.ok) expect(dispatchCommand(p.command, idle)).toMatchObject({ ok: true, action: { kind: 'budget' } });
     const sample: Record<string, string> = { rename: 'x', steer: 'x', why: '3', budget: '', model: 'm', provider: 'anthropic', mode: 'jev-on', llm: 'on', theme: 'dark', history: 'clear' };
+    // TUI-DESIGN-3 §8 S4 (G5): the kinds list is exhaustive over the union (compile-time) and every dispatched kind is in it
+    const kinds: readonly CommandAction['kind'][] = COMMAND_ACTION_KINDS;
+    expect(kinds).toHaveLength(36);
+    expect(new Set(kinds).size).toBe(kinds.length);
     for (const c of COMMANDS) {
       const ctx = c.availableDuringTask === 'live' ? live : idle;
       const r = dispatchCommand(`/${c.name} ${sample[c.name] ?? ''}`.trim(), ctx);
       expect(r.ok, c.name).toBe(true);
-      if (r.ok) expect(r.spec.name).toBe(c.name);
+      if (r.ok) {
+        expect(r.spec.name).toBe(c.name);
+        expect(kinds).toContain(r.action.kind);
+      }
     }
+    // aliases dispatch to the owner's action
+    expect(ok('/s')).toEqual({ kind: 'status' });
+    expect(ok('/m jev-on')).toEqual({ kind: 'mode', mode: 'jev-on' });
+    expect(ok('/p d')).toEqual({ kind: 'panel', panel: 'd' });
+    expect(ok('/tr full')).toEqual({ kind: 'transcript', view: 'full' });
+    expect(ok('/q')).toEqual({ kind: 'exit' });
+    expect(ok('/nw')).toEqual({ kind: 'new' });
+    expect(ok('/r')).toMatchObject({ kind: 'resume', target: { kind: 'picker' } });
   });
-  it('argumentCandidates offers enum/setting values, changed steps and session titles', () => {
+  it('TUI-DESIGN-3 §4.4 F21 (D-K): `keepDraft` — fixable errors (unknown command, tokeniser, bad argument, missing value) keep the draft; availability errors (`needs a live run`, `runs when the run is idle`, an idle-only flag while live) clear it', () => {
+    expect(keeps('/foo')).toBe(true);
+    expect(keeps('/bud')).toBe(true);
+    expect(keeps('/export "abc')).toBe(true);
+    expect(keeps('/export abc\\')).toBe(true);
+    expect(keeps('/budget spend-cap abc')).toBe(true);
+    expect(keeps('/budget spend-cap')).toBe(true);
+    expect(keeps('/undo 4')).toBe(true);
+    expect(keeps('/mode jev-maybe')).toBe(true);
+    expect(keeps('/resume nothing')).toBe(true);
+    expect(keeps('/exit now')).toBe(true);
+    expect(keeps('/diff --nope')).toBe(true);
+    expect(keeps('/undo', live)).toBe(false);
+    expect(keeps('/new', live)).toBe(false);
+    expect(keeps('/pause')).toBe(false);
+    expect(keeps('/steer keep going')).toBe(false);
+    expect(keeps('/diff --full', live)).toBe(false);
+    expect(dispatchCommand('/steer x', idle)).toEqual({ ok: false, text: 'error: /steer needs a live run', label: '[ui]', keepDraft: false });
+  });
+  it('argumentCandidates offers enum/setting values, changed steps and session titles; a second positional (the /decisions stage) has its own list; rest/text/path arguments have none (TUI-DESIGN-3 §4.3)', () => {
     expect(argumentCandidates(findCommand('budget') as CommandSpec, 0, idle)).toContain('spend-cap');
+    expect(argumentCandidates(findCommand('decisions') as CommandSpec, 1, idle)).toEqual(['replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete']);
+    expect(argumentCandidates(findCommand('decisions') as CommandSpec, 0, idle)).toEqual([]);
+    expect(argumentCandidates(findCommand('budget') as CommandSpec, 1, idle)).toEqual([]);
+    expect(argumentCandidates(findCommand('model') as CommandSpec, 0, idle)).toEqual([]);
+    expect(argumentCandidates(findCommand('export') as CommandSpec, 0, idle)).toEqual([]);
+    expect(argumentCandidates(findCommand('steer') as CommandSpec, 0, live)).toEqual([]);
+    expect(argumentCandidates(findCommand('theme') as CommandSpec, 0, idle)).toEqual(['dark', 'light', 'daltonized', 'ansi']);
+    expect(argumentCandidates(findCommand('resume') as CommandSpec, 0, { run: 'none', step: 0, sessions: [{ id: '20260920-191506-5gnampki', title: '' }] })).toEqual(['20260920-191506-5gnampki']);
     expect(argumentCandidates(findCommand('undo') as CommandSpec, 0, idle)).toEqual(['3', '5', '7']);
     expect(argumentCandidates(findCommand('undo') as CommandSpec, 0, { run: 'none', step: 3 })).toEqual(['1', '2', '3']);
     expect(argumentCandidates(findCommand('resume') as CommandSpec, 0, idle)).toEqual(['fix parse_date tz', 'fix the docs', 'migrate loader']);
@@ -232,7 +296,7 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
   it('dispatch.ts never imports cli/** (the controller depends on it, not the reverse)', () => {
     const src = readFileSync(fileURLToPath(new URL('../../../../src/tui/commands/dispatch.ts', import.meta.url)), 'utf8');
     expect(src).not.toMatch(/from '[^']*\/cli\//);
-    for (const f of ['parse', 'registry', 'fuzzy', 'palette']) {
+    for (const f of ['parse', 'registry', 'fuzzy', 'palette', 'local']) {
       const s = readFileSync(fileURLToPath(new URL(`../../../../src/tui/commands/${f}.ts`, import.meta.url)), 'utf8');
       expect(s, f).not.toMatch(/from '[^']*\/cli\//);
       expect(s, f).not.toMatch(/from 'ink'|from 'react'/);

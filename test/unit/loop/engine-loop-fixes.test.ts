@@ -244,7 +244,9 @@ describe('Fix 3: loop signatures for refused proposals', () => {
     expect(r.counters.replans).toBe(1);
     expect(h.store.last()!.loopDetector.tripsBySignature[sig]).toMatchObject({ trips: 2, directives: [{ step: 4 }] });
     expect(h.store.transcript.some((l) => l.startsWith(`[step 7] replan: gather_context directed again for ${sig} (already directed at step 4); treated as stop_and_report`))).toBe(true);
-    expect(h.store.transcript.at(-2)).toBe(`[run] warn: stop: replan_stop at step 6 (gather_context directed again for ${sig} (already directed at step 4))`);
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
+    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
   });
 
   it('a second replan that picks another move is not the exit; a first gather_context on a run signature is not either', async () => {

@@ -1,0 +1,10 @@
+sleep 0.6
+resize 12 60
+sleep 0.6
+resize 40 120
+sleep 0.6
+resize 40 40
+sleep 0.6
+resize 24 80
+sleep 0.8
+eof

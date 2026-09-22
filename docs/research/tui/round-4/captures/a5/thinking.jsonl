@@ -1,0 +1,20 @@
+{"t":107,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":107,"step":2,"op":"expect","arg":"Say hi"}
+{"t":197,"step":3,"op":"expect","arg":"sess \\$"}
+{"t":597,"step":4,"op":"sleep","arg":"0.4"}
+{"t":597,"step":5,"op":"send","arg":"hi"}
+{"t":799,"step":6,"op":"sleep","arg":"0.2"}
+{"t":799,"step":7,"op":"send","arg":"\\r"}
+{"t":1199,"step":8,"op":"sleep","arg":"0.4"}
+{"t":1199,"step":9,"op":"send","arg":"second message while thinking"}
+{"t":1500,"step":10,"op":"sleep","arg":"0.3"}
+{"t":1500,"step":11,"op":"send","arg":"\\r"}
+{"t":1901,"step":12,"op":"sleep","arg":"0.4"}
+{"t":1901,"step":13,"op":"mark","arg":"enter-while-thinking"}
+{"t":4404,"step":14,"op":"sleep","arg":"2.5"}
+{"t":4404,"step":15,"op":"mark","arg":"settled"}
+{"t":4404,"step":16,"op":"send","arg":"/exit"}
+{"t":4704,"step":17,"op":"sleep","arg":"0.3"}
+{"t":4704,"step":18,"op":"send","arg":"\\r"}
+{"t":64722,"step":19,"op":"timeout","arg":"eof"}
+{"t":65279,"step":0,"op":"exit","arg":"0"}

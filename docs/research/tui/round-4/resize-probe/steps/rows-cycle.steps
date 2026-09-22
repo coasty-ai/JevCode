@@ -1,0 +1,27 @@
+expect \x1b\[\?25l
+sleep 1.3
+mark settled
+resize 12 80
+sleep 0.7
+mark flat
+resize 40 80
+sleep 0.7
+mark tall
+resize 8 80
+sleep 0.7
+mark tiny
+resize 5 80
+sleep 0.7
+mark minsize
+resize 24 80
+sleep 0.9
+mark back
+send Z
+sleep 0.4
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.6
+eof

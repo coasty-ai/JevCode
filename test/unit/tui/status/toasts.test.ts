@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { TOAST_ERROR_MS, TOAST_INFO_MS, TOAST_MAX, TOAST_TEXT_MAX, activeToast, asciiFold, nextToastExpiry, oneLineSafe, toastDurationMs, toastReducer, toastText } from '../../../../src/tui/toasts.js';
+import { TOAST_ERROR_MS, TOAST_FADE_MS, TOAST_INFO_MS, TOAST_MAX, TOAST_TEXT_MAX, activeToast, asciiFold, nextToastExpiry, oneLineSafe, toastDurationMs, toastPhase, toastReducer, toastRole, toastText } from '../../../../src/tui/toasts.js';
 import type { Toast, ToastAction } from '../../../../src/tui/toasts.js';
 import { mulberry32, pick } from '../composer/helpers.js';
 
@@ -320,5 +320,34 @@ describe('activeToast, toastText, nextToastExpiry, text helpers', () => {
     expect(asciiFold('plain')).toBe('plain');
     expect(asciiFold('→ ≥ ≤ × ⚠ Σ … † • · ─ │ ↑ ↓ ✓ ✗ ⎇ ▂▃ ▍ ⏎')).toBe('-> >= <= x ! sum ... + * - - | ^ v + x br 23 3 |');
     expect(asciiFold('中文 stays')).toBe('中文 stays');
+  });
+});
+
+describe('toastPhase / toastRole (TUI-DESIGN-3 §5.2 A7: the last-second dim, the level colours)', () => {
+  it('`fading` ⇔ untilMs − nowMs ≤ 1000; `visible` before that; a non-finite clock reads as 0', () => {
+    expect(TOAST_FADE_MS).toBe(1000);
+    const t = { untilMs: 5000 };
+    expect(toastPhase(t, 0)).toBe('visible');
+    expect(toastPhase(t, 3999)).toBe('visible');
+    expect(toastPhase(t, 4000)).toBe('fading');
+    expect(toastPhase(t, 4999)).toBe('fading');
+    expect(toastPhase(t, 5000)).toBe('fading');
+    expect(toastPhase(t, Number.NaN)).toBe('visible');
+    expect(toastPhase({ untilMs: 900 }, Number.NaN)).toBe('fading');
+    // an info toast is dim for exactly its last second, an error toast for the last of its four
+    let q = push([], 'x', 'info', 1000);
+    expect(toastPhase(q[0]!, 1000 + TOAST_INFO_MS - 1001)).toBe('visible');
+    expect(toastPhase(q[0]!, 1000 + TOAST_INFO_MS - 1000)).toBe('fading');
+    q = push([], 'y', 'error', 0);
+    expect(toastPhase(q[0]!, TOAST_ERROR_MS - 1001)).toBe('visible');
+    expect(toastPhase(q[0]!, TOAST_ERROR_MS - 1000)).toBe('fading');
+  });
+  it('roles: `!` info → accent, `✓` ok → ok, `!` error → error', () => {
+    expect(toastRole('info')).toBe('accent');
+    expect(toastRole('ok')).toBe('ok');
+    expect(toastRole('error')).toBe('error');
+    expect(toastText({ text: 'a', level: 'info' })).toBe('! a');
+    expect(toastText({ text: 'a', level: 'error' })).toBe('! a');
+    expect(toastText({ text: 'a', level: 'ok' })).toBe('✓ a');
   });
 });

@@ -22,11 +22,13 @@ import {
   leftZoneText,
   leftZoneWord,
   meterText,
+  meterWordRole,
   pausedWord,
   secretBadge,
   shortHelp,
   sparklineText,
   statusLineText,
+  statusSpans,
   statusZones,
   stepText,
   tokensText,
@@ -85,7 +87,20 @@ function mk(over: Partial<StatusLineState> = {}): StatusLineState {
 function live(over: Partial<StatusLineState> = {}): StatusLineState {
   return mk({ run: 'live', status: status(3, 40, 62_000, spend(0.09, 2)), ready: { step: 3, maxSteps: 40 }, spend: { run: spend(0.09, 2), session: { totalUsd: 0.4, capUsd: 10 } }, ...over });
 }
-const spin2: StatusLineOptions = { spinnerFrame: 2 }; // ⠹
+const spin2: StatusLineOptions = { spinnerFrame: 2 };
+/** the spinner frames and the static glyph, read from the glyph table (TUI-DESIGN-3 D-P: the shade pulse replaces the braille frames; S2's table, one source) */
+const SPIN = GLYPHS.unicode.spinner;
+const SPIN_A = GLYPHS.ascii.spinner;
+const S0 = SPIN[0]!;
+const S2 = SPIN[2]!;
+const S4 = SPIN[4]!;
+const STATIC = GLYPHS.unicode.spinnerStatic;
+/** the §2.3 frames of TUI-DESIGN.md were written with the braille spinner: a row's leading spinner glyph is folded to `⠹` / `⠼` before the comparison */
+const spinFold = (row: string): string => {
+  for (const f of SPIN) if (row.startsWith(`${f} `)) return `⠹${row.slice(f.length)}`;
+  return row;
+};
+const designFold = (row: string): string => row.replace(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] /, '⠹ ');
 const norm = (s: string): string => s.replace(/ {2,}/g, ' ');
 const ASCII_ONLY = /^[\x20-\x7e]*$/;
 
@@ -348,7 +363,9 @@ describe('left zone words (§7.4, §24)', () => {
     expect(leftZoneWord(mk({ done: done('complete', 12, 1) }), { mode: 'one-shot' })).toBe('done complete');
   });
   it('phases and overlays', () => {
-    expect(leftZoneWord(mk({ run: 'starting' }))).toBe('starting');
+    // TUI-DESIGN-3 §5.2 P7: `starting` without a chat phase keeps the idle word (no `starting` beside `Type to steer`)
+    expect(leftZoneWord(mk({ run: 'starting' }))).toBe('idle');
+    expect(leftZoneWord(mk({ run: 'starting', done: done('max_steps', 7, 252_000) }))).toBe('idle exit 4');
     expect(leftZoneWord(live({ run: 'aborting' }))).toBe('aborting');
     expect(leftZoneWord(live({ run: 'pausing' }))).toBe('pausing after step 3');
     expect(leftZoneWord(mk({ overlay: 'wizard' }))).toBe('setup');
@@ -359,26 +376,26 @@ describe('left zone words (§7.4, §24)', () => {
     expect(leftZoneWord(live({ overlay: 'review' }))).toBe('review');
     expect(leftZoneWord(live({ pendingReview: { id: 'c1', step: 3 } as StatusLineState['pendingReview'] }))).toBe('review pending…');
     expect(leftZoneWord(live({ pendingReview: { id: 'c1', step: 3 } as StatusLineState['pendingReview'] }), { ascii: true })).toBe('review pending...');
-    expect(leftZoneWord(live({ overlay: 'exitConfirm', status: status(5, 40, 1, spend(0, 2), 'execute') }), { spinnerFrame: 4 })).toBe('⠼ execute');
+    expect(leftZoneWord(live({ overlay: 'exitConfirm', status: status(5, 40, 1, spend(0, 2), 'execute') }), { spinnerFrame: 4 })).toBe(`${S4} execute`);
   });
   it('spinner + stage verb, jev-only marker, bare `still waiting`, reduced motion and ASCII', () => {
-    expect(leftZoneWord(live(), spin2)).toBe('⠹ propose');
-    expect(leftZoneWord(live(), { spinnerFrame: 0 })).toBe('⠋ propose');
-    expect(leftZoneWord(live(), { spinnerFrame: 12 })).toBe('⠹ propose');
-    expect(leftZoneWord(live(), { spinnerFrame: Number.NaN })).toBe('⠋ propose');
-    expect(leftZoneWord(live({ mode: 'jev-only' }), spin2)).toBe('⠹ propose [synth]');
-    expect(leftZoneWord(live({ mode: 'jev-on' }), spin2)).toBe('⠹ propose');
-    expect(leftZoneWord(live({ status: status(5, 40, 1, spend(0, 2), 'execute') }), { spinnerFrame: 4 })).toBe('⠼ execute');
+    expect(leftZoneWord(live(), spin2)).toBe(`${S2} propose`);
+    expect(leftZoneWord(live(), { spinnerFrame: 0 })).toBe(`${S0} propose`);
+    expect(leftZoneWord(live(), { spinnerFrame: 2 + SPIN.length })).toBe(`${S2} propose`);
+    expect(leftZoneWord(live(), { spinnerFrame: Number.NaN })).toBe(`${S0} propose`);
+    expect(leftZoneWord(live({ mode: 'jev-only' }), spin2)).toBe(`${S2} propose [synth]`);
+    expect(leftZoneWord(live({ mode: 'jev-on' }), spin2)).toBe(`${S2} propose`);
+    expect(leftZoneWord(live({ status: status(5, 40, 1, spend(0, 2), 'execute') }), { spinnerFrame: 4 })).toBe(`${S4} execute`);
     expect(leftZoneWord(live({ status: status(5, 40, 1, spend(0, 2), 'idle') }))).toBe('starting');
     expect(leftZoneWord(live({ stageStartedAt: 0, nowMs: 45_000 }), spin2)).toBe('still waiting');
     expect(stringWidth(leftZoneWord(live({ stageStartedAt: 0, nowMs: 45_000 }), spin2))).toBeLessThanOrEqual(14);
-    expect(leftZoneWord(live({ stageStartedAt: 0, nowMs: 44_999 }), spin2)).toBe('⠹ propose');
-    expect(leftZoneWord(live({ stageStartedAt: 0, nowMs: Number.NaN }), spin2)).toBe('⠹ propose');
-    expect(leftZoneWord(live(), { reducedMotion: true })).toBe('• propose');
-    expect(leftZoneWord(live(), { reducedMotion: true, ascii: true })).toBe('* propose');
-    expect(leftZoneWord(live(), { ascii: true, spinnerFrame: 2 })).toBe('- propose');
-    expect(leftZoneWord(live(), { ascii: true, spinnerFrame: 3 })).toBe('\\ propose');
-    expect(leftZoneWord(live(), { ascii: true, spinnerFrame: 4 })).toBe('| propose');
+    expect(leftZoneWord(live({ stageStartedAt: 0, nowMs: 44_999 }), spin2)).toBe(`${S2} propose`);
+    expect(leftZoneWord(live({ stageStartedAt: 0, nowMs: Number.NaN }), spin2)).toBe(`${S2} propose`);
+    expect(leftZoneWord(live(), { reducedMotion: true })).toBe(`${STATIC} propose`);
+    expect(leftZoneWord(live(), { reducedMotion: true, ascii: true })).toBe(`${GLYPHS.ascii.spinnerStatic} propose`);
+    expect(leftZoneWord(live(), { ascii: true, spinnerFrame: 2 })).toBe(`${SPIN_A[2]} propose`);
+    expect(leftZoneWord(live(), { ascii: true, spinnerFrame: 3 })).toBe(`${SPIN_A[3 % SPIN_A.length]} propose`);
+    expect(leftZoneWord(live(), { ascii: true, spinnerFrame: 4 })).toBe(`${SPIN_A[4 % SPIN_A.length]} propose`);
   });
   it('blocking, disk, retry and finishing words', () => {
     const req = { id: 'b1', step: 0, kind: 'key-rejected' as const, detail: 'x', stop: 'error' as const, exitCode: 2 };
@@ -390,7 +407,7 @@ describe('left zone words (§7.4, §24)', () => {
     expect(pausedWord('sandbox-unavailable')).toBe('paused: sandbox unavailable');
     expect(leftZoneWord(live({ diskErrors: 2 }))).toBe('disk ×2');
     expect(leftZoneWord(live({ diskErrors: 2 }), { ascii: true })).toBe('disk x2');
-    expect(leftZoneWord(live({ diskErrors: Number.NaN }), spin2)).toBe('⠹ propose');
+    expect(leftZoneWord(live({ diskErrors: Number.NaN }), spin2)).toBe(`${S2} propose`);
     const retry = { attempt: 2, maxAttempts: 3, cause: { kind: 'http' as const } };
     expect(leftZoneWord(live({ retrying: retry }))).toBe('retrying 2/3');
     expect(leftZoneWord(live({ retrying: { ...retry, cause: { kind: 'network' } } }))).toBe('offline');
@@ -409,7 +426,7 @@ describe('left zone words (§7.4, §24)', () => {
     expect(secretBadge(live({ draft: { secretHits: Number.NaN } }))).toBe('');
     expect(badges(live({ sandbox: 'seatbelt' }))).toEqual([]);
     expect(badges(live({ errors: Number.NaN }))).toEqual([]);
-    expect(leftZoneText(s, spin2)).toBe('⠹ propose !3 sandbox: none no-net');
+    expect(leftZoneText(s, spin2)).toBe(`${S2} propose !3 sandbox: none no-net`);
     const toasts = [{ id: 1, text: 'press Ctrl-C again to exit', level: 'info' as const, untilMs: 5000 }];
     expect(leftZoneText(mk({ toasts, nowMs: 1000 }))).toBe('! press Ctrl-C again to exit');
     expect(leftZoneText(mk({ toasts, nowMs: 5000 }))).toBe('idle');
@@ -448,11 +465,11 @@ describe('statusLineText reproduces the §2.3 frames', () => {
   it('F-C live propose at 80 and F-D at 120 (git zone + sparkline appear)', () => {
     const s = live({ git: gitMain, jevLatencies: JEV12 });
     const at80 = statusLineText(s, 80, spin2);
-    expect(norm(at80)).toBe(norm(frameStatusRow('**F-C.')));
+    expect(norm(spinFold(at80))).toBe(norm(designFold(frameStatusRow('**F-C.'))));
     expect(at80).not.toContain('⎇');
     expect(at80).not.toContain('jev ▂');
     const at120 = statusLineText(s, 120, spin2);
-    expect(norm(at120)).toBe(norm(frameStatusRow('**F-D.')));
+    expect(norm(spinFold(at120))).toBe(norm(designFold(frameStatusRow('**F-D.'))));
     expect(at120.endsWith('⎇ main · 1~  jev ▂▃▂▅▂▂▇▃▂▁▂▃  ? help')).toBe(true);
     expect(stringWidth(at120)).toBe(120);
   });
@@ -487,8 +504,8 @@ describe('statusLineText reproduces the §2.3 frames', () => {
   it('F-W exit confirm on a live run keeps `? help` at the right (the design row is 79 cells wide; spacing normalised)', () => {
     const s = live({ overlay: 'exitConfirm', status: status(5, 40, 161_000, spend(0.17, 2), 'execute'), spend: { run: spend(0.17, 2), session: { totalUsd: 0.48, capUsd: 10 } } });
     const row = statusLineText(s, 80, { spinnerFrame: 4 });
-    expect(norm(row)).toBe(norm(frameStatusRow('**F-W.')));
-    expect(row.startsWith('⠼ execute')).toBe(true);
+    expect(norm(spinFold(row))).toBe(norm(designFold(frameStatusRow('**F-W.'))));
+    expect(row.startsWith(`${S4} execute`)).toBe(true);
     expect(row.endsWith('sess $0.48/10.00 ok  ? help')).toBe(true);
     expect(stringWidth(row)).toBe(80);
   });
@@ -497,7 +514,8 @@ describe('statusLineText reproduces the §2.3 frames', () => {
     const row = statusLineText(s, 120);
     expect(norm(row)).toBe(norm(frameStatusRow('**F-Z.')));
     expect(row).not.toContain('5gnampki');
-    expect(statusZones(s, 120).dropped).toEqual(['centre']);
+    // TUI-DESIGN-3 §5.1 rule 7: the run id is never a centre candidate, so nothing is dropped for it
+    expect(statusZones(s, 120).dropped).toEqual([]);
   });
   it('F-V: `⚠ secret?` sits at the end of the status line (§4.10) — byte-identical at 80; ShortHelp yields to it', () => {
     const s = mk({ done: done('complete', 2, 41_000), status: status(2, 40, 41_000, spend(0.05, 2), 'complete'), spend: { run: spend(0.05, 2), session: { totalUsd: 0.05, capUsd: 10 } }, overlay: 'secret', draft: { secretHits: 1 } });
@@ -529,7 +547,7 @@ describe('drop order at 40/60/80/100/120/140/160 (§7.4, §19.1)', () => {
   it('160: everything incl. tokens and bars; the centre still waits for 24 free cells (see the O5 report)', () => {
     const row = statusLineText(rich, 160, spin2);
     expect(stringWidth(row)).toBe(160);
-    has(row, '⠹ propose', 'step 3/40 1m02s', 'run $0.09/2.00 ', 'sess $0.40/10.00 ', '⎇ main ↑2 · 1~', 'jev ▂▃▂▅▂▂▇▃▂▁▂▃', '? help', 'gen 5.5k jev 28k');
+    has(row, `${S2} propose`, 'step 3/40 1m02s', 'run $0.09/2.00 ', 'sess $0.40/10.00 ', '⎇ main ↑2 · 1~', 'jev ▂▃▂▅▂▂▇▃▂▁▂▃', '? help', 'gen 5.5k jev 28k');
     expect(row).toMatch(/run \$0\.09\/2\.00 [█▏▎▍▌▋▊▉·]{10} ok/);
     // left 9 + right 137 + two gaps = 150 → 10 free cells: the title waits
     expect(statusZones(rich, 160, spin2).dropped).toEqual(['centre']);
@@ -543,8 +561,9 @@ describe('drop order at 40/60/80/100/120/140/160 (§7.4, §19.1)', () => {
     const wide = statusLineText(rich, 220, spin2);
     expect(stringWidth(wide)).toBe(220);
     expect(wide.indexOf('"fix parse_date tz"')).toBeGreaterThan(20);
-    // without a title the run id takes the centre
-    expect(statusLineText({ ...rich, title: null }, 220, spin2)).toContain('20260920-191506-5gnampki');
+    // TUI-DESIGN-3 §5.1 rule 7: without a title the centre stays empty — the run id never appears in the status row
+    expect(statusLineText({ ...rich, title: null }, 220, spin2)).not.toContain('20260920-191506-5gnampki');
+    expect(statusZones({ ...rich, title: null }, 220, spin2).dropped).toEqual([]);
   });
   it('140: bars, no tokens', () => {
     const row = statusLineText(rich, 140, spin2);
@@ -577,19 +596,19 @@ describe('drop order at 40/60/80/100/120/140/160 (§7.4, §19.1)', () => {
   it('60: help then the session meter drop; the wall survives (F-S content)', () => {
     const row = statusLineText(rich, 60, spin2);
     expect(stringWidth(row)).toBe(60);
-    expect(norm(row)).toBe('⠹ propose step 3/40 1m02s run $0.09/2.00 ok');
+    expect(norm(row)).toBe(`${S2} propose step 3/40 1m02s run $0.09/2.00 ok`);
     expect(statusZones(rich, 60, spin2).dropped).toEqual(['help', 'sess', 'centre']);
   });
   it('40: the wall drops too; the sentinel and run meter stay', () => {
     const row = statusLineText(rich, 40, spin2);
     expect(stringWidth(row)).toBeLessThanOrEqual(40);
-    expect(norm(row)).toBe('⠹ propose step 3/40 run $0.09/2.00 ok');
+    expect(norm(row)).toBe(`${S2} propose step 3/40 run $0.09/2.00 ok`);
     expect(statusZones(rich, 40, spin2).dropped).toEqual(['help', 'sess', 'wall', 'centre']);
   });
   it('tiny: the left zone yields last, the sentinel survives longest', () => {
-    expect(statusLineText(rich, 20, spin2)).toBe('⠹ propose  step 3/40');
-    expect(statusLineText(rich, 18, spin2)).toBe('⠹ prop…  step 3/40');
-    expect(statusLineText(rich, 15, spin2)).toBe('⠹ p…  step 3/40');
+    expect(statusLineText(rich, 20, spin2)).toBe(`${S2} propose  step 3/40`);
+    expect(statusLineText(rich, 18, spin2)).toBe(`${S2} prop…  step 3/40`);
+    expect(statusLineText(rich, 15, spin2)).toBe(`${S2} p…  step 3/40`);
     expect(statusLineText(rich, 12, spin2)).toBe('   step 3/40');
     expect(statusLineText(rich, 10, spin2)).toBe(' step 3/40');
     expect(statusLineText(rich, 9, spin2)).toBe('step 3/40');
@@ -635,7 +654,7 @@ describe('wide terminals and the left budget (§7.4, §14.1)', () => {
     const row = statusLineText(rich, 500, spin2);
     expect(stringWidth(row)).toBe(500);
     expect(row.endsWith('  ? help')).toBe(true);
-    expect(row.startsWith('⠹ propose')).toBe(true);
+    expect(row.startsWith(`${S2} propose`)).toBe(true);
     expect(row).toContain('"fix parse_date tz"');
     expect(stringWidth(statusLineText(mk(), 1000))).toBe(1000);
   });
@@ -659,23 +678,25 @@ describe('wide terminals and the left budget (§7.4, §14.1)', () => {
 });
 
 describe('centre zone (§7.4, §14.1)', () => {
-  it('appears only when ≥ 24 cells stay free, title in quotes before run id', () => {
+  it('appears only when ≥ 24 cells stay free, the title in quotes; the run id is never a centre text (TUI-DESIGN-3 §5.1 rule 7)', () => {
     const s = mk({ runId: '20260920-191506-5gnampki', spend: { run: null, session: { totalUsd: 0, capUsd: 10 } } });
-    expect(centreText(s)).toBe('20260920-191506-5gnampki');
+    expect(centreText(s)).toBe('');
     expect(centreText({ ...s, title: 'fix parse_date tz' })).toBe('"fix parse_date tz"');
-    expect(centreText({ ...s, title: '  ' })).toBe('20260920-191506-5gnampki');
+    expect(centreText({ ...s, title: '  ' })).toBe('');
     expect(centreText({ ...s, title: 'a\nb\u001b[2J' })).toBe('"a ⏎ b[2J"');
     expect(centreText({ ...s, title: 'a\nb' }, true)).toBe('"a | b"');
     expect(centreText(mk())).toBe('');
-    // idle: left 4 + right 37 + 2 gaps → free = 80 − 4 − 37 − 4 = 35 ≥ 24 → centre shown
+    // idle: the run id is not shown whatever the room; a title is
     const row = statusLineText(s, 80);
-    expect(row).toContain('5gnampki');
+    expect(row).not.toContain('5gnampki');
     expect(stringWidth(row)).toBe(80);
     expect(row.startsWith('idle ')).toBe(true);
     expect(row.endsWith('  ? help')).toBe(true);
-    const z = statusZones(s, 4 + 37 + 4 + CENTRE_MIN_FREE);
-    expect(z.centre).toBe('20260920-191506-5gnampki');
-    const z2 = statusZones(s, 4 + 37 + 4 + CENTRE_MIN_FREE - 1);
+    const titled = { ...s, title: 'a-title-of-24-cells-long' };
+    // left 4 + right 37 + 2 gaps → free = columns − 45: the 24-cell title needs ≥ 24 free cells
+    const z = statusZones(titled, 4 + 37 + 4 + CENTRE_MIN_FREE + 2);
+    expect(z.centre).toBe('"a-title-of-24-cells-long"');
+    const z2 = statusZones(titled, 4 + 37 + 4 + CENTRE_MIN_FREE - 1);
     expect(z2.centre).toBe('');
     expect(z2.dropped).toEqual(['centre']);
   });
@@ -757,7 +778,7 @@ describe('robustness', () => {
       expect(ASCII_ONLY.test(row), `columns ${c}: ${row}`).toBe(true);
     }
     const row = statusLineText(s, 160, { ascii: true, spinnerFrame: 1 });
-    expect(row).toContain('/ propose !1');
+    expect(row).toContain(`${SPIN_A[1]} propose !1`);
     expect(row).toContain('br main ^2 - 1~');
     expect(row).toContain('jev 232522732123');
     expect(row).toContain('! secret?');
@@ -809,5 +830,128 @@ describe('robustness', () => {
     expect(acc).toBeGreaterThan(0);
     process.stderr.write(`statusLineText: ${n} renders in ${ms.toFixed(1)} ms (${((ms / n) * 1000).toFixed(1)} µs each)\n`);
     expect(ms / n).toBeLessThan(0.5); // 500 µs per render; measured ≈ tens of µs
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-3 §5.2 P6 / D-P: the spans — the left word and the meter words only, never the whole row
+// ---------------------------------------------------------------------------------------
+
+describe('statusSpans (TUI-DESIGN-3 §5.2 P6, D-P)', () => {
+  const slice = (r: ReturnType<typeof statusSpans>, i: number): string => r.text.slice(r.spans[i]!.from, r.spans[i]!.to);
+  it('text equals statusLineText for every state and width; spans are ascending, non-overlapping and inside the text', () => {
+    const states = [mk(), live(), live({ git: gitMain, jevLatencies: JEV12, title: 'fix parse_date tz' }), mk({ done: done('max_steps', 7, 252_000), spend: { run: spend(1.7, 2), session: { totalUsd: 9.6, capUsd: 10 } } }), live({ draft: { secretHits: 1 } }), mk({ toasts: [{ id: 1, text: 'saved', level: 'ok', untilMs: 5000 }], nowMs: 1000 })];
+    for (const s of states) {
+      for (const c of [12, 40, 60, 76, 80, 116, 160, 220]) {
+        for (const o of [{}, spin2, { ascii: true, spinnerFrame: 2 }, { flatBadge: true }] as StatusLineOptions[]) {
+          const st = { ...s, modeBadge: { mode: 'jev-on' as const, pending: null } };
+          const r = statusSpans(st, c, o);
+          expect(r.text).toBe(statusLineText(st, c, o));
+          let at = 0;
+          for (const sp of r.spans) {
+            expect(sp.from).toBeGreaterThanOrEqual(at);
+            expect(sp.to).toBeGreaterThan(sp.from);
+            expect(sp.to).toBeLessThanOrEqual(r.text.length);
+            at = sp.to;
+          }
+        }
+      }
+    }
+  });
+  it('the spinner glyph leads the left word in `accent`; nothing else of a live row is coloured while the meters read ok', () => {
+    const r = statusSpans(live(), 80, spin2);
+    expect(r.spans).toHaveLength(1);
+    expect(slice(r, 0)).toBe(S2);
+    expect(r.spans[0]).toMatchObject({ from: 0, role: 'accent' });
+    expect(statusSpans(live(), 80, { reducedMotion: true }).spans[0]).toMatchObject({ from: 0, to: STATIC.length, role: 'accent' });
+    // the thinking words carry the glyph too
+    expect(slice(statusSpans(mk({ thinking: 'intake' }), 80, spin2), 0)).toBe(S2);
+    // idle without a run ended: no span at all — the row is a fact
+    expect(statusSpans(mk(), 80).spans).toEqual([]);
+    expect(statusSpans(mk({ spend: { run: null, session: { totalUsd: 0, capUsd: 10 } } }), 80).spans).toEqual([]);
+  });
+  it('the done word: `idle exit 0` in `ok`, `idle exit 4` in `warn`, both bold; the meters after it keep their own words', () => {
+    const okRow = statusSpans(mk({ done: done('complete', 12, 1), spend: { run: spend(0.3, 2), session: { totalUsd: 0.3, capUsd: 10 } } }), 80);
+    expect(slice(okRow, 0)).toBe('idle exit 0');
+    expect(okRow.spans[0]).toMatchObject({ from: 0, role: 'ok', bold: true });
+    const warnRow = statusSpans(mk({ done: done('replan_stop', 9, 14_000), spend: { run: spend(0.03, 2), session: { totalUsd: 0.03, capUsd: 10 } } }), 76);
+    expect(slice(warnRow, 0)).toBe('idle exit 4');
+    expect(warnRow.spans[0]).toMatchObject({ role: 'warn', bold: true });
+    expect(warnRow.spans).toHaveLength(1);
+    // F-R6's status row (76 cells): `idle exit 4  step 9/40 0m14s  run $0.03/2.00 ok  sess $0.03/10.00 ok  ? help`
+    const f = mk({ done: done('replan_stop', 9, 14_000), status: status(9, 40, 14_000, spend(0.03, 2), 'complete'), spend: { run: spend(0.03, 2), session: { totalUsd: 0.03, capUsd: 10 } } });
+    expect(statusSpans(f, 76).text).toBe('idle exit 4  step 9/40 0m14s  run $0.03/2.00 ok  sess $0.03/10.00 ok  ? help');
+    // a wizard / palette / picker over an ended run shows its own word, uncoloured
+    expect(statusSpans(mk({ done: done('complete', 1, 1), overlay: 'palette' }), 80).spans).toEqual([]);
+  });
+  it('meter words: `high` → warn, `critical` / `over` → error, `ok` / `half` / `uncapped` plain; positions land on the word', () => {
+    expect(meterWordRole('high')).toBe('warn');
+    expect(meterWordRole('critical')).toBe('error');
+    expect(meterWordRole('over')).toBe('error');
+    expect(meterWordRole('ok')).toBeNull();
+    expect(meterWordRole('half')).toBeNull();
+    expect(meterWordRole('uncapped')).toBeNull();
+    const r = statusSpans(live({ status: status(3, 40, 62_000, spend(1.7, 2)), spend: { run: spend(1.7, 2), session: { totalUsd: 9.6, capUsd: 10 } } }), 100, spin2);
+    const words = r.spans.map((sp) => [r.text.slice(sp.from, sp.to), sp.role]);
+    expect(words).toEqual([
+      [S2, 'accent'],
+      ['high', 'warn'],
+      ['critical', 'error'],
+    ]);
+    const over = statusSpans(live({ status: status(3, 40, 62_000, spend(2.1, 2)), spend: { run: spend(2.1, 2), session: { totalUsd: 0.4, capUsd: 10 } } }), 80, spin2);
+    expect(over.spans.map((sp) => over.text.slice(sp.from, sp.to))).toEqual([S2, 'over']);
+    // with bars at ≥ 140 the word is still the last token of the segment
+    const bars = statusSpans(live({ status: status(3, 40, 62_000, spend(1.7, 2)), spend: { run: spend(1.7, 2), session: { totalUsd: 0.4, capUsd: 10 } } }), 150, spin2);
+    expect(bars.spans.map((sp) => bars.text.slice(sp.from, sp.to))).toEqual([S2, 'high']);
+  });
+  it('`⚠ secret?` takes `secret` (and only it: the row is no longer coloured whole); `! secret?` under --ascii', () => {
+    const s = mk({ done: done('complete', 2, 41_000), status: status(2, 40, 41_000, spend(0.05, 2), 'complete'), spend: { run: spend(0.05, 2), session: { totalUsd: 0.05, capUsd: 10 } }, overlay: 'secret', draft: { secretHits: 1 } });
+    const r = statusSpans(s, 80);
+    const last = r.spans.at(-1)!;
+    expect(r.text.slice(last.from, last.to)).toBe('⚠ secret?');
+    expect(last.role).toBe('secret');
+    // `overlay: secret` is not `none`: the done word is not painted under the gate row
+    expect(r.spans).toHaveLength(1);
+    const a = statusSpans({ ...s, overlay: 'none' }, 100, { ascii: true });
+    expect(a.spans.map((sp) => [a.text.slice(sp.from, sp.to), sp.role])).toEqual([
+      ['idle exit 0', 'ok'],
+      ['! secret?', 'secret'],
+    ]);
+  });
+  it('a toast takes its level\'s role (`!` info accent, `✓` ok, `!` error) and `dim` in its final second (A7); no spinner or done span under it', () => {
+    const toasts = (level: 'info' | 'ok' | 'error', until: number) => [{ id: 1, text: 'saved to disk', level, untilMs: until }];
+    const info = statusSpans(mk({ toasts: toasts('info', 5000), nowMs: 1000, done: done('complete', 1, 1) }), 80);
+    expect(info.spans).toEqual([{ from: 0, to: '! saved to disk'.length, role: 'accent' }]);
+    const ok = statusSpans(mk({ toasts: toasts('ok', 5000), nowMs: 1000 }), 80);
+    expect(ok.spans).toEqual([{ from: 0, to: '✓ saved to disk'.length, role: 'ok' }]);
+    const err = statusSpans(mk({ toasts: toasts('error', 5000), nowMs: 1000 }), 80);
+    expect(err.spans[0]).toMatchObject({ role: 'error' });
+    const fading = statusSpans(mk({ toasts: toasts('error', 5000), nowMs: 4200 }), 80);
+    expect(fading.spans[0]).toMatchObject({ role: 'dim' });
+    expect(statusSpans(mk({ toasts: toasts('info', 5000), nowMs: 4000 }), 80).spans[0]).toMatchObject({ role: 'dim' });
+    expect(statusSpans(mk({ toasts: toasts('info', 5000), nowMs: 3999 }), 80).spans[0]).toMatchObject({ role: 'accent' });
+  });
+  it('the flat tier\'s badge prefix takes `badge` (the word only); when the badge is dropped nothing is painted for it', () => {
+    const s = mk({ modeBadge: { mode: 'llm-jev', pending: null }, spend: { run: null, session: { totalUsd: 0, capUsd: 10 } } });
+    const r = statusSpans(s, 80, { flatBadge: true });
+    expect(r.text.startsWith('llm+jev · verified · idle')).toBe(true);
+    expect(r.spans).toEqual([{ from: 0, to: 'llm+jev · verified'.length, role: 'badge' }]);
+    const short = statusSpans(s, 44, { flatBadge: true });
+    expect(short.text).not.toContain('llm+jev');
+    expect(short.spans).toEqual([]);
+    // a badge, then the done word after the prefix
+    const d = statusSpans(mk({ modeBadge: { mode: 'jev-on', pending: null }, done: done('complete', 1, 1) }), 80, { flatBadge: true });
+    expect(d.spans.map((sp) => [d.text.slice(sp.from, sp.to), sp.role])).toEqual([
+      ['jev+llm', 'badge'],
+      ['idle exit 0', 'ok'],
+    ]);
+  });
+  it('V14: the coloured span on the console status row covers ≤ 30 % of the inner width for every §2.3 state at 76 cells', () => {
+    const states = [mk(), live(), live({ status: status(3, 40, 62_000, spend(1.7, 2)), spend: { run: spend(1.7, 2), session: { totalUsd: 9.6, capUsd: 10 } } }), mk({ done: done('max_steps', 7, 252_000), spend: { run: spend(1.9, 2), session: { totalUsd: 9.9, capUsd: 10 } } }), live({ draft: { secretHits: 1 } })];
+    for (const s of states) {
+      const r = statusSpans(s, 76, spin2);
+      const coloured = r.spans.reduce((n, sp) => n + stringWidth(r.text.slice(sp.from, sp.to)), 0);
+      expect(coloured, r.text).toBeLessThanOrEqual(Math.floor(76 * 0.3));
+    }
   });
 });

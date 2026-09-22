@@ -1,11 +1,18 @@
-# the startup splash left alone (TUI-DESIGN-2 §5.2 / §5.4): no key — the wordmark ticks at 50 ms (≤ 15 frames in 700 ms)
-# and settles by itself into the brand row `─── ◆ jevcode <version> ───`; no wordmark frame at or after the brand row's
-# frame; zero clears. The `◆ jevcode` accent span is expected as raw bytes (the brand glyph opens its own colour span).
+# the startup splash left alone (TUI-DESIGN-3 §3.4 / §3.5): no key — the wordmark ticks at 50 ms (≤ 15 frames in 700 ms) and settles by
+# itself into the held mark with its caption `◆ <version>` (the round-3 settle sentinel); every frame after it carries the mark; the loop
+# rests for 5.75 s after `splash:done`, so the 5 s after the settle write no frame (the frames between the caption frame and the echo of
+# the marker key are counted by run-smoke.sh: 0); zero clears
 expect \x1b\[\?25l
 expect step 0/
-expect ◆ jevcode
+expect ◆(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*\d+\.\d+\.\d+
 mark settled
 expect sess \$
+sleep 5
+mark quiet
+send h
+expect (?:›|>) (?:\x1b\[[0-9;]*m)*h
+send \x03
+expect Say hi
 send /exit
 sleep 0.2
 send \r

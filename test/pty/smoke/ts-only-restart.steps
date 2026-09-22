@@ -1,0 +1,10 @@
+# the second half of ts-only-start (TUI-DESIGN-3 §1.8 edge 15): the same HOME (config.json now carries `mode: jev-only`) and the same fake
+# TYPESAFE_API_KEY — no wizard, the `jev-only` badge from the first frame, the placeholder; /exit leaves 0
+expect \x1b\[\?25l
+expect ╭─ (?:\x1b\[[0-9;]*m)*jev-only
+expect Say hi
+expect sess \$
+send /exit
+sleep 0.2
+send \r
+eof

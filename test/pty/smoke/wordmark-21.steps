@@ -1,0 +1,19 @@
+# 21x80 — the smallest height with the mark (TUI-DESIGN-3 §3.1 WORDMARK_MIN_ROWS): the mark shows; the palette (8 rows) fits beside it
+# (rule 1 + mark 5 + palette 8 + console 5 = 19 = the budget), so `/` never hands the mark off; Esc closes the palette; a 6-row draft fits too
+expect \x1b\[\?25l
+expect step 0/
+expect ◆(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*\d+\.\d+\.\d+
+expect sess \$
+sleep 0.3
+send /
+expect Tab
+sleep 0.4
+mark palette
+send \x1b
+sleep 0.3
+send \x03
+expect Say hi
+send /exit
+sleep 0.2
+send \r
+eof

@@ -8,6 +8,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CursorPosition } from 'ink';
 import { NOTE_LABEL, Review, maskGlyphFor, maskHits, noteFieldRow, previewWant, reviewPreview, reviewRows } from '../../../src/tui/Review.js';
+import { REVIEW_KEYS_80 as KEYS_80 } from '../../../src/tui/review/lines.js';
 import { REVIEW_KEYS_80, REVIEW_KEYS_120, reviewHeaderLines } from '../../../src/tui/review/lines.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
 import { detectSecrets } from '../../../src/core/redact.js';
@@ -102,5 +103,32 @@ describe('the note row masks secret spans (§4.3 / §10.2, finding 3)', () => {
     const positions: (CursorPosition | undefined)[] = [];
     render(<Review req={workedRequest()} rows={8} previewRows={0} columns={120} top={2} note={{ text, gate: null, spans: hits.map((h) => ({ start: h.start, end: h.end })) }} cursor={(p) => positions.push(p)} />);
     expect(positions.at(-1)).toEqual({ x: stringWidth(`${NOTE_LABEL}${text}`), y: 3 });
+  });
+});
+
+describe('the review card arm (TUI-DESIGN-3 §5.2 A8: drawing only — `resolveKey` decides what `y` does)', () => {
+  /** the `<Text>` props the component asked for, recorded through a stub theme lookup: every row's text with its role */
+  it('unarmed: the keys row is the same text (nothing moves, nothing is hidden); armed (default): the same rows — the arm changes colour only', () => {
+    const rows = (armed: boolean | undefined, boxed: boolean): string[] => {
+      const ui = render(<Review req={workedRequest()} rows={boxed ? 9 : 8} previewRows={0} columns={80} top={0} {...(armed === undefined ? {} : { armed })} boxed={boxed} />);
+      const out = (ui.lastFrame() ?? '').replace(/\x1b\[[0-9;]*m/g, '').split('\n');
+      cleanup();
+      return out;
+    };
+    for (const boxed of [false, true]) {
+      const unarmed = rows(false, boxed);
+      const armed = rows(true, boxed);
+      const dflt = rows(undefined, boxed);
+      expect(unarmed).toEqual(armed);
+      expect(dflt).toEqual(armed);
+      // the keys row is present in both frames: only `y` approves, whatever the colour says
+      expect(unarmed.some((r) => r.includes(KEYS_80.trim()) || r.includes('[y] approve'))).toBe(true);
+    }
+  });
+  it('the review invariants stay: Enter is drawn nowhere as a default, the keys line reads `[y] approve` first', () => {
+    const ui = render(<Review req={workedRequest()} rows={8} previewRows={0} columns={80} top={0} armed={false} />);
+    const text = (ui.lastFrame() ?? '').replace(/\x1b\[[0-9;]*m/g, '');
+    expect(text).toContain('[y] approve');
+    expect(text).not.toMatch(/Enter (approves|accepts)/);
   });
 });

@@ -1,0 +1,16 @@
+# TUI-DESIGN-3 §1.8 edge 8: the wizard through 24x80 → 12x60 → 40x120 — the `key` step is 3 rows in every tier (boxed inside the console,
+# flat with `<MaskedField>` at 12 rows, F-W9), zero clears outside the shrink segment; Ctrl-C exits 2
+expect \x1b\[\?25l
+expect OpenRouter API key
+sleep 0.3
+send sk-or-v1-fakefakefakefake
+expect •{10}
+sleep 0.3
+resize 12 60
+sleep 0.6
+mark shrunk
+resize 40 120
+sleep 0.6
+mark grown
+send \x03
+eof

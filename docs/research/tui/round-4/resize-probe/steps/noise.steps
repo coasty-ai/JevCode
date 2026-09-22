@@ -1,0 +1,26 @@
+expect \x1b\[\?25l
+sleep 1.2
+send \x1b[I
+send \x1b[O
+send \x1b[<0;10;5M
+send \x1b[<0;10;5m
+send \x1b[?62;1;2;6;9c
+send \x1b[24;80R
+send \x1b[?0u
+send \x1b]11;rgb:0000/0000/0000\x07
+sleep 0.8
+mark noise
+send hello
+sleep 0.5
+mark typed
+resize 12 60
+sleep 0.8
+resize 24 80
+sleep 0.8
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.8
+eof

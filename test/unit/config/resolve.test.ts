@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCliArgs, type ParsedFlags } from '../../../src/cli/args.js';
-import { detectPackageRoot, modeFromParsedFlags, negateBooleanText, reconcileResumeConfig, resolveConfig, resumeIdentityFromRunMeta, type ResolveOptions } from '../../../src/config/resolve.js';
+import { detectPackageRoot, isEngineMode, modeFromParsedFlags, negateBooleanText, reconcileResumeConfig, resolveConfig, resumeIdentityFromRunMeta, type ResolveOptions } from '../../../src/config/resolve.js';
+import { DEFAULT_MODE } from '../../../src/config/defaults.js';
+import { defaultRunSpendCapUsd } from '../../../src/config/ui.js';
 import type { RunMeta } from '../../../src/core/types.js';
 import { fingerprint } from '../../../src/config/mask.js';
 import { ConfigError } from '../../../src/errors.js';
@@ -59,11 +61,11 @@ describe('resolveConfig precedence', () => {
       commandTimeoutMs: 120_000,
       maxCommandTimeoutMs: 600_000,
       maxOutputBytes: 200 * 1024,
-      // TUI-DESIGN-2 §1.2: zero arguments resolve to jev-only, whose run-cap default is $0.25 (P45)
-      spendCapUsd: 0.25,
+      // TUI-DESIGN-2 §1.2 / TUI-DESIGN-3 §1.1: zero arguments resolve to DEFAULT_MODE, whose mode-keyed run-cap default follows (P45)
+      spendCapUsd: defaultRunSpendCapUsd(DEFAULT_MODE),
     });
-    expect(c.mode).toBe('jev-only');
-    expect(c.entries.get('mode')).toEqual({ value: 'jev-only', source: 'default' });
+    expect(c.mode).toBe(DEFAULT_MODE);
+    expect(c.entries.get('mode')).toEqual({ value: DEFAULT_MODE, source: 'default' });
   });
 
   it('flag > env > ./.env > <OPEN_ASSIST_PATH>/.env > config file > default, one layer at a time', async () => {
@@ -205,22 +207,22 @@ describe('resolveConfig keys and lazy validation', () => {
     expect((await resolve(run(), env)).decider()).toMatchObject({ provider: 'openrouter', providerSource: 'auto:openrouter-key' });
   });
 
-  it('mode (TUI-DESIGN-2 §1.2 / §6 item 9): the config carries the `mode` setting its caps were keyed on — default jev-only, --mode / --condition, or opts.mode on a re-resolve', async () => {
+  it('mode (TUI-DESIGN-2 §1.2 / §6 item 9): the config carries the `mode` setting its caps were keyed on — DEFAULT_MODE, --mode / --condition, or opts.mode on a re-resolve', async () => {
     const env = { OPENROUTER_API_KEY: OR_KEY };
-    expect((await resolve(run(), env)).mode).toBe('jev-only');
+    expect((await resolve(run(), env)).mode).toBe(DEFAULT_MODE);
     expect((await resolve(run('--mode', 'jev-on'), env)).mode).toBe('jev-on');
     expect((await resolve(run('--mode', 'jev-off'), env)).mode).toBe('jev-off');
     expect((await resolve(run('--condition', 'jev-on'), env)).mode).toBe('jev-on');
     expect((await resolve(run(), env, { mode: 'jev-on' })).mode).toBe('jev-on');
-    // the run-cap default follows the same value (TUI-DESIGN §9.1, P45)
-    expect((await resolve(run(), env)).limits().spendCapUsd).toBe(0.25);
+    // the run-cap default follows the same value (TUI-DESIGN §9.1, P45; TUI-DESIGN-3 §1.1: keyed on DEFAULT_MODE)
+    expect((await resolve(run(), env)).limits().spendCapUsd).toBe(defaultRunSpendCapUsd(DEFAULT_MODE));
     expect((await resolve(run('--mode', 'jev-on'), env)).limits().spendCapUsd).toBe(2);
   });
 
   it('pricing: table for the default GLM 5.3 Flash and for Sonnet 5, env overrides, zeros plus a warning for unknown models', async () => {
     const env = { OPENROUTER_API_KEY: OR_KEY };
     const dflt = await resolve(run(), env);
-    expect(dflt.generator().pricing).toEqual({ inputPerM: 0.09, outputPerM: 0.3, cacheReadPerM: 0.018, cacheWritePerM: expect.closeTo(0.1125, 12) });
+    expect(dflt.generator().pricing).toEqual({ inputPerM: 0.15, outputPerM: 0.5, cacheReadPerM: 0.05, cacheWritePerM: expect.closeTo(0.1875, 12) });
     expect(dflt.generator().priced).toBe(true);
     expect(dflt.warnings).toEqual([]);
     expect(dflt.record()['generator.priceCacheReadPerM']).toBeUndefined(); // a table hit: no derived cache rows
@@ -399,8 +401,8 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
     expect(jo.limits().spendCapUsd).toBe(0.25);
     expect(jo.sessionSpendCap('jev-only')).toEqual({ value: 1.25, source: 'derived', derived: true });
     expect((await resolve(run('--condition', 'jev-only'))).limits().spendCapUsd).toBe(0.25);
-    // TUI-DESIGN-2 §1.2: zero arguments = jev-only ($0.25); jev-on / jev-off keep $2.00
-    expect((await resolve(run())).limits().spendCapUsd).toBe(0.25);
+    // TUI-DESIGN-2 §1.2 / TUI-DESIGN-3 §1.1: zero arguments = DEFAULT_MODE and its mode-keyed cap; jev-on / jev-off keep $2.00
+    expect((await resolve(run())).limits().spendCapUsd).toBe(defaultRunSpendCapUsd(DEFAULT_MODE));
     expect((await resolve(run('--mode', 'jev-on'))).limits().spendCapUsd).toBe(2);
     expect((await resolve(run('--mode', 'jev-off'))).limits().spendCapUsd).toBe(2);
     expect((await resolve(run('--mode', 'jev-only', '--spend-cap', '1'))).limits().spendCapUsd).toBe(1);
@@ -477,6 +479,10 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
       logLevel: 'debug',
       logFile: join(cwd, 'my.log'),
       keybindingsFile: join(home, '.config', 'jevcode', 'keybindings.json'),
+      wordmark: 'sweep',
+      // contract 1.6 (TUI-DESIGN-4 §8 items 4–5)
+      renderer: 'classic',
+      fullscreenDump: true,
     });
     expect(c.entries.get('ui.history')).toEqual({ value: 'false', source: 'flag' });
     expect(c.entries.get('log.level')).toEqual({ value: 'debug', source: 'flag' });
@@ -885,13 +891,13 @@ describe('TUI-DESIGN-2 §2.3: decider.provider — auto-detection, precedence, k
 });
 
 describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
-  it('chain: --mode > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > default jev-only; each layer records its source; the run-cap default follows', async () => {
+  it('chain: --mode > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > DEFAULT_MODE; each layer records its source; the run-cap default follows', async () => {
     const dflt = await resolve(run());
-    expect(dflt.mode).toBe('jev-only');
-    expect(dflt.entries.get('mode')).toEqual({ value: 'jev-only', source: 'default' });
-    expect(dflt.record()['mode']).toEqual({ value: 'jev-only', source: 'default' });
-    // §2.6 / §12: `mode  jev-only  default`
-    expect(configTableLines(dflt.record(), { sandboxLevel: 'none' }).find((l) => l.startsWith('mode '))).toMatch(/^mode\s+jev-only\s+default$/);
+    expect(dflt.mode).toBe(DEFAULT_MODE);
+    expect(dflt.entries.get('mode')).toEqual({ value: DEFAULT_MODE, source: 'default' });
+    expect(dflt.record()['mode']).toEqual({ value: DEFAULT_MODE, source: 'default' });
+    // §2.6 / §12: `mode  <DEFAULT_MODE>  default`
+    expect(configTableLines(dflt.record(), { sandboxLevel: 'none' }).find((l) => l.startsWith('mode '))).toMatch(new RegExp(`^mode\\s+${DEFAULT_MODE}\\s+default$`));
     // file `mode: jev-on` → source file:<path>, cap default $2.00 (§8.1 S1 row)
     await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ mode: 'jev-on' }));
     const file = await resolve(run());
@@ -944,5 +950,51 @@ describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
     expect((await resolve(run('--mode', 'jev-only'), {}, { mode: 'jev-on' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'default' });
     // `record()` never throws for a valid chain and `jevcode config` prints the row (`config` command flags)
     expect((await resolve(parseCliArgs(['config']), { JEVCODE_MODE: 'jev-off' })).record()['mode']).toEqual({ value: 'jev-off', source: 'env' });
+  });
+});
+
+describe('TUI-DESIGN-3 §1.1 / §1.8 (S3): modeFromParsedFlags is the one argv rule; a wizard-written file never displaces an env TypeSafe key; the seen.defaultMode row', () => {
+  it('modeFromParsedFlags: --mode, the hidden --condition alias, everything else DEFAULT_MODE (the former cli/main.tsx twin is gone)', () => {
+    expect(modeFromParsedFlags({ command: 'run' })).toBe(DEFAULT_MODE);
+    expect(modeFromParsedFlags({ command: 'chat' })).toBe(DEFAULT_MODE);
+    expect(modeFromParsedFlags({ command: 'run', mode: 'jev-on' })).toBe('jev-on');
+    expect(modeFromParsedFlags({ command: 'run', mode: 'jev-only' })).toBe('jev-only');
+    expect(modeFromParsedFlags({ command: 'run', condition: 'jev-off' })).toBe('jev-off');
+    expect(modeFromParsedFlags({ command: 'run', condition: 'jev-on' })).toBe('jev-on');
+    // an unknown value never reaches here (args.ts rejects it); a stray one falls back to the default
+    expect(modeFromParsedFlags({ command: 'run', mode: 'nope' })).toBe(DEFAULT_MODE);
+    expect(modeFromParsedFlags({ command: 'run', mode: 'llm-jev' })).toBe('llm-jev');
+    expect(modeFromParsedFlags({ command: 'chat', condition: 'llm-jev' })).toBe('llm-jev');
+    expect(isEngineMode('llm-jev')).toBe(true);
+    expect(isEngineMode('turbo')).toBe(false);
+    expect(isEngineMode(undefined)).toBe(false);
+  });
+
+  it('edge 34: a file the one-key wizard wrote beside an env TYPESAFE_API_KEY (apiKey + provider openrouter, no jevProvider) keeps `decider.provider typesafe (auto:typesafe-key)`; a file `jevProvider: openrouter` WOULD move Jev (why the save-shape table forbids it)', async () => {
+    const TS_KEY = 'ts-live-abcdefghijklmnopqrstuvwxyz-0123456789';
+    await writeCredentials({ apiKey: OR_KEY, provider: 'openrouter' }, { env: {}, home, cwd }, 'wizard');
+    const c = await resolve(run(), { TYPESAFE_API_KEY: TS_KEY });
+    expect(c.decider()).toMatchObject({ provider: 'typesafe', providerSource: 'auto:typesafe-key', apiKey: TS_KEY });
+    expect(c.entries.get('generator.apiKey')).toMatchObject({ value: OR_KEY });
+    expect(c.missingSecrets('jev-on')).toEqual([]);
+    expect(configTableLines(c.record(), { sandboxLevel: 'none' }).find((l) => l.startsWith('decider.provider '))).toMatch(/^decider\.provider\s+typesafe\s+derived \(auto: TYPESAFE_API_KEY is set\)$/);
+    // the forbidden shape: a file jevProvider is rule 1 and beats rule 2c
+    await writeCredentials({ apiKey: OR_KEY, jevApiKey: OR_KEY, provider: 'openrouter', jevProvider: 'openrouter' }, { env: {}, home, cwd }, 'wizard');
+    expect((await resolve(run(), { TYPESAFE_API_KEY: TS_KEY })).decider()).toMatchObject({ provider: 'openrouter', apiKey: OR_KEY });
+  });
+
+  it('seen.defaultMode (D-Q): a file-only bookkeeping row — resolved from `seenDefaultMode`, hidden from the table unless --all, kept in the record; no flag, no variable', async () => {
+    const { settingSpec } = await import('../../../src/config/defaults.js');
+    expect(settingSpec('seen.defaultMode')).toMatchObject({ env: [], fileKey: 'seenDefaultMode', defaultValue: null, secret: false, hidden: true });
+    expect(settingSpec('seen.defaultMode').flag).toBeUndefined();
+    const none = await resolve(run());
+    expect(none.entries.has('seen.defaultMode')).toBe(false);
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ seenDefaultMode: 'jev-on' }));
+    const c = await resolve(run());
+    expect(c.entries.get('seen.defaultMode')).toEqual({ value: 'jev-on', source: `file:${join(cwd, 'jevcode.json')}` });
+    expect(c.warnings).toEqual([]);
+    expect(c.record()['seen.defaultMode']).toEqual({ value: 'jev-on', source: `file:${join(cwd, 'jevcode.json')}` });
+    expect(configTableLines(c.record(), { sandboxLevel: 'none' }).some((l) => l.startsWith('seen.defaultMode'))).toBe(false);
+    expect(configTableLines(c.record(), { sandboxLevel: 'none', all: true }).find((l) => l.startsWith('seen.defaultMode'))).toMatch(/^seen\.defaultMode\s+jev-on\s+file:/);
   });
 });

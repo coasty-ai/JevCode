@@ -29,8 +29,10 @@
 import { RISK_BLOCK, RISK_REVIEW, levelProb, riskFromProbabilities, scoreConfidence } from '../../jev/confidence.js';
 import { noul, ref, score } from '../../jev/questions.js';
 import { clip } from '../../core/text.js';
-import { RISK_DIMENSIONS, type Answer, type Intent, type JsonObject, type OutcomeStatus, type Proposal, type ProposalEvidence, type Question, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TargetInfo, type TestCommand } from '../../core/types.js';
+import { RESEARCH_ACTION_KINDS, RISK_DIMENSIONS, type Action, type Answer, type Intent, type JsonObject, type OrchestrationOptions, type OutcomeStatus, type Proposal, type ProposalEvidence, type Question, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TargetInfo, type TestCommand } from '../../core/types.js';
 import { patchTouchedPaths } from '../../provider/actions.js';
+// ORCHESTRATION-DESIGN §8.1 rule 2: the surface imports orchestration through the ONE facade, never a file under it.
+import { ownsPath, parseOwnGlob, type OwnGlob } from '../../orchestrate/index.js';
 import type { StageContext } from '../engine.js';
 import { patchContentHash } from '../loopdetect.js';
 import { buildRiskState, commonLastRun, evidenceVerified, isChangeAction, type PriorPatch, type PriorPatchResult, type PriorPatchRun } from '../state.js';
@@ -535,11 +537,73 @@ export function resetPatchHistory(runId: string): void {
 
 /** Code-computed target info for edit/write (one) or patch (per touched path). */
 export async function computeTargets(ctx: StageContext, proposal: Proposal): Promise<TargetInfo[]> {
-  const a = proposal.action;
-  const paths = a.kind === 'edit' || a.kind === 'write' ? [a.path] : a.kind === 'patch' ? patchTouchedPaths(a.diff).slice(0, 50) : [];
   const out: TargetInfo[] = [];
-  for (const p of paths) out.push(await ctx.workspace.target(p, ctx.createdThisRun));
+  for (const p of targetPaths(proposal.action)) out.push(await ctx.workspace.target(p, ctx.createdThisRun));
   return out;
+}
+
+// ---------------------------------------------------------------------------------------
+// Ownership — belt 2 (docs/ORCHESTRATION-DESIGN.md §2.4, §2.5(a)/(b), corner rows 18, 19, 24)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * §2.4 [G8]: the paths a proposal writes that the harness can know BEFORE anything runs — exactly
+ * what `computeTargets` reads. `run` yields none, and that is the hole belt 2 does not cover: it is
+ * closed after the fact by the post-`run` escape diff (`escapedPaths`, `src/loop/launch.ts`).
+ */
+export function targetPaths(a: Action): string[] {
+  return a.kind === 'edit' || a.kind === 'write' ? [a.path] : a.kind === 'patch' ? patchTouchedPaths(a.diff).slice(0, 50) : [];
+}
+
+/** §2.4 belt 2: every refusal reason begins with this, so `isOwnershipRefusal` needs no second channel. */
+export const OWNERSHIP_REFUSAL_PREFIX = "outside this agent's ownership: ";
+/** §2.5(b) / corner row 24: a `role: 'research'` child refused a write. Counted, but NOT a scope fight. */
+export const RESEARCH_REFUSAL_PREFIX = 'research agents are read-only: ';
+/** §2.4 / corner row 18: this many CONSECUTIVE belt-2 refusals park the child with `scope-fight`. */
+export const SCOPE_FIGHT_AFTER = 3;
+
+/** True for a belt-2 refusal reason (never for the research refusal, which is not the split's fault). */
+export function isOwnershipRefusal(reason: string): boolean {
+  return reason.startsWith(OWNERSHIP_REFUSAL_PREFIX);
+}
+
+/**
+ * §2.4 belt 2 and §2.5(b), as one code rule the risk stage applies BEFORE any Jev request and before
+ * anything touches the workspace:
+ *
+ *   - `role: 'research'` → `edit | write | patch` are not in the action space at all (row 24);
+ *   - otherwise a target outside `own` → `outside this agent's ownership: src/y.ts (owns src/tui/**)`.
+ *
+ * The glob matcher is the facade's (`matchesOwn` / `ownsPath` through `parseOwnGlob`) — there is
+ * exactly one `own` sub-language in this repo and this is not a second one. An unparsable glob owns
+ * nothing, the same rule `outsideOwn` takes: widening ownership on a malformed string is the one
+ * failure mode belt 2 exists to prevent.
+ *
+ * Returns `null` for a parent (`depth: 0`) and for a run with no `orchestration` at all, which is why
+ * nothing here can change the behaviour of an ordinary run.
+ */
+export function ownershipRefusal(action: Action, orchestration: OrchestrationOptions | undefined): { status: 'blocked'; reason: string } | null {
+  if (orchestration === undefined || orchestration.depth !== 1) return null;
+  if (orchestration.role === 'research' && !(RESEARCH_ACTION_KINDS as readonly string[]).includes(action.kind)) {
+    return { status: 'blocked', reason: `${RESEARCH_REFUSAL_PREFIX}${action.kind} is not in a research agent's action space (${RESEARCH_ACTION_KINDS.join(' | ')})` };
+  }
+  const own = orchestration.own ?? [];
+  if (own.length === 0) return null;
+  const targets = targetPaths(action);
+  if (targets.length === 0) return null;
+  const globs: OwnGlob[] = [];
+  for (const raw of own) {
+    const p = parseOwnGlob(raw);
+    if (p.ok) globs.push(p.glob);
+  }
+  const outside = targets.filter((p) => !ownsPath(globs, p));
+  if (outside.length === 0) return null;
+  return { status: 'blocked', reason: `${OWNERSHIP_REFUSAL_PREFIX}${[...new Set(outside)].join(', ')} (owns ${own.join(', ')})` };
+}
+
+/** §2.4: the refusal as a `RiskAssessment` the engine's existing `verdict === 'block'` branch turns into the outcome. */
+export function ownershipBlockAssessment(intent: Intent | null, reason: string): RiskAssessment {
+  return { ...assessRisk({}, 1, intent, { texts: RISK_LEVEL_TEXTS }), risk: 1, verdict: 'block', reason };
 }
 
 export interface RiskStageResult {
@@ -562,6 +626,15 @@ export interface RiskStageOptions {
 type IntentInfo = { intent: Intent; answer: Intent | 'none_of_these'; probability: number };
 
 export async function runRiskStage(ctx: StageContext, common: JsonObject, proposal: Proposal, intent: IntentInfo, opts: RiskStageOptions = {}): Promise<RiskStageResult> {
+  // ORCHESTRATION-DESIGN §2.4 belt 2 / §2.5(b): a child's refusal is CODE — decided before the targets are
+  // stat'ed, before any Jev request, and in every mode that runs this stage. The engine's existing
+  // `verdict === 'block'` branch turns it into `{ status: 'blocked', reason }` and counts it in `counters.blocked`.
+  const refusal = ownershipRefusal(proposal.action, ctx.orchestration);
+  if (refusal !== null) {
+    const risk = ownershipBlockAssessment(intent.intent, refusal.reason);
+    ctx.emit({ type: 'risk', step: ctx.step, risk });
+    return { risk, matchesIntent: 1, evidenceConsistent: null, targets: [] };
+  }
   const targets = await computeTargets(ctx, proposal);
   const history = opts.patchHistory ?? patchHistoryFor(ctx.runId, ctx.step);
   const priorPatches = history.observe(ctx.step, proposal, common);

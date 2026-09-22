@@ -23,6 +23,18 @@ import { FACT_QUESTION_PREFIX, FACT_SELECT_FLOOR } from '../chat/facts.js';
 
 /** §7.6: a `/why` item's `detail` is ≤ 60 lines. */
 export const WHY_MAX_LINES = 60;
+/** TUI-DESIGN-3 §4.4 F8 / §10: the `/why` failure text names how far back a ref can reach. */
+export const WHY_KEPT_STEPS = 3;
+
+/**
+ * TUI-DESIGN-3 §4.4 F8 / §10 `whyErrorText` — the one `/why` failure text for both renderers (the App's local lookup and the
+ * controller's): `missing` → `error: /why: no decision <ref> in the last 3 steps`; `grammar` → `error: /why: <ref> is not a
+ * decision ref (s<N>.<stage>.<id>, a digit 1–5, or intake)`. The `error: ` prefix is part of the text (`uiError` keeps it).
+ */
+export function whyErrorText(ref: string, reason: 'missing' | 'grammar'): string {
+  const r = ref.trim();
+  return reason === 'missing' ? `error: /why: no decision ${r} in the last ${WHY_KEPT_STEPS} steps` : `error: /why: ${r} is not a decision ref (s<N>.<stage>.<id>, a digit 1–5, or intake)`;
+}
 /** Instructions and criteria texts are clipped to one line of this many characters. */
 const WHY_TEXT_CHARS = 160;
 /** Two-decimal wire probabilities: the noise floor quoted beside the risk band (§7.6). */
@@ -41,7 +53,7 @@ export type WhyRef =
   /** TUI-DESIGN-2 §3.11: `intake` (the Choice), `intake.reply`, `intake.about_<key>`, `intake.can_<kind>` — the last intake's step-0 rows */
   | { kind: 'intake'; id: string };
 
-const STAGES: ReadonlySet<string> = new Set<StageName>(['replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete']);
+const STAGES: ReadonlySet<string> = new Set<StageName>(['decompose', 'replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete']);
 
 /** TUI-DESIGN-2 §3.11: the `/why` argument grammar of the intake rows — `intake` alone is the Choice itself */
 const INTAKE_REF_RE = /^intake(?:\.([a-z][a-z0-9_]*))?$/;
@@ -244,7 +256,8 @@ export function whyBlock(d: Decision, ctx: WhyContext = {}, g: GlyphSet = GLYPHS
 
 /** TUI-DESIGN §7.7 Ctrl+O: one `/why`-style block per stage of `step` (probabilities and criteria), in stage order. */
 export function stepWhyBlocks(decisions: readonly Decision[], step: number, g: GlyphSet = GLYPHS.unicode): string[][] {
-  const order: readonly StageName[] = ['replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete'];
+  // ORCHESTRATION-DESIGN §3: `decompose` runs in runStep() before replan/intent, so it leads the loop order
+  const order: readonly StageName[] = ['decompose', 'replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete'];
   const mine = decisions.filter((d) => d.step === step);
   const blocks: string[][] = [];
   for (const stage of order) {

@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": "Thinking about the request.","thought": true,"thoughtSignature": "CvkBAdHtim8yZ2xhc3M="}]},"index": 0}],"usageMetadata": {"promptTokenCount": 240,"totalTokenCount": 258},"modelVersion": "gemini-3.8-flash","responseId": "aBcD1234"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": "Listing the files."}]},"index": 0}],"usageMetadata": {"promptTokenCount": 240,"cachedContentTokenCount": 64,"candidatesTokenCount": 4,"thoughtsTokenCount": 14,"totalTokenCount": 258},"modelVersion": "gemini-3.8-flash","responseId": "aBcD1234"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"functionCall": {"id": "fc-1","name": "propose_action","args": {"goal": "list files","command": "ls -la"}},"thoughtSignature": "CvkBAdHtim8yZ2xhc3M="}]},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 240,"cachedContentTokenCount": 64,"candidatesTokenCount": 18,"thoughtsTokenCount": 14,"totalTokenCount": 272,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 240}]},"modelVersion": "gemini-3.8-flash","responseId": "aBcD1234"}
+

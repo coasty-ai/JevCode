@@ -1,0 +1,29 @@
+expect \x1b\[\?25l
+sleep 1.2
+send start the probe run
+sleep 0.2
+send \r
+expect \[y\] approve
+sleep 0.8
+mark card-up
+resize 12 60
+sleep 0.9
+mark shrunk
+resize 8 40
+sleep 0.9
+mark tiny
+resize 40 120
+sleep 0.9
+mark grown
+send y
+sleep 1.5
+mark approved
+send \x03
+sleep 0.3
+send \x03
+sleep 0.8
+send \x04
+sleep 0.2
+send \x04
+sleep 0.8
+eof

@@ -1,8 +1,9 @@
 /**
- * Spinner rules (TUI-DESIGN §7.4 "Spinner", §6.2 A50, §14.2 reduced motion, F16): braille frames at 8 fps only
- * while a stage runs and no review is pending; `|/-\` under `--ascii`; a static `•` under reduced motion with a
- * 1 Hz functional tick (the wall clock still moves); `still waiting` after 45 s in one stage. This module and
- * `retry.ts` are the only two in `src/tui/**` allowed to call `setInterval` (§14.2's grep test).
+ * Spinner rules (TUI-DESIGN §7.4 "Spinner", §6.2 A50, §14.2 reduced motion, F16; TUI-DESIGN-3 §5.2 A3, D-P): the
+ * brand's shade pulse `░ ▒ ▓ █ ▓ ▒` at the existing 8 fps (a 750 ms cycle) only while a stage runs and no review is
+ * pending; `. + # # + .` under `--ascii`; a static `◆` (`*`) under reduced motion with a 1 Hz functional tick (the wall
+ * clock still moves); `still waiting` after 45 s in one stage. This module and `retry.ts` are the only two in
+ * `src/tui/**` allowed to call `setInterval` (§14.2's grep test).
  */
 import { useEffect, useState } from 'react';
 import type { ConfirmRequest, EngineStatus } from '../core/types.js';
@@ -16,8 +17,15 @@ export { STILL_WAITING_MS };
 export const SPINNER_INTERVAL_MS = 125;
 /** The functional tick under reduced motion (§14.2). */
 export const REDUCED_MOTION_TICK_MS = 1000;
-/** Braille frames, the Unicode set of `glyphs.ts` (kept from StatusLine.tsx). */
+/** TUI-DESIGN-3 §5.2 A3: the shade-pulse frames, the Unicode set of `glyphs.ts` (`░ ▒ ▓ █ ▓ ▒`). */
 export const SPINNER_FRAMES: readonly string[] = GLYPHS.unicode.spinner;
+/** TUI-DESIGN-3 §5.2 A3: the static glyph under reduced motion — `◆` (`*` under `--ascii`); the status spans colour it `accent` like a frame. */
+export const SPINNER_STATIC: string = GLYPHS.unicode.spinnerStatic;
+
+/** TUI-DESIGN-3 §5.2 A3: the static spinner glyph of a glyph set (`◆` / `*`) — the reduced-motion twin every status consumer draws. */
+export function spinnerStatic(g: GlyphSet = GLYPHS.unicode): string {
+  return g.spinnerStatic;
+}
 
 /** The slice of `UiState` 1.1 the spinner rule reads. */
 export interface SpinnerInput {
@@ -44,7 +52,7 @@ export function spinnerActive(s: SpinnerInput): boolean {
   return stage !== 'idle' && s.status?.stopReason == null;
 }
 
-/** The glyph for a frame: a braille frame (or `|/-\`), the static glyph under reduced motion. */
+/** The glyph for a frame: a shade-pulse frame (or `. + # # + .`), the static glyph under reduced motion. */
 export function spinnerGlyph(frame: number, g: GlyphSet = GLYPHS.unicode, reducedMotion = false): string {
   if (reducedMotion) return g.spinnerStatic;
   const frames = g.spinner;

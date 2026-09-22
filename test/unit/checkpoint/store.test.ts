@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { sha256Hex } from '../../../src/core/hash.js';
 import type { CheckpointEnvelope } from '../../../src/core/types.js';
 import { CheckpointError } from '../../../src/errors.js';
-import { CHECKPOINT_FILES, CORRUPT_STATE_FILE, createCheckpointStore, parseEnvelope, redactDeep, serialiseEnvelope } from '../../../src/checkpoint/store.js';
+import { CHECKPOINT_FILES, CORRUPT_STATE_FILE, ORCHESTRATE_FILE_BYTES, cacheRelPath, createCheckpointStore, parseEnvelope, redactDeep, serialiseEnvelope } from '../../../src/checkpoint/store.js';
 import { FAKE_KEY, REDACTED, fakeRedact, makeDecision, makeMeta, makeState, makeStepRecord, withTempDir } from '../../fixtures/checkpoint/make.js';
 
 const identity = (s: string): string => s;
@@ -104,7 +104,8 @@ describe('writeState / load', () => {
       const text = await readFile(path, 'utf8');
       await writeFile(path, text.replace('"version":1', '"version":2'));
       expect((await store.load()).recoveredFrom).toBe('prev');
-      expect(store.lastWarnings().join(' ')).toMatch(/unsupported version/);
+      // TUI-DESIGN-4 §7.9: a *newer* envelope is named as such so the caller can offer `jevcode upgrade`
+      expect(store.lastWarnings().join(' ')).toMatch(/written by a newer JevCode \(state\.json v2; this build reads v1\)/);
       await writeFile(path, text.slice(0, text.length >> 1));
       expect((await store.load()).recoveredFrom).toBe('prev');
       expect(store.lastWarnings().join(' ')).toMatch(/not JSON/);
@@ -384,6 +385,141 @@ describe('serialisation failures', () => {
 // TUI-DESIGN §15 item 10 / §13.3 / §19.0: CHECKPOINT_FILES additions, writeUi, updateMeta({ git }), classifyDiskError
 // ---------------------------------------------------------------------------------------
 
+describe('contract 1.4 additions (COORDINATION-DESIGN §7.2, §7.4)', () => {
+  it('writeCache writes <run>/cache/<rel> atomically and redacted, readCache reads it back, a missing file is null', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, fakeRedact);
+      await store.create(makeMeta());
+      await store.writeCache('step-3.json', { v: 1, step: 3, partial: { text: `key ${FAKE_KEY}`, chars: 4 } });
+      const files = await readdir(join(dir, CHECKPOINT_FILES.cache));
+      expect(files).toEqual(['step-3.json']);
+      const text = await readFile(join(dir, CHECKPOINT_FILES.cache, 'step-3.json'), 'utf8');
+      expect(text.endsWith('\n')).toBe(true);
+      expect(text).not.toContain(FAKE_KEY);
+      expect(text).toContain(REDACTED);
+      expect(await store.readCache('step-3.json')).toEqual({ v: 1, step: 3, partial: { text: `key ${REDACTED}`, chars: 4 } });
+      expect(await store.readCache('step-4.json')).toBeNull();
+      // nested rels create their parents; the store's flush awaits the chain
+      void store.writeCache('llm/g1/0/2.json', { body: 'x' });
+      await store.flush();
+      expect(await store.readCache('llm/g1/0/2.json')).toEqual({ body: 'x' });
+      // not JSON → null, never a throw
+      await writeFile(join(dir, CHECKPOINT_FILES.cache, 'bad.json'), '{');
+      expect(await store.readCache('bad.json')).toBeNull();
+    }));
+
+  it('renameCache supersedes a cache file: the bytes move, the old name is gone, a missing source is not an error, a bad rel rejects', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeCache('step-3.json', { v: 1, step: 3 });
+      await store.renameCache('step-3.json', 'step-3.superseded.json');
+      expect(await store.readCache('step-3.json')).toBeNull();
+      expect(await store.readCache('step-3.superseded.json')).toEqual({ v: 1, step: 3 });
+      expect(await readdir(join(dir, CHECKPOINT_FILES.cache))).toEqual(['step-3.superseded.json']);
+      // nothing to supersede is the common case (a boundary pause wrote no cache)
+      await expect(store.renameCache('step-9.json', 'step-9.superseded.json')).resolves.toBeUndefined();
+      await expect(store.renameCache('../escape.json', 'step-1.json')).rejects.toBeInstanceOf(CheckpointError);
+      await expect(store.renameCache('step-1.json', '/abs.json')).rejects.toBeInstanceOf(CheckpointError);
+    }));
+
+  it('a cache rel is validated: relative, no .., no absolute, no backslash; the writer rejects with CheckpointError', () =>
+    withTempDir(async (dir) => {
+      expect(cacheRelPath('step-1.json')).toBe('step-1.json');
+      expect(cacheRelPath('llm/./g1//0.json')).toBe('llm/g1/0.json');
+      for (const bad of ['', '../x.json', '/abs.json', 'a/../../b.json', 'a\\b.json', '..', '.']) expect(cacheRelPath(bad)).toBeNull();
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await expect(store.writeCache('../escape.json', { v: 1 })).rejects.toBeInstanceOf(CheckpointError);
+      expect(await store.readCache('../escape.json')).toBeNull();
+    }));
+
+  // -------------------------------------------------------------------------------------
+  // contract 1.5 (ORCHESTRATION-DESIGN §8.2 D0 item 4, §3.7, §2.5): the `orchestrate/` directory
+  // -------------------------------------------------------------------------------------
+
+  it('contract 1.5: writeCache routes an `orchestrate/` rel to <run>/orchestrate/, redacted, with its own per-file chain', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, fakeRedact);
+      await store.create(makeMeta());
+      await store.writeCache('orchestrate/manifest-11.json', { v: 1, manifestId: 'abc', token: `key ${FAKE_KEY}` });
+      // the run-relative layout is <run>/orchestrate/manifest-11.json, NOT <run>/cache/orchestrate/...
+      expect(await readdir(join(dir, CHECKPOINT_FILES.orchestrate))).toEqual(['manifest-11.json']);
+      await expect(readdir(join(dir, CHECKPOINT_FILES.cache))).rejects.toThrow();
+      const text = await readFile(join(dir, CHECKPOINT_FILES.orchestrate, 'manifest-11.json'), 'utf8');
+      expect(text.endsWith('\n')).toBe(true);
+      expect(text).not.toContain(FAKE_KEY);
+      expect(text).toContain(REDACTED);
+      expect(await store.readCache('orchestrate/manifest-11.json')).toEqual({ v: 1, manifestId: 'abc', token: `key ${REDACTED}` });
+      expect(await store.readCache('orchestrate/manifest-12.json')).toBeNull();
+      // nested rels under orchestrate/ create their parents too (agent-<slug>/ subtrees)
+      void store.writeCache('orchestrate/inbox/a.json', { body: 'x' });
+      await store.flush();
+      expect(await store.readCache('orchestrate/inbox/a.json')).toEqual({ body: 'x' });
+      // the two roots never collide: the same leaf name in each is two files
+      await store.writeCache('manifest-11.json', { v: 1, where: 'cache' });
+      expect(await store.readCache('manifest-11.json')).toEqual({ v: 1, where: 'cache' });
+      expect(await store.readCache('orchestrate/manifest-11.json')).toEqual({ v: 1, manifestId: 'abc', token: `key ${REDACTED}` });
+    }));
+
+  it('contract 1.5: renameCache consumes a review answer within orchestrate/, and never across the two roots (§2.5)', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeCache('orchestrate/review-4.json', { id: 'r4', approved: true });
+      await store.renameCache('orchestrate/review-4.json', 'orchestrate/review-4.used');
+      expect(await store.readCache('orchestrate/review-4.json')).toBeNull();
+      expect(await store.readCache('orchestrate/review-4.used')).toEqual({ id: 'r4', approved: true });
+      expect(await readdir(join(dir, CHECKPOINT_FILES.orchestrate))).toEqual(['review-4.used']);
+      // a missing source stays a no-op under orchestrate/ too
+      await expect(store.renameCache('orchestrate/review-9.json', 'orchestrate/review-9.used')).resolves.toBeUndefined();
+      // crossing the roots is refused in both directions
+      await store.writeCache('orchestrate/manifest-1.json', { v: 1 });
+      await expect(store.renameCache('orchestrate/manifest-1.json', 'manifest-1.json')).rejects.toBeInstanceOf(CheckpointError);
+      await store.writeCache('step-1.json', { v: 1 });
+      await expect(store.renameCache('step-1.json', 'orchestrate/step-1.json')).rejects.toBeInstanceOf(CheckpointError);
+    }));
+
+  it('contract 1.5: an orchestrate rel is validated and bounded exactly like a cache rel', () =>
+    withTempDir(async (dir) => {
+      expect(cacheRelPath('orchestrate/manifest-1.json')).toBe('orchestrate/manifest-1.json');
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      // normalisation is the SAME function, so `orchestrate/..` climbs back to the cache root and never out of the run dir
+      expect(cacheRelPath('orchestrate/../escape.json')).toBe('escape.json');
+      expect(cacheRelPath('orchestrate//x.json')).toBe('orchestrate/x.json');
+      for (const bad of ['orchestrate/../../escape.json', 'orchestrate/a\\b.json', '/orchestrate/x.json']) {
+        await expect(store.writeCache(bad, { v: 1 })).rejects.toBeInstanceOf(CheckpointError);
+        expect(await store.readCache(bad)).toBeNull();
+      }
+      // `orchestrate` alone is the directory, not a file: it writes under cache/ like any other leaf, never over the directory
+      await store.writeCache('orchestrate', { v: 1 });
+      expect(await store.readCache('orchestrate')).toEqual({ v: 1 });
+      expect(await readdir(join(dir, CHECKPOINT_FILES.cache))).toContain('orchestrate');
+      // §3.7: a manifest is <= MANIFEST_BYTES; the store refuses an oversized orchestrate artefact rather than writing it
+      await expect(store.writeCache('orchestrate/huge.json', { blob: 'x'.repeat(ORCHESTRATE_FILE_BYTES + 1) })).rejects.toBeInstanceOf(CheckpointError);
+      expect(await store.readCache('orchestrate/huge.json')).toBeNull();
+    }));
+
+  it('updateMeta({ ended }) replaces as a scalar and null clears it; resumes[] entries keep `reopened`', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.updateMeta({ ended: { at: '2026-09-21T12:00:00.000Z', by: 'human' } });
+      let onDisk = JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.meta), 'utf8')) as ReturnType<typeof makeMeta>;
+      expect(onDisk.ended).toEqual({ at: '2026-09-21T12:00:00.000Z', by: 'human' });
+      await store.updateMeta({ resumes: [{ resumedAt: '2026-09-21T13:00:00.000Z', previousStopReason: 'human_pause', reopened: true }], ended: null });
+      onDisk = JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.meta), 'utf8')) as ReturnType<typeof makeMeta>;
+      expect(onDisk.ended).toBeNull();
+      expect(onDisk.resumes).toEqual([{ resumedAt: '2026-09-21T13:00:00.000Z', previousStopReason: 'human_pause', reopened: true }]);
+      expect(onDisk.task).toBe('fix the bug');
+      // the loader still accepts the meta
+      const loaded = await createCheckpointStore(dir, identity).load().catch((e: unknown) => e);
+      expect(loaded).toBeInstanceOf(CheckpointError); // no state.json yet — but the meta parsed (the error names the state files, not run.json)
+      expect(String((loaded as Error).message)).toContain('no usable checkpoint');
+    }));
+});
+
 describe('contract 1.1 additions (TUI-DESIGN §15 item 19, §13.3)', () => {
   it('CHECKPOINT_FILES names the session-era artefacts', async () => {
     const { DISK_ERROR_CODES } = await import('../../../src/checkpoint/store.js');
@@ -394,7 +530,10 @@ describe('contract 1.1 additions (TUI-DESIGN §15 item 19, §13.3)', () => {
     expect(CHECKPOINT_FILES.post).toBe('post');
     expect(CHECKPOINT_FILES.tmp).toBe('tmp');
     expect(CHECKPOINT_FILES.drafts).toBe('drafts');
-    expect(DISK_ERROR_CODES).toEqual(['ENOSPC', 'EACCES', 'EROFS', 'EDQUOT', 'EIO', 'EMFILE']);
+    // contract 1.5 (ORCHESTRATION-DESIGN §8.2 D0 item 4): the delegation's own run-dir directory
+    expect(CHECKPOINT_FILES.orchestrate).toBe('orchestrate');
+    // TUI-DESIGN-4 §7.2 edge 2: ENOENT joins the set (the `rundir:rm` fault and the measured silent run)
+    expect(DISK_ERROR_CODES).toEqual(['ENOSPC', 'EACCES', 'EROFS', 'EDQUOT', 'EIO', 'EMFILE', 'ENOENT']);
   });
 
   it('writeUi writes ui.json atomically and redacted', () =>
@@ -434,20 +573,33 @@ describe('contract 1.1 additions (TUI-DESIGN §15 item 19, §13.3)', () => {
       expect((JSON.parse(text) as ReturnType<typeof makeMeta>).title).toBe('first title');
     }));
 
-  it('classifyDiskError: the six codes through a cause chain, file inferred from the message, null otherwise', async () => {
+  it('classifyDiskError: the seven codes through a cause chain, file inferred from the message, null otherwise', async () => {
     const { classifyDiskError } = await import('../../../src/checkpoint/store.js');
     const errno = (code: string): Error & { code: string } => Object.assign(new Error(`${code}: boom`), { code });
-    expect(classifyDiskError(errno('ENOSPC'), 'state.json')).toEqual({ code: 'ENOSPC', file: 'state.json', text: 'checkpoint degraded: ENOSPC on state.json', key: 'state.json:ENOSPC' });
+    expect(classifyDiskError(errno('ENOSPC'), 'state.json')).toEqual({
+      code: 'ENOSPC',
+      file: 'state.json',
+      text: 'checkpoint degraded: ENOSPC on state.json',
+      // TUI-DESIGN-4 §7.2 edge 6: the whole sentence, never the raw `open '<path>'` suffix
+      sentence: 'checkpoint degraded: ENOSPC on state.json — the disk is full; this run cannot be resumed',
+      key: 'state.json:ENOSPC',
+    });
     // wrapped by the store's fail(): the file is named in the message and the errno sits in `cause`
     const wrapped = new CheckpointError('cannot rotate state.json: ENOSPC: no space left on device (/tmp/run)', '/tmp/run', { cause: errno('ENOSPC') });
     expect(classifyDiskError(wrapped)).toMatchObject({ code: 'ENOSPC', file: 'state.json' });
     const append = new CheckpointError('append to steps.jsonl failed: EACCES (/tmp/run)', '/tmp/run', { cause: errno('EACCES') });
     expect(classifyDiskError(append)).toMatchObject({ code: 'EACCES', file: 'steps.jsonl', key: 'steps.jsonl:EACCES' });
-    for (const code of ['EROFS', 'EDQUOT', 'EIO', 'EMFILE']) expect(classifyDiskError(errno(code))?.code).toBe(code);
+    for (const code of ['EROFS', 'EDQUOT', 'EIO', 'EMFILE', 'ENOENT']) expect(classifyDiskError(errno(code))?.code).toBe(code);
     // unknown file → "run dir"
-    expect(classifyDiskError(errno('EROFS'))).toEqual({ code: 'EROFS', file: null, text: 'checkpoint degraded: EROFS on run dir', key: 'run dir:EROFS' });
-    // not a disk condition
-    expect(classifyDiskError(errno('ENOENT'))).toBeNull();
+    expect(classifyDiskError(errno('EROFS'))).toEqual({
+      code: 'EROFS',
+      file: null,
+      text: 'checkpoint degraded: EROFS on run dir',
+      sentence: 'checkpoint degraded: EROFS on run dir — the run directory is not writable; this run cannot be resumed',
+      key: 'run dir:EROFS',
+    });
+    // TUI-DESIGN-4 §7.2 edge 2: ENOENT now classifies (write paths only)
+    expect(classifyDiskError(errno('ENOENT'))?.sentence).toBe('checkpoint degraded: ENOENT on run dir — the run directory was removed during the run; this run cannot be resumed');
     expect(classifyDiskError(new Error('plain'))).toBeNull();
     expect(classifyDiskError(null)).toBeNull();
     expect(classifyDiskError('ENOSPC')).toBeNull();
@@ -465,7 +617,7 @@ describe('contract 1.1 additions (TUI-DESIGN §15 item 19, §13.3)', () => {
     const runDir = '/tmp/ui.json-runs/abc';
     // no artefact outside the run dir → run dir
     const listing = new CheckpointError(`cannot list post images: ENOSPC (${runDir})`, runDir, { cause: errno('ENOSPC') });
-    expect(classifyDiskError(listing)).toEqual({ code: 'ENOSPC', file: null, text: 'checkpoint degraded: ENOSPC on run dir', key: 'run dir:ENOSPC' });
+    expect(classifyDiskError(listing)).toMatchObject({ code: 'ENOSPC', file: null, text: 'checkpoint degraded: ENOSPC on run dir', key: 'run dir:ENOSPC' });
     // the errno text names the temp file under the run dir: the artefact is state.json, not ui.json
     const tmp = new CheckpointError(`cannot write state.json temp file: ENOSPC: write '${runDir}/state.json.tmp-1-abcd' (${runDir})`, runDir, { cause: errno('ENOSPC') });
     expect(classifyDiskError(tmp)).toMatchObject({ file: 'state.json', key: 'state.json:ENOSPC' });

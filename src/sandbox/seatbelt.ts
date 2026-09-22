@@ -42,6 +42,22 @@ export interface ProfileOptions {
   gitCommonDir?: string;
   /** TUI-DESIGN §12.7: resolved `${XDG_CONFIG_HOME:-~/.config}/jevcode` + legacy dirs, appended to the `file-read*` denies. */
   configDirs?: readonly string[];
+  /**
+   * ORCHESTRATION-DESIGN §5.2 [G3]: set when `EngineOptions.orchestration.depth === 1`.
+   *
+   * A linked worktree's common dir is a WRITE ROOT (the `gitRoots` block below puts it there so
+   * `git commit` can reach `refs/`, `logs/` and `objects/`), and the §12.7 denies cover only the
+   * executable knobs. The landing layer pins `refs/heads/jevcode/<slug>` to a sha ONCE and re-checks
+   * that same sha at merge time; a child that could move the ref, rewrite the reflog, repack
+   * `packed-refs` or repoint another worktree's `HEAD` in between would defeat the re-check and get
+   * an unverified tree merged into the dock — and under `orchestrate.land: 'step'`, into the user's
+   * checkout. So a depth-1 profile denies all four, and only a depth-1 one: the supervisor builds its
+   * OWN `Sandbox` per worktree from the PARENT's configuration ([D10]), never sets this flag, and it
+   * is that profile — not this one — that runs [G1]'s `git add` / `git commit` in an agent worktree.
+   * An agent's own engine never writes a ref (`src/workspace/git.ts` writes only the index and the
+   * working tree: `restore --worktree`, `add -A -N`, `apply`), so the deny costs it nothing.
+   */
+  agentChild?: boolean;
 }
 
 /** SBPL string literal: double-quoted with backslash and quote escaped. */
@@ -65,6 +81,24 @@ export function sbplRegex(pattern: string): string {
 
 const HOME_SECRET_SUBPATHS = [join('.config', 'jevcode'), '.ssh', '.aws', join('.config', 'gh')];
 const HOME_SECRET_LITERALS = ['.netrc'];
+
+/**
+ * IMPORT-DESIGN §2.11 [G2.1]: the workspace memory the importer writes. A run may **read** its own
+ * memory — it is supposed to — but it must not rewrite the memory that steers the next run, so each
+ * of these is denied as a literal + subpath pair beside the `.git` denies (the `addRead` idiom of
+ * `:150-151` applied to writes). They ride `protectGit` for the same reason the `.git` denies do:
+ * the bench's infrastructure sandbox is a fresh clone into the root and has no memory to protect.
+ */
+const WS_MEMORY_WRITE_DENIES = [join('.jevcode', 'memory'), join('.jevcode', 'rules'), join('.jevcode', 'commands')];
+
+/**
+ * IMPORT-DESIGN §2.2 / §2.11 [G2.1]: the 0600 personal-memory tree. Its deny is **not** routed through
+ * `addRead`, because that lands in the `file-read*` deny at `:163` which the `:181`
+ * `(allow file-read* (subpath <ws>) …)` then overrides — `<ws>` is a writable root and therefore in
+ * `roots`, so the personal files would stay readable by any sandboxed command. It is emitted after the
+ * allow instead, exactly as the `:170`/`:180` pair already does for `~/.jevcode`.
+ */
+const WS_MEMORY_LOCAL = join('.jevcode', 'memory-local');
 
 function canonOption(p: string | undefined): string | null {
   return typeof p === 'string' && p.length > 0 ? canonicalPathSync(p) : null;
@@ -126,12 +160,32 @@ export function buildProfile(opts: ProfileOptions): string {
       `(regex ${sbplRegex(`^${modules}/.+/hooks(/.*)?$`)})`,
     );
   }
+  // IMPORT-DESIGN §2.11 [G2.1]: appended to `gitDenies`, so they land in the deny line emitted AFTER the
+  // write allow above (which is exactly why the `.git` denies work) and are suppressed by `protectGit: false`.
+  for (const rel of WS_MEMORY_WRITE_DENIES) {
+    const canon = canonicalPathSync(join(ws, rel));
+    gitDenies.push(`(literal ${sbplString(canon)})`, `(subpath ${sbplString(canon)})`);
+  }
   const ttyDeny = opts.ttyPath && opts.ttyPath.startsWith('/dev/') ? [`(literal ${sbplString(canonicalPathSync(opts.ttyPath))})`] : [];
   if (opts.protectGit === false) {
     // infrastructure sandbox (fresh clone into the root): only the harness tty stays denied
     if (ttyDeny.length > 0) lines.push(`(deny file-write* ${ttyDeny.join(' ')})`);
   } else {
     lines.push(`(deny file-write* ${[...gitDenies, ...ttyDeny].join(' ')})`);
+  }
+  // ORCHESTRATION-DESIGN §5.2 [G3]: the child deny list, its own rule so nothing else can weaken it
+  // (`protectGit: false` is the infrastructure sandbox's knob and has no business relaxing this one).
+  // It sits after the write allow because later rules win; without the ordering the deny is inert.
+  // The four paths are relative to the git COMMON dir: `refs/` and `packed-refs` hold the branch the
+  // landing layer pinned, `logs/` its reflog, and `worktrees/<name>/HEAD` the file that decides what
+  // any linked worktree — this agent's own included — considers its current branch. The agent's own
+  // per-worktree `logs/` and `refs/` live under `<commonDir>/worktrees/<name>/` and stay writable.
+  if (opts.agentChild === true) {
+    const agentCommon = commonDir ?? join(ws, '.git');
+    lines.push(
+      `(deny file-write* (subpath ${sbplString(join(agentCommon, 'refs'))}) (literal ${sbplString(join(agentCommon, 'packed-refs'))}) (subpath ${sbplString(join(agentCommon, 'logs'))}) ` +
+        `(regex ${sbplRegex(`^${regexQuote(join(agentCommon, 'worktrees'))}/[^/]+/HEAD$`)}))`,
+    );
   }
 
   const reads: string[] = [];
@@ -179,6 +233,12 @@ export function buildProfile(opts: ProfileOptions): string {
   const roots = `(subpath ${sbplString(ws)}) (subpath ${sbplString(runTmp)}) (subpath ${sbplString(runHome)})${[...writable, ...readable].map((p) => ` (subpath ${sbplString(p)})`).join('')}`;
   lines.push(`(allow file-read-data ${roots})`);
   lines.push(`(allow file-read* ${roots})`);
+  // IMPORT-DESIGN §2.11 [G2.1]: after BOTH re-allows, never before them — a deny on a family emitted after
+  // the allow wins (the macOS 26 behaviour recorded above), while the same rule routed through `addRead`
+  // would sit at the `file-read*` deny the `<ws>` re-allow overrides. Not gated on `protectGit`: that flag
+  // relaxes the git write knobs, not the confidentiality of the human's 0600 personal memory.
+  const memoryLocal = canonicalPathSync(join(ws, WS_MEMORY_LOCAL));
+  lines.push(`(deny file-read* (literal ${sbplString(memoryLocal)}) (subpath ${sbplString(memoryLocal)}))`);
 
   if (opts.noNetwork) lines.push('(deny network*)');
   return `${lines.join('\n')}\n`;

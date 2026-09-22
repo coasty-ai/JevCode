@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { GenerateOptions, GenerateRequest, GeneratorConfig, ToolSpec } from '../../../src/core/types.js';
+import type { ProviderConfig } from '../../../src/provider/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(here, '..', '..', 'fixtures', 'provider');
@@ -171,4 +172,36 @@ export function testDeps(fetchImpl: typeof fetch, random = 0): { deps: { fetch: 
 /** Options with a fresh signal; accepts the LLM-JEV-DESIGN §4.8 members (`sample`, `onCancelled`) too. */
 export function genOpts(over: Partial<GenerateOptions> = {}): GenerateOptions {
   return { signal: new AbortController().signal, ...over };
+}
+
+// ---------------------------------------------------------------------------------------
+// Multi-provider helpers (2026-09-21): the five HTTP clients added in provider/{openai,gemini,fireworks,meta,xai}.ts
+// take a `ProviderConfig` (provider/types.ts), which is `GeneratorConfig` without the core `provider` union.
+// ---------------------------------------------------------------------------------------
+
+/** A fake key per provider, in each provider's own key shape, so the redactor patterns below are exercised. */
+export const FAKE_KEYS: Readonly<Record<string, string>> = {
+  openai: 'sk-proj-test000000000000000000000000000000000000',
+  gemini: 'AIzaSyTest0000000000000000000000000000',
+  fireworks: 'fw_test0000000000000000000000',
+  meta: 'LLM|607358788850350|nx9test0000000000000000',
+  xai: 'xai-test000000000000000000000000000000000000',
+};
+
+export function providerCfg(over: Partial<ProviderConfig> = {}): ProviderConfig {
+  return { model: 'test-model', apiKey: 'sk-test-000000000000000000000000', baseUrl: 'https://example.invalid/v1', temperature: null, maxTokens: 512, pricing: PRICING, ...over };
+}
+
+/** Deps whose redactor also covers the four new key shapes (OpenAI project keys, Google, Fireworks, xAI, Meta app keys). */
+export function providerDeps(fetchImpl: typeof fetch, random = 0): ReturnType<typeof testDeps> {
+  const base = testDeps(fetchImpl, random);
+  const inner = base.deps.redact;
+  base.deps.redact = (s: string) =>
+    inner(s)
+      .replace(/sk-proj-[A-Za-z0-9_-]{20,}/g, '[REDACTED:pattern]')
+      .replace(/AIza[A-Za-z0-9_-]{20,}/g, '[REDACTED:pattern]')
+      .replace(/fw_[A-Za-z0-9]{20,}/g, '[REDACTED:pattern]')
+      .replace(/xai-[A-Za-z0-9]{20,}/g, '[REDACTED:pattern]')
+      .replace(/LLM\|\d+\|[A-Za-z0-9_.-]{10,}/g, '[REDACTED:pattern]');
+  return base;
 }

@@ -1,0 +1,27 @@
+{"t":117,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":117,"step":2,"op":"expect","arg":"Say hi"}
+{"t":619,"step":3,"op":"sleep","arg":"0.5"}
+{"t":619,"step":4,"op":"send","arg":"make the tests pass"}
+{"t":919,"step":5,"op":"sleep","arg":"0.3"}
+{"t":919,"step":6,"op":"send","arg":"\\r"}
+{"t":1926,"step":7,"op":"expect","arg":"review · step 4"}
+{"t":3426,"step":8,"op":"sleep","arg":"1.5"}
+{"t":3426,"step":9,"op":"mark","arg":"card"}
+{"t":3426,"step":10,"op":"send","arg":"y"}
+{"t":3432,"step":11,"op":"expect","arg":"confirm \\S+ approved"}
+{"t":3717,"step":12,"op":"expect","arg":"end (complete|max_steps|generator_done)"}
+{"t":4319,"step":13,"op":"sleep","arg":"0.6"}
+{"t":4319,"step":14,"op":"send","arg":"/diff"}
+{"t":4619,"step":15,"op":"sleep","arg":"0.3"}
+{"t":4619,"step":16,"op":"send","arg":"\\r"}
+{"t":6119,"step":17,"op":"sleep","arg":"1.5"}
+{"t":6119,"step":18,"op":"mark","arg":"diff"}
+{"t":6119,"step":19,"op":"send","arg":"/transcript full"}
+{"t":6419,"step":20,"op":"sleep","arg":"0.3"}
+{"t":6419,"step":21,"op":"send","arg":"\\r"}
+{"t":7219,"step":22,"op":"sleep","arg":"0.8"}
+{"t":7222,"step":23,"op":"send","arg":"/exit"}
+{"t":7422,"step":24,"op":"sleep","arg":"0.2"}
+{"t":7422,"step":25,"op":"send","arg":"\\r"}
+{"t":7468,"step":26,"op":"eof","arg":""}
+{"t":7468,"step":0,"op":"exit","arg":"0"}

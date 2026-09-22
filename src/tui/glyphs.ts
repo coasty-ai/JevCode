@@ -38,9 +38,9 @@ export interface GlyphSet {
   readonly eighths: readonly string[];
   /** sparkline levels 0..8: index 0 = a failed attempt (space), 1..8 = `▁▂▃▄▅▆▇█` → `12345678` */
   readonly spark: readonly string[];
-  /** spinner frames (braille → `|/-\`) */
+  /** TUI-DESIGN-3 §5.2 A3 (D-P): the brand's shade pulse `░ ▒ ▓ █ ▓ ▒` → `. + # # + .` (the same cells as `shade1..3` / `full`, so the ASCII twin table stays one-to-one) */
   readonly spinner: readonly string[];
-  /** the static spinner glyph under reduced motion (§7.4, §14.2): `•` → `*` (the same cell as `bullet`, so the ASCII twin table stays one-to-one) */
+  /** the static spinner glyph under reduced motion (§7.4, §14.2; TUI-DESIGN-3 D-P): `◆` → `*` (the same cell as `brand`) */
   readonly spinnerStatic: string;
   /** truncation mark `…` → `...` */
   readonly ellipsis: string;
@@ -118,8 +118,8 @@ const UNICODE: GlyphSet = {
   full: '█',
   eighths: ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉'],
   spark: [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'],
-  spinner: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
-  spinnerStatic: '•',
+  spinner: ['░', '▒', '▓', '█', '▓', '▒'],
+  spinnerStatic: '◆',
   ellipsis: '…',
   vbar: '│',
   boxTopLeft: '┌',
@@ -170,7 +170,7 @@ const ASCII: GlyphSet = {
   full: '#',
   eighths: ['', '1', '2', '3', '4', '5', '6', '7'],
   spark: [' ', '1', '2', '3', '4', '5', '6', '7', '8'],
-  spinner: ['|', '/', '-', '\\'],
+  spinner: ['.', '+', '#', '#', '+', '.'],
   spinnerStatic: '*',
   ellipsis: '...',
   vbar: '|',

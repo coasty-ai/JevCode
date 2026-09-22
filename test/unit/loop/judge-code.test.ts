@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest';
 import { assertQuestionBatch } from '../../../src/jev/questions.js';
 import type { CompletionEvidence } from '../../../src/core/types.js';
-import { completionEvidenceHolds, isCompleteByFact } from '../../../src/loop/stages/complete.js';
+import { completionEvidenceHolds, isCompleteByFact, knownFailureCount, knownFailuresOf, unexpectedFailures, type ClaimingCompletionEvidence } from '../../../src/loop/stages/complete.js';
 import { buildRecordOnlyQuestions, codeJudge, ledgerGoalsOf, type CodeJudgeRun } from '../../../src/loop/stages/judge.js';
 
 const T1 = 'tests/test_a.py::test_f';
@@ -130,5 +130,57 @@ describe('isCompleteByFact (§6.6)', () => {
     expect(isCompleteByFact({ ...base, action: 'done', outcome: 'noop', tests: null, completion: undefined, verifiedDone: true })).toBe(true);
     expect(isCompleteByFact({ ...base, action: 'done', outcome: 'noop', tests: null, completion: undefined, verifiedDone: false })).toBe(false);
     expect(isCompleteByFact({ ...base, action: 'patch', verifiedDone: true })).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Head-to-head v2, class E′ (experiments/results/llm-jev-headtohead-v2.md §9): sympy-11618's
+// claiming run reads 644 passed / 0 failed / 43 errors on a scoped suite that had those 43
+// collection errors before the patch
+// ---------------------------------------------------------------------------------------
+
+describe('pre-existing failures: the claiming run is judged against the baseline\'s knownFailures, not against zero', () => {
+  const CMD = 'python -m pytest -q sympy/printing/tests/test_latex.py';
+  const KNOWN = 43;
+  const counts = (errors: number, failed = 0): { passed: number; failed: number; errors: number; skipped: number } => ({ passed: 644, failed, errors, skipped: 0 });
+  const tests = (errors: number, failed = 0): CodeJudgeRun['tests'] => ({ command: CMD, parsed: counts(errors, failed), allPassed: false });
+  const completion: ClaimingCompletionEvidence = { ledgerFixed: true, testsChanged: [], guardPending: false, repro: 'pass', oracle: 'valid', command: CMD, knownFailures: KNOWN };
+  const fact = { action: 'run' as const, outcome: 'executed' as const, tests: { command: CMD, parsed: counts(KNOWN), allPassed: false }, testsCurrent: true, completion, testsPassUnparsed: null, verifiedDone: false };
+
+  it('the code judge: 43 pre-existing errors are not a failure and not an `error_present`; one error beyond them is both', () => {
+    const green = codeJudge(run({ tests: tests(KNOWN), exitCode: 1, knownFailures: KNOWN }), [ITEM], goals([ITEM]));
+    expect(green).toMatchObject({ succeeded: 1, errorPresent: 0, source: 'code', tests: { source: 'parsed', allPassed: false, passed: 644, failed: 0, errors: KNOWN } });
+    expect(green.doneClaims).toEqual([{ text: ITEM, judged: 1, accepted: true }]);
+    // the patch fixed one of them as well: still no failure beyond the baseline
+    expect(codeJudge(run({ tests: tests(KNOWN - 1), exitCode: 1, knownFailures: KNOWN }), [ITEM], goals([ITEM])).succeeded).toBe(1);
+    // one error more than the baseline had, or a newly failing test: the run did not succeed and the error is the engineer's
+    expect(codeJudge(run({ tests: tests(KNOWN + 1), exitCode: 1, knownFailures: KNOWN }), [ITEM], goals([ITEM]))).toMatchObject({ succeeded: 0, errorPresent: 1 });
+    expect(codeJudge(run({ tests: tests(KNOWN, 1), exitCode: 1, knownFailures: KNOWN }), [ITEM], goals([ITEM]))).toMatchObject({ succeeded: 0, errorPresent: 1 });
+    // undeclared (every QuixBugs / ladder run): the old rule stands — the parser's own allPassed and zero failures
+    expect(codeJudge(run({ tests: tests(KNOWN), exitCode: 1 }), [ITEM], goals([ITEM]))).toMatchObject({ succeeded: 0, errorPresent: 1 });
+    expect(codeJudge(run({ tests: { command: CMD, parsed: counts(0), allPassed: true } }), [ITEM], goals([ITEM])).succeeded).toBe(1);
+  });
+
+  it('the completion fact: the claiming run completes on the declared known failures (the run ends `complete` instead of re-claiming `done partial`)', () => {
+    expect(isCompleteByFact(fact)).toBe(true);
+    // without the declaration the same run is not complete — this is the v2 behaviour that cost sympy-11618 7 steps
+    const undeclared: ClaimingCompletionEvidence = { ...completion };
+    delete undeclared.knownFailures;
+    expect(isCompleteByFact({ ...fact, completion: undeclared })).toBe(false);
+    // a failure beyond the baseline's, no passing test, a stale run, or a reproduction that does not pass: still not complete
+    expect(isCompleteByFact({ ...fact, tests: { command: CMD, parsed: counts(KNOWN + 1), allPassed: false } })).toBe(false);
+    expect(isCompleteByFact({ ...fact, tests: { command: CMD, parsed: counts(KNOWN, 2), allPassed: false } })).toBe(false);
+    expect(isCompleteByFact({ ...fact, tests: { command: CMD, parsed: { passed: 0, failed: 0, errors: KNOWN, skipped: 0 }, allPassed: false } })).toBe(false);
+    expect(isCompleteByFact({ ...fact, testsCurrent: false })).toBe(false);
+    expect(isCompleteByFact({ ...fact, completion: { ...completion, repro: 'fail' } })).toBe(false);
+    expect(isCompleteByFact({ ...fact, completion: { ...completion, oracle: 'llm_valid' } })).toBe(false);
+    // a green run with nothing declared is unaffected (the QuixBugs path)
+    expect(isCompleteByFact({ ...fact, tests: { command: CMD, parsed: counts(0), allPassed: true }, completion: { ...undeclared, repro: 'none', oracle: null } })).toBe(true);
+  });
+
+  it('knownFailuresOf / knownFailureCount / unexpectedFailures: a missing, zero or nonsense declaration means none', () => {
+    expect([knownFailuresOf(undefined), knownFailuresOf(completion), knownFailuresOf({ ...completion, knownFailures: 0 }), knownFailuresOf({ ...completion, knownFailures: -3 })]).toEqual([0, KNOWN, 0, 0]);
+    expect([knownFailureCount(undefined), knownFailureCount(Number.NaN), knownFailureCount(2.7), knownFailureCount(43)]).toEqual([0, 0, 2, 43]);
+    expect([unexpectedFailures({ failed: 0, errors: 43 }, 43), unexpectedFailures({ failed: 1, errors: 43 }, 43), unexpectedFailures({ failed: 0, errors: 2 }, 0), unexpectedFailures({ failed: 0, errors: 40 }, 43)]).toEqual([0, 1, 2, 0]);
   });
 });

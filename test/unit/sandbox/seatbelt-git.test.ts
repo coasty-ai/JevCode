@@ -48,11 +48,27 @@ function allowLine(profile: string): string {
   return profile.split('\n').find((l) => l.startsWith('(allow file-write*'))!;
 }
 
+/**
+ * IMPORT-DESIGN §2.11 [G2.1]: the three workspace-memory write denies are appended to `gitDenies`,
+ * so in the emitted line they sit after the git fragments and before the tty literal. The §12.7
+ * assertions below are exact-line, so they carry the fragment rather than loosening to `toContain`.
+ */
+function memoryDenies(ws: string): string {
+  return ['memory', 'rules', 'commands']
+    .map((n) => {
+      const p = canonicalPathSync(join(ws, '.jevcode', n));
+      return `(literal ${sbplString(p)}) (subpath ${sbplString(p)})`;
+    })
+    .join(' ');
+}
+
 describe('buildProfile gitDir / gitCommonDir (§12.7)', () => {
   it('no option → the main-tree snapshot is byte-identical to today: two denies, no config.worktree, no modules regex', () => {
     const { base, ws } = fixture(temp('jev-sbg-'));
     const p = buildProfile(base);
-    expect(denyLine(p)).toBe(`(deny file-write* (literal ${sbplString(join(ws, '.git', 'config'))}) (subpath ${sbplString(join(ws, '.git', 'hooks'))}) (literal "/dev/ttys004"))`);
+    expect(denyLine(p)).toBe(
+      `(deny file-write* (literal ${sbplString(join(ws, '.git', 'config'))}) (subpath ${sbplString(join(ws, '.git', 'hooks'))}) ${memoryDenies(ws)} (literal "/dev/ttys004"))`,
+    );
     expect(p).not.toContain('config.worktree');
     expect(p).not.toContain('modules');
     expect(p).not.toContain('worktrees');
@@ -71,7 +87,8 @@ describe('buildProfile gitDir / gitCommonDir (§12.7)', () => {
     const worktrees = regexQuote(join(gitDir, 'worktrees'));
     expect(denyLine(p)).toBe(
       `(deny file-write* (literal ${sbplString(join(gitDir, 'config'))}) (subpath ${sbplString(join(gitDir, 'hooks'))}) (literal ${sbplString(join(gitDir, 'config.worktree'))}) ` +
-        `(regex #"^${worktrees}/[^/]+/config\\.worktree$") (regex #"^${modules}/.+/config$") (regex #"^${modules}/.+/hooks(/.*)?$") (literal "/dev/ttys004"))`,
+        `(regex #"^${worktrees}/[^/]+/config\\.worktree$") (regex #"^${modules}/.+/config$") (regex #"^${modules}/.+/hooks(/.*)?$") ` +
+        `${memoryDenies(ws)} (literal "/dev/ttys004"))`,
     );
     // one backslash per metacharacter: `.git` → `\.git` (a doubled backslash would silently never match)
     expect(denyLine(p)).toContain('/\\.git/modules/.+/config$');
@@ -119,7 +136,8 @@ describe('buildProfile gitDir / gitCommonDir (§12.7)', () => {
     expect(denyLine(p)).toBe(
       `(deny file-write* (literal ${sbplString(join(repo, '.git', 'config'))}) (subpath ${sbplString(join(repo, '.git', 'hooks'))}) (literal ${sbplString(join(repo, '.git', 'config.worktree'))}) ` +
         `(regex #"^${regexQuote(join(repo, '.git', 'worktrees'))}/[^/]+/config\\.worktree$") ` +
-        `(regex #"^${regexQuote(join(repo, '.git', 'modules'))}/.+/config$") (regex #"^${regexQuote(join(repo, '.git', 'modules'))}/.+/hooks(/.*)?$"))`,
+        `(regex #"^${regexQuote(join(repo, '.git', 'modules'))}/.+/config$") (regex #"^${regexQuote(join(repo, '.git', 'modules'))}/.+/hooks(/.*)?$") ` +
+        `${memoryDenies(ws)})`,
     );
   });
 
@@ -206,6 +224,31 @@ describe.skipIf(!darwin)('createSandbox forwards the git options into the profil
     // configDirs alone also changes the name
     createSandbox({ workspaceRoot: ws, runDir, profile: 'seatbelt', noNetwork: false, secretReadDenies: [], redact: (s) => s, configDirs: [join(dir, 'cfg', 'jevcode')] }, FAST_KILL);
     expect(readdirSync(runDir).filter((f) => f.endsWith('.sb')).length).toBe(3);
+  });
+
+  it('ORCHESTRATION-DESIGN §5.2 [G3]: `agentChild` reaches buildProfile AND the profile-path hash, so the [D10] pair coexists', () => {
+    const dir = temp('jev-sbg-');
+    const ws = join(dir, 'ws');
+    mkdirSync(join(ws, '.git'), { recursive: true });
+    const runDir = join(dir, 'run');
+    const base = { workspaceRoot: ws, runDir, profile: 'seatbelt' as const, noNetwork: false, secretReadDenies: [], redact: (x: string) => x, gitDir: join(ws, '.git'), gitCommonDir: join(ws, '.git') };
+    // §5.2 [D10] is exactly this pair: the supervisor's own depth-0 sandbox over the agent's worktree, and the
+    // child engine's depth-1 sandbox over the SAME worktree in the SAME run dir. Forwarded but not hashed, the
+    // two would collide on one `sandbox-<hash>.sb` and the later profile would silently overwrite the earlier.
+    const supervisor = createSandbox(base, FAST_KILL);
+    const child = createSandbox({ ...base, agentChild: true }, FAST_KILL);
+    expect(supervisor.level).toBe('seatbelt');
+    expect(child.level).toBe('seatbelt');
+    const files = readdirSync(runDir).filter((f) => f.endsWith('.sb')).sort();
+    expect(files.length).toBe(2);
+    const bodies = files.map((f) => readFileSync(join(runDir, f), 'utf8'));
+    const denying = bodies.filter((b) => b.includes('packed-refs'));
+    expect(denying).toHaveLength(1);
+    // and the supervisor's profile is byte-identical to the one it would get with no orchestration at all
+    expect(bodies.find((b) => !b.includes('packed-refs'))).toBe(readFileSync(join(runDir, files.find((f) => !readFileSync(join(runDir, f), 'utf8').includes('packed-refs'))!), 'utf8'));
+    // `agentChild: false` is not a different sandbox from an absent one — same name, one more file is NOT created
+    createSandbox({ ...base, agentChild: false }, FAST_KILL);
+    expect(readdirSync(runDir).filter((f) => f.endsWith('.sb')).length).toBe(2);
   });
 
   it('a linked worktree can `git commit` (writes into the main .git) while config, config.worktree, hooks and modules/*/config stay unwritable', async () => {

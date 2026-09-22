@@ -162,7 +162,9 @@ describe('pause (§9.1 rule 1: only at the loop top)', () => {
     expect(last.step).toBe(1);
     expect(last.interrupted).toBeNull();
     // the stop and end lines go through the shared item model like every other stop
-    expect(h.store.transcript.at(-2)).toBe('[run] warn: stop: human_pause at step 1');
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
+    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end human_pause steps=1 /);
     expect(h.of('run:end')[0]!.result.stopReason).toBe('human_pause');
   });
@@ -306,18 +308,20 @@ describe('finish() in flight reads as finished (§8.6: a steer confirmed to the 
     return store;
   }
 
-  it('a steer that lands before finish() (at the budget line of the loop top) is accepted and persisted; one issued during the final write, on the stop: line or after run:end is refused as finished', async () => {
+  it('a steer that lands before finish() (at the budget line of the loop top) is accepted and persisted; one issued during the final write or at run:end is refused as finished', async () => {
     const store = slowStore(40);
     const h = await build({ store, turns: readTurns(1), limits: { maxSteps: 1 } });
     const results: Record<string, unknown> = {};
     h.engine.events.on('transcript', (e) => {
       if (/^budget max_steps reached at step start$/.test(e.text)) results['beforeFinish'] = h.engine.steer('survives the pause');
-      if (e.text.startsWith('stop:')) {
-        results['onStopLine'] = h.engine.steer('too late');
-        results['unsteerOnStop'] = h.engine.unsteer();
-        results['annotateOnStop'] = h.engine.annotate('late line');
-        h.engine.pause();
-      }
+    });
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop:` transcript line is deleted, so the last-event arm of this
+    // test re-anchors on `run:end` — the same "finish() is in flight / already done" window it was probing.
+    h.engine.events.on('run:end', () => {
+      results['onStopLine'] = h.engine.steer('too late');
+      results['unsteerOnStop'] = h.engine.unsteer();
+      results['annotateOnStop'] = h.engine.annotate('late line');
+      h.engine.pause();
     });
     const realWrite = store.writeState.bind(store);
     store.writeState = async (state) => {

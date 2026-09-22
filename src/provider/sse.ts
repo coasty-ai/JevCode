@@ -225,6 +225,35 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOpt
   }
 }
 
+/**
+ * Read a whole non-SSE 200 body as text under the same budgets `parseSse` uses (first byte, then idle between chunks,
+ * and `maxEventBytes` as a hard cap). Needed by the one provider whose streaming surface cannot carry what the harness
+ * needs — api.meta.ai drops tool calls and the usage frame when `stream: true` (provider/meta.ts) — so its client asks
+ * for JSON and still gets the abort, timeout and size guarantees the streaming clients have.
+ */
+export async function readStreamText(stream: ReadableStream<Uint8Array>, opts: SseOptions = {}): Promise<string> {
+  const firstByte = opts.firstByteTimeoutMs ?? FIRST_BYTE_TIMEOUT_MS;
+  const idle = opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
+  const maxBytes = opts.maxEventBytes ?? MAX_EVENT_BYTES;
+  const reader = stream.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let out = '';
+  let sawByte = false;
+  try {
+    for (;;) {
+      const r = await readWithTimeout(reader, sawByte ? idle : firstByte, sawByte ? 'idle' : 'first_byte', opts.signal);
+      if (r.done) break;
+      sawByte = true;
+      out += decoder.decode(r.value, { stream: true });
+      if (out.length > maxBytes) throw new ProviderHttpError(`response body exceeds ${maxBytes} bytes`, { status: 0, retryable: false });
+    }
+    out += decoder.decode();
+    return out;
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
 // ---------------------------------------------------------------------------------------
 // Retry policy
 // ---------------------------------------------------------------------------------------
@@ -453,12 +482,17 @@ export function toCancelledGeneration(p: StreamPartial, price: (t: TokenBreakdow
 }
 
 /**
- * The `onCancelled` facts of a call that ended rate-limited without a stream (core/types.ts `CancelledGeneration.rateLimited`):
- * the retry chain's every attempt was answered HTTP 429, or the signal aborted the call during a 429 backoff. Nothing was
- * served — zero streamed sizes, no ids, no usage — so the engine records the sample at zero, not from an estimate.
+ * The `onCancelled` facts of a call that ended rate-limited (core/types.ts `CancelledGeneration.rateLimited`): the retry
+ * chain's every attempt was answered HTTP 429, or the signal aborted the call during a 429 backoff.
+ *
+ * With no argument nothing was served — zero streamed sizes, no ids, no usage — so the engine records the sample at zero
+ * rather than from an estimate. `served` is for the other shape of the same ending: a 429 that arrived as a MID-STREAM
+ * error frame (`isRateLimit` counts those), where the stream had opened and tokens had been served and billed before the
+ * limiter cut it. Reporting zeros there would under-bill the run, so the streamed facts are kept and only the
+ * `rateLimited` flag is added.
  */
-export function rateLimitedCancellation(): CancelledGeneration {
-  return { text: '', toolChars: 0, reasoningChars: 0, rateLimited: true };
+export function rateLimitedCancellation(served?: CancelledGeneration): CancelledGeneration {
+  return served === undefined ? { text: '', toolChars: 0, reasoningChars: 0, rateLimited: true } : { ...served, rateLimited: true };
 }
 
 /** HTTP 429 from the API or the upstream provider (`Provider returned error` with code 429 on a mid-stream frame counts too). */

@@ -1,0 +1,14 @@
+expect jevcode session
+sleep 0.6
+send hello there
+send \r
+sleep 2.0
+mark reply1
+send the date parsing
+send \r
+sleep 2.5
+mark reply2
+send /exit
+send \r
+sleep 0.6
+eof

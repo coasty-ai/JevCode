@@ -874,3 +874,243 @@ reason (one key, no generator spend); a default should follow the behaviour on d
 document. Consequences: the wizard, the badge and the help text list the mode without preferring it; `defaultRunSpendCapUsd`
 treats `llm-jev` like the other generator modes ($2.00 — the design's §8.4 named $0.50, open); `handles()` false
 (non-Python, test-less, feature work) falls back to the generic per-step proposer and is outside the dominance claim.
+
+## 2026-09-21 Jev+LLM is the default; one OpenRouter key runs both
+
+`DEFAULT_MODE` (`src/config/defaults.ts`) becomes `jev-on` (badge `jev+llm`): the generator writes the code, Jev decides every step; the
+session follows `config.mode` through `applyConfig()` (flag > `JEVCODE_MODE` > dotenv > file > default), which it did not before (a file or
+env mode reached the caps and `jevcode config` but never the running session). One `OPENROUTER_API_KEY` serves Jev at
+`openrouter.ai/api/alpha/decisions` and the default generator `z-ai/glm-5.3-flash`; TypeSafe native Jev is preferred whenever
+`TYPESAFE_API_KEY` exists. The first-run wizard opens on one masked field and writes the file keys the detected state calls for (four from one paste when nothing
+resolves; the generator key alone beside a TypeSafe or Jev key, so a file `jevProvider` never displaces `TYPESAFE_API_KEY`); its `3 Jev only`
+persists `mode: jev-only` at startup; a keyed start without a file `mode` row prints the default-mode caps item once — when the file's `seen.defaultMode` differs
+from `DEFAULT_MODE`; printing it writes that row (D-Q as the owner ratified it, TUI-DESIGN-3 §0.1: one-time, not every start); `jevcode login --key-stdin` is the pipe form. Reason: the round-2 default (jev-only) was chosen for "one key, no generator spend" — with GLM 5.3 Flash
+at $0.09/M in the same key buys both, and the owner asked for the LLM mode by default. Consequences: caps $2.00 / $10.00 by default (the
+`[setup] spend caps` item names them after a wizard save; `/mode jev-only` and the wizard's `3 Jev only` keep the $0.25 path); every
+fallback that named a mode reads `DEFAULT_MODE`, the badge words come from one table (`MODE_BADGE_WORD`, `llm-jev` → `llm+jev · verified`),
+and a unit test refuses any literal that names a default outside `defaults.ts` — the peer's `llm-jev` flip is one literal. The two-commit
+order (behaviour first, flip + re-pin second) is recorded in TUI-DESIGN-3 §1.10.
+
+## 2026-09-21 Verification sends one priced Jev decision and one 1-token completion, on `y` only
+
+The wizard's `Verify now?` (Enter/Esc skip) and `jevcode login --verify` send one real Jev decision (~$0.00002, ~250 ms), one `max_tokens: 1`
+completion on the generator (~$0.000002; only when the mode needs a generator) and `GET /api/v1/key` ($0), and classify the answer as ok
+· rejected (401/403, exit 2) · credits (402, exit 5) · unreachable (408/429/5xx/network, exit 5) · model (400/404, exit 2). Reason:
+OpenRouter's key endpoint cannot see the balance of a key with `limit: null` and `/api/v1/credits` needs a management key (docs fetched
+2026-09-21), so only a priced request reveals a 402; a model id is verifiable only by asking for it; the Ink wizard's `y` was a no-op
+before (no `verify` host member). Consequences: the decision is metered into the session (`/cost` shows it); nothing is sent before an
+explicit `y`; `JEVCODE_ASSERT_NO_NETWORK` smokes never press it.
+
+## 2026-09-21 The wordmark stays; the sweep loops at 4 fps peak and sleeps
+
+The 5-row wordmark is the pane slot's idle tenant, granted whole or not at all (`computeLayout` 1.2 `paneWhole`): shown while idle and
+thinking at ≥ 21 rows (below, the boxed tier keeps the brand row so no palette or draft hands it off), hidden while a run is live or a panel,
+picker or review owns the slot, back under the strip after `run:end` (at once at ≥ 24 rows, on the next key at 21–23 so the epilogue stays in
+view); a key completes the reveal instead of killing it. The splash's own 6-cell sweep band loops left → right at 4 cells per 250 ms tick — 16 written frames per 4 s
+pass, 6 s of rest (mean 1.6 fps), one pass per 30 s after a minute without activity, static after ten minutes, no pass within 3 s of a key (evaluated only where a pass would start — a key never cuts a pass short), a
+reply calms rather than wakes it, off under reduced motion, at colour depth 0 and by default over SSH (`ui.wordmark: static`). Reason: the owner asked to "keep that animation … not disappear once it loads"; idle
+today writes zero frames, so the budget is an absolute one — Ink's log throttle has a 0 ms wait and `useAnimation({ interval: 250 })` yields
+exactly one render per tick at maxFps 30 and 15 (verified on the real renderer), so the loop cannot add throttle latency to a keystroke,
+only ≈ 11 ms of CPU per frame. Consequences: a new `idle-frames` perf probe gates ≤ 4 fps peak / ≤ 2 mean and ≤ 12 KB/s; the caption
+`◆ <version>` replaces the brand row as the settle sentinel; `ui.wordmark: sweep | static | off` is the escape hatch; the flat tier, 16–20 rows, < 64
+columns and the screen reader draw no mark and spend no frames.
+
+## 2026-09-21 The pink is TypeSafe's; the default theme keeps its id
+
+The `dark` theme becomes the typesafe.ai palette measured on 2026-09-21: primary `#f386a1` (211 / `magentaBright`) for what *is*
+JevCode or Jev — the brand row, the wordmark letters, the badge, the `[jevcode]` label, `[chosen]`, the idle `›`, the spinner — and
+secondary `#d45bb6` (169 / `magenta`) for what is *being acted on* — the console edges while a run is live, the `[you]` label, the
+palette cursor; error/warn/ok keep their hues; the light theme gets darkened pinks (`#be185d` / `#831843`) and fixes its unreadable
+inherited red and green (2.74:1 and 1.73:1 on white); daltonized keeps the red ↔ blue swap and lets `[chosen]` stay pink (pink vs blue ΔE
+34). Reason: the site uses `#f386a1` as its block colour and `#d45bb6` as hover/selection/border, which is a ready rule for rest vs
+active; pink is never a semantic colour, so every pink role keeps its text marker and a deuteranope who cannot split pink from salmon
+(ΔE 12) still reads `[chosen]` vs `[block]`. Consequences: the id `dark` stays (six enum sites, the man page, completions and 37 pty
+scenarios untouched); chat bodies stay the terminal's default foreground — the label is the bubble; the prompt is pink at rest and amber
+while steering. A white terminal announced through `COLORFGBG` (background 7 or 15) gets the `light` table by default (D-R); Terminal.app,
+which sets none, is told in `/help` and TUI.md.
+
+## 2026-09-21 Aliases pin their owner; availability errors clear the draft
+
+21 short aliases (`/s` status, `/p` panel, `/t` theme, `/l` login, `/m` mode, `/c` cost, …) join the registry; an exact alias pins its owner
+to the top palette row (the fuzzy scorer ranked `/steer` above `/status` for `s`), the palette shows an alias column, a `→ /owner` ghost and
+Suggested → recent → Popular groups for an empty query; Tab completes arguments and never wipes a typed one; an error the user cannot fix by
+editing (`needs a live run`, `runs when the run is idle`, `not available in --plain`) clears the draft, a fixable one keeps it. Reason: the
+audit measured `/budget spend-cap` + Tab collapsing to `/budget `, and kept drafts turning the next command into `/steer x/pause`. `a` for
+`/abort`, `x` for `/exit` and `n` for `/new` were rejected (one-letter aliases for commands whose Enter destroys state without a confirm; `/new` is `nw`). Consequences: `docs/COMMANDS.md` and the man page regenerate;
+the help block prints aliases; `/panel`, `/transcript`, `/theme`, `/copy diff`, `/decisions`, `/why`, `/help`, `/trust`, `/logout`, `/new`,
+`/rename`, `/model`, `/provider`, `/errors` and `/help reload` behave as their rows promise (TUI-DESIGN-3 §4.4).
+
+---
+
+## 2026-09-21 The probe's majority decides an all-seed split, before any special-case count
+
+When ≥ 2 behaviour clusters survive, no cluster holds an `llm` member and every cluster carries the same independent support
+(`seedOnlySplit`, `src/synth/search/guard.ts`), the guard commits the cluster that agrees with the passers' **majority on the perturbed
+inputs** (`probeMajorityCluster`, `CodeRule 'probe_majority'`) and never the one adding the fewest special-case guards: on each input where
+the clusters' probe outputs differ the passers vote, a cluster casting one vote per member, and the cluster alone at the top of the
+agreement count wins; a split vote on every differing input (or a probe that separates none of them) falls through to the one Q15 + Q16
+request with the perturbation table, and the all-overfit signature still drops the set. `fewestSpecialCases` keeps its place everywhere
+else — when some cluster holds an LLM member or the supports differ. Reason: "fewest added conditionals/literals" is exactly right when
+the bug is a wrong expression and a guard would only be fitting the tests (`wrap`) and exactly wrong when the defect *is* a missing guard;
+in the v2 head-to-head it committed the two remaining overfits (llm-jev-headtohead-v2.md §9 class A′) — ladder `stats`
+(`values.remove(mid)` +0c beat the gold `if not values: raise` +1c/+1l) and QuixBugs `detect_cycle` (the least-guarded of three guards) —
+both with the LLM sample gone, so `preferLlmInCluster` and Q15/Q16 never entered. Member votes rather than `clusterSupport` because the
+rule is gated on equal support, so the near-duplicate worry `clusterSupport` exists for cannot bite, while the 4-vs-1 member count that
+was available and unused can. Consequences: `stats` re-run live (`bench/results/llm-jev-v2-leftovers-stats`) commits the +1c/+1l guard and
+is now a **weak, exception-class-only overfit at 2/111** differential inputs where v2's was strong at 9/111; the guard emits the agreement
+counts in its decision line; nothing changes for a set that holds an LLM candidate.
+
+## 2026-09-21 The sample deadline adapts up from the served p90; a slow provider caps reasoning at 512 tokens
+
+`sampleDeadlineMs` (`src/synth/llm/source.ts`) is `clamp(LLM_DEADLINE_ADAPT.factor 2 × the running p90 of SERVED samples this run, the
+class default, the class ceiling)` — floor 20 s cheap / 30 s repository, ceiling 45 s / 90 s — used from 2 served samples on, with the
+§10.2 probe's p90 standing in before that and the class default when there is neither; per run, in memory, nothing persisted, and the round
+records what it fired with (`LlmRoundSummary.deadlineMs`). Only **served** samples count: a timeout, a cancellation and a 429 served
+nothing, so a sample the deadline cut cannot drag the deadline down. When the served p90 is past the class default (`providerSlow`) the run
+caps every further sample's `reasoning: {maxTokens}` at `LLM_REASONING_CAP_TOKENS` 512, one-way, and says so on `llm:deadline`. Reason: the
+fixed 20 s / 30 s cap cut **31 of 100 samples** in v2 (61 % on QuixBugs; every timed-out row served by the one provider whose served samples
+ran at p50 7–10 s) and two overfits were then decided with no LLM candidate in the set; served latencies are right-censored by the deadline
+itself, so the observed p90 is a lower bound on the tail the next round must fit — which is why the rule moved from `2 × p50` to `2 × p90`
+and why it can only raise the deadline, never lower it. The cap is the other half: when waiting longer is not enough, ask for less
+reasoning (GLM bills it) rather than widen the wall again; `{maxTokens}` keeps reasoning on, which `{enabled: false}` cannot do on GLM
+(HTTP 400). Consequences: a round's wall is bounded by the ceiling, not by a provider's tail; the first-passer early stop still ends most
+rounds long before either bound; the 15 % `verify.timeouts / samples` gate is now read against the adapted deadline. Not yet re-measured
+live under a slow provider — the two leftovers runs were served in 6.7 s and 8.7 s, inside the class default.
+
+## 2026-09-21 Completion and the code judge compare against the base commit's known failures, not against zero
+
+The claiming run's evidence carries `knownFailures` on the repository class — `failed + errors` of the scoped suite at the **base commit** —
+and both the completion fact and the code judge read it: the suite counts as passing when `unexpectedFailures = max(0, failed + errors −
+knownFailures)` is 0 with `passed > 0`, and `errorPresent` is 1 only for errors the baseline did not already have
+(`src/loop/stages/complete.ts` `KnownFailuresEvidence` / `unexpectedFailures` / `isCompleteByFact`, `judge.ts codeJudge`, written from
+`RepositoryMode.knownFailures` in `src/synth/search/index.ts`). `core/types.ts` owns `CompletionEvidence`, so the count travels as an
+optional structural extension declared where it is consumed, absent (= 0) off the repository class. The count is the base commit's by
+construction: the first rebaseline of a run measures it and every later one may only **lower** it — a commit that fixed one — never raise
+it, so a regression this run caused can never travel as a pre-existing failure; a resumed run keeps the persisted count. Reason:
+`sympy-11618`'s scoped suite has 43 pre-existing collection errors in its environment; the fix landed at step 3 but the claiming run read
+`644 passed / 0 failed / 43 errors`, the fact compared against zero and never held, the synthesizer re-claimed `done partial` at steps 5, 6
+and 7, the loop tripped, and the run ended `replan_stop` at step 10 with the correct patch on disk that the evaluator passed
+(llm-jev-headtohead-v2.md §9 class E′). Pre-existing failures are not the engineer's to fix and are not evidence against a verified patch;
+anything above them is. Consequences: with `knownFailures = 0` — every QuixBugs and ladder run and every repository whose scoped suite is
+green at the base — the rule is bit-for-bit the old `failed = errors = 0`, and the runner's own `allPassed` is still required there; with a
+non-zero count the runner exits non-zero by construction, so `allPassed` is dropped from the test and the arithmetic decides. A run whose
+own goal sits among the pre-existing failures still cannot complete on them: the repository clause needs the reproduction to pass under a
+code oracle. Not re-measured live (no repository run in the leftovers round).
+
+## 2026-09-21 GREEN sent for the default-mode flip after the v2 head-to-head
+
+The harness session sent the TUI session GREEN for the `DEFAULT_MODE` flip of TUI-DESIGN-3 §1.10 commit 2. What the signal rests on: v2
+(`experiments/results/llm-jev-headtohead-v2.md`, docs/LLM-JEV.md 2026-09-21 entry) passes **28/28** against the baseline's 19/28 and the
+hygiene-tuned arm's 22/28, is correct on **20/22** cheap-test tasks with 2 overfits and **6/6** on SWE-bench, at a **62 s** median wall
+against 391 s and **$0.144** total against $0.506 — and every pre-registered criterion the reduced subset can reach passes (ladder 1–4,
+wall 3 and cost 4 on all three suites, S1–S3, Jev share of wall 3–9 %, attribution 5b). The honest caveat, recorded so the flip is not read
+as more than it is: QuixBugs criteria 1–2 and SWE criterion 1 remain **unreachable by construction** at n = 10/12/6 (the baseline's 7/10 and
+3/6 cap b − c below the absolute bars) and the QuixBugs sign test stays at p = 0.125, so the §1.3 criterion is still not *formally* met and
+only a full §10.3 re-run (90 paired tasks) can meet it; the earlier gate entry ("The default-mode flip is gated on the head-to-head") stands
+as written and this entry is the signal against it, not a rewrite of it. An independent verification of the v2 report landed the same
+day (`experiments/results/llm-jev-headtohead-v2.verification.md`, commit `edf6def`) and every headline number reproduces to the digit —
+but it sharpens the caveat in four ways this entry adopts: the 28 tasks are a **development set** and no out-of-sample evidence for the
+mode exists at any build (C1); the both-solved wall ratio is **0.31×, not 0.16×**, because the baseline runs into its hard cap on 10 of 28
+runs (C1c); "SWE 6/6 correct" is a tautology — `src/bench/headtohead.ts:92` defines SWE correctness as pass (C1i); and
+"overfits only `detect_cycle` and `stats`" is **refuted as a behavioural statement** — ladder `units` diverges from gold on 10 of 20
+string inputs (`int(float(text))` for `int(text)`) where the harness's own perturbations cannot see it, so the honest cheap-test count is
+**19/22 with 3 divergences**, not 20/22 with 2 (C2d). GREEN is sent on the pass, wall and cost margins, which are large and reproduce;
+it is not sent on a claim of out-of-sample correctness, which nobody has measured. Consequences: the flip itself is the peer's work and one literal in
+`src/config/defaults.ts` plus the mechanical re-pin list of §1.10; this session changed no default, no config and no source. The three
+classes v2 left open are now built and two of them spot-checked live (this log's three entries above); a full re-run is what would turn the
+signal into a measurement.
+
+## 2026-09-21 Subagents run on Opus 5 while the Fable usage limit holds
+
+Work in this repo that is delegated to subagents (doc rewrites, code reads, bench-record inspection, research sweeps) runs on Opus 5
+(1M context) for as long as the Fable model's usage limit is in force, rather than waiting the limit out or dropping to a smaller model.
+Reason: the tasks are long-context reading tasks over a 3,500-line design document and several 1,000-line source files, where context length
+and the quality of the summary are what matter and the model is not in any measured path — no benchmark number, no `tasks.jsonl` row and no
+generator record depends on which model wrote a paragraph of Markdown (the bench arms pin `z-ai/glm-5.3-flash` and `jev-1.13.0` explicitly,
+`src/bench/conditions.ts`). Consequences: nothing in the repository encodes the choice — it is a session setting, reverted by switching
+back when the limit lifts; anything a subagent asserts about behaviour is still checked against the code or a run record before it is
+written down, which is the rule regardless of model.
+
+## 2026-09-22 Contract blocks are numbered by assignment and ordered ascending in the file, whatever order they land
+
+`src/core/types.ts` header lines read `1.1, 1.2, 1.2, 1.3, 1.4` (coordination), then every later block in **ascending** number order:
+1.5 orchestration, 1.6 import, 1.7 TUI round 4, 1.8 TUI round 5, 1.9 Fastlane (HARNESS-NEXT). Numbers are assigned when a design is accepted, not when it merges, so a block that
+lands early (1.7 landed before 1.5 and 1.6) sits *below* the numbers reserved above it and a later block is inserted, contiguous,
+between its neighbours. Reason: three designs queued for the same file on one day and "numbered in landing order" would have made
+every rebase renumber someone else's block; assignment order makes the number stable in the design documents that cite it.
+Consequences: `test/unit/core/contract.test.ts` asserts the first five lines and that every later number is greater than 1.4 and
+ascending; the 1.4 line sits directly after 1.3 (where the harness rebased it); each owner edits only its own block.
+
+## 2026-09-22 Harness-owned files touched by the TUI session arrive as hunks
+
+`src/loop/engine.ts`, `src/checkpoint/**`, `src/core/**` (other than the TUI's contract block) and `src/errors.ts` are edited by the
+harness session only; the TUI session sends the exact hunks it needs (round 4's `annotateBlock`, the degrade emit, the ENOENT
+classification, `artefactVersion`, `shortPath`, `explainFsError`) and the harness lands them, or the TUI commits them alone at a hash
+the harness then rebases over (2350c3a). Reason: two sessions editing one engine file in a shared working tree blocked a merge for an
+hour (an uncommitted block in `types.ts`) and shipped a raw U+2028 inside a regex literal that TypeScript accepts and esbuild does
+not (`src/errors.ts:368`, fixed 9f26fb6), taking ~40 test files down on a clean checkout while the shared tree looked green.
+Consequences: `test/unit/hygiene/no-raw-line-separators.test.ts` scans `src/**` and `scripts/**`; the round-4 integrator's
+instructions carry the rule; an uncommitted edit in a shared file is a merge blocker, not a courtesy.
+
+## 2026-09-22 Wall-clock gates on the shared machine: bounded workers, best-of-N, and hermetic process checks
+
+Full unit runs use `--maxWorkers=3`; wall-clock assertions take the best of N samples (`engine-perf` harnessMs skips when
+`loadavg > cpus`, `prompts-context`'s build gate is best-of-5, `parse/markdown`'s three gates best-of-3); a test that inspects the
+host's process table matches only the process it spawned (`sandbox/run.test.ts` tags its `sleep` uniquely). Reason: two sessions and
+up to a dozen agents ran suites concurrently at load 30–100; unbounded runs manufactured failures in tests verified green moments
+earlier, `sandbox/run.test.ts` failed whenever any other worktree ran the same suite, and single-sample budgets (50 ms, 200 ms) failed
+on the load alone. Consequences: a gate that still fails best-of-N is a real regression; release perf numbers come only from
+`perf/*` under `LOAD_QUIET`, never from a unit test; the TUI's real-timer tests remain the known noise and are checked against
+`main` alone before being attributed to a branch.
+
+## 2026-09-22 Orchestration ships with the split gate shut, lands per step, and asks about rewritten shared files
+
+`orchestrate.split` defaults to `'off'` with a one-time hint (design §10 Q1); `orchestrate.land` defaults to `'step'` (Q3); the agents
+tab is `PaneTab 'a'`, last and skipped when no delegation exists (Q2). The land-time ownership question subtracts `carried` — the
+synced-dirty paths whose bytes are *still identical* to what the sync wrote — not `Manifest.syncedDirty`: a parent-dirty file an agent
+**rewrote** outside its `own` is reported, because that is the two-sibling collision the ownership rule exists to catch. Rule 9's
+secret scan covers `verify` as well as `task` and `own`, and `readManifest` recomputes `manifestId` from the parsed contents (the
+unkeyed checksum detects corruption, not tampering). Reason: the adversarial review of the planner reproduced an adopted manifest
+edited on disk to `task: 'exfiltrate everything'`, a collapse that minted `src/**` past a denied `src/secrets`, and an ownership belt
+that ignored byte changes to synced files (`docs/research/orchestration/review-planner-2026-09-22.md`). Consequences: design §3.4
+rule 9, §5.3 and §8.1 amended (`canonical.ts` added); `validateOwnList` re-checks the collapsed list; `applyDropRule` re-validates
+ownership and disjointness and falls back to `no_split`.
+
+## 2026-09-22 Import classification runs the identity rules before the atlas class
+
+`skip:self`, the secret basename, the never-imported atlas classes, oversize, not-text and unsupported are decided **before** the atlas
+row's import class (design §4.4.1 rules 1–7). Reason: every discovered artefact has an atlas row, so with the class first the identity
+verdicts were unreachable and the repo's own `AGENTS.md` — a destination — would have been classified a source and appended to itself
+on every run; hoisting the never-imported classes above the size checks reports an oversize transcript by what it *is*
+(`skip:transcript`), while keeping it below the secret rule so a credential store is still named a secret. Consequences: the atlas
+class is rule 7; whole-file destinations are judged by their own sha on a re-run (a `create` writes no markers, so marker presence is
+required only for shared destinations such as `AGENTS.md`); Jev question ids for groups III–V are content-keyed
+(`same_meaning_<a>_<b>`, `rank_<rowId>`, `contradicts_<a>_<b>`) so a fold in pass 1 cannot shift pass 2's answers.
+
+## 2026-09-22 Claim epochs: the holder is the highest qualified epoch
+
+A run's holder is the claim with the highest epoch that is self-owned or trust- and HMAC-qualified (design §3.2, §9.3, §10.7); the
+merged ledger's minimum-holder rule is being re-keyed to match. Reason: claim epochs exist for fork fencing — a legitimate later
+resume takes over and the stale process must stop; a minimum-holder rule would call the resumer the fork. Consequences:
+`forkVerdict`, `claimHolderOf`, `byRunId` and the `/resume` refusal follow the maximum; `--force-takeback` mints above the maximum of
+qualified and (strictly-below-bound) unqualified epochs and refuses `'epoch-exhausted'` at the bound; qualified foreign epochs come
+from the sixth record kind `claims` at `runs/<deviceId>/<runId>/claims.json`, never from `run.json`.
+
+## 2026-09-22 Out of sample, llm-jev ties the tuned generator; the default stands on the same-build claim only
+
+The measurement the GREEN entry asked for exists (`experiments/results/llm-jev-headtohead-v2.oos.md`, commit `c01ec8a`, frozen
+`066816f`, $1.68 live). Same build, the original 28: `llm-jev` 28/28 vs **plain** `jev-off` 21/28 — not the 19/28 the v2 report used,
+because six tasks flip between two runs of the same baseline arm (noise ≈ ±2) — discordance 7–0 (p = 0.0078), correct 26 vs 20
+with the same two discordant losses, both-solved wall 0.225×, cost 0.245×. **Out of sample**, on 22 tasks nobody tuned against:
+13/22 vs 12/22 for the hygiene-tuned generator (2–1 discordant, indistinguishable), pooled median wall **1.385× against**, cost
+**2.68× against** (2,330 Jev requests vs 0). Per suite: the ten new QuixBugs programs are 10/10 on both arms with **zero overfits on
+either side** (the first evidence the guard thresholds hold off their fitting set) and `llm-jev` wins only efficiency there
+(3 steps / 34 s / $0.0008 vs 6 / 79 s / $0.0026); the ladder long tier is 3/8 vs 2/8 at 3.7× wall and 2.9× cost, ending on
+`replan_stop` / `max_replans`; the four SWE instances are 0/4 on both arms with `llm-jev` spending 2.9× (one instance alone $0.22 and
+432 Jev requests before the 25-minute cap). Decision: the `llm-jev` default **stands**, on the same-build claim and the one-line-bug
+regime, and the README/STATUS footnote says so in one line (peer commit `5b5bdc6`); the `verified` badge names the same-build claim,
+never out-of-sample correctness. Consequences: the next harness iteration is driven by an analysis of where the 22 out-of-sample
+runs spend wall and Jev requests (per question kind, per stage), with every proposed change judged for re-fitting to those 22 tasks
+and any task-named change disallowed; the 22 tasks join the development set only after that iteration is measured on a fresh slice.
+Still unmeasured, and stated as such: `llm-sieve`, any repeat run, the per-question ablation, an independent ladder correctness
+oracle (`perturb.ts`'s own `LADDER_HARNESS` still judges), and SWE correctness beyond pass (`src/bench/headtohead.ts:92`).

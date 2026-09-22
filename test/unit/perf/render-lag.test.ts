@@ -6,7 +6,7 @@
  * run of the baseline probe source itself.
  */
 import { describe, expect, it } from 'vitest';
-import { BASELINE_SECONDS, LAG_MAX_MS, LAG_P95_MS, LAG_PROBE_SOURCE, SPLASH_MS, SPLASH_SETTLE_MS, baselineFrom, describeGeometry, lagVerdict, measureLagBaseline, netLagP95, parseLag, splashBucket, splashGateFor, type LagBaseline } from '../../../src/perf/render-lag.js';
+import { BASELINE_SECONDS, LAG_MAX_MS, LAG_P95_MS, LAG_PROBE_SOURCE, SPLASH_MS, SPLASH_SETTLE_MS, baselineFrom, describeGeometry, lagVerdict, measureLagBaseline, netLagP95, parseLag, runStartBucket, splashBucket, splashGateFor, type LagBaseline } from '../../../src/perf/render-lag.js';
 import type { LagGeometry } from '../../../src/perf/render-lag.js';
 import { BSU, ESU, classifyFrames, splitFrames, type Chunk } from '../../../src/perf/pty.js';
 
@@ -100,4 +100,25 @@ describe('measureLagBaseline (the probe source runs in a bare node)', () => {
     expect(b.p50!).toBeLessThanOrEqual(b.p95!);
     expect(b.p95!).toBeLessThanOrEqual(b.max!);
   }, 15_000);
+});
+
+describe('runStartBucket (TUI-DESIGN-3 §5.2 A5 / §9 "run-start bucket")', () => {
+  const fr = (rows: readonly string[]): string => `${BSU}\x1b[?25l${rows.join('\r\n')}\r\n\x1b[?25h${ESU}`;
+  const idle = ['─── ◆ jevcode 0.3.0 ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ idle │', '╰──╯'];
+  const start = ['    [run] start 20260921-120000-ab12cd34 mode=jev-on task: t', '─── ◆ jevcode 0.3.0 ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ ▓ context  step 0/40 │', '╰──╯'];
+  const live = ['─── ▸ jev s1 · 2 decisions ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ ▓ propose  step 1/40 │', '╰──╯'];
+  it('counts the `dynamic` frames within one second of the `[run] start` frame; static frames in the window are not counted; −1 without a run', () => {
+    const cap = fr(idle) + fr(idle) + fr(start) + fr(live) + fr(live) + fr(['[step 1] run $ pytest -q · risk 0.00 ok', ...live]) + fr(live) + fr(live);
+    const { frames } = splitFrames(cap);
+    const times = [100, 500, 1000, 1050, 1300, 1600, 1990, 2100];
+    const chunks: Chunk[] = frames.map((f, i) => ({ t: times[i]!, off: f.start, n: f.end - f.start }));
+    const classes = classifyFrames(frames, chunks, [], 34);
+    expect(classes).toEqual(['dynamic', 'dynamic', 'static', 'dynamic', 'dynamic', 'static', 'dynamic', 'dynamic']);
+    // the window [1000, 2000]: the start frame itself is static (it carries the item), three dynamic frames follow inside it, the 2100 frame is outside
+    expect(runStartBucket(frames, chunks, classes, cap)).toBe(3);
+    expect(runStartBucket(frames, chunks, classes, cap, 300)).toBe(1);
+    expect(runStartBucket(splitFrames(fr(idle) + fr(idle)).frames, chunks, ['dynamic', 'dynamic'], fr(idle) + fr(idle))).toBe(-1);
+    // a run that started but whose frame has no chunk time cannot be bucketed
+    expect(runStartBucket(frames, [], classes, cap)).toBe(-1);
+  });
 });

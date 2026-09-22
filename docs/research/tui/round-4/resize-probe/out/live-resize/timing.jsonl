@@ -1,0 +1,27 @@
+{"t":108,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":1310,"step":2,"op":"sleep","arg":"1.2"}
+{"t":1310,"step":3,"op":"send","arg":"make the tests pass"}
+{"t":1513,"step":4,"op":"sleep","arg":"0.2"}
+{"t":1513,"step":5,"op":"send","arg":"\\r"}
+{"t":2513,"step":6,"op":"sleep","arg":"1.0"}
+{"t":2513,"step":7,"op":"mark","arg":"running"}
+{"t":2513,"step":8,"op":"send","arg":"/panel full"}
+{"t":2713,"step":9,"op":"sleep","arg":"0.2"}
+{"t":2713,"step":10,"op":"send","arg":"\\r"}
+{"t":3513,"step":11,"op":"sleep","arg":"0.8"}
+{"t":3513,"step":12,"op":"mark","arg":"panel"}
+{"t":3516,"step":13,"op":"resize","arg":"12 60"}
+{"t":4418,"step":14,"op":"sleep","arg":"0.9"}
+{"t":4419,"step":15,"op":"mark","arg":"shrunk"}
+{"t":4422,"step":16,"op":"resize","arg":"5 30"}
+{"t":5323,"step":17,"op":"sleep","arg":"0.9"}
+{"t":5323,"step":18,"op":"mark","arg":"minsize"}
+{"t":5326,"step":19,"op":"resize","arg":"40 120"}
+{"t":6229,"step":20,"op":"sleep","arg":"0.9"}
+{"t":6229,"step":21,"op":"mark","arg":"grown"}
+{"t":6229,"step":22,"op":"send","arg":"\\x03"}
+{"t":6730,"step":23,"op":"sleep","arg":"0.5"}
+{"t":6730,"step":24,"op":"send","arg":"\\x03"}
+{"t":7097,"step":25,"op":"sleep","arg":"1.0"}
+{"t":7097,"step":25,"op":"eof-during-sleep","arg":"1.0"}
+{"t":7097,"step":0,"op":"exit","arg":"0"}

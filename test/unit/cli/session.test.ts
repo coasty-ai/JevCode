@@ -6,12 +6,19 @@
  * (§13.3), the exit paths (§13.5: one-shot exit code, `/exit` while live confirms and exits 0, signal → 130/143 without
  * reopening the composer), the argv secret gate (§10.2) and the exit hook.
  */
+import { text60 } from '../../../src/session/index.js';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BlockingRequest, Engine, EngineOptions } from '../../../src/core/types.js';
-import { EXIT_CONFIRM_ROW, INTAKE_KEPT, LOGIN_SAVED_TOAST, MODE_JEV_OFF_SET, MODE_JEV_ONLY_SET, MODE_JEV_ON_SET, MODE_LLM_JEV_SET, SESSION_CAP_CHAT_REFUSAL, STARTING_STEER_CAP, applyRawEdits, exportFilePath, helpLines, isInCi, isInteractive, jevcodeDir, mockReviewStep, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps, type WizardReason } from '../../../src/cli/session.js';
+import type { BlockingRequest, Engine, EngineMode, EngineOptions } from '../../../src/core/types.js';
+import { EXIT_CONFIRM_ROW, GENERATOR_IGNORED_NOTE, INTAKE_KEPT, LOGIN_SAVED_TOAST, MODE_JEV_OFF_SET, MODE_JEV_ONLY_SET, MODE_JEV_ON_SET, MODE_LLM_JEV_SET, MODE_SET_ITEM, NO_SESSION_YET, RENAME_CUT_NOTE, SESSION_CAP_CHAT_REFUSAL, STARTING_STEER_CAP, applyRawEdits, exportFilePath, isInCi, isInteractive, jevcodeDir, mockReviewStep, modeSetItem, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps, type WizardReason } from '../../../src/cli/session.js';
+import { helpLines } from '../../../src/tui/commands/palette.js';
+import { modeBadgeWord } from '../../../src/tui/status/lines.js';
+import { MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
+import { MISSING_GENERATOR_ONLY, MOCK_VERIFY_NOTE, PANEL_HANDLED_BY_TUI, TRANSCRIPT_ALWAYS_FULL, capsItem, defaultModeItem, fixBlockLines, modeSavedItem } from '../../../src/tui/onboarding/lines.js';
+import { whyErrorText } from '../../../src/tui/why.js';
+import { mkdirSync as mkdirp } from 'node:fs';
 import { sessionCapChangedLine } from '../../../src/tui/budget/lines.js';
 import { sandboxText } from '../../../src/tui/onboarding/lines.js';
 import { detectSandboxLevel } from '../../../src/sandbox/seatbelt.js';
@@ -20,6 +27,8 @@ import { detectSecrets } from '../../../src/core/redact.js';
 import { NOT_RESUMABLE } from '../../../src/cli/epilogue.js';
 import type { Log } from '../../../src/core/log.js';
 import { DEFAULT_THRESHOLDS } from '../../../src/tui/useEngine.js';
+import { DEFAULT_MODE } from '../../../src/config/defaults.js';
+import { defaultRunSpendCapUsd } from '../../../src/config/ui.js';
 import { finishedRunLines, harnessDecider, loadedRun, makeController, scriptedRunId, tick, waitFor, type Harness } from './helpers.js';
 
 const SECRET = 'sk-ant-api03-SECRETSECRETSECRETSECRETSECRET1234';
@@ -63,13 +72,12 @@ describe('pure helpers (§1)', () => {
     expect(mostRecentSession(rows, '/w')?.sessionId).toBe('b');
     expect(mostRecentSession(rows, '/none')).toBeNull();
   });
-  it('helpLines lists every command with its title, marks availability, keeps the per-terminal notes and stays ≤ 60 lines', () => {
-    const lines = helpLines('all', { live: true });
+  it('TUI-DESIGN-3 §4.4 F9: the controller has no help formatter of its own — the palette\'s `helpLines` (aliases, the live tag, ≤ 60 lines) is the one both renderers print', () => {
+    const lines = helpLines(80, { topic: 'all', live: true });
     expect(lines.length).toBeLessThanOrEqual(60);
-    expect(lines.some((l) => l.startsWith('/undo') && l.endsWith('(idle only)'))).toBe(true);
-    expect(lines).toContain('Shift+Enter needs a keyboard protocol: use Ctrl+J or \\ then Enter');
-    expect(helpLines('commands', { live: false }).some((l) => l.startsWith('keys ·'))).toBe(false);
-    expect(helpLines('keys', { live: false }).some((l) => l.startsWith('/exit'))).toBe(false);
+    expect(lines.some((l) => l.trimStart().startsWith('/undo') && l.includes('(idle only)'))).toBe(true);
+    expect(helpLines(80, { topic: 'commands', live: false }).some((l) => l.startsWith('keys'))).toBe(false);
+    expect(helpLines(80, { topic: 'keys', live: false }).some((l) => l.trimStart().startsWith('/exit'))).toBe(false);
   });
   it('applyRawEdits applies Backspace / DEL / Ctrl-U and drops other control bytes', () => {
     expect(applyRawEdits('abc\u007fd')).toBe('abd');
@@ -123,45 +131,66 @@ describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, lan
   const NO_OPEN_ASSIST = '/nonexistent/open-assist';
   const modeActions = (h: Harness): unknown[] => h.renderer.dispatched.filter((a) => a.type === 'mode');
 
-  it('/mode alone shows current and next; /llm on pends jev-on with MODE_JEV_ON_SET and a `mode` dispatch; the same mode twice says already; /llm off and /mode jev-off pend their modes', async () => {
+  it('/mode alone shows the mode in two forms (F1): one word plus ` (default)` when nothing differs, `mode <cur> — next run: <next>` otherwise; /llm on|off and /mode <m> pend with modeSetItem and a `mode` dispatch; the same mode twice says already', async () => {
     const h = await build();
     void h.controller.run();
     await h.ready();
+    const dflt = modeBadgeWord(DEFAULT_MODE);
+    // TUI-DESIGN-3 §1.2: the badge dispatch of applyConfig names the resolved default with nothing pending
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: DEFAULT_MODE, pending: null });
     await h.command('/mode');
-    expect(h.renderer.notes.at(-1)?.text).toBe('mode jev-only (next run: jev-only)');
-    // `--mock` never needs a generator key (missingSecrets skips it), so /llm on pends at once
-    await h.command('/llm on');
-    expect(h.controller.view.pending.mode).toBe('jev-on');
-    expect(h.renderer.notes.at(-1)?.text).toBe(MODE_JEV_ON_SET);
-    expect(MODE_JEV_ON_SET).toBe('mode jev+llm from the next run — Claude writes the code, Jev still decides every step (persist: jevcode config set mode jev-on)');
-    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-only', pending: 'jev-on' });
-    await h.command('/mode jev-on');
-    expect(h.renderer.notes.at(-1)?.text).toBe('mode jev+llm already');
-    // §1.3 `case 'mode'`: idle, the current mode IS the next run's (`cur = live() ? currentRunMode : next`)
+    expect(h.renderer.notes.at(-1)?.text).toBe(`mode ${dflt} (default)`);
+    const other: EngineMode = DEFAULT_MODE === 'jev-only' ? 'jev-on' : 'jev-only';
+    // `--mock` never needs a generator key (missingSecrets skips it), so the switch pends at once
+    await h.command(`/mode ${other}`);
+    expect(h.controller.view.pending.mode).toBe(other);
+    expect(h.renderer.notes.at(-1)?.text).toBe(modeSetItem(other));
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: DEFAULT_MODE, pending: other });
+    await h.command(`/mode ${other}`);
+    expect(h.renderer.notes.at(-1)?.text).toBe(`mode ${modeBadgeWord(other)} already`);
+    // §1.3 / F1: idle with a pending mode the two words differ — ` (default)` only after the word equal to MODE_BADGE_WORD[DEFAULT_MODE], never twice
     await h.command('/mode');
-    expect(h.renderer.notes.at(-1)?.text).toBe('mode jev+llm (next run: jev+llm)');
+    expect(h.renderer.notes.at(-1)?.text).toBe(`mode ${dflt} — next run: ${modeBadgeWord(other)}`);
+    expect(h.renderer.notes.at(-1)?.text).not.toContain('(default) (');
+    await h.command(`/mode ${DEFAULT_MODE}`);
+    expect(h.controller.view.pending.mode).toBe(DEFAULT_MODE);
+    await h.command('/mode');
+    expect(h.renderer.notes.at(-1)?.text).toBe(`mode ${dflt} (default)`);
+    // /llm on|off are /mode jev-on|jev-only
     await h.command('/llm off');
     expect(h.controller.view.pending.mode).toBe('jev-only');
     expect(h.renderer.notes.at(-1)?.text).toBe(MODE_JEV_ONLY_SET);
+    await h.command('/llm on');
+    expect(h.controller.view.pending.mode).toBe('jev-on');
+    expect(h.renderer.notes.at(-1)?.text).toBe(MODE_JEV_ON_SET);
     await h.command('/mode jev-off');
     expect(h.controller.view.pending.mode).toBe('jev-off');
     expect(h.renderer.notes.at(-1)?.text).toBe(MODE_JEV_OFF_SET);
-    expect(modeActions(h)).toHaveLength(3);
+    // §10 "Mode items": one table, generator-neutral copy (R3 F9)
+    expect(MODE_JEV_ON_SET).toBe('mode jev+llm from the next run — the code model writes the code, Jev still decides every step (persist: jevcode config set mode jev-on)');
+    expect(MODE_JEV_ONLY_SET).toBe('mode jev-only from the next run — no generating LLM; code proposes, Jev decides, tests verify (persist: jevcode config set mode jev-only)');
+    expect(MODE_JEV_OFF_SET).toBe('mode llm-only from the next run — the generator alone, no Jev (bench condition; reviews still ask)');
+    for (const m of MODE_SETTING_VALUES) {
+      expect(MODE_SET_ITEM[m], m).toBe(modeSetItem(m));
+      expect(MODE_SET_ITEM[m], m).toMatch(new RegExp(`^mode ${MODE_BADGE_WORD[m].replace(/[+·]/g, '.')} from the next run — `));
+      expect(MODE_SET_ITEM[m], m).not.toMatch(/Claude|GLM/);
+    }
   });
 
-  it('llm-jev (docs/LLM-JEV-DESIGN.md): /mode llm-jev pends the fourth mode with MODE_LLM_JEV_SET and a `mode` dispatch; the badge word is llm-jev', async () => {
-    const h = await build();
+  it('llm-jev (docs/LLM-JEV-DESIGN.md): /mode llm-jev pends the fourth mode with MODE_LLM_JEV_SET and a `mode` dispatch; the badge word is `llm+jev · verified` (D-N)', async () => {
+    // llm-jev is the default since 2026-09-22: start the session in jev-on so the switch pends instead of answering `already`
+    const h = await build({ flags: { mode: 'jev-on' } });
     void h.controller.run();
     await h.ready();
     await h.command('/mode llm-jev');
     expect(h.controller.view.pending.mode).toBe('llm-jev');
     expect(h.renderer.notes.at(-1)?.text).toBe(MODE_LLM_JEV_SET);
-    expect(MODE_LLM_JEV_SET).toBe('mode llm-jev from the next run — GLM writes candidate patches inside the Jev-only search; Jev decides, tests verify (persist: jevcode config set mode llm-jev)');
-    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-only', pending: 'llm-jev' });
+    expect(MODE_LLM_JEV_SET).toBe('mode llm+jev · verified from the next run — the code model writes candidate patches, tests verify them, Jev arbitrates (persist: jevcode config set mode llm-jev)');
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-on', pending: 'llm-jev' }); // the base is the explicit jev-on start (llm-jev is the default now)
     await h.command('/mode llm-jev');
-    expect(h.renderer.notes.at(-1)?.text).toBe('mode llm-jev already');
+    expect(h.renderer.notes.at(-1)?.text).toBe('mode llm+jev · verified already');
     await h.command('/mode');
-    expect(h.renderer.notes.at(-1)?.text).toBe('mode llm-jev (next run: llm-jev)');
+    expect(h.renderer.notes.at(-1)?.text).toBe('mode jev+llm — next run: llm+jev · verified (default)'); // base jev-on (explicit), next run = the default → ` (default)`
   });
 
   it('/mode jev-on without a generator key opens the wizard with reason mode for jev-on: cancelled → `mode stays jev-only — no generator key was saved` (warn, nothing pends); saved → pends, MODE_JEV_ON_SET, no login toast', async () => {
@@ -184,7 +213,8 @@ describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, lan
     expect(calls).toEqual([{ missing: ['generator.apiKey'], reason: 'mode', mode: 'jev-on' }]);
     expect(h.renderer.notes.at(-1)).toMatchObject({ text: 'mode stays jev-only — no generator key was saved', level: 'warn' });
     expect(h.controller.view.pending.mode).toBeUndefined();
-    expect(modeActions(h)).toHaveLength(0);
+    // TUI-DESIGN-3 §1.2: the re-resolve after the wizard refreshes the badge (pending null); nothing may pend
+    expect(modeActions(h).filter((a) => (a as { pending: unknown }).pending !== null)).toHaveLength(0);
     answer = 'saved';
     await h.command('/mode jev-on');
     expect(calls).toHaveLength(2);
@@ -546,12 +576,17 @@ describe('commands (§5.2)', () => {
     const texts = (): string[] => h.renderer.notes.map((n) => n.text);
     await h.command('/help');
     expect(texts().at(-1)).toBe('help');
-    expect(h.renderer.notes.at(-1)?.detail).toContain('/exit  leave (exit 0; confirms first while a run is live)');
+    // TUI-DESIGN-3 §4.4 F9: the palette's two-space form (aliases, the title cut to the column) — the same lines in both renderers
+    expect(h.renderer.notes.at(-1)?.detail).toContain('  /exit, /q, /quit');
+    expect(h.renderer.notes.at(-1)?.detail).toContain('leave (exit 0; confirms first while a');
+    expect(h.renderer.notes.at(-1)?.detail?.split('\n')).toEqual(helpLines(80, { topic: 'all', live: false }));
     await h.command('/status');
     expect(h.renderer.notes.at(-1)?.detail).toContain(`session ${h.controller.view.sessionId}`);
     await h.command('/cost');
-    // TUI-DESIGN-2 §1.2: the default mode is jev-only, whose run cap is $0.25
-    expect(h.renderer.notes.at(-1)?.text).toMatch(/^run \$0\.115 of \$0\.250/);
+    // TUI-DESIGN-3 §5.1 rule 5 (S5's row): the head is the noun `cost`; the run line (DEFAULT_MODE's mode-keyed cap) is the first body row
+    const defaultCap = defaultRunSpendCapUsd(DEFAULT_MODE).toFixed(3).replace('.', '\\.');
+    expect(h.renderer.notes.at(-1)?.text).toBe('cost');
+    expect(h.renderer.notes.at(-1)?.detail?.split('\n')[0]).toMatch(new RegExp(`^run \\$0\\.115 of \\$${defaultCap}`));
     await h.command('/jev');
     expect(h.renderer.notes.at(-1)?.detail).toContain('decider typesafe/jev-1.13-20260917');
     await h.command('/config');
@@ -1116,5 +1151,395 @@ describe('wave-4 polish: thresholds, the engine log handle, the live session cap
     expect(afterChange.length).toBeGreaterThanOrEqual(2);
     expect(afterChange.every((p) => p.capUsd === 0.01)).toBe(true);
     expect(h.controller.view.sessionMeter.snapshot().capUsd).toBe(0.01);
+  });
+});
+
+describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config.mode, the wizard\'s found state and mode outcome, the one-time default-mode item', () => {
+  const NO_OPEN_ASSIST = '/nonexistent/open-assist';
+  const OR_KEY = 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+  const TS_KEY = `ts-${'0123456789abcdef'.repeat(3)}`;
+  const modeActions = (h: Harness): unknown[] => h.renderer.dispatched.filter((a) => a.type === 'mode');
+  const configPath = (home: string): string => join(home, '.config', 'jevcode', 'config.json');
+  const writeConfig = (home: string, values: Record<string, unknown>): void => {
+    mkdirp(join(home, '.config', 'jevcode'), { recursive: true });
+    writeFileSync(configPath(home), JSON.stringify(values));
+  };
+  const readConfig = (home: string): Record<string, unknown> => (existsSync(configPath(home)) ? (JSON.parse(readFileSync(configPath(home), 'utf8')) as Record<string, unknown>) : {});
+
+  it('§1.2 (edge 26): JEVCODE_MODE=jev-only with no --mode → the session runs jev-only (controller.mode, the badge dispatch), the startup wizard lists the Jev key only', async () => {
+    const calls: { missing: readonly string[]; found: unknown }[] = [];
+    const h = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { JEVCODE_MODE: 'jev-only' }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found }); return { kind: 'cancelled' }; } } });
+    void h.controller.run();
+    await h.ready();
+    expect(h.controller.mode()).toBe('jev-only');
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-only', pending: null });
+    expect(calls).toEqual([{ missing: ['decider.apiKey'], found: null }]);
+    await h.command('/mode');
+    expect(h.renderer.notes.at(-1)?.text).toBe(`mode jev-only${DEFAULT_MODE === 'jev-only' ? ' (default)' : ''}`);
+  });
+
+  it('§1.2 (edge 27, R3 F1): a round-2 file `mode: "jev-only"` with TYPESAFE_API_KEY → no wizard, session jev-only, caps $0.25 / $1.25; a file `mode: "jev-on"` with only OPENROUTER_API_KEY → no wizard, badge jev+llm', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
+    writeConfig(home, { mode: 'jev-only' });
+    let wizards = 0;
+    const h = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { TYPESAFE_API_KEY: TS_KEY }, prompts: { wizard: async () => { wizards += 1; return { kind: 'cancelled' }; } } });
+    void h.controller.run();
+    await h.ready();
+    expect(wizards).toBe(0);
+    expect(h.controller.mode()).toBe('jev-only');
+    expect(h.controller.view.runCapUsd).toBe(0.25);
+    expect(h.controller.view.sessionMeter.snapshot().capUsd).toBe(1.25);
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-only', pending: null });
+    // no default-mode item: the file has a `mode` row
+    expect(h.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
+    const home2 = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
+    writeConfig(home2, { mode: 'jev-on' });
+    const h2 = await build({ home: home2, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY }, prompts: { wizard: async () => { wizards += 1; return { kind: 'cancelled' }; } } });
+    void h2.controller.run();
+    await h2.ready();
+    expect(wizards).toBe(0);
+    expect(h2.controller.mode()).toBe('jev-on');
+    expect(modeActions(h2).at(-1)).toEqual({ type: 'mode', mode: 'jev-on', pending: null });
+    expect(h2.controller.view.runCapUsd).toBe(2);
+    expect(h2.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
+  });
+
+  it('§1.2: a pending /mode survives a reresolve — the base never copies the pending value, the badge keeps ` · next run` (the dispatch carries both), the /mode echo names two words', async () => {
+    const h = await build({ prompts: { wizard: async () => ({ kind: 'saved', patch: { jevApiKey: OR_KEY, jevProvider: 'openrouter' } }) } });
+    void h.controller.run();
+    await h.ready();
+    const other: EngineMode = DEFAULT_MODE === 'jev-only' ? 'jev-on' : 'jev-only';
+    await h.command(`/mode ${other}`);
+    expect(h.controller.view.pending.mode).toBe(other);
+    // /login saves → persistCredentials → reresolve() with the pending mode as the flag layer: baseMode stays, pending stays
+    await h.command('/login');
+    expect(h.renderer.notes.some((n) => n.text === LOGIN_SAVED_TOAST)).toBe(true);
+    expect(h.controller.view.pending.mode).toBe(other);
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: DEFAULT_MODE, pending: other });
+    await h.command('/mode');
+    expect(h.renderer.notes.at(-1)?.text).toBe(`mode ${modeBadgeWord(DEFAULT_MODE)} — next run: ${modeBadgeWord(other)}${other === DEFAULT_MODE ? ' (default)' : ''}`);
+  });
+
+  it('§1.3 / §1.4.3 (edges 15, 35): TYPESAFE_API_KEY only (or a round-2 file Jev key) under a generator default → wizard(key) with found typesafe; `{ kind: mode, jev-only, persist }` writes the mode row, prints modeSavedItem, badge jev-only; a restart over the same file opens no wizard', async () => {
+    if (DEFAULT_MODE === 'jev-only') return; // the generator default is what makes the generator key missing
+    const calls: { missing: readonly string[]; found: unknown; foundSource: unknown; mode: unknown }[] = [];
+    const home = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
+    const h = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { TYPESAFE_API_KEY: TS_KEY }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found, foundSource: o.foundSource, mode: o.mode }); return { kind: 'mode', mode: 'jev-only', persist: true }; } } });
+    void h.controller.run();
+    await h.ready();
+    expect(calls).toEqual([{ missing: ['generator.apiKey'], found: 'typesafe', foundSource: 'env', mode: DEFAULT_MODE }]);
+    expect(readConfig(home)['mode']).toBe('jev-only');
+    expect(h.renderer.notes.some((n) => n.label === '[setup]' && n.text === modeSavedItem('jev-only', configPath(home).replace(home, '~')))).toBe(true);
+    expect(h.controller.mode()).toBe('jev-only');
+    expect(h.controller.view.pending.mode).toBeUndefined();
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-only', pending: null });
+    // no "no key found" block: after the mode moved nothing is missing
+    expect(h.renderer.notes.some((n) => n.text.startsWith('no key found'))).toBe(false);
+    // the restart: the file's `mode` row drives the session — no wizard, jev-only
+    const h2 = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { TYPESAFE_API_KEY: TS_KEY }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found, foundSource: o.foundSource, mode: o.mode }); return { kind: 'cancelled' }; } } });
+    void h2.controller.run();
+    await h2.ready();
+    expect(calls).toHaveLength(1);
+    expect(h2.controller.mode()).toBe('jev-only');
+    // edge 35: a round-2 file Jev key (jevApiKey + jevProvider typesafe, no file mode) → found typesafe from the file layer, never the `provider` step
+    const home3 = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
+    writeConfig(home3, { jevApiKey: TS_KEY, jevProvider: 'typesafe' });
+    const h3 = await build({ home: home3, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found, foundSource: o.foundSource, mode: o.mode }); return { kind: 'cancelled' }; } } });
+    void h3.controller.run();
+    await h3.ready();
+    expect(calls.at(-1)).toEqual({ missing: ['generator.apiKey'], found: 'typesafe', foundSource: 'file', mode: DEFAULT_MODE });
+    // edge 17: JEV_API_KEY only (an OpenRouter key) → found jev, reusable
+    const seen: unknown[] = [];
+    const h4 = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { JEV_API_KEY: OR_KEY }, prompts: { wizard: async (missing, o) => { seen.push({ missing, found: o.found, foundSource: o.foundSource, foundReusable: o.foundReusable, jevProvider: o.jevProvider }); return { kind: 'cancelled' }; } } });
+    void h4.controller.run();
+    await h4.ready();
+    expect(seen).toEqual([{ missing: ['generator.apiKey'], found: 'jev', foundSource: 'env', foundReusable: true, jevProvider: 'openrouter' }]);
+    // edge 16: ANTHROPIC_API_KEY only → both missing, found anthropic
+    const anth: unknown[] = [];
+    const h5 = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { ANTHROPIC_API_KEY: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123' }, prompts: { wizard: async (missing, o) => { anth.push({ missing, found: o.found, provider: o.provider }); return { kind: 'cancelled' }; } } });
+    void h5.controller.run();
+    await h5.ready();
+    expect(anth).toEqual([{ missing: ['generator.apiKey', 'decider.apiKey'], found: 'anthropic', provider: 'openrouter' }]);
+  });
+
+  it('§1.4.3: a `/login` wizard\'s `{ kind: mode }` PENDS (no file write): pending.mode, the badge dispatch, modeSetItem; a saved patch carrying a mode choice (the plain twin\'s [j]) applies it after the save', async () => {
+    let outcome: 'mode' | 'saved' = 'mode';
+    const home = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
+    const h = await build({ home, prompts: { wizard: async () => (outcome === 'mode' ? { kind: 'mode', mode: 'jev-only', persist: false } : { kind: 'saved', patch: { jevApiKey: OR_KEY, jevProvider: 'openrouter' }, mode: { mode: 'jev-only', persist: true } }) } });
+    void h.controller.run();
+    await h.ready();
+    await h.command('/login');
+    expect(h.controller.view.pending.mode).toBe('jev-only');
+    expect(readConfig(home)['mode']).toBeUndefined();
+    expect(h.renderer.notes.at(-1)?.text).toBe(modeSetItem('jev-only'));
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: DEFAULT_MODE, pending: 'jev-only' });
+    outcome = 'saved';
+    await h.command('/login');
+    expect(readConfig(home)['mode']).toBe('jev-only');
+    expect(readConfig(home)['jevApiKey']).toBe(OR_KEY);
+    expect(h.renderer.notes.some((n) => n.text === modeSavedItem('jev-only', configPath(home).replace(home, '~')))).toBe(true);
+  });
+
+  it('§1.7 (D-Q, edge 36): a keyed start whose mode resolves from `default` prints ONE [setup] default-mode item and writes seen.defaultMode; a second start is silent; a file `mode` row, --mock or a jev-only default suppress it; a different seen value prints again; a read-only config dir prints and warns once in the log', async () => {
+    if (DEFAULT_MODE === 'jev-only') return; // the item exists for defaults that bill a generator
+    const home = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
+    const h = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    void h.controller.run();
+    await h.ready();
+    const item = defaultModeItem(DEFAULT_MODE, h.controller.view.runCapUsd, h.controller.view.sessionMeter.snapshot().capUsd);
+    expect(item).toBe(`mode ${MODE_BADGE_WORD[DEFAULT_MODE]} (default) — caps $2.00 per run · $10.00 per session; /mode jev-only runs on Jev alone at $0.25 / $1.25; jevcode config set mode <m> keeps a choice`);
+    expect(h.renderer.notes.filter((n) => n.label === '[setup]' && n.text === item)).toHaveLength(1);
+    expect(readConfig(home)['seenDefaultMode']).toBe(DEFAULT_MODE);
+    // the item precedes the [sandbox] line (startup order: config → shadowing → the notice → trust → sandbox)
+    const idx = h.renderer.notes.findIndex((n) => n.text === item);
+    expect(idx).toBeLessThan(h.renderer.notes.findIndex((n) => n.label === '[sandbox]'));
+    // second start: silent
+    const h2 = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    void h2.controller.run();
+    await h2.ready();
+    expect(h2.renderer.notes.some((n) => n.text === item)).toBe(false);
+    // a different seen value (an earlier default) prints again and updates the row
+    writeConfig(home, { seenDefaultMode: 'jev-only' });
+    const h3 = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    void h3.controller.run();
+    await h3.ready();
+    expect(h3.renderer.notes.filter((n) => n.text === item)).toHaveLength(1);
+    expect(readConfig(home)['seenDefaultMode']).toBe(DEFAULT_MODE);
+    // a `mode` row in the file suppresses it entirely
+    writeConfig(home, { mode: DEFAULT_MODE });
+    const h4 = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    void h4.controller.run();
+    await h4.ready();
+    expect(h4.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
+    expect(readConfig(home)['seenDefaultMode']).toBeUndefined();
+    // --mock: absent (and nothing written)
+    const h5 = await build();
+    void h5.controller.run();
+    await h5.ready();
+    expect(h5.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
+    expect(existsSync(configPath(h5.home))).toBe(false);
+    // JEVCODE_MODE (a non-default source) suppresses it too
+    const h6 = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY, JEVCODE_MODE: DEFAULT_MODE } });
+    void h6.controller.run();
+    await h6.ready();
+    expect(h6.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
+    // a read-only config directory: the item prints (at every start), the log warns once, the process goes on
+    const roHome = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
+    const lines: string[] = [];
+    const h7 = await build({ home: roHome, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { log: capturingLog(lines), writeConfigValue: async () => { throw new Error('EACCES: read-only'); } } });
+    void h7.controller.run();
+    await h7.ready();
+    expect(h7.renderer.notes.filter((n) => n.text === item)).toHaveLength(1);
+    expect(lines.filter((l) => l.includes('could not record seen.defaultMode'))).toHaveLength(1);
+    expect(h7.renderer.notes.some((n) => n.level === 'error')).toBe(false);
+  });
+
+  it('§1.7: a wizard save on a first run prints the caps item for the mode it saved for (a keyed start prints the default-mode item instead)', async () => {
+    const h = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, prompts: { wizard: async () => ({ kind: 'saved', patch: { apiKey: OR_KEY, jevApiKey: OR_KEY, provider: 'openrouter', jevProvider: 'openrouter' } }) } });
+    void h.controller.run();
+    await h.ready();
+    const caps = capsItem(DEFAULT_MODE, h.controller.view.runCapUsd, h.controller.view.sessionMeter.snapshot().capUsd);
+    await waitFor(() => h.renderer.notes.some((n) => n.label === '[setup]' && n.text === caps), 4000, 'the caps item'); // the wizard save resolves after ready()
+    expect(h.renderer.notes.filter((n) => n.label === '[setup]' && n.text === caps)).toHaveLength(1);
+    expect(h.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
+    if (DEFAULT_MODE !== 'jev-only') expect(caps).toBe(`spend caps: $2.00 per run · $10.00 per session (${MODE_BADGE_WORD[DEFAULT_MODE]}) — /budget changes them; /mode jev-only runs on Jev alone at $0.25 / $1.25`);
+  });
+
+  it('§1.5: verifyForWizard meters the priced calls on the session meter (never the chat ledger) and maps a rejected side to its field; --mock never reaches the network', async () => {
+    const seen: unknown[] = [];
+    const h = await build({
+      flags: { mock: false, openAssistPath: NO_OPEN_ASSIST },
+      env: { OPENROUTER_API_KEY: OR_KEY },
+      deps: {
+        verifyKeys: async (input) => {
+          seen.push({ mode: input.mode, provider: input.provider, jevProvider: input.jevProvider, hasGen: input.generatorKey !== null, hasJev: input.jevKey !== null, generatorModel: input.generatorModel, jevBaseUrl: input.jevBaseUrl, jevModel: input.jevModel });
+          return [
+            { which: 'jev', ok: true, text: 'verified: jev ok (m, 318 input tokens, $0.00002)', usage: { inputTokens: 318, outputTokens: 20, costUsd: 0.00002, calls: 1 } },
+            { which: 'generator', ok: true, text: 'verified: g ok (1 token, $0.000002)', usage: { inputTokens: 8, outputTokens: 1, costUsd: 0.000002, calls: 1 } },
+          ];
+        },
+      },
+    });
+    void h.controller.run();
+    await h.ready();
+    const before = h.controller.view.sessionMeter.snapshot().totalUsd;
+    const r = await h.controller.verifyForWizard({ provider: null, jevProvider: null, fields: ['key'], mode: DEFAULT_MODE });
+    expect(r).toEqual({ ok: true, rejected: null, items: ['verified: jev ok (m, 318 input tokens, $0.00002)', 'verified: g ok (1 token, $0.000002)'] });
+    expect(h.controller.view.sessionMeter.snapshot().totalUsd - before).toBeCloseTo(0.000022, 9);
+    expect(seen).toEqual([{ mode: DEFAULT_MODE, provider: 'openrouter', jevProvider: 'openrouter', hasGen: DEFAULT_MODE !== 'jev-only', hasJev: true, generatorModel: DEFAULT_MODE === 'jev-only' ? '' : 'z-ai/glm-5.3-flash', jevBaseUrl: 'https://openrouter.ai/api/alpha/decisions', jevModel: 'typesafe/jev-1.13-20260917' }]);
+    // /cost: the chat line stays absent (no message was charged), the session total carries the probe
+    await h.command('/cost');
+    expect(h.renderer.notes.at(-1)?.detail ?? '').not.toContain('chat $');
+    // a rejected Jev side names the Jev field
+    const rejecting = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { verifyKeys: async () => [{ which: 'jev', ok: false, text: 'verification failed: openrouter HTTP 401 — the key was kept; fix it with /login', reason: 'rejected' }] } });
+    void rejecting.controller.run();
+    await rejecting.ready();
+    expect(await rejecting.controller.verifyForWizard({ provider: null, jevProvider: null, fields: ['key'], mode: DEFAULT_MODE })).toEqual({ ok: false, rejected: 'decider.apiKey', items: ['verification failed: openrouter HTTP 401 — the key was kept; fix it with /login'] });
+    // a credits / unreachable failure keeps the key (rejected null)
+    const credits = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { verifyKeys: async () => [{ which: 'jev', ok: false, text: 'x', reason: 'credits' }] } });
+    void credits.controller.run();
+    await credits.ready();
+    expect((await credits.controller.verifyForWizard({ provider: null, jevProvider: null, fields: ['key'], mode: DEFAULT_MODE })).rejected).toBeNull();
+    // edge 30: --mock
+    const mock = await build({ deps: { verifyKeys: async () => { throw new Error('network'); } } });
+    void mock.controller.run();
+    await mock.ready();
+    expect(await mock.controller.verifyForWizard({ provider: null, jevProvider: null, fields: ['key'], mode: DEFAULT_MODE })).toEqual({ ok: true, rejected: null, items: [MOCK_VERIFY_NOTE] });
+  });
+
+  it('§1.3.3 / §1.6 (edges 20, 21): a pipe with no keys → ConfigError + the mode\'s fix block, exit 2, no run dir; with TYPESAFE_API_KEY only under a generator default → the three-way generator text', async () => {
+    const h = await build({ mode: 'one-shot', rendererKind: 'plain', interactive: false, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, task: 'fix it' });
+    const code = await h.controller.run();
+    expect(code).toBe(2);
+    const err = h.stderr.join('');
+    const names = DEFAULT_MODE === 'jev-only' ? 'decider.apiKey' : 'generator.apiKey, decider.apiKey';
+    expect(err).toContain(`jevcode: missing ${names}: set the environment variable or run jevcode login`);
+    for (const l of fixBlockLines(DEFAULT_MODE, null)) expect(err).toContain(l);
+    expect(h.factory.calls).toHaveLength(0);
+    expect(existsSync(join(h.home, 'runs'))).toBe(false);
+    if (DEFAULT_MODE !== 'jev-only') {
+      const ts = await build({ mode: 'one-shot', rendererKind: 'plain', interactive: false, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { TYPESAFE_API_KEY: TS_KEY }, task: 'fix it' });
+      expect(await ts.controller.run()).toBe(2);
+      expect(ts.stderr.join('')).toContain(`jevcode: ${MISSING_GENERATOR_ONLY}`);
+      for (const l of fixBlockLines(DEFAULT_MODE, null)) expect(ts.stderr.join('')).toContain(l);
+    }
+    // JEVCODE_MODE=jev-only in the pipe's env: the jev-only block
+    const jo = await build({ mode: 'one-shot', rendererKind: 'plain', interactive: false, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { JEVCODE_MODE: 'jev-only' }, task: 'fix it' });
+    expect(await jo.controller.run()).toBe(2);
+    for (const l of fixBlockLines('jev-only', null)) expect(jo.stderr.join('')).toContain(l);
+  });
+
+  it('§1.8 edge 6: Ctrl-C at the trust card (host.exit(2) with nothing missing) prints no fix block; a startup wizard Ctrl-C with a key still missing prints the mode\'s block', async () => {
+    const h = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    void h.controller.run();
+    await h.ready();
+    try {
+      h.host.exit(2);
+    } catch {
+      /* process.exit */
+    }
+    expect(h.renderer.notes.some((n) => n.text.startsWith('no key found'))).toBe(false);
+    const missing = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, prompts: { wizard: async () => ({ kind: 'cancelled' }) } });
+    void missing.controller.run();
+    await missing.ready();
+    try {
+      missing.host.exit(2);
+    } catch {
+      /* process.exit */
+    }
+    const block = missing.renderer.notes.find((n) => n.text.startsWith('no key found — set them'));
+    expect(block?.detail).toBe(fixBlockLines(DEFAULT_MODE, 'openrouter').join('\n'));
+  });
+});
+
+describe('TUI-DESIGN-3 §4.4: the audit rows the controller lands (S3)', () => {
+  it('F12 /new before any session says so; F13 /rename over 60 chars appends the cut note', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.command('/new');
+    expect(h.renderer.notes.at(-1)?.text).toBe(NO_SESSION_YET);
+    expect(NO_SESSION_YET).toBe('no session yet — the next prompt starts one');
+    expect(h.controller.view.sessionId).toBeNull();
+    await h.command(`/rename ${'x'.repeat(70)}`);
+    expect(h.renderer.notes.at(-1)?.text).toBe(`renamed the session to "${text60('x'.repeat(70), (t) => t)}"${RENAME_CUT_NOTE}`); // the stored title is the clipped one (59 + …)
+    expect(RENAME_CUT_NOTE).toBe(' (cut to 60 chars)');
+    await h.command('/rename short');
+    expect(h.renderer.notes.at(-1)?.text).toBe('renamed the session to "short"');
+  });
+
+  it('F15 /model and /provider show forms and the jev-only cross-check; an OpenRouter id without a vendor prefix gets a soft note', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.command('/model');
+    expect(h.renderer.notes.at(-1)?.text).toMatch(/^model /);
+    await h.command('/provider');
+    expect(h.renderer.notes.at(-1)?.text).toBe('provider openrouter');
+    await h.command('/mode jev-only');
+    await h.command('/model z-ai/glm-5.3-flash');
+    expect(h.renderer.notes.at(-1)?.text).toBe(`model z-ai/glm-5.3-flash pending (next run)${GENERATOR_IGNORED_NOTE}`);
+    expect(GENERATOR_IGNORED_NOTE).toBe(' — mode jev-only ignores the generator; /llm on to use it');
+    await h.command('/provider anthropic');
+    expect(h.renderer.notes.at(-1)?.text).toBe(`provider anthropic pending (next run)${GENERATOR_IGNORED_NOTE}`);
+    await h.command('/provider');
+    expect(h.renderer.notes.at(-1)?.text).toBe('provider openrouter (next run: anthropic)');
+    await h.command('/mode jev-on');
+    await h.command('/provider openrouter');
+    await h.command('/model glm-no-vendor');
+    expect(h.renderer.notes.at(-1)?.text).toBe('model glm-no-vendor pending (next run) — OpenRouter ids read <vendor>/<model>');
+    await h.command('/model');
+    expect(h.renderer.notes.at(-1)?.text).toMatch(/\(next run: glm-no-vendor\)$/);
+  });
+
+  it('F3 /panel and /transcript: --plain prints the panel rows (`(no decisions yet)` when empty) and `transcript full (--plain is always full)`; the TUI answers the warn note (only a wizard-owned line reaches the host)', async () => {
+    const plain = await build({ rendererKind: 'plain', interactive: false });
+    void plain.controller.run();
+    await plain.ready();
+    await plain.command('/panel');
+    expect(plain.renderer.notes.at(-2)?.text).toBe('panel · d');
+    expect(plain.renderer.notes.at(-1)?.text).toBe('(no decisions yet)');
+    await plain.command('/panel p');
+    expect(plain.renderer.notes.some((n) => n.text === 'panel · p')).toBe(true);
+    await plain.command('/transcript');
+    expect(plain.renderer.notes.at(-1)?.text).toBe(TRANSCRIPT_ALWAYS_FULL);
+    expect(TRANSCRIPT_ALWAYS_FULL).toBe('transcript full (--plain is always full)');
+    const tui = await build();
+    void tui.controller.run();
+    await tui.ready();
+    await tui.command('/panel d');
+    expect(tui.renderer.notes.at(-1)).toMatchObject({ text: PANEL_HANDLED_BY_TUI, level: 'warn' });
+    expect(PANEL_HANDLED_BY_TUI).toBe('panel: handled by the TUI');
+  });
+
+  it('F8 /why failures use whyErrorText (grammar and missing); F18 /errors dispatches ack-errors; F16 /logout passes labelled: false', async () => {
+    const logoutCalls: unknown[] = [];
+    const logout: NonNullable<SessionDeps['commandLogout']> = async (_flags, io, opts) => {
+      logoutCalls.push(opts);
+      io.stdout.write('removed jev key (sha256:abcd) from ~/x\n');
+      return 0;
+    };
+    const h = await build({ deps: { commandLogout: logout } });
+    void h.controller.run();
+    await h.ready();
+    await h.command('/why nope');
+    expect(h.renderer.notes.at(-1)?.text).toBe(whyErrorText('nope', 'grammar'));
+    await h.command('/why s7.risk.plan_mismatch');
+    expect(h.renderer.notes.at(-1)?.text).toBe(whyErrorText('s7.risk.plan_mismatch', 'missing'));
+    await h.command('/errors');
+    expect(h.renderer.dispatched.at(-1)).toEqual({ type: 'ack-errors' });
+    await h.command('/logout jev');
+    expect(logoutCalls).toEqual([{ labelled: false }]);
+    expect(h.renderer.notes.at(-1)).toMatchObject({ label: '[setup]', text: 'removed jev key (sha256:abcd) from ~/x' });
+  });
+
+  it('F10 the keybindings table reaches the renderer at load and on /help reload (setBindings); F17 /trust with the card closed keeps the decision and says `trust unchanged`', async () => {
+    const bindings: unknown[] = [];
+    const h = await build({ options: {}, prompts: { trust: async (_inputs, o) => (o?.reopen === true ? null : 1) } });
+    (h.renderer as unknown as { setBindings: (b: unknown) => void }).setBindings = (b) => bindings.push(b);
+    void h.controller.run();
+    await h.ready();
+    expect(bindings).toHaveLength(1);
+    await h.command('/help reload');
+    expect(bindings).toHaveLength(2);
+    await h.command('/trust');
+    expect(h.renderer.notes.at(-1)).toMatchObject({ label: '[config]', text: 'trust unchanged (trust)' });
+  });
+
+  it('F7 /copy diff with no run answers `nothing to copy for diff`; the S5 rows: the /cost head is `cost` and the /jev block carries `last: <kind in words> (p)`', async () => {
+    const copies: string[] = [];
+    const h = await build({ deps: { copy: async (text) => { copies.push(text); return { ok: true, method: 'osc52', bytes: text.length, masked: 0, truncated: false, toast: 'copied' }; } } });
+    void h.controller.run();
+    await h.ready();
+    await h.command('/copy diff');
+    expect(h.renderer.notes.at(-1)?.text).toBe('error: /copy: nothing to copy for diff');
+    expect(copies).toEqual([]);
+    await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
+    await h.command('/jev');
+    expect(h.renderer.notes.at(-1)?.detail).toContain('last: greeting or smalltalk (0.90)');
+    await h.command('/cost');
+    expect(h.renderer.notes.at(-1)?.text).toBe('cost');
+    // §5.1 rule 6: never scientific notation
+    expect(h.renderer.notes.at(-1)?.detail ?? '').not.toMatch(/e-\d/);
   });
 });

@@ -43,6 +43,8 @@ export function classifyAbort(reason: unknown): { interrupt: InterruptReason; st
   if (isAbortError(reason)) {
     if (reason.reason === 'human_abort') return { interrupt: 'human_abort', stop: 'human_abort' };
     if (reason.reason === 'signal') return { interrupt: 'signal', stop: 'signal' };
+    // contract 1.4 (COORDINATION-DESIGN §7.2, W0 item 6): the pause-now soft interrupt — exit 4, resumable without --force
+    if (reason.reason === 'human_pause') return { interrupt: 'human_pause', stop: 'human_pause' };
     return { interrupt: 'error', stop: 'error' };
   }
   return { interrupt: 'error', stop: 'error' };
@@ -53,8 +55,17 @@ export function serializeError(e: unknown, redact: (s: string) => string): Seria
   return { name: err.name, code: err.code, message: redact(err.message), exitCode: err.exitCode };
 }
 
-export function stopTranscriptLine(reason: StopReason, step: number, detail?: string): string {
-  return `stop: ${reason} at step ${step}${detail ? ` (${detail})` : ''}`;
+/**
+ * contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — `[run] finished ·
+ * <reason> · <steps> · <cost>` already says every word of it one line later, and the pair read as a stutter in
+ * all three sinks. Returning `''` rather than removing the function keeps the one place that decides the row,
+ * so a future wave can bring it back (or a renderer can special-case it) without hunting the call sites.
+ *
+ * The engine SKIPS the event entirely when this is empty (`finish()`), so no sink ever prints a bare `[run]`.
+ * `itemsFromEvent` (`src/tui/plain.ts`, TUI-owned) drops an empty-text transcript item as a second belt.
+ */
+export function stopTranscriptLine(_reason: StopReason, _step: number, _detail?: string): string {
+  return '';
 }
 
 /** A per-source token series from a checkpoint: older checkpoints lack it, which reads as zeros of the combined series' length. */

@@ -10,9 +10,9 @@ import type {
   Answer,
   Candidate,
   CheckpointState,
-  CheckpointStore,
   ConfirmOutcome,
   Confirmer,
+  ContextPolicyOptions,
   Decider,
   Decision,
   Engine,
@@ -27,6 +27,7 @@ import type {
   GitState,
   JevProvider,
   JevRequestRecord,
+  Json,
   PlanDraft,
   Provider,
   Question,
@@ -48,7 +49,10 @@ import type {
 } from '../../../src/core/types.js';
 import { sleep } from '../../../src/core/time.js';
 import { AbortError, EditError, FileNotFoundError, JevHttpError, PatchError, PathEscapeError, ProviderHttpError } from '../../../src/errors.js';
+import type { CheckpointStoreWithContext } from '../../../src/checkpoint/types.js';
+import type { DiskError } from '../../../src/checkpoint/store.js';
 import { createEngine, type EngineDeps, type GitProbe } from '../../../src/loop/engine.js';
+
 import { notRepoState } from '../../../src/workspace/gitstate.js';
 
 // ---------------------------------------------------------------------------------------
@@ -463,8 +467,14 @@ export function createFakeSandbox(script: (command: string, index: number) => Ex
 // Checkpoint store
 // ---------------------------------------------------------------------------------------
 
-export interface FakeStore extends CheckpointStore {
+export interface FakeStore extends CheckpointStoreWithContext {
   meta: RunMeta | null;
+  /** docs/COORDINATION-DESIGN.md §8.3: outputs/step-<n>.txt, by step */
+  outputs: Map<number, string>;
+  /** §8.6: context/summary.json */
+  summary: Json | null;
+  /** §8.3: how many output files this run keeps (0 = unbounded); past it `writeOutput` evicts the oldest and says so */
+  outputsMax: number;
   states: CheckpointState[];
   syncStates: CheckpointState[];
   steps: StepRecord[];
@@ -477,6 +487,15 @@ export interface FakeStore extends CheckpointStore {
   writeDelayMs: number;
   /** when set, writeState never resolves (forced-exit tests) */
   stallWrites: boolean;
+  /** contract 1.4: `cache/<rel>` files written by writeCache(), keyed by rel */
+  cache: Map<string, Json>;
+  /** contract 1.4: when set, writeCache rejects with this error (a cache write failure is a notice only) */
+  failCache: Error | null;
+  /** contract 1.7 (TUI-DESIGN-4 §7.2 item 1): whatever the engine registered, so a test can drive the store's report */
+  degradeListener: ((info: DiskError) => void) | null;
+  setDegradeListener(cb: ((info: DiskError) => void) | null): void;
+  /** drive one classified write failure the way a real write path would */
+  reportDegrade(info: DiskError): void;
   seed(meta: RunMeta, state: CheckpointState, extraSteps?: StepRecord[]): void;
   last(): CheckpointState | undefined;
 }
@@ -485,6 +504,37 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
   const st: FakeStore = {
     dir,
     meta: null,
+    degradeListener: null,
+    setDegradeListener(cb: ((info: DiskError) => void) | null) {
+      st.degradeListener = cb;
+    },
+    reportDegrade(info: DiskError) {
+      st.degradeListener?.(info);
+    },
+    outputs: new Map<number, string>(),
+    summary: null,
+    outputsMax: 0,
+    async writeOutput(step, text) {
+      st.outputs.set(step, text);
+      // docs/COORDINATION-DESIGN.md §8.3: the per-run bound; `outputsMax` (0 = unbounded) lets a test drive the eviction
+      const evicted: number[] = [];
+      while (st.outputsMax > 0 && st.outputs.size > st.outputsMax) {
+        const oldest = Math.min(...st.outputs.keys());
+        if (oldest === step) break;
+        st.outputs.delete(oldest);
+        evicted.push(oldest);
+      }
+      return evicted;
+    },
+    async readOutput(step) {
+      return st.outputs.get(step) ?? null;
+    },
+    async writeContextSummary(summary) {
+      st.summary = structuredClone(summary);
+    },
+    async readContextSummary() {
+      return st.summary;
+    },
     states: [],
     syncStates: [],
     steps: [],
@@ -495,6 +545,8 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
     flushes: 0,
     writeDelayMs: 0,
     stallWrites: false,
+    cache: new Map(),
+    failCache: null,
     seed(meta, state, extraSteps = []) {
       st.meta = meta;
       st.states.push(state);
@@ -519,6 +571,26 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
       if (patch.title !== undefined) st.meta.title = patch.title;
       if (patch.instructions !== undefined) st.meta.instructions = patch.instructions;
       if (patch.git !== undefined) st.meta.git = structuredClone(patch.git);
+      // contract 1.4 (§7.4): `ended` replaces as a scalar; null clears it
+      if (patch.ended !== undefined) st.meta.ended = patch.ended === null ? null : { ...patch.ended };
+      // contract 1.5 (ORCHESTRATION-DESIGN §5.7 tail): the landed merges and the /rewind floor are scalar replaces
+      if (patch.landed !== undefined) st.meta.landed = structuredClone(patch.landed);
+      if (patch.undoUnavailableBelow !== undefined) st.meta.undoUnavailableBelow = patch.undoUnavailableBelow;
+    },
+    async writeCache(rel, json) {
+      if (st.failCache !== null) throw st.failCache;
+      st.cache.set(rel, structuredClone(json));
+    },
+    async readCache(rel) {
+      const v = st.cache.get(rel);
+      return v === undefined ? null : structuredClone(v);
+    },
+    // contract 1.4 (§7.3 step 4): the disk store renames the file; a missing source is not an error
+    async renameCache(from, to) {
+      const v = st.cache.get(from);
+      if (v === undefined) return;
+      st.cache.delete(from);
+      st.cache.set(to, v);
     },
     async writeState(state) {
       if (st.stallWrites) await new Promise<void>(() => undefined);
@@ -642,7 +714,7 @@ export interface HarnessOptions {
   /** jev-only: the propose stage */
   synthesizer?: Synthesizer;
   task?: string;
-  resume?: { runId: string; force: boolean };
+  resume?: { runId: string; force: boolean; replay?: boolean };
   now?: () => number;
   exit?: (code: number) => never;
   /** TUI-DESIGN-2 §6 item 8: `provider` names the naming scheme of the drift check (engine default openrouter) */
@@ -655,7 +727,10 @@ export interface HarnessOptions {
    */
   probeGitState?: GitState | GitProbe;
   /** contract 1.1 wave 2 options spread over EngineOptions (seed, session, humanDirective, blocker, instructions, …) */
-  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing'>>;
+  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing' | 'orchestration'>> & {
+    /** docs/COORDINATION-DESIGN.md §12.0.1 (`EngineOptionsWithContextPolicy` until core/types.ts gains the member) */
+    contextPolicy?: ContextPolicyOptions;
+  };
 }
 
 export interface Harness {

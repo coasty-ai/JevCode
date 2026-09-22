@@ -1108,3 +1108,157 @@ read-only this round).
   scenarios: S6's, under `docs/live/tui/round-2/`; nothing in this slot touched the network (`JEVCODE_ASSERT_NO_NETWORK=1`
   in every scenario that runs without `--mock`).
 - Publishing: `package.json` reads 0.3.0 since the owner's pass; nothing is pushed to the npm registry or the Homebrew tap.
+
+## Round 3 — jev+llm default, one-key onboarding, TypeSafe pink, the persistent wordmark, commands, polish (2026-09-21)
+
+The third round of the interactive TUI (`docs/TUI-DESIGN-3.md`; five slots ran concurrently on 2026-09-21 — S1 theme, S2
+wordmark and animations, S3 defaults and onboarding, S4 commands and the palette, S5 message polish, pty, perf and docs).
+This section is S5's record of the tree at the end of its pass: what landed per slot, the gates that were run and their
+numbers, and where the tree deviates from the design. Numbers marked *(integrator)* are to be filled from the final
+`npm run perf` / pty run on the merged tree; the rest were measured by S5 on its own working tree.
+
+### What was built (as found on disk at the end of the S5 pass)
+
+- **Contract 1.3 and the default flip** (S3, W0–W2: `src/core/types.ts`, `src/config/**`, `src/cli/**`, `src/tui/onboarding/**`,
+  `src/chat/**`): `DEFAULT_MODE = 'jev-on'` (the one constant; `MODE_BADGE_WORD` the one table, `llm-jev` → `llm+jev · verified`),
+  `MODE_BADGE_MAX_CELLS`; `ui.wordmark` (`sweep | static | off`, `static` under SSH); `LaunchSettings.themeHint` from `COLORFGBG`
+  (D-R) and `.ssh`; `Renderer.setBindings?`, `SessionHost.dispatchContext?`, `WizardOutcome { kind: 'mode' }`, `Prompter.wizard`
+  `found` / `foundSource`; the session follows `config.mode` (§1.2); the one-key wizard (`key` / `options` steps, `isFieldStep`,
+  the save-shape table, `3 Jev only` persisting `mode: jev-only` at startup), `verifyKeys` with four outcomes, `login --key-stdin`,
+  `capsItem`, `defaultModeItem` (D-Q as ratified: once, through `seen.defaultMode`), `modeSavedItem`, the generator-neutral copy
+  (§1.9), the `[sandbox]` item as `seatbelt · writes only in the workspace and run dirs · …` with the old sentence as its detail.
+- **The TypeSafe pink** (S1, W1: `src/tui/theme.ts`, `color-shim.ts`): `dark` keeps its id and becomes the typesafe.ai palette
+  (primary `#f386a1` / 211, secondary `#d45bb6` / 169; `accent2` new; `labelRole`; `itemRole` without the `[ui]` → dim branch and
+  `null` for `[you]`); `light` darkens the pinks and fixes its red / green; `daltonized` and `ansi` twins recomputed.
+- **The persistent wordmark and the animations** (S2, W1–W3: `src/tui/wordmark.ts` new, `splash.ts`, `motion.ts` (`useIdleLoop`,
+  `attentionAt`), `layout.ts` (`paneWhole`), `Pane.tsx`, `glyphs.ts` / `spinner.ts` (the shade pulse `░ ▒ ▓ █ ▓ ▒`, static `◆`),
+  `useEngine.tsx` (`lastActivityAt`, `postRunKeySeen`, `run:end` clears the loop banner), `App.tsx` (the mark as the pane slot's
+  idle tenant, the loop, A5 / A6, P7's `thinking` dispatch with `run:starting`, the `DEFAULT_MODE` fallback, `depth` for the live
+  rows)); the caption `◆ <version>` and the tagline.
+- **Commands** (S4, W1–W3: `src/tui/commands/**`, `composer/submit.ts`, `pane/commands.ts`, `keys/**`, `why.ts`, `plain-composer.ts`,
+  `Overlay.tsx`, `scripts/gen-docs.mjs`): the 21 aliases with the exact-alias pin, the alias column, the ` → /owner` ghost,
+  Suggested → recent → Popular, Tab argument completion, `keepDraft`, the six unbound key actions, the §4.4 fixes.
+- **Message polish, identity, pty, perf and docs** (S5, this slot; W1–W4): `src/tui/status/lines.ts` (`modeBadgeWord` from the
+  table, `ModeBadge = string`, `statusSpans` — the left word and the meter words only, D-P; `leftWord` idle for `starting &&
+  !thinking`, P7; `centreText` never the run id, rule 7), `src/tui/transcript/wrap.ts` (new: the segment-aware wrap at ` · ` with the
+  no-orphan rule, `joinWrapped` = the §5.3 normaliser), `src/tui/Transcript.tsx` (the 10-cell gutter, pre-split bodies, detail rows
+  hanging under `label  value`, the spacer above a `[ui]` block, `labelRole` / `bodyRole` — the D-F `keySeq` → `<Static>` style path
+  untouched), `StatusLine.tsx` / `Console.tsx` (rendered from `statusSpans` — `statusRole` and the whole-row `bold` retired; the
+  prompt `accent` at rest and `steer` live; `edgeRole?` for A6; `isFieldStep` for the masked row; `wizardConsoleTitle` delegating to
+  `onboarding/lines.ts`'s; the `{ arrow }` ghost), `Review.tsx` (`armed?` — the keys row dim until the card arms, A8),
+  `composer/Composer.tsx` (prompt roles, the arrow ghost), `toasts.ts` (`toastPhase`, `toastRole`, `TOAST_FADE_MS`, A7),
+  `budget/lines.ts` (`eachUsdText`: `~$0.000006 each`, rule 6); `src/perf/idle-frames.ts` (new probe), the `idle-loop` composer
+  series, the render-lag `run-start` bucket, `ProbeName | 'idle-frames'`, the README rows; `scripts/pty/polish-check.mjs` (V1–V21);
+  the pty steps and `round3.pty.test.ts`; README / TUI.md / CHANGELOG / DECISIONS.
+
+### Gates (S5's own tree; the integrator re-runs on the merged tree)
+
+| Gate | Result | Where |
+| --- | --- | --- |
+| tsc `--strict` on the whole tree, `no-any` | *(S5: clean on every S5 file; the peers' in-flight files listed in the S5 report)* | `npm run typecheck` |
+| unit suite (`npx vitest run --project unit`) | *(S5 report: file / test counts; the timing-based flakes named there)* | — |
+| first frame | *(integrator: `jevcode perf` rows)* < 300 ms, `wordmarkCells > 0` at ≥ 16×64 | `perf/first-frame.ts` |
+| idle animation (new `idle-frames` probe) | *(integrator)* ≤ 4 dynamic frames in any idle second, mean ≤ 2/s, ≤ 12 KB/s peak, ≤ 5 KB/s mean, 0 clears, region ≤ rows − 2; child CPU reported | `perf/idle-frames.ts`, `wordmark-idle.steps` |
+| composer keystroke → frame incl. the `idle-loop` series | *(integrator)* p95 < 16 ms, max < 50 ms | `perf/composer-latency.ts` |
+| dynamic fps during a run incl. the `run-start` bucket | *(integrator)* ≤ maxFps + 1 | `perf/render-lag.ts` |
+| zero clears outside shrink segments | *(integrator)* 0 | `states.ts`, every `.steps` |
+| line identity | the §5.3 normaliser over the scripted run at 80 columns: every engine item re-joins to `formatTranscriptItem` (unit, S5) | `round2-transcript.test.tsx`, `round3-polish-app.test.tsx`, `twins.pty.test.ts` |
+| hero-frame checklist V1–V21 | *(integrator: `polish` / `polish-wide` in `run-smoke.sh`; `.scratch/pty-smoke/polish*.polish.txt`)* | `scripts/pty/polish-check.mjs` |
+| keys never in frames or logs | `r3-wizard-masked-key`, `r3-key-paste-newline`, `ts-only-start` assert it | `round3.pty.test.ts`, `run-smoke.sh` |
+| review invariants | A8 is drawing only; `resolveKey` untouched | `review.test.tsx`, `app.test.tsx` |
+
+### Deviations from the design (S5's, with the reason)
+
+1. **`wordWrap` treats a run of ≥ 2 spaces as a group boundary** (`src/tui/transcript/wrap.ts`): §5.1 rule 4 shows the epilogue's
+   `files     ~/…/  (transcript.log, …)` row hanging its parenthetical whole under the value; a plain word rule would have put
+   `(transcript.log,` on the first row. Identity is unaffected (the §5.3 join collapses space runs).
+2. **The hard-split of a token wider than the row** keeps its last piece ≥ 4 cells and the §5.3 join is exact only when no token is
+   wider than the row (a 71-cell path at a 40-cell width carries one space inside it after the join; nothing is lost).
+3. **V11's money regex** is `\$\d+\.\d{2,6}` in `polish-check.mjs`, not the design's `{2,4}`: rule 6's `~$0.000006 each` has six decimals.
+4. **`splash-settle` / `wordmark-nocolor` allow one frame between the caption frame and the marker key**: the host's `resolveConfig`
+   lands the session meter (`sess $…`) in the status row a few frames after the settle; the design's "0 frames in the 5 s after the
+   settle" is read as "0 sweep frames".
+5. **`statusSpans` paints no done word under an overlay** (`overlay !== 'none'` or the picker): F-R6 colours `idle exit 4` on the idle
+   console; under the palette / picker / wizard the left word is that overlay's and stays plain.
+6. **`round2-lines.test.ts` (one pin) and `test/unit/spend/budget-lines.test.ts` (one pin)** were edited although §7.1 does not list
+   them under S5: the pins were on S5's functions (`modeBadgeWord('llm-jev')`, the `/cost` `each` figure) and would have failed the
+   suite otherwise.
+
+### Requests left for the other slots
+
+- S3 (`onboarding/lines.ts`): `wizardConsoleTitle` gains `key` → `setup · key`, `options` → `setup · options` (the Console wrapper
+  delegates to it; `round2-console.test.tsx` pins both).
+- S4 (`Overlay.tsx`): pass `armed={state.overlayArmed}` to `<Review>` (the prop defaults to `true`, so the arm stays invisible until then).
+- S2 (`App.tsx`): pass `edgeRole` to `<Console>` from the A6 fade (`borderFocus` → `accent2` → `border`); the prop is in place.
+- S2 / S3: the run-end `[ui] stopped` epilogue item is emitted with the epilogue rows as `detail` (`epilogueItemLines`) — unchanged text;
+  the renderer indents and hangs them (rule 4).
+
+### Measured (S5's tree)
+
+- *(to be filled by the S5 report and the integrator's run: perf rows, pty smoke summary, polish-check verdicts)*
+
+
+### Integration (2026-09-21, the owner, after the workflow lost its S3/S5 reviews and the integrator to the API cap)
+
+The round-3 workflow was cut off mid-flight by the account's API usage cap (the Fable sub-agent pool; reset 2026-10-01): W0, S1, S2
+and S4 finished with their reviews, S3 and S5 wrote nearly all of their code before dying, their review/fix passes and the integrator
+never ran. Integration was finished by the owner directly plus two Opus sub-agents on disjoint files (the wizard edges; the pty/smoke
+scenarios), the round-4 audit was relaunched on Opus. What the integration changed, all design-cited (`docs/TUI-DESIGN-3.md` §0.2):
+
+1. **Frame-0 theme** — `--theme light|ansi|…` and `JEVCODE_THEME` painted the dark palette for the first 700 ms (`38;5;211` in the
+   `theme-light` capture): `LaunchSettings.themeHint` now carries an explicit known theme (argv/env only), the App reads it before `setUi`.
+2. **Wizard edge 1** — a key pasted with a trailing CR (`send <key>\r`, one pty write) answered `key too short` on a full buffer: the
+   text and the Enter landed in one React batch and `submit` read the stale closure's length; Enter now reads the buffer, and a pasted
+   text ending in a newline submits itself (`Wizard.tsx`, `wizard-paste.test.tsx`).
+3. **Wizard edge 24 (`--plain`)** — Ctrl-C at the masked prompt hung the process (raw mode: the `0x03` byte sat in readline's line buffer;
+   no SIGINT) and a cancelled plain wizard printed a warn block and kept the session alive: a passive stdin watcher cancels the read on
+   `0x03`, the other-ways prompt cancels on EOF/Ctrl-C, and the startup gate exits 2 with the §1.6 fix block for a cancelled `--plain`
+   wizard (`plain-prompter.test.ts`, `r3-plain-wizard`).
+4. **`/rename`** — the dispatcher cut the title to 60 before the controller could, so the cut note never printed; the controller clips once.
+5. **Scenario patterns** — the caption `◆ <version>` carries SGRs between the diamond and the version; the 10-cell gutter pads every label;
+   the pink prompt closes an SGR before the echo; a palette row highlights the typed prefix; a pasted `/s` is one input event (no palette);
+   `commands-live`'s two Ctrl-C 3 ms apart hit the exit window. ~25 smoke gates had been vacuous against gutter rows (`grep '^\[run\] …'`).
+6. **Checklist V14** exempts toast rows (`! press Ctrl-C again to exit` is 28 of 76 cells by design); **V11** allows six decimals.
+7. **The mark returns in the `[run] end` frame** (one frame earlier than §3.3's prose said; the §3.2 table already said `run:end → idle`).
+8. **Flaky waits** in `wizard.test.tsx` / `session.test.ts` (fixed 20–60 ms ticks after an async save) became polls.
+9. **`chat.pty.test.ts:98`** double-escaped the badge regex (`jev\\+llm`); it uses the helper's escaped `BADGE_DEFAULT`.
+
+Gates on the integrated tree (sub-agent runs at load 2–7; the owner's final numbers are in the table below when the machine was quiet):
+
+| Gate | Result |
+| --- | --- |
+| `tsc --noEmit`, `no-any`, `gen-docs --check` | clean |
+| unit (`vitest --project unit`) | **6,050 passed** at load 21 with 20 timing flakes, each green when re-run alone at load < 8 (App ticks, wizard timers, engine-perf, the fold budget); the peer's clean-checkout run at 9d1dbae: 5,776 passed, 1 cross-worktree flake fixed on main (457708c) |
+| build + `check-pack` at 0.4.0 | pass (bundle minified, tarball < 1.5 MB) |
+| real-pty smoke (`run-smoke.sh`, 64 scenarios) | **64 / 64 PASS**, exit 0 — wizard scenarios included |
+| pty vitest (88 tests incl. `round3.pty.test.ts`) | **88 / 88** after the `chat.pty.test.ts` regex fix (the resize storm tolerates the one P1 torn frame) |
+| hero-frame checklist (`polish-check.mjs` on `polish` / `polish-wide`) | 19 pass / 2 skip (V13 deferred by design; V20 needs the typist) on both geometries |
+| perf (`jevcode perf` incl. the new `idle-frames` probe) | **isolated probes pass**; two full runs were starved by a shared machine — see below |
+| live jev+llm drive (`docs/live/tui/round-3/`) | **pass**: `hi` → `[jevcode]` 322 ms, facts 195 ms, task → `[run] start` 288 ms; the jev+llm run **completed the demo repair** (7 steps, pytest 7/0, $0.016 Jev + $0.008 GLM, 8 generator calls); `/mode` round trip; 0 clears; 0 key bytes |
+
+**Perf on a shared machine (2026-09-21 22:00–23:00).** Two full `jevcode perf` runs were starved: the machine was shared with a
+peer session's live SWE bench (pytest bursts to load 40–90), its harness implementers, and iCloud's `fseventsd` / `cloudd` /
+`replicatord` indexing the churn (each at 30–65 % CPU). The starvation signature is unambiguous — review keystrokes at p50 612 ms,
+67 of 200 burst keys located, a palette state scenario timing out at 60 s — and every probe passed when run alone in the same hour:
+
+| Probe (alone, load 2–8) | Result |
+| --- | --- |
+| first frame (cold p95, 24×80 run / chat) | 144 / 172 ms (< 300); splash frame 0 in 20/20 at ≥ 16×64 |
+| harness overhead p95 | 48.5–49.5 ms (< 50; the 15 MiB image copy dominates; the synthesizer's `synthMs` sits outside it) |
+| render lag net p95 (rows 40 / 12 / reduced) | 0.30 / 0.33 / 2.31 ms (< 5); typing p95 4.4 / 4.3 / 7.1 ms; 0 clears |
+| composer keystroke → frame p95 (idle / idle-loop / live / palette / review) | 5.3 / 5.1 / 4.6 / 5.0 / 6.1 ms (< 16); live-stress 13.7 (report); burst30 2.6 with 200/200 |
+| **idle animation** (new gate) | 4 frames in the busiest second, 1.6/s mean; 9.0 / 11.7 KB peak, 3.5 / 4.6 KB/s mean at 24×80 / 40×120; 0 clears; CPU 17–27 ms/s |
+| intake reply (mock0 / mock150) | bubble p95 12.5 / 10.1 ms; reply net p95 12.5 / 14.8 ms (isolated run before the flip of the palette rows) |
+| states (17 scenarios) | 0 clears outside shrink segments; region ≤ rows − 2 |
+
+One round-3 regression was real and is fixed: the persistent wordmark's five rows re-rendered on every key frame (palette series p50 11 ms,
+p95 34 ms) — `<SplashRow>` is memoised by value on the band tick and blank runs join the neighbouring coloured span, giving palette
+p50 3.6 / p95 5.0 ms and idle p95 4.1 ms. One artefact stays open: in three of nine typing series a run-specific onset made every later
+key's located frame arrive exactly 26 keys (2.6 s) late — the probe's 26-letter cycle means the composer row's last cell stopped
+tracking the newest key (a caret jump or a probe alignment slip); it never recurred in the four kept-capture runs, so it is recorded
+here (P3) for round 4's robustness audit with the hypothesis and the reproduction recipe (`JEVCODE_PERF_KEEP`).
+
+Product observations recorded, not fixed (round 4's resize/robustness audit owns them): **P1** during a 30-resize storm between 40×100 and
+12×60 one frame is laid out for the old width (the mark indented for 100 columns inside a 60-column terminal, 11 dynamic rows at 12 rows):
+Ink's `stdout.columns` updates on SIGWINCH before the App's React `columns` state; steady-state frames are correct (`chat.pty.test.ts:286`,
+2 of 5 runs). **P2** (prose) fixed in §3.3.

@@ -1,0 +1,8 @@
+# --theme ansi (TUI-DESIGN-3 §2.4): the ANSI-16 twin — `ESC[95m` (magentaBright) for the primary pink, never a `38;5;` cell
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+send /exit
+sleep 0.2
+send \r
+eof

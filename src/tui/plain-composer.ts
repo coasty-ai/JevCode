@@ -43,8 +43,9 @@ export function plainUnavailableError(spec: CommandSpec): string {
 
 /**
  * TUI-DESIGN §5.2 `plain` column: `yes`, `n/a`, `inline only`, `` `/resume <id>` only ``, `` `/login` raw-mode prompt ``,
- * `` yes (readline `y/N`) ``. Everything but `n/a` runs; `/resume` without an argument would open the picker (pane only)
- * and `/diff --full` the pager (idle-only anyway), so those two shapes are refused with the `[ui] error:` sentence.
+ * `` yes (readline `y/N`) ``, `always full` (TUI-DESIGN-3 §4.4 F3: `/transcript` — the host answers `transcript full (--plain is
+ * always full)`; `/panel` prints the rows). Everything but `n/a` runs; `/resume` without an argument would open the picker (pane
+ * only) and `/diff --full` the pager (idle-only anyway), so those two shapes are refused with the `[ui] error:` sentence.
  */
 export function plainSupports(spec: CommandSpec, action: CommandAction): { ok: true } | { ok: false; error: string } {
   if (spec.plain === 'n/a') return { ok: false, error: plainUnavailableError(spec) };

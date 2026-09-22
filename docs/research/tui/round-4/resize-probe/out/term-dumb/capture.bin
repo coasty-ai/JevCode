@@ -1,0 +1,3 @@
+[run] jevcode task:  | step 0/- starting
+[sandbox] seatbelt - writes confined to the workspace and run dirs; harness secret files, ~/.ssh, ~/.aws unreadable; reads elsewhere and network allowed unless --no-network
+[?2004l[?2026l[0 q[?25h[0mjevcode: missing task text: pass it as a positional argument, --task-file <path>, or on stdin

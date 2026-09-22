@@ -7,9 +7,12 @@
 import type { ActionOutcome, ExecResult, KilledBy, Proposal, TestCommand, TestCounts } from '../../core/types.js';
 import { isBudgetError } from '../../errors.js';
 import { clampCommandTimeout } from '../budget.js';
+import { headTail } from '../../core/text.js';
 import { joinOutput } from '../window.js';
 import type { StageContext } from '../engine.js';
-import { CONTEXT_MAX_FILE_BYTES, CONTEXT_MAX_FILES, CONTEXT_MAX_TOTAL_BYTES } from './context.js';
+import { parseOutputRef } from '../context/history.js';
+// docs/COORDINATION-DESIGN.md §8.5: the read caps rise with the relaxed context (16 files / 32 KiB / 128 KiB, `core/limits.ts`)
+import { OUTPUT_READ_PREFIX, READ_MAX_FILES, READ_MAX_FILE_CHARS, READ_MAX_TOTAL_CHARS } from '../../core/limits.js';
 import { testsAllPassed } from '../state.js';
 
 export interface ExecuteStageResult {
@@ -64,18 +67,54 @@ export async function runExecuteStage(ctx: StageContext, proposal: Proposal): Pr
     case 'read': {
       const parts: string[] = [];
       let total = 0;
-      const paths = a.paths.slice(0, CONTEXT_MAX_FILES);
+      const paths = a.paths.slice(0, READ_MAX_FILES);
+      const budgetLine = (p: string, size: string): string => `### ${p} (${size}) — not shown: the ${Math.round(READ_MAX_TOTAL_CHARS / 1024)} KB read budget for this step is spent; read it alone on the next step`;
       for (const p of paths) {
-        const view = await ctx.workspace.read(p, CONTEXT_MAX_FILE_BYTES);
-        if (total + view.content.length > CONTEXT_MAX_TOTAL_BYTES) {
-          parts.push(`### ${p} (${view.bytes} bytes) — not shown: 60 KB read budget reached`);
+        // docs/COORDINATION-DESIGN.md §8.3: `jevcode:outputs/step-<n>.txt` is served from the run dir, never from the workspace
+        if (p.startsWith(OUTPUT_READ_PREFIX)) {
+          const stored = parseOutputRef(p) === null ? null : await ctx.contextReads?.runOutput(p);
+          if (stored === null || stored === undefined) {
+            parts.push(`### ${p} — no stored output under this name`);
+            continue;
+          }
+          const shown = stored.length > READ_MAX_FILE_CHARS ? headTail(stored, READ_MAX_FILE_CHARS - 8_192, 8_000) : stored;
+          // review D4: the same budget guard as the workspace branch — 14 `jevcode:` paths used to return 392 KB in one step
+          if (total + shown.length > READ_MAX_TOTAL_CHARS) {
+            parts.push(budgetLine(p, `${stored.length} chars`));
+            continue;
+          }
+          total += shown.length;
+          const clipped = shown.length < stored.length ? `, head and tail shown; the whole ${stored.length} chars stay at ${p}` : '';
+          parts.push(`### ${p} (${stored.length} chars${clipped})\n${shown}`);
+          continue;
+        }
+        // §8.4: a file already in view, rendered whole and unchanged, costs no read and no new tokens
+        const unchanged = await ctx.contextReads?.unchanged(p);
+        if (unchanged !== null && unchanged !== undefined) {
+          parts.push(`### ${p}\n${unchanged}`);
+          continue;
+        }
+        // §8.4 / review D1: in view but shown as a window → the NEXT window, so the tail is reachable and the step differs
+        const next = await ctx.contextReads?.nextWindow(p);
+        if (next !== null && next !== undefined) {
+          if (total + next.length > READ_MAX_TOTAL_CHARS) {
+            parts.push(budgetLine(p, 'next window'));
+            continue;
+          }
+          total += next.length;
+          parts.push(`### ${p}\n${next}`);
+          continue;
+        }
+        const view = await ctx.workspace.read(p, READ_MAX_FILE_CHARS);
+        if (total + view.content.length > READ_MAX_TOTAL_CHARS) {
+          parts.push(budgetLine(p, `${view.bytes} bytes`));
           continue;
         }
         total += view.content.length;
-        const trunc = view.truncatedBytes > 0 ? `, truncated ${view.truncatedBytes} bytes` : '';
+        const trunc = view.truncatedBytes > 0 ? `, ${view.truncatedBytes} more bytes not shown; read ${p} again for the next window` : '';
         parts.push(`### ${p} (${view.bytes} bytes${trunc})\n${view.content}`);
       }
-      if (a.paths.length > CONTEXT_MAX_FILES) parts.push(`(${a.paths.length - CONTEXT_MAX_FILES} more paths not shown: 12-file limit)`);
+      if (a.paths.length > READ_MAX_FILES) parts.push(`(${a.paths.length - READ_MAX_FILES} more paths not shown: the ${READ_MAX_FILES}-file limit; read them on the next step)`);
       const output = ctx.redact(parts.join('\n'));
       return done({ outcome: { status: 'executed', summary: `read ${paths.length} file(s)`, changedFiles: [] }, output, changedFiles: [], tests: null, created: [] });
     }

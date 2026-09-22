@@ -1,12 +1,17 @@
 /**
- * Submit routing (TUI-DESIGN §4.9, §5.1, §10.2), pure over `parseCommand` / `dispatchCommand` /
+ * Submit routing (TUI-DESIGN §4.9, §5.1, §10.2; TUI-DESIGN-3 §4.4 F14, F21), pure over `parseCommand` / `dispatchCommand` /
  * `host.detectSecrets`: Enter on the composer becomes one of — ignore (re-entrancy, empty), newline
- * (trailing `\`), a command action or its `[ui] error:` item with the draft kept, a missing-chip cancel,
- * a hold until the host attaches, the secret gate, a steer (run live) or a submission (idle). A `/` token
+ * (trailing `\`), a command action or its `[ui] error:` item (`keepDraft` says whether the draft stays: fixable errors keep
+ * it, availability errors clear it, D-K), a `busy` toast for a command that must wait for the thinking reply, a missing-chip
+ * cancel, a hold until the host attaches, the secret gate, a steer (run live) or a submission (idle). A `/` token
  * that matches nothing never submits: a submitted line is a paid run (a `/` after leading whitespace is
  * a command too — a slash typo with a stray space must never start a run). `exit`/`quit`/`:q` typed alone
  * do not exit (§22 against A9). `@` mentions on the §10.4 denylist are dropped from `pinnedFiles` and
- * reported in `droppedMentions` (the literal word stays in the text).
+ * reported in `droppedMentions` (the literal word stays in the text). While a chat request is thinking
+ * (`allowCommandsWhileSubmitting`), `/` lines route instead of being dropped: the read-only commands run
+ * (`READ_ONLY_WHILE_THINKING`), `/exit` runs (the App cancels the request and exits), `/steer` answers
+ * `needs a live run` (a chat request is not a run: the dispatch context carries `run: 'none'`), every other
+ * command answers the `one moment — still thinking` toast with the draft kept.
  */
 import type { SecretHit, SessionHost } from '../../core/types.js';
 import type { OverlayKind } from '../layout.js';
@@ -23,6 +28,19 @@ export const MIN_SECRET_LENGTH = 8;
 export const TRUNCATION_NOTICE = 'notice: only the first 12,000 characters reach the generator; @-mention a file for more';
 /** TUI-DESIGN §24: the toast while Enter is held before the host attached. */
 export const STARTING_TOAST = 'starting…';
+/** TUI-DESIGN-2 §3.1 row 11 / §12 "Status" (the App re-exports it): Enter while a submission is still thinking. */
+export const STILL_THINKING_TOAST = 'one moment — still thinking';
+/**
+ * TUI-DESIGN-3 §4.4 F14: the commands that run while the intake is thinking — read-only, no session side effect. `/exit` is
+ * handled apart (it cancels the request and exits); everything else answers `STILL_THINKING_TOAST`.
+ */
+export const READ_ONLY_WHILE_THINKING: ReadonlySet<string> = new Set(['status', 'cost', 'jev', 'help', 'panel', 'transcript', 'theme']);
+
+/** TUI-DESIGN-3 §4.4 F14: what a resolved command does while a chat request is thinking. */
+export function whileThinking(spec: Pick<CommandSpec, 'name'>): 'run' | 'exit' | 'busy' {
+  if (spec.name === 'exit') return 'exit';
+  return READ_ONLY_WHILE_THINKING.has(spec.name) ? 'run' : 'busy';
+}
 
 /** TUI-DESIGN §5.4 / §10.4 / §24: the `[ui]` notice for a denied `@` mention typed in full (the label is added by the item). */
 export function deniedMentionNotice(rel: string): string {
@@ -85,6 +103,11 @@ export interface SubmitInput {
   readonly dispatch: DispatchContext;
   /** override the chip expander (O2's PasteStore) */
   readonly expand?: (text: string) => ExpandResult;
+  /**
+   * TUI-DESIGN-3 §4.4 F14: a chat request is thinking (`chatThinking(state)`): `/` lines route while `submitting` instead of being
+   * dropped — read-only commands run, the rest answer the still-thinking toast (`busy`); text still waits for the reply.
+   */
+  readonly allowCommandsWhileSubmitting?: boolean;
 }
 
 /** TUI-DESIGN §4.9: the routing decision the controller executes. */
@@ -92,7 +115,10 @@ export type SubmitDecision =
   | { readonly kind: 'ignore'; readonly reason: 'submitting' | 'empty' | 'run-ending' }
   | { readonly kind: 'newline'; readonly text: string }
   | { readonly kind: 'command'; readonly action: CommandAction; readonly spec: CommandSpec; readonly line: string }
-  | { readonly kind: 'error'; readonly text: string; readonly label: '[ui]' }
+  /** TUI-DESIGN-3 §4.4 F21: `keepDraft` false → the App clears the draft (availability errors have nothing to edit) */
+  | { readonly kind: 'error'; readonly text: string; readonly label: '[ui]'; readonly keepDraft: boolean }
+  /** TUI-DESIGN-3 §4.4 F14: a command that must wait for the thinking reply — toast, draft kept */
+  | { readonly kind: 'busy'; readonly toast: typeof STILL_THINKING_TOAST }
   | { readonly kind: 'chip-missing'; readonly n: number; readonly text: string; readonly label: '[ui]' }
   | { readonly kind: 'hold'; readonly toast: typeof STARTING_TOAST }
   | { readonly kind: 'gate'; readonly full: string; readonly hits: readonly SecretHit[] }
@@ -140,27 +166,31 @@ function sendInput(i: SubmitInput): SendInput {
 
 /**
  * TUI-DESIGN §4.9 `routeSubmit` — `onEnter()` as a pure function:
- * submitting → ignore; palette → run only on an exact name/alias match, else the unknown-command item;
- * `/` first (leading whitespace ignored: a slash typo never starts a run, D-log "a submitted line is money")
- * → `dispatchCommand`, errors keep the draft; `//` at column 0 → literal slash prompt; trailing `\` →
- * newline; empty → ignore; missing chip → cancel with `remove [Pasted #N] or paste again`; no host → hold
+ * submitting → ignore (unless a chat request is thinking and the line is a command, TUI-DESIGN-3 F14); palette → run only on an
+ * exact name/alias match, else the unknown-command item; `/` first (leading whitespace ignored: a slash typo never starts a run,
+ * D-log "a submitted line is money") → `dispatchCommand`, fixable errors keep the draft and availability errors clear it (F21);
+ * while thinking a resolved command runs only when read-only (`whileThinking`), else `busy`; `//` at column 0 → literal slash
+ * prompt; trailing `\` → newline; empty → ignore; missing chip → cancel with `remove [Pasted #N] or paste again`; no host → hold
  * with `starting…`; secret hits → the gate; else `routeSend`.
  */
 export function routeSubmit(i: SubmitInput): SubmitDecision {
-  if (i.submitting) return { kind: 'ignore', reason: 'submitting' };
+  const thinking = i.allowCommandsWhileSubmitting === true;
+  const lead0 = i.text.trimStart();
+  if (i.submitting && !(thinking && (isCommandLine(lead0) || i.overlay === 'palette'))) return { kind: 'ignore', reason: 'submitting' };
   let text = i.text;
+  const resolved = (r: ReturnType<typeof dispatchCommand>, line: string): SubmitDecision => {
+    if (!r.ok) return { kind: 'error', text: r.text, label: '[ui]', keepDraft: r.keepDraft };
+    if (thinking && whileThinking(r.spec) === 'busy') return { kind: 'busy', toast: STILL_THINKING_TOAST };
+    return { kind: 'command', action: r.action, spec: r.spec, line };
+  };
   if (i.overlay === 'palette') {
     const token = commandToken(text.trimStart());
-    if (token === '' || !isExactCommand(token)) return { kind: 'error', text: unknownCommandText(token === '' ? text.trim().split(/\s+/)[0] ?? '/' : token), label: '[ui]' };
-    const r = dispatchCommand(text.trimStart(), i.dispatch);
-    return r.ok ? { kind: 'command', action: r.action, spec: r.spec, line: text.trim() } : { kind: 'error', text: r.text, label: '[ui]' };
+    if (token === '' || !isExactCommand(token)) return { kind: 'error', text: unknownCommandText(token === '' ? text.trim().split(/\s+/)[0] ?? '/' : token), label: '[ui]', keepDraft: true };
+    return resolved(dispatchCommand(text.trimStart(), i.dispatch), text.trim());
   }
   if (/(^|[^\\])\\$/.test(text)) return { kind: 'newline', text: text.slice(0, -1) };
   const lead = text.trimStart();
-  if (isCommandLine(lead)) {
-    const r = dispatchCommand(lead, i.dispatch);
-    return r.ok ? { kind: 'command', action: r.action, spec: r.spec, line: text.trim() } : { kind: 'error', text: r.text, label: '[ui]' };
-  }
+  if (isCommandLine(lead)) return resolved(dispatchCommand(lead, i.dispatch), text.trim());
   if (text.startsWith('//')) text = text.slice(1); // literal slash-leading prompt
   if (text.trim() === '') return { kind: 'ignore', reason: 'empty' };
   const expanded = (i.expand ?? ((t: string) => expandChips(t, i.chips)))(text);

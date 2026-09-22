@@ -1,8 +1,9 @@
 /**
- * Loop banner (TUI-DESIGN §7.3, A45): one row, present only while a signature count ≥ 2 or a
- * replan directive is active — `loop  run:pytest -q›exit 1  x2/3   replan 1/5 s6 change_approach p .61 imp .12`.
- * Counts are folded from `step:end.record.loopSignatures`, reset on `replan` and `steer:applied`.
- * Pure; the row is ≤ `columns`.
+ * Loop banner (TUI-DESIGN §7.3, A45; TUI-DESIGN-3 §5.1 rule 12): one dynamic row, present only while a signature count
+ * ≥ 2 or a replan directive is active — `loop · run:pytest -q›exit 1 repeated 2 of 3 · replan 1 of 5 · s6 change_approach
+ * (p 0.61 · impossible 0.12)` (` · ` separators like every other row; probabilities two decimals, rule 6). Counts are
+ * folded from `step:end.record.loopSignatures`, reset on `replan` and `steer:applied`, and the reducer clears the banner
+ * at `run:end`. A dynamic row, never a transcript item (no identity cost). Pure; the row is ≤ `columns`.
  */
 import type { ReplanDirective, StepRecord } from '../../core/types.js';
 import { LOOP_TRIP_COUNT, signatureKind } from '../../loop/loopdetect.js';
@@ -104,22 +105,32 @@ export function loopView(fold: LoopFold): LoopBannerView | null {
   return { signature: bestSig !== null ? (fold.labels[bestSig] ?? bestSig) : '', count: best, max: LOOP_TRIP_COUNT, replan: fold.replan };
 }
 
-/** `.61` for probabilities in the banner (§24 `p .61 imp .12`). */
+/** `.61` for probabilities (the round-2 banner's `p .61 imp .12`; kept for callers that print the short form). */
 export function shortP(x: number): string {
   if (!Number.isFinite(x)) return 'nan';
   const s = Math.max(0, Math.min(1, x)).toFixed(2);
   return s.startsWith('0') ? s.slice(1) : s;
 }
 
-/** TUI-DESIGN §7.3 / §24: the one-row banner — `loop  <signature>  x2/3   replan 1/5 s6 <move> p .61 imp .12` — or null when neither a count ≥ 2 nor a replan is active. */
+/** TUI-DESIGN-3 §5.1 rule 6: probabilities with two decimals (`0.62`). */
+export function bannerP(x: number): string {
+  return Number.isFinite(x) ? Math.max(0, Math.min(1, x)).toFixed(2) : 'nan';
+}
+
+/**
+ * TUI-DESIGN-3 §5.1 rule 12: the one-row banner — `loop · <signature> repeated 2 of 3` · `loop · replan 1 of 5 · s7 gather_context
+ * (p 0.62 · impossible 0.20)` (both segments when both apply, ` · ` between them; `-` under `--ascii`) — or null when neither
+ * a count ≥ 2 nor a replan is active.
+ */
 export function bannerRow(view: LoopBannerView | null, columns: number, g: GlyphSet = GLYPHS.unicode): string | null {
   if (view === null || columns <= 0) return null;
+  const sep = ` ${g.dot} `;
   const parts: string[] = [];
-  if (view.count >= 2) parts.push(`${oneLineCells(view.signature)}  x${view.count}/${view.max}`);
+  if (view.count >= 2) parts.push(`${oneLineCells(view.signature)} repeated ${view.count} of ${view.max}`);
   if (view.replan) {
     const r = view.replan;
-    parts.push(`replan ${r.n}/${r.max} s${r.step} ${r.move} p ${shortP(r.p)} imp ${shortP(r.impossible)}`);
+    parts.push(`replan ${r.n} of ${r.max}${sep}s${r.step} ${r.move} (p ${bannerP(r.p)}${sep}impossible ${bannerP(r.impossible)})`);
   }
   if (parts.length === 0) return null;
-  return truncateCells(`loop  ${parts.join('   ')}`, columns, g);
+  return truncateCells(`loop${sep}${parts.join(sep)}`, columns, g);
 }

@@ -8,6 +8,7 @@
 import { CONDITION_ORDER } from '../../../src/bench/conditions.js';
 import { describe, expect, it } from 'vitest';
 import {
+  BARE_JEVCODE_SENTENCE,
   BOOLEAN_FLAGS,
   CONDITIONS,
   CLI_SOURCES,
@@ -21,6 +22,7 @@ import {
   RUN_ID_RE,
   SESSIONS_OPS,
   STRING_FLAGS,
+  TAGLINE,
   classifyResumeValue,
   parseCliArgs,
   promoteRunToChat,
@@ -28,6 +30,7 @@ import {
   type Command,
 } from '../../../src/cli/args.js';
 import type { TuiBooleanFlagKey, TuiStringFlagKey } from '../../../src/config/types.js';
+import { DEFAULT_MODE, MODE_BADGE_WORD } from '../../../src/config/defaults.js';
 import { UsageError } from '../../../src/errors.js';
 
 const RUN_ID = '20260919-142301-k7q2m3xa';
@@ -442,7 +445,14 @@ describe('usageText', () => {
     expect(usageText('run')).toMatch(/--mode jev-only\|jev-on\|jev-off/);
     expect(usageText()).toContain('jev-only');
     // TUI-DESIGN-2 §1.4: `jevcode login --jev-provider typesafe|openrouter`
-    expect(usageText()).toContain('jevcode login [--provider anthropic|openrouter] [--jev-provider typesafe|openrouter]');
+    // TUI-DESIGN-3 §1.6: `--key-stdin` leads the login synopsis
+    expect(usageText()).toContain('jevcode login [--key-stdin | --generator-key-stdin --jev-key-stdin] [--provider anthropic|openrouter] [--jev-provider typesafe|openrouter]');
+    expect(parseCliArgs(['login', '--key-stdin'])).toEqual({ command: 'login', keyStdin: true });
+    expect(FLAGS.find((f) => f.key === 'keyStdin')).toMatchObject({ name: 'key-stdin', type: 'boolean', commands: ['login'] });
+    expect(usageText('login')).toContain('--key-stdin');
+    // TUI-DESIGN-3 §0.1 (D-Q): `jevcode config --all`
+    expect(parseCliArgs(['config', '--all'])).toEqual({ command: 'config', all: true });
+    expect(usageText()).toContain('jevcode config [--json] [--all]');
     // finding 9: login's flag table agrees with its usage line (`auto` = infer is what an absent flag means there)
     expect(login).toContain('--jev-provider typesafe|openrouter ');
     expect(login).not.toContain('auto|typesafe|openrouter');
@@ -463,10 +473,11 @@ describe('usageText', () => {
 });
 
 describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)', () => {
-  it('--mode help names jev-only as the default and orders the enum jev-only|jev-on|jev-off|llm-jev; the flag itself stays optional (the default lives in the config layer)', () => {
+  it('--mode help names the default through DEFAULT_MODE (TUI-DESIGN-3 §1.1, D-N) and orders the enum jev-only|jev-on|jev-off|llm-jev; the flag itself stays optional (the default lives in the config layer)', () => {
     const mode = FLAGS.find((f) => f.key === 'mode');
     expect(mode?.arg).toBe('jev-only|jev-on|jev-off|llm-jev');
-    expect(mode?.help).toBe('engine mode: jev-only (default; no generating LLM), jev-on (Jev + LLM), jev-off (generator only), llm-jev (GLM candidates inside the Jev-only search; Jev decides, tests verify)');
+    expect(mode?.help).toBe(`engine mode (default ${DEFAULT_MODE}): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)`);
+    expect(mode?.help).not.toMatch(/jev-only \(default|Claude|GLM/);
     expect(FLAGS.find((f) => f.key === 'condition')?.arg).toBe('jev-only|jev-on|jev-off|llm-jev');
     expect(MODES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
     expect(parseCliArgs([]).mode).toBeUndefined();
@@ -474,7 +485,12 @@ describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)',
     expect(usage(['run', 'x', '--mode', 'jev-maybe']).message).toMatch(/--mode: expected one of jev-only\|jev-on\|jev-off\|llm-jev/);
     expect(usageText()).toContain('[--mode jev-only|jev-on|jev-off|llm-jev]');
     expect(usageText()).not.toContain('[--mode jev-on|jev-off|jev-only]');
-    expect(usageText()).toContain('opens the interactive session in jev-only mode');
+    // TUI-DESIGN-3 §1.1 / §1.9: the bare-`jevcode` sentence names DEFAULT_MODE's badge word; the tagline is generator-neutral
+    expect(usageText()).toContain(BARE_JEVCODE_SENTENCE);
+    expect(BARE_JEVCODE_SENTENCE).toBe(`A bare \`jevcode\` opens the interactive session in ${MODE_BADGE_WORD[DEFAULT_MODE]} mode (one OpenRouter key serves Jev and the code model; /mode jev-only runs on Jev alone); \`/\` lists commands, \`?\` shows the keys.`);
+    expect(usageText().split('\n')[0]).toBe(TAGLINE);
+    expect(TAGLINE).toBe('JevCode: Jev decides, the code model writes.');
+    expect(usageText()).not.toContain('Claude');
   });
 
   it('llm-jev (docs/LLM-JEV-DESIGN.md): --mode / --condition / bench --conditions accept the fourth mode; the bench default stays jev-on,jev-off', () => {
@@ -486,7 +502,7 @@ describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)',
     // every bench arm the runner defines is accepted by --conditions (args.ts lists them literally: bench/conditions.ts is too heavy for the argv path)
     expect([...CONDITIONS]).toEqual([...CONDITION_ORDER]);
     expect(FLAGS.find((f) => f.key === 'conditions')?.arg).toBe('jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned]');
-    expect(FLAGS.find((f) => f.key === 'conditions')?.help).toBe('conditions to run (default jev-on,jev-off)');
+    expect(FLAGS.find((f) => f.key === 'conditions')?.help).toBe('conditions to run (when omitted: the jev-on and jev-off arms)');
     expect(usageText('run')).toContain('--mode jev-only|jev-on|jev-off|llm-jev ');
     expect(usageText('bench')).toContain('--conditions jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned] ');
     expect(usageText()).toContain('[--mode jev-only|jev-on|jev-off|llm-jev]');
@@ -517,7 +533,7 @@ describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)',
     expect(usage(['bench', '--conditions', 'jev-on,nope']).message).toMatch(/--conditions/);
     expect(usageText()).toContain('jev-only');
     expect(usageText('run')).toMatch(/--mode jev-only\|jev-on\|jev-off/);
-    expect(FLAGS.find((f) => f.key === 'conditions')?.help).toBe('conditions to run (default jev-on,jev-off)');
+    expect(FLAGS.find((f) => f.key === 'conditions')?.help).toBe('conditions to run (when omitted: the jev-on and jev-off arms)');
   });
 });
 

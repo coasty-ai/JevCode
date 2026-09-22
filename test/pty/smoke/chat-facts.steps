@@ -12,7 +12,7 @@ expect \[jevcode\](?:\x1b\[[0-9;]*m)* JevCode is a coding agent
 send which mode is this?
 sleep 0.2
 send \r
-expect \[jevcode\](?:\x1b\[[0-9;]*m)* Mode: jev-only
+expect \[jevcode\](?:\x1b\[[0-9;]*m)* Mode: llm\+jev
 send /exit
 sleep 0.2
 send \r

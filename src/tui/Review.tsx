@@ -4,7 +4,9 @@
  * clipping); the preview is `confirmPreviewLines(req)` through `reviewPreviewLines()` with the
  * `…[k more preview lines · e expands]` tail; the `d` note field replaces row 2 (the keys line) for its lifetime
  * so the single overlay slot is never double-booked (§6.3), and the note's own secret gate renders in that same
- * row. Keys (`y n Esc d e w+digit Ctrl-C`) are resolved by `resolveKey` in `<App>`; this component only draws.
+ * row. Keys (`y n Esc d e w+digit Ctrl-C`) are resolved by `resolveKey` in `<App>`; this component only draws — TUI-DESIGN-3
+ * §5.2 A8: the keys row is `dim` on the card's first (unarmed) frame and bold in the verdict colour once `armed` (the App's
+ * `overlayArmed`), so the card wakes up exactly when `y` becomes live; no key semantics change here.
  */
 import { Box, Text } from 'ink';
 import type { CursorPosition } from 'ink';
@@ -108,6 +110,8 @@ export interface ReviewProps {
   color?: ColorOn;
   /** TUI-DESIGN-2 §4.7: the boxed tier draws the card (`reviewCardLines`) — `rows` is the card's want incl. its two edges */
   boxed?: boolean;
+  /** TUI-DESIGN-3 §5.2 A8: the card is armed (`overlayArmed`, ≥ 150 ms after its first frame) — the keys row goes from dim to bold verdict colour; default true */
+  armed?: boolean;
 }
 
 /** §6: the review header (title and keys in the verdict colour) and the dim preview, as fixed-height truncating rows. */
@@ -121,6 +125,7 @@ export function Review(p: ReviewProps): React.JSX.Element | null {
   const total = header.length + preview.length;
   if (total === 0) return null;
   const verdict = p.req.risk.verdict === 'block' ? 'block' : 'review';
+  const armed = p.armed !== false;
   if (p.note && p.cursor && header.length >= 2) {
     const x = p.note.gate === null ? Math.min(p.columns - 1, stringWidth(`${NOTE_LABEL}${maskHits(p.note.text, p.note.spans ?? [], maskGlyphFor(g))}`)) : 0;
     p.cursor({ x, y: p.top + 1 });
@@ -128,7 +133,7 @@ export function Review(p: ReviewProps): React.JSX.Element | null {
   return (
     <Box flexDirection="column" height={total} overflow="hidden">
       {header.map((line, i) => (
-        <Text key={`h${i}`} wrap="truncate" {...(i === 0 || (i === 1 && !p.note) ? textProps(theme, verdict, color) : i === 1 && p.note?.gate ? textProps(theme, 'secret', color) : {})} bold={i === 1 && !p.note}>
+        <Text key={`h${i}`} wrap="truncate" {...(i === 0 || (i === 1 && !p.note && armed) ? textProps(theme, verdict, color) : i === 1 && !p.note ? textProps(theme, 'dim', color) : i === 1 && p.note?.gate ? textProps(theme, 'secret', color) : {})} bold={i === 1 && !p.note && armed}>
           {line}
         </Text>
       ))}
@@ -150,6 +155,7 @@ function ReviewCard(p: ReviewProps & { glyphs: GlyphSet; theme: Theme; color: Co
   const lines = reviewCardRows(p.req, p.rows, p.previewRows, p.columns, g, p.note ?? null);
   if (lines.length === 0) return null;
   const verdict = p.req.risk.verdict === 'block' ? 'block' : 'review';
+  const armed = p.armed !== false;
   const edges = textProps(p.theme, verdict, p.color);
   const boxed = lines.length >= 3;
   const bodyRows = boxed ? lines.length - 2 : lines.length;
@@ -180,7 +186,7 @@ function ReviewCard(p: ReviewProps & { glyphs: GlyphSet; theme: Theme; color: Co
         return (
           <Text key={`c${i}`} wrap="truncate">
             <Text {...edges}>{left}</Text>
-            <Text {...(isKeys ? { ...textProps(p.theme, verdict, p.color), bold: true } : isGate ? textProps(p.theme, 'secret', p.color) : isPreview ? textProps(p.theme, 'dim', p.color) : {})}>{body}</Text>
+            <Text {...(isKeys ? (armed ? { ...textProps(p.theme, verdict, p.color), bold: true } : textProps(p.theme, 'dim', p.color)) : isGate ? textProps(p.theme, 'secret', p.color) : isPreview ? textProps(p.theme, 'dim', p.color) : {})}>{body}</Text>
             <Text {...edges}>{right}</Text>
           </Text>
         );

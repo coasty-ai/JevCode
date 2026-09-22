@@ -327,9 +327,9 @@ describe('llm-jev: sanctioned generator channel, mode plumbing, code-fact stages
       [4, 'propose_fix', true, 'error'],
     ]);
     const [r0, , r1, r4] = rows;
-    // config/defaults.ts GLM 5.3 Flash row: $0.09/M in, $0.30/M out
+    // config/defaults.ts GLM 5.3 Flash row: $0.15/M in, $0.50/M out (re-fetched 2026-09-21)
     expect(r0!.usage).toMatchObject({ inputTokens: inTok, outputTokens: 2, calls: 1, estimated: true });
-    expect(r0!.usage.costUsd).toBeCloseTo((inTok * 0.09 + 2 * 0.3) / 1e6, 15);
+    expect(r0!.usage.costUsd).toBeCloseTo((inTok * 0.15 + 2 * 0.5) / 1e6, 15);
     // not sample 2's 1000 prompt tokens; priced at the run's mean rate over everything metered so far
     expect(r1!.usage).toMatchObject({ inputTokens: inTok, outputTokens: 0, calls: 1, estimated: true });
     expect(r1!.usage.costUsd).toBeCloseTo(((r0!.usage.costUsd + 0.004) / (inTok + 2 + 1200)) * inTok, 15);
@@ -360,7 +360,9 @@ describe('llm-jev: sanctioned generator channel, mode plumbing, code-fact stages
     expect(h1.of('budget:unpriced')).toEqual([{ type: 'budget:unpriced', side: 'generator', model: 'vendor/unknown-model', step: 1, tokens: { input: 4, output: 0 } }]);
     expect(r1.stopReason).toBe('error');
     expect(r1.steps).toBe(1);
-    expect(h1.store.transcript.at(-2)).toBe('[run] warn: stop: error at step 1 (unpriced_usage)');
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
+    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    expect(h1.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     expect(h1.store.generator[0]!.usage).toEqual({ inputTokens: 4, outputTokens: 0, costUsd: 0, calls: 1, estimated: true });
     // the resolved config pricing (overrides included) prices the same estimate
     const p2 = deferredProvider('vendor/unknown-model');

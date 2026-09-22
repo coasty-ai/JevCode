@@ -8,6 +8,7 @@
 import type { Answer, EngineMode, GitState, JevProvider, LastTestRun, Question, SandboxLevel, StopReason, TestRunner } from '../core/types.js';
 import { noul, ref } from '../jev/questions.js';
 import { clip } from '../core/text.js';
+import { MODE_BADGE_WORD } from '../config/defaults.js';
 import { sandboxText } from '../tui/onboarding/lines.js';
 import { usd2 } from '../tui/budget/lines.js';
 import { stepCostText } from '../tui/plain.js';
@@ -107,23 +108,31 @@ export const FACT_FALSE_EXAMPLES: Readonly<Record<FactKey, readonly string[]>> =
 
 /** Jev's price on both providers (§2.1: $0.042 per million input tokens, output free) */
 export const JEV_PRICE_TEXT = '$0.042 per million input tokens (output free)';
-export const WHAT_IT_IS_TEXT = 'JevCode is a coding agent where Jev, a decision model, makes every decision: what kind of step comes next, which files matter, how risky an action is, whether a step worked. In jev-only mode code proposes fixes and tests verify them; in jev+llm mode Claude writes the code.';
-export const SWITCH_MODE_TEXT = 'Switch with /mode jev-on (alias /llm on) or /mode jev-only; it applies to the next run. Persist it with jevcode config set mode <m>.';
+// TUI-DESIGN-3 §1.9 (R3 F9 / R5 F13): the copy names the code model, never a vendor
+export const WHAT_IT_IS_TEXT = 'JevCode is a coding agent where Jev, a decision model, makes every decision: what kind of step comes next, which files matter, how risky an action is, whether a step worked. In jev-only mode code proposes fixes and tests verify them; in jev+llm mode the code model writes the code.';
+export const SWITCH_MODE_TEXT = 'Switch with /mode jev-only (Jev alone, $0.25 run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.';
 export const REVIEW_TEXT = 'Risky actions stop for review: y approves once, n declines, d declines with a note. Nothing is ever auto-approved; Enter does nothing there.';
 export const UNDO_TEXT = '/undo reverts the last step\'s file changes, /rewind picks a step, /diff shows what changed.';
 export const COMMANDS_TEXT = 'Commands start with /; type / to list them, /help for keys.';
 export const HOW_TO_TASK_TEXT = 'Describe the change in plain words and press Enter; a run starts, shows every decision, and stops to ask before anything risky.';
 export const HOW_TO_TASK_SUFFIX: Readonly<Record<EngineMode, string>> = {
   'jev-only': ' In jev-only I fix what tests can verify; for open-ended changes switch with /mode jev-on.',
-  'jev-on': ' Claude writes the code, Jev decides each step.',
+  'jev-on': ' The code model writes the code, Jev decides each step.',
   'jev-off': ' The generator alone runs it; reviews still ask.',
-  'llm-jev': ' GLM writes candidate patches inside the Jev-only search; Jev decides, tests verify.',
+  'llm-jev': ' The code model writes candidate patches, tests verify them, Jev arbitrates.',
+};
+/** TUI-DESIGN-3 §1.9: the `mode_now` sentence per mode — ONE table, the badge words from `MODE_BADGE_WORD` */
+export const MODE_SENTENCE: Readonly<Record<EngineMode, string>> = {
+  'jev-only': `Mode: ${MODE_BADGE_WORD['jev-only']} — no generating LLM; code proposes, Jev decides, tests verify.`,
+  'jev-on': `Mode: ${MODE_BADGE_WORD['jev-on']} — the code model writes the code, Jev decides every step.`,
+  'jev-off': `Mode: ${MODE_BADGE_WORD['jev-off']} — the generator alone, no Jev (bench condition; reviews still ask).`,
+  'llm-jev': `Mode: ${MODE_BADGE_WORD['llm-jev']} — the code model writes candidate patches, tests verify them, Jev arbitrates.`,
 };
 export const NOTHING_RAN_TEXT = 'Nothing has run yet in this session.';
 export const NO_TESTS_PARSED_TEXT = 'No test run has been parsed in this session yet.';
 
 function modeNowText(mode: EngineMode, nextMode: EngineMode): string {
-  const base = mode === 'jev-only' ? 'Mode: jev-only — no generating LLM; code proposes, Jev decides, tests verify.' : mode === 'jev-on' ? 'Mode: jev+llm — Claude writes the code, Jev decides every step.' : mode === 'llm-jev' ? 'Mode: llm-jev — GLM writes candidate patches inside the Jev-only search; Jev decides, tests verify.' : 'Mode: llm-only — the generator alone, no Jev (bench condition; reviews still ask).';
+  const base = MODE_SENTENCE[mode];
   return nextMode !== mode ? `${base} Next run: ${modeWord(nextMode)}.` : base;
 }
 

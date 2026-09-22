@@ -14,8 +14,13 @@
  * ` · next run` while a `/mode` is pending) and the conversational left words (`⠹ thinking` · `⠹ looking` ·
  * `⠹ replying` · `asking`); in the boxed tier the row is drawn at the console's inner width, in the flat tier the
  * badge leads the left zone (`jev-only · idle`) and is the first thing dropped when short.
+ * TUI-DESIGN-3 §1.1 / §5.2 P6–P7 / §5.1 rule 7: the badge word comes from the one table `MODE_BADGE_WORD` (config/defaults.ts —
+ * nothing here names a mode); `statusSpans` colours the left word and the meter words only (never the whole row); the
+ * `starting` phase without a chat phase keeps the previous idle word (no wrong chrome between Enter and the bubble); the
+ * centre shows `/rename` titles only, never the run id.
  */
 import type { BlockingKind, BlockingRequest, ConfirmRequest, EngineMode, EngineStatus, GitHead, RetryCause, RunResult, SandboxLevel, SpendSnapshot, StopReason } from '../../core/types.js';
+import { MODE_BADGE_WORD } from '../../config/defaults.js';
 import { exitCodeFor } from '../../loop/stop.js';
 import { SPARKLINE_CELLS, eighthBar, sparkline } from '../bars.js';
 import { meterWord, usd2 } from '../budget/lines.js';
@@ -23,7 +28,8 @@ import { ELLIPSIS, stringWidth, truncateCells } from '../composer/width.js';
 import { GLYPHS, glyphSet } from '../glyphs.js';
 import type { GlyphSet } from '../glyphs.js';
 import type { OverlayKind } from '../layout.js';
-import { activeToast, asciiFold, oneLineSafe, toastText } from '../toasts.js';
+import type { ColorRole } from '../theme.js';
+import { activeToast, asciiFold, oneLineSafe, toastPhase, toastRole, toastText } from '../toasts.js';
 import type { Toast } from '../toasts.js';
 
 // ---------------------------------------------------------------------------------------
@@ -101,16 +107,16 @@ export const THINKING_WORDS: Readonly<Record<ThinkingPhase, string>> = { intake:
 /** TUI-DESIGN-2 §3.7 / §12: the left word while the intake card asks `run this as a task?`. */
 export const ASKING_WORD = 'asking';
 
-/** TUI-DESIGN-2 §1.5: the badge words (llm-jev: docs/LLM-JEV-DESIGN.md §9.3). */
-export type ModeBadge = 'jev-only' | 'jev+llm' | 'llm-only' | 'llm-jev';
-/** TUI-DESIGN-2 §1.5: jev-only → `jev-only`; jev-on → `jev+llm`; jev-off → `llm-only`; llm-jev → `llm-jev`. */
-export function modeBadgeWord(mode: EngineMode): ModeBadge {
-  return mode === 'jev-on' ? 'jev+llm' : mode === 'jev-off' ? 'llm-only' : mode === 'llm-jev' ? 'llm-jev' : 'jev-only';
+/** TUI-DESIGN-3 §1.1 (D-N): the badge word is whatever `MODE_BADGE_WORD` says — a string, never an enumeration of modes here. */
+export type ModeBadge = string;
+/** TUI-DESIGN-3 §1.1: the ONE table maps a mode to its word (`jev-only` · `jev+llm` · `llm-only` · `llm+jev · verified`); the `·` folds to the glyph set's dot. */
+export function modeBadgeWord(mode: EngineMode, g: GlyphSet = GLYPHS.unicode): ModeBadge {
+  return MODE_BADGE_WORD[mode].replaceAll(' · ', ` ${g.dot} `);
 }
 /** TUI-DESIGN-2 §1.5 / §12 "Console": `jev-only`; `jev+llm · next run` while a pending mode differs from the live one. */
 export function modeBadge(mode: EngineMode, pending: EngineMode | null, g: GlyphSet = GLYPHS.unicode): string {
-  if (pending !== null && pending !== mode) return `${modeBadgeWord(pending)} ${g.dot} next run`;
-  return modeBadgeWord(mode);
+  if (pending !== null && pending !== mode) return `${modeBadgeWord(pending, g)} ${g.dot} next run`;
+  return modeBadgeWord(mode, g);
 }
 
 /** TUI-DESIGN §7.4 / §14.1: glyph mode, motion, spinner phase and renderer mode (all default to the Unicode session TUI). */
@@ -150,7 +156,7 @@ export const MAX_COLUMNS = 4096;
 /** The jev-only propose marker (`StatusLine.tsx` SYNTH_MARKER, kept). */
 export const SYNTH_MARKER = '[synth]';
 const ZONE_GAP = 2;
-const STEP_WORDS: readonly string[] = ['intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete', 'replan'];
+const STEP_WORDS: readonly string[] = ['intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete', 'replan', 'decompose'];
 
 // ---------------------------------------------------------------------------------------
 // Cells (§4.2 via O2's width.ts; §14.1 ellipsis twin)
@@ -333,8 +339,9 @@ function leftWord(s: StatusLineState, o: StatusLineOptions): string {
   // under reduced motion). The submission runs under `run: 'starting'` until the reply or `run:start` (§3.1 row 5), so the
   // chat phase wins over the bare `starting` word; a live run never carries a phase (the controller refuses `converse` then)
   if (s.thinking !== undefined && s.thinking !== null && (s.run === 'none' || s.run === 'starting')) return `${spinnerGlyph(o)} ${THINKING_WORDS[s.thinking]}`;
-  if (s.run === 'starting') return 'starting';
-  if (s.run === 'none') {
+  // TUI-DESIGN-3 §5.2 P7: `starting` without a chat phase (the frame between Enter and the bubble, the one-shot argv path
+  // before `run:start`) keeps the previous idle word — the row never reads `starting` beside a `Type to steer` placeholder
+  if (s.run === 'none' || s.run === 'starting') {
     if (s.done === null) return 'idle';
     return o.mode === 'one-shot' ? `done ${s.done.stopReason}` : `idle exit ${exitOf(s, s.done)}`;
   }
@@ -471,11 +478,14 @@ export function rightZoneSegments(s: StatusLineState, columns: number, o: Status
   return { segments, wall: wallStr };
 }
 
-/** TUI-DESIGN §7.4 / §14.1: the centre zone's text — the `/rename` title in quotes (one line, no controls, no bidi or format characters), else the run id, else ''. */
+/**
+ * TUI-DESIGN §7.4 / §14.1: the centre zone's text — the `/rename` title in quotes (one line, no controls, no bidi or format
+ * characters), else ''. TUI-DESIGN-3 §5.1 rule 7: never the run id (it lives in `[run] start` and the epilogue's `run` row).
+ */
 export function centreText(s: StatusLineState, ascii = false): string {
   const title = typeof s.title === 'string' ? oneLineSafe(s.title).trim() : '';
   if (title.length > 0) return `"${ascii ? asciiFold(title) : title}"`;
-  return s.runId ?? '';
+  return '';
 }
 
 /** TUI-DESIGN §7.4: the three zones after the drop order was applied; `right` is the list of surviving segment texts. */
@@ -564,25 +574,130 @@ export function statusZones(s: StatusLineState, columns: number, o: StatusLineOp
  * '' when `columns` is 0, NaN or negative. The `step N/M` sentinel is always present when anything is.
  */
 export function statusLineText(s: StatusLineState, columns: number, o: StatusLineOptions = {}): string {
+  return assemble(s, columns, o).text;
+}
+
+/** the assembled row plus where its parts landed (string indices), so `statusSpans` colours the words without re-deriving the text */
+interface Assembled {
+  text: string;
+  zones: StatusZones | null;
+  /** index of the left zone (always 0 when present; -1 when the left zone was dropped) */
+  leftAt: number;
+  /** index of each surviving right segment's text, aligned with `zones.right`; empty when the right zone was cut */
+  rightAt: number[];
+}
+
+function assemble(s: StatusLineState, columns: number, o: StatusLineOptions = {}): Assembled {
   const cols = clampColumns(columns);
-  if (cols <= 0) return '';
+  const none: Assembled = { text: '', zones: null, leftAt: -1, rightAt: [] };
+  if (cols <= 0) return none;
   const ascii = o.ascii === true;
   const z = statusZones(s, cols, o);
   const right = z.right.join(' '.repeat(ZONE_GAP));
   const lw = stringWidth(z.left);
   const rw = stringWidth(right);
-  if (lw + rw === 0) return '';
-  if (lw === 0) return rw <= cols ? `${' '.repeat(cols - rw)}${right}` : truncateStatus(right, cols, ascii);
+  if (lw + rw === 0) return none;
+  const segmentsAt = (rightStart: number): number[] => {
+    const out: number[] = [];
+    let at = rightStart;
+    for (const seg of z.right) {
+      out.push(at);
+      at += seg.length + ZONE_GAP;
+    }
+    return out;
+  };
+  if (lw === 0) {
+    if (rw <= cols) {
+      const pad = ' '.repeat(cols - rw);
+      return { text: `${pad}${right}`, zones: z, leftAt: -1, rightAt: segmentsAt(pad.length) };
+    }
+    return { text: truncateStatus(right, cols, ascii), zones: z, leftAt: -1, rightAt: [] };
+  }
   if (lw + ZONE_GAP + rw > cols) {
     // only reachable when even the sentinel alone does not fit: keep as much of it as the row allows
-    return truncateStatus(z.left.length > 0 ? `${z.left}  ${right}` : right, cols, ascii);
+    return { text: truncateStatus(z.left.length > 0 ? `${z.left}  ${right}` : right, cols, ascii), zones: z, leftAt: z.left.length > 0 ? 0 : -1, rightAt: [] };
   }
   const gap = cols - lw - rw;
   if (z.centre.length > 0) {
     const cw = stringWidth(z.centre);
     const before = Math.floor((gap - cw) / 2);
     const after = gap - cw - before;
-    return `${z.left}${' '.repeat(before)}${z.centre}${' '.repeat(after)}${right}`;
+    const head = `${z.left}${' '.repeat(before)}${z.centre}${' '.repeat(after)}`;
+    return { text: `${head}${right}`, zones: z, leftAt: 0, rightAt: segmentsAt(head.length) };
   }
-  return `${z.left}${' '.repeat(gap)}${right}`;
+  const head = `${z.left}${' '.repeat(gap)}`;
+  return { text: `${head}${right}`, zones: z, leftAt: 0, rightAt: segmentsAt(head.length) };
+}
+
+// ---------------------------------------------------------------------------------------
+// Spans (TUI-DESIGN-3 §5.2 P6, D-P): the coloured parts of the row — never the whole row
+// ---------------------------------------------------------------------------------------
+
+/** A half-open span of `text` (string indices) and the colour role it takes. */
+export interface StatusSpan {
+  from: number;
+  to: number;
+  role: ColorRole;
+  /** the span is drawn bold too (the done word) */
+  bold?: boolean;
+}
+
+export interface StatusSpans {
+  /** `statusLineText(state, columns, o)` — the same string, byte for byte */
+  text: string;
+  /** ascending, non-overlapping */
+  spans: StatusSpan[];
+}
+
+/** TUI-DESIGN-3 §5.2 P6 / D-P: the meter word's role — `high` warns, `critical` and `over` are errors, the rest is plain. */
+export function meterWordRole(word: string): ColorRole | null {
+  if (word === 'high') return 'warn';
+  if (word === 'critical' || word === 'over') return 'error';
+  return null;
+}
+
+/**
+ * TUI-DESIGN-3 §5.2 P6 (D-P): the status row as text plus the spans that carry colour — the leading spinner glyph
+ * (`accent`), the left word once a run ended (`ok` for `complete`, `warn` otherwise, bold), a toast by its level (A7:
+ * `dim` in its last second), the flat tier's badge prefix (`badge`), the meter words (`high` → `warn`, `critical` /
+ * `over` → `error`) and `⚠ secret?` (`secret`). Everything else stays the terminal's default foreground: the status is
+ * a fact. `text` equals `statusLineText` for the same inputs.
+ */
+export function statusSpans(s: StatusLineState, columns: number, o: StatusLineOptions = {}): StatusSpans {
+  const a = assemble(s, columns, o);
+  const spans: StatusSpan[] = [];
+  if (a.zones === null) return { text: a.text, spans };
+  const ascii = o.ascii === true;
+  const g = glyphs(ascii);
+  if (a.leftAt === 0) {
+    const left = a.zones.left;
+    const toast = activeToast(s.toasts, s.nowMs);
+    const prefix = a.zones.dropped.includes('badge') ? '' : flatBadgePrefix(s, o);
+    const badgeWord = prefix === '' ? '' : prefix.slice(0, prefix.length - ` ${g.dot} `.length);
+    if (badgeWord !== '' && left.startsWith(badgeWord)) spans.push({ from: 0, to: badgeWord.length, role: 'badge' });
+    const wordAt = left.startsWith(prefix) ? prefix.length : 0;
+    const word = left.slice(wordAt);
+    if (toast !== null) {
+      const role: ColorRole = toastPhase(toast, s.nowMs) === 'fading' ? 'dim' : toastRole(toast.level);
+      if (word.length > 0) spans.push({ from: wordAt, to: wordAt + word.length, role });
+    } else {
+      const spinner = o.reducedMotion === true ? g.spinnerStatic : g.spinner.find((f) => word.startsWith(`${f} `)) ?? null;
+      if (spinner !== null && word.startsWith(`${spinner} `)) spans.push({ from: wordAt, to: wordAt + spinner.length, role: 'accent' });
+      else if (s.run === 'none' && s.done !== null && s.overlay === 'none' && s.picker !== true) {
+        const idle = leftZoneWord(s, o);
+        if (word.startsWith(idle) && idle.length > 0) spans.push({ from: wordAt, to: wordAt + idle.length, role: s.done.stopReason === 'complete' ? 'ok' : 'warn', bold: true });
+      }
+    }
+  }
+  a.zones.right.forEach((seg, i) => {
+    const at = a.rightAt[i];
+    if (at === undefined) return;
+    if (seg.startsWith('run $') || seg.startsWith('sess $')) {
+      const sp = seg.lastIndexOf(' ');
+      const word = seg.slice(sp + 1);
+      const role = meterWordRole(word);
+      if (role !== null) spans.push({ from: at + sp + 1, to: at + seg.length, role });
+    } else if (seg === secretBadge(s, ascii) && seg.length > 0) spans.push({ from: at, to: at + seg.length, role: 'secret' });
+  });
+  return { text: a.text, spans: spans.filter((x) => x.to > x.from && x.to <= a.text.length).sort((x, y) => x.from - y.from) };
 }

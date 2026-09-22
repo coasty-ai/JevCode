@@ -130,10 +130,12 @@ describe('the jev-contract lint', () => {
   });
 
   it('is a ratchet: an allow-list row wider than the file is an error, not a note', () => {
-    // src/loop/engine.ts is grandfathered for one un-annotated site; a copy of the tree where it has none must fail
+    // src/loop/engine.ts is grandfathered for its seam sites; a copy of the tree where it has none must fail.
+    // The row's count moves as waves land (contract 1.5 added the decomposeContext seam), so the assertion is on
+    // the ratchet's shape, not on today's number — what must hold is that headroom is an error.
     const r = lint(tree({ 'src/loop/engine.ts': 'export const engine = 1;\n' }));
     expect(r.code).toBe(1);
-    expect(r.out).toContain('the allow-list grandfathers 1 un-annotated Jev call site(s) but the file has 0');
+    expect(r.out).toMatch(/src\/loop\/engine\.ts: the allow-list grandfathers [1-9]\d* un-annotated Jev call site\(s\) but the file has 0/);
     expect(r.out).toContain('tighten the row to 0');
   });
 

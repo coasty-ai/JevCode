@@ -9,6 +9,10 @@
 // contract 1.1 (2026-09-20): additive TUI/session extensions per docs/TUI-DESIGN.md §15; every new field on an existing type is optional; CheckpointEnvelope.version stays 1.
 // contract 1.2 (2026-09-21): conversational intake, Jev providers, mode setting, chat labels per docs/TUI-DESIGN-2.md §6; items 4 and 7 add required fields (every constructor and fake is listed there), item 8 is optional, everything else is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 // contract 1.2 (2026-09-21): docs/LLM-JEV-DESIGN.md §4.8 / §4.12 / §9.3 generator-channel fields, reconciled from stages 1–3 (this file is the single source; provider/* and synth/llm/* declare no contract shapes of their own). All additive and optional.
+// contract 1.3 (2026-09-21): TUI round 3 — renderer bindings, wizard `mode` outcome, ui.wordmark, host dispatch context, per docs/TUI-DESIGN-3.md §6; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
+// contract 1.4 (2026-09-21): coordination — pause points, context meter, registry API per docs/COORDINATION-DESIGN.md §12.0; every item is optional or a new union member; CheckpointEnvelope.version stays 1.
+// contract 1.5 (2026-09-22): orchestration — decompose stage, manifest, agents, landing queue per docs/ORCHESTRATION-DESIGN.md §4.1; every item is optional or a new union member; Action, STOP_REASON_SET, exitCodeFor, MODES and CheckpointEnvelope.version are untouched.
+// contract 1.7 (2026-09-22): TUI round 4 — block rows, annotateBlock, diff detail kind, ui.renderer, peer view, per docs/TUI-DESIGN-4.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
 
@@ -136,8 +140,8 @@ export interface PlanUnverified {
   step: number;
   judged: number;
 }
-/** TUI-DESIGN §15 item 2: 'human' = a steer (step > 0) or a seed / undo note (step 0) */
-export type HarnessProblemKind = 'replan' | 'rejected_claim' | 'stale_plan' | 'human';
+/** TUI-DESIGN §15 item 2: 'human' = a steer (step > 0) or a seed / undo note (step 0); contract 1.5 (§3.7): 'orchestration' = a declined or failed decomposition, which sends the next steps single-threaded */
+export type HarnessProblemKind = 'replan' | 'rejected_claim' | 'stale_plan' | 'human' | 'orchestration';
 export interface HarnessProblem {
   kind: HarnessProblemKind;
   text: string;
@@ -237,7 +241,8 @@ export interface JevResponse {
   provider?: string;
 }
 
-export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | 'execute' | 'judge' | 'complete';
+/** contract 1.5 (ORCHESTRATION-DESIGN §4.1): `decompose` is the optional stage that runs before `replan`/`intent` and, on approval, delegates the step */
+export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | 'execute' | 'judge' | 'complete' | 'decompose';
 
 /**
  * The verdict written on a resolved Choice (loop/stages/choose.ts): `chosen` = Jev's answer with its paired Noul >= floor,
@@ -386,10 +391,12 @@ export interface StepTiming {
   imagesMs?: number;
   /** docs/LLM-JEV-DESIGN.md §7.5 (llm-jev): wall of `synthesize()`; generatorMs (batch wall) and the synthesizer's Jev requests sit inside it */
   synthMs?: number;
+  /** contract 1.5 (ORCHESTRATION-DESIGN §4.1 [D13]): wall of the `decompose` stage (gate → enumerate → normalise → rank → confirm); absent when the gate was shut */
+  decomposeMs?: number;
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
-export type InterruptReason = 'signal' | 'human_abort' | 'wall_time' | 'error';
+export type InterruptReason = 'signal' | 'human_abort' | 'wall_time' | 'error' | 'human_pause'; // contract 1.4 (§12.0.2 P4/P5, W0 item 1): a pause-now that skipped or cut the judge
 
 export interface StepRecord {
   step: number;
@@ -427,6 +434,16 @@ export interface StepRecord {
    * `propose_action` fallback when `handles()` is false; stage 4 sets it). Absent in the other modes.
    */
   proposer?: StepProposer;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §2.6 [G1]): the sha of the harness commit this step produced inside an agent
+   * worktree (`commitStep`). Absent when the engine made no git commit — which is every non-agent run.
+   */
+  commit?: string;
+  /**
+   * contract 1.5 (§2.4 [G8]): paths this step wrote OUTSIDE the agent's `own` set — the belt-2 hole the post-`run`
+   * escape diff finds. Reported, not refused; the critic's include/drop question reads it. Absent = nothing escaped.
+   */
+  escaped?: readonly string[];
 }
 
 /** docs/LLM-JEV-DESIGN.md §9.4 */
@@ -503,6 +520,11 @@ export interface RunResult {
   jevModelDrift: { step: number; served: string } | null;
   /** TUI-DESIGN-2 §2.4 (additive): the cost basis of the Jev requests this process made (`costBlock`'s `jev table …` / `jev provider usage.cost` suffix); absent from older results */
   jevCostBasis?: JevCostBasis | null;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §2.6 [G1]): the sha of the harness commit this run made at `run:end` inside an
+   * agent worktree. Absent when the engine made no git commit — which is every run without `orchestration.runGit`.
+   */
+  commit?: string;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -696,6 +718,21 @@ export interface ConfirmRequest {
   matchesIntent?: number | null;
   /** TUI-DESIGN §15 item 6: the risk stage's Jev latency for the 120-column title */
   jevLatencyMs?: number;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §3.7 [D5]): replaces the computed review title verbatim (cut to `columns`).
+   * When set, `reviewTitle` / `reviewCardTitle` never call `dominantDimension` / `dimOf`.
+   */
+  title?: string;
+  /**
+   * contract 1.5 (§3.7 [D4]): <= HEADLINE_ROWS_MAX (`src/core/limits.ts`) rows that fill the gauge band of
+   * `reviewHeaderLines` / `reviewCardLines` row-for-row, padded with '' so every ladder rung keeps its exact
+   * row count. Setting it also refuses `review:why` [D5b]. `proposal` and `risk` stay REQUIRED.
+   */
+  headline?: readonly string[];
+  /** contract 1.5 (§3.7 [G2]): pre-rendered preview lines; replaces `describeAction(proposal.action).preview` in `confirmPreviewLines` */
+  body?: readonly string[];
+  /** contract 1.5 (§3.7 [G2]): e.g. 'agent tui-rows' — rendered in the header before the title */
+  badge?: string;
 }
 /** TUI-DESIGN §15 item 6: note = redacted, <= 600, one line; `...(note ? { note } : {})` */
 export interface ConfirmOutcome {
@@ -726,6 +763,13 @@ export interface SpendSnapshot {
   parentExceeded?: boolean;
   /** TUI-DESIGN §15 item 7: the parent's totals; present only with a parent */
   parent?: { totalUsd: number; capUsd: number };
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §6.2 [G6]): money reserved for live agents and not yet spent. Optional so
+   * every pre-1.5 snapshot (and every fake) is still a `SpendSnapshot`; `createSpendMeter` always writes it, and
+   * `restore` re-establishes it — it is usage-shaped, not cap-shaped. Enforcement is `sessionRemainingUsd`'s third
+   * argument [D6], never `exceeded()`.
+   */
+  heldUsd?: number;
 }
 export interface SpendMeter {
   /** never throws; records (and forwards to the parent) first, then evaluates */
@@ -739,6 +783,23 @@ export interface SpendMeter {
   child(capUsd: number): SpendMeter;
   /** TUI-DESIGN §15 item 7: root meter: replace the cap (USD or +Infinity); children keep forwarding to the same object; never recreate a meter */
   setCap?(capUsd: number): void;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §6.2 [G6]): reserve `usd` for one spawned agent, KEYED BY `agentId`. OPTIONAL
+   * so every existing fake still satisfies `SpendMeter`. Holding per agent rather than as one running total is what
+   * makes `release` idempotent and adoption rebuildable: a re-`hold` for the same id REPLACES that agent's reserve
+   * (a raised cap), and a double `release` cannot drive the total negative. The hold belongs to the meter that took
+   * it and is NOT forwarded to the parent; `exceeded()` does not count it [D6]. Non-finite or negative amounts are
+   * ignored; an empty `agentId` is ignored.
+   */
+  hold?(agentId: string, usd: number): void;
+  /** contract 1.5 (§6.2 [G6]): drop one agent's reserve. Idempotent — an unknown id is a no-op. Never forwarded. */
+  release?(agentId: string): void;
+  /**
+   * contract 1.5 (§6.2 [D6]): the sum of the outstanding holds — the third argument of
+   * `sessionRemainingUsd(cap, spent, heldUsd)`, which is the half of the reserve that actually enforces anything.
+   * Always a finite number >= 0. Equals `snapshot().heldUsd`.
+   */
+  heldUsd?(): number;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -964,6 +1025,34 @@ export interface CheckpointState {
   error?: { stage: StageName; code: string };
   /** §9.1 rule 1: a discarded (uncommitted) step */
   interrupted: { step: number; stage: StageName; proposal: Proposal | null } | null;
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §7.2, §12.0.4 "state the card reads"): what a pause-now left behind for `--replay` —
+   * the run-relative cache file, the targets' hashes at the pause, whether a replay is possible, how much of the proposal had
+   * streamed. Present only while `interrupted` names the same step; dropped with it (checkpoint/resume.ts fold, commit).
+   */
+  interruptedDetail?: InterruptedDetail;
+  /**
+   * contract 1.4 (§12.0.2 "when emitted"): the pause point the final `human_pause` write recorded, so the resume card has it
+   * without the heartbeat (the design puts it on `Heartbeat.pausePoint?`; the state carries the same object). Never restored
+   * into a resumed engine's status; the resumed run's next checkpoint drops it.
+   */
+  pausePoint?: PausePoint;
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §8.3, §8.4, §8.6 — moved here verbatim from src/loop/context/types.ts): the generator's
+   * relaxed context, all optional and absent on runs written before it landed. `history` ≤ 12 tiered steps with their
+   * `outputs/step-<n>.txt` pointers, `fileCache` ≤ 16 files in view, `fileMemory` ≤ 64 known paths, `summaryAt` the step
+   * whose commit produced `context/summary.json`.
+   */
+  history?: HistoryEntry[];
+  fileCache?: FileCacheEntry[];
+  fileMemory?: FileMemory;
+  summaryAt?: number | null;
+  /** contract 1.4 (§12.0.3): compactions over the run's life, all resumes (ContextUsage.compactions) */
+  compactions?: number;
+  /** contract 1.4 (§12.0.3): ISO time of the last compaction (ContextUsage.lastCompactionAt) */
+  lastCompactionAt?: string | null;
+  /** contract 1.4 (§12.0.3): chars of the last generator prompt this run built, persisted at commit so a resumed process's meter starts from a fact instead of 0 */
+  lastPromptChars?: number;
   consecutiveStageFailures: number;
   /** Σ decisions.length over committed steps (RunResult.jevQuestions); absent in older checkpoints */
   jevQuestions?: number;
@@ -975,6 +1064,19 @@ export interface CheckpointState {
   undoLog?: UndoLogEntry[];
   /** TUI-DESIGN §15 item 9 */
   checkpointDegraded?: boolean;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.1, §8.2 D1 item 15): the delegation this run is the parent of, so a resumed
+   * or adopted process re-finds its children. Absent on every run that never delegated.
+   */
+  orchestration?: {
+    manifestId: string;
+    /** the step the manifest was confirmed at */
+    step: number;
+    dockBranch: string;
+    agents: { slug: string; state: AgentState; runId: string | null; commit: string | null }[];
+  };
+  /** contract 1.5 (§3.1): decompositions this run has made, against `orchestrate.maxSplits`; absent reads as 0 */
+  splits?: number;
   resumes: number;
   updatedAt: string;
 }
@@ -992,7 +1094,7 @@ export interface PendingDirective {
 export const PENDING_DIRECTIVES_MAX = 8;
 export const DIRECTIVE_MAX_CHARS = 600;
 /** TUI-DESIGN §15 item 9 */
-export type UndoSkipReason = 'link' | 'escape' | 'submodule' | 'not-recoverable' | 'head-moved' | 'refused' | 'declined' | 'cap' | 'size';
+export type UndoSkipReason = 'link' | 'escape' | 'submodule' | 'not-recoverable' | 'head-moved' | 'refused' | 'declined' | 'cap' | 'size' | 'landed'; // contract 1.5 (§8.2 D3 item 25): the path came from a landed agent branch, below `RunMeta.undoUnavailableBelow`
 /** TUI-DESIGN §15 item 9 */
 export interface UndoLogEntry {
   runId: string;
@@ -1013,6 +1115,12 @@ export interface CheckpointEnvelope {
 export interface ConfigRecordValue {
   value: string | { source: string; fingerprint: string };
   source: string;
+  /**
+   * contract 1.6 item 7 (TUI-DESIGN-4 §7.5): why the file layer discarded this value, so `jevcode config` can say so
+   * instead of printing a default. Absent / null = the value is fine; `expected` is the sentence the row suffixes
+   * (`✗ expected an integer ≥ 1`). A row carrying a problem is never folded (§3.3).
+   */
+  readonly problem?: { readonly kind: 'unknown-key' | 'wrong-type' | 'out-of-range'; readonly expected: string } | null;
 }
 export interface RunMeta {
   runId: string;
@@ -1025,9 +1133,15 @@ export interface RunMeta {
   createdAt: string;
   /** appended on resume (§9); TUI-DESIGN §9.4 (additive): `source` names who raised it — `/budget` (pending value) or a flag; absent reads as 'flag' */
   overrides: { setting: string; from: string; to: string; atStep: number; source?: '/budget' | 'flag' }[];
-  resumes: { resumedAt: string; previousStopReason: StopReason | null }[];
+  /** contract 1.4 (§7.4): `reopened` marks a `--force` resume of an ended run */
+  resumes: { resumedAt: string; previousStopReason: StopReason | null; reopened?: true }[];
   resolvedJevModel: string | null;
   jevModelDrift: { step: number; served: string } | null;
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §7.4, §12.0.2): `end` was requested — written with the final `human_pause` state;
+   * `createEngine` refuses a resume without `--force`; a forced reopen writes `null` (the run is live again; nothing is deleted).
+   */
+  ended?: RunEnded | null;
   /** TUI-DESIGN §15 item 10: the session this run belongs to (default: the run id itself) */
   sessionId?: string;
   /** TUI-DESIGN §15 item 10: the run this one was seeded from (§8.3) */
@@ -1040,6 +1154,27 @@ export interface RunMeta {
   git?: RunGitMeta;
   /** TUI-DESIGN §15 item 10: AGENTS.md files folded into the generator system prompt */
   instructions?: InstructionRecord[];
+  /** contract 1.5 (ORCHESTRATION-DESIGN §4.1): this run delegated — what it spawned and what came back */
+  orchestration?: {
+    manifestId: string;
+    /** slugs, in manifest order */
+    agents: string[];
+    dockBranch: string;
+    landed: { slug: string; commit: string; step: number }[];
+  };
+  /** contract 1.5 (§4.1 [D2]): this run IS an agent — who its parent is, what it owns, and what the dirty sync replayed into its worktree */
+  agent?: {
+    slug: string;
+    parentRunId: string;
+    parentSessionId: string;
+    own: string[];
+    manifestId: string;
+    syncedDirty: SyncedDirtyEntry[];
+  };
+  /** contract 1.5 (§8.2 D3 item 25): the merges this run landed into its checkout, newest last */
+  landed?: { step: number; branch: string; commit: string }[];
+  /** contract 1.5 (§4.1; shared with COORDINATION-DESIGN §9.3): `/undo` and `/rewind` refuse below this step — a landed merge is not a harness write to revert */
+  undoUnavailableBelow?: number;
 }
 /** TUI-DESIGN §15 item 10 */
 export type RunSource = 'cli' | 'bench' | 'perf';
@@ -1080,6 +1215,8 @@ export interface GeneratorCallRecord {
   servedProvider?: string;
   /** true when the sample hit HTTP 429 — the call recovered by retrying (a completed row), or ended rate-limited (a cancelled row; `CancelledGeneration.rateLimited`) */
   rateLimited?: true;
+  /** contract 1.4 (COORDINATION-DESIGN §7.2, §11 row 41): a late row of a pause-now-discarded step — the number a replay reuses, so the two attempts stay apart */
+  discarded?: true;
 }
 
 export interface CheckpointStore {
@@ -1087,8 +1224,9 @@ export interface CheckpointStore {
   create(meta: RunMeta): Promise<void>;
   /** CheckpointError, exit 3 */
   load(): Promise<{ meta: RunMeta; state: CheckpointState; recoveredFrom: 'state' | 'prev' }>;
-  /** TUI-DESIGN §15 item 10: patch type gains 'title' | 'instructions' | 'git' (git: scalar replace) */
-  updateMeta(patch: Partial<Pick<RunMeta, 'overrides' | 'resumes' | 'resolvedJevModel' | 'jevModelDrift' | 'title' | 'instructions' | 'git'>>): Promise<void>;
+  /** TUI-DESIGN §15 item 10: patch type gains 'title' | 'instructions' | 'git' (git: scalar replace); contract 1.4: 'ended' (scalar replace; null clears it on a forced reopen, §7.4) */
+  /** contract 1.5 (ORCHESTRATION-DESIGN §5.7 tail, corner row 44): `landed` / `undoUnavailableBelow` join the patchable scalars — additive, every existing caller compiles */
+  updateMeta(patch: Partial<Pick<RunMeta, 'overrides' | 'resumes' | 'resolvedJevModel' | 'jevModelDrift' | 'title' | 'instructions' | 'git' | 'ended' | 'landed' | 'undoUnavailableBelow'>>): Promise<void>;
   /** write tmp + fsync; rename state.json -> state.prev.json; rename tmp -> state.json */
   writeState(state: CheckpointState): Promise<void>;
   /** synchronous last resort used by shutdown() on a second Ctrl-C or on 'exit' */
@@ -1106,6 +1244,26 @@ export interface CheckpointStore {
   lastWarnings?(): readonly string[];
   /** TUI-DESIGN §15 item 10: ui.json; optional so injected fakes still type-check */
   writeUi?(ui: Json): Promise<void>;
+  /** contract 1.4 (COORDINATION-DESIGN §7.2, §6.4): `<runDir>/cache/<rel>` — a redacted JSON file on a per-file chain, tmp + rename; `rel` is relative to `cache/`, no `..`; optional so injected fakes compile */
+  writeCache?(rel: string, json: Json): Promise<void>;
+  /** contract 1.4 (§7.3 step 3): read `<runDir>/cache/<rel>` back; null when missing or not JSON */
+  readCache?(rel: string): Promise<Json | null>;
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §8.3, §8.6, W2 item 20): the context policy's artefacts. `writeOutput` stores the whole
+   * (redacted) output of a step at `outputs/step-<n>.txt` (≤ 1 MiB each, ≤ 64 MiB per run) and resolves with the steps whose
+   * file the per-run bound deleted, so the caller stops pointing at them; `writeContextSummary` stores `context/summary.json`.
+   * Optional on the contract so injected fakes keep type-checking (`hasContextStore`); required on the disk store.
+   */
+  writeOutput?(step: number, text: string): Promise<number[]>;
+  readOutput?(step: number): Promise<string | null>;
+  writeContextSummary?(summary: Json): Promise<void>;
+  readContextSummary?(): Promise<Json | null>;
+  /**
+   * contract 1.4 (§7.3 step 3): rename a cache file inside `cache/` — the engine supersedes `cache/step-<n>.json` to
+   * `cache/step-<n>.superseded.json` the moment step n runs fresh, so no later `--replay` can resurrect it. A missing
+   * source resolves; only a real failure rejects.
+   */
+  renameCache?(from: string, to: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1140,6 +1298,12 @@ export interface EngineSeed {
   pinnedFiles?: string[];
   /** TUI-DESIGN §8.3 (additive): steers carried from the parent's pendingDirectives, for the ` · N pending steer carried` suffix of the seeded notice */
   carriedDirectives?: number;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §2.6 [D13]): the other agents of this manifest, for the child's bounded
+   * `## Agents` prompt section — what they are doing and what they own, so a child does not duplicate or fight them.
+   * Absent for every run that is not an agent.
+   */
+  siblings?: readonly { slug: string; task: string; own: readonly string[] }[];
 }
 /** §9.3: main() emits budget:clamp from it right after run:ready */
 export interface SessionClamp {
@@ -1157,8 +1321,16 @@ export interface SessionRef {
   /** TUI-DESIGN-2 §6 item 13: why the run started (run.json, the `s0 intake` row); absent for argv tasks and follow-ups that skipped intake */
   intake?: { kind: IntakeKind; probability: number; requestHash: string };
 }
+/**
+ * NOT widened by contract 1.5. ORCHESTRATION-DESIGN §5.7 [D1] wants a `'land-preflight'` member, but `BlockingKind` is
+ * consumed by FOUR exhaustive sites outside the harness (`src/tui/blocking/lines.ts` ×2, `src/tui/status/lines.ts`, and a
+ * `Record<BlockingKind, …>` in `test/unit/tui/pane/blocking.test.ts`), so the member is not additive in this repo and
+ * belongs to the TUI session's wave. Until it lands, §5.7's `[c] / [s] / [x]` is asked through `Engine.land`'s injected
+ * asker (`LandPreflightOffer`, `src/loop/launch.ts`), which needs no pane at all.
+ */
 export type BlockingKind = 'jev-unreachable' | 'key-rejected' | 'spend-limit' | 'checkpoint-degraded' | 'drift' | 'sandbox-unavailable';
-export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin';
+/** contract 1.5 (§5.7 [D1]): the launch pre-flight's answers — `[c] commit` and `[s] stash` each seed a judged step of their own; `[x] cancel` is the existing 'stop'. */
+export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin' | 'pause' | 'wait' | 'worktree' | 'commit' | 'stash'; // contract 1.4 (§12.0.2 P6 / P7, §4.3 step 4): `pause()` while a pane is awaited wakes the blocker with 'pause'; the lease-conflict pane adds `[w] wait` (keep waiting, the next coordinate re-checks) and `[t] worktree` (stop for relocation) — 'pause' and 'worktree' are the resumable stop at the loop top
 export interface BlockingRequest {
   id: string;
   step: number;
@@ -1177,7 +1349,10 @@ export interface EngineOptions {
   /** realpath is taken by createWorkspace() */
   workspace: string;
   runsDir: string;
-  resume?: { runId: string; force: boolean };
+  /** contract 1.4 (§7.3 step 3, §12.0.1): `replay` = restore the paused proposal (or the arrived LLM samples) from `cache/step-<n>.json` behind the hash gate; both existing callers compile */
+  resume?: { runId: string; force: boolean; replay?: boolean };
+  /** contract 1.4 (§12.0.1, §8): the generator's relaxed context; absent → the defaults of `src/loop/context/limits.ts` */
+  contextPolicy?: ContextPolicyOptions;
   provider: Provider;
   decider: Decider;
   confirmer: Confirmer;
@@ -1242,6 +1417,13 @@ export interface EngineOptions {
    * real call without `usage.cost`). TODO(src/cli/session.ts): pass `config.generator.pricing` here.
    */
   generatorPricing?: GeneratorConfig['pricing'];
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.1): this engine's place in a delegation. Absent = an ordinary run that is
+   * neither a parent nor an agent (`depth: 0` with nothing else is the parent's own shape).
+   */
+  orchestration?: OrchestrationOptions;
+  /** contract 1.5 (§4.1, §6.4): every resolved `orchestrate.*` setting the decompose stage reads; absent = `DEFAULT_SPLIT_POLICY` (`split: 'off'`) */
+  splitPolicy?: OrchestrationPolicy;
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 
@@ -1256,6 +1438,10 @@ export interface SampleOptions {
   sample: number;
   purpose: GeneratePurpose;
   signal: AbortSignal;
+  /** contract 1.4 (§12.0.2 P3, §6.4): the synthesizer's goal this sample belongs to — the engine records it on the pause cache and on `PausePoint.llm`; absent outside a goal round */
+  goalId?: string;
+  /** contract 1.4 (§12.0.2 P3): the goal's LLM round this sample was fired in (the synthesizer's own numbering) */
+  goalRound?: number;
 }
 
 export interface SynthesisContext {
@@ -1269,6 +1455,12 @@ export interface SynthesisContext {
   intent: Intent;
   /** files the context stage selected (path -> content view) */
   contextFiles: readonly FileView[];
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §8.8 column 3): the relaxed context view the engine built for this step — the
+   * `## Recent steps` / `## Files in view` / summary block as text — for a synthesizer that prompts the generator itself
+   * (llm-jev). Absent when the run builds none (`jev-only`, `view: 'legacy'`), so the synthesizer keeps today's prompt.
+   */
+  contextText?: string;
   workspace: Workspace;
   workspaceInfo: WorkspaceInfo;
   sandbox: Sandbox;
@@ -1369,10 +1561,22 @@ export interface EngineStatus {
   generatorTokens?: { used: number; cap: number | null };
   /** TUI-DESIGN-2 §2.4 / §2.6 (additive): the cost basis of the Jev requests this process made, for the `/jev` line-2 suffix; null before any */
   jevCostBasis?: JevCostBasis | null;
+  /** contract 1.4 (COORDINATION-DESIGN §7.2): `pause({ at: 'now' })` was requested; with `stage === 'execute'` the status reads `pausing · execute finishes first` */
+  pauseNow?: boolean;
+  /** contract 1.4 (§12.0.2): the last PausePoint of this process — set when the point is reached, until run:end; null on a fresh or resumed engine */
+  pausePoint?: PausePoint | null;
+  /** contract 1.4 (§12.0.3): the context meter; the context-policy branch fills it, the shape is fixed here */
+  context?: ContextUsage;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.1, §4.6): the delegation this process is the parent of — `null` once a
+   * delegation settled or when this run never delegated; absent on a process that cannot delegate at all.
+   */
+  orchestration?: { manifestId: string; agents: number; live: number; landed: number; reserveUsd: number; heldUsd: number } | null;
 }
 
 // TUI-DESIGN §15 item 14: notices and renderer labels
-export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui';
+/** contract 1.5 (ORCHESTRATION-DESIGN §4.1): 'orchestration' = the delegation surface's notices (spawned, adopted, landed, the declined split) */
+export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui' | 'orchestration';
 /** the only labels formatTranscriptItem prints instead of stepLabel() (item 19, §15.1); TUI-DESIGN-2 §6 item 1 / §3.10: the chat bubbles */
 export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]' | '[you]' | '[jevcode]';
 export type ChatLabel = Extract<UiLabel, '[you]' | '[jevcode]'>;
@@ -1400,7 +1604,8 @@ export type EngineEvent =
   | { type: 'generator:delta'; step: number; text: string; sample?: number }
   | { type: 'generator:tool-delta'; step: number; chars: number; sample?: number } // cumulative streamed tool-argument chars ("streaming action… N chars")
   | { type: 'generator:end'; step: number; usage: TokenUsage; latencyMs: number; finishReason: string; sample?: number }
-  | { type: 'proposal'; step: number; proposal: Proposal }
+  // contract 1.4 (§7.3 step 3): `verdict: 'replay'` marks a proposal restored from `cache/step-<n>.json` (plain / TUI print `(replayed)`); absent on every fresh proposal
+  | { type: 'proposal'; step: number; proposal: Proposal; verdict?: 'replay' }
   | { type: 'risk'; step: number; risk: RiskAssessment }
   | { type: 'confirm:request'; request: ConfirmRequest }
   | { type: 'confirm:resolved'; step: number; id: string; approved: boolean; aborted: boolean; note?: string } // TUI-DESIGN §15 item 14: note from confirmDetailed
@@ -1433,7 +1638,26 @@ export type EngineEvent =
   | { type: 'workspace'; git: RunGitMeta; instructions: InstructionRecord[]; sandbox: SandboxLevel }
   | { type: 'blocking:request'; request: BlockingRequest }
   | { type: 'blocking:resolved'; id: string; answer: BlockingAnswer; auto: boolean } // auto = the jev-unreachable timer answered
-  | { type: 'secret-ack'; step: number | null; count: number };
+  | { type: 'secret-ack'; step: number | null; count: number }
+  // contract 1.4 (COORDINATION-DESIGN §12.0.2): emitted in finish('human_pause') after the final state.json settled and before the stop line and run:end
+  | { type: 'pause:point'; point: PausePoint }
+  // contract 1.4 (§8.6, §12.0.4): the context-policy branch emits it after a compaction; `chars` is before → after
+  | { type: 'context:compacted'; step: number; chars: { before: number; after: number }; by: 'code' | 'llm' }
+  // contract 1.5 (ORCHESTRATION-DESIGN §4.1): twelve additive members; the json stream stays `v: 1` and an
+  // unknown-type-ignoring consumer is unaffected. The `agent:*` members are HOST-emitted (the supervisor, §8.3 item 34),
+  // not engine-emitted — they ride the same emitter so every surface reads one stream.
+  | { type: 'decompose:start'; step: number; options: number }
+  | { type: 'decompose:skipped'; step: number; why: GateReason } // --json=verbose only
+  | { type: 'decompose:ranked'; step: number; splitKind: SplitKind; verdict: ChoiceVerdict; probability: number; agents: number; rejected: number }
+  | { type: 'orchestration:proposed'; step: number; manifest: Manifest }
+  | { type: 'agent:start'; agent: AgentRef } // host-emitted
+  | { type: 'agent:status'; agent: AgentRef; row: AgentRow } // host-emitted, verbose
+  | { type: 'agent:review'; agent: AgentRef; request: ConfirmRequest }
+  | { type: 'agent:end'; agent: AgentRef; stopReason: StopReason; exitCode: number; commits: number; changedFiles: number; spendUsd: number }
+  | { type: 'land:attempt'; slug: string; dockHead: string; pinned: string } // [G3] `pinned` is a sha, never a ref
+  | { type: 'land:result'; slug: string; outcome: 'landed' | 'conflicted' | 'failed-verify' | 'refused'; commit?: string; verify?: VerifyResult[]; rule?: string }
+  | { type: 'orchestration:settled'; landed: string[]; parked: string[]; dropped: string[]; dockBranch: string; spendUsd: number }
+  | { type: 'agent:adopted'; count: number; parentRunId: string };
 
 export type EngineEventType = EngineEvent['type'];
 
@@ -1445,6 +1669,215 @@ export interface EngineEmitter {
 
 /** TUI-DESIGN §15 item 15 */
 export type SteerResult = { ok: true; index: number; queued: number } | { ok: false; reason: 'empty' | 'full' | 'finished'; queued: number };
+
+// ---------------------------------------------------------------------------------------
+// Pause points, resumable state and the context meter — contract 1.4 (docs/COORDINATION-DESIGN.md §7, §12.0.2, §12.0.3)
+// ---------------------------------------------------------------------------------------
+
+/** §12.0.2: why the run stopped at its pause point */
+export type PausePointReason =
+  | 'step' // pause({ at: 'step' }): the in-flight step committed whole, stopped at the loop top
+  | 'now' // pause({ at: 'now' }): the stage in flight was discarded under rule 1; proposal + arrived samples cached (§7.2)
+  | 'now-after-execute' // pause({ at: 'now' }) landed during execute: execute finished, judge skipped, step committed (§7.2 execute row, §11 row 29)
+  | 'pane' // pause() while a blocking pane was awaited: blockWaker → answer 'pause' (§7.2, §11 row 37)
+  | 'worktree' // lease-conflict [t]: stopped for relocation; interruptedDetail.relocate set (§4.3 step 5)
+  // contract 1.5 (ORCHESTRATION-DESIGN §4.2)
+  | 'delegate' // P9 "delegation accepted": the manifest was confirmed at step n; the parent has nothing left to do until children report — engine-initiated, `by: 'self'`, nothing interrupted [G17]
+  | 'review-needed'; // P10 "a child needs a human decision": a `review` verdict, or any blocking pane, inside a child
+
+/** §12.0.2: where a run stopped, so that /resume can continue it; one per pause point, emitted before `run:end` */
+export interface PausePoint {
+  /** the step /resume starts at: the discarded step's own number (rule 1) or the committed step + 1 */
+  step: number;
+  /** llm-jev only: the LLM round whose arrived samples the cache holds — `llm.round` when the synthesizer named one, else the engine's 0-based sample batch of the step; null otherwise. Read from what the cache RECORDED, never from the live draft. */
+  round: number | null;
+  /** where the pause landed: the stage in flight, 'idle' at a step boundary, 'pane' while a blocking pane was open */
+  phase: StageName | 'idle' | 'pane';
+  reason: PausePointReason;
+  /** 'boundary' = nothing to replay (resume is a fresh step at intent); else the run-relative cache file of §7.2 that `--replay` reads */
+  resumableAt: 'boundary' | `cache/step-${number}.json`;
+  /**
+   * §7.2, one definition: `(a proposal was written to the cache) || (arrived samples written to the cache > 0)` — both as
+   * RECORDED in the written cache, never as the live draft read at discard time — and false when the cache write failed or
+   * `executeStarted`. The card shows `[r]` only when this AND every `targetsSha` still matches.
+   */
+  replayable: boolean;
+  /** phase === 'pane': which pane */
+  pane?: BlockingKind;
+  /**
+   * llm-jev (P3): the round the cache holds, typed — the synthesizer's goal id, its round and the sample ids that ARRIVED
+   * and were written. Sourced from the pause cache (the sample options the synthesizer fires with), never from the
+   * free-text `synth` event. Absent when no goal round was in flight.
+   */
+  llm?: { goalId: string; round: number; arrived: number[] };
+  /** who asked — the index line's `by` (§5.3) */
+  by: 'self' | `peer:${string}` | `device:${string}`;
+  /** `end` (§7.4) was requested: RunMeta.ended is written with the final state; /resume needs --force */
+  end: boolean;
+}
+
+/** §7.2 / §12.0.2: `Engine.pause(opts)` */
+export interface PauseOptions {
+  /** 'step' (default) = the loop-top pause; 'now' = the soft interrupt (an `execute` in flight still runs to its end) */
+  at?: 'step' | 'now';
+  /** who asked (§5.3); default 'self' */
+  by?: PausePoint['by'];
+}
+
+/** §7.4 / §12.0.2: `Engine.end(opts)` */
+export interface EndOptions {
+  at?: 'step' | 'now';
+  /** default 'human' */
+  by?: 'human' | 'remote';
+}
+
+/** §7.4: `RunMeta.ended` */
+export interface RunEnded {
+  at: string;
+  by: 'human' | 'remote';
+}
+
+/** §7.2 / §12.0.4: what a pause-now (or a lease-conflict discard) left for `--replay`; lives beside `CheckpointState.interrupted` */
+export interface InterruptedDetail {
+  cache: `cache/step-${number}.json`;
+  /**
+   * §7.3 step 4: the `resumes` counter of the run that may replay this detail — the writing run's `resumes` + 1, because the
+   * loader increments it on resume. `loadReplay` and `buildResumeCard` require `detail.resumes === state.resumes` (the
+   * resume-ready state), so a detail that survived one fresh resume can never resurrect its proposal in a later `--replay`.
+   */
+  resumes: number;
+  /** ISO time the snapshot was stamped (the pause) */
+  at: string;
+  /** sha256 of every target at the pause (null: missing or past the hashing budget); the replay gate re-hashes and compares */
+  targetsSha: Record<string, string | null>;
+  replayable: boolean;
+  /** streamed generator chars of the partial proposal (kept for the card, never replayed as a proposal) */
+  partialChars: number;
+  /** §4.3 step 5: stopped for relocation to a worktree */
+  relocate?: { slug: string; reason: 'lease-conflict' };
+}
+
+/** §5.1 / §12.0.4: what `Engine.deliver` reports back for the ack */
+export type AckOutcome = 'delivered' | 'applied' | 'refused' | 'expired';
+
+/**
+ * §5.4 / §12.0.4: the structural subset of a coordination `Message` (src/coordination/records.ts) the engine reads — the real
+ * record is assignable to it. `type` 'pause' | 'end' apply (§12.0.2 P8; `text` 'now' selects the soft interrupt); every other
+ * type is refused until the messaging wave routes notes and steers (W3).
+ */
+export interface DeliverableMessage {
+  id: string;
+  type: string;
+  text: string;
+  from: { deviceId: string; label: string; sessionId: string | null; runId: string | null };
+  by?: 'human' | 'engine';
+}
+
+/** §8.6: the compactor in force (`context.compaction`, default `code`). */
+export type CompactionMode = 'code' | 'llm' | 'off';
+
+/**
+ * §8.7 / §12.0.3: the context meter (`EngineStatus.context`). ONE definition — the members the context-policy branch
+ * declared in `src/loop/context/types.ts` are here verbatim; that file re-declares nothing.
+ */
+export interface ContextUsage {
+  promptChars: number;
+  budgetChars: number;
+  pct: number;
+  files: number;
+  historyEntries: number;
+  summaryAt: number | null;
+  lastCompactionStep: number | null;
+  /** round(promptChars / CHARS_PER_TOKEN) with CHARS_PER_TOKEN = 3.4 (§8.2) — an estimate; the generator's tokenizer is never called */
+  tokensInWindow: number;
+  /**
+   * the PROMPT BUDGET in tokens: round(budgetChars / CHARS_PER_TOKEN) = 0.55 × windowTokens (§8.2), so
+   * pct === round(100 × tokensInWindow / budgetTokens) — the meter is a share of the budget, not of the model's window
+   */
+  budgetTokens: number;
+  /** the model's context window in tokens (`generatorContextTokens`, §8.2) — what `/context` shows beside the budget */
+  windowTokens: number;
+  /** compactions over the run's life, all resumes; persisted as CheckpointState.compactions? */
+  compactions: number;
+  /** ISO time of the last compaction, null before any; persisted as CheckpointState.lastCompactionAt? */
+  lastCompactionAt: string | null;
+  /** §8.6: the compactor in force */
+  compaction: CompactionMode;
+  /** §8.2: which term bound `budgetChars` — `/context` prints it (`budget 96k chars — capped by the $2.00 run cap …`) */
+  budgetBoundBy: 'window' | 'money' | 'floor' | 'ceiling';
+  /** §8.2: estimated generator input $ per step at this budget, null when the generator is unpriced */
+  usdPerStep: number | null;
+  /** §8.2: the budget was clamped to the model's window because the window is smaller than the floor */
+  windowTooSmall: boolean;
+  /** §8.2(c): the `/context` recent-steps line — `recent steps 71k of 71k (2 whole, 4 clipped, 6 one-line)` */
+  recentSteps: RecentStepsUsage;
+  /** §8.9: how long the last prompt build took (ms), and the file refresh inside it — the `promptBuildMs` gate's source */
+  promptBuildMs: number;
+  refreshMs: number;
+}
+
+/** §8.2(c): what the tier ladder did to the history at the last build. */
+export interface RecentStepsUsage {
+  chars: number;
+  allowanceChars: number;
+  whole: number;
+  clipped: number;
+  oneLine: number;
+  /** output files opened for this build (§8.3: ≤ 6, in practice 2–3 warm) */
+  reads: number;
+}
+
+/** §8.3: a WindowEntry (600-char body) plus the pointer to the whole output on disk (`CheckpointState.history?` ≤ 12). */
+export interface HistoryEntry extends WindowEntry {
+  /** `outputs/step-<n>.txt` under the run dir when the output was longer than the 600-char body */
+  outputRef?: string;
+  /** length of the whole output text (what the file holds, before its own 1 MiB cap) */
+  fullOutputChars?: number;
+  /** §8.5: the per-run 64 MiB bound deleted `outputRef` mid-run — the pointer must not be printed again */
+  outputEvicted?: boolean;
+}
+
+/** §8.4: why a path is in view; eviction keeps human > jev > seed > edit > read. */
+export type FilePin = 'read' | 'edit' | 'human' | 'jev' | 'seed';
+
+/** §8.4: one file the generator keeps in view (`CheckpointState.fileCache?` ≤ 16). */
+export interface FileCacheEntry {
+  rel: string;
+  pinnedBy: FilePin;
+  lastUsedStep: number;
+  /** chars of the file shown at the last prompt build (0 before the first) */
+  bytesShown: number;
+}
+
+/** §8.4: what the run knows about a path's content (`CheckpointState.fileMemory?` ≤ 64 entries). */
+export interface FileMemoryEntry {
+  /** first 12 hex of the file's sha256 (post-image hash for edits; the raw file hash at load for reads); null until hashed */
+  sha12: string | null;
+  bytes: number;
+  readAt: number | null;
+  editedAt: number | null;
+}
+export type FileMemory = Record<string, FileMemoryEntry>;
+
+/**
+ * §12.0.1: `EngineOptions.contextPolicy?`.
+ *
+ * `view` is the one member the design does not list: `'legacy'` sends no context view at all, so `buildPrompt` takes the
+ * byte-identical pre-§8 path and no `outputs/` file, file cache or compaction runs — what the bench baselines were
+ * measured against.
+ */
+export interface ContextPolicyOptions {
+  /** default `'relaxed'`; `'legacy'` is HEAD's prompt, byte for byte */
+  view?: 'relaxed' | 'legacy';
+  /** §8.2: the model's context window in tokens; absent → the pricing table's `contextTokens` (§14 Q4), else 128k */
+  windowTokens?: number;
+  historySteps?: number;
+  fileCacheBytes?: number;
+  /** 0 disables the interval trigger */
+  compactEvery?: number;
+  compaction?: CompactionMode;
+  budgetChars?: number;
+}
 
 export interface Engine {
   readonly runId: string;
@@ -1465,12 +1898,45 @@ export interface Engine {
   steer(text: string, opts?: { secretsAcked?: number }): SteerResult;
   /** TUI-DESIGN §15 item 15: withdraw the newest queued directive; null when none */
   unsteer(): PendingDirective | null;
-  /** TUI-DESIGN §15 item 15: stop with 'human_pause' at the next §9.1 rule-1 point; idempotent */
-  pause(): void;
+  /**
+   * TUI-DESIGN §15 item 15: stop with 'human_pause' at the next §9.1 rule-1 point; idempotent. contract 1.4 (COORDINATION-DESIGN
+   * §7.2, §12.0.2): `at: 'step'` (default) is that; `at: 'now'` is the soft interrupt through the shared controller (the draft
+   * snapshot is cached, the stage in flight is discarded under rule 1; an `execute` in flight is never cut); `now` after `step`
+   * upgrades, `step` after `now` is a no-op; stays void.
+   */
+  pause(opts?: PauseOptions): void;
+  /** contract 1.4 (§7.4): pause(opts) + `RunMeta.ended = { at, by }` written with the final state; /resume then needs --force; optional so injected fakes compile */
+  end?(opts?: EndOptions): void;
+  /** contract 1.4 (§5.4, §12.0.2 P8): a coordination message addressed to this run's session; returns what happened, which the caller writes into the ack */
+  deliver?(msg: DeliverableMessage): AckOutcome;
+  /**
+   * contract 1.4 (§8.5, §8.6): `/compact now` — fold the history into the rolling summary at once, outside the 85 % / every-8-steps
+   * triggers. A no-op when the run builds no relaxed context (`jev-only`, `view: 'legacy'`) or once finish() began; the
+   * `context:compacted` event reports what it did.
+   */
+  compact?(): void;
   /** TUI-DESIGN §15 item 15: end the current retry sleep early (F12 `[r]`); false when no retry sleep is active */
   retryNow(): boolean;
   /** TUI-DESIGN §15 item 15: a renderer-originated transcript line while the run is live (§15.1); false once finished, then the renderer keeps it local */
   annotate(text: string, opts?: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' }): boolean;
+  /**
+   * contract 1.6 item 2 (TUI-DESIGN-4 §3.5, D-W): one `notice ui` per row, head first, so a command block issued while a run is
+   * live writes the same rows to `transcript.log` from the TUI as from `--plain`. `rows` are the ALREADY-RENDERED row texts.
+   * Returns false when no run is live, exactly like `annotate`. (`level` is `TranscriptLevel`, spelt out here like `annotate`'s.)
+   */
+  annotateBlock?(head: string, rows: readonly string[], opts?: { level?: 'info' | 'warn' | 'error'; label?: UiLabel }): boolean;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §5.7): seed the NEXT step's proposal. It then goes through `risk`, the review
+   * confirm, `takePreImages`, `execute`, `takePostImages` and `judge` like any other step — the launch is an ORDINARY
+   * step, not a parallel path. False when the run has finished or a seed is already pending. Optional so fakes compile.
+   */
+  seedStep?(proposal: Proposal, note?: string): boolean;
+  /**
+   * contract 1.5 (§5.7 + [D1]): the launch. Empty overlap → the merge is seeded. Non-empty → NO merge action is
+   * proposed at all and `ask` decides `[c]` / `[s]` / `[x]`; with no `ask` (headless) the offer is printed and nothing
+   * is seeded. A no-op without `EngineOptions.orchestration.runGit`.
+   */
+  land?(input: LaunchInput, ask?: (offer: LandPreflightOffer) => Promise<BlockingAnswer>): Promise<{ seeded: 'merge' | 'commit' | 'stash' | 'stop' | null; overlap: string[] }>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1485,10 +1951,31 @@ export interface LaunchSettings {
   screenReader: boolean;
   ascii: boolean;
   noColor: boolean;
-  /** TUI-DESIGN-2 §6 item 14 / §1.1: the first frame's badge word — `--mode` > `JEVCODE_MODE`; absent when neither is set (the App reads `jev-only`) */
+  /** TUI-DESIGN-2 §6 item 14 / §1.1: the first frame's badge word — `--mode` > `JEVCODE_MODE`; absent when neither is set (the App reads `DEFAULT_MODE`) */
   modeHint?: EngineMode;
   /** TUI-DESIGN-2 §6 item 14 / §5.3: `--no-animation` > `JEVCODE_REDUCED_MOTION` > screenReader — the splash's static form before the file is read */
   reducedMotion: boolean;
+  /**
+   * TUI-DESIGN-3 §6 item 8 / §2.2 (D-R): `COLORFGBG` background index 7 | 15 → the `light` table is frame 0's default; absent otherwise and
+   * whenever `--theme` / `JEVCODE_THEME` is set (the chain resolves those; `ui.theme` in the file still wins at setUi)
+   */
+  themeHint?: 'dark' | 'light' | 'daltonized' | 'ansi';
+  /**
+   * TUI-DESIGN-3 §6 item 8: the SSH launch source (`SSH_TTY` / `SSH_CONNECTION`), already the fps default's input; `ui.wordmark` defaults to
+   * `static` under it. Always set by resolveLaunchSettings; optional here (the design writes `ssh: boolean`) so the LaunchSettings / UiConfig
+   * literals outside S3's files (test/unit/tui/plain.test.ts) keep compiling in W0 — readers test `launch.ssh === true`
+   */
+  ssh?: boolean;
+  /**
+   * contract 1.6 item 6 (TUI-DESIGN-4 §1.3.1, D-S): the renderer chosen at mount — Ink fixes `alternateScreen` in its
+   * constructor, so this MUST be a launch member. THE READER IDIOM, stated once and used everywhere:
+   * `launch.renderer ?? 'classic'` (never `launch.renderer ===`). OPTIONAL for exactly the reason round 3 wrote down for
+   * `ssh` above: `resolveLaunchSettings` always sets it, but a required new member breaks every LaunchSettings / UiConfig
+   * literal outside the config slot's files.
+   */
+  renderer?: 'classic' | 'fullscreen';
+  /** contract 1.6 item 6 (§1.3.1): the one `[ui]` note naming why `fullscreen` was refused and `classic` used; absent when nothing was refused */
+  rendererRefusal?: string;
 }
 /** the LaunchSettings members repeat the mount-time values (source flag | env | default only) */
 export interface UiConfig extends LaunchSettings {
@@ -1506,6 +1993,15 @@ export interface UiConfig extends LaunchSettings {
   logLevel: 'error' | 'warn' | 'info' | 'debug' | 'trace';
   logFile: string | null;
   keybindingsFile: string | null;
+  /** TUI-DESIGN-3 §6 item 4 / §3.2: the wordmark's idle animation — OPTIONAL; readers: `ui?.wordmark ?? (launch.ssh ? 'static' : 'sweep')` */
+  wordmark?: 'sweep' | 'static' | 'off';
+  /**
+   * contract 1.6 item 4 (TUI-DESIGN-4 §1.3.4): the fullscreen renderer's on-exit transcript dump to the primary screen.
+   * OPTIONAL, like `wordmark`. Reader: `ui?.fullscreenDump ?? true`. `renderer` is declared ONCE, on LaunchSettings
+   * (item 6), and inherited here — re-declaring it would weaken a required base member (TS2430), the mistake round 3
+   * documented for `ssh` above.
+   */
+  fullscreenDump?: boolean;
 }
 /**
  * TUI-DESIGN §15 item 19 / §10.1: one detected secret span. Declared here so SessionHost is self-contained;
@@ -1534,7 +2030,13 @@ export interface SessionHost {
   /** addSecret per span BEFORE engine.steer; secretsAcked = spans.length */
   steer(text: string, opts: { secretSpans: readonly string[] }): SteerResult;
   unsteer(): PendingDirective | null;
-  pause(): void;
+  /**
+   * contract 1.4 (§12.0.1 rule 3): widened to the engine's shape — `at: 'now'` is `/pause now` and the `run:pauseNow` chord.
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.3 [D15]): the OPTIONAL `scope` rides on this signature only (never on
+   * `PauseOptions`, which `Engine.pause` shares). The default for a delegating session is `tree`; absent = this run only.
+   * Additive by method-parameter bivariance: every existing `pause(opts?: PauseOptions)` implementation still satisfies it.
+   */
+  pause(opts?: PauseOptions & { scope?: 'run' | 'tree' | 'agents' | 'all' | `agent:${string}` }): void;
   abort(reason: 'human_abort'): void;
   retryNow(): boolean;
   /** a renderer-originated line: engine.annotate() while a run is live, else a local `[ui]` item + `--json` `ui` line (§15.1) */
@@ -1548,6 +2050,19 @@ export interface SessionHost {
   history(): HistoryStore | null;
   /** pre-run: files.ts listCandidates() once after firstFrame(); from run:ready: the live workspace.listCandidates() (§5.4) */
   workspaceCandidates(): Promise<readonly Candidate[]>;
+  /** TUI-DESIGN-3 §6 item 7 (R4 F20): the host's dispatch context beyond the run phase (cli/session.ts ControllerHost declares it; the App prefers it over its own fold) */
+  dispatchContext?(): Omit<import('../tui/commands/dispatch.js').DispatchContext, 'run'>;
+  /** contract 1.6 item 9 (TUI-DESIGN-4 §7.10): the peer snapshot the TUI renders; null until the registry lands */
+  peers?(): PeerView | null;
+  /** contract 1.5 (ORCHESTRATION-DESIGN §4.6): the agent rows the `a` tab and `jevcode agents list` render; absent until the supervisor lands (§8.3 item 34) */
+  agents?(): readonly AgentRow[];
+}
+/** contract 1.6 item 9 (TUI-DESIGN-4 §7.10): what `/peers` shows about other JevCode instances on this workspace */
+export interface PeerView {
+  readonly live: number;
+  readonly stale: number;
+  readonly oldestStartedMsAgo: number | null;
+  readonly exclusive: boolean;
 }
 export interface RunRow {
   runId: string;
@@ -1615,6 +2130,18 @@ export interface Renderer {
   restoreDraft?(text: string): void;
   /** TUI-DESIGN-2 §6 item 11 / §3.6: the LLM turn's streamed text for the live region ('' empties it) */
   live?(text: string): void;
+  /**
+   * TUI-DESIGN-3 §6 item 1 (R4 F10): the effective key bindings (defaults + the keybindings file) for the App. `Bindings` is imported
+   * type-only from src/tui/keys/bindings.ts — the contract's one core → tui inversion (redeclaring its four-map shape here would be a
+   * second source of truth for the key tables)
+   */
+  setBindings?(bindings: import('../tui/keys/bindings.js').Bindings): void;
+  /**
+   * contract 1.6 item 3 (TUI-DESIGN-4 §3.5, D-W): the row-list form of a block body. `lines` are the ALREADY-RENDERED row
+   * texts that `renderBlock` produced (not `BlockRow[]`), so the parameter type matches §3.5's call. The DEFAULT
+   * implementation is today's per-line `note`, so no renderer breaks. (`level` is `TranscriptLevel`, spelt out like `notify`'s.)
+   */
+  blockLines?(lines: readonly string[], opts?: { label?: UiLabel; level?: 'info' | 'warn' | 'error' }): void;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1638,8 +2165,8 @@ export interface GeneratorConfig {
   baseUrl: string;
   temperature: number | null;
   maxTokens: number;
-  /** USD per million tokens, used when the API returns no cost */
-  pricing: { inputPerM: number; outputPerM: number; cacheReadPerM: number; cacheWritePerM: number };
+  /** USD per million tokens, used when the API returns no cost; `contextTokens` is contract 1.4 (§8.2, §14 Q4): the model's context window, absent → DEFAULT_GENERATOR_CONTEXT_TOKENS */
+  pricing: { inputPerM: number; outputPerM: number; cacheReadPerM: number; cacheWritePerM: number; contextTokens?: number };
   /**
    * TUI-DESIGN §15 item 17: OPTIONAL: validateGenerator always sets it; resolveConfig / validate.ts treat absent as false.
    * §9.5: absent ⇒ a null OpenRouter `usage.cost` yields `costUsd` NaN (`budget:unpriced`, stop `error unpriced_usage` unless
@@ -1668,7 +2195,7 @@ export interface DeciderConfig {
 export interface ResolvedConfig {
   /** every setting with its source; secrets appear only as fingerprints in record() */
   readonly entries: ReadonlyMap<string, Resolved<string>>;
-  /** TUI-DESIGN-2 §6 item 9 / §1.2: the `mode` setting (flag > JEVCODE_MODE > dotenv > file > default jev-only); the mode-keyed spend caps read it */
+  /** TUI-DESIGN-2 §6 item 9 / §1.2: the `mode` setting (flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE); the mode-keyed spend caps read it */
   readonly mode: EngineMode;
   /** validates the generator section on first call; ConfigError names setting and sources */
   generator(): GeneratorConfig;
@@ -1698,6 +2225,12 @@ export interface ResolvedConfig {
   ui(launch: LaunchSettings): UiConfig;
   /** 'none' -> +Infinity */
   sessionSpendCap(mode: EngineMode): { value: number; source: ConfigSource; derived: boolean };
+  /**
+   * TUI-DESIGN-4 §8 (the round-4 config rows): the relaxed-context policy from the config chain
+   * (docs/COORDINATION-DESIGN.md §8), with ONLY the members the user set — the engine keeps `src/core/limits.ts`'s
+   * defaults for the rest. Optional so no existing `ResolvedConfig` fake breaks; `config/resolve.ts` always sets it.
+   */
+  context?(): ContextPolicyOptions;
   /** delegate to the redactor */
   addSecret(name: string, value: string): boolean;
   dropSecret(name: string): boolean;
@@ -1854,6 +2387,13 @@ export interface SandboxCreateOptions {
   gitCommonDir?: string;
   /** TUI-DESIGN §15 item 18: resolved jevcode config dirs appended to the file-read denies (§12.7) */
   configDirs?: readonly string[];
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §5.2 [G3]): set when `EngineOptions.orchestration.depth === 1`, so the
+   * child's profile denies writing `<commonDir>/refs/**`, `packed-refs`, `logs/**` and `worktrees/<name>/HEAD`. The
+   * supervisor's own per-worktree sandbox ([D10]) is built in the depth-0 parent and never sets it, which is why
+   * the harness's `git commit` still works while a child's `run` action cannot move the pinned ref.
+   */
+  agentChild?: boolean;
 }
 
 /** Everything the bench runner needs, injected so bench/* compiles and tests without the real modules. */
@@ -1867,4 +2407,305 @@ export interface BenchDeps {
   /** present only with --live */
   liveProvider?: Provider;
   liveDecider?: Decider;
+}
+
+// ---------------------------------------------------------------------------------------
+// Orchestration, contract 1.5 (docs/ORCHESTRATION-DESIGN.md §4.1)
+//
+// Every shape below is part of the frozen contract and is re-exported by `src/orchestrate/types.ts`, which keeps only
+// the §8.1 seams (`RunGit`, `Clock`, `AskFn`, `CommitIdentity`, `DEFAULT_SPLIT_POLICY`) and the planner-internal drafts.
+// `src/core/types.ts` never imports from `src/orchestrate/**`, which is why `SplitPolicy`'s body is declared here as
+// `OrchestrationPolicy` and aliased there.
+// ---------------------------------------------------------------------------------------
+
+/** contract 1.5 (§3.2 + §3.4): the escape `no_split` is always present and is always the fallback. */
+export type SplitKind = 'by_plan_item' | 'by_directory' | 'by_failing_test' | 'by_layer' | 'as_written' | 'no_split';
+
+/** contract 1.5 (§2.5 / §3.4 rule 5 / §5.6): `research` is read-only and never lands; `critic` writes only test globs. */
+export type AgentRole = 'code' | 'research' | 'critic';
+
+/**
+ * contract 1.5 (§2.5(b) / corner row 24): the action space of `role: 'research'` — enforced in code
+ * (`ownershipRefusal`) AND in the tool schema (`proposeActionToolFor`), so the model is never offered
+ * `edit | write | patch` and can never write code.
+ */
+export const RESEARCH_ACTION_KINDS: readonly ActionKind[] = ['read', 'run', 'done'];
+
+/** contract 1.5 (§2.6 [G1]): the identity every harness commit is made under when `orchestrate.commitIdentity` is unset. */
+export const DEFAULT_COMMIT_IDENTITY: { name: string; email: string } = { name: 'jevcode', email: 'jevcode@local' };
+
+/** contract 1.5 (§5.7): what the launch needs to decide between seeding the merge and asking `[c]` / `[s]` / `[x]`. */
+export interface LaunchInput {
+  /** the USER's checkout — never a worktree; §5.2(b) lets the supervisor write only to the dock */
+  workspaceRoot: string;
+  baseSha: string;
+  /** [G3] the PINNED dock sha, never a branch name */
+  pinned: string;
+  agents: number;
+  dockBranch: string;
+  /** §5.7 tail: the step the manifest was confirmed at (P9) — the floor `/rewind` is refused below. Defaults to the merge step. */
+  delegationStep?: number;
+}
+
+/**
+ * contract 1.5 (§5.7 [D1], corner row 53): the pre-flight's offer. Deliberately NOT a `BlockingRequest`:
+ * `BlockingKind` is consumed by four exhaustive sites in `src/tui/**`, so a `'land-preflight'` member is not additive
+ * and belongs to the TUI session's wave. `stop` / `exitCode` are carried so the offer converts verbatim the day it lands.
+ */
+export interface LandPreflightOffer {
+  id: string;
+  step: number;
+  kind: 'land-preflight';
+  detail: string;
+  overlap: readonly string[];
+  choices: readonly ['c', 's', 'x'];
+  stop: StopReason;
+  exitCode: number;
+}
+
+/** contract 1.5 (§2.8): sixteen states; `paused` (a human asked) and `parked` (the child stopped itself) are separate [G22]. */
+export type AgentState =
+  | 'planned'
+  | 'starting'
+  | 'running'
+  | 'paused'
+  | 'parked'
+  | 'review'
+  | 'stalled'
+  | 'done'
+  | 'landing'
+  | 'landed'
+  | 'conflicted'
+  | 'failed-verify'
+  | 'kicked'
+  | 'dropped'
+  | 'crashed'
+  | 'failed-start';
+
+/** contract 1.5 (§3.1): the gate opens only when one of these holds as well as every all-of condition. */
+export type DemandReason = 'disjoint_directories' | 'failing_tests' | 'human';
+
+/** contract 1.5 (§3.1): why the gate is shut. One typed reason, so `decompose:skipped` is testable (M2). */
+export type GateReason =
+  | 'split_off'
+  | 'child_depth'
+  | 'no_ledger'
+  | 'not_git'
+  | 'unborn_head'
+  | 'no_worktree_support'
+  | 'plan_too_small'
+  | 'blocking_unverified'
+  | 'no_verification'
+  | 'dirty_too_large'
+  | 'children_live'
+  | 'max_splits'
+  | 'cooldown'
+  | 'resources'
+  | 'money'
+  | 'replan_step'
+  | 'orchestration_problem'
+  | 'no_demand';
+
+/** contract 1.5 ([D2] §2.3): one entry per file the worktree dirty-set sync wrote, binary-safe [G9]. */
+export interface SyncedDirtyEntry {
+  path: string;
+  /** sha256 of the BYTES written into the worktree; '' for a file the sync deleted */
+  sha256: string;
+  /** st_mode & 0o7777 as the sync set it */
+  mode: number;
+}
+
+/** contract 1.5 (§3.7): one row of the manifest. Produced only by the normaliser (§3.4). */
+export interface AgentSpec {
+  slug: string;
+  /** <= AGENT_TASK_CHARS after redact + one-lining */
+  task: string;
+  /** <= OWN_GLOBS_MAX globs of the §3.4 rule 2 sub-language */
+  own: readonly string[];
+  role: AgentRole;
+  /** <= VERIFY_COMMANDS_MAX commands, <= OWN_GLOB_CHARS chars each; [] only for 'research' */
+  verify: readonly string[];
+  /** slugs; a DAG of depth <= DEPENDS_DEPTH_MAX */
+  dependsOn: readonly string[];
+  capUsd: number;
+  maxSteps: number;
+  maxWallMs: number;
+  mode: EngineMode;
+  /** `jevcode/<slug>`; null for 'research' (§2.2, §3.4 rule 5) */
+  branch: string | null;
+}
+
+/** contract 1.5 (§3.4): an option deleted by a normalisation rule, or clamped by rule 7. */
+export interface RejectedOption {
+  kind: SplitKind;
+  reason: string;
+  /** Jev's probability when the option reached ranking; null when code deleted it first */
+  probability: number | null;
+}
+
+/** contract 1.5 (§3.7): the decomposition record, written to `<runDir>/orchestrate/manifest-<step>.json`. */
+export interface Manifest {
+  v: 1;
+  manifestId: string;
+  runId: string;
+  sessionId: string;
+  step: number;
+  splitKind: SplitKind;
+  verdict: ChoiceVerdict;
+  probability: number;
+  confidence: number;
+  baseSha: string;
+  repoKey: string | null;
+  dockBranch: string;
+  /**
+   * [D2] what §2.3's `dirtySync` replayed into every agent worktree: excluded from each agent's commit
+   * set (§2.6) unless that agent changed it, from §5.3's outside-`own` computation, and from the land diff.
+   */
+  syncedDirty: readonly SyncedDirtyEntry[];
+  /** [D1] the subset of `syncedDirty` inside some agent's `own`: the paths §5.7's launch must ask about */
+  dirtyOverlap: readonly string[];
+  agents: readonly AgentSpec[];
+  reserveUsd: number;
+  reserveFrom: 'session' | 'run';
+  rejected: readonly RejectedOption[];
+  demand: DemandReason;
+  createdAt: string;
+  checksum: string;
+}
+
+/** contract 1.5 (§5.1 / §5.2): one verification command's result against a tree. */
+export interface VerifyResult {
+  command: string;
+  ok: boolean;
+  exitCode: number | null;
+  durationMs: number;
+  /** <= VERIFY_TAIL_LINES lines of the combined output, redacted by the caller */
+  tail: readonly string[];
+  /** parsed by `workspace/tests.ts parseTestOutput` when the runner is known; null otherwise */
+  counts: TestCounts | null;
+  /** the command was killed by its timeout or the tree kill */
+  killed: boolean;
+}
+
+/** contract 1.5 (§5.2): one append-only line of `<runDir>/orchestrate/land.jsonl`. */
+export interface LandAttempt {
+  at: string;
+  slug: string;
+  /** [G3] the sha the branch resolved to ONCE, before verification; never a ref */
+  pinned: string;
+  /** the dock head the merge started from — what a failure resets to */
+  dockHead: string;
+  outcome: 'landed' | 'conflicted' | 'failed-verify' | 'refused';
+  /** the merge commit, when it landed */
+  commit?: string;
+  verify?: readonly VerifyResult[];
+  /** the §5.3 hard rule that refused it */
+  rule?: string;
+  /** conflicting paths, for `conflicted` */
+  conflicts?: readonly string[];
+  /** 0 on the first attempt; the kick number afterwards (§5.4) */
+  kick: number;
+}
+
+/** contract 1.5 (§2.2): how the surface names one child. */
+export interface AgentRef {
+  slug: string;
+  /** null until the child's process reports `run:ready` */
+  runId: string | null;
+  sessionId: string | null;
+}
+
+/**
+ * contract 1.5 (§4.6): the one row model every surface renders — the Ink tab, `--plain`, the screen-reader twin
+ * and `jevcode agents list`. Declared here with the rest of contract 1.5; the pure row STRINGS are
+ * built by `src/tui/agents/lines.ts` (wave D3 item 32), which is not this slot's file.
+ */
+export interface AgentRow {
+  slug: string;
+  state: AgentState;
+  step: number;
+  maxSteps: number;
+  stage: StageName | 'idle';
+  spendUsd: number;
+  capUsd: number;
+  wallMs: number;
+  maxWallMs: number;
+  own: readonly string[];
+  branch: string | null;
+  verify: readonly string[];
+  /** the last transcript line of the child, clipped by the renderer */
+  last: string;
+  /** why it is `parked` / `stalled` / `failed-verify`; '' otherwise */
+  why: string;
+}
+
+/**
+ * contract 1.5 (§4.1 `EngineOptions.splitPolicy`) — every `orchestrate.*` setting this slot reads, already resolved.
+ * `src/orchestrate/**` never imports `src/config/**` (§8.1 rule 1); wave D3 item 26 builds this object
+ * from the `SETTINGS` rows of §6.4 and hands it in. `src/orchestrate/types.ts` aliases it as `SplitPolicy`,
+ * which is the name every orchestrate module and `DEFAULT_SPLIT_POLICY` keep using.
+ */
+export interface OrchestrationPolicy {
+  split: 'off' | 'ask' | 'auto';
+  maxAgents: number;
+  /** [G15] `coordination.maxChildren` — the ceiling `maxAgents` is clamped by */
+  maxChildren: number;
+  maxSplits: number;
+  splitEvery: number;
+  preludeMaxFiles: number;
+  selfContainedFloor: number;
+  reserveFraction: number;
+  maxReserveUsd: number;
+  minAgentUsd: number;
+  agentMaxSteps: number;
+  agentMaxWallMs: number;
+  agentStallMs: number;
+  onStall: 'notify' | 'pause' | 'kick';
+  maxKicks: number;
+  critic: 'tests' | 'run' | 'off';
+  verify: readonly string[];
+  verifyRetries: number;
+  testGlobs: readonly string[];
+  land: 'step' | 'branch';
+  incidentalGlobs: readonly string[];
+  agentMode: 'worktree' | 'copy';
+  agentInclude: readonly string[];
+  dockCleanExclude: readonly string[];
+}
+
+/**
+ * contract 1.5 (§4.1 `EngineOptions.orchestration`): this engine's place in a delegation. `depth: 0` with nothing
+ * else set is a parent that may delegate; `depth: 1` with `role`/`own`/`parentRunId` is an agent, and
+ * `createEngine` refuses a deeper one (`ORCHESTRATION_DEPTH_MAX`, §2.1).
+ */
+export interface OrchestrationOptions {
+  depth: 0 | 1;
+  role?: AgentRole;
+  /** §2.4 belt 1: the globs `computeTargets` refuses to write outside of */
+  own?: readonly string[];
+  parentRunId?: string;
+  parentSessionId?: string;
+  slug?: string;
+  manifestId?: string;
+  /**
+   * contract 1.5 (§3.1 [G5]): a coordination ledger handle exists, so children can be tracked. §3.1 names this
+   * `EngineOptions.coordination.ledger`, which contract 1.4 did NOT land and §4.1 never listed — so the fact
+   * rides here, on the options the engine already reads, until the coordination facade grows one.
+   * Absent reads as FALSE and shuts the gate: no ledger, no delegation, and no measurement taken to find out.
+   */
+  hasLedger?: boolean;
+  /** §4.2 P10: the file a parked review's answer is read back from on replay */
+  reviewAnswerFile?: string;
+  /** §2.6 [G1]: the identity every harness commit is made under; never the user's */
+  commit?: { name: string; email: string };
+  /** [D2] §2.3: what the dirty-set sync replayed into this worktree — excluded from the commit set unless this agent changed it */
+  syncedDirty?: readonly SyncedDirtyEntry[];
+  /**
+   * contract 1.5 (§2.6 / corner row 20): the sandbox level the PARENT recorded for itself. `createEngine` refuses a
+   * child whose resolved level is weaker than it (`seatbelt` → `none`), because `--sandbox` is one of the four rights
+   * the spawn line deliberately does not forward and a hand-typed child must not be able to widen them.
+   */
+  parentSandbox?: SandboxLevel;
+  /** [D10] §2.6: the harness's git seam for commit-after-step; the supervisor binds it to `runGit` with the per-worktree Sandbox. Absent = the engine makes no git commits. */
+  runGit?: (cwd: string, args: readonly string[], opts?: { timeoutMs?: number; maxOutputBytes?: number; signal?: AbortSignal }) => Promise<ExecResult>;
 }

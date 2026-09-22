@@ -267,6 +267,10 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
     // TUI-DESIGN §15.2 bench/conditions.ts row: a bench run is its own session and writes neither index.jsonl nor history.jsonl (§1)
     session: { sessionId: null, parentRunId: null, source: 'bench' },
   };
+  // docs/COORDINATION-DESIGN.md §8.2 / review D7: every frozen arm keeps HEAD's prompt until a head-to-head has measured
+  // the relaxed context, or the baselines in `experiments/results/` stop being comparable the moment §8 lands. Pass
+  // `contextPolicy: { view: 'relaxed' }` (or set `JEVCODE_BENCH_CONTEXT=relaxed`) for the arm that measures it.
+  out.contextPolicy = { view: process.env['JEVCODE_BENCH_CONTEXT'] === 'relaxed' ? 'relaxed' : 'legacy' };
   if (input.synthesizer) out.synthesizer = input.synthesizer;
   if (input.resume) out.resume = input.resume;
   if (input.now) out.now = input.now;

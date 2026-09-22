@@ -24,10 +24,16 @@ import { toJson } from '../core/json.js';
 import { clip } from '../core/text.js';
 import { monotonicNow, nowIso, sleep } from '../core/time.js';
 // TUI-DESIGN §8.6 (F7): the steer bounds are defined once, next to PendingDirective; re-exported below under the engine's names
-import { DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
+import { DEFAULT_COMMIT_IDENTITY, DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type { AskResult,
+  AckOutcome,
   Action,
   ActionOutcome,
+  AgentRef,
+  OrchestrationOptions,
+  PlanDraft,
+  SandboxLevel,
+  SandboxProfile,
   Answer,
   BlockingAnswer,
   BlockingRequest,
@@ -38,12 +44,14 @@ import type { AskResult,
   ConfirmRequest,
   Decider,
   Decision,
+  DeliverableMessage,
   Engine,
   EngineEmitter,
   EngineEvent,
   EngineMode,
   EngineOptions,
   EngineStatus,
+  EndOptions,
   FileView,
   GenerateRequest,
   GenerateResult,
@@ -51,12 +59,17 @@ import type { AskResult,
   GitState,
   HarnessProblem,
   Intent,
+  InterruptReason,
   JevCostBasis,
   IntentAnswer,
+  InterruptedDetail,
   JevRequestRecord,
   Json,
   JsonObject,
   JudgeResult,
+  PauseOptions,
+  PausePoint,
+  PausePointReason,
   PendingDirective,
   Plan,
   PlanSnapshot,
@@ -95,10 +108,27 @@ import type { AskResult,
   WindowEntry,
   Workspace,
   WorkspaceInfo,
+  // contract 1.4 (COORDINATION-DESIGN §8, §12.0.3): the context policy's shapes, now in the core contract
+  ContextUsage,
+  FileCacheEntry,
+  FileMemory,
+  HistoryEntry,
+  RecentStepsUsage,
 } from '../core/types.js';
 import { AbortError, CheckpointError, ConfigError, GeneratorResponseError, JevCodeError, JevHttpError, JevModelDriftError, JevResponseError, ProviderHttpError, isAbortError, isBudgetError, isJevCodeError, toJevCodeError, type BudgetKind } from '../errors.js';
-import { CHECKPOINT_FILES, classifyDiskError } from '../checkpoint/store.js';
-import { writePostImages, writePreImages, type ImageSource, type PreImageResult } from '../checkpoint/images.js';
+import type { DiskError } from '../checkpoint/store.js';
+import { CHECKPOINT_FILES, CONTEXT_SUMMARY_FILE, attachDegradeListener, classifyDiskError, outputFileName } from '../checkpoint/store.js';
+import { fileMemoryFromPostImage, writePostImages, writePreImages, type ImageSource, type PostImage, type PreImageResult } from '../checkpoint/images.js';
+import { hasContextStore, readContextExtension, type ContextCheckpointExtension } from '../checkpoint/types.js';
+import { CACHED_SAMPLES_MAX, CACHED_SAMPLE_MAX_CHARS, PARTIAL_TEXT_MAX_CHARS, REPLAY_HASH_MAX_FILES, hashTargets, parseStepCache, promptHashOf, proposalPaths, stepCacheName, stepCacheRel, stepCacheSupersededName, verifyTargets, type CachedSample, type StepCache } from '../checkpoint/replay.js';
+// docs/COORDINATION-DESIGN.md §8: the generator's relaxed context (Jev's window is untouched — two windows, §8.1)
+import { compactCode, compactionDue, isContextSummary, type CompactionTrigger } from './context/compaction.js';
+import { FilesInView, boundMemory, dropFile, evictFiles, forgetFile, noteShown, rememberFile, touchFile, workspaceFilesInViewDeps } from './context/context-cache.js';
+import { buildHistoryEntry, foldHistoryRecord, foldableCount, needsOutputFile, outputRefFor, outputView, parseOutputRef, planHistory, pushHistory, renderHistory, seedHistoryEntry, tierText, type HistoryPlan, type OutputView } from './context/history.js';
+import { AGENT_MEM_BYTES, MIN_FREE_BYTES, ORCHESTRATION_DEPTH_MAX } from '../core/limits.js';
+import { CONTEXT_BUDGET_MIN_CHARS, FILE_CACHE_MAX_ENTRIES, HISTORY_MID, HISTORY_SHARE, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, OUTPUT_READ_PREFIX, resolveContextPolicy, type ResolvedContextPolicy } from './context/limits.js';
+import { computeContextUsage, restoredContextUsage } from './context/meter.js';
+import type { ContextReadHooks, ContextSummary } from './context/types.js';
 import { acquireRunLock, releaseRunLock } from '../session/lock.js';
 import { seedNoticeText } from '../session/seed.js';
 import { nextBudgetWarn, seedAnnounced, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
@@ -109,7 +139,9 @@ import { headDriftWarning, headMoved, notRepoState, probeGitState as realProbeGi
 import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
-import { buildSystemPrompt, type PromptHints, type PromptInput } from '../provider/prompts.js';
+import { buildSplitMessage, buildSystemPrompt, splitToolsFor, PROPOSE_SPLIT_TOOL_NAME, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput } from '../provider/prompts.js';
+// contract 1.5 (§3.4 rule 9): a COUNT of secret hits, never a value
+import { detectSecrets } from '../core/redact.js';
 import { linkedAbort } from '../core/abort.js';
 import { lookupPricing } from '../config/defaults.js';
 import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
@@ -117,18 +149,37 @@ import { stepTimeline, writeTimelineFile } from '../perf/timeline.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
 import { PLAN_MAX_HARNESS_PROBLEMS, applyPlanDraft, boundHarnessProblems, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
-import { buildCommonState, testsCurrent, type Redact } from './state.js';
+import { buildCommonState, isChangeAction, testsCurrent, type Redact } from './state.js';
 import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTranscriptLine, tokenSeriesOrZeros } from './stop.js';
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
 import { isComplete, isCompleteByFact, type CompletionFactInput } from './stages/complete.js';
 import { prefilterCandidates, runContextStage } from './stages/context.js';
+// contract 1.5 (ORCHESTRATION-DESIGN §3, §8.2 D1 item 15): the decompose stage
+import { checkpointOrchestration, decomposeShutByOptions, parseSplitDraft, runDecomposeStage, splitPrefixTree, type DecomposeFacts, type DecomposeStageContext } from './stages/decompose.js';
 import { runExecuteStage } from './stages/execute.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
 import { runJudgeStage } from './stages/judge.js';
-import { runProposeStage } from './stages/propose.js';
+import { runProposeStage, type ProposeStageResult } from './stages/propose.js';
 import { runReplanStage } from './stages/replan.js';
 import { runSynthStage } from './stages/synth.js';
-import { computeTargets, runRiskStage, MATCHES_INTENT_THRESHOLD, type VerifiedCompletion } from './stages/risk.js';
+import { computeTargets, isOwnershipRefusal, ownershipRefusal, runRiskStage, MATCHES_INTENT_THRESHOLD, SCOPE_FIGHT_AFTER, type VerifiedCompletion } from './stages/risk.js';
+// contract 1.5 (ORCHESTRATION-DESIGN §8.1 rule 2): orchestration is imported through the ONE facade, never a file below it.
+import {
+  commitStep,
+  computeAddSet,
+  manifestPath,
+  nodeManifestIo,
+  nodePreflightProbe,
+  preflight,
+  readManifest,
+  resolveVerification,
+  sameDelegation,
+  DEFAULT_SPLIT_POLICY,
+  type DraftSplit,
+  type GateReason,
+  type Manifest,
+} from '../orchestrate/index.js';
+import { escapedLine, escapedPaths, landPreflightOffer, launchOverlap, launchProposal, mergeAction, seedFor, type LandPreflightOffer, type LaunchAnswer, type LaunchInput } from './launch.js';
 
 // ---------------------------------------------------------------------------------------
 // Dependency injection (concurrently written modules)
@@ -224,6 +275,12 @@ export { DIRECTIVE_MAX_CHARS };
 /** TUI-DESIGN §8.6 annotate(): a renderer-originated line is clipped at 600 and its TUI-only body at 12,000 (through sanitizeStream) */
 export const ANNOTATE_TEXT_MAX_CHARS = 600;
 export const ANNOTATE_DETAIL_MAX_CHARS = 12_000;
+/**
+ * contract 1.7 item 2 (TUI-DESIGN-4 §3.5 D-W, edge 2): `annotateBlock` logs at most this many BODY rows, then one
+ * `… +N more rows`. A 42-row `/config` issued while a run is live would otherwise be 42 events through the redacting
+ * emit and 42 lines in `transcript.log`, which is a support artefact, not a pager mirror.
+ */
+export const BLOCK_LOG_MAX = 24;
 /** TUI-DESIGN §13.2 / §13.3: `paused: jev unreachable` auto-retries after 30 s, doubling to 5 min across consecutive pauses */
 export const JEV_UNREACHABLE_RETRY_MS = 30_000;
 export const JEV_UNREACHABLE_RETRY_MAX_MS = 300_000;
@@ -238,6 +295,17 @@ const TOKEN_CAP_RAISE_STEP = 10_000;
 const SPEND_LIMIT_RE = /spend|credit|billing|quota|insufficient/i;
 /** TUI-DESIGN §15 item 6: a reviewer note is one line of at most 600 chars */
 const REVIEWER_NOTE_MAX = 600;
+/** contract 1.4 (COORDINATION-DESIGN §7.2): finish() waits this long for the pause-now cache write before `replayable` is read as false */
+export const PAUSE_CACHE_BOUND_MS = 2_000;
+/** contract 1.4 (§5.3, §10): a peer's label inside `PausePoint.by` is clamped to this many chars of the id grammar */
+export const PEER_LABEL_MAX = 32;
+/** §5.3: `peer:<sid8>` — the last 8 chars of the sender's session id */
+const PEER_SID_CHARS = 8;
+/** the `by` grammar: [A-Za-z0-9._-] only, ≤ PEER_LABEL_MAX chars, never empty (a stripped label reads `unknown`) */
+function peerLabel(raw: string): string {
+  const clean = raw.replace(/[^A-Za-z0-9._-]/g, '').slice(0, PEER_LABEL_MAX);
+  return clean.length > 0 ? clean : 'unknown';
+}
 
 /**
  * TUI-DESIGN §13.3: what a failing stage asks for, before the loop top installs it. The id and the auto-retry interval
@@ -280,6 +348,15 @@ export interface StageContext {
   generate(req: GenerateRequest, attempt: number): Promise<GenerateResult>;
   noteMalformed(attempt: number): void;
   startCandidateRefresh(): void;
+  /** docs/COORDINATION-DESIGN.md §8.3 / §8.4 (W2 item 21): the zero-cost read and the `jevcode:outputs/` pseudo-path; absent in fakes */
+  contextReads?: ContextReadHooks;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §2.5): this engine's place in a delegation, so the stages that carry a child
+   * difference read one field instead of five — the risk stage's `own` refusal (§2.4 belt 2) and the propose stage's
+   * research tool schema (§2.5(b)). Absent on every run without `EngineOptions.orchestration`, which is why nothing
+   * here can change an ordinary run.
+   */
+  readonly orchestration?: OrchestrationOptions;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -312,6 +389,8 @@ interface StepDraft {
   /**
    * imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none.
    *
+   * decomposeMs: contract 1.5 (§4.1 [D13]) — the `decompose` stage's own wall, inside harnessMs; 0 when the gate was shut.
+   *
    * `jevMs` is what the decider *reports* (`AskResult.latencyMs`) — the client's cost basis, the number jev.jsonl
    * and `/jev` show. `jevWallMs` is the wall the engine actually spent inside `decider.ask`, measured here.
    * HARNESS-NEXT-DESIGN §4.4 / §5: `harnessMs` subtracts the larger of the two, because a decider that does its
@@ -320,7 +399,7 @@ interface StepDraft {
    * made the gate look fixable by making the double faster. The two are within noise of each other for a real HTTP
    * decider, so this only ever tightens the gated number.
    */
-  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null; jevWallMs: number };
+  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null; jevWallMs: number; decomposeMs: number };
   /** docs/LLM-JEV-DESIGN.md §7.5: wall of synthesize() (synth modes); null when the propose stage was the generator's */
   synthMs: number | null;
   /** the Jev latency spent inside synthesize(); `timing.jevMs - synthJevMs` is the shell's share */
@@ -344,7 +423,7 @@ interface StepDraft {
   generatorFailReason: string | null;
   errorClass: string | null;
   error: { stage: StageName; code: string; message: string } | null;
-  interruptedAt: { stage: StageName; reason: 'signal' | 'human_abort' | 'wall_time' | 'error' } | null;
+  interruptedAt: { stage: StageName; reason: InterruptReason } | null;
   jevStagesCompleted: number;
   proposeCompleted: boolean;
   directive: ReplanDirective | null;
@@ -355,6 +434,32 @@ interface StepDraft {
   observed: boolean;
   patchTargets: TargetInfo[];
   lastError: unknown;
+  // contract 1.4 (COORDINATION-DESIGN §7.2): what a pause-now snapshots
+  /** the generator's streamed text and tool-argument fragments of the propose call, ≤ PARTIAL_TEXT_MAX_CHARS (kept for the card, never replayed) */
+  partialText: string;
+  /** streamed chars of the PROPOSAL's own text only — a sample's chars belong to its generator row, never to the partial proposal (InterruptedDetail.partialChars) */
+  partialChars: number;
+  /** llm-jev: sample batches started this step (the engine's own fallback round number when the synthesizer names none) */
+  llmRounds: number;
+  /** llm-jev: the goal and round the samples of this step were fired for, as the synthesizer named them (SampleOptions); null when it named none */
+  llmGoal: { goalId: string; round: number } | null;
+  /** llm-jev: the samples that arrived this step, for the round cache (≤ CACHED_SAMPLES_MAX) */
+  arrivedSamples: CachedSample[];
+  /** the step restored its proposal from cache/step-<n>.json (§7.3 step 3) */
+  replayed: boolean;
+  /** absorbDiscardedTiming ran: this attempt's sample rows carry `discarded: true` (§11 row 41) */
+  discarded: boolean;
+}
+
+/** contract 1.4 (§12.0.2): the pause point as decided where the run stopped; finish() completes `resumableAt` / `replayable` / `by` / `end` */
+interface PendingPausePoint {
+  step: number;
+  phase: PausePoint['phase'];
+  reason: PausePointReason;
+  round: number | null;
+  pane?: BlockingRequest['kind'];
+  llm?: { goalId: string; round: number; arrived: number[] };
+  cache: `cache/step-${number}.json` | null;
 }
 
 function zeroUsage(): TokenUsage {
@@ -384,6 +489,19 @@ function addUsage(a: TokenUsage, b: TokenUsage): void {
  */
 function jevChargedMs(draft: Pick<StepDraft, 'timing'>): number {
   return Math.max(draft.timing.jevMs, draft.timing.jevWallMs);
+}
+/**
+ * contract 1.5 (ORCHESTRATION-DESIGN §3.1, §6.1 [D6]): what is left of the session budget NET OF HOLDS.
+ *
+ * The rendered twin is `sessionRemainingUsd` (`src/tui/budget/lines.ts:184`), which `src/loop/**` may not
+ * import; D0 item 3 gives that one an optional third `heldUsd` argument and the two must stay in step. A
+ * hold is money already promised to an agent that has not spent it yet, so the money gate reads it as gone
+ * — which is the whole of [D6]: without it a parent can promise the same dollar to two children.
+ */
+function sessionRemainingNetOfHolds(capUsd: number, spentUsd: number, heldUsd: number): number {
+  if (capUsd === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
+  const cap = Number.isFinite(capUsd) ? capUsd : 0;
+  return cap - Math.max(0, Number.isFinite(spentUsd) ? spentUsd : 0) - Math.max(0, Number.isFinite(heldUsd) ? heldUsd : 0);
 }
 
 function zeroTiming(): StepTiming {
@@ -525,8 +643,52 @@ class EngineImpl implements Engine {
 
   // engine state (§11 state-mutation rule: plan/window/detector change only in commit)
   private step = 0;
+  // contract 1.5 (ORCHESTRATION-DESIGN §3.1, §4.1): what this run has delegated. `splits` is counted against
+  // `orchestrate.maxSplits` and only a WRITTEN manifest consumes a slot (corner row 8); `lastSplitStep` is the
+  // `splitEvery` cooldown; `orchestration` is the delegation itself, re-read on resume by corner row 12.
+  private splits = 0;
+  private lastSplitStep: number | null = null;
+  private orchestration: NonNullable<CheckpointState['orchestration']> | null = null;
+  /** corner row 12: `agent:adopted` is announced once per process, not once per step */
+  private adoptedAnnounced = false;
   private plan: Plan = emptyPlan();
   private window: WindowEntry[] = [];
+  // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context — `window` above stays Jev's 4 × 600 (§8.1 two windows)
+  private history: HistoryEntry[] = [];
+  private fileCache: FileCacheEntry[] = [];
+  private fileMemory: FileMemory = {};
+  private summary: ContextSummary | null = null;
+  private summaryAt: number | null = null;
+  private compactions = 0;
+  private lastCompactionAt: string | null = null;
+  private contextUsage: ContextUsage;
+  private readonly contextPolicy: ResolvedContextPolicy;
+  /**
+   * §8.8 / review D5: only the modes whose generator prompt CONSUMES the relaxed view pay for it. `jev-only` never builds
+   * a generator prompt; `llm-jev` needs §8.8's third column (`SynthesisContext.contextText`), which is a core-contract
+   * addition — until it exists the bookkeeping would be dead weight (outputs/, a summary, a compaction) with a meter
+   * stuck at 0 %.
+   * TODO(§8.8 column 3, contract 1.4): when `SynthesisContext.contextText?: string` lands, add 'llm-jev' here and feed
+   * `contextView()` into `synthesisContext()`; nothing else in this file changes.
+   */
+  private readonly contextEnabled: boolean;
+  private readonly filesInView: FilesInView;
+  /** head + tail of the newest outputs by step (≤ HISTORY_MID); read back from `outputs/` once after a resume */
+  private readonly outputViews = new Map<number, OutputView>();
+  /** steps whose `outputRef` this device cannot follow (§8.5: the prompt says so instead of pointing at nothing) */
+  private readonly missingOutputs = new Set<number>();
+  private contextLoaded = false;
+  /** the post image of the step in flight, consumed by commitContext (§8.4 fileMemory from the hashes already computed) */
+  private lastPostImage: PostImage | null = null;
+  /** §8.2 / review D8: `windowTooSmall`, announced once after run:ready (the constructor has no listeners yet) */
+  private pendingWindowNotice: string | null = null;
+  /** §8.6 / review D20: a resume that folded rows past the history window compacts once, before the first prompt */
+  private pendingResumeCompaction = false;
+  /** §8.2(c) / §8.9: what the last prompt build cost and what the tier ladder did — carried on `ContextUsage` */
+  private lastRecentSteps: RecentStepsUsage = { chars: 0, allowanceChars: 0, whole: 0, clipped: 0, oneLine: 0, reads: 0 };
+  private lastRefreshMs = 0;
+  private lastPromptBuildMs = 0;
+
   private readonly detector: LoopDetector;
   private wallMsUsedBefore = 0;
   private runStartMono: number | null = null;
@@ -651,6 +813,74 @@ class EngineImpl implements Engine {
    */
   private deferredAnnouncements: EngineEvent[] = [];
 
+  // contract 1.4 (COORDINATION-DESIGN §7.2–§7.4, §12.0.2): pause points
+  /** pause({ at: 'now' }) was requested (§7.2); an execute in flight finishes first (P4) */
+  private pauseNow = false;
+  /** who asked for the pause (§5.3 `by`); 'self' unless a remote message (deliver) said otherwise */
+  private pauseBy: PausePoint['by'] = 'self';
+  /** end() was requested: RunMeta.ended rides the final human_pause write (§7.4) */
+  private endRequested: { by: 'human' | 'remote' } | null = null;
+  /** the point as decided where the run stopped (loop top, rule-1 discard, pane answer); finish() completes and emits it */
+  private pauseAt: PendingPausePoint | null = null;
+  /** a pause-now landed while execute ran (P4) or cut the judge (P5): the boundary point reads 'now-after-execute' */
+  private pauseLandedInExecute = false;
+  /** the last PausePoint of this process (EngineStatus.pausePoint); null until the point is reached */
+  private pausePoint: PausePoint | null = null;
+  /**
+   * the cache/step-<n>.json write a pause-now enqueued, together with WHAT IT WROTE (§12.0.2: `replayable` and the point's
+   * round are facts of the file, not of the draft the discard reads a tick later — a sample or a proposal landing between
+   * the snapshot and the discard must not promise a replay the file cannot serve). `done` is awaited (bounded) by finish().
+   */
+  private pauseCache: {
+    step: number;
+    rel: `cache/step-${number}.json`;
+    /** the resumes counter of the process entitled to replay it (this run's + 1) */
+    resumes: number;
+    at: string;
+    hadProposal: boolean;
+    arrivedCount: number;
+    partialChars: number;
+    round: number | null;
+    llm: { goalId: string; round: number; arrived: number[] } | null;
+    done: Promise<{ ok: boolean; targetsSha: Record<string, string | null> }>;
+  } | null = null;
+  /** abort() after a pause-now: the later abort wins the classification and the exit code (§7.2, §11 row 38) */
+  private abortOverride: AbortError | null = null;
+  /** created per awaitBlocker; pause() aborts it so an awaited pane resolves { answer: 'pause' } (P6) */
+  private blockWaker: AbortController | null = null;
+  /** §7.2 / §12.0.4: the replay detail beside `interrupted`; cleared with it at commit */
+  private interruptedDetail: InterruptedDetail | null = null;
+  /** §12.0.3 / D7: chars of the last generator prompt built this run (CheckpointState.lastPromptChars), persisted at commit */
+  private lastPromptChars: number | null = null;
+  /** §7.3 step 3: the cache the next runStep() replays (EngineOptions.resume.replay, gated by the target hashes at run start) */
+  private replayCache: StepCache | null = null;
+  private readonly replayRequested: boolean;
+  /** a --force resume of an ended run (§7.4): the resumes[] entry records `reopened` and run.json.ended is cleared */
+  private readonly reopened: boolean;
+
+  // contract 1.5 (ORCHESTRATION-DESIGN §2.4, §2.5, §2.6, §5.7): the child differences and the launch.
+  // Every one is inert on a run without `EngineOptions.orchestration`.
+  /** §2.4 / corner row 18: CONSECUTIVE belt-2 refusals; `SCOPE_FIGHT_AFTER` of them park the child */
+  private beltRefusals = 0;
+  /** §2.4 [G8]: the post-`run` escape diff of the step in flight, moved onto `StepRecord.escaped` at commit */
+  private escapedThisStep: readonly string[] = [];
+  /** §2.6 [G1]: the sha of the harness commit this step produced, moved onto `StepRecord.commit` at commit */
+  private commitThisStep: string | null = null;
+  /** §2.6 [D2] `touched`: ⋃ over this run's steps of `ActionOutcome.changedFiles` — file actions AND post-`run` diffs */
+  private readonly touchedPaths = new Set<string>();
+  /** §2.6: the sha of the unconditional `run:end` commit (`RunResult.commit`) */
+  private endCommit: string | null = null;
+  /** §2.5(c) / P10: a parked review is pending, so the rule-1 discard's point reads `review-needed`, not `now` */
+  private reviewParked = false;
+  /** §2.5(c) / corner row 29: the answer file was consumed this run — single-use, whatever a replay does */
+  private reviewAnswerUsed = false;
+  /** §5.7: the proposal the harness seeded for the NEXT step (the launch merge, or the [c] / [s] pre-flight step) */
+  private seededStep: { step: number; proposal: Proposal; note: string } | null = null;
+  /** §5.7: what `/land` is landing, so the merge's `executed` outcome can write `RunMeta.landed` */
+  private pendingLand: { branch: string; agents: number; delegatedAt: number } | null = null;
+  /** §5.7 tail: `RunMeta.landed`, newest last */
+  private landedMerges: readonly { step: number; branch: string; commit: string }[] = [];
+
   constructor(init: {
     runId: string;
     opts: EngineOptions;
@@ -663,12 +893,23 @@ class EngineImpl implements Engine {
     runDir: string;
     lock: { held: boolean; warning: string | null };
     headDrift: string | null;
+    /** contract 1.4 (§7.4): the resume reopens an ended run under --force */
+    reopened?: boolean;
   }) {
     this.runId = init.runId;
+    this.reopened = init.reopened === true;
+    this.replayRequested = init.resume !== null && init.opts.resume?.replay === true;
     this.opts = init.opts;
     this.mode = init.opts.mode;
     this.redact = init.opts.redact;
     this.store = init.store;
+    // contract 1.7 item 8 (TUI-DESIGN-4 §7.2 P-D2 item 1): the store reports every write path's own classification here.
+    // Registration happens AFTER the store is final (a resume replaces it with `loadForResume`'s), which is why this is a
+    // post-construction listener rather than a `createCheckpointStore` option: `CheckpointStoreFactory` is
+    // `(runsDir, runId, redact)` and never sees one. Detached in `finish()`, so a late write cannot emit into a dead engine.
+    attachDegradeListener(this.store, (info) => {
+      this.noteDisk(info, this.draft?.step ?? null);
+    });
     this.workspace = init.workspace;
     this.sandbox = init.sandbox;
     this.wsInfo = init.wsInfo;
@@ -728,10 +969,19 @@ class EngineImpl implements Engine {
       }
       this.consecutiveStageFailures = s.consecutiveStageFailures;
       this.jevQuestions = s.jevQuestions ?? 0;
+      // contract 1.5 (ORCHESTRATION-DESIGN corner row 12): a resumed run re-finds the delegation it already made, so
+      // the gate stays shut and no second manifest is proposed for the same work. `maybeDecompose` re-reads the
+      // manifest and compares `manifestId` + `baseSha` before it ADOPTS it.
+      this.orchestration = s.orchestration !== undefined ? { ...s.orchestration, agents: s.orchestration.agents.map((a) => ({ ...a })) } : null;
+      this.splits = s.splits ?? 0;
+      this.lastSplitStep = s.orchestration?.step ?? null;
       this.synthState = s.synthState ?? null;
       this.resumes = s.resumes;
+      this.lastPromptChars = s.lastPromptChars ?? null;
       this.jevCalls = s.jevLatencyMs.length;
       this.interrupted = s.interrupted;
+      // contract 1.4 (§7.3 step 4): the replay detail is restored only while `interrupted` names its step; `pausePoint` is never restored (it is this process's)
+      this.interruptedDetail = s.interrupted !== null && s.interruptedDetail !== undefined ? { ...s.interruptedDetail, targetsSha: { ...s.interruptedDetail.targetsSha } } : null;
       // contract 1.1 (TUI-DESIGN §15.2): steers queued before the stop are consumed by the resumed run
       this.pendingDirectives = (s.pendingDirectives ?? []).map((d) => ({ ...d }));
       this.steerSeq = this.pendingDirectives.reduce((m, d) => Math.max(m, d.index + 1), 0);
@@ -779,6 +1029,56 @@ class EngineImpl implements Engine {
       }
     }
     this.restoredSpentUsd = restoredSpentUsd;
+    // docs/COORDINATION-DESIGN.md §8: the context policy — the optional state fields restored, un-checkpointed steps folded into the
+    // history like the window above (a prepared loader folds the window, not the history: rows past the newest history step fold here)
+    // §8.2: the budget is model-aware AND money-aware — the run cap and the step count are the second term
+    // contract 1.4 (§8.2, §14 Q4): the model's window comes from `contextPolicy.windowTokens`, else the pricing table's column
+    const pricedWindow = init.opts.generatorPricing?.contextTokens;
+    this.contextPolicy = resolveContextPolicy(
+      init.opts.contextPolicy?.windowTokens === undefined && pricedWindow !== undefined ? { ...init.opts.contextPolicy, windowTokens: pricedWindow } : init.opts.contextPolicy,
+      {
+        spendCapUsd: init.opts.limits.spendCapUsd,
+        maxSteps: init.opts.limits.maxSteps,
+        ...(init.opts.generatorPricing?.inputPerM !== undefined ? { inputPerM: init.opts.generatorPricing.inputPerM } : {}),
+      },
+    );
+    this.contextEnabled = this.contextPolicy.view === 'relaxed' && (this.mode === 'jev-on' || this.mode === 'jev-off');
+    this.filesInView = new FilesInView(workspaceFilesInViewDeps(this.workspace), () => this.clock());
+    // review finding 28 / D5: under `view: 'legacy'`, and in the modes that never read it, none of §8 exists
+    if (this.contextEnabled) {
+      if (init.resume) {
+        // §9.3 / §10: a state.json (possibly mirrored from another device) is untrusted input — every addition is validated
+        const s: ContextCheckpointExtension = readContextExtension(init.resume.state, this.contextPolicy.historySteps);
+        this.history = s.history ?? [];
+        this.fileCache = s.fileCache ?? [];
+        this.fileMemory = s.fileMemory ?? {};
+        this.summaryAt = s.summaryAt ?? null;
+        this.compactions = s.compactions ?? 0;
+        this.lastCompactionAt = s.lastCompactionAt ?? null;
+        const newest = this.history[this.history.length - 1]?.step ?? 0;
+        let folded = 0;
+        for (const rec of [...init.resume.foldedSteps].sort((a, b) => a.step - b.step)) {
+          if (rec.step <= newest || rec.step > this.step) continue;
+          this.history = foldHistoryRecord(this.history, rec, this.contextPolicy.historySteps);
+          folded += 1;
+        }
+        // §8.6 trigger 4 / review finding 53 + D20: compact on resume ONLY when the folded rows pushed entries out of the
+        // history window, so a resume-heavy run sees the same history as an uninterrupted one and `compactions` cannot drift
+        this.pendingResumeCompaction = folded > 0 && this.history.length >= this.contextPolicy.historySteps;
+      } else {
+        // §8.3: a follow-up starts with the parent's window as its history (the generator's `## Recent steps` is derived from
+        // the same records as Jev's `recent`, so a seeded run sees the parent's steps exactly as the 4-entry window shows
+        // them; the parent's `outputs/` live in the parent's run dir, so no pointer is carried across)
+        this.history = (init.opts.seed?.window ?? []).map(seedHistoryEntry);
+        // §8.4: the human's @-mentions enter the cache pinned `human` (evicted last)
+        for (const rel of init.opts.seed?.pinnedFiles ?? []) this.fileCache = touchFile(this.fileCache, rel, 'human', 0);
+      }
+    }
+    this.contextUsage = restoredContextUsage(this.contextExtension(), this.contextPolicy.budget, this.contextPolicy.compaction);
+    // §8.2 / review D8: a model whose window is smaller than the floor is a run-shaping fact, not a silent clamp
+    if (this.contextEnabled && this.contextPolicy.budget.windowTooSmall) {
+      this.pendingWindowNotice = `context budget clamped to ${this.contextPolicy.budgetChars} chars — the generator's ${this.contextPolicy.windowTokens}-token window is smaller than the ${CONTEXT_BUDGET_MIN_CHARS}-char floor`;
+    }
     // TUI-DESIGN §15.2 constructor row (both branches): the initial directive is queued exactly like a steer (same bounds, same
     // deferred steer:queued line after run:ready) and consumed at the first step start
     if (typeof init.opts.humanDirective === 'string') this.steer(init.opts.humanDirective);
@@ -846,7 +1146,11 @@ class EngineImpl implements Engine {
   // -------------------------------------------------------------------------------------
 
   status(): EngineStatus {
-    return {
+    // docs/COORDINATION-DESIGN.md §12.0.3: `context` rides every status (a subtype until EngineStatus gains the member).
+    // Review D5/D18: it is ABSENT — not `0 %` — in the modes and under the pin where no relaxed prompt is built, so
+    // `--json=verbose` under `view: 'legacy'` is byte-identical to HEAD and a jev-only run shows no meter that cannot move.
+    const status: EngineStatus = {
+      ...(this.contextEnabled ? { context: this.contextUsage } : {}),
       step: this.step,
       maxSteps: this.opts.limits.maxSteps,
       wallMs: this.wallMsUsed(),
@@ -864,7 +1168,11 @@ class EngineImpl implements Engine {
       generatorTokens: { used: this.generatorTokens, cap: this.opts.limits.maxGeneratorTokens ?? null },
       // TUI-DESIGN-2 §2.4 / §2.6: the `/jev` line-2 suffix reads one value
       jevCostBasis: this.jevCostBasis(),
+      // contract 1.4 (COORDINATION-DESIGN §7.2, §12.0.2)
+      pauseNow: this.pauseNow && this.lastResult === null,
+      pausePoint: this.pausePoint,
     };
+    return status;
   }
 
   /** TUI-DESIGN-2 §2.4: `table` when every Jev request of this process was table-priced, `provider` when every one carried `usage.cost`, `mixed` otherwise; null before any. */
@@ -903,6 +1211,11 @@ class EngineImpl implements Engine {
     }
     this.aborting = true;
     if (!this.controller.signal.aborted) this.controller.abort(new AbortError(reason, this.signalName));
+    else if (isAbortError(this.controller.signal.reason) && this.controller.signal.reason.reason === 'human_pause') {
+      // contract 1.4 (COORDINATION-DESIGN §7.2 "a later abort() still wins", §11 row 38): the shared controller already carries the
+      // pause-now reason; classifyStop() and markLastResort prefer this one, so Esc Esc / SIGTERM never finish as human_pause
+      this.abortOverride = new AbortError(reason, this.signalName);
+    }
     void this.sandbox.killAll().catch(() => undefined);
     const handler = (): void => {
       try {
@@ -924,7 +1237,8 @@ class EngineImpl implements Engine {
    * rule-1 discard (`interrupted`), so `--resume` restarts that step and the run reads as stopped, not crashed.
    */
   private markLastResort(reason: 'human_abort' | 'signal' | 'error'): void {
-    if (this.stopReason === null) this.stopReason = reason;
+    // contract 1.4 (§7.2): a pause-now already set human_pause; the abort that followed is the stop
+    if (this.stopReason === null || this.stopReason === 'human_pause') this.stopReason = reason;
     if (this.interrupted === null && this.draft !== null && this.draft.step > this.step) {
       this.interrupted = { step: this.draft.step, stage: this.currentStage === 'idle' ? 'intent' : this.currentStage, proposal: this.draft.proposal };
     }
@@ -984,11 +1298,342 @@ class EngineImpl implements Engine {
     return d;
   }
 
-  /** Stop with 'human_pause' at the next loop top (§9.1 rule 1: the in-flight step commits whole first); idempotent. */
-  pause(): void {
-    if (this.pauseRequested || this.isFinished()) return;
+  /**
+   * Stop with 'human_pause' at the next loop top (§9.1 rule 1: the in-flight step commits whole first); idempotent.
+   * contract 1.4 (COORDINATION-DESIGN §7.2, §12.0.2): `at: 'now'` is the soft interrupt — synchronous, in order: (1) the draft
+   * snapshot → `cache/step-<n>.json` (the proposal, its targets' hashes, the partial text, the arrived LLM samples), (2) the
+   * flags and `pause:requested`, (3) an awaited pane wakes with 'pause' (P6), else the shared controller aborts with
+   * `AbortError('human_pause')` unless `execute` is in flight (P4: WAIT, never kill — the judge is skipped after it). `now`
+   * after `step` upgrades (the snapshot and the abort happen then); `step` after `now` is a no-op; nothing once finish() began.
+   */
+  pause(opts: PauseOptions = {}): void {
+    if (this.isFinished()) return;
+    if (opts.by !== undefined) this.pauseBy = opts.by;
+    if ((opts.at ?? 'step') === 'step') {
+      if (this.pauseRequested) return;
+      this.pauseRequested = true;
+      this.announce([{ type: 'pause:requested', step: this.step + 1 }]);
+      // P6: a pane awaited at the loop top has nothing in flight — wake it so the loop top finishes with human_pause now
+      if (this.blockWaker !== null) this.blockWaker.abort();
+      return;
+    }
+    if (this.pauseNow) return;
+    this.pauseNow = true;
+    const first = !this.pauseRequested;
     this.pauseRequested = true;
-    this.announce([{ type: 'pause:requested', step: this.step + 1 }]);
+    const draft = this.draft;
+    // (1) a stage is in flight (the draft is open) and nothing ran yet: the snapshot is what /resume --replay restores; once
+    // execute started the step commits whole instead; a discarded draft awaiting a pane is closed — nothing is in flight (P6)
+    const inFlight = draft !== null && !draft.closed && this.started;
+    if (inFlight && !draft.executeStarted) this.snapshotDraft(draft);
+    // (2) the request line once; an upgrade shows in the status (pauseNow) only
+    if (first) this.announce([{ type: 'pause:requested', step: this.step + 1 }]);
+    else if (this.started) this.emitStatus();
+    // (3) a pane is up (installed, or already awaited at the loop top): nothing is in flight — wake it with 'pause' (P6) and
+    // never abort the shared controller. The `blocked` half matters between installBlock() and awaitBlocker(): the waker does
+    // not exist yet there, and an abort would turn a resumable pane pause into the pane's own stop.
+    if (this.blocked !== null || this.blockWaker !== null) {
+      this.blockWaker?.abort();
+      return;
+    }
+    // (4) the stage in flight is cut through the shared controller; `execute` is never cut (P4, §11 row 29)
+    if (inFlight && this.currentStage !== 'execute' && !this.controller.signal.aborted) this.controller.abort(new AbortError('human_pause'));
+  }
+
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §7.4, §12.0.2): `end` = pause (at step, or now) + `RunMeta.ended = { at, by }` written with
+   * the final state, so `createEngine` requires --force to reopen. No new StopReason (§2.1 rule 10). Idempotent: a second end()
+   * keeps the first requester; end() after pause() adds the mark; nothing once finish() began.
+   */
+  end(opts: EndOptions = {}): void {
+    if (this.isFinished()) return;
+    const by = opts.by ?? 'human';
+    const first = this.endRequested === null;
+    if (first) this.endRequested = { by };
+    this.pause({ at: opts.at ?? 'step', ...(by === 'human' ? { by: 'self' as const } : {}) });
+    if (first) this.announce([{ type: 'transcript', step: null, level: 'info', text: `end requested (${by}): the run stops paused after this point; /resume ${this.runId} --force reopens` }]);
+  }
+
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §5.4, §12.0.2 P8): a coordination message addressed to this run. `pause` / `end` apply as
+   * `pause({ at, by: 'peer:<sid8>' })` / `end({ at, by: 'remote' })` — `text` naming `now` selects the soft interrupt; the caller
+   * (the TUI, which owns trust and the `[y] [Y] [n]` row) has already decided the sender may. Every other type is refused until
+   * the messaging wave routes it (W3). The outcome says what actually happened (§7.4 idempotency): `applied` when the request
+   * changed the run's course, `delivered` when it was already so, `expired` once the run is no longer live.
+   */
+  deliver(msg: DeliverableMessage): AckOutcome {
+    if (this.isFinished()) return 'expired';
+    if (msg.type !== 'pause' && msg.type !== 'end') return 'refused';
+    const sid = msg.from.sessionId ?? msg.from.runId;
+    // §5.3 / §10: a peer's own strings reach `by`, which rides state.json, the heartbeat and an index line — clamp them to
+    // the id grammar and 32 chars here, so no record can be widened, split across lines or made to look like another target
+    const by: PausePoint['by'] = sid !== null && sid.length > 0 ? `peer:${peerLabel(sid.slice(-PEER_SID_CHARS))}` : `device:${peerLabel(msg.from.label)}`;
+    const at: 'step' | 'now' = /\bnow\b/i.test(msg.text) ? 'now' : 'step';
+    const before = { requested: this.pauseRequested, now: this.pauseNow, end: this.endRequested !== null };
+    if (msg.type === 'pause') this.pause({ at, by });
+    else {
+      this.pauseBy = by;
+      this.end({ at, by: 'remote' });
+    }
+    const changed = this.pauseRequested !== before.requested || this.pauseNow !== before.now || (this.endRequested !== null) !== before.end;
+    return changed ? 'applied' : 'delivered';
+  }
+
+  /**
+   * §7.2 step 1–2: the draft snapshot, taken synchronously, written through the store's cache chain (`persist`: a failure is a
+   * notice, never a blocker — the card then offers no `[r]`). The targets' hashes are computed on the way out (async, bounded by
+   * the images.ts budget) and ride the same promise, which finish() awaits for at most PAUSE_CACHE_BOUND_MS.
+   */
+  private snapshotDraft(draft: StepDraft): void {
+    const step = draft.step;
+    const rel = stepCacheRel(step);
+    const proposal = draft.proposal;
+    const arrived = draft.arrivedSamples.map((a) => ({ ...a }));
+    const rels: string[] = [];
+    if (proposal !== null) {
+      for (const t of [...draft.patchTargets.map((t) => t.path), ...proposalPaths(proposal.action)]) if (!rels.includes(t)) rels.push(t);
+    }
+    const targets = rels.slice(0, REPLAY_HASH_MAX_FILES);
+    const intent = draft.intent;
+    const snap: Omit<StepCache, 'targets'> = {
+      v: 1,
+      step,
+      stage: this.currentStage,
+      proposal,
+      patchTargets: draft.patchTargets.map((t) => ({ ...t })),
+      risk: draft.risk,
+      matchesIntent: draft.matchesIntent,
+      intent: intent === null ? null : { intent: intent.intent, answer: intent.answer, verdict: intent.verdict, probability: intent.probability, confidence: intent.confidence, pairedNoul: intent.pairedNoul, planStillValid: intent.planStillValid },
+      proposer: draft.proposer,
+      contextFiles: [...draft.contextFiles],
+      directive: draft.directive,
+      partial: draft.partialChars > 0 ? { text: sanitizeStream(draft.partialText), chars: draft.partialChars } : null,
+      llmRound: this.mode === 'llm-jev' && draft.llmRounds > 0 ? { goalId: draft.llmGoal?.goalId ?? null, round: draft.llmGoal?.round ?? draft.llmRounds - 1, arrived } : null,
+      // §7.2 step 2: the same pair goes into `interruptedDetail`, and a replay serves the file only when the two agree
+      resumes: this.resumes + 1,
+      at: nowIso(),
+    };
+    // §12.0.2: exactly what the file carries — the discard and finish() read these, never the draft as it looks later
+    const wrote = {
+      step,
+      rel,
+      resumes: this.resumes + 1,
+      at: snap.at,
+      hadProposal: proposal !== null,
+      arrivedCount: snap.llmRound?.arrived.length ?? 0,
+      partialChars: draft.partialChars,
+      round: snap.llmRound?.round ?? null,
+      llm: snap.llmRound !== null && snap.llmRound.goalId !== null ? { goalId: snap.llmRound.goalId, round: snap.llmRound.round, arrived: arrived.map((a) => a.sample) } : null,
+    };
+    const write = this.store.writeCache;
+    if (write === undefined) {
+      this.pauseCache = { ...wrote, done: Promise.resolve({ ok: false, targetsSha: {} }) };
+      return;
+    }
+    const done = hashTargets(this.workspace.root, targets).then(async (targetsSha) => {
+      await write.call(this.store, stepCacheName(step), toJson({ ...snap, targets: targets.map((t) => ({ rel: t, sha256: targetsSha[t] ?? null })) }));
+      return { ok: true, targetsSha };
+    });
+    this.persist(done.then(() => undefined), rel);
+    this.pauseCache = { ...wrote, done: done.catch(() => ({ ok: false, targetsSha: {} })) };
+  }
+
+  /** contract 1.4 (§7.2): the stop classification of the shared signal, the later abort winning over a pause-now */
+  private classifyStop(reason: unknown = this.signal.reason): { interrupt: InterruptReason; stop: StopReason } {
+    return classifyAbort(this.abortOverride ?? reason);
+  }
+
+  /** §12.0.2 P1 / P4 / P5: the point at a step boundary — recorded at the loop top unless a discard already recorded one */
+  private recordBoundaryPause(): void {
+    if (this.pauseAt !== null) return;
+    this.pauseAt = { step: this.step + 1, phase: 'idle', reason: this.pauseLandedInExecute ? 'now-after-execute' : 'step', round: null, cache: null };
+  }
+
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.2 **P9**, [G17]): "delegation accepted". The manifest was confirmed
+   * at step n, the parent has nothing left to do until children report, and it stops.
+   *
+   * [G17] is the whole reason this is its own recorder rather than a call to `recordBoundaryPause()`: P9 is
+   * ENGINE-initiated. No human asked, so `by` stays `'self'` and never takes a `peer:` / `device:` form, and
+   * every surface that keys off `human_pause` to mean "a human asked" must add the `reason: 'delegate'` case.
+   * It is also the only pause point where NOTHING was interrupted — the step committed whole — which is why
+   * `resumableAt` is `'boundary'`, `replayable` is false, and the resume card shows no `[r] replay`.
+   */
+  private recordDelegatePause(step: number): void {
+    this.pauseBy = 'self';
+    this.pauseAt = { step: step + 1, phase: 'idle', reason: 'delegate', round: null, cache: null };
+  }
+
+  /**
+   * §12.0.2 P6 / P7: the point at a pane that pause() woke (`pane`) or that the human answered `[t] worktree` (`worktree`,
+   * the lease-conflict relocation of §4.3 step 5) — the step that raised the pane is already a rule-1 discard, so its
+   * `interruptedDetail` (when one was written) is what `--replay` reads after the relocation.
+   */
+  private recordPanePause(req: BlockingRequest, reason: 'pane' | 'worktree'): void {
+    const detail = this.interrupted !== null ? this.interruptedDetail : null;
+    this.pauseAt = { step: this.interrupted?.step ?? this.step + 1, phase: 'pane', reason, round: null, pane: req.kind, cache: detail?.cache ?? null };
+  }
+
+  /**
+   * §12.0.2 P2 / P3: a rule-1 discard after a pause-now (or an abort that followed one) — the replay detail beside `interrupted`
+   * and, for a human_pause, the point itself. `replayable` = a proposal or an arrived sample exists and nothing ran; the cache
+   * write's outcome is folded in by finish().
+   */
+  private noteDiscardDetail(draft: StepDraft, stage: StageName, stop: StopReason): void {
+    const cache = this.pauseCache;
+    if (cache === null || cache.step !== draft.step) return;
+    // §12.0.2 (one definition of `replayable`): what the snapshot WROTE — a proposal in the file, or arrived samples in it —
+    // and nothing executed. A sample that resolved in the same tick as the pause is not in the file and does not count.
+    const replayable = !draft.executeStarted && (cache.hadProposal || cache.arrivedCount > 0);
+    this.interruptedDetail = { cache: cache.rel, resumes: cache.resumes, at: cache.at, targetsSha: {}, replayable, partialChars: cache.partialChars };
+    if (stop !== 'human_pause') return;
+    this.pauseAt = {
+      step: draft.step,
+      phase: stage,
+      // contract 1.5 (ORCHESTRATION-DESIGN §4.2 P10): the parking confirmer's discard is a review park, not a pause-now
+      reason: this.reviewParked ? 'review-needed' : 'now',
+      round: cache.round,
+      ...(cache.llm !== null ? { llm: { ...cache.llm, arrived: [...cache.llm.arrived] } } : {}),
+      cache: cache.rel,
+    };
+  }
+
+  /**
+   * finish(): the pause-now cache write settles (bounded) so `interruptedDetail.targetsSha` / `.replayable` are facts in the final
+   * state — for every stop reason (an abort after a pause-now keeps the file for the card, §11 row 38); then, for a human_pause,
+   * the PausePoint (§12.0.2) is built from the decided facts before the snapshot is taken, so state.json and the event agree.
+   * §7.5: the wait is PAUSE_CACHE_BOUND_MS at most and never outlives `deadlineMs`, the ONE shutdown bound it shares with the
+   * final write — so a hung cache chain cannot stretch the shutdown past SHUTDOWN_CHECKPOINT_BOUND_MS.
+   */
+  private async settlePausePoint(reason: StopReason, deadlineMs: number): Promise<void> {
+    const cache = this.pauseCache;
+    let cacheOk = false;
+    if (cache !== null && this.interruptedDetail !== null && this.interruptedDetail.cache === cache.rel) {
+      const waitMs = Math.max(0, Math.min(PAUSE_CACHE_BOUND_MS, deadlineMs - this.clock()));
+      // the sleep's wake signal ends the timer the moment the race is over (the write won, or the bound did), so the
+      // shutdown never carries a timer nobody waits for; the wake RESOLVES the sleep, so nothing is left unhandled either
+      const waker = new AbortController();
+      let r: { ok: boolean; targetsSha: Record<string, string | null> };
+      try {
+        r = await Promise.race([cache.done, sleep(waitMs, undefined, waker.signal).then(() => ({ ok: false, targetsSha: {} as Record<string, string | null> }))]);
+      } finally {
+        waker.abort();
+      }
+      cacheOk = r.ok;
+      this.interruptedDetail = { ...this.interruptedDetail, targetsSha: r.targetsSha, replayable: this.interruptedDetail.replayable && r.ok };
+    }
+    if (reason !== 'human_pause') return;
+    // §12.0.2: `checkpoint-degraded` (exit 3, resumable false) never reaches a pause point — the state the point promises could not be written
+    if (this.checkpointDegraded) return;
+    if (this.pauseAt === null) this.recordBoundaryPause();
+    const at = this.pauseAt!;
+    const detail = at.cache !== null && this.interruptedDetail !== null && this.interruptedDetail.cache === at.cache ? this.interruptedDetail : null;
+    this.pausePoint = {
+      step: at.step,
+      round: at.round,
+      phase: at.phase,
+      reason: at.reason,
+      resumableAt: at.cache !== null && cacheOk ? at.cache : 'boundary',
+      replayable: detail !== null && detail.replayable && cacheOk,
+      ...(at.pane !== undefined ? { pane: at.pane } : {}),
+      ...(at.llm !== undefined ? { llm: { ...at.llm, arrived: [...at.llm.arrived] } } : {}),
+      by: this.pauseBy,
+      end: this.endRequested !== null,
+    };
+  }
+
+  /**
+   * §7.3 step 3: `EngineOptions.resume.replay` — read `cache/step-<n>.json` for the interrupted step and pass the hash gate;
+   * otherwise the step is fresh at intent with one transcript line saying why (§11 row 30).
+   */
+  private async loadReplay(): Promise<void> {
+    const step = this.step + 1;
+    const interrupted = this.interrupted;
+    const detail = this.interruptedDetail;
+    if (interrupted === null || detail === null || interrupted.step !== step) {
+      this.emit({ type: 'transcript', step: null, level: 'info', text: `replay unavailable: no paused proposal for step ${step}; fresh step at intent` });
+      return;
+    }
+    // §7.3 step 4: the detail is stamped with the resume counter of the run allowed to replay it; one fresh resume of the
+    // step supersedes it for good (runStep renames the file), so a later --replay can never resurrect the rejected proposal
+    if (detail.resumes !== this.resumes) {
+      this.emit({ type: 'transcript', step: null, level: 'info', text: `replay unavailable: the paused proposal for step ${step} was already superseded by a fresh resume (stamped for resume ${detail.resumes}, this is ${this.resumes}); fresh step at intent` });
+      return;
+    }
+    if (!detail.replayable) {
+      this.emit({ type: 'transcript', step: null, level: 'info', text: `replay unavailable: nothing had arrived when step ${step} paused; fresh step at intent` });
+      return;
+    }
+    const json = this.store.readCache ? await this.store.readCache(stepCacheName(step)) : null;
+    const cache = json === null ? null : parseStepCache(json);
+    if (cache === null || cache.step !== step) {
+      this.emit({ type: 'transcript', step: null, level: 'warn', text: `replay unavailable: ${detail.cache} is missing or unreadable; fresh step ${step} at intent` });
+      return;
+    }
+    // §7.2 step 2: the file must be the one this state names — the `{ resumes, at }` pair, never the mere presence of the file
+    if (cache.resumes !== detail.resumes || cache.at !== detail.at) {
+      this.emit({ type: 'transcript', step: null, level: 'warn', text: `replay unavailable: ${detail.cache} belongs to another attempt (written ${cache.at}, the state names ${detail.at}); fresh step ${step} at intent` });
+      return;
+    }
+    const check = await verifyTargets(this.workspace.root, detail.targetsSha);
+    if (!check.ok) {
+      this.emit({ type: 'transcript', step: null, level: 'warn', text: `replay unavailable: targets changed since the proposal (${check.changed.join(', ')}); fresh step ${step} at intent` });
+      return;
+    }
+    this.replayCache = cache;
+    const what = cache.proposal !== null ? 'the paused proposal (risk re-checked)' : `${cache.llmRound?.arrived.length ?? 0} arrived LLM sample(s), no generator call for them`;
+    this.emit({ type: 'transcript', step: null, level: 'info', text: `replaying step ${step} from ${detail.cache}: ${what}` });
+  }
+
+  /**
+   * §7.3 step 4: drop the replay detail and rename `cache/step-<n>.json` → `cache/step-<n>.superseded.json`. Called at the top
+   * of every step that is not a replay: the bytes stay for the audit trail, the proposal is out of reach for good.
+   */
+  private supersedeStepCache(): void {
+    const detail = this.interruptedDetail;
+    this.interruptedDetail = null;
+    if (detail === null) return;
+    const rename = this.store.renameCache;
+    const m = /^cache\/step-(\d+)\.json$/.exec(detail.cache);
+    if (rename === undefined || m === null) return;
+    const n = Number(m[1]);
+    this.persist(rename.call(this.store, stepCacheName(n), stepCacheSupersededName(n)), detail.cache);
+  }
+
+  /** the cache for exactly this step, or null; a cached proposal is consumed here, a samples-only cache stays for generate() until the step ends */
+  private takeReplay(step: number): StepCache | null {
+    // ORCHESTRATION-DESIGN §5.7: a harness-seeded proposal (the launch merge, or the [c] / [s] pre-flight step) enters
+    // the loop through the SAME door as a replayed one — "do not build a parallel path".
+    const seeded = this.takeSeeded(step);
+    if (seeded !== null) return seeded;
+    const c = this.replayCache;
+    if (c === null || c.step !== step) return null;
+    if (c.proposal !== null) this.replayCache = null;
+    return c;
+  }
+
+  /** llm-jev replay: the cached result for this sample of the same prompt, served once; null → the generator is asked */
+  private takeCachedSample(draft: StepDraft, req: GenerateRequest, sample: SampleOptions): GenerateResult | null {
+    const c = this.replayCache;
+    if (c === null || c.step !== draft.step || c.llmRound === null) return null;
+    const hash = promptHashOf(req);
+    const i = c.llmRound.arrived.findIndex((a) => a.sample === sample.sample && a.purpose === sample.purpose && a.promptHash === hash);
+    if (i < 0) return null;
+    const [hit] = c.llmRound.arrived.splice(i, 1);
+    return hit === undefined ? null : hit.result;
+  }
+
+  /**
+   * §7.2: the streamed generator chars of the propose call feed the snapshot's partial text (bounded). Only the proposal's
+   * own stream counts: an llm-jev sample's chars are its row's (`recordUnfinishedSample`), and counting them would make the
+   * card claim a partial proposal that never existed.
+   */
+  private notePartial(draft: StepDraft, text: string, keepText: boolean): void {
+    if (!keepText) return;
+    draft.partialChars += text.length;
+    const room = PARTIAL_TEXT_MAX_CHARS - draft.partialText.length;
+    if (room <= 0) return;
+    draft.partialText += text.length <= room ? text : text.slice(0, room);
   }
 
   /**
@@ -1006,6 +1651,19 @@ class EngineImpl implements Engine {
     this.retryWaker = null;
     w.abort();
     return true;
+  }
+
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §8.5, §8.6): `/compact now` — fold the history into the rolling summary at once,
+   * outside the 85 % / every-8-steps triggers. A no-op when this run builds no relaxed context (`jev-only`, `llm-jev`,
+   * `view: 'legacy'`, `compaction: 'off'`), when there is nothing foldable, or once finish() began; `context:compacted`
+   * reports what it did, exactly as an automatic compaction does.
+   */
+  compact(): void {
+    if (!this.contextEnabled || this.isFinished() || this.contextPolicy.compaction === 'off') return;
+    if (foldableCount(this.history) === 0) return;
+    this.compactContext(this.step, 'manual');
+    this.emitStatus();
   }
 
   /**
@@ -1029,6 +1687,30 @@ class EngineImpl implements Engine {
       label: opts.label ?? '[ui]',
       ...(detail.length > 0 ? { detail } : {}),
     });
+    return true;
+  }
+
+  /**
+   * contract 1.7 item 2 (TUI-DESIGN-4 §3.5, D-W): one `notice ui` per row, HEAD FIRST, exactly as `--plain`'s
+   * `note(head); for (const l of lines) note(l)` loop does — so a command block issued while a run is live writes the
+   * same rows to `transcript.log` from the TUI as from `--plain`, and the three sinks match. Returns false when no run
+   * is live, exactly like `annotate`, and the caller then keeps the rows local.
+   *
+   * Edge 1: the loop is ATOMIC with respect to `isFinished()` — liveness is read once, before the first emit, so a
+   * listener that pauses (or a run that ends) between two rows can never truncate a block into half a card.
+   * Edge 2: at most `BLOCK_LOG_MAX` body rows, then one `… +N more rows`.
+   */
+  annotateBlock(head: string, rows: readonly string[], opts: { level?: 'info' | 'warn' | 'error'; label?: UiLabel } = {}): boolean {
+    if (!this.started || this.isFinished()) return false;
+    const step = this.draft?.step ?? null;
+    const level = opts.level ?? 'info';
+    const label = opts.label ?? '[ui]';
+    const shown = rows.length > BLOCK_LOG_MAX ? rows.slice(0, BLOCK_LOG_MAX) : rows;
+    const overflow = rows.length - shown.length;
+    const lines = [head, ...shown, ...(overflow > 0 ? [`… +${overflow} more rows`] : [])];
+    for (const line of lines) {
+      this.emit({ type: 'notice', step, kind: 'ui', level, text: clipText(sanitizeStream(line), ANNOTATE_TEXT_MAX_CHARS), label });
+    }
     return true;
   }
 
@@ -1099,6 +1781,11 @@ class EngineImpl implements Engine {
     }
     // TUI-DESIGN §8.3: the seeded line names the parent and what was carried
     if (this.seeded && this.opts.seed) this.emit({ type: 'notice', step: null, kind: 'seeded', level: 'info', text: seedNoticeText(this.opts.seed, this.opts.seed.carriedDirectives ?? 0) });
+    // §8.2 / review D8: the generator's window is smaller than the context floor — the run says so once, here
+    if (this.pendingWindowNotice !== null) {
+      this.emit({ type: 'notice', step: null, kind: 'ui', level: 'warn', label: '[ui]', text: this.pendingWindowNotice });
+      this.pendingWindowNotice = null;
+    }
     // TUI-DESIGN §10.2: the count of secrets the human sent on request (never the values)
     if (this.opts.secretsAcked !== undefined && this.opts.secretsAcked > 0) this.emit({ type: 'secret-ack', step: null, count: this.opts.secretsAcked });
     // TUI-DESIGN §8.6 / §15.2: steers, withdrawals, a pause and secret-acks decided before run(), in order, after every writer saw run:ready
@@ -1110,39 +1797,66 @@ class EngineImpl implements Engine {
       // TUI-DESIGN §9.4: this resume's overrides are recorded in run.json together with its resumes[] entry
       this.persist(
         this.store.updateMeta({
-          resumes: [{ resumedAt: nowIso(), previousStopReason: this.stopReason }],
+          // contract 1.4 (§7.4): a --force resume of an ended run records `reopened` and clears run.json.ended (the run is live again)
+          resumes: [{ resumedAt: nowIso(), previousStopReason: this.stopReason, ...(this.reopened ? { reopened: true as const } : {}) }],
           ...(resumeOverrides.length > 0 ? { overrides: resumeOverrides.map((o) => ({ ...o })) } : {}),
           // TUI-DESIGN-2 §2.5: the resolved id under the new provider's naming (see the constructor)
           ...(this.resolvedRekeyed ? { resolvedJevModel: this.resolvedJevModel } : {}),
+          ...(this.reopened ? { ended: null } : {}),
         }),
         CHECKPOINT_FILES.meta,
       );
+      if (this.reopened) this.emit({ type: 'transcript', step: null, level: 'info', text: `reopened: run ${this.runId} was ended; --force resumed it` });
       this.stopReason = null;
+      // contract 1.4 (§7.3 step 3): the replay cache is read and gated once, before the first step
+      if (this.replayRequested) await this.loadReplay();
     }
     for (;;) {
       trace(`loop top step=${this.step} aborted=${this.signal.aborted}`);
-      if (this.signal.aborted) return this.finish(classifyAbort(this.signal.reason).stop);
+      if (this.signal.aborted) {
+        const cls = this.classifyStop();
+        // contract 1.4 (§12.0.2 P5): a pause-now that cut the judge committed the step under rule 3; the point is the boundary
+        if (cls.stop === 'human_pause') this.recordBoundaryPause();
+        return this.finish(cls.stop);
+      }
       const budget = checkBudgets(this.budgetInput());
       if (budget !== null) {
         this.emit({ type: 'transcript', step: null, level: 'info', text: `budget ${budget} reached at step start` });
         return this.finish(budget);
       }
       // contract 1.1 (TUI-DESIGN §9.1, §15.2): a requested pause ends the run only here, after the in-flight step committed whole
-      if (this.pauseRequested) return this.finish('human_pause');
+      if (this.pauseRequested) {
+        // contract 1.4 (§12.0.2 P1 / P4): the boundary point
+        this.recordBoundaryPause();
+        return this.finish('human_pause');
+      }
       // TUI-DESIGN §13.3: every blocking pause is awaited here — nothing is in flight and the last commit is whole
       if (this.blocked !== null) {
         const req = this.blocked;
         const answer = await this.awaitBlocker(req);
         if (this.signal.aborted) continue; // the abort is classified at the top
+        // contract 1.4 (§12.0.2 P6, §11 row 37): pause() woke the pane → human_pause without adoptBlockedError (the pane's error is
+        // not this stop's error). Two exceptions (review 2026-09-21 #25 / #26): `drift` keeps `[p] pin` / `[q] stop` only, so a
+        // pause reads as `[q]` below; `checkpoint-degraded` exists because state.json failed, and finish()'s final write hits the
+        // same disk — a pause there cannot end as exit 4, so it reads as `[r] retry the write` and the loop top pauses normally
+        // once the write lands (a failing retry re-arms the pane and the run ends exit 3, not resumable).
+        // `[t] worktree` (P7, §4.3 step 5) is the same resumable stop: the TUI creates the worktree and resumes with --replay
+        if ((answer === 'pause' || answer === 'worktree') && req.kind !== 'drift' && req.kind !== 'checkpoint-degraded') {
+          this.recordPanePause(req, answer === 'worktree' ? 'worktree' : 'pane');
+          return this.finish('human_pause');
+        }
         // TUI-DESIGN §13.3: the drift pane offers `[p] pin … for the next run` and `[q] stop` only — every answer ends the run with
         // exit 2 (a `retry` would re-run on the drifted model: the second call is no longer a first call)
         if (answer === 'stop' || req.kind === 'drift') {
           this.adoptBlockedError(req);
           return this.finish(req.stop);
         }
+        // `[w] wait` (the lease-conflict pane, §4.3 step 4) is not a stop: the pane closes and the next step's coordinate
+        // stage re-checks the lease — the wait belongs inside that stage, never to the loop top
         this.blocked = null;
         this.blockedError = null;
         if (req.kind === 'checkpoint-degraded') {
+          // `[r] retry`, and `pause()` with it (contract 1.4, review #26): the write is tried again before the loop top pauses
           if (answer === 'continue') this.checkpointDegraded = true;
           else await this.retryStateWrite(req.step);
         }
@@ -1234,6 +1948,16 @@ class EngineImpl implements Engine {
         this.retryWaker = waker;
         races.push(sleep(req.retryInMs, undefined, waker.signal).then(() => ({ answer: 'retry' as const, auto: true })));
       }
+      // contract 1.4 (COORDINATION-DESIGN §7.2, §12.0.2 P6): pause() aborts this controller so the awaited pane resolves 'pause'
+      const blockWaker = new AbortController();
+      this.blockWaker = blockWaker;
+      races.push(
+        new Promise<{ answer: BlockingAnswer; auto: boolean }>((resolve) => {
+          const onPause = (): void => resolve({ answer: 'pause', auto: false });
+          if (blockWaker.signal.aborted) onPause();
+          else blockWaker.signal.addEventListener('abort', onPause, { once: true });
+        }),
+      );
       try {
         ({ answer, auto } = await Promise.race(races));
         // a `[r] now` press (retryNow aborted the waker) ended the wait early: a retry answered by the human, not by the timer
@@ -1242,6 +1966,7 @@ class EngineImpl implements Engine {
         answer = 'stop';
       } finally {
         if (onAbort !== null) this.signal.removeEventListener('abort', onAbort);
+        if (this.blockWaker === blockWaker) this.blockWaker = null;
         if (waker !== null) {
           // the wait is over either way: release the waker so a later retryNow() reports false, and end the timer
           if (this.retryWaker === waker) this.retryWaker = null;
@@ -1281,14 +2006,28 @@ class EngineImpl implements Engine {
   private noteDiskError(e: unknown, file: string | undefined, step: number | null): boolean {
     const disk = classifyDiskError(e, file);
     if (disk === null) return false;
+    return this.noteDisk(disk, step, e);
+  }
+
+  /**
+   * contract 1.7 item 8 (TUI-DESIGN-4 §7.2 P-D2 item 1): the same emit + block path, entered from a classification the
+   * STORE made. The store reports every write path's failure through `attachDegradeListener`, which is what closes the
+   * measured hole: `enqueue()` handles the tail of a chain whose caller never awaited it, so before round 4 a run whose
+   * directory vanished mid-flight reported `complete`, exit 0, and the epilogue advertised a resume that could not work.
+   * The once-per-`<file>:<code>` rule lives here, in `this.warned`, so the two entry points can never double-report.
+   */
+  private noteDisk(disk: DiskError, step: number | null, cause: unknown = null): boolean {
     if (!this.warned.has(disk.key)) {
       this.warned.add(disk.key);
-      this.emit({ type: 'notice', step, kind: 'checkpoint:degraded', level: 'error', text: disk.text });
+      // contract 1.7 (TUI-DESIGN-4 §7.2 edge 6): the notice carries the whole SENTENCE — `checkpoint degraded:
+      // EACCES on state.json — the run directory is not writable; this run cannot be resumed` — never the bare
+      // `<code> on <file>` and never the raw `open '<path>'` suffix. `text` stays on `DiskError` for its captures.
+      this.emit({ type: 'notice', step, kind: 'checkpoint:degraded', level: 'error', text: disk.sentence });
     }
     // `[c] continue without checkpoints` was chosen: later state.json failures stay notices, the run is already degraded;
     // a failure of the FINAL write (finish() in flight) has no loop top left to pause at — it makes the run exit 3 instead
     if (disk.file === CHECKPOINT_FILES.state && this.blocked === null && !this.checkpointDegraded && !this.finishing) {
-      this.installBlock({ step: step ?? this.step, kind: 'checkpoint-degraded', detail: checkpointDegradedDetail(disk.code, disk.file), stop: 'error', exitCode: 3 }, e);
+      this.installBlock({ step: step ?? this.step, kind: 'checkpoint-degraded', detail: checkpointDegradedDetail(disk.code, disk.file), stop: 'error', exitCode: 3 }, cause);
       this.emitStatus();
     }
     return true;
@@ -1499,6 +2238,12 @@ class EngineImpl implements Engine {
       jevModelDrift: this.jevModelDrift,
       stopReason: this.stopReason,
       interrupted: this.interrupted,
+      // contract 1.4 (COORDINATION-DESIGN §7.2, §12.0.2): the replay detail rides only with its OWN `interrupted` — same step,
+      // and the cache file it names is that step's, so a detail left by an earlier attempt is never written beside a later discard
+      ...(this.interrupted !== null && this.interruptedDetail !== null && this.interruptedDetail.cache === stepCacheRel(this.interrupted.step)
+        ? { interruptedDetail: { ...this.interruptedDetail, targetsSha: { ...this.interruptedDetail.targetsSha } } }
+        : {}),
+      ...(this.pausePoint !== null ? { pausePoint: { ...this.pausePoint } } : {}),
       consecutiveStageFailures: this.consecutiveStageFailures,
       jevQuestions: this.jevQuestions,
       ...(this.synthState !== null ? { synthState: this.synthState } : {}),
@@ -1506,6 +2251,15 @@ class EngineImpl implements Engine {
       ...(this.pendingDirectives.length > 0 ? { pendingDirectives: this.pendingDirectives.map((d) => ({ ...d })) } : {}),
       ...(this.undoLog.length > 0 ? { undoLog: this.undoLog.map((u) => ({ ...u, restored: [...u.restored], skipped: u.skipped.map((k) => ({ ...k })) })) } : {}),
       ...(this.checkpointDegraded ? { checkpointDegraded: true } : {}),
+      // contract 1.5 (ORCHESTRATION-DESIGN §4.1, §4.2 P9): the delegation this run is the parent of, and how many
+      // splits it has spent. Both are conditional spreads, so a run that never delegated writes the same state.json
+      // it wrote before this change — which is half of what M2 means by “zero cost”.
+      ...(this.orchestration !== null ? { orchestration: { ...this.orchestration, agents: this.orchestration.agents.map((a) => ({ ...a })) } } : {}),
+      ...(this.splits > 0 ? { splits: this.splits } : {}),
+      // contract 1.4 (§12.0.3): the last prompt's chars, so a resumed process's context meter starts from a fact
+      ...(this.lastPromptChars !== null ? { lastPromptChars: this.lastPromptChars } : {}),
+      // docs/COORDINATION-DESIGN.md §8.3 / §8.4 / §12.0.3 (additive, conditional): absent while empty, so older readers and goldens are unchanged
+      ...this.contextExtension(),
       resumes: this.resumes,
       updatedAt: nowIso(),
     };
@@ -1538,7 +2292,7 @@ class EngineImpl implements Engine {
       jevRequests: [],
       generatorRecords: [],
       usage: { generator: zeroUsage(), jev: zeroUsage() },
-      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null, jevWallMs: 0 },
+      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null, jevWallMs: 0, decomposeMs: 0 },
       synthMs: null,
       synthJevMs: 0,
       synthJevWallMs: 0,
@@ -1559,6 +2313,13 @@ class EngineImpl implements Engine {
       observed: true,
       patchTargets: [],
       lastError: null,
+      partialText: '',
+      partialChars: 0,
+      llmRounds: 0,
+      llmGoal: null,
+      arrivedSamples: [],
+      replayed: false,
+      discarded: false,
     };
   }
 
@@ -1618,6 +2379,10 @@ class EngineImpl implements Engine {
           self.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `candidate refresh failed: ${e instanceof Error ? self.redact(e.message) : String(e)}` });
         });
       },
+      // docs/COORDINATION-DESIGN.md §8.3 / §8.4: the zero-cost read and the `jevcode:outputs/` pseudo-path
+      contextReads: this.contextReadHooks(),
+      // ORCHESTRATION-DESIGN §2.5: spread in only when set, so a normal run's StageContext is unchanged
+      ...(this.opts.orchestration !== undefined ? { orchestration: this.opts.orchestration } : {}),
     };
   }
 
@@ -1960,7 +2725,21 @@ class EngineImpl implements Engine {
     // stopping) was never served — reject with the reason before any event, row or metered token
     if (sample !== undefined && sample.signal.aborted) throw sample.signal.reason;
     if (sample !== undefined && this.signal.aborted) throw this.signal.reason;
+    // contract 1.4 (§12.0.2 P3): the round the pause cache names comes from the synthesizer's own sample options, never from
+    // the free-text `synth` event; the samples of one batch carry the same pair, so the last one dispatched is the round
+    if (sample?.goalId !== undefined) draft.llmGoal = { goalId: sample.goalId, round: sample.goalRound ?? Math.max(0, draft.llmRounds - 1) };
     const at = sample === undefined ? {} : { sample: sample.sample };
+    if (sample !== undefined) {
+      // contract 1.4 (COORDINATION-DESIGN §6.4, §7.3 step 3, P3): a sample that arrived before the pause is served from the round
+      // cache — no provider call, no metering, no row (nothing was bought); the events say so for the renderers
+      const cached = this.takeCachedSample(draft, req, sample);
+      if (cached !== null) {
+        this.emit({ type: 'generator:start', step: draft.step, attempt, ...at });
+        this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `sample ${sample.sample} replayed from ${stepCacheRel(draft.step)} (no generator call)` });
+        this.emit({ type: 'generator:end', step: draft.step, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, latencyMs: 0, finishReason: 'replayed', ...at });
+        return cached;
+      }
+    }
     this.emit({ type: 'generator:start', step: draft.step, attempt, ...at });
     // Tool-call argument fragments are reported as a cumulative character count per call; the
     // renderer coalesces ("streaming action… N chars", §7/§10). The text itself is parsed once at the end.
@@ -1983,10 +2762,12 @@ class EngineImpl implements Engine {
         ...at,
         onDelta: (text) => {
           textChars += text.length;
+          this.notePartial(draft, text, sample === undefined);
           this.emit({ type: 'generator:delta', step: draft.step, text, ...at });
         },
         onToolDelta: (fragment) => {
           toolChars += fragment.length;
+          this.notePartial(draft, fragment, sample === undefined);
           this.emit({ type: 'generator:tool-delta', step: draft.step, chars: toolChars, ...at });
         },
         onRetry: retry.onRetry,
@@ -2028,10 +2809,16 @@ class EngineImpl implements Engine {
     addUsage(draft.usage.generator, usage);
     // the one-sample call adds the provider's latency; a round's samples close their batch wall in noteSampleEnd
     if (sample === undefined) draft.timing.generatorMs += res.latencyMs;
+    const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
+    if (sample !== undefined && draft.arrivedSamples.length < CACHED_SAMPLES_MAX) {
+      // contract 1.4 (§6.4): the arrived sample joins the step's round cache (bounded), so a pause-now keeps what was bought
+      const body = JSON.stringify(res);
+      if (body !== undefined && body.length <= CACHED_SAMPLE_MAX_CHARS) draft.arrivedSamples.push({ sample: sample.sample, purpose: sample.purpose, promptHash, result: JSON.parse(body) as GenerateResult });
+    }
     this.pushGeneratorRecord(draft, {
       step: draft.step,
       attempt,
-      promptHash: sha12(toJson({ system: req.system, messages: req.messages })),
+      promptHash,
       model: res.model,
       // the request's own values (the propose stage sends opts.generation; a sample may differ per §4.6)
       temperature: req.temperature,
@@ -2063,6 +2850,8 @@ class EngineImpl implements Engine {
       else if (rec.stopReason === 'cancelled') draft.verify.cancelled += 1;
       if (rec.malformed) draft.verify.malformed += 1;
     }
+    // contract 1.4 (§7.2, §11 row 41): rows of a pause-now-discarded attempt are marked, so the replayed step's rows stay apart
+    if (draft.discarded) rec.discarded = true;
     if (draft.closed) this.persist(this.store.appendGenerator(rec), 'generator.jsonl');
     else draft.generatorRecords.push(rec);
   }
@@ -2108,7 +2897,11 @@ class EngineImpl implements Engine {
   /** docs/LLM-JEV-DESIGN.md §4.8: `generatorMs` of an llm-jev step is the wall of the round (the union of the samples' intervals), never the sum. */
   private noteSampleStart(draft: StepDraft): void {
     const b = draft.generatorBatch;
-    if (b.inFlight === 0) b.startedAt = this.clock();
+    if (b.inFlight === 0) {
+      b.startedAt = this.clock();
+      // contract 1.4 (§12.0.2 PausePoint.round): one round per sample batch of the step
+      draft.llmRounds += 1;
+    }
     b.inFlight += 1;
   }
 
@@ -2214,6 +3007,283 @@ class EngineImpl implements Engine {
   // One step
   // -------------------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------------------
+  // contract 1.5 (ORCHESTRATION-DESIGN §3, §4.2 P9, §8.2 D1 item 15): the decompose stage's call site
+  // -------------------------------------------------------------------------------------
+
+  /**
+   * §3.1 [G21] / §2.5(e) / [G5] — **THE ONE SHORT-CIRCUIT**, and the only place it is decided.
+   *
+   * `orchestrate.split === 'off'` (the shipping default), `orchestration.depth === 1` (an agent may never
+   * spawn agents) and a missing coordination ledger are each decided from the RESOLVED OPTIONS alone.
+   * Nothing past this predicate runs for them: no `statusPorcelain`, no `os.availableParallelism()`, no
+   * `os.freemem()`, no `statfs`, no `du -sk` of the repo, no `git ls-files`, no `propose_split` generator
+   * call and no Jev request — because `GateInput` wants every one of those measurements, and M2's gate is
+   * that a shut split costs this comparison and nothing else.
+   *
+   * It emits nothing, either. §3.1's `decompose:skipped` line exists to make the GATE testable; `split_off`
+   * is the setting the user chose, not news, and M2 asserts a default run produces no new events at all.
+   */
+  private decomposeShortCircuit(): GateReason | null {
+    const o = this.opts.orchestration;
+    return decomposeShutByOptions(this.opts.splitPolicy, o?.depth, o?.hasLedger);
+  }
+
+  /**
+   * §3: the stage, before `replan` / `intent`. Returns a stop reason when the delegation was accepted —
+   * that is **P9**, and the parent's process ends there (§2.9: waiting on children with a live process
+   * burns context and money for nothing).
+   *
+   * Every other outcome returns null and the step goes on exactly as it would have: the stage is a
+   * PROPOSAL (§3), it never touches the workspace, and a rule-1 discard of it costs one Jev request.
+   */
+  private async maybeDecompose(draft: StepDraft): Promise<StopReason | null> {
+    if (this.decomposeShortCircuit() !== null) return null;
+    // corner row 12: this run already delegated. The gate stays shut and the existing delegation is
+    // adopted — `agent:adopted` says so — for as long as `manifestId` AND `baseSha` still match.
+    if (this.orchestration !== null) {
+      await this.adoptExistingDelegation();
+      return null;
+    }
+
+    const t0 = this.clock();
+    try {
+      const facts = await this.decomposeFacts();
+      const result = await this.stage('decompose', () =>
+        runDecomposeStage(this.decomposeContext(draft), {
+          policy: this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY,
+          depth: this.opts.orchestration?.depth ?? 0,
+          runId: this.runId,
+          sessionId: this.opts.session?.sessionId ?? this.runId,
+          plan: this.plan,
+          planDraft: { done: this.plan.done.map((d) => d.text), remaining: [...this.plan.remaining], openProblems: [...this.plan.openProblems] },
+          reserveUsd: this.decomposeReserveUsd(),
+          reserveFrom: 'session',
+          facts,
+          detectSecrets: (text) => detectSecrets(text).length,
+          // there is no engine-side verbose gate: `--json=verbose` is filtered in `src/cli/json-stream.ts`
+          // by `VERBOSE_ONLY_TYPES`, so the engine emits and the stream drops. `decompose:skipped` must be
+          // added to that set (one word, CLI-owned); until then it rides an ordinary `--json` stream.
+          verbose: true,
+          // corner row 11: no blocker means `--no-input` / a pipe / the bench, and the confirm cannot be answered
+          hasBlocker: this.opts.blocker !== undefined,
+          confirm: (req) => this.confirmDecomposition(draft, req),
+        }),
+      );
+      if (result.kind === 'proposed') return await this.acceptDelegation(draft, result.manifest);
+      if (result.kind === 'declined' || (result.kind === 'no_split' && result.problem !== null)) {
+        // §3.7 policy / corner row 9: an `orchestration` harness problem sends the next `splitEvery` steps
+        // single-threaded. `lastSplitStep` is NOT moved: only a written manifest consumes a `maxSplits` slot.
+        const text = result.kind === 'declined' ? result.reason : (result.problem ?? result.reason);
+        this.plan = { ...this.plan, harnessProblems: boundHarnessProblems([...this.plan.harnessProblems, { kind: 'orchestration', text: clip(text, 600), step: draft.step }], PLAN_MAX_HARNESS_PROBLEMS) };
+        draft.notes.push(`decompose: ${clip(text, 200)}`);
+      }
+      return null;
+    } catch (e) {
+      // §3.5: nothing about a decomposition may end a run. An abort still propagates (the step is a rule-1
+      // discard, and §3's "it is a proposal" means there is nothing to roll back).
+      if (isAbortError(e) || this.signal.aborted) throw e;
+      this.emit({ type: 'notice', step: draft.step, kind: 'orchestration', level: 'info', text: `decompose failed: ${clip(this.redact(e instanceof Error ? e.message : String(e)), 200)} — continuing single-threaded` });
+      return null;
+    } finally {
+      draft.timing.decomposeMs = Math.max(0, this.clock() - t0);
+    }
+  }
+
+  /** the `DecomposeStageContext` seam: the engine's `ask` / `generate` with the stage's own narrow shape */
+  private decomposeContext(draft: StepDraft): DecomposeStageContext {
+    const self = this;
+    return {
+      step: draft.step,
+      mode: this.mode,
+      task: this.opts.task,
+      redact: (s) => self.redact(s),
+      now: () => self.clock(),
+      emit: (e) => self.emit(e),
+      ask: async (state, questions, annotate) => {
+        const out = await self.ask(draft, 'decompose', state as JsonObject, questions, annotate);
+        return { answers: out.answers, rows: out.rows };
+      },
+      proposeSplit: () => self.proposeSplit(draft),
+    };
+  }
+
+  /**
+   * §3.3: the generator's ONE call at the gate. Its prose is DISCARDED — only the structured
+   * `propose_split` argument survives, and `normalizeSplit` re-derives every safety property of it.
+   * `jev-only` has no generator, so `splitToolsFor` returns nothing and this returns null without a call.
+   */
+  private async proposeSplit(draft: StepDraft): Promise<DraftSplit | null> {
+    const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
+    const tools = splitToolsFor(this.mode, policy.maxAgents);
+    const tool = tools[0];
+    if (tool === undefined) return null;
+    const listing = await this.listCandidatesTimed();
+    const message = buildSplitMessage({
+      step: draft.step,
+      task: this.opts.task,
+      plan: this.plan,
+      prefixTree: splitPrefixTree(listing.map((c) => c.path)),
+      failingTests: this.lastTestRun !== null && !this.lastTestRun.allPassed ? [this.lastTestRun.command] : [],
+      maxAgents: policy.maxAgents,
+      verification: policy.verify,
+    });
+    const result = await this.generate(draft, { system: buildSystemPrompt({ mode: this.mode, sandboxLevel: this.sandbox.level, toolName: tool.name }), messages: [{ role: 'user', content: message }], maxTokens: this.opts.generation.maxTokens, temperature: this.opts.generation.temperature, tools, toolChoice: { name: tool.name } }, 0);
+    const call = result.toolCalls.find((c) => c.name === PROPOSE_SPLIT_TOOL_NAME);
+    return call === undefined ? null : parseSplitDraft(call.input);
+  }
+
+  /**
+   * §3.7 [G2]: the manifest confirm goes through the EXISTING `Confirmer` — the same seam the review card
+   * uses, with `title` / `headline` / `body` / `badge` set and [D5c]'s fixed `proposal` / `risk`. There is
+   * no second confirmer: `confirm:request` and `confirm:resolved` are emitted exactly as they are for a
+   * review, so `--plain`, the SR twin and the `--json` stream all see one familiar pair of events.
+   */
+  private async confirmDecomposition(draft: StepDraft, req: ConfirmRequest): Promise<ConfirmOutcome> {
+    this.emit({ type: 'confirm:request', request: req });
+    const c0 = this.clock();
+    try {
+      const c = this.opts.confirmer;
+      const r: ConfirmOutcome = c.confirmDetailed ? await c.confirmDetailed(req, { signal: this.signal }) : { approved: await c.confirm(req, { signal: this.signal }) };
+      draft.timing.confirmMs += Math.max(0, this.clock() - c0);
+      const rawNote = typeof r.note === 'string' ? clip(sanitizeStream(r.note).replace(/\s+/g, ' ').trim(), REVIEWER_NOTE_MAX) : '';
+      const note = rawNote.length > 0 ? rawNote : undefined;
+      this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: r.approved, aborted: false, ...(note !== undefined ? { note } : {}) });
+      return { approved: r.approved, ...(note !== undefined ? { note } : {}) };
+    } catch (e) {
+      draft.timing.confirmMs += Math.max(0, this.clock() - c0);
+      this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: false, aborted: true });
+      if (isAbortError(e) && !this.signal.aborted) this.abort(e.reason === 'signal' ? 'signal' : 'human_abort');
+      throw e;
+    }
+  }
+
+  /**
+   * §4.2 **P9**, in the row's exact persist order: `orchestrate/manifest-<n>.json` → `state.json`
+   * (`orchestration`, `interrupted = null` — the step committed) → heartbeat → `run:end`. The manifest is
+   * written FIRST and awaited, because a `state.json` naming a manifest that is not on disk is a
+   * delegation the next process cannot adopt and would therefore propose a second time (corner row 12).
+   */
+  private async acceptDelegation(draft: StepDraft, manifest: Manifest): Promise<StopReason | null> {
+    const write = this.store.writeCache;
+    if (write === undefined) {
+      this.emit({ type: 'notice', step: draft.step, kind: 'orchestration', level: 'info', text: 'the delegation was approved but this checkpoint store cannot write it — continuing single-threaded' });
+      return null;
+    }
+    try {
+      // the store routes an `orchestrate/`-prefixed rel to `<runDir>/orchestrate/` (`checkpoint/store.ts cacheTarget`)
+      await write.call(this.store, manifestPath(manifest.step), toJson(manifest));
+    } catch (e) {
+      this.emit({ type: 'notice', step: draft.step, kind: 'orchestration', level: 'info', text: `the manifest could not be written: ${clip(this.redact(e instanceof Error ? e.message : String(e)), 200)} — continuing single-threaded` });
+      return null;
+    }
+    this.emit({ type: 'orchestration:proposed', step: draft.step, manifest });
+    this.orchestration = checkpointOrchestration(manifest);
+    // only a WRITTEN manifest consumes a `maxSplits` slot and arms the `splitEvery` cooldown (corner row 8)
+    this.splits += 1;
+    this.lastSplitStep = draft.step;
+    this.absorbDiscardedTiming(draft);
+    this.recordDelegatePause(draft.step);
+    this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `delegated at step ${draft.step} — ${manifest.agents.length} agents` });
+    return 'human_pause';
+  }
+
+  /**
+   * corner row 12: a resumed run whose `manifestId` AND `baseSha` still match ADOPTS the delegation. The
+   * gate stays shut and no second manifest is proposed. A mismatch (the base moved, the plan changed, the
+   * file is gone) drops the record so the gate may open again — the alternative is a run that can never
+   * delegate because of a manifest it can no longer read.
+   */
+  private async adoptExistingDelegation(): Promise<void> {
+    const held = this.orchestration;
+    if (held === null) return;
+    const read = await readManifest(nodeManifestIo(this.store.dir), held.step, { task: this.opts.task, remaining: this.plan.remaining });
+    const head = this.workspace.gitState?.()?.head ?? null;
+    const baseSha = head !== null && head.kind === 'branch' ? head.oid : null;
+    // row 12: `manifestId` AND `baseSha` must BOTH still match. A head nothing probed cannot refute the
+    // base, so only a head that is KNOWN and different drops the adoption.
+    if (read.ok && sameDelegation(read.manifest, { manifestId: held.manifestId, baseSha: read.manifest.baseSha }) && (baseSha === null || baseSha === read.manifest.baseSha)) {
+      if (!this.adoptedAnnounced) {
+        this.adoptedAnnounced = true;
+        this.emit({ type: 'agent:adopted', count: held.agents.length, parentRunId: this.runId });
+      }
+      return;
+    }
+    this.emit({ type: 'notice', step: this.step + 1, kind: 'orchestration', level: 'info', text: `the delegation of step ${held.step} no longer matches this checkout (${read.ok ? 'the base moved' : read.reason}) — it is not adopted` });
+    this.orchestration = null;
+  }
+
+  /** §6.1: `min(sessionRemaining × reserveFraction, maxReserveUsd)`. `w_i` is a code weight; Jev has no say in money. */
+  private decomposeReserveUsd(): number {
+    const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
+    const snap = this.opts.meter.snapshot();
+    // [D6]: `sessionRemainingUsd(cap, spent, heldUsd = 0)` is D0 item 3's change and is not in the tree yet,
+    // so the hold is subtracted here. One line to delete when the third argument lands.
+    const remaining = Math.max(0, sessionRemainingNetOfHolds(snap.capUsd, snap.totalUsd, snap.heldUsd ?? 0));
+    return Math.max(0, Math.min(remaining * policy.reserveFraction, policy.maxReserveUsd));
+  }
+
+  /**
+   * Everything `GateInput` and the planner need, measured ONCE, and only ever reached past the
+   * short-circuit above. The resource numbers come from the §3.6 probe (`nodePreflightProbe`), which is
+   * the one place `node:os` / `statfs` / `du` are touched.
+   */
+  private async decomposeFacts(): Promise<DecomposeFacts> {
+    const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
+    const git = this.workspace.gitState?.() ?? null;
+    const headOid = git !== null && git.head !== null && git.head.kind === 'branch' ? git.head.oid : null;
+    const listing = (await this.listCandidatesTimed()).map((c) => c.path);
+    const probe = nodePreflightProbe();
+    const disk = await probe.diskFree(this.workspace.root);
+    const repoBytes = (await probe.repoBytes(this.workspace.root)) ?? 0;
+    const fit = await preflight(probe, { repoRoot: this.workspace.root, want: policy.maxAgents, minFreeBytes: MIN_FREE_BYTES, agentMemBytes: AGENT_MEM_BYTES });
+    const verification = resolveVerification({
+      configured: policy.verify,
+      packageJson: null,
+      rootFiles: new Set<string>(),
+      makefile: null,
+      synthRunner: null,
+      lastTestRunCommand: this.lastTestRun?.command ?? this.wsInfo.testCommand?.command ?? null,
+    });
+    const snap = this.opts.meter.snapshot();
+    const problem = [...this.plan.harnessProblems].reverse().find((h) => h.kind === 'orchestration');
+    return {
+      // [G5]: past the short-circuit this is true by construction — it is re-stated so the gate stays pure
+      hasLedger: this.opts.orchestration?.hasLedger === true,
+      git: { isRepo: git?.repo === true, headBorn: headOid !== null, worktreeSupported: git?.repo === true },
+      baseSha: headOid ?? '',
+      repoKey: git?.commonDir ?? null,
+      existingBranches: [],
+      deny: ['.git', ...this.opts.secretPaths],
+      fold: false,
+      repoPaths: listing,
+      listing,
+      // D1 has no item→file join: `fileMemory` is keyed by path, not by plan item, so the association is
+      // computed from the item text against the real listing. Wave D2's evidence join replaces this.
+      itemFiles: this.plan.remaining.map((item) => listing.filter((p) => item.includes(p))),
+      testImports: {},
+      packages: [],
+      lastTestRun: this.lastTestRun !== null && !this.lastTestRun.allPassed ? { failingFiles: [this.lastTestRun.command] } : null,
+      dirtyEntries: git?.dirty.entries.length ?? 0,
+      syncedDirty: [],
+      dirtyOverlap: [],
+      liveChildren: 0,
+      splits: this.splits,
+      lastSplitStep: this.lastSplitStep,
+      maxAgentsAllowed: fit.agents,
+      preflightReasons: fit.reasons,
+      availableParallelism: probe.availableParallelism() ?? 1,
+      freeMemBytes: probe.freeMemBytes() ?? 0,
+      freeDiskBytes: disk?.freeBytes ?? 0,
+      repoBytes,
+      sessionRemainingUsd: Math.max(0, sessionRemainingNetOfHolds(snap.capUsd, snap.totalUsd, snap.heldUsd ?? 0)),
+      isReplanStep: this.detector.tripped(),
+      orchestrationProblemAgeSteps: problem === undefined ? null : Math.max(0, this.step + 1 - problem.step),
+      verification: verification.commands,
+      humanAsked: false,
+    };
+  }
+
   private async runStep(): Promise<{ stop: StopReason | null; detail?: string }> {
     const step = this.step + 1;
     const draft = this.newDraft(step);
@@ -2221,6 +3291,12 @@ class EngineImpl implements Engine {
     this.stageBlock = null;
     stepTimeline.beginStep(step);
     this.emit({ type: 'step:start', step, startedAt: draft.startedAt });
+    // contract 1.4 (COORDINATION-DESIGN §7.3 step 3): the paused proposal (or the arrived samples) of exactly this step, gated at run start
+    const replay = this.takeReplay(step);
+    const replayed = replay !== null && replay.proposal !== null ? replay : null;
+    // §7.3 step 4: no cache for this step means it runs FRESH — whatever a previous pause left is rejected by that fact. The
+    // detail goes now (a later discard must not inherit it) and the file is renamed, so no `--replay` can resurrect it.
+    if (replay === null) this.supersedeStepCache();
     // llm-jev (docs/LLM-JEV-DESIGN.md §3): replan on a trip, otherwise straight to the synth propose stage — no intent or context request
     let stage: StageName = usesJev(this.mode) ? (this.detector.tripped() ? 'replan' : this.mode === 'llm-jev' ? 'propose' : 'intent') : 'propose';
     let changedFiles: string[] = [];
@@ -2234,6 +3310,13 @@ class EngineImpl implements Engine {
     try {
       changedFiles = await this.workspace.changedFiles().catch(() => [] as string[]);
       const ctx = this.makeContext(draft, changedFiles);
+
+      // contract 1.5 (ORCHESTRATION-DESIGN §3): the `decompose` stage runs HERE — before `replan` / `intent` —
+      // and only when the gate can possibly open. `maybeDecompose` short-circuits on `split: 'off'`, on an agent
+      // (`orchestration.depth === 1`) and on a missing ledger before it gathers a single gate fact (M2). A
+      // `human_pause` back is **P9**: the manifest was written and confirmed, and the parent has nothing left to do.
+      const delegated = await this.maybeDecompose(draft);
+      if (delegated !== null) return { stop: delegated, detail: `delegated at step ${step}` };
       const common = (): JsonObject => (commonState ??= this.commonState(changedFiles, this.window));
 
       if (usesJev(this.mode)) {
@@ -2257,7 +3340,14 @@ class EngineImpl implements Engine {
         const llmJev = this.mode === 'llm-jev';
         let intentInfo: { intent: Intent; answer: IntentAnswer; probability: number };
         let contextFiles: FileView[] = [];
-        if (llmJev) {
+        if (replayed !== null) {
+          // §7.3 step 3: intent / context / propose are skipped — the cached results stand; risk always re-runs below
+          const ri = replayed.intent;
+          if (ri !== null) draft.intent = { intent: ri.intent, answer: ri.answer, verdict: ri.verdict, probability: ri.probability, confidence: ri.confidence, pairedNoul: ri.pairedNoul, planStillValid: ri.planStillValid };
+          intentInfo = ri !== null ? { intent: ri.intent, answer: ri.answer, probability: ri.probability } : { intent: INTENT_FALLBACK, answer: INTENT_FALLBACK, probability: 1 };
+          draft.contextFiles = [...replayed.contextFiles];
+          draft.directive = replayed.directive;
+        } else if (llmJev) {
           // docs/LLM-JEV-DESIGN.md §3 rows 2–3 / §13: no intent Choice and no context Nouls — the synthesizer holds every
           // file itself and `draft.intent` is code-derived from the proposal kind once the synth stage returned
           intentInfo = { intent: INTENT_FALLBACK, answer: INTENT_FALLBACK, probability: 1 };
@@ -2273,7 +3363,10 @@ class EngineImpl implements Engine {
         }
         stage = 'propose';
         let p: { proposal: Proposal };
-        if (this.mode === 'jev-only' || llmJev) {
+        if (replayed !== null) {
+          p = { proposal: replayed.proposal! };
+          this.emitReplayedProposal(draft, replayed);
+        } else if (this.mode === 'jev-only' || llmJev) {
           // The Synthesizer proposes (docs/JEV-ONLY.md): in jev-only no generator call, no generator:* events, no generator.jsonl
           // row; in llm-jev the synthesizer spends generator samples through SynthesisContext.generate (docs/LLM-JEV-DESIGN.md §4.8).
           const synthesizer = this.synthesizer;
@@ -2284,8 +3377,8 @@ class EngineImpl implements Engine {
             draft.proposer = 'generic';
             const listing = await this.listCandidatesTimed();
             const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
-            const prompt = this.promptInput(draft, changedFiles, [], candidates);
-            p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
+            // review D5: the same entry point as the other two, so the meter and the view follow the mode gate in one place
+            p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, [], candidates));
             this.flushGeneratorRecords(draft);
           } else {
             if (llmJev) draft.proposer = 'synth';
@@ -2305,8 +3398,8 @@ class EngineImpl implements Engine {
             this.flushGeneratorRecords(draft);
           }
         } else {
-          const prompt = this.promptInput(draft, changedFiles, contextFiles, null);
-          p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
+          // docs/COORDINATION-DESIGN.md §8.8 jev-on column: Jev's picks first, then the cache; the meter recomputed once the prompt is built
+          p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, contextFiles, null));
           this.flushGeneratorRecords(draft);
         }
         draft.proposal = p.proposal;
@@ -2347,17 +3440,31 @@ class EngineImpl implements Engine {
         }
       } else {
         stage = 'propose';
-        // Same <= 300 pre-filter (mention count, then recency) as the context stage (§13).
-        const listing = await this.listCandidatesTimed();
-        const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
-        const prompt = this.promptInput(draft, changedFiles, [], candidates);
-        const p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
-        this.flushGeneratorRecords(draft);
+        let p: { proposal: Proposal };
+        if (replayed !== null) {
+          p = { proposal: replayed.proposal! };
+          this.emitReplayedProposal(draft, replayed);
+        } else {
+          // Same <= 300 pre-filter (mention count, then recency) as the context stage (§13).
+          const listing = await this.listCandidatesTimed();
+          const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
+          // docs/COORDINATION-DESIGN.md §8.8 jev-off column: the cache is the generator's only file view; candidates stay the listing
+          p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, [], candidates));
+          this.flushGeneratorRecords(draft);
+        }
         draft.proposal = p.proposal;
         draft.proposeCompleted = true;
         claimsOf(p.proposal);
         stage = 'execute';
         draft.patchTargets = await computeTargets(ctx, p.proposal);
+        // ORCHESTRATION-DESIGN §2.4 belt 2: jev-off runs no risk stage, so the child's code refusal is applied here —
+        // belt 2 is a property of the AGENT, not of the mode (`runRiskStage` carries it in every other mode).
+        const refusal = ownershipRefusal(p.proposal.action, this.opts.orchestration);
+        if (refusal !== null) {
+          draft.outcome = refusal;
+          this.counters.blocked += 1;
+          this.emit({ type: 'outcome', step, outcome: refusal });
+        }
       }
 
       if (draft.outcome === null && draft.proposal !== null) {
@@ -2381,6 +3488,8 @@ class EngineImpl implements Engine {
         // TUI-DESIGN §12.3: pre-images of the targets (edit|write|patch) or the dirty set (run) before anything touches the workspace
         const imageSource = imageSourceOf(draft.proposal.action);
         const pre = imageSource !== null ? await this.takePreImages(draft, imageSource, changedFiles) : null;
+        // contract 1.4 (§7.2): a pause-now (or an abort) that landed while the pre-images were taken discards under rule 1 — execute never starts on an aborted signal
+        if (this.signal.aborted) throw this.signal.reason;
         draft.executeStarted = true;
         const ex = await this.stage('execute', () => runExecuteStage(ctx, draft.proposal!));
         draft.outcome = ex.outcome;
@@ -2392,12 +3501,30 @@ class EngineImpl implements Engine {
         draft.executeFinished = true;
         // TUI-DESIGN §12.3: post-images right after execute, still inside runStep() so harnessMs sees them
         if (imageSource !== null) await this.takePostImages(draft, imageSource, ex.changedFiles, pre);
+        // ORCHESTRATION-DESIGN §2.4 [G8]: belt 2 does not cover `run`, so the post-images are diffed against `own` here.
+        // Reported, never blocked — "blocking after the command ran would be theatre".
+        await this.noteEscaped(draft, ex.changedFiles);
+        // ORCHESTRATION-DESIGN §5.7 tail / corner row 44: a merge that landed is recorded, because `/undo` cannot
+        // restore a merge commit from images and `/rewind` below the delegation would orphan the branches.
+        await this.noteLanded(draft, ex.outcome);
         this.emit({ type: 'outcome', step, outcome: ex.outcome });
         if (ex.outcome.status === 'interrupted') {
-          const cls = classifyAbort(this.signal.reason);
+          const cls = this.classifyStop();
           draft.interruptedAt = { stage: 'execute', reason: cls.interrupt };
           draft.observed = false;
           stopAfterCommit = cls.stop;
+        } else if (this.pauseNow) {
+          // contract 1.4 (COORDINATION-DESIGN §7.2 execute row, §12.0.2 P4, §11 row 29): the pause-now landed while execute ran —
+          // the command ran to its own end (WAIT, never kill); the judge is skipped with the rule-3 shape, no signal involved; the
+          // step commits and the loop top finishes the run at the boundary
+          this.pauseLandedInExecute = true;
+          if (usesJev(this.mode)) {
+            draft.judge = null;
+            draft.completion = null;
+            draft.interruptedAt = { stage: 'judge', reason: 'human_pause' };
+            draft.notes.push('interrupted before judge');
+            this.emit({ type: 'transcript', step, level: 'info', text: `step ${step}: pause now landed during execute; the action ran to its end, the judge is skipped (human_pause)` });
+          }
         } else if (usesJev(this.mode)) {
           stage = 'judge';
           const recent = pushWindow(this.window, this.provisionalEntry(draft));
@@ -2426,8 +3553,15 @@ class EngineImpl implements Engine {
       await this.candidateRefresh;
       this.candidateRefresh = null;
     }
+    // ORCHESTRATION-DESIGN §2.6 [G1] [D2] [D10]: the harness commits, in the agent worktree, through the injected
+    // `runGit` seam — after every committed step of a child whose outcome is `executed` with changed files. No seam
+    // (every run that is not an agent) = no git mutation at all, which is why nothing below changes an ordinary run.
+    await this.commitAfterStep(draft);
     const committed = this.commit(draft);
     if (committed.stop) return { stop: committed.stop };
+    // §2.4 / corner row 18: three consecutive belt-2 refusals are the honest signal that the DECOMPOSITION failed
+    const park = this.noteBeltRefusal(draft);
+    if (park !== null) return { stop: 'human_pause', detail: park };
     if (stopAfterCommit) return { stop: stopAfterCommit };
     if (this.unpriced !== null) {
       // TUI-DESIGN §9.5: usage.cost null/non-finite → the step committed, the run stops with error unless --allow-unpriced (exit 2, the flag is named)
@@ -2445,6 +3579,15 @@ class EngineImpl implements Engine {
       return { stop: 'error' };
     }
     return { stop: null };
+  }
+
+  /** §7.3 step 3: the restored proposal is announced like a fresh one, plus one line saying it was replayed; the risk stage follows as always */
+  private emitReplayedProposal(draft: StepDraft, cache: StepCache): void {
+    draft.replayed = true;
+    draft.proposer = cache.proposer;
+    this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `step ${draft.step}: replaying the paused proposal from ${stepCacheRel(draft.step)} (intent, context and propose skipped; risk re-checked)` });
+    // contract 1.4 (§7.3 step 3): the event says it is a replay, so `plain.ts` / the TUI can print `(replayed)` without guessing
+    this.emit({ type: 'proposal', step: draft.step, proposal: cache.proposal!, verdict: 'replay' });
   }
 
   /** TUI-DESIGN §12.3: `writePreImages` for the targets (edit|write|patch) or the dirty set (run: `workspace.dirtySet()`, else the changed files). */
@@ -2501,6 +3644,8 @@ class EngineImpl implements Engine {
         now: () => this.clock(),
       });
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + r.ms;
+      // docs/COORDINATION-DESIGN.md §8.4: the hashes already computed feed fileMemory at commit (no second read)
+      this.lastPostImage = r.image;
     } catch (e) {
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + Math.max(0, this.clock() - t0);
       this.noteImagesFailure(draft, 'post', e);
@@ -2515,6 +3660,270 @@ class EngineImpl implements Engine {
     this.noteDiskError(e, which === 'pre' ? CHECKPOINT_FILES.pre : CHECKPOINT_FILES.post, draft.step);
   }
 
+  // -------------------------------------------------------------------------------------
+  // contract 1.5 — the child differences (ORCHESTRATION-DESIGN §2.4, §2.5, §2.6) and the launch (§5.7).
+  // Every method below returns at once on a run without `EngineOptions.orchestration`, and the commit
+  // path additionally returns at once without the injected `runGit` seam: absent seam = no git mutation.
+  // -------------------------------------------------------------------------------------
+
+  /** §2.5: the child's identity on the events the parent's surface reads. */
+  private agentRef(): AgentRef {
+    const o = this.opts.orchestration;
+    return { slug: o?.slug ?? 'agent', runId: this.runId, sessionId: this.opts.session?.sessionId ?? null };
+  }
+
+  /**
+   * §2.4 [G8]: after every `run` action in a child, diff the post-images against `own`. The paths outside it are
+   * recorded on `StepRecord.escaped` and shown on the row; the step is NOT blocked, because the command already ran.
+   *
+   * [D2] review finding 1: the subtracted set is the STILL-CARRIED subset of `syncedDirty` (`carriedPaths`, inside the
+   * facade's `outsideOwn`), never the raw list — subtracting the whole list would exempt up to 200 parent-dirty paths
+   * from belt 2 for the whole run, including one a sibling rewrote.
+   */
+  private async noteEscaped(draft: StepDraft, changed: readonly string[]): Promise<void> {
+    const o = this.opts.orchestration;
+    if (o === undefined || o.depth !== 1 || draft.proposal?.action.kind !== 'run') return;
+    const own = o.own ?? [];
+    if (own.length === 0 || changed.length === 0) return;
+    try {
+      const escaped = await escapedPaths(this.workspace.root, { changed, own, syncedDirty: o.syncedDirty ?? [] });
+      if (escaped.length === 0) return;
+      this.escapedThisStep = escaped;
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: escapedLine(escaped) });
+    } catch (e) {
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `escape diff failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+    }
+  }
+
+  /**
+   * §2.4 / corner row 18: three CONSECUTIVE belt-2 refusals park the child with `scope-fight` — "the honest signal
+   * that the decomposition, not the worker, failed". A research refusal is not a scope fight (the split was fine; the
+   * model asked for the wrong kind of action), so only `isOwnershipRefusal` reasons count.
+   */
+  private noteBeltRefusal(draft: StepDraft): string | null {
+    if (this.opts.orchestration?.depth !== 1) return null;
+    const o = draft.outcome;
+    this.beltRefusals = o !== null && o.status === 'blocked' && isOwnershipRefusal(o.reason) ? this.beltRefusals + 1 : 0;
+    if (this.beltRefusals < SCOPE_FIGHT_AFTER) return null;
+    this.emit({
+      type: 'transcript',
+      step: draft.step,
+      level: 'warn',
+      text: `parked (scope-fight): ${SCOPE_FIGHT_AFTER} refusals in a row outside ${(this.opts.orchestration.own ?? []).join(', ')} — the split was wrong for this agent`,
+    });
+    return 'scope-fight';
+  }
+
+  /**
+   * §2.6 [G1] [D2] [D10]: after every committed step of a child whose `outcome.status === 'executed'` and
+   * `changedFiles.length > 0`. The add set is COMPUTED (`computeAddSet`), never `-A`: `git add -A` in an agent
+   * worktree stages the parent's synced dirty set onto every branch from the first commit, which is what corner row
+   * 55 exists to forbid.
+   */
+  private async commitAfterStep(draft: StepDraft): Promise<void> {
+    const o = this.opts.orchestration;
+    if (o === undefined || o.depth !== 1 || o.runGit === undefined) return;
+    for (const p of draft.changedFiles) this.touchedPaths.add(p);
+    if (draft.outcome?.status !== 'executed' || draft.changedFiles.length === 0) return;
+    this.commitThisStep = await this.harnessCommit(draft.step, draft.proposal?.goal ?? summariseAction(draft.proposal?.action ?? { kind: 'done', summary: '' }));
+  }
+
+  /** §2.6: the one place the harness runs `git add` / `git commit`. `addSet` empty → no commit, no error. */
+  private async harnessCommit(step: number, summary: string): Promise<string | null> {
+    const o = this.opts.orchestration;
+    const runGit = o?.runGit;
+    if (o === undefined || runGit === undefined) return null;
+    const dir = this.workspace.root;
+    try {
+      const { addSet } = await computeAddSet(runGit, dir, { touched: [...this.touchedPaths], syncedDirty: o.syncedDirty ?? [] });
+      if (addSet.length === 0) return null;
+      const r = await commitStep(runGit, dir, { addSet, identity: o.commit ?? DEFAULT_COMMIT_IDENTITY, slug: o.slug ?? 'agent', step, summary });
+      if (!r.ok) {
+        this.emit({ type: 'transcript', step, level: 'warn', text: `harness commit failed: ${this.redact(r.reason)}` });
+        return null;
+      }
+      if (r.commit !== null) this.emit({ type: 'transcript', step, level: 'info', text: `committed ${r.commit.slice(0, 12)} in ${o.slug ?? 'agent'}` });
+      return r.commit;
+    } catch (e) {
+      this.emit({ type: 'transcript', step, level: 'warn', text: `harness commit failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+      return null;
+    }
+  }
+
+  /**
+   * §2.6 / corner rows 36 and 37, INVERTED: uncommitted-at-end is the CRASH case. The end commit fires
+   * unconditionally once when the add set is non-empty, so `addSet ≠ ∅` after a clean `run:end` means the process died
+   * between the step commit and the git commit — and "uncommitted" means outside `carried ∪ syncedIgnored`, which is
+   * exactly what `computeAddSet` computes.
+   */
+  private async commitAtEnd(): Promise<void> {
+    const o = this.opts.orchestration;
+    if (o === undefined || o.depth !== 1 || o.runGit === undefined) return;
+    this.endCommit = await this.harnessCommit(this.step, 'run end');
+  }
+
+  /**
+   * §2.5(c) / §4.2 P10: in a child the review confirm PARKS. The `ConfirmRequest` is written to
+   * `<childRunDir>/orchestrate/review-<step>.json` (the store routes an `orchestrate/`-prefixed rel there), the parent's
+   * surface is told through `agent:review`, and the confirm rejects with `AbortError('human_pause')` → rule-1 discard →
+   * P10. Never returns.
+   */
+  private async parkForReview(draft: StepDraft, req: ConfirmRequest, why: string | null): Promise<never> {
+    const write = this.store.writeCache;
+    if (write !== undefined) {
+      const body: Json = { ...(toJson(req) as JsonObject), ...(why !== null ? { reason: why } : {}) };
+      try {
+        await write.call(this.store, reviewCacheRel(draft.step), body);
+      } catch (e) {
+        this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `review park: ${reviewCacheRel(draft.step)} write failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+      }
+    }
+    this.emit({ type: 'agent:review', agent: this.agentRef(), request: req });
+    this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: false, aborted: true });
+    this.emit({ type: 'transcript', step: draft.step, level: 'info', text: why !== null ? `review parked: ${why}` : `review parked: a human decision is needed (${reviewCacheRel(draft.step)})` });
+    this.reviewParked = true;
+    this.snapshotDraft(draft);
+    throw new AbortError('human_pause');
+  }
+
+  /**
+   * §2.5(c) / corner row 29: the answer file, `{ id, approved, note?, by, at }`, ID-MATCHED, SINGLE-USE and renamed to
+   * `.used` on consumption. Anything else — missing, stale, id-mismatched, already used — answers `null`, which parks
+   * again with `reason: 'answer not for this request'`. Nothing is ever auto-approved or auto-denied.
+   */
+  private async consumeReviewAnswer(req: ConfirmRequest): Promise<{ outcome: ConfirmOutcome } | { why: string }> {
+    const rel = this.opts.orchestration?.reviewAnswerFile;
+    if (rel === undefined) return { why: 'no answer file: a human decision is needed' };
+    if (this.reviewAnswerUsed) return { why: 'answer not for this request' };
+    const read = this.store.readCache;
+    if (read === undefined) return { why: 'no answer file: a human decision is needed' };
+    let raw: Json | null;
+    try {
+      raw = await read.call(this.store, rel);
+    } catch {
+      raw = null;
+    }
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { why: 'answer not for this request' };
+    const id = raw['id'];
+    const approved = raw['approved'];
+    if (typeof id !== 'string' || id !== req.id || typeof approved !== 'boolean') return { why: 'answer not for this request' };
+    // single-use: consumed BEFORE it is answered from, so a crash between the two never re-serves it
+    this.reviewAnswerUsed = true;
+    const rename = this.store.renameCache;
+    if (rename !== undefined) {
+      try {
+        await rename.call(this.store, rel, `${rel}.used`);
+      } catch {
+        // the answer is already consumed in memory; a failed rename must not re-approve anything
+      }
+    }
+    const note = typeof raw['note'] === 'string' ? clip(sanitizeStream(raw['note']).replace(/\s+/g, ' ').trim(), REVIEWER_NOTE_MAX) : '';
+    return { outcome: { approved, ...(note.length > 0 ? { note } : {}) } };
+  }
+
+  /**
+   * §5.7 tail / corner row 44: the merge landed, so `RunMeta.landed` gains `{ step, branch, commit }` and
+   * `RunMeta.undoUnavailableBelow` is set to the delegation step. `/undo` on that step then uses
+   * `UndoSkipReason 'landed'` and offers `[g] git revert <commit>` as a NEW judged step (`landedUndoOffer`), and
+   * `/rewind` below the floor is refused with `rewindRefusal`'s sentence.
+   *
+   * The `[c]` / `[s]` pre-flight steps are ordinary steps and are deliberately NOT recorded: they are undoable from
+   * images like anything else, and only the merge is not.
+   */
+  private async noteLanded(draft: StepDraft, outcome: ActionOutcome): Promise<void> {
+    const pending = this.pendingLand;
+    const runGit = this.opts.orchestration?.runGit;
+    const action = draft.proposal?.action;
+    if (pending === null || runGit === undefined || outcome.status !== 'executed') return;
+    if (action?.kind !== 'run' || !/^git\s+merge\s/.test(action.command)) return;
+    this.pendingLand = null;
+    let commit = '';
+    try {
+      const r = await runGit(this.workspace.root, ['rev-parse', 'HEAD']);
+      commit = r.ok ? r.stdout.trim() : '';
+    } catch {
+      commit = '';
+    }
+    if (!/^[0-9a-f]{7,64}$/.test(commit)) return;
+    const landed = [...this.landedMerges, { step: draft.step, branch: pending.branch, commit }];
+    this.landedMerges = landed;
+    const floor = pending.delegatedAt;
+    try {
+      await this.store.updateMeta({ landed, undoUnavailableBelow: floor });
+    } catch (e) {
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `${CHECKPOINT_FILES.meta} write failed (landed): ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+    }
+    this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `landed ${pending.agents} ${pending.agents === 1 ? 'agent' : 'agents'} from ${pending.branch} as ${commit.slice(0, 12)} — /undo offers [g] git revert ${commit.slice(0, 12)}; /rewind below step ${floor} is refused` });
+  }
+
+  /**
+   * §5.7: the seeded proposal of the launch step. It enters the loop through the SAME path a replayed proposal takes,
+   * so it goes through `risk`, the review confirm, `takePreImages`, `execute`, `takePostImages` and `judge` exactly
+   * like any other step — the transcript, `--json`, the decisions pane and `/diff` then all fall out for free.
+   */
+  private takeSeeded(step: number): StepCache | null {
+    const s = this.seededStep;
+    if (s === null || s.step !== step) return null;
+    this.seededStep = null;
+    this.emit({ type: 'transcript', step, level: 'info', text: s.note });
+    return {
+      v: 1,
+      step,
+      stage: 'propose',
+      proposal: s.proposal,
+      patchTargets: [],
+      risk: null,
+      matchesIntent: null,
+      intent: null,
+      proposer: null,
+      contextFiles: [],
+      directive: null,
+      targets: [],
+      partial: null,
+      llmRound: null,
+      resumes: this.resumes,
+      at: nowIso(),
+    };
+  }
+
+  /** §5.7: seed the NEXT step's proposal. False when the run has finished or a seed is already pending. */
+  seedStep(proposal: Proposal, note?: string): boolean {
+    if (this.finishing || this.isFinished() || this.seededStep !== null) return false;
+    this.seededStep = { step: this.step + 1, proposal, note: note ?? `step ${this.step + 1}: proposal seeded by the harness (${summariseAction(proposal.action)})` };
+    return true;
+  }
+
+  /**
+   * §5.7 + [D1]: the launch. `overlap` empty → the merge is seeded exactly as written. `overlap` non-empty → **no merge
+   * action is proposed at all**; the `land-preflight` pane offers `[c]` / `[s]` / `[x]`, each of which is itself an
+   * ordinary judged step, and `[c]` / `[s]` re-run the pre-flight and seed the merge as a SECOND judged step.
+   */
+  async land(input: LaunchInput, ask?: (offer: LandPreflightOffer) => Promise<BlockingAnswer>): Promise<{ seeded: 'merge' | 'commit' | 'stash' | 'stop' | null; overlap: string[] }> {
+    const o = this.opts.orchestration;
+    const runGit = o?.runGit;
+    if (runGit === undefined) return { seeded: null, overlap: [] };
+    const { overlap, ok } = await launchOverlap(runGit, input);
+    const plan: PlanDraft = { done: this.plan.done.map((d) => d.text), remaining: [...this.plan.remaining], openProblems: [...this.plan.openProblems] };
+    if (ok && overlap.length === 0) {
+      this.pendingLand = { branch: input.dockBranch, agents: input.agents, delegatedAt: input.delegationStep ?? this.step + 1 };
+      this.seedStep(launchProposal(mergeAction(input.pinned), `land ${input.agents} agents: merge ${input.dockBranch}`, plan), `step ${this.step + 1}: landing ${input.agents} agents — ${input.dockBranch} merges as an ordinary judged step`);
+      return { seeded: 'merge', overlap: [] };
+    }
+    // [D1] NO merge action is proposed: `git merge` would abort with `Your local changes … would be overwritten by merge`
+    const offer = landPreflightOffer(this.nextBlockingId(), this.step + 1, overlap, input);
+    this.emit({ type: 'transcript', step: null, level: 'warn', text: `/land: ${offer.detail}` });
+    const answer = ask === undefined ? 'stop' : await ask(offer).catch(() => 'stop' as const);
+    const chosen: LaunchAnswer = answer === 'commit' || answer === 'stash' ? answer : 'stop';
+    const seeded = seedFor(chosen, overlap, input, plan);
+    if (seeded === null) {
+      this.emit({ type: 'transcript', step: null, level: 'info', text: `/land cancelled: ${input.dockBranch} stays and /diff still works` });
+      return { seeded: null, overlap };
+    }
+    this.pendingLand = { branch: input.dockBranch, agents: input.agents, delegatedAt: input.delegationStep ?? this.step + 1 };
+    this.seedStep(seeded, `step ${this.step + 1}: ${chosen === 'commit' ? 'committing' : 'stashing'} ${overlap.length} overlapping file(s) before the merge`);
+    return { seeded: chosen, overlap };
+  }
+
   private flushGeneratorRecords(draft: StepDraft): void {
     for (const rec of draft.generatorRecords) this.persist(this.store.appendGenerator(rec), 'generator.jsonl');
     draft.generatorRecords = [];
@@ -2522,14 +3931,20 @@ class EngineImpl implements Engine {
 
   private absorbDiscardedTiming(draft: StepDraft): void {
     // Discarded steps (§9.1 rule 1) still consumed wall time and money; the run totals keep them.
+    // contract 1.4 (§7.2, §11 row 41): this attempt's sample rows (flushed now, or landing late) carry `discarded: true`
+    draft.discarded = true;
+    for (const rec of draft.generatorRecords) rec.discarded = true;
     this.flushGeneratorRecords(draft);
     // §4.8: a sample of this step that ends from here on writes its row itself (pushGeneratorRecord)
     draft.closed = true;
+    if (this.replayCache !== null && this.replayCache.step === draft.step) this.replayCache = null;
     const total = Math.max(0, this.clock() - draft.t0);
     this.timing.generatorMs += draft.timing.generatorMs;
     this.timing.jevMs += draft.timing.jevMs;
     this.timing.execMs += draft.timing.execMs;
     this.timing.totalMs += total;
+    // contract 1.5 (§4.1 [D13]): a discarded step still paid for its decomposition (corner row 8)
+    if (draft.timing.decomposeMs > 0) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + draft.timing.decomposeMs;
     if (this.mode === 'llm-jev') {
       const t = this.llmJevTiming(draft, total);
       this.timing.harnessMs += t.harnessMs;
@@ -2556,6 +3971,7 @@ class EngineImpl implements Engine {
       totalMs: total,
       synthMs,
       ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
+      ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
     };
   }
 
@@ -2594,6 +4010,16 @@ class EngineImpl implements Engine {
       ...(riskRequests.length > 0 ? { jevLatencyMs: riskRequests.reduce((n, r) => n + r.latencyMs, 0) } : {}),
     };
     this.emit({ type: 'confirm:request', request: req });
+    // ORCHESTRATION-DESIGN §2.5(c) / §4.2 P10: a child never blocks a human on an interactive confirmer it does not
+    // have. It answers ONCE from the parent's id-matched, single-use answer file, or it parks at P10.
+    if (this.opts.orchestration?.depth === 1) {
+      const answered = await this.consumeReviewAnswer(req);
+      if ('outcome' in answered) {
+        this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: answered.outcome.approved, aborted: false, ...(answered.outcome.note !== undefined ? { note: answered.outcome.note } : {}) });
+        return answered.outcome;
+      }
+      await this.parkForReview(draft, req, answered.why);
+    }
     const c0 = this.clock();
     try {
       const c = this.opts.confirmer;
@@ -2697,6 +4123,285 @@ class EngineImpl implements Engine {
     };
   }
 
+  // -------------------------------------------------------------------------------------
+  // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context (history, files in view, compaction, meter)
+  // -------------------------------------------------------------------------------------
+
+  /** The optional CheckpointState fields (§8.3, §8.4, §12.0.3), each present only when it carries something. */
+  private contextExtension(): ContextCheckpointExtension {
+    const ext: ContextCheckpointExtension = {};
+    if (this.history.length > 0) ext.history = this.history.map((e) => ({ ...e, shownFiles: [...e.shownFiles], notes: [...e.notes] }));
+    if (this.fileCache.length > 0) ext.fileCache = this.fileCache.map((e) => ({ ...e }));
+    if (Object.keys(this.fileMemory).length > 0) ext.fileMemory = { ...this.fileMemory };
+    if (this.summaryAt !== null) ext.summaryAt = this.summaryAt;
+    if (this.compactions > 0) ext.compactions = this.compactions;
+    if (this.lastCompactionAt !== null) ext.lastCompactionAt = this.lastCompactionAt;
+    return ext;
+  }
+
+  /** §8 / §12.0.3: the relaxed view (fresh files, planned history), then the prompt, then the meter — all before the call. */
+  private async proposeWithContext(ctx: StageContext, draft: StepDraft, changedFiles: string[], contextFiles: PromptInput['contextFiles'], candidates: PromptInput['candidates']): Promise<ProposeStageResult> {
+    const base = this.promptInput(draft, changedFiles, contextFiles, candidates);
+    // review finding 28 / D5: the legacy pin and the non-consuming modes send HEAD's message, byte for byte — the hook only
+    // counts its chars (contract 1.4 `lastPromptChars`); no meter, no file view, no compaction runs on this path
+    if (!this.contextEnabled) return runProposeStage(ctx, this.systemPrompt, base, { onPrompt: (built) => this.notePromptChars(built) });
+    const t0 = this.clock();
+    const prompt: PromptInput = { ...base, context: await this.contextView(draft.step) };
+    return runProposeStage(ctx, this.systemPrompt, prompt, { onPrompt: (built) => this.notePromptBuilt(built, t0) });
+  }
+
+  /** The rolling summary, read from the run dir once per process (a resume starts with `summaryAt` but no text). */
+  private async ensureSummaryLoaded(): Promise<void> {
+    if (this.contextLoaded) return;
+    this.contextLoaded = true;
+    if (!hasContextStore(this.store) || this.summaryAt === null || this.summary !== null) return;
+    const raw = await this.store.readContextSummary().catch(() => null);
+    if (isContextSummary(raw)) this.summary = raw;
+  }
+
+  /**
+   * §8.2(a) / §8.3: open ONLY the output files the plan's surviving tiers will show — the fit was computed from
+   * `fullOutputChars` before any read, so a tier the 30 % allowance cannot show is never opened (review D11). Warm steps
+   * read nothing: the views are memoised for the life of the process.
+   */
+  private async loadPlannedOutputs(plan: HistoryPlan): Promise<void> {
+    if (!hasContextStore(this.store)) return;
+    for (const step of plan.reads) {
+      if (this.outputViews.has(step) || this.missingOutputs.has(step)) continue;
+      const text = await this.store.readOutput(step).catch(() => null);
+      // §8.5 / review finding 22: a resume whose run dir was mirrored without `outputs/` must not print a pointer at nothing
+      if (text === null) this.missingOutputs.add(step);
+      else this.outputViews.set(step, outputView(text));
+    }
+  }
+
+  /** §8.3 / §8.4: what the prompt shows this step — one stat per cached file, a read only where a stat changed, memoised output views. */
+  private async contextView(step: number): Promise<PromptContextView> {
+    await this.ensureSummaryLoaded();
+    // §8.6: the resume trigger runs before the first prompt of the resumed process, never mid-step
+    if (this.pendingResumeCompaction) {
+      this.pendingResumeCompaction = false;
+      const trigger = compactionDue({ step: this.step, compactEvery: this.contextPolicy.compactEvery, pct: 0, mode: this.contextPolicy.compaction, foldable: foldableCount(this.history), resume: true });
+      if (trigger !== null) this.compactContext(this.step, trigger);
+    }
+    const refreshed = await this.filesInView.refresh(this.fileCache, step, this.contextPolicy.fileCacheBytes);
+    this.lastRefreshMs = refreshed.ms;
+    if (refreshed.failed.length > 0) {
+      for (const f of refreshed.failed) this.fileCache = dropFile(this.fileCache, f.rel);
+      // review D16: paths and error text are redacted like every other transcript line
+      const gone = refreshed.failed.map((f) => f.rel).join(', ');
+      this.emit({ type: 'transcript', step, level: 'info', text: this.redact(`files in view: dropped ${gone} (${clip(refreshed.failed[0]!.reason, 120)})`) });
+    }
+    this.fileCache = noteShown(this.fileCache, new Map(refreshed.files.map((f) => [f.rel, f.shownChars] as const)));
+    // §8.2(a): plan first (pure, from `fullOutputChars`), read only what survives, then render
+    const plan = planHistory(this.history, Math.floor(this.contextPolicy.budgetChars * HISTORY_SHARE));
+    await this.loadPlannedOutputs(plan);
+    this.lastRecentSteps = { chars: plan.chars, allowanceChars: plan.allowanceChars, whole: plan.whole, clipped: plan.clipped, oneLine: plan.oneLine, reads: plan.reads.length };
+    return {
+      files: refreshed.files.map((f) => ({
+        path: f.rel,
+        content: f.content,
+        bytes: f.bytes,
+        truncatedBytes: f.truncatedBytes,
+        windowStart: f.windowStart,
+        lineFrom: f.lineFrom,
+        lineTo: f.lineTo,
+        lineTotal: f.lineTotal,
+        pinnedBy: f.pinnedBy,
+        lastUsedStep: f.lastUsedStep,
+        omitted: f.omitted,
+      })),
+      history: renderHistory(plan, { view: (n) => this.outputViews.get(n) ?? null, missing: (n) => this.missingOutputs.has(n) }),
+      summary: this.summary?.text ?? null,
+      summaryAt: this.summaryAt,
+      budgetChars: this.contextPolicy.budgetChars,
+      newestClipped: plan.newestClipped,
+    };
+  }
+
+  /**
+   * §12.0.3 cadence point 1: the meter once the step's prompt is built, before the generator call. Review D2: the
+   * zero-cost read may only stand on the files this message really rendered whole. Review D15: the meter counts the
+   * WHOLE prompt — the system prompt goes to the model on every call too.
+   */
+  private notePromptBuilt(built: PromptBuild, startedAt?: number): void {
+    this.filesInView.keepShown(built.shownFiles);
+    if (startedAt !== undefined) this.lastPromptBuildMs = Math.max(0, this.clock() - startedAt);
+    this.notePromptChars(built);
+    this.contextUsage = this.usage(this.systemPrompt.length + built.chars);
+  }
+
+  /**
+   * contract 1.4 (§12.0.3): `CheckpointState.lastPromptChars` — the chars of the last generator prompt this run built
+   * (system + message), the same quantity `ContextUsage.promptChars` reports, so a resumed process's meter starts from a
+   * fact instead of 0. Recorded for every generator prompt, relaxed view or legacy.
+   */
+  private notePromptChars(built: PromptBuild): void {
+    this.lastPromptChars = this.systemPrompt.length + built.chars;
+  }
+
+  /** One place where `ContextUsage` is assembled, so both cadence points report the same members (§12.0.3). */
+  private usage(promptChars: number, over: { summaryAt?: number; lastCompactionAt?: string } = {}): ContextUsage {
+    const summaryAt = over.summaryAt ?? this.summaryAt;
+    return computeContextUsage({
+      promptChars,
+      budgetChars: this.contextPolicy.budgetChars,
+      budget: this.contextPolicy.budget,
+      recentSteps: this.lastRecentSteps,
+      promptBuildMs: this.lastPromptBuildMs,
+      refreshMs: this.lastRefreshMs,
+      files: this.fileCache.length,
+      historyEntries: this.history.length,
+      summaryAt,
+      lastCompactionStep: summaryAt,
+      compactions: this.compactions,
+      lastCompactionAt: over.lastCompactionAt ?? this.lastCompactionAt,
+      compaction: this.contextPolicy.compaction,
+    });
+  }
+
+  /** §8.3 / §8.4: the execute stage's `read` hooks — the zero-cost read (one stat) and the `jevcode:outputs/step-<n>.txt` pseudo-path. */
+  private contextReadHooks(): ContextReadHooks {
+    return {
+      unchanged: async (rel) => (this.contextEnabled ? ((await this.filesInView.unchanged(rel, this.fileMemory))?.text ?? null) : null),
+      nextWindow: async (rel) => (this.contextEnabled ? ((await this.filesInView.nextWindow(rel, this.step + 1))?.text ?? null) : null),
+      runOutput: async (pathOrRef) => {
+        const step = parseOutputRef(pathOrRef);
+        if (step === null) return null;
+        const stored = hasContextStore(this.store) ? await this.store.readOutput(step).catch(() => null) : null;
+        if (stored !== null) return stored;
+        // the file is gone (the 64 MiB bound, or a mirror without `outputs/`): the memoised head + tail is still the truth
+        this.missingOutputs.add(step);
+        const view = this.outputViews.get(step);
+        return view === undefined ? null : tierText(view, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, null);
+      },
+    };
+  }
+
+  /** The §8 bookkeeping at commit: the history entry (+ the whole output on disk), files in view, fileMemory, eviction, compaction. */
+  private commitContext(draft: StepDraft, entry: WindowEntry, step: number): void {
+    if (!this.contextEnabled) return;
+    // review D22: the prompt must show the SAME bytes in-process as after a resume — memoise the redacted text, which is
+    // exactly what `writeOutput` puts on disk
+    const output = draft.output.length > 0 ? this.redact(draft.output) : null;
+    let ref: string | null = null;
+    if (needsOutputFile(output) && hasContextStore(this.store)) {
+      // §8.3 / §8.5: the whole text is on disk before any clip names it; the write rides the outputs/ chain, never the step
+      ref = outputRefFor(step);
+      const written = this.store.writeOutput(step, output);
+      // review D12: the per-run 64 MiB bound may delete older files — mark those entries so their pointer is not printed again
+      this.persist(
+        written.then((evicted) => {
+          if (evicted.length > 0) this.noteOutputsEvicted(evicted);
+        }),
+        `${CHECKPOINT_FILES.outputs}/${outputFileName(step)}`,
+      );
+    }
+    if (output !== null) {
+      this.outputViews.set(step, outputView(output));
+      const excess = this.outputViews.size - HISTORY_MID;
+      if (excess > 0) for (const s of [...this.outputViews.keys()].sort((a, b) => a - b).slice(0, excess)) this.outputViews.delete(s);
+    }
+    this.history = pushHistory(this.history, buildHistoryEntry(entry, output, ref), this.contextPolicy.historySteps);
+
+    const proposal = draft.proposal;
+    if (proposal !== null && draft.outcome?.status === 'executed') {
+      const a = proposal.action;
+      if (a.kind === 'read') {
+        for (const p of a.paths) {
+          if (p.startsWith(OUTPUT_READ_PREFIX)) continue;
+          this.fileCache = touchFile(this.fileCache, p, 'read', step);
+          this.fileMemory = rememberFile(this.fileMemory, p, { readAt: step });
+        }
+      }
+      // review D23: every path the step changed is invalidated whatever the action was — a `run` that renames or
+      // regenerates a file in view must not leave the old bytes in the next prompt
+      if (draft.changedFiles.length > 0) {
+        this.filesInView.invalidate(draft.changedFiles);
+        for (const p of draft.changedFiles) {
+          if (isChangeAction(a.kind)) this.fileCache = touchFile(this.fileCache, p, 'edit', step);
+          this.fileMemory = rememberFile(this.fileMemory, p, { editedAt: step });
+        }
+      }
+    }
+    const image = this.lastPostImage;
+    this.lastPostImage = null;
+    if (image !== null && image.step === step) {
+      for (const id of fileMemoryFromPostImage(image)) {
+        if (id.deleted) {
+          this.fileCache = dropFile(this.fileCache, id.rel);
+          this.fileMemory = forgetFile(this.fileMemory, id.rel);
+          this.filesInView.invalidate([id.rel]);
+          continue;
+        }
+        this.fileMemory = rememberFile(this.fileMemory, id.rel, { ...(id.sha12 !== null ? { sha12: id.sha12 } : {}), ...(id.bytes !== null ? { bytes: id.bytes } : {}), editedAt: step });
+      }
+    }
+    this.fileMemory = boundMemory(this.fileMemory);
+    const ev = evictFiles(this.fileCache, { maxEntries: FILE_CACHE_MAX_ENTRIES, maxBytes: this.contextPolicy.fileCacheBytes });
+    if (ev.evicted.length > 0) {
+      this.fileCache = ev.kept;
+      this.filesInView.invalidate(ev.evicted.map((e) => e.rel));
+    }
+    // §8.6: compaction runs after the commit of the triggering step, before the next intent
+    const trigger = compactionDue({ step, compactEvery: this.contextPolicy.compactEvery, pct: this.contextUsage.pct, mode: this.contextPolicy.compaction, foldable: foldableCount(this.history) });
+    if (trigger !== null) this.compactContext(step, trigger);
+  }
+
+  /**
+   * §8.6 `'code'`: fold the history into the rolling summary, persist it, announce `context:compacted`, recompute the meter.
+   * `'llm'` (the second bullet of §8.6 — one generator call with the opencode template) is not built here; it degrades to
+   * `'code'`, which §8.6 already names as its fallback, so the event always reports `by: 'code'` while `ContextUsage.compaction`
+   * keeps reporting the configured mode.
+   */
+  private compactContext(step: number, trigger: CompactionTrigger): void {
+    const at = nowIso();
+    const allowance = Math.floor(this.contextPolicy.budgetChars * HISTORY_SHARE);
+    const r = compactCode({ step, at, task: this.opts.task, plan: this.plan, history: this.history, fileMemory: this.fileMemory, lastTestRun: this.lastTestRun, previous: this.summary });
+    // review D15: the event and the meter report PROMPT chars — what the fold removes from the message the generator
+    // sees — not the size of the persisted JSON. Both sides are measured with the planner the prompt itself uses; before
+    // the first build of a process (the §8.6 resume trigger) the two sections stand in for the whole prompt.
+    const sectionsBefore = planHistory(this.history, allowance).chars + (this.summary?.text.length ?? 0);
+    const historyAfter = planHistory(r.history, allowance).chars;
+    const sectionsAfter = historyAfter + r.summary.text.length;
+    const before = this.contextUsage.promptChars > 0 ? this.contextUsage.promptChars : sectionsBefore;
+    const chars = { before, after: Math.max(0, before - Math.max(0, sectionsBefore - sectionsAfter)) };
+    this.history = r.history;
+    this.summary = r.summary;
+    this.summaryAt = step;
+    this.compactions += 1;
+    this.lastCompactionAt = at;
+    if (hasContextStore(this.store)) this.persist(this.store.writeContextSummary(toJson(r.summary)), `${CHECKPOINT_FILES.context}/${CONTEXT_SUMMARY_FILE}`);
+    const event: Extract<EngineEvent, { type: 'context:compacted' }> = { type: 'context:compacted', step, chars, by: 'code' };
+    // contract 1.4: the union now carries the event, so `--json` and a subscribing renderer get it typed. It yields no
+    // transcript item of its own (`itemsFromEvent` has no case for it), so the human-readable line stays the notice below.
+    this.emit(event);
+    // review finding 29: ONE shared line in all three sinks — the notice, kind `ui` with the `[ui]` label, which
+    // `itemsFromEvent` turns into a single `notice` item (never a `[jevcode]` chat bubble); `detail` carries the event JSON.
+    const why = trigger === 'interval' ? `every ${this.contextPolicy.compactEvery} steps` : trigger === 'budget' ? `prompt at ${this.contextUsage.pct}% of the context budget` : trigger === 'resume' ? 'resumed past the history window' : 'requested';
+    const folded = `${r.dropped.length} step${r.dropped.length === 1 ? '' : 's'} folded into the summary`;
+    this.emit({ type: 'notice', step, kind: 'ui', level: 'info', label: '[ui]', text: `compaction: ${chars.before} → ${chars.after} prompt chars (code); ${folded} at step ${step} (${why})`, detail: JSON.stringify(event) });
+    // §12.0.3 cadence point 2: the meter after a compaction, in the same units
+    this.lastRecentSteps = { ...this.lastRecentSteps, chars: historyAfter };
+    this.contextUsage = this.usage(chars.after, { summaryAt: step, lastCompactionAt: at });
+  }
+
+  /** §8.5 / review D12: the per-run output bound deleted these steps' files — every pointer to them stops being printed. */
+  private noteOutputsEvicted(steps: readonly number[]): void {
+    const gone = new Set(steps);
+    let hit = false;
+    this.history = this.history.map((e) => {
+      if (!gone.has(e.step) || e.outputRef === undefined || e.outputEvicted === true) return e;
+      hit = true;
+      return { ...e, outputEvicted: true };
+    });
+    for (const step of gone) {
+      this.outputViews.delete(step);
+      this.missingOutputs.add(step);
+    }
+    if (hit) this.emit({ type: 'transcript', step: this.step, level: 'info', text: `outputs/: the 64 MiB per-run bound dropped step ${[...gone].sort((a, b) => a - b).join(', ')} — their history lines no longer point at a file` });
+  }
+
   /** The current step's window entry before judge (Jev's `recent` includes it, §5.5). */
   private provisionalEntry(draft: StepDraft): WindowEntry {
     return buildWindowEntry({
@@ -2728,11 +4433,13 @@ class EngineImpl implements Engine {
     this.lastErrorStage = stage;
     const aborted = this.signal.aborted || isAbortError(e) || isBudgetError(e);
     if (aborted) {
-      const cls = classifyAbort(this.signal.aborted ? this.signal.reason : e);
+      const cls = this.classifyStop(this.signal.aborted ? this.signal.reason : e);
       if (this.fatalError !== null) cls.stop = 'error';
       if (!draft.executeStarted) {
         // Rule 1: the step is discarded; the proposal is kept for the transcript.
         this.interrupted = { step: draft.step, stage, proposal: draft.proposal };
+        // contract 1.4 (§12.0.2 P2 / P3): the pause-now snapshot's detail beside it, and the point when this stop is the pause
+        this.noteDiscardDetail(draft, stage, cls.stop);
         this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `step ${draft.step} interrupted during ${stage} (${cls.interrupt}); discarded` });
         return { discard: true, stop: cls.stop };
       }
@@ -2750,6 +4457,8 @@ class EngineImpl implements Engine {
       draft.completion = null;
       draft.interruptedAt = { stage: 'judge', reason: cls.interrupt };
       draft.notes.push('interrupted before judge');
+      // contract 1.4 (§12.0.2 P5): a pause-now cut the judge — the executed action is kept, one Jev call saved
+      if (cls.interrupt === 'human_pause') this.pauseLandedInExecute = true;
       return { discard: false, stop: cls.stop };
     }
     // TUI-DESIGN §13.3: a failure that asks for a blocking pause discards the step (rule 1) when no action ran; the loop top awaits the answer
@@ -2847,6 +4556,7 @@ class EngineImpl implements Engine {
     });
     let plan = update.plan;
     const notes = [...draft.notes, ...update.notes];
+    if (draft.replayed) notes.push('replayed the paused proposal (risk re-checked)');
     if (status === 'noop' && this.mode === 'llm-jev') {
       // docs/LLM-JEV-DESIGN.md §6.6: a `done` completes only on the engine's own passing, current run; `task_complete` is recorded, not consulted
       if (!this.completeAfter(draft)) notes.push(`done rejected: no passing, current run verifies it${draft.completion !== null ? ` (task_complete=${draft.completion.toFixed(2)} recorded only)` : ''}`);
@@ -2893,6 +4603,8 @@ class EngineImpl implements Engine {
             totalMs: total,
             // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
             ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
+            // contract 1.5 (§4.1 [D13]): likewise inside harnessMs, absent when the gate was shut — M2 reads its p95
+            ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
           };
     this.timing.generatorMs += timing.generatorMs;
     this.timing.jevMs += timing.jevMs;
@@ -2901,6 +4613,7 @@ class EngineImpl implements Engine {
     this.timing.totalMs += timing.totalMs;
     if (timing.imagesMs !== undefined) this.timing.imagesMs = (this.timing.imagesMs ?? 0) + timing.imagesMs;
     if (timing.synthMs !== undefined) this.timing.synthMs = (this.timing.synthMs ?? 0) + timing.synthMs;
+    if (timing.decomposeMs !== undefined) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + timing.decomposeMs;
     // TUI-DESIGN §9.2: the per-step cost series behind `stepsLeftEstimate`
     this.costPerStep.push(draft.usage.generator.costUsd + draft.usage.jev.costUsd);
     const generatorTokens = draft.usage.generator.inputTokens + draft.usage.generator.outputTokens;
@@ -2954,7 +4667,11 @@ class EngineImpl implements Engine {
     this.step = step;
     this.plan = plan;
     this.window = window;
+    // docs/COORDINATION-DESIGN.md §8: the generator's history, files in view and (when due) the compaction — before the snapshot below
+    this.commitContext(draft, entry, step);
     this.interrupted = null;
+    this.interruptedDetail = null;
+    if (this.replayCache !== null && this.replayCache.step === step) this.replayCache = null;
     // TUI-DESIGN §8.6: the directives reached exactly this step; the next steer re-arms them
     if (this.activeHuman?.step === step) this.activeHuman = null;
     this.emit({ type: 'plan', step, plan, rejectedDone: update.rejected.map((r) => r.text), unverifiedDone: update.unverified.map((u) => u.text) });
@@ -2976,6 +4693,11 @@ class EngineImpl implements Engine {
       timing,
       loopSignatures: signatures,
     };
+    // contract 1.5 (ORCHESTRATION-DESIGN §2.4 [G8] / §2.6 [G1]): both absent on every run without `orchestration`
+    if (this.escapedThisStep.length > 0) record.escaped = [...this.escapedThisStep];
+    if (this.commitThisStep !== null) record.commit = this.commitThisStep;
+    this.escapedThisStep = [];
+    this.commitThisStep = null;
     if (draft.proposer !== null) record.proposer = draft.proposer;
     // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts (llm-jev only; jev-only rows are unchanged)
     if (this.mode === 'llm-jev' && draft.proposer === 'synth') record.verify = this.verifySummary(draft, proposal);
@@ -3043,9 +4765,17 @@ class EngineImpl implements Engine {
     }
     // TUI-DESIGN §9.2 / §9.5: the budget:stop item precedes the stop and run:end lines (not for a refused resume, whose transcript is muted)
     if (!opts.skipWrite) this.emitBudgetStop(reason, opts.detail);
+    // contract 1.4 (COORDINATION-DESIGN §12.0.2): the pause-now cache settles and the PausePoint is built before the final snapshot;
+    // §7.5: one bound for the whole shutdown — what the cache wait spends is taken off the final write's share below
+    const shutdownDeadline = this.clock() + SHUTDOWN_CHECKPOINT_BOUND_MS;
+    if (!opts.skipWrite) await this.settlePausePoint(reason, shutdownDeadline);
+    // contract 1.5 (ORCHESTRATION-DESIGN §2.6, corner rows 36/37 inverted): the child's unconditional end commit, once,
+    // when the add set is non-empty. After it, an `addSet ≠ ∅` in that worktree means the process DIED — it is the
+    // crash case, not the default. A run with no `orchestration.runGit` seam makes no git mutation here or anywhere.
+    if (!opts.skipWrite) await this.commitAtEnd();
     const snapshot = this.buildCheckpointState();
     // TUI-DESIGN-2 §2.4: the cost basis of this process's Jev requests rides the result for `costBlock`'s suffix
-    const result: RunResult = { ...assembleRunResult({ runId: this.runId, mode: this.mode, reason, state: snapshot, error }), jevCostBasis: this.jevCostBasis() };
+    const result: RunResult = { ...assembleRunResult({ runId: this.runId, mode: this.mode, reason, state: snapshot, error }), jevCostBasis: this.jevCostBasis(), ...(this.endCommit !== null ? { commit: this.endCommit } : {}) };
     const stopLine: EngineEvent = { type: 'transcript', step: null, level: reason === 'complete' ? 'info' : 'warn', text: stopTranscriptLine(reason, this.step, opts.detail) };
     let stateWritten = opts.skipWrite === true; // a refused resume leaves the stored state.json as it was
     // TUI-DESIGN §13.5 / §15 item 14: exit code, resumability and the artefact paths ride run:end; built when the final write has settled.
@@ -3072,9 +4802,26 @@ class EngineImpl implements Engine {
         }
         stateWritten = true;
         trace('finish: final state written');
+        // contract 1.4 (§7.4): `end` marks run.json with the final state, so a shell `--resume` needs --force too (§11 row 44)
+        if (reason === 'human_pause' && this.endRequested !== null) {
+          try {
+            await this.store.updateMeta({ ended: { at: nowIso(), by: this.endRequested.by } });
+          } catch (e) {
+            this.emit({ type: 'transcript', step: null, level: 'warn', text: `${CHECKPOINT_FILES.meta} write failed (ended): ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+          }
+        }
+        // contract 1.4 (§12.0.2 "when emitted"): after the final state settled — `resumableAt` names a file that exists and
+        // `replayable` is a fact — and before the stop line and run:end; never for another stop reason or a failed write
+        if (reason === 'human_pause' && this.pausePoint !== null) {
+          this.emitStatus();
+          this.emit({ type: 'pause:point', point: { ...this.pausePoint } });
+        }
         // The stop line and the run:end line reach transcript.log through the same item model as every other line (§10).
+        // contract 1.7 (§3.6 D-V): `stopTranscriptLine` now returns '' — the row is deleted — so the event is not
+        // emitted at all. Guarding HERE rather than only in `itemsFromEvent` keeps `--json` and every listener free
+        // of an empty-text transcript event, not just the two rendered sinks.
         stopEmitted = true;
-        this.emit(stopLine);
+        if (stopLine.type === 'transcript' && stopLine.text.length > 0) this.emit(stopLine);
         endEvent = buildEnd();
         this.recordTranscript(endEvent);
         await Promise.allSettled([...this.pendingPersists]);
@@ -3085,7 +4832,8 @@ class EngineImpl implements Engine {
       })();
       let timer: NodeJS.Timeout | null = null;
       const bound = new Promise<'timeout'>((resolve) => {
-        timer = setTimeout(() => resolve('timeout'), SHUTDOWN_CHECKPOINT_BOUND_MS);
+        // contract 1.4 (§7.5): the remainder of the one shutdown bound (the pause cache above spent its share, if any)
+        timer = setTimeout(() => resolve('timeout'), Math.max(0, shutdownDeadline - this.clock()));
         timer.unref();
       });
       const outcome = await Promise.race([phase.then(() => 'ok' as const, () => 'failed' as const), bound]);
@@ -3106,12 +4854,15 @@ class EngineImpl implements Engine {
     }
     // TUI-DESIGN §8.5: the lock ends with the run
     this.releaseLock();
+    // §7.2 item 1: and so does the degrade listener — the last write above has settled, and `noteDisk` on a finished
+    // engine would emit a notice no renderer is listening for.
+    attachDegradeListener(this.store, null);
     if (this.exitHandler) {
       process.removeListener('exit', this.exitHandler);
       this.exitHandler = null;
     }
     this.lastResult = result;
-    if (!stopEmitted) this.emit(stopLine);
+    if (!stopEmitted && stopLine.type === 'transcript' && stopLine.text.length > 0) this.emit(stopLine);
     this.emitStatus();
     // Already recorded in the checkpoint phase (or muted); emitted raw so it is not written twice.
     this.events.emit(endEvent ?? buildEnd());
@@ -3200,9 +4951,52 @@ function trace(msg: string): void {
   }
 }
 
+/** §2.5(c) / §4.2 P10: the parked review's artefact, under `<runDir>/orchestrate/` (`CheckpointStore.cacheTarget` routes it). */
+export function reviewCacheRel(step: number): string {
+  return `${CHECKPOINT_FILES.orchestrate}/review-${step}.json`;
+}
+
+/** `seatbelt` is stronger than `none`; `auto` resolves to at least what the platform gives, never to less than `seatbelt` asked for. */
+function sandboxWeakerThan(profile: SandboxProfile, parent: SandboxLevel): boolean {
+  return parent === 'seatbelt' && profile === 'none';
+}
+
+/**
+ * contract 1.5 (ORCHESTRATION-DESIGN §2.1, §2.6, corner row 20): the three refusals `createEngine` owes a child.
+ *
+ * 1. `depth > ORCHESTRATION_DEPTH_MAX` (1) — depth is a constant, not a setting, so an agent can never spawn agents.
+ * 2. a depth-1 run that ALSO carries a split flag — `--agent` with `--split` is a `ConfigError`, so the gate cannot be
+ *    forced open from the command line inside a child.
+ * 3. a child whose resolved sandbox level is WEAKER than the parent's recorded one — `--sandbox` is one of the four
+ *    rights §2.6's spawn line deliberately does not forward.
+ *
+ * A run without `EngineOptions.orchestration` (every run today) returns immediately.
+ */
+export function refuseOrchestration(opts: Pick<EngineOptions, 'orchestration' | 'sandboxProfile' | 'configRecord'>): void {
+  const o = opts.orchestration;
+  if (o === undefined) return;
+  if (o.depth > ORCHESTRATION_DEPTH_MAX) {
+    throw new ConfigError(`orchestration depth ${o.depth} exceeds the cap of ${ORCHESTRATION_DEPTH_MAX}: an agent cannot spawn agents`, { setting: 'orchestration.depth' });
+  }
+  if (o.depth === 1) {
+    const split = opts.configRecord['orchestrate.split'];
+    const value = split === undefined ? undefined : typeof split.value === 'string' ? split.value : undefined;
+    if (value !== undefined && value !== 'off') {
+      throw new ConfigError(`--agent ${o.slug ?? ''} with --split ${value}: an agent cannot delegate (the cap is ${ORCHESTRATION_DEPTH_MAX})`.replace('  ', ' '), { setting: 'orchestrate.split' });
+    }
+    if (o.parentSandbox !== undefined && sandboxWeakerThan(opts.sandboxProfile, o.parentSandbox)) {
+      throw new ConfigError(`an agent may not run with a weaker sandbox than its parent (parent ${o.parentSandbox}, this run ${opts.sandboxProfile})`, { setting: 'sandbox' });
+    }
+  }
+}
+
 export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): Promise<Engine> {
   // jev-only and llm-jev (docs/LLM-JEV-DESIGN.md §3) put the Synthesizer in the propose stage
   if ((opts.mode === 'jev-only' || opts.mode === 'llm-jev') && !opts.synthesizer) throw new ConfigError(`${opts.mode} mode requires a synthesizer (EngineOptions.synthesizer)`, { setting: 'mode' });
+  // contract 1.5 (ORCHESTRATION-DESIGN §2.1 / §2.6, corner row 20): the depth cap is refused HERE, not only in the TUI,
+  // so a hand-typed `jevcode run --parent …` cannot make grandchildren, and a child can never be given weaker rights
+  // than the parent recorded for itself.
+  refuseOrchestration(opts);
   const d = await resolveDeps(deps);
   const redact = opts.redact;
   let root: string;
@@ -3215,6 +5009,7 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
   let store: CheckpointStore;
   let resume: ResumeLoad | null = null;
   let lock: { held: boolean; warning: string | null } | null = null;
+  let reopened = false;
   if (opts.resume) {
     runId = opts.resume.runId;
     await validateResumeId(opts.runsDir, runId);
@@ -3224,6 +5019,10 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     if (resume.state.runId !== runId) throw new CheckpointError(`state.json belongs to run ${resume.state.runId}, not ${runId}`, store.dir);
     if (resume.state.mode !== opts.mode) throw new ConfigError(`--resume: run ${runId} was a ${resume.state.mode} run`, { setting: 'mode' });
     if ((resume.previousStopReason ?? resume.state.stopReason) === 'complete' && !opts.resume.force) throw new ConfigError(`--resume: run ${runId} is complete; pass --force to continue it`, { setting: 'resume' });
+    // contract 1.4 (COORDINATION-DESIGN §7.4, §11 row 44): an ended run needs --force to reopen — the gate is in the engine, not only the TUI picker
+    const ended = resume.meta.ended ?? null;
+    if (ended !== null && !opts.resume.force) throw new ConfigError(`--resume: run ${runId} was ended by ${ended.by} at ${ended.at}; pass --force to reopen`, { setting: 'resume' });
+    reopened = ended !== null;
     // TUI-DESIGN §8.5: a live lock (same host, pid alive) refuses the resume with exit 2 before any further work
     lock = takeRunLock(store.dir || join(opts.runsDir, runId), runId);
   } else {
@@ -3249,6 +5048,10 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     redact,
     ...(opts.extraWritableRoots ? { extraWritable: opts.extraWritableRoots } : {}),
     ...(opts.extraReadableRoots ? { extraReadable: opts.extraReadableRoots } : {}),
+    // contract 1.5 (ORCHESTRATION-DESIGN §5.2 [G3], corner rows 51 / 56): a depth-1 child's profile write-denies the
+    // shared git refs (`<commonDir>/refs`, `packed-refs`, `logs`, a linked worktree's HEAD); the depth-0 supervisor
+    // must still be able to move `refs/heads/jevcode/<slug>`, so the flag is keyed strictly on depth === 1.
+    ...(opts.orchestration?.depth === 1 ? { agentChild: true } : {}),
     // TUI-DESIGN §12.7 / §15 item 18: the seatbelt learns the git dirs and the config dirs from here
     ...(git?.gitDir ? { gitDir: git.gitDir } : {}),
     ...(git?.commonDir ? { gitCommonDir: git.commonDir } : {}),
@@ -3292,7 +5095,7 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     // TUI-DESIGN §8.5: run.lock after store.create
     lock = takeRunLock(runDir, runId);
   }
-  return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume, gitState: git, runDir, lock: lock ?? { held: false, warning: null }, headDrift });
+  return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume, gitState: git, runDir, lock: lock ?? { held: false, warning: null }, headDrift, reopened });
 }
 
 /**

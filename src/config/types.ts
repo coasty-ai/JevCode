@@ -31,10 +31,14 @@ export type SettingName =
   | 'ui.theme'
   | 'ui.fps'
   | 'ui.renderMode'
+  // contract 1.6 (TUI-DESIGN-4 §8 item 5 / §1.3): the opt-in pinned-header renderer and its on-exit transcript dump
+  | 'ui.renderer'
+  | 'ui.fullscreenDump'
   | 'ui.ascii'
   | 'ui.title'
   | 'ui.screenReader'
   | 'ui.reducedMotion'
+  | 'ui.wordmark'
   | 'ui.notify'
   | 'ui.osc52'
   | 'ui.history'
@@ -45,6 +49,8 @@ export type SettingName =
   | 'ui.exitCode'
   | 'ui.keybindings'
   | 'ui.noColor'
+  // TUI-DESIGN-3 §0.1 (D-Q): the bookkeeping row behind the one-time default-mode item — a config-file key, never a flag or a variable
+  | 'seen.defaultMode'
   | 'log.file'
   | 'log.level'
   | 'update.notify'
@@ -61,7 +67,7 @@ export type SettingName =
  * compile before args.ts gains them; `lookup()` reads flags structurally, so a flag the parser does not know yet is
  * simply absent (the chain falls through to env / file / default).
  */
-export type TuiStringFlagKey = 'theme' | 'fps' | 'renderMode' | 'exitCode' | 'keybindings' | 'log' | 'logLevel' | 'sessionSpendCap' | 'maxGeneratorTokens';
+export type TuiStringFlagKey = 'theme' | 'fps' | 'renderMode' | 'exitCode' | 'keybindings' | 'log' | 'logLevel' | 'sessionSpendCap' | 'maxGeneratorTokens' | 'renderer';
 /** TUI-DESIGN §16 boolean flags that `cli/args.ts` (O10) adds to `BOOLEAN_FLAGS`. */
 export type TuiBooleanFlagKey =
   | 'ascii'
@@ -121,6 +127,8 @@ export interface SettingSpec {
   launch?: true;
   /** TUI-DESIGN §16: a file key that is recognised only to be reported as `ignored:launch` (launch settings) */
   ignoredFileKey?: string;
+  /** TUI-DESIGN-3 §0.1 (D-Q): a bookkeeping row `jevcode config` hides unless `--all` (`seen.*`); `--json` keeps it */
+  hidden?: true;
 }
 
 export interface LoadedDotenv {
@@ -145,7 +153,7 @@ export interface ResolveOptions {
   /**
    * TUI-DESIGN §9.1 / §16 (P45) / TUI-DESIGN-2 §1.2: the engine mode the run-cap default is keyed on, when it is known from
    * somewhere other than the `mode` setting — a `--resume` re-resolve passes `identity.mode` from run.json so a jev-only run
-   * keeps its $0.25 default. Absent: `resolveMode(layers)` (flag > JEVCODE_MODE > dotenv > file > default jev-only).
+   * keeps its $0.25 default. Absent: `resolveMode(layers)` (flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE).
    */
   mode?: EngineMode;
   /** TUI-DESIGN §16 (P30): skip the legacy-config-path warning for this call (it is already once per process and path) */

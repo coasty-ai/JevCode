@@ -63,6 +63,16 @@ one item source; `useAnimation(` only in `motion.ts`, `setInterval(` only in `sp
 | D-Q | **Ratified with one change — one-time, not every start.** The `[setup]` default-mode item (§1.7) prints on a keyed start whose `mode` resolves from `default` and whose config file has no `mode` row **only when the config file's `seen.defaultMode` value differs from `DEFAULT_MODE`**; printing it writes `seen.defaultMode = DEFAULT_MODE` (one `writeConfigValue`, the same write path the trust gate uses; a read-only config directory downgrades to printing at every start with no error). Consequences: a user who accepts the default sees the item once; a later flip of `DEFAULT_MODE` (to `llm-jev`) shows it once more with the new caps; a `mode` row in the file still suppresses it entirely. The designer's every-start variant is rejected because the common case — a user happy with the default — would read the same notice at every launch until typing a config command. §1.7 and §1.3.1 are to be read with this rule; the S3 implementer adds the `seen.defaultMode` config row (string, non-secret, hidden from `jevcode config` unless `--all`) and its tests (first start prints + writes; second start silent; file with `mode` row silent; `DEFAULT_MODE` change prints again; read-only directory prints and warns once in the log). |
 | D-R | Noted as decided. |
 
+### 0.2 Integration amendments (2026-09-21, owner, after the slots landed)
+
+| Item | Amendment |
+| --- | --- |
+| D-R / §2.2 frame-0 theme | An explicit `--theme <name>` or `JEVCODE_THEME` naming a known theme (`dark` · `light` · `daltonized` · `ansi`, case-folded) is frame 0's theme too (`LaunchSettings.themeHint`, argv/env only, zero I/O; source `flag` / `env`) — the splash and the console never paint the dark palette before the resolved `ui.theme` takes over at `setUi`. An unknown explicit value leaves the hint absent (the `ui.theme` setting reports it) and still suppresses the COLORFGBG rule. Measured cause: `--theme light` painted `38;5;211` for the first 700 ms (theme-light / theme-ansi scenarios). |
+| §9 V14 | Rows whose left zone is a toast (`! …`, `✓ …`, `• …`) are exempt from the ≤ 30 % coloured-span rule: a level-coloured toast such as `! press Ctrl-C again to exit` is 28 of 76 cells by design (§5.2 A7). |
+| §4.4 F13 | The dispatcher passes `/rename`'s title whole; the controller clips once (`text60`, 59 cells + `…`) and appends ` (cut to 60 chars)`. |
+| §3.1 return after `run:end` | The mark returns in the same frame as the `[run] end` item (the epilogue item and the state change commit together), one frame earlier than "the `end` frame itself (the epilogue item and the state change commit together)"; the scenarios accept either. |
+| §10 `/jev` | The intake row and the last-intake row are two rows: `intake: <n> message(s) · p50 <ms> ms · $<usd>` and `last: <kind words> (<p>)`. |
+
 ## 1. Default jev+llm mode and one-key onboarding (D-G, D-J, D-N)
 
 ### 1.1 One constant, one table, and the ten fallbacks that stop naming a mode
@@ -1655,7 +1665,7 @@ each ≤ 3 KB, band cells only in `sweep` SGR, letters unchanged, 0 clears, regi
 h`; echo within the **50 ms max bound** — a key landing while a sweep frame renders waits out that ≈ 11 ms render before its own ≈ 5 ms frame
 (R2 §0.2), so a single-sample 16 ms gate would be flaky by the design's own numbers; the 16 ms p95 gate stays in `composer-latency`'s `idle-loop`
 series over 200 keys; the pass finishes — band frames continue; no new pass within 3 s), `wordmark-handoff.steps` (`fix the failing test\r` → no
-wordmark frame between `[run] start` and `end`; the frame after `end` has the strip **and** the mark; `/panel\r` → mark gone; `/panel off\r`
+wordmark frame between `[run] start` and `end`; the `end` frame itself (the epilogue item and the state change commit together) has the strip **and** the mark; `/panel\r` → mark gone; `/panel off\r`
 → back), `wordmark-reduced.steps` (replaces `splash-reduced`: frame 0 carries the complete mark and no `▓▒░`; 0 wordmark frames after; 11
 rows), `wordmark-21.steps` (21×80: the mark shows and neither the palette nor a 6-row draft hides it; 20×80: the brand row, no mark, today's frames; 22×80 after a mock run: no mark until the first key, then F-W5), `wordmark-nocolor.steps`
 (`--no-color`: 0 idle frames; the reveal still ran), `chrome-tiers.steps` (no wordmark at 12×60, back at 24×80, clears ≤ 1 in the shrink);

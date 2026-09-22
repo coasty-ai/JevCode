@@ -12,7 +12,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import type { ResolvedConfigWithDiagnostics } from '../../../src/config/types.js';
 import { parseCliArgs } from '../../../src/cli/args.js';
-import { ensureWiring, firstFrameTask, loginFlagsFrom, modeFromFlags, readTask, selectRenderer, versionJson } from '../../../src/cli/main.js';
+import { ensureWiring, firstFrameTask, loginFlagsFrom, readTask, selectRenderer, versionJson } from '../../../src/cli/main.js';
 import { RESTORE, createRestoreTerminal, processRestoreTerminal, restoreTerminal, setProcessRestore } from '../../../src/tui/terminal.js';
 import { UsageError } from '../../../src/errors.js';
 import { buildProvider, defaultEngineFactory } from '../../../src/cli/session.js';
@@ -122,21 +122,12 @@ describe('readTask and versions', () => {
       w.uninstall();
     }
   });
-  it('modeFromFlags: --mode, the hidden --condition alias, default jev-only (TUI-DESIGN-2 §1.1 / §1.2: `jevcode` and `jevcode run` alone are jev-only)', () => {
-    expect(modeFromFlags({ command: 'run' })).toBe('jev-only');
-    expect(modeFromFlags({ command: 'chat' })).toBe('jev-only');
-    expect(modeFromFlags({ command: 'run', mode: 'jev-on' })).toBe('jev-on');
-    expect(modeFromFlags({ command: 'run', mode: 'jev-only' })).toBe('jev-only');
-    expect(modeFromFlags({ command: 'run', condition: 'jev-off' })).toBe('jev-off');
-    expect(modeFromFlags({ command: 'run', condition: 'jev-on' })).toBe('jev-on');
-    // an unknown value never reaches here (args.ts rejects it); a stray one falls back to the default, never to jev-on
-    expect(modeFromFlags({ command: 'run', mode: 'nope' })).toBe('jev-only');
-    // llm-jev (docs/LLM-JEV-DESIGN.md): the fourth mode passes through both spellings
-    expect(modeFromFlags({ command: 'run', mode: 'llm-jev' })).toBe('llm-jev');
-    expect(modeFromFlags({ command: 'chat', condition: 'llm-jev' })).toBe('llm-jev');
-  });
+  // TUI-DESIGN-3 §1.1: `modeFromFlags` is gone — `config/resolve.ts modeFromParsedFlags` is the one rule (test/unit/config/resolve.test.ts)
   it('loginFlagsFrom: `jevcode login --jev-provider typesafe --jev-key-stdin` forwards jevProvider to commandLogin with the other login flags (TUI-DESIGN-2 §1.4)', () => {
     expect(loginFlagsFrom(parseCliArgs(['login', '--jev-provider', 'typesafe', '--jev-key-stdin']))).toEqual({ jevProvider: 'typesafe', jevKeyStdin: true });
+    // TUI-DESIGN-3 §1.6: `--key-stdin` rides along
+    expect(loginFlagsFrom(parseCliArgs(['login', '--key-stdin']))).toEqual({ keyStdin: true });
+    expect(loginFlagsFrom(parseCliArgs(['login', '--key-stdin', '--verify']))).toEqual({ keyStdin: true, verify: true });
     expect(loginFlagsFrom(parseCliArgs(['login', '--provider', 'anthropic', '--jev-provider', 'OpenRouter', '--generator-key-stdin', '--jev-key-stdin', '--status', '--verify', '--config', '/x/c.json']))).toEqual({
       provider: 'anthropic',
       jevProvider: 'openrouter',

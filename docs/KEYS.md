@@ -26,6 +26,12 @@ Reserved and never rebindable (A24): `Ctrl+C`, `Ctrl+D`, `Ctrl+M`, `Ctrl+[`, `Ct
 | `global:panelTimeline` | `Alt+T` | open the panel on the timeline tab; a second press collapses it (= /panel t) |  | TUI-DESIGN-2 §4.6 |
 | `global:panelSynth` | `Alt+S` | open the panel on the synth tab; a second press collapses it (= /panel s) |  | TUI-DESIGN-2 §4.6 |
 | `session:export` | _unbound_ | export the session transcript (= /export) |  | unbound by default; e.g. "session:export": "ctrl+x ctrl+s" |
+| `session:cost` | _unbound_ | run and session spend (= /cost) |  | unbound by default; e.g. "session:cost": "ctrl+x c" (TUI-DESIGN-3 §4.5) |
+| `session:status` | _unbound_ | run id, session id, step, stage, sandbox, workspace (= /status) |  | unbound by default (TUI-DESIGN-3 §4.5) |
+| `session:mode` | _unbound_ | show the engine mode and the next run's (= /mode) |  | unbound by default (TUI-DESIGN-3 §4.5) |
+| `files:diff` | _unbound_ | numstat block of the run's changes (= /diff) |  | unbound by default (TUI-DESIGN-3 §4.5) |
+| `files:undo` | _unbound_ | restore the files a step changed (= /undo; opens the undo confirm) |  | unbound by default (TUI-DESIGN-3 §4.5) |
+| `ui:copy` | _unbound_ | copy the last item, redacted (= /copy) |  | unbound by default (TUI-DESIGN-3 §4.5) |
 
 ## Composer
 

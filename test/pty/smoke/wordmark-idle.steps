@@ -1,0 +1,18 @@
+# the idle sweep (TUI-DESIGN-3 §3.4, §3.9): settle, then 12 s alone — exactly one pass (16 written frames at 250 ms, k = 1..16) lands in
+# [6 s, 11 s] after the settle; run-smoke.sh counts the frames between the caption frame and the marker key's echo (14–18), checks that
+# every one is ≤ 3 KB, that its letters equal the settled frame's (colour only: the band cells carry the `sweep` SGR), zero clears, 11 rows
+expect \x1b\[\?25l
+expect step 0/
+expect ◆(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*\d+\.\d+\.\d+
+mark settled
+expect sess \$
+sleep 12
+mark idled
+send h
+expect (?:›|>) (?:\x1b\[[0-9;]*m)*h
+send \x03
+expect Say hi
+send /exit
+sleep 0.2
+send \r
+eof

@@ -1,0 +1,23 @@
+{"t":110,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":110,"step":2,"op":"expect","arg":"Say hi"}
+{"t":200,"step":3,"op":"expect","arg":"sess \\$"}
+{"t":702,"step":4,"op":"sleep","arg":"0.5"}
+{"t":702,"step":5,"op":"send","arg":"the date parsing"}
+{"t":1002,"step":6,"op":"sleep","arg":"0.3"}
+{"t":1002,"step":7,"op":"send","arg":"\\r"}
+{"t":1011,"step":8,"op":"expect","arg":"run this as a task\\?"}
+{"t":1512,"step":9,"op":"sleep","arg":"0.5"}
+{"t":1512,"step":10,"op":"mark","arg":"card-up"}
+{"t":1512,"step":11,"op":"send","arg":"x"}
+{"t":1913,"step":12,"op":"sleep","arg":"0.4"}
+{"t":1914,"step":13,"op":"mark","arg":"stray-key"}
+{"t":1914,"step":14,"op":"send","arg":"\\x1b"}
+{"t":2716,"step":15,"op":"sleep","arg":"0.8"}
+{"t":2717,"step":16,"op":"mark","arg":"esc"}
+{"t":2717,"step":17,"op":"send","arg":"/exit"}
+{"t":3019,"step":18,"op":"sleep","arg":"0.3"}
+{"t":3019,"step":19,"op":"send","arg":"\\r"}
+{"t":63124,"step":20,"op":"timeout","arg":"eof"}
+{"t":73662,"step":0,"op":"kill-on-timeout","arg":"SIGKILL"}
+{"t":73671,"step":0,"op":"signal","arg":"SIGKILL"}
+{"t":73671,"step":0,"op":"exit","arg":"137"}

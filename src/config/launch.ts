@@ -7,9 +7,12 @@
  * TUI-DESIGN-2 §6 item 14 adds two argv + env members for the first frame: `modeHint` (`--mode` > `JEVCODE_MODE`; the badge
  * word of §1.5 until `resolveConfig` reads the `mode` setting) and `reducedMotion` (`--no-animation` > `JEVCODE_REDUCED_MOTION`
  * > screenReader; the splash's static form of §5.3 until the `ui.reducedMotion` chain is read).
+ *
+ * TUI-DESIGN-3 §6 item 8 adds `ssh` (the SSH launch source, exposed for `ui.wordmark`'s default) and `themeHint` (D-R: `COLORFGBG`
+ * naming a light background makes `light` frame 0's theme unless `--theme` / `JEVCODE_THEME` is set).
  */
 import type { ConfigSource, EngineMode, LaunchSettings } from '../core/types.js';
-import { DEFAULT_FPS, MAX_FPS, MIN_FPS, SSH_FPS } from './defaults.js';
+import { DEFAULT_FPS, MAX_FPS, MIN_FPS, MODE_SETTING_VALUES, SSH_FPS } from './defaults.js';
 
 /**
  * The flags this resolver reads, structurally: `ParsedFlags` (cli/args.ts, O10) is assignable once it carries them;
@@ -25,6 +28,8 @@ export interface LaunchFlags {
   mode?: string;
   /** TUI-DESIGN-2 §6 item 14: `--no-animation` */
   noAnimation?: boolean;
+  /** TUI-DESIGN-3 §2.2 (D-R): `--theme` — an explicit theme suppresses the `COLORFGBG` hint (the chain resolves it) */
+  theme?: string;
 }
 
 /** Where each launch member came from; `jevcode config` prints it beside the value (§16). */
@@ -36,7 +41,8 @@ export const RENDER_MODES = ['standard', 'incremental'] as const;
 /** TUI-DESIGN-2 §1.2 / §6 item 14: a `--mode` / `JEVCODE_MODE` value, or null so the next layer applies (the `mode` setting reports a bad value later, with its source). */
 export function parseModeHint(text: string): EngineMode | null {
   const t = text.trim().toLowerCase();
-  return t === 'jev-only' || t === 'jev-on' || t === 'jev-off' ? t : null;
+  // TUI-DESIGN-3 §1.1 (R3 F2): every MODE_SETTING_VALUES member, llm-jev included — `--mode llm-jev` shows `llm+jev · verified` from frame 0
+  return (MODE_SETTING_VALUES as readonly string[]).includes(t) ? (t as EngineMode) : null;
 }
 
 function envValue(env: NodeJS.ProcessEnv, name: string): string | null {
@@ -53,6 +59,28 @@ export function parseEnvBoolean(v: string): boolean {
 /** TUI-DESIGN §16: `SSH_TTY` / `SSH_CONNECTION` present and non-empty → a slow link (fps default 15). */
 export function isSshSession(env: NodeJS.ProcessEnv): boolean {
   return envValue(env, 'SSH_TTY') !== null || envValue(env, 'SSH_CONNECTION') !== null;
+}
+
+/**
+ * TUI-DESIGN-3 §2.2 (D-R): `COLORFGBG` is `<fg>;<bg>` or `<fg>;<x>;<bg>` (iTerm2, Konsole, rxvt, mintty set it); a background index of
+ * 7 or 15 is a light terminal → `'light'`; a dark index, a lone value, garbage or an empty string → null (the default `dark` stands).
+ */
+/** The theme names frame 0 may adopt from argv/env (mirrors `ThemeName` in src/tui/theme.ts without importing the TUI here). */
+export type ThemeHint = 'dark' | 'light' | 'daltonized' | 'ansi';
+const THEME_HINTS: readonly ThemeHint[] = ['dark', 'light', 'daltonized', 'ansi'];
+/** `--theme <name>` / `JEVCODE_THEME` as a frame-0 hint: a known name (case-folded), else null (the chain decides later). */
+export function parseThemeHint(text: string): ThemeHint | null {
+  const t = text.trim().toLowerCase();
+  return (THEME_HINTS as readonly string[]).includes(t) ? (t as ThemeHint) : null;
+}
+
+export function parseColorFgBg(text: string): 'light' | null {
+  const parts = text.trim().split(';');
+  if (parts.length < 2) return null;
+  const bg = (parts[parts.length - 1] ?? '').trim();
+  if (!/^\d+$/.test(bg)) return null;
+  const n = Number(bg);
+  return n === 7 || n === 15 ? 'light' : null;
 }
 
 /** TUI-DESIGN §14.1 Unicode gate: `TERM=dumb`, `TERM=linux` or a non-UTF-8 POSIX locale → ASCII glyphs. */
@@ -148,7 +176,7 @@ export function resolveLaunchSettingsWithSources(flags: LaunchFlags, env: NodeJS
     ncSource = 'flag';
   }
 
-  // TUI-DESIGN-2 §6 item 14 / §1.1: modeHint = --mode > JEVCODE_MODE, absent otherwise (the App reads jev-only); a bad value is
+  // TUI-DESIGN-2 §6 item 14 / §1.1: modeHint = --mode > JEVCODE_MODE, absent otherwise (the App reads DEFAULT_MODE); a bad value is
   // skipped here (nothing can render an error yet) and reported by the `mode` setting with its source
   let modeHint: EngineMode | undefined;
   let modeSource: LaunchSource = 'default';
@@ -177,9 +205,49 @@ export function resolveLaunchSettingsWithSources(flags: LaunchFlags, env: NodeJS
     rmSource = 'flag';
   }
 
+  // TUI-DESIGN-3 §6 item 8: the SSH launch source (the fps default's input above), exposed for `ui.wordmark`'s `static` default
+  const ssh = isSshSession(env);
+
+  // TUI-DESIGN-3 §2.2 (D-R): themeHint = `light` when COLORFGBG names a light background (index 7 | 15) and neither --theme nor
+  // JEVCODE_THEME is set — an explicit theme resolves through the chain after the first frame; env only, zero I/O
+  // An explicit `--theme` / `JEVCODE_THEME` naming a known theme is frame 0's theme too (argv/env only, zero I/O): the splash and
+  // the console never paint the dark palette first. Anything else resolves through the chain after the first frame.
+  let themeHint: ThemeHint | undefined;
+  let themeSource: LaunchSource = 'default';
+  const flagTheme = typeof flags.theme === 'string' ? parseThemeHint(flags.theme) : null;
+  const envTheme = parseThemeHint(envValue(env, 'JEVCODE_THEME') ?? '');
+  const themeExplicit = (typeof flags.theme === 'string' && flags.theme.trim() !== '') || envValue(env, 'JEVCODE_THEME') !== null;
+  const fgbg = envValue(env, 'COLORFGBG');
+  const fgbgHint = fgbg === null ? null : parseColorFgBg(fgbg);
+  if (flagTheme !== null) {
+    themeHint = flagTheme;
+    themeSource = 'flag';
+  } else if (envTheme !== null) {
+    themeHint = envTheme;
+    themeSource = 'env';
+  } else if (!themeExplicit && fgbgHint !== null) {
+    themeHint = fgbgHint;
+    themeSource = 'env';
+  }
+
   return {
-    settings: { fps, renderMode, screenReader, ascii, noColor, ...(modeHint !== undefined ? { modeHint } : {}), reducedMotion },
-    sources: { fps: fpsSource, renderMode: renderSource, screenReader: srSource, ascii: asciiSource, noColor: ncSource, modeHint: modeSource, reducedMotion: rmSource },
+    settings: { fps, renderMode, screenReader, ascii, noColor, ...(modeHint !== undefined ? { modeHint } : {}), reducedMotion, ...(themeHint !== undefined ? { themeHint } : {}), ssh },
+    sources: {
+      fps: fpsSource,
+      renderMode: renderSource,
+      screenReader: srSource,
+      ascii: asciiSource,
+      noColor: ncSource,
+      modeHint: modeSource,
+      reducedMotion: rmSource,
+      themeHint: themeSource,
+      ssh: ssh ? 'env' : 'default',
+      // contract 1.6 (TUI-DESIGN-4 §8 item 6) W0 TYPE SURFACE ONLY: `LaunchSources` is `Record<keyof LaunchSettings, …>`, so the two
+      // new optional members need a row here for this literal to type-check. §1.3.1's `--fullscreen` / `--renderer` /
+      // `JEVCODE_RENDERER` resolution and the refusal matrix are S1's W0 work and replace both rows (and set `settings.renderer`).
+      renderer: 'default',
+      rendererRefusal: 'default',
+    },
   };
 }
 

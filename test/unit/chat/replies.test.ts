@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import type { Answer } from '../../../src/core/types.js';
 import { REPLIES, REPLY_FALLBACK_KEY, REPLY_TEXT_MAX, buildReplyQuestion, fillReply, modeWord, pickReply, replyByKey, replyCriteria, tildify } from '../../../src/chat/replies.js';
 import { ESCAPE_KEY } from '../../../src/jev/questions.js';
+import { MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
 
 const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F000}-\u{1F2FF}]/u;
 
@@ -69,6 +70,8 @@ describe('§3.4 the reply catalogue', () => {
     expect(tildify('/Users/me', '/Users/me')).toBe('~');
     expect(tildify('/Users/meow/x', '/Users/me')).toBe('/Users/meow/x');
     expect(tildify('/tmp/x', '/')).toBe('/tmp/x');
-    expect([modeWord('jev-only'), modeWord('jev-on'), modeWord('jev-off'), modeWord('llm-jev')]).toEqual(['jev-only', 'jev+llm', 'llm-only', 'llm-jev']);
+    // TUI-DESIGN-3 §1.1 (D-N): the ONE badge table — llm-jev reads `llm+jev · verified`
+    expect([modeWord('jev-only'), modeWord('jev-on'), modeWord('jev-off'), modeWord('llm-jev')]).toEqual(['jev-only', 'jev+llm', 'llm-only', 'llm+jev · verified']);
+    for (const m of MODE_SETTING_VALUES) expect(modeWord(m)).toBe(MODE_BADGE_WORD[m]);
   });
 });

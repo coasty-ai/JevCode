@@ -15,7 +15,7 @@ disagree, the code wins and the disagreement is a bug; where the code deviates f
 
 | You type | What runs | Composer | Leaves with |
 | --- | --- | --- | --- |
-| `jevcode`, `jevcode chat`, or `jevcode run` with no task on a terminal | an interactive **session** in `jev-only` (the badge in the console's top edge): the composer opens first; nothing runs (and no money is spent) until Jev has read a submission as a task — a greeting or a question gets a reply, not a run | Ink composer | `/exit`, Ctrl-D ×2, Ctrl-C ×2 while idle → exit 0 (`--exit-code last-run` returns the last run's code instead) |
+| `jevcode`, `jevcode chat`, or `jevcode run` with no task on a terminal | an interactive **session** in the default mode (`llm+jev · verified`, the badge in the console's top edge; `jev-only` with `--mode jev-only` or a `mode` row): the composer opens first under the resting wordmark; nothing runs (and no money is spent) until Jev has read a submission as a task — a greeting or a question gets a reply, not a run | Ink composer | `/exit`, Ctrl-D ×2, Ctrl-C ×2 while idle → exit 0 (`--exit-code last-run` returns the last run's code instead) |
 | `jevcode run "<task>"`, `--task-file <path>`, `--resume <id\|title>`, `-c` | **one-shot**: one run, started right after `run:ready`; the composer is mounted for steering only | Ink (Enter = steer while live) | the run's exit code (table at the end) |
 | `jevcode [chat] --plain` on a terminal | the same session over a plain `> ` readline prompt: no panes, no colours, the same slash commands | `node:readline` | as a session; Ctrl-C and EOF follow the same matrix (below) |
 | a pipe, `CI`, `TERM=dumb`, `--no-input` | one run with the plain line renderer, no composer; the task comes from argv, `--task-file` or stdin; every prompt takes its safe default (key wizard → the fix block and exit 2, trust → instruction files skipped, follow-up over the session cap → silent clamp, a secret in the task → refused with exit 2, a review → declined) | none | the run's exit code |
@@ -25,21 +25,26 @@ disagree, the code wins and the disagreement is a bug; where the code deviates f
 reads its task like `run` and exits at `run:end`. The interactive rule is `stdin.isTTY && stdout.isTTY && !CI &&
 TERM !== 'dumb' && !--plain && !--json && !--no-input` (`CI` / `CONTINUOUS_INTEGRATION` set and not `0`/`false`).
 
-**Engine modes and the badge.** `jev-only` (the default: no generating LLM — code proposes candidate fixes, Jev
-decides, tests verify; one key; run cap $0.25, session cap $1.25), `jev-on` (Jev + LLM: the generator writes the code,
-Jev decides every step; $2.00 / $10.00) and `jev-off` (the generator alone, a bench condition). The mode is a setting —
-`--mode`, `JEVCODE_MODE`, `./.env`, the config file's `mode`, then the default — and a badge in every frame: `jev-only`
-· `jev+llm` · `llm-only` in the console's top edge (`╭─ jev-only ──── <dir> ─╮`), or leading the status left zone in
-the flat tier (`jev-only · idle`). `/mode` alone prints `mode jev-only (next run: jev-only)`; `/mode jev-on` (alias
-`/llm on`) sets the **next** run's mode (`mode jev+llm from the next run — Claude writes the code, Jev still decides
-every step (persist: jevcode config set mode jev-on)`; the badge reads `jev+llm · next run` until the run starts and
-promotes it) and, when no generator key is configured, opens the wizard's provider and generator-key steps inside the
-console (`jev+llm needs a generator. Pick the provider:`) — Ctrl-C there closes the wizard and keeps the mode (`mode
-stays jev-only — no generator key was saved`), it never exits. `/mode jev-only` (`/llm off`) switches back; `jevcode
-config set mode <m>` persists a mode.
-`/mode llm-jev` (badge `llm-jev`) is the fourth mode: the jev-only search with the generator writing candidate patches
-inside it (Jev localises, ranks and arbitrates; tests verify); it needs both keys, opens the same generator step when the
-generator key is missing, and takes the jev-on spend caps ($2.00 run / $10.00 session).
+**Engine modes and the badge.** `llm-jev` (the default since 2026-09-22, badge `llm+jev · verified`: the code model writes candidate patches inside the Jev-only search, tests verify, Jev arbitrates — docs/LLM-JEV-DESIGN.md), `jev-on` (badge `jev+llm`: the code model writes the code,
+Jev decides every step; one OpenRouter key serves both; run cap $2.00, session cap $10.00), `jev-only` (badge `jev-only`:
+no generating LLM — code proposes candidate fixes, Jev decides, tests verify; one Jev key; $0.25 / $1.25), `jev-off`
+(`llm-only`: the generator alone, a bench condition) and `llm-jev` (`llm+jev · verified`: the jev-only search with the
+generator writing candidate patches inside it — Jev localises, ranks and arbitrates, tests verify; the jev-on caps). The
+mode is a setting — `--mode`, `JEVCODE_MODE`, `./.env`, the config file's `mode`, then the default (`DEFAULT_MODE` in
+`src/config/defaults.ts`, the one constant every fallback reads; the badge words come from the one table
+`MODE_BADGE_WORD`) — and the **session follows it**: a round-2 `mode: "jev-only"` row keeps its session in jev-only
+after `applyConfig`, with the badge corrected within 100 ms of the first frame. The badge is in every frame: in the
+console's top edge (`╭─ jev+llm ──── <dir> ─╮`), or leading the status left zone in the flat tier (`jev+llm · idle`).
+`/mode` alone prints `mode jev+llm (default)` — or `mode <current> — next run: <next>[ (default)]` when a switch is
+pending; `/mode jev-only` (alias `/llm off`, or `/m jev-only`) sets the **next** run's mode (`mode jev-only from the next
+run — no generating LLM; code proposes, Jev decides, tests verify (persist: jevcode config set mode jev-only)`; the badge
+reads `jev-only · next run` until the run starts and promotes it); `/mode jev-on` (`/llm on`) switches back and, when no
+generator key is configured, opens the wizard's key step inside the console — Ctrl-C there closes the wizard and keeps
+the mode (`mode stays jev-only — no generator key was saved`), it never exits. `jevcode config set mode <m>` persists a
+choice. A keyed start whose mode resolves from the default and whose config file has no `mode` row prints
+`[setup] mode jev+llm (default) — caps $2.00 per run · $10.00 per session; /mode jev-only runs on Jev alone at $0.25 /
+$1.25; jevcode config set mode <m> keeps a choice` once (it writes `seen.defaultMode`, so a later flip of the default
+shows it once more).
 
 The first frame is drawn from the command line alone — before any configuration file, `.env`, the runs
 directory or git is touched — and it is frame 0 of the startup splash: the header item, the rule, the `J` column of
@@ -53,11 +58,20 @@ startup item is not emitted by the tree checked on 2026-09-21). The
 round-1 frame measured 82–87 ms on the child clock in the pty smoke and cold p95 110.4 ms in `jevcode perf` (gate
 < 300 ms); the round-2 numbers are in `docs/STATUS.md`, "Round 2".
 
-**The splash.** The wordmark (`JEVCODE` in seven 5-row block letters, `JEV` in the accent colour) is revealed left to
-right over 400 ms, shimmers once, fades over the next 250 ms and settles at 700 ms into the brand rule row `─── ◆
-jevcode 0.3.0 ───`, which stays the rule row until the first run replaces it with the Jev panel strip. It ticks through
-Ink's own animation timer at 50 ms (≤ 15 frames, never above the frame-rate gate), it never clears the screen or
-writes to the scrollback, and it dies on your first key — the next frame shows the character and no wordmark row — or
+**The wordmark.** The mark (`JEVCODE` in seven 5-row block letters, `JEV` in TypeSafe pink, `CODE` dim) is revealed
+left to right over 400 ms, shimmers once and is held from 550 ms on — with the caption `◆ 0.4.0` two cells after the
+last `E` (at ≥ 73 columns) and the tagline `Decisions, not strings` on its first row at ≥ 104 columns. It **stays**: the
+mark is the pane slot's idle tenant at ≥ 21 rows and ≥ 64 columns, shown while the session is idle and while Jev reads
+a message, hidden while a run is live or a panel, picker or review owns the slot, back under the strip after `run:end`
+(at once at ≥ 24 rows; at 21–23 rows on your first key after the end, so the epilogue stays on screen); `/panel off`,
+Esc on an empty draft and Alt+J bring it back. Its sweep — the splash's own 6-cell band — loops left to right at 4 fps
+(16 written frames per 4 s pass, 6 s of rest: one pass per 10 s while you are attentive, per 30 s after a minute without
+a key, asleep after ten minutes; never within 3 s of a key, and a reply calms it rather than waking it). Colour only:
+letter cells inside the band take the pale `sweep` tint; the caption and tagline never do. `ui.wordmark` (`jevcode config
+set ui.wordmark sweep|static|off`, `JEVCODE_WORDMARK`) is the escape hatch — `static` keeps the mark without the sweep
+(the default over SSH), `off` restores the round-2 brand row `─── ◆ jevcode 0.4.0 ───`. The reveal ticks through Ink's
+own animation timer at 50 ms (≤ 15 frames, never above the frame-rate gate), never clears the screen or writes to the
+scrollback, and a key **completes** it — the next frame shows the character and the whole resting mark — or
 on a run start or any overlay. `--no-animation` / `JEVCODE_REDUCED_MOTION`, `--screen-reader` and `--plain` have no
 splash (the brand row from the first frame); below 64 columns only the one-line brand row pulses.
 
@@ -116,6 +130,28 @@ cycle its tabs); `d`, `p`, `t`, `s` are never keys, so the first letter of a tas
 Jev panel, `Alt+Shift+J` opens it fully, `Alt+D` / `Alt+P` / `Alt+T` / `Alt+S` pick a tab (a second press on the same
 tab collapses the panel).
 
+**Shortcut aliases (TUI-DESIGN-3 §4.1, D-K).** Every command keeps its name; 21 short forms join it — an exact alias runs
+its owner on Enter and pins it to the top palette row, the palette shows an alias column and a dim ` → /owner` ghost
+while you type, Tab completes arguments and never wipes one you typed, and an error you cannot fix by editing
+(`needs a live run`, `runs when the run is idle`, `not available in --plain`) clears the draft while a fixable one keeps
+it. No one-letter alias exists for a command whose Enter destroys state without a confirm (`/abort`, `/exit`, `/new`).
+
+| Command | Aliases | Command | Aliases |
+| --- | --- | --- | --- |
+| `/help` | `h` | `/panel` | `p` |
+| `/mode` | `m` | `/plan` | `pl` |
+| `/model` | `ml` | `/diff` | `d` |
+| `/cost` | `c` | `/undo` | `u` |
+| `/status` | `s` | `/theme` | `t` |
+| `/resume` | `r`, `sessions`, `continue` | `/login` | `l` |
+| `/new` | `nw` | `/budget` | `b` |
+| `/exit` | `q`, `quit` | `/jev` | `j` |
+| `/transcript` | `tr` | `/copy` | `cp` |
+| `/config` | `cf` | `/rewind` | `rw` |
+| `/why` | `w` | `/decisions` | `dc` |
+
+`docs/COMMANDS.md` and `man jevcode` list every command with its aliases (`node scripts/gen-docs.mjs` regenerates them).
+
 ## The conversation
 
 Every line you submit that is not a `/command` becomes a `[you] <text>` item in the transcript (one item per line,
@@ -127,15 +163,15 @@ ms on the TypeSafe endpoint). While the request is in flight the status word is 
 composer reads `(thinking…)`; the very first frame after Enter — the one that commits the `[you]` bubble — still shows
 `starting` and the steer placeholder `Type to steer the next step…  Esc pauses`, so with a reply faster than one frame
 (the 0 ms mock of the pty smoke) that is the only frame you see (checked 2026-09-21 on the 13:4xZ bundle: a 400 ms mock
-delay shows `starting` once, then `⠋ thinking` … `⠸ thinking` with `(thinking…)`; the perf `intake` series at a 150 ms
-delay saw the word in 20 of 20 messages — deviation 4 in `docs/STATUS.md`, "Round 2"). What follows depends on Jev's
+delay shows `▓ thinking` with `(thinking…)` from the first frame after Enter — the `starting` word never shows beside a
+steer placeholder (TUI-DESIGN-3 P7). What follows depends on Jev's
 answer:
 
 | Jev reads it as | You get | Money |
 | --- | --- | --- |
 | a greeting, thanks, goodbye, small talk | one `[jevcode]` reply from a 14-row catalogue — `hi` → `Hi. I'm ready when you are — describe a change you want in <dir>, or ask what I can do.`; `thanks` → `You're welcome. Anything else on <dir>?`; `bye` → `Bye for now. /exit closes the session; runs are saved under ~/.jevcode/runs.`; `ok` → `Okay. Whenever you're ready.` … | the intake only |
-| a question about JevCode itself (what it can do, its mode, keys, cost, commands, the last run, the tests, the sandbox, undo, the Jev provider) | one `[jevcode]` item per selected fact, most relevant first (≤ 4): `JevCode is a coding agent where Jev, a decision model, makes every decision: …`, `Mode: jev-only — no generating LLM; code proposes, Jev decides, tests verify.`, `Switch with /mode jev-on (alias /llm on) or /mode jev-only; it applies to the next run. …`, `Keys: Jev through typesafe (TYPESAFE_API_KEY, never printed); generator: none — needed for jev+llm; /mode jev-on asks for one.`, `Session spend: $0.00 of $1.25 (0 runs, 3 chat messages). /cost has the breakdown.` … | the intake only |
-| a question about the code in the workspace | in `jev-only`: `⠹ looking`, one more Jev request over up to 60 candidate files, then `[jevcode] In jev-only mode I can point at code but not explain it — Jev decides, it doesn't write. Likely places:` with up to three `path:line  text` rows per file and `Switch with /mode jev-on to get an explanation from the LLM, or describe the change and I'll make it.` (or `I couldn't find a file in <dir> that clearly answers that (looked at <n> candidates). …`); in `jev+llm`: `⠹ replying`, one generator turn with no tools, streamed into the live region, then one `[jevcode]` item per line | the lookup ≈ $0.00005; the LLM turn at the generator's price, refused before sending when it would pass the session cap or the model is unpriced |
+| a question about JevCode itself (what it can do, its mode, keys, cost, commands, the last run, the tests, the sandbox, undo, the Jev provider) | one `[jevcode]` item per selected fact, most relevant first (≤ 4): `JevCode is a coding agent where Jev, a decision model, makes every decision: …`, `Mode: jev+llm — the code model writes the code, Jev decides every step.`, `Switch with /mode jev-only (Jev alone, $0.25 run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.`, `Keys: Jev through openrouter (OPENROUTER_API_KEY, never printed); generator: openrouter …`, `Session spend: $0.00 of $10.00 (0 runs, 3 chat messages). /cost has the breakdown.` … | the intake only |
+| a question about the code in the workspace | in `jev-only`: `▓ looking`, one more Jev request over up to 60 candidate files, then `[jevcode] In jev-only mode I can point at code but not explain it — Jev decides, it doesn't write. Likely places:` with up to three `path:line  text` rows per file and `Switch with /mode jev-on to get an explanation from the LLM, or describe the change and I'll make it.` (or `I couldn't find a file in <dir> that clearly answers that (looked at <n> candidates). …`); in `jev+llm` (the default): `▓ replying`, one generator turn with no tools, streamed into the live region, then one `[jevcode]` item per line | the lookup ≈ $0.00005; the LLM turn at the generator's price, refused before sending when it would pass the session cap or the model is unpriced |
 | a task (`coding_task` at Jev's own p ≥ 0.6, paired Noul ≥ 0.5) | today's run: `[run] start …`, one `[step N]` line per step | the run |
 | anything weaker or `ambiguous` (`the date parsing`, `tests?`) | the card `╭─ run this as a task? ─╮` / `[y] run it   [n] just chatting   (Esc keeps the text; Enter does nothing)` (one row in the flat tier; `run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text >` in `--plain`); status word `asking`. `y` runs it, `n` takes the best chat reading from the same answers (no new request), Esc or Ctrl-C puts the text back into the composer with `[jevcode] Okay — edit it and press Enter, or ask me something.`; on a pipe the answer is always keep | nothing until you answer |
 
@@ -269,9 +305,19 @@ same line); in screen-reader mode the choices are numbered `1 approve  2 decline
 
 ## The transcript, the Jev panel, the status bar and toasts
 
-**The transcript** is a conversation: `[you]` items in the `you` colour with a dim label, `[jevcode]` items with a
-dim label and a hanging indent when they wrap, a spacer row above each turn and above `[run] start` / `[run] end`, and
-— by default — **one line per step**: `[step 2] edit kth.py "guard k > len" · risk 0.12 ok · 1 file · tests
+**The transcript** is a conversation, laid out with a 10-cell label gutter (TUI-DESIGN-3 §5.1, D-L): every label is
+right-aligned in the nine cells before column 10 — `[jevcode]` and `[sandbox]` flush, `[you]`, `[run]`, `[ui]`, `[step 7]`
+padded on the left (`[step 100]` touches the edge; steps beyond push the body by the excess) — so every body starts at
+column 10 and its wrapped rows hang there. `[jevcode]` labels are the primary pink and `[you]` labels the secondary,
+both bold; bodies stay the terminal's default colour (amber for warnings and `[review]`, red for errors and `[block]`,
+dim only for the `[run] git …` row) — the label is the bubble (D-O). A body wraps at ` · ` before it wraps at spaces (a
+continuation row leads with `· `), and a final token narrower than 4 cells never sits alone: `[run] end … (gen $0.000,
+jev $0.025)` / `exit 4`. TUI-only detail rows (the epilogue's `run` / `files` / `resume` / `report` table, `/cost`, `/jev`)
+indent under the body column and hang under their value; a blank row precedes a `[you]` turn, the first `[jevcode]` of a
+turn, `[run] start` / `end` and a `[ui]` block. None of this changes an item's text — `transcript.log`, `--plain` and the
+TUI still print the same line, and the round-3 identity check (`test/unit/tui/round2-transcript.test.tsx`,
+`round3-polish-app.test.tsx`) re-joins the rows by stripping their leading spaces. By default the transcript shows
+**one line per step**: `[step 2] edit kth.py "guard k > len" · risk 0.12 ok · 1 file · tests
 40p/1f/0e · judge 0.52 · 1.6s · $0.0006` (action and verdict first; `declined` / `failed` / `blocked` as the outcome;
 `interrupted at <stage> (<reason>)` for a step an abort cut; `jev 1.4k` tokens when the step carries no cost). This
 `compact` view hides the stage items (`intent`, `context`, `proposal`, `risk`, `outcome`, `judge`, `plan`) and
@@ -322,16 +368,21 @@ the newest 50 runs or 32 MB of this workspace's `decisions.jsonl` and `steps.jso
 written there) are the other inspection blocks; `jevcode why <run> <step> <ref>` and `jevcode calibration` print the
 same blocks from the shell.
 
-**Status bar.** In the boxed tier it is the console's status compartment (`│ idle … step 0/–  sess $0.00/1.25 ok
+**Status bar.** In the boxed tier it is the console's status compartment (`│ idle … step 0/–  sess $0.00/10.00 ok
 ? help │`, laid out at the terminal width minus 4, so the git zone and the sparkline appear from 104 terminal
-columns); in the flat tier the round-1 status row with the badge in front (`jev-only · idle …`). Left: the mode word
-or spinner and stage (`idle`, `idle exit N`, `starting` (also the bubble frame right after Enter), `⠹ thinking` /
-`⠹ looking` / `⠹ replying` while a message is read, looked up or answered (`• thinking` under reduced motion), `asking`
-under the intake card, `⠹ propose`,
+columns); in the flat tier the round-1 status row with the badge in front (`jev+llm · idle …`). Colour goes to the
+left word and the meter words only, never the whole row (D-P): the spinner glyph in the accent pink, `idle exit 0` green
+and `idle exit 4` amber once a run ended, `high` amber and `critical` / `over` red on the meters, `⚠ secret?` amber, a
+toast in its level's colour and dim for its last second. Left: the mode word
+or spinner and stage (`idle`, `idle exit N` (also right after Enter, until Jev's phase word takes over — `starting`
+never shows beside a steer placeholder), `▓ thinking` /
+`▓ looking` / `▓ replying` while a message is read, looked up or answered (the shade pulse `░ ▒ ▓ █ ▓ ▒` at 8 fps; `◆ thinking` under reduced motion), `asking`
+under the intake card, `▓ propose`,
 `propose [synth]` in jev-only, `review`, `review pending…`, `setup` under the wizard, `pausing after step N`,
 `paused: <reason>`, `retrying 2/3`, `offline`, `disk ×N`, `aborting`, `palette`, `picker`, `still waiting` after 45 s
 in one stage) plus the badges `!n` (unacknowledged warnings — Ctrl+O or `/errors` clears it), `sandbox: none`,
-`no-net`, `⚠ secret?`. Centre: the session title or run id when the width allows. Right: `step 7/40 4m12s · run
+`no-net`, `⚠ secret?`. Centre: the `/rename` title when the width allows — never the run id (it lives in `[run] start` and
+the epilogue's `run` row). Right: `step 7/40 4m12s · run
 $1.60/2.00 high · sess $4.11/10.00 ok`, the git zone `⎇ main ↑2 · 3~ 1?` and the Jev latency sparkline `jev
 ▂▃▂▅▂▂▇▃▂▁▂▃`, then a short help cell (`? help`, `Tab ⇥`, `Esc closes`; nothing under the intake card, whose row lists
 its keys). Meter words: `ok` (< 50 %), `half`, `high` (≥ 80 %), `critical` (≥ 95 %), `over`, `uncapped` (session cap
@@ -339,8 +390,17 @@ its keys). Meter words: `ok` (< 50 %), `half`, `high` (≥ 80 %), `critical` (�
 `intake pending: y n · Esc keeps the text`) replace the left zone and, except for the idle Ctrl-C/Ctrl-D/Esc hints and
 the thinking toasts, also land in the transcript as `[ui]` items.
 
-**Colour.** Truecolor and 256-colour palettes are picked from `COLORTERM`, `TERM_PROGRAM` and `TERM` (`FORCE_COLOR`
-overrides; never a terminal query) with the round-1 ANSI-16 names as the fallback; every coloured word keeps its
+**Colour.** The default theme (`dark`) is TypeSafe's pink, measured on typesafe.ai on 2026-09-21 (TUI-DESIGN-3 §2,
+D-H): the two pinks — `#f386a1` (cell 211) marks JevCode and Jev (the brand row, the wordmark letters, the badge, the
+`[jevcode]` label, Jev's `[chosen]`, the idle `›`, the spinner), `#d45bb6` (cell 169) marks what is live or selected (the
+console edges during a run, your `[you]` label, the palette cursor); red, amber and green keep their meanings and pink
+is never a semantic colour, so every pink surface keeps its text marker. `light` darkens the pinks (`#be185d` / `#831843`)
+and fixes the inherited red and green on white; `daltonized` keeps the red ↔ blue swap; `ansi` is the 16-colour twin
+(`magentaBright` / `magenta`). A terminal that announces a white background through `COLORFGBG` (iTerm2, Konsole, rxvt,
+mintty: background index 7 or 15) gets `light` by default unless `--theme`, `JEVCODE_THEME` or `ui.theme` says otherwise;
+Terminal.app announces nothing, so its white Basic profile wants `jevcode config set ui.theme light` (or `/theme light`
+for the session). Truecolor and 256-colour palettes are picked from `COLORTERM`, `TERM_PROGRAM` and `TERM` (`FORCE_COLOR`
+overrides; never a terminal query) with the ANSI-16 names as the fallback; every coloured word keeps its
 textual marker (`[you]`, the badge word, the box glyphs), so `--no-color`, `NO_COLOR`, `TERM=dumb` and `--theme ansi`
 read the same. `--ascii` draws the console and cards with `+ - |`, the prompt as `> `, the panel chevrons as `> v`,
 the wordmark in `#`.
@@ -393,9 +453,9 @@ follow-up has its own run cap and shares the session cap.
 
 ## Money
 
-Two caps: the **run cap** (`--spend-cap`, `limits.spendCapUsd`, default $0.25 under the default `jev-only` and $2.00
-under `jev-on`) and the **session cap** (`--session-spend-cap <usd|none>`, `session.spendCapUsd`, default 5 × the run
-cap, so $1.25 or $10.00). The session meter exists from startup and every chat message's intake request is charged to
+Two caps: the **run cap** (`--spend-cap`, `limits.spendCapUsd`, default $2.00 under the default `jev-on` and $0.25
+under `jev-only`) and the **session cap** (`--session-spend-cap <usd|none>`, `session.spendCapUsd`, default 5 × the run
+cap, so $10.00 or $1.25). The session meter exists from startup and every chat message's intake request is charged to
 it (`sess $0.00/1.25 ok` moves by about $0.00007 per greeting; a jev-only lookup ≈ $0.00005; an LLM turn at the
 generator's price); every run's meter is a child of it with cap `min(runCap, remaining)`, and the accumulated chat
 spend carries into the first run's totals. The status line shows both (`run $1.60/2.00 high  sess $4.11/10.00 ok`);
@@ -589,12 +649,12 @@ tests. The manual checklist at the end of the matrix is how a row gets verified.
 | --- | --- |
 | Every terminal | Shift+Enter is not a newline (it needs a keyboard protocol JevCode does not enable): use **Ctrl+J**, **Alt+Enter**, or a trailing `\` before Enter. Alt-b / Alt-f / Alt-d / Alt-y need the Option or Alt key to send Esc-prefixed chords. |
 | iTerm2 | *Profiles → Keys → Left Option key: Esc+* for the Alt chords. Notifications arrive through OSC 9 (BEL otherwise); OSC 52 clipboard writes need *General → Selection → Applications in terminal may access clipboard* and `--osc52` — `/copy` uses `pbcopy` first anyway. |
-| Terminal.app (macOS) | *Profiles → Keyboard → Use Option as Meta key*. No OSC 52 or OSC 9: `/copy` goes through `pbcopy`, notifications are BEL. |
+| Terminal.app (macOS) | *Profiles → Keyboard → Use Option as Meta key*. No OSC 52 or OSC 9: `/copy` goes through `pbcopy`, notifications are BEL. The default Basic profile is black on white and Terminal.app sets no `COLORFGBG`, so the pink theme cannot detect it: `jevcode config set ui.theme light` once (or `/theme light` for a session). |
 | VS Code integrated terminal | Alt chords work when `terminal.integrated.macOptionIsMeta` is on (macOS). OSC 52 works locally but not over Remote-SSH (native tool first). Without `TERM` the colour decision follows `FORCE_COLOR`. Huge pastes may drop characters in xterm.js: paste into a file and `@`-mention it instead. |
 | Ghostty, kitty, WezTerm | The kitty keyboard protocol is never requested, so their Shift+Enter still needs Ctrl+J or `\`+Enter. kitty gets OSC 99 notifications, the other two OSC 9. |
 | Alacritty, foot | Plain xterm-style keys; OSC 52 write supported; foot shows OSC 9 notifications, Alacritty falls back to BEL. |
 | tmux 3.4+ | Colours are limited to the 16 ANSI names inside tmux by design. For notifications and `--osc52` through tmux set `set -g allow-passthrough on` (and `set -g set-clipboard on` for the clipboard). A lone Esc waits 30 ms for an Alt chord; tmux's own `escape-time` adds to it, so set it low (`set -sg escape-time 10`). |
-| ssh / mosh | `SSH_TTY` or `SSH_CONNECTION` lowers the frame rate to 15 fps (`--fps` overrides). mosh does not pass OSC 52 or notifications; expect BEL only. |
+| ssh / mosh | `SSH_TTY` or `SSH_CONNECTION` lowers the frame rate to 15 fps (`--fps` overrides) and sets `ui.wordmark` to `static` (the resting mark without the sweep; `jevcode config set ui.wordmark sweep` overrides). mosh does not pass OSC 52 or notifications; expect BEL only. |
 | Linux console (`TERM=linux`), `TERM=dumb` | ASCII glyphs are selected automatically (`--ascii` / `JEVCODE_ASCII=0` override); `TERM=dumb` selects the plain renderer. |
 | Windows | Not tested. The design is ConPTY terminals with `--sandbox none` and sandboxed runs under WSL 2; the credentials file prints `(Windows: protected by your user profile ACL)` instead of being chmod'ed. |
 
@@ -602,7 +662,8 @@ tests. The manual checklist at the end of the matrix is how a row gets verified.
 replaces bars and the spinner with text, numbers every prompt (`Enter selection (1-N):`), turns notifications and
 reduced motion on, and implies `--plain` on a pipe (the design's opening item `[screen reader mode: on via …]` is not
 emitted by this tree — `docs/STATUS.md`, "Interactive TUI" deviations).
-`--no-animation` / `--reduced-motion` (`JEVCODE_REDUCED_MOTION`) uses a static `•` spinner with a 1 Hz clock.
+`--no-animation` / `--reduced-motion` (`JEVCODE_REDUCED_MOTION`) uses a static `◆` spinner with a 1 Hz clock, mounts the
+resting wordmark from frame 0 and runs no idle sweep.
 `--ascii` swaps every glyph (`─` → `-`, `✓ ✗` → `+ x`, `⎇` → `br`, bars → `#`). `--theme
 dark|light|daltonized|ansi` (`daltonized` swaps red and blue for review/block; `ansi` never dims); `/theme`
 changes it for new items. `--fps 5..30` and `--render-mode standard|incremental` are fixed at launch (flag > env >
@@ -614,8 +675,8 @@ wired — see `docs/STATUS.md` ("Interactive TUI", deviations).
 
 `--mock` runs a scripted generator and decider offline: the mock decider classifies chat messages by shape
 (`JEVCODE_MOCK_INTAKE=<kind>` forces the intake's answer, `JEVCODE_MOCK_JEV_MS=<ms>` delays it), and the scripted
-run trajectory is a generator trajectory, so a mocked *run* needs `--mode jev-on` (under the default `jev-only` the
-real synthesizer runs instead); `JEVCODE_MOCK_REVIEW_AT=<step>` puts that step in the review band so the card can be
+run trajectory is a generator trajectory, so a mocked *run* says `--mode jev-on` explicitly, whatever the default is (under
+`jev-only` the real synthesizer runs instead); `JEVCODE_MOCK_REVIEW_AT=<step>` puts that step in the review band so the card can be
 exercised. `sh test/pty/run-smoke.sh [scenario…]` drives the built bundle (`npm run build` first) through
 `scripts/pty/drive.exp` in a real pseudo-terminal across 36 scenarios — every child runs from its own workspace under
 an isolated `HOME` / `XDG_CONFIG_HOME` / `JEVCODE_HOME` with `JEVCODE_CONFIG` and every key variable unset, so neither

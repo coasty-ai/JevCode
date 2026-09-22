@@ -1,0 +1,70 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "accounts/fireworks/models/kimi-k3",
+      "object": "model",
+      "owned_by": "fireworks",
+      "created": 1784483409,
+      "kind": "HF_BASE_MODEL",
+      "supports_chat": true,
+      "supports_image_input": true,
+      "supports_tools": true,
+      "context_length": 1048576
+    },
+    {
+      "id": "accounts/fireworks/routers/kimi-k3-fast",
+      "object": "model",
+      "owned_by": "fireworks",
+      "created": 1784483409,
+      "kind": "HF_BASE_MODEL",
+      "supports_chat": true,
+      "supports_image_input": true,
+      "supports_tools": true,
+      "context_length": 1048576
+    },
+    {
+      "id": "accounts/fireworks/models/glm-5p3-flash",
+      "object": "model",
+      "owned_by": "fireworks",
+      "created": 1787754936,
+      "kind": "HF_BASE_MODEL",
+      "supports_chat": true,
+      "supports_image_input": true,
+      "supports_tools": true,
+      "context_length": 1048576
+    },
+    {
+      "id": "accounts/fireworks/models/gpt-oss-120b",
+      "object": "model",
+      "owned_by": "fireworks",
+      "created": 1754345600,
+      "kind": "HF_BASE_MODEL",
+      "supports_chat": true,
+      "supports_image_input": false,
+      "supports_tools": true,
+      "context_length": 131072
+    },
+    {
+      "id": "accounts/fireworks/models/qwen3p8-max",
+      "object": "model",
+      "owned_by": "fireworks",
+      "created": 1785949040,
+      "kind": "HF_BASE_MODEL",
+      "supports_chat": true,
+      "supports_image_input": true,
+      "supports_tools": true
+    },
+    {
+      "id": "accounts/fireworks/models/qwen3-embedding-8b",
+      "object": "model",
+      "owned_by": "fireworks",
+      "created": 1755707090,
+      "kind": "EMBEDDING_MODEL",
+      "supports_chat": true,
+      "supports_image_input": false,
+      "supports_tools": false,
+      "context_length": 40960
+    }
+  ]
+}
