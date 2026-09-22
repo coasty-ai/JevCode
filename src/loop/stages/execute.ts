@@ -7,10 +7,16 @@
 import type { ActionOutcome, ExecResult, KilledBy, Proposal, TestCommand, TestCounts } from '../../core/types.js';
 import { isBudgetError } from '../../errors.js';
 import { clampCommandTimeout } from '../budget.js';
+import { headTail } from '../../core/text.js';
 import { joinOutput } from '../window.js';
 import type { StageContext } from '../engine.js';
+import { parseOutputRef } from '../context/history.js';
+import { FILE_VIEW_MAX_CHARS, OUTPUT_READ_PREFIX } from '../context/limits.js';
 import { CONTEXT_MAX_FILE_BYTES, CONTEXT_MAX_FILES, CONTEXT_MAX_TOTAL_BYTES } from './context.js';
 import { testsAllPassed } from '../state.js';
+
+/** docs/COORDINATION-DESIGN.md §8.3: a `read` of `jevcode:outputs/step-<n>.txt` shows up to 32 KiB (head + tail beyond that). */
+const OUTPUT_READ_MAX_CHARS = FILE_VIEW_MAX_CHARS;
 
 export interface ExecuteStageResult {
   outcome: ActionOutcome;
@@ -66,6 +72,23 @@ export async function runExecuteStage(ctx: StageContext, proposal: Proposal): Pr
       let total = 0;
       const paths = a.paths.slice(0, CONTEXT_MAX_FILES);
       for (const p of paths) {
+        // docs/COORDINATION-DESIGN.md §8.3: `jevcode:outputs/step-<n>.txt` is served from the run dir, never from the workspace
+        if (p.startsWith(OUTPUT_READ_PREFIX)) {
+          const stored = parseOutputRef(p) === null ? null : await ctx.contextReads?.runOutput(p);
+          if (stored === null || stored === undefined) parts.push(`### ${p} — no stored output under this name`);
+          else {
+            const shown = stored.length > OUTPUT_READ_MAX_CHARS ? headTail(stored, OUTPUT_READ_MAX_CHARS - 8_192, 8_000) : stored;
+            total += shown.length;
+            parts.push(`### ${p} (${stored.length} chars${shown.length < stored.length ? ', head and tail shown' : ''})\n${shown}`);
+          }
+          continue;
+        }
+        // §8.4: a file already in view whose stat is unchanged costs no read and no new tokens — the line points at Files in view
+        const unchanged = await ctx.contextReads?.unchanged(p);
+        if (unchanged !== null && unchanged !== undefined) {
+          parts.push(`### ${p}\n${unchanged}`);
+          continue;
+        }
         const view = await ctx.workspace.read(p, CONTEXT_MAX_FILE_BYTES);
         if (total + view.content.length > CONTEXT_MAX_TOTAL_BYTES) {
           parts.push(`### ${p} (${view.bytes} bytes) — not shown: 60 KB read budget reached`);

@@ -2,11 +2,21 @@
  * Generator prompts (DESIGN.md §7, §13). One fixed system prompt per run and one user message
  * per step. The user message is O(plan + window + context), never O(transcript): every section
  * is bounded here and the total is clipped as a last resort.
+ *
+ * docs/COORDINATION-DESIGN.md §8 (the relaxed generator context): when `PromptInput.context` is given, the message carries
+ * `## Files in view` (fresh content of every file the generator read / edited, Jev's picks first in jev-on, de-duplicated by
+ * path), the tiered `## Recent steps` (the newest 2 outputs whole up to 32 KiB, 3–6 head+tail, 7–12 one line) and the rolling
+ * `## Summary`, filled in the §8.2 order under the model-aware budget: a section that does not fit shrinks to its floor
+ * before the next is added, and no clip is silent (every marker names the path to the full text, §8.5). Without `context`
+ * the message is byte-identical to before (the 4-entry window, Jev's context files) — the synth modes and older callers.
  */
 import { clip, headTail } from '../core/text.js';
 // TUI-DESIGN §8.6 (F7): the steer bounds are defined once, next to PendingDirective
 import { DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type { Candidate, ChoiceVerdict, EngineMode, FileView, Intent, IntentAnswer, Plan, ReplanDirective, SandboxLevel, WindowEntry } from '../core/types.js';
+import type { RenderedHistoryEntry } from '../loop/context/history.js';
+import { FILES_SHARE, HISTORY_SHARE, SUMMARY_MAX_CHARS } from '../loop/context/limits.js';
+import type { FilePin } from '../loop/context/types.js';
 
 export const PROMPT_LIMITS = {
   /** hard ceiling on one user message; sections are bounded individually well below it */
@@ -51,6 +61,32 @@ export interface PromptWorkspaceInfo {
   git: boolean;
 }
 
+/** §8.4: one file of `## Files in view` — fresh content from disk, ≤ 32 KiB, with why it is in view. */
+export interface PromptFileInView {
+  path: string;
+  /** the shown content; when `truncatedBytes > 0` the section adds the `…[N more bytes …; full file: <path>]` marker */
+  content: string;
+  bytes: number;
+  truncatedBytes: number;
+  pinnedBy: FilePin;
+  lastUsedStep: number;
+  /** dropped for the files byte budget before the prompt: listed by name with the recovery hint */
+  omitted: boolean;
+}
+
+/** §8.3 / §8.6 / §8.7: what the engine's context policy assembled for this step. */
+export interface PromptContextView {
+  /** most valuable first (pins human > jev > seed > edit > read, then most recently used) */
+  files: PromptFileInView[];
+  /** oldest first, tiers already assigned and outputs expanded */
+  history: RenderedHistoryEntry[];
+  /** the rolling summary text (≤ 3 KiB as written; clipped at 6 KiB here), null before the first compaction */
+  summary: string | null;
+  summaryAt: number | null;
+  /** §8.2 `contextBudgetChars` */
+  budgetChars: number;
+}
+
 export interface PromptInput {
   mode: EngineMode;
   step: number;
@@ -74,6 +110,8 @@ export interface PromptInput {
   humanDirectives?: readonly string[];
   /** TUI-DESIGN §15 item 11: @-mentioned files the human pinned for this task */
   pinnedFiles?: readonly string[];
+  /** docs/COORDINATION-DESIGN.md §8: the relaxed context view; absent → the legacy 4-entry message, byte-identical to before */
+  context?: PromptContextView;
 }
 
 export interface SystemPromptOptions {
@@ -82,6 +120,16 @@ export interface SystemPromptOptions {
   toolName: string;
   /** TUI-DESIGN §11.3 / §15 item 19: AGENTS.md text (≤ 32 KiB) appended as `## Project instructions`; generator only */
   instructions?: string;
+}
+
+/** What one build produced: the text, its size and the per-section chars behind the meter (§8.7 `/context`). */
+export interface PromptBuild {
+  text: string;
+  chars: number;
+  /** section name → chars, in render order */
+  sections: Record<string, number>;
+  /** a section was shrunk to its floor (or the last-resort clip fired) to fit the budget */
+  shrunk: boolean;
 }
 
 /** TUI-DESIGN §11.3 (D6): the instruction text never exceeds 32 KiB in the prompt, whatever the loader passed. */
@@ -196,7 +244,8 @@ function hintsSection(input: PromptInput): string | null {
   return ['## Notes from the harness', ...lines.map((l) => `- ${l}`)].join('\n');
 }
 
-function windowEntry(e: WindowEntry): string {
+/** The header lines of one step entry (everything but the output block). */
+function entryHeader(e: WindowEntry): string[] {
   const head = [`### step ${e.step}: ${e.action}`];
   const meta: string[] = [];
   if (e.intent) meta.push(`intent=${e.intent}`);
@@ -217,6 +266,11 @@ function windowEntry(e: WindowEntry): string {
   if (e.reason) head.push(`reason: ${clip(e.reason, PROMPT_LIMITS.reasonChars)}`);
   if (e.shownFiles.length > 0) head.push(`shown files: ${e.shownFiles.slice(0, 20).join(', ')}${e.shownFiles.length > 20 ? ', …' : ''}`);
   for (const n of e.notes.slice(0, 8)) head.push(`note: ${clip(n, PROMPT_LIMITS.noteChars)}`);
+  return head;
+}
+
+function windowEntry(e: WindowEntry): string {
+  const head = entryHeader(e);
   if (e.output !== undefined && e.output.length > 0) head.push('output:\n```\n' + headTail(e.output, 400, 200) + '\n```');
   return head.join('\n');
 }
@@ -266,8 +320,125 @@ function candidateSection(candidates: Candidate[]): string {
   return lines.join('\n');
 }
 
-/** One user message per step (§7 layout; §13 omits the Jev sections and lists candidates). */
-export function buildUserMessage(input: PromptInput): string {
+// ---------------------------------------------------------------------------------------
+// docs/COORDINATION-DESIGN.md §8: the relaxed context sections
+// ---------------------------------------------------------------------------------------
+
+/** How much the fill order (§8.2) has shrunk: 0 = everything, 1 = files at their floor, 2 = history all one-liners, 3 = no summary. */
+type ShrinkLevel = 0 | 1 | 2 | 3;
+
+const PIN_LABEL: Readonly<Record<FilePin, string>> = { read: 'you read it', edit: 'you edited it', human: 'pinned by the human', jev: 'selected by Jev', seed: 'carried from the parent run' };
+
+function whyInView(f: PromptFileInView): string {
+  const when = f.lastUsedStep > 0 ? ` at step ${f.lastUsedStep}` : '';
+  return `${PIN_LABEL[f.pinnedBy]}${when}`;
+}
+
+/** §8.5: a clipped file names itself as the recovery path. */
+function fileBlock(path: string, bytes: number, why: string, content: string, truncatedBytes: number): string {
+  const marker = truncatedBytes > 0 ? `\n…[${truncatedBytes} more bytes not shown of ${bytes}; full file: ${path}]…` : '';
+  return `### ${path} (${bytes} bytes · ${why})\n\`\`\`\n${content}${marker}\n\`\`\``;
+}
+
+function fileOmitted(path: string, bytes: number, why: string, reason: string): string {
+  return `### ${path} (${bytes} bytes · ${why}) — not shown (${reason}); \`read\` it if you need it`;
+}
+
+/**
+ * §8.4 / §8.8: `## Files in view` — in jev-on Jev's picks first (their content already bounded by the context stage), then the
+ * cache entries not already present, de-duplicated by path, within FILES_SHARE of the budget. Beyond the floor (level ≥ 1) only
+ * Jev's picks carry content; every other file is listed by name with the `read` hint — never dropped silently.
+ */
+function filesInViewSection(input: PromptInput, ctx: PromptContextView, level: ShrinkLevel): string | null {
+  const jevFiles = input.mode === 'jev-on' ? input.contextFiles.slice(0, PROMPT_LIMITS.contextFiles) : [];
+  if (jevFiles.length === 0 && ctx.files.length === 0) {
+    return input.mode === 'jev-on' ? '## Files in view\n(none; use a `read` action if you need file contents)' : null;
+  }
+  const cap = Math.floor(ctx.budgetChars * FILES_SHARE);
+  const lines = ['## Files in view'];
+  const seen = new Set<string>();
+  let total = 0;
+  for (const f of jevFiles) {
+    if (seen.has(f.path)) continue;
+    seen.add(f.path);
+    let content = f.content;
+    if (content.length > PROMPT_LIMITS.contextFileBytes) content = content.slice(0, PROMPT_LIMITS.contextFileBytes);
+    const truncated = f.truncatedBytes + (f.content.length - content.length);
+    if (total + content.length > cap) {
+      lines.push(fileOmitted(f.path, f.bytes, PIN_LABEL.jev, 'files budget'));
+      continue;
+    }
+    total += content.length;
+    lines.push(fileBlock(f.path, f.bytes, PIN_LABEL.jev, content, truncated));
+  }
+  for (const f of ctx.files) {
+    if (seen.has(f.path)) continue;
+    seen.add(f.path);
+    const why = whyInView(f);
+    if (f.omitted || level >= 1) {
+      lines.push(fileOmitted(f.path, f.bytes, why, f.omitted ? 'files budget' : 'prompt budget'));
+      continue;
+    }
+    if (total + f.content.length > cap) {
+      lines.push(fileOmitted(f.path, f.bytes, why, 'files budget'));
+      continue;
+    }
+    total += f.content.length;
+    lines.push(fileBlock(f.path, f.bytes, why, f.content, f.truncatedBytes));
+  }
+  return lines.join('\n');
+}
+
+function tieredEntry(r: RenderedHistoryEntry, asLine: boolean): string {
+  if (asLine || r.tier === 'line' || (r.output === null && r.entry.judge === undefined && r.entry.notes.length === 0 && r.entry.shownFiles.length === 0)) return `- ${r.line}`;
+  const head = entryHeader(r.entry);
+  if (r.output !== null && r.output.length > 0) head.push('output:\n```\n' + r.output + '\n```');
+  return head.join('\n');
+}
+
+/**
+ * §8.3: `## Recent steps` tiered, oldest first, within HISTORY_SHARE of the budget: when the rendered section is too large the
+ * oldest expanded entries demote to one-liners until it fits (their pointer names the full text); level ≥ 2 = all one-liners.
+ */
+function recentStepsSection(ctx: PromptContextView, level: ShrinkLevel): string {
+  const items = ctx.history;
+  const header = `## Recent steps (last ${items.length}, oldest first)`;
+  if (items.length === 0) return `${header}\n(this is the first step)`;
+  const cap = Math.floor(ctx.budgetChars * HISTORY_SHARE);
+  let demoted = level >= 2 ? items.length : 0;
+  for (;;) {
+    const body = items.map((r, i) => tieredEntry(r, i < demoted)).join('\n');
+    if (body.length <= cap || demoted >= items.length) return `${header}\n${body}`;
+    demoted += 1;
+  }
+}
+
+function summarySection(ctx: PromptContextView, level: ShrinkLevel): string | null {
+  if (ctx.summary === null || ctx.summary.length === 0 || level >= 3) return null;
+  const at = ctx.summaryAt !== null ? ` (rolling; compacted at step ${ctx.summaryAt})` : ' (rolling)';
+  return `## Summary${at}\n${clip(ctx.summary, SUMMARY_MAX_CHARS)}`;
+}
+
+function replySection(toolName: string): string {
+  return `## Your reply\nCall \`${toolName}\` once with { goal, action, plan } (or reply with exactly one fenced \`\`\`json block of that shape). One action only.`;
+}
+
+function sectionName(text: string): string {
+  const m = /^(?:# Step \d+\n\n)?## ([^\n(]+)/.exec(text);
+  return m?.[1]?.trim() ?? 'other';
+}
+
+function measure(sections: readonly string[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const s of sections) {
+    const name = sectionName(s);
+    out[name] = (out[name] ?? 0) + s.length;
+  }
+  return out;
+}
+
+/** The legacy message (no context view): byte-identical to what the engine sent before §8 landed. */
+function assembleLegacy(input: PromptInput): string[] {
   const sections: string[] = [];
   sections.push(`# Step ${input.step}\n\n## Task\n${clip(input.task, PROMPT_LIMITS.taskChars)}`);
   sections.push(planSection(input.plan));
@@ -279,11 +450,60 @@ export function buildUserMessage(input: PromptInput): string {
   if (input.mode === 'jev-on') sections.push(contextSection(input.contextFiles));
   else sections.push(candidateSection(input.candidates ?? []));
   sections.push(windowSection(input.window));
-  sections.push(
-    `## Your reply\nCall \`${input.toolName}\` once with { goal, action, plan } (or reply with exactly one fenced \`\`\`json block of that shape). One action only.`,
-  );
-  const text = sections.join('\n\n');
-  return text.length > PROMPT_LIMITS.maxUserMessageChars ? headTail(text, PROMPT_LIMITS.maxUserMessageChars - 2_000, 1_500) : text;
+  sections.push(replySection(input.toolName));
+  return sections;
+}
+
+/** §8.2 fill order at one shrink level: task → plan → directives → summary → files in view → candidates → recent steps. */
+function assembleRelaxed(input: PromptInput, ctx: PromptContextView, level: ShrinkLevel): string[] {
+  const sections: string[] = [];
+  sections.push(`# Step ${input.step}\n\n## Task\n${clip(input.task, PROMPT_LIMITS.taskChars)}`);
+  sections.push(planSection(input.plan));
+  const intent = intentSection(input);
+  if (intent) sections.push(intent);
+  const hints = hintsSection(input);
+  if (hints) sections.push(hints);
+  sections.push(workspaceSection(input.workspace));
+  const summary = summarySection(ctx, level);
+  if (summary) sections.push(summary);
+  const files = filesInViewSection(input, ctx, level);
+  if (files) sections.push(files);
+  if (input.mode !== 'jev-on') sections.push(candidateSection(input.candidates ?? []));
+  sections.push(recentStepsSection(ctx, level));
+  sections.push(replySection(input.toolName));
+  return sections;
+}
+
+/** One user message per step (§7 layout; §13 omits the Jev sections and lists candidates) with the facts behind the meter. */
+export function buildPrompt(input: PromptInput): PromptBuild {
+  const ctx = input.context;
+  if (ctx === undefined) {
+    const sections = assembleLegacy(input);
+    const joined = sections.join('\n\n');
+    const clipped = joined.length > PROMPT_LIMITS.maxUserMessageChars;
+    const text = clipped ? headTail(joined, PROMPT_LIMITS.maxUserMessageChars - 2_000, 1_500) : joined;
+    return { text, chars: text.length, sections: measure(sections), shrunk: clipped };
+  }
+  const budget = Math.max(1, Math.floor(ctx.budgetChars));
+  for (const level of [0, 1, 2, 3] as const) {
+    const sections = assembleRelaxed(input, ctx, level);
+    const joined = sections.join('\n\n');
+    if (joined.length <= budget) return { text: joined, chars: joined.length, sections: measure(sections), shrunk: level > 0 };
+    if (level === 3) {
+      // the last-resort safety net (§8.2): head + tail of the whole message, marked — and inside the budget at any budget
+      const tail = Math.min(1_500, Math.floor(budget / 4));
+      const text = headTail(joined, Math.max(1, budget - tail - 200), tail);
+      return { text, chars: text.length, sections: measure(sections), shrunk: true };
+    }
+  }
+  /* unreachable: the loop returns at level 3 */
+  const text = assembleRelaxed(input, ctx, 3).join('\n\n');
+  return { text, chars: text.length, sections: {}, shrunk: true };
+}
+
+/** One user message per step (§7 layout; §13 omits the Jev sections and lists candidates). */
+export function buildUserMessage(input: PromptInput): string {
+  return buildPrompt(input).text;
 }
 
 /** Follow-up user message after a malformed reply (§6 stage table): reason plus the tail of the raw text. */

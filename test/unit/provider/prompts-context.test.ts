@@ -1,0 +1,155 @@
+/**
+ * The generator's relaxed message (docs/COORDINATION-DESIGN.md §8.2–§8.5, §8.8): `## Files in view`, the tiered
+ * `## Recent steps` and the rolling `## Summary`, filled in the §8.2 order inside the model-aware budget, with every clip
+ * naming its recovery path — plus the §8.9 gate: promptBuildMs p95 < 5 ms over a 12-step window and 60 KiB files.
+ */
+import { describe, expect, it } from 'vitest';
+import type { FileView, Plan } from '../../../src/core/types.js';
+import { buildHistoryEntry, expandHistory, needsOutputFile, outputRefFor, outputView, pushHistory } from '../../../src/loop/context/history.js';
+import { contextBudgetChars } from '../../../src/loop/context/limits.js';
+import type { HistoryEntry } from '../../../src/loop/context/types.js';
+import { buildWindowEntry } from '../../../src/loop/window.js';
+import { PROMPT_LIMITS, buildPrompt, buildUserMessage, type PromptContextView, type PromptFileInView, type PromptInput } from '../../../src/provider/prompts.js';
+
+const plan: Plan = { done: [], remaining: ['fix f'], unverified: [], openProblems: [], harnessProblems: [] };
+
+function input(over: Partial<PromptInput> = {}): PromptInput {
+  return {
+    mode: 'jev-off',
+    step: 13,
+    task: 'Fix f() in src/a.ts',
+    plan,
+    intent: null,
+    hints: {},
+    directive: null,
+    loopNotice: null,
+    window: [],
+    workspace: { changedFiles: [], resumed: false, testCommand: 'pytest -q', git: true },
+    contextFiles: [],
+    candidates: [],
+    toolName: 'propose_action',
+    ...over,
+  };
+}
+
+/** `n` steps whose outputs are `chars` long, tiers already assigned (what the engine's contextView hands over). */
+function history(n: number, chars: number) {
+  let h: HistoryEntry[] = [];
+  const texts = new Map<number, string>();
+  for (let step = 1; step <= n; step++) {
+    const out = `step ${step} output `.padEnd(chars, 'x');
+    texts.set(step, out);
+    const entry = buildWindowEntry({ step, intent: 'edit', action: `run cmd-${step}`, outcome: { status: 'executed', summary: 'ok', changedFiles: [] }, output: out, judge: null, completion: null, shownFiles: [`src/f${step}.ts`], notes: [], error: null });
+    h = pushHistory(h, buildHistoryEntry(entry, out, needsOutputFile(out) ? outputRefFor(step) : null));
+  }
+  return expandHistory(h, { view: (s) => (texts.has(s) ? outputView(texts.get(s)!) : null) });
+}
+
+function file(path: string, chars: number, pinnedBy: PromptFileInView['pinnedBy'] = 'read', truncatedBytes = 0): PromptFileInView {
+  return { path, content: 'c'.repeat(chars), bytes: chars + truncatedBytes, truncatedBytes, pinnedBy, lastUsedStep: 4, omitted: false };
+}
+
+function context(over: Partial<PromptContextView> = {}): PromptContextView {
+  return { files: [], history: [], summary: null, summaryAt: null, budgetChars: contextBudgetChars(), ...over };
+}
+
+describe('§8.8 the relaxed user message', () => {
+  it('carries Files in view, the tiered Recent steps and the Summary, and says why each file is there', () => {
+    const ctx = context({
+      files: [file('src/a.ts', 500, 'edit'), file('notes.md', 200, 'human'), file('big.ts', 32 * 1024, 'read', 40_000)],
+      history: history(12, 5_000),
+      summary: 'Objective:\n- Fix f()',
+      summaryAt: 8,
+    });
+    const text = buildUserMessage(input({ context: ctx }));
+    expect(text).toContain('## Summary (rolling; compacted at step 8)');
+    expect(text).toContain('## Files in view');
+    expect(text).toContain('### src/a.ts (500 bytes · you edited it at step 4)');
+    expect(text).toContain('### notes.md (200 bytes · pinned by the human at step 4)');
+    expect(text).toContain('## Recent steps (last 12, oldest first)');
+    // the §8.2 fill order: summary before files before recent steps
+    expect(text.indexOf('## Summary')).toBeLessThan(text.indexOf('## Files in view'));
+    expect(text.indexOf('## Files in view')).toBeLessThan(text.indexOf('## Recent steps'));
+    // no clip is silent: the truncated file names itself, the demoted steps name their file
+    expect(text).toContain('…[40000 more bytes not shown of 72768; full file: big.ts]…');
+    expect(text).toContain('full text: read jevcode:outputs/step-1.txt');
+    // the two newest outputs are whole
+    expect(text).toContain(`step 12 output `.padEnd(5_000, 'x'));
+    expect(text).toContain(`step 11 output `.padEnd(5_000, 'x'));
+  });
+
+  it('jev-on puts Jev’s picks first and de-duplicates by path (§8.8 first column)', () => {
+    const jev: FileView = { path: 'src/a.ts', content: 'JEV VIEW', bytes: 8, truncatedBytes: 0 };
+    const text = buildUserMessage(input({ mode: 'jev-on', contextFiles: [jev], context: context({ files: [file('src/a.ts', 500), file('src/b.ts', 500)] }) }));
+    const section = text.slice(text.indexOf('## Files in view'));
+    expect(section.indexOf('### src/a.ts')).toBeLessThan(section.indexOf('### src/b.ts'));
+    expect(section).toContain('### src/a.ts (8 bytes · selected by Jev)');
+    expect(section.match(/### src\/a\.ts/g)).toHaveLength(1);
+    expect(section).toContain('JEV VIEW');
+  });
+
+  it('a file the byte budget dropped is listed by name with the read hint, never removed', () => {
+    const dropped: PromptFileInView = { ...file('src/huge.ts', 0), omitted: true, bytes: 900_000 };
+    const text = buildUserMessage(input({ context: context({ files: [dropped] }) }));
+    expect(text).toContain('### src/huge.ts (900000 bytes · you read it at step 4) — not shown (files budget); `read` it if you need it');
+  });
+
+  it('shrinks in the §8.2 order under a small budget and never exceeds it', () => {
+    const ctx = context({ files: [file('src/a.ts', 20_000), file('src/b.ts', 20_000)], history: history(12, 5_000), summary: 'S'.repeat(3_000), summaryAt: 8, budgetChars: 30_000 });
+    const built = buildPrompt(input({ context: ctx }));
+    expect(built.chars).toBeLessThanOrEqual(30_000);
+    // the per-section caps (40 % files, 30 % history) shrink first, and the recovery hints survive
+    expect(built.text).toContain('`read` it if you need it');
+    expect(built.text).toContain('full text: read jevcode:outputs/step-1.txt');
+    expect(built.text).toContain('## Recent steps');
+    // the per-section measurement backs `/context`
+    expect(Object.keys(built.sections)).toContain('Files in view');
+    expect(Object.keys(built.sections)).toContain('Recent steps');
+    // past the floors the whole message is head+tail'ed, still inside the budget
+    const tiny = buildPrompt(input({ context: { ...ctx, budgetChars: 2_000 } }));
+    expect(tiny.chars).toBeLessThanOrEqual(2_000);
+    expect(tiny.shrunk).toBe(true);
+  });
+
+  it('without a context view the message is the legacy one, byte for byte (review finding 28)', () => {
+    const base = input({ window: [buildWindowEntry({ step: 1, intent: 'edit', action: 'edit src/a.ts', outcome: { status: 'executed', summary: 'ok', changedFiles: [] }, output: 'x'.repeat(2_000), judge: null, completion: null, shownFiles: [], notes: [], error: null })] });
+    const legacy = buildUserMessage(base);
+    expect(legacy).toContain('## Recent steps (last 4, oldest first)');
+    expect(legacy).not.toContain('## Files in view');
+    expect(legacy).not.toContain('## Summary');
+    expect(buildPrompt(base).text).toBe(legacy);
+    expect(buildPrompt(base).chars).toBe(legacy.length);
+    // the legacy ceiling is still the last-resort net, and the legacy path never reports a shrink below it
+    expect(buildPrompt(base).shrunk).toBe(false);
+    expect(buildPrompt(base).chars).toBeLessThanOrEqual(PROMPT_LIMITS.maxUserMessageChars);
+  });
+
+  it('an empty history and an empty cache degrade to one line each', () => {
+    const text = buildUserMessage(input({ context: context() }));
+    expect(text).toContain('## Recent steps (last 0, oldest first)\n(this is the first step)');
+    expect(text).not.toContain('## Files in view');
+    expect(buildUserMessage(input({ mode: 'jev-on', context: context() }))).toContain('## Files in view\n(none; use a `read` action if you need file contents)');
+  });
+
+  // §8.9: `promptBuildMs` p95 < 5 ms — the worst realistic build (12 steps in view, two 60 KiB outputs whole, 6 × 60 KiB files)
+  it('builds in under 5 ms at p95 with a 12-step window and 60 KiB files', () => {
+    const files = Array.from({ length: 6 }, (_, i) => file(`src/f${i}.ts`, 60 * 1024, i === 0 ? 'human' : 'read'));
+    const ctx = context({ files, history: history(12, 60 * 1024), summary: 'S'.repeat(3_000), summaryAt: 8 });
+    const payload = input({ context: ctx });
+    for (let i = 0; i < 20; i++) buildPrompt(payload); // warm up the JIT like a real run's first steps do
+    // best of three batches: a noisy neighbour must not fail the gate, code slower than the budget fails every batch
+    const batch = (): number => {
+      const ms: number[] = [];
+      for (let i = 0; i < 200; i++) {
+        const t0 = performance.now();
+        const built = buildPrompt(payload);
+        ms.push(performance.now() - t0);
+        expect(built.chars).toBeLessThanOrEqual(ctx.budgetChars);
+      }
+      ms.sort((a, b) => a - b);
+      return ms[Math.min(ms.length - 1, Math.ceil(0.95 * ms.length) - 1)]!;
+    };
+    const p95 = Math.min(batch(), batch(), batch());
+    expect(p95).toBeLessThan(5);
+  });
+});

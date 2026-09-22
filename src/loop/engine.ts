@@ -97,8 +97,16 @@ import type { AskResult,
   WorkspaceInfo,
 } from '../core/types.js';
 import { AbortError, CheckpointError, ConfigError, GeneratorResponseError, JevCodeError, JevHttpError, JevModelDriftError, JevResponseError, ProviderHttpError, isAbortError, isBudgetError, isJevCodeError, toJevCodeError, type BudgetKind } from '../errors.js';
-import { CHECKPOINT_FILES, classifyDiskError } from '../checkpoint/store.js';
-import { writePostImages, writePreImages, type ImageSource, type PreImageResult } from '../checkpoint/images.js';
+import { CHECKPOINT_FILES, CONTEXT_SUMMARY_FILE, classifyDiskError, outputFileName } from '../checkpoint/store.js';
+import { fileMemoryFromPostImage, writePostImages, writePreImages, type ImageSource, type PostImage, type PreImageResult } from '../checkpoint/images.js';
+import { hasContextStore, readContextExtension } from '../checkpoint/types.js';
+// docs/COORDINATION-DESIGN.md §8: the generator's relaxed context (Jev's window is untouched — two windows, §8.1)
+import { compactCode, compactionDue, isContextSummary, type CompactionTrigger } from './context/compaction.js';
+import { FilesInView, boundMemory, dropFile, evictFiles, forgetFile, noteShown, rememberFile, touchFile, workspaceFilesInViewDeps } from './context/context-cache.js';
+import { buildHistoryEntry, expandHistory, foldHistoryRecord, foldableCount, needsOutputFile, outputRefFor, outputView, parseOutputRef, pushHistory, stepsNeedingViews, tierText, type OutputView } from './context/history.js';
+import { FILE_CACHE_MAX_ENTRIES, HISTORY_MID, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, OUTPUT_READ_PREFIX, resolveContextPolicy, type ResolvedContextPolicy } from './context/limits.js';
+import { computeContextUsage, restoredContextUsage } from './context/meter.js';
+import type { ContextCheckpointExtension, ContextCompactedEvent, ContextReadHooks, ContextSummary, ContextUsage, EngineOptionsWithContextPolicy, EngineStatusWithContext, FileCacheEntry, FileMemory, HistoryEntry } from './context/types.js';
 import { acquireRunLock, releaseRunLock } from '../session/lock.js';
 import { seedNoticeText } from '../session/seed.js';
 import { nextBudgetWarn, seedAnnounced, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
@@ -109,14 +117,14 @@ import { headDriftWarning, headMoved, notRepoState, probeGitState as realProbeGi
 import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
-import { buildSystemPrompt, type PromptHints, type PromptInput } from '../provider/prompts.js';
+import { buildSystemPrompt, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput } from '../provider/prompts.js';
 import { linkedAbort } from '../core/abort.js';
 import { lookupPricing } from '../config/defaults.js';
 import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
 import { PLAN_MAX_HARNESS_PROBLEMS, applyPlanDraft, boundHarnessProblems, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
-import { buildCommonState, testsCurrent, type Redact } from './state.js';
+import { buildCommonState, isChangeAction, testsCurrent, type Redact } from './state.js';
 import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTranscriptLine, tokenSeriesOrZeros } from './stop.js';
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
 import { isComplete, isCompleteByFact, type CompletionFactInput } from './stages/complete.js';
@@ -124,7 +132,7 @@ import { prefilterCandidates, runContextStage } from './stages/context.js';
 import { runExecuteStage } from './stages/execute.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
 import { runJudgeStage } from './stages/judge.js';
-import { runProposeStage } from './stages/propose.js';
+import { runProposeStage, type ProposeStageResult } from './stages/propose.js';
 import { runReplanStage } from './stages/replan.js';
 import { runSynthStage } from './stages/synth.js';
 import { computeTargets, runRiskStage, MATCHES_INTENT_THRESHOLD, type VerifiedCompletion } from './stages/risk.js';
@@ -279,6 +287,8 @@ export interface StageContext {
   generate(req: GenerateRequest, attempt: number): Promise<GenerateResult>;
   noteMalformed(attempt: number): void;
   startCandidateRefresh(): void;
+  /** docs/COORDINATION-DESIGN.md §8.3 / §8.4 (W2 item 21): the zero-cost read and the `jevcode:outputs/` pseudo-path; absent in fakes */
+  contextReads?: ContextReadHooks;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -504,6 +514,24 @@ class EngineImpl implements Engine {
   private step = 0;
   private plan: Plan = emptyPlan();
   private window: WindowEntry[] = [];
+  // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context — `window` above stays Jev's 4 × 600 (§8.1 two windows)
+  private history: HistoryEntry[] = [];
+  private fileCache: FileCacheEntry[] = [];
+  private fileMemory: FileMemory = {};
+  private summary: ContextSummary | null = null;
+  private summaryAt: number | null = null;
+  private compactions = 0;
+  private lastCompactionAt: string | null = null;
+  private contextUsage: ContextUsage;
+  private readonly contextPolicy: ResolvedContextPolicy;
+  private readonly filesInView: FilesInView;
+  /** head + tail of the newest outputs by step (≤ HISTORY_MID); read back from `outputs/` once after a resume */
+  private readonly outputViews = new Map<number, OutputView>();
+  /** steps whose `outputRef` this device cannot follow (§8.5: the prompt says so instead of pointing at nothing) */
+  private readonly missingOutputs = new Set<number>();
+  private contextLoaded = false;
+  /** the post image of the step in flight, consumed by commitContext (§8.4 fileMemory from the hashes already computed) */
+  private lastPostImage: PostImage | null = null;
   private readonly detector: LoopDetector;
   private wallMsUsedBefore = 0;
   private runStartMono: number | null = null;
@@ -756,6 +784,36 @@ class EngineImpl implements Engine {
       }
     }
     this.restoredSpentUsd = restoredSpentUsd;
+    // docs/COORDINATION-DESIGN.md §8: the context policy — the optional state fields restored, un-checkpointed steps folded into the
+    // history like the window above (a prepared loader folds the window, not the history: rows past the newest history step fold here)
+    this.contextPolicy = resolveContextPolicy((init.opts as EngineOptionsWithContextPolicy).contextPolicy);
+    this.filesInView = new FilesInView(workspaceFilesInViewDeps(this.workspace), () => this.clock());
+    // review finding 28: under `view: 'legacy'` none of §8 exists — no history, no cache, no state additions, HEAD's prompt
+    if (this.contextPolicy.view === 'relaxed') {
+      if (init.resume) {
+        // §9.3 / §10: a state.json (possibly mirrored from another device) is untrusted input — every addition is validated
+        const s: ContextCheckpointExtension = readContextExtension(init.resume.state, this.contextPolicy.historySteps);
+        this.history = s.history ?? [];
+        this.fileCache = s.fileCache ?? [];
+        this.fileMemory = s.fileMemory ?? {};
+        this.summaryAt = s.summaryAt ?? null;
+        this.compactions = s.compactions ?? 0;
+        this.lastCompactionAt = s.lastCompactionAt ?? null;
+        const newest = this.history[this.history.length - 1]?.step ?? 0;
+        for (const rec of [...init.resume.foldedSteps].sort((a, b) => a.step - b.step)) {
+          if (rec.step <= newest || rec.step > this.step) continue;
+          this.history = foldHistoryRecord(this.history, rec, this.contextPolicy.historySteps);
+        }
+      } else {
+        // §8.3: a follow-up starts with the parent's window as its history (the generator's `## Recent steps` is derived from
+        // the same records as Jev's `recent`, so a seeded run sees the parent's steps exactly as the 4-entry window shows
+        // them; the parent's `outputs/` live in the parent's run dir, so no pointer is carried across)
+        this.history = (init.opts.seed?.window ?? []).map((e) => buildHistoryEntry(e, e.output ?? null, null));
+        // §8.4: the human's @-mentions enter the cache pinned `human` (evicted last)
+        for (const rel of init.opts.seed?.pinnedFiles ?? []) this.fileCache = touchFile(this.fileCache, rel, 'human', 0);
+      }
+    }
+    this.contextUsage = restoredContextUsage(this.contextExtension(), this.contextPolicy.budgetChars, this.contextPolicy.compaction, this.contextPolicy.windowTokens);
     // TUI-DESIGN §15.2 constructor row (both branches): the initial directive is queued exactly like a steer (same bounds, same
     // deferred steer:queued line after run:ready) and consumed at the first step start
     if (typeof init.opts.humanDirective === 'string') this.steer(init.opts.humanDirective);
@@ -823,7 +881,9 @@ class EngineImpl implements Engine {
   // -------------------------------------------------------------------------------------
 
   status(): EngineStatus {
-    return {
+    // docs/COORDINATION-DESIGN.md §12.0.3: `context` rides every status (a subtype until EngineStatus gains the member)
+    const status: EngineStatusWithContext = {
+      context: this.contextUsage,
       step: this.step,
       maxSteps: this.opts.limits.maxSteps,
       wallMs: this.wallMsUsed(),
@@ -842,6 +902,7 @@ class EngineImpl implements Engine {
       // TUI-DESIGN-2 §2.4 / §2.6: the `/jev` line-2 suffix reads one value
       jevCostBasis: this.jevCostBasis(),
     };
+    return status;
   }
 
   /** TUI-DESIGN-2 §2.4: `table` when every Jev request of this process was table-priced, `provider` when every one carried `usage.cost`, `mixed` otherwise; null before any. */
@@ -1481,6 +1542,8 @@ class EngineImpl implements Engine {
       ...(this.pendingDirectives.length > 0 ? { pendingDirectives: this.pendingDirectives.map((d) => ({ ...d })) } : {}),
       ...(this.undoLog.length > 0 ? { undoLog: this.undoLog.map((u) => ({ ...u, restored: [...u.restored], skipped: u.skipped.map((k) => ({ ...k })) })) } : {}),
       ...(this.checkpointDegraded ? { checkpointDegraded: true } : {}),
+      // docs/COORDINATION-DESIGN.md §8.3 / §8.4 / §12.0.3 (additive, conditional): absent while empty, so older readers and goldens are unchanged
+      ...this.contextExtension(),
       resumes: this.resumes,
       updatedAt: nowIso(),
     };
@@ -1590,6 +1653,8 @@ class EngineImpl implements Engine {
           self.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `candidate refresh failed: ${e instanceof Error ? self.redact(e.message) : String(e)}` });
         });
       },
+      // docs/COORDINATION-DESIGN.md §8.3 / §8.4: the zero-cost read and the `jevcode:outputs/` pseudo-path
+      contextReads: this.contextReadHooks(),
     };
   }
 
@@ -2250,8 +2315,8 @@ class EngineImpl implements Engine {
             this.flushGeneratorRecords(draft);
           }
         } else {
-          const prompt = this.promptInput(draft, changedFiles, contextFiles, null);
-          p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
+          // docs/COORDINATION-DESIGN.md §8.8 jev-on column: Jev's picks first, then the cache; the meter recomputed once the prompt is built
+          p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, contextFiles, null));
           this.flushGeneratorRecords(draft);
         }
         draft.proposal = p.proposal;
@@ -2295,8 +2360,8 @@ class EngineImpl implements Engine {
         // Same <= 300 pre-filter (mention count, then recency) as the context stage (§13).
         const listing = await this.workspace.listCandidates().catch(() => []);
         const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
-        const prompt = this.promptInput(draft, changedFiles, [], candidates);
-        const p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
+        // docs/COORDINATION-DESIGN.md §8.8 jev-off column: the cache is the generator's only file view; candidates stay the listing
+        const p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, [], candidates));
         this.flushGeneratorRecords(draft);
         draft.proposal = p.proposal;
         draft.proposeCompleted = true;
@@ -2435,6 +2500,8 @@ class EngineImpl implements Engine {
         now: () => this.clock(),
       });
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + r.ms;
+      // docs/COORDINATION-DESIGN.md §8.4: the hashes already computed feed fileMemory at commit (no second read)
+      this.lastPostImage = r.image;
     } catch (e) {
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + Math.max(0, this.clock() - t0);
       this.noteImagesFailure(draft, 'post', e);
@@ -2626,6 +2693,196 @@ class EngineImpl implements Engine {
       humanDirectives: this.activeHuman?.step === draft.step ? [...this.activeHuman.texts] : [],
       pinnedFiles: [...(this.opts.seed?.pinnedFiles ?? [])],
     };
+  }
+
+  // -------------------------------------------------------------------------------------
+  // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context (history, files in view, compaction, meter)
+  // -------------------------------------------------------------------------------------
+
+  /** The optional CheckpointState fields (§8.3, §8.4, §12.0.3), each present only when it carries something. */
+  private contextExtension(): ContextCheckpointExtension {
+    const ext: ContextCheckpointExtension = {};
+    if (this.history.length > 0) ext.history = this.history.map((e) => ({ ...e, shownFiles: [...e.shownFiles], notes: [...e.notes] }));
+    if (this.fileCache.length > 0) ext.fileCache = this.fileCache.map((e) => ({ ...e }));
+    if (Object.keys(this.fileMemory).length > 0) ext.fileMemory = { ...this.fileMemory };
+    if (this.summaryAt !== null) ext.summaryAt = this.summaryAt;
+    if (this.compactions > 0) ext.compactions = this.compactions;
+    if (this.lastCompactionAt !== null) ext.lastCompactionAt = this.lastCompactionAt;
+    return ext;
+  }
+
+  /** §8 / §12.0.3: the relaxed view (fresh files, expanded history), then the prompt, then the meter — all before the generator call. */
+  private async proposeWithContext(ctx: StageContext, draft: StepDraft, changedFiles: string[], contextFiles: PromptInput['contextFiles'], candidates: PromptInput['candidates']): Promise<ProposeStageResult> {
+    const base = this.promptInput(draft, changedFiles, contextFiles, candidates);
+    // review finding 28: `contextPolicy.view: 'legacy'` sends HEAD's message, byte for byte — the bench baselines' prompt
+    const prompt: PromptInput = this.contextPolicy.view === 'legacy' ? base : { ...base, context: await this.contextView(draft.step) };
+    return runProposeStage(ctx, this.systemPrompt, prompt, { onPrompt: (built) => this.notePromptBuilt(built) });
+  }
+
+  /** After a resume: the summary text and the output views the whole / mid tiers need, read from the run dir once per process. */
+  private async ensureContextLoaded(): Promise<void> {
+    if (this.contextLoaded) return;
+    this.contextLoaded = true;
+    if (!hasContextStore(this.store)) return;
+    const store = this.store;
+    if (this.summaryAt !== null && this.summary === null) {
+      const raw = await store.readContextSummary().catch(() => null);
+      if (isContextSummary(raw)) this.summary = raw;
+    }
+    for (const step of stepsNeedingViews(this.history)) {
+      if (this.outputViews.has(step)) continue;
+      const text = await store.readOutput(step).catch(() => null);
+      // §8.5 / review finding 22: a resume whose run dir was mirrored without `outputs/` must not print a pointer at nothing
+      if (text === null) this.missingOutputs.add(step);
+      else this.outputViews.set(step, outputView(text));
+    }
+  }
+
+  /** §8.3 / §8.4: what the prompt shows this step — one stat per cached file, a read only where a stat changed, memoised output views. */
+  private async contextView(step: number): Promise<PromptContextView> {
+    await this.ensureContextLoaded();
+    const refreshed = await this.filesInView.refresh(this.fileCache, step, this.contextPolicy.fileCacheBytes);
+    if (refreshed.failed.length > 0) {
+      for (const f of refreshed.failed) this.fileCache = dropFile(this.fileCache, f.rel);
+      this.emit({ type: 'transcript', step, level: 'info', text: `files in view: dropped ${refreshed.failed.map((f) => f.rel).join(', ')} (${this.redact(clip(refreshed.failed[0]!.reason, 120))})` });
+    }
+    this.fileCache = noteShown(this.fileCache, new Map(refreshed.files.map((f) => [f.rel, f.shownChars] as const)));
+    return {
+      files: refreshed.files.map((f) => ({ path: f.rel, content: f.content, bytes: f.bytes, truncatedBytes: f.truncatedBytes, pinnedBy: f.pinnedBy, lastUsedStep: f.lastUsedStep, omitted: f.omitted })),
+      history: expandHistory(this.history, { view: (s) => this.outputViews.get(s) ?? null, missing: (s) => this.missingOutputs.has(s) }),
+      summary: this.summary?.text ?? null,
+      summaryAt: this.summaryAt,
+      budgetChars: this.contextPolicy.budgetChars,
+    };
+  }
+
+  /** §12.0.3 cadence point 1: the meter once the step's prompt is built, before the generator call. */
+  private notePromptBuilt(built: PromptBuild): void {
+    this.contextUsage = computeContextUsage({
+      promptChars: built.chars,
+      budgetChars: this.contextPolicy.budgetChars,
+      windowTokens: this.contextPolicy.windowTokens,
+      files: this.fileCache.length,
+      historyEntries: this.history.length,
+      summaryAt: this.summaryAt,
+      lastCompactionStep: this.summaryAt,
+      compactions: this.compactions,
+      lastCompactionAt: this.lastCompactionAt,
+      compaction: this.contextPolicy.compaction,
+    });
+  }
+
+  /** §8.3 / §8.4: the execute stage's `read` hooks — the zero-cost read (one stat) and the `jevcode:outputs/step-<n>.txt` pseudo-path. */
+  private contextReadHooks(): ContextReadHooks {
+    return {
+      unchanged: async (rel) => (await this.filesInView.unchanged(rel, this.fileMemory))?.text ?? null,
+      runOutput: async (pathOrRef) => {
+        const step = parseOutputRef(pathOrRef);
+        if (step === null) return null;
+        const stored = hasContextStore(this.store) ? await this.store.readOutput(step).catch(() => null) : null;
+        if (stored !== null) return stored;
+        // the file is gone (the 64 MiB bound, or a mirror without `outputs/`): the memoised head + tail is still the truth
+        this.missingOutputs.add(step);
+        const view = this.outputViews.get(step);
+        return view === undefined ? null : tierText(view, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, null);
+      },
+    };
+  }
+
+  /** The §8 bookkeeping at commit: the history entry (+ the whole output on disk), files in view, fileMemory, eviction, compaction. */
+  private commitContext(draft: StepDraft, entry: WindowEntry, step: number): void {
+    if (this.contextPolicy.view === 'legacy') return;
+    const output = draft.output.length > 0 ? draft.output : null;
+    let ref: string | null = null;
+    if (needsOutputFile(output) && hasContextStore(this.store)) {
+      // §8.3 / §8.5: the whole text is on disk before any clip names it; the write rides the outputs/ chain, never the step
+      ref = outputRefFor(step);
+      this.persist(this.store.writeOutput(step, output), `${CHECKPOINT_FILES.outputs}/${outputFileName(step)}`);
+    }
+    if (output !== null) {
+      this.outputViews.set(step, outputView(output));
+      const excess = this.outputViews.size - HISTORY_MID;
+      if (excess > 0) for (const s of [...this.outputViews.keys()].sort((a, b) => a - b).slice(0, excess)) this.outputViews.delete(s);
+    }
+    this.history = pushHistory(this.history, buildHistoryEntry(entry, output, ref), this.contextPolicy.historySteps);
+
+    const proposal = draft.proposal;
+    if (proposal !== null && draft.outcome?.status === 'executed') {
+      const a = proposal.action;
+      if (a.kind === 'read') {
+        for (const p of a.paths) {
+          if (p.startsWith(OUTPUT_READ_PREFIX)) continue;
+          this.fileCache = touchFile(this.fileCache, p, 'read', step);
+          this.fileMemory = rememberFile(this.fileMemory, p, { readAt: step });
+        }
+      } else if (draft.changedFiles.length > 0) {
+        // edit / write / patch targets, or the paths a `run` changed: fresh content at the next build, `editedAt` now
+        this.filesInView.invalidate(draft.changedFiles);
+        for (const p of draft.changedFiles) {
+          if (isChangeAction(a.kind)) this.fileCache = touchFile(this.fileCache, p, 'edit', step);
+          this.fileMemory = rememberFile(this.fileMemory, p, { editedAt: step });
+        }
+      }
+    }
+    const image = this.lastPostImage;
+    this.lastPostImage = null;
+    if (image !== null && image.step === step) {
+      for (const id of fileMemoryFromPostImage(image)) {
+        if (id.deleted) {
+          this.fileCache = dropFile(this.fileCache, id.rel);
+          this.fileMemory = forgetFile(this.fileMemory, id.rel);
+          this.filesInView.invalidate([id.rel]);
+          continue;
+        }
+        this.fileMemory = rememberFile(this.fileMemory, id.rel, { ...(id.sha12 !== null ? { sha12: id.sha12 } : {}), ...(id.bytes !== null ? { bytes: id.bytes } : {}), editedAt: step });
+      }
+    }
+    this.fileMemory = boundMemory(this.fileMemory);
+    const ev = evictFiles(this.fileCache, { maxEntries: FILE_CACHE_MAX_ENTRIES, maxBytes: this.contextPolicy.fileCacheBytes });
+    if (ev.evicted.length > 0) {
+      this.fileCache = ev.kept;
+      this.filesInView.invalidate(ev.evicted.map((e) => e.rel));
+    }
+    // §8.6: compaction runs after the commit of the triggering step, before the next intent
+    const trigger = compactionDue({ step, compactEvery: this.contextPolicy.compactEvery, pct: this.contextUsage.pct, mode: this.contextPolicy.compaction, foldable: foldableCount(this.history) });
+    if (trigger !== null) this.compactContext(step, trigger);
+  }
+
+  /**
+   * §8.6 `'code'`: fold the history into the rolling summary, persist it, announce `context:compacted`, recompute the meter.
+   * `'llm'` (the second bullet of §8.6 — one generator call with the opencode template) is not built here; it degrades to
+   * `'code'`, which §8.6 already names as its fallback, so the event always reports `by: 'code'` while `ContextUsage.compaction`
+   * keeps reporting the configured mode.
+   */
+  private compactContext(step: number, trigger: CompactionTrigger): void {
+    const at = nowIso();
+    const r = compactCode({ step, at, task: this.opts.task, plan: this.plan, history: this.history, fileMemory: this.fileMemory, lastTestRun: this.lastTestRun, previous: this.summary });
+    this.history = r.history;
+    this.summary = r.summary;
+    this.summaryAt = step;
+    this.compactions += 1;
+    this.lastCompactionAt = at;
+    if (hasContextStore(this.store)) this.persist(this.store.writeContextSummary(toJson(r.summary)), `${CHECKPOINT_FILES.context}/${CONTEXT_SUMMARY_FILE}`);
+    const event: ContextCompactedEvent = { type: 'context:compacted', step, chars: r.chars, by: 'code' };
+    // review finding 29: ONE shared line in all three sinks. Until `EngineEvent` gains `context:compacted`, the event rides
+    // the notice channel as kind `ui` with the `[ui]` label — `itemsFromEvent` already turns that into a single `notice`
+    // item (never a `[jevcode]` chat bubble), and `detail` carries the event JSON verbatim for a renderer that wants it.
+    const why = trigger === 'interval' ? `every ${this.contextPolicy.compactEvery} steps` : trigger === 'budget' ? `prompt at ${this.contextUsage.pct}% of the context budget` : 'requested';
+    const folded = `${r.dropped.length} step${r.dropped.length === 1 ? '' : 's'} folded into the summary`;
+    this.emit({ type: 'notice', step, kind: 'ui', level: 'info', label: '[ui]', text: `compaction: ${r.chars.before} → ${r.chars.after} chars (code); ${folded} at step ${step} (${why})`, detail: JSON.stringify(event) });
+    // §12.0.3 cadence point 2: the meter after a compaction (promptChars = the last build less what the fold removed, until the next build)
+    this.contextUsage = computeContextUsage({
+      promptChars: Math.max(0, this.contextUsage.promptChars - Math.max(0, r.chars.before - r.chars.after)),
+      budgetChars: this.contextPolicy.budgetChars,
+      windowTokens: this.contextPolicy.windowTokens,
+      files: this.fileCache.length,
+      historyEntries: this.history.length,
+      summaryAt: step,
+      lastCompactionStep: step,
+      compactions: this.compactions,
+      lastCompactionAt: at,
+      compaction: this.contextPolicy.compaction,
+    });
   }
 
   /** The current step's window entry before judge (Jev's `recent` includes it, §5.5). */
@@ -2885,6 +3142,8 @@ class EngineImpl implements Engine {
     this.step = step;
     this.plan = plan;
     this.window = window;
+    // docs/COORDINATION-DESIGN.md §8: the generator's history, files in view and (when due) the compaction — before the snapshot below
+    this.commitContext(draft, entry, step);
     this.interrupted = null;
     // TUI-DESIGN §8.6: the directives reached exactly this step; the next steer re-arms them
     if (this.activeHuman?.step === step) this.activeHuman = null;

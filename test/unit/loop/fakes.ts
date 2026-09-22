@@ -27,6 +27,7 @@ import type {
   GitState,
   JevProvider,
   JevRequestRecord,
+  Json,
   PlanDraft,
   Provider,
   Question,
@@ -48,7 +49,9 @@ import type {
 } from '../../../src/core/types.js';
 import { sleep } from '../../../src/core/time.js';
 import { AbortError, EditError, FileNotFoundError, JevHttpError, PatchError, PathEscapeError, ProviderHttpError } from '../../../src/errors.js';
+import type { ContextStoreExtension } from '../../../src/checkpoint/types.js';
 import { createEngine, type EngineDeps, type GitProbe } from '../../../src/loop/engine.js';
+import type { ContextPolicyOptions } from '../../../src/loop/context/types.js';
 import { notRepoState } from '../../../src/workspace/gitstate.js';
 
 // ---------------------------------------------------------------------------------------
@@ -463,8 +466,12 @@ export function createFakeSandbox(script: (command: string, index: number) => Ex
 // Checkpoint store
 // ---------------------------------------------------------------------------------------
 
-export interface FakeStore extends CheckpointStore {
+export interface FakeStore extends CheckpointStore, ContextStoreExtension {
   meta: RunMeta | null;
+  /** docs/COORDINATION-DESIGN.md §8.3: outputs/step-<n>.txt, by step */
+  outputs: Map<number, string>;
+  /** §8.6: context/summary.json */
+  summary: Json | null;
   states: CheckpointState[];
   syncStates: CheckpointState[];
   steps: StepRecord[];
@@ -485,6 +492,20 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
   const st: FakeStore = {
     dir,
     meta: null,
+    outputs: new Map<number, string>(),
+    summary: null,
+    async writeOutput(step, text) {
+      st.outputs.set(step, text);
+    },
+    async readOutput(step) {
+      return st.outputs.get(step) ?? null;
+    },
+    async writeContextSummary(summary) {
+      st.summary = structuredClone(summary);
+    },
+    async readContextSummary() {
+      return st.summary;
+    },
     states: [],
     syncStates: [],
     steps: [],
@@ -655,7 +676,10 @@ export interface HarnessOptions {
    */
   probeGitState?: GitState | GitProbe;
   /** contract 1.1 wave 2 options spread over EngineOptions (seed, session, humanDirective, blocker, instructions, …) */
-  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing'>>;
+  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing'>> & {
+    /** docs/COORDINATION-DESIGN.md §12.0.1 (`EngineOptionsWithContextPolicy` until core/types.ts gains the member) */
+    contextPolicy?: ContextPolicyOptions;
+  };
 }
 
 export interface Harness {
