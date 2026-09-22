@@ -13,6 +13,7 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CONDITIONS } from '../../../src/cli/args.js';
+import { resolveFastPathOption } from '../../../src/loop/engine.js';
 import { CONDITION_ORDER, MECHANISM_ENV_VARS, armMechanisms, buildEngineOptions, conditionConfig, engineModeOf, isNextArm, parseConditions, pinMechanismEnv, pinnedGeneration, requiresSerialBench, usesSynthesizer, usesTunedProvider } from '../../../src/bench/conditions.js';
 import { computeSuiteMetrics } from '../../../src/bench/metrics.js';
 import { evaluateAcceptRule, evaluatePredictions, FASTPATH_REASONS, FRESH_18, measurementRows, recorded, RECORDED_BUILD } from '../../../src/bench/next-arms.js';
@@ -103,15 +104,21 @@ describe('the jev-on-next arms (§8.1)', () => {
     expect(env['JEVCODE_WARM']).toBe('off');
     expect(pinMechanismEnv(env)).toEqual([]);
 
-    // a mirror of slot C's precedence (engine.ts `resolveFastPathOption`), which is env-first in both directions.
-    // Replace it with the real import once slot C has merged; the point it pins is that the ONLY way the arm's
-    // pinned value survives is an empty environment.
-    const resolveLikeSlotC = (option: 'auto' | 'off', e: Record<string, string | undefined>): 'auto' | 'off' => (e['JEVCODE_FASTPATH'] === 'off' ? 'off' : e['JEVCODE_FASTPATH'] === 'auto' ? 'auto' : option);
-    for (const pinned of ['auto', 'off'] as const) {
-      expect(resolveLikeSlotC(pinned, { JEVCODE_FASTPATH: 'auto' })).not.toBe(pinned === 'auto' ? 'off' : pinned);
-      const cleared: Record<string, string | undefined> = { JEVCODE_FASTPATH: pinned === 'auto' ? 'off' : 'auto' };
-      pinMechanismEnv(cleared);
-      expect(resolveLikeSlotC(pinned, cleared)).toBe(pinned);
+    // slot C has merged (integration, 2026-09-22), so this drives the REAL resolver instead of the mirror this slot
+    // shipped: `resolveFastPathOption` is env-first in both directions, and the ONLY way the arm's pinned value
+    // survives is an environment `pinMechanismEnv` has already emptied.
+    const saved = process.env['JEVCODE_FASTPATH'];
+    try {
+      for (const pinned of ['auto', 'off'] as const) {
+        const opposite = pinned === 'auto' ? 'off' : 'auto';
+        process.env['JEVCODE_FASTPATH'] = opposite;
+        expect(resolveFastPathOption('jev-on', pinned)).toBe(opposite);
+        pinMechanismEnv();
+        expect(resolveFastPathOption('jev-on', pinned)).toBe(pinned);
+      }
+    } finally {
+      if (saved === undefined) delete process.env['JEVCODE_FASTPATH'];
+      else process.env['JEVCODE_FASTPATH'] = saved;
     }
   });
 
@@ -309,7 +316,11 @@ describe('the §8.3 rows', () => {
     expect(rows.find((r) => r.id === 'R-d')).toMatchObject({ status: 'fail' });
     expect(rows.find((r) => r.id === 'R-d')!.detail).toContain('NOT in FastPathReason: invented_clause');
     expect(FASTPATH_REASONS).toContain('scope_unusable');
-    expect(FASTPATH_REASONS).toHaveLength(26);
+    // slot C's union is the source of truth now (integration, 2026-09-22): the two reasons the mirror was missing
+    // are declines/failures the writer really emits, so R-d must NOT call them unknown
+    expect(FASTPATH_REASONS).toContain('warm_plane');
+    expect(FASTPATH_REASONS).toContain('no_passer');
+    expect(FASTPATH_REASONS).toHaveLength(29);
   });
 });
 

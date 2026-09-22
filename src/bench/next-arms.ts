@@ -27,7 +27,7 @@
  *     `decision: 'failed'`) was invisible to the budget row.
  */
 import { formatDuration } from '../core/time.js';
-import type { BenchCondition, BenchSuite } from '../core/types.js';
+import type { BenchCondition, BenchSuite, FastPathReason } from '../core/types.js';
 import { isEvaluated, median } from './metrics.js';
 import { emptyStepsSummary, mergeStepsSummaries } from './step-records.js';
 import type { BenchRecord, StepsSummary } from './types.js';
@@ -115,39 +115,45 @@ export const RECORDED_BOTH_SOLVED_RATIO = 26_000 / 19_700;
 // ---------------------------------------------------------------------------------------
 
 /**
- * §5.2: `FastPathReason` is a string union so the R-d histogram is exhaustive. The union itself lands in
- * `src/core/types.ts` with slot C (§7.1 writer order puts C after this slot), so the list is mirrored here and the
- * mirror is what R-d is checked against; `test/unit/bench/next-arms.test.ts` pins it, and once slot C has merged the
- * list should be replaced by `satisfies readonly FastPathReason[]` so the compiler owns the exhaustiveness instead.
+ * §5.2: `FastPathReason` is a string union so the R-d histogram is exhaustive. Slot C landed the union in
+ * `src/core/types.ts` (§7.1 writer order put C after this slot), so the mirrored list this slot shipped is gone and
+ * the COMPILER owns the exhaustiveness: a missing key and an invented key are both errors in `KNOWN`, which is what
+ * the mirror could not do — it went stale the moment slot C merged (it was missing `warm_plane` and `no_passer`,
+ * two reasons the writer emits, so R-d would have read `fail … NOT in FastPathReason: no_passer` on a real run).
  */
-export const FASTPATH_REASONS: readonly string[] = [
-  'off',
-  'not_jev_on',
-  'no_synthesizer',
-  'no_parsed_run',
-  'scope_unusable',
-  'all_passing',
-  'workspace_changed',
-  't_run_too_slow',
-  'multi_file',
-  'too_many_failures',
-  'repository_class',
-  'no_wall',
-  'fingerprint_seen',
-  'attempts_exhausted',
-  'disarmed',
-  'loop_tripped',
-  'pause_pending',
-  'lease_conflict',
-  'oracle_class',
-  'too_many_sites',
-  'pool_exceeds_run_budget',
-  'no_sites',
-  'empty_step_budget',
-  'confirm_timeout',
-  'held',
-  'error',
-];
+const KNOWN: Readonly<Record<FastPathReason, true>> = {
+  none: true,
+  off: true,
+  not_jev_on: true,
+  no_synthesizer: true,
+  no_parsed_run: true,
+  scope_unusable: true,
+  all_passing: true,
+  workspace_changed: true,
+  t_run_too_slow: true,
+  multi_file: true,
+  too_many_failures: true,
+  repository_class: true,
+  no_wall: true,
+  fingerprint_seen: true,
+  attempts_exhausted: true,
+  disarmed: true,
+  loop_tripped: true,
+  pause_pending: true,
+  lease_conflict: true,
+  warm_plane: true,
+  oracle_class: true,
+  too_many_sites: true,
+  pool_exceeds_run_budget: true,
+  no_sites: true,
+  empty_step_budget: true,
+  no_passer: true,
+  confirm_timeout: true,
+  held: true,
+  error: true,
+};
+
+export const FASTPATH_REASONS: readonly FastPathReason[] = Object.keys(KNOWN) as FastPathReason[];
 
 /** §8.3 R-c: above this the PREDICATE is wrong, not the budget. */
 export const STAGE2_DECLINE_BAR = 0.3;
@@ -225,7 +231,7 @@ export function measurementRows(records: readonly BenchRecord[], condition: Benc
   });
 
   const hist = declineHistogram(all);
-  const unknown = hist.filter((h) => !FASTPATH_REASONS.includes(h.reason)).map((h) => h.reason);
+  const unknown = hist.filter((h) => !Object.hasOwn(KNOWN, h.reason)).map((h) => h.reason);
   const errorBucket = hist.find((h) => h.reason === 'error') ?? null;
   const errorOver = errorBucket !== null && errorBucket.share > ERROR_BUCKET_BAR;
   out.push({
