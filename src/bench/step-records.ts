@@ -199,6 +199,12 @@ export function withWaveMembers(part: StepsSummary): StepsSummary {
   const ttfb = s2?.['ttfbMs'];
   if (Array.isArray(ttfb)) for (const v of ttfb) if (isFiniteNumber(v)) s.s2.ttfbMs.push(v);
   for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite'] as const) s.s2[k] = num(s2, k);
+  // OOS iteration 3, item 3: NOT a count, so it is carried rather than summed — and it must be carried, because this
+  // function rebuilds the part from `emptyStepsSummary()` and anything it does not name is erased. `deadlineGrowth`
+  // landed on `main` after this normaliser was written, so before this line every `mergeStepsSummaries` and every
+  // `--resume` dropped the arm the run was taken under, which is exactly the fact the next A/B needs.
+  const growth = part['deadlineGrowth'];
+  if (growth === 'served' || growth === 'always' || growth === 'mixed') s.deadlineGrowth = growth;
   return s;
 }
 
