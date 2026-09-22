@@ -1766,7 +1766,7 @@ messages · p50 <ms> ms · $<usd> · last: <kind> <p>` · `/cost` `chat $<usd> f
 
 ---
 
-## Appendix A — slot map for this round (disjoint files; TUI-DESIGN §20 ownership rule)
+## Appendix A — file map for this round (disjoint files; TUI-DESIGN §20 ownership rule)
 
 | Slot | Files | Sections |
 | --- | --- | --- |
