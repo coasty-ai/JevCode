@@ -1853,7 +1853,9 @@ export interface EngineOptions {
    * docs/LLM-JEV-DESIGN.md §4.8 / §8 (additive): the generator's resolved pricing (config overrides included) for the
    * estimate of a cancelled or failed llm-jev sample when no finished sibling and no run mean give a served rate. Absent ->
    * the engine reads the pricing table for `provider.model`; an unknown model is then unpriced (`budget:unpriced`, as a
-   * real call without `usage.cost`). TODO(src/cli/session.ts): pass `config.generator.pricing` here.
+   * real call without `usage.cost`). Filled by src/cli/session.ts from config.generator.pricing; absent only for bench,
+   * perf and tests — both engine-construction sites have passed it since the models-catalogue wave, and
+   * test/unit/hygiene/comment-refs.test.ts pins that they still do.
    */
   generatorPricing?: GeneratorConfig['pricing'];
   /**
@@ -2531,6 +2533,7 @@ export interface Engine {
    * proposed at all and `ask` decides `[c]` / `[s]` / `[x]`; with no `ask` (headless) the offer is printed and nothing
    * is seeded. A no-op without `EngineOptions.orchestration.runGit`.
    */
+  // NO CALLER — reachable only from the supervisor (ORCHESTRATION-DESIGN §8.3 item 34)
   land?(input: LaunchInput, ask?: (offer: LandPreflightOffer) => Promise<BlockingAnswer>): Promise<{ seeded: 'merge' | 'commit' | 'stash' | 'stop' | null; overlap: string[] }>;
 }
 

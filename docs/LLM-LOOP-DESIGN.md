@@ -631,8 +631,8 @@ first implementation therefore got wrong. They are the normative reading of §3.
    not counted: in jev-on Jev reselects them per step.
 6. **§3.4's figures are recorded**, through the hop the §9.3 counts already take: round summary →
    `GoalSearchTrace.llm` → `SynthesisContext.reportVerify` → `StepRecord.verify`, each member absent when nothing
-   measured it. §3.5's `--quick` remains unreachable from a command line until `src/cli/args.ts` carries the
-   `'quick'` row; `test/unit/bench/quick-preset.test.ts` asserts today's rejection so the gap is visible.
+   measured it. §3.5's `--quick` is reachable from a command line as of `0fb7af3`, which landed the `'quick'`
+   row in `src/cli/args.ts` beside `--archive-runs`; `test/unit/bench/quick-preset.test.ts` pins that it parses.
 
 ### 3.7 As built, the engine's side of §3.2 (`c811899`)
 
