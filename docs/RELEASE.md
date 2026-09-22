@@ -21,10 +21,11 @@ Not shipped: `dist/jevcode.mjs.map`, `dist/meta.json`, `src/`, `docs/`, tests. `
 enforces this: allowlist equality, forbidden paths, an unpacked-size gate, a tarball-size gate and a `--version` smoke.
 
 **The size gates are the script's `UNPACKED_MAX` and `TARBALL_MAX`, and this document deliberately does not restate
-them.** This paragraph carried a hand-copied 2 MB figure long after the gate was raised past it (`ca8e71c`), which is
-how a release note comes to promise a bound the build does not enforce. Read the two constants at the top of `scripts/check-pack.mjs`, or just
-run it — the pass line prints the measured size against the gate. `test/unit/hygiene/doc-claims.test.ts` fails if any
-byte figure printed here beside either constant's name stops matching the script.
+them.** This paragraph carried a hand-copied 2 MB figure through two raises of the real gate — 3.0 MB, then 3.5 MB
+at `ca8e71c` — which is how a release note comes to promise a bound the build does not enforce. Read the two
+constants at the top of `scripts/check-pack.mjs`, or just run it: the pass line prints the measured size against
+the gate. `test/unit/hygiene/doc-claims.test.ts` fails if any byte figure printed here beside either constant's
+name stops matching the script.
 
 ## One-time setup (before the first release)
 
