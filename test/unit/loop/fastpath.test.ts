@@ -9,7 +9,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Harness } from './fakes.js';
-import { createFakeSandbox, failingTests, makeEngine, turn } from './fakes.js';
+import { createFakeSandbox, createFakeWorkspace, failingTests, makeEngine, turn } from './fakes.js';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { EngineMode, LastTestRun, StepRecord } from '../../../src/core/types.js';
 import { resolveFastPathOption } from '../../../src/loop/engine.js';
 import {
@@ -313,6 +316,70 @@ describe('resolveFastPathOption', () => {
     withEnv('auto', () => expect(resolveFastPathOption('llm-jev', 'auto')).toBe('off'));
     withEnv('yes please', () => expect(resolveFastPathOption('jev-on', undefined)).toBe('auto'));
   });
+});
+
+// ---------------------------------------------------------------------------------------
+// The fired round, end to end (§4.7, §6 row 7)
+// ---------------------------------------------------------------------------------------
+
+/** pytest output that names one traceback frame in `gcd.py` and one failing node id — a single-file cluster (T6, T10). */
+const CLUSTER_OUTPUT = [
+  'F.',
+  'Traceback (most recent call last):',
+  '  File "gcd.py", line 4, in gcd',
+  '    return gcd(a % b, b)',
+  'RecursionError: maximum recursion depth exceeded',
+  '=========================== short test summary info ============================',
+  'FAILED tests/test_gcd.py::test_gcd - RecursionError',
+  '1 failed, 1 passed in 0.10s',
+  '',
+].join('\n');
+
+/** A QuixBugs-shaped workspace the predicate really fires on: one root program, its test file, a pytest command. */
+async function firingHarness(): Promise<Harness> {
+  const runsDir = mkdtempSync(join(tmpdir(), 'jevcode-fastpath-'));
+  const workspace = createFakeWorkspace({
+    root: runsDir,
+    files: {
+      'gcd.py': 'def gcd(a, b):\n    if b == 0:\n        return a\n    return gcd(a % b, b)\n',
+      'tests/test_gcd.py': 'from gcd import gcd\n\ndef test_gcd():\n    assert gcd(35, 21) == 7\n\ndef test_other():\n    assert gcd(4, 2) == 2\n',
+    },
+    testCommand: { command: 'python3 -m pytest -q', runner: 'pytest' },
+  });
+  return await build({
+    mode: 'jev-on',
+    runsDir,
+    workspace,
+    task: 'fix gcd.py',
+    turns: [turn({ kind: 'run', command: 'python3 -m pytest -q' }), turn({ kind: 'done', summary: 'green' })],
+    sandbox: createFakeSandbox(() => ({ stdout: CLUSTER_OUTPUT, stderr: '', exitCode: 1 })),
+    engine: { fastPath: 'auto' },
+  });
+}
+
+describe('a round that fires', () => {
+  it('is a propose STAGE: the pair opens before the round and closes after it (§6 row 7)', async () => {
+    const h = await firingHarness();
+    await h.engine.run();
+    const fired = h.store.steps.find((r) => r.fastPath !== undefined && r.fastPath.decision !== 'declined');
+    expect(fired).toBeDefined();
+    const step = fired!.step;
+    // the events of that step, in order
+    const seq = h.events.filter((e) => 'step' in e && e.step === step && ((e.type === 'stage:start' && e.stage === 'propose') || (e.type === 'stage:end' && e.stage === 'propose') || (e.type === 'synth' && e.phase.startsWith('fastpath:'))));
+    const at = (pred: (e: (typeof seq)[number]) => boolean): number => seq.findIndex(pred);
+    const entered = at((e) => e.type === 'synth' && e.phase === 'fastpath:entered');
+    const start = at((e) => e.type === 'stage:start');
+    expect(entered).toBeGreaterThanOrEqual(0);
+    // the round runs INSIDE the stage: `currentStage` is 'propose' for its whole length, not left on the previous one
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(start).toBeLessThan(entered);
+    const done = seq.findIndex((e) => e.type === 'synth' && (e.phase === 'fastpath:abandoned' || e.phase === 'fastpath:confirmed' || e.phase === 'fastpath:declined'));
+    expect(done).toBeGreaterThan(entered);
+    expect(at((e) => e.type === 'stage:end')).toBeGreaterThan(done);
+    // and every propose stage of that step is a matched pair
+    const starts = seq.filter((e) => e.type === 'stage:start').length;
+    expect(seq.filter((e) => e.type === 'stage:end').length).toBe(starts);
+  }, 60_000);
 });
 
 // ---------------------------------------------------------------------------------------

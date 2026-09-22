@@ -175,6 +175,7 @@ import { isTestCommand, runExecuteStage } from './stages/execute.js';
 // predicate and budget here, the round itself behind the synth facade.
 import { declinedRecord, fastPathBudget, fastPathRunWallCapMs, fastPathStage1Free, fastPathStage1Workspace, firedRecord } from './stages/fastpath.js';
 import { FastPathRunner, fastPathFailingIds, fastPathFingerprint, fastPathSuspects } from '../synth/search/fastpath.js';
+import type { FastPathBudget, FastPathRunState } from '../synth/search/fastpath.js';
 import { detectLayout } from '../synth/search/index.js';
 import { isRepositoryWorkspace } from '../synth/oracle/index.js';
 import { synthesizerHandles } from '../synth/index.js';
@@ -420,6 +421,18 @@ export function resolveFastPathOption(mode: EngineMode, option: 'auto' | 'off' |
   if (env === 'auto') return mode === 'jev-on' ? 'auto' : 'off';
   if (option !== undefined) return option === 'auto' && mode === 'jev-on' ? 'auto' : 'off';
   return mode === 'jev-on' ? 'auto' : 'off';
+}
+
+/**
+ * contract 1.9 (Fastlane) §4.3: what stage 1 agreed to. Separated from the round so the cheap predicate stays outside
+ * any stage (a decline must cost nothing and emit nothing) while the round runs inside `this.stage('propose', …)`.
+ */
+interface ArmedFastPath {
+  runner: FastPathRunner;
+  state: FastPathRunState;
+  budget: FastPathBudget;
+  fingerprint: string;
+  tRunMs: number;
 }
 
 interface StepDraft {
@@ -3118,7 +3131,7 @@ class EngineImpl implements Engine {
    * and it declines for free on every step whose stage-1 predicate does not hold. It never applies anything (I7): an
    * accepted proposal goes through the unchanged risk → confirm → coordinate → budget → execute → judge path.
    */
-  private async tryFastPath(draft: StepDraft): Promise<Proposal | null> {
+  private async fastPathArm(draft: StepDraft): Promise<ArmedFastPath | null> {
     if (this.fastPathOption !== 'auto' || this.mode !== 'jev-on') return null;
     const runner = this.fastPathRunner ?? (this.fastPathRunner = new FastPathRunner());
     // §4.6: the engine's 4-entry window reaches the round's memory on EVERY step of an armed run, not only on rounds —
@@ -3185,6 +3198,20 @@ class EngineImpl implements Engine {
     if (budget === null) return decline('no_wall');
     this.emit({ type: 'synth', step: draft.step, phase: 'fastpath:considered', detail: `${gate.file}: ${run?.failed ?? 0} failing, ${run?.errors ?? 0} errors at t_run ${tRunMs} ms` });
     state.attempts.set(fingerprint, (state.attempts.get(fingerprint) ?? 0) + 1);
+    return { runner, state, budget, fingerprint, tRunMs };
+  }
+
+  /**
+   * The round itself, run INSIDE `this.stage('propose', …)` by the call site — the round is a propose, and a propose
+   * is a stage: one `stage:start` / `stage:end` pair, `currentStage` on `'propose'` for its whole length, a
+   * `stepTimeline` span and an `emitStatus()` at its end. A round may last `wallMs + reserveMs + graceMs` (up to ~47 s
+   * with the default cap), so a round outside the stage left every consumer that pairs the two events — the TUI's
+   * stage display, the timing derivation, the bench event parser — reading an unmatched sequence for that long.
+   *
+   * `draft.fastPathMs` stays the FACADE's own clock diff (§4.4 bound 3), not the stage's wall.
+   */
+  private async fastPathRound(draft: StepDraft, armed: ArmedFastPath): Promise<Proposal | null> {
+    const { runner, state, budget, fingerprint, tRunMs } = armed;
     const result = await runner.run(this.synthesisContext(draft, []), budget);
     draft.fastPathMs = result.telemetry.wallMs;
     draft.fastPathJevMs = result.telemetry.jevMs;
@@ -4064,7 +4091,11 @@ class EngineImpl implements Engine {
           // contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9): ONE bounded sieve round on the one shape the
           // search provably wins, before the LLM is asked to guess. A branch route, not a race: when it declines (which
           // is every step where the predicate does not hold, at zero cost) the code default below runs unchanged.
-          const fast = await this.tryFastPath(draft);
+          const armed = await this.fastPathArm(draft);
+          // §4.4 / the stage contract: stage 1 is free and silent, so a decline emits nothing; the ROUND is a propose
+          // like every other propose and runs inside the stage. A step whose round fired and declined therefore has
+          // two propose spans — the round's and the LLM's — both matched, rather than one unmatched sequence.
+          const fast = armed === null ? null : await this.stage('propose', () => this.fastPathRound(draft, armed));
           if (fast !== null) {
             draft.proposer = 'fastpath';
             p = { proposal: fast };
