@@ -1231,7 +1231,9 @@ both-solved; in-sample 28 `llm-jev` 27/28) were taken at `751e3bf` and `main` no
 disappears — **that ordering is preferred**. Both arms are refused at any `--concurrency` but 1.
 
 **Registered predictions** (`src/bench/next-arms.ts` evaluates each, `experiments/llm-jev/headtohead.mts` prints them):
-(a) solved ≥ 12/18 on the fresh slice — evaluated only over the full 18, since a partial slice must not retire a route;
+(a) solved ≥ 12/18 on the fresh slice — evaluated only over the recorded 18 task ids (`FRESH_18`, compared as a SET of
+`(suite, task)`; a partial, different or over-full slice reads n/a, since a slice that is not the recorded one must
+neither pass nor retire a route);
 (b) median wall on the both-solved tasks below 26.0 s and within 10 % of 19.7 s; (c) ladder long-2 keeps ≥ 3/6;
 (d) `routerWaitMs` 0 on every step; (e) fired-and-proposed on ≥ 60 % of the QuixBugs steps where stage 1 held;
 (f) `jev-on-next` − `jev-on-next-nofast` on solve count > 0. **A failure of (a) or (e) RETIRES route R9; it does not

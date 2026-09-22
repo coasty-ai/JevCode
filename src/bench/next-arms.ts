@@ -68,6 +68,45 @@ export function recorded(slice: RecordedSlice['slice'], condition: BenchConditio
   return RECORDED_ITER1.find((r) => r.slice === slice && r.condition === condition) ?? null;
 }
 
+/** One task of a slice. The suite is part of the identity: two suites may carry the same task id. */
+export interface SliceTask {
+  suite: BenchSuite;
+  task: string;
+}
+
+/**
+ * §8.2: the fresh-18 slice BY TASK ID — 8 QuixBugs, the 6 ladder long-2 tasks and 4 django SWE instances, read off
+ * the recorded runs themselves (`bench/results/iter1-fresh-{llm-jev,jev-off-tuned}-*` / `RECORDED_SOURCE`).
+ *
+ * Prediction (a) compares a solve COUNT against the recorded 12/18, and a count is only comparable over the same
+ * tasks. A bare `n === 18` accepted any eighteen evaluated records — eighteen SWE instances, or nine QuixBugs plus
+ * nine ladder tasks — as "the recorded fresh 18", and (a) is one of the two predictions that RETIRE route R9. The
+ * set, not the cardinality, is the slice.
+ */
+export const FRESH_18: readonly SliceTask[] = [
+  { suite: 'quixbugs', task: 'quicksort' },
+  { suite: 'quixbugs', task: 'rpn_eval' },
+  { suite: 'quixbugs', task: 'shortest_path_lengths' },
+  { suite: 'quixbugs', task: 'shortest_paths' },
+  { suite: 'quixbugs', task: 'sieve' },
+  { suite: 'quixbugs', task: 'subsequences' },
+  { suite: 'quixbugs', task: 'to_base' },
+  { suite: 'quixbugs', task: 'topological_ordering' },
+  { suite: 'ladder', task: 'csv_schema' },
+  { suite: 'ladder', task: 'deadline_queue' },
+  { suite: 'ladder', task: 'dep_order' },
+  { suite: 'ladder', task: 'hunk_merge' },
+  { suite: 'ladder', task: 'route_match' },
+  { suite: 'ladder', task: 'token_bucket' },
+  { suite: 'swebench', task: 'django__django-14725' },
+  { suite: 'swebench', task: 'django__django-14787' },
+  { suite: 'swebench', task: 'django__django-15375' },
+  { suite: 'swebench', task: 'django__django-16100' },
+];
+
+const sliceKey = (t: SliceTask): string => `${t.suite}\u0000${t.task}`;
+const namesOf = (keys: readonly string[]): string => keys.slice(0, 3).map((k) => k.replace('\u0000', '/')).join(', ') + (keys.length > 3 ? `, +${keys.length - 3} more` : '');
+
 /** §8.4 (b): `llm-jev` is already 1.32× slower than tuned on the 8 both-solved QuixBugs tasks. A losing fast path deepens exactly that shape. */
 export const RECORDED_BOTH_SOLVED_RATIO = 26_000 / 19_700;
 
@@ -256,6 +295,8 @@ export interface PredictionInput {
   control: BenchCondition;
   /** the ladder long-2 task ids of the fresh slice (§8.4 (c): >= 3/6) */
   ladderLong2?: readonly string[];
+  /** §8.4 (a): the slice the recorded count is comparable over; defaults to the recorded `FRESH_18` */
+  slice?: readonly SliceTask[];
 }
 
 /** §8.4 (a)…(f) over the merged records. (b) is checked against the recorded rows, which is exactly the confounded comparison §8.2 warns about — the detail says so. */
@@ -267,9 +308,16 @@ export function evaluatePredictions(input: PredictionInput): PredictionResult[] 
 
   const refSolved = ref?.solved ?? 12;
   const refN = ref?.n ?? 18;
-  // A solve COUNT is only comparable over the same slice. A partial run of 5 of the 18 tasks would otherwise read
-  // "4 < 12: FAIL", and (a) failing retires route R9 — a slice that was never finished must not retire a route.
-  const sameSlice = mine.n === refN;
+  // A solve COUNT is only comparable over the same TASKS, and (a) failing retires route R9 — so the slice is
+  // identified by its (suite, task) set, not by how many records happen to be evaluated. A partial run of 5 of the
+  // 18, a different 18, or the 18 plus one extra all read `not_evaluable`: a slice that is not the recorded one
+  // must neither pass nor retire a route.
+  const slice = input.slice ?? FRESH_18;
+  const want = new Set(slice.map(sliceKey));
+  const have = new Set(records.filter((r) => r.condition === arm && isEvaluated(r)).map((r) => sliceKey(r)));
+  const missing = [...want].filter((k) => !have.has(k));
+  const extra = [...have].filter((k) => !want.has(k));
+  const sameSlice = missing.length === 0 && extra.length === 0 && want.size === refN;
   out.push({
     id: 'a',
     title: `solved >= llm-jev's ${refSolved}/${refN} on the fresh slice`,
@@ -278,7 +326,7 @@ export function evaluatePredictions(input: PredictionInput): PredictionResult[] 
       mine.n === 0
         ? `no evaluated ${arm} record`
         : !sameSlice
-          ? `${arm} ${mine.solved}/${mine.n}: NOT the recorded slice of ${refN} tasks, so a solve count is not comparable — run the fresh 18 (a partial slice must not retire route R9)`
+          ? `${arm} ${mine.solved}/${mine.n}: NOT the recorded slice of ${refN} tasks${missing.length > 0 ? `, missing ${missing.length} (${namesOf(missing)})` : ''}${extra.length > 0 ? `, ${extra.length} not in it (${namesOf(extra)})` : ''} — a solve count is only comparable over the same tasks, so run the fresh 18 (a wrong or partial slice must not retire route R9)`
           : `${arm} ${mine.solved}/${mine.n} against the recorded ${refSolved}/${refN} at ${RECORDED_BUILD} (${RECORDED_SOURCE}) — build-drift confounded, see §8.2`,
     retiresR9: true,
   });
@@ -432,6 +480,8 @@ export function recordedReferenceLines(): string[] {
   out.push(
     '',
     `Build drift, and it is not small: \`main\` carries \`oos-iter-2\` on top of \`${RECORDED_BUILD}\` — nine unmeasured changes. Every comparison against the rows above confounds this wave with all of iteration 2. The \`jev-on-next-nofast\` control and the plain \`jev-on\` arm are the only same-build contrasts, and §8.5 clause 4 rests on the control, not on these rows.`,
+    '',
+    `The fresh slice is pinned by task id (\`FRESH_18\`: ${FRESH_18.filter((t) => t.suite === 'quixbugs').length} QuixBugs, ${FRESH_18.filter((t) => t.suite === 'ladder').length} ladder long-2, ${FRESH_18.filter((t) => t.suite === 'swebench').length} SWE), not by a count of 18 records: a run over any other eighteen tasks reads n/a on prediction (a), never a pass.`,
   );
   return out;
 }

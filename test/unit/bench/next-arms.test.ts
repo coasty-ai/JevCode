@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest';
 import { CONDITIONS } from '../../../src/cli/args.js';
 import { CONDITION_ORDER, armMechanisms, buildEngineOptions, conditionConfig, engineModeOf, isNextArm, parseConditions, pinnedGeneration, requiresSerialBench, usesSynthesizer, usesTunedProvider } from '../../../src/bench/conditions.js';
 import { computeSuiteMetrics } from '../../../src/bench/metrics.js';
-import { evaluateAcceptRule, evaluatePredictions, FASTPATH_REASONS, measurementRows, recorded, RECORDED_BUILD } from '../../../src/bench/next-arms.js';
+import { evaluateAcceptRule, evaluatePredictions, FASTPATH_REASONS, FRESH_18, measurementRows, recorded, RECORDED_BUILD } from '../../../src/bench/next-arms.js';
 import { buildRecord, validateOptions } from '../../../src/bench/runner.js';
 import { emptyStepsSummary, mergeStepsSummaries, summariseStepRows, withWaveMembers } from '../../../src/bench/step-records.js';
 import type { BenchRecord, StepsSummary } from '../../../src/bench/types.js';
@@ -265,14 +265,38 @@ describe('the §8.4 predictions and the §8.5 accept rule', () => {
     expect(RECORDED_BUILD).toBe('751e3bf');
   });
 
+  it('(a) is pinned to the fresh-18 TASK IDS, not to a count of 18 records', () => {
+    expect(FRESH_18).toHaveLength(18);
+    expect(FRESH_18.filter((t) => t.suite === 'quixbugs')).toHaveLength(8);
+    expect(FRESH_18.filter((t) => t.suite === 'ladder')).toHaveLength(6);
+    expect(FRESH_18.filter((t) => t.suite === 'swebench')).toHaveLength(4);
+
+    // eighteen evaluated records that are NOT the recorded slice: a bare count read them as the fresh 18 and
+    // compared 18 solves against 12/18, which is not a comparison at all
+    const wrong = Array.from({ length: 18 }, (_, i) => rec(`t${i}`, 'jev-on-next'));
+    const a = evaluatePredictions({ records: wrong, arm: 'jev-on-next', control: 'jev-on-next-nofast' }).find((p) => p.id === 'a')!;
+    expect(a.status).toBe('not_evaluable');
+    expect(a.detail).toContain('NOT the recorded slice');
+    expect(a.detail).toContain('must not retire route R9');
+
+    // the recorded ids, at their own suites, are the slice
+    const right = FRESH_18.map((t) => rec(t.task, 'jev-on-next', { suite: t.suite }));
+    expect(evaluatePredictions({ records: right, arm: 'jev-on-next', control: 'jev-on-next-nofast' }).find((p) => p.id === 'a')).toMatchObject({ status: 'pass' });
+
+    // one task swapped for another is not the slice either, however the count comes out
+    const swapped = [...right.slice(0, 17), rec('extra_task', 'jev-on-next', { suite: 'quixbugs' })];
+    expect(evaluatePredictions({ records: swapped, arm: 'jev-on-next', control: 'jev-on-next-nofast' }).find((p) => p.id === 'a')).toMatchObject({ status: 'not_evaluable' });
+  });
+
   it('does not accept a wave whose control is missing, even when every row passes', () => {
     const records = Array.from({ length: 18 }, (_, i) => ({ ...rec(`t${i}`, 'jev-on-next'), synth: summariseStepRows(step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', wallMs: 10, budgetMs: 45_000 }, router: { issued: 1, applied: 1, dropped: 0, waitMs: 0 } })) }));
     const rows = measurementRows(records, 'jev-on-next', ['quixbugs']);
-    const predictions = evaluatePredictions({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast' });
+    const slice = records.map((r) => ({ suite: r.suite, task: r.task }));
+    const predictions = evaluatePredictions({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast', slice });
     expect(predictions.find((p) => p.id === 'a')).toMatchObject({ status: 'pass' });
     expect(predictions.find((p) => p.id === 'f')).toMatchObject({ status: 'not_evaluable' });
     // a partial slice is not a failure of (a): a count against 12/18 needs the 18
-    const partial = evaluatePredictions({ records: records.slice(0, 5), arm: 'jev-on-next', control: 'jev-on-next-nofast' });
+    const partial = evaluatePredictions({ records: records.slice(0, 5), arm: 'jev-on-next', control: 'jev-on-next-nofast', slice });
     expect(partial.find((p) => p.id === 'a')).toMatchObject({ status: 'not_evaluable' });
     expect(partial.find((p) => p.id === 'a')!.detail).toContain('must not retire route R9');
     expect(predictions.find((p) => p.id === 'f')!.detail).toContain('confounds tuned generation');
@@ -331,7 +355,8 @@ describe('the §8.4 predictions and the §8.5 accept rule', () => {
       ...Array.from({ length: 18 }, (_, i) => rec(`t${i}`, 'jev-off-tuned', { wallMs: 19_000 })),
     ];
     const rows = measurementRows(records, 'jev-on-next', ['quixbugs']);
-    const predictions = evaluatePredictions({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast' });
+    const slice = records.filter((r) => r.condition === 'jev-on-next').map((r) => ({ suite: r.suite, task: r.task }));
+    const predictions = evaluatePredictions({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast', slice });
     expect(predictions.find((p) => p.id === 'a')).toMatchObject({ status: 'pass' });
     expect(predictions.find((p) => p.id === 'e')).toMatchObject({ status: 'fail' });
     expect(predictions.find((p) => p.id === 'f')).toMatchObject({ status: 'not_evaluable' });
@@ -359,7 +384,8 @@ describe('the §8.4 predictions and the §8.5 accept rule', () => {
       rec('t0', 'jev-on-next-nofast'),
     ];
     const rows = measurementRows(records, 'jev-on-next', ['quixbugs']);
-    const predictions = evaluatePredictions({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast' });
+    const slice = records.filter((r) => r.condition === 'jev-on-next').map((r) => ({ suite: r.suite, task: r.task }));
+    const predictions = evaluatePredictions({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast', slice });
     expect(predictions.find((p) => p.id === 'a')).toMatchObject({ status: 'fail', retiresR9: true });
     expect(predictions.find((p) => p.id === 'e')).toMatchObject({ status: 'fail', retiresR9: true });
     const verdict = evaluateAcceptRule({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast', rows, predictions, gatesGreen: true });
