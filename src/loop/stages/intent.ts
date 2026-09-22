@@ -18,6 +18,8 @@
  * jev-only, so jev-on and jev-off resolve exactly as §6 says.
  */
 import { choice, noul, pairedNouls, ref } from '../../jev/questions.js';
+import { routeSpeculative, type StepToken } from '../../jev/router.js';
+import { RL1_INTENT_DEADLINE_MS, noteStepRoute, routersOn, stepTokenFor } from '../routers.js';
 import type { Answer, EngineMode, Intent, IntentAnswer, JsonObject, Question } from '../../core/types.js';
 import type { StageContext } from '../engine.js';
 import { buildIntentState, commonChangeUnverified, commonRemaining, commonRunGreen, ledgerItems } from '../state.js';
@@ -166,6 +168,33 @@ export function resolveIntentWithLedger(res: ChoiceResolution<Intent>, answers: 
   return { option, verdict, answer: res.answer, probability: choiceProbability(answers, 'intent', option), pairedNoul: pairedNoul(answers, option) };
 }
 
+/**
+ * contract 1.9 (Fastlane) §2.2 RL1: the intent the CODE picks, with no Jev answer at all — the order the step is
+ * already executing when the router issues its ask. `INTENT_FALLBACK` (`investigate`) leads, except that a change
+ * this run executed and never verified makes `verify` the step the harness itself would take next (the same fact
+ * `resolveIntentWithLedger` uses, `state.ts commonChangeUnverified`).
+ *
+ * **One fact, and only one** (review 2026-09-22, defect 8). This took a `runGreen` and promised in prose that "a
+ * green, current run demotes both"; the body never read it, so the caller computed and passed it for nothing and
+ * the unimplemented half of the rule was untestable. The parameter and the sentence are gone rather than guessed
+ * at: what a green run should lead with (`edit`? `finish`?) is a measurement for the §8 arms, not an invention
+ * here, and `resolveIntentWithLedger` already reads `runGreen` where it has a rule for it.
+ *
+ * Pure, total, and sufficient alone: the stage runs on `codeIntentOrder()[0]` whenever Jev does not answer in time.
+ */
+export function codeIntentOrder(input: { changeUnverified: boolean }): readonly Intent[] {
+  const rest = INTENT_LIST.filter((i) => i !== INTENT_FALLBACK && i !== 'verify');
+  if (input.changeUnverified) return ['verify', INTENT_FALLBACK, ...rest];
+  return [INTENT_FALLBACK, 'verify', ...rest];
+}
+
+/** what one intent ask produced: the resolution and the two Nouls the stage reads off the same request */
+interface IntentAsked {
+  resolved: ChoiceResolution<Intent>;
+  planStillValid: number;
+  confidence: number;
+}
+
 export interface IntentStageResult {
   intent: Intent;
   answer: IntentAnswer;
@@ -192,14 +221,60 @@ export async function runIntentStage(ctx: StageContext, common: JsonObject): Pro
   let resolved = resolve({});
   let planStillValid = 1;
   let confidence = 0;
-  await ctx.ask('intent', state, questions, (answers, rows) => {
-    resolved = resolve(answers);
-    annotateChoiceRows(rows, 'intent', resolved);
-    const psv = answers['plan_still_valid'];
-    planStillValid = psv && psv.type === 'noul' ? psv.noul : 1;
-    const row = rows.find((r) => r.id === 'intent');
-    confidence = row ? row.confidence : 0;
-  });
+  // the code answer, complete before any request is made: the stage can finish on this alone
+  const codeAnswer: IntentAsked = { resolved, planStillValid, confidence };
+  // I4 at the WRITE site: the step's own token, held from before the ask so a late answer can see that its step
+  // has committed. Null on the routers-off path, where this callback is the pre-1.9 one, byte for byte.
+  let routed: StepToken | null = null;
+  const asked = async (signal?: AbortSignal): Promise<IntentAsked> => {
+    let out: IntentAsked = codeAnswer;
+    // jev-contract: RL1 intent (docs/LLM-LOOP-DESIGN.md §2.2)
+    //   escape:   the Choice carries `none_of_these`; resolveChoice returns the escape as a non-answer and
+    //             INTENT_FALLBACK stands.
+    //   guard:    with routers on, routeSpeculative issues under the step signal with a 250 ms deadline and a
+    //             step-scoped token (§2.6); the answer may only re-order the intent list, never add an option,
+    //             and resolveIntentWithLedger still applies the code facts on top of it.
+    //   fallback: codeIntentOrder()[0] (INTENT_FALLBACK = 'investigate', or `verify` when a change this run made is unverified) — test: test/unit/loop/router.test.ts
+    //   no-gating: the answer reaches one sentence of the prompt's intent section and nothing else. It cannot
+    //             stop the run, block an action, or withhold a candidate.
+    await ctx.ask('intent', state, questions, (answers, rows) => {
+    // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token, settled
+    // work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it annotates
+    // nothing and applies nothing. `ctx.ask` still takes no per-call signal — that is the `askRecorded` seam of
+    // §7.5, slot B's post-C commit — so the request itself runs on; what it may no longer do is write a verdict.
+      if (signal?.aborted === true || routed?.valid === false) return;
+      const r = resolve(answers);
+      annotateChoiceRows(rows, 'intent', r);
+      const psv = answers['plan_still_valid'];
+      const row = rows.find((q) => q.id === 'intent');
+      out = { resolved: r, planStillValid: psv && psv.type === 'noul' ? psv.noul : 1, confidence: row ? row.confidence : 0 };
+    });
+    return out;
+  };
+  if (!routersOn(ctx.mode)) {
+    const answered = await asked();
+    resolved = answered.resolved;
+    planStillValid = answered.planStillValid;
+    confidence = answered.confidence;
+  } else {
+    // RL1: the code order is what the step runs; Jev's answer re-orders it when it lands inside the deadline
+    const codeOrder = codeIntentOrder({ changeUnverified: ledgerInput.changeUnverified });
+    const codeRoute: IntentAsked = { ...codeAnswer, resolved: { ...codeAnswer.resolved, option: codeOrder[0] ?? INTENT_FALLBACK } };
+    routed = stepTokenFor(ctx.runId, ctx.step);
+    const route = await routeSpeculative<IntentAsked>({
+      id: 'RL1',
+      token: routed,
+      codeOrder: [codeRoute],
+      deadlineMs: RL1_INTENT_DEADLINE_MS,
+      signal: ctx.signal,
+      ask: async (signal) => [await asked(signal)],
+    });
+    noteStepRoute(ctx.runId, ctx.step, route);
+    const chosen = route.order[0] ?? codeRoute;
+    resolved = chosen.resolved;
+    planStillValid = chosen.planStillValid;
+    confidence = chosen.confidence;
+  }
   const answer: IntentAnswer = resolved.answer === 'none_of_these' || (INTENT_LIST as readonly string[]).includes(resolved.answer) ? (resolved.answer as IntentAnswer) : 'none_of_these';
   ctx.emit({ type: 'intent', step: ctx.step, intent: resolved.option, answer, probability: resolved.probability, confidence, verdict: resolved.verdict });
   return { intent: resolved.option, answer, verdict: resolved.verdict, probability: resolved.probability, confidence, pairedNoul: resolved.pairedNoul, planStillValid };

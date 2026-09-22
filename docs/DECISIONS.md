@@ -1217,3 +1217,74 @@ already says the advantage is not on repositories. Iteration 2 (branch `oos-iter
 the repository `replan_stop`/pricing path, a deadline p90 that excludes zero-token samples, the one-line-regime slowdown,
 a thresholdless rule for the `token_bucket` overfit, and the `--jev off` escape-to-stop; it is measured on the same 18 + 28
 before any of it is called an improvement.
+
+## 2026-09-22 The risk verdict is code-first (contract 1.9 §2.4), and it is reversible on evidence
+
+`docs/LLM-LOOP-DESIGN.md` §2.4 ratified here before the S4 routers land, because it **contradicts a standing
+rule**. `docs/HARNESS-NEXT-DESIGN.md` §1.2 and the allow-list row this wave deletes
+(`scripts/jev-contract.mjs`: *"code deny-list first, a failed ask means ask/decline, never allow"*) say that a
+failed harm ask means ask-or-decline. Contract 1.9 says a failed harm ask yields the **code verdict**.
+
+**What is actually built, which is narrower than the sentence above.** Under `routers: 'on'` the risk stage has
+two code halves and they apply in different cases:
+
+- **Jev answered** → Jev's verdict stands, raised only by the **deny-list floor** (`codeRiskFloor`,
+  `src/jev/danger.ts dangerousCommand()`): a deny-listed command can never be released by a Score at level 0.
+  Every other step keeps the pre-1.9 verdict and the pre-1.9 reason string, byte for byte. Code can only tighten.
+- **No answer reached the step** (a drop, a `JevError`, a 503/529, an abort) → the **code verdict**
+  (`codeRiskVerdict`): the allow-list (`codeRiskReason`, a `read` / a verification run / a verified
+  regression-free patch / a recoverable revert / a `done` the engine's own passing run verified) yields `ok`;
+  the deny-list yields `review`; **anything else yields `review`** — an ask, never an allow. So the rule the old
+  row stated in prose is now the code path, and the only thing that changed is that a `read` and a verification
+  run no longer need a human when Jev is down.
+
+**The exposure, named.** A harmful command the deny-list misses **during a Jev outage**, in a case the allow-list
+cleared. The allow-list clears only actions whose safety is a harness-computed fact, and `dangerousCommand()`
+says in its own docstring that it is a deny-list, not a proof (`test/unit/jev/danger.test.ts` asserts the misses:
+`RM -RF /`, `rm   -rf /`, `git push -f`, `dd if=/dev/zero of=/dev/sda`, …).
+
+**Why it is acceptable.** Today three Jev 503s in a row end the run (`CONSECUTIVE_STAGE_FAILURE_LIMIT`), which is
+how `sympy-17139`, `django-15128` and `django-15315` died in the recorded head-to-head. A rule that turns an
+outage into a lost run is not a safety rule; it is a availability failure wearing one.
+
+**The audit trail, and the reversal trigger.** Every step records `StepRecord.riskSource` (`'code' | 'jev'`) and
+`StepRecord.jevUnavailable`, so every step where the code verdict stood is countable after the fact. The change
+reverses **on evidence**: if the §8 arms show any step executing a change under `riskSource: 'code'` that a human
+would have refused, or if `jevUnavailable` exceeds a per-run handful outside a real outage, the fallback returns
+to ask-or-decline (one line: `codeRiskVerdict` returns `review` for the allow-list cases too).
+
+**Scope.** `routers` defaults **off** in every mode on `main`; only the `jev-on-next` bench arm turns it on. In
+session mode `classifyBlocking` still offers the `jev-unreachable` pause — it is simply no longer the only
+outcome. Tests: `test/unit/loop/router.test.ts` ("risk yields the code verdict with jevUnavailable and
+riskSource 'code' when the decider throws", and the escalation rows), `test/unit/jev/danger.test.ts`.
+
+## 2026-09-22 Only Jev's failures are the router's drop branch (contract 1.9 §2.1 clause 4, as built)
+
+The adversarial review of `llm-loop-B-routers` found the S4 primitive collapsing four things that are not Jev
+failures into `dropped: 'error'`: an aborted step signal (a human pause, `/stop`, and the wall-time
+`BudgetError` the engine raises through that signal), a `JevModelDriftError`, and the `QuestionBuildError` of a
+malformed batch. The risk stage's `try { … } catch {}` did the same. The consequence was not a slower run but a
+*wrong* one: a run paused during the risk stage returned a code verdict, and the engine walked into `confirm()`
+and `takePreImages()` before its own `signal.aborted` guard unwound it.
+
+**Ratified: clause 4 covers Jev's failures and nothing else.** `isRouterFatal` (`src/jev/router.ts`) rethrows
+those four unchanged, exactly as they travel with `routers: 'off'`; a `JevError`, a 503/529, a deadline, an
+invalidated token and a malformed answer stay the one silent drop branch. "A Jev outage is slower, never wrong"
+is a statement about **Jev's** availability, and reading it as "nothing thrown inside a routed ask, ever" turns
+the harness's own stop conditions into ordering noise.
+
+Two consequences ratified with it. A dropped ask is **cancelled** (the router aborts the signal it handed the
+thunk) and a dropped answer **annotates nothing** (each routed stage's annotate returns early on an aborted
+signal or an invalidated token) — so the audit trail cannot say Jev's option was chosen on a step that refused
+it. And the switch is gated on `mode === 'jev-on'` before anything else is read: `runReplanStage` is the one
+replan site for every mode, so a process-wide `JEVCODE_ROUTERS` had been demoting `stop_and_report` and
+`task_impossible` in `llm-jev`, `jev-only` and `jev-off` — the arms the §8 head-to-head measures `jev-on`
+against.
+
+**What is deferred, and named rather than implied.** `EngineOptions.routers`, `StepTiming.routerWaitMs`,
+`StepRecord.router` / `riskSource` / `jevUnavailable` and `completionDecision` are tagged **RESERVED** in
+`src/core/types.ts`: their writer is the `askRecorded` seam in `src/loop/engine.ts`, and §7.1 allows one slot in
+that file at a time (slot C holds it). Until that post-C commit the expressible switch is `JEVCODE_ROUTERS=on`
+per bench worker process, and a dropped ask — cancelled at the router — still runs to completion inside
+`askRecorded` and charges its metering and its records to the step that issued it. The bench arm does not turn
+on before that commit lands; §7.5 carries the table.

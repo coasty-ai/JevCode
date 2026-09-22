@@ -15,13 +15,20 @@ import { isJsonObject, toJson } from '../core/json.js';
 import { sleep } from '../core/time.js';
 import type { Answer, AskOptions, AskResult, Decider, IntakeKind, JevRequest, Json, JsonObject, MockDeciderContext, MockDeciderOptions, Question, StageName } from '../core/types.js';
 import { choiceConfidence, scoreConfidence } from './confidence.js';
+import { DANGEROUS_COMMAND } from './danger.js';
 import { ESCAPE_KEY, PAIRED_PREFIX, QuestionBuildError, assertQuestionBatch } from './questions.js';
 import { isRetryableStatus } from './client.js';
 import { DEFAULT_JEV_MODEL, JEV_INPUT_USD_PER_TOKEN, JEV_TOKENS_PER_CHAR, JEV_TOKEN_OVERHEAD } from './types.js';
 import { validateJevResponse } from './validate.js';
 
-/** Commands the default risk heuristic treats as block-level (§5.5 destructive levels 3-4). */
-export const DANGEROUS_COMMAND = /rm -rf|git push --force|sudo|curl[^|]*\|\s*sh|mkfs|:\(\)\{/;
+/**
+ * Commands the default risk heuristic treats as block-level (§5.5 destructive levels 3-4).
+ *
+ * contract 1.9 (Fastlane) §2.4: the list itself moved to `src/jev/danger.ts` as production code (with
+ * `dangerousCommand()`, the reason-returning form the risk stage's code-first verdict uses). This is a
+ * RE-EXPORT of the same object, so the mock decider's answers are byte-identical to before the move.
+ */
+export { DANGEROUS_COMMAND } from './danger.js';
 
 // ---------------------------------------------------------------------------------------
 // TUI-DESIGN-2 §3.13: the intake heuristics (the mock's reading of a chat submission; never used outside --mock)

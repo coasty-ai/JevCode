@@ -14,6 +14,9 @@
 // contract 1.5 (2026-09-22): orchestration — decompose stage, manifest, agents, landing queue per docs/ORCHESTRATION-DESIGN.md §4.1; every item is optional or a new union member; Action, STOP_REASON_SET, exitCodeFor, MODES and CheckpointEnvelope.version are untouched.
 // contract 1.6 (2026-09-22): import — memory, rules, commands, MCP and the import plan per docs/IMPORT-DESIGN.md §7.1 row 1; the 22 section-1 shapes move here verbatim from src/import/types.ts, which re-exports them; every widening is an optional member or a new union member; CheckpointEnvelope.version stays 1.
 // contract 1.7 (2026-09-22): TUI round 4 — block rows, annotateBlock, diff detail kind, ui.renderer, peer view, per docs/TUI-DESIGN-4.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
+// contract 1.9 (2026-09-22): Fastlane — speculative routers (S4), the bounded sieve fast path (route R9) and the
+// S2 generator-path counters, per docs/LLM-LOOP-DESIGN.md §5; every item is optional or a default-preserving
+// widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
 /**
@@ -438,6 +441,16 @@ export interface StepTiming {
    * nothing waited.
    */
   coordWaitMs?: number;
+  /**
+   * contract 1.9 (Fastlane) §0.4 I3: blocked wall attributable to the speculative routers of §2 — the wall a router
+   * held the step for BEYOND the Jev ask the step was making anyway. It MUST read 0 (measured per route as
+   * `heldMs` minus the ask's own elapsed time, asserted per routed site in test/unit/jev/router.test.ts and
+   * test/unit/loop/router.test.ts, and due as a bench-wide row); the ask's own latency stays in `jevMs`. Absent = 0.
+   *
+   * RESERVED: written by the §7.5 engine seam (`commitStepRouters` in the same `finally` as the `StepRecord`),
+   * which is slot B's post-C commit to src/loop/engine.ts (§7.1). No run emits it yet.
+   */
+  routerWaitMs?: number;
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
@@ -520,6 +533,35 @@ export interface StepRecord {
    * escape diff finds. Reported, not refused; the critic's include/drop question reads it. Absent = nothing escaped.
    */
   escaped?: readonly string[];
+  /**
+   * contract 1.9 (Fastlane) §2: the router table's outcome for this step; bounded at 12 rows. Absent = no router ran.
+   *
+   * RESERVED with `StepTiming.routerWaitMs`, `riskSource` and `jevUnavailable` below: all four are written by the
+   * §7.5 engine seam (slot B's post-C commit to src/loop/engine.ts, §7.1). `src/loop/routers.ts` builds the
+   * ledger and `src/loop/stages/risk.ts` returns the other two today; the engine drops them until the seam lands.
+   */
+  router?: StepRouter;
+  /**
+   * contract 1.9 (Fastlane) §2.4: which verdict actually stood at the risk stage — the audit trail for the ratified
+   * code-first polarity. Absent on every run with `routers: 'off'`, where the verdict is Jev's exactly as before.
+   * RESERVED: see `router` above.
+   */
+  riskSource?: 'code' | 'jev';
+  /** contract 1.9 (Fastlane) §2.4: the harm ask was dropped or failed and the CODE verdict stood. Absent = false. RESERVED: see `router` above. */
+  jevUnavailable?: boolean;
+}
+
+/**
+ * contract 1.9 (Fastlane) §2: the router table's outcome for one step. `waitMs` is I3's assertion in the record:
+ * a router contributes zero blocked wall, so this sums to 0 on every step that is not a bug.
+ */
+export interface StepRouter {
+  issued: number;
+  applied: number;
+  dropped: number;
+  /** I3: MUST be 0 */
+  waitMs: number;
+  rows: readonly { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean }[];
 }
 
 /** docs/LLM-JEV-DESIGN.md §9.4 */
@@ -1609,6 +1651,19 @@ export interface EngineOptions {
    * prompt and event sequence byte-identical to a build without this wave (`engine-coordination-off.test.ts`).
    */
   coordination?: CoordinationOptions;
+  /**
+   * contract 1.9 (Fastlane) §0.3: the speculative routers of §2, and ONLY in `mode: 'jev-on'` — the wave carries
+   * three polarity changes (§2.4 risk, §2.5 the replan stop and completion) and the other modes are the controls
+   * the §8 head-to-head measures `jev-on` against. Default **'off'** everywhere on `main`: none of the three
+   * reaches a user run before that head-to-head decides.
+   *
+   * **RESERVED until the §7.5 engine seam** (review 2026-09-22, defect 3): nothing reads this member yet. The seam
+   * that lifts it off the run and hands it to `routersOn(mode, opt)` at the four routed sites lands in slot B's
+   * post-C commit to `src/loop/engine.ts` (§7.1 allows one slot in that file at a time, and slot C holds it).
+   * Until then the switch a bench arm can express is `JEVCODE_ROUTERS=on|off` in the worker's own process, read
+   * inside `src/loop/routers.ts` and gated on `jev-on` exactly as this member will be.
+   */
+  routers?: 'on' | 'off';
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 

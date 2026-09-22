@@ -29,11 +29,8 @@ import { join, relative } from 'node:path';
 const ALLOW = [
   { file: 'src/loop/engine.ts', sites: 2, why: 'askRecorded, plus the decomposeContext seam that forwards into it (contract 1.5): the one metered, recorded path to the decider — the guard, not call sites' },
   { file: 'src/loop/stages/decompose.ts', sites: 1, why: 'the `deps.ask` forwarder into ctx.ask/askRecorded (contract 1.5); the Choice is built, floored and guarded in src/orchestrate/split/rank.ts, which carries the four-clause block' },
-  { file: 'src/loop/stages/intent.ts', sites: 1, why: 'Q7 intent Choice: escape + paired Nouls, code fallback to investigate (INTENT_FALLBACK)' },
   { file: 'src/loop/stages/context.ts', sites: 1, why: 'Q2–Q6 context Nouls: ordering only, the code pre-filter enumerates the candidates' },
-  { file: 'src/loop/stages/risk.ts', sites: 2, why: 'Q19/Q20 harm-only: code deny-list first, a failed ask means ask/decline, never allow' },
-  { file: 'src/loop/stages/judge.ts', sites: 3, why: 'Q15/Q16/Q21/Q22: recorded-only in llm-jev; completion is isCompleteByFact()' },
-  { file: 'src/loop/stages/replan.ts', sites: 1, why: 'Q18 replan move: code fallback keep_going, the loop detector is code' },
+  { file: 'src/jev/router.ts', sites: 1, why: "contract 1.9 (Fastlane) §2.1: routeSpeculative's `input.ask(signal)` is the INJECTED thunk of the routed site — the stage's own ctx.ask, which reaches the decider through the engine's one metered path. The primitive builds no question and takes no decision; it only decides whether an answer arrives in time to be applied, and its single failure branch (deadline / JevError / 503 / abort / committed token) is what makes every routed site's clause-3 fallback structural. The four clauses belong to the calling site, which carries them." },
   { file: 'src/chat/lookup.ts', sites: 1, why: 'TUI-DESIGN-2 §3.6 chat lookup Nouls: no workspace mutation reachable from the answer' },
   { file: 'src/chat/intake.ts', sites: 1, why: 'TUI-DESIGN-2 §3.13 intake Choice: escape + can_* pairs, code fallback coding_task' },
   { file: 'src/undo/apply.ts', sites: 1, why: 'not Jev: the undo picker asks the human which checkpoint to restore' },

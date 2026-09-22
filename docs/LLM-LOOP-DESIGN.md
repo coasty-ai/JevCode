@@ -61,12 +61,25 @@ mode, and the env overrides are read inside `src/loop`, exactly as `JEVCODE_WARM
 | option | type | default on `main` | default in the bench arm | env override |
 |---|---|---|---|---|
 | `fastPath` | `'auto' \| 'off'` | `'auto'` when `mode === 'jev-on'`, `'off'` in every other mode | `'auto'` | `JEVCODE_FASTPATH=off\|auto` |
-| `routers` | `'on' \| 'off'` | **`'off'`** in every mode | `'on'` | `JEVCODE_ROUTERS=on\|off` |
+| `routers` | `'on' \| 'off'` | **`'off'`** in every mode | `'on'` (**`jev-on` only**) | `JEVCODE_ROUTERS=on\|off` |
 
 `routers` defaults **off on main** deliberately. The router wave carries three polarity changes — the risk
 verdict, the replan stop, and completion — and none of them may reach a user run before the head-to-head of §8
 decides. `fastPath` defaults `auto` in `jev-on` because it is purely additive: it can only propose, and it
 degrades to "the LLM proposes as usual".
+
+**The `routers` switch is gated on `mode === 'jev-on'`, first and unconditionally** (as built; review
+2026-09-22, defect 4). `runReplanStage` is the ONE replan site for every mode — unlike judge, which branches to
+`runCodeJudgeStage` for `llm-jev`, and risk, which branches to `runHarmOnlyRiskStage` — so a switch read only
+from the environment demoted `stop_and_report` and `task_impossible` in `llm-jev`, `jev-only` and `jev-off` as
+well: the control arms §8 exists to measure `jev-on` against. `routersOn(mode, opt?)` in `src/loop/routers.ts`
+returns false for every other mode before it reads the option or the env var.
+
+**`EngineOptions.routers` is RESERVED until the §7.5 engine seam** (as built; review 2026-09-22, defect 3). The
+four routed sites call `routersOn(ctx.mode)`; the argument that carries the option down to them is written by the
+same post-C commit to `src/loop/engine.ts` that lands the `askRecorded` seam, because §7.1 allows one slot in
+that file at a time. Until then the switch a bench arm can express is `JEVCODE_ROUTERS=on` in the worker's own
+process, under the same `jev-on` gate, and the contract comment on the member says so.
 
 **No new `EngineMode`.** `jev-on-next` is a *bench condition*, not a mode. `MODES` is untouched.
 
@@ -297,7 +310,8 @@ export interface RouteResult<T> {
   readonly appliedAt: number | null;
   readonly dropped: boolean;
   readonly id: RouterId;
-  readonly waitMs: 0;            // I3, in the type
+  readonly waitMs: number;       // I3, MEASURED: held wall minus the ask's own elapsed time (0, or a bug)
+  readonly heldMs: number;       // the raw wall entry -> settled race; what makes waitMs falsifiable
 }
 
 export interface RouteInput<T> {
@@ -320,13 +334,31 @@ Semantics, in order:
    `src/provider/sse.ts:539`).
 3. An answer landing inside `deadlineMs`, before the in-flight item settles, and **while `token.valid`** re-orders
    only the **pending tail**.
-4. A deadline, a `JevError`, a 503/529 or an abort are **one branch**: `dropped: true`, code order stands,
-   nothing thrown. This single failure branch is what makes "a Jev outage is slower, never wrong" a structural
-   property rather than a per-site promise.
+4. A deadline, a `JevError`, a 503/529, an invalidated token and a malformed answer are **one branch**:
+   `dropped: true`, code order stands, nothing thrown. This single failure branch is what makes "a Jev outage is
+   slower, never wrong" a structural property rather than a per-site promise. **It is JEV's failures only** (as
+   built; review 2026-09-22, defect 5): an aborted step signal (a human pause, `/stop`), a wall-time
+   `BudgetError`, a `JevModelDriftError` and a `QuestionBuildError` are the harness's own stop conditions and a
+   programming error, not an outage — `isRouterFatal` sends them back up unchanged, exactly as they travel with
+   routers off. Swallowing them is how an aborted run keeps executing stages, and how the risk stage handed the
+   engine a verdict to act on after the run had been paused.
 5. The thunk is **injected**: `ask` is the stage's existing `ctx.ask`, which already routes through
    `askRecorded`. No router touches `engine.ts` except through the one `askRecorded` seam slot B owns.
+6. A dropped ask is **cancelled** (as built; review 2026-09-22, defect 2): the router aborts the linked
+   controller whose signal it handed the thunk, naming the router and the drop in the reason, and the routed
+   stages' annotate callbacks return early when that signal is aborted or their step's token has been
+   invalidated. Until the `askRecorded` seam takes a per-call signal the *request* still runs on — what it may
+   no longer do is write a verdict into a dropped answer's rows.
 
-The `ask` is still made, still metered, still written to `jev.jsonl`. `jevMs` may grow. `routerWaitMs` reads 0.
+The listener the abort race installs on the caller's run-scoped signal is removed in the same `finally` as the
+timer and the `linkedAbort` unlink; one leaked listener per routed ask is ~120 by step 40 (review 2026-09-22,
+defect 1).
+
+The `ask` is still made, still metered, still written to `jev.jsonl`. `jevMs` may grow. `routerWaitMs` reads 0 —
+**measured, not written**: `heldMs` is the clock from entry to the settled race and `waitMs` is what is left of it
+after the ask's own elapsed time, less `ROUTER_SETTLE_SLACK_MS` (2 ms, the microtask hop `Date.now()` makes
+visible). A hard-coded `0` asserted nothing; the measured pair shows the deadline working as a ceiling (a 500 ms
+ask behind RL1's 250 ms deadline holds the step ~250 ms, and adds nothing to it).
 
 Two flavours. **Order routes** re-order a pending tail. **Branch routes** pick between branches whose code
 default is already running — R9 is the only one in this wave.
@@ -502,8 +534,22 @@ export interface StepToken { readonly step: number; valid: boolean; }
 
 The engine mints one per step in `runStep` and sets `token.valid = false` at step commit, in the same `finally`
 that writes the `StepRecord`. `routeSpeculative` checks `token.valid` immediately before applying an answer and
-records `dropped: true` otherwise. Unit test: *"a router answer landing after step commit is recorded dropped and
-mutates nothing"*, driven by a decider that resolves on a timer past the commit.
+records `dropped: true` otherwise. Unit tests: *"an answer landing after step commit is recorded dropped and
+applied to nothing"* (the primitive) and *"a router answer landing after step commit is dropped, and the
+committed step cannot be resurrected"* (the loop), both driven by a decider that resolves on a timer past the
+commit.
+
+**A committed step stays committed** (as built; review 2026-09-22, defect 6). `stepTokenFor` and `noteStepRoute`
+reach the step's state through `stateFor`, which used to re-create it lazily — so either call after
+`commitStepRouters` minted a FRESH VALID token for the committed step and a ledger nobody would ever commit, and
+`noteStepRoute` runs after every route resolves. `src/loop/routers.ts` keeps a bounded set (64) of closed
+`(runId, step)` keys: a closed key gets a permanently-invalid token and a throwaway ledger, `commitStepRouters`
+closes the key before its early return, and the two-step live LRU closes what it evicts.
+
+**What the token cannot promise on its own.** It guards *application*, at the router and again inside each routed
+stage's annotate callback. It does not stop the engine writing: `ctx.ask` takes no per-call signal until the §7.5
+seam, so a decider that ignores the signal the router aborts can still finish inside `askRecorded` and charge its
+metering, its `jev.jsonl` row and its `decision` events to the step that issued it.
 
 ---
 
@@ -1075,6 +1121,20 @@ over a recorded run directory showing the new columns non-empty; the `--concurre
   `risk.ts`, `judge.ts`, `replan.ts`), plus `subgoal.ts` tightened.
 - `test/unit/jev/router.test.ts`, `test/unit/jev/danger.test.ts` (table-driven),
   `test/unit/loop/router.test.ts`, `test/unit/loop/stages/**`, `test/unit/synth/search/router.test.ts`.
+
+**Deferred to slot B's post-C commit, and only that commit** (§7.1: no two slots hold `src/loop/engine.ts` at
+once, and slot C holds it while this lands). Everything below is written and tested except its engine seam:
+
+| what | where it waits | consequence until it lands |
+|---|---|---|
+| a per-call signal on `ctx.ask` / `askRecorded` | `engine.ts` | a dropped router ask is cancelled at the router but still runs to completion inside `askRecorded`, charging its metering, `jev.jsonl` row, `decision` events and persists to the step that issued it — after that step's `StepRecord` was written (review 2026-09-22, defect 2) |
+| `EngineOptions.routers` → `routersOn(ctx.mode, opt)` | `engine.ts`, `StageContext` | the switch a bench arm can express is `JEVCODE_ROUTERS=on` per worker process (defect 3) |
+| `commitStepRouters` in the `StepRecord` finally | `engine.ts` | `StepTiming.routerWaitMs`, `StepRecord.router`, `riskSource` and `jevUnavailable` have no writer: the §5.2 audit trail and the I3 bench row do not exist in a real run, and a step's ledger is reclaimed by the live LRU (defect 9) |
+| `completionDecision` at `completeAfter` | `engine.ts:4514` | RL5 is written and unit-tested; no run reaches it |
+| the retry waker keyed per in-flight request | `engine.ts:2930` | an abandoned router ask can still clobber the shown `retryWaker` / `retrying` slot (review defect 6 of the engine set, unconfirmed) |
+
+All five members are tagged **RESERVED** in `src/core/types.ts` so the contract does not claim a record it does
+not yet write.
 
 **Gates:**
 
