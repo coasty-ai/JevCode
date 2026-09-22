@@ -71,6 +71,27 @@ export const KEPT_MAX_ITEMS = 24;
 export const KEPT_ITEM_CHARS = 300;
 export const SUMMARY_MAX_CHARS = 6 * 1024;
 export const OTHER_SESSIONS_MAX_CHARS = 6 * 1024;
+/**
+ * contract 1.4 (COORDINATION-DESIGN §8.8 / §9, W2b follow-up): `## Other sessions` is filled from the coordination
+ * runtime's `currentFacts()`, so its size follows the number of peers rather than a fixed 6 KiB. It takes at most
+ * this share of the step's budget (`OTHER_SESSIONS_MAX_CHARS` still caps it absolutely): a peer's facts are the
+ * cheapest section to lose — they are advisory, they are re-derived every step, and the section says so when it
+ * clips. At the `CONTEXT_BUDGET_MIN_CHARS` floor this is 3,000 chars, which holds the ≤ 8 conflicts and ≤ 8
+ * requests `buildFacts` may carry plus the first messages.
+ */
+export const OTHER_SESSIONS_SHARE = 0.05;
+
+// --- §3.2 / §9.3 run claims (COORDINATION-DESIGN W0 item 1) -----------------------------
+/**
+ * contract 1.4: `RunMeta.claims[]` is capped at 64 — the FIRST row (the origin incarnation, which is the
+ * provenance) plus the newest 63 (§3.2, §4.6 row 1 as amended). Only the origin and the maximum are ever read, so
+ * pruning the middle is lossless.
+ *
+ * This is the file-header move of the duplicated copy in `src/coordination/claims.ts`: `src/checkpoint/**` writes
+ * the capped array and must not import the ledger to learn the bound, and this module imports nothing, which is
+ * exactly why it exists. `test/unit/core/limits-claims.test.ts` pins the two to the same number.
+ */
+export const MAX_CLAIMS_PER_RUN = 64;
 
 // --- §8.6 compaction ----------------------------------------------------------------------
 export const COMPACT_EVERY = 8;

@@ -32,7 +32,7 @@
  */
 import { dirname } from 'node:path';
 
-import type { Json, Sandbox } from '../../core/types.js';
+import type { Json, Sandbox, SynthSubwork } from '../../core/types.js';
 import { isJsonArray, isJsonObject, isString, parseJson } from '../../core/json.js';
 import type { LanePool } from '../sieve/lanes.js';
 import type { Goal, OracleModel, VerifyOutcome } from './types.js';
@@ -668,6 +668,33 @@ export type BehaviourProbe = (plausible: readonly VerifyOutcome[], inputs: reado
 export interface LaneProbeContext {
   sandbox: Pick<Sandbox, 'run'>;
   signal: AbortSignal;
+  /**
+   * contract 1.4 (W3) (COORDINATION-DESIGN §6, W3 item 28): the heartbeat's sub-work rows — one `probe` row per
+   * candidate being perturbed. Structural, so a `SynthesisContext` is still a `LaneProbeContext`; absent means
+   * every producer here is a no-op `?.` call.
+   */
+  coordination?: SynthSubwork;
+}
+
+/** §6.1: the id of one candidate's probe row. The candidate id is already unique within the run. */
+export function probeSubworkId(candidateId: string): string {
+  return `probe:${candidateId}`;
+}
+
+/**
+ * contract 1.4 (W3), §6 / W3 item 28: one `probe` sub-work row around a candidate's perturbation run. The `finally`
+ * is the whole point — a probe whose process throws or whose lane is disposed must not leave a row on the heartbeat.
+ */
+async function withProbeRow<T>(ctx: LaneProbeContext, candidateId: string, detail: string, fn: () => Promise<T>): Promise<T> {
+  const hook = ctx.coordination;
+  if (hook === undefined) return fn();
+  const id = probeSubworkId(candidateId);
+  hook.subworkStarted({ kind: 'probe', id, stage: 'guard', detail });
+  try {
+    return await fn();
+  } finally {
+    hook.subworkEnded(id);
+  }
 }
 
 /**
@@ -682,13 +709,15 @@ export function createLaneProbe(ctx: LaneProbeContext, pool: LanePool, program: 
     const out = new Map<string, string>();
     await Promise.all(
       plausible.map(async (o) => {
-        const sig = await pool.withLane(async (lane) => {
-          await pool.applyToLane(lane, o.applied, o.job.base.files);
-          const candidatePath = pool.pathInLane(lane, `${program}.py`);
-          const command = behaviourProbeCommand({ name: program, candidatePath, inputs, perInputTimeoutMs, pythonPath: [dirname(candidatePath)] });
-          const res = await ctx.sandbox.run(command, { timeoutMs: probeTimeoutMs(inputs.length, perInputTimeoutMs), maxOutputBytes: PROBE_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir });
-          return parseBehaviourProbe(res.stdout);
-        });
+        const sig = await withProbeRow(ctx, o.applied.candidate.id, `${program}: ${inputs.length} perturbed inputs`, () =>
+          pool.withLane(async (lane) => {
+            await pool.applyToLane(lane, o.applied, o.job.base.files);
+            const candidatePath = pool.pathInLane(lane, `${program}.py`);
+            const command = behaviourProbeCommand({ name: program, candidatePath, inputs, perInputTimeoutMs, pythonPath: [dirname(candidatePath)] });
+            const res = await ctx.sandbox.run(command, { timeoutMs: probeTimeoutMs(inputs.length, perInputTimeoutMs), maxOutputBytes: PROBE_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir });
+            return parseBehaviourProbe(res.stdout);
+          }),
+        );
         if (sig !== null) out.set(o.applied.candidate.id, sig);
       }),
     );
@@ -1229,12 +1258,14 @@ export function createLadderProbe(ctx: LaneProbeContext, pool: LanePool, perInpu
     if (calls.length === 0) return out;
     await Promise.all(
       plausible.map(async (o) => {
-        const sig = await pool.withLane(async (lane) => {
-          await pool.applyToLane(lane, o.applied, o.job.base.files);
-          const command = ladderReplayCommand({ tree: lane.dir, inputs: calls, perInputTimeoutMs });
-          const res = await ctx.sandbox.run(command, { timeoutMs: probeTimeoutMs(calls.length, perInputTimeoutMs), maxOutputBytes: PROBE_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir });
-          return parseLadderReplay(res.stdout);
-        });
+        const sig = await withProbeRow(ctx, o.applied.candidate.id, `ladder replay: ${calls.length} calls`, () =>
+          pool.withLane(async (lane) => {
+            await pool.applyToLane(lane, o.applied, o.job.base.files);
+            const command = ladderReplayCommand({ tree: lane.dir, inputs: calls, perInputTimeoutMs });
+            const res = await ctx.sandbox.run(command, { timeoutMs: probeTimeoutMs(calls.length, perInputTimeoutMs), maxOutputBytes: PROBE_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir });
+            return parseLadderReplay(res.stdout);
+          }),
+        );
         if (sig !== null) out.set(o.applied.candidate.id, sig);
       }),
     );

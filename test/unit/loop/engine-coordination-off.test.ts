@@ -75,6 +75,19 @@ describe('coordination off: a run without a ledger is the run before this wave',
     expect('subwork' in t.status).toBe(false);
   });
 
+  it('contract 1.4 (W0 item 1): a run with no ledger writes neither `claims` nor `claimEpochHigh` to run.json', async () => {
+    const h: Harness = await makeEngine({ turns: [...TURNS], probeGitState: repoState() });
+    try {
+      await h.engine.run();
+      const meta = h.store.meta;
+      expect(meta).not.toBeNull();
+      expect('claims' in meta!).toBe(false);
+      expect('claimEpochHigh' in meta!).toBe(false);
+    } finally {
+      h.cleanup();
+    }
+  });
+
   it('`ledger: null` is identical to absent: same prompts, same events, same rows', async () => {
     const [off, nulled] = await Promise.all([run(), run({ engine: { coordination: { ledger: null, claims: 'strict' } } })]);
     // `claims: 'strict'` is set on purpose: with no handle the mode is not even read, which is the property that

@@ -29,7 +29,7 @@
 import { RISK_BLOCK, RISK_REVIEW, levelProb, riskFromProbabilities, scoreConfidence } from '../../jev/confidence.js';
 import { noul, ref, score } from '../../jev/questions.js';
 import { clip } from '../../core/text.js';
-import { RESEARCH_ACTION_KINDS, RISK_DIMENSIONS, type Action, type Answer, type Intent, type JsonObject, type OrchestrationOptions, type OutcomeStatus, type Proposal, type ProposalEvidence, type Question, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TargetInfo, type TestCommand } from '../../core/types.js';
+import { RESEARCH_ACTION_KINDS, RISK_DIMENSIONS, type Action, type ActionKind, type Answer, type Intent, type JsonObject, type OrchestrationOptions, type OutcomeStatus, type Proposal, type ProposalEvidence, type Question, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TargetInfo, type TestCommand } from '../../core/types.js';
 import { patchTouchedPaths } from '../../provider/actions.js';
 // ORCHESTRATION-DESIGN §8.1 rule 2: the surface imports orchestration through the ONE facade, never a file under it.
 import { ownsPath, parseOwnGlob, type OwnGlob } from '../../orchestrate/index.js';
@@ -223,6 +223,27 @@ const SHELL_COMPOSITION = /[;&|<>`$(){}\\\n]/;
 export function isVerificationRun(command: string, test: TestCommand | null): boolean {
   if (test === null || SHELL_COMPOSITION.test(command)) return false;
   return isTestCommand(command, test);
+}
+
+/**
+ * docs/research/llm-jev/oos-analysis-2026-09-22.md change 6, the half left for this file: are Q20's two harm Scores
+ * worth a Jev request for THIS proposal?
+ *
+ * On the synth path a proposal is only `patch` / `run <the workspace test command>` / `done`, and over the 22-task
+ * out-of-sample slice `risk|destructive` and `risk|irreversible` were asked 51 times each for ONE distinct answer:
+ * a shadow-verified or best-guess patch and a `done` cannot lose state or be hard to undo in any way the §5.5 level
+ * texts can see, and a plain test run is already `ok` by code (`isVerificationRun`, Fix 2). The family therefore
+ * survives for exactly the case the analysis keeps — "destructive `run` actions outside the synth path" — which is
+ * every `run` whose command is not one plain invocation of the detected workspace test command. Outside the synth
+ * path there is no detected command (`testCommand === null`), so `isVerificationRun` is false and every `run` asks.
+ *
+ * `command` is the `run`'s command and null for every other action kind. Unasked dimensions are not "skipped": the
+ * caller records them at level 0 / confidence 1 exactly as `runHarmOnlyRiskStage` already did for the alignment two.
+ * Only the llm-jev harm-only stage consults this; jev-on's four Scores plus `matches_intent` are untouched.
+ */
+export function harmScoresDue(actionKind: ActionKind, command: string | null, testCommand: TestCommand | null): boolean {
+  if (actionKind !== 'run' || command === null) return false;
+  return !isVerificationRun(command, testCommand);
 }
 
 /** Fix 1: the engine's own passing, current test run behind a `done` whose plan claims nothing remains. */
@@ -698,6 +719,18 @@ async function runHarmOnlyRiskStage(ctx: StageContext, common: JsonObject, propo
   const code = codeRiskReason(proposal, targets, input.testCommand, input.verifiedCompletion);
   if (code !== null) {
     const risk = codeOkAssessment(intent.intent, code);
+    ctx.emit({ type: 'risk', step: ctx.step, risk });
+    return { risk, matchesIntent: 1, evidenceConsistent: null, targets };
+  }
+  // change 6: the harm Scores are a Jev request only for a `run` that is not the workspace test command. Everything
+  // else on the synth path records them where `runHarmOnlyRiskStage` already recorded the alignment two — level 0,
+  // confidence 1 — and says so in the reason, so the audit trail still names every dimension.
+  const action = proposal.action;
+  if (!harmScoresDue(action.kind, action.kind === 'run' ? action.command : null, input.testCommand)) {
+    const risk = codeOkAssessment(
+      intent.intent,
+      `${action.kind}: the harm Scores gate a \`run\` that is not the workspace test command; every other synth-path proposal records destructive and irreversible at level 0 (oos-analysis-2026-09-22 change 6: 51 questions each, 1 distinct answer)`,
+    );
     ctx.emit({ type: 'risk', step: ctx.step, risk });
     return { risk, matchesIntent: 1, evidenceConsistent: null, targets };
   }

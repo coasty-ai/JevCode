@@ -14,7 +14,7 @@ import { isAbsolute, join, normalize, posix, sep } from 'node:path';
 import { writeFileAtomic, writeFileAtomicSync } from '../core/atomic.js';
 import { sha256Hex } from '../core/hash.js';
 import { isJsonArray, isJsonObject, parseJson } from '../core/json.js';
-import { OUTPUTS_DIR_MAX_BYTES, OUTPUT_FILE_MAX_CHARS } from '../core/limits.js';
+import { MAX_CLAIMS_PER_RUN, OUTPUTS_DIR_MAX_BYTES, OUTPUT_FILE_MAX_CHARS } from '../core/limits.js';
 import { headTail } from '../core/text.js';
 import type {
   CheckpointState,
@@ -342,6 +342,19 @@ export function isCheckpointState(v: unknown): v is CheckpointState {
     isNonNegInt(v['resumes']) &&
     typeof v['updatedAt'] === 'string'
   );
+}
+
+/**
+ * contract 1.4 (COORDINATION-DESIGN §3.2 / §4.6 row 1 as amended): `RunMeta.claims[]` keeps the FIRST row — the
+ * origin incarnation, which is the provenance — and the newest `MAX_CLAIMS_PER_RUN - 1`. Only the origin and the
+ * maximum are ever read, so pruning the middle is lossless.
+ *
+ * The same rule as `src/coordination/claims.ts capClaims`, computed here because `src/checkpoint/**` must not import
+ * the ledger to write a bounded array; `src/core/limits.ts` holds the one number both read.
+ */
+export function capRunClaims<T>(rows: readonly T[]): T[] {
+  if (rows.length <= MAX_CLAIMS_PER_RUN) return [...rows];
+  return [rows[0] as T, ...rows.slice(rows.length - (MAX_CLAIMS_PER_RUN - 1))];
 }
 
 export function isRunMeta(v: unknown): v is RunMeta {
@@ -725,6 +738,11 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
           ...(patch.git !== undefined ? { git: patch.git } : {}),
           // contract 1.4 (COORDINATION-DESIGN §7.4): `ended` replaces as a scalar; null (a --force reopen) clears it
           ...(patch.ended !== undefined ? { ended: patch.ended } : {}),
+          // contract 1.4 (W0 item 1, §3.2 / §4.6 row 1 as amended): `claims` APPENDS like `overrides`/`resumes` and is
+          // then capped at the first row plus the newest 63; `claimEpochHigh` is a monotonic MAX, never a replace — a
+          // late write from an older incarnation must not lower a mark a newer one already raised.
+          ...(patch.claims === undefined ? {} : { claims: capRunClaims([...(current.claims ?? []), ...patch.claims]) }),
+          ...(patch.claimEpochHigh === undefined ? {} : { claimEpochHigh: Math.max(current.claimEpochHigh ?? 0, patch.claimEpochHigh) }),
         };
         await writeMeta(next);
       });
