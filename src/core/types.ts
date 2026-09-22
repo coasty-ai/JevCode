@@ -443,8 +443,12 @@ export interface StepTiming {
   coordWaitMs?: number;
   /**
    * contract 1.9 (Fastlane) §0.4 I3: blocked wall attributable to the speculative routers of §2 — the wall a router
-   * held the step for BEYOND the Jev ask the step was making anyway. It MUST read 0 (asserted per routed site in
-   * test/unit/jev/router.test.ts and as a bench-wide row); the ask's own latency stays in `jevMs`. Absent = 0.
+   * held the step for BEYOND the Jev ask the step was making anyway. It MUST read 0 (measured per route as
+   * `heldMs` minus the ask's own elapsed time, asserted per routed site in test/unit/jev/router.test.ts and
+   * test/unit/loop/router.test.ts, and due as a bench-wide row); the ask's own latency stays in `jevMs`. Absent = 0.
+   *
+   * RESERVED: written by the §7.5 engine seam (`commitStepRouters` in the same `finally` as the `StepRecord`),
+   * which is slot B's post-C commit to src/loop/engine.ts (§7.1). No run emits it yet.
    */
   routerWaitMs?: number;
 }
@@ -529,14 +533,21 @@ export interface StepRecord {
    * escape diff finds. Reported, not refused; the critic's include/drop question reads it. Absent = nothing escaped.
    */
   escaped?: readonly string[];
-  /** contract 1.9 (Fastlane) §2: the router table's outcome for this step; bounded at 12 rows. Absent = no router ran. */
+  /**
+   * contract 1.9 (Fastlane) §2: the router table's outcome for this step; bounded at 12 rows. Absent = no router ran.
+   *
+   * RESERVED with `StepTiming.routerWaitMs`, `riskSource` and `jevUnavailable` below: all four are written by the
+   * §7.5 engine seam (slot B's post-C commit to src/loop/engine.ts, §7.1). `src/loop/routers.ts` builds the
+   * ledger and `src/loop/stages/risk.ts` returns the other two today; the engine drops them until the seam lands.
+   */
   router?: StepRouter;
   /**
    * contract 1.9 (Fastlane) §2.4: which verdict actually stood at the risk stage — the audit trail for the ratified
    * code-first polarity. Absent on every run with `routers: 'off'`, where the verdict is Jev's exactly as before.
+   * RESERVED: see `router` above.
    */
   riskSource?: 'code' | 'jev';
-  /** contract 1.9 (Fastlane) §2.4: the harm ask was dropped or failed and the CODE verdict stood. Absent = false. */
+  /** contract 1.9 (Fastlane) §2.4: the harm ask was dropped or failed and the CODE verdict stood. Absent = false. RESERVED: see `router` above. */
   jevUnavailable?: boolean;
 }
 
