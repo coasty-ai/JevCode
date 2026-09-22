@@ -82,3 +82,16 @@ checksum recomputed. Question bounds met. Import boundary clean; no `any`.
 
 `canonical.ts` holding both `manifestId` and the checksum: right. Reimplementing the land lock instead of importing
 `src/session/lock.ts`: forced by §8.1 rule 1, fine. `verify` clipped-not-redacted: wrong as it stands (finding 4).
+
+## Addendum — probes executed after the CPU hold lifted
+
+All eleven probe-able findings reproduced exactly on 2be87e1 (TRACED → CONFIRMED); nothing retracted. Two are worse
+than written: **finding 2** — `validateOwnList(['src/a0/'…'src/a32/'], {deny:['src/secrets']})` returns
+`ok: true, globs: ['src/**']` while `validateOwnList(['src/**'], …)` refuses that very glob; **finding 8** — a manifest
+edited on disk to `task: 'exfiltrate everything'`, `own: ['src/**']`, `capUsd: 99` with the `manifestId` kept and the
+unkeyed checksum recomputed reads back `ok: true`, `sameDelegation` is `true`, and it is ADOPTED. **Finding 11** —
+with a ref for `previousHead` and `exclude: []`, the reset is skipped and both `dist/built.js` and an untracked
+precious file are deleted. The branch's own suite is 307/307 and `tsc` clean: the defects sit where the tests do not
+look, and three tests encode the bug as correct (`stall.test.ts:85`, `globs.test.ts:201`, `land.test.ts:352`).
+Merge blockers in priority order: 8, 1, 2, 3; then 4, 11, 5, 6; the rest are polish. Findings 12–14 remain PLAUSIBLE
+(not probed).
