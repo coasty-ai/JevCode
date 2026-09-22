@@ -64,7 +64,8 @@ export type RunPhase = 'starting' | 'running' | 'pausing' | 'paused' | 'blocked'
  * §12.0.2 (a): the pause point. ONE definition — `src/core/types.ts` `// contract 1.4` (landed at 0c7bd79); the
  * coordination module re-exports it so `Heartbeat.pausePoint?` and `checkPausePoint` bind to the canonical shape.
  */
-export type { PausePoint, PausePointReason } from '../core/types.js';
+import type { PausePoint, PausePointReason } from '../core/types.js';
+export type { PausePoint, PausePointReason };
 
 /** §6.1 one sub-work row of a heartbeat (≤ 16) */
 export interface SubworkEntry {
