@@ -345,7 +345,7 @@ describe('decide: the §2.6 table', () => {
     const unchanged = outcome(npCands[1]!, NP_BASE, { subset: NP_BASELINE });
     const timedOut = outcome(npCands[2]!, NP_BASE, { subset: summary({ passed: 0, failing: ['<test run>'], timedOut: true }), status: 'timeout' });
     const d = await decide([regressed, unchanged, timedOut], mem, NP_GOAL, throwingAsk);
-    expect(d).toEqual({ kind: 'continue', plausible: 0, clusters: 0, arbitrated: false, requests: 0, fallbacks: [], probeError: null, held: null, signals: [], dropped: 0, codeRule: null });
+    expect(d).toEqual({ kind: 'continue', plausible: 0, clusters: 0, arbitrated: false, requests: 0, fallbacks: [], probeError: null, held: null, signals: [], dropped: 0, structuralDrops: 0, codeRule: null });
     expect(improvedBase(mem)).toBeUndefined();
     expect(guardState(mem).suspect).toBeNull();
   });
@@ -484,7 +484,7 @@ describe('decide: the §2.6 table', () => {
     const mem = createGuardMemory(DFS_BASE);
     const ask = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.1 }, escape: 0.9, noul: { 'nextnode for nextnode in node.successors': 0.06, 'search_from(goalnode) for nextnode in node.successors': 0.03, 'node for nextnode in node.successors': 0.04, 'any for nextnode in node.successors': 0.04, 'goalnode for nextnode in node.successors': 0.04 } }));
     const d = await decide(dfsPlausible(), mem, DFS_GOAL, ask);
-    expect(d).toEqual({ kind: 'continue', plausible: 7, clusters: 1, arbitrated: true, requests: 1, fallbacks: [], probeError: null, held: null, signals: [], dropped: 7, codeRule: null });
+    expect(d).toEqual({ kind: 'continue', plausible: 7, clusters: 1, arbitrated: true, requests: 1, fallbacks: [], probeError: null, held: null, signals: [], dropped: 7, structuralDrops: 0, codeRule: null });
     expect(guardState(mem).suspect).toBeNull();
     expect(guardState(mem).pending).toBeNull();
     expect(guardState(mem).fallbacks).toBeNull();
@@ -1396,11 +1396,17 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, sig.get(o.applied.candidate.id) ?? '']));
     const notes: string[] = [];
     const passers = [...statsGuards(), statsOverfit()];
-    const d = await decide(passers, mem, g, throwingAsk, { oracle: oracle({ runner: 'pytest' }), probe, inputs: () => Promise.resolve(statsInputs()), budget: ample, note: (n) => notes.push(n) });
+    // Ranked change 5 (OOS 2026-09-22 Q6, record 20260922-014311-65ul43qh): `values.remove(mid)`
+    // mutates a parameter the pre-patch `median` left alone, so the structural rule refuses it
+    // BEFORE any clustering — the probe majority below is no longer what keeps it out of the
+    // commit, and the four guards are left as one behaviour cluster for the residual arbitration.
+    const ask = scriptedAsk(arbitrationScript({ choice: { 'if not values:': 0.8 }, escape: 0.1, noul: { 'if not values:': 0.8, 'if len(values) == 0:': 0.6, 'if not len(values):': 0.6, 'if len(list(values)) == 0:': 0.6 } }));
+    const d = await decide(passers, mem, g, ask, { oracle: oracle({ runner: 'pytest' }), probe, inputs: () => Promise.resolve(statsInputs()), budget: ample, note: (n) => notes.push(n) });
     expect(d.kind).toBe('commit');
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('stats_guard_raise');
-    expect(d).toMatchObject({ plausible: 5, clusters: 2, arbitrated: false, requests: 0, held: null, codeRule: 'probe_majority' });
-    expect(d.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['stats_remove']);
+    expect(d).toMatchObject({ plausible: 4, clusters: 1, structuralDrops: 1, held: null, codeRule: null });
+    expect(d.fallbacks.map((o) => o.applied.candidate.id)).not.toContain('stats_remove');
+    expect(notes.some((n) => n.includes('stats_remove') && n.includes('mutates in place a parameter the pre-patch code left alone'))).toBe(true);
     // the rule the v2 run used would have committed the mutation (fewest added special cases: +0c/+0l against +1c/+1l)
     const clusters = clusterByBehaviour(passers, sig);
     expect(clusters.map((c) => c.members.length)).toEqual([4, 1]);
@@ -1412,7 +1418,9 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     expect(maj.differing).toBe(3);
     expect([...maj.agreement.values()]).toEqual([3, 0]);
     expect(maj.winner?.representative.applied.candidate.id).toBe('stats_guard_raise');
-    expect(notes.some((n) => n.includes('agrees with the passers\' majority on the perturbed inputs (cluster_1 3/3, cluster_2 0/3'))).toBe(true);
+    // the class A′ rule still names the guard cluster on the full set; it is simply no longer the
+    // rule that keeps `values.remove(mid)` out of the commit (the structural refusal is)
+    expect([...maj.agreement.entries()].map(([id, n]) => `${id}=${n}`)).toEqual(['cluster_1=3', 'cluster_2=0']);
   });
 
   it('detect_cycle: three seed clusters (2/2/1) the probe cannot separate — the break-guard is not committed by its +1c/+0l minimum; Q15/Q16 decides on the perturbation table', async () => {
@@ -1453,14 +1461,16 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     const maj = probeMajorityCluster(clusters, sig);
     expect(maj.differing).toBe(3);
     expect(maj.winner).toBeNull();
-    // so the decision is Jev's, on the table, and the break guard is not it
-    expect(d).toMatchObject({ kind: 'commit', plausible: 5, clusters: 3, arbitrated: true, requests: 1, codeRule: null, held: null });
+    // Ranked change 5 (OOS 2026-09-22 Q6, record 20260922-013715-nlsygcax): both `guard_empty_break`
+    // members put a `break` in the `while True:` the pre-patch function could only `return` out of,
+    // so each adds an implicit-None exit and is refused before clustering. What is left are the two
+    // returning guards and the donor, whose probe majority commits `dc_return` by code — Q15/Q16 is
+    // not reached at all, and the break guard is never a pick or a fallback.
+    expect(d).toMatchObject({ kind: 'commit', plausible: 3, clusters: 2, arbitrated: false, requests: 0, structuralDrops: 2, codeRule: 'probe_majority', held: null });
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('dc_return');
-    expect(ask.calls).toHaveLength(1);
-    const state = ask.calls[0]!.state as { perturbations?: { outputs: Record<string, string> }[]; perturbations_note?: string };
-    expect(state.perturbations_note).toBe(PERTURBATION_NOTE);
-    expect((state.perturbations ?? []).length).toBeGreaterThan(0);
-    expect(notes.some((n) => n.includes('the probe separates none of them') && n.includes('the special-case count does not decide here'))).toBe(true);
+    expect(ask.calls).toHaveLength(0);
+    expect(d.fallbacks.map((o) => o.applied.candidate.id)).not.toContain('dc_break');
+    expect(notes.filter((n) => n.includes('adds a path that leaves a function with an implicit `return None`'))).toHaveLength(2);
   });
 
   it('the probe majority still decides a three-cluster split when one behaviour is the majority; an LLM member or unequal support keeps the count rule', async () => {
@@ -1487,7 +1497,9 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     const maj = probeMajorityCluster(clusterByBehaviour(passers, sig), sig);
     expect([...maj.agreement.entries()].map(([id, n]) => `${id}=${n}`)).toEqual(['cluster_1=2', 'cluster_2=0', 'cluster_3=0']);
     const d = await decide(passers, mem, g, throwingAsk, { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample });
-    expect(d).toMatchObject({ kind: 'commit', clusters: 3, arbitrated: false, requests: 0, codeRule: 'probe_majority' });
+    // ranked change 5 refuses `b1` (a `break` out of `while True:` = an implicit-None exit) before
+    // clustering, so the probe majority decides between the two clusters that are left
+    expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: false, requests: 0, structuralDrops: 1, codeRule: 'probe_majority' });
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('a1');
     // an LLM member in any cluster, or supports that differ, leave `fewestSpecialCases` in charge
     const llm = plausibleOutcome(candidate(siteAt(DETECT_CYCLE, 9, 'insert'), '        if hare.successor.successor is None:\n            return False', { id: 'llm:dc', source: 'llm', op: 'sample_0_0', prior: 1 }), DC_BASE);

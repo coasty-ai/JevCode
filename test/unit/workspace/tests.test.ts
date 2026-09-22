@@ -261,6 +261,7 @@ describe('scope builders', () => {
   });
 
   it('runners without a subset syntax have no builder', () => {
-    for (const r of ['jest', 'vitest', 'npm', 'cargo', 'go', 'unknown'] as const) expect(scopeBuilderFor(r, 'x')).toBeNull();
+    // jest/vitest/cargo/go gained builders in HARNESS-NEXT wave S1 (test/unit/workspace/tests-scope.test.ts)
+    for (const r of ['npm', 'unknown'] as const) expect(scopeBuilderFor(r, 'x')).toBeNull();
   });
 });

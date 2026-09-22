@@ -71,7 +71,7 @@ export function initialDynamic(): HeartbeatDynamic {
     spend: { generatorUsd: 0, jevUsd: 0, sessionUsd: null, capUsd: 0 },
     tokens: { used: 0, cap: null },
     wallMs: 0,
-    context: { pct: 0, files: 0, historyEntries: 0, summaryAt: null, tokensInWindow: 0, windowBudget: 0, compactions: 0 },
+    context: { pct: 0, files: 0, historyEntries: 0, summaryAt: null, tokensInWindow: 0, budgetTokens: 0, windowTokens: 0, compactions: 0 },
   };
 }
 

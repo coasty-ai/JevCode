@@ -256,6 +256,11 @@ export async function rankSplits(input: RankInput, deps: { ask: AskFn | null }):
   let answers: Record<string, Answer>;
   let rows: Decision[];
   try {
+    // jev-contract: WHICH_SPLIT — the split ranking (ORCHESTRATION-DESIGN §3.5; contract 1.5)
+    //   escape: planDecomposeQuestions builds the Choice through src/jev/questions.ts choice(), so SPLIT_ESCAPE (`none_of_these`) and the paired `can_` Nouls are always present; the options are the splits the enumerators produced
+    //   guard: every later line narrows — the PAIRED_NOUL_FLOOR check, SPLIT_KIND_OF, the winner-must-be-a-surviving-split lookup, then applyDropRule over the deny list and the fold, then the code critic downstream
+    //   fallback: fellBack()/noSplit() answer `no_split` on a reject, a missing or non-Choice answer, a floor miss or an unknown kind; test: test/unit/orchestrate/rank.test.ts
+    //   no-gating: ordering only — the answer divides work among agents; correctness stays the harness's own verification and the landing queue's merge
     const got = await deps.ask(state, plan.questions);
     answers = got.answers;
     rows = got.rows;

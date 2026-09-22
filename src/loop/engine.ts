@@ -17,18 +17,23 @@
 import { appendFileSync } from 'node:fs';
 import { mkdir, realpath } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { join, sep } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import { createEmitter } from '../core/events.js';
 import { sha12 } from '../core/hash.js';
 import { toJson } from '../core/json.js';
 import { clip } from '../core/text.js';
 import { monotonicNow, nowIso, sleep } from '../core/time.js';
 // TUI-DESIGN §8.6 (F7): the steer bounds are defined once, next to PendingDirective; re-exported below under the engine's names
-import { DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
+import { DEFAULT_COMMIT_IDENTITY, DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type { AskResult,
   AckOutcome,
   Action,
   ActionOutcome,
+  AgentRef,
+  OrchestrationOptions,
+  PlanDraft,
+  SandboxLevel,
+  SandboxProfile,
   Answer,
   BlockingAnswer,
   BlockingRequest,
@@ -63,6 +68,8 @@ import type { AskResult,
   JsonObject,
   JudgeResult,
   PauseOptions,
+  EngineRunPhase,
+  MessageDisposition,
   PausePoint,
   PausePointReason,
   PendingDirective,
@@ -78,6 +85,7 @@ import type { AskResult,
   RunCounters,
   RunGitMeta,
   RunLimits,
+  RunClaimRow,
   RunMeta,
   RunResult,
   SampleOptions,
@@ -88,11 +96,14 @@ import type { AskResult,
   SpendSource,
   StageName,
   SteerResult,
+  StepCoord,
   StepRecord,
   StepTiming,
   StepUsage,
   StopReason,
   StoppedAt,
+  SubworkEntry,
+  SynthSubwork,
   SynthesisContext,
   Synthesizer,
   TargetInfo,
@@ -111,7 +122,8 @@ import type { AskResult,
   RecentStepsUsage,
 } from '../core/types.js';
 import { AbortError, CheckpointError, ConfigError, GeneratorResponseError, JevCodeError, JevHttpError, JevModelDriftError, JevResponseError, ProviderHttpError, isAbortError, isBudgetError, isJevCodeError, toJevCodeError, type BudgetKind } from '../errors.js';
-import { CHECKPOINT_FILES, CONTEXT_SUMMARY_FILE, classifyDiskError, outputFileName } from '../checkpoint/store.js';
+import type { DiskError } from '../checkpoint/store.js';
+import { CHECKPOINT_FILES, CONTEXT_SUMMARY_FILE, attachDegradeListener, classifyDiskError, outputFileName } from '../checkpoint/store.js';
 import { fileMemoryFromPostImage, writePostImages, writePreImages, type ImageSource, type PostImage, type PreImageResult } from '../checkpoint/images.js';
 import { hasContextStore, readContextExtension, type ContextCheckpointExtension } from '../checkpoint/types.js';
 import { CACHED_SAMPLES_MAX, CACHED_SAMPLE_MAX_CHARS, PARTIAL_TEXT_MAX_CHARS, REPLAY_HASH_MAX_FILES, hashTargets, parseStepCache, promptHashOf, proposalPaths, stepCacheName, stepCacheRel, stepCacheSupersededName, verifyTargets, type CachedSample, type StepCache } from '../checkpoint/replay.js';
@@ -119,23 +131,32 @@ import { CACHED_SAMPLES_MAX, CACHED_SAMPLE_MAX_CHARS, PARTIAL_TEXT_MAX_CHARS, RE
 import { compactCode, compactionDue, isContextSummary, type CompactionTrigger } from './context/compaction.js';
 import { FilesInView, boundMemory, dropFile, evictFiles, forgetFile, noteShown, rememberFile, touchFile, workspaceFilesInViewDeps } from './context/context-cache.js';
 import { buildHistoryEntry, foldHistoryRecord, foldableCount, needsOutputFile, outputRefFor, outputView, parseOutputRef, planHistory, pushHistory, renderHistory, seedHistoryEntry, tierText, type HistoryPlan, type OutputView } from './context/history.js';
+import { AGENT_MEM_BYTES, MIN_FREE_BYTES, ORCHESTRATION_DEPTH_MAX } from '../core/limits.js';
 import { CONTEXT_BUDGET_MIN_CHARS, FILE_CACHE_MAX_ENTRIES, HISTORY_MID, HISTORY_SHARE, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, OUTPUT_READ_PREFIX, resolveContextPolicy, type ResolvedContextPolicy } from './context/limits.js';
-import { computeContextUsage, restoredContextUsage } from './context/meter.js';
+import { computeContextUsage, contextWarnCrossed, restoredContextUsage } from './context/meter.js';
 import type { ContextReadHooks, ContextSummary } from './context/types.js';
 import { acquireRunLock, releaseRunLock } from '../session/lock.js';
 import { seedNoticeText } from '../session/seed.js';
-import { nextBudgetWarn, seedAnnounced, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
+// [D6]: `sessionRemainingUsd`'s third argument (heldUsd) landed with d8490fa, so the engine reads the ONE
+// definition instead of the local twin it carried while that was in flight.
+import { nextBudgetWarn, seedAnnounced, sessionRemainingUsd, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
 import { checkpointDegradedDetail, driftDetail, keyRejectedDetail } from '../tui/blocking/lines.js';
 import { EQUIVALENT_IDS, equivalentIdsRow, equivalentJevModel, jevModelMatches, normaliseModelId, sameJevWeights } from '../jev/providers.js';
 import { VERSION } from '../version.js';
 import { headDriftWarning, headMoved, notRepoState, probeGitState as realProbeGitState, toRunGitMeta } from '../workspace/gitstate.js';
+import { runGit } from '../workspace/git.js';
 import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
-import { buildSystemPrompt, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput } from '../provider/prompts.js';
+import { buildSplitMessage, buildSystemPrompt, memoryIndexChars, splitToolsFor, PROPOSE_SPLIT_TOOL_NAME, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput, type PromptMemoryBuild } from '../provider/prompts.js';
+// contract 1.6 (IMPORT-DESIGN §2.10.4, §7.5 row 42): the per-step rule/topic matcher
+import { selectMemory } from './context/memory.js';
+// contract 1.5 (§3.4 rule 9): a COUNT of secret hits, never a value
+import { detectSecrets } from '../core/redact.js';
 import { linkedAbort } from '../core/abort.js';
 import { lookupPricing } from '../config/defaults.js';
 import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
+import { stepTimeline, writeTimelineFile } from '../perf/timeline.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
 import { PLAN_MAX_HARNESS_PROBLEMS, applyPlanDraft, boundHarnessProblems, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
@@ -144,13 +165,37 @@ import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTran
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
 import { isComplete, isCompleteByFact, type CompletionFactInput } from './stages/complete.js';
 import { prefilterCandidates, runContextStage } from './stages/context.js';
+// contract 1.5 (ORCHESTRATION-DESIGN §3, §8.2 D1 item 15): the decompose stage
+import { checkpointOrchestration, decomposeShutByOptions, measureRepoFacts, parseSplitDraft, runDecomposeStage, splitPrefixTree, type DecomposeFacts, type DecomposeStageContext } from './stages/decompose.js';
 import { runExecuteStage } from './stages/execute.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
 import { runJudgeStage } from './stages/judge.js';
 import { runProposeStage, type ProposeStageResult } from './stages/propose.js';
 import { runReplanStage } from './stages/replan.js';
+import { createCachingDecider, type CachingDecider } from '../jev/cache.js';
 import { runSynthStage } from './stages/synth.js';
-import { computeTargets, runRiskStage, MATCHES_INTENT_THRESHOLD, type VerifiedCompletion } from './stages/risk.js';
+import { computeTargets, isOwnershipRefusal, ownershipRefusal, runRiskStage, MATCHES_INTENT_THRESHOLD, SCOPE_FIGHT_AFTER, type VerifiedCompletion } from './stages/risk.js';
+// contract 1.5 (ORCHESTRATION-DESIGN §8.1 rule 2): orchestration is imported through the ONE facade, never a file below it.
+import {
+  commitStep,
+  computeAddSet,
+  manifestPath,
+  nodeManifestIo,
+  nodePreflightProbe,
+  preflight,
+  type PreflightProbe,
+  readManifest,
+  resolveVerification,
+  sameDelegation,
+  DEFAULT_SPLIT_POLICY,
+  type DraftSplit,
+  type GateReason,
+  type Manifest,
+} from '../orchestrate/index.js';
+import { escapedLine, escapedPaths, landPreflightOffer, launchOverlap, launchProposal, mergeAction, seedFor, type LandPreflightOffer, type LaunchAnswer, type LaunchInput } from './launch.js';
+// contract 1.4 (W2b), COORDINATION-DESIGN §4 / §5 / §6: the engine's ONE import of the coordination ledger.
+// `createCoordination` returns null when there is no handle, which is the whole of "coordination off".
+import { SUBWORK_MAX, coordinates, createCoordination, type CoordinateOutcome, type CoordinationRuntime, type HeartbeatBase, type HeartbeatDynamic } from './coordination.js';
 
 // ---------------------------------------------------------------------------------------
 // Dependency injection (concurrently written modules)
@@ -190,9 +235,18 @@ export interface EngineDeps {
   loadForResume?: ResumeLoader;
   /** default: workspace/gitstate.ts probeGitState (TUI-DESIGN §12.1); a probe that rejects reads as `git-missing` */
   probeGitState?: GitProbe;
+  /**
+   * contract 1.4 (W2b), ORCHESTRATION-DESIGN §3.6: the resource pre-flight's seam. Default `nodePreflightProbe()`,
+   * which reads `statfs`, `os.freemem()`, `availableParallelism()`, `du -sk` and the soft `RLIMIT_NOFILE` — five facts
+   * that differ per machine and per minute, so the P9 delegate pause point and the §8.3 row-12 gate could not be
+   * driven end to end without injecting them. `preflight` itself was already pure; this was the last impure edge on
+   * the decompose path, and it sat INSIDE `decomposeFacts` where no `EngineDeps` could reach it.
+   */
+  preflightProbe?: PreflightProbe;
 }
 
 interface ResolvedDeps {
+  preflightProbe: PreflightProbe;
   createCheckpointStore: CheckpointStoreFactory;
   createWorkspace: WorkspaceFactory;
   createSandbox: SandboxFactory;
@@ -225,7 +279,10 @@ async function resolveDeps(deps: EngineDeps): Promise<ResolvedDeps> {
     }
   }
   const probeGitState: GitProbe = deps.probeGitState ?? ((root) => realProbeGitState(root));
-  return { createCheckpointStore, createWorkspace, createSandbox, newRunId, loadForResume, probeGitState };
+  // §3.6: resolved ONCE per engine, not once per gate — an injected probe must be the same object across the run or
+  // a test cannot count its calls, and `nodePreflightProbe()` is a closure bag with no state worth rebuilding.
+  const preflightProbe: PreflightProbe = deps.preflightProbe ?? nodePreflightProbe();
+  return { createCheckpointStore, createWorkspace, createSandbox, newRunId, loadForResume, probeGitState, preflightProbe };
 }
 
 async function storeBasedLoadForResume(_runsDir: string, _runId: string, _redact: Redact, store: CheckpointStore): Promise<ResumeLoad> {
@@ -246,6 +303,12 @@ export { DIRECTIVE_MAX_CHARS };
 /** TUI-DESIGN §8.6 annotate(): a renderer-originated line is clipped at 600 and its TUI-only body at 12,000 (through sanitizeStream) */
 export const ANNOTATE_TEXT_MAX_CHARS = 600;
 export const ANNOTATE_DETAIL_MAX_CHARS = 12_000;
+/**
+ * contract 1.7 item 2 (TUI-DESIGN-4 §3.5 D-W, edge 2): `annotateBlock` logs at most this many BODY rows, then one
+ * `… +N more rows`. A 42-row `/config` issued while a run is live would otherwise be 42 events through the redacting
+ * emit and 42 lines in `transcript.log`, which is a support artefact, not a pager mirror.
+ */
+export const BLOCK_LOG_MAX = 24;
 /** TUI-DESIGN §13.2 / §13.3: `paused: jev unreachable` auto-retries after 30 s, doubling to 5 min across consecutive pauses */
 export const JEV_UNREACHABLE_RETRY_MS = 30_000;
 export const JEV_UNREACHABLE_RETRY_MAX_MS = 300_000;
@@ -262,6 +325,10 @@ const SPEND_LIMIT_RE = /spend|credit|billing|quota|insufficient/i;
 const REVIEWER_NOTE_MAX = 600;
 /** contract 1.4 (COORDINATION-DESIGN §7.2): finish() waits this long for the pause-now cache write before `replayable` is read as false */
 export const PAUSE_CACHE_BOUND_MS = 2_000;
+/** §4.3: `released.changed` is bounded at 64 entries by the lease record's own cap */
+const LEASE_CHANGED_MAX = 64;
+/** §3.3: `touchedRecent` — the union of the last three steps' post images, ≤ 96 paths */
+const TOUCHED_RECENT_KEEP = 96;
 /** contract 1.4 (§5.3, §10): a peer's label inside `PausePoint.by` is clamped to this many chars of the id grammar */
 export const PEER_LABEL_MAX = 32;
 /** §5.3: `peer:<sid8>` — the last 8 chars of the sender's session id */
@@ -315,6 +382,13 @@ export interface StageContext {
   startCandidateRefresh(): void;
   /** docs/COORDINATION-DESIGN.md §8.3 / §8.4 (W2 item 21): the zero-cost read and the `jevcode:outputs/` pseudo-path; absent in fakes */
   contextReads?: ContextReadHooks;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §2.5): this engine's place in a delegation, so the stages that carry a child
+   * difference read one field instead of five — the risk stage's `own` refusal (§2.4 belt 2) and the propose stage's
+   * research tool schema (§2.5(b)). Absent on every run without `EngineOptions.orchestration`, which is why nothing
+   * here can change an ordinary run.
+   */
+  readonly orchestration?: OrchestrationOptions;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -344,12 +418,34 @@ interface StepDraft {
   jevRequests: JevRequestRecord[];
   generatorRecords: GeneratorCallRecord[];
   usage: StepUsage;
-  /** imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none */
-  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null };
+  /**
+   * imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none.
+   *
+   * decomposeMs: contract 1.5 (§4.1 [D13]) — the `decompose` stage's own wall, inside harnessMs; 0 when the gate was shut.
+   *
+   * `jevMs` is what the decider *reports* (`AskResult.latencyMs`) — the client's cost basis, the number jev.jsonl
+   * and `/jev` show. `jevWallMs` is the wall the engine actually spent inside `decider.ask`, measured here.
+   * HARNESS-NEXT-DESIGN §4.4 / §5: `harnessMs` subtracts the larger of the two, because a decider that does its
+   * work in-process and reports `latencyMs: 0` (every mock and stub, `src/jev/mock.ts`, `src/bench/stub-decider.ts`,
+   * `src/jev/off.ts`) would otherwise spend the 50 ms harness budget on the test double's own CPU — which is what
+   * made the gate look fixable by making the double faster. The two are within noise of each other for a real HTTP
+   * decider, so this only ever tightens the gated number.
+   *
+   * coordinateMs / coordWaitMs: contract 1.4 (W2b) (COORDINATION-DESIGN §4.2) — the claim gate's own wall, and the
+   * inline strict wait INSIDE it. Only the WAIT is subtracted from `harnessMs`, exactly like `confirmMs` and for the
+   * same reason S0 subtracts the Jev wall: a step held 40 s for a peer did not spend 40 s of harness, and charging
+   * it would make the §13 M9 gate a measure of how busy the other session was. The gate's own sub-2 ms work stays
+   * IN `harnessMs`, because that part really is ours.
+   */
+  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null; jevWallMs: number; decomposeMs: number; coordinateMs: number; coordWaitMs: number };
   /** docs/LLM-JEV-DESIGN.md §7.5: wall of synthesize() (synth modes); null when the propose stage was the generator's */
+  /** contract 1.4 (W2b) (§4.1): what the `coordinate` gate saw and decided; copied onto `StepRecord.coord` at commit */
+  coord: StepCoord | null;
   synthMs: number | null;
   /** the Jev latency spent inside synthesize(); `timing.jevMs - synthJevMs` is the shell's share */
   synthJevMs: number;
+  /** the same split for the measured ask wall: `timing.jevWallMs - synthJevWallMs` is the shell's measured share */
+  synthJevWallMs: number;
   /** docs/LLM-JEV-DESIGN.md §4.8: the in-flight samples of the llm-jev round, for the batch wall in `timing.generatorMs` */
   generatorBatch: { inFlight: number; startedAt: number };
   /**
@@ -424,6 +520,15 @@ function addUsage(a: TokenUsage, b: TokenUsage): void {
   // TUI-DESIGN §9.5: an unpriced (non-finite) cost adds nothing — see pricedUsage
   a.costUsd += Number.isFinite(b.costUsd) ? b.costUsd : 0;
   a.calls += b.calls;
+}
+/**
+ * The Jev time `harnessMs` is charged for: the larger of what the decider reported and what the engine measured
+ * inside `decider.ask`. HARNESS-NEXT-DESIGN §4.4 — a mock, a stub or the `--jev off` double reports `latencyMs: 0`
+ * and does its work on this thread, so charging `jevMs` alone hands the whole of the double's CPU to the gated
+ * harness budget. For a real HTTP decider the two agree to within the await, so nothing recorded moves.
+ */
+function jevChargedMs(draft: Pick<StepDraft, 'timing'>): number {
+  return Math.max(draft.timing.jevMs, draft.timing.jevWallMs);
 }
 function zeroTiming(): StepTiming {
   return { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 0 };
@@ -547,6 +652,15 @@ class EngineImpl implements Engine {
   readonly signal: AbortSignal;
   private readonly controller = new AbortController();
   private readonly opts: EngineOptions;
+  /**
+   * OOS 2026-09-22 ranked change 2: the run's `requestHash` -> answer cache. 454 of the slice's
+   * 2,330 requests (19.5 %) re-issued a hash already answered in the SAME run (339/1,532 ladder,
+   * 115/744 SWE, 0 QuixBugs). Lifetime is one RUN and nothing wider: the Engine is built per run
+   * and `run()` is single-shot, and `run()` clears it anyway so a reopened engine starts empty.
+   * A hit is recorded in jev.jsonl exactly like a call, with `usage.calls: 0`, `costUsd: 0` and
+   * `latencyMs: 0` — so the meter cannot bill it and the hits are countable off the records.
+   */
+  private readonly jevCache: CachingDecider;
   private readonly mode: EngineMode;
   private readonly redact: Redact;
   private readonly store: CheckpointStore;
@@ -554,6 +668,34 @@ class EngineImpl implements Engine {
   private readonly sandbox: Sandbox;
   private readonly wsInfo: WorkspaceInfo;
   private readonly clock: () => number;
+  /**
+   * contract 1.4 (W2b), COORDINATION-DESIGN §4.1: the coordination ledger's engine side, or `null` — no handle, or
+   * `enabled: false`, or a bench task. Every call site reads `this.coord?.x()`, so OFF is the absence of an object
+   * rather than a flag twenty branches have to honour (`engine-coordination-off.test.ts` is the proof).
+   */
+  private readonly coord: CoordinationRuntime | null;
+  /** contract 1.4 (W3), §6 / W3 item 28: `SynthesisContext.coordination`, built once per run by `synthSubwork()` */
+  private subworkAdapter: SynthSubwork | null = null;
+  /** contract 1.4 (W0 item 1), §3.2 / §9.3: `RunMeta.claims[]` as this process knows it — the resumed rows plus every mint it made */
+  private localClaims: RunClaimRow[] = [];
+  /** contract 1.4 (W0 item 1), §3.2 / §9.3: `RunMeta.claimEpochHigh` — the monotonic high-water mark, resumed and then raised at each mint */
+  private claimEpochHigh = 0;
+  /**
+   * §12.0.1 rule 5: `setIdentity({ repoKey, runId })` after `run:ready`; its promise resolves once every newly
+   * reachable watch root has been walked ONCE. Awaited before the FIRST `coordinate` and never again — `fs.watch`
+   * reports future changes only, so a check made before the walk could read `clear` by ignorance (§3.5).
+   */
+  private coordReady: Promise<void> | null = null;
+  /**
+   * contract 1.4 (W2b), §9.3: a QUALIFIED foreign claim supersedes this process's. Set by `checkFork`, acted on at
+   * the loop top — never in the middle of a step, because the whole point is to stop BEFORE a second writer touches
+   * the run dir, and the middle of a step is after it already has.
+   */
+  private forkStop: string | null = null;
+  /** contract 1.4 (W2b), §3.3: the union of the last 3 committed steps' post images, for the heartbeat */
+  private touchedRecent: string[] = [];
+  /** contract 1.4 (W2b), §3.6: the injected resource pre-flight (`EngineDeps.preflightProbe`) */
+  private readonly preflightProbe: PreflightProbe;
   private readonly systemPrompt: string;
   /** jev-only propose stage; null in the other modes (createEngine rejects jev-only without one) */
   private readonly synthesizer: Synthesizer | null;
@@ -564,6 +706,14 @@ class EngineImpl implements Engine {
 
   // engine state (§11 state-mutation rule: plan/window/detector change only in commit)
   private step = 0;
+  // contract 1.5 (ORCHESTRATION-DESIGN §3.1, §4.1): what this run has delegated. `splits` is counted against
+  // `orchestrate.maxSplits` and only a WRITTEN manifest consumes a slot (corner row 8); `lastSplitStep` is the
+  // `splitEvery` cooldown; `orchestration` is the delegation itself, re-read on resume by corner row 12.
+  private splits = 0;
+  private lastSplitStep: number | null = null;
+  private orchestration: NonNullable<CheckpointState['orchestration']> | null = null;
+  /** corner row 12: `agent:adopted` is announced once per process, not once per step */
+  private adoptedAnnounced = false;
   private plan: Plan = emptyPlan();
   private window: WindowEntry[] = [];
   // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context — `window` above stays Jev's 4 × 600 (§8.1 two windows)
@@ -601,6 +751,9 @@ class EngineImpl implements Engine {
   private lastRecentSteps: RecentStepsUsage = { chars: 0, allowanceChars: 0, whole: 0, clipped: 0, oneLine: 0, reads: 0 };
   private lastRefreshMs = 0;
   private lastPromptBuildMs = 0;
+  /** contract 1.6 (IMPORT-DESIGN §2.10.3): the two memory sections of the last build, and the run's index size */
+  private lastMemoryBuild: PromptMemoryBuild | null = null;
+  private readonly memoryIndexChars: number;
 
   private readonly detector: LoopDetector;
   private wallMsUsedBefore = 0;
@@ -771,6 +924,29 @@ class EngineImpl implements Engine {
   /** a --force resume of an ended run (§7.4): the resumes[] entry records `reopened` and run.json.ended is cleared */
   private readonly reopened: boolean;
 
+  // contract 1.5 (ORCHESTRATION-DESIGN §2.4, §2.5, §2.6, §5.7): the child differences and the launch.
+  // Every one is inert on a run without `EngineOptions.orchestration`.
+  /** §2.4 / corner row 18: CONSECUTIVE belt-2 refusals; `SCOPE_FIGHT_AFTER` of them park the child */
+  private beltRefusals = 0;
+  /** §2.4 [G8]: the post-`run` escape diff of the step in flight, moved onto `StepRecord.escaped` at commit */
+  private escapedThisStep: readonly string[] = [];
+  /** §2.6 [G1]: the sha of the harness commit this step produced, moved onto `StepRecord.commit` at commit */
+  private commitThisStep: string | null = null;
+  /** §2.6 [D2] `touched`: ⋃ over this run's steps of `ActionOutcome.changedFiles` — file actions AND post-`run` diffs */
+  private readonly touchedPaths = new Set<string>();
+  /** §2.6: the sha of the unconditional `run:end` commit (`RunResult.commit`) */
+  private endCommit: string | null = null;
+  /** §2.5(c) / P10: a parked review is pending, so the rule-1 discard's point reads `review-needed`, not `now` */
+  private reviewParked = false;
+  /** §2.5(c) / corner row 29: the answer file was consumed this run — single-use, whatever a replay does */
+  private reviewAnswerUsed = false;
+  /** §5.7: the proposal the harness seeded for the NEXT step (the launch merge, or the [c] / [s] pre-flight step) */
+  private seededStep: { step: number; proposal: Proposal; note: string } | null = null;
+  /** §5.7: what `/land` is landing, so the merge's `executed` outcome can write `RunMeta.landed` */
+  private pendingLand: { branch: string; agents: number; delegatedAt: number } | null = null;
+  /** §5.7 tail: `RunMeta.landed`, newest last */
+  private landedMerges: readonly { step: number; branch: string; commit: string }[] = [];
+
   constructor(init: {
     runId: string;
     opts: EngineOptions;
@@ -785,14 +961,25 @@ class EngineImpl implements Engine {
     headDrift: string | null;
     /** contract 1.4 (§7.4): the resume reopens an ended run under --force */
     reopened?: boolean;
+    /** contract 1.4 (W2b), §3.6: the resource pre-flight seam (`EngineDeps.preflightProbe`), resolved by createEngine */
+    preflightProbe?: PreflightProbe;
   }) {
     this.runId = init.runId;
+    this.preflightProbe = init.preflightProbe ?? nodePreflightProbe();
     this.reopened = init.reopened === true;
     this.replayRequested = init.resume !== null && init.opts.resume?.replay === true;
     this.opts = init.opts;
+    this.jevCache = createCachingDecider(init.opts.decider);
     this.mode = init.opts.mode;
     this.redact = init.opts.redact;
     this.store = init.store;
+    // contract 1.7 item 8 (TUI-DESIGN-4 §7.2 P-D2 item 1): the store reports every write path's own classification here.
+    // Registration happens AFTER the store is final (a resume replaces it with `loadForResume`'s), which is why this is a
+    // post-construction listener rather than a `createCheckpointStore` option: `CheckpointStoreFactory` is
+    // `(runsDir, runId, redact)` and never sees one. Detached in `finish()`, so a late write cannot emit into a dead engine.
+    attachDegradeListener(this.store, (info) => {
+      this.noteDisk(info, this.draft?.step ?? null);
+    });
     this.workspace = init.workspace;
     this.sandbox = init.sandbox;
     this.wsInfo = init.wsInfo;
@@ -804,9 +991,24 @@ class EngineImpl implements Engine {
     });
     // TUI-DESIGN §15.2 constructor row: AGENTS.md text reaches the generator system prompt only (D6)
     const instructions = init.opts.instructions?.text ?? '';
-    this.systemPrompt = buildSystemPrompt({ mode: this.mode, sandboxLevel: init.sandbox.level, toolName: 'propose_action', ...(instructions.length > 0 ? { instructions } : {}) });
+    // contract 1.6 (IMPORT-DESIGN §2.10.1/§2.10.2): the always-on memory index rides the once-per-run system prompt,
+    // after `## Project instructions`; absent → the prompt is byte-identical to what it was before 1.6
+    const memoryIndex = init.opts.memory?.index?.trim() ?? '';
+    this.systemPrompt = buildSystemPrompt({
+      mode: this.mode,
+      sandboxLevel: init.sandbox.level,
+      toolName: 'propose_action',
+      ...(instructions.length > 0 ? { instructions } : {}),
+      ...(memoryIndex.length > 0 ? { memoryIndex } : {}),
+    });
+    this.memoryIndexChars = memoryIndexChars(memoryIndex);
     this.synthesizer = init.opts.synthesizer ?? null;
     this.resumed = init.resume !== null;
+    // contract 1.4 (W0 item 1, §9.3): the epochs THIS device has already minted or accepted for the run, as the
+    // resumed `run.json` recorded them. The resume gate's local set starts here rather than at this process's own
+    // claim, which is what stops an epoch GC'd out of the fold from being re-minted.
+    this.localClaims = [...(init.resume?.meta.claims ?? [])];
+    this.claimEpochHigh = init.resume?.meta.claimEpochHigh ?? 0;
     this.resumeStop = null;
     this.gitState = init.gitState;
     this.gitMeta = runGitMetaOf(init.gitState ?? notRepoState('git-missing', { probedAt: nowIso(), probeMs: 0 }));
@@ -852,6 +1054,12 @@ class EngineImpl implements Engine {
       }
       this.consecutiveStageFailures = s.consecutiveStageFailures;
       this.jevQuestions = s.jevQuestions ?? 0;
+      // contract 1.5 (ORCHESTRATION-DESIGN corner row 12): a resumed run re-finds the delegation it already made, so
+      // the gate stays shut and no second manifest is proposed for the same work. `maybeDecompose` re-reads the
+      // manifest and compares `manifestId` + `baseSha` before it ADOPTS it.
+      this.orchestration = s.orchestration !== undefined ? { ...s.orchestration, agents: s.orchestration.agents.map((a) => ({ ...a })) } : null;
+      this.splits = s.splits ?? 0;
+      this.lastSplitStep = s.orchestration?.step ?? null;
       this.synthState = s.synthState ?? null;
       this.resumes = s.resumes;
       this.lastPromptChars = s.lastPromptChars ?? null;
@@ -952,6 +1160,23 @@ class EngineImpl implements Engine {
       }
     }
     this.contextUsage = restoredContextUsage(this.contextExtension(), this.contextPolicy.budget, this.contextPolicy.compaction);
+    // contract 1.4 (W2b), §4.1 / §3.3: the ledger's engine side. Constructed here and NOT started: `start()` is
+    // §3.3 point 1, at `run:ready`, so a refused resume and a constructor throw write no heartbeat at all.
+    const co = init.opts.coordination;
+    this.coord =
+      co === undefined || co.ledger === null
+        ? null
+        : createCoordination({
+            options: co,
+            source: init.opts.session?.source ?? 'cli',
+            base: this.heartbeatBase(co.ledger),
+            emit: (e) => {
+              this.emit(e);
+            },
+            monotonicNow: () => this.clock(),
+            now: () => Date.now(),
+            redact: this.redact,
+          });
     // §8.2 / review D8: a model whose window is smaller than the floor is a run-shaping fact, not a silent clamp
     if (this.contextEnabled && this.contextPolicy.budget.windowTooSmall) {
       this.pendingWindowNotice = `context budget clamped to ${this.contextPolicy.budgetChars} chars — the generator's ${this.contextPolicy.windowTokens}-token window is smaller than the ${CONTEXT_BUDGET_MIN_CHARS}-char floor`;
@@ -1022,6 +1247,260 @@ class EngineImpl implements Engine {
   // Engine surface
   // -------------------------------------------------------------------------------------
 
+  /**
+   * §3.3: the identity half of this run's heartbeat — fixed for the run's life, except `repo.repoKey`, which may
+   * arrive after `run:ready` and is re-derived by `ledger.setIdentity`. Every free-text leaf is redacted and clipped
+   * here as well as by the writer, because the 4 KiB cap is a refusal and a task title is the likeliest overflow.
+   */
+  private heartbeatBase(ledger: NonNullable<NonNullable<EngineOptions['coordination']>['ledger']>): HeartbeatBase {
+    const self = ledger.self;
+    const session = this.opts.session;
+    const g = this.gitMeta;
+    const head = g.head;
+    return {
+      deviceId: self.deviceId,
+      label: self.label,
+      host: self.host,
+      user: self.user,
+      pid: process.pid,
+      ...(self.hostKey !== undefined ? { hostKey: self.hostKey } : {}),
+      ...(self.bootId !== undefined ? { bootId: self.bootId } : {}),
+      bootAt: self.bootAt,
+      jevcode: VERSION,
+      runId: this.runId,
+      sessionId: session?.sessionId ?? this.runId,
+      // §6.5: a child run has its OWN sessionId and names its parent here, so the picker can indent it and the
+      // session meter can fold its spend into the parent's total without guessing from run ids.
+      parentSessionId: session?.parentSessionId ?? null,
+      parentRunId: session?.parentRunId ?? null,
+      source: session?.source ?? 'cli',
+      title60: session?.title === undefined ? null : this.redact(session.title).slice(0, 60),
+      task60: this.redact(this.opts.task).slice(0, 60),
+      claim: ledger.claim,
+      repo: {
+        wsKey: self.wsKey,
+        repoKey: self.repoKey,
+        remoteKey: self.remoteKey,
+        basename: basename(this.workspace.root),
+        branch: head === null ? null : head.kind === 'detached' ? null : head.name,
+        head: head === null ? null : head.kind === 'unborn' ? null : head.oid,
+        dirtyAtStart: this.dirtyAtStart.size > 0,
+        linkedWorktree: g.linkedWorktree,
+        worktreeSlug: null,
+      },
+      mode: this.mode,
+      maxSteps: this.opts.limits.maxSteps,
+      maxWallMs: this.opts.limits.maxWallMs,
+      startedAt: nowIso(),
+    };
+  }
+
+  /**
+   * §3.3 point 4: the moving half of the heartbeat, derived from the flags `emitStatus` already reads — one place,
+   * so the status line, `sessions who` on another device and the resume card can never disagree about this run.
+   */
+  private heartbeatDynamic(): Partial<HeartbeatDynamic> {
+    const snap = this.opts.meter.snapshot();
+    const action = this.draft?.proposal?.action ?? null;
+    const plan = this.plan;
+    return {
+      phase: this.runPhase(),
+      step: this.step,
+      stage: this.currentStage,
+      action80: action === null ? null : this.redact(summariseAction(action)).slice(0, 80),
+      pausing: this.pauseRequested && this.lastResult === null,
+      pauseNow: this.pauseNow && this.lastResult === null,
+      blocked: this.blocked?.kind ?? null,
+      retrying: this.retrying === null ? null : { side: this.retrying.side, attempt: this.retrying.attempt },
+      stopReason: this.stopReason,
+      plan: {
+        done: plan.done.length,
+        remaining: plan.remaining.length,
+        unverified: plan.unverified.length,
+        // §3.3: `next3` is what a peer reads to know whether to start on the same file — the plan, not the prose
+        next3: plan.remaining.slice(0, 3).map((t) => this.redact(t).slice(0, 80)),
+      },
+      touchedRecent: [...this.touchedRecent],
+      spend: { generatorUsd: snap.generator.costUsd, jevUsd: snap.jev.costUsd, sessionUsd: snap.parent?.totalUsd ?? null, capUsd: snap.capUsd },
+      tokens: { used: this.generatorTokens, cap: this.opts.limits.maxGeneratorTokens ?? null },
+      wallMs: this.wallMsUsed(),
+      // §3.3 / §12.0.3: the meter a peer's `sessions who` row shows, filled from the ONE `ContextUsage` the status
+      // event carries. `budgetTokens` is the PROMPT BUDGET and `windowTokens` the model's own window, so a peer can
+      // print `ctx 41% · budget 70k of 128k` without re-deriving either — and neither is a second definition here.
+      context: {
+        pct: this.contextUsage.pct,
+        files: this.contextUsage.files,
+        historyEntries: this.contextUsage.historyEntries,
+        summaryAt: this.contextUsage.summaryAt,
+        tokensInWindow: this.contextUsage.tokensInWindow,
+        budgetTokens: this.contextUsage.budgetTokens,
+        windowTokens: this.contextUsage.windowTokens,
+        compactions: this.contextUsage.compactions,
+      },
+      lockHeld: this.lockHeld,
+    };
+  }
+
+  /**
+   * §4.2, the `coordinate` micro-stage's engine half: the gate is run inside `this.stage()` so it emits
+   * `stage:start` / `stage:end` / `status` like every other stage, its wall lands in `StepTiming.coordinateMs`, and
+   * the inline wait lands in `coordWaitMs` (subtracted from `harnessMs`).
+   *
+   * Returns `null` to proceed, or the transcript line of a rule-1 discard. It never throws: a ledger fault is the
+   * ledger's own notice (`⇄ off (<code>)`) and the step proceeds — coordination is an aid, not a gate on the run
+   * being able to run at all (§2.1 rule 3).
+   */
+  private async runCoordinate(draft: StepDraft, step: number): Promise<string | null> {
+    const coord = this.coord;
+    const proposal = draft.proposal;
+    if (coord === null || proposal === null) return null;
+    // §3.5 / §12.0.1 rule 5: the added watch roots are walked ONCE before the first check, so `clear` is a fact
+    // rather than ignorance. Every later step reads the already-warm fold.
+    if (this.coordReady !== null) {
+      await this.coordReady;
+      this.coordReady = null;
+    }
+    const head = this.gitMeta.head;
+    const t0 = this.clock();
+    let outcome: CoordinateOutcome;
+    try {
+      outcome = await this.stage('coordinate', () =>
+        coord.coordinate({
+          step,
+          action: proposal.action,
+          targets: draft.patchTargets.map((t) => t.path),
+          branch: head === null || head.kind === 'detached' ? null : head.name,
+          head: head === null || head.kind === 'unborn' ? null : head.oid,
+          // §8.4: `check()` wants "the sha the proposal was built on" per path; `FileMemory` keeps a richer entry, so
+          // the projection is taken here rather than widening the ledger's input to a shape it has no use for.
+          fileMemory: Object.fromEntries(Object.entries(this.fileMemory).map(([rel, e]) => [rel, e.sha12])),
+          // §11 row 23: a case-folding volume is the ledger's own probe (`probeCaseInsensitive`), not a fact the
+          // engine holds; until the surface passes it in, the exact-match reading is the conservative one — it can
+          // miss a conflict on a folding volume, never invent one.
+          caseFold: false,
+          ask: this.opts.blocker === undefined ? null : (req) => this.awaitCoordinationPane(req),
+          blockingId: () => this.nextBlockingId(),
+          signal: this.signal,
+          currentSha: (paths) => hashTargets(this.workspace.root, paths),
+        }),
+      );
+    } catch (e) {
+      // the ledger classifies its own errno into one notice; the step is never held by a failure to coordinate
+      this.emit({ type: 'notice', step, kind: 'coordination', level: 'warn', text: `coordination: the claim gate failed (${e instanceof Error ? this.redact(e.message) : String(e)}) — the step proceeds uncoordinated` });
+      return null;
+    }
+    draft.timing.coordinateMs += Math.max(0, this.clock() - t0);
+    draft.timing.coordWaitMs += outcome.waitedMs;
+    if (outcome.kind === 'proceed') {
+      draft.coord = outcome.coord;
+      return null;
+    }
+    if (outcome.kind === 'stale') {
+      // §4.2 suspension check: the PROCESS was frozen and the targets moved under it. A rule-1 discard with a
+      // `replan` problem, never a conflict — nobody is holding anything; the proposal is simply about old bytes.
+      this.plan = {
+        ...this.plan,
+        harnessProblems: boundHarnessProblems([...this.plan.harnessProblems, { kind: 'replan', text: `targets changed while this session was suspended (${outcome.changed.slice(0, 3).join(', ')})`, step: step + 1 }], PLAN_MAX_HARNESS_PROBLEMS),
+      };
+      return `step ${step} discarded: the targets changed while this session was suspended`;
+    }
+    draft.coord = outcome.coord;
+    // §4.2: in `jev-on` the human review confirm has already approved this step, so the line says so plainly —
+    // "approved but not executed" is the one wording that does not read as a bug report.
+    return `step ${step} approved but not executed: coordination chose ${outcome.kind}`;
+  }
+
+  /**
+   * §4.3 step 4: the strict claim wait's human pane, through the EXISTING blocker seam. `this.blocked` is set for
+   * its duration so the status line, `pausedWord` and the heartbeat all read `lease-conflict`, and `pause()` finds a
+   * pane to wake (P6): it aborts the `blockWaker` and never the shared controller, so the answer is deterministically
+   * `'pause'` and the step is a resumable discard.
+   */
+  private async awaitCoordinationPane(req: BlockingRequest): Promise<BlockingAnswer> {
+    const previous = this.blocked;
+    this.blocked = req;
+    this.emitStatus();
+    try {
+      return await this.awaitBlocker(req);
+    } finally {
+      this.blocked = previous;
+      this.emitStatus();
+    }
+  }
+
+  /**
+   * contract 1.4 (W2b), §9.3 / §11 rows 31 and 51: the fork fence. Cheap (one map read over the already-folded
+   * ledger), so it runs at every loop top as well as once at `run:ready` — a peer that resumes this run while we are
+   * mid-step must be seen at the NEXT boundary, not at the end of the run.
+   *
+   * Only an AUTHENTICATED superseding claim stops anything. An unverified one is a notice and nothing else, because
+   * a forged record in a shared folder can produce it and a stop that a stranger can trigger is a denial of service.
+   */
+  private checkFork(): void {
+    if (this.coord === null || this.forkStop !== null) return;
+    const v = this.coord.forkGate(this.runId);
+    if (v === null) return;
+    if ('stop' in v) {
+      this.forkStop = v.stop;
+      return;
+    }
+    if (this.warned.has('fork-unverified')) return;
+    this.warned.add('fork-unverified');
+    this.emit({ type: 'notice', step: null, kind: 'coordination', level: 'warn', text: v.notice });
+  }
+
+  /**
+   * §9.3, the resume gate: a claim epoch published by another device that outranks every epoch this one minted.
+   * Awaited ONCE, before the first step of a resumed run — it reads signed `claims.json` projections, which is the
+   * only evidence available when the peer that took the run over is currently offline.
+   */
+  /**
+   * contract 1.4 (COORDINATION-DESIGN W0 item 1, §3.2 / §9.3): persist one `claims[]` mint in `run.json`.
+   *
+   * The row is this process's own claim (`authority: 'self'` — this device minted it) and the high-water mark is
+   * raised to it; the store appends and caps at `MAX_CLAIMS_PER_RUN` and takes the MAX of the two epoch marks, so a
+   * resumed run accumulates its incarnations and never lowers the bar. Fire-and-forget on the meta queue like every
+   * other `updateMeta`: coordination never delays a step, and a run with no ledger never reaches here, which is why
+   * such a run's `run.json` carries neither member.
+   */
+  private persistClaimMint(): void {
+    if (this.coord === null) return;
+    const claim = this.coord.ledger.claim;
+    if (this.localClaims.some((c) => c.epoch === claim.epoch && c.deviceId === claim.deviceId)) return;
+    const row: RunClaimRow = { epoch: claim.epoch, deviceId: claim.deviceId, at: claim.at, authority: 'self' };
+    this.localClaims.push(row);
+    this.claimEpochHigh = Math.max(this.claimEpochHigh, claim.epoch);
+    this.persist(this.store.updateMeta({ claims: [row], claimEpochHigh: this.claimEpochHigh }), CHECKPOINT_FILES.meta);
+  }
+
+  private async checkResumeClaim(): Promise<void> {
+    if (this.coord === null || !this.resumed) return;
+    // the epochs THIS device minted: `RunMeta.claims[]` and `claimEpochHigh` as `run.json` recorded them (W0 item 1
+    // — the set the fold can no longer see, because ended heartbeats are GC'd after 24 h), this process's own claim,
+    // and the one persisted beside the run for a takeover it made with no local run dir.
+    const persisted = await this.coord.ledger.readRunClaim(this.runId).catch(() => null);
+    const local = [this.coord.ledger.claim.epoch, ...(persisted === null ? [] : [persisted.epoch]), ...this.localClaims.map((c) => c.epoch), ...(this.claimEpochHigh > 0 ? [this.claimEpochHigh] : [])];
+    const refusal = await this.coord.claimGate(this.runId, local).catch(() => null);
+    if (refusal === null) return;
+    const label = this.coord.ledger.fold.devices.get(refusal.deviceId)?.label ?? refusal.deviceId.slice(0, 8);
+    this.forkStop = `run ${this.runId} is also live on ${label} (claim ${String(refusal.epoch)} supersedes ${String(Math.max(...local))}) — stopped to avoid a double writer`;
+  }
+
+  /**
+   * §7.1: the run's lifecycle word, derived in ONE place from the flags that already exist. A strict claim wait is
+   * the one `blocked` the engine can be in without a pane, which is why the runtime is asked first.
+   */
+  private runPhase(): EngineRunPhase {
+    if (this.lastResult !== null) return 'ended';
+    if (this.aborting) return 'aborting';
+    if (this.blocked !== null) return 'blocked';
+    const waiting = this.coord?.phase();
+    if (waiting !== null && waiting !== undefined) return waiting;
+    if (this.pauseRequested) return 'pausing';
+    if (!this.started) return 'starting';
+    return 'running';
+  }
+
   status(): EngineStatus {
     // docs/COORDINATION-DESIGN.md §12.0.3: `context` rides every status (a subtype until EngineStatus gains the member).
     // Review D5/D18: it is ABSENT — not `0 %` — in the modes and under the pin where no relaxed prompt is built, so
@@ -1048,6 +1527,9 @@ class EngineImpl implements Engine {
       // contract 1.4 (COORDINATION-DESIGN §7.2, §12.0.2)
       pauseNow: this.pauseNow && this.lastResult === null,
       pausePoint: this.pausePoint,
+      // contract 1.4 (W2b) (§3.6, §7.1, §6.1): the coordination zone, the lifecycle word and the sub-work rows.
+      // All three are ABSENT with no ledger, so `--json=verbose` on a run without coordination is byte-identical.
+      ...(this.coord !== null ? { phase: this.runPhase(), coordination: this.coord.status(), subwork: this.coord.subworkRows() } : {}),
     };
     return status;
   }
@@ -1100,6 +1582,11 @@ class EngineImpl implements Engine {
         this.markLastResort(reason);
         const snap = this.snapshotState();
         if (snap) this.store.writeStateSync(snap);
+        // contract 1.4 (W2b), §3.3 point 6: one bounded synchronous `phase:'ended'` marker, LOCAL ONLY — never the
+        // mirror, because a synchronous write to an unmounted share would hold the exit handler for the kernel's
+        // timeout. Expiry is the truth; the marker is a courtesy for the next process. After writeStateSync,
+        // before releaseLock.
+        this.coord?.finishSync({ phase: 'ended', stopReason: reason });
       } catch {
         // nothing more can be done on 'exit'
       }
@@ -1240,6 +1727,26 @@ class EngineImpl implements Engine {
    */
   deliver(msg: DeliverableMessage): AckOutcome {
     if (this.isFinished()) return 'expired';
+    // contract 1.4 (W2b), §5.4: the non-control types. None of them can change the run's course, so none needs a
+    // `[y]` and all of them are applied here whatever the sender's authority — what a peer says is a FACT about the
+    // repository, rendered inside the prompt's fenced untrusted-data block, never an instruction (§5.4, §8.8).
+    if (msg.type === 'steer') {
+      // §5.4: a `steer` is a DIRECTIVE, so it is the one fact-shaped type whose authority matters; the caller has
+      // already applied §10.3 (trusted + hmac-valid, or same device and same boot) before calling us.
+      const r = this.steer(`[session] ${msg.from.label}: ${msg.text}`);
+      return r.ok ? 'applied' : 'refused';
+    }
+    if (msg.type === 'note' || msg.type === 'heads-up' || msg.type === 'handoff' || msg.type === 'who' || msg.type === 'budget' || msg.type === 'review' || msg.type === 'kick' || msg.type === 'land') {
+      this.emit({ type: 'notice', step: this.step + 1, kind: 'session', level: 'info', text: `${msg.from.label}: ${this.redact(msg.text)}` });
+      return 'delivered';
+    }
+    if (msg.type === 'request-release') {
+      // §5.4 / G1(b): under `advisory` this is a FACT and nothing is delayed — the current step commits and
+      // releases as it always would, and the next prompt's `## Other sessions` carries the ask.
+      const files = (msg.refs?.files ?? []).slice(0, 8).join(', ');
+      this.emit({ type: 'notice', step: this.step + 1, kind: 'session', level: 'info', text: `${msg.from.label} asks you to release ${files.length > 0 ? files : 'the paths it named'}` });
+      return 'applied';
+    }
     if (msg.type !== 'pause' && msg.type !== 'end') return 'refused';
     const sid = msg.from.sessionId ?? msg.from.runId;
     // §5.3 / §10: a peer's own strings reach `by`, which rides state.json, the heartbeat and an index line — clamp them to
@@ -1254,6 +1761,21 @@ class EngineImpl implements Engine {
     }
     const changed = this.pauseRequested !== before.requested || this.pauseNow !== before.now || (this.endRequested !== null) !== before.end;
     return changed ? 'applied' : 'delivered';
+  }
+
+  /**
+   * §5.4: apply ONE arrival the surface does not have to ask about. `classifyIncoming` has already decided what
+   * the sender may do — this only turns the verdict into the engine verb, and returns the outcome the ack records.
+   *
+   * A message whose verdict was DOWNGRADED is applied as the reduced action, never as the one it asked for: an
+   * untrusted `steer` is a note, and it is a note that says so.
+   */
+  private applyIncoming(msg: DeliverableMessage, d: MessageDisposition): AckOutcome {
+    if (d.refused !== null && d.action === 'note' && d.downgraded) {
+      this.emit({ type: 'notice', step: this.step + 1, kind: 'session', level: 'warn', text: `${msg.from.label}: ${this.redact(msg.text)} (${d.refused})` });
+      return 'refused';
+    }
+    return this.deliver({ ...msg, type: d.action });
   }
 
   /**
@@ -1327,6 +1849,21 @@ class EngineImpl implements Engine {
   }
 
   /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.2 **P9**, [G17]): "delegation accepted". The manifest was confirmed
+   * at step n, the parent has nothing left to do until children report, and it stops.
+   *
+   * [G17] is the whole reason this is its own recorder rather than a call to `recordBoundaryPause()`: P9 is
+   * ENGINE-initiated. No human asked, so `by` stays `'self'` and never takes a `peer:` / `device:` form, and
+   * every surface that keys off `human_pause` to mean "a human asked" must add the `reason: 'delegate'` case.
+   * It is also the only pause point where NOTHING was interrupted — the step committed whole — which is why
+   * `resumableAt` is `'boundary'`, `replayable` is false, and the resume card shows no `[r] replay`.
+   */
+  private recordDelegatePause(step: number): void {
+    this.pauseBy = 'self';
+    this.pauseAt = { step: step + 1, phase: 'idle', reason: 'delegate', round: null, cache: null };
+  }
+
+  /**
    * §12.0.2 P6 / P7: the point at a pane that pause() woke (`pane`) or that the human answered `[t] worktree` (`worktree`,
    * the lease-conflict relocation of §4.3 step 5) — the step that raised the pane is already a rule-1 discard, so its
    * `interruptedDetail` (when one was written) is what `--replay` reads after the relocation.
@@ -1352,7 +1889,8 @@ class EngineImpl implements Engine {
     this.pauseAt = {
       step: draft.step,
       phase: stage,
-      reason: 'now',
+      // contract 1.5 (ORCHESTRATION-DESIGN §4.2 P10): the parking confirmer's discard is a review park, not a pause-now
+      reason: this.reviewParked ? 'review-needed' : 'now',
       round: cache.round,
       ...(cache.llm !== null ? { llm: { ...cache.llm, arrived: [...cache.llm.arrived] } } : {}),
       cache: cache.rel,
@@ -1463,6 +2001,10 @@ class EngineImpl implements Engine {
 
   /** the cache for exactly this step, or null; a cached proposal is consumed here, a samples-only cache stays for generate() until the step ends */
   private takeReplay(step: number): StepCache | null {
+    // ORCHESTRATION-DESIGN §5.7: a harness-seeded proposal (the launch merge, or the [c] / [s] pre-flight step) enters
+    // the loop through the SAME door as a replayed one — "do not build a parallel path".
+    const seeded = this.takeSeeded(step);
+    if (seeded !== null) return seeded;
     const c = this.replayCache;
     if (c === null || c.step !== step) return null;
     if (c.proposal !== null) this.replayCache = null;
@@ -1547,9 +2089,35 @@ class EngineImpl implements Engine {
     return true;
   }
 
+  /**
+   * contract 1.7 item 2 (TUI-DESIGN-4 §3.5, D-W): one `notice ui` per row, HEAD FIRST, exactly as `--plain`'s
+   * `note(head); for (const l of lines) note(l)` loop does — so a command block issued while a run is live writes the
+   * same rows to `transcript.log` from the TUI as from `--plain`, and the three sinks match. Returns false when no run
+   * is live, exactly like `annotate`, and the caller then keeps the rows local.
+   *
+   * Edge 1: the loop is ATOMIC with respect to `isFinished()` — liveness is read once, before the first emit, so a
+   * listener that pauses (or a run that ends) between two rows can never truncate a block into half a card.
+   * Edge 2: at most `BLOCK_LOG_MAX` body rows, then one `… +N more rows`.
+   */
+  annotateBlock(head: string, rows: readonly string[], opts: { level?: 'info' | 'warn' | 'error'; label?: UiLabel } = {}): boolean {
+    if (!this.started || this.isFinished()) return false;
+    const step = this.draft?.step ?? null;
+    const level = opts.level ?? 'info';
+    const label = opts.label ?? '[ui]';
+    const shown = rows.length > BLOCK_LOG_MAX ? rows.slice(0, BLOCK_LOG_MAX) : rows;
+    const overflow = rows.length - shown.length;
+    const lines = [head, ...shown, ...(overflow > 0 ? [`… +${overflow} more rows`] : [])];
+    for (const line of lines) {
+      this.emit({ type: 'notice', step, kind: 'ui', level, text: clipText(sanitizeStream(line), ANNOTATE_TEXT_MAX_CHARS), label });
+    }
+    return true;
+  }
+
   run(): Promise<RunResult> {
     if (this.finished) return this.finished;
     this.started = true;
+    this.jevCache.clear(); // ranked change 2: the answer cache is per RUN, never wider
+
     this.finished = this.runGuarded();
     return this.finished;
   }
@@ -1571,7 +2139,19 @@ class EngineImpl implements Engine {
   }
 
   private async main(): Promise<RunResult> {
-    this.emit({ type: 'run:start', runId: this.runId, task: this.opts.task, mode: this.mode, resumedFromStep: this.resumed ? this.step : null });
+    // HARNESS-NEXT-DESIGN §4.4 (wave S0): the per-step timing buckets, off unless JEVCODE_TIMELINE is set
+    stepTimeline.beginRun(this.runId, this.mode);
+    // contract 1.4 (W2b) (COORDINATION-DESIGN §6.5): the child's session tree is a fact on the FIRST event of the
+    // run. Conditional, so an ordinary run emits byte-identically to HEAD.
+    const parentSessionId = this.opts.session?.parentSessionId ?? null;
+    this.emit({
+      type: 'run:start',
+      runId: this.runId,
+      task: this.opts.task,
+      mode: this.mode,
+      resumedFromStep: this.resumed ? this.step : null,
+      ...(parentSessionId !== null ? { parentSessionId } : {}),
+    });
     if (this.resumeStop !== null) {
       // the items decided before run() still reach the listeners (transcript.log is muted for a refused resume)
       this.flushDeferredAnnouncements();
@@ -1593,6 +2173,21 @@ class EngineImpl implements Engine {
       noNetwork: this.opts.noNetwork,
       maxReplans: this.opts.limits.maxReplans,
     });
+    // contract 1.4 (W2b), §3.3 point 1 / §12.0.1 rule 5: the first beat and the identity patch. `setIdentity` is
+    // AWAITED (once, before the first `coordinate`) rather than here, because its promise resolves only after every
+    // newly reachable watch root has been walked, and blocking `run:ready` on a slow mount would be exactly the
+    // "coordination delays a step" the design forbids.
+    if (this.coord !== null) {
+      const coord = this.coord;
+      coord.start(this.heartbeatDynamic());
+      this.coordReady = coord
+        .setIdentity({ runId: this.runId, sessionId: this.opts.session?.sessionId ?? this.runId, ...(this.gitMeta.head !== null && this.gitMeta.head.kind === 'branch' ? { branch: this.gitMeta.head.name } : {}) })
+        .catch(() => undefined);
+      // contract 1.4 (W0 item 1, §3.2 / §9.3): the mint. The ledger minted this incarnation's claim when it opened;
+      // `run.json` is where it survives the GC of every record it came from, so it is written here — once per
+      // process, beside the heartbeat that announces the same epoch.
+      this.persistClaimMint();
+    }
     // TUI-DESIGN §12.2: the git banner and the instruction files as one event right after run:ready (notice-only, never a gate)
     this.emit({ type: 'workspace', git: this.gitMeta, instructions: (this.opts.instructions?.files ?? []).map((f) => ({ ...f })), sandbox: this.sandbox.level });
     for (const n of this.startupNotices) this.emit({ type: 'notice', step: null, kind: n.kind, level: n.level, text: n.text });
@@ -1622,6 +2217,10 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §8.6 / §15.2: steers, withdrawals, a pause and secret-acks decided before run(), in order, after every writer saw run:ready
     this.flushDeferredAnnouncements();
     this.runStartMono = this.clock();
+    // contract 1.4 (W2b), §9.3: the resume gates, before the wall clock starts. `checkResumeClaim` is the only
+    // AWAITED coordination read on the startup path, it runs on a resume only, and its failure is not a stop.
+    await this.checkResumeClaim();
+    this.checkFork();
     this.deadline = armWallDeadline(this.controller, this.opts.limits.maxWallMs - this.wallMsUsedBefore);
     if (this.resumed) {
       this.emit({ type: 'transcript', step: null, level: 'info', text: `resumed at step ${this.step + 1}` });
@@ -1694,6 +2293,20 @@ class EngineImpl implements Engine {
         this.emitStatus();
         continue; // re-check abort, budgets and pause before the next step
       }
+      // contract 1.4 (W2b), §9.3: the fork fence, at the boundary. `error` / exit 2, with the design's sentence.
+      this.checkFork();
+      if (this.forkStop !== null) {
+        const e = new ConfigError(this.forkStop, { setting: 'coordination' });
+        this.fatalSerialized = { ...serializeStopError(e, this.redact), exitCode: 2 };
+        this.emit({ type: 'notice', step: null, kind: 'coordination', level: 'error', text: this.forkStop });
+        return this.finish('error');
+      }
+      // contract 1.4 (W2b), §5.4: the inbox, at the step boundary — the one point where nothing is in flight, so a
+      // `steer` lands as the next step's directive and a `pause` as this loop's next check. §5.4 gives the host the
+      // same duty in all three modes; the engine doing it too is what makes `jevcode sessions pause <id>` against a
+      // HEADLESS run apply at all, and the `seen` set plus `deliver`'s idempotency make the overlap harmless. The
+      // `session:message` event carries `applied`, so a surface knows whether an ack is still owed.
+      if (this.coord !== null) await this.coord.pumpInbox((msg, d) => this.applyIncoming(msg, d)).catch(() => undefined);
       this.applyPendingDirectives();
       const result = await this.runStep();
       trace(`runStep done step=${this.step} stop=${result.stop ?? 'null'}`);
@@ -1837,14 +2450,28 @@ class EngineImpl implements Engine {
   private noteDiskError(e: unknown, file: string | undefined, step: number | null): boolean {
     const disk = classifyDiskError(e, file);
     if (disk === null) return false;
+    return this.noteDisk(disk, step, e);
+  }
+
+  /**
+   * contract 1.7 item 8 (TUI-DESIGN-4 §7.2 P-D2 item 1): the same emit + block path, entered from a classification the
+   * STORE made. The store reports every write path's failure through `attachDegradeListener`, which is what closes the
+   * measured hole: `enqueue()` handles the tail of a chain whose caller never awaited it, so before round 4 a run whose
+   * directory vanished mid-flight reported `complete`, exit 0, and the epilogue advertised a resume that could not work.
+   * The once-per-`<file>:<code>` rule lives here, in `this.warned`, so the two entry points can never double-report.
+   */
+  private noteDisk(disk: DiskError, step: number | null, cause: unknown = null): boolean {
     if (!this.warned.has(disk.key)) {
       this.warned.add(disk.key);
-      this.emit({ type: 'notice', step, kind: 'checkpoint:degraded', level: 'error', text: disk.text });
+      // contract 1.7 (TUI-DESIGN-4 §7.2 edge 6): the notice carries the whole SENTENCE — `checkpoint degraded:
+      // EACCES on state.json — the run directory is not writable; this run cannot be resumed` — never the bare
+      // `<code> on <file>` and never the raw `open '<path>'` suffix. `text` stays on `DiskError` for its captures.
+      this.emit({ type: 'notice', step, kind: 'checkpoint:degraded', level: 'error', text: disk.sentence });
     }
     // `[c] continue without checkpoints` was chosen: later state.json failures stay notices, the run is already degraded;
     // a failure of the FINAL write (finish() in flight) has no loop top left to pause at — it makes the run exit 3 instead
     if (disk.file === CHECKPOINT_FILES.state && this.blocked === null && !this.checkpointDegraded && !this.finishing) {
-      this.installBlock({ step: step ?? this.step, kind: 'checkpoint-degraded', detail: checkpointDegradedDetail(disk.code, disk.file), stop: 'error', exitCode: 3 }, e);
+      this.installBlock({ step: step ?? this.step, kind: 'checkpoint-degraded', detail: checkpointDegradedDetail(disk.code, disk.file), stop: 'error', exitCode: 3 }, cause);
       this.emitStatus();
     }
     return true;
@@ -1985,6 +2612,10 @@ class EngineImpl implements Engine {
   }
 
   private emitStatus(): void {
+    // contract 1.4 (W2b), §3.3 point 4: a transition of phase / blocked / pausing / pauseNow / stage schedules ONE
+    // coalesced beat (≤ 1 per 250 ms, the writer's own rule). Anything else is stored and rides the next beat, so
+    // this is not a write per status event.
+    this.coord?.set(this.heartbeatDynamic());
     this.emit({ type: 'status', status: this.status() });
   }
 
@@ -2068,6 +2699,11 @@ class EngineImpl implements Engine {
       ...(this.pendingDirectives.length > 0 ? { pendingDirectives: this.pendingDirectives.map((d) => ({ ...d })) } : {}),
       ...(this.undoLog.length > 0 ? { undoLog: this.undoLog.map((u) => ({ ...u, restored: [...u.restored], skipped: u.skipped.map((k) => ({ ...k })) })) } : {}),
       ...(this.checkpointDegraded ? { checkpointDegraded: true } : {}),
+      // contract 1.5 (ORCHESTRATION-DESIGN §4.1, §4.2 P9): the delegation this run is the parent of, and how many
+      // splits it has spent. Both are conditional spreads, so a run that never delegated writes the same state.json
+      // it wrote before this change — which is half of what M2 means by “zero cost”.
+      ...(this.orchestration !== null ? { orchestration: { ...this.orchestration, agents: this.orchestration.agents.map((a) => ({ ...a })) } } : {}),
+      ...(this.splits > 0 ? { splits: this.splits } : {}),
       // contract 1.4 (§12.0.3): the last prompt's chars, so a resumed process's context meter starts from a fact
       ...(this.lastPromptChars !== null ? { lastPromptChars: this.lastPromptChars } : {}),
       // docs/COORDINATION-DESIGN.md §8.3 / §8.4 / §12.0.3 (additive, conditional): absent while empty, so older readers and goldens are unchanged
@@ -2104,9 +2740,11 @@ class EngineImpl implements Engine {
       jevRequests: [],
       generatorRecords: [],
       usage: { generator: zeroUsage(), jev: zeroUsage() },
-      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null },
+      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null, jevWallMs: 0, decomposeMs: 0, coordinateMs: 0, coordWaitMs: 0 },
+      coord: null,
       synthMs: null,
       synthJevMs: 0,
+      synthJevWallMs: 0,
       generatorBatch: { inFlight: 0, startedAt: 0 },
       closed: false,
       verify: { samples: 0, timeouts: 0, cancelled: 0, malformed: 0, reported: null },
@@ -2137,6 +2775,7 @@ class EngineImpl implements Engine {
   private async stage<T>(name: StageName, fn: () => Promise<T>): Promise<T> {
     const step = this.draft?.step ?? this.step + 1;
     this.currentStage = name;
+    stepTimeline.stage(name);
     const t0 = this.clock();
     this.emit({ type: 'stage:start', step, stage: name });
     try {
@@ -2146,6 +2785,7 @@ class EngineImpl implements Engine {
       throw e;
     } finally {
       trace(`stage ${name} finally`);
+      stepTimeline.stage('');
       this.emit({ type: 'stage:end', step, stage: name, ms: Math.max(0, this.clock() - t0) });
       this.emitStatus();
       trace(`stage ${name} end emitted`);
@@ -2190,6 +2830,8 @@ class EngineImpl implements Engine {
       },
       // docs/COORDINATION-DESIGN.md §8.3 / §8.4: the zero-cost read and the `jevcode:outputs/` pseudo-path
       contextReads: this.contextReadHooks(),
+      // ORCHESTRATION-DESIGN §2.5: spread in only when set, so a normal run's StageContext is unchanged
+      ...(this.opts.orchestration !== undefined ? { orchestration: this.opts.orchestration } : {}),
     };
   }
 
@@ -2207,13 +2849,21 @@ class EngineImpl implements Engine {
     trace(`engine.ask ${stage} step=${draft.step} start`);
     let res: AskResult;
     const retry = this.retryHooks('jev', draft.step, stage);
+    // HARNESS-NEXT-DESIGN §4.4: `jevWaitMs` per stage — per router once §3.x labels its asks
+    const endJevWait = stepTimeline.span('jev', stage);
+    // and the same wall as a plain number, always: `harnessMs` is derived from it so an in-process decider that
+    // reports `latencyMs: 0` cannot charge its own CPU to the gated harness budget (see StepDraft.timing)
+    const askT0 = this.clock();
     try {
-      res = await this.opts.decider.ask(state, questions, { signal: this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
+      res = await this.jevCache.ask(state, questions, { signal: this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
       retry.settled(true);
     } catch (e) {
       retry.settled(false);
       trace(`engine.ask ${stage} rejected ${e instanceof Error ? e.name : typeof e}`);
       throw e;
+    } finally {
+      draft.timing.jevWallMs += Math.max(0, this.clock() - askT0);
+      endJevWait();
     }
     trace(`engine.ask ${stage} resolved attempts=${res.attempts}`);
     // TUI-DESIGN §13.2: a reachable Jev restarts the unreachable backoff (30 s again on the next pause)
@@ -2226,7 +2876,10 @@ class EngineImpl implements Engine {
     draft.timing.jevMs += res.latencyMs;
     const ids = Object.keys(questions);
     // TUI-DESIGN-2 §2.4 / §6 item 6: the client's cost basis rides the record (jev.jsonl) and the run-level aggregate (`/jev`, costBlock)
-    const record: JevRequestRecord = { step: draft.step, stage, requestHash: res.requestHash, latencyMs: res.latencyMs, questions: ids.length, usage, model: res.model, attempts: res.attempts, ...(res.costBasis !== undefined ? { costBasis: res.costBasis } : {}) };
+    // review finding 8: a hit is MARKED, never inferred from `usage.calls === 0` — the bench's
+    // stub decider reports 0 calls on every request, so the inference counted every stubbed
+    // request as a cache hit
+    const record: JevRequestRecord = { step: draft.step, stage, requestHash: res.requestHash, latencyMs: res.latencyMs, questions: ids.length, usage, model: res.model, attempts: res.attempts, ...(res.costBasis !== undefined ? { costBasis: res.costBasis } : {}), ...(res.cached === true ? { cached: true } : {}) };
     if (res.costBasis !== undefined) this.jevBasisCounts[res.costBasis] += 1;
     draft.jevRequests.push(record);
     this.jevLatencyMs.push(res.latencyMs);
@@ -2367,6 +3020,18 @@ class EngineImpl implements Engine {
    * the REPORT question rules), so a synthesizer cannot spend Jev budget or take a decision the
    * run does not record. The signal is the engine's; a synthesizer's own signal is ignored.
    */
+  /** The workspace listing, in the `listing` timing bucket (HARNESS-NEXT-DESIGN §4.4); a failed listing is an empty one, as before. */
+  private async listCandidatesTimed(): Promise<Awaited<ReturnType<Workspace['listCandidates']>>> {
+    const end = stepTimeline.span('listing', 'candidates');
+    try {
+      return await this.workspace.listCandidates();
+    } catch {
+      return [];
+    } finally {
+      end();
+    }
+  }
+
   /**
    * docs/LLM-JEV-DESIGN.md §9.4: whether the synthesizer covers this workspace, decided once per run from the workspace listing
    * (the layout does not change under the run); a synthesizer without `handles` covers everything.
@@ -2374,10 +3039,40 @@ class EngineImpl implements Engine {
   private async synthesizerHandles(synthesizer: Synthesizer): Promise<boolean> {
     if (this.synthHandles !== null) return this.synthHandles;
     if (synthesizer.handles === undefined) return (this.synthHandles = true);
-    const listing = await this.workspace.listCandidates().catch(() => []);
+    const listing = await this.listCandidatesTimed();
     const handles = synthesizer.handles(this.wsInfo, listing.map((c) => c.path));
     if (!handles) this.emit({ type: 'transcript', step: this.step + 1, level: 'info', text: `synthesizer ${synthesizer.name} does not cover this workspace; proposing through the generic per-step fallback (docs/LLM-JEV-DESIGN.md §9.4)` });
     return (this.synthHandles = handles);
+  }
+
+  /**
+   * contract 1.4 (W3), COORDINATION-DESIGN §6 / W3 item 28: `SynthesisContext.coordination`, built once per run.
+   *
+   * `CoordinationRuntime.subworkEnded(kind, id)` needs the kind; the synthesizer's seam takes the id alone (a producer
+   * that must repeat its own kind to close a row gets it wrong eventually). The adapter is therefore the one thing
+   * that remembers the pairing, in a map bounded by the runtime's own `SUBWORK_MAX`: a row the runtime dropped for
+   * the cap is still closed here, and the map cannot outgrow what the heartbeat carries.
+   */
+  private synthSubwork(): SynthSubwork {
+    const existing = this.subworkAdapter;
+    if (existing !== null) return existing;
+    const kinds = new Map<string, SubworkEntry['kind']>();
+    const adapter: SynthSubwork = {
+      subworkStarted: (entry) => {
+        if (this.coord === null) return;
+        if (!kinds.has(entry.id) && kinds.size >= SUBWORK_MAX) return;
+        kinds.set(entry.id, entry.kind);
+        this.coord.subworkStarted(entry.kind, entry.id, entry.stage, entry.detail, entry.laneDir);
+      },
+      subworkEnded: (id) => {
+        const kind = kinds.get(id);
+        if (kind === undefined) return;
+        kinds.delete(id);
+        this.coord?.subworkEnded(kind, id);
+      },
+    };
+    this.subworkAdapter = adapter;
+    return adapter;
   }
 
   private synthesisContext(draft: StepDraft, contextFiles: readonly FileView[]): SynthesisContext {
@@ -2424,6 +3119,9 @@ class EngineImpl implements Engine {
       // The synthesizer's LLM source is built once per run and keeps the FIRST step's function (search/llm.ts runOf): the
       // step a sample belongs to is the step it is dispatched in, so the draft is resolved at call time — the engine's
       // current draft, or this step's when none is open — never bound to the context that handed the function out.
+      // contract 1.4 (W3), §6 / W3 item 28: the heartbeat's sub-work rows. One adapter per run, so an `ended` finds the
+      // `kind` its `started` used; absent when coordination is off, which is the whole of "zero cost when absent".
+      ...(this.coord === null ? {} : { coordination: this.synthSubwork() }),
       ...(this.mode === 'jev-only'
         ? {}
         : {
@@ -2540,6 +3238,9 @@ class EngineImpl implements Engine {
     // frame when it had arrived, or a rate-limited end (`CancelledGeneration.rateLimited`); null when the callback never fired
     const held: { partial: CancelledGeneration | null } = { partial: null };
     let res: GenerateResult;
+    // HARNESS-NEXT-DESIGN §4.1 queue 2: the sample wait, per sample; the bucket's `ms` is the union, so a round of
+    // eight concurrent samples reports the round's exposed wall and `sumMs` the summed time
+    const endSampleWait = stepTimeline.span('sample', sample === undefined ? 'one-shot' : `sample${sample.sample}`);
     try {
       res = await this.opts.provider.generate(req, {
         signal: link?.signal ?? this.signal,
@@ -2580,6 +3281,7 @@ class EngineImpl implements Engine {
       }
       throw e;
     } finally {
+      endSampleWait();
       link?.unlink();
       if (sample !== undefined) this.noteSampleEnd(draft);
     }
@@ -2790,11 +3492,309 @@ class EngineImpl implements Engine {
   // One step
   // -------------------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------------------
+  // contract 1.5 (ORCHESTRATION-DESIGN §3, §4.2 P9, §8.2 D1 item 15): the decompose stage's call site
+  // -------------------------------------------------------------------------------------
+
+  /**
+   * §3.1 [G21] / §2.5(e) / [G5] — **THE ONE SHORT-CIRCUIT**, and the only place it is decided.
+   *
+   * `orchestrate.split === 'off'` (the shipping default), `orchestration.depth === 1` (an agent may never
+   * spawn agents) and a missing coordination ledger are each decided from the RESOLVED OPTIONS alone.
+   * Nothing past this predicate runs for them: no `statusPorcelain`, no `os.availableParallelism()`, no
+   * `os.freemem()`, no `statfs`, no `du -sk` of the repo, no `git ls-files`, no `propose_split` generator
+   * call and no Jev request — because `GateInput` wants every one of those measurements, and M2's gate is
+   * that a shut split costs this comparison and nothing else.
+   *
+   * It emits nothing, either. §3.1's `decompose:skipped` line exists to make the GATE testable; `split_off`
+   * is the setting the user chose, not news, and M2 asserts a default run produces no new events at all.
+   */
+  private decomposeShortCircuit(): GateReason | null {
+    const o = this.opts.orchestration;
+    return decomposeShutByOptions(this.opts.splitPolicy, o?.depth, this.hasLedger());
+  }
+
+  /**
+   * contract 1.4 (W2b), ORCHESTRATION-DESIGN §3.1 [G5]: "a coordination ledger handle exists, so children can be
+   * tracked". `OrchestrationOptions.hasLedger` rode the orchestration options only because contract 1.4 had not
+   * landed `EngineOptions.coordination`; it has now, so the FACT is derived from the handle and the field is the
+   * override it always read as. The field stays (contract 1.5 shipped it, and a test may still set it), but a
+   * caller that passes a real handle no longer has to remember to set a second flag that says so — which is exactly
+   * the drift [G5] would have produced: a parent that delegates with no ledger to track the children in.
+   */
+  private hasLedger(): boolean {
+    return this.coord !== null || this.opts.orchestration?.hasLedger === true;
+  }
+
+  /**
+   * §3: the stage, before `replan` / `intent`. Returns a stop reason when the delegation was accepted —
+   * that is **P9**, and the parent's process ends there (§2.9: waiting on children with a live process
+   * burns context and money for nothing).
+   *
+   * Every other outcome returns null and the step goes on exactly as it would have: the stage is a
+   * PROPOSAL (§3), it never touches the workspace, and a rule-1 discard of it costs one Jev request.
+   */
+  private async maybeDecompose(draft: StepDraft): Promise<StopReason | null> {
+    if (this.decomposeShortCircuit() !== null) return null;
+    // corner row 12: this run already delegated. The gate stays shut and the existing delegation is
+    // adopted — `agent:adopted` says so — for as long as `manifestId` AND `baseSha` still match.
+    if (this.orchestration !== null) {
+      await this.adoptExistingDelegation();
+      return null;
+    }
+
+    const t0 = this.clock();
+    try {
+      const facts = await this.decomposeFacts();
+      const result = await this.stage('decompose', () =>
+        runDecomposeStage(this.decomposeContext(draft), {
+          policy: this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY,
+          depth: this.opts.orchestration?.depth ?? 0,
+          runId: this.runId,
+          sessionId: this.opts.session?.sessionId ?? this.runId,
+          plan: this.plan,
+          planDraft: { done: this.plan.done.map((d) => d.text), remaining: [...this.plan.remaining], openProblems: [...this.plan.openProblems] },
+          reserveUsd: this.decomposeReserveUsd(),
+          reserveFrom: 'session',
+          facts,
+          detectSecrets: (text) => detectSecrets(text).length,
+          // there is no engine-side verbose gate: `--json=verbose` is filtered in `src/cli/json-stream.ts`
+          // by `VERBOSE_ONLY_TYPES`, so the engine emits and the stream drops. `decompose:skipped` must be
+          // added to that set (one word, CLI-owned); until then it rides an ordinary `--json` stream.
+          verbose: true,
+          // corner row 11: no blocker means `--no-input` / a pipe / the bench, and the confirm cannot be answered
+          hasBlocker: this.opts.blocker !== undefined,
+          confirm: (req) => this.confirmDecomposition(draft, req),
+        }),
+      );
+      if (result.kind === 'proposed') return await this.acceptDelegation(draft, result.manifest);
+      if (result.kind === 'declined' || (result.kind === 'no_split' && result.problem !== null)) {
+        // §3.7 policy / corner row 9: an `orchestration` harness problem sends the next `splitEvery` steps
+        // single-threaded. `lastSplitStep` is NOT moved: only a written manifest consumes a `maxSplits` slot.
+        const text = result.kind === 'declined' ? result.reason : (result.problem ?? result.reason);
+        this.plan = { ...this.plan, harnessProblems: boundHarnessProblems([...this.plan.harnessProblems, { kind: 'orchestration', text: clip(text, 600), step: draft.step }], PLAN_MAX_HARNESS_PROBLEMS) };
+        draft.notes.push(`decompose: ${clip(text, 200)}`);
+      }
+      return null;
+    } catch (e) {
+      // §3.5: nothing about a decomposition may end a run. An abort still propagates (the step is a rule-1
+      // discard, and §3's "it is a proposal" means there is nothing to roll back).
+      if (isAbortError(e) || this.signal.aborted) throw e;
+      this.emit({ type: 'notice', step: draft.step, kind: 'orchestration', level: 'info', text: `decompose failed: ${clip(this.redact(e instanceof Error ? e.message : String(e)), 200)} — continuing single-threaded` });
+      return null;
+    } finally {
+      draft.timing.decomposeMs = Math.max(0, this.clock() - t0);
+    }
+  }
+
+  /** the `DecomposeStageContext` seam: the engine's `ask` / `generate` with the stage's own narrow shape */
+  private decomposeContext(draft: StepDraft): DecomposeStageContext {
+    const self = this;
+    return {
+      step: draft.step,
+      mode: this.mode,
+      task: this.opts.task,
+      redact: (s) => self.redact(s),
+      now: () => self.clock(),
+      emit: (e) => self.emit(e),
+      ask: async (state, questions, annotate) => {
+        const out = await self.ask(draft, 'decompose', state as JsonObject, questions, annotate);
+        return { answers: out.answers, rows: out.rows };
+      },
+      proposeSplit: () => self.proposeSplit(draft),
+    };
+  }
+
+  /**
+   * §3.3: the generator's ONE call at the gate. Its prose is DISCARDED — only the structured
+   * `propose_split` argument survives, and `normalizeSplit` re-derives every safety property of it.
+   * `jev-only` has no generator, so `splitToolsFor` returns nothing and this returns null without a call.
+   */
+  private async proposeSplit(draft: StepDraft): Promise<DraftSplit | null> {
+    const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
+    const tools = splitToolsFor(this.mode, policy.maxAgents);
+    const tool = tools[0];
+    if (tool === undefined) return null;
+    const listing = await this.listCandidatesTimed();
+    const message = buildSplitMessage({
+      step: draft.step,
+      task: this.opts.task,
+      plan: this.plan,
+      prefixTree: splitPrefixTree(listing.map((c) => c.path)),
+      failingTests: this.lastTestRun !== null && !this.lastTestRun.allPassed ? [this.lastTestRun.command] : [],
+      maxAgents: policy.maxAgents,
+      verification: policy.verify,
+    });
+    const result = await this.generate(draft, { system: buildSystemPrompt({ mode: this.mode, sandboxLevel: this.sandbox.level, toolName: tool.name }), messages: [{ role: 'user', content: message }], maxTokens: this.opts.generation.maxTokens, temperature: this.opts.generation.temperature, tools, toolChoice: { name: tool.name } }, 0);
+    const call = result.toolCalls.find((c) => c.name === PROPOSE_SPLIT_TOOL_NAME);
+    return call === undefined ? null : parseSplitDraft(call.input);
+  }
+
+  /**
+   * §3.7 [G2]: the manifest confirm goes through the EXISTING `Confirmer` — the same seam the review card
+   * uses, with `title` / `headline` / `body` / `badge` set and [D5c]'s fixed `proposal` / `risk`. There is
+   * no second confirmer: `confirm:request` and `confirm:resolved` are emitted exactly as they are for a
+   * review, so `--plain`, the SR twin and the `--json` stream all see one familiar pair of events.
+   */
+  private async confirmDecomposition(draft: StepDraft, req: ConfirmRequest): Promise<ConfirmOutcome> {
+    this.emit({ type: 'confirm:request', request: req });
+    const c0 = this.clock();
+    try {
+      const c = this.opts.confirmer;
+      const r: ConfirmOutcome = c.confirmDetailed ? await c.confirmDetailed(req, { signal: this.signal }) : { approved: await c.confirm(req, { signal: this.signal }) };
+      draft.timing.confirmMs += Math.max(0, this.clock() - c0);
+      const rawNote = typeof r.note === 'string' ? clip(sanitizeStream(r.note).replace(/\s+/g, ' ').trim(), REVIEWER_NOTE_MAX) : '';
+      const note = rawNote.length > 0 ? rawNote : undefined;
+      this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: r.approved, aborted: false, ...(note !== undefined ? { note } : {}) });
+      return { approved: r.approved, ...(note !== undefined ? { note } : {}) };
+    } catch (e) {
+      draft.timing.confirmMs += Math.max(0, this.clock() - c0);
+      this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: false, aborted: true });
+      if (isAbortError(e) && !this.signal.aborted) this.abort(e.reason === 'signal' ? 'signal' : 'human_abort');
+      throw e;
+    }
+  }
+
+  /**
+   * §4.2 **P9**, in the row's exact persist order: `orchestrate/manifest-<n>.json` → `state.json`
+   * (`orchestration`, `interrupted = null` — the step committed) → heartbeat → `run:end`. The manifest is
+   * written FIRST and awaited, because a `state.json` naming a manifest that is not on disk is a
+   * delegation the next process cannot adopt and would therefore propose a second time (corner row 12).
+   */
+  private async acceptDelegation(draft: StepDraft, manifest: Manifest): Promise<StopReason | null> {
+    const write = this.store.writeCache;
+    if (write === undefined) {
+      this.emit({ type: 'notice', step: draft.step, kind: 'orchestration', level: 'info', text: 'the delegation was approved but this checkpoint store cannot write it — continuing single-threaded' });
+      return null;
+    }
+    try {
+      // the store routes an `orchestrate/`-prefixed rel to `<runDir>/orchestrate/` (`checkpoint/store.ts cacheTarget`)
+      await write.call(this.store, manifestPath(manifest.step), toJson(manifest));
+    } catch (e) {
+      this.emit({ type: 'notice', step: draft.step, kind: 'orchestration', level: 'info', text: `the manifest could not be written: ${clip(this.redact(e instanceof Error ? e.message : String(e)), 200)} — continuing single-threaded` });
+      return null;
+    }
+    this.emit({ type: 'orchestration:proposed', step: draft.step, manifest });
+    this.orchestration = checkpointOrchestration(manifest);
+    // only a WRITTEN manifest consumes a `maxSplits` slot and arms the `splitEvery` cooldown (corner row 8)
+    this.splits += 1;
+    this.lastSplitStep = draft.step;
+    this.absorbDiscardedTiming(draft);
+    this.recordDelegatePause(draft.step);
+    this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `delegated at step ${draft.step} — ${manifest.agents.length} agents` });
+    return 'human_pause';
+  }
+
+  /**
+   * corner row 12: a resumed run whose `manifestId` AND `baseSha` still match ADOPTS the delegation. The
+   * gate stays shut and no second manifest is proposed. A mismatch (the base moved, the plan changed, the
+   * file is gone) drops the record so the gate may open again — the alternative is a run that can never
+   * delegate because of a manifest it can no longer read.
+   */
+  private async adoptExistingDelegation(): Promise<void> {
+    const held = this.orchestration;
+    if (held === null) return;
+    const read = await readManifest(nodeManifestIo(this.store.dir), held.step, { task: this.opts.task, remaining: this.plan.remaining });
+    const head = this.workspace.gitState?.()?.head ?? null;
+    const baseSha = head !== null && head.kind === 'branch' ? head.oid : null;
+    // row 12: `manifestId` AND `baseSha` must BOTH still match. A head nothing probed cannot refute the
+    // base, so only a head that is KNOWN and different drops the adoption.
+    if (read.ok && sameDelegation(read.manifest, { manifestId: held.manifestId, baseSha: read.manifest.baseSha }) && (baseSha === null || baseSha === read.manifest.baseSha)) {
+      if (!this.adoptedAnnounced) {
+        this.adoptedAnnounced = true;
+        this.emit({ type: 'agent:adopted', count: held.agents.length, parentRunId: this.runId });
+      }
+      return;
+    }
+    this.emit({ type: 'notice', step: this.step + 1, kind: 'orchestration', level: 'info', text: `the delegation of step ${held.step} no longer matches this checkout (${read.ok ? 'the base moved' : read.reason}) — it is not adopted` });
+    this.orchestration = null;
+  }
+
+  /** §6.1: `min(sessionRemaining × reserveFraction, maxReserveUsd)`. `w_i` is a code weight; Jev has no say in money. */
+  private decomposeReserveUsd(): number {
+    const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
+    const snap = this.opts.meter.snapshot();
+    // [D6]: a hold is money already promised to an agent that has not spent it yet, so the reserve reads it as gone.
+    // `sessionRemainingUsd`'s third argument (D0 item 3) landed, so this is the ONE arithmetic — the twin is deleted.
+    const remaining = Math.max(0, sessionRemainingUsd(snap.capUsd, snap.totalUsd, snap.heldUsd ?? 0));
+    return Math.max(0, Math.min(remaining * policy.reserveFraction, policy.maxReserveUsd));
+  }
+
+  /**
+   * Everything `GateInput` and the planner need, measured ONCE, and only ever reached past the
+   * short-circuit above. The resource numbers come from the §3.6 probe (`nodePreflightProbe`), which is
+   * the one place `node:os` / `statfs` / `du` are touched.
+   */
+  private async decomposeFacts(): Promise<DecomposeFacts> {
+    const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
+    const git = this.workspace.gitState?.() ?? null;
+    const headOid = git !== null && git.head !== null && git.head.kind === 'branch' ? git.head.oid : null;
+    const listing = (await this.listCandidatesTimed()).map((c) => c.path);
+    // contract 1.4 (W2b), §3.6: the INJECTED probe (`EngineDeps.preflightProbe`, default `nodePreflightProbe()`),
+    // resolved once per engine — the five host readings were the last thing on this path a unit test could not pin
+    const probe = this.preflightProbe;
+    const disk = await probe.diskFree(this.workspace.root);
+    const repoBytes = (await probe.repoBytes(this.workspace.root)) ?? 0;
+    const fit = await preflight(probe, { repoRoot: this.workspace.root, want: policy.maxAgents, minFreeBytes: MIN_FREE_BYTES, agentMemBytes: AGENT_MEM_BYTES });
+    const verification = resolveVerification({
+      configured: policy.verify,
+      packageJson: null,
+      rootFiles: new Set<string>(),
+      makefile: null,
+      synthRunner: null,
+      lastTestRunCommand: this.lastTestRun?.command ?? this.wsInfo.testCommand?.command ?? null,
+    });
+    const snap = this.opts.meter.snapshot();
+    const measured = await measureRepoFacts((cwd, args, o) => runGit(this.sandbox, cwd, args, o ?? {}), this.workspace.root);
+    const problem = [...this.plan.harnessProblems].reverse().find((h) => h.kind === 'orchestration');
+    return {
+      // [G5]: past the short-circuit this is true by construction — it is re-stated so the gate stays pure
+      hasLedger: this.hasLedger(),
+      git: { isRepo: git?.repo === true, headBorn: headOid !== null, worktreeSupported: git?.repo === true },
+      baseSha: headOid ?? '',
+      repoKey: git?.commonDir ?? null,
+      existingBranches: measured.existingBranches,
+      deny: ['.git', ...this.opts.secretPaths],
+      // review 2026-09-22 findings 5 + 6: measured, not `false`/`[]`. Every one of these placeholders made the
+      // planner more permissive than the truth; `unmeasured` carries whatever git could not answer and the gate
+      // refuses on it rather than guessing. All of it runs BEHIND the short-circuit, so M2 is untouched.
+      fold: measured.fold,
+      unmeasured: measured.unmeasured,
+      repoPaths: listing,
+      listing,
+      // D1 has no item→file join: `fileMemory` is keyed by path, not by plan item, so the association is
+      // computed from the item text against the real listing. Wave D2's evidence join replaces this.
+      itemFiles: this.plan.remaining.map((item) => listing.filter((p) => item.includes(p))),
+      testImports: {},
+      packages: [],
+      lastTestRun: this.lastTestRun !== null && !this.lastTestRun.allPassed ? { failingFiles: [this.lastTestRun.command] } : null,
+      dirtyEntries: git?.dirty.entries.length ?? 0,
+      // [D1]: the OVERLAP is not a fact of the repo — it is the dirty set intersected with the chosen split's
+      // owns, which do not exist until the normaliser has run, so the stage derives it at manifest time.
+      syncedDirty: measured.syncedDirty,
+      liveChildren: 0,
+      splits: this.splits,
+      lastSplitStep: this.lastSplitStep,
+      maxAgentsAllowed: fit.agents,
+      preflightReasons: fit.reasons,
+      availableParallelism: probe.availableParallelism() ?? 1,
+      freeMemBytes: probe.freeMemBytes() ?? 0,
+      freeDiskBytes: disk?.freeBytes ?? 0,
+      repoBytes,
+      sessionRemainingUsd: Math.max(0, sessionRemainingUsd(snap.capUsd, snap.totalUsd, snap.heldUsd ?? 0)),
+      isReplanStep: this.detector.tripped(),
+      orchestrationProblemAgeSteps: problem === undefined ? null : Math.max(0, this.step + 1 - problem.step),
+      verification: verification.commands,
+      humanAsked: false,
+    };
+  }
+
   private async runStep(): Promise<{ stop: StopReason | null; detail?: string }> {
     const step = this.step + 1;
     const draft = this.newDraft(step);
     this.draft = draft;
     this.stageBlock = null;
+    stepTimeline.beginStep(step);
     this.emit({ type: 'step:start', step, startedAt: draft.startedAt });
     // contract 1.4 (COORDINATION-DESIGN §7.3 step 3): the paused proposal (or the arrived samples) of exactly this step, gated at run start
     const replay = this.takeReplay(step);
@@ -2815,6 +3815,13 @@ class EngineImpl implements Engine {
     try {
       changedFiles = await this.workspace.changedFiles().catch(() => [] as string[]);
       const ctx = this.makeContext(draft, changedFiles);
+
+      // contract 1.5 (ORCHESTRATION-DESIGN §3): the `decompose` stage runs HERE — before `replan` / `intent` —
+      // and only when the gate can possibly open. `maybeDecompose` short-circuits on `split: 'off'`, on an agent
+      // (`orchestration.depth === 1`) and on a missing ledger before it gathers a single gate fact (M2). A
+      // `human_pause` back is **P9**: the manifest was written and confirmed, and the parent has nothing left to do.
+      const delegated = await this.maybeDecompose(draft);
+      if (delegated !== null) return { stop: delegated, detail: `delegated at step ${step}` };
       const common = (): JsonObject => (commonState ??= this.commonState(changedFiles, this.window));
 
       if (usesJev(this.mode)) {
@@ -2873,7 +3880,7 @@ class EngineImpl implements Engine {
           // to the generic `propose_action` sample — the flag (not the mode) keys `generator_done` and the verbatim claim evidence
           if (llmJev && !(await this.synthesizerHandles(synthesizer))) {
             draft.proposer = 'generic';
-            const listing = await this.workspace.listCandidates().catch(() => []);
+            const listing = await this.listCandidatesTimed();
             const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
             // review D5: the same entry point as the other two, so the meter and the view follow the mode gate in one place
             p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, [], candidates));
@@ -2883,12 +3890,14 @@ class EngineImpl implements Engine {
             const sctx = this.synthesisContext(draft, contextFiles);
             const s0 = this.clock();
             const jev0 = draft.timing.jevMs;
+            const jevWall0 = draft.timing.jevWallMs;
             try {
               p = await this.stage('propose', () => runSynthStage(ctx, synthesizer, sctx));
             } finally {
               // docs/LLM-JEV-DESIGN.md §7.5: the synth wall and the Jev latency spent inside it (the shell's share is the rest)
               draft.synthMs = Math.max(0, this.clock() - s0);
               draft.synthJevMs = Math.max(0, draft.timing.jevMs - jev0);
+              draft.synthJevWallMs = Math.max(0, draft.timing.jevWallMs - jevWall0);
             }
             // llm-jev: the round's per-sample rows (cancelled estimates included) reach generator.jsonl exactly as after runProposeStage; a no-op in jev-only
             this.flushGeneratorRecords(draft);
@@ -2942,7 +3951,7 @@ class EngineImpl implements Engine {
           this.emitReplayedProposal(draft, replayed);
         } else {
           // Same <= 300 pre-filter (mention count, then recency) as the context stage (§13).
-          const listing = await this.workspace.listCandidates().catch(() => []);
+          const listing = await this.listCandidatesTimed();
           const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
           // docs/COORDINATION-DESIGN.md §8.8 jev-off column: the cache is the generator's only file view; candidates stay the listing
           p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, [], candidates));
@@ -2953,17 +3962,38 @@ class EngineImpl implements Engine {
         claimsOf(p.proposal);
         stage = 'execute';
         draft.patchTargets = await computeTargets(ctx, p.proposal);
+        // ORCHESTRATION-DESIGN §2.4 belt 2: jev-off runs no risk stage, so the child's code refusal is applied here —
+        // belt 2 is a property of the AGENT, not of the mode (`runRiskStage` carries it in every other mode).
+        const refusal = ownershipRefusal(p.proposal.action, this.opts.orchestration);
+        if (refusal !== null) {
+          draft.outcome = refusal;
+          this.counters.blocked += 1;
+          this.emit({ type: 'outcome', step, outcome: refusal });
+        }
       }
 
       if (draft.outcome === null && draft.proposal !== null) {
         // Await the overlapped checkpoint of the previous step before anything touches the workspace (§9).
-        if (this.pendingCheckpoint) await this.pendingCheckpoint;
+        if (this.pendingCheckpoint) await stepTimeline.measure('store', 'pending-checkpoint', () => this.pendingCheckpoint ?? Promise.resolve());
         if (this.blocked !== null) {
           // TUI-DESIGN §13.3: that checkpoint failed on a disk class (or a pause was requested by a write): nothing executes until the pane is answered
           this.interrupted = { step, stage: 'execute', proposal: draft.proposal };
           this.emit({ type: 'transcript', step, level: 'warn', text: `${this.blocked.kind} before execute; step ${step} discarded` });
           this.absorbDiscardedTiming(draft);
           return { stop: null };
+        }
+        // contract 1.4 (W2b), COORDINATION-DESIGN §4.2: the `coordinate` micro-stage, in the design's exact order —
+        // after the overlapped checkpoint and the `blocked` discard, BEFORE `checkBudgets` (so a strict wait that ate
+        // the wall budget is caught below, not after pre-images) and before `takePreImages` (the latest point at
+        // which nothing has touched the workspace).
+        if (this.coord !== null && coordinates(draft.proposal.action)) {
+          const discard = await this.runCoordinate(draft, step);
+          if (discard !== null) {
+            this.interrupted = { step, stage: 'execute', proposal: draft.proposal };
+            this.emit({ type: 'transcript', step, level: 'warn', text: discard });
+            this.absorbDiscardedTiming(draft);
+            return { stop: null };
+          }
         }
         const b = checkBudgets(this.budgetInput(['spend_cap', 'wall_time']));
         if (b !== null) {
@@ -2989,6 +4019,12 @@ class EngineImpl implements Engine {
         draft.executeFinished = true;
         // TUI-DESIGN §12.3: post-images right after execute, still inside runStep() so harnessMs sees them
         if (imageSource !== null) await this.takePostImages(draft, imageSource, ex.changedFiles, pre);
+        // ORCHESTRATION-DESIGN §2.4 [G8]: belt 2 does not cover `run`, so the post-images are diffed against `own` here.
+        // Reported, never blocked — "blocking after the command ran would be theatre".
+        await this.noteEscaped(draft, ex.changedFiles);
+        // ORCHESTRATION-DESIGN §5.7 tail / corner row 44: a merge that landed is recorded, because `/undo` cannot
+        // restore a merge commit from images and `/rewind` below the delegation would orphan the branches.
+        await this.noteLanded(draft, ex.outcome);
         this.emit({ type: 'outcome', step, outcome: ex.outcome });
         if (ex.outcome.status === 'interrupted') {
           const cls = this.classifyStop();
@@ -3035,8 +4071,15 @@ class EngineImpl implements Engine {
       await this.candidateRefresh;
       this.candidateRefresh = null;
     }
+    // ORCHESTRATION-DESIGN §2.6 [G1] [D2] [D10]: the harness commits, in the agent worktree, through the injected
+    // `runGit` seam — after every committed step of a child whose outcome is `executed` with changed files. No seam
+    // (every run that is not an agent) = no git mutation at all, which is why nothing below changes an ordinary run.
+    await this.commitAfterStep(draft);
     const committed = this.commit(draft);
     if (committed.stop) return { stop: committed.stop };
+    // §2.4 / corner row 18: three consecutive belt-2 refusals are the honest signal that the DECOMPOSITION failed
+    const park = this.noteBeltRefusal(draft);
+    if (park !== null) return { stop: 'human_pause', detail: park };
     if (stopAfterCommit) return { stop: stopAfterCommit };
     if (this.unpriced !== null) {
       // TUI-DESIGN §9.5: usage.cost null/non-finite → the step committed, the run stops with error unless --allow-unpriced (exit 2, the flag is named)
@@ -3075,6 +4118,14 @@ class EngineImpl implements Engine {
     // a `run` with nothing dirty has nothing to copy: no pre-image directory (clean tracked files are recoverable from HEAD)
     if (source === 'run' && targets.length === 0) return null;
     const t0 = this.clock();
+    // HARNESS-NEXT-DESIGN §5/§6 S0 charters a *reduction* of imagesMs (p95 19.9–24.5 ms, target 15 ms). Wave S0
+    // instrumented it and did not reduce it, and once `harnessMs` stopped being charged the decider double's CPU
+    // this span became the whole of the gated number: on the `step-overhead` fixture `images:pre` is 386 ms total
+    // at p95 38.1 ms against `listing:note-changed` 26 ms, `store` 117 ms and `jev` 98 ms over 203 asks. The cost
+    // is the serial 15 MiB pre-image copy inside `writePreImages` — `src/checkpoint/images.ts`, owned by another
+    // branch in flight. DEFERRED, with that owner; `experiments/harness-next/quick.mts` prints the deferral on
+    // every Ring-0 run so it cannot be quietly forgotten.
+    const endImages = stepTimeline.span('images', 'pre');
     try {
       const r = await writePreImages(this.runDir, draft.step, targets, { root: this.workspace.root, source, now: () => this.clock() });
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + r.ms;
@@ -3083,6 +4134,8 @@ class EngineImpl implements Engine {
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + Math.max(0, this.clock() - t0);
       this.noteImagesFailure(draft, 'pre', e);
       return null;
+    } finally {
+      endImages();
     }
   }
 
@@ -3097,6 +4150,7 @@ class EngineImpl implements Engine {
     // run would overwrite those modifications (§12.4 rule 3)
     const probe = this.gitState;
     const t0 = this.clock();
+    const endImages = stepTimeline.span('images', 'post');
     try {
       const r = await writePostImages(this.runDir, draft.step, changedFiles, {
         root: this.workspace.root,
@@ -3113,6 +4167,8 @@ class EngineImpl implements Engine {
     } catch (e) {
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + Math.max(0, this.clock() - t0);
       this.noteImagesFailure(draft, 'post', e);
+    } finally {
+      endImages();
     }
   }
 
@@ -3122,12 +4178,290 @@ class EngineImpl implements Engine {
     this.noteDiskError(e, which === 'pre' ? CHECKPOINT_FILES.pre : CHECKPOINT_FILES.post, draft.step);
   }
 
+  // -------------------------------------------------------------------------------------
+  // contract 1.5 — the child differences (ORCHESTRATION-DESIGN §2.4, §2.5, §2.6) and the launch (§5.7).
+  // Every method below returns at once on a run without `EngineOptions.orchestration`, and the commit
+  // path additionally returns at once without the injected `runGit` seam: absent seam = no git mutation.
+  // -------------------------------------------------------------------------------------
+
+  /** §2.5: the child's identity on the events the parent's surface reads. */
+  private agentRef(): AgentRef {
+    const o = this.opts.orchestration;
+    return { slug: o?.slug ?? 'agent', runId: this.runId, sessionId: this.opts.session?.sessionId ?? null };
+  }
+
+  /**
+   * §2.4 [G8]: after every `run` action in a child, diff the post-images against `own`. The paths outside it are
+   * recorded on `StepRecord.escaped` and shown on the row; the step is NOT blocked, because the command already ran.
+   *
+   * [D2] review finding 1: the subtracted set is the STILL-CARRIED subset of `syncedDirty` (`carriedPaths`, inside the
+   * facade's `outsideOwn`), never the raw list — subtracting the whole list would exempt up to 200 parent-dirty paths
+   * from belt 2 for the whole run, including one a sibling rewrote.
+   */
+  private async noteEscaped(draft: StepDraft, changed: readonly string[]): Promise<void> {
+    const o = this.opts.orchestration;
+    if (o === undefined || o.depth !== 1 || draft.proposal?.action.kind !== 'run') return;
+    // review 2026-09-22 finding 4: an empty `own` is NOT a reason to skip the diff — it is the case where
+    // every changed path escaped. `escapedPaths` fails closed; this only skips when nothing changed at all.
+    const own = o.own ?? [];
+    if (changed.length === 0) return;
+    try {
+      const escaped = await escapedPaths(this.workspace.root, { changed, own, syncedDirty: o.syncedDirty ?? [] });
+      if (escaped.length === 0) return;
+      this.escapedThisStep = escaped;
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: escapedLine(escaped) });
+    } catch (e) {
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `escape diff failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+    }
+  }
+
+  /**
+   * §2.4 / corner row 18: three CONSECUTIVE belt-2 refusals park the child with `scope-fight` — "the honest signal
+   * that the decomposition, not the worker, failed". A research refusal is not a scope fight (the split was fine; the
+   * model asked for the wrong kind of action), so only `isOwnershipRefusal` reasons count.
+   */
+  private noteBeltRefusal(draft: StepDraft): string | null {
+    if (this.opts.orchestration?.depth !== 1) return null;
+    const o = draft.outcome;
+    this.beltRefusals = o !== null && o.status === 'blocked' && isOwnershipRefusal(o.reason) ? this.beltRefusals + 1 : 0;
+    if (this.beltRefusals < SCOPE_FIGHT_AFTER) return null;
+    this.emit({
+      type: 'transcript',
+      step: draft.step,
+      level: 'warn',
+      text: `parked (scope-fight): ${SCOPE_FIGHT_AFTER} refusals in a row outside ${(this.opts.orchestration.own ?? []).join(', ')} — the split was wrong for this agent`,
+    });
+    return 'scope-fight';
+  }
+
+  /**
+   * §2.6 [G1] [D2] [D10]: after every committed step of a child whose `outcome.status === 'executed'` and
+   * `changedFiles.length > 0`. The add set is COMPUTED (`computeAddSet`), never `-A`: `git add -A` in an agent
+   * worktree stages the parent's synced dirty set onto every branch from the first commit, which is what corner row
+   * 55 exists to forbid.
+   */
+  private async commitAfterStep(draft: StepDraft): Promise<void> {
+    const o = this.opts.orchestration;
+    if (o === undefined || o.depth !== 1 || o.runGit === undefined) return;
+    for (const p of draft.changedFiles) this.touchedPaths.add(p);
+    if (draft.outcome?.status !== 'executed' || draft.changedFiles.length === 0) return;
+    this.commitThisStep = await this.harnessCommit(draft.step, draft.proposal?.goal ?? summariseAction(draft.proposal?.action ?? { kind: 'done', summary: '' }));
+  }
+
+  /** §2.6: the one place the harness runs `git add` / `git commit`. `addSet` empty → no commit, no error. */
+  private async harnessCommit(step: number, summary: string): Promise<string | null> {
+    const o = this.opts.orchestration;
+    const runGit = o?.runGit;
+    if (o === undefined || runGit === undefined) return null;
+    const dir = this.workspace.root;
+    try {
+      const { addSet } = await computeAddSet(runGit, dir, { touched: [...this.touchedPaths], syncedDirty: o.syncedDirty ?? [] });
+      if (addSet.length === 0) return null;
+      const r = await commitStep(runGit, dir, { addSet, identity: o.commit ?? DEFAULT_COMMIT_IDENTITY, slug: o.slug ?? 'agent', step, summary });
+      if (!r.ok) {
+        this.emit({ type: 'transcript', step, level: 'warn', text: `harness commit failed: ${this.redact(r.reason)}` });
+        return null;
+      }
+      if (r.commit !== null) this.emit({ type: 'transcript', step, level: 'info', text: `committed ${r.commit.slice(0, 12)} in ${o.slug ?? 'agent'}` });
+      return r.commit;
+    } catch (e) {
+      this.emit({ type: 'transcript', step, level: 'warn', text: `harness commit failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+      return null;
+    }
+  }
+
+  /**
+   * §2.6 / corner rows 36 and 37, INVERTED: uncommitted-at-end is the CRASH case. The end commit fires
+   * unconditionally once when the add set is non-empty, so `addSet ≠ ∅` after a clean `run:end` means the process died
+   * between the step commit and the git commit — and "uncommitted" means outside `carried ∪ syncedIgnored`, which is
+   * exactly what `computeAddSet` computes.
+   */
+  private async commitAtEnd(): Promise<void> {
+    const o = this.opts.orchestration;
+    if (o === undefined || o.depth !== 1 || o.runGit === undefined) return;
+    this.endCommit = await this.harnessCommit(this.step, 'run end');
+  }
+
+  /**
+   * §2.5(c) / §4.2 P10: in a child the review confirm PARKS. The `ConfirmRequest` is written to
+   * `<childRunDir>/orchestrate/review-<step>.json` (the store routes an `orchestrate/`-prefixed rel there), the parent's
+   * surface is told through `agent:review`, and the confirm rejects with `AbortError('human_pause')` → rule-1 discard →
+   * P10. Never returns.
+   */
+  private async parkForReview(draft: StepDraft, req: ConfirmRequest, why: string | null): Promise<never> {
+    const write = this.store.writeCache;
+    if (write !== undefined) {
+      const body: Json = { ...(toJson(req) as JsonObject), ...(why !== null ? { reason: why } : {}) };
+      try {
+        await write.call(this.store, reviewCacheRel(draft.step), body);
+      } catch (e) {
+        this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `review park: ${reviewCacheRel(draft.step)} write failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+      }
+    }
+    this.emit({ type: 'agent:review', agent: this.agentRef(), request: req });
+    this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: false, aborted: true });
+    this.emit({ type: 'transcript', step: draft.step, level: 'info', text: why !== null ? `review parked: ${why}` : `review parked: a human decision is needed (${reviewCacheRel(draft.step)})` });
+    this.reviewParked = true;
+    this.snapshotDraft(draft);
+    throw new AbortError('human_pause');
+  }
+
+  /**
+   * §2.5(c) / corner row 29: the answer file, `{ id, approved, note?, by, at }`, ID-MATCHED, SINGLE-USE and renamed to
+   * `.used` on consumption. Anything else — missing, stale, id-mismatched, already used — answers `null`, which parks
+   * again with `reason: 'answer not for this request'`. Nothing is ever auto-approved or auto-denied.
+   */
+  private async consumeReviewAnswer(req: ConfirmRequest): Promise<{ outcome: ConfirmOutcome } | { why: string }> {
+    const rel = this.opts.orchestration?.reviewAnswerFile;
+    if (rel === undefined) return { why: 'no answer file: a human decision is needed' };
+    if (this.reviewAnswerUsed) return { why: 'answer not for this request' };
+    const read = this.store.readCache;
+    if (read === undefined) return { why: 'no answer file: a human decision is needed' };
+    let raw: Json | null;
+    try {
+      raw = await read.call(this.store, rel);
+    } catch {
+      raw = null;
+    }
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { why: 'answer not for this request' };
+    const id = raw['id'];
+    const approved = raw['approved'];
+    if (typeof id !== 'string' || id !== req.id || typeof approved !== 'boolean') return { why: 'answer not for this request' };
+    // single-use: consumed BEFORE it is answered from, so a crash between the two never re-serves it
+    this.reviewAnswerUsed = true;
+    const rename = this.store.renameCache;
+    if (rename !== undefined) {
+      try {
+        await rename.call(this.store, rel, `${rel}.used`);
+      } catch {
+        // the answer is already consumed in memory; a failed rename must not re-approve anything
+      }
+    }
+    const note = typeof raw['note'] === 'string' ? clip(sanitizeStream(raw['note']).replace(/\s+/g, ' ').trim(), REVIEWER_NOTE_MAX) : '';
+    return { outcome: { approved, ...(note.length > 0 ? { note } : {}) } };
+  }
+
+  /**
+   * §5.7 tail / corner row 44: the merge landed, so `RunMeta.landed` gains `{ step, branch, commit }` and
+   * `RunMeta.undoUnavailableBelow` is set to the delegation step. `/undo` on that step then uses
+   * `UndoSkipReason 'landed'` and offers `[g] git revert <commit>` as a NEW judged step (`landedUndoOffer`), and
+   * `/rewind` below the floor is refused with `rewindRefusal`'s sentence.
+   *
+   * The `[c]` / `[s]` pre-flight steps are ordinary steps and are deliberately NOT recorded: they are undoable from
+   * images like anything else, and only the merge is not.
+   */
+  private async noteLanded(draft: StepDraft, outcome: ActionOutcome): Promise<void> {
+    const pending = this.pendingLand;
+    const runGit = this.opts.orchestration?.runGit;
+    const action = draft.proposal?.action;
+    if (pending === null || runGit === undefined || outcome.status !== 'executed') return;
+    if (action?.kind !== 'run' || !/^git\s+merge\s/.test(action.command)) return;
+    this.pendingLand = null;
+    let commit = '';
+    try {
+      const r = await runGit(this.workspace.root, ['rev-parse', 'HEAD']);
+      commit = r.ok ? r.stdout.trim() : '';
+    } catch {
+      commit = '';
+    }
+    if (!/^[0-9a-f]{7,64}$/.test(commit)) return;
+    const landed = [...this.landedMerges, { step: draft.step, branch: pending.branch, commit }];
+    this.landedMerges = landed;
+    const floor = pending.delegatedAt;
+    try {
+      await this.store.updateMeta({ landed, undoUnavailableBelow: floor });
+    } catch (e) {
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `${CHECKPOINT_FILES.meta} write failed (landed): ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+    }
+    this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `landed ${pending.agents} ${pending.agents === 1 ? 'agent' : 'agents'} from ${pending.branch} as ${commit.slice(0, 12)} — /undo offers [g] git revert ${commit.slice(0, 12)}; /rewind below step ${floor} is refused` });
+  }
+
+  /**
+   * §5.7: the seeded proposal of the launch step. It enters the loop through the SAME path a replayed proposal takes,
+   * so it goes through `risk`, the review confirm, `takePreImages`, `execute`, `takePostImages` and `judge` exactly
+   * like any other step — the transcript, `--json`, the decisions pane and `/diff` then all fall out for free.
+   */
+  private takeSeeded(step: number): StepCache | null {
+    const s = this.seededStep;
+    if (s === null || s.step !== step) return null;
+    this.seededStep = null;
+    this.emit({ type: 'transcript', step, level: 'info', text: s.note });
+    return {
+      v: 1,
+      step,
+      stage: 'propose',
+      proposal: s.proposal,
+      patchTargets: [],
+      risk: null,
+      matchesIntent: null,
+      intent: null,
+      proposer: null,
+      contextFiles: [],
+      directive: null,
+      targets: [],
+      partial: null,
+      llmRound: null,
+      resumes: this.resumes,
+      at: nowIso(),
+    };
+  }
+
+  /** §5.7: seed the NEXT step's proposal. False when the run has finished or a seed is already pending. */
+  seedStep(proposal: Proposal, note?: string): boolean {
+    if (this.finishing || this.isFinished() || this.seededStep !== null) return false;
+    this.seededStep = { step: this.step + 1, proposal, note: note ?? `step ${this.step + 1}: proposal seeded by the harness (${summariseAction(proposal.action)})` };
+    return true;
+  }
+
+  /**
+   * §5.7 + [D1]: the launch. `overlap` empty → the merge is seeded exactly as written. `overlap` non-empty → **no merge
+   * action is proposed at all**; the `land-preflight` pane offers `[c]` / `[s]` / `[x]`, each of which is itself an
+   * ordinary judged step, and `[c]` / `[s]` re-run the pre-flight and seed the merge as a SECOND judged step.
+   */
+  async land(input: LaunchInput, ask?: (offer: LandPreflightOffer) => Promise<BlockingAnswer>): Promise<{ seeded: 'merge' | 'commit' | 'stash' | 'stop' | null; overlap: string[] }> {
+    const o = this.opts.orchestration;
+    const runGit = o?.runGit;
+    if (runGit === undefined) return { seeded: null, overlap: [] };
+    const { overlap, ok } = await launchOverlap(runGit, input);
+    const plan: PlanDraft = { done: this.plan.done.map((d) => d.text), remaining: [...this.plan.remaining], openProblems: [...this.plan.openProblems] };
+    // review 2026-09-22 finding 1: `!ok` is its OWN case. `launchOverlap` reports `ok: false` when
+    // `statusEntries` failed, and its `overlap` is then `[]` — which is indistinguishable from "your checkout is
+    // clean" and used to fall through to the offer branch, where an empty pathspec made `[s]` mean "stash your
+    // entire working tree". We cannot read the checkout, so we cannot say what overlaps: refuse, seed nothing.
+    if (!ok) {
+      this.emit({ type: 'transcript', step: null, level: 'warn', text: `/land: could not read your checkout (git status failed): nothing was committed or stashed — ${input.dockBranch} stays and /diff still works` });
+      return { seeded: null, overlap: [] };
+    }
+    if (overlap.length === 0) {
+      this.pendingLand = { branch: input.dockBranch, agents: input.agents, delegatedAt: input.delegationStep ?? this.step + 1 };
+      this.seedStep(launchProposal(mergeAction(input.pinned), `land ${input.agents} agents: merge ${input.dockBranch}`, plan), `step ${this.step + 1}: landing ${input.agents} agents — ${input.dockBranch} merges as an ordinary judged step`);
+      return { seeded: 'merge', overlap: [] };
+    }
+    // [D1] NO merge action is proposed: `git merge` would abort with `Your local changes … would be overwritten by merge`
+    const offer = landPreflightOffer(this.nextBlockingId(), this.step + 1, overlap, input);
+    this.emit({ type: 'transcript', step: null, level: 'warn', text: `/land: ${offer.detail}` });
+    const answer = ask === undefined ? 'stop' : await ask(offer).catch(() => 'stop' as const);
+    const chosen: LaunchAnswer = answer === 'commit' || answer === 'stash' ? answer : 'stop';
+    const seeded = seedFor(chosen, overlap, input, plan);
+    if (seeded === null) {
+      this.emit({ type: 'transcript', step: null, level: 'info', text: `/land cancelled: ${input.dockBranch} stays and /diff still works` });
+      return { seeded: null, overlap };
+    }
+    this.pendingLand = { branch: input.dockBranch, agents: input.agents, delegatedAt: input.delegationStep ?? this.step + 1 };
+    this.seedStep(seeded, `step ${this.step + 1}: ${chosen === 'commit' ? 'committing' : 'stashing'} ${overlap.length} overlapping file(s) before the merge`);
+    return { seeded: chosen, overlap };
+  }
+
   private flushGeneratorRecords(draft: StepDraft): void {
     for (const rec of draft.generatorRecords) this.persist(this.store.appendGenerator(rec), 'generator.jsonl');
     draft.generatorRecords = [];
   }
 
   private absorbDiscardedTiming(draft: StepDraft): void {
+    // contract 1.4 (W2b), §4.3 step 7: a discarded step's lease is released `discarded` at once. Without this a
+    // rule-1 discard would leave an `exclusive` lease live for its full ttl and every peer would wait on a step that
+    // is never going to run.
+    this.coord?.released('discarded');
     // Discarded steps (§9.1 rule 1) still consumed wall time and money; the run totals keep them.
     // contract 1.4 (§7.2, §11 row 41): this attempt's sample rows (flushed now, or landing late) carry `discarded: true`
     draft.discarded = true;
@@ -3141,12 +4475,14 @@ class EngineImpl implements Engine {
     this.timing.jevMs += draft.timing.jevMs;
     this.timing.execMs += draft.timing.execMs;
     this.timing.totalMs += total;
+    // contract 1.5 (§4.1 [D13]): a discarded step still paid for its decomposition (corner row 8)
+    if (draft.timing.decomposeMs > 0) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + draft.timing.decomposeMs;
     if (this.mode === 'llm-jev') {
       const t = this.llmJevTiming(draft, total);
       this.timing.harnessMs += t.harnessMs;
       this.timing.synthMs = (this.timing.synthMs ?? 0) + (t.synthMs ?? 0);
     } else {
-      this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs);
+      this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - jevChargedMs(draft) - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs);
     }
   }
 
@@ -3157,15 +4493,20 @@ class EngineImpl implements Engine {
    */
   private llmJevTiming(draft: StepDraft, total: number): StepTiming {
     const synthMs = draft.synthMs ?? 0;
-    const shellJevMs = Math.max(0, draft.timing.jevMs - draft.synthJevMs);
+    // the shell's Jev share, charged at the larger of reported latency and measured wall (see StepDraft.timing)
+    const shellJevMs = Math.max(Math.max(0, draft.timing.jevMs - draft.synthJevMs), Math.max(0, draft.timing.jevWallMs - draft.synthJevWallMs));
     return {
       generatorMs: draft.timing.generatorMs,
       jevMs: draft.timing.jevMs,
       execMs: draft.timing.execMs,
-      harnessMs: Math.max(0, total - synthMs - draft.timing.execMs - draft.timing.confirmMs - shellJevMs),
+      harnessMs: Math.max(0, total - synthMs - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs - shellJevMs),
       totalMs: total,
       synthMs,
       ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
+      ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
+      // contract 1.4 (W2b) (§4.2): absent when the gate did not run, so a run without a ledger writes HEAD's row
+      ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
+      ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
     };
   }
 
@@ -3204,6 +4545,16 @@ class EngineImpl implements Engine {
       ...(riskRequests.length > 0 ? { jevLatencyMs: riskRequests.reduce((n, r) => n + r.latencyMs, 0) } : {}),
     };
     this.emit({ type: 'confirm:request', request: req });
+    // ORCHESTRATION-DESIGN §2.5(c) / §4.2 P10: a child never blocks a human on an interactive confirmer it does not
+    // have. It answers ONCE from the parent's id-matched, single-use answer file, or it parks at P10.
+    if (this.opts.orchestration?.depth === 1) {
+      const answered = await this.consumeReviewAnswer(req);
+      if ('outcome' in answered) {
+        this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: answered.outcome.approved, aborted: false, ...(answered.outcome.note !== undefined ? { note: answered.outcome.note } : {}) });
+        return answered.outcome;
+      }
+      await this.parkForReview(draft, req, answered.why);
+    }
     const c0 = this.clock();
     try {
       const c = this.opts.confirmer;
@@ -3331,7 +4682,7 @@ class EngineImpl implements Engine {
     if (!this.contextEnabled) return runProposeStage(ctx, this.systemPrompt, base, { onPrompt: (built) => this.notePromptChars(built) });
     const t0 = this.clock();
     const prompt: PromptInput = { ...base, context: await this.contextView(draft.step) };
-    return runProposeStage(ctx, this.systemPrompt, prompt, { onPrompt: (built) => this.notePromptBuilt(built, t0) });
+    return runProposeStage(ctx, this.systemPrompt, prompt, { onPrompt: (built) => this.notePromptBuilt(built, draft.step, t0) });
   }
 
   /** The rolling summary, read from the run dir once per process (a resume starts with `summaryAt` but no text). */
@@ -3381,7 +4732,18 @@ class EngineImpl implements Engine {
     const plan = planHistory(this.history, Math.floor(this.contextPolicy.budgetChars * HISTORY_SHARE));
     await this.loadPlannedOutputs(plan);
     this.lastRecentSteps = { chars: plan.chars, allowanceChars: plan.allowanceChars, whole: plan.whole, clipped: plan.clipped, oneLine: plan.oneLine, reads: plan.reads.length };
+    // contract 1.6 (IMPORT-DESIGN §2.10.4): the step's paths are its files in view plus the @-mentioned pins, the same
+    // set §8.2 uses; `selectMemory` is empty (and both sections elide) whenever the run was given no memory
+    const memory = selectMemory(this.opts.memory, [...refreshed.files.map((f) => f.rel), ...(this.opts.seed?.pinnedFiles ?? [])]);
+    // contract 1.4 (COORDINATION-DESIGN §8.8 / §9): the last gate's facts fill `## Other sessions` for the NEXT
+    // prompt. `currentFacts()` is null before the first `coordinate` stage and the whole member is ABSENT when
+    // coordination is off or nothing is live, which is what keeps a non-coordinating run's prompt byte-identical.
+    const coordFacts = this.coord?.currentFacts() ?? null;
+    const sessions = coordFacts !== null && (coordFacts.others > 0 || coordFacts.conflicts.length > 0 || coordFacts.requested.length > 0 || coordFacts.messages.length > 0) ? coordFacts : null;
     return {
+      ...(sessions === null ? {} : { coordination: sessions }),
+      ...(memory.rules.length > 0 ? { rulesInScope: memory.rules } : {}),
+      ...(memory.topics.length > 0 ? { memoryInScope: memory.topics } : {}),
       files: refreshed.files.map((f) => ({
         path: f.rel,
         content: f.content,
@@ -3408,11 +4770,18 @@ class EngineImpl implements Engine {
    * zero-cost read may only stand on the files this message really rendered whole. Review D15: the meter counts the
    * WHOLE prompt — the system prompt goes to the model on every call too.
    */
-  private notePromptBuilt(built: PromptBuild, startedAt?: number): void {
+  private notePromptBuilt(built: PromptBuild, step: number, startedAt?: number): void {
     this.filesInView.keepShown(built.shownFiles);
     if (startedAt !== undefined) this.lastPromptBuildMs = Math.max(0, this.clock() - startedAt);
     this.notePromptChars(built);
+    // contract 1.6 (§2.10.3): what the two memory sections cost this build; null on a run with no memory
+    this.lastMemoryBuild = built.memory ?? null;
+    const before = this.contextUsage.pct;
     this.contextUsage = this.usage(this.systemPrompt.length + built.chars);
+    // contract 1.4 (Q16): one `context:warn` per UPWARD crossing of the §8.6 line. Only this branch runs it, so `legacy`
+    // and the non-consuming modes never emit; the fold at the commit below lowers the meter and re-arms the next one.
+    const u = this.contextUsage;
+    if (contextWarnCrossed(before, u.pct)) this.emit({ type: 'context:warn', step, pct: u.pct, budgetTokens: u.budgetTokens, tokensInWindow: u.tokensInWindow });
   }
 
   /**
@@ -3441,6 +4810,8 @@ class EngineImpl implements Engine {
       compactions: this.compactions,
       lastCompactionAt: over.lastCompactionAt ?? this.lastCompactionAt,
       compaction: this.contextPolicy.compaction,
+      // contract 1.6 (§2.10.3): omitted — and so omitted from ContextUsage — on a run with no memory
+      ...(this.lastMemoryBuild === null ? {} : { memory: { indexChars: this.memoryIndexChars, ...this.lastMemoryBuild } }),
     });
   }
 
@@ -3783,10 +5154,15 @@ class EngineImpl implements Engine {
             generatorMs: draft.timing.generatorMs,
             jevMs: draft.timing.jevMs,
             execMs: draft.timing.execMs,
-            harnessMs: Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs),
+            harnessMs: Math.max(0, total - draft.timing.generatorMs - jevChargedMs(draft) - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs),
             totalMs: total,
             // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
             ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
+            // contract 1.5 (§4.1 [D13]): likewise inside harnessMs, absent when the gate was shut — M2 reads its p95
+            ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
+            // contract 1.4 (W2b) (§4.2): the coordinate gate, absent when it did not run (no ledger, or a read/done action)
+            ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
+            ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
           };
     this.timing.generatorMs += timing.generatorMs;
     this.timing.jevMs += timing.jevMs;
@@ -3795,6 +5171,7 @@ class EngineImpl implements Engine {
     this.timing.totalMs += timing.totalMs;
     if (timing.imagesMs !== undefined) this.timing.imagesMs = (this.timing.imagesMs ?? 0) + timing.imagesMs;
     if (timing.synthMs !== undefined) this.timing.synthMs = (this.timing.synthMs ?? 0) + timing.synthMs;
+    if (timing.decomposeMs !== undefined) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + timing.decomposeMs;
     // TUI-DESIGN §9.2: the per-step cost series behind `stepsLeftEstimate`
     this.costPerStep.push(draft.usage.generator.costUsd + draft.usage.jev.costUsd);
     const generatorTokens = draft.usage.generator.inputTokens + draft.usage.generator.outputTokens;
@@ -3870,13 +5247,22 @@ class EngineImpl implements Engine {
       completion: draft.completion,
       decisions: draft.decisions,
       jevRequests: draft.jevRequests,
+      ...(() => { const hits = draft.jevRequests.filter((r) => r.cached === true).length; return hits > 0 ? { jevCacheHits: hits } : {}; })(),
       usage: draft.usage,
       timing,
       loopSignatures: signatures,
     };
+    // contract 1.5 (ORCHESTRATION-DESIGN §2.4 [G8] / §2.6 [G1]): both absent on every run without `orchestration`
+    if (this.escapedThisStep.length > 0) record.escaped = [...this.escapedThisStep];
+    if (this.commitThisStep !== null) record.commit = this.commitThisStep;
+    this.escapedThisStep = [];
+    this.commitThisStep = null;
     if (draft.proposer !== null) record.proposer = draft.proposer;
     // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts (llm-jev only; jev-only rows are unchanged)
     if (this.mode === 'llm-jev' && draft.proposer === 'synth') record.verify = this.verifySummary(draft, proposal);
+    // contract 1.4 (W2b) (§4.1): a conditional spread everywhere else, a conditional assignment here — a step
+    // whose gate saw nothing writes the row it wrote before this wave, which is half of what M2 means by zero cost
+    if (draft.coord !== null) record.coord = draft.coord;
     if (draft.interruptedAt) record.interruptedAt = draft.interruptedAt;
     if (draft.error) record.error = draft.error;
     if (this.completeAfter(draft)) record.stoppedAt = 'complete';
@@ -3884,7 +5270,9 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §8.7 / §15 item 3: the committed plan after this step, bounded, so /rewind N seeds without replaying drafts
     record.planAfter = planSnapshot(plan);
 
+    const endSerialise = stepTimeline.span('serialise', 'checkpoint-state');
     const snapshot = this.buildCheckpointState();
+    endSerialise();
     const c0 = this.clock();
     this.pendingCheckpoint = (async () => {
       // TUI-DESIGN §12.3: nothing is hashed in here, where the lag gate could not see it
@@ -3900,6 +5288,29 @@ class EngineImpl implements Engine {
         this.noteDiskError(e, file, step);
       }
     })();
+    // contract 1.4 (W2b), §4.3 step 7 + §3.3 point 2: the lease is released with the post-image set and ONE beat
+    // goes out with what was touched — both hung off `pendingCheckpoint.then`, OUTSIDE the IIFE's try/catch, because
+    // that catch classifies any errno as `checkpoint degraded: <code> on state.json` and a ledger fault is not that.
+    // The IIFE catches internally, so the `.then` always runs. Neither is ever awaited by the loop.
+    if (this.coord !== null) {
+      const coord = this.coord;
+      const image = this.lastPostImage;
+      const changed: Record<string, string | null> = {};
+      const files: string[] = [];
+      for (const [rel, f] of Object.entries(image?.files ?? {})) {
+        if (files.length >= LEASE_CHANGED_MAX) break;
+        files.push(rel);
+        changed[rel] = f.sha256 ?? null;
+      }
+      // §3.3: `touchedRecent` is the union of the last THREE committed steps, so a peer arriving mid-run sees more
+      // than the one step that happened to be committing when it folded.
+      this.touchedRecent = [...new Set([...files, ...this.touchedRecent])].slice(0, TOUCHED_RECENT_KEEP);
+      const head = image?.headOid ?? null;
+      void this.pendingCheckpoint.then(() => {
+        coord.released('committed', changed, head ?? undefined);
+        coord.beat({ ...this.heartbeatDynamic(), touched: { step, files } });
+      });
+    }
     // TUI-DESIGN-2 §6 item 3: money for the `[step N]` summary line (absent → the renderer falls back to tokens)
     this.emit({ type: 'step:end', record, costUsd: { generator: record.usage.generator.costUsd, jev: record.usage.jev.costUsd } });
     this.emitStatus();
@@ -3909,6 +5320,8 @@ class EngineImpl implements Engine {
     draft.closed = true;
     this.draft = null;
     this.currentStage = 'idle';
+    stepTimeline.stage('');
+    stepTimeline.endStep();
     return { stop: null };
   }
 
@@ -3941,9 +5354,13 @@ class EngineImpl implements Engine {
     // §7.5: one bound for the whole shutdown — what the cache wait spends is taken off the final write's share below
     const shutdownDeadline = this.clock() + SHUTDOWN_CHECKPOINT_BOUND_MS;
     if (!opts.skipWrite) await this.settlePausePoint(reason, shutdownDeadline);
+    // contract 1.5 (ORCHESTRATION-DESIGN §2.6, corner rows 36/37 inverted): the child's unconditional end commit, once,
+    // when the add set is non-empty. After it, an `addSet ≠ ∅` in that worktree means the process DIED — it is the
+    // crash case, not the default. A run with no `orchestration.runGit` seam makes no git mutation here or anywhere.
+    if (!opts.skipWrite) await this.commitAtEnd();
     const snapshot = this.buildCheckpointState();
     // TUI-DESIGN-2 §2.4: the cost basis of this process's Jev requests rides the result for `costBlock`'s suffix
-    const result: RunResult = { ...assembleRunResult({ runId: this.runId, mode: this.mode, reason, state: snapshot, error }), jevCostBasis: this.jevCostBasis() };
+    const result: RunResult = { ...assembleRunResult({ runId: this.runId, mode: this.mode, reason, state: snapshot, error }), jevCostBasis: this.jevCostBasis(), ...(this.endCommit !== null ? { commit: this.endCommit } : {}) };
     const stopLine: EngineEvent = { type: 'transcript', step: null, level: reason === 'complete' ? 'info' : 'warn', text: stopTranscriptLine(reason, this.step, opts.detail) };
     let stateWritten = opts.skipWrite === true; // a refused resume leaves the stored state.json as it was
     // TUI-DESIGN §13.5 / §15 item 14: exit code, resumability and the artefact paths ride run:end; built when the final write has settled.
@@ -3985,12 +5402,32 @@ class EngineImpl implements Engine {
           this.emit({ type: 'pause:point', point: { ...this.pausePoint } });
         }
         // The stop line and the run:end line reach transcript.log through the same item model as every other line (§10).
+        // contract 1.7 (§3.6 D-V): `stopTranscriptLine` now returns '' — the row is deleted — so the event is not
+        // emitted at all. Guarding HERE rather than only in `itemsFromEvent` keeps `--json` and every listener free
+        // of an empty-text transcript event, not just the two rendered sinks.
+        // contract 1.4 (W2b), §3.3 point 5: `phase:'ended'` AFTER the final `writeState`, before the stop line and
+        // `run:end`, carrying the `PausePoint` — so a resume card on another device has the point without the run
+        // dir (§12.0.2 "the same object rides the final phase:'ended' heartbeat"). Tracked leases are released
+        // `ended` by the writer itself and the chain is awaited, inside the shutdown bound.
+        if (this.coord !== null) {
+          await this.coord
+            .finish({
+              ...this.heartbeatDynamic(),
+              phase: 'ended',
+              stopReason: reason,
+              ...(this.pausePoint !== null ? { pausePoint: { ...this.pausePoint } } : {}),
+            })
+            .catch(() => undefined);
+        }
         stopEmitted = true;
-        this.emit(stopLine);
+        if (stopLine.type === 'transcript' && stopLine.text.length > 0) this.emit(stopLine);
         endEvent = buildEnd();
         this.recordTranscript(endEvent);
         await Promise.allSettled([...this.pendingPersists]);
         await this.store.flush();
+        // HARNESS-NEXT-DESIGN §4.4: the run's timing buckets, written once at the end (never per step)
+        stepTimeline.endStep();
+        await writeTimelineFile(this.runDir);
       })();
       let timer: NodeJS.Timeout | null = null;
       const bound = new Promise<'timeout'>((resolve) => {
@@ -4016,12 +5453,15 @@ class EngineImpl implements Engine {
     }
     // TUI-DESIGN §8.5: the lock ends with the run
     this.releaseLock();
+    // §7.2 item 1: and so does the degrade listener — the last write above has settled, and `noteDisk` on a finished
+    // engine would emit a notice no renderer is listening for.
+    attachDegradeListener(this.store, null);
     if (this.exitHandler) {
       process.removeListener('exit', this.exitHandler);
       this.exitHandler = null;
     }
     this.lastResult = result;
-    if (!stopEmitted) this.emit(stopLine);
+    if (!stopEmitted && stopLine.type === 'transcript' && stopLine.text.length > 0) this.emit(stopLine);
     this.emitStatus();
     // Already recorded in the checkpoint phase (or muted); emitted raw so it is not written twice.
     this.events.emit(endEvent ?? buildEnd());
@@ -4110,9 +5550,52 @@ function trace(msg: string): void {
   }
 }
 
+/** §2.5(c) / §4.2 P10: the parked review's artefact, under `<runDir>/orchestrate/` (`CheckpointStore.cacheTarget` routes it). */
+export function reviewCacheRel(step: number): string {
+  return `${CHECKPOINT_FILES.orchestrate}/review-${step}.json`;
+}
+
+/** `seatbelt` is stronger than `none`; `auto` resolves to at least what the platform gives, never to less than `seatbelt` asked for. */
+function sandboxWeakerThan(profile: SandboxProfile, parent: SandboxLevel): boolean {
+  return parent === 'seatbelt' && profile === 'none';
+}
+
+/**
+ * contract 1.5 (ORCHESTRATION-DESIGN §2.1, §2.6, corner row 20): the three refusals `createEngine` owes a child.
+ *
+ * 1. `depth > ORCHESTRATION_DEPTH_MAX` (1) — depth is a constant, not a setting, so an agent can never spawn agents.
+ * 2. a depth-1 run that ALSO carries a split flag — `--agent` with `--split` is a `ConfigError`, so the gate cannot be
+ *    forced open from the command line inside a child.
+ * 3. a child whose resolved sandbox level is WEAKER than the parent's recorded one — `--sandbox` is one of the four
+ *    rights §2.6's spawn line deliberately does not forward.
+ *
+ * A run without `EngineOptions.orchestration` (every run today) returns immediately.
+ */
+export function refuseOrchestration(opts: Pick<EngineOptions, 'orchestration' | 'sandboxProfile' | 'configRecord'>): void {
+  const o = opts.orchestration;
+  if (o === undefined) return;
+  if (o.depth > ORCHESTRATION_DEPTH_MAX) {
+    throw new ConfigError(`orchestration depth ${o.depth} exceeds the cap of ${ORCHESTRATION_DEPTH_MAX}: an agent cannot spawn agents`, { setting: 'orchestration.depth' });
+  }
+  if (o.depth === 1) {
+    const split = opts.configRecord['orchestrate.split'];
+    const value = split === undefined ? undefined : typeof split.value === 'string' ? split.value : undefined;
+    if (value !== undefined && value !== 'off') {
+      throw new ConfigError(`--agent ${o.slug ?? ''} with --split ${value}: an agent cannot delegate (the cap is ${ORCHESTRATION_DEPTH_MAX})`.replace('  ', ' '), { setting: 'orchestrate.split' });
+    }
+    if (o.parentSandbox !== undefined && sandboxWeakerThan(opts.sandboxProfile, o.parentSandbox)) {
+      throw new ConfigError(`an agent may not run with a weaker sandbox than its parent (parent ${o.parentSandbox}, this run ${opts.sandboxProfile})`, { setting: 'sandbox' });
+    }
+  }
+}
+
 export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): Promise<Engine> {
   // jev-only and llm-jev (docs/LLM-JEV-DESIGN.md §3) put the Synthesizer in the propose stage
   if ((opts.mode === 'jev-only' || opts.mode === 'llm-jev') && !opts.synthesizer) throw new ConfigError(`${opts.mode} mode requires a synthesizer (EngineOptions.synthesizer)`, { setting: 'mode' });
+  // contract 1.5 (ORCHESTRATION-DESIGN §2.1 / §2.6, corner row 20): the depth cap is refused HERE, not only in the TUI,
+  // so a hand-typed `jevcode run --parent …` cannot make grandchildren, and a child can never be given weaker rights
+  // than the parent recorded for itself.
+  refuseOrchestration(opts);
   const d = await resolveDeps(deps);
   const redact = opts.redact;
   let root: string;
@@ -4164,6 +5647,10 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     redact,
     ...(opts.extraWritableRoots ? { extraWritable: opts.extraWritableRoots } : {}),
     ...(opts.extraReadableRoots ? { extraReadable: opts.extraReadableRoots } : {}),
+    // contract 1.5 (ORCHESTRATION-DESIGN §5.2 [G3], corner rows 51 / 56): a depth-1 child's profile write-denies the
+    // shared git refs (`<commonDir>/refs`, `packed-refs`, `logs`, a linked worktree's HEAD); the depth-0 supervisor
+    // must still be able to move `refs/heads/jevcode/<slug>`, so the flag is keyed strictly on depth === 1.
+    ...(opts.orchestration?.depth === 1 ? { agentChild: true } : {}),
     // TUI-DESIGN §12.7 / §15 item 18: the seatbelt learns the git dirs and the config dirs from here
     ...(git?.gitDir ? { gitDir: git.gitDir } : {}),
     ...(git?.commonDir ? { gitCommonDir: git.commonDir } : {}),
@@ -4207,7 +5694,7 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     // TUI-DESIGN §8.5: run.lock after store.create
     lock = takeRunLock(runDir, runId);
   }
-  return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume, gitState: git, runDir, lock: lock ?? { held: false, warning: null }, headDrift, reopened });
+  return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume, gitState: git, runDir, lock: lock ?? { held: false, warning: null }, headDrift, reopened, preflightProbe: d.preflightProbe });
 }
 
 /**

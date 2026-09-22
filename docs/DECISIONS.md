@@ -1034,7 +1034,7 @@ written down, which is the rule regardless of model.
 ## 2026-09-22 Contract blocks are numbered by assignment and ordered ascending in the file, whatever order they land
 
 `src/core/types.ts` header lines read `1.1, 1.2, 1.2, 1.3, 1.4` (coordination), then every later block in **ascending** number order:
-1.5 orchestration, 1.6 import, 1.7 TUI round 4. Numbers are assigned when a design is accepted, not when it merges, so a block that
+1.5 orchestration, 1.6 import, 1.7 TUI round 4, 1.8 TUI round 5, 1.9 Fastlane (HARNESS-NEXT). Numbers are assigned when a design is accepted, not when it merges, so a block that
 lands early (1.7 landed before 1.5 and 1.6) sits *below* the numbers reserved above it and a later block is inserted, contiguous,
 between its neighbours. Reason: three designs queued for the same file on one day and "numbered in landing order" would have made
 every rebase renumber someone else's block; assignment order makes the number stable in the design documents that cite it.
@@ -1142,3 +1142,67 @@ window brings it under 100 ms and older history stays on disk, reachable through
 `foldIndex` additionally returns a per-reason tally (`not-json`, `bad-shape`, `over-length`, `unknown-kind`) so
 `jevcode sessions` can say `<n> index lines were unreadable and skipped — run jevcode sessions reindex` instead of
 printing the fresh-install sentence over a corrupt index (TUI-DESIGN-4 §7.6).
+
+## 2026-09-22 Out of sample, llm-jev ties the tuned generator; the default stands on the same-build claim only
+
+The measurement the GREEN entry asked for exists (`experiments/results/llm-jev-headtohead-v2.oos.md`, commit `c01ec8a`, frozen
+`066816f`, $1.68 live). Same build, the original 28: `llm-jev` 28/28 vs **plain** `jev-off` 21/28 — not the 19/28 the v2 report used,
+because six tasks flip between two runs of the same baseline arm (noise ≈ ±2) — discordance 7–0 (p = 0.0078), correct 26 vs 20
+with the same two discordant losses, both-solved wall 0.225×, cost 0.245×. **Out of sample**, on 22 tasks nobody tuned against:
+13/22 vs 12/22 for the hygiene-tuned generator (2–1 discordant, indistinguishable), pooled median wall **1.385× against**, cost
+**2.68× against** (2,330 Jev requests vs 0). Per suite: the ten new QuixBugs programs are 10/10 on both arms with **zero overfits on
+either side** (the first evidence the guard thresholds hold off their fitting set) and `llm-jev` wins only efficiency there
+(3 steps / 34 s / $0.0008 vs 6 / 79 s / $0.0026); the ladder long tier is 3/8 vs 2/8 at 3.7× wall and 2.9× cost, ending on
+`replan_stop` / `max_replans`; the four SWE instances are 0/4 on both arms with `llm-jev` spending 2.9× (one instance alone $0.22 and
+432 Jev requests before the 25-minute cap). Decision: the `llm-jev` default **stands**, on the same-build claim and the one-line-bug
+regime, and the README/STATUS footnote says so in one line (peer commit `5b5bdc6`); the `verified` badge names the same-build claim,
+never out-of-sample correctness. Consequences: the next harness iteration is driven by an analysis of where the 22 out-of-sample
+runs spend wall and Jev requests (per question kind, per stage), with every proposed change judged for re-fitting to those 22 tasks
+and any task-named change disallowed; the 22 tasks join the development set only after that iteration is measured on a fresh slice.
+Still unmeasured, and stated as such: `llm-sieve`, any repeat run, the per-question ablation, an independent ladder correctness
+oracle (`perturb.ts`'s own `LADDER_HARNESS` still judges), and SWE correctness beyond pass (`src/bench/headtohead.ts:92`).
+
+## 2026-09-22 `Ledger` and `LedgerHandle` are a real split, not an alias; consumers hold the handle
+
+`src/coordination/types.ts` keeps `Ledger` as the narrow READER base — `root`, `self`, `fold`, `open`, `setIdentity`,
+`subscribe`, `close` — and `src/coordination/ledger.ts` declares `LedgerHandle extends Ledger` with the writer members
+(`enqueue`, `writeOwn`, `refreshFence`, `foreignLive`, `forkVerdict`, `claim`, `stamps`, `mirror`, …). Every write verb
+(`declare`, `send`, `ack`, `gc`, …) takes the **base** and recovers the handle internally with `asHandle()`, so a caller
+may hold the small type; `openLedger` returns `LedgerHandle`, and `EngineOptions.coordination.ledger: LedgerHandle | null`
+carries it, because the engine calls all of them. **There is no `Ledger` alias for `LedgerHandle`** — this reverses
+TUI-DESIGN-5 §15.1 row 1, and §15.2 records the reversal as binding for round 5. Reason: the alternative was renaming the
+base, which rewrites every signature in `leases.ts`, `mailbox.ts`, `subwork.ts` and `worktree.ts` for a word, and `Ledger`
+is the right name for what a reader holds. Consequences: COORDINATION-DESIGN §12.0.1's `ledger?: Ledger` line is corrected
+to `ledger: LedgerHandle | null` (required and nullable — `null` is presence off, and the engine has one less state to
+handle than "absent or null"); §14 item 20 records the whole W2b as-built list; the naming note lives at the top of
+`src/coordination/index.ts` so a new consumer reads it before it picks a type.
+
+## 2026-09-22 The warm verification plane is off by default until a real-lane test and Ring 1 pass with it on
+
+`warmModeFor` returns `null` unless `JEVCODE_WARM=on`; the two Python lane shapes (quixbugs, pytest) were on by default from the S1
+merge (66aa019) until f5df14f. Reason: the first live measurement of the merged tree (`experiments/results/llm-jev-iter1.md` §1)
+found that with the plane on an `llm-jev` run never completes a synthesis step — the SIEVE batch reaches the lanes, the sieve
+reports `0 tested on 8 lanes (nothing ran)`, the wall cap takes step 1, and runs wedge at 0 % CPU for an hour; a five-point $0 A/B
+on one task (066816f tsx 6 steps / 2,896 tested vs 751e3bf warm-on 0 / 0 vs 751e3bf `JEVCODE_WARM=off` 6 / 2,180) pins it on the
+plane and on nothing else. The unit suite stayed green throughout because the S1 parity tests use fakes for the worker; the
+S1 review did not run a real lane either. Consequences: every warm-path unit test opts in for its own duration; the fix ships
+with a REAL-LANE integration test (the actual Python worker over a fixture project) and a watchdog (a worker that never announces
+READY or never replies is `disabledReason`, the sieve falls back cold — a run must never wedge again); the default returns to on
+only when that test and Ring 1 pass with the plane on; no live number taken between 66aa019 and f5df14f with the default on is
+trusted (the bench arms ran with `JEVCODE_WARM=off`).
+
+## 2026-09-22 Iteration 1 measured: the default stands; iteration 2 targets the repository stop rule and the timeouts
+
+On a fresh slice of 18 untuned tasks (`experiments/results/llm-jev-iter1.md`, frozen 751e3bf, $0.58, plane off): `llm-jev` 12/18
+vs the tuned generator 9/18 (b = 4 / c = 1, sign p = 0.19), every win on the new multi-hunk ladder tier long-2 (4/6 vs 0/6),
+QuixBugs 8/8 both with zero overfits but `llm-jev` slower on the both-solved (26.0 vs 19.7 s) at a fifth of the cost, SWE 0/4 vs
+1/4 with every `llm-jev` repository run ending `replan_stop` at 5 steps having tested 5 of 6,960 priced candidates, and one
+strong overfit (`token_bucket`). In-sample 28: 27/28 (`django__django-15128` regressed at `replan_stop`), correctness unchanged
+(detect_cycle, stats still wrong), cost 0.54× and 394 Jev requests vs 482. Predictions: changes 1, 2, 4, 6, 7 held on the
+one-line and multi-hunk regimes; change 1 failed on repositories (a pricing path bypasses the cap); change 3 made zero-token
+timeouts worse (47 % of samples); change 5 caught neither named loss. Ring 1 fails the `--jev off` gate (gcd, mergesort,
+units); Ring 2 rejects. Decision: the `llm-jev` default stands on the same-build and multi-hunk evidence; the README footnote
+already says the advantage is not on repositories. Iteration 2 (branch `oos-iter-2`) is scoped to what the records show:
+the repository `replan_stop`/pricing path, a deadline p90 that excludes zero-token samples, the one-line-regime slowdown,
+a thresholdless rule for the `token_bucket` overfit, and the `--jev off` escape-to-stop; it is measured on the same 18 + 28
+before any of it is called an improvement.

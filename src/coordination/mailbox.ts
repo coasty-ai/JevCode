@@ -362,8 +362,13 @@ export function resolveTarget(fold: Fold, self: SelfIdentity, target: string): R
 export type RemoteControl = 'allow' | 'confirm' | 'never';
 
 export interface IncomingDisposition {
-  /** what the receiver may do with it — `steer` only from a trusted or same-device sender, else it is a `note` */
-  action: 'note' | 'steer' | 'pause' | 'end' | 'resume' | 'abort' | 'request-release' | 'heads-up' | 'handoff' | 'who' | 'ack';
+  /**
+   * what the receiver may do with it — `steer` only from a trusted or same-device sender, else it is a `note`.
+   * contract 1.4 (W2b): `budget` / `review` / `kick` / `land` are FACTS, like `note` and `heads-up`: they are not in
+   * `CONTROL_MESSAGE_TYPES`, they never need a `[y]`, and they are passed through under their own name so the surface
+   * can route them (the orchestration wave's landing queue reads `land`) instead of flattening them into `note`.
+   */
+  action: 'note' | 'steer' | 'pause' | 'end' | 'resume' | 'abort' | 'request-release' | 'heads-up' | 'handoff' | 'who' | 'ack' | 'budget' | 'review' | 'kick' | 'land';
   /** the sender asked for more than its rights allow; `action` is what it was reduced to */
   downgraded: boolean;
   /** the local human must confirm before the action applies (`abort` always; `pause` / `end` / `resume` under 'confirm') */
@@ -416,6 +421,11 @@ export function classifyIncoming(
     case 'who':
     case 'ack':
     case 'request-release':
+    // contract 1.4 (W2b): the four orchestration facts — never control, never gated
+    case 'budget':
+    case 'review':
+    case 'kick':
+    case 'land':
       return plain(msg.type);
     case 'steer':
       if (trusted) return plain('steer');

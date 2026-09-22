@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EngineStatus } from '../../../src/core/types.js';
 import { hasContextStore } from '../../../src/checkpoint/types.js';
-import { HISTORY_STEPS, contextBudgetChars } from '../../../src/loop/context/limits.js';
+import { COMPACT_AT_PCT, HISTORY_STEPS, contextBudgetChars } from '../../../src/loop/context/limits.js';
 import { compactCode } from '../../../src/loop/context/compaction.js';
 import type { ContextUsage, HistoryEntry } from '../../../src/core/types.js';
 import { createFakeSandbox, createFakeWorkspace, execResult, makeEngine, turn, type Harness } from './fakes.js';
@@ -564,5 +564,69 @@ describe('§8 checkpoint compatibility (additive)', () => {
     const history = (resumed.store.last()! as { history?: { step: number; outputRef?: string }[] }).history!;
     expect(history.map((e) => e.step).slice(0, 4)).toEqual([1, 2, 3, 4]);
     expect(history.find((e) => e.step === 3)!.outputRef).toBe('outputs/step-3.txt');
+  });
+});
+
+/**
+ * contract 1.4 (Q16) `context:warn`: the §8.6 compaction line (`COMPACT_AT_PCT`, 85 % of the prompt budget) is the
+ * moment the run's context stops being comfortable — the fold that follows is visible, but nothing announced the
+ * crossing itself, so a surface had to poll `status().context.pct` to notice. The event is edge-triggered: one per
+ * UPWARD crossing, never a per-step drip, and the compaction that follows lowers the meter and re-arms it.
+ *
+ * It is emitted where the relaxed meter is computed, so the modes without a meter cannot emit it: `view: 'legacy'`
+ * and the non-consuming modes (jev-only, llm-jev) never reach the branch.
+ */
+describe('contract 1.4 (Q16) context:warn', () => {
+  /**
+   * A run whose fixed system prompt (clipped project instructions) already sits well inside the budget, so the
+   * growing recent-steps section is what pushes the meter over the line — and the fold pulls it back under.
+   */
+  async function crowded(view: 'relaxed' | 'legacy'): Promise<Harness> {
+    let i = 0;
+    const h = await makeEngine({
+      turns: () => turn({ kind: 'run', command: `echo ${'abcdefghijklmnopqrst'[i++ % 20]}` }, { remaining: ['keep going'] }),
+      sandbox: createFakeSandbox((c) => execResult({ stdout: `${c}\n${'x'.repeat(Math.max(0, 5_000 - c.length - 2))}\n` })),
+      limits: { maxSteps: 6 },
+      engine: {
+        contextPolicy: { view, windowTokens: 20_000, compactEvery: 0 },
+        instructions: { files: [{ path: 'AGENTS.md', sha256: 'ab'.repeat(32), bytes: 40_000 }], text: 'house style. '.repeat(3_077) },
+      },
+    });
+    harnesses.push(h);
+    return h;
+  }
+
+  it('fires once per upward crossing of the 85 % line, and the compaction under it re-arms the next one', async () => {
+    const h = await crowded('relaxed');
+    await h.engine.run();
+    // six steps, two crossings: 60 → 69 → 78 → 86 (fold) → 79 → 87 (fold). Never one per step.
+    const warns = h.of('context:warn');
+    expect(warns.map((w) => w.step)).toEqual([4, 6]);
+    expect(h.of('context:compacted').map((e) => e.step)).toEqual([4, 6]);
+
+    const budgetTokens = Math.round(contextBudgetChars(20_000) / 3.4);
+    for (const w of warns) {
+      const req = h.provider.requests[w.step - 1]!;
+      const promptChars = (req.system ?? '').length + req.messages[0]!.content.length;
+      expect(w.budgetTokens, `step ${w.step}`).toBe(budgetTokens);
+      expect(w.tokensInWindow, `step ${w.step}`).toBe(Math.round(promptChars / 3.4));
+      expect(w.pct, `step ${w.step}`).toBe(Math.round((100 * w.tokensInWindow) / w.budgetTokens));
+      expect(w.pct, `step ${w.step}`).toBeGreaterThanOrEqual(COMPACT_AT_PCT);
+    }
+
+    // the first warn precedes the fold it predicts; the second only happens because step 5 came back under the line
+    const types = h.events.map((e) => e.type);
+    expect(types.indexOf('context:warn')).toBeLessThan(types.indexOf('context:compacted'));
+    expect(types.lastIndexOf('context:warn')).toBeGreaterThan(types.indexOf('context:compacted'));
+    const fifth = h.provider.requests[4]!;
+    const fifthPct = Math.round((100 * Math.round(((fifth.system ?? '').length + fifth.messages[0]!.content.length) / 3.4)) / budgetTokens);
+    expect(fifthPct).toBeLessThan(COMPACT_AT_PCT);
+  });
+
+  it('a legacy run emits none — the meter it would report does not exist', async () => {
+    const h = await crowded('legacy');
+    await h.engine.run();
+    expect(h.of('context:warn')).toEqual([]);
+    expect((h.engine.status() as { context?: unknown }).context).toBeUndefined();
   });
 });

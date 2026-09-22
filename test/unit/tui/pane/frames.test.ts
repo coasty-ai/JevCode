@@ -44,7 +44,7 @@ function frameColumns(tag: string): number {
 const PARTIAL_RE = /[▏▎▍▌▋▊▉]/g;
 const partial = (s: string): string => s.replace(PARTIAL_RE, '▏');
 const collapse = (s: string): string => s.replace(/ +/g, ' ').trimEnd();
-const strips = (s: string): string => s.replace(/\b[ICPRXJ]{2,}\b/g, 'STRIP');
+const strips = (s: string): string => s.replace(/\b[DICPROXJ]{2,}\b/g, 'STRIP');
 
 const rows = (decs: ReturnType<typeof frameBDecisions>): ReturnType<typeof toDecisionRow>[] => decs.map((d) => toDecisionRow(d, 0.85));
 

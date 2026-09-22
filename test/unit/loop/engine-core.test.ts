@@ -134,6 +134,7 @@ describe('transcript.log (§10 shared item model)', () => {
     expect(h.store.transcript.some((l) => /^\[step 1\] done [·-] read 1 file$/.test(l))).toBe(true);
     expect(h.store.transcript.some((l) => l.startsWith('[run] stop'))).toBe(false);
     expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] complete [·-] 2 steps [·-] /);
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     // pane-only events never produce a line
     expect(h.store.transcript.some((l) => /decision|status|stage:/.test(l))).toBe(false);
   });

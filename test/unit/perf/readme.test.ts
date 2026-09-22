@@ -182,6 +182,7 @@ function result(): PerfResult {
       dirtyBytes: 50 * 300 * 1024,
       pass: true,
       gateMs: 50,
+      timeline: null,
     },
     staticAppend: { regions: [{ name: 'live22', rows: 24, columns: 80, regionRows: 22, lines: 60, frames: 60, appendFrameMedian: 2015, appendFrameMean: 2018, appendFrameMax: 2100, bytesPerLineMedian: 2015, bytesPerLineMean: 2018, bytesPerLineMax: 2100, bytesTotal: 121000 }], withinBudget: true, pass: true },
     renderLag: {
@@ -264,6 +265,9 @@ function result(): PerfResult {
       pass: true,
     },
     jevLatency: null,
+    // §5 Ring 0 probes: opt-in, never in a release result (a named Ring-0 probe makes the run `partial`)
+    laneRun: null,
+    sandboxSpawn: null,
     pass: false,
   };
 }

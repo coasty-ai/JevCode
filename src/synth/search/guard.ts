@@ -50,14 +50,26 @@
  * It does refuse passers: one whose arbitration answered the all-overfit signature, and a lone
  * passer Jev confidently doubted, are never committed (head-to-head v1 committed 5 overfits where
  * the baseline committed 0; experiments/results/llm-jev-headtohead.md §5, §9).
+ *
+ * **Structural refusals (2026-09-22, ranked change 5 of docs/research/llm-jev/oos-analysis-2026-09-22.md).**
+ * Before any rule above runs, `decide` drops a passer that `structuralRejection` refuses: one that
+ * adds an implicit-`None` exit to a function whose every other exit returns a value, or that mutates
+ * in place a parameter the pre-patch code left alone. Both are read off the patched file's source
+ * (src/synth/py/structure.ts `fallsOffEnd` / `mutatedParameters`) before and after the patch, so
+ * they have no threshold, no task name and no Jev cost; the probe's own post-call argument diff
+ * (`perturb.ts ladderOutputText`) refuses the same shape at run time when a signature carries it.
+ * The two records behind them (Q6) are the ones the guard committed with everything else working:
+ * `20260922-013715-nlsygcax` (noul 0.44, above `SUSPECT_NOUL_MAX`, so no all-overfit drop) and
+ * `20260922-014311-65ul43qh` (decided by `probeMajorityCluster`/majority, no `genuine_fix` request).
  */
 import type { Json, StageName, SynthesisContext } from '../../core/types.js';
 import { choice, ESCAPE_KEY, noul } from '../../jev/questions.js';
 import type { NoulCriteriaSpec } from '../../jev/questions.js';
 import { codeLines, moduleCodeLines } from '../localize/index.js';
-import { codeTokens, levenshtein, normaliseLine, tokenizeFragment } from '../py/index.js';
+import { analyse, codeTokens, fallsOffEnd, levenshtein, mutatedParameters, normaliseLine, qualifiedName, statementKinds, tokenizeFragment } from '../py/index.js';
+import type { Block, PyModule, ReturnFact, StatementKind } from '../py/index.js';
 import type { LanePool } from '../sieve/lanes.js';
-import type { Candidate, CandidateSourceName, FailureView, JevAsk, SourceFile } from '../types.js';
+import type { AppliedCandidate, Candidate, CandidateSourceName, FailureView, JevAsk, SourceFile } from '../types.js';
 import { RUN_FAILURE_ID } from '../verify/text.js';
 import { MAX_PARTIALS_REMEMBERED, appliedOnCommitted, commitPartial, committedBase, guardState, holdBestPartial, isPartial, outcomeSummary, siteKeyOf } from './bases.js';
 import type { GuardMemory, HeldPasser, PartialAdvice } from './bases.js';
@@ -424,10 +436,208 @@ export function probeMajorityCluster(clusters: readonly BehaviourCluster[], sign
 }
 
 // ---------------------------------------------------------------------------------------
+// Structural rejection of a passer (ranked change 5 of the OOS analysis, its Q6 table)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * The two shapes a passing candidate is REFUSED for, whatever the rest of the guard would have
+ * decided. Both are differences between the patched file's source before and after the patch, so
+ * they cost nothing and ask nobody (`decide` runs them before any rule below can pick a candidate);
+ * neither has a threshold, and neither knows a task exists.
+ *
+ * `adds_implicit_none_exit` — the patch opens a path that leaves a function with an implicit
+ * `return None` while every other exit of it returns a value. Record `20260922-013715-nlsygcax`:
+ * the committed template `guard_empty_break` put `if not hare.successor.successor: break` inside
+ * `while True:`, so the loop the pre-patch code could only `return` out of now falls off the end
+ * of the function. The guard saw 5 plausible, 3 clusters, arbitrated, `general_cand_01` noul 0.44
+ * — ABOVE `SUSPECT_NOUL_MAX` 0.3 — so the all-overfit drop never fired and `probeMajorityCluster`
+ * / the Choice argmax committed it.
+ *
+ * `mutates_new_argument` — the patch makes a function mutate a parameter in place that the
+ * pre-patch code left alone, so the caller's object changes. Record `20260922-014311-65ul43qh`:
+ * `values.remove(mid)` made `median([])` raise ValueError incidentally (the goal test's
+ * `pytest.raises`), broke `median([2, 2])` and mutated the caller's list, where the gold adds
+ * `if not values: raise ValueError`. 5 plausible, 2 clusters, arbitrated, no `genuine_fix`
+ * request — `probeMajorityCluster`/majority decided it.
+ */
+export type StructuralRejection = 'adds_implicit_none_exit' | 'mutates_new_argument';
+
+/** What a refusal says in the transcript. */
+export const STRUCTURAL_REJECTION_WHY: Readonly<Record<StructuralRejection, string>> = {
+  adds_implicit_none_exit: 'adds a path that leaves a function with an implicit `return None`, while every other exit of that function returns a value',
+  mutates_new_argument: 'mutates in place a parameter the pre-patch code left alone, so the caller\'s object changes',
+};
+
+/**
+ * Review finding 2: argument mutation is a SUSPICION, not a refusal.
+ *
+ * `values.sort(); return values[-1]` and `if k not in d: d[k] = 0` are ordinary in-place APIs;
+ * refusing them costs solves on the SWE class, where in-place is often the contract. The two
+ * idioms are exempted in `py/structure.ts mutatedParameterDetails`, and what survives that is
+ * still only evidence: it never drops a SOLE passer (there is nothing better to fall back to,
+ * and `holdBestPartial` would throw the run's only fix away), and with two or more contenders it
+ * is handed to the arbitration that already exists (Q15/Q16) as a named signal.
+ *
+ * The one shape that stays an outright refusal is the one the record shows going wrong, stated
+ * structurally: an in-place method on a parameter the function NEVER hands back, in a goal whose
+ * tests expect a raise. That is `stats`' `values.remove(mid)` — the mutation is invisible to the
+ * function's own result, so no caller could have wanted it, and the `raises` goal is what the
+ * candidate satisfied incidentally (analysis Q6 (ii)).
+ */
+export function raisesGoal(goal: Pick<Goal, 'failures'>): boolean {
+  return goal.failures.some((f) => /\braise[sd]?\b|Error\b|Exception\b/.test(`${f.expected} ${f.actual}`));
+}
+
+/**
+ * The mark `perturb.ts ladderOutputText` writes into a replayed output whose call changed its own
+ * arguments — the post-call argument diff the replay harness already runs, reused here rather than
+ * re-derived (a unit test asserts the two agree, so the literal cannot drift).
+ */
+export const ARGS_MUTATED_MARK = '[arguments mutated to ';
+
+/**
+ * The statement kinds that own a suite, so introducing one changes the shape `suiteExits` walks
+ * (review finding 1). `def` / `class` are absent on purpose: `statementKinds` already excludes
+ * nested block bodies, and a patch that adds a helper `def` does not change how its parent exits.
+ */
+const SUITE_SHAPE_KINDS: ReadonlySet<StatementKind> = new Set(['if', 'elif', 'else', 'for', 'while', 'try', 'except', 'finally', 'with']);
+
+/** A function's `return` facts, or none when the block is not a `def` of this module. */
+function returnsOf(mod: PyModule, block: Block): readonly ReturnFact[] {
+  return mod.functions.find((f) => f.blockIndex === block.index)?.returns ?? [];
+}
+
+/**
+ * Does this function have a None exit — control reaching the end of the body (`fallsOffEnd`) or a
+ * bare `return`? `return None` is an exit its author wrote on purpose and counts as a value exit.
+ */
+function noneExit(mod: PyModule, block: Block): boolean {
+  return fallsOffEnd(mod, block) || returnsOf(mod, block).some((r) => r.expr === null);
+}
+
+/** Exits of this function that hand a value back. */
+function valueExits(mod: PyModule, block: Block): number {
+  return returnsOf(mod, block).filter((r) => r.expr !== null).length;
+}
+
+/** The `def`s a patch's file has in BOTH revisions, matched by qualified name; a function the patch adds has no pre-patch half and is not compared. */
+function functionPairs(before: PyModule, after: PyModule): { before: Block; after: Block }[] {
+  const byName = new Map<string, Block>();
+  for (const b of before.blocks) {
+    if (b.kind !== 'def') continue;
+    const name = qualifiedName(before, b);
+    if (!byName.has(name)) byName.set(name, b);
+  }
+  const out: { before: Block; after: Block }[] = [];
+  const seen = new Set<string>();
+  for (const a of after.blocks) {
+    if (a.kind !== 'def') continue;
+    const name = qualifiedName(after, a);
+    const b = byName.get(name);
+    if (b === undefined || seen.has(name)) continue;
+    seen.add(name);
+    out.push({ before: b, after: a });
+  }
+  return out;
+}
+
+/**
+ * One decision's parsed revisions, keyed by source text: every candidate of a batch patches the
+ * same base, so the pre-patch analysis is shared instead of repeated per candidate (on a
+ * repository-class file that is the difference between one tokenizer pass and one per passer).
+ */
+export type ParseCache = Map<string, PyModule | null>;
+
+/** `analyse` of a revision, or null when the text does not tokenize (it then says nothing about the candidate). */
+function parsed(src: string, cache?: ParseCache): PyModule | null {
+  const hit = cache?.get(src);
+  if (hit !== undefined) return hit;
+  let mod: PyModule | null;
+  try {
+    mod = analyse(src);
+  } catch {
+    mod = null;
+  }
+  cache?.set(src, mod);
+  return mod;
+}
+
+/**
+ * The first structural refusal the patch earns, or null. Reads only `AppliedCandidate.files`
+ * (the touched files' text before and after), so it works on every candidate source and needs no
+ * run, no probe and no Jev request.
+ */
+export function structuralRejection(applied: Pick<AppliedCandidate, 'files'>, cache?: ParseCache): StructuralRejection | null {
+  for (const f of applied.files) {
+    const before = parsed(f.before, cache);
+    const after = parsed(f.after, cache);
+    if (before === null || after === null) continue;
+    for (const p of functionPairs(before, after)) {
+      // Review finding 1: the difference argument requires the two revisions to be built from the
+      // same constructs. A patch that introduces a COMPOUND statement — one that owns a suite, so
+      // it changes the shape the exit analysis walks — is exactly where "unmodelled cancels out"
+      // stops being true; wrapping exiting code in `try/except` is a large fraction of real
+      // repository fixes. Leaf statements (`break`, `return`, `pass`, an expression) are NOT this:
+      // they sit inside a suite the analysis already walks and are precisely what the difference
+      // is built to see — `detect_cycle`'s added `break` must still be caught.
+      const wasShapes = new Set([...statementKinds(before, p.before)].filter((k) => SUITE_SHAPE_KINDS.has(k)));
+      if ([...statementKinds(after, p.after)].some((k) => SUITE_SHAPE_KINDS.has(k) && !wasShapes.has(k))) continue;
+      if (!noneExit(before, p.before) && noneExit(after, p.after) && valueExits(after, p.after) > 0) return 'adds_implicit_none_exit';
+    }
+  }
+  return null;
+}
+
+/** The parameters a patch newly mutates in place, exemptions already applied (`mutatedParameterDetails`). */
+export function newlyMutatedParameters(applied: Pick<AppliedCandidate, 'files'>, cache?: ParseCache): { fn: Block; mod: PyModule; names: string[] }[] {
+  const out: { fn: Block; mod: PyModule; names: string[] }[] = [];
+  for (const f of applied.files) {
+    const before = parsed(f.before, cache);
+    const after = parsed(f.after, cache);
+    if (before === null || after === null) continue;
+    for (const p of functionPairs(before, after)) {
+      const was = new Set(mutatedParameters(before, p.before));
+      const names = mutatedParameters(after, p.after).filter((n) => !was.has(n));
+      if (names.length > 0) out.push({ fn: p.after, mod: after, names });
+    }
+  }
+  return out;
+}
+
+/**
+ * The narrow refusal of review finding 2: the patch newly mutates a parameter the function never
+ * hands back, and the goal's tests expect a raise. Everything else that `newlyMutatedParameters`
+ * finds is a suspicion signal, not a refusal.
+ */
+export function mutationRefused(applied: Pick<AppliedCandidate, 'files'>, goal: Pick<Goal, 'failures'>, cache?: ParseCache): boolean {
+  if (!raisesGoal(goal)) return false;
+  return newlyMutatedParameters(applied, cache).some(({ fn, mod, names }) => {
+    const returned = mod.functions.find((x) => x.blockIndex === fn.index)?.returns ?? [];
+    return names.some((n) => !returned.some((r) => r.expr !== null && new RegExp(`^${n}\\s*(?:$|[[.])`).test(r.expr.trim())));
+  });
+}
+
+/**
+ * The runtime half of the argument-mutation rule, for a mutation the token scan cannot see (one
+ * through a helper, or a form `mutatedParameters` does not model): the replay harness's own
+ * post-call argument diff marked at least one of this candidate's outputs, and NO function of the
+ * pre-patch file mutated a parameter at all — so the mutation is the patch's. Free: the signature
+ * is the one the probe already produced for clustering.
+ */
+export function probeArgumentMutation(o: VerifyOutcome, signature: string | undefined, cache?: ParseCache): boolean {
+  const outs = probeOutputs(signature);
+  if (outs === null || !outs.some((t) => t.includes(ARGS_MUTATED_MARK))) return false;
+  return o.applied.files.every((f) => {
+    const before = parsed(f.before, cache);
+    return before !== null && before.blocks.every((b) => mutatedParameters(before, b).length === 0);
+  });
+}
+
+// ---------------------------------------------------------------------------------------
 // Structural suspicion signals (code) on a lone passer
 // ---------------------------------------------------------------------------------------
 
-export type SuspicionSignal = 'deletes_statement' | 'duplicates_block' | 'guards_other_variable' | 'dead_guard' | 'adds_special_case';
+export type SuspicionSignal = 'deletes_statement' | 'duplicates_block' | 'guards_other_variable' | 'dead_guard' | 'adds_special_case' | 'mutates_new_argument';
 
 // ---------------------------------------------------------------------------------------
 // Special-case guards (code metric): the conditionals and literals a candidate adds
@@ -608,6 +818,9 @@ export function suspicionSignals(o: VerifyOutcome, goal: Pick<Goal, 'failures'>)
     if (addsStatement && subjects.every((s) => !isUsed(s, fn.map((l) => l.text)))) out.push('dead_guard');
   }
   if (specialCaseScore(c).total > 0) out.push('adds_special_case');
+  // review finding 2: a mutation the exemptions did not excuse is a signal on a lone passer —
+  // Q16 decides the hold, and the passer is never simply dropped
+  if (newlyMutatedParameters(o.applied).length > 0) out.push('mutates_new_argument');
   return out;
 }
 
@@ -893,6 +1106,8 @@ export interface GuardFields {
   signals: SuspicionSignal[];
   /** passers dropped by the all-overfit signature this decision (they stay in `tried`; none is ever committed) */
   dropped: number;
+  /** passers refused by a structural rule this decision (`structuralRejection`; no Jev request, none is ever committed). Optional so hand-built fields need not state it; `decide` always does. */
+  structuralDrops?: number;
   /** the code rule that committed without Jev, if any */
   codeRule: CodeRule | null;
 }
@@ -1086,11 +1301,31 @@ function scoreSummary(reps: readonly VerifyOutcome[]): string {
 export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory, goal: Goal, ask: JevAsk, opts: DecideOptions = {}): Promise<GuardDecision> {
   const st = guardState(mem);
   const note = opts.note ?? ((): void => undefined);
-  const fresh = mostPassing(results.filter((o) => isPlausible(o, goal)));
+  // Ranked change 5 of the OOS analysis (its Q6 table): a passer with one of the two structural
+  // defects is refused HERE, before any rule below can pick it — the two committed overfits of Q6
+  // were decided by rules (`probeMajorityCluster`, the Choice argmax) that never saw the defect,
+  // and the all-overfit drop could not fire at noul 0.44. Costs no Jev request and no run.
+  const refused = new Map<string, StructuralRejection>();
+  const parseCache: ParseCache = new Map();
+  const admissible = (o: VerifyOutcome): boolean => {
+    // Review finding 2: argument mutation no longer refuses on its own. Only the none-exit rule
+    // and the narrow `stats` shape (an in-place method on a parameter the function never returns,
+    // in a goal whose tests expect a raise) drop a candidate here; every other mutation becomes
+    // the `mutates_new_argument` suspicion signal below, which never drops a SOLE passer.
+    const why = structuralRejection(o.applied, parseCache) ?? (mutationRefused(o.applied, goal, parseCache) ? 'mutates_new_argument' : null);
+    if (why === null) return true;
+    refused.set(o.applied.candidate.id, why);
+    return false;
+  };
+  const fresh = mostPassing(results.filter((o) => isPlausible(o, goal)).filter(admissible));
   const partial = results.filter((o) => !isPlausible(o, goal) && isPartial(o));
-  const carried = heldPassers(mem, goal);
+  const carried = heldPassers(mem, goal).filter(admissible);
+  // a held passer this rule refuses is dropped with its hold, so no step-end `commitSuspect` revives it
+  if (st.pending !== null && st.pending.goalId === goal.id && refused.has(st.pending.outcome.applied.candidate.id)) st.pending = null;
+  if (st.suspect !== null && st.suspect.goalId === goal.id && refused.has(st.suspect.outcome.applied.candidate.id)) st.suspect = null;
+  for (const [id, why] of refused) note(`${goal.id}: refuses the passing candidate ${id} — it ${STRUCTURAL_REJECTION_WHY[why]} (structural rule, no Jev request); it stays in tried and the search goes on`);
   const plausible = mostPassing(dedupeById([...carried, ...fresh]));
-  const base = { plausible: fresh.length, clusters: 0, arbitrated: false, requests: 0, fallbacks: [] as VerifyOutcome[], probeError: null as string | null, held: null as HoldKind | null, signals: [] as SuspicionSignal[], dropped: 0, codeRule: null as CodeRule | null };
+  const base = { plausible: fresh.length, clusters: 0, arbitrated: false, requests: 0, fallbacks: [] as VerifyOutcome[], probeError: null as string | null, held: null as HoldKind | null, signals: [] as SuspicionSignal[], dropped: 0, structuralDrops: refused.size, codeRule: null as CodeRule | null };
 
   if (plausible.length === 0) {
     // Code only: strictly more passed wins, ties by the bases.ts tie-break rule (no Jev request).
@@ -1178,7 +1413,32 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
       probeError = e instanceof Error ? e.message : String(e);
     }
   }
-  const clusters = clusterByBehaviour(plausible, signatures);
+  // The runtime half of the argument-mutation rule (ranked change 5): the replay harness already
+  // diffed each call's arguments after it ran (`perturb.ts ladderOutputText`), so a passer whose own
+  // signature carries that mark while the pre-patch file mutated no parameter is refused here, at
+  // the cost of reading a signature the clustering needed anyway.
+  const mutators = plausible.filter((o) => probeArgumentMutation(o, signatures.get(o.applied.candidate.id), parseCache));
+  // Review finding 2, runtime half: a replayed call that changed its own arguments refuses the
+  // candidate only in the narrow `raises`-goal shape; otherwise it is evidence that demotes it
+  // among its peers. And it NEVER empties the field: if refusing would leave no contender, the
+  // refusals are withdrawn and the candidates go to arbitration carrying the signal instead.
+  const runtimeRefused = mutators.filter((o) => mutationRefused(o.applied, goal, parseCache));
+  const dropped = runtimeRefused.length < plausible.length ? runtimeRefused : [];
+  for (const o of dropped) {
+    refused.set(o.applied.candidate.id, 'mutates_new_argument');
+    note(`${goal.id}: refuses the passing candidate ${describe(o)} — its replayed calls ${STRUCTURAL_REJECTION_WHY.mutates_new_argument}, on a parameter it never returns, for a goal whose tests expect a raise (the probe's own post-call argument diff, no Jev request)`);
+  }
+  const contenders = dropped.length === 0 ? plausible : plausible.filter((o) => !refused.has(o.applied.candidate.id));
+  // the surviving mutators keep the signal; `arbitrationSignals` hands it to Q15/Q16 below
+  const mutationSuspects = new Set(mutators.filter((o) => !refused.has(o.applied.candidate.id)).map((o) => o.applied.candidate.id));
+  for (const o of contenders) if (mutationSuspects.has(o.applied.candidate.id)) note(`${goal.id}: ${describe(o)} mutates an argument the pre-patch code left alone — recorded as a suspicion signal for the arbitration, not a refusal (review finding 2)`);
+  base.structuralDrops = refused.size;
+  if (contenders.length === 0) {
+    clearHeld(mem, goal);
+    holdBestPartial(mem, partial, goal);
+    return { kind: 'continue', ...base, probeError };
+  }
+  const clusters = clusterByBehaviour(contenders, signatures);
   const probeNote = opts.probe === undefined ? 'no probe' : `probe ${inputs.length} inputs, ${signatures.size}/${plausible.length} signatures${probeError === null ? '' : `, error: ${probeError}`}`;
   const common = { ...base, plausible: fresh.length, clusters: clusters.length, probeError };
   const single = clusters.length === 1 ? clusters[0] : undefined;
@@ -1187,7 +1447,7 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
     // candidate is committed by code rule (the correctness witness among test-equivalent passers); no Jev request
     clearHeld(mem, goal);
     const pick = single.representative;
-    note(`${goal.id}: ${plausible.length} passers in one behaviour cluster with a code seed and an LLM candidate (${probeNote}); committing the LLM member ${describe(pick)} by the preferLlmInCluster rule (no arbitration)`);
+    note(`${goal.id}: ${contenders.length} passers in one behaviour cluster with a code seed and an LLM candidate (${probeNote}); committing the LLM member ${describe(pick)} by the preferLlmInCluster rule (no arbitration)`);
     return commit(mem, pick, { ...common, clusters: 1, fallbacks: single.members.filter((m) => m !== pick), codeRule: 'llm_in_cluster' });
   }
   if (clusters.length >= 2) {
@@ -1200,11 +1460,11 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
       const pick = majority.representative;
       const fallbacks = clusters.filter((c) => c !== majority).map((c) => c.representative);
       guardState(mem).fallbacks = { goalId: goal.id, outcomes: fallbacks };
-      note(`${goal.id}: ${plausible.length} passers (${carried.length} held) in ${clusters.length} behaviour clusters (${probeNote}; ${supportSummary(clusters)}); ${majority.id} holds the majority of the independent support; committing its representative ${describe(pick)} by code (no arbitration)`);
+      note(`${goal.id}: ${contenders.length} passers (${carried.length} held) in ${clusters.length} behaviour clusters (${probeNote}; ${supportSummary(clusters)}); ${majority.id} holds the majority of the independent support; committing its representative ${describe(pick)} by code (no arbitration)`);
       return commit(mem, pick, { ...common, fallbacks, codeRule: 'majority_cluster' });
     }
     const reps = clusters.map((c) => c.representative);
-    const split = `${goal.id}: ${plausible.length} passers (${carried.length} held) in ${clusters.length} behaviour clusters (${probeNote}; ${supportSummary(clusters)}); the clusters split`;
+    const split = `${goal.id}: ${contenders.length} passers (${carried.length} held) in ${clusters.length} behaviour clusters (${probeNote}; ${supportSummary(clusters)}); the clusters split`;
     if (seedOnlySplit(clusters)) {
       // Class A′ (llm-jev-headtohead-v2.md §8.2, §9): no cluster holds an LLM member and every cluster
       // carries the same independent support, so the special-case count is not evidence — it committed
@@ -1240,7 +1500,7 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
   const table = perturbationTable(representativesOf(clusters), inputs, signatures);
   const arb = await arbitrate(arbCtx, clusters, ask, table.length > 0 ? { perturbations: table } : {});
   const arbitrated = { ...common, arbitrated: true, requests: arb.requests };
-  note(`${goal.id}: arbitrated ${plausible.length} passers (${carried.length} held) in ${clusters.length} cluster${clusters.length === 1 ? '' : 's'} (${probeNote}${table.length > 0 ? `, ${table.length} differing input${table.length === 1 ? '' : 's'} shown` : ''}); escape ${arb.pEscape.toFixed(2)}, max general ${Math.max(...Object.values(arb.noul)).toFixed(2)}; ${arb.suspect ? 'all-overfit signature' : `pick ${describe(arb.pick)}`}`);
+  note(`${goal.id}: arbitrated ${contenders.length} passers (${carried.length} held) in ${clusters.length} cluster${clusters.length === 1 ? '' : 's'} (${probeNote}${table.length > 0 ? `, ${table.length} differing input${table.length === 1 ? '' : 's'} shown` : ''}); escape ${arb.pEscape.toFixed(2)}, max general ${Math.max(...Object.values(arb.noul)).toFixed(2)}; ${arb.suspect ? 'all-overfit signature' : `pick ${describe(arb.pick)}`}`);
 
   if (arb.suspect) {
     // Rule (1): every passer looks like an overfit (P(escape) ≥ SUSPECT_ESCAPE_MIN, max general <
@@ -1249,8 +1509,8 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
     // on with the batch's best partial held for the step's honest progress commit.
     clearHeld(mem, goal);
     holdBestPartial(mem, partial, goal);
-    note(`${goal.id}: all-overfit signature (escape ${arb.pEscape.toFixed(2)} ≥ ${SUSPECT_ESCAPE_MIN}, max general ${Math.max(...Object.values(arb.noul)).toFixed(2)} < ${SUSPECT_NOUL_MAX}); dropping the ${plausible.length} passer${plausible.length === 1 ? '' : 's'} (kept in tried, none is committed); searching on${partial.length > 0 ? ` with the batch's best partial held` : ''}`);
-    return { kind: 'continue', ...arbitrated, dropped: plausible.length };
+    note(`${goal.id}: all-overfit signature (escape ${arb.pEscape.toFixed(2)} ≥ ${SUSPECT_ESCAPE_MIN}, max general ${Math.max(...Object.values(arb.noul)).toFixed(2)} < ${SUSPECT_NOUL_MAX}); dropping the ${contenders.length} passer${contenders.length === 1 ? '' : 's'} (kept in tried, none is committed); searching on${partial.length > 0 ? ` with the batch's best partial held` : ''}`);
+    return { kind: 'continue', ...arbitrated, dropped: contenders.length };
   }
   clearHeld(mem, goal);
   guardState(mem).fallbacks = { goalId: goal.id, outcomes: arb.fallbacks };

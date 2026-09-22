@@ -19,6 +19,7 @@ import { SandboxError, isAbortError, isBudgetError } from '../errors.js';
 import { killTree } from './kill.js';
 import type { KillTreeOptions, KillTreeResult } from './kill.js';
 import { canonicalPath, canonicalPathSync, isWithin } from './paths.js';
+import { commandLabel, stepTimeline } from '../perf/timeline.js';
 import { SANDBOX_EXEC, buildProfile, detectSandboxLevel } from './seatbelt.js';
 
 export const TAIL_BYTES = 16 * 1024;
@@ -181,6 +182,10 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
   const gitDir = typeof opts.gitDir === 'string' && opts.gitDir.length > 0 ? resolve(opts.gitDir) : null;
   const gitCommonDir = typeof opts.gitCommonDir === 'string' && opts.gitCommonDir.length > 0 ? resolve(opts.gitCommonDir) : null;
   const configDirs = (opts.configDirs ?? []).filter((p): p is string => typeof p === 'string' && p.length > 0).map((p) => resolve(p));
+  // contract 1.5 (ORCHESTRATION-DESIGN §5.2 [G3]): the child's ref-deny list. Folded into the hash below for the
+  // same reason the git dirs are — [D10] puts a depth-0 supervisor sandbox and a depth-1 child sandbox over the
+  // SAME worktree in the SAME run dir, and an unhashed difference would make them share one `sandbox-<h>.sb`.
+  const agentChild = opts.agentChild === true;
   let profilePath: string | null = null;
   if (level === 'seatbelt') {
     // One profile file per sandbox instance: several sandboxes can share a run dir (the bench
@@ -188,6 +193,7 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
     // sandbox overwrite an earlier one's profile mid-run, leaving its workspace unreadable.
     const hashInput = [workspaceRoot, extraRoots.join('\n'), opts.noNetwork ? '1' : '0'];
     if (gitDir !== null || gitCommonDir !== null || configDirs.length > 0) hashInput.push(gitDir ?? '', gitCommonDir ?? '', configDirs.join('\n'));
+    if (agentChild) hashInput.push('agent-child');
     profilePath = join(runDir, `sandbox-${createHash('sha256').update(hashInput.join('\n')).digest('hex').slice(0, 12)}.sb`);
     const profile = buildProfile({
       ws: workspaceRoot,
@@ -202,6 +208,7 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
       ...(gitDir !== null ? { gitDir } : {}),
       ...(gitCommonDir !== null ? { gitCommonDir } : {}),
       ...(configDirs.length > 0 ? { configDirs } : {}),
+      ...(agentChild ? { agentChild: true } : {}),
     });
     try {
       writeFileSync(profilePath, profile, { mode: 0o600 });
@@ -403,5 +410,15 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
     await Promise.allSettled([...entries.map((e) => e.done), ...strays.map((pgid) => killImpl(pgid, internals.killTreeOptions ?? {}))]);
   }
 
-  return { level, run, killAll };
+  /**
+   * HARNESS-NEXT-DESIGN §4.1 queues 1 and 5 (wave S0): every sandboxed process run is the lane/candidate queue —
+   * `exec` inside the agent's own execute stage, `lane` everywhere else (candidate runs, lane setup, the `git status`
+   * refresh), labelled by argv0. Off unless `JEVCODE_TIMELINE` is set, where it is `run` itself with no wrapper.
+   */
+  const timedRun = (command: string, o: SandboxRunOptions): Promise<ExecResult> => {
+    if (!stepTimeline.isEnabled()) return run(command, o);
+    return stepTimeline.measure(stepTimeline.currentStage() === 'execute' ? 'exec' : 'lane', commandLabel(command), () => run(command, o));
+  };
+
+  return { level, run: timedRun, killAll };
 }

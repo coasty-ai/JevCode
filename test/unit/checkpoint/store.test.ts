@@ -1,10 +1,11 @@
-import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { sha256Hex } from '../../../src/core/hash.js';
 import type { CheckpointEnvelope } from '../../../src/core/types.js';
 import { CheckpointError } from '../../../src/errors.js';
-import { CHECKPOINT_FILES, CORRUPT_STATE_FILE, cacheRelPath, createCheckpointStore, parseEnvelope, redactDeep, serialiseEnvelope } from '../../../src/checkpoint/store.js';
+import type { DiskError } from '../../../src/checkpoint/store.js';
+import { CHECKPOINT_FILES, CORRUPT_STATE_FILE, ORCHESTRATE_FILE_BYTES, cacheRelPath, createCheckpointStore, parseEnvelope, redactDeep, serialiseEnvelope } from '../../../src/checkpoint/store.js';
 import { FAKE_KEY, REDACTED, fakeRedact, makeDecision, makeMeta, makeState, makeStepRecord, withTempDir } from '../../fixtures/checkpoint/make.js';
 
 const identity = (s: string): string => s;
@@ -434,6 +435,95 @@ describe('contract 1.4 additions (COORDINATION-DESIGN §7.2, §7.4)', () => {
       expect(await store.readCache('../escape.json')).toBeNull();
     }));
 
+  // -------------------------------------------------------------------------------------
+  // contract 1.5 (ORCHESTRATION-DESIGN §8.2 D0 item 4, §3.7, §2.5): the `orchestrate/` directory
+  // -------------------------------------------------------------------------------------
+
+  it('contract 1.5: writeCache routes an `orchestrate/` rel to <run>/orchestrate/, redacted, with its own per-file chain', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, fakeRedact);
+      await store.create(makeMeta());
+      await store.writeCache('orchestrate/manifest-11.json', { v: 1, manifestId: 'abc', token: `key ${FAKE_KEY}` });
+      // the run-relative layout is <run>/orchestrate/manifest-11.json, NOT <run>/cache/orchestrate/...
+      expect(await readdir(join(dir, CHECKPOINT_FILES.orchestrate))).toEqual(['manifest-11.json']);
+      await expect(readdir(join(dir, CHECKPOINT_FILES.cache))).rejects.toThrow();
+      const text = await readFile(join(dir, CHECKPOINT_FILES.orchestrate, 'manifest-11.json'), 'utf8');
+      expect(text.endsWith('\n')).toBe(true);
+      expect(text).not.toContain(FAKE_KEY);
+      expect(text).toContain(REDACTED);
+      expect(await store.readCache('orchestrate/manifest-11.json')).toEqual({ v: 1, manifestId: 'abc', token: `key ${REDACTED}` });
+      expect(await store.readCache('orchestrate/manifest-12.json')).toBeNull();
+      // nested rels under orchestrate/ create their parents too (agent-<slug>/ subtrees)
+      void store.writeCache('orchestrate/inbox/a.json', { body: 'x' });
+      await store.flush();
+      expect(await store.readCache('orchestrate/inbox/a.json')).toEqual({ body: 'x' });
+      // the two roots never collide: the same leaf name in each is two files
+      await store.writeCache('manifest-11.json', { v: 1, where: 'cache' });
+      expect(await store.readCache('manifest-11.json')).toEqual({ v: 1, where: 'cache' });
+      expect(await store.readCache('orchestrate/manifest-11.json')).toEqual({ v: 1, manifestId: 'abc', token: `key ${REDACTED}` });
+    }));
+
+  it('contract 1.5: renameCache consumes a review answer within orchestrate/, and never across the two roots (§2.5)', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeCache('orchestrate/review-4.json', { id: 'r4', approved: true });
+      await store.renameCache('orchestrate/review-4.json', 'orchestrate/review-4.used');
+      expect(await store.readCache('orchestrate/review-4.json')).toBeNull();
+      expect(await store.readCache('orchestrate/review-4.used')).toEqual({ id: 'r4', approved: true });
+      expect(await readdir(join(dir, CHECKPOINT_FILES.orchestrate))).toEqual(['review-4.used']);
+      // a missing source stays a no-op under orchestrate/ too
+      await expect(store.renameCache('orchestrate/review-9.json', 'orchestrate/review-9.used')).resolves.toBeUndefined();
+      // crossing the roots is refused in both directions
+      await store.writeCache('orchestrate/manifest-1.json', { v: 1 });
+      await expect(store.renameCache('orchestrate/manifest-1.json', 'manifest-1.json')).rejects.toBeInstanceOf(CheckpointError);
+      await store.writeCache('step-1.json', { v: 1 });
+      await expect(store.renameCache('step-1.json', 'orchestrate/step-1.json')).rejects.toBeInstanceOf(CheckpointError);
+    }));
+
+  it('review 2026-09-22 finding 9: an `orchestrate/` write degrades against ITS OWN file, not `cache`', () =>
+    withTempDir(async (dir) => {
+      const seen: DiskError[] = [];
+      const store = createCheckpointStore(dir, identity, { onDegrade: (i) => seen.push(i) });
+      await store.create(makeMeta());
+      // make <run>/orchestrate unwritable so the manifest write fails with a disk-class errno
+      await mkdir(join(dir, CHECKPOINT_FILES.orchestrate), { recursive: true });
+      await chmod(join(dir, CHECKPOINT_FILES.orchestrate), 0o500);
+      try {
+        await expect(store.writeCache('orchestrate/manifest-11.json', { v: 1 })).rejects.toBeInstanceOf(CheckpointError);
+      } finally {
+        await chmod(join(dir, CHECKPOINT_FILES.orchestrate), 0o700);
+      }
+      expect(seen).toHaveLength(1);
+      // the key is what the engine dedupes on and what the notice names: `cache` would have said the wrong
+      // file, and worse, a later REAL cache failure of the same code would have been swallowed as a dupe
+      expect(seen[0]!.file).toBe('orchestrate/manifest-11.json');
+      expect(seen[0]!.key).toBe('orchestrate/manifest-11.json:EACCES');
+      expect(seen[0]!.text).toContain('orchestrate/manifest-11.json');
+      expect(seen[0]!.text).not.toContain('cache');
+    }));
+
+  it('contract 1.5: an orchestrate rel is validated and bounded exactly like a cache rel', () =>
+    withTempDir(async (dir) => {
+      expect(cacheRelPath('orchestrate/manifest-1.json')).toBe('orchestrate/manifest-1.json');
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      // normalisation is the SAME function, so `orchestrate/..` climbs back to the cache root and never out of the run dir
+      expect(cacheRelPath('orchestrate/../escape.json')).toBe('escape.json');
+      expect(cacheRelPath('orchestrate//x.json')).toBe('orchestrate/x.json');
+      for (const bad of ['orchestrate/../../escape.json', 'orchestrate/a\\b.json', '/orchestrate/x.json']) {
+        await expect(store.writeCache(bad, { v: 1 })).rejects.toBeInstanceOf(CheckpointError);
+        expect(await store.readCache(bad)).toBeNull();
+      }
+      // `orchestrate` alone is the directory, not a file: it writes under cache/ like any other leaf, never over the directory
+      await store.writeCache('orchestrate', { v: 1 });
+      expect(await store.readCache('orchestrate')).toEqual({ v: 1 });
+      expect(await readdir(join(dir, CHECKPOINT_FILES.cache))).toContain('orchestrate');
+      // §3.7: a manifest is <= MANIFEST_BYTES; the store refuses an oversized orchestrate artefact rather than writing it
+      await expect(store.writeCache('orchestrate/huge.json', { blob: 'x'.repeat(ORCHESTRATE_FILE_BYTES + 1) })).rejects.toBeInstanceOf(CheckpointError);
+      expect(await store.readCache('orchestrate/huge.json')).toBeNull();
+    }));
+
   it('updateMeta({ ended }) replaces as a scalar and null clears it; resumes[] entries keep `reopened`', () =>
     withTempDir(async (dir) => {
       const store = createCheckpointStore(dir, identity);
@@ -463,6 +553,8 @@ describe('contract 1.1 additions (TUI-DESIGN §15 item 19, §13.3)', () => {
     expect(CHECKPOINT_FILES.post).toBe('post');
     expect(CHECKPOINT_FILES.tmp).toBe('tmp');
     expect(CHECKPOINT_FILES.drafts).toBe('drafts');
+    // contract 1.5 (ORCHESTRATION-DESIGN §8.2 D0 item 4): the delegation's own run-dir directory
+    expect(CHECKPOINT_FILES.orchestrate).toBe('orchestrate');
     // TUI-DESIGN-4 §7.2 edge 2: ENOENT joins the set (the `rundir:rm` fault and the measured silent run)
     expect(DISK_ERROR_CODES).toEqual(['ENOSPC', 'EACCES', 'EROFS', 'EDQUOT', 'EIO', 'EMFILE', 'ENOENT']);
   });

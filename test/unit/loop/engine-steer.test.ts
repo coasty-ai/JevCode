@@ -164,6 +164,7 @@ describe('pause (§9.1 rule 1: only at the loop top)', () => {
     // TUI-DESIGN-4 §3.7 G1 (D-V): the `stop:` line is deleted; `[run] finished` is the one row that says it
     expect(h.store.transcript.some((l) => l.includes('stop: human_pause'))).toBe(false);
     expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] human_pause [·-] 1 steps [·-] /);
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     expect(h.of('run:end')[0]!.result.stopReason).toBe('human_pause');
   });
 
@@ -306,7 +307,7 @@ describe('finish() in flight reads as finished (§8.6: a steer confirmed to the 
     return store;
   }
 
-  it('a steer that lands before finish() (at the budget line of the loop top) is accepted and persisted; one issued during the final write, on the stop: line or after run:end is refused as finished', async () => {
+  it('a steer that lands before finish() (at the budget line of the loop top) is accepted and persisted; one issued during the final write or at run:end is refused as finished', async () => {
     const store = slowStore(40);
     const h = await build({ store, turns: readTurns(1), limits: { maxSteps: 1 } });
     const results: Record<string, unknown> = {};

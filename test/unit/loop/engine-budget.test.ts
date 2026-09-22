@@ -29,6 +29,7 @@ describe('budgets', () => {
     // TUI-DESIGN-4 §3.7 G1 (D-V): the `stop:` line is deleted; the run:end line is the last one (§10)
     expect(h.store.transcript.some((l) => l.includes('stop: spend_cap'))).toBe(false);
     expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] spend_cap [·-] 0 steps [·-] /);
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     // usage in RunResult includes the paid call
     expect(r.usage.generator.costUsd).toBeCloseTo(0.5);
   });

@@ -4,16 +4,17 @@
 For every task under tasks/: run pytest on the buggy tree, on the tree with gold/
 copied over src/, and (for multi-hunk tasks) on the tree with each hunk applied alone.
 Also checks that meta.hunks equals the number of `diff -U0` hunks between src/ and gold/,
-that a task's `expected_failing` (required for tier "long") is exactly the buggy tree's failing
-set, and that index.json matches the meta.json files and lists the "short" tier (the original
-twelve, sorted by name) before the "long" tier (tasks 13-20, sorted by name). Runs in a
-temporary copy, so the checked-in tree is never modified.
+that a task's `expected_failing` (required for every tier but "short") is exactly the buggy
+tree's failing set, and that index.json matches the meta.json files and lists the tiers in
+order -- "short" (the original twelve), then "long" (tasks 13-20), then "long-2" (tasks 21-26)
+-- each sorted by name. Runs in a temporary copy, so the checked-in tree is never modified.
 
     python3 bench/data/ladder/check.py --python /tmp/ladder-venv/bin/python [task ...]
 
 Exit status is 1 when any gold fails, any buggy passes, or any count disagrees.
 
-Per-tier limits: "short" 4-10 tests and a gold run under 2 s; "long" 20-60 tests and under 3 s.
+Per-tier limits: "short" 4-10 tests and a gold run under 2 s; "long" and "long-2" 20-60 tests
+and under 3 s.
 """
 from __future__ import annotations
 
@@ -32,9 +33,9 @@ from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent
 TASKS = ROOT / "tasks"
-TIERS = ("short", "long")
+TIERS = ("short", "long", "long-2")
 # tier -> (min tests, max tests, max gold seconds)
-LIMITS = {"short": (4, 10, 2.0), "long": (20, 60, 3.0)}
+LIMITS = {"short": (4, 10, 2.0), "long": (20, 60, 3.0), "long-2": (20, 60, 3.0)}
 
 
 def tier_of(meta: Dict[str, object]) -> str:
@@ -98,8 +99,8 @@ def check_task(python: str, task_dir: Path, tmp_root: Path, verbose: bool) -> Tu
     if buggy["passed"] == 0:
         problems.append("buggy version passes no test (no pass-to-pass regression guard)")
     expected = meta.get("expected_failing")
-    if expected is None and tier == "long":
-        problems.append("tier long requires expected_failing")
+    if expected is None and tier != "short":
+        problems.append("tier %s requires expected_failing" % tier)
     if expected is not None and sorted(expected) != buggy["failing"]:
         problems.append("expected_failing differs from the buggy run: only in meta "
                         f"{sorted(set(expected) - set(buggy['failing']))}, only in run {sorted(set(buggy['failing']) - set(expected))}")
@@ -174,7 +175,7 @@ def check_index() -> List[str]:
     problems = []
     want = [n for tier in TIERS for n in sorted(n for n, m in metas.items() if tier_of(m) == tier)]
     if [e["name"] for e in index] != want:
-        problems.append("index.json task list differs from tasks/ directories or is not ordered short tier (by name) then long tier (by name)")
+        problems.append("index.json task list differs from tasks/ directories or is not ordered by tier (%s), each by name" % ", ".join(TIERS))
     for entry in index:
         meta = metas.get(entry["name"])
         if meta is None:
@@ -203,11 +204,11 @@ def main() -> int:
     if not args.tasks:
         all_problems.extend(check_index())
 
-    header = f"{'task':<17} {'tier':<5} {'hunks':>5} {'dfclt':>5} {'tests':>5} {'buggy':>7} {'gold':>7}  {'each hunk alone (passed/total)':<52} {'gold s':>6}  ok"
+    header = f"{'task':<17} {'tier':<6} {'hunks':>5} {'dfclt':>5} {'tests':>5} {'buggy':>7} {'gold':>7}  {'each hunk alone (passed/total)':<52} {'gold s':>6}  ok"
     print(header)
     print("-" * len(header))
     for r in rows:
-        print(f"{r['task']:<17} {r['tier']:<5} {r['hunks']:>5} {r['difficulty']:>5} {r['tests']:>5} {r['buggy']:>7} {r['gold']:>7}  {r['single']:<52} {r['seconds']:>6.2f}  {'yes' if r['ok'] else 'NO'}")
+        print(f"{r['task']:<17} {r['tier']:<6} {r['hunks']:>5} {r['difficulty']:>5} {r['tests']:>5} {r['buggy']:>7} {r['gold']:>7}  {r['single']:<52} {r['seconds']:>6.2f}  {'yes' if r['ok'] else 'NO'}")
     total_tests = sum(r["tests"] for r in rows)
     print(f"\n{len(rows)} tasks, {total_tests} tests, {sum(r['hunks'] for r in rows)} hunks; "
           f"buggy column = tests passing before the fix, gold column = after.")

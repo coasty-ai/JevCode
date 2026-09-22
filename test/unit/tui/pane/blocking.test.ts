@@ -34,7 +34,7 @@ function req(over: Partial<BlockingRequest> & Pick<BlockingRequest, 'kind'>): Bl
 
 const keyRejected = req({ kind: 'key-rejected', side: 'jev', detail: keyRejectedDetail(401, 'User not found.'), sources: ['env JEV_API_KEY', 'file ~/.config/jevcode/credentials.json'], exitCode: 2 });
 
-const ALL_KINDS: readonly BlockingKind[] = ['key-rejected', 'spend-limit', 'jev-unreachable', 'checkpoint-degraded', 'drift', 'sandbox-unavailable'];
+const ALL_KINDS: readonly BlockingKind[] = ['key-rejected', 'spend-limit', 'jev-unreachable', 'checkpoint-degraded', 'drift', 'sandbox-unavailable', 'land-preflight', 'lease-conflict'];
 
 /** One realistic request per kind, every detail filled (the widest rows). */
 function sample(kind: BlockingKind): BlockingRequest {
@@ -51,6 +51,10 @@ function sample(kind: BlockingKind): BlockingRequest {
       return req({ kind, detail: driftDetail('jev-1.13', 'jev-1.13-20260901'), exitCode: 2 });
     case 'sandbox-unavailable':
       return req({ kind, exitCode: 6 });
+    case 'land-preflight':
+      return req({ kind, detail: '2 of your uncommitted files are also changed by jevcode/fix-tests — src/a.ts, src/b.ts', stop: 'human_pause', exitCode: 4 });
+    case 'lease-conflict':
+      return req({ kind, detail: 'src/loop/engine.ts is held by mbp (step 7, 12 s ago)', stop: 'human_pause', exitCode: 4 });
   }
 }
 
@@ -62,6 +66,9 @@ const KEYS: Readonly<Record<BlockingKind, readonly string[]>> = {
   'checkpoint-degraded': ['[r]', '[c]', '[q]'],
   drift: ['[p]', '[q]'],
   'sandbox-unavailable': ['[q]'],
+  // contract 1.4 (W2b) / 1.5: the two members the TUI session's exception admitted; the row text is a placeholder, the keys are the contract
+  'land-preflight': ['[c]', '[s]', '[x]'],
+  'lease-conflict': ['[w]', '[c]', '[t]', '[q]'],
 };
 
 describe('blockingLines (§13.3, §24)', () => {

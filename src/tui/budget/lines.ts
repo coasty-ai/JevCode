@@ -193,23 +193,27 @@ export function budgetItems(e: BudgetItemEvent): string[] {
 // Follow-up confirm and refusal (§9.3)
 // ---------------------------------------------------------------------------------------
 
-/** TUI-DESIGN §9.1: `remaining = sessionCap − sessionSpent` (+Infinity when uncapped; never below 0 for the box maths). */
-export function sessionRemainingUsd(sessionCapUsd: number, sessionSpentUsd: number): number {
+/**
+ * TUI-DESIGN §9.1: `remaining = sessionCap − sessionSpent − held` (+Infinity when uncapped; never below 0 for the box maths).
+ * `heldUsd` (ORCHESTRATION-DESIGN [D6]) is the session meter's reserved-but-unspent amount for live agents — it gates a new
+ * run exactly like spend; negative or non-finite holds count as 0. Callers without holds keep the two-argument form.
+ */
+export function sessionRemainingUsd(sessionCapUsd: number, sessionSpentUsd: number, heldUsd = 0): number {
   if (sessionCapUsd === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
-  return finite(sessionCapUsd) - Math.max(0, finite(sessionSpentUsd));
+  return finite(sessionCapUsd) - Math.max(0, finite(sessionSpentUsd)) - Math.max(0, finite(heldUsd));
 }
 
 /** TUI-DESIGN §9.1: every run's child cap is `min(runCap, remaining)`, computed before the run's own spend is added. */
-export function childCapUsd(runCapUsd: number, sessionCapUsd: number, sessionSpentUsd: number): number {
-  const remaining = sessionRemainingUsd(sessionCapUsd, sessionSpentUsd);
+export function childCapUsd(runCapUsd: number, sessionCapUsd: number, sessionSpentUsd: number, heldUsd = 0): number {
+  const remaining = sessionRemainingUsd(sessionCapUsd, sessionSpentUsd, heldUsd);
   return Math.max(0, Math.min(finite(runCapUsd), remaining));
 }
 
 export type FollowUpDecision = 'start' | 'confirm' | 'refuse';
 
 /** TUI-DESIGN §9.3: `remaining ≥ runCap` → start; `0 < remaining < runCap` → the y/r/n box; `remaining ≤ 0` → refuse. */
-export function followUpDecision(runCapUsd: number, sessionCapUsd: number, sessionSpentUsd: number): FollowUpDecision {
-  const remaining = sessionRemainingUsd(sessionCapUsd, sessionSpentUsd);
+export function followUpDecision(runCapUsd: number, sessionCapUsd: number, sessionSpentUsd: number, heldUsd = 0): FollowUpDecision {
+  const remaining = sessionRemainingUsd(sessionCapUsd, sessionSpentUsd, heldUsd);
   if (remaining <= 0) return 'refuse';
   return remaining >= finite(runCapUsd) ? 'start' : 'confirm';
 }

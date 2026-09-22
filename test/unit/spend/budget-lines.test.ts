@@ -226,6 +226,15 @@ describe('follow-up confirm and refusal (§9.3)', () => {
     expect(followUpDecision(2, INF, 1e9)).toBe('start');
     expect(sessionRemainingUsd(INF, 5)).toBe(INF);
     expect(sessionRemainingUsd(10, Number.NaN)).toBe(10);
+    // ORCHESTRATION-DESIGN [D6]: held reservations are subtracted like spend; negative or NaN holds count as 0
+    expect(sessionRemainingUsd(10, 3, 2)).toBe(5);
+    expect(sessionRemainingUsd(10, 3, Number.NaN)).toBe(7);
+    expect(sessionRemainingUsd(10, 3, -1)).toBe(7);
+    expect(sessionRemainingUsd(INF, 5, 100)).toBe(INF);
+    // [D6] the two callers pass the hold through
+    expect(followUpDecision(2, 10, 8, 1)).toBe('confirm');
+    expect(followUpDecision(2, 10, 7, 3)).toBe('refuse');
+    expect(followUpDecision(2, 10, 7, 1)).toBe('start');
   });
 
   it('child cap = min(runCap, remaining), never negative', () => {
@@ -233,6 +242,7 @@ describe('follow-up confirm and refusal (§9.3)', () => {
     expect(childCapUsd(2, 10, 8)).toBe(2);
     expect(childCapUsd(2, 10, 9.5)).toBeCloseTo(0.5, 12);
     expect(childCapUsd(2, 10, 11)).toBe(0);
+    expect(childCapUsd(2, 10, 8, 1.5)).toBeCloseTo(0.5, 12);
     expect(childCapUsd(2, INF, 100)).toBe(2);
     expect(childCapUsd(2, 15, 10)).toBe(2);
   });

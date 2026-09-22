@@ -122,15 +122,13 @@ describe('P1 — step boundary', () => {
     expect(h.of('run:end')[0]).toMatchObject({ exitCode: 4, resumable: true });
     const p = point(h);
     expect(p).toEqual({ step: 2, round: null, phase: 'idle', reason: 'step', resumableAt: 'boundary', replayable: false, by: 'self', end: false });
-    // order: … status → pause:point → transcript stop line → run:end
+    // order: … status → pause:point → run:end. contract 1.7 (TUI-DESIGN-4 §3.6, D-V) deleted the transcript stop
+    // line that used to sit between the point and run:end, so the slot it occupied is asserted EMPTY as well.
     const iPoint = indexOf(h, (e) => e.type === 'pause:point');
-    // TUI-DESIGN-4 §3.6 / §3.7 G1 (D-V): the stop EVENT still fires here (this test is about ordering); what the
-    // round deletes is the ITEM, in `itemsFromEvent` — see the transcript assertion below.
-    const iStop = indexOf(h, (e) => e.type === 'transcript' && (e.text === '' || /^stop: [a-z_]+ at step \d+/.test(e.text)));
     const iEnd = indexOf(h, (e) => e.type === 'run:end');
     expect(iPoint).toBeGreaterThan(0);
-    expect(iPoint).toBeLessThan(iStop);
-    expect(iStop).toBeLessThan(iEnd);
+    expect(iPoint).toBeLessThan(iEnd);
+    expect(indexOf(h, (e) => e.type === 'transcript' && /^stop: /.test(e.text))).toBe(-1);
     expect(h.events[iPoint - 1]?.type).toBe('status');
     // the state carries the same object; status() reads it until run:end; a fresh engine reads null
     expect(h.store.last()!.pausePoint).toEqual(p);
@@ -141,6 +139,7 @@ describe('P1 — step boundary', () => {
     // `stop:` line as well, so `[run] finished` is the last row
     expect(h.store.transcript.some((l) => l.includes('stop: human_pause'))).toBe(false);
     expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] human_pause [·-] /);
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
   });
 
   it('pause now between steps (before run) is the same as pause at step: nothing to interrupt, zero steps, exit 4', async () => {
@@ -537,7 +536,7 @@ describe('replayable is what the cache holds, not what the draft held a tick lat
 });
 
 describe('P8 — remote pause / end through deliver()', () => {
-  it('a pause message applies as pause({ at, by: peer:<sid8> }); a repeat is delivered; after run:end it is expired; other types are refused', async () => {
+  it('a pause message applies as pause({ at, by: peer:<sid8> }); a repeat is delivered; after run:end it is expired; a note is delivered as a fact', async () => {
     const provider = createFakeProvider([turn({ kind: 'read', paths: ['src/a.py'] }, {}, { delayMs: 5_000 })]);
     const h = await build({ provider, limits: { maxSteps: 2 } });
     const outcomes: string[] = [];
@@ -545,12 +544,18 @@ describe('P8 — remote pause / end through deliver()', () => {
       outcomes.push(h.engine.deliver!({ id: 'm1', type: 'pause', text: 'pause now please', from: PEER }));
       outcomes.push(h.engine.deliver!({ id: 'm2', type: 'pause', text: 'now', from: PEER }));
       outcomes.push(h.engine.deliver!({ id: 'm3', type: 'note', text: 'hi', from: PEER }));
+      // contract 1.4 (W2b): `abort` is the one type `deliver` still refuses outright — §5.4 says it ALWAYS needs the
+      // local `[y]`, so it can never reach the engine as an applied verb, whoever sent it.
+      outcomes.push(h.engine.deliver!({ id: 'm4', type: 'abort', text: 'stop it', from: PEER }));
     });
     const r = await h.engine.run();
     expect(r.stopReason).toBe('human_pause');
-    expect(outcomes).toEqual(['applied', 'delivered', 'refused']);
+    // contract 1.4 (W2b), §5.4: a `note` is no longer refused — it is a FACT, rendered as a `[session]` notice and
+    // carried into the next prompt's fenced `## Other sessions` block. `delivered` (not `applied`) is the right ack:
+    // it reached the run and changed nothing about its course, which is exactly what the two words distinguish.
+    expect(outcomes).toEqual(['applied', 'delivered', 'delivered', 'refused']);
     expect(point(h)).toMatchObject({ step: 1, phase: 'propose', reason: 'now', by: 'peer:rpywkq2v', end: false });
-    expect(h.engine.deliver!({ id: 'm4', type: 'pause', text: '', from: PEER })).toBe('expired');
+    expect(h.engine.deliver!({ id: 'm5', type: 'pause', text: '', from: PEER })).toBe('expired');
   });
 
   it('a peer\'s label reaches `by` clamped to the id grammar: 32 chars of [A-Za-z0-9._-], never empty', async () => {

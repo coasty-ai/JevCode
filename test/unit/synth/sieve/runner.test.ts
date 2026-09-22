@@ -2,7 +2,7 @@ import { exec } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ExecResult, SandboxRunOptions } from '../../../../src/core/types.js';
 import { fitOracle, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, RETRY_CASE_TIMEOUT_MS, RETRY_TIMEOUTS_MAX_PER_BATCH, shellWords } from '../../../../src/synth/search/budget.js';
@@ -15,6 +15,12 @@ import { progress } from '../../../../src/synth/verify/progress.js';
 import { summarize } from '../../../../src/synth/verify/index.js';
 import type { Candidate } from '../../../../src/synth/types.js';
 import { base, budget, candidate, execResult, fakeSandbox, fifoQueue, GCD_BASELINE, GCD_BUGGY, GCD_BUGGY_INPUTS, GCD_CORRECT, GCD_TESTS, goal, job, oracle, QUIXBUGS_DIR, runTestsJson, site, sourceFile, summary } from './helpers.js';
+
+// The warm verification plane (docs/HARNESS-NEXT-DESIGN.md §3 M6) is off for this file: every
+// case here pins the cold path, and the fake sandbox cannot start an interpreter anyway.
+// test/unit/synth/warm/* covers the warm path, including its parity with these verdicts.
+beforeAll(() => vi.stubEnv('JEVCODE_WARM', 'off'));
+afterAll(() => vi.unstubAllEnvs());
 
 let tmp: string;
 let ws: string;

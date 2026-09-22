@@ -37,7 +37,7 @@ import { applyCandidate } from '../verify/apply.js';
 import { progress } from '../verify/progress.js';
 import { appliedOnCommitted, dropHeldPartial, heldPartialOutcome } from './bases.js';
 import type { GuardMemory } from './bases.js';
-import { SIEVE_MAX_T_RUN_MS, decideRunPlan, llmHoldOf, llmRoundAffordable, runsLeft } from './budget.js';
+import { SIEVE_MAX_T_RUN_MS, decideRunPlan, llmHoldOf, llmRoundAffordable, rankPoolCap, runsLeft } from './budget.js';
 import type { SearchOverrides } from './directive.js';
 import { commitSuspect, gateHeldPartial } from './guard.js';
 import { LLM_FEEDBACK_ROUNDS_PER_GOAL, LLM_FEEDBACK_WIDEN, attemptsFromArrival, llmMemory, needPathsOf, recordAttempts } from './llm.js';
@@ -845,7 +845,23 @@ async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, 
     everythingQueued = true;
   } else {
     if (mem.stepBudget.jevRequestsLeft <= 0) return BUDGET_EXIT;
-    const ranked = await deps.rank(ctx, mem, fresh, site, goal);
+    // OOS 2026-09-22 ranked change 1: price only the candidates the order can reach — this visit
+    // runs `plan.k` of them, so the cap is k plus the margin the `fixProbablyAbsent` signal needs
+    // (`rankPoolCap`; review finding 5 — the first version capped at `runsLeft`, the whole step's
+    // budget over every site, which priced ~1,000× more than the order could ever pick). The rest
+    // is never queued, stays out of `tried` and comes back enumerable next step (§2.3), and
+    // `everythingQueued` below still compares against the whole `fresh` set, so a truncated pool
+    // never marks the source exhausted.
+    const priced = fresh.slice(0, rankPoolCap(plan.k, runsLeft(mem.oracle, mem.stepBudget)));
+    // Review finding 6: `visitPairs` above may have spent the step's runs since `decideRunPlan`
+    // measured them. An empty priced pool would reach `rank([])`, which answers
+    // `fixProbablyAbsent: true` over nothing and marks the source exhausted at this site with no
+    // question asked and no candidate tried. A spent budget ends the step instead.
+    if (priced.length === 0) {
+      note(st, 'budget', `${goal.id}: ${siteKey(site)}: the step's runs were spent before ${source} could be ranked; ending the step with the source still open`);
+      return BUDGET_EXIT;
+    }
+    const ranked = await deps.rank(ctx, mem, priced, site, goal);
     spend(mem, ranked.requests);
     trace.jevRequests += ranked.requests;
     trace.candidatesRanked += ranked.ranked.length;
@@ -950,6 +966,12 @@ async function visitSite(st: LoopState, phase: Phase, base: Base, site: Site, si
     exhausted.add('mutation');
     note(st, 'site', `${goal.id}: ${siteKey(site)}: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks`);
   }
+  // OOS 2026-09-22 ranked change 1 does NOT move this gate, deliberately. The union batch has to
+  // enumerate every open seed source at the site before it can compare the union against the run
+  // budget, and in-process enumeration is the largest wall bucket of the whole slice (synthLocal
+  // 53–60 %, Q1). The Jev saving the change is after is already taken one level down: the
+  // per-source `decideRunPlan` in `visitSource` now runs a pool that fits the runs left instead of
+  // ordering it, whatever t_run is. So the t_run line stays here as the oracle-class cut it is.
   if ((phase === 'SEEDS' || phase === 'WIDENED') && mem.oracle.tRunMs.goalSubset <= SIEVE_MAX_T_RUN_MS) {
     const r = await visitSeedBatch(st, phase, base, site, sitesLeft, exhausted, visited);
     if (r.kind === 'exit') return r;
@@ -1149,16 +1171,18 @@ async function runLlmRound(st: LoopState, round: LlmRound): Promise<BatchOutcome
   if (plan.runsAllowed <= 0) return BUDGET_EXIT;
   let ordered = cands;
   if (plan.mode === 'RANK' && q17Needed(cands.length, left, mem.oracle.tRunMs.goalSubset) && mem.stepBudget.jevRequestsLeft > 0) {
-    // §4g: Jev orders the distinct samples (|distinct| > runsLeft or t_run > 2 s); it never withholds a run
-    const applied = cands.map((c) => L.applied.get(c.id)).filter((a): a is LlmApplied => a !== undefined);
+    // §4g: Jev orders the distinct samples (|distinct| > runsLeft, OOS ranked change 1); it never withholds a run.
+    // Only the samples a run this step could reach are priced (`rankPoolCap`), as on the seed path.
+    const priced = cands.slice(0, rankPoolCap(plan.k, left));
+    const applied = priced.map((c) => L.applied.get(c.id)).filter((a): a is LlmApplied => a !== undefined);
     const order = await L.deps.order(ctx, goal, applied, committed.files);
     spend(mem, order.requests);
     trace.jevRequests += order.requests;
-    trace.candidatesRanked += cands.length;
+    trace.candidatesRanked += priced.length;
     const rank = new Map(order.order.map((id, i) => [id, i]));
     ordered = [...cands].sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
     L.fixAbsent = order.strong ? 'strong' : order.weak ? 'weak' : null;
-    note(st, 'llm:rank', `${goal.id}: Q17 ordered ${cands.length} LLM candidates in ${order.requests} request${order.requests === 1 ? '' : 's'} (escape ${order.pEscape === null ? 'n/a' : order.pEscape.toFixed(2)}, max Noul ${order.maxNoul === null ? 'n/a' : order.maxNoul.toFixed(2)}); fix-absent signal ${L.fixAbsent ?? 'none'} (routing only); running the top ${Math.min(plan.k, ordered.length)}`);
+    note(st, 'llm:rank', `${goal.id}: Q17 ordered ${priced.length} LLM candidates in ${order.requests} request${order.requests === 1 ? '' : 's'} (escape ${order.pEscape === null ? 'n/a' : order.pEscape.toFixed(2)}, max Noul ${order.maxNoul === null ? 'n/a' : order.maxNoul.toFixed(2)}); fix-absent signal ${L.fixAbsent ?? 'none'} (routing only); running the top ${Math.min(plan.k, ordered.length)}`);
   }
   const top = plan.mode === 'RANK' ? ordered.slice(0, plan.k) : ordered;
   note(st, 'llm:phase', `${goal.id}: round ${round.round} (${round.klass}): ${cands.length} fresh LLM candidate${cands.length === 1 ? '' : 's'} from ${arrivals.length} arrival${arrivals.length === 1 ? '' : 's'}; ${plan.mode}, running ${top.length}`);

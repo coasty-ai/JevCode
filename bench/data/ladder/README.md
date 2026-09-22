@@ -22,15 +22,15 @@ that makes the suite pass without touching `tests/` is also a solve.
 ```
 bench/data/ladder/
 ├── README.md              this file
-├── index.json             the 20 meta.json objects (12 short, then 8 long), each with an added "path": "tasks/<name>"
+├── index.json             the 26 meta.json objects (12 short, 8 long, 6 long-2), each with an added "path": "tasks/<name>"
 ├── check.py               verifier: prints the buggy / gold / each-hunk-alone matrix (see below)
 └── tasks/<name>/
     ├── task.md            the prompt a user would type
     ├── meta.json          { name, hunks, kinds, files, difficulty, description } (+ tier, expected_failing: long tier)
     ├── pytest.ini         testpaths=tests, pythonpath=., no cache dir (-q in the short tier only, see the long tier)
     ├── src/__init__.py
-    ├── src/<module>.py    the buggy code the agent sees (two modules for `table`, 3-6 in the long tier)
-    ├── tests/test_<module>.py   4-10 pytest tests (20-60 in the long tier); some fail on src/, all pass on gold/
+    ├── src/<module>.py    the buggy code the agent sees (two modules for `table`, 3-6 in the long tiers)
+    ├── tests/test_<module>.py   4-10 pytest tests (20-60 in the long tiers); some fail on src/, all pass on gold/
     └── gold/<module>.py   the fixed module(s); never show these to the agent under test
 ```
 
@@ -154,6 +154,75 @@ checked by hand with single-fix and cumulative-fix trees:
 - `long_chain`: cumulative fixes 16 -> 13 -> 10 -> 6 -> 4 -> 2 -> 0 failing, the remaining failures'
   innermost frame moving load -> clean -> enrich -> totals -> layout -> report.
 
+## The long-2 tier (tasks 21-26, 2026-09-22)
+
+Six further tasks, `tier: "long-2"` in their `meta.json`. Where the long tier measures how many
+**independent** sub-goals an agent can chain, long-2 measures whether it can hold **two hunks in
+two different files as one edit**. Every task is built the same way:
+
+- a **coupled pair** (A in one module, B in another) that **cancel each other on the buggy tree**.
+  The masked half has no failing test of its own; the visible half's failing tests all sit in one
+  module's test file and point straight at it. Repairing either half alone turns previously
+  passing tests red — on four of the six it leaves a tree with *fewer* passing tests than the
+  buggy one — so a per-hunk verify-and-keep loop cannot walk to the fix and a partial cannot be
+  held. This is `table`'s shape (README above), made the rule rather than the exception, and
+  spread across three to five modules.
+- a **third defect** whose obvious repair is a one-hunk edit at the wrong site or on the wrong
+  side of a boundary. Every one of those is caught by a test that passes on the buggy tree, so an
+  overfit is a regression, not a solve.
+- 4-8 failing tests spread over **at least two test modules**, and 26-36 passing ones behind them.
+
+Domains are all new to the suite: a token-bucket rate limiter, a CSV schema inferrer, an
+install-order resolver, a diff-hunk merger, a deadline scheduler and a URL router. Each is 3-5
+modules and 150-182 lines of source behind 178-230 lines of tests. Pure Python 3.9 standard
+library, deterministic, offline, gold under half a second per suite.
+
+Each task's `meta.json` `description` records, for the evaluator and report side only, the exact
+wrong fixes that were tried and what caught them (pass/fail counts from a real run).
+
+| # | task | hunks | modules | failing / total | the coupled pair | the wrong-site third defect |
+|---|---|---|---|---|---|---|
+| 21 | `csv_schema` | 3 | cells, infer, schema (+ reader) | 8 / 39 | `cells.widen` takes the *narrower* kind of the `int < float < str` chain and `infer.column_type` seeds the fold with `WIDEST`: min-with-a-top-seed is right for a homogeneous column, so repairing `widen` alone goes 8 -> 9 failures | `schema.validate` reports only a row that is too *short*; `>` instead of `!=` breaks the pinned short-row test |
+| 22 | `deadline_queue` | 3 | slack, schedule (+ job, ranking, report) | 6 / 37 | `slack.lateness` returns `due_at - finish_at` and `schedule.lateness_of` calls it with the arguments swapped, so every schedule-side number is right; fixing either half flips the sign of ten passing schedule and report tests | `schedule.lay_out` gives a slot to a job of no length; dropping it in `ranking.order` instead breaks the pinned "ranking drops nothing" test |
+| 23 | `dep_order` | 3 | layers, order, plan (+ graph) | 6 / 32 | `layers.depth`'s empty fold is `0` for `-1` and `order.round_number` drops `+ FIRST_ROUND`: the shift *is* the missing offset, and the grouping in `layers()` does not see a constant shift at all | `plan.check` walks `wanted` only; switching it to `installed` breaks the pinned unknown-wanted test |
+| 24 | `hunk_merge` | 3 | hunks, apply, merge (+ text, preview) | 6 / 42 | `Hunk.index()` returns the 1-based `start` and `apply.apply` subtracts the 1 back out; every one of the ten apply tests passes until one half is repaired | `merge.merge` only pairs one side against the other; `clashes(left) or clashes(right)` breaks the pinned cross-side conflict test |
+| 25 | `route_match` | 3 | pattern, router (+ segments) | 6 / 32 | `pattern.specificity` counts placeholders instead of static segments and `router.match` takes `min` instead of `max`; the candidates for one path always have the same width, so `min(placeholders) == max(static)` exactly | `router.reverse` tests `wanted - set(params)`; the other direction breaks the pinned missing-parameter test |
+| 26 | `token_bucket` | 3 | bucket, limiter, policy (+ clock) | 7 / 33 | `bucket.wait_for` has no over-capacity guard and `limiter.allow` tests the wait for truthiness: the missing guard keeps a truthy float in play, so inserting it alone lets an impossible request through | `policy.bucket_for` passes `per_minute` as a per-second rate; rewriting `POLICIES` instead breaks the two pinned policy-table tests |
+
+Totals for the tier: 6 tasks, 25 modules, 215 tests, 18 hunks; 39 tests fail on the buggy trees.
+The numbering is the selection order (alphabetical within the tier), not the design order.
+
+`--tasks N` counts from the front, so the tier is selected by id:
+
+```sh
+jevcode bench --suite ladder --task-id csv_schema,deadline_queue,dep_order,hunk_merge,route_match,token_bucket
+```
+
+### Long-2 verification (2026-09-22, `~/.jevcode/runs/ladder-venv`, Python 3.9.6, pytest 8.4.2)
+
+`python3 bench/data/ladder/check.py --python ~/.jevcode/runs/ladder-venv/bin/python` covers all 26.
+The "each hunk alone" column is the whole point of the tier:
+
+```
+task            hunks dfclt tests   buggy    gold  each hunk alone (passed/total)     gold s
+csv_schema          3     5    39   31/39   39/39  h1:30/39 h2:33/39 h3:33/39           0.38
+deadline_queue      3     5    37   31/37   37/37  h1:26/37 h2:32/37 h3:21/37           0.34
+dep_order           3     5    32   26/32   32/32  h1:26/32 h2:22/32 h3:28/32           0.39
+hunk_merge          3     5    42   36/42   42/42  h1:28/42 h2:25/42 h3:38/42           0.44
+route_match         3     5    32   26/32   32/32  h1:27/32 h2:23/32 h3:28/32           0.12
+token_bucket        3     5    33   26/33   33/33  h1:27/33 h2:27/33 h3:30/33           0.12
+```
+
+Read h1/h2/h3 against the task's own `buggy` column. The gold needs 6-8 more passing tests; no
+single hunk of any long-2 diff buys more than 4, and **seven of the eighteen leave a strictly
+worse tree**: csv_schema h1 (30 < 31), deadline_queue h1 and h3 (26, 21 < 31), dep_order h2
+(22 < 26), hunk_merge h1 and h2 (28, 25 < 36), route_match h2 (23 < 26). `dep_order` h1 holds
+the count exactly (26 = 26) while swapping *which* six tests fail — the same trap read through a
+number that does not move. The h-column that does gain is in every case the **third, independent
+defect**, never a half of the coupled pair; `token_bucket` is the mildest pair (each half nets
++1, because the guard half fixes two tests and breaks one). A mocked bench over the six
+(`--conditions jev-off`, gold trajectory, real pytest evaluator) is 6/6.
+
 ## Running one task by hand
 
 ```sh
@@ -173,7 +242,7 @@ Point an agent at the copied directory with the text of `task.md`; grade by runn
 
 ```sh
 python3 -m venv /tmp/ladder-venv && /tmp/ladder-venv/bin/pip -q install pytest
-python3 bench/data/ladder/check.py --python /tmp/ladder-venv/bin/python        # all 20
+python3 bench/data/ladder/check.py --python /tmp/ladder-venv/bin/python        # all 26
 python3 bench/data/ladder/check.py --python /tmp/ladder-venv/bin/python table   # one task
 ```
 
@@ -181,9 +250,9 @@ python3 bench/data/ladder/check.py --python /tmp/ladder-venv/bin/python table   
 runs buggy, each-hunk-alone and gold, and exits 1 if any gold fails, any buggy passes every test,
 any buggy passes no test (no pass-to-pass regression guard), a suite is outside its tier's size
 (short: 4-10 tests, gold under 2 s; long: 20-60 tests, gold under 3 s), `expected_failing` (required
-for the long tier) differs from the buggy run's failing set, `meta.hunks` disagrees with `diff -U0`,
+for every tier but short) differs from the buggy run's failing set, `meta.hunks` disagrees with `diff -U0`,
 a gold file differs from `src/` without being listed in `meta.files`, or `index.json` disagrees with
-the `meta.json` files or is not ordered short tier (by name) then long tier (by name).
+the `meta.json` files or is not ordered by tier (short, long, long-2), each by name.
 
 ## Licence
 

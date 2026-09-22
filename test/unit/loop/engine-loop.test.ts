@@ -86,6 +86,7 @@ describe('loop detection and replan', () => {
     // §3.7 G1: the `stop:` line is deleted; the `[step 4] replan:` row below still carries the diagnosis
     expect(h2.store.transcript.some((l) => l.includes('stop: impossible'))).toBe(false);
     expect(h2.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] impossible [·-] /);
+    expect(h2.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     // the replan stage ran at the start of step 4, which was then discarded (§9.1 rule 1); the stop names the last committed step
     expect(h2.store.transcript.some((l) => /^\[step 4\] replan: impossible \(move change_approach p=0\.80, task_impossible=0\.90\)$/.test(l))).toBe(true);
   });

@@ -12,7 +12,7 @@
  * hand-over: `Heartbeat.lockHeld?`, `Fold.forks?`, `CoordStageName`, `LivenessVerdict`, `LivenessEnv`, `SubworkEntry`,
  * `LeaseOutcome`, `RecordKind` / `RecordOf` / `AnyRecord`.
  */
-import type { BlockingKind, EngineMode, RunSource, StageName, StopReason } from '../core/types.js';
+import type { BlockingKind, EngineMode, EngineRunPhase, RunSource, StageName, StopReason } from '../core/types.js';
 
 /** `StageName` + `'coordinate'` (W0 item 1 adds the member to core/types.ts; a union here so this module compiles against HEAD). */
 export type CoordStageName = StageName | 'coordinate'; // +
@@ -28,17 +28,26 @@ export interface Stamp {
  * + review blocker 3: the fork / foreign-liveness fence. The Lamport `Stamp` folds (`max(n, observed) + 1` on every fold
  * AND every issue) and the heartbeat is one file per run overwritten every beat, so two engines comparing stamps can both
  * read themselves as the holder. A `Claim` is minted ONCE per process and never changes, so both sides compute the same
- * verdict from the same pair of records whatever the sync timing: the holder is the LOWEST claim (the first claimer keeps
- * the run; a newcomer yields), ordered `(epoch, startedAt, deviceId, pid)`.
+ * verdict from the same pair of records whatever the sync timing.
+ *
+ * §3.2 / §9.3 / §10.7 (owner decision, §14 item 18): the holder is the **HIGHEST QUALIFIED epoch** — the LATER
+ * incarnation, which by construction read its predecessor's state. That is the whole purpose of an epoch: a legitimate
+ * `/resume` or takeover mints above what it replaced and the stale process must stop. Ties break by `deviceId`, then
+ * `runId` (`at`, then `pid`, are the as-built last resort for two processes of ONE device on ONE run).
  */
 export interface Claim {
   /** the run incarnation: 1 for a fresh run, `max(every epoch seen for this runId) + 1` for a resume / takeover / import */
   epoch: number;
   deviceId: string;
   runId: string;
+  /** this process's start (ISO) — §3.2's `at`; audit, and the last-resort tiebreak below `(epoch, deviceId, runId)` */
+  at: string;
+  /**
+   * as built (§14 item 19): display and audit only — never an `isPidAlive` input across devices, and never compared
+   * above `at`. It exists so `(epoch, deviceId, runId)` — which is not total for two processes of one device on one
+   * run — still yields a total order, the one thing the fork rule cannot do without.
+   */
   pid: number;
-  /** this process's start (ISO) — the tiebreak between two claims that minted the same epoch */
-  startedAt: string;
 }
 
 /** + review blockers 5 / 6: where a record came from and whether it is authentic — decided by the reader, never by the record. */
@@ -57,8 +66,12 @@ export interface RecordOrigin {
 /** + §10.3: the verdict on one foreign record's authority; only `'trusted'` may stop a run or apply a control verb. */
 export type Authority = 'self' | 'trusted' | 'unverified';
 
-/** §7.1 */
-export type RunPhase = 'starting' | 'running' | 'pausing' | 'paused' | 'blocked' | 'aborting' | 'ended';
+/**
+ * §7.1. contract 1.4 (W2b): ONE definition — `EngineRunPhase` in `src/core/types.ts`, which the engine's `status()`
+ * and this module's `Heartbeat.phase` now share. The local name stays so nothing that imports `RunPhase` from the
+ * facade has to change.
+ */
+export type RunPhase = EngineRunPhase;
 
 /**
  * §12.0.2 (a): the pause point. ONE definition — `src/core/types.ts` `// contract 1.4` (landed at 0c7bd79); the
@@ -139,7 +152,15 @@ export interface Heartbeat {
   tokens: { used: number; cap: number | null };
   wallMs: number;
   maxWallMs: number;
-  context: { pct: number; files: number; historyEntries: number; summaryAt: number | null; tokensInWindow: number; windowBudget: number; compactions: number };
+  /**
+   * §3.3 / §12.0.3. contract 1.4 (W2b): the member names are `ContextUsage`'s, which is the ONE definition
+   * (`src/core/types.ts`). `windowBudget` is gone — §12.0.3 settled in revision 4 that it "read as the model's
+   * window and made `ctx 41%` look like 41 % of the window when it is 41 % of a budget that is itself ~55 % of it",
+   * so the beat carries `budgetTokens` (the PROMPT BUDGET) and `windowTokens` (the model's own window) and a peer's
+   * `sessions who` row can spell both out exactly as `/context` does. There is no alias: two names for one number
+   * across a record boundary is how the two drift.
+   */
+  context: { pct: number; files: number; historyEntries: number; summaryAt: number | null; tokensInWindow: number; budgetTokens: number; windowTokens: number; compactions: number };
   /**
    * §12.0.2: on the final `phase:'ended'` beat of a human_pause. It travels in a 4 KiB record that a hostile writer
    * also controls, so `parseRecord` bounds it: `llm.goalId` by length, `llm.arrived` by count, every counter by
@@ -189,7 +210,12 @@ export interface Lease {
   wsKey: string;
   branch: string | null;
   head: string | null;
-  type: 'intent' | 'exclusive' | 'command' | 'lane' | 'worktree' | 'takeover';
+  /**
+   * contract 1.4 (W2b), ORCHESTRATION-DESIGN §3.1 [G5]: `'agent'` joins the six — a parent's claim on the paths it has
+   * DELEGATED to a child, held for the child's life so a third session sees the delegation as one holder rather than
+   * as an unexplained gap. It holds (it is in `HOLDING_LEASE_TYPES`) and is bounded in `parseRecord` like every other.
+   */
+  type: 'intent' | 'exclusive' | 'command' | 'lane' | 'worktree' | 'takeover' | 'agent';
   paths: string[];
   truncated: boolean;
   command60?: string;
@@ -211,7 +237,16 @@ export interface Lease {
 }
 
 /** inbox/<deviceId>/<target>/<t>-<seq>.json — ≤ 2 KiB — §5.1, typed */
-export type MessageType = 'heads-up' | 'handoff' | 'note' | 'request-release' | 'steer' | 'pause' | 'resume' | 'end' | 'abort' | 'ack' | 'who';
+/**
+ * contract 1.4 (W2b): four types the orchestration wave asked for, all of them FACTS rather than control — none is in
+ * `CONTROL_MESSAGE_TYPES`, so none can pause, end, abort or steer a run, and `classifyIncoming` therefore treats each
+ * as a plain note-shaped arrival that needs no `[y]`:
+ *   `budget` — a parent telling a child its reserve moved; `review` — a child asking for a look at a landed branch;
+ *   `kick`   — "your lease expired, I am taking the path" (advisory, still just a fact);
+ *   `land`   — a child announcing its branch is ready for the landing queue (ORCHESTRATION-DESIGN §5.7).
+ * Bounded in `parseRecord` by `MESSAGE_TYPES`, like every other member.
+ */
+export type MessageType = 'heads-up' | 'handoff' | 'note' | 'request-release' | 'steer' | 'pause' | 'resume' | 'end' | 'abort' | 'ack' | 'who' | 'budget' | 'review' | 'kick' | 'land';
 export interface Message {
   v: 1;
   kind: 'message';
@@ -350,7 +385,7 @@ export interface Fold {
   ignored: Map<string, Heartbeat & { arrivalMono: number }>;
   skipped: number;
   at: { wallMs: number; monoMs: number };
-  /** + §9.3 fork rule: every heartbeat for a runId beyond the holder (the lowest CLAIM), by runId; absent = none */
+  /** + §9.3 fork rule: every heartbeat for a runId beyond the holder (the HIGHEST claim epoch, §14 item 18), by runId; absent = none */
   forks?: Map<string, (Heartbeat & { arrivalMono: number })[]>;
   /** + review blockers 5 / 6: the origin of every heartbeat in `live` / `gone` / `forks`, by `${deviceId}/${runId}` */
   origins: Map<string, RecordOrigin>;
@@ -541,7 +576,7 @@ export interface DeclaredFact {
 }
 
 /** §4.3 step 2 (revision 5): the lease types that are a HOLD, and therefore a conflict. `intent` is not one. */
-export const HOLDING_LEASE_TYPES: ReadonlySet<Lease['type']> = new Set(['exclusive', 'command', 'lane', 'worktree', 'takeover']);
+export const HOLDING_LEASE_TYPES: ReadonlySet<Lease['type']> = new Set(['exclusive', 'command', 'lane', 'worktree', 'takeover', 'agent']);
 
 /**
  * + review blocker 4: the strict write-then-read fence is SYMMETRIC. `refold` is the judgment re-run after my own rename
@@ -654,7 +689,7 @@ export interface RunClaimMeta {
   /** `max(epoch)` this device has ever minted or accepted for the run */
   claimEpochHigh: number;
   /** append-only, newest last, ≤ CLAIMS_MAX rows */
-  claims: { epoch: number; deviceId: string; startedAt: string; authority: Authority }[];
+  claims: { epoch: number; deviceId: string; at: string; authority: Authority }[];
 }
 
 /** §6.5 worktree metadata — `coordination/worktrees/<repoKey>/<slug>.json`, outside every checkout and sandbox root */

@@ -12,9 +12,9 @@ import { GC_RETENTION_MS, MAX_DEVICES, SEEN_RETENTION_MS, TRACKED_ACKS_MAX, igno
 import { nodeFs } from '../../../src/coordination/fs.js';
 import { commonsPaths } from '../../../src/coordination/paths.js';
 import { mintCommonsKey, readCommonsKey, trustDevice, writeCommonsKey } from '../../../src/coordination/ids.js';
-import { EPOCH_MAX, MAX_CLAIM_EPOCH, canMintAbove, forceTakebackPlan, qualifiedEpochs } from '../../../src/coordination/claims.js';
+import { EPOCH_MAX, MAX_CLAIM_EPOCH, canMintAbove, claimRefusal, forceTakebackPlan, qualifiedEpochs } from '../../../src/coordination/claims.js';
 import { MESSAGE_TTL_MS, parseRecord, serializeRecord, withChecksum } from '../../../src/coordination/records.js';
-import { sessionTargets } from '../../../src/coordination/fold.js';
+import { claimHolderOf, sessionTargets } from '../../../src/coordination/fold.js';
 import { check, declare } from '../../../src/coordination/leases.js';
 import { loadSeen, purgeInbox } from '../../../src/coordination/mailbox.js';
 import type { FoldChange, LedgerHandle } from '../../../src/coordination/index.js';
@@ -232,41 +232,54 @@ describe('review blockers 3 / 5: epoch fencing and forged records (§9.3, §11 r
       pid: 900,
       label: 'studio',
       stamp: stamp(1, DEV_B, rid),
-      claim: claim({ epoch: o.peerEpoch, deviceId: DEV_B, runId: rid, pid: 900, startedAt: iso(o.peerStarted) }),
+      claim: claim({ epoch: o.peerEpoch, deviceId: DEV_B, runId: rid, pid: 900, at: iso(o.peerStarted) }),
     });
     await putHeartbeat(h.root, o.signWith !== undefined ? signed(peer, o.signWith) : peer);
-    await putHeartbeat(h.root, makeHeartbeat({ runId: rid, sessionId: rid, claim: claim({ epoch: 2, runId: rid, pid: 4242, startedAt: iso(T0 - 1_000) }) }));
+    await putHeartbeat(h.root, makeHeartbeat({ runId: rid, sessionId: rid, claim: claim({ epoch: 2, runId: rid, pid: 4242, at: iso(T0 - 1_000) }) }));
     await h.l.open();
     return h;
   }
 
-  it('an EARLIER incarnation on another device holds; the later one is the loser (both sides agree)', async () => {
-    const h = await forked({ peerEpoch: 1, peerStarted: T0 - 20_000, signWith: KEY_B, trust: true });
+  /**
+   * FAILING-FIRST (§14 item 18). This read `peerEpoch: 1` and asserted that the EARLIER incarnation holds — the stale
+   * process kept the run and the resumer, which had minted above it, was the loser. §3.2 / §9.3 / §10.7 / §11 row 31
+   * all say the opposite, and the exit-2 stop belongs to the process that has been superseded.
+   */
+  it('a LATER qualified incarnation on another device holds; my stale one is the loser (both sides agree)', async () => {
+    const h = await forked({ peerEpoch: 3, peerStarted: T0 - 20_000, signWith: KEY_B, trust: true }); // mine is epoch 2
     const v = h.l.forkVerdict(rid);
     expect(v.role).toBe('loser');
     expect(v.holder.deviceId).toBe(DEV_B);
+    expect(v.holder.epoch).toBe(3);
     expect(v.verified).toBe(true); // hmac-valid from a paired device: the exit-2 stop is authorised
     expect(h.l.foreignLive(rid)?.label).toBe('studio'); // + review major 7: verified is the DEFAULT
+    expect(claimHolderOf(h.l.fold, rid)?.deviceId).toBe(DEV_B);
   });
 
-  it('review blocker 5: a FORGED beat for my runId raises the flag but may NOT stop the run', async () => {
-    const h = await forked({ peerEpoch: 1, peerStarted: T0 - 99_999 }); // unsigned, not paired
+  it('review blocker 5 / §11 row 51: a FORGED beat for my runId raises the flag but may NOT take the run', async () => {
+    const h = await forked({ peerEpoch: 9, peerStarted: T0 - 99_999 }); // unsigned, not paired, and a HIGHER epoch
     const v = h.l.forkVerdict(rid);
-    expect(v.role).toBe('loser'); // displayed as ⚠ forked …
+    expect(v.role).toBe('holder'); // an unqualified claim never enters the holder computation (§9.3)
+    expect(v.unverifiedFork).toBe(true); // displayed as ⚠ forked with the [c]/[q] pane …
     expect(v.verified).toBe(false); // … and never auto-stops (§10.3)
     expect(h.l.foreignLive(rid)).toBeNull(); // + review major 7: a caller that FORGETS the flag now gets nothing
     expect(h.l.foreignLive(rid, { includeUnverified: true })?.authority).toBe('unverified');
+    // the same rule on the fold's own holder: the planted beat outranks mine and is still skipped
+    expect(claimHolderOf(h.l.fold, rid)?.deviceId).toBe(DEV_A);
+    expect(claimHolderOf(h.l.fold, rid, { includeUnverified: true })?.deviceId).toBe(DEV_B);
   });
 
   it('a signed record from an UNPAIRED device is still unverified', async () => {
-    const h = await forked({ peerEpoch: 1, peerStarted: T0 - 20_000, signWith: KEY_B, trust: false });
-    expect(h.l.forkVerdict(rid).verified).toBe(false);
+    const h = await forked({ peerEpoch: 3, peerStarted: T0 - 20_000, signWith: KEY_B, trust: false });
+    const v = h.l.forkVerdict(rid);
+    expect(v.verified).toBe(false);
+    expect(v.role).toBe('holder'); // unqualified, so it cannot take the run either
   });
 
-  it('the verdict never depends on the rolling stamp — a peer with a HIGHER stamp still loses on its later epoch', async () => {
-    const h = await forked({ peerEpoch: 9, peerStarted: T0 - 90_000, signWith: KEY_B, trust: true });
+  it('the verdict never depends on the rolling stamp — a peer with a HIGHER stamp still loses on its EARLIER epoch', async () => {
+    const h = await forked({ peerEpoch: 1, peerStarted: T0 - 90_000, signWith: KEY_B, trust: true });
     expect(h.l.forkVerdict(rid).role).toBe('holder');
-    expect(h.l.nextEpoch(rid)).toBe(10); // a resume must mint above everything seen
+    expect(h.l.nextEpoch(rid)).toBe(3); // a resume must mint above everything seen (mine is 2)
   });
 
   it('alone means alone', async () => {
@@ -801,8 +814,13 @@ describe("§9.3 (revision 5): the sixth record kind — the AUTHENTICATED claim 
     await l.open();
     // … but NOT paired: the epoch is reported and unqualified (the card shows it; it refuses nothing)
     expect(await l.readClaimEpochs(rid)).toEqual([{ epoch: 7, deviceId: DEV_B, qualified: false }]);
+    // §7.3 1(a) / §9.3: unqualified refuses nothing, so /resume proceeds
+    expect(claimRefusal([3], await l.readClaimEpochs(rid))).toBeNull();
     await l.pairDevice({ deviceId: DEV_B, label: 'studio', keyHex: KEY_B });
     expect(await l.readClaimEpochs(rid)).toEqual([{ epoch: 7, deviceId: DEV_B, qualified: true }]);
+    // … and once it IS qualified and exceeds my local maximum, /resume is refused until --force-takeback
+    expect(claimRefusal([3], await l.readClaimEpochs(rid))).toEqual({ deviceId: DEV_B, epoch: 7 });
+    expect(claimRefusal([9], await l.readClaimEpochs(rid))).toBeNull(); // my own maximum is higher: nothing to refuse
     // a paired device whose signature does NOT match its key is unqualified again — `verified` is not `ok`
     await put(t.root, projection({ deviceId: DEV_B, runId: rid, epochs: [8] }), KEY_A);
     expect(await l.readClaimEpochs(rid)).toEqual([{ epoch: 8, deviceId: DEV_B, qualified: false }]);

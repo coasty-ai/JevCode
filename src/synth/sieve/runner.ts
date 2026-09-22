@@ -67,6 +67,8 @@ import { summarize } from '../verify/index.js';
 import { progress } from '../verify/progress.js';
 import { CASE_TIMEOUT_ENV, hangsOnEveryFailure, isCaseNotRun, isCaseTimeout, MAX_CASE_TIMEOUTS_ENV, quixbugsTestCommand } from '../verify/quixbugs.js';
 import { RUN_FAILURE_ID, shellQuote } from '../verify/text.js';
+import { scopeUsable } from '../../workspace/tests.js';
+import { emptyWarmStats, interpreterFor, WarmPlane, warmDelta, warmModeFor, warmNote, type WarmScreen, type WarmStats } from '../warm/index.js';
 import { createLanes, type LanePool } from './lanes.js';
 
 /** §4.3: full-suite regression runs per step, "stop after the fifth passer" (decide() arbitrates ≤ 5 plausible). */
@@ -152,6 +154,20 @@ export interface RunnerMemory {
    */
   passersThisStep?: number;
   lanes?: LanePool;
+  /**
+   * The warm verification plane (docs/HARNESS-NEXT-DESIGN.md §3 M6): one persistent interpreter
+   * per lane, screening candidate runs at fork cost. Lives beside the lane pool because it is
+   * bound to the lane directories, is created lazily on the first servable command, and is
+   * disposed whenever the pool is rebuilt (here and in `oracle/verify.ts runRepositoryQueue`,
+   * the two places that rebuild it). Absent, disabled or unservable, every run takes exactly
+   * today's cold path.
+   *
+   * Run-end teardown is the lane pool's: nothing disposes either at the end of a run, and both
+   * are ended by `sandbox.killAll()` (`src/loop/engine.ts`) — which is layer 4 of the worker's
+   * liveness ladder, and is also what closing the harness's end of the request fifo would do on
+   * its own. Until then an idle worker exits by itself after `WARM_IDLE_MS`.
+   */
+  warm?: WarmScreen;
   /** `${base.id}|${scope}` → baseline restricted to the goal subset (pytest without passing ids needs one run) */
   subsetBaselines?: Map<string, TestRunSummary>;
   /**
@@ -403,6 +419,30 @@ export function classifyOutcome(input: ClassifyInput): VerifyStatus {
   return 'unchanged';
 }
 
+/**
+ * Did this run hit a deadline the BASELINE does not already hit (docs/HARNESS-NEXT-DESIGN.md
+ * §3 M6, risk R-2)?
+ *
+ * A deadline is the one measurement the warm and the cold path cannot charge from the same
+ * instant: a cold cap covers process start and the runner's own imports, a warm one covers a
+ * fork, and the worker can only subtract a *measured estimate* of the difference. So a warm run
+ * that hits a NEW deadline is never a verdict — `runTests` discards it and runs the command
+ * cold, which decides. Without that, a real fix the warm cap happened to cut short would be
+ * classified `timeout`, marked `tried`, and dropped for the run with nothing re-checking it.
+ *
+ * "New" is what keeps the guard affordable. A candidate that hangs exactly where the baseline
+ * hangs tells the same story on both paths — that is `bitcount`'s 203 hanging candidates, whose
+ * wall IS the per-case cap — and re-running every one of them cold would double the wall of the
+ * task class the warm plane was built for, while deciding nothing. A timeout the baseline does
+ * not have is the opposite: it is either a candidate that made things worse, or the cap being
+ * wrong, and only a cold run can tell which.
+ */
+export function newDeadlineHit(run: Pick<TestRunSummary, 'timedOut' | 'failures'>, baseline: Pick<TestRunSummary, 'timedOut' | 'failures'>): boolean {
+  if (run.timedOut) return !baseline.timedOut;
+  const known = new Set(baseline.failures.filter((f) => isCaseTimeout(f.actual)).map((f) => f.testId));
+  return run.failures.some((f) => isCaseTimeout(f.actual) && !known.has(f.testId));
+}
+
 /** Whether a `timeout` verdict is final ('hang') or awaits a retry at the full cap ('provisional'). */
 export type TimeoutKind = 'hang' | 'provisional';
 
@@ -498,6 +538,36 @@ type JobResult =
   | { kind: 'killed'; pending: PendingRetry; outcome: VerifyOutcome }
   | { kind: 'skip' };
 
+/** One lane run: the summary, whether the batch must treat it as not having happened, and whether a warm worker produced it. */
+type LaneRun = TestRunSummary & { aborted: boolean; warm: boolean };
+
+/**
+ * The run's warm plane for this oracle, or null when the warm path is off: a non-Python runner,
+ * `JEVCODE_WARM=off`, a suite command whose interpreter cannot be read off the command itself,
+ * or a plane a screen/confirm mismatch has already disabled. Created lazily and kept on the
+ * memory beside the lane pool; disposed with it.
+ *
+ * Exported for `test/unit/synth/sieve/warm-wiring.test.ts`: this is the only production
+ * construction site of `WarmPlane`, so the default-on decision, the interpreter it boots and the
+ * disabled latch are all decided here and nowhere else.
+ */
+export function warmPlaneFor(ctx: RunnerContext, mem: Pick<RunnerMemory, 'warm'>, oracle: OracleModel, spec: SuiteSpec): WarmScreen | null {
+  const mode = warmModeFor(oracle);
+  // The interpreter is the word the command names, never a guess: the plane boots that one and
+  // `WarmPlane.serve` refuses any command naming another (site-packages are part of a verdict).
+  const interpreter = mode === null ? null : interpreterFor(mode, spec.command);
+  if (mode === null || interpreter === null) {
+    mem.warm?.dispose();
+    delete mem.warm;
+    return null;
+  }
+  const have = mem.warm;
+  if (have !== undefined) return have.disabled ? null : have;
+  const plane = new WarmPlane({ sandbox: ctx.sandbox, signal: ctx.signal, runDir: ctx.runDir, workspaceRoot: ctx.workspaceInfo.root, mode, interpreter, bootEnv: LANE_RUN_ENV });
+  mem.warm = plane;
+  return plane;
+}
+
 function emptySummary(command: string, actual: string): TestRunSummary {
   return { command, passed: 0, failed: 0, errors: 1, skipped: 0, total: 1, failing: [RUN_FAILURE_ID], passing: [], failures: [{ testId: RUN_FAILURE_ID, call: command, expected: 'the candidate applies and its tests run', actual }], exitCode: null, timedOut: false, durationMs: 0, outputTail: '' };
 }
@@ -527,9 +597,19 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   if (mem.lanes !== undefined && mem.lanes.mode !== 'inplace' && mem.lanes.lanes.length < oracle.lanes) {
     await mem.lanes.disposeLanes();
     delete mem.lanes;
+    // the warm workers' cwd is a lane directory that no longer exists
+    mem.warm?.dispose();
+    delete mem.warm;
   }
   const pool = mem.lanes ?? (await createLanes(ctx, oracle));
   mem.lanes = pool;
+  const warm = warmPlaneFor(ctx, mem, oracle, spec);
+  const warmBefore: WarmStats = warm?.stats() ?? emptyWarmStats();
+  let scopeUnusable = 0;
+  /** latched once a scoped run of this goal reports zero collected tests (see `runGoalSubset`) */
+  let scopeIsUnusable = false;
+  /** candidates this batch classified on a warm worker and did not confirm cold (see `requeueScreened`) */
+  const screenedThisBatch: { job: VerifyJob; diffHash: string }[] = [];
   const subsetBaselines = mem.subsetBaselines ?? new Map<string, TestRunSummary>();
   mem.subsetBaselines = subsetBaselines;
   const deferredByGoal = mem.deferred ?? new Map<string, VerifyJob[]>();
@@ -540,6 +620,20 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   // goes back on `deferred` for the next call, never into this call's supply (it would be popped
   // again at once and charged a run per loop until runsAllowed ran out)
   const carried = deferred.splice(0, deferred.length);
+  /**
+   * §3 M6, the "re-queue the batch cold" half of the screen/confirm rule. A warm verdict that was
+   * never confirmed cold is only a screen: once one screened passer has disagreed with its cold
+   * confirmation, every other candidate this batch classified warm is suspect too (a false
+   * negative silently drops a real fix and marks it `tried`). Their hashes leave `tried` and
+   * their jobs go back on the goal's deferred queue, where the now-disabled plane guarantees they
+   * run cold at the next call.
+   */
+  const requeueScreened = (): void => {
+    for (const s of screenedThisBatch.splice(0, screenedThisBatch.length)) {
+      mem.tried.delete(s.diffHash);
+      deferred.push(s.job);
+    }
+  };
   const retryByGoal = mem.retryTimeouts ?? new Map<string, PendingRetry[]>();
   mem.retryTimeouts = retryByGoal;
   const pendingRetries = retryByGoal.get(goal.id) ?? [];
@@ -630,21 +724,69 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
    * oracle's run timeout: that says nothing about the candidate (it is not a probable infinite
    * loop), so it is deferred and re-run with the full timeout rather than classified `timeout`.
    */
-  const runTests = async (command: string, lane: Lane, s: RunSettings): Promise<TestRunSummary & { aborted: boolean }> => {
+  const runTests = async (command: string, lane: Lane, s: RunSettings, how: { cold?: boolean } = {}): Promise<LaneRun> => {
     const o = oracleFor(s);
     const runTimeoutMs = s.runTimeoutMs ?? (o === oracle ? laneTimeoutMs : laneRunTimeout(o, baseline));
-    const timeoutMs = Math.max(1, Math.min(runTimeoutMs, Math.max(1, wallLeft())));
+    const capMs = (): number => Math.max(1, Math.min(runTimeoutMs, Math.max(1, wallLeft())));
+    const env = laneRunEnv(o, { stopRule: s.stopRule });
+    // §3 M6: the warm plane screens; it never decides. A null here (command not servable, plane
+    // disabled, worker anomaly) is the cold path below, unchanged.
+    if (how.cold !== true && warm !== null) {
+      const warmStarted = now();
+      const hot = await warm.serve(lane, command, capMs(), env);
+      if (hot !== null) {
+        const sum = summarize(command, hot, hot.durationMs > 0 ? hot.durationMs : now() - warmStarted);
+        // A deadline is the one thing the two paths cannot be made to mean exactly the same
+        // (the cold cap includes process start; the worker subtracts a *measured* estimate of
+        // it, which is an estimate). So a warm run that hit a deadline the baseline does NOT
+        // already hit is not a verdict at all: it is discarded and the command runs cold, which
+        // is what decides. Without this the sieve would mark a candidate `tried` on a timeout
+        // the cold path never saw, and a non-passer is never cold-confirmed by screen/confirm.
+        if (!newDeadlineHit(sum, baseline)) {
+          const wallCut = capMs() < runTimeoutMs && hot.timedOut;
+          return { ...sum, aborted: wallCut || ctx.signal.aborted, warm: true };
+        }
+        warm.deadlineRecheck();
+      }
+    }
+    const timeoutMs = capMs();
     const truncated = timeoutMs < runTimeoutMs;
     const started = now();
     try {
-      const res = await ctx.sandbox.run(command, { timeoutMs, maxOutputBytes: RUN_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir, env: laneRunEnv(o, { stopRule: s.stopRule }) });
+      const res = await ctx.sandbox.run(command, { timeoutMs, maxOutputBytes: RUN_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir, env });
       const sum = summarize(command, res, res.durationMs > 0 ? res.durationMs : now() - started);
       const wallCut = truncated && res.killedBy === 'timeout';
-      return { ...sum, aborted: res.killedBy === 'abort' || res.killedBy === 'wall_time' || wallCut || ctx.signal.aborted };
+      return { ...sum, aborted: res.killedBy === 'abort' || res.killedBy === 'wall_time' || wallCut || ctx.signal.aborted, warm: false };
     } catch (e: unknown) {
       const sum = summarize(command, { stdout: '', stderr: e instanceof Error ? e.message : String(e), exitCode: null }, now() - started);
-      return { ...sum, aborted: ctx.signal.aborted };
+      return { ...sum, aborted: ctx.signal.aborted, warm: false };
     }
+  };
+
+  /**
+   * The goal-subset run, with the scope-usability guard (§6 S1, risks R-11 / R-14): a scoped run
+   * that collected nothing is not evidence — "0 failing" on an empty run reads as success — so it
+   * is re-run at full scope, `scope_unusable` is recorded, and the caller compares the result
+   * with the base's full summary instead of the file-restricted one.
+   */
+  const runGoalSubset = async (lane: Lane, s: RunSettings): Promise<LaneRun & { fullScope: boolean }> => {
+    const wide = async (): Promise<LaneRun & { fullScope: boolean }> => {
+      const w = await runTests(fullSuiteCommand(oracleFor(s), lane, spec), lane, s);
+      return { ...w, fullScope: !w.aborted };
+    };
+    // Latched for the rest of the batch: this goal's scope collects nothing on this suite, so
+    // every later candidate runs the full suite too. Without the latch a candidate whose scoped
+    // run happened to collect something would be compared with the FULL baseline the first
+    // widening cached, and read as a mass regression.
+    if (scope.kind === 'files' && scopeIsUnusable) return wide();
+    const first = await runTests(subsetCommand(oracleFor(s), goal, lane, spec), lane, s);
+    if (scope.kind !== 'files' || first.aborted || first.timedOut || scopeUsable(first)) return { ...first, fullScope: scope.kind === 'full' };
+    scopeIsUnusable = true;
+    scopeUnusable += 1;
+    warm?.scopeUnusable();
+    if (budget.testRunsLeft <= 0) return { ...first, fullScope: false };
+    budget.testRunsLeft -= 1;
+    return wide();
   };
 
   /** Baseline the subset run is compared with: the base's full summary, or its restriction to the goal's files. */
@@ -662,10 +804,12 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
     if (budget.testRunsLeft <= 0) return 'defer';
     budget.testRunsLeft -= 1;
     await pool.applyToLane(lane, { candidate: job.candidate, files: [], diff: '' }, job.base.files);
-    const s = await runTests(subsetCommand(oracleFor(REFERENCE), goal, lane, spec), lane, REFERENCE);
+    const s = await runGoalSubset(lane, REFERENCE);
     if (s.aborted) return 'defer';
-    subsetBaselines.set(key, s);
-    return s;
+    // an unusable scope makes the reference the full suite: the base's own summary already is that
+    const measured = s.fullScope ? job.base.summary : s;
+    subsetBaselines.set(key, measured);
+    return measured;
   };
 
   /**
@@ -693,23 +837,33 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
     if (budget.testRunsLeft <= 0) return { kind: 'defer' };
     budget.testRunsLeft -= 1;
     const settings = mode === 'retry' ? (retryOf?.runTimeoutMs === undefined ? RETRY : inFlightRetry(retryOf)) : firstRun();
-    const subset = await runTests(subsetCommand(oracleFor(settings), goal, lane, spec), lane, settings);
-    if (subset.aborted) return { kind: 'defer' };
-    if (mode === 'first') {
-      subsetDurations.push(subset.durationMs);
+    const sub = await runGoalSubset(lane, settings);
+    if (sub.aborted) return { kind: 'defer' };
+    let subsetRun: TestRunSummary = sub;
+    let screened = sub.warm;
+    // an unusable scope widened the run to the whole suite: compare it with the base's own summary
+    const base = sub.fullScope && scope.kind === 'files' ? job.base.summary : subsetBase;
+    const subsetIsFull = scope.kind === 'full' || sub.fullScope;
+    // Only COLD runs teach the oracle. `tRunMs` sizes lane timeouts, the SIEVE/RANK plan and the
+    // load scaling, all of which are statements about a fresh process; a warm run's 20 ms would
+    // make the estimate describe a path the cold confirmation does not take. The warm win is wall
+    // saved, not a recalibration — and keeping the estimate cold is also what reserves enough
+    // remaining wall (`minRunWallMs`) for the cold confirmation of a passer found late in a batch.
+    if (mode === 'first' && !sub.warm) {
+      subsetDurations.push(subsetRun.durationMs);
       observeLoad();
     }
-    const subsetProgress = progress(subsetBase, subset);
-    const passesGoal = goalPasses(goal, subset, subsetProgress);
+    const subsetProgress = progress(base, subsetRun);
+    const passesGoal = goalPasses(goal, subsetRun, subsetProgress);
 
     let full: TestRunSummary | undefined;
     let fullProgress: Progress | undefined;
     if (passesGoal) {
-      if (scope.kind === 'full') {
+      if (subsetIsFull) {
         // the subset already was the whole suite: the run is spent and decides, whatever the passer count
         // (the cap of §4.3 bounds full-suite runs; here there is none to bound, and tests are the oracle)
         passers += 1;
-        full = subset;
+        full = subsetRun;
       } else {
         if (passers >= MAX_FULL_SUITE_RUNS_PER_STEP || budget.testRunsLeft <= 0) return { kind: 'defer' };
         passers += 1;
@@ -719,16 +873,60 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
           passers -= 1;
           return { kind: 'defer' };
         }
-        if (mode === 'first') fullDurations.push(f.durationMs);
+        if (mode === 'first' && !f.warm) fullDurations.push(f.durationMs);
+        screened = screened || f.warm;
         full = f;
       }
       fullProgress = progress(job.base.summary, full);
     }
-    const status = classifyOutcome({ subset, subsetProgress, passesGoal, ...(full !== undefined ? { full } : {}), ...(fullProgress !== undefined ? { fullProgress } : {}) });
-    const outcome: VerifyOutcome = { job, applied, subset, progress: fullProgress ?? subsetProgress, status, ...(full !== undefined ? { full } : {}) };
+    let status = classifyOutcome({ subset: subsetRun, subsetProgress, passesGoal, ...(full !== undefined ? { full } : {}), ...(fullProgress !== undefined ? { fullProgress } : {}) });
+    let confirmedCold = false;
+    // ------------------------------------------------------------------------------------
+    // §3 M6: screen hot, confirm COLD. A passer any part of which was produced on a warm worker
+    // is re-verified by a fresh, isolated, cold full-suite run before it can reach
+    // search/guard.ts decide(). The confirmation is never skipped — when the budget cannot hold
+    // it the candidate is deferred, exactly as a missing full-suite run is — and nothing is
+    // asked of Jev here: the tests are the oracle and the disagreement rule is arithmetic.
+    // ------------------------------------------------------------------------------------
+    if (status === 'plausible' && screened) {
+      if (budget.testRunsLeft <= 0) {
+        passers -= 1;
+        return { kind: 'defer' };
+      }
+      budget.testRunsLeft -= 1;
+      const cold = await runTests(fullSuiteCommand(oracleFor(settings), lane, spec), lane, settings, { cold: true });
+      if (cold.aborted) {
+        passers -= 1;
+        return { kind: 'defer' };
+      }
+      warm?.confirmed(cold.durationMs);
+      // a real cold full-suite measurement: exactly what `tRunMs.fullSuite` is
+      if (mode === 'first') fullDurations.push(cold.durationMs);
+      const coldProgress = progress(job.base.summary, cold);
+      const coldPasses = goalPasses(goal, cold, coldProgress);
+      const coldStatus = classifyOutcome({ subset: cold, subsetProgress: coldProgress, passesGoal: coldPasses, full: cold, fullProgress: coldProgress });
+      full = cold;
+      fullProgress = coldProgress;
+      status = coldStatus;
+      confirmedCold = true;
+      // when the subset run WAS the whole suite, the cold confirmation replaces it outright:
+      // what reaches guard.ts decide() (which re-checks `subset` in `isPlausible`) is then cold
+      // end to end, not a warm screen carried alongside a cold verdict
+      if (subsetIsFull) subsetRun = cold;
+      if (coldStatus !== 'plausible') {
+        // the warm pass the cap was spent on is disowned: it must not consume one of the step's
+        // MAX_FULL_SUITE_RUNS_PER_STEP passers, nor feed stopDispatch()
+        passers -= 1;
+        // one disagreement ends the mechanism for the whole run and re-queues what it classified
+        warm?.mismatch();
+        ctx.emit({ type: 'synth', step: ctx.step, phase: 'verify', detail: `${goal.id}: screen:mismatch — a hot-screened passer at ${applied.candidate.site.file.path}:${applied.candidate.site.line} came back ${coldStatus} cold; the warm plane is off for the run and its batch re-runs cold`, candidates: 1, tested: 1 });
+        requeueScreened();
+      }
+    }
+    const outcome: VerifyOutcome = { job, applied, subset: subsetRun, progress: fullProgress ?? subsetProgress, status, ...(full !== undefined ? { full } : {}), ...(screened ? { screened: true } : {}), ...(confirmedCold ? { confirmedCold: true } : {}) };
     if (status === 'timeout' && mode === 'first') {
       // which run hung: the full suite of a subset passer, else the subset
-      const hung = full !== undefined && (full.timedOut || hangsOnEveryFailure(full)) ? { run: full, base: job.base.summary } : { run: subset, base: subsetBase };
+      const hung = full !== undefined && (full.timedOut || hangsOnEveryFailure(full)) ? { run: full, base: job.base.summary } : { run: subsetRun, base };
       if (hung.run.timedOut) {
         // the sandbox killed the run at the lane timeout: a hang, unless the whole batch was killed under load (the batch end decides; `tried` waits)
         return { kind: 'killed', pending: { job, applied, diffHash, subset: hung.run, caseTimeoutMs: settings.caseTimeoutMs ?? DEFAULT_CASE_TIMEOUT_MS, baseline }, outcome };
@@ -738,6 +936,10 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
         if (kind === 'provisional') return { kind: 'provisional', pending: { job, applied, diffHash, subset: hung.run, caseTimeoutMs: settings.caseTimeoutMs, baseline } };
       }
     }
+    // a warm verdict nothing cold confirmed is only a screen: recorded so that one screen/confirm
+    // disagreement anywhere in the batch can withdraw it (`requeueScreened`) — in retry mode too,
+    // where a withdrawn classification is just as wrong as in first mode
+    if (screened && !confirmedCold) screenedThisBatch.push({ job, diffHash });
     mem.tried.add(diffHash); // only a finally classified candidate is "tried"; a deferred or provisional one runs again
     if (status === 'unchanged') recordUnchanged(mem, goal.id, diffHash); // stale once a progress commit changes what the goal's tests fail on
     if (mode === 'retry') retried.set(status, (retried.get(status) ?? 0) + 1);
@@ -859,7 +1061,8 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const loadNote = caseTimeoutNow === oracle.perTestTimeoutMs || oracle.perTestTimeoutMs === null ? '' : `; load ×${loadNow.toFixed(1)}, case timeout ${oracle.perTestTimeoutMs}→${caseTimeoutNow} ms`;
   const inFlightNote = inFlight ? `; ${killed.length} in-flight timeout${killed.length === 1 ? '' : 's'} under load ×${loadAtEnd.toFixed(1)}: re-queued once, lane timeout ${laneTimeoutMs}→${inFlightTimeoutMs} ms` : '';
   const streamNote = passerStop ? '; streamed batch ended on its first passer' : '';
-  const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${loadNote}${inFlightNote}${retryNote}${streamNote}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
+  const warmStats: WarmStats = { ...(warm === null ? emptyWarmStats() : warmDelta(warmBefore, warm.stats())), scopeUnusable };
+  const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${loadNote}${inFlightNote}${retryNote}${streamNote}${warmNote(warmStats)}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
   ctx.emit({ type: 'synth', step: ctx.step, phase: 'verify', detail, candidates: dispatched, tested: outcomes.length });
   // a broken lane with nothing to show for the batch is an error the step must see; on abort the caller is stopping anyway
   if (laneFailure !== null && outcomes.length === 0 && !ctx.signal.aborted) throw new RunnerError(`lane failure during ${goal.id}: ${laneFailure instanceof Error ? laneFailure.message : String(laneFailure)}`, { cause: laneFailure });

@@ -76,6 +76,32 @@ export const PROPOSE_ACTION_TOOL: ToolSpec = {
   },
 };
 
+/**
+ * docs/ORCHESTRATION-DESIGN.md §2.5(b) / corner row 24: the same tool with the `action` `oneOf`
+ * narrowed to `kinds`. A `role: 'research'` child is offered `read | run | done` and nothing else,
+ * so it is never even shown the shape of a write — Cognition's "subagents only tasked with
+ * answering a question, not writing any code".
+ *
+ * The full kind list returns `PROPOSE_ACTION_TOOL` itself (referential identity), so every run
+ * without a research role sends the byte-identical schema it sent before.
+ */
+export function proposeActionToolFor(kinds: readonly ActionKind[]): ToolSpec {
+  const wanted = ACTION_KINDS.filter((k) => kinds.includes(k));
+  if (wanted.length === ACTION_KINDS.length) return PROPOSE_ACTION_TOOL;
+  const schema = PROPOSE_ACTION_TOOL.inputSchema;
+  const properties = isJsonObject(schema['properties']) ? schema['properties'] : {};
+  const action = isJsonObject(properties['action']) ? properties['action'] : {};
+  const oneOf = Array.isArray(action['oneOf']) ? action['oneOf'] : [];
+  const variants = oneOf.filter((v) => {
+    if (!isJsonObject(v)) return false;
+    const props = v['properties'];
+    if (!isJsonObject(props)) return false;
+    const kind = props['kind'];
+    return isJsonObject(kind) && typeof kind['const'] === 'string' && (wanted as readonly string[]).includes(kind['const']);
+  });
+  return { ...PROPOSE_ACTION_TOOL, inputSchema: { ...schema, properties: { ...properties, action: { ...action, oneOf: variants } } } };
+}
+
 function fail(reason: string, rawText: string): never {
   throw new GeneratorResponseError(reason, rawText);
 }

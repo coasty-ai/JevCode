@@ -384,7 +384,7 @@ class LedgerImpl implements LedgerHandle {
    * + review minor 24: NOT readonly on the implementation. The claim is minted once per (process, RUN); `parseRecord`
    * binds `claim.runId` to the record's `runId`, so a `setIdentity({ runId })` that left the old claim in place would
    * make every later beat fail its own validator. A runId move re-mints at `max(epoch seen for the NEW runId) + 1`,
-   * keeping this process's `pid` and `startedAt` — the incarnation order §9.3 compares is preserved.
+   * keeping this process's `pid` and `at` — the incarnation order §9.3 compares is preserved.
    */
   claim: Claim;
   opened = false;
@@ -444,7 +444,7 @@ class LedgerImpl implements LedgerHandle {
     this.budgetMs = o.budgetMs ?? READ_FOLD_BUDGET_MS;
     this.actor8 = o.actor8 ?? actor8Of(o.self.runId, o.random);
     this.stamps = createStampClock(o.self.deviceId, o.self.runId ?? this.actor8);
-    this.claim = o.claim ?? mintClaim({ deviceId: o.self.deviceId, runId: o.self.runId ?? this.actor8, pid: o.pid ?? process.pid, startedAt: new Date(this.now()).toISOString() });
+    this.claim = o.claim ?? mintClaim({ deviceId: o.self.deviceId, runId: o.self.runId ?? this.actor8, pid: o.pid ?? process.pid, at: new Date(this.now()).toISOString() });
     this.commonsKey = o.commonsKey ?? null;
     if (o.trustKeys !== undefined) this.trustKeys = o.trustKeys;
     this.fold = emptyFold(this.clock());
@@ -587,7 +587,7 @@ class LedgerImpl implements LedgerHandle {
       // + review minor 24: the claim is per (process, RUN). `parseRecord` binds `claim.runId` to the record's `runId`,
       // so carrying the old claim onto the new run would make every beat fail its own validator; re-mint above every
       // epoch already seen for the NEW runId, keeping this process's pid and start time.
-      this.claim = mintClaim({ deviceId: next.deviceId, runId: rid, pid: this.claim.pid, startedAt: this.claim.startedAt, seenEpochs: seenEpochs(this.fold, rid) });
+      this.claim = mintClaim({ deviceId: next.deviceId, runId: rid, pid: this.claim.pid, at: this.claim.at, seenEpochs: seenEpochs(this.fold, rid) });
     }
     // §3.5 / §4.3 (design revision 5): a key change MOVES the live leases. Their directory is derived from the run's
     // keys, and `repoKey` only arrives after `run:ready`, so a lease declared before it would otherwise stay under
@@ -1252,7 +1252,7 @@ class LedgerImpl implements LedgerHandle {
     };
   }
 
-  /** every live record for `runId`, holder (lowest claim) first */
+  /** every live record for `runId`, in `compareClaim` rank order — highest epoch first (§3.2) */
   private liveFor(runId: string): (Heartbeat & { arrivalMono: number })[] {
     const out: (Heartbeat & { arrivalMono: number })[] = [];
     const live = this.fold.live.get(runId);
@@ -1292,7 +1292,7 @@ class LedgerImpl implements LedgerHandle {
   }
 
   nextEpoch(runId: string, o: { epochHigh?: number } = {}): number {
-    return mintClaim({ deviceId: this.self.deviceId, runId, pid: this.claim.pid, startedAt: this.claim.startedAt, seenEpochs: this.epochsFor(runId, o.epochHigh) }).epoch;
+    return mintClaim({ deviceId: this.self.deviceId, runId, pid: this.claim.pid, at: this.claim.at, seenEpochs: this.epochsFor(runId, o.epochHigh) }).epoch;
   }
 
   /** §9.3: the fold's trust-qualified epochs plus the value persisted beside the run (review major 11). */
@@ -1431,7 +1431,7 @@ class LedgerImpl implements LedgerHandle {
     const persisted = await this.readRunClaim(o.runId);
     const seen = this.epochsFor(o.runId, o.epochHigh);
     if (persisted !== null) seen.push(persisted.epoch);
-    const claim = o.claim ?? mintClaim({ deviceId: this.self.deviceId, runId: o.runId, pid: this.claim.pid, startedAt: this.claim.startedAt, seenEpochs: seen });
+    const claim = o.claim ?? mintClaim({ deviceId: this.self.deviceId, runId: o.runId, pid: this.claim.pid, at: this.claim.at, seenEpochs: seen });
     // + review minor 21: through `finalizeRecord` (redact → checksum) and the size gate, exactly like every other
     // writer — a takeover built with a raw `withChecksum` skipped redaction and could publish an over-size record.
     const lease: Lease = this.sign(finalizeRecord({

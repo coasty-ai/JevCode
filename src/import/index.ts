@@ -25,7 +25,7 @@ import { parseMarkdown, redactSecrets } from './parse/markdown.js';
 import { parseMdc } from './parse/mdc.js';
 import { parseToml } from './parse/toml.js';
 import { findMarkerBlocks, joinDestination } from './apply.js';
-import { buildPlan, secretCandidateId } from './plan.js';
+import { buildPlan, secretCandidateId, secretId } from './plan.js';
 import type { PlanBands } from './plan.js';
 import type { PlanCandidate, PlanInput } from './plan.js';
 import { askImport, contradictsQuestions, fileKindQuestions, mattersHereQuestions, mergeBatches, sameMeaningQuestions, secretQuestions } from './questions.js';
@@ -122,12 +122,13 @@ export type {
   SecretCandidate,
 } from './questions.js';
 
-export { buildPlan, contradictsId, dedupe, expandGlobs, rankId, rankIndex, rerunAction, sameMeaningId, secretCandidateId, slugOf } from './plan.js';
+export { buildPlan, contradictsId, dedupe, expandGlobs, rankId, rankIndex, rerunAction, sameMeaningId, secretCandidateId, secretId, slugOf } from './plan.js';
 export type { PlanBands } from './plan.js';
 export type { PlanCandidate, PlanInput } from './plan.js';
 
 export { REPORT_SECTIONS, parseReport, renderPlanJson, renderReport } from './report.js';
-export type { ReportView } from './report.js';
+// §1 property 4 / §2.9: both renderers take the exact `SecretSet` layer, the same value `planImport({ redact })` takes.
+export type { RenderOptions, ReportView } from './report.js';
 
 export {
   APPLY_ORDER,
@@ -200,11 +201,16 @@ export interface PlanImportOptions {
   projectWritable?: boolean;
   /**
    * §2.9: the session redactor's **exact `SecretSet` layer only** — `config.addSecret`
-   * registrations, i.e. `createRedactor(secrets).redact`. Do NOT pass `patternRedact` or a
-   * finished two-layer redactor here: the engine composes this with `detectSecrets`, which adds
-   * all fifteen families, and it does so for everything derived from source text (headings,
-   * sentence fragments) before any of it can reach a Jev request or an artefact. Passing a
-   * pattern-only redactor would silently leave the nine warn-only families in a heading.
+   * registrations, i.e. `createRedactor(secrets).redact`. The engine composes whatever arrives here
+   * with `detectSecrets`, which scans all fifteen families UNCONDITIONALLY, and it does so for
+   * everything derived from source text (headings, sentence fragments) before any of it can reach a
+   * Jev request or an artefact — so the pattern layer is never this caller's to supply.
+   *
+   * Passing `patternRedact` or a finished two-layer redactor here is therefore **useless, not
+   * harmful**: the fifteen families are already covered, the six that `patternRedact` knows would be
+   * matched twice, and the only thing lost is the exact layer the option exists to carry. (Corrected
+   * 2026-09-22: this comment previously claimed such a redactor "would silently leave the nine
+   * warn-only families in a heading", which `redactSecrets(s, exact)` makes impossible.)
    */
   redact?: (s: string) => string;
   cannotRead?: readonly CannotRead[];
@@ -288,9 +294,9 @@ function secretCandidatesOf(item: SourceItem, keys: readonly KeyVerdict[]): read
     if (!k.band || k.shape === null) continue;
     out.push({
       // Review defect 5 was a mis-keying between this id and the one `plan.ts` looks answers up
-      // by, and it could DEMOTE a real credential. Both sides now derive it from one function so
-      // they cannot drift apart again.
-      id: secretCandidateId(item.id, k.leaf.dotted),
+      // by, and it could DEMOTE a real credential. The id IS the question id now — `secret_<candidateId>`,
+      // the convention groups III–V already use — so there is no ordinal and no side table to drift.
+      id: secretId(secretCandidateId(item.id, k.leaf.dotted)),
       dotted: k.leaf.dotted,
       leaf: k.leaf.path[k.leaf.path.length - 1] ?? k.leaf.dotted,
       path: item.display,
@@ -323,10 +329,11 @@ export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
   const fs = opts.fs ?? nodeImportFs();
   const clock = opts.clock ?? systemClock();
   // §2.9 / review defect 8: `opts.redact` is the session redactor's EXACT `SecretSet` layer, not a
-  // finished redactor. Everything derived from source text goes through `redactSecrets`, which
-  // runs that exact layer AND all fifteen families — `patternRedact` alone masks only the six
-  // redacting ones and would leak aws/slack/webhook/PEM/jwt/stripe/npm/hf/glpat into a heading,
-  // and from there into `sources.jsonl` and a Jev request body.
+  // finished redactor. Everything derived from source text goes through `redactSecrets`, which runs
+  // that exact layer AND all fifteen families on every string, whatever the caller passed — this
+  // composition is the guarantee, which is why the option can only ever ADD the exact layer. Had the
+  // engine used `patternRedact` here instead, only the six redacting families would be masked and
+  // aws/slack/webhook/PEM/jwt/stripe/npm/hf/glpat would reach a heading, `sources.jsonl` and a Jev body.
   const exact = opts.redact !== undefined ? { redact: opts.redact } : undefined;
   const redact = (s: string): string => redactSecrets(s, exact);
   const now = clock.now();

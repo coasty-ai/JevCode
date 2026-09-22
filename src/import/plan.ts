@@ -13,6 +13,12 @@
  *
  * **No field of `PlanRow` can hold a value** (§4.6.1, §1 property 4): nothing here copies a
  * config value, a body or a credential anywhere.
+ *
+ * **One question-id convention** (§4.4.3, amended 2026-09-22). The four ids this module exports —
+ * `secretId`, `sameMeaningId`, `rankId`, `contradictsId` — are all `<group>_<content key>`, derived
+ * from the source and the destination and never from a position in a list. Group I was the last
+ * ordinal, and its `secretCandidateId → secret_<n>` side table is retired: `SecretCandidate.id`
+ * IS the question id, so `questions[c.id]` reads the same way in all four groups.
  */
 import { sha256Hex } from '../core/hash.js';
 import { IMPORT_LIMITS } from '../core/limits.js';
@@ -567,13 +573,22 @@ export interface PlanBands {
 }
 
 /**
- * §4.4.3 groups III–V: **content-keyed** question ids (review follow-up D2).
+ * §4.4.3 groups I and III–V: **content-keyed** question ids (review follow-up D2; group I brought
+ * onto the same convention 2026-09-22).
  *
  * These used to be ordinals — `rank_0`, `rank_1`, … — assigned while collecting in pass 1 and
  * read back by position in pass 2. But pass 2 runs *after* the duplicate folds pass 1's own
  * answers caused, so the list it re-indexes is shorter: every note after a folded pair shifted
  * by one and silently received its neighbour's Score. Keying on the row and item ids, which are
  * derived from the source and the destination and never from position, removes the whole class.
+ *
+ * **Group I joined them.** `secret_<i>` was the last ordinal left: `secretQuestions` numbered its
+ * Nouls across the plan-wide candidate list and `keyGroupRows` re-derived the same ordinal through
+ * a `secretCandidateId → secret_<n>` side table, so the two agreed only as long as they iterated
+ * identically — exactly the coupling review defect 5 broke once already, on the side that can
+ * DEMOTE a real credential. `secretId(candidateId)` removes the table: the candidate's `id` IS the
+ * question id, which is what groups III–V already did (`questions[c.id] = …`). All four groups now
+ * read the same way and the answer map can be indexed from anywhere without a pass-order argument.
  *
  * The TUI reads these ids straight off the question map; they are stable across passes and
  * across runs of the same corpus.
@@ -648,9 +663,9 @@ export function buildPlan(input: PlanInput, bands?: PlanBands): ImportPlan {
   const notices: string[] = [...(input.notices ?? [])];
   const jev = input.jev ?? { answers: {}, requests: 0, questions: 0, usd: 0, fallbacks: 0 };
   const answers = jev.answers;
-  // §4.4.3 group I: built over the *uncapped* candidate list, because that is the list the facade
-  // numbered `secret_<i>` over before the row ceiling below trimmed it (review defect 5).
-  const secretIds = secretQuestionIds(input.candidates);
+  // §4.4.3 group I needs no side table: `secretId(secretCandidateId(item, dotted))` is the question
+  // id wherever it is computed, so the row ceiling below cannot shift an answer onto another key —
+  // which is the positional coupling review defect 5 broke.
 
   // ---- 0. the row ceiling -------------------------------------------------------------
   let candidates = input.candidates;
@@ -825,7 +840,7 @@ export function buildPlan(input: PlanInput, bands?: PlanBands): ImportPlan {
 
     // key rows: one file is simultaneously SECRET, CONFIG/permission, WORKFLOW/exec and CONFIG/mcp
     if (c.keys && c.keys.length > 0) {
-      const keyRows = keyGroupRows(c, d, answers, jev.reason, destState, manifest, input.workspaceKey, secretIds);
+      const keyRows = keyGroupRows(c, d, answers, jev.reason, destState, manifest, input.workspaceKey);
       if (keyRows.length > 0) {
         rows.push(...keyRows);
         continue;
@@ -1097,30 +1112,22 @@ export function allocateSlug(base: string, tool: SourceTool | undefined, taken: 
 // ---------------------------------------------------------------------------------------
 
 /**
- * §4.4.3 group I: which `secret_<i>` question belongs to which band key, **plan-wide**.
- *
- * `secretQuestions` numbers its Nouls across the whole candidate list, so a counter that restarts
- * at every file reads file 2's key with file 1's answer — which can *demote* a real credential
- * (review defect 5). The map is keyed by `SecretCandidate.id`, the same `<item.id>:<dotted>` the
- * facade builds the candidates with, so the two agree by construction rather than by both
- * happening to iterate in the same order.
+ * §4.4.3 group I: the content key of one band key — `<item.id>:<dotted>`, the same string the
+ * facade builds `SecretCandidate.id` from, so the asker and the reader agree by construction
+ * rather than by both happening to iterate in the same order (review defect 5).
  */
 export function secretCandidateId(itemId: string, dotted: string): string {
   return `${itemId}:${dotted}`;
 }
 
-function secretQuestionIds(candidates: readonly PlanCandidate[]): ReadonlyMap<string, string> {
-  const out = new Map<string, string>();
-  let n = 0;
-  for (const c of candidates) {
-    for (const k of c.keys ?? []) {
-      // the facade's own filter: a band key always has a shape, and only band keys are asked about
-      if (!k.band || k.shape === null) continue;
-      out.set(secretCandidateId(c.item.id, k.leaf.dotted), `secret_${n}`);
-      n += 1;
-    }
-  }
-  return out;
+/**
+ * §4.4.3 group I: the question id, `secret_<candidateId>` — the fourth member of the one
+ * convention groups III–V already used (`sameMeaningId`, `rankId`, `contradictsId`). There is no
+ * `secretCandidateId → ordinal` table any more: `SecretCandidate.id` IS the question id, so
+ * `secretQuestions` writes `questions[c.id]` exactly as the other three groups do.
+ */
+export function secretId(candidateId: string): string {
+  return `secret_${candidateId}`;
 }
 
 function keyGroupRows(
@@ -1131,7 +1138,6 @@ function keyGroupRows(
   destState: Readonly<Record<string, { sha256: string; markers: readonly string[] } | null>>,
   manifest: ImportManifest | null,
   workspaceKey: string,
-  secretIds: ReadonlyMap<string, string>,
 ): PlanRow[] {
   const keys = c.keys ?? [];
   const out: PlanRow[] = [];
@@ -1140,10 +1146,10 @@ function keyGroupRows(
   // Jev group I may promote a band key into the secret class and may never demote one out of it.
   const resolved: KeyVerdict[] = keys.map((k): KeyVerdict => {
     if (!k.band) return k;
-    // no id ⇒ no answer ⇒ `joinSecretVerdict(_, null)` treats the band item as a secret, which is
-    // the conservative side of §0 principle 4. Mis-keying can only over-protect, never demote.
-    const id = secretIds.get(secretCandidateId(item.id, k.leaf.dotted));
-    const a = id === undefined ? undefined : answers[id];
+    // no answer ⇒ `joinSecretVerdict(_, null)` treats the band item as a secret, which is the
+    // conservative side of §0 principle 4. The id is content-keyed, so a miss means Jev was not
+    // asked (over-budget, unreachable, out of the batch) — never that the answer went elsewhere.
+    const a = answers[secretId(secretCandidateId(item.id, k.leaf.dotted))];
     const p = a && a.type === 'noul' && Number.isFinite(a.noul) ? a.noul : null;
     const joined = joinSecretVerdict({ secret: false, band: true, rule: k.rule, why: k.why }, p);
     return joined.secret ? { ...k, class: 'secret', kind: 'secret', why: joined.why } : k;

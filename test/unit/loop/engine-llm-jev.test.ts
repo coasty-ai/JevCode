@@ -228,20 +228,24 @@ describe('llm-jev: sanctioned generator channel, mode plumbing, code-fact stages
     const r = await h.engine.run();
     expect(r.stopReason).toBe('max_steps');
     const [s1, s2] = h.store.steps;
-    // §5 Q20: harm dims only; `matches_intent`, `evidence_consistent`, `out_of_scope`, `plan_mismatch` are never asked
-    expect(h.decider.callsAt('risk').map((c) => [c.step, Object.keys(c.questions)])).toEqual([[1, ['destructive', 'irreversible']], [2, ['destructive', 'irreversible']]]);
+    // §5 Q20 + OOS 2026-09-22 ranked change 6(a): `matches_intent`, `evidence_consistent`, `out_of_scope` and
+    // `plan_mismatch` are never asked, and the two harm Scores are now due for a non-test `run` alone — neither the
+    // best-guess patch nor the partial `done` can lose state or be hard to undo, so neither step asks anything
+    expect(h.decider.callsAt('risk')).toEqual([]);
     expect(s1!.risk?.verdict).toBe('ok');
-    expect(s1!.risk?.reason).toContain('harm-only (llm-jev): out_of_scope and plan_mismatch not asked, recorded at level 0, not gating');
-    expect(s1!.risk?.reason).toContain('evidence unverified: 1→1 of 2 pass');
-    expect(s1!.decisions.filter((d) => d.stage === 'risk').map((d) => [d.id, d.verdict])).toEqual([['destructive', 'ok'], ['irreversible', 'ok']]);
+    expect(s1!.risk?.reason).toContain('by code: patch: the harm Scores gate a `run` that is not the workspace test command');
+    expect(s1!.decisions.filter((d) => d.stage === 'risk')).toEqual([]);
     expect(s1!.outcome?.status).toBe('executed');
-    // the partial done: Q22 recorded (0.10 default), no code fact → not complete, note on the window entry
+    // the partial done: no code fact → not complete. OOS 2026-09-22 ranked change 6(b): this step
+    // closes no goal and `plan.remaining` still lists one, so Q22 is NOT due and is not asked —
+    // it was recorded and never consulted on this path anyway (127 questions, 87.7 % below 0.5)
     expect(s2!.outcome?.status).toBe('noop');
-    expect(h.decider.callsAt('judge').map((c) => [c.step, Object.keys(c.questions)])).toEqual([[2, ['task_complete']]]);
-    expect(s2!.completion).toBe(0.1);
+    expect(h.decider.callsAt('judge')).toEqual([]);
+    // not asked is null, not a recorded 0.00 (JudgeStageResult.completion: 'null when it was not asked')
+    expect(s2!.completion).toBeNull();
     // not complete by fact: the record stops at the step budget (max_steps 2), never `complete`
     expect(s2!.stoppedAt).toBe('step_start');
-    expect(h.store.last()?.window.at(-1)?.notes).toContain('done rejected: no passing, current run verifies it (task_complete=0.10 recorded only)');
+    expect(h.store.last()?.window.at(-1)?.notes).toContain('done rejected: no passing, current run verifies it');
     expect(h.store.generator).toEqual([]);
   });
 
@@ -365,6 +369,7 @@ describe('llm-jev: sanctioned generator channel, mode plumbing, code-fact stages
     expect(h1.store.transcript.some((l) => l.includes('stop: error'))).toBe(false);
     // §14.2 review item 5: the error clause moved after `exit <n>` so `RUN_END_PATTERN` still matches a failed run
     expect(h1.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] error [·-] \d+ steps [·-] .* [·-] config: generator usage\.cost missing/);
+    expect(h1.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     expect(h1.store.generator[0]!.usage).toEqual({ inputTokens: 4, outputTokens: 0, costUsd: 0, calls: 1, estimated: true });
     // the resolved config pricing (overrides included) prices the same estimate
     const p2 = deferredProvider('vendor/unknown-model');

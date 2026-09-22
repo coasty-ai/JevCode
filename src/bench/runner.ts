@@ -20,12 +20,14 @@ import { readGeneratorRecords, summariseGeneratorRecords } from './generator-rec
 import { computeSuiteMetrics, isNotRun, suitesIn, withPairComplete } from './metrics.js';
 import { readStepsSummary } from './step-records.js';
 import { createStubDecider, type StubDecider } from './stub-decider.js';
+import { withJevOff } from '../jev/off.js';
 import { createTunedProvider, type TunedProvider } from './tuned-provider.js';
 import { renderComparison } from './report.js';
 import { loadLadderSources } from './ladder/loader.js';
 import { LADDER_VENV_DIR } from './ladder/venv.js';
 import { loadQuixbugsSources } from './quixbugs/loader.js';
 import { BENCH_CACHE_DIR, loadSwebenchSources } from './swebench/loader.js';
+import { archiveRuns, archiveRunsDue } from './archive.js';
 import { modelNameOrPath, readSavedModelPatch, writePredictions, type PredictionEntry } from './swebench/predictions.js';
 import { loadTerminalBenchSources } from './terminalbench/loader.js';
 import { TB_VENV_DIR } from './terminalbench/shim.js';
@@ -234,6 +236,11 @@ export function buildRecord(input: RecordInput): BenchRecord {
     jevTokensPerStep: [...result.jevTokensPerStep],
     cost: { generator: result.usage.generator.costUsd, jev: result.usage.jev.costUsd },
     jevLatencyMs: { raw, p50: percentile(raw, 50), p95: percentile(raw, 95) },
+    // review finding 8: this is the count of requests that reached a provider, which is what the
+    // comparison is about. The meter adds `usage.calls`, and a cache hit contributes 0
+    // (jev/cache.ts `asHit`) — so cached requests are excluded here by construction, exactly as
+    // the stub's are (its count travels as `stubbedJevRequests`). Rows, `draft.jevRequests.length`
+    // and `jev.jsonl` still hold every request INCLUDING the hits, marked `cached`.
     jevRequests: result.usage.jev.calls,
     jevQuestions: result.jevQuestions,
     timing: { generatorMs: result.timing.generatorMs, jevMs: result.timing.jevMs, execMs: result.timing.execMs, harnessMs: result.timing.harnessMs },
@@ -549,7 +556,12 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
     const provider: Provider = tuned ?? baseProvider;
     // llm-sieve: zero Jev requests — the stub answers (and counts) whatever still reaches the decider slot
     const stub: StubDecider | null = usesStubDecider(condition) ? createStubDecider() : null;
-    const decider: Decider = stub ?? (mocked ? deps.createMockDecider() : deps.liveDecider!);
+    // HARNESS-NEXT-DESIGN §1.2 / §5 Ring 1: with `JEVCODE_JEV=off` the Decider slot holds the switch's deterministic
+    // double, so an arm that still finishes proves every router took its named code fallback (`--jev off` gate).
+    // The stub wins: `deciderModelOf` and `buildEngineOptions` both check `usesStubDecider` BEFORE the switch, so
+    // wrapping an llm-sieve arm here would pin `deciderModel` to the stub's name while the decider served
+    // `none (--jev off)` — a pinned model drift, i.e. `JevModelDriftError` and exit 2 on the first ask.
+    const decider: Decider = stub ?? withJevOff(mocked ? deps.createMockDecider() : deps.liveDecider!);
     if (!jevOnly) generatorModel ??= baseProvider.model;
     const synthMode = synthesizerModeOf(condition);
     const synthGeneration = synthesizerGenerationOf(condition, baseProvider.model);
@@ -765,6 +777,14 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
       }
       await writePredictions(outDir, condition, entries);
     }
+  }
+  // last, and after everything the bench is judged on is on disk: the archive is a convenience and
+  // never a reason for a finished bench to fail (bench/archive.ts)
+  // ...and on by default for a results directory in the repository's own bench/results tree, so
+  // every result directory from now on carries its records without anyone remembering the flag
+  // (archive.ts archiveByDefault; the 44 OOS runs had to be tarred by hand after the fact)
+  if (archiveRunsDue(opts.archiveRuns, outDir)) {
+    await archiveRuns({ outDir, runsDir: opts.runsDir, runIds: records.map((r) => r.runId).filter((id): id is string => id !== null), log });
   }
   log(`[bench] done: ${records.length} records in ${outDir}`);
   return { benchId, outDir, records, summary, comparisonMarkdown };

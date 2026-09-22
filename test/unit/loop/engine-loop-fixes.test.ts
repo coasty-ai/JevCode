@@ -250,6 +250,7 @@ describe('Fix 3: loop signatures for refused proposals', () => {
     // §3.7 G1: the `stop:` line is deleted — it restated, one row later, the `[step 7] replan:` row above it
     expect(h.store.transcript.some((l) => l.includes('stop: replan_stop'))).toBe(false);
     expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] replan_stop [·-] /);
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
   });
 
   it('a second replan that picks another move is not the exit; a first gather_context on a run signature is not either', async () => {

@@ -9,6 +9,7 @@ import { assertQuestionBatch } from '../../../src/jev/questions.js';
 import type { CompletionEvidence } from '../../../src/core/types.js';
 import { completionEvidenceHolds, isCompleteByFact, knownFailureCount, knownFailuresOf, unexpectedFailures, type ClaimingCompletionEvidence } from '../../../src/loop/stages/complete.js';
 import { buildRecordOnlyQuestions, codeJudge, ledgerGoalsOf, type CodeJudgeRun } from '../../../src/loop/stages/judge.js';
+import { completeQuestionDue } from '../../../src/loop/stages/complete.js';
 
 const T1 = 'tests/test_a.py::test_f';
 const T2 = 'tests/test_a.py::test_g';
@@ -76,11 +77,51 @@ describe('codeJudge (llm-jev)', () => {
     expect(m.get(VERIFY)).toEqual([]);
   });
 
-  it('record-only questions: done_<j>, tests_pass_unparsed when unparsed, task_complete — nothing else', () => {
+  it('record-only questions: done_<j>, tests_pass_unparsed when unparsed, task_complete \u2014 nothing else', () => {
     const qs = buildRecordOnlyQuestions({ testsUnparsed: true, claims: [ITEM, VERIFY] });
     expect(Object.keys(qs)).toEqual(['tests_pass_unparsed', 'done_0', 'done_1', 'task_complete']);
     assertQuestionBatch(qs);
     expect(Object.keys(buildRecordOnlyQuestions({ testsUnparsed: false, claims: [] }))).toEqual(['task_complete']);
+  });
+
+  /**
+   * OOS 2026-09-22 ranked change 6(b) (Q2(d)): `complete|task_complete` was asked on every step
+   * \u2014 127 questions, 87.7 % of the answers below 0.5 \u2014 while on this path it is recorded and
+   * never consulted (`isCompleteByFact` is the stop). `completeQuestionDue` is the gate;
+   * `buildRecordOnlyQuestions` is where judge.ts applies it.
+   */
+  it('change 6(b): Q22 is dropped from the record-only batch when it is not due, and absent still means due', () => {
+    // not due: the step closed no goal and the plan still lists work
+    const gated = buildRecordOnlyQuestions({ testsUnparsed: false, claims: [], completeDue: false });
+    expect(Object.keys(gated)).toEqual([]);
+    // the other record-only questions are untouched by the gate
+    const withClaims = buildRecordOnlyQuestions({ testsUnparsed: true, claims: [ITEM], completeDue: false });
+    expect(Object.keys(withClaims)).toEqual(['tests_pass_unparsed', 'done_0']);
+    assertQuestionBatch(withClaims);
+    // due, and absent (every other caller) behaves exactly as before
+    expect(Object.keys(buildRecordOnlyQuestions({ testsUnparsed: false, claims: [], completeDue: true }))).toEqual(['task_complete']);
+    expect(Object.keys(buildRecordOnlyQuestions({ testsUnparsed: false, claims: [] }))).toEqual(['task_complete']);
+  });
+
+  it('change 6(b): the gate judge.ts computes \u2014 a goal closed this step, or nothing is left to close', () => {
+    expect(completeQuestionDue({ goalJustClosed: true, planRemaining: 3 })).toBe(true);
+    expect(completeQuestionDue({ goalJustClosed: false, planRemaining: 0 })).toBe(true);
+    expect(completeQuestionDue({ goalJustClosed: false, planRemaining: 3 })).toBe(false);
+  });
+
+  /**
+   * Review finding 3: when Q22 is not due but the batch is asked anyway \u2014 the UNPARSED path,
+   * which still needs `tests_pass_unparsed` \u2014 the callback assigned `completion` regardless, so
+   * a question nobody was asked was recorded as 0.00 (in the step record and in the engine's
+   * window note, which reads `task_complete=0.00 recorded only`).
+   */
+  it('review finding 3: the unparsed batch is still asked, and Q22 is absent from it \u2014 so nothing can read a 0 back', () => {
+    const qs = buildRecordOnlyQuestions({ testsUnparsed: true, claims: [], completeDue: false });
+    expect(Object.keys(qs)).toEqual(['tests_pass_unparsed']);
+    expect(Object.keys(qs)).not.toContain('task_complete');
+    // the batch a decider answers carries no `task_complete` key at all, so the only way to
+    // record a completion on this path would be to invent one
+    expect(buildRecordOnlyQuestions({ testsUnparsed: true, claims: ['x'], completeDue: false })).not.toHaveProperty('task_complete');
   });
 });
 

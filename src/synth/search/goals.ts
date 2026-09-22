@@ -72,6 +72,15 @@ export const MAX_BUDGET_HIT_STEPS = 4;
  * run starts the count at 0 (in-memory, like `budgetSteps`).
  */
 export const MAX_PROGRESS_COMMITS_PER_GOAL = 3;
+/**
+ * Review finding 4: a caller shared by this many clusters or more is a shared utility, not the
+ * defect's call chain, and never merges them. Three is the smallest number that can distinguish
+ * the two: TWO clusters meeting at a caller is the coupled-defect shape the merge exists for
+ * (`crossfile`: three failing frames under one `run`), while a function that three otherwise
+ * unrelated failures all pass through is by definition general-purpose. It is a property of the
+ * relation, not a tuned threshold — at 2 the rule would refuse every merge and delete itself.
+ */
+export const SHARED_UTILITY_CLUSTERS = 3;
 /** Failures kept per goal for Jev states; the measured programs had ≤ 14 (verify STATE_FAILURES_BOUND). */
 export const GOAL_FAILURES_BOUND = STATE_FAILURES_BOUND;
 /**
@@ -354,6 +363,184 @@ function clusterByFrames(entries: FramedTest[]): Cluster[] {
   return clusters;
 }
 
+/**
+ * Couple the frame clusters that the same repair has to touch
+ * (docs/research/llm-jev/oos-analysis-2026-09-22.md ranked change 4).
+ *
+ * Q3: the four `plausible = 0` ladder losses decompose wrongly in both directions. `crossfile`
+ * (`20260922-054652-dcxbrltg`) made SEVEN goals, one per failing test, over three files, for a
+ * defect that needs coupled hunks — so every goal searched a fragment of a repair no single hunk
+ * could complete, 168 sites and 12,153 candidates later with 0 plausible. One goal per failing
+ * test is right only when the tests are independent repairs.
+ *
+ * The structural reason to be one goal, read off the traceback and not a threshold: the two
+ * clusters' failing frames have the SAME IMMEDIATE CALLER — the source frame directly above the
+ * key frame, shared by every member of both clusters. That is the call chain the defect sits on,
+ * and a repair there fixes both tests at once; it is exactly the shape `crossfile` has and
+ * exactly what seven per-test goals cannot express.
+ *
+ * Two guards, both from review finding 4, because the first version merged on ANY shared node:
+ *   - ADJACENCY. On a repository workspace nearly every traceback runs through `sympify`,
+ *     `Basic.__new__` or a decorator, so "shares a node somewhere" is true of almost every pair
+ *     and the union-find collapsed the whole ledger into one goal. Only the immediate caller
+ *     counts, and only when every member of the cluster reaches its key frame through it.
+ *   - SHARED UTILITIES. A caller that appears on `SHARED_UTILITY_CLUSTERS` or more clusters is a
+ *     helper — unrelated code calling one function is what a helper IS — and merging on it is
+ *     refused outright.
+ *
+ * What is deliberately NOT a reason:
+ *
+ *  - the same source FILE. Two independent functions in one module are two repairs, and
+ *    `clusterByFrames` has already split one function's distant lines on FRAME_LINE_WINDOW; a
+ *    file-level merge would undo both and rebuild `masked`'s single 69-site goal.
+ *  - a node that IS a cluster's key frame. Merging on that is the same-function merge
+ *    `clusterByFrames` already did and then split on the line window.
+ *  - a test-kind frame. A single-file workspace with no source traceback (QuixBugs,
+ *    `run_tests.py`) produces only test-kind frames, so it has no shared-caller node at all and
+ *    is left exactly as `clusterByFrames` left it — which keeps a one-file, <= 2-failing-test
+ *    workspace at the ONE goal it is today.
+ *
+ * Merging is transitive (union-find) and order-free: the result depends on the frames, not on the
+ * order the clusters arrived in.
+ */
+export function mergeCoupledClusters(clusters: readonly Cluster[], chains: ReadonlyMap<number, readonly Frame[]>, keys: ReadonlyMap<number, string>): Cluster[] {
+  const parent = clusters.map((_, i) => i);
+  const find = (i: number): number => {
+    let r = i;
+    while (parent[r] !== r) r = parent[r]!;
+    return r;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  };
+  /**
+   * The IMMEDIATE caller of each member's key frame. Review finding 4: a merely shared node was too
+   * weak — on a repository workspace nearly every traceback runs through `sympify`,
+   * `Basic.__new__` or a decorator, so "shares a node" is true of almost every pair and the
+   * union-find collapsed the whole ledger into one goal. The immediate caller is the frame the
+   * defect actually sits under: if two failing frames have the same parent, one edit at that
+   * parent plausibly fixes both; a node six frames up says nothing.
+   *
+   * A cluster's callers are the intersection over its members — a caller only counts if EVERY
+   * member reaches its key frame through it.
+   */
+  const nodeOf = (f: Frame): string | null => (f.kind === 'source' && f.fn !== null ? `${f.path}|${f.fn}` : null);
+  /** the immediate SOURCE caller of `key` on one member's chain (chains are outermost-first) */
+  const callerOn = (chain: readonly Frame[], key: string | undefined): string | null => {
+    for (let i = 0; i < chain.length; i += 1) {
+      if (nodeOf(chain[i]!) !== key) continue;
+      for (let j = i - 1; j >= 0; j -= 1) {
+        const up = nodeOf(chain[j]!);
+        if (up !== null) return up;
+      }
+      return null;
+    }
+    return null;
+  };
+  const callersOf = clusters.map((c) => {
+    // the intersection over the cluster's members: a caller counts only when EVERY member
+    // reaches its key frame through it
+    let shared: string[] | null = null;
+    for (const m of c.members) {
+      const caller = callerOn(chains.get(m) ?? [], keys.get(m));
+      const mine: string[] = caller === null ? [] : [caller];
+      shared = shared === null ? mine : shared.filter((x) => mine.includes(x));
+      if (shared.length === 0) break;
+    }
+    return new Set<string>(shared ?? []);
+  });
+
+  /**
+   * A shared utility: a function that unrelated failures merely PASS THROUGH. It is counted over
+   * the clusters on whose chains the node appears somewhere OTHER than as the immediate caller of
+   * a key frame — which is the distinction that makes the two halves of review finding 4 consistent.
+   *
+   * Counting bare appearances would refuse `crossfile` itself: its three failing frames are three
+   * clusters and `src/pipeline.py|run` is on all three chains, so a flat "on >= 3 chains" test
+   * deletes the very merge the change exists for. What makes `sympify` / `Basic.__new__` / a
+   * decorator different is not how many chains carry them but WHERE: they sit far above the
+   * failing frame on chain after chain, while `run` is the frame directly above each failure. So
+   * the count ignores the adjacency uses and asks whether the node is ALSO a general waypoint.
+   */
+  const passThrough = new Map<string, number>();
+  clusters.forEach((c, ci) => {
+    const seen = new Set<string>();
+    for (const m of c.members) {
+      const chain = chains.get(m) ?? [];
+      const caller = callerOn(chain, keys.get(m));
+      for (const f of chain) {
+        const n = nodeOf(f);
+        if (n === null || n === caller || n === keys.get(m)) continue;
+        seen.add(n);
+      }
+    }
+    for (const n of seen) passThrough.set(n, (passThrough.get(n) ?? 0) + (ci >= 0 ? 1 : 0));
+  });
+  const utility = (n: string): boolean => (passThrough.get(n) ?? 0) >= SHARED_UTILITY_CLUSTERS;
+
+  const sharesCaller = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => {
+    for (const x of a) if (b.has(x) && !utility(x)) return true;
+    return false;
+  };
+  for (let i = 0; i < clusters.length; i += 1) {
+    for (let j = i + 1; j < clusters.length; j += 1) {
+      if (sharesCaller(callersOf[i]!, callersOf[j]!)) union(i, j);
+    }
+  }
+  const byRoot = new Map<number, Cluster>();
+  const order: number[] = [];
+  clusters.forEach((c, i) => {
+    const root = find(i);
+    const held = byRoot.get(root);
+    if (held === undefined) {
+      byRoot.set(root, { reason: c.reason, members: [...c.members], suspectedFiles: [...c.suspectedFiles], missingNames: [...c.missingNames] });
+      order.push(root);
+      return;
+    }
+    held.members.push(...c.members);
+    held.suspectedFiles = dedupe([...held.suspectedFiles, ...c.suspectedFiles]);
+    held.missingNames = dedupe([...held.missingNames, ...c.missingNames]);
+    held.reason = `${held.reason} + ${c.reason}`;
+  });
+  return order.map((root) => {
+    const c = byRoot.get(root)!;
+    c.members.sort((a, b) => a - b);
+    return c;
+  });
+}
+
+/**
+ * The other direction of ranked change 4: split a multi-test goal whose site list cannot be
+ * searched inside the run budget.
+ *
+ * Q3: `masked` (`plausible = 0`, `replan_stop`) was ONE goal over four coupled tests in one file
+ * with 69 sites; it enumerated 7,027 candidates and tested 4,525 without ever reaching the sites
+ * the later tests name, because one goal searches its sites in one order and the budget runs out
+ * part-way down. When a goal's sites outnumber the runs the step can spend, the goal cannot be
+ * decided as a unit this step, and its tests are better attacked one at a time — each with its
+ * own localisation, its own site order and its own share of the ledger's attention.
+ *
+ * The trigger is the same budget comparison as the rest of this iteration (`sites > runsLeft`),
+ * never a site count chosen by hand. A goal with one test is never split: there is nothing to
+ * split it into. The successors inherit the parent's suspected files and missing names, and are
+ * ids `<parent>.1 .. <parent>.n` so the ledger shows the chain.
+ */
+export function splitBySiteBudget(goal: Goal, sites: number, runsLeft: number): Goal[] {
+  if (goal.tests.length < 2 || sites <= runsLeft) return [goal];
+  return goal.tests.map((test, i) => {
+    const failures = goal.failures.filter((f) => f.testId === test);
+    const child = newGoal(`${goal.id}.${i + 1}`, [test], failures.length > 0 ? failures : [failureless(test)], [...goal.suspectedFiles], goal.missingNames ?? []);
+    child.phase = goal.phase;
+    return child;
+  });
+}
+
+function failureless(testId: string): FailureView {
+  return { testId, call: testId, expected: '', actual: 'failed: no details in the output' };
+}
+
 /** The best-ranked SBFL line (rank ≤ SBFL_CLUSTER_TOP) a test executed, or null. */
 function sbflKeyLine(testId: string, sbfl: NonNullable<ClusterOptions['sbfl']>): RankedLine | null {
   const per = sbfl.perTest.find((r) => r.id === testId);
@@ -402,7 +589,12 @@ export function clusterFailures(baseline: TestRunSummary, options: ClusterOption
     if (key === null) unframed.push(index);
     else framed.push({ index, frame: key, frames: fs, missingNames: missingOf(id) });
   });
-  const clusters = clusterByFrames(framed);
+  // ranked change 4: frame clusters the same repair has to touch are ONE goal (shared source
+  // file, or an overlapping (path, fn) node in the two chains). crossfile's seven single-test
+  // goals over three files were seven fragments of a repair no single hunk could complete.
+  const chains = new Map<number, readonly Frame[]>(framed.map((f) => [f.index, f.frames]));
+  const keyNodes = new Map<number, string>(framed.map((f) => [f.index, `${f.frame.path}|${f.frame.fn ?? ''}`]));
+  const clusters = mergeCoupledClusters(clusterByFrames(framed), chains, keyNodes);
   const bySbfl = new Map<string, Cluster>();
   for (const index of unframed) {
     const id = failing[index]!;

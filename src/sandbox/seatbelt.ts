@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { SandboxLevel, SandboxProfile } from '../core/types.js';
+import { ConfigError } from '../errors.js';
 import { canonicalPathSync, isWithin } from './paths.js';
 
 export interface ProfileOptions {
@@ -42,6 +43,22 @@ export interface ProfileOptions {
   gitCommonDir?: string;
   /** TUI-DESIGN §12.7: resolved `${XDG_CONFIG_HOME:-~/.config}/jevcode` + legacy dirs, appended to the `file-read*` denies. */
   configDirs?: readonly string[];
+  /**
+   * ORCHESTRATION-DESIGN §5.2 [G3]: set when `EngineOptions.orchestration.depth === 1`.
+   *
+   * A linked worktree's common dir is a WRITE ROOT (the `gitRoots` block below puts it there so
+   * `git commit` can reach `refs/`, `logs/` and `objects/`), and the §12.7 denies cover only the
+   * executable knobs. The landing layer pins `refs/heads/jevcode/<slug>` to a sha ONCE and re-checks
+   * that same sha at merge time; a child that could move the ref, rewrite the reflog, repack
+   * `packed-refs` or repoint another worktree's `HEAD` in between would defeat the re-check and get
+   * an unverified tree merged into the dock — and under `orchestrate.land: 'step'`, into the user's
+   * checkout. So a depth-1 profile denies all four, and only a depth-1 one: the supervisor builds its
+   * OWN `Sandbox` per worktree from the PARENT's configuration ([D10]), never sets this flag, and it
+   * is that profile — not this one — that runs [G1]'s `git add` / `git commit` in an agent worktree.
+   * An agent's own engine never writes a ref (`src/workspace/git.ts` writes only the index and the
+   * working tree: `restore --worktree`, `add -A -N`, `apply`), so the deny costs it nothing.
+   */
+  agentChild?: boolean;
 }
 
 /** SBPL string literal: double-quoted with backslash and quote escaped. */
@@ -156,6 +173,45 @@ export function buildProfile(opts: ProfileOptions): string {
     if (ttyDeny.length > 0) lines.push(`(deny file-write* ${ttyDeny.join(' ')})`);
   } else {
     lines.push(`(deny file-write* ${[...gitDenies, ...ttyDeny].join(' ')})`);
+  }
+  // ORCHESTRATION-DESIGN §5.2 [G3]: the child deny list, its own rule so nothing else can weaken it
+  // (`protectGit: false` is the infrastructure sandbox's knob and has no business relaxing this one).
+  // It sits after the write allow because later rules win; without the ordering the deny is inert.
+  //
+  // Everything here is relative to the git COMMON dir, and every entry is a thing that decides what a
+  // later `git merge` merges, or merges INTO:
+  //   refs/, packed-refs, reftable/  the branch the landing layer pinned, in all three storage formats
+  //                                  (`extensions.refStorage = reftable` makes the first two inert on
+  //                                  their own — review 2026-09-22 finding 8)
+  //   logs/                          its reflog
+  //   HEAD, index                    the MAIN worktree's current branch and staged tree. Under
+  //                                  `orchestrate.land: 'step'` the user's own checkout is the merge
+  //                                  target, so these were the most valuable writable files left
+  //                                  (review 2026-09-22 finding 3, probed under sandbox-exec)
+  //   ORIG_HEAD, MERGE_HEAD,         the in-flight state of a merge/rebase/cherry-pick: cheap to deny,
+  //   sequencer/                     and each one steers what a resumed operation does
+  //   worktrees/<name>/HEAD          what any linked worktree — this agent's own included — considers
+  //                                  its current branch
+  // The agent's own per-worktree `logs/`, `refs/` and `index` live under `<commonDir>/worktrees/<name>/`
+  // and stay writable, which is what leaves its own work possible.
+  //
+  // The subpaths lead deliberately: `(deny file-write* (subpath` is how the tests tell this rule apart
+  // from the `.git` knob denies, which open with `(literal`.
+  if (opts.agentChild === true) {
+    // review 2026-09-22 finding 7: REFUSE rather than degrade. In an agent worktree `<ws>/.git` is a FILE,
+    // so the old `commonDir ?? join(ws, '.git')` fallback aimed every rule at a path that does not exist and
+    // the whole of [G3] silently evaporated. A depth-1 sandbox without a probed common dir is a wiring bug.
+    // `commonOpt`, not the derived `commonDir`: the derivation falls back to `gitDir`, and a gitDir-only call
+    // at depth 1 is still a guess about where the refs live. The probe knows; require that it was asked.
+    if (commonOpt === null) {
+      throw new ConfigError('a depth-1 (agentChild) seatbelt profile needs gitCommonDir: without it the [G3] ref denies would point at nothing', { setting: 'gitCommonDir' });
+    }
+    const q = (...parts: string[]): string => sbplString(join(commonOpt, ...parts));
+    lines.push(
+      `(deny file-write* (subpath ${q('refs')}) (subpath ${q('logs')}) (subpath ${q('reftable')}) (subpath ${q('sequencer')}) ` +
+        `(literal ${q('packed-refs')}) (literal ${q('HEAD')}) (literal ${q('index')}) (literal ${q('ORIG_HEAD')}) (literal ${q('MERGE_HEAD')}) ` +
+        `(regex ${sbplRegex(`^${regexQuote(join(commonOpt, 'worktrees'))}/[^/]+/HEAD$`)}))`,
+    );
   }
 
   const reads: string[] = [];

@@ -3,8 +3,8 @@
  * the step's prompt is built and after a compaction — from chars, with `CHARS_PER_TOKEN = 3.4` as the token estimate. Pure;
  * the engine keeps the last object and `status()` returns it unchanged.
  */
-import { CHARS_PER_TOKEN, DEFAULT_GENERATOR_CONTEXT_TOKENS, METER_AMBER_PCT, METER_RED_PCT, type ContextBudget } from './limits.js';
-import type { CompactionMode, ContextUsage, RecentStepsUsage } from '../../core/types.js';
+import { CHARS_PER_TOKEN, COMPACT_AT_PCT, DEFAULT_GENERATOR_CONTEXT_TOKENS, METER_AMBER_PCT, METER_RED_PCT, type ContextBudget } from './limits.js';
+import type { CompactionMode, ContextUsage, MemoryUsage, RecentStepsUsage } from '../../core/types.js';
 import type { ContextCheckpointExtension } from '../../checkpoint/types.js';
 
 export interface ContextUsageInput {
@@ -24,6 +24,12 @@ export interface ContextUsageInput {
   compactions: number;
   lastCompactionAt: string | null;
   compaction: CompactionMode;
+  /**
+   * contract 1.6 (IMPORT-DESIGN §2.10.3, §7.5 row 42): what the two memory sections cost at this build and what the
+   * once-per-run index costs. Omitted — and therefore omitted from `ContextUsage` too — on a run with no memory, so the
+   * meter object of a run that never imported anything is exactly what it was before 1.6.
+   */
+  memory?: MemoryUsage;
 }
 
 /**
@@ -56,6 +62,8 @@ export function computeContextUsage(i: ContextUsageInput): ContextUsage {
     recentSteps: i.recentSteps ?? { chars: 0, allowanceChars: 0, whole: 0, clipped: 0, oneLine: 0, reads: 0 },
     promptBuildMs: Math.max(0, Math.round((i.promptBuildMs ?? 0) * 100) / 100),
     refreshMs: Math.max(0, Math.round((i.refreshMs ?? 0) * 100) / 100),
+    // contract 1.6: present only when the run has memory (the spread, not a `memory: undefined` member)
+    ...(i.memory === undefined ? {} : { memory: i.memory }),
   };
 }
 
@@ -77,6 +85,18 @@ export function restoredContextUsage(state: ContextCheckpointExtension, budget: 
 }
 
 export type MeterLevel = 'ok' | 'amber' | 'red';
+
+/**
+ * contract 1.4 (Q16): did this build cross the §8.6 compaction line (`COMPACT_AT_PCT`) going UP?
+ *
+ * The arming state is the previous `ContextUsage.pct` itself, so there is no flag to keep in sync: a run that sits at
+ * 90 % for six steps warns once, and the fold that drops it to 60 % re-arms the next crossing by moving `previousPct`
+ * back under the line. The comparison is on the rounded percent the meter reports, so the event can never disagree
+ * with the number a surface is showing.
+ */
+export function contextWarnCrossed(previousPct: number, pct: number): boolean {
+  return pct >= COMPACT_AT_PCT && previousPct < COMPACT_AT_PCT;
+}
 
 /** §8.5: amber at 85 %, red at 95 %. */
 export function meterLevel(pct: number): MeterLevel {
@@ -103,6 +123,22 @@ export function formatBudget(u: ContextUsage, o: { maxSteps?: number; spendCapUs
   if (u.budgetBoundBy === 'floor') return `budget ${k(u.budgetChars)} chars — the floor${per}`;
   if (u.budgetBoundBy === 'ceiling') return `budget ${k(u.budgetChars)} chars — the ceiling${per}`;
   return `budget ${k(u.budgetChars)} chars of the ${k(u.windowTokens)}-token window${per}`;
+}
+
+/**
+ * contract 1.6 (IMPORT-DESIGN §2.10.3): the `/context` memory line —
+ * `memory 2.1k of 14k · 3 of 4 rules, 1 of 2 notes · index 512`. Null on a run with no memory, so `/context`
+ * prints nothing extra for a session that never imported anything.
+ */
+export function formatMemory(u: ContextUsage): string | null {
+  const m = u.memory;
+  if (m === undefined) return null;
+  const k = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k` : `${n}`);
+  const used = m.rulesChars + m.memoryChars;
+  const allowance = m.rulesAllowanceChars + m.memoryAllowanceChars;
+  const rules = `${m.rulesShown} of ${m.rulesMatched} rule${m.rulesMatched === 1 ? '' : 's'}`;
+  const notes = `${m.memoryShown} of ${m.memoryMatched} note${m.memoryMatched === 1 ? '' : 's'}`;
+  return `memory ${k(used)} of ${k(allowance)} · ${rules}, ${notes} · index ${k(m.indexChars)}`;
 }
 
 /** The S5 zone text: `ctx 41% · 6 files · 12 steps`. */

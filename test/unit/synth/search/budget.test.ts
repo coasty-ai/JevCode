@@ -56,6 +56,9 @@ import {
   SESSION_OVERHEAD_MS,
   SIEVE_KEEP_FACTOR,
   SIEVE_MAX_T_RUN_MS,
+  poolFitsRunBudget,
+  rankPoolCap,
+  siteShare,
 } from '../../../../src/synth/search/budget.js';
 import { MAX_FULL_SUITE_RUNS_PER_STEP } from '../../../../src/synth/sieve/runner.js';
 import type { TestRunSummary } from '../../../../src/synth/types.js';
@@ -459,14 +462,23 @@ describe('decideRunPlan (§2.4)', () => {
   it('RANK on slow oracles: K = 3 at replace sites, 5 at insert sites, 5 above 60 candidates', () => {
     const swe = oracle({ runner: 'pytest', lanes: 4, tRunMs: { goalSubset: 5000, fullSuite: 5000 } });
     const b = budget({ testRunsLeft: 16, testWallLeftMs: 40_000 });
-    expect(decideRunPlan(10, replace, swe, b)).toEqual({ mode: 'RANK', k: 3, runsAllowed: 3 });
-    expect(decideRunPlan(10, insert, swe, b)).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
+    expect(runsLeft(swe, b)).toBe(16); // min(16, floor(40 s x 4 / 5 s) = 32)
+    // 10 <= 16 runs left: OOS 2026-09-22 ranked change 1 runs the pool instead of ordering it
+    expect(decideRunPlan(10, replace, swe, b)).toEqual({ mode: 'SIEVE', k: 10, runsAllowed: 10 });
+    expect(decideRunPlan(10, insert, swe, b)).toEqual({ mode: 'SIEVE', k: 10, runsAllowed: 10 });
+    expect(decideRunPlan(17, replace, swe, b)).toEqual({ mode: 'RANK', k: 3, runsAllowed: 3 });
+    expect(decideRunPlan(17, insert, swe, b)).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
     expect(decideRunPlan(COMPACT_NOUL_MIN_CANDIDATES - 1, replace, swe, b).k).toBe(3);
     expect(decideRunPlan(COMPACT_NOUL_MIN_CANDIDATES, replace, swe, b).k).toBe(5);
     expect(decideRunPlan(1641, replace, swe, b)).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
-    // exactly SIEVE_MAX_T_RUN_MS is still cheap enough; 1 ms more is not
+    // t_run no longer cuts SIEVE off on its own: the pool-against-budget comparison is the whole test,
+    // and `runsLeft` is where an expensive run is already priced (OOS 2026-09-22 ranked change 1)
     expect(decideRunPlan(3, replace, oracle({ tRunMs: { goalSubset: SIEVE_MAX_T_RUN_MS, fullSuite: 0 } }), b).mode).toBe('SIEVE');
-    expect(decideRunPlan(3, replace, oracle({ tRunMs: { goalSubset: SIEVE_MAX_T_RUN_MS + 1, fullSuite: 0 } }), b).mode).toBe('RANK');
+    expect(decideRunPlan(3, replace, oracle({ tRunMs: { goalSubset: SIEVE_MAX_T_RUN_MS + 1, fullSuite: 0 } }), b).mode).toBe('SIEVE');
+    // an expensive run shrinks the runs left, and the pool stops fitting there
+    const slow = oracle({ runner: 'pytest', lanes: 1, tRunMs: { goalSubset: 60_000, fullSuite: 60_000 } });
+    expect(runsLeft(slow, b)).toBe(0); // floor(40 s x 1 / 60 s)
+    expect(decideRunPlan(3, replace, slow, b)).toEqual({ mode: 'RANK', k: 0, runsAllowed: 0 });
   });
   it('K never exceeds the runs left; an empty set is a SIEVE of nothing; arrays count like numbers', () => {
     const swe = oracle({ runner: 'pytest', lanes: 4, tRunMs: { goalSubset: 5000, fullSuite: 5000 } });
@@ -525,19 +537,97 @@ describe('repository-class runs per step from the measured oracle, and the budge
     expect(decideRunPlan(727, replace, sympy, b, { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: RANK_K_SITE_MAX, runsAllowed: RANK_K_SITE_MAX });
     expect(decideRunPlan(727, replace, sympy, b, { sitesLeft: 4 })).toEqual({ mode: 'RANK', k: 16, runsAllowed: 16 });
     // a small share never undercuts the fixed rule (3 at replace sites, 5 at gaps and on compact sets)
-    expect(decideRunPlan(10, replace, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'RANK', k: 3, runsAllowed: 3 });
-    expect(decideRunPlan(10, insert, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
+    // 10 candidates against 20 runs left is a SIEVE now (ranked change 1); 100 against 20 is not.
+    // The site's share caps what the SIEVE may SPEND here (review finding 7): floor(20/12) = 1.
+    expect(decideRunPlan(10, replace, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'SIEVE', k: 10, runsAllowed: 1 });
+    expect(decideRunPlan(10, insert, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'SIEVE', k: 10, runsAllowed: 1 });
     expect(decideRunPlan(100, replace, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
     // never above the runs left
     expect(decideRunPlan(727, replace, sympy, budget({ testRunsLeft: 2, testWallLeftMs: 600_000 }), { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: 2, runsAllowed: 2 });
     // without sitesLeft (the best-guess path, callers outside the loop): the fixed K
     expect(decideRunPlan(727, replace, sympy, b)).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
-    expect(decideRunPlan(10, replace, sympy, b)).toEqual({ mode: 'RANK', k: 3, runsAllowed: 3 });
+    expect(decideRunPlan(10, replace, sympy, b)).toEqual({ mode: 'SIEVE', k: 10, runsAllowed: 10 });
   });
+  /**
+   * docs/research/llm-jev/oos-analysis-2026-09-22.md ranked change 1. Q2: 707 SIEVE/RANK
+   * `candidate_*` requests, 64,961 questions, $0.4260 of the slice's $0.6233 (68 %); 393/397 of
+   * the ladder's and 302/302 of SWE's fired in steps whose search found `plausible = 0`. Q4:
+   * sympy-16792 (`20260922-063202-e44wjtrm`) enumerated 28,878 candidates, ranked 27,754 and
+   * could test 1,191 — 178 requests / 26,489 questions for an order over a pool 24x the run
+   * budget. Q5: QuixBugs paid 3 sieve requests across all ten tasks because a 9-11-site pool at
+   * t_run <= 520 ms is fully testable in one round.
+   */
+  it('poolFitsRunBudget is the whole SIEVE/RANK test: a pool with a passer inside the run budget spends no ranking request, a pool larger than the budget still ranks (OOS 2026-09-22 ranked change 1)', () => {
+    // QuixBugs shape: 11 sites x ~10 one-line edits at t_run 520 ms, decided by the goal test alone
+    const quix = oracle({ lanes: 8, tRunMs: { goalSubset: 520, fullSuite: 520 } });
+    const qb = budget({ testRunsLeft: 1500, testWallLeftMs: 90_000 });
+    expect(poolFitsRunBudget(110, runsLeft(quix, qb))).toBe(true);
+    expect(decideRunPlan(110, { kind: 'replace' }, quix, qb).mode).toBe('SIEVE');
+    // sympy-16792's shape: the pool is 24x the runs the step can spend, so the order is still bought
+    const sympy16792 = oracle({ runner: 'pytest', lanes: 4, tRunMs: { goalSubset: 1574, fullSuite: 1574 } });
+    const swe = budget({ testRunsLeft: 1191, testWallLeftMs: 600_000 });
+    expect(runsLeft(sympy16792, swe)).toBe(1191);
+    expect(poolFitsRunBudget(28_878, 1191)).toBe(false);
+    expect(decideRunPlan(28_878, { kind: 'replace' }, sympy16792, swe).mode).toBe('RANK');
+    // and at the boundary the comparison is pool <= budget, nothing else
+    expect(poolFitsRunBudget(1191, 1191)).toBe(true);
+    expect(poolFitsRunBudget(1192, 1191)).toBe(false);
+    expect(poolFitsRunBudget(0, 0)).toBe(true); // an empty pool needs no order
+  });
+
+  /**
+   * Review finding 5: the first version capped at `runsLeft` — the STEP's budget over every site
+   * still to visit (4,574 in the reviewer's probe) where the visit itself runs `plan.k` = 5. It
+   * priced ~1,000x more candidates than the order could pick and left ~90 % of change 1's saving
+   * on the table. The cap is `k` plus at most `k` of margin for the `fixProbablyAbsent` signal.
+   */
+  it('rankPoolCap prices the ORDER, not the step: k = 5 prices at most 10, never runsLeft (review finding 5)', () => {
+    expect(rankPoolCap(5, 4574)).toBe(10);
+    expect(rankPoolCap(3, 4574)).toBe(6);
+    expect(rankPoolCap(16, 4574)).toBe(32);
+    // never more than the runs actually left, and never less than k itself
+    expect(rankPoolCap(5, 7)).toBe(7);
+    expect(rankPoolCap(5, 5)).toBe(5);
+    expect(rankPoolCap(5, 2)).toBe(2);
+    expect(rankPoolCap(0, 4574)).toBe(0);
+    expect(rankPoolCap(5, 0)).toBe(0);
+    expect(rankPoolCap(-5, 10)).toBe(0);
+    // sympy-16792 (OOS 2026-09-22 Q4): 27,754 ranked to test 1,191 in 178 requests. At k = 5 the
+    // priced pool is 10, which is ONE request of the 150-candidate repository chunk.
+    const priced = Math.min(27_754, rankPoolCap(5, 1191));
+    expect(priced).toBe(10);
+    expect(Math.ceil(priced / 150)).toBe(1);
+  });
+
+  /**
+   * Review finding 7: `decideRunPlan` returned `runsAllowed = n` for SIEVE, ignoring `sitesLeft`.
+   * With a 60 s oracle, 1 lane and a 20 min wall the step has 20 runs for 12 sites, so an
+   * 18-candidate pool at the first source of the first site took 18 of them and starved 11 sites.
+   */
+  it('SIEVE spreads the run budget over the sites too: the reviewer\'s 60 s oracle never spends 18 runs at one site (review finding 7)', () => {
+    const slow = oracle({ runner: 'pytest', lanes: 1, tRunMs: { goalSubset: 60_000, fullSuite: 60_000 } });
+    const b = budget({ testRunsLeft: 1500, testWallLeftMs: 20 * 60_000 });
+    expect(runsLeft(slow, b)).toBe(20); // floor(20 min x 1 lane / 60 s)
+    const plan = decideRunPlan(18, replace, slow, b, { sitesLeft: 12 });
+    // the pool fits the STEP, so it is still a SIEVE — but it may not spend the whole step here
+    expect(plan.mode).toBe('SIEVE');
+    expect(plan.runsAllowed).toBe(1); // floor(20 / 12)
+    expect(plan.runsAllowed).toBeLessThan(18);
+    // with no sitesLeft given (the best-guess path, callers outside the loop) the whole pool runs
+    expect(decideRunPlan(18, replace, slow, b)).toEqual({ mode: 'SIEVE', k: 18, runsAllowed: 18 });
+    // at the last site the share is the whole remaining budget
+    expect(decideRunPlan(18, replace, slow, b, { sitesLeft: 1 })).toEqual({ mode: 'SIEVE', k: 18, runsAllowed: 18 });
+    // siteShare itself: never 0 while a run is left, so a site can always make progress
+    expect(siteShare(20, 12)).toBe(1);
+    expect(siteShare(60, 4)).toBe(15);
+    expect(siteShare(1, 12)).toBe(1);
+    expect(siteShare(0, 12)).toBe(0);
+  });
+
   it('the sized take is confined to the cheap repository oracle: equal-cost and QuixBugs-class plans are unchanged', () => {
     const equal = oracle({ runner: 'pytest', lanes: 4, tRunMs: { goalSubset: 5000, fullSuite: 5000 } });
     const b = budget({ testRunsLeft: 100, testWallLeftMs: 600_000 });
-    expect(decideRunPlan(10, replace, equal, b, { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: 3, runsAllowed: 3 });
+    expect(decideRunPlan(10, replace, equal, b, { sitesLeft: 1 })).toEqual({ mode: 'SIEVE', k: 10, runsAllowed: 10 });
     expect(decideRunPlan(200, insert, equal, b, { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
     // QuixBugs class (t_run < 2 s) with a cheaper subset: RANK only when the set outgrows the runs left, and then the fixed K
     const quix = oracle({ lanes: 8, tRunMs: { goalSubset: 300, fullSuite: 4000 } });

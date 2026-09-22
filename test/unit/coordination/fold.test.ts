@@ -67,20 +67,20 @@ function shape(f: ReturnType<typeof foldOf>): unknown {
 
 describe('the §9.3 fork rule over immutable claims (review blocker 3, §11 row 31)', () => {
   const rid = runId(7);
-  const mineClaim = claim({ epoch: 1, deviceId: DEV_A, runId: rid, pid: 100, startedAt: iso(T0 - 10_000) });
-  const theirClaim = claim({ epoch: 2, deviceId: DEV_B, runId: rid, pid: 200, startedAt: iso(T0 - 1_000) });
+  const mineClaim = claim({ epoch: 1, deviceId: DEV_A, runId: rid, pid: 100, at: iso(T0 - 10_000) });
+  const theirClaim = claim({ epoch: 2, deviceId: DEV_B, runId: rid, pid: 200, at: iso(T0 - 1_000) });
   const mine = makeHeartbeat({ runId: rid, sessionId: rid, stamp: stamp(51, DEV_A, rid), claim: mineClaim });
-  // the peer's rolling stamp is LOWER, which the old rule would have made it the holder
+  // the peer's rolling stamp is LOWER, and the withdrawn minimum-holder rule would have made MINE the holder (§14 item 18)
   const theirs = makeHeartbeat({ deviceId: DEV_B, runId: rid, sessionId: rid, pid: 200, stamp: stamp(50, DEV_B, rid), claim: theirClaim });
 
   it('two records for one runId: the claim holder is `live`, the rest are `forks`, and the flag is raised', () => {
     const fold = foldOf([entry(mine, SELF), entry(theirs, TRUSTED)]);
-    expect(fold.live.get(rid)?.deviceId).toBe(DEV_A); // the lower CLAIM, not the lower stamp
+    expect(fold.live.get(rid)?.deviceId).toBe(DEV_B); // the HIGHER claim epoch (§3.2), not the stamp
     expect(fold.forks?.get(rid)).toHaveLength(1);
     const row = listSessions(fold, self).find((a) => a.runId === rid);
     expect(row?.flags.forked).toBe(true);
-    expect(byRunId(fold, rid).map((h) => h.deviceId)).toEqual([DEV_A, DEV_B]);
-    expect(seenEpochs(fold, rid)).toEqual([1, 2]);
+    expect(byRunId(fold, rid).map((h) => h.deviceId)).toEqual([DEV_B, DEV_A]); // rank order: highest epoch first
+    expect(seenEpochs(fold, rid)).toEqual([2, 1]);
   });
 
   it('the verdict does not move when the arrival order is reversed', () => {
@@ -236,8 +236,8 @@ describe('§11 row 7: a resumed run whose workspace path changed', () => {
 describe('+ review major 12: one row per (deviceId, runId) — forks included', () => {
   const rid = runId(7);
   const forked = () => {
-    // two live processes on ONE runId: the claim holder (epoch 1) and a later incarnation on another device
-    const holder = makeHeartbeat({ runId: rid, sessionId: rid, pid: 111, claim: claim({ epoch: 1, runId: rid, pid: 111, startedAt: iso(T0 - 90_000) }), stamp: stamp(5, DEV_A, rid) });
+    // two live processes on ONE runId: a stale incarnation (epoch 1) and the claim holder (epoch 2) on another device
+    const holder = makeHeartbeat({ runId: rid, sessionId: rid, pid: 111, claim: claim({ epoch: 1, runId: rid, pid: 111, at: iso(T0 - 90_000) }), stamp: stamp(5, DEV_A, rid) });
     const later = makeHeartbeat({ deviceId: DEV_B, runId: rid, sessionId: rid, pid: 222, label: 'studio', claim: claim({ epoch: 2, deviceId: DEV_B, runId: rid, pid: 222 }), stamp: stamp(6, DEV_B, rid) });
     return foldOf([entry(holder, SELF), entry(later, TRUSTED)]);
   };
@@ -257,9 +257,9 @@ describe('+ review major 12: one row per (deviceId, runId) — forks included', 
   it('byRunId puts the CLAIM HOLDER first and keeps two processes of one device apart', () => {
     const fold = forked();
     const rows = byRunId(fold, rid);
-    expect(rows[0]?.claim.epoch).toBe(1); // the holder is the LOWEST claim, never the newest stamp
+    expect(rows[0]?.claim.epoch).toBe(2); // the holder is the HIGHEST epoch (§3.2), never the newest stamp
     expect(rows).toHaveLength(2);
-    expect(seenEpochs(fold, rid)).toEqual([1, 2]);
+    expect(seenEpochs(fold, rid)).toEqual([2, 1]);
   });
 });
 
