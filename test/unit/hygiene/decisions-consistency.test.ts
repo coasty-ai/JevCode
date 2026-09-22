@@ -21,7 +21,7 @@ const DECISIONS = readFileSync(join(ROOT, 'docs/DECISIONS.md'), 'utf8');
 const UNMERGED_WORDS = /\b(still owed|owed|unmerged|not (?:yet )?merged|awaiting merge|pending merge|will land|has not landed|not landed)\b/i;
 
 function isMergedOrGone(branch: string): boolean {
-  const opts = { cwd: ROOT, encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'ignore'] as const };
+  const opts = { cwd: ROOT, encoding: 'utf8' as const, stdio: ['ignore', 'pipe', 'ignore'] as ('ignore' | 'pipe')[] };
   try {
     execFileSync('git', ['rev-parse', '--verify', `refs/heads/${branch}`], opts);
   } catch {
