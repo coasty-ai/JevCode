@@ -6,7 +6,7 @@
  * (`readBounded` never pulls more than `maxBytes + 1` into memory — §2.1 rule 6, ≤ 64 KiB).
  */
 import { mkdirSync, openSync, readSync, closeSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { mkdir, open, readdir, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, realpath, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { writeFileAtomic, writeFileAtomicSync } from '../core/atomic.js';
 
 export interface FsStat {
@@ -32,6 +32,8 @@ export interface CoordFs {
   readdir(path: string): Promise<string[]>;
   readBounded(path: string, maxBytes: number): Promise<BoundedRead>;
   stat(path: string): Promise<FsStat>;
+  /** + re-review (6)(ii): symlinks resolved — the mirror root must not resolve INSIDE the coordination root */
+  realpath(path: string): Promise<string>;
   unlink(path: string): Promise<void>;
   rmTree(path: string): Promise<void>;
   // the synchronous subset: the `'exit'` handler's ended marker (§3.3 point 6) and the bench lock (§4.7)
@@ -102,6 +104,9 @@ export const nodeFs: CoordFs = {
   readBounded: readBoundedAsync,
   async stat(path) {
     return toStat(await stat(path));
+  },
+  realpath(path) {
+    return realpath(path);
   },
   unlink(path) {
     return unlink(path);

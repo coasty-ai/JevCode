@@ -9,12 +9,13 @@ import { join } from 'node:path';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { DIRECTIVE_MAX_CHARS } from '../core/types.js';
 import { ConfigError } from '../errors.js';
-import { listSessions, sessionTargets } from './fold.js';
-import { DIR_MODE, FILE_MODE } from './fs.js';
+import { listSessions, messageOrigin, sessionTargets } from './fold.js';
+import { DIR_MODE, FILE_MODE, classifyLedgerError } from './fs.js';
 import { DEVICE_ID_RE, MSG_ID_RE, isValidRelPath, isValidTarget } from './ids.js';
-import { asHandle, type LedgerHandle } from './ledger.js';
+import { ACK_TRACK_MAX_MS, asHandle, type LedgerHandle } from './ledger.js';
+import { ackRel, messageRel } from './paths.js';
 import { CONTROL_MESSAGE_TTL_MS, CONTROL_MESSAGE_TYPES, MESSAGE_FILES_MAX, MESSAGE_TTL_MS, READ_MAX_BYTES, compareStamp, finalizeRecord, fitsRecordSize, oneLine } from './records.js';
-import type { Ack, AckOutcome, Authority, Fold, Ledger, Message, MessageType, RecordOrigin, SelfIdentity, SessionActivity } from './types.js';
+import type { Ack, AckOutcome, Authority, Fold, Ledger, Message, MessageType, PurgeReport, RecordOrigin, SelfIdentity, SessionActivity } from './types.js';
 
 /** §5.1: a device sending more than this per minute mutes itself for 10 min with one notice */
 export const MUTE_THRESHOLD_PER_MIN = 60;
@@ -37,7 +38,7 @@ interface MailboxState {
  * name stays parseable, and always unique per writer.
  */
 export function consumerIdOf(self: Pick<SelfIdentity, 'sessionId'>, actor8: string): string {
-  return self.sessionId ?? `tui-${actor8}`;
+  return `${self.sessionId ?? 'tui'}-${actor8}`;
 }
 const states = new WeakMap<LedgerHandle, MailboxState>();
 function stateOf(h: LedgerHandle): MailboxState {
@@ -103,6 +104,7 @@ export async function send(ledger: Ledger, m: SendInput): Promise<{ id: string; 
       to: m.to,
       type: m.type,
       text,
+      ...(h.self.hostKey !== undefined ? { hostKey: h.self.hostKey } : {}), // §3.2: binds the message to the MACHINE
       refs: cleanRefs(m.refs),
       ...(m.by !== undefined ? { by: m.by } : {}),
       t: new Date(wall).toISOString(),
@@ -114,9 +116,12 @@ export async function send(ledger: Ledger, m: SendInput): Promise<{ id: string; 
   );
   const signed = h.sign(record);
   if (!fitsRecordSize('message', signed)) throw new ConfigError('message too large (record exceeds 2 KiB)', { setting: 'coordination' });
-  const rel = join(m.to, `${wall}-${stamp.n}.json`);
+  // + review major 13: `@ws:…` / `@rm:…` targets become `@ws-…` / `@rm-…` on disk; the record keeps the colon form
+  const rel = messageRel(m.to, wall, stamp.n);
   st.sentAt.push(wall);
-  h.trackAck(id);
+  // + review major 9: the tracking lapses with the message (10 min for a control type) and never outlives the
+  // ack-wait horizon — a 7-day message would otherwise keep one readdir per device alive on every scan for a week
+  h.trackAck(id, Math.min(ttl, ACK_TRACK_MAX_MS));
   await h.writeOwn('inbox', rel, signed, { fsync: true });
   return { id, path: join(h.paths.deviceDir('inbox', h.self.deviceId), rel) };
 }
@@ -132,8 +137,10 @@ export function inbox(fold: Fold, self: SelfIdentity, seen: ReadonlySet<string>)
     if (seen.has(m.id)) continue;
     const exp = Date.parse(m.expiresAt);
     if (Number.isFinite(exp) && exp <= fold.at.wallMs) continue;
-    if (self.sessionId !== null && m.from.sessionId === self.sessionId) continue;
-    if (self.runId !== null && m.from.runId === self.runId) continue;
+    // + review minor 20: "mine" is the READ LOCATION plus the content, never the content alone — a foreign message
+    // that names my sessionId would otherwise silently disappear from my own inbox.
+    const mineByContent = (self.sessionId !== null && m.from.sessionId === self.sessionId) || (self.runId !== null && m.from.runId === self.runId);
+    if (mineByContent && messageOrigin(fold, m).self) continue;
     out.push(m);
   }
   return out.sort((a, b) => compareStamp(a.stamp, b.stamp));
@@ -179,17 +186,25 @@ async function markSeen(h: LedgerHandle, id: string): Promise<void> {
 
 // ── ack / awaitAck ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** writes acks/<myDeviceId>/<msgId>/<mySessionId>.json and appends the id to coordination/seen/<mySessionId>.json (≤ 2,000, one writer) */
+/**
+ * writes `acks/<myDeviceId>/<msgId>/<consumerId>.json` and appends the id to `inbox/seen/<consumerId>.json`
+ * (≤ 2,000, ONE writer — review major 8: the writer is a PROCESS, so the file is keyed by `consumerId`, not by session).
+ *
+ * + review major 8: a SESSIONLESS consumer (a `sessions` twin, a TUI before its first run) may ack `delivered` — it
+ * really did read the message, and the sender's `awaitAck` deserves to know. It may not claim `applied` / `refused`:
+ * those are outcomes only a run can produce.
+ */
 export async function ack(ledger: Ledger, msgId: string, outcome: AckOutcome, detail60?: string): Promise<void> {
   const h = asHandle(ledger);
   if (!MSG_ID_RE.test(msgId)) throw new ConfigError(`ack: '${msgId}' is not a message id`, { setting: 'coordination' });
-  if (h.self.sessionId === null) throw new ConfigError('ack: this process has no session id', { setting: 'coordination' });
+  if (h.self.sessionId === null && outcome !== 'delivered') throw new ConfigError(`ack: this process has no session id, so it can only ack 'delivered' (not '${outcome}')`, { setting: 'coordination' });
+  const consumerId = consumerIdOf(h.self, h.actor8);
   const record: Ack = finalizeRecord(
     {
       v: 1,
       kind: 'ack',
       msgId,
-      by: h.self.sessionId,
+      by: consumerId,
       deviceId: h.self.deviceId,
       at: new Date(h.now()).toISOString(),
       outcome,
@@ -199,15 +214,24 @@ export async function ack(ledger: Ledger, msgId: string, outcome: AckOutcome, de
     },
     h.redact,
   );
-  await h.writeOwn('acks', join(msgId, `${h.self.sessionId}.json`), h.sign(record), { fsync: true });
+  await h.writeOwn('acks', ackRel(msgId, consumerId), h.sign(record), { fsync: true });
   await markSeen(h, msgId);
 }
 
-/** the CLI twin's wait: resolves with the target's ack or null after `timeoutMs` (default 5_000), via subscribe — never a busy loop */
+/**
+ * The CLI twin's wait: resolves with a BELIEVED ack — one read from the subtree of the device where the target is or
+ * was last live (§5.1, review blocker 3) — or null after `timeoutMs` (default 5_000), via `subscribe`, never a busy
+ * loop. Any consumerId of that device counts (review major 8).
+ *
+ * An ack from any other subtree is not an answer: nothing in an ack's CONTENT binds it to the target, so
+ * `acks/<anyDevice>/<msgId>/<targetSessionId>.json` would otherwise let any writer in a shared folder answer for
+ * anyone. The caller that wants to show a non-believed ack as a hint reads `fold.acks` and rates it with
+ * `authorityOf(ackOrigin(fold, ack))`.
+ */
 export function awaitAck(ledger: Ledger, msgId: string, timeoutMs = AWAIT_ACK_MS): Promise<Ack | null> {
   const h = asHandle(ledger);
   h.trackAck(msgId);
-  const found = (): Ack | null => h.fold.acks.get(msgId)?.[0] ?? null;
+  const found = (): Ack | null => h.believedAck(msgId);
   const now = found();
   if (now !== null) return Promise.resolve(now);
   return new Promise<Ack | null>((resolve) => {
@@ -229,6 +253,47 @@ export function awaitAck(ledger: Ledger, msgId: string, timeoutMs = AWAIT_ACK_MS
       if (a !== null) finish(a);
     });
   });
+}
+
+/**
+ * `sessions inbox --purge <device>` (+ re-review (2)): OUR OWN outbox files to that device's sessions are removed;
+ * a FOREIGN message is only added to this consumer's `seen` set — the one-owner rule forbids deleting another device's
+ * file, and a sync client would resurrect it anyway (§4.6). Never throws for a disk fault; failures are reported.
+ */
+export async function purgeInbox(ledger: Ledger, o: { deviceId?: string; target?: string } = {}): Promise<PurgeReport> {
+  const h = asHandle(ledger);
+  const report: PurgeReport = { removed: 0, muted: 0, failed: [] };
+  const matches = (m: Message): boolean => (o.deviceId === undefined || m.from.deviceId === o.deviceId) && (o.target === undefined || m.to === o.target);
+  for (const e of h.ownEntries()) {
+    if (e.kind !== 'message') continue;
+    const m = e.record as Message;
+    if (!matches(m)) continue;
+    try {
+      await h.removeOwn('inbox', messageRel(m.to, Date.parse(m.t), m.stamp.n));
+      report.removed++;
+    } catch (err) {
+      report.failed.push({ path: e.path, code: classifyLedgerError(err) });
+    }
+  }
+  const seen = new Set(await loadSeen(h));
+  let muted = 0;
+  for (const m of h.fold.inbox) {
+    if (!matches(m) || seen.has(m.id) || messageOrigin(h.fold, m).self) continue;
+    seen.add(m.id);
+    muted++;
+  }
+  if (muted > 0) {
+    const ids = [...seen].slice(-SEEN_MAX);
+    stateOf(h).seen = new Set(ids);
+    try {
+      await h.fs.mkdir(h.paths.seenDir, DIR_MODE);
+      await h.fs.writeAtomic(h.paths.seenFile(consumerIdOf(h.self, h.actor8)), `${JSON.stringify({ v: 1, ids })}\n`, { fsync: false, mode: FILE_MODE });
+      report.muted = muted;
+    } catch (err) {
+      report.failed.push({ path: h.paths.seenFile(consumerIdOf(h.self, h.actor8)), code: classifyLedgerError(err) });
+    }
+  }
+  return report;
 }
 
 // ── target grammar (§5.3) ─────────────────────────────────────────────────────────────────────────────────────────────

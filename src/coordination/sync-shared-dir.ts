@@ -22,6 +22,13 @@ export type MirrorState = 'unknown' | 'online' | 'offline';
 export interface MirrorOptions {
   fs: CoordFs;
   sharedDir: string;
+  /**
+   * + re-review (6)(ii): the LOCAL coordination root. §10.1 bounded `sharedDir` by string containment only, so a
+   * symlink inside it (or a `sharedDir` pointing at `~/.jevcode/coordination` itself) made every mirrored file read
+   * back out of our own local subtree — `origin.self` again, and the forged same-device `pause` path is open. The
+   * probe resolves both with `realpath` and refuses the mirror when either contains the other.
+   */
+  localRoot?: string;
   deviceId: string;
   monotonicNow: () => number;
   opTimeoutMs?: number;
@@ -34,6 +41,8 @@ export interface Mirror {
   readonly paths: Commons;
   readonly state: MirrorState;
   readonly offlineCode: string | null;
+  /** + re-review (6)(ii): the reason the root was refused outright (containment), or null */
+  readonly refused: string | null;
   /** monotonic ms when the mirror went offline, or null */
   readonly offlineSinceMono: number | null;
   /** §9.2: our last measured write → read-back lag */
@@ -65,6 +74,7 @@ export function createMirror(o: MirrorOptions): Mirror {
   let offlineCode: string | null = null;
   let offlineSinceMono: number | null = null;
   let lagMs: number | null = null;
+  let refused: string | null = null;
 
   const setState = (next: MirrorState, code: string | null): void => {
     if (next === state && code === offlineCode) return;
@@ -108,10 +118,27 @@ export function createMirror(o: MirrorOptions): Mirror {
     }
   };
 
+  /** + re-review (6)(ii): `a` contains `b` (or is `b`) once both are realpaths. */
+  const contains = (a: string, b: string): boolean => b === a || b.startsWith(a.endsWith('/') ? a : `${a}/`);
+
   const probe = async (): Promise<boolean> => {
+    if (refused !== null) return false;
     try {
       const s = await withTimeout(o.fs.stat(root), timeoutMs, 'mirror probe');
       if (!s.isDirectory) throw Object.assign(new Error('mirror root is not a directory'), { code: 'ENOTDIR' });
+      const local = o.localRoot;
+      if (local !== undefined) {
+        const [mirrorReal, localReal] = await Promise.all([
+          withTimeout(o.fs.realpath(root), timeoutMs, 'mirror realpath'),
+          withTimeout(o.fs.realpath(local), timeoutMs, 'coordination realpath').catch(() => local),
+        ]);
+        if (contains(localReal, mirrorReal) || contains(mirrorReal, localReal)) {
+          refused = `the shared dir resolves inside the coordination root (${mirrorReal})`;
+          pending.clear();
+          setState('offline', 'EINVAL');
+          return false;
+        }
+      }
       setState('online', null);
       return true;
     } catch (e) {
@@ -129,6 +156,9 @@ export function createMirror(o: MirrorOptions): Mirror {
     get offlineCode() {
       return offlineCode;
     },
+    get refused() {
+      return refused;
+    },
     get offlineSinceMono() {
       return offlineSinceMono;
     },
@@ -140,12 +170,14 @@ export function createMirror(o: MirrorOptions): Mirror {
     },
     probe,
     copy(kind, rel, data) {
+      if (refused !== null) return;
       const key = `${kind}/${rel}`;
       pending.set(key, { kind, rel, data, queuedMono: o.monotonicNow() });
       if (state === 'offline') return;
       void enqueue(() => attempt(key)).catch(() => undefined);
     },
     remove(kind, rel) {
+      if (refused !== null) return;
       const key = `${kind}/${rel}`;
       pending.set(key, { kind, rel, data: null, queuedMono: o.monotonicNow() });
       if (state === 'offline') return;
@@ -164,6 +196,7 @@ export function createMirror(o: MirrorOptions): Mirror {
     },
     flush: () => chain,
     async listDevices(kind) {
+      if (refused !== null) return [];
       try {
         const names = await withTimeout(o.fs.readdir(paths.kindRoot(kind)), timeoutMs, 'mirror readdir');
         setState('online', null);

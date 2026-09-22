@@ -288,10 +288,12 @@ describe('the identity files (§3.1 / §10.3, review #42)', () => {
     const keys = await readTrustKeys(nodeFs, t.root);
     expect(keys.get(DEV_B)).toBe(key);
     const record = { v: 1 as const, kind: 'ack' as const, msgId: 'x' };
-    const signed = { ...record, hmac: hmacOf(record, key) };
-    expect(hmacValid(signed, keys.get(DEV_B))).toBe(true);
-    expect(hmacValid(signed, mintCommonsKey())).toBe(false);
-    expect(hmacValid(signed, keys.get(DEV_A))).toBe(false);
+    const signed = { ...record, hmac: hmacOf(record, key, DEV_B) };
+    expect(hmacValid(signed, keys.get(DEV_B), DEV_B)).toBe(true);
+    expect(hmacValid(signed, mintCommonsKey(), DEV_B)).toBe(false);
+    expect(hmacValid(signed, keys.get(DEV_A), DEV_A)).toBe(false);
+    // + re-review (5): one GROUP key, two devices — DEV_A may not replay DEV_B's bytes as its own
+    expect(hmacValid(signed, key, DEV_A)).toBe(false);
     // a malformed key in the file is simply not a key
     await writeTrusted(nodeFs, t.root, [{ deviceId: DEV_B, label: 'studio', pairedAt: iso(T0), keyHex: 'nope' }]);
     expect((await readTrustKeys(nodeFs, t.root)).size).toBe(0);

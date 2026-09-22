@@ -5,7 +5,7 @@
  * times), never of the order files arrived in. `listSessions` and the target/inbox helpers are pure over the fold.
  */
 import { authorityOf, compareClaim, FOREIGN_ORIGIN } from './claims.js';
-import { compareStamp, GONE_KEEP_MS, isLive, SKEW_MS, type Now } from './records.js';
+import { compareStamp, GONE_KEEP_MS, isLive, SKEW_MS, SYNC_SLACK_GIT_MS, type Now } from './records.js';
 import { sameRepo } from './ids.js';
 import type { Ack, AnyRecord, Authority, DeviceRecord, Fold, Heartbeat, Lease, Liveness, LivenessEnv, Message, RecordKind, RecordOrigin, SelfIdentity, SessionActivity } from './types.js';
 
@@ -48,12 +48,17 @@ export interface FoldEnv extends LivenessEnv {
   ignoredDevices: ReadonlySet<string>;
   /** §9.2: our own measured lag, shown on our device row */
   selfSyncLagMs?: number | null;
+  /**
+   * + review minor 26: §9.2 for a FOREIGN device — `now − mtime of the newest file we read from that device's mirror
+   * copy`, measured by the scanner. Absent for a device we have only local records of.
+   */
+  foreignSyncLagMs?: ReadonlyMap<string, number>;
   /** records that failed to parse in this cycle */
   skipped?: number;
 }
 
 export function emptyFold(now: Now): Fold {
-  return { live: new Map(), gone: new Map(), leases: new Map(), byPath: new Map(), inbox: [], acks: new Map(), devices: new Map(), origins: new Map(), skipped: 0, at: { wallMs: now.wallMs, monoMs: now.monoMs } };
+  return { live: new Map(), gone: new Map(), leases: new Map(), byPath: new Map(), inbox: [], acks: new Map(), devices: new Map(), origins: new Map(), liveness: new Map(), ignored: new Map(), skipped: 0, at: { wallMs: now.wallMs, monoMs: now.monoMs } };
 }
 
 /** §5.1: a recipient's inbox is the union, over every device subtree, of the `<sessionId>`, `@<repoKey>`, `@<remoteKey>` and `@all` outbox dirs. */
@@ -76,9 +81,19 @@ function byStampDesc<T extends { stamp: { n: number; deviceId: string; runId: st
 }
 
 const hbKey = (hb: Heartbeat): string => `${hb.deviceId}/${hb.runId}`;
+/**
+ * + review major 12: ONE heartbeat record, including two processes of one device on one runId. `Fold.liveness` and
+ * `listSessions`'s row set are keyed by this; `origins` stays on `<deviceId>/<runId>` (the §12.0.4 shape).
+ */
+export const recordKeyOf = (hb: Pick<Heartbeat, 'deviceId' | 'runId' | 'pid'>): string => `${hb.deviceId}/${hb.runId}/${hb.pid}`;
 /** `Fold.origins` keys: a heartbeat is `<deviceId>/<runId>` (a deviceId is 8 base32 chars, so no prefix can collide). */
 export const messageOriginKey = (id: string): string => `msg/${id}`;
 export const leaseOriginKey = (leaseId: string): string => `lease/${leaseId}`;
+/**
+ * + review blocker 3 (acks): an ack's origin is keyed by the subtree it was READ from as well as its content — two
+ * devices can (and in the attack do) both publish `acks/<dev>/<msgId>/<by>.json` with the same `by`.
+ */
+export const ackOriginKey = (deviceId: string, msgId: string, by: string): string => `ack/${deviceId}/${msgId}/${by}`;
 
 /** Build the fold from the record set. Pure given `state` (which it updates: first arrivals, gone times). */
 export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env: FoldEnv): Fold {
@@ -94,7 +109,14 @@ export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env:
       devices.push(e.record as DeviceRecord);
       continue;
     }
-    if (env.ignoredDevices.has(e.deviceId)) continue;
+    if (env.ignoredDevices.has(e.deviceId)) {
+      // + review minor 25: kept OUT of every decision path, but walkable by `sessions who --all`
+      if (e.kind === 'heartbeat') {
+        const hb = e.record as Heartbeat;
+        fold.ignored.set(recordKeyOf(hb), { ...hb, arrivalMono: env.now.monoMs });
+      }
+      continue;
+    }
     switch (e.kind) {
       case 'heartbeat':
         heartbeats.push({ hb: e.record as Heartbeat, origin: e.origin });
@@ -111,9 +133,12 @@ export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env:
         fold.origins.set(messageOriginKey(m.id), e.origin);
         break;
       }
-      case 'ack':
-        acks.push(e.record as Ack);
+      case 'ack': {
+        const a = e.record as Ack;
+        acks.push(a);
+        fold.origins.set(ackOriginKey(e.deviceId, a.msgId, a.by), e.origin);
         break;
+      }
     }
   }
 
@@ -125,7 +150,8 @@ export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env:
   }
   for (const d of [...devices].sort((a, b) => (a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0))) {
     if (fold.devices.has(d.deviceId)) continue;
-    fold.devices.set(d.deviceId, { ...d, lastSeen: lastSeen.get(d.deviceId) ?? d.createdAt, syncLagMs: d.deviceId === env.deviceId ? (env.selfSyncLagMs ?? null) : null, ignored: env.ignoredDevices.has(d.deviceId) });
+    const syncLagMs = d.deviceId === env.deviceId ? (env.selfSyncLagMs ?? null) : (env.foreignSyncLagMs?.get(d.deviceId) ?? null);
+    fold.devices.set(d.deviceId, { ...d, lastSeen: lastSeen.get(d.deviceId) ?? d.createdAt, syncLagMs, ignored: env.ignoredDevices.has(d.deviceId) });
   }
 
   // heartbeats — one per (device, run) file; several records for one runId = a fork (§9.3): the lowest CLAIM holds
@@ -152,6 +178,14 @@ export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env:
   }
   // only `state.arrivals` is carried between builds and needs pruning; `fold.origins` is rebuilt from the entries every time
   for (const k of [...state.arrivals.keys()]) if (!seenKeys.has(k)) state.arrivals.delete(k);
+  // + review minor 26: the 180 s git slack is a PER-DEVICE fact (`device.json.syncMode`), not one number for the fold
+  const envFor = (deviceId: string): FoldEnv =>
+    fold.devices.get(deviceId)?.syncMode === 'git' ? { ...env, syncSlackMs: env.gitSyncSlackMs ?? SYNC_SLACK_GIT_MS } : env;
+  const verdictOf = (hb: Heartbeat & { arrivalMono: number }): Liveness => {
+    const v = isLive(hb, env.now, { arrivalMono: hb.arrivalMono }, envFor(hb.deviceId), fold.origins.get(hbKey(hb)) ?? FOREIGN_ORIGIN);
+    fold.liveness.set(recordKeyOf(hb), v.liveness);
+    return v.liveness;
+  };
   for (const [runId, list] of byRun) {
     list.sort((a, b) => compareClaim(a.claim, b.claim) || compareStamp(a.stamp, b.stamp));
     const holder = list[0]!;
@@ -159,21 +193,22 @@ export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env:
       fold.forks ??= new Map();
       fold.forks.set(runId, list.slice(1));
     }
+    // + review major 12: EVERY record gets a verdict, so `listSessions` can show a row per (deviceId, runId, pid)
+    for (const hb of list) verdictOf(hb);
     // a run whose CLAIM holder is stale but which has a live later incarnation (a takeover) is live under that one
     let shown = holder;
-    let verdict = isLive(holder, env.now, { arrivalMono: holder.arrivalMono }, env, fold.origins.get(hbKey(holder)) ?? FOREIGN_ORIGIN);
-    if (verdict.liveness !== 'live') {
+    let verdict: Liveness = fold.liveness.get(recordKeyOf(holder)) ?? 'unknown';
+    if (verdict !== 'live') {
       for (const cand of list.slice(1)) {
-        const v = isLive(cand, env.now, { arrivalMono: cand.arrivalMono }, env, fold.origins.get(hbKey(cand)) ?? FOREIGN_ORIGIN);
-        if (v.liveness === 'live') {
+        if (fold.liveness.get(recordKeyOf(cand)) === 'live') {
           shown = cand;
-          verdict = v;
+          verdict = 'live';
           break;
         }
       }
     }
     const key = hbKey(shown);
-    if (verdict.liveness === 'live') {
+    if (verdict === 'live') {
       state.goneAt.delete(key);
       fold.live.set(runId, shown);
     } else {
@@ -325,9 +360,26 @@ export function listSessions(fold: Fold, self: SelfIdentity, opts: { all?: boole
   const rows: SessionActivity[] = [];
   const boot = parseIso(self.bootAt);
   const byRun = leasesByRun(fold);
+  const seen = new Set<string>();
+  const push = (hb: Heartbeat & { arrivalMono: number; goneAtMono?: number }, liveness: Liveness): void => {
+    const key = recordKeyOf(hb);
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push(activityOf(fold, self, hb, liveness, byRun));
+  };
   for (const hb of fold.live.values()) {
     if (!all && fold.devices.get(hb.deviceId)?.ignored === true) continue;
-    rows.push(activityOf(fold, self, hb, 'live', byRun));
+    push(hb, 'live');
+  }
+  // + review major 12: one row per (deviceId, runId) — a FORK is a second record for one runId and had no row at all,
+  // so `sessions who` hid exactly the case §9.3 exists for (and `/spawn`'s child runs on one device hid each other).
+  for (const list of fold.forks?.values() ?? []) {
+    for (const hb of list) {
+      if (!all && fold.devices.get(hb.deviceId)?.ignored === true) continue;
+      const verdict = fold.liveness.get(recordKeyOf(hb)) ?? 'unknown';
+      if (verdict !== 'live' && !all) continue;
+      push(hb, verdict);
+    }
   }
   for (const hb of fold.gone.values()) {
     if (!all && fold.devices.get(hb.deviceId)?.ignored === true) continue;
@@ -338,26 +390,64 @@ export function listSessions(fold: Fold, self: SelfIdentity, opts: { all?: boole
       const started = parseIso(hb.startedAt);
       if (Number.isFinite(started) && Number.isFinite(boot) && started < boot) liveness = 'stale-reused-pid';
     }
-    rows.push(activityOf(fold, self, hb, liveness, byRun));
+    push(hb, liveness);
   }
+  // + review minor 25: an ignored device's rows exist only under `--all`, and every one carries `flags.ignoredDevice`
+  if (all) for (const hb of fold.ignored.values()) push(hb, fold.liveness.get(recordKeyOf(hb)) ?? 'unknown');
   rows.sort((a, b) => {
     const r = LIVENESS_RANK[a.liveness] - LIVENESS_RANK[b.liveness];
     if (r !== 0) return r;
     if (a.heartbeat.beatAt !== b.heartbeat.beatAt) return a.heartbeat.beatAt < b.heartbeat.beatAt ? 1 : -1;
-    return a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0;
+    if (a.runId !== b.runId) return a.runId < b.runId ? -1 : 1;
+    if (a.deviceId !== b.deviceId) return a.deviceId < b.deviceId ? -1 : 1;
+    return a.heartbeat.pid - b.heartbeat.pid;
   });
   return rows;
 }
 
-/** + review blocker 3: every heartbeat the fold holds for one runId, holder first (the lowest claim). */
+/**
+ * + review blocker 3 / major 12: every heartbeat the fold holds for one runId, **the CLAIM HOLDER first** (`[0]` is the
+ * holder by `compareClaim`, which is the ownership fence — never the folding stamp, never arrival order). Records are
+ * deduplicated by (deviceId, pid), so two processes of one device on one runId are two rows, as §9.3 needs them to be.
+ */
 export function byRunId(fold: Fold, runId: string): (Heartbeat & { arrivalMono: number })[] {
   const out: (Heartbeat & { arrivalMono: number })[] = [];
-  const live = fold.live.get(runId);
-  if (live !== undefined) out.push(live);
-  const gone = fold.gone.get(runId);
-  if (gone !== undefined && (live === undefined || gone.deviceId !== live.deviceId)) out.push(gone);
-  for (const f of fold.forks?.get(runId) ?? []) if (!out.some((o) => o.deviceId === f.deviceId)) out.push(f);
-  return out.sort((a, b) => compareClaim(a.claim, b.claim));
+  const add = (hb: (Heartbeat & { arrivalMono: number }) | undefined): void => {
+    if (hb === undefined) return;
+    if (out.some((o) => o.deviceId === hb.deviceId && o.pid === hb.pid)) return;
+    out.push(hb);
+  };
+  add(fold.live.get(runId));
+  add(fold.gone.get(runId));
+  for (const f of fold.forks?.get(runId) ?? []) add(f);
+  return out.sort((a, b) => compareClaim(a.claim, b.claim) || compareStamp(a.stamp, b.stamp));
+}
+
+/** The claim holder for one runId, or null when the fold holds no record of it. */
+export function claimHolderOf(fold: Fold, runId: string): (Heartbeat & { arrivalMono: number }) | null {
+  return byRunId(fold, runId)[0] ?? null;
+}
+
+/**
+ * + review blocker 3 (acks): the devices a SESSION is — or was last — live on, by the fold's own read locations. An ack
+ * counts against a pending targeted message only when it came from one of these subtrees (§5.1).
+ */
+export function sessionDevices(fold: Fold, sessionId: string): { deviceId: string; self: boolean }[] {
+  const out = new Map<string, boolean>();
+  const consider = (hb: Heartbeat): void => {
+    if (hb.sessionId !== sessionId) return;
+    const self = originOf(fold, hb).self;
+    out.set(hb.deviceId, (out.get(hb.deviceId) ?? false) || self);
+  };
+  for (const hb of fold.live.values()) consider(hb);
+  for (const hb of fold.gone.values()) consider(hb);
+  for (const list of fold.forks?.values() ?? []) for (const hb of list) consider(hb);
+  return [...out].map(([deviceId, self]) => ({ deviceId, self })).sort((a, b) => (a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0));
+}
+
+/** The origin of one ack — where the FILE was read from (review blocker 3). */
+export function ackOrigin(fold: Fold, ack: Pick<Ack, 'deviceId' | 'msgId' | 'by'>): RecordOrigin {
+  return fold.origins.get(ackOriginKey(ack.deviceId, ack.msgId, ack.by)) ?? FOREIGN_ORIGIN;
 }
 
 /** The origin the fold recorded for one heartbeat — the only legitimate source of "is this mine?" (blocker 6). */
@@ -375,9 +465,20 @@ export function leaseOrigin(fold: Fold, lease: Pick<Lease, 'leaseId'>): RecordOr
   return fold.origins.get(leaseOriginKey(lease.leaseId)) ?? FOREIGN_ORIGIN;
 }
 
-/** Every epoch the fold has seen for one runId — the seed of `mintClaim` on a resume, takeover or import. */
-export function seenEpochs(fold: Fold, runId: string): number[] {
-  return byRunId(fold, runId).map((hb) => hb.claim.epoch);
+/**
+ * Every epoch the fold has seen for one runId — the seed of `mintClaim` on a resume, takeover or import.
+ *
+ * + review major 11 / re-review (5): an UNVERIFIED foreign record does not raise the bar. Without this, one planted beat
+ * (or one planted `run.json` epoch) makes every later `/resume` mint above a number nobody owns, and at the ceiling the
+ * run becomes unresumable on every device. `includeUnverified` exists for the display path only.
+ */
+export function seenEpochs(fold: Fold, runId: string, o: { includeUnverified?: boolean } = {}): number[] {
+  const out: number[] = [];
+  for (const hb of byRunId(fold, runId)) {
+    if (o.includeUnverified !== true && authorityOf(originOf(fold, hb)) === 'unverified') continue;
+    out.push(hb.claim.epoch);
+  }
+  return out;
 }
 
 /** §6.5: the child runs of a session (their heartbeats carry `parentSessionId`). */

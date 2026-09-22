@@ -5,7 +5,51 @@
  * File names are parsed with the §3.1 regexes and anything else is skipped and counted, never joined into a path.
  */
 import { join } from 'node:path';
-import { DEVICE_ID_RE, LEASE_ID_RE, MSG_ID_RE, MSG_T_RE, REPO_KEY_RE, RUN_ID_RE, SEQ_RE, SLUG_RE, isValidTarget } from './ids.js';
+import { CONSUMER_ID_RE, DEVICE_ID_RE, LEASE_ID_RE, MSG_ID_RE, MSG_T_RE, RUN_ID_RE, SEQ_RE, SLUG_RE, isValidTarget } from './ids.js';
+
+// ── key ⇄ directory component (+ review major 13) ─────────────────────────────────────────────────────────────────────
+//
+// A repoKey is `ws:<16 hex>` / `rm:<16 hex>` / `<16 hex>` and a broadcast target is `@<repoKey>`. The colon form stays
+// INSIDE records (it is the identity §3.2 defines), but it may never reach a path component: Windows and every
+// Windows-backed share reserve `:` for a drive/ADS, iCloud Drive and Dropbox rewrite or refuse it, and a macOS Finder
+// alias renders it as `/`. Directory components therefore use `ws-` / `rm-`, which round-trips exactly.
+
+const KEY_SCHEME_RE = /^(ws|rm):/;
+const KEY_PREFIX_RE = /^(ws|rm)-/;
+/** §3.1 (design revision 4): the `<keyDir>` lease component — the colon-free spelling of a `repoKey` / `wsKey`. */
+export const KEY_DIR_RE = /^(ws-|rm-)?[0-9a-f]{16}$/;
+
+/** §3.1 `keyDir(repoKey ?? wsKey)`: `ws:3f9a…` → `ws-3f9a…`; a bare 16-hex roots key is unchanged. */
+export function keyDir(key: string): string {
+  return key.replace(KEY_SCHEME_RE, '$1-');
+}
+/** the inverse of `keyDir` — `ws-3f9a…` → `ws:3f9a…`. */
+export function keyOfDir(name: string): string {
+  return name.replace(KEY_PREFIX_RE, '$1:');
+}
+/** the pre-revision-4 names */
+export const encodeKeyComponent = keyDir;
+export const decodeKeyComponent = keyOfDir;
+/** `@ws:3f9a…` → `@ws-3f9a…`; a session-id target is unchanged. */
+export function encodeTargetComponent(target: string): string {
+  return target.startsWith('@') ? `@${keyDir(target.slice(1))}` : target;
+}
+export function decodeTargetComponent(name: string): string {
+  return name.startsWith('@') ? `@${keyOfDir(name.slice(1))}` : name;
+}
+
+/** `leases/<deviceId>/<repoKey-dir>/<leaseId>.json`, relative to the device subtree (the ledger's `writeOwn` rel). */
+export function leaseRel(repoKey: string, leaseId: string): string {
+  return join(keyDir(repoKey), `${leaseId}.json`);
+}
+/** `inbox/<deviceId>/<target-dir>/<t>-<seq>.json`, relative to the device subtree. */
+export function messageRel(target: string, tMs: number, seq: number): string {
+  return join(encodeTargetComponent(target), `${tMs}-${seq}.json`);
+}
+/** `acks/<deviceId>/<msgId>/<consumerId>.json`, relative to the device subtree. */
+export function ackRel(msgId: string, consumerId: string): string {
+  return join(msgId, `${consumerId}.json`);
+}
 
 export const COORDINATION_DIR = 'coordination';
 export const MIRROR_DIR = 'jevcode-commons';
@@ -17,9 +61,21 @@ export function coordinationRoot(home: string): string {
   return join(home, COORDINATION_DIR);
 }
 
-/** `~/.jevcode/worktrees/<repoKey>/<slug>` — the session worktree itself (§6.5); a sibling of `coordination/`, not inside it. */
+/** `~/.jevcode/worktrees/<keyDir>/<slug>` — the session worktree itself (§6.5); a sibling of `coordination/`, not inside it. */
 export function sessionWorktreeDir(home: string, repoKey: string, slug: string): string {
-  return join(home, WORKTREES_DIR, repoKey, slug);
+  return join(home, WORKTREES_DIR, keyDir(repoKey), slug);
+}
+
+/**
+ * §3.1 / §9.3 (design revision 4): `devices/<hostKey>/claims/<runId>.json` — the takeover claim this device minted for a
+ * run it has no local dir for, so the NEXT mint on this device reads it instead of re-issuing the same epoch. Local
+ * truth: never mirrored, never published.
+ */
+export function deviceClaimsDir(root: string, hostKey: string): string {
+  return join(root, 'devices', hostKey, 'claims');
+}
+export function deviceClaimFile(root: string, hostKey: string, runId: string): string {
+  return join(deviceClaimsDir(root, hostKey), `${runId}.json`);
 }
 export function mirrorRoot(sharedDir: string): string {
   return join(sharedDir, MIRROR_DIR);
@@ -47,12 +103,14 @@ export interface Commons {
   deviceDir(kind: CommonsKind, deviceId: string): string;
   deviceRecordFile(deviceId: string): string;
   heartbeatFile(deviceId: string, runId: string): string;
+  /** the repoKey is encoded for the path (`ws:` → `ws-`, review major 13); the record keeps the colon form */
   leaseDir(deviceId: string, repoKey: string): string;
   leaseFile(deviceId: string, repoKey: string, leaseId: string): string;
   outboxDir(deviceId: string, target: string): string;
   messageFile(deviceId: string, target: string, tMs: number, seq: number): string;
   ackDir(deviceId: string, msgId: string): string;
-  ackFile(deviceId: string, msgId: string, sessionId: string): string;
+  /** `acks/<deviceId>/<msgId>/<consumerId>.json` — the CONSUMER PROCESS, not the session (review major 8) */
+  ackFile(deviceId: string, msgId: string, consumerId: string): string;
   runsDir(deviceId: string, runId: string): string;
   /** `inbox/seen/<consumerId>.json` — the message dedupe set of one CONSUMER process (§5.1, review #13) */
   seenFile(consumerId: string): string;
@@ -76,15 +134,15 @@ export function commonsPaths(root: string): Commons {
     deviceDir,
     deviceRecordFile: (deviceId) => join(deviceDir('registry', deviceId), DEVICE_FILE),
     heartbeatFile: (deviceId, runId) => join(deviceDir('registry', deviceId), `${runId}.json`),
-    leaseDir: (deviceId, repoKey) => join(deviceDir('leases', deviceId), repoKey),
-    leaseFile: (deviceId, repoKey, leaseId) => join(deviceDir('leases', deviceId), repoKey, `${leaseId}.json`),
-    outboxDir: (deviceId, target) => join(deviceDir('inbox', deviceId), target),
-    messageFile: (deviceId, target, tMs, seq) => join(deviceDir('inbox', deviceId), target, `${tMs}-${seq}.json`),
+    leaseDir: (deviceId, repoKey) => join(deviceDir('leases', deviceId), keyDir(repoKey)),
+    leaseFile: (deviceId, repoKey, leaseId) => join(deviceDir('leases', deviceId), leaseRel(repoKey, leaseId)),
+    outboxDir: (deviceId, target) => join(deviceDir('inbox', deviceId), encodeTargetComponent(target)),
+    messageFile: (deviceId, target, tMs, seq) => join(deviceDir('inbox', deviceId), messageRel(target, tMs, seq)),
     ackDir: (deviceId, msgId) => join(deviceDir('acks', deviceId), msgId),
-    ackFile: (deviceId, msgId, sessionId) => join(deviceDir('acks', deviceId), msgId, `${sessionId}.json`),
+    ackFile: (deviceId, msgId, consumerId) => join(deviceDir('acks', deviceId), ackRel(msgId, consumerId)),
     runsDir: (deviceId, runId) => join(deviceDir('runs', deviceId), runId),
     seenFile: (consumerId) => join(root, 'inbox', 'seen', `${consumerId}.json`),
-    worktreeFile: (repoKey, slug) => join(root, WORKTREES_DIR, repoKey, `${slug}.json`),
+    worktreeFile: (repoKey, slug) => join(root, WORKTREES_DIR, keyDir(repoKey), `${slug}.json`),
   };
 }
 
@@ -96,10 +154,10 @@ export function isDeviceIdDir(name: string): boolean {
   return DEVICE_ID_RE.test(name);
 }
 export function isRepoKeyDir(name: string): boolean {
-  return REPO_KEY_RE.test(name);
+  return KEY_DIR_RE.test(name);
 }
 export function isTargetDir(name: string): boolean {
-  return isValidTarget(name);
+  return isValidTarget(decodeTargetComponent(name));
 }
 export function isMsgIdDir(name: string): boolean {
   return MSG_ID_RE.test(name);
@@ -131,7 +189,12 @@ export function parseMessageName(name: string): { t: number; seq: number } | nul
   if (!MSG_T_RE.test(t) || !SEQ_RE.test(seq)) return null;
   return { t: Number(t), seq: Number(seq) };
 }
-/** `<sessionId>.json` → sessionId */
+/**
+ * `<consumerId>.json` → consumerId (review major 8: `${sessionId ?? 'tui'}-${actor8}`, not a bare session id).
+ * The legacy bare-run-id form is still accepted so an ack written by an older build is not silently skipped.
+ */
 export function parseAckName(name: string): string | null {
-  return parseHeartbeatName(name);
+  if (!JSON_EXT.test(name)) return null;
+  const id = name.replace(JSON_EXT, '');
+  return CONSUMER_ID_RE.test(id) || RUN_ID_RE.test(id) ? id : null;
 }

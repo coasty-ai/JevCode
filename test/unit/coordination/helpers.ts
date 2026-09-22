@@ -359,9 +359,12 @@ export function shuffled<T>(xs: readonly T[], seed: number): T[] {
 export const KEY_A = 'a'.repeat(64);
 export const KEY_B = 'b'.repeat(64);
 
-/** Sign a record with a device key (what a paired peer's writer would have done). */
-export function signed<T extends object>(record: T, keyHex: string): T {
-  return withHmac(record, keyHex);
+/**
+ * Sign a record with a device key (what a paired peer's writer would have done).
+ * + re-review (5): the WRITER'S device id is bound into the mac, so the fixture must say whose subtree it belongs in.
+ */
+export function signed<T extends object>(record: T, keyHex: string, deviceId = DEV_B): T {
+  return withHmac(record, keyHex, deviceId);
 }
 
 const KIND_OF: Record<string, RecordKind> = { heartbeat: 'heartbeat', bench: 'heartbeat', lease: 'lease', message: 'message', ack: 'ack' };

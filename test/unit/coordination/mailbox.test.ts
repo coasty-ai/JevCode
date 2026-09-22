@@ -12,6 +12,7 @@ import { nodeFs } from '../../../src/coordination/fs.js';
 import { commonsPaths } from '../../../src/coordination/paths.js';
 import { CONTROL_MESSAGE_TTL_MS, MESSAGE_TTL_MS, parseRecord, serializeRecord } from '../../../src/coordination/records.js';
 import { DIRECTIVE_MAX_CHARS } from '../../../src/core/types.js';
+import { ackOrigin, authorityOf } from '../../../src/coordination/index.js';
 import type { LedgerHandle, Message, RecordOrigin } from '../../../src/coordination/index.js';
 import { DEV_A, DEV_B, KEY_A, REPO, SELF, T0, TRUSTED, UNVERIFIED, claim, entry, fakeClock, fakeTimers, foldOf, iso, makeAck, makeDevice, makeHeartbeat, makeMessage, makeSelf, putAck, putHeartbeat, putMessage, runId, stamp, tempHome } from './helpers.js';
 
@@ -100,7 +101,7 @@ describe('send (§5.1)', () => {
     const first = await send(l, { to: '@all', type: 'note', text: 'before the pause' });
     // the resume folds its own outbox, so the Lamport seed is above everything published
     await l.refresh('all');
-    l.setIdentity({ runId: runId(1), sessionId: runId(1) });
+    await l.setIdentity({ runId: runId(1), sessionId: runId(1) });
     const second = await send(l, { to: '@all', type: 'note', text: 'after the resume' });
     expect(second.id).not.toBe(first.id);
     expect(Number(second.id.split('-')[2])).toBeGreaterThan(Number(first.id.split('-')[2]));
@@ -125,7 +126,8 @@ describe('inbox (pure) and the seen set', () => {
   });
 
   it('review #13: the consumer is a PROCESS — a sessionless TUI keeps its own seen file', async () => {
-    expect(consumerIdOf({ sessionId: runId(1) }, 'abcdefgh')).toBe(runId(1));
+    // + review major 8: a consumer is a PROCESS — `${sessionId ?? 'tui'}-${actor8}`, unique per writer either way
+    expect(consumerIdOf({ sessionId: runId(1) }, 'abcdefgh')).toBe(`${runId(1)}-abcdefgh`);
     expect(consumerIdOf({ sessionId: null }, 'abcdefgh')).toBe('tui-abcdefgh');
     const { t, l } = await harness({ self: { sessionId: null, runId: null } });
     expect([...(await loadSeen(l))]).toEqual([]);
@@ -140,7 +142,7 @@ describe('ack / awaitAck (§5.1)', () => {
     const msgId = `${DEV_B}-abcdefgh-3`;
     l.trackAck(msgId);
     await ack(l, msgId, 'applied', 'paused at step end');
-    const file = commonsPaths(t.root).ackFile(DEV_A, msgId, runId(1));
+    const file = commonsPaths(t.root).ackFile(DEV_A, msgId, consumerIdOf(l.self, l.actor8));
     const parsed = parseRecord((await nodeFs.readBounded(file, 4096)).text, 'ack', { deviceId: DEV_A });
     expect(parsed.ok && parsed.record.outcome).toBe('applied');
     expect(parsed.ok && parsed.record.detail60).toBe('paused at step end');
@@ -163,21 +165,57 @@ describe('ack / awaitAck (§5.1)', () => {
     await putAck(t.root, makeAck({ msgId, deviceId: DEV_A, by: runId(1) }));
     l.trackAck(msgId);
     await l.refresh('all');
-    expect((await awaitAck(l, msgId, 1))?.outcome).toBe('delivered');
+    // + review blocker 3: BELIEVED only — this ack is in our own local subtree, for a message our own session sent
+    const got = await awaitAck(l, msgId, 1);
+    expect(got?.outcome).toBe('delivered');
+    expect(authorityOf(ackOrigin(l.fold, got as NonNullable<typeof got>))).toBe('self');
   });
 
-  it('two runs on ONE device acking one broadcast write two files (§5.1, W3 tests)', async () => {
+  /**
+   * + review major 8: TWO PROCESSES ON ONE SESSION (`jevcode -c` twice on a paused session, or a TUI and the run it
+   * spawned). The old `acks/<dev>/<msgId>/<sessionId>.json` gave them ONE file name and two writers — the second
+   * `writeAtomic` silently replaced the first, and `seen/<sessionId>.json` lost whichever process wrote first.
+   * The consumer id is per PROCESS, so each writes its own file and neither loses the other's.
+   */
+  it('two processes on ONE session ack one broadcast into two files (§5.1, review major 8)', async () => {
     const t = await tempHome();
     cleanups.push(t.cleanup);
     const clock = fakeClock();
     const msgId = `${DEV_B}-abcdefgh-3`;
-    for (const rid of [runId(1), runId(2)]) {
-      const l = openLedger({ home: t.home, self: makeSelf({ runId: rid, sessionId: rid }), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, isPidAlive: () => true });
+    const rid = runId(1);
+    const consumers: string[] = [];
+    // the RUN of the session, and a second process attached to the same session id (`jevcode -c` on a paused session):
+    // one session, two writers — the `actor8` is what separates them
+    for (const runIdOf of [rid, null]) {
+      const l = openLedger({
+        home: t.home,
+        self: makeSelf({ runId: runIdOf, sessionId: rid }),
+        now: clock.now,
+        monotonicNow: clock.monotonicNow,
+        scanOnly: true,
+        isPidAlive: () => true,
+        random: () => Uint8Array.from([0x22, 0x22, 0x22, 0x22, 0x22]),
+      });
       await l.open();
       await ack(l, msgId, 'delivered');
+      consumers.push(consumerIdOf(l.self, l.actor8));
       await l.close();
     }
-    expect((await nodeFs.readdir(commonsPaths(t.root).ackDir(DEV_A, msgId))).sort()).toEqual([`${runId(1)}.json`, `${runId(2)}.json`]);
+    const files = (await nodeFs.readdir(commonsPaths(t.root).ackDir(DEV_A, msgId))).sort();
+    expect(files).toHaveLength(2);
+    expect(files).toEqual(consumers.map((c) => `${c}.json`).sort());
+    // both parse under the path binding, and both name the same session
+    for (const f of files) {
+      const parsed = parseRecord((await nodeFs.readBounded(join(commonsPaths(t.root).ackDir(DEV_A, msgId), f), 4096)).text, 'ack', { deviceId: DEV_A });
+      expect(parsed.ok && parsed.record.by.startsWith(`${rid}-`)).toBe(true);
+    }
+  });
+
+  it('+ review major 8: a SESSIONLESS consumer may ack `delivered`, but not claim an outcome only a run can produce', async () => {
+    const { l } = await harness({ self: { sessionId: null, runId: null } });
+    const msgId = `${DEV_B}-abcdefgh-3`;
+    await expect(ack(l, msgId, 'delivered')).resolves.toBeUndefined();
+    await expect(ack(l, msgId, 'applied')).rejects.toThrow(/no session id/);
   });
 });
 

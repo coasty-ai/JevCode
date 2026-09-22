@@ -5,12 +5,13 @@
  * re-folds every peer's `leases/<repoKey>/` once (strict: the write-then-read fence). Prefix collapse keeps a lease ≤ 64
  * paths and ≤ 8 KiB — conservative, more conflicts never fewer.
  */
-import { join } from 'node:path';
 import { ConfigError } from '../errors.js';
+import { leaseOrigin } from './fold.js';
 import { asHandle, type LedgerHandle } from './ledger.js';
-import { LEASE_PATHS_MAX, isValidRelPath, sameRepo } from './ids.js';
+import { LANE_DIR_RE, LEASE_PATHS_MAX, isValidRelPath, sameRepo } from './ids.js';
+import { leaseRel } from './paths.js';
 import { LEASE_TTL_MS, compareStamp, fitsRecordSize, finalizeRecord, oneLine, overlap, type Now } from './records.js';
-import type { CoordinationFacts, Fold, Heartbeat, Lease, LeaseCheck, LeaseConflict, LeaseHandle, LeaseIntent, LeaseOutcome, Ledger, Message, SelfIdentity, Stamp, StrictDeclaration } from './types.js';
+import type { CoordinationFacts, Fold, Heartbeat, Lease, LeaseCheck, LeaseConflict, LeaseHandle, LeaseIntent, LeaseOutcome, LeaseSnapshot, Ledger, Message, SelfIdentity, Stamp, StrictDeclare } from './types.js';
 
 /** §4.1 / §4.3 step 4: the strict inline wait bound */
 export const STRICT_WAIT_MS = 60_000;
@@ -68,8 +69,8 @@ export interface CheckOptions {
   caseFold?: boolean;
   /** my own stamp once issued (the strict re-fold); absent = any overlapping exclusive lease is lower than the one I will mint */
   stamp?: Stamp;
-  /** + review blocker 4: the `LeaseCheck.snapshot` the judgment being fenced was made over */
-  snapshot?: readonly string[];
+  /** §4.5: the `LeaseCheck.snapshot` the judgment being fenced was made over (the design's `seen`) */
+  snapshot?: LeaseSnapshot;
   /** defaults to `fold.at` */
   now?: Now;
 }
@@ -129,8 +130,12 @@ export function check(fold: Fold, self: SelfIdentity, mine: LeaseIntent, opts: C
     const holder = liveHolder(fold, lease);
     if (holder === null) continue;
     if (!sameRepo(leaseRepo(lease), self)) continue;
+    // + review blocker 4: `expiresAt` is a WRITER wall-clock stamp and this is the READER's clock. A reader 15 minutes
+    // ahead (a VM that resumed, a laptop that woke, a machine with no NTP) judged every live peer lease expired and
+    // cleared straight through it — the one case the fence exists for. Liveness of the OWNER is the gate, and §4.3
+    // already says a beating owner's lease never expires: `liveHolder` above is that test. Expiry survives only as the
+    // display number `expiresInMs`, and as the retention input the GC uses on OUR OWN files.
     const expiresAt = Date.parse(lease.expiresAt);
-    if (Number.isFinite(expiresAt) && expiresAt <= now.wallMs) continue;
     const treeLock = lease.exclusiveTree === true || mine.exclusiveTree === true;
     const pairs = treeLock ? (mine.paths.length > 0 ? mine.paths : [TREE_PATH]).map((p) => ({ path: p, with: TREE_PATH })) : overlap(mine.paths, lease.paths, { caseFold });
     if (pairs.length === 0) continue;
@@ -155,7 +160,9 @@ export function check(fold: Fold, self: SelfIdentity, mine: LeaseIntent, opts: C
       conflicts.push({
         leaseId: lease.leaseId,
         path: pair.path,
-        holder: { runId: lease.runId, sessionId: lease.sessionId, deviceId: lease.deviceId, label: holder.label, sameDevice: lease.deviceId === self.deviceId },
+        // + review minor 20: `sameDevice` is the READ LOCATION of the lease file, never `lease.deviceId === self.deviceId`
+        // — a planted lease naming my own device id would otherwise render as mine and be dismissed.
+        holder: { runId: lease.runId, sessionId: lease.sessionId, deviceId: lease.deviceId, label: holder.label, sameDevice: leaseOrigin(fold, lease).self },
         holderStep: holder.step,
         holderStage: holder.stage,
         holderPhase: holder.phase,
@@ -225,7 +232,9 @@ function buildLease(h: LedgerHandle, mine: LeaseIntent, type: Lease['type'], sta
     truncated: tr,
     ...(mine.command60 !== undefined ? { command60: oneLine(h.redact(mine.command60)).slice(0, 60) } : {}),
     ...(mine.exclusiveTree !== undefined ? { exclusiveTree: mine.exclusiveTree } : {}),
-    ...(mine.laneDir !== undefined && isValidRelPath(mine.laneDir) ? { laneDir: mine.laneDir } : {}),
+    // + review major 15: `laneDir` names a directory `sessions gc --lanes` will `rm -rf`. `isValidRelPath` admitted
+    // `post`, `src`, `tmp/x` — anything relative. Only the exact `tmp/synth/lane<k>` shape may travel in the record.
+    ...(mine.laneDir !== undefined && LANE_DIR_RE.test(mine.laneDir) ? { laneDir: mine.laneDir } : {}),
     ...(mine.slug !== undefined ? { slug: mine.slug } : {}),
     reason60: oneLine(h.redact(mine.reason60)).slice(0, 60),
     step: mine.step,
@@ -246,8 +255,9 @@ function buildLease(h: LedgerHandle, mine: LeaseIntent, type: Lease['type'], sta
   return lease;
 }
 
+/** + review major 13: `ws:`/`rm:` become `ws-`/`rm-` in the path; the record keeps the colon form. */
 function relOf(lease: Lease): string {
-  return join(lease.repoKey, `${lease.leaseId}.json`);
+  return leaseRel(lease.repoKey, lease.leaseId);
 }
 
 function makeHandle(h: LedgerHandle, initial: Lease, awaitedWrites: boolean): LeaseHandle & { current(): Lease } {
@@ -261,6 +271,17 @@ function makeHandle(h: LedgerHandle, initial: Lease, awaitedWrites: boolean): Le
     leaseId: initial.leaseId,
     stamp: initial.stamp,
     current: () => current,
+    /**
+     * §4.5 F1: the yield. Same `leaseId`, same `stamp` (minted once at declare and kept through every rewrite, §3.2),
+     * `type: 'intent'` — so the lease stops fencing anyone else while still announcing the intent, and F2's wake
+     * condition on the other side ("everything I yielded to is now `intent`") can become true.
+     */
+    async downgrade() {
+      if (released || current.type === 'intent') return;
+      const next = finalizeRecord({ ...current, type: 'intent' as const, renewedAt: nowIso(h) }, h.redact);
+      current = next;
+      await h.writeOwn('leases', relOf(next), next, { fsync: false });
+    },
     renew() {
       if (released) return;
       const at = nowIso(h);
@@ -281,14 +302,15 @@ function makeHandle(h: LedgerHandle, initial: Lease, awaitedWrites: boolean): Le
 /** advisory: one fire-and-forget write on the ledger chain (type as declared, usually 'intent'); nothing awaited */
 export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'advisory'): LeaseHandle;
 /**
- * strict: type 'exclusive', the rename awaited (~1 ms, no fsync), then ONE readdir of every peer's leases/<repoKey>/ → the
- * re-fold result (§4.5). The fence is SYMMETRIC (review blocker 4): `appeared` holds every overlapping lease that was NOT
- * in the snapshot `check()` judged over, and any non-empty `appeared` sets `reJudge` — regardless of stamp order, because in
- * the one-sees interleaving the viewer can be the LOWER stamp and would otherwise proceed while the writer never saw it.
- * `opts.snapshot` is the `LeaseCheck.snapshot` of the judgment being fenced; without it the pre-write fold is used.
+ * strict: type `'exclusive'` under `keyDir(repoKey ?? wsKey)`, the rename awaited (~1 ms, no fsync), then ONE readdir of
+ * EVERY device's `leases/<keyDir>/` — the fence is NOT bounded by `MAX_DEVICES`, only by `MAX_FENCE_DEVICES` (256) and
+ * `STRICT_FENCE_MS` (250 ms), §4.5. Two outcomes, both explicit; see `StrictDeclare` for the F1 / F2 rules.
+ *
+ * `opts.snapshot` is the design's `seen` — the `LeaseCheck.snapshot` of the judgment being fenced. Without it the
+ * pre-write fold is used, which is only correct when nothing was judged in between.
  */
-export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'strict', opts?: CheckOptions): Promise<LeaseHandle & StrictDeclaration>;
-export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'advisory' | 'strict', opts: CheckOptions = {}): LeaseHandle | Promise<LeaseHandle & StrictDeclaration> {
+export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'strict', opts?: CheckOptions): Promise<StrictDeclare>;
+export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'advisory' | 'strict', opts: CheckOptions = {}): LeaseHandle | Promise<StrictDeclare> {
   const h = asHandle(ledger);
   const stamp = h.stamps.issue();
   if (mode === 'advisory') {
@@ -300,14 +322,73 @@ export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'advisory' | 's
   const lease = buildLease(h, mine, mine.type === 'intent' ? 'exclusive' : mine.type, stamp);
   return (async () => {
     await h.writeOwn('leases', relOf(lease), lease, { fsync: false });
-    await h.refresh('leases');
+    // + review blocker 1: `refreshFence` guarantees a readdir that STARTS after the rename above — the whole fence is
+    // that ordering. The directory is `keyDir(repoKey ?? wsKey)` on both sides (§4.3), so a run whose `repoKey` is
+    // still null (before `run:ready`, a shallow clone, a non-git workspace) leases under its `wsKey`, which is exactly
+    // the key §4.3 step 2 matches such a peer by — the fence is never blind merely for want of a repoKey.
+    const scan = await h.refreshFence();
+    const handle = makeHandle(h, lease, true);
+    // §4.5: blind is REFUSED, not assumed. A bound reached before the enumeration finished means a peer beyond it may
+    // hold an overlapping exclusive lease, and strict promises a decision it can no longer make.
+    if (!scan.complete) return Object.assign(handle, { fence: 'blind' as const, scanned: scan.scanned, total: scan.total });
     const judged = check(h.fold, h.self, mine, { ...opts, stamp });
     const conflicts = judged.kind === 'conflict' ? judged.conflicts : [];
     const appeared = conflicts.filter((c) => !before.has(c.leaseId));
-    const reJudge = appeared.length > 0 || (judged.kind === 'conflict' && judged.contested);
+    // §4.5 F1: yield on SIGHT. Not the stamps — a local stamp test here is what let both writers proceed.
+    const proceed = appeared.length === 0;
     const refold: LeaseCheck = judged.kind === 'conflict' && appeared.length > 0 ? { ...judged, contested: true } : judged;
-    return Object.assign(makeHandle(h, lease, true), { refold, appeared, reJudge });
+    return Object.assign(handle, { fence: 'decided' as const, refold, appeared, proceed });
   })();
+}
+
+/**
+ * §4.5 F2, the wake condition of the §4.3 step-4 wait, as a pure predicate over the fold.
+ *
+ * True when every overlapping exclusive lease this side yielded to has become `intent`, been released or gone stale
+ * AND this side holds the lowest `stamp` among that mutually-yielded set and itself. Then — and only then — the caller
+ * re-declares `exclusive` and re-runs the fence; the others keep waiting for a real release.
+ *
+ * In the ONE-sees case the winner still holds `exclusive`, so this is false and the yielder simply waits, which is
+ * correct. In the BOTH-see case both are `intent` within a millisecond, both wakes fire, and the total order
+ * `compareStamp` picks exactly one — no livelock with three or more racers, because each round hands the work to the
+ * current minimum, and a racer that crashed after yielding drops out through staleness.
+ */
+export function f2Wake(fold: Fold, mine: Stamp, yieldedTo: readonly LeaseConflict[]): boolean {
+  if (yieldedTo.length === 0) return false;
+  let lowest = true;
+  for (const c of yieldedTo) {
+    const l = fold.leases.get(c.leaseId);
+    if (l === undefined || l.released !== undefined) continue; // released or gone: no longer a fence
+    if (liveHolder(fold, l) === null) continue; // its owner is stale: no longer a fence
+    if (l.type === 'exclusive') return false; // still holding: not my turn, keep waiting for a real release
+    if (compareStamp(l.stamp, mine) < 0) lowest = false; // a mutual yielder below me re-declares first
+  }
+  return lowest;
+}
+
+/**
+ * §4.5 F1 + F2 as one object: the yield, the set it was made against, the wake test and the re-declare.
+ * `leases.ts` owns the "set I yielded to" so the engine's wait loop only has to ask `wake(fold)` on each fold change.
+ */
+export interface FenceWait {
+  readonly yieldedTo: readonly LeaseConflict[];
+  /** F1: rewrite my own lease to `intent` so I stop fencing anyone else */
+  yield(): Promise<void>;
+  /** F2: is it my turn to try again? */
+  wake(fold: Fold): boolean;
+  /** F2: re-declare `exclusive` and re-run the fence (the snapshot moves on to what I can see now) */
+  redeclare(): Promise<StrictDeclare>;
+}
+
+export function fenceWait(ledger: Ledger, mine: LeaseIntent, decided: LeaseHandle & { appeared: LeaseConflict[] }): FenceWait {
+  const h = asHandle(ledger);
+  const yieldedTo = [...decided.appeared];
+  return {
+    yieldedTo,
+    yield: () => decided.downgrade(),
+    wake: (fold) => f2Wake(fold, decided.stamp, yieldedTo),
+    redeclare: () => declare(h, mine, 'strict', { snapshot: leaseSnapshot(h.fold) }),
+  };
 }
 
 export function release(handle: LeaseHandle, outcome: LeaseOutcome, changed?: Record<string, string | null>, head?: string): void {

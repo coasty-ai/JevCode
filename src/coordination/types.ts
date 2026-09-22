@@ -95,6 +95,8 @@ export interface Heartbeat {
   user: string;
   pid: number;
   bootAt: string;
+  /** §3.2: the writer's `hostKey` — binds the record to the MACHINE, so a beat under my own deviceId from another machine is never `sameDevice` */
+  hostKey?: string;
   jevcode: string;
   runId: string;
   sessionId: string;
@@ -149,6 +151,12 @@ export interface Heartbeat {
   stamp: Stamp;
   /** + review blocker 3: the immutable per-process claim the fork rule compares (never `stamp`) */
   claim: Claim;
+  /**
+   * + review blocker 2: the beat did not fit 4 KiB at full detail and the builder DEGRADED it (touchedRecent → subwork →
+   * plan.next3 → the declared / touched path sets) rather than refuse to beat. A refused beat reads as stale to every peer,
+   * which drops the run's leases — degrading is always the safer failure.
+   */
+  truncated?: boolean;
   checksum: string;
   hmac?: string;
 }
@@ -198,6 +206,8 @@ export interface Message {
   /** `<deviceId>-<actor8>-<seq>` (MSG_ID_RE) */
   id: string;
   from: { deviceId: string; label: string; sessionId: string | null; runId: string | null; user: string };
+  /** §3.2: the writer's `hostKey` — a `pause` from another machine under one shared `deviceId` is never `self` */
+  hostKey?: string;
   /** '<sessionId>' | '@<repoKey>' | '@all' */
   to: string;
   type: MessageType;
@@ -218,7 +228,11 @@ export interface Ack {
   v: 1;
   kind: 'ack';
   msgId: string;
-  /** sessionId */
+  /**
+   * + review major 8: the CONSUMER id `${sessionId ?? 'tui'}-${actor8}`, not a session id. Two processes can hold one
+   * session (`jevcode -c` twice on a paused session) and a TUI has no session before its first run, so a session-keyed
+   * ack file has two writers.
+   */
   by: string;
   deviceId: string;
   at: string;
@@ -264,6 +278,17 @@ export interface Fold {
   /** acks by msgId */
   acks: Map<string, Ack[]>;
   devices: Map<string, DeviceRecord & { lastSeen: string; syncLagMs: number | null; ignored: boolean }>;
+  /**
+   * + review major 12: the liveness verdict of EVERY heartbeat the fold holds — the claim holder AND every fork — by
+   * `${deviceId}/${runId}/${pid}`. `listSessions` shows one row per record; without this a fork row has no verdict.
+   */
+  liveness: Map<string, Liveness>;
+  /**
+   * + review minor 25: heartbeats read from a device this host has tombstoned (§4.6 row 4). They are kept OUT of
+   * `live` / `gone` / `leases` / `inbox` — nothing they say may move a decision — and exist only so `sessions who --all`
+   * can walk them and `unignoreDevice` has something to show.
+   */
+  ignored: Map<string, Heartbeat & { arrivalMono: number }>;
   skipped: number;
   at: { wallMs: number; monoMs: number };
   /** + §9.3 fork rule: every heartbeat for a runId beyond the holder (the lowest CLAIM), by runId; absent = none */
@@ -278,6 +303,13 @@ export interface SelfIdentity {
   label: string;
   host: string;
   user: string;
+  /**
+   * §3.2 (design revision 4): `hostKey = sha8(hostname(), userInfo().username, machineId)` — THREE inputs. The revision-3
+   * two-input hash collided exactly in §11 row 3's supported case (two default-named Macs, cloned VMs, a corporate image
+   * sharing one `~/.jevcode`): both machines adopted one `deviceId` and each read the other's records as `sameDevice`.
+   * Absent = the machine identifier could not be read; the reader then stays permissive (hostKey DENIES, never grants).
+   */
+  hostKey?: string;
   bootAt: string;
   sessionId: string | null;
   runId: string | null;
@@ -310,9 +342,13 @@ export interface LivenessEnv {
   deviceId: string;
   /** ISO: the reader's boot time (`os.uptime()`); a same-device record whose `startedAt` predates it is `stale-reused-pid` */
   bootAt: string;
+  /** §3.2 / §5.4 rule 4: this reader's `hostKey`; a record carrying a DIFFERENT one is never same-device, whatever the path says */
+  hostKey?: string;
   isPidAlive: (pid: number) => boolean;
   /** foreign staleness bound beyond `ttlMs` (120 s shared-dir, 180 s git) */
   syncSlackMs?: number;
+  /** + review minor 26: the bound for a peer whose `device.json` says `syncMode:'git'` (180 s); defaults to `syncSlackMs` */
+  gitSyncSlackMs?: number;
 }
 
 export interface SessionActivity {
@@ -356,10 +392,13 @@ export interface Ledger {
   /**
    * + review blocker 1: adopt a moved identity fact and re-derive everything keyed on it — the watch roots
    * (the per-device `leases/<dev>/<repoKey>` and `inbox/<dev>` dirs), the fold's inbox targets, the lease directory and the stamp clock's `runId`.
-   * Synchronous and idempotent; the next scan picks up the new roots. The engine calls it once after `run:ready`, the host
-   * at `run:start`, `run:end` and `/resume`.
+   * The in-memory half is synchronous and idempotent (the fold is rebuilt from records already held, so a message to the
+   * new `sessionId` appears with no I/O). The returned promise resolves after ONE BOUNDED WALK of every root the patch
+   * ADDS (design revision 4, §3.5): `fs.watch` reports future changes only, so a newly reachable
+   * `leases/<dev>/<keyDir>/` would stay invisible until the 15 s poll and the first `check()` after a `/resume` could
+   * read `clear` by ignorance. The engine calls it once after `run:ready`, the host at `run:start`, `run:end` and `/resume`.
    */
-  setIdentity(patch: IdentityPatch): void;
+  setIdentity(patch: IdentityPatch): Promise<void>;
   /** change notifications; the unsubscribe function; callbacks run on the debounce tick, never inside a watcher callback */
   subscribe(cb: (fold: Readonly<Fold>, change: FoldChange) => void): () => void;
   close(): Promise<void>;
@@ -418,20 +457,64 @@ export type LeaseCheck =
  * regardless of stamp order (the stamp only decides who is DISPLAYED as holder), so of two racing writers at least one —
  * and never zero — yields.
  */
-export interface StrictDeclaration {
-  refold: LeaseCheck;
-  appeared: LeaseConflict[];
-  /** true when this side must re-judge before it touches the paths */
-  reJudge: boolean;
-}
+/**
+ * §4.5 (design revision 4), the two outcomes of a strict declare, both explicit.
+ *
+ * `fence:'decided'` carries `appeared` — every overlapping exclusive lease present now that was ABSENT from the
+ * snapshot `check()` judged over — and **F1: `proceed = appeared.length === 0`. Yield on sight, never proceed on
+ * sight.** A local stamp test here is exactly what let both writers proceed in the one-sees interleaving (A renames
+ * first, sees nothing, proceeds; B renames second with a LOWER stamp, sees A, and a local "lower stamp wins" test would
+ * have B proceed too). Sight, not order, is what stops you; at most one overlapping writer gets `proceed: true` in ANY
+ * interleaving, because two empty `appeared` sets would need each `readdir` to precede the other's rename.
+ *
+ * `proceed: false` means YIELD: `downgrade()` to `'intent'` and enter the §4.3 step-4 wait, whose F2 wake rule
+ * (`f2Wake`) lets the LOWEST stamp among the mutually-yielded set re-declare — that is where "the lower stamp proceeds"
+ * actually happens, and it happens ~2 ms later rather than after `strictWaitMs`.
+ *
+ * `fence:'blind'` is a bound reached before the enumeration finished (`MAX_FENCE_DEVICES` / `STRICT_FENCE_MS`): strict
+ * refuses to guess and the caller takes the rule-1 discard + `lease-conflict` pane.
+ *
+ * Nothing on this path consults Jev, a pane, `theyTouched` or `coordination.default`, so `jev-on`, `jev-off`,
+ * `--no-input`, a Jev outage and a bench machine all decide identically.
+ */
+export type StrictDeclare =
+  | (LeaseHandle & { fence: 'decided'; refold: LeaseCheck; appeared: LeaseConflict[]; proceed: boolean })
+  | (LeaseHandle & { fence: 'blind'; scanned: number; total: number });
+
+/** §4.5: the overlapping exclusive lease ids a `check()` saw, so the re-fold can say which APPEARED afterwards. */
+export type LeaseSnapshot = ReadonlySet<string> | readonly string[];
 export interface LeaseHandle {
   leaseId: string;
   stamp: Stamp;
   renew(): void;
+  /**
+   * §4.5 F1 (design revision 4): `'exclusive'` → `'intent'` on a fence yield — same stamp, same leaseId, so every
+   * observer keeps agreeing about the order while this side stops being a fence for anyone else. Awaited: the yield is
+   * only real once the rename has landed.
+   */
+  downgrade(): Promise<void>;
   release(outcome: LeaseOutcome, changed?: Record<string, string | null>, head?: string): void;
 }
 
 // ── the write API the product surface needs (+ review blocker 2) ──────────────────────────────────────────────────────
+
+/**
+ * + review major 11 / re-review (5)(e) — NOTE FOR CORE: the field `src/checkpoint`'s `RunMeta` must carry, declared
+ * here until `RunMeta` is unfrozen.
+ *
+ * The fold only knows the epochs of records it can still SEE. A run whose earlier incarnations have been GC'd (ended
+ * heartbeats go after 24 h) or whose peer subtree has not synced yet would otherwise re-mint an epoch a previous
+ * incarnation already used, and `compareClaim` would return 0 for two different processes — the one case §9.3's fork
+ * rule cannot decide. `claimEpochHigh` is the monotonic high-water mark persisted beside the run and fed back through
+ * `nextEpoch(runId, { epochHigh })`. `claims` is bounded by `CLAIMS_MAX` and each row carries the authority it was read
+ * with, so an unverified foreign row never raises the bar (re-review (5)).
+ */
+export interface RunClaimMeta {
+  /** `max(epoch)` this device has ever minted or accepted for the run */
+  claimEpochHigh: number;
+  /** append-only, newest last, ≤ CLAIMS_MAX rows */
+  claims: { epoch: number; deviceId: string; startedAt: string; authority: Authority }[];
+}
 
 /** §6.5 worktree metadata — `coordination/worktrees/<repoKey>/<slug>.json`, outside every checkout and sandbox root */
 export interface WorktreeRecord {
@@ -457,9 +540,55 @@ export interface GcReport {
   byKind: Record<'heartbeat' | 'lease' | 'message' | 'ack', number>;
   /** lane dirs of dead runs the sweep may prune (§6.2 (a)) — paths are never removed by the ledger itself */
   staleLanes: { runId: string; laneDir: string }[];
-  /** files that could not be removed, by errno */
+  /** files that could not be removed, by errno — a GC never throws for a disk fault (§11 row 13) */
   failed: { path: string; code: string }[];
 }
+
+/** `sessions inbox --purge <device>` — our own outbox files are removed; a foreign message is only marked seen. */
+export interface PurgeReport {
+  /** our own outbox files removed */
+  removed: number;
+  /** foreign messages added to this consumer's `seen` set (nothing foreign is ever deleted — §4.6) */
+  muted: number;
+  failed: { path: string; code: string }[];
+}
+/**
+ * + re-review (2): the shapes the product surface's verbs return, with their error semantics stated once.
+ * Every verb REPORTS failure (an errno row) and never throws for a disk fault: a coordination write is bookkeeping
+ * (§11 row 13). `ConfigError` is reserved for a caller mistake (a bad id, an empty label, an unknown slug).
+ */
+export interface WorktreeInfo {
+  repoKey: string;
+  slug: string;
+  runId: string;
+  sessionId: string;
+  deviceId: string;
+  branch: string;
+  base: string;
+  createdAt: string;
+  /** the absolute worktree directory (derived from `home`, never read from the record) */
+  dir: string;
+  /** what the §6.6 guards say about it right now; `removable` means every guard passed */
+  state: 'removable' | 'live' | 'dirty' | 'unmerged' | 'too-young' | 'not-ours' | 'unknown' | 'git-failed';
+  detail: string;
+}
+
+/** §9.1 / §9.2: what `sessions sync` prints; `state: 'off'` when no shared dir is configured. */
+export interface SyncStatus {
+  mode: 'off' | 'shared-dir' | 'git';
+  state: 'off' | 'unknown' | 'online' | 'offline';
+  /** the errno that took the mirror offline, or null */
+  code: string | null;
+  /** §9.2: our own write → read-back lag */
+  lagMs: number | null;
+  /** copies queued behind an offline mirror */
+  pending: number;
+  /** monotonic ms the mirror has been offline; past `MIRROR_OFFLINE_NOTICE_MS` the status zone says `⇄ offline` */
+  offlineForMs: number | null;
+  /** the mirror root was refused (it resolves inside the coordination root — re-review (6)(ii)) */
+  refused: string | null;
+}
+
 /** §4.1 advisory facts for one step */
 export interface CoordinationFacts {
   step: number;

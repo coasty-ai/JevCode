@@ -141,7 +141,8 @@ describe('the ledger over a mirror (§9.1, §11 rows 5 / 14 / 48)', () => {
     await l.open();
     expect(l.fold.live.has(rid)).toBe(true);
     expect(l.fold.origins.get(`${DEV_B}/${rid}`)).toMatchObject({ self: false, source: s.root });
-    expect(l.foreignLive(rid)?.authority).toBe('unverified');
+    expect(l.foreignLive(rid, { includeUnverified: true })?.authority).toBe('unverified');
+    expect(l.foreignLive(rid)).toBeNull(); // + review major 7: verified-only is the default, so a mirror plant cannot stop us
   });
 
   it('review blocker 6: a record planted under MY device id in the mirror is never folded as mine', async () => {

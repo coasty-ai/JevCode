@@ -24,6 +24,8 @@ export interface HeartbeatBase {
   host: string;
   user: string;
   pid: number;
+  /** §3.2: this machine's `hostKey`, so a peer sharing our `deviceId` under one `~/.jevcode` is not read as us */
+  hostKey?: string;
   bootAt: string;
   jevcode: string;
   runId: string;
@@ -71,15 +73,43 @@ export function initialDynamic(): HeartbeatDynamic {
   };
 }
 
-export type BuildHeartbeatResult = { ok: true; record: Heartbeat } | { ok: false; reason: 'size' };
+export type BuildHeartbeatResult = { ok: true; record: Heartbeat; degraded: boolean } | { ok: false; reason: 'size' };
 
 const clip = (s: string, n: number): string => (s.length > n ? s.slice(0, n) : s);
 
-/** Apply every cap of §3.3 (60/80-char fields, ≤ 3 next, ≤ 64 paths, ≤ 96 recent, ≤ 8 leases, ≤ 16 subwork), redact, checksum; refuse > 4 KiB. */
+/**
+ * + review blocker 2: the §3.3 caps DO NOT FIT 4 KiB. An empty beat is already ~1.4 KiB of fixed identity, and the
+ * documented `touchedRecent` cap of 96 paths overflows on its own at any realistic path length (64 × 40 chars is
+ * enough). The old builder answered `{ ok: false, reason: 'size' }` and the writer then wrote NOTHING — so the run
+ * simply stopped beating, every peer read it stale after ttl + slack, and its leases were dropped and its files
+ * clobbered. Refusing to beat is the worst available failure.
+ *
+ * The record now DEGRADES, in the order the design says matters least first, and marks itself `truncated`:
+ *   touchedRecent → subwork → plan.next3 → the declared / touched path sets (collapsed, then emptied).
+ * A beat that still cannot fit — only possible when the fixed identity itself overflows — is refused as before.
+ */
+const DEGRADE_STEPS = 6;
+
 export function buildHeartbeat(base: HeartbeatBase, dyn: HeartbeatDynamic, o: { beatSeq: number; beatAt: string; stamp: Stamp; redact: (s: string) => string; sign?: <T extends object>(r: T) => T }): BuildHeartbeatResult {
-  const declared = dyn.declared === null ? null : { ...dyn.declared, ...collapsePaths(dyn.declared.paths, LEASE_PATHS_MAX) };
-  if (declared !== null && dyn.declared !== null) declared.truncated = declared.truncated || dyn.declared.truncated;
-  const touched = dyn.touched === null ? null : { step: dyn.touched.step, files: collapsePaths(dyn.touched.files, LEASE_PATHS_MAX).paths };
+  for (let step = 0; step <= DEGRADE_STEPS; step++) {
+    const r = buildAt(base, dyn, o, step);
+    if (r !== null) return { ok: true, record: r, degraded: step > 0 };
+  }
+  return { ok: false, reason: 'size' };
+}
+
+/** One rung of the ladder: `null` when the result does not fit its 4 KiB cap. */
+function buildAt(base: HeartbeatBase, dyn0: HeartbeatDynamic, o: { beatSeq: number; beatAt: string; stamp: Stamp; redact: (s: string) => string; sign?: <T extends object>(r: T) => T }, step: number): Heartbeat | null {
+  const pathCap = step >= 6 ? 0 : step >= 5 ? 1 : step >= 4 ? 8 : LEASE_PATHS_MAX;
+  const dyn: HeartbeatDynamic = {
+    ...dyn0,
+    ...(step >= 1 ? { touchedRecent: [] } : {}),
+    ...(step >= 2 ? { subwork: [] } : {}),
+    ...(step >= 3 ? { plan: { ...dyn0.plan, next3: [] } } : {}),
+  };
+  const declared = dyn.declared === null ? null : { ...dyn.declared, ...collapsePaths(dyn.declared.paths, Math.max(1, pathCap)), ...(pathCap === 0 ? { paths: [] } : {}) };
+  if (declared !== null && dyn.declared !== null) declared.truncated = declared.truncated || dyn.declared.truncated || step >= 4;
+  const touched = dyn.touched === null ? null : { step: dyn.touched.step, files: pathCap === 0 ? [] : collapsePaths(dyn.touched.files, Math.max(1, pathCap)).paths };
   const record: Heartbeat = {
     v: 1,
     kind: base.kind ?? 'heartbeat',
@@ -88,6 +118,7 @@ export function buildHeartbeat(base: HeartbeatBase, dyn: HeartbeatDynamic, o: { 
     host: base.host,
     user: base.user,
     pid: base.pid,
+    ...(base.hostKey !== undefined ? { hostKey: base.hostKey } : {}),
     bootAt: base.bootAt,
     jevcode: base.jevcode,
     runId: base.runId,
@@ -124,6 +155,7 @@ export function buildHeartbeat(base: HeartbeatBase, dyn: HeartbeatDynamic, o: { 
     context: dyn.context,
     ...(dyn.pausePoint !== undefined ? { pausePoint: dyn.pausePoint } : {}),
     ...(dyn.lockHeld !== undefined ? { lockHeld: dyn.lockHeld } : {}),
+    ...(step > 0 ? { truncated: true } : {}),
     startedAt: base.startedAt,
     beatAt: o.beatAt,
     beatSeq: o.beatSeq,
@@ -132,8 +164,7 @@ export function buildHeartbeat(base: HeartbeatBase, dyn: HeartbeatDynamic, o: { 
     checksum: '',
   };
   const final = (o.sign ?? ((r: Heartbeat) => r))(finalizeRecord(record, o.redact));
-  if (!fitsRecordSize('heartbeat', final)) return { ok: false, reason: 'size' };
-  return { ok: true, record: final };
+  return fitsRecordSize('heartbeat', final) ? final : null;
 }
 
 // ── the writer ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -150,8 +181,10 @@ export interface HeartbeatWriterOptions {
   coalesceMs?: number;
   /** runs on every timer tick after the beat (the engine's own per-tick work, e.g. `syncLag` display) */
   onTick?: () => void;
-  /** the record did not fit 4 KiB and was not written (one notice) */
+  /** the record did not fit 4 KiB EVEN DEGRADED and was not written (one notice) — see `buildHeartbeat` */
   onRefused?: (reason: 'size') => void;
+  /** + review blocker 2: the beat was written, but detail was dropped to make it fit (one notice) */
+  onDegraded?: () => void;
 }
 
 export interface HeartbeatWriter {
@@ -190,6 +223,7 @@ export function createHeartbeatWriter(o: HeartbeatWriterOptions): HeartbeatWrite
   let lastBeatMono: number | null = null;
   let ended = false;
   let refusedOnce = false;
+  let degradedOnce = false;
   let timer: unknown = null;
   let coalesce: unknown = null;
   const tracked = new Map<string, LeaseHandle>();
@@ -197,7 +231,13 @@ export function createHeartbeatWriter(o: HeartbeatWriterOptions): HeartbeatWrite
   const build = (): Heartbeat | null => {
     beatSeq += 1;
     const r = buildHeartbeat(o.base, dyn, { beatSeq, beatAt: new Date(h.now()).toISOString(), stamp: h.stamps.issue(), redact: h.redact, sign: h.sign });
-    if (r.ok) return r.record;
+    if (r.ok) {
+      if (r.degraded && !degradedOnce) {
+        degradedOnce = true;
+        o.onDegraded?.();
+      }
+      return r.record;
+    }
     if (!refusedOnce) {
       refusedOnce = true;
       o.onRefused?.(r.reason);

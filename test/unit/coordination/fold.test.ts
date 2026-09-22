@@ -233,6 +233,68 @@ describe('§11 row 7: a resumed run whose workspace path changed', () => {
   });
 });
 
+describe('+ review major 12: one row per (deviceId, runId) — forks included', () => {
+  const rid = runId(7);
+  const forked = () => {
+    // two live processes on ONE runId: the claim holder (epoch 1) and a later incarnation on another device
+    const holder = makeHeartbeat({ runId: rid, sessionId: rid, pid: 111, claim: claim({ epoch: 1, runId: rid, pid: 111, startedAt: iso(T0 - 90_000) }), stamp: stamp(5, DEV_A, rid) });
+    const later = makeHeartbeat({ deviceId: DEV_B, runId: rid, sessionId: rid, pid: 222, label: 'studio', claim: claim({ epoch: 2, deviceId: DEV_B, runId: rid, pid: 222 }), stamp: stamp(6, DEV_B, rid) });
+    return foldOf([entry(holder, SELF), entry(later, TRUSTED)]);
+  };
+
+  it('a FORK gets its own row — the case §9.3 exists for was the one `sessions who` hid', () => {
+    const fold = forked();
+    expect(fold.forks?.get(rid)).toHaveLength(1);
+    const rows = listSessions(fold, self).filter((a) => a.runId === rid);
+    expect(rows).toHaveLength(2); // the holder AND the fork, both live
+    expect(rows.map((a) => a.deviceId).sort()).toEqual([DEV_A, DEV_B].sort());
+    expect(rows.every((a) => a.flags.forked)).toBe(true);
+    // every record the fold holds has a verdict, keyed by (deviceId, runId, pid)
+    expect(fold.liveness.get(`${DEV_A}/${rid}/111`)).toBe('live');
+    expect(fold.liveness.get(`${DEV_B}/${rid}/222`)).toBe('live');
+  });
+
+  it('byRunId puts the CLAIM HOLDER first and keeps two processes of one device apart', () => {
+    const fold = forked();
+    const rows = byRunId(fold, rid);
+    expect(rows[0]?.claim.epoch).toBe(1); // the holder is the LOWEST claim, never the newest stamp
+    expect(rows).toHaveLength(2);
+    expect(seenEpochs(fold, rid)).toEqual([1, 2]);
+  });
+});
+
+describe('+ review minor 25: an ignored device is walkable by `who --all` and by nothing else', () => {
+  const ignoredDevices = new Set([DEV_B]);
+  const fold = () =>
+    foldOf(
+      [
+        entry(makeHeartbeat(), SELF),
+        entry(makeDevice({ deviceId: DEV_B, label: 'old-mac' }), TRUSTED),
+        peerBeat(9),
+        entry(makeLease({ runId: runId(9), sessionId: runId(9), deviceId: DEV_B, leaseId: `${runId(9)}-9`, stamp: stamp(9, DEV_B, runId(9)) }), TRUSTED),
+        entry(makeMessage({ to: '@all', id: `${DEV_B}-abcdefgh-9`, stamp: stamp(9, DEV_B, runId(9)) }), TRUSTED),
+      ],
+      { ignoredDevices },
+    );
+
+  it('its records move nothing: no live row, no lease, no inbox message', () => {
+    const f = fold();
+    expect(f.live.has(runId(9))).toBe(false);
+    expect(f.leases.size).toBe(0);
+    expect(f.inbox).toHaveLength(0);
+    expect(listSessions(f, self).map((a) => a.deviceId)).toEqual([DEV_A]);
+  });
+
+  it('…but `--all` walks it and flags it, which is what makes `gc --unignore` nameable', () => {
+    const f = fold();
+    expect(f.ignored.size).toBe(1);
+    const rows = listSessions(f, self, { all: true });
+    const row = rows.find((a) => a.deviceId === DEV_B);
+    expect(row).toBeDefined();
+    expect(row?.flags.ignoredDevice).toBe(true);
+  });
+});
+
 describe('targets, lease keys and the stamp seed', () => {
   it('§5.1: my targets are my sessionId, @repoKey, @remoteKey and @all', () => {
     expect([...sessionTargets(makeSelf({ remoteKey: 'rm:0000000000000000' }))].sort()).toEqual(['@all', `@${REPO}`, '@rm:0000000000000000', runId(1)].sort());

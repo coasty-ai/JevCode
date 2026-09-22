@@ -19,7 +19,13 @@ export interface Timers {
 }
 
 export const nodeTimers: Timers = {
-  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  // + review minor 22: unref'd like the poll interval. A pending debounce (or an `awaitAck` timeout, which uses the
+  // same seam) held the event loop open, so `jevcode sessions tell …` sat for up to 5 s after its work was done.
+  setTimeout: (fn, ms) => {
+    const h = setTimeout(fn, ms);
+    h.unref();
+    return h;
+  },
   clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
   setInterval: (fn, ms) => {
     const h = setInterval(fn, ms);

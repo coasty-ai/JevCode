@@ -7,11 +7,78 @@ import { byteLength } from '../core/text.js';
 import type { JsonObject } from '../core/types.js';
 import { DIRECTIVE_MAX_CHARS } from '../core/types.js';
 import { checksumOf, withChecksum } from './checksum.js';
-import { isValidClaim } from './claims.js';
-import { ACTOR8_RE, DEVICE_ID_RE, LANE_DIR_RE, LEASE_ID_RE, LEASE_PATHS_MAX, MSG_ID_RE, OID_RE, REPO_KEY_RE, RUN_ID_RE, SLUG_RE, TOUCHED_RECENT_MAX, isValidBranch, isValidRelPath, isValidTarget } from './ids.js';
+import { MAX_CLAIM_EPOCH, hmacValid, isValidClaim } from './claims.js';
+import { keyDir } from './paths.js';
+import { ACTOR8_RE, CONSUMER_ID_RE, COUNTER_MAX, DEVICE_ID_RE, LANE_DIR_RE, LEASE_ID_RE, LEASE_PATHS_MAX, HOST_KEY_RE, MSG_ID_RE, OID_RE, REPO_KEY_RE, RUN_ID_RE, SLUG_RE, TOUCHED_RECENT_MAX, isValidBranch, isValidRelPath, isValidTarget } from './ids.js';
 import type { Ack, AnyRecord, DeviceRecord, Heartbeat, Lease, LivenessEnv, LivenessVerdict, Message, RecordKind, RecordOf, RecordOrigin, Stamp } from './types.js';
 
 export { checksumOf, withChecksum } from './checksum.js';
+
+// ── errors (§12.0.4, design revision 4) ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One error type for all thirteen write verbs. A write verb NEVER throws a bare errno and never rejects with a string.
+ *
+ * The rule, stated once: a REFUSAL the user can act on is a RESULT (`removeWorktree().refused`, `syncDisable()`), a
+ * PRECONDITION the caller got wrong — or an environment that cannot serve the verb at all — is a `CoordinationError`,
+ * and a PER-FILE failure inside a bulk verb (`gc`, `sweep`, `purgeInbox`) is COUNTED in that verb's report. An
+ * unclassified errno surfaces as code `'io'` with the errno in `detail60`, so the surface never pattern-matches on
+ * `err.code` from `node:fs`.
+ */
+export type CoordinationErrorCode =
+  | 'dirty-base'
+  | 'branch-exists'
+  | 'slug-taken'
+  | 'not-found'
+  | 'not-ours'
+  | 'label-too-long'
+  | 'unknown-device'
+  | 'ambiguous-device'
+  // design revision 5, §12.0.4
+  | 'self-device'
+  | 'not-paired'
+  | 'too-many-devices'
+  | 'epoch-exhausted'
+  | 'offline'
+  | 'readonly'
+  | 'no-space'
+  | 'denied'
+  | 'io';
+
+export class CoordinationError extends Error {
+  readonly code: CoordinationErrorCode;
+  /** redacted, one line, ready to render */
+  readonly detail60: string;
+  /** `'ambiguous-device'` only (§5.3 listing) */
+  readonly candidates?: readonly unknown[];
+  constructor(code: CoordinationErrorCode, message: string, o: { detail60?: string; candidates?: readonly unknown[] } = {}) {
+    super(message);
+    this.name = 'CoordinationError';
+    this.code = code;
+    this.detail60 = oneLine(o.detail60 ?? message).slice(0, 60);
+    if (o.candidates !== undefined) this.candidates = o.candidates;
+  }
+}
+
+/** §11 row 13 → §12.0.4: the errno classes a write verb reports as a typed code rather than a raw `node:fs` error. */
+export function coordinationCodeOf(errno: string | null): CoordinationErrorCode {
+  switch (errno) {
+    case 'EROFS':
+      return 'readonly';
+    case 'ENOSPC':
+    case 'EDQUOT':
+      return 'no-space';
+    case 'EACCES':
+    case 'EPERM':
+      return 'denied';
+    case 'ETIMEDOUT':
+    case 'ESTALE':
+    case 'ENOTCONN':
+      return 'offline';
+    default:
+      return 'io';
+  }
+}
 
 // ── bounds ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -36,10 +103,17 @@ export const MESSAGE_TTL_MS = 7 * 86_400_000;
 export const CONTROL_MESSAGE_TTL_MS = 600_000;
 export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set(['pause', 'abort', 'steer', 'resume', 'end']);
 export const SUBWORK_MAX = 16;
-/** review #35: the bound every integer field of a record must stay inside (a `stamp.n` of 2^60 poisons a Lamport clock for good) */
-export const COUNTER_MAX = 1_000_000_000;
+/** review #35: the bound every integer field of a record must stay inside (declared in `ids.ts`; re-exported here) */
+export { COUNTER_MAX };
 /** review #35: an observed Lamport `n` further than this above our own is a hostile value and is not adopted */
 export const STAMP_ADOPT_MAX_DELTA = 1_000_000_000;
+/**
+ * + review major 16: the clock never ADOPTS a value inside this margin of `COUNTER_MAX`. `issue()` saturates at the cap
+ * (ids.ts), so adopting the cap itself would leave every later stamp equal and the Lamport order flat; refusing the top
+ * of the range keeps `issue()` strictly increasing for the life of a run.
+ */
+export const STAMP_ADOPT_MARGIN = 1_000;
+export const STAMP_ADOPT_CEILING = COUNTER_MAX - STAMP_ADOPT_MARGIN;
 export const NEXT3_MAX_CHARS = 80;
 export const LEASES_IN_BEAT_MAX = 8;
 export const MESSAGE_FILES_MAX = 32;
@@ -56,7 +130,7 @@ export function compareStamp(a: Stamp, b: Stamp): -1 | 0 | 1 {
 
 /** review #35: only adopt an observed Lamport `n` that is plausibly ours to follow; a hostile 1e9 jump is ignored. */
 export function adoptableStampN(observed: number, own: number): boolean {
-  return Number.isSafeInteger(observed) && observed >= 0 && observed <= COUNTER_MAX && observed - own < STAMP_ADOPT_MAX_DELTA;
+  return Number.isSafeInteger(observed) && observed >= 0 && observed < STAMP_ADOPT_CEILING && observed - own < STAMP_ADOPT_MAX_DELTA;
 }
 
 // ── text hygiene ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -112,10 +186,17 @@ export function fitsRecordSize(kind: RecordKind, record: object): boolean {
 
 // ── parsing ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export type ParseFailure = 'size' | 'json' | 'shape' | 'version' | 'id' | 'checksum';
-export type ParseRecordResult<K extends RecordKind> = { ok: true; record: RecordOf<K> } | { ok: false; reason: ParseFailure };
+/** §12.0.4: `'bounds'` (design revision 4) is a counter outside its documented range — `claim.epoch > MAX_CLAIM_EPOCH`,
+ *  a `stamp.n` of 1e300 — told apart from a mistyped field (`'shape'`) and a malformed id (`'id'`). */
+export type ParseFailure = 'size' | 'json' | 'shape' | 'version' | 'id' | 'bounds' | 'checksum';
+/**
+ * §12.0.4 (design revision 4): `verified` is REPORTED, never a gate. A record that does not verify still parses — the
+ * fold needs it for `⚠ forked`, for `who`'s `unverified` flag and for the `[y]` row — and it is the DECISION that
+ * consults the authority, not the parser. `verified` is false whenever `ctx.trust` is absent (nothing to check with).
+ */
+export type ParseRecordResult<K extends RecordKind> = { ok: true; record: RecordOf<K>; verified: boolean } | { ok: false; reason: ParseFailure };
 
-type Bad = 'shape' | 'id';
+type Bad = 'shape' | 'id' | 'bounds';
 
 const isStr = (v: unknown): v is string => typeof v === 'string';
 const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
@@ -153,6 +234,10 @@ function checkStamp(v: unknown): Bad | null {
 function checkId(v: unknown, re: RegExp): Bad | null {
   return isStr(v) ? (re.test(v) ? null : 'id') : 'shape';
 }
+function checkConsumerId(v: unknown): Bad | null {
+  if (!isStr(v)) return 'shape';
+  return CONSUMER_ID_RE.test(v) || RUN_ID_RE.test(v) ? null : 'id';
+}
 function checkIdOrNull(v: unknown, re: RegExp): Bad | null {
   return v === null ? null : checkId(v, re);
 }
@@ -162,6 +247,9 @@ function checkHeartbeat(o: JsonObject): Bad | null {
   let bad = checkId(o['deviceId'], DEVICE_ID_RE) ?? checkId(o['runId'], RUN_ID_RE) ?? checkId(o['sessionId'], RUN_ID_RE) ?? checkIdOrNull(o['parentSessionId'], RUN_ID_RE) ?? checkIdOrNull(o['parentRunId'], RUN_ID_RE);
   if (bad !== null) return bad;
   for (const k of ['label', 'host', 'user', 'jevcode', 'task60', 'startedAt', 'beatAt', 'bootAt', 'mode', 'stage'] as const) if (!isStr(o[k])) return 'shape';
+  // §3.2: the machine the beat was written on; `isPidAlive` may only be asked about a pid from THIS machine
+  if (o['hostKey'] !== undefined && (!isStr(o['hostKey']) || !HOST_KEY_RE.test(o['hostKey']))) return 'id';
+  if (o['truncated'] !== undefined && !isBool(o['truncated'])) return 'shape'; // + blocker 2: the degraded-beat marker
   if (!isCount(o['pid']) || o['pid'] <= 0) return 'shape';
   if (!oneOf(SOURCES)(o['source']) || !isStrOrNull(o['title60'])) return 'shape';
   const repo = o['repo'];
@@ -219,6 +307,7 @@ function checkHeartbeat(o: JsonObject): Bad | null {
   if (o['pausePoint'] !== undefined && !isJsonObject(o['pausePoint'])) return 'shape';
   if (!isCount(o['beatSeq']) || !isCount(o['ttlMs'])) return 'shape';
   // + review blocker 3: the immutable claim the fork rule compares
+  if (isJsonObject(o['claim']) && typeof o['claim']['epoch'] === 'number' && !(Number.isSafeInteger(o['claim']['epoch']) && o['claim']['epoch'] >= 1 && o['claim']['epoch'] <= MAX_CLAIM_EPOCH)) return 'bounds';
   if (!isValidClaim(o['claim'])) return 'shape';
   const claim = o['claim'];
   if (claim.deviceId !== o['deviceId'] || claim.runId !== o['runId']) return 'id';
@@ -241,6 +330,8 @@ function checkLease(o: JsonObject): Bad | null {
   if (o['slug'] !== undefined && checkId(o['slug'], SLUG_RE) !== null) return 'id';
   if (o['claim'] !== undefined && !isValidClaim(o['claim'])) return 'shape';
   if (o['type'] === 'takeover' && !isValidClaim(o['claim'])) return 'shape'; // + blocker 3: a takeover always carries its claim
+  // + re-review (3)/(6): `claim.deviceId` joins the id-vs-path binding list — a takeover claiming another device's id is 'id'
+  if (isJsonObject(o['claim']) && o['claim']['deviceId'] !== o['deviceId']) return 'id';
   const rel = o['released'];
   if (rel !== undefined) {
     if (!isJsonObject(rel) || !isStr(rel['at']) || !oneOf(LEASE_OUTCOMES)(rel['outcome']) || !isJsonObject(rel['changed'])) return 'shape';
@@ -265,6 +356,7 @@ function checkMessage(o: JsonObject): Bad | null {
   bad = checkId(from['deviceId'], DEVICE_ID_RE) ?? checkIdOrNull(from['sessionId'], RUN_ID_RE) ?? checkIdOrNull(from['runId'], RUN_ID_RE);
   if (bad !== null) return bad;
   if (!isStr(from['label']) || !isStr(from['user'])) return 'shape';
+  if (o['hostKey'] !== undefined && (!isStr(o['hostKey']) || !HOST_KEY_RE.test(o['hostKey']))) return 'id'; // §3.2
   if (!isStr(o['to'])) return 'shape';
   if (!isValidTarget(o['to'])) return 'id';
   if (!oneOf(MESSAGE_TYPES)(o['type']) || !isStr(o['text']) || !isStr(o['t']) || !isStr(o['expiresAt'])) return 'shape';
@@ -288,7 +380,8 @@ function checkMessage(o: JsonObject): Bad | null {
 
 function checkAck(o: JsonObject): Bad | null {
   if (o['kind'] !== 'ack') return 'shape';
-  const bad = checkId(o['msgId'], MSG_ID_RE) ?? checkId(o['by'], RUN_ID_RE) ?? checkId(o['deviceId'], DEVICE_ID_RE);
+  // + review major 8: `by` is a CONSUMER id (`${sessionId ?? 'tui'}-${actor8}`); the bare run-id form of an older build still parses
+  const bad = checkId(o['msgId'], MSG_ID_RE) ?? checkConsumerId(o['by']) ?? checkId(o['deviceId'], DEVICE_ID_RE);
   if (bad !== null) return bad;
   if (!isStr(o['at']) || !oneOf(ACK_OUTCOMES)(o['outcome'])) return 'shape';
   if (o['detail60'] !== undefined && !isStr(o['detail60'])) return 'shape';
@@ -315,6 +408,13 @@ export interface ParseContext {
   deviceId: string;
   /** for a message: the `<target>` directory component */
   target?: string;
+  /** §3.1 / §4.3 (revision 4): for a lease, the `<keyDir>` directory component — `keyDir(repoKey ?? wsKey)` must equal it */
+  keyDir?: string;
+  /**
+   * §10.3 (revision 4): the verification key for the PATH's device, looked up by the reader. The record's own `keyId`
+   * is display text and is never how a verifier finds a key. Absent → `verified: false`, which is a fact, not a failure.
+   */
+  trust?: (pathDeviceId: string) => string | null | undefined;
 }
 
 /** Every identity field a record carries must equal the path component it was read from. */
@@ -326,8 +426,18 @@ function locationMatches(kind: RecordKind, o: JsonObject, ctx: ParseContext): bo
       const claimDevice = isJsonObject(claim) ? claim['deviceId'] : undefined;
       return o['deviceId'] === ctx.deviceId && stampDevice === ctx.deviceId && claimDevice === ctx.deviceId;
     }
-    case 'lease':
-      return o['deviceId'] === ctx.deviceId && stampDevice === ctx.deviceId;
+    case 'lease': {
+      const claim = o['claim'];
+      const claimDevice = isJsonObject(claim) ? claim['deviceId'] : ctx.deviceId; // + re-review (3): claim.deviceId is bound too
+      if (o['deviceId'] !== ctx.deviceId || stampDevice !== ctx.deviceId || claimDevice !== ctx.deviceId) return false;
+      // §4.3 (revision 4): the lease's own `keyDir(repoKey ?? wsKey)` must equal the directory it sits in, or a peer
+      // could park a lease for MY repo under a key nobody folds — invisible to the fence that is supposed to see it.
+      if (ctx.keyDir !== undefined) {
+        const repoKey = o['repoKey'];
+        return typeof repoKey === 'string' && keyDir(repoKey) === ctx.keyDir;
+      }
+      return true;
+    }
     case 'message': {
       const from = o['from'];
       if (!isJsonObject(from) || from['deviceId'] !== ctx.deviceId || stampDevice !== ctx.deviceId) return false;
@@ -357,7 +467,9 @@ export function parseRecord<K extends RecordKind>(text: string, kind: K, ctx?: P
   if (bad !== null) return { ok: false, reason: bad };
   if (ctx !== undefined && !locationMatches(kind, o, ctx)) return { ok: false, reason: 'id' };
   if (o['checksum'] !== checksumOf(o)) return { ok: false, reason: 'checksum' };
-  return { ok: true, record: o as unknown as RecordOf<K> };
+  // §10.3: reported, never a gate — the key is found by the PATH's deviceId, never by a `keyId` the record carries
+  const verified = ctx?.trust === undefined ? false : hmacValid(o, ctx.trust(ctx.deviceId), { deviceId: ctx.deviceId, hostKey: typeof o['hostKey'] === 'string' ? o['hostKey'] : undefined });
+  return { ok: true, record: o as unknown as RecordOf<K>, verified };
 }
 
 /** The kind a parsed record claims (a `device.json` has no `kind`). */
@@ -418,6 +530,15 @@ export function isLive(record: Heartbeat, now: Now, arrival: { arrivalMono: numb
   const beatAt = parseIso(record.beatAt);
   const skewMs = Number.isFinite(beatAt) && beatAt - now.wallMs > SKEW_MS ? beatAt - now.wallMs : null;
   const skewed = skewMs !== null;
+  // §3.2 `duplicate-identity`: two clones reporting one machine identifier share a deviceId, so the local subtree is not
+  // proof of "my machine". A record naming another hostKey is judged by ARRIVAL, never by a pid probe against a foreign
+  // pid table. `hostKey` DENIES same-device; it can never grant it (the local read location is still required).
+  if (origin.self && !sameHost(record.hostKey, env.hostKey)) {
+    if (arrival === null) return { liveness: 'unknown', hung: false, skewed, skewMs };
+    if (record.phase === 'ended') return { liveness: 'stale', hung: false, skewed, skewMs };
+    const live = now.monoMs - arrival.arrivalMono < record.ttlMs + (env.syncSlackMs ?? SYNC_SLACK_SHARED_MS);
+    return { liveness: live ? 'live' : 'stale', hung: false, skewed, skewMs };
+  }
   if (origin.self) {
     if (record.phase === 'ended') return { liveness: 'stale', hung: false, skewed, skewMs };
     const started = parseIso(record.startedAt);
@@ -432,6 +553,11 @@ export function isLive(record: Heartbeat, now: Now, arrival: { arrivalMono: numb
   const slack = env.syncSlackMs ?? SYNC_SLACK_SHARED_MS;
   const live = now.monoMs - arrival.arrivalMono < record.ttlMs + slack;
   return { liveness: live ? 'live' : 'stale', hung: false, skewed, skewMs };
+}
+
+/** §3.2 / §5.4 rule 4: unknown on either side stays permissive; only a KNOWN difference refuses same-device. */
+export function sameHost(a: string | undefined, b: string | undefined): boolean {
+  return a === undefined || b === undefined || a === b;
 }
 
 // ── overlap (§4.3 step 2, §11 rows 8 / 23 / 34) ───────────────────────────────────────────────────────────────────────

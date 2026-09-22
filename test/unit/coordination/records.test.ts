@@ -211,13 +211,15 @@ describe('claims — the immutable fork fence (review blocker 3)', () => {
 
 describe('authenticity (§10.3)', () => {
   it('the hmac covers the same canonical text as the checksum and a single edited byte breaks it', () => {
-    const signedHb = withHmac(makeHeartbeat(), KEY_A);
-    expect(hmacValid(signedHb, KEY_A)).toBe(true);
-    expect(hmacValid(signedHb, KEY_B)).toBe(false);
-    expect(hmacValid({ ...signedHb, step: 8 }, KEY_A)).toBe(false);
-    expect(hmacValid(makeHeartbeat(), KEY_A)).toBe(false); // unsigned
-    expect(hmacValid(signedHb, 'short')).toBe(false);
-    expect(hmacOf(makeHeartbeat(), KEY_A)).toMatch(/^[0-9a-f]{64}$/);
+    const signedHb = withHmac(makeHeartbeat(), KEY_A, DEV_A);
+    expect(hmacValid(signedHb, KEY_A, DEV_A)).toBe(true);
+    expect(hmacValid(signedHb, KEY_B, DEV_A)).toBe(false);
+    expect(hmacValid({ ...signedHb, step: 8 }, KEY_A, DEV_A)).toBe(false);
+    expect(hmacValid(makeHeartbeat(), KEY_A, DEV_A)).toBe(false); // unsigned
+    expect(hmacValid(signedHb, 'short', DEV_A)).toBe(false);
+    expect(hmacOf(makeHeartbeat(), KEY_A, DEV_A)).toMatch(/^[0-9a-f]{64}$/);
+    // + re-review (5): the same bytes under the same GROUP key do not verify for another device's subtree
+    expect(hmacValid(signedHb, KEY_A, DEV_B)).toBe(false);
   });
 
   it('authority comes from the origin, never from the record', () => {

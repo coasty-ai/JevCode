@@ -104,12 +104,47 @@ describe('buildHeartbeat (§3.3): every cap applied, 4 KiB refused', () => {
     expect(r.record.touched?.files.length).toBeLessThanOrEqual(LEASE_PATHS_MAX);
   });
 
-  it('a record that cannot fit 4 KiB is REFUSED, never truncated (every clipped field stays inside its cap)', () => {
-    // task60 and friends are clipped by the builder, so overflow can only come from the bounded-but-wide arrays
-    const wide = Array.from({ length: 96 }, (_, i) => `src/${'p'.repeat(400)}${i}.ts`);
-    const r = buildHeartbeat(base(), { ...initialDynamic(), touchedRecent: wide }, buildOpts);
-    expect(r).toEqual({ ok: false, reason: 'size' });
+  /**
+   * REVIEW BLOCKER 2 FIXTURE — a beat AT THE DOCUMENTED §3.3 CAPS.
+   *
+   * Fails before the fix: `{ ok: false, reason: 'size' }`, so `write()` wrote nothing at all, the run stopped beating,
+   * every peer read it stale after ttl + slack and dropped its leases. Passes after: the record DEGRADES in order
+   * (touchedRecent → subwork → plan.next3 → the path sets), marks itself `truncated`, and always beats.
+   */
+  it('review blocker 2: a beat at the documented caps DEGRADES and still beats — it is never refused', () => {
+    const atTheCaps = {
+      ...initialDynamic(),
+      // the §3.3 numbers exactly: 96 recent paths, 64 declared, 64 touched, 16 subwork, 8 leases, 3 next
+      touchedRecent: Array.from({ length: TOUCHED_RECENT_MAX }, (_, i) => `src/tui/components/part${String(i).padStart(2, '0')}/file.ts`),
+      touched: { step: 7, files: Array.from({ length: LEASE_PATHS_MAX }, (_, i) => `src/engine/stage${i}/run.ts`) },
+      declared: { step: 8, paths: Array.from({ length: LEASE_PATHS_MAX }, (_, i) => `src/engine/stage${i}/run.ts`), type: 'intent' as const, truncated: false },
+      leases: Array.from({ length: LEASES_IN_BEAT_MAX }, (_, i) => `${runId(1)}-${i + 1}`),
+      subwork: Array.from({ length: SUBWORK_MAX }, (_, i) => subworkEntry({ kind: 'sample', id: `g1/r2/s${i}`, since: iso(T0), stage: 'propose', detail: `llm round 2 sample ${i}` })),
+      plan: { done: 3, remaining: 4, unverified: 1, next3: ['a'.repeat(80), 'b'.repeat(80), 'c'.repeat(80)] },
+    };
+    const r = buildHeartbeat(base(), atTheCaps, buildOpts);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.degraded).toBe(true);
+    expect(r.record.truncated).toBe(true);
+    expect(recordBytes(r.record)).toBeLessThanOrEqual(RECORD_MAX_BYTES.heartbeat);
+    expect(r.record.touchedRecent).toEqual([]); // the first rung: the least load-bearing field goes first
+    expect(parseRecord(JSON.stringify(r.record), 'heartbeat', { deviceId: DEV_A }).ok).toBe(true);
+    // 64 × 40-char recent paths alone overflowed the old builder; they degrade and beat now
+    const sixtyFour = buildHeartbeat(base(), { ...initialDynamic(), touchedRecent: Array.from({ length: 64 }, (_, i) => `src/a/${'p'.repeat(28)}${String(i).padStart(2, '0')}.ts`) }, buildOpts);
+    expect(sixtyFour.ok).toBe(true);
+    expect(sixtyFour.ok && sixtyFour.record.truncated).toBe(true);
+    // an ordinary beat is untouched and carries no marker
+    const plain = buildHeartbeat(base(), initialDynamic(), buildOpts);
+    expect(plain.ok && plain.degraded).toBe(false);
+    expect(plain.ok && plain.record.truncated).toBeUndefined();
     expect(buildHeartbeat(base({ task60: 'x'.repeat(RECORD_MAX_BYTES.heartbeat) }), initialDynamic(), buildOpts).ok).toBe(true);
+  });
+
+  it('a beat whose FIXED identity cannot fit is still refused — degrading has a floor', () => {
+    // `host` has no cap of its own, so it is the one field the ladder cannot shed
+    const r = buildHeartbeat(base({ host: 'h'.repeat(RECORD_MAX_BYTES.heartbeat) }), initialDynamic(), buildOpts);
+    expect(r).toEqual({ ok: false, reason: 'size' });
   });
 
   it('a realistic beat stays well inside 4 KiB', () => {
@@ -224,10 +259,24 @@ describe('the writer: the six write points (§3.3)', () => {
     expect(rec.lockHeld).toBe(false);
   });
 
-  it('a refused (too large) record notifies once and never writes', async () => {
+  it('review blocker 2: an over-size beat DEGRADES and is written; only an unshrinkable one is refused', async () => {
     const reasons: string[] = [];
+    let degraded = 0;
     const wide = Array.from({ length: 96 }, (_, i) => `src/${'p'.repeat(400)}${i}.ts`);
-    const { t, w, l } = await writerAt({ initial: { touchedRecent: wide }, onRefused: (r) => reasons.push(r) });
+    const { t, w, l } = await writerAt({ initial: { touchedRecent: wide }, onRefused: (r) => reasons.push(r), onDegraded: () => degraded++ });
+    w.start();
+    w.beat();
+    await l.close();
+    expect(reasons).toEqual([]);
+    expect(degraded).toBe(1); // one notice, then silence
+    const rec = JSON.parse((await nodeFs.readBounded(commonsPaths(t.root).heartbeatFile(DEV_A, runId(1)), 4096)).text) as { truncated?: boolean; phase: string };
+    expect(rec.truncated).toBe(true);
+    expect(rec.phase).toBe('running'); // the run keeps beating: peers never see it stale, its leases are never dropped
+  });
+
+  it('a beat that cannot fit even degraded notifies once and never writes', async () => {
+    const reasons: string[] = [];
+    const { t, w, l } = await writerAt({ base: base({ host: 'h'.repeat(5000) }), onRefused: (r) => reasons.push(r) });
     w.start();
     w.beat();
     await l.close();

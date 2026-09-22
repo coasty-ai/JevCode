@@ -6,9 +6,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { acquireBenchLock, benchLockInUseMessage, declareLane, declareWorktree, laneLeases, parseBenchLock, readBenchLock, releaseBenchLock, staleLaneLeases, BENCH_LOCK_FILE } from '../../../src/coordination/subwork.js';
-import { buildWorktreeRecord, createWorktree, listWorktrees, lockReasonFor, parseLockReason, parseWorktreeList, parseWorktreeRecord, removeWorktree, sweepWorktrees, LOCK_REASON_PREFIX } from '../../../src/coordination/worktree.js';
+import { buildWorktreeRecord, createWorktree, listWorktreeInfo, listWorktrees, lockReasonFor, parseLockReason, parseWorktreeList, parseWorktreeRecord, removeWorktree, sweepWorktrees, LOCK_REASON_PREFIX } from '../../../src/coordination/worktree.js';
 import { openLedger } from '../../../src/coordination/ledger.js';
-import { nodeFs } from '../../../src/coordination/fs.js';
+import { nodeFs, type CoordFs } from '../../../src/coordination/fs.js';
 import { commonsPaths, sessionWorktreeDir } from '../../../src/coordination/paths.js';
 import type { LedgerHandle, RunGit } from '../../../src/coordination/index.js';
 import { DEV_A, DEV_B, REPO, SELF, T0, TRUSTED, claim, entry, fakeClock, fakeTimers, foldOf, iso, makeHeartbeat, makeLease, makeSelf, runId, stamp, tempHome } from './helpers.js';
@@ -85,7 +85,8 @@ describe('§6.5 session worktrees', () => {
     cleanups.push(t.cleanup);
     const { git, calls } = fakeGit();
     const r = await createWorktree({ fs: nodeFs, root: t.root, home: t.home, git, nowIso: iso(T0) }, { repoKey: REPO, slug: 'fix-tests', base: 'HEAD', runId: runId(1), sessionId: runId(1), deviceId: DEV_A, workspace: '/ws', syncedIgnored: ['.env.local'] });
-    expect(calls[0]).toEqual(['worktree', 'add', '--lock', '--reason', lockReasonFor(runId(1), runId(1)), '-b', 'jevcode/fix-tests', sessionWorktreeDir(t.home, REPO, 'fix-tests'), 'HEAD']);
+    // + review major 18: `--end-of-options` before the record-sourced positional arguments
+    expect(calls[0]).toEqual(['worktree', 'add', '--lock', '--reason', lockReasonFor(runId(1), runId(1)), '-b', 'jevcode/fix-tests', '--end-of-options', sessionWorktreeDir(t.home, REPO, 'fix-tests'), 'HEAD']);
     expect(r.dir).toBe(sessionWorktreeDir(t.home, REPO, 'fix-tests'));
     expect(r.branch).toBe('jevcode/fix-tests');
     expect(r.record.syncedIgnored).toEqual(['.env.local']);
@@ -153,6 +154,74 @@ describe('§6.5 session worktrees', () => {
     expect(await listWorktrees(io, REPO)).toHaveLength(0);
   });
 
+  /**
+   * REVIEW BLOCKER 5 FIXTURE — guard ORDERING.
+   *
+   * Fails before the fix twice over: (a) `git worktree unlock` + `worktree remove --force` ran BEFORE the retention
+   * guard, so a worktree the function reported as `kept: too-young` had already been deleted; (b) when git no longer
+   * listed the directory (`entry === undefined` — a pruned registration, a moved `.git`, a sweep run from another
+   * repository) the (a)/(c) guards were skipped entirely and `rmTree` deleted it unconditionally, which for a user's
+   * own work at that path is unrecoverable. Passes after: every guard is evaluated before any mutation, and an
+   * unlisted worktree whose directory still exists is refused as `'unknown'`.
+   */
+  it('review blocker 5: every guard runs BEFORE any mutation, and an unlisted worktree is never deleted', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const dir = sessionWorktreeDir(t.home, REPO, 'fix-tests');
+    const listed = { code: 0, stdout: `worktree ${dir}\nHEAD abc\nbranch refs/heads/jevcode/fix-tests\nlocked ${lockReasonFor(runId(1), runId(1))}\n` };
+    const { git, calls } = fakeGit({ 'worktree list': listed });
+    const io = { fs: nodeFs, root: t.root, home: t.home, git, nowIso: iso(T0) };
+    await createWorktree(io, { repoKey: REPO, slug: 'fix-tests', base: 'HEAD', runId: runId(1), sessionId: runId(1), deviceId: DEV_A, workspace: '/ws' });
+    await nodeFs.mkdir(dir, 0o700);
+
+    // (a) too young → refused, and git was never asked to unlock or remove anything
+    const young = await removeWorktree(io, { repoKey: REPO, slug: 'fix-tests', workspace: '/ws', nowMs: T0 + 1000 });
+    expect(young).toMatchObject({ removed: false, refused: 'too-young' });
+    expect(calls.some((c) => c[0] === 'worktree' && (c[1] === 'unlock' || c[1] === 'remove'))).toBe(false);
+    await expect(nodeFs.stat(dir)).resolves.toBeTruthy(); // the directory is still there
+    expect(await listWorktrees(io, REPO)).toHaveLength(1); // …and so is its metadata
+
+    // (b) git does not list the path and the directory exists → 'unknown', never an unconditional rm -rf
+    const unlisted = { fs: nodeFs, root: t.root, home: t.home, git: fakeGit({ 'worktree list': { code: 0, stdout: 'worktree /somewhere/else\nHEAD abc\n' } }).git, nowIso: iso(T0) };
+    const r = await removeWorktree(unlisted, { repoKey: REPO, slug: 'fix-tests', workspace: '/ws', nowMs: T0 + 31 * 86_400_000 });
+    expect(r).toMatchObject({ removed: false, refused: 'unknown' });
+    await expect(nodeFs.stat(dir)).resolves.toBeTruthy();
+    expect(await listWorktrees(io, REPO)).toHaveLength(1);
+
+    // …and once every guard passes, the mutation runs in order: unlock, remove, prune, then the metadata
+    const ok = await removeWorktree(io, { repoKey: REPO, slug: 'fix-tests', workspace: '/ws', nowMs: T0 + 31 * 86_400_000 });
+    expect(ok).toMatchObject({ removed: true, refused: null });
+    const verbs = calls.filter((c) => c[0] === 'worktree').map((c) => c[1]);
+    expect(verbs.indexOf('unlock')).toBeLessThan(verbs.indexOf('remove'));
+    expect(verbs.indexOf('remove')).toBeLessThan(verbs.indexOf('prune'));
+    expect(await listWorktrees(io, REPO)).toHaveLength(0);
+  });
+
+  it('+ re-review (2): listWorktreeInfo renders the §6.6 verdict and mutates nothing', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const dir = sessionWorktreeDir(t.home, REPO, 'fix-tests');
+    const io = { fs: nodeFs, root: t.root, home: t.home, git: fakeGit({ 'worktree list': { code: 0, stdout: `worktree ${dir}\nHEAD abc\nbranch refs/heads/jevcode/fix-tests\nlocked ${lockReasonFor(runId(1), runId(1))}\n` } }).git, nowIso: iso(T0) };
+    await createWorktree(io, { repoKey: REPO, slug: 'fix-tests', base: 'HEAD', runId: runId(1), sessionId: runId(1), deviceId: DEV_A, workspace: '/ws' });
+    await nodeFs.mkdir(dir, 0o700);
+    const rows = await listWorktreeInfo(io, { repoKey: REPO, workspace: '/ws', nowMs: T0 + 1000 });
+    expect(rows.map((r) => [r.slug, r.state])).toEqual([['fix-tests', 'too-young']]);
+    await expect(nodeFs.stat(dir)).resolves.toBeTruthy(); // a read verb deletes nothing
+    expect((await listWorktreeInfo(io, { repoKey: REPO, workspace: '/ws', nowMs: T0 + 31 * 86_400_000 }))[0]?.state).toBe('removable');
+  });
+
+  it('+ review major 18: a record-sourced branch or base that git would read as an option is refused', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const io = { fs: nodeFs, root: t.root, home: t.home, git: fakeGit().git, nowIso: iso(T0) };
+    const input = { repoKey: REPO, slug: 'ok', base: 'HEAD', runId: runId(1), sessionId: runId(1), deviceId: DEV_A, workspace: '/ws' };
+    await expect(createWorktree(io, { ...input, branch: '--upload-pack=touch /tmp/pwn' })).rejects.toThrow(/not a valid branch name/);
+    await expect(createWorktree(io, { ...input, base: '--exec=touch /tmp/pwn' })).rejects.toThrow(/not a commit or ref/);
+    // and a metadata file carrying one is not a record at all
+    const bad = buildWorktreeRecord({ repoKey: REPO, slug: 'ok', runId: runId(1), sessionId: runId(1), deviceId: DEV_A, dir60: '/x', branch: '-ok', base: 'HEAD', createdAt: iso(T0), syncedIgnored: [] });
+    expect(parseWorktreeRecord(JSON.stringify(bad))).toBeNull();
+  });
+
   it('a malformed or checksum-broken metadata file is skipped, never joined into a path', async () => {
     const t = await tempHome();
     cleanups.push(t.cleanup);
@@ -203,6 +272,57 @@ describe('§4.7 / §11 row 17: the bench lock', () => {
     const r2 = acquireBenchLock(dir, { benchId: 'b1', pid: 333, host: 'mbp.local', nowIso: iso(T0 + 120_000), bootAt: boot, isAlive: () => true, warn: (m) => warns.push(m) });
     expect(r2.replaced?.pid).toBe(222);
     expect(warns[1]).toMatch(/predates boot/);
+  });
+
+  /**
+   * REVIEW BLOCKER 6 FIXTURE — two runners racing a STALE lock.
+   *
+   * The wrapper runs the second runner at the exact point the first is about to create the file. Fails before the fix:
+   * the stale path replaced the lock with an unguarded `tmp + rename`, so BOTH runners "won" and both ran the same
+   * bench against one output directory. Passes after: the replacement is itself an `O_EXCL` create, so the loser gets
+   * `EEXIST`, re-reads the winner's lock and is refused by the same live-holder test as anyone else.
+   */
+  it('review blocker 6: two runners racing a stale bench.lock — exactly one wins', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const dir = join(t.home, 'bench', 'race');
+    // a lock left by a dead runner
+    acquireBenchLock(dir, { benchId: 'race', pid: 111, host: 'mbp.local', nowIso: iso(T0), isAlive: () => true });
+    const alive = new Set([222, 333]);
+    const isAlive = (pid: number) => alive.has(pid);
+    const won: number[] = [];
+    let raced = false;
+    const runOther = (): void => {
+      if (raced) return;
+      raced = true;
+      try {
+        acquireBenchLock(dir, { benchId: 'race', pid: 333, host: 'mbp.local', nowIso: iso(T0 + 2), isAlive, fs: nodeFs });
+        won.push(333);
+      } catch {
+        /* refused */
+      }
+    };
+    // whichever call the taker uses to CREATE the file, the other runner gets in first
+    const racing: CoordFs = {
+      ...nodeFs,
+      writeExclusiveSync(p: string, d: string, m: number) {
+        runOther();
+        nodeFs.writeExclusiveSync(p, d, m);
+      },
+      writeAtomicSync(p: string, d: string, o: { fsync: boolean; mode: number }) {
+        runOther();
+        nodeFs.writeAtomicSync(p, d, o);
+      },
+    };
+    try {
+      acquireBenchLock(dir, { benchId: 'race', pid: 222, host: 'mbp.local', nowIso: iso(T0 + 1), isAlive, fs: racing });
+      won.push(222);
+    } catch {
+      /* refused */
+    }
+    expect(won).toHaveLength(1); // the old tmp+rename replacement let both through
+    expect(readBenchLock(dir)?.pid).toBe(won[0]);
+    expect(won[0]).toBe(333); // the runner that actually created the file holds it
   });
 
   it('release removes only a lock this process wrote; a malformed lock reads as absent', async () => {

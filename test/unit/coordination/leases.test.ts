@@ -6,7 +6,7 @@
  * re-judge and never zero.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import {
   TREE_PATH,
   buildFacts,
@@ -14,6 +14,8 @@ import {
   collapsePaths,
   coordRecordOf,
   declare,
+  f2Wake,
+  fenceWait,
   isExclusiveTreeCommand,
   leaseSnapshot,
   release,
@@ -22,12 +24,12 @@ import {
   shouldSkipInlineWait,
 } from '../../../src/coordination/leases.js';
 import { openLedger } from '../../../src/coordination/ledger.js';
-import { nodeFs } from '../../../src/coordination/fs.js';
+import { nodeFs, type CoordFs } from '../../../src/coordination/fs.js';
 import { LEASE_PATHS_MAX } from '../../../src/coordination/ids.js';
 import { commonsPaths } from '../../../src/coordination/paths.js';
 import { LEASE_TTL_MS } from '../../../src/coordination/records.js';
 import type { LeaseIntent } from '../../../src/coordination/types.js';
-import { DEV_A, DEV_B, KEY_B, REPO, SELF, T0, TRUSTED, claim, entry, fakeClock, foldOf, iso, makeHeartbeat, makeLease, makeMessage, makeSelf, putHeartbeat, putLease, runId, signed, stamp, tempHome } from './helpers.js';
+import { DEV_A, DEV_B, KEY_B, REPO, SELF, T0, TRUSTED, WS, claim, entry, fakeClock, foldOf, iso, makeHeartbeat, makeLease, makeMessage, makeSelf, putHeartbeat, putLease, runId, signed, stamp, tempHome } from './helpers.js';
 
 const self = makeSelf();
 const intent = (patch: Partial<LeaseIntent> = {}): LeaseIntent => ({ paths: ['src/x.ts'], type: 'intent', reason60: 'edit x', step: 8, stage: 'coordinate', branch: 'main', head: null, ...patch });
@@ -78,9 +80,33 @@ describe('check (§4.3 step 2, pure)', () => {
     expect(check(mine, self, intent()).kind).toBe('clear');
   });
 
-  it('an expired lease is ignored regardless (§4.6 row 1)', () => {
-    const fold = foldOf([...peerHolding(['src/x.ts'], {}, { expiresAt: iso(T0 - 1000) })]);
-    expect(check(fold, self, intent()).kind).toBe('clear');
+  /**
+   * REVIEW BLOCKER 4 FIXTURE — the reader's wall clock is ±15 minutes off the writer's.
+   *
+   * Fails before the fix: `check()` compared the peer's `expiresAt` (a WRITER wall-clock stamp) against the READER's
+   * clock, so a reader 15 min ahead judged every live peer lease expired and cleared straight through the fence — the
+   * exact case the fence exists for, and one a laptop that woke or a VM that resumed produces routinely. Passes after:
+   * liveness of the OWNER is the only gate, exactly as §4.3 says a beating owner's lease never expires.
+   */
+  it('review blocker 4: a ±15 min reader clock never drops a LIVE peer lease', () => {
+    const skew = 15 * 60_000;
+    const entries = [...peerHolding(['src/x.ts'])]; // the peer's lease expires at T0 + 10 min, renewed at T0
+    for (const [label, wallMs] of [
+      ['ahead', T0 + skew],
+      ['behind', T0 - skew],
+      ['in step', T0],
+    ] as const) {
+      const fold = foldOf(entries, { now: { wallMs, monoMs: 1_000_000 } });
+      const r = check(fold, self, intent(), { now: { wallMs, monoMs: 1_000_000 } });
+      expect(r.kind, label).toBe('conflict');
+      expect(r.kind === 'conflict' && r.conflicts[0]?.expiresInMs, label).toBeGreaterThanOrEqual(0);
+    }
+    // the OWNER's liveness is the gate: an ended holder clears, however fresh the lease's own expiry looks
+    const ended = foldOf([...peerHolding(['src/x.ts'], { phase: 'ended' }, { expiresAt: iso(T0 + 86_400_000) })]);
+    expect(check(ended, self, intent()).kind).toBe('clear');
+    // and an ancient expiry on a LIVE owner is still a conflict (the lease it renews every 15 s simply has not landed)
+    const oldStamp = foldOf([...peerHolding(['src/x.ts'], {}, { expiresAt: iso(T0 - 1000), renewedAt: iso(T0 - 601_000) })]);
+    expect(check(oldStamp, self, intent()).kind).toBe('conflict');
   });
 
   it('§4.2 / §11 row 47: an exclusiveTree command conflicts with EVERYTHING in the tree', () => {
@@ -244,51 +270,166 @@ describe('declare / renew / release over a real store', () => {
   });
 });
 
-describe('§4.5 the strict write-then-read fence — SYMMETRIC (review blocker 4)', () => {
-  it('write A · readdir A · write B (LOWER stamp) · readdir B → exactly one side re-judges, never zero', async () => {
+describe('§4.5 the strict fence — F1 yield on sight, F2 the lowest stamp re-declares (design revision 4)', () => {
+  /**
+   * Two engines over ONE store, each with its own ledger and its own published beat.
+   * `barrier` makes the BOTH-SEE interleaving deterministic: every fence `readdir` of `leases/` waits until two lease
+   * files have been renamed, so neither side can list before the other has written. Without it the two declares race
+   * and the test flaps between the one-sees and both-see cases.
+   */
+  async function twoEngines(seedA: number, seedB: number, o: { barrier?: boolean } = {}) {
     const t = await tempHome();
     cleanups.push(t.cleanup);
     const clock = fakeClock();
     const ridA = runId(1);
     const ridB = runId(2);
-    const open = async (rid: string, seedStamp: number) => {
-      const l = openLedger({ home: t.home, self: makeSelf({ runId: rid, sessionId: rid }), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    let armed = false;
+    let writes = 0;
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gated: CoordFs = {
+      ...nodeFs,
+      async writeAtomic(path: string, data: string, opt: { fsync: boolean; mode: number }) {
+        await nodeFs.writeAtomic(path, data, opt);
+        if (armed && path.includes(`${sep}leases${sep}`)) {
+          writes += 1;
+          if (writes >= 2) release();
+        }
+      },
+      async readdir(path: string) {
+        if (armed && path.includes(`${sep}leases${sep}`)) await gate;
+        return nodeFs.readdir(path);
+      },
+    };
+    const open = async (rid: string, seed: number) => {
+      const l = openLedger({ home: t.home, self: makeSelf({ runId: rid, sessionId: rid }), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: o.barrier === true ? gated : nodeFs, isPidAlive: () => true });
       await l.open();
-      // advance A's counter so its next issue is ABOVE B's — the interleaving the review names
-      for (let i = 0; i < seedStamp; i++) l.stamps.issue();
+      for (let i = 0; i < seed; i++) l.stamps.issue();
+      cleanups.push(() => l.close());
       return l;
     };
-    // both engines must look live to each other
-    const a = await open(ridA, 62);
-    const b = await open(ridB, 0);
-    // both published beats carry a LOW stamp, so B's own counter stays low while A's in-memory counter has run ahead —
-    // exactly the review's interleaving: the second writer is the LOWER stamp and the old rule let it proceed
+    const a = await open(ridA, seedA);
+    const b = await open(ridB, seedB);
     await putHeartbeat(t.root, makeHeartbeat({ runId: ridA, sessionId: ridA, claim: claim({ runId: ridA, pid: 111 }), stamp: stamp(1, DEV_A, ridA) }));
     await putHeartbeat(t.root, makeHeartbeat({ runId: ridB, sessionId: ridB, pid: 222, claim: claim({ runId: ridB, pid: 222 }), stamp: stamp(1, DEV_A, ridB) }));
     await a.refresh('all');
     await b.refresh('all');
+    armed = o.barrier === true;
+    return { t, a, b, disarm: () => { armed = false; release(); } };
+  }
 
-    const mine = intent({ paths: ['src/engine.ts'], type: 'exclusive' });
+  const mine = (): LeaseIntent => intent({ paths: ['src/engine.ts'], type: 'exclusive' });
+
+  it('(i) one-sees: the SECOND writer yields even though its stamp is LOWER — sight, not order, stops you', async () => {
+    // A's in-memory counter has run ahead, so the second writer holds the lower stamp: revision 2's "lower stamp wins"
+    // read as a local test made BOTH proceed here, which is the failure G1(c) forbids.
+    const { a, b } = await twoEngines(62, 0);
     const snapA = leaseSnapshot(a.fold);
     const snapB = leaseSnapshot(b.fold);
-    // A writes and fences FIRST: it sees nothing, so it proceeds
-    const decA = await declare(a, mine, 'strict', { snapshot: snapA });
-    // B writes and fences SECOND with a LOWER stamp — the old rule made B the holder and let it proceed
-    const decB = await declare(b, mine, 'strict', { snapshot: snapB });
-
-    expect(decB.refold.kind).toBe('conflict');
+    const decA = await declare(a, mine(), 'strict', { snapshot: snapA });
+    const decB = await declare(b, mine(), 'strict', { snapshot: snapB });
+    expect(decA.fence).toBe('decided');
+    expect(decB.fence).toBe('decided');
+    if (decA.fence !== 'decided' || decB.fence !== 'decided') return;
+    expect(decB.stamp.n).toBeLessThan(decA.stamp.n); // B really is the lower stamp
+    expect(decA.proceed).toBe(true); // A's readdir preceded B's rename
+    expect(decB.proceed).toBe(false); // …and B SAW A, so B yields regardless of the stamps
     expect(decB.appeared.map((c) => c.leaseId)).toEqual([decA.leaseId]);
-    expect(decB.reJudge).toBe(true);
-    expect(decB.refold.kind === 'conflict' && decB.refold.contested).toBe(true);
-    expect(decA.reJudge).toBe(false);
-    expect([decA.reJudge, decB.reJudge].filter(Boolean)).toHaveLength(1);
-    // and B's stamp really is the lower one, so the stamp order alone would have picked the wrong side
-    expect(decB.stamp.n).toBeLessThan(decA.stamp.n);
-    await a.close();
-    await b.close();
+    expect([decA.proceed, decB.proceed].filter(Boolean)).toHaveLength(1); // never zero, never two
+
+    // F2 never fires for B while A still holds `exclusive`: B waits for a real release, which is correct
+    const wait = fenceWait(b, mine(), decB);
+    await wait.yield();
+    await b.refresh('leases');
+    expect(wait.wake(b.fold)).toBe(false);
   });
 
-  it('a lease that was already in the judged snapshot is not "appeared" — no spurious re-judge', async () => {
+  it('(ii) both-see: F1 yields on both sides, then F2 lets only the LOWEST stamp re-declare and proceed', async () => {
+    const { a, b, disarm } = await twoEngines(62, 0, { barrier: true });
+    const snapA = leaseSnapshot(a.fold);
+    const snapB = leaseSnapshot(b.fold);
+    // both renames land before either readdir — the symmetric case arrival cannot separate
+    const [decA, decB] = await Promise.all([declare(a, mine(), 'strict', { snapshot: snapA }), declare(b, mine(), 'strict', { snapshot: snapB })]);
+    disarm();
+    if (decA.fence !== 'decided' || decB.fence !== 'decided') throw new Error('expected two decided fences');
+    expect(decA.proceed || decB.proceed).toBe(false); // F1: nobody proceeds on sight
+    const waitA = fenceWait(a, mine(), decA);
+    const waitB = fenceWait(b, mine(), decB);
+    await waitA.yield();
+    await waitB.yield();
+    await a.refresh('leases');
+    await b.refresh('leases');
+    // F2: exactly one wake fires, and it is the lower stamp (B)
+    expect(decB.stamp.n).toBeLessThan(decA.stamp.n);
+    expect(waitB.wake(b.fold)).toBe(true);
+    expect(waitA.wake(a.fold)).toBe(false);
+    expect([waitA.wake(a.fold), waitB.wake(b.fold)].filter(Boolean)).toHaveLength(1);
+    // and its re-declare proceeds: everyone else is `intent`, so `appeared` is empty
+    const again = await waitB.redeclare();
+    expect(again.fence === 'decided' && again.proceed).toBe(true);
+  });
+
+  it('(ii) the same script decides identically with NO Jev and NO prompter — it is pure code', async () => {
+    // there is nothing to stub: `declare` / `f2Wake` take a fold and a stamp and return a boolean. Running the
+    // decision twice over the same facts must produce the same answer, which is what `jev-off` / `--no-input` get.
+    const { a, b, disarm } = await twoEngines(62, 0, { barrier: true });
+    const [decA, decB] = await Promise.all([declare(a, mine(), 'strict', { snapshot: leaseSnapshot(a.fold) }), declare(b, mine(), 'strict', { snapshot: leaseSnapshot(b.fold) })]);
+    disarm();
+    if (decA.fence !== 'decided' || decB.fence !== 'decided') throw new Error('expected two decided fences');
+    await fenceWait(a, mine(), decA).yield();
+    await fenceWait(b, mine(), decB).yield();
+    await b.refresh('leases');
+    const first = f2Wake(b.fold, decB.stamp, decB.appeared);
+    const second = f2Wake(b.fold, decB.stamp, decB.appeared);
+    expect(first).toBe(second);
+    expect(first).toBe(true);
+  });
+
+  it('(iii) fence-blind: past MAX_FENCE_DEVICES the fence REFUSES rather than proceeding', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await l.open();
+    // more lease subtrees than the fence may walk
+    const ids = Array.from({ length: 20 }, (_, i) => `${'abcdefgh'.slice(0, 7)}${String.fromCharCode(97 + (i % 20))}`);
+    for (const id of new Set(ids)) await nodeFs.mkdir(commonsPaths(t.root).leaseDir(id, REPO), 0o700);
+    const dec = await declare(l, intent({ paths: ['src/engine.ts'], type: 'exclusive' }), 'strict', { snapshot: [] });
+    expect(dec.fence).toBe('decided'); // 20 subtrees is well inside the 256 bound
+    const blind = await l.refreshFence({ maxDevices: 3 });
+    expect(blind.complete).toBe(false);
+    expect(blind.total).toBeGreaterThan(blind.scanned);
+    await l.close();
+  });
+
+  it('(iv) the NULL key: a run with no repoKey fences under keyDir(wsKey), and a peer in the same checkout sees it', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const open = async (rid: string) => {
+      const l = openLedger({ home: t.home, self: makeSelf({ runId: rid, sessionId: rid, repoKey: null }), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+      await l.open();
+      cleanups.push(() => l.close());
+      return l;
+    };
+    const a = await open(runId(1));
+    const b = await open(runId(2));
+    await putHeartbeat(t.root, makeHeartbeat({ runId: runId(1), sessionId: runId(1), claim: claim({ runId: runId(1), pid: 111 }), stamp: stamp(1, DEV_A, runId(1)), repo: { repoKey: null } }));
+    await putHeartbeat(t.root, makeHeartbeat({ runId: runId(2), sessionId: runId(2), pid: 222, claim: claim({ runId: runId(2), pid: 222 }), stamp: stamp(1, DEV_A, runId(2)), repo: { repoKey: null } }));
+    await a.refresh('all');
+    await b.refresh('all');
+    const decA = await declare(a, mine(), 'strict', { snapshot: leaseSnapshot(a.fold) });
+    expect(decA.fence === 'decided' && decA.proceed).toBe(true);
+    // the file really is under `keyDir(wsKey)` — 'ws:' is never a path component (review major 13)
+    expect(commonsPaths(t.root).leaseDir(DEV_A, WS)).toContain(`ws-${WS.slice(3)}`);
+    await expect(nodeFs.stat(commonsPaths(t.root).leaseFile(DEV_A, WS, decA.leaseId))).resolves.toBeTruthy();
+    const decB = await declare(b, mine(), 'strict', { snapshot: leaseSnapshot(b.fold) });
+    expect(decB.fence === 'decided' && decB.proceed).toBe(false); // B sees A across the wsKey directory
+  });
+
+  it('a lease that was already in the judged snapshot is not "appeared" — no spurious yield', async () => {
     const t = await tempHome();
     cleanups.push(t.cleanup);
     const clock = fakeClock();
@@ -298,13 +439,78 @@ describe('§4.5 the strict write-then-read fence — SYMMETRIC (review blocker 4
     await putHeartbeat(t.root, makeHeartbeat({ deviceId: DEV_B, runId: runId(9), sessionId: runId(9), claim: claim({ deviceId: DEV_B, runId: runId(9), pid: 900 }), stamp: stamp(9, DEV_B, runId(9)) }));
     const l = openLedger({ home: t.home, self: makeSelf({ runId: rid, sessionId: rid }), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
     await l.open();
-    const mine = intent({ paths: ['src/mine.ts'], type: 'exclusive' });
-    const dec = await declare(l, mine, 'strict', { snapshot: leaseSnapshot(l.fold) });
+    const dec = await declare(l, intent({ paths: ['src/mine.ts'], type: 'exclusive' }), 'strict', { snapshot: leaseSnapshot(l.fold) });
+    expect(dec.fence).toBe('decided');
+    if (dec.fence !== 'decided') return;
     expect(dec.appeared).toEqual([]);
-    expect(dec.reJudge).toBe(false);
+    expect(dec.proceed).toBe(true);
     expect(dec.refold.kind).toBe('clear');
     await l.close();
     expect(join(t.root, 'leases')).toContain('leases');
+  });
+});
+
+/**
+ * REVIEW BLOCKER 1 FIXTURE — the gated readdir.
+ *
+ * A scan is in flight and has already LISTED every peer's `leases/<repoKey>/`; it is parked reading one of the files it
+ * listed. The peer writes its exclusive lease into that same directory. Our strict `declare` then writes its own lease
+ * and refreshes.
+ *
+ * Fails before the fix: `scan()` saw `this.scanning !== null`, joined the parked pass and returned `[]`, so the refold
+ * was answered by a readdir that ran BEFORE our own write — `appeared` empty, `reJudge` false, and both writers hold
+ * the paths. Passes after: `refresh()` chains a pass that STARTS after the call.
+ */
+describe('§4.5 review blocker 1: the strict fence is never answered by a readdir that predates its own write', () => {
+  it('a peer lease written between the list and the resolve of an in-flight scan is seen by the fence', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const ridPeer = runId(9);
+    // a peer lease already on disk, so the scan has a FILE to park on after it has listed the directory
+    await putHeartbeat(t.root, makeHeartbeat({ deviceId: DEV_B, runId: ridPeer, sessionId: ridPeer, label: 'studio', claim: claim({ deviceId: DEV_B, runId: ridPeer, pid: 900 }), stamp: stamp(9, DEV_B, ridPeer) }));
+    const seed = makeLease({ runId: ridPeer, sessionId: ridPeer, deviceId: DEV_B, leaseId: `${ridPeer}-1`, type: 'exclusive', paths: ['docs/unrelated.md'], stamp: stamp(1, DEV_B, ridPeer) });
+    await putLease(t.root, seed);
+
+    let park = (): void => undefined;
+    const parked = new Promise<void>((resolve) => {
+      park = resolve;
+    });
+    let armed = false;
+    const fs: CoordFs = {
+      ...nodeFs,
+      async readBounded(path: string, max: number) {
+        if (armed && path.endsWith(`${seed.leaseId}.json`)) {
+          armed = false;
+          await parked;
+        }
+        return nodeFs.readBounded(path, max);
+      },
+    };
+    const l = openLedger({ home: t.home, self: makeSelf({ runId: runId(1), sessionId: runId(1) }), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs, isPidAlive: () => true });
+    await l.open();
+    const snapshot = leaseSnapshot(l.fold);
+    armed = true;
+    // the seed's (mtime, size) must move, or the incremental scanner never re-reads it and never parks
+    await putLease(t.root, { ...seed, reason60: 'renewed' });
+
+    const inFlight = l.refresh('leases'); // lists the directory, then parks on the seed file
+    // the peer's CONFLICTING lease lands after that listing — the writer cannot have seen ours either
+    const conflicting = makeLease({ runId: ridPeer, sessionId: ridPeer, deviceId: DEV_B, leaseId: `${ridPeer}-2`, type: 'exclusive', paths: ['src/engine.ts'], stamp: stamp(2, DEV_B, ridPeer) });
+    await putLease(t.root, conflicting);
+    const second = l.refresh('leases'); // registered while the first pass is still parked
+    park();
+    await Promise.all([inFlight, second]);
+    // the joined-scan bug returned [] here and left the fold exactly as the pre-write listing found it
+    expect(l.fold.leases.has(conflicting.leaseId)).toBe(true);
+
+    // and the fence itself now sees it: a strict declare over the same path YIELDS instead of proceeding (§4.5 F1)
+    const dec = await declare(l, intent({ paths: ['src/engine.ts'], type: 'exclusive' }), 'strict', { snapshot });
+    expect(dec.fence).toBe('decided');
+    if (dec.fence !== 'decided') return;
+    expect(dec.appeared.map((c) => c.leaseId)).toContain(conflicting.leaseId);
+    expect(dec.proceed).toBe(false); // F1: I SAW it, so I yield — whatever the stamps say
+    await l.close();
   });
 });
 

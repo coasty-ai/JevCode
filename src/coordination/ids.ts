@@ -29,6 +29,18 @@ export const LEASE_ID_RE = /^\d{8}-\d{6}-[a-z2-7]{8}-\d{1,9}$/;
 /** the `<t>` of a message file name: epoch milliseconds */
 export const MSG_T_RE = /^\d{1,16}$/;
 export const ACTOR8_RE = /^[a-z2-7]{8}$/;
+/**
+ * + review major 8: the id of one CONSUMER PROCESS — `${sessionId ?? 'tui'}-${actor8}`. It names the ack file and the
+ * `seen` file, both of which must have exactly one writer: a session can be held by two processes (`jevcode -c` twice on a
+ * paused session) and a TUI has no session at all before its first run.
+ */
+export const CONSUMER_ID_RE = /^(tui|\d{8}-\d{6}-[a-z2-7]{8})-[a-z2-7]{8}$/;
+/**
+ * §3.2 (design revision 4): `hostKey = sha8(hostname(), userInfo().username, machineId)` — eight hex chars over THREE
+ * inputs. The machine identifier is the OS's own (`IOPlatformUUID` on macOS, `/etc/machine-id` on Linux), read once by the
+ * CALLER (this module spawns nothing) and kept private.
+ */
+export const HOST_KEY_RE = /^[0-9a-f]{8}$/;
 export const OID_RE = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 export const BROADCAST_ALL = '@all';
 /** review #37: the ONLY shape a `laneDir` may take — the sweep `rm -rf`s what this names, so `.`, `post` and `tmp/../..` must fail */
@@ -58,6 +70,12 @@ export function isValidTarget(t: string): boolean {
 export const REL_PATH_MAX_CHARS = 512;
 export const LEASE_PATHS_MAX = 64;
 export const TOUCHED_RECENT_MAX = 96;
+/**
+ * review #35: the bound every integer field of a record must stay inside (a `stamp.n` of 2^60 poisons a Lamport clock for
+ * good). Declared here, beside the other id facts, because `createStampClock` saturates at it and `records.ts` imports
+ * this module (never the other way round).
+ */
+export const COUNTER_MAX = 1_000_000_000;
 
 const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
 
@@ -98,6 +116,15 @@ export function mintActor8(random?: RandomBytes): string {
 /** The `actor8` of a sender: the run id's trailing 8 chars, or a minted id for a CLI twin. */
 export function actor8Of(runId: string | null, random?: RandomBytes): string {
   return runId !== null && RUN_ID_RE.test(runId) ? runId.slice(-8) : mintActor8(random);
+}
+
+/**
+ * §3.2: `sha8(hostname, user, machineId)`. `machineId` omitted falls back to the two-input form — the caller shows
+ * `machine id unavailable — two machines sharing this home would share one device id` once, per the design.
+ */
+export function hostKeyOf(hostname: string, username: string, machineId?: string | null): string {
+  const parts = machineId === undefined || machineId === null || machineId === '' ? [hostname, username] : [hostname, username, machineId];
+  return sha256Hex(parts.map((x) => x.trim()).join('\u0000')).slice(0, 8);
 }
 
 // ── keys (§3.2) ───────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -230,18 +257,22 @@ export interface StampClock {
  * a lower stamp: a new run's first stamp exceeds everything it can see. `runId` is the tiebreak among equal `n`.
  */
 export function createStampClock(deviceId: string, runId: string, seed = 0): StampClock {
-  let n = Number.isFinite(seed) && seed > 0 ? Math.floor(seed) : 0;
+  let n = Number.isFinite(seed) && seed > 0 ? Math.min(COUNTER_MAX, Math.floor(seed)) : 0;
   return {
     deviceId,
     runId,
     current: () => ({ n, deviceId, runId }),
+    // + review major 16 (rollover): the counter SATURATES at `COUNTER_MAX` — it never wraps and never leaves the range
+    // `isCount` accepts, so a saturated clock still writes parseable records. At the cap the Lamport order degenerates to
+    // the `(deviceId, runId)` tiebreak, which is total, and a run that reaches 1e9 stamps mints a new runId on its next
+    // resume (the clock is per RUN, seeded from the fold) and starts again below the cap.
     issue: () => {
-      n += 1;
+      if (n < COUNTER_MAX) n += 1;
       return { n, deviceId, runId };
     },
     observe: (observed) => {
       const m = typeof observed === 'number' ? observed : observed.n;
-      if (Number.isFinite(m) && m > n) n = Math.floor(m);
+      if (Number.isFinite(m) && m > n) n = Math.min(COUNTER_MAX, Math.floor(m));
     },
   };
 }
@@ -294,6 +325,12 @@ export interface DeviceIdentityOptions {
   label?: string;
   syncMode?: DeviceRecord['syncMode'];
   random?: RandomBytes;
+  /**
+   * + re-review (6): `machineIdOf(<platform uuid>)` — `IOPlatformUUID` (macOS `ioreg`), `/etc/machine-id` (Linux) or the
+   * host's equivalent, probed by the CALLER (this module spawns nothing). Cached in the PRIVATE `coordination/machine.json`
+   * at device creation, never in the published `device.json`. Omitted, the identity is machine-agnostic as before.
+   */
+  machineId?: string;
 }
 
 const DEVICE_MAX_BYTES = 2048;
@@ -337,6 +374,44 @@ async function readDeviceFile(fs: CoordFs, path: string): Promise<DeviceRecord |
   }
 }
 
+/**
+ * + re-review (6): the PRIVATE machine record. `device.json` is the published public subset (both copies are readable by
+ * every device that shares the folder), so the machine id lives in its own 0600 file beside `device.key` and is never
+ * mirrored. `bootId` is the caller's boot identifier when it has one (the `run.lock` rule, decision (a)).
+ */
+export const MACHINE_FILE = 'machine.json';
+export interface MachineRecord {
+  v: 1;
+  /** the OS machine identifier this device's `hostKey` was derived from — stored so a CHANGE is detected (§3.2) */
+  machineId: string;
+  /** the derived `hostKey`, so a reader does not have to re-hash to compare */
+  hostKey?: string;
+  /** the OS boot identity, when the caller resolved one (decision (a)) */
+  bootId?: string;
+}
+
+export async function readMachineRecord(fs: CoordFs, root: string): Promise<MachineRecord | null> {
+  try {
+    const r = await fs.readBounded(join(root, MACHINE_FILE), 512);
+    if (r.overflow) return null;
+    const parsed = parseJson(r.text);
+    if (!parsed.ok || !isJsonObject(parsed.value) || parsed.value['v'] !== 1) return null;
+    const id = parsed.value['machineId'];
+    if (typeof id !== 'string' || id === '') return null;
+    const bootId = parsed.value['bootId'];
+    const hostKey = parsed.value['hostKey'];
+    return { v: 1, machineId: id, ...(typeof hostKey === 'string' && HOST_KEY_RE.test(hostKey) ? { hostKey } : {}), ...(typeof bootId === 'string' ? { bootId } : {}) };
+  } catch {
+    return null;
+  }
+}
+
+export async function writeMachineRecord(fs: CoordFs, root: string, rec: Omit<MachineRecord, 'v'>): Promise<void> {
+  if (rec.machineId.trim() === '') throw new ConfigError('coordination: a machine id cannot be empty', { setting: 'coordination' });
+  await fs.mkdir(root, DIR_MODE);
+  await fs.writeAtomic(join(root, MACHINE_FILE), `${JSON.stringify({ v: 1, ...rec })}\n`, { fsync: true, mode: FILE_MODE });
+}
+
 /** Write `coordination/device.json` and its copy `registry/<deviceId>/device.json` (one writer: the CLI). */
 export async function writeDeviceRecord(fs: CoordFs, root: string, rec: DeviceRecord): Promise<void> {
   const text = `${JSON.stringify(rec)}\n`;
@@ -355,8 +430,15 @@ export async function writeDeviceRecord(fs: CoordFs, root: string, rec: DeviceRe
 export async function deviceIdentity(o: DeviceIdentityOptions): Promise<DeviceIdentityResult> {
   const path = join(o.root, 'device.json');
   const existing = await readDeviceFile(o.fs, path);
+  const machine = await readMachineRecord(o.fs, o.root);
   if (existing !== null) {
-    if (existing.host === o.hostname && existing.user === o.username) return { status: 'loaded', device: existing, path };
+    // + re-review (6)(i): `host + user` collides on two default-named Macs and on cloned VMs sharing one `~/.jevcode`;
+    // the cached machine id is what makes `kind:'foreign'` reachable in exactly that case, so the CLI can ask to adopt.
+    const sameMachine = o.machineId === undefined || machine === null || machine.machineId === o.machineId;
+    if (existing.host === o.hostname && existing.user === o.username && sameMachine) {
+      if (o.machineId !== undefined && machine === null) await writeMachineRecord(o.fs, o.root, { machineId: o.machineId });
+      return { status: 'loaded', device: existing, path };
+    }
     return { status: 'foreign', device: existing, path };
   }
   let subtrees: string[] = [];
@@ -369,6 +451,7 @@ export async function deviceIdentity(o: DeviceIdentityOptions): Promise<DeviceId
     const rec = await readDeviceFile(o.fs, join(o.root, 'registry', id, 'device.json'));
     if (rec !== null && rec.host === o.hostname && rec.user === o.username) {
       await writeDeviceRecord(o.fs, o.root, rec);
+      if (o.machineId !== undefined) await writeMachineRecord(o.fs, o.root, { machineId: o.machineId });
       return { status: 'readopted', device: rec, path };
     }
   }
@@ -387,6 +470,7 @@ export async function adoptNewDevice(o: DeviceIdentityOptions): Promise<DeviceId
     syncMode: o.syncMode ?? 'off',
   });
   await writeDeviceRecord(o.fs, o.root, rec);
+  if (o.machineId !== undefined) await writeMachineRecord(o.fs, o.root, { machineId: o.machineId });
   return { status: 'created', device: rec, path: join(o.root, 'device.json') };
 }
 
@@ -401,6 +485,11 @@ export interface TrustedDevice {
   deviceId: string;
   label: string;
   pairedAt: string;
+  /**
+   * §10.3 (design revision 4): `trusted-devices.json` gains `key` — THIS peer's 32-byte verification key, per device,
+   * not one group key shared by everyone paired. Written as `key`; the older `keyHex` spelling is still read so a
+   * file written before the rename keeps working.
+   */
   keyHex?: string;
 }
 export interface IgnoredDevice {
@@ -436,7 +525,7 @@ export const TRUSTED_FILE = 'trusted-devices.json';
 export function readTrusted(fs: CoordFs, root: string): Promise<TrustedDevice[]> {
   return readDeviceList(fs, join(root, TRUSTED_FILE), (o) => {
     if (typeof o['deviceId'] !== 'string' || typeof o['label'] !== 'string' || typeof o['pairedAt'] !== 'string') return null;
-    const key = o['keyHex'];
+    const key = typeof o['key'] === 'string' ? o['key'] : o['keyHex'];
     return { deviceId: o['deviceId'], label: o['label'], pairedAt: o['pairedAt'], ...(typeof key === 'string' && COMMONS_KEY_RE.test(key) ? { keyHex: key } : {}) };
   });
 }
@@ -463,9 +552,19 @@ export async function ignoreDevice(fs: CoordFs, root: string, entry: IgnoredDevi
   return list;
 }
 
+/** + review minor 25: lift a local tombstone — the subtree folds again from the next scan. */
+export async function unignoreDevice(fs: CoordFs, root: string, deviceId: string): Promise<IgnoredDevice[]> {
+  const list = (await readIgnoredDevices(fs, root)).filter((d) => d.deviceId !== deviceId);
+  await fs.mkdir(root, DIR_MODE);
+  await fs.writeAtomic(join(root, 'ignored-devices.json'), `${JSON.stringify({ v: 1, devices: list })}\n`, { fsync: true, mode: FILE_MODE });
+  return list;
+}
+
 export async function writeTrusted(fs: CoordFs, root: string, devices: TrustedDevice[]): Promise<void> {
   await fs.mkdir(root, DIR_MODE);
-  await fs.writeAtomic(join(root, TRUSTED_FILE), `${JSON.stringify({ v: 1, devices })}\n`, { fsync: true, mode: FILE_MODE });
+  // §10.3: written under BOTH spellings for one release, so a downgrade does not silently unpair every device
+  const rows = devices.map((d) => (d.keyHex === undefined ? d : { ...d, key: d.keyHex }));
+  await fs.writeAtomic(join(root, TRUSTED_FILE), `${JSON.stringify({ v: 1, devices: rows })}\n`, { fsync: true, mode: FILE_MODE });
 }
 
 /** §10.3: pair a device — one upsert by id; the key never leaves this file. */

@@ -136,10 +136,18 @@ export interface AcquireBenchLockOptions {
   warn?: (message: string) => void;
 }
 
+/** the bounded number of times the taker re-reads after losing an `O_EXCL` race */
+const BENCH_LOCK_TRIES = 4;
+
 /**
- * Take `<benchDir>/bench.lock`. A live lock (same host, pid alive, started after boot) throws `ConfigError` (exit 2) naming
- * the holder; a stale one is replaced through tmp + rename and reported through `warn`. Two `--resume` processes racing for
- * an empty slot cannot both win (`O_EXCL`; the loser re-reads the winner's lock).
+ * Take `<benchDir>/bench.lock`. A live lock (same host, pid alive, started after boot) throws `ConfigError` (exit 2)
+ * naming the holder; a stale one is REPLACED and reported through `warn`.
+ *
+ * + review blocker 6: every path that creates the file is an `O_EXCL` create. The old code took the `O_EXCL` route only
+ * when the slot was empty and replaced a STALE lock with an unguarded tmp + rename — so two runners that both read the
+ * same stale lock both "won", both renamed over it, and both ran the same bench against one output directory. The
+ * replacement now unlinks and re-creates exclusively; the loser gets `EEXIST`, re-reads the winner's lock and is
+ * refused by the same live-holder test as anyone else.
  */
 export function acquireBenchLock(benchDir: string, o: AcquireBenchLockOptions): { replaced: BenchLock | null } {
   const fs = o.fs ?? nodeFs;
@@ -165,22 +173,31 @@ export function acquireBenchLock(benchDir: string, o: AcquireBenchLockOptions): 
   fs.mkdirSync(benchDir, 0o700);
   let existing = readBenchLock(benchDir, fs);
   let verdict = evaluate(existing);
-  if (verdict === 'free') {
+  for (let attempt = 0; attempt < BENCH_LOCK_TRIES; attempt++) {
+    if (verdict !== 'free') {
+      try {
+        fs.unlinkSync(path);
+      } catch (e) {
+        if (errnoCode(e) !== 'ENOENT') throw e;
+      }
+    }
     try {
       fs.writeExclusiveSync(path, text, FILE_MODE);
+      if (verdict === 'stale' && existing !== null) {
+        const why = existing.host !== o.host ? `another host (${existing.host || 'unknown'})` : `pid ${existing.pid} is gone or predates boot`;
+        o.warn?.(`bench ${o.benchId}: replaced a stale ${BENCH_LOCK_FILE} from ${why}, started ${existing.startedAt || 'unknown'}`);
+        return { replaced: existing };
+      }
       return { replaced: null };
     } catch (e) {
       if (errnoCode(e) !== 'EEXIST') throw e;
+      // someone created it between our unlink and our create: re-read and re-judge (this throws when they are live)
       existing = readBenchLock(benchDir, fs);
       verdict = evaluate(existing);
+      if (verdict === 'ours') return { replaced: null };
     }
   }
-  if (verdict === 'stale' && existing !== null) {
-    const why = existing.host !== o.host ? `another host (${existing.host || 'unknown'})` : `pid ${existing.pid} is gone or predates boot`;
-    o.warn?.(`bench ${o.benchId}: replaced a stale ${BENCH_LOCK_FILE} from ${why}, started ${existing.startedAt || 'unknown'}`);
-  }
-  fs.writeAtomicSync(path, text, { fsync: false, mode: FILE_MODE });
-  return { replaced: verdict === 'stale' ? existing : null };
+  throw new ConfigError(`bench ${o.benchId}: ${BENCH_LOCK_FILE} is contended — another 'jevcode bench --resume' is starting`, { setting: 'bench' });
 }
 
 /** Remove the lock; with `pid` given only a lock this process wrote. Never throws; true when a file was removed. */
