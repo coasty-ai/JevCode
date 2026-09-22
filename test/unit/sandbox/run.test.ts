@@ -236,7 +236,10 @@ describe('kills', () => {
   it('abort with an AbortError reason rejects after the kill', async () => {
     const t = sb();
     const ac = new AbortController();
-    const p = t.sandbox.run('echo $$; sleep 300', { timeoutMs: 30_000, maxOutputBytes: CAP, signal: ac.signal });
+    // A duration unique to this test run: other worktrees run this same suite on a shared machine, and `ps` sees
+    // every process on the host, so a bare `sleep 300` match would fail on THEIR still-running children.
+    const tag = `300.${String(process.pid % 10_000).padStart(4, '0')}${String(process.hrtime()[1] % 1000).padStart(3, '0')}`;
+    const p = t.sandbox.run(`echo $$; sleep ${tag}`, { timeoutMs: 30_000, maxOutputBytes: CAP, signal: ac.signal });
     await new Promise((r) => setTimeout(r, 150));
     const err = new AbortError('human_abort');
     ac.abort(err);
@@ -244,7 +247,7 @@ describe('kills', () => {
     // the child is gone once the rejection lands
     await new Promise((r) => setTimeout(r, 50));
     const ps = spawnSync('/bin/ps', ['-axo', 'pid,command']).stdout.toString();
-    expect(ps).not.toMatch(/sleep 300\n/);
+    expect(ps).not.toContain(`sleep ${tag}`);
   });
 
   it('abort with BudgetError(wall_time) resolves with killedBy wall_time', async () => {
