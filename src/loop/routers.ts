@@ -59,14 +59,42 @@ interface StepRouterState {
 const MAX_LIVE_STEPS = 2;
 const live = new Map<string, StepRouterState>();
 
+/**
+ * §2.6, the other half of I4 (review 2026-09-22, defect 6). `noteStepRoute` runs AFTER `routeSpeculative`
+ * resolves, so a route that resolves once its step has committed used to re-create that step's state through
+ * `stateFor` — minting a FRESH VALID token for an already-committed step, and a ledger nobody would ever commit.
+ * A closed key stays closed: `stateFor` hands back a dead token and a throwaway ledger, and no `commitStepRouters`
+ * can ever return rows for it again. Bounded, because a long run must not accumulate keys; 64 closed steps is far
+ * past the one step a late answer can outlive.
+ */
+const CLOSED_STEPS_MAX = 64;
+const closed = new Set<string>();
+
+function close(key: string): void {
+  closed.add(key);
+  while (closed.size > CLOSED_STEPS_MAX) {
+    const oldest = closed.values().next();
+    if (oldest.done === true) break;
+    closed.delete(oldest.value);
+  }
+}
+
 function keyOf(runId: string, step: number): string {
   return `${runId}:${step}`;
+}
+
+/** A dead token and a ledger that goes nowhere: what a committed or superseded step hands a late router. */
+function closedState(step: number): StepRouterState {
+  const token = createStepToken(step);
+  invalidateStepToken(token);
+  return { token, ledger: emptyRouterLedger() };
 }
 
 function stateFor(runId: string, step: number): StepRouterState {
   const key = keyOf(runId, step);
   const found = live.get(key);
   if (found !== undefined) return found;
+  if (closed.has(key)) return closedState(step);
   const made: StepRouterState = { token: createStepToken(step), ledger: emptyRouterLedger() };
   live.set(key, made);
   while (live.size > MAX_LIVE_STEPS) {
@@ -75,6 +103,9 @@ function stateFor(runId: string, step: number): StepRouterState {
     const dropped = live.get(oldest.value);
     if (dropped !== undefined) invalidateStepToken(dropped.token);
     live.delete(oldest.value);
+    // an evicted step is a superseded step: it is closed, not merely forgotten, or the next `stepTokenFor` for it
+    // would mint a valid token for a step the run has moved past
+    close(oldest.value);
   }
   return made;
 }
@@ -97,13 +128,16 @@ export function noteStepRoute<T>(runId: string, step: number, r: RouteResult<T>)
 export function commitStepRouters(runId: string, step: number): RouterLedger | null {
   const key = keyOf(runId, step);
   const state = live.get(key);
+  // I4: closed BEFORE the early return, so committing a step that ran no router still bars a late one
+  close(key);
   if (state === undefined) return null;
   invalidateStepToken(state.token);
   live.delete(key);
   return state.ledger.issued === 0 ? null : state.ledger;
 }
 
-/** Tests only: forget every live step. */
+/** Tests only: forget every live step and reopen every closed one. */
 export function resetStepRouters(): void {
   live.clear();
+  closed.clear();
 }

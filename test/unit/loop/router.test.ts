@@ -24,7 +24,8 @@ import type { StageContext } from '../../../src/loop/engine.js';
 import { createLoopDetector } from '../../../src/loop/loopdetect.js';
 import { emptyPlan } from '../../../src/loop/plan.js';
 import { buildCommonState, type ExecutedInfo } from '../../../src/loop/state.js';
-import { commitStepRouters, resetStepRouters, routersOn, stepTokenFor } from '../../../src/loop/routers.js';
+import { commitStepRouters, noteStepRoute, resetStepRouters, routersOn, stepTokenFor } from '../../../src/loop/routers.js';
+import type { RouteResult } from '../../../src/jev/router.js';
 import { INTENT_FALLBACK, codeIntentOrder, runIntentStage } from '../../../src/loop/stages/intent.js';
 import { runJudgeStage } from '../../../src/loop/stages/judge.js';
 import { completionDecision, type CompletionFactInput } from '../../../src/loop/stages/complete.js';
@@ -270,7 +271,7 @@ describe('the router table with a decider that throws (routers: on)', () => {
     for (const row of ledger?.rows ?? []) expect(row.appliedAt).toBeNull();
   });
 
-  it('I4: a router answer landing after step commit is recorded dropped and mutates nothing', async () => {
+  it('I4: a router answer landing after step commit is dropped, and the committed step cannot be resurrected', async () => {
     const slow = stageCtx({
       step: 21,
       ask: async () => {
@@ -283,7 +284,33 @@ describe('the router table with a decider that throws (routers: on)', () => {
     commitStepRouters('r-router', 21);
     const r = await pending;
     expect(r.intent).toBe(INTENT_FALLBACK);
-    expect(stepTokenFor('r-router', 21).valid).toBe(true); // a fresh token for a fresh step; the committed one is gone
+    // review 2026-09-22 defect 6: `noteStepRoute` runs AFTER routeSpeculative resolves, and it used to re-create
+    // the step's state — minting a FRESH VALID token for the step that had just committed, plus a ledger nobody
+    // would ever commit. Step 21 is the same step number, not a fresh one: its token stays dead for good.
+    expect(stepTokenFor('r-router', 21).valid).toBe(false);
+    expect(commitStepRouters('r-router', 21)).toBeNull();
+  });
+
+  it('defect 6: a committed (runId, step) is closed — stepTokenFor and noteStepRoute cannot reopen it', () => {
+    const late: RouteResult<string> = { order: ['code'], source: 'code', appliedAt: null, dropped: true, id: 'RL1', waitMs: 0, heldMs: 0, drop: 'committed' };
+    expect(stepTokenFor('probe', 7).valid).toBe(true);
+    const held = stepTokenFor('probe', 7);
+    commitStepRouters('probe', 7);
+    expect(held.valid).toBe(false);
+    expect(stepTokenFor('probe', 7).valid).toBe(false);
+    noteStepRoute('probe', 7, late);
+    expect(commitStepRouters('probe', 7)).toBeNull();
+    // a DIFFERENT step of the same run is untouched, and so is the same step number of a different run
+    expect(stepTokenFor('probe', 8).valid).toBe(true);
+    expect(stepTokenFor('probe-2', 7).valid).toBe(true);
+  });
+
+  it('defect 6: the live-step LRU closes what it evicts — an evicted step is superseded, not forgotten', () => {
+    const evicted = stepTokenFor('lru', 1);
+    stepTokenFor('lru', 2);
+    stepTokenFor('lru', 3); // a third mint retires step 1
+    expect(evicted.valid).toBe(false);
+    expect(stepTokenFor('lru', 1).valid).toBe(false);
   });
 
   it('I5: three consecutive Jev failures do not end a run — every stage returns a code answer and none throws', async () => {
