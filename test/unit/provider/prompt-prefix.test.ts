@@ -42,12 +42,18 @@ function input(over: Partial<PromptInput> = {}): PromptInput {
   };
 }
 
-/** Two steps of one run: the same task, repo map and files; a different step number, plan and window. */
+/**
+ * Two steps of one run: the same task, repo map and files; a different step number, plan, window — and a
+ * different set of CHANGED FILES, which is what a real step 9 has. `workspaceSection` grows that line at every
+ * edit, so a head that contains it is not a head at all (review defect 4): the fixture must differ there or the
+ * byte-identity assertion below is vacuous.
+ */
 function stepTwo(over: Partial<PromptInput> = {}): PromptInput {
   return input({
     step: 9,
     plan: { done: [], remaining: ['fix f', 'run the suite'], unverified: [], openProblems: ['the fixture is stale'], harnessProblems: [] },
     window: [buildWindowEntry({ step: 8, intent: 'edit', action: 'edit src/a.ts', outcome: { status: 'executed', summary: 'ok', changedFiles: ['src/a.ts'] }, output: 'ran 3 tests', judge: null, completion: null, shownFiles: [], notes: [], error: null })],
+    workspace: { changedFiles: ['src/a.ts', 'src/b.ts', 'tests/test_a.py'], resumed: false, testCommand: 'pytest -q', git: true },
     ...over,
   });
 }
@@ -86,17 +92,24 @@ describe('§3.3 `prefixOrder: pinned` — a head that repeats between steps', ()
     expect(text).toContain('# Step 3\n\n## Plan');
     expect(at('## Plan')).toBeLessThan(at('## Recent steps'));
     expect(at('## Recent steps')).toBeLessThan(at('## Your reply'));
+    // review defect 4: the repo map that pins is the part that does NOT move — the changed-file list grows at
+    // every edit of the run, so it sits behind the step heading and outside the head
+    expect(text).toContain('## Workspace\ngit repository: yes\ndetected test command: `pytest -q`\n\n');
+    expect(at('# Step 3')).toBeLessThan(at('files changed by this run'));
+    expect(at('## Workspace (changed by this run)')).toBeLessThan(at('## Recent steps'));
   });
 
-  it('adds, removes and rewrites nothing: the pinned message is a PERMUTATION of the legacy one', () => {
+  it('adds, removes and rewrites nothing but the one heading the workspace split needs', () => {
     const pinnedBuild = buildPrompt(input({ prefixOrder: 'pinned' }));
     const legacyBuild = buildPrompt(input());
-    // the same sections, named the same way — the step heading just rides the plan instead of the task
+    // the same section NAMES — the step heading rides the plan instead of the task, and `## Workspace (changed by
+    // this run)` measures under `Workspace` like the lines it took, so `/context` reports the same buckets
     expect(Object.keys(pinnedBuild.sections).sort()).toEqual(Object.keys(legacyBuild.sections).sort());
+    // and every LINE of the legacy message survives verbatim: the only text the reorder adds is that heading
+    const lines = (t: string): string[] => t.split('\n').filter((l) => l.length > 0).sort();
+    expect(lines(pinnedBuild.text)).toEqual(lines(`${legacyBuild.text}\n## Workspace (changed by this run)`));
     const total = (m: Record<string, number>): number => Object.values(m).reduce((a, b) => a + b, 0);
-    expect(total(pinnedBuild.sections)).toBe(total(legacyBuild.sections));
-    expect(pinnedBuild.chars).toBe(legacyBuild.chars);
-    // and every section's own text survives verbatim: only the order changed
+    expect(total(pinnedBuild.sections)).toBe(total(legacyBuild.sections) + '## Workspace (changed by this run)'.length);
     for (const section of ['## Task\n', '## Workspace', '## Plan', '## Your reply']) expect(pinnedBuild.text).toContain(section);
   });
 

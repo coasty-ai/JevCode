@@ -407,14 +407,39 @@ function windowSection(window: WindowEntry[]): string {
   return lines.join('\n');
 }
 
-function workspaceSection(ws: PromptWorkspaceInfo): string {
-  const lines = ['## Workspace'];
-  lines.push(ws.git ? 'git repository: yes' : 'git repository: no');
-  lines.push(ws.testCommand ? `detected test command: \`${ws.testCommand}\`` : 'detected test command: none');
+/**
+ * contract 1.9 (Fastlane) §3.3 (review defect 4): the workspace facts, split by WHETHER THEY CHANGE WITHIN A RUN.
+ * `stable` is what §3.3 calls the repo map — is this a git repository, what command runs the tests — and it is the
+ * same bytes at step 3 and at step 30. `changed` is the list of files this run has edited, which grows at every
+ * commit: a "cacheable head" containing it would break at the first edit, which is the defect this split fixes.
+ */
+function workspaceParts(ws: PromptWorkspaceInfo): { stable: string[]; changed: string } {
+  const stable = ['## Workspace'];
+  stable.push(ws.git ? 'git repository: yes' : 'git repository: no');
+  stable.push(ws.testCommand ? `detected test command: \`${ws.testCommand}\`` : 'detected test command: none');
   const files = ws.changedFiles.slice(0, 50);
   const label = ws.resumed ? 'resumed run: these files differ from the last commit' : 'files changed by this run';
-  lines.push(`${label}: ${files.length === 0 ? 'none' : files.join(', ')}${ws.changedFiles.length > 50 ? `, … (${ws.changedFiles.length - 50} more)` : ''}`);
-  return lines.join('\n');
+  const changed = `${label}: ${files.length === 0 ? 'none' : files.join(', ')}${ws.changedFiles.length > 50 ? `, … (${ws.changedFiles.length - 50} more)` : ''}`;
+  return { stable, changed };
+}
+
+/** The legacy `## Workspace` section: the repo map and the changed files in one block, byte for byte as before. */
+function workspaceSection(ws: PromptWorkspaceInfo): string {
+  const { stable, changed } = workspaceParts(ws);
+  return [...stable, changed].join('\n');
+}
+
+/** §3.3: the repo map alone — the part of `## Workspace` a run repeats verbatim, and the only part the head may hold. */
+function workspaceStableSection(ws: PromptWorkspaceInfo): string {
+  return workspaceParts(ws).stable.join('\n');
+}
+
+/**
+ * §3.3: the volatile half, behind the step heading. The heading keeps the parenthesis form so `sectionName` still
+ * measures it under `Workspace` — `/context` reports one bucket under both orders, as it did before the split.
+ */
+function workspaceChangedSection(ws: PromptWorkspaceInfo): string {
+  return `## Workspace (changed by this run)\n${workspaceParts(ws).changed}`;
 }
 
 function contextSection(files: FileView[]): string {
@@ -850,11 +875,14 @@ function assembleLegacy(input: PromptInput): { sections: string[]; prefixChars: 
   // §3.3 `system → repo map → files → window`: the head is the task and the repo map (the two things a run repeats
   // verbatim) plus the file bodies; the step number, the plan, the intent and the hints — all of which change every
   // step — move behind them, and the window, which only grows, stays last before the reply.
-  const head = [taskSection(input), workspace, files];
-  const sections = [...head, withStepHeading(input.step, volatileTail[0] ?? ''), ...volatileTail.slice(1), window];
+  // review defect 4: `prefixChars` is counted over the STABLE sections only — the task and the repo map. The file
+  // bodies keep §3.3's place (they are the large thing a run usually repeats) but nothing guarantees they repeat:
+  // in jev-on Jev selects them per step. Over-reporting the head would claim a cache hit the provider never gives.
+  const stable = [taskSection(input), workspaceStableSection(input.workspace)];
+  const sections = [...stable, files, withStepHeading(input.step, volatileTail[0] ?? ''), ...volatileTail.slice(1), workspaceChangedSection(input.workspace), window];
   if (agents) sections.push(agents);
   sections.push(reply);
-  return { sections, prefixChars: head.reduce((n, t) => n + t.length, 0) + 2 * head.length };
+  return { sections, prefixChars: stable.reduce((n, t) => n + t.length, 0) + 2 * stable.length };
 }
 
 /**
@@ -881,11 +909,11 @@ function assembleRelaxed(input: PromptInput, ctx: PromptContextView, budget: num
   const workspace = workspaceSection(input.workspace);
   let prefixChars: number | null = null;
   if (pinned(input)) {
-    // the repo map is the one fixed section a run repeats verbatim; the budgeted `## Files in view` follows it and
-    // is measured as part of the head only when it fits, which `take` decides below — so the head reported here is
-    // the guaranteed part: task + workspace.
-    const stable = [taskSection(input), workspace];
-    head.push(...stable, withStepHeading(input.step, volatileHead[0] ?? ''), ...volatileHead.slice(1));
+    // the repo map is the one fixed section a run repeats verbatim; the budgeted `## Files in view` follows the head
+    // and is measured as part of it only when it fits, which `take` decides below — so the head reported here is the
+    // guaranteed part: the task and the repo map. Review defect 4: the workspace's changed-file line is NOT in it.
+    const stable = [taskSection(input), workspaceStableSection(input.workspace)];
+    head.push(...stable, withStepHeading(input.step, volatileHead[0] ?? ''), ...volatileHead.slice(1), workspaceChangedSection(input.workspace));
     prefixChars = stable.reduce((n, t) => n + t.length, 0) + 2 * stable.length;
   } else {
     head.push(withStepHeading(input.step, taskSection(input)), ...volatileHead, workspace);
