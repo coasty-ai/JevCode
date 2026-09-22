@@ -103,7 +103,8 @@ for.
 
 One run per arm is an illustration, not a measurement. Model latency varies, the machine was
 busy, and a single pair proves nothing on its own. The measured head-to-head tables — many
-tasks, both arms, pass rates and cost per solved task — live in `docs/measurements/`. Read
+tasks, both arms, pass rates and cost per solved task — are in
+[Measurements](../measurements/README.md). Read
 those for the claim; read this page for the shape of it.
 
 The same pairing on the recorded benchmark slice put `detect_cycle` at 33.6 s in the default

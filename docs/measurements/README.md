@@ -62,7 +62,7 @@ dollar figure repeats this.
 | --- | --- |
 | [llm-jev vs generator-only](head-to-head.md) | the same-build 28-task table, the Wilson intervals, the b/c discordance, the exact sign tests, the one-sided censoring and the cost basis |
 | [Out of sample](out-of-sample.md) | the 22-task slice, the rules that selected it, the suite-by-suite split and the reading |
-| [Iterations 1–4](iterations.md) | what each of the four iterations changed, what it measured, and the two that measured nothing and said so |
+| [Iterations 1–4](iterations.md) | what each of the four iterations changed, what it measured, and the two that measured nothing and said so — including the fresh 18-task slice, 14/18 against a tuned baseline's 9/18, sign p = 0.0312 |
 | [Jev-only](jev-only.md) | the ladder of rungs for the mode with no generating model at all, repaired and correct reported separately on every row |
 | [The warm plane A/B](warm-plane.md) | a 23 % speedup that is switched **off** by default, and the failure that keeps it off |
 | [Startup, render and harness overhead](performance.md) | the perf gates and the last recorded run, with the machine and the load |

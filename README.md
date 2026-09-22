@@ -98,13 +98,17 @@ under it.
 - **It holds up out of sample.** On a fresh 18-task slice that nothing was fitted against, and
   against a *tuned* generator-only loop rather than a naive one: 14/18 against 9/18, p = 0.031, at
   flat cost. On easy single-file bugs a tuned loop is slightly faster than JevCode, so "faster" is
-  a claim about the plain loop only, never a general one.
-  [Measurements](docs/measurements/README.md)
+  a claim about the plain loop only, never a general one. On a wider out-of-sample slice that adds
+  multi-hunk and repository tasks the advantage disappears — 13/22 against 12/22, not significant —
+  and the pages below say so before they say anything else.
+  [Iterations 1–4](docs/measurements/iterations.md) ·
+  [Out of sample](docs/measurements/out-of-sample.md)
 - **It installs as one bundled JavaScript file plus a two-line launcher and starts instantly.** Zero
   runtime dependencies — Ink and React are compiled in, and `npm install jevcode` adds exactly one
   package — a tarball of about 1 MB, and a first frame in about 130 ms in a real terminal with the
   network untouched, against a design budget of 300 ms.
-  [Measurements](docs/measurements/README.md)
+  [Install](docs/getting-started/install.md) ·
+  [Startup and overhead](docs/measurements/performance.md)
 
 ## Modes
 
