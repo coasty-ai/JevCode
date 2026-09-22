@@ -480,6 +480,9 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
       logFile: join(cwd, 'my.log'),
       keybindingsFile: join(home, '.config', 'jevcode', 'keybindings.json'),
       wordmark: 'sweep',
+      // contract 1.6 (TUI-DESIGN-4 §8 items 4–5)
+      renderer: 'classic',
+      fullscreenDump: true,
     });
     expect(c.entries.get('ui.history')).toEqual({ value: 'false', source: 'flag' });
     expect(c.entries.get('log.level')).toEqual({ value: 'debug', source: 'flag' });

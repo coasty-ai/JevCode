@@ -10,6 +10,7 @@
 // contract 1.2 (2026-09-21): conversational intake, Jev providers, mode setting, chat labels per docs/TUI-DESIGN-2.md §6; items 4 and 7 add required fields (every constructor and fake is listed there), item 8 is optional, everything else is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 // contract 1.2 (2026-09-21): docs/LLM-JEV-DESIGN.md §4.8 / §4.12 / §9.3 generator-channel fields, reconciled from stages 1–3 (this file is the single source; provider/* and synth/llm/* declare no contract shapes of their own). All additive and optional.
 // contract 1.3 (2026-09-21): TUI round 3 — renderer bindings, wizard `mode` outcome, ui.wordmark, host dispatch context, per docs/TUI-DESIGN-3.md §6; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
+// contract 1.7 (2026-09-22): TUI round 4 — block rows, annotateBlock, diff detail kind, ui.renderer, peer view, per docs/TUI-DESIGN-4.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
 
@@ -1014,6 +1015,12 @@ export interface CheckpointEnvelope {
 export interface ConfigRecordValue {
   value: string | { source: string; fingerprint: string };
   source: string;
+  /**
+   * contract 1.6 item 7 (TUI-DESIGN-4 §7.5): why the file layer discarded this value, so `jevcode config` can say so
+   * instead of printing a default. Absent / null = the value is fine; `expected` is the sentence the row suffixes
+   * (`✗ expected an integer ≥ 1`). A row carrying a problem is never folded (§3.3).
+   */
+  readonly problem?: { readonly kind: 'unknown-key' | 'wrong-type' | 'out-of-range'; readonly expected: string } | null;
 }
 export interface RunMeta {
   runId: string;
@@ -1472,6 +1479,12 @@ export interface Engine {
   retryNow(): boolean;
   /** TUI-DESIGN §15 item 15: a renderer-originated transcript line while the run is live (§15.1); false once finished, then the renderer keeps it local */
   annotate(text: string, opts?: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' }): boolean;
+  /**
+   * contract 1.6 item 2 (TUI-DESIGN-4 §3.5, D-W): one `notice ui` per row, head first, so a command block issued while a run is
+   * live writes the same rows to `transcript.log` from the TUI as from `--plain`. `rows` are the ALREADY-RENDERED row texts.
+   * Returns false when no run is live, exactly like `annotate`. (`level` is `TranscriptLevel`, spelt out here like `annotate`'s.)
+   */
+  annotateBlock?(head: string, rows: readonly string[], opts?: { level?: 'info' | 'warn' | 'error'; label?: UiLabel }): boolean;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1501,6 +1514,16 @@ export interface LaunchSettings {
    * literals outside S3's files (test/unit/tui/plain.test.ts) keep compiling in W0 — readers test `launch.ssh === true`
    */
   ssh?: boolean;
+  /**
+   * contract 1.6 item 6 (TUI-DESIGN-4 §1.3.1, D-S): the renderer chosen at mount — Ink fixes `alternateScreen` in its
+   * constructor, so this MUST be a launch member. THE READER IDIOM, stated once and used everywhere:
+   * `launch.renderer ?? 'classic'` (never `launch.renderer ===`). OPTIONAL for exactly the reason round 3 wrote down for
+   * `ssh` above: `resolveLaunchSettings` always sets it, but a required new member breaks every LaunchSettings / UiConfig
+   * literal outside the config slot's files.
+   */
+  renderer?: 'classic' | 'fullscreen';
+  /** contract 1.6 item 6 (§1.3.1): the one `[ui]` note naming why `fullscreen` was refused and `classic` used; absent when nothing was refused */
+  rendererRefusal?: string;
 }
 /** the LaunchSettings members repeat the mount-time values (source flag | env | default only) */
 export interface UiConfig extends LaunchSettings {
@@ -1520,6 +1543,13 @@ export interface UiConfig extends LaunchSettings {
   keybindingsFile: string | null;
   /** TUI-DESIGN-3 §6 item 4 / §3.2: the wordmark's idle animation — OPTIONAL; readers: `ui?.wordmark ?? (launch.ssh ? 'static' : 'sweep')` */
   wordmark?: 'sweep' | 'static' | 'off';
+  /**
+   * contract 1.6 item 4 (TUI-DESIGN-4 §1.3.4): the fullscreen renderer's on-exit transcript dump to the primary screen.
+   * OPTIONAL, like `wordmark`. Reader: `ui?.fullscreenDump ?? true`. `renderer` is declared ONCE, on LaunchSettings
+   * (item 6), and inherited here — re-declaring it would weaken a required base member (TS2430), the mistake round 3
+   * documented for `ssh` above.
+   */
+  fullscreenDump?: boolean;
 }
 /**
  * TUI-DESIGN §15 item 19 / §10.1: one detected secret span. Declared here so SessionHost is self-contained;
@@ -1564,6 +1594,15 @@ export interface SessionHost {
   workspaceCandidates(): Promise<readonly Candidate[]>;
   /** TUI-DESIGN-3 §6 item 7 (R4 F20): the host's dispatch context beyond the run phase (cli/session.ts ControllerHost declares it; the App prefers it over its own fold) */
   dispatchContext?(): Omit<import('../tui/commands/dispatch.js').DispatchContext, 'run'>;
+  /** contract 1.6 item 9 (TUI-DESIGN-4 §7.10): the peer snapshot the TUI renders; null until the registry lands */
+  peers?(): PeerView | null;
+}
+/** contract 1.6 item 9 (TUI-DESIGN-4 §7.10): what `/peers` shows about other JevCode instances on this workspace */
+export interface PeerView {
+  readonly live: number;
+  readonly stale: number;
+  readonly oldestStartedMsAgo: number | null;
+  readonly exclusive: boolean;
 }
 export interface RunRow {
   runId: string;
@@ -1637,6 +1676,12 @@ export interface Renderer {
    * second source of truth for the key tables)
    */
   setBindings?(bindings: import('../tui/keys/bindings.js').Bindings): void;
+  /**
+   * contract 1.6 item 3 (TUI-DESIGN-4 §3.5, D-W): the row-list form of a block body. `lines` are the ALREADY-RENDERED row
+   * texts that `renderBlock` produced (not `BlockRow[]`), so the parameter type matches §3.5's call. The DEFAULT
+   * implementation is today's per-line `note`, so no renderer breaks. (`level` is `TranscriptLevel`, spelt out like `notify`'s.)
+   */
+  blockLines?(lines: readonly string[], opts?: { label?: UiLabel; level?: 'info' | 'warn' | 'error' }): void;
 }
 
 // ---------------------------------------------------------------------------------------

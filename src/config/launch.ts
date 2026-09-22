@@ -242,6 +242,11 @@ export function resolveLaunchSettingsWithSources(flags: LaunchFlags, env: NodeJS
       reducedMotion: rmSource,
       themeHint: themeSource,
       ssh: ssh ? 'env' : 'default',
+      // contract 1.6 (TUI-DESIGN-4 §8 item 6) W0 TYPE SURFACE ONLY: `LaunchSources` is `Record<keyof LaunchSettings, …>`, so the two
+      // new optional members need a row here for this literal to type-check. §1.3.1's `--fullscreen` / `--renderer` /
+      // `JEVCODE_RENDERER` resolution and the refusal matrix are S1's W0 work and replace both rows (and set `settings.renderer`).
+      renderer: 'default',
+      rendererRefusal: 'default',
     },
   };
 }

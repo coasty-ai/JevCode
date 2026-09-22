@@ -40,6 +40,8 @@ describe('the §16 SETTINGS table', () => {
       'ui.screenReader',
       'ui.reducedMotion',
       'ui.wordmark', // TUI-DESIGN-3 §6 item 5
+      'ui.renderer', // TUI-DESIGN-4 §8 item 5 (contract 1.6)
+      'ui.fullscreenDump', // TUI-DESIGN-4 §8 item 5 (contract 1.6)
       'ui.notify',
       'ui.osc52',
       'ui.history',
@@ -194,6 +196,22 @@ describe('TUI-DESIGN-3 §1.1 (D-G, D-N): DEFAULT_MODE, MODE_BADGE_WORD, MODE_BAD
     // the words are distinct: a badge names its mode unambiguously
     const words = MODE_SETTING_VALUES.map((m: EngineMode) => MODE_BADGE_WORD[m]);
     expect(new Set(words).size).toBe(words.length);
+  });
+});
+
+describe('TUI-DESIGN-4 §8 item 5 (contract 1.6): the ui.renderer and ui.fullscreenDump rows', () => {
+  it('both are ordinary session rows (not launch rows): the mount-time value comes from resolveLaunchSettings, the file value persists for the relaunch', () => {
+    expect(settingSpec('ui.renderer')).toMatchObject({ flag: 'renderer', env: ['JEVCODE_RENDERER'], fileKey: 'renderer', defaultValue: 'classic', secret: false });
+    expect(settingSpec('ui.renderer').launch).toBeUndefined();
+    expect(settingSpec('ui.renderer').ignoredFileKey).toBeUndefined();
+    expect(settingSpec('ui.renderer').boolFlag).toBeUndefined();
+    expect(settingSpec('ui.renderer').description).toContain('classic|fullscreen');
+    expect(settingSpec('ui.fullscreenDump')).toMatchObject({ env: ['JEVCODE_FULLSCREEN_DUMP'], fileKey: 'fullscreenDump', defaultValue: 'true', secret: false });
+    expect(settingSpec('ui.fullscreenDump').flag).toBeUndefined();
+    expect(settingSpec('ui.fullscreenDump').boolFlag).toBeUndefined();
+    expect(settingSpec('ui.fullscreenDump').launch).toBeUndefined();
+    // the five launch rows are unchanged by contract 1.6 (the row above pins the list)
+    expect(LAUNCH_SETTINGS.map((x) => x.name)).not.toContain('ui.renderer');
   });
 });
 

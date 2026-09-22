@@ -31,6 +31,9 @@ export type SettingName =
   | 'ui.theme'
   | 'ui.fps'
   | 'ui.renderMode'
+  // contract 1.6 (TUI-DESIGN-4 §8 item 5 / §1.3): the opt-in pinned-header renderer and its on-exit transcript dump
+  | 'ui.renderer'
+  | 'ui.fullscreenDump'
   | 'ui.ascii'
   | 'ui.title'
   | 'ui.screenReader'
@@ -64,7 +67,7 @@ export type SettingName =
  * compile before args.ts gains them; `lookup()` reads flags structurally, so a flag the parser does not know yet is
  * simply absent (the chain falls through to env / file / default).
  */
-export type TuiStringFlagKey = 'theme' | 'fps' | 'renderMode' | 'exitCode' | 'keybindings' | 'log' | 'logLevel' | 'sessionSpendCap' | 'maxGeneratorTokens';
+export type TuiStringFlagKey = 'theme' | 'fps' | 'renderMode' | 'exitCode' | 'keybindings' | 'log' | 'logLevel' | 'sessionSpendCap' | 'maxGeneratorTokens' | 'renderer';
 /** TUI-DESIGN §16 boolean flags that `cli/args.ts` (O10) adds to `BOOLEAN_FLAGS`. */
 export type TuiBooleanFlagKey =
   | 'ascii'

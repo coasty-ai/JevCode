@@ -249,6 +249,14 @@ export interface UiState {
   readonly lastActivityAt: number;
   /** §3.2: false at `run:end`, true at the next `key` — below 24 rows the mark returns on that key so the epilogue stays on screen */
   readonly postRunKeySeen: boolean;
+  // ----- contract 1.6 (TUI-DESIGN-4 §8 item 11)
+  /**
+   * TUI-DESIGN-4 §1.3.3: the fullscreen viewport's scroll anchor — fullscreen only; the classic renderer leaves it at the
+   * sticky-to-bottom default and never reads it. (S1 may re-type this to `Scroll` once `src/tui/fullscreen/viewport.ts` exports it.)
+   */
+  readonly scroll: { readonly anchor: 'bottom' } | { readonly anchor: 'row'; readonly top: number };
+  /** TUI-DESIGN-4 §5.3 P-C7: the one-slot submission queue — Enter while thinking remembers the text instead of dropping it; null when empty */
+  readonly queued: string | null;
 }
 
 /** TUI-DESIGN §15 item 20 `UiAction` (today's four, the design's additions, and the additive `picker` / `title` / `spend:session` / `git:dirs`). */
@@ -382,6 +390,9 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     lastRisk: null,
     lastActivityAt: opts.nowMs ?? 0,
     postRunKeySeen: true,
+    // contract 1.6 (TUI-DESIGN-4 §8 item 11): sticky to the bottom, nothing queued
+    scroll: { anchor: 'bottom' },
+    queued: null,
   };
 }
 

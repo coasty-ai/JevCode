@@ -19,6 +19,10 @@ describe('resolveLaunchSettings (TUI-DESIGN §16: flag > env > default, pure, no
       reducedMotion: 'default',
       themeHint: 'default',
       ssh: 'default',
+      // contract 1.6 (TUI-DESIGN-4 §8 item 6): `LaunchSources` is keyed on `keyof LaunchSettings`, so the two new
+      // optional members have a row. W0 lands the type surface only — S1's §1.3.1 work resolves them.
+      renderer: 'default',
+      rendererRefusal: 'default',
     });
   });
 

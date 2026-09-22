@@ -156,6 +156,12 @@ export const SETTINGS: readonly SettingSpec[] = [
   { name: 'ui.reducedMotion', boolFlag: { key: 'noAnimation', negate: false }, env: ['JEVCODE_REDUCED_MOTION'], fileKey: 'reducedMotion', defaultValue: null, secret: false, description: 'no spinner animation (default true under screen-reader mode)' },
   // TUI-DESIGN-3 §6 item 5 / §3.2: the wordmark's idle animation; no default row — config/ui.ts derives `static` under the SSH launch source, `sweep` otherwise
   { name: 'ui.wordmark', env: ['JEVCODE_WORDMARK'], fileKey: 'wordmark', defaultValue: null, secret: false, description: 'wordmark idle animation (sweep|static|off; default static under SSH)' },
+  // contract 1.6 (TUI-DESIGN-4 §8 item 5 / §1.3.1): the opt-in pinned-header renderer. The value Ink mounts with is resolved by
+  // `resolveLaunchSettings` (flag > env > default, zero file I/O — Ink fixes `alternateScreen` in its constructor); this row exists
+  // so `jevcode config` prints it and `jevcode config set ui.renderer fullscreen` persists for the relaunch `/fullscreen` offers.
+  { name: 'ui.renderer', flag: 'renderer', env: ['JEVCODE_RENDERER'], fileKey: 'renderer', defaultValue: 'classic', secret: false, description: 'renderer (classic|fullscreen); fullscreen pins the header on the alternate screen and needs 18 rows / 40 columns' },
+  // contract 1.6 (TUI-DESIGN-4 §8 item 5 / §1.3.4): the fullscreen renderer's on-exit transcript dump to the primary screen
+  { name: 'ui.fullscreenDump', env: ['JEVCODE_FULLSCREEN_DUMP'], fileKey: 'fullscreenDump', defaultValue: 'true', secret: false, description: 'write the transcript to the primary screen when the fullscreen renderer exits' },
   { name: 'ui.notify', boolFlag: { key: 'notify', negate: false }, env: ['JEVCODE_NOTIFY'], fileKey: 'notify', defaultValue: null, secret: false, description: 'terminal notifications (BEL / OSC; default true under screen-reader mode)' },
   { name: 'ui.osc52', boolFlag: { key: 'osc52', negate: false }, env: ['JEVCODE_OSC52'], fileKey: 'osc52', defaultValue: 'false', secret: false, description: 'clipboard writes through OSC 52' },
   // Inverted-polarity variable (TUI-DESIGN §16): JEVCODE_NO_HISTORY=1 → ui.history false; resolve.ts flips the recognised boolean.
