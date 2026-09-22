@@ -1066,13 +1066,32 @@ flag; CI keeps the runner default. Wall-clock assertions take the best of N samp
 `listSessions` budget best-of-5, `jev/mock-candidates`'s 1000-view answer budget best-of-3, `synth/llm/repro`'s concurrency
 wall behind the `engine-perf` load guard, and `synth/search/subgoal-llm`'s grace pinned on a frozen clock instead of the wall);
 a test that inspects the host's process table matches only the process it spawned (`sandbox/run.test.ts` tags its `sleep`
-uniquely); and the unit project's `setupFiles` (`test/unit/setup-env.ts`) deletes the mechanism env vars before every file, so a
-gate run measures the tree and not the shell the measuring session exported into. Reason: two sessions and
+uniquely); and the unit project's `setupFiles` (`test/unit/setup-env.ts`) deletes **every** `JEVCODE_*` name in the environment
+before every file, except an explicit keep-list of harness opt-ins (`JEVCODE_LIVE`, `JEVCODE_LADDER_PYTHON`, the router-golden
+output path, the pty switches) and `JEVCODE_ASSERT_*`, which can only make a child process stricter. So a gate run measures the
+tree and not the shell the measuring session exported into. The list is INVERTED on purpose: the first version deleted nine
+audited names out of the ~87 the shipped code reads, and the review found two live holes it had missed
+(`JEVCODE_HEDGE`, `JEVCODE_DEADLINE_GROWTH` in `src/synth/llm/source.ts`, both read before any option and both pinned per arm in
+the OOS wave, each deterministically red on a real unit file). A per-name list cannot be kept complete by hand; a sweep is
+complete by construction, and `test/unit/hygiene/env-hygiene.test.ts` quantifies over every `JEVCODE_*` name in `src/`,
+`scripts/` and `bin/` to keep the keep-list free of behaviour switches. Reason: two sessions and
 up to a dozen agents ran suites concurrently at load 30–100; unbounded runs manufactured failures in tests verified green moments
 earlier, `sandbox/run.test.ts` failed whenever any other worktree ran the same suite, and single-sample budgets (50 ms, 200 ms) failed
 on the load alone. Consequences: a gate that still fails best-of-N is a real regression; release perf numbers come only from
 `perf/*` under `LOAD_QUIET`, never from a unit test; the TUI's real-timer tests remain the known noise and are checked against
 `main` alone before being attributed to a branch.
+
+Two corollaries the same review forced, both of the form *a unit test may not be a function of host state it does not control*.
+(i) A test that asserts on a BUILD ARTEFACT must first establish the artefact is this tree's: `test/unit/scripts/build-output.test.ts`
+runs its `dist/jevcode.mjs` case only when the bundle is no older than `scripts/build.mjs`, and otherwise skips naming both
+timestamps — the first version reddened `npm test` in any checkout carrying a bundle built before the fix, the integrator's own
+among them, while in CI (`npm run check` runs *before* `npm run build`) it skipped and never ran at all. `scripts/check-pack.mjs`
+gate 9 is the always-on gate for that artefact, because a build always precedes it. (ii) A host-tool probe must be a probe, not a
+`stat`: `test/unit/bench/ladder-long.test.ts` resolves its interpreter by spawning it (`$JEVCODE_LADDER_PYTHON` → the user-built
+`~/.jevcode/ladder-venv/bin/python` → the bench's `~/.jevcode/runs/ladder-venv/bin/python` → the system `python3`), never by
+`existsSync`, which is false for every bare command name and therefore skipped all 26 grading tasks for
+`JEVCODE_LADDER_PYTHON=python3` while the next probe ran the identical binary; the report now names the interpreter and tells
+“not on PATH” from “no pytest” apart.
 
 ## 2026-09-22 Orchestration ships with the split gate shut, lands per step, and asks about rewritten shared files
 

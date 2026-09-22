@@ -131,6 +131,16 @@ describe('the race and the grace (§4.2, §6.2)', () => {
     // the assertion below from "the machine was quick enough" into the fact the case is about — the loop adds
     // nothing to the ledger when it does not wait. The discriminating half is `runBatches` having length 1 and the
     // round being cancelled on the commit: had the loop waited the 5 ms, sample 0 would have landed and run.
+    //
+    // The frozen clock costs `graceMs` its power on its own: `waited` is `now() - t0` and both are 0, so
+    // `graceMs === 0` holds for ANY behaviour and only fails if the trace is absent. The `grace` note the same
+    // lines emit keeps a real gate on the number that IS computed from the code under test — `waited N ms of
+    // WAIT`, where WAIT is `min(deps.graceMs, round.deadlineLeftMs())` (subgoal.ts:1099) and is unaffected by the
+    // clock. `waited 0 ms of 0` is therefore false the moment the loop decides to wait at all, which is what the
+    // case is about; it is asserted below beside the tautology it replaces. Verified by mutation 2026-09-22:
+    // configuring `graceMs: 7` instead of 0 leaves `runBatches` at 1, `cancelled` at ['commit'] and `graceMs` at 0
+    // — every assertion that was here stays green — and reds only the grace note (two notes, the second site's
+    // among them). The wall-clock `toBeLessThan(5)` this replaced measured the machine, not the loop.
     const llm = { ...fakeLlm({ graceMs: 0, rounds: () => ({ arrivals: [{ candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 5 }] }) }), now: () => 0 };
     const deps = fakeSubGoalDeps({
       sites: [replace],
@@ -144,7 +154,13 @@ describe('the race and the grace (§4.2, §6.2)', () => {
     if (r.kind === 'commit') expect(r.applied.candidate.text).toBe(FIX);
     expect(deps.rec.runBatches).toHaveLength(1);
     expect(llm.rec.cancelled).toEqual(['commit']);
+    // documentation, not a gate: with `now: () => 0` this can only fail by the trace being absent
     expect(r.trace.llm?.graceMs).toBe(0);
+    // the gate: the grace note reports the wait the loop CHOSE, which the frozen clock does not touch
+    const grace = ctx.events.filter((e) => e.type === 'synth' && e.phase === 'grace');
+    expect(grace).toHaveLength(1);
+    const detail = grace[0]!.type === 'synth' ? grace[0]!.detail : '';
+    expect(detail, 'a configured grace of 0 must not wait, and must say so').toContain('waited 0 ms of 0');
   });
 
   it('the grace runs at any site: the top-site seeds miss (release), a seed passer at the second site waits for sample 0 and the batch is decided once over the union', async () => {

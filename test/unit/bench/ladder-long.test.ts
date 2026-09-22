@@ -8,16 +8,30 @@
  * fails exactly `expected_failing` while the gold tree is green.
  *
  * WHICH python grades the ladder is stated, never inferred from host state (F24a). In order:
- * `JEVCODE_LADDER_PYTHON`, then `~/.jevcode/ladder-venv/bin/python`, then the system `python3` —
- * each accepted only if it imports pytest, and a PINNED interpreter that cannot grade is reported
- * rather than silently replaced. The old default read `<runsDir>/ladder-venv`, i.e. INSIDE the
- * product's own runs directory, which jevcode creates and prunes and which the tests point
- * `JEVCODE_HOME` away from: whether the 26-task tier ran at all was a function of whether a prune
- * had happened to sweep it. That venv stays where it is for the BENCH — `src/bench/ladder/venv.ts`
- * builds `<runsDir>/ladder-venv` deliberately, because `pyworkspace.ts linkVenv` needs it on the
- * sandbox's one allowed root — this is only about which binary grades the fixtures in a unit run.
+ *   1. `$JEVCODE_LADDER_PYTHON` — a path OR a bare command name resolved on PATH (`python3.12`);
+ *   2. `~/.jevcode/ladder-venv/bin/python` — a USER-BUILT venv, created by nothing in this repo; a
+ *      developer who wants one interpreter to grade every ladder run makes it once by hand
+ *      (`python3 -m venv ~/.jevcode/ladder-venv && ~/.jevcode/ladder-venv/bin/pip install
+ *      pytest==8.4.2`, the version `src/bench/ladder/venv.ts` pins), and nothing prunes it;
+ *   3. `~/.jevcode/runs/ladder-venv/bin/python` — the BENCH's own venv if a bench has built one;
+ *   4. the system `python3`.
+ * Each is accepted only if it imports pytest, and a PINNED interpreter that cannot grade is reported
+ * rather than silently replaced. Probe 3 used to be the only default, i.e. the interpreter was read
+ * from INSIDE the product's own runs directory, which jevcode creates and prunes and which the tests
+ * point `JEVCODE_HOME` away from: whether the 26-task tier ran at all was a function of whether a
+ * prune had happened to sweep it. It stays as a probe because a machine that has run the bench has a
+ * pinned-pytest interpreter there and it is a better grader than an arbitrary system python3 — but it
+ * is no longer the default, so a prune only demotes the run to probe 4. That venv stays where it is
+ * for the BENCH — `src/bench/ladder/venv.ts` builds `<runsDir>/ladder-venv` deliberately, because
+ * `pyworkspace.ts linkVenv` needs it on the sandbox's one allowed root.
  * The resolved interpreter is appended to the live case's name, so the report says which binary
  * graded the ladder and a skip is never silent.
+ *
+ * `existsSync` is deliberately NOT part of the test: it is false for every bare command name, so
+ * gating the pinned value on it rejected `JEVCODE_LADDER_PYTHON=python3` — a working interpreter —
+ * with "is missing or does not import pytest" and skipped all 26 tasks, while the fallback one line
+ * below ran the identical binary and graded them in 8 s. The probe below spawns instead and tells the
+ * two rejections apart: not runnable (ENOENT / no exit status) versus runnable without pytest.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -42,29 +56,104 @@ const LONG_8 = ['crossfile', 'import_and_guard', 'ledger5', 'long_chain', 'maske
 const LONG2_6 = ['csv_schema', 'deadline_queue', 'dep_order', 'hunk_merge', 'route_match', 'token_bucket'];
 const ALL_26 = [...ORIGINAL_12, ...LONG_8, ...LONG2_6];
 
-function importsPytest(python: string): boolean {
-  return spawnSync(python, ['-c', 'import pytest'], { encoding: 'utf8' }).status === 0;
+/**
+ * Spawns the candidate. A bare command name is resolved on PATH by the spawn itself, which is why nothing here
+ * stats the file: `existsSync('python3')` is false and would reject a perfectly good interpreter.
+ *   'ok'           — it ran and imported pytest
+ *   'no-pytest'    — it ran and could not import pytest (a python without the package)
+ *   'not-runnable' — it never ran: not on PATH, not a file, not executable (ENOENT / killed / no status)
+ */
+type Probe = 'ok' | 'no-pytest' | 'not-runnable';
+function probePytest(python: string): Probe {
+  const r = spawnSync(python, ['-c', 'import pytest'], { encoding: 'utf8' });
+  if (r.error !== undefined || r.status === null) return 'not-runnable';
+  return r.status === 0 ? 'ok' : 'no-pytest';
 }
 
 /** The env override, so a run can STATE its interpreter instead of hoping the host has the right one. */
 const LADDER_PYTHON_ENV = 'JEVCODE_LADDER_PYTHON';
-/** The shared bench venv, OUTSIDE `~/.jevcode/runs` — that directory is jevcode's own, created and pruned by it. */
+/** The user-built venv, OUTSIDE `~/.jevcode/runs` — that directory is jevcode's own, created and pruned by it. */
 const LADDER_VENV = join(homedir(), '.jevcode', 'ladder-venv', 'bin', 'python');
+/** The bench's own venv (`src/bench/ladder/venv.ts` `<runsDir>/ladder-venv`): pinned pytest when a bench has run. */
+const BENCH_VENV = join(homedir(), '.jevcode', 'runs', 'ladder-venv', 'bin', 'python');
+/** The probes after the override, in preference order, each with the name the report uses. */
+const PROBES: readonly { python: string; why: string }[] = [
+  { python: LADDER_VENV, why: `the user-built venv ${LADDER_VENV}` },
+  { python: BENCH_VENV, why: `the bench venv ${BENCH_VENV}` },
+  { python: 'python3', why: 'the system python3' },
+];
 
 /** The resolved interpreter, or the reason there is none — both go into the live case's name. */
 function pytestPython(): { python: string | null; why: string } {
   const pinned = process.env[LADDER_PYTHON_ENV]?.trim();
   if (pinned !== undefined && pinned !== '') {
-    // a pinned interpreter that cannot grade is an error to report, never a silent fall back to another binary
-    if (existsSync(pinned) && importsPytest(pinned)) return { python: pinned, why: `$${LADDER_PYTHON_ENV}=${pinned}` };
-    return { python: null, why: `$${LADDER_PYTHON_ENV}=${pinned} is missing or does not import pytest` };
+    // a pinned interpreter that cannot grade is an error to report, never a silent fall back to another binary —
+    // and the report distinguishes "I could not run it" from "it has no pytest", which are different mistakes
+    const r = probePytest(pinned);
+    if (r === 'ok') return { python: pinned, why: `$${LADDER_PYTHON_ENV}=${pinned}` };
+    const why = r === 'not-runnable' ? (pinned.includes('/') ? 'is not an executable file' : 'is not on PATH') : 'does not import pytest';
+    return { python: null, why: `$${LADDER_PYTHON_ENV}=${pinned} ${why}` };
   }
-  if (existsSync(LADDER_VENV) && importsPytest(LADDER_VENV)) return { python: LADDER_VENV, why: LADDER_VENV };
-  if (importsPytest('python3')) return { python: 'python3', why: 'the system python3' };
-  return { python: null, why: `no pytest: tried $${LADDER_PYTHON_ENV}, ${LADDER_VENV}, python3` };
+  for (const probe of PROBES) {
+    if (probePytest(probe.python) === 'ok') return { python: probe.python, why: probe.why };
+  }
+  return { python: null, why: `no pytest: tried $${LADDER_PYTHON_ENV}, ${LADDER_VENV}, ${BENCH_VENV}, python3` };
 }
 
 const { python: PYTHON, why: GRADED_BY } = pytestPython();
+
+/** the system interpreter's own state, so the cases below say what they measure instead of assuming a host */
+const SYSTEM_PYTEST = probePytest('python3') === 'ok';
+
+describe('which interpreter grades the ladder (F24a)', () => {
+  const withPinned = <T>(value: string | undefined, fn: () => T): T => {
+    const before = process.env[LADDER_PYTHON_ENV];
+    if (value === undefined) delete process.env[LADDER_PYTHON_ENV];
+    else process.env[LADDER_PYTHON_ENV] = value;
+    try {
+      return fn();
+    } finally {
+      if (before === undefined) delete process.env[LADDER_PYTHON_ENV];
+      else process.env[LADDER_PYTHON_ENV] = before;
+    }
+  };
+
+  it.skipIf(!SYSTEM_PYTEST)('honours a PATH-relative pin: `python3` is resolved by the spawn, never stat()ed', () => {
+    // failing-first: with the `existsSync(pinned) &&` conjunct this returned { python: null } and skipped all 26
+    // tasks with "is missing or does not import pytest", while the very next probe ran the identical binary
+    expect(withPinned('python3', pytestPython)).toEqual({ python: 'python3', why: `$${LADDER_PYTHON_ENV}=python3` });
+    expect(withPinned('  python3  ', pytestPython).python).toBe('python3'); // trimmed, so a stray space is not a skip
+  });
+
+  it('tells the two rejections apart: not runnable vs. runnable without pytest', () => {
+    const notOnPath = withPinned('jevcode-no-such-python', pytestPython);
+    expect(notOnPath.python).toBeNull();
+    expect(notOnPath.why).toBe(`$${LADDER_PYTHON_ENV}=jevcode-no-such-python is not on PATH`);
+
+    const notAFile = withPinned('/nonexistent/bin/python', pytestPython);
+    expect(notAFile.python).toBeNull();
+    expect(notAFile.why).toBe(`$${LADDER_PYTHON_ENV}=/nonexistent/bin/python is not an executable file`);
+
+    // a binary that runs and has no pytest: `/bin/echo` exits 0 on anything, so use `false`-like semantics —
+    // `/usr/bin/true` runs and imports nothing, i.e. it exits 0; the honest probe is a python-less runnable file
+    const noPytest = withPinned('/bin/ls', pytestPython);
+    expect(noPytest.python).toBeNull();
+    expect(noPytest.why).toBe(`$${LADDER_PYTHON_ENV}=/bin/ls does not import pytest`);
+  });
+
+  it('a pin is never silently replaced, and an absent pin walks the four probes in order', () => {
+    // the pinned value is reported, not swapped for the fallback that would have worked
+    expect(withPinned('jevcode-no-such-python', pytestPython).python).toBeNull();
+    expect(PROBES.map((p) => p.python)).toEqual([LADDER_VENV, BENCH_VENV, 'python3']);
+    // probe 2 is the user-built venv (nothing in this repo creates it) and probe 3 the bench's own, which a
+    // `jevcode bench` run does create — F24a moved the DEFAULT out of runs/, it did not drop that venv as a probe
+    expect(LADDER_VENV).toBe(join(homedir(), '.jevcode', 'ladder-venv', 'bin', 'python'));
+    expect(BENCH_VENV).toBe(join(homedir(), '.jevcode', 'runs', 'ladder-venv', 'bin', 'python'));
+    const resolved = withPinned(undefined, pytestPython);
+    if (SYSTEM_PYTEST) expect(resolved.python).not.toBeNull();
+    expect(GRADED_BY.length).toBeGreaterThan(0);
+  });
+});
 
 interface PytestRun {
   status: number | null;
