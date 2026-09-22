@@ -198,6 +198,27 @@ export function backedOffDeadlineMs(klass: OracleClass, baseMs: number, growths:
   return Math.min(deadlineCeilingMs(klass), Math.round(baseMs * LLM_TIMEOUT_BACKOFF.factor ** Math.max(0, growths)));
 }
 
+/**
+ * OOS iteration 2, question 2: the same deadline with the goal's HIGH-WATER MARK applied — the
+ * longest deadline at which a sample of this goal has already timed out with nothing served.
+ *
+ * Why it is needed. `backedOffDeadlineMs` is a monotone factor on `baseDeadlineMs`, but the base
+ * is recomputed at every `fire` from the RUNNING served p90 (`sampleDeadlineMs`), and that moves
+ * in both directions: a run whose first served samples are slow and whose later ones are fast
+ * sees its p90 — and with it the base — fall, and a caller that pins a high round-1 deadline and
+ * leaves the next unpinned falls all the way back to the class default. Either way a goal that
+ * has ALREADY proved a deadline too short goes back below it, which is the one thing a
+ * zero-token timeout can never be evidence for. Records: 61 of the fresh slice's 135 zero-token
+ * timeouts fired at a grown deadline, so the growths were real; nothing in the tree stopped the
+ * next round of the same goal from undoing them.
+ *
+ * The mark is per goal and in memory, like the growths, and is bounded by the sampling class's
+ * ceiling, so it can never take a goal past what the class allows.
+ */
+export function goalDeadlineMs(klass: OracleClass, baseMs: number, b: Pick<TimeoutBackoff, 'growths' | 'floorMs'>): number {
+  return Math.min(deadlineCeilingMs(klass), Math.max(b.floorMs, backedOffDeadlineMs(klass, baseMs, b.growths)));
+}
+
 /** The latency facts a deadline is computed from, all per run and in memory (nothing is persisted). */
 export interface SampleLatency {
   /** running p90 of the samples the provider SERVED this run (a timeout, a cancellation and a 429 served nothing); null until `LLM_DEADLINE_ADAPT.minSamples` of them */
@@ -740,6 +761,13 @@ export interface TimeoutBackoff {
   paused: boolean;
   /** a zero-token timeout has already been booked for the round in flight — the round grows once, however many samples time out */
   bookedThisRound: boolean;
+  /**
+   * OOS iteration 2: the longest deadline at which a sample of this goal has already timed out
+   * having served nothing — the high-water mark of `goalDeadlineMs`. A zero-token timeout can
+   * never be evidence for a SHORTER deadline, and the round's base is recomputed from a moving
+   * served p90 at every fire, so without this a proved-too-short deadline comes back.
+   */
+  floorMs: number;
 }
 
 /** The fired samples of a round that were never served: settled without a result and rate-limited (`SampleArrival.rateLimited`). */
@@ -791,7 +819,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   function backoffOf(goalId: string): TimeoutBackoff {
     const cur = backoff.get(goalId);
     if (cur !== undefined) return cur;
-    const fresh: TimeoutBackoff = { streak: 0, growths: 0, paused: false, bookedThisRound: false };
+    const fresh: TimeoutBackoff = { streak: 0, growths: 0, paused: false, bookedThisRound: false, floorMs: 0 };
     backoff.set(goalId, fresh);
     return fresh;
   }
@@ -802,15 +830,19 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
    * next round — the streak restarts there, so a paused goal is not paused again by the same run of
    * timeouts, only by a new one.
    */
-  function noteZeroTokenTimeout(goalId: string, klass: OracleClass, baseMs: number): void {
+  function noteZeroTokenTimeout(goalId: string, klass: OracleClass, baseMs: number, firedAtMs: number): void {
     const b = backoffOf(goalId);
+    // OOS iteration 2: the deadline this sample actually waited is a high-water mark for the goal,
+    // booked whether or not the ROUND takes a growth — one round is one growth, but every proved
+    // deadline is evidence that nothing shorter can be right for this goal.
+    b.floorMs = Math.min(deadlineCeilingMs(klass), Math.max(b.floorMs, firedAtMs));
     // review finding 10: ONE growth per round. A round fires its samples in parallel, so five
     // zero-token timeouts are one observation of a provider serving nothing, not five.
     if (b.bookedThisRound) return;
     b.bookedThisRound = true;
     b.growths += 1;
     b.streak += 1;
-    emit('llm:deadline', `goal ${goalId}: this round timed out with 0 output tokens (nothing served); its next round waits ${backedOffDeadlineMs(klass, baseMs, b.growths)} ms (${b.growths} × ${LLM_TIMEOUT_BACKOFF.factor} on ${baseMs} ms, capped at the ${klass} maximum ${deadlineCeilingMs(klass)} ms)`);
+    emit('llm:deadline', `goal ${goalId}: this round timed out with 0 output tokens (nothing served); its next round waits ${goalDeadlineMs(klass, baseMs, b)} ms (${b.growths} × ${LLM_TIMEOUT_BACKOFF.factor} on ${baseMs} ms, capped at the ${klass} maximum ${deadlineCeilingMs(klass)} ms)`);
     if (b.streak < LLM_TIMEOUT_BACKOFF.pauseAfter) return;
     b.streak = 0;
     b.paused = true;
@@ -973,7 +1005,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       // §4.8 rev 4: a timeout with nothing produced backs this goal's deadline off; one that streamed
       // output was being answered, so it ends the streak instead of adding to it
       if (end.kind === 'timeout') {
-        if (isZeroTokenTimeout(end.kind, partial)) noteZeroTokenTimeout(st.input.goalId, st.input.klass, st.baseDeadlineMs);
+        if (isZeroTokenTimeout(end.kind, partial)) noteZeroTokenTimeout(st.input.goalId, st.input.klass, st.baseDeadlineMs, st.deadlines.get(k) ?? st.deadlineMs);
         else noteProduced(st.input.goalId);
       }
       const detail = end.kind === 'timeout' ? `deadline ${st.deadlines.get(k) ?? st.deadlineMs} ms passed` : end.kind === 'cancelled' ? (end.error instanceof Error ? end.error.message : 'cancelled') : messageOf(end.error);
@@ -1042,7 +1074,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     const t0 = now();
     // §4.8 rev 4: this sample's own deadline — the round's base grown by whatever zero-token timeouts
     // the goal has collected BY NOW, so a staggered round's `release()` samples carry sample 0's back-off
-    const deadlineMs = backedOffDeadlineMs(st.input.klass, st.baseDeadlineMs, backoffOf(st.input.goalId).growths);
+    const deadlineMs = goalDeadlineMs(st.input.klass, st.baseDeadlineMs, backoffOf(st.input.goalId));
     st.deadlines.set(k, deadlineMs);
     // contract 1.4 (W3), §6 / W3 item 28: the sample becomes a heartbeat row here and stops being one in `settle`.
     deps.coordination?.subworkStarted({ kind: 'sample', id: sampleSubworkId(st.input.goalId, st.input.round, k), stage: 'propose', detail: `${st.input.klass} sample ${k} of ${st.n}, ${deadlineMs} ms` });
@@ -1067,7 +1099,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       key,
       n,
       baseDeadlineMs,
-      deadlineMs: backedOffDeadlineMs(input.klass, baseDeadlineMs, backoffOf(input.goalId).growths),
+      deadlineMs: goalDeadlineMs(input.klass, baseDeadlineMs, backoffOf(input.goalId)),
       deadlines: new Map(),
       // the pinned base, or the base an overriding `reasoning` implies (3,000 on, 1,500 off); doubled once for a goal after a `length` drop
       maxTokens: input.maxTokens ?? maxTokensFor(input.goalId, input.reasoning === undefined ? gen.maxTokens : maxTokensBase(input.reasoning)),
@@ -1115,7 +1147,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     const samples = backedOff.paused ? pausedSampleCount(n) : n;
     if (backedOff.paused) {
       backedOff.paused = false;
-      emit('llm:fire', `goal ${input.goalId} round ${input.round}: ${LLM_TIMEOUT_BACKOFF.pauseAfter} consecutive rounds of this goal served nothing — firing ${samples} of ${n} samples at ${backedOffDeadlineMs(input.klass, input.deadlineMs ?? sampleDeadlineMs(input.klass, latencyOf(), gen.sampleDeadline), backedOff.growths)} ms instead of the full round`);
+      emit('llm:fire', `goal ${input.goalId} round ${input.round}: ${LLM_TIMEOUT_BACKOFF.pauseAfter} consecutive rounds of this goal served nothing — firing ${samples} of ${n} samples at ${goalDeadlineMs(input.klass, input.deadlineMs ?? sampleDeadlineMs(input.klass, latencyOf(), gen.sampleDeadline), backedOff)} ms instead of the full round`);
     }
     backedOff.bookedThisRound = false; // a new round may book one growth of its own
     if (input.budget.roundsLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_rounds', cached: 0, key };

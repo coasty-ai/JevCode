@@ -31,8 +31,13 @@ import { noul, ref, score } from '../../jev/questions.js';
 import { clip } from '../../core/text.js';
 import { RESEARCH_ACTION_KINDS, RISK_DIMENSIONS, type Action, type ActionKind, type Answer, type Intent, type JsonObject, type OrchestrationOptions, type OutcomeStatus, type Proposal, type ProposalEvidence, type Question, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TargetInfo, type TestCommand } from '../../core/types.js';
 import { patchTouchedPaths } from '../../provider/actions.js';
-// ORCHESTRATION-DESIGN §8.1 rule 2: the surface imports orchestration through the ONE facade, never a file under it.
-import { ownsPath, parseOwnGlob, type OwnGlob } from '../../orchestrate/index.js';
+// ORCHESTRATION-DESIGN §8.1 rule 2 says the surface imports orchestration through the ONE facade.
+// The exception, and the only one here: this module is on the TUI's STATIC import graph
+// (tui/plain.ts → tui/review/lines.ts → this file), and the facade re-exports land.ts, manifest.ts
+// and worktree.ts, which import `node:fs` and `node:child_process`. Importing the two pure glob
+// helpers from their leaf module keeps that machinery out of the renderer's graph; `split/globs.ts`
+// imports nothing but `core/limits.js`, so the leaf cannot grow one behind our back.
+import { ownsPath, parseOwnGlob, type OwnGlob } from '../../orchestrate/split/globs.js';
 import type { StageContext } from '../engine.js';
 import { patchContentHash } from '../loopdetect.js';
 import { buildRiskState, commonLastRun, evidenceVerified, isChangeAction, type PriorPatch, type PriorPatchResult, type PriorPatchRun } from '../state.js';

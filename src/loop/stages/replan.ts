@@ -184,10 +184,57 @@ export function gatherContextEscalation(i: GatherContextRepeatInput): GatherCont
   };
 }
 
-/** The `change_approach` directive that escalates the phase: parsed as `change_approach` by both search/directive.ts and loopdetect.ts `directiveMove`. */
+/**
+ * Change 9 (OOS iteration 2, from the iteration-1 records): the run does not END on a completion
+ * claim the harness itself refused, before the search's own rung has been climbed.
+ *
+ * Evidence. All four fresh SWE runs of `bench/results/iter1-fresh-llm-jev-swebench` stop
+ * `replan_stop` at step 5 of a 25-step budget. On `runs/20260922-120654-pwk7v3bn` steps 3, 4 and
+ * 5 are one and the same `done` proposal — signature `done:a38c40c21f99`, `outcome: "noop"`,
+ * `notes: ["done rejected: no passing, current run verifies it"]`, `timing.synthMs` 0.28 ms — so
+ * three steps ran nothing, proposed nothing and changed nothing; the trip then answers
+ * `stop_and_report` (p 0.44–0.61) and the run ends with 20 steps unspent, 1,735 of the step's
+ * 1,740 priced candidates never run and 0 of 7 generator samples served. `django__django-15128`
+ * (`20260922-124457-mo7wd5un`, the only in-sample regression against the frozen `066816f`) is the
+ * same shape through engine.ts `repeatedGatherContextExit`: steps 2–7 are one refused `done`
+ * (`done:b8ee1f6c9667`) and `gather_context` twice.
+ *
+ * The rule, on facts the detector already holds and with no constant, no threshold and no task
+ * name: a `done:` signature IS a completion claim the harness refused — an accepted one ends the
+ * run — so its repetition is evidence about the proposer/completion handshake, not about the
+ * search being spent. The search has exactly one rung above where it stands (`PHASE_ESCALATION`,
+ * search/directive.ts `change_approach`), so the first trip that would otherwise END the run on
+ * such a signature — the `stop_and_report` move, or a move this stage has already directed once
+ * for this very signature, which is the engine's exit — climbs that rung instead. Once the rung
+ * has been directed for this signature the stop is the honest end, which keeps the ladder finite
+ * (escalate, then stop) exactly as change 7's does for a `run:` signature.
+ */
+export function doneClaimEscalation(i: Pick<GatherContextRepeatInput, 'signature' | 'move' | 'priorDirectives'>): GatherContextEscalation | null {
+  if (signatureKind(i.signature) !== 'done') return null;
+  // the two ways this stage ends a run on a refused completion claim: the stop move itself, and a
+  // directive already given for this signature (engine.ts `repeatedGatherContextExit`)
+  const repeated = i.priorDirectives.some((d) => directiveMove(d.directive) === i.move);
+  if (i.move !== 'stop_and_report' && !repeated) return null;
+  const escalated = i.priorDirectives.filter((d) => d.directive.includes(PHASE_ESCALATION));
+  if (escalated.length === 0) return { kind: 'escalate' };
+  return {
+    kind: 'stop',
+    reason: `the completion claim ${i.signature} repeated after escalating ${PHASE_ESCALATION} at step ${escalated.map((d) => d.step).join(', ')}; the search has no phase left to escalate and the harness will not accept the claim`,
+  };
+}
+
+/**
+ * The `change_approach` directive that escalates the phase: parsed as `change_approach` by both
+ * search/directive.ts and loopdetect.ts `directiveMove`. Change 9's ladder reaches it with an
+ * empty `gatheredAt` (a refused completion claim that was never directed to gather), so the
+ * wording names what actually repeated rather than a gather that did not happen — and
+ * `change_approach` is the only move that reopens a goal the best-guess search parked
+ * (search/directive.ts: `gather_context` leaves that park in place), which is why it is the rung.
+ */
 export function escalationDirectiveText(probability: number, signature: string, gatheredAt: readonly number[]): string {
   const kind = describeSignatureKind(signatureKind(signature));
-  return `After repeating the same ${kind} 3 times with gather_context already directed at step ${gatheredAt.join(', ')} and the output unchanged, Jev directs \`change_approach\` (p=${probability.toFixed(2)}, escalation=${PHASE_ESCALATION}): escalate the search phase ${PHASE_ESCALATION} — rotate the goal's source order, widen the site beam and allow the WIDENED phase, instead of reading again for a command whose output has not moved.`;
+  const after = gatheredAt.length > 0 ? `with gather_context already directed at step ${gatheredAt.join(', ')} and the output unchanged` : 'with nothing proposed in between';
+  return `After repeating the same ${kind} 3 times ${after}, Jev directs \`change_approach\` (p=${probability.toFixed(2)}, escalation=${PHASE_ESCALATION}): escalate the search phase ${PHASE_ESCALATION} — rotate the goal's source order, reopen every parked goal, widen the site beam and allow the WIDENED phase, instead of repeating a step that has not moved.`;
 }
 
 /** The `stop_and_report` directive of the exhausted escalation ladder (change 7). */
@@ -222,21 +269,22 @@ export async function runReplanStage(ctx: StageContext, common: JsonObject, dete
   const move: ReplanMove = resolved.option;
   const directive: ReplanDirective = { move, probability: resolved.probability, confidence, taskImpossible, text: directiveText(resolved.verdict === 'fallback' ? 'none_of_these' : move, resolved.verdict, resolved.probability, taskImpossible, signature) };
   if (askImpossible && taskImpossible >= ctx.limits.impossibleThreshold) return { kind: 'stop', reason: 'impossible', directive };
-  if (move === 'stop_and_report') return { kind: 'stop', reason: 'replan_stop', directive };
-  // change 7: the repeat is off the detector's own signature and directive history (never a constant, never a task name)
-  if (synthProposes(ctx.mode)) {
-    const escalation = gatherContextEscalation({ signature, move, priorDirectives, lastOutcomes });
-    if (escalation !== null && escalation.kind === 'stop') {
-      const stop: ReplanDirective = { ...directive, move: 'stop_and_report', text: escalationStopText(resolved.probability, escalation.reason) };
-      return { kind: 'stop', reason: 'replan_stop', directive: stop };
-    }
-    if (escalation !== null) {
-      const gatheredAt = priorDirectives.filter((d) => directiveMove(d.directive) === 'gather_context').map((d) => d.step);
-      const escalated: ReplanDirective = { ...directive, move: 'change_approach', text: escalationDirectiveText(resolved.probability, signature, gatheredAt) };
-      ctx.emit({ type: 'replan', step: ctx.step, directive: escalated });
-      return { kind: 'directive', directive: escalated };
-    }
+  // changes 7 and 9: the escalation ladder, off the detector's own signature and directive history
+  // (never a constant, never a task name). It runs BEFORE the `stop_and_report` exit below because
+  // change 9's whole subject is a stop move on a refused completion claim; a `run:` signature and
+  // every non-synth mode reach that exit unchanged (`doneClaimEscalation` answers null for both).
+  const escalation = synthProposes(ctx.mode) ? (gatherContextEscalation({ signature, move, priorDirectives, lastOutcomes }) ?? doneClaimEscalation({ signature, move, priorDirectives })) : null;
+  if (escalation !== null && escalation.kind === 'stop') {
+    const stop: ReplanDirective = { ...directive, move: 'stop_and_report', text: escalationStopText(resolved.probability, escalation.reason) };
+    return { kind: 'stop', reason: 'replan_stop', directive: stop };
   }
+  if (escalation !== null) {
+    const gatheredAt = priorDirectives.filter((d) => directiveMove(d.directive) === 'gather_context').map((d) => d.step);
+    const escalated: ReplanDirective = { ...directive, move: 'change_approach', text: escalationDirectiveText(resolved.probability, signature, gatheredAt) };
+    ctx.emit({ type: 'replan', step: ctx.step, directive: escalated });
+    return { kind: 'directive', directive: escalated };
+  }
+  if (move === 'stop_and_report') return { kind: 'stop', reason: 'replan_stop', directive };
   ctx.emit({ type: 'replan', step: ctx.step, directive });
   return { kind: 'directive', directive };
 }

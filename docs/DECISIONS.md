@@ -1189,7 +1189,18 @@ S1 review did not run a real lane either. Consequences: every warm-path unit tes
 with a REAL-LANE integration test (the actual Python worker over a fixture project) and a watchdog (a worker that never announces
 READY or never replies is `disabledReason`, the sieve falls back cold — a run must never wedge again); the default returns to on
 only when that test and Ring 1 pass with the plane on; no live number taken between 66aa019 and f5df14f with the default on is
-trusted (the bench arms ran with `JEVCODE_WARM=off`).
+trusted (the bench arms ran with `JEVCODE_WARM=off`). **Root cause, found the same day (07df581):** the warm worker drove its
+lane FIFOs with `fs.createWriteStream` / `fs.createReadStream`, whose blocking `open(2)` (a FIFO write-end waits for a reader)
+and `read(2)` park a libuv filesystem-pool thread each; with eight lanes and four threads the pool was gone, and every `fs` call
+in the harness queued behind opens whose workers had already exited at `--connect-ms` — 0 % CPU, no children, `0 tested`. The
+fakes could not see it: the parity tests script a `WarmScreen` with no descriptors, the worker tests drive one lane. Fix: raw
+`O_NONBLOCK` descriptors driven by `readSync`/`writeSync` on a timer that runs only while a request is in flight (`net.Socket`
+was measured and rejected — kqueue's read filter on a FIFO delivers only what was already in the pipe when the watcher armed),
+a `serve()` watchdog (`disabledReason`, cold fallback; a worker timeout disables the plane on first occurrence;
+`WARM_MAX_FAILURES_PER_RUN` = 4), and the server source written once per run; `test/unit/synth/warm/real-lane.test.ts` boots the
+real Python worker, runs six lanes at once with a concurrent `readFile` proving the pool is free, and drives two hangs to
+`disabled` in under 1.2 s. Mock A/B on one task: warm on 23.6 s vs off 31.6 s, identical trajectory. The default stays OFF until
+a real-model A/B on the measured 18-task slice.
 
 ## 2026-09-22 Iteration 1 measured: the default stands; iteration 2 targets the repository stop rule and the timeouts
 
