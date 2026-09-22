@@ -559,30 +559,30 @@ as `partial`, never a release number, and never written into this section).
 
 | Measurement | Result | Gate | Status |
 | --- | --- | --- | --- |
-| First frame `run` 40×120, cold compile cache: p95 / median over 10 runs (warm median) | 128.0 ms / 123.1 ms (98.2 ms) | < 300 ms | pass |
-| First frame `run` 24×80, cold compile cache: p95 / median over 10 runs (warm median) | 123.4 ms / 121.3 ms (97.4 ms) | < 300 ms | pass |
-| First frame `run` 8×40, cold compile cache: p95 / median over 10 runs (warm median) | 119.9 ms / 117.5 ms (94.0 ms) | < 300 ms | pass |
-| First frame `chat` 40×120, cold compile cache: p95 / median over 10 runs (warm median) | 123.7 ms / 122.3 ms (99.3 ms) | < 300 ms | pass |
-| First frame `chat` 24×80, cold compile cache: p95 / median over 10 runs (warm median) | 122.3 ms / 120.7 ms (96.9 ms) | < 300 ms | pass |
-| First frame `chat` 8×40, cold compile cache: p95 / median over 10 runs (warm median) | 119.5 ms / 117.9 ms (93.7 ms) | < 300 ms | pass |
-| First frame `run` 24×80 breakdown, child clock: bare `node -e ''` → `render()` returned → frame flushed (harness spawn → sentinel) | 23.3 ms → 112.4 ms → 119.1 ms (120.9 ms) | report |  |
-| First frame `chat` 24×80 breakdown, child clock: bare `node -e ''` → `render()` returned → frame flushed (harness spawn → sentinel) | 22.8 ms → 112.9 ms → 119.6 ms (121.5 ms) | report |  |
+| First frame `run` 40×120, cold compile cache: p95 / median over 10 runs (warm median) | 132.1 ms / 126.9 ms (100.8 ms) | < 300 ms | pass |
+| First frame `run` 24×80, cold compile cache: p95 / median over 10 runs (warm median) | 132.8 ms / 125.9 ms (99.8 ms) | < 300 ms | pass |
+| First frame `run` 8×40, cold compile cache: p95 / median over 10 runs (warm median) | 126.1 ms / 121.9 ms (95.8 ms) | < 300 ms | pass |
+| First frame `chat` 40×120, cold compile cache: p95 / median over 10 runs (warm median) | 128.2 ms / 126.4 ms (101.2 ms) | < 300 ms | pass |
+| First frame `chat` 24×80, cold compile cache: p95 / median over 10 runs (warm median) | 139.0 ms / 125.7 ms (99.8 ms) | < 300 ms | pass |
+| First frame `chat` 8×40, cold compile cache: p95 / median over 10 runs (warm median) | 124.1 ms / 122.3 ms (95.4 ms) | < 300 ms | pass |
+| First frame `run` 24×80 breakdown, child clock: bare `node -e ''` → `render()` returned → frame flushed (harness spawn → sentinel) | 23.4 ms → 116.0 ms → 126.3 ms (125.1 ms) | report |  |
+| First frame `chat` 24×80 breakdown, child clock: bare `node -e ''` → `render()` returned → frame flushed (harness spawn → sentinel) | 23.6 ms → 116.4 ms → 124.7 ms (125.6 ms) | report |  |
 | Splash frame 0 is the first frame: runs whose first frame (the `step 0/` frame) already carried wordmark cells (`run` 40×120 · `run` 24×80 · `run` 8×40 · `chat` 40×120 · `chat` 24×80 · `chat` 8×40) | 20/20 · 20/20 · 0/20 (flat, none expected) · 20/20 · 20/20 · 0/20 (flat, none expected) | every run at ≥ 16 rows × ≥ 64 columns, none below (TUI-DESIGN-2 §9 row 1) | pass |
-| Harness overhead per step, p95 / p50 (mocked zero-latency run, 50 steps, 5,000-file git fixture + 5,000 ignored files, 50 dirty files / 15 MiB copied at every `run` step) | 52.6 ms / 25.4 ms | < 50 ms | FAIL |
-| Harness overhead of the `run` steps alone, p95 / p50 (12 steps; they copy the pre-image and carry the p95 above) · every other step p95 | 67.9 ms / 46.4 ms · 33.7 ms | report (margin under 50 ms) | -17.9 ms margin |
-| `imagesMs` p95 / p50 over steps with images · `run`-step p95 (the 15 MiB dirty-set copy) | 23.2 ms / 1.2 ms · 32.8 ms | report only, not a gate (§18 target < 15 ms; the copy is inside `harnessMs`, which is gated) | above target (reported) |
+| Harness overhead per step, p95 / p50 (mocked zero-latency run, 50 steps, 5,000-file git fixture + 5,000 ignored files, 50 dirty files / 15 MiB copied at every `run` step) | 42.6 ms / 15.0 ms | < 50 ms | pass |
+| Harness overhead of the `run` steps alone, p95 / p50 (12 steps; they copy the pre-image and carry the p95 above) · every other step p95 | 43.9 ms / 34.2 ms · 21.4 ms | report (margin under 50 ms) | 6.1 ms margin |
+| `imagesMs` p95 / p50 over steps with images · `run`-step p95 (the 15 MiB dirty-set copy) | 32.4 ms / 1.2 ms · 35.1 ms | report only, not a gate (§18 target < 15 ms; the copy is inside `harnessMs`, which is gated) | above target (reported) |
 | 60 MiB `run` artefact: post image written with `hashSkipped: true`, nothing hashed (step 11) | true | true | pass |
 | `promptBuildMs` p95 / p50, warm (the file refresh, the §8.2(a) tier plan and the assembly of one relaxed prompt — last build 2 whole, 1 clipped, 9 one-line, 0 output file(s) opened) | 0.7 ms / 0.2 ms | p95 < 5 ms (§8.9) | pass |
 | `promptBuildMs` cold — the first prompt after `--resume`, when none of the ≤ 6 `outputs/step-n.txt` has been read yet (§8.3) | 0.7 ms | < 25 ms | pass |
 | Static append, bytes per committed line — the append frame, median / mean (`live22`, 13-row region at 24×80) | 1814 / 1816 B | report | in budget |
 | Static append, bytes per committed line — the append frame, median / mean (`review22`, 19-row region at 24×80) | 2613 / 2616 B | report | in budget |
 | Static append, bytes per committed line — the append frame, median / mean (`idle15`, 11-row region at 24×80) | 1865 / 1868 B | report | in budget |
-| Event-loop lag while typing 10 keys/s during a live mocked run at the realistic step rate (`JEVCODE_MOCK_STEP_MS=200`, about 5 steps/s), p95 net of the probe's idle floor (raw p95 in parentheses; rows 40 / rows 12 / rows 40 reduced motion; 120 columns) | 3.80 ms (4.84 ms) / 1.39 ms (2.44 ms) / 3.46 ms (4.51 ms) | < 5 ms net | pass |
-| Lag probe idle floor, measured in this run — the same 10 ms `setInterval` probe in a bare idle `node` process for 17 s: p50 / p95 / max (macOS coalesces the kevent timeout libuv waits with; the p50 is what the row above subtracts) | 1.05 ms / 1.10 ms / 1.39 ms | report (calibration; applies while the floor p95 is < 5 ms) | applied |
-| Event-loop lag, max, raw (rows 40 / rows 12 / rows 40 reduced motion) | 25.18 ms / 19.46 ms / 35.17 ms | < 50 ms | pass |
-| Mocked run rate under the typist: steps per second · `<Static>` rows committed per second over the typing window (rows 40 / rows 12 / rows 40 reduced motion) | 4.4 · 9 / 4.4 · 9 / 4.3 · 8 | report (the load profile the gates apply to; a real run commits a few rows per second) |  |
-| Frames per second while typing, busiest one-second bucket, split into `static` · `key` · `dynamic` (rows 40 / rows 12 / rows 40 reduced motion): `static` frames carry new `<Static>` rows and are rendered immediately by Ink, unthrottled (`reconciler.js` `isStaticDirty` → `onImmediateRender`), so their rate is the item commit rate by design; `key` frames arrive within one throttle period (34 ms) of a keystroke — the leading-edge render, which follows the offered key rate by design; `dynamic` is the rest, the frames the `maxFps` throttle governs | 5 · 16 · 11 / 5 · 16 · 10 / 5 · 12 · 7 | `dynamic` ≤ maxFps + 1 = 31 (every geometry, reduced motion included); `static` and `key` reported | pass |
-| Stress row — the same run at `JEVCODE_MOCK_STEP_MS=0` (rows 40; 39.0 steps/s, 88 `<Static>` rows/s, 50–100× any real run): lag p95 net (raw) / max · frames `static` · `key` · `dynamic` | 7.03 ms (8.07 ms) / 21.50 ms · 55 · 18 · 19 | report (lag and frame rate not gated under the storm; hygiene below is) | over the realistic-rate gates (expected) |
+| Event-loop lag while typing 10 keys/s during a live mocked run at the realistic step rate (`JEVCODE_MOCK_STEP_MS=200`, about 5 steps/s), p95 net of the probe's idle floor (raw p95 in parentheses; rows 40 / rows 12 / rows 40 reduced motion; 120 columns) | 4.15 ms (5.22 ms) / 1.43 ms (2.50 ms) / 3.97 ms (5.04 ms) | < 5 ms net | pass |
+| Lag probe idle floor, measured in this run — the same 10 ms `setInterval` probe in a bare idle `node` process for 17 s: p50 / p95 / max (macOS coalesces the kevent timeout libuv waits with; the p50 is what the row above subtracts) | 1.07 ms / 1.14 ms / 1.90 ms | report (calibration; applies while the floor p95 is < 5 ms) | applied |
+| Event-loop lag, max, raw (rows 40 / rows 12 / rows 40 reduced motion) | 27.37 ms / 22.28 ms / 28.54 ms | < 50 ms | pass |
+| Mocked run rate under the typist: steps per second · `<Static>` rows committed per second over the typing window (rows 40 / rows 12 / rows 40 reduced motion) | 4.3 · 8 / 4.4 · 9 / 4.3 · 8 | report (the load profile the gates apply to; a real run commits a few rows per second) |  |
+| Frames per second while typing, busiest one-second bucket, split into `static` · `key` · `dynamic` (rows 40 / rows 12 / rows 40 reduced motion): `static` frames carry new `<Static>` rows and are rendered immediately by Ink, unthrottled (`reconciler.js` `isStaticDirty` → `onImmediateRender`), so their rate is the item commit rate by design; `key` frames arrive within one throttle period (34 ms) of a keystroke — the leading-edge render, which follows the offered key rate by design; `dynamic` is the rest, the frames the `maxFps` throttle governs | 5 · 15 · 12 / 5 · 13 · 12 / 5 · 12 · 6 | `dynamic` ≤ maxFps + 1 = 31 (every geometry, reduced motion included); `static` and `key` reported | pass |
+| Stress row — the same run at `JEVCODE_MOCK_STEP_MS=0` (rows 40; 36.9 steps/s, 83 `<Static>` rows/s, 50–100× any real run): lag p95 net (raw) / max · frames `static` · `key` · `dynamic` | 6.84 ms (7.91 ms) / 26.74 ms · 54 · 19 · 17 | report (lag and frame rate not gated under the storm; hygiene below is) | over the realistic-rate gates (expected) |
 | Splash bucket — `dynamic` frames within 700 ms of the first frame (no key is sent before 800 ms, so the splash settles by itself) · `static` · `key` frames of the same window · frames of any class carrying the wordmark · first frame is splash frame 0 (rows 40 / rows 12 / rows 40 reduced motion / stress; the splash ticks through Ink's `useAnimation` at 50 ms, ≤ 15 frames by construction; rows 12 is the flat tier and reduced motion mounts settled, so they draw no wordmark) | 11 · 1 · 0 · 12 · true / 1 · 1 · 0 · 0 · false / 1 · 1 · 0 · 2 · true / 11 · 1 · 0 · 12 · true | `dynamic` ≤ ⌈(maxFps + 1) × 0.7⌉ = 22 (realistic geometries; stress reported) | pass |
 | Run-start bucket — `dynamic` frames within 1 s of the `[run] start` frame (the rule sweep's ≤ 6 frames + the spinner + the live flush; rows 40 / rows 12 / rows 40 reduced motion / stress) | – / – / – / – | ≤ maxFps + 1 = 31 (realistic geometries; stress reported) | pass |
 | Terminal clears after the first frame during the live run (rows 40 / rows 12 / rows 40 reduced motion / stress) | 0 / 0 / 0 / 0 | 0 | pass |
@@ -593,38 +593,38 @@ as `partial`, never a release number, and never written into this section).
 | `CLEAR_RE` self-test (matches `ESC[2J`, `ESC[3J`, `ESC c`, `ESC[?1049h`; not `ESC[2K`) | true | true | pass |
 | `NO_3J` self-test — the `ESC[3J` detector matches the bare and parameterised forms and neither `ESC[2J` nor `ESC[2K`/`ESC[3K` (TUI-DESIGN-4 §11, §1.4: `ESC[3J` deletes the user's scrollback) | true | true | pass |
 | Named-anchor self-test — every measured window's anchor matches **both** glyph sets and none of its negatives, and a zero match is a hard failure, never a silent whole-capture window (TUI-DESIGN-4 §11, D-V; `run-started` · `run-end`) | ok | every anchor, both glyph sets | pass |
-| Composer keystroke → frame, p50 / p95 / max (`idle`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 5.8 ms / 7.0 ms / 9.5 ms | p95 < 16 ms, max < 50 ms | pass |
-| Composer keystroke → frame, p50 / p95 / max (`idle-loop`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 5.8 ms / 6.8 ms / 11.4 ms | p95 < 16 ms, max < 50 ms | pass |
-| Composer keystroke → frame, p50 / p95 / max (`live`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80, live run at `JEVCODE_MOCK_STEP_MS=200`) | 3.6 ms / 7.7 ms / 13.1 ms | p95 < 16 ms, max < 50 ms | pass |
-| Composer keystroke → frame, p50 / p95 / max (`live-stress`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80, live run at `JEVCODE_MOCK_STEP_MS=0`) | 2.1 ms / 9.8 ms / 14.7 ms | latency report only (the zero-latency storm); hygiene gated | pass |
-| Composer keystroke → frame, p50 / p95 / max (`palette`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 7.1 ms / 8.5 ms / 10.0 ms | p95 < 16 ms, max < 50 ms | pass |
-| Composer keystroke → frame, p50 / p95 / max (`palette-cycle`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 8.0 ms / 9.8 ms / 13.2 ms | p95 < 16 ms, max < 50 ms | pass |
-| Composer keystroke → frame, p50 / p95 / max (`palette-arg`: 70/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 7217.3 ms / 13584.5 ms / 13686.7 ms | latency report only (§18: a key inside Ink's 34 ms throttle window waits for the trailing edge); `dynamic` frame rate ≤ 31 gated | FAIL |
-| Composer keystroke → frame, p50 / p95 / max (`review`: 200/200 `e` toggles located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 7.4 ms / 9.8 ms / 11.1 ms | p95 < 16 ms, max < 50 ms | pass |
-| Composer keystroke → frame, p50 / p95 / max (`burst30`: 200/200 keys located, 30 ms apart → 33.3 keys/s achieved, 24×80) | 3.8 ms / 5.2 ms / 11.0 ms | latency report only (§18: a key inside Ink's 34 ms throttle window waits for the trailing edge); `dynamic` frame rate ≤ 31 gated | pass |
-| Frames per second while typing, busiest bucket, `static` · `key` · `dynamic` (`idle` · `idle-loop` · `live` · `live-stress` · `palette` · `palette-cycle` · `palette-arg` · `review` · `burst30`; "n/e" = not exercised: neither a live run nor more than 30 keys/s offered; "report" = the stress series) | 0 · 10 · 0 n/e / 0 · 12 · 2 n/e / 5 · 16 · 11 / 47 · 19 · 18 (report) / 0 · 10 · 0 n/e / 0 · 10 · 0 n/e / 0 · 5 · 0 n/e / 0 · 12 · 0 n/e / 0 · 34 · 0 | `dynamic` ≤ maxFps + 1 = 31 where exercised (`live`, `burst30`); `static` and `key` reported | pass |
+| Composer keystroke → frame, p50 / p95 / max (`idle`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 5.1 ms / 7.1 ms / 7.7 ms | p95 < 16 ms, max < 50 ms | pass |
+| Composer keystroke → frame, p50 / p95 / max (`idle-loop`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 5.7 ms / 7.0 ms / 11.3 ms | p95 < 16 ms, max < 50 ms | pass |
+| Composer keystroke → frame, p50 / p95 / max (`live`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80, live run at `JEVCODE_MOCK_STEP_MS=200`) | 3.3 ms / 6.2 ms / 14.4 ms | p95 < 16 ms, max < 50 ms | pass |
+| Composer keystroke → frame, p50 / p95 / max (`live-stress`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80, live run at `JEVCODE_MOCK_STEP_MS=0`) | 2.2 ms / 10.4 ms / 20.0 ms | latency report only (the zero-latency storm); hygiene gated | pass |
+| Composer keystroke → frame, p50 / p95 / max (`palette`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 7.5 ms / 8.9 ms / 10.2 ms | p95 < 16 ms, max < 50 ms | pass |
+| Composer keystroke → frame, p50 / p95 / max (`palette-cycle`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 8.4 ms / 10.8 ms / 14.9 ms | p95 < 16 ms, max < 50 ms | pass |
+| Composer keystroke → frame, p50 / p95 / max (`palette-arg`: 70/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 7222.5 ms / 13585.9 ms / 13685.9 ms | latency report only (§18: a key inside Ink's 34 ms throttle window waits for the trailing edge); `dynamic` frame rate ≤ 31 gated | FAIL |
+| Composer keystroke → frame, p50 / p95 / max (`review`: 200/200 `e` toggles located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 7.3 ms / 9.9 ms / 11.5 ms | p95 < 16 ms, max < 50 ms | pass |
+| Composer keystroke → frame, p50 / p95 / max (`burst30`: 200/200 keys located, 30 ms apart → 33.2 keys/s achieved, 24×80) | 4.0 ms / 5.4 ms / 7.3 ms | latency report only (§18: a key inside Ink's 34 ms throttle window waits for the trailing edge); `dynamic` frame rate ≤ 31 gated | pass |
+| Frames per second while typing, busiest bucket, `static` · `key` · `dynamic` (`idle` · `idle-loop` · `live` · `live-stress` · `palette` · `palette-cycle` · `palette-arg` · `review` · `burst30`; "n/e" = not exercised: neither a live run nor more than 30 keys/s offered; "report" = the stress series) | 0 · 10 · 0 n/e / 0 · 12 · 2 n/e / 5 · 15 · 11 / 43 · 18 · 17 (report) / 0 · 10 · 0 n/e / 0 · 10 · 0 n/e / 0 · 5 · 0 n/e / 0 · 11 · 1 n/e / 0 · 34 · 0 | `dynamic` ≤ maxFps + 1 = 31 where exercised (`live`, `burst30`); `static` and `key` reported | pass |
 | Composer series hygiene: clears after the first frame · tallest painted region · frames not ending with `ESC[?25h` (`idle` · `idle-loop` · `live` · `live-stress` · `palette` · `palette-cycle` · `palette-arg` · `review` · `burst30`; the review series has no cursor while the composer is collapsed, reported only) | 0 · 15 · 0 / 0 · 15 · 0 / 0 · 15 · 0 / 0 · 15 · 0 / 0 · 19 · 0 / 0 · 19 · 0 / 0 · 19 · 0 / 0 · 22 · 226 (report) / 0 · 15 · 0 | 0 · ≤ 22 · 0 where the composer is active | pass |
-| Intake reply latency, `mock0`: Enter → `[you]` bubble frame p50 / p95 / max · Enter → `[jevcode]` reply frame p50 / p95 / max (20 greetings and tool questions, 20 located, 24×80, mock decider at 0 ms; `thinking` seen for 20/20) | 13.2 ms / 15.7 ms / 22.0 ms · 13.2 ms / 15.7 ms / 22.0 ms | bubble p95 < 16 ms · reply p95 ≤ 40 ms (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's) | pass |
-| Intake reply latency, `mock150`: Enter → `[you]` bubble frame p50 / p95 / max · Enter → `[jevcode]` reply frame p50 / p95 / max (20 greetings and tool questions, 20 located, 24×80, mock decider at 150 ms (`JEVCODE_MOCK_JEV_MS=150`; the reply figure is gated net of the delay); `thinking` seen for 20/20) | 11.7 ms / 14.8 ms / 16.7 ms · 165.0 ms / 169.0 ms / 177.3 ms (net p95 19.0 ms) | bubble p95 < 16 ms · reply p95 ≤ 40 ms net of the delay (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's) | pass |
+| Intake reply latency, `mock0`: Enter → `[you]` bubble frame p50 / p95 / max · Enter → `[jevcode]` reply frame p50 / p95 / max (20 greetings and tool questions, 20 located, 24×80, mock decider at 0 ms; `thinking` seen for 20/20) | 11.3 ms / 15.2 ms / 15.6 ms · 11.3 ms / 15.2 ms / 15.6 ms | bubble p95 < 16 ms · reply p95 ≤ 40 ms (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's) | pass |
+| Intake reply latency, `mock150`: Enter → `[you]` bubble frame p50 / p95 / max · Enter → `[jevcode]` reply frame p50 / p95 / max (20 greetings and tool questions, 20 located, 24×80, mock decider at 150 ms (`JEVCODE_MOCK_JEV_MS=150`; the reply figure is gated net of the delay); `thinking` seen for 20/20) | 10.8 ms / 13.1 ms / 13.9 ms · 164.6 ms / 167.9 ms / 172.4 ms (net p95 17.9 ms) | bubble p95 < 16 ms · reply p95 ≤ 40 ms net of the delay (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's) | pass |
 | Intake hygiene: runs started by a greeting or a tool question · clears after the first frame · tallest painted region (`mock0` · `mock150`) | 0 · 0 · 15 / 0 · 0 · 15 | 0 · 0 · ≤ 22 | pass |
 | Idle animation — `dynamic` frames per second over the 30 s after the wordmark settles (busiest second · mean; 24×80 · 40×120; `chat --mock` left alone, no key: the sweep's 16 frames per 10 s pass are the only writer) | 4 · 1.6 / 4 · 1.6 | ≤ 4 in every second · mean ≤ 2/s (TUI-DESIGN-3 §3.9) | pass |
 | Idle animation bytes — busiest second · mean per second · widest frame (24×80 · 40×120) | 8948 · 3511 · 2237 B / 11652 · 4595 · 2913 B | ≤ 12288 B/s peak · ≤ 5120 B/s mean | pass |
-| Idle animation hygiene — clears after the first frame · tallest painted region · frames carrying the wordmark in the window · child CPU over the window (`ps -o time`, reported) (24×80 · 40×120) | 0 · 15 · 48 · 680 ms (22.7 ms/s) / 0 · 15 · 48 · 680 ms (22.7 ms/s) | 0 · ≤ rows − 2 · report · report | pass |
+| Idle animation hygiene — clears after the first frame · tallest painted region · frames carrying the wordmark in the window · child CPU over the window (`ps -o time`, reported) (24×80 · 40×120) | 0 · 15 · 48 · 690 ms (23.0 ms/s) / 0 · 15 · 48 · 750 ms (25.0 ms/s) | 0 · ≤ rows − 2 · report · report | pass |
 | Zero clears per state and geometry segment across 18 pty scenarios (review card, palette card, jev-only wizard, secret row and intake card at 24×80 — boxed — and 12×60 — flat; picker; `render:composer` / `render:pane` faults; Ctrl+L; three resize sequences): clear events total · in shrink segments · `ESC c` + alt-screen | 1 · 1 · 0 | 0 outside shrink segments, ≤ 1 per shrink; never `ESC c` / `ESC[?1049h` | FAIL |
 | `resize` 40×120 (typist): clear events per segment (allowed) · stale paints at or after the TUI's reaction to a shrink · frames in flight at the shrink (ms after the ioctl) · dynamic rows painted by the clear frame | 0 (0) · 0 (1) · 0 (0) · 0 (0) · 0 · 0 · – | ≤ allowed · 0 · report · ≤ 10 | pass |
-| `resize-live` 40×120 (typist): clear events per segment (allowed) · stale paints at or after the TUI's reaction to a shrink · frames in flight at the shrink (ms after the ioctl) · dynamic rows painted by the clear frame | 0 (0) · 1 (1) · 0 (0) · 0 (0) · 0 · 0 · 4 | ≤ allowed · 0 · report · ≤ 10 | pass |
+| `resize-live` 40×120 (typist): clear events per segment (allowed) · stale paints at or after the TUI's reaction to a shrink · frames in flight at the shrink (ms after the ioctl) · dynamic rows painted by the clear frame | 0 (0) · 1 (1) · 0 (0) · 0 (0) · 0 · 1 (+0.7 ms) · 4 | ≤ allowed · 0 · report · ≤ 10 | pass |
 | `resize-idle` 24×80 (typist): clear events per segment (allowed) · stale paints at or after the TUI's reaction to a shrink · frames in flight at the shrink (ms after the ioctl) · dynamic rows painted by the clear frame | 0 (0) · 0 (1) · 0 (0) · 0 (0) · 0 · 0 · – | ≤ allowed · 0 · report · ≤ 10 | pass |
 | Ctrl+L repaint (3-row draft, pane open, 24×80): visible frame content equals the frame before it, in one BSU/ESU pair | true (1 frame) | true | pass |
 | state `review` 12×60 | exit 124 (want 0) timeout; clears 0/0 |  | FAIL |
 | state `fault-pane` 24×80 | exit 124 (want 0) timeout; clears 0/0 |  | FAIL |
 | state `fault-live` 24×80 | exit 124 (want 0) timeout; clears 0/0 |  | FAIL |
-| Scroll key → frame, p50 / p95 / max (fullscreen, 200/200 PgUp/PgDn located, 40×120, 20000 items) | 23.5 ms / 46.2 ms / 55.2 ms | p95 < 16 ms, max < 50 ms | FAIL |
-| Bytes in the widest scroll frame · width-change rebuild · frames not exactly `rows` tall (fullscreen post-condition) | 3073 B · 80.9 ms · 373 | ≤ 6144 B · < 50 ms · 0 | FAIL |
+| Scroll key → frame, p50 / p95 / max (fullscreen, 200/200 PgUp/PgDn located, 40×120, 20000 items) | 21.9 ms / 44.2 ms / 55.3 ms | p95 < 16 ms, max < 50 ms | FAIL |
+| Bytes in the widest scroll frame · width-change rebuild · frames not exactly `rows` tall (fullscreen post-condition) | 3070 B · 80.5 ms · 368 | ≤ 6144 B · < 50 ms · 0 | FAIL |
 | Scroll hygiene: clears after the first frame · `ESC[3J` · cursor shown at exit | 3 · 0 · true | 0 · 0 · true | FAIL |
 
-Measured 2026-09-22 (13:37Z) on an Apple Silicon Mac (15 cores, 24 GB, Apple M5 Pro), Node 22.23.2,
-darwin 25.6.0; 1-minute load average 2.18 at the start and 1.97 at the end of the run (the suite waits while it is above 8;
-a release number needs ≤ 2 at both ends — NOT met here); no other pty driver process was alive at the start. Result of the run: **5 gates fail: harness overhead; composer palette-arg (keys not located); state review 12×60; state fault-pane 24×80; state fault-live 24×80**.
+Measured 2026-09-22 (14:55Z) on an Apple Silicon Mac (15 cores, 24 GB, Apple M5 Pro), Node 22.23.2,
+darwin 25.6.0; 1-minute load average 5.26 at the start and 2.16 at the end of the run (the suite waits while it is above 8;
+a release number needs ≤ 2 at both ends — NOT met here); no other pty driver process was alive at the start. Result of the run: **4 gates fail: composer palette-arg (keys not located); state review 12×60; state fault-pane 24×80; state fault-live 24×80**.
 Raw values in `perf/results/latest.json`.
 
 How it is measured:
@@ -632,8 +632,8 @@ How it is measured:
 1. First frame: `script -q /dev/null sh -c 'stty rows R cols C; exec node bin/jevcode.js <run "…"|chat> --config <unreadable>
    --perf-exit-after-first-frame'` with `JEVCODE_ASSERT_NO_NETWORK=1`, `JEVCODE_ASSERT_NO_CONFIG_BEFORE_FRAME=1` (inert until `bin/jevcode.js` implements the hook), a non-existent `JEVCODE_HOME` and `XDG_CONFIG_HOME`, `HOME` inside the workspace;
    the time is spawn → the status sentinel `step 0/` in the pty bytes; cold runs use a fresh `NODE_COMPILE_CACHE`. The
-   breakdown (three traced runs, `JEVCODE_TRACE`) splits the child's own clock: about 23 ms of Node boot, about 90 ms of
-   bundle evaluation plus the first synchronous render, about 7 ms until Ink has flushed the frame. Round 2 (TUI-DESIGN-2 §5): that frame is
+   breakdown (three traced runs, `JEVCODE_TRACE`) splits the child's own clock: about 24 ms of Node boot, about 93 ms of
+   bundle evaluation plus the first synchronous render, about 9 ms until Ink has flushed the frame. Round 2 (TUI-DESIGN-2 §5): that frame is
    the startup splash's frame 0 — the wordmark's `J` column and sweep head land in it with the console and `step 0/–`; 20/20, 20/20, 20/20, 20/20 first frames at the
    wordmark geometries carried it (the 8×40 series is the flat tier and draws none) — gated per series (TUI-DESIGN-2 §9 row 1): every series as designed.
 2. Event-loop lag and composer latency run in a real pty through `perf/drivers/pty_type.py`, a `pty.fork` typist that
@@ -644,16 +644,16 @@ How it is measured:
    distribution covers the whole session after a 500 ms warm-up — about 1.2 s of idle prologue (the typist lets the splash settle for 800 ms before its first key) and 1 s of abort/exit tail
    around the 15 s of typing; it is not windowed to the keystrokes (the probe emits percentiles only). The gated load
    profile is the `--mock` run paced by `JEVCODE_MOCK_STEP_MS=200` (`src/cli/mock-trajectory.ts`: every mocked generator turn
-   takes that long, the mock decider answers at once): 4.4 / 4.4 / 4.3 mocked steps/s and 9 / 9 / 8 committed
+   takes that long, the mock decider answers at once): 4.3 / 4.4 / 4.3 mocked steps/s and 8 / 9 / 8 committed
    `<Static>` rows/s at rows 40 / 12 / 40 reduced motion — still ten times faster than a real run, whose steps take 2–10 s.
    The probe has a floor: in an idle Node process on macOS the same 10 ms `setInterval` reads about 2 ms per tick with nothing
    blocking (the kernel coalesces the kevent timeout libuv waits with, `kern.timer.coalescing_enabled`; a loop kept spinning by a
    1 ms interval reads 0.3 ms). A run paced at 5 steps/s idles between steps, so its raw p95 carries the floor; the storm never idles.
-   Each run therefore measures the floor first — the identical probe in a bare idle `node` for 17 s: p50 1.05 ms, p95 1.10 ms, max 1.39 ms here —
+   Each run therefore measures the floor first — the identical probe in a bare idle `node` for 17 s: p50 1.07 ms, p95 1.14 ms, max 1.90 ms here —
    and the gate applies to the p95 net of that median; raw and net are both in the table. In this run the lag p95 read
-   3.80 ms / 1.39 ms / 3.46 ms net (4.84 ms / 2.44 ms / 4.51 ms raw; max 25.18 ms / 19.46 ms / 35.17 ms) — inside the gate.
-   The stress row repeats rows 40 at `JEVCODE_MOCK_STEP_MS=0`: 39.0 steps/s and 88 `<Static>` rows/s, 50–100× any real run, where the lag p95 read
-   7.03 ms net (8.07 ms raw; max 21.50 ms) — reported, not gated: the storm is the diagnosis of what a transcript commit costs, not a budget a real run meets.
+   4.15 ms / 1.43 ms / 3.97 ms net (5.22 ms / 2.50 ms / 5.04 ms raw; max 27.37 ms / 22.28 ms / 28.54 ms) — inside the gate.
+   The stress row repeats rows 40 at `JEVCODE_MOCK_STEP_MS=0`: 36.9 steps/s and 83 `<Static>` rows/s, 50–100× any real run, where the lag p95 read
+   6.84 ms net (7.91 ms raw; max 26.74 ms) — reported, not gated: the storm is the diagnosis of what a transcript commit costs, not a budget a real run meets.
 3. Frame rate: every frame of the typing window is classified (`src/perf/pty.ts` `classifyFrame`). `static` frames carry
    new `<Static>` rows — Ink 7.1.1 renders a commit that changed the `<Static>` subtree at once (`ink/build/reconciler.js`
    `resetAfterCommit`: `isStaticDirty` → `onImmediateRender`, which `ink.js` binds to the unthrottled `onRender`), so a
@@ -661,8 +661,8 @@ How it is measured:
    throttle period (`ceil(1000 / maxFps)` = 34 ms) of a keystroke: the leading edge of `throttle(onRender, …, { leading: true,
    trailing: true })`, which follows the offered key rate by design. `dynamic` is the rest — spinner, 1 Hz clock, live
    flush, status-line and pane changes — the frames the `maxFps` throttle governs, and the class the gate applies to (≤ 31).
-   At the realistic rate the busiest one-second bucket held 5 · 16 · 11 / 5 · 16 · 10 / 5 · 12 · 7 static · key · dynamic
-   frames at rows 40 / 12 / 40 reduced motion — inside the gate; under the stress row 55 · 18 · 19 (reported). Reduced motion is gated
+   At the realistic rate the busiest one-second bucket held 5 · 15 · 12 / 5 · 13 · 12 / 5 · 12 · 6 static · key · dynamic
+   frames at rows 40 / 12 / 40 reduced motion — inside the gate; under the stress row 54 · 19 · 17 (reported). Reduced motion is gated
    the same way: its "≤ 4/s" figure in §18 is the 250 ms live-flush cadence, asserted in unit tests, which a live run
    cannot separate from the state-change repaints of 5 steps/s. The same split is applied in the composer series (next note).
 4. Composer latency: 200 uppercase keys per series (the wave-4 brief's count; §18 names 500 printable bytes) at an exact
@@ -671,36 +671,36 @@ How it is measured:
    directly above the status line — ends with that key; matching the key anywhere in the frame paired 23 of 200 `live`
    keys of the 2026-09-21 08:54Z run with a frame that predated them (a wrapped draft row above the cursor row ended with
    the same letter). `live` is the A109 region (pane 12 + live rows + a composer at its 6-row cap over a 2,000-char draft)
-   during a live mocked run at `JEVCODE_MOCK_STEP_MS=200` (p95 7.7 ms, 5 · 16 · 11 static · key · dynamic frames/s); `live-stress` repeats it over the
-   zero-latency mock (p95 9.8 ms, 47 · 19 · 18 frames/s) and is reported. `review` measures the review's `e` toggle (the composer is
+   during a live mocked run at `JEVCODE_MOCK_STEP_MS=200` (p95 6.2 ms, 5 · 15 · 11 static · key · dynamic frames/s); `live-stress` repeats it over the
+   zero-latency mock (p95 10.4 ms, 43 · 18 · 17 frames/s) and is reported. `review` measures the review's `e` toggle (the composer is
    collapsed while a review is pending, so its frame is recognised by the painted-row change; the Jev panel is opened with `/panel full` first, since round 2 collapses it to a strip and the toggle zeroes the pane rows).
-   `burst30` offers 33.3 keys/s, above `maxFps` 30: Ink's throttle is `leading: true`, so a key landing after the previous 34 ms
-   window renders at once and one inside it waits for the trailing edge — its latency (p95 5.2 ms) is reported, not gated, and its
+   `burst30` offers 33.2 keys/s, above `maxFps` 30: Ink's throttle is `leading: true`, so a key landing after the previous 34 ms
+   window renders at once and one inside it waits for the trailing edge — its latency (p95 5.4 ms) is reported, not gated, and its
    34 `key` frames/s follow the offered key rate by design; the gate applies to its `dynamic` frames (0). At 10 keys/s without a
    live run the frame rate is reported as not exercised.
 5. Harness overhead: `StepRecord.timing.harnessMs` from `step:end` with the engine in-process (mock provider and decider
    at zero latency, no TUI). The fixture holds 50 tracked files modified after the commit (300 KiB each), so every `run`
    step copies 15 MiB of pre-images — the worst case inside the 200-file / 16 MiB cap — which is why `imagesMs` p95
-   (23.2 ms) sits above the 15 ms target — a report row, not a gate: the copy is awaited inside `runStep()` (D8), so it is already inside the gated `harnessMs` and the `run` steps carry the p95 of `harnessMs` (67.9 ms against
-   52.6 ms overall; every other step p95 33.7 ms). The margin under the gate is -17.9 ms and load-sensitive, which is why a release number requires a 1-minute load ≤ 2.
+   (32.4 ms) sits above the 15 ms target — a report row, not a gate: the copy is awaited inside `runStep()` (D8), so it is already inside the gated `harnessMs` and the `run` steps carry the p95 of `harnessMs` (43.9 ms against
+   42.6 ms overall; every other step p95 21.4 ms). The margin under the gate is 6.1 ms and load-sensitive, which is why a release number requires a 1-minute load ≤ 2.
 6. Zero clears: 18 scenarios; the resize sequences run through the typist (its `resize` record carries the capture byte
    offset, so every frame is held to the budget of the geometry it was painted in), the rest through `scripts/pty/drive.exp`.
    Clears are counted as events (Ink's `clearTerminal` is `ESC[2J ESC[3J ESC[H`, two regex matches for one clear) with
    the §18 regex self-tested first. A shrink segment is allowed one clear (research 20 §1: Ink cannot erase a frame taller
    than the new terminal line by line); clear events per segment in this run — `resize` 0/0/0/0, `resize-live` 0/1/0/0, `resize-idle` 0/0/0/0; frames painted taller than the new
    geometry at or after the TUI's reaction to a shrink (the stale-tree race DESIGN §12 describes): 0; frames already in flight when
-   SIGWINCH landed (written after the ioctl, before the TUI's first reaction, still laid out for the old geometry): 0 — reported, a
+   SIGWINCH landed (written after the ioctl, before the TUI's first reaction, still laid out for the old geometry): 1 — reported, a
    terminal receives them whatever the renderer does. The retry row and blocking panes are not driven:
    `JEVCODE_FAULT=jev:429` / `jev:401` / `persist:ENOSPC` are not implemented in this tree (only `render:<pane>` is).
 7. Intake reply latency (TUI-DESIGN-2 §3.12): 20 greetings and questions about the tool typed into `chat --mock` at 24×80 through the
    typist; every one passes the mock decider's intake (§3.13) and ends in a `[jevcode]` reply, none in a run. Enter → the frame carrying
-   the `[you]` bubble read p95 15.7 ms at 0 ms and 14.8 ms with the mock delayed 150 ms (gate < 16 ms, the composer gate); Enter → the
-   `[jevcode]` reply frame read p95 15.7 ms at 0 ms and 19.0 ms net of the delay (gate ≤ 40 ms). The live gate — p95 < 1.5 s over a real
+   the `[you]` bubble read p95 15.2 ms at 0 ms and 13.1 ms with the mock delayed 150 ms (gate < 16 ms, the composer gate); Enter → the
+   `[jevcode]` reply frame read p95 15.2 ms at 0 ms and 17.9 ms net of the delay (gate ≤ 40 ms). The live gate — p95 < 1.5 s over a real
    provider — is the S6 live scenario's (`docs/live/tui/round-2/`), not this probe's.
 8. Idle animation (TUI-DESIGN-3 §3.4, §3.9): `chat --mock` at 24×80 and 40×120 is left alone for 33 s; the window is
    [settle + 1 s, settle + 31 s), the settle being the caption frame `◆ <version>`. The wordmark's sweep (16 frames per 4 s pass, 6 s rest, period 10 s while
    attentive) is the only idle writer, so every frame of the window is counted: 4 peak · 1.6 mean frames/s and 8948 B peak · 3511 B mean per second; 4 peak · 1.6 mean frames/s and 11652 B peak · 4595 B mean per second — inside the §3.9 budget.
-   The child's CPU over the window (`ps -o time=`, centiseconds) read 680 ms (22.7 ms/s) / 680 ms (22.7 ms/s) — reported, not gated (the owner lowers `LOOP_INTERVAL_MS` above 30 ms/s).
+   The child's CPU over the window (`ps -o time=`, centiseconds) read 690 ms (23.0 ms/s) / 750 ms (25.0 ms/s) — reported, not gated (the owner lowers `LOOP_INTERVAL_MS` above 30 ms/s).
 9. `renderTime` (Ink's `onRender` metric) is not measured: the App registers no `onRender` callback.
 
 Declared deviations from docs/TUI-DESIGN.md §18 and docs/TUI-DESIGN-2.md §9 (also listed in `perf/results/latest.json`):

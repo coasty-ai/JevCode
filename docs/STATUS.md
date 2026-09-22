@@ -1427,3 +1427,46 @@ The captures are kept at `docs/research/tui/round-4/integration-drives/` (gzippe
    on the opt-in renderer's path only.
 6. **The machine was never quiet.** A peer session's live bench (`bench --suite swebench --live --concurrency 2`)
    ran throughout; every load average is recorded with its measurement.
+
+### Owner's pass (2026-09-22, the merged tree — what actually ships as 0.5.0)
+
+The integrator's tree above was `r4-impl` before `main` was merged into it. The owner's pass merged `main` at `9f58e0c` (contracts 1.5
+and 1.6, the coordination W2b wave, the `BlockingKind` members, the `decompose` / `coordinate` stage tables, the caching decider, the
+`heldUsd` callers, the round-5 design), resolved eleven conflicts, re-ran every gate on the result, drove it live once more and bumped
+the version. Commits on the branch: `3252a6c` (the six slots + integration, 280 files) → `a01b2d9` (merge) → `b7cd449` (merge fixes) →
+`9012240` (0.5.0, lockfile regenerated with `--package-lock-only`) → `cb2aaca` (unit fixes) → `ca8e71c` (pack gate) → this commit.
+
+**Conflicts and how they were resolved.** `docs/DECISIONS.md`: both sides' 2026-09-22 entries kept. `src/perf/main.ts`: both probe sets
+(`scroll-latency` in the release set; the harness's opt-in `lane-run` / `sandbox-spawn` in `RING0_PROBES`). Eight harness-owned
+`test/unit/loop/engine-*.test.ts` files: round 4's §3.6/§3.7 sentences stand and the harness's own "no `stop:` row" assertion sits
+beside them; `engine-steer.test.ts` takes the harness's `run:end` anchor for its last-event arm (its D-V deletes the stop transcript
+event outright, so round 4's stop-event anchor never fired). `test/unit/loop/decompose-m2.test.ts`: the M2 golden's `transcript` alone
+was re-captured on the merged tree at `9012240` with the gate shut (152 rows; `transcriptCommit` in the fixture); prompts, event types,
+decider calls, sandbox commands and invalidations are byte-identical to the a17c7f6 capture, and the line-by-line comparison is back
+with a duration-agnostic normaliser (deterministic over two runs). Generated files (`man/jevcode.1`, completions) regenerated.
+
+**Gates on the merged tree.**
+
+| gate | result |
+| --- | --- |
+| `npx tsc -p tsconfig.json --noEmit` · `node scripts/no-any.mjs` | clean · ok |
+| `npx vitest run --project unit --maxWorkers=3` (1-minute load 22, a peer's bounded test runs) | 507 files, **8,493 passed**, 8 skipped, 6 failed → all six resolved: three `height.test.tsx` first-frame snapshots differed only in the `◆ 0.5.0` caption (re-recorded, `git diff` shows version strings only); `plain.test.ts`'s formatter import-graph allowlist gained `src/orchestrate/{land,manifest,worktree}.ts`, reached through the harness's `src/loop/stages/risk.ts` → orchestrate barrel (documented; the harness imports the leaf module next and the rows go); two `app.test.tsx` cells were load flakes — `app.test.tsx` 75/75 and `motion.test.tsx` 11/11 alone at load 3 |
+| `node scripts/gen-docs.mjs --check` | clean |
+| `npm run build` | bundle **2,786,493 B** (was 2,480,880 B before the merge: the engine-side waves), first-frame smoke 57 ms, `--version` → `jevcode 0.5.0` |
+| `node scripts/check-pack.mjs` | all gates; unpacked **3,003,627 B** against the gate raised to 3,500,000 (`ca8e71c`, dated note; the old 3,000,000 line was missed by 0.12 %), tarball 1,015,735 B < 1,500,000, 10 files, 0 dependencies |
+| `env -u CI npx vitest run --project pty` | **88 / 88** |
+| `env -u CI sh test/pty/run-smoke.sh` | exit 0, every scenario PASS |
+| `node bin/jevcode.js perf` (load 5.26 at start, 2.16 at end — **not** a quiet release number by the suite's own ≤ 2 rule; the window was announced and the peer held its agents; the residual load was the desktop) | **43 of 50 gates**: first frame p95 133 ms (< 300), harness overhead p95 42.6 ms (< 50), render lag, static append, intake, idle frames all pass; **7 red**, the same rows the integration pass named: composer `palette-arg` 70/200 keys located; `states` review 12×60, fault-pane, fault-live timed out on their anchors (exit 124); `scroll-latency` (the opt-in fullscreen renderer) p95 44.2 ms vs 16, width rebuild 80.5 ms vs 50, and **368 frames not exactly 40 rows** — a real post-condition defect of the opt-in renderer, not of the default hybrid layout |
+| live drive (`docs/live/tui/round-4/run-live.sh live-round4-owner 24 80`, the merged build, TypeSafe `jev-1.13.0`, the `llm-jev` default, `--spend-cap 0.30`) | exit 0 · 0 timeouts · 0 clears · **0 key bytes**; first frame 114 ms, composer 202 ms, splash settled 554 ms, `hi` → reply 307 ms, task → `[run] started` 254 ms; run 41.0 s: pytest **7 / 0 at step 2**, `replan_stop` at step 5, **$0.0080** (generator $0.0014 · jev $0.0066), 1,787 Jev questions — artefacts `live-round4-owner.*` beside the integration pass's |
+
+No pre-existing gate regressed; the seven red rows are round-4 design targets that never had a green baseline. They stay red in
+this release and are named here rather than loosened.
+
+**Hunks for the harness session** (its files; reverted from this tree per the 2026-09-22 ownership rule and sent as patches):
+`docs/research/tui/round-4/harness-session-hunks.patch` — `src/errors.ts` `explainFsError` (exit 3 for a full disk *inside* a run
+directory) and `src/loop/stop.ts` `stopTranscriptLine → ''` (both behaviours already delivered from round-4-owned files, so the patch
+is a no-op for every call site); plus the two test-file edits above and the allowlist request.
+
+**Owed after this merge** (small, on `main`): the `/jev` `cache hits` row and the `jevcode report` column reading
+`StepRecord.jevCacheHits` (per-request views read `JevRequestRecord.cached`, never `usage.calls === 0`); the fullscreen frame-height
+post-condition (the 368 frames above) as a fix or a round-5 slot; the `lease-conflict` / `land-preflight` pane prose (round 5, D-AF).
