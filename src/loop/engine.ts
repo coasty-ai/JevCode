@@ -174,7 +174,7 @@ import { isTestCommand, runExecuteStage } from './stages/execute.js';
 // contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9): the bounded sieve fast path — a pure engine-side
 // predicate and budget here, the round itself behind the synth facade.
 import { declinedRecord, fastPathBudget, fastPathRunWallCapMs, fastPathStage1Free, fastPathStage1Workspace, firedRecord } from './stages/fastpath.js';
-import { FastPathRunner, fastPathFingerprint, fastPathSuspects } from '../synth/search/fastpath.js';
+import { FastPathRunner, fastPathFailingIds, fastPathFingerprint, fastPathSuspects } from '../synth/search/fastpath.js';
 import { detectLayout } from '../synth/search/index.js';
 import { isRepositoryWorkspace } from '../synth/oracle/index.js';
 import { synthesizerHandles } from '../synth/index.js';
@@ -489,6 +489,13 @@ interface StepDraft {
   proposer: StepProposer | null;
   /** contract 1.9 (Fastlane) §5.2: the fast path's row for this step; null when it never armed (I2: nothing is written then) */
   fastPath: StepFastPath | null;
+  /**
+   * contract 1.9 (Fastlane) §4.3 T3 / §6 row 14: the scope-usability verdict the TRIGGER saw, snapshotted at propose
+   * time. The step's own run overwrites `lastTestRunScopeUsable` at commit, so reading the field there would record
+   * run N's verdict beside a `fastPath.reason` that came from run N−1 — on exactly the steps where it matters, the
+   * ones whose action is a `run`.
+   */
+  scopeUsable: boolean | null;
   /** contract 1.9 (Fastlane) §4.4 bound 3: the round's wall, the facade's own clock diff, charged to the step */
   fastPathMs: number;
   /** contract 1.9 (Fastlane) §4.4: the Jev latency spent INSIDE the round (already inside `timing.jevMs`) */
@@ -2804,6 +2811,7 @@ class EngineImpl implements Engine {
       verify: { samples: 0, timeouts: 0, cancelled: 0, malformed: 0, reported: null },
       proposer: null,
       fastPath: null,
+      scopeUsable: null,
       fastPathMs: 0,
       fastPathJevMs: 0,
       generatorFailReason: null,
@@ -3110,7 +3118,7 @@ class EngineImpl implements Engine {
    * and it declines for free on every step whose stage-1 predicate does not hold. It never applies anything (I7): an
    * accepted proposal goes through the unchanged risk → confirm → coordinate → budget → execute → judge path.
    */
-  private async tryFastPath(draft: StepDraft, changedFiles: readonly string[]): Promise<Proposal | null> {
+  private async tryFastPath(draft: StepDraft): Promise<Proposal | null> {
     if (this.fastPathOption !== 'auto' || this.mode !== 'jev-on') return null;
     const runner = this.fastPathRunner ?? (this.fastPathRunner = new FastPathRunner());
     // §4.6: the engine's 4-entry window reaches the round's memory on EVERY step of an armed run, not only on rounds —
@@ -3119,6 +3127,8 @@ class EngineImpl implements Engine {
     const state = runner.state(this.runId);
     const run = this.lastTestRun;
     const tRunMs = run?.durationMs ?? 0;
+    // §6 row 14: snapshotted here, where the predicate reads it, because this step's own run replaces it at commit
+    draft.scopeUsable = this.lastTestRunScopeUsable;
     const decline = (reason: FastPathReason): null => {
       draft.fastPath = declinedRecord(reason, tRunMs, state.disarmed);
       return null;
@@ -3151,14 +3161,21 @@ class EngineImpl implements Engine {
       runWallLeftMs: Math.max(0, fastPathRunWallCapMs(this.opts.limits.maxWallMs) - state.wallSpentMs),
     });
     const suspects = fastPathSuspects(this.lastTestRunOutput, listing, this.opts.task);
-    const fingerprint = fastPathFingerprint(suspects[0] ?? '', [`${run?.command ?? ''}#${run?.failed ?? 0}/${run?.errors ?? 0}`]);
+    // T10: the `(file, failing-test-id-set)` key the design names, parsed out of the run's own output. The counts are
+    // the FALLBACK, used only when the output named no test: two different clusters with the same counts must not
+    // collide (the first would make the second read as `fingerprint_seen` and a winnable round would never be entered).
+    const failingIds = fastPathFailingIds(run?.command ?? '', this.lastTestRunOutput);
+    const fingerprint = fastPathFingerprint(suspects[0] ?? '', failingIds.length > 0 ? failingIds : [`${run?.command ?? ''}#${run?.failed ?? 0}/${run?.errors ?? 0}`]);
     const gate = fastPathStage1Workspace({
       handles: this.fastPathHandles,
       suspects,
       repository: isRepositoryWorkspace(this.wsInfo.testCommand, listing),
       layoutDetected: detectLayout(listing) !== 'other',
-      // §6 row 9: the round edits nothing in the workspace, but a patch that cannot land is not worth the wall
-      leaseConflict: changedFiles.length > 0 && suspects.length === 1 && changedFiles.includes(suspects[0] ?? ''),
+      // §6 row 9: the round edits nothing in the workspace, but a patch that cannot land is not worth the wall. This
+      // is the COORDINATION ledger's own verdict on the implicated file (the same `check()` the coordinate stage
+      // runs), not this run's dirty-file list: a peer's exclusive lease is the thing that stops a patch landing, and
+      // a file this run itself modified earlier is not a lease conflict and must not be counted as one in §8.
+      leaseConflict: suspects.length === 1 && this.coord !== null && this.coord.conflictOn([suspects[0] ?? ''], draft.step),
       wallLeftMs: this.wallRemainingMs(),
       budget,
       fingerprint,
@@ -4047,7 +4064,7 @@ class EngineImpl implements Engine {
           // contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9): ONE bounded sieve round on the one shape the
           // search provably wins, before the LLM is asked to guess. A branch route, not a race: when it declines (which
           // is every step where the predicate does not hold, at zero cost) the code default below runs unchanged.
-          const fast = await this.tryFastPath(draft, changedFiles);
+          const fast = await this.tryFastPath(draft);
           if (fast !== null) {
             draft.proposer = 'fastpath';
             p = { proposal: fast };
@@ -5438,7 +5455,8 @@ class EngineImpl implements Engine {
     // contract 1.9 (Fastlane) §5.2 (slot C): both absent unless the fast path armed this step, which is I2
     if (draft.fastPath !== null) {
       record.fastPath = draft.fastPath;
-      record.scopeUsable = this.lastTestRunScopeUsable;
+      // §6 row 14: the verdict the TRIGGER read, not the verdict this step's own run left behind
+      record.scopeUsable = draft.scopeUsable ?? this.lastTestRunScopeUsable;
     }
     // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts (llm-jev only; jev-only rows are unchanged)
     if (this.mode === 'llm-jev' && draft.proposer === 'synth') record.verify = this.verifySummary(draft, proposal);

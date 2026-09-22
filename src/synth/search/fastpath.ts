@@ -21,6 +21,8 @@ import { LedgerSieveSynthesizer, framesOfTraceback, mentionedInTask, observeWind
 import { dropMemory } from './memory.js';
 import { isTestPath } from './subgoal.js';
 import { searchDeps } from '../index.js';
+import { summarize } from '../verify/index.js';
+import { RUN_FAILURE_ID } from '../verify/text.js';
 import type { LocalizeResult } from '../types.js';
 import type { Goal, GoalSearchTrace, OracleModel, StepBudget } from './types.js';
 
@@ -166,6 +168,23 @@ export function fastPathSuspects(output: string | null, files: readonly string[]
 /** §4.3 T10: the `(file, failing-test-id-set)` fingerprint, stable under ordering, that makes a second empty round unreachable. */
 export function fastPathFingerprint(file: string, failing: readonly string[]): string {
   return `${file}\u0000${[...new Set(failing)].sort().join('\u0001')}`;
+}
+
+/**
+ * §4.3 T10: the failing test IDS of the loop's own last run, read out of its output by the same code the oracle uses
+ * (`verify/index.ts summarize`), so the fingerprint is the `(file, failing-test-id-set)` the design names.
+ *
+ * The counts are NOT a substitute. Two structurally different bugs in one file that both print `1 failed, 0 errors`
+ * share a counts key, so the second cluster reads as `fingerprint_seen` and a winnable round is never entered; and the
+ * same unchanged cluster gets a NEW key whenever a count moves, which defeats the "second empty round is unreachable"
+ * guarantee T10 exists for. The synthetic `<test run>` id is dropped: it is what an unparseable run yields, and it
+ * would collide every unparseable run with every other. Empty = the output named none; the caller then falls back to
+ * the weaker counts key and the record says so.
+ */
+export function fastPathFailingIds(command: string, output: string | null): string[] {
+  if (output === null || output.trim() === '') return [];
+  const summary = summarize(command, { stdout: output, exitCode: null }, 0);
+  return [...new Set(summary.failing.filter((id) => id !== RUN_FAILURE_ID))].sort();
 }
 
 // ---------------------------------------------------------------------------------------

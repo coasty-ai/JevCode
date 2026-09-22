@@ -26,7 +26,10 @@ import {
   firedRecord,
 } from '../../../src/loop/stages/fastpath.js';
 import type { FastPathStage1Input } from '../../../src/loop/stages/fastpath.js';
-import { FASTPATH_JEV_MAX, fastPathCeilingMs, fastPathFingerprint } from '../../../src/synth/search/fastpath.js';
+import { FASTPATH_JEV_MAX, fastPathCeilingMs, fastPathFailingIds, fastPathFingerprint } from '../../../src/synth/search/fastpath.js';
+import { knownLeaseConflict } from '../../../src/loop/coordination.js';
+import type { LeaseIntent } from '../../../src/coordination/types.js';
+import { DEV_B, TRUSTED, claim, entry, foldOf, makeHeartbeat, makeLease, makeSelf, runId, stamp } from '../coordination/helpers.js';
 import type { FastPathRoundResult } from '../../../src/synth/search/fastpath.js';
 
 const harnesses: Harness[] = [];
@@ -196,6 +199,49 @@ describe('fastPathBudget', () => {
 });
 
 // ---------------------------------------------------------------------------------------
+// §4.3 T10 / T12 — the facts the trigger reads
+// ---------------------------------------------------------------------------------------
+
+describe('the trigger reads the facts it names', () => {
+  it('T10: the fingerprint is the FAILING TEST IDS, so two clusters with equal counts never collide', () => {
+    const pytest = 'python3 -m pytest -q';
+    const SHORT = '=========================== short test summary info ============================';
+    const first = `F.\n${SHORT}\nFAILED tests/test_gcd.py::test_gcd - assert 1 == 2\n1 failed, 1 passed in 0.10s\n`;
+    const second = `F.\n${SHORT}\nFAILED tests/test_gcd.py::test_lcm - assert 3 == 4\n1 failed, 1 passed in 0.10s\n`;
+    expect(fastPathFailingIds(pytest, first)).toEqual(['tests/test_gcd.py::test_gcd']);
+    // the counts are identical (1 failed, 0 errors, same command) — the ids are not, and the fingerprints differ
+    const a = fastPathFingerprint('gcd.py', fastPathFailingIds(pytest, first));
+    const b = fastPathFingerprint('gcd.py', fastPathFailingIds(pytest, second));
+    expect(a).not.toBe(b);
+    // and the SAME cluster keeps its key when a count moves, which is what makes a second empty round unreachable
+    const more = `FF.\n${SHORT}\nFAILED tests/test_gcd.py::test_gcd - assert 1 == 2\n2 failed, 1 passed in 0.10s\n`;
+    expect(fastPathFingerprint('gcd.py', fastPathFailingIds(pytest, more))).toBe(a);
+    // an output that names nothing yields no ids, so the caller can fall back to the weaker counts key knowingly
+    expect(fastPathFailingIds(pytest, 'no test output here')).toEqual([]);
+    expect(fastPathFailingIds(pytest, null)).toEqual([]);
+  });
+
+  /** a live peer run on another device holding an exclusive lease on `paths` (test/unit/coordination/leases.test.ts) */
+  const peerHolding = (paths: string[]): ReturnType<typeof entry>[] => {
+    const rid = runId(9);
+    const hb = makeHeartbeat({ deviceId: DEV_B, runId: rid, sessionId: rid, label: 'studio', task60: 'fix gcd', stamp: stamp(9, DEV_B, rid), claim: claim({ deviceId: DEV_B, runId: rid, pid: 900 }) });
+    const lease = makeLease({ runId: rid, sessionId: rid, deviceId: DEV_B, label: 'studio', leaseId: `${rid}-9`, type: 'exclusive', paths, stamp: stamp(9, DEV_B, rid) });
+    return [entry(hb, TRUSTED), entry(lease, TRUSTED)];
+  };
+
+  it('T12: `lease_conflict` is a PEER lease on the implicated file, never this run\'s own dirty list', () => {
+    const self = makeSelf();
+    const mine = (path: string): LeaseIntent => ({ paths: [path], type: 'intent', reason60: 'fastpath', step: 5, stage: 'coordinate', branch: null, head: null });
+    // a peer holding gcd.py: the round's wall would be spent on a patch the coordinate stage will conflict on
+    expect(knownLeaseConflict(foldOf(peerHolding(['gcd.py'])), self, mine('gcd.py'))).toBe(true);
+    // the same fold says nothing about another file, and an empty ledger conflicts with nothing at all —
+    // a file THIS run merely modified earlier is not a lease conflict and must not be counted as one in §8
+    expect(knownLeaseConflict(foldOf(peerHolding(['other.py'])), self, mine('gcd.py'))).toBe(false);
+    expect(knownLeaseConflict(foldOf([]), self, mine('gcd.py'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
 // §5.2 — the record
 // ---------------------------------------------------------------------------------------
 
@@ -313,6 +359,19 @@ describe('I2: fastPath off', () => {
     expect(normalise(stripped)).toBe(normalise(off.store.steps));
     // and the armed run never proposed through the fast path on a workspace it does not cover
     expect(on.store.steps.some((s) => s.proposer === 'fastpath')).toBe(false);
+  });
+
+  it('§6 row 14: `scopeUsable` is the verdict the TRIGGER saw, not the one this step\'s own run left behind', async () => {
+    const on = await build({ mode: 'jev-on', turns: script, sandbox: createFakeSandbox(() => failingTests), engine: { fastPath: 'auto' } });
+    await on.engine.run();
+    // step 1 declines with `no_parsed_run` — there was no run to judge — and THEN executes a test run whose parse is
+    // usable. The row must say what the predicate read (false), not what the step went on to produce (true).
+    const first = on.store.steps[0];
+    expect(first?.fastPath?.reason).toBe('no_parsed_run');
+    expect(first?.proposal?.action.kind).toBe('run');
+    expect(first?.scopeUsable).toBe(false);
+    // and once a run HAS happened the verdict the trigger reads is the usable one
+    expect(on.store.steps[1]?.scopeUsable).toBe(true);
   });
 
   it("keeps JEV'S OWN STATE byte-identical: `durationMs` is the engine's private fact, never a state member", async () => {
