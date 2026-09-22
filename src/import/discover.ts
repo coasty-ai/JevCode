@@ -90,7 +90,7 @@ export interface DiscoverResult {
  * always fit) is the whole budget; past either, an item keeps its `SourceParse` summary, loses
  * only its doc, and the caller re-parses that one body.
  */
-export function docBudget(limits: ImportLimits): { maxEntries: number; maxBytes: number } {
+export function docBudget(limits: ImportLimits): Readonly<{ maxEntries: number; maxBytes: number }> {
   return { maxEntries: Math.floor(limits.planRows / 4), maxBytes: 2 * limits.sourceReadCapBytes };
 }
 
