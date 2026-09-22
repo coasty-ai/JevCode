@@ -129,8 +129,11 @@ describe('§3.2 firing', () => {
     g.legs[0]!.answer();
     await vi.advanceTimersByTimeAsync(0);
     const round = src.round()!;
-    expect(round.hedges).toBe(0);
-    expect(round.hedgeWins).toBe(0);
+    // review defect 10: "absent = hedging was off or none fired" is what the JSDoc promises, so the off path
+    // must not report a 0 a reader would take for "a hedge was possible and none won"
+    expect(round.hedges).toBeUndefined();
+    expect(round.hedgeWins).toBeUndefined();
+    expect(round.ttfbMs).toBeUndefined();
   });
 
   it('fires one twin when the origin produces no first byte, with the origin’s message and the rotated order', async () => {
@@ -171,13 +174,27 @@ describe('§3.2 firing', () => {
     g.legs[0]!.opts.onFirstByte?.(40);
     await vi.advanceTimersByTimeAsync(LLM_HEDGE_AFTER.maxMs * 3);
     expect(g.legs).toHaveLength(1);
-    expect(src.round()!.hedges).toBe(0);
-    // and the TTFB it reported is the run's p50, which is what the next threshold reads
-    expect(src.p50TtfbMs()).toBe(40);
-    expect(src.hedgeAfterMs()).toBe(LLM_HEDGE_AFTER.minMs);
+    expect(src.round()!.hedges).toBeUndefined();
+    // review defect 8: ONE fast first byte is not evidence. Until `LLM_DEADLINE_ADAPT.minSamples` of them the p50
+    // is null and the threshold stays at its CEILING — the same "never act on no evidence" rule the ceiling-before-
+    // any-TTFB case is written for; otherwise one 40 ms reply would pin the rest of the run at the 3 s floor.
+    expect(src.p50TtfbMs()).toBeNull();
+    expect(src.hedgeAfterMs()).toBe(LLM_HEDGE_AFTER.maxMs);
     g.legs[0]!.answer();
     await src.collectAll();
     expect(src.round()!.ttfbMs).toEqual([40]);
+
+    // a second observation meets the minimum, and the threshold is then 2 × the p50 of the two (`percentile` takes
+    // the lower of an even pair), which here is between the floor and the ceiling — the clamp is not doing the work
+    const g2 = parked();
+    const src2 = source({ generate: g2.generate, hedge: true });
+    src2.fire(fireInput(budget(), { n: 2, stagger: false }));
+    g2.legs[0]!.opts.onFirstByte?.(2_000);
+    g2.legs[1]!.opts.onFirstByte?.(5_000);
+    expect(src2.p50TtfbMs()).toBe(2_000);
+    expect(src2.hedgeAfterMs()).toBe(4_000);
+    for (const leg of g2.legs) leg.answer();
+    await src2.collectAll();
   });
 });
 
@@ -249,10 +266,39 @@ describe('§3.2 a round that is over for the loop', () => {
     expect(b.samplesLeft).toBe(12 - 3);
     expect(src.round()!.hedges).toBe(1);
     // and the refusal is not booked against the live round either: nothing was declined, the round simply ended
-    expect(src.round()!.hedgesRefused).toBe(0);
+    expect(src.round()!.hedgesRefused).toBeUndefined();
     for (const leg of g.legs) leg.answer();
     await vi.advanceTimersByTimeAsync(0);
     await src.collectAll();
+  });
+});
+
+describe('§3.2 the win the mechanism exists for', () => {
+  /**
+   * Review defect 7. The recorded shape §3.2 answers is a sample that is SILENT from the first byte to its
+   * deadline (82 of 244 ladder `propose_fix` calls). When that origin times out and the twin then delivers, the
+   * hedge has bought the round its only candidate — and `cancelHedgeLoser` used to book the win only while the
+   * loser was still cancellable, so exactly this outcome read `hedgeWins: 0` while `hedges: 1`.
+   */
+  it('counts the win when the origin TIMED OUT silent and the twin delivered (nothing left to cancel)', async () => {
+    vi.useFakeTimers();
+    const g = parked();
+    const src = source({ generate: g.generate, hedge: true });
+    // the deadline is past the hedge threshold, so the twin is already in flight when the origin's deadline passes
+    src.fire(fireInput(budget(), { deadlineMs: hedgeAfterMs(null) + 2_000 }));
+    await vi.advanceTimersByTimeAsync(hedgeAfterMs(null));
+    expect(g.legs.map((l) => l.sample)).toEqual([0, HEDGE_TWIN_OFFSET]);
+    // the origin never produces a byte and its deadline passes: a zero-token timeout, the §4.8 rev 4 shape
+    await vi.advanceTimersByTimeAsync(2_000);
+    g.legs[1]!.answer();
+    await vi.advanceTimersByTimeAsync(0);
+    const arrivals = await src.collectAll();
+    expect(arrivals.find((a) => a.sample === 0)!.status).toBe('timeout');
+    expect(arrivals.find((a) => a.sample === HEDGE_TWIN_OFFSET)!.status).toBe('valid');
+    const round = src.round()!;
+    expect(round.hedges).toBe(1);
+    expect(round.hedgeWins).toBe(1);
+    expect(round.distinct).toBe(1);
   });
 });
 
@@ -276,7 +322,7 @@ describe('§3.2 the refusal', () => {
     await vi.advanceTimersByTimeAsync(hedgeAfterMs(null));
     expect(g2.legs).toHaveLength(1);
     const round = src2.round()!;
-    expect(round.hedges).toBe(0);
+    expect(round.hedges).toBeUndefined();
     // the refusal is recorded, not swallowed: the §8 decline histogram reads it
     expect(round.hedgesRefused).toBe(1);
     g2.legs[0]!.answer();

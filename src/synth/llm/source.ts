@@ -938,7 +938,13 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   const maxTokensFor = (goalId: string, base = gen.maxTokens): number => (lengthGoals.has(goalId) ? base * 2 : base);
   const p50ValidMs = (): number | null => percentile(validMs, 50);
   const p90ServedMs = (): number | null => (servedMs.length >= LLM_DEADLINE_ADAPT.minSamples ? percentile(servedMs, 90) : null);
-  const p50TtfbMs = (): number | null => percentile(ttfbMsAll, 50);
+  /**
+   * contract 1.9 (Fastlane) §3.1 (review defect 8): null until `LLM_DEADLINE_ADAPT.minSamples` of them, exactly like
+   * the sibling `p90ServedMs`. One fast first byte is not evidence about the run: acting on it would pin the §3.2
+   * threshold at its 3 s floor for the rest of the run from a single observation — the same "never act on no
+   * evidence" hazard the ceiling-before-any-TTFB rule exists for, one sample later.
+   */
+  const p50TtfbMs = (): number | null => (ttfbMsAll.length >= LLM_DEADLINE_ADAPT.minSamples ? percentile(ttfbMsAll, 50) : null);
   const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
   /** The latency view of the adaptive deadline (§4.8 rev 3): the run's served p90, the probe's p90 before it exists. */
@@ -1078,11 +1084,12 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       rateLimitedRound: st.closed && st.fired.size > 0 && settledFired.length === st.fired.size && rateLimited === st.fired.size,
       deadlineMs: st.deadlineMs,
       closed: st.closed,
-      // contract 1.9 (Fastlane) §3.1 / §3.2 / §3.4
-      ttfbMs: [...st.ttfb],
-      hedges: st.hedges,
-      hedgeWins: st.hedgeWins,
-      hedgesRefused: st.hedgesRefused,
+      // contract 1.9 (Fastlane) §3.1 / §3.2 / §3.4. Spread conditionally, as the members' JSDoc says ("absent =
+      // hedging was off or none fired"): a 0 would read as "a hedge was possible and none won". It also keeps the
+      // OFF path allocation-free — `summary()` is on the hot path through `llmRoundsAvailable` / `llmHoldOf`.
+      ...(st.ttfb.length > 0 ? { ttfbMs: [...st.ttfb] } : {}),
+      ...(st.hedges > 0 ? { hedges: st.hedges, hedgeWins: st.hedgeWins } : {}),
+      ...(st.hedgesRefused > 0 ? { hedgesRefused: st.hedgesRefused } : {}),
       ...cacheCountsOf(st),
     };
   }
@@ -1201,6 +1208,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     // contract 1.9 (Fastlane) §3.2: this leg was served — mark it and cancel its hedge partner before anything is
     // parsed or compiled, so the loser's stream stops at the earliest instant the result is known.
     st.served.add(k);
+    noteHedgeWin(st, k);
     cancelHedgeLoser(st, k);
     const usd = costOf(result.usage, pricing);
     chargeSettled(st, k, usd);
@@ -1358,8 +1366,19 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     const run = st.runs.get(partner);
     if (run === undefined) return;
     run.abort('hedge');
-    if (winner !== origin) st.hedgeWins += 1;
     emit('llm:hedge', `goal ${st.input.goalId} round ${st.input.round}: sample ${winner} answered first; ${partner} cancelled (hedge), metered from what it streamed`);
+  }
+
+  /**
+   * §3.2 (review defect 7): a twin that was served while its origin was not is what the hedge bought — whether or
+   * not the origin is still there to cancel. The recorded shape the mechanism exists for is precisely the one where
+   * it is NOT: the origin went silent to its deadline and settled as a zero-token timeout, and the twin answered
+   * afterwards. Booking the win inside `cancelHedgeLoser` read 0 on exactly that outcome.
+   */
+  function noteHedgeWin(st: RoundState, winner: number): void {
+    const origin = originOf(st, winner);
+    if (origin === winner || st.served.has(origin)) return;
+    st.hedgeWins += 1;
   }
 
   function newRound(input: LlmFireInput, key: string, n: number): RoundState {
