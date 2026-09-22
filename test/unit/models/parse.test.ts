@@ -4,7 +4,8 @@
  * the Gemini API disabled).
  */
 import { describe, expect, it } from 'vitest';
-import { fireworksLabel, isChatModelId, listArray, nextPageQuery, parseModelList, pricingOf, roundRate, sortModels, supportsOf, titleCaseId } from '../../../src/models/parse.js';
+import { aliasesOf, fireworksLabel, isChatModelId, listArray, nextPageQuery, parseModelList, pricingOf, roundRate, sortModels, supportsOf, titleCaseId } from '../../../src/models/parse.js';
+import { isJsonObject } from '../../../src/core/json.js';
 import type { ModelInfo, ProviderId } from '../../../src/models/types.js';
 import { fixture, model } from './helpers.js';
 
@@ -184,8 +185,41 @@ describe('parse: xAI', () => {
   it('also parses the /v1/language-models shape, where modalities replace the context window', () => {
     const models = parse('xai', 'xai-language-models.json');
     expect(models.map((m) => m.id).sort()).toEqual(['grok-4.3', 'grok-4.7']);
-    expect(byId(models, 'grok-4.7').supports).toEqual({ vision: true });
+    expect(byId(models, 'grok-4.7').supports).toEqual({ reasoning: true, vision: true });
     expect(byId(models, 'grok-4.7').contextLength).toBeUndefined();
+  });
+
+  it('derives vision and reasoning on /v1/models, which states no modalities at all', () => {
+    // the endpoint providers.ts actually calls: no `input_modalities` on any row (13/13 live), so
+    // an image-token price stands in for vision and a reasoning_effort list for reasoning
+    const models = parse('xai', 'xai-models.json');
+    const rows = listArray('xai', fixture('xai-models.json'));
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) expect(isJsonObject(row) ? row['input_modalities'] : 'not-an-object').toBeUndefined();
+
+    expect(byId(models, 'grok-4.7').supports).toEqual({ reasoning: true, vision: true });
+    // grok-build-0.1 is priced for images but publishes no reasoning_effort list
+    expect(byId(models, 'grok-build-0.1').supports).toEqual({ vision: true });
+  });
+
+  it('leaves a capability absent rather than false when the row says nothing, so enrich can fill it', () => {
+    const bare = parseModelList('xai', { data: [{ id: 'grok-4.9-new', context_length: 500_000, prompt_text_token_price: 20_000, completion_text_token_price: 60_000 }] }, { updatedAt: AT });
+    expect(byId(bare, 'grok-4.9-new').supports).toEqual({});
+    expect(byId(bare, 'grok-4.9-new').pricing).toEqual({ inputPerM: 2, outputPerM: 6 });
+  });
+
+  it('keeps the aliases xAI publishes, and drops the empty array it sends for a model with none', () => {
+    const models = parse('xai', 'xai-models.json');
+    expect(byId(models, 'grok-build-0.1').aliases).toEqual(['grok-code-fast-1', 'grok-code-fast', 'grok-code-fast-1-0825']);
+    expect(byId(models, 'grok-4.3').aliases).toEqual(['grok-4.3-latest']);
+    expect('aliases' in byId(models, 'grok-4.7')).toBe(false);
+  });
+
+  it('normalises an alias list: junk, blanks, duplicates and the id itself are dropped', () => {
+    expect(aliasesOf('m', ['a', ' a ', '', 7, null, 'm', 'b'])).toEqual(['a', 'b']);
+    expect(aliasesOf('m', ['m'])).toBeUndefined();
+    expect(aliasesOf('m', [])).toBeUndefined();
+    expect(aliasesOf('m', null)).toBeUndefined();
   });
 });
 

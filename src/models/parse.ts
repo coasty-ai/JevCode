@@ -12,11 +12,17 @@
  * | openai     | no      | no      | no      | no    | no         | no        | no     | yes         |
  * | openrouter | yes     | yes     | yes     | yes   | yes        | yes       | yes    | yes         |
  * | gemini     | yes     | yes     | no      | no    | no         | yes       | no     | no          |
- * | xai        | yes     | no      | yes     | no    | no         | no        | partly | no          |
+ * | xai        | yes     | no      | yes     | no    | no         | derived   | derived| no          |
  * | fireworks  | yes     | no      | no      | yes   | serving    | no        | yes    | no          |
  * | meta       | no      | no      | no      | no    | no         | no        | no     | no          |
  *
  * Everything in the "no" cells comes from the bundled snapshot (static.ts) via `enrich`.
+ *
+ * xai's two `derived` cells are read off the endpoint the code actually calls. `/v1/models` carries
+ * no `input_modalities` on any row (13/13 live), so vision comes from a published
+ * `prompt_image_token_price` and reasoning from the presence of `capabilities.reasoning_effort`.
+ * `/v1/language-models` does ship modalities; `parseXai` parses either and prefers a stated
+ * modality list when it finds one. xai also ships `aliases` per row, which `parseXai` keeps.
  */
 import { getArr, getNum, getObj, getStr } from '../provider/sse.js';
 import { isJsonObject } from '../core/json.js';
@@ -48,15 +54,34 @@ interface ModelDraft {
   displayName: string;
   updatedAt: string;
   supports: ModelSupports;
+  aliases?: readonly string[] | undefined;
   contextLength?: number | undefined;
   maxOutput?: number | undefined;
   pricing?: ModelPricing | undefined;
   deprecated?: boolean | undefined;
 }
 
+/**
+ * Alias list → the `ModelInfo.aliases` contract: trimmed, non-empty, de-duplicated, never the id
+ * itself, and `undefined` rather than `[]` when nothing is left (xAI sends `aliases: []` for a
+ * model with none, and an empty array would block `enrich` from filling one in).
+ */
+export function aliasesOf(id: string, raw: readonly Json[] | null | undefined): readonly string[] | undefined {
+  if (raw === null || raw === undefined) return undefined;
+  const out: string[] = [];
+  for (const v of raw) {
+    if (typeof v !== 'string') continue;
+    const alias = v.trim();
+    if (alias === '' || alias === id || out.includes(alias)) continue;
+    out.push(alias);
+  }
+  return out.length === 0 ? undefined : out;
+}
+
 /** Assemble a `ModelInfo`, omitting (never nulling) every unknown optional member. */
 export function buildModel(d: ModelDraft): ModelInfo {
   const info: ModelInfo = { id: d.id, provider: d.provider, displayName: d.displayName, supports: d.supports, updatedAt: d.updatedAt };
+  if (d.aliases !== undefined && d.aliases.length > 0) info.aliases = d.aliases;
   const ctx = count(d.contextLength);
   if (ctx !== undefined) info.contextLength = ctx;
   const out = count(d.maxOutput);
@@ -367,6 +392,13 @@ export function parseFireworks(body: ListBody, opts: ParseOptions): ModelInfo[] 
  *
  * `long_context_threshold` (200k) doubles the rates above it; the doubled tier is not modelled here —
  * `pricing` is the below-threshold rate, which is what a cost estimate for a coding turn should use.
+ *
+ * Capabilities come from whichever signals the endpoint in hand carries. `/v1/models` (the one
+ * providers.ts selects, because only it has `context_length`) states no modalities at all, so:
+ *  - vision ← `input_modalities` when stated, else a published `prompt_image_token_price` — xAI
+ *    quotes an image-token rate exactly on the rows that accept images;
+ *  - reasoning ← a `capabilities.reasoning_effort` list (grok-4.7: low/medium/high/xhigh).
+ * Both stay absent when the row says nothing, so `enrich` can still fill them from the snapshot.
  */
 export function parseXai(body: ListBody, opts: ParseOptions): ModelInfo[] {
   const out: ModelInfo[] = [];
@@ -374,15 +406,20 @@ export function parseXai(body: ListBody, opts: ParseOptions): ModelInfo[] {
     const id = getStr(m, 'id');
     if (!nonEmpty(id) || id === null) continue;
     if (opts.includeNonChat !== true && !isChatModelId('xai', id)) continue;
+    const imagePrice = getNum(m, 'prompt_image_token_price');
     out.push(
       buildModel({
         id,
         provider: 'xai',
         displayName: id,
         updatedAt: opts.updatedAt,
+        aliases: aliasesOf(id, getArr(m, 'aliases')),
         contextLength: getNum(m, 'context_length') ?? undefined,
         pricing: pricingOf(xaiPrice(m, 'prompt_text_token_price'), xaiPrice(m, 'completion_text_token_price'), xaiPrice(m, 'cached_prompt_text_token_price')),
-        supports: supportsOf({ vision: hasModality(m, 'input_modalities', 'image') }),
+        supports: supportsOf({
+          vision: hasModality(m, 'input_modalities', 'image') ?? (imagePrice === null ? undefined : true),
+          reasoning: getArr(getObj(m, 'capabilities'), 'reasoning_effort') === null ? undefined : true,
+        }),
       }),
     );
   }

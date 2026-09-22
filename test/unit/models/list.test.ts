@@ -8,6 +8,7 @@ import { CACHE_TTL_MS } from '../../../src/models/cache.js';
 import { SNAPSHOT_AT } from '../../../src/models/static.js';
 import { ProviderHttpError } from '../../../src/errors.js';
 import { T0, entry, fixture, memoryCache, model, routedFetch, scriptedFetch, testDeps } from './helpers.js';
+import type { Scripted } from './helpers.js';
 
 const OK = { 'content-type': 'application/json' };
 
@@ -118,6 +119,26 @@ describe('listModels: cache', () => {
     expect(f.calls[1]?.headers['if-none-match']).toBeUndefined();
   });
 
+  it('an entry that lists no models reads as a miss, not as an empty catalogue', async () => {
+    // parseCacheFile accepts `models: []`, and the 304 branch would otherwise rewrite it forward
+    // with a fresh timestamp forever — so the module's "never empty" promise has to outrank it
+    const f = scriptedFetch([{ status: 200, body: fixture('openai-models.json') }]);
+    const empty = memoryCache([entry('openai', [], { etag: 'W/"empty"' })]);
+    const res = await listModels('openai', 'k', testDeps({ fetch: f.fetch, cache: empty.cache }));
+    expect(f.calls).toHaveLength(1);
+    expect(f.calls[0]?.headers['if-none-match']).toBeUndefined();
+    expect(res.source).toBe('network');
+    expect(res.models.length).toBeGreaterThan(0);
+  });
+
+  it('falls back to the snapshot rather than an empty cache entry when the network fails', async () => {
+    const f = scriptedFetch([{ status: 0, networkError: 'ENOTFOUND' }]);
+    const empty = memoryCache([entry('openai', [])]);
+    const res = await listModels('openai', 'k', testDeps({ fetch: f.fetch, cache: empty.cache }));
+    expect(res.source).toBe('static');
+    expect(res.models.length).toBeGreaterThan(0);
+  });
+
   it('honours a custom TTL', async () => {
     const f = scriptedFetch([{ status: 200, body: fixture('openai-models.json') }]);
     const res = await listModels('openai', 'k', testDeps({ fetch: f.fetch, cache: memoryCache([cached]).cache, now: () => T0 + 60_000 }), { ttlMs: 1000 });
@@ -206,6 +227,26 @@ describe('listModels: fallbacks', () => {
     expect(bare.source).toBe('static');
   });
 
+  it('stops paging when a provider keeps echoing the same cursor', async () => {
+    // has_more: true with an unchanged last_id would otherwise cost the full MAX_PAGES round trips
+    const stuck = { object: 'list', data: [{ id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5' }], has_more: true, last_id: 'claude-sonnet-5' };
+    const f = scriptedFetch(Array.from({ length: 10 }, () => ({ status: 200, body: stuck })));
+    const res = await listModels('anthropic', 'k', testDeps({ fetch: f.fetch }));
+    expect(f.calls).toHaveLength(2);
+    expect(res.models.map((m) => m.id)).toEqual(['claude-sonnet-5']);
+  });
+
+  it('still follows a cursor that actually moves', async () => {
+    const page = (id: string, next: string | null): Scripted => ({
+      status: 200,
+      body: { object: 'list', data: [{ id, display_name: id }], ...(next === null ? { has_more: false } : { has_more: true, last_id: next }) },
+    });
+    const f = scriptedFetch([page('claude-sonnet-5', 'claude-sonnet-5'), page('claude-opus-5', 'claude-opus-5'), page('claude-haiku-4-5', null)]);
+    const res = await listModels('anthropic', 'k', testDeps({ fetch: f.fetch }));
+    expect(f.calls).toHaveLength(3);
+    expect(res.models.map((m) => m.id)).toEqual(['claude-haiku-4-5', 'claude-opus-5', 'claude-sonnet-5']);
+  });
+
   it('rethrows the caller abort reason instead of swallowing it', async () => {
     const controller = new AbortController();
     const reason = new Error('picker closed');
@@ -215,6 +256,31 @@ describe('listModels: fallbacks', () => {
       throw new DOMException('This operation was aborted', 'AbortError');
     };
     await expect(listModels('openai', 'k', testDeps({ fetch: fetchImpl }), { signal: controller.signal })).rejects.toBe(reason);
+  });
+
+  it('stops reading the body when the caller aborts after the headers arrive', async () => {
+    // the picker's Esc: headers are in, the 8 MB body is still streaming. timedFetch's link to the
+    // caller ends with the fetch promise, so the body read has to carry the signal itself.
+    const controller = new AbortController();
+    const reason = new Error('picker closed');
+    let cancelled = false;
+    let pushed = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        pushed++;
+        if (pushed === 2) controller.abort(reason);
+        c.enqueue(new TextEncoder().encode('{"data":[],'.padEnd(4096, ' ')));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetchImpl = (async () => new Response(body, { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof fetch;
+
+    await expect(listModels('openai', 'k', testDeps({ fetch: fetchImpl }), { signal: controller.signal })).rejects.toBe(reason);
+    expect(cancelled).toBe(true);
+    // a handful of chunks, not the 8 MB cap
+    expect(pushed).toBeLessThan(10);
   });
 });
 

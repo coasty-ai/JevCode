@@ -203,6 +203,7 @@ export function resolveStatic(provider: ProviderId, id: string): StaticModel | n
 
 function toModelInfo(provider: ProviderId, row: StaticModel): ModelInfo {
   const info: ModelInfo = { id: row.id, provider, displayName: row.displayName, supports: { ...row.supports }, updatedAt: SNAPSHOT_AT };
+  if (row.aliases !== undefined && row.aliases.length > 0) info.aliases = [...row.aliases];
   if (row.contextLength !== undefined) info.contextLength = row.contextLength;
   if (row.maxOutput !== undefined) info.maxOutput = row.maxOutput;
   if (row.pricing !== undefined) info.pricing = { ...row.pricing };
@@ -240,9 +241,20 @@ export function fireworksBucketPricing(id: string): ModelPricing | null {
 /**
  * Overlay the snapshot (and an optional external pricing source) onto a live list: the wire always
  * wins for a field it carried, and the snapshot fills the gaps — context window, output cap,
- * pricing, unstated capability flags, a real display name where the provider only gave an id, and
- * `deprecated` (OR'd, so a snapshot marking never un-deprecates a live shutdown date).
+ * pricing, unstated capability flags, a real display name where the provider only gave an id,
+ * aliases (a union: xAI states its own, everyone else states none) and `deprecated` (OR'd, so a
+ * snapshot marking never un-deprecates a live shutdown date).
  */
+/** Wire aliases first, then any the snapshot adds; de-duplicated, never the id itself, `[]` → absent. */
+function mergeAliases(id: string, live: readonly string[] | undefined, snapshot: readonly string[] | undefined): readonly string[] | undefined {
+  const out: string[] = [];
+  for (const alias of [...(live ?? []), ...(snapshot ?? [])]) {
+    if (alias === '' || alias === id || out.includes(alias)) continue;
+    out.push(alias);
+  }
+  return out.length === 0 ? undefined : out;
+}
+
 export function enrich(provider: ProviderId, models: readonly ModelInfo[], lookup?: (provider: ProviderId, id: string) => ModelPricing | null): ModelInfo[] {
   return models.map((live) => {
     const row = resolveStatic(provider, live.id);
@@ -256,6 +268,8 @@ export function enrich(provider: ProviderId, models: readonly ModelInfo[], looku
       if (out.supports.structuredOutput === undefined && row.supports.structuredOutput !== undefined) out.supports.structuredOutput = row.supports.structuredOutput;
       if (out.supports.reasoning === undefined && row.supports.reasoning !== undefined) out.supports.reasoning = row.supports.reasoning;
       if (out.supports.vision === undefined && row.supports.vision !== undefined) out.supports.vision = row.supports.vision;
+      const aliases = mergeAliases(live.id, live.aliases, row.aliases);
+      if (aliases !== undefined) out.aliases = aliases;
       if (row.deprecated === true) out.deprecated = true;
     }
     if (out.pricing === undefined && lookup !== undefined) {

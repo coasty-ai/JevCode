@@ -10,6 +10,7 @@
  *    §9.5), so a model chosen in the picker can be handed straight to a generator config.
  */
 import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR } from '../config/defaults.js';
+import { costFromPricing } from '../provider/sse.js';
 import type { GeneratorConfig } from '../core/types.js';
 import { SNAPSHOT, resolveStatic } from './static.js';
 import { PROVIDER_IDS } from './providers.js';
@@ -47,13 +48,15 @@ export function generatorPricingOf(pricing: ModelPricing): GeneratorConfig['pric
   };
 }
 
-/** USD for a token count at these rates (uncached input, cache reads, output). */
+/**
+ * USD for a token count at these rates (uncached input, cache reads, output). Delegates to the
+ * engine's own `costFromPricing` over `generatorPricingOf(pricing)` rather than repeating the
+ * formula: a picker's estimate and the run's meter must not be able to drift apart. A catalogue
+ * estimate never bills a cache write — that rate is derived, not published (see
+ * `generatorPricingOf`), so charging for it would invent a cost.
+ */
 export function estimateCostUsd(pricing: ModelPricing, tokens: { input?: number; cacheRead?: number; output?: number }): number {
-  const input = tokens.input ?? 0;
-  const cacheRead = tokens.cacheRead ?? 0;
-  const output = tokens.output ?? 0;
-  const cacheRate = pricing.cacheReadPerM ?? pricing.inputPerM * CACHE_READ_FACTOR;
-  return (input * pricing.inputPerM + cacheRead * cacheRate + output * pricing.outputPerM) / 1e6;
+  return costFromPricing(generatorPricingOf(pricing), { input: tokens.input ?? 0, cacheRead: tokens.cacheRead ?? 0, cacheWrite: 0, output: tokens.output ?? 0 });
 }
 
 /**

@@ -1,6 +1,10 @@
 /**
  * Disk cache for provider catalogues: `~/.jevcode/models/<provider>.json`, one file per provider,
- * fresh for 24 h, with the response's ETag kept so a refresh can be answered by a 304.
+ * fresh for 24 h, with the response's ETag kept so a refresh can be answered by a 304 *when the
+ * provider offers one*. None of the seven list endpoints sent an `etag` header when probed on
+ * 2026-09-21 (nor OpenRouter's `/key` check), so a refresh today is in practice a full
+ * re-download; the revalidation path is here for the providers that add one. Size a refresh
+ * accordingly rather than assuming 304s.
  *
  * The cache exists so the first frame never waits on the network: a picker opens from this file (or
  * from the bundled snapshot) and refreshes behind the frame. Every read is tolerant — a missing,
@@ -60,6 +64,19 @@ function boolOf(o: JsonObject, key: string): boolean | undefined {
   return typeof v === 'boolean' ? v : undefined;
 }
 
+/** Alias list from a cache file: strings only, trimmed, de-duplicated, never the id, `[]` → absent. */
+function parseAliases(id: string, v: Json | undefined): readonly string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: string[] = [];
+  for (const item of v) {
+    if (typeof item !== 'string') continue;
+    const alias = item.trim();
+    if (alias === '' || alias === id || out.includes(alias)) continue;
+    out.push(alias);
+  }
+  return out.length === 0 ? undefined : out;
+}
+
 function parsePricing(v: Json | undefined): ModelPricing | undefined {
   if (!isJsonObject(v)) return undefined;
   const input = rate(v, 'inputPerM');
@@ -98,6 +115,8 @@ export function parseCachedModel(v: Json): ModelInfo | null {
     supports: parseSupports(v['supports']),
     updatedAt: str(v, 'updatedAt') ?? '',
   };
+  const aliases = parseAliases(id, v['aliases']);
+  if (aliases !== undefined) info.aliases = aliases;
   const ctx = posInt(v, 'contextLength');
   if (ctx !== undefined) info.contextLength = ctx;
   const out = posInt(v, 'maxOutput');
@@ -132,11 +151,17 @@ export function serialiseCacheEntry(entry: CacheEntry): string {
   return `${JSON.stringify({ version: CACHE_VERSION, provider: entry.provider, fetchedAt: entry.fetchedAt, etag: entry.etag, models: entry.models }, null, 2)}\n`;
 }
 
-/** Inside the TTL window. A file with an unparseable `fetchedAt` is never fresh. */
+/**
+ * Inside the TTL window. A file with an unparseable `fetchedAt` is never fresh, and neither is one
+ * stamped in the future: a clock that was briefly set forward (or a VM with a bad RTC) would
+ * otherwise write an entry that pins the catalogue until the wall clock catches up, with only
+ * `force` to escape it. A negative age is treated as "not fresh", i.e. revalidate now.
+ */
 export function isFresh(entry: CacheEntry, nowMs: number, ttlMs: number = CACHE_TTL_MS): boolean {
   const at = Date.parse(entry.fetchedAt);
   if (!Number.isFinite(at)) return false;
-  return nowMs - at < ttlMs;
+  const age = nowMs - at;
+  return age >= 0 && age < ttlMs;
 }
 
 /** How old a cached entry is, in ms; null when its timestamp is unusable. */

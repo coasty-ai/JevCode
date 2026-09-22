@@ -1,7 +1,9 @@
 /** Ranking: the bands, the tie-breaks and the determinism a picker depends on. */
 import { describe, expect, it } from 'vitest';
-import { compareModels, filterModels, findModel, isSubsequence, matchModel, nearMisses, normalise, rankModels, searchModels } from '../../../src/models/search.js';
+import { compareModels, filterModels, findModel, isRoutingVariant, isSubsequence, matchModel, nearMisses, normalise, rankModels, searchModels, variantRank } from '../../../src/models/search.js';
 import { instantCatalogue } from '../../../src/models/list.js';
+import { enrich } from '../../../src/models/static.js';
+import { parseModelList } from '../../../src/models/parse.js';
 import type { ModelInfo } from '../../../src/models/types.js';
 import { fixture, model, routedFetch, testDeps } from './helpers.js';
 
@@ -93,9 +95,10 @@ describe('rankModels', () => {
     expect(ids(rankModels('gpt', POOL, { includeDeprecated: false }))).not.toContain('gpt-3.5-turbo');
   });
 
-  it('honours limit', () => {
+  it('honours limit, clamping a negative one to empty like recommend does', () => {
     expect(rankModels('', POOL, { limit: 2 })).toHaveLength(2);
     expect(rankModels('', POOL, { limit: 0 })).toHaveLength(0);
+    expect(rankModels('', POOL, { limit: -1 })).toHaveLength(0);
   });
 
   it('is a stable total order regardless of input order', () => {
@@ -112,6 +115,104 @@ describe('rankModels', () => {
   it('ranks tools-capable models before unknown-capability ones', () => {
     const pool = [model({ id: 'aa' }), model({ id: 'ab', supports: { tools: true } })];
     expect(ids(rankModels('', pool))).toEqual(['ab', 'aa']);
+  });
+});
+
+describe('routing variants', () => {
+  const live = enrich('openrouter', parseModelList('openrouter', fixture('openrouter-models.json'), { updatedAt: '2026-09-21T12:00:00.000Z' }));
+
+  it('recognises a :suffix route', () => {
+    expect(isRoutingVariant('z-ai/glm-5.3-flash:free')).toBe(true);
+    expect(isRoutingVariant('z-ai/glm-5.3-flash')).toBe(false);
+    expect(variantRank(model({ id: 'a:batch' }))).toBe(1);
+    expect(variantRank(model({ id: 'a' }))).toBe(0);
+  });
+
+  it('never lets a :free route top the opened picker, though it stays in the list', () => {
+    // the recorded OpenRouter catalogue carries two :free rows, both priced at zero
+    const free = live.filter((m) => isRoutingVariant(m.id));
+    expect(free.length).toBeGreaterThan(0);
+    expect(free.every((m) => (m.pricing?.inputPerM ?? 1) === 0)).toBe(true);
+
+    const opened = rankModels('', live);
+    expect(isRoutingVariant(opened[0]?.model.id ?? '')).toBe(false);
+    expect(opened.map((h) => h.model.id)).toEqual(expect.arrayContaining(free.map((m) => m.id)));
+
+    // Within one (deprecated, tools) class every standard route ranks ahead of every variant.
+    // Across classes it does not, and must not: deprecation and tool support are tie-breaks above
+    // the variant rank, so a live tools-capable `:free` route correctly beats a deprecated model.
+    const cls = (m: ModelInfo): string => `${m.deprecated === true ? 'dep' : 'live'}/${m.supports.tools === true ? 'tools' : 'no-tools'}`;
+    const seenVariant = new Map<string, number>();
+    opened.forEach((h, i) => {
+      const key = cls(h.model);
+      if (isRoutingVariant(h.model.id)) {
+        if (!seenVariant.has(key)) seenVariant.set(key, i);
+      } else {
+        expect(seenVariant.get(key), `${h.model.id} ranked behind a variant of its own class`).toBeUndefined();
+      }
+    });
+    expect([...seenVariant.keys()].length).toBeGreaterThan(0);
+  });
+
+  it('sorts a variant behind its own standard route even though it is cheaper', () => {
+    const standard = model({ id: 'z-ai/glm-5.3-flash', pricing: { inputPerM: 0.15, outputPerM: 0.5 }, supports: { tools: true } });
+    const free = model({ id: 'z-ai/glm-5.3-flash:free', pricing: { inputPerM: 0, outputPerM: 0 }, supports: { tools: true } });
+    const batch = model({ id: 'z-ai/glm-5.3-flash:batch', pricing: { inputPerM: 0.075, outputPerM: 0.25 }, supports: { tools: true } });
+    expect(compareModels(free, standard)).toBeGreaterThan(0);
+    expect(compareModels(batch, standard)).toBeGreaterThan(0);
+    // behind it, and among themselves the usual cheapest-first order resumes
+    expect(ids(rankModels('', [free, batch, standard]))).toEqual(['z-ai/glm-5.3-flash', 'z-ai/glm-5.3-flash:free', 'z-ai/glm-5.3-flash:batch']);
+  });
+
+  it('a typed query still finds a variant — the closeness bonus outweighs the tie-break', () => {
+    const standard = model({ id: 'z-ai/glm-5.3-flash', supports: { tools: true } });
+    const free = model({ id: 'nex-agi/nex-n2.5-mini:free', supports: { tools: true } });
+    expect(ids(rankModels('nexn25mini', [standard, free]))).toEqual(['nex-agi/nex-n2.5-mini:free']);
+  });
+
+  it('a capability filter over the live list is still variant-last', () => {
+    const tools = rankModels('', live, { capability: 'tools' });
+    expect(tools.length).toBeGreaterThan(0);
+    expect(isRoutingVariant(tools[0]?.model.id ?? '')).toBe(false);
+  });
+});
+
+describe('aliases', () => {
+  const ALIASED: ModelInfo[] = [
+    model({ id: 'grok-4.20-0309-reasoning', provider: 'xai', displayName: 'Grok 4.20 (reasoning)', aliases: ['grok-4.20', 'grok-4.20-reasoning'], supports: { tools: true } }),
+    model({ id: 'grok-4.7', provider: 'xai', displayName: 'Grok 4.7', supports: { tools: true } }),
+  ];
+
+  it('findModel accepts a documented alias the provider accepts', () => {
+    expect(findModel('grok-4.20', ALIASED)?.id).toBe('grok-4.20-0309-reasoning');
+    expect(findModel(' grok-4.20-reasoning ', ALIASED)?.id).toBe('grok-4.20-0309-reasoning');
+    expect(findModel('grok-4.7', ALIASED)?.id).toBe('grok-4.7');
+    expect(findModel('grok-9', ALIASED)).toBeNull();
+    expect(findModel('   ', ALIASED)).toBeNull();
+  });
+
+  it('a canonical id is never shadowed by another row that lists it as an alias', () => {
+    const pool = [model({ id: 'a', aliases: ['b'] }), model({ id: 'b' })];
+    expect(findModel('b', pool)?.id).toBe('b');
+  });
+
+  it('an alias is a search haystack', () => {
+    expect(ids(rankModels('grok-4.20', ALIASED))).toEqual(['grok-4.20-0309-reasoning']);
+    expect(rankModels('grok-4.20', ALIASED)[0]?.matched).toBe('exact');
+  });
+
+  it('nearMisses does not suggest the row the alias already resolves to', () => {
+    // `grok-4.20` is not a near miss: findModel resolves it exactly, via the alias
+    expect(nearMisses('grok-4.20', ALIASED, 2).map((m) => m.id)).toEqual([]);
+    // a real typo still gets suggestions
+    expect(nearMisses('grok47', ALIASED, 2).map((m) => m.id)).toEqual(['grok-4.7']);
+  });
+
+  it('the snapshot carries its aliases onto the models it produces', () => {
+    const xai = instantCatalogue(['xai']);
+    expect(xai.find((m) => m.id === 'grok-4.20-0309-reasoning')?.aliases).toEqual(['grok-4.20', 'grok-4.20-reasoning']);
+    expect(findModel('grok-4.20', xai)?.id).toBe('grok-4.20-0309-reasoning');
+    expect(findModel('gpt-5.6', instantCatalogue(['openai']))?.id).toBe('gpt-5.6-sol');
   });
 });
 

@@ -1,6 +1,7 @@
 /** Price maths, the bridge to the engine's four-rate pricing, and the strings a picker prints. */
 import { describe, expect, it } from 'vitest';
-import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR } from '../../../src/config/defaults.js';
+import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, DEFAULT_MODEL, PRICING_TABLE, lookupPricing } from '../../../src/config/defaults.js';
+import type { GeneratorConfig } from '../../../src/core/types.js';
 import { BLENDED_INPUT_SHARE, blendedPerM, estimateCostUsd, findPricingByModelId, formatPricing, formatRate, formatTokens, generatorPricingOf, mergePricingSources, modelBlendedPerM, snapshotPricingSource } from '../../../src/models/pricing.js';
 import { model } from './helpers.js';
 
@@ -81,6 +82,54 @@ describe('formatting', () => {
     expect(formatTokens(1_048_576)).toBe('1.0M');
     expect(formatTokens(1_310_720)).toBe('1.3M');
     expect(formatTokens(10_000_000)).toBe('10M');
+  });
+});
+
+describe('the picker and the engine must price a model the same way', () => {
+  /**
+   * `src/config/defaults.ts PRICING_TABLE` (owned by the config group) is what the run's cost meter
+   * bills with when the API returns no cost; `src/models/static.ts` (owned by this module) is what
+   * the picker shows and what `generatorPricingOf` hands to a new generator config. A model in both
+   * must carry the same four rates, or picking it silently re-rates the run.
+   *
+   * The two that still disagree are listed here with the evidence. Re-fetched live from the
+   * OpenRouter models API on 2026-09-21:
+   *   z-ai/glm-5.3-flash  prompt 0.00000015  completion 0.0000005   input_cache_read 0.00000005
+   *                       → $0.15 / $0.50 / $0.05      PRICING_TABLE says $0.09 / $0.30 / $0.018
+   *   z-ai/glm-5.3        prompt 0.00000084  completion 0.00000264  input_cache_read 0.000000156
+   *                       → $0.84 / $2.64 / $0.156     PRICING_TABLE says $0.91 / $2.86 / derived
+   * The snapshot is the correct side; `defaults.ts:71-74` already predicted its own staleness. The
+   * fix belongs to the config owner (this branch may not touch `src/config/**`), and the assertion
+   * below is exact in both directions: a new divergence fails, and so does removing one of these
+   * without deleting its entry here.
+   */
+  const KNOWN_DIVERGENCES: readonly string[] = ['z-ai/glm-5.3', 'z-ai/glm-5.3-flash'];
+
+  const RATES = ['inputPerM', 'outputPerM', 'cacheReadPerM', 'cacheWritePerM'] as const;
+  const sameRates = (a: GeneratorConfig['pricing'], b: GeneratorConfig['pricing']): boolean => RATES.every((k) => Math.abs(a[k] - b[k]) < 1e-9);
+
+  const shared = [...PRICING_TABLE.keys()].filter((id) => findPricingByModelId(id) !== null);
+
+  it('covers the ids both tables name', () => {
+    expect(shared.length).toBeGreaterThanOrEqual(4);
+    expect(shared).toContain(DEFAULT_MODEL);
+  });
+
+  it('agrees on every shared id except the two known stale rows in config/defaults.ts', () => {
+    const diverging = shared.filter((id) => {
+      const snap = findPricingByModelId(id);
+      return snap !== null && !sameRates(generatorPricingOf(snap.pricing), lookupPricing(id).pricing);
+    });
+    expect([...diverging].sort()).toEqual([...KNOWN_DIVERGENCES].sort());
+  });
+
+  it('pins the size of the default generator gap so the config owner has the numbers', () => {
+    const snap = findPricingByModelId(DEFAULT_MODEL);
+    expect(snap?.provider).toBe('openrouter');
+    expect(generatorPricingOf(snap?.pricing ?? { inputPerM: 0, outputPerM: 0 })).toEqual({ inputPerM: 0.15, outputPerM: 0.5, cacheReadPerM: 0.05, cacheWritePerM: 0.15 * CACHE_WRITE_FACTOR });
+    expect(lookupPricing(DEFAULT_MODEL).pricing).toEqual({ inputPerM: 0.09, outputPerM: 0.3, cacheReadPerM: 0.018, cacheWritePerM: 0.09 * CACHE_WRITE_FACTOR });
+    // 0.15 / 0.09 — the engine would under-report a run picked in the picker by a third
+    expect(0.15 / 0.09).toBeCloseTo(5 / 3, 10);
   });
 });
 

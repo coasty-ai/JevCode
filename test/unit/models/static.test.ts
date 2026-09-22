@@ -44,6 +44,15 @@ describe('snapshot', () => {
     expect(SNAPSHOT_AT.startsWith(SNAPSHOT_DATE)).toBe(true);
   });
 
+  it('hands out aliases as copies, never the snapshot array itself', () => {
+    const rows = staticModels('xai');
+    const grok = rows.find((m) => m.id === 'grok-4.20-0309-reasoning');
+    expect(grok?.aliases).toEqual(['grok-4.20', 'grok-4.20-reasoning']);
+    expect(grok?.aliases).not.toBe(SNAPSHOT.xai.find((r) => r.id === 'grok-4.20-0309-reasoning')?.aliases);
+    // a row with no aliases has the member absent, not an empty array
+    expect('aliases' in (rows.find((m) => m.id === 'grok-4.7') ?? {})).toBe(false);
+  });
+
   it('prices the default generator from config/defaults.ts', () => {
     const glm = resolveStatic('openrouter', 'z-ai/glm-5.3-flash');
     expect(glm?.pricing).toEqual({ inputPerM: 0.15, outputPerM: 0.5, cacheReadPerM: 0.05 });
@@ -113,6 +122,23 @@ describe('enrich', () => {
   it('or-s deprecation and never un-deprecates', () => {
     const live: ModelInfo[] = [model({ id: 'claude-sonnet-5', provider: 'anthropic', deprecated: true })];
     expect(enrich('anthropic', live)[0]?.deprecated).toBe(true);
+  });
+
+  it('unions the wire aliases with the snapshot ones, id and duplicates excluded', () => {
+    // xAI states its own aliases; every other provider states none, so the snapshot supplies them
+    const wire: ModelInfo[] = [model({ id: 'grok-4.20-0309-reasoning', provider: 'xai', aliases: ['grok-4.20-reasoning-latest', 'grok-4.20'] })];
+    expect(enrich('xai', wire)[0]?.aliases).toEqual(['grok-4.20-reasoning-latest', 'grok-4.20', 'grok-4.20-reasoning']);
+
+    const bare: ModelInfo[] = [model({ id: 'gpt-5.6-sol', provider: 'openai' })];
+    expect(enrich('openai', bare)[0]?.aliases).toEqual(['gpt-5.6']);
+
+    const none: ModelInfo[] = [model({ id: 'claude-sonnet-5', provider: 'anthropic' })];
+    expect('aliases' in (enrich('anthropic', none)[0] ?? {})).toBe(false);
+  });
+
+  it('a live row the snapshot does not know keeps its own aliases untouched', () => {
+    const wire: ModelInfo[] = [model({ id: 'grok-4.9-new', provider: 'xai', aliases: ['grok-4.9'] })];
+    expect(enrich('xai', wire)[0]?.aliases).toEqual(['grok-4.9']);
   });
 
   it('uses the injected pricing source before the Fireworks bucket fallback', () => {

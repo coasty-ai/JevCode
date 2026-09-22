@@ -4,7 +4,8 @@
  *
  * Order of preference:
  *   1. a fresh cache entry (< TTL) unless `force`
- *   2. the network (ETag-revalidated when the cache had one; paged where the provider pages)
+ *   2. the network (paged where the provider pages, ETag-revalidated when the provider offers an
+ *      ETag — none of the seven did on 2026-09-21, so budget a refresh as a full re-download)
  *   3. any cache entry, however old            → `source: 'cache'`, `error` explains why
  *   4. the bundled snapshot                    → `source: 'static'`, `error` explains why
  *
@@ -13,8 +14,9 @@
  * behind it, a dead network should fall back in one round trip instead of three timeouts.
  */
 import { ProviderHttpError } from '../errors.js';
-import { httpError, parseJsonObject, readBodyCapped, withRetry } from '../provider/sse.js';
-import { CATALOGUE_TIMEOUT_MS, ERROR_BODY_CAP, timedFetch } from './http.js';
+import { httpError, parseJsonObject, withRetry } from '../provider/sse.js';
+import { patternRedact } from '../core/redact.js';
+import { CATALOGUE_TIMEOUT_MS, ERROR_BODY_CAP, readBody, timedFetch } from './http.js';
 import { sleep as defaultSleep } from '../core/time.js';
 import { CACHE_TTL_MS, NULL_CACHE, defaultModelCache, isFresh } from './cache.js';
 import { authHeaders, keysFromEnv, listUrl, PROVIDER_IDS } from './providers.js';
@@ -41,12 +43,18 @@ interface ResolvedDeps {
  * Defaults for the injected side effects. `cache` defaults to *no* cache: touching the real home
  * directory is an explicit choice made by `defaultCatalogue()` (index.ts), never a surprise in a
  * unit test or a one-shot CLI read.
+ *
+ * `redact` defaults to `patternRedact`, never to identity. A caller that forgets to inject one
+ * still cannot leak a key: an error body is server-controlled text that ends up verbatim in
+ * `ModelsError.message` and in `ProviderHttpError.body`, and a user-supplied `baseUrl` (a corporate
+ * gateway or proxy) routinely echoes the `Authorization` header into its 4xx bodies. A caller that
+ * does inject one gets exact-secret naming on top; the two layers compose.
  */
 function resolve(deps: ModelsDeps): ResolvedDeps {
   const pricing = deps.pricing;
   return {
     fetch: deps.fetch ?? globalThis.fetch,
-    redact: deps.redact ?? ((s: string) => s),
+    redact: deps.redact ?? patternRedact,
     now: deps.now ?? Date.now,
     cache: deps.cache ?? NULL_CACHE,
     random: deps.random ?? Math.random,
@@ -90,6 +98,13 @@ function isoOf(ms: number): string {
   return Number.isFinite(at.getTime()) ? at.toISOString() : new Date(0).toISOString();
 }
 
+/** Two page cursors are the same request; key order does not matter. */
+function sameQuery(a: Readonly<Record<string, string>>, b: Readonly<Record<string, string>>): boolean {
+  const ka = Object.keys(a).sort();
+  const kb = Object.keys(b).sort();
+  return ka.length === kb.length && ka.every((k, i) => kb[i] === k && a[k] === b[k]);
+}
+
 export interface FetchedPage {
   models: ModelInfo[];
   /** the response ETag, for the next revalidation */
@@ -120,7 +135,7 @@ export async function fetchProviderModels(provider: ProviderId, apiKey: string |
       const r = await timedFetch({ fetch: d.fetch, url, headers, timeoutMs, signal: opts.signal, redact: d.redact });
       if (r.status === 304) return r;
       if (!r.ok) {
-        const body = await readBodyCapped(r, ERROR_BODY_CAP, timeoutMs);
+        const body = await readBody(r, ERROR_BODY_CAP, timeoutMs, opts.signal);
         const parsed = parseJsonObject(body);
         const errObj = parsed === null ? null : parsed['error'];
         const message = typeof errObj === 'object' && errObj !== null && !Array.isArray(errObj) && typeof errObj['message'] === 'string' ? errObj['message'] : undefined;
@@ -132,7 +147,7 @@ export async function fetchProviderModels(provider: ProviderId, apiKey: string |
     if (page === 0) etag = res.headers.get('etag');
     if (res.status === 304) return { models: [], etag, notModified: true };
 
-    const text = await readBodyCapped(res, MAX_LIST_BYTES, timeoutMs);
+    const text = await readBody(res, MAX_LIST_BYTES, timeoutMs, opts.signal);
     const body = parseJsonObject(text);
     if (body === null) {
       throw new ProviderHttpError(`${provider} models: response was not a JSON object (${text.length} bytes)`, { status: res.status, retryable: false });
@@ -141,6 +156,9 @@ export async function fetchProviderModels(provider: ProviderId, apiKey: string |
     models.push(...parseModelList(provider, body, parseOpts));
     const next = nextPageQuery(provider, body);
     if (next === null) break;
+    // a provider that keeps echoing the same cursor (`has_more: true` with an unchanged `last_id`)
+    // would otherwise cost the full MAX_PAGES round trips to fetch one page over and over
+    if (sameQuery(next, query)) break;
     query = next;
   }
   return { models, etag, notModified: false };
@@ -158,6 +176,11 @@ function result(provider: ProviderId, models: readonly ModelInfo[], source: List
 
 function fromCache(provider: ProviderId, entry: CacheEntry, source: ListSource, error?: ModelsError): ListResult {
   return result(provider, entry.models, source, entry.fetchedAt, error);
+}
+
+/** A cache entry worth serving: present and non-empty. Applies to any injected `ModelCache`. */
+function usableEntry(entry: CacheEntry | null): CacheEntry | null {
+  return entry !== null && entry.models.length > 0 ? entry : null;
 }
 
 function fromStatic(provider: ProviderId, error?: ModelsError): ListResult {
@@ -185,7 +208,9 @@ export async function listModels(provider: ProviderId, apiKey: string | null, de
   // the cache file is keyed by provider alone: an unfiltered list must not be stored or served
   // under the same key as the chat-filtered one the picker asks for
   const cache = opts.includeNonChat === true ? NULL_CACHE : d.cache;
-  const cached = await cache.read(provider);
+  // an entry that lists no models cannot satisfy "never returns an empty list", and the 304 branch
+  // below would rewrite it forward with a fresh timestamp forever — so it reads as a miss
+  const cached = usableEntry(await cache.read(provider));
 
   if (cached !== null && opts.force !== true && opts.offline !== true && isFresh(cached, d.now(), ttl)) {
     return fromCache(provider, cached, 'cache');

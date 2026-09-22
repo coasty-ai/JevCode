@@ -63,6 +63,15 @@ describe('verifyProvider', () => {
     expect(res.error?.message).not.toContain('sk-abcdefgh12345678');
   });
 
+  it('redacts with no injected redactor at all — the default is patternRedact, not identity', async () => {
+    const KEY = 'sk-proj-REALKEY1234567890abcdefghijklmn';
+    const f = scriptedFetch([{ status: 401, body: { error: { message: `Incorrect API key provided: ${KEY}` } } }]);
+    // a corporate gateway that echoes the Authorization header is the realistic leak vector
+    const res = await verifyProvider({ provider: 'openai', baseUrl: 'https://gateway.internal/v1' }, KEY, { fetch: f.fetch });
+    expect(res.error?.message).toContain('[REDACTED:pattern]');
+    expect(res.error?.message).not.toContain(KEY);
+  });
+
   it('sends nothing at all without a key', async () => {
     const f = scriptedFetch([]);
     const res = await verifyProvider({ provider: 'openai' }, '   ', testDeps({ fetch: f.fetch }));

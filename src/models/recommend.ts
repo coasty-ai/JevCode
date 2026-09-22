@@ -13,7 +13,7 @@
  */
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from '../config/defaults.js';
 import { blendedPerM, formatPricing, formatTokens } from './pricing.js';
-import { compareModels, filterModels } from './search.js';
+import { compareModels, filterModels, isRoutingVariant } from './search.js';
 import { instantCatalogue } from './list.js';
 import { isGeneratorProvider, providerDisplayName } from './providers.js';
 import type { Budget, ModelInfo, ModelTask, RecommendOptions, Recommendation } from './types.js';
@@ -69,16 +69,13 @@ const WEIGHTS: Readonly<Record<ModelTask, Weights>> = {
 export const DEPRECATED_PENALTY = 60;
 
 /**
- * OpenRouter serves routing variants of the same model behind a `:suffix` — `:free` (rate-limited
- * shared capacity), `:batch` (asynchronous, not interactive), `:nitro`, `:extended`. They are
- * serving terms rather than models, and `:free` prices at zero, which would otherwise win every
- * budget comparison outright. They stay in the list; they just stop topping it.
+ * Score penalty for an OpenRouter routing variant (`:free`, `:batch`, `:nitro`, `:extended`). The
+ * predicate itself lives in search.ts, where `compareModels` uses it as a tie-break so the ranking
+ * and the recommendation agree that a serving term is not a distinct model; `:free` prices at zero,
+ * which would otherwise win every budget comparison outright. Variants stay in both lists; they
+ * just stop topping them.
  */
 export const VARIANT_PENALTY = 25;
-
-export function isRoutingVariant(id: string): boolean {
-  return id.includes(':');
-}
 
 /**
  * A nudge towards the generator jevcode already ships with (config/defaults.ts `DEFAULT_MODEL` on

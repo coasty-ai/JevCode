@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import * as models from '../../../src/models/index.js';
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from '../../../src/config/defaults.js';
+import { ProviderHttpError } from '../../../src/errors.js';
 import { T0, entry, fixture, memoryCache, routedFetch, testDeps } from './helpers.js';
 
 describe('the barrel', () => {
@@ -121,6 +122,45 @@ describe('defaultCatalogue', () => {
     expect(catalogue.deps.cache).not.toBeNull();
     expect(catalogue.deps.cache?.path('openai')).toBe('/tmp/jevcode-test-home/models/openai.json');
     expect(catalogue.deps.pricing?.lookup('anthropic', 'claude-sonnet-5')).toEqual({ inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2 });
+  });
+
+  it('ships a redactor — the production entry point never runs with secret redaction off', () => {
+    const catalogue = models.defaultCatalogue({});
+    expect(typeof catalogue.deps.redact).toBe('function');
+    expect(catalogue.deps.redact?.('key sk-proj-REALKEY1234567890abcdefghijklmn')).toBe('key [REDACTED:pattern]');
+  });
+
+  it('keeps a caller-supplied redactor', () => {
+    const catalogue = models.defaultCatalogue({}, { redact: () => 'gone' });
+    expect(catalogue.deps.redact?.('anything')).toBe('gone');
+  });
+
+  it('does not leak a key a gateway echoed into its error body, through any of the three surfaces', async () => {
+    // the production entry point, with only the disk cache disabled so $HOME is untouched
+    const KEY = 'sk-proj-REALKEY1234567890abcdefghijklmn';
+    const echoed = { status: 401, body: { error: { message: `Incorrect API key provided: ${KEY}` } } };
+    // both the registry URL (`listModels` takes no base URL) and the gateway `verifyProvider` accepts
+    const f = routedFetch({ 'gateway.internal': echoed, 'api.openai.com': echoed });
+    const catalogue = models.defaultCatalogue({}, { cache: null, fetch: f.fetch });
+
+    const list = await catalogue.list('openai', KEY);
+    expect(list.error?.message).toContain('[REDACTED:pattern]');
+    expect(list.error?.message).not.toContain(KEY);
+
+    const check = await catalogue.verify({ provider: 'openai', baseUrl: 'https://gateway.internal/v1' }, KEY);
+    expect(check.ok).toBe(false);
+    expect(check.error?.message).toContain('[REDACTED:pattern]');
+    expect(check.error?.message).not.toContain(KEY);
+
+    // and the 2 KB of raw wire text ProviderHttpError carries alongside the message
+    await expect(models.fetchProviderModels('openai', KEY, catalogue.deps, { baseUrl: 'https://gateway.internal/v1' })).rejects.toSatisfy((e: unknown) => {
+      const body = e instanceof ProviderHttpError ? e.body : null;
+      expect(e).toBeInstanceOf(ProviderHttpError);
+      expect(String(body)).toContain('[REDACTED:pattern]');
+      expect(String(body)).not.toContain(KEY);
+      expect((e as Error).message).not.toContain(KEY);
+      return true;
+    });
   });
 
   it('leaves an explicitly disabled cache disabled', () => {

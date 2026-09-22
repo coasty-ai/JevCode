@@ -15,12 +15,16 @@
  * partially masked key label and account usage; `VerifyResult` deliberately carries only `ok`,
  * `latencyMs`, `via`, a model count and a redacted error.
  */
-import { httpError, parseJsonObject, readBodyCapped } from '../provider/sse.js';
-import { CATALOGUE_TIMEOUT_MS, ERROR_BODY_CAP, timedFetch } from './http.js';
+import { httpError, parseJsonObject } from '../provider/sse.js';
+import { patternRedact } from '../core/redact.js';
+import { CATALOGUE_TIMEOUT_MS, ERROR_BODY_CAP, readBody, timedFetch } from './http.js';
 import { authHeaders, keyCheckUrl, listUrl, PROVIDERS } from './providers.js';
 import { listArray } from './parse.js';
 import { toModelsError } from './list.js';
 import type { ModelsDeps, ProviderSpec, VerifyResult } from './types.js';
+
+/** Same ceiling as a catalogue list read: the key check counts the models the key can see. */
+const MAX_VERIFY_BYTES = 8 * 1024 * 1024;
 
 function nowFn(deps: ModelsDeps): () => number {
   return deps.now ?? Date.now;
@@ -37,7 +41,9 @@ export async function verifyProvider(spec: ProviderSpec, apiKey: string, deps: M
     return { ok: false, provider, latencyMs: 0, via: 'none', error: { kind: 'no_key', status: null, message: `${provider}: no API key`, retryable: false } };
   }
   const fetchImpl = deps.fetch ?? globalThis.fetch;
-  const redact = deps.redact ?? ((s: string) => s);
+  // never identity: a gateway at `spec.baseUrl` that echoes the Authorization header into its 401
+  // body would otherwise put the pasted key straight into `VerifyResult.error.message`
+  const redact = deps.redact ?? patternRedact;
   const now = nowFn(deps);
   const timeoutMs = opts.timeoutMs ?? CATALOGUE_TIMEOUT_MS;
   const checkUrl = keyCheckUrl(provider, spec.baseUrl);
@@ -48,7 +54,7 @@ export async function verifyProvider(spec: ProviderSpec, apiKey: string, deps: M
   try {
     const res = await timedFetch({ fetch: fetchImpl, url, headers: authHeaders(provider, key), timeoutMs, signal: opts.signal, redact });
     if (!res.ok) {
-      const body = await readBodyCapped(res, ERROR_BODY_CAP, timeoutMs);
+      const body = await readBody(res, ERROR_BODY_CAP, timeoutMs, opts.signal);
       const parsed = parseJsonObject(body);
       const errObj = parsed === null ? null : parsed['error'];
       const message = typeof errObj === 'object' && errObj !== null && !Array.isArray(errObj) && typeof errObj['message'] === 'string' ? errObj['message'] : undefined;
@@ -59,7 +65,7 @@ export async function verifyProvider(spec: ProviderSpec, apiKey: string, deps: M
       // the body is key metadata (label, usage, limits): a 200 is the whole answer, nothing is read
       return { ok: true, provider, latencyMs, via };
     }
-    const text = await readBodyCapped(res, 8 * 1024 * 1024, timeoutMs);
+    const text = await readBody(res, MAX_VERIFY_BYTES, timeoutMs, opts.signal);
     const body = parseJsonObject(text);
     if (body === null) {
       return {

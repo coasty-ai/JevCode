@@ -71,12 +71,15 @@ function matchHaystack(q: string, raw: string): HaystackMatch | null {
  *    namespace comes first;
  *  - the label;
  *  - the provider-qualified id and the fully spelled-out "OpenRouter Z.ai: GLM 5.3 Flash", which
- *    are what make "openai gpt6" and "openrouter glm" work.
+ *    are what make "openai gpt6" and "openrouter glm" work;
+ *  - every alias the provider publishes, so typing a documented id the provider accepts
+ *    (`grok-4.20`, `grok-code-fast-1`) ranks its canonical row rather than nothing.
  */
 function haystacks(model: ModelInfo): string[] {
   const hays = [model.id, model.displayName, `${model.provider}/${model.id}`, `${providerDisplayName(model.provider)} ${model.displayName}`];
   const slash = model.id.lastIndexOf('/');
   if (slash !== -1 && slash + 1 < model.id.length) hays.push(model.id.slice(slash + 1));
+  if (model.aliases !== undefined) hays.push(...model.aliases);
   return hays;
 }
 
@@ -115,7 +118,31 @@ function providerOrder(model: ModelInfo): number {
   return i === -1 ? PROVIDER_IDS.length : i;
 }
 
-/** The deterministic tie-break chain, applied after `score`. Exported for the picker's own sorts. */
+/**
+ * OpenRouter serves routing variants of the same model behind a `:suffix` — `:free` (rate-limited
+ * shared capacity), `:batch` (asynchronous, so it cannot serve an interactive turn at all),
+ * `:nitro`, `:extended`. They are serving terms rather than models.
+ */
+export function isRoutingVariant(id: string): boolean {
+  return id.includes(':');
+}
+
+/** 1 for a routing variant, 0 otherwise — the tie-break key `compareModels` sorts variants by. */
+export function variantRank(model: ModelInfo): number {
+  return isRoutingVariant(model.id) ? 1 : 0;
+}
+
+/**
+ * The deterministic tie-break chain, applied after `score`. Exported for the picker's own sorts.
+ *
+ * Routing variants rank behind their standard routes, and *above* the price comparison rather than
+ * below it: `:free` prices at zero and `:batch` undercuts its own standard route, so on price alone
+ * they would sweep the top of the empty-query default list — of OpenRouter's 445 live models on
+ * 2026-09-21, 89 are variants (21 `:free`, every one of them $0, and 68 `:batch`). They stay in the
+ * list and a typed query still finds them (the closeness bonus outweighs any tie-break); they just
+ * stop topping the opened picker. Deprecation and tool support are still tie-breaks *above* this
+ * one, so a live tools-capable variant does correctly outrank a deprecated or tool-less model.
+ */
 export function compareModels(a: ModelInfo, b: ModelInfo): number {
   const da = a.deprecated === true ? 1 : 0;
   const db = b.deprecated === true ? 1 : 0;
@@ -123,6 +150,9 @@ export function compareModels(a: ModelInfo, b: ModelInfo): number {
   const ta = a.supports.tools === true ? 0 : 1;
   const tb = b.supports.tools === true ? 0 : 1;
   if (ta !== tb) return ta - tb;
+  const va = variantRank(a);
+  const vb = variantRank(b);
+  if (va !== vb) return va - vb;
   const pa = modelBlendedPerM(a);
   const pb = modelBlendedPerM(b);
   if (pa !== pb) {
@@ -152,7 +182,8 @@ export function rankModels(query: string, models: readonly ModelInfo[], opts: Ra
     hits.push({ model, score: m.score, matched: m.kind });
   }
   hits.sort((x, y) => (y.score !== x.score ? y.score - x.score : compareModels(x.model, y.model)));
-  return opts.limit !== undefined && opts.limit >= 0 ? hits.slice(0, opts.limit) : hits;
+  // clamped, not ignored, for a negative limit — `recommend` does the same (Math.max(0, limit))
+  return opts.limit === undefined ? hits : hits.slice(0, Math.max(0, opts.limit));
 }
 
 /**
@@ -171,21 +202,27 @@ export async function searchModels(query: string, opts: SearchOptions = {}): Pro
   return rankModels(query, load.models, opts);
 }
 
-/** Exact id lookup across a loaded catalogue (`/model <id>` validation). */
+/**
+ * Exact id lookup across a loaded catalogue (`/model <id>` validation). Canonical ids win outright;
+ * a provider alias resolves to its canonical row only when nothing claimed the id exactly, so a
+ * model literally named `X` can never be shadowed by another model that lists `X` as an alias.
+ */
 export function findModel(id: string, models: readonly ModelInfo[]): ModelInfo | null {
   const needle = id.trim();
-  return models.find((m) => m.id === needle) ?? null;
+  if (needle === '') return null;
+  return models.find((m) => m.id === needle) ?? models.find((m) => m.aliases?.includes(needle) === true) ?? null;
 }
 
 /**
- * The "did you mean" set for an id that matched nothing exactly: the same ranking, minus the id
- * itself, best match first.
+ * The "did you mean" set for an id that matched nothing exactly: the same ranking, minus any row
+ * `findModel` would have resolved (the id itself, or a row that lists it as an alias), best match
+ * first. Two extra candidates are ranked so both of those can be dropped without shortening the list.
  */
 export function nearMisses(id: string, models: readonly ModelInfo[], limit = 3): ModelInfo[] {
   const needle = id.trim();
   if (normalise(needle) === '') return [];
-  return rankModels(needle, models, { limit: limit + 1 })
+  return rankModels(needle, models, { limit: limit + 2 })
     .map((h) => h.model)
-    .filter((m) => m.id !== needle)
+    .filter((m) => m.id !== needle && m.aliases?.includes(needle) !== true)
     .slice(0, limit);
 }

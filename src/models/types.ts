@@ -48,6 +48,15 @@ export interface ModelInfo {
   provider: ProviderId;
   /** the provider's own label when it ships one, else a title-cased form of the id */
   displayName: string;
+  /**
+   * Alternative ids the provider accepts for this model, never listed as models of their own —
+   * xAI ships them on the wire (`grok-4.20-0309-reasoning` also answers to `grok-4.20`,
+   * `grok-4.20-reasoning`, `grok-4.20-reasoning-latest`) and the snapshot carries them for the
+   * providers that do not. `findModel` resolves them and the search matches against them, so a
+   * documented id a user pastes is accepted rather than reported unknown. Absent when there are
+   * none (never an empty array), and never includes `id` itself.
+   */
+  aliases?: readonly string[];
   /** input context window in tokens */
   contextLength?: number;
   /** max completion/output tokens */
@@ -101,7 +110,12 @@ export interface ListResult {
 /** Injected side effects. Every member has a production default; tests pass fakes. */
 export interface ModelsDeps {
   fetch?: typeof fetch;
-  /** secret redaction for error text; identity when absent (src/core/redact.ts createRedactor().redact in production) */
+  /**
+   * Secret redaction for error text. Pass `createRedactor(...).redact` (src/core/redact.ts) so
+   * configured keys are named as well as pattern-matched; when absent, every consumer falls back
+   * to `patternRedact`, never to identity — a gateway that echoes an `Authorization` header into a
+   * 4xx body must not be able to hand that body back through `ModelsError.message`.
+   */
   redact?: (s: string) => string;
   /** wall clock in ms (cache freshness and `updatedAt`); `Date.now` when absent */
   now?: () => number;

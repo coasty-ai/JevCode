@@ -69,6 +69,14 @@ describe('parseCacheFile', () => {
     expect(parseCachedModel('m')).toBeNull();
   });
 
+  it('round-trips aliases, normalising junk out of the list', () => {
+    const aliased = entry('xai', [model({ id: 'grok-4.20-0309-reasoning', provider: 'xai', aliases: ['grok-4.20', 'grok-4.20-reasoning'] })]);
+    expect(parseCacheFile(serialiseCacheEntry(aliased))).toEqual(aliased);
+    expect(parseCachedModel({ id: 'm', provider: 'xai', supports: {}, updatedAt: AT, aliases: ['a', 7, '', 'a', 'm'] })?.aliases).toEqual(['a']);
+    expect('aliases' in (parseCachedModel({ id: 'm', provider: 'xai', supports: {}, updatedAt: AT, aliases: [] }) ?? {})).toBe(false);
+    expect('aliases' in (parseCachedModel({ id: 'm', provider: 'xai', supports: {}, updatedAt: AT, aliases: 'a' }) ?? {})).toBe(false);
+  });
+
   it('keeps a rate of exactly zero (free models are priced, not unpriced)', () => {
     const parsed = parseCachedModel({ id: 'm', provider: 'openrouter', supports: {}, updatedAt: AT, pricing: { inputPerM: 0, outputPerM: 0 } });
     expect(parsed?.pricing).toEqual({ inputPerM: 0, outputPerM: 0 });
@@ -88,6 +96,13 @@ describe('freshness', () => {
   it('an unparseable timestamp is never fresh', () => {
     expect(isFresh({ ...e, fetchedAt: 'yesterday' }, T0)).toBe(false);
     expect(cacheAgeMs({ ...e, fetchedAt: 'yesterday' }, T0)).toBeNull();
+  });
+
+  it('a timestamp in the future is never fresh either', () => {
+    // a clock briefly set forward would otherwise pin the catalogue until the wall clock caught up
+    expect(isFresh({ ...e, fetchedAt: '2099-01-01T00:00:00.000Z' }, T0)).toBe(false);
+    expect(isFresh({ ...e, fetchedAt: new Date(T0 + 1).toISOString() }, T0)).toBe(false);
+    expect(isFresh({ ...e, fetchedAt: new Date(T0).toISOString() }, T0)).toBe(true);
   });
 
   it('reports age', () => {

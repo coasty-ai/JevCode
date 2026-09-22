@@ -210,8 +210,13 @@ export function keysFromEnv(env: NodeJS.ProcessEnv): Partial<Record<ProviderId, 
   return out;
 }
 
+/**
+ * `some` rather than `includes` with a widening cast: the cast would keep compiling if
+ * `GeneratorConfig['provider']` ever gained a member `ProviderId` does not have (`'mock'`), and
+ * silently answer `true` for it. The comparison makes the overlap the compiler's business.
+ */
 export function isGeneratorProvider(id: ProviderId): boolean {
-  return (GENERATOR_PROVIDERS as readonly ProviderId[]).includes(id);
+  return GENERATOR_PROVIDERS.some((p) => p === id);
 }
 
 /**
