@@ -2560,8 +2560,14 @@ export type BenchStopReason = StopReason | 'not_run';
  * engine mode with a bench-side substitution — `llm-sieve` = the `llm-jev` engine with a stub Decider (zero Jev requests)
  * and the synthesizer's code fallbacks, `jev-off-tuned` = the `jev-off` engine behind a provider that applies the §4
  * generator hygiene (bench/conditions.ts `engineModeOf`).
+ *
+ * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §8.1: `jev-on-next` = the `jev-on` engine with the router table, the
+ * synth fast path armed (`fastPath: 'auto'`) and the S2 generation mechanisms on; `jev-on-next-nofast` is the SAME arm
+ * with the fast path OFF — the paired in-session control that keeps a `jev-on-next` win from confounding tuned
+ * generation + S2 + routers + the fast path (§8.5 clause 4 rests on it, not on the recorded rows). Both are bench-side
+ * substitutions on the `jev-on` mode; neither is an EngineMode (bench/conditions.ts `engineModeOf`, `armMechanisms`).
  */
-export type BenchCondition = EngineMode | 'llm-sieve' | 'jev-off-tuned';
+export type BenchCondition = EngineMode | 'llm-sieve' | 'jev-off-tuned' | 'jev-on-next' | 'jev-on-next-nofast';
 
 export interface BenchTaskRecord {
   suite: BenchSuite;

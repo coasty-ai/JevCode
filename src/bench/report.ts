@@ -7,10 +7,11 @@
  * present, a head-to-head section (docs/LLM-JEV-DESIGN.md §10.4 / §10.6: discordant pairs,
  * Wilson intervals, the pre-registered criteria) is added per suite (bench/headtohead.ts).
  */
-import { formatDuration } from '../core/time.js';
+import { formatDuration, percentile } from '../core/time.js';
 import type { BenchCondition, BenchSuite } from '../core/types.js';
 import { criteriaLines, evaluateAttribution, suiteHeadToHead, suiteHeadToHeadLines, verdictParagraph, type SuiteHeadToHead } from './headtohead.js';
-import type { BenchRecord, ConditionMetrics, Summary, TokensPoint } from './types.js';
+import { declineHistogram } from './next-arms.js';
+import type { BenchRecord, ConditionMetrics, StepsSummary, Summary, TokensPoint } from './types.js';
 
 export const TB_LABEL = 'local shim, non-comparable to the tbench.ai leaderboard';
 export const BAR_WIDTH = 20;
@@ -135,7 +136,15 @@ export const CONDITIONS_PARAGRAPH =
   'as another one); ' +
   '**jev-off-tuned** is jev-off behind a provider that applies the §4 generator hygiene (max_tokens 1,500 with one doubling ' +
   'after a `length` stop, reasoning effort low, a 20 s per-call deadline that drops the call — no retry, the step ends — and ' +
-  'meters it from an estimate, plan capped at 200 chars). Generation parameters are PINNED per arm (the table below); jev-off ' +
+  'meters it from an estimate, plan capped at 200 chars). ' +
+  '**jev-on-next** and **jev-on-next-nofast** (contract 1.9, docs/LLM-LOOP-DESIGN.md §8.1) are the LLM-loop wave: the ' +
+  'jev-on engine — the generator still proposes — with the router table on, the S2 generation mechanisms on (one hedge ' +
+  'per round at clamp(2 × TTFB p50, 3 s, 8 s), the byte-stable prefix, a 256-token reasoning cap on the cheap classes) ' +
+  'and the jev-off-tuned generation parameters. They differ in ONE mechanism: `jev-on-next` arms the bounded sieve fast ' +
+  'path (`fastPath: auto`, the structural predicate decides per step) and `jev-on-next-nofast` does not. That pair is the ' +
+  'wave\'s only same-build contrast, and without it a jev-on-next win confounds tuned generation, S2, the routers and the ' +
+  'fast path; both run at `--concurrency 1`, because the fast path runs test commands inside the step. ' +
+  'Generation parameters are PINNED per arm (the table below); jev-off ' +
   'runs exactly the checked-in baseline parameters, never the user config.';
 
 function fmtReasoning(g: Summary['conditions'][string]['generation']): string {
@@ -170,6 +179,13 @@ function conditionRows(summary: Summary): string[][] {
   });
 }
 
+/** contract 1.9 (Fastlane) §8.3 R-d: the decline histogram as one cell, largest bucket first, shares included. */
+function declineReasons(summary: StepsSummary): string {
+  const hist = declineHistogram(summary);
+  if (hist.length === 0) return 'none';
+  return hist.map((h) => `${h.reason} ${h.n} (${(h.share * 100).toFixed(0)} %)`).join(', ');
+}
+
 function metricRows(conds: readonly BenchCondition[], m: Record<string, ConditionMetrics>): string[][] {
   const get = (c: BenchCondition): ConditionMetrics => m[c]!;
   const row = (label: string, f: (x: ConditionMetrics) => string): string[] => [label, ...conds.map((c) => f(get(c)))];
@@ -202,6 +218,16 @@ function metricRows(conds: readonly BenchCondition[], m: Record<string, Conditio
     row('verify: samples / distinct / malformed / timeouts / cancelled / misanchored', (x) => `${x.synth.verify.samples} / ${x.synth.verify.distinct} / ${x.synth.verify.malformed} / ${x.synth.verify.timeouts} / ${x.synth.verify.cancelled} / ${x.synth.verify.misanchored}`),
     row('verify: candidates tested / passers / partials', (x) => `${x.synth.verify.candidatesTested} / ${x.synth.verify.passers} / ${x.synth.verify.partials}`),
     row('grace wait total / localisation missed / generic steps', (x) => `${formatDuration(x.synth.verify.graceMs)} / ${x.synth.verify.localisationMissed} / ${x.synth.genericSteps}`),
+    // contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §8.3: the wave's rows. Every one reads 0 on an arm that was never
+    // armed, and `considered` is what tells "armed and declined every step" apart from "never armed" (§5.5).
+    row('fast path: considered / fired / declined / failed', (x) => `${x.synth.fastPath.considered} / ${x.synth.fastPath.fired} / ${x.synth.fastPath.declined} / ${x.synth.fastPath.failed}`),
+    row('fast path: proposed / refused / timeouts / budget overruns (R-b)', (x) => `${x.synth.fastPath.proposed} / ${x.synth.fastPath.refused} / ${x.synth.fastPath.timeouts} / ${x.synth.fastPath.budgetOverruns}`),
+    row('fast path: stage-1 fired / stage-2 declined (R-c)', (x) => `${x.synth.fastPath.stage1Fired} / ${x.synth.fastPath.stage2Declined}${x.synth.fastPath.stage1Fired === 0 ? '' : ` = ${(x.synth.fastPath.stage2Declined / x.synth.fastPath.stage1Fired).toFixed(2)}`}`),
+    row('fast path: candidates tested / test runs / Jev requests / wall', (x) => `${x.synth.fastPath.candidatesTested} / ${x.synth.fastPath.testRuns} / ${x.synth.fastPath.jevRequests} / ${formatDuration(x.synth.fastPath.wallMs)}`),
+    row('fast path: decline reasons (R-d)', (x) => declineReasons(x.synth)),
+    row('routers: issued / applied / dropped / max wait ms (R-a)', (x) => `${x.synth.routers.issued} / ${x.synth.routers.applied} / ${x.synth.routers.dropped} / ${x.synth.routers.maxWaitMs}`),
+    row('risk: code verdicts / Jev unavailable (R-e)', (x) => `${x.synth.risk.codeVerdicts} / ${x.synth.risk.jevUnavailable}`),
+    row('S2: TTFB p50 / p90 ms (n) / hedges / hedge wins / cache read+write', (x) => `${fmt(percentile(x.synth.s2.ttfbMs, 50), 0)} / ${fmt(percentile(x.synth.s2.ttfbMs, 90), 0)} (n=${x.synth.s2.ttfbMs.length}) / ${x.synth.s2.hedges} / ${x.synth.s2.hedgeWins} / ${x.synth.s2.cacheRead}+${x.synth.s2.cacheWrite}`),
   ];
 }
 

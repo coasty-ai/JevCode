@@ -15,7 +15,7 @@ import { percentile } from '../core/time.js';
 import type { ActionOutcome, BenchCondition, BenchSuite, BenchTaskRecord, Decider, Engine, Provider, RunResult, Sandbox, SandboxRunOptions, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
 import { ConfigError, toJevCodeError } from '../errors.js';
 import { createNullProvider } from '../provider/null.js';
-import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isBenchCondition, requiresGenerator, servedRateFor, synthesizerGenerationOf, synthesizerModeOf, tunedParamsFor, usesStubDecider, usesSynthesizer, usesTunedProvider } from './conditions.js';
+import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isBenchCondition, isNextArm, requiresGenerator, requiresSerialBench, servedRateFor, synthesizerGenerationOf, synthesizerModeOf, tunedParamsFor, usesStubDecider, usesSynthesizer, usesTunedProvider } from './conditions.js';
 import { readGeneratorRecords, summariseGeneratorRecords } from './generator-records.js';
 import { computeSuiteMetrics, isNotRun, suitesIn, withPairComplete } from './metrics.js';
 import { readStepsSummary } from './step-records.js';
@@ -72,6 +72,13 @@ export function validateOptions(opts: BenchOptions, deps: BenchDepsWithSynth): v
   // jev-only and llm-jev (docs/LLM-JEV-DESIGN.md §10.1) put the synthesizer in the propose stage
   const synthCondition = opts.conditions.find(usesSynthesizer);
   if (synthCondition !== undefined && !deps.createSynthesizer) throw new ConfigError(`condition ${synthCondition} requires a synthesizer (BenchDeps.createSynthesizer)`, { setting: 'conditions' });
+  // contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §8.2 / §6 row 15: the fast path runs test commands of its own inside
+  // the step, so an arm that can enter it is measured at --concurrency 1 — at anything else its wall is a function of how
+  // many other tasks shared the machine, and neither R-b (fastPath.wallMs <= budgetMs) nor prediction (b) means anything.
+  // The control arm is held to the same bar: a paired contrast whose two arms ran at different concurrencies is not one.
+  if (requiresSerialBench(opts.conditions) && opts.concurrency !== 1) {
+    throw new ConfigError(`--concurrency must be 1 for ${opts.conditions.filter(isNextArm).join(', ')} (LLM-LOOP-DESIGN §8.2: the fast path runs tests inside the step; a shared machine makes its wall unreadable)`, { setting: 'concurrency' });
+  }
   if (opts.tasks !== undefined && opts.tasks !== null && (!Number.isInteger(opts.tasks) || opts.tasks < 1)) throw new ConfigError('--tasks must be a positive integer', { setting: 'tasks' });
   if (opts.resumeBenchId !== undefined && opts.resumeBenchId !== null && !BENCH_ID_RE.test(opts.resumeBenchId)) throw new ConfigError(`--resume: "${opts.resumeBenchId}" is not a bench id`, { setting: 'resume' });
 }

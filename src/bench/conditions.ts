@@ -20,9 +20,49 @@ import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../synth/llm/sour
 import { STUB_DECIDER_MODEL } from './stub-decider.js';
 import { JEV_OFF_MODEL, jevOffModeFrom } from '../jev/off.js';
 import { PLAN_CAP_CHARS, type TunedProviderParams } from './tuned-provider.js';
-import type { BenchOptions, ConditionConfig, PinnedGeneration, ServedRate } from './types.js';
+import type { ArmMechanisms, BenchOptions, ConditionConfig, PinnedGeneration, S2Generation, ServedRate } from './types.js';
 
-export const CONDITION_ORDER: readonly BenchCondition[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned'];
+export const CONDITION_ORDER: readonly BenchCondition[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned', 'jev-on-next', 'jev-on-next-nofast'];
+
+/**
+ * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §8.1: the two arms of the LLM-loop wave. `jev-on-next` is the `jev-on`
+ * engine with the router table, the synth fast path armed and the S2 generation mechanisms on; `jev-on-next-nofast` is the
+ * same arm with the fast path off. They are bench-side substitutions on the `jev-on` mode exactly as `jev-off-tuned` is one
+ * on `jev-off`: the arm's mechanisms are PINNED here (`armMechanisms`) and recorded in summary.json, so a run directory says
+ * which mechanisms were live rather than leaving it to be inferred from the engine's defaults.
+ */
+export const NEXT_ARMS: readonly BenchCondition[] = ['jev-on-next', 'jev-on-next-nofast'];
+
+export function isNextArm(condition: BenchCondition): boolean {
+  return NEXT_ARMS.includes(condition);
+}
+
+/**
+ * The three mechanisms of the wave, per arm (§8.1 arm table; the shape lives in bench/types.ts beside `ConditionConfig`,
+ * which records it). `fastPath: 'auto'` = armed, the stage-1 predicate decides per step (§4.3); `routers` = the §2 router
+ * table; `s2` = the §3 generation path, whose pinned parameters ride on `PinnedGeneration.s2`.
+ */
+export function armMechanisms(condition: BenchCondition): ArmMechanisms {
+  switch (condition) {
+    case 'jev-on-next':
+      return { fastPath: 'auto', routers: true, s2: true };
+    case 'jev-on-next-nofast':
+      // §8.1: the single most valuable device in the plan — everything jev-on-next has EXCEPT route R9
+      return { fastPath: 'off', routers: true, s2: true };
+    default:
+      return { fastPath: 'off', routers: false, s2: false };
+  }
+}
+
+/**
+ * §8.2 / §6 row 15: the fast path runs test commands of its own inside the step, so an arm that can enter it is measured at
+ * `--concurrency 1` — otherwise its wall is a function of how many other tasks shared the machine, and neither R-b
+ * (`fastPath.wallMs <= budgetMs`) nor prediction (b) (median wall) means anything. The control arm is held to the same
+ * concurrency so the pair is comparable: a paired contrast whose two arms ran at different concurrencies is not one.
+ */
+export function requiresSerialBench(conditions: readonly BenchCondition[]): boolean {
+  return conditions.some(isNextArm);
+}
 
 /** The engine mode an arm runs on (docs/LLM-JEV-DESIGN.md §10.1): the attribution arms are bench-side substitutions on an existing mode. */
 export function engineModeOf(condition: BenchCondition): EngineMode {
@@ -31,6 +71,10 @@ export function engineModeOf(condition: BenchCondition): EngineMode {
       return 'llm-jev';
     case 'jev-off-tuned':
       return 'jev-off';
+    case 'jev-on-next':
+    case 'jev-on-next-nofast':
+      // contract 1.9 (Fastlane) §8.1: the wave's arms are the jev-on engine with mechanisms switched on, never a new mode
+      return 'jev-on';
     default:
       return condition;
   }
@@ -127,6 +171,16 @@ export const HYGIENE_REASONING: GenerateReasoning = LLM_DEFAULT_REASONING;
 /** §10.1 `llm-jev` / `llm-sieve`: what the LLM source sends by default (§4.6 / §4.8), handed to the synthesizer verbatim. */
 export const SYNTHESIZER_GENERATION: SynthesizerGeneration = LLM_DEFAULT_GENERATION;
 
+/**
+ * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §3: the S2 generation mechanisms, PINNED so summary.json states what the
+ * arm asked for rather than what the build happened to default to. `hedgeAfterMs = clamp(2 × running TTFB p50, 3 s, 8 s)`
+ * with one hedge per round (§3.2, `LLM_HEDGES_PER_ROUND`); the byte-stable prefix order system → repo map → files → window
+ * (§3.3 — it must not move `view: 'legacy'` bytes, which is the golden test's business, not this record's); the §3.4
+ * reasoning cap on the cheap classes only, which is why it is a separate number and NOT folded into `reasoning`
+ * (`{ effort: 'low' }` stays: §4.12, the served endpoint rejects `reasoning: {enabled:false}` outright).
+ */
+export const S2_GENERATION: S2Generation = { hedges: { perRound: 1, afterMsMin: 3_000, afterMsMax: 8_000, ttfbP50Multiple: 2 }, prefix: 'byte-stable', reasoningMaxTokens: 256 };
+
 export function pinnedGeneration(condition: BenchCondition, generatorModel: string): PinnedGeneration {
   const servedRate = servedRateFor(generatorModel);
   switch (condition) {
@@ -135,6 +189,22 @@ export function pinnedGeneration(condition: BenchCondition, generatorModel: stri
       return { proposer: 'generator', temperature: null, maxTokens: BASELINE_MAX_TOKENS, reasoning: null, deadlineMs: null, lengthHandling: 'none', servedRate };
     case 'jev-off-tuned':
       return { proposer: 'generator', temperature: null, maxTokens: TUNED_MAX_TOKENS, reasoning: HYGIENE_REASONING, deadlineMs: TUNED_DEADLINE_MS, repositoryDeadlineMs: TUNED_REPOSITORY_DEADLINE_MS, lengthHandling: 'double-once', servedRate };
+    case 'jev-on-next':
+    case 'jev-on-next-nofast':
+      // contract 1.9 (Fastlane) §8.1: "the jev-off-tuned object plus the S2 hedge/prefix fields". The proposer is the
+      // GENERATOR — the fast path is a per-step detour that builds its own jev-only synthesizer (§4.2), it is not the
+      // arm's proposer, which is why `usesSynthesizer` is false here and no SynthesizerGeneration is pinned.
+      return {
+        proposer: 'generator',
+        temperature: null,
+        maxTokens: TUNED_MAX_TOKENS,
+        reasoning: HYGIENE_REASONING,
+        deadlineMs: TUNED_DEADLINE_MS,
+        repositoryDeadlineMs: TUNED_REPOSITORY_DEADLINE_MS,
+        lengthHandling: 'double-once',
+        servedRate,
+        s2: S2_GENERATION,
+      };
     case 'jev-only':
       // no generating LLM: the NullProvider throws if called; the values are the engine's inert defaults
       return { proposer: 'synthesizer', temperature: null, maxTokens: BASELINE_MAX_TOKENS, reasoning: null, deadlineMs: null, lengthHandling: 'none', servedRate: { inputPerM: 0, outputPerM: 0 } };
@@ -207,6 +277,7 @@ export function conditionConfig(condition: BenchCondition, opts: BenchOptions, g
     maxOutputBytes: opts.limits.maxOutputBytes,
     completeThreshold: opts.limits.completeThreshold,
     impossibleThreshold: opts.limits.impossibleThreshold,
+    mechanisms: armMechanisms(condition),
   };
 }
 
@@ -238,9 +309,19 @@ function copyConfigRecord(record: Record<string, ConfigRecordValue>): Record<str
   return out;
 }
 
-export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions): EngineOptions {
+/**
+ * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §5.2 / §7.1: `EngineOptions.fastPath` is written by slot C and
+ * `EngineOptions.routers` by slot B, both into `src/core/types.ts` AFTER this slot lands (the §7.1 writer order is
+ * B0 → C → D → B → A). This intersection is the seam, and it is deliberately typed rather than cast: when the two
+ * members land with the shapes §5.2 states, the intersection is redundant and everything still compiles; if either
+ * lands with a DIFFERENT type, the intersection collapses and the assignment below fails to compile — a loud failure
+ * at merge is the point, since the silent alternative is an arm that runs with both mechanisms off and measures nothing.
+ */
+export type WaveEngineOptions = EngineOptions & { fastPath?: 'auto' | 'off'; routers?: 'on' | 'off' };
+
+export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions): WaveEngineOptions {
   const generation = pinnedGeneration(input.condition, input.provider.model);
-  const out: EngineOptions = {
+  const out: WaveEngineOptions = {
     task: input.task,
     mode: engineModeOf(input.condition),
     workspace: input.workspace,
@@ -276,6 +357,11 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
   if (input.now) out.now = input.now;
   if (input.extraWritableRoots && input.extraWritableRoots.length > 0) out.extraWritableRoots = [...input.extraWritableRoots];
   if (input.extraReadableRoots && input.extraReadableRoots.length > 0) out.extraReadableRoots = [...input.extraReadableRoots];
+  // contract 1.9 (Fastlane) §8.1: the arm's mechanisms are pinned per condition, never read from the user's env — an arm
+  // whose fast path was on because JEVCODE_FASTPATH happened to be exported is not the arm summary.json says it is.
+  const mech = armMechanisms(input.condition);
+  out.fastPath = mech.fastPath;
+  out.routers = mech.routers ? 'on' : 'off';
   return out;
 }
 
