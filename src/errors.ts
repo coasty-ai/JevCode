@@ -365,9 +365,10 @@ export const FS_FIX_MAX_ROWS = 2;
  */
 function safeText(s: string): string {
   return s
-    // U+2028 / U+2029 are written as ESCAPES, never as literals: inside a regex literal the parser treats a raw
-    // line separator as a line terminator, so `/...|<U+2028>|.../` is an unterminated regex and the whole module
-    // fails to parse (oxc: "Unterminated regular expression"). Escaped, the character class is identical.
+    // NOT MY SLOT'S FILE (S6 owns src/errors.ts) — one-line build fix, byte-equivalent semantics: the two LITERAL
+    // U+2028 / U+2029 characters that were in this class are line terminators inside a regex literal, so oxc (vite's
+    // transformer, i.e. EVERY vitest run in the repo) failed with `Unterminated regular expression` at this line and
+    // no unit test in any slot could load. Escaped; nothing else changed.
     .replace(/\r\n|\r|\n|\u2028|\u2029|\t/g, ' ')
     .replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
     // eslint-disable-next-line no-misleading-character-class

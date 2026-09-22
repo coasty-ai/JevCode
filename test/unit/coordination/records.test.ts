@@ -4,7 +4,7 @@
  * bound to the path it was read from (blocker 6) and a forged foreign beat that may not stop a run (blocker 5).
  */
 import { describe, expect, it } from 'vitest';
-import { authorityOf, claimHolder, compareClaim, forkVerdict, hmacOf, hmacValid, isValidClaim, mintClaim, withHmac } from '../../../src/coordination/claims.js';
+import { MAX_CLAIM_EPOCH, authorityOf, claimHolder, claimRefusal, compareClaim, forkVerdict, hmacOf, hmacValid, isValidClaim, mintClaim, withHmac } from '../../../src/coordination/claims.js';
 import {
   COUNTER_MAX,
   HEARTBEAT_TTL_MS,
@@ -186,54 +186,111 @@ describe('liveness (§3.4, §11 rows 1 / 2 / 6)', () => {
   });
 });
 
-describe('claims — the immutable fork fence (review blocker 3)', () => {
-  it('the holder is the lowest claim and the verdict never depends on the order records arrived', () => {
-    const a = claim({ epoch: 1, deviceId: DEV_A, pid: 10, startedAt: iso(T0 - 5000) });
-    const b = claim({ epoch: 2, deviceId: DEV_B, pid: 11, startedAt: iso(T0 - 1000) });
-    expect(compareClaim(a, b)).toBe(-1);
-    expect(compareClaim(b, a)).toBe(1);
-    expect(claimHolder([b, a])).toEqual(a);
-    expect(claimHolder([a, b])).toEqual(a);
-    expect(forkVerdict(a, [{ claim: b, authority: 'trusted' }]).role).toBe('holder');
-    expect(forkVerdict(b, [{ claim: a, authority: 'trusted' }]).role).toBe('loser');
+describe('claims — the immutable fork fence (review blocker 3; §3.2 / §9.3 / §10.7 ordering, §14 item 18)', () => {
+  it('the holder is the HIGHEST epoch and the verdict never depends on the order records arrived', () => {
+    const a = claim({ epoch: 1, deviceId: DEV_A, pid: 10, at: iso(T0 - 5000) });
+    const b = claim({ epoch: 2, deviceId: DEV_B, pid: 11, at: iso(T0 - 1000) });
+    expect(compareClaim(b, a)).toBe(-1); // a RANK order: negative means `b` OUTRANKS `a`
+    expect(compareClaim(a, b)).toBe(1);
+    expect(claimHolder([b, a])).toEqual(b);
+    expect(claimHolder([a, b])).toEqual(b);
+    expect(forkVerdict(b, [{ claim: a, authority: 'trusted' }]).role).toBe('holder');
+    expect(forkVerdict(a, [{ claim: b, authority: 'trusted' }]).role).toBe('loser');
   });
 
-  it('two processes that minted one epoch are ordered by startedAt, then deviceId, then pid — total and stable', () => {
-    const base = { epoch: 3, runId: runId(1), startedAt: iso(T0) };
+  /**
+   * FAILING-FIRST (owner decision, §14 item 18). Under the withdrawn minimum-holder rule this asserted the exact
+   * opposite: the STALE process (epoch 3) was the holder and the legitimate resumer (epoch 4, hmac-valid from a paired
+   * device) was called the fork and had to stop. That inverts the purpose of the epoch — it is minted by the
+   * incarnation that READ its predecessor's state, so the later one is the one entitled to write.
+   */
+  it('§9.3: the resumer with the higher QUALIFIED epoch holds; the stale lower-epoch process gets the fork verdict', () => {
+    const rid = runId(7);
+    const stale = claim({ epoch: 3, deviceId: DEV_A, runId: rid, pid: 100, at: iso(T0 - 90_000) });
+    const resumer = mintClaim({ deviceId: DEV_B, runId: rid, pid: 200, at: iso(T0 - 1_000), seenEpochs: [stale.epoch] });
+    expect(resumer.epoch).toBe(4);
+    // the stale process reads the resumer's authenticated beat: it is the LOSER and the exit-2 stop is authorised
+    const onStale = forkVerdict(stale, [{ claim: resumer, authority: 'trusted' }]);
+    expect(onStale.role).toBe('loser');
+    expect(onStale.holder).toEqual(resumer);
+    expect(onStale.verified).toBe(true);
+    expect(onStale.losers).toEqual([stale]);
+    // the resumer reads the stale beat: it HOLDS, and nothing about it is a stop
+    const onResumer = forkVerdict(resumer, [{ claim: stale, authority: 'trusted' }]);
+    expect(onResumer.role).toBe('holder');
+    expect(onResumer.verified).toBe(false);
+    // both sides computed the same holder — symmetry is the property the immutable claim buys
+    expect(onStale.holder).toEqual(onResumer.holder);
+  });
+
+  it('§3.2 / §11 row 31: one epoch ties by deviceId, then runId; `at` then `pid` are the as-built last resort', () => {
+    const base = { epoch: 3, runId: runId(1), at: iso(T0) };
+    expect(compareClaim({ ...base, deviceId: 'aaaaaaaa', pid: 9 }, { ...base, deviceId: DEV_A, pid: 9 })).toBe(-1);
+    expect(compareClaim({ ...base, deviceId: DEV_A, pid: 9 }, { ...base, deviceId: DEV_A, runId: runId(2), pid: 9 })).toBe(-1);
+    // two processes of ONE device on ONE run: the design's tuple is not total there, so `at` then `pid` decide
     const x = { ...base, deviceId: DEV_A, pid: 2 };
-    const y = { ...base, deviceId: DEV_A, pid: 9 };
-    expect(compareClaim(x, y)).toBe(-1);
-    expect(compareClaim({ ...base, deviceId: 'aaaaaaaa', pid: 9 }, y)).toBe(-1);
+    expect(compareClaim(x, { ...base, deviceId: DEV_A, pid: 9 })).toBe(-1);
+    expect(compareClaim({ ...x, at: iso(T0 - 1) }, x)).toBe(-1);
     expect(compareClaim(x, { ...x })).toBe(0);
   });
 
   it('the review’s A:48 / B:50 interleaving: the FOLDING stamp flips, the claim does not', () => {
-    // both engines claim one runId; A started first, so A holds — whatever each side last folded
-    const aClaim = mintClaim({ deviceId: DEV_A, runId: runId(7), pid: 100, startedAt: iso(T0 - 10_000), seenEpochs: [] });
-    const bClaim = mintClaim({ deviceId: DEV_B, runId: runId(7), pid: 200, startedAt: iso(T0 - 1_000), seenEpochs: [aClaim.epoch] });
+    // both engines claim one runId; B minted after reading A's epoch, so B holds — whatever each side last folded
+    const aClaim = mintClaim({ deviceId: DEV_A, runId: runId(7), pid: 100, at: iso(T0 - 10_000), seenEpochs: [] });
+    const bClaim = mintClaim({ deviceId: DEV_B, runId: runId(7), pid: 200, at: iso(T0 - 1_000), seenEpochs: [aClaim.epoch] });
     expect(aClaim.epoch).toBe(1);
     expect(bClaim.epoch).toBe(2);
-    // A folds B first, then B folds A's LATER beat: both still agree A holds
-    expect(forkVerdict(aClaim, [{ claim: bClaim, authority: 'trusted' }]).holder).toEqual(aClaim);
-    expect(forkVerdict(bClaim, [{ claim: aClaim, authority: 'trusted' }]).holder).toEqual(aClaim);
+    // A folds B first, then B folds A's LATER beat: both still agree B holds
+    expect(forkVerdict(aClaim, [{ claim: bClaim, authority: 'trusted' }]).holder).toEqual(bClaim);
+    expect(forkVerdict(bClaim, [{ claim: aClaim, authority: 'trusted' }]).holder).toEqual(bClaim);
     // exactly one loser
     const roles = [forkVerdict(aClaim, [{ claim: bClaim, authority: 'trusted' }]).role, forkVerdict(bClaim, [{ claim: aClaim, authority: 'trusted' }]).role];
     expect(roles.filter((r) => r === 'loser')).toHaveLength(1);
   });
 
-  it('review blocker 5: a FORGED foreign claim can never make this process stop', () => {
-    const mine = claim({ epoch: 2, deviceId: DEV_A, runId: runId(7), pid: 100, startedAt: iso(T0) });
-    const forged = claim({ epoch: 1, deviceId: DEV_B, runId: runId(7), pid: 1, startedAt: iso(T0 - 99_999) });
+  it('review blocker 5 / §11 row 51: a FORGED foreign claim can never stop this process, even at a HIGHER epoch', () => {
+    const mine = claim({ epoch: 2, deviceId: DEV_A, runId: runId(7), pid: 100, at: iso(T0) });
+    const forged = claim({ epoch: 9, deviceId: DEV_B, runId: runId(7), pid: 1, at: iso(T0 - 99_999) });
     const unverified = forkVerdict(mine, [{ claim: forged, authority: 'unverified' }]);
-    expect(unverified.role).toBe('loser'); // displayed as forked …
-    expect(unverified.verified).toBe(false); // … but the stop is NOT authorised (§10.3)
+    expect(unverified.role).toBe('holder'); // an unqualified claim never enters the holder computation (§9.3)
+    expect(unverified.holder).toEqual(mine);
+    expect(unverified.unverifiedFork).toBe(true); // … it still shows as ⚠ forked with the [c]/[q] pane …
+    expect(unverified.verified).toBe(false); // … and the stop is NOT authorised (§10.3)
     const paired = forkVerdict(mine, [{ claim: forged, authority: 'trusted' }]);
+    expect(paired.role).toBe('loser');
     expect(paired.verified).toBe(true);
+    expect(paired.unverifiedFork).toBe(false);
+    // a mixed fold: the qualified superseding claim decides, and the forged one cannot suppress the stop
+    const mixed = forkVerdict(mine, [
+      { claim: forged, authority: 'unverified' },
+      { claim: claim({ epoch: 3, deviceId: 'cccccccc', runId: runId(7), pid: 7, at: iso(T0) }), authority: 'trusted' },
+    ]);
+    expect(mixed.role).toBe('loser');
+    expect(mixed.holder.epoch).toBe(3);
+    expect(mixed.verified).toBe(true);
+  });
+
+  it('§7.3 1(a) / §9.3: /resume refuses only when a QUALIFIED foreign epoch exceeds the local maximum', () => {
+    expect(claimRefusal([3], [{ epoch: 4, deviceId: DEV_B, qualified: true }])).toEqual({ deviceId: DEV_B, epoch: 4 });
+    expect(claimRefusal([3], [{ epoch: 4, deviceId: DEV_B, qualified: false }])).toBeNull(); // a card line, never a refusal
+    expect(claimRefusal([4], [{ epoch: 4, deviceId: DEV_B, qualified: true }])).toBeNull(); // equal is not "exceeds"
+    expect(claimRefusal([3], [{ epoch: MAX_CLAIM_EPOCH + 1, deviceId: DEV_B, qualified: true }])).toBeNull(); // out of band
+    expect(claimRefusal([], [])).toBeNull();
+    // the highest qualified epoch names the device on the card
+    expect(
+      claimRefusal(
+        [1],
+        [
+          { epoch: 4, deviceId: DEV_B, qualified: true },
+          { epoch: 9, deviceId: 'cccccccc', qualified: true },
+        ],
+      ),
+    ).toEqual({ deviceId: 'cccccccc', epoch: 9 });
   });
 
   it('a malformed or unbounded claim is refused', () => {
     expect(isValidClaim(claim())).toBe(true);
-    for (const bad of [null, {}, { ...claim(), epoch: 0 }, { ...claim(), epoch: 1e300 }, { ...claim(), pid: 0 }, { ...claim(), deviceId: 1 }]) expect(isValidClaim(bad)).toBe(false);
+    for (const bad of [null, {}, { ...claim(), epoch: 0 }, { ...claim(), epoch: 1e300 }, { ...claim(), pid: 0 }, { ...claim(), deviceId: 1 }, { ...claim(), at: '' }]) expect(isValidClaim(bad)).toBe(false);
   });
 });
 

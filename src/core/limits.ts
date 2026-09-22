@@ -4,7 +4,7 @@
  * Blocks land additively from the parallel designs and are unioned at merge — ADD TO THIS FILE, NEVER REORGANISE IT:
  *   1. the generator's relaxed-context bounds (COORDINATION-DESIGN §8, below);
  *   2. the orchestration bounds (ORCHESTRATION-DESIGN §8.2 D0 item 2, at the end of the file);
- *   3. IMPORT_LIMITS (IMPORT-DESIGN Appendix B) when the import engine merges.
+ *   3. IMPORT_LIMITS (IMPORT-DESIGN Appendix B, at the end of the file).
  * W0 still owes the moves of the other duplicated copies (`src/loop/window.ts:10-15`, `resume.ts:20-24`, `prompts.ts:15`,
  * `:220`, `:227`). Nothing here imports anything: it is the leaf both `src/checkpoint/**` and `src/loop/**` read.
  */
@@ -155,3 +155,88 @@ export const ADD_SET_CHUNK = 256;
  * so five is the count that keeps every ladder rung returning exactly what it returned before.
  */
 export const HEADLINE_ROWS_MAX = 5;
+
+// ---------------------------------------------------------------------------------------
+// Import (docs/IMPORT-DESIGN.md Appendix B) — unioned at merge; the block above it is orchestration, above that the
+// relaxed-context bounds. ADD, NEVER REORGANISE.
+// ---------------------------------------------------------------------------------------
+
+/**
+ * §2.8 / Appendix B. Frozen by `as const` so a caller cannot widen a bound at runtime; every
+ * value is a positive finite number and the two shares sit in `(0, 0.5)`
+ * (`test/unit/core/limits.test.ts`).
+ */
+export const IMPORT_LIMITS = {
+  // ----- discover (§4.2.2) -----
+  /** deepest real artefact observed is `~/.claude/projects/<slug>/<session>/subagents/x.jsonl` (depth 5) */
+  walkDepth: 8,
+  /** per root; `~/.claude/projects` alone is 10,220 entries today */
+  walkEntries: 20_000,
+  /** per root; a cold NFS `$HOME` must not hang the wizard */
+  walkMs: 2_000,
+  /** one atlas row cannot produce 3,371 plan rows */
+  filesPerRow: 512,
+  /** `= INSTRUCTIONS_READ_CAP_BYTES` (`config/instructions.ts:24`) */
+  sourceReadCapBytes: 4 * 1024 * 1024,
+  /** metadata pass only; the largest transcript on the author's machine is 151 MB */
+  transcriptScanBytes: 256 * 1024,
+  /** a NUL in this prefix means the file is not text (§4.4.1 rule 5) */
+  binarySniffBytes: 8 * 1024,
+  /** stat→read race slack (§6 row 31) */
+  readSlackBytes: 64 * 1024,
+
+  // ----- destination (§2.2, §2.8) -----
+  memoryDirBytes: 512 * 1024,
+  memoryFiles: 200,
+  /** Claude's own index cap is 200 lines / 25 KB */
+  memoryIndexLines: 200,
+  memoryIndexBytes: 8 * 1024,
+  topicBytes: 8 * 1024,
+  /** Windsurf's own rule cap is 12,000 chars → clipped with a notice */
+  ruleBytes: 4 * 1024,
+  commandBytes: 8 * 1024,
+  /** keeps `AGENTS.md` under `INSTRUCTIONS_MAX_BYTES` (32 KiB) with headroom */
+  agentsAppendBytes: 8 * 1024,
+  /** per rule, after brace expansion */
+  rulePatterns: 200,
+  /** rule files a session matches against per step [G1.6] */
+  ruleFiles: 200,
+  mcpServers: 64,
+  /** `slugOf` output cap [G1.2] */
+  slugMaxChars: 64,
+
+  // ----- prompt: shares of the step's context budget (§2.10.3) [G2.7] -----
+  /** the `## Memory (index)` system-prompt section, once per run */
+  memoryIndexPromptBytes: 8 * 1024,
+  rulesInScopeShare: 0.1,
+  rulesInScopeMin: 2 * 1024,
+  rulesInScopeMax: 12 * 1024,
+  memoryInScopeShare: 0.14,
+  memoryInScopeMin: 2 * 1024,
+  memoryInScopeMax: 16 * 1024,
+
+  // ----- jev (§4.4.3) -----
+  /** `assertQuestionBatch` (`jev/questions.ts:102`) caps at 1,000; the import budget is far under it */
+  jevRequests: 3,
+  jevQuestions: 400,
+  jevHeadings: 5,
+  jevHeadingCells: 80,
+  /** only under `--jev-sample=head400` [G2.4] */
+  jevSentenceChars: 200,
+
+  // ----- plan (§4.5) -----
+  planRows: 2_000,
+  /** bounds the O(N²) Jaccard pass [G1.6] */
+  dedupePairs: 20_000,
+  minhashBands: 8,
+
+  // ----- artefacts (§4.6, §4.7.6) -----
+  reportBytes: 1 * 1024 * 1024,
+  sourceLineBytes: 2 * 1024,
+  /** newest import dirs kept; the rest are GC'd at the start of the next import [G1.4] */
+  importsKeep: 10,
+  lockStaleMs: 10 * 60 * 1000,
+} as const;
+
+/** The literal type of `IMPORT_LIMITS`, for callers that thread a narrowed copy through a seam. */
+export type ImportLimits = typeof IMPORT_LIMITS;

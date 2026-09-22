@@ -83,7 +83,9 @@ describe('loop detection and replan', () => {
     });
     const r2 = await h2.engine.run();
     expect(r2.stopReason).toBe('impossible');
-    expect(h2.store.transcript.at(-2)).toMatch(/^\[run\] warn: stop: impossible at step 3 \(task_impossible=0\.90\)$/);
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
+    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    expect(h2.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     // the replan stage ran at the start of step 4, which was then discarded (§9.1 rule 1); the stop names the last committed step
     expect(h2.store.transcript.some((l) => /^\[step 4\] replan: impossible \(move change_approach p=0\.80, task_impossible=0\.90\)$/.test(l))).toBe(true);
   });

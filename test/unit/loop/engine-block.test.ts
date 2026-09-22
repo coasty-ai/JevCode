@@ -103,13 +103,18 @@ describe('the degrade emit (TUI-DESIGN-4 §7.2 P-D2 item 1)', () => {
     // the store classifies and reports; the engine dedupes by key and emits
     const reported = h.store.degradeListener;
     expect(typeof reported).toBe('function');
-    h.store.reportDegrade({ code: 'EACCES', file: 'steps.jsonl', text: 'checkpoint degraded: EACCES on steps.jsonl', key: 'steps.jsonl:EACCES' });
-    h.store.reportDegrade({ code: 'EACCES', file: 'steps.jsonl', text: 'checkpoint degraded: EACCES on steps.jsonl', key: 'steps.jsonl:EACCES' });
-    h.store.reportDegrade({ code: 'ENOENT', file: 'steps.jsonl', text: 'checkpoint degraded: ENOENT on steps.jsonl', key: 'steps.jsonl:ENOENT' });
+    h.store.reportDegrade({ code: 'EACCES', file: 'steps.jsonl', text: 'checkpoint degraded: EACCES on steps.jsonl', sentence: 'checkpoint degraded: EACCES on steps.jsonl — the run directory is not writable; this run cannot be resumed', key: 'steps.jsonl:EACCES' });
+    h.store.reportDegrade({ code: 'EACCES', file: 'steps.jsonl', text: 'checkpoint degraded: EACCES on steps.jsonl', sentence: 'checkpoint degraded: EACCES on steps.jsonl — the run directory is not writable; this run cannot be resumed', key: 'steps.jsonl:EACCES' });
+    h.store.reportDegrade({ code: 'ENOENT', file: 'steps.jsonl', text: 'checkpoint degraded: ENOENT on steps.jsonl', sentence: 'checkpoint degraded: ENOENT on steps.jsonl — the run directory was removed during the run; this run cannot be resumed', key: 'steps.jsonl:ENOENT' });
     await h.engine.run();
     const degraded = h.of('notice').filter((n) => n.kind === 'checkpoint:degraded');
     // edge 1: the dedupe key is <file>:<code>, so a DIFFERENT code on the same file degrades again
-    expect(degraded.map((n) => n.text)).toEqual(['checkpoint degraded: EACCES on steps.jsonl', 'checkpoint degraded: ENOENT on steps.jsonl']);
+    // contract 1.7 (§7.2 edge 6): the notice carries the whole sentence, and edge 1's key is <file>:<code>, so a
+    // DIFFERENT code on the same file degrades again
+    expect(degraded.map((n) => n.text)).toEqual([
+      'checkpoint degraded: EACCES on steps.jsonl — the run directory is not writable; this run cannot be resumed',
+      'checkpoint degraded: ENOENT on steps.jsonl — the run directory was removed during the run; this run cannot be resumed',
+    ]);
     for (const n of degraded) expect(n.level).toBe('error');
   });
 
@@ -117,7 +122,7 @@ describe('the degrade emit (TUI-DESIGN-4 §7.2 P-D2 item 1)', () => {
     const h = await build({ turns: readTurns(1), limits: { maxSteps: 1 } });
     await h.engine.run();
     const before = h.of('notice').filter((n) => n.kind === 'checkpoint:degraded').length;
-    h.store.reportDegrade({ code: 'EIO', file: 'jev.jsonl', text: 'checkpoint degraded: EIO on jev.jsonl', key: 'jev.jsonl:EIO' });
+    h.store.reportDegrade({ code: 'EIO', file: 'jev.jsonl', text: 'checkpoint degraded: EIO on jev.jsonl', sentence: 'checkpoint degraded: EIO on jev.jsonl — the disk reported an I/O error; this run cannot be resumed', key: 'jev.jsonl:EIO' });
     expect(h.of('notice').filter((n) => n.kind === 'checkpoint:degraded')).toHaveLength(before);
   });
 });

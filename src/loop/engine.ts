@@ -1994,7 +1994,10 @@ class EngineImpl implements Engine {
   private noteDisk(disk: DiskError, step: number | null, cause: unknown = null): boolean {
     if (!this.warned.has(disk.key)) {
       this.warned.add(disk.key);
-      this.emit({ type: 'notice', step, kind: 'checkpoint:degraded', level: 'error', text: disk.text });
+      // contract 1.7 (TUI-DESIGN-4 §7.2 edge 6): the notice carries the whole SENTENCE — `checkpoint degraded:
+      // EACCES on state.json — the run directory is not writable; this run cannot be resumed` — never the bare
+      // `<code> on <file>` and never the raw `open '<path>'` suffix. `text` stays on `DiskError` for its captures.
+      this.emit({ type: 'notice', step, kind: 'checkpoint:degraded', level: 'error', text: disk.sentence });
     }
     // `[c] continue without checkpoints` was chosen: later state.json failures stay notices, the run is already degraded;
     // a failure of the FINAL write (finish() in flight) has no loop top left to pause at — it makes the run exit 3 instead
@@ -4741,8 +4744,11 @@ class EngineImpl implements Engine {
           this.emit({ type: 'pause:point', point: { ...this.pausePoint } });
         }
         // The stop line and the run:end line reach transcript.log through the same item model as every other line (§10).
+        // contract 1.7 (§3.6 D-V): `stopTranscriptLine` now returns '' — the row is deleted — so the event is not
+        // emitted at all. Guarding HERE rather than only in `itemsFromEvent` keeps `--json` and every listener free
+        // of an empty-text transcript event, not just the two rendered sinks.
         stopEmitted = true;
-        this.emit(stopLine);
+        if (stopLine.type === 'transcript' && stopLine.text.length > 0) this.emit(stopLine);
         endEvent = buildEnd();
         this.recordTranscript(endEvent);
         await Promise.allSettled([...this.pendingPersists]);
@@ -4780,7 +4786,7 @@ class EngineImpl implements Engine {
       this.exitHandler = null;
     }
     this.lastResult = result;
-    if (!stopEmitted) this.emit(stopLine);
+    if (!stopEmitted && stopLine.type === 'transcript' && stopLine.text.length > 0) this.emit(stopLine);
     this.emitStatus();
     // Already recorded in the checkpoint phase (or muted); emitted raw so it is not written twice.
     this.events.emit(endEvent ?? buildEnd());

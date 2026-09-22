@@ -14,11 +14,14 @@
  * measurements are what `sandbox.commands` and `workspace.invalidations` see, so those are what this
  * asserts on — the seams, not a wall-clock number.
  */
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { exitCodeFor, type EngineOptions, type EngineEvent } from '../../../src/core/types.js';
+import type { EngineOptions, EngineEvent } from '../../../src/core/types.js';
 import { decomposeShutByOptions } from '../../../src/loop/stages/decompose.js';
 import { DEFAULT_SPLIT_POLICY } from '../../../src/orchestrate/index.js';
-import { alwaysApprove, createFakeWorkspace, makeEngine, repoState, turn, FIXED_RUN_ID, type Harness } from './fakes.js';
+import { alwaysApprove, createFakeWorkspace, makeEngine, repoState, turn, type Harness } from './fakes.js';
 
 const TURNS = [turn({ kind: 'read', paths: ['src/a.py'] }), turn({ kind: 'done', summary: 'nothing to change' })];
 
@@ -104,108 +107,67 @@ describe('M2: zero cost when it cannot help [G21]', () => {
   });
 });
 
-describe('P9: delegation accepted (§4.2 [G17])', () => {
-  const REMAINING = ['fix alpha/one.ts', 'fix beta/one.ts', 'fix gamma/one.ts'];
-  const FILES = { 'alpha/one.ts': 'a\n', 'beta/one.ts': 'b\n', 'gamma/one.ts': 'c\n' };
 
-  /** a parent that can actually delegate: a repo with a born head, a ledger [G5], a plan of 3 and a reviewer */
-  async function parent(over: { confirmer?: Harness['engine'] extends never ? never : Parameters<typeof makeEngine>[0]['confirmer'] } = {}): Promise<Harness> {
-    return makeEngine({
-      turns: [...TURNS],
-      workspace: createFakeWorkspace({ root: '/repo', files: FILES, gitState: repoState() }),
+/**
+ * §4.2 **P9**. The delegation path itself is exercised over fakes in `decompose.test.ts` (the stage returns
+ * `proposed`, with the confirm asserted byte for byte); what is asserted HERE is the half that lives in the
+ * engine: that the call site is live past the short-circuit, that the gate is really evaluated with facts,
+ * and that nothing about a shut gate writes a byte.
+ *
+ * What is deliberately NOT asserted here, and why: reaching `acceptDelegation` needs `splitGate`'s resource
+ * arm to pass, and that arm reads the HOST — `min(maxAgents, availableParallelism() - 1,
+ * floor(os.freemem() / 3 GiB), floor(freeDisk / repoBytes)) >= 2`. The engine builds `DecomposeFacts`
+ * privately from `nodePreflightProbe()`, so a unit test cannot pin those numbers, and a test that passes
+ * only on a machine with 6 GiB free is worse than no test. The seam that would fix it is named in the
+ * hand-off: an optional `PreflightProbe` on `EngineDeps`, defaulting to `nodePreflightProbe()`.
+ */
+describe('P9: the call site is live (§3, §4.2)', () => {
+  it('past the short-circuit the gate is really evaluated — with a ledger and `split: ask`, a REAL reason comes back', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jevcode-p9-'));
+    const h = await makeEngine({
+      runsDir: dir,
+      turns: [turn({ kind: 'done', summary: 'nothing to change' })],
+      workspace: createFakeWorkspace({ root: dir, files: { 'alpha/one.ts': 'a', 'beta/one.ts': 'b', 'gamma/one.ts': 'c' }, gitState: repoState() }),
       probeGitState: repoState(),
-      ...(over.confirmer !== undefined ? { confirmer: over.confirmer } : { confirmer: alwaysApprove }),
+      confirmer: alwaysApprove,
       engine: {
         splitPolicy: { ...DEFAULT_SPLIT_POLICY, split: 'ask', maxAgents: 3, verify: ['npm test'] },
         orchestration: { depth: 0, hasLedger: true },
-        blocker: async () => 'stop',
-        seed: {
-          parentRunId: 'parent',
-          plan: { done: [], remaining: [...REMAINING], unverified: [], openProblems: [], harnessProblems: [] },
-          window: [],
-          createdThisRun: [],
-          lastTestRun: null,
-        },
+        seed: { parentRunId: 'p', plan: { done: [], remaining: ['fix alpha/one.ts', 'fix beta/one.ts', 'fix gamma/one.ts'], unverified: [], openProblems: [], harnessProblems: [] }, window: [], createdThisRun: [], lastTestRun: null },
       } as Partial<EngineOptions>,
     });
-  }
-
-  it('writes the manifest, emits `orchestration:proposed`, records the state and stops at P9 — exit 4, resumable, `by: self`', async () => {
-    const h = await parent();
     try {
-      const result = await h.engine.run();
-      const proposed = h.of('orchestration:proposed');
-      if (proposed.length === 0) {
-        // the gate did not open in this fixture: the delegation path is unreachable, and P9 with it
-        expect(h.of('decompose:skipped').length + h.of('decompose:ranked').length).toBeGreaterThan(0);
-        return;
-      }
-      expect(proposed).toHaveLength(1);
-      const manifest = proposed[0]!.manifest;
-
-      // the persist order of §4.2's P9 row: the manifest is on disk BEFORE state.json names it
-      expect([...h.store.cache.keys()]).toContain(`orchestrate/manifest-${manifest.step}.json`);
-
-      // `CheckpointState.orchestration` + `.splits`
-      const state = h.store.last()!;
-      expect(state.orchestration).toEqual({
-        manifestId: manifest.manifestId,
-        step: manifest.step,
-        dockBranch: manifest.dockBranch,
-        agents: manifest.agents.map((a) => ({ slug: a.slug, state: 'planned', runId: null, commit: null })),
-      });
-      expect(state.splits).toBe(1);
-      expect(state.interrupted).toBeNull();
-
-      // the PausePoint, exactly as §4.2 writes it — `by: 'self'` [G17], nothing interrupted, no `[r] replay`
-      expect(state.pausePoint).toEqual({
-        step: manifest.step + 1,
-        round: null,
-        phase: 'idle',
-        reason: 'delegate',
-        resumableAt: 'boundary',
-        replayable: false,
-        by: 'self',
-        end: false,
-      });
-      expect(result.reason).toBe('human_pause');
-      expect(exitCodeFor('human_pause')).toBe(4);
+      await h.engine.run();
+      const skipped = h.of('decompose:skipped');
+      expect(skipped.length).toBeGreaterThan(0);
+      // the short-circuit's three reasons mean the stage was never entered; anything else means it WAS,
+      // over measured facts — which is the property the call site has to have.
+      for (const e of skipped) expect(['split_off', 'child_depth', 'no_ledger']).not.toContain(e.why);
+      // and a shut gate still wrote nothing
+      expect([...h.store.cache.keys()].filter((k) => k.startsWith('orchestrate/'))).toEqual([]);
     } finally {
       h.cleanup();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 
-  it('corner row 12: a resumed run whose manifestId AND baseSha still match ADOPTS — no second manifest', async () => {
-    const h = await parent();
+  it('with no ledger the stage is never entered, so not one gate fact is measured (the [G5] half of M2)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jevcode-p9-'));
+    const h = await makeEngine({
+      runsDir: dir,
+      turns: [turn({ kind: 'done', summary: 'nothing to change' })],
+      workspace: createFakeWorkspace({ root: dir, files: { 'alpha/one.ts': 'a' }, gitState: repoState() }),
+      probeGitState: repoState(),
+      engine: { splitPolicy: { ...DEFAULT_SPLIT_POLICY, split: 'ask' }, orchestration: { depth: 0 } } as Partial<EngineOptions>,
+    });
     try {
       await h.engine.run();
-      if (h.of('orchestration:proposed').length === 0) return;
-      const first = h.of('orchestration:proposed')[0]!.manifest;
-
-      const resumed = await makeEngine({
-        turns: [...TURNS],
-        runsDir: h.runsDir,
-        store: h.store,
-        workspace: createFakeWorkspace({ root: '/repo', files: FILES, gitState: repoState() }),
-        probeGitState: repoState(),
-        confirmer: alwaysApprove,
-        resume: { runId: FIXED_RUN_ID, force: false },
-        engine: {
-          splitPolicy: { ...DEFAULT_SPLIT_POLICY, split: 'ask', maxAgents: 3, verify: ['npm test'] },
-          orchestration: { depth: 0, hasLedger: true },
-        } as Partial<EngineOptions>,
-      });
-      try {
-        await resumed.engine.run();
-        expect(resumed.of('orchestration:proposed')).toHaveLength(0);
-        const adopted = resumed.of('agent:adopted');
-        expect(adopted).toHaveLength(1);
-        expect(adopted[0]!.count).toBe(first.agents.length);
-      } finally {
-        resumed.cleanup();
-      }
+      expect(h.of('decompose:skipped')).toEqual([]);
+      expect(h.of('decompose:start')).toEqual([]);
+      expect([...h.store.cache.keys()].filter((k) => k.startsWith('orchestrate/'))).toEqual([]);
     } finally {
       h.cleanup();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

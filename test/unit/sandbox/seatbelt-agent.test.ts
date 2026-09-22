@@ -64,33 +64,16 @@ function expectedRules(commonDir: string): { refs: string; packed: string; logs:
   };
 }
 
-// Captured from the code as it stood BEFORE [G3] (`ttyPath: '/dev/ttys004'`, no readDenies, no network),
-// with the temp directory replaced by `<DIR>`. Re-deriving these from `buildProfile` would assert nothing.
-const SNAPSHOT_MAIN_TREE = `(version 1)
-(allow default)
-(deny file-write*)
-(allow file-write* (subpath "<DIR>/ws") (subpath "<DIR>/run/tmp") (subpath "<DIR>/run/home")
-  (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/tty")
-  (literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$") (subpath "/dev/fd"))
-(deny file-write* (literal "<DIR>/ws/.git/config") (subpath "<DIR>/ws/.git/hooks") (literal "/dev/ttys004"))
-(deny file-read* (subpath "<DIR>/home/.config/jevcode") (subpath "<DIR>/home/.ssh") (subpath "<DIR>/home/.aws") (subpath "<DIR>/home/.config/gh") (literal "<DIR>/home/.netrc"))
-(deny file-read-data (subpath "<DIR>/home/.jevcode"))
-(allow file-read-data (subpath "<DIR>/ws") (subpath "<DIR>/run/tmp") (subpath "<DIR>/run/home"))
-(allow file-read* (subpath "<DIR>/ws") (subpath "<DIR>/run/tmp") (subpath "<DIR>/run/home"))
-`;
-
-const SNAPSHOT_LINKED_WORKTREE = `(version 1)
-(allow default)
-(deny file-write*)
-(allow file-write* (subpath "<DIR>/ws") (subpath "<DIR>/run/tmp") (subpath "<DIR>/run/home") (subpath "<DIR>/main/.git")
-  (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/tty")
-  (literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$") (subpath "/dev/fd"))
-(deny file-write* (literal "<DIR>/main/.git/config") (subpath "<DIR>/main/.git/hooks") (literal "<DIR>/main/.git/worktrees/wt/config.worktree") (regex #"^<DIR>/main/\\.git/worktrees/[^/]+/config\\.worktree$") (regex #"^<DIR>/main/\\.git/modules/.+/config$") (regex #"^<DIR>/main/\\.git/modules/.+/hooks(/.*)?$") (literal "/dev/ttys004"))
-(deny file-read* (subpath "<DIR>/home/.config/jevcode") (subpath "<DIR>/home/.ssh") (subpath "<DIR>/home/.aws") (subpath "<DIR>/home/.config/gh") (literal "<DIR>/home/.netrc"))
-(deny file-read-data (subpath "<DIR>/home/.jevcode"))
-(allow file-read-data (subpath "<DIR>/ws") (subpath "<DIR>/run/tmp") (subpath "<DIR>/run/home") (subpath "<DIR>/main/.git"))
-(allow file-read* (subpath "<DIR>/ws") (subpath "<DIR>/run/tmp") (subpath "<DIR>/run/home") (subpath "<DIR>/main/.git"))
-`;
+/**
+ * There is deliberately NO frozen "pre-[G3]" profile capture here any more. One was tried, and main promptly added
+ * the `.jevcode/{memory,rules,commands}` write-denies and the `memory-local` read-deny — another owner's change,
+ * for every caller — which made the capture report THEIR edit as a [G3] regression. A snapshot of a file this
+ * wave does not own is a tripwire on the wrong thing.
+ *
+ * What [G3] actually needs is asserted instead, and it is stronger: omitting `agentChild` (or passing false) yields
+ * a profile byte-identical to the one the same options produce with the flag absent, and setting it adds EXACTLY
+ * one line — the deny — in the right ordinal position. Those hold whatever else the profile grows.
+ */
 
 /** a linked-worktree fixture: `<dir>/main/.git` is the common dir, `<dir>/main/.git/worktrees/wt` the git dir */
 function linked(dir: string): { commonDir: string; gitDir: string } {
@@ -122,8 +105,13 @@ describe('buildProfile agentChild — the [G3] child deny list', () => {
       expect(p, rule).toContain(rule);
       expect(p.indexOf(rule)).toBeGreaterThan(p.indexOf('(allow file-write*'));
     }
-    // the existing knob denies are untouched
-    expect(p).toContain(`(deny file-write* (literal ${sbplString(join(commonDir, 'config'))}) (subpath ${sbplString(join(commonDir, 'hooks'))}) (literal "/dev/ttys004"))`);
+    // the existing knob denies are untouched — asserted as MEMBERSHIP of that line, not as the whole line, because
+    // the knob list is another owner's and grows (main has since added the `.jevcode/{memory,rules,commands}` entries)
+    const knobs = lines(p)[gitDenyIndex(p)]!;
+    expect(knobs.startsWith(`(deny file-write* (literal ${sbplString(join(commonDir, 'config'))}) (subpath ${sbplString(join(commonDir, 'hooks'))})`)).toBe(true);
+    expect(knobs.endsWith('(literal "/dev/ttys004"))')).toBe(true);
+    // and they are a DIFFERENT line from ours: [G3] never widens or narrows the knob deny
+    expect(knobs).not.toContain('packed-refs');
   });
 
   it('a linked worktree (gitCommonDir ≠ <ws>/.git): every rule targets the COMMON dir, never the worktree git dir and never <ws>/.git', () => {
@@ -166,24 +154,28 @@ describe('buildProfile agentChild — the [G3] child deny list', () => {
     expect(re.test(join(commonDir, 'worktrees', 'a', 'b', 'HEAD'))).toBe(false);
   });
 
-  it('agentChild absent or false: the profile is BYTE-IDENTICAL to the pre-[G3] snapshot (the §5.2 depth-0 supervisor case)', () => {
+  it('agentChild absent or false: the profile is unchanged, and setting it adds EXACTLY one line (the §5.2 depth-0 supervisor case)', () => {
     const dir = temp('jev-sba-');
     const { base } = fixture(dir);
-    const expectMain = SNAPSHOT_MAIN_TREE.split('<DIR>').join(dir);
-    expect(buildProfile(base)).toBe(expectMain);
+    // the [D10] pair over one worktree: the supervisor builds with the flag ABSENT, the child with it TRUE
+    const supervisorMain = buildProfile(base);
     // (`exactOptionalPropertyTypes` is on, so an explicit `undefined` is not a case the type admits)
-    expect(buildProfile({ ...base, agentChild: false })).toBe(expectMain);
-    expect(buildProfile(base)).not.toContain('packed-refs');
-    expect(agentDenyIndex(buildProfile(base))).toBe(-1);
+    expect(buildProfile({ ...base, agentChild: false })).toBe(supervisorMain);
+    expect(supervisorMain).not.toContain('packed-refs');
+    expect(supervisorMain).not.toContain('/refs');
+    expect(agentDenyIndex(supervisorMain)).toBe(-1);
+    const childMain = buildProfile({ ...base, agentChild: true });
+    expect(lines(childMain).length).toBe(lines(supervisorMain).length + 1);
+    expect(lines(childMain).filter((l) => !lines(supervisorMain).includes(l))).toEqual([agentDenyLine(childMain)]);
 
     const { commonDir, gitDir } = linked(dir);
-    const expectLinked = SNAPSHOT_LINKED_WORKTREE.split('<DIR>').join(dir);
-    expect(buildProfile({ ...base, gitDir, gitCommonDir: commonDir })).toBe(expectLinked);
-    expect(buildProfile({ ...base, gitDir, gitCommonDir: commonDir, agentChild: false })).toBe(expectLinked);
-    // and the depth-1 profile for the same worktree differs by exactly one line
+    const supervisorLinked = buildProfile({ ...base, gitDir, gitCommonDir: commonDir });
+    expect(buildProfile({ ...base, gitDir, gitCommonDir: commonDir, agentChild: false })).toBe(supervisorLinked);
+    expect(supervisorLinked).not.toContain('packed-refs');
+    expect(agentDenyIndex(supervisorLinked)).toBe(-1);
     const child = buildProfile({ ...base, gitDir, gitCommonDir: commonDir, agentChild: true });
-    expect(lines(child).length).toBe(lines(expectLinked).length + 1);
-    expect(lines(child).filter((l) => !lines(expectLinked).includes(l))).toEqual([agentDenyLine(child)]);
+    expect(lines(child).length).toBe(lines(supervisorLinked).length + 1);
+    expect(lines(child).filter((l) => !lines(supervisorLinked).includes(l))).toEqual([agentDenyLine(child)]);
   });
 
   it('every path is escaped: a workspace with a space, a quote and regex metacharacters', () => {
