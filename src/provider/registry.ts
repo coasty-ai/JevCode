@@ -19,7 +19,7 @@
  * `createProvider()` return exactly a core `Provider` with no other change here.
  */
 import { ConfigError } from '../errors.js';
-import { PROVIDER_KEY_ENV } from './ids.js';
+import { PROVIDER_BASE_URL, PROVIDER_DISPLAY_NAME, PROVIDER_KEY_ENV } from './ids.js';
 import { ANTHROPIC_VERSION, createAnthropicProvider } from './anthropic.js';
 import { createOpenRouterProvider, OPENROUTER_REFERER, OPENROUTER_TITLE } from './openrouter.js';
 import { createOpenAiProvider, listOpenAiModels, OPENAI_BASE_URL, OPENAI_DEFAULT_MODEL } from './openai.js';
@@ -174,9 +174,9 @@ export async function listOpenRouterModels(apiKey: string, deps: ProviderDeps, b
 export const PROVIDERS: readonly ProviderSpec[] = [
   {
     id: 'anthropic',
-    displayName: 'Anthropic',
+    displayName: PROVIDER_DISPLAY_NAME.anthropic,
     keyEnv: PROVIDER_KEY_ENV.anthropic[0],
-    baseUrl: 'https://api.anthropic.com',
+    baseUrl: PROVIDER_BASE_URL.anthropic,
     defaultModel: 'claude-sonnet-5',
     docsUrl: 'https://docs.claude.com/en/api/messages',
     supports: { tools: true, structuredOutput: true, reasoning: true, vision: true },
@@ -186,9 +186,9 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     id: 'openrouter',
-    displayName: 'OpenRouter',
+    displayName: PROVIDER_DISPLAY_NAME.openrouter,
     keyEnv: PROVIDER_KEY_ENV.openrouter[0],
-    baseUrl: 'https://openrouter.ai/api/v1',
+    baseUrl: PROVIDER_BASE_URL.openrouter,
     defaultModel: 'z-ai/glm-5.3-flash',
     docsUrl: 'https://openrouter.ai/docs/api-reference/chat-completion',
     supports: { tools: true, structuredOutput: true, reasoning: true, vision: true },
@@ -197,7 +197,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     id: 'openai',
-    displayName: 'OpenAI',
+    displayName: PROVIDER_DISPLAY_NAME.openai,
     keyEnv: PROVIDER_KEY_ENV.openai[0],
     baseUrl: OPENAI_BASE_URL,
     defaultModel: OPENAI_DEFAULT_MODEL,
@@ -208,7 +208,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     id: 'gemini',
-    displayName: 'Google Gemini',
+    displayName: PROVIDER_DISPLAY_NAME.gemini,
     keyEnv: PROVIDER_KEY_ENV.gemini[0],
     baseUrl: GEMINI_BASE_URL,
     defaultModel: GEMINI_DEFAULT_MODEL,
@@ -219,7 +219,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     id: 'fireworks',
-    displayName: 'Fireworks AI',
+    displayName: PROVIDER_DISPLAY_NAME.fireworks,
     keyEnv: PROVIDER_KEY_ENV.fireworks[0],
     baseUrl: FIREWORKS_BASE_URL,
     defaultModel: FIREWORKS_DEFAULT_MODEL,
@@ -230,7 +230,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     id: 'meta',
-    displayName: 'Meta',
+    displayName: PROVIDER_DISPLAY_NAME.meta,
     keyEnv: PROVIDER_KEY_ENV.meta[0],
     baseUrl: META_BASE_URL,
     defaultModel: META_DEFAULT_MODEL,
@@ -244,7 +244,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   },
   {
     id: 'xai',
-    displayName: 'xAI (Grok)',
+    displayName: PROVIDER_DISPLAY_NAME.xai,
     keyEnv: PROVIDER_KEY_ENV.xai[0],
     baseUrl: XAI_BASE_URL,
     defaultModel: XAI_DEFAULT_MODEL,

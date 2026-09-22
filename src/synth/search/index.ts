@@ -16,7 +16,7 @@ import { toJson } from '../../core/json.js';
 import { clip } from '../../core/text.js';
 import { PLAN_ITEM_MAX_CHARS } from '../../loop/plan.js';
 import type { ClaimingCompletionEvidence, CompletionWitness } from '../../loop/stages/complete.js';
-import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, SynthesisContext, Synthesizer, SynthesizerGeneration, WindowEntry } from '../../core/types.js';
+import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, StepVerifySummary, SynthesisContext, Synthesizer, SynthesizerGeneration, WindowEntry } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
 import { SPEC_FILE } from '../../workspace/tests.js';
 import { harvestHistory } from '../history/index.js';
@@ -48,7 +48,7 @@ import type { EngineRun, PersistedRepositoryState, RepositoryMode, RepositorySco
 import { BEST_GUESS_NOTE, bestGuessGoalText, commitEvidence, completionEvidence, goalTestsPassing, isFullSuiteRun, proposeDone, proposePatch, proposeRevert, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
 import { commitProgress, everySiteSeedsExhausted, isTestPath, newTrace, taskIdentifiers } from './subgoal.js';
 import type { ProgressOptions, RegressionRun, SubGoalMemory, SubGoalResult } from './subgoal.js';
-import type { Base, Goal, GoalSearchTrace, Lane, PersistedSearchState, VerifyOutcome } from './types.js';
+import type { Base, Goal, GoalSearchTrace, Lane, LlmTrace, PersistedSearchState, StepBudget, VerifyOutcome } from './types.js';
 import { isPersistedSearchState } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -159,12 +159,47 @@ export interface SearchDeps {
   now(): number;
 }
 
+/**
+ * contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4.4: the one-round clamp the fast path installs on the synthesizer it
+ * owns. It is applied as a CLAMP on the freshly computed step budget — never by lying to the synthesizer about the run's
+ * limits (§1.6) — so every counter is the smaller of the run's honest budget and the round's share.
+ *
+ * The object is owned and MUTATED by the facade between rounds (`src/synth/search/fastpath.ts`): the synthesizer is built
+ * once per `runId` and each round installs its own share before calling `synthesize()`.
+ */
+export interface FastPathClamp {
+  /** upper bound on `testRunsLeft` */
+  testRuns: number;
+  /** upper bound on the CANDIDATE phase's wall; `testWallLeftMs` is clamped to `wallMs + reserveMs` */
+  wallMs: number;
+  /**
+   * §4.4: the cold-confirm reserve, INSTALLED rather than merely computed. It is added to the clamped
+   * `testWallLeftMs` and published as `StepBudget.reserveWallMs`, so the sieve stops dispatching candidates with this
+   * much wall still in the counter and the passer's confirm run has somewhere to come from. Without it a round that
+   * spends its share on candidates reaches the guard with ~0 wall, the hold/confirm is refused, and the one-strike
+   * disarm takes the fast path out for the run — the exact failure §4.4 says must never happen.
+   */
+  reserveMs: number;
+  /** upper bound on `jevRequestsLeft`; 0 is legal (the localiser falls to code order) */
+  jevRequests: number;
+  /**
+   * §4.3 stage 2, the seam that makes the stage-2 predicate enforceable: called with the round's memory and its clamped
+   * budget every time the clamp is applied. The call that matters is the one right after `fitOracle`, before any
+   * candidate runs; the facade recognises it by `mem.baseline !== null` and ignores the pre-baseline call, whose oracle
+   * is `UNMEASURED_ORACLE` and says nothing. The facade aborts the round from here when the round would not be a SIEVE
+   * round. Pure observation otherwise.
+   */
+  observe?: (mem: Pick<RunMemory, 'oracle' | 'baseline'>, budget: StepBudget) => void;
+}
+
 /** docs/LLM-JEV-DESIGN.md §9.2 stage 4: the controller's mode switch (the `llm-jev` flag via `SynthesizerOptions`). */
 export interface ControllerOptions {
   /** llm-jev: no establishing run, completion evidence on the claiming run, the revert route, the repository step-1 overlap, lane-baseline adoption */
   llmJev?: boolean;
   /** llm-jev: the pinned generation parameters (§10.1) the L2 reproduction writer reuses (`reasoning`, the max_tokens base); absent = the writer's default */
   generation?: SynthesizerGeneration;
+  /** contract 1.9 (Fastlane) §4.4: the one-round clamp the fast path installs; absent = the unclamped round (every other caller) */
+  fastPath?: FastPathClamp;
 }
 
 /** The real collaborators for everything but the sub-goal searches and the localiser (src/synth/index.ts adds those). */
@@ -578,6 +613,27 @@ export interface RunScratch {
   freshRepro: VerifyReproResult | null;
 }
 
+/**
+ * contract 1.9 (Fastlane) §3.1 / §3.2 / §3.4 (docs/LLM-LOOP-DESIGN.md §3): the generator-path figures of this step's
+ * LLM rounds, for `StepRecord.verify`. Summed over both passes of a recursed step exactly like the counts beside them
+ * (`prior` is the first search's trace). Every member is ABSENT when nothing measured it: a run with hedging off must
+ * not report `hedges: 0` as if a hedge had been declined, and a provider that served no cache must not report a
+ * `cacheHitRate` of 0, which reads as "the cache missed" rather than "nothing was measured". `cacheHitRate` is
+ * computed from the summed READ and the summed INPUT tokens, never averaged over the rounds' own rates.
+ */
+function fastlaneCounts(prior: LlmTrace | undefined, llm: LlmTrace): Partial<StepVerifySummary> {
+  const ttfbMs = [...(prior?.ttfbMs ?? []), ...(llm.ttfbMs ?? [])];
+  const hedges = (prior?.hedges ?? 0) + (llm.hedges ?? 0);
+  const cacheRead = (prior?.cacheRead ?? 0) + (llm.cacheRead ?? 0);
+  const cacheWrite = (prior?.cacheWrite ?? 0) + (llm.cacheWrite ?? 0);
+  const cacheInput = (prior?.cacheInput ?? 0) + (llm.cacheInput ?? 0);
+  return {
+    ...(ttfbMs.length > 0 ? { ttfbMs } : {}),
+    ...(hedges > 0 ? { hedges, hedgeWins: (prior?.hedgeWins ?? 0) + (llm.hedgeWins ?? 0) } : {}),
+    ...(cacheRead > 0 || cacheWrite > 0 ? { cacheRead, cacheWrite, ...(cacheInput > 0 ? { cacheHitRate: cacheRead / cacheInput } : {}) } : {}),
+  };
+}
+
 export class LedgerSieveSynthesizer implements Synthesizer {
   readonly name = 'ledger-sieve';
   private readonly deps: SearchDeps;
@@ -586,11 +642,14 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   private readonly llmJev: boolean;
   /** the pinned generation the L2 writer reuses (`ControllerOptions.generation`); the public echo is the outer synthesizer's (src/synth/index.ts) */
   private readonly l2Generation: SynthesizerGeneration | undefined;
+  /** contract 1.9 (Fastlane) §4.4: the fast path's one-round clamp, or undefined for every other caller */
+  private readonly fastPath: FastPathClamp | undefined;
 
   constructor(deps: SearchDeps, opts: ControllerOptions = {}) {
     this.deps = deps;
     this.llmJev = opts.llmJev === true && deps.llm !== undefined;
     this.l2Generation = opts.generation;
+    this.fastPath = opts.fastPath;
   }
 
   async synthesize(ctx: SynthesisContext): Promise<Proposal> {
@@ -635,6 +694,23 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       fresh.llmRoundsLeft = Math.min(fresh.llmRoundsLeft, prev.llmRoundsLeft);
       fresh.llmSamplesLeft = Math.min(fresh.llmSamplesLeft, prev.llmSamplesLeft);
       fresh.llmUsdLeft = Math.min(fresh.llmUsdLeft, prev.llmUsdLeft);
+    }
+    // contract 1.9 (Fastlane) §4.4: the fast path's round is a CLAMP on the honest budget, and spends no generator.
+    const fp = this.fastPath;
+    if (fp !== undefined) {
+      fresh.testRunsLeft = Math.min(fresh.testRunsLeft, fp.testRuns);
+      // §4.4: the counter carries the candidate share AND the confirm reserve; `reserveWallMs` is what keeps the
+      // second out of the first, so the reserve is held outside the share in the code and not only in the table.
+      const reserve = Math.max(0, Math.floor(fp.reserveMs));
+      fresh.testWallLeftMs = Math.min(fresh.testWallLeftMs, fp.wallMs + reserve);
+      // never more than half the counter: a reserve that swallowed the whole wall would leave the round unable to
+      // dispatch a single candidate, which is the opposite of what holding it is for
+      fresh.reserveWallMs = Math.min(reserve, Math.floor(fresh.testWallLeftMs / 2));
+      fresh.jevRequestsLeft = Math.min(fresh.jevRequestsLeft, fp.jevRequests);
+      fresh.llmRoundsLeft = 0;
+      fresh.llmSamplesLeft = 0;
+      fresh.llmUsdLeft = 0;
+      fp.observe?.(mem, fresh);
     }
     return fresh;
   }
@@ -890,12 +966,18 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       candidatesTested: (prior?.candidatesTested ?? 0) + r.trace.candidatesTested,
       passers: (prior?.plausible ?? 0) + r.trace.plausible,
       partials: r.kind === 'commit' && !r.allGoalTestsPass ? 1 : 0,
+      // OOS iteration 2, defect 2: the warm plane's own counters for this step (sieve/runner.ts
+      // `recordWarmStep`), so `steps.jsonl` carries what until now existed only as free text in
+      // the sieve's `synth · verify` event. The accumulator is per step and already covers every
+      // batch and every goal of it, so a later call in the same step reports a superset.
+      ...(mem.warmStep?.step === ctx.step ? { warm: mem.warmStep.warm } : {}),
       ...(r.trace.llm === undefined
         ? {}
         : {
             distinct: (prior?.llm?.distinct ?? 0) + r.trace.llm.distinct,
             misanchored: (prior?.llm?.misanchored ?? 0) + r.trace.llm.misanchored,
             graceMs: (prior?.llm?.graceMs ?? 0) + r.trace.llm.graceMs,
+            ...fastlaneCounts(prior?.llm, r.trace.llm),
             // OOS iteration 3, item 3: the arm, not a count — the same value on every step of a run
             ...(r.trace.llm.deadlineGrowth === undefined ? {} : { deadlineGrowth: r.trace.llm.deadlineGrowth }),
           }),

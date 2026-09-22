@@ -88,6 +88,7 @@ complete -c jevcode -n '__fish_seen_subcommand_from bench perf' -l live -d 'use 
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l task-spend-cap -x -d 'per-run spend cap (default 2.00)'
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l allow-model-alias -d 'allow an undated --jev-model'
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l archive-runs -d 'copy each run'\''s records (steps/decisions/jev/generator.jsonl, run.json, state.json, patch) gzipped into <results>/runs/<runId>/'
+complete -c jevcode -n '__fish_seen_subcommand_from bench' -l quick -d 'the M16 quick preset (docs/LLM-LOOP-DESIGN.md §3.5): the five Ring-2 tasks, --concurrency 3, replay by default and --spend-cap 0.05 as DEFAULTS that never override an explicit flag'
 complete -c jevcode -n '__fish_seen_subcommand_from bench perf report' -l out -r -F -d 'bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)'
 complete -c jevcode -n '__fish_seen_subcommand_from login' -l key-stdin -d 'read one OpenRouter key from the first stdin line: it serves Jev and the code model (pipes)'
 complete -c jevcode -n '__fish_seen_subcommand_from login' -l generator-key-stdin -d 'read the generator key from the first stdin line (pipes)'

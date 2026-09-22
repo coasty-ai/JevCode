@@ -104,6 +104,7 @@ export const BOOLEAN_FLAGS = [
   'live',
   'allowModelAlias',
   'archiveRuns',
+  'quick',
   'help',
   'version',
   'mock',
@@ -316,12 +317,13 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'suite', name: 'suite', type: 'string', commands: BENCH, arg: 'swebench|terminal-bench|quixbugs|ladder|all', help: 'benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)' },
   { key: 'tasks', name: 'tasks', type: 'string', commands: BENCH, arg: '<n>', help: 'number of tasks' },
   { key: 'taskId', name: 'task-id', type: 'string', commands: BENCH, arg: '<id>[,<id>...]', help: 'specific task ids' },
-  { key: 'conditions', name: 'conditions', type: 'string', commands: BENCH, arg: 'jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned]', help: 'conditions to run (when omitted: the jev-on and jev-off arms)' },
+  { key: 'conditions', name: 'conditions', type: 'string', commands: BENCH, arg: 'jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned,jev-on-next,jev-on-next-nofast]', help: 'conditions to run (when omitted: the jev-on and jev-off arms)' },
   { key: 'concurrency', name: 'concurrency', type: 'string', commands: BENCH, arg: '<n>', help: 'parallel runs' },
   { key: 'live', name: 'live', type: 'boolean', commands: ['bench', 'perf'], help: 'use the real generator and Jev (requires --spend-cap)' },
   { key: 'taskSpendCap', name: 'task-spend-cap', type: 'string', commands: BENCH, arg: '<usd>', help: 'per-run spend cap (default 2.00)' },
   { key: 'allowModelAlias', name: 'allow-model-alias', type: 'boolean', commands: BENCH, help: 'allow an undated --jev-model' },
   { key: 'archiveRuns', name: 'archive-runs', type: 'boolean', commands: BENCH, help: 'copy each run\'s records (steps/decisions/jev/generator.jsonl, run.json, state.json, patch) gzipped into <results>/runs/<runId>/' },
+  { key: 'quick', name: 'quick', type: 'boolean', commands: BENCH, help: 'the M16 quick preset (docs/LLM-LOOP-DESIGN.md §3.5): the five Ring-2 tasks, --concurrency 3, replay by default and --spend-cap 0.05 as DEFAULTS that never override an explicit flag' },
   { key: 'out', name: 'out', type: 'string', commands: ['bench', 'perf', 'report'], arg: '<path>', help: 'bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)' },
   // --- TUI-DESIGN §11.2 login / logout -----------------------------------------------------------------------------
   // TUI-DESIGN-3 §1.6: `printenv OPENROUTER_API_KEY | jevcode login --key-stdin` — one line serves Jev and the code model
@@ -376,7 +378,7 @@ export const SANDBOX_PROFILES = ['auto', 'seatbelt', 'none'] as const;
  * because that module imports the synthesizer's LLM source and args.ts runs before the first frame (test/unit/config/args.test.ts
  * asserts the two lists are identical). The four engine modes are `MODES` below; `llm-sieve` and `jev-off-tuned` are bench-only arms.
  */
-export const CONDITIONS = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned'] as const;
+export const CONDITIONS = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned', 'jev-on-next', 'jev-on-next-nofast'] as const;
 /** TUI-DESIGN-2 §1.2: `--mode` / `--condition` values in the round-2 order; llm-jev last (docs/LLM-JEV-DESIGN.md); the default is `DEFAULT_MODE` (config/defaults.ts) */
 export const MODES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] as const;
 /** TUI-DESIGN-3 §1.9 (R3 F9): the usage tagline — generator-neutral, `package.json`'s description agrees */
@@ -854,7 +856,7 @@ const USAGE_LINES: Readonly<Record<Command, readonly string[]>> = {
   ],
   config: ['  jevcode config [--json] [--all]', '  jevcode config set <setting> <value>'],
   bench: [
-    '  jevcode bench --suite swebench|terminal-bench|quixbugs|ladder|all [--tasks <n> | --task-id <id>,...] [--conditions jev-on,jev-off,jev-only,llm-jev,llm-sieve,jev-off-tuned]',
+    '  jevcode bench --suite swebench|terminal-bench|quixbugs|ladder|all [--tasks <n> | --task-id <id>,...] [--conditions jev-on,jev-off,jev-only,llm-jev,llm-sieve,jev-off-tuned,jev-on-next,jev-on-next-nofast]',
     '                [--concurrency <n>] [--live --spend-cap <usd>] [--task-spend-cap <usd>] [--allow-model-alias]',
     '                [--resume <bench-id>] [--out <dir>]',
   ],

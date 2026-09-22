@@ -509,15 +509,17 @@ describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)',
     expect(parseCliArgs(['chat', '--mode', ' LLM-JEV ']).mode).toBe('llm-jev');
     expect(parseCliArgs(['run', 'x', '--condition', 'llm-jev']).condition).toBe('llm-jev');
     expect(parseCliArgs(['bench', '--conditions', 'jev-on,llm-jev']).conditions).toBe('jev-on,llm-jev');
-    expect(CONDITIONS).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned']);
-    // every bench arm the runner defines is accepted by --conditions (args.ts lists them literally: bench/conditions.ts is too heavy for the argv path)
+    expect(CONDITIONS).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned', 'jev-on-next', 'jev-on-next-nofast']);
+    // Every bench arm the runner defines is accepted by --conditions (args.ts lists them literally: bench/conditions.ts is too
+    // heavy for the argv path). Contract 1.9 (Fastlane, docs/LLM-LOOP-DESIGN.md §8.1) added `jev-on-next` and
+    // `jev-on-next-nofast` to CONDITION_ORDER; the rows landed here with the `arg`, `help` and usage strings below.
     expect([...CONDITIONS]).toEqual([...CONDITION_ORDER]);
-    expect(FLAGS.find((f) => f.key === 'conditions')?.arg).toBe('jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned]');
+    expect(FLAGS.find((f) => f.key === 'conditions')?.arg).toBe('jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned,jev-on-next,jev-on-next-nofast]');
     expect(FLAGS.find((f) => f.key === 'conditions')?.help).toBe('conditions to run (when omitted: the jev-on and jev-off arms)');
     expect(usageText('run')).toContain('--mode jev-only|jev-on|jev-off|llm-jev ');
-    expect(usageText('bench')).toContain('--conditions jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned] ');
+    expect(usageText('bench')).toContain('--conditions jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned,jev-on-next,jev-on-next-nofast] ');
     expect(usageText()).toContain('[--mode jev-only|jev-on|jev-off|llm-jev]');
-    expect(usageText()).toContain('[--conditions jev-on,jev-off,jev-only,llm-jev,llm-sieve,jev-off-tuned]');
+    expect(usageText()).toContain('[--conditions jev-on,jev-off,jev-only,llm-jev,llm-sieve,jev-off-tuned,jev-on-next,jev-on-next-nofast]');
   });
 
   it('parses --mode, folds the hidden --condition alias into it, and rejects disagreement', () => {

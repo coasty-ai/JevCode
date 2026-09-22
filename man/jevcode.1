@@ -551,7 +551,7 @@ number of tasks
 .BI \-\-task\-id " <id>[,<id>...]"
 specific task ids
 .TP
-.BI \-\-conditions " jev\-on,jev\-off[,jev\-only,llm\-jev,llm\-sieve,jev\-off\-tuned]"
+.BI \-\-conditions " jev\-on,jev\-off[,jev\-only,llm\-jev,llm\-sieve,jev\-off\-tuned,jev\-on\-next,jev\-on\-next\-nofast]"
 conditions to run (when omitted: the jev\-on and jev\-off arms)
 .TP
 .BI \-\-concurrency " <n>"
@@ -569,6 +569,11 @@ allow an undated \-\-jev\-model
 .BI \-\-archive\-runs
 copy each run's records (steps/decisions/jev/generator.jsonl, run.json,
 state.json, patch) gzipped into <results>/runs/<runId>/
+.TP
+.BI \-\-quick
+the M16 quick preset (docs/LLM\-LOOP\-DESIGN.md §3.5): the five Ring\-2
+tasks, \-\-concurrency 3, replay by default and \-\-spend\-cap 0.05 as
+DEFAULTS that never override an explicit flag
 .TP
 .BI \-\-out " <path>"
 bench: results dir; perf: results file; report: bundle dir (default

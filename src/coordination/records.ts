@@ -10,7 +10,7 @@ import { checksumOf, withChecksum } from './checksum.js';
 import { MAX_CLAIM_EPOCH, MAX_CLAIMS_PER_RUN, hmacValid, isValidClaim } from './claims.js';
 import { keyDir } from './paths.js';
 import { ACTOR8_RE, CONSUMER_ID_RE, COUNTER_MAX, DEVICE_ID_RE, LANE_DIR_RE, LEASE_ID_RE, LEASE_PATHS_MAX, HOST_KEY_RE, MSG_ID_RE, OID_RE, REPO_KEY_RE, RUN_ID_RE, SLUG_RE, TOUCHED_RECENT_MAX, isValidBranch, isValidRelPath, isValidTarget } from './ids.js';
-import type { Ack, AnyRecord, ClaimsProjection, DeviceRecord, Heartbeat, Lease, LivenessEnv, LivenessVerdict, Message, RecordKind, RecordOf, RecordOrigin, Stamp } from './types.js';
+import type { Ack, AnyRecord, ClaimsProjection, DeviceRecord, Heartbeat, Lease, LivenessEnv, LivenessVerdict, Message, PublicMessage, RecordKind, RecordOf, RecordOrigin, Stamp } from './types.js';
 
 export { checksumOf, withChecksum } from './checksum.js';
 
@@ -181,6 +181,46 @@ function redactDeep(value: unknown, redact: (s: string) => string, depth: number
 /** §10.2: every string leaf through `redact()` then `oneLine`; keys untouched; `undefined` members dropped. */
 export function redactRecord<T extends object>(record: T, redact: (s: string) => string): T {
   return redactDeep(record, redact, 0) as T;
+}
+
+/**
+ * §3.1 / `DEVICE_ID_RE`: a device id is 8 base32 chars, so `deviceId8` is the whole id today. The slice writes
+ * TUI-DESIGN-5 §8.1's derivation down ("SessionActivity.deviceId first 8 chars"), so a later widening of
+ * `DEVICE_ID_RE` cannot widen this sink by accident.
+ */
+export const DEVICE_ID8_CHARS = 8;
+
+/**
+ * TUI round-5 request R5-H1: the PUBLIC projection of a `Message` — what a `--json` sink serialises instead of the
+ * record. TOTAL over `MessageType` by construction (`type` is copied, never switched on), so `budget` / `review` /
+ * `kick` / `land` and every older kind project identically; `test/unit/coordination/public-message.test.ts` walks an
+ * exhaustive `Record<MessageType, …>` map and asserts the key set of each projection exactly.
+ *
+ * Every dropped member is argued on the `PublicMessage` declaration (`./types.ts`): `hostKey` (the one field the
+ * design calls a device secret derivative), `hmac` and `checksum` (key material and a `hostKey` oracle over it),
+ * `from.pid` / `from.bootId` / `from.user`, and the wire bookkeeping `v` / `kind` / `stamp` / `expiresAt`.
+ *
+ * `by` is spread in only when the record carries it, so the projection never invents a member the message did not
+ * have — the one property a `--json` consumer can actually rely on.
+ */
+export function publicMessage(m: Message): PublicMessage {
+  return {
+    id: m.id,
+    from: {
+      deviceId8: m.from.deviceId.slice(0, DEVICE_ID8_CHARS),
+      label: m.from.label,
+      sessionId: m.from.sessionId,
+      runId: m.from.runId,
+    },
+    to: m.to,
+    type: m.type,
+    text: m.text,
+    // a DEEP-enough copy: `files` is the only array in `refs`, and a sink that hands the projection to a caller
+    // must not hand it a path list the record still shares
+    refs: { ...m.refs, ...(m.refs.files !== undefined ? { files: [...m.refs.files] } : {}) },
+    ...(m.by !== undefined ? { by: m.by } : {}),
+    t: m.t,
+  };
 }
 
 /** Redact, then checksum — the last two steps of every writer. */

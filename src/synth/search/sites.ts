@@ -72,8 +72,10 @@ import { buildSites, functionGapSlots, indentAfter, indentBefore, isDefLine, sbf
 import type { Anchor, GapSlot } from '../localize/sites.js';
 import type { FunctionEntry } from '../localize/types.js';
 import { indentOf } from '../py/edits.js';
-import { blockAt, scopeAt, statementAt } from '../py/structure.js';
+import { PY_BUILTINS, blockAt, scopeAt, statementAt } from '../py/structure.js';
 import type { Block, Statement } from '../py/structure.js';
+import { codeTokens, isKeyword, tokenizeFragment } from '../py/tokenize.js';
+import type { Token } from '../py/tokenize.js';
 import type { PerTestResult, RankedLine } from '../sbfl/types.js';
 import { isFailing } from '../sbfl/ochiai.js';
 import { importInsertLine, unboundNames } from '../templates/imports.js';
@@ -506,6 +508,25 @@ export function importGapSite(file: SourceFile, names: readonly string[]): Site 
   return { file, line, kind: 'insert', currentLine: '', indent: '', block: null, scope: scopeAt(file.mod, line), evidence: { notes: [`${IMPORT_GAP_NOTE} for ${missing.join(', ')}`] } };
 }
 
+/** The note `buildGoalSites` writes on a line the Q5n Noul ranked; the only trace of that ranking on a site. */
+export const Q5N_NOTE = 'q5n noul ';
+
+/**
+ * Did Jev rank ANYTHING in this list — a Q5 line Choice that answered, or a Q5n Noul that was
+ * not flat?
+ *
+ * OOS iteration 4 review, defect 4. `sites.some(s => s.evidence.jevProbability !== undefined)`
+ * was the proxy, and `jevProbability` is written only by Q5 anchors. The Q5n Noul ranking — the
+ * one the single-file path actually uses — lives in `GoalSites.lineNouls` and reaches a site
+ * only as this note. So a goal whose line Choice escaped but whose Q5n answered 0.90 and
+ * SHORT-CIRCUITED had "no Jev evidence anywhere" and was treated as unranked. A flat Q5n leaves
+ * no such note (`ranked` is empty), so `--jev off` still reads as unranked, which is the case
+ * the caller exists for.
+ */
+export function jevRankedSites(sites: readonly Site[]): boolean {
+  return sites.some((s) => s.evidence.jevProbability !== undefined || s.evidence.notes.some((n) => n.startsWith(Q5N_NOTE)));
+}
+
 /** True for a site `importGapSite` built: a module-level insert gap carrying the import-gap note. */
 export function isImportGap(site: Pick<Site, 'kind' | 'block' | 'evidence'>): boolean {
   return site.kind === 'insert' && site.block === null && site.evidence.notes.some((n) => n.startsWith(IMPORT_GAP_NOTE));
@@ -522,6 +543,268 @@ function byDesc<T>(items: readonly T[], score: (t: T) => number): T[] {
 
 function noulP(a: Answer | undefined): number {
   return a !== undefined && a.type === 'noul' ? a.noul : 0;
+}
+
+// ---------------------------------------------------------------------------------------
+// The code-side replace-site order (OOS iteration 4, item A)
+// ---------------------------------------------------------------------------------------
+
+/** Test-derived literals handed to the sources (§3 "test-derived values"); bounded so a long expected list does not flood the pool. */
+const MAX_TEST_LITERALS = 40;
+const MAX_TASK_IDENTIFIERS = 60;
+
+/**
+ * Numbers, quoted strings and value keywords from the goal's failures (call, expected, actual),
+ * deduplicated and bounded.
+ *
+ * OOS iteration 4, item A: this and `taskIdentifiers` moved here from `subgoal.ts` (which
+ * re-exports both, so every caller is unchanged) because the code-side site order below reads
+ * them and `subgoal.ts` imports this module — the other direction would be a cycle.
+ */
+export function testLiterals(failures: readonly FailureView[]): string[] {
+  const out = new Set<string>();
+  const re = /-?\d+(?:\.\d+)?|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\b(?:True|False|None)\b/g;
+  for (const f of failures) {
+    for (const text of [f.call, f.expected, f.actual]) {
+      for (const m of text.matchAll(re)) {
+        if (out.size >= MAX_TEST_LITERALS) return [...out];
+        out.add(m[0]);
+      }
+    }
+  }
+  return [...out];
+}
+
+/** Backticked words and identifier-shaped tokens (with `_`, a digit or camelCase) from the task text. */
+export function taskIdentifiers(task: string): string[] {
+  const out = new Set<string>();
+  for (const m of task.matchAll(/`([^`\n]+)`/g)) {
+    const inner = m[1] ?? '';
+    for (const id of inner.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) out.add(id[0]);
+  }
+  for (const m of task.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
+    const id = m[0];
+    if (/_|\d|[a-z][A-Z]/.test(id) && id.length >= 2) out.add(id);
+  }
+  return [...out].slice(0, MAX_TASK_IDENTIFIERS);
+}
+
+/**
+ * How much likelier a replace site of this statement kind is to be the line a gold patch
+ * rewrites than an arbitrary replace site is. MEASURED, not chosen: over all 198 gold patches in
+ * `bench/data` (QuixBugs 41 programs, ladder 65 gold files, `swebench-verified-30.gold.json` 92
+ * Python hunks) every BEFORE-image line the gold removes or rewrites was classified by
+ * `statementAt(...).kind` at the statement's first line (a later physical line of a multi-line
+ * statement is `continuation`), against the background of every line of those images that could
+ * be a replace site at all (non-blank, non-comment, not a `def`/`class` header).
+ *
+ * **All 198 patches are measured** (OOS iteration 4 review, defects 2 and 7). 43 SWE-bench hunk
+ * images do not tokenize after a plain dedent — the window is cut out of the middle of a file —
+ * and `gold-corpus.helpers.ts analysableImage` recovers all 43 with an `if True:` prologue at
+ * each indent width the fragment uses plus a closing `"""`/bracket tail. The first measurement
+ * covered 155 of 198 and the only real-world corpus contributed almost nothing.
+ *
+ * **A rewritten multi-line statement counts ONCE, at its first line, on both sides** (defect 6).
+ * Counting every physical line of one gave `continuation` a prior of 1.71 — above `return` —
+ * so the order offered `* rate` as a replace site ahead of the `return (` that owns it, which is
+ * a syntax error waiting to happen and is what the statement-span site exists to prevent. With
+ * statements counted once the kind is gone from the table entirely, and a continuation physical
+ * line is ranked last by `orderByCodeEvidence` rather than scored.
+ *
+ * 195 gold statements against 2,335 background statements, so the base rate is
+ * r0 = 195/2335 = 0.0835. The one smoothing is fixed by the measurement rather than picked: one
+ * pseudo gold statement on top, and on the bottom the 1/r0 = 11.97 background statements one
+ * gold statement is worth at the base rate, so `prior(k) = ((gold_k + 1) / (bg_k + 1/r0)) / r0`
+ * and an unseen kind lands on exactly 1.00.
+ *
+ * The table is in docs/LLM-JEV.md under "iteration 4"; `test/unit/synth/search/code-order.test.ts`
+ * re-derives it from `bench/data` and checks the RANK ORDER plus a tolerance, so adding a ladder
+ * task does not make this constant a build break (review defect 13).
+ */
+export const GOLD_KIND_BASE_RATE = 0.0835;
+export const GOLD_STATEMENT_KIND_PRIOR: Readonly<Record<string, number>> = {
+  while: 1.78,
+  return: 1.75,
+  break: 1.41,
+  assign: 1.26,
+  augassign: 1.06,
+  for: 0.93,
+  assert: 0.92,
+  expr: 0.84,
+  if: 0.8,
+  continue: 0.75,
+  try: 0.63,
+  except: 0.6,
+  import: 0.57,
+  elif: 0.52,
+  other: 0.35,
+  else: 0.33,
+  raise: 0.19,
+  from_import: 0.11,
+};
+
+/** A physical line that continues a multi-line statement begun above it: the span site covers it. */
+export function isContinuationLine(file: SourceFile, line: number): boolean {
+  const st = statementAt(file.mod, line);
+  return st !== undefined && st.startLine !== line;
+}
+
+/** The measured prior of the statement kind at `line`; 1 (the base rate) for a kind the corpus never showed. */
+export function statementKindPrior(file: SourceFile, line: number): number {
+  const st = statementAt(file.mod, line);
+  if (st === undefined) return 1;
+  return GOLD_STATEMENT_KIND_PRIOR[st.kind] ?? 1;
+}
+
+/**
+ * The words the failure is about: the literals of the failing tests, the identifiers the task
+ * text names, and the identifier tokens of each failure's own `call` / `expected` / `actual`
+ * text. Python keywords and builtins are dropped — they are on nearly every line and localise
+ * nothing — as are one-character names.
+ */
+export function failureVocabulary(task: string, failures: readonly FailureView[]): Set<string> {
+  const out = new Set<string>();
+  for (const l of testLiterals(failures)) out.add(l);
+  for (const id of taskIdentifiers(task)) if (id.length >= 2 && !isKeyword(id) && !PY_BUILTINS.includes(id)) out.add(id);
+  // review defect 11: `testLiterals` is capped at 40 and `taskIdentifiers` at 60, and this loop
+  // had no cap at all — one five-frame pytest traceback yields 55 entries, most of them path
+  // components. Capped like the other two, and the `File "…", line N, in …` frame furniture is
+  // dropped rather than counted as evidence about the code.
+  let taken = 0;
+  for (const f of failures) {
+    for (const text of [f.call, f.expected, f.actual]) {
+      for (const m of text.replace(TRACEBACK_FRAME, ' ').matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+        if (taken >= MAX_FAILURE_IDENTIFIERS) return out;
+        const id = m[0];
+        if (id.length < 2 || isKeyword(id) || PY_BUILTINS.includes(id) || TRACEBACK_WORDS.has(id)) continue;
+        if (!out.has(id)) taken += 1;
+        out.add(id);
+      }
+    }
+  }
+  return out;
+}
+
+/** Identifiers taken from the failure text, bounded exactly as `taskIdentifiers` is. */
+const MAX_FAILURE_IDENTIFIERS = 60;
+/** `File "/home/u/p/src/mod.py", line 12, in fn` — frame furniture, not evidence about the code. */
+const TRACEBACK_FRAME = /File "[^"]*", line \d+, in \S*/g;
+const TRACEBACK_WORDS: ReadonlySet<string> = new Set(['Traceback', 'most', 'recent', 'call', 'last', 'File', 'line', 'in']);
+
+/** Distinct vocabulary words the site's own text uses, as whole tokens (names, numbers, strings). */
+export function vocabularyOverlap(site: Pick<Site, 'currentLine'>, vocabulary: ReadonlySet<string>): number {
+  const hit = new Set<string>();
+  let tokens: readonly Token[];
+  try {
+    tokens = codeTokens(tokenizeFragment(site.currentLine.trim()));
+  } catch {
+    return 0;
+  }
+  for (const t of tokens) {
+    if (t.type !== 'NAME' && t.type !== 'NUMBER' && t.type !== 'STRING') continue;
+    if (vocabulary.has(t.text)) hit.add(t.text);
+  }
+  return hit.size;
+}
+
+/** The function names the failures' `call` fields name (`kth([1, 2], 4)` → `kth`); a pytest node id names none. */
+export function failingCallNames(failures: readonly FailureView[]): Set<string> {
+  const out = new Set<string>();
+  for (const f of failures) {
+    for (const m of f.call.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const name = m[1] ?? '';
+      if (name !== '' && !isKeyword(name) && !PY_BUILTINS.includes(name)) out.add(name);
+    }
+  }
+  return out;
+}
+
+/** Distance of a function from the failing call: 0 = the call's own function, 1 = one it calls, 2 = anything else. */
+function callDistance(files: ReadonlyMap<string, SourceFile>, called: ReadonlySet<string>): (site: Site) => number {
+  const callees = new Set<string>();
+  for (const f of files.values()) {
+    for (const fn of f.mod.functions) {
+      if (!called.has(fn.name)) continue;
+      for (const c of fn.calls) callees.add(c.callee.split('.').pop() ?? c.callee);
+    }
+  }
+  return (site) => {
+    const name = (site.block?.name ?? '').split('.').pop() ?? '';
+    if (name !== '' && called.has(name)) return 0;
+    if (name !== '' && callees.has(name)) return 1;
+    return 2;
+  };
+}
+
+/** The group a site is ranked inside: its enclosing function, module level counting as one group. */
+function groupKeyOf(site: Site): string {
+  return `${site.file.path}:${site.block?.startLine ?? 'module'}`;
+}
+
+/**
+ * Deterministic replace-site order for the case iteration 3 left open: NO Choice answered
+ * (`--jev off`, the request budget spent mid-beam, or every line Choice escaped), so every site
+ * scores `jev = 0`, no site carries an SBFL rank, and `a.sbflRank - b.sbflRank` is
+ * `Infinity - Infinity` = **NaN** — a comparator V8 reads as "equal", which left the six the
+ * `REPLACE_SITES_MAX` cut keeps in FILE order. `kth`'s gold is the tenth code line of its only
+ * function, so file order cut it: the iteration-3 localiser fix put L12 in `loc.sites` and this
+ * cut threw it away again (review finding 12; iteration-3 entry, "iteration 4 owns the no-Jev
+ * site ranking").
+ *
+ * The order is built only from evidence already in reach, and every piece of it is measured or
+ * structural — nothing here is a tuned weight:
+ *
+ *   0. **a continuation physical line last, always** — the statement-span site covers it;
+ *   1. **the failing call's function first, then its callees** (`callDistance`), as the grouping
+ *      the round-robin below rotates over;
+ *   2. **overlap with the failure's own words** (`failureVocabulary`: `EnumerateOptions`'
+ *      `testLiterals` / `taskIdentifiers` plus the identifiers of each failure's call, expected
+ *      and actual text), distinct whole tokens on the line, descending;
+ *   3. **the statement-kind prior measured over the 198 golds** (`GOLD_STATEMENT_KIND_PRIOR`),
+ *      descending;
+ *   4. line order, so the result is total and stable.
+ *
+ * Then **round-robin across function groups** — the first site of each group, then the second of
+ * each — so one function cannot take all six of a multi-function localisation. The groups are
+ * visited by their best member's key, which puts the failing call's own function first. Review
+ * defect 12, accepted rather than fixed: with ≥ 6 groups in the tail the six kept sites are the
+ * heads of the six best groups, so the failing call's own function contributes exactly one. That
+ * is the price of the fairness rule and it is still far better than the file order it replaces;
+ * a single-function localisation degenerates correctly.
+ *
+ * SBFL is NOT part of this: a site the spectrum ranked keeps its rank and is ordered ahead of
+ * every site here, exactly as before (`buildGoalSites` step 4 splits the two). This function
+ * sees only the sites the spectrum said nothing about.
+ */
+export function orderByCodeEvidence(sites: readonly Site[], opts: { task: string; failures: readonly FailureView[]; files: ReadonlyMap<string, SourceFile> }): Site[] {
+  if (sites.length <= 1) return [...sites];
+  const vocabulary = failureVocabulary(opts.task, opts.failures);
+  const distance = callDistance(opts.files, failingCallNames(opts.failures));
+  const keyed = sites.map((site, i) => ({
+    site,
+    i,
+    // review defect 6: a continuation physical line is ranked LAST, never scored. Replacing one
+    // line of a multi-line statement with a generated line is a syntax error in almost every
+    // case, and `replaceSiteAt` already offers the whole-statement span at the statement's first
+    // line. Ranked last rather than dropped, so WIDENED and later passes can still reach it.
+    continuation: isContinuationLine(site.file, site.line) && site.endLine === undefined ? 1 : 0,
+    distance: distance(site),
+    overlap: vocabularyOverlap(site, vocabulary),
+    prior: statementKindPrior(site.file, site.line),
+  }));
+  type Keyed = (typeof keyed)[number];
+  const better = (a: Keyed, b: Keyed): number => a.continuation - b.continuation || a.distance - b.distance || b.overlap - a.overlap || b.prior - a.prior || a.site.line - b.site.line || a.i - b.i;
+  const groups = new Map<string, Keyed[]>();
+  for (const k of keyed) {
+    const g = groups.get(groupKeyOf(k.site)) ?? [];
+    g.push(k);
+    groups.set(groupKeyOf(k.site), g);
+  }
+  const ordered = [...groups.values()].map((g) => [...g].sort(better));
+  ordered.sort((a, b) => better(a[0]!, b[0]!));
+  const out: Site[] = [];
+  for (let round = 0; out.length < keyed.length; round++) for (const g of ordered) if (g[round] !== undefined) out.push(g[round]!.site);
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -783,13 +1066,28 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
     const r = await askLineNouls(ctx, goal, fns, stage, anchors[0]?.line ?? null);
     requests += r.requests;
     for (const [k, p] of r.probs) lineNouls.set(k, p);
-    const ranked = byDesc([...r.probs.entries()].filter(([, p]) => p > 0), ([, p]) => p);
+    // OOS iteration 4, item A: a FLAT Q5n is not a ranking. `JEVCODE_JEV=off` answers every Noul
+    // with the inert 0.5 (`src/jev/off.ts`), so this block used to take the first three lines of
+    // the file at "p = 0.50" and put them ahead of everything the code order had to say — the
+    // `kth` six came out `[2, 3, 4, 10, 12, 14]` with the gold only barely inside, by accident.
+    // The same argument `q5Anchors` makes about the escape applies here: `p ≥ minP` is a filter
+    // on an answer, and it cannot also mean "no answer at all". One value for every line ranks
+    // nothing, whoever produced it.
+    // Review defect 5: the `size > 1` test belonged in the RULE, not only in the note. A
+    // one-code-line function produces exactly one Noul, so any answer at all read as "flat" and
+    // was dropped silently — measured on `def scale(v, k): return v * k` with Jev answering
+    // 0.95, the L2 short-circuit disappeared. One value over one line is an answer; one value
+    // over many lines is not a ranking. (On the records every flat group is the `--jev off`
+    // inert 0.5: 401 of 903 Q5n groups, all 0.5, all in runs whose every Noul is 0.5.)
+    const flat = r.probs.size > 1 && new Set(r.probs.values()).size <= 1;
+    if (flat) notes.push(`q5n ignored: one value (${[...r.probs.values()][0]?.toFixed(2) ?? 'n/a'}) on all ${r.probs.size} lines ranks nothing`);
+    const ranked = flat ? [] : byDesc([...r.probs.entries()].filter(([, p]) => p > 0), ([, p]) => p);
     const fileOf = fns[0]?.file;
     if (fileOf !== undefined) {
       for (const [k, p] of ranked.slice(0, Q5N_TOP)) {
         const line = Number(k.slice(k.lastIndexOf(':') + 1));
         const q5 = anchors.find((a) => a.line === line)?.evidence.jevProbability;
-        const evidence: SiteEvidence = { notes: [`q5n noul ${p.toFixed(2)}`] };
+        const evidence: SiteEvidence = { notes: [`${Q5N_NOTE}${p.toFixed(2)}`] };
         if (q5 !== undefined) evidence.jevProbability = q5;
         const site = replaceSiteAt(fileOf, line, evidence);
         if (site !== null) addReplace(site, p);
@@ -820,18 +1118,43 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
     if (span !== null) addReplace(span, 0);
   }
 
-  // 4. Order: the short-circuit line, then Jev evidence by p, then SBFL-only by rank; cut at 6.
+  // 4. Order: the short-circuit line, then Jev evidence by p, then SBFL-only by rank, then —
+  //    OOS iteration 4, item A — the sites NOTHING ranked, by the code order.
+  //
+  //    `a.sbflRank - b.sbflRank` was the whole tail rule. On a site with no spectrum row the rank
+  //    is `+Infinity`, so any comparison of two such sites was `Infinity - Infinity` = **NaN**: a
+  //    comparator V8 reads as "equal", leaving them in insertion order, which is file order. With
+  //    no coverage at all that is the entire tail, and it is the recorded `--jev off` `kth`
+  //    failure (review finding 12): its gold is the tenth code line of its only function, and the
+  //    iteration-3 localiser fix that finally offered L12 as a replace site was undone here.
+  //
+  //    SCOPE, stated honestly (OOS iteration 4 review, defect 3): this is NOT only the no-Jev
+  //    case, and a Jev-ON trajectory with a real ranking is NOT byte-identical. Two tail sites
+  //    share `+Infinity` whenever the spectrum ranked neither — routine with full coverage and a
+  //    full Jev answer, because `statementSiteFor` spans start at a statement's first line, which
+  //    usually has no spectrum row of its own. The reviewer's one-file probe (a real Q5 ranking,
+  //    a real non-flat Q5n, a real spectrum) goes `9,10,8,3,6,2,5` on 5ac0042 and `9,10,8,3,6,5,2`
+  //    here, and at `REPLACE_SITES_MAX = 6` the kept SET differs (main keeps L2, this keeps L5).
+  //    What is true is narrower and is the claim this code makes: a finite rank still sorts
+  //    exactly as it did and still beats an infinite one, so the only order that changes is the
+  //    relative order of tail sites the spectrum did not rank — in every run, not just no-Jev
+  //    ones. `code-order.test.ts` pins that mixed case as a deliberate behaviour change.
   const scored = [...replace.values()];
+  const tail = scored.filter((s) => s.jev <= 0 && s.site !== shortCircuit);
   const ordered = [
     ...(shortCircuit === null ? [] : [shortCircuit]),
     ...byDesc(
       scored.filter((s) => s.jev > 0 && s.site !== shortCircuit),
       (s) => s.jev,
     ).map((s) => s.site),
-    ...scored
-      .filter((s) => s.jev <= 0 && s.site !== shortCircuit)
+    ...tail
+      .filter((s) => Number.isFinite(s.sbflRank))
       .sort((a, b) => a.sbflRank - b.sbflRank)
       .map((s) => s.site),
+    ...orderByCodeEvidence(
+      tail.filter((s) => !Number.isFinite(s.sbflRank)).map((s) => s.site),
+      { task: ctx.task, failures: goal.failures, files: ctx.files },
+    ),
   ];
   const replaceSites = ordered.slice(0, maxReplace);
 

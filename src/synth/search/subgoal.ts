@@ -30,7 +30,7 @@ import { scopeAt } from '../py/structure.js';
 import { EDIT_CLASS_IDS } from '../sketch/productions.js';
 import type { EditClass } from '../sketch/productions.js';
 import { EDIT_CLASSES, EDIT_CLASS_INSTRUCTIONS, EDIT_CLASS_QUESTION_ID } from '../sketch/questions.js';
-import type { Candidate, CandidateSource, CandidateSourceName, EnumerateOptions, FailureView, LocalizeResult, RankResult, Site, SourceFile, TestRunSummary } from '../types.js';
+import type { Candidate, CandidateSource, CandidateSourceName, EnumerateOptions, LocalizeResult, RankResult, Site, SourceFile, TestRunSummary } from '../types.js';
 import { runRegressionCheck, subsetScope } from '../sieve/runner.js';
 import type { RunnerMemory } from '../sieve/runner.js';
 import { applyCandidate } from '../verify/apply.js';
@@ -45,7 +45,10 @@ import type { LlmRound, SubGoalLlm } from './llm.js';
 import type { SearchMemory } from './memory.js';
 import { wasTried } from './memory.js';
 import { patchMaxFiles } from './proposal.js';
-import { WIDENED_SITES_MAX, lineEvidenceOf, nextWidenChunk, orderWidenedSites, siteKey, widenedSites } from './sites.js';
+import { WIDENED_SITES_MAX, jevRankedSites, lineEvidenceOf, nextWidenChunk, orderWidenedSites, siteKey, taskIdentifiers, testLiterals, widenedSites } from './sites.js';
+// OOS iteration 4, item A: the two text extractors moved to sites.ts (the code-side site order
+// reads them and subgoal.ts already imports that module); re-exported so every caller is unchanged.
+export { taskIdentifiers, testLiterals } from './sites.js';
 import type { Base, Decision, Goal, GoalSearchTrace, OracleModel, Phase, VerifyJob, VerifyOutcome } from './types.js';
 import { PHASES } from './types.js';
 import { isUnstableOutcome } from '../oracle/index.js';
@@ -110,9 +113,6 @@ const SIEVE_ORDER_EPSILON = 1e-4;
  * a repository step as expensive). Three sites is the SKETCH bound (Q5 top-3 covers 36/40).
  */
 export const BEST_GUESS_TOP_SITES = 3;
-/** Test-derived literals handed to the sources (§3 "test-derived values"); bounded so a long expected list does not flood the pool. */
-const MAX_TEST_LITERALS = 40;
-const MAX_TASK_IDENTIFIERS = 60;
 /** An LLM round yields ≤ N samples × 3 patches (docs/LLM-JEV-DESIGN.md §4.6): the most a streamed round can queue. */
 export const LLM_ROUND_MAX_CANDIDATES = 18;
 
@@ -353,35 +353,6 @@ export function isSingleFileWorkspace(files: ReadonlyMap<string, SourceFile>): b
   return n <= SINGLE_FILE_MAX_PY_FILES;
 }
 
-/** Numbers, quoted strings and value keywords from the goal's failures (call, expected, actual), deduplicated and bounded. */
-export function testLiterals(failures: readonly FailureView[]): string[] {
-  const out = new Set<string>();
-  const re = /-?\d+(?:\.\d+)?|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\b(?:True|False|None)\b/g;
-  for (const f of failures) {
-    for (const text of [f.call, f.expected, f.actual]) {
-      for (const m of text.matchAll(re)) {
-        if (out.size >= MAX_TEST_LITERALS) return [...out];
-        out.add(m[0]);
-      }
-    }
-  }
-  return [...out];
-}
-
-/** Backticked words and identifier-shaped tokens (with `_`, a digit or camelCase) from the task text. */
-export function taskIdentifiers(task: string): string[] {
-  const out = new Set<string>();
-  for (const m of task.matchAll(/`([^`\n]+)`/g)) {
-    const inner = m[1] ?? '';
-    for (const id of inner.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) out.add(id[0]);
-  }
-  for (const m of task.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
-    const id = m[0];
-    if (/_|\d|[a-z][A-Z]/.test(id) && id.length >= 2) out.add(id);
-  }
-  return [...out].slice(0, MAX_TASK_IDENTIFIERS);
-}
-
 /**
  * The options every source enumerates with at a site on `base`. `phase` is the goal's current
  * phase (visitPhase sets it before a site is visited): the sources that widen the space beyond the
@@ -463,6 +434,34 @@ export function newTrace(goal: Goal, oracle: OracleModel): GoalSearchTrace {
 /** §5.3: every located site of the goal has its seed sources exhausted, so a budget-hit step could test nothing new at the top sites. */
 export function everySiteSeedsExhausted(goal: Goal, sites: readonly Site[]): boolean {
   return sites.length > 0 && sites.every((s) => seedsExhaustedAt(goal, s));
+}
+
+/**
+ * May the search enter WIDENED (§2.3 phase W: every code line and gap slot of the located
+ * functions)? The measured gate is "every located site is seed-exhausted" — a site budget that a
+ * JEV RANKING chose is exhausted evidence, so widening is the honest next move.
+ *
+ * OOS iteration 4, item A adds the case that gate never covered. When no Choice answered
+ * (`--jev off`, the budget spent, every Choice escaped) the six replace sites are not a ranking
+ * at all: they are a code ORDER over sites nothing has an opinion about (`orderByCodeEvidence`),
+ * and `REPLACE_SITES_MAX` is a cut justified by "a Jev top-3 covers 36/40". Running that order
+ * out therefore exhausts the ORDER, not the space — and the recorded `--jev off` `kth` run is
+ * exactly that shape: it parks in phase `LLM` with the insert gaps still open, never reaches
+ * WIDENED, and so never sees the code lines its six-cut left behind.
+ *
+ * The test for "Jev had no opinion" is `jevRankedSites`, NOT `evidence.jevProbability` (OOS
+ * iteration 4 review, defect 4): `jevProbability` is written only by Q5 anchors, so a goal whose
+ * line Choice escaped but whose Q5n Noul answered 0.90 and SHORT-CIRCUITED carried no
+ * `jevProbability` anywhere and took this clause — WIDENED opening early on a goal Jev was
+ * confident about, with five insert gaps still open. A Q5n ranking leaves its own trace on the
+ * sites, and a flat one (the `--jev off` inert 0.5) leaves none, which is exactly the split.
+ */
+export function widenedReachable(goal: Goal, sites: readonly Site[]): boolean {
+  if (sites.length === 0) return false;
+  if (sites.every((s) => seedsExhaustedAt(goal, s))) return true;
+  if (jevRankedSites(sites)) return false;
+  const replace = sites.filter((s) => s.kind === 'replace');
+  return replace.length > 0 && replace.every((s) => seedsExhaustedAt(goal, s));
 }
 
 /** Human-readable park reason (§2.3 `describe(goal.exhausted, sites)`), Jev-visible in openProblems, so no machine state. */
@@ -1316,6 +1315,14 @@ async function settleLlm(st: LoopState, outcome: GoalSearchTrace['outcome']): Pr
     closeRound(L);
   }
   const sum = (f: (s: LlmRoundSummary) => number): number => L.summaries.reduce((n, s) => n + f(s), 0);
+  // contract 1.9 (Fastlane) §3.1 / §3.2 / §3.4 (review defect 5): the generator-path figures of the rounds, summed
+  // onto the trace so search/index.ts can put them on `StepRecord.verify`. Each is ABSENT when nothing measured it —
+  // a 0 would read as "the cache missed" or "no hedge won" rather than "the mechanism was off".
+  const ttfbMs = L.summaries.flatMap((s) => [...(s.ttfbMs ?? [])]);
+  const hedges = sum((s) => s.hedges ?? 0);
+  const cacheRead = sum((s) => s.cacheRead ?? 0);
+  const cacheWrite = sum((s) => s.cacheWrite ?? 0);
+  const cacheInput = sum((s) => s.cacheInputTokens ?? 0);
   st.trace.llm = {
     rounds: L.summaries.length,
     samples: sum((s) => s.fired),
@@ -1327,6 +1334,9 @@ async function settleLlm(st: LoopState, outcome: GoalSearchTrace['outcome']): Pr
     misanchored: sum((s) => s.misanchored),
     graceMs: L.graceMs,
     fixAbsent: L.fixAbsent,
+    ...(ttfbMs.length > 0 ? { ttfbMs } : {}),
+    ...(hedges > 0 ? { hedges, hedgeWins: sum((s) => s.hedgeWins ?? 0) } : {}),
+    ...(cacheRead > 0 || cacheWrite > 0 ? { cacheRead, cacheWrite, ...(cacheInput > 0 ? { cacheInput } : {}) } : {}),
     // OOS iteration 3, item 3: which deadline-growth arm produced these rounds (recorded, never a gate)
     deadlineGrowth: L.deps.deadlineGrowth,
   };
@@ -1481,7 +1491,9 @@ async function searchPhases(st: LoopState, loc: LocalizeResult, sites: readonly 
       }
       case 'WIDENED': {
         // Single-file workspaces only, or repositories under a `change_approach` directive (§2.3, §5.4).
-        if (!(singleFile || mem.overrides.widenedOnRepos) || !sites.every((s) => seedsExhaustedAt(goal, s))) break;
+        // OOS iteration 4, item A: `widenedReachable`, not `sites.every(...)` — a code-ORDERED
+        // six is a guess, so running its replace sites out is reason to widen, not to park.
+        if (!(singleFile || mem.overrides.widenedOnRepos) || !widenedReachable(goal, sites)) break;
         // Every code line and statement gap of the located functions the SEEDS list did not cover,
         // in the order of the localisation's line evidence (Q5 p, Q5n Noul; a gap scores its better
         // neighbour), then distance from the top-1 line, cut at WIDENED_SITES_MAX (sites.ts; `wrap`'s

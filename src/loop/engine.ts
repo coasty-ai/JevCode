@@ -49,6 +49,7 @@ import type { AskResult,
   EngineEmitter,
   EngineEvent,
   EngineMode,
+  FastPathReason,
   EngineOptions,
   EngineStatus,
   EndOptions,
@@ -75,6 +76,7 @@ import type { AskResult,
   PendingDirective,
   Plan,
   PlanSnapshot,
+  StepFastPath,
   StepProposer,
   StepVerifySummary,
   Proposal,
@@ -164,11 +166,27 @@ import { PLAN_MAX_HARNESS_PROBLEMS, applyPlanDraft, boundHarnessProblems, emptyP
 import { buildCommonState, isChangeAction, testsCurrent, type Redact } from './state.js';
 import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTranscriptLine, tokenSeriesOrZeros } from './stop.js';
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
-import { isComplete, isCompleteByFact, type CompletionFactInput } from './stages/complete.js';
+import { completionDecision, isComplete, isCompleteByFact, type CompletionFactInput } from './stages/complete.js';
+// contract 1.9 (Fastlane) §7.5 — the engine seam of the router table: the switch (§0.3), the per-step commit of the
+// token and the ledger (§2.6, §5.2). `src/loop/routers.ts` owns all three; the engine calls them and nothing else.
+import { commitStepRouters, discardStepRouters, routersOn } from './routers.js';
 import { prefilterCandidates, runContextStage } from './stages/context.js';
 // contract 1.5 (ORCHESTRATION-DESIGN §3, §8.2 D1 item 15): the decompose stage
 import { checkpointOrchestration, decomposeShutByOptions, measureRepoFacts, parseSplitDraft, runDecomposeStage, splitPrefixTree, type DecomposeFacts, type DecomposeStageContext } from './stages/decompose.js';
-import { runExecuteStage } from './stages/execute.js';
+import { isTestCommand, runExecuteStage } from './stages/execute.js';
+// contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9): the bounded sieve fast path — a pure engine-side
+// predicate and budget here, the round itself behind the synth facade.
+import { declinedRecord, fastPathBudget, fastPathRunWallCapMs, fastPathStage1Free, fastPathStage1Workspace, firedRecord } from './stages/fastpath.js';
+import { FastPathRunner, fastPathFailingIds, fastPathFingerprint, fastPathSuspects } from '../synth/search/fastpath.js';
+import type { FastPathBudget, FastPathRunState } from '../synth/search/fastpath.js';
+import { detectLayout } from '../synth/search/index.js';
+import { isRepositoryWorkspace } from '../synth/oracle/index.js';
+import { synthesizerHandles } from '../synth/index.js';
+// contract 1.9 (Fastlane) §3.2: a hedge twin's sample index carries its origin — the one fact `noteSampleStart` needs
+// to tell "a second copy of a sample of the open round" from "a new round" (slot A's defect 11)
+import { hedgeOriginOf } from '../synth/llm/source.js';
+import { warmPlaneEnabled } from '../synth/warm/index.js';
+import { scopeUsable } from '../workspace/tests.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
 import { runJudgeStage } from './stages/judge.js';
 import { runProposeStage, type ProposeStageResult } from './stages/propose.js';
@@ -374,10 +392,21 @@ export interface StageContext {
   readonly createdThisRun: ReadonlySet<string>;
   /** targets computed by the risk stage (jev-on) or before execute (jev-off) */
   patchTargets: readonly TargetInfo[];
+  /**
+   * contract 1.9 (Fastlane) §0.3 / §7.5 seam (b): `EngineOptions.routers`, lifted off the run and handed to
+   * `routersOn(ctx.mode, ctx.routers)` at the four routed sites. Absent = the caller pinned nothing and
+   * `JEVCODE_ROUTERS` decides (`routersEnabled`); the `jev-on` gate is checked first and no switch passes it.
+   */
+  readonly routers?: 'on' | 'off';
   now(): number;
   wallRemainingMs(): number;
   emit(e: EngineEvent): void;
-  ask(stage: StageName, state: JsonObject, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void): Promise<AskOutcome>;
+  /**
+   * The one metered, recorded path to the decider. `signal` is contract 1.9 (Fastlane) §7.5 seam (a): a
+   * **per-call** signal a speculative router hands in, so that an ask it has already dropped is cancelled AND
+   * charges nothing. Absent on every non-routed site, where the call is the pre-1.9 one byte for byte.
+   */
+  ask(stage: StageName, state: JsonObject, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void, signal?: AbortSignal): Promise<AskOutcome>;
   generate(req: GenerateRequest, attempt: number): Promise<GenerateResult>;
   noteMalformed(attempt: number): void;
   startCandidateRefresh(): void;
@@ -396,6 +425,39 @@ export interface StageContext {
 // Internal state
 // ---------------------------------------------------------------------------------------
 
+/**
+ * contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §0.3: the fast path's effective switch.
+ *
+ * `'auto'` in `jev-on` and `'off'` in every other mode — the engine derives the default, so there is no `src/config`
+ * and no `src/cli` change. `JEVCODE_FASTPATH=off|auto` fills an **absent** option, which is how a bisect and a
+ * worker process turn it off without rebuilding; it is read here for the same reason `JEVCODE_WARM` is read inside
+ * `src/synth/warm/plane.ts`. Any other value is ignored rather than throwing: an env typo must not end a run.
+ *
+ * **The explicit option wins** (§7.5 seam (b), slot D's finding; changed here, it used to read the env FIRST in
+ * both directions). An exported `JEVCODE_FASTPATH=off` ran `jev-on-next` disarmed while `summary.json` recorded
+ * `'auto'`, and `JEVCODE_FASTPATH=auto` armed the `jev-on-next-nofast` CONTROL while it recorded `'off'` — the
+ * arm's own row was not the truth, and nothing in the output said so. `routersEnabled` (src/jev/router.ts) has the
+ * same polarity, so the two mechanism switches now behave alike.
+ */
+export function resolveFastPathOption(mode: EngineMode, option: 'auto' | 'off' | undefined): 'auto' | 'off' {
+  if (option !== undefined) return option === 'auto' && mode === 'jev-on' ? 'auto' : 'off';
+  const env = process.env['JEVCODE_FASTPATH'];
+  if (env === 'off') return 'off';
+  return mode === 'jev-on' ? 'auto' : 'off';
+}
+
+/**
+ * contract 1.9 (Fastlane) §4.3: what stage 1 agreed to. Separated from the round so the cheap predicate stays outside
+ * any stage (a decline must cost nothing and emit nothing) while the round runs inside `this.stage('propose', …)`.
+ */
+interface ArmedFastPath {
+  runner: FastPathRunner;
+  state: FastPathRunState;
+  budget: FastPathBudget;
+  fingerprint: string;
+  tRunMs: number;
+}
+
 interface StepDraft {
   step: number;
   startedAt: string;
@@ -404,6 +466,13 @@ interface StepDraft {
   contextFiles: string[];
   proposal: Proposal | null;
   risk: RiskAssessment | null;
+  /**
+   * contract 1.9 (Fastlane) §2.4 / §7.5 seam (c): which verdict actually stood at the risk stage, and whether the
+   * harm ask was dropped or failed. `RiskStageResult` returns both only with routers on (§2.4's code-first gate);
+   * `commit()` copies them onto `StepRecord.riskSource` / `jevUnavailable`, so both stay absent with routers off.
+   */
+  riskSource: 'code' | 'jev' | null;
+  jevUnavailable: boolean | null;
   matchesIntent: number | null;
   outcome: ActionOutcome | null;
   output: string;
@@ -461,6 +530,19 @@ interface StepDraft {
   verify: { samples: number; timeouts: number; cancelled: number; malformed: number; reported: Partial<StepVerifySummary> | null };
   /** docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): who proposed — the synthesizer, or the generic per-step fallback (stage 4); null in the other modes */
   proposer: StepProposer | null;
+  /** contract 1.9 (Fastlane) §5.2: the fast path's row for this step; null when it never armed (I2: nothing is written then) */
+  fastPath: StepFastPath | null;
+  /**
+   * contract 1.9 (Fastlane) §4.3 T3 / §6 row 14: the scope-usability verdict the TRIGGER saw, snapshotted at propose
+   * time. The step's own run overwrites `lastTestRunScopeUsable` at commit, so reading the field there would record
+   * run N's verdict beside a `fastPath.reason` that came from run N−1 — on exactly the steps where it matters, the
+   * ones whose action is a `run`.
+   */
+  scopeUsable: boolean | null;
+  /** contract 1.9 (Fastlane) §4.4 bound 3: the round's wall, the facade's own clock diff, charged to the step */
+  fastPathMs: number;
+  /** contract 1.9 (Fastlane) §4.4: the Jev latency spent INSIDE the round (already inside `timing.jevMs`) */
+  fastPathJevMs: number;
   generatorFailReason: string | null;
   errorClass: string | null;
   error: { stage: StageName; code: string; message: string } | null;
@@ -863,6 +945,21 @@ class EngineImpl implements Engine {
   private readonly costPerStep: number[] = [];
   /** the output of the engine's last parsed test run, for the `done` state's `lastRun.output` (state.ts ExecutedInfo.lastRunOutput) */
   private lastTestRunOutput: string | null = null;
+  /**
+   * contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4.3 T3: `scopeUsable()` over the last parsed test run. In-memory
+   * only and rebuilt by the next run, exactly like `lastTestRunOutput`: a resumed run cannot arm until one happens.
+   */
+  private lastTestRunScopeUsable = false;
+  /**
+   * contract 1.9 (Fastlane) §0.3 / §4: the bounded sieve fast path. `'auto'` in `jev-on`, `'off'` everywhere else;
+   * `JEVCODE_FASTPATH=off|auto` overrides, read here exactly as `JEVCODE_WARM` is read in `src/synth/warm/plane.ts`
+   * (no `src/config` and no `src/cli` change). With `'off'` the runner is never built and the three `if`s below are
+   * all false, which is the whole of I2 (byte identity).
+   */
+  private readonly fastPathOption: 'auto' | 'off';
+  private fastPathRunner: FastPathRunner | null = null;
+  /** T2, cached once per run: does the fast path's own synthesizer cover this workspace (`synthesizerHandles`)? */
+  private fastPathHandles: boolean | null = null;
   /** a provider reported usage without a finite cost (§9.5): the run stops with error after the step commits unless --allow-unpriced */
   private unpriced: { side: SpendSource; model: string; stage: StageName } | null = null;
   /** `budget:unpriced` is one item per (side, model) per run (§9.5), not one per metered call */
@@ -1008,6 +1105,8 @@ class EngineImpl implements Engine {
     });
     this.memoryIndexChars = memoryIndexChars(memoryIndex);
     this.synthesizer = init.opts.synthesizer ?? null;
+    // contract 1.9 (Fastlane) §0.3: the engine derives the default from the mode; the env override is the bench's switch
+    this.fastPathOption = resolveFastPathOption(this.mode, init.opts.fastPath);
     this.resumed = init.resume !== null;
     // contract 1.4 (W0 item 1, §9.3): the epochs THIS device has already minted or accepted for the run, as the
     // resumed `run.json` recorded them. The resume gate's local set starts here rather than at this process's own
@@ -2730,6 +2829,8 @@ class EngineImpl implements Engine {
       contextFiles: [],
       proposal: null,
       risk: null,
+      riskSource: null,
+      jevUnavailable: null,
       matchesIntent: null,
       outcome: null,
       output: '',
@@ -2754,6 +2855,10 @@ class EngineImpl implements Engine {
       closed: false,
       verify: { samples: 0, timeouts: 0, cancelled: 0, malformed: 0, reported: null },
       proposer: null,
+      fastPath: null,
+      scopeUsable: null,
+      fastPathMs: 0,
+      fastPathJevMs: 0,
       generatorFailReason: null,
       errorClass: null,
       error: null,
@@ -2822,7 +2927,10 @@ class EngineImpl implements Engine {
       now: () => self.clock(),
       wallRemainingMs: () => self.wallRemainingMs(),
       emit: (e) => self.emit(e),
-      ask: (stage, state, questions, annotate) => self.ask(draft, stage, state, questions, annotate),
+      ask: (stage, state, questions, annotate, signal) => self.ask(draft, stage, state, questions, annotate, signal),
+      // contract 1.9 (Fastlane) §7.5 seam (b): spread in only when the caller pinned it, so a run that pins
+      // nothing hands the stages exactly the object it handed them before the wave (I2)
+      ...(this.opts.routers !== undefined ? { routers: this.opts.routers } : {}),
       generate: (req, attempt) => self.generate(draft, req, attempt),
       noteMalformed: (attempt) => {
         const rec = draft.generatorRecords.find((r) => r.attempt === attempt);
@@ -2844,32 +2952,64 @@ class EngineImpl implements Engine {
   // Jev and generator calls (metered here, §6 Budgets)
   // -------------------------------------------------------------------------------------
 
-  private async ask(draft: StepDraft, stage: StageName, state: Json, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void): Promise<AskOutcome> {
-    return (await this.askRecorded(draft, stage, state, questions, annotate)).outcome;
+  private async ask(draft: StepDraft, stage: StageName, state: Json, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void, signal?: AbortSignal): Promise<AskOutcome> {
+    return (await this.askRecorded(draft, stage, state, questions, annotate, signal)).outcome;
   }
 
-  /** The one metered, recorded path to the decider; returns the raw AskResult too for the jev-only decider wrapper. */
-  private async askRecorded(draft: StepDraft, stage: StageName, state: Json, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void): Promise<{ outcome: AskOutcome; res: AskResult }> {
+  /**
+   * The one metered, recorded path to the decider; returns the raw AskResult too for the jev-only decider wrapper.
+   *
+   * contract 1.9 (Fastlane) §7.5 seam (a) — the **per-call signal**. A speculative router (§2.1 clause 6) aborts
+   * the ask it dropped; before this seam that abort reached nobody, so the request ran to completion in here and
+   * charged its metering, its `jev.jsonl` row, its `decision` events and its `draft` mutations to the step that
+   * issued it — after that step's `StepRecord` had been written (review 2026-09-22, defect 2; I4). With the signal
+   * threaded the request itself is cancelled, and a decider that ignores its signal and answers anyway is
+   * **abandoned**: the call rejects at the guard below and nothing past `jevCache.ask` runs. Nothing is charged or
+   * recorded for it beyond the router's own `dropped` row. `signal` is absent on every non-routed site, where
+   * `this.signal` is the only signal and every line below is the pre-1.9 one.
+   */
+  private async askRecorded(draft: StepDraft, stage: StageName, state: Json, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void, signal?: AbortSignal): Promise<{ outcome: AskOutcome; res: AskResult }> {
     assertQuestionBatch(questions);
     trace(`engine.ask ${stage} step=${draft.step} start`);
     let res: AskResult;
     const retry = this.retryHooks('jev', draft.step, stage);
     // HARNESS-NEXT-DESIGN §4.4: `jevWaitMs` per stage — per router once §3.x labels its asks
     const endJevWait = stepTimeline.span('jev', stage);
+    // §7.5 seam (a): the run signal and the caller's, as one. `linkedAbort` is the same helper the router and the
+    // sample channel use, and its `unlink` runs in the finally so a run-scoped signal collects no listeners.
+    const link = signal === undefined ? null : linkedAbort(this.signal);
+    let onCallAbort: (() => void) | null = null;
+    if (link !== null && signal !== undefined) {
+      if (signal.aborted) link.controller.abort(signal.reason);
+      else {
+        onCallAbort = (): void => link.controller.abort(signal.reason);
+        signal.addEventListener('abort', onCallAbort, { once: true });
+      }
+    }
     // and the same wall as a plain number, always: `harnessMs` is derived from it so an in-process decider that
     // reports `latencyMs: 0` cannot charge its own CPU to the gated harness budget (see StepDraft.timing)
     const askT0 = this.clock();
     try {
-      res = await this.jevCache.ask(state, questions, { signal: this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
+      res = await this.jevCache.ask(state, questions, { signal: link?.controller.signal ?? this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
       retry.settled(true);
     } catch (e) {
       retry.settled(false);
       trace(`engine.ask ${stage} rejected ${e instanceof Error ? e.name : typeof e}`);
       throw e;
     } finally {
-      draft.timing.jevWallMs += Math.max(0, this.clock() - askT0);
+      if (onCallAbort !== null && signal !== undefined) signal.removeEventListener('abort', onCallAbort);
+      link?.unlink();
+      // §7.5 seam (a): an abandoned ask charges no wall either — the step it would charge may already be committed,
+      // and the router's own `heldMs` is where that wall is accounted (I3).
+      if (signal?.aborted !== true) draft.timing.jevWallMs += Math.max(0, this.clock() - askT0);
       endJevWait();
     }
+    // §7.5 seam (a): the decider answered a call nobody is waiting on any more (it ignored its signal, or it
+    // resolved in the same tick the router dropped it). NOTHING below runs: no meter, no `jev.jsonl` row, no
+    // `decision` event, no `draft` mutation. The router already recorded the drop; this is the write I4 forbids.
+    // The reason the CALLER gave (routeSpeculative names the router and the drop) travels on, so the router's own
+    // `isRouterFatal` sees a plain Error and keeps its single silent drop branch — never the harness's own stop.
+    if (signal?.aborted === true) throw signal.reason instanceof Error ? signal.reason : new Error(`ask ${stage} (step ${draft.step}) was abandoned by its caller after the answer arrived`);
     trace(`engine.ask ${stage} resolved attempts=${res.attempts}`);
     // TUI-DESIGN §13.2: a reachable Jev restarts the unreachable backoff (30 s again on the next pause)
     this.unreachablePauses = 0;
@@ -2926,6 +3066,14 @@ class EngineImpl implements Engine {
    * fresh waker before every sleep (an AbortController aborts once) and emits `retry`; `wake` is the getter the clients
    * read per attempt; `settled` (call it in the finally of the call) emits `retry:settled` when a retry happened and
    * nulls the waker so a later retryNow() reports false.
+   *
+   * contract 1.9 (Fastlane) §7.5 seam (e) — **keyed per in-flight request** (review defect 6 of the engine set).
+   * The shown slots (`retryWaker`, `retrying`) used to be written and, worse, CLEARED by whichever call touched
+   * them last. Routers make two jev asks overlap for the first time: a router ask the step abandoned settles
+   * while the next step's ask is sleeping between attempts, and the abandoned one's `settled()` nulls the live
+   * call's waker (so `[r]` reports "no retry sleep is active" and the sleep runs to its end) and clears the
+   * `retrying` status the TUI is showing. Each call now holds its own waker in a local and only writes or clears
+   * the shared slot while it OWNS it — last writer shows, and only that writer may take the display down.
    */
   private retryHooks(side: 'jev' | 'generator', step: number, stage: StageName, sample?: number): { onRetry: (info: RetryInfo) => void; wake: () => AbortSignal | undefined; settled: (ok: boolean) => void } {
     let retries = 0;
@@ -2933,24 +3081,35 @@ class EngineImpl implements Engine {
     // docs/LLM-JEV-DESIGN.md §4.8: wakers are keyed per sample; the status line (`retrying`) shows sample 0's — or the one-sample call's
     const shown = sample === undefined || sample === 0;
     const key = sample ?? 0;
-    const setWaker = (w: AbortController | null): void => {
-      if (shown) this.retryWaker = w;
-      else if (w === null) this.sampleWakers.delete(key);
-      else this.sampleWakers.set(key, w);
-    };
+    // §7.5 seam (e): THIS call's waker. `wake()` reads it, never the shared slot, so a concurrent call's
+    // controller is never handed to this client's sleep.
+    let own: AbortController | null = null;
     return {
       onRetry: (info) => {
         retries += 1;
         totalWaitMs += Math.max(0, info.waitMs);
-        setWaker(new AbortController());
+        // §7.5 seam (e): a fresh controller per sleep, held here AND published — last writer shows
+        own = new AbortController();
+        if (shown) this.retryWaker = own;
+        else this.sampleWakers.set(key, own);
         if (shown) this.retrying = { side, attempt: info.attempt, maxAttempts: info.maxAttempts, untilMs: Date.now() + Math.max(0, info.waitMs) };
         this.emit({ type: 'retry', side, step, stage, info });
         this.emitStatus();
       },
-      wake: () => (shown ? this.retryWaker : this.sampleWakers.get(key))?.signal,
+      wake: () => (shown ? own : this.sampleWakers.get(key))?.signal,
       settled: (ok) => {
-        setWaker(null);
-        if (shown) this.retrying = null;
+        // §7.5 seam (e): a call that never slept owns nothing and clears nothing — that is the whole defect. A
+        // call that did only takes the display down while the slot is still the controller IT published.
+        const mine = own;
+        own = null;
+        if (mine !== null) {
+          if (shown) {
+            if (this.retryWaker === mine) {
+              this.retryWaker = null;
+              this.retrying = null;
+            }
+          } else if (this.sampleWakers.get(key) === mine) this.sampleWakers.delete(key);
+        }
         if (retries === 0) return;
         this.emit({ type: 'retry:settled', side, step, attempts: retries + 1, ok, totalWaitMs });
         this.emitStatus();
@@ -3048,6 +3207,113 @@ class EngineImpl implements Engine {
     const handles = synthesizer.handles(this.wsInfo, listing.map((c) => c.path));
     if (!handles) this.emit({ type: 'transcript', step: this.step + 1, level: 'info', text: `synthesizer ${synthesizer.name} does not cover this workspace; proposing through the generic per-step fallback (docs/LLM-JEV-DESIGN.md §9.4)` });
     return (this.synthHandles = handles);
+  }
+
+  /**
+   * contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9), stage 1: may ONE bounded sieve round run for a
+   * single-file failing cluster on this step, and with what budget? `null` is the decline — the record is already on
+   * the draft — and then the LLM proposes as usual and nothing else about the step changes.
+   *
+   * The whole route is a BRANCH: the code default (the generator's `propose_action`) is what runs when it declines,
+   * and it declines for free on every step whose predicate does not hold. This half runs OUTSIDE any stage precisely
+   * because it must cost nothing and emit nothing; `fastPathRound` is the half that is a propose stage. It never
+   * applies anything (I7): an accepted proposal goes through the unchanged risk → confirm → coordinate → budget →
+   * execute → judge path.
+   */
+  private async fastPathArm(draft: StepDraft): Promise<ArmedFastPath | null> {
+    if (this.fastPathOption !== 'auto' || this.mode !== 'jev-on') return null;
+    const runner = this.fastPathRunner ?? (this.fastPathRunner = new FastPathRunner());
+    // §4.6: the engine's 4-entry window reaches the round's memory on EVERY step of an armed run, not only on rounds —
+    // otherwise `lastEngineRun` / `lastChangeStep` go stale and the ledger claims a commit the workspace never took.
+    runner.observe(this.runId, this.window);
+    const state = runner.state(this.runId);
+    const run = this.lastTestRun;
+    const tRunMs = run?.durationMs ?? 0;
+    // §6 row 14: snapshotted here, where the predicate reads it, because this step's own run replaces it at commit
+    draft.scopeUsable = this.lastTestRunScopeUsable;
+    const decline = (reason: FastPathReason): null => {
+      draft.fastPath = declinedRecord(reason, tRunMs, state.disarmed);
+      return null;
+    };
+    // stage 1a — free: engine state only, no workspace listing, no Jev, no LLM, no test run
+    const free = fastPathStage1Free({
+      mode: this.mode,
+      option: this.fastPathOption,
+      lastTestRun: run,
+      lastRunWasTestCommand: run !== null && isTestCommand(run.command, this.wsInfo.testCommand),
+      scopeUsable: this.lastTestRunScopeUsable,
+      lastChangeStep: this.lastChangeStep,
+      spendLeftUsd: Math.max(0, this.opts.limits.spendCapUsd - this.opts.meter.snapshot().totalUsd),
+      disarmed: state.disarmed,
+      loopTripped: this.detector.tripped(),
+      pausePending: this.pauseRequested,
+      // §4.5 / I8: with the warm plane on, a warm-screened passer is indistinguishable from a cold-confirmed one in
+      // the evidence the facade can see, so the route refuses to enter rather than record a coldness it cannot check
+      warmEnabled: warmPlaneEnabled(),
+    });
+    if (free !== null) return decline(free);
+    // stage 1b: the listing behind T2 / T6 / T8, paid for only now
+    const listing = (await this.listCandidatesTimed()).map((c) => c.path);
+    if (this.fastPathHandles === null) this.fastPathHandles = synthesizerHandles(this.wsInfo, listing);
+    // §4.4: the share is taken of the RUN's remaining wall (there is no per-step wall limit in `Limits`), and it is
+    // additionally bounded by what the run-wide fast-path ledger has left, so the AGGREGATE over rounds is bounded too.
+    // `fullSuiteMs` is passed only when the loop's own run really was the full suite — the unscoped detected command.
+    const fullSuiteMs = this.wsInfo.testCommand !== null && run !== null && run.command.trim() === this.wsInfo.testCommand.command.trim() ? tRunMs : undefined;
+    const budget = fastPathBudget({
+      tRunMs,
+      ...(fullSuiteMs === undefined ? {} : { fullSuiteMs }),
+      wallRemainingMs: this.wallRemainingMs(),
+      runWallLeftMs: Math.max(0, fastPathRunWallCapMs(this.opts.limits.maxWallMs) - state.wallSpentMs),
+    });
+    const suspects = fastPathSuspects(this.lastTestRunOutput, listing, this.opts.task);
+    // T10: the `(file, failing-test-id-set)` key the design names, parsed out of the run's own output. The counts are
+    // the FALLBACK, used only when the output named no test: two different clusters with the same counts must not
+    // collide (the first would make the second read as `fingerprint_seen` and a winnable round would never be entered).
+    const failingIds = fastPathFailingIds(run?.command ?? '', this.lastTestRunOutput);
+    const fingerprint = fastPathFingerprint(suspects[0] ?? '', failingIds.length > 0 ? failingIds : [`${run?.command ?? ''}#${run?.failed ?? 0}/${run?.errors ?? 0}`]);
+    const gate = fastPathStage1Workspace({
+      handles: this.fastPathHandles,
+      suspects,
+      repository: isRepositoryWorkspace(this.wsInfo.testCommand, listing),
+      layoutDetected: detectLayout(listing) !== 'other',
+      // §6 row 9: the round edits nothing in the workspace, but a patch that cannot land is not worth the wall. This
+      // is the COORDINATION ledger's own verdict on the implicated file (the same `check()` the coordinate stage
+      // runs), not this run's dirty-file list: a peer's exclusive lease is the thing that stops a patch landing, and
+      // a file this run itself modified earlier is not a lease conflict and must not be counted as one in §8.
+      leaseConflict: suspects.length === 1 && this.coord !== null && this.coord.conflictOn([suspects[0] ?? ''], draft.step),
+      wallLeftMs: this.wallRemainingMs(),
+      budget,
+      fingerprint,
+      state,
+    });
+    if (!gate.fire) return decline(gate.reason);
+    if (budget === null) return decline('no_wall');
+    this.emit({ type: 'synth', step: draft.step, phase: 'fastpath:considered', detail: `${gate.file}: ${run?.failed ?? 0} failing, ${run?.errors ?? 0} errors at t_run ${tRunMs} ms` });
+    state.attempts.set(fingerprint, (state.attempts.get(fingerprint) ?? 0) + 1);
+    return { runner, state, budget, fingerprint, tRunMs };
+  }
+
+  /**
+   * The round itself, run INSIDE `this.stage('propose', …)` by the call site — the round is a propose, and a propose
+   * is a stage: one `stage:start` / `stage:end` pair, `currentStage` on `'propose'` for its whole length, a
+   * `stepTimeline` span and an `emitStatus()` at its end. A round may last `wallMs + reserveMs + graceMs` (up to ~47 s
+   * with the default cap), so a round outside the stage left every consumer that pairs the two events — the TUI's
+   * stage display, the timing derivation, the bench event parser — reading an unmatched sequence for that long.
+   *
+   * `draft.fastPathMs` stays the FACADE's own clock diff (§4.4 bound 3), not the stage's wall.
+   */
+  private async fastPathRound(draft: StepDraft, armed: ArmedFastPath): Promise<Proposal | null> {
+    const { runner, state, budget, fingerprint, tRunMs } = armed;
+    const result = await runner.run(this.synthesisContext(draft, []), budget);
+    draft.fastPathMs = result.telemetry.wallMs;
+    draft.fastPathJevMs = result.telemetry.jevMs;
+    draft.fastPath = firedRecord(result, { tRunMs, budget, disarmed: state.disarmed });
+    if (result.kind !== 'proposed') {
+      // T10: the cluster is not tried again this run — `mem.tried` is monotone, so a second round would enumerate nothing
+      state.seen.add(fingerprint);
+      return null;
+    }
+    return result.proposal;
   }
 
   /**
@@ -3242,7 +3508,7 @@ class EngineImpl implements Engine {
     const retry = this.retryHooks('generator', draft.step, 'propose', sample?.sample);
     const link = sample === undefined ? null : this.linkSample(sample);
     const t0 = this.clock();
-    if (sample !== undefined) this.noteSampleStart(draft);
+    if (sample !== undefined) this.noteSampleStart(draft, sample.sample);
     // §4.8: the provider's facts on a sample that yields no result — the ids and streamed sizes of an aborted stream, its usage
     // frame when it had arrived, or a rate-limited end (`CancelledGeneration.rateLimited`); null when the callback never fired
     const held: { partial: CancelledGeneration | null } = { partial: null };
@@ -3268,11 +3534,18 @@ class EngineImpl implements Engine {
         wake: retry.wake,
         ...(sample !== undefined
           ? {
+              // contract 1.9 (Fastlane) §3.1: the engine keeps the facts for the row AND hands them to the synthesizer's
+              // own callback when it asked for one — the sample's accounting is the synthesizer's, the row is the engine's.
               onCancelled: (partial: CancelledGeneration) => {
                 held.partial = partial;
+                sample.onCancelled?.(partial);
               },
             }
           : {}),
+        // contract 1.9 (Fastlane) §3.1: time to first byte, forwarded verbatim. It is the §3.2 hedge's only input, so the
+        // channel must not swallow it; absent when the caller asked for none, which is a one-shot propose call and every
+        // sample of a synthesizer that does not measure TTFB.
+        ...(sample?.onFirstByte === undefined ? {} : { onFirstByte: sample.onFirstByte }),
       });
       retry.settled(true);
     } catch (e) {
@@ -3388,13 +3661,26 @@ class EngineImpl implements Engine {
     };
   }
 
-  /** docs/LLM-JEV-DESIGN.md §4.8: `generatorMs` of an llm-jev step is the wall of the round (the union of the samples' intervals), never the sum. */
-  private noteSampleStart(draft: StepDraft): void {
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.8: `generatorMs` of an llm-jev step is the wall of the round (the union of the
+   * samples' intervals), never the sum.
+   *
+   * contract 1.9 (Fastlane) §3.2 / contract 1.4 §12.0.2 P3 — slot A's defect 11. "One round per sample batch" is
+   * kept by `inFlight === 0`, and `noteSampleEnd` drops `inFlight` to 0 in `generate`'s own `finally`, BEFORE the
+   * source's `handleEnd` / `settle` has marked the origin served and cleared its hedge timer. A twin started in
+   * that window found `inFlight === 0` and opened a SECOND round for one batch: `llmRounds` 2 where the round is
+   * one, so `PausePoint.llmRound.round` names a round the synthesizer never ran and the batch wall restarts
+   * mid-round. A hedge twin is not a round — it is a second copy of a sample of the round already open
+   * (`HEDGE_TWIN_OFFSET`, `hedgeOriginOf`) — so it takes the batch wall when it is the only sample in flight and
+   * never the round counter. Every other sample index is unchanged, which is what keeps the PausePoint contract
+   * tests reading exactly what they read before.
+   */
+  private noteSampleStart(draft: StepDraft, sample: number): void {
     const b = draft.generatorBatch;
     if (b.inFlight === 0) {
       b.startedAt = this.clock();
       // contract 1.4 (§12.0.2 PausePoint.round): one round per sample batch of the step
-      draft.llmRounds += 1;
+      if (hedgeOriginOf(sample) === null) draft.llmRounds += 1;
     }
     b.inFlight += 1;
   }
@@ -3914,9 +4200,22 @@ class EngineImpl implements Engine {
             this.flushGeneratorRecords(draft);
           }
         } else {
-          // docs/COORDINATION-DESIGN.md §8.8 jev-on column: Jev's picks first, then the cache; the meter recomputed once the prompt is built
-          p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, contextFiles, null));
-          this.flushGeneratorRecords(draft);
+          // contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9): ONE bounded sieve round on the one shape the
+          // search provably wins, before the LLM is asked to guess. A branch route, not a race: when it declines (which
+          // is every step where the predicate does not hold, at zero cost) the code default below runs unchanged.
+          const armed = await this.fastPathArm(draft);
+          // §4.4 / the stage contract: stage 1 is free and silent, so a decline emits nothing; the ROUND is a propose
+          // like every other propose and runs inside the stage. A step whose round fired and declined therefore has
+          // two propose spans — the round's and the LLM's — both matched, rather than one unmatched sequence.
+          const fast = armed === null ? null : await this.stage('propose', () => this.fastPathRound(draft, armed));
+          if (fast !== null) {
+            draft.proposer = 'fastpath';
+            p = { proposal: fast };
+          } else {
+            // docs/COORDINATION-DESIGN.md §8.8 jev-on column: Jev's picks first, then the cache; the meter recomputed once the prompt is built
+            p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, contextFiles, null));
+            this.flushGeneratorRecords(draft);
+          }
         }
         draft.proposal = p.proposal;
         draft.proposeCompleted = true;
@@ -3932,6 +4231,10 @@ class EngineImpl implements Engine {
         stage = 'risk';
         const rk = await this.stage('risk', () => runRiskStage(ctx, common(), p.proposal, intentInfo, { verifiedCompletion: this.verifiedCompletion(p.proposal) }));
         draft.risk = rk.risk;
+        // contract 1.9 (Fastlane) §2.4 / §7.5 seam (c): the code-first gate's audit trail. Both are undefined on
+        // the routers-off path, so the draft keeps its nulls and the record keeps neither member (I2).
+        if (rk.riskSource !== undefined) draft.riskSource = rk.riskSource;
+        if (rk.jevUnavailable !== undefined) draft.jevUnavailable = rk.jevUnavailable;
         draft.matchesIntent = rk.matchesIntent;
         draft.patchTargets = rk.targets;
         if (rk.risk.verdict === 'block') {
@@ -4473,6 +4776,11 @@ class EngineImpl implements Engine {
     // rule-1 discard would leave an `exclusive` lease live for its full ttl and every peer would wait on a step that
     // is never going to run.
     this.coord?.released('discarded');
+    // contract 1.9 (Fastlane) §2.6 / §7.5 seam (c): the ATTEMPT is over — its token is invalidated, so a router
+    // answering after the discard applies to nothing and its ledger goes nowhere (no `StepRecord` is written for
+    // a discarded step). The key stays open, because §7.3 step 3 replays this same step number and a closed key
+    // would drop every router of the replayed attempt `committed`.
+    if (routersOn(this.mode, this.opts.routers)) discardStepRouters(this.runId, draft.step);
     // Discarded steps (§9.1 rule 1) still consumed wall time and money; the run totals keep them.
     // contract 1.4 (§7.2, §11 row 41): this attempt's sample rows (flushed now, or landing late) carry `discarded: true`
     draft.discarded = true;
@@ -4518,13 +4826,25 @@ class EngineImpl implements Engine {
       // contract 1.4 (W2b) (§4.2): absent when the gate did not run, so a run without a ledger writes HEAD's row
       ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
       ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
+      // OOS iteration 2, defect 3: the measured ask wall, which `jevChargedMs` (and `shellJevMs` above) charge
+      // `harnessMs` by and which nothing persisted — `grep -c jevWallMs` over iteration 2's state.json and
+      // steps.jsonl archives read 0. Absent when nothing was asked, so a step without Jev writes HEAD's row.
+      ...(draft.timing.jevWallMs > 0 ? { jevWallMs: draft.timing.jevWallMs } : {}),
     };
   }
 
   /** The stop rule after a step: llm-jev → the code fact of docs/LLM-JEV-DESIGN.md §6.6; jev-on / jev-only → `task_complete >= completeThreshold`. */
   private completeAfter(draft: StepDraft): boolean {
     if (this.mode === 'llm-jev') return isCompleteByFact(this.completionFact(draft));
-    return usesJev(this.mode) && isComplete(draft.completion, this.opts.limits.completeThreshold);
+    if (!usesJev(this.mode)) return false;
+    // contract 1.9 (Fastlane) §2.5 RL5 / §7.5 seam (d): with the routers ON, completion is demoted to
+    // recorded-only on exactly the steps where the harness holds the fact itself — a step whose proposal carries
+    // `ProposalEvidence`, which in `jev-on` is ZERO steps until route R9 commits its first fast-path proposal.
+    // Off that, and on every routers-off run, this is the pre-1.9 line and `completionDecision` is not consulted
+    // at all: the call is behind the same one `if` the rest of the wave is (I2, `router-golden.test.ts`).
+    if (!routersOn(this.mode, this.opts.routers)) return isComplete(draft.completion, this.opts.limits.completeThreshold);
+    const fact = this.completionFact(draft);
+    return completionDecision({ routers: true, hasEvidence: draft.proposal?.evidence !== undefined, completion: draft.completion, threshold: this.opts.limits.completeThreshold, fact }).complete;
   }
 
   private completionFact(draft: StepDraft): CompletionFactInput {
@@ -5113,6 +5433,17 @@ class EngineImpl implements Engine {
 
   private commit(draft: StepDraft): { stop: StopReason | null } {
     const step = draft.step;
+    // contract 1.9 (Fastlane) §2.6 / §5.2 / §7.5 seam (c) — STEP COMMIT, and the first line of it. This is I4's
+    // other half: the step's token is invalidated here, so no router answer still in flight may be applied to a
+    // record that is about to be written, and the step's ledger is taken (and its key closed for good, so a late
+    // `stepTokenFor` cannot resurrect the step — defect 6).
+    //
+    // Behind the switch, and that is not decoration (I2): `commitStepRouters` CLOSES the key whether or not a
+    // router ran, and a closed key hands out a permanently-invalid token. A routers-off run that closed
+    // `(runId, 1…n)` would therefore disarm every router of the next run in the same process that reused the run
+    // id — which is exactly what a `jev-on` / `jev-on-next` A/B over one fixture does. Off, this seam is not
+    // entered at all, and `StepRecord.router` / `StepTiming.routerWaitMs` stay absent.
+    const routerLedger = routersOn(this.mode, this.opts.routers) ? commitStepRouters(this.runId, step) : null;
     const proposal = draft.proposal;
     const outcome = draft.outcome;
     const status = outcome?.status ?? null;
@@ -5170,9 +5501,12 @@ class EngineImpl implements Engine {
     // Code-computed workspace facts (§5.5), persisted for --resume.
     if (status === 'executed' && draft.changedFiles.length > 0 && proposal && proposal.action.kind !== 'run' && proposal.action.kind !== 'read') this.lastChangeStep = step;
     if (draft.tests?.parsed) {
-      this.lastTestRun = { step, command: draft.tests.command, passed: draft.tests.parsed.passed, failed: draft.tests.parsed.failed, errors: draft.tests.parsed.errors, allPassed: draft.tests.allPassed === true };
+      // contract 1.9 (Fastlane) §4.3 T5: `durationMs` is the member that lets the fast-path predicate survive a resume
+      this.lastTestRun = { step, command: draft.tests.command, passed: draft.tests.parsed.passed, failed: draft.tests.parsed.failed, errors: draft.tests.parsed.errors, allPassed: draft.tests.allPassed === true, durationMs: Math.round(Math.max(0, draft.timing.execMs)) };
       // the run's output tail for the `done` state's `lastRun.output` (loop/synth team request; state.ts ExecutedInfo.lastRunOutput)
       this.lastTestRunOutput = draft.output;
+      // contract 1.9 (Fastlane) §4.3 T3 / §6 row 14: the scope-usability verdict on the loop's OWN run
+      this.lastTestRunScopeUsable = scopeUsable(draft.tests.parsed);
     }
     for (const p of draft.created) this.createdThisRun.add(p);
     if (status === 'executed' && proposal?.action.kind === 'read') this.counters.reads += 1;
@@ -5195,6 +5529,13 @@ class EngineImpl implements Engine {
             // contract 1.4 (W2b) (§4.2): the coordinate gate, absent when it did not run (no ledger, or a read/done action)
             ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
             ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
+            // contract 1.9 (Fastlane) §5.2 (slot C): the round's own wall and the Jev latency inside it; absent when no round ran
+            ...(draft.fastPathMs > 0 ? { fastPathMs: draft.fastPathMs } : {}),
+            ...(draft.fastPathJevMs > 0 ? { fastPathJevMs: draft.fastPathJevMs } : {}),
+            // OOS iteration 2, defect 3: the wall measured inside `decider.ask`, the number `jevChargedMs` charges
+            // `harnessMs` by when the decider under-reports (every mock, stub and `--jev off` double). Absent when
+            // nothing was asked.
+            ...(draft.timing.jevWallMs > 0 ? { jevWallMs: draft.timing.jevWallMs } : {}),
           };
     this.timing.generatorMs += timing.generatorMs;
     this.timing.jevMs += timing.jevMs;
@@ -5204,6 +5545,8 @@ class EngineImpl implements Engine {
     if (timing.imagesMs !== undefined) this.timing.imagesMs = (this.timing.imagesMs ?? 0) + timing.imagesMs;
     if (timing.synthMs !== undefined) this.timing.synthMs = (this.timing.synthMs ?? 0) + timing.synthMs;
     if (timing.decomposeMs !== undefined) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + timing.decomposeMs;
+    // OOS iteration 2, defect 3: summed for the run's own `RunResult.timing` (state.json), like the buckets above
+    if (timing.jevWallMs !== undefined) this.timing.jevWallMs = (this.timing.jevWallMs ?? 0) + timing.jevWallMs;
     // TUI-DESIGN §9.2: the per-step cost series behind `stepsLeftEstimate`
     this.costPerStep.push(draft.usage.generator.costUsd + draft.usage.jev.costUsd);
     const generatorTokens = draft.usage.generator.inputTokens + draft.usage.generator.outputTokens;
@@ -5290,6 +5633,23 @@ class EngineImpl implements Engine {
     this.escapedThisStep = [];
     this.commitThisStep = null;
     if (draft.proposer !== null) record.proposer = draft.proposer;
+    // contract 1.9 (Fastlane) §2 / §5.2 / §7.5 seam (c): the step's router rows, and the three members that had no
+    // writer until this seam. `routerWaitMs` is I3 IN THE RECORD — the sum of the per-route measured waits, which
+    // is 0 on every step that is not a bug (the ask's own latency stays in `jevMs`). All four absent with the
+    // routers off: `commitStepRouters` returned null and the risk stage returned neither member.
+    if (routerLedger !== null) {
+      record.router = { issued: routerLedger.issued, applied: routerLedger.applied, dropped: routerLedger.dropped, waitMs: routerLedger.waitMs, rows: routerLedger.rows };
+      timing.routerWaitMs = routerLedger.waitMs;
+    }
+    if (draft.riskSource !== null) record.riskSource = draft.riskSource;
+    // §5.2: "Absent = false" — only the outage is a row, and `riskSource: 'jev'` already says the other case
+    if (draft.jevUnavailable === true) record.jevUnavailable = true;
+    // contract 1.9 (Fastlane) §5.2 (slot C): both absent unless the fast path armed this step, which is I2
+    if (draft.fastPath !== null) {
+      record.fastPath = draft.fastPath;
+      // §6 row 14: the verdict the TRIGGER read, not the verdict this step's own run left behind
+      record.scopeUsable = draft.scopeUsable ?? this.lastTestRunScopeUsable;
+    }
     // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts (llm-jev only; jev-only rows are unchanged)
     if (this.mode === 'llm-jev' && draft.proposer === 'synth') record.verify = this.verifySummary(draft, proposal);
     // contract 1.4 (W2b) (§4.1): a conditional spread everywhere else, a conditional assignment here — a step
@@ -5408,6 +5768,9 @@ class EngineImpl implements Engine {
       const phase = (async (): Promise<void> => {
         // Stray background process groups from a successful run must not outlive it (§8); abort() already killed on its path.
         if (!this.aborting) await this.sandbox.killAll().catch(() => undefined);
+        // contract 1.9 (Fastlane) §4.6: the fast path's own synthesizer and its search memory go with the run. Nothing
+        // else in `jev-on` holds a search memory, so this drops exactly what this engine created and nothing shared.
+        this.fastPathRunner?.dispose(this.runId);
         if (this.pendingCheckpoint) await this.pendingCheckpoint;
         trace('finish: checkpoint awaited, writing final state');
         try {

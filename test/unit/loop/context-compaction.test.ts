@@ -52,6 +52,26 @@ function input(over: Partial<CompactionInput> = {}): CompactionInput {
 }
 
 describe('§8.6 code compaction', () => {
+  /**
+   * The BYTE golden of the `'code'` fold (TUI round-5 request R5-H2). §14 item 16(b) makes a golden the definition of
+   * a mode that must not move; `context.kept` lands beside this function (`rankKept`) and `kept: 'code'` promises the
+   * compactor is untouched, so the promise is a literal here rather than an assertion in a doc. Regenerating it is a
+   * deliberate act: every character is what the comparison arm compares against.
+   */
+  const GOLDEN_CODE_SUMMARY =
+    "Objective:\n- Fix f() in src/a.ts so that tests/test_a.py passes\nCompleted:\n- read the failing test (step 2, judged 0.91)\n- fix f() (step 6, judged 0.88; tests 12 passed, 1 failed, 0 errors)\nActive:\n- run the suite\n- update the changelog\n- c\n- d\nBlocked:\n- [replan, step 5] the same edit three times\nFiles:\n- src/a.ts — read at step 2, edited at step 6 (sha abcd…)\n- tests/test_a.py — read at step 1\nTests:\n- pytest -q: 12 passed, 1 failed, 0 errors (step 6)\nNotes:\n- [step 1] edit src/f1.ts → executed (3000 chars; full text: read jevcode:outputs/step-1.txt)\n- [step 2] edit src/f2.ts → executed (3000 chars; full text: read jevcode:outputs/step-2.txt)\n- [step 3] edit src/f3.ts → executed (3000 chars; full text: read jevcode:outputs/step-3.txt)\n- [step 4] edit src/f4.ts → executed (3000 chars; full text: read jevcode:outputs/step-4.txt)\n- [step 5] edit src/f5.ts → executed (3000 chars; full text: read jevcode:outputs/step-5.txt)\n- [step 6] edit src/f6.ts → executed (3000 chars; full text: read jevcode:outputs/step-6.txt)";
+
+  it("§8.6 golden: the `'code'` summary is byte-identical, and the `kept` switch is not one of its inputs", () => {
+    const r = compactCode(input());
+    expect(r.summary.text).toBe(GOLDEN_CODE_SUMMARY);
+    expect(r.summary.by).toBe('code');
+    // `context.kept` reaches `rankKept`, never the compactor: it is not a member of `CompactionInput` at all, and
+    // neither value of it changes what `resolveContextPolicy` hands the fold
+    expect(Object.keys(input())).not.toContain('kept');
+    expect(resolveContextPolicy({ kept: 'jev' }).compaction).toBe(resolveContextPolicy({ kept: 'code' }).compaction);
+    expect(resolveContextPolicy({ kept: 'jev' }).compactEvery).toBe(resolveContextPolicy({ kept: 'code' }).compactEvery);
+  });
+
   it('is deterministic: the same inputs give the same summary text, byte for byte', () => {
     const a = compactCode(input());
     const b = compactCode(input());

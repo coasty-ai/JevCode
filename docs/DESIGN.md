@@ -3381,9 +3381,9 @@ the ones the probes held or routing margins.
 
 ### 22.8 Bench arms and per-condition pinned generation (`src/bench/`)
 
-`CONDITION_ORDER = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned']`
-(`conditions.ts`; `BenchCondition = EngineMode | 'llm-sieve' | 'jev-off-tuned'` in
-`core/types.ts`). The two attribution arms are bench-side substitutions on an existing engine
+`CONDITION_ORDER = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned',
+'jev-on-next', 'jev-on-next-nofast']` (`conditions.ts`; `BenchCondition = EngineMode | 'llm-sieve' |
+'jev-off-tuned' | 'jev-on-next' | 'jev-on-next-nofast'` in `core/types.ts`). The two attribution arms are bench-side substitutions on an existing engine
 mode (`engineModeOf`): `llm-sieve` runs the `llm-jev` engine with the stub decider and the
 synthesizer in `mode: 'llm-sieve'`; `jev-off-tuned` runs the `jev-off` engine behind the tuned
 provider. The user's generation config never reaches an arm: `pinnedGeneration(condition,
@@ -3396,6 +3396,8 @@ model)` is recorded verbatim in `summary.json.conditions` and is what the reques
 | `jev-only` | full engine + synthesizer, `NullProvider` | synthesizer | inert (no LLM) | Jev | the no-generator reference; any generator call invalidates the record |
 | `llm-jev` | full engine + synthesizer **and** the real provider | synthesizer | the one `SynthesizerGeneration` object `LLM_DEFAULT_GENERATION` — `reasoning {effort: 'low'}, maxTokens 3000, sampleDeadline {10 s, 20 s, repo 30 s}, sampleTemperature {0, 0.8, 0.6, 1.0}` — handed to `createSynthesizer({generation})` and echoed back as `Synthesizer.generation`; the flat record fields (`maxTokens`, `reasoning`, `deadlineMs`, `sampleTemperatures`, `lengthHandling: double-once`, `servedRate`) are derived from it | Jev | the candidate; generator calls are recorded per sample, never asserted zero |
 | `llm-sieve` | as `llm-jev` with `createStubDecider()` in the decider slot | synthesizer | same object as `llm-jev` | stub (`STUB_DECIDER_MODEL`, Noul 0.5, Choice = first non-escape option, Score level 0; `usage.calls: 0`, its own count travels as `stubbedJevRequests`) | attribution control for criterion 5; **not wired**: `createSynthesizer` throws for `mode: 'llm-sieve'`, so the runner writes an `engine_create_failed` record instead of measuring a different arm under this name |
+| `jev-on-next` | full engine, `mode: 'jev-on'` (`engineModeOf`), with `EngineOptions.fastPath: 'auto'` and `routers: 'on'` | **generator** (the fast path is a per-step detour, not the arm's proposer, so `usesSynthesizer` is false) | the `jev-off-tuned` object — `maxTokens 1500, {effort: 'low'}, deadline 20 s / 30 s on repositories, lengthHandling double-once` — plus the pinned `S2Generation` block (`hedges {perRound 1, 3–8 s, 2 × TTFB p50}, prefix 'byte-stable', reasoningMaxTokens 256`) | Jev | contract 1.9, `docs/LLM-LOOP-DESIGN.md` §8.1; `validateOptions` refuses it at any `--concurrency` but 1 |
+| `jev-on-next-nofast` | as `jev-on-next` with `fastPath: 'off'` | generator | the same object | Jev | the paired same-build control §8.5 clause 4 rests on; without it a `jev-on-next` win confounds tuned generation, S2, the routers and the fast path |
 
 The runner (`runner.ts`) refuses a synthesizer arm whose synthesizer does not echo the arm's mode
 and, for the LLM arms, the very generation object (`synthesizerMismatch`), records
@@ -3406,9 +3408,48 @@ head-to-head (`headtohead.ts`: Wilson intervals, exact one-sided sign test on di
 exact one-sided Wilcoxon signed-rank on paired wall, cost ratios, criteria 1–5 with the failed
 ones named first) is rendered into `comparison.md` by `report.ts` whenever an LLM arm sits beside
 `jev-off`, and by `experiments/llm-jev/headtohead.mts` across several results dirs with
-per-arm verdict files. The bench CLI (`src/cli/args.ts CONDITIONS`) still validates
-`--conditions` against `jev-on, jev-off, jev-only, llm-jev`; the two attribution arms are reachable
-through `runBench` only.
+per-arm verdict files. The bench CLI (`src/cli/args.ts CONDITIONS`) keeps its own hard-coded allow-list, which today reads
+`jev-on, jev-off, jev-only, llm-jev, llm-sieve, jev-off-tuned` — it is **not** derived from
+`CONDITION_ORDER`, so `--conditions jev-on-next` is rejected at the CLI boundary even though
+`parseConditions`, `isBenchCondition` and `runBench` all accept it. Adding the two rows to that
+constant is the one change the wave needs outside `src/bench/**`, and it is the only reason the arm
+is not yet reachable from `bin/jevcode.js bench` (and therefore from `experiments/harness-next/quick.mts`,
+which shells out to it). `test/unit/bench/next-arms.test.ts` pins the gap so it cannot be forgotten.
+
+**contract 1.9 (Fastlane) — the wave's arms and their measurement.** `jev-on-next` and
+`jev-on-next-nofast` (`docs/LLM-LOOP-DESIGN.md` §8) are bench-side substitutions on `jev-on` in
+exactly the sense `jev-off-tuned` is one on `jev-off`: no new `EngineMode`, no new engine, three
+mechanisms switched on per arm and PINNED in `summary.json.conditions[arm].mechanisms`
+(`armMechanisms`), never read from the environment. The measurement side is
+`src/bench/next-arms.ts` — the recorded iteration-1 reference (fresh 18: `llm-jev` 12/18,
+`jev-off-tuned` 9/18, 26.0 s against 19.7 s on the 8 both-solved; in-sample 28: 27/28), the five
+blocking rows R-a…R-e of §8.3, the pre-registered predictions (a)…(f) of §8.4 and the five-clause
+accept rule of §8.5 — and it is fed by the §5.5 bridge: `step-records.ts` now folds `fastPath`,
+`router`, `riskSource`, `jevUnavailable` and the S2 members of `verify` out of `steps.jsonl` into
+`StepsSummary`, without which every one of those fields is written to the run directory and is
+invisible to every bench table. The recorded rows are a *reference*, not a same-build baseline:
+they were taken at `751e3bf` and `main` carries the nine unmeasured changes of `oos-iter-2`, which
+is why clause 4 rests on the `jev-on-next-nofast` control instead. `report.ts` prints the wave's
+columns in `comparison.md`; `experiments/llm-jev/headtohead.mts` prints the three §8 sections when
+the arm is present; `experiments/fastlane/quick-table.mts` adds the fast-path, router-wait and TTFB
+columns and folds R-a and R-b into the §5 accept rule; `experiments/harness-next/quick.mts` takes
+`--arm` (rings 1 and 2 used to hard-code `llm-jev`, so a Ring-2 run of this wave would have read
+zeros for a reason that had nothing to do with the fast path) and clamps that arm to concurrency 1.
+
+Two consequences of pinning the mechanisms are recorded here rather than left to be discovered from
+a table. **First, pinning an option is not enough: both mechanisms are resolved env-FIRST inside the
+engine** (slot C's `resolveFastPathOption` reads `JEVCODE_FASTPATH` before `EngineOptions.fastPath`,
+in both directions; slot B's `routersOn` ORs `JEVCODE_ROUTERS=on` in). An exported
+`JEVCODE_FASTPATH=off` would run `jev-on-next` disarmed while `summary.json` recorded `'auto'`, and
+an exported `JEVCODE_FASTPATH=auto` would run the `jev-on-next-nofast` **control** armed while it
+recorded `'off'` — destroying the one-mechanism contrast clause 4 rests on, silently and in the
+flattering direction. `runBenchWithSources` therefore calls `conditions.ts pinMechanismEnv()` before
+any engine is built, unconditionally, and logs each switch it removed; after that the pinned value
+is the effective one. **Second, `armMechanisms` returns `fastPath: 'off'` for the six older arms**,
+which once slot C lands is a deliberate divergence from the product default (`'auto'` in `jev-on`):
+a bench `jev-on` row measures the engine *without* route R9, because it is the same-build no-fast-path
+reference the wave is read against. §8.5's note that the default-mode flip is "a separate decision on
+these rows" is exactly this: the `jev-on` bench row is not a measurement of the shipped default.
 
 ### 22.9 Deviations from `docs/LLM-JEV-DESIGN.md` recorded in the stage reports
 

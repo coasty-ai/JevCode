@@ -43,6 +43,37 @@ export const PROVIDER_KEY_ENV: Readonly<Record<ProviderId, readonly [string, ...
   meta: ['META_API_KEY', 'MODEL_API_KEY'],
 };
 
+/**
+ * The GENERATOR base URL per provider — what `src/provider/registry.ts` rows and the adapters' own `*_BASE_URL`
+ * constants read, and the seven-entry form of the config layer's `BASE_URLS` (TUI-DESIGN-5 §8.2 R14). `anthropic`
+ * deliberately carries no `/v1`: `src/provider/anthropic.ts` appends its own version segment. These are NOT the
+ * catalogue's `origin + versionPath` (the two agree for six of the seven and differ for `anthropic`). No trailing slash.
+ */
+export const PROVIDER_BASE_URL: Readonly<Record<ProviderId, string>> = {
+  anthropic: 'https://api.anthropic.com',
+  openrouter: 'https://openrouter.ai/api/v1',
+  openai: 'https://api.openai.com/v1',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta',
+  xai: 'https://api.x.ai/v1',
+  fireworks: 'https://api.fireworks.ai/inference/v1',
+  meta: 'https://api.meta.ai/v1',
+};
+
+/**
+ * What a picker column, a key-setup title, a registry row and an error label call each provider (R14). One spelling
+ * per provider: the registry used to say `'xAI (Grok)'` while the catalogue said `'xAI'`; the catalogue's strings are
+ * the ones the TUI pins (TUI-DESIGN-5 §12), so they are the table.
+ */
+export const PROVIDER_DISPLAY_NAME: Readonly<Record<ProviderId, string>> = {
+  anthropic: 'Anthropic',
+  openrouter: 'OpenRouter',
+  openai: 'OpenAI',
+  gemini: 'Google Gemini',
+  xai: 'xAI',
+  fireworks: 'Fireworks AI',
+  meta: 'Meta',
+};
+
 /** Whether an untrusted string is a provider id. Reads no prototype key: `'toString'` is not an id. */
 export function isProviderId(s: string): s is ProviderId {
   return (PROVIDER_IDS as readonly string[]).includes(s);

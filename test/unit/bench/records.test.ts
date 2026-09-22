@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { isValidCall, latencyFit, mergeGeneratorSummaries, parseGeneratorRecords, summariseGeneratorRecords } from '../../../src/bench/generator-records.js';
-import { mergeStepsSummaries, summariseStepRows } from '../../../src/bench/step-records.js';
+import { emptyStepsSummary, mergeStepsSummaries, summariseStepRows } from '../../../src/bench/step-records.js';
 
 const row = (over: Record<string, unknown>): string =>
   JSON.stringify({ step: 1, attempt: 1, promptHash: 'p', model: 'glm', temperature: null, maxTokens: 3000, usage: { inputTokens: 1000, outputTokens: 100, costUsd: 0.0002, calls: 1 }, latencyMs: 2000, stopReason: 'tool_calls', malformed: false, ...over });
@@ -58,7 +58,9 @@ describe('steps.jsonl summary', () => {
       'not json',
     ].join('\n');
     const s = summariseStepRows(text);
-    expect(s).toEqual({ steps: 3, synthSteps: 1, synthMs: 4000, genericSteps: 1, verify: { samples: 4, distinct: 3, malformed: 1, timeouts: 0, cancelled: 2, misanchored: 1, candidatesTested: 9, passers: 1, partials: 0, graceMs: 500, localisationMissed: 1 } });
+    // contract 1.9 (Fastlane) §5.5: a pre-wave row carries no fastPath / router / risk / S2 members, so those blocks
+    // read exactly `emptyStepsSummary()`'s — zeros, never an error (test/unit/bench/next-arms.test.ts owns the folding)
+    expect(s).toEqual({ ...emptyStepsSummary(), steps: 3, synthSteps: 1, synthMs: 4000, genericSteps: 1, verify: { samples: 4, distinct: 3, malformed: 1, timeouts: 0, cancelled: 2, misanchored: 1, candidatesTested: 9, passers: 1, partials: 0, graceMs: 500, localisationMissed: 1 } });
     expect(mergeStepsSummaries([s, s]).verify.candidatesTested).toBe(18);
     expect(mergeStepsSummaries([]).steps).toBe(0);
   });
@@ -100,5 +102,54 @@ describe('steps.jsonl summary', () => {
     expect(mergeStepsSummaries([served, served]).deadlineGrowth).toBe('served');
     expect(mergeStepsSummaries([served, always]).deadlineGrowth).toBe('mixed');
     expect(mergeStepsSummaries([summariseStepRows(rows(null)), always]).deadlineGrowth).toBe('always');
+  });
+
+  /**
+   * OOS iteration 2, defect 2 / defect 4 (experiments/results/llm-jev-iter2.md §10): the warm
+   * verification plane's counters existed only as free text in the sieve's `synth · verify` event,
+   * and `--archive-runs` does not copy `transcript.log` — so the warm A/B that measurement was
+   * asked for could not be audited from the committed artefacts at all, and every warm number in
+   * that report was harvested by hand from the live run directory. `StepRecord.verify.warm` now
+   * carries them per step and `StepsSummary` sums them, with `mode` unioned like `deadlineGrowth`.
+   */
+  it('sums the per-step warm counters, unions the mode, and is absent on a warm-off run', () => {
+    const row = (warm: Record<string, unknown> | null): string =>
+      JSON.stringify({ step: 1, proposer: 'synth', timing: { synthMs: 10 }, verify: { samples: 1, distinct: 0, malformed: 0, timeouts: 0, cancelled: 0, misanchored: 0, candidatesTested: 5, passers: 0, partials: 0, graceMs: 0, localisationMissed: false, ...(warm === null ? {} : { warm }) } });
+    const on = (over: Record<string, unknown> = {}): Record<string, unknown> => ({ mode: 'on', offered: 100, screened: 98, confirmed: 2, mismatches: 0, fallbacks: 2, restarts: 0, invalidations: 0, scopeUnusable: 0, deadlineRechecks: 3, screenMs: 4000, confirmMs: 900, ...over });
+
+    const s = summariseStepRows([row(on()), row(on())].join('\n'));
+    expect(s.warm?.mode).toBe('on');
+    expect(s.warm?.offered).toBe(200);
+    expect(s.warm?.screened).toBe(196);
+    expect(s.warm?.deadlineRechecks).toBe(6);
+    expect(s.warm?.screenMs).toBe(8000);
+    // the S1 acceptance criterion the next A/B reads straight off the record
+    expect(s.warm?.mismatches).toBe(0);
+    expect(s.warm?.disabled).toBe(0);
+    expect(s.warm?.disabledReason).toBeUndefined();
+
+    // the plane turning itself off is counted and its first reason kept
+    const off = summariseStepRows([row(on()), row(on({ disabledReason: 'lane 3 stopped answering' })), row(on({ disabledReason: 'a later one' }))].join('\n'));
+    expect(off.warm?.disabled).toBe(2);
+    expect(off.warm?.disabledReason).toBe('lane 3 stopped answering');
+
+    // defect 4: the flag was on and the runner had no warm shape. A report counts these to know
+    // how many tasks of an "18-task warm A/B" the plane was actually engaged on.
+    const swe = summariseStepRows(row({ ...on(), mode: 'unsupported-runner', offered: 0, screened: 0, deadlineRechecks: 0, screenMs: 0, confirmMs: 0, confirmed: 0, fallbacks: 0 }));
+    expect(swe.warm?.mode).toBe('unsupported-runner');
+    expect(swe.warm?.screened).toBe(0);
+
+    // a warm-off run (the default) records nothing at all, so its summary is HEAD's
+    expect(summariseStepRows(row(null)).warm).toBeUndefined();
+    // and a mode the field does not define is not recorded as if it were an arm
+    expect(summariseStepRows(row({ ...on(), mode: 'sometimes' })).warm).toBeUndefined();
+
+    // a merge across arms says so rather than picking one
+    expect(mergeStepsSummaries([s, s]).warm?.offered).toBe(400);
+    expect(mergeStepsSummaries([s, swe]).warm?.mode).toBe('mixed');
+    expect(mergeStepsSummaries([summariseStepRows(row(null)), s]).warm?.mode).toBe('on');
+    expect(mergeStepsSummaries([summariseStepRows(row(null)), summariseStepRows(row(null))]).warm).toBeUndefined();
+    expect(mergeStepsSummaries([off, off]).warm?.disabled).toBe(4);
+    expect(mergeStepsSummaries([off, off]).warm?.disabledReason).toBe('lane 3 stopped answering');
   });
 });

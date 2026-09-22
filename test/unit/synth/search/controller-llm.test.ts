@@ -419,3 +419,50 @@ describe('synthesizerHandles (§9.4)', () => {
     expect(synthesizerHandles({ testCommand: { command: 'python runtests.py', runner: 'django' } }, ['django/db/models.py'])).toBe(true);
   });
 });
+
+/**
+ * contract 1.9 (Fastlane) §3.1 / §3.2 / §3.4 (review defect 5): `StepVerifySummary.ttfbMs | hedges | hedgeWins |
+ * cacheRead | cacheWrite | cacheHitRate` were declared and never written — no record and no bench arm could read a
+ * TTFB, a hedge or a cache hit rate. The controller already reports the search's LLM counts through
+ * `SynthesisContext.reportVerify` (§9.3); the generator-path figures ride the same hop.
+ */
+describe('§3.1 / §3.2 / §3.4 the generator-path figures reach `StepRecord.verify`', () => {
+  const llmTrace = (over: Partial<NonNullable<ReturnType<typeof makeTrace>['llm']>> = {}): NonNullable<ReturnType<typeof makeTrace>['llm']> => ({
+    rounds: 1,
+    samples: 3,
+    valid: 2,
+    distinct: 2,
+    malformed: 0,
+    timeouts: 1,
+    cancelled: 1,
+    misanchored: 0,
+    graceMs: 40,
+    fixAbsent: null,
+    ...over,
+  });
+
+  it('reports TTFB, the hedges and the provider cache — with `cacheHitRate` derived from the input tokens they are a share of', async () => {
+    const h = harness({
+      results: [(goal) => ({ kind: 'parked', reason: 'exhausted', trace: makeTrace({ goalId: goal.id, outcome: 'exhausted', llm: llmTrace({ ttfbMs: [120, 240, 900], hedges: 1, hedgeWins: 1, cacheRead: 900, cacheWrite: 100, cacheInput: 1_200 }) }) })],
+    });
+    const ctx = ctxFor({ runId: 'llm-ctl-fastlane', step: 1 });
+    await h.synth.synthesize(ctx);
+    const reported = ctx.verifyReports.at(-1)!;
+    expect(reported.ttfbMs).toEqual([120, 240, 900]);
+    expect(reported.hedges).toBe(1);
+    expect(reported.hedgeWins).toBe(1);
+    expect(reported.cacheRead).toBe(900);
+    expect(reported.cacheWrite).toBe(100);
+    expect(reported.cacheHitRate).toBeCloseTo(0.75, 12);
+    // the §9.3 counts it already reported are untouched by the addition
+    expect(reported).toMatchObject({ distinct: 2, misanchored: 0, graceMs: 40 });
+  });
+
+  it('reports none of them when nothing measured them: hedging off, no TTFB, a provider that served no cache', async () => {
+    const h = harness({ results: [(goal) => ({ kind: 'parked', reason: 'exhausted', trace: makeTrace({ goalId: goal.id, outcome: 'exhausted', llm: llmTrace() }) })] });
+    const ctx = ctxFor({ runId: 'llm-ctl-fastlane-off', step: 1 });
+    await h.synth.synthesize(ctx);
+    const reported = ctx.verifyReports.at(-1)!;
+    for (const key of ['ttfbMs', 'hedges', 'hedgeWins', 'cacheRead', 'cacheWrite', 'cacheHitRate']) expect(key in reported).toBe(false);
+  });
+});

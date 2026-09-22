@@ -58,6 +58,12 @@ export interface OpenLedgerOptions {
   /**
    * + review blocker 3: this process's immutable claim on `self.runId`. Omitted, the ledger mints `epoch 1` from
    * `self.runId` + `pid` at construction — good enough for a reader; a run passes the claim it minted at `createEngine`.
+   *
+   * TUI round-5 request R5-H3: this IS the seat for the MINTED claim, and a writer should use it. The handle's claim
+   * and the claim its heartbeat base carries must name ONE epoch — a reader that ranks by the seat would otherwise
+   * disagree with every reader that ranks by the beat (§3.2, §9.3, §14 item 18: the holder is the highest QUALIFIED
+   * epoch). When the mint can only happen after the fold is first readable — `nextEpoch(runId)` needs `seenEpochs`,
+   * which needs `open()` — pass nothing here and call `reseatClaim()` once the epoch is known.
    */
   claim?: Claim;
   pid?: number;
@@ -250,6 +256,24 @@ export interface LedgerHandle extends Ledger {
   peerLive(runId: string, o?: { excludePid?: number }): PeerLive | null;
   /** this process's immutable claim (review blocker 3) */
   readonly claim: Claim;
+  /**
+   * TUI round-5 request R5-H3 (§2.8's claim fence): seat the claim this process actually minted, for the one case
+   * `OpenLedgerOptions.claim` cannot serve — an epoch that is only computable AFTER the fold is first readable
+   * (`nextEpoch(runId)` reads `seenEpochs`, which needs `open()`). After it, the handle's seat and the heartbeat's
+   * `claim` name one epoch, which is the whole point: a reader ranking by the seat and a reader ranking by the beat
+   * cannot disagree.
+   *
+   * It is a SEAT, not a re-mint, and §14 item 18's holder rule bounds it in three ways — each a `CoordinationError`,
+   * never a silent no-op:
+   *   · the claim must be well formed (`isValidClaim`: epoch in [1, MAX_CLAIM_EPOCH], positive pid, ISO `at`);
+   *   · it must name THIS handle's `deviceId` and the `runId` its current claim names — `parseRecord` binds
+   *     `claim.runId` to the record's `runId`, so a cross-run seat would make every later beat fail its own
+   *     validator (the same rule `setIdentity` re-mints for, review minor 24);
+   *   · the epoch may never go DOWN. The holder is the highest qualified epoch, so a handle that has already
+   *     published epoch n and then seats n−1 would be telling its own peers it lost a race it won.
+   * An equal epoch is accepted and idempotent, so a caller that seats the same claim twice is not an error.
+   */
+  reseatClaim(claim: Claim): void;
   /**
    * + review blocker 3: the fork decision for `runId` over the IMMUTABLE claims of every record the fold holds. Stable
    * under any arrival order, so both sides of a fork agree; `verified` says whether the verdict may stop the run (§10.3).
@@ -558,6 +582,27 @@ class LedgerImpl implements LedgerHandle {
       this.watcher.start();
     }
     this.opened = true;
+  }
+
+  /**
+   * TUI round-5 request R5-H3. Guarded exactly as the interface states; see there for why each bound exists.
+   *
+   * Deliberately NOT wired into `createHeartbeatWriter`: the bench presence beat (§4.7) is written through a run's
+   * ledger with its OWN `benchId` as the beat `runId`, so forcing `base.claim` and `handle.claim` to agree there
+   * would refuse a legitimate record. The agreement is the run writer's to make, and this is the verb that makes it.
+   */
+  reseatClaim(claim: Claim): void {
+    if (!isValidClaim(claim)) throw new CoordinationError('not-ours', 'coordination: reseatClaim was given a claim that is not well formed');
+    if (claim.deviceId !== this.claim.deviceId) {
+      throw new CoordinationError('not-ours', `coordination: reseatClaim was given device '${claim.deviceId}', this handle is '${this.claim.deviceId}'`);
+    }
+    if (claim.runId !== this.claim.runId) {
+      throw new CoordinationError('not-ours', `coordination: reseatClaim was given run '${claim.runId}', this handle's claim is on '${this.claim.runId}'`);
+    }
+    if (claim.epoch < this.claim.epoch) {
+      throw new CoordinationError('not-ours', `coordination: reseatClaim would lower the seated epoch from ${String(this.claim.epoch)} to ${String(claim.epoch)}; the holder is the HIGHEST qualified epoch (§14 item 18)`);
+    }
+    this.claim = claim;
   }
 
   /**

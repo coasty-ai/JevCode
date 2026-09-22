@@ -18,7 +18,10 @@
  *                   `src/perf/jev-latency.ts`): level 0 of `destructive` is "nothing existing is lost" and of
  *                   `irreversible` is "no lasting effect". An inert level 0 would therefore answer every harm Score
  *                   with the most permissive reading available — `verdict ok, risk 0.000` on a proposal the mock
- *                   decider it replaces escalates to levels n−2/n−1 on a `DANGEROUS_COMMAND` match — which is
+ *                   decider it replaces escalates to levels n−2/n−1 on a `DANGEROUS_COMMAND` match (contract 1.9
+ *                   §2.4: that deny-list is production code in `src/jev/danger.ts` now — `dangerousCommand()`, the
+ *                   reason-returning form the risk stage's code-first verdict reads; `src/jev/mock.ts` re-exports the
+ *                   same object, so this sentence names exactly what it always did) — which is
  *                   exactly what §1.2 clause 2 forbids ("Jev can escalate to ask/block; it can never release what
  *                   code denies") and what the harm-gate bullet spells out ("A failed or timed-out Q20 means ask …
  *                   Never allow"). The top level is the only inert answer that cannot release anything: it can cost

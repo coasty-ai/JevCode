@@ -28,7 +28,8 @@ import { effortOf, pickEffort } from './openai-compat.js';
 import { getArr, getNum, getStr } from './sse.js';
 import type { GenerationProvider, ModelInfo, Pricing, ProviderConfig, ProviderDeps } from './types.js';
 
-export const XAI_BASE_URL = 'https://api.x.ai/v1';
+import { PROVIDER_BASE_URL } from './ids.js';
+export const XAI_BASE_URL = PROVIDER_BASE_URL.xai;
 /** 500k context, tools, $2.00/$6.00 per 1M (live catalogue read 2026-09-21). */
 export const XAI_DEFAULT_MODEL = 'grok-4.7';
 

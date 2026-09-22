@@ -23,11 +23,13 @@
  *   that loop by construction, with no constant and no task name in the rule.
  */
 import { choice, noul, pairedNouls, ref } from '../../jev/questions.js';
+import { routeSpeculative, type StepToken } from '../../jev/router.js';
+import { RL6_REPLAN_DEADLINE_MS, noteStepRoute, routersOn, stepTokenFor } from '../routers.js';
 import type { ChoiceVerdict, EngineMode, JsonObject, Question, ReplanDirective, ReplanMove } from '../../core/types.js';
 import type { StageContext } from '../engine.js';
 import { REFUSED_RESULT, describeSignatureKind, directiveMove, signatureKind, type LoopDetector } from '../loopdetect.js';
 import { buildReplanState } from '../state.js';
-import { annotateChoiceRows, resolveChoice } from './choose.js';
+import { annotateChoiceRows, resolveChoice, type ChoiceResolution } from './choose.js';
 
 export type ReplanOption = Exclude<ReplanMove, 'none_of_these'>;
 
@@ -111,6 +113,13 @@ function falseExamples(option: string): string[] {
     default:
       return ['this is the first trip and a plain change of approach is untried', 'recent shows steady progress despite the repetition'];
   }
+}
+
+/** what one replan request produced: the resolution and the two numbers the directive carries */
+interface ReplanAsked {
+  resolved: ChoiceResolution<ReplanOption>;
+  taskImpossible: number;
+  confidence: number;
 }
 
 export type ReplanOutcome = { kind: 'directive'; directive: ReplanDirective } | { kind: 'stop'; reason: 'replan_stop' | 'impossible'; directive: ReplanDirective };
@@ -259,16 +268,68 @@ export async function runReplanStage(ctx: StageContext, common: JsonObject, dete
   // change 6(a): on the synth path the Noul is not asked, so `taskImpossible` stays 0 and the
   // `impossible` stop below cannot fire from this stage whatever the configured threshold is
   const askImpossible = !synthProposes(ctx.mode);
-  await ctx.ask('replan', state, buildReplanQuestions({ taskImpossible: askImpossible }), (answers, rows) => {
-    resolved = resolveChoice<ReplanOption>({ choiceId: 'next_move', answers, options: REPLAN_LIST, escape: 'none_of_these', fallback: REPLAN_FALLBACK });
-    annotateChoiceRows(rows, 'next_move', resolved);
-    const ti = answers['task_impossible'];
-    taskImpossible = ti && ti.type === 'noul' ? ti.noul : 0;
-    confidence = rows.find((r) => r.id === 'next_move')?.confidence ?? 0;
-  });
+  const codeAnswer: ReplanAsked = { resolved, taskImpossible: 0, confidence: 0 };
+  // I4 at the WRITE site: the step's own token, held from before the ask so a late answer can see that its step
+  // has committed. Null on the routers-off path, where this callback is the pre-1.9 one, byte for byte.
+  let routed: StepToken | null = null;
+  const asked = async (signal?: AbortSignal): Promise<ReplanAsked> => {
+    let out: ReplanAsked = codeAnswer;
+    // jev-contract: RL6 next_move (docs/LLM-LOOP-DESIGN.md §2.2, §2.5)
+    //   escape:   the Choice carries `none_of_these`; resolveChoice returns the escape as a non-answer.
+    //   guard:    with routers on the ask is issued through routeSpeculative under the step signal with a 500 ms
+    //             deadline and a step-scoped token, the answer supplies the DIRECTIVE only, and the two Jev-decided
+    //             run-enders (`stop_and_report`, `task_impossible`) are recorded-only — the escalation ladder of
+    //             changes 7 and 9, which is code over the detector's own history, still ends a spent run.
+    //   fallback: REPLAN_FALLBACK = 'change_approach', the move the stage already resolves to when the Choice is escaped or absent — test: test/unit/loop/router.test.ts
+    //   no-gating: with routers on a dropped answer continues the run on the code directive; it can never end one.
+    await ctx.ask(
+      'replan',
+      state,
+      buildReplanQuestions({ taskImpossible: askImpossible }),
+      (answers, rows) => {
+        // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token,
+        // settled work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it
+        // annotates nothing and applies nothing. The belt stays even though §7.5 seam (a) has landed and
+        // `askRecorded` now abandons the call before this callback can run: the token check is the ONE drop the
+        // signal cannot see.
+        if (signal?.aborted === true || routed?.valid === false) return;
+        const r = resolveChoice<ReplanOption>({ choiceId: 'next_move', answers, options: REPLAN_LIST, escape: 'none_of_these', fallback: REPLAN_FALLBACK });
+        annotateChoiceRows(rows, 'next_move', r);
+        const ti = answers['task_impossible'];
+        out = { resolved: r, taskImpossible: ti && ti.type === 'noul' ? ti.noul : 0, confidence: rows.find((q) => q.id === 'next_move')?.confidence ?? 0 };
+      },
+      // §7.5 seam (a): the PER-CALL signal — a dropped ask is cancelled AND charges nothing.
+      signal,
+    );
+    return out;
+  };
+  const routers = routersOn(ctx.mode, ctx.routers);
+  if (!routers) {
+    const a = await asked();
+    resolved = a.resolved;
+    taskImpossible = a.taskImpossible;
+    confidence = a.confidence;
+  } else {
+    routed = stepTokenFor(ctx.runId, ctx.step);
+    const route = await routeSpeculative<ReplanAsked>({
+      id: 'RL6',
+      token: routed,
+      codeOrder: [codeAnswer],
+      deadlineMs: RL6_REPLAN_DEADLINE_MS,
+      signal: ctx.signal,
+      ask: async (signal) => [await asked(signal)],
+    });
+    noteStepRoute(ctx.runId, ctx.step, route);
+    const a = route.order[0] ?? codeAnswer;
+    resolved = a.resolved;
+    taskImpossible = a.taskImpossible;
+    confidence = a.confidence;
+  }
   const move: ReplanMove = resolved.option;
   const directive: ReplanDirective = { move, probability: resolved.probability, confidence, taskImpossible, text: directiveText(resolved.verdict === 'fallback' ? 'none_of_these' : move, resolved.verdict, resolved.probability, taskImpossible, signature) };
-  if (askImpossible && taskImpossible >= ctx.limits.impossibleThreshold) return { kind: 'stop', reason: 'impossible', directive };
+  // §2.5 RL6: with routers on, `task_impossible` is recorded and no longer ends the run — the step cap, the wall
+  // cap and the code loop detector are the run's stops.
+  if (!routers && askImpossible && taskImpossible >= ctx.limits.impossibleThreshold) return { kind: 'stop', reason: 'impossible', directive };
   // changes 7 and 9: the escalation ladder, off the detector's own signature and directive history
   // (never a constant, never a task name). It runs BEFORE the `stop_and_report` exit below because
   // change 9's whole subject is a stop move on a refused completion claim; a `run:` signature and
@@ -284,7 +345,15 @@ export async function runReplanStage(ctx: StageContext, common: JsonObject, dete
     ctx.emit({ type: 'replan', step: ctx.step, directive: escalated });
     return { kind: 'directive', directive: escalated };
   }
-  if (move === 'stop_and_report') return { kind: 'stop', reason: 'replan_stop', directive };
+  if (move === 'stop_and_report') {
+    // §2.5 RL6: recorded-only with routers on. The move stays in the record and in the directive text; what it no
+    // longer does is end a run with 20 of 25 steps unspent (the iteration-1 shape: every llm-jev SWE run stopped
+    // at step 5). The escalation ladder above still stops a run whose search has no rung left to climb.
+    if (!routers) return { kind: 'stop', reason: 'replan_stop', directive };
+    const continued: ReplanDirective = { ...directive, move: REPLAN_FALLBACK, text: `${directive.text} (recorded only: contract 1.9 §2.5 — Jev does not end the run; continuing with \`${REPLAN_FALLBACK}\`)` };
+    ctx.emit({ type: 'replan', step: ctx.step, directive: continued });
+    return { kind: 'directive', directive: continued };
+  }
   ctx.emit({ type: 'replan', step: ctx.step, directive });
   return { kind: 'directive', directive };
 }

@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { evaluateAttribution, evaluateCriteria, pairArms, parseVerdictsMarkdown, suiteHeadToHead, verdictParagraph, type Verdict, type Verdicts } from '../../../src/bench/headtohead.js';
+import { engineModeOf } from '../../../src/bench/conditions.js';
 import { buildRecord } from '../../../src/bench/runner.js';
 import { binomialTailOneSided, discordantPairs, signTestOneSided, wilcoxonSignedRankOneSided, wilson } from '../../../src/bench/stats.js';
 import type { BenchRecord } from '../../../src/bench/types.js';
@@ -66,7 +67,7 @@ function rec(task: string, condition: BenchCondition, s: Spec): BenchRecord {
   const base = buildRecord({
     source: syntheticSource({ id: task }),
     condition,
-    result: fakeRunResult({ runId: `r-${task}-${condition}`, mode: condition === 'llm-sieve' ? 'llm-jev' : condition === 'jev-off-tuned' ? 'jev-off' : condition, steps: s.steps ?? 2, wallMs: s.wallMs, usage: { generator: { inputTokens: 10, outputTokens: 10, costUsd: s.costUsd, calls: 1 }, jev: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 } }, counters: { blocked: s.blocked ?? 0, reviews: 0, declined: 0, failed: 0, loops: 0, replans: 0, reads: 0 } }),
+    result: fakeRunResult({ runId: `r-${task}-${condition}`, mode: engineModeOf(condition), steps: s.steps ?? 2, wallMs: s.wallMs, usage: { generator: { inputTokens: 10, outputTokens: 10, costUsd: s.costUsd, calls: 1 }, jev: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 } }, counters: { blocked: s.blocked ?? 0, reviews: 0, declined: 0, failed: 0, loops: 0, replans: 0, reads: 0 } }),
     evaluation: { pass: s.pass, evaluator: 'local' },
     patch: { modelPatch: s.pass ? 'd' : '', patchBytes: s.pass ? 1 : 0, patchEmpty: s.patchEmpty ?? !s.pass },
     capFired: null,

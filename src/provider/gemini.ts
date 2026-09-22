@@ -34,7 +34,8 @@ import { effortOf, pickEffort } from './openai-compat.js';
 import { TransportError, clipMessage, countOf, getArr, getNum, getObj, getStr, isRateLimit, notify, parseJsonObject, parseSse, resolveDeps, sanitiseRequestId } from './sse.js';
 import type { GenerationProvider, ModelInfo, ProviderConfig, ProviderDeps, ProviderOutcome, StreamPartial, TokenBreakdown } from './types.js';
 
-export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+import { PROVIDER_BASE_URL } from './ids.js';
+export const GEMINI_BASE_URL = PROVIDER_BASE_URL.gemini;
 /** ai.google.dev/gemini-api/docs/models: GA since Sep 2026, 1,048,576 in / 65,536 out, $0.75/$3.75 per 1M. */
 export const GEMINI_DEFAULT_MODEL = 'gemini-3.8-flash';
 
@@ -256,7 +257,7 @@ function heldOf(st: GeminiState): StreamPartial {
 async function consumeGemini(stream: ReadableStream<Uint8Array>, ctx: ConsumeContext): Promise<ProviderOutcome> {
   const st = newState();
   try {
-    for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs })) {
+    for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) })) {
       if (ctx.opts.signal.aborted) throw ctx.opts.signal.reason;
       const data = rec.data.trim();
       if (data.length === 0) continue;

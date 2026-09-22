@@ -875,14 +875,14 @@ describe('contract 1.8 (TUI-DESIGN-5 §8.1 items 1–6, W0)', () => {
    * §9.3 W5's shared row, and the gate the five per-round header cases above cannot give on their own: the
    * WHOLE header block, in order, in one assertion. Each round's own case checks its neighbour; only this one
    * catches a line inserted out of order two rounds later, or a round whose header was never written at all.
-   * The expected sequence is `1.1, 1.2, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8` — **1.2 twice**, because round 2 and
+   * The expected sequence is `1.1, 1.2, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9` — **1.2 twice**, because round 2 and
    * the llm-jev generator channel both landed under that number and the duplicate is deliberate (the file says
    * so at `:11`). `CheckpointEnvelope.version` stays 1 through all of it, which is the point of "additive".
    */
-  it('the contract header block is contiguous and ascending: 1.1, 1.2, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8', () => {
+  it('the contract header block is contiguous and ascending: 1.1, 1.2, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9', () => {
     const lines = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8').split('\n');
     const heads = lines.map((l, i) => [i, /^\/\/ contract (\d+\.\d+) \(/.exec(l)?.[1] ?? null] as const).filter((e): e is readonly [number, string] => e[1] !== null);
-    expect(heads.map((e) => e[1])).toEqual(['1.1', '1.2', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8']);
+    expect(heads.map((e) => e[1])).toEqual(['1.1', '1.2', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9']);
     // contiguous: no line between the first and the last that is not itself a contract header
     const first = heads[0]?.[0] ?? -1;
     const last = heads[heads.length - 1]?.[0] ?? -1;

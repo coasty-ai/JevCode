@@ -27,9 +27,12 @@
  * (`novelVerifiedPatch`, the Fix 2 mechanism): Jev's alignment answers stay in `dims` and the reason.
  */
 import { RISK_BLOCK, RISK_REVIEW, levelProb, riskFromProbabilities, scoreConfidence } from '../../jev/confidence.js';
+import { dangerousCommand } from '../../jev/danger.js';
 import { noul, ref, score } from '../../jev/questions.js';
+import { isRouterFatal } from '../../jev/router.js';
+import { routersOn } from '../routers.js';
 import { clip } from '../../core/text.js';
-import { RESEARCH_ACTION_KINDS, RISK_DIMENSIONS, type Action, type ActionKind, type Answer, type Intent, type JsonObject, type OrchestrationOptions, type OutcomeStatus, type Proposal, type ProposalEvidence, type Question, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TargetInfo, type TestCommand } from '../../core/types.js';
+import { RESEARCH_ACTION_KINDS, RISK_DIMENSIONS, type Action, type ActionKind, type Answer, type Decision, type Intent, type JsonObject, type OrchestrationOptions, type OutcomeStatus, type Proposal, type ProposalEvidence, type Question, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TargetInfo, type TestCommand } from '../../core/types.js';
 import { patchTouchedPaths } from '../../provider/actions.js';
 // ORCHESTRATION-DESIGN §8.1 rule 2 says the surface imports orchestration through the ONE facade.
 // The exception, and the only one here: this module is on the TUI's STATIC import graph
@@ -380,6 +383,67 @@ export function codeRiskReason(proposal: Proposal, targets: readonly TargetInfo[
   }
 }
 
+// ---------------------------------------------------------------------------------------
+// contract 1.9 (Fastlane) §2.4: the code-first verdict (RL3). Ratified in docs/DECISIONS.md.
+// ---------------------------------------------------------------------------------------
+
+/** The verdict ladder, ascending. Jev may climb it; nothing Jev answers may descend it. */
+const VERDICT_RANK: Record<RiskAssessment['verdict'], number> = { ok: 0, review: 1, block: 2 };
+
+/** §2.4: the higher of two verdicts — the whole of "Jev may only ESCALATE the code verdict". */
+export function escalateVerdict(code: RiskAssessment['verdict'], jev: RiskAssessment['verdict']): RiskAssessment['verdict'] {
+  return VERDICT_RANK[jev] > VERDICT_RANK[code] ? jev : code;
+}
+
+export interface CodeVerdict {
+  verdict: RiskAssessment['verdict'];
+  reason: string;
+}
+
+/**
+ * contract 1.9 (Fastlane) §2.4: the verdict CODE computes for a step **no Jev answer reached** — the fallback of
+ * the RL3 clause 3, and the thing the old allow-list row called "ask-or-decline, never allow", now in code.
+ *
+ * Two halves, and neither yields `allow` for an arbitrary `run`:
+ *  - `dangerousCommand()` (`src/jev/danger.ts`) is a DENY-LIST, not a proof: a match yields `review`, which is an
+ *    ask, and Jev's Scores may escalate it further to `block`.
+ *  - `codeRiskReason()` is an ALLOW-LIST of cases that are safe as a matter of fact (a `read`, a verification run
+ *    of the workspace test command, a verified regression-free patch, a recoverable revert, a `done` the engine's
+ *    own passing run verified). A match yields `ok`.
+ *  - Anything else is `review`: with Jev unreachable the code has no opinion, so the step is confirmed, never
+ *    allowed. A Jev outage therefore costs confirmations, never correctness.
+ */
+export function codeRiskVerdict(proposal: Proposal, targets: readonly TargetInfo[], testCommand: TestCommand | null, verifiedCompletion: VerifiedCompletion | null | undefined): CodeVerdict {
+  const action = proposal.action;
+  const denied = codeRiskFloor(proposal);
+  if (denied.verdict !== 'ok') return denied;
+  const allowed = codeRiskReason(proposal, targets, testCommand, verifiedCompletion);
+  if (allowed !== null) return { verdict: 'ok', reason: allowed };
+  return { verdict: 'review', reason: `${action.kind}: no code rule clears this proposal and Jev did not answer, so it is reviewed — the deny-list is not a proof and the allow-list did not match` };
+}
+
+/**
+ * contract 1.9 (Fastlane) §2.4: the floor Jev's own answer may not sink below — the DENY-LIST alone.
+ *
+ * This is the half that applies when Jev DID answer, and it is deliberately narrow. The contract's clause 2 is
+ * "a code guard runs after, and it can only tighten": a deny-listed command can never be released by a Score at
+ * level 0, and everything else keeps exactly the verdict Jev's Scores produce — which is what keeps a
+ * `routers: 'on'` run the same run, rather than one that asks a human to confirm every step. The wider
+ * `codeRiskVerdict()` is the fallback for the case Jev never answered, where "no opinion" must mean "ask".
+ */
+export function codeRiskFloor(proposal: Proposal): CodeVerdict {
+  const action = proposal.action;
+  const command = action.kind === 'run' ? action.command : null;
+  const denied = command !== null ? dangerousCommand(command) : null;
+  if (denied !== null) return { verdict: 'review', reason: `code deny-list: ${denied}` };
+  return { verdict: 'ok', reason: 'no deny-list rule matches; the code floor is ok and Jev\'s Scores decide' };
+}
+
+/** Q19/Q20's audit trail: the Score rows keep Jev's own verdict even where code overrode it (§2.4 clause 3). */
+function stampRowVerdict(rows: readonly Decision[], dims: readonly string[], v: RiskAssessment['verdict']): void {
+  for (const r of rows) if (dims.includes(r.id)) r.verdict = v;
+}
+
 /** docs/LLM-JEV-DESIGN.md §5 Q20: the two harm Scores (`destructive`, `irreversible`) with the §5.5 level texts; nothing else. */
 export function harmOnlyQuestions(): Record<string, Question> {
   const qs: Record<string, Question> = {};
@@ -645,6 +709,14 @@ export interface RiskStageResult {
   /** the `evidence_consistent` answer; null when the proposal carried no evidence */
   evidenceConsistent: number | null;
   targets: TargetInfo[];
+  /**
+   * contract 1.9 (Fastlane) §2.4: which verdict stood — `'code'` when the harm ask was dropped or failed and the
+   * code-first verdict was the answer, `'jev'` when Jev's Scores escalated it. Absent with routers off, where the
+   * stage is the pre-1.9 one. The engine copies it to `StepRecord.riskSource` (the `askRecorded` seam, §7.5).
+   */
+  riskSource?: 'code' | 'jev';
+  /** contract 1.9 (Fastlane) §2.4: the harm ask was dropped or failed and the CODE verdict stood. */
+  jevUnavailable?: boolean;
 }
 
 export interface RiskStageOptions {
@@ -690,20 +762,63 @@ export async function runRiskStage(ctx: StageContext, common: JsonObject, propos
   let assessment: RiskAssessment | null = null;
   let matchesIntent = 1;
   let evidenceConsistent: number | null = null;
-  await ctx.ask('risk', state, buildRiskQuestions({ evidence: withEvidence }), (answers, rows) => {
-    const mi = answers['matches_intent'];
-    matchesIntent = mi && mi.type === 'noul' ? mi.noul : 1;
-    const ec = answers[EVIDENCE_CONSISTENT_ID];
-    evidenceConsistent = ec && ec.type === 'noul' ? ec.noul : null;
-    assessment = assessRisk(answers, matchesIntent, intent.intent, assessOpts(evidenceConsistent));
-    // The Score rows keep Jev's own verdict even when the verified-completion rule below overrides it (audit trail).
-    for (const r of rows) if ((RISK_DIMENSIONS as readonly string[]).includes(r.id)) r.verdict = assessment.verdict;
-  });
+  const routers = routersOn(ctx.mode, ctx.routers);
+  // §2.4: with routers on the code verdict is computed BEFORE the request is made, so a failed ask has an answer
+  // to fall back to. When Jev does answer, only the narrower deny-list floor applies (codeRiskFloor, below).
+  const code = routers ? codeRiskVerdict(proposal, targets, testCommand, opts.verifiedCompletion) : null;
+  let jevAnswered = false;
+  const askRisk = async (): Promise<void> => {
+    // jev-contract: RL3 harm+alignment (docs/LLM-LOOP-DESIGN.md §2.4) — THIS SITE IS A GATE, NOT A ROUTER, and
+    // its polarity is ratified in docs/DECISIONS.md (2026-09-22, "the risk verdict is code-first").
+    //   escape:   the Scores carry their escape; an unanswered Score is inert (src/jev/off.ts answers every Score
+    //             at its TOP level, which can only escalate).
+    //   guard:    with routers on a CODE FLOOR runs after the answer and can only TIGHTEN it: codeRiskFloor() —
+    //             dangerousCommand() (src/jev/danger.ts, a DENY-LIST, not a proof) — raises Jev's verdict to
+    //             `review` for a deny-listed command, so no Score at level 0 can release one. Everything Jev
+    //             answered about keeps its pre-1.9 verdict and its pre-1.9 reason, byte for byte.
+    //   fallback: with NO answer (a JevError, a 503/529 — Jev's own failures, and ONLY those: isRouterFatal sends a pause, a budget, a model drift and a malformed batch back up) codeRiskVerdict() is the verdict — the allow-list yields ok, the deny-list and everything unmatched yield review (ask-or-decline, never allow), recorded as jevUnavailable / riskSource 'code' — test: test/unit/loop/router.test.ts
+    //   no-gating: Jev does not gate — code does. A Jev outage cannot allow what code did not clear, and it
+    //             cannot end the run: the stage returns a verdict either way. Routers off = the pre-1.9 stage.
+    await ctx.ask('risk', state, buildRiskQuestions({ evidence: withEvidence }), (answers, rows) => {
+      const mi = answers['matches_intent'];
+      matchesIntent = mi && mi.type === 'noul' ? mi.noul : 1;
+      const ec = answers[EVIDENCE_CONSISTENT_ID];
+      evidenceConsistent = ec && ec.type === 'noul' ? ec.noul : null;
+      assessment = assessRisk(answers, matchesIntent, intent.intent, assessOpts(evidenceConsistent));
+      jevAnswered = true;
+      // The Score rows keep Jev's own verdict even when the verified-completion rule below overrides it (audit trail).
+      stampRowVerdict(rows, RISK_DIMENSIONS, assessment.verdict);
+    });
+  };
+  if (code === null) await askRisk();
+  else {
+    try {
+      await askRisk();
+    } catch (e) {
+      // §2.4 / I5: a JevError or a 503/529 is not a stage failure here — the code verdict is the answer. But only
+      // JEV's failures are (review 2026-09-22, defect 5): a bare `catch {}` also swallowed the human pause and
+      // `/stop` that abort this.controller, the wall-time BudgetError, a JevModelDriftError and the
+      // QuestionBuildError of a malformed batch — and the engine then walked into `confirm()` and
+      // `takePreImages()` on an already-aborted run before its own `signal.aborted` guard unwound it.
+      if (isRouterFatal(e)) throw e;
+      jevAnswered = false;
+    }
+  }
   let risk: RiskAssessment = assessment ?? assessRisk({}, matchesIntent, intent.intent, assessOpts(evidenceConsistent));
+  if (code !== null && !jevAnswered) {
+    // no answer reached this step: the CODE verdict is the verdict, and it never allows what code did not clear
+    risk = { ...risk, verdict: code.verdict, reason: `code verdict ${code.verdict} (${code.reason}); Jev unavailable, the code verdict stands` };
+  } else if (code !== null) {
+    // Jev answered: its verdict stands, raised by the deny-list floor where the floor is higher. Where the floor
+    // changes nothing — every step but a deny-listed command — the reason is byte-identical to the pre-1.9 one.
+    const floor = codeRiskFloor(proposal);
+    const raised = escalateVerdict(floor.verdict, risk.verdict);
+    if (raised !== risk.verdict) risk = { ...risk, verdict: raised, reason: `${floor.reason} — the code floor raises Jev's ${risk.verdict} to ${raised}: ${risk.reason}` };
+  }
   const verified = opts.verifiedCompletion;
   if (verified !== undefined && verified !== null && proposal.action.kind === 'done' && risk.verdict !== 'ok') risk = completionVerifiedByRun(risk, verified);
   ctx.emit({ type: 'risk', step: ctx.step, risk });
-  return { risk, matchesIntent, evidenceConsistent, targets };
+  return { risk, matchesIntent, evidenceConsistent, targets, ...(code !== null ? { riskSource: jevAnswered ? ('jev' as const) : ('code' as const), jevUnavailable: !jevAnswered } : {}) };
 }
 
 interface HarmOnlyInput {
@@ -743,9 +858,17 @@ async function runHarmOnlyRiskStage(ctx: StageContext, common: JsonObject, propo
   const evidence = proposal.evidence;
   const assessOpts: AssessOptions = { texts: RISK_LEVEL_TEXTS, harmOnly: true, ...(evidence !== undefined ? { evidence, goal: proposal.goal } : {}) };
   let assessment: RiskAssessment | null = null;
+  // jev-contract: RL3 llm-jev Q20 (docs/LLM-LOOP-DESIGN.md §2.4) — A GATE, NOT A ROUTER; unchanged by contract 1.9.
+  //   escape:   the two harm Scores carry their escape; src/jev/off.ts answers every Score at its TOP level, so
+  //             "no opinion" can only escalate, never release.
+  //   guard:    every code-`ok` case was decided BEFORE this request (codeRiskReason, the allow-list above), and
+  //             the engine's confirm/coordinate/budget path still runs on whatever comes back.
+  //   fallback: a failed ask means ask-or-decline, never allow — assessRisk({}) leaves the Scores at their top level and the proposal is reviewed or blocked — test: test/unit/loop/router.test.ts
+  //   no-gating: the answer cannot release what the code allow-list did not clear, cannot complete a run and
+  //             cannot accept a patch.
   await ctx.ask('risk', state, harmOnlyQuestions(), (answers, rows) => {
     assessment = assessRisk(answers, 1, intent.intent, assessOpts);
-    for (const r of rows) if ((HARM_DIMENSIONS as readonly string[]).includes(r.id)) r.verdict = assessment.verdict;
+    stampRowVerdict(rows, HARM_DIMENSIONS, assessment.verdict);
   });
   const risk: RiskAssessment = assessment ?? assessRisk({}, 1, intent.intent, assessOpts);
   ctx.emit({ type: 'risk', step: ctx.step, risk });

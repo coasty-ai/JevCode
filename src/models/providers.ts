@@ -21,7 +21,7 @@
  * from a missing one.
  */
 import { OPENROUTER_REFERER, OPENROUTER_TITLE } from '../provider/openrouter.js';
-import { PROVIDER_IDS, PROVIDER_KEY_ENV, keyEnvNames } from '../provider/ids.js';
+import { PROVIDER_DISPLAY_NAME, PROVIDER_IDS, PROVIDER_KEY_ENV, keyEnvNames } from '../provider/ids.js';
 import type { GeneratorConfig } from '../core/types.js';
 import type { ProviderId } from './types.js';
 
@@ -70,7 +70,7 @@ export const MAX_PAGE_SIZE = 1000;
 export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
   anthropic: {
     id: 'anthropic',
-    displayName: 'Anthropic',
+    displayName: PROVIDER_DISPLAY_NAME.anthropic,
     origin: 'https://api.anthropic.com',
     versionPath: '/v1',
     listPath: '/models',
@@ -82,7 +82,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
   },
   openai: {
     id: 'openai',
-    displayName: 'OpenAI',
+    displayName: PROVIDER_DISPLAY_NAME.openai,
     origin: 'https://api.openai.com',
     versionPath: '/v1',
     listPath: '/models',
@@ -94,7 +94,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
   },
   openrouter: {
     id: 'openrouter',
-    displayName: 'OpenRouter',
+    displayName: PROVIDER_DISPLAY_NAME.openrouter,
     origin: 'https://openrouter.ai',
     versionPath: '/api/v1',
     listPath: '/models',
@@ -107,7 +107,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
   },
   gemini: {
     id: 'gemini',
-    displayName: 'Google Gemini',
+    displayName: PROVIDER_DISPLAY_NAME.gemini,
     origin: 'https://generativelanguage.googleapis.com',
     versionPath: '/v1beta',
     listPath: '/models',
@@ -121,7 +121,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
   },
   xai: {
     id: 'xai',
-    displayName: 'xAI',
+    displayName: PROVIDER_DISPLAY_NAME.xai,
     origin: 'https://api.x.ai',
     versionPath: '/v1',
     /**
@@ -139,7 +139,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
   },
   fireworks: {
     id: 'fireworks',
-    displayName: 'Fireworks AI',
+    displayName: PROVIDER_DISPLAY_NAME.fireworks,
     origin: 'https://api.fireworks.ai',
     versionPath: '/inference/v1',
     listPath: '/models',
@@ -151,7 +151,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
   },
   meta: {
     id: 'meta',
-    displayName: 'Meta',
+    displayName: PROVIDER_DISPLAY_NAME.meta,
     origin: 'https://api.meta.ai',
     versionPath: '/v1',
     listPath: '/models',

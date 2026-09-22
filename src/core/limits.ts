@@ -272,3 +272,17 @@ export const IMPORT_LIMITS = {
 
 /** The literal type of `IMPORT_LIMITS`, for callers that thread a narrowed copy through a seam. */
 export type ImportLimits = typeof IMPORT_LIMITS;
+
+// --- contract 1.9 (Fastlane) §3.2: the generator-path hedge (docs/LLM-LOOP-DESIGN.md §3.2) -------
+/**
+ * Hedge twins one LLM round may fire. One — a hedge is a second copy of a sample that has not
+ * produced a first byte, and a second copy per round is already the whole of what the latency
+ * tail costs; more turns a slow provider into a spend multiplier. The twin is booked at full
+ * estimated cost like every other sample, and the round refuses it when the dollar counter
+ * cannot hold one more, so a hedge storm can never leave a goal with zero rounds (§3.2).
+ *
+ * Shared, so it lives here rather than beside one owner (§3.5).
+ */
+export const LLM_HEDGES_PER_ROUND = 1;
+/** §3.2: the hedge threshold is `clamp(factor × the running TTFB p50, minMs, maxMs)`; a sample silent that long is hedged. */
+export const LLM_HEDGE_AFTER = { factor: 2, minMs: 3_000, maxMs: 8_000 } as const;

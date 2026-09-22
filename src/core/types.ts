@@ -15,6 +15,7 @@
 // contract 1.6 (2026-09-22): import — memory, rules, commands, MCP and the import plan per docs/IMPORT-DESIGN.md §7.1 row 1; the 22 section-1 shapes move here verbatim from src/import/types.ts, which re-exports them; every widening is an optional member or a new union member; CheckpointEnvelope.version stays 1.
 // contract 1.7 (2026-09-22): TUI round 4 — block rows, annotateBlock, diff detail kind, ui.renderer, peer view, per docs/TUI-DESIGN-4.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 // contract 1.8 (2026-09-22): TUI round 5 — coordination surface types, the context cell, the session label, the agents tab, the import overlay and the seven-provider widening, per docs/TUI-DESIGN-5.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
+// contract 1.9 (2026-09-22): Fastlane — speculative routers (S4), the bounded sieve fast path (route R9) and the S2 generator-path counters, per docs/LLM-LOOP-DESIGN.md §5; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
 /**
@@ -421,6 +422,15 @@ export interface TokenUsage {
   reasoningTokens?: number;
   /** docs/LLM-JEV-DESIGN.md §4.8: true for a cancelled/timed-out sample metered from an estimate (sibling prompt tokens, streamed chars / 4) */
   estimated?: boolean;
+  /**
+   * contract 1.9 (Fastlane) §3.4: the cached share of `inputTokens`, as the API itself reported it (OpenRouter
+   * `prompt_tokens_details.cached_tokens`, Anthropic `cache_read_input_tokens`). `inputTokens` already contains it —
+   * this member only says how much of it was a cache READ, so the prompt-prefix pinning of §3.3 can be measured.
+   * Absent when the call reported none, which keeps every uncached call's usage object byte-identical to before.
+   */
+  cacheReadTokens?: number;
+  /** contract 1.9 (Fastlane) §3.4: the written-to-cache share of `inputTokens` (`cache_write_tokens` / `cache_creation_input_tokens`); absent when zero. */
+  cacheWriteTokens?: number;
 }
 export interface StepUsage {
   generator: TokenUsage;
@@ -446,6 +456,33 @@ export interface StepTiming {
    * nothing waited.
    */
   coordWaitMs?: number;
+  /**
+   * contract 1.9 (Fastlane) §0.4 I3: blocked wall attributable to the speculative routers of §2 — the wall a router
+   * held the step for BEYOND the Jev ask the step was making anyway. It MUST read 0 (measured per route as
+   * `heldMs` minus the ask's own elapsed time, asserted per routed site in test/unit/jev/router.test.ts and
+   * test/unit/loop/router.test.ts, and due as a bench-wide row); the ask's own latency stays in `jevMs`. Absent = 0.
+   *
+   * WRITER: the §7.5 engine seam (c) — `commitStepRouters` at step commit in `Engine.commit`, which takes the
+   * step's ledger and invalidates its token in one place. Present on exactly the steps that routed; absent on
+   * every step of every run with the routers off (I2). Asserted on a real step in
+   * test/unit/loop/engine-router-seam.test.ts › *`StepRecord.router` and `StepTiming.routerWaitMs` are written*.
+   */
+  routerWaitMs?: number;
+  // slot C — contract 1.9 (Fastlane) §5.2: the fast-path round's own wall, the sibling of `synthMs`. Both absent on
+  // every step where the round did not run, which is what keeps `fastPath: 'off'` byte-identical (I2).
+  /** contract 1.9 (Fastlane) §4.4: wall of the fast-path round, measured by the facade's own clock, inside `harnessMs` */
+  fastPathMs?: number;
+  /** contract 1.9 (Fastlane) §4.4: Jev latency spent INSIDE the fast-path round (localiser + arbitration), already inside `jevMs` */
+  fastPathJevMs?: number;
+  /**
+   * OOS iteration 2, defect 3 (experiments/results/llm-jev-iter2.md §10, additive): the wall the engine actually
+   * measured inside `decider.ask`, as against `jevMs`, which is what the decider REPORTS (`AskResult.latencyMs`).
+   * HARNESS-NEXT-DESIGN §4.4 / §5 charge `harnessMs` the larger of the two, so a mock or the `--jev off` double
+   * (`latencyMs: 0`, work on this thread) cannot spend the 50 ms harness budget on itself — but until now only the
+   * reported number was persisted, so no record said which of the two the gate had charged. Absent when nothing was
+   * asked this step, and for a real HTTP decider it agrees with `jevMs` to within the await.
+   */
+  jevWallMs?: number;
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
@@ -528,10 +565,135 @@ export interface StepRecord {
    * escape diff finds. Reported, not refused; the critic's include/drop question reads it. Absent = nothing escaped.
    */
   escaped?: readonly string[];
+  /**
+   * contract 1.9 (Fastlane) §2: the router table's outcome for this step; bounded at 12 rows. Absent = no router ran.
+   *
+   * WRITER (with `StepTiming.routerWaitMs`, `riskSource` and `jevUnavailable` below): the §7.5 engine seam (c),
+   * `Engine.commit`. `src/loop/routers.ts` builds the ledger and `src/loop/stages/risk.ts` returns the other two;
+   * the engine folds all four into the record at step commit, and writes none of them with the routers off.
+   */
+  router?: StepRouter;
+  /**
+   * contract 1.9 (Fastlane) §2.4: which verdict actually stood at the risk stage — the audit trail for the ratified
+   * code-first polarity. Absent on every run with `routers: 'off'`, where the verdict is Jev's exactly as before.
+   */
+  riskSource?: 'code' | 'jev';
+  /** contract 1.9 (Fastlane) §2.4: the harm ask was dropped or failed and the CODE verdict stood. Absent = false. */
+  jevUnavailable?: boolean;
+  // slot C — contract 1.9 (Fastlane) §5.2
+  /** contract 1.9 (Fastlane) §4: the fast path's decision and what the round cost. Absent when the fast path was never armed. */
+  fastPath?: StepFastPath;
+  /**
+   * contract 1.9 (Fastlane) §4.3 T3: `scopeUsable()` over the step's own last test run — the "narrow test command reads
+   * green" hole, made visible in the data (§6 row 14).
+   *
+   * §5.2 asks for this on every step; I2 (`fastPath: 'off'` is byte-identical to today's `jev-on`) forbids a new row on a
+   * step that today writes none. I2 wins: the member is written only on an ARMED step, so the bench arm carries it and a
+   * `--fast-path off` run's `steps.jsonl` is unchanged.
+   */
+  scopeUsable?: boolean;
 }
 
-/** docs/LLM-JEV-DESIGN.md §9.4 */
-export type StepProposer = 'synth' | 'generic';
+/**
+ * contract 1.9 (Fastlane) §2: the router table's outcome for one step. `waitMs` is I3's assertion in the record:
+ * a router contributes zero blocked wall, so this sums to 0 on every step that is not a bug.
+ */
+export interface StepRouter {
+  issued: number;
+  applied: number;
+  dropped: number;
+  /** I3: MUST be 0 */
+  waitMs: number;
+  rows: readonly { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean }[];
+}
+
+/** docs/LLM-JEV-DESIGN.md §9.4; contract 1.9 (Fastlane) §5.2 (slot C) widens it with `fastpath` — the bounded sieve round proposed the step */
+export type StepProposer = 'synth' | 'generic' | 'fastpath';
+
+/**
+ * contract 1.9 (Fastlane) §5.2 (slot C): why the fast path did not fire, or how it failed. A closed union, not a free
+ * string, so the decline histogram of docs/LLM-LOOP-DESIGN.md §8 is exhaustive and a new reason cannot appear unnamed.
+ */
+export type FastPathReason =
+  /** the round fired and proposed: no clause declined and nothing failed */
+  | 'none'
+  | 'off'
+  | 'not_jev_on'
+  | 'no_synthesizer'
+  | 'no_parsed_run'
+  | 'scope_unusable'
+  | 'all_passing'
+  | 'workspace_changed'
+  | 't_run_too_slow'
+  | 'multi_file'
+  | 'too_many_failures'
+  | 'repository_class'
+  | 'no_wall'
+  | 'fingerprint_seen'
+  | 'attempts_exhausted'
+  | 'disarmed'
+  | 'loop_tripped'
+  | 'pause_pending'
+  | 'lease_conflict'
+  /** §4.5 / I8: the warm plane is switched on, so "cold-confirmed" cannot be claimed — the round is not entered */
+  | 'warm_plane'
+  | 'oracle_class'
+  | 'too_many_sites'
+  | 'pool_exceeds_run_budget'
+  | 'no_sites'
+  | 'empty_step_budget'
+  | 'no_passer'
+  | 'confirm_timeout'
+  | 'held'
+  | 'error';
+
+/**
+ * contract 1.9 (Fastlane) §4 (slot C): one fast-path decision, as it lands on `StepRecord.fastPath`.
+ *
+ * `refused` is NOT `no_passer` (§4.5): the guard drops passers silently (`structuralRejection`, `mutationRefused`, a
+ * lone passer held under the Noul floor), so a step that found and refused passers records `refused` with the counts.
+ */
+export interface StepFastPath {
+  /** `fired` = the round ran; `declined` = a predicate clause said no before any cost; `failed` = the round ran and did not produce a usable proposal */
+  decision: 'fired' | 'declined' | 'failed';
+  /** the clause that declined, or the failure — the per-reason histogram of §8 reads this */
+  reason: FastPathReason;
+  /** 1 = engine-side, free; 2 = inside the facade, after the round's own baseline (§4.3) */
+  stage: 1 | 2;
+  outcome: 'proposed' | 'no_passer' | 'refused' | 'timeout' | 'error' | 'skipped';
+  /** the engine's last parsed test run's wall (T5), 0 when unknown */
+  tRunMs: number;
+  /** sites the round's localiser returned; 0 = not observed */
+  sites: number;
+  /** candidate pool the round priced; 0 = not observed (the facade sees sites, not the pool) */
+  poolSize: number;
+  runMode: 'SIEVE' | 'RANK';
+  candidatesTested: number;
+  testRuns: number;
+  jevRequests: number;
+  /** the facade's own clock diff, independent of the synthesizer's accounting */
+  wallMs: number;
+  /**
+   * the round's own CEILING — the wall share plus the cold-confirm reserve plus the grace (`fastPathCeilingMs`), which
+   * is the bound the abort actually enforces. `wallMs <= budgetMs` is a gate on every fired step (§8 row R-b); the
+   * share alone is not that bound, because only the sieve's test wall is clamped to it.
+   */
+  budgetMs: number;
+  /** the wall share installed on the round's synthesizer (`budget.testWallLeftMs` is clamped to it plus the reserve) */
+  shareMs: number;
+  passer: boolean;
+  confirmedCold: boolean;
+  structuralDrops: number;
+  /**
+   * a lone passer is being HELD after the round's last guard decision (`GuardFields.held: HoldKind | null`). A
+   * presence, not a count — the guard holds at most one passer at a time — so the member is a boolean and the §8
+   * reading is "rounds that ended holding", never "passers held".
+   */
+  heldAny: boolean;
+  dropped: number;
+  /** one-strike disarm (§4.5): the fast path is out for the rest of the run */
+  disarmed: boolean;
+}
 
 /** docs/LLM-JEV-DESIGN.md §9.2 stage 1 / §9.3: code-computed counts of one llm-jev step's LLM round and verification. */
 export interface StepVerifySummary {
@@ -550,6 +712,18 @@ export interface StepVerifySummary {
   graceMs: number;
   /** true when the committed change lies outside every Jev-ranked listing (the localisation missed) */
   localisationMissed: boolean;
+  /** contract 1.9 (Fastlane) §3.1: time to first byte of each sample the provider opened a stream for, in settle order. Absent when no sample reported one. */
+  ttfbMs?: readonly number[];
+  /** contract 1.9 (Fastlane) §3.2: hedge twins fired this step (`LLM_HEDGES_PER_ROUND` per round); absent = hedging was off or none fired. */
+  hedges?: number;
+  /** contract 1.9 (Fastlane) §3.2: hedge twins whose result arrived before their original's — what the hedge actually bought. */
+  hedgeWins?: number;
+  /** contract 1.9 (Fastlane) §3.4: prompt tokens the provider served from ITS cache this step (`TokenUsage.cacheReadTokens` summed). */
+  cacheRead?: number;
+  /** contract 1.9 (Fastlane) §3.4: prompt tokens written to the provider's cache this step. */
+  cacheWrite?: number;
+  /** contract 1.9 (Fastlane) §3.4: `cacheRead / (input tokens of the step's priced samples)`, 0…1 — the §3.3 prefix-pinning measurement. */
+  cacheHitRate?: number;
   /**
    * OOS iteration 3, item 3 (llm-jev, additive): the per-goal deadline high-water mark's evidence
    * rule this run ran under — `JEVCODE_DEADLINE_GROWTH`, default `always` (the behaviour OOS
@@ -558,6 +732,58 @@ export interface StepVerifySummary {
    * on a step written without an LLM source (jev-only) or by an engine before the flag existed.
    */
   deadlineGrowth?: 'served' | 'always';
+  /**
+   * OOS iteration 2, defect 2 / defect 4 (experiments/results/llm-jev-iter2.md §10, additive):
+   * what the S1 warm verification plane (docs/HARNESS-NEXT-DESIGN.md §9, §9.2.1) did during this
+   * step. Absent when `JEVCODE_WARM` did not ask for the plane at all — which is the default, so
+   * every record written by a warm-off run is byte-identical to one written before this field
+   * existed. Present with `mode: 'unsupported-runner'` when the flag WAS on and the oracle has no
+   * warm shape, so a report can count the tasks an A/B actually covered: iteration 2's
+   * "18-task warm A/B" was really 14, because SWE-bench's runner is `other` and the flag was a
+   * silent no-op on 4 of them.
+   */
+  warm?: StepWarmSummary;
+}
+
+/**
+ * docs/HARNESS-NEXT-DESIGN.md §9.2.1: one step's warm-plane counters, summed over every sieve
+ * batch of the step (`WarmStats`, `src/synth/warm/plane.ts`). Iteration 2 could not audit its own
+ * warm A/B from the committed artefacts because these numbers existed only as free text in the
+ * sieve's `synth · verify` event and `--archive-runs` does not copy `transcript.log`; they are
+ * recorded here so `steps.jsonl` carries them.
+ */
+export interface StepWarmSummary {
+  /**
+   * `on` — a plane existed for this step's oracle and served (or was offered) commands;
+   * `unsupported-runner` — `JEVCODE_WARM=on` but the oracle's runner has no warm shape
+   * (`warmModeFor` admits only `quixbugs` and `pytest`; SWE-bench is `other`);
+   * `unsupported-command` — the runner has a shape but the suite command's interpreter cannot be
+   * read off the command itself, so nothing could be screened.
+   */
+  mode: 'on' | 'unsupported-runner' | 'unsupported-command';
+  /** commands the plane was offered */
+  offered: number;
+  /** commands a warm worker actually served */
+  screened: number;
+  /** cold confirmation runs made for warm passers */
+  confirmed: number;
+  /** screen/confirm disagreements; the S1 acceptance criterion is 0 */
+  mismatches: number;
+  /** offers that fell back to the cold path after a warm attempt failed */
+  fallbacks: number;
+  restarts: number;
+  /** restarts caused by the warm parent's import set going stale */
+  invalidations: number;
+  /** scoped runs that collected nothing and were re-run at full scope */
+  scopeUnusable: number;
+  /** warm runs that hit a deadline and were therefore discarded and re-run cold */
+  deadlineRechecks: number;
+  /** wall spent inside warm runs (ms, as the worker measured it) */
+  screenMs: number;
+  /** wall spent in cold confirmations (ms) */
+  confirmMs: number;
+  /** the one-way reason the plane turned itself off, when it did; absent otherwise */
+  disabledReason?: string;
 }
 
 export interface RunCounters {
@@ -656,6 +882,13 @@ export type GenerateReasoning = { enabled: false } | { effort: ReasoningEffort }
 /** docs/LLM-JEV-DESIGN.md §4.12 verbatim: OpenRouter routes only to endpoints that support every parameter sent (tools, seed, …). */
 export interface GenerateProviderPrefs {
   requireParameters: boolean;
+  /**
+   * contract 1.9 (Fastlane) §3.2: the upstream providers to try, in order (OpenRouter `provider.order`). The hedge
+   * twin of `src/synth/llm/source.ts` sends the same list ROTATED, so a 429 or a stall on the original's first
+   * upstream leaves the twin pointed at a different one. Absent = the parameter is not sent and the router picks,
+   * which is what every call does today.
+   */
+  order?: readonly string[];
 }
 export interface GenerateRequest {
   system: string;
@@ -756,6 +989,13 @@ export interface GenerateOptions {
    * the abort reason, exactly like a throwing `onDelta`.
    */
   onCancelled?: (partial: CancelledGeneration) => void;
+  /**
+   * contract 1.9 (Fastlane) §3.1: time to first byte. Called at most once per `generate()`, with the ms from the
+   * request going out to the first byte of the 200 body (the header phase included), and never for a call that
+   * never opened a stream. It is the input of the §3.2 hedge threshold and of `StepVerifySummary.ttfbMs`; a
+   * throwing callback is a harness bug and surfaces as a typed 'internal' error, exactly like a throwing `onDelta`.
+   */
+  onFirstByte?: (ms: number) => void;
 }
 /**
  * contract 1.8 item 6 (TUI-DESIGN-5 §8.1 / §6.1, D-AP): widened from `'anthropic' | 'openrouter' | 'mock'` to every
@@ -1092,6 +1332,12 @@ export interface LastTestRun {
   failed: number;
   errors: number;
   allPassed: boolean;
+  // slot C — contract 1.9 (Fastlane) §5.2
+  /**
+   * contract 1.9 (Fastlane) §4.3 T5: the run's wall, so the fast-path predicate survives a resume. `lastTestRunOutput` is
+   * in-memory only; without this member a restarted run would have to arm blind or never arm. Absent = unknown.
+   */
+  durationMs?: number;
 }
 
 export interface CheckpointState {
@@ -1566,6 +1812,14 @@ export interface EngineOptions {
   extraReadableRoots?: readonly string[];
   /** jev-only mode: proposes actions with Jev + code search, no generating LLM (required when mode === 'jev-only') */
   synthesizer?: Synthesizer;
+  // slot C — contract 1.9 (Fastlane) §5.2
+  /**
+   * contract 1.9 (Fastlane) §0.3: the bounded sieve fast path (route R9). Absent resolves to `'auto'` under `jev-on`
+   * and to `'off'` under every other mode; the engine derives it, so no `src/config` and no `src/cli` change exists. Env
+   * override: `JEVCODE_FASTPATH=off|auto`, read inside `src/loop` exactly as `JEVCODE_WARM` is read in
+   * `src/synth/warm/plane.ts`. `'off'` is byte-identical to today's `jev-on` (I2).
+   */
+  fastPath?: 'auto' | 'off';
   /** injectable clock for perf/unit tests */
   now?: () => number;
   /** injected exit for tests of the forced second Ctrl-C path (TUI-DESIGN §13.4: always injected by cli/session.ts) */
@@ -1631,6 +1885,19 @@ export interface EngineOptions {
    * prompt and event sequence byte-identical to a build without this wave (`engine-coordination-off.test.ts`).
    */
   coordination?: CoordinationOptions;
+  /**
+   * contract 1.9 (Fastlane) §0.3: the speculative routers of §2, and ONLY in `mode: 'jev-on'` — the wave carries
+   * three polarity changes (§2.4 risk, §2.5 the replan stop and completion) and the other modes are the controls
+   * the §8 head-to-head measures `jev-on` against. Default **'off'** everywhere on `main`: none of the three
+   * reaches a user run before that head-to-head decides.
+   *
+   * READ by the §7.5 engine seam (b): `makeContext` puts it on `StageContext.routers` and the four routed sites
+   * call `routersOn(ctx.mode, ctx.routers)`. **This member beats `JEVCODE_ROUTERS`**, in both directions; the env
+   * var only fills an ABSENT option, which is how a worker process and a bisect still express the switch. (It
+   * used to be ORed in, so an exported `on` armed an arm whose own row said `off` — slot D's finding.) The
+   * `jev-on` gate is checked before either.
+   */
+  routers?: 'on' | 'off';
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 
@@ -1649,6 +1916,18 @@ export interface SampleOptions {
   goalId?: string;
   /** contract 1.4 (§12.0.2 P3): the goal's LLM round this sample was fired in (the synthesizer's own numbering) */
   goalRound?: number;
+  /**
+   * contract 1.9 (Fastlane) §3.1: `GenerateOptions.onCancelled` for this sample — the facts of a stream the abort cut
+   * after its headers. The engine keeps its OWN copy for the generator.jsonl row and calls this one as well, so the
+   * synthesizer's per-sample accounting (`unfinishedSampleUsage`) reads the provider's figures rather than an estimate.
+   */
+  onCancelled?: (partial: CancelledGeneration) => void;
+  /**
+   * contract 1.9 (Fastlane) §3.1: `GenerateOptions.onFirstByte` for this sample — the ms from the request going out to
+   * the first byte of the reply, at most once. It is the ONLY input of the §3.2 hedge threshold: a channel that drops
+   * it leaves the running TTFB p50 null, pins the threshold at its ceiling and hedges samples that are being served.
+   */
+  onFirstByte?: (ms: number) => void;
 }
 
 /**
@@ -2202,6 +2481,16 @@ export interface ContextPolicyOptions {
   /** 0 disables the interval trigger */
   compactEvery?: number;
   compaction?: CompactionMode;
+  /**
+   * docs/COORDINATION-DESIGN.md §8.6 / §12.0.1: who RANKS the kept items the prompt's `## Kept (do not re-derive)`
+   * renders. Extraction is always code; this switch only decides the ordering pass.
+   *   `'code'` (default) — deterministic across devices and resumes (G3(d)), free, and available in `jev-off`:
+   *                        the `'code'` compactor stays exactly what it claims to be.
+   *   `'jev'`            — ONE bounded Jev request per compaction (§8.9: ~$0.001 per 8 steps), REFUSED under
+   *                        `jev-off`, and an escape or a failure falls back to the code order — Jev routes, never
+   *                        gates (`rankKept`, `src/loop/context/compaction.ts`).
+   */
+  kept?: 'code' | 'jev';
   budgetChars?: number;
 }
 
@@ -2686,8 +2975,14 @@ export type BenchStopReason = StopReason | 'not_run';
  * engine mode with a bench-side substitution — `llm-sieve` = the `llm-jev` engine with a stub Decider (zero Jev requests)
  * and the synthesizer's code fallbacks, `jev-off-tuned` = the `jev-off` engine behind a provider that applies the §4
  * generator hygiene (bench/conditions.ts `engineModeOf`).
+ *
+ * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §8.1: `jev-on-next` = the `jev-on` engine with the router table, the
+ * synth fast path armed (`fastPath: 'auto'`) and the S2 generation mechanisms on; `jev-on-next-nofast` is the SAME arm
+ * with the fast path OFF — the paired in-session control that keeps a `jev-on-next` win from confounding tuned
+ * generation + S2 + routers + the fast path (§8.5 clause 4 rests on it, not on the recorded rows). Both are bench-side
+ * substitutions on the `jev-on` mode; neither is an EngineMode (bench/conditions.ts `engineModeOf`, `armMechanisms`).
  */
-export type BenchCondition = EngineMode | 'llm-sieve' | 'jev-off-tuned';
+export type BenchCondition = EngineMode | 'llm-sieve' | 'jev-off-tuned' | 'jev-on-next' | 'jev-on-next-nofast';
 
 export interface BenchTaskRecord {
   suite: BenchSuite;

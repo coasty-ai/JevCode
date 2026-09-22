@@ -120,11 +120,35 @@ export interface WarmPlaneOptions {
  * back to on only when a real-lane integration test and Ring 1 pass with the plane on.
  */
 export function warmModeFor(oracle: Pick<OracleModel, 'runner'>, env: Readonly<Record<string, string | undefined>> = process.env): WarmMode | null {
-  const flag = (env[WARM_ENV_FLAG] ?? '').trim().toLowerCase();
-  if (flag !== 'on' && flag !== '1' && flag !== 'true') return null;
+  if (!warmRequested(env)) return null;
   if (oracle.runner === 'quixbugs') return 'quixbugs';
   if (oracle.runner === 'pytest') return 'pytest';
   return null;
+}
+
+/**
+ * Is the warm plane switched ON at all, before any per-oracle shape test? The `JEVCODE_WARM` half of `warmModeFor`,
+ * on its own, for callers that must know whether a run's lane runs CAN be warm without holding an oracle — the fast
+ * path's stage-1 predicate (contract 1.9 (Fastlane) §4.5 / I8: its whole acceptance rule reduces "cold-confirmed" to
+ * "the regression run exists and passed", which is true only while every lane run is cold).
+ */
+export function warmPlaneEnabled(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  return warmRequested(env);
+}
+
+/**
+ * Did `JEVCODE_WARM` ASK for the plane, whatever this oracle can do with it?
+ *
+ * `warmModeFor` answers null for two quite different situations — the flag is off, and the flag
+ * is on but the runner has no warm shape — and iteration 2 was measured without being able to
+ * tell them apart: its "18-task warm A/B" was really 14, because SWE-bench's oracle runner is
+ * `other` and nothing in any output said so (experiments/results/llm-jev-iter2.md §10 defect 4).
+ * The sieve asks this so an unsupported runner is RECORDED (`StepWarmSummary.mode`) instead of
+ * being silently the cold path.
+ */
+export function warmRequested(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  const flag = (env[WARM_ENV_FLAG] ?? '').trim().toLowerCase();
+  return flag === 'on' || flag === '1' || flag === 'true';
 }
 
 export function emptyWarmStats(): WarmStats {

@@ -78,6 +78,13 @@ export interface StepBudget {
   jevRequestsLeft: number;
   testRunsLeft: number;
   testWallLeftMs: number;
+  /**
+   * contract 1.9 (Fastlane) §4.4: wall inside `testWallLeftMs` that is RESERVED and must not be spent on dispatching
+   * another candidate — the fast path's cold-confirm reserve. The sieve stops starting new lane runs while only this
+   * much is left, so the passer's full-suite confirm still has wall when the candidate phase ends. Absent (every other
+   * caller) = 0, which is exactly today's dispatch rule.
+   */
+  reserveWallMs?: number;
   startedMs: number;
   recursed: boolean;
   /**
@@ -244,6 +251,22 @@ export interface LlmTrace {
    * nothing. Absent on a trace written before the flag existed.
    */
   deadlineGrowth?: DeadlineGrowthMode;
+  /**
+   * contract 1.9 (Fastlane) §3.1: time to first byte of every sample of this search's rounds that opened a stream,
+   * in the rounds' order. ABSENT when nothing measured one — the channel forwarded no `onFirstByte`, or every sample
+   * timed out silent — which is a different fact from "the first byte took 0 ms".
+   */
+  ttfbMs?: readonly number[];
+  /** contract 1.9 (Fastlane) §3.2: hedge twins this search fired; absent when hedging was off or none fired. */
+  hedges?: number;
+  /** contract 1.9 (Fastlane) §3.2: twins whose result arrived while their origin's had not — what the hedge bought. */
+  hedgeWins?: number;
+  /** contract 1.9 (Fastlane) §3.4: prompt tokens the provider served from ITS cache; absent when it reported none. */
+  cacheRead?: number;
+  /** contract 1.9 (Fastlane) §3.4: prompt tokens written to the provider's cache; absent when it reported none. */
+  cacheWrite?: number;
+  /** contract 1.9 (Fastlane) §3.4: the input tokens those two are a share of — `StepVerifySummary.cacheHitRate`'s denominator. */
+  cacheInput?: number;
 }
 
 /** What survives a checkpoint (SynthesisContext.synthState); everything else is rebuilt from the plan and the workspace. */

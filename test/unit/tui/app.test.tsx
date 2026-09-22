@@ -7,6 +7,9 @@
  * `host.addSecret` before `host.submit`), the palette (exact match runs, a typo keeps the draft), toasts, `[`/`]`
  * tabs, `?` help, and the piped-stdin mount (the confirmer declines). Ink's key parser is fed real bytes.
  */
+// Load-sensitive REAL-RENDERER tests (Ink on a real event loop): under a shared-machine load spike a single case can miss its
+// frame window and fail while passing alone (round-4/5 owner's passes, harness session 2026-09-22). Every top-level suite
+// carries `{ retry: 1 }`: one retry absorbs a hiccup; a real regression still fails twice and stays red.
 import { EventEmitter } from 'node:events';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -34,7 +37,7 @@ beforeEach(() => resetRenderFaults());
 
 import { CANARY, CTRL_C, CTRL_D, CTRL_G, CTRL_O, CTRL_R, DOWN, ESC, UP, dynamicLines, fakeHistory, fakeHost, goLive, mountApp, retryInfo, stripSgr, waitFor, type Mounted } from './app-harness.js';
 
-describe('<App> first frame (§1)', () => {
+describe('<App> first frame (§1)', { retry: 1 }, () => {
   it('one-shot: renders the status sentinel `step 0/` and the task header in the very first frame, before any engine is attached', () => {
     const m = mountApp();
     expect(m.frames.length).toBeGreaterThanOrEqual(1);
@@ -78,7 +81,7 @@ describe('<App> first frame (§1)', () => {
   });
 });
 
-describe('<App> transcript, live region and pane', () => {
+describe('<App> transcript, live region and pane', { retry: 1 }, () => {
   it('exec:output feeds the live region through the coalescer with escape sequences stripped; outcome clears it', async () => {
     const m = mountApp();
     goLive(m, 2);
@@ -216,7 +219,7 @@ describe('<App> transcript, live region and pane', () => {
   });
 });
 
-describe('<App> review (§6)', () => {
+describe('<App> review (§6)', { retry: 1 }, () => {
   it('the box appears after the ~1 s deferral; y approves; typed-ahead keys during the deferral land in the draft', async () => {
     const m = mountApp();
     goLive(m, 3);
@@ -345,7 +348,7 @@ describe('<App> review (§6)', () => {
   });
 });
 
-describe('<App> Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
+describe('<App> Ctrl-C / Esc / Ctrl-D matrix (§3.3)', { retry: 1 }, () => {
   it('S0 idle·empty (session): Ctrl-C toasts `press Ctrl-C again to exit`; a second within 1.5 s exits 0 with the item', async () => {
     const m = mountApp({ mode: 'session' });
     m.stdin.write(CTRL_C);
@@ -431,7 +434,7 @@ describe('<App> Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
   });
 });
 
-describe('<App> composer, steer, paste, gate, palette (§4, §5, §8.6, §10)', () => {
+describe('<App> composer, steer, paste, gate, palette (§4, §5, §8.6, §10)', { retry: 1 }, () => {
   it('Enter while live steers through host.steer; the queue rows show; a full queue toasts', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
@@ -587,7 +590,7 @@ describe('<App> composer, steer, paste, gate, palette (§4, §5, §8.6, §10)', 
   });
 });
 
-describe('createTuiRenderer', () => {
+describe('createTuiRenderer', { retry: 1 }, () => {
   it('mounts without throwing when stdin has no isTTY (piped) and still renders the sentinel; the confirmer declines', async () => {
     class Out extends EventEmitter {
       frames: string[] = [];
@@ -650,7 +653,7 @@ describe('createTuiRenderer', () => {
 // FIX pass: the findings of the O9 review (blocker 1, majors 2–8, minors 10–19) and the missing §19.3 items
 // ---------------------------------------------------------------------------------------------------------------
 
-describe('<App> a submission that never becomes a run (§4.9, finding 1)', () => {
+describe('<App> a submission that never becomes a run (§4.9, finding 1)', { retry: 1 }, () => {
   it('host.submit() resolving without run:start returns run to none: the status is idle again, Enter submits again, Ctrl-C ×2 exits 0', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
@@ -738,7 +741,7 @@ describe('<App> a submission that never becomes a run (§4.9, finding 1)', () =>
   });
 });
 
-describe('<App> coalesced input chunks (§4.5 step 1 amended, finding 2)', () => {
+describe('<App> coalesced input chunks (§4.5 step 1 amended, finding 2)', { retry: 1 }, () => {
   const NONE = { upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, pageDown: false, pageUp: false, home: false, end: false, return: false, escape: false, ctrl: false, shift: false, tab: false, backspace: false, delete: false, meta: false, super: false, hyper: false, capsLock: false, numLock: false };
 
   it('splitInputChunk: `text\\r` is text then Enter; `abc\\r\\x03\\x03` splits into text, Enter, Ctrl-C, Ctrl-C; `^C^C/exit\\r` into Ctrl-C ×2, text, Enter', () => {
@@ -815,7 +818,7 @@ describe('<App> coalesced input chunks (§4.5 step 1 amended, finding 2)', () =>
   });
 });
 
-describe('<App> the `d` note field (§6.2, §6.4, findings 3 and 8)', () => {
+describe('<App> the `d` note field (§6.2, §6.4, findings 3 and 8)', { retry: 1 }, () => {
   async function openNote(m: Mounted, draft: string): Promise<ReturnType<typeof m.confirmer.confirmDetailed>> {
     goLive(m, 4);
     await tick(10);
@@ -903,7 +906,7 @@ describe('<App> the `d` note field (§6.2, §6.4, findings 3 and 8)', () => {
   });
 });
 
-describe('<App> review deferral over another overlay (§6.3, finding 4)', () => {
+describe('<App> review deferral over another overlay (§6.3, finding 4)', { retry: 1 }, () => {
   it('a review arriving while the exit confirm is open waits; y/n answer the exit confirm (never the review); the box shows once the overlay closed', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
@@ -962,7 +965,7 @@ describe('<App> review deferral over another overlay (§6.3, finding 4)', () => 
   });
 });
 
-describe('<App> App-level fault injection (§13.4, finding 5)', () => {
+describe('<App> App-level fault injection (§13.4, finding 5)', { retry: 1 }, () => {
   it.each(['rule', 'live', 'queue', 'banner', 'status', 'composer', 'pane'])('render:%s:lines: the builder throws once, that pane degrades, the [ui] item is appended and the rest of the frame survives', async (pane) => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host, fault: builderFaultFor(pane) });
@@ -1008,7 +1011,7 @@ describe('<App> App-level fault injection (§13.4, finding 5)', () => {
   });
 });
 
-describe('<App> retry row `[r] retry now` (§13.2, finding 7)', () => {
+describe('<App> retry row `[r] retry now` (§13.2, finding 7)', { retry: 1 }, () => {
   it('`r` on an empty draft while retrying calls host.retryNow (two presses, two calls); with a draft r is text; after retry:settled r is text again', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
@@ -1054,7 +1057,7 @@ describe('<App> retry row `[r] retry now` (§13.2, finding 7)', () => {
   });
 });
 
-describe('<App> Ctrl-C / Esc / Ctrl-D matrix, the remaining cells (§3.3)', () => {
+describe('<App> Ctrl-C / Esc / Ctrl-D matrix, the remaining cells (§3.3)', { retry: 1 }, () => {
   it('S3 live·text: Ctrl-C clears the draft and never aborts (F5); Esc Esc clears too', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
@@ -1170,7 +1173,7 @@ describe('<App> Ctrl-C / Esc / Ctrl-D matrix, the remaining cells (§3.3)', () =
   });
 });
 
-describe('<App> composer paths (§4.6, §5.4, §8.6, §10.2, finding 12)', () => {
+describe('<App> composer paths (§4.6, §5.4, §8.6, §10.2, finding 12)', { retry: 1 }, () => {
   it('`/steer <text>` with a secret passes the gate: the row opens, an armed y sends the steer with the span and the command lands in history redacted', async () => {
     const host = fakeHost();
     host.historyStore = fakeHistory();
@@ -1335,7 +1338,7 @@ describe('<App> composer paths (§4.6, §5.4, §8.6, §10.2, finding 12)', () =>
   });
 });
 
-describe('<App> bridge prompts, blocking pane and wizard (§9.3, §12.4, §13.3, §11.1)', () => {
+describe('<App> bridge prompts, blocking pane and wizard (§9.3, §12.4, §13.3, §11.1)', { retry: 1 }, () => {
   it('confirmFollowUp: y is inert before arming, then starts; r prefills the raise command; Esc cancels and settles the promise', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
@@ -1526,7 +1529,7 @@ describe('<App> bridge prompts, blocking pane and wizard (§9.3, §12.4, §13.3,
   });
 });
 
-describe('<App> screen-reader review answering (§6.5)', () => {
+describe('<App> screen-reader review answering (§6.5)', { retry: 1 }, () => {
   const sr: LaunchSettings = { ...resolveLaunchSettings({}, {}), screenReader: true };
 
   it('srReviewAnswer maps exactly 1/2/3/y/n; anything else is text', () => {
@@ -1605,7 +1608,7 @@ function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 }
 
-describe('createTuiRenderer: unmount flushes the final frame (finding 10); resize through the early listener (finding 11)', () => {
+describe('createTuiRenderer: unmount flushes the final frame (finding 10); resize through the early listener (finding 11)', { retry: 1 }, () => {
   it('the last frame written before unmount shows `done <stop>` with no spinner and no steer placeholder', async () => {
     const stdout = new StubStdout(24, 80, true);
     const stdin = new StubStdin();

@@ -40,7 +40,7 @@ const GLM = 'z-ai/glm-5.3-flash';
 
 describe('arms (docs/LLM-JEV-DESIGN.md §10.1)', () => {
   it('order, parsing and the engine mode behind each arm', () => {
-    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned']);
+    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned', 'jev-on-next', 'jev-on-next-nofast']);
     expect(parseConditions('llm-sieve, jev-off-tuned,llm-jev')).toEqual(['llm-sieve', 'jev-off-tuned', 'llm-jev']);
     expect(isBenchCondition('llm-sieve')).toBe(true);
     expect(isBenchCondition('jev-tuned')).toBe(false);
