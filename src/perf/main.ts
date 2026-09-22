@@ -193,7 +193,7 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
   if (probes.includes('step-overhead')) {
     log('perf: harness overhead per step (mocked, zero latency, 50 steps, 5,000-file fixture, 50 dirty files / 15 MiB, one 60 MiB artefact)…\n');
     overhead = await measureStepOverhead({ steps: 50 });
-    progress(`harness p50 ${overhead.p50?.toFixed(1)} ms, p95 ${overhead.p95?.toFixed(1)} ms (run steps p95 ${overhead.harnessRunP95?.toFixed(1)} / p50 ${overhead.harnessRunP50?.toFixed(1)} ms, other steps p95 ${overhead.harnessOtherP95?.toFixed(1)} ms); imagesMs p50 ${overhead.imagesP50?.toFixed(1)} p95 ${overhead.imagesP95?.toFixed(1)} ms (run steps p95 ${overhead.imagesRunP95?.toFixed(1)} ms); hashSkipped ${String(overhead.hashSkipped)} at step ${overhead.artefactStep}`);
+    progress(`harness p50 ${overhead.p50?.toFixed(1)} ms, p95 ${overhead.p95?.toFixed(1)} ms (run steps p95 ${overhead.harnessRunP95?.toFixed(1)} / p50 ${overhead.harnessRunP50?.toFixed(1)} ms, other steps p95 ${overhead.harnessOtherP95?.toFixed(1)} ms); imagesMs p50 ${overhead.imagesP50?.toFixed(1)} p95 ${overhead.imagesP95?.toFixed(1)} ms (run steps p95 ${overhead.imagesRunP95?.toFixed(1)} ms); hashSkipped ${String(overhead.hashSkipped)} at step ${overhead.artefactStep}; promptBuildMs p50 ${overhead.promptBuildP50?.toFixed(2)} p95 ${overhead.promptBuildP95?.toFixed(2)} ms (cold after --resume ${overhead.coldPromptBuildMs?.toFixed(2) ?? 'n/a'} ms)`);
   }
   if (probes.includes('static-append')) {
     log('perf: Static append bytes per committed line (in-process fake TTY 24x80: live + 6-row draft, review pending, idle)…\n');
