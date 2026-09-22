@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SpendMeter, SpendSnapshot, TokenUsage } from '../../../src/core/types.js';
-import { createSpendMeter, sanitiseCap } from '../../../src/spend/meter.js';
+import { RESTORED_HOLD_ID, createSpendMeter, sanitiseCap } from '../../../src/spend/meter.js';
 
 const usage = (costUsd: number, tokens = 100): TokenUsage => ({ inputTokens: tokens, outputTokens: tokens / 10, costUsd, calls: 1 });
 
@@ -245,49 +245,69 @@ describe('session meter tree (TUI-DESIGN §9.1, §15 item 7)', () => {
 });
 
 describe('hold / release (ORCHESTRATION-DESIGN §6.2 [G6] [D6])', () => {
-  it('hold accumulates into snapshot().heldUsd, which starts at 0', () => {
+  it('hold is keyed by agent: the sum is heldUsd() and snapshot().heldUsd, both starting at 0', () => {
     const m = createSpendMeter(2);
     expect(typeof m.hold).toBe('function');
     expect(typeof m.release).toBe('function');
+    expect(typeof m.heldUsd).toBe('function');
+    expect(m.heldUsd?.()).toBe(0);
     expect(m.snapshot().heldUsd).toBe(0);
-    m.hold?.(0.9);
-    expect(m.snapshot().heldUsd).toBeCloseTo(0.9, 12);
-    m.hold?.(0.3);
-    expect(m.snapshot().heldUsd).toBeCloseTo(1.2, 12);
+    m.hold?.('fix-store', 0.9);
+    expect(m.heldUsd?.()).toBeCloseTo(0.9, 12);
+    m.hold?.('tui-rows', 0.3);
+    expect(m.heldUsd?.()).toBeCloseTo(1.2, 12);
+    // the accessor and the snapshot field are the same number, always
+    expect(m.snapshot().heldUsd).toBe(m.heldUsd?.());
+    // §6.5: re-holding one agent REPLACES its reserve (a raised cap), it does not accumulate
+    m.hold?.('tui-rows', 0.5);
+    expect(m.heldUsd?.()).toBeCloseTo(1.4, 12);
   });
 
-  it('release subtracts and clamps at 0 — a hold is never negative', () => {
+  it('release drops one agent and is idempotent — a hold can never go negative', () => {
     const m = createSpendMeter(2);
-    m.hold?.(1);
-    m.release?.(0.4);
-    expect(m.snapshot().heldUsd).toBeCloseTo(0.6, 12);
-    m.release?.(99);
-    expect(m.snapshot().heldUsd).toBe(0);
-    m.release?.(1);
-    expect(m.snapshot().heldUsd).toBe(0);
+    m.hold?.('a', 1);
+    m.hold?.('b', 0.4);
+    m.release?.('b');
+    expect(m.heldUsd?.()).toBeCloseTo(1, 12);
+    // a double release, and an unknown id, are both no-ops: there is no subtraction that could underflow
+    m.release?.('b');
+    m.release?.('never-held');
+    expect(m.heldUsd?.()).toBeCloseTo(1, 12);
+    m.release?.('a');
+    expect(m.heldUsd?.()).toBe(0);
+    m.release?.('a');
+    expect(m.heldUsd?.()).toBe(0);
   });
 
-  it('a negative, NaN or infinite hold or release is ignored (the nonNegative discipline)', () => {
+  it('a negative, NaN or infinite amount, and an empty agent id, are ignored (the nonNegative discipline)', () => {
     const m = createSpendMeter(2);
-    m.hold?.(Number.NaN);
-    m.hold?.(-5);
-    m.hold?.(Number.POSITIVE_INFINITY);
-    expect(m.snapshot().heldUsd).toBe(0);
-    m.hold?.(0.5);
-    m.release?.(Number.NaN);
-    m.release?.(-5);
-    m.release?.(Number.POSITIVE_INFINITY);
-    expect(m.snapshot().heldUsd).toBeCloseTo(0.5, 12);
+    m.hold?.('a', Number.NaN);
+    m.hold?.('b', -5);
+    m.hold?.('c', Number.POSITIVE_INFINITY);
+    expect(m.heldUsd?.()).toBe(0);
+    m.hold?.('', 99);
+    expect(m.heldUsd?.()).toBe(0);
+    m.release?.('');
+    m.hold?.('d', 0.5);
+    expect(m.heldUsd?.()).toBeCloseTo(0.5, 12);
+    // the sum is always finite and >= 0, whatever was pushed in
+    expect(Number.isFinite(m.heldUsd?.() ?? Number.NaN)).toBe(true);
   });
 
-  it('[G6] heldUsd survives restore — it is usage-shaped, so an adopting session re-holds it', () => {
+  it('[G6] heldUsd survives restore under RESTORED_HOLD_ID, which adoption must release once it re-holds per agent', () => {
     const m = createSpendMeter(3);
-    m.hold?.(0.75);
+    m.hold?.('fix-store', 0.75);
     const saved = m.snapshot();
     expect(saved.heldUsd).toBeCloseTo(0.75, 12);
     const fresh = createSpendMeter(3);
     fresh.restore(saved);
     expect(fresh.snapshot().heldUsd).toBeCloseTo(0.75, 12);
+    // a SpendSnapshot carries no per-agent breakdown, so the total lands under one reserved id; §4.4's adoption
+    // rebuilds the real holds from the manifest x the live run.locks and releases this one, or it double-counts
+    fresh.hold?.('fix-store', 0.75);
+    expect(fresh.heldUsd?.()).toBeCloseTo(1.5, 12);
+    fresh.release?.(RESTORED_HOLD_ID);
+    expect(fresh.heldUsd?.()).toBeCloseTo(0.75, 12);
     // a snapshot written before contract 1.5 carries no heldUsd: restore reads 0, never NaN
     fresh.restore({ generator: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, jev: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, totalUsd: 0, capUsd: 3, exceeded: false });
     expect(fresh.snapshot().heldUsd).toBe(0);
@@ -298,26 +318,28 @@ describe('hold / release (ORCHESTRATION-DESIGN §6.2 [G6] [D6])', () => {
 
   it('[D6] exceeded() is untouched by a hold: on a run meter it still means "this run spent its cap"', () => {
     const m = createSpendMeter(1);
-    m.hold?.(10);
+    m.hold?.('a', 10);
     expect(m.exceeded()).toBe(false);
     expect(m.snapshot().exceeded).toBe(false);
     expect(m.snapshot().totalUsd).toBe(0);
     m.add('generator', usage(1));
     expect(m.exceeded()).toBe(true);
-    m.release?.(10);
+    m.release?.('a');
     expect(m.exceeded()).toBe(true);
   });
 
   it('a hold belongs to the meter that took it and never forwards to the parent', () => {
     const parent = createSpendMeter(10);
     const child = parent.child(2);
-    child.hold?.(0.5);
+    child.hold?.('a', 0.5);
     expect(child.snapshot().heldUsd).toBeCloseTo(0.5, 12);
     expect(parent.snapshot().heldUsd).toBe(0);
-    parent.hold?.(0.9);
+    parent.hold?.('a', 0.9);
     expect(parent.snapshot().heldUsd).toBeCloseTo(0.9, 12);
     expect(child.snapshot().heldUsd).toBeCloseTo(0.5, 12);
-    child.release?.(0.5);
+    // the same id in two meters is two independent reserves: releasing one leaves the other alone
+    child.release?.('a');
+    expect(child.snapshot().heldUsd).toBe(0);
     expect(parent.snapshot().heldUsd).toBeCloseTo(0.9, 12);
     // a misbehaving parent is irrelevant: hold never touches it
     const brokenParent: SpendMeter = {
@@ -332,7 +354,8 @@ describe('hold / release (ORCHESTRATION-DESIGN §6.2 [G6] [D6])', () => {
       child: (cap) => createSpendMeter(cap),
     };
     const lone = createSpendMeter(1, brokenParent);
-    expect(() => lone.hold?.(0.2)).not.toThrow();
+    expect(() => lone.hold?.('a', 0.2)).not.toThrow();
     expect(lone.snapshot().heldUsd).toBeCloseTo(0.2, 12);
+    expect(lone.heldUsd?.()).toBeCloseTo(0.2, 12);
   });
 });

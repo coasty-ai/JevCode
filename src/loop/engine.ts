@@ -24,11 +24,16 @@ import { toJson } from '../core/json.js';
 import { clip } from '../core/text.js';
 import { monotonicNow, nowIso, sleep } from '../core/time.js';
 // TUI-DESIGN §8.6 (F7): the steer bounds are defined once, next to PendingDirective; re-exported below under the engine's names
-import { DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
+import { DEFAULT_COMMIT_IDENTITY, DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type { AskResult,
   AckOutcome,
   Action,
   ActionOutcome,
+  AgentRef,
+  OrchestrationOptions,
+  PlanDraft,
+  SandboxLevel,
+  SandboxProfile,
   Answer,
   BlockingAnswer,
   BlockingRequest,
@@ -120,6 +125,7 @@ import { CACHED_SAMPLES_MAX, CACHED_SAMPLE_MAX_CHARS, PARTIAL_TEXT_MAX_CHARS, RE
 import { compactCode, compactionDue, isContextSummary, type CompactionTrigger } from './context/compaction.js';
 import { FilesInView, boundMemory, dropFile, evictFiles, forgetFile, noteShown, rememberFile, touchFile, workspaceFilesInViewDeps } from './context/context-cache.js';
 import { buildHistoryEntry, foldHistoryRecord, foldableCount, needsOutputFile, outputRefFor, outputView, parseOutputRef, planHistory, pushHistory, renderHistory, seedHistoryEntry, tierText, type HistoryPlan, type OutputView } from './context/history.js';
+import { AGENT_MEM_BYTES, MIN_FREE_BYTES, ORCHESTRATION_DEPTH_MAX } from '../core/limits.js';
 import { CONTEXT_BUDGET_MIN_CHARS, FILE_CACHE_MAX_ENTRIES, HISTORY_MID, HISTORY_SHARE, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, OUTPUT_READ_PREFIX, resolveContextPolicy, type ResolvedContextPolicy } from './context/limits.js';
 import { computeContextUsage, restoredContextUsage } from './context/meter.js';
 import type { ContextReadHooks, ContextSummary } from './context/types.js';
@@ -133,7 +139,9 @@ import { headDriftWarning, headMoved, notRepoState, probeGitState as realProbeGi
 import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
-import { buildSystemPrompt, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput } from '../provider/prompts.js';
+import { buildSplitMessage, buildSystemPrompt, splitToolsFor, PROPOSE_SPLIT_TOOL_NAME, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput } from '../provider/prompts.js';
+// contract 1.5 (§3.4 rule 9): a COUNT of secret hits, never a value
+import { detectSecrets } from '../core/redact.js';
 import { linkedAbort } from '../core/abort.js';
 import { lookupPricing } from '../config/defaults.js';
 import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
@@ -145,13 +153,32 @@ import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTran
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
 import { isComplete, isCompleteByFact, type CompletionFactInput } from './stages/complete.js';
 import { prefilterCandidates, runContextStage } from './stages/context.js';
+// contract 1.5 (ORCHESTRATION-DESIGN §3, §8.2 D1 item 15): the decompose stage
+import { checkpointOrchestration, decomposeShutByOptions, parseSplitDraft, runDecomposeStage, splitPrefixTree, type DecomposeFacts, type DecomposeStageContext } from './stages/decompose.js';
 import { runExecuteStage } from './stages/execute.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
 import { runJudgeStage } from './stages/judge.js';
 import { runProposeStage, type ProposeStageResult } from './stages/propose.js';
 import { runReplanStage } from './stages/replan.js';
 import { runSynthStage } from './stages/synth.js';
-import { computeTargets, runRiskStage, MATCHES_INTENT_THRESHOLD, type VerifiedCompletion } from './stages/risk.js';
+import { computeTargets, isOwnershipRefusal, ownershipRefusal, runRiskStage, MATCHES_INTENT_THRESHOLD, SCOPE_FIGHT_AFTER, type VerifiedCompletion } from './stages/risk.js';
+// contract 1.5 (ORCHESTRATION-DESIGN §8.1 rule 2): orchestration is imported through the ONE facade, never a file below it.
+import {
+  commitStep,
+  computeAddSet,
+  manifestPath,
+  nodeManifestIo,
+  nodePreflightProbe,
+  preflight,
+  readManifest,
+  resolveVerification,
+  sameDelegation,
+  DEFAULT_SPLIT_POLICY,
+  type DraftSplit,
+  type GateReason,
+  type Manifest,
+} from '../orchestrate/index.js';
+import { escapedLine, escapedPaths, landPreflightOffer, launchOverlap, launchProposal, mergeAction, seedFor, type LandPreflightOffer, type LaunchAnswer, type LaunchInput } from './launch.js';
 
 // ---------------------------------------------------------------------------------------
 // Dependency injection (concurrently written modules)
@@ -322,6 +349,13 @@ export interface StageContext {
   startCandidateRefresh(): void;
   /** docs/COORDINATION-DESIGN.md §8.3 / §8.4 (W2 item 21): the zero-cost read and the `jevcode:outputs/` pseudo-path; absent in fakes */
   contextReads?: ContextReadHooks;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §2.5): this engine's place in a delegation, so the stages that carry a child
+   * difference read one field instead of five — the risk stage's `own` refusal (§2.4 belt 2) and the propose stage's
+   * research tool schema (§2.5(b)). Absent on every run without `EngineOptions.orchestration`, which is why nothing
+   * here can change an ordinary run.
+   */
+  readonly orchestration?: OrchestrationOptions;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -352,7 +386,8 @@ interface StepDraft {
   generatorRecords: GeneratorCallRecord[];
   usage: StepUsage;
   /** imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none */
-  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null };
+  /** decomposeMs: contract 1.5 (§4.1 [D13]) — the `decompose` stage's own wall, inside harnessMs; 0 when the gate was shut */
+  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null; decomposeMs: number };
   /** docs/LLM-JEV-DESIGN.md §7.5: wall of synthesize() (synth modes); null when the propose stage was the generator's */
   synthMs: number | null;
   /** the Jev latency spent inside synthesize(); `timing.jevMs - synthJevMs` is the shell's share */
@@ -432,6 +467,20 @@ function addUsage(a: TokenUsage, b: TokenUsage): void {
   a.costUsd += Number.isFinite(b.costUsd) ? b.costUsd : 0;
   a.calls += b.calls;
 }
+/**
+ * contract 1.5 (ORCHESTRATION-DESIGN §3.1, §6.1 [D6]): what is left of the session budget NET OF HOLDS.
+ *
+ * The rendered twin is `sessionRemainingUsd` (`src/tui/budget/lines.ts:184`), which `src/loop/**` may not
+ * import; D0 item 3 gives that one an optional third `heldUsd` argument and the two must stay in step. A
+ * hold is money already promised to an agent that has not spent it yet, so the money gate reads it as gone
+ * — which is the whole of [D6]: without it a parent can promise the same dollar to two children.
+ */
+function sessionRemainingNetOfHolds(capUsd: number, spentUsd: number, heldUsd: number): number {
+  if (capUsd === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
+  const cap = Number.isFinite(capUsd) ? capUsd : 0;
+  return cap - Math.max(0, Number.isFinite(spentUsd) ? spentUsd : 0) - Math.max(0, Number.isFinite(heldUsd) ? heldUsd : 0);
+}
+
 function zeroTiming(): StepTiming {
   return { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 0 };
 }
@@ -571,6 +620,14 @@ class EngineImpl implements Engine {
 
   // engine state (§11 state-mutation rule: plan/window/detector change only in commit)
   private step = 0;
+  // contract 1.5 (ORCHESTRATION-DESIGN §3.1, §4.1): what this run has delegated. `splits` is counted against
+  // `orchestrate.maxSplits` and only a WRITTEN manifest consumes a slot (corner row 8); `lastSplitStep` is the
+  // `splitEvery` cooldown; `orchestration` is the delegation itself, re-read on resume by corner row 12.
+  private splits = 0;
+  private lastSplitStep: number | null = null;
+  private orchestration: NonNullable<CheckpointState['orchestration']> | null = null;
+  /** corner row 12: `agent:adopted` is announced once per process, not once per step */
+  private adoptedAnnounced = false;
   private plan: Plan = emptyPlan();
   private window: WindowEntry[] = [];
   // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context — `window` above stays Jev's 4 × 600 (§8.1 two windows)
@@ -778,6 +835,29 @@ class EngineImpl implements Engine {
   /** a --force resume of an ended run (§7.4): the resumes[] entry records `reopened` and run.json.ended is cleared */
   private readonly reopened: boolean;
 
+  // contract 1.5 (ORCHESTRATION-DESIGN §2.4, §2.5, §2.6, §5.7): the child differences and the launch.
+  // Every one is inert on a run without `EngineOptions.orchestration`.
+  /** §2.4 / corner row 18: CONSECUTIVE belt-2 refusals; `SCOPE_FIGHT_AFTER` of them park the child */
+  private beltRefusals = 0;
+  /** §2.4 [G8]: the post-`run` escape diff of the step in flight, moved onto `StepRecord.escaped` at commit */
+  private escapedThisStep: readonly string[] = [];
+  /** §2.6 [G1]: the sha of the harness commit this step produced, moved onto `StepRecord.commit` at commit */
+  private commitThisStep: string | null = null;
+  /** §2.6 [D2] `touched`: ⋃ over this run's steps of `ActionOutcome.changedFiles` — file actions AND post-`run` diffs */
+  private readonly touchedPaths = new Set<string>();
+  /** §2.6: the sha of the unconditional `run:end` commit (`RunResult.commit`) */
+  private endCommit: string | null = null;
+  /** §2.5(c) / P10: a parked review is pending, so the rule-1 discard's point reads `review-needed`, not `now` */
+  private reviewParked = false;
+  /** §2.5(c) / corner row 29: the answer file was consumed this run — single-use, whatever a replay does */
+  private reviewAnswerUsed = false;
+  /** §5.7: the proposal the harness seeded for the NEXT step (the launch merge, or the [c] / [s] pre-flight step) */
+  private seededStep: { step: number; proposal: Proposal; note: string } | null = null;
+  /** §5.7: what `/land` is landing, so the merge's `executed` outcome can write `RunMeta.landed` */
+  private pendingLand: { branch: string; agents: number; delegatedAt: number } | null = null;
+  /** §5.7 tail: `RunMeta.landed`, newest last */
+  private landedMerges: readonly { step: number; branch: string; commit: string }[] = [];
+
   constructor(init: {
     runId: string;
     opts: EngineOptions;
@@ -866,6 +946,12 @@ class EngineImpl implements Engine {
       }
       this.consecutiveStageFailures = s.consecutiveStageFailures;
       this.jevQuestions = s.jevQuestions ?? 0;
+      // contract 1.5 (ORCHESTRATION-DESIGN corner row 12): a resumed run re-finds the delegation it already made, so
+      // the gate stays shut and no second manifest is proposed for the same work. `maybeDecompose` re-reads the
+      // manifest and compares `manifestId` + `baseSha` before it ADOPTS it.
+      this.orchestration = s.orchestration !== undefined ? { ...s.orchestration, agents: s.orchestration.agents.map((a) => ({ ...a })) } : null;
+      this.splits = s.splits ?? 0;
+      this.lastSplitStep = s.orchestration?.step ?? null;
       this.synthState = s.synthState ?? null;
       this.resumes = s.resumes;
       this.lastPromptChars = s.lastPromptChars ?? null;
@@ -1341,6 +1427,21 @@ class EngineImpl implements Engine {
   }
 
   /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.2 **P9**, [G17]): "delegation accepted". The manifest was confirmed
+   * at step n, the parent has nothing left to do until children report, and it stops.
+   *
+   * [G17] is the whole reason this is its own recorder rather than a call to `recordBoundaryPause()`: P9 is
+   * ENGINE-initiated. No human asked, so `by` stays `'self'` and never takes a `peer:` / `device:` form, and
+   * every surface that keys off `human_pause` to mean "a human asked" must add the `reason: 'delegate'` case.
+   * It is also the only pause point where NOTHING was interrupted — the step committed whole — which is why
+   * `resumableAt` is `'boundary'`, `replayable` is false, and the resume card shows no `[r] replay`.
+   */
+  private recordDelegatePause(step: number): void {
+    this.pauseBy = 'self';
+    this.pauseAt = { step: step + 1, phase: 'idle', reason: 'delegate', round: null, cache: null };
+  }
+
+  /**
    * §12.0.2 P6 / P7: the point at a pane that pause() woke (`pane`) or that the human answered `[t] worktree` (`worktree`,
    * the lease-conflict relocation of §4.3 step 5) — the step that raised the pane is already a rule-1 discard, so its
    * `interruptedDetail` (when one was written) is what `--replay` reads after the relocation.
@@ -1366,7 +1467,8 @@ class EngineImpl implements Engine {
     this.pauseAt = {
       step: draft.step,
       phase: stage,
-      reason: 'now',
+      // contract 1.5 (ORCHESTRATION-DESIGN §4.2 P10): the parking confirmer's discard is a review park, not a pause-now
+      reason: this.reviewParked ? 'review-needed' : 'now',
       round: cache.round,
       ...(cache.llm !== null ? { llm: { ...cache.llm, arrived: [...cache.llm.arrived] } } : {}),
       cache: cache.rel,
@@ -1477,6 +1579,10 @@ class EngineImpl implements Engine {
 
   /** the cache for exactly this step, or null; a cached proposal is consumed here, a samples-only cache stays for generate() until the step ends */
   private takeReplay(step: number): StepCache | null {
+    // ORCHESTRATION-DESIGN §5.7: a harness-seeded proposal (the launch merge, or the [c] / [s] pre-flight step) enters
+    // the loop through the SAME door as a replayed one — "do not build a parallel path".
+    const seeded = this.takeSeeded(step);
+    if (seeded !== null) return seeded;
     const c = this.replayCache;
     if (c === null || c.step !== step) return null;
     if (c.proposal !== null) this.replayCache = null;
@@ -2117,6 +2223,11 @@ class EngineImpl implements Engine {
       ...(this.pendingDirectives.length > 0 ? { pendingDirectives: this.pendingDirectives.map((d) => ({ ...d })) } : {}),
       ...(this.undoLog.length > 0 ? { undoLog: this.undoLog.map((u) => ({ ...u, restored: [...u.restored], skipped: u.skipped.map((k) => ({ ...k })) })) } : {}),
       ...(this.checkpointDegraded ? { checkpointDegraded: true } : {}),
+      // contract 1.5 (ORCHESTRATION-DESIGN §4.1, §4.2 P9): the delegation this run is the parent of, and how many
+      // splits it has spent. Both are conditional spreads, so a run that never delegated writes the same state.json
+      // it wrote before this change — which is half of what M2 means by “zero cost”.
+      ...(this.orchestration !== null ? { orchestration: { ...this.orchestration, agents: this.orchestration.agents.map((a) => ({ ...a })) } } : {}),
+      ...(this.splits > 0 ? { splits: this.splits } : {}),
       // contract 1.4 (§12.0.3): the last prompt's chars, so a resumed process's context meter starts from a fact
       ...(this.lastPromptChars !== null ? { lastPromptChars: this.lastPromptChars } : {}),
       // docs/COORDINATION-DESIGN.md §8.3 / §8.4 / §12.0.3 (additive, conditional): absent while empty, so older readers and goldens are unchanged
@@ -2153,7 +2264,7 @@ class EngineImpl implements Engine {
       jevRequests: [],
       generatorRecords: [],
       usage: { generator: zeroUsage(), jev: zeroUsage() },
-      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null },
+      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null, decomposeMs: 0 },
       synthMs: null,
       synthJevMs: 0,
       generatorBatch: { inFlight: 0, startedAt: 0 },
@@ -2239,6 +2350,8 @@ class EngineImpl implements Engine {
       },
       // docs/COORDINATION-DESIGN.md §8.3 / §8.4: the zero-cost read and the `jevcode:outputs/` pseudo-path
       contextReads: this.contextReadHooks(),
+      // ORCHESTRATION-DESIGN §2.5: spread in only when set, so a normal run's StageContext is unchanged
+      ...(this.opts.orchestration !== undefined ? { orchestration: this.opts.orchestration } : {}),
     };
   }
 
@@ -2839,6 +2952,283 @@ class EngineImpl implements Engine {
   // One step
   // -------------------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------------------
+  // contract 1.5 (ORCHESTRATION-DESIGN §3, §4.2 P9, §8.2 D1 item 15): the decompose stage's call site
+  // -------------------------------------------------------------------------------------
+
+  /**
+   * §3.1 [G21] / §2.5(e) / [G5] — **THE ONE SHORT-CIRCUIT**, and the only place it is decided.
+   *
+   * `orchestrate.split === 'off'` (the shipping default), `orchestration.depth === 1` (an agent may never
+   * spawn agents) and a missing coordination ledger are each decided from the RESOLVED OPTIONS alone.
+   * Nothing past this predicate runs for them: no `statusPorcelain`, no `os.availableParallelism()`, no
+   * `os.freemem()`, no `statfs`, no `du -sk` of the repo, no `git ls-files`, no `propose_split` generator
+   * call and no Jev request — because `GateInput` wants every one of those measurements, and M2's gate is
+   * that a shut split costs this comparison and nothing else.
+   *
+   * It emits nothing, either. §3.1's `decompose:skipped` line exists to make the GATE testable; `split_off`
+   * is the setting the user chose, not news, and M2 asserts a default run produces no new events at all.
+   */
+  private decomposeShortCircuit(): GateReason | null {
+    const o = this.opts.orchestration;
+    return decomposeShutByOptions(this.opts.splitPolicy, o?.depth, o?.hasLedger);
+  }
+
+  /**
+   * §3: the stage, before `replan` / `intent`. Returns a stop reason when the delegation was accepted —
+   * that is **P9**, and the parent's process ends there (§2.9: waiting on children with a live process
+   * burns context and money for nothing).
+   *
+   * Every other outcome returns null and the step goes on exactly as it would have: the stage is a
+   * PROPOSAL (§3), it never touches the workspace, and a rule-1 discard of it costs one Jev request.
+   */
+  private async maybeDecompose(draft: StepDraft): Promise<StopReason | null> {
+    if (this.decomposeShortCircuit() !== null) return null;
+    // corner row 12: this run already delegated. The gate stays shut and the existing delegation is
+    // adopted — `agent:adopted` says so — for as long as `manifestId` AND `baseSha` still match.
+    if (this.orchestration !== null) {
+      await this.adoptExistingDelegation();
+      return null;
+    }
+
+    const t0 = this.clock();
+    try {
+      const facts = await this.decomposeFacts();
+      const result = await this.stage('decompose', () =>
+        runDecomposeStage(this.decomposeContext(draft), {
+          policy: this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY,
+          depth: this.opts.orchestration?.depth ?? 0,
+          runId: this.runId,
+          sessionId: this.opts.session?.sessionId ?? this.runId,
+          plan: this.plan,
+          planDraft: { done: this.plan.done.map((d) => d.text), remaining: [...this.plan.remaining], openProblems: [...this.plan.openProblems] },
+          reserveUsd: this.decomposeReserveUsd(),
+          reserveFrom: 'session',
+          facts,
+          detectSecrets: (text) => detectSecrets(text).length,
+          // there is no engine-side verbose gate: `--json=verbose` is filtered in `src/cli/json-stream.ts`
+          // by `VERBOSE_ONLY_TYPES`, so the engine emits and the stream drops. `decompose:skipped` must be
+          // added to that set (one word, CLI-owned); until then it rides an ordinary `--json` stream.
+          verbose: true,
+          // corner row 11: no blocker means `--no-input` / a pipe / the bench, and the confirm cannot be answered
+          hasBlocker: this.opts.blocker !== undefined,
+          confirm: (req) => this.confirmDecomposition(draft, req),
+        }),
+      );
+      if (result.kind === 'proposed') return await this.acceptDelegation(draft, result.manifest);
+      if (result.kind === 'declined' || (result.kind === 'no_split' && result.problem !== null)) {
+        // §3.7 policy / corner row 9: an `orchestration` harness problem sends the next `splitEvery` steps
+        // single-threaded. `lastSplitStep` is NOT moved: only a written manifest consumes a `maxSplits` slot.
+        const text = result.kind === 'declined' ? result.reason : (result.problem ?? result.reason);
+        this.plan = { ...this.plan, harnessProblems: boundHarnessProblems([...this.plan.harnessProblems, { kind: 'orchestration', text: clip(text, 600), step: draft.step }], PLAN_MAX_HARNESS_PROBLEMS) };
+        draft.notes.push(`decompose: ${clip(text, 200)}`);
+      }
+      return null;
+    } catch (e) {
+      // §3.5: nothing about a decomposition may end a run. An abort still propagates (the step is a rule-1
+      // discard, and §3's "it is a proposal" means there is nothing to roll back).
+      if (isAbortError(e) || this.signal.aborted) throw e;
+      this.emit({ type: 'notice', step: draft.step, kind: 'orchestration', level: 'info', text: `decompose failed: ${clip(this.redact(e instanceof Error ? e.message : String(e)), 200)} — continuing single-threaded` });
+      return null;
+    } finally {
+      draft.timing.decomposeMs = Math.max(0, this.clock() - t0);
+    }
+  }
+
+  /** the `DecomposeStageContext` seam: the engine's `ask` / `generate` with the stage's own narrow shape */
+  private decomposeContext(draft: StepDraft): DecomposeStageContext {
+    const self = this;
+    return {
+      step: draft.step,
+      mode: this.mode,
+      task: this.opts.task,
+      redact: (s) => self.redact(s),
+      now: () => self.clock(),
+      emit: (e) => self.emit(e),
+      ask: async (state, questions, annotate) => {
+        const out = await self.ask(draft, 'decompose', state as JsonObject, questions, annotate);
+        return { answers: out.answers, rows: out.rows };
+      },
+      proposeSplit: () => self.proposeSplit(draft),
+    };
+  }
+
+  /**
+   * §3.3: the generator's ONE call at the gate. Its prose is DISCARDED — only the structured
+   * `propose_split` argument survives, and `normalizeSplit` re-derives every safety property of it.
+   * `jev-only` has no generator, so `splitToolsFor` returns nothing and this returns null without a call.
+   */
+  private async proposeSplit(draft: StepDraft): Promise<DraftSplit | null> {
+    const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
+    const tools = splitToolsFor(this.mode, policy.maxAgents);
+    const tool = tools[0];
+    if (tool === undefined) return null;
+    const listing = await this.workspace.listCandidates().catch(() => []);
+    const message = buildSplitMessage({
+      step: draft.step,
+      task: this.opts.task,
+      plan: this.plan,
+      prefixTree: splitPrefixTree(listing.map((c) => c.path)),
+      failingTests: this.lastTestRun !== null && !this.lastTestRun.allPassed ? [this.lastTestRun.command] : [],
+      maxAgents: policy.maxAgents,
+      verification: policy.verify,
+    });
+    const result = await this.generate(draft, { system: buildSystemPrompt({ mode: this.mode, sandboxLevel: this.sandbox.level, toolName: tool.name }), messages: [{ role: 'user', content: message }], maxTokens: this.opts.generation.maxTokens, temperature: this.opts.generation.temperature, tools, toolChoice: { name: tool.name } }, 0);
+    const call = result.toolCalls.find((c) => c.name === PROPOSE_SPLIT_TOOL_NAME);
+    return call === undefined ? null : parseSplitDraft(call.input);
+  }
+
+  /**
+   * §3.7 [G2]: the manifest confirm goes through the EXISTING `Confirmer` — the same seam the review card
+   * uses, with `title` / `headline` / `body` / `badge` set and [D5c]'s fixed `proposal` / `risk`. There is
+   * no second confirmer: `confirm:request` and `confirm:resolved` are emitted exactly as they are for a
+   * review, so `--plain`, the SR twin and the `--json` stream all see one familiar pair of events.
+   */
+  private async confirmDecomposition(draft: StepDraft, req: ConfirmRequest): Promise<ConfirmOutcome> {
+    this.emit({ type: 'confirm:request', request: req });
+    const c0 = this.clock();
+    try {
+      const c = this.opts.confirmer;
+      const r: ConfirmOutcome = c.confirmDetailed ? await c.confirmDetailed(req, { signal: this.signal }) : { approved: await c.confirm(req, { signal: this.signal }) };
+      draft.timing.confirmMs += Math.max(0, this.clock() - c0);
+      const rawNote = typeof r.note === 'string' ? clip(sanitizeStream(r.note).replace(/\s+/g, ' ').trim(), REVIEWER_NOTE_MAX) : '';
+      const note = rawNote.length > 0 ? rawNote : undefined;
+      this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: r.approved, aborted: false, ...(note !== undefined ? { note } : {}) });
+      return { approved: r.approved, ...(note !== undefined ? { note } : {}) };
+    } catch (e) {
+      draft.timing.confirmMs += Math.max(0, this.clock() - c0);
+      this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: false, aborted: true });
+      if (isAbortError(e) && !this.signal.aborted) this.abort(e.reason === 'signal' ? 'signal' : 'human_abort');
+      throw e;
+    }
+  }
+
+  /**
+   * §4.2 **P9**, in the row's exact persist order: `orchestrate/manifest-<n>.json` → `state.json`
+   * (`orchestration`, `interrupted = null` — the step committed) → heartbeat → `run:end`. The manifest is
+   * written FIRST and awaited, because a `state.json` naming a manifest that is not on disk is a
+   * delegation the next process cannot adopt and would therefore propose a second time (corner row 12).
+   */
+  private async acceptDelegation(draft: StepDraft, manifest: Manifest): Promise<StopReason | null> {
+    const write = this.store.writeCache;
+    if (write === undefined) {
+      this.emit({ type: 'notice', step: draft.step, kind: 'orchestration', level: 'info', text: 'the delegation was approved but this checkpoint store cannot write it — continuing single-threaded' });
+      return null;
+    }
+    try {
+      // the store routes an `orchestrate/`-prefixed rel to `<runDir>/orchestrate/` (`checkpoint/store.ts cacheTarget`)
+      await write.call(this.store, manifestPath(manifest.step), toJson(manifest));
+    } catch (e) {
+      this.emit({ type: 'notice', step: draft.step, kind: 'orchestration', level: 'info', text: `the manifest could not be written: ${clip(this.redact(e instanceof Error ? e.message : String(e)), 200)} — continuing single-threaded` });
+      return null;
+    }
+    this.emit({ type: 'orchestration:proposed', step: draft.step, manifest });
+    this.orchestration = checkpointOrchestration(manifest);
+    // only a WRITTEN manifest consumes a `maxSplits` slot and arms the `splitEvery` cooldown (corner row 8)
+    this.splits += 1;
+    this.lastSplitStep = draft.step;
+    this.absorbDiscardedTiming(draft);
+    this.recordDelegatePause(draft.step);
+    this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `delegated at step ${draft.step} — ${manifest.agents.length} agents` });
+    return 'human_pause';
+  }
+
+  /**
+   * corner row 12: a resumed run whose `manifestId` AND `baseSha` still match ADOPTS the delegation. The
+   * gate stays shut and no second manifest is proposed. A mismatch (the base moved, the plan changed, the
+   * file is gone) drops the record so the gate may open again — the alternative is a run that can never
+   * delegate because of a manifest it can no longer read.
+   */
+  private async adoptExistingDelegation(): Promise<void> {
+    const held = this.orchestration;
+    if (held === null) return;
+    const read = await readManifest(nodeManifestIo(this.store.dir), held.step, { task: this.opts.task, remaining: this.plan.remaining });
+    const head = this.workspace.gitState?.()?.head ?? null;
+    const baseSha = head !== null && head.kind === 'branch' ? head.oid : null;
+    // row 12: `manifestId` AND `baseSha` must BOTH still match. A head nothing probed cannot refute the
+    // base, so only a head that is KNOWN and different drops the adoption.
+    if (read.ok && sameDelegation(read.manifest, { manifestId: held.manifestId, baseSha: read.manifest.baseSha }) && (baseSha === null || baseSha === read.manifest.baseSha)) {
+      if (!this.adoptedAnnounced) {
+        this.adoptedAnnounced = true;
+        this.emit({ type: 'agent:adopted', count: held.agents.length, parentRunId: this.runId });
+      }
+      return;
+    }
+    this.emit({ type: 'notice', step: this.step + 1, kind: 'orchestration', level: 'info', text: `the delegation of step ${held.step} no longer matches this checkout (${read.ok ? 'the base moved' : read.reason}) — it is not adopted` });
+    this.orchestration = null;
+  }
+
+  /** §6.1: `min(sessionRemaining × reserveFraction, maxReserveUsd)`. `w_i` is a code weight; Jev has no say in money. */
+  private decomposeReserveUsd(): number {
+    const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
+    const snap = this.opts.meter.snapshot();
+    // [D6]: `sessionRemainingUsd(cap, spent, heldUsd = 0)` is D0 item 3's change and is not in the tree yet,
+    // so the hold is subtracted here. One line to delete when the third argument lands.
+    const remaining = Math.max(0, sessionRemainingNetOfHolds(snap.capUsd, snap.totalUsd, snap.heldUsd ?? 0));
+    return Math.max(0, Math.min(remaining * policy.reserveFraction, policy.maxReserveUsd));
+  }
+
+  /**
+   * Everything `GateInput` and the planner need, measured ONCE, and only ever reached past the
+   * short-circuit above. The resource numbers come from the §3.6 probe (`nodePreflightProbe`), which is
+   * the one place `node:os` / `statfs` / `du` are touched.
+   */
+  private async decomposeFacts(): Promise<DecomposeFacts> {
+    const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
+    const git = this.workspace.gitState?.() ?? null;
+    const headOid = git !== null && git.head !== null && git.head.kind === 'branch' ? git.head.oid : null;
+    const listing = (await this.workspace.listCandidates().catch(() => [])).map((c) => c.path);
+    const probe = nodePreflightProbe();
+    const disk = await probe.diskFree(this.workspace.root);
+    const repoBytes = (await probe.repoBytes(this.workspace.root)) ?? 0;
+    const fit = await preflight(probe, { repoRoot: this.workspace.root, want: policy.maxAgents, minFreeBytes: MIN_FREE_BYTES, agentMemBytes: AGENT_MEM_BYTES });
+    const verification = resolveVerification({
+      configured: policy.verify,
+      packageJson: null,
+      rootFiles: new Set<string>(),
+      makefile: null,
+      synthRunner: null,
+      lastTestRunCommand: this.lastTestRun?.command ?? this.wsInfo.testCommand?.command ?? null,
+    });
+    const snap = this.opts.meter.snapshot();
+    const problem = [...this.plan.harnessProblems].reverse().find((h) => h.kind === 'orchestration');
+    return {
+      // [G5]: past the short-circuit this is true by construction — it is re-stated so the gate stays pure
+      hasLedger: this.opts.orchestration?.hasLedger === true,
+      git: { isRepo: git?.repo === true, headBorn: headOid !== null, worktreeSupported: git?.repo === true },
+      baseSha: headOid ?? '',
+      repoKey: git?.commonDir ?? null,
+      existingBranches: [],
+      deny: ['.git', ...this.opts.secretPaths],
+      fold: false,
+      repoPaths: listing,
+      listing,
+      // D1 has no item→file join: `fileMemory` is keyed by path, not by plan item, so the association is
+      // computed from the item text against the real listing. Wave D2's evidence join replaces this.
+      itemFiles: this.plan.remaining.map((item) => listing.filter((p) => item.includes(p))),
+      testImports: {},
+      packages: [],
+      lastTestRun: this.lastTestRun !== null && !this.lastTestRun.allPassed ? { failingFiles: [this.lastTestRun.command] } : null,
+      dirtyEntries: git?.dirty.entries.length ?? 0,
+      syncedDirty: [],
+      dirtyOverlap: [],
+      liveChildren: 0,
+      splits: this.splits,
+      lastSplitStep: this.lastSplitStep,
+      maxAgentsAllowed: fit.agents,
+      preflightReasons: fit.reasons,
+      availableParallelism: probe.availableParallelism() ?? 1,
+      freeMemBytes: probe.freeMemBytes() ?? 0,
+      freeDiskBytes: disk?.freeBytes ?? 0,
+      repoBytes,
+      sessionRemainingUsd: Math.max(0, sessionRemainingNetOfHolds(snap.capUsd, snap.totalUsd, snap.heldUsd ?? 0)),
+      isReplanStep: this.detector.tripped(),
+      orchestrationProblemAgeSteps: problem === undefined ? null : Math.max(0, this.step + 1 - problem.step),
+      verification: verification.commands,
+      humanAsked: false,
+    };
+  }
+
   private async runStep(): Promise<{ stop: StopReason | null; detail?: string }> {
     const step = this.step + 1;
     const draft = this.newDraft(step);
@@ -2864,6 +3254,13 @@ class EngineImpl implements Engine {
     try {
       changedFiles = await this.workspace.changedFiles().catch(() => [] as string[]);
       const ctx = this.makeContext(draft, changedFiles);
+
+      // contract 1.5 (ORCHESTRATION-DESIGN §3): the `decompose` stage runs HERE — before `replan` / `intent` —
+      // and only when the gate can possibly open. `maybeDecompose` short-circuits on `split: 'off'`, on an agent
+      // (`orchestration.depth === 1`) and on a missing ledger before it gathers a single gate fact (M2). A
+      // `human_pause` back is **P9**: the manifest was written and confirmed, and the parent has nothing left to do.
+      const delegated = await this.maybeDecompose(draft);
+      if (delegated !== null) return { stop: delegated, detail: `delegated at step ${step}` };
       const common = (): JsonObject => (commonState ??= this.commonState(changedFiles, this.window));
 
       if (usesJev(this.mode)) {
@@ -3002,6 +3399,14 @@ class EngineImpl implements Engine {
         claimsOf(p.proposal);
         stage = 'execute';
         draft.patchTargets = await computeTargets(ctx, p.proposal);
+        // ORCHESTRATION-DESIGN §2.4 belt 2: jev-off runs no risk stage, so the child's code refusal is applied here —
+        // belt 2 is a property of the AGENT, not of the mode (`runRiskStage` carries it in every other mode).
+        const refusal = ownershipRefusal(p.proposal.action, this.opts.orchestration);
+        if (refusal !== null) {
+          draft.outcome = refusal;
+          this.counters.blocked += 1;
+          this.emit({ type: 'outcome', step, outcome: refusal });
+        }
       }
 
       if (draft.outcome === null && draft.proposal !== null) {
@@ -3038,6 +3443,12 @@ class EngineImpl implements Engine {
         draft.executeFinished = true;
         // TUI-DESIGN §12.3: post-images right after execute, still inside runStep() so harnessMs sees them
         if (imageSource !== null) await this.takePostImages(draft, imageSource, ex.changedFiles, pre);
+        // ORCHESTRATION-DESIGN §2.4 [G8]: belt 2 does not cover `run`, so the post-images are diffed against `own` here.
+        // Reported, never blocked — "blocking after the command ran would be theatre".
+        await this.noteEscaped(draft, ex.changedFiles);
+        // ORCHESTRATION-DESIGN §5.7 tail / corner row 44: a merge that landed is recorded, because `/undo` cannot
+        // restore a merge commit from images and `/rewind` below the delegation would orphan the branches.
+        await this.noteLanded(draft, ex.outcome);
         this.emit({ type: 'outcome', step, outcome: ex.outcome });
         if (ex.outcome.status === 'interrupted') {
           const cls = this.classifyStop();
@@ -3084,8 +3495,15 @@ class EngineImpl implements Engine {
       await this.candidateRefresh;
       this.candidateRefresh = null;
     }
+    // ORCHESTRATION-DESIGN §2.6 [G1] [D2] [D10]: the harness commits, in the agent worktree, through the injected
+    // `runGit` seam — after every committed step of a child whose outcome is `executed` with changed files. No seam
+    // (every run that is not an agent) = no git mutation at all, which is why nothing below changes an ordinary run.
+    await this.commitAfterStep(draft);
     const committed = this.commit(draft);
     if (committed.stop) return { stop: committed.stop };
+    // §2.4 / corner row 18: three consecutive belt-2 refusals are the honest signal that the DECOMPOSITION failed
+    const park = this.noteBeltRefusal(draft);
+    if (park !== null) return { stop: 'human_pause', detail: park };
     if (stopAfterCommit) return { stop: stopAfterCommit };
     if (this.unpriced !== null) {
       // TUI-DESIGN §9.5: usage.cost null/non-finite → the step committed, the run stops with error unless --allow-unpriced (exit 2, the flag is named)
@@ -3171,6 +3589,270 @@ class EngineImpl implements Engine {
     this.noteDiskError(e, which === 'pre' ? CHECKPOINT_FILES.pre : CHECKPOINT_FILES.post, draft.step);
   }
 
+  // -------------------------------------------------------------------------------------
+  // contract 1.5 — the child differences (ORCHESTRATION-DESIGN §2.4, §2.5, §2.6) and the launch (§5.7).
+  // Every method below returns at once on a run without `EngineOptions.orchestration`, and the commit
+  // path additionally returns at once without the injected `runGit` seam: absent seam = no git mutation.
+  // -------------------------------------------------------------------------------------
+
+  /** §2.5: the child's identity on the events the parent's surface reads. */
+  private agentRef(): AgentRef {
+    const o = this.opts.orchestration;
+    return { slug: o?.slug ?? 'agent', runId: this.runId, sessionId: this.opts.session?.sessionId ?? null };
+  }
+
+  /**
+   * §2.4 [G8]: after every `run` action in a child, diff the post-images against `own`. The paths outside it are
+   * recorded on `StepRecord.escaped` and shown on the row; the step is NOT blocked, because the command already ran.
+   *
+   * [D2] review finding 1: the subtracted set is the STILL-CARRIED subset of `syncedDirty` (`carriedPaths`, inside the
+   * facade's `outsideOwn`), never the raw list — subtracting the whole list would exempt up to 200 parent-dirty paths
+   * from belt 2 for the whole run, including one a sibling rewrote.
+   */
+  private async noteEscaped(draft: StepDraft, changed: readonly string[]): Promise<void> {
+    const o = this.opts.orchestration;
+    if (o === undefined || o.depth !== 1 || draft.proposal?.action.kind !== 'run') return;
+    const own = o.own ?? [];
+    if (own.length === 0 || changed.length === 0) return;
+    try {
+      const escaped = await escapedPaths(this.workspace.root, { changed, own, syncedDirty: o.syncedDirty ?? [] });
+      if (escaped.length === 0) return;
+      this.escapedThisStep = escaped;
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: escapedLine(escaped) });
+    } catch (e) {
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `escape diff failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+    }
+  }
+
+  /**
+   * §2.4 / corner row 18: three CONSECUTIVE belt-2 refusals park the child with `scope-fight` — "the honest signal
+   * that the decomposition, not the worker, failed". A research refusal is not a scope fight (the split was fine; the
+   * model asked for the wrong kind of action), so only `isOwnershipRefusal` reasons count.
+   */
+  private noteBeltRefusal(draft: StepDraft): string | null {
+    if (this.opts.orchestration?.depth !== 1) return null;
+    const o = draft.outcome;
+    this.beltRefusals = o !== null && o.status === 'blocked' && isOwnershipRefusal(o.reason) ? this.beltRefusals + 1 : 0;
+    if (this.beltRefusals < SCOPE_FIGHT_AFTER) return null;
+    this.emit({
+      type: 'transcript',
+      step: draft.step,
+      level: 'warn',
+      text: `parked (scope-fight): ${SCOPE_FIGHT_AFTER} refusals in a row outside ${(this.opts.orchestration.own ?? []).join(', ')} — the split was wrong for this agent`,
+    });
+    return 'scope-fight';
+  }
+
+  /**
+   * §2.6 [G1] [D2] [D10]: after every committed step of a child whose `outcome.status === 'executed'` and
+   * `changedFiles.length > 0`. The add set is COMPUTED (`computeAddSet`), never `-A`: `git add -A` in an agent
+   * worktree stages the parent's synced dirty set onto every branch from the first commit, which is what corner row
+   * 55 exists to forbid.
+   */
+  private async commitAfterStep(draft: StepDraft): Promise<void> {
+    const o = this.opts.orchestration;
+    if (o === undefined || o.depth !== 1 || o.runGit === undefined) return;
+    for (const p of draft.changedFiles) this.touchedPaths.add(p);
+    if (draft.outcome?.status !== 'executed' || draft.changedFiles.length === 0) return;
+    this.commitThisStep = await this.harnessCommit(draft.step, draft.proposal?.goal ?? summariseAction(draft.proposal?.action ?? { kind: 'done', summary: '' }));
+  }
+
+  /** §2.6: the one place the harness runs `git add` / `git commit`. `addSet` empty → no commit, no error. */
+  private async harnessCommit(step: number, summary: string): Promise<string | null> {
+    const o = this.opts.orchestration;
+    const runGit = o?.runGit;
+    if (o === undefined || runGit === undefined) return null;
+    const dir = this.workspace.root;
+    try {
+      const { addSet } = await computeAddSet(runGit, dir, { touched: [...this.touchedPaths], syncedDirty: o.syncedDirty ?? [] });
+      if (addSet.length === 0) return null;
+      const r = await commitStep(runGit, dir, { addSet, identity: o.commit ?? DEFAULT_COMMIT_IDENTITY, slug: o.slug ?? 'agent', step, summary });
+      if (!r.ok) {
+        this.emit({ type: 'transcript', step, level: 'warn', text: `harness commit failed: ${this.redact(r.reason)}` });
+        return null;
+      }
+      if (r.commit !== null) this.emit({ type: 'transcript', step, level: 'info', text: `committed ${r.commit.slice(0, 12)} in ${o.slug ?? 'agent'}` });
+      return r.commit;
+    } catch (e) {
+      this.emit({ type: 'transcript', step, level: 'warn', text: `harness commit failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+      return null;
+    }
+  }
+
+  /**
+   * §2.6 / corner rows 36 and 37, INVERTED: uncommitted-at-end is the CRASH case. The end commit fires
+   * unconditionally once when the add set is non-empty, so `addSet ≠ ∅` after a clean `run:end` means the process died
+   * between the step commit and the git commit — and "uncommitted" means outside `carried ∪ syncedIgnored`, which is
+   * exactly what `computeAddSet` computes.
+   */
+  private async commitAtEnd(): Promise<void> {
+    const o = this.opts.orchestration;
+    if (o === undefined || o.depth !== 1 || o.runGit === undefined) return;
+    this.endCommit = await this.harnessCommit(this.step, 'run end');
+  }
+
+  /**
+   * §2.5(c) / §4.2 P10: in a child the review confirm PARKS. The `ConfirmRequest` is written to
+   * `<childRunDir>/orchestrate/review-<step>.json` (the store routes an `orchestrate/`-prefixed rel there), the parent's
+   * surface is told through `agent:review`, and the confirm rejects with `AbortError('human_pause')` → rule-1 discard →
+   * P10. Never returns.
+   */
+  private async parkForReview(draft: StepDraft, req: ConfirmRequest, why: string | null): Promise<never> {
+    const write = this.store.writeCache;
+    if (write !== undefined) {
+      const body: Json = { ...(toJson(req) as JsonObject), ...(why !== null ? { reason: why } : {}) };
+      try {
+        await write.call(this.store, reviewCacheRel(draft.step), body);
+      } catch (e) {
+        this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `review park: ${reviewCacheRel(draft.step)} write failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+      }
+    }
+    this.emit({ type: 'agent:review', agent: this.agentRef(), request: req });
+    this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: false, aborted: true });
+    this.emit({ type: 'transcript', step: draft.step, level: 'info', text: why !== null ? `review parked: ${why}` : `review parked: a human decision is needed (${reviewCacheRel(draft.step)})` });
+    this.reviewParked = true;
+    this.snapshotDraft(draft);
+    throw new AbortError('human_pause');
+  }
+
+  /**
+   * §2.5(c) / corner row 29: the answer file, `{ id, approved, note?, by, at }`, ID-MATCHED, SINGLE-USE and renamed to
+   * `.used` on consumption. Anything else — missing, stale, id-mismatched, already used — answers `null`, which parks
+   * again with `reason: 'answer not for this request'`. Nothing is ever auto-approved or auto-denied.
+   */
+  private async consumeReviewAnswer(req: ConfirmRequest): Promise<{ outcome: ConfirmOutcome } | { why: string }> {
+    const rel = this.opts.orchestration?.reviewAnswerFile;
+    if (rel === undefined) return { why: 'no answer file: a human decision is needed' };
+    if (this.reviewAnswerUsed) return { why: 'answer not for this request' };
+    const read = this.store.readCache;
+    if (read === undefined) return { why: 'no answer file: a human decision is needed' };
+    let raw: Json | null;
+    try {
+      raw = await read.call(this.store, rel);
+    } catch {
+      raw = null;
+    }
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return { why: 'answer not for this request' };
+    const id = raw['id'];
+    const approved = raw['approved'];
+    if (typeof id !== 'string' || id !== req.id || typeof approved !== 'boolean') return { why: 'answer not for this request' };
+    // single-use: consumed BEFORE it is answered from, so a crash between the two never re-serves it
+    this.reviewAnswerUsed = true;
+    const rename = this.store.renameCache;
+    if (rename !== undefined) {
+      try {
+        await rename.call(this.store, rel, `${rel}.used`);
+      } catch {
+        // the answer is already consumed in memory; a failed rename must not re-approve anything
+      }
+    }
+    const note = typeof raw['note'] === 'string' ? clip(sanitizeStream(raw['note']).replace(/\s+/g, ' ').trim(), REVIEWER_NOTE_MAX) : '';
+    return { outcome: { approved, ...(note.length > 0 ? { note } : {}) } };
+  }
+
+  /**
+   * §5.7 tail / corner row 44: the merge landed, so `RunMeta.landed` gains `{ step, branch, commit }` and
+   * `RunMeta.undoUnavailableBelow` is set to the delegation step. `/undo` on that step then uses
+   * `UndoSkipReason 'landed'` and offers `[g] git revert <commit>` as a NEW judged step (`landedUndoOffer`), and
+   * `/rewind` below the floor is refused with `rewindRefusal`'s sentence.
+   *
+   * The `[c]` / `[s]` pre-flight steps are ordinary steps and are deliberately NOT recorded: they are undoable from
+   * images like anything else, and only the merge is not.
+   */
+  private async noteLanded(draft: StepDraft, outcome: ActionOutcome): Promise<void> {
+    const pending = this.pendingLand;
+    const runGit = this.opts.orchestration?.runGit;
+    const action = draft.proposal?.action;
+    if (pending === null || runGit === undefined || outcome.status !== 'executed') return;
+    if (action?.kind !== 'run' || !/^git\s+merge\s/.test(action.command)) return;
+    this.pendingLand = null;
+    let commit = '';
+    try {
+      const r = await runGit(this.workspace.root, ['rev-parse', 'HEAD']);
+      commit = r.ok ? r.stdout.trim() : '';
+    } catch {
+      commit = '';
+    }
+    if (!/^[0-9a-f]{7,64}$/.test(commit)) return;
+    const landed = [...this.landedMerges, { step: draft.step, branch: pending.branch, commit }];
+    this.landedMerges = landed;
+    const floor = pending.delegatedAt;
+    try {
+      await this.store.updateMeta({ landed, undoUnavailableBelow: floor });
+    } catch (e) {
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `${CHECKPOINT_FILES.meta} write failed (landed): ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+    }
+    this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `landed ${pending.agents} ${pending.agents === 1 ? 'agent' : 'agents'} from ${pending.branch} as ${commit.slice(0, 12)} — /undo offers [g] git revert ${commit.slice(0, 12)}; /rewind below step ${floor} is refused` });
+  }
+
+  /**
+   * §5.7: the seeded proposal of the launch step. It enters the loop through the SAME path a replayed proposal takes,
+   * so it goes through `risk`, the review confirm, `takePreImages`, `execute`, `takePostImages` and `judge` exactly
+   * like any other step — the transcript, `--json`, the decisions pane and `/diff` then all fall out for free.
+   */
+  private takeSeeded(step: number): StepCache | null {
+    const s = this.seededStep;
+    if (s === null || s.step !== step) return null;
+    this.seededStep = null;
+    this.emit({ type: 'transcript', step, level: 'info', text: s.note });
+    return {
+      v: 1,
+      step,
+      stage: 'propose',
+      proposal: s.proposal,
+      patchTargets: [],
+      risk: null,
+      matchesIntent: null,
+      intent: null,
+      proposer: null,
+      contextFiles: [],
+      directive: null,
+      targets: [],
+      partial: null,
+      llmRound: null,
+      resumes: this.resumes,
+      at: nowIso(),
+    };
+  }
+
+  /** §5.7: seed the NEXT step's proposal. False when the run has finished or a seed is already pending. */
+  seedStep(proposal: Proposal, note?: string): boolean {
+    if (this.finishing || this.isFinished() || this.seededStep !== null) return false;
+    this.seededStep = { step: this.step + 1, proposal, note: note ?? `step ${this.step + 1}: proposal seeded by the harness (${summariseAction(proposal.action)})` };
+    return true;
+  }
+
+  /**
+   * §5.7 + [D1]: the launch. `overlap` empty → the merge is seeded exactly as written. `overlap` non-empty → **no merge
+   * action is proposed at all**; the `land-preflight` pane offers `[c]` / `[s]` / `[x]`, each of which is itself an
+   * ordinary judged step, and `[c]` / `[s]` re-run the pre-flight and seed the merge as a SECOND judged step.
+   */
+  async land(input: LaunchInput, ask?: (offer: LandPreflightOffer) => Promise<BlockingAnswer>): Promise<{ seeded: 'merge' | 'commit' | 'stash' | 'stop' | null; overlap: string[] }> {
+    const o = this.opts.orchestration;
+    const runGit = o?.runGit;
+    if (runGit === undefined) return { seeded: null, overlap: [] };
+    const { overlap, ok } = await launchOverlap(runGit, input);
+    const plan: PlanDraft = { done: this.plan.done.map((d) => d.text), remaining: [...this.plan.remaining], openProblems: [...this.plan.openProblems] };
+    if (ok && overlap.length === 0) {
+      this.pendingLand = { branch: input.dockBranch, agents: input.agents, delegatedAt: input.delegationStep ?? this.step + 1 };
+      this.seedStep(launchProposal(mergeAction(input.pinned), `land ${input.agents} agents: merge ${input.dockBranch}`, plan), `step ${this.step + 1}: landing ${input.agents} agents — ${input.dockBranch} merges as an ordinary judged step`);
+      return { seeded: 'merge', overlap: [] };
+    }
+    // [D1] NO merge action is proposed: `git merge` would abort with `Your local changes … would be overwritten by merge`
+    const offer = landPreflightOffer(this.nextBlockingId(), this.step + 1, overlap, input);
+    this.emit({ type: 'transcript', step: null, level: 'warn', text: `/land: ${offer.detail}` });
+    const answer = ask === undefined ? 'stop' : await ask(offer).catch(() => 'stop' as const);
+    const chosen: LaunchAnswer = answer === 'commit' || answer === 'stash' ? answer : 'stop';
+    const seeded = seedFor(chosen, overlap, input, plan);
+    if (seeded === null) {
+      this.emit({ type: 'transcript', step: null, level: 'info', text: `/land cancelled: ${input.dockBranch} stays and /diff still works` });
+      return { seeded: null, overlap };
+    }
+    this.pendingLand = { branch: input.dockBranch, agents: input.agents, delegatedAt: input.delegationStep ?? this.step + 1 };
+    this.seedStep(seeded, `step ${this.step + 1}: ${chosen === 'commit' ? 'committing' : 'stashing'} ${overlap.length} overlapping file(s) before the merge`);
+    return { seeded: chosen, overlap };
+  }
+
   private flushGeneratorRecords(draft: StepDraft): void {
     for (const rec of draft.generatorRecords) this.persist(this.store.appendGenerator(rec), 'generator.jsonl');
     draft.generatorRecords = [];
@@ -3190,6 +3872,8 @@ class EngineImpl implements Engine {
     this.timing.jevMs += draft.timing.jevMs;
     this.timing.execMs += draft.timing.execMs;
     this.timing.totalMs += total;
+    // contract 1.5 (§4.1 [D13]): a discarded step still paid for its decomposition (corner row 8)
+    if (draft.timing.decomposeMs > 0) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + draft.timing.decomposeMs;
     if (this.mode === 'llm-jev') {
       const t = this.llmJevTiming(draft, total);
       this.timing.harnessMs += t.harnessMs;
@@ -3215,6 +3899,7 @@ class EngineImpl implements Engine {
       totalMs: total,
       synthMs,
       ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
+      ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
     };
   }
 
@@ -3253,6 +3938,16 @@ class EngineImpl implements Engine {
       ...(riskRequests.length > 0 ? { jevLatencyMs: riskRequests.reduce((n, r) => n + r.latencyMs, 0) } : {}),
     };
     this.emit({ type: 'confirm:request', request: req });
+    // ORCHESTRATION-DESIGN §2.5(c) / §4.2 P10: a child never blocks a human on an interactive confirmer it does not
+    // have. It answers ONCE from the parent's id-matched, single-use answer file, or it parks at P10.
+    if (this.opts.orchestration?.depth === 1) {
+      const answered = await this.consumeReviewAnswer(req);
+      if ('outcome' in answered) {
+        this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: answered.outcome.approved, aborted: false, ...(answered.outcome.note !== undefined ? { note: answered.outcome.note } : {}) });
+        return answered.outcome;
+      }
+      await this.parkForReview(draft, req, answered.why);
+    }
     const c0 = this.clock();
     try {
       const c = this.opts.confirmer;
@@ -3836,6 +4531,8 @@ class EngineImpl implements Engine {
             totalMs: total,
             // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
             ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
+            // contract 1.5 (§4.1 [D13]): likewise inside harnessMs, absent when the gate was shut — M2 reads its p95
+            ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
           };
     this.timing.generatorMs += timing.generatorMs;
     this.timing.jevMs += timing.jevMs;
@@ -3844,6 +4541,7 @@ class EngineImpl implements Engine {
     this.timing.totalMs += timing.totalMs;
     if (timing.imagesMs !== undefined) this.timing.imagesMs = (this.timing.imagesMs ?? 0) + timing.imagesMs;
     if (timing.synthMs !== undefined) this.timing.synthMs = (this.timing.synthMs ?? 0) + timing.synthMs;
+    if (timing.decomposeMs !== undefined) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + timing.decomposeMs;
     // TUI-DESIGN §9.2: the per-step cost series behind `stepsLeftEstimate`
     this.costPerStep.push(draft.usage.generator.costUsd + draft.usage.jev.costUsd);
     const generatorTokens = draft.usage.generator.inputTokens + draft.usage.generator.outputTokens;
@@ -3923,6 +4621,11 @@ class EngineImpl implements Engine {
       timing,
       loopSignatures: signatures,
     };
+    // contract 1.5 (ORCHESTRATION-DESIGN §2.4 [G8] / §2.6 [G1]): both absent on every run without `orchestration`
+    if (this.escapedThisStep.length > 0) record.escaped = [...this.escapedThisStep];
+    if (this.commitThisStep !== null) record.commit = this.commitThisStep;
+    this.escapedThisStep = [];
+    this.commitThisStep = null;
     if (draft.proposer !== null) record.proposer = draft.proposer;
     // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts (llm-jev only; jev-only rows are unchanged)
     if (this.mode === 'llm-jev' && draft.proposer === 'synth') record.verify = this.verifySummary(draft, proposal);
@@ -3990,9 +4693,13 @@ class EngineImpl implements Engine {
     // §7.5: one bound for the whole shutdown — what the cache wait spends is taken off the final write's share below
     const shutdownDeadline = this.clock() + SHUTDOWN_CHECKPOINT_BOUND_MS;
     if (!opts.skipWrite) await this.settlePausePoint(reason, shutdownDeadline);
+    // contract 1.5 (ORCHESTRATION-DESIGN §2.6, corner rows 36/37 inverted): the child's unconditional end commit, once,
+    // when the add set is non-empty. After it, an `addSet ≠ ∅` in that worktree means the process DIED — it is the
+    // crash case, not the default. A run with no `orchestration.runGit` seam makes no git mutation here or anywhere.
+    if (!opts.skipWrite) await this.commitAtEnd();
     const snapshot = this.buildCheckpointState();
     // TUI-DESIGN-2 §2.4: the cost basis of this process's Jev requests rides the result for `costBlock`'s suffix
-    const result: RunResult = { ...assembleRunResult({ runId: this.runId, mode: this.mode, reason, state: snapshot, error }), jevCostBasis: this.jevCostBasis() };
+    const result: RunResult = { ...assembleRunResult({ runId: this.runId, mode: this.mode, reason, state: snapshot, error }), jevCostBasis: this.jevCostBasis(), ...(this.endCommit !== null ? { commit: this.endCommit } : {}) };
     const stopLine: EngineEvent = { type: 'transcript', step: null, level: reason === 'complete' ? 'info' : 'warn', text: stopTranscriptLine(reason, this.step, opts.detail) };
     let stateWritten = opts.skipWrite === true; // a refused resume leaves the stored state.json as it was
     // TUI-DESIGN §13.5 / §15 item 14: exit code, resumability and the artefact paths ride run:end; built when the final write has settled.
@@ -4162,9 +4869,52 @@ function trace(msg: string): void {
   }
 }
 
+/** §2.5(c) / §4.2 P10: the parked review's artefact, under `<runDir>/orchestrate/` (`CheckpointStore.cacheTarget` routes it). */
+export function reviewCacheRel(step: number): string {
+  return `${CHECKPOINT_FILES.orchestrate}/review-${step}.json`;
+}
+
+/** `seatbelt` is stronger than `none`; `auto` resolves to at least what the platform gives, never to less than `seatbelt` asked for. */
+function sandboxWeakerThan(profile: SandboxProfile, parent: SandboxLevel): boolean {
+  return parent === 'seatbelt' && profile === 'none';
+}
+
+/**
+ * contract 1.5 (ORCHESTRATION-DESIGN §2.1, §2.6, corner row 20): the three refusals `createEngine` owes a child.
+ *
+ * 1. `depth > ORCHESTRATION_DEPTH_MAX` (1) — depth is a constant, not a setting, so an agent can never spawn agents.
+ * 2. a depth-1 run that ALSO carries a split flag — `--agent` with `--split` is a `ConfigError`, so the gate cannot be
+ *    forced open from the command line inside a child.
+ * 3. a child whose resolved sandbox level is WEAKER than the parent's recorded one — `--sandbox` is one of the four
+ *    rights §2.6's spawn line deliberately does not forward.
+ *
+ * A run without `EngineOptions.orchestration` (every run today) returns immediately.
+ */
+export function refuseOrchestration(opts: Pick<EngineOptions, 'orchestration' | 'sandboxProfile' | 'configRecord'>): void {
+  const o = opts.orchestration;
+  if (o === undefined) return;
+  if (o.depth > ORCHESTRATION_DEPTH_MAX) {
+    throw new ConfigError(`orchestration depth ${o.depth} exceeds the cap of ${ORCHESTRATION_DEPTH_MAX}: an agent cannot spawn agents`, { setting: 'orchestration.depth' });
+  }
+  if (o.depth === 1) {
+    const split = opts.configRecord['orchestrate.split'];
+    const value = split === undefined ? undefined : typeof split.value === 'string' ? split.value : undefined;
+    if (value !== undefined && value !== 'off') {
+      throw new ConfigError(`--agent ${o.slug ?? ''} with --split ${value}: an agent cannot delegate (the cap is ${ORCHESTRATION_DEPTH_MAX})`.replace('  ', ' '), { setting: 'orchestrate.split' });
+    }
+    if (o.parentSandbox !== undefined && sandboxWeakerThan(opts.sandboxProfile, o.parentSandbox)) {
+      throw new ConfigError(`an agent may not run with a weaker sandbox than its parent (parent ${o.parentSandbox}, this run ${opts.sandboxProfile})`, { setting: 'sandbox' });
+    }
+  }
+}
+
 export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): Promise<Engine> {
   // jev-only and llm-jev (docs/LLM-JEV-DESIGN.md §3) put the Synthesizer in the propose stage
   if ((opts.mode === 'jev-only' || opts.mode === 'llm-jev') && !opts.synthesizer) throw new ConfigError(`${opts.mode} mode requires a synthesizer (EngineOptions.synthesizer)`, { setting: 'mode' });
+  // contract 1.5 (ORCHESTRATION-DESIGN §2.1 / §2.6, corner row 20): the depth cap is refused HERE, not only in the TUI,
+  // so a hand-typed `jevcode run --parent …` cannot make grandchildren, and a child can never be given weaker rights
+  // than the parent recorded for itself.
+  refuseOrchestration(opts);
   const d = await resolveDeps(deps);
   const redact = opts.redact;
   let root: string;
@@ -4216,6 +4966,10 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     redact,
     ...(opts.extraWritableRoots ? { extraWritable: opts.extraWritableRoots } : {}),
     ...(opts.extraReadableRoots ? { extraReadable: opts.extraReadableRoots } : {}),
+    // contract 1.5 (ORCHESTRATION-DESIGN §5.2 [G3], corner rows 51 / 56): a depth-1 child's profile write-denies the
+    // shared git refs (`<commonDir>/refs`, `packed-refs`, `logs`, a linked worktree's HEAD); the depth-0 supervisor
+    // must still be able to move `refs/heads/jevcode/<slug>`, so the flag is keyed strictly on depth === 1.
+    ...(opts.orchestration?.depth === 1 ? { agentChild: true } : {}),
     // TUI-DESIGN §12.7 / §15 item 18: the seatbelt learns the git dirs and the config dirs from here
     ...(git?.gitDir ? { gitDir: git.gitDir } : {}),
     ...(git?.commonDir ? { gitCommonDir: git.commonDir } : {}),

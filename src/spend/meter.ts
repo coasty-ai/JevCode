@@ -10,7 +10,7 @@
  * live child forwards to — a recreated root would orphan the child), and `snapshot().parent` carries the parent's
  * totals so the engine can emit session-scope `budget:warn` without knowing the parent object.
  *
- * ORCHESTRATION-DESIGN §6.2 [G6] [D6]: `hold()` / `release()` reserve money for spawned agents. They are STORAGE only —
+ * ORCHESTRATION-DESIGN §6.2 [G6] [D6]: `hold(agentId, usd)` / `release(agentId)` / `heldUsd()` reserve money for spawned agents. They are STORAGE only —
  * `exceeded()` is deliberately untouched, because on a run meter (a real finite cap) it must keep meaning "this run spent
  * its cap", not "this session is holding money for agents"; the enforcement is `sessionRemainingUsd(cap, spent, heldUsd)`.
  * A hold belongs to the meter that took it and is never forwarded to the parent.
@@ -42,6 +42,13 @@ function addInto(target: TokenUsage, u: TokenUsage): void {
   target.calls += u.calls;
 }
 
+/**
+ * §6.2 [G6]: `restore()` recovers only the TOTAL held (a `SpendSnapshot` carries no per-agent breakdown), so it lands
+ * under this reserved id. Adoption (§4.4) then rebuilds the real per-agent holds from `orchestrate/manifest-*.json`
+ * crossed with the live `run.lock`s and must `release(RESTORED_HOLD_ID)` once it has, or the reserve is counted twice.
+ */
+export const RESTORED_HOLD_ID = '__restored__';
+
 /** NaN or negative caps fail closed (0); +Infinity means "no cap" and is kept. */
 export function sanitiseCap(capUsd: number): number {
   return typeof capUsd === 'number' && capUsd >= 0 ? capUsd : 0;
@@ -52,8 +59,18 @@ export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMete
   let cap = sanitiseCap(capUsd);
   let generator = zeroUsage();
   let jev = zeroUsage();
-  /** §6.2 [G6]: money reserved for live agents and not yet spent. Never negative, never non-finite, never forwarded. */
-  let held = 0;
+  /**
+   * §6.2 [G6]: money reserved for live agents and not yet spent, KEYED BY agent id. Never negative, never
+   * non-finite, never forwarded. Keyed rather than a running total so `release` is idempotent (a double release,
+   * or an adopted tree whose manifest disagrees with the ledger, cannot drive the sum negative and hand
+   * `sessionRemainingUsd` more money than the cap allows) and so a re-`hold` for one agent REPLACES its reserve.
+   */
+  const holds = new Map<string, number>();
+  function heldUsd(): number {
+    let sum = 0;
+    for (const v of holds.values()) sum += v;
+    return sum;
+  }
 
   function totalUsd(): number {
     return generator.costUsd + jev.costUsd;
@@ -90,7 +107,7 @@ export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMete
       totalUsd: totalUsd(),
       capUsd: cap,
       exceeded: exceeded(),
-      heldUsd: held,
+      heldUsd: heldUsd(),
       ...(p ? { parentExceeded: parentExceeded(), parent: { totalUsd: p.totalUsd, capUsd: p.capUsd } } : {}),
     };
   }
@@ -121,7 +138,9 @@ export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMete
       const snap: Partial<SpendSnapshot> = typeof s === 'object' && s !== null ? s : {};
       generator = sanitiseUsage(snap.generator);
       jev = sanitiseUsage(snap.jev);
-      held = nonNegative(snap.heldUsd);
+      holds.clear();
+      const restored = nonNegative(snap.heldUsd);
+      if (restored > 0) holds.set(RESTORED_HOLD_ID, restored);
     },
     child(childCapUsd: number): SpendMeter {
       return createSpendMeter(childCapUsd, meter);
@@ -130,18 +149,21 @@ export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMete
       // TUI-DESIGN §9.1: the same object keeps its usage and its children; only the cap changes (+Infinity = `none`).
       cap = sanitiseCap(newCapUsd);
     },
-    hold(usd: number): void {
-      // §6.2 [G6]: reserve money for spawned agents. NOT forwarded to the parent — the hold belongs to the meter that
-      // took it (the session meter holds for its own children; a run meter's hold is that run's, not the session's).
-      // Non-finite, negative and +Infinity amounts are ignored by `nonNegative`, exactly like a malformed usage.
-      held += nonNegative(usd);
+    hold(agentId: string, usd: number): void {
+      // §6.2 [G6]: reserve money for one spawned agent. NOT forwarded to the parent — the hold belongs to the meter
+      // that took it (the session meter holds for its own children; a run meter's hold is that run's, not the
+      // session's). Non-finite, negative and +Infinity amounts are ignored by `nonNegative`, exactly like a
+      // malformed usage; a hold of 0 still records the id, so `release` of a known agent stays meaningful.
+      if (typeof agentId !== 'string' || agentId.length === 0) return;
+      holds.set(agentId, nonNegative(usd));
     },
-    release(usd: number): void {
-      // §6.2 [G6]: give back part of a hold. Clamped at 0 — a release larger than the outstanding hold (a double
-      // release, or an adopted tree whose manifest disagrees with the ledger) must never make `heldUsd` negative,
-      // which would hand `sessionRemainingUsd` more money than the cap allows. Not forwarded, like `hold`.
-      held = Math.max(0, held - nonNegative(usd));
+    release(agentId: string): void {
+      // §6.2 [G6]: drop one agent's reserve. Idempotent by construction — an unknown id is a no-op, and there is no
+      // subtraction that could underflow. Not forwarded, like `hold`.
+      if (typeof agentId !== 'string' || agentId.length === 0) return;
+      holds.delete(agentId);
     },
+    heldUsd,
   };
   return meter;
 }

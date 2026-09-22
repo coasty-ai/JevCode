@@ -520,6 +520,11 @@ export interface RunResult {
   jevModelDrift: { step: number; served: string } | null;
   /** TUI-DESIGN-2 §2.4 (additive): the cost basis of the Jev requests this process made (`costBlock`'s `jev table …` / `jev provider usage.cost` suffix); absent from older results */
   jevCostBasis?: JevCostBasis | null;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §2.6 [G1]): the sha of the harness commit this run made at `run:end` inside an
+   * agent worktree. Absent when the engine made no git commit — which is every run without `orchestration.runGit`.
+   */
+  commit?: string;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -779,13 +784,22 @@ export interface SpendMeter {
   /** TUI-DESIGN §15 item 7: root meter: replace the cap (USD or +Infinity); children keep forwarding to the same object; never recreate a meter */
   setCap?(capUsd: number): void;
   /**
-   * contract 1.5 (ORCHESTRATION-DESIGN §6.2 [G6]): reserve `usd` for spawned agents. OPTIONAL so every existing fake
-   * still satisfies `SpendMeter`. The hold belongs to the meter that took it and is NOT forwarded to the parent;
-   * `exceeded()` does not count it [D6]. Non-finite or negative amounts are ignored.
+   * contract 1.5 (ORCHESTRATION-DESIGN §6.2 [G6]): reserve `usd` for one spawned agent, KEYED BY `agentId`. OPTIONAL
+   * so every existing fake still satisfies `SpendMeter`. Holding per agent rather than as one running total is what
+   * makes `release` idempotent and adoption rebuildable: a re-`hold` for the same id REPLACES that agent's reserve
+   * (a raised cap), and a double `release` cannot drive the total negative. The hold belongs to the meter that took
+   * it and is NOT forwarded to the parent; `exceeded()` does not count it [D6]. Non-finite or negative amounts are
+   * ignored; an empty `agentId` is ignored.
    */
-  hold?(usd: number): void;
-  /** contract 1.5 (§6.2 [G6]): give back part of a hold; clamps at 0 and never forwards to the parent. */
-  release?(usd: number): void;
+  hold?(agentId: string, usd: number): void;
+  /** contract 1.5 (§6.2 [G6]): drop one agent's reserve. Idempotent — an unknown id is a no-op. Never forwarded. */
+  release?(agentId: string): void;
+  /**
+   * contract 1.5 (§6.2 [D6]): the sum of the outstanding holds — the third argument of
+   * `sessionRemainingUsd(cap, spent, heldUsd)`, which is the half of the reserve that actually enforces anything.
+   * Always a finite number >= 0. Equals `snapshot().heldUsd`.
+   */
+  heldUsd?(): number;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1211,7 +1225,8 @@ export interface CheckpointStore {
   /** CheckpointError, exit 3 */
   load(): Promise<{ meta: RunMeta; state: CheckpointState; recoveredFrom: 'state' | 'prev' }>;
   /** TUI-DESIGN §15 item 10: patch type gains 'title' | 'instructions' | 'git' (git: scalar replace); contract 1.4: 'ended' (scalar replace; null clears it on a forced reopen, §7.4) */
-  updateMeta(patch: Partial<Pick<RunMeta, 'overrides' | 'resumes' | 'resolvedJevModel' | 'jevModelDrift' | 'title' | 'instructions' | 'git' | 'ended'>>): Promise<void>;
+  /** contract 1.5 (ORCHESTRATION-DESIGN §5.7 tail, corner row 44): `landed` / `undoUnavailableBelow` join the patchable scalars — additive, every existing caller compiles */
+  updateMeta(patch: Partial<Pick<RunMeta, 'overrides' | 'resumes' | 'resolvedJevModel' | 'jevModelDrift' | 'title' | 'instructions' | 'git' | 'ended' | 'landed' | 'undoUnavailableBelow'>>): Promise<void>;
   /** write tmp + fsync; rename state.json -> state.prev.json; rename tmp -> state.json */
   writeState(state: CheckpointState): Promise<void>;
   /** synchronous last resort used by shutdown() on a second Ctrl-C or on 'exit' */
@@ -1306,8 +1321,16 @@ export interface SessionRef {
   /** TUI-DESIGN-2 §6 item 13: why the run started (run.json, the `s0 intake` row); absent for argv tasks and follow-ups that skipped intake */
   intake?: { kind: IntakeKind; probability: number; requestHash: string };
 }
+/**
+ * NOT widened by contract 1.5. ORCHESTRATION-DESIGN §5.7 [D1] wants a `'land-preflight'` member, but `BlockingKind` is
+ * consumed by FOUR exhaustive sites outside the harness (`src/tui/blocking/lines.ts` ×2, `src/tui/status/lines.ts`, and a
+ * `Record<BlockingKind, …>` in `test/unit/tui/pane/blocking.test.ts`), so the member is not additive in this repo and
+ * belongs to the TUI session's wave. Until it lands, §5.7's `[c] / [s] / [x]` is asked through `Engine.land`'s injected
+ * asker (`LandPreflightOffer`, `src/loop/launch.ts`), which needs no pane at all.
+ */
 export type BlockingKind = 'jev-unreachable' | 'key-rejected' | 'spend-limit' | 'checkpoint-degraded' | 'drift' | 'sandbox-unavailable';
-export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin' | 'pause' | 'wait' | 'worktree'; // contract 1.4 (§12.0.2 P6 / P7, §4.3 step 4): `pause()` while a pane is awaited wakes the blocker with 'pause'; the lease-conflict pane adds `[w] wait` (keep waiting, the next coordinate re-checks) and `[t] worktree` (stop for relocation) — 'pause' and 'worktree' are the resumable stop at the loop top
+/** contract 1.5 (§5.7 [D1]): the launch pre-flight's answers — `[c] commit` and `[s] stash` each seed a judged step of their own; `[x] cancel` is the existing 'stop'. */
+export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin' | 'pause' | 'wait' | 'worktree' | 'commit' | 'stash'; // contract 1.4 (§12.0.2 P6 / P7, §4.3 step 4): `pause()` while a pane is awaited wakes the blocker with 'pause'; the lease-conflict pane adds `[w] wait` (keep waiting, the next coordinate re-checks) and `[t] worktree` (stop for relocation) — 'pause' and 'worktree' are the resumable stop at the loop top
 export interface BlockingRequest {
   id: string;
   step: number;
@@ -1902,6 +1925,18 @@ export interface Engine {
    * Returns false when no run is live, exactly like `annotate`. (`level` is `TranscriptLevel`, spelt out here like `annotate`'s.)
    */
   annotateBlock?(head: string, rows: readonly string[], opts?: { level?: 'info' | 'warn' | 'error'; label?: UiLabel }): boolean;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §5.7): seed the NEXT step's proposal. It then goes through `risk`, the review
+   * confirm, `takePreImages`, `execute`, `takePostImages` and `judge` like any other step — the launch is an ORDINARY
+   * step, not a parallel path. False when the run has finished or a seed is already pending. Optional so fakes compile.
+   */
+  seedStep?(proposal: Proposal, note?: string): boolean;
+  /**
+   * contract 1.5 (§5.7 + [D1]): the launch. Empty overlap → the merge is seeded. Non-empty → NO merge action is
+   * proposed at all and `ask` decides `[c]` / `[s]` / `[x]`; with no `ask` (headless) the offer is printed and nothing
+   * is seeded. A no-op without `EngineOptions.orchestration.runGit`.
+   */
+  land?(input: LaunchInput, ask?: (offer: LandPreflightOffer) => Promise<BlockingAnswer>): Promise<{ seeded: 'merge' | 'commit' | 'stash' | 'stop' | null; overlap: string[] }>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2383,6 +2418,45 @@ export type SplitKind = 'by_plan_item' | 'by_directory' | 'by_failing_test' | 'b
 /** contract 1.5 (§2.5 / §3.4 rule 5 / §5.6): `research` is read-only and never lands; `critic` writes only test globs. */
 export type AgentRole = 'code' | 'research' | 'critic';
 
+/**
+ * contract 1.5 (§2.5(b) / corner row 24): the action space of `role: 'research'` — enforced in code
+ * (`ownershipRefusal`) AND in the tool schema (`proposeActionToolFor`), so the model is never offered
+ * `edit | write | patch` and can never write code.
+ */
+export const RESEARCH_ACTION_KINDS: readonly ActionKind[] = ['read', 'run', 'done'];
+
+/** contract 1.5 (§2.6 [G1]): the identity every harness commit is made under when `orchestrate.commitIdentity` is unset. */
+export const DEFAULT_COMMIT_IDENTITY: { name: string; email: string } = { name: 'jevcode', email: 'jevcode@local' };
+
+/** contract 1.5 (§5.7): what the launch needs to decide between seeding the merge and asking `[c]` / `[s]` / `[x]`. */
+export interface LaunchInput {
+  /** the USER's checkout — never a worktree; §5.2(b) lets the supervisor write only to the dock */
+  workspaceRoot: string;
+  baseSha: string;
+  /** [G3] the PINNED dock sha, never a branch name */
+  pinned: string;
+  agents: number;
+  dockBranch: string;
+  /** §5.7 tail: the step the manifest was confirmed at (P9) — the floor `/rewind` is refused below. Defaults to the merge step. */
+  delegationStep?: number;
+}
+
+/**
+ * contract 1.5 (§5.7 [D1], corner row 53): the pre-flight's offer. Deliberately NOT a `BlockingRequest`:
+ * `BlockingKind` is consumed by four exhaustive sites in `src/tui/**`, so a `'land-preflight'` member is not additive
+ * and belongs to the TUI session's wave. `stop` / `exitCode` are carried so the offer converts verbatim the day it lands.
+ */
+export interface LandPreflightOffer {
+  id: string;
+  step: number;
+  kind: 'land-preflight';
+  detail: string;
+  overlap: readonly string[];
+  choices: readonly ['c', 's', 'x'];
+  stop: StopReason;
+  exitCode: number;
+}
+
 /** contract 1.5 (§2.8): sixteen states; `paused` (a human asked) and `parked` (the child stopped itself) are separate [G22]. */
 export type AgentState =
   | 'planned'
@@ -2607,12 +2681,25 @@ export interface OrchestrationOptions {
   parentSessionId?: string;
   slug?: string;
   manifestId?: string;
+  /**
+   * contract 1.5 (§3.1 [G5]): a coordination ledger handle exists, so children can be tracked. §3.1 names this
+   * `EngineOptions.coordination.ledger`, which contract 1.4 did NOT land and §4.1 never listed — so the fact
+   * rides here, on the options the engine already reads, until the coordination facade grows one.
+   * Absent reads as FALSE and shuts the gate: no ledger, no delegation, and no measurement taken to find out.
+   */
+  hasLedger?: boolean;
   /** §4.2 P10: the file a parked review's answer is read back from on replay */
   reviewAnswerFile?: string;
   /** §2.6 [G1]: the identity every harness commit is made under; never the user's */
   commit?: { name: string; email: string };
   /** [D2] §2.3: what the dirty-set sync replayed into this worktree — excluded from the commit set unless this agent changed it */
   syncedDirty?: readonly SyncedDirtyEntry[];
+  /**
+   * contract 1.5 (§2.6 / corner row 20): the sandbox level the PARENT recorded for itself. `createEngine` refuses a
+   * child whose resolved level is weaker than it (`seatbelt` → `none`), because `--sandbox` is one of the four rights
+   * the spawn line deliberately does not forward and a hand-typed child must not be able to widen them.
+   */
+  parentSandbox?: SandboxLevel;
   /** [D10] §2.6: the harness's git seam for commit-after-step; the supervisor binds it to `runGit` with the per-worktree Sandbox. Absent = the engine makes no git commits. */
   runGit?: (cwd: string, args: readonly string[], opts?: { timeoutMs?: number; maxOutputBytes?: number; signal?: AbortSignal }) => Promise<ExecResult>;
 }
