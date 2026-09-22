@@ -1,5 +1,5 @@
 /**
- * docs/IMPORT-DESIGN.md §4.1 / §5.2 / §5.5: the facade the TUI session imports. The plan summary
+ * docs/IMPORT-DESIGN.md §4.1 / §5.2 / §5.5: the facade the interactive session imports. The plan summary
  * and the `--yes` row set are engine policy — every surface quotes them rather than re-deriving
  * them, so the overlay, the `[import]` items, `--plain` and `--json` can never disagree.
  */
