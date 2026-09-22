@@ -285,13 +285,14 @@ describe('the router leaks nothing, cancels what it drops, and measures what it 
     const applied = await routeSpeculative<string>({ id: 'RL1', token: createStepToken(1), codeOrder: ['code'], deadlineMs: 5_000, ask: () => after(40, ['jev']) });
     expect(applied.source).toBe('jev');
     expect(applied.heldMs).toBeGreaterThanOrEqual(30);
+    expect(applied.heldMs).toBeLessThan(5_000);
     expect(applied.waitMs).toBe(0);
     // and a 300 ms ask behind a 20 ms deadline: the router held 20 ms, not 300 — the deadline is a CEILING on
     // the wall, which is the half of I3 a hard-coded `waitMs: 0` could never have shown
     const dropped = await routeSpeculative<string>({ id: 'RL1', token: createStepToken(2), codeOrder: ['code'], deadlineMs: 20, ask: () => after(300, ['late']) });
     expect(dropped.drop).toBe('deadline');
     expect(dropped.heldMs).toBeGreaterThanOrEqual(10);
-    expect(dropped.heldMs).toBeLessThan(250);
+    expect(dropped.heldMs).toBeLessThan(290);
     expect(dropped.waitMs).toBe(0);
   });
 

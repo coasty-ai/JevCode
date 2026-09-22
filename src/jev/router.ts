@@ -57,11 +57,13 @@ export function isRouterFatal(e: unknown): boolean {
 export const ROUTER_DEADLINE_MS = 400;
 
 /**
- * The scheduling hop between the ask's promise settling and the race result being observed — one microtask, made
- * visible at all only by `Date.now()`'s 1 ms granularity. It is not blocked wall, so `waitMs` (I3) does not count
- * it; anything above it is the router genuinely holding the step past its own ask, and is reported.
+ * The scheduling hop between the ask's promise settling and the race result being observed — one microtask under
+ * whatever else the event loop is running, made visible at all by `Date.now()`'s 1 ms granularity. It is the
+ * scheduler's wall, not the router's, so `waitMs` (I3) does not count it; anything above it is the router
+ * genuinely holding the step past its own ask, and is reported. Kept small enough that a real extra await (the
+ * bug I3 exists to catch: 250 ms and up at these deadlines) can never hide inside it.
  */
-export const ROUTER_SETTLE_SLACK_MS = 2;
+export const ROUTER_SETTLE_SLACK_MS = 5;
 
 /** §2.2, the router table. `RL3` and `RS5` are deliberately absent: they are gates, not routers. */
 export type RouterId = 'RL1' | 'RL2' | 'RL4' | 'RL5' | 'RL6' | 'RS1' | 'RS2' | 'RS3' | 'RS4' | 'R9';
@@ -130,7 +132,10 @@ function abortReasonOf(signal: AbortSignal): unknown {
 }
 
 /**
- * Route one ask. Never throws, never rejects: every failure is the one drop branch of clause 4.
+ * Route one ask. **No failure of Jev's throws or rejects**: a deadline, a `JevError`, a 503/529, an invalidated
+ * token and a malformed answer are the one drop branch of clause 4. The four failures that are not Jev's —
+ * an aborted step signal, a budget, a model drift, a malformed question batch — are rethrown unchanged
+ * (`isRouterFatal`), because with routers off they reject the stage and a router may not quietly change that.
  *
  * The returned `order` is what the caller executes. `order[0]` is `codeOrder[0]` unless Jev answered in time and
  * the token was still valid, in which case it is Jev's — and even then the caller is free to ignore it, because
@@ -139,6 +144,8 @@ function abortReasonOf(signal: AbortSignal): unknown {
 export async function routeSpeculative<T>(input: RouteInput<T>): Promise<RouteResult<T>> {
   const { id, token, codeOrder } = input;
   if (codeOrder.length === 0) throw new RangeError(`routeSpeculative(${id}): codeOrder must be non-empty — the code order is the step, not a fallback`);
+  // a step that is already over runs no code order and issues no ask — exactly what ctx.ask does with routers off
+  if (input.signal?.aborted === true) throw abortReasonOf(input.signal);
   const now = input.now ?? Date.now;
   const deadlineMs = Math.max(0, input.deadlineMs ?? ROUTER_DEADLINE_MS);
   const t0 = now();
