@@ -659,3 +659,69 @@ describe('llm-jev: recording — step keying, cancellation facts, rate limits, v
     expect('verify' in h3.store.steps[0]!).toBe(false);
   });
 });
+
+/**
+ * contract 1.9 (Fastlane) §3.1 (docs/LLM-LOOP-DESIGN.md §3.1): the sanctioned generator channel is the ONLY way a
+ * sample reaches the provider, so a per-sample callback the channel drops does not exist in production. The hedge of
+ * §3.2 is built on exactly one of them — a sample that has produced a first byte is being served and is never hedged —
+ * so an engine that forwards `sample`, `purpose` and the signal but not `onFirstByte` leaves the hedge blind: the
+ * running TTFB p50 stays null, the threshold is pinned at its 8 s ceiling and a healthy stream is hedged anyway.
+ */
+describe('contract 1.9 (Fastlane) §3.1: the sample callbacks reach the provider', () => {
+  it('forwards `onFirstByte` and `onCancelled` from the synthesizer’s sample options into `provider.generate`', async () => {
+    const seen: { sample: number; ms: number }[] = [];
+    const cancelled: { sample: number; toolChars: number }[] = [];
+    const provider: FakeProvider = {
+      name: 'mock',
+      model: 'z-ai/glm-5.3-flash',
+      requests: [],
+      generate(req, o) {
+        provider.requests.push(req);
+        // the stream opens 37 ms after the request goes out; sample 1 never opens one and is aborted
+        return new Promise<GenerateResult>((resolve, reject) => {
+          if (o.sample === 0) {
+            o.onFirstByte?.(37);
+            resolve(result(120, 0));
+            return;
+          }
+          o.signal.addEventListener(
+            'abort',
+            () => {
+              o.onCancelled?.({ text: '', toolChars: 4, reasoningChars: 0 });
+              reject(o.signal.reason);
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    const synth: Synthesizer = {
+      name: 'callback-probe',
+      async synthesize(ctx) {
+        const gen = generateOf(ctx);
+        const req: GenerateRequest = { system: 'sys', messages: [{ role: 'user', content: 'fix f' }], maxTokens: 1500, temperature: 0.7, reasoning: { enabled: false } };
+        const c0 = new AbortController();
+        const c1 = new AbortController();
+        const first = gen(req, { sample: 0, purpose: 'propose_fix', signal: c0.signal, onFirstByte: (ms) => seen.push({ sample: 0, ms }) });
+        const second = gen(req, { sample: 1, purpose: 'propose_fix', signal: c1.signal, onCancelled: (p) => cancelled.push({ sample: 1, toolChars: p.toolChars }) });
+        await first;
+        c1.abort(new Error('llm sample cancelled: hedge'));
+        await expect(second).rejects.toThrow('hedge');
+        const p: Proposal = { goal: 'verify', action: { kind: 'run', command: 'pytest -q' }, plan: { done: [], remaining: [LEDGER_ITEM], openProblems: [] }, rawText: '' };
+        p.evidence = evidence();
+        return p;
+      },
+    };
+    const h = await build({ mode: 'llm-jev', synthesizer: synth, provider, limits: { maxSteps: 1 } });
+    await h.engine.run();
+    // §3.1: the figure the provider measured, under the sample it belongs to — this is the hedge threshold's only input
+    expect(seen).toEqual([{ sample: 0, ms: 37 }]);
+    // and the cancellation facts still reach the SYNTHESIZER's callback as well as the engine's row (both, not either)
+    expect(cancelled).toEqual([{ sample: 1, toolChars: 4 }]);
+    const rows = h.store.generator.filter((g) => g.step === 1);
+    expect(rows.map((g) => [g.sample, g.cancelled ?? false, g.stopReason])).toEqual([
+      [0, false, 'tool_use'],
+      [1, true, 'cancelled'],
+    ]);
+  });
+});

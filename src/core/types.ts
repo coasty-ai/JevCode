@@ -1662,6 +1662,18 @@ export interface SampleOptions {
   goalId?: string;
   /** contract 1.4 (§12.0.2 P3): the goal's LLM round this sample was fired in (the synthesizer's own numbering) */
   goalRound?: number;
+  /**
+   * contract 1.9 (Fastlane) §3.1: `GenerateOptions.onCancelled` for this sample — the facts of a stream the abort cut
+   * after its headers. The engine keeps its OWN copy for the generator.jsonl row and calls this one as well, so the
+   * synthesizer's per-sample accounting (`unfinishedSampleUsage`) reads the provider's figures rather than an estimate.
+   */
+  onCancelled?: (partial: CancelledGeneration) => void;
+  /**
+   * contract 1.9 (Fastlane) §3.1: `GenerateOptions.onFirstByte` for this sample — the ms from the request going out to
+   * the first byte of the reply, at most once. It is the ONLY input of the §3.2 hedge threshold: a channel that drops
+   * it leaves the running TTFB p50 null, pins the threshold at its ceiling and hedges samples that are being served.
+   */
+  onFirstByte?: (ms: number) => void;
 }
 
 /**
