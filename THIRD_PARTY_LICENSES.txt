@@ -1,4 +1,4 @@
-Third-party notices for jevcode 0.5.0
+Third-party notices for jevcode 0.6.0
 
 dist/jevcode.mjs is a single-file bundle that inlines the packages listed below (the only
 runtime dependencies are ink and react; the rest is their dependency tree). The bundler strips
