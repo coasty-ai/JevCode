@@ -878,6 +878,18 @@ pool was to carry — `Action.kind === 'run'` never leaves `src/sandbox/run.ts` 
 because the warm plane is reachable only from the sieve. Widening `synthesizerHandles` stays deferred, as §6 S1
 already states.
 
+#### 9.2.1 S1 wedge and fix (2026-09-22, 07df581)
+
+The first live measurement of the merged tree found the plane wedging every `llm-jev` run (see `docs/DECISIONS.md`, "The warm
+verification plane is off by default …", for the mechanism: blocking FIFO opens/reads exhausting libuv's four-thread pool with
+eight lanes). As built after the fix: `src/synth/warm/worker.ts` drives both FIFO ends as raw `O_NONBLOCK` descriptors with
+`readSync`/`writeSync` on an in-flight-only timer; `WarmPlane.serve()` races a watchdog and disables the plane (`disabledReason`)
+on any hang — a worker timeout on first occurrence, crashes under the per-lane budget plus `WARM_MAX_FAILURES_PER_RUN` = 4; the
+server source is written once per run; `test/unit/synth/warm/real-lane.test.ts` is the real-worker gate (screen + cold
+confirm, truncation, six concurrent lanes, two hang shapes). `warmModeFor` defaults OFF (`JEVCODE_WARM=on` enables the two
+Python shapes); the M6 gate is measured behind that switch until a real-model A/B on the 18-task slice. Micro-benchmark, 8 lanes
+× 12 runs: warm 1.13 s vs cold 11.4 s; mock bench one task: 23.6 s vs 31.6 s.
+
 ### 9.3 S2–S6 — status
 
 None has started. Verified by the absence, on main, of the symbol each wave is defined by.

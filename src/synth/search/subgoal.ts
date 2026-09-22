@@ -1592,14 +1592,33 @@ async function bestGuessPhases(st: LoopState, sites: readonly Site[], committed:
   // its candidates then go before every seed (§6.1 repository class: p = 1.0 − i·ε)
   const llmRest: Promise<SampleArrival[]> = st.llm !== null && st.llm.round !== null ? st.llm.round.rest() : Promise.resolve([]);
 
-  // Jev ranks each site's set; the sets merge by probability (§2.4: K is a budget, never a threshold)
+  // Jev ranks each site's set; the sets merge by probability (§2.4: K is a budget, never a threshold).
+  //
+  // OOS iteration 2, question 1(b): the price is capped here as it is on the sub-goal paths
+  // (`visitSource`, `runLlmRound`). Ranked change 1 put `rankPoolCap` on those two and left this
+  // one, which is the ONLY RANK site a repository-class best guess reaches — so the fresh SWE arm
+  // of iteration 1 priced 6,960 candidates against 20 tested (1,740 against 5 per instance,
+  // `bench/results/iter1-fresh-llm-jev-swebench`), every one of them a Noul Jev answered about a
+  // candidate no run of that step could ever have reached. The merge below runs
+  // `k = min(plan.k, plan.runsAllowed, ranked.length)`, so `rankPoolCap` of that k is exactly what
+  // the order can pick; the cap is shared out over the sites the way §2.4 shares runs (`siteShare`
+  // arithmetic: the remaining budget over the sites still to visit), so no site is starved by the
+  // first, and what is not priced is not queued, stays out of `tried` and comes back enumerable
+  // next step (§2.3).
+  const priceLeft = runsLeft(mem.oracle, mem.stepBudget);
+  const pooled = perSite.reduce((n, s) => n + s.cands.length, 0);
+  const prePlan = decideRunPlan(pooled, sites[0] ?? perSite[0]?.site ?? { kind: 'replace' }, mem.oracle, mem.stepBudget);
+  let priceBudget = rankPoolCap(prePlan.mode === 'RANK' ? prePlan.k : pooled, priceLeft);
   const ranked: { candidate: Candidate; probability: number; site: Site }[] = [];
-  for (const { site, cands } of perSite) {
-    if (mem.stepBudget.jevRequestsLeft <= 0) break;
-    const r = await deps.rank(ctx, mem, cands, site, goal);
+  for (const [i, { site, cands }] of perSite.entries()) {
+    if (mem.stepBudget.jevRequestsLeft <= 0 || priceBudget <= 0) break;
+    const share = Math.max(1, Math.ceil(priceBudget / (perSite.length - i)));
+    const priced = cands.slice(0, Math.min(share, priceBudget));
+    const r = await deps.rank(ctx, mem, priced, site, goal);
     spend(mem, r.requests);
     trace.jevRequests += r.requests;
     trace.candidatesRanked += r.ranked.length;
+    priceBudget -= priced.length;
     for (const x of r.ranked) ranked.push({ candidate: x.candidate, probability: x.probability, site });
   }
   const llmCands = freshLlm(st, await llmRest, committed);
