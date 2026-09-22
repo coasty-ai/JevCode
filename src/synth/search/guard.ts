@@ -170,10 +170,10 @@ export const STRONG_SIGNALS_MIN = 2;
  * `fewestSpecialCases`, and the golds add special cases too — `detect_cycle`'s gold
  * (`hare is None or hare.successor is None`) adds one conditional and one literal, `wrap`'s adds
  * none, `next_permutation`'s none. A signal every second gold carries cannot be the evidence that
- * a pool contains no gold. The six that remain are shapes the gold sweeps found on ZERO gold
- * patches: 41 QuixBugs + 26 ladder tasks (65 gold files) for `late_guard`, the same sweep in
- * review-oos-iter-1-2026-09-22.md finding 2 for `mutates_new_argument`, and the run-3 inspection
- * (jev-only-quixbugs-3-inspection.md §1) for the other four.
+ * a pool contains no gold. Of the six that remain, `late_guard` is swept here — 0 of 41 QuixBugs
+ * gold patches and 0 of 65 ladder gold files (26 tasks) — `mutates_new_argument`'s sweep over the
+ * same corpus is review-oos-iter-1-2026-09-22.md finding 2 ("zero refusals" of a gold), and the
+ * other four are the run-3 overfit shapes (jev-only-quixbugs-3-inspection.md §1).
  */
 export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['deletes_statement', 'duplicates_block', 'guards_other_variable', 'dead_guard', 'mutates_new_argument', 'late_guard']);
 /**
