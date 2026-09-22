@@ -1349,15 +1349,15 @@ export interface GuardClause {
   /** roots of `operands`, de-duplicated */
   roots: string[];
   /**
-   * Sibling-index chain from the function body down to this clause, the leading docstring of each
-   * suite not counted. It is the clause's IDENTITY across two revisions of a function: a patch that
+   * Sibling-index chain from the function body down to this clause, the declarations of each
+   * suite (docstring, nested def/class) not counted. It is the clause's IDENTITY across two revisions of a function: a patch that
    * only rewrites a condition leaves every path alone, while one that inserts a statement shifts
    * the paths after it (guard.ts `newlyLateGuards` uses that to tell an edit from an insertion).
    */
   path: number[];
-  /** position among its sibling statements, a leading docstring not counted; 0 = the top of the block */
+  /** position among its sibling statements, declarations not counted (`isDeclaration`); 0 = the top of the block */
   position: number;
-  /** how many non-docstring statements its own suite holds — with `path`, the check that the suite did not change shape */
+  /** how many non-declaration statements its own suite holds — with `path`, the check that the suite did not change shape */
   siblings: number;
   /** siblings BEFORE it that read an operand (outside an assignment target) */
   readsBefore: number;
@@ -1450,6 +1450,20 @@ function isDocstring(st: Statement): boolean {
   return st.kind === 'expr' && st.tokens.length === 1 && st.tokens[0]?.type === 'STRING';
 }
 
+/**
+ * Statements a guard clause's POSITION is not counted against: a docstring, and a nested `def` /
+ * `class` (with its decorators). A declaration runs nothing — its body executes when it is called,
+ * not where it stands — so a guard behind one is not behind any USE of its operands, and hoisting
+ * the guard above it would change nothing. Measured: the one false positive of the late-guard rule
+ * over iteration 1's 46 applied committed patches was `hunk_merge`, whose LLM patch defines a
+ * local `within()` helper and then guards on `left` / `right` — a guard at the top of its block
+ * with a helper in front of it (experiments/results/llm-jev-iter1.md §4.2, run
+ * `20260922-115414-emklxk3j`).
+ */
+function isDeclaration(st: Statement): boolean {
+  return isDocstring(st) || st.kind === 'def' || st.kind === 'class' || st.kind === 'decorator';
+}
+
 /** Is this `if` a guard clause — no `elif`/`else` beside it, and a body that leaves the suite on every path? */
 function isGuardClause(nodes: readonly SuiteNode[], i: number): boolean {
   const n = nodes[i]!;
@@ -1465,7 +1479,7 @@ function isGuardClause(nodes: readonly SuiteNode[], i: number): boolean {
 
 /** Walk one suite level, recording its guard clauses, then recurse into the suites under it. */
 function collectGuards(nodes: readonly SuiteNode[], prefix: readonly number[], out: GuardClause[]): void {
-  const siblings = nodes.filter((n) => !isDocstring(n.st));
+  const siblings = nodes.filter((n) => !isDeclaration(n.st));
   siblings.forEach((n, i) => {
     if (isGuardClause(siblings, i) && n.st.colonIndex !== null) {
       const operands = conditionOperands(n.st.tokens.slice(1, n.st.colonIndex));

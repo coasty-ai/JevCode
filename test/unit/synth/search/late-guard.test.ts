@@ -77,6 +77,22 @@ describe('guardClauses / isLateGuard read the placement, not the condition', () 
     expect(isLateGuard(g)).toBe(false);
   });
 
+  /**
+   * The one false positive the rule had over iteration 1's 46 applied committed patches, and the
+   * reason it is not one: `hunk_merge`'s LLM patch (`20260922-115414-emklxk3j`, a PASS and one of
+   * the four long-2 wins) defines a local `within()` helper and then guards on `left` / `right`.
+   * A declaration runs nothing where it stands, so the guard is at the top of its block.
+   */
+  it('a nested `def` in front of a guard is a declaration, not a position: the guard still counts as the top of its block', () => {
+    const withHelper = ['def merge(left, right):', '    """doc"""', '    def within(side):', '        return [a for a in side]', '', '    if conflicts(left, right) or within(left) or within(right):', '        raise Conflict("clash")', '    return list(left) + list(right)', ''].join('\n');
+    const mod = analyse(withHelper);
+    const g = guardClauses(mod, mod.blocks.find((b) => b.name === 'merge')!)[0]!;
+    expect(g).toMatchObject({ position: 0 });
+    expect(isLateGuard(g)).toBe(false);
+    const before = withHelper.replace(['    def within(side):', '        return [a for a in side]', '', '    if conflicts(left, right) or within(left) or within(right):'].join('\n'), '    if conflicts(left, right):');
+    expect(lateGuardsOf('src/merge.py', before, withHelper)).toEqual([]);
+  });
+
   it('a condition over nothing but builtins and literals has no operand to be placed relative to, so its position says nothing', () => {
     const mod = analyse(['def f(a):', '    a = a + 1', '    if True:', '        return 0', '    return a', ''].join('\n'));
     const g = guardClauses(mod, mod.blocks[0]!)[0]!;
