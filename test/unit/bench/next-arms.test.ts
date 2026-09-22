@@ -173,7 +173,7 @@ describe('the §5.5 bench bridge', () => {
   // `decision: 'fired'` ONLY on a proposal, and `decision: 'failed'` with outcome timeout/refused/error otherwise.
   it('folds fastPath, router, riskSource and the S2 verify members out of steps.jsonl', () => {
     const text = [
-      step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', candidatesTested: 12, testRuns: 3, jevRequests: 2, wallMs: 4000, budgetMs: 45_000 }, router: { issued: 3, applied: 2, dropped: 1, waitMs: 0 }, riskSource: 'code', verify: { ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10 } }),
+      step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', candidatesTested: 12, testRuns: 3, jevRequests: 2, wallMs: 4000, budgetMs: 45_000 }, router: { issued: 3, applied: 2, dropped: 1, waitMs: 0 }, riskSource: 'code', verify: { ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10, cacheInput: 1_000 } }),
       step({ step: 2, fastPath: { decision: 'declined', reason: 'multi_file', stage: 1, outcome: 'skipped', wallMs: 1, budgetMs: 45_000 }, router: { issued: 2, applied: 2, dropped: 0, waitMs: 7 }, riskSource: 'jev', jevUnavailable: true }),
       step({ step: 3, fastPath: { decision: 'declined', reason: 'no_passer_class', stage: 2, outcome: 'skipped', wallMs: 900, budgetMs: 45_000 } }),
       // a round that ran and blew its own budget: R-b counts it whatever it then decided, and against the budget THAT
@@ -192,7 +192,9 @@ describe('the §5.5 bench bridge', () => {
     expect(s.fastPath.reasons).toEqual({ multi_file: 1, no_passer_class: 1, error: 1 });
     expect(s.routers).toEqual({ issued: 5, applied: 4, dropped: 1, maxWaitMs: 7 });
     expect(s.risk).toEqual({ codeVerdicts: 1, jevUnavailable: 1 });
-    expect(s.s2).toEqual({ ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10 });
+    // F19: `cacheInput` is the §3.4 hit rate's DENOMINATOR and travels with the two counts, so the run-level rate is
+    // Σread / Σinput. The four rows without a `verify` block add nothing to it, exactly as they add nothing to the rest.
+    expect(s.s2).toEqual({ ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10, cacheInput: 1_000 });
 
     const merged = mergeStepsSummaries([s, s, emptyStepsSummary()]);
     expect(merged.fastPath.fired).toBe(2);

@@ -719,6 +719,13 @@ export interface StepVerifySummary {
   /** contract 1.9 (Fastlane) §3.4: `cacheRead / (input tokens of the step's priced samples)`, 0…1 — the §3.3 prefix-pinning measurement. */
   cacheHitRate?: number;
   /**
+   * contract 1.9 (Fastlane) §3.4: the input tokens of the step's priced samples — `cacheHitRate`'s own DENOMINATOR,
+   * recorded beside it because the rate alone does not compose. A run or an arm's hit rate is `Σ cacheRead / Σ
+   * cacheInput`, and averaging the steps' rates is a different (and flattering) number: 10/1,000 with 90/100 is a
+   * true 9.1 % and a mean-of-ratios 45.5 %. Absent whenever `cacheRead` / `cacheWrite` are, and for the same reason.
+   */
+  cacheInput?: number;
+  /**
    * OOS iteration 3, item 3 (llm-jev, additive): the per-goal deadline high-water mark's evidence
    * rule this run ran under — `JEVCODE_DEADLINE_GROWTH`, default `always` (the behaviour OOS
    * iteration 2 shipped), `served` grows the mark only on a sample the provider actually served

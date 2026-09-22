@@ -137,8 +137,13 @@ export interface StepsSummary {
    * contract 1.9 (Fastlane) §3 / §5.2: the S2 members of `StepVerifySummary`. `ttfbMs` is kept raw so a quantile over a
    * merged run set is exact rather than an average of averages — the hedge threshold is `2 × running TTFB p50`, so a
    * p50 that was itself computed from p50s would be measuring the wrong thing.
+   *
+   * `cacheInput` is the same rule for the §3.3 prefix-pinning measurement, which is why the per-step
+   * `StepVerifySummary.cacheHitRate` is NOT carried here: the run's hit rate is `cacheRead / cacheInput` over the
+   * summed tokens, and the mean of the steps' own rates is a different number (10/1,000 with 90/100 is a true 9.1 %
+   * and a mean-of-ratios 45.5 %). Recomputing beats folding a ratio, so the denominator travels and the rate does not.
    */
-  s2: { ttfbMs: number[]; hedges: number; hedgeWins: number; cacheRead: number; cacheWrite: number };
+  s2: { ttfbMs: number[]; hedges: number; hedgeWins: number; cacheRead: number; cacheWrite: number; cacheInput: number };
   /**
    * OOS iteration 2, defect 2 / defect 4: the S1 warm verification plane's counters, summed over
    * the run's steps (`StepRecord.verify.warm`, core/types.ts `StepWarmSummary`). Absent when no

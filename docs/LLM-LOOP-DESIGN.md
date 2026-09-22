@@ -596,7 +596,10 @@ must state which it did.
 ### 3.4 Reasoning cap and cache accounting
 
 `reasoning: { maxTokens: 256 }` on the cheap classes only. `cached_tokens` (already parsed) surfaces as
-`cacheRead` / `cacheWrite` / `cacheHitRate` on `StepVerifySummary`.
+`cacheRead` / `cacheWrite` / `cacheHitRate` on `StepVerifySummary`, with `cacheInput` — the rate's own denominator —
+beside them (F19), so a run or an arm recomputes the rate as `Σ read / Σ input` over its steps instead of averaging
+the steps' ratios: 10/1,000 with 90/100 is a true 9.1 % and a mean-of-ratios 45.5 %. `StepsSummary.s2` carries
+`cacheInput` and NOT `cacheHitRate`, for that reason; `src/bench/report.ts` prints the recomputed rate.
 
 ### 3.5 `--quick`
 
@@ -998,7 +1001,7 @@ Verified safe: no reader outside `engine.ts` and `core/types.ts` (grep).
 ```
 
 **`StepVerifySummary`** (slot A): `ttfbMs?: readonly number[]`, `hedges?: number`, `hedgeWins?: number`,
-`cacheRead?: number`, `cacheWrite?: number`, `cacheHitRate?: number`.
+`cacheRead?: number`, `cacheWrite?: number`, `cacheHitRate?: number`, `cacheInput?: number`.
 
 **`EngineOptions`** (block at `src/core/types.ts:1514`):
 

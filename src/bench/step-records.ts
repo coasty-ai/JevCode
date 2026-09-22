@@ -34,7 +34,7 @@ export function emptyStepsSummary(): StepsSummary {
     fastPath: emptyFastPathSummary(),
     routers: { issued: 0, applied: 0, dropped: 0, maxWaitMs: 0 },
     risk: { codeVerdicts: 0, jevUnavailable: 0 },
-    s2: { ttfbMs: [], hedges: 0, hedgeWins: 0, cacheRead: 0, cacheWrite: 0 },
+    s2: { ttfbMs: [], hedges: 0, hedgeWins: 0, cacheRead: 0, cacheWrite: 0, cacheInput: 0 },
   };
 }
 
@@ -105,7 +105,7 @@ function addWaveMembers(s: StepsSummary, row: JsonObject): void {
   if (isJsonObject(verify)) {
     const ttfb = verify['ttfbMs'];
     if (Array.isArray(ttfb)) for (const v of ttfb) if (isFiniteNumber(v)) s.s2.ttfbMs.push(v);
-    for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite'] as const) {
+    for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite', 'cacheInput'] as const) {
       const v = verify[k];
       if (isFiniteNumber(v)) s.s2[k] += v;
     }
@@ -243,7 +243,7 @@ export function withWaveMembers(part: StepsSummary): StepsSummary {
   const s2 = obj(part['s2']);
   const ttfb = s2?.['ttfbMs'];
   if (Array.isArray(ttfb)) for (const v of ttfb) if (isFiniteNumber(v)) s.s2.ttfbMs.push(v);
-  for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite'] as const) s.s2[k] = num(s2, k);
+  for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite', 'cacheInput'] as const) s.s2[k] = num(s2, k);
   // OOS iteration 3, item 3: NOT a count, so it is carried rather than summed — and it must be carried, because this
   // function rebuilds the part from `emptyStepsSummary()` and anything it does not name is erased. `deadlineGrowth`
   // landed on `main` after this normaliser was written, so before this line every `mergeStepsSummaries` and every
@@ -289,7 +289,7 @@ export function mergeStepsSummaries(parts: readonly StepsSummary[]): StepsSummar
     s.risk.codeVerdicts += p.risk.codeVerdicts;
     s.risk.jevUnavailable += p.risk.jevUnavailable;
     s.s2.ttfbMs.push(...p.s2.ttfbMs);
-    for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite'] as const) s.s2[k] += p.s2[k];
+    for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite', 'cacheInput'] as const) s.s2[k] += p.s2[k];
     if (p.deadlineGrowth !== undefined) s.deadlineGrowth = s.deadlineGrowth === undefined || s.deadlineGrowth === p.deadlineGrowth ? p.deadlineGrowth : 'mixed';
     if (p.warm !== undefined) addWarm(s, p.warm.mode, p.warm, p.warm.disabled, p.warm.disabledReason);
   }
