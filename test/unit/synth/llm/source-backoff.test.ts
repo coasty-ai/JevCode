@@ -99,9 +99,9 @@ describe('§4.8 rev 4: the source grows the goal\'s next deadline and pauses it 
     expect(src.fire(fireInput(b))).toMatchObject({ fired: true, deadlineMs: 40 });
     await drain(src);
     expect(src.round()).toMatchObject({ timeouts: 1, closed: true });
-    expect(src.timeoutBackoff('g1')).toEqual({ streak: 1, growths: 1, paused: false, bookedThisRound: true, floorMs: 40 });
+    expect(src.timeoutBackoff('g1')).toEqual({ streak: 1, growths: 1, paused: false, bookedThisRound: true, floorMs: 40, served: 0 });
     // another goal is untouched: the back-off is per goal, never per run and never per task
-    expect(src.timeoutBackoff('g2')).toEqual({ streak: 0, growths: 0, paused: false, bookedThisRound: false, floorMs: 0 });
+    expect(src.timeoutBackoff('g2')).toEqual({ streak: 0, growths: 0, paused: false, bookedThisRound: false, floorMs: 0, served: 0 });
     // the goal's next round fires at 1.5 × its base, the other goal's at its base
     expect(src.fire(fireInput(b, { round: 2 }))).toMatchObject({ fired: true, deadlineMs: 60 });
     await drain(src);
@@ -120,7 +120,7 @@ describe('§4.8 rev 4: the source grows the goal\'s next deadline and pauses it 
     await drain(src);
     // armed at exactly `pauseAfter`, and the streak restarts so the pause cannot repeat every round
     expect(LLM_TIMEOUT_BACKOFF.pauseAfter).toBe(2);
-    expect(src.timeoutBackoff('g1')).toEqual({ streak: 0, growths: 2, paused: true, bookedThisRound: true, floorMs: 60 });
+    expect(src.timeoutBackoff('g1')).toEqual({ streak: 0, growths: 2, paused: true, bookedThisRound: true, floorMs: 60, served: 0 });
     // review finding 10: the backed-off round still FIRES — half the samples, at the grown
     // deadline. `fire(round: 1)` is once per step per goal, so refusing it removed every LLM
     // candidate from the step, on exactly the tasks the back-off exists to rescue.
@@ -190,11 +190,11 @@ describe('§4.8 rev 4: the source grows the goal\'s next deadline and pauses it 
     src.fire(fireInput(b, { round: 2 }));
     await drain(src);
     // the provider answered inside the deadline: the streak is over, the growth stands (one-way per goal, like the reasoning cap)
-    expect(src.timeoutBackoff('g1')).toEqual({ streak: 0, growths: 1, paused: false, bookedThisRound: true, floorMs: 40 });
+    expect(src.timeoutBackoff('g1')).toEqual({ streak: 0, growths: 1, paused: false, bookedThisRound: true, floorMs: 40, served: 1 });
     hang = true;
     // round 3: a re-fire at round 2 would replay the served round's cached patch instead of sampling
     expect(src.fire(fireInput(b, { round: 3 }))).toMatchObject({ fired: true, deadlineMs: 60 });
     await drain(src);
-    expect(src.timeoutBackoff('g1')).toEqual({ streak: 1, growths: 2, paused: false, bookedThisRound: true, floorMs: 60 });
+    expect(src.timeoutBackoff('g1')).toEqual({ streak: 1, growths: 2, paused: false, bookedThisRound: true, floorMs: 60, served: 1 });
   });
 });

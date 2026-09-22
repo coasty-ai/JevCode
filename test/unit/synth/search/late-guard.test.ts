@@ -1,27 +1,22 @@
 /**
- * OOS iteration 3, item 1 — the LATE-GUARD rule, and the gold sweep that bounds it.
+ * OOS iteration 3, item 1 — the LATE-GUARD rule as its adversarial review re-specified it
+ * (`/tmp/review-iter3-2026-09-22.md` findings 1 and 3), and the sweeps that bound it.
  *
- * Two of the three correctness losses of iteration 1 are the same shape, and it is a shape a
- * thresholdless code rule can see because each one's own gold is THE SAME GUARD at the top of the
- * block (experiments/results/llm-jev-iter1.md §4.2 `token_bucket` "committed as a strong overfit",
- * §5 `stats` "a weak overfit again"):
+ * Iteration 3 shipped a two-shape rule: `position > 0 AND (some prior sibling READS an operand
+ * ROOT, OR — for an insertion — no prior sibling BINDS one)`. The review showed both disjuncts
+ * misfire on correct code, and that the repo's own real-world corpus contains a gold the rule
+ * flags (`sympy__sympy-17139`). Shape (b) degenerated to "not the first statement", because
+ * nothing ever binds a parameter.
  *
- *   - `stats` (in-sample ladder, run 20260922-123643-rcnailmj) inserted
- *     `if not ordered: raise ValueError("median of empty sequence")` BEFORE line 22 of
- *     `src/stats.py` — behind `ordered = sorted(values)`, `mid = len(ordered) // 2` and
- *     `if len(ordered) % 2: return float(ordered[mid])`, all of which already read `ordered`, so
- *     the odd-length path never reaches the guard. `bench/data/ladder/tasks/stats/gold/stats.py`
- *     inserts `if not values: raise ValueError(...)` as the FIRST statement of `median`.
- *   - `token_bucket` (fresh ladder long-2, run 20260922-115943-acykmmph) rewrote
- *     `if self.refill_per_second <= 0.0:` into `if cost > self.capacity or self.refill_per_second
- *     <= 0.0:` — behind `self.sync(now)` and `if self.tokens >= cost: return 0.0`, which reads
- *     `cost`. `bench/data/ladder/tasks/token_bucket/gold/bucket.py` inserts
- *     `if cost > self.capacity: return None` at the top of `wait_for`.
+ * The rule now has ONE shape, and every clause of it is a suppression: a preceding sibling
+ * DEREFERENCES the operand's exact dotted path — `p.attr`, `p[…]`, `p.method(…)`, a use the value
+ * the guard rejects would have made fail — and nothing in front BINDS that path's root and
+ * nothing in front NARROWS it with an exiting guard of its own.
  *
- * The rule is `py/structure.ts isLateGuard` over `guardClauses`, differenced by
- * `guard.ts newlyLateGuards`, and it is a SUSPICION SIGNAL (`late_guard`) that Q15/Q16 arbitrates —
- * never a hard rejection. The sweep at the bottom is the bound: over all 41 QuixBugs gold patches
- * and every ladder gold file (26 tasks) it fires ZERO times and refuses nothing.
+ * The consequence is measured below and is not comfortable: the tightened rule is silent on all
+ * three of iteration 1's recorded overfits as well. That is why `late_guard` is no longer a
+ * `POOL_SUSPECT_SIGNAL` — a signal with no positive evidence on the records cannot be the
+ * evidence that a pool holds no gold.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -29,9 +24,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { createGuardMemory } from '../../../../src/synth/search/bases.js';
-import { decide, mutationRefused, newlyLateGuards, structuralRejection, suspicionSignals } from '../../../../src/synth/search/guard.js';
+import { POOL_SUSPECT_SIGNALS, decide, mutationRefused, newlyLateGuards, structuralRejection, suspicionSignals } from '../../../../src/synth/search/guard.js';
 import { analyse, guardClauses, isLateGuard } from '../../../../src/synth/py/index.js';
-import type { Answer, Json, Question } from '../../../../src/core/types.js';
 import type { VerifyOutcome } from '../../../../src/synth/search/types.js';
 import { REPO_ROOT, candidate, committedBase, failure, goal as goalOf, plausibleOutcome, scriptedAsk, siteAt, sourceFile, summary, throwingAsk } from './helpers.js';
 
@@ -44,218 +38,179 @@ function lateGuardsOf(path: string, before: string, after: string): string[] {
   return newlyLateGuards({ files: [{ path, before, after }] }).map((x) => `${x.fn}:${x.guard.test}`);
 }
 
+/** A function's first guard clause, for the structural facts. */
+function firstClause(src: string, fn?: string) {
+  const mod = analyse(src);
+  const block = fn === undefined ? mod.blocks[0]! : mod.blocks.find((b) => b.name === fn)!;
+  return guardClauses(mod, block)[0]!;
+}
+
 // ---------------------------------------------------------------------------------------
-// The rule on the two records and their golds
+// The structural facts
 // ---------------------------------------------------------------------------------------
 
-const STATS_SRC = read(join(LADDER, 'stats/src/stats.py'));
-const STATS_GOLD = read(join(LADDER, 'stats/gold/stats.py'));
-/** `20260922-123643-rcnailmj` cand_02, the committed one: the gold's guard three statements too late. */
-const STATS_OVERFIT = STATS_SRC.replace('    return (ordered[mid - 1] + ordered[mid]) / 2', '    if not ordered:\n        raise ValueError("median of empty sequence")\n    return (ordered[mid - 1] + ordered[mid]) / 2');
-
-const BUCKET_SRC = read(join(LADDER, 'token_bucket/src/bucket.py'));
-const BUCKET_GOLD = read(join(LADDER, 'token_bucket/gold/bucket.py'));
-/** `20260922-115943-acykmmph`: the new disjunct behind the statement that already reads `cost`. */
-const BUCKET_OVERFIT = BUCKET_SRC.replace('        if self.refill_per_second <= 0.0:', '        if cost > self.capacity or self.refill_per_second <= 0.0:');
-
-describe('guardClauses / isLateGuard read the placement, not the condition', () => {
+describe('guardClauses reads the placement, not the condition', () => {
   it('a guard clause is an `if` with no elif/else whose body leaves the suite; `while` and an ordinary branch are not', () => {
     const mod = analyse(['def f(xs, k):', '    """doc"""', '    if not xs:', '        return None', '    total = 0', '    while k > 0:', '        k -= 1', '    if k == 0:', '        total += 1', '    else:', '        total -= 1', '    return total', ''].join('\n'));
-    const fn = mod.blocks[0]!;
-    const clauses = guardClauses(mod, fn);
-    // only `if not xs: return None`: the `while` is a loop and the `if/else` is a branch
+    const clauses = guardClauses(mod, mod.blocks[0]!);
     expect(clauses.map((g) => g.test)).toEqual(['not xs']);
     // the docstring is not a position, so the guard is at the top of the block and never late
     expect(clauses[0]).toMatchObject({ position: 0, operands: ['xs'], roots: ['xs'] });
     expect(isLateGuard(clauses[0]!)).toBe(false);
   });
 
-  it('`x = compute()` followed by `if x is None: return` is NOT late — the operand is produced by the statement in front of it', () => {
-    const mod = analyse(['def f(a):', '    x = compute(a)', '    if x is None:', '        return 0', '    return x', ''].join('\n'));
-    const g = guardClauses(mod, mod.blocks[0]!)[0]!;
-    expect(g).toMatchObject({ position: 1, readsBefore: 0, bindsBefore: 1 });
-    expect(isLateGuard(g)).toBe(false);
-  });
-
-  /**
-   * The one false positive the rule had over iteration 1's 46 applied committed patches, and the
-   * reason it is not one: `hunk_merge`'s LLM patch (`20260922-115414-emklxk3j`, a PASS and one of
-   * the four long-2 wins) defines a local `within()` helper and then guards on `left` / `right`.
-   * A declaration runs nothing where it stands, so the guard is at the top of its block.
-   */
-  it('a nested `def` in front of a guard is a declaration, not a position: the guard still counts as the top of its block', () => {
-    const withHelper = ['def merge(left, right):', '    """doc"""', '    def within(side):', '        return [a for a in side]', '', '    if conflicts(left, right) or within(left) or within(right):', '        raise Conflict("clash")', '    return list(left) + list(right)', ''].join('\n');
-    const mod = analyse(withHelper);
-    const g = guardClauses(mod, mod.blocks.find((b) => b.name === 'merge')!)[0]!;
-    expect(g).toMatchObject({ position: 0 });
-    expect(isLateGuard(g)).toBe(false);
-    const before = withHelper.replace(['    def within(side):', '        return [a for a in side]', '', '    if conflicts(left, right) or within(left) or within(right):'].join('\n'), '    if conflicts(left, right):');
-    expect(lateGuardsOf('src/merge.py', before, withHelper)).toEqual([]);
-  });
-
-  it('a condition over nothing but builtins and literals has no operand to be placed relative to, so its position says nothing', () => {
-    const mod = analyse(['def f(a):', '    a = a + 1', '    if True:', '        return 0', '    return a', ''].join('\n'));
-    const g = guardClauses(mod, mod.blocks[0]!)[0]!;
+  it('a condition over nothing but builtins and literals has no operand to be placed relative to', () => {
+    const g = firstClause(['def f(a):', '    a = a + 1', '    if True:', '        return 0', '    return a', ''].join('\n'));
     expect(g).toMatchObject({ position: 1, operands: [], roots: [] });
     expect(isLateGuard(g)).toBe(false);
   });
 
-  it('stats: the committed guard sits behind two statements that read `ordered`; the gold guard is the first statement of `median`', () => {
-    const after = analyse(STATS_OVERFIT);
-    const median = after.blocks.find((b) => b.name === 'median')!;
-    const g = guardClauses(after, median).find((c) => c.test === 'not ordered')!;
-    expect(g).toMatchObject({ position: 3, readsBefore: 2, operands: ['ordered'] });
-    expect(isLateGuard(g)).toBe(true);
-    const gold = analyse(STATS_GOLD);
-    const goldGuard = guardClauses(gold, gold.blocks.find((b) => b.name === 'median')!).find((c) => c.test === 'not values')!;
-    expect(goldGuard).toMatchObject({ position: 0 });
-    expect(isLateGuard(goldGuard)).toBe(false);
-    // and as a DIFFERENCE: the overfit adds a late guard, the gold adds none
-    expect(lateGuardsOf('src/stats.py', STATS_SRC, STATS_OVERFIT)).toEqual(['median:not ordered']);
-    expect(lateGuardsOf('src/stats.py', STATS_SRC, STATS_GOLD)).toEqual([]);
-  });
-
-  it('token_bucket: a condition REWRITE is late only through the operand roots it adds — `cost`, read by `if self.tokens >= cost` in front of it', () => {
-    expect(lateGuardsOf('src/bucket.py', BUCKET_SRC, BUCKET_OVERFIT)).toEqual(['TokenBucket.wait_for:cost > self.capacity or self.refill_per_second <= 0.0']);
-    expect(lateGuardsOf('src/bucket.py', BUCKET_SRC, BUCKET_GOLD)).toEqual([]);
-    // the rewrite arm never offers the hoistable shape, so a gold that only swaps an operator or
-    // adds a disjunct nothing in front of it reads is silent: `possible_change`'s `not coins`,
-    // `account`'s `amount > self.balance`, `csv_schema`'s `len(row) != len(schema.columns)`
-    for (const [t, f] of [
-      ['account', 'account.py'],
-      ['csv_schema', 'schema.py'],
-    ] as const) {
-      expect(lateGuardsOf(f, read(join(LADDER, t, 'src', f)), read(join(LADDER, t, 'gold', f)))).toEqual([]);
-    }
-    expect(lateGuardsOf('possible_change.py', read(join(QUIXBUGS, 'programs/possible_change.py')), read(join(QUIXBUGS, 'correct/possible_change.py')))).toEqual([]);
+  /**
+   * The rule is not vacuous: a parameter that a statement in front DEREFERENCES, with nothing
+   * binding or narrowing it, is exactly the shape the signal exists for.
+   */
+  it('a guard behind a dereference of its own operand, with no bind and no narrowing, IS late', () => {
+    const before = ['def f(x):', '    x.run()', '    return x', ''].join('\n');
+    const after = ['def f(x):', '    x.run()', '    if x is None:', '        return None', '    return x', ''].join('\n');
+    expect(lateGuardsOf('m.py', before, after)).toEqual(['f:x is None']);
+    const g = firstClause(after);
+    expect(g.perOperand['x']).toEqual({ derefs: 1, binds: 0, narrows: 0, reads: 1 });
   });
 });
 
 // ---------------------------------------------------------------------------------------
-// The signal, and the decision the records made
+// Review findings 1 and 3: every one of these correct shapes must be SILENT
 // ---------------------------------------------------------------------------------------
 
-const STATS_FILE = sourceFile('src/stats.py', STATS_SRC);
-/** `    return (ordered[mid - 1] + ordered[mid]) / 2` — the line the four recorded candidates insert before */
-const STATS_GAP = 22;
-const STATS_TESTS = ['tests/test_stats.py::test_median_of_empty_raises'];
-const STATS_BASE = committedBase(STATS_FILE, summary({ passed: 12, failing: STATS_TESTS, failures: [{ testId: STATS_TESTS[0]!, call: STATS_TESTS[0]!, expected: 'ValueError', actual: 'IndexError' }] }));
-const STATS_GOAL = goalOf([failure(STATS_TESTS[0]!, 'ValueError', 'IndexError')], { suspectedFiles: ['src/stats.py'] });
-
-/** The four options of the recorded `genuine_fix` request, in the recorded cand_01..cand_04 order. */
-const STATS_CANDIDATES: readonly [string, string][] = [
-  ['cand_01', '    if not values:\n        raise ValueError("median of empty sequence")'],
-  ['cand_02', '    if not ordered:\n        raise ValueError("median of empty sequence")'],
-  ['cand_03', '    if not ordered:\n        raise ValueError("ordered must not be empty")'],
-  ['cand_04', '    if not ordered:\n        raise ValueError("p must be between 0 and 100")'],
+/** The review's own table, verbatim as minimal Python. Each entry fired on `c469c9e`. */
+const CORRECT_SHAPES: readonly { name: string; before: string; after: string; why: string }[] = [
+  {
+    name: 'an attribute guard behind an unrelated attribute call (finding 1: the `self` root collapse)',
+    why: '`self.logger.debug(…)` says nothing about `self.handler`; the root must not stand in for the path',
+    before: 'def f(self):\n    pass\n',
+    after: 'def f(self):\n    self.logger.debug("x")\n    if self.handler is None:\n        return None\n    return self.handler\n',
+  },
+  {
+    name: '`len()` in front of an emptiness guard (finding 1)',
+    why: 'the prior read cannot fail on the value the guard rejects, so it is not evidence',
+    before: 'def f(xs):\n    n = len(xs)\n    return n\n',
+    after: 'def f(xs):\n    n = len(xs)\n    if not xs:\n        raise ValueError("e")\n    return n\n',
+  },
+  {
+    name: 'a guard that is only VALID after a narrowing guard (finding 1: the isinstance case)',
+    why: '`"key" not in v` is meaningful only once `v` is a Mapping; the prior guard is a narrowing',
+    before: 'def f(v):\n    if not isinstance(v, dict):\n        return None\n    return v\n',
+    after: 'def f(v):\n    if not isinstance(v, dict):\n        return None\n    if "key" not in v:\n        raise KeyError("k")\n    return v\n',
+  },
+  {
+    name: 'a guard the code PROVES cannot be hoisted (finding 1: bind in front)',
+    why: '`xs = list(xs)` binds the operand, so the position was not a choice',
+    before: 'def f(xs):\n    xs = list(xs)\n    xs.sort()\n    return xs\n',
+    after: 'def f(xs):\n    xs = list(xs)\n    xs.sort()\n    if not xs:\n        return None\n    return xs\n',
+  },
+  {
+    name: 'a second parameter guard after a first (finding 1: shape (b) degenerating)',
+    why: 'nothing ever binds a parameter, so the old shape (b) made every non-first guard late',
+    before: 'def f(a, b):\n    if a is None:\n        raise ValueError("a")\n    return a / b\n',
+    after: 'def f(a, b):\n    if a is None:\n        raise ValueError("a")\n    if b == 0:\n        raise ValueError("b")\n    return a / b\n',
+  },
+  {
+    name: 'a guard on a loop variable inside the loop body (finding 1)',
+    why: 'the `for` target is the parent, not a sibling, so nothing binds it at this level',
+    before: 'def f(items):\n    for item in items:\n        seen(item)\n    return items\n',
+    after: 'def f(items):\n    for item in items:\n        seen(item)\n        if item is None:\n            continue\n    return items\n',
+  },
+  {
+    name: 'a guard behind a try/except that only passes the operand to a call (finding 1)',
+    why: '`os.stat(path)` reads `path` as an argument; it does not dereference it',
+    before: 'def f(path):\n    try:\n        st = os.stat(path)\n    except OSError:\n        st = None\n    return st\n',
+    after: 'def f(path):\n    try:\n        st = os.stat(path)\n    except OSError:\n        st = None\n    if path is None:\n        raise ValueError("p")\n    return st\n',
+  },
+  {
+    name: 'a guard behind a comprehension over the operand (finding 1)',
+    why: 'iterating a list cannot fail on empty, which is what the guard rejects',
+    before: 'def f(rows):\n    names = [r.name for r in rows]\n    return names\n',
+    after: 'def f(rows):\n    names = [r.name for r in rows]\n    if not rows:\n        return []\n    return names\n',
+  },
+  { name: '`with … as x` (finding 3)', why: 'the binder\'s own target was scored as a read', before: 'def f(p):\n    head()\n    with open(p) as x:\n        pass\n    return x\n', after: 'def f(p):\n    head()\n    with open(p) as x:\n        pass\n    if not x:\n        return None\n    return x\n' },
+  { name: '`except E as x` (finding 3)', why: 'the binder\'s own target was scored as a read', before: 'def f():\n    try:\n        go()\n    except Error as x:\n        pass\n    return x\n', after: 'def f():\n    try:\n        go()\n    except Error as x:\n        pass\n    if not x:\n        return None\n    return x\n' },
+  { name: '`import mod as x` (finding 3)', why: 'an import reads no local', before: 'def f():\n    head()\n    import mod as x\n    return x\n', after: 'def f():\n    head()\n    import mod as x\n    if not x:\n        return None\n    return x\n' },
+  { name: 'a walrus target (finding 3)', why: 'the name before `:=` is a target, not a read', before: 'def f(src):\n    head()\n    if (x := next(src)) is None:\n        pass\n    return x\n', after: 'def f(src):\n    head()\n    if (x := next(src)) is None:\n        pass\n    if not x:\n        return None\n    return x\n' },
+  { name: 'an in-place mutation in front (finding 3)', why: '`x.append(1)` binds the operand', before: 'def f(x):\n    x.append(1)\n    return x\n', after: 'def f(x):\n    x.append(1)\n    if not x:\n        return None\n    return x\n' },
+  { name: '`global x` (finding 3)', why: 'a scope declaration reads nothing', before: 'def f():\n    head()\n    global x\n    return x\n', after: 'def f():\n    head()\n    global x\n    if not x:\n        return None\n    return x\n' },
+  { name: 'a subscript assignment in front (finding 3)', why: '`x[0] = 1` is a bind, not a hoistable gap', before: 'def f(x):\n    x[0] = 1\n    return x\n', after: 'def f(x):\n    x[0] = 1\n    if not x:\n        return None\n    return x\n' },
+  { name: '`del x[0]` (finding 3)', why: '`del` is a bind, not a hoistable gap', before: 'def f(x):\n    del x[0]\n    return x\n', after: 'def f(x):\n    del x[0]\n    if not x:\n        return None\n    return x\n' },
 ];
-/** The recorded answers: choice cand_02 0.81 / escape 0.15, nouls 0.39 / 0.49 / 0.49 / 0.21. */
-const STATS_NOULS: Record<string, number> = { cand_01: 0.39, cand_02: 0.49, cand_03: 0.49, cand_04: 0.21 };
-const STATS_CHOICE: Record<string, number> = { cand_01: 0.04, cand_02: 0.81, cand_03: 0, cand_04: 0, none_of_these: 0.15 };
 
-function statsPassers(): VerifyOutcome[] {
-  return STATS_CANDIDATES.map(([id, text]) => plausibleOutcome(candidate(siteAt(STATS_FILE, STATS_GAP, 'insert'), text, { id, source: 'mutation', op: 'statement_insert' }), STATS_BASE));
-}
+describe('review findings 1 and 3: the rule is silent on every correct shape the review lists', () => {
+  for (const c of CORRECT_SHAPES) {
+    it(c.name, () => {
+      expect({ case: c.name, fires: lateGuardsOf('m.py', c.before, c.after) }).toEqual({ case: c.name, fires: [] });
+    });
+  }
 
-/** Answers keyed by the option KEY (the recorded rows are cand_01..cand_04, and two options share their text). */
-function byKey(choiceP: Record<string, number>, nouls: Record<string, number>): ReturnType<typeof scriptedAsk> {
-  return scriptedAsk((questions) => {
-    const out: Record<string, Answer> = {};
-    for (const [id, q] of Object.entries(questions)) {
-      if (q.type === 'choice') {
-        const keys = Object.keys(q.criteria);
-        const probabilities: Record<string, number> = {};
-        for (const k of keys) probabilities[k] = choiceP[k] ?? 0;
-        const best = keys.reduce((a, b) => ((probabilities[b] ?? 0) > (probabilities[a] ?? 0) ? b : a), keys[0] ?? '');
-        out[id] = { type: 'choice', choice: best, probabilities, confidence: 0.7 };
-      } else if (q.type === 'noul') {
-        out[id] = { type: 'noul', noul: nouls[id.replace(/^general_/, '')] ?? 0 };
-      } else {
-        throw new Error(`unexpected question ${id}`);
-      }
-    }
-    return out;
-  });
-}
-
-describe('stats (20260922-123643-rcnailmj): four late guards, no clean candidate in the pool', () => {
-  it('`late_guard` fires on every one of the four recorded candidates, the gold-shaped `if not values` included — it is placed late too', () => {
-    for (const o of statsPassers()) expect(suspicionSignals(o, STATS_GOAL)).toContain('late_guard');
-  });
-
-  it('the batch is arbitrated with the signals in the state and NOT committed: the pick answered general 0.49, below the two-signal vouch bound', async () => {
-    const mem = createGuardMemory(STATS_BASE);
-    const notes: string[] = [];
-    const ask = byKey(STATS_CHOICE, STATS_NOULS);
-    const d = await decide(statsPassers(), mem, STATS_GOAL, ask, { note: (n) => notes.push(n) });
-    expect(d).toMatchObject({ kind: 'continue', arbitrated: true, requests: 1, dropped: 4 });
-    expect(ask.calls).toHaveLength(1);
-    // the state named the placement on every option, which is what the record's Q16 could not see
-    const state = ask.calls[0]!.state as { signals?: Record<string, string[]>; signals_note?: string };
-    expect(Object.keys(state.signals ?? {})).toEqual(['cand_01', 'cand_02', 'cand_03', 'cand_04']);
-    expect(state.signals_note).toContain('computed from the source alone');
-    expect(notes.some((n) => n.includes('gold-free pool'))).toBe(true);
-    expect(notes.some((n) => n.includes('general 0.49') && n.includes('dropping the 4 passers'))).toBe(true);
-  });
-});
-
-describe('token_bucket (20260922-115943-acykmmph): the committed three-file LLM patch', () => {
-  const policy = sourceFile('src/policy.py', read(join(LADDER, 'token_bucket/src/policy.py')));
-  const bucket = sourceFile('src/bucket.py', BUCKET_SRC);
-  const limiter = sourceFile('src/limiter.py', read(join(LADDER, 'token_bucket/src/limiter.py')));
-  const tests = ['tests/test_bucket.py::test_wait_for_above_the_capacity_never_ends'];
-  const base = committedBase(policy, summary({ passed: 26, failing: tests, failures: [{ testId: tests[0]!, call: tests[0]!, expected: 'None', actual: '0.0' }] }), [bucket, limiter]);
-  const g = goalOf([failure(tests[0]!, 'None', '0.0')], { suspectedFiles: ['src/policy.py', 'src/bucket.py'] });
-  const POLICY_FIX = '    return TokenBucket(capacity=policy.burst, refill_per_second=policy.refill_rate, tokens=policy.burst, updated_at=now)';
-
-  /** An LLM sample that fixes policy.py and limiter.py correctly and puts the capacity guard late in bucket.py. */
-  const sample = (id: string, bucketLine: string): VerifyOutcome =>
-    plausibleOutcome(
-      candidate(siteAt(policy, 35), POLICY_FIX, {
-        id,
-        source: 'llm',
-        op: `sample_0_${id.slice(-1)}`,
-        prior: 1,
-        extraEdits: [
-          { path: 'src/bucket.py', line: 40, kind: 'replace', text: bucketLine },
-          { path: 'src/limiter.py', line: 31, kind: 'replace', text: '        if wait == 0.0:' },
-        ],
-      }),
-      base,
-    );
-
-  it('the late guard is found in an EXTRA EDIT of another file, not at the candidate\'s own site', () => {
-    const o = sample('tb_01', '        if cost > self.capacity or self.refill_per_second <= 0.0:');
-    expect(newlyLateGuards(o.applied).map((x) => `${x.path} ${x.fn}`)).toEqual(['src/bucket.py TokenBucket.wait_for']);
-    expect(suspicionSignals(o, g)).toContain('late_guard');
-    // the gold's own three hunks carry no late guard at all
-    const gold = sample('tb_gold', '        if self.refill_per_second <= 0.0:');
-    expect(newlyLateGuards(gold.applied)).toEqual([]);
-    expect(suspicionSignals(gold, g)).not.toContain('late_guard');
-  });
-
-  it('two late-guard samples in one behaviour cluster are arbitrated and refused at the recorded nouls 0.39 / 0.33', async () => {
-    const mem = createGuardMemory(base);
-    const passers = [sample('tb_01', '        if cost > self.capacity or self.refill_per_second <= 0.0:'), sample('tb_02', '        if self.refill_per_second <= 0.0 or cost > self.capacity:')];
-    const ask = byKey({ cand_01: 0.58, cand_02: 0.25, none_of_these: 0.17 }, { cand_01: 0.39, cand_02: 0.33 });
-    const notes: string[] = [];
-    const d = await decide(passers, mem, g, ask, { note: (n) => notes.push(n) });
-    expect(d).toMatchObject({ kind: 'continue', arbitrated: true, requests: 1, dropped: 2 });
-    expect(notes.some((n) => n.includes('general 0.39') && n.includes('dropping the 2 passers'))).toBe(true);
-  });
-
-  it('a sole passer whose only fault is the late guard is never dropped — it is put to Q16 and committed when Jev keeps it', async () => {
-    const mem = createGuardMemory(base);
-    const ask = byKey({}, { cand_01: 0.9 });
-    const d = await decide([sample('tb_01', '        if cost > self.capacity or self.refill_per_second <= 0.0:')], mem, g, ask);
-    expect(d.kind).toBe('commit');
-    expect(d.signals).toContain('late_guard');
-    expect(d.requests).toBe(1);
+  /**
+   * Review finding 1's headline: a gold in this repository's own real-world corpus.
+   * `bench/data/swebench-verified-30.gold.json` → `sympy__sympy-17139` inserts
+   * `if not rv.exp.is_real: return rv` behind `if not (rv.is_Pow and rv.base.func == f): return rv`.
+   * `rv.exp` is only meaningful once `rv.is_Pow` holds, so the prior guard is a narrowing.
+   */
+  it('sympy__sympy-17139: the gold patch is silent (a prior exiting guard on the same root is a narrowing)', () => {
+    const before = ['def _f(rv):', '    if not (rv.is_Pow and rv.base.func == f):', '        return rv', '', '    if (rv.exp < 0) == True:', '        return rv', '    return rv', ''].join('\n');
+    const after = ['def _f(rv):', '    if not (rv.is_Pow and rv.base.func == f):', '        return rv', '    if not rv.exp.is_real:', '        return rv', '', '    if (rv.exp < 0) == True:', '        return rv', '    return rv', ''].join('\n');
+    expect(lateGuardsOf('sympy/simplify/fu.py', before, after)).toEqual([]);
+    const mod = analyse(after);
+    const clause = guardClauses(mod, mod.blocks.find((b) => b.name === '_f')!).find((c) => c.test === 'not rv.exp.is_real')!;
+    // it IS at position > 0 and it IS dereferenced in front (`rv.exp < 0` is later, `rv.is_Pow`
+    // is earlier) — the narrowing is what keeps it silent
+    expect(clause.position).toBeGreaterThan(0);
+    expect(clause.perOperand['rv.exp.is_real']?.narrows).toBeGreaterThan(0);
   });
 });
 
 // ---------------------------------------------------------------------------------------
-// The sweep: no gold patch anywhere in the bench data adds a late guard, and none is refused
+// What the tightening costs: the three records the signal was built for
+// ---------------------------------------------------------------------------------------
+
+describe('the iteration-1 replay after the tightening (why `late_guard` left POOL_SUSPECT_SIGNALS)', () => {
+  const STATS_SRC = read(join(LADDER, 'stats/src/stats.py'));
+  const STATS_OVERFIT = STATS_SRC.replace('    return (ordered[mid - 1] + ordered[mid]) / 2', '    if not ordered:\n        raise ValueError("median of empty sequence")\n    return (ordered[mid - 1] + ordered[mid]) / 2');
+  const BUCKET_SRC = read(join(LADDER, 'token_bucket/src/bucket.py'));
+  const BUCKET_OVERFIT = BUCKET_SRC.replace('        if self.refill_per_second <= 0.0:', '        if cost > self.capacity or self.refill_per_second <= 0.0:');
+  const DC_SRC = read(join(QUIXBUGS, 'programs/detect_cycle.py'));
+  const DC_OVERFIT = DC_SRC.replace('        hare = hare.successor.successor', '        if not hare.successor.successor:\n            break\n        hare = hare.successor.successor');
+
+  it('`stats` is now silent: `ordered = sorted(values)` BINDS the operand in front of the guard', () => {
+    expect(lateGuardsOf('src/stats.py', STATS_SRC, STATS_OVERFIT)).toEqual([]);
+    const g = analyse(STATS_OVERFIT).blocks.find((b) => b.name === 'median')!;
+    const clause = guardClauses(analyse(STATS_OVERFIT), g).find((c) => c.test === 'not ordered')!;
+    // the dereference is there (`ordered[mid]`), and so is the bind that suppresses it
+    expect(clause.perOperand['ordered']).toMatchObject({ derefs: 1, binds: 1 });
+  });
+
+  it('`token_bucket` is now silent: `if self.tokens >= cost` only PLAIN-READS `cost`, and `self.sync(now)` is not a dereference of `self.capacity`', () => {
+    expect(lateGuardsOf('src/bucket.py', BUCKET_SRC, BUCKET_OVERFIT)).toEqual([]);
+    const mod = analyse(BUCKET_OVERFIT);
+    const clause = guardClauses(mod, mod.blocks.find((b) => b.name === 'wait_for')!).find((c) => c.test.startsWith('cost >'))!;
+    expect(clause.perOperand['cost']).toMatchObject({ derefs: 0, reads: 1 });
+    expect(clause.perOperand['self.capacity']).toMatchObject({ derefs: 0 });
+  });
+
+  it('`detect_cycle` is now silent: nothing in front dereferences `hare.successor.successor` (the prior guard dereferences `hare`)', () => {
+    expect(lateGuardsOf('detect_cycle.py', DC_SRC, DC_OVERFIT)).toEqual([]);
+    const mod = analyse(DC_OVERFIT);
+    const clause = guardClauses(mod, mod.blocks[0]!).find((c) => c.test === 'not hare.successor.successor')!;
+    expect(clause.perOperand['hare.successor.successor']).toMatchObject({ derefs: 0 });
+  });
+
+  it('so the signal is not swept-clean-AND-positive, and is a lone-passer signal only', () => {
+    expect([...POOL_SUSPECT_SIGNALS]).toEqual(['mutates_new_argument']);
+    expect(POOL_SUSPECT_SIGNALS.has('late_guard')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// The sweeps
 // ---------------------------------------------------------------------------------------
 
 interface GoldPatch {
@@ -268,9 +223,8 @@ interface GoldPatch {
 function quixbugsGolds(): GoldPatch[] {
   const out: GoldPatch[] = [];
   for (const f of readdirSync(join(QUIXBUGS, 'programs')).filter((x) => x.endsWith('.py'))) {
-    const after = join(QUIXBUGS, 'correct', f);
-    if (!existsSync(after)) continue;
-    out.push({ name: `quixbugs/${f}`, path: f, before: read(join(QUIXBUGS, 'programs', f)), after: read(after) });
+    if (!existsSync(join(QUIXBUGS, 'correct', f))) continue;
+    out.push({ name: `quixbugs/${f}`, path: f, before: read(join(QUIXBUGS, 'programs', f)), after: read(join(QUIXBUGS, 'correct', f)) });
   }
   return out;
 }
@@ -283,53 +237,113 @@ function ladderGolds(): GoldPatch[] {
     const srcDir = join(LADDER, task, 'src');
     if (!existsSync(goldDir) || !existsSync(srcDir)) continue;
     for (const f of walk(goldDir)) {
-      const before = join(srcDir, f);
-      if (!existsSync(before)) continue;
-      out.push({ name: `ladder/${task}/${f}`, path: `src/${f}`, before: read(before), after: read(join(goldDir, f)) });
+      if (!existsSync(join(srcDir, f))) continue;
+      out.push({ name: `ladder/${task}/${f}`, path: `src/${f}`, before: read(join(srcDir, f)), after: read(join(goldDir, f)) });
     }
   }
   return out;
 }
 
-describe('gold sweep: every gold patch of the bench data', () => {
-  const golds = [...quixbugsGolds(), ...ladderGolds()];
+/** Every Python hunk of a unified diff, as the before/after image of its own context window. */
+function hunkPatches(id: string, diff: string): GoldPatch[] {
+  const out: GoldPatch[] = [];
+  let path = '';
+  let before: string[] = [];
+  let after: string[] = [];
+  const flush = (): void => {
+    if (path.endsWith('.py') && (before.length > 0 || after.length > 0)) out.push({ name: `${id} ${path}`, path, before: `${before.join('\n')}\n`, after: `${after.join('\n')}\n` });
+    before = [];
+    after = [];
+  };
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('--- ')) continue;
+    if (line.startsWith('+++ b/')) {
+      flush();
+      path = line.slice('+++ b/'.length);
+      continue;
+    }
+    if (line.startsWith('@@') || line.startsWith('diff --git') || line.startsWith('index ')) {
+      if (line.startsWith('@@')) flush();
+      continue;
+    }
+    if (line.startsWith('-')) before.push(line.slice(1));
+    else if (line.startsWith('+')) after.push(line.slice(1));
+    else if (line.startsWith(' ')) {
+      before.push(line.slice(1));
+      after.push(line.slice(1));
+    }
+  }
+  flush();
+  return out;
+}
 
-  it('covers the 41 QuixBugs programs and every ladder task (the 20 short rungs, the 6 long-2 tier and the long/repository rungs beside them)', () => {
+function swebenchGolds(): GoldPatch[] {
+  const golds = JSON.parse(read(join(REPO_ROOT, 'bench/data/swebench-verified-30.gold.json'))) as Record<string, string>;
+  return Object.entries(golds).flatMap(([id, diff]) => hunkPatches(id, diff));
+}
+
+describe('gold sweeps: every corpus in the repository', () => {
+  const corpora: readonly [string, GoldPatch[]][] = [
+    ['quixbugs', quixbugsGolds()],
+    ['ladder', ladderGolds()],
+    ['swebench-verified-30', swebenchGolds()],
+  ];
+
+  it('covers the 41 QuixBugs programs, every ladder task, and all 30 SWE-bench Verified instances (the four fresh django ones included)', () => {
     expect(quixbugsGolds()).toHaveLength(41);
     const tasks = new Set(ladderGolds().map((p) => p.name.split('/')[1]));
     expect(tasks.size).toBeGreaterThanOrEqual(26);
-    for (const t of ['token_bucket', 'stats', 'deadline_queue', 'dep_order', 'hunk_merge', 'route_match', 'csv_schema']) expect(tasks.has(t)).toBe(true);
+    for (const t of ['token_bucket', 'stats', 'deadline_queue', 'route_match', 'csv_schema']) expect(tasks.has(t)).toBe(true);
+    const ids = new Set(swebenchGolds().map((p) => p.name.split(' ')[0]));
+    for (const i of ['sympy__sympy-17139', 'django__django-14787', 'django__django-16100', 'django__django-14725', 'django__django-15375']) expect(ids.has(i)).toBe(true);
   });
 
-  it('adds ZERO late guards', () => {
-    const firing = golds.filter((p) => lateGuardsOf(p.path, p.before, p.after).length > 0).map((p) => `${p.name}: ${lateGuardsOf(p.path, p.before, p.after).join(', ')}`);
-    expect(firing).toEqual([]);
-  });
+  for (const [name, golds] of corpora) {
+    it(`${name}: no gold patch adds a late guard`, () => {
+      const firing = golds.filter((p) => lateGuardsOf(p.path, p.before, p.after).length > 0).map((p) => `${p.name}: ${lateGuardsOf(p.path, p.before, p.after).join(', ')}`);
+      expect(firing).toEqual([]);
+    });
+  }
 
-  it('and is refused by no structural rule (the none-exit rejection and the `raises`-goal mutation rule stay silent too)', () => {
+  it('and no gold is refused by a structural rule (the none-exit rejection and the `raises`-goal mutation rule stay silent too)', () => {
     const raisesEverything = goalOf([failure('t', 'ValueError raised', 'ValueError not raised')]);
-    const refused = golds.filter((p) => {
+    const refused = [...quixbugsGolds(), ...ladderGolds()].filter((p) => {
       const applied = { files: [{ path: p.path, before: p.before, after: p.after }] };
       return structuralRejection(applied) !== null || mutationRefused(applied, raisesEverything);
     });
     expect(refused.map((p) => p.name)).toEqual([]);
   });
+});
 
-  it('and the sweep is a code-only property: nothing above asks Jev', async () => {
-    // `throwingAsk` proves it for the decision path too, on a gold with no signal at all
-    const wrapGoldFile = sourceFile('src/stats.py', STATS_SRC);
-    const mem = createGuardMemory(STATS_BASE);
-    const clean = plausibleOutcome(candidate(siteAt(wrapGoldFile, 19), '    mid = len(ordered) // 2', { id: 'noop_clean' }), STATS_BASE);
-    await expect(decide([clean], mem, STATS_GOAL, throwingAsk)).resolves.toMatchObject({ kind: 'commit', signals: [] });
+// ---------------------------------------------------------------------------------------
+// The signal is still wired to the lone-passer advisory
+// ---------------------------------------------------------------------------------------
+
+describe('a genuine late guard is still a lone-passer signal', () => {
+  const SRC = ['def handle(conn):', '    conn.open()', '    return conn.read()', ''].join('\n');
+  const FILE = sourceFile('svc.py', SRC);
+  const TEST = 'tests/test_svc.py::test_none_conn';
+  const BASE = committedBase(FILE, summary({ passed: 3, failing: [TEST], failures: [{ testId: TEST, call: TEST, expected: 'None', actual: 'AttributeError' }] }));
+  const GOAL = goalOf([failure(TEST, 'None', 'AttributeError')], { suspectedFiles: ['svc.py'] });
+
+  const late = (): VerifyOutcome =>
+    plausibleOutcome(candidate(siteAt(FILE, 3, 'insert'), '    if conn is None:\n        return None', { id: 'late_one', source: 'template', op: 'guard_none_return' }), BASE);
+
+  it('`late_guard` reaches `suspicionSignals`, so the advisory is asked about it', () => {
+    expect(suspicionSignals(late(), GOAL)).toContain('late_guard');
+  });
+
+  it('and a sole passer carrying it is never dropped — Jev keeps it and it commits', async () => {
+    const mem = createGuardMemory(BASE);
+    const ask = scriptedAsk((questions) => Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul' as const, noul: 0.9 }])));
+    const d = await decide([late()], mem, GOAL, ask);
+    expect(d.kind).toBe('commit');
+    expect(d.signals).toContain('late_guard');
+  });
+
+  it('the sweep is a code-only property: a clean lone passer asks nobody', async () => {
+    const mem = createGuardMemory(BASE);
+    const clean = plausibleOutcome(candidate(siteAt(FILE, 2), '    conn.open()', { id: 'noop_clean' }), BASE);
+    await expect(decide([clean], mem, GOAL, throwingAsk)).resolves.toMatchObject({ kind: 'commit', signals: [] });
   });
 });
-
-/** The state a Q15 request carries is JSON, so a `signals` block must serialise. */
-it('the signals block is plain JSON', () => {
-  const state: Json = { signals: { cand_01: ['adds a guard behind statements that already use the value it guards, where the same guard could have stood at the top of the block'] } };
-  expect(JSON.parse(JSON.stringify(state))).toEqual(state);
-});
-
-/** Type-only guard so the fixture list above cannot silently drift from the question shape. */
-const _q: Question | null = null;
-void _q;

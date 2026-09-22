@@ -208,6 +208,34 @@ describe('replace sites: Q5 ∪ Q5n ∪ SBFL, unioned and ordered', () => {
     expect(lines(q5Anchors(result))).toEqual([9, 8, 15]);
   });
 
+  /**
+   * Review finding 5. `evidenced` was a GLOBAL predicate over the whole localisation, so the
+   * fallback died the moment ANY one Choice answered — which is the normal Jev-on case, one
+   * function ranked and another escaped or unasked. The review's probe: a two-file localisation
+   * with `a.py:3` answered 0.8 and `b.py` fully escaped returned ONE anchor (`a.py:3`), dropping
+   * b.py's five code-order replace sites. It is now decided per function group.
+   */
+  it('a MIXED localisation keeps the escaped group`s code order and still cuts the answered group to its top-3', () => {
+    const a = fixtureFile('twofn.py');
+    const b = sf('other.py', ['def fb(x):', '    y = x + 1', '    z = y + 2', '    w = z + 3', '    return w', ''].join('\n'));
+    const replaceAt = (file: typeof a, line: number, p?: number): Site => {
+      const site = siteAt(file, line);
+      return p === undefined ? site : { ...site, evidence: { ...site.evidence, jevProbability: p } };
+    };
+    // a.py: one answered line plus two more the Choice ranked; b.py: five code-order lines, no probability
+    const localized: LocalizeResult = {
+      files: [{ path: a.path, probability: 1 }, { path: b.path, probability: 1 }],
+      functions: [],
+      requests: 1,
+      sites: [replaceAt(a, 3, 0.8), replaceAt(a, 4, 0.2), replaceAt(a, 5, 0.1), replaceAt(a, 6, 0.01), replaceAt(b, 2), replaceAt(b, 3), replaceAt(b, 4), replaceAt(b, 5)],
+    };
+    const anchors = q5Anchors(localized);
+    // b.py's four code-order sites all survive — they did before this fix only when a.py escaped too
+    expect(anchors.filter((x) => x.file.path === 'other.py').map((x) => x.line)).toEqual([2, 3, 4, 5]);
+    // and a.py, which DID get an answer, keeps its measured top-3 and drops the 0.01 noise line
+    expect(anchors.filter((x) => x.file.path === a.path).map((x) => x.line)).toEqual([3, 4, 5]);
+  });
+
   it('insert sites come first when Q5 put ≥ 0.3 on none_of_these or Q7 puts ≥ 0.5 on insert_new_line', async () => {
     const { result, escape } = await localizeWith({ line_9: 0.3, line_8: 0.2, [ESCAPE_KEY]: 0.35 });
     expect(escape()).toBeCloseTo(0.35, 6);

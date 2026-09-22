@@ -757,6 +757,13 @@ export interface TimeoutBackoff {
    * served p90 at every fire, so without this a proved-too-short deadline comes back.
    */
   floorMs: number;
+  /**
+   * OOS iteration 3 review, finding 10: samples of this goal the provider actually SERVED
+   * (`end.kind === 'result'`) this run. Under `JEVCODE_DEADLINE_GROWTH=served` a zero-token
+   * timeout backs the deadline off only once this is non-zero — the evidence that waiting longer
+   * can pay. Counted in both arms; only `served` reads it.
+   */
+  served: number;
 }
 
 /** The fired samples of a round that were never served: settled without a result and rate-limited (`SampleArrival.rateLimited`). */
@@ -810,7 +817,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   function backoffOf(goalId: string): TimeoutBackoff {
     const cur = backoff.get(goalId);
     if (cur !== undefined) return cur;
-    const fresh: TimeoutBackoff = { streak: 0, growths: 0, paused: false, bookedThisRound: false, floorMs: 0 };
+    const fresh: TimeoutBackoff = { streak: 0, growths: 0, paused: false, bookedThisRound: false, floorMs: 0, served: 0 };
     backoff.set(goalId, fresh);
     return fresh;
   }
@@ -823,23 +830,26 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
    */
   function noteZeroTokenTimeout(goalId: string, klass: OracleClass, baseMs: number, firedAtMs: number): void {
     const b = backoffOf(goalId);
-    // OOS iteration 2: the deadline this sample actually waited is a high-water mark for the goal,
-    // booked whether or not the ROUND takes a growth — one round is one growth, but every proved
-    // deadline is evidence that nothing shorter can be right for this goal.
-    // OOS iteration 3, item 3: under `served` a timeout is NOT that evidence — nothing was served,
-    // so neither the mark nor the growth moves and only `noteServed` can raise the deadline.
-    if (growthMode === 'always') b.floorMs = Math.min(deadlineCeilingMs(klass), Math.max(b.floorMs, firedAtMs));
-    // review finding 10: ONE growth per round. A round fires its samples in parallel, so five
-    // zero-token timeouts are one observation of a provider serving nothing, not five.
+    // OOS iteration 3, item 3 as the review re-specified it (finding 10). `served` does not mean
+    // "never back off" — that arm could not raise a deadline at all, because `floorMs` only ever
+    // records a latency a sample beat, so it can never exceed the deadline that sample ran under.
+    // It means "back off only where there is evidence the provider ANSWERS this goal": one
+    // `end.kind === 'result'` earlier in the run. A provider that has served nothing for this goal
+    // stays at the class base however long it is given; a slow-but-working one backs off exactly
+    // as `always` does.
+    const grows = growthMode === 'always' || b.served > 0;
+    if (grows) b.floorMs = Math.min(deadlineCeilingMs(klass), Math.max(b.floorMs, firedAtMs));
+    // review finding 10 of iteration 2: ONE growth per round. A round fires its samples in
+    // parallel, so five zero-token timeouts are one observation of a provider serving nothing.
     if (b.bookedThisRound) return;
     b.bookedThisRound = true;
-    if (growthMode === 'always') b.growths += 1;
+    if (grows) b.growths += 1;
     b.streak += 1;
     emit(
       'llm:deadline',
-      growthMode === 'always'
-        ? `goal ${goalId}: this round timed out with 0 output tokens (nothing served); its next round waits ${goalDeadlineMs(klass, baseMs, b)} ms (${b.growths} × ${LLM_TIMEOUT_BACKOFF.factor} on ${baseMs} ms, capped at the ${klass} maximum ${deadlineCeilingMs(klass)} ms)`
-        : `goal ${goalId}: this round timed out with 0 output tokens (nothing served); ${DEADLINE_GROWTH_ENV_FLAG}=served, so the deadline does not grow on it — its next round waits ${goalDeadlineMs(klass, baseMs, b)} ms, the longest a sample of this goal was actually SERVED at`,
+      grows
+        ? `goal ${goalId}: this round timed out with 0 output tokens (nothing served); its next round waits ${goalDeadlineMs(klass, baseMs, b)} ms (${b.growths} × ${LLM_TIMEOUT_BACKOFF.factor} on ${baseMs} ms, floor ${b.floorMs} ms, capped at the ${klass} maximum ${deadlineCeilingMs(klass)} ms)`
+        : `goal ${goalId}: this round timed out with 0 output tokens (nothing served); ${DEADLINE_GROWTH_ENV_FLAG}=served and this goal has never had a sample served, so the deadline does not grow — its next round waits ${goalDeadlineMs(klass, baseMs, b)} ms, the ${klass} base`,
     );
     if (b.streak < LLM_TIMEOUT_BACKOFF.pauseAfter) return;
     b.streak = 0;
@@ -855,18 +865,21 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   }
 
   /**
-   * OOS iteration 3, item 3 (`served` only): the provider SERVED this sample after `ms`, so a
-   * deadline shorter than `ms` would have killed a sample that was going to answer. That — and
-   * nothing else in this mode — raises the goal's high-water mark, bounded by the class ceiling.
-   * Under `always` the mark is the timeouts' and this is a no-op.
+   * The provider SERVED a sample of this goal (`end.kind === 'result'`) after `ms`. Two things
+   * follow, and under `served` the first is what the whole arm turns on:
+   *   - the goal has evidence the provider answers it, so a later zero-token timeout may back the
+   *     deadline off (review finding 10: without this the arm was "no backoff", not "served");
+   *   - a deadline shorter than `ms` would have killed a sample that was going to answer, so the
+   *     goal's high-water mark is at least `ms` (bounded by the class ceiling).
    */
   function noteServedLatency(goalId: string, klass: OracleClass, ms: number): void {
-    if (growthMode !== 'served') return;
     const b = backoffOf(goalId);
+    b.served += 1;
+    if (growthMode !== 'served') return;
     const grown = Math.min(deadlineCeilingMs(klass), Math.max(b.floorMs, Math.round(ms)));
     if (grown <= b.floorMs) return;
     b.floorMs = grown;
-    emit('llm:deadline', `goal ${goalId}: a sample was SERVED after ${Math.round(ms)} ms; its next round waits at least that long (${DEADLINE_GROWTH_ENV_FLAG}=served: served evidence only, capped at the ${klass} maximum ${deadlineCeilingMs(klass)} ms)`);
+    emit('llm:deadline', `goal ${goalId}: a sample was SERVED after ${Math.round(ms)} ms; its next round waits at least that long (${DEADLINE_GROWTH_ENV_FLAG}=served, floor ${b.floorMs} ms, capped at the ${klass} maximum ${deadlineCeilingMs(klass)} ms)`);
   }
 
   /**
@@ -1041,7 +1054,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     servedMs.push(end.ms);
     // §4.8 rev 4: it answered inside the deadline, so the goal's zero-token-timeout streak is over
     noteProduced(st.input.goalId);
-    // OOS iteration 3, item 3: under `served` this is the ONLY evidence that grows the deadline
+    // OOS iteration 3, item 3: the goal now has served evidence — under `served` that is what
+    // lets a later zero-token timeout back its deadline off at all (review finding 10)
     noteServedLatency(st.input.goalId, st.input.klass, end.ms);
     const base: SampleArrival = { ...emptyArrival(k, 'valid', end.ms, ''), usage: result.usage, usd, generationId: result.generationId ?? null, rateLimited: result.rateLimited === true };
     if (isLengthStop(result.stopReason)) {

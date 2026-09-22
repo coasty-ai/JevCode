@@ -1341,12 +1341,15 @@ export interface GuardClause {
   test: string;
   /**
    * The operand paths the condition reads: a dotted chain that is not a call (`ordered`, `cost`,
-   * `self.capacity`, `hare.successor.successor`), builtins excluded. The ROOT of each is what the
-   * placement questions below are answered on, since reading `hare.successor` reads `hare` and
-   * rebinding `hare` invalidates every chain under it.
+   * `self.capacity`, `hare.successor.successor`), builtins excluded.
+   *
+   * Review finding 1: the EXACT path is what every question below is answered on. Collapsing
+   * `self.x` to the root `self` made `self.logger.debug(…)` count as "already reads" the operand
+   * of `if self.handler is None: return None`, which flags essentially every attribute guard in
+   * object-oriented code.
    */
   operands: string[];
-  /** roots of `operands`, de-duplicated */
+  /** roots of `operands`, de-duplicated (used for BINDING and NARROWING only, never for the dereference) */
   roots: string[];
   /**
    * Sibling-index chain from the function body down to this clause, the declarations of each
@@ -1359,12 +1362,29 @@ export interface GuardClause {
   position: number;
   /** how many non-declaration statements its own suite holds — with `path`, the check that the suite did not change shape */
   siblings: number;
-  /** siblings BEFORE it that read an operand (outside an assignment target) */
-  readsBefore: number;
-  /** siblings BEFORE it that bind an operand, assign an attribute of one, or mutate one in place */
-  bindsBefore: number;
-  /** the same two counts per operand ROOT, so a caller can ask about the operands a patch ADDED and no others */
-  perRoot: Record<string, { reads: number; binds: number }>;
+  /** the placement facts per operand PATH, so a caller can ask about the operands a patch ADDED and no others */
+  perOperand: Record<string, OperandPlacement>;
+}
+
+/**
+ * What the statements in front of a guard clause do to one of its operand paths. Only
+ * `derefs` can make a guard late; `binds` and `narrows` can only ever SUPPRESS it (review
+ * finding 1: a guard the code proves cannot be hoisted is not a placement choice).
+ */
+export interface OperandPlacement {
+  /**
+   * Preceding siblings whose subtree DEREFERENCES this exact path — `p.attr`, `p[…]` or
+   * `p.method(…)` — i.e. a use the guarded input would make fail. A bare occurrence is NOT one:
+   * `len(xs)`, `isinstance(v, M)`, `log.debug(xs)`, `for r in rows` and `[r for r in rows]` all
+   * read the operand and none of them can fail on the value the guard rejects.
+   */
+  derefs: number;
+  /** preceding siblings that bind the path's root, assign into the path, `del` it or mutate it in place */
+  binds: number;
+  /** preceding siblings that are themselves exiting guard clauses mentioning the path's root — a narrowing the guard depends on */
+  narrows: number;
+  /** preceding siblings that mention the path's root at all, outside a binding target (recorded, never a lateness input) */
+  reads: number;
 }
 
 /** The chain of `.NAME` after `k`, stopping before a call; `null` when the token is not a readable operand head. */
@@ -1407,20 +1427,54 @@ function subtreeStatements(node: SuiteNode): Statement[] {
   return out;
 }
 
-/** Does `st` READ `root` — an occurrence as a name that is not (only) a binding target? */
-function readsName(st: Statement, root: string): boolean {
+/**
+ * Token offsets of `st` that are BINDING TARGETS rather than reads. Review finding 3: the skip
+ * set used to cover only `assign`, `augassign` and `for`, so every other binder left its own
+ * target in the scan and the statement that CREATES a name was scored as one that reads it —
+ * `with open(p) as x:` then `if not x: return None` had no earlier position to stand in.
+ */
+function bindingTargetOffsets(st: Statement): Set<number> {
   const toks = st.tokens;
   const skip = new Set<number>();
-  if (st.kind === 'assign') for (const span of assignTargetSpans(toks)) for (const t of span) skip.add(t.start);
-  if (st.kind === 'augassign') {
-    const op = findTopLevel(toks, (t) => t.type === 'OP' && AUG_OPS.has(t.text));
-    if (op > 0) for (const t of toks.slice(0, op)) skip.add(t.start);
+  const addSpan = (span: readonly Token[]): void => {
+    for (const t of span) skip.add(t.start);
+  };
+  switch (st.kind) {
+    case 'assign':
+      for (const span of assignTargetSpans(toks)) addSpan(span);
+      break;
+    case 'augassign': {
+      const op = findTopLevel(toks, (t) => t.type === 'OP' && AUG_OPS.has(t.text));
+      if (op > 0) addSpan(toks.slice(0, op));
+      break;
+    }
+    case 'for': {
+      const start = isKw(toks[0], 'async') ? 2 : 1;
+      const inIdx = findTopLevel(toks, (t) => isKw(t, 'in'), start);
+      if (inIdx > start) addSpan(toks.slice(start, inIdx));
+      break;
+    }
+    case 'import':
+    case 'from_import':
+    case 'global':
+    case 'nonlocal':
+      // an import or a scope declaration binds and reads nothing local
+      addSpan(toks);
+      break;
+    default:
+      break;
   }
-  if (st.kind === 'for') {
-    const start = isKw(toks[0], 'async') ? 2 : 1;
-    const inIdx = findTopLevel(toks, (t) => isKw(t, 'in'), start);
-    if (inIdx > start) for (const t of toks.slice(start, inIdx)) skip.add(t.start);
-  }
+  // `with … as x[, … as y]:` and `except E as x:` — every name after an `as`
+  for (let k = 0; k + 1 < toks.length; k++) if (isKw(toks[k], 'as')) skip.add(toks[k + 1]!.start);
+  // walrus: the NAME immediately before `:=` is a target, not a read
+  for (let k = 1; k < toks.length; k++) if (isOp(toks[k], ':=') && toks[k - 1]?.type === 'NAME') skip.add(toks[k - 1]!.start);
+  return skip;
+}
+
+/** Does `st` READ `root` — an occurrence as a name that is not a binding target? (recorded only; never a lateness input) */
+function readsName(st: Statement, root: string): boolean {
+  const toks = st.tokens;
+  const skip = bindingTargetOffsets(st);
   for (let k = 0; k < toks.length; k++) {
     const t = toks[k]!;
     if (t.type !== 'NAME' || t.text !== root) continue;
@@ -1431,11 +1485,62 @@ function readsName(st: Statement, root: string): boolean {
   return false;
 }
 
-/** Does `st` BIND `root`, assign an attribute of it, or mutate it in place with one of the container methods? */
+/** The token index just past `path` when it starts at `k` as a whole dotted chain, else -1. */
+function dottedChainEnd(toks: readonly Token[], k: number, parts: readonly string[]): number {
+  if (isOp(toks[k - 1], '.')) return -1;
+  let j = k;
+  for (let i = 0; i < parts.length; i++) {
+    const t = toks[j];
+    if (t === undefined || t.type !== 'NAME' || t.text !== parts[i]) return -1;
+    j += 1;
+    if (i + 1 < parts.length) {
+      if (!isOp(toks[j], '.')) return -1;
+      j += 1;
+    }
+  }
+  return j;
+}
+
+/**
+ * Does `st` DEREFERENCE the exact dotted `path` — use it as the base of an attribute access, a
+ * subscript or a method call, i.e. in a way the value the guard rejects would make fail?
+ *
+ * Review finding 1: a bare occurrence is not one. `len(xs)`, `isinstance(v, M)`,
+ * `log.debug(xs)`, `for r in rows` and `[r.name for r in rows]` all mention the operand and none
+ * of them fails on `None` / empty, so none of them is evidence that a guard behind it is late.
+ */
+function dereferencesPath(st: Statement, path: string): boolean {
+  const parts = path.split('.');
+  const toks = st.tokens;
+  const skip = bindingTargetOffsets(st);
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k]!;
+    if (t.type !== 'NAME' || t.text !== parts[0] || skip.has(t.start)) continue;
+    const end = dottedChainEnd(toks, k, parts);
+    if (end < 0) continue;
+    const next = toks[end];
+    if (next === undefined) continue;
+    if (isOp(next, '.') || isOp(next, '[') || isOp(next, '(')) return true;
+  }
+  return false;
+}
+
+/**
+ * Does `st` BIND `root`, assign into it, `del` it, or mutate it in place? Review finding 3 adds
+ * the subscript-assignment receiver (`x[0] = 1`) and `del x` / `del x[0]`, which used to be
+ * neither a read nor a bind and so read as "hoistable".
+ */
 function bindsName(st: Statement, root: string): boolean {
   if (st.binds.includes(root)) return true;
   if (st.attrAssigns.some((a) => a.receiver === root)) return true;
   const toks = st.tokens;
+  const headIsRoot = (span: readonly Token[]): boolean => span[0]?.type === 'NAME' && span[0].text === root;
+  if (st.kind === 'assign') for (const span of assignTargetSpans(toks)) if (headIsRoot(span)) return true;
+  if (st.kind === 'augassign') {
+    const op = findTopLevel(toks, (t) => t.type === 'OP' && AUG_OPS.has(t.text));
+    if (op > 0 && headIsRoot(toks.slice(0, op))) return true;
+  }
+  if (st.keyword === 'del' && headIsRoot(toks.slice(1))) return true;
   for (let k = 0; k + 3 < toks.length; k++) {
     const recv = toks[k]!;
     if (recv.type !== 'NAME' || recv.text !== root || isOp(toks[k - 1], '.')) continue;
@@ -1477,6 +1582,18 @@ function isGuardClause(nodes: readonly SuiteNode[], i: number): boolean {
   return GUARD_EXIT_KINDS.has(last.st.kind) || branchExits(last);
 }
 
+/** Does this sibling NARROW `root` — is it itself an exiting guard clause whose condition mentions it? */
+function narrowsRoot(siblings: readonly SuiteNode[], i: number, root: string): boolean {
+  const n = siblings[i]!;
+  if (!isGuardClause(siblings, i) || n.st.colonIndex === null) return false;
+  const cond = n.st.tokens.slice(1, n.st.colonIndex);
+  for (let k = 0; k < cond.length; k++) {
+    const t = cond[k]!;
+    if (t.type === 'NAME' && t.text === root && !isOp(cond[k - 1], '.')) return true;
+  }
+  return false;
+}
+
 /** Walk one suite level, recording its guard clauses, then recurse into the suites under it. */
 function collectGuards(nodes: readonly SuiteNode[], prefix: readonly number[], out: GuardClause[]): void {
   const siblings = nodes.filter((n) => !isDeclaration(n.st));
@@ -1484,12 +1601,16 @@ function collectGuards(nodes: readonly SuiteNode[], prefix: readonly number[], o
     if (isGuardClause(siblings, i) && n.st.colonIndex !== null) {
       const operands = conditionOperands(n.st.tokens.slice(1, n.st.colonIndex));
       const roots = uniq(operands.map((p) => p.split('.')[0] ?? p));
-      const priors = siblings.slice(0, i).map(subtreeStatements);
-      const perRoot: Record<string, { reads: number; binds: number }> = {};
-      for (const r of roots) {
-        perRoot[r] = {
-          reads: priors.filter((sts) => sts.some((s) => readsName(s, r))).length,
-          binds: priors.filter((sts) => sts.some((s) => bindsName(s, r))).length,
+      const before = siblings.slice(0, i);
+      const priors = before.map(subtreeStatements);
+      const perOperand: Record<string, OperandPlacement> = {};
+      for (const p of operands) {
+        const root = p.split('.')[0] ?? p;
+        perOperand[p] = {
+          derefs: priors.filter((sts) => sts.some((s) => dereferencesPath(s, p))).length,
+          binds: priors.filter((sts) => sts.some((s) => bindsName(s, root))).length,
+          narrows: before.filter((_, k) => narrowsRoot(siblings, k, root)).length,
+          reads: priors.filter((sts) => sts.some((s) => readsName(s, root))).length,
         };
       }
       out.push({
@@ -1500,9 +1621,7 @@ function collectGuards(nodes: readonly SuiteNode[], prefix: readonly number[], o
         path: [...prefix, i],
         position: i,
         siblings: siblings.length,
-        readsBefore: priors.filter((sts) => roots.some((r) => sts.some((s) => readsName(s, r)))).length,
-        bindsBefore: priors.filter((sts) => roots.some((r) => sts.some((s) => bindsName(s, r)))).length,
-        perRoot,
+        perOperand,
       });
     }
     collectGuards(n.body, [...prefix, i], out);
@@ -1520,51 +1639,55 @@ export function guardClauses(mod: PyModule, block: Block): GuardClause[] {
   return out;
 }
 
-/** The clause's placement counts over a subset of its operand roots (all of them by default). */
-export function guardPlacement(g: GuardClause, roots?: readonly string[]): { reads: number; binds: number } {
-  if (roots === undefined) return { reads: g.readsBefore, binds: g.bindsBefore };
-  let reads = 0;
-  let binds = 0;
-  for (const r of roots) {
-    const c = g.perRoot[r];
+/** The clause's placement facts over a subset of its operand PATHS (all of them by default). */
+export function guardPlacement(g: GuardClause, operands?: readonly string[]): OperandPlacement {
+  const keys = operands ?? g.operands;
+  const out: OperandPlacement = { derefs: 0, binds: 0, narrows: 0, reads: 0 };
+  for (const p of keys) {
+    const c = g.perOperand[p];
     if (c === undefined) continue;
-    reads = Math.max(reads, c.reads);
-    binds = Math.max(binds, c.binds);
+    out.derefs = Math.max(out.derefs, c.derefs);
+    out.binds = Math.max(out.binds, c.binds);
+    out.narrows = Math.max(out.narrows, c.narrows);
+    out.reads = Math.max(out.reads, c.reads);
   }
-  return { reads, binds };
+  return out;
 }
 
 /**
- * Is this guard clause LATE — placed behind statements it should have stood in front of?
+ * Is this guard clause LATE — placed behind a use of its own operand that the value it rejects
+ * would have made fail?
  *
- * Two shapes, both differences of POSITION rather than thresholds (OOS iteration 3, item 1; the
- * evidence is the two overfits of experiments/results/llm-jev-iter1.md §4.2 and §5 measured
- * against their own golds, which are THE SAME GUARD at the top of the block):
+ * ONE shape, and every clause of it is a suppression (OOS iteration 3 review, finding 1):
  *
- *   (a) a sibling BEFORE the guard already READ one of its operands, so the guard cannot protect
- *       the code it sits behind. `stats` inserted `if not ordered: raise ValueError(…)` after
- *       `mid = len(ordered) // 2` and `if len(ordered) % 2: return float(ordered[mid])`; the gold
- *       inserts `if not values: raise ValueError(…)` as the FIRST statement of `median`.
- *       `token_bucket` added `cost > self.capacity` as a disjunct of `if self.refill_per_second
- *       <= 0.0:` — behind `if self.tokens >= cost: return 0.0`, which reads `cost` — where the gold
- *       inserts `if cost > self.capacity: return None` at the top of `wait_for`.
- *   (b) `hoistable`: no sibling before it BINDS or mutates any of its operands, so the guard could
- *       stand at the top of the block unchanged and its position is arbitrary. Only offered for a
- *       guard the patch INSERTED: a patch that rewrites the condition of a guard already standing
- *       there did not choose the position at all, and on the gold sweep (`possible_change`'s
- *       `total < 0 or not coins`, `account`'s `amount > self.balance`, `csv_schema`'s
- *       `len(row) != len(schema.columns)`) shape (b) is exactly what a condition edit looks like.
+ *   a preceding sibling DEREFERENCES the operand's exact dotted path — `p.attr`, `p[…]`,
+ *   `p.method(…)` — **and** nothing in front of the guard BINDS that path's root **and** nothing
+ *   in front of it NARROWS the root with an exiting guard of its own.
  *
- * A guard already at the top of its block (`position === 0`) is never late: that is where the golds
- * put theirs. `x = compute()` followed by `if x is None: return` is not late either — the operand is
- * produced by the statement in front of it, so (a) is false and (b) is false.
+ * What each clause refuses to call late, with the review's own inputs:
+ *   - position 0 — that is where the golds put theirs;
+ *   - a bare occurrence: `n = len(xs)` then `if not xs: raise`, `log.debug(xs)`,
+ *     `for r in rows` / `[r.name for r in rows]` then `if not rows: return []`. None of those
+ *     statements can fail on the value the guard rejects, so none of them is evidence;
+ *   - the ROOT standing in for a path: `self.logger.debug(…)` says nothing about `self.handler`;
+ *   - a bind in front: `xs = list(xs); xs.sort()` then `if not xs: return None` — the code PROVES
+ *     the guard cannot be hoisted, so its position was not a choice;
+ *   - a narrowing in front: `if not isinstance(v, Mapping): return None` then `if "k" not in v:`,
+ *     and `bench/data/swebench-verified-30.gold.json` `sympy__sympy-17139`, whose gold inserts
+ *     `if not rv.exp.is_real: return rv` behind `if not (rv.is_Pow and …): return rv` — `rv.exp`
+ *     is only meaningful once `rv.is_Pow` holds.
+ *
+ * The old shape (b) ("nothing in front binds it, so it could stand at the top") is GONE: nothing
+ * ever binds a parameter, so it made every inserted guard on a parameter at position > 0 late
+ * unconditionally — it degenerated to "not the first statement".
  */
-export function isLateGuard(g: GuardClause, opts: { roots?: readonly string[]; hoistable?: boolean } = {}): boolean {
+export function isLateGuard(g: GuardClause, opts: { operands?: readonly string[] } = {}): boolean {
   if (g.position === 0) return false;
-  const roots = opts.roots ?? g.roots;
-  // a condition over nothing but literals and builtins (`if True:`) has no operand to be placed
-  // relative to, so its position says nothing and it is never late
-  if (roots.length === 0) return false;
-  const p = guardPlacement(g, roots);
-  return p.reads > 0 || ((opts.hoistable ?? true) && p.binds === 0);
+  const operands = opts.operands ?? g.operands;
+  if (operands.length === 0) return false;
+  // per PATH, never aggregated: one operand may be dereferenced in front while another is bound
+  return operands.some((p) => {
+    const c = g.perOperand[p];
+    return c !== undefined && c.derefs > 0 && c.binds === 0 && c.narrows === 0;
+  });
 }

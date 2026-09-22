@@ -95,6 +95,28 @@ describe('budget-starved paths', () => {
     expect(res.sites[0]!.file.path).toBe('lib/pkg7/mod377.py');
   });
 
+  /**
+   * Review finding 7. Iteration 3 claimed "a Jev-on trajectory is unchanged" and pinned only the
+   * FULLY-ANSWERED case. It is not unchanged when the budget is spent mid-beam: the beam
+   * functions the localiser could not afford a Choice for used to be DROPPED and now contribute
+   * their code order, so `loc.sites` grows and re-orders (measured by the review on this very
+   * fixture with SBFL: main `sites=11`, branch `sites=14`, geometry replace order `17,16,15,14`
+   * → `17,14,15,16`). That is accepted — "Jev routes, never gates", and a function the router had
+   * no opinion about must still be searchable — so the drift is PINNED here rather than denied.
+   * This case is the same call without the SBFL rows; the neighbouring SBFL test pins that one.
+   */
+  it('budget 1 with SBFL: the starved beam contributes its code order, and the Jev anchor still leads', async () => {
+    const { ask } = scriptedAsk((call) => answerAll(call, () => 0.1, () => ({ line_13: 0.6 })));
+    const row = (file: string, line: number, rank: number): RankedLine => ({ rank, file, line, ef: 1, ep: 0, score: 1 / rank, scores: { ochiai: 1 / rank, tarantula: 0, dstar: 0 } });
+    const sbfl = [row('pkg/utils.py', 13, 1), row('pkg/geometry.py', 17, 2)];
+    const res = await createLocalizer().localize({ ask, task: 'fix', files: twoFileWorkspace(), failures: [], sbfl, signal: signal(), budget: { maxRequests: 1 } });
+    const geometry = res.sites.filter((s) => s.file.path === 'pkg/geometry.py' && s.kind === 'replace').map((s) => s.line);
+    expect({ sites: res.sites.length, geometry }).toEqual({ sites: 14, geometry: [17, 14, 15, 16] });
+    // the Jev anchor still leads, and the second beam function is present only in code order
+    expect(res.sites[0]).toMatchObject({ line: 13, kind: 'replace' });
+    expect(res.sites.some((s) => s.evidence.notes.some((n) => n.includes('no Jev request left for this function')))).toBe(true);
+  });
+
   it('budget 1 on a multi-file workspace still asks one line Choice in the traceback function', async () => {
     const { ask, calls } = scriptedAsk((call) => answerAll(call, () => 0.1, () => ({ line_17: 0.8 })));
     const res = await createLocalizer().localize({ ask, task: 'fix', files: twoFileWorkspace(), failures: [GEOMETRY_FAILURE], traceback: GEOMETRY_TRACEBACK, signal: signal(), budget: { maxRequests: 1 } });

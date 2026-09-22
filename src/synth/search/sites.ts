@@ -573,11 +573,14 @@ export function q5Anchors(localized: LocalizeResult, perFunction = ANCHORS_PER_F
   // Jev answer ("below 0.05 a line is noise"); it cannot also mean "no answer at all", which is
   // §1.2 clause 3's fallback trigger. When not one replace site of the localisation carries a
   // probability, the localiser's own order stands in — it is already the code order.
-  const evidenced = localized.sites.some((s) => s.kind === 'replace' && s.evidence.jevProbability !== undefined);
+  // Review finding 5: `evidenced` is decided PER GROUP, not over the whole localisation. A global
+  // predicate killed the fallback the moment any one Choice answered, which is the normal Jev-on
+  // case (one function ranked, another escaped or unasked): on a two-file localisation with
+  // `a.py:3` answered 0.8 and `b.py` fully escaped, b.py's five code-order replace sites were all
+  // dropped — the very "no replace site at all" bug this fallback exists to prevent.
   const groups = new Map<string, Site[]>();
   for (const s of localized.sites) {
     if (s.kind !== 'replace') continue;
-    if (evidenced && (s.evidence.jevProbability === undefined || s.evidence.jevProbability < minP)) continue;
     if (isDefLine(s.file, s.line) || !isCodeLine(s.file, s.line)) continue;
     const k = `${s.file.path}:${s.block?.startLine ?? 'module'}`;
     const g = groups.get(k) ?? [];
@@ -585,9 +588,16 @@ export function q5Anchors(localized: LocalizeResult, perFunction = ANCHORS_PER_F
     groups.set(k, g);
   }
   const out: Site[] = [];
-  // with no Jev evidence anywhere the per-function cut is a ranking cut with nothing to rank, so
-  // the whole code order of each located function is offered and the site budget decides
-  for (const g of groups.values()) out.push(...(evidenced ? byDesc(g, (s) => s.evidence.jevProbability ?? 0).slice(0, perFunction) : g));
+  for (const g of groups.values()) {
+    const evidenced = g.some((s) => s.evidence.jevProbability !== undefined);
+    // with no Jev evidence in THIS group the per-function cut is a ranking cut with nothing to
+    // rank, so the whole code order of the function is offered and the site budget decides
+    if (!evidenced) {
+      out.push(...g);
+      continue;
+    }
+    out.push(...byDesc(g.filter((s) => (s.evidence.jevProbability ?? 0) >= minP), (s) => s.evidence.jevProbability ?? 0).slice(0, perFunction));
+  }
   return byDesc(out, (s) => (s.evidence.jevProbability ?? 0) * weight(s));
 }
 

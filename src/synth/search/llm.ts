@@ -31,8 +31,9 @@ import { buildFixSystemPrompt, buildFixUserMessage, hintSchedule, listingSet, PR
 import { orderByQ17, type Q17Order } from '../llm/rank.js';
 import { createLlmSource, deadlineGrowthFrom, samplesFor, type CancelReason, type DeadlineGrowthMode, type LlmBudget, type LlmFireInput, type LlmPricing, type LlmRoundSummary, type LlmSource, type SampleArrival } from '../llm/source.js';
 import type { OracleClass } from '../llm/types.js';
+import { DEFAULT_LOCALIZER_OPTIONS } from '../localize/types.js';
 import { outline, tracebackFrames } from '../localize/outline.js';
-import type { LocalizeResult, SourceFile } from '../types.js';
+import type { LocalizeResult, Site, SourceFile } from '../types.js';
 import { heldPartialOutcome } from './bases.js';
 import { decideLlmN, llmClassOf, llmHoldOf } from './budget.js';
 import type { SearchMemory } from './memory.js';
@@ -383,16 +384,38 @@ export function listingsFor(files: ReadonlyMap<string, SourceFile>, loc: Localiz
     const f = files.get(p);
     if (f !== undefined) anchors.push({ path: p, line: 1, fn: null });
   }
-  for (const s of loc.sites) anchors.push({ path: s.file.path, line: s.line, fn: s.block?.name ?? null });
+  for (const s of promptAnchorSites(loc)) anchors.push({ path: s.file.path, line: s.line, fn: s.block?.name ?? null });
   for (const fn of loc.functions) anchors.push({ path: fn.file.path, line: fn.startLine, fn: fn.name });
   const listings = listingSet({ files, frames, anchors, maxListings: PROMPT_LIMITS_FIX.listings + Math.max(0, opts.widen ?? 0) });
   return { listings, frames, anchors };
 }
 
+/**
+ * The sites of `loc` that may reach the prompt, at most `anchorsPerFunction` per located function.
+ *
+ * Review finding 12: with `escapedAnchors` the escaped branch can produce ~40 anchors (and up to
+ * `40 × (2·window+1)` sites) for ONE function, and `listingsFor` fed every one of them to
+ * `listingSet`, which then picks its four `## Code` listings from a list the first function
+ * monopolises — a second located function is crowded out of the prompt entirely. The site LIST
+ * keeps all 40 (the search budget spends it); only what reaches the model is balanced.
+ */
+function promptAnchorSites(loc: LocalizeResult): Site[] {
+  const perFunction = new Map<string, number>();
+  const out: Site[] = [];
+  for (const s of loc.sites) {
+    const k = `${s.file.path}:${s.block?.startLine ?? 'module'}`;
+    const n = perFunction.get(k) ?? 0;
+    if (n >= DEFAULT_LOCALIZER_OPTIONS.anchorsPerFunction) continue;
+    perFunction.set(k, n + 1);
+    out.push(s);
+  }
+  return out;
+}
+
 /** The `## Localisation` rows: the deepest frames, then the Jev-ranked sites with their probabilities. */
 function localisationOf(frames: readonly ListingMember[], loc: LocalizeResult): LocalisationLine[] {
   const out: LocalisationLine[] = frames.map((f) => ({ path: f.path, line: f.line, fn: f.fn ?? null, origin: 'traceback' }));
-  for (const s of loc.sites.slice(0, PROMPT_LIMITS_FIX.jevLines)) {
+  for (const s of promptAnchorSites(loc).slice(0, PROMPT_LIMITS_FIX.jevLines)) {
     const row: LocalisationLine = { path: s.file.path, line: s.line, fn: s.block?.name ?? null, origin: 'jev' };
     if (s.evidence.jevProbability !== undefined) row.probability = s.evidence.jevProbability;
     out.push(row);

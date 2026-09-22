@@ -12,7 +12,7 @@ exports[`arbitrate: Q15 + Q16 in one request, measured wording and state shape >
             "deleting a branch no test reaches",
             "returning a constant that matches the tested cases",
             "a guard added after the statements that already use the value it guards, so the earlier uses stay unprotected",
-            "a guard naming a different variable than the one the failure dereferences",
+            "a guard on a variable that is not on the path from the failing input to the failure",
           ],
         },
         "true": {
@@ -20,7 +20,7 @@ exports[`arbitrate: Q15 + Q16 in one request, measured wording and state shape >
           "examples": [
             "an off-by-one bound corrected so every element is visited",
             "swapped arguments restored to the order the algorithm requires",
-            "a missing guard added in front of the code that uses the value, naming the variable the failure names",
+            "a missing guard added in front of the code that uses the value",
           ],
         },
       },
@@ -36,7 +36,7 @@ exports[`arbitrate: Q15 + Q16 in one request, measured wording and state shape >
             "deleting a branch no test reaches",
             "returning a constant that matches the tested cases",
             "a guard added after the statements that already use the value it guards, so the earlier uses stay unprotected",
-            "a guard naming a different variable than the one the failure dereferences",
+            "a guard on a variable that is not on the path from the failing input to the failure",
           ],
         },
         "true": {
@@ -44,7 +44,7 @@ exports[`arbitrate: Q15 + Q16 in one request, measured wording and state shape >
           "examples": [
             "an off-by-one bound corrected so every element is visited",
             "swapped arguments restored to the order the algorithm requires",
-            "a missing guard added in front of the code that uses the value, naming the variable the failure names",
+            "a missing guard added in front of the code that uses the value",
           ],
         },
       },

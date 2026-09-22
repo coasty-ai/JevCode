@@ -29,10 +29,10 @@ import {
   DEADLINE_GROWTH_ENV_FLAG,
   DEFAULT_DEADLINE_GROWTH,
   LLM_DEFAULT_GENERATION,
-  LLM_TIMEOUT_BACKOFF,
   createLlmSource,
   deadlineCeilingMs,
   deadlineGrowthFrom,
+  type DeadlineGrowthMode,
   type LlmBudget,
   type LlmFireInput,
   type LlmSource,
@@ -104,23 +104,59 @@ describe('`always` (the default) is iteration 2 unchanged', () => {
   });
 });
 
-describe('`served`: only a sample the provider actually served grows the deadline', () => {
-  it('a run of nothing but zero-token timeouts never grows anything — the 61 grown-deadline timeouts of the slice would have fired at the class default', async () => {
-    const src = createLlmSource({ generate: hanging, pricing: PRICING, generation: GEN, deadlineGrowth: 'served' });
-    const b = budget();
-    expect(src.fire(fireInput(b, { deadlineMs: 20 }))).toMatchObject({ fired: true, deadlineMs: 20 });
-    await drain(src);
-    // no growth, no floor — the timeout served nothing, so it is evidence for nothing
-    expect(src.timeoutBackoff('g1')).toMatchObject({ growths: 0, floorMs: 0 });
-    // and the streak is untouched, so the A/B moves the deadline and nothing else
-    expect(src.timeoutBackoff('g1').streak).toBe(1);
-    expect(src.fire(fireInput(b, { round: 2 }))).toMatchObject({ fired: true, deadlineMs: SCALED.maxMs });
-    await drain(src);
-    expect(src.timeoutBackoff('g1')).toMatchObject({ growths: 0, floorMs: 0, streak: 0, paused: true });
-    expect(LLM_TIMEOUT_BACKOFF.pauseAfter).toBe(2);
+/**
+ * Review finding 10. The shipped `served` arm could not raise a deadline at all: `growths` never
+ * incremented, and `floorMs` only ever recorded a latency a sample BEAT, so it can never exceed
+ * the deadline that sample ran under. The arm was "no timeout backoff", not "served evidence" —
+ * and the branch's own test only showed `floorMs = 37` because it pinned `deadlineMs: 1_000` on
+ * `fire`, a caller override the bench never uses.
+ *
+ * The arm now means what it says: a zero-token timeout backs the deadline off only once the
+ * provider has actually SERVED a sample of that goal (`end.kind === 'result'`). Both probes below
+ * are the review's own, through the real `fire` path with no deadline override, so the deadline
+ * sequence is the one the bench would see.
+ */
+describe('review finding 10: `served` grows on served evidence and starves a provider that never answers', () => {
+  /** The deadline each round of one goal fires at, driving `fire` exactly as the loop does. */
+  async function deadlines(mode: DeadlineGrowthMode, generate: GenerateFn, rounds: number): Promise<{ seq: number[]; backoff: ReturnType<LlmSource['timeoutBackoff']> }> {
+    const src = createLlmSource({ generate, pricing: PRICING, generation: GEN, deadlineGrowth: mode });
+    const b = budget({ roundsLeft: rounds + 2, samplesLeft: rounds + 2 });
+    const seq: number[] = [];
+    for (let round = 1; round <= rounds; round++) {
+      const fired = src.fire(fireInput(b, { round }));
+      if (fired.fired) seq.push(fired.deadlineMs);
+      // eslint-disable-next-line no-await-in-loop
+      await drain(src);
+    }
+    return { seq, backoff: src.timeoutBackoff('g1') };
+  }
+
+  it('a provider that NEVER answers stays at the class base under `served` and backs off under `always`', async () => {
+    const off = await deadlines('served', hanging, 4);
+    expect(off.seq).toEqual([SCALED.maxMs, SCALED.maxMs, SCALED.maxMs, SCALED.maxMs]);
+    expect(off.backoff).toMatchObject({ growths: 0, floorMs: 0, served: 0 });
+    const on = await deadlines('always', hanging, 4);
+    expect(on.seq).toEqual([20, 30, 45, 68]);
+    expect(on.backoff).toMatchObject({ growths: 4, floorMs: 68 });
   });
 
-  it('a SERVED sample past the current mark raises it, and a faster one never lowers it', async () => {
+  it('a slow-but-working provider backs off under `served` exactly as under `always` — one served sample is the evidence', async () => {
+    // round 1 is served (slowly), every later round times out with nothing: the provider answers
+    // this goal, so waiting longer is evidence-backed
+    let call = 0;
+    const flaky: GenerateFn = (req, o) => {
+      call += 1;
+      if (call > 1) return hanging(req, o);
+      return Promise.resolve({ text: '', toolCalls: [proposeFixCall([FIX])], usage: { inputTokens: 900, outputTokens: 120, costUsd: 0, calls: 1 }, stopReason: 'tool_use' } as Awaited<ReturnType<GenerateFn>>);
+    };
+    const served = await deadlines('served', flaky, 4);
+    expect(served.backoff.served).toBe(1);
+    expect(served.backoff.growths).toBeGreaterThan(0);
+    // rounds 2..4 grow exactly as `always` does once the goal has served evidence
+    expect(served.seq.slice(1)).toEqual([20, 30, 45]);
+  });
+
+  it('a served sample past the current mark still raises the goal floor, and a faster one never lowers it', async () => {
     const c = clock();
     let latency = 37;
     const scripted = scriptedGenerate(() => {
@@ -131,15 +167,13 @@ describe('`served`: only a sample the provider actually served grows the deadlin
     const b = budget();
     src.fire(fireInput(b, { deadlineMs: 1_000 }));
     await drain(src);
-    // served after 37 ms: a deadline below that would have killed a sample that was going to answer
-    expect(src.timeoutBackoff('g1')).toMatchObject({ growths: 0, floorMs: 37 });
+    expect(src.timeoutBackoff('g1')).toMatchObject({ floorMs: 37, served: 1 });
     latency = 5;
     src.fire(fireInput(b, { round: 2, deadlineMs: 1_000 }));
     await drain(src);
-    // the mark is a HIGH-water mark: a fast sample is not evidence the goal can go back to being quick
+    // the mark is a HIGH-water mark, and it is per goal like the growths
     expect(src.timeoutBackoff('g1')).toMatchObject({ floorMs: 37 });
-    // and it is per goal, like the growths
-    expect(src.timeoutBackoff('g2')).toMatchObject({ floorMs: 0 });
+    expect(src.timeoutBackoff('g2')).toMatchObject({ floorMs: 0, served: 0 });
   });
 
   it('the mark can never take a goal past its sampling class ceiling', async () => {
@@ -154,15 +188,13 @@ describe('`served`: only a sample the provider actually served grows the deadlin
     expect(src.timeoutBackoff('g1').floorMs).toBe(deadlineCeilingMs('quixbugs'));
   });
 
-  it('under `always` a served sample changes no mark: the two arms read different evidence, which is what the A/B compares', async () => {
-    const c = clock();
-    const scripted = scriptedGenerate(() => {
-      c.advance(37);
-      return { toolCall: proposeFixCall([FIX]), usage: { inputTokens: 900, outputTokens: 120 } };
-    });
-    const src = createLlmSource({ generate: scripted.generate, pricing: PRICING, generation: GEN, now: c.now, deadlineGrowth: 'always' });
-    src.fire(fireInput(budget(), { deadlineMs: 1_000 }));
-    await drain(src);
-    expect(src.timeoutBackoff('g1')).toMatchObject({ growths: 0, floorMs: 0 });
+  it('the `llm:deadline` line says what the number is in both arms', async () => {
+    const starved: string[] = [];
+    const s1 = createLlmSource({ generate: hanging, pricing: PRICING, generation: GEN, deadlineGrowth: 'served', emit: (_p, d) => starved.push(d) });
+    s1.fire(fireInput(budget(), { deadlineMs: 20 }));
+    await drain(s1);
+    expect(starved.some((d) => d.includes('has never had a sample served') && d.includes('the quixbugs base'))).toBe(true);
+    // and it no longer claims the number is "the longest a sample was actually SERVED at"
+    expect(starved.some((d) => d.includes('actually SERVED at'))).toBe(false);
   });
 });

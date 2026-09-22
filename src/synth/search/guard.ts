@@ -169,28 +169,31 @@ export const STRONG_SIGNALS_MIN = 2;
  * none of them". A signal a gold can carry turns a pool the gold is IN into a pool the rule calls
  * gold-free, and then the arbitration's vouch bound refuses the fix.
  *
- * Only two qualify today:
- *   - `late_guard` — swept in this branch: 0 of 41 QuixBugs gold patches, 0 of 65 ladder gold
- *     files (26 tasks), and 3 of the 46 committed patches of iteration 1, all three of them that
- *     measurement's correctness losses.
- *   - `mutates_new_argument` — swept over the same corpus by review-oos-iter-1-2026-09-22.md
- *     finding 2 ("Sweep of all 41 QuixBugs golds and 20 ladder golds: zero refusals").
+ * ONE qualifies today:
+ *   - `mutates_new_argument` — swept over the whole gold corpus by
+ *     review-oos-iter-1-2026-09-22.md finding 2 ("Sweep of all 41 QuixBugs golds and 20 ladder
+ *     golds: zero refusals").
  *
- * The others are excluded, each for a measured reason:
+ * Every other signal is excluded, each for a measured reason:
  *   - `adds_special_case` is the input of `fewestSpecialCases` and the golds add special cases
  *     too (`detect_cycle`'s gold adds one conditional and one literal);
  *   - `deletes_statement` fires on a gold-shaped REWRITE, which deletes statements by
  *     construction. Measured: ladder `units` with Jev on (run `20260922-165453-txeukybg`) —
- *     "every passer of the batch is structurally suspect and the pick
- *     `composite/donor_body_unit:parse_size:2stmt at src/units.py:25:replace`
- *     (deletes_statement, adds_special_case) answered general 0.50 < 0.7; dropping the 3 passers"
- *     — and the gold for `units` IS a rewrite of `parse_duration`'s three statements into five.
- *     That run passed before this rule and `replan_stop`s at 15 steps with it.
+ *     "…the pick `composite/donor_body_unit:parse_size:2stmt` (deletes_statement,
+ *     adds_special_case) answered general 0.50 < 0.7; dropping the 3 passers" — and the `units`
+ *     gold IS a rewrite of `parse_duration`'s three statements into five;
+ *   - `late_guard` was admitted by iteration 3 and is WITHDRAWN by its review. The rule it now
+ *     implements (a dereference of the exact operand path, with no bind and no narrowing in
+ *     front) is silent on all 41 QuixBugs golds, all 65 ladder gold files and all 92 Python hunks
+ *     of `bench/data/swebench-verified-30.gold.json` — but it is also silent on all three of
+ *     iteration 1's recorded overfits (`stats` binds `ordered` in front, `token_bucket` only
+ *     plain-reads `cost`, `detect_cycle` never dereferences `hare.successor.successor`). A signal
+ *     with no positive evidence on the records cannot be the evidence that a pool holds no gold;
  *   - `duplicates_block`, `guards_other_variable` and `dead_guard` have no gold sweep behind them
- *     yet, and `deletes_statement` is what an unswept signal costs. They stay lone-passer signals
- *     (where a single Q16 answer decides and nothing is dropped) until one is taken.
+ *     at all. All of these stay LONE-PASSER signals, where one Q16 answer decides and nothing is
+ *     dropped.
  */
-export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['mutates_new_argument', 'late_guard']);
+export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['mutates_new_argument']);
 /**
  * A hold is started or kept only while the step has this much left: the wall of ~15 median
  * QuixBugs runs per lane and two lanes' worth of SIEVE batches, so the decision that releases the
@@ -663,25 +666,41 @@ export function probeArgumentMutation(o: VerifyOutcome, signature: string | unde
 }
 
 /**
- * OOS iteration 3, item 1: the guard clauses this patch ADDS that are LATE — placed behind
- * statements that already read their operands, or (for an inserted one) hoistable to the top of
- * its block unchanged (`py/structure.ts isLateGuard`).
+ * Guard clauses of one function, memoised per (module, block). Review finding 15: `newlyLateGuards`
+ * runs once per contender and `collectGuards` is O(n²) in a suite's length, so an 8-contender
+ * decision on a 5,801-line repository module repeated a 59 ms walk eight times. The `ParseCache`
+ * already shares the `PyModule`; this shares the clause list keyed off that same object.
+ */
+const CLAUSE_CACHE = new WeakMap<PyModule, Map<number, readonly GuardClause[]>>();
+function clausesOf(mod: PyModule, block: Block): readonly GuardClause[] {
+  let byBlock = CLAUSE_CACHE.get(mod);
+  if (byBlock === undefined) {
+    byBlock = new Map();
+    CLAUSE_CACHE.set(mod, byBlock);
+  }
+  const hit = byBlock.get(block.index);
+  if (hit !== undefined) return hit;
+  const built = guardClauses(mod, block);
+  byBlock.set(block.index, built);
+  return built;
+}
+
+/**
+ * OOS iteration 3, item 1: the guard clauses this patch ADDS that are LATE — placed behind a
+ * DEREFERENCE of their own operand that the value they reject would have made fail, with nothing
+ * in front binding or narrowing it (`py/structure.ts isLateGuard`).
  *
  * A clause is the patch's when no clause of the same function's pre-patch revision spells the same
  * test, and the two ways of adding one are told apart by the clause's sibling PATH, which a
  * condition rewrite leaves alone and an insertion shifts:
  *
- *   - INSERTED (no pre-patch guard clause at that path): judged on all of its operands, shape (a)
- *     or (b). `stats` inserted `if not ordered: raise ValueError(…)` at position 3 of `median`,
- *     behind two statements that read `ordered`; `detect_cycle` inserted
- *     `if not hare.successor.successor: break` at position 2 of the `while True:` suite, behind
- *     `if hare.successor is None: return False`, which reads `hare`.
- *   - EDITED (a pre-patch guard clause stands at that path): judged on shape (a) only, and only on
- *     the operand roots the edit ADDED — the position was not the patch's choice. `token_bucket`
- *     added `cost > self.capacity` to `if self.refill_per_second <= 0.0:`, and `cost` is read by
- *     `if self.tokens >= cost: return 0.0` in front of it. The three golds that edit a condition
- *     in place add no operand root (`amount > self.balance`, `len(row) != len(schema.columns)`) or
- *     add one nothing in front of them reads (`possible_change`'s `not coins`), so none is late.
+ *   - INSERTED (no pre-patch guard clause at that path): judged on all of its operand paths.
+ *   - EDITED (a pre-patch guard clause stands at that path): judged only on the operand paths the
+ *     edit ADDED — the position was not the patch's choice.
+ *
+ * Review finding 1: the rule no longer has a second "hoistable" shape, and the dereference is
+ * matched on the exact dotted path, so `self.logger.debug(…)` is not evidence about `self.handler`
+ * and `len(xs)` is not evidence about `xs`.
  */
 export function newlyLateGuards(applied: Pick<AppliedCandidate, 'files'>, cache?: ParseCache): { path: string; fn: string; guard: GuardClause }[] {
   const out: { path: string; fn: string; guard: GuardClause }[] = [];
@@ -690,20 +709,17 @@ export function newlyLateGuards(applied: Pick<AppliedCandidate, 'files'>, cache?
     const after = parsed(f.after, cache);
     if (before === null || after === null) continue;
     for (const p of functionPairs(before, after)) {
-      const wasClauses = guardClauses(before, p.before);
+      const wasClauses = clausesOf(before, p.before);
       const wasTests = new Set(wasClauses.map((g) => g.test));
       const atPath = new Map(wasClauses.map((g) => [g.path.join('.'), g] as const));
-      for (const g of guardClauses(after, p.after)) {
+      for (const g of clausesOf(after, p.after)) {
         if (wasTests.has(g.test)) continue;
         // A clause at the same path in a suite of the same length is the SAME clause with a
         // rewritten condition; anything else (a suite that grew or shrank, a path nothing stood at)
         // is the patch placing a guard where none was, and the whole placement is the patch's.
         const at = atPath.get(g.path.join('.'));
         const stood = at !== undefined && at.siblings === g.siblings ? at : undefined;
-        const late =
-          stood === undefined
-            ? isLateGuard(g)
-            : isLateGuard(g, { roots: g.roots.filter((r) => !stood.roots.includes(r)), hoistable: false });
+        const late = stood === undefined ? isLateGuard(g) : isLateGuard(g, { operands: g.operands.filter((p2) => !stood.operands.includes(p2)) });
         if (late) out.push({ path: f.path, fn: qualifiedName(after, p.after), guard: g });
       }
     }
@@ -934,11 +950,24 @@ export const GENERAL_PREFIX = 'general_';
  * it — the patch is literally a missing guard being added — while the `false` side had no example
  * of a guard that is added in the wrong PLACE or on the wrong VARIABLE. Both of the shapes the
  * code-computed signals see (`guards_other_variable`, `late_guard`) were therefore unnamed on the
- * side they belong to. The `true` example is kept and made explicit about what "exactly where"
- * means (in front of the code that dereferences the value); the `false` side gains the two
- * counter-examples, and `signals` in the state points at the candidates the code found them on.
- * Both sides keep ≥ 2 examples (`src/jev/questions.ts` enforces it) and the question still never
- * counts anything.
+ * side they belong to. The `true` example is kept and made explicit about WHERE the guard goes;
+ * the `false` side gains the two counter-examples. Both sides keep ≥ 2 examples
+ * (`src/jev/questions.ts` enforces it) and the question still never counts anything.
+ *
+ * Review finding 4: the `true` example must NOT also require the guard to name the variable the
+ * failure names, and the `false` counter-example must not be a name match. `stats`' own gold
+ * guards the parameter `values` while the failure is an `IndexError` on the derived local
+ * `ordered` (`src/stats.py:22`, `ordered[mid - 1]`); a name match marks that gold DOWN, and
+ * guarding the parameter while the traceback names a derived local is the majority shape. The
+ * counter-example is therefore about the DATA PATH from the failing input to the failure — which
+ * `values → ordered` is on and `detect_cycle`'s `tortoise.successor` is not.
+ *
+ * Review findings 8 and 13: the signals are NOT shown to Jev. The 0.3 / 0.7 bounds were
+ * calibrated on a signal-free state and the recorded 0.44 / 0.49 / 0.39 answers were measured on
+ * one, so a state that names a candidate's suspicious properties would depress the very Noul
+ * those bounds gate on (and an annotation present on some options and absent on others reads as
+ * "not computed" rather than "clean"). The signals stay code-side: they decide whether the code
+ * ranking rules are skipped and which bound applies, never what Jev is told.
  */
 export const GENERAL_CRITERIA: NoulCriteriaSpec = {
   true: {
@@ -946,7 +975,7 @@ export const GENERAL_CRITERIA: NoulCriteriaSpec = {
     examples: [
       'an off-by-one bound corrected so every element is visited',
       'swapped arguments restored to the order the algorithm requires',
-      'a missing guard added in front of the code that uses the value, naming the variable the failure names',
+      'a missing guard added in front of the code that uses the value',
     ],
   },
   false: {
@@ -957,7 +986,7 @@ export const GENERAL_CRITERIA: NoulCriteriaSpec = {
       'deleting a branch no test reaches',
       'returning a constant that matches the tested cases',
       'a guard added after the statements that already use the value it guards, so the earlier uses stay unprotected',
-      'a guard naming a different variable than the one the failure dereferences',
+      'a guard on a variable that is not on the path from the failing input to the failure',
     ],
   },
 };
@@ -972,10 +1001,6 @@ export const SUSPICION_SIGNAL_WHY: Readonly<Record<SuspicionSignal, string>> = {
   mutates_new_argument: 'mutates in place a parameter the pre-patch code left alone',
   late_guard: 'adds a guard behind statements that already use the value it guards, where the same guard could have stood at the top of the block',
 };
-
-/** Explains `signals`; added to the measured state only when the code found at least one. */
-export const SIGNALS_NOTE =
-  'Each entry of `signals` is a property of that candidate\'s diff that the harness computed from the source alone, before and after the patch — not an opinion and not a test result. A candidate with signals still passes every test; the signals say what is unusual about HOW it passes them. Judge each option on the code; the signals are evidence, not a verdict.';
 
 export function generalInstructions(key: string): string {
   return `Is \`candidates.${key}\` a correct general fix: with this replacement, does \`program\` compute the right result for every valid input, not just for the listed \`tests\`?`;
@@ -996,6 +1021,12 @@ export interface Representative {
 export interface ArbitrationResult extends Arbitration {
   representatives: Representative[];
   state: Json;
+  /**
+   * Per representative key: did Jev actually return a Noul for it? `noul` maps a missing or
+   * wrong-shaped answer to 0, which a caller cannot tell from a confident "no" — and review
+   * finding 11 is precisely a caller that refused a whole pool on that 0.
+   */
+  noulAnswered: Record<string, boolean>;
 }
 
 /**
@@ -1066,10 +1097,13 @@ function optionDescription(c: Candidate): string {
 }
 
 /**
- * The measured state: `{ task, program, tests, buggy_program_failure, candidates }`, plus
- * `signals` when the caller computed the code signals (OOS iteration 3, item 2).
+ * The measured state: `{ task, program, tests, buggy_program_failure, candidates }`, verbatim.
+ *
+ * Review findings 8 and 13: it carries NO code signals. The lone-passer bounds were calibrated on
+ * this state and `adviseLonePasser` asks on this state, so the pool path must gate on a Noul
+ * measured on the same one.
  */
-export function arbitrateState(ctx: ArbitrateContext, reps: readonly Representative[], signals?: ReadonlyMap<string, readonly SuspicionSignal[]>): { [k: string]: Json } {
+export function arbitrateState(ctx: ArbitrateContext, reps: readonly Representative[]): { [k: string]: Json } {
   const files = new Map<string, { file: SourceFile; lines: number[]; n: number }>();
   for (const r of reps) {
     const site = r.outcome.applied.candidate.site;
@@ -1098,17 +1132,6 @@ export function arbitrateState(ctx: ArbitrateContext, reps: readonly Representat
   const candidates: { [k: string]: Json } = {};
   for (const r of reps) candidates[r.key] = candidateJson(r.outcome.applied.candidate, primary.file.path);
   state['candidates'] = candidates;
-  if (signals !== undefined) {
-    const rows: { [k: string]: Json } = {};
-    for (const r of reps) {
-      const found = signals.get(r.outcome.applied.candidate.id) ?? [];
-      if (found.length > 0) rows[r.key] = found.map((s) => SUSPICION_SIGNAL_WHY[s]);
-    }
-    if (Object.keys(rows).length > 0) {
-      state['signals_note'] = SIGNALS_NOTE;
-      state['signals'] = rows;
-    }
-  }
   return state;
 }
 
@@ -1155,8 +1178,6 @@ export function perturbationTable(reps: readonly Representative[], inputs: reado
 export interface ArbitrateExtras {
   /** the perturbation table (`perturbationTable`), shown to Jev as `perturbations` when non-empty */
   perturbations?: readonly PerturbationRow[];
-  /** OOS iteration 3, item 2: candidate id → the code-computed suspicion signals, shown as `signals` */
-  signals?: ReadonlyMap<string, readonly SuspicionSignal[]>;
 }
 
 /**
@@ -1169,7 +1190,7 @@ export interface ArbitrateExtras {
 export async function arbitrate(ctx: ArbitrateContext, clusters: readonly BehaviourCluster[], ask: JevAsk, extras: ArbitrateExtras = {}): Promise<ArbitrationResult> {
   const reps = representativesOf(clusters);
   if (reps.length < 2) throw new GuardError(`arbitrate needs at least two representatives, got ${reps.length}`);
-  const state = arbitrateState(ctx, reps, extras.signals);
+  const state = arbitrateState(ctx, reps);
   if (extras.perturbations !== undefined && extras.perturbations.length > 0) {
     state['perturbations_note'] = PERTURBATION_NOTE;
     state['perturbations'] = extras.perturbations.map((r): Json => ({ input: r.input, how: r.how, outputs: { ...r.outputs } }));
@@ -1185,9 +1206,11 @@ export async function arbitrate(ctx: ArbitrateContext, clusters: readonly Behavi
   if (answer === undefined || answer.type !== 'choice') throw new GuardError(`${GENUINE_FIX_ID} answer missing or not a choice`);
   const pChoice: Record<string, number> = {};
   const nouls: Record<string, number> = {};
+  const noulAnswered: Record<string, boolean> = {};
   for (const r of reps) {
     pChoice[r.key] = answer.probabilities[r.key] ?? 0;
     const n = res.answers[`${GENERAL_PREFIX}${r.key}`];
+    noulAnswered[r.key] = n !== undefined && n.type === 'noul';
     nouls[r.key] = n !== undefined && n.type === 'noul' ? n.noul : 0;
   }
   const pEscape = answer.probabilities[ESCAPE_KEY] ?? 0;
@@ -1205,7 +1228,7 @@ export async function arbitrate(ctx: ArbitrateContext, clusters: readonly Behavi
   }
   const chosen = pick;
   const fallbacks = byChoice.filter((r) => r.key !== chosen.key).map((r) => r.outcome);
-  return { pick: chosen.outcome, fallbacks, pChoice, pEscape, noul: nouls, suspect, requests: 1, representatives: reps, state };
+  return { pick: chosen.outcome, fallbacks, pChoice, pEscape, noul: nouls, suspect, requests: 1, representatives: reps, state, noulAnswered };
 }
 
 /** The one-candidate key of the Q16 advisory (rule (b)): the same state shape as an arbitration over one representative. */
@@ -1612,15 +1635,29 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
   }
   // OOS iteration 3, item 2: the pool has no structurally clean candidate. `preferLlmInCluster`
   // above still stands — an LLM candidate that behaves exactly like a code seed is an independent
-  // correctness witness, not a ranking — but the three RANKING rules below are ranking suspects
-  // against each other, so the batch goes to Q15/Q16 with the signals in the state instead.
-  if (poolSuspect) note(`${goal.id}: every one of the ${contenders.length} passers carries a code signal (${contenders.map((o) => `${describe(o)}: ${(arbitrationSignals.get(o.applied.candidate.id) ?? []).join('/')}`).join('; ')}); the code ranking rules cannot separate a gold-free pool, so this batch is arbitrated with the signals in the state`);
-  if (clusters.length >= 2 && !poolSuspect) {
-    // Rule (2): generality by code before Jev. The clusters differ on some perturbed input (or on
-    // the suite), so at most one of them is right; independent agreement, then the fewest
-    // special-case guards, pick it without a request. Q15 is asked only on the residual tie — and
-    // on a pool whose every contender is structurally suspect (`poolSuspect`), where the three
-    // rules below rank suspects against each other and cannot see that the gold is not here.
+  // correctness witness, not a ranking — but the three RANKING rules below would be ranking
+  // suspects against each other, so the batch goes to Q15/Q16 instead.
+  //
+  // Review finding 6: only when there is a request to spend. The lone-passer advisory is gated on
+  // `jevRequestsLeft` and this was not, so a step that had exhausted its Jev budget either
+  // overspent it or threw out of `decide` where it used to commit by code with `requests: 0`.
+  const canAskPool = opts.budget === undefined || opts.budget.jevRequestsLeft >= 1;
+  const poolAsk = poolSuspect && canAskPool;
+  if (poolSuspect) {
+    const why = contenders.map((o) => `${describe(o)}: ${(arbitrationSignals.get(o.applied.candidate.id) ?? []).join('/')}`).join('; ');
+    note(
+      poolAsk
+        ? `${goal.id}: every one of the ${contenders.length} passers carries a swept code signal (${why}); the code ranking rules cannot separate a gold-free pool, so this batch is arbitrated`
+        : `${goal.id}: every one of the ${contenders.length} passers carries a swept code signal (${why}) but no Jev request is left to arbitrate them; the code ranking rules decide as before`,
+    );
+  }
+  /**
+   * The three code RANKING rules of rule (2), as one call so the pool path can both skip them and
+   * come back to them when Jev declined to answer (review finding 11). Returns null when none of
+   * them decides; every branch is exactly what it was before this iteration.
+   */
+  const byCodeRules = (basis: GuardFields): GuardDecision | null => {
+    if (clusters.length < 2) return null;
     const majority = majorityCluster(clusters);
     if (majority !== null) {
       clearHeld(mem, goal);
@@ -1628,7 +1665,7 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
       const fallbacks = clusters.filter((c) => c !== majority).map((c) => c.representative);
       guardState(mem).fallbacks = { goalId: goal.id, outcomes: fallbacks };
       note(`${goal.id}: ${contenders.length} passers (${carried.length} held) in ${clusters.length} behaviour clusters (${probeNote}; ${supportSummary(clusters)}); ${majority.id} holds the majority of the independent support; committing its representative ${describe(pick)} by code (no arbitration)`);
-      return commit(mem, pick, { ...common, fallbacks, codeRule: 'majority_cluster' });
+      return commit(mem, pick, { ...basis, fallbacks, codeRule: 'majority_cluster' });
     }
     const reps = clusters.map((c) => c.representative);
     const split = `${goal.id}: ${contenders.length} passers (${carried.length} held) in ${clusters.length} behaviour clusters (${probeNote}; ${supportSummary(clusters)}); the clusters split`;
@@ -1646,7 +1683,7 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
         const fallbacks = clusters.filter((c) => c !== winner).map((c) => c.representative);
         guardState(mem).fallbacks = { goalId: goal.id, outcomes: fallbacks };
         note(`${split} with no LLM member and equal support; committing ${describe(pick)} — ${winner.id} agrees with the passers' majority on the perturbed inputs (${agreement}; ${scoreSummary(reps)}) by code (no arbitration)`);
-        return commit(mem, pick, { ...common, fallbacks, codeRule: 'probe_majority' });
+        return commit(mem, pick, { ...basis, fallbacks, codeRule: 'probe_majority' });
       }
       note(`${split} with no LLM member and equal support, and the probe separates none of them (${maj.differing} differing input${maj.differing === 1 ? '' : 's'}; ${agreement}); the special-case count does not decide here (${scoreSummary(reps)}) — arbitrating`);
     } else {
@@ -1656,42 +1693,66 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
         const fallbacks = reps.filter((r) => r !== fewest).sort((a, b) => specialCaseScore(a.applied.candidate).total - specialCaseScore(b.applied.candidate).total || byEditCost(a, b));
         guardState(mem).fallbacks = { goalId: goal.id, outcomes: fallbacks };
         note(`${split}; committing ${describe(fewest)} with the fewest added special-case guards (${scoreSummary(reps)}) by code (no arbitration)`);
-        return commit(mem, fewest, { ...common, fallbacks, codeRule: 'fewest_special_cases' });
+        return commit(mem, fewest, { ...basis, fallbacks, codeRule: 'fewest_special_cases' });
       }
     }
+    return null;
+  };
+  if (!poolAsk) {
+    const byCode = byCodeRules(common);
+    if (byCode !== null) return byCode;
   }
   // The residual: a single all-seed cluster of ≥ 2, or split clusters whose representatives tie on
   // the code metric. One Q15 + Q16 request, with the perturbation table in the state.
   const arbCtx: ArbitrateContext = { goal };
   if (opts.stage !== undefined) arbCtx.stage = opts.stage;
   const table = perturbationTable(representativesOf(clusters), inputs, signatures);
-  const extras: ArbitrateExtras = { signals: arbitrationSignals };
+  const extras: ArbitrateExtras = {};
   if (table.length > 0) extras.perturbations = table;
   const arb = await arbitrate(arbCtx, clusters, ask, extras);
   const arbitrated = { ...common, arbitrated: true, requests: arb.requests };
   note(`${goal.id}: arbitrated ${contenders.length} passers (${carried.length} held) in ${clusters.length} cluster${clusters.length === 1 ? '' : 's'} (${probeNote}${table.length > 0 ? `, ${table.length} differing input${table.length === 1 ? '' : 's'} shown` : ''}); escape ${arb.pEscape.toFixed(2)}, max general ${Math.max(...Object.values(arb.noul)).toFixed(2)}; ${arb.suspect ? 'all-overfit signature' : `pick ${describe(arb.pick)}`}`);
 
-  if (!arb.suspect && poolSuspect) {
-    // OOS iteration 3, item 2. The pool held no structurally clean candidate, so the guard applies
-    // to the arbitration's pick exactly the rule it already applies to a lone passer carrying the
-    // same signals (rule (b)): one signal needs general ≥ LONE_PASSER_HOLD_MAX_NOUL, two or more
-    // need ≥ LONE_PASSER_VOUCH_MIN_NOUL. No new constant and no threshold chosen here — a batch of
-    // suspects is weaker evidence than one suspect alone, never stronger. `detect_cycle`'s
-    // committed `guard_empty_break` carries `dead_guard, adds_special_case, late_guard` at the 0.44
-    // the record measured, which is below the two-signal bound.
+  if (!arb.suspect && poolAsk) {
+    // OOS iteration 3, item 2, as the review re-specified it. The pool held no structurally clean
+    // candidate, so the pick faces exactly the rule a LONE passer with the same signals faces
+    // (rule (b)) — and, review finding 2, exactly the same DISPOSITION: it is HELD as the
+    // `suspect`, so the budget-reserve release and step-end `commitSuspect` apply to it just as
+    // they do on the lone path. The previous `dropped` was strictly harsher than the rule it
+    // claimed to copy: the same `stats` candidate at 0.49 was held-then-committed alone and
+    // killed outright in a pool of two.
     const picked = arb.representatives.find((r) => r.outcome === arb.pick);
     const pickSignals = arbitrationSignals.get(arb.pick.applied.candidate.id) ?? [];
+    // review finding 9: only a SWEPT signal raises the bound. `adds_special_case` rides on every
+    // inserted guard, so counting every signal made `>= STRONG_SIGNALS_MIN` true for essentially
+    // every guard pool and the 0.3 branch dead.
+    const strong = pickSignals.filter((x) => POOL_SUSPECT_SIGNALS.has(x));
+    const bound = strong.length >= STRONG_SIGNALS_MIN ? LONE_PASSER_VOUCH_MIN_NOUL : LONE_PASSER_HOLD_MAX_NOUL;
+    const answered = picked !== undefined && (arb.noulAnswered[picked.key] ?? false);
     const p = picked === undefined ? 0 : (arb.noul[picked.key] ?? 0);
-    const bound = pickSignals.length >= STRONG_SIGNALS_MIN ? LONE_PASSER_VOUCH_MIN_NOUL : LONE_PASSER_HOLD_MAX_NOUL;
-    if (p < bound) {
+    if (!answered) {
+      // review finding 11: a Jev that escaped the Noul, or answered the wrong shape, is not
+      // evidence against the pool. `arbitrate` maps such an answer to 0, which would have refused
+      // every contender; the code rules decide instead, exactly as they did before this iteration.
+      note(`${goal.id}: every passer is structurally suspect but Jev returned no Noul for the pick ${describe(arb.pick)}; the code ranking rules decide (no refusal on a missing answer)`);
+      const byCode = byCodeRules(arbitrated);
+      if (byCode !== null) return byCode;
+    } else if (p < bound) {
+      const budgetOk = budgetAllowsHold(opts.budget);
+      const held: HeldPasser = { goalId: goal.id, outcome: arb.pick, phase: goal.phase, signals: pickSignals, noul: p };
+      if (budgetOk || unreleasable(held)) {
+        clearHeld(mem, goal);
+        guardState(mem).suspect = held;
+        note(`${goal.id}: every passer is structurally suspect and the pick ${describe(arb.pick)} (${pickSignals.join(', ')}) answered general ${p.toFixed(2)} < ${bound}; holding it as suspect (released on the budget reserve or at step end exactly as a lone passer is), searching on`);
+        return { kind: 'continue', ...arbitrated, signals: pickSignals, held: 'suspect' };
+      }
+      note(`${goal.id}: every passer is structurally suspect and the pick ${describe(arb.pick)} answered general ${p.toFixed(2)} < ${bound}, but the budget reserve is spent; committing as possible overfit`);
       clearHeld(mem, goal);
-      holdBestPartial(mem, partial, goal);
-      note(
-        `${goal.id}: every passer of the batch is structurally suspect and the pick ${describe(arb.pick)} (${pickSignals.join(', ')}) answered general ${p.toFixed(2)} < ${bound}; dropping the ${contenders.length} passer${contenders.length === 1 ? '' : 's'} (kept in tried, none is committed); searching on${partial.length > 0 ? ` with the batch's best partial held` : ''}`,
-      );
-      return { kind: 'continue', ...arbitrated, dropped: contenders.length };
+      guardState(mem).fallbacks = { goalId: goal.id, outcomes: arb.fallbacks };
+      return commit(mem, arb.pick, { ...arbitrated, signals: pickSignals, fallbacks: arb.fallbacks, note: 'possible overfit' });
+    } else {
+      note(`${goal.id}: every passer is structurally suspect but the pick ${describe(arb.pick)} (${pickSignals.join(', ')}) is vouched for at general ${p.toFixed(2)} ≥ ${bound}; committing it`);
     }
-    note(`${goal.id}: every passer is structurally suspect but the pick ${describe(arb.pick)} (${pickSignals.join(', ')}) is vouched for at general ${p.toFixed(2)} ≥ ${bound}; committing it`);
   }
   if (arb.suspect) {
     // Rule (1): every passer looks like an overfit (P(escape) ≥ SUSPECT_ESCAPE_MIN, max general <
