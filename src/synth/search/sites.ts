@@ -72,8 +72,10 @@ import { buildSites, functionGapSlots, indentAfter, indentBefore, isDefLine, sbf
 import type { Anchor, GapSlot } from '../localize/sites.js';
 import type { FunctionEntry } from '../localize/types.js';
 import { indentOf } from '../py/edits.js';
-import { blockAt, scopeAt, statementAt } from '../py/structure.js';
+import { PY_BUILTINS, blockAt, scopeAt, statementAt } from '../py/structure.js';
 import type { Block, Statement } from '../py/structure.js';
+import { codeTokens, isKeyword, tokenizeFragment } from '../py/tokenize.js';
+import type { Token } from '../py/tokenize.js';
 import type { PerTestResult, RankedLine } from '../sbfl/types.js';
 import { isFailing } from '../sbfl/ochiai.js';
 import { importInsertLine, unboundNames } from '../templates/imports.js';
@@ -525,6 +527,222 @@ function noulP(a: Answer | undefined): number {
 }
 
 // ---------------------------------------------------------------------------------------
+// The code-side replace-site order (OOS iteration 4, item A)
+// ---------------------------------------------------------------------------------------
+
+/** Test-derived literals handed to the sources (§3 "test-derived values"); bounded so a long expected list does not flood the pool. */
+const MAX_TEST_LITERALS = 40;
+const MAX_TASK_IDENTIFIERS = 60;
+
+/**
+ * Numbers, quoted strings and value keywords from the goal's failures (call, expected, actual),
+ * deduplicated and bounded.
+ *
+ * OOS iteration 4, item A: this and `taskIdentifiers` moved here from `subgoal.ts` (which
+ * re-exports both, so every caller is unchanged) because the code-side site order below reads
+ * them and `subgoal.ts` imports this module — the other direction would be a cycle.
+ */
+export function testLiterals(failures: readonly FailureView[]): string[] {
+  const out = new Set<string>();
+  const re = /-?\d+(?:\.\d+)?|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|\b(?:True|False|None)\b/g;
+  for (const f of failures) {
+    for (const text of [f.call, f.expected, f.actual]) {
+      for (const m of text.matchAll(re)) {
+        if (out.size >= MAX_TEST_LITERALS) return [...out];
+        out.add(m[0]);
+      }
+    }
+  }
+  return [...out];
+}
+
+/** Backticked words and identifier-shaped tokens (with `_`, a digit or camelCase) from the task text. */
+export function taskIdentifiers(task: string): string[] {
+  const out = new Set<string>();
+  for (const m of task.matchAll(/`([^`\n]+)`/g)) {
+    const inner = m[1] ?? '';
+    for (const id of inner.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) out.add(id[0]);
+  }
+  for (const m of task.matchAll(/\b[A-Za-z_][A-Za-z0-9_]*\b/g)) {
+    const id = m[0];
+    if (/_|\d|[a-z][A-Z]/.test(id) && id.length >= 2) out.add(id);
+  }
+  return [...out].slice(0, MAX_TASK_IDENTIFIERS);
+}
+
+/**
+ * How much likelier a replace site of this statement kind is to be the line a gold patch
+ * rewrites than an arbitrary replace site is. MEASURED, not chosen: over all 198 gold patches in
+ * `bench/data` (QuixBugs 41 programs, ladder 65 gold files, `swebench-verified-30.gold.json` 92
+ * Python hunks) every BEFORE-image line the gold removes or rewrites was classified by
+ * `statementAt(...).kind` at the statement's first line (a later physical line of a multi-line
+ * statement is `continuation`), against the background of every line of those images that could
+ * be a replace site at all (non-blank, non-comment, not a `def`/`class` header).
+ *
+ * 155 of the 198 images parse (43 SWE-bench hunk fragments do not even after dedenting, and are
+ * simply absent from both numerator and denominator); 161 gold lines against 2,171 background
+ * lines, so the base rate is r0 = 161/2171 = 0.0742. The one smoothing is fixed by the
+ * measurement rather than picked: one pseudo gold line on top, and on the bottom the 1/r0 = 13.48
+ * background lines that one gold line is worth at the base rate, so
+ * `prior(k) = ((gold_k + 1) / (bg_k + 1/r0)) / r0` and an unseen kind lands on exactly 1.00.
+ *
+ * The table is in docs/LLM-JEV.md under "iteration 4"; `scripts` does not regenerate it, the
+ * sweep in `test/unit/synth/search/code-order.test.ts` re-derives it from `bench/data` and fails
+ * if the corpus moves.
+ */
+export const GOLD_KIND_BASE_RATE = 0.0742;
+export const GOLD_STATEMENT_KIND_PRIOR: Readonly<Record<string, number>> = {
+  while: 1.89,
+  continuation: 1.71,
+  return: 1.68,
+  break: 1.46,
+  if: 1.28,
+  assign: 1.14,
+  augassign: 0.95,
+  for: 0.95,
+  assert: 0.93,
+  continue: 0.77,
+  try: 0.73,
+  except: 0.69,
+  import: 0.6,
+  elif: 0.57,
+  expr: 0.45,
+  other: 0.42,
+  else: 0.37,
+  raise: 0.21,
+  from_import: 0.12,
+};
+
+/** The measured prior of the statement kind at `line`; 1 (the base rate) for a kind the corpus never showed. */
+export function statementKindPrior(file: SourceFile, line: number): number {
+  const st = statementAt(file.mod, line);
+  if (st === undefined) return 1;
+  const key = st.startLine === line ? st.kind : 'continuation';
+  return GOLD_STATEMENT_KIND_PRIOR[key] ?? 1;
+}
+
+/**
+ * The words the failure is about: the literals of the failing tests, the identifiers the task
+ * text names, and the identifier tokens of each failure's own `call` / `expected` / `actual`
+ * text. Python keywords and builtins are dropped — they are on nearly every line and localise
+ * nothing — as are one-character names.
+ */
+export function failureVocabulary(task: string, failures: readonly FailureView[]): Set<string> {
+  const out = new Set<string>();
+  for (const l of testLiterals(failures)) out.add(l);
+  for (const id of taskIdentifiers(task)) if (id.length >= 2 && !isKeyword(id) && !PY_BUILTINS.includes(id)) out.add(id);
+  for (const f of failures) {
+    for (const text of [f.call, f.expected, f.actual]) {
+      for (const m of text.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
+        const id = m[0];
+        if (id.length >= 2 && !isKeyword(id) && !PY_BUILTINS.includes(id)) out.add(id);
+      }
+    }
+  }
+  return out;
+}
+
+/** Distinct vocabulary words the site's own text uses, as whole tokens (names, numbers, strings). */
+export function vocabularyOverlap(site: Pick<Site, 'currentLine'>, vocabulary: ReadonlySet<string>): number {
+  const hit = new Set<string>();
+  let tokens: readonly Token[];
+  try {
+    tokens = codeTokens(tokenizeFragment(site.currentLine.trim()));
+  } catch {
+    return 0;
+  }
+  for (const t of tokens) {
+    if (t.type !== 'NAME' && t.type !== 'NUMBER' && t.type !== 'STRING') continue;
+    if (vocabulary.has(t.text)) hit.add(t.text);
+  }
+  return hit.size;
+}
+
+/** The function names the failures' `call` fields name (`kth([1, 2], 4)` → `kth`); a pytest node id names none. */
+export function failingCallNames(failures: readonly FailureView[]): Set<string> {
+  const out = new Set<string>();
+  for (const f of failures) {
+    for (const m of f.call.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+      const name = m[1] ?? '';
+      if (name !== '' && !isKeyword(name) && !PY_BUILTINS.includes(name)) out.add(name);
+    }
+  }
+  return out;
+}
+
+/** Distance of a function from the failing call: 0 = the call's own function, 1 = one it calls, 2 = anything else. */
+function callDistance(files: ReadonlyMap<string, SourceFile>, called: ReadonlySet<string>): (site: Site) => number {
+  const callees = new Set<string>();
+  for (const f of files.values()) {
+    for (const fn of f.mod.functions) {
+      if (!called.has(fn.name)) continue;
+      for (const c of fn.calls) callees.add(c.callee.split('.').pop() ?? c.callee);
+    }
+  }
+  return (site) => {
+    const name = (site.block?.name ?? '').split('.').pop() ?? '';
+    if (name !== '' && called.has(name)) return 0;
+    if (name !== '' && callees.has(name)) return 1;
+    return 2;
+  };
+}
+
+/** The group a site is ranked inside: its enclosing function, module level counting as one group. */
+function groupKeyOf(site: Site): string {
+  return `${site.file.path}:${site.block?.startLine ?? 'module'}`;
+}
+
+/**
+ * Deterministic replace-site order for the case iteration 3 left open: NO Choice answered
+ * (`--jev off`, the request budget spent mid-beam, or every line Choice escaped), so every site
+ * scores `jev = 0`, no site carries an SBFL rank, and `a.sbflRank - b.sbflRank` is
+ * `Infinity - Infinity` = **NaN** — a comparator V8 reads as "equal", which left the six the
+ * `REPLACE_SITES_MAX` cut keeps in FILE order. `kth`'s gold is the tenth code line of its only
+ * function, so file order cut it: the iteration-3 localiser fix put L12 in `loc.sites` and this
+ * cut threw it away again (review finding 12; iteration-3 entry, "iteration 4 owns the no-Jev
+ * site ranking").
+ *
+ * The order is built only from evidence already in reach, and every piece of it is measured or
+ * structural — nothing here is a tuned weight:
+ *
+ *   1. **the failing call's function first, then its callees** (`callDistance`), as the grouping
+ *      the round-robin below rotates over;
+ *   2. **overlap with the failure's own words** (`failureVocabulary`: `EnumerateOptions`'
+ *      `testLiterals` / `taskIdentifiers` plus the identifiers of each failure's call, expected
+ *      and actual text), distinct whole tokens on the line, descending;
+ *   3. **the statement-kind prior measured over the 198 golds** (`GOLD_STATEMENT_KIND_PRIOR`),
+ *      descending;
+ *   4. line order, so the result is total and stable.
+ *
+ * Then **round-robin across function groups** — the first site of each group, then the second of
+ * each — so one function cannot take all six of a multi-function localisation. The groups are
+ * visited by their best member's key, which puts the failing call's own function first.
+ *
+ * SBFL is NOT part of this: a site the spectrum ranked keeps its rank and is ordered ahead of
+ * every site here, exactly as before (`buildGoalSites` step 4 splits the two). This function
+ * sees only the sites the spectrum said nothing about.
+ */
+export function orderByCodeEvidence(sites: readonly Site[], opts: { task: string; failures: readonly FailureView[]; files: ReadonlyMap<string, SourceFile> }): Site[] {
+  if (sites.length <= 1) return [...sites];
+  const vocabulary = failureVocabulary(opts.task, opts.failures);
+  const distance = callDistance(opts.files, failingCallNames(opts.failures));
+  const keyed = sites.map((site, i) => ({ site, i, distance: distance(site), overlap: vocabularyOverlap(site, vocabulary), prior: statementKindPrior(site.file, site.line) }));
+  type Keyed = (typeof keyed)[number];
+  const better = (a: Keyed, b: Keyed): number => a.distance - b.distance || b.overlap - a.overlap || b.prior - a.prior || a.site.line - b.site.line || a.i - b.i;
+  const groups = new Map<string, Keyed[]>();
+  for (const k of keyed) {
+    const g = groups.get(groupKeyOf(k.site)) ?? [];
+    g.push(k);
+    groups.set(groupKeyOf(k.site), g);
+  }
+  const ordered = [...groups.values()].map((g) => [...g].sort(better));
+  ordered.sort((a, b) => better(a[0]!, b[0]!));
+  const out: Site[] = [];
+  for (let round = 0; out.length < keyed.length; round++) for (const g of ordered) if (g[round] !== undefined) out.push(g[round]!.site);
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------
 // The site list
 // ---------------------------------------------------------------------------------------
 
@@ -783,7 +1001,16 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
     const r = await askLineNouls(ctx, goal, fns, stage, anchors[0]?.line ?? null);
     requests += r.requests;
     for (const [k, p] of r.probs) lineNouls.set(k, p);
-    const ranked = byDesc([...r.probs.entries()].filter(([, p]) => p > 0), ([, p]) => p);
+    // OOS iteration 4, item A: a FLAT Q5n is not a ranking. `JEVCODE_JEV=off` answers every Noul
+    // with the inert 0.5 (`src/jev/off.ts`), so this block used to take the first three lines of
+    // the file at "p = 0.50" and put them ahead of everything the code order had to say — the
+    // `kth` six came out `[2, 3, 4, 10, 12, 14]` with the gold only barely inside, by accident.
+    // The same argument `q5Anchors` makes about the escape applies here: `p ≥ minP` is a filter
+    // on an answer, and it cannot also mean "no answer at all". One value for every line ranks
+    // nothing, whoever produced it.
+    const flat = new Set(r.probs.values()).size <= 1;
+    if (flat && r.probs.size > 1) notes.push(`q5n ignored: one value (${[...r.probs.values()][0]?.toFixed(2) ?? 'n/a'}) on all ${r.probs.size} lines ranks nothing`);
+    const ranked = flat ? [] : byDesc([...r.probs.entries()].filter(([, p]) => p > 0), ([, p]) => p);
     const fileOf = fns[0]?.file;
     if (fileOf !== undefined) {
       for (const [k, p] of ranked.slice(0, Q5N_TOP)) {
@@ -820,18 +1047,33 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
     if (span !== null) addReplace(span, 0);
   }
 
-  // 4. Order: the short-circuit line, then Jev evidence by p, then SBFL-only by rank; cut at 6.
+  // 4. Order: the short-circuit line, then Jev evidence by p, then SBFL-only by rank, then —
+  //    OOS iteration 4, item A — the sites NOTHING ranked, by the code order.
+  //
+  //    `a.sbflRank - b.sbflRank` was the whole tail rule. On a site with no spectrum row the rank
+  //    is `+Infinity`, so with no coverage at all every comparison was `Infinity - Infinity` =
+  //    **NaN**: a comparator V8 reads as "equal", leaving the six the cut keeps in insertion
+  //    order, which is file order. That is the recorded `--jev off` `kth` failure (review finding
+  //    12): its gold is the tenth code line of its only function, and the iteration-3 localiser
+  //    fix that finally offered L12 as a replace site was undone here. The split below is
+  //    deliberately minimal — a finite rank still sorts exactly as it did, and a finite rank
+  //    still beats an infinite one, so the only order this changes is the one that was NaN.
   const scored = [...replace.values()];
+  const tail = scored.filter((s) => s.jev <= 0 && s.site !== shortCircuit);
   const ordered = [
     ...(shortCircuit === null ? [] : [shortCircuit]),
     ...byDesc(
       scored.filter((s) => s.jev > 0 && s.site !== shortCircuit),
       (s) => s.jev,
     ).map((s) => s.site),
-    ...scored
-      .filter((s) => s.jev <= 0 && s.site !== shortCircuit)
+    ...tail
+      .filter((s) => Number.isFinite(s.sbflRank))
       .sort((a, b) => a.sbflRank - b.sbflRank)
       .map((s) => s.site),
+    ...orderByCodeEvidence(
+      tail.filter((s) => !Number.isFinite(s.sbflRank)).map((s) => s.site),
+      { task: ctx.task, failures: goal.failures, files: ctx.files },
+    ),
   ];
   const replaceSites = ordered.slice(0, maxReplace);
 

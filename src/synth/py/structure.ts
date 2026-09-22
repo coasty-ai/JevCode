@@ -1691,3 +1691,85 @@ export function isLateGuard(g: GuardClause, opts: { operands?: readonly string[]
     return c !== undefined && c.derefs > 0 && c.binds === 0 && c.narrows === 0;
   });
 }
+
+// ---------------------------------------------------------------------------------------
+// Data flow: which locals a function derives from its own parameters (OOS iteration 4, item B)
+// ---------------------------------------------------------------------------------------
+
+/** Names `st` READS: every NAME token that is not a binding target and not an attribute suffix. */
+function namesRead(st: Statement): Set<string> {
+  const skip = bindingTargetOffsets(st);
+  const out = new Set<string>();
+  const toks = st.tokens;
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k]!;
+    if (t.type !== 'NAME' || isKeyword(t.text) || skip.has(t.start)) continue;
+    if (isOp(toks[k - 1], '.')) continue;
+    out.add(t.text);
+  }
+  return out;
+}
+
+/**
+ * Names `block` binds from an expression that reads a parameter — the DERIVED LOCALS, to a fixed
+ * point (`ordered = sorted(values)`; `hare = tortoise = node`; `for item in items`; and a chain
+ * `a = f(p); b = g(a)`). A parameter is never one of them, however often the body rebinds it:
+ * `values = list(values)` still stands for what the caller passed.
+ *
+ * Why the distinction is the one that matters (OOS iteration 4, item B; the iteration-3 author's
+ * disagreement 1): a function's contract is about its PARAMETERS, so a guard on a parameter is a
+ * precondition and belongs at the top. A guard on a value the function computed for itself, put
+ * behind the code that already used that value, is a patch for the one path the tests took.
+ * `stats`' gold guards the parameter `values`; the overfit guards `ordered = sorted(values)`
+ * after `mid = len(ordered) // 2` has already read it.
+ */
+export function parameterDerivedLocals(mod: PyModule, block: Block): Set<string> {
+  const out = new Set<string>();
+  if (block.kind !== 'def') return out;
+  const params = new Set(block.params.map((p) => p.name));
+  const body = mod.statements.filter((s) => s.blockIndex === block.index);
+  for (let round = 0; round < body.length + 1; round++) {
+    let grew = false;
+    for (const st of body) {
+      const targets = [...st.binds, ...st.attrAssigns.map((a) => a.receiver)].filter((n) => !params.has(n) && !out.has(n));
+      if (targets.length === 0) continue;
+      let fromParam = false;
+      for (const n of namesRead(st)) if (params.has(n) || out.has(n)) fromParam = true;
+      if (!fromParam) continue;
+      for (const n of targets) out.add(n);
+      grew = true;
+    }
+    if (!grew) break;
+  }
+  return out;
+}
+
+/**
+ * Is this guard clause a guard on a value the function DERIVED from its parameters, placed behind
+ * the code that already used that value?
+ *
+ * Precisely, for at least one operand path of the clause, with root R:
+ *   - R is a `parameterDerivedLocals` name of the enclosing `def` (so not a parameter itself);
+ *   - a statement of the block strictly BEFORE the clause's first line BINDS R; and
+ *   - a statement of the block strictly before the clause's first line READS R
+ *     (`readsName`, so the binder's own target does not count as a read of itself).
+ *
+ * The two clauses together are the placement fact: the guard could have stood where the local was
+ * created, and the patch put it after the first use instead. The `detect_cycle` GOLD is the check
+ * that the "after the first use" half is load-bearing — it adds `hare is None` to the clause at
+ * the top of the `while` body, where `hare` is derived from the parameter `node` but nothing in
+ * front of the guard has read it yet, so this is silent on it and fires on the overfit two
+ * statements further down.
+ */
+export function guardsDerivedLocal(mod: PyModule, block: Block, g: GuardClause, opts: { operands?: readonly string[] } = {}): boolean {
+  const operands = opts.operands ?? g.operands;
+  if (operands.length === 0) return false;
+  const derived = parameterDerivedLocals(mod, block);
+  if (derived.size === 0) return false;
+  const before = mod.statements.filter((s) => s.blockIndex === block.index && s.startLine < g.line);
+  return operands.some((p) => {
+    const root = p.split('.')[0] ?? p;
+    if (!derived.has(root)) return false;
+    return before.some((s) => bindsName(s, root)) && before.some((s) => readsName(s, root));
+  });
+}

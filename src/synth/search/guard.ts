@@ -66,7 +66,7 @@ import type { Json, StageName, SynthesisContext } from '../../core/types.js';
 import { choice, ESCAPE_KEY, noul } from '../../jev/questions.js';
 import type { NoulCriteriaSpec } from '../../jev/questions.js';
 import { codeLines, moduleCodeLines } from '../localize/index.js';
-import { analyse, codeTokens, fallsOffEnd, guardClauses, isLateGuard, levenshtein, mutatedParameters, normaliseLine, qualifiedName, statementKinds, tokenizeFragment } from '../py/index.js';
+import { analyse, codeTokens, fallsOffEnd, guardClauses, guardsDerivedLocal, isKeyword, isLateGuard, levenshtein, mutatedParameters, normaliseLine, qualifiedName, statementKinds, tokenizeFragment } from '../py/index.js';
 import type { Block, GuardClause, PyModule, ReturnFact, StatementKind } from '../py/index.js';
 import type { LanePool } from '../sieve/lanes.js';
 import type { AppliedCandidate, Candidate, CandidateSourceName, FailureView, JevAsk, SourceFile } from '../types.js';
@@ -169,10 +169,27 @@ export const STRONG_SIGNALS_MIN = 2;
  * none of them". A signal a gold can carry turns a pool the gold is IN into a pool the rule calls
  * gold-free, and then the arbitration's vouch bound refuses the fix.
  *
- * ONE qualifies today:
- *   - `mutates_new_argument` — swept over the whole gold corpus by
- *     review-oos-iter-1-2026-09-22.md finding 2 ("Sweep of all 41 QuixBugs golds and 20 ladder
- *     golds: zero refusals").
+ * FIVE qualify today. `mutates_new_argument` was swept over the whole gold corpus by
+ * review-oos-iter-1-2026-09-22.md finding 2 ("Sweep of all 41 QuixBugs golds and 20 ladder
+ * golds: zero refusals"). The other four are OOS iteration 4, items B and C, swept over all 198
+ * gold patches by `test/unit/synth/search/signal-sweeps.test.ts` (QuixBugs 41, ladder 65,
+ * SWE-bench Verified 92 Python hunks of which 30 do not tokenize as fragments and are reported
+ * as skipped rather than clean):
+ *   - `guards_other_variable` — 0 fires as it stood;
+ *   - `dead_guard` — 2 gold fires as it stood (`sympy__sympy-17139`'s `rv.exp.is_real`, a
+ *     predicate attribute the function never names, and `pytest-dev__pytest-10081`'s `skipped`,
+ *     a local the patch itself introduces). Narrowed to "the subject OCCURS in the pre-patch
+ *     function and is never dereferenced there", which is exactly `detect_cycle`'s
+ *     `tortoise.successor`, and 0 fires after;
+ *   - `duplicates_block` — 1 gold fire as it stood (`sympy__sympy-12489`, an in-place rename:
+ *     abstracting identifiers is what makes a renamed line look like the line it replaced).
+ *     Narrowed to "the patch RAISES the count of that normalised line", which is exactly
+ *     `wrap`'s loop copied under itself, and 0 fires after;
+ *   - `guards_derived_local` (item B) — 0 fires, and it FIRES on 2 of the 3 recorded iteration-1
+ *     overfits (`stats`, `detect_cycle`; not `token_bucket`, whose overfit and gold guard the
+ *     same two parameters and differ only in placement). Both halves of the bar, so it is the
+ *     first signal admitted to the pool with positive evidence behind it as well as a clean
+ *     sweep — which is what `late_guard` lacked.
  *
  * Every other signal is excluded, each for a measured reason:
  *   - `adds_special_case` is the input of `fewestSpecialCases` and the golds add special cases
@@ -188,12 +205,11 @@ export const STRONG_SIGNALS_MIN = 2;
  *     of `bench/data/swebench-verified-30.gold.json` — but it is also silent on all three of
  *     iteration 1's recorded overfits (`stats` binds `ordered` in front, `token_bucket` only
  *     plain-reads `cost`, `detect_cycle` never dereferences `hare.successor.successor`). A signal
- *     with no positive evidence on the records cannot be the evidence that a pool holds no gold;
- *   - `duplicates_block`, `guards_other_variable` and `dead_guard` have no gold sweep behind them
- *     at all. All of these stay LONE-PASSER signals, where one Q16 answer decides and nothing is
- *     dropped.
+ *     with no positive evidence on the records cannot be the evidence that a pool holds no gold.
+ *     Iteration 4 left that ruling standing: the sweep is clean, the records are silent, so it
+ *     is a LONE-PASSER signal, where one Q16 answer decides and nothing is dropped.
  */
-export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['mutates_new_argument']);
+export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['mutates_new_argument', 'guards_other_variable', 'dead_guard', 'duplicates_block', 'guards_derived_local']);
 /**
  * A hold is started or kept only while the step has this much left: the wall of ~15 median
  * QuixBugs runs per lane and two lanes' worth of SIEVE batches, so the decision that releases the
@@ -727,11 +743,55 @@ export function newlyLateGuards(applied: Pick<AppliedCandidate, 'files'>, cache?
   return out;
 }
 
+/**
+ * OOS iteration 4, item B: the guard clauses this patch ADDS that guard a value the function
+ * DERIVED from its own parameters, placed behind the code that already used that value
+ * (`py/structure.ts guardsDerivedLocal`).
+ *
+ * This is the property the iteration-3 author's disagreement 1 named and iteration 3 could not
+ * express: what separates the three recorded overfits from their golds is DATA FLOW, not
+ * position. A function's contract is about its parameters, so a guard on a parameter is a
+ * precondition; a guard on a local the function computed for itself, inserted after the first
+ * statement that used that local, is a patch for the one path the tests took.
+ *
+ *   `stats`      gold `if not values:` at the top (the parameter) vs the overfit
+ *                `if not ordered:` after `mid = len(ordered) // 2` — `ordered = sorted(values)`.
+ *   `detect_cycle` gold adds `hare is None` to the clause at the TOP of the `while` body, where
+ *                nothing has read `hare` yet, vs the overfit `if not hare.successor.successor:`
+ *                two statements further down, behind `if hare.successor is None:`.
+ *
+ * The patch's own clauses are told from the pre-patch ones exactly as `newlyLateGuards` tells
+ * them: a clause whose `test` no pre-patch clause of the same function spells, judged on all of
+ * its operands when it was INSERTED (the sibling path moved or nothing stood there) and on the
+ * operands the edit ADDED when a clause stood at the same path in a suite of the same length.
+ */
+export function newlyDerivedLocalGuards(applied: Pick<AppliedCandidate, 'files'>, cache?: ParseCache): { path: string; fn: string; guard: GuardClause }[] {
+  const out: { path: string; fn: string; guard: GuardClause }[] = [];
+  for (const f of applied.files) {
+    const before = parsed(f.before, cache);
+    const after = parsed(f.after, cache);
+    if (before === null || after === null) continue;
+    for (const p of functionPairs(before, after)) {
+      const wasClauses = clausesOf(before, p.before);
+      const wasTests = new Set(wasClauses.map((g) => g.test));
+      const atPath = new Map(wasClauses.map((g) => [g.path.join('.'), g] as const));
+      for (const g of clausesOf(after, p.after)) {
+        if (wasTests.has(g.test)) continue;
+        const at = atPath.get(g.path.join('.'));
+        const stood = at !== undefined && at.siblings === g.siblings ? at : undefined;
+        const hit = stood === undefined ? guardsDerivedLocal(after, p.after, g) : guardsDerivedLocal(after, p.after, g, { operands: g.operands.filter((p2) => !stood.operands.includes(p2)) });
+        if (hit) out.push({ path: f.path, fn: qualifiedName(after, p.after), guard: g });
+      }
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------------------
 // Structural suspicion signals (code) on a lone passer
 // ---------------------------------------------------------------------------------------
 
-export type SuspicionSignal = 'deletes_statement' | 'duplicates_block' | 'guards_other_variable' | 'dead_guard' | 'adds_special_case' | 'mutates_new_argument' | 'late_guard';
+export type SuspicionSignal = 'deletes_statement' | 'duplicates_block' | 'guards_other_variable' | 'dead_guard' | 'adds_special_case' | 'mutates_new_argument' | 'late_guard' | 'guards_derived_local';
 
 // ---------------------------------------------------------------------------------------
 // Special-case guards (code metric): the conditionals and literals a candidate adds
@@ -800,7 +860,17 @@ const NONE_GUARD = /\b([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s+is\s+None\b/g;
 const NOT_GUARD = /(?<!\bis\s)\bnot\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\b(?!\s*\()/g;
 const CONDITION_HEAD = /^(?:if|elif|while)\b/;
 
-/** `X` of every `X is None` / `not X` in the condition lines of `text`. */
+/**
+ * `X` of every `X is None` / `not X` in the condition lines of `text`.
+ *
+ * OOS iteration 4, item C. A subject whose head is a Python KEYWORD is not a subject: `NOT_GUARD`
+ * reads the `in` of `nextnode not in ordered_nodes` as the guarded name, and the QuixBugs gold
+ * `topological_ordering.py` — whose whole patch is `outgoing_nodes` → `incoming_nodes` inside
+ * exactly that condition — then fired `dead_guard`, because nothing in the function
+ * "dereferences" a variable called `in`. That is the one false positive the item-C sweep turned
+ * up, and it is shown in `test/unit/synth/search/signal-sweeps.test.ts`. `not in` and `is not`
+ * are comparison operators; neither guards a value against being absent.
+ */
 function guardSubjectsIn(text: string): string[] {
   const out: string[] = [];
   for (const line of text.split('\n')) {
@@ -809,7 +879,7 @@ function guardSubjectsIn(text: string): string[] {
     for (const m of t.matchAll(NONE_GUARD)) out.push(m[1] ?? '');
     for (const m of t.matchAll(NOT_GUARD)) out.push(m[1] ?? '');
   }
-  return out.filter((s) => s !== '' && s !== 'None' && s !== 'True' && s !== 'False');
+  return out.filter((s) => s !== '' && s !== 'None' && s !== 'True' && s !== 'False' && !isKeyword(s.split('.')[0] ?? s));
 }
 
 /** Null/empty-guard subjects the candidate ADDS: those of its lines minus those already on the site's current line. */
@@ -874,6 +944,41 @@ function isUsed(s: string, lines: readonly string[]): boolean {
   return lines.some((l) => patterns.some((p) => p.test(l)));
 }
 
+/** True when the exact dotted expression `s` occurs anywhere in `lines`, however it is used. */
+function occursIn(s: string, lines: readonly string[]): boolean {
+  const re = new RegExp(`(?<![\\w.])${escapeRe(s)}(?![\\w.])`);
+  return lines.some((l) => re.test(l));
+}
+
+/**
+ * For the candidate's own file: normalised line → how many MORE times the patch's AFTER image
+ * holds it than its BEFORE image did.
+ *
+ * OOS iteration 4, item C. `duplicates_block` asked only "is this added line, identifiers and
+ * literals abstracted, a line the function already has" — which is true of every in-place
+ * RENAME, because abstracting the identifiers is exactly what makes the renamed line look like
+ * the original. The SWE-bench Verified gold `sympy__sympy-12489` is that patch and nothing else
+ * (`_af_new` → `cls._af_new`, `Perm` → `cls`, and a `coerse` → `coerce` typo in a docstring), and
+ * it fired. "Duplicates" means the count went UP: `wrap`'s copied loop takes its normalised line
+ * from one occurrence to two, while a rename removes one and adds one.
+ */
+function normalisedLineGrowth(applied: Pick<AppliedCandidate, 'files'>, path: string): Map<string, number> {
+  const out = new Map<string, number>();
+  const f = applied.files.find((x) => x.path === path);
+  if (f === undefined) return out;
+  const count = (src: string, sign: number): void => {
+    for (const raw of src.split('\n')) {
+      const t = raw.trim();
+      if (t === '' || t.startsWith('#')) continue;
+      const k = normaliseLine(t).join(' ');
+      out.set(k, (out.get(k) ?? 0) + sign);
+    }
+  };
+  count(f.after, 1);
+  count(f.before, -1);
+  return out;
+}
+
 /**
  * Code-computed reasons to doubt a lone passer before it is committed (rule (b)); each is a
  * shape the run-3 overfits had and the golds did not:
@@ -894,6 +999,13 @@ function isUsed(s: string, lines: readonly string[]): boolean {
  *     `stats`' `if not ordered: raise …` after `mid = len(ordered) // 2`, `token_bucket`'s
  *     `cost > self.capacity` after `if self.tokens >= cost`. Both golds are the same guard at the
  *     top of the block (`py/structure.ts isLateGuard`, `newlyLateGuards` above).
+ *   - `guards_derived_local` (OOS iteration 4, item B): the patch guards a value the function
+ *     DERIVED from its own parameters, behind the first statement that used that value —
+ *     `stats`' `if not ordered:` (`ordered = sorted(values)`) after `mid = len(ordered) // 2`,
+ *     `detect_cycle`'s `if not hare.successor.successor:` (`hare = tortoise = node`) behind
+ *     `if hare.successor is None:`. Both golds guard a PARAMETER, or add their operand to the
+ *     clause at the top of the block where nothing has read it yet
+ *     (`py/structure.ts guardsDerivedLocal`, `newlyDerivedLocalGuards` above).
  * The signals trigger a Q16 question; what Jev answers decides the hold (`decide`, rule (b)). On a
  * batch of ≥ 2 passers they travel into the Q15/Q16 state instead (`arbitrationSignals`), and a
  * pool in which EVERY contender carries one is never committed by a code rule (item 2).
@@ -907,7 +1019,13 @@ export function suspicionSignals(o: VerifyOutcome, goal: Pick<Goal, 'failures'>,
   const fn = functionLines(c).filter((l) => !(c.site.kind === 'replace' && l.line === c.site.line));
   if (added.length >= 2) {
     const norm = new Set(fn.map((l) => normaliseLine(l.text).join(' ')));
-    const dup = added.filter((l) => norm.has(normaliseLine(l).join(' '))).length;
+    // OOS iteration 4, item C: a copy, not a rename — the patch must RAISE the count of the
+    // normalised line, or `sympy__sympy-12489`'s in-place rename reads as a copied block.
+    const growth = normalisedLineGrowth(o.applied, c.site.file.path);
+    const dup = added.filter((l) => {
+      const k = normaliseLine(l).join(' ');
+      return norm.has(k) && (growth.get(k) ?? 0) > 0;
+    }).length;
     if (dup >= Math.max(2, Math.ceil(added.length / 2))) out.push('duplicates_block');
   }
 
@@ -917,7 +1035,14 @@ export function suspicionSignals(o: VerifyOutcome, goal: Pick<Goal, 'failures'>,
     if (deref !== null && deref.receivers.size > 0 && subjects.every((s) => !deref.receivers.has(s.split('.')[0] ?? s))) out.push('guards_other_variable');
     // an added guard statement (an insert, or a replace that wraps the current line in new lines)
     const addsStatement = c.site.kind === 'insert' || added.length >= 2;
-    if (addsStatement && subjects.every((s) => !isUsed(s, fn.map((l) => l.text)))) out.push('dead_guard');
+    // OOS iteration 4, item C: "nothing reads it" is evidence only about a value the code HAS.
+    // The subject must OCCUR in the pre-patch function and never be dereferenced there — that is
+    // `detect_cycle`'s `tortoise.successor` (`tortoise = tortoise.successor`, never dereferenced)
+    // and not `sympy__sympy-17139`'s `rv.exp.is_real`, a predicate attribute `_f` never names at
+    // all, nor `pytest-dev__pytest-10081`'s `skipped`, a local the patch itself introduces two
+    // lines above its own guard. Both were gold fires of the old rule.
+    const fnText = fn.map((l) => l.text);
+    if (addsStatement && subjects.some((s) => occursIn(s, fnText)) && subjects.every((s) => !isUsed(s, fnText))) out.push('dead_guard');
   }
   if (specialCaseScore(c).total > 0) out.push('adds_special_case');
   // review finding 2: a mutation the exemptions did not excuse is a signal on a lone passer —
@@ -925,6 +1050,10 @@ export function suspicionSignals(o: VerifyOutcome, goal: Pick<Goal, 'failures'>,
   if (newlyMutatedParameters(o.applied, cache).length > 0) out.push('mutates_new_argument');
   // OOS iteration 3, item 1: a guard clause the patch put behind the code it should protect
   if (newlyLateGuards(o.applied, cache).length > 0) out.push('late_guard');
+  // OOS iteration 4, item B: a guard on a value the function derived from its own parameters,
+  // added behind the first statement that used it — the data-flow shape that separates `stats`
+  // and `detect_cycle` from their golds where placement alone does not
+  if (newlyDerivedLocalGuards(o.applied, cache).length > 0) out.push('guards_derived_local');
   return out;
 }
 
@@ -1000,6 +1129,7 @@ export const SUSPICION_SIGNAL_WHY: Readonly<Record<SuspicionSignal, string>> = {
   adds_special_case: 'adds a conditional or a literal beyond the line it replaces',
   mutates_new_argument: 'mutates in place a parameter the pre-patch code left alone',
   late_guard: 'adds a guard behind statements that already use the value it guards, where the same guard could have stood at the top of the block',
+  guards_derived_local: 'guards a value the function computed from its own arguments, added behind the first statement that used that value, rather than guarding the argument itself',
 };
 
 export function generalInstructions(key: string): string {

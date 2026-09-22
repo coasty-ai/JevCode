@@ -18,7 +18,7 @@
  * `POOL_SUSPECT_SIGNAL` — a signal with no positive evidence on the records cannot be the
  * evidence that a pool holds no gold.
  */
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -27,10 +27,10 @@ import { createGuardMemory } from '../../../../src/synth/search/bases.js';
 import { POOL_SUSPECT_SIGNALS, decide, mutationRefused, newlyLateGuards, structuralRejection, suspicionSignals } from '../../../../src/synth/search/guard.js';
 import { analyse, guardClauses, isLateGuard } from '../../../../src/synth/py/index.js';
 import type { VerifyOutcome } from '../../../../src/synth/search/types.js';
-import { REPO_ROOT, candidate, committedBase, failure, goal as goalOf, plausibleOutcome, scriptedAsk, siteAt, sourceFile, summary, throwingAsk } from './helpers.js';
+import { candidate, committedBase, failure, goal as goalOf, plausibleOutcome, scriptedAsk, siteAt, sourceFile, summary, throwingAsk } from './helpers.js';
+import { LADDER_TASKS as LADDER, QUIXBUGS_DIR as QUIXBUGS, goldCorpora, ladderGolds, quixbugsGolds, swebenchGolds } from './gold-corpus.helpers.js';
+import type { GoldPatch } from './gold-corpus.helpers.js';
 
-const LADDER = join(REPO_ROOT, 'bench/data/ladder/tasks');
-const QUIXBUGS = join(REPO_ROOT, 'bench/data/quixbugs');
 const read = (p: string): string => readFileSync(p, 'utf8');
 
 /** A one-file patch as `newlyLateGuards` reads it. */
@@ -203,9 +203,15 @@ describe('the iteration-1 replay after the tightening (why `late_guard` left POO
     expect(clause.perOperand['hare.successor.successor']).toMatchObject({ derefs: 0 });
   });
 
+  /**
+   * OOS iteration 4 left this ruling standing and widened the set around it: four other signals
+   * now have a 0-fire sweep AND, for `guards_derived_local`, positive evidence on two of these
+   * same three records (`signal-sweeps.test.ts`). `late_guard` is still the one that is clean on
+   * the golds and silent on the records, so it is still lone-passer only.
+   */
   it('so the signal is not swept-clean-AND-positive, and is a lone-passer signal only', () => {
-    expect([...POOL_SUSPECT_SIGNALS]).toEqual(['mutates_new_argument']);
     expect(POOL_SUSPECT_SIGNALS.has('late_guard')).toBe(false);
+    expect(POOL_SUSPECT_SIGNALS.has('mutates_new_argument')).toBe(true);
   });
 });
 
@@ -213,81 +219,13 @@ describe('the iteration-1 replay after the tightening (why `late_guard` left POO
 // The sweeps
 // ---------------------------------------------------------------------------------------
 
-interface GoldPatch {
-  name: string;
-  path: string;
-  before: string;
-  after: string;
-}
-
-function quixbugsGolds(): GoldPatch[] {
-  const out: GoldPatch[] = [];
-  for (const f of readdirSync(join(QUIXBUGS, 'programs')).filter((x) => x.endsWith('.py'))) {
-    if (!existsSync(join(QUIXBUGS, 'correct', f))) continue;
-    out.push({ name: `quixbugs/${f}`, path: f, before: read(join(QUIXBUGS, 'programs', f)), after: read(join(QUIXBUGS, 'correct', f)) });
-  }
-  return out;
-}
-
-function ladderGolds(): GoldPatch[] {
-  const out: GoldPatch[] = [];
-  const walk = (dir: string, rel = ''): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name), `${rel}${e.name}/`) : e.name.endsWith('.py') ? [`${rel}${e.name}`] : []));
-  for (const task of readdirSync(LADDER)) {
-    const goldDir = join(LADDER, task, 'gold');
-    const srcDir = join(LADDER, task, 'src');
-    if (!existsSync(goldDir) || !existsSync(srcDir)) continue;
-    for (const f of walk(goldDir)) {
-      if (!existsSync(join(srcDir, f))) continue;
-      out.push({ name: `ladder/${task}/${f}`, path: `src/${f}`, before: read(join(srcDir, f)), after: read(join(goldDir, f)) });
-    }
-  }
-  return out;
-}
-
-/** Every Python hunk of a unified diff, as the before/after image of its own context window. */
-function hunkPatches(id: string, diff: string): GoldPatch[] {
-  const out: GoldPatch[] = [];
-  let path = '';
-  let before: string[] = [];
-  let after: string[] = [];
-  const flush = (): void => {
-    if (path.endsWith('.py') && (before.length > 0 || after.length > 0)) out.push({ name: `${id} ${path}`, path, before: `${before.join('\n')}\n`, after: `${after.join('\n')}\n` });
-    before = [];
-    after = [];
-  };
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('--- ')) continue;
-    if (line.startsWith('+++ b/')) {
-      flush();
-      path = line.slice('+++ b/'.length);
-      continue;
-    }
-    if (line.startsWith('@@') || line.startsWith('diff --git') || line.startsWith('index ')) {
-      if (line.startsWith('@@')) flush();
-      continue;
-    }
-    if (line.startsWith('-')) before.push(line.slice(1));
-    else if (line.startsWith('+')) after.push(line.slice(1));
-    else if (line.startsWith(' ')) {
-      before.push(line.slice(1));
-      after.push(line.slice(1));
-    }
-  }
-  flush();
-  return out;
-}
-
-function swebenchGolds(): GoldPatch[] {
-  const golds = JSON.parse(read(join(REPO_ROOT, 'bench/data/swebench-verified-30.gold.json'))) as Record<string, string>;
-  return Object.entries(golds).flatMap(([id, diff]) => hunkPatches(id, diff));
-}
-
+/**
+ * OOS iteration 4 lifted these loaders into `gold-corpus.helpers.ts`, unchanged, so that the
+ * data-flow signal, the three signals item C swept and the statement-kind prior of item A all
+ * sweep exactly this corpus.
+ */
 describe('gold sweeps: every corpus in the repository', () => {
-  const corpora: readonly [string, GoldPatch[]][] = [
-    ['quixbugs', quixbugsGolds()],
-    ['ladder', ladderGolds()],
-    ['swebench-verified-30', swebenchGolds()],
-  ];
+  const corpora: readonly [string, GoldPatch[]][] = goldCorpora();
 
   it('covers the 41 QuixBugs programs, every ladder task, and all 30 SWE-bench Verified instances (the four fresh django ones included)', () => {
     expect(quixbugsGolds()).toHaveLength(41);
