@@ -140,9 +140,10 @@ export function parsePerfWindowHeader(text: string): PerfWindowHeader | null {
  * refusal that says which file to remove.
  *
  * That headerless reading is the one place this implementation and the protocol's first draft disagreed, and the
- * disagreement is settled in writing: docs/DECISIONS.md "Amendment: a perf-window sentinel with no readable header
- * is HELD from its mtime, not stale", which replaces the sentence "a reader that cannot parse that line treats the
- * file as stale" in the F17 sentinel entry. Nothing is held indefinitely: the floor still expires.
+ * disagreement is settled in writing: docs/DECISIONS.md "Amendment (applied in place above): a perf-window sentinel
+ * with no readable header is HELD from its mtime, not stale", whose replacement sentence the integration branch
+ * applied IN PLACE inside the F17 sentinel entry's "Who creates it" bullet (it used to read "a reader that cannot
+ * parse that line treats the file as stale"). Nothing is held indefinitely: the floor still expires.
  */
 export function perfWindowTtlMs(header: PerfWindowHeader | null): number {
   if (header === null) return PERF_WINDOW_TTL_FLOOR_MS;

@@ -5,6 +5,46 @@ candidate source inside it, Jev localising and arbitrating, shadow lanes verifyi
 entry per measurement, with the numbers, the run ids and the report they come from; the design doc holds the plan and the
 criterion, `experiments/results/` holds the reports. Live results only — nothing here is projected.
 
+## §5a Harness environment switches (reference, not a measurement)
+
+Every environment variable that **changes what a run does**, in one table, because four of them
+(`JEVCODE_HEDGE`, `JEVCODE_CASE_TIMEOUT_MS`, `JEVCODE_MAX_CASE_TIMEOUTS`, `JEVCODE_BENCH_CONTEXT`) appeared in no
+document at all before 2026-09-22 and four more existed only inside design prose with no default and no effect —
+so a measurement could inherit one from the shell and nobody could tell from the record. Presentation and settings
+variables (`JEVCODE_MODE`, `JEVCODE_THEME`, `JEVCODE_ASCII`, the `JEVCODE_MOCK_*` and `JEVCODE_ASSERT_*` test hooks,
+…) are NOT here; they belong to the settings table in `src/config/defaults.ts` and to the TUI docs.
+
+**Two rules hold for all of them.** (1) An unset or unrecognised value is always the pre-existing behaviour — a
+typo disarms a switch, it never arms one. (2) Where an in-process option exists for the same mechanism, **the
+explicit option wins and the environment only fills an ABSENT option** (`routersEnabled`, `resolveFastPathOption`,
+`hedgeEnabled`); an arm's recorded row is therefore always the truth about what it ran.
+
+<!-- env-switches:begin -->
+| Switch | Accepted values | Default (unset) | Effect | Read in |
+| --- | --- | --- | --- | --- |
+| `JEVCODE_JEV` | `off` / `0` / `escape` / `down` / `503` / `unreachable` (`off`,`0` → escape; `down`,`503` → unreachable) | unset — the real decider | Replaces the Decider with a deterministic double: every Choice takes the escape option, every Noul is inert at 0.5, every Score sits at its TOP level (so the destructive gate can only tighten). Bench/perf only — there is no `--jev off` row on `run` or `bench` in `src/cli/args.ts` (the `--jev` boolean at `:288` is `jevcode logout --jev`, an unrelated flag), and the single caller is the bench runner | `src/jev/off.ts` (`jevOffModeFrom`, `withJevOff`), applied at `src/bench/runner.ts` |
+| `JEVCODE_ROUTERS` | `on` (anything else is off) | off in every mode | Arms the contract 1.9 §2 speculative router table (`routeSpeculative`). An explicit `EngineOptions.routers` wins; the env fills only an absent option. The `jev-on` gate stays ahead of both | `src/jev/router.ts` (`routersEnabled`) |
+| `JEVCODE_FASTPATH` | `auto` / `off` | `auto` when the mode is `jev-on`, `off` otherwise | Arms route R9, the Ledger+Sieve fast path. An explicit `EngineOptions.fastPath` wins; the env fills only an absent option | `src/loop/engine.ts` (`resolveFastPathOption`) |
+| `JEVCODE_WARM` | `on` / `1` / `true` (anything else is off) | OFF for every runner | Asks for the warm verification plane (a persistent forked interpreter that SCREENS candidates; a passer is always re-verified by a cold spawn). A runner with no warm shape records `warm.mode: 'unsupported-runner'` instead of silently running cold. Also refuses the fast path outright (`reason: 'warm_plane'`) | `src/synth/warm/plane.ts` (`warmRequested`, `warmModeFor`) |
+| `JEVCODE_HEDGE` | `on` (anything else is off) | off | Arms the contract 1.9 §3.2 hedge: one twin per round fired after `hedgeAfterMs(p50 TTFB)`. A caller's `LlmSourceDeps.hedge` pin wins — but **no site under `src/` sets one**, so this variable is today the ONLY way the hedge can arm | `src/synth/llm/source.ts` (`hedgeEnabled`, `HEDGE_ENV_FLAG`) |
+| `JEVCODE_DEADLINE_GROWTH` | `served` / `always` | `always` (byte-identical to the behaviour before the switch existed) | `served`: a zero-token timeout backs a goal's deadline off only once a sample of that goal has actually been SERVED, so a provider that never answers stays at the class base. Recorded per run on `StepsSummary.deadlineGrowth` | `src/synth/llm/source.ts` (`deadlineGrowthFrom`, `DEADLINE_GROWTH_ENV_FLAG`; the type is `DeadlineGrowthMode`) |
+| `JEVCODE_CASE_TIMEOUT_MS` | a positive integer, milliseconds | 2000 ms (`CASE_TIMEOUT_S = 2`, run_tests.py's own `--timeout`) | The per-case limit compiled into the GENERATED QuixBugs pytest module (`src/bench/quixbugs/pytest.ts:95`), so an exported value binds the bench's own QuixBugs runs. It does NOT bind every sieve lane: `laneRunEnv` OVERWRITES it on a pytest lane that has a measured per-test timeout (`src/synth/sieve/runner.ts:115`), and a sieve `quixbugs` lane takes its limit on the command line instead (`quixbugsLaneCommand`, `:427`), where the environment is not consulted | `src/synth/verify/quixbugs.ts` (`CASE_TIMEOUT_ENV`), consumed by the module built in `src/bench/quixbugs/pytest.ts`, set per lane in `src/synth/sieve/runner.ts` |
+| `JEVCODE_MAX_CASE_TIMEOUTS` | a positive integer | unset — no limit (the sieve sets 1 on its own lanes, `LANE_MAX_CASE_TIMEOUTS`) | After this many case timeouts in one run the remaining cases are reported "not run" rather than called. This is what keeps a hanging candidate from costing the whole per-case budget on every case | `src/synth/verify/quixbugs.ts` (`MAX_CASE_TIMEOUTS_ENV`), consumed by `src/bench/quixbugs/pytest.ts`, set per lane in `src/synth/sieve/runner.ts` |
+| `JEVCODE_TIMELINE` | any value except `0` and `off` (`1` by convention) | unset — the recorder is off and every entry point is an early return | Arms the per-step span recorder and its §4.4 buckets (`jev`, `sample`, `store`, `listing:*`, `images:pre`/`images:post`). It is instrumentation, but it is in this table rather than out of scope because it **changes what the gated `harnessMs` contains** (`src/perf/step-overhead.ts`), so a perf number taken with it exported is not comparable with one taken without — `docs/HARNESS-NEXT-DESIGN.md` §9.1's bucket measurements were taken under it | `src/perf/timeline.ts` (`timelineEnabled`) |
+| `JEVCODE_BENCH_CONTEXT` | `relaxed` (anything else is legacy) | `legacy` | Flips **every** bench arm's `contextPolicy.view` from legacy to relaxed, i.e. changes the prompt every arm sends. An arm that wants the relaxed view should set `contextPolicy` on its own condition object; this switch is the whole-run override and is easy to leave exported | `src/bench/conditions.ts` |
+<!-- env-switches:end -->
+
+`test/unit/hygiene/env-switches-documented.test.ts` discovers this set from `src/` by enumerating **every**
+`JEVCODE_[A-Z0-9_]+` read outside the TUI-owned trees, two ways: an exported constant used as an `env[CONST]`
+subscript, and a literal `env['JEVCODE_…']` subscript (the second rule is how 13 of the ~16 non-TUI reads in this
+tree are written, and it was missing from the first version of the test). A discovered name leaves the required set
+only through the test's `OUT_OF_SCOPE` list, which carries a written reason per name — today the diagnostics
+switches (`JEVCODE_TRACE`, `JEVCODE_LOG`, `JEVCODE_LOG_LEVEL`), the settings switch `JEVCODE_HOME`, the
+`JEVCODE_MOCK_*` test hooks and the `JEVCODE_PERF_*` harness plumbing — and every exemption is re-checked to be
+still read, so it cannot rot into a silent path in. The test fails if a required switch has no row, if a row has an
+empty column, if a row names a switch nothing reads, if a row's "Read in" file does not actually read it, or if the
+"Read in" column names a reader function that is not a symbol under `src/`.
+
 ## 2026-09-21 — first head-to-head against the GLM generator-only baseline (HEAD 626fc40)
 
 Report: `experiments/results/llm-jev-headtohead.md` (tool output `llm-jev-headtohead.tool.md`, `.tool-rerun.md`); probes
@@ -208,8 +248,13 @@ five fresh-slice QuixBugs records at `wall_time` with 0–1 steps and `execMs: 0
 child processes for 59 minutes. A five-point $0 offline A/B on one task at `--concurrency 1` pins it on the **warm
 verification plane** (`src/synth/warm/`, `7c99ce0` + `6cd0e76`, HARNESS-NEXT wave S1 M6), not on this iteration's work and
 not on the bundle: `066816f` 6 steps / 2,896 tested, `168a599` 0/0, `751e3bf` tsx 0/0, `751e3bf` bundle 0/0,
-`751e3bf` with `JEVCODE_WARM=off` **6 steps / 2,180 tested in 80.8 s**. `warmModeFor` defaults the plane on for every
-`quixbugs` and `pytest` runner. Everything below therefore ran with `JEVCODE_WARM=off`; fix the plane before the next arm.
+`751e3bf` with `JEVCODE_WARM=off` **6 steps / 2,180 tested in 80.8 s**. ~~`warmModeFor` defaults the plane on for every
+`quixbugs` and `pytest` runner.~~ **Re-tensed 2026-09-22 at `d297b29`: that was true AT `751e3bf` and is no longer true of any
+tree since `11e1acc` (merged `0556f1a`).** The plane is OPT-IN for every runner: `warmRequested(env)`
+(`src/synth/warm/plane.ts:149`) is false unless `JEVCODE_WARM` is `on` / `1` / `true`, and `warmModeFor` returns `null` before
+it looks at the runner (`:123`). Everything below therefore ran with `JEVCODE_WARM=off`, which is now simply the default;
+the plane's own defects were fixed by `warm-plane-fix-2` and the default stays OFF until pass parity holds
+(`docs/DECISIONS.md`, the warm A/B).
 
 **1. Fresh slice (18 tasks: the 8 remaining eligible QuixBugs, the whole new ladder long-2 tier, the first 4 non-sympy
 SWE instances that are neither oracle-valid nor ever passed).** `llm-jev` **12/18** [44 %, 84 %] against `jev-off-tuned`
