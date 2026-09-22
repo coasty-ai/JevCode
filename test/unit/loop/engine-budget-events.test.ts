@@ -187,7 +187,9 @@ describe('budget:unpriced (§9.5 A135–A137)', () => {
     expect(r.stopReason).toBe('error');
     expect(r.steps).toBe(1); // the step committed first
     expect(r.error).toMatchObject({ code: 'config', exitCode: 2, message: expect.stringContaining('--allow-unpriced') });
-    expect(h.store.transcript.at(-2)).toBe('[run] warn: stop: error at step 1 (unpriced_usage)');
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
+    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     expect(h.of('run:end')[0]!.exitCode).toBe(2);
   });
 

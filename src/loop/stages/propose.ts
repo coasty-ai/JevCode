@@ -9,7 +9,8 @@
  */
 import { GeneratorResponseError } from '../../errors.js';
 import type { ChatMessage, GenerateRequest, Proposal } from '../../core/types.js';
-import { PROPOSE_ACTION_TOOL, parseProposal, rawTextTail } from '../../provider/actions.js';
+import { PROPOSE_ACTION_TOOL, parseProposal, proposeActionToolFor, rawTextTail } from '../../provider/actions.js';
+import { RESEARCH_ACTION_KINDS } from '../../core/types.js';
 import { buildPrompt, buildRetryMessage, type PromptBuild, type PromptInput } from '../../provider/prompts.js';
 import type { StageContext } from '../engine.js';
 
@@ -35,6 +36,9 @@ export interface ProposeStageResult {
 export async function runProposeStage(ctx: StageContext, systemPrompt: string, input: PromptInput, hooks?: ProposeStageHooks): Promise<ProposeStageResult> {
   const built = buildPrompt(input);
   hooks?.onPrompt?.(built);
+  // ORCHESTRATION-DESIGN §2.5(b) / corner row 24: a `role: 'research'` child is never OFFERED edit | write | patch —
+  // the restriction is in the tool schema as well as in code, so the model cannot even shape a write.
+  const tool = ctx.orchestration?.role === 'research' ? proposeActionToolFor(RESEARCH_ACTION_KINDS) : PROPOSE_ACTION_TOOL;
   const userMessage = built.text;
   const messages: ChatMessage[] = [{ role: 'user', content: userMessage }];
   let promptChars = userMessage.length;
@@ -45,8 +49,8 @@ export async function runProposeStage(ctx: StageContext, systemPrompt: string, i
       messages,
       maxTokens: ctx.generation.maxTokens,
       temperature: ctx.generation.temperature,
-      tools: [PROPOSE_ACTION_TOOL],
-      toolChoice: { name: PROPOSE_ACTION_TOOL.name },
+      tools: [tool],
+      toolChoice: { name: tool.name },
     };
     const result = await ctx.generate(req, attempt);
     // §10.1 drop-not-retry: the row is recorded (metered from the provider's estimate), the step ends here

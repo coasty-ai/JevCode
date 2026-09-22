@@ -140,8 +140,21 @@ export const LAND_LOG_LINE_BYTES = 1024;
  * `dirtySnapshot` into `src/orchestrate/worktree.ts` is complete (wave D2 item 17).
  */
 export const DIRTY_ENTRIES_MAX = 200;
+/**
+ * §3.6 / §6.4 `orchestrate.minFreeBytes`: the pre-flight keeps this much disk free after every agent's worktree.
+ * A setting in §6.4's table; this is the default the engine uses until `SETTINGS` resolves one (wave D3 item 26).
+ */
+export const MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024;
+/** §3.6 / §6.4 `orchestrate.agentMemBytes`: from the bench's measured 2.9 GB RSS peak, rounded up. */
+export const AGENT_MEM_BYTES = 3 * 1024 * 1024 * 1024;
 /** §2.6 [D2]: paths per `git add` invocation, so a 200-entry change set stays inside `ARG_MAX`. */
 export const ADD_SET_CHUNK = 256;
+/**
+ * §3.7 [D4]: rows of `ConfirmRequest.headline`. The band it fills is the one `reviewHeaderLines` /
+ * `reviewCardLines` would have given `[…RISK_DIMENSIONS gauges, matchesIntent]` — four gauges plus one row —
+ * so five is the count that keeps every ladder rung returning exactly what it returned before.
+ */
+export const HEADLINE_ROWS_MAX = 5;
 
 // ---------------------------------------------------------------------------------------
 // Import (docs/IMPORT-DESIGN.md Appendix B) — unioned at merge; the block above it is orchestration, above that the

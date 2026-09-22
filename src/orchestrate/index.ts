@@ -8,15 +8,16 @@
  * `CommitIdentity`, `SplitPolicy`) next to the functions that take them.
  *
  * What is NOT here yet, and why: `src/loop/stages/decompose.ts`, every `src/loop/engine.ts` change,
- * `src/spend/meter.ts`'s `hold`/`release`, `src/checkpoint/store.ts`'s `writeCache`,
- * `src/sandbox/seatbelt.ts`'s child deny list and `src/orchestrate/preflight.ts` belong to the
+ * `src/spend/meter.ts`'s `hold`/`release` and `src/checkpoint/store.ts`'s `writeCache` belong to the
  * engine-wiring wave and to the coordination waves this design consumes (§0.1). This slot is the
  * pure half: everything below is unit-testable over a temp repo with no engine, no session and no
  * network.
  */
 
 // ---------------------------------------------------------------------------------------
-// Contract types (§4.1; they move to `src/core/types.ts // contract 1.5` after coordination 1.4)
+// Contract types (§4.1; they now LIVE in `src/core/types.ts` under the `// contract 1.5` header and `./types.js`
+// re-exports them, so this facade and every importer below it are unchanged. `SplitPolicy` is the local alias of
+// core's `OrchestrationPolicy`; the seams — `RunGit`, `Clock`, `AskFn`, `CommitIdentity` — are still declared there.)
 // ---------------------------------------------------------------------------------------
 export type {
   AgentRef,
@@ -167,3 +168,7 @@ export type { AcquireLandLockOptions, AcquireLandLockResult, LandLock, LandLockH
 
 export { detectStall } from './stall.js';
 export type { HeartbeatSample, StallSignal, StallVerdict } from './stall.js';
+
+// §3.6: the resource pre-flight (code, before any worktree)
+export { nodePreflightProbe, preflight, DISK_HEADROOM, FDS_PER_AGENT, FD_MARGIN } from './preflight.js';
+export type { PreflightInput, PreflightLimit, PreflightProbe, PreflightReason, PreflightResult } from './preflight.js';

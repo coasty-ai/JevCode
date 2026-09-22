@@ -130,7 +130,9 @@ describe('transcript.log (§10 shared item model)', () => {
     expect(h.store.transcript[0]).toMatch(/^\[run\] start /);
     expect(h.store.transcript.some((l) => /^\[step 1\] intent=investigate p=0\.90 c=/.test(l))).toBe(true);
     expect(h.store.transcript.some((l) => /^\[step 1\] outcome executed: read 1 file\(s\)$/.test(l))).toBe(true);
-    expect(h.store.transcript.at(-2)).toBe('[run] stop: complete at step 2');
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
+    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end complete steps=2 wall=/);
     // pane-only events never produce a line
     expect(h.store.transcript.some((l) => /decision|status|stage:/.test(l))).toBe(false);

@@ -360,7 +360,9 @@ describe('llm-jev: sanctioned generator channel, mode plumbing, code-fact stages
     expect(h1.of('budget:unpriced')).toEqual([{ type: 'budget:unpriced', side: 'generator', model: 'vendor/unknown-model', step: 1, tokens: { input: 4, output: 0 } }]);
     expect(r1.stopReason).toBe('error');
     expect(r1.steps).toBe(1);
-    expect(h1.store.transcript.at(-2)).toBe('[run] warn: stop: error at step 1 (unpriced_usage)');
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
+    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    expect(h1.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
     expect(h1.store.generator[0]!.usage).toEqual({ inputTokens: 4, outputTokens: 0, costUsd: 0, calls: 1, estimated: true });
     // the resolved config pricing (overrides included) prices the same estimate
     const p2 = deferredProvider('vendor/unknown-model');
