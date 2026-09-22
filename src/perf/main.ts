@@ -138,6 +138,11 @@ export function parsePerfWindowHeader(text: string): PerfWindowHeader | null {
  * with no parseable header — a bare `touch`, which is all the agent prompts ask for — keeps the floor, measured from
  * its mtime: clobbering somebody's live window costs a real measurement, while honouring a leftover costs one
  * refusal that says which file to remove.
+ *
+ * That headerless reading is the one place this implementation and the protocol's first draft disagreed, and the
+ * disagreement is settled in writing: docs/DECISIONS.md "Amendment: a perf-window sentinel with no readable header
+ * is HELD from its mtime, not stale", which replaces the sentence "a reader that cannot parse that line treats the
+ * file as stale" in the F17 sentinel entry. Nothing is held indefinitely: the floor still expires.
  */
 export function perfWindowTtlMs(header: PerfWindowHeader | null): number {
   if (header === null) return PERF_WINDOW_TTL_FLOOR_MS;
@@ -178,15 +183,60 @@ export function perfWindowBusyMessage(path: string, w: Extract<PerfWindow, { kin
 }
 
 /**
+ * `O_CREAT|O_EXCL`: true when THIS call created the file, false when something was already at that path. Every
+ * other errno throws — a window that cannot be written for any other reason is not a window this run may assume.
+ */
+function createExclusive(path: string, line: string): boolean {
+  try {
+    writeFileSync(path, line, { flag: 'wx' });
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    return false;
+  }
+}
+
+/** The refusal for a path that is occupied but that `perfWindowState` cannot read as a window. */
+export function perfWindowOccupiedMessage(path: string): string {
+  return `cannot take the perf window ${path}: the path exists but does not read as a window (another run took it in the same instant, or it is a dangling symlink) — remove it if nothing is measuring`;
+}
+
+/**
  * Take the perf window: refuse (`ConfigError`, exit 2) while another run holds it, replace a stale one with a logged
  * note, and write this run's header line.
+ *
+ * The create is **exclusive**, and that is the mutual exclusion — not the state read above it. `perfWindowState`
+ * cannot arbitrate between two runs: the window is taken immediately before `awaitQuietMachine`, i.e. exactly when
+ * both sessions on this machine are most likely to start together after waiting on the same sentinel, and a
+ * check-then-write let every run that landed between the `statSync` and the `writeFileSync` read `free` and
+ * measure. (It also left the first run's `closePerfWindow` declining to unlink, because the pid on disk was by then
+ * the last writer's, so the leftover outlived all of them.) So the OS decides who created the file; the state read
+ * is kept for the two things it is actually good at — the *wording* of the refusal, and recognising a killed run's
+ * leftover, which is the one case where an existing file is replaced.
  */
 export function openPerfWindow(path: string, log: (s: string) => void, now: number = Date.now()): void {
-  const w = perfWindowState(path, now);
-  if (w.kind === 'held') throw new ConfigError(perfWindowBusyMessage(path, w));
-  if (w.kind === 'stale') log(`perf: ${path} is ${minutes(w.ageMs)} min old (stale after ${minutes(w.ttlMs)} min) and was taken by ${w.owner}; treating it as a killed run's leftover and replacing it\n`);
-  writeFileSync(path, `${new Date(now).toISOString()} ${process.pid} ${PERF_WINDOW_OWNER} ${PERF_WINDOW_EXPECTED_MIN}\n`);
-  log(`perf: perf window taken: ${path} (pid ${process.pid})\n`);
+  const line = `${new Date(now).toISOString()} ${process.pid} ${PERF_WINDOW_OWNER} ${PERF_WINDOW_EXPECTED_MIN}\n`;
+  // At most two attempts: one to take a free window, and one more after a stale leftover has been removed.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (createExclusive(path, line)) {
+      log(`perf: perf window taken: ${path} (pid ${process.pid})\n`);
+      return;
+    }
+    const w = perfWindowState(path, now);
+    if (w.kind === 'held') throw new ConfigError(perfWindowBusyMessage(path, w));
+    if (w.kind === 'stale') {
+      log(`perf: ${path} is ${minutes(w.ageMs)} min old (stale after ${minutes(w.ttlMs)} min) and was taken by ${w.owner}; treating it as a killed run's leftover and replacing it\n`);
+      // whoever unlinks it first wins the next create; losing that is another run holding the window, not an error
+      try {
+        unlinkSync(path);
+      } catch {
+        // gone already, or not ours to remove: the next exclusive create is the only answer that matters
+      }
+    }
+    // `free` with the create refused means the path is occupied by something the state read cannot see (a
+    // dangling symlink) or the holder released it in between; either way, one more exclusive attempt decides.
+  }
+  throw new ConfigError(perfWindowOccupiedMessage(path));
 }
 
 /** Release the window — but only the one this process wrote: never unlink a window another run took after ours. */
@@ -328,11 +378,16 @@ export function foreignPtyDrivers(): string[] {
 /**
  * Run the Static microbenchmark in a child `jevcode perf` (see the header) and return its result; the child's progress
  * lines (two-space indented) are forwarded, everything else it prints is dropped. Null when the child failed.
+ *
+ * `parentEnv` is the run's environment — `PerfRunOptions.env`, i.e. `process.env` in production and whatever a test
+ * injected otherwise. Reading `process.env` here instead would have made the injection a half-truth: the child is
+ * the one place a perf run hands an environment to something else, so it is the one place where getting it from the
+ * process rather than from the run is visible.
  */
-async function measureStaticAppendInChild(bin: string, root: string, progress: (line: string) => void): Promise<StaticAppendResult | null> {
+export async function measureStaticAppendInChild(bin: string, root: string, parentEnv: NodeJS.ProcessEnv, progress: (line: string) => void): Promise<StaticAppendResult | null> {
   const dir = mkdtempSync(join(tmpdir(), 'jevcode-perf-static-'));
   const out = join(dir, 'static-append.json');
-  const env: Record<string, string | undefined> = { ...process.env, JEVCODE_PERF_ONLY: 'static-append', JEVCODE_PERF_CHILD: '1', NODE_ENV: 'production' };
+  const env: Record<string, string | undefined> = { ...parentEnv, JEVCODE_PERF_ONLY: 'static-append', JEVCODE_PERF_CHILD: '1', NODE_ENV: 'production' };
   delete env['CI'];
   try {
     const code = await new Promise<number | null>((done) => {
@@ -363,11 +418,18 @@ async function measureStaticAppendInChild(bin: string, root: string, progress: (
   }
 }
 
-/** What a run measures from, reads its switches out of, and prints to. Defaults are the process's own; a test injects. */
+/**
+ * What a run measures from, reads its switches out of, and prints to. Defaults are the process's own; a test injects.
+ *
+ * The injection is honoured everywhere the run reaches out of itself: the two refusals, the README write, the
+ * static-append child's cwd **and** its environment, and the `root` the `lane-run` and `jev-latency` probes resolve
+ * their fixtures and config against. It is not a sandbox — the pty probes still resolve their drivers from `root`
+ * and run real processes — but nothing on the path reads `process.env` or `process.cwd()` behind the caller's back.
+ */
 export interface PerfRunOptions {
   /** the working directory the probes and the README rewrite resolve against (default `process.cwd()`) */
   cwd?: string;
-  /** the environment `JEVCODE_PERF_ONLY` / `JEVCODE_PERF_CHILD` / `JEVCODE_PERF_WINDOW` are read from (default `process.env`) */
+  /** the environment `JEVCODE_PERF_ONLY` / `JEVCODE_PERF_CHILD` / `JEVCODE_PERF_WINDOW` are read from, and the one the static-append child inherits (default `process.env`) */
   env?: NodeJS.ProcessEnv;
   /** where the run's own lines go (default `process.stdout`) */
   log?: (s: string) => void;
@@ -447,7 +509,7 @@ async function measureAll(flags: ParsedFlags, ctx: { root: string; env: NodeJS.P
       const { measureStaticAppend } = await import('./static-append.js');
       staticAppend = await measureStaticAppend({ onProgress: progress });
     } else {
-      staticAppend = await measureStaticAppendInChild(bin, root, progress);
+      staticAppend = await measureStaticAppendInChild(bin, root, env, progress);
       if (staticAppend === null) progress('static append: the child probe failed (no result) → FAIL');
     }
   }
@@ -484,12 +546,12 @@ async function measureAll(flags: ParsedFlags, ctx: { root: string; env: NodeJS.P
   if (probes.includes('lane-run')) {
     log('perf: one real candidate run, cold spawn vs the persistent runner (§5 P2 — the >= 2x gate wave S1 is judged by)…\n');
     const { measureLaneRun } = await import('./lane-run.js');
-    laneRun = await measureLaneRun({ onProgress: progress });
+    laneRun = await measureLaneRun({ root, onProgress: progress });
   }
   if (flags.live) {
     log('perf: Jev latency (live)…\n');
     const { measureJevLatency } = await import('./jev-latency.js');
-    jev = await measureJevLatency(flags);
+    jev = await measureJevLatency(flags, { root, env });
   }
   const loadEnd = loadavg()[0] ?? 0;
 

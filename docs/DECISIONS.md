@@ -1459,3 +1459,38 @@ reads: clean sweep WITH stated power, plus positive replay evidence. **Consequen
 hole (a ≥ 2-passer pool committed by a code rule with no Jev request) is open again. **By the user's direction of 2026-09-22 the
 overfit-signal search stops here**: no iteration 5; the open items (the detect_cycle pool, the `kth` generation gap, the item-C
 signals' missing replay evidence, Ring 1 re-measurement on the merged tip) are recorded in `docs/LLM-JEV.md` for whoever picks them up.
+
+## 2026-09-22 Amendment: a perf-window sentinel with no readable header is HELD from its mtime, not stale
+
+Amends exactly one sentence of the entry **"The perf-window sentinel protocol, and the provenance of every Ring-1
+`--jev off` number"** (written by the finishing pass F17, on branch `finish-F` at `a98689c`; it is not on `main` at
+`d297b29`). In that entry's bullet **Who creates it**, the last sentence read:
+
+> A reader that cannot parse that line treats the file as stale.
+
+It now reads:
+
+> A reader that cannot parse that line takes the file's mtime as its creation time and applies the 30-minute floor.
+
+**Why the sentence moves and not the code.** Every agent prompt in this repository asks for the file and nothing
+else — "wait while `/tmp/jevcode-perf-window-open` exists before tests or builds" — so the sentinel a human or an
+agent actually creates is a bare `touch`, with no header at all. Under the original sentence that *common* case is
+the one case the protocol does not protect: `jevcode perf` would see "stale", replace a live hand-taken window on
+sight and measure straight through somebody else's measurement, which is the precise failure the sentinel exists to
+prevent. The two mistakes are not symmetric. Honouring a leftover costs one refusal, and the refusal names the file,
+its age and the sentence "remove the file if nothing is measuring"; clobbering a live window costs a real
+measurement — the one being taken, and the one taken under its load. The floor still bounds it: a headerless
+sentinel goes stale thirty minutes after its mtime and is then replaced with a logged note, so nothing holds the
+machine indefinitely and "who clears a stale file" is unchanged. What the amended sentence gives up is only the
+ability to *attribute* such a window; the refusal says "by an unknown process" and carries on.
+
+As built: `perfWindowTtlMs(null) === PERF_WINDOW_TTL_FLOOR_MS` and `perfWindowState`'s `header?.createdAt ?? mtime`
+(`src/perf/main.ts`), pinned by `test/unit/perf/main.test.ts` — "honours a bare `touch`ed sentinel too" and "reads a
+window that is there, one that is not, and one it cannot attribute".
+
+**Merge note, and the reason this entry exists as an entry.** F15 (the enforcement, branch `finish-C`) and F17 (the
+protocol, branch `finish-F`) were written in parallel against the same unwritten protocol and landed on opposite
+sides of it. Whichever merges second would otherwise leave a ratified sentence that the code in the same tree
+disproves, so the two must be reconciled in one merge: an integrator taking both is free to apply the replacement
+in place, inside the F17 entry, and drop this amendment — the record of the disagreement is this paragraph, not a
+second copy of the rule.

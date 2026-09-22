@@ -11,7 +11,8 @@
  */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { PerfResult } from '../../../src/perf/main.js';
 import { README_NOT_A_CHECKOUT, isJevCodeCheckout, rewriteReadmePerformance } from '../../../src/perf/main.js';
@@ -484,5 +485,39 @@ describe('rewriteReadmePerformance() writes only inside a JevCode checkout (F01)
     writeFileSync(join(root, 'README.md'), '# JevCode\n\nno such section\n');
     expect(rewriteReadmePerformance(root, 'out.json', result())).toBe('README.md has no "## Performance" section; nothing rewritten\n');
     expect(readFileSync(join(root, 'README.md'), 'utf8')).toBe('# JevCode\n\nno such section\n');
+  });
+});
+
+/**
+ * C-06: the three cases above exercise the guarded helper, which is what F01 added — but nothing pinned that the
+ * COMMAND still goes through it. Re-introducing `updateReadmePerformance(resolve(root, 'README.md'), result)` at
+ * the call site, the exact regression F01 is about, left every one of them green.
+ *
+ * `measureAll` is not exported and its write path only runs after a complete release set of real pty probes, so
+ * there is no in-process seam to assert against. The call site is a source fact, so it is asserted as one: the
+ * only `updateReadmePerformance(` call in `src/perf/main.ts` is the one inside `rewriteReadmePerformance`, and
+ * that function still refuses ahead of it.
+ */
+describe('the command reaches the README only through the guarded helper (C-06)', () => {
+  const MAIN_TS = join(dirname(fileURLToPath(import.meta.url)), '../../../src/perf/main.ts');
+
+  it('has exactly one updateReadmePerformance( call in src/perf/main.ts, inside rewriteReadmePerformance, behind the checkout guard', () => {
+    const src = readFileSync(MAIN_TS, 'utf8');
+    const from = src.indexOf('export function rewriteReadmePerformance(');
+    expect(from, 'rewriteReadmePerformance must still be the guarded helper in src/perf/main.ts').toBeGreaterThan(-1);
+    // a top-level function ends at the first `}` in column 0 after its header
+    const close = src.indexOf('\n}\n', from);
+    expect(close).toBeGreaterThan(from);
+    const body = src.slice(from, close);
+
+    const calls = [...src.matchAll(/updateReadmePerformance\s*\(/g)].map((m) => m.index ?? -1);
+    expect(calls, 'the README writer must still be called: a vacuous pass here is the regression').toHaveLength(1);
+    for (const at of calls) {
+      const line = src.slice(0, at).split('\n').length;
+      expect(at >= from && at < close, `src/perf/main.ts:${line} calls updateReadmePerformance( outside rewriteReadmePerformance — that is the unguarded write F01 removed`).toBe(true);
+    }
+    // and the refusal is still ahead of the call, not beside it
+    expect(body).toContain('if (!isJevCodeCheckout(root)) return README_NOT_A_CHECKOUT;');
+    expect(body.indexOf('isJevCodeCheckout')).toBeLessThan(body.indexOf('updateReadmePerformance('));
   });
 });

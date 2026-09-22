@@ -20,7 +20,7 @@
  * the cold confirmation, MORE LANES THAN THE THREADPOOL HAS THREADS (the shape that wedged),
  * and the watchdog, driven by a worker script that really does sleep for ever.
  */
-import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -36,6 +36,12 @@ import { havePython, havePytest, haveRunner, PY_ENV, QUIXBUGS_DIR, warmFixture, 
 const LANES = 6;
 /** The whole point of the plane is that a screen is cheap; a real one is tens of milliseconds. */
 const SERVE_DEADLINE_MS = 30_000;
+/**
+ * Room for the COLD module wall (`run_tests.py`: `timeout * (len(expected_names) + 1) + 5`, i.e. 7.4 s at the
+ * 0.4 s cap the module cases use) on both legs, so what bounds those runs is the worker's own deadline rather
+ * than this one — an assertion, not a convenience.
+ */
+const MODULE_WALL_DEADLINE_MS = 60_000;
 
 let fx: WarmFixture | null = null;
 let plane: WarmPlane | null = null;
@@ -231,6 +237,82 @@ describe.skipIf(!havePython || !haveRunner)('a candidate whose import never retu
     expect(p.stats().screened).toBe(2);
     expect(p.stats().fallbacks).toBe(0);
   }, 120_000);
+
+  /**
+   * The nine `hasJsonTests:false` programs take `_run_module`, whose import used to be armed at the PER-CASE cap
+   * while the cold path gives the very same import the whole MODULE wall (`run_tests.py:209`,
+   * `timeout * (len(expected_names) + 1) + 5`). A candidate whose module body is slow but finite — a heavy
+   * top-level computation, a large table built at import — was therefore reported all-TIMEOUT warm and passed
+   * cold: a *correct* candidate discarded by the screen. The rule the JSON path already states (`_import_cap`:
+   * "never shorter than the cold path allows") has to hold here too, so this case is the parity assertion for
+   * the slow-but-finite shape, not just for a true hang.
+   */
+  it('gives a slow-but-finite module import the cold module wall, so a correct candidate is not failed warm and passed cold', async () => {
+    fx = warmFixture('jev-warm-import-slow-');
+    const f = fx;
+    const p = new WarmPlane({ sandbox: f.sandbox, signal: f.signal, runDir: f.runDir, workspaceRoot: f.ws, mode: 'quixbugs', interpreter: 'python3', bootEnv: PY_ENV });
+    plane = p;
+    // breadth_first_search: five MODULE tests and no `.json`, i.e. the `_run_module` path. The candidate is the
+    // gold one with a 1.5 s module body in front of it — correct, and far past the 0.4 s per-case cap, while
+    // well inside the 7.4 s module wall the cold runner gives the same import.
+    const candidate = join(f.lane.dir, 'breadth_first_search.py');
+    const gold = readFileSync(join(QUIXBUGS_DIR, 'correct/breadth_first_search.py'), 'utf8');
+    writeFileSync(candidate, `import time\ntime.sleep(1.5)\n${gold}`);
+    const command = quixbugsTestCommand(QUIXBUGS_DIR, 'breadth_first_search', candidate, { timeoutSec: 0.4 });
+
+    const hot = await p.serve(f.lane, command, MODULE_WALL_DEADLINE_MS, {});
+    expect(hot, 'the plane refused to serve the slow-importing candidate').not.toBeNull();
+    expect(hot!.timedOut).toBe(false);
+    const warm = summarize(command, hot!, hot!.durationMs);
+
+    const res = await f.sandbox.run(command, { timeoutMs: MODULE_WALL_DEADLINE_MS, maxOutputBytes: WARM_OUTPUT_BYTES, signal: f.signal, cwd: f.lane.dir, env: { ...PY_ENV } });
+    const cold = summarize(command, res, res.durationMs);
+
+    // the point of the case: cold passes it, so warm must pass it — same verdict, failure texts included
+    expect(cold.passed).toBe(5);
+    expect(fullVerdict(warm)).toEqual(fullVerdict(cold));
+    expect(warm.passed).toBe(5);
+    expect(warm.total).toBe(5);
+    expect(p.disabled).toBe(false);
+  }, 180_000);
+
+  /**
+   * And the hang on that same path is still bounded by the worker — at the cold wall, worded as the cold path
+   * words it (`run_tests.py:229`), so warm is byte-identical to cold rather than merely the same status.
+   */
+  it('bounds a module-path import that never returns at the cold module wall, in the cold path\'s own words', async () => {
+    fx = warmFixture('jev-warm-module-hang-');
+    const f = fx;
+    const p = new WarmPlane({ sandbox: f.sandbox, signal: f.signal, runDir: f.runDir, workspaceRoot: f.ws, mode: 'quixbugs', interpreter: 'python3', bootEnv: PY_ENV });
+    plane = p;
+    const candidate = join(f.lane.dir, 'breadth_first_search.py');
+    const gold = readFileSync(join(QUIXBUGS_DIR, 'correct/breadth_first_search.py'), 'utf8');
+    writeFileSync(candidate, `import time\ntime.sleep(300)\n${gold}`);
+    const command = quixbugsTestCommand(QUIXBUGS_DIR, 'breadth_first_search', candidate, { timeoutSec: 0.4 });
+
+    const started = Date.now();
+    const hot = await p.serve(f.lane, command, MODULE_WALL_DEADLINE_MS, {});
+    const took = Date.now() - started;
+    expect(hot, 'the plane refused to serve the hanging candidate').not.toBeNull();
+    expect(hot!.timedOut, 'the worker must return on its own, not be killed at the run deadline').toBe(false);
+    // 0.4 * (5 + 1) + 5 = 7.4 s, and nothing like the 300 s the module body asks for
+    expect(took).toBeLessThan(MODULE_WALL_DEADLINE_MS / 2);
+    const warm = summarize(command, hot!, hot!.durationMs);
+    expect(warm.total).toBe(5);
+    expect(warm.passed).toBe(0);
+    expect(warm.failures.map((x) => x.actual)).toEqual(Array.from({ length: 5 }, () => 'TIMEOUT (module wall-clock 7.4s exceeded)'));
+
+    const res = await f.sandbox.run(command, { timeoutMs: MODULE_WALL_DEADLINE_MS, maxOutputBytes: WARM_OUTPUT_BYTES, signal: f.signal, cwd: f.lane.dir, env: { ...PY_ENV } });
+    expect(fullVerdict(warm)).toEqual(fullVerdict(summarize(command, res, res.durationMs)));
+
+    // the lane survives it and the next candidate is served warm
+    expect(p.disabled).toBe(false);
+    expect(p.stats().fallbacks).toBe(0);
+    copyFileSync(join(QUIXBUGS_DIR, 'correct/breadth_first_search.py'), candidate);
+    const after = await p.serve(f.lane, command, MODULE_WALL_DEADLINE_MS, {});
+    expect(after, 'the lane must still be alive after the hang').not.toBeNull();
+    expect(summarize(command, after!, after!.durationMs).passed).toBe(5);
+  }, 180_000);
 });
 
 describe.skipIf(!havePython)('the plane watchdog (skipped: python3 is not on PATH here)', () => {

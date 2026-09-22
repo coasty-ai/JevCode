@@ -288,6 +288,70 @@ describe('loadForResume', () => {
       }
     }));
 
+  /**
+   * The shape a real newer build produces. `CHECKPOINT_VERSION` is ONE constant: a build that bumps it writes the
+   * new number into `run.json`'s `v` **and** into the `state.json` envelope's `version`. With the refusal sitting
+   * after `store.load()`, that run died inside `parseEnvelope` as a `CheckpointError` exit 3 "no usable checkpoint"
+   * and never reached the ratified upgrade sentence — the branch's own case bumped `run.json` alone, which is a
+   * shape a newer build would rarely write. So the refusal reads `run.json` BEFORE the envelope, and the sentence
+   * names `run.json`, exactly as docs/DECISIONS.md and TUI-DESIGN-4 §7.9 word it.
+   */
+  it('refuses when the envelope is newer too — the shape one CHECKPOINT_VERSION bump actually writes', () =>
+    withTempDir(async (tmp) => {
+      const runsDir = join(tmp, 'runs');
+      const { runId, runDir } = await createRunDir(runsDir, new Date('2026-09-19T12:00:00Z'));
+      const store = createCheckpointStore(runDir, fakeRedact);
+      await store.create(makeMeta({ runId }));
+      await store.writeState(makeState({ runId, step: 1 }));
+
+      const metaPath = join(runDir, CHECKPOINT_FILES.meta);
+      const meta = JSON.parse(await readFile(metaPath, 'utf8')) as Record<string, unknown>;
+      await writeFile(metaPath, `${JSON.stringify({ v: 99, ...meta }, null, 2)}\n`);
+      const statePath = join(runDir, CHECKPOINT_FILES.state);
+      const env = JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>;
+      await writeFile(statePath, `${JSON.stringify({ ...env, version: 99 }, null, 2)}\n`);
+      // there is no older envelope to fall back to either: a v99 run has never been written by this build
+      expect(await readFile(statePath, 'utf8')).toContain('"version": 99');
+
+      const err: unknown = await loadForResume(runsDir, runId, { redact: fakeRedact, now }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(ConfigError);
+      expect(err).not.toBeInstanceOf(CheckpointError);
+      expect((err as ConfigError).exitCode).toBe(2);
+      expect((err as ConfigError).message).toBe(`run ${runId} was written by a newer JevCode (run.json v99; this build reads v1) — upgrade with jevcode upgrade`);
+      // and not the envelope's own wording, which is what exit 3 used to answer with
+      expect((err as ConfigError).message).not.toContain('no usable checkpoint');
+    }));
+
+  /**
+   * The other half of "refuse before the envelope": a newer build is also free to change `run.json`'s SHAPE, so
+   * the version has to be read off the raw JSON rather than off an `isRunMeta`-validated object — otherwise the
+   * answer is "run.json has an invalid shape" (exit 3) instead of the upgrade sentence.
+   */
+  it('refuses a newer run.json whose shape this build does not recognise, rather than calling it invalid', () =>
+    withTempDir(async (tmp) => {
+      const runsDir = join(tmp, 'runs');
+      const { runId, runDir } = await createRunDir(runsDir, new Date('2026-09-19T12:00:00Z'));
+      const store = createCheckpointStore(runDir, fakeRedact);
+      await store.create(makeMeta({ runId }));
+      await store.writeState(makeState({ runId, step: 1 }));
+      // v100 renamed `mode` to `engineMode`: isRunMeta fails, and the honest answer is still "upgrade"
+      const metaPath = join(runDir, CHECKPOINT_FILES.meta);
+      const meta = JSON.parse(await readFile(metaPath, 'utf8')) as Record<string, unknown>;
+      delete meta['mode'];
+      await writeFile(metaPath, `${JSON.stringify({ v: 100, engineMode: 'auto', ...meta }, null, 2)}\n`);
+
+      const err: unknown = await loadForResume(runsDir, runId, { redact: fakeRedact, now }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(ConfigError);
+      expect((err as ConfigError).exitCode).toBe(2);
+      expect((err as ConfigError).message).toBe(`run ${runId} was written by a newer JevCode (run.json v100; this build reads v1) — upgrade with jevcode upgrade`);
+    }));
+
   it('maps id and directory failures to ConfigError / CheckpointError', () =>
     withTempDir(async (tmp) => {
       await expect(loadForResume(tmp, 'bogus', { redact: fakeRedact })).rejects.toBeInstanceOf(ConfigError);

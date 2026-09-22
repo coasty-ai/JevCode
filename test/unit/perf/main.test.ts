@@ -10,14 +10,21 @@
  *   * F15: the perf window. Two autonomous sessions share this machine, and the sentinel that says "a measurement is
  *     running" was, until now, a bullet in a design doc that no code read.
  *
- * Every case here points `JEVCODE_PERF_ONLY` at a probe name that does not exist, so a refusal that failed to fire
- * would be caught by the unknown-probe error rather than by a real probe starting: no test in this file may ever
- * spawn a pty, and the assertion on WHICH error comes back is also the assertion that no probe ran.
+ * The review's two follow-ons are here too: the window is taken with an **exclusive create** so the OS arbitrates
+ * between two runs that start in the same instant rather than a `statSync` taken a moment earlier (C-04, asserted
+ * with six real processes released from one barrier), and the static-append child inherits the run's injected
+ * environment rather than `process.env` (C-05).
+ *
+ * Every `runPerf` case here points `JEVCODE_PERF_ONLY` at a probe name that does not exist, so a refusal that
+ * failed to fire would be caught by the unknown-probe error rather than by a real probe starting: no test in this
+ * file may ever spawn a pty, and the assertion on WHICH error comes back is also the assertion that no probe ran.
  * `JEVCODE_PERF_WINDOW` keeps every case off the machine's real `/tmp/jevcode-perf-window-open`.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ParsedFlags } from '../../../src/cli/args.js';
 import { ConfigError } from '../../../src/errors.js';
@@ -26,6 +33,8 @@ import {
   PERF_WINDOW_TTL_FLOOR_MS,
   PERF_WINDOW_TTL_MAX_MS,
   driverLines,
+  measureStaticAppendInChild,
+  openPerfWindow,
   parsePerfWindowHeader,
   perfWindowState,
   perfWindowTtlMs,
@@ -81,6 +90,8 @@ async function attempt(cwd: string, windowPath: string, only: string = NO_PROBE)
   }
   return { error, lines, liveWhileTaken };
 }
+
+const PERF_MAIN = join(dirname(fileURLToPath(import.meta.url)), '../../../src/perf/main.js');
 
 describe('driverLines', () => {
   it('keeps expect … drive.exp and python3 … pty_type.py processes, drops shells and editors that only mention them, truncates long lines', () => {
@@ -214,6 +225,89 @@ describe('the perf window is a lock file, not a design-doc bullet (F15)', () => 
     expect(existsSync(windowPath)).toBe(false);
   });
 
+  /**
+   * C-04: "a lock file" has to mean the OS arbitrates, not that the run looked first. The window is taken right
+   * before `awaitQuietMachine` — i.e. at the moment both sessions on this machine are MOST likely to start
+   * together, having just finished waiting on the same sentinel — so the check-then-write shape (`perfWindowState`,
+   * then an unconditional `writeFileSync`) let every run interleaved between those two calls read `free` and
+   * measure. It also left the first run's `closePerfWindow` declining to unlink (the pid on disk is the last
+   * writer's), so the leftover outlived every one of them.
+   *
+   * Six real processes, released from one barrier: exactly one may come back `TOOK`, and the sentinel on disk must
+   * name that one. Before the fix all six took it, every run.
+   */
+  it('lets exactly one of six simultaneous runs take the window — the OS arbitrates, not a stat taken a moment earlier', async () => {
+    const dir = tempDir('jevcode-perf-race-');
+    const windowPath = join(dir, 'window');
+    const readyPrefix = join(dir, 'ready');
+    const go = join(dir, 'go');
+    // each child: import the real module, report ready, spin on the barrier, then take the window
+    const childPath = join(dir, 'child.mts');
+    writeFileSync(
+      childPath,
+      [
+        `import { openPerfWindow } from ${JSON.stringify(PERF_MAIN)};`,
+        "import { existsSync, writeFileSync } from 'node:fs';",
+        'const [path, ready, barrier] = process.argv.slice(2) as [string, string, string];',
+        'writeFileSync(`${ready}.${process.pid}`, String(process.pid));',
+        'while (!existsSync(barrier)) { /* released together, so the calls overlap */ }',
+        'try {',
+        '  openPerfWindow(path, () => undefined);',
+        '  process.stdout.write(`TOOK ${process.pid}`);',
+        '} catch {',
+        '  process.stdout.write(`REFUSED ${process.pid}`);',
+        '}',
+        '',
+      ].join('\n'),
+    );
+
+    const RUNS = 6;
+    const said: string[] = [];
+    const done: Promise<void>[] = [];
+    for (let i = 0; i < RUNS; i++) {
+      const c = spawn(process.execPath, ['--import', 'tsx', childPath, windowPath, readyPrefix, go], { stdio: ['ignore', 'pipe', 'inherit'] });
+      let buf = '';
+      c.stdout.on('data', (b: Buffer) => {
+        buf += b.toString('utf8');
+      });
+      done.push(new Promise<void>((r) => c.on('close', () => { said.push(buf.trim()); r(); })));
+    }
+    const readyCount = (): number => readdirSync(dir).filter((f) => f.startsWith('ready.')).length;
+    const deadline = Date.now() + 120_000;
+    while (readyCount() < RUNS && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    expect(readyCount(), 'every child must have imported the module before the barrier drops').toBe(RUNS);
+    writeFileSync(go, '');
+    await Promise.all(done);
+
+    const took = said.filter((l) => l.startsWith('TOOK'));
+    expect(took, `six runs answered: ${said.join(' | ')}`).toHaveLength(1);
+    expect(said.filter((l) => l.startsWith('REFUSED'))).toHaveLength(RUNS - 1);
+    // and the window on disk belongs to the one that took it, so ITS finally is the one that can release it
+    const header = parsePerfWindowHeader(readFileSync(windowPath, 'utf8'));
+    expect(header).not.toBeNull();
+    expect(`TOOK ${header!.pid}`).toBe(took[0]);
+  }, 180_000);
+
+  /**
+   * C-04, the same defect without the timing: a path that exists on disk while `perfWindowState` reads it as
+   * `free`. A dangling symlink is the one such shape a test can build — `statSync` follows it and throws ENOENT,
+   * so the state read says the window is free, while the file very much is not absent. Check-then-write reported
+   * the window taken and wrote through the link; an exclusive create fails with EEXIST, which is the OS telling
+   * this run that something is already there, and the run refuses instead of measuring.
+   */
+  it('does not write through a path that exists while the state read calls it free', () => {
+    const dir = tempDir('jevcode-perf-symlink-');
+    const windowPath = join(dir, 'window');
+    const target = join(dir, 'gone');
+    symlinkSync(target, windowPath);
+    expect(perfWindowState(windowPath).kind, 'the state read cannot see it').toBe('free');
+
+    const lines: string[] = [];
+    expect(() => openPerfWindow(windowPath, (s) => lines.push(s))).toThrow(ConfigError);
+    expect(existsSync(target), 'nothing may be created through the link').toBe(false);
+    expect(lines.join('')).not.toContain('perf window taken');
+  });
+
   it('reads a window that is there, one that is not, and one it cannot attribute', () => {
     const dir = tempDir('jevcode-perf-win-');
     expect(perfWindowState(join(dir, 'absent')).kind).toBe('free');
@@ -249,4 +343,59 @@ describe('the perf window is a lock file, not a design-doc bullet (F15)', () => 
     expect(parsePerfWindowHeader('2026-09-22T10:00:00.000Z 4242 perf soon')).toBeNull();
     expect(parsePerfWindowHeader('2026-09-22T10:00:00.000Z 4242 perf 30\nnotes')?.pid).toBe(4242);
   });
+});
+
+/**
+ * C-05: `PerfRunOptions` says a run's root, environment and log are injected rather than read off the process.
+ * The static-append child is the one place a perf run hands an environment to something ELSE, and it was building
+ * that environment from `process.env` — so the contract was half true, and a test that injected an env to exercise
+ * a probe would silently have got the process's own.
+ */
+describe('the injected environment reaches the static-append child (C-05)', () => {
+  /** A stand-in for `bin/jevcode.js`: it writes what it was actually given into the `--out` file. */
+  function echoBin(dir: string): string {
+    const bin = join(dir, 'echo-bin.mjs');
+    writeFileSync(
+      bin,
+      [
+        "import { writeFileSync } from 'node:fs';",
+        "const out = process.argv[process.argv.indexOf('--out') + 1];",
+        "console.log('  echo child ran');",
+        "writeFileSync(out, JSON.stringify({ staticAppend: { marker: process.env.PERF_TEST_MARKER ?? null, ci: process.env.CI ?? null, only: process.env.JEVCODE_PERF_ONLY ?? null, child: process.env.JEVCODE_PERF_CHILD ?? null, cwd: process.cwd() } }));",
+        '',
+      ].join('\n'),
+    );
+    return bin;
+  }
+
+  it('spreads the run\'s env, not the process\'s, and still sets the child switches and drops CI', async () => {
+    const dir = tempDir('jevcode-perf-child-');
+    const bin = echoBin(dir);
+    const progress: string[] = [];
+    const injected: NodeJS.ProcessEnv = { PATH: process.env['PATH'], PERF_TEST_MARKER: 'from-the-injected-env', CI: 'true' };
+
+    const r = await measureStaticAppendInChild(bin, dir, injected, (l) => progress.push(l));
+    expect(r, 'the echo child must have produced a result').not.toBeNull();
+    const got = r as unknown as Record<string, unknown>;
+    // the marker exists only in the injected env: reading process.env here would report null
+    expect(got['marker']).toBe('from-the-injected-env');
+    // and the three things the child path owns are still applied on top of it
+    expect(got['only']).toBe('static-append');
+    expect(got['child']).toBe('1');
+    expect(got['ci']).toBeNull();
+    expect(got['cwd']).toBe(realpathSync(dir));
+    expect(progress).toContain('echo child ran');
+  }, 60_000);
+
+  it('does not leak the process environment into the child', async () => {
+    const dir = tempDir('jevcode-perf-child-clean-');
+    const bin = echoBin(dir);
+    process.env['PERF_TEST_MARKER'] = 'from-the-process-env';
+    try {
+      const r = await measureStaticAppendInChild(bin, dir, { PATH: process.env['PATH'] }, () => undefined);
+      expect((r as unknown as Record<string, unknown>)['marker']).toBeNull();
+    } finally {
+      delete process.env['PERF_TEST_MARKER'];
+    }
+  }, 60_000);
 });

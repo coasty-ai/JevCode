@@ -257,6 +257,16 @@ export interface DiskCheckpointStore extends CheckpointStore {
   /** Warnings collected by the most recent load() or readStepsAfter() (torn lines, prev fallback). */
   lastWarnings(): readonly string[];
   /**
+   * TUI-DESIGN-4 §7.9: `run.json` as raw JSON, parsed but **not** shape-checked — the one thing a build that
+   * cannot read a run still can read, namely its version.
+   *
+   * `load()` cannot serve that: it validates `run.json` with `isRunMeta` (v1 fields only) and then parses the
+   * envelope, so a run written by a newer build dies on one of those two before the forward-version refusal can
+   * fire. A resume therefore asks here FIRST (`loadForResume`). Null when the file is absent, unreadable or not
+   * JSON: those are `load()`'s diagnoses and are left to it.
+   */
+  peekMeta(): Promise<unknown>;
+  /**
    * TUI-DESIGN-4 §7.2 P-D2 item 1, the second entry point to `CheckpointStoreOptions.onDegrade`: the ENGINE cannot
    * pass constructor options (its `CheckpointStoreFactory` is `(runsDir, runId, redact)`, `engine.ts:173`, and a
    * resume REPLACES the store with the one `loadForResume` built), so it registers here instead and detaches at
@@ -585,6 +595,18 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
     return parsed.value;
   }
 
+  /** §7.9: the raw `run.json` value, shape check and all, skipped — see `DiskCheckpointStore.peekMeta`. */
+  async function peekMeta(): Promise<unknown> {
+    let text: string;
+    try {
+      text = await readBounded(CHECKPOINT_FILES.meta);
+    } catch {
+      return null;
+    }
+    const parsed = parseJson(text);
+    return parsed.ok ? parsed.value : null;
+  }
+
   async function writeMeta(meta: RunMeta): Promise<void> {
     const text = JSON.stringify(redactDeep(meta, redact), null, 2);
     try {
@@ -683,6 +705,8 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
 
   const store: DiskCheckpointStore = {
     dir,
+
+    peekMeta,
 
     async create(meta) {
       const metaPath = pathOf(CHECKPOINT_FILES.meta);

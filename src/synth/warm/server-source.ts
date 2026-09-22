@@ -414,10 +414,19 @@ class Quixbugs(object):
         # The import runs under a deadline this worker owns, exactly as each test below does. Without it
         # the one piece of candidate code outside every warm deadline was the module body, and a
         # candidate that hangs there held the lane until the whole run's wall -- for every case, and then
-        # again cold. The cold path bounds the same hang with run_tests.py's module wall and words it
-        # after that number; here it is the per-test wording, same status, sooner.
+        # again cold.
+        #
+        # The deadline is the COLD one, not the per-case cap: run_tests.py gives this same import the whole
+        # module wall (run_tests.py:209, overall = timeout * (len(expected_names) + 1) + 5, applied to the
+        # --_child-module subprocess that does _load_candidate + exec_module), so arming it at "timeout"
+        # would fail a slow-but-finite module body here that passes cold -- a CORRECT candidate thrown away
+        # by the screen. That is the same rule _import_cap states on the JSON path ("never shorter than the
+        # cold path allows"), and it applies here for the same reason. A true hang is still bounded by the
+        # worker rather than by the run's wall, and the rows are worded exactly as run_tests.py:229 words
+        # them, so warm is byte-identical to cold and not merely the same status.
+        overall = timeout * (len(expected_names) + 1) + 5
         signal.signal(signal.SIGALRM, rt._alarm)
-        signal.setitimer(signal.ITIMER_REAL, timeout)
+        signal.setitimer(signal.ITIMER_REAL, overall)
         try:
             rt._load_candidate(name, path)
             spec = importlib.util.spec_from_file_location(name + "_test", test_file)
@@ -425,7 +434,7 @@ class Quixbugs(object):
             spec.loader.exec_module(tmod)
         except rt._Timeout:
             return [{"input": t, "expected": "pass", "status": "timeout",
-                     "actual": "TIMEOUT after %gs" % timeout} for t in expected_names]
+                     "actual": "TIMEOUT (module wall-clock %gs exceeded)" % overall} for t in expected_names]
         except BaseException as exc:
             text = rt._exc_text(exc, test_file)
             return [{"input": t, "expected": "pass", "status": "error", "actual": "import error: " + text}
