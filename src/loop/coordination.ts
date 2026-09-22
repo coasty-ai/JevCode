@@ -396,7 +396,12 @@ export class CoordinationRuntime {
   /** §4.1: the facts this step carries — `StepRecord.coord`, the prompt's `## Other sessions`, the status count. */
   private recordFacts(step: number, c: LeaseCheck, mine: LeaseIntent): StepCoord | null {
     const requested = requestedFor(this.ledger.fold, this.ledger.self, mine.paths, undefined, { caseFold: false });
-    const facts = buildFacts({ step, check: c, messages: this.ledger.fold.inbox, others: this.ledger.fold.live.size });
+    // `others` is what the NEXT prompt's `## Other sessions` counts (§8.8), so it must exclude THIS run: `fold.live`
+    // is keyed by runId and has carried our own heartbeat since the first beat.
+    const myRunId = this.ledger.self.runId;
+    let others = 0;
+    for (const runId of this.ledger.fold.live.keys()) if (runId !== myRunId) others += 1;
+    const facts = buildFacts({ step, check: c, messages: this.ledger.fold.inbox, others });
     if (requested.length > 0) facts.requested = requested.slice(0, 8);
     this.facts = facts;
     this.lastConflicts = facts.conflicts.length;

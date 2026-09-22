@@ -71,6 +71,15 @@ export const KEPT_MAX_ITEMS = 24;
 export const KEPT_ITEM_CHARS = 300;
 export const SUMMARY_MAX_CHARS = 6 * 1024;
 export const OTHER_SESSIONS_MAX_CHARS = 6 * 1024;
+/**
+ * contract 1.4 (COORDINATION-DESIGN §8.8 / §9, W2b follow-up): `## Other sessions` is filled from the coordination
+ * runtime's `currentFacts()`, so its size follows the number of peers rather than a fixed 6 KiB. It takes at most
+ * this share of the step's budget (`OTHER_SESSIONS_MAX_CHARS` still caps it absolutely): a peer's facts are the
+ * cheapest section to lose — they are advisory, they are re-derived every step, and the section says so when it
+ * clips. At the `CONTEXT_BUDGET_MIN_CHARS` floor this is 3,000 chars, which holds the ≤ 8 conflicts and ≤ 8
+ * requests `buildFacts` may carry plus the first messages.
+ */
+export const OTHER_SESSIONS_SHARE = 0.05;
 
 // --- §8.6 compaction ----------------------------------------------------------------------
 export const COMPACT_EVERY = 8;

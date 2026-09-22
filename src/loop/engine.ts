@@ -4665,7 +4665,13 @@ class EngineImpl implements Engine {
     // contract 1.6 (IMPORT-DESIGN §2.10.4): the step's paths are its files in view plus the @-mentioned pins, the same
     // set §8.2 uses; `selectMemory` is empty (and both sections elide) whenever the run was given no memory
     const memory = selectMemory(this.opts.memory, [...refreshed.files.map((f) => f.rel), ...(this.opts.seed?.pinnedFiles ?? [])]);
+    // contract 1.4 (COORDINATION-DESIGN §8.8 / §9): the last gate's facts fill `## Other sessions` for the NEXT
+    // prompt. `currentFacts()` is null before the first `coordinate` stage and the whole member is ABSENT when
+    // coordination is off or nothing is live, which is what keeps a non-coordinating run's prompt byte-identical.
+    const coordFacts = this.coord?.currentFacts() ?? null;
+    const sessions = coordFacts !== null && (coordFacts.others > 0 || coordFacts.conflicts.length > 0 || coordFacts.requested.length > 0 || coordFacts.messages.length > 0) ? coordFacts : null;
     return {
+      ...(sessions === null ? {} : { coordination: sessions }),
       ...(memory.rules.length > 0 ? { rulesInScope: memory.rules } : {}),
       ...(memory.topics.length > 0 ? { memoryInScope: memory.topics } : {}),
       files: refreshed.files.map((f) => ({
