@@ -242,6 +242,13 @@ describe('import-leak — no secret leaves its file (§1 property 4, §8.3)', ()
       importId: 'imp_20260921T120000Z_a1b2c3',
       decider: capture.decider,
       redact: writeTimeRedact,
+      // A real `jevcode import` always knows its own destinations, and the fixture's
+      // `<repo>/AGENTS.md` is deliberately BOTH a needle-bearing source and a destination. Without
+      // this the row appends the file to itself and the gate then greps the human's own
+      // pre-existing bytes — a false positive, because §1 property 4 is about what the importer
+      // WRITES, not about what was already in the human's file. Passing them makes it `skip:self`
+      // (§4.4.1 rule 2), which is what a real run does.
+      destinations: [join(f.ws, 'AGENTS.md'), join(f.ws, '.jevcode'), f.userDir],
     });
 
     // ----- report (§4.6) -----

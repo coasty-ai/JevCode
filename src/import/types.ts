@@ -482,7 +482,17 @@ export interface ImportFs {
  * touching a file the TUI session owns.
  */
 export interface ImportWriteFs extends ImportFs {
-  writeFile(path: string, data: string, opts: { mode: number; mkdir: boolean }): Promise<void>;
+  /**
+   * Review defect 7: `Buffer` is accepted so a destination and its `pre/` snapshot survive
+   * **byte for byte**. Round-tripping arbitrary bytes through `toString('utf8')` replaces every
+   * invalid sequence with U+FFFD, which corrupted a latin-1 `AGENTS.md` (`e9` → `ef bf bd`) and
+   * mangled its snapshot too, so undo then refused to restore it. `apply.ts` reads and writes
+   * destinations as `Buffer`, and **demotes a destination that is not valid UTF-8 to `review`
+   * rather than rewriting it** — the widening makes the snapshot honest, it does not license
+   * writing rendered text into a non-UTF-8 file.
+   */
+  writeFile(path: string, data: string | Buffer, opts: { mode: number; mkdir: boolean }): Promise<void>;
+  /** Text only: every appender in the engine (`apply.jsonl`, the marker blocks) renders UTF-8. */
   appendFile(path: string, data: string, opts: { mode: number; mkdir: boolean }): Promise<void>;
   mkdir(path: string, opts: { recursive: true; mode?: number }): Promise<void>;
   rm(path: string): Promise<void>;

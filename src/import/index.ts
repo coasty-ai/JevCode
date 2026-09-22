@@ -9,6 +9,8 @@
  * `applyPlan()` / `resumeImport()` / `undoImport()` (re-exported from `apply.ts`) run phase 4
  * over the injected write seam, and only for the rows the human approved.
  */
+import { isAbsolute, join } from 'node:path';
+
 import { IMPORT_LIMITS } from '../core/limits.js';
 import { sha256Hex } from '../core/hash.js';
 import { patternRedact } from '../core/redact.js';
@@ -23,6 +25,7 @@ import { parseJsonc } from './parse/jsonc.js';
 import { parseMarkdown } from './parse/markdown.js';
 import { parseMdc } from './parse/mdc.js';
 import { parseToml } from './parse/toml.js';
+import { findMarkerBlocks, joinDestination } from './apply.js';
 import { buildPlan } from './plan.js';
 import type { PlanCandidate, PlanInput } from './plan.js';
 import { askImport, fileKindQuestions, mergeBatches, secretQuestions } from './questions.js';
@@ -39,6 +42,7 @@ import type {
   ImportPlan,
   ImportProbe,
   MarkdownDoc,
+  PlanRow,
   PlanRoot,
   SourceItem,
 } from './types.js';
@@ -186,6 +190,8 @@ export interface PlanImportOptions {
   respectGitignore?: boolean;
   scope?: 'user' | 'project' | 'both';
   all?: boolean;
+  /** scope → destination root; defaults to the workspace and `${XDG_CONFIG_HOME:-~/.config}/jevcode` */
+  destRoots?: DestRoots;
   /** false when the repo is read-only or there is no git root (§6 rows 83–84) */
   projectWritable?: boolean;
   /** applied to every heading and every sentence fragment before it can reach Jev or an artefact (§2.9) */
@@ -321,6 +327,12 @@ export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
     candidates.push({
       item,
       verdict,
+      // Review defect 1: without this the atlas's own routing is discarded and `plan.ts` falls
+      // back to the class map, so `agents-append`, `memory-index`, `memory-local` and
+      // `report-only` are dead end to end — a repo `CLAUDE.md` lands in `.jevcode/memory/` and
+      // the marker/append path, `MEMORY.md` and the [G1.5] trust re-pin are never exercised.
+      // The atlas is the only place a tool's knowledge lives (§3.1); it must win.
+      ...(spec !== undefined ? { destination: spec.destination } : {}),
       ...(parsed.doc !== null ? { doc: parsed.doc } : {}),
       ...(parsed.frontmatter !== null ? { frontmatter: parsed.frontmatter } : {}),
       ...(keys.length > 0 ? { keys } : {}),
@@ -350,7 +362,14 @@ export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
   });
 
   // ----- plan (§4.5, §4.6) -----
+  // §4.6.1 [G1.3]: the manifest is keyed by `realpath(gitRoot ?? workspace)`. Without the
+  // realpath the key is whatever path the caller happened to pass, so the same clone reached
+  // through a symlink (or `/var` vs `/private/var` on macOS) reads as a different workspace and
+  // its rows all come back `create` — which is exactly the second-clone case [G1.3] exists for.
+  const workspaceRaw = opts.env.gitRoot ?? opts.env.workspace;
+  const workspaceKey = await fs.realpath(workspaceRaw).catch(() => workspaceRaw);
   const roots: readonly PlanRoot[] = found.roots.length > 0 ? found.roots.map(planRoot) : allRoots(opts.env).map(planRoot);
+  const destRoots = opts.destRoots ?? defaultDestRoots(opts.env);
   const answers: Readonly<Record<string, Answer>> = jev.answers;
   const input: PlanInput = {
     candidates,
@@ -358,7 +377,7 @@ export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
     at: now.toISOString(),
     jevcodeVersion: opts.jevcodeVersion,
     workspace: opts.env.workspace,
-    workspaceKey: opts.env.gitRoot ?? opts.env.workspace,
+    workspaceKey,
     gitRoot: opts.env.gitRoot,
     trust: opts.trust,
     roots,
@@ -378,7 +397,72 @@ export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
     ...(opts.all !== undefined ? { all: opts.all } : {}),
     ...(opts.projectWritable !== undefined ? { projectWritable: opts.projectWritable } : {}),
   };
-  return buildPlan(input);
+
+  const first = buildPlan(input);
+  if (opts.destState !== undefined) return first;
+  // §4.7.5: the re-run matrix is evaluated at PLAN time — the report has to be able to say
+  // `append`, `update` and `skip:unchanged`, not just `create`. That needs the destinations'
+  // current bytes, and nobody but the engine knows what the destinations are until the plan has
+  // named them. So: plan once to learn them, stat them (read-only, phase 1-3 writes nothing),
+  // and re-plan only when at least one already exists. On a first import nothing exists and the
+  // second pass is skipped entirely. Row ids are stable across the two passes because
+  // `PlanRow.id` is derived from the source and the destination, never from the action.
+  const destState = await probeDestinations(first, destRoots, fs);
+  if (destState === null) return first;
+  return buildPlan({ ...input, destState });
+}
+
+/** The scope→root map a caller gets when it does not supply one; mirrors `ApplyOptions.destRoots`. */
+export interface DestRoots {
+  project: string;
+  projectLocal: string;
+  user: string;
+}
+
+/**
+ * §2.2: workspace files live in the repo, user files under `${XDG_CONFIG_HOME:-~/.config}/jevcode`.
+ * A **relative** `XDG_CONFIG_HOME` is ignored per spec (§6 row 4) — the same rule `rootFor` applies
+ * to every atlas root, restated here rather than imported, because `src/import/**` may not reach
+ * `src/config/credentials.ts` (§7 ownership).
+ */
+export function defaultDestRoots(env: ImportEnvironment): DestRoots {
+  const xdg = env.env['XDG_CONFIG_HOME'];
+  const configHome = xdg !== undefined && xdg.length > 0 && isAbsolute(xdg) ? xdg : join(env.home, '.config');
+  return { project: env.workspace, projectLocal: env.workspace, user: join(configHome, 'jevcode') };
+}
+
+/**
+ * Read the current state of every destination the plan names. Returns null when none exists, so
+ * the caller can skip the second planning pass. Read-only and total: an unreadable or
+ * non-regular destination reads as absent, exactly as the matrix's "destination absent" cell.
+ */
+async function probeDestinations(
+  plan: ImportPlan,
+  destRoots: DestRoots,
+  fs: ImportFs,
+): Promise<Readonly<Record<string, { sha256: string; markers: readonly string[] } | null>> | null> {
+  const wanted = new Map<string, PlanRow['scope']>();
+  for (const r of plan.rows) if (r.dest !== null && !wanted.has(r.dest)) wanted.set(r.dest, r.scope);
+  if (wanted.size === 0) return null;
+  const state: Record<string, { sha256: string; markers: readonly string[] } | null> = {};
+  let anyExists = false;
+  for (const [dest, scope] of wanted) {
+    const root = scope === 'user' ? destRoots.user : scope === 'project-local' ? destRoots.projectLocal : destRoots.project;
+    const abs = joinDestination(root, dest);
+    try {
+      const st = await fs.stat(abs);
+      if (!st.isFile()) {
+        state[dest] = null;
+        continue;
+      }
+      const buf = await fs.readFile(abs);
+      state[dest] = { sha256: sha256Hex(buf), markers: findMarkerBlocks(buf.toString('utf8')).map((b) => b.importId) };
+      anyExists = true;
+    } catch {
+      state[dest] = null;
+    }
+  }
+  return anyExists ? state : null;
 }
 
 function planRoot(r: { tool: PlanRoot['tool']; display: string; via: PlanRoot['via']; env?: string; exists: boolean }): PlanRoot {
