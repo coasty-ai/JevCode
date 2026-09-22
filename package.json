@@ -53,7 +53,8 @@
     "bench": "node bin/jevcode.js bench",
     "dev": "tsx src/cli/main.tsx",
     "jev-contract": "node scripts/jev-contract.mjs",
-    "check": "npm run typecheck && npm run jev-contract && npm test"
+    "check:docs": "node scripts/check-doc-links.mjs",
+    "check": "npm run typecheck && npm run jev-contract && npm run check:docs && npm test"
   },
   "devDependencies": {
     "@types/node": "22.20.4",

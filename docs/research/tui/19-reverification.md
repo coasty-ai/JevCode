@@ -328,7 +328,7 @@ protocol (CSI =|?|>|< u)", author Tyriar, "merged commit 91c4761 into xtermjs:ma
 **VS Code 1.109** (`https://raw.githubusercontent.com/microsoft/vscode-docs/main/release-notes/v1_109.md`, 2026-09-20):
 `Date: 2026-02-04`, heading `# January 2026 (version 1.109)`; highlights bullet "Kitty keyboard support is now available
 to all users"; Terminal section: "**Setting**: `setting(terminal.integrated.enableKittyKeyboardProtocol)`" and "The
-[Kitty keyboard protocol](…) has been implemented and will be rolling out to stable this release." and "This requires
+Kitty keyboard protocol (link elided in the note) has been implemented and will be rolling out to stable this release." and "This requires
 the program running in the terminal to support the protocol and request to enable it when it runs. A big benefit you
 will see immediately is shift+enter should work in some agentic CLIs without the need to run something like
 `/terminalSetup`." Date **VERIFIED**; the notes never say "default true".

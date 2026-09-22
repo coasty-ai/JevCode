@@ -58,13 +58,23 @@ jobs:
       - name: Generated docs are current (man page, completions, KEYS.md, COMMANDS.md)
         run: node scripts/gen-docs.mjs --check
 
+      - name: The decisions table of contents is current
+        run: node scripts/gen-decisions-toc.mjs --check
+
+      - name: Every relative link in the README and docs/ resolves
+        run: node scripts/check-doc-links.mjs
+
       # The README is the npm package page and rots silently. Two classes of rot have bitten before:
       # a version number written into prose (the binary renders its own from package.json) and an
       # unresolved <owner> / <this repo> placeholder in a command a reader is told to run.
+      #
+      # One version is allowed: a clause of the form "arrives in X.Y.Z" about a release that has not
+      # happened. It names a future, so it cannot be a stale claim about the current build, and it
+      # is more use to a reader than "in a later release". Delete the clause when that release ships.
       - name: README carries no hard-coded version and no placeholder
         run: |
           fail=0
-          if grep -nE '[0-9]+\.[0-9]+\.[0-9]+' README.md; then
+          if grep -vE 'arrives in [0-9]+\.[0-9]+\.[0-9]+' README.md | grep -nE '[0-9]+\.[0-9]+\.[0-9]+'; then
             echo "::error file=README.md::hard-coded version in the README; the binary prints its own from package.json" >&2
             fail=1
           fi

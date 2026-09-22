@@ -37,7 +37,7 @@ the build prompt or from `~/Documents/jev-research/REPORT.md` are also listed in
 
 **2026-09-21**
 
-- [Subagents run on Opus 5 while the Fable usage limit holds](#2026-09-21-subagents-run-on-opus-5-while-the-fable-usage-limit-holds)
+- [Review agents run on a different model tier while the primary tier is rate-limited](#2026-09-21-review-agents-run-on-a-different-model-tier-while-the-primary-tier-is-rate-limited)
 - [GREEN sent for the default-mode flip after the v2 head-to-head](#2026-09-21-green-sent-for-the-default-mode-flip-after-the-v2-head-to-head)
 - [Completion and the code judge compare against the base commit's known failures, not against zero](#2026-09-21-completion-and-the-code-judge-compare-against-the-base-commits-known-failures-not-against-zero)
 - [The sample deadline adapts up from the served p90; a slow provider caps reasoning at 512 tokens](#2026-09-21-the-sample-deadline-adapts-up-from-the-served-p90-a-slow-provider-caps-reasoning-at-512-tokens)

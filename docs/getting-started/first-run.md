@@ -121,7 +121,9 @@ Below is a real recorded run, trimmed. It is a `jev-on` run on a small Python wo
 task was *"Fix the failing tests in tests/test_core.py without changing the tests."* Your own
 default mode is `llm-jev`, which prints fewer decision lines, but the shape is the same.
 
-The full file is [`../live/01-fix/transcript.log`](../live/01-fix/transcript.log).
+The whole run directory it comes from is not part of the published repository — see
+[History](../history/README.md) for what those early captures showed. The capture that does ship is
+the [side-by-side recording](../media/side-by-side.md).
 
 ```
 [run] start 20260920-052929-tjopfdiw mode=jev-on task: Fix the failing tests ...

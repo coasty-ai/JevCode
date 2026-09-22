@@ -42,13 +42,16 @@ each round.
 Treat every number in it as dated. The current gate numbers live in the round's own section, and the current
 performance numbers are on the [performance page](../measurements/performance.md).
 
-## Kept live-run captures
+## Live-run captures
 
-[`docs/live/`](../live/) holds seven complete run directories from an early live session, each with the full
-transcript, the step records, every decision with its probability, the run configuration with secrets
-fingerprinted, and the raw pseudo-terminal capture of the interface being driven by real keystrokes.
+Seven complete run directories were captured during an early live session, each with the full transcript, the
+step records, every decision with its probability, the run configuration with secrets fingerprinted, and the
+raw pseudo-terminal capture of the interface being driven by real keystrokes. **They are not part of the
+published repository** — together they are tens of megabytes of run state, most of it of no use to a reader.
+What they showed is summarised here, and the one capture that does ship is the
+[side-by-side recording](../media/side-by-side.md).
 
-They are kept because they show behaviour that is hard to describe and easy to doubt:
+They were kept because they show behaviour that is hard to describe and easy to doubt:
 
 | Directory | What it demonstrates |
 | --- | --- |
@@ -60,11 +63,12 @@ They are kept because they show behaviour that is hard to describe and easy to d
 | `05-resume/` | an interrupt mid-run that stalled the interface, the checkpoint surviving it, and a resume continuing from the same step |
 | `05c-ctrl-c-resume/` | the same scenario after the fix: the in-flight request is rejected, the partial step is discarded, and the resume is clean |
 
-The first attempt at the first scenario is kept too, under a name that says what it was: a run started with the
-review prompt deliberately unanswered, which waited for a keypress — the intended behaviour of the middle
+The first attempt at the first scenario was kept too, under a name that says what it was: a run started with
+the review prompt deliberately unanswered, which waited for a keypress — the intended behaviour of the middle
 confidence band, and the reason there is no auto-approve.
 
-No artefact in that directory contains a key. Each was checked for the key formats after the run.
+No artefact in that set contained a key. Each was checked for the key formats after the run. An excerpt from
+the first one, annotated line by line, is on [Your first run](../getting-started/first-run.md).
 
 ## The decision log
 
