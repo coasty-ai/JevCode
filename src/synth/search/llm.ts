@@ -29,7 +29,7 @@ import { monotonicNow } from '../../core/time.js';
 import { attemptFromDrop, attemptLedger, attemptsHash, createAstCompileCheck, type AstCompileCheck, type CompileCheck, type LlmApplied } from '../llm/candidates.js';
 import { buildFixSystemPrompt, buildFixUserMessage, hintSchedule, listingSet, PROMPT_LIMITS_FIX, type AttemptRecord, type HintAnchor, type Listing, type ListingMember, type LocalisationLine, type OutlineView } from '../llm/prompt.js';
 import { orderByQ17, type Q17Order } from '../llm/rank.js';
-import { createLlmSource, samplesFor, type CancelReason, type LlmBudget, type LlmFireInput, type LlmPricing, type LlmRoundSummary, type LlmSource, type SampleArrival } from '../llm/source.js';
+import { createLlmSource, deadlineGrowthFrom, samplesFor, type CancelReason, type DeadlineGrowthMode, type LlmBudget, type LlmFireInput, type LlmPricing, type LlmRoundSummary, type LlmSource, type SampleArrival } from '../llm/source.js';
 import type { OracleClass } from '../llm/types.js';
 import { outline, tracebackFrames } from '../localize/outline.js';
 import type { LocalizeResult, SourceFile } from '../types.js';
@@ -290,6 +290,12 @@ export interface SubGoalLlm {
   readonly graceMs: number;
   /** the clock the rounds' deadlines run on (the loop measures the grace with it) */
   readonly now: () => number;
+  /**
+   * OOS iteration 3, item 3: the per-goal deadline high-water mark's evidence rule this run uses
+   * (`JEVCODE_DEADLINE_GROWTH`, default `always` = the behaviour iteration 2 shipped). Recorded on
+   * every search's `LlmTrace` so a bench record says which arm ran; it gates nothing.
+   */
+  readonly deadlineGrowth: DeadlineGrowthMode;
   /** start a round for the goal at its located sites; null when skipped (§4.2: counters spent, no `generate`, nothing to list) */
   fire(ctx: SynthesisContext, mem: LlmSearchMemory, goal: Goal, loc: LocalizeResult, opts: LlmFireOptions): LlmRound | null;
   /** Q17 over the distinct arrived candidates: an order, never a gate (§4g) */
@@ -312,6 +318,8 @@ export interface SearchLlmOptions {
   now?: () => number;
   /** what every sample sends (§10.1: pinned per bench arm, echoed by the synthesizer); default `LLM_DEFAULT_GENERATION` */
   generation?: SynthesizerGeneration;
+  /** OOS iteration 3, item 3: `served` | `always`; default `JEVCODE_DEADLINE_GROWTH` (i.e. `always`) */
+  deadlineGrowth?: DeadlineGrowthMode;
 }
 
 interface RunLlm {
@@ -402,6 +410,8 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
   const now = opts.now ?? monotonicNow;
   const pricing = opts.pricing === undefined ? LLM_SERVED_PRICING : opts.pricing;
   const graceMs = opts.graceMs ?? LLM_GRACE_MS;
+  // OOS iteration 3, item 3: resolved once per process so every run of a bench arm is the same arm
+  const deadlineGrowth: DeadlineGrowthMode = opts.deadlineGrowth ?? deadlineGrowthFrom();
   const runs = new Map<string, RunLlm>();
 
   function runOf(ctx: SynthesisContext): RunLlm | null {
@@ -548,6 +558,7 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
   return {
     graceMs,
     now,
+    deadlineGrowth,
     fire,
     order: (ctx, goal, applied, files) => orderByQ17({ task: ctx.task, failures: goal.failures, candidates: applied, files }, ctx.ask, ctx.signal, 'propose'),
     spentUsd: (runId) => runs.get(runId)?.spentUsd ?? 0,

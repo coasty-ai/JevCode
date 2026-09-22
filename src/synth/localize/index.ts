@@ -403,7 +403,10 @@ async function stageLines(ctx: LocalizeContext, o: LocalizerOptions, asker: Aske
       if (out.length > 0) return out;
       // §1.2 clause 3: no option carried mass (an escape, or a Jev with no opinion) — the code
       // order stands in, with no `jevProbability`: these anchors carry no Jev evidence and say so.
-      return codeDerivedLines(f.entry, listing, focus, frames, sbfl, o.anchorsPerFunction).map((line, i) => ({
+      // OOS iteration 3, item 4: and it stands in with `escapedAnchors`, not the Jev beam's 3 —
+      // the code order is not a ranking, so cutting it at a ranking's width leaves the defect out
+      // of the site list whenever it is not in the first three lines of its function.
+      return codeDerivedLines(f.entry, listing, focus, frames, sbfl, o.escapedAnchors).map((line, i) => ({
         anchor: { file: f.entry.file, line, entry: f.entry.kind === 'module' ? null : f.entry, lineProbabilities: new Map<number, number>(), notes: [`code anchor #${i + 1} in ${f.entry.qualname} (no Jev opinion: the line Choice escaped)`] },
         score: f.joint / (i + 1),
       }));
@@ -449,9 +452,10 @@ async function singleFileFlat(ctx: LocalizeContext, o: LocalizerOptions, asker: 
   // used to leave this workspace with no anchor, no function and no site — the Ring-1 `gcd` /
   // `mergesort` losses. The code order stands in; the probabilities are code-derived ranks, so
   // the mass ordering below still works and nothing claims a Jev opinion it does not have.
+  // OOS iteration 3, item 4: `escapedAnchors` lines, not the Jev beam's 3 — see LocalizerOptions.
   const escaped = [...probs.values()].every((p) => p <= 0);
   if (escaped) {
-    const derived = codeDerivedLines(moduleEntry(file), listing, focus, frames, sbfl, o.anchorsPerFunction);
+    const derived = codeDerivedLines(moduleEntry(file), listing, focus, frames, sbfl, o.escapedAnchors);
     probs = new Map(derived.map((line, i) => [line, 1 / (i + 1)]));
   }
 
@@ -469,7 +473,7 @@ async function singleFileFlat(ctx: LocalizeContext, o: LocalizerOptions, asker: 
       return { file, name: entry.qualname, startLine: entry.startLine, endLine: entry.endLine, probability: Math.min(1, p) };
     });
 
-  const top = byProbabilityDesc([...probs.keys()], (l) => probs.get(l) ?? 0).slice(0, o.anchorsPerFunction);
+  const top = byProbabilityDesc([...probs.keys()], (l) => probs.get(l) ?? 0).slice(0, escaped ? o.escapedAnchors : o.anchorsPerFunction);
   const anchors: Anchor[] = [];
   top.forEach((line, i) => {
     const p = probs.get(line) ?? 0;

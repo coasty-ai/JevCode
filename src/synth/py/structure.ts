@@ -1322,3 +1322,233 @@ export function qualifiedName(mod: PyModule, block: Block): string {
   }
   return parts.join('.');
 }
+
+// ---------------------------------------------------------------------------------------
+// Guard clauses and where the patch put them (OOS iteration 3, item 1: the late-guard signal)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * The statements that leave a suite at once, so an `if` whose body is only these is an early-exit
+ * GUARD CLAUSE rather than an ordinary branch.
+ */
+const GUARD_EXIT_KINDS: ReadonlySet<StatementKind> = new Set(['return', 'raise', 'break', 'continue']);
+
+/** A guard clause of a function: an `if` with no `elif`/`else` whose body leaves the suite on every path. */
+export interface GuardClause {
+  /** first physical line of the `if` header */
+  line: number;
+  /** the condition source, exactly as the header spells it (`not ordered`, `cost > self.capacity or …`) */
+  test: string;
+  /**
+   * The operand paths the condition reads: a dotted chain that is not a call (`ordered`, `cost`,
+   * `self.capacity`, `hare.successor.successor`), builtins excluded. The ROOT of each is what the
+   * placement questions below are answered on, since reading `hare.successor` reads `hare` and
+   * rebinding `hare` invalidates every chain under it.
+   */
+  operands: string[];
+  /** roots of `operands`, de-duplicated */
+  roots: string[];
+  /**
+   * Sibling-index chain from the function body down to this clause, the leading docstring of each
+   * suite not counted. It is the clause's IDENTITY across two revisions of a function: a patch that
+   * only rewrites a condition leaves every path alone, while one that inserts a statement shifts
+   * the paths after it (guard.ts `newlyLateGuards` uses that to tell an edit from an insertion).
+   */
+  path: number[];
+  /** position among its sibling statements, a leading docstring not counted; 0 = the top of the block */
+  position: number;
+  /** how many non-docstring statements its own suite holds — with `path`, the check that the suite did not change shape */
+  siblings: number;
+  /** siblings BEFORE it that read an operand (outside an assignment target) */
+  readsBefore: number;
+  /** siblings BEFORE it that bind an operand, assign an attribute of one, or mutate one in place */
+  bindsBefore: number;
+  /** the same two counts per operand ROOT, so a caller can ask about the operands a patch ADDED and no others */
+  perRoot: Record<string, { reads: number; binds: number }>;
+}
+
+/** The chain of `.NAME` after `k`, stopping before a call; `null` when the token is not a readable operand head. */
+function operandPathAt(tokens: readonly Token[], k: number): { path: string; next: number } | null {
+  const head = tokens[k];
+  if (head === undefined || head.type !== 'NAME' || isKeyword(head.text)) return null;
+  if (isOp(tokens[k - 1], '.')) return null;
+  if (isOp(tokens[k + 1], '(')) return null; // `len(...)` — the callee is not an operand, its arguments are
+  const parts = [head.text];
+  let j = k + 1;
+  while (isOp(tokens[j], '.') && tokens[j + 1]?.type === 'NAME') {
+    // `a.b(` — the chain ends at the receiver `a`; the method call is not an operand
+    if (isOp(tokens[j + 2], '(')) break;
+    parts.push(tokens[j + 1]!.text);
+    j += 2;
+  }
+  return { path: parts.join('.'), next: j };
+}
+
+const BUILTIN_SET: ReadonlySet<string> = new Set(PY_BUILTINS);
+
+/** Operand paths a condition reads (`len(ordered) % 2` → `ordered`; `self.tokens >= cost` → `self.tokens`, `cost`). */
+export function conditionOperands(tokens: readonly Token[]): string[] {
+  const out: string[] = [];
+  for (let k = 0; k < tokens.length; k++) {
+    const p = operandPathAt(tokens, k);
+    if (p === null) continue;
+    k = p.next - 1;
+    const root = p.path.split('.')[0] ?? p.path;
+    if (BUILTIN_SET.has(root)) continue;
+    out.push(p.path);
+  }
+  return uniq(out);
+}
+
+/** A statement and every statement of the suite under it (the whole subtree a sibling owns). */
+function subtreeStatements(node: SuiteNode): Statement[] {
+  const out: Statement[] = [node.st];
+  for (const child of node.body) out.push(...subtreeStatements(child));
+  return out;
+}
+
+/** Does `st` READ `root` — an occurrence as a name that is not (only) a binding target? */
+function readsName(st: Statement, root: string): boolean {
+  const toks = st.tokens;
+  const skip = new Set<number>();
+  if (st.kind === 'assign') for (const span of assignTargetSpans(toks)) for (const t of span) skip.add(t.start);
+  if (st.kind === 'augassign') {
+    const op = findTopLevel(toks, (t) => t.type === 'OP' && AUG_OPS.has(t.text));
+    if (op > 0) for (const t of toks.slice(0, op)) skip.add(t.start);
+  }
+  if (st.kind === 'for') {
+    const start = isKw(toks[0], 'async') ? 2 : 1;
+    const inIdx = findTopLevel(toks, (t) => isKw(t, 'in'), start);
+    if (inIdx > start) for (const t of toks.slice(start, inIdx)) skip.add(t.start);
+  }
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k]!;
+    if (t.type !== 'NAME' || t.text !== root) continue;
+    if (isOp(toks[k - 1], '.')) continue;
+    if (skip.has(t.start)) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Does `st` BIND `root`, assign an attribute of it, or mutate it in place with one of the container methods? */
+function bindsName(st: Statement, root: string): boolean {
+  if (st.binds.includes(root)) return true;
+  if (st.attrAssigns.some((a) => a.receiver === root)) return true;
+  const toks = st.tokens;
+  for (let k = 0; k + 3 < toks.length; k++) {
+    const recv = toks[k]!;
+    if (recv.type !== 'NAME' || recv.text !== root || isOp(toks[k - 1], '.')) continue;
+    const method = toks[k + 2];
+    if (isOp(toks[k + 1], '.') && method !== undefined && method.type === 'NAME' && MUTATING_METHODS.has(method.text) && isOp(toks[k + 3], '(')) return true;
+  }
+  return false;
+}
+
+/** A leading `"""docstring"""` of a suite: it binds nothing, reads nothing, and is not a position. */
+function isDocstring(st: Statement): boolean {
+  return st.kind === 'expr' && st.tokens.length === 1 && st.tokens[0]?.type === 'STRING';
+}
+
+/** Is this `if` a guard clause — no `elif`/`else` beside it, and a body that leaves the suite on every path? */
+function isGuardClause(nodes: readonly SuiteNode[], i: number): boolean {
+  const n = nodes[i]!;
+  if (n.st.kind !== 'if') return false;
+  if (IF_CLAUSES.has(nodes[i + 1]?.st.kind ?? 'other')) return false;
+  const inline = inlineParts(n.st);
+  if (inline.length > 0) return inline.every((p) => GUARD_EXIT_KINDS.has(classify(p).kind));
+  const body = n.body;
+  if (body.length === 0) return false;
+  const last = body[body.length - 1]!;
+  return GUARD_EXIT_KINDS.has(last.st.kind) || branchExits(last);
+}
+
+/** Walk one suite level, recording its guard clauses, then recurse into the suites under it. */
+function collectGuards(nodes: readonly SuiteNode[], prefix: readonly number[], out: GuardClause[]): void {
+  const siblings = nodes.filter((n) => !isDocstring(n.st));
+  siblings.forEach((n, i) => {
+    if (isGuardClause(siblings, i) && n.st.colonIndex !== null) {
+      const operands = conditionOperands(n.st.tokens.slice(1, n.st.colonIndex));
+      const roots = uniq(operands.map((p) => p.split('.')[0] ?? p));
+      const priors = siblings.slice(0, i).map(subtreeStatements);
+      const perRoot: Record<string, { reads: number; binds: number }> = {};
+      for (const r of roots) {
+        perRoot[r] = {
+          reads: priors.filter((sts) => sts.some((s) => readsName(s, r))).length,
+          binds: priors.filter((sts) => sts.some((s) => bindsName(s, r))).length,
+        };
+      }
+      out.push({
+        line: n.st.startLine,
+        test: renderTokens(n.st.tokens.slice(1, n.st.colonIndex)),
+        operands,
+        roots,
+        path: [...prefix, i],
+        position: i,
+        siblings: siblings.length,
+        readsBefore: priors.filter((sts) => roots.some((r) => sts.some((s) => readsName(s, r)))).length,
+        bindsBefore: priors.filter((sts) => roots.some((r) => sts.some((s) => bindsName(s, r)))).length,
+        perRoot,
+      });
+    }
+    collectGuards(n.body, [...prefix, i], out);
+  });
+}
+
+/**
+ * Every guard clause directly inside `block` (a nested `def`'s own guards belong to that block,
+ * since `mod.statements` keys them to it), with the facts that say WHERE the patch put it.
+ */
+export function guardClauses(mod: PyModule, block: Block): GuardClause[] {
+  if (block.kind !== 'def') return [];
+  const out: GuardClause[] = [];
+  collectGuards(suiteOf(mod, block), [], out);
+  return out;
+}
+
+/** The clause's placement counts over a subset of its operand roots (all of them by default). */
+export function guardPlacement(g: GuardClause, roots?: readonly string[]): { reads: number; binds: number } {
+  if (roots === undefined) return { reads: g.readsBefore, binds: g.bindsBefore };
+  let reads = 0;
+  let binds = 0;
+  for (const r of roots) {
+    const c = g.perRoot[r];
+    if (c === undefined) continue;
+    reads = Math.max(reads, c.reads);
+    binds = Math.max(binds, c.binds);
+  }
+  return { reads, binds };
+}
+
+/**
+ * Is this guard clause LATE — placed behind statements it should have stood in front of?
+ *
+ * Two shapes, both differences of POSITION rather than thresholds (OOS iteration 3, item 1; the
+ * evidence is the two overfits of experiments/results/llm-jev-iter1.md §4.2 and §5 measured
+ * against their own golds, which are THE SAME GUARD at the top of the block):
+ *
+ *   (a) a sibling BEFORE the guard already READ one of its operands, so the guard cannot protect
+ *       the code it sits behind. `stats` inserted `if not ordered: raise ValueError(…)` after
+ *       `mid = len(ordered) // 2` and `if len(ordered) % 2: return float(ordered[mid])`; the gold
+ *       inserts `if not values: raise ValueError(…)` as the FIRST statement of `median`.
+ *       `token_bucket` added `cost > self.capacity` as a disjunct of `if self.refill_per_second
+ *       <= 0.0:` — behind `if self.tokens >= cost: return 0.0`, which reads `cost` — where the gold
+ *       inserts `if cost > self.capacity: return None` at the top of `wait_for`.
+ *   (b) `hoistable`: no sibling before it BINDS or mutates any of its operands, so the guard could
+ *       stand at the top of the block unchanged and its position is arbitrary. Only offered for a
+ *       guard the patch INSERTED: a patch that rewrites the condition of a guard already standing
+ *       there did not choose the position at all, and on the gold sweep (`possible_change`'s
+ *       `total < 0 or not coins`, `account`'s `amount > self.balance`, `csv_schema`'s
+ *       `len(row) != len(schema.columns)`) shape (b) is exactly what a condition edit looks like.
+ *
+ * A guard already at the top of its block (`position === 0`) is never late: that is where the golds
+ * put theirs. `x = compute()` followed by `if x is None: return` is not late either — the operand is
+ * produced by the statement in front of it, so (a) is false and (b) is false.
+ */
+export function isLateGuard(g: GuardClause, opts: { roots?: readonly string[]; hoistable?: boolean } = {}): boolean {
+  if (g.position === 0) return false;
+  const roots = opts.roots;
+  if (roots !== undefined && roots.length === 0) return false;
+  const p = guardPlacement(g, roots);
+  return p.reads > 0 || ((opts.hoistable ?? true) && p.binds === 0);
+}

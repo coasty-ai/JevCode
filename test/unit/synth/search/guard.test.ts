@@ -612,8 +612,8 @@ describe('rule (b): code-computed structural signals on a lone passer', () => {
     expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if hare.successor is not None:'))).toEqual([]);
     expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if not f(x) or hare.successor is None:'))).toEqual([]);
   });
-  it('detect_cycle: the committed guard copies lines 5-6, names a variable the traceback never dereferences, guards an expression nothing reads and adds a special case; the gold adds a clause (one signal), a genuine inserted guard too', () => {
-    expect(suspicionSignals(dcOverfit(), DC_GOAL)).toEqual(['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case']);
+  it('detect_cycle: the committed guard copies lines 5-6, names a variable the traceback never dereferences, guards an expression nothing reads, adds a special case and stands behind the statements that already use `hare`; the gold adds a clause (one signal), a genuine inserted guard too', () => {
+    expect(suspicionSignals(dcOverfit(), DC_GOAL)).toEqual(['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case', 'late_guard']);
     // `hare is None or` adds a conditional (`or`) and a literal (`None`) over the replaced line: the advisory is asked, and the measured gold answered 0.85
     expect(suspicionSignals(dcGold(), DC_GOAL)).toEqual(['adds_special_case']);
     expect(specialCaseScore(dcGoldCand())).toEqual({ conditionals: 1, literals: 1, total: 2 });
@@ -621,7 +621,7 @@ describe('rule (b): code-computed structural signals on a lone passer', () => {
     expect(suspicionSignals(genuine, DC_GOAL)).toEqual(['adds_special_case']);
     // without the traceback line the other-variable signal goes
     const noTail = committedBase(DETECT_CYCLE, { ...DC_BASELINE, outputTail: '' }, [NODE]);
-    expect(suspicionSignals(plausibleOutcome(detectCycleOverfit(), noTail), DC_GOAL)).toEqual(['duplicates_block', 'dead_guard', 'adds_special_case']);
+    expect(suspicionSignals(plausibleOutcome(detectCycleOverfit(), noTail), DC_GOAL)).toEqual(['duplicates_block', 'dead_guard', 'adds_special_case', 'late_guard']);
   });
   it('wrap: the loop copied under itself duplicates a block and adds a `while` with literals; the one-line gold is clean; GLM\'s `if text:` adds one conditional', () => {
     expect(suspicionSignals(wrapOver(), WRAP_GOAL)).toEqual(['duplicates_block', 'adds_special_case']);
@@ -676,7 +676,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     };
     const opts = { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample };
     const over = dcOverfit();
-    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
+    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case', 'late_guard'];
     const d1 = await decide([over], mem, g, ask, opts);
     expect(d1).toMatchObject({ kind: 'continue', held: 'suspect', signals, requests: 1, plausible: 1, clusters: 0, arbitrated: false });
     expect(guardState(mem).suspect).toEqual({ goalId: 'g1', outcome: over, phase: 'SEEDS', signals, noul: 0.12 });
@@ -730,7 +730,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     expect(ask.calls).toHaveLength(2);
   });
   it('a passer with ≥ 2 signals is committed at once only when Jev vouches confidently (p ≥ LONE_PASSER_VOUCH_MIN_NOUL); the live 0.39 holds it', async () => {
-    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
+    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case', 'late_guard'];
     const run = async (p: number): Promise<ReturnType<typeof decide>> => {
       const mem = createGuardMemory(DC_BASE);
       const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: p } }));
@@ -773,7 +773,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     expect(d2).toMatchObject({ kind: 'commit', requests: 0, signals: [] });
   });
   it('inside the budget reserve the advisory is still asked (shipping was committed unasked with 14 s left): doubted → possible overfit, confidently doubted → held and never released; no request left → committed', async () => {
-    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
+    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case', 'late_guard'];
     const doubted = await decide([dcOverfit()], createGuardMemory(DC_BASE), goal(DETECT_CYCLE_FAILURES), scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.5 } })), { oracle: oracle(), budget: thin });
     expect(doubted).toMatchObject({ kind: 'commit', note: 'possible overfit', held: null, requests: 1, signals });
     const mem = createGuardMemory(DC_BASE);
@@ -1464,16 +1464,24 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     // Ranked change 5 (OOS 2026-09-22 Q6, record 20260922-013715-nlsygcax): both `guard_empty_break`
     // members put a `break` in the `while True:` the pre-patch function could only `return` out of,
     // so each adds an implicit-None exit and is refused before clustering. What is left are the two
-    // returning guards and the donor, whose probe majority commits `dc_return` by code — Q15/Q16 is
-    // not reached at all, and the break guard is never a pick or a fallback.
-    expect(d).toMatchObject({ kind: 'commit', plausible: 3, clusters: 2, arbitrated: false, requests: 0, structuralDrops: 2, codeRule: 'probe_majority', held: null });
+    // returning guards and the donor — and OOS iteration 3 item 2 changes what happens to them:
+    // every one of the three is a guard inserted at L9/L10 carrying a SHAPE signal (`dead_guard`,
+    // `late_guard`, the donor also `guards_other_variable`), while the gold REPLACES L4. On such a
+    // gold-free pool the probe majority is ranking suspects against each other, so no code rule
+    // commits and the batch goes to Q15/Q16 with the signals in the state. The pick `dc_return`
+    // carries two signals and is vouched for at general 0.70 ≥ LONE_PASSER_VOUCH_MIN_NOUL, so it
+    // is still what gets committed — by an arbitration that saw the signals, not by the count.
+    expect(d).toMatchObject({ kind: 'commit', plausible: 3, clusters: 2, arbitrated: true, requests: 1, structuralDrops: 2, codeRule: null, held: null });
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('dc_return');
-    expect(ask.calls).toHaveLength(0);
+    expect(ask.calls).toHaveLength(1);
+    expect(notes.some((n) => n.includes('every one of the 3 passers carries a code signal') && n.includes('gold-free pool'))).toBe(true);
+    const shown = (ask.calls[0]!.state as { signals: Record<string, string[]> }).signals;
+    expect(Object.values(shown).every((rows) => rows.some((r) => r.includes('adds a guard behind statements that already use the value it guards')))).toBe(true);
     expect(d.fallbacks.map((o) => o.applied.candidate.id)).not.toContain('dc_break');
     expect(notes.filter((n) => n.includes('adds a path that leaves a function with an implicit `return None`'))).toHaveLength(2);
   });
 
-  it('the probe majority still decides a three-cluster split when one behaviour is the majority; an LLM member or unequal support keeps the count rule', async () => {
+  it('the probe majority names the majority behaviour of a three-cluster split, but on a pool whose every contender carries a shape signal the arbitration confirms it; an LLM member or unequal support keeps the count rule', async () => {
     const mem = createGuardMemory(DC_BASE);
     const g = goal(DETECT_CYCLE_FAILURES);
     const guard = (id: string, head: string, tail: string, op: string): VerifyOutcome =>
@@ -1496,10 +1504,13 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     // three votes for the returning behaviour against one and one on both inputs: the family is the majority
     const maj = probeMajorityCluster(clusterByBehaviour(passers, sig), sig);
     expect([...maj.agreement.entries()].map(([id, n]) => `${id}=${n}`)).toEqual(['cluster_1=2', 'cluster_2=0', 'cluster_3=0']);
-    const d = await decide(passers, mem, g, throwingAsk, { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample });
     // ranked change 5 refuses `b1` (a `break` out of `while True:` = an implicit-None exit) before
-    // clustering, so the probe majority decides between the two clusters that are left
-    expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: false, requests: 0, structuralDrops: 1, codeRule: 'probe_majority' });
+    // clustering; what is left are three returning guards and the donor, every one of them a guard
+    // INSERTED at L9/L10 with a shape signal, so OOS iteration 3 item 2 sends the batch to Q15/Q16
+    // instead of letting the probe majority commit a member of a pool with no gold in it
+    const askMaj = scriptedAsk(arbitrationScript({ choice: { 'if not hare.successor.successor:': 0.7, [OVERFIT_TEXT]: 0.1 }, escape: 0.2, noul: { 'if not hare.successor.successor:': 0.85, [OVERFIT_TEXT]: 0.1 } }));
+    const d = await decide(passers, mem, g, askMaj, { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: true, requests: 1, structuralDrops: 1, codeRule: null });
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('a1');
     // an LLM member in any cluster, or supports that differ, leave `fewestSpecialCases` in charge
     const llm = plausibleOutcome(candidate(siteAt(DETECT_CYCLE, 9, 'insert'), '        if hare.successor.successor is None:\n            return False', { id: 'llm:dc', source: 'llm', op: 'sample_0_0', prior: 1 }), DC_BASE);

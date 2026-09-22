@@ -896,6 +896,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
             distinct: (prior?.llm?.distinct ?? 0) + r.trace.llm.distinct,
             misanchored: (prior?.llm?.misanchored ?? 0) + r.trace.llm.misanchored,
             graceMs: (prior?.llm?.graceMs ?? 0) + r.trace.llm.graceMs,
+            // OOS iteration 3, item 3: the arm, not a count — the same value on every step of a run
+            ...(r.trace.llm.deadlineGrowth === undefined ? {} : { deadlineGrowth: r.trace.llm.deadlineGrowth }),
           }),
     });
 
