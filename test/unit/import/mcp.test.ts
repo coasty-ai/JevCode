@@ -13,7 +13,8 @@ import { describe, expect, it } from 'vitest';
 import { IMPORT_LIMITS } from '../../../src/core/limits.js';
 import { mergeMcpFile, normaliseMcp, normaliseReference, parseMcpFile, renderBackTo, renderMcpFile } from '../../../src/import/mcp.js';
 import type { McpDialect, NormaliseInput } from '../../../src/import/mcp.js';
-import type { Json, McpFile, McpServerRecord, SourceTool } from '../../../src/import/types.js';
+import type { Json } from '../../../src/core/types.js';
+import type { McpFile, McpServerRecord, SourceTool } from '../../../src/import/types.js';
 
 const TOOL_OF: Readonly<Record<McpDialect, SourceTool>> = {
   'claude-code': 'claude-code',
@@ -218,7 +219,7 @@ describe('mergeMcpFile (§4.7.4 step 5)', () => {
     const m = mergeMcpFile(existing, { github: rec('codex'), linear: rec('codex') });
     expect(m.file.servers['github']?.command).toBe('existing-one');
     expect(m.file.servers['github-codex']?.command).toBe('x');
-    expect(m.added.sort()).toEqual(['github-codex', 'linear']);
+    expect([...m.added].sort()).toEqual(['github-codex', 'linear']);
     expect(m.renamed).toEqual(['github-codex']);
     expect(Object.values(m.file.servers).every((s) => s.enabled === false)).toBe(true);
   });
