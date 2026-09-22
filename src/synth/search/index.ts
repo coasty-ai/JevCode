@@ -682,7 +682,9 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       // second out of the first, so the reserve is held outside the share in the code and not only in the table.
       const reserve = Math.max(0, Math.floor(fp.reserveMs));
       fresh.testWallLeftMs = Math.min(fresh.testWallLeftMs, fp.wallMs + reserve);
-      fresh.reserveWallMs = Math.min(reserve, fresh.testWallLeftMs);
+      // never more than half the counter: a reserve that swallowed the whole wall would leave the round unable to
+      // dispatch a single candidate, which is the opposite of what holding it is for
+      fresh.reserveWallMs = Math.min(reserve, Math.floor(fresh.testWallLeftMs / 2));
       fresh.jevRequestsLeft = Math.min(fresh.jevRequestsLeft, fp.jevRequests);
       fresh.llmRoundsLeft = 0;
       fresh.llmSamplesLeft = 0;

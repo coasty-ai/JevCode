@@ -250,6 +250,8 @@ describe('FastPathRunner.run', () => {
     expect(installed!.testWallLeftMs).toBeLessThanOrEqual(9_000 + 1_000);
     expect(installed!.testWallLeftMs).toBeGreaterThan(9_000);
     expect(installed!.reserveWallMs).toBe(1_000);
+    // and never more than half the counter, so a round always has wall to dispatch a candidate with
+    expect(installed!.reserveWallMs).toBeLessThanOrEqual(Math.floor(installed!.testWallLeftMs / 2));
     expect(installed!.jevRequestsLeft).toBeLessThanOrEqual(3);
     expect([installed!.llmRoundsLeft, installed!.llmSamplesLeft, installed!.llmUsdLeft]).toEqual([0, 0, 0]);
     runner.dispose(ctx.runId);
