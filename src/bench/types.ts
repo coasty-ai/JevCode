@@ -115,6 +115,13 @@ export interface StepsSummary {
     localisationMissed: number;
   };
   /**
+   * OOS iteration 3, item 3: the `JEVCODE_DEADLINE_GROWTH` arm the run's steps recorded — `always`
+   * (today's behaviour, the default), `served`, or `mixed` when a merge spans both. Absent when no
+   * step recorded one (jev-only, or a record written before the flag existed). Not a count: it is
+   * the arm, so `mergeStepsSummaries` unions rather than sums it.
+   */
+  deadlineGrowth?: 'served' | 'always' | 'mixed';
+  /**
    * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §5.5: `src/bench/step-records.ts` is the ONLY bridge from
    * `steps.jsonl` to `BenchRecord.synth`. Without these members every `fastPath` and `router` field the engine writes
    * into the run directory is invisible to every bench table — the rows of §8.3 would read zero for a reason that has

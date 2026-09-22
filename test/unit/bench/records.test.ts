@@ -80,4 +80,27 @@ describe('steps.jsonl summary', () => {
     expect(s.verify.samples).toBe(4);
     expect(s.verify.timeouts).toBe(1);
   });
+
+  /**
+   * OOS iteration 3, item 3: the bench record must SAY which deadline-growth arm produced it, and
+   * say it as a field of the run's own timeline rather than as a log line — otherwise the next
+   * measurement's A/B has no way to tell the two arms of its own table apart. `StepRecord.verify`
+   * carries it (the same value on every step of a run) and `StepsSummary` unions it.
+   */
+  it('records the JEVCODE_DEADLINE_GROWTH arm from the steps, unions it over a merge, and is absent when no step recorded one', () => {
+    const rows = (growth: string | null): string =>
+      JSON.stringify({ step: 1, proposer: 'synth', timing: { synthMs: 10 }, verify: { samples: 1, distinct: 0, malformed: 1, timeouts: 0, cancelled: 0, misanchored: 0, candidatesTested: 5, passers: 0, partials: 0, graceMs: 0, localisationMissed: false, ...(growth === null ? {} : { deadlineGrowth: growth }) } });
+    expect(summariseStepRows([rows('served'), rows('served')].join('\n')).deadlineGrowth).toBe('served');
+    expect(summariseStepRows([rows('always'), rows('always')].join('\n')).deadlineGrowth).toBe('always');
+    // a jev-only run, or an engine before the flag: nothing claimed, nothing recorded
+    expect(summariseStepRows(rows(null)).deadlineGrowth).toBeUndefined();
+    // a value the flag does not define is not recorded as if it were an arm
+    expect(summariseStepRows(rows('sometimes')).deadlineGrowth).toBeUndefined();
+    // one arm per run, but a merge across arms says so rather than picking one
+    const served = summariseStepRows(rows('served'));
+    const always = summariseStepRows(rows('always'));
+    expect(mergeStepsSummaries([served, served]).deadlineGrowth).toBe('served');
+    expect(mergeStepsSummaries([served, always]).deadlineGrowth).toBe('mixed');
+    expect(mergeStepsSummaries([summariseStepRows(rows(null)), always]).deadlineGrowth).toBe('always');
+  });
 });

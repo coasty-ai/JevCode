@@ -6,11 +6,13 @@ exports[`arbitrate: Q15 + Q16 in one request, measured wording and state shape >
     "general_cand_01": {
       "criteria": {
         "false": {
-          "definition": "The replacement makes the listed tests pass by coincidence: it special-cases the tested inputs, changes an unrelated part of the line, removes functionality the tests do not exercise, or is a boundary the tests cannot distinguish.",
+          "definition": "The replacement makes the listed tests pass by coincidence: it special-cases the tested inputs, changes an unrelated part of the line, removes functionality the tests do not exercise, is a boundary the tests cannot distinguish, or puts a guard somewhere only the tested path reaches.",
           "examples": [
             "a condition that happens to hold for the tested inputs only",
             "deleting a branch no test reaches",
             "returning a constant that matches the tested cases",
+            "a guard added after the statements that already use the value it guards, so the earlier uses stay unprotected",
+            "a guard on a variable that is not on the path from the failing input to the failure",
           ],
         },
         "true": {
@@ -18,7 +20,7 @@ exports[`arbitrate: Q15 + Q16 in one request, measured wording and state shape >
           "examples": [
             "an off-by-one bound corrected so every element is visited",
             "swapped arguments restored to the order the algorithm requires",
-            "a missing guard added exactly where the failing input reaches",
+            "a missing guard added in front of the code that uses the value",
           ],
         },
       },
@@ -28,11 +30,13 @@ exports[`arbitrate: Q15 + Q16 in one request, measured wording and state shape >
     "general_cand_02": {
       "criteria": {
         "false": {
-          "definition": "The replacement makes the listed tests pass by coincidence: it special-cases the tested inputs, changes an unrelated part of the line, removes functionality the tests do not exercise, or is a boundary the tests cannot distinguish.",
+          "definition": "The replacement makes the listed tests pass by coincidence: it special-cases the tested inputs, changes an unrelated part of the line, removes functionality the tests do not exercise, is a boundary the tests cannot distinguish, or puts a guard somewhere only the tested path reaches.",
           "examples": [
             "a condition that happens to hold for the tested inputs only",
             "deleting a branch no test reaches",
             "returning a constant that matches the tested cases",
+            "a guard added after the statements that already use the value it guards, so the earlier uses stay unprotected",
+            "a guard on a variable that is not on the path from the failing input to the failure",
           ],
         },
         "true": {
@@ -40,7 +44,7 @@ exports[`arbitrate: Q15 + Q16 in one request, measured wording and state shape >
           "examples": [
             "an off-by-one bound corrected so every element is visited",
             "swapped arguments restored to the order the algorithm requires",
-            "a missing guard added exactly where the failing input reaches",
+            "a missing guard added in front of the code that uses the value",
           ],
         },
       },

@@ -1329,3 +1329,27 @@ derived from `CONDITION_ORDER`, so `bin/jevcode.js bench --conditions jev-on-nex
 though `parseConditions` and `runBench` accept it. Adding the two rows there (and to the `arg`/`help`/usage strings) is the
 one change this wave needs outside `src/bench/**`; `test/unit/config/args.test.ts` and `test/unit/bench/next-arms.test.ts`
 both pin the gap so it cannot be forgotten, and **no live arm can run until it lands**.
+
+## 2026-09-22 Iteration 3 lands unmeasured; a structural signal reaches the pool rule only with a gold sweep behind it, and Jev's state stays signal-free
+
+Iteration 3 (`oos-iter-3`, review `docs/research/llm-jev/review-oos-iter-3-2026-09-22.md`, 16 findings, 11 confirmed by probe)
+found the real `detect_cycle` hole — a pool of two or more passers never computed its suspicion signals and a code rule committed a
+guard with no Jev request — and, in fixing it, showed how a structural rule goes wrong: the first `late_guard` fired on a SWE-bench
+Verified gold (`sympy__sympy-17139`) and on ordinary attribute guards. Rulings, applied on the branch before the merge:
+(1) a suspicion signal may make a pool "gold-free" (skip the code ranking rules, ask Jev, hold the pick to the lone-passer bound)
+only after a sweep of every gold patch in the repository's bench data — QuixBugs 41, ladder 65 files, SWE-bench Verified 30 — shows
+zero fires; `late_guard`, rewritten to fire only on a dereference of the operand's exact dotted path with no bind or narrowing in
+front, is clean on all 198 but no longer fires on `stats`/`token_bucket`/`detect_cycle` either, so it is a lone-passer signal only and
+`POOL_SUSPECT_SIGNALS` is `{mutates_new_argument}`; iteration 4 owns the data-flow property that actually separates those three
+(the gold guards the parameter at the top, the overfit guards a derived local after use). (2) A refused pick is HELD (`st.suspect`,
+step-end `commitSuspect`), never dropped: the pool path may be no harsher than the lone path. (3) The pool ask is gated on the step's
+Jev budget and falls through to the code rules, with a note, when it cannot ask or Jev escapes; Jev routes, never gates. (4) The
+signals stay out of the arbitration state: the 0.3/0.7 bounds were calibrated on a signal-free Noul and the recorded replays are
+evidence only about that state; only swept signals count toward the strong bound (`adds_special_case` rides on every inserted guard).
+(5) The Q16 `true` example names the position of the guard, not the variable the failure names (the `stats` gold guards `values`
+while the traceback names `ordered`). (6) A Jev-ON trajectory is allowed to change when the request budget is spent mid-beam — the
+code-derived anchors enter in that case — and that case is pinned beside the fully-answered one. (7) `JEVCODE_DEADLINE_GROWTH=served`
+means: a zero-token timeout backs a goal's deadline off only once a sample of that goal has actually been served; a provider that
+never answers stays at the class base; default `always` is byte-identical to before. Ring 1 at the merged tip is unmeasured (the
+localiser changed after the last run); the next measurement runs it from a frozen worktree of the merged tip. `kth` under `--jev off`
+is expected to fail until iteration 4 ranks replace sites without a Jev ranking (`REPLACE_SITES_MAX = 6` in file order).

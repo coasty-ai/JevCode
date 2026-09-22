@@ -708,6 +708,14 @@ export interface StepVerifySummary {
   cacheWrite?: number;
   /** contract 1.9 (Fastlane) §3.4: `cacheRead / (input tokens of the step's priced samples)`, 0…1 — the §3.3 prefix-pinning measurement. */
   cacheHitRate?: number;
+  /**
+   * OOS iteration 3, item 3 (llm-jev, additive): the per-goal deadline high-water mark's evidence
+   * rule this run ran under — `JEVCODE_DEADLINE_GROWTH`, default `always` (the behaviour OOS
+   * iteration 2 shipped), `served` grows the mark only on a sample the provider actually served
+   * past it. Recorded so a bench record says which arm produced it; it gates nothing and is absent
+   * on a step written without an LLM source (jev-only) or by an engine before the flag existed.
+   */
+  deadlineGrowth?: 'served' | 'always';
 }
 
 export interface RunCounters {

@@ -1338,6 +1338,8 @@ async function settleLlm(st: LoopState, outcome: GoalSearchTrace['outcome']): Pr
     ...(ttfbMs.length > 0 ? { ttfbMs } : {}),
     ...(hedges > 0 ? { hedges, hedgeWins: sum((s) => s.hedgeWins ?? 0) } : {}),
     ...(cacheRead > 0 || cacheWrite > 0 ? { cacheRead, cacheWrite, ...(cacheInput > 0 ? { cacheInput } : {}) } : {}),
+    // OOS iteration 3, item 3: which deadline-growth arm produced these rounds (recorded, never a gate)
+    deadlineGrowth: L.deps.deadlineGrowth,
   };
 }
 

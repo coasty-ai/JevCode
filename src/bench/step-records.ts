@@ -136,6 +136,9 @@ export function addStepRow(s: StepsSummary, row: JsonObject): void {
     if (isFiniteNumber(v)) s.verify[k] += v;
   }
   if (verify['localisationMissed'] === true) s.verify.localisationMissed += 1;
+  // OOS iteration 3, item 3: the arm, not a count — unioned so a run that somehow saw both says so
+  const growth = verify['deadlineGrowth'];
+  if (growth === 'served' || growth === 'always') s.deadlineGrowth = s.deadlineGrowth === undefined || s.deadlineGrowth === growth ? growth : 'mixed';
 }
 
 /** Every well-formed line of a steps.jsonl (a torn last line is skipped). */
@@ -222,6 +225,7 @@ export function mergeStepsSummaries(parts: readonly StepsSummary[]): StepsSummar
     s.risk.jevUnavailable += p.risk.jevUnavailable;
     s.s2.ttfbMs.push(...p.s2.ttfbMs);
     for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite'] as const) s.s2[k] += p.s2[k];
+    if (p.deadlineGrowth !== undefined) s.deadlineGrowth = s.deadlineGrowth === undefined || s.deadlineGrowth === p.deadlineGrowth ? p.deadlineGrowth : 'mixed';
   }
   return s;
 }
