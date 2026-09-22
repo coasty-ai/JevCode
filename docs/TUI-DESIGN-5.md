@@ -208,7 +208,8 @@ part of their W0 read.
    (d8490fa); `'decompose'` in every stage table with `TIMELINE_EXCLUDED_STAGES` exported (2e20108); every run's decider
    wrapped in `createCachingDecider` from `src/jev/cache.ts` (f9d033e) — the `/jev` `cache hits N` row and the
    `jevcode report` column reading `StepRecord.jevCacheHits` are owed by the **round-4 owner's pass**, so round 5
-   only extends them if they are still missing at its W0.
+   only extends them if they are still missing at its W0. Per-request views read the explicit **`JevRequestRecord.cached`**
+   (from `AskResult.cached`, harness 751e3bf) — never infer a hit from `usage.calls === 0`, which the stub decider also reports.
 7. **`BlockingKind`** — see D-AF: both members and their placeholder cases arrive in one harness commit that
    `r4-impl` rebases over; round 5 restyles the labels and builds the lease-conflict pane on the real member.
 
