@@ -12,6 +12,7 @@
 // contract 1.3 (2026-09-21): TUI round 3 — renderer bindings, wizard `mode` outcome, ui.wordmark, host dispatch context, per docs/TUI-DESIGN-3.md §6; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 // contract 1.4 (2026-09-21): coordination — pause points, context meter, registry API per docs/COORDINATION-DESIGN.md §12.0; every item is optional or a new union member; CheckpointEnvelope.version stays 1.
 // contract 1.5 (2026-09-22): orchestration — decompose stage, manifest, agents, landing queue per docs/ORCHESTRATION-DESIGN.md §4.1; every item is optional or a new union member; Action, STOP_REASON_SET, exitCodeFor, MODES and CheckpointEnvelope.version are untouched.
+// contract 1.6 (2026-09-22): import — memory, rules, commands, MCP and the import plan per docs/IMPORT-DESIGN.md §7.1 row 1; the 22 section-1 shapes move here verbatim from src/import/types.ts, which re-exports them; every widening is an optional member or a new union member; CheckpointEnvelope.version stays 1.
 // contract 1.7 (2026-09-22): TUI round 4 — block rows, annotateBlock, diff detail kind, ui.renderer, peer view, per docs/TUI-DESIGN-4.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
@@ -1047,6 +1048,14 @@ export interface CheckpointState {
   fileCache?: FileCacheEntry[];
   fileMemory?: FileMemory;
   summaryAt?: number | null;
+  /**
+   * contract 1.6 (IMPORT-DESIGN §7.1 row 1, amendment to COORDINATION-DESIGN §8.6 `:1504` [G2.2]): the ≤ 24
+   * kept items the prompt's `## Kept (do not re-derive)` renders. `kept` itself is a coordination-design
+   * addition that had not landed in this file, so 1.6 lands the row **with** its amendment rather than as an
+   * independent change: `kind` carries `'memory'` beside `'fact' | 'file' | 'decision'`, because a memory item
+   * is a kept item that outlives the run (§2.10.3). Optional and absent on every checkpoint written before it.
+   */
+  kept?: { kind: 'fact' | 'file' | 'decision' | 'memory'; text: string; step: number; by: 'jev' | 'human' | 'code' }[];
   /** contract 1.4 (§12.0.3): compactions over the run's life, all resumes (ContextUsage.compactions) */
   compactions?: number;
   /** contract 1.4 (§12.0.3): ISO time of the last compaction (ContextUsage.lastCompactionAt) */
@@ -1175,6 +1184,8 @@ export interface RunMeta {
   landed?: { step: number; branch: string; commit: string }[];
   /** contract 1.5 (§4.1; shared with COORDINATION-DESIGN §9.3): `/undo` and `/rewind` refuse below this step — a landed merge is not a harness write to revert */
   undoUnavailableBelow?: number;
+  /** contract 1.6 (IMPORT-DESIGN §7.1 row 1, widening 4 / §4.7.5): the import ids whose memory this run was given, newest last */
+  imports?: readonly string[];
 }
 /** TUI-DESIGN §15 item 10 */
 export type RunSource = 'cli' | 'bench' | 'perf';
@@ -1183,6 +1194,10 @@ export interface InstructionRecord {
   path: string;
   sha256: string;
   bytes: number;
+  /** contract 1.6 (IMPORT-DESIGN §7.1 row 1, widening 1 / §2.3): a memory or rule file's `kind`; absent on an AGENTS.md record */
+  kind?: MemoryKind;
+  /** contract 1.6 (§7.1 row 1, widening 1 / §0 principle 7): scope is meaning — user, project and project-local are different destinations */
+  scope?: 'user' | 'project' | 'project-local';
 }
 
 export interface GeneratorCallRecord {
@@ -1390,6 +1405,13 @@ export interface EngineOptions {
   session?: SessionRef;
   /** TUI-DESIGN §15 item 11: AGENTS.md: text -> generator system prompt only; files -> run.json.instructions[] */
   instructions?: { files: InstructionRecord[]; text: string };
+  /**
+   * contract 1.6 (IMPORT-DESIGN §7.1 row 1, widening 2 / §2.10): imported memory. `index` -> the system
+   * prompt's `## Memory (index)` (once per run); `rules` / `topics` -> the per-step `## Rules in scope`
+   * and `## Memory in scope`, selected by `matchRules` against the step's files in view. ABSENT is the
+   * pin: every prompt is byte-identical to what it was before 1.6 landed.
+   */
+  memory?: EngineMemoryOptions;
   /** TUI-DESIGN §15 item 11: count for the run:start secret-ack item (never values) */
   secretsAcked?: number;
   /** TUI-DESIGN §15 item 11 */
@@ -1575,8 +1597,11 @@ export interface EngineStatus {
 }
 
 // TUI-DESIGN §15 item 14: notices and renderer labels
-/** contract 1.5 (ORCHESTRATION-DESIGN §4.1): 'orchestration' = the delegation surface's notices (spawned, adopted, landed, the declined split) */
-export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui' | 'orchestration';
+/**
+ * contract 1.5 (ORCHESTRATION-DESIGN §4.1): 'orchestration' = the delegation surface's notices (spawned, adopted, landed, the declined split).
+ * contract 1.6 (IMPORT-DESIGN §7.1 row 1, widening 3 / §2.12): 'import' = the importer's notices (`[import] active from the next run · /new starts one here`).
+ */
+export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui' | 'orchestration' | 'import';
 /** the only labels formatTranscriptItem prints instead of stepLabel() (item 19, §15.1); TUI-DESIGN-2 §6 item 1 / §3.10: the chat bubbles */
 export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]' | '[you]' | '[jevcode]';
 export type ChatLabel = Extract<UiLabel, '[you]' | '[jevcode]'>;
@@ -1814,6 +1839,12 @@ export interface ContextUsage {
   /** §8.9: how long the last prompt build took (ms), and the file refresh inside it — the `promptBuildMs` gate's source */
   promptBuildMs: number;
   refreshMs: number;
+  /**
+   * contract 1.6 (IMPORT-DESIGN §2.10.3, §7.5 row 42): what `## Rules in scope` and `## Memory in scope` cost
+   * at the last build, and the once-per-run `## Memory (index)`. ABSENT when the run was given no memory, so a
+   * run without `EngineOptions.memory` reports exactly the object it reported before 1.6.
+   */
+  memory?: MemoryUsage;
 }
 
 /** §8.2(c): what the tier ladder did to the history at the last build. */
@@ -2708,4 +2739,318 @@ export interface OrchestrationOptions {
   parentSandbox?: SandboxLevel;
   /** [D10] §2.6: the harness's git seam for commit-after-step; the supervisor binds it to `runGit` with the per-worktree Sandbox. Absent = the engine makes no git commits. */
   runGit?: (cwd: string, args: readonly string[], opts?: { timeoutMs?: number; maxOutputBytes?: number; signal?: AbortSignal }) => Promise<ExecResult>;
+}
+
+// ---------------------------------------------------------------------------------------
+// Import, contract 1.6 (docs/IMPORT-DESIGN.md §7.1 row 1)
+//
+// The 22 shapes below are the import contract, moved here VERBATIM from `src/import/types.ts`
+// section 1 (§7.1 [G2.2]: "the import additions to src/core/types.ts go after coordination's
+// round-3 contract line", i.e. after 1.4 and after orchestration's 1.5). `src/import/types.ts`
+// now re-exports every one of them and keeps only its section 3 — the atlas shape, the parser
+// results and the read/write/clock/environment seams, which no other owner consumes.
+//
+// `src/core/types.ts` never imports from `src/import/**`; the dependency runs the other way, so
+// the engine can consume memory (`EngineOptions.memory`, §2.10) without depending on the importer.
+// ---------------------------------------------------------------------------------------
+
+/** contract 1.6 (§3): the nine tools the atlas knows, plus Claude Desktop, the MCP-only rows and stdin pastes (§3.11). */
+export type SourceTool =
+  | 'claude-code'
+  | 'claude-desktop'
+  | 'codex'
+  | 'opencode'
+  | 'cursor'
+  | 'windsurf'
+  | 'aider'
+  | 'gemini'
+  | 'copilot'
+  | 'mcp'
+  | 'pasted';
+
+/** contract 1.6 (§2.2 / §4.2.5): scope is meaning (§0 principle 7) — never flattened. `managed` is a system-wide root. */
+export type SourceScope = 'user' | 'project' | 'project-local' | 'managed';
+
+/** contract 1.6 (§4.2.5): how a source is read. A Codex `*.rules` file is `text` (no parser claims it). */
+export type SourceFormat = 'md' | 'mdc' | 'json' | 'jsonc' | 'toml' | 'yaml' | 'jsonl' | 'sqlite' | 'text' | 'js' | 'sh';
+
+/**
+ * contract 1.6 (§4.4.0 / §4.6.1): `PlanRow.class`, and the class an atlas row declares (§3.1 `SourceSpec.class`).
+ * The design's five letters map on: M → `memory` | `rule`, W → `command`, C → `config` | `mcp`,
+ * S → `secret`, T → `transcript`, X → `skip` (an atlas row that is never imported at all).
+ */
+export type ImportClass = 'memory' | 'rule' | 'command' | 'mcp' | 'config' | 'secret' | 'transcript' | 'skip';
+
+/** contract 1.6 (§4.4.0): the fourteen named `skip:*` reasons — "unknown" is never a silent bucket. */
+export type ImportSkipAction =
+  | 'skip:unchanged'
+  | 'skip:self'
+  | 'skip:secret'
+  | 'skip:executable'
+  | 'skip:unsupported'
+  | 'skip:oversize'
+  | 'skip:not-text'
+  | 'skip:not-a-file'
+  | 'skip:parse-error'
+  | 'skip:symlink'
+  | 'skip:transcript'
+  | 'skip:third-party'
+  | 'skip:tool-managed'
+  | 'skip:unknown-format'
+  | 'skip:remote'
+  | 'skip:unrelated'
+  | 'skip:untrusted';
+
+/** contract 1.6 (§4.6.1): exactly one action per discovered artefact (§1 property 2 — there is no "other" bucket). */
+export type ImportAction = 'create' | 'append' | 'update' | 'merge' | 'review' | 'suggest' | ImportSkipAction;
+
+/** contract 1.6 (§4.2.5): the tolerant parse summary carried on a `SourceItem`. Shapes only — never a body. */
+export interface SourceParse {
+  ok: boolean;
+  error?: string;
+  frontmatterKeys?: readonly string[];
+  /** redacted and clipped to `jevHeadingCells`, at most `jevHeadings` of them */
+  headings?: readonly string[];
+  lines?: number;
+  fences?: number;
+}
+
+/** contract 1.6 (§4.2.5): one line of `sources.jsonl`. Keyed by realpath (§4.2.3), so five detectors yield one item. */
+export interface SourceItem {
+  /** `sha256(realpath).slice(0, 12)` */
+  id: string;
+  realpath: string;
+  /** `~/…` form; never an absolute home path in an artefact */
+  display: string;
+  tools: readonly SourceTool[];
+  /** the atlas row id, e.g. `claude.auto-memory.topic` */
+  artefact: string;
+  format: SourceFormat;
+  scope: SourceScope;
+  bytes: number;
+  sha256: string;
+  mtime: string;
+  parse: SourceParse;
+  notices: readonly string[];
+}
+
+/** contract 1.6 (§2.3): `kind` in a topic file's frontmatter; Claude Code's four `type` values map on to the first four. */
+export type MemoryKind = 'project' | 'preference' | 'reference' | 'feedback' | 'rule';
+
+/** contract 1.6 (§2.5): when a rule is injected. `always` is a rule file with `paths: ["**"]`, never an AGENTS.md promotion. */
+export type RuleTrigger = 'always' | 'paths' | 'manual';
+
+/** contract 1.6 (§2.3): the `source:` block written into every imported file — provenance on every byte (§0 principle 6). */
+export interface MemoryProvenance {
+  tool: SourceTool;
+  /** `~/…` display form */
+  path: string;
+  sha256: string;
+  /** ISO-8601 */
+  imported: string;
+  importId: string;
+  /** present only when N detectors found the same realpath (§4.2.3) */
+  tools?: readonly SourceTool[];
+}
+
+/** contract 1.6 (§2.3 / §2.5): one topic or rule file, frontmatter + body, as the engine renders it. */
+export interface MemoryItem {
+  /** the human name; the filename is `slugOf(name)` (§4.7.3) — they are not the same thing */
+  name: string;
+  description: string;
+  kind: MemoryKind;
+  scope: 'user' | 'project' | 'project-local';
+  /** required when `trigger === 'paths'`; absent = index-only, loaded on demand */
+  paths?: readonly string[];
+  /** rules only */
+  trigger?: RuleTrigger;
+  source: MemoryProvenance;
+  /** count of `[REDACTED:*]` substitutions made at write time (§2.9) */
+  redacted: number;
+  /** bytes dropped by the cap; 0 when whole */
+  clipped: number;
+  /** redacted, bidi-stripped, CRLF-normalised, capped body */
+  body: string;
+}
+
+/** contract 1.6 (§2.6 / §5.8.3): an inert imported command (A63). The body never executes — see `executableStripped`. */
+export interface ProjectCommand {
+  name: string;
+  description: string;
+  argumentHint?: string;
+  /** destination path, repo- or `~`-relative */
+  path: string;
+  body: string;
+  scope: 'user' | 'project';
+  source: MemoryProvenance;
+  /** how many `` !`cmd` ``/```` ```! ````/`!{cmd}`/`@{file}`/`$(cmd)` segments became ```` ```text (not run) ```` fences */
+  executableStripped: number;
+}
+
+/** contract 1.6 (§2.7 / §3.10): the one normalised MCP dialect. Every server arrives disabled. */
+export interface McpServerRecord {
+  transport: 'stdio' | 'http' | 'sse';
+  command?: string;
+  args?: readonly string[];
+  url?: string;
+  /** values are `${VAR}` references only — a literal credential is replaced by its variable name (§4.8.3) */
+  env?: Readonly<Record<string, string>>;
+  headers?: Readonly<Record<string, string>>;
+  /** §2.7: always false on arrival; §1 property 16 asserts it */
+  enabled: false;
+  source: { tool: SourceTool; path: string; sha256: string; importId: string };
+  /** dropped extras and credential substitutions, rendered in the report */
+  notes?: readonly string[];
+}
+
+/** contract 1.6 (§2.7): the `mcp.json` document. */
+export interface McpFile {
+  v: 1;
+  servers: Readonly<Record<string, McpServerRecord>>;
+}
+
+/**
+ * contract 1.6 (§4.6.1): one row of the plan. **No field of this type can hold a value** — that is the
+ * structural half of §1 property 4; `test/unit/import/leak.test.ts` is the other half.
+ */
+export interface PlanRow {
+  /** stable: `sha256(source.id + dest).slice(0, 12)` */
+  id: string;
+  source: {
+    id: string;
+    display: string;
+    tools: readonly SourceTool[];
+    sha256: string;
+    bytes: number;
+    /** carried only as a cheap pre-filter for the re-hash of §4.7.2 */
+    mtimeMs: number;
+  };
+  class: Exclude<ImportClass, 'skip'>;
+  /** repo- or `~`-relative; null for report-only rows */
+  dest: string | null;
+  action: ImportAction;
+  scope: 'user' | 'project' | 'project-local';
+  /** destination bytes this row would write */
+  bytes: number;
+  /** `rule 9 (frontmatter name+description+metadata.type)` | `jev kind_3 … p=0.82 can_=0.71` | `code fallback (jev unavailable: HTTP 429)` */
+  why: string;
+  warnings: readonly string[];
+  /** conflict / duplicate group id */
+  group?: string;
+}
+
+/** contract 1.6 (§4.6.1): one root as the report's `## Sources` section names it. */
+export interface PlanRoot {
+  display: string;
+  tool: SourceTool;
+  via: 'default' | 'env';
+  env?: string;
+  exists: boolean;
+}
+
+/** contract 1.6 (§3.11): rendered even when empty, so "nothing found" never reads as "you have nothing". */
+export interface CannotRead {
+  what: string;
+  why: string;
+  paste: string;
+}
+
+/** contract 1.6 (§4.6.1): the artefact phases 1–3 produce. The report *is* the plan (§0 principle 9). */
+export interface ImportPlan {
+  v: 1;
+  importId: string;
+  /** ISO-8601 */
+  at: string;
+  jevcodeVersion: string;
+  workspace: string;
+  /** `realpath(gitRoot ?? workspace)` [G1.3] */
+  workspaceKey: string;
+  gitRoot: string | null;
+  trust: 'trust' | 'session' | 'none';
+  roots: readonly PlanRoot[];
+  rows: readonly PlanRow[];
+  budget: { memoryBytes: number; memoryMax: number; indexLines: number; indexMax: number };
+  jev: { requests: number; questions: number; usd: number; fallbacks: number; reason?: string };
+  cannotRead: readonly CannotRead[];
+  notices: readonly string[];
+}
+
+/** contract 1.6 (§5.1): the ≤ 50 ms wizard probe. Counts and tool names only — never a value, never a body. */
+export interface ImportProbe {
+  tools: readonly { tool: SourceTool; display: string; items: number }[];
+  /** sum of `tools[].items` */
+  total: number;
+  /** wall time of the probe, for the perf row */
+  ms: number;
+  /** true when a cap or the deadline stopped the probe early */
+  partial: boolean;
+}
+
+/** contract 1.6 (§4.7.5): one applied row, as the manifest remembers it. */
+export interface ImportManifestEntry {
+  importId: string;
+  /** repo- or `~`-relative destination */
+  dest: string;
+  /** the source's sha256 at apply time, so a changed source becomes `update` */
+  sourceSha256: string;
+  /** the destination's sha256 immediately after the write */
+  destSha256: string;
+  scope: 'user' | 'project' | 'project-local';
+  at: string;
+  /** §4.8.2: only the human's own terminal or their own `--yes` is authority */
+  by: 'tty' | 'flag';
+}
+
+/**
+ * contract 1.6 (§4.7.5 [G1.3]): keyed by workspace — a single global list against repo-relative
+ * destinations makes a second clone of the same repo look already-imported.
+ */
+export interface ImportManifest {
+  v: 1;
+  user: readonly ImportManifestEntry[];
+  /** `realpath(gitRoot ?? workspace)` → its entries */
+  workspaces: Readonly<Record<string, readonly ImportManifestEntry[]>>;
+  lastRun?: string;
+}
+
+/**
+ * contract 1.6 (§7.1 row 1, widening 2 / §2.10): the memory an engine run is given. Absent → the
+ * generator's prompts are byte-identical to what they were before import landed: `## Memory (index)`
+ * is elided from the system prompt and the two per-step sections are elided from the user message.
+ *
+ * `index` is already capped at `IMPORT_LIMITS.memoryIndexPromptBytes` by the loader; `rules` and
+ * `topics` are matched per step by `matchRules` (§2.10.4) and bounded by the §2.10.3 shares.
+ */
+export interface EngineMemoryOptions {
+  /** the `## Memory (index)` system-prompt section, already capped at `memoryIndexPromptBytes` */
+  index?: string;
+  /** rule files the per-step matcher may activate (§2.10.4) */
+  rules?: readonly MemoryItem[];
+  /** topic headers; bodies are read on demand */
+  topics?: readonly MemoryItem[];
+}
+
+/**
+ * contract 1.6 (§2.10.3, §7.5 row 42): what the two per-step memory sections cost at the last prompt
+ * build, and what the once-per-run index cost — the numbers `/context` and `/memory` print. Present on
+ * `ContextUsage` only when the run was given memory, so a run without it reports exactly what it did before.
+ */
+export interface MemoryUsage {
+  /** chars `## Memory (index)` occupies in the system prompt (0 when the run has no index) */
+  indexChars: number;
+  /** chars `## Rules in scope` rendered into the last user message */
+  rulesChars: number;
+  /** the §2.10.3 share this section was offered: clamp(0.10 × budget, 2 KiB, 12 KiB) */
+  rulesAllowanceChars: number;
+  /** rule files `matchRules` activated for the step's paths */
+  rulesMatched: number;
+  /** of those, how many the section actually rendered (the rest are named in the clip notice) */
+  rulesShown: number;
+  /** chars `## Memory in scope` rendered into the last user message */
+  memoryChars: number;
+  /** the §2.10.3 share this section was offered: clamp(0.14 × budget, 2 KiB, 16 KiB) */
+  memoryAllowanceChars: number;
+  /** topic files in scope for the step's paths */
+  memoryMatched: number;
+  memoryShown: number;
 }
