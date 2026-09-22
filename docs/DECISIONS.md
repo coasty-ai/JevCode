@@ -1129,3 +1129,33 @@ is the right name for what a reader holds. Consequences: COORDINATION-DESIGN §1
 to `ledger: LedgerHandle | null` (required and nullable — `null` is presence off, and the engine has one less state to
 handle than "absent or null"); §14 item 20 records the whole W2b as-built list; the naming note lives at the top of
 `src/coordination/index.ts` so a new consumer reads it before it picks a type.
+
+## 2026-09-22 The warm verification plane is off by default until a real-lane test and Ring 1 pass with it on
+
+`warmModeFor` returns `null` unless `JEVCODE_WARM=on`; the two Python lane shapes (quixbugs, pytest) were on by default from the S1
+merge (66aa019) until f5df14f. Reason: the first live measurement of the merged tree (`experiments/results/llm-jev-iter1.md` §1)
+found that with the plane on an `llm-jev` run never completes a synthesis step — the SIEVE batch reaches the lanes, the sieve
+reports `0 tested on 8 lanes (nothing ran)`, the wall cap takes step 1, and runs wedge at 0 % CPU for an hour; a five-point $0 A/B
+on one task (066816f tsx 6 steps / 2,896 tested vs 751e3bf warm-on 0 / 0 vs 751e3bf `JEVCODE_WARM=off` 6 / 2,180) pins it on the
+plane and on nothing else. The unit suite stayed green throughout because the S1 parity tests use fakes for the worker; the
+S1 review did not run a real lane either. Consequences: every warm-path unit test opts in for its own duration; the fix ships
+with a REAL-LANE integration test (the actual Python worker over a fixture project) and a watchdog (a worker that never announces
+READY or never replies is `disabledReason`, the sieve falls back cold — a run must never wedge again); the default returns to on
+only when that test and Ring 1 pass with the plane on; no live number taken between 66aa019 and f5df14f with the default on is
+trusted (the bench arms ran with `JEVCODE_WARM=off`).
+
+## 2026-09-22 Iteration 1 measured: the default stands; iteration 2 targets the repository stop rule and the timeouts
+
+On a fresh slice of 18 untuned tasks (`experiments/results/llm-jev-iter1.md`, frozen 751e3bf, $0.58, plane off): `llm-jev` 12/18
+vs the tuned generator 9/18 (b = 4 / c = 1, sign p = 0.19), every win on the new multi-hunk ladder tier long-2 (4/6 vs 0/6),
+QuixBugs 8/8 both with zero overfits but `llm-jev` slower on the both-solved (26.0 vs 19.7 s) at a fifth of the cost, SWE 0/4 vs
+1/4 with every `llm-jev` repository run ending `replan_stop` at 5 steps having tested 5 of 6,960 priced candidates, and one
+strong overfit (`token_bucket`). In-sample 28: 27/28 (`django__django-15128` regressed at `replan_stop`), correctness unchanged
+(detect_cycle, stats still wrong), cost 0.54× and 394 Jev requests vs 482. Predictions: changes 1, 2, 4, 6, 7 held on the
+one-line and multi-hunk regimes; change 1 failed on repositories (a pricing path bypasses the cap); change 3 made zero-token
+timeouts worse (47 % of samples); change 5 caught neither named loss. Ring 1 fails the `--jev off` gate (gcd, mergesort,
+units); Ring 2 rejects. Decision: the `llm-jev` default stands on the same-build and multi-hunk evidence; the README footnote
+already says the advantage is not on repositories. Iteration 2 (branch `oos-iter-2`) is scoped to what the records show:
+the repository `replan_stop`/pricing path, a deadline p90 that excludes zero-token samples, the one-line-regime slowdown,
+a thresholdless rule for the `token_bucket` overfit, and the `--jev off` escape-to-stop; it is measured on the same 18 + 28
+before any of it is called an improvement.

@@ -44,10 +44,15 @@ function planeOver(sandbox: Sandbox): { plane: WarmPlane; lane: (i: number) => L
 const CMD = quixbugsTestCommand('/b/quixbugs', 'gcd', '/l/gcd.py');
 
 describe('warmModeFor', () => {
-  it('is on for the two Python lane shapes and off for everything else', () => {
-    expect(warmModeFor({ runner: 'quixbugs' }, {})).toBe('quixbugs');
-    expect(warmModeFor({ runner: 'pytest' }, {})).toBe('pytest');
+  it('is OFF by default for every runner (2026-09-22: the plane wedged llm-jev runs on the merged tree), and JEVCODE_WARM=on enables the two Python lane shapes only', () => {
+    expect(warmModeFor({ runner: 'quixbugs' }, {})).toBeNull();
+    expect(warmModeFor({ runner: 'pytest' }, {})).toBeNull();
     expect(warmModeFor({ runner: 'other' }, {})).toBeNull();
+    for (const on of ['on', 'ON', '1', 'true', ' on ']) {
+      expect(warmModeFor({ runner: 'quixbugs' }, { JEVCODE_WARM: on })).toBe('quixbugs');
+      expect(warmModeFor({ runner: 'pytest' }, { JEVCODE_WARM: on })).toBe('pytest');
+      expect(warmModeFor({ runner: 'other' }, { JEVCODE_WARM: on })).toBeNull();
+    }
   });
 
   it('JEVCODE_WARM=off restores the cold path, whatever the runner', () => {

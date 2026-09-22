@@ -12,17 +12,30 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { warmPlaneFor, type RunnerContext, type RunnerMemory, type SuiteSpec } from '../../../../src/synth/sieve/runner.js';
 import { WARM_ENV_FLAG, type WarmScreen } from '../../../../src/synth/warm/index.js';
 import { fakeSandbox, oracle } from './helpers.js';
 
+// 2026-09-22: the warm plane is OFF by default (it wedged llm-jev runs on the merged tree); these cases exercise the
+// warm path, so the file opts in for its own duration and restores the caller's environment afterwards.
+const PREV_JEVCODE_WARM = process.env['JEVCODE_WARM'];
+beforeAll(() => {
+  process.env['JEVCODE_WARM'] = 'on';
+});
+afterAll(() => {
+  if (PREV_JEVCODE_WARM === undefined) delete process.env['JEVCODE_WARM'];
+  else process.env['JEVCODE_WARM'] = PREV_JEVCODE_WARM;
+});
+
+
 let tmp: string | null = null;
 afterEach(() => {
   if (tmp !== null) rmSync(tmp, { recursive: true, force: true });
   tmp = null;
-  delete process.env[WARM_ENV_FLAG];
+  // the file opted in (beforeAll): a case that switched the plane off puts it back for the next case
+  process.env[WARM_ENV_FLAG] = 'on';
 });
 
 function ctxFor(): RunnerContext {
