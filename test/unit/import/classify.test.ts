@@ -127,9 +127,12 @@ describe('§4.4.1 the 12 file rules, in order', () => {
     expect(v.why).toContain('unterminated frontmatter');
   });
 
-  it('rule 6 — a transcript and a secret atlas class become their named skips', () => {
-    expect(classifyFile({ item: item('/h/.claude/projects/x/s.jsonl'), spec: { ...spec, id: 'claude.transcripts', class: 'transcript' } })).toMatchObject({ rule: 6, skip: 'skip:transcript', class: 'transcript' });
-    expect(classifyFile({ item: item('/h/.codex/auth.json'), spec: { ...spec, id: 'codex.auth', class: 'secret' } })).toMatchObject({ rule: 6, skip: 'skip:secret', class: 'secret' });
+  it('rule 2 — a transcript and a secret atlas class become their named skips', () => {
+    // hoisted from rule 6 to rule 2 when the always-skip classes moved above oversize/not-text/
+    // unsupported (ratified 2026-09-22): a file we never read cannot have its verdict changed by
+    // its size, its encoding or whether a parser claims its format.
+    expect(classifyFile({ item: item('/h/.claude/projects/x/s.jsonl'), spec: { ...spec, id: 'claude.transcripts', class: 'transcript' } })).toMatchObject({ rule: 2, skip: 'skip:transcript', class: 'transcript' });
+    expect(classifyFile({ item: item('/h/.codex/auth.json'), spec: { ...spec, id: 'codex.auth', class: 'secret' } })).toMatchObject({ rule: 2, skip: 'skip:secret', class: 'secret' });
     // …and a secret *basename* reaches the same verdict one rule earlier, without the atlas row
     expect(classifyFile({ item: item('/h/.claude/sessions/a.key'), spec: { ...spec, id: 'claude.session-key', class: 'secret' } })).toMatchObject({ rule: 2, skip: 'skip:secret', class: 'secret' });
   });
@@ -203,14 +206,22 @@ describe('§4.4.1 amended 2026-09-22 — the identity rules run before the atlas
     expect(classifyFile({ item: item('/h/.claude/workflows/deploy.js'), spec: { ...spec, id: 'claude.workflows', class: 'command' } })).toMatchObject({ rule: 5, skip: 'skip:unsupported' });
   });
 
-  // A consequence of the amendment worth stating out loud: the atlas's own never-import classes
-  // (`transcript`, `secret`, `skip`) are at rule 6 too, so an oversize transcript reports the
-  // oversize reason rather than the transcript one. Both are honest `skip:*` rows and neither is
-  // ever read; if the report would rather name the transcript, the fix is to hoist the
-  // `ALWAYS_SKIP` branch above rule 3, not to restore the old order.
-  it('rule 3 — a transcript over the read cap reports the oversize reason, not the transcript one', () => {
+  // Ratified 2026-09-22 with the hoist: the atlas's never-import classes (`transcript`, `secret`,
+  // `skip`) sit at rule 2, ABOVE oversize/not-text/unsupported. An oversize transcript therefore
+  // reports `skip:transcript` — the reason the human can act on (`--source claude-transcripts`)
+  // rather than the cap. ~20 of the author's 3,371 real transcripts are over the 4 MiB cap
+  // (§3.12), so this is the common case, not a corner.
+  it('rule 2 — a transcript over the read cap still reports the transcript reason, not the cap', () => {
     const big = item('/h/.claude/projects/x/s.jsonl', { bytes: 151_000_000 });
-    expect(classifyFile({ item: big, spec: { ...spec, id: 'claude.transcripts', class: 'transcript' } })).toMatchObject({ rule: 3, skip: 'skip:oversize' });
+    expect(classifyFile({ item: big, spec: { ...spec, id: 'claude.transcripts', class: 'transcript' } })).toMatchObject({ rule: 2, skip: 'skip:transcript' });
+  });
+
+  it('rule 2 — never-imported outranks not-text and unsupported too, and needs no successful parse', () => {
+    const binary = item('/h/.claude/projects/x/s.jsonl', { parse: { ok: false, error: 'not utf-8' } });
+    expect(classifyFile({ item: binary, spec: { ...spec, id: 'claude.transcripts', class: 'transcript' } })).toMatchObject({ rule: 2, skip: 'skip:transcript' });
+    // …but a secret BASENAME is still answered by name first, so a credential store reads as one
+    const cred = item('/h/.claude/.credentials.json', { bytes: 151_000_000 });
+    expect(classifyFile({ item: cred, spec: { ...spec, id: 'claude.credentials', class: 'secret' } })).toMatchObject({ rule: 2, skip: 'skip:secret' });
   });
 
   it('rule 6 — past the identity rules the atlas class still wins over every content rule', () => {

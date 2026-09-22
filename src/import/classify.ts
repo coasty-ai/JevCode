@@ -30,6 +30,18 @@
  * ours to read. Reviewed and accepted 2026-09-22 (`docs/research/import/review-engine-2026-09-22.md`
  * defect 11); the coordinator has amended §4.4.1 to match, and the rule numbers below — 1–5
  * identity, 6 atlas, 7–12 content, unchanged — are that amended table's.
+ *
+ * ### Amendment, ratified 2026-09-22: the never-imported atlas classes join rule 2
+ *
+ * The atlas classes that are never imported at all (`transcript`, `secret`, `skip`) used to be
+ * answered with the declared class at rule 6, which put them *below* oversize, not-text and
+ * unsupported. An oversize transcript therefore reported `skip:oversize` — true, but naming the
+ * cap instead of the thing the human can act on, and ~20 of the 3,371 real transcripts of §3.12
+ * are over the 4 MiB cap, so it was the common case rather than a corner. They now answer at
+ * **rule 2**, immediately after the secret-basename rule: a file we are never going to read
+ * cannot have its verdict changed by its size, its encoding, or whether a parser claims its
+ * format. They stay *below* the secret-basename rule so a credential store is still reported as
+ * a secret by name rather than by whichever atlas row happened to match it.
  */
 import { IMPORT_LIMITS } from '../core/limits.js';
 import type { Json } from '../core/types.js';
@@ -218,6 +230,24 @@ export function classifyFile(input: FileInput): FileVerdict {
     return verdict({ class: 'secret', skip: 'skip:secret', rule: 2, p: 1, band: false, why: `rule 2 (secret basename ${name}; named, not read)` });
   }
 
+  // 2 (cont.) — an atlas class that is NEVER imported, whatever the file turns out to be.
+  //
+  // Ratified 2026-09-22: this branch is hoisted ABOVE oversize/not-text/unsupported. It used to
+  // live with the atlas class at rule 6, which meant a transcript over 4 MiB reported
+  // `skip:oversize` — true but useless, since ~20 of the author's 3,371 transcripts are over the
+  // cap and the report would have named the cap rather than the reason the human cares about
+  // (`jevcode import --source claude-transcripts`). "Never imported" is an identity statement
+  // like the three above it: the size, encoding and parser availability of a file we are never
+  // going to read cannot change the verdict, so they must not be consulted first.
+  //
+  // It stays BELOW the secret-basename rule so a credential store is still reported as a secret
+  // by name rather than by whichever atlas row happened to match it.
+  const never = spec && spec.class ? ALWAYS_SKIP[spec.class] : undefined;
+  if (spec && never !== undefined) {
+    const cls = spec.class === 'skip' ? fallbackClass : spec.class;
+    return verdict({ class: cls, skip: never, rule: 2, p: 1, band: false, why: `rule 2 (atlas ${spec.id}; never imported)` });
+  }
+
   // 3 — oversize
   if (item.bytes > IMPORT_LIMITS.sourceReadCapBytes) {
     return verdict({
@@ -246,11 +276,8 @@ export function classifyFile(input: FileInput): FileVerdict {
       const reason = item.parse.error ?? 'unparsable';
       return verdict({ class: fallbackClass, skip: 'skip:parse-error', rule: 6, p: 1, band: false, why: `rule 6 (atlas ${spec.id}) — parse error: ${reason}` });
     }
-    const always = ALWAYS_SKIP[spec.class];
-    if (always !== undefined) {
-      const cls = spec.class === 'skip' ? fallbackClass : spec.class;
-      return verdict({ class: cls, skip: always, rule: 6, p: 1, band: false, why: `rule 6 (atlas ${spec.id})` });
-    }
+    // the never-imported classes were already answered at rule 2, above; only importable
+    // classes reach here
     return verdict({ class: spec.class, skip: null, rule: 6, p: 1, band: false, why: `rule 6 (atlas ${spec.id})` });
   }
 

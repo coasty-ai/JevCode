@@ -281,7 +281,18 @@ export function renderReport(plan: ImportPlan, view: ReportView = 'unicode'): st
 
 /** §4.6.1: the `--json` form — one object, no prose, no ANSI, no secrets. */
 export function renderPlanJson(plan: ImportPlan): string {
-  return `${JSON.stringify(plan, null, 2)}\n`;
+  // §1 property 4 names `plan.json` in the same breath as `report.md`, and §4.6.2 puts this exact
+  // string on stdout under `--json`. Review defect 9 redacted the report because its own leak
+  // assertion was crashing; `plan.json` had no assertion, so nothing forced the issue — but the
+  // exposure is identical. `source.display`, `why`, `warnings` and `notices` are all
+  // source-controlled, so a repository shipping `docs/AKIA….md` would otherwise echo that string
+  // into an artefact and onto the terminal from a path the human never typed.
+  //
+  // Redacting the serialised form rather than the fields keeps one rule for the whole document
+  // and cannot miss a member added later. It is safe for the JSON contract: `[REDACTED:pattern]`
+  // contains no quote, backslash or control character, so the result still parses, and a plan
+  // with nothing to redact is returned byte for byte unchanged.
+  return `${redactSecrets(JSON.stringify(plan, null, 2))}\n`;
 }
 
 // ---------------------------------------------------------------------------------------
