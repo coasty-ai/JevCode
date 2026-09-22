@@ -2504,6 +2504,13 @@ export type GateReason =
   | 'money'
   | 'replan_step'
   | 'orchestration_problem'
+  /**
+   * review 2026-09-22 findings 5 + 6: a fact the gate needs could not be MEASURED (`git config core.ignorecase`,
+   * `git for-each-ref`, `git status`). The placeholders those measurements replaced each widened the split —
+   * `fold: false` let two agents own one tree on a case-folding volume, `existingBranches: []` let a manifest
+   * name a branch that already exists — so an unmeasured fact refuses rather than guessing permissive.
+   */
+  | 'unmeasured'
   | 'no_demand';
 
 /** contract 1.5 ([D2] §2.3): one entry per file the worktree dirty-set sync wrote, binary-safe [G9]. */

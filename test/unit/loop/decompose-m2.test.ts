@@ -14,7 +14,7 @@
  * measurements are what `sandbox.commands` and `workspace.invalidations` see, so those are what this
  * asserts on — the seams, not a wall-clock number.
  */
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -168,6 +168,84 @@ describe('P9: the call site is live (§3, §4.2)', () => {
     } finally {
       h.cleanup();
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * review 2026-09-22, "M2 verdict": the test above proves the orchestration BRANCH is inert, because its
+ * baseline is the same tree without the options. That is a weaker claim than M2 makes. This one is the real
+ * thing: the golden was captured by running the same fixture in a DETACHED checkout of `a17c7f6` — the
+ * commit before the wave — and is compared against today's tree with `split: 'off'`.
+ *
+ * Two differences are INTENDED and scoped here rather than hidden, both contract 1.7 (TUI-DESIGN-4), both
+ * landed in the same wave and neither anything to do with the orchestration gate:
+ *   §3.6 D-V   `stopTranscriptLine` returns '' — the `stop: <reason> at step N` row is deleted, so the
+ *              transcript loses exactly that row and the event stream loses exactly that one `transcript`.
+ *   §7.2 e6    the `checkpoint:degraded` notice carries `disk.sentence`. This fixture never degrades, so it
+ *              cannot show here; `engine-block.test.ts` owns it.
+ * Everything else — all 19 generator prompts, byte for byte, the Jev call count, the sandbox commands, the
+ * candidate invalidations and the rest of the event sequence — must be identical.
+ */
+describe('M2 against the pre-wave commit a17c7f6 (the real golden)', () => {
+  const golden = JSON.parse(readFileSync(join(import.meta.dirname, '../../fixtures/loop/m2-golden-a17c7f6.json'), 'utf8')) as {
+    commit: string;
+    prompts: string[];
+    eventTypes: string[];
+    deciderCalls: number;
+    sandboxCommands: string[];
+    invalidations: number;
+    transcript: string[];
+  };
+  /** contract 1.7 §3.6 (D-V): the one row the wave deletes on every run */
+  const STOP_ROW = /^\[run\] (?:warn: )?stop: /;
+  /** the run:end row carries a real wall clock; normalise it or the golden is a stopwatch, not a contract */
+  const norm = (l: string): string => l.replace(/wall=\d+(?:\.\d+)?m?s/, 'wall=<n>');
+
+  it('every generator prompt is byte-identical to the pre-wave run', async () => {
+    const off = await run({ splitPolicy: { ...DEFAULT_SPLIT_POLICY, split: 'off' }, orchestration: { depth: 0 } });
+    expect(golden.commit).toBe('a17c7f6');
+    expect(golden.prompts.length).toBe(19);
+    expect(off.prompts).toEqual(golden.prompts);
+  });
+
+  it('the Jev calls, the sandbox commands and the candidate invalidations are unchanged', async () => {
+    const off = await run({ splitPolicy: { ...DEFAULT_SPLIT_POLICY, split: 'off' }, orchestration: { depth: 0 } });
+    expect(off.deciderCalls).toBe(golden.deciderCalls);
+    expect(off.sandboxCommands).toEqual(golden.sandboxCommands);
+    expect(off.invalidations).toBe(golden.invalidations);
+    expect(off.orchestrateKeys).toEqual([]);
+  });
+
+  it('the event sequence differs by exactly ONE transcript event — the deleted `stop:` row — and nothing else', async () => {
+    const h = await makeEngine({ turns: [...TURNS], engine: { splitPolicy: { ...DEFAULT_SPLIT_POLICY, split: 'off' }, orchestration: { depth: 0 } }, probeGitState: repoState() });
+    try {
+      await h.engine.run();
+      const now = h.events.map((e: EngineEvent) => e.type);
+      // the golden still carries the stop row's `transcript` event; drop exactly one to compare
+      const expected = [...golden.eventTypes];
+      const stopAt = h.store.transcript.length; // unused guard: the row is gone from today's transcript
+      expect(stopAt).toBeGreaterThan(0);
+      expect(now.length).toBe(expected.length - 1);
+      // no new event TYPE appears, and no type disappears except the one shared `transcript`
+      const count = (xs: string[]): Map<string, number> => xs.reduce((m, x) => m.set(x, (m.get(x) ?? 0) + 1), new Map<string, number>());
+      const a = count(expected);
+      const b = count(now);
+      for (const [k, v] of a) expect(b.get(k) ?? 0, `${k} count`).toBe(k === 'transcript' ? v - 1 : v);
+      for (const k of b.keys()) expect(a.has(k), `${k} is new`).toBe(true);
+      // and the ONLY transcript line the golden has that today's run does not is the stop row
+      const today = h.store.transcript.map(norm);
+      const before = golden.transcript.map(norm);
+      const missing = before.filter((l) => !today.includes(l));
+      expect(missing.every((l) => STOP_ROW.test(l)), `unexpected missing lines: ${missing.filter((l) => !STOP_ROW.test(l)).join(' | ')}`).toBe(true);
+      expect(missing).toHaveLength(1);
+      // nothing new was added to the transcript either
+      expect(today.filter((l) => !before.includes(l))).toEqual([]);
+      // and the row really is gone, not merely reordered
+      expect(today.filter((l) => STOP_ROW.test(l))).toEqual([]);
+      expect(before.filter((l) => STOP_ROW.test(l))).toHaveLength(1);
+    } finally {
+      h.cleanup();
     }
   });
 });

@@ -126,3 +126,22 @@ describe('splitGate (§3.1)', () => {
     }
   });
 });
+
+describe('review 2026-09-22 findings 5 + 6 — a fact the harness could not measure shuts the gate', () => {
+  it('any `unmeasured` entry refuses, and the reason names measurement', () => {
+    expect(splitGate(base()).open).toBe(true);
+    for (const list of [['fold'], ['existingBranches'], ['syncedDirty'], ['fold', 'existingBranches']]) {
+      const v = splitGate(base({ unmeasured: list }));
+      expect(v.open).toBe(false);
+      expect(v.open === false && v.why).toBe('unmeasured');
+    }
+    // an empty list is the measured case and changes nothing
+    expect(splitGate(base({ unmeasured: [] })).open).toBe(true);
+    expect(gateReasonText('unmeasured')).toMatch(/could not measure/i);
+  });
+
+  it('it refuses BEFORE the demand check, so an unmeasured fact is never masked by a demand that happened to hold', () => {
+    const v = splitGate(base({ unmeasured: ['fold'], demand: { directories: [], failingTestFiles: [], humanAsked: false } }));
+    expect(v.open === false && v.why).toBe('unmeasured');
+  });
+});

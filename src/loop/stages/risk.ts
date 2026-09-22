@@ -587,14 +587,21 @@ export function ownershipRefusal(action: Action, orchestration: OrchestrationOpt
   if (orchestration.role === 'research' && !(RESEARCH_ACTION_KINDS as readonly string[]).includes(action.kind)) {
     return { status: 'blocked', reason: `${RESEARCH_REFUSAL_PREFIX}${action.kind} is not in a research agent's action space (${RESEARCH_ACTION_KINDS.join(' | ')})` };
   }
-  const own = orchestration.own ?? [];
-  if (own.length === 0) return null;
   const targets = targetPaths(action);
   if (targets.length === 0) return null;
+  const own = orchestration.own ?? [];
   const globs: OwnGlob[] = [];
   for (const raw of own) {
     const p = parseOwnGlob(raw);
     if (p.ok) globs.push(p.glob);
+  }
+  // review 2026-09-22 finding 4: FAIL CLOSED. An absent `own` (the member is optional, so this is a reachable
+  // spawn), an empty one, or one whose every glob the §3.4 sub-language rejects, all mean the same thing: this
+  // agent owns nothing. Returning null there made belt 2 read "owns everything" — the one place in the design
+  // where an unknown widened the slice instead of narrowing it. `read | run | done` are unaffected: they yield
+  // no targets, so they return above this line.
+  if (globs.length === 0) {
+    return { status: 'blocked', reason: `${OWNERSHIP_REFUSAL_PREFIX}${[...new Set(targets)].join(', ')} (owns nothing: this agent was spawned without a usable \`own\` list)` };
   }
   const outside = targets.filter((p) => !ownsPath(globs, p));
   if (outside.length === 0) return null;
