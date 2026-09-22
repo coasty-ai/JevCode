@@ -30,3 +30,4 @@ perf/results/*
 # would otherwise commit them on every bench run. A record archive is checked in DELIBERATELY and
 # as one file, the way experiments/results/oos-2026-09-22-runs.tar.gz was.
 bench/results/*/runs/
+!bench/results/iter1-*/
