@@ -27,7 +27,8 @@ import { getArr, getNum, getStr } from './sse.js';
 import { isJsonObject } from '../core/json.js';
 import type { GenerationProvider, ModelInfo, ProviderConfig, ProviderDeps } from './types.js';
 
-export const FIREWORKS_BASE_URL = 'https://api.fireworks.ai/inference/v1';
+import { PROVIDER_BASE_URL } from './ids.js';
+export const FIREWORKS_BASE_URL = PROVIDER_BASE_URL.fireworks;
 /** fireworks.ai/models: 1,048,576 context, tools, $0.15/$0.50 per 1M — the same weights the project's OpenRouter default runs. */
 export const FIREWORKS_DEFAULT_MODEL = 'accounts/fireworks/models/glm-5p3-flash';
 

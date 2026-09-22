@@ -43,7 +43,8 @@ import type { ChatQuirks, ChatRequestBody, EffortWord } from './openai-compat.js
 import { TransportError, clipMessage, countOf, getArr, getNum, getObj, getStr, isRateLimit, isRetryableStatus, notify, parseSse, resolveDeps, sanitiseRequestId } from './sse.js';
 import type { GenerationProvider, ModelInfo, ProviderConfig, ProviderDeps, ProviderOutcome, StreamPartial, TokenBreakdown } from './types.js';
 
-export const OPENAI_BASE_URL = 'https://api.openai.com/v1';
+import { PROVIDER_BASE_URL } from './ids.js';
+export const OPENAI_BASE_URL = PROVIDER_BASE_URL.openai;
 /** developers.openai.com/api/docs/models — the mid-tier 2026-09 flagship: 1.05M context, 128K output, $2/$12 per 1M. */
 export const OPENAI_DEFAULT_MODEL = 'gpt-5.6-terra';
 

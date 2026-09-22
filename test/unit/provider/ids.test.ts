@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { PROVIDERS as REGISTRY_PROVIDERS } from '../../../src/provider/registry.js';
 import { PROVIDERS as CATALOGUE_PROVIDERS, keyEnvNames as catalogueKeyEnvNames } from '../../../src/models/providers.js';
-import { PROVIDER_IDS, PROVIDER_KEY_ENV, isProviderId, keyEnvNames, type ProviderId } from '../../../src/provider/ids.js';
+import { PROVIDER_BASE_URL, PROVIDER_DISPLAY_NAME, PROVIDER_IDS, PROVIDER_KEY_ENV, isProviderId, keyEnvNames, type ProviderId } from '../../../src/provider/ids.js';
 
 const SOURCE = readFileSync(new URL('../../../src/provider/ids.ts', import.meta.url), 'utf8');
 
@@ -69,6 +69,48 @@ describe('PROVIDER_KEY_ENV', () => {
       expect(CATALOGUE_PROVIDERS[id].keyEnv, id).toEqual(PROVIDER_KEY_ENV[id]);
       expect(catalogueKeyEnvNames(id), id).toEqual(keyEnvNames(id));
     }
+  });
+});
+
+describe('PROVIDER_BASE_URL and PROVIDER_DISPLAY_NAME (R14: the two tables live beside the ids, zero-import)', () => {
+  it('are total over PROVIDER_IDS and hold nothing else', () => {
+    const ids = [...PROVIDER_IDS].sort();
+    expect(Object.keys(PROVIDER_BASE_URL).sort()).toEqual(ids);
+    expect(Object.keys(PROVIDER_DISPLAY_NAME).sort()).toEqual(ids);
+  });
+
+  it('base URLs are https origins with an optional version path and no trailing slash; anthropic alone carries no version segment', () => {
+    for (const id of PROVIDER_IDS) {
+      const url = PROVIDER_BASE_URL[id];
+      expect(url, id).toMatch(/^https:\/\/[a-z0-9.-]+(\/[a-z0-9./-]*[a-z0-9])?$/);
+      expect(url.endsWith('/'), id).toBe(false);
+    }
+    expect(PROVIDER_BASE_URL.anthropic).toBe('https://api.anthropic.com');
+    for (const id of PROVIDER_IDS) if (id !== 'anthropic') expect(PROVIDER_BASE_URL[id], id).toMatch(/\/v1(beta)?$/);
+  });
+
+  it('is what the registry rows read: every generator baseUrl and displayName equals the table (no second spelling of xAI)', () => {
+    for (const spec of REGISTRY_PROVIDERS) {
+      expect(spec.baseUrl, spec.id).toBe(PROVIDER_BASE_URL[spec.id]);
+      expect(spec.displayName, spec.id).toBe(PROVIDER_DISPLAY_NAME[spec.id]);
+    }
+    expect(PROVIDER_DISPLAY_NAME.xai).toBe('xAI');
+  });
+
+  it('is what the catalogue table reads for display names, and agrees with its origin + versionPath for the six versioned providers', () => {
+    for (const id of PROVIDER_IDS) {
+      expect(CATALOGUE_PROVIDERS[id].displayName, id).toBe(PROVIDER_DISPLAY_NAME[id]);
+      const cat = CATALOGUE_PROVIDERS[id] as { origin?: string; versionPath?: string };
+      if (id !== 'anthropic' && cat.origin !== undefined && cat.versionPath !== undefined) {
+        expect(`${cat.origin}${cat.versionPath}`.replace(/\/$/, ''), id).toBe(PROVIDER_BASE_URL[id]);
+      }
+    }
+  });
+
+  it('display names are short, human, unique', () => {
+    const names = PROVIDER_IDS.map((id) => PROVIDER_DISPLAY_NAME[id]);
+    expect(new Set(names).size).toBe(names.length);
+    for (const n of names) expect(n).toMatch(/^[A-Za-z][A-Za-z ]{1,19}$/);
   });
 });
 
