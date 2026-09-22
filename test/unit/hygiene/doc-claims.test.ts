@@ -48,65 +48,75 @@ function srcHits(needle: string): string[] {
 }
 
 /**
- * Claims this pass verified CLOSED on `main` @ `d297b29`. `symbol` must be present in `definedIn`; `staleText` is the exact
- * spelling the doc must no longer carry.
+ * Claims this pass verified CLOSED on `main` @ `d297b29`. `symbol` must be present in `definedIn`; `staleTexts` are the
+ * exact spellings the doc must no longer carry OUTSIDE a strike — a set, not one needle, because review F21-1 showed one
+ * spelling of a retired claim leaves the other three un-guarded.
  */
-const CLOSED: readonly { id: string; file: string; symbol: string; definedIn: string; staleText: string }[] = [
+const CLOSED: readonly { id: string; file: string; symbol: string; definedIn: string; staleTexts: readonly string[] }[] = [
   {
     id: 'DESIGN §22.10 — jev-only is no longer the default',
     file: 'docs/DESIGN.md',
     symbol: "DEFAULT_MODE: EngineMode = 'llm-jev'",
     definedIn: 'src/config/defaults.ts',
-    staleText: '`jev-only` remains the default',
+    staleTexts: ['`jev-only` remains the default'],
   },
   {
     id: 'DESIGN §22.10 — StepRecord.verify is filled',
     file: 'docs/DESIGN.md',
     symbol: 'record.verify = this.verifySummary',
     definedIn: 'src/loop/engine.ts',
-    staleText: '`StepRecord.verify` is typed but never filled',
+    staleTexts: ['`StepRecord.verify` is typed but never filled'],
   },
   {
     id: 'DESIGN §22.10 — cancelled rows carry onCancelled',
     file: 'docs/DESIGN.md',
     symbol: 'onCancelled',
     definedIn: 'src/loop/engine.ts',
-    staleText: 'does not pass\n  `GenerateOptions.onCancelled`',
+    staleTexts: ['does not pass\n  `GenerateOptions.onCancelled`'],
   },
   {
     id: 'DESIGN §22.10 — the CONDITIONS arms exist',
     file: 'docs/DESIGN.md',
     symbol: "'llm-sieve', 'jev-off-tuned'",
     definedIn: 'src/cli/args.ts',
-    staleText: '`src/cli/args.ts CONDITIONS` does not list `llm-sieve`',
+    staleTexts: ['`src/cli/args.ts CONDITIONS` does not list `llm-sieve`'],
   },
   {
     id: 'LLM-LOOP §1.8 / §6 row 15 — runFactsRef is gone',
     file: 'docs/LLM-LOOP-DESIGN.md',
     symbol: 'RUN_FACTS_MAX',
     definedIn: 'src/synth/introspect/facts.ts',
-    staleText: '`runFactsRef` is process-global',
+    staleTexts: ['`runFactsRef` is process-global'],
   },
   {
     id: 'LLM-LOOP §3.6 item 6 — --quick is typeable',
     file: 'docs/LLM-LOOP-DESIGN.md',
     symbol: "{ key: 'quick', name: 'quick'",
     definedIn: 'src/cli/args.ts',
-    staleText: "remains unreachable from a command line until `src/cli/args.ts` carries the\n   `'quick'` row",
+    staleTexts: ["remains unreachable from a command line until `src/cli/args.ts` carries the\n   `'quick'` row"],
   },
   {
     id: 'LLM-JEV §0 — the warm plane no longer defaults on',
     file: 'docs/LLM-JEV.md',
     symbol: 'warmRequested',
     definedIn: 'src/synth/warm/plane.ts',
-    staleText: '`warmModeFor` defaults the plane on for every\n`quixbugs` and `pytest` runner.',
+    staleTexts: ['`warmModeFor` defaults the plane on for every\n`quixbugs` and `pytest` runner.'],
   },
   {
     id: 'TUI-DESIGN-5 D-AG — llm-jev is inside contextEnabled',
     file: 'docs/TUI-DESIGN-5.md',
     symbol: "this.contextEnabled = this.contextPolicy.view === 'relaxed'",
     definedIn: 'src/loop/engine.ts',
-    staleText: 'excludes it from `contextEnabled`',
+    // Review F21-1: one spelling was not enough. Three further sites still carried the pre-R13 guard un-struck —
+    // §1.1 item 3's tail, §7 row 35 cells 3 and 4, §14.2 row #4 — and none of them matched the original needle.
+    staleTexts: [
+      'excludes it from `contextEnabled`',
+      'engine.ts:922',
+      'Until R13 lands',
+      'until §8.2 R13 lands',
+      '(`jev-on`/`jev-off` only)',
+      'are empty in the product\'s default mode',
+    ],
   },
 ];
 
@@ -137,9 +147,12 @@ const OPEN: readonly { id: string; absent?: string; check?: () => void }[] = [
 ];
 
 describe('design-doc claims match main', () => {
-  it.each(CLOSED)('$id', ({ file, symbol, definedIn, staleText }) => {
+  it.each(CLOSED)('$id', ({ file, symbol, definedIn, staleTexts }) => {
     expect(srcHits(symbol), `${symbol} should be in ${definedIn}`).toContain(definedIn);
-    expect(unstruck(file), `${file} still carries, un-struck, a claim main falsifies: ${JSON.stringify(staleText)}`).not.toContain(staleText);
+    const live = unstruck(file);
+    for (const staleText of staleTexts) {
+      expect(live, `${file} still carries, un-struck, a claim main falsifies: ${JSON.stringify(staleText)}`).not.toContain(staleText);
+    }
   });
 
   it.each(OPEN)('$id', ({ absent, check }) => {
@@ -166,25 +179,39 @@ describe('design-doc claims match main', () => {
     expect(d, 'the judge hole belongs in §9.1 with an owner').toMatch(/§9\.1[\s\S]*The `scopeUsable` hole in the \*\*judge\*\*[\s\S]*owner/);
   });
 
-  it('RELEASE.md cites scripts/check-pack.mjs instead of restating its constants, and the figures it prints match', () => {
-    const rel = doc('docs/RELEASE.md');
+  it('no doc restates the pack-size constants: every figure printed beside one is the script\'s own', () => {
+    // Review F22-2: the pin read only docs/RELEASE.md, so docs/MERGE-QUEUE.md re-created the hand-copied-constant
+    // drift RELEASE.md had just shed (`headroom to UNPACKED_MAX | 496,373 | 3_500_000 − 3,003,627`). The scan is
+    // now over every doc that names either gate, so a third file cannot reintroduce it either.
     const pack = readFileSync(join(ROOT, 'scripts/check-pack.mjs'), 'utf8');
     const num = (name: string): number => {
       const m = new RegExp(`const ${name} = ([0-9_]+)`).exec(pack);
       expect(m, `scripts/check-pack.mjs must declare ${name}`).not.toBeNull();
       return Number((m as RegExpExecArray)[1]?.replace(/_/g, ''));
     };
-    const unpacked = num('UNPACKED_MAX');
-    const tarball = num('TARBALL_MAX');
-    expect(unpacked).toBeGreaterThan(0);
+    const gates = [['UNPACKED_MAX', num('UNPACKED_MAX')], ['TARBALL_MAX', num('TARBALL_MAX')]] as const;
+    expect(gates[0][1]).toBeGreaterThan(0);
 
-    expect(rel, 'the gate is the script, so RELEASE.md must name it as the source of truth').toContain('`scripts/check-pack.mjs`');
-    expect(rel, 'the stale "< 2 MB" figure predates the raise to 3,500,000').not.toMatch(/unpacked < 2 MB/);
-    // Any byte figure RELEASE.md does print for these two gates must be the script's own.
-    for (const [label, value] of [['UNPACKED_MAX', unpacked], ['TARBALL_MAX', tarball]] as const) {
-      const printed = [...rel.matchAll(new RegExp(`${label}[^\\n]*?([0-9][0-9,_]{5,})`, 'g'))].map((m) => Number((m[1] as string).replace(/[,_]/g, '')));
-      for (const p of printed) expect(p, `RELEASE.md prints ${p} beside ${label}, which is ${value}`).toBe(value);
+    const docs = readdirSync(join(ROOT, 'docs'))
+      .filter((n) => n.endsWith('.md'))
+      .map((n) => ({ path: `docs/${n}`, text: doc(`docs/${n}`) }))
+      .filter((d) => gates.some(([label]) => d.text.includes(label)));
+    const naming = docs.map((d) => d.path);
+    expect(naming, 'RELEASE.md must still name the gate').toContain('docs/RELEASE.md');
+    expect(naming, 'MERGE-QUEUE.md spends the headroom, so it must cite the gate too').toContain('docs/MERGE-QUEUE.md');
+
+    const wrong: string[] = [];
+    for (const d of docs) {
+      if (!d.text.includes('`scripts/check-pack.mjs`')) wrong.push(`${d.path} names a size gate without citing scripts/check-pack.mjs`);
+      for (const [label, value] of gates) {
+        for (const m of d.text.matchAll(new RegExp(`${label}[^\\n]*?([0-9][0-9,_]{5,})`, 'g'))) {
+          const printed = Number((m[1] as string).replace(/[,_]/g, ''));
+          if (printed !== value) wrong.push(`${d.path} prints ${m[1] as string} beside ${label}, which is ${value}`);
+        }
+      }
     }
+    expect(wrong).toEqual([]);
+    expect(doc('docs/RELEASE.md'), 'the stale "< 2 MB" figure predates the raise to 3,500,000').not.toMatch(/unpacked < 2 MB/);
   });
 
   it('the two behaviour deferrals of this pass are filed with an owner', () => {

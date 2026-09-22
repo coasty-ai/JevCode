@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { FLAGS } from '../../../src/cli/args.js';
 
 const ROOT = join(import.meta.dirname, '../../..');
 const DESIGN = join(ROOT, 'docs/HARNESS-NEXT-DESIGN.md');
@@ -90,6 +91,25 @@ describe('docs/HARNESS-NEXT-DESIGN.md §9.3 — the wave-status table names only
     const callers = srcHits('withJevOff').filter((f) => f !== 'src/jev/off.ts');
     expect(callers, 'withJevOff is reached only from the bench runner today').toEqual(['src/bench/runner.ts']);
     expect(s91, '§9.1 must say the switch is bench/perf-only until the CLI wiring lands').toContain('bench/perf-only');
+  });
+
+  it('the `--jev` claim is narrowed to `run`/`bench`: a `--jev` flag DOES exist, for `jevcode logout`', () => {
+    // Review F16-1: "there is no `--jev` row in `src/cli/args.ts`" is false by spelling — args.ts:288 declares one
+    // for `logout`, printed in the usage line. The checkable property is the narrow one: no run-like command takes
+    // a `jev` flag, so neither an interactive session nor `jevcode run`/`bench` can reach the off-decider.
+    const jevRows = FLAGS.filter((f) => f.name === 'jev');
+    expect(jevRows.map((f) => [...f.commands]), 'args.ts carries exactly one `--jev` row, and it belongs to `logout`').toEqual([['logout']]);
+    const onRunLike = FLAGS.filter((f) => f.name === 'jev' && f.commands.some((c) => c === 'run' || c === 'bench'));
+    expect(onRunLike, 'no `--jev` flag on `run` or `bench`: the off-decider is reachable only through JEVCODE_JEV').toEqual([]);
+
+    for (const [file, forbidden] of [
+      ['docs/HARNESS-NEXT-DESIGN.md', 'there is no `--jev` row in `src/cli/args.ts`'],
+      ['docs/LLM-JEV.md', 'there is no `--jev` CLI flag'],
+    ] as const) {
+      const text = readFileSync(join(ROOT, file), 'utf8');
+      expect(text, `${file} states a blanket absence that args.ts:288 falsifies`).not.toContain(forbidden);
+    }
+    expect(s91, '§9.1 must narrow the claim to `run`/`bench`').toContain('no `--jev off` row on `run` or `bench`');
   });
 
   it('the three unstarted waves are still unstarted (S3 index, S5 replacer ladder / `poll`, M15 replay)', () => {

@@ -1043,13 +1043,17 @@ ascending; the 1.4 line sits directly after 1.3 (where the harness rebased it); 
 
 ## 2026-09-22 Harness-owned files touched by the TUI session arrive as hunks
 
-**Widened 2026-09-22 at `d297b29` (finishing pass F17).** As drafted this paragraph named four paths, while both sessions had
-long been treating eleven as harness-owned and four top-level `src/` directories were on neither list. The peer's own
-round-5 patch header enumerates its eleven verbatim — `src/loop/**`, `src/synth/**`, `src/coordination/**`,
+**Widened 2026-09-22 at `d297b29` (finishing pass F17; counts corrected in the same pass's review).** As drafted this
+paragraph named four paths, while both sessions had long been treating eleven as harness-owned and **six** top-level
+`src/` directories were on neither list — `src/bench`, `src/jev`, `src/perf`, `src/sandbox`, `src/undo` and
+`src/workspace` (`ls -d src/*/` is 21 directories; the peer's enumeration covers nine of them plus `src/errors.ts`
+and the non-TUI blocks of `src/core/types.ts`, and the TUI reverse list covers five). The peer's own round-5 patch
+header enumerates its eleven verbatim — `src/loop/**`, `src/synth/**`, `src/coordination/**`,
 `src/orchestrate/**`, `src/import/**`, `src/models/**`, `src/provider/**`, `src/spend/**`, `src/checkpoint/**`,
-`src/errors.ts` and "every non-TUI block of `src/core/types.ts`"
-(`docs/research/tui/round-5/harness-session-hunks.patch` on `r5-impl`, quoted in
-`docs/research/coordination/peer-hunks-r5-2026-09-22.md`) — and its reverse list is the five directories below.
+`src/errors.ts` and "every non-TUI block of `src/core/types.ts`". The patch itself
+(`docs/research/tui/round-5/harness-session-hunks.patch`) is on `r5-impl` and NOT on `main`, so the header is quoted
+verbatim into `docs/research/coordination/peer-hunks-r5-2026-09-22.md` §0, which is harness-owned and on `main` —
+that is the copy this entry is checkable against. Its reverse list is the five directories below.
 The partition below is complete: every top-level directory of `src/` appears in exactly one bucket, asserted by
 `test/unit/hygiene/decisions-consistency.test.ts`.
 
@@ -1458,18 +1462,21 @@ makes `jev-on` the primary LLM-driven loop on the new harness: S2 generator path
 `--quick`), S4 speculative routers (`routeSpeculative`, `ROUTER_DEADLINE_MS`, the exact-digest cache; nine sites four-clause), and the Ledger+Sieve
 synthesizer as a bounded fast path (route R9: one SIEVE round on a single-file cluster whose pool fits `t_run`, cold-confirmed, proposes and never
 applies, one-strike disarm). Contract 1.9 header and optional members only. Landed on `main` from `llm-loop-integration` @ 13414f0 (merge order
-design → B → A → C → D; three merge-exposed defects fixed failing-first; full suite 530 files / 8,786 passed; Ring 1 `--jev off` all gates met **on the PRE-merge integration tip `cbbdbb9` (2026-09-22) — amended
-2026-09-22 at `d297b29`: that run is recorded as a sentence in the merge message with no arm counts and no artefact, and the localiser changed
-under it at `856023a` (oos-iter-4), so it is not a statement about `main`; see the Ring-1 provenance entry at the end of this log**;
+design → B → A → C → D; three merge-exposed defects fixed failing-first; full suite 530 files / 8,786 passed; ~~Ring 1 `--jev off` all gates met~~ **— struck, amended
+2026-09-22 at `d297b29`: the clause is about the PRE-merge integration tip `cbbdbb9` (2026-09-22), it is recorded as a sentence in the merge
+message with no arm counts and no artefact, and the localiser changed under it at `856023a` (oos-iter-4), so it is not a statement about
+`main`; see the Ring-1 provenance entry at the end of this log**;
 `router-golden` and `fastpath` §I2 byte-identity hold). **Switches on `main`:** `routers: 'off'` in every mode; `fastPath: 'auto'` only when
 `mode === 'jev-on'`, `'off'` otherwise; `DEFAULT_MODE` stays `'llm-jev'`; env `JEVCODE_ROUTERS`/`JEVCODE_FASTPATH` fill an absent option only.
 **§9 ratified as written by the harness owner:** Q1 **YES — corrected 2026-09-22 at `d297b29`. This row read "NO risk-polarity change" and
 contradicted the dedicated entry above ("The risk verdict is code-first (contract 1.9 §2.4)"), which ratifies the code-first verdict that
-`src/loop/stages/risk.ts:420` (`codeRiskVerdict`) actually ships.** The two are reconciled as built: `risk.ts` ships the code-first polarity
+`src/loop/stages/risk.ts:416` (`codeRiskVerdict`; the gated call site is `:768`, `routers ? codeRiskVerdict(…) : null`) actually ships.** The two are reconciled as built: `risk.ts` ships the code-first polarity
 **behind `routers`**, so with `routers: 'off'` — every mode on `main` — a failed Q20 still means ask and the verdict is Jev's byte for byte, which
 is all the old "NO" was ever true of; with `routers: 'on'` the code verdict stands when no answer reached the step (allow-list yields `ok`,
 deny-list yields `review`, **anything else yields `review`**, never allow), and `riskSource`/`jevUnavailable` record which half ran; Q2 routers stay off until §8.5 accepts, the flip is its own DECISIONS line; Q3 the fast path ships even with
-Ring 1 red under `--jev off`, refusing under the off-decider (Ring 1 came back green on the merged tree anyway); Q4–Q6 `ROUTER_DEADLINE_MS` 400,
+Ring 1 red under `--jev off`, refusing under the off-decider ~~(Ring 1 came back green on the merged tree anyway)~~ — struck, amended
+2026-09-22 at `d297b29`: that was the pre-merge integration tip `cbbdbb9`, recorded with no arm counts and no artefact, so it says nothing
+about the merged tree; see the Ring-1 provenance entry at the end of this log; Q4–Q6 `ROUTER_DEADLINE_MS` 400,
 `FASTPATH_MAX_T_RUN_MS` 800, `FASTPATH_WALL_MAX_MS` 45 s / 0.35 share ship and are retuned from Ring-2 data only; Q7 no legacy golden re-capture;
 Q8 the plain `jev-on` arm is funded; Q9 `runFactsRef` was fixed on `main` (c7ae106) outside the wave, so the `--concurrency 1` pin is no longer
 forced by it. **Still owed before the head-to-head (arms `jev-on-next`, `jev-on-next-nofast`, `jev-on` on the fresh 18 + in-sample 28)
@@ -1530,8 +1537,11 @@ made `docs/HARNESS-NEXT-DESIGN.md` §9.1's post-merge row unmeasurable). The pro
 - **What it is not.** It is not a lock on the repository and it never gates correctness work: editing files, `tsc`, `no-any` and
   `jev-contract` all run inside an open window. Only *builds* and *test runs* wait, because only those contend for CPU.
 
+<!-- ring1-provenance:begin -->
 **Ring-1 `--jev off` provenance — the authoritative statement.** Two entries in this log disagreed about it, so here is the whole
-record in one place, and both of them now point at this line:
+record in one place, and all of them now point at this line. **This delimited block is the ONLY place in this log that may state a
+Ring-1 verdict**; `test/unit/hygiene/decisions-consistency.test.ts` fails on any un-struck clause outside it that pairs "Ring 1"
+with "green" or "all gates met".
 
 | Tip | Date | Arms, as recorded | Verdict |
 | --- | --- | --- | --- |
@@ -1543,6 +1553,7 @@ So: the only Ring-1 `--jev off` run with arm counts is iteration 2's, and it FAI
 counts and predates `856023a` (oos-iter-4), which changed the localiser the gate turns on. **There is no Ring-1 `--jev off`
 measurement at or after `main` `d297b29`, and no release note, README line or design row may claim one.** The next measurement
 runs from a frozen worktree of the merged tip, inside a declared perf window, and lands its counts in this table.
+<!-- ring1-provenance:end -->
 
 ## 2026-09-22 The cross-session merge queue is a file in `docs/`, and every behaviour-changing env switch has one table
 
@@ -1555,9 +1566,13 @@ therefore invisible to anyone reading `docs/`, and so was its conflict surface. 
 is not in that table does not exist as far as the other session is concerned.* One row per unmerged branch (branch,
 owner session, contents, base commit, gates passed, the files it will conflict on, named to the hunk); the row is
 deleted in the merge commit that lands it. The file also carries the **forward bundle budget**, so a landing cannot
-arrive as a surprise gate raise: 496,373 B of headroom on the last measured 3,003,627, against ≈ 93 KB that round 5
-will spend wiring in `src/models/**` and the five provider adapters + registry — which are in the tree today but
-imported by nothing, so esbuild tree-shakes them and the measured figure does not contain them yet.
+arrive as a surprise gate raise: ≈ 93 KB that round 5 will spend wiring in `src/models/**` and the five provider
+adapters + registry — which are in the tree today but imported by nothing, so esbuild tree-shakes them and the last
+measured unpacked size, 3,003,627, does not contain them yet. **The gate itself is not restated anywhere in `docs/`**
+(amended 2026-09-22 in the finishing pass's own review, which found `docs/MERGE-QUEUE.md` re-creating the
+hand-copied-constant drift `docs/RELEASE.md` had just shed): `UNPACKED_MAX` and `TARBALL_MAX` live in
+`scripts/check-pack.mjs`, `node scripts/check-pack.mjs` prints the measured size against the gate, and
+`test/unit/hygiene/doc-claims.test.ts` fails on any figure a doc prints beside either name that is not the script's.
 
 **2. `docs/LLM-JEV.md` §5a, "Harness environment switches".** Nine switches that change what a run does, with
 accepted values, default, effect and reading file. Four of them (`JEVCODE_HEDGE`, `JEVCODE_CASE_TIMEOUT_MS`,

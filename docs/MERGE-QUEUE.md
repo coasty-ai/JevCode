@@ -24,17 +24,24 @@ hunks" (the delimited three-bucket partition). This file records *branches*; tha
 ## Forward bundle budget
 
 Recorded here so the next landing is not a surprise gate raise. `scripts/check-pack.mjs` gates the **unpacked**
-size; the constants live in that script and are deliberately not restated in `docs/RELEASE.md`.
+size and the tarball; **the two constants live in that script and are restated in no document**, here included —
+`docs/RELEASE.md` shed a hand-copied figure that had survived two raises of the real gate, and the first draft of
+this table immediately re-created the same drift by writing `UNPACKED_MAX` out as a literal and deriving a headroom
+from it (found by the finishing pass's own review, corrected 2026-09-22). Run `node scripts/check-pack.mjs`: its
+pass line prints the measured size against the gate, which is the only pair that cannot go stale.
+`test/unit/hygiene/doc-claims.test.ts` fails on any figure printed beside `UNPACKED_MAX` or `TARBALL_MAX` in any
+document that is not the script's own value.
 
 | Item | Bytes | Note |
 | --- | --- | --- |
 | last measured unpacked size | 3,003,627 | `docs/STATUS.md`, against the gate raised at `ca8e71c` |
-| headroom to `UNPACKED_MAX` | **496,373** | `3_500_000 − 3,003,627` |
-| `r5-impl` forward: `src/models/**` | ≈ **42 KB** bundled (139,479 B of source) | 10 modules (`cache`, `format`, `http`, `index`, `list`, `parse`, `pricing`, `providers`, `recommend`, `search`) |
+| the gate | `UNPACKED_MAX` in `scripts/check-pack.mjs` | deliberately not restated; headroom = that constant − the measured size, and the script prints both |
+| `r5-impl` forward: `src/models/**` | ≈ **42 KB** bundled (139,479 B of source) | all **13** modules in the directory — `cache`, `format`, `http`, `index`, `list`, `parse`, `pricing`, `providers`, `recommend`, `search`, `static`, `types`, `verify` (the byte figure is `cat src/models/*.ts \| wc -c`, so it counts all 13; the first draft named ten of them beside it) |
 | `r5-impl` forward: the five adapters + the provider registry | ≈ **51 KB** bundled (101,888 B of source) | `src/provider/{openai,gemini,xai,fireworks,openai-compat}.ts` + `registry.ts` |
-| projected headroom after r5 | ≈ **403 KB** | ≈ 93 KB of the 496 KB spent, i.e. **the gate does not need raising for round 5** |
+| `r5-impl` forward, total | ≈ **93 KB** | the whole of round 5's wiring cost; compare it against the headroom the script prints, not against a number copied into this table |
 
-**Why this is "forward" when the files are already on `main`.** All 16 of them are in the tree today — they landed
+**Why this is "forward" when the files are already on `main`.** All 19 of them — 13 under `src/models/`, the five
+adapters and `registry.ts` — are in the tree today — they landed
 with the models catalogue and R14 (`d397b8f`) — but **nothing under `src/` imports them**: there is no importer of
 `src/models/**` outside `src/models/**`, and `src/provider/registry.ts` has no importer at all (the only
 `registry.js` imports in the tree resolve to `src/tui/commands/registry.ts`). esbuild therefore tree-shakes every

@@ -9,6 +9,27 @@ applicable patch — two of its three bodies are elided (`{ … }`) and its line
 Branch: `peer-hunks-r5`. Harness-owned files only; nothing under `src/tui`, `src/cli`, `src/config`, `src/session`
 or `src/chat` was touched.
 
+## 0. The peer's own ownership enumeration, quoted verbatim
+
+The patch lives on `r5-impl` and is **not on `main`**, so `docs/DECISIONS.md`'s hunks rule could not be checked from
+`main` against it. Its first seven lines are therefore reproduced here byte-for-byte
+(`git show r5-impl:docs/research/tui/round-5/harness-session-hunks.patch | head -7`, 2026-09-22), because this file
+is harness-owned and on `main`. This is the list the DECISIONS ownership paragraph calls "the peer's eleven":
+
+```
+# TUI round 5 — hunks owed to the HARNESS (peer) session
+#
+# The round-5 TUI worktree edited NO harness-owned file: `src/loop/**`, `src/synth/**`, `src/coordination/**`,
+# `src/orchestrate/**`, `src/import/**`, `src/models/**`, `src/provider/**`, `src/spend/**`, `src/checkpoint/**`,
+# `src/errors.ts` and every non-TUI block of `src/core/types.ts` are byte-identical to `36f1104` (verified with
+# `git status --short`). There is therefore **nothing to revert** — this file is the request list, written as
+# hunks so the peer can apply them without a second design pass, exactly as round 4's file was.
+```
+
+Read with the TUI session's reverse list (`src/tui`, `src/cli`, `src/config`, `src/session`, `src/chat`), six
+top-level `src/` directories are on neither side — `src/bench`, `src/jev`, `src/perf`, `src/sandbox`, `src/undo`,
+`src/workspace` — which is what the DECISIONS partition settles.
+
 | Hunk | Outcome |
 | --- | --- |
 | R5-H1 `publicMessage` | **landed, altered** — placed in `records.ts` and re-exported from the facade; two more members dropped than the peer's sketch named, with reasons |
