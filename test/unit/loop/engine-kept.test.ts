@@ -92,6 +92,116 @@ describe('F26 — CheckpointState.kept is written at a compaction and restored o
   });
 });
 
+/**
+ * Review defect **A4**. `this.kept` was REBUILT from scratch at every compaction out of the 12-entry history
+ * window (`HISTORY_STEPS`, `src/core/limits.ts`), so a fact left `CheckpointState.kept` at exactly the moment it
+ * left the prompt — `kept` held nothing the prompt did not already carry, which is the one thing §8.6's "do not
+ * re-derive" exists to do. The probe below is the review's, verbatim: 18 steps, `compactEvery: 2`, a loop trip at
+ * step 4 whose `[replan, step 4]` line is on checkpoint 3 and gone by checkpoint 7, replaced by the step-16 copy.
+ */
+describe('F26 / A4 — `kept` ACCUMULATES: a fact survives its own step leaving the window', () => {
+  const REPLAN_4 = /^\[replan, step 4\] /;
+
+  /** 18 steps repeating one failing command: the loop detector trips, so each trip writes a `[replan, step N]` problem. */
+  async function longRun(): Promise<Harness> {
+    const h = await makeEngine({
+      turns: () => turn({ kind: 'run', command: 'pytest -q' }, { remaining: ['make tests/test_a.py::test_f pass'], openProblems: ['the fixture writes into /tmp'] }),
+      sandbox: createFakeSandbox(() => execResult({ exitCode: failingTests.exitCode, stdout: failingTests.stdout })),
+      limits: { maxSteps: 18 },
+      engine: { contextPolicy: { compactEvery: 2 } },
+    });
+    harnesses.push(h);
+    return h;
+  }
+
+  it('the step-4 replan line is still kept at step 18, after eight more compactions rebuilt the list', async () => {
+    const h = await longRun();
+    await h.engine.run();
+    const atFirst = keptOf(h.store.states[3]).filter((k) => REPLAN_4.test(k.text));
+    // the review's input: the fact IS derived at the first compaction that sees it
+    expect(atFirst).toHaveLength(1);
+    const atLast = keptOf(h.store.last());
+    expect(atLast.filter((k) => REPLAN_4.test(k.text))).toEqual(atFirst);
+    // and so is the failing-suite fact of the step that produced it, which the newer copies never overwrote
+    expect(atLast.some((k) => k.text === 'pytest -q at step 4: 1 passed, 1 failed, 0 errors')).toBe(true);
+    expect(atLast.some((k) => k.text === 'pytest -q at step 18: 1 passed, 1 failed, 0 errors')).toBe(true);
+  });
+
+  it('accumulation is BOUNDED and ordered by recency: never past KEPT_MAX, newest step first', async () => {
+    const h = await longRun();
+    await h.engine.run();
+    for (const st of h.store.states) expect(keptOf(st).length).toBeLessThanOrEqual(KEPT_MAX);
+    const last = keptOf(h.store.last());
+    expect(last.length).toBeGreaterThan(3);
+    const steps = last.map((k) => k.step);
+    expect([...steps].sort((a, b) => b - a)).toEqual(steps);
+  });
+
+  it('a fact re-derived at a newer step REFRESHES rather than duplicating it', async () => {
+    const h = await longRun();
+    await h.engine.run();
+    const last = keptOf(h.store.last());
+    const texts = last.map((k) => `${k.kind}\u0000${k.text}`);
+    expect(new Set(texts).size).toBe(texts.length);
+    // `open problem: …` is re-derived at every compaction and stays ONE item
+    expect(last.filter((k) => k.text === 'open problem: the fixture writes into /tmp')).toHaveLength(1);
+  });
+});
+
+/**
+ * F26's last recorded sub-part: **nothing filled `PromptContextView.kept`**, so `## Kept (do not re-derive)`
+ * (`keptSection`, `src/provider/prompts.ts`) rendered for nobody and the whole mechanism — extractor, ranking
+ * switch, checkpoint member — was inert end to end. It costs no golden: the section is part of the RELAXED view
+ * only (`Engine.contextEnabled`), and it elides while the list is empty, so every `view: 'legacy'` prompt and
+ * every relaxed prompt before the run's first compaction is byte-identical to what it was.
+ */
+describe('F26 — the section finally has a writer: `## Kept (do not re-derive)` in the relaxed prompt', () => {
+  async function relaxed(steps: number): Promise<Harness> {
+    const h = await makeEngine({
+      turns: () => turn({ kind: 'run', command: 'pytest -q' }, { remaining: ['make tests/test_a.py::test_f pass'], openProblems: ['the fixture writes into /tmp'] }),
+      sandbox: createFakeSandbox(() => execResult({ exitCode: failingTests.exitCode, stdout: failingTests.stdout })),
+      limits: { maxSteps: steps },
+      engine: { contextPolicy: { view: 'relaxed', compactEvery: 2 } },
+    });
+    harnesses.push(h);
+    return h;
+  }
+
+  it('renders the extracted items once a compaction has produced some, and not before', async () => {
+    const h = await relaxed(6);
+    await h.engine.run();
+    const prompts = h.provider.requests.map((r) => r.messages[0]!.content);
+    expect(prompts.length).toBeGreaterThanOrEqual(5);
+    // nothing has been extracted yet, so the section elides exactly as it did before this change
+    expect(prompts[0]).not.toContain('## Kept (do not re-derive)');
+    const last = prompts.at(-1)!;
+    expect(last).toContain('## Kept (do not re-derive)');
+    // the lines are the extractor's own items, in its order, with kind / step / provenance
+    expect(last).toMatch(/\n- \[fact, step \d+, code\] pytest -q at step \d+: 1 passed, 1 failed, 0 errors/);
+    expect(last).toContain('open problem: the fixture writes into /tmp');
+    // ...and they are items the checkpoint persisted: the prompt of step N is built from the extraction of the
+    // compaction at step N-1, so the state written two steps back is the one it must agree with
+    const persisted = keptOf(h.store.states.at(-3));
+    expect(persisted.length).toBeGreaterThan(0);
+    for (const k of persisted) expect(last).toContain(k.text);
+  });
+
+  it('a `view: \'legacy\'` run extracts nothing and renders no section at all (I2)', async () => {
+    const legacy = await run(6, { engine: { contextPolicy: { view: 'legacy' } } });
+    await legacy.engine.run();
+    // the legacy view runs no compaction, so there is nothing to persist and nothing to render — the pin the
+    // frozen bench arms rest on (`buildEngineOptions` sets `view: 'legacy'` for every one of them)
+    expect(keptOf(legacy.store.last())).toEqual([]);
+    for (const r of legacy.provider.requests) expect(r.messages[0]!.content).not.toContain('## Kept (do not re-derive)');
+
+    // and the relaxed run that DOES extract is the contrast: same turns, same steps, one section more
+    const relaxedRun = await relaxed(6);
+    await relaxedRun.engine.run();
+    expect(keptOf(relaxedRun.store.last()).length).toBeGreaterThan(0);
+    expect(relaxedRun.provider.requests.at(-1)!.messages[0]!.content).toContain('## Kept (do not re-derive)');
+  });
+});
+
 describe('F26 — the `context.kept` switch finally has something to rank', () => {
   it("the default 'code' asks nothing: no `most_needed` request anywhere in the run", async () => {
     const h = await run(4);

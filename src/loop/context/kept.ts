@@ -47,6 +47,21 @@ export interface KeptExtractInput {
    * carries them because they ride `CheckpointState.kept` like everything else.
    */
   human?: readonly KeptItem[];
+  /**
+   * §8.6 "do not re-derive", made true (review defect **A4**). The DERIVED items this run already holds — the
+   * previous compaction's output, minus the human ones, which travel in `human` above.
+   *
+   * Without them the extraction is a pure function of the still-visible 12-entry history window
+   * (`HISTORY_STEPS`), so a fact left this list at exactly the moment it left the prompt and `kept` could never
+   * hold anything the prompt did not already carry. Measured on the review's own probe (18 steps,
+   * `compactEvery: 2`): the `[replan, step 4]` line is on checkpoint 3 and gone by checkpoint 7, replaced by the
+   * step-16 copy of the same sentence.
+   *
+   * They join the candidates as ordinary ones, so the (kind, text) dedup below keeps the NEWER step — a fact
+   * re-derived this compaction refreshes rather than duplicates — and `KEPT_MAX` still bounds the whole list,
+   * with `rankKeptCode`'s recency order cutting the oldest first. Accumulation is bounded, never unbounded.
+   */
+  carried?: readonly KeptItem[];
   /** default `KEPT_MAX` (24) */
   max?: number;
 }
@@ -119,6 +134,15 @@ export function keptCandidates(input: KeptExtractInput): KeptItem[] {
   //    are replaced each step and belong to the task, not to a moment), so they rank last by recency — which is
   //    right: a constraint that is still open is in `plan` and therefore already in the prompt.
   for (const p of input.plan.openProblems) add('fact', `open problem: ${p}`, 0);
+
+  // 7. §8.6 "do not re-derive" (review defect A4): what this run already established and can no longer see.
+  //    LAST, so that on an exact (kind, text, step) tie the fresh derivation is the one the dedup keeps and a
+  //    carried item never pins a stale `by` over a fact the current compaction proved again for itself.
+  for (const k of input.carried ?? []) {
+    const t = text(k.text);
+    if (t.length === 0) continue;
+    out.push({ ...k, text: t });
+  }
 
   const seen = new Map<string, KeptItem>();
   for (const item of out) {

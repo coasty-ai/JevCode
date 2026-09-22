@@ -684,10 +684,65 @@ function zeroTiming(): StepTiming {
 export const RUN_TIMING_BUCKETS = ['imagesMs', 'synthMs', 'decomposeMs', 'coordinateMs', 'coordWaitMs', 'fastPathMs', 'fastPathJevMs', 'jevWallMs'] as const;
 
 /**
+ * F13 / review defect **A10**: the optional `StepTiming` buckets a step reached, as ONE list.
+ *
+ * They used to be spread inline at two places — the commit path's `StepTiming` literal and `llmJevTiming` — and
+ * the two lists had already drifted: `llmJevTiming` omitted `fastPathMs` / `fastPathJevMs`, so in `llm-jev` a
+ * COMMITTED step could never sum them onto the run while `absorbDiscardedTiming` reads `draft.fastPathMs`
+ * directly for both branches and would. Unreachable today only because `resolveFastPathOption` forces `'off'`
+ * outside `jev-on` — which is an accident of a switch, not a property. An inline list at two sites is exactly
+ * how four buckets went unsummed in the first place, so there is one builder and `RUN_TIMING_BUCKETS` is its
+ * pair (the test asserts they agree, minus `synthMs`, which only the llm-jev builder writes and writes always).
+ *
+ * Each member is ABSENT rather than 0 when its gate did not run, which is what keeps a coordination-off /
+ * fast-path-off step's row byte-identical to HEAD's (contract 1.9 I2). `imagesMs: 0` is the exception and is
+ * deliberate: it is a MEASUREMENT (the image pass ran and cost nothing), so only `null` means "did not run".
+ */
+export function optionalStepTiming(d: { imagesMs: number | null; decomposeMs: number; coordinateMs: number; coordWaitMs: number; jevWallMs: number; fastPathMs: number; fastPathJevMs: number }): Partial<StepTiming> {
+  return {
+    // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
+    ...(d.imagesMs !== null ? { imagesMs: d.imagesMs } : {}),
+    // contract 1.5 (§4.1 [D13]): likewise inside harnessMs, absent when the gate was shut — M2 reads its p95
+    ...(d.decomposeMs > 0 ? { decomposeMs: d.decomposeMs } : {}),
+    // contract 1.4 (W2b) (§4.2): the coordinate gate, absent when it did not run (no ledger, or a read/done action)
+    ...(d.coordinateMs > 0 ? { coordinateMs: d.coordinateMs } : {}),
+    ...(d.coordWaitMs > 0 ? { coordWaitMs: d.coordWaitMs } : {}),
+    // contract 1.9 (Fastlane) §5.2 (slot C): the round's own wall and the Jev latency inside it; absent when no round ran
+    ...(d.fastPathMs > 0 ? { fastPathMs: d.fastPathMs } : {}),
+    ...(d.fastPathJevMs > 0 ? { fastPathJevMs: d.fastPathJevMs } : {}),
+    // OOS iteration 2, defect 3: the wall measured inside `decider.ask`, the number `jevChargedMs` charges
+    // `harnessMs` by when the decider under-reports (every mock, stub and `--jev off` double). Absent when
+    // nothing was asked.
+    ...(d.jevWallMs > 0 ? { jevWallMs: d.jevWallMs } : {}),
+  };
+}
+
+/** The `StepDraft` members `optionalStepTiming` reads — two of them live beside `draft.timing`, not inside it. */
+function optionalTimingInput(draft: StepDraft): Parameters<typeof optionalStepTiming>[0] {
+  return {
+    imagesMs: draft.timing.imagesMs,
+    decomposeMs: draft.timing.decomposeMs,
+    coordinateMs: draft.timing.coordinateMs,
+    coordWaitMs: draft.timing.coordWaitMs,
+    jevWallMs: draft.timing.jevWallMs,
+    fastPathMs: draft.fastPathMs,
+    fastPathJevMs: draft.fastPathJevMs,
+  };
+}
+
+/**
  * Fold one committed step's timing into the run's. The five required members add; each optional bucket adds only
  * where the step carried it, so a bucket no step of the run wrote stays ABSENT on the run — which is what keeps a
  * coordination-off / fast-path-off run's `state.json` byte-identical (contract 1.9 I2,
  * test/unit/loop/engine-coordination-off.test.ts).
+ *
+ * **What `RunResult.timing` is, exactly** (review defect A9). It is the sum of the COMMITTED steps — the
+ * `steps.jsonl` rows — **plus the wall of any attempt §9.1 rule 1 discarded**. A discarded attempt writes no
+ * `StepRecord` (a blocking pause landed before any action ran and the step NUMBER is replayed with a fresh
+ * draft), but it really spent that wall and that money, so `absorbDiscardedTiming` adds its buckets to the run
+ * directly. That was already true of `decomposeMs` and `generatorMs` before this wave; F13 made it true of four
+ * more. So a reader reconciling `state.json` against `steps.jsonl` on a run with a blocking pause will find the
+ * run LARGER, by exactly the discarded attempt's share, and that is the contract — not a leak.
  */
 export function addStepTimingToRun(run: StepTiming, step: StepTiming): void {
   run.generatorMs += step.generatorMs;
@@ -1212,7 +1267,7 @@ class EngineImpl implements Engine {
     // contract 1.9 (Fastlane) §0.3: the engine derives the default from the mode; the env override is the bench's switch
     this.fastPathOption = resolveFastPathOption(this.mode, init.opts.fastPath);
     // §3 / §0.3: read once, at construction, like every other mechanism switch
-    this.s2 = s2Mode(this.mode);
+    this.s2 = s2Mode(this.mode, init.opts.s2);
     this.resumed = init.resume !== null;
     // contract 1.4 (W0 item 1, §9.3): the epochs THIS device has already minted or accepted for the run, as the
     // resumed `run.json` recorded them. The resume gate's local set starts here rather than at this process's own
@@ -1746,9 +1801,25 @@ class EngineImpl implements Engine {
       ...(this.coord !== null ? { phase: this.runPhase(), coordination: this.coord.status(), subwork: this.coord.subworkRows() } : {}),
       // contract 1.9 (Fastlane) §8.1 (F25): what this engine RESOLVED, so a bench summary can be checked against the
       // run instead of against its own intention. All three are read once at construction and never move.
-      mechanisms: { s2: this.s2, routers: routersOn(this.mode, this.opts.routers) ? 'on' : 'off', fastPath: this.fastPathOption },
+      //
+      // Review defect A8: a CONDITIONAL spread, in the same shape as the coordination triple above and for the
+      // same reason — `status` rides the `--json=verbose` NDJSON stream, and writing the member unconditionally
+      // added one to every line of every mode, including every control arm of the §8 head-to-head. Absent is
+      // `{ s2: 'off', routers: 'off', fastPath: 'off' }` and says so in the type.
+      ...this.mechanismsMember(),
     };
     return status;
+  }
+
+  /**
+   * contract 1.9 (Fastlane) §8.1 (F25) / review defect A8: the ONE place the three mechanisms are projected, for
+   * `EngineStatus` and for `CheckpointState` alike. Empty — so the member is ABSENT — when all three resolved
+   * off, which is every control arm; a reader that sees nothing has read `off / off / off`.
+   */
+  private mechanismsMember(): Pick<EngineStatus, 'mechanisms'> {
+    const routers = routersOn(this.mode, this.opts.routers) ? 'on' : 'off';
+    if (this.s2 === 'off' && routers === 'off' && this.fastPathOption === 'off') return {};
+    return { mechanisms: { s2: this.s2, routers, fastPath: this.fastPathOption } };
   }
 
   /** TUI-DESIGN-2 §2.4: `table` when every Jev request of this process was table-priced, `provider` when every one carried `usage.cost`, `mixed` otherwise; null before any. */
@@ -2925,6 +2996,11 @@ class EngineImpl implements Engine {
       ...(this.lastPromptChars !== null ? { lastPromptChars: this.lastPromptChars } : {}),
       // docs/COORDINATION-DESIGN.md §8.3 / §8.4 / §12.0.3 (additive, conditional): absent while empty, so older readers and goldens are unchanged
       ...this.contextExtension(),
+      // contract 1.9 (Fastlane) §8.1 (F25, the finishing pass): the same resolution `EngineStatus` reports, and
+      // under the same absent-means-all-off rule — an ARCHIVED run directory can now be checked against
+      // `summary.json.conditions[arm].mechanisms` without re-running it, and a control arm's state.json is
+      // byte-identical to a pre-wave run's.
+      ...this.mechanismsMember(),
       resumes: this.resumes,
       updatedAt: nowIso(),
     };
@@ -3618,6 +3694,7 @@ class EngineImpl implements Engine {
    */
   private async generateProposal(draft: StepDraft, req: GenerateRequest, attempt: number): Promise<GenerateResult> {
     if (this.s2 === 'off') return this.generate(draft, req, attempt);
+    const t0 = this.clock();
     const out = await hedgedCall<GenerateResult>({
       signal: this.signal,
       // `'partial'` is the measurement half without the hedge: `JEVCODE_HEDGE=off` said so explicitly
@@ -3636,8 +3713,13 @@ class EngineImpl implements Engine {
     });
     draft.verify.s2.hedges += out.hedges;
     draft.verify.s2.hedgeWins += out.hedgeWins;
-    // the winner's latency is the step's; the loser's is booked on its own cancelled row
-    draft.timing.generatorMs += out.result.latencyMs;
+    // Review defect A2: the RACE's wall, exactly as `noteSampleEnd` takes the batch wall for a round — not the
+    // winner's provider-reported latency alone. On a twin win the twin's own `latencyMs` starts at the hedge
+    // threshold, so booking only it left the origin's whole 3–8 s wait in NO named bucket, and the residual
+    // formula at the commit charged all of it to `harnessMs` — the harness-overhead metric the 50 ms p95 budget
+    // is read against. The loser's latency stays on its own cancelled row and is never added here (that would
+    // double-count one wall as two). `max` of the two so a clock that cannot see the wait still books the call.
+    draft.timing.generatorMs += Math.max(out.result.latencyMs, Math.max(0, this.clock() - t0));
     return out.result;
   }
 
@@ -3740,7 +3822,7 @@ class EngineImpl implements Engine {
       if (sample === undefined && leg !== undefined) {
         const latencyMs = Math.max(0, this.clock() - t0);
         const stopReason = leg.signal.aborted ? 'cancelled' : 'error';
-        this.recordUnfinishedSample(draft, req, attempt, { sample: leg.sample ?? 0, purpose: 'propose_fix' }, { latencyMs, streamedChars: toolChars + textChars, stopReason, partial: held.partial });
+        this.recordUnfinishedSample(draft, req, attempt, { sample: leg.sample ?? 0, purpose: 'propose_fix' }, { latencyMs, streamedChars: toolChars + textChars, stopReason, partial: held.partial, oneShotLeg: true });
       }
       throw e;
     } finally {
@@ -3782,13 +3864,17 @@ class EngineImpl implements Engine {
       latencyMs: res.latencyMs,
       stopReason: res.stopReason,
       malformed: false,
-      ...(sample !== undefined ? { sample: sample.sample, purpose: sample.purpose } : {}),
+      // §3.2 (F25) / review defect A3: a WINNING hedge leg carries its index too. Without it a twin that won wrote
+      // a row `hedgeOriginOf` could not read back — contradicting the comment on `at` above and §7.6a — and the
+      // loser was the only leg counted, so a step that SUCCEEDED reported `samples: 1, cancelled: 1`. The ORIGIN
+      // leg has no index (`OneShotLeg.sample` is set only on the twin), so an unhedged call's row is unchanged.
+      ...(sample !== undefined ? { sample: sample.sample, purpose: sample.purpose } : leg?.sample === undefined ? {} : { sample: leg.sample, purpose: 'propose_fix' as const }),
       ...(res.usage.reasoningTokens !== undefined ? { reasoningTokens: res.usage.reasoningTokens } : {}),
       ...(res.generationId !== undefined ? { generationId: res.generationId } : {}),
       ...(res.servedProvider !== undefined ? { servedProvider: res.servedProvider } : {}),
       // the chain recovered from a 429: the round's classification reads it, the result is the result
       ...(res.rateLimited === true ? { rateLimited: true } : {}),
-    });
+    }, sample === undefined && leg !== undefined ? 'one-shot-leg' : 'sample');
     this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: res.latencyMs, finishReason: res.stopReason, ...at });
     return res;
   }
@@ -3797,9 +3883,17 @@ class EngineImpl implements Engine {
    * §4.8: one row per call, under the step the call was dispatched in, and the step's own verification tallies (§9.3). A row
    * that arrives after its step was committed or discarded — a round draining across the step boundary, a sample the
    * synthesizer let run past `synthesize()` — cannot ride the step's flush any more: it is appended at once, never dropped.
+   *
+   * `counts` (review defect A3): `draft.verify.samples` / `timeouts` / `cancelled` / `malformed` are the
+   * SYNTHESIZER's round tallies — §9.3's "how many candidates did the sieve's LLM source produce, and how many
+   * of them died". A §3.2 hedge leg of the one-shot propose call carries a `sample` index for one reason only,
+   * that `hedgeOriginOf` can read the twin back off its `generator.jsonl` row; it is not a sample of a round,
+   * there is no round, and counting it made a jev-on-next arm with S2 on report
+   * `samples == cancelled == (hedged steps)` — a 100 % cancellation rate on an arm that has no synthesizer.
+   * The legs are recorded where they belong instead: `StepVerifySummary.hedges` / `hedgeWins`.
    */
-  private pushGeneratorRecord(draft: StepDraft, rec: GeneratorCallRecord): void {
-    if (rec.sample !== undefined) {
+  private pushGeneratorRecord(draft: StepDraft, rec: GeneratorCallRecord, counts: 'sample' | 'one-shot-leg' = 'sample'): void {
+    if (rec.sample !== undefined && counts === 'sample') {
       draft.verify.samples += 1;
       if (rec.stopReason === 'timeout') draft.verify.timeouts += 1;
       else if (rec.stopReason === 'cancelled') draft.verify.cancelled += 1;
@@ -3910,7 +4004,7 @@ class EngineImpl implements Engine {
     attempt: number,
     // F25: only the index and the purpose are read, so a hedged one-shot leg books itself through the same estimator
     sample: Pick<SampleOptions, 'sample' | 'purpose'>,
-    o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' | 'rate_limited'; partial: CancelledGeneration | null },
+    o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' | 'rate_limited'; partial: CancelledGeneration | null; oneShotLeg?: boolean },
   ): void {
     const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
     const p = o.partial;
@@ -3952,7 +4046,9 @@ class EngineImpl implements Engine {
       ...(p?.generationId !== undefined ? { generationId: p.generationId } : {}),
       ...(p?.servedProvider !== undefined ? { servedProvider: p.servedProvider } : {}),
       ...(p?.rateLimited === true ? { rateLimited: true } : {}),
-    });
+      // review defect A3: a losing §3.2 leg is booked exactly like a losing sample — metered, priced, one row —
+      // but it is not a sample of a synthesizer round and does not join that round's tallies
+    }, o.oneShotLeg === true ? 'one-shot-leg' : 'sample');
     this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: o.latencyMs, finishReason: o.stopReason, sample: sample.sample });
   }
 
@@ -4996,6 +5092,10 @@ class EngineImpl implements Engine {
     // F13 (finishing pass): and for its coordinate gate and its fast-path round, which were short the same way as
     // the commit path. The attempt really spent this wall — §9.1 rule 1 replays the step NUMBER with a fresh draft,
     // so nothing here is counted twice — and each stays absent when the discarded attempt never reached it.
+    //
+    // Review defect A9: this is the one place `RunResult.timing` exceeds the sum of the `steps.jsonl` rows, and
+    // it does so by design — no `StepRecord` is written for a discarded attempt (see just above), so its wall
+    // has nowhere else to be recorded. The two doc comments that claimed "the sum of the rows" now say so.
     if (draft.timing.coordinateMs > 0) this.timing.coordinateMs = (this.timing.coordinateMs ?? 0) + draft.timing.coordinateMs;
     if (draft.timing.coordWaitMs > 0) this.timing.coordWaitMs = (this.timing.coordWaitMs ?? 0) + draft.timing.coordWaitMs;
     if (draft.fastPathMs > 0) this.timing.fastPathMs = (this.timing.fastPathMs ?? 0) + draft.fastPathMs;
@@ -5025,15 +5125,11 @@ class EngineImpl implements Engine {
       harnessMs: Math.max(0, total - synthMs - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs - shellJevMs),
       totalMs: total,
       synthMs,
-      ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
-      ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
-      // contract 1.4 (W2b) (§4.2): absent when the gate did not run, so a run without a ledger writes HEAD's row
-      ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
-      ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
-      // OOS iteration 2, defect 3: the measured ask wall, which `jevChargedMs` (and `shellJevMs` above) charge
-      // `harnessMs` by and which nothing persisted — `grep -c jevWallMs` over iteration 2's state.json and
-      // steps.jsonl archives read 0. Absent when nothing was asked, so a step without Jev writes HEAD's row.
-      ...(draft.timing.jevWallMs > 0 ? { jevWallMs: draft.timing.jevWallMs } : {}),
+      // review defect A10: the SAME optional-bucket builder the commit path uses. It used to be an inline list
+      // here, and it was already two members short (`fastPathMs`, `fastPathJevMs`) — which
+      // `absorbDiscardedTiming` reads for both branches, so a discarded llm-jev attempt could contribute
+      // fast-path wall to the run that a committed one could not.
+      ...optionalStepTiming(optionalTimingInput(draft)),
     };
   }
 
@@ -5314,6 +5410,13 @@ class EngineImpl implements Engine {
     const sessions = coordFacts !== null && (coordFacts.others > 0 || coordFacts.conflicts.length > 0 || coordFacts.requested.length > 0 || coordFacts.messages.length > 0) ? coordFacts : null;
     return {
       ...(sessions === null ? {} : { coordination: sessions }),
+      // §8.6 fourth bullet (F26, the finishing pass): the extracted items reach the prompt's
+      // `## Kept (do not re-derive)`. Until this line nothing filled `PromptContextView.kept`, so the extractor,
+      // the `context.kept` switch and `CheckpointState.kept` were a mechanism with no consumer — the section
+      // rendered for nobody. ABSENT while the list is empty (every run before its first compaction, and every
+      // run that never compacts), so `keptSection` elides exactly as it did and no relaxed prompt moves until
+      // there is something to say. `view: 'legacy'` never reaches this method at all.
+      ...(this.kept.length > 0 ? { kept: this.kept.map((k) => ({ ...k })) } : {}),
       ...(memory.rules.length > 0 ? { rulesInScope: memory.rules } : {}),
       ...(memory.topics.length > 0 ? { memoryInScope: memory.topics } : {}),
       files: refreshed.files.map((f) => ({
@@ -5539,6 +5642,11 @@ class EngineImpl implements Engine {
       failingTests: this.lastTestRun === null ? [] : fastPathFailingIds(this.lastTestRun.command, this.lastTestRunOutput),
       testOutput: this.lastTestRunOutput,
       human: this.kept.filter((k) => k.by === 'human'),
+      // §8.6 "do not re-derive" (review defect A4): the derived items this run already holds. Without them the
+      // extraction is a pure function of the 12-step history window, so a fact left `kept` at exactly the moment
+      // it left the prompt — `kept` then held nothing the prompt did not already carry, which is the one thing
+      // §8.6 exists to do. `KEPT_MAX` still bounds the union and recency still cuts the oldest first.
+      carried: this.kept.filter((k) => k.by !== 'human'),
     });
     // §8.6: one bounded ordering request per compaction, and only under `'jev'`. It is owed rather than made here
     // because `compactContext` is synchronous (it runs inside `commit`); `contextView` pays it before the next
@@ -5790,24 +5898,15 @@ class EngineImpl implements Engine {
             execMs: draft.timing.execMs,
             harnessMs: Math.max(0, total - draft.timing.generatorMs - jevChargedMs(draft) - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs),
             totalMs: total,
-            // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
-            ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
-            // contract 1.5 (§4.1 [D13]): likewise inside harnessMs, absent when the gate was shut — M2 reads its p95
-            ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
-            // contract 1.4 (W2b) (§4.2): the coordinate gate, absent when it did not run (no ledger, or a read/done action)
-            ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
-            ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
-            // contract 1.9 (Fastlane) §5.2 (slot C): the round's own wall and the Jev latency inside it; absent when no round ran
-            ...(draft.fastPathMs > 0 ? { fastPathMs: draft.fastPathMs } : {}),
-            ...(draft.fastPathJevMs > 0 ? { fastPathJevMs: draft.fastPathJevMs } : {}),
-            // OOS iteration 2, defect 3: the wall measured inside `decider.ask`, the number `jevChargedMs` charges
-            // `harnessMs` by when the decider under-reports (every mock, stub and `--jev off` double). Absent when
-            // nothing was asked.
-            ...(draft.timing.jevWallMs > 0 ? { jevWallMs: draft.timing.jevWallMs } : {}),
+            // review defect A10: the ONE optional-bucket builder, shared with `llmJevTiming`
+            ...optionalStepTiming(optionalTimingInput(draft)),
           };
-    // F13 (finishing pass): ONE fold over `RUN_TIMING_BUCKETS`, so `RunResult.timing` is by construction the sum of
-    // the `steps.jsonl` rows. Four buckets (`coordinateMs`, `coordWaitMs`, `fastPathMs`, `fastPathJevMs`) were
-    // written per step and named in no run-level sum; an inline list is exactly how they were missed.
+    // F13 (finishing pass): ONE fold over `RUN_TIMING_BUCKETS`, so `RunResult.timing` is by construction the sum
+    // of the committed `steps.jsonl` rows PLUS the wall of any discarded attempt (§9.1 rule 1, see
+    // `absorbDiscardedTiming` and the `addStepTimingToRun` header — review defect A9: the original wording here
+    // claimed the rows alone, which is false on any run with a blocking pause). Four buckets (`coordinateMs`,
+    // `coordWaitMs`, `fastPathMs`, `fastPathJevMs`) were written per step and named in no run-level sum; an
+    // inline list is exactly how they were missed.
     addStepTimingToRun(this.timing, timing);
     // TUI-DESIGN §9.2: the per-step cost series behind `stepsLeftEstimate`
     this.costPerStep.push(draft.usage.generator.costUsd + draft.usage.jev.costUsd);

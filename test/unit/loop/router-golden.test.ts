@@ -65,6 +65,25 @@ async function run(): Promise<Omit<Trace, 'commit'>> {
   }
 }
 
+
+/**
+ * F26, the finishing pass: `## Kept (do not re-derive)` (docs/COORDINATION-DESIGN.md §8.6) now has a writer, so
+ * a relaxed-view run that has compacted carries one section this golden's capture does not.
+ *
+ * The golden is NOT re-captured. Re-capturing would overwrite the pre-wave bytes with today's and make the test
+ * tautological — the provenance in `commit` is the whole evidence. Instead the ONE intended difference is named
+ * and removed, and the test then asserts what it always asserted: every other byte is identical. The strip is
+ * exact (split / filter / join on the section separator is the identity minus those blocks), and the cases below
+ * assert that the section really was there, so a silently-empty strip cannot hide a second change.
+ */
+const KEPT_HEADING = '## Kept (do not re-derive)';
+function withoutKeptSection(prompt: string): string {
+  return prompt
+    .split('\n\n')
+    .filter((block) => !block.startsWith(KEPT_HEADING))
+    .join('\n\n');
+}
+
 describe('I2: `routers: off` is byte-identical to the pre-1.9 tree', () => {
   it('the same prompts, the same Jev requests and states, the same events, the same sandbox commands', async () => {
     // the routers must be OFF for this run: the default, and never inherited from an exported env var
@@ -78,7 +97,10 @@ describe('I2: `routers: off` is byte-identical to the pre-1.9 tree', () => {
     expect(existsSync(GOLDEN), `${GOLDEN} is missing — capture it in a detached checkout of the branch point`).toBe(true);
     const golden = JSON.parse(readFileSync(GOLDEN, 'utf8')) as Trace;
     expect(golden.commit).toBe('d86c385');
-    expect(now.prompts).toEqual(golden.prompts);
+    // F26: the one intended difference, named and bounded — every other byte of every prompt is unchanged
+    expect(now.prompts.some((t) => t.includes(KEPT_HEADING))).toBe(true);
+    expect(now.prompts.map(withoutKeptSection)).toEqual(golden.prompts);
+    expect(golden.prompts.some((t) => t.includes(KEPT_HEADING))).toBe(false);
     expect(now.jev).toEqual(golden.jev);
     expect(now.decisions).toEqual(golden.decisions);
     expect(now.eventTypes).toEqual(golden.eventTypes);
@@ -97,7 +119,7 @@ describe('I2: `routers: off` is byte-identical to the pre-1.9 tree', () => {
       // code judge on a parsed run, the demoted stop, the code verdict under an outage — are driven against a
       // failing decider in test/unit/loop/router.test.ts, where they can be asserted rather than hoped for.
       expect(on.jev).toEqual(golden.jev);
-      expect(on.prompts).toEqual(golden.prompts);
+      expect(on.prompts.map(withoutKeptSection)).toEqual(golden.prompts);
     } finally {
       delete process.env['JEVCODE_ROUTERS'];
     }

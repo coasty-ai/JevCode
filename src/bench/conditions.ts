@@ -317,7 +317,7 @@ function copyConfigRecord(record: Record<string, ConfigRecordValue>): Record<str
  * lands with a DIFFERENT type, the intersection collapses and the assignment below fails to compile — a loud failure
  * at merge is the point, since the silent alternative is an arm that runs with both mechanisms off and measures nothing.
  */
-export type WaveEngineOptions = EngineOptions & { fastPath?: 'auto' | 'off'; routers?: 'on' | 'off' };
+export type WaveEngineOptions = EngineOptions & { fastPath?: 'auto' | 'off'; routers?: 'on' | 'off'; s2?: 'on' | 'off' };
 
 export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions): WaveEngineOptions {
   const generation = pinnedGeneration(input.condition, input.provider.model);
@@ -371,6 +371,10 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
   const mech = armMechanisms(input.condition);
   out.fastPath = mech.fastPath;
   out.routers = mech.routers ? 'on' : 'off';
+  // F25's headline gap, closed (review defect A5): the THIRD mechanism is pinned here like the other two. Until
+  // it was, `armMechanisms('jev-on-next')` returned `s2: true` while no option was written and `s2Mode` read
+  // `JEVCODE_S2` — which nothing in `src/bench` set — so the arm ran with S2 OFF and `summary.json` said `true`.
+  out.s2 = mech.s2 ? 'on' : 'off';
   return out;
 }
 
@@ -382,8 +386,23 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
  * therefore runs `jev-on-next` DISARMED while `summary.json` records `mechanisms.fastPath: 'auto'`, and an exported
  * `JEVCODE_FASTPATH=auto` runs the `jev-on-next-nofast` CONTROL armed while it records `'off'` — which destroys the
  * one-mechanism contrast §8.5 clause 4 rests on, silently, in the direction that makes the wave look better.
+ *
+ * **`JEVCODE_S2` and `JEVCODE_HEDGE` are here too** (review defect A5). `s2Mode` gates on `mode === 'jev-on'`, and
+ * `engineModeOf('jev-on') === 'jev-on'`, so the plain `jev-on` CONTROL arm passes that gate: an exported
+ * `JEVCODE_S2=on` armed the whole §3 generation path on the control and on `jev-on-next-nofast` while both rows
+ * recorded `mechanisms.s2: false`. It did not exist before F25 only because the variable was inert.
+ * `JEVCODE_HEDGE` rides with it because it is the half-switch that turns a pinned `s2: 'on'` into `'partial'` —
+ * an arm whose hedge counters read 0 for a reason its own row does not name is the same lie one level down, and
+ * it also arms the SYNTHESIZER's own round hedge (`hedgeEnabled(deps.hedge, env)`, src/synth/llm/source.ts),
+ * which no `ConditionConfig.mechanisms` row records at all.
+ *
+ * **Consequence, recorded:** clearing it means a bench arm can no longer express either hedge through the
+ * environment. That is the right default — an unrecorded mechanism is exactly what this function exists to
+ * stop — but an arm that WANTS the synthesizer's round hedge now needs a pin of its own: an `ArmMechanisms`
+ * member plus `LlmSourceDeps.hedge` threaded through `BenchDeps.createSynthesizer`, which is outside this
+ * file. Nothing in `armMechanisms` asks for it today, so no recorded arm loses anything.
  */
-export const MECHANISM_ENV_VARS: readonly string[] = ['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS'];
+export const MECHANISM_ENV_VARS: readonly string[] = ['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS', 'JEVCODE_S2', 'JEVCODE_HEDGE'];
 
 /**
  * Removes those switches from the bench process's environment and returns what it removed, so the runner can say so

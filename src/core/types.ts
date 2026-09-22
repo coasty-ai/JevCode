@@ -598,7 +598,16 @@ export interface StepRouter {
   dropped: number;
   /** I3: MUST be 0 */
   waitMs: number;
-  rows: readonly { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean }[];
+  /**
+   * `drop` (review defect A7) is WHY the route did not take Jev's answer, and it is ABSENT on an applied row.
+   * Without it every non-application is one undifferentiated `dropped: true`, and the two facts a reader needs
+   * to tell apart are exactly the two it hides: `'deadline'` says the site's own deadline is the binding
+   * constraint and must be resized against that site's real batch, `'error'` says Jev was down. RL2 is the case
+   * that made it necessary — it sends the loop's LARGEST batch (one Noul per candidate, up to
+   * `CONTEXT_MAX_CANDIDATES`) against a deadline measured over the loop's asks in general, so an arm that
+   * quietly ran `selectCandidatesCode` on every step would have looked exactly like an arm Jev was down for.
+   */
+  rows: readonly { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean; drop?: 'deadline' | 'error' | 'aborted' | 'committed' | 'empty' | 'work_settled' | 'off' }[];
 }
 
 /** docs/LLM-JEV-DESIGN.md §9.4; contract 1.9 (Fastlane) §5.2 (slot C) widens it with `fastpath` — the bounded sieve round proposed the step */
@@ -1389,6 +1398,16 @@ export interface CheckpointState {
    * is a kept item that outlives the run (§2.10.3). Optional and absent on every checkpoint written before it.
    */
   kept?: { kind: 'fact' | 'file' | 'decision' | 'memory'; text: string; step: number; by: 'jev' | 'human' | 'code' }[];
+  /**
+   * contract 1.9 (Fastlane) §8.1 (F25, the finishing pass): the three mechanisms of the wave as this engine
+   * RESOLVED them, the same object `EngineStatus.mechanisms` carries and under the same rule — **absent means
+   * every one of them resolved off**, so a control arm's `state.json` is byte-identical to a pre-wave run's.
+   *
+   * `EngineStatus` is only readable while the process is alive; an archived run directory could therefore be
+   * checked against `summary.json.conditions[arm].mechanisms` only by re-running it. This is the same answer,
+   * persisted, so "the arm's row is a record of the run rather than of an intention" survives the run.
+   */
+  mechanisms?: { s2: 'on' | 'partial' | 'off'; routers: 'on' | 'off'; fastPath: 'auto' | 'off' };
   /** contract 1.4 (§12.0.3): compactions over the run's life, all resumes (ContextUsage.compactions) */
   compactions?: number;
   /** contract 1.4 (§12.0.3): ISO time of the last compaction (ContextUsage.lastCompactionAt) */
@@ -1886,6 +1905,18 @@ export interface EngineOptions {
    * `jev-on` gate is checked before either.
    */
   routers?: 'on' | 'off';
+  /**
+   * contract 1.9 (Fastlane) §0.3 / §3: the S2 generation path on the `jev-on` propose call — the pinned prefix
+   * order (§3.3), the TTFB callback (§3.1), the hedge (§3.2) and the cache accounting (§3.4). `jev-on` only, and
+   * **default off** everywhere on `main` (§0.3's rule for a new mechanism), which is what keeps every
+   * `view: 'legacy'` prompt golden and `router-golden.test.ts` valid without a re-capture.
+   *
+   * **This member beats `JEVCODE_S2`**, in both directions; the env var only fills an ABSENT option, exactly as
+   * `routers` beats `JEVCODE_ROUTERS` (`s2Enabled`, `src/synth/llm/hedge.ts`). It exists because without it the
+   * bench could not pin S2 per arm: `armMechanisms('jev-on-next')` recorded `s2: true` while nothing set the
+   * variable, and an exported `JEVCODE_S2=on` armed the plain `jev-on` CONTROL arm while its row said `false`.
+   */
+  s2?: 'on' | 'off';
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 
@@ -2087,7 +2118,14 @@ export interface EngineStatus {
    *
    * `s2: 'partial'` is the honest middle: the §3.1/§3.3/§3.4 measurement half is on and the §3.2 hedge is off
    * because `JEVCODE_HEDGE=off` said so — a hedge counter of 0 then means "switched off", not "nothing was
-   * slow enough". Absent on an engine that does not resolve them (fakes, the generator-only factory).
+   * slow enough".
+   *
+   * **ABSENT means "every one of the three resolved off"** (review defect A8), and not only on an engine that
+   * does not resolve them (fakes, the generator-only factory). It is written as a conditional spread for the
+   * same reason the adjacent `coordination` / `phase` / `subwork` triple is: `status` rides the `--json=verbose`
+   * NDJSON stream, and a member on every line of every mode would change that stream for every CONTROL arm of
+   * the §8 head-to-head — arms whose whole job is to be the pre-wave build. A reader that sees no `mechanisms`
+   * has read `{ s2: 'off', routers: 'off', fastPath: 'off' }`.
    */
   mechanisms?: { s2: 'on' | 'partial' | 'off'; routers: 'on' | 'off'; fastPath: 'auto' | 'off' };
 }

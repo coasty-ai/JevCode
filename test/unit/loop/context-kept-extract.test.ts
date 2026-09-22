@@ -187,3 +187,48 @@ describe('F26 §8.6 — what the code extracts at a compaction', () => {
     expect(readKeptItems({ kept: many } as unknown as CheckpointState)).toHaveLength(KEPT_MAX);
   });
 });
+
+/**
+ * Review defect **A4**: without `carried` the extraction is a pure function of the still-visible 12-step history
+ * window, so `kept` could only ever hold facts the prompt already carries — the opposite of §8.6's "do not
+ * re-derive". `carried` is the previous compaction's derived output, and it joins the candidate list as an
+ * ordinary member: deduplicated on (kind, text) at the newer step, ranked by recency, cut at `KEPT_MAX`.
+ */
+describe('F26 §8.6 / A4 — the extraction ACCUMULATES rather than re-deriving', () => {
+  const aged: KeptItem = { kind: 'fact', text: 'step 1 run pytest -q was blocked: the sandbox refused /etc/hosts', step: 1, by: 'code' };
+
+  it('a carried item whose step is long gone is still a candidate', () => {
+    const without = extractKept(input());
+    expect(without.map((k) => k.text)).not.toContain(aged.text);
+    const with_ = extractKept(input({ carried: [aged] }));
+    expect(with_.map((k) => k.text)).toContain(aged.text);
+    // ...and it ranks by its own (oldest) step, so it is among the first things the cap eats: every item
+    // derived from a later step precedes it, and only the step-0 open problems trail it
+    const at = with_.findIndex((k) => k.text === aged.text);
+    expect(with_.slice(0, at).every((k) => k.step >= aged.step)).toBe(true);
+    expect(with_.slice(at + 1).every((k) => k.step <= aged.step)).toBe(true);
+  });
+
+  it('a carried item the current compaction re-derives REFRESHES to the newer step, never duplicates', () => {
+    const stale: KeptItem = { kind: 'file', text: 'src/a.ts', step: 2, by: 'code' };
+    const kept = extractKept(input({ carried: [stale] }));
+    const files = kept.filter((k) => k.kind === 'file' && k.text === 'src/a.ts');
+    expect(files).toEqual([{ kind: 'file', text: 'src/a.ts', step: 6, by: 'code' }]);
+  });
+
+  it('accumulation is bounded by KEPT_MAX, and the human items still lead unranked', () => {
+    const human: KeptItem = { kind: 'fact', text: 'the acceptance criterion is the ladder suite', step: 0, by: 'human' };
+    const carried: KeptItem[] = Array.from({ length: 100 }, (_, i) => ({ kind: 'fact', text: `an aged fact ${i}`, step: 1, by: 'code' }));
+    const kept = extractKept(input({ human: [human], carried }));
+    expect(kept).toHaveLength(KEPT_MAX);
+    expect(kept[0]).toEqual(human);
+    expect(kept.filter((k) => k.by === 'human')).toEqual([human]);
+    // the keys stay content-derived, so the ranking request is still comparable across compactions
+    const taken = new Set<string>();
+    for (const k of kept) {
+      const key = keptKey(k, taken);
+      expect(key).toMatch(/^(?:fact|file)_[0-9a-f]{6,}$/);
+      taken.add(key);
+    }
+  });
+});

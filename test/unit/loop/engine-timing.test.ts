@@ -13,7 +13,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { StepTiming } from '../../../src/core/types.js';
-import { RUN_TIMING_BUCKETS, addStepTimingToRun } from '../../../src/loop/engine.js';
+import { RUN_TIMING_BUCKETS, addStepTimingToRun, optionalStepTiming } from '../../../src/loop/engine.js';
 import { coordinationRoot, openLedger, type LedgerHandle } from '../../../src/coordination/index.js';
 import { tempHome } from '../coordination/helpers.js';
 import { makeEngine, repoState, turn, type Harness } from './fakes.js';
@@ -68,6 +68,25 @@ describe('F13 — every StepTiming bucket a step writes is summed onto the run',
     const all = row({ imagesMs: 1, synthMs: 1, decomposeMs: 1, coordinateMs: 1, coordWaitMs: 1, fastPathMs: 1, fastPathJevMs: 1, routerWaitMs: 1, jevWallMs: 1 });
     const optional = Object.keys(all).filter((k) => !['generatorMs', 'jevMs', 'execMs', 'harnessMs', 'totalMs'].includes(k));
     expect([...RUN_TIMING_BUCKETS, 'routerWaitMs'].sort()).toEqual(optional.sort());
+  });
+
+  /**
+   * Review defect **A10**. The optional buckets were spread INLINE at two different places — the commit path's
+   * `StepTiming` literal and `llmJevTiming` — and the two lists had drifted: `llmJevTiming` omitted `fastPathMs`
+   * and `fastPathJevMs`, so in `llm-jev` a committed step could never sum them onto the run while
+   * `absorbDiscardedTiming` reads `draft.fastPathMs` directly for BOTH branches and would. Unreachable today
+   * only because `resolveFastPathOption` forces `'off'` outside `jev-on` — an asymmetry waiting for a switch.
+   * There is one list now, and it is this function; `RUN_TIMING_BUCKETS` is the other half of the pair.
+   */
+  it('one builder for the optional buckets, so the two timing paths cannot name different sets (A10)', () => {
+    const draft = { imagesMs: 11, decomposeMs: 12, coordinateMs: 13, coordWaitMs: 14, jevWallMs: 15, fastPathMs: 16, fastPathJevMs: 17 };
+    expect(optionalStepTiming(draft)).toEqual({ imagesMs: 11, decomposeMs: 12, coordinateMs: 13, coordWaitMs: 14, jevWallMs: 15, fastPathMs: 16, fastPathJevMs: 17 });
+    // every bucket the run sums, except `synthMs`, which only the llm-jev builder writes and writes always
+    expect(Object.keys(optionalStepTiming(draft)).sort()).toEqual(RUN_TIMING_BUCKETS.filter((k) => k !== 'synthMs').slice().sort());
+    // absent, never 0: a step that reached none of the gates writes HEAD's row (contract 1.9 I2)
+    expect(optionalStepTiming({ imagesMs: null, decomposeMs: 0, coordinateMs: 0, coordWaitMs: 0, jevWallMs: 0, fastPathMs: 0, fastPathJevMs: 0 })).toEqual({});
+    // `imagesMs: 0` is a MEASUREMENT (the image pass ran and cost nothing); only `null` is "did not run"
+    expect(optionalStepTiming({ imagesMs: 0, decomposeMs: 0, coordinateMs: 0, coordWaitMs: 0, jevWallMs: 0, fastPathMs: 0, fastPathJevMs: 0 })).toEqual({ imagesMs: 0 });
   });
 });
 

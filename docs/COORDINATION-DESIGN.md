@@ -1534,9 +1534,38 @@ validated and bounded on the way back in (`readKeptItems`) exactly as `history` 
 `'jev'` the one bounded request is paid once per compaction, at the next prompt build (`Engine.rankKeptItems`),
 because the fold itself is synchronous.
 
-**Not built here, and deliberately:** nothing fills `PromptContextView.kept`, so `## Kept (do not re-derive)`
-still renders for nobody. Rendering changes every `relaxed`-view prompt, and the section belongs with the
-surface that owns `/keep`.
+**The list ACCUMULATES; it is not re-derived** (finishing-pass review, defect A4). The six sources above all
+read the still-visible state — `plan`, `fileMemory`, `lastTestRun`, and a `history` bounded at `HISTORY_STEPS`
+(12) — so an extraction that took only them was a pure function of what the prompt already shows: a fact left
+`kept` at exactly the moment it left the prompt, and `kept` could never hold anything worth not re-deriving.
+Measured on a run of 18 steps at `compactEvery: 2`, the `[replan, step 4]` line was on checkpoint 3 and gone by
+checkpoint 7, replaced by the step-16 copy of the same sentence, and `kept` never held more than three items.
+
+So `extractKept` takes a seventh source: `carried`, the previous compaction's own derived items
+(`Engine.compactContext` passes `this.kept.filter(k => k.by !== 'human')`; the human ones travel in `human` and
+are pinned first as before). They join as ordinary candidates, LAST, so the (kind, text) dedup keeps the newer
+step and a fact this compaction proved again REFRESHES rather than duplicating. Accumulation is bounded, not
+unbounded: `KEPT_MAX` (24) still cuts the list and `rankKeptCode`'s recency order eats the oldest first, so an
+aged fact survives exactly as long as nothing newer needs its slot.
+
+**The section renders** (F26's last sub-part). `Engine.contextView()` fills `PromptContextView.kept` when the
+list is non-empty, and `keptSection` builds `## Kept (do not re-derive)`; `PromptKeptItem`'s `kind` / `by` are
+widened to the full `KeptItem` vocabulary, because the extractor's own candidates are `by: 'code'` — the only
+provenance a run has before a surface adds a `/keep` — and the narrower pair described a shape nothing could
+produce. Absent while the list is empty, so every run before its first compaction, every run that never
+compacts and every `view: 'legacy'` run (which runs no compaction at all: the frozen bench arms) builds exactly
+the bytes it built before.
+
+**What that moved, stated rather than re-captured.** A relaxed-view run that HAS compacted now carries one
+section its pre-wave capture does not, which two byte-identity goldens see:
+`test/unit/loop/router-golden.test.ts` (contract 1.9 **I2**, against `d86c385`) and
+`test/unit/loop/decompose-m2.test.ts` (contract 1.5 **M2**, against `a17c7f6`). Neither golden was re-captured —
+overwriting the pre-wave bytes with today's would make both tests tautological and the provenance in their
+`commit` field is the entire evidence. Instead each strips exactly the `## Kept` block and asserts that every
+other byte of every prompt is identical, and that the section really was present (so an empty strip cannot hide
+a second change). In `decompose-m2` the transcript's compaction notice reports PROMPT CHARS and therefore moves
+too; the test asserts that the compaction rows are the ONLY rows that differ and that they differ only in that
+pair of figures.
 
 ### 8.7 Visible usage
 

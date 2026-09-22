@@ -128,10 +128,24 @@ export function reasoningCapTokens(reactive: number | null, cheap: number | null
  * path into the treatment's. Default OFF (§0.3's rule for a new mechanism), which is what keeps
  * `test/unit/loop/router-golden.test.ts` and every `view: 'legacy'` prompt golden valid without a re-capture.
  */
-export function s2Mode(mode: EngineMode, env: Readonly<Record<string, string | undefined>> = process.env): 'on' | 'partial' | 'off' {
+export function s2Mode(mode: EngineMode, opt?: 'on' | 'off', env: Readonly<Record<string, string | undefined>> = process.env): 'on' | 'partial' | 'off' {
   if (mode !== 'jev-on') return 'off';
-  if ((env[S2_ENV_FLAG] ?? '').trim().toLowerCase() !== 'on') return 'off';
+  if (!s2Enabled(opt, env)) return 'off';
   return (env[HEDGE_ENV_FLAG] ?? '').trim().toLowerCase() === 'off' ? 'partial' : 'on';
+}
+
+/**
+ * F25's recorded gap, closed (review defect A5): **the explicit option wins; `JEVCODE_S2` only fills an ABSENT
+ * option** — the same polarity `routersEnabled` and `resolveFastPathOption` were inverted to by the §7.5 seam,
+ * and for the same reason. Without an option the bench could not pin S2 per arm at all: `armMechanisms` recorded
+ * `s2: true` for `jev-on-next` while nothing set the variable (so the arm ran S2 OFF), and an exported
+ * `JEVCODE_S2=on` armed the whole generation path on the plain `jev-on` CONTROL arm while `summary.json` recorded
+ * `mechanisms.s2: false` — contamination in the direction that makes the wave look better, unobservably.
+ * `MECHANISM_ENV_VARS` clears the variable as the belt; this is the option that makes the arm's row true.
+ */
+export function s2Enabled(opt?: 'on' | 'off', env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  if (opt !== undefined) return opt === 'on';
+  return (env[S2_ENV_FLAG] ?? '').trim().toLowerCase() === 'on';
 }
 
 // ---------------------------------------------------------------------------------------
@@ -197,9 +211,17 @@ export async function hedgedCall<R>(input: HedgedCallInput<R>): Promise<HedgedCa
   };
 
   type Settled = { sample: number; ok: true; result: R } | { sample: number; ok: false; error: unknown };
+  /**
+   * Review defect A1: a leg is identified by its `sample`, and it leaves `live` when the loop has OBSERVED its
+   * event — never when it has merely settled. The two are not the same drain: `Promise.race` hands back one
+   * event per turn, so a twin that resolved in the same microtask drain as the origin's rejection is settled
+   * and unobserved at the moment the origin's rejection is consumed. Filtering on "settled" dropped it, left
+   * `live` empty and threw the origin's error over a result that was already in hand — the exact opposite of
+   * this module's "a hedged call is never less reliable than an unhedged one".
+   */
   interface Tracked {
-    done: boolean;
-    p: Promise<Settled>;
+    readonly sample: number;
+    readonly p: Promise<Settled>;
   }
 
   const start = (sample: number): Tracked => {
@@ -223,12 +245,7 @@ export async function hedgedCall<R>(input: HedgedCallInput<R>): Promise<HedgedCa
         (error: unknown): Settled => ({ sample, ok: false, error }),
       )
       .finally(() => legLink.unlink());
-    const t: Tracked = { done: false, p: raw };
-    t.p = raw.then((settled) => {
-      t.done = true;
-      return settled;
-    });
-    return t;
+    return { sample, p: raw };
   };
 
   // The timer is a RACER, not a side effect: a twin started while the race is already awaiting would otherwise
@@ -267,7 +284,10 @@ export async function hedgedCall<R>(input: HedgedCallInput<R>): Promise<HedgedCa
         live.push(start(HEDGE_TWIN_OFFSET));
         continue;
       }
-      live = live.filter((t) => !t.done);
+      // A1: only the leg whose event was just consumed leaves the race. The other leg's `t.p` may already be
+      // settled — the next `Promise.race` then picks it up in the very next turn, which is how a twin that
+      // answered beside its origin's failure becomes the call's answer instead of being discarded with it.
+      live = live.filter((t) => t.sample !== ev.sample);
       if (ev.ok) {
         clearTimer();
         const wonBy = ev.sample === 0 ? 'origin' : 'twin';

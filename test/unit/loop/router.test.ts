@@ -26,10 +26,10 @@ import type { StageContext } from '../../../src/loop/engine.js';
 import { createLoopDetector } from '../../../src/loop/loopdetect.js';
 import { emptyPlan } from '../../../src/loop/plan.js';
 import { buildCommonState, type ExecutedInfo } from '../../../src/loop/state.js';
-import { commitStepRouters, noteStepRoute, resetStepRouters, routersOn, stepTokenFor } from '../../../src/loop/routers.js';
+import { RL2_CONTEXT_DEADLINE_MS, commitStepRouters, noteStepRoute, resetStepRouters, routersOn, stepTokenFor } from '../../../src/loop/routers.js';
 import type { RouteResult } from '../../../src/jev/router.js';
 import { INTENT_FALLBACK, codeIntentOrder, runIntentStage } from '../../../src/loop/stages/intent.js';
-import { runContextStage, selectCandidatesCode } from '../../../src/loop/stages/context.js';
+import { CONTEXT_MAX_CANDIDATES, buildContextQuestions, runContextStage, selectCandidatesCode } from '../../../src/loop/stages/context.js';
 import { runJudgeStage } from '../../../src/loop/stages/judge.js';
 import { completionDecision, type CompletionFactInput } from '../../../src/loop/stages/complete.js';
 import { REPLAN_FALLBACK, runReplanStage } from '../../../src/loop/stages/replan.js';
@@ -209,6 +209,67 @@ describe('the router table with a decider that throws (routers: on)', () => {
     const r = await pending;
     // the code order, not Jev's single file: the answer arrived for a step that no longer exists
     expect(r.files.map((f) => f.path)).toEqual(['src/a.py', 'tests/test_a.py']);
+  });
+
+  /**
+   * Review defect **A7**, the half that is reachable without a live Jev. RL2 carries the LARGEST question batch
+   * on the loop — one Noul per candidate, up to `CONTEXT_MAX_CANDIDATES` (300) — against a deadline
+   * (`RL2_CONTEXT_DEADLINE_MS`, 400 ms) justified by a p50/p95 measured over the loop's asks IN GENERAL, none of
+   * which is a 300-Noul batch. If that batch is routinely slower than the deadline, `jev-on-next` does not gain
+   * a route at RL2: it silently LOSES Jev context selection and runs `selectCandidatesCode` every step.
+   *
+   * What can be fixed offline is the word "silently". The per-route drop REASON now rides the ledger row, so the
+   * measurement the review asks for — "measure the context batch's own latency on a jev-on-next task before the
+   * arm is run" — is a read of that arm's own `steps.jsonl` rather than a new experiment: `drop: 'deadline'` on
+   * every RL2 row says the deadline is the binding constraint and must be resized; `drop: 'error'` says Jev was
+   * down; no `drop` at all says the answer was applied. Sizing the constant itself still needs the measurement.
+   */
+  it('RL2 A7: the drop REASON is recorded, so a deadline-bound arm is visible in its own run directory', async () => {
+    const intent = { intent: 'investigate' as const, answer: 'investigate' as const, probability: 0.9 };
+    // the deadline, on the batch the site really sends
+    const slow = stageCtx({
+      step: 45,
+      ask: async (_stage, questions) => {
+        await new Promise((r) => setTimeout(r, RL2_CONTEXT_DEADLINE_MS + 120));
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(0.95);
+        return out;
+      },
+    });
+    await runContextStage(slow, common(), intent);
+    expect(commitStepRouters('r-router', 45)?.rows[0]).toMatchObject({ id: 'RL2', dropped: true, drop: 'deadline' });
+
+    // an outage is a DIFFERENT reason, and a reader must be able to tell them apart — one says "resize the
+    // deadline", the other says "Jev was down"; before this they were the same `dropped: true`
+    const down = stageCtx({ ask: OUTAGE, step: 46 });
+    await runContextStage(down, common(), intent);
+    expect(commitStepRouters('r-router', 46)?.rows[0]).toMatchObject({ id: 'RL2', dropped: true, drop: 'error' });
+
+    // and an applied answer carries no reason at all, so the member is absent on the row it cannot describe
+    const fast = stageCtx({
+      step: 47,
+      ask: (_stage, questions) => {
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(id === 'show:tests/test_a.py' ? 0.95 : 0.05);
+        return Promise.resolve(out);
+      },
+    });
+    await runContextStage(fast, common(), intent);
+    const applied = commitStepRouters('r-router', 47)?.rows[0];
+    expect(applied).toMatchObject({ id: 'RL2', dropped: false });
+    expect(applied?.drop).toBeUndefined();
+  });
+
+  /**
+   * A7's other half, as a fact rather than a worry: RL2's batch really is the loop's largest, so the generic
+   * per-site deadline is being applied to the one site it was never measured on. `CONTEXT_MAX_CANDIDATES` Nouls
+   * against RL1/RL4/RL6's single Choice.
+   */
+  it('RL2 A7: the batch is one Noul per candidate, up to CONTEXT_MAX_CANDIDATES — the largest ask on the loop', () => {
+    const views = Array.from({ length: CONTEXT_MAX_CANDIDATES + 40 }, (_, i) => ({ path: `src/f${i}.py`, bytes: 100, mentionsInTask: 0, touchedThisRun: false }));
+    const questions = buildContextQuestions(views.slice(0, CONTEXT_MAX_CANDIDATES), 'investigate');
+    expect(Object.keys(questions)).toHaveLength(CONTEXT_MAX_CANDIDATES);
+    for (const q of Object.values(questions)) expect(q.type).toBe('noul');
   });
 
   it('RL2 the code order: touched first, then mentions, then path, under the 12-file / 60 KB caps', () => {

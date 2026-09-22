@@ -85,11 +85,18 @@ export interface PromptFileInView {
 }
 
 /** §8.6: one `## Kept (do not re-derive)` item. */
+/**
+ * §8.6's kept item, as the section renders it. `kind` and `by` are widened to the full `KeptItem` vocabulary
+ * (`src/loop/context/compaction.ts`, `CheckpointState.kept`) by F26's finishing pass: the extractor's own
+ * candidates are `by: 'code'` — the only provenance a run has before a surface adds a `/keep` or `kept: 'jev'`
+ * ranks them — so the narrower pair described a shape nothing could produce, which is half of why the section
+ * rendered for nobody. Additive: no prompt built before this change carried an item at all.
+ */
 export interface PromptKeptItem {
-  kind: 'fact' | 'file' | 'decision';
+  kind: 'fact' | 'file' | 'decision' | 'memory';
   text: string;
   step: number;
-  by: 'jev' | 'human';
+  by: 'jev' | 'human' | 'code';
 }
 
 /**

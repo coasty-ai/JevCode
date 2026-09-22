@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { GenerateOptions, GenerateRequest, GenerateResult } from '../../../src/core/types.js';
 import type { FakeProvider, Harness } from './fakes.js';
 import { createFakeSandbox, createFakeWorkspace, execResult, makeEngine, repoState, turn } from './fakes.js';
-import { HEDGE_TWIN_OFFSET, S2_ENV_FLAG, hedgeAfterMs, s2Mode } from '../../../src/synth/llm/hedge.js';
+import { HEDGE_TWIN_OFFSET, S2_ENV_FLAG, hedgeAfterMs, hedgeOriginOf, s2Mode } from '../../../src/synth/llm/hedge.js';
 import { summariseStepRows } from '../../../src/bench/step-records.js';
 
 const harnesses: Harness[] = [];
@@ -56,24 +56,108 @@ function ttfbProvider(ttfbMs: number): FakeProvider & { firstByteCalls: number }
   return p;
 }
 
+/** The recorded shape the hedge exists for: an origin silent from the first byte to the deadline, a twin that answers at once. */
+function silentOriginProvider(): FakeProvider {
+  const requests: GenerateRequest[] = [];
+  return {
+    name: 'mock',
+    model: 'z-ai/glm-5.3-flash',
+    requests,
+    async generate(req: GenerateRequest, o: GenerateOptions): Promise<GenerateResult> {
+      requests.push(req);
+      if (o.sample === undefined) {
+        await new Promise<never>((_, reject) => {
+          o.signal.addEventListener('abort', () => reject(o.signal.reason as Error));
+        });
+      }
+      return { text: '', toolCalls: [PROPOSAL({ kind: 'done', summary: 'the twin answered' })], usage: { inputTokens: 900, outputTokens: 100, costUsd: 0.003, calls: 1 }, model: 'z-ai/glm-5.3-flash', stopReason: 'tool_use', latencyMs: 5 };
+    },
+  };
+}
+
 describe('F25 §3 — the switch', () => {
   it("is `jev-on` only, default off, and `JEVCODE_HEDGE=off` makes it 'partial'", () => {
-    expect(s2Mode('jev-on', {})).toBe('off');
-    expect(s2Mode('jev-on', { [S2_ENV_FLAG]: 'on' })).toBe('on');
-    expect(s2Mode('jev-on', { [S2_ENV_FLAG]: 'ON ' })).toBe('on');
-    expect(s2Mode('jev-on', { [S2_ENV_FLAG]: 'on', JEVCODE_HEDGE: 'off' })).toBe('partial');
-    for (const mode of ['llm-jev', 'jev-only', 'jev-off'] as const) expect(s2Mode(mode, { [S2_ENV_FLAG]: 'on' })).toBe('off');
+    expect(s2Mode('jev-on', undefined, {})).toBe('off');
+    expect(s2Mode('jev-on', undefined, { [S2_ENV_FLAG]: 'on' })).toBe('on');
+    expect(s2Mode('jev-on', undefined, { [S2_ENV_FLAG]: 'ON ' })).toBe('on');
+    expect(s2Mode('jev-on', undefined, { [S2_ENV_FLAG]: 'on', JEVCODE_HEDGE: 'off' })).toBe('partial');
+    expect(s2Mode('jev-on', 'on', { JEVCODE_HEDGE: 'off' })).toBe('partial');
+    for (const mode of ['llm-jev', 'jev-only', 'jev-off'] as const) expect(s2Mode(mode, undefined, { [S2_ENV_FLAG]: 'on' })).toBe('off');
   });
 
-  it("EngineStatus.mechanisms reports what actually ran: 'on' under jev-on with the switch, 'off' under llm-jev", async () => {
+  it("EngineStatus.mechanisms reports what actually ran: 'on' under jev-on with the switch", async () => {
     process.env[S2_ENV_FLAG] = 'on';
     const on = await build({ mode: 'jev-on', turns: [turn({ kind: 'done', summary: 'x' })], limits: { maxSteps: 1 } });
     expect(on.engine.status().mechanisms).toEqual({ s2: 'on', routers: 'off', fastPath: 'auto' });
-    const llm = await build({ mode: 'llm-jev', turns: [turn({ kind: 'done', summary: 'x' })], limits: { maxSteps: 1 }, synthesizer: { name: 'none', async synthesize() { return { goal: 'g', action: { kind: 'done', summary: 'x' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' }; } } });
-    expect(llm.engine.status().mechanisms).toEqual({ s2: 'off', routers: 'off', fastPath: 'off' });
     delete process.env[S2_ENV_FLAG];
     const off = await build({ mode: 'jev-on', turns: [turn({ kind: 'done', summary: 'x' })], limits: { maxSteps: 1 } });
     expect(off.engine.status().mechanisms).toEqual({ s2: 'off', routers: 'off', fastPath: 'auto' });
+  });
+
+  /**
+   * Review defect A8: the member was written UNCONDITIONALLY, which contradicts its own type doc ("Absent on an
+   * engine that does not resolve them") and adds a member to every `--json=verbose` status line in every mode.
+   * The adjacent `coordination` spread exists in exactly that shape to keep the stream byte-identical on a run
+   * without a ledger; `mechanisms` now follows it — absent when the engine resolved every mechanism OFF, which
+   * is every control arm of the §8 head-to-head.
+   */
+  it('is ABSENT on an engine that resolved every mechanism off, so the control arms\' status line is byte-identical (A8)', async () => {
+    for (const mode of ['llm-jev', 'jev-only'] as const) {
+      const h = await build({
+        mode,
+        turns: [turn({ kind: 'done', summary: 'x' })],
+        limits: { maxSteps: 1 },
+        synthesizer: { name: 'none', async synthesize() { return { goal: 'g', action: { kind: 'done', summary: 'x' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' }; } },
+      });
+      expect(h.engine.status().mechanisms).toBeUndefined();
+      expect('mechanisms' in h.engine.status()).toBe(false);
+    }
+    const off = await build({ mode: 'jev-off', turns: [turn({ kind: 'done', summary: 'x' })], limits: { maxSteps: 1 } });
+    expect(off.engine.status().mechanisms).toBeUndefined();
+  });
+
+  /**
+   * F25's recorded gap, and review defect A5's other half: the bench could not PIN S2 per arm because there was
+   * no option to pin — `s2Mode` read `JEVCODE_S2` and nothing else. It now reads the option FIRST, exactly as
+   * `routersEnabled` and `resolveFastPathOption` do after the §7.5 seam inverted them, so an exported switch can
+   * neither arm a control arm nor disarm a treatment arm.
+   */
+  it("EngineOptions.s2 beats JEVCODE_S2 in both directions, and the env only fills an ABSENT option", async () => {
+    expect(s2Mode('jev-on', 'on', {})).toBe('on');
+    expect(s2Mode('jev-on', 'off', { [S2_ENV_FLAG]: 'on' })).toBe('off');
+    expect(s2Mode('jev-on', undefined, { [S2_ENV_FLAG]: 'on' })).toBe('on');
+    expect(s2Mode('jev-on', undefined, {})).toBe('off');
+    // the `jev-on` gate is still first: no option turns a control arm's generation path into the treatment's
+    for (const mode of ['llm-jev', 'jev-only', 'jev-off'] as const) expect(s2Mode(mode, 'on', { [S2_ENV_FLAG]: 'on' })).toBe('off');
+
+    process.env[S2_ENV_FLAG] = 'on';
+    const pinnedOff = await build({ mode: 'jev-on', turns: [turn({ kind: 'done', summary: 'x' })], limits: { maxSteps: 1 }, engine: { s2: 'off' } });
+    expect(pinnedOff.engine.status().mechanisms).toEqual({ s2: 'off', routers: 'off', fastPath: 'auto' });
+    delete process.env[S2_ENV_FLAG];
+    const pinnedOn = await build({ mode: 'jev-on', turns: [turn({ kind: 'done', summary: 'x' })], limits: { maxSteps: 1 }, engine: { s2: 'on' } });
+    expect(pinnedOn.engine.status().mechanisms).toEqual({ s2: 'on', routers: 'off', fastPath: 'auto' });
+  });
+
+  /**
+   * F25's other recorded sub-part: `state` did not carry `mechanisms`, only `EngineStatus` did — so an archived
+   * run directory could be checked against `summary.json` only while the process was alive. It rides
+   * `state.json` under the same absent-when-all-off rule as the status line.
+   */
+  it('CheckpointState.mechanisms records the same resolution, and is absent when every mechanism is off', async () => {
+    process.env[S2_ENV_FLAG] = 'on';
+    const on = await build({ mode: 'jev-on', turns: [turn({ kind: 'done', summary: 'x' })], limits: { maxSteps: 1 }, probeGitState: repoState() });
+    await on.engine.run();
+    expect(on.store.last()!.mechanisms).toEqual({ s2: 'on', routers: 'off', fastPath: 'auto' });
+    delete process.env[S2_ENV_FLAG];
+    const off = await build({
+      mode: 'llm-jev',
+      turns: [turn({ kind: 'done', summary: 'x' })],
+      limits: { maxSteps: 1 },
+      probeGitState: repoState(),
+      synthesizer: { name: 'none', async synthesize() { return { goal: 'g', action: { kind: 'done', summary: 'x' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' }; } },
+    });
+    await off.engine.run();
+    expect(off.store.last()!.mechanisms).toBeUndefined();
   });
 });
 
@@ -185,6 +269,63 @@ describe('F25 §3.2 — the hedge on the jev-on propose call', () => {
     const cancelled = h.store.generator.filter((g) => g.cancelled === true);
     expect(cancelled).toHaveLength(1);
     expect(cancelled[0]!.stopReason).toBe('cancelled');
+  });
+
+  /**
+   * Review defect **A2**. Only the WINNER's provider-reported latency reached `draft.timing.generatorMs`, so on a
+   * twin-win step the whole hedge wait (`hedgeAfterMs`, 3–8 s) fell out of every named bucket and the residual
+   * formula charged all of it to `harnessMs` — the harness-overhead metric the 50 ms p95 budget is measured
+   * against. The race's WALL is the step's generator time, exactly as `noteSampleEnd` takes the batch wall for a
+   * round; the loser's own `latencyMs` is booked on its own cancelled row and adds nothing here.
+   */
+  it('books the RACE wall as generatorMs, so a twin win does not leak hedgeAfterMs into harnessMs (A2)', async () => {
+    process.env[S2_ENV_FLAG] = 'on';
+    const h = await build({ mode: 'jev-on', provider: silentOriginProvider(), limits: { maxSteps: 1 }, probeGitState: repoState(), now: () => Date.now() });
+    const running = h.engine.run();
+    await vi.advanceTimersByTimeAsync(hedgeAfterMs(null) + 50);
+    await vi.advanceTimersByTimeAsync(50);
+    await running;
+    const t = h.store.steps[0]!.timing;
+    // the twin answered with `latencyMs: 5`; the race itself held the step for the whole hedge threshold
+    expect(t.generatorMs).toBeGreaterThanOrEqual(hedgeAfterMs(null));
+    expect(t.harnessMs).toBeLessThan(hedgeAfterMs(null));
+    expect(t.generatorMs).toBeLessThanOrEqual(t.totalMs);
+  });
+
+  /**
+   * Review defect **A3**. The success row's spread never consulted `leg.sample`, so a WINNING twin's
+   * `generator.jsonl` row carried no `sample` member at all — `hedgeOriginOf` could not read it back — while the
+   * LOSER (always written with one) was the only row `pushGeneratorRecord` counted. A jev-on step that succeeded
+   * therefore reported `samples: 1, cancelled: 1`: one sample, all of it cancelled. And because
+   * `src/bench/step-records.ts` sums those counters off any row with a `verify` object, a jev-on-next arm with S2
+   * on reported a 100 % cancellation rate on an arm that has no synthesizer at all.
+   */
+  it('the WINNING twin\'s row carries its leg index, and one-shot legs are not counted as synthesizer samples (A3)', async () => {
+    process.env[S2_ENV_FLAG] = 'on';
+    const h = await build({ mode: 'jev-on', provider: silentOriginProvider(), limits: { maxSteps: 1 }, probeGitState: repoState() });
+    const running = h.engine.run();
+    await vi.advanceTimersByTimeAsync(hedgeAfterMs(null) + 50);
+    await vi.advanceTimersByTimeAsync(50);
+    await running;
+    const rows = h.store.generator;
+    const winner = rows.filter((g) => g.cancelled !== true);
+    expect(winner).toHaveLength(1);
+    expect(winner[0]!.sample).toBe(HEDGE_TWIN_OFFSET);
+    expect(hedgeOriginOf(winner[0]!.sample!)).toBe(0);
+    expect(winner[0]!.purpose).toBe('propose_fix');
+    // both legs are still booked (a hedge is faster, never free) — the loser keeps its own cancelled row
+    expect(rows.filter((g) => g.cancelled === true)).toHaveLength(1);
+    // but NEITHER leg is a synthesizer sample, so the two verification counters stay 0 on a step that succeeded
+    const rec = h.store.steps[0]!;
+    expect(rec.verify?.samples).toBe(0);
+    expect(rec.verify?.cancelled).toBe(0);
+    expect(rec.verify?.hedges).toBe(1);
+    // ...and the bench row says the same: no synthesizer, no samples, no 100 % cancellation rate
+    const summary = summariseStepRows(h.store.steps.map((x) => JSON.stringify(x)).join('\n'));
+    expect(summary.verify.samples).toBe(0);
+    expect(summary.verify.cancelled).toBe(0);
+    expect(summary.s2.hedges).toBe(1);
+    expect(summary.s2.hedgeWins).toBe(1);
   });
 
   it('an origin that produces a first byte is never hedged', async () => {
