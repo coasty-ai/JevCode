@@ -5,7 +5,7 @@
  * times), never of the order files arrived in. `listSessions` and the target/inbox helpers are pure over the fold.
  */
 import { authorityOf, compareClaim, FOREIGN_ORIGIN } from './claims.js';
-import { compareStamp, GONE_KEEP_MS, isLive, SKEW_MS, SYNC_SLACK_GIT_MS, type Now } from './records.js';
+import { compareStamp, GONE_KEEP_MS, honouredTtlMs, isLive, SKEW_MS, SYNC_SLACK_GIT_MS, type Now } from './records.js';
 import { sameRepo } from './ids.js';
 import type { Ack, AnyRecord, Authority, DeviceRecord, Fold, Heartbeat, Lease, Liveness, LivenessEnv, Message, RecordKind, RecordOrigin, SelfIdentity, SessionActivity } from './types.js';
 
@@ -58,7 +58,7 @@ export interface FoldEnv extends LivenessEnv {
 }
 
 export function emptyFold(now: Now): Fold {
-  return { live: new Map(), gone: new Map(), leases: new Map(), byPath: new Map(), inbox: [], acks: new Map(), devices: new Map(), origins: new Map(), liveness: new Map(), ignored: new Map(), skipped: 0, at: { wallMs: now.wallMs, monoMs: now.monoMs } };
+  return { live: new Map(), gone: new Map(), leases: new Map(), byPath: new Map(), inbox: [], acks: new Map(), devices: new Map(), origins: new Map(), liveness: new Map(), ignored: new Map(), cloned: new Set(), skipped: 0, at: { wallMs: now.wallMs, monoMs: now.monoMs } };
 }
 
 /** §5.1: a recipient's inbox is the union, over every device subtree, of the `<sessionId>`, `@<repoKey>`, `@<remoteKey>` and `@all` outbox dirs. */
@@ -151,7 +151,7 @@ export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env:
   for (const d of [...devices].sort((a, b) => (a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0))) {
     if (fold.devices.has(d.deviceId)) continue;
     const syncLagMs = d.deviceId === env.deviceId ? (env.selfSyncLagMs ?? null) : (env.foreignSyncLagMs?.get(d.deviceId) ?? null);
-    fold.devices.set(d.deviceId, { ...d, lastSeen: lastSeen.get(d.deviceId) ?? d.createdAt, syncLagMs, ignored: env.ignoredDevices.has(d.deviceId) });
+    fold.devices.set(d.deviceId, { ...d, lastSeen: lastSeen.get(d.deviceId) ?? d.createdAt, syncLagMs, ignored: env.ignoredDevices.has(d.deviceId), cloned: false });
   }
 
   // heartbeats — one per (device, run) file; several records for one runId = a fork (§9.3): the lowest CLAIM holds
@@ -222,6 +222,26 @@ export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env:
   }
   for (const k of [...state.goneAt.keys()]) if (!seenKeys.has(k)) state.goneAt.delete(k);
 
+  // §3.2 / §10.3 (design revision 5): the CLONE flag. Two or more LIVE heartbeats from ONE deviceId carrying different
+  // `bootId`s are one `deviceKey` on two machines, so that key can no longer speak for either of them: every gated
+  // action is suspended for that device until it is re-paired. For a FOREIGN device this is all a peer can do (it must
+  // not delete or rewrite anything of theirs); for MY OWN deviceId it is the `duplicate-identity` case of §3.2 and the
+  // later booter adopts a new id. The flag is a fact about records, so it is computed here and never in a renderer.
+  const bootsByDevice = new Map<string, Set<string>>();
+  for (const { hb } of kept) {
+    if (typeof hb.bootId !== 'string' || hb.bootId === '') continue;
+    if (fold.liveness.get(recordKeyOf(hb)) !== 'live') continue;
+    const set = bootsByDevice.get(hb.deviceId) ?? new Set<string>();
+    set.add(hb.bootId);
+    bootsByDevice.set(hb.deviceId, set);
+  }
+  for (const [deviceId, boots] of bootsByDevice) {
+    if (boots.size < 2) continue;
+    fold.cloned.add(deviceId);
+    const d = fold.devices.get(deviceId);
+    if (d !== undefined) fold.devices.set(deviceId, { ...d, cloned: true });
+  }
+
   // leases — by leaseId; cap by stamp
   leases.sort(byStampDesc);
   const keptLeases = leases.length > FOLD_CAPS.leases ? leases.slice(0, FOLD_CAPS.leases) : leases;
@@ -271,15 +291,22 @@ export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env:
 /** The largest stamp `n` in the fold (own subtree, gone records and forks included) — the seed of a new run's clock (§3.2). */
 export function maxStampN(fold: Fold): number {
   let n = 0;
-  const bump = (s: { n: number }): void => {
+  // + re-check (6): adoption is TRUST-QUALIFIED. A Lamport clock only has to follow writers whose order matters to it,
+  // and `leaseId = <runId>-<n>` / `msgId = <deviceId>-<actor8>-<n>` are derived from it: an unverified writer that
+  // published `n = 999_998_999` pushed every local clock to the saturation ceiling within a thousand issues, after
+  // which every `declare` overwrote the previous lease FILE and every message after the first was dropped by the
+  // `seenIds` dedupe. Only my own records and hmac-valid records from a paired device raise the bar; an unverified
+  // peer's stamp still DISPLAYS and still orders that peer's own records, it just cannot move my counter.
+  const bump = (s: { n: number }, origin: RecordOrigin | undefined): void => {
+    if (origin === undefined || authorityOf(origin) === 'unverified') return;
     if (s.n > n) n = s.n;
   };
-  for (const hb of fold.live.values()) bump(hb.stamp);
-  for (const hb of fold.gone.values()) bump(hb.stamp);
-  for (const list of fold.forks?.values() ?? []) for (const hb of list) bump(hb.stamp);
-  for (const l of fold.leases.values()) bump(l.stamp);
-  for (const m of fold.inbox) bump(m.stamp);
-  for (const list of fold.acks.values()) for (const a of list) bump(a.stamp);
+  for (const hb of fold.live.values()) bump(hb.stamp, fold.origins.get(`${hb.deviceId}/${hb.runId}`));
+  for (const hb of fold.gone.values()) bump(hb.stamp, fold.origins.get(`${hb.deviceId}/${hb.runId}`));
+  for (const list of fold.forks?.values() ?? []) for (const hb of list) bump(hb.stamp, fold.origins.get(`${hb.deviceId}/${hb.runId}`));
+  for (const l of fold.leases.values()) bump(l.stamp, fold.origins.get(leaseOriginKey(l.leaseId)));
+  for (const m of fold.inbox) bump(m.stamp, fold.origins.get(messageOriginKey(m.id)));
+  for (const list of fold.acks.values()) for (const a of list) bump(a.stamp, fold.origins.get(ackOriginKey(a.deviceId, a.msgId, a.by)));
   return n;
 }
 
@@ -311,7 +338,7 @@ function activityOf(fold: Fold, self: SelfIdentity, hb: Heartbeat & { arrivalMon
   const beatAt = parseIso(hb.beatAt);
   const beatAgeMs = Number.isFinite(beatAt) ? Math.max(0, fold.at.wallMs - beatAt) : 0;
   const skewMs = Number.isFinite(beatAt) && beatAt - fold.at.wallMs > SKEW_MS ? beatAt - fold.at.wallMs : null;
-  const hung = sameDevice && liveness === 'live' && Number.isFinite(beatAt) && fold.at.wallMs - beatAt > hb.ttlMs;
+  const hung = sameDevice && liveness === 'live' && Number.isFinite(beatAt) && fold.at.wallMs - beatAt > honouredTtlMs(hb.ttlMs);
   const leases: Lease[] = [];
   let takenOver = false;
   for (const l of byRun.get(hb.runId) ?? []) {
@@ -337,6 +364,8 @@ function activityOf(fold: Fold, self: SelfIdentity, hb: Heartbeat & { arrivalMon
       noLock: hb.lockHeld === false,
       ignoredDevice: device?.ignored === true,
       unverified: authority === 'unverified',
+      // §3.2 / §10.3 (revision 5): one deviceKey on two machines — every gated action is suspended until re-pairing
+      cloned: fold.cloned.has(hb.deviceId),
     },
     authority,
     skewMs,

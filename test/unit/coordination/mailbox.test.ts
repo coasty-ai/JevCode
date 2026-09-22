@@ -131,8 +131,8 @@ describe('inbox (pure) and the seen set', () => {
     expect(consumerIdOf({ sessionId: null }, 'abcdefgh')).toBe('tui-abcdefgh');
     const { t, l } = await harness({ self: { sessionId: null, runId: null } });
     expect([...(await loadSeen(l))]).toEqual([]);
-    // the seen file lives under inbox/seen/, where no deviceId regex can ever match it
-    expect(commonsPaths(t.root).seenFile(consumerIdOf(l.self, l.actor8))).toBe(join(t.root, 'inbox', 'seen', `tui-${l.actor8}.json`));
+    // §3.1: the seen file lives under inbox/seen/<deviceId>/, where no deviceId regex can ever match the 'seen' level
+    expect(commonsPaths(t.root).seenFile(DEV_A, consumerIdOf(l.self, l.actor8))).toBe(join(t.root, 'inbox', 'seen', DEV_A, `tui-${l.actor8}.json`));
   });
 });
 

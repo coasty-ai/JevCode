@@ -270,16 +270,18 @@ describe('review blocker 2: the write verbs the surface owns', () => {
   it('setDeviceLabel rewrites both device.json files as the PUBLIC subset — never the commons key', async () => {
     const h = await harness();
     await h.l.open();
-    await writeCommonsKey(nodeFs, h.root, mintCommonsKey());
+    const p = commonsPaths(h.root, h.l.hostKey);
+    await writeCommonsKey(nodeFs, p.hostDir, mintCommonsKey());
     const rec = await setDeviceLabel(h.l, 'studio-2');
     expect(rec.label).toBe('studio-2');
-    const p = commonsPaths(h.root);
+    // §3.1 (revision 5): the private copy is per HOST, the published one per DEVICE
+    expect(p.deviceFile).toContain(join('devices', h.l.hostKey));
     for (const file of [p.deviceFile, p.deviceRecordFile(DEV_A)]) {
       const text = (await nodeFs.readBounded(file, 4096)).text;
       expect(JSON.parse(text)).toEqual(rec);
       expect(text).not.toContain('keyHex');
     }
-    expect(await readCommonsKey(nodeFs, h.root)).toMatch(/^[0-9a-f]{64}$/);
+    expect(await readCommonsKey(nodeFs, p.hostDir)).toMatch(/^[0-9a-f]{64}$/);
     expect(h.l.self.label).toBe('studio-2');
   });
 
@@ -608,10 +610,13 @@ describe('§11 rows 3 / 11 / 27: two devices, a returning device, a copied home'
     const t = await tempHome();
     cleanups.push(t.cleanup);
     const key = mintCommonsKey();
-    await trustDevice(nodeFs, t.root, { deviceId: DEV_B, label: 'studio', pairedAt: iso(T0), keyHex: key });
-    const text = (await nodeFs.readBounded(commonsPaths(t.root).trustedFile, 4096)).text;
-    expect(commonsPaths(t.root).trustedFile).toContain('trusted-devices.json');
+    const p = commonsPaths(t.root, 'a1b2c3d4');
+    await trustDevice(nodeFs, p.hostDir, { deviceId: DEV_B, label: 'studio', pairedAt: iso(T0), keyHex: key });
+    const text = (await nodeFs.readBounded(p.trustedFile, 4096)).text;
+    expect(p.trustedFile).toContain('trusted-devices.json');
+    // §3.1 (revision 5): the paired keys are PER HOST and are never mirrored
+    expect(p.trustedFile).toContain(join('devices', 'a1b2c3d4'));
     expect(text).toContain(key);
-    expect(commonsPaths(t.root).seenDir).toContain(join('inbox', 'seen'));
+    expect(p.seenDir(DEV_A)).toContain(join('inbox', 'seen', DEV_A));
   });
 });

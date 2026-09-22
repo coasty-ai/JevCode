@@ -8,7 +8,9 @@ import { authorityOf, claimHolder, compareClaim, forkVerdict, hmacOf, hmacValid,
 import {
   COUNTER_MAX,
   HEARTBEAT_TTL_MS,
+  HONOURED_TTL_MAX_MS,
   RECORD_MAX_BYTES,
+  RECORD_TTL_MAX_MS,
   SKEW_MS,
   SYNC_SLACK_SHARED_MS,
   adoptableStampN,
@@ -128,9 +130,33 @@ describe('liveness (§3.4, §11 rows 1 / 2 / 6)', () => {
     expect(isLive(hb, now, null, { ...env, isPidAlive: () => false }, SELF).liveness).toBe('stale');
   });
 
-  it('§11 row 2: a run that started before this device booted is `stale-reused-pid` even with a live pid', () => {
-    const hb = makeHeartbeat({ startedAt: iso(Date.parse(BOOT) - 60_000) });
-    expect(isLive(hb, now, null, env, SELF).liveness).toBe('stale-reused-pid');
+  it('§11 row 2 (design revision 5): the reused pid is decided by `bootId`, and the wall-arithmetic rule is WITHDRAWN', () => {
+    // revision 2 read `startedAt < bootAt` as a reused pid. A forward clock step (NTP after sleep, a VM restore, a
+    // manual set) larger than the process's age-since-boot then made a LIVE process stale, `takeRunLock` replaced its
+    // run.lock and two engines co-wrote one state.json. A clock may never decide this.
+    const clockJumped = makeHeartbeat({ startedAt: iso(Date.parse(BOOT) - 60_000) });
+    expect(isLive(clockJumped, now, null, env, SELF).liveness).toBe('live');
+    // a KNOWN, differing bootId with no fresh beat and a live pid IS the reused-pid case, and the only one
+    const myBoot = { ...env, bootId: 'boot-now' };
+    const previousBoot = makeHeartbeat({ bootId: 'boot-before' });
+    expect(isLive(previousBoot, now, null, myBoot, SELF).liveness).toBe('stale-reused-pid');
+    // ... with a DEAD pid it is simply gone
+    expect(isLive(previousBoot, now, null, { ...myBoot, isPidAlive: () => false }, SELF).liveness).toBe('stale');
+    // §3.2 duplicate-identity (ii): a differing bootId with a FRESH beat is a live CLONE, not a reboot — it folds as
+    // foreign (judged by arrival) and is live. A previous boot of my machine stops renewing; a clone does not.
+    expect(isLive(previousBoot, now, { arrivalMono: now.monoMs - 1_000 }, myBoot, SELF).liveness).toBe('live');
+    // an older build wrote no bootId at all: a live pid is never auto-replaced
+    expect(isLive(makeHeartbeat(), now, null, myBoot, SELF).liveness).toBe('live');
+  });
+
+  it('+ re-check (5): a hostile `ttlMs` cannot buy a peer 11 days of liveness', () => {
+    const hostile = makeHeartbeat({ deviceId: DEV_B, ttlMs: HONOURED_TTL_MAX_MS * 100, claim: claim({ deviceId: DEV_B }) });
+    // `isLive` honours min(ttlMs, 4 beats), so the window is bounded whatever the record claims
+    const pastHonoured = now.monoMs - (HONOURED_TTL_MAX_MS + SYNC_SLACK_SHARED_MS + 1);
+    expect(isLive(hostile, now, { arrivalMono: pastHonoured }, env, TRUSTED).liveness).toBe('stale');
+    // and a record may not even CARRY more than ten beats of ttl
+    expect(parseRecord(serializeRecord(makeHeartbeat({ ttlMs: RECORD_TTL_MAX_MS + 1 })), 'heartbeat')).toEqual({ ok: false, reason: 'bounds' });
+    expect(parseRecord(serializeRecord(makeHeartbeat({ ttlMs: 0 })), 'heartbeat')).toEqual({ ok: false, reason: 'bounds' });
   });
 
   it('foreign liveness is the RECEIVER monotonic arrival time; a listed-but-unreadable file is `unknown`', () => {

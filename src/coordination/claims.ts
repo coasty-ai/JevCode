@@ -36,8 +36,17 @@ export const CLAIMS_MAX = MAX_CLAIMS_PER_RUN;
 
 /** §3.2: keep the first row and the newest `MAX_CLAIMS_PER_RUN - 1`. */
 export function capClaims<T>(rows: readonly T[], max = MAX_CLAIMS_PER_RUN): T[] {
+  // + re-check (lower 4): `max <= 0` must be the empty set. The old form fell through to `slice(-0)`, which is the
+  // WHOLE array — a "keep nothing" bound that kept everything.
+  if (max <= 0) return [];
   if (rows.length <= max) return [...rows];
+  if (max === 1) return [rows[rows.length - 1] as T];
   return [rows[0] as T, ...rows.slice(rows.length - (max - 1))];
+}
+
+/** + re-check (lower 5): a parseable ISO-8601 instant, bounded — the shape `compareClaim` orders on. */
+export function isIsoInstant(v: unknown): boolean {
+  return typeof v === 'string' && v.length >= 20 && v.length <= 32 && Number.isFinite(Date.parse(v));
 }
 
 export function isValidClaim(c: unknown): c is Claim {
@@ -45,7 +54,10 @@ export function isValidClaim(c: unknown): c is Claim {
   const o = c as Record<string, unknown>;
   if (!Number.isSafeInteger(o['epoch']) || (o['epoch'] as number) < 1 || (o['epoch'] as number) > MAX_CLAIM_EPOCH) return false;
   if (!Number.isSafeInteger(o['pid']) || (o['pid'] as number) <= 0) return false;
-  return typeof o['deviceId'] === 'string' && typeof o['runId'] === 'string' && typeof o['startedAt'] === 'string';
+  if (typeof o['deviceId'] !== 'string' || typeof o['runId'] !== 'string') return false;
+  // + re-check (lower 5): `startedAt` is a TIEBREAK input of `compareClaim`, so its SHAPE is load-bearing: a forged
+  // `''` sorts before every real instant and would take the tie. Only a parseable ISO instant counts.
+  return isIsoInstant(o['startedAt']);
 }
 
 /**

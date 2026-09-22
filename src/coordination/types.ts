@@ -95,6 +95,14 @@ export interface Heartbeat {
   user: string;
   pid: number;
   bootAt: string;
+  /**
+   * §3.2 / §3.4 (design revision 5): the OS boot identity. Like `hostKey` it can only DENY `sameDevice`, never grant
+   * it: a record in my own local subtree whose `bootId` is not mine is by construction not this boot's process, so the
+   * pane / debugger / clock case cannot apply to it and beat FRESHNESS decides instead — which is the one fact that
+   * separates a previous boot of my machine (stopped renewing) from a live clone (still renewing). Absent = an older
+   * build wrote it; such a record with a live pid is never auto-replaced (§3.4).
+   */
+  bootId?: string | null;
   /** §3.2: the writer's `hostKey` — binds the record to the MACHINE, so a beat under my own deviceId from another machine is never `sameDevice` */
   hostKey?: string;
   jevcode: string;
@@ -205,7 +213,12 @@ export interface Message {
   kind: 'message';
   /** `<deviceId>-<actor8>-<seq>` (MSG_ID_RE) */
   id: string;
-  from: { deviceId: string; label: string; sessionId: string | null; runId: string | null; user: string };
+  /**
+   * §5.1 / §5.4 rule 5 (design revision 5): `pid` is DISPLAY AND AUDIT ONLY — it is never an `isPidAlive` input, because
+   * a sender's pid means nothing in the reader's pid table. `bootId` DENIES the no-confirm same-device path for the
+   * control types: a `pause` that arrived in my own subtree from another boot session is not mine to apply silently.
+   */
+  from: { deviceId: string; label: string; sessionId: string | null; runId: string | null; user: string; pid?: number; bootId?: string | null };
   /** §3.2: the writer's `hostKey` — a `pause` from another machine under one shared `deviceId` is never `self` */
   hostKey?: string;
   /** '<sessionId>' | '@<repoKey>' | '@all' */
@@ -277,7 +290,15 @@ export interface Fold {
   inbox: Message[];
   /** acks by msgId */
   acks: Map<string, Ack[]>;
-  devices: Map<string, DeviceRecord & { lastSeen: string; syncLagMs: number | null; ignored: boolean }>;
+  devices: Map<string, DeviceRecord & { lastSeen: string; syncLagMs: number | null; ignored: boolean; cloned: boolean }>;
+  /**
+   * §3.2 / §10.3 (design revision 5): every `deviceId` the fold saw TWO OR MORE live heartbeats for with DIFFERENT
+   * `bootId`s — one `deviceKey` on two machines, which can therefore no longer speak for either. The write facade
+   * suspends every gated action for such a device until it is re-paired; a peer never deletes or rewrites anything of
+   * theirs. For MY OWN deviceId this is the `duplicate-identity` case and the later booter adopts a new id (§3.2).
+   * A separate set because a clone may have no `device.json` in the fold at all.
+   */
+  cloned: Set<string>;
   /**
    * + review major 12: the liveness verdict of EVERY heartbeat the fold holds — the claim holder AND every fork — by
    * `${deviceId}/${runId}/${pid}`. `listSessions` shows one row per record; without this a fork row has no verdict.
@@ -311,6 +332,11 @@ export interface SelfIdentity {
    */
   hostKey?: string;
   bootAt: string;
+  /**
+   * §3.2 / §3.4 (design revision 5): this process's boot identity, resolved by the caller (one bounded local `sysctl` /
+   * `/proc` read, cached per process). `null` = unknown, which stays permissive exactly as an unknown `hostKey` does.
+   */
+  bootId?: string | null;
   sessionId: string | null;
   runId: string | null;
   wsKey: string;
@@ -344,6 +370,13 @@ export interface LivenessEnv {
   bootAt: string;
   /** §3.2 / §5.4 rule 4: this reader's `hostKey`; a record carrying a DIFFERENT one is never same-device, whatever the path says */
   hostKey?: string;
+  /**
+   * §3.2 / §3.4 (design revision 5): this reader's `bootId`. A local-subtree record naming a DIFFERENT one is judged by
+   * beat freshness (a live clone keeps renewing; a previous boot of this machine does not) and by pid death — never by
+   * `startedAt ≥ bootAt`, the wall-arithmetic rule revision 5 withdraws (a forward clock step read a LIVE process as
+   * `stale-reused-pid`, after which `takeRunLock` replaced its lock and two engines co-wrote one `state.json`).
+   */
+  bootId?: string | null;
   isPidAlive: (pid: number) => boolean;
   /** foreign staleness bound beyond `ttlMs` (120 s shared-dir, 180 s git) */
   syncSlackMs?: number;
@@ -360,7 +393,7 @@ export interface SessionActivity {
   sameDevice: boolean;
   kind: 'run' | 'bench';
   liveness: Liveness;
-  flags: { hung: boolean; skewed: boolean; forked: boolean; takenOver: boolean; noLock: boolean; ignoredDevice: boolean; unverified: boolean };
+  flags: { hung: boolean; skewed: boolean; forked: boolean; takenOver: boolean; noLock: boolean; ignoredDevice: boolean; unverified: boolean; cloned: boolean };
   /** + review blockers 5 / 6: `'self'` = read from my own local subtree; `'trusted'` = hmac-valid from a paired device */
   authority: Authority;
   /** beatAt − wall now when skewed (> 300 s); display only (§3.4) */

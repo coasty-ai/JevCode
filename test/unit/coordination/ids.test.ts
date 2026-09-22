@@ -12,6 +12,8 @@ import {
   adoptNewDevice,
   createStampClock,
   deviceIdentity,
+  hostKeyOf,
+  hostRoot,
   ignoreDevice,
   isValidBranch,
   isValidRelPath,
@@ -37,6 +39,7 @@ import {
   TRUSTED_FILE,
 } from '../../../src/coordination/ids.js';
 import { COMMONS_KEY_RE, hmacOf, hmacValid } from '../../../src/coordination/claims.js';
+import { withChecksum } from '../../../src/coordination/checksum.js';
 import { commonsPaths } from '../../../src/coordination/paths.js';
 import { compareStamp } from '../../../src/coordination/records.js';
 import { nodeFs } from '../../../src/coordination/fs.js';
@@ -203,34 +206,67 @@ describe('device identity (§3.2, §11 row 27)', () => {
     const t = await tempHome();
     cleanups.push(t.cleanup);
     const first = await deviceIdentity({ root: t.root, fs: nodeFs, ...base });
-    await nodeFs.unlink(join(t.root, 'device.json'));
+    await nodeFs.unlink(join(hostRoot(t.root, first.hostKey), 'device.json'));
     const again = await deviceIdentity({ root: t.root, fs: nodeFs, ...base });
     expect(again.status).toBe('readopted');
     expect(again.device.deviceId).toBe(first.device.deviceId);
   });
 
-  it('a wholesale copy to another Mac is foreign; adoptNewDevice mints a new id and leaves the old subtree', async () => {
+  it('§3.1 (revision 5): a wholesale copy to another Mac needs NO prompt — a new hostKey is a new subtree and a new id', async () => {
     const t = await tempHome();
     cleanups.push(t.cleanup);
     const first = await deviceIdentity({ root: t.root, fs: nodeFs, ...base });
     const onNewMac = { ...base, hostname: 'studio.local' };
-    const foreign = await deviceIdentity({ root: t.root, fs: nodeFs, ...onNewMac });
+    // the identity file is PER HOST, so the second machine simply has no file under ITS hostKey and mints an id;
+    // revision 4's `foreign` + adopt prompt for this case is gone, and the old host's subtree is left untouched.
+    const second = await deviceIdentity({ root: t.root, fs: nodeFs, ...onNewMac });
+    expect(second.status).toBe('created');
+    expect(second.hostKey).not.toBe(first.hostKey);
+    expect(second.device.deviceId).not.toBe(first.device.deviceId);
+    expect(second.device.host).toBe('studio.local');
+    const dirs = await nodeFs.readdir(join(t.root, 'registry'));
+    expect(dirs.sort()).toEqual([first.device.deviceId, second.device.deviceId].sort());
+    // both identity subtrees coexist; neither machine ever rewrites the other's device.json (§11 row 3)
+    expect((await nodeFs.readdir(join(t.root, 'devices'))).sort()).toEqual([first.hostKey, second.hostKey].sort());
+    expect((await deviceIdentity({ root: t.root, fs: nodeFs, ...base })).device.deviceId).toBe(first.device.deviceId);
+    expect((await deviceIdentity({ root: t.root, fs: nodeFs, ...onNewMac })).status).toBe('loaded');
+  });
+
+  it("§3.2: a hand-edited device.json under MY OWN hostKey is 'foreign' — the one case that still asks", async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const first = await deviceIdentity({ root: t.root, fs: nodeFs, ...base });
+    const file = join(hostRoot(t.root, first.hostKey), 'device.json');
+    const edited = withChecksum({ ...first.device, host: 'someone-else.local', checksum: '' });
+    await nodeFs.writeAtomic(file, `${JSON.stringify(edited)}\n`, { fsync: false, mode: 0o600 });
+    const foreign = await deviceIdentity({ root: t.root, fs: nodeFs, ...base });
     expect(foreign.status).toBe('foreign');
-    expect(foreign.device.host).toBe('mbp.local');
-    const adopted = await adoptNewDevice({ root: t.root, fs: nodeFs, ...onNewMac });
+    expect(foreign.device.host).toBe('someone-else.local');
+    const adopted = await adoptNewDevice({ root: t.root, fs: nodeFs, ...base });
     expect(adopted.status).toBe('created');
     expect(adopted.device.deviceId).not.toBe(first.device.deviceId);
-    expect(adopted.device.host).toBe('studio.local');
-    const dirs = await nodeFs.readdir(join(t.root, 'registry'));
-    expect(dirs.sort()).toEqual([first.device.deviceId, adopted.device.deviceId].sort());
-    expect((await deviceIdentity({ root: t.root, fs: nodeFs, ...onNewMac })).status).toBe('loaded');
+  });
+
+  it('§3.2 (revision 5): a clone adoption mints a new id AND a new key, with no prompt', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const first = await deviceIdentity({ root: t.root, fs: nodeFs, ...base });
+    const adopted = await adoptNewDevice({ root: t.root, fs: nodeFs, ...base, adoptFrom: first.device.deviceId, bootId: 'boot-b' });
+    expect(adopted.status).toBe('created');
+    expect(adopted.adoptedFrom).toBe(first.device.deviceId);
+    // a CLONED deviceKey is held by two machines and can no longer speak for either (§10.3)
+    expect(adopted.newKey).toBe(true);
+    // device.json read back our own new id, so the adoption is permanent rather than process-only
+    expect(adopted.processOnly).toBe(false);
+    expect(adopted.device.deviceId).not.toBe(first.device.deviceId);
   });
 
   it('a malformed device.json is treated as missing', async () => {
     const t = await tempHome();
     cleanups.push(t.cleanup);
-    await nodeFs.mkdir(t.root, 0o700);
-    await nodeFs.writeAtomic(join(t.root, 'device.json'), '{"v":1,"deviceId":"nope"}\n', { fsync: false, mode: 0o600 });
+    const hostKey = hostKeyOf(base.hostname, base.username);
+    await nodeFs.mkdir(hostRoot(t.root, hostKey), 0o700);
+    await nodeFs.writeAtomic(join(hostRoot(t.root, hostKey), 'device.json'), '{"v":1,"deviceId":"nope"}\n', { fsync: false, mode: 0o600 });
     expect((await deviceIdentity({ root: t.root, fs: nodeFs, ...base })).status).toBe('created');
   });
 });
@@ -246,20 +282,31 @@ describe('validators added for the review findings', () => {
 });
 
 describe('the identity files (§3.1 / §10.3, review #42)', () => {
-  it('they sit under coordination/ with the names the review asked for — never ~/.jevcode/trust.json', async () => {
+  const HK = 'a1b2c3d4';
+
+  it('§3.1 (revision 5): every identity file is PER HOST, under devices/<hostKey>/ — never ~/.jevcode/trust.json', async () => {
     const t = await tempHome();
     cleanups.push(t.cleanup);
-    const p = commonsPaths(t.root);
-    expect(p.deviceFile).toBe(join(t.root, 'device.json'));
-    expect(p.deviceKeyFile).toBe(join(t.root, DEVICE_KEY_FILE));
-    expect(p.trustedFile).toBe(join(t.root, TRUSTED_FILE));
+    const p = commonsPaths(t.root, HK);
+    const host = join(t.root, 'devices', HK);
+    expect(p.hostDir).toBe(host);
+    expect(p.deviceFile).toBe(join(host, 'device.json'));
+    expect(p.deviceKeyFile).toBe(join(host, DEVICE_KEY_FILE));
+    expect(p.trustedFile).toBe(join(host, TRUSTED_FILE));
     expect(TRUSTED_FILE).toBe('trusted-devices.json');
-    expect(p.ignoredFile).toBe(join(t.root, 'ignored-devices.json'));
-    expect(p.repokeysDir).toBe(join(t.root, 'repokeys'));
-    // the dedupe set moved under the inbox kind, where no deviceId regex can match it
-    expect(p.seenDir).toBe(join(t.root, 'inbox', 'seen'));
+    expect(p.ignoredFile).toBe(join(host, 'ignored-devices.json'));
+    expect(p.repokeysDir).toBe(join(host, 'repokeys'));
+    expect(p.worktreesDir).toBe(join(host, 'worktrees'));
+    expect(p.worktreeFile('ws:3f9a2c1d8bc0d11e', 'fix')).toBe(join(host, 'worktrees', 'ws-3f9a2c1d8bc0d11e', 'fix.json'));
+    // a second machine sharing this ~/.jevcode writes a DIFFERENT subtree — the §11 row 3 ping-pong cannot happen
+    expect(commonsPaths(t.root, 'deadbeef').deviceFile).not.toBe(p.deviceFile);
+    // the dedupe set is under the inbox kind AND under its own device level (§3.1)
+    expect(p.seenDir(DEV_A)).toBe(join(t.root, 'inbox', 'seen', DEV_A));
+    expect(p.seenFile(DEV_A, 'tui-abcdefgh')).toBe(join(t.root, 'inbox', 'seen', DEV_A, 'tui-abcdefgh.json'));
     expect(DEVICE_ID_RE.test('seen')).toBe(false);
+    // the per-device kinds are unchanged and are the only ones that are ever mirrored
     for (const k of ['registry', 'leases', 'inbox', 'acks', 'runs'] as const) expect(p.deviceDir(k, DEV_A)).toBe(join(t.root, k, DEV_A));
+    expect(p.claimsFile(DEV_A, runId(1))).toBe(join(t.root, 'runs', DEV_A, runId(1), 'claims.json'));
   });
 
   it('§10.3: the commons key lives in its own 0600 file, so both device.json copies stay the PUBLIC subset', async () => {
@@ -267,16 +314,17 @@ describe('the identity files (§3.1 / §10.3, review #42)', () => {
     cleanups.push(t.cleanup);
     const base = { hostname: 'mbp.local', username: 'p', jevcode: '0.3.0', nowIso: iso(T0) };
     const created = await deviceIdentity({ root: t.root, fs: nodeFs, ...base });
+    const host = hostRoot(t.root, created.hostKey);
     const key = mintCommonsKey();
     expect(key).toMatch(COMMONS_KEY_RE);
-    await writeCommonsKey(nodeFs, t.root, key);
-    expect(await readCommonsKey(nodeFs, t.root)).toBe(key);
-    for (const file of [join(t.root, 'device.json'), join(t.root, 'registry', created.device.deviceId, 'device.json')]) {
+    await writeCommonsKey(nodeFs, host, key);
+    expect(await readCommonsKey(nodeFs, host)).toBe(key);
+    for (const file of [join(host, 'device.json'), join(t.root, 'registry', created.device.deviceId, 'device.json')]) {
       const text = (await nodeFs.readBounded(file, 4096)).text;
       expect(text).not.toContain(key);
       expect(text).not.toContain('keyHex');
     }
-    await expect(writeCommonsKey(nodeFs, t.root, 'nope')).rejects.toThrow(/64 hex/);
+    await expect(writeCommonsKey(nodeFs, host, 'nope')).rejects.toThrow(/64 hex/);
     expect(await readCommonsKey(nodeFs, join(t.root, 'missing'))).toBeNull();
   });
 

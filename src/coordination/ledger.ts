@@ -5,7 +5,7 @@
  * tombstones, `gc()` of our own files only, `foreignLive` / `peerLive`, and the takeover lease. It never throws into a caller:
  * every write failure is bookkeeping (§11 row 13) and never reaches the checkpoint store's `noteDiskError`.
  */
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { ConfigError } from '../errors.js';
 import { authorityOf, compareClaim, forkVerdict, hmacValid, isValidClaim, mintClaim, sameClaim, withHmac, type ForkVerdict } from './claims.js';
@@ -88,11 +88,19 @@ export interface OpenLedgerOptions {
   /** §10.3: verification keys by paired deviceId; read from `trusted-devices.json` at `open()` when absent */
   trustKeys?: ReadonlyMap<string, string>;
   /**
-   * §3.2 (design revision 4): this machine's `hostKey` = `hostKeyOf(hostname, user, machineId)`. Omitted, it is read
-   * from the private `coordination/machine.json` at `open()`; absent there too the reader stays machine-agnostic and
-   * `self.hostKey` is undefined (hostKey DENIES same-device, it never grants it, so unknown is the permissive value).
+   * §3.2 (design revision 4/5): this machine's `hostKey` = `hostKeyOf(hostname, user, machineId)`. It NAMES the
+   * per-host identity subtree `devices/<hostKey>/` (§3.1), so it can never be read out of a file inside that subtree:
+   * omitted, the ledger derives it from `self.host + self.user` (the two-input fallback §3.2 allows when no machine
+   * identifier could be read) and `self.hostKey` is always defined from that moment on.
    */
   hostKey?: string;
+  /**
+   * §3.2 / §3.4 (design revision 5): THIS boot's identity — `/proc/sys/kernel/random/boot_id` (Linux) or
+   * `sysctl -n kern.bootsessionuuid` (macOS), resolved by the CALLER (this module spawns nothing). Every record this
+   * device writes carries it, and it is a DISQUALIFIER exactly like `hostKey`: a record in my own local subtree whose
+   * `bootId` is not mine is not this boot's process, so it is judged by beat freshness and pid death, never as mine.
+   */
+  bootId?: string | null;
 }
 
 export const LEDGER_OP_TIMEOUT_MS = 5_000;
@@ -165,6 +173,10 @@ export interface PeerLive {
 /** The full handle `openLedger` returns: the §12.0.4 `Ledger` plus what leases / mailbox / heartbeat need. */
 export interface LedgerHandle extends Ledger {
   readonly paths: Commons;
+  /** §3.1 / §3.2 (revision 5): the per-host identity subtree this process writes — `devices/<hostKey>/` */
+  readonly hostKey: string;
+  /** §3.2 / §3.4 (revision 5): this boot's identity; null when the caller could not resolve one */
+  readonly bootId: string | null;
   readonly fs: CoordFs;
   readonly now: () => number;
   readonly monotonicNow: () => number;
@@ -184,7 +196,9 @@ export interface LedgerHandle extends Ledger {
   writeOwn(kind: CommonsKind, relInDevice: string, record: object, o?: { fsync?: boolean }): Promise<void>;
   /** the `'exit'` handler's variant (§3.3 point 6): one bounded synchronous write, no mirror */
   writeOwnSync(kind: CommonsKind, relInDevice: string, record: object): void;
-  removeOwn(kind: CommonsKind, relInDevice: string): Promise<void>;
+  removeOwn(kind: CommonsKind, relInDevice: string): Promise<boolean>;
+  /** + re-check (lower 1): remove one of our own files by the path it was read from */
+  removeOwnFile(kind: CommonsKind, path: string): Promise<boolean>;
   /** re-scan now; `'leases'` = one readdir of every peer's `leases/<keyDir>/` (§4.5) */
   refresh(scope?: 'all' | 'leases'): Promise<void>;
   /**
@@ -301,6 +315,16 @@ function stemMatchesPath(kind: RecordKind, r: ParseRecordResult<RecordKind>, ste
 
 class LedgerImpl implements LedgerHandle {
   readonly root: string;
+  /**
+   * §3.1 / §3.2 (design revision 5): this machine's `hostKey`. It NAMES the per-host identity subtree
+   * (`devices/<hostKey>/`), so it cannot be discovered by reading a file inside that subtree — it is computed from
+   * live facts (`hostname + username + machineId`), falling back to the two-input form the design allows when the
+   * caller could not read a machine identifier. Always defined: `hostKey` DENIES same-device and never grants it, so
+   * an always-present value only ever makes the `duplicate-identity` rule of §3.2 reachable.
+   */
+  readonly hostKey: string;
+  /** §3.2 / §3.4 (revision 5): this boot's identity, from the caller or the private `machine.json` cache; null = unknown */
+  bootId: string | null;
   /** + review blocker 1: mutable behind `setIdentity`; the object handed out is a frozen snapshot per read */
   self: SelfIdentity;
   readonly paths: Commons;
@@ -362,7 +386,10 @@ class LedgerImpl implements LedgerHandle {
     this.o = o;
     this.self = o.self;
     this.root = coordinationRoot(o.home);
-    this.paths = commonsPaths(this.root);
+    this.hostKey = o.hostKey ?? o.self.hostKey ?? hostKeyOf(o.self.host, o.self.user);
+    this.bootId = o.bootId ?? o.self.bootId ?? null;
+    this.self = { ...this.self, hostKey: this.hostKey, bootId: this.bootId };
+    this.paths = commonsPaths(this.root, this.hostKey);
     this.fs = o.fs ?? nodeFs;
     this.now = o.now ?? (() => Date.now());
     this.monotonicNow = o.monotonicNow ?? (() => performance.now());
@@ -372,7 +399,6 @@ class LedgerImpl implements LedgerHandle {
     this.opTimeoutMs = o.opTimeoutMs ?? LEDGER_OP_TIMEOUT_MS;
     this.budgetMs = o.budgetMs ?? READ_FOLD_BUDGET_MS;
     this.actor8 = actor8Of(o.self.runId, o.random);
-    if (o.hostKey !== undefined) this.self = { ...this.self, hostKey: o.hostKey };
     this.stamps = createStampClock(o.self.deviceId, o.self.runId ?? this.actor8);
     this.claim = o.claim ?? mintClaim({ deviceId: o.self.deviceId, runId: o.self.runId ?? this.actor8, pid: o.pid ?? process.pid, startedAt: new Date(this.now()).toISOString() });
     this.commonsKey = o.commonsKey ?? null;
@@ -443,17 +469,17 @@ class LedgerImpl implements LedgerHandle {
     } catch (e) {
       this.noteError(this.root, e);
     }
-    this.ignored = new Set((await readIgnoredDevices(this.fs, this.root)).map((d) => d.deviceId));
-    // §3.2: the machine identifier and the derived `hostKey` live in the PRIVATE `machine.json`, never in `device.json`.
-    // Read here, on the `open()` path — asynchronously, once per process, never before the first frame.
-    if (this.o.hostKey === undefined) {
-      const machine = await readMachineRecord(this.fs, this.root);
-      const hostKey = machine?.hostKey ?? (machine === null ? undefined : hostKeyOf(this.self.host, this.self.user, machine.machineId));
-      if (hostKey !== undefined) this.self = { ...this.self, hostKey };
+    this.ignored = new Set((await readIgnoredDevices(this.fs, this.paths.hostDir)).map((d) => d.deviceId));
+    // §3.2 / §3.1 (revision 5): the machine identifier and this boot's identity live in the PRIVATE
+    // `devices/<hostKey>/machine.json`, never in `device.json`. Read here, on the `open()` path — asynchronously, once
+    // per process, never before the first frame. `hostKey` is NOT read from it: it names the directory this file is in.
+    if (this.bootId === null) {
+      const machine = await readMachineRecord(this.fs, this.paths.hostDir);
+      if (machine?.bootId !== undefined) this.bootId = machine.bootId;
     }
     // §10.3: our signing key and the paired devices' verification keys — read once; a missing key file is "not paired yet"
-    if (this.o.commonsKey === undefined) this.commonsKey = await readCommonsKey(this.fs, this.root);
-    if (this.o.trustKeys === undefined) this.trustKeys = await readTrustKeys(this.fs, this.root);
+    if (this.o.commonsKey === undefined) this.commonsKey = await readCommonsKey(this.fs, this.paths.hostDir);
+    if (this.o.trustKeys === undefined) this.trustKeys = await readTrustKeys(this.fs, this.paths.hostDir);
     if (this.mirror !== null) await this.mirror.probe();
     await this.scan('all');
     this.rebuild();
@@ -882,6 +908,8 @@ class LedgerImpl implements LedgerHandle {
       ...(target === undefined ? {} : { target }),
       // §4.3: a lease must agree with the `<keyDir>` directory it sits in, or the fence cannot see what it should
       ...(parseKind === 'lease' ? { keyDir: basename(dirname(path)) } : {}),
+      // + re-check (lower 3): an ack must agree with the `<msgId>` directory it sits in
+      ...(parseKind === 'ack' ? { msgId: basename(dirname(path)) } : {}),
       // §10.3: the key is found by the PATH's deviceId; `verified` comes back as a fact, never as a gate
       trust: (pathDeviceId: string) => this.trustKeys.get(pathDeviceId) ?? null,
     };
@@ -977,14 +1005,33 @@ class LedgerImpl implements LedgerHandle {
     this.fs.writeAtomicSync(path, serializeRecord(record), { fsync: false, mode: FILE_MODE });
   }
 
-  async removeOwn(kind: CommonsKind, rel: string): Promise<void> {
+  /**
+   * + re-check (lower 1): the answer is whether a file was ACTUALLY unlinked. `ENOENT` is swallowed (a purge that races
+   * a GC must not throw), and a caller that counted every call as a deletion reported removals that never happened.
+   */
+  async removeOwn(kind: CommonsKind, rel: string): Promise<boolean> {
     const path = join(this.paths.deviceDir(kind, this.self.deviceId), rel);
+    let removed = true;
     await this.fs.unlink(path).catch((e: unknown) => {
       if (classifyLedgerError(e) !== 'ENOENT') throw e;
+      removed = false;
     });
     this.entries.delete(path);
     this.sigs.delete(path);
-    this.mirror?.remove(kind, rel);
+    if (removed) this.mirror?.remove(kind, rel);
+    return removed;
+  }
+
+  /**
+   * + re-check (lower 1): remove one of OUR OWN files by the path it was READ from, so a purge never has to
+   * reconstruct a file name from record fields (`${Date.parse(m.t)}-${m.stamp.n}.json` does not round-trip a record
+   * whose `t` was clipped or whose name carried a different seq). Anything outside our own subtree is refused.
+   */
+  async removeOwnFile(kind: CommonsKind, path: string): Promise<boolean> {
+    const dir = this.paths.deviceDir(kind, this.self.deviceId);
+    const rel = relative(dir, path);
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false;
+    return this.removeOwn(kind, rel);
   }
 
   /**
@@ -1217,7 +1264,7 @@ class LedgerImpl implements LedgerHandle {
       createdAt: existing?.createdAt ?? nowIso,
       syncMode: existing?.syncMode ?? (this.mirror === null ? 'off' : 'shared-dir'),
     });
-    await writeDeviceRecord(this.fs, this.root, rec);
+    await writeDeviceRecord(this.fs, this.root, this.hostKey, rec);
     this.self = { ...this.self, label: clipped };
     await this.refresh('all');
     return rec;
@@ -1235,7 +1282,7 @@ class LedgerImpl implements LedgerHandle {
     // + re-check (4): tombstoning MY OWN subtree would drop my own heartbeats, leases and outbox from my own fold —
     // every peer would keep seeing me while I stopped seeing myself, and `sessions who` would lose the local rows.
     if (deviceId === this.self.deviceId) throw new CoordinationError('self-device', 'ignore: that is this device — a host cannot tombstone its own subtree');
-    const list = await writeIgnoreDevice(this.fs, this.root, { deviceId, label, at: new Date(this.now()).toISOString() });
+    const list = await writeIgnoreDevice(this.fs, this.paths.hostDir, { deviceId, label, at: new Date(this.now()).toISOString() });
     this.ignored = new Set(list.map((d) => d.deviceId));
     this.rebuild();
   }
@@ -1243,7 +1290,7 @@ class LedgerImpl implements LedgerHandle {
   /** + review minor 25: the tombstone lifts and the subtree folds again from the next scan. */
   async unignoreDevice(deviceId: string): Promise<void> {
     if (!DEVICE_ID_RE.test(deviceId)) throw new CoordinationError('unknown-device', `unignore: '${deviceId}' is not a device id`);
-    const list = await writeUnignoreDevice(this.fs, this.root, deviceId);
+    const list = await writeUnignoreDevice(this.fs, this.paths.hostDir, deviceId);
     this.ignored = new Set(list.map((d) => d.deviceId));
     this.rebuild();
   }
@@ -1304,11 +1351,11 @@ class LedgerImpl implements LedgerHandle {
    */
   async unpairDevice(deviceId: string): Promise<void> {
     if (!DEVICE_ID_RE.test(deviceId)) throw new CoordinationError('unknown-device', `unpair: '${deviceId}' is not a device id`);
-    const paired = await readTrusted(this.fs, this.root);
+    const paired = await readTrusted(this.fs, this.paths.hostDir);
     const remaining = paired.filter((d) => d.deviceId !== deviceId);
     if (remaining.length === paired.length) throw new CoordinationError('not-paired', `unpair: '${deviceId}' is not a paired device`);
-    await writeTrusted(this.fs, this.root, remaining);
-    this.trustKeys = await readTrustKeys(this.fs, this.root);
+    await writeTrusted(this.fs, this.paths.hostDir, remaining);
+    this.trustKeys = await readTrustKeys(this.fs, this.paths.hostDir);
     this.sigs.clear(); // every foreign record must be re-read: its authority has changed
     await this.refresh('all');
   }

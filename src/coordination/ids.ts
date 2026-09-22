@@ -127,6 +127,21 @@ export function hostKeyOf(hostname: string, username: string, machineId?: string
   return sha256Hex(parts.map((x) => x.trim()).join('\u0000')).slice(0, 8);
 }
 
+/** §3.1 (design revision 5): the PER-HOST identity subtree — `coordination/devices/<hostKey>/`. */
+export const DEVICES_DIR = 'devices';
+
+/**
+ * §3.1 (design revision 5): `coordination/devices/<hostKey>/` — PER-MACHINE LOCAL TRUTH. `device.json`, `machine.json`,
+ * `device.key`, `trusted-devices.json`, `ignored-devices.json`, `repokeys/`, `worktrees/` and `claims/` live here and
+ * nowhere else, so a `~/.jevcode` that is itself inside a synced folder still has exactly one writer per file: a second
+ * machine has a different `hostKey`, therefore a different subtree, therefore it can never rewrite the first machine's
+ * `device.json`, the adopt prompt cannot ping-pong and no identity file is ever co-written into a "conflicted copy"
+ * (§11 row 3). Never mirrored — `sync-shared-dir.ts` copies the per-DEVICE kinds only.
+ */
+export function hostRoot(root: string, hostKey: string): string {
+  return join(root, DEVICES_DIR, hostKey);
+}
+
 // ── keys (§3.2) ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** `'ws:' + sha256(realpath(toplevel ?? workspace))[0:16]` — known at startup with zero spawns. */
@@ -191,17 +206,17 @@ export interface RepoKeyCacheEntry {
   at: string;
 }
 
-export function repoKeyCachePath(root: string, wsRealpath: string): string {
-  return join(root, 'repokeys', `${sha256Hex(wsRealpath).slice(0, 16)}.json`);
+export function repoKeyCachePath(hostDir: string, wsRealpath: string): string {
+  return join(hostDir, 'repokeys', `${sha256Hex(wsRealpath).slice(0, 16)}.json`);
 }
 
 const CACHE_MAX_BYTES = 4096;
 
 /** null on a missing, malformed or regex-failing entry — the caller recomputes. */
-export async function readRepoKeyCache(fs: CoordFs, root: string, wsRealpath: string): Promise<RepoKeyCacheEntry | null> {
+export async function readRepoKeyCache(fs: CoordFs, hostDir: string, wsRealpath: string): Promise<RepoKeyCacheEntry | null> {
   let text: string;
   try {
-    const r = await fs.readBounded(repoKeyCachePath(root, wsRealpath), CACHE_MAX_BYTES);
+    const r = await fs.readBounded(repoKeyCachePath(hostDir, wsRealpath), CACHE_MAX_BYTES);
     if (r.overflow) return null;
     text = r.text;
   } catch {
@@ -221,9 +236,9 @@ export async function readRepoKeyCache(fs: CoordFs, root: string, wsRealpath: st
   return { v: 1, repoKey: repoKey as string | null, remoteKey: (remoteKey ?? null) as string | null, kind, commonDir60: o['commonDir60'], at: o['at'] };
 }
 
-export async function writeRepoKeyCache(fs: CoordFs, root: string, wsRealpath: string, entry: Omit<RepoKeyCacheEntry, 'v'>): Promise<void> {
-  const path = repoKeyCachePath(root, wsRealpath);
-  await fs.mkdir(join(root, 'repokeys'), DIR_MODE);
+export async function writeRepoKeyCache(fs: CoordFs, hostDir: string, wsRealpath: string, entry: Omit<RepoKeyCacheEntry, 'v'>): Promise<void> {
+  const path = repoKeyCachePath(hostDir, wsRealpath);
+  await fs.mkdir(join(hostDir, 'repokeys'), DIR_MODE);
   const rec: RepoKeyCacheEntry = { v: 1, ...entry, commonDir60: entry.commonDir60.slice(0, 60) };
   await fs.writeAtomic(path, `${JSON.stringify(rec)}\n`, { fsync: false, mode: FILE_MODE });
 }
@@ -313,6 +328,14 @@ export interface DeviceIdentityResult {
   /** for `'foreign'`: the record on disk that names another host + user (the CLI asks before adopting) */
   device: DeviceRecord;
   path: string;
+  /** §3.1 (revision 5): the per-host subtree this identity was read from / written to */
+  hostKey: string;
+  /** §3.2 clone adoption: the `deviceId` this machine walked away from */
+  adoptedFrom?: string;
+  /** §3.2 / §10.3: a cloned `deviceKey` speaks for two machines, so an adoption always mints a fresh one */
+  newKey?: boolean;
+  /** §3.2: `device.json` did not read back our own id (a shared, synced home) — the new id holds for THIS PROCESS only */
+  processOnly?: boolean;
 }
 
 export interface DeviceIdentityOptions {
@@ -331,6 +354,8 @@ export interface DeviceIdentityOptions {
    * at device creation, never in the published `device.json`. Omitted, the identity is machine-agnostic as before.
    */
   machineId?: string;
+  /** §3.1 (revision 5): the per-host subtree; derived from `hostname + username + machineId` when the caller has none */
+  hostKey?: string;
 }
 
 const DEVICE_MAX_BYTES = 2048;
@@ -390,9 +415,9 @@ export interface MachineRecord {
   bootId?: string;
 }
 
-export async function readMachineRecord(fs: CoordFs, root: string): Promise<MachineRecord | null> {
+export async function readMachineRecord(fs: CoordFs, hostDir: string): Promise<MachineRecord | null> {
   try {
-    const r = await fs.readBounded(join(root, MACHINE_FILE), 512);
+    const r = await fs.readBounded(join(hostDir, MACHINE_FILE), 512);
     if (r.overflow) return null;
     const parsed = parseJson(r.text);
     if (!parsed.ok || !isJsonObject(parsed.value) || parsed.value['v'] !== 1) return null;
@@ -406,40 +431,50 @@ export async function readMachineRecord(fs: CoordFs, root: string): Promise<Mach
   }
 }
 
-export async function writeMachineRecord(fs: CoordFs, root: string, rec: Omit<MachineRecord, 'v'>): Promise<void> {
+export async function writeMachineRecord(fs: CoordFs, hostDir: string, rec: Omit<MachineRecord, 'v'>): Promise<void> {
   if (rec.machineId.trim() === '') throw new ConfigError('coordination: a machine id cannot be empty', { setting: 'coordination' });
-  await fs.mkdir(root, DIR_MODE);
-  await fs.writeAtomic(join(root, MACHINE_FILE), `${JSON.stringify({ v: 1, ...rec })}\n`, { fsync: true, mode: FILE_MODE });
+  await fs.mkdir(hostDir, DIR_MODE);
+  await fs.writeAtomic(join(hostDir, MACHINE_FILE), `${JSON.stringify({ v: 1, ...rec })}\n`, { fsync: true, mode: FILE_MODE });
 }
 
-/** Write `coordination/device.json` and its copy `registry/<deviceId>/device.json` (one writer: the CLI). */
-export async function writeDeviceRecord(fs: CoordFs, root: string, rec: DeviceRecord): Promise<void> {
+/**
+ * Write `devices/<hostKey>/device.json` (§3.1, revision 5: PER HOST, never mirrored) and its PUBLIC copy
+ * `registry/<deviceId>/device.json` (one writer: the CLI).
+ */
+export async function writeDeviceRecord(fs: CoordFs, root: string, hostKey: string, rec: DeviceRecord): Promise<void> {
   const text = `${JSON.stringify(rec)}\n`;
-  await fs.mkdir(root, DIR_MODE);
-  await fs.writeAtomic(join(root, 'device.json'), text, { fsync: true, mode: FILE_MODE });
+  const hostDir = hostRoot(root, hostKey);
+  await fs.mkdir(hostDir, DIR_MODE);
+  await fs.writeAtomic(join(hostDir, 'device.json'), text, { fsync: true, mode: FILE_MODE });
   const reg = join(root, 'registry', rec.deviceId);
   await fs.mkdir(reg, DIR_MODE);
   await fs.writeAtomic(join(reg, 'device.json'), text, { fsync: true, mode: FILE_MODE });
 }
 
 /**
- * §3.2 `deviceId`: load `coordination/device.json`; missing → re-adopt a registry subtree whose device.json names this
- * host + user (a restored `~/.jevcode`), else mint one; present but naming another host + user (a wholesale copy to a new
- * Mac, §11 row 27) → `'foreign'` so the CLI can ask `adopt as a new device? [y]` and call `adoptNewDevice`.
+ * §3.2 `deviceId`: load `devices/<hostKey>/device.json`; missing → re-adopt a registry subtree whose device.json names
+ * this host + user (a restored `~/.jevcode`), else mint one; present but naming another host + user (a wholesale copy to
+ * a new Mac, §11 row 27) → `'foreign'` so the CLI can ask `adopt as a new device? [y]` and call `adoptNewDevice`.
+ *
+ * §3.1 (revision 5): the file is PER HOST, so the two common cases need no prompt at all — a restored `~/.jevcode` on
+ * the same host finds its own `hostKey` and re-adopts its id, and a home shared live by two machines simply has two
+ * `devices/` entries.
  */
 export async function deviceIdentity(o: DeviceIdentityOptions): Promise<DeviceIdentityResult> {
-  const path = join(o.root, 'device.json');
+  const hostKey = o.hostKey ?? hostKeyOf(o.hostname, o.username, o.machineId);
+  const hostDir = hostRoot(o.root, hostKey);
+  const path = join(hostDir, 'device.json');
   const existing = await readDeviceFile(o.fs, path);
-  const machine = await readMachineRecord(o.fs, o.root);
+  const machine = await readMachineRecord(o.fs, hostDir);
   if (existing !== null) {
     // + re-review (6)(i): `host + user` collides on two default-named Macs and on cloned VMs sharing one `~/.jevcode`;
     // the cached machine id is what makes `kind:'foreign'` reachable in exactly that case, so the CLI can ask to adopt.
     const sameMachine = o.machineId === undefined || machine === null || machine.machineId === o.machineId;
     if (existing.host === o.hostname && existing.user === o.username && sameMachine) {
-      if (o.machineId !== undefined && machine === null) await writeMachineRecord(o.fs, o.root, { machineId: o.machineId });
-      return { status: 'loaded', device: existing, path };
+      if (o.machineId !== undefined && machine === null) await writeMachineRecord(o.fs, hostDir, { machineId: o.machineId, hostKey });
+      return { status: 'loaded', device: existing, path, hostKey };
     }
-    return { status: 'foreign', device: existing, path };
+    return { status: 'foreign', device: existing, path, hostKey };
   }
   let subtrees: string[] = [];
   try {
@@ -450,16 +485,29 @@ export async function deviceIdentity(o: DeviceIdentityOptions): Promise<DeviceId
   for (const id of subtrees.filter((s) => DEVICE_ID_RE.test(s)).sort()) {
     const rec = await readDeviceFile(o.fs, join(o.root, 'registry', id, 'device.json'));
     if (rec !== null && rec.host === o.hostname && rec.user === o.username) {
-      await writeDeviceRecord(o.fs, o.root, rec);
-      if (o.machineId !== undefined) await writeMachineRecord(o.fs, o.root, { machineId: o.machineId });
-      return { status: 'readopted', device: rec, path };
+      await writeDeviceRecord(o.fs, o.root, hostKey, rec);
+      if (o.machineId !== undefined) await writeMachineRecord(o.fs, hostDir, { machineId: o.machineId, hostKey });
+      return { status: 'readopted', device: rec, path, hostKey };
     }
   }
   return adoptNewDevice(o);
 }
 
-/** Mint a fresh device id and write both device.json files; the previous subtree (if any) is left read-only. */
-export async function adoptNewDevice(o: DeviceIdentityOptions): Promise<DeviceIdentityResult> {
+/**
+ * Mint a fresh device id and write both device.json files; the previous subtree (if any) is left read-only.
+ *
+ * §3.2 (design revision 5) — the CLONE path. `adoptFrom` names the `deviceId` this machine is walking away from because
+ * the fold showed two live beats under it with different `bootId`s. Two things then follow, and both are normative:
+ *  (a) a NEW `deviceKey` / `keyId` is minted with the id, because a cloned key is held by two machines and can no longer
+ *      speak for either (§10.3) — `newKey: true` says so, and the caller writes it with `writeCommonsKey`;
+ *  (b) `device.json` is the one genuinely co-written file, so it is READ BACK after the rename. When it does not read
+ *      back our own new `deviceId` (a shared, synced home where the other clone rewrote it) we retry once and then keep
+ *      the new id FOR THIS PROCESS ONLY, recording the split in `devices/<hostKey>/adopted/<deviceId>.json`.
+ * No prompt is involved: two engines co-writing one `state.json` is data loss, a second device subtree is a directory.
+ */
+export async function adoptNewDevice(o: DeviceIdentityOptions & { adoptFrom?: string; bootId?: string | null }): Promise<DeviceIdentityResult> {
+  const hostKey = o.hostKey ?? hostKeyOf(o.hostname, o.username, o.machineId);
+  const hostDir = hostRoot(o.root, hostKey);
   const rec = buildDeviceRecord({
     deviceId: mintDeviceId(o.random),
     label: o.label ?? o.hostname,
@@ -469,9 +517,31 @@ export async function adoptNewDevice(o: DeviceIdentityOptions): Promise<DeviceId
     createdAt: o.nowIso,
     syncMode: o.syncMode ?? 'off',
   });
-  await writeDeviceRecord(o.fs, o.root, rec);
-  if (o.machineId !== undefined) await writeMachineRecord(o.fs, o.root, { machineId: o.machineId });
-  return { status: 'created', device: rec, path: join(o.root, 'device.json') };
+  await writeDeviceRecord(o.fs, o.root, hostKey, rec);
+  if (o.machineId !== undefined) await writeMachineRecord(o.fs, hostDir, { machineId: o.machineId, hostKey, ...(typeof o.bootId === 'string' ? { bootId: o.bootId } : {}) });
+  let processOnly = false;
+  if (o.adoptFrom !== undefined) {
+    // (b): one read-back, one retry, then this process keeps the id alone and the split is recorded.
+    let back = await readDeviceFile(o.fs, join(hostDir, 'device.json'));
+    if (back === null || back.deviceId !== rec.deviceId) {
+      await writeDeviceRecord(o.fs, o.root, hostKey, rec);
+      back = await readDeviceFile(o.fs, join(hostDir, 'device.json'));
+    }
+    processOnly = back === null || back.deviceId !== rec.deviceId;
+    if (processOnly) {
+      const dir = join(hostDir, 'adopted');
+      await o.fs.mkdir(dir, DIR_MODE);
+      const split = { v: 1, deviceId: rec.deviceId, adoptedFrom: o.adoptFrom, bootId: o.bootId ?? null, machineId: o.machineId ?? null, at: o.nowIso };
+      await o.fs.writeAtomic(join(dir, `${rec.deviceId}.json`), `${JSON.stringify(split)}\n`, { fsync: true, mode: FILE_MODE });
+    }
+  }
+  return {
+    status: 'created',
+    device: rec,
+    path: join(hostDir, 'device.json'),
+    hostKey,
+    ...(o.adoptFrom !== undefined ? { adoptedFrom: o.adoptFrom, newKey: true, processOnly } : {}),
+  };
 }
 
 // ── trusted / ignored devices (§10.3, §4.6 row 4) ──────────────────────────────────────────────────────────────────────
@@ -522,8 +592,8 @@ async function readDeviceList<T extends { deviceId: string }>(fs: CoordFs, path:
 
 export const TRUSTED_FILE = 'trusted-devices.json';
 
-export function readTrusted(fs: CoordFs, root: string): Promise<TrustedDevice[]> {
-  return readDeviceList(fs, join(root, TRUSTED_FILE), (o) => {
+export function readTrusted(fs: CoordFs, hostDir: string): Promise<TrustedDevice[]> {
+  return readDeviceList(fs, join(hostDir, TRUSTED_FILE), (o) => {
     if (typeof o['deviceId'] !== 'string' || typeof o['label'] !== 'string' || typeof o['pairedAt'] !== 'string') return null;
     const key = typeof o['key'] === 'string' ? o['key'] : o['keyHex'];
     return { deviceId: o['deviceId'], label: o['label'], pairedAt: o['pairedAt'], ...(typeof key === 'string' && COMMONS_KEY_RE.test(key) ? { keyHex: key } : {}) };
@@ -531,48 +601,48 @@ export function readTrusted(fs: CoordFs, root: string): Promise<TrustedDevice[]>
 }
 
 /** The verification key per paired device — what the fold hands `hmacValid` for a foreign record (§10.3). */
-export async function readTrustKeys(fs: CoordFs, root: string): Promise<Map<string, string>> {
+export async function readTrustKeys(fs: CoordFs, hostDir: string): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  for (const d of await readTrusted(fs, root)) if (d.keyHex !== undefined) out.set(d.deviceId, d.keyHex);
+  for (const d of await readTrusted(fs, hostDir)) if (d.keyHex !== undefined) out.set(d.deviceId, d.keyHex);
   return out;
 }
 
-export function readIgnoredDevices(fs: CoordFs, root: string): Promise<IgnoredDevice[]> {
-  return readDeviceList(fs, join(root, 'ignored-devices.json'), (o) =>
+export function readIgnoredDevices(fs: CoordFs, hostDir: string): Promise<IgnoredDevice[]> {
+  return readDeviceList(fs, join(hostDir, 'ignored-devices.json'), (o) =>
     typeof o['deviceId'] === 'string' && typeof o['label'] === 'string' && typeof o['at'] === 'string' ? { deviceId: o['deviceId'], label: o['label'], at: o['at'] } : null,
   );
 }
 
 /** §4.6 row 4: a local tombstone — the fold skips the subtree; nothing foreign is ever deleted. */
-export async function ignoreDevice(fs: CoordFs, root: string, entry: IgnoredDevice): Promise<IgnoredDevice[]> {
-  const list = (await readIgnoredDevices(fs, root)).filter((d) => d.deviceId !== entry.deviceId);
+export async function ignoreDevice(fs: CoordFs, hostDir: string, entry: IgnoredDevice): Promise<IgnoredDevice[]> {
+  const list = (await readIgnoredDevices(fs, hostDir)).filter((d) => d.deviceId !== entry.deviceId);
   list.push({ ...entry, label: entry.label.slice(0, LABEL_MAX_CHARS) });
-  await fs.mkdir(root, DIR_MODE);
-  await fs.writeAtomic(join(root, 'ignored-devices.json'), `${JSON.stringify({ v: 1, devices: list })}\n`, { fsync: true, mode: FILE_MODE });
+  await fs.mkdir(hostDir, DIR_MODE);
+  await fs.writeAtomic(join(hostDir, 'ignored-devices.json'), `${JSON.stringify({ v: 1, devices: list })}\n`, { fsync: true, mode: FILE_MODE });
   return list;
 }
 
 /** + review minor 25: lift a local tombstone — the subtree folds again from the next scan. */
-export async function unignoreDevice(fs: CoordFs, root: string, deviceId: string): Promise<IgnoredDevice[]> {
-  const list = (await readIgnoredDevices(fs, root)).filter((d) => d.deviceId !== deviceId);
-  await fs.mkdir(root, DIR_MODE);
-  await fs.writeAtomic(join(root, 'ignored-devices.json'), `${JSON.stringify({ v: 1, devices: list })}\n`, { fsync: true, mode: FILE_MODE });
+export async function unignoreDevice(fs: CoordFs, hostDir: string, deviceId: string): Promise<IgnoredDevice[]> {
+  const list = (await readIgnoredDevices(fs, hostDir)).filter((d) => d.deviceId !== deviceId);
+  await fs.mkdir(hostDir, DIR_MODE);
+  await fs.writeAtomic(join(hostDir, 'ignored-devices.json'), `${JSON.stringify({ v: 1, devices: list })}\n`, { fsync: true, mode: FILE_MODE });
   return list;
 }
 
-export async function writeTrusted(fs: CoordFs, root: string, devices: TrustedDevice[]): Promise<void> {
-  await fs.mkdir(root, DIR_MODE);
+export async function writeTrusted(fs: CoordFs, hostDir: string, devices: TrustedDevice[]): Promise<void> {
+  await fs.mkdir(hostDir, DIR_MODE);
   // §10.3: written under BOTH spellings for one release, so a downgrade does not silently unpair every device
   const rows = devices.map((d) => (d.keyHex === undefined ? d : { ...d, key: d.keyHex }));
-  await fs.writeAtomic(join(root, TRUSTED_FILE), `${JSON.stringify({ v: 1, devices: rows })}\n`, { fsync: true, mode: FILE_MODE });
+  await fs.writeAtomic(join(hostDir, TRUSTED_FILE), `${JSON.stringify({ v: 1, devices: rows })}\n`, { fsync: true, mode: FILE_MODE });
 }
 
 /** §10.3: pair a device — one upsert by id; the key never leaves this file. */
-export async function trustDevice(fs: CoordFs, root: string, entry: TrustedDevice): Promise<TrustedDevice[]> {
-  const list = (await readTrusted(fs, root)).filter((d) => d.deviceId !== entry.deviceId);
+export async function trustDevice(fs: CoordFs, hostDir: string, entry: TrustedDevice): Promise<TrustedDevice[]> {
+  const list = (await readTrusted(fs, hostDir)).filter((d) => d.deviceId !== entry.deviceId);
   list.push({ ...entry, label: entry.label.slice(0, LABEL_MAX_CHARS) });
   list.sort((a, b) => (a.deviceId < b.deviceId ? -1 : a.deviceId > b.deviceId ? 1 : 0));
-  await writeTrusted(fs, root, list);
+  await writeTrusted(fs, hostDir, list);
   return list;
 }
 
@@ -589,9 +659,9 @@ export function mintCommonsKey(random: RandomBytes = defaultRandom): string {
   return Buffer.from(random(COMMONS_KEY_BYTES)).toString('hex');
 }
 
-export async function readCommonsKey(fs: CoordFs, root: string): Promise<string | null> {
+export async function readCommonsKey(fs: CoordFs, hostDir: string): Promise<string | null> {
   try {
-    const r = await fs.readBounded(join(root, DEVICE_KEY_FILE), 256);
+    const r = await fs.readBounded(join(hostDir, DEVICE_KEY_FILE), 256);
     if (r.overflow) return null;
     const parsed = parseJson(r.text);
     if (!parsed.ok || !isJsonObject(parsed.value) || parsed.value['v'] !== 1) return null;
@@ -602,8 +672,8 @@ export async function readCommonsKey(fs: CoordFs, root: string): Promise<string 
   }
 }
 
-export async function writeCommonsKey(fs: CoordFs, root: string, keyHex: string): Promise<void> {
+export async function writeCommonsKey(fs: CoordFs, hostDir: string, keyHex: string): Promise<void> {
   if (!COMMONS_KEY_RE.test(keyHex)) throw new ConfigError('coordination: a commons key is 64 hex characters', { setting: 'coordination' });
-  await fs.mkdir(root, DIR_MODE);
-  await fs.writeAtomic(join(root, DEVICE_KEY_FILE), `${JSON.stringify({ v: 1, keyHex })}\n`, { fsync: true, mode: FILE_MODE });
+  await fs.mkdir(hostDir, DIR_MODE);
+  await fs.writeAtomic(join(hostDir, DEVICE_KEY_FILE), `${JSON.stringify({ v: 1, keyHex })}\n`, { fsync: true, mode: FILE_MODE });
 }

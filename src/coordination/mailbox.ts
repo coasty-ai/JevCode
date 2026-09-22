@@ -146,11 +146,11 @@ export function inbox(fold: Fold, self: SelfIdentity, seen: ReadonlySet<string>)
   return out.sort((a, b) => compareStamp(a.stamp, b.stamp));
 }
 
-// ── seen set (`coordination/seen/<sessionId>.json`) ───────────────────────────────────────────────────────────────────
+// ── seen set (§3.1: `inbox/seen/<deviceId>/<consumerId>.json`) ───────────────────────────────────────────────────────
 
 async function readSeen(h: LedgerHandle, consumerId: string): Promise<Set<string>> {
   try {
-    const r = await h.fs.readBounded(h.paths.seenFile(consumerId), READ_MAX_BYTES);
+    const r = await h.fs.readBounded(h.paths.seenFile(h.self.deviceId, consumerId), READ_MAX_BYTES);
     if (r.overflow) return new Set();
     const parsed = parseJson(r.text);
     if (!parsed.ok || !isJsonObject(parsed.value) || parsed.value['v'] !== 1 || !Array.isArray(parsed.value['ids'])) return new Set();
@@ -180,8 +180,8 @@ async function markSeen(h: LedgerHandle, id: string): Promise<void> {
   seen.add(id);
   const ids = [...seen].slice(-SEEN_MAX);
   stateOf(h).seen = new Set(ids);
-  await h.fs.mkdir(h.paths.seenDir, DIR_MODE);
-  await h.fs.writeAtomic(h.paths.seenFile(consumerIdOf(h.self, h.actor8)), `${JSON.stringify({ v: 1, ids })}\n`, { fsync: false, mode: FILE_MODE });
+  await h.fs.mkdir(h.paths.seenDir(h.self.deviceId), DIR_MODE);
+  await h.fs.writeAtomic(h.paths.seenFile(h.self.deviceId, consumerIdOf(h.self, h.actor8)), `${JSON.stringify({ v: 1, ids })}\n`, { fsync: false, mode: FILE_MODE });
 }
 
 // ── ack / awaitAck ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -269,8 +269,10 @@ export async function purgeInbox(ledger: Ledger, o: { deviceId?: string; target?
     const m = e.record as Message;
     if (!matches(m)) continue;
     try {
-      await h.removeOwn('inbox', messageRel(m.to, Date.parse(m.t), m.stamp.n));
-      report.removed++;
+      // + re-check (lower 1): delete the file we READ, and count a removal only when one happened. Rebuilding the rel
+      // from `m.t` / `m.stamp.n` does not round-trip (a clipped `t`, a different seq in the name), and `removeOwn`
+      // swallows ENOENT — so the old form reported removals for files it had never found.
+      if (await h.removeOwnFile('inbox', e.path)) report.removed++;
     } catch (err) {
       report.failed.push({ path: e.path, code: classifyLedgerError(err) });
     }
@@ -286,11 +288,11 @@ export async function purgeInbox(ledger: Ledger, o: { deviceId?: string; target?
     const ids = [...seen].slice(-SEEN_MAX);
     stateOf(h).seen = new Set(ids);
     try {
-      await h.fs.mkdir(h.paths.seenDir, DIR_MODE);
-      await h.fs.writeAtomic(h.paths.seenFile(consumerIdOf(h.self, h.actor8)), `${JSON.stringify({ v: 1, ids })}\n`, { fsync: false, mode: FILE_MODE });
+      await h.fs.mkdir(h.paths.seenDir(h.self.deviceId), DIR_MODE);
+      await h.fs.writeAtomic(h.paths.seenFile(h.self.deviceId, consumerIdOf(h.self, h.actor8)), `${JSON.stringify({ v: 1, ids })}\n`, { fsync: false, mode: FILE_MODE });
       report.muted = muted;
     } catch (err) {
-      report.failed.push({ path: h.paths.seenFile(consumerIdOf(h.self, h.actor8)), code: classifyLedgerError(err) });
+      report.failed.push({ path: h.paths.seenFile(h.self.deviceId, consumerIdOf(h.self, h.actor8)), code: classifyLedgerError(err) });
     }
   }
   return report;
