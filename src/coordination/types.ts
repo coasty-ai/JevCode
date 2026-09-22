@@ -60,20 +60,49 @@ export type Authority = 'self' | 'trusted' | 'unverified';
 /** §7.1 */
 export type RunPhase = 'starting' | 'running' | 'pausing' | 'paused' | 'blocked' | 'aborting' | 'ended';
 
-/** §12.0.2 (a): where a run stopped, so that /resume can continue it; one per pause point, emitted before `run:end` */
+/**
+ * §12.0.2 (a): where a run stopped, so that /resume can continue it; one per pause point, emitted before `run:end`.
+ *
+ * CANONICAL SHAPE, mirrored. The one definition is `src/core/types.ts`'s `// contract 1.4` block (landing on
+ * `w2a-pause-points`); this copy exists only because `src/core/types.ts` is frozen until that hash lands, exactly as
+ * the header of this file says of every type in it. When it lands the whole block below is replaced by one line:
+ *
+ *     export type { PausePoint, PausePointReason } from '../core/types.js';
+ *
+ * Revision 4 replaced the free-text `synthPhase?: string` with the typed `llm?: { goalId, round, arrived }` — sourced
+ * from the pause CACHE (the sample options the synthesizer fires with), never from the free-text `synth` event.
+ */
 export interface PausePoint {
+  /** the step /resume starts at: the discarded step's own number (rule 1) or the committed step + 1 */
   step: number;
+  /** llm-jev only: the LLM round whose arrived samples the cache holds; null otherwise. From the CACHE, not the draft. */
   round: number | null;
+  /** where the pause landed: the stage in flight, 'idle' at a step boundary, 'pane' while a blocking pane was open */
   phase: CoordStageName | 'idle' | 'pane';
   reason: PausePointReason;
+  /** 'boundary' = nothing to replay (resume is a fresh step at intent); else the run-relative cache file of §7.2 */
   resumableAt: 'boundary' | `cache/step-${number}.json`;
+  /** §7.2: a proposal, or arrived samples, were RECORDED in the written cache — never the live draft at discard time */
   replayable: boolean;
+  /** phase === 'pane': which pane */
   pane?: BlockingKind;
-  synthPhase?: string;
+  /**
+   * llm-jev (P3): the round the cache holds, TYPED — the synthesizer's goal id, its round and the sample ids that
+   * ARRIVED and were written. Absent when no goal round was in flight. (Revision 4; was `synthPhase?: string`.)
+   */
+  llm?: { goalId: string; round: number; arrived: number[] };
+  /** who asked — the index line's `by` (§5.3) */
   by: 'self' | `peer:${string}` | `device:${string}`;
+  /** `end` (§7.4) was requested: RunMeta.ended is written with the final state; /resume needs --force */
   end: boolean;
 }
-export type PausePointReason = 'step' | 'now' | 'now-after-execute' | 'pane' | 'worktree';
+/** §12.0.2: why the run stopped at its pause point */
+export type PausePointReason =
+  | 'step' // pause({ at: 'step' }): the in-flight step committed whole, stopped at the loop top
+  | 'now' // pause({ at: 'now' }): the stage in flight was discarded under rule 1; proposal + arrived samples cached
+  | 'now-after-execute' // pause({ at: 'now' }) landed during execute: execute finished, judge skipped, step committed
+  | 'pane' // pause() while a blocking pane was awaited: blockWaker -> answer 'pause'
+  | 'worktree'; // lease-conflict [t]: stopped for relocation; interruptedDetail.relocate set (§4.3 step 5)
 
 /** §6.1 one sub-work row of a heartbeat (≤ 16) */
 export interface SubworkEntry {
@@ -148,7 +177,11 @@ export interface Heartbeat {
   wallMs: number;
   maxWallMs: number;
   context: { pct: number; files: number; historyEntries: number; summaryAt: number | null; tokensInWindow: number; windowBudget: number; compactions: number };
-  /** §12.0.2: on the final phase:'ended' beat of a human_pause */
+  /**
+   * §12.0.2: on the final `phase:'ended'` beat of a human_pause. It travels in a 4 KiB record that a hostile writer
+   * also controls, so `parseRecord` bounds it: `llm.goalId` by length, `llm.arrived` by count, every counter by
+   * `isCount` (see `checkPausePoint`).
+   */
   pausePoint?: PausePoint;
   /** + §11 row 15: false when `takeRunLock` reported `held:false` (the heartbeat is the second liveness signal); absent = unknown */
   lockHeld?: boolean;

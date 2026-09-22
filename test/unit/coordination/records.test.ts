@@ -9,6 +9,8 @@ import {
   COUNTER_MAX,
   HEARTBEAT_TTL_MS,
   HONOURED_TTL_MAX_MS,
+  PAUSE_ARRIVED_MAX,
+  PAUSE_GOAL_ID_MAX_CHARS,
   RECORD_MAX_BYTES,
   RECORD_TTL_MAX_MS,
   SKEW_MS,
@@ -277,5 +279,30 @@ describe('§11 row 4: a stray record under our subtree is skipped, not trusted',
     const hb = withChecksum({ ...makeHeartbeat(), repo: { ...makeHeartbeat().repo, wsKey: 'nope', repoKey: REPO, remoteKey: null } });
     expect(parseRecord(serializeRecord(hb), 'heartbeat')).toEqual({ ok: false, reason: 'id' });
     expect(WS).toMatch(/^ws:/);
+  });
+});
+
+describe('§12.0.2: the pause point a beat carries is bounded like every other member', () => {
+  const beat = (pausePoint: unknown) => serializeRecord(withChecksum({ ...makeHeartbeat(), pausePoint, checksum: '' } as unknown as Parameters<typeof withChecksum>[0]));
+  const ok = { step: 8, round: null, phase: 'idle', reason: 'step', resumableAt: 'boundary', replayable: false, by: 'self', end: false };
+
+  it('the canonical shape parses, and the revision-3 free-text `synthPhase` is refused', () => {
+    expect(parseRecord(beat(ok), 'heartbeat').ok).toBe(true);
+    expect(parseRecord(beat({ ...ok, llm: { goalId: 'g-1', round: 2, arrived: [0, 1, 2] } }), 'heartbeat').ok).toBe(true);
+    // revision 4 replaced `synthPhase?: string` with the typed `llm` — a record may not smuggle the old one back in
+    expect(parseRecord(beat({ ...ok, synthPhase: 'sampling' }), 'heartbeat')).toEqual({ ok: false, reason: 'shape' });
+  });
+
+  it('`llm.arrived` and `llm.goalId` are BOUNDED — a pause point is a hostile writer\u2019s field too', () => {
+    const many = Array.from({ length: PAUSE_ARRIVED_MAX + 1 }, (_, i) => i);
+    expect(parseRecord(beat({ ...ok, llm: { goalId: 'g-1', round: 1, arrived: many } }), 'heartbeat')).toEqual({ ok: false, reason: 'bounds' });
+    const longId = 'g'.repeat(PAUSE_GOAL_ID_MAX_CHARS + 1);
+    expect(parseRecord(beat({ ...ok, llm: { goalId: longId, round: 1, arrived: [] } }), 'heartbeat')).toEqual({ ok: false, reason: 'bounds' });
+    // and every counter is a safe non-negative integer
+    expect(parseRecord(beat({ ...ok, llm: { goalId: 'g', round: -1, arrived: [] } }), 'heartbeat')).toEqual({ ok: false, reason: 'shape' });
+    expect(parseRecord(beat({ ...ok, llm: { goalId: 'g', round: 1, arrived: [1.5] } }), 'heartbeat')).toEqual({ ok: false, reason: 'shape' });
+    expect(parseRecord(beat({ ...ok, step: -1 }), 'heartbeat')).toEqual({ ok: false, reason: 'shape' });
+    expect(parseRecord(beat({ ...ok, reason: 'whatever' }), 'heartbeat')).toEqual({ ok: false, reason: 'shape' });
+    expect(parseRecord(beat('not an object'), 'heartbeat')).toEqual({ ok: false, reason: 'shape' });
   });
 });

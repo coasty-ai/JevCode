@@ -266,6 +266,38 @@ function isBootId(v: unknown): boolean {
   return v === undefined || v === null || (typeof v === 'string' && v.length > 0 && v.length <= BOOT_ID_MAX_CHARS && !/[\u0000-\u001f\u007f]/.test(v));
 }
 
+/** §12.0.2 (P3): the synthesizer goal ids and arrived-sample ids a pause point may carry. */
+export const PAUSE_GOAL_ID_MAX_CHARS = 64;
+export const PAUSE_ARRIVED_MAX = 16;
+
+/**
+ * §12.0.2 / §3.3: a `pausePoint` travels inside a heartbeat, which a hostile writer also controls — so it is
+ * bounded like every other member. Revision 4 replaced the free-text `synthPhase` with the typed
+ * `llm: { goalId, round, arrived }`, and `arrived` is an ARRAY: unbounded, it is 4 KiB of sample ids a renderer then
+ * walks, and `goalId` is a string a resume card prints. Both are capped here, at the parse.
+ */
+function checkPausePoint(v: unknown): Bad | null {
+  if (!isJsonObject(v)) return 'shape';
+  if (!isCount(v['step']) || !isBool(v['replayable']) || !isBool(v['end'])) return 'shape';
+  if (!(v['round'] === null || isCount(v['round']))) return 'shape';
+  for (const k of ['phase', 'reason', 'resumableAt', 'by'] as const) if (!isStr(v[k])) return 'shape';
+  if (!oneOf(PAUSE_REASONS)(v['reason'])) return 'shape';
+  if (v['pane'] !== undefined && !isStr(v['pane'])) return 'shape';
+  const llm = v['llm'];
+  if (llm !== undefined) {
+    if (!isJsonObject(llm) || !isCount(llm['round'])) return 'shape';
+    if (!isStr(llm['goalId']) || llm['goalId'].length === 0) return 'shape';
+    if (llm['goalId'].length > PAUSE_GOAL_ID_MAX_CHARS) return 'bounds';
+    const arrived = llm['arrived'];
+    if (!Array.isArray(arrived)) return 'shape';
+    if (arrived.length > PAUSE_ARRIVED_MAX) return 'bounds';
+    for (const a of arrived) if (!isCount(a)) return 'shape';
+  }
+  // the free-text `synthPhase` of revision 3 is not a member any more, and a record may not smuggle one back in
+  if (v['synthPhase'] !== undefined) return 'shape';
+  return null;
+}
+
 function checkHeartbeat(o: JsonObject): Bad | null {
   if (o['kind'] !== 'heartbeat' && o['kind'] !== 'bench') return 'shape';
   let bad = checkId(o['deviceId'], DEVICE_ID_RE) ?? checkId(o['runId'], RUN_ID_RE) ?? checkId(o['sessionId'], RUN_ID_RE) ?? checkIdOrNull(o['parentSessionId'], RUN_ID_RE) ?? checkIdOrNull(o['parentRunId'], RUN_ID_RE);
@@ -330,7 +362,10 @@ function checkHeartbeat(o: JsonObject): Bad | null {
   const ctx = o['context'];
   if (!isJsonObject(ctx) || !isNum(ctx['pct']) || !isNum(ctx['files']) || !isNum(ctx['historyEntries']) || !isNumOrNull(ctx['summaryAt']) || !isNum(ctx['tokensInWindow']) || !isNum(ctx['windowBudget']) || !isNum(ctx['compactions'])) return 'shape';
   if (o['lockHeld'] !== undefined && !isBool(o['lockHeld'])) return 'shape';
-  if (o['pausePoint'] !== undefined && !isJsonObject(o['pausePoint'])) return 'shape';
+  if (o['pausePoint'] !== undefined) {
+    const bad2 = checkPausePoint(o['pausePoint']);
+    if (bad2 !== null) return bad2;
+  }
   if (!isCount(o['beatSeq']) || !isCount(o['ttlMs'])) return 'shape';
   // + re-check (5): a writer-chosen liveness window. `COUNTER_MAX` let a record claim 11.6 days of freshness.
   if (o['ttlMs'] <= 0 || o['ttlMs'] > RECORD_TTL_MAX_MS) return 'bounds';
@@ -499,6 +534,8 @@ function checkClaims(o: JsonObject): Bad | null {
   if (ended !== undefined && !(isJsonObject(ended) && isStr(ended['at']) && (ended['by'] === 'human' || ended['by'] === 'remote'))) return 'shape';
   return checkStamp(o['stamp']);
 }
+
+const PAUSE_REASONS = ['step', 'now', 'now-after-execute', 'pane', 'worktree'] as const;
 
 const CHECKERS: Record<RecordKind, (o: JsonObject) => Bad | null> = { heartbeat: checkHeartbeat, lease: checkLease, message: checkMessage, ack: checkAck, device: checkDevice, claims: checkClaims };
 
