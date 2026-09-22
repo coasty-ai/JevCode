@@ -130,7 +130,8 @@ import { fileMemoryFromPostImage, writePostImages, writePreImages, type ImageSou
 import { hasContextStore, readContextExtension, type ContextCheckpointExtension } from '../checkpoint/types.js';
 import { CACHED_SAMPLES_MAX, CACHED_SAMPLE_MAX_CHARS, PARTIAL_TEXT_MAX_CHARS, REPLAY_HASH_MAX_FILES, hashTargets, parseStepCache, promptHashOf, proposalPaths, stepCacheName, stepCacheRel, stepCacheSupersededName, verifyTargets, type CachedSample, type StepCache } from '../checkpoint/replay.js';
 // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context (Jev's window is untouched — two windows, §8.1)
-import { compactCode, compactionDue, isContextSummary, type CompactionTrigger } from './context/compaction.js';
+import { compactCode, compactionDue, isContextSummary, rankKept, type CompactionTrigger, type KeptItem } from './context/compaction.js';
+import { extractKept, readKeptItems } from './context/kept.js';
 import { FilesInView, boundMemory, dropFile, evictFiles, forgetFile, noteShown, rememberFile, touchFile, workspaceFilesInViewDeps } from './context/context-cache.js';
 import { buildHistoryEntry, foldHistoryRecord, foldableCount, needsOutputFile, outputRefFor, outputView, parseOutputRef, planHistory, pushHistory, renderHistory, seedHistoryEntry, tierText, type HistoryPlan, type OutputView } from './context/history.js';
 import { AGENT_MEM_BYTES, MIN_FREE_BYTES, ORCHESTRATION_DEPTH_MAX } from '../core/limits.js';
@@ -837,6 +838,14 @@ class EngineImpl implements Engine {
   private fileMemory: FileMemory = {};
   private summary: ContextSummary | null = null;
   private summaryAt: number | null = null;
+  /**
+   * docs/COORDINATION-DESIGN.md §8.6 fourth bullet (F26): the kept items, re-extracted at every compaction and
+   * persisted as `CheckpointState.kept`. Empty until the run's first compaction, which is what keeps a short
+   * run's `state.json` byte-identical to the one it wrote before this landed.
+   */
+  private kept: KeptItem[] = [];
+  /** §8.6 `context.kept: 'jev'`: one bounded ordering request is owed for the compaction just made */
+  private keptRankPending = false;
   private compactions = 0;
   private lastCompactionAt: string | null = null;
   private contextUsage: ContextUsage;
@@ -1274,6 +1283,10 @@ class EngineImpl implements Engine {
         this.fileCache = s.fileCache ?? [];
         this.fileMemory = s.fileMemory ?? {};
         this.summaryAt = s.summaryAt ?? null;
+        // §8.6 (F26): the kept items ride the checkpoint like `history` and `fileCache`. The human `/keep` items
+        // inside them are the ONLY channel a human item has today (`/keep` is `src/tui`'s), so a resume that
+        // dropped them would lose the one part of the list the code cannot re-derive.
+        this.kept = readKeptItems(init.resume.state);
         this.compactions = s.compactions ?? 0;
         this.lastCompactionAt = s.lastCompactionAt ?? null;
         const newest = this.history[this.history.length - 1]?.step ?? 0;
@@ -5034,13 +5047,23 @@ class EngineImpl implements Engine {
   // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context (history, files in view, compaction, meter)
   // -------------------------------------------------------------------------------------
 
-  /** The optional CheckpointState fields (§8.3, §8.4, §12.0.3), each present only when it carries something. */
-  private contextExtension(): ContextCheckpointExtension {
-    const ext: ContextCheckpointExtension = {};
+  /**
+   * The optional CheckpointState fields (§8.3, §8.4, §8.6, §12.0.3), each present only when it carries something.
+   *
+   * F26 widens the return past `ContextCheckpointExtension` by `kept` alone: that `Pick` lives in
+   * `src/checkpoint/types.ts` beside `readContextExtension`, which is a different owner's file, and `kept` is
+   * validated on the way in by `readKeptItems` (`context/kept.ts`) instead. The member itself is
+   * `CheckpointState['kept']`, so nothing here is a second declaration.
+   */
+  private contextExtension(): ContextCheckpointExtension & Pick<CheckpointState, 'kept'> {
+    const ext: ContextCheckpointExtension & Pick<CheckpointState, 'kept'> = {};
     if (this.history.length > 0) ext.history = this.history.map((e) => ({ ...e, shownFiles: [...e.shownFiles], notes: [...e.notes] }));
     if (this.fileCache.length > 0) ext.fileCache = this.fileCache.map((e) => ({ ...e }));
     if (Object.keys(this.fileMemory).length > 0) ext.fileMemory = { ...this.fileMemory };
     if (this.summaryAt !== null) ext.summaryAt = this.summaryAt;
+    // §8.6 (F26): absent until the first compaction extracted something, so a run that never compacts (and every
+    // run written before the extractor existed) carries the same object it always did
+    if (this.kept.length > 0) ext.kept = this.kept.map((k) => ({ ...k }));
     if (this.compactions > 0) ext.compactions = this.compactions;
     if (this.lastCompactionAt !== null) ext.lastCompactionAt = this.lastCompactionAt;
     return ext;
@@ -5112,6 +5135,7 @@ class EngineImpl implements Engine {
       const trigger = compactionDue({ step: this.step, compactEvery: this.contextPolicy.compactEvery, pct: 0, mode: this.contextPolicy.compaction, foldable: foldableCount(this.history), resume: true });
       if (trigger !== null) this.compactContext(this.step, trigger);
     }
+    await this.rankKeptItems(step);
     const refreshed = await this.filesInView.refresh(this.fileCache, step, this.contextPolicy.fileCacheBytes);
     this.lastRefreshMs = refreshed.ms;
     if (refreshed.failed.length > 0) {
@@ -5297,6 +5321,34 @@ class EngineImpl implements Engine {
   }
 
   /**
+   * §8.6 `context.kept: 'jev'` (F26): the ONE bounded ordering request the last compaction owes, paid once, just
+   * before the prompt that would render the order. `'code'` — the default — never reaches `rankKept`'s Jev branch
+   * at all (`deps.kept` decides that inside `rankKept`, which also refuses under `jev-off`), so the default
+   * compactor stays free and deterministic and this method is a single `if` on every step of every run.
+   *
+   * Jev routes, never gates: every route out of the branch (policy, `jev-off`, no asker, nothing askable, an
+   * escape, a throw) returns `rankKeptCode`'s order untouched, so a Jev outage costs the ORDER of a prompt hint
+   * and nothing else. The flag is cleared before the await, so a failure cannot re-arm the request.
+   */
+  private async rankKeptItems(step: number): Promise<void> {
+    if (!this.keptRankPending) return;
+    this.keptRankPending = false;
+    const draft = this.draft;
+    const r = await rankKept(
+      { task: this.opts.task, plan: this.plan, candidates: this.kept },
+      {
+        kept: this.contextPolicy.kept,
+        mode: this.mode,
+        // the engine's one metered, recorded path; absent when there is no open draft to charge the request to,
+        // which `rankKept` reports as `fellBackTo: 'no-asker'` and answers with the code order
+        ...(draft === null ? {} : { ask: async (state: Json, questions: Record<string, Question>): Promise<AskResult> => (await this.askRecorded(draft, 'context', state, questions)).res }),
+      },
+    );
+    this.kept = r.kept;
+    if (r.by === 'jev') this.emit({ type: 'transcript', step, level: 'info', text: `kept: ${r.kept.length} item${r.kept.length === 1 ? '' : 's'} ordered by Jev (1 request)` });
+  }
+
+  /**
    * §8.6 `'code'`: fold the history into the rolling summary, persist it, announce `context:compacted`, recompute the meter.
    * `'llm'` (the second bullet of §8.6 — one generator call with the opencode template) is not built here; it degrades to
    * `'code'`, which §8.6 already names as its fallback, so the event always reports `by: 'code'` while `ContextUsage.compaction`
@@ -5317,6 +5369,26 @@ class EngineImpl implements Engine {
     this.history = r.history;
     this.summary = r.summary;
     this.summaryAt = step;
+    // §8.6 fourth bullet (F26): the extraction, which is the whole mechanism under `context.kept: 'code'` — pure,
+    // free, deterministic, and run over the history BEFORE the fold collapsed it is not needed: every input here
+    // (`plan`, `fileMemory`, `lastTestRun`, the folded history's own reasons) survives the fold. The human items
+    // already on the list are carried forward unranked; nothing else about them is this module's business.
+    this.kept = extractKept({
+      task: this.opts.task,
+      plan: this.plan,
+      history: this.history,
+      fileMemory: this.fileMemory,
+      lastTestRun: this.lastTestRun,
+      // §8.6's "failing test ids + assertion lines", read by the same code the oracle and the fast path use, so
+      // the kept facts name the tests the way every other artefact of this run names them
+      failingTests: this.lastTestRun === null ? [] : fastPathFailingIds(this.lastTestRun.command, this.lastTestRunOutput),
+      testOutput: this.lastTestRunOutput,
+      human: this.kept.filter((k) => k.by === 'human'),
+    });
+    // §8.6: one bounded ordering request per compaction, and only under `'jev'`. It is owed rather than made here
+    // because `compactContext` is synchronous (it runs inside `commit`); `contextView` pays it before the next
+    // prompt is built, which is the first moment the order can matter and the last moment it is free to wait.
+    this.keptRankPending = this.contextPolicy.kept === 'jev' && this.kept.length > 0;
     this.compactions += 1;
     this.lastCompactionAt = at;
     if (hasContextStore(this.store)) this.persist(this.store.writeContextSummary(toJson(r.summary)), `${CHECKPOINT_FILES.context}/${CONTEXT_SUMMARY_FILE}`);

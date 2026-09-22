@@ -1516,6 +1516,28 @@ on fresh file bytes, which is why the wording is "deterministic given (state, bu
   meant to isolate the generator, and a non-deterministic `kept` (hence prompt) across devices and resumes, against G3(d). `/keep <text>` adds a human item. Kept items render as `## Kept (do not
   re-derive)` and ride `buildSeed` into follow-ups (`seed.ts:47`).
 
+**As built (the finishing pass, F26).** The ranking pass (`rankKept`) landed first and the EXTRACTION did not, so
+`CheckpointState.kept` had no writer at all: `'code'` ranked an empty list and `'jev'` had nothing to ask about —
+the switch was inert in both positions. The extractor is `src/loop/context/kept.ts` (`extractKept`), pure and
+dependency-free, run at every compaction over the same inputs the fold takes:
+
+1. the failing-test summary of `lastTestRun`, unless the suite is green (a green run is nothing to carry);
+2. each failing test id with its **assertion line** — the ids come from the engine's own reader
+   (`fastPathFailingIds`, the one the oracle uses), bounded at `KEPT_FAILING_IDS_MAX` (8);
+3. every file `fileMemory` records as EDITED (a file merely read is already in `## Files in view`);
+4. the `declined` / `blocked` / `failed` history entries with their reason;
+5. `plan.harnessProblems` with their step, and `plan.openProblems` as step-0 facts (they rank last by recency).
+
+Deduplicated on (kind, text) keeping the newer step, cut to `KEPT_MAX` (24) **before** any ranking, human `/keep`
+items first in the order they were given and never ranked. `state.json` is untrusted input, so `kept` is
+validated and bounded on the way back in (`readKeptItems`) exactly as `history` and `fileCache` are. Under
+`'jev'` the one bounded request is paid once per compaction, at the next prompt build (`Engine.rankKeptItems`),
+because the fold itself is synchronous.
+
+**Not built here, and deliberately:** nothing fills `PromptContextView.kept`, so `## Kept (do not re-derive)`
+still renders for nobody. Rendering changes every `relaxed`-view prompt, and the section belongs with the
+surface that owns `/keep`.
+
 ### 8.7 Visible usage
 
 `EngineStatus.context?: { promptChars, budgetChars, pct, files, historyEntries, summaryAt: number|null, lastCompactionStep }` — plus the
