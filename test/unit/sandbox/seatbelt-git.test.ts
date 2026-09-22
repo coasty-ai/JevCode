@@ -48,11 +48,27 @@ function allowLine(profile: string): string {
   return profile.split('\n').find((l) => l.startsWith('(allow file-write*'))!;
 }
 
+/**
+ * IMPORT-DESIGN §2.11 [G2.1]: the three workspace-memory write denies are appended to `gitDenies`,
+ * so in the emitted line they sit after the git fragments and before the tty literal. The §12.7
+ * assertions below are exact-line, so they carry the fragment rather than loosening to `toContain`.
+ */
+function memoryDenies(ws: string): string {
+  return ['memory', 'rules', 'commands']
+    .map((n) => {
+      const p = canonicalPathSync(join(ws, '.jevcode', n));
+      return `(literal ${sbplString(p)}) (subpath ${sbplString(p)})`;
+    })
+    .join(' ');
+}
+
 describe('buildProfile gitDir / gitCommonDir (§12.7)', () => {
   it('no option → the main-tree snapshot is byte-identical to today: two denies, no config.worktree, no modules regex', () => {
     const { base, ws } = fixture(temp('jev-sbg-'));
     const p = buildProfile(base);
-    expect(denyLine(p)).toBe(`(deny file-write* (literal ${sbplString(join(ws, '.git', 'config'))}) (subpath ${sbplString(join(ws, '.git', 'hooks'))}) (literal "/dev/ttys004"))`);
+    expect(denyLine(p)).toBe(
+      `(deny file-write* (literal ${sbplString(join(ws, '.git', 'config'))}) (subpath ${sbplString(join(ws, '.git', 'hooks'))}) ${memoryDenies(ws)} (literal "/dev/ttys004"))`,
+    );
     expect(p).not.toContain('config.worktree');
     expect(p).not.toContain('modules');
     expect(p).not.toContain('worktrees');
@@ -71,7 +87,8 @@ describe('buildProfile gitDir / gitCommonDir (§12.7)', () => {
     const worktrees = regexQuote(join(gitDir, 'worktrees'));
     expect(denyLine(p)).toBe(
       `(deny file-write* (literal ${sbplString(join(gitDir, 'config'))}) (subpath ${sbplString(join(gitDir, 'hooks'))}) (literal ${sbplString(join(gitDir, 'config.worktree'))}) ` +
-        `(regex #"^${worktrees}/[^/]+/config\\.worktree$") (regex #"^${modules}/.+/config$") (regex #"^${modules}/.+/hooks(/.*)?$") (literal "/dev/ttys004"))`,
+        `(regex #"^${worktrees}/[^/]+/config\\.worktree$") (regex #"^${modules}/.+/config$") (regex #"^${modules}/.+/hooks(/.*)?$") ` +
+        `${memoryDenies(ws)} (literal "/dev/ttys004"))`,
     );
     // one backslash per metacharacter: `.git` → `\.git` (a doubled backslash would silently never match)
     expect(denyLine(p)).toContain('/\\.git/modules/.+/config$');
@@ -119,7 +136,8 @@ describe('buildProfile gitDir / gitCommonDir (§12.7)', () => {
     expect(denyLine(p)).toBe(
       `(deny file-write* (literal ${sbplString(join(repo, '.git', 'config'))}) (subpath ${sbplString(join(repo, '.git', 'hooks'))}) (literal ${sbplString(join(repo, '.git', 'config.worktree'))}) ` +
         `(regex #"^${regexQuote(join(repo, '.git', 'worktrees'))}/[^/]+/config\\.worktree$") ` +
-        `(regex #"^${regexQuote(join(repo, '.git', 'modules'))}/.+/config$") (regex #"^${regexQuote(join(repo, '.git', 'modules'))}/.+/hooks(/.*)?$"))`,
+        `(regex #"^${regexQuote(join(repo, '.git', 'modules'))}/.+/config$") (regex #"^${regexQuote(join(repo, '.git', 'modules'))}/.+/hooks(/.*)?$") ` +
+        `${memoryDenies(ws)})`,
     );
   });
 

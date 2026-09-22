@@ -1,0 +1,245 @@
+{
+  "v": 1,
+  "importId": "imp_20260921T120000Z_a1b2c3",
+  "at": "2026-09-21T12:00:00.000Z",
+  "jevcodeVersion": "0.3.0",
+  "workspace": "/ws",
+  "workspaceKey": "/ws",
+  "gitRoot": "/ws",
+  "trust": "trust",
+  "roots": [
+    { "display": "~/.claude", "tool": "claude-code", "via": "default", "exists": true },
+    { "display": "/tmp/cx", "tool": "codex", "via": "env", "env": "CODEX_HOME", "exists": true },
+    { "display": "—", "tool": "cursor", "via": "default", "exists": false },
+    { "display": "—", "tool": "windsurf", "via": "default", "exists": false },
+    { "display": "—", "tool": "opencode", "via": "default", "exists": false },
+    { "display": "—", "tool": "gemini", "via": "default", "exists": false },
+    { "display": "—", "tool": "aider", "via": "default", "exists": false },
+    { "display": "~/.copilot", "tool": "copilot", "via": "default", "exists": true },
+    { "display": "—", "tool": "claude-desktop", "via": "default", "exists": false }
+  ],
+  "rows": [
+    {
+      "id": "0a1b2c3d4e5f",
+      "source": { "id": "aaaaaaaaaaaa", "display": "~/.claude/projects/-ws/memory/project-notes.md", "tools": ["claude-code"], "sha256": "9f8e7d6c5b4a39281706f5e4d3c2b1a0998877665544332211ffeeddccbbaa99", "bytes": 4200, "mtimeMs": 1758456000000 },
+      "class": "memory",
+      "dest": ".jevcode/memory/project-notes.md",
+      "action": "create",
+      "scope": "project",
+      "bytes": 4288,
+      "why": "rule 9 (frontmatter name+description+metadata.type)",
+      "warnings": []
+    },
+    {
+      "id": "1a1b2c3d4e5f",
+      "source": { "id": "bbbbbbbbbbbb", "display": "~/.claude/projects/-ws/memory/MEMORY.md", "tools": ["claude-code"], "sha256": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809", "bytes": 640, "mtimeMs": 1758456000000 },
+      "class": "memory",
+      "dest": ".jevcode/memory/MEMORY.md",
+      "action": "create",
+      "scope": "project",
+      "bytes": 712,
+      "why": "rule 1 (atlas claude.auto-memory.index)",
+      "warnings": []
+    },
+    {
+      "id": "2a1b2c3d4e5f",
+      "source": { "id": "cccccccccccc", "display": "~/.claude/CLAUDE.md", "tools": ["claude-code", "opencode"], "sha256": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a", "bytes": 1800, "mtimeMs": 1758456000000 },
+      "class": "memory",
+      "dest": "~/.config/jevcode/AGENTS.md",
+      "action": "append",
+      "scope": "user",
+      "bytes": 1930,
+      "why": "rule 1 (atlas claude.user-instructions)",
+      "warnings": ["1 value redacted"]
+    },
+    {
+      "id": "3a1b2c3d4e5f",
+      "source": { "id": "dddddddddddd", "display": "AGENTS.md", "tools": ["codex", "opencode", "copilot", "cursor", "claude-code"], "sha256": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b", "bytes": 678, "mtimeMs": 1758456000000 },
+      "class": "memory",
+      "dest": "AGENTS.md",
+      "action": "update",
+      "scope": "project",
+      "bytes": 812,
+      "why": "manifest entry exists, source sha256 changed",
+      "warnings": []
+    },
+    {
+      "id": "4a1b2c3d4e5f",
+      "source": { "id": "eeeeeeeeeeee", "display": "CLAUDE.local.md", "tools": ["claude-code"], "sha256": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c", "bytes": 300, "mtimeMs": 1758456000000 },
+      "class": "memory",
+      "dest": ".jevcode/memory-local/claude-local.md",
+      "action": "create",
+      "scope": "project-local",
+      "bytes": 430,
+      "why": "rule 1 (atlas claude.personal-uncommitted)",
+      "warnings": []
+    },
+    {
+      "id": "5a1b2c3d4e5f",
+      "source": { "id": "ffffffffffff", "display": ".cursor/rules/style.mdc", "tools": ["cursor"], "sha256": "5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d", "bytes": 900, "mtimeMs": 1758456000000 },
+      "class": "rule",
+      "dest": ".jevcode/rules/style.md",
+      "action": "create",
+      "scope": "project",
+      "bytes": 1080,
+      "why": "rule 7 (frontmatter globs) — trigger paths, 3 patterns",
+      "warnings": []
+    },
+    {
+      "id": "6a1b2c3d4e5f",
+      "source": { "id": "111111111111", "display": ".devin/rules/long.md", "tools": ["windsurf"], "sha256": "6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e", "bytes": 12000, "mtimeMs": 1758456000000 },
+      "class": "rule",
+      "dest": ".jevcode/rules/long.md",
+      "action": "create",
+      "scope": "project",
+      "bytes": 4096,
+      "why": "rule 7 (frontmatter trigger)",
+      "warnings": ["clipped 12,000 → 4,096 bytes"]
+    },
+    {
+      "id": "7a1b2c3d4e5f",
+      "source": { "id": "222222222222", "display": "~/.claude/commands/ft.md", "tools": ["claude-code"], "sha256": "708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f", "bytes": 260, "mtimeMs": 1758456000000 },
+      "class": "command",
+      "dest": "~/.config/jevcode/commands/ft.md",
+      "action": "create",
+      "scope": "user",
+      "bytes": 520,
+      "why": "rule 8 (body contains $1)",
+      "warnings": ["2 shell segments fenced"]
+    },
+    {
+      "id": "8a1b2c3d4e5f",
+      "source": { "id": "333333333333", "display": "/tmp/cx/config.toml", "tools": ["codex"], "sha256": "8192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70", "bytes": 1400, "mtimeMs": 1758456000000 },
+      "class": "mcp",
+      "dest": ".jevcode/mcp.json",
+      "action": "merge",
+      "scope": "project",
+      "bytes": 940,
+      "why": "key rule 7 (mcp set: mcp_servers.*) — 3 servers, all disabled",
+      "warnings": ["1 env value held a literal; only the name was imported"]
+    },
+    {
+      "id": "9a1b2c3d4e5f",
+      "source": { "id": "444444444444", "display": "~/.claude/settings.json", "tools": ["claude-code"], "sha256": "92a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081", "bytes": 2100, "mtimeMs": 1758456000000 },
+      "class": "config",
+      "dest": null,
+      "action": "suggest",
+      "scope": "user",
+      "bytes": 0,
+      "why": "key rule 5 (permission set: permissions.allow) — 12 entries, never written",
+      "warnings": []
+    },
+    {
+      "id": "aa1b2c3d4e5f",
+      "source": { "id": "555555555555", "display": "~/.claude/settings.json", "tools": ["claude-code"], "sha256": "92a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081", "bytes": 2100, "mtimeMs": 1758456000000 },
+      "class": "secret",
+      "dest": null,
+      "action": "skip:secret",
+      "scope": "user",
+      "bytes": 0,
+      "why": "key rule 1 (known-secret set: env.ANTHROPIC_API_KEY) — sha256:3f2a1b0c",
+      "warnings": []
+    },
+    {
+      "id": "bb1b2c3d4e5f",
+      "source": { "id": "666666666666", "display": "~/.claude/settings.json", "tools": ["claude-code"], "sha256": "92a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081", "bytes": 2100, "mtimeMs": 1758456000000 },
+      "class": "config",
+      "dest": null,
+      "action": "skip:executable",
+      "scope": "user",
+      "bytes": 0,
+      "why": "key rule 6 (hook/exec set: hooks.PreToolUse) — report only",
+      "warnings": []
+    },
+    {
+      "id": "cc1b2c3d4e5f",
+      "source": { "id": "777777777777", "display": ".jevcode/memory/project-notes.md", "tools": ["claude-code"], "sha256": "a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192", "bytes": 4288, "mtimeMs": 1758456000000 },
+      "class": "memory",
+      "dest": null,
+      "action": "skip:self",
+      "scope": "project",
+      "bytes": 0,
+      "why": "rule 2 (realpath is a destination)",
+      "warnings": []
+    },
+    {
+      "id": "dd1b2c3d4e5f",
+      "source": { "id": "888888888888", "display": "~/.claude/projects/-ws/session.jsonl", "tools": ["claude-code"], "sha256": "b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3", "bytes": 158334976, "mtimeMs": 1758456000000 },
+      "class": "transcript",
+      "dest": null,
+      "action": "skip:transcript",
+      "scope": "user",
+      "bytes": 0,
+      "why": "rule 1 (atlas claude.transcripts) — jevcode import --source claude-transcripts",
+      "warnings": []
+    },
+    {
+      "id": "ee1b2c3d4e5f",
+      "source": { "id": "999999999999", "display": "~/.claude/workflows/deploy.js", "tools": ["claude-code"], "sha256": "c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4", "bytes": 3400, "mtimeMs": 1758456000000 },
+      "class": "command",
+      "dest": null,
+      "action": "skip:unsupported",
+      "scope": "user",
+      "bytes": 0,
+      "why": "rule 6 (format js)",
+      "warnings": []
+    },
+    {
+      "id": "ff1b2c3d4e5f",
+      "source": { "id": "0000000000aa", "display": ".jevcode/memory/agents-md.md", "tools": ["codex"], "sha256": "d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5", "bytes": 700, "mtimeMs": 1758456000000 },
+      "class": "memory",
+      "dest": ".jevcode/memory/agents-md.md",
+      "action": "review",
+      "scope": "project",
+      "bytes": 830,
+      "why": "jev same_meaning p=0.41 → both kept (jaccard 0.78)",
+      "warnings": [],
+      "group": "dup-1"
+    },
+    {
+      "id": "aaa1b2c3d4e5",
+      "source": { "id": "0000000000bb", "display": "~/.codex/AGENTS.md", "tools": ["codex"], "sha256": "e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6", "bytes": 1120, "mtimeMs": 1758456000000 },
+      "class": "memory",
+      "dest": "~/.config/jevcode/AGENTS.md",
+      "action": "review",
+      "scope": "user",
+      "bytes": 1250,
+      "why": "conflict: opposed polarity on \"prose before a patch\"",
+      "warnings": [],
+      "group": "conflict-1"
+    },
+    {
+      "id": "bbb1b2c3d4e5",
+      "source": { "id": "0000000000cc", "display": "notes.md", "tools": ["claude-code"], "sha256": "f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7", "bytes": 120, "mtimeMs": 1758456000000 },
+      "class": "memory",
+      "dest": null,
+      "action": "skip:unrelated",
+      "scope": "project",
+      "bytes": 0,
+      "why": "rule 12 (code fallback; jev unavailable: --no-jev)",
+      "warnings": []
+    },
+    {
+      "id": "ccc1b2c3d4e5",
+      "source": { "id": "0000000000dd", "display": "~/.config/jevcode/commands/ft.md", "tools": ["claude-code"], "sha256": "091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8", "bytes": 520, "mtimeMs": 1758456000000 },
+      "class": "command",
+      "dest": "~/.config/jevcode/commands/ft.md",
+      "action": "skip:unchanged",
+      "scope": "user",
+      "bytes": 0,
+      "why": "manifest entry exists, source sha256 unchanged, markers present",
+      "warnings": []
+    }
+  ],
+  "budget": { "memoryBytes": 38912, "memoryMax": 524288, "indexLines": 9, "indexMax": 200 },
+  "jev": { "requests": 1, "questions": 70, "usd": 0.0003, "fallbacks": 6 },
+  "cannotRead": [
+    { "what": "Cursor User Rules", "why": "stored on your Cursor account", "paste": "/memory add, or jevcode import --from -" },
+    { "what": "Windsurf Cascade memories", "why": "undocumented local format", "paste": "/memory add" },
+    { "what": "Codex memories", "why": "[features] memories = false", "paste": "enable, use Codex once, re-run import" }
+  ],
+  "notices": [
+    "walk: ~/.claude/projects stopped at 20,000 entries (3 rows may be missing)",
+    "clip: .devin/rules/long.md clipped 12,000 → 4,096 bytes"
+  ]
+}

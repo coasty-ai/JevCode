@@ -66,6 +66,24 @@ export function sbplRegex(pattern: string): string {
 const HOME_SECRET_SUBPATHS = [join('.config', 'jevcode'), '.ssh', '.aws', join('.config', 'gh')];
 const HOME_SECRET_LITERALS = ['.netrc'];
 
+/**
+ * IMPORT-DESIGN §2.11 [G2.1]: the workspace memory the importer writes. A run may **read** its own
+ * memory — it is supposed to — but it must not rewrite the memory that steers the next run, so each
+ * of these is denied as a literal + subpath pair beside the `.git` denies (the `addRead` idiom of
+ * `:150-151` applied to writes). They ride `protectGit` for the same reason the `.git` denies do:
+ * the bench's infrastructure sandbox is a fresh clone into the root and has no memory to protect.
+ */
+const WS_MEMORY_WRITE_DENIES = [join('.jevcode', 'memory'), join('.jevcode', 'rules'), join('.jevcode', 'commands')];
+
+/**
+ * IMPORT-DESIGN §2.2 / §2.11 [G2.1]: the 0600 personal-memory tree. Its deny is **not** routed through
+ * `addRead`, because that lands in the `file-read*` deny at `:163` which the `:181`
+ * `(allow file-read* (subpath <ws>) …)` then overrides — `<ws>` is a writable root and therefore in
+ * `roots`, so the personal files would stay readable by any sandboxed command. It is emitted after the
+ * allow instead, exactly as the `:170`/`:180` pair already does for `~/.jevcode`.
+ */
+const WS_MEMORY_LOCAL = join('.jevcode', 'memory-local');
+
 function canonOption(p: string | undefined): string | null {
   return typeof p === 'string' && p.length > 0 ? canonicalPathSync(p) : null;
 }
@@ -126,6 +144,12 @@ export function buildProfile(opts: ProfileOptions): string {
       `(regex ${sbplRegex(`^${modules}/.+/hooks(/.*)?$`)})`,
     );
   }
+  // IMPORT-DESIGN §2.11 [G2.1]: appended to `gitDenies`, so they land in the deny line emitted AFTER the
+  // write allow above (which is exactly why the `.git` denies work) and are suppressed by `protectGit: false`.
+  for (const rel of WS_MEMORY_WRITE_DENIES) {
+    const canon = canonicalPathSync(join(ws, rel));
+    gitDenies.push(`(literal ${sbplString(canon)})`, `(subpath ${sbplString(canon)})`);
+  }
   const ttyDeny = opts.ttyPath && opts.ttyPath.startsWith('/dev/') ? [`(literal ${sbplString(canonicalPathSync(opts.ttyPath))})`] : [];
   if (opts.protectGit === false) {
     // infrastructure sandbox (fresh clone into the root): only the harness tty stays denied
@@ -179,6 +203,12 @@ export function buildProfile(opts: ProfileOptions): string {
   const roots = `(subpath ${sbplString(ws)}) (subpath ${sbplString(runTmp)}) (subpath ${sbplString(runHome)})${[...writable, ...readable].map((p) => ` (subpath ${sbplString(p)})`).join('')}`;
   lines.push(`(allow file-read-data ${roots})`);
   lines.push(`(allow file-read* ${roots})`);
+  // IMPORT-DESIGN §2.11 [G2.1]: after BOTH re-allows, never before them — a deny on a family emitted after
+  // the allow wins (the macOS 26 behaviour recorded above), while the same rule routed through `addRead`
+  // would sit at the `file-read*` deny the `<ws>` re-allow overrides. Not gated on `protectGit`: that flag
+  // relaxes the git write knobs, not the confidentiality of the human's 0600 personal memory.
+  const memoryLocal = canonicalPathSync(join(ws, WS_MEMORY_LOCAL));
+  lines.push(`(deny file-read* (literal ${sbplString(memoryLocal)}) (subpath ${sbplString(memoryLocal)}))`);
 
   if (opts.noNetwork) lines.push('(deny network*)');
   return `${lines.join('\n')}\n`;
