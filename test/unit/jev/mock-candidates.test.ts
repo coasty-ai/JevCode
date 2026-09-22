@@ -70,12 +70,20 @@ describe('mock decider: the context candidate lookup', () => {
     for (let i = 0; i < 1000; i++) all.push({ path: `src/pkg${i % 40}/module_${i}.py`, bytes: 512, mentionsInTask: i % 7 === 0 ? 1 : 0, touchedThisRun: false });
     const asked = all.slice(0, 200);
     const questions = buildContextQuestions(asked, 'edit');
-    const t0 = performance.now();
-    const a = await answers(stateOf(all), questions);
-    const ms = performance.now() - t0;
+    // docs/DECISIONS.md (2026-09-22, wall-clock gates on the shared machine): three calls, keep the BEST. `answers`
+    // is pure — same state, same questions, same result — so repeating it costs nothing but a sample, and the
+    // single 100 ms sample this replaces was the reported flake (102.68 ms under a peer's suite). The quadratic
+    // scan this test exists to catch needs tens of times the budget, so it still fails EVERY sample.
+    const state = stateOf(all);
+    let best = Number.POSITIVE_INFINITY;
+    let a: Record<string, number> = {};
+    for (let i = 0; i < 3; i += 1) {
+      const t0 = performance.now();
+      a = await answers(state, questions);
+      best = Math.min(best, performance.now() - t0);
+    }
     expect(a[contextQuestionId('src/pkg0/module_0.py')]).toBe(0.9);
     expect(a[contextQuestionId('src/pkg1/module_1.py')]).toBe(0.15);
-    // the scan this replaced needs tens of times this budget for the same batch; a generous bound still catches it
-    expect(ms).toBeLessThan(100);
+    expect(best, `best of 3 = ${best.toFixed(2)} ms`).toBeLessThan(100);
   });
 });

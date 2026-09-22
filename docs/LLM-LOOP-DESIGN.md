@@ -1182,14 +1182,15 @@ and `:5063`). **No two slots hold `engine.ts` at the same time.**
 **Gates (all must be green before C merges):**
 
 1. `npm run check` — typecheck, `node scripts/no-any.mjs`, `node scripts/jev-contract.mjs`, lint.
-2. `npx vitest run --maxWorkers=3` — the full unit suite.
+2. `npm test` — the full unit suite (the `--maxWorkers=3` bound lives in `vitest.config.ts`, so the short command carries it).
 3. **The facade's first unit test asserts `candidatesTested > 0`** on a known-solvable cluster (§6 row 13).
 4. **I2 golden**: `fastPath: 'off'` on the existing `jev-on` fixtures is byte-identical.
 5. `fastPath.wallMs <= budgetMs` (the round's CEILING, §4.4) on every fired step in the test fixtures, asserted on a
    round with a real slow baseline rather than on a hand-built telemetry literal.
 6. **Ring 1 re-measured green under `--jev off`** — a **hard merge gate** (see §7.7). The code fix landed at
    `0d61eef`; the measurement has not been taken.
-7. `node scripts/check-pack.mjs` at the 3.5 MB unpacked gate.
+7. `node scripts/check-pack.mjs` at the 3.5 MB unpacked gate — re-measured 2026-09-22 at 0.5.0: unpacked
+   3,072,489 (87.8 % of the cap), tarball 1,039,272, bundle 2,854,378 minified.
 
 ### 7.4 Slot D — bench and measurement
 
@@ -1217,7 +1218,7 @@ and `:5063`). **No two slots hold `engine.ts` at the same time.**
 `summary.json` is written by `runner.ts`, and the column chain is
 `step-records → types → metrics → report`.
 
-**Gates:** `npm run check`; `npx vitest run --maxWorkers=3`; a dry-run of `quick-table.mts` and `headtohead.mts`
+**Gates:** `npm run check`; `npm test` (the unit project bounds itself to 3 workers); a dry-run of `quick-table.mts` and `headtohead.mts`
 over a recorded run directory showing the new columns non-empty; the `--concurrency 1` assertion firing.
 
 ### 7.5 Slot B — the routers
@@ -1269,7 +1270,7 @@ The five members are no longer **RESERVED** in `src/core/types.ts`: each names i
    header saying which capture is which.
 8. **Ring 1 re-measured green under `--jev off`**, and the `src/synth/localize/index.ts` allow-list row
    (`jev-contract.mjs:48`) justified by that run or replaced — a hard merge gate (§7.7).
-9. `npx vitest run --maxWorkers=3`, `npm run check`.
+9. `npm test`, `npm run check`.
 
 #### 7.5a The engine seam, as built (`c811899`, 2026-09-22)
 
@@ -1359,7 +1360,7 @@ row (`StepRecord.router.rows[].drop`), so the first `jev-on-next` run answers th
 only), `src/core/limits.ts` (additive), `src/core/types.ts` (the `StepVerifySummary` members),
 `test/unit/provider/**`, `test/unit/synth/llm/**`.
 
-**Gates:** `npm run check`; `npx vitest run --maxWorkers=3`; the `view: 'legacy'` prompt golden — **unchanged, or
+**Gates:** `npm run check`; `npm test` (the unit project bounds itself to 3 workers); the `view: 'legacy'` prompt golden — **unchanged, or
 the change is stated and the golden re-captured with a reason** (§3.3); a budget-refusal test proving a hedge is
 declined when the budget cannot hold one more estimated-full-cost sample; cancelled-leg cost still reaching
 `generator.jsonl`.
@@ -1529,7 +1530,7 @@ contrast against the arm that preceded it.
 - **Fresh 18** (untuned) and **in-sample 28**.
 - **`JEVCODE_WARM` unset (off)** throughout (I8).
 - **`--concurrency 1`** for every arm that can enter the fast path (§6 row 15).
-- `--maxWorkers=3` for the unit suite; the bench's own concurrency is separate.
+- `--maxWorkers=3` for the unit suite — set in `vitest.config.ts`, so plain `npm test` is the bounded run; the bench's own concurrency is separate.
 - `alwaysDecline` confirmer.
 - Baselines are **not re-run**: `experiments/llm-jev/results.ts` merges the recorded rows by
   `(suite, task, condition)`.

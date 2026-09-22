@@ -7,6 +7,12 @@
 //
 // Outputs: dist/jevcode.mjs (minified with keepNames, so stack traces and `fn.name` keep their identifiers),
 // dist/jevcode.mjs.map (local debugging; excluded from the tarball by package.json "files") and dist/meta.json
+//
+// The map is emitted with `sourcemap: 'external'`, NOT `true` (F24c, 2026-09-22): `true` appends
+// `//# sourceMappingURL=jevcode.mjs.map` to the bundle, and since the map is excluded from the tarball — and
+// scripts/check-pack.mjs forbids any *.map in it — every installed copy carried a reference to a file that is not
+// there, which `node --enable-source-maps` and every trace-reading tool then fail to open. `external` writes the
+// same map beside the bundle for local debugging and leaves the bundle pointing at nothing.
 // (the esbuild metafile; scripts/licenses.mjs derives THIRD_PARTY_LICENSES.txt from it because
 // legalComments 'none' strips every attribution comment from the bundle). The version is injected from
 // package.json through the `__JEVCODE_VERSION__` define that src/version.ts reads (tsx/vitest fall back
@@ -69,8 +75,9 @@ if (!noMeasure) {
   rawBytes = raw.outputFiles.find((f) => f.path.endsWith('.mjs'))?.contents.byteLength ?? null;
 }
 
-// Pass 2: the shipped artefact.
-const result = await build({ ...common, sourcemap: true, minify: true, keepNames: true, metafile: true });
+// Pass 2: the shipped artefact. `sourcemap: 'external'` — the map is written, the bundle carries no directive (see the
+// header): the map never ships, so a directive would dangle in every install.
+const result = await build({ ...common, sourcemap: 'external', minify: true, keepNames: true, metafile: true });
 writeFileSync('dist/meta.json', JSON.stringify(result.metafile));
 const minBytes = statSync('dist/jevcode.mjs').size;
 const ms = Math.round(performance.now() - t0);

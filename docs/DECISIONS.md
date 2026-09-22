@@ -1049,19 +1049,49 @@ classification, `artefactVersion`, `shortPath`, `explainFsError`) and the harnes
 the harness then rebases over (2350c3a). Reason: two sessions editing one engine file in a shared working tree blocked a merge for an
 hour (an uncommitted block in `types.ts`) and shipped a raw U+2028 inside a regex literal that TypeScript accepts and esbuild does
 not (`src/errors.ts:368`, fixed 9f26fb6), taking ~40 test files down on a clean checkout while the shared tree looked green.
-Consequences: `test/unit/hygiene/no-raw-line-separators.test.ts` scans `src/**` and `scripts/**`; the round-4 integrator's
-instructions carry the rule; an uncommitted edit in a shared file is a merge blocker, not a courtesy.
+Consequences: `test/unit/hygiene/no-raw-line-separators.test.ts` scans `src/**`, `scripts/**` and `bin/**` (added 2026-09-22:
+`bin/` ships verbatim in package.json `files`, so a raw separator there reaches an installed copy where no test would see it);
+the round-4 integrator's instructions carry the rule; an uncommitted edit in a shared file is a merge blocker, not a courtesy.
+The rejection is narrower than first written: esbuild rejects a raw U+2028/U+2029 in a REGEX literal, not in a string — two
+test fixtures hold the raw characters in strings and transform fine (`import/parse/markdown.test.ts:132-145`,
+`coordination/records.test.ts:113`) — but the scan stays blunt, because escaping costs nothing and telling the two contexts
+apart needs a parser.
 
 ## 2026-09-22 Wall-clock gates on the shared machine: bounded workers, best-of-N, and hermetic process checks
 
-Full unit runs use `--maxWorkers=3`; wall-clock assertions take the best of N samples (`engine-perf` harnessMs skips when
-`loadavg > cpus`, `prompts-context`'s build gate is best-of-5, `parse/markdown`'s three gates best-of-3); a test that inspects the
-host's process table matches only the process it spawned (`sandbox/run.test.ts` tags its `sleep` uniquely). Reason: two sessions and
+Full unit runs use `--maxWorkers=3` — since the finishing pass that bound is the unit project's own `maxWorkers` in
+`vitest.config.ts` (`allowOnly: false` beside it), so plain `npm test` IS the bounded run and no gate depends on remembering the
+flag; CI keeps the runner default. Wall-clock assertions take the best of N samples (`engine-perf` harnessMs skips when
+`loadavg > cpus`, `prompts-context`'s build gate is best-of-5, `parse/markdown`'s three gates best-of-3, `coordination/fold`'s
+`listSessions` budget best-of-5, `jev/mock-candidates`'s 1000-view answer budget best-of-3, `synth/llm/repro`'s concurrency
+wall behind the `engine-perf` load guard, and `synth/search/subgoal-llm`'s grace pinned on a frozen clock instead of the wall);
+a test that inspects the host's process table matches only the process it spawned (`sandbox/run.test.ts` tags its `sleep`
+uniquely); and the unit project's `setupFiles` (`test/unit/setup-env.ts`) deletes **every** `JEVCODE_*` name in the environment
+before every file, except an explicit keep-list of harness opt-ins (`JEVCODE_LIVE`, `JEVCODE_LADDER_PYTHON`, the router-golden
+output path, the pty switches) and `JEVCODE_ASSERT_*`, which can only make a child process stricter. So a gate run measures the
+tree and not the shell the measuring session exported into. The list is INVERTED on purpose: the first version deleted nine
+audited names out of the ~87 the shipped code reads, and the review found two live holes it had missed
+(`JEVCODE_HEDGE`, `JEVCODE_DEADLINE_GROWTH` in `src/synth/llm/source.ts`, both read before any option and both pinned per arm in
+the OOS wave, each deterministically red on a real unit file). A per-name list cannot be kept complete by hand; a sweep is
+complete by construction, and `test/unit/hygiene/env-hygiene.test.ts` quantifies over every `JEVCODE_*` name in `src/`,
+`scripts/` and `bin/` to keep the keep-list free of behaviour switches. Reason: two sessions and
 up to a dozen agents ran suites concurrently at load 30–100; unbounded runs manufactured failures in tests verified green moments
 earlier, `sandbox/run.test.ts` failed whenever any other worktree ran the same suite, and single-sample budgets (50 ms, 200 ms) failed
 on the load alone. Consequences: a gate that still fails best-of-N is a real regression; release perf numbers come only from
 `perf/*` under `LOAD_QUIET`, never from a unit test; the TUI's real-timer tests remain the known noise and are checked against
 `main` alone before being attributed to a branch.
+
+Two corollaries the same review forced, both of the form *a unit test may not be a function of host state it does not control*.
+(i) A test that asserts on a BUILD ARTEFACT must first establish the artefact is this tree's: `test/unit/scripts/build-output.test.ts`
+runs its `dist/jevcode.mjs` case only when the bundle is no older than `scripts/build.mjs`, and otherwise skips naming both
+timestamps — the first version reddened `npm test` in any checkout carrying a bundle built before the fix, the integrator's own
+among them, while in CI (`npm run check` runs *before* `npm run build`) it skipped and never ran at all. `scripts/check-pack.mjs`
+gate 9 is the always-on gate for that artefact, because a build always precedes it. (ii) A host-tool probe must be a probe, not a
+`stat`: `test/unit/bench/ladder-long.test.ts` resolves its interpreter by spawning it (`$JEVCODE_LADDER_PYTHON` → the user-built
+`~/.jevcode/ladder-venv/bin/python` → the bench's `~/.jevcode/runs/ladder-venv/bin/python` → the system `python3`), never by
+`existsSync`, which is false for every bare command name and therefore skipped all 26 grading tasks for
+`JEVCODE_LADDER_PYTHON=python3` while the next probe ran the identical binary; the report now names the interpreter and tells
+“not on PATH” from “no pytest” apart.
 
 ## 2026-09-22 Orchestration ships with the split gate shut, lands per step, and asks about rewritten shared files
 

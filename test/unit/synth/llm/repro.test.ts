@@ -1,3 +1,4 @@
+import { cpus, loadavg } from 'node:os';
 import { describe, expect, it } from 'vitest';
 
 import type { Answer, GenerateRequest, Question, ToolCall } from '../../../../src/core/types.js';
@@ -14,6 +15,16 @@ import { scriptedGenerate } from './fixtures.js';
 
 const ISSUE = ['`simplify(cos(x)**I)` raises TypeError: Invalid comparison of complex I.', '', 'It should simplify without raising an error for complex exponents.', '', '```python', 'from sympy import *', 'x = Symbol("x")', 'print(simplify(cos(x)**I))', '```'].join('\n');
 const QUOTE = 'raises TypeError: Invalid comparison of complex I';
+
+/**
+ * docs/DECISIONS.md (2026-09-22, wall-clock gates on the shared machine), the `engine-perf` guard verbatim: this
+ * machine is shared with bench and perf runs, so a real-time bound says nothing about the code under load. Only the
+ * wall assertion is gated on it — `calls()`, `maxInFlight()` and the structural claims run either way, and they are
+ * what actually prove the lanes ran concurrently.
+ */
+function timingIsMeaningful(): boolean {
+  return (loadavg()[0] ?? 0) <= cpus().length;
+}
 
 const SCRIPTS = [
   'from sympy import Symbol, cos, I, simplify\nx = Symbol("x")\nsimplify(cos(x)**I)  # marker-a',
@@ -455,7 +466,10 @@ describe('L2 reproduction writer: the writer', () => {
     expect(runner.calls()).toBe(5);
     expect(scratch.runs()).toBe(5);
     expect(runner.maxInFlight()).toBe(2);
-    expect(wall).toBeLessThan(5 * 20);
+    // `maxInFlight() === 2` above is the structural claim and it is unconditional; this line only adds that the
+    // three rounds really overlapped in real time, which is meaningless — and was the reported 107 < 100 flake —
+    // when another suite owns the cores.
+    if (timingIsMeaningful()) expect(wall, `3 rounds of 20 ms took ${wall} ms at loadavg ${(loadavg()[0] ?? 0).toFixed(2)}`).toBeLessThan(5 * 20);
     // two survivors: the Choice is asked, the pick's Noul grades it
     expect(res.pick).toMatchObject({ key: 'script_0', outcome: 'llm_valid', escapeAboveTop: false });
     expect(Object.keys(res.pick!.pChoice).sort()).toEqual(['script_0', 'script_2']);
