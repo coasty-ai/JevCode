@@ -750,6 +750,15 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
    * sample because it may only hold or raise `tRunMs`, never lower it — see `sampleRun`.
    */
   const warmSubsetDurations: number[] = [];
+  /**
+   * Every COLD goal-subset run of the batch, deadline re-runs included — which is exactly what
+   * `subsetDurations` held before iteration 2. Read only by the in-flight-timeout rule at the end
+   * of the batch, which asks a different question from t_run: not "what does a run of this scope
+   * cost?" (for which a run killed at its cap is no answer) but "were the lanes starved while
+   * this batch ran?" (for which it is the evidence, and the reason ladder `account` step 18's
+   * four killed candidates are re-queued rather than called hangs).
+   */
+  const coldRunDurations: number[] = [];
   const fullDurations: number[] = [];
   const provisional: { order: number; pending: PendingRetry }[] = [];
   const killed: { order: number; pending: PendingRetry; outcome: VerifyOutcome }[] = [];
@@ -823,6 +832,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
    *     excluded warm runs outright).
    */
   const sampleRun = (r: Pick<LaneRun, 'durationMs' | 'warm' | 'recheck'>): void => {
+    if (!r.warm) coldRunDurations.push(r.durationMs);
     if (r.recheck) return;
     if (r.warm) warmSubsetDurations.push(r.durationMs + PROCESS_OVERHEAD_MS);
     else subsetDurations.push(r.durationMs);
@@ -1163,7 +1173,8 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   // are provisional and the candidates wait in mem.retryTimeouts for the next call for the goal
   // (not `tried`), to run once more with the lane timeout scaled by that load. Otherwise every
   // killed run is the candidate's own hang: classified, tried.
-  const loadAtEnd = loadRatio(measuredMedian(), estimateMs);
+  // unchanged from iteration 1: the starvation question, asked of every cold run this batch made
+  const loadAtEnd = loadRatio(median(coldRunDurations), estimateMs);
   const inFlight = results.length === 0 && killed.length >= IN_FLIGHT_RETRY_MIN_RUNS && loadAtEnd >= LOAD_SCALE_MIN_RATIO;
   const inFlightTimeoutMs = Math.round(laneTimeoutMs * Math.min(Math.max(1, loadAtEnd), IN_FLIGHT_RETRY_TIMEOUT_FACTOR));
   // in dispatch order (the lanes complete in any order), so the retries keep the queue's ranking

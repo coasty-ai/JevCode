@@ -910,8 +910,11 @@ imported the suite — and pricing the step's run budget on one would send pools
 afford while every confirmation is still a cold run (`test/unit/synth/sieve/screen-confirm-budget.test.ts` pins that
 from the other side, and it is why the original rule excluded warm runs outright). Replayed on the recorded batch:
 **t_run 11,655 ms → 510 ms**, which is exactly what the warm-off arm measured on the identical 185 candidates. The
-load scaling and the in-flight-timeout rule read the cold samples when the batch has any and the hot bounds otherwise,
-and a hot-only batch's event says `run median ≥ N ms hot` rather than claiming a measurement. (1b) *The screen was bounded by the lane RUN
+load scaling reads the cold samples when the batch has any and the hot bounds otherwise, and a hot-only batch's event
+says `run median ≥ N ms hot` rather than claiming a measurement. The in-flight-timeout rule is left reading every cold
+run of the batch, deadline re-runs included, exactly as before: it asks a different question — not what a run of this
+scope costs but whether the lanes were starved while the batch ran — and for that a run killed at its cap is the
+evidence, which is why ladder `account` step 18's four killed candidates are re-queued rather than called hangs. (1b) *The screen was bounded by the lane RUN
 cap.* `warm.serve` was handed `capMs()`; a screen that hits a deadline is thrown away and re-run cold, so the step paid
 both (≈14 s + 14 s per diverging candidate). It is now given `screenDeadline` — the lane run timeout's own shape with
 the cold path's 10 s process-start slack replaced by one per-case cap, floored at `MIN_RUN_TIMEOUT_MS` and never above
