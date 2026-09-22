@@ -52,6 +52,7 @@ import { AbortError, EditError, FileNotFoundError, JevHttpError, PatchError, Pat
 import type { CheckpointStoreWithContext } from '../../../src/checkpoint/types.js';
 import type { DiskError } from '../../../src/checkpoint/store.js';
 import { createEngine, type EngineDeps, type GitProbe } from '../../../src/loop/engine.js';
+import type { PreflightProbe } from '../../../src/orchestrate/index.js';
 
 import { notRepoState } from '../../../src/workspace/gitstate.js';
 
@@ -727,10 +728,16 @@ export interface HarnessOptions {
    */
   probeGitState?: GitState | GitProbe;
   /** contract 1.1 wave 2 options spread over EngineOptions (seed, session, humanDirective, blocker, instructions, …) */
-  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing' | 'orchestration'>> & {
+  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing' | 'orchestration' | 'splitPolicy' | 'coordination'>> & {
     /** docs/COORDINATION-DESIGN.md §12.0.1 (`EngineOptionsWithContextPolicy` until core/types.ts gains the member) */
     contextPolicy?: ContextPolicyOptions;
   };
+  /**
+   * contract 1.4 (W2b), ORCHESTRATION-DESIGN §3.6: the resource pre-flight seam (`EngineDeps.preflightProbe`).
+   * Without it the decompose gate reads the real machine's free disk, free memory, core count, repo size and
+   * `RLIMIT_NOFILE`, so P9 and the §8.3 row-12 gate could only be asserted on a machine-shaped guess.
+   */
+  preflightProbe?: PreflightProbe;
 }
 
 export interface Harness {
@@ -834,6 +841,7 @@ export async function makeEngine(h: HarnessOptions = {}): Promise<Harness> {
       return sandbox;
     },
     newRunId: () => FIXED_RUN_ID,
+    ...(h.preflightProbe !== undefined ? { preflightProbe: h.preflightProbe } : {}),
     probeGitState: async (root) => {
       calls.order.push('probeGitState');
       return probe(root);

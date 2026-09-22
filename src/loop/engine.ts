@@ -17,7 +17,7 @@
 import { appendFileSync } from 'node:fs';
 import { mkdir, realpath } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { join, sep } from 'node:path';
+import { basename, join, sep } from 'node:path';
 import { createEmitter } from '../core/events.js';
 import { sha12 } from '../core/hash.js';
 import { toJson } from '../core/json.js';
@@ -68,6 +68,8 @@ import type { AskResult,
   JsonObject,
   JudgeResult,
   PauseOptions,
+  EngineRunPhase,
+  MessageDisposition,
   PausePoint,
   PausePointReason,
   PendingDirective,
@@ -93,6 +95,7 @@ import type { AskResult,
   SpendSource,
   StageName,
   SteerResult,
+  StepCoord,
   StepRecord,
   StepTiming,
   StepUsage,
@@ -180,6 +183,9 @@ import {
   type Manifest,
 } from '../orchestrate/index.js';
 import { escapedLine, escapedPaths, landPreflightOffer, launchOverlap, launchProposal, mergeAction, seedFor, type LandPreflightOffer, type LaunchAnswer, type LaunchInput } from './launch.js';
+// contract 1.4 (W2b), COORDINATION-DESIGN §4 / §5 / §6: the engine's ONE import of the coordination ledger.
+// `createCoordination` returns null when there is no handle, which is the whole of "coordination off".
+import { coordinates, createCoordination, type CoordinateOutcome, type CoordinationRuntime, type HeartbeatBase, type HeartbeatDynamic } from './coordination.js';
 
 // ---------------------------------------------------------------------------------------
 // Dependency injection (concurrently written modules)
@@ -309,6 +315,10 @@ const SPEND_LIMIT_RE = /spend|credit|billing|quota|insufficient/i;
 const REVIEWER_NOTE_MAX = 600;
 /** contract 1.4 (COORDINATION-DESIGN §7.2): finish() waits this long for the pause-now cache write before `replayable` is read as false */
 export const PAUSE_CACHE_BOUND_MS = 2_000;
+/** §4.3: `released.changed` is bounded at 64 entries by the lease record's own cap */
+const LEASE_CHANGED_MAX = 64;
+/** §3.3: `touchedRecent` — the union of the last three steps' post images, ≤ 96 paths */
+const TOUCHED_RECENT_KEEP = 96;
 /** contract 1.4 (§5.3, §10): a peer's label inside `PausePoint.by` is clamped to this many chars of the id grammar */
 export const PEER_LABEL_MAX = 32;
 /** §5.3: `peer:<sid8>` — the last 8 chars of the sender's session id */
@@ -400,8 +410,12 @@ interface StepDraft {
   usage: StepUsage;
   /** imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none */
   /** decomposeMs: contract 1.5 (§4.1 [D13]) — the `decompose` stage's own wall, inside harnessMs; 0 when the gate was shut */
-  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null; decomposeMs: number };
+  /** coordinateMs / coordWaitMs: contract 1.4 (W2b) (§4.2) — the gate's own wall, and the inline strict wait INSIDE it,
+   *  which is subtracted from `harnessMs` exactly like `confirmMs`: a step held 40 s for a peer did not spend 40 s of harness */
+  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null; decomposeMs: number; coordinateMs: number; coordWaitMs: number };
   /** docs/LLM-JEV-DESIGN.md §7.5: wall of synthesize() (synth modes); null when the propose stage was the generator's */
+  /** contract 1.4 (W2b) (§4.1): what the `coordinate` gate saw and decided; copied onto `StepRecord.coord` at commit */
+  coord: StepCoord | null;
   synthMs: number | null;
   /** the Jev latency spent inside synthesize(); `timing.jevMs - synthJevMs` is the shell's share */
   synthJevMs: number;
@@ -609,6 +623,26 @@ class EngineImpl implements Engine {
   private readonly sandbox: Sandbox;
   private readonly wsInfo: WorkspaceInfo;
   private readonly clock: () => number;
+  /**
+   * contract 1.4 (W2b), COORDINATION-DESIGN §4.1: the coordination ledger's engine side, or `null` — no handle, or
+   * `enabled: false`, or a bench task. Every call site reads `this.coord?.x()`, so OFF is the absence of an object
+   * rather than a flag twenty branches have to honour (`engine-coordination-off.test.ts` is the proof).
+   */
+  private readonly coord: CoordinationRuntime | null;
+  /**
+   * §12.0.1 rule 5: `setIdentity({ repoKey, runId })` after `run:ready`; its promise resolves once every newly
+   * reachable watch root has been walked ONCE. Awaited before the FIRST `coordinate` and never again — `fs.watch`
+   * reports future changes only, so a check made before the walk could read `clear` by ignorance (§3.5).
+   */
+  private coordReady: Promise<void> | null = null;
+  /**
+   * contract 1.4 (W2b), §9.3: a QUALIFIED foreign claim supersedes this process's. Set by `checkFork`, acted on at
+   * the loop top — never in the middle of a step, because the whole point is to stop BEFORE a second writer touches
+   * the run dir, and the middle of a step is after it already has.
+   */
+  private forkStop: string | null = null;
+  /** contract 1.4 (W2b), §3.3: the union of the last 3 committed steps' post images, for the heartbeat */
+  private touchedRecent: string[] = [];
   /** contract 1.4 (W2b), §3.6: the injected resource pre-flight (`EngineDeps.preflightProbe`) */
   private readonly preflightProbe: PreflightProbe;
   private readonly systemPrompt: string;
@@ -1056,6 +1090,23 @@ class EngineImpl implements Engine {
       }
     }
     this.contextUsage = restoredContextUsage(this.contextExtension(), this.contextPolicy.budget, this.contextPolicy.compaction);
+    // contract 1.4 (W2b), §4.1 / §3.3: the ledger's engine side. Constructed here and NOT started: `start()` is
+    // §3.3 point 1, at `run:ready`, so a refused resume and a constructor throw write no heartbeat at all.
+    const co = init.opts.coordination;
+    this.coord =
+      co === undefined || co.ledger === null
+        ? null
+        : createCoordination({
+            options: co,
+            source: init.opts.session?.source ?? 'cli',
+            base: this.heartbeatBase(co.ledger),
+            emit: (e) => {
+              this.emit(e);
+            },
+            monotonicNow: () => this.clock(),
+            now: () => Date.now(),
+            redact: this.redact,
+          });
     // §8.2 / review D8: a model whose window is smaller than the floor is a run-shaping fact, not a silent clamp
     if (this.contextEnabled && this.contextPolicy.budget.windowTooSmall) {
       this.pendingWindowNotice = `context budget clamped to ${this.contextPolicy.budgetChars} chars — the generator's ${this.contextPolicy.windowTokens}-token window is smaller than the ${CONTEXT_BUDGET_MIN_CHARS}-char floor`;
@@ -1126,6 +1177,228 @@ class EngineImpl implements Engine {
   // Engine surface
   // -------------------------------------------------------------------------------------
 
+  /**
+   * §3.3: the identity half of this run's heartbeat — fixed for the run's life, except `repo.repoKey`, which may
+   * arrive after `run:ready` and is re-derived by `ledger.setIdentity`. Every free-text leaf is redacted and clipped
+   * here as well as by the writer, because the 4 KiB cap is a refusal and a task title is the likeliest overflow.
+   */
+  private heartbeatBase(ledger: NonNullable<NonNullable<EngineOptions['coordination']>['ledger']>): HeartbeatBase {
+    const self = ledger.self;
+    const session = this.opts.session;
+    const g = this.gitMeta;
+    const head = g.head;
+    return {
+      deviceId: self.deviceId,
+      label: self.label,
+      host: self.host,
+      user: self.user,
+      pid: process.pid,
+      ...(self.hostKey !== undefined ? { hostKey: self.hostKey } : {}),
+      ...(self.bootId !== undefined ? { bootId: self.bootId } : {}),
+      bootAt: self.bootAt,
+      jevcode: VERSION,
+      runId: this.runId,
+      sessionId: session?.sessionId ?? this.runId,
+      // §6.5: a child run has its OWN sessionId and names its parent here, so the picker can indent it and the
+      // session meter can fold its spend into the parent's total without guessing from run ids.
+      parentSessionId: session?.parentSessionId ?? null,
+      parentRunId: session?.parentRunId ?? null,
+      source: session?.source ?? 'cli',
+      title60: session?.title === undefined ? null : this.redact(session.title).slice(0, 60),
+      task60: this.redact(this.opts.task).slice(0, 60),
+      claim: ledger.claim,
+      repo: {
+        wsKey: self.wsKey,
+        repoKey: self.repoKey,
+        remoteKey: self.remoteKey,
+        basename: basename(this.workspace.root),
+        branch: head === null ? null : head.kind === 'detached' ? null : head.name,
+        head: head === null ? null : head.kind === 'unborn' ? null : head.oid,
+        dirtyAtStart: this.dirtyAtStart.size > 0,
+        linkedWorktree: g.linkedWorktree,
+        worktreeSlug: null,
+      },
+      mode: this.mode,
+      maxSteps: this.opts.limits.maxSteps,
+      maxWallMs: this.opts.limits.maxWallMs,
+      startedAt: nowIso(),
+    };
+  }
+
+  /**
+   * §3.3 point 4: the moving half of the heartbeat, derived from the flags `emitStatus` already reads — one place,
+   * so the status line, `sessions who` on another device and the resume card can never disagree about this run.
+   */
+  private heartbeatDynamic(): Partial<HeartbeatDynamic> {
+    const snap = this.opts.meter.snapshot();
+    const action = this.draft?.proposal?.action ?? null;
+    const plan = this.plan;
+    return {
+      phase: this.runPhase(),
+      step: this.step,
+      stage: this.currentStage,
+      action80: action === null ? null : this.redact(summariseAction(action)).slice(0, 80),
+      pausing: this.pauseRequested && this.lastResult === null,
+      pauseNow: this.pauseNow && this.lastResult === null,
+      blocked: this.blocked?.kind ?? null,
+      retrying: this.retrying === null ? null : { side: this.retrying.side, attempt: this.retrying.attempt },
+      stopReason: this.stopReason,
+      plan: {
+        done: plan.done.length,
+        remaining: plan.remaining.length,
+        unverified: plan.unverified.length,
+        // §3.3: `next3` is what a peer reads to know whether to start on the same file — the plan, not the prose
+        next3: plan.remaining.slice(0, 3).map((t) => this.redact(t).slice(0, 80)),
+      },
+      touchedRecent: [...this.touchedRecent],
+      spend: { generatorUsd: snap.generator.costUsd, jevUsd: snap.jev.costUsd, sessionUsd: snap.parent?.totalUsd ?? null, capUsd: snap.capUsd },
+      tokens: { used: this.generatorTokens, cap: this.opts.limits.maxGeneratorTokens ?? null },
+      wallMs: this.wallMsUsed(),
+      lockHeld: this.lockHeld,
+    };
+  }
+
+  /**
+   * §4.2, the `coordinate` micro-stage's engine half: the gate is run inside `this.stage()` so it emits
+   * `stage:start` / `stage:end` / `status` like every other stage, its wall lands in `StepTiming.coordinateMs`, and
+   * the inline wait lands in `coordWaitMs` (subtracted from `harnessMs`).
+   *
+   * Returns `null` to proceed, or the transcript line of a rule-1 discard. It never throws: a ledger fault is the
+   * ledger's own notice (`⇄ off (<code>)`) and the step proceeds — coordination is an aid, not a gate on the run
+   * being able to run at all (§2.1 rule 3).
+   */
+  private async runCoordinate(draft: StepDraft, step: number): Promise<string | null> {
+    const coord = this.coord;
+    const proposal = draft.proposal;
+    if (coord === null || proposal === null) return null;
+    // §3.5 / §12.0.1 rule 5: the added watch roots are walked ONCE before the first check, so `clear` is a fact
+    // rather than ignorance. Every later step reads the already-warm fold.
+    if (this.coordReady !== null) {
+      await this.coordReady;
+      this.coordReady = null;
+    }
+    const head = this.gitMeta.head;
+    const t0 = this.clock();
+    let outcome: CoordinateOutcome;
+    try {
+      outcome = await this.stage('coordinate', () =>
+        coord.coordinate({
+          step,
+          action: proposal.action,
+          targets: draft.patchTargets.map((t) => t.path),
+          branch: head === null || head.kind === 'detached' ? null : head.name,
+          head: head === null || head.kind === 'unborn' ? null : head.oid,
+          // §8.4: `check()` wants "the sha the proposal was built on" per path; `FileMemory` keeps a richer entry, so
+          // the projection is taken here rather than widening the ledger's input to a shape it has no use for.
+          fileMemory: Object.fromEntries(Object.entries(this.fileMemory).map(([rel, e]) => [rel, e.sha12])),
+          // §11 row 23: a case-folding volume is the ledger's own probe (`probeCaseInsensitive`), not a fact the
+          // engine holds; until the surface passes it in, the exact-match reading is the conservative one — it can
+          // miss a conflict on a folding volume, never invent one.
+          caseFold: false,
+          ask: this.opts.blocker === undefined ? null : (req) => this.awaitCoordinationPane(req),
+          blockingId: () => this.nextBlockingId(),
+          signal: this.signal,
+          currentSha: (paths) => hashTargets(this.workspace.root, paths),
+        }),
+      );
+    } catch (e) {
+      // the ledger classifies its own errno into one notice; the step is never held by a failure to coordinate
+      this.emit({ type: 'notice', step, kind: 'coordination', level: 'warn', text: `coordination: the claim gate failed (${e instanceof Error ? this.redact(e.message) : String(e)}) — the step proceeds uncoordinated` });
+      return null;
+    }
+    draft.timing.coordinateMs += Math.max(0, this.clock() - t0);
+    draft.timing.coordWaitMs += outcome.waitedMs;
+    if (outcome.kind === 'proceed') {
+      draft.coord = outcome.coord;
+      return null;
+    }
+    if (outcome.kind === 'stale') {
+      // §4.2 suspension check: the PROCESS was frozen and the targets moved under it. A rule-1 discard with a
+      // `replan` problem, never a conflict — nobody is holding anything; the proposal is simply about old bytes.
+      this.plan = {
+        ...this.plan,
+        harnessProblems: boundHarnessProblems([...this.plan.harnessProblems, { kind: 'replan', text: `targets changed while this session was suspended (${outcome.changed.slice(0, 3).join(', ')})`, step: step + 1 }], PLAN_MAX_HARNESS_PROBLEMS),
+      };
+      return `step ${step} discarded: the targets changed while this session was suspended`;
+    }
+    draft.coord = outcome.coord;
+    // §4.2: in `jev-on` the human review confirm has already approved this step, so the line says so plainly —
+    // "approved but not executed" is the one wording that does not read as a bug report.
+    return `step ${step} approved but not executed: coordination chose ${outcome.kind}`;
+  }
+
+  /**
+   * §4.3 step 4: the strict claim wait's human pane, through the EXISTING blocker seam. `this.blocked` is set for
+   * its duration so the status line, `pausedWord` and the heartbeat all read `lease-conflict`, and `pause()` finds a
+   * pane to wake (P6): it aborts the `blockWaker` and never the shared controller, so the answer is deterministically
+   * `'pause'` and the step is a resumable discard.
+   */
+  private async awaitCoordinationPane(req: BlockingRequest): Promise<BlockingAnswer> {
+    const previous = this.blocked;
+    this.blocked = req;
+    this.emitStatus();
+    try {
+      return await this.awaitBlocker(req);
+    } finally {
+      this.blocked = previous;
+      this.emitStatus();
+    }
+  }
+
+  /**
+   * contract 1.4 (W2b), §9.3 / §11 rows 31 and 51: the fork fence. Cheap (one map read over the already-folded
+   * ledger), so it runs at every loop top as well as once at `run:ready` — a peer that resumes this run while we are
+   * mid-step must be seen at the NEXT boundary, not at the end of the run.
+   *
+   * Only an AUTHENTICATED superseding claim stops anything. An unverified one is a notice and nothing else, because
+   * a forged record in a shared folder can produce it and a stop that a stranger can trigger is a denial of service.
+   */
+  private checkFork(): void {
+    if (this.coord === null || this.forkStop !== null) return;
+    const v = this.coord.forkGate(this.runId);
+    if (v === null) return;
+    if ('stop' in v) {
+      this.forkStop = v.stop;
+      return;
+    }
+    if (this.warned.has('fork-unverified')) return;
+    this.warned.add('fork-unverified');
+    this.emit({ type: 'notice', step: null, kind: 'coordination', level: 'warn', text: v.notice });
+  }
+
+  /**
+   * §9.3, the resume gate: a claim epoch published by another device that outranks every epoch this one minted.
+   * Awaited ONCE, before the first step of a resumed run — it reads signed `claims.json` projections, which is the
+   * only evidence available when the peer that took the run over is currently offline.
+   */
+  private async checkResumeClaim(): Promise<void> {
+    if (this.coord === null || !this.resumed) return;
+    // the epochs THIS device minted: this process's, plus the one persisted beside the run for a takeover it made
+    // with no local run dir. `RunMeta.claims[]` (W0 item 1) would widen this set; until it lands these are the two
+    // that exist, and a missing local epoch can only make the gate MORE conservative, never less.
+    const persisted = await this.coord.ledger.readRunClaim(this.runId).catch(() => null);
+    const local = [this.coord.ledger.claim.epoch, ...(persisted === null ? [] : [persisted.epoch])];
+    const refusal = await this.coord.claimGate(this.runId, local).catch(() => null);
+    if (refusal === null) return;
+    const label = this.coord.ledger.fold.devices.get(refusal.deviceId)?.label ?? refusal.deviceId.slice(0, 8);
+    this.forkStop = `run ${this.runId} is also live on ${label} (claim ${String(refusal.epoch)} supersedes ${String(Math.max(...local))}) — stopped to avoid a double writer`;
+  }
+
+  /**
+   * §7.1: the run's lifecycle word, derived in ONE place from the flags that already exist. A strict claim wait is
+   * the one `blocked` the engine can be in without a pane, which is why the runtime is asked first.
+   */
+  private runPhase(): EngineRunPhase {
+    if (this.lastResult !== null) return 'ended';
+    if (this.aborting) return 'aborting';
+    if (this.blocked !== null) return 'blocked';
+    const waiting = this.coord?.phase();
+    if (waiting !== null && waiting !== undefined) return waiting;
+    if (this.pauseRequested) return 'pausing';
+    if (!this.started) return 'starting';
+    return 'running';
+  }
+
   status(): EngineStatus {
     // docs/COORDINATION-DESIGN.md §12.0.3: `context` rides every status (a subtype until EngineStatus gains the member).
     // Review D5/D18: it is ABSENT — not `0 %` — in the modes and under the pin where no relaxed prompt is built, so
@@ -1152,6 +1425,9 @@ class EngineImpl implements Engine {
       // contract 1.4 (COORDINATION-DESIGN §7.2, §12.0.2)
       pauseNow: this.pauseNow && this.lastResult === null,
       pausePoint: this.pausePoint,
+      // contract 1.4 (W2b) (§3.6, §7.1, §6.1): the coordination zone, the lifecycle word and the sub-work rows.
+      // All three are ABSENT with no ledger, so `--json=verbose` on a run without coordination is byte-identical.
+      ...(this.coord !== null ? { phase: this.runPhase(), coordination: this.coord.status(), subwork: this.coord.subworkRows() } : {}),
     };
     return status;
   }
@@ -1204,6 +1480,11 @@ class EngineImpl implements Engine {
         this.markLastResort(reason);
         const snap = this.snapshotState();
         if (snap) this.store.writeStateSync(snap);
+        // contract 1.4 (W2b), §3.3 point 6: one bounded synchronous `phase:'ended'` marker, LOCAL ONLY — never the
+        // mirror, because a synchronous write to an unmounted share would hold the exit handler for the kernel's
+        // timeout. Expiry is the truth; the marker is a courtesy for the next process. After writeStateSync,
+        // before releaseLock.
+        this.coord?.finishSync({ phase: 'ended', stopReason: reason });
       } catch {
         // nothing more can be done on 'exit'
       }
@@ -1344,6 +1625,26 @@ class EngineImpl implements Engine {
    */
   deliver(msg: DeliverableMessage): AckOutcome {
     if (this.isFinished()) return 'expired';
+    // contract 1.4 (W2b), §5.4: the non-control types. None of them can change the run's course, so none needs a
+    // `[y]` and all of them are applied here whatever the sender's authority — what a peer says is a FACT about the
+    // repository, rendered inside the prompt's fenced untrusted-data block, never an instruction (§5.4, §8.8).
+    if (msg.type === 'steer') {
+      // §5.4: a `steer` is a DIRECTIVE, so it is the one fact-shaped type whose authority matters; the caller has
+      // already applied §10.3 (trusted + hmac-valid, or same device and same boot) before calling us.
+      const r = this.steer(`[session] ${msg.from.label}: ${msg.text}`);
+      return r.ok ? 'applied' : 'refused';
+    }
+    if (msg.type === 'note' || msg.type === 'heads-up' || msg.type === 'handoff' || msg.type === 'who' || msg.type === 'budget' || msg.type === 'review' || msg.type === 'kick' || msg.type === 'land') {
+      this.emit({ type: 'notice', step: this.step + 1, kind: 'session', level: 'info', text: `${msg.from.label}: ${this.redact(msg.text)}` });
+      return 'delivered';
+    }
+    if (msg.type === 'request-release') {
+      // §5.4 / G1(b): under `advisory` this is a FACT and nothing is delayed — the current step commits and
+      // releases as it always would, and the next prompt's `## Other sessions` carries the ask.
+      const files = (msg.refs?.files ?? []).slice(0, 8).join(', ');
+      this.emit({ type: 'notice', step: this.step + 1, kind: 'session', level: 'info', text: `${msg.from.label} asks you to release ${files.length > 0 ? files : 'the paths it named'}` });
+      return 'applied';
+    }
     if (msg.type !== 'pause' && msg.type !== 'end') return 'refused';
     const sid = msg.from.sessionId ?? msg.from.runId;
     // §5.3 / §10: a peer's own strings reach `by`, which rides state.json, the heartbeat and an index line — clamp them to
@@ -1358,6 +1659,21 @@ class EngineImpl implements Engine {
     }
     const changed = this.pauseRequested !== before.requested || this.pauseNow !== before.now || (this.endRequested !== null) !== before.end;
     return changed ? 'applied' : 'delivered';
+  }
+
+  /**
+   * §5.4: apply ONE arrival the surface does not have to ask about. `classifyIncoming` has already decided what
+   * the sender may do — this only turns the verdict into the engine verb, and returns the outcome the ack records.
+   *
+   * A message whose verdict was DOWNGRADED is applied as the reduced action, never as the one it asked for: an
+   * untrusted `steer` is a note, and it is a note that says so.
+   */
+  private applyIncoming(msg: DeliverableMessage, d: MessageDisposition): AckOutcome {
+    if (d.refused !== null && d.action === 'note' && d.downgraded) {
+      this.emit({ type: 'notice', step: this.step + 1, kind: 'session', level: 'warn', text: `${msg.from.label}: ${this.redact(msg.text)} (${d.refused})` });
+      return 'refused';
+    }
+    return this.deliver({ ...msg, type: d.action });
   }
 
   /**
@@ -1719,7 +2035,17 @@ class EngineImpl implements Engine {
   }
 
   private async main(): Promise<RunResult> {
-    this.emit({ type: 'run:start', runId: this.runId, task: this.opts.task, mode: this.mode, resumedFromStep: this.resumed ? this.step : null });
+    // contract 1.4 (W2b) (§6.5): the child's session tree is a fact on the FIRST event of the run. Conditional, so an
+    // ordinary run emits byte-identically to HEAD.
+    const parentSessionId = this.opts.session?.parentSessionId ?? null;
+    this.emit({
+      type: 'run:start',
+      runId: this.runId,
+      task: this.opts.task,
+      mode: this.mode,
+      resumedFromStep: this.resumed ? this.step : null,
+      ...(parentSessionId !== null ? { parentSessionId } : {}),
+    });
     if (this.resumeStop !== null) {
       // the items decided before run() still reach the listeners (transcript.log is muted for a refused resume)
       this.flushDeferredAnnouncements();
@@ -1741,6 +2067,17 @@ class EngineImpl implements Engine {
       noNetwork: this.opts.noNetwork,
       maxReplans: this.opts.limits.maxReplans,
     });
+    // contract 1.4 (W2b), §3.3 point 1 / §12.0.1 rule 5: the first beat and the identity patch. `setIdentity` is
+    // AWAITED (once, before the first `coordinate`) rather than here, because its promise resolves only after every
+    // newly reachable watch root has been walked, and blocking `run:ready` on a slow mount would be exactly the
+    // "coordination delays a step" the design forbids.
+    if (this.coord !== null) {
+      const coord = this.coord;
+      coord.start(this.heartbeatDynamic());
+      this.coordReady = coord
+        .setIdentity({ runId: this.runId, sessionId: this.opts.session?.sessionId ?? this.runId, ...(this.gitMeta.head !== null && this.gitMeta.head.kind === 'branch' ? { branch: this.gitMeta.head.name } : {}) })
+        .catch(() => undefined);
+    }
     // TUI-DESIGN §12.2: the git banner and the instruction files as one event right after run:ready (notice-only, never a gate)
     this.emit({ type: 'workspace', git: this.gitMeta, instructions: (this.opts.instructions?.files ?? []).map((f) => ({ ...f })), sandbox: this.sandbox.level });
     for (const n of this.startupNotices) this.emit({ type: 'notice', step: null, kind: n.kind, level: n.level, text: n.text });
@@ -1770,6 +2107,10 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §8.6 / §15.2: steers, withdrawals, a pause and secret-acks decided before run(), in order, after every writer saw run:ready
     this.flushDeferredAnnouncements();
     this.runStartMono = this.clock();
+    // contract 1.4 (W2b), §9.3: the resume gates, before the wall clock starts. `checkResumeClaim` is the only
+    // AWAITED coordination read on the startup path, it runs on a resume only, and its failure is not a stop.
+    await this.checkResumeClaim();
+    this.checkFork();
     this.deadline = armWallDeadline(this.controller, this.opts.limits.maxWallMs - this.wallMsUsedBefore);
     if (this.resumed) {
       this.emit({ type: 'transcript', step: null, level: 'info', text: `resumed at step ${this.step + 1}` });
@@ -1842,6 +2183,20 @@ class EngineImpl implements Engine {
         this.emitStatus();
         continue; // re-check abort, budgets and pause before the next step
       }
+      // contract 1.4 (W2b), §9.3: the fork fence, at the boundary. `error` / exit 2, with the design's sentence.
+      this.checkFork();
+      if (this.forkStop !== null) {
+        const e = new ConfigError(this.forkStop, { setting: 'coordination' });
+        this.fatalSerialized = { ...serializeStopError(e, this.redact), exitCode: 2 };
+        this.emit({ type: 'notice', step: null, kind: 'coordination', level: 'error', text: this.forkStop });
+        return this.finish('error');
+      }
+      // contract 1.4 (W2b), §5.4: the inbox, at the step boundary — the one point where nothing is in flight, so a
+      // `steer` lands as the next step's directive and a `pause` as this loop's next check. §5.4 gives the host the
+      // same duty in all three modes; the engine doing it too is what makes `jevcode sessions pause <id>` against a
+      // HEADLESS run apply at all, and the `seen` set plus `deliver`'s idempotency make the overlap harmless. The
+      // `session:message` event carries `applied`, so a surface knows whether an ack is still owed.
+      if (this.coord !== null) await this.coord.pumpInbox((msg, d) => this.applyIncoming(msg, d)).catch(() => undefined);
       this.applyPendingDirectives();
       const result = await this.runStep();
       trace(`runStep done step=${this.step} stop=${result.stop ?? 'null'}`);
@@ -2147,6 +2502,10 @@ class EngineImpl implements Engine {
   }
 
   private emitStatus(): void {
+    // contract 1.4 (W2b), §3.3 point 4: a transition of phase / blocked / pausing / pauseNow / stage schedules ONE
+    // coalesced beat (≤ 1 per 250 ms, the writer's own rule). Anything else is stored and rides the next beat, so
+    // this is not a write per status event.
+    this.coord?.set(this.heartbeatDynamic());
     this.emit({ type: 'status', status: this.status() });
   }
 
@@ -2271,7 +2630,8 @@ class EngineImpl implements Engine {
       jevRequests: [],
       generatorRecords: [],
       usage: { generator: zeroUsage(), jev: zeroUsage() },
-      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null, decomposeMs: 0 },
+      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null, decomposeMs: 0, coordinateMs: 0, coordWaitMs: 0 },
+      coord: null,
       synthMs: null,
       synthJevMs: 0,
       generatorBatch: { inFlight: 0, startedAt: 0 },
@@ -2978,7 +3338,19 @@ class EngineImpl implements Engine {
    */
   private decomposeShortCircuit(): GateReason | null {
     const o = this.opts.orchestration;
-    return decomposeShutByOptions(this.opts.splitPolicy, o?.depth, o?.hasLedger);
+    return decomposeShutByOptions(this.opts.splitPolicy, o?.depth, this.hasLedger());
+  }
+
+  /**
+   * contract 1.4 (W2b), ORCHESTRATION-DESIGN §3.1 [G5]: "a coordination ledger handle exists, so children can be
+   * tracked". `OrchestrationOptions.hasLedger` rode the orchestration options only because contract 1.4 had not
+   * landed `EngineOptions.coordination`; it has now, so the FACT is derived from the handle and the field is the
+   * override it always read as. The field stays (contract 1.5 shipped it, and a test may still set it), but a
+   * caller that passes a real handle no longer has to remember to set a second flag that says so — which is exactly
+   * the drift [G5] would have produced: a parent that delegates with no ledger to track the children in.
+   */
+  private hasLedger(): boolean {
+    return this.coord !== null || this.opts.orchestration?.hasLedger === true;
   }
 
   /**
@@ -3201,7 +3573,7 @@ class EngineImpl implements Engine {
     const problem = [...this.plan.harnessProblems].reverse().find((h) => h.kind === 'orchestration');
     return {
       // [G5]: past the short-circuit this is true by construction — it is re-stated so the gate stays pure
-      hasLedger: this.opts.orchestration?.hasLedger === true,
+      hasLedger: this.hasLedger(),
       git: { isRepo: git?.repo === true, headBorn: headOid !== null, worktreeSupported: git?.repo === true },
       baseSha: headOid ?? '',
       repoKey: git?.commonDir ?? null,
@@ -3425,6 +3797,19 @@ class EngineImpl implements Engine {
           this.emit({ type: 'transcript', step, level: 'warn', text: `${this.blocked.kind} before execute; step ${step} discarded` });
           this.absorbDiscardedTiming(draft);
           return { stop: null };
+        }
+        // contract 1.4 (W2b), COORDINATION-DESIGN §4.2: the `coordinate` micro-stage, in the design's exact order —
+        // after the overlapped checkpoint and the `blocked` discard, BEFORE `checkBudgets` (so a strict wait that ate
+        // the wall budget is caught below, not after pre-images) and before `takePreImages` (the latest point at
+        // which nothing has touched the workspace).
+        if (this.coord !== null && coordinates(draft.proposal.action)) {
+          const discard = await this.runCoordinate(draft, step);
+          if (discard !== null) {
+            this.interrupted = { step, stage: 'execute', proposal: draft.proposal };
+            this.emit({ type: 'transcript', step, level: 'warn', text: discard });
+            this.absorbDiscardedTiming(draft);
+            return { stop: null };
+          }
         }
         const b = checkBudgets(this.budgetInput(['spend_cap', 'wall_time']));
         if (b !== null) {
@@ -3866,6 +4251,10 @@ class EngineImpl implements Engine {
   }
 
   private absorbDiscardedTiming(draft: StepDraft): void {
+    // contract 1.4 (W2b), §4.3 step 7: a discarded step's lease is released `discarded` at once. Without this a
+    // rule-1 discard would leave an `exclusive` lease live for its full ttl and every peer would wait on a step that
+    // is never going to run.
+    this.coord?.released('discarded');
     // Discarded steps (§9.1 rule 1) still consumed wall time and money; the run totals keep them.
     // contract 1.4 (§7.2, §11 row 41): this attempt's sample rows (flushed now, or landing late) carry `discarded: true`
     draft.discarded = true;
@@ -3886,7 +4275,7 @@ class EngineImpl implements Engine {
       this.timing.harnessMs += t.harnessMs;
       this.timing.synthMs = (this.timing.synthMs ?? 0) + (t.synthMs ?? 0);
     } else {
-      this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs);
+      this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs);
     }
   }
 
@@ -3902,11 +4291,14 @@ class EngineImpl implements Engine {
       generatorMs: draft.timing.generatorMs,
       jevMs: draft.timing.jevMs,
       execMs: draft.timing.execMs,
-      harnessMs: Math.max(0, total - synthMs - draft.timing.execMs - draft.timing.confirmMs - shellJevMs),
+      harnessMs: Math.max(0, total - synthMs - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs - shellJevMs),
       totalMs: total,
       synthMs,
       ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
       ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
+      // contract 1.4 (W2b) (§4.2): absent when the gate did not run, so a run without a ledger writes HEAD's row
+      ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
+      ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
     };
   }
 
@@ -4534,12 +4926,15 @@ class EngineImpl implements Engine {
             generatorMs: draft.timing.generatorMs,
             jevMs: draft.timing.jevMs,
             execMs: draft.timing.execMs,
-            harnessMs: Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs),
+            harnessMs: Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs),
             totalMs: total,
             // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
             ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
             // contract 1.5 (§4.1 [D13]): likewise inside harnessMs, absent when the gate was shut — M2 reads its p95
             ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
+            // contract 1.4 (W2b) (§4.2): the coordinate gate, absent when it did not run (no ledger, or a read/done action)
+            ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
+            ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
           };
     this.timing.generatorMs += timing.generatorMs;
     this.timing.jevMs += timing.jevMs;
@@ -4636,6 +5031,9 @@ class EngineImpl implements Engine {
     if (draft.proposer !== null) record.proposer = draft.proposer;
     // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts (llm-jev only; jev-only rows are unchanged)
     if (this.mode === 'llm-jev' && draft.proposer === 'synth') record.verify = this.verifySummary(draft, proposal);
+    // contract 1.4 (W2b) (§4.1): a conditional spread everywhere else, a conditional assignment here — a step
+    // whose gate saw nothing writes the row it wrote before this wave, which is half of what M2 means by zero cost
+    if (draft.coord !== null) record.coord = draft.coord;
     if (draft.interruptedAt) record.interruptedAt = draft.interruptedAt;
     if (draft.error) record.error = draft.error;
     if (this.completeAfter(draft)) record.stoppedAt = 'complete';
@@ -4659,6 +5057,29 @@ class EngineImpl implements Engine {
         this.noteDiskError(e, file, step);
       }
     })();
+    // contract 1.4 (W2b), §4.3 step 7 + §3.3 point 2: the lease is released with the post-image set and ONE beat
+    // goes out with what was touched — both hung off `pendingCheckpoint.then`, OUTSIDE the IIFE's try/catch, because
+    // that catch classifies any errno as `checkpoint degraded: <code> on state.json` and a ledger fault is not that.
+    // The IIFE catches internally, so the `.then` always runs. Neither is ever awaited by the loop.
+    if (this.coord !== null) {
+      const coord = this.coord;
+      const image = this.lastPostImage;
+      const changed: Record<string, string | null> = {};
+      const files: string[] = [];
+      for (const [rel, f] of Object.entries(image?.files ?? {})) {
+        if (files.length >= LEASE_CHANGED_MAX) break;
+        files.push(rel);
+        changed[rel] = f.sha256 ?? null;
+      }
+      // §3.3: `touchedRecent` is the union of the last THREE committed steps, so a peer arriving mid-run sees more
+      // than the one step that happened to be committing when it folded.
+      this.touchedRecent = [...new Set([...files, ...this.touchedRecent])].slice(0, TOUCHED_RECENT_KEEP);
+      const head = image?.headOid ?? null;
+      void this.pendingCheckpoint.then(() => {
+        coord.released('committed', changed, head ?? undefined);
+        coord.beat({ ...this.heartbeatDynamic(), touched: { step, files } });
+      });
+    }
     // TUI-DESIGN-2 §6 item 3: money for the `[step N]` summary line (absent → the renderer falls back to tokens)
     this.emit({ type: 'step:end', record, costUsd: { generator: record.usage.generator.costUsd, jev: record.usage.jev.costUsd } });
     this.emitStatus();
@@ -4751,6 +5172,20 @@ class EngineImpl implements Engine {
         // contract 1.7 (§3.6 D-V): `stopTranscriptLine` now returns '' — the row is deleted — so the event is not
         // emitted at all. Guarding HERE rather than only in `itemsFromEvent` keeps `--json` and every listener free
         // of an empty-text transcript event, not just the two rendered sinks.
+        // contract 1.4 (W2b), §3.3 point 5: `phase:'ended'` AFTER the final `writeState`, before the stop line and
+        // `run:end`, carrying the `PausePoint` — so a resume card on another device has the point without the run
+        // dir (§12.0.2 "the same object rides the final phase:'ended' heartbeat"). Tracked leases are released
+        // `ended` by the writer itself and the chain is awaited, inside the shutdown bound.
+        if (this.coord !== null) {
+          await this.coord
+            .finish({
+              ...this.heartbeatDynamic(),
+              phase: 'ended',
+              stopReason: reason,
+              ...(this.pausePoint !== null ? { pausePoint: { ...this.pausePoint } } : {}),
+            })
+            .catch(() => undefined);
+        }
         stopEmitted = true;
         if (stopLine.type === 'transcript' && stopLine.text.length > 0) this.emit(stopLine);
         endEvent = buildEnd();

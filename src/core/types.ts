@@ -1375,6 +1375,13 @@ export interface SessionClamp {
 export interface SessionRef {
   sessionId: string | null;
   parentRunId: string | null;
+  /**
+   * contract 1.4 (W2b) (COORDINATION-DESIGN §6.5): the session that SPAWNED this one. A child run has its own
+   * `sessionId` (= its run id, as every first run does) so that one writer owns `outbox/<sessionId>/` and
+   * `foldIndex` stays honest; this is how the picker indents it under its parent, how `-c / --continue` knows never
+   * to pick it, and how the session meter folds its spend into the parent's total. Absent on an ordinary run.
+   */
+  parentSessionId?: string | null;
   source: RunSource;
   title?: string;
   clamp?: SessionClamp;
@@ -2874,7 +2881,7 @@ export interface OrchestrationOptions {
    * rides here, on the options the engine already reads, until the coordination facade grows one.
    * Absent reads as FALSE and shuts the gate: no ledger, no delegation, and no measurement taken to find out.
    */
-  hasLedger?: boolean;
+  hasLedger?: boolean; // contract 1.4 (W2b): now DERIVED from `EngineOptions.coordination.ledger !== null`; the field stays as the override (`hasLedger() = coord !== null || this === true`), so contract 1.5's callers and fakes are unchanged
   /** §4.2 P10: the file a parked review's answer is read back from on replay */
   reviewAnswerFile?: string;
   /** §2.6 [G1]: the identity every harness commit is made under; never the user's */
