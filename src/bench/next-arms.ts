@@ -384,10 +384,16 @@ export function evaluateAcceptRule(input: AcceptInput): AcceptVerdict {
     {
       n: 4,
       title: 'the paired control attributes the win to the fast path — or R9 is retired and the wave ships as S2 + routers alone',
-      status: f === undefined ? 'not_evaluable' : f.status === 'pass' ? 'pass' : retireR9 ? 'pass' : f.status,
-      detail: f === undefined ? 'prediction (f) was not evaluated' : f.status === 'pass' ? f.detail : retireR9 ? `(f) ${f.status}, and (a)/(e) already retire route R9 — ship S2 + routers with fastPath defaulted 'off' in every mode` : f.detail,
+      // the escape is "the control RAN and the fast path lost", not "there is no control": a retired R9 still needs
+      // an evaluated contrast before "ship S2 + routers alone" is a measured statement rather than a hope. So the
+      // `retireR9` branch is taken only on an evaluated (f) — `not_evaluable` stays `not_evaluable`.
+      status: f === undefined ? 'not_evaluable' : f.status === 'pass' ? 'pass' : retireR9 && f.status === 'fail' ? 'pass' : f.status,
+      detail: f === undefined ? 'prediction (f) was not evaluated' : f.status === 'pass' ? f.detail : retireR9 && f.status === 'fail' ? `(f) fail, and (a)/(e) already retire route R9 — ship S2 + routers with fastPath defaulted 'off' in every mode` : `${f.detail} — and a retired R9 does not substitute for the contrast: clause 4 needs the control to have RUN`,
     },
-    { n: 5, title: 'R-e shows no allowed harmful command', status: re === undefined ? 'not_evaluable' : 'reported', detail: re === undefined ? 'R-e was not computed' : `${re.detail}; otherwise §2.4 is reverted and slot B's risk change is backed out independently of the rest` },
+    // §2.4: whether a HARMFUL command was allowed under a dropped ask is read off the steps by a person, not off a
+    // counter — there is no machine condition here and the title says so rather than claiming one. R-e's two counts
+    // are what the judgement is made from.
+    { n: 5, title: "R-e's riskSource/jevUnavailable counts are reported for the §2.4 judgement (no machine condition)", status: re === undefined ? 'not_evaluable' : 'reported', detail: re === undefined ? 'R-e was not computed' : `${re.detail}; otherwise §2.4 is reverted and slot B's risk change is backed out independently of the rest` },
   ];
   const accept = clauses.every((c) => c.status === 'pass' || (c.n === 5 && c.status === 'reported'));
   return { clauses, accept, retireR9 };

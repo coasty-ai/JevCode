@@ -286,5 +286,8 @@ its budget and then timed out.
 `experiments/llm-jev/headtohead.mts` under `--candidate jev-on-next --control jev-on-next-nofast`. Clause 1 (the §7
 gates, including Ring 1 under `--jev off`) is a tree fact the script cannot observe: it is `--gates green|red` and
 defaults to **not measured**, which does not accept. Clause 4 has the documented escape — retire route R9 and ship S2
-+ routers alone with `fastPath` defaulted `'off'` — and prediction (a) or (e) failing takes that branch
-automatically. **A failure retires the route; it does not loosen the predicate.**
++ routers alone with `fastPath` defaulted `'off'` — and prediction (a) or (e) failing takes that branch, but only
+when (f) itself was EVALUATED and lost: a missing control leaves clause 4 `not_evaluable`, so a wave with no
+same-build contrast cannot read ACCEPT. **A failure retires the route; it does not loosen the predicate.** Clause 5
+is reported, not checked: it prints R-e's two counts for the §2.4 judgement and makes no machine assertion about
+them, which is what its title now says.

@@ -1247,10 +1247,14 @@ The wave is accepted when **all** hold:
 1. Every gate in §7 is green on the merged tree, including Ring 1 under `--jev off`.
 2. R-a and R-b pass. R-c passes on every suite, or the predicate is revised and the arms re-run.
 3. Prediction (a) holds **and** (b) holds.
-4. (f) holds, i.e. the paired control attributes the win to the fast path — **or** the fast path is retired under
-   §8.4 and the wave ships as S2 + routers alone, with `fastPath` defaulted `'off'` in every mode.
-5. R-e shows no allowed harmful command; otherwise §2.4 is reverted and slot B's risk change is backed out
-   independently of the rest.
+4. (f) holds, i.e. the paired control attributes the win to the fast path — **or** (f) was EVALUATED and lost while
+   the fast path is retired under §8.4, and the wave ships as S2 + routers alone with `fastPath` defaulted `'off'`
+   in every mode. As built, the escape requires an evaluated (f): "the control never ran" is `not_evaluable`, never
+   a pass — a retired R9 does not substitute for the contrast, or "ship S2 + routers alone" is a hope rather than a
+   measured statement.
+5. R-e's `riskSource: 'code'` and `jevUnavailable` counts are **reported** for the §2.4 judgement. As built this
+   clause carries NO machine condition: whether a harmful command was allowed under a dropped ask is read off the
+   steps by a person. If one was, §2.4 is reverted and slot B's risk change is backed out independently of the rest.
 
 **The default-mode flip to `jev-on` is not part of this accept rule.** It is a separate decision on these rows.
 

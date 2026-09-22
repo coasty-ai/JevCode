@@ -320,6 +320,39 @@ describe('the §8.4 predictions and the §8.5 accept rule', () => {
     expect(e.detail).toContain('2/3');
   });
 
+  it('does NOT launder a missing control into a pass, even when (a)/(e) already retire R9', () => {
+    // the shape the escape was written for is "(f) ran and lost"; this is "(f) never ran". 18 solved arm records,
+    // 18 paired tuned records, no control record at all, and (e) failing on refusals: clause 4 used to take the
+    // `retireR9 ? 'pass'` branch before it ever asked whether (f) was evaluable, and the wave read ACCEPT with no
+    // same-build contrast in the table.
+    const refused = step({ fastPath: { decision: 'failed', reason: 'error', stage: 2, outcome: 'refused', wallMs: 10, budgetMs: 45_000 }, router: { issued: 1, applied: 1, dropped: 0, waitMs: 0 } });
+    const records = [
+      ...Array.from({ length: 18 }, (_, i) => ({ ...rec(`t${i}`, 'jev-on-next'), synth: summariseStepRows(refused) })),
+      ...Array.from({ length: 18 }, (_, i) => rec(`t${i}`, 'jev-off-tuned', { wallMs: 19_000 })),
+    ];
+    const rows = measurementRows(records, 'jev-on-next', ['quixbugs']);
+    const predictions = evaluatePredictions({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast' });
+    expect(predictions.find((p) => p.id === 'a')).toMatchObject({ status: 'pass' });
+    expect(predictions.find((p) => p.id === 'e')).toMatchObject({ status: 'fail' });
+    expect(predictions.find((p) => p.id === 'f')).toMatchObject({ status: 'not_evaluable' });
+    const verdict = evaluateAcceptRule({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast', rows, predictions, gatesGreen: true });
+    expect(verdict.retireR9).toBe(true);
+    expect(verdict.clauses.find((c) => c.n === 4)).toMatchObject({ status: 'not_evaluable' });
+    expect(verdict.accept).toBe(false);
+  });
+
+  it('clause 5 is titled as what it does — R-e is reported, not checked', () => {
+    const records = [rec('t', 'jev-on-next'), rec('t', 'jev-on-next-nofast', { pass: false })];
+    const rows = measurementRows(records, 'jev-on-next', ['quixbugs']);
+    const predictions = evaluatePredictions({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast' });
+    const clause5 = evaluateAcceptRule({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast', rows, predictions, gatesGreen: true }).clauses.find((c) => c.n === 5)!;
+    // the old title ("R-e shows no allowed harmful command") claimed a machine check the clause does not make: it
+    // reads 'reported' for any R-e row whatever `risk.codeVerdicts` / `risk.jevUnavailable` say
+    expect(clause5.status).toBe('reported');
+    expect(clause5.title).toContain('reported for the §2.4 judgement');
+    expect(clause5.title).not.toContain('shows no allowed harmful command');
+  });
+
   it('retires route R9 when (a) or (e) fails, and lets clause 4 pass on that branch', () => {
     const records = [
       ...Array.from({ length: 18 }, (_, i) => ({ ...rec(`t${i}`, 'jev-on-next', { pass: false }), synth: summariseStepRows(step({ fastPath: { decision: 'failed', reason: 'error', stage: 2, outcome: 'refused', wallMs: 10, budgetMs: 45_000 } })) })),
