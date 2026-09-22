@@ -150,6 +150,7 @@ import { detectSecrets } from '../core/redact.js';
 import { linkedAbort } from '../core/abort.js';
 import { lookupPricing } from '../config/defaults.js';
 import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
+import { stepTimeline, writeTimelineFile } from '../perf/timeline.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
 import { PLAN_MAX_HARNESS_PROBLEMS, applyPlanDraft, boundHarnessProblems, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
@@ -391,13 +392,26 @@ interface StepDraft {
   jevRequests: JevRequestRecord[];
   generatorRecords: GeneratorCallRecord[];
   usage: StepUsage;
-  /** imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none */
-  /** decomposeMs: contract 1.5 (§4.1 [D13]) — the `decompose` stage's own wall, inside harnessMs; 0 when the gate was shut */
-  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null; decomposeMs: number };
+  /**
+   * imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none.
+   *
+   * decomposeMs: contract 1.5 (§4.1 [D13]) — the `decompose` stage's own wall, inside harnessMs; 0 when the gate was shut.
+   *
+   * `jevMs` is what the decider *reports* (`AskResult.latencyMs`) — the client's cost basis, the number jev.jsonl
+   * and `/jev` show. `jevWallMs` is the wall the engine actually spent inside `decider.ask`, measured here.
+   * HARNESS-NEXT-DESIGN §4.4 / §5: `harnessMs` subtracts the larger of the two, because a decider that does its
+   * work in-process and reports `latencyMs: 0` (every mock and stub, `src/jev/mock.ts`, `src/bench/stub-decider.ts`,
+   * `src/jev/off.ts`) would otherwise spend the 50 ms harness budget on the test double's own CPU — which is what
+   * made the gate look fixable by making the double faster. The two are within noise of each other for a real HTTP
+   * decider, so this only ever tightens the gated number.
+   */
+  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null; jevWallMs: number; decomposeMs: number };
   /** docs/LLM-JEV-DESIGN.md §7.5: wall of synthesize() (synth modes); null when the propose stage was the generator's */
   synthMs: number | null;
   /** the Jev latency spent inside synthesize(); `timing.jevMs - synthJevMs` is the shell's share */
   synthJevMs: number;
+  /** the same split for the measured ask wall: `timing.jevWallMs - synthJevWallMs` is the shell's measured share */
+  synthJevWallMs: number;
   /** docs/LLM-JEV-DESIGN.md §4.8: the in-flight samples of the llm-jev round, for the batch wall in `timing.generatorMs` */
   generatorBatch: { inFlight: number; startedAt: number };
   /**
@@ -472,6 +486,15 @@ function addUsage(a: TokenUsage, b: TokenUsage): void {
   // TUI-DESIGN §9.5: an unpriced (non-finite) cost adds nothing — see pricedUsage
   a.costUsd += Number.isFinite(b.costUsd) ? b.costUsd : 0;
   a.calls += b.calls;
+}
+/**
+ * The Jev time `harnessMs` is charged for: the larger of what the decider reported and what the engine measured
+ * inside `decider.ask`. HARNESS-NEXT-DESIGN §4.4 — a mock, a stub or the `--jev off` double reports `latencyMs: 0`
+ * and does its work on this thread, so charging `jevMs` alone hands the whole of the double's CPU to the gated
+ * harness budget. For a real HTTP decider the two agree to within the await, so nothing recorded moves.
+ */
+function jevChargedMs(draft: Pick<StepDraft, 'timing'>): number {
+  return Math.max(draft.timing.jevMs, draft.timing.jevWallMs);
 }
 function zeroTiming(): StepTiming {
   return { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 0 };
@@ -1732,6 +1755,8 @@ class EngineImpl implements Engine {
   }
 
   private async main(): Promise<RunResult> {
+    // HARNESS-NEXT-DESIGN §4.4 (wave S0): the per-step timing buckets, off unless JEVCODE_TIMELINE is set
+    stepTimeline.beginRun(this.runId, this.mode);
     this.emit({ type: 'run:start', runId: this.runId, task: this.opts.task, mode: this.mode, resumedFromStep: this.resumed ? this.step : null });
     if (this.resumeStop !== null) {
       // the items decided before run() still reach the listeners (transcript.log is muted for a refused resume)
@@ -2284,9 +2309,10 @@ class EngineImpl implements Engine {
       jevRequests: [],
       generatorRecords: [],
       usage: { generator: zeroUsage(), jev: zeroUsage() },
-      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null, decomposeMs: 0 },
+      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null, jevWallMs: 0, decomposeMs: 0 },
       synthMs: null,
       synthJevMs: 0,
+      synthJevWallMs: 0,
       generatorBatch: { inFlight: 0, startedAt: 0 },
       closed: false,
       verify: { samples: 0, timeouts: 0, cancelled: 0, malformed: 0, reported: null },
@@ -2317,6 +2343,7 @@ class EngineImpl implements Engine {
   private async stage<T>(name: StageName, fn: () => Promise<T>): Promise<T> {
     const step = this.draft?.step ?? this.step + 1;
     this.currentStage = name;
+    stepTimeline.stage(name);
     const t0 = this.clock();
     this.emit({ type: 'stage:start', step, stage: name });
     try {
@@ -2326,6 +2353,7 @@ class EngineImpl implements Engine {
       throw e;
     } finally {
       trace(`stage ${name} finally`);
+      stepTimeline.stage('');
       this.emit({ type: 'stage:end', step, stage: name, ms: Math.max(0, this.clock() - t0) });
       this.emitStatus();
       trace(`stage ${name} end emitted`);
@@ -2389,6 +2417,11 @@ class EngineImpl implements Engine {
     trace(`engine.ask ${stage} step=${draft.step} start`);
     let res: AskResult;
     const retry = this.retryHooks('jev', draft.step, stage);
+    // HARNESS-NEXT-DESIGN §4.4: `jevWaitMs` per stage — per router once §3.x labels its asks
+    const endJevWait = stepTimeline.span('jev', stage);
+    // and the same wall as a plain number, always: `harnessMs` is derived from it so an in-process decider that
+    // reports `latencyMs: 0` cannot charge its own CPU to the gated harness budget (see StepDraft.timing)
+    const askT0 = this.clock();
     try {
       res = await this.jevCache.ask(state, questions, { signal: this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
       retry.settled(true);
@@ -2396,6 +2429,9 @@ class EngineImpl implements Engine {
       retry.settled(false);
       trace(`engine.ask ${stage} rejected ${e instanceof Error ? e.name : typeof e}`);
       throw e;
+    } finally {
+      draft.timing.jevWallMs += Math.max(0, this.clock() - askT0);
+      endJevWait();
     }
     trace(`engine.ask ${stage} resolved attempts=${res.attempts}`);
     // TUI-DESIGN §13.2: a reachable Jev restarts the unreachable backoff (30 s again on the next pause)
@@ -2549,6 +2585,18 @@ class EngineImpl implements Engine {
    * the REPORT question rules), so a synthesizer cannot spend Jev budget or take a decision the
    * run does not record. The signal is the engine's; a synthesizer's own signal is ignored.
    */
+  /** The workspace listing, in the `listing` timing bucket (HARNESS-NEXT-DESIGN §4.4); a failed listing is an empty one, as before. */
+  private async listCandidatesTimed(): Promise<Awaited<ReturnType<Workspace['listCandidates']>>> {
+    const end = stepTimeline.span('listing', 'candidates');
+    try {
+      return await this.workspace.listCandidates();
+    } catch {
+      return [];
+    } finally {
+      end();
+    }
+  }
+
   /**
    * docs/LLM-JEV-DESIGN.md §9.4: whether the synthesizer covers this workspace, decided once per run from the workspace listing
    * (the layout does not change under the run); a synthesizer without `handles` covers everything.
@@ -2556,7 +2604,7 @@ class EngineImpl implements Engine {
   private async synthesizerHandles(synthesizer: Synthesizer): Promise<boolean> {
     if (this.synthHandles !== null) return this.synthHandles;
     if (synthesizer.handles === undefined) return (this.synthHandles = true);
-    const listing = await this.workspace.listCandidates().catch(() => []);
+    const listing = await this.listCandidatesTimed();
     const handles = synthesizer.handles(this.wsInfo, listing.map((c) => c.path));
     if (!handles) this.emit({ type: 'transcript', step: this.step + 1, level: 'info', text: `synthesizer ${synthesizer.name} does not cover this workspace; proposing through the generic per-step fallback (docs/LLM-JEV-DESIGN.md §9.4)` });
     return (this.synthHandles = handles);
@@ -2722,6 +2770,9 @@ class EngineImpl implements Engine {
     // frame when it had arrived, or a rate-limited end (`CancelledGeneration.rateLimited`); null when the callback never fired
     const held: { partial: CancelledGeneration | null } = { partial: null };
     let res: GenerateResult;
+    // HARNESS-NEXT-DESIGN §4.1 queue 2: the sample wait, per sample; the bucket's `ms` is the union, so a round of
+    // eight concurrent samples reports the round's exposed wall and `sumMs` the summed time
+    const endSampleWait = stepTimeline.span('sample', sample === undefined ? 'one-shot' : `sample${sample.sample}`);
     try {
       res = await this.opts.provider.generate(req, {
         signal: link?.signal ?? this.signal,
@@ -2762,6 +2813,7 @@ class EngineImpl implements Engine {
       }
       throw e;
     } finally {
+      endSampleWait();
       link?.unlink();
       if (sample !== undefined) this.noteSampleEnd(draft);
     }
@@ -3083,7 +3135,7 @@ class EngineImpl implements Engine {
     const tools = splitToolsFor(this.mode, policy.maxAgents);
     const tool = tools[0];
     if (tool === undefined) return null;
-    const listing = await this.workspace.listCandidates().catch(() => []);
+    const listing = await this.listCandidatesTimed();
     const message = buildSplitMessage({
       step: draft.step,
       task: this.opts.task,
@@ -3197,7 +3249,7 @@ class EngineImpl implements Engine {
     const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
     const git = this.workspace.gitState?.() ?? null;
     const headOid = git !== null && git.head !== null && git.head.kind === 'branch' ? git.head.oid : null;
-    const listing = (await this.workspace.listCandidates().catch(() => [])).map((c) => c.path);
+    const listing = (await this.listCandidatesTimed()).map((c) => c.path);
     const probe = nodePreflightProbe();
     const disk = await probe.diskFree(this.workspace.root);
     const repoBytes = (await probe.repoBytes(this.workspace.root)) ?? 0;
@@ -3260,6 +3312,7 @@ class EngineImpl implements Engine {
     const draft = this.newDraft(step);
     this.draft = draft;
     this.stageBlock = null;
+    stepTimeline.beginStep(step);
     this.emit({ type: 'step:start', step, startedAt: draft.startedAt });
     // contract 1.4 (COORDINATION-DESIGN §7.3 step 3): the paused proposal (or the arrived samples) of exactly this step, gated at run start
     const replay = this.takeReplay(step);
@@ -3345,7 +3398,7 @@ class EngineImpl implements Engine {
           // to the generic `propose_action` sample — the flag (not the mode) keys `generator_done` and the verbatim claim evidence
           if (llmJev && !(await this.synthesizerHandles(synthesizer))) {
             draft.proposer = 'generic';
-            const listing = await this.workspace.listCandidates().catch(() => []);
+            const listing = await this.listCandidatesTimed();
             const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
             // review D5: the same entry point as the other two, so the meter and the view follow the mode gate in one place
             p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, [], candidates));
@@ -3355,12 +3408,14 @@ class EngineImpl implements Engine {
             const sctx = this.synthesisContext(draft, contextFiles);
             const s0 = this.clock();
             const jev0 = draft.timing.jevMs;
+            const jevWall0 = draft.timing.jevWallMs;
             try {
               p = await this.stage('propose', () => runSynthStage(ctx, synthesizer, sctx));
             } finally {
               // docs/LLM-JEV-DESIGN.md §7.5: the synth wall and the Jev latency spent inside it (the shell's share is the rest)
               draft.synthMs = Math.max(0, this.clock() - s0);
               draft.synthJevMs = Math.max(0, draft.timing.jevMs - jev0);
+              draft.synthJevWallMs = Math.max(0, draft.timing.jevWallMs - jevWall0);
             }
             // llm-jev: the round's per-sample rows (cancelled estimates included) reach generator.jsonl exactly as after runProposeStage; a no-op in jev-only
             this.flushGeneratorRecords(draft);
@@ -3414,7 +3469,7 @@ class EngineImpl implements Engine {
           this.emitReplayedProposal(draft, replayed);
         } else {
           // Same <= 300 pre-filter (mention count, then recency) as the context stage (§13).
-          const listing = await this.workspace.listCandidates().catch(() => []);
+          const listing = await this.listCandidatesTimed();
           const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
           // docs/COORDINATION-DESIGN.md §8.8 jev-off column: the cache is the generator's only file view; candidates stay the listing
           p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, [], candidates));
@@ -3437,7 +3492,7 @@ class EngineImpl implements Engine {
 
       if (draft.outcome === null && draft.proposal !== null) {
         // Await the overlapped checkpoint of the previous step before anything touches the workspace (§9).
-        if (this.pendingCheckpoint) await this.pendingCheckpoint;
+        if (this.pendingCheckpoint) await stepTimeline.measure('store', 'pending-checkpoint', () => this.pendingCheckpoint ?? Promise.resolve());
         if (this.blocked !== null) {
           // TUI-DESIGN §13.3: that checkpoint failed on a disk class (or a pause was requested by a write): nothing executes until the pane is answered
           this.interrupted = { step, stage: 'execute', proposal: draft.proposal };
@@ -3568,6 +3623,14 @@ class EngineImpl implements Engine {
     // a `run` with nothing dirty has nothing to copy: no pre-image directory (clean tracked files are recoverable from HEAD)
     if (source === 'run' && targets.length === 0) return null;
     const t0 = this.clock();
+    // HARNESS-NEXT-DESIGN §5/§6 S0 charters a *reduction* of imagesMs (p95 19.9–24.5 ms, target 15 ms). Wave S0
+    // instrumented it and did not reduce it, and once `harnessMs` stopped being charged the decider double's CPU
+    // this span became the whole of the gated number: on the `step-overhead` fixture `images:pre` is 386 ms total
+    // at p95 38.1 ms against `listing:note-changed` 26 ms, `store` 117 ms and `jev` 98 ms over 203 asks. The cost
+    // is the serial 15 MiB pre-image copy inside `writePreImages` — `src/checkpoint/images.ts`, owned by another
+    // branch in flight. DEFERRED, with that owner; `experiments/harness-next/quick.mts` prints the deferral on
+    // every Ring-0 run so it cannot be quietly forgotten.
+    const endImages = stepTimeline.span('images', 'pre');
     try {
       const r = await writePreImages(this.runDir, draft.step, targets, { root: this.workspace.root, source, now: () => this.clock() });
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + r.ms;
@@ -3576,6 +3639,8 @@ class EngineImpl implements Engine {
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + Math.max(0, this.clock() - t0);
       this.noteImagesFailure(draft, 'pre', e);
       return null;
+    } finally {
+      endImages();
     }
   }
 
@@ -3590,6 +3655,7 @@ class EngineImpl implements Engine {
     // run would overwrite those modifications (§12.4 rule 3)
     const probe = this.gitState;
     const t0 = this.clock();
+    const endImages = stepTimeline.span('images', 'post');
     try {
       const r = await writePostImages(this.runDir, draft.step, changedFiles, {
         root: this.workspace.root,
@@ -3606,6 +3672,8 @@ class EngineImpl implements Engine {
     } catch (e) {
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + Math.max(0, this.clock() - t0);
       this.noteImagesFailure(draft, 'post', e);
+    } finally {
+      endImages();
     }
   }
 
@@ -3915,7 +3983,7 @@ class EngineImpl implements Engine {
       this.timing.harnessMs += t.harnessMs;
       this.timing.synthMs = (this.timing.synthMs ?? 0) + (t.synthMs ?? 0);
     } else {
-      this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs);
+      this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - jevChargedMs(draft) - draft.timing.execMs - draft.timing.confirmMs);
     }
   }
 
@@ -3926,7 +3994,8 @@ class EngineImpl implements Engine {
    */
   private llmJevTiming(draft: StepDraft, total: number): StepTiming {
     const synthMs = draft.synthMs ?? 0;
-    const shellJevMs = Math.max(0, draft.timing.jevMs - draft.synthJevMs);
+    // the shell's Jev share, charged at the larger of reported latency and measured wall (see StepDraft.timing)
+    const shellJevMs = Math.max(Math.max(0, draft.timing.jevMs - draft.synthJevMs), Math.max(0, draft.timing.jevWallMs - draft.synthJevWallMs));
     return {
       generatorMs: draft.timing.generatorMs,
       jevMs: draft.timing.jevMs,
@@ -4577,7 +4646,7 @@ class EngineImpl implements Engine {
             generatorMs: draft.timing.generatorMs,
             jevMs: draft.timing.jevMs,
             execMs: draft.timing.execMs,
-            harnessMs: Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs),
+            harnessMs: Math.max(0, total - draft.timing.generatorMs - jevChargedMs(draft) - draft.timing.execMs - draft.timing.confirmMs),
             totalMs: total,
             // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
             ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
@@ -4687,7 +4756,9 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §8.7 / §15 item 3: the committed plan after this step, bounded, so /rewind N seeds without replaying drafts
     record.planAfter = planSnapshot(plan);
 
+    const endSerialise = stepTimeline.span('serialise', 'checkpoint-state');
     const snapshot = this.buildCheckpointState();
+    endSerialise();
     const c0 = this.clock();
     this.pendingCheckpoint = (async () => {
       // TUI-DESIGN §12.3: nothing is hashed in here, where the lag gate could not see it
@@ -4712,6 +4783,8 @@ class EngineImpl implements Engine {
     draft.closed = true;
     this.draft = null;
     this.currentStage = 'idle';
+    stepTimeline.stage('');
+    stepTimeline.endStep();
     return { stop: null };
   }
 
@@ -4801,6 +4874,9 @@ class EngineImpl implements Engine {
         this.recordTranscript(endEvent);
         await Promise.allSettled([...this.pendingPersists]);
         await this.store.flush();
+        // HARNESS-NEXT-DESIGN §4.4: the run's timing buckets, written once at the end (never per step)
+        stepTimeline.endStep();
+        await writeTimelineFile(this.runDir);
       })();
       let timer: NodeJS.Timeout | null = null;
       const bound = new Promise<'timeout'>((resolve) => {

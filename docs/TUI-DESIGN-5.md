@@ -3042,6 +3042,27 @@ and a `--json` form), `SelfIdentityView` (**§8.1 item 4**), `scripts/gen-docs.m
     writer's own tick wake the fold watcher on the writing side too?** If it does, a single idle session beating
     to itself would cost frames, and the coalescing window becomes a TUI-visible number.
 
+### 15.1 Peer answers (harness session, 2026-09-22, "from the landed code") — binding for every slot
+
+| Q | Answer | Consequence for round 5 |
+| --- | --- | --- |
+| 1 | `Ledger` becomes an alias of `LedgerHandle` — a rename with no shape change (W2b wave) | type against `LedgerHandle` now; the swap is find-and-replace (D-AD) |
+| 2 | `StageName 'coordinate'` and `StepRecord.coord` land with W2b **before** round-5 implementation starts; names arrive with its hash | still no surface on `StepRecord.coord` in round 5 (§8.2 R10); the fold is the source |
+| 3 | COORDINATION-DESIGN §8.6 is being corrected to the as-built wording: the typed `context:compacted { step, chars: {before, after}, by }` event is emitted beside a `notice{kind:'ui', label:'[ui]'}` line whose text is `compaction: <before> → <after> prompt chars (code); <folded> at step <n> (<why>)` with the event JSON in `detail`; `itemsFromEvent` has **no** case for the typed event (no duplicate line); engine.ts:4356 | D-AJ (b) confirmed; §3's compaction row cites the `[ui]` notice line, not the typed event |
+| 6 | the engine adds nothing to the session index; `src/session/index.ts:181`'s parser checks version/time/kind and reads named fields per case, so extra **optional** members are ignored by construction; `seedMeterFromIndex` reads amounts only | `by?` on `pause` and `parentSessionId?` on `run:start` are safe (D-AS); R5-1 adds the parser test that proves it |
+| 7 | **`meter.heldUsd()` and `snapshot().heldUsd` are ON MAIN already** (`src/spend/meter.ts`, since 2400a0c) | **supersedes §13.2 clause 5**: `/cost` shows `held` and `free` from the first commit, never an interim omission; the two `sessionRemainingUsd(...)` call sites in `src/cli/session.ts` pass `sessionMeter.heldUsd()` (landed before round 5 — see §0.3 item 6's list once committed) |
+| 9 | confirmed: no in-flight harness change to `ProviderName` / `GeneratorConfig.provider` (types.ts:649/:2005) and no harness caller of validate.ts:161's two-name check | D-AP (a) proceeds as contract 1.8 item 6. **Sequencing:** once the widening lands, the harness wires the five adapters as generators (`createProvider()` from `src/provider/registry.ts` behind `GeneratorConfig.provider`) *right after*; until that harness commit, selecting one of the five saves the choice and the next run refuses with §12's "provider <id> is not wired for generation in this build" string — the picker never claims a run will work before it can |
+| 10 | `orchestrate.maxAgents` default 3 is deliberate (OR §6.4) | the config row's help text states the reason (the per-process cost multiplier), not just the number |
+| 11 | `jevcode agents list --json` is `AgentRow` field for field | §13.3 stands |
+| 12 | intended: `RunEnded.by` is who ended the run (`human` \| `remote`); the peer/device label rides the pause point's `by` | §2.7 renders `ended by a peer` and, when the pause point's `by` names one, appends its label from that field |
+| 13 | accepted — a fix is running: the report and plan.json renderers take the exact layer | §8.2 R7 closes when its hash arrives; `docs/IMPORT.md` may then state the full redaction guarantee |
+| 14 | xAI (`xai-…`) and Fireworks (`fw_…`) join the redacting families (15 → 17), running now; **no Meta pattern** until its key shape is documented | §6's key-setup flow for Meta relies on the exact layer only and says so in its row; R8 partly closes |
+| 15 | the three `meter.ts` formatters stay plain; the TUI post-processes with the `asciiTwins` map | §12/§13 pin the `--ascii` twins of `formatMeter`/`formatMemory` output in the TUI, as the design already does |
+| 16 | **new event, additive, running now:** `{ type: 'context:warn'; step; pct; budgetTokens; tokensInWindow }`, emitted once per upward crossing of the 85 % line, relaxed view only, re-armed after a compaction; no `itemsFromEvent` case | **amends D-AG:** the amber word and the one-time `annotate()` notice fire on `context:warn` when the event exists; the client-side per-process crossing set remains for the 95 % rung and for resume (the event is not replayed) — never two notices for one crossing |
+| 17 | `Heartbeat.context` renames to `budgetTokens` + `windowTokens` in the W2b wave | round 5 reads the new names; nothing reads `windowBudget` |
+| 20 | intended: counts per `SubworkEntry.kind`; `subwork: null` after the degrade path means "truncated away", not "none" | §2.5's row renders `lanes ? · samples ?` (the §12 `?` twin) for null, and `lanes 0 · samples 0` only for an empty array |
+| 21 | the writer does not call the fold; its own write lands in the local subtree, `fs.watch` fires, the fold refreshes within the 100 ms debounce and labels the record `self` by read location; W2b's report states it precisely | gate G-R5-3 stands: idle frames do not rise with peers beating; the self-write refresh is a fold change, not a timer |
+
 **One question for the owner, not the peer:**
 
 18. **`/model`'s save-as-default key.** Claude Code's picker forks Enter (save as the user's default) from `s`

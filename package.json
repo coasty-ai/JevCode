@@ -47,7 +47,8 @@
     "perf": "npm run build && node bin/jevcode.js perf",
     "bench": "node bin/jevcode.js bench",
     "dev": "tsx src/cli/main.ts",
-    "check": "npm run typecheck && npm test"
+    "jev-contract": "node scripts/jev-contract.mjs",
+    "check": "npm run typecheck && npm run jev-contract && npm test"
   },
   "devDependencies": {
     "@types/node": "22.20.4",
