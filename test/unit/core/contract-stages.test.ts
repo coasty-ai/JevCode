@@ -45,21 +45,9 @@ const STAGE_TWIN: Record<StageName, true> = {
 };
 const ALL_STAGES: readonly StageName[] = ['decompose', 'replan', 'intent', 'context', 'propose', 'risk', 'coordinate', 'execute', 'judge', 'complete'];
 
-/**
- * contract 1.4 (W2b), COORDINATION-DESIGN §4.2: `coordinate` is a `StageName`, and the four tables below live in
- * `src/tui/**`, which the coordination wave may not edit (the one exception it was granted covers `BlockingKind`'s two
- * members and four named spots, nothing else). The TUI session's round 5 owes the one-word additions — `'coordinate'`
- * into `src/tui/why.ts` STAGES (:56) and `stepWhyBlocks`' order array BETWEEN 'risk' AND 'execute' (the loop order of
- * §4.2: the gate sits after the risk confirm and before pre-images), into `src/tui/status/lines.ts` STEP_WORDS (:159),
- * and a letter into `src/tui/pane/timeline.ts` TIMELINE_STAGES (or `'coordinate'` into the exported
- * TIMELINE_EXCLUDED_STAGES, whichever the strip wants — a sub-2 ms gate may not deserve a cell).
- * DELETE THIS CONSTANT (and this comment) in the same commit that adds the word — the guard then bites for real.
- */
-const PENDING_TUI_STAGES = ['coordinate'] as const;
-const pending: ReadonlySet<string> = new Set<string>(PENDING_TUI_STAGES);
 
 /** Every `StageName` a table is held to: the union minus the words the TUI session still owes, minus that table's explicit exclusion set. */
-const expectedStages = (excluded: readonly StageName[] = []): StageName[] => ALL_STAGES.filter((s) => !pending.has(s) && !excluded.includes(s));
+const expectedStages = (excluded: readonly StageName[] = []): StageName[] => ALL_STAGES.filter((s) => !excluded.includes(s));
 
 /** Read one file of `src/tui/**` once; these are sources, not modules, because the three tables are not exported. */
 function source(file: string): string {
@@ -99,8 +87,6 @@ describe('the stage guard [G14] [D3] — four tables, four explicit exclusion se
     expect(ALL_STAGES.length).toBe(Object.keys(STAGE_TWIN).length);
     expect([...ALL_STAGES].sort()).toEqual(Object.keys(STAGE_TWIN).sort());
     expect(new Set(ALL_STAGES).size).toBe(ALL_STAGES.length);
-    // every word the allow-list forgives must still be a real stage, or the allow-list has outlived its comment
-    for (const s of PENDING_TUI_STAGES) expect(ALL_STAGES).toContain(s);
   });
 
   it('STAGES (src/tui/why.ts:56) covers every StageName; its exclusion set is empty', () => {
@@ -136,10 +122,12 @@ describe('the stage guard [G14] [D3] — four tables, four explicit exclusion se
     expect([...strip, ...impliedExcluded].sort()).toEqual([...ALL_STAGES].sort());
     // and the excluded half is exactly the exported, documented choice plus the words the TUI still owes — a
     // DIFFERENT stage going missing fails here
-    expect(impliedExcluded.filter((s) => !pending.has(s))).toEqual([...TIMELINE_EXCLUDED_STAGES]);
+    expect(impliedExcluded).toEqual([...TIMELINE_EXCLUDED_STAGES]);
     expect([...TIMELINE_EXCLUDED_STAGES]).toEqual(['replan', 'complete']);
     // the strip letters `decompose` as `D` (ORCHESTRATION-DESIGN §8.3 row 52)
     expect(TIMELINE_STAGES.find((x) => x.stage === 'decompose')?.letter).toBe('D');
+    // and `coordinate` as `O` (COORDINATION-DESIGN §4.2), between R and X in loop order
+    expect(TIMELINE_STAGES.map((x) => x.letter).join('')).toBe('DICPROXJ');
     // one letter per lettered stage, all distinct (the strip is read by letter)
     expect(new Set(TIMELINE_STAGES.map((t) => t.letter)).size).toBe(TIMELINE_STAGES.length);
   });
