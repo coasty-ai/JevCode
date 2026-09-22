@@ -18,7 +18,9 @@ One zero-dependency package. `package.json` `files` is the allowlist:
 | `README.md`, `LICENSE`, `package.json` | always included by npm |
 
 Not shipped: `dist/jevcode.mjs.map`, `dist/meta.json`, `src/`, `docs/`, tests. `scripts/check-pack.mjs`
-enforces this (allowlist equality, forbidden paths, unpacked < 2 MB, tarball < 1.5 MB, `--version` smoke).
+enforces this (allowlist equality, forbidden paths, unpacked < 3.5 MB, tarball < 1.5 MB, `--version` smoke, and
+— since 2026-09-22 — that `dist/jevcode.mjs` carries no `sourceMappingURL` directive, since the map it would
+point at is one of the things not shipped). Measured 2026-09-22 at 0.5.0: unpacked 3,072,489, tarball 1,039,272.
 
 ## One-time setup (before the first release)
 

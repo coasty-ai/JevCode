@@ -1049,8 +1049,13 @@ classification, `artefactVersion`, `shortPath`, `explainFsError`) and the harnes
 the harness then rebases over (2350c3a). Reason: two sessions editing one engine file in a shared working tree blocked a merge for an
 hour (an uncommitted block in `types.ts`) and shipped a raw U+2028 inside a regex literal that TypeScript accepts and esbuild does
 not (`src/errors.ts:368`, fixed 9f26fb6), taking ~40 test files down on a clean checkout while the shared tree looked green.
-Consequences: `test/unit/hygiene/no-raw-line-separators.test.ts` scans `src/**` and `scripts/**`; the round-4 integrator's
-instructions carry the rule; an uncommitted edit in a shared file is a merge blocker, not a courtesy.
+Consequences: `test/unit/hygiene/no-raw-line-separators.test.ts` scans `src/**`, `scripts/**` and `bin/**` (added 2026-09-22:
+`bin/` ships verbatim in package.json `files`, so a raw separator there reaches an installed copy where no test would see it);
+the round-4 integrator's instructions carry the rule; an uncommitted edit in a shared file is a merge blocker, not a courtesy.
+The rejection is narrower than first written: esbuild rejects a raw U+2028/U+2029 in a REGEX literal, not in a string — two
+test fixtures hold the raw characters in strings and transform fine (`import/parse/markdown.test.ts:132-145`,
+`coordination/records.test.ts:113`) — but the scan stays blunt, because escaping costs nothing and telling the two contexts
+apart needs a parser.
 
 ## 2026-09-22 Wall-clock gates on the shared machine: bounded workers, best-of-N, and hermetic process checks
 

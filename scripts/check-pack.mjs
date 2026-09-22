@@ -11,8 +11,12 @@
 //   5. `npm pack --dry-run --json` lists exactly the allowlist derived from package.json `files`
 //      (directories expanded recursively) plus package.json; extras and missing entries are named
 //   6. no forbidden path: *.map, meta.json, src/, docs/, test files, .env*
-//   7. unpacked size < 3.5 MB (the wave-3 bundle was 1.86 MB; 0.5.0 is 3.0 MB) and the gzipped tarball < 1.5 MB
+//   7. unpacked size < 3.5 MB and the gzipped tarball < 1.5 MB. Re-measured 2026-09-22 (finishing pass F24d,
+//      the head-to-head freeze) at 0.5.0: unpacked 3,072,489 bytes (87.8 % of the cap, 427,511 to spare),
+//      tarball 1,039,272, dist/jevcode.mjs 2,854,378 minified from 5,064,620 unminified.
 //   8. `node bin/jevcode.js --version` prints the package.json version
+//   9. dist/jevcode.mjs carries no `sourceMappingURL` directive: the map is excluded from the tarball and rejected
+//      by gate 6, so a directive would dangle in every installed copy (F24c; scripts/build.mjs emits it external)
 //
 // `npm pack` is run with --ignore-scripts so the `prepack` hook (a full rebuild) does not fire here.
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
@@ -25,6 +29,14 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 // (+~400 KB of source: blocks, fullscreen renderer, palette navigation, diff rows, faults) and the harness waves merged the same
 // day (coordination W2b, orchestration contract 1.5, import contract 1.6, llm-jev iteration 1) put the unpacked package at
 // 3,003,627 — 0.12 % over. Still zero runtime dependencies and one file; the tarball gate is unchanged.
+//
+// RE-MEASURED 2026-09-22 (F24d): the cap had not been checked against a real build since the raise, and ~306 KB of source
+// landed after it (the LLM-loop and OOS waves), with the only dist/ on disk predating it. `npm run build && npm run pack:check`
+// at d297b29 + the finishing pass, node 22.23.2, 0.5.0:
+//   unpacked  3,072,489 bytes  (87.8 % of UNPACKED_MAX; 427,511 to spare)
+//   tarball   1,039,272 bytes  (69.3 % of TARBALL_MAX)
+//   bundle    2,854,378 bytes minified from 5,064,620 unminified (43.6 % smaller, keepNames)
+// So the +306 KB of source cost +68,862 unpacked bytes and neither cap moves. Re-measure at the next raise, not before.
 const UNPACKED_MAX = 3_500_000; // bytes
 const TARBALL_MAX = 1_500_000; // bytes
 const FORBIDDEN = [
@@ -143,6 +155,18 @@ if (packed.status !== 0) {
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
   if (r.status === 0 && out.includes(pkg.version)) ok(`\`node bin/jevcode.js --version\` printed "${out.split('\n')[0]}"`);
   else bad(`\`node bin/jevcode.js --version\` exit ${r.status}, output ${JSON.stringify(out.slice(0, 200))} (expected to contain ${pkg.version})`);
+}
+
+// 9. no dangling source-map reference in the shipped bundle
+{
+  const p = join(ROOT, 'dist', 'jevcode.mjs');
+  if (!existsSync(p)) {
+    bad('dist/jevcode.mjs is missing; run `npm run build` before this gate');
+  } else {
+    const hit = /\/\/[#@]\s*sourceMappingURL=(\S*)/.exec(readFileSync(p, 'utf8'));
+    if (hit === null) ok('dist/jevcode.mjs carries no sourceMappingURL directive (the map never ships)');
+    else bad(`dist/jevcode.mjs ends with a sourceMappingURL=${hit[1]} directive, but the map is excluded from the tarball (gate 6): every install would carry a dangling reference. scripts/build.mjs must use \`sourcemap: 'external'\``);
+  }
 }
 
 if (failures.length > 0) {

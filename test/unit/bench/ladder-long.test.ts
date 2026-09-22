@@ -5,9 +5,19 @@
  * order, `--tasks 20` the originals plus the long tier), every meta declares its tier and the
  * buggy tree's exact failing set, every gold diff applies cleanly to a copy of its tree and
  * yields gold, and (when a pytest interpreter is available) a real pytest run of each buggy tree
- * fails exactly `expected_failing` while the gold tree is green. The live part prefers the shared
- * bench venv `~/.jevcode/runs/ladder-venv` and falls back to the system python3; it is skipped
- * when neither imports pytest.
+ * fails exactly `expected_failing` while the gold tree is green.
+ *
+ * WHICH python grades the ladder is stated, never inferred from host state (F24a). In order:
+ * `JEVCODE_LADDER_PYTHON`, then `~/.jevcode/ladder-venv/bin/python`, then the system `python3` —
+ * each accepted only if it imports pytest, and a PINNED interpreter that cannot grade is reported
+ * rather than silently replaced. The old default read `<runsDir>/ladder-venv`, i.e. INSIDE the
+ * product's own runs directory, which jevcode creates and prunes and which the tests point
+ * `JEVCODE_HOME` away from: whether the 26-task tier ran at all was a function of whether a prune
+ * had happened to sweep it. That venv stays where it is for the BENCH — `src/bench/ladder/venv.ts`
+ * builds `<runsDir>/ladder-venv` deliberately, because `pyworkspace.ts linkVenv` needs it on the
+ * sandbox's one allowed root — this is only about which binary grades the fixtures in a unit run.
+ * The resolved interpreter is appended to the live case's name, so the report says which binary
+ * graded the ladder and a skip is never silent.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -36,14 +46,25 @@ function importsPytest(python: string): boolean {
   return spawnSync(python, ['-c', 'import pytest'], { encoding: 'utf8' }).status === 0;
 }
 
-/** `~/.jevcode/runs/ladder-venv/bin/python` when it imports pytest, else `python3` when it does, else null. */
-function pytestPython(): string | null {
-  const venv = join(homedir(), '.jevcode', 'runs', 'ladder-venv', 'bin', 'python');
-  if (existsSync(venv) && importsPytest(venv)) return venv;
-  return importsPytest('python3') ? 'python3' : null;
+/** The env override, so a run can STATE its interpreter instead of hoping the host has the right one. */
+const LADDER_PYTHON_ENV = 'JEVCODE_LADDER_PYTHON';
+/** The shared bench venv, OUTSIDE `~/.jevcode/runs` — that directory is jevcode's own, created and pruned by it. */
+const LADDER_VENV = join(homedir(), '.jevcode', 'ladder-venv', 'bin', 'python');
+
+/** The resolved interpreter, or the reason there is none — both go into the live case's name. */
+function pytestPython(): { python: string | null; why: string } {
+  const pinned = process.env[LADDER_PYTHON_ENV]?.trim();
+  if (pinned !== undefined && pinned !== '') {
+    // a pinned interpreter that cannot grade is an error to report, never a silent fall back to another binary
+    if (existsSync(pinned) && importsPytest(pinned)) return { python: pinned, why: `$${LADDER_PYTHON_ENV}=${pinned}` };
+    return { python: null, why: `$${LADDER_PYTHON_ENV}=${pinned} is missing or does not import pytest` };
+  }
+  if (existsSync(LADDER_VENV) && importsPytest(LADDER_VENV)) return { python: LADDER_VENV, why: LADDER_VENV };
+  if (importsPytest('python3')) return { python: 'python3', why: 'the system python3' };
+  return { python: null, why: `no pytest: tried $${LADDER_PYTHON_ENV}, ${LADDER_VENV}, python3` };
 }
 
-const PYTHON = pytestPython();
+const { python: PYTHON, why: GRADED_BY } = pytestPython();
 
 interface PytestRun {
   status: number | null;
@@ -175,7 +196,7 @@ describe.skipIf(!REAL_LADDER)('ladder real data: the long tiers behind the origi
     }
   }, 60_000);
 
-  it.skipIf(PYTHON === null)('pytest on every buggy tree fails exactly expected_failing (or fails at all, for the short tier) and every gold tree is green', async () => {
+  it.skipIf(PYTHON === null)(`pytest on every buggy tree fails exactly expected_failing (or fails at all, for the short tier) and every gold tree is green — graded by ${GRADED_BY}`, async () => {
     const records = await loadLadderRecords(LADDER);
     const t = await tempDir();
     cleanups.push(t.cleanup);

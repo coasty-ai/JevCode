@@ -1151,7 +1151,8 @@ and `:5063`). **No two slots hold `engine.ts` at the same time.**
    round with a real slow baseline rather than on a hand-built telemetry literal.
 6. **Ring 1 re-measured green under `--jev off`** — a **hard merge gate** (see §7.7). The code fix landed at
    `0d61eef`; the measurement has not been taken.
-7. `node scripts/check-pack.mjs` at the 3.5 MB unpacked gate.
+7. `node scripts/check-pack.mjs` at the 3.5 MB unpacked gate — re-measured 2026-09-22 at 0.5.0: unpacked
+   3,072,489 (87.8 % of the cap), tarball 1,039,272, bundle 2,854,378 minified.
 
 ### 7.4 Slot D — bench and measurement
 
