@@ -18,7 +18,13 @@ One zero-dependency package. `package.json` `files` is the allowlist:
 | `README.md`, `LICENSE`, `package.json` | always included by npm |
 
 Not shipped: `dist/jevcode.mjs.map`, `dist/meta.json`, `src/`, `docs/`, tests. `scripts/check-pack.mjs`
-enforces this (allowlist equality, forbidden paths, unpacked < 2 MB, tarball < 1.5 MB, `--version` smoke).
+enforces this: allowlist equality, forbidden paths, an unpacked-size gate, a tarball-size gate and a `--version` smoke.
+
+**The size gates are the script's `UNPACKED_MAX` and `TARBALL_MAX`, and this document deliberately does not restate
+them.** This paragraph carried a hand-copied 2 MB figure long after the gate was raised past it (`ca8e71c`), which is
+how a release note comes to promise a bound the build does not enforce. Read the two constants at the top of `scripts/check-pack.mjs`, or just
+run it — the pass line prints the measured size against the gate. `test/unit/hygiene/doc-claims.test.ts` fails if any
+byte figure printed here beside either constant's name stops matching the script.
 
 ## One-time setup (before the first release)
 

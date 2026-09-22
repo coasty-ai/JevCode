@@ -207,8 +207,13 @@ five fresh-slice QuixBugs records at `wall_time` with 0–1 steps and `execMs: 0
 child processes for 59 minutes. A five-point $0 offline A/B on one task at `--concurrency 1` pins it on the **warm
 verification plane** (`src/synth/warm/`, `7c99ce0` + `6cd0e76`, HARNESS-NEXT wave S1 M6), not on this iteration's work and
 not on the bundle: `066816f` 6 steps / 2,896 tested, `168a599` 0/0, `751e3bf` tsx 0/0, `751e3bf` bundle 0/0,
-`751e3bf` with `JEVCODE_WARM=off` **6 steps / 2,180 tested in 80.8 s**. `warmModeFor` defaults the plane on for every
-`quixbugs` and `pytest` runner. Everything below therefore ran with `JEVCODE_WARM=off`; fix the plane before the next arm.
+`751e3bf` with `JEVCODE_WARM=off` **6 steps / 2,180 tested in 80.8 s**. ~~`warmModeFor` defaults the plane on for every
+`quixbugs` and `pytest` runner.~~ **Re-tensed 2026-09-22 at `d297b29`: that was true AT `751e3bf` and is no longer true of any
+tree since `11e1acc` (merged `0556f1a`).** The plane is OPT-IN for every runner: `warmRequested(env)`
+(`src/synth/warm/plane.ts:149`) is false unless `JEVCODE_WARM` is `on` / `1` / `true`, and `warmModeFor` returns `null` before
+it looks at the runner (`:123`). Everything below therefore ran with `JEVCODE_WARM=off`, which is now simply the default;
+the plane's own defects were fixed by `warm-plane-fix-2` and the default stays OFF until pass parity holds
+(`docs/DECISIONS.md`, the warm A/B).
 
 **1. Fresh slice (18 tasks: the 8 remaining eligible QuixBugs, the whole new ladder long-2 tier, the first 4 non-sympy
 SWE instances that are neither oracle-valid nor ever passed).** `llm-jev` **12/18** [44 %, 84 %] against `jev-off-tuned`

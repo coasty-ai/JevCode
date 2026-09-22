@@ -279,10 +279,13 @@ shape a losing fast path would deepen, and §8 pre-registers against it.
   nothing and spend its budget — a failure that looks exactly like an honest decline. §7.7 therefore keeps Ring
   1 green under `--jev off` as a **hard merge gate on both B and C**; what changed is that the gate is now a
   *re-measurement*, not a fix slot B must write.
-- **`runFactsRef` is process-global.** `src/synth/index.ts:83`:
-  `const runFactsRef: { current: RunFacts | null } = { current: null };` — written at `:120` and `:139`, read at
-  `:90` and `:156` *after awaits*. `src/bench/runner.ts` runs `--concurrency` tasks in **one** process, so two
-  interleaved synthesizers can cross facts. Latent today; a hard blocker for the arm at concurrency > 1.
+- ~~**`runFactsRef` is process-global.**~~ **FIXED on `main` at `c7ae106`, outside this wave (swept 2026-09-22 at
+  `d297b29`).** `grep -rn runFactsRef src/` is empty. The facts are a per-`runId` registry:
+  `src/synth/introspect/facts.ts` holds a module `Map<string, RunFacts>` bounded by `RUN_FACTS_MAX = 8` with
+  `setRunFacts(runId, …)` / LRU eviction, so two interleaved synthesizers in one `src/bench/runner.ts` process read
+  their own run's facts across an await. **Consequence for the plan:** the `--concurrency 1` pin on the fast-path arms
+  is no longer forced by this defect (Q9, below, says the same); if the arms keep it, they keep it for measurement
+  noise, which is a different and weaker reason.
 - **Nothing drops a run's search memory.** `memories` is a module-level `Map` with `MEMORIES_MAX = 4`
   (`src/synth/search/memory.ts:200`, LRU eviction at `:207`, `dropMemory` at `:219`) and no run-end hook. A
   Django-scale memory is ~0.4 GB.
@@ -603,6 +606,10 @@ must state which it did.
 `src/bench/cli.ts` gains `--quick` (slot A owns `cli.ts`; slot D owns every other `src/bench` file). Global caps
 per `HARNESS-NEXT-DESIGN.md` §3 M16.
 
+**As built, 2026-09-22 (`d297b29`):** the preset is in `src/bench/cli.ts` AND the flag is typeable — the `'quick'`
+row landed in `src/cli/args.ts` at `0fb7af3` (`:86` in `BOOLEAN_FLAGS`, `:278` in `FLAGS`, `commands: BENCH`), so
+`jevcode bench --quick` parses. Everything below that describes the flag as unreachable is struck in place.
+
 **`src/core/limits.ts` is additive only**, and constants that belong to one owner live beside that owner —
 `LLM_HEDGES_PER_ROUND` in limits (shared), `ROUTER_DEADLINE_MS` in `src/jev/router.ts`, the `FASTPATH_*` constants
 in `src/loop/stages/fastpath.ts`. This is what keeps slots A and C from colliding in limits.ts.
@@ -631,8 +638,11 @@ first implementation therefore got wrong. They are the normative reading of §3.
    not counted: in jev-on Jev reselects them per step.
 6. **§3.4's figures are recorded**, through the hop the §9.3 counts already take: round summary →
    `GoalSearchTrace.llm` → `SynthesisContext.reportVerify` → `StepRecord.verify`, each member absent when nothing
-   measured it. §3.5's `--quick` remains unreachable from a command line until `src/cli/args.ts` carries the
-   `'quick'` row; `test/unit/bench/quick-preset.test.ts` asserts today's rejection so the gap is visible.
+   measured it. ~~§3.5's `--quick` remains unreachable from a command line until `src/cli/args.ts` carries the
+   `'quick'` row~~ — **struck 2026-09-22 (`d297b29`): the row landed at `0fb7af3`** (`src/cli/args.ts:86` in
+   `BOOLEAN_FLAGS` and `:278` in `FLAGS`), so `jevcode bench --quick` parses and the preset applies. The header
+   comment in `src/bench/cli.ts:21–25`, which still states the rejection, is code and is outside this documentation
+   slot; it is recorded in the finishing pass's notes.
 
 ### 3.7 As built, the engine's side of §3.2 (`c811899`)
 
@@ -1084,8 +1094,8 @@ rows read zero for a reason that has nothing to do with the fast path.
 | 11 | **The ledger claims a commit the engine never executed** | the synthesizer records a commit when it **proposes**. If risk blocks, a human declines, or the apply fails, `patchNotExecutedLastStep(window)` + `rollbackUnexecutedPatch` undo it — but only on the **next** fast-path entry. If the fast path is never re-entered the stale record survives to run end and is dropped by `dropMemory(runId)` | bounded and harmless (nothing outside the synth memory reads that ledger in `jev-on`), **provided** the facade calls `observeWindow` on **every** step of an armed run (§4.6) | — |
 | 12 | **Second fast path on the same cluster** | `mem.tried` is monotone, so the second round enumerates nothing. T10 and T11 make it unreachable rather than merely fast | three mechanisms take hashes back out (`forgetUnchangedTried`, `requeueScreened`, a re-baseline) and the facade assumes none of them ran | `reason: 'fingerprint_seen'` / `'attempts_exhausted'` |
 | 13 | **`emptyStepBudget` trap** | cannot occur: the fast path calls the public `synthesize()`, so `rebaseline` installs `mem.stepBudget` (`search/index.ts:1262`) | a caller entering at `searchSubGoal` would get `exhausted: () => true` (`memory.ts:164`) and an instant `{kind:'budget'}` indistinguishable from an honest decline | the facade's **first unit test** asserts `candidatesTested > 0` on a known-solvable cluster |
-| 14 | **Narrow test command reads green** | T3 applies `scopeUsable` to the engine's own last test run before the fast path trusts it; the record carries the verdict the TRIGGER saw (snapshotted into the draft at propose time), because this step's own run replaces it before the row is written | closes the hole **for the trigger**; the same hole in the **judge** remains and is out of scope — which is why `scopeUsable` is recorded on every step even with the fast path off | `scopeUsable: false`, `reason: 'scope_unusable'` |
-| 15 | **Two concurrent fast paths in one process** | `runFactsRef` (`src/synth/index.ts:83`) is process-global and read after awaits at `:90`/`:156`; `src/bench/runner.ts` runs `--concurrency` tasks in one process | **the `jev-on-next` arm runs at `--concurrency 1`**, asserted by slot D, until the ref is made per-run | a named bench constraint, not a silent hazard |
+| 14 | **Narrow test command reads green** | T3 applies `scopeUsable` to the engine's own last test run before the fast path trusts it; the record carries the verdict the TRIGGER saw (snapshotted into the draft at propose time), because this step's own run replaces it before the row is written | closes the hole **for the trigger**; the same hole in the **judge** remains and is deferred with an owner (§9.1). **As built, corrected 2026-09-22 (`d297b29`):** §5.2 asked for the member on every step, and I2 — `fastPath: 'off'` is byte-identical to today's `jev-on` — forbids a new row on a step that today writes none. I2 wins, so **the member is written only on an ARMED step** (`src/loop/engine.ts:5651`, inside the `draft.fastPath !== null` guard; the sentence is `src/core/types.ts:580–587`): the bench arm carries it and a `--fast-path off` run's `steps.jsonl` is unchanged. Writing it unconditionally is NOT the fix for the judge hole — it would break I2 | `scopeUsable: false`, `reason: 'scope_unusable'` — on armed steps only |
+| 15 | **Two concurrent fast paths in one process** | ~~`runFactsRef` (`src/synth/index.ts:83`) is process-global and read after awaits~~ — **struck 2026-09-22 (`d297b29`): the ref is gone.** The facts are a per-`runId` registry (`src/synth/introspect/facts.ts`, `RUN_FACTS_MAX = 8`, LRU), so two fast paths in one `src/bench/runner.ts` process cannot cross facts | the hazard this row existed for is closed in code, at `c7ae106` | **the `jev-on-next` arm still runs at `--concurrency 1`**, asserted by slot D — now purely a measurement-noise choice, no longer a correctness pin |
 | 16 | **A late router answer after step commit** | `token.valid === false` → recorded `dropped`, applied nowhere (I4) | the only concurrency this wave introduces | `router.dropped` |
 | 17 | **Both the LLM proposal and a fast-path round succeed** | cannot happen: R9 is a branch route, not a race. The predicate is evaluated before the generator call; when it holds the round runs first and the generator is called only if the round did not commit | prompt assembly (pure, no network) may proceed in parallel — that is the overlap saving | `proposer: 'fastpath'` or `'generic'`, never both |
 | 18 | **`fastPath: 'off'` + `routers: 'off'`** | byte-identical to today (I2) | three `if` statements, all false | asserted in slot B's **and** slot C's test files, on the existing `jev-on` goldens |
@@ -1497,12 +1507,30 @@ It is one cheap run and it is the only thing that turns I2 from an assertion int
 budget forces a cut, cut the **in-sample 28** for `jev-on-next-nofast` before cutting this.
 
 **Q9 — Who fixes `runFactsRef` (`src/synth/index.ts:83`)?**
-It is a latent correctness defect today (a process-global read after awaits, with `src/bench/runner.ts` running
-concurrent tasks in one process) and the reason every fast-path arm is pinned to `--concurrency 1`, which is most
-of the measurement's cost. **Default: out of scope for this wave; filed in `docs/STATUS.md` as the next harness
-defect, with the `--concurrency 1` assertion in slot D as the interim guard.**
+~~It is a latent correctness defect today (a process-global read after awaits, with `src/bench/runner.ts` running
+concurrent tasks in one process) and the reason every fast-path arm is pinned to `--concurrency 1`.~~
+**ANSWERED AND CLOSED: it was fixed on `main` at `c7ae106`, outside this wave** (ratified in `docs/DECISIONS.md`
+2026-09-22, "The LLM-loop wave lands with both switches off", Q9). `grep -rn runFactsRef src/` is empty; the facts
+are a per-`runId` registry (`src/synth/introspect/facts.ts`, `RUN_FACTS_MAX = 8`, LRU). The `--concurrency 1`
+assertion in slot D stands, but it is now a measurement-noise choice, not a correctness pin.
 
 ### 9.1 Deferred, with reasons
+
+**Filed 2026-09-22 at `d297b29` by the finishing pass (F21) — two BEHAVIOUR deferrals it deliberately did not change,
+each with an owner, so neither is mistaken for an oversight:**
+
+- **The fast path's blanket `warm_plane` refusal** (`src/loop/stages/fastpath.ts:183`,
+  `if (i.warmEnabled) return 'warm_plane';`, T1's free stage, ahead of everything that could spend). It was written
+  for I8 while the warm plane was unmeasured. Since `JEVCODE_WARM` became opt-in the cost changed shape: under
+  `JEVCODE_WARM=on` the refusal now costs **route R9 entirely** — every step of every `jev-on` run declines with
+  `reason: 'warm_plane'`, so the two switches cannot be measured together at all. The narrower rule (refuse only when
+  the plane would screen *this* cluster's lanes, or require a cold confirmation as the sieve already does) is a
+  behaviour change with its own A/B and is **not** in a documentation pass. **Owner: the wave that flips the warm
+  default** (`docs/DECISIONS.md` 2026-09-22 warm A/B: the default stays OFF until pass parity holds).
+- **S2 on `jev-on` (the §3.2 hedge is unreachable from a run).** `hedgeEnabled(pinned, env)` takes the caller's pin
+  first and **no site under `src/` sets `LlmSourceDeps.hedge`**, so `JEVCODE_HEDGE=on` is the only thing that can arm
+  the hedge; a plain `jev-on` run never hedges however fast or slow its provider is. Arming it from the engine is a
+  behaviour change on the default path. **Owner: finishing-pass F05.**
 
 Persistent Jev cache + `--jev-cache off` (the exact-digest cache in `src/jev/cache.ts` already landed).
 A `searchOneRound` API at the `searchSubGoal` altitude (§1.5 — `rebaseline` is private for good reasons).
@@ -1512,5 +1540,10 @@ The warm plane (I8).
 `screened` / `screenMismatches` in `ProposalEvidence` / `GoalSearchTrace`.
 A hard per-round Jev cap as a `ControllerOptions` member (reported as `fastPath.jevRequests` instead).
 M15 replay.
-The `scopeUsable` hole in the **judge** (§6 row 14) — recorded here, fixed elsewhere.
+The `scopeUsable` hole in the **judge** (§6 row 14) — **owner: the next loop wave (S5 step avoidance), carried here
+with its reason.** The loop's own `run` action has no scope guard: a generator-proposed narrow test command that
+collects nothing reads green to the judge. The fast path's trigger is guarded (T3); the judge is not. The fix is a
+guard at the judge, *not* writing `StepRecord.scopeUsable` unconditionally — that member is written only on an armed
+step precisely because invariant I2 (`fastPath: 'off'` byte-identical to today's `jev-on`) forbids a new row on a step
+that writes none today, and the data this row would add is not what the judge reads anyway.
 The default-mode flip.
