@@ -16,6 +16,7 @@
 import { lookupPricing } from '../config/defaults.js';
 import type { BenchCondition, BenchDeps, BenchSuite, ConfigRecordValue, Confirmer, Decider, Engine, EngineMode, EngineOptions, GenerateReasoning, Provider, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
 import { AbortError, ConfigError } from '../errors.js';
+import { s2ReachableOn } from '../synth/llm/hedge.js';
 import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../synth/llm/source.js';
 import { STUB_DECIDER_MODEL } from './stub-decider.js';
 import { JEV_OFF_MODEL, jevOffModeFrom } from '../jev/off.js';
@@ -45,17 +46,21 @@ export function isNextArm(condition: BenchCondition): boolean {
  *
  * **F05 — an arm may not pin a mechanism it cannot run.** The two next arms pinned `s2: true` and the whole
  * `S2_GENERATION` block, and summary.json therefore described the §3 generation path as live days before the
- * head-to-head was read off that file. It never was: both arms run `engineModeOf === 'jev-on'`, and in `jev-on` no S2
- * mechanism is reachable — nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only on the synthesizer
- * sample path, and hedging plus the §3.4 reasoning cap live in `src/synth/llm/source.ts`, which `jev-on` never enters.
- * Nothing caught it because nothing READ the flag: `buildEngineOptions` applies `fastPath` and `routers`, and `s2` had
- * no reader anywhere in src. So the clamp below is the reader: outside the llm-jev sample path the pinned value is
- * `'off'`, whatever the arm table says.
+ * head-to-head was read off that file. It never was: nothing READ the flag — `buildEngineOptions` applied
+ * `fastPath` and `routers`, and `s2` had no reader anywhere in src, so the pin was a sentence in a report and
+ * nothing else. The clamp is the answer: an arm whose mode cannot honour the pin records `'off'`, whatever the
+ * arm table says.
  *
- * `observed` is the other half and the one that survives slot A wiring S2 onto `jev-on` (F17, §9.1): when the run
- * reported what it did (`StepRecord.mechanisms.s2`, folded onto `StepsSummary.s2.state` by the §5.5 bridge and read
- * back by `bench/next-arms.ts observedArmS2`), THAT is recorded and the clamp does not apply — the record follows
- * the run in both directions, and can never be a constant again.
+ * **Which modes CAN honour it moved under this function, and the predicate is no longer written here.** When F05
+ * was written the §3 mechanisms lived only on the synthesizer sample path (`src/synth/llm/source.ts`), so this
+ * clamp named `'llm-jev'`. F25 then built the reader on the OTHER mode: `EngineOptions.s2` (src/core/types.ts) is
+ * resolved by `s2Mode(mode, opt, env)`, which honours it on `jev-on` and nothing else — the synthesizer path is
+ * fed by `LlmSourceDeps` and nothing threads the option into it. Two hand-written mode lists, exact opposites, one
+ * per branch. `s2ReachableOn` is the question asked once, beside the resolver that answers it.
+ *
+ * `observed` is the other half: when the run reported what it did (`StepRecord.mechanisms.s2`, folded onto
+ * `StepsSummary.s2.state` by the §5.5 bridge and read back by `bench/next-arms.ts observedArmS2`), THAT is recorded
+ * and the clamp does not apply — the record follows the run in both directions, and can never be a constant again.
  *
  * B4: `observed` is `S2State | null | undefined`, and only a real measurement overrides. "No run reported the
  * member" (`null`) and "the run reported that S2 was off" (`'off'`) are different facts, and the reader this
@@ -67,8 +72,11 @@ export function armMechanisms(condition: BenchCondition, observed?: S2State | nu
   const mech = (fastPath: ArmMechanisms['fastPath'], routers: boolean, pinnedS2: S2State): ArmMechanisms => ({
     fastPath,
     routers,
-    // the clamp: a pinned claim survives only on an arm whose mode reaches the mechanisms; a MEASURED value always wins
-    s2: observed ?? (engineModeOf(condition) === 'llm-jev' ? pinnedS2 : 'off'),
+    // the clamp: a pinned claim survives only on an arm whose mode reaches the mechanisms; a MEASURED value always
+    // wins. The predicate is `s2ReachableOn`, which asks `s2Mode` — the resolver that actually honours the option —
+    // rather than repeating its mode list here, because a repeated list is exactly how F05 and F25 came to name
+    // opposite modes (see the function's own docblock in src/synth/llm/hedge.ts).
+    s2: observed ?? (s2ReachableOn(engineModeOf(condition)) ? pinnedS2 : 'off'),
   });
   switch (condition) {
     case 'jev-on-next':
@@ -417,7 +425,13 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
   // F25's headline gap, closed (review defect A5): the THIRD mechanism is pinned here like the other two. Until
   // it was, `armMechanisms('jev-on-next')` returned `s2: true` while no option was written and `s2Mode` read
   // `JEVCODE_S2` — which nothing in `src/bench` set — so the arm ran with S2 OFF and `summary.json` said `true`.
-  out.s2 = mech.s2 ? 'on' : 'off';
+  //
+  // The comparison is against `'off'` and not a truthiness test. F25 wrote `mech.s2 ? 'on' : 'off'` while
+  // `ArmMechanisms.s2` was a BOOLEAN; F05 widened it to `S2State` on another branch, and `'off'` is a truthy
+  // string — so taking both built EVERY arm, including the plain `jev-on` control, with `s2: 'on'` under a
+  // `summary.json` row saying `'off'`. `'partial'` maps to `'on'` because the option is the two-state switch and
+  // the missing half is `JEVCODE_HEDGE`, which `s2Mode` reads for itself.
+  out.s2 = mech.s2 === 'off' ? 'off' : 'on';
   return out;
 }
 

@@ -133,7 +133,10 @@ describe('docs/LLM-JEV.md §5a — every behaviour-changing env switch is in the
       'JEVCODE_PERF_CHILD',
       'JEVCODE_PERF_KEEP',
       'JEVCODE_PERF_ONLY',
+      // integration: slot C's sentinel override and slot A's third mechanism switch
+      'JEVCODE_PERF_WINDOW',
       'JEVCODE_ROUTERS',
+      'JEVCODE_S2',
       'JEVCODE_TIMELINE',
       'JEVCODE_TRACE',
       'JEVCODE_WARM',
@@ -164,7 +167,12 @@ describe('docs/LLM-JEV.md §5a — every behaviour-changing env switch is in the
       'JEVCODE_HEDGE',
       'JEVCODE_JEV',
       'JEVCODE_MAX_CASE_TIMEOUTS',
+      // integration: both are in the §5a table rather than OUT_OF_SCOPE. `JEVCODE_PERF_WINDOW` sits beside the
+      // three exempt `JEVCODE_PERF_*` plumbing names but is not plumbing: an exported value sends `jevcode perf`
+      // to poll the wrong sentinel and measure straight through somebody's live window.
+      'JEVCODE_PERF_WINDOW',
       'JEVCODE_ROUTERS',
+      'JEVCODE_S2',
       'JEVCODE_TIMELINE',
       'JEVCODE_WARM',
     ]);

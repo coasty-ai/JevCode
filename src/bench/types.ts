@@ -447,9 +447,12 @@ export interface ArmMechanisms {
   routers: boolean;
   /**
    * F05: what the RUN did, never a constant. `armMechanisms` yields the arm's pinned value and refuses to pin
-   * anything but `'off'` on an arm whose `engineModeOf` is not `'llm-jev'` (no S2 mechanism is reachable outside the
-   * synthesizer sample path); `conditionConfig`'s `observed` argument overrides it with the value read off the run's
-   * own records at the end of the run, so the record cannot disagree with what ran in either direction.
+   * anything but `'off'` on an arm whose mode cannot honour it — the predicate is `s2ReachableOn`
+   * (`src/synth/llm/hedge.ts`), which asks `s2Mode`, the resolver that reads `EngineOptions.s2`, rather than
+   * keeping a mode list of its own. (F05 kept one and it said `'llm-jev'`; F25 then built the reader on `jev-on`
+   * and the two lists were exact opposites, which is why the question is now asked in one place.)
+   * `conditionConfig`'s `observed` argument overrides the pin with the value read off the run's own records at the
+   * end of the run, so the record cannot disagree with what ran in either direction.
    */
   s2: S2State;
 }

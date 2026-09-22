@@ -28,6 +28,7 @@
  */
 import { formatDuration } from '../core/time.js';
 import type { BenchCondition, BenchSuite, FastPathReason } from '../core/types.js';
+import { s2ReachableOn } from '../synth/llm/hedge.js';
 import { armMechanisms, engineModeOf } from './conditions.js';
 import { isEvaluated, median } from './metrics.js';
 import { emptyStepsSummary, mergeStepsSummaries } from './step-records.js';
@@ -264,15 +265,32 @@ export function measurementRows(records: readonly BenchRecord[], condition: Benc
   // B4: the row reads THE SAME observation summary.json records (`all.s2.state`, folded from the run's steps.jsonl by
   // §5.5) — before this it read `armMechanisms(condition)` with no observation, so the moment a run reports
   // `mechanisms.s2` the table would have said `not_evaluable` under a summary.json saying `'on'`.
-  // B6: the reason names the arm's OWN mode. `measurementRows` takes any `BenchCondition` and every condition now
-  // clamps to `'off'`, so the hard-coded "jev-on" made the row contradict itself on `llm-jev` and `llm-sieve`.
-  const s2 = armMechanisms(condition, all.s2.state ?? null).s2;
+  // B6: the reason names the arm's OWN mode, never a hard-coded one. Integration: the reason itself changed with
+  // the F05/F25 reconciliation — S2 is honoured on `jev-on` (`s2Mode`, src/synth/llm/hedge.ts) and NOT on the
+  // synthesizer sample path, which is the opposite of what F05 could see. An `'off'` row is now either an arm
+  // whose mode cannot honour the pin, or one that pinned nothing; `s2ReachableOn` separates the two so the row
+  // says which, instead of blaming a mode that in fact runs it.
+  //
+  // Integration: F25 made the pin reachable, which creates a FOURTH state this row could not have before — an arm
+  // that pins S2 on and whose steps reported nothing (an engine without contract 1.9, or a run with no steps). That
+  // is not a measurement, so it reads `not_evaluable` and says which of the three "nothing to report" reasons it is,
+  // rather than printing `S2 on: TTFB n=0, hedges 0` under a run that never ran one.
+  const observedS2 = all.s2.state ?? null;
+  const s2 = armMechanisms(condition, observedS2).s2;
   out.push({
     id: 'R-s2',
     title: 'S2 (§3): hedging, byte-stable prefix, reasoning cap',
     gating: false,
-    status: s2 === 'off' ? 'not_evaluable' : 'reported',
-    detail: s2 === 'off' ? `S2 lives on the llm-jev sample path; this arm's mode is ${engineModeOf(condition)}` : `S2 ${s2}: TTFB n=${all.s2.ttfbMs.length}, hedges ${all.s2.hedges} (${all.s2.hedgeWins} won), cache ${all.s2.cacheInput === 0 ? 'not measured' : `${all.s2.cacheRead}/${all.s2.cacheInput}`}`,
+    status: s2 !== 'off' && observedS2 !== null ? 'reported' : 'not_evaluable',
+    detail: s2 === 'off'
+      ? observedS2 === 'off'
+        ? `the run reported S2 off on every step it reported; this arm's mode is ${engineModeOf(condition)}`
+        : s2ReachableOn(engineModeOf(condition))
+          ? `this arm pins S2 off; its mode (${engineModeOf(condition)}) would honour a pin`
+          : `S2 is honoured only on the jev-on propose path (EngineOptions.s2); this arm's mode is ${engineModeOf(condition)}`
+      : observedS2 === null
+        ? `this arm pins S2 ${s2} and no step reported mechanisms.s2; its mode is ${engineModeOf(condition)}`
+        : `S2 ${s2}: TTFB n=${all.s2.ttfbMs.length}, hedges ${all.s2.hedges} (${all.s2.hedgeWins} won), cache ${all.s2.cacheInput === 0 ? 'not measured' : `${all.s2.cacheRead}/${all.s2.cacheInput}`}`,
   });
   return out;
 }

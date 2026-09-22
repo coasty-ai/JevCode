@@ -143,6 +143,21 @@ export function s2Mode(mode: EngineMode, opt?: 'on' | 'off', env: Readonly<Recor
  * `mechanisms.s2: false` — contamination in the direction that makes the wave look better, unobservably.
  * `MECHANISM_ENV_VARS` clears the variable as the belt; this is the option that makes the arm's row true.
  */
+/**
+ * Which engine modes HONOUR a pinned `EngineOptions.s2` — asked of the resolver above rather than kept as a second
+ * list, because a second list is how the finishing pass's two slots came to name opposite modes.
+ *
+ * F05 (`src/bench/conditions.ts armMechanisms`) clamps an arm's pinned `s2` to `'off'` unless the arm's mode can
+ * run it, and it was written when `ArmMechanisms.s2` had no reader at all: its clamp named `'llm-jev'`, the
+ * synthesizer sample path where the §3 mechanisms first lived. F25 then built the reader HERE, on `jev-on`, and
+ * `llm-jev` is fed by `LlmSourceDeps` — nothing threads `EngineOptions.s2` into the synthesizer — so the two
+ * statements were exact opposites. This function is the single answer; `s2Mode` decides it and everything else
+ * asks. The `{}` environment is deliberate: reachability is a property of the build, never of a shell.
+ */
+export function s2ReachableOn(mode: EngineMode): boolean {
+  return s2Mode(mode, 'on', {}) !== 'off';
+}
+
 export function s2Enabled(opt?: 'on' | 'off', env: Readonly<Record<string, string | undefined>> = process.env): boolean {
   if (opt !== undefined) return opt === 'on';
   return (env[S2_ENV_FLAG] ?? '').trim().toLowerCase() === 'on';

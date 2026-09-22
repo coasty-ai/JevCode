@@ -1615,7 +1615,9 @@ hand-copied-constant drift `docs/RELEASE.md` had just shed): `UNPACKED_MAX` and 
 `scripts/check-pack.mjs`, `node scripts/check-pack.mjs` prints the measured size against the gate, and
 `test/unit/hygiene/doc-claims.test.ts` fails on any figure a doc prints beside either name that is not the script's.
 
-**2. `docs/LLM-JEV.md` §5a, "Harness environment switches".** Nine switches that change what a run does, with
+**2. `docs/LLM-JEV.md` §5a, "Harness environment switches".** Eleven switches that change what a run does (nine as
+written; the finishing-pass integration added `JEVCODE_S2` and `JEVCODE_PERF_WINDOW`, both of which the guard
+below found on the merged tree before a human did — which is the whole point of deriving the required set), with
 accepted values, default, effect and reading file. Four of them (`JEVCODE_HEDGE`, `JEVCODE_CASE_TIMEOUT_MS`,
 `JEVCODE_MAX_CASE_TIMEOUTS`, `JEVCODE_BENCH_CONTEXT`) were in no document at all; four more
 (`JEVCODE_WARM`, `JEVCODE_FASTPATH`, `JEVCODE_ROUTERS`, `JEVCODE_DEADLINE_GROWTH`) existed only inside design prose
