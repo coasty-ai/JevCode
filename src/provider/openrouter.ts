@@ -3,7 +3,9 @@
  * Streams `choices[0].delta.content` to `onDelta`, accumulates `delta.tool_calls[i].function.arguments`
  * by index for `onToolDelta`, and takes `usage.cost` from the accounting frame that precedes `[DONE]`.
  * LLM-JEV-DESIGN §4.12: maps `seed` / `reasoning` / `providerPrefs`, records `reasoning_tokens`, the served
- * `provider` and the generation `id`; §4.8: a cancelled stream's facts (ids, streamed sizes) go to `onCancelled`.
+ * `provider` and the generation `id`; §4.8: a cancelled stream's facts (ids, streamed sizes) go to `onCancelled`, and so
+ * does a call that ended rate-limited (every retry a 429, or aborted in a 429 backoff: `CancelledGeneration.rateLimited`);
+ * a result the chain reached through a 429 retry carries `GenerateResult.rateLimited`.
  */
 import { JevCodeError, ProviderHttpError } from '../errors.js';
 import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, JsonObject, Provider, ToolCall } from '../core/types.js';
@@ -25,6 +27,8 @@ import {
   parseJsonObject,
   parseRetryAfter,
   parseSse,
+  rateLimitLedger,
+  rateLimitedCancellation,
   readBodyCapped,
   requestIdOf,
   resolveDeps,
@@ -56,6 +60,9 @@ function validateRequest(req: GenerateRequest): void {
   }
   if (req.seed !== undefined && !Number.isInteger(req.seed)) {
     throw new ProviderHttpError(`invalid GenerateRequest: seed must be an integer, got ${String(req.seed)}`, { status: 0, retryable: false });
+  }
+  if (req.reasoning !== undefined && 'maxTokens' in req.reasoning && (!Number.isInteger(req.reasoning.maxTokens) || req.reasoning.maxTokens <= 0)) {
+    throw new ProviderHttpError(`invalid GenerateRequest: reasoning.maxTokens must be a positive integer, got ${String(req.reasoning.maxTokens)}`, { status: 0, retryable: false });
   }
 }
 
@@ -109,9 +116,15 @@ export function buildOpenRouterBody(cfg: GeneratorConfig, req: GenerateRequest):
   return body;
 }
 
-/** Discriminates on the member present (§4.12's union), never on a truthy read: `{effort}` must not degrade to `reasoning: {}` (= the model's default effort, `max` on GLM). */
+/**
+ * Discriminates on the member present (§4.12's union), never on a truthy read: `{effort}` must not degrade to `reasoning: {}`
+ * (= the model's default effort, `max` on GLM). `{maxTokens}` → OpenRouter's `max_tokens` thinking budget (types.ts: a
+ * pass-through, not verified against the GLM endpoints live).
+ */
 function reasoningOf(r: NonNullable<GenerateRequest['reasoning']>): OpenRouterReasoning {
-  return 'effort' in r ? { effort: r.effort } : { enabled: false };
+  if ('effort' in r) return { effort: r.effort };
+  if ('maxTokens' in r) return { max_tokens: r.maxTokens };
+  return { enabled: false };
 }
 
 function providerPrefsOf(p: GenerateRequest['providerPrefs']): OpenRouterProviderPrefs | null {
@@ -392,15 +405,21 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       const body = JSON.stringify(buildOpenRouterBody(cfg, req));
       const t0 = d.now();
       const held: StreamContext['held'] = { partial: null };
+      // 429s: withRetry retries them (Retry-After, else exponential backoff with jitter, 3 attempts; every sleep ends on the
+      // sample's signal, so the chain never outlives the deadline); the ledger keeps the facts the retry loop does not report
+      const limited = rateLimitLedger();
       let out: StreamOutcome;
       try {
         // TUI-DESIGN §15.2 `provider/openrouter.ts`: GenerateOptions.onRetry / wake thread into withRetry (§13.2)
-        out = await withRetry(d, opts.signal, () => attempt(body, opts, held), opts);
+        out = await withRetry(d, opts.signal, () => limited.track(() => attempt(body, opts, held)), opts);
       } catch (e) {
         // §4.8: `held.partial` is set only by an abort that landed on an open stream (never before the headers), and only the
         // abort reason reaches here then. onCancelled runs outside withRetry and attempt, whose catches rethrow signal.reason
         // whenever the signal is aborted: a throwing callback is a harness bug and must surface (as 'internal', like onDelta), not vanish.
         if (held.partial !== null) notify(opts.onCancelled, toCancelledGeneration(held.partial, tablePrice));
+        // The call ended rate-limited without a stream: the chain's last attempt was a 429 (gave up, or the abort landed in the
+        // backoff after one). The error still propagates (a 429 ProviderHttpError, or the abort reason); the fact rides along.
+        else if (limited.last) notify(opts.onCancelled, rateLimitedCancellation());
         throw e;
       }
       // usage.cost is what OpenRouter bills. Without it (BYOK, a missing frame field) a table-priced model
@@ -416,6 +435,8 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
         latencyMs: Math.round(d.now() - t0),
         ...(out.generationId !== null ? { generationId: out.generationId } : {}),
         ...(out.servedProvider !== null ? { servedProvider: out.servedProvider } : {}),
+        // the chain hit the rate limiter and recovered: a fact for the round's classification, not a change to the result
+        ...(limited.attempts > 0 ? { rateLimited: true } : {}),
       };
     },
   };

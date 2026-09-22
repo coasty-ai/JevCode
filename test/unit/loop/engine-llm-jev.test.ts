@@ -5,6 +5,10 @@
  * verification run, the code judge with Q21/Q22 recorded only, and completion as a code fact on the claiming run. The
  * accounting of samples that yield no result (§4.8, §8): sibling / prompt-chars estimates, the table rate, unpriced
  * fail-closed, a never-dispatched sample, a provider failure after streaming; and `retryNow()` over the per-sample wakers.
+ * Recording (experiments/results/llm-jev-headtohead.md §11): rows and events keyed by the step a sample was DISPATCHED in
+ * even through a `generate` the synthesizer kept from step 1, a late sample's row, the provider's `onCancelled` facts on the
+ * row (ids, the usage frame, a rate-limited end at zero), and `StepRecord.verify` from the tallies, the evidence and
+ * `SynthesisContext.reportVerify`.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Harness } from './fakes.js';
@@ -401,5 +405,248 @@ describe('llm-jev: sanctioned generator channel, mode plumbing, code-fact stages
     expect(r.stopReason).toBe('max_steps');
     expect(h.of('retry:settled')).toEqual([{ type: 'retry:settled', side: 'generator', step: 1, attempts: 2, ok: true, totalWaitMs: 60_000 }]);
     expect(h.store.generator.map((g) => [g.sample, g.cancelled ?? false, g.stopReason])).toEqual([[0, false, 'tool_use'], [1, false, 'tool_use']]);
+  });
+});
+
+describe('llm-jev: recording — step keying, cancellation facts, rate limits, verify counts', () => {
+  const P: GenerateRequest = { system: 'sys', messages: [{ role: 'user', content: 'fix f please' }], maxTokens: 1500, temperature: 0.7 };
+  const bySample = <T extends { sample?: number }>(xs: readonly T[]): T[] => [...xs].sort((a, b) => (a.sample ?? -1) - (b.sample ?? -1));
+
+  it('rows, step usage and events carry the step a sample was dispatched in, through a generate() the synthesizer kept from step 1 (search/llm.ts builds its source once per run)', async () => {
+    const requests: GenerateRequest[] = [];
+    const provider: FakeProvider = {
+      name: 'mock',
+      model: 'z-ai/glm-5.3-flash',
+      requests,
+      async generate(req, o) {
+        requests.push(req);
+        // a step-2 sample retries once: the retry rows must say step 2, not the step whose context handed the function out
+        if (req.messages[0]!.content === 'step 2' && o.sample === 1) await driveRetries({ count: 1, waitMs: 1, status: 503 }, o);
+        return result(10, o.sample ?? 0);
+      },
+    };
+    let kept: NonNullable<SynthesisContext['generate']> | null = null;
+    const synth: Synthesizer = {
+      name: 'stale-generate',
+      async synthesize(ctx) {
+        kept ??= generateOf(ctx);
+        const gen = kept;
+        const c = new AbortController();
+        const req: GenerateRequest = { ...P, messages: [{ role: 'user', content: `step ${ctx.step}` }] };
+        const n = ctx.step === 1 ? 1 : 2;
+        await Promise.all(Array.from({ length: n }, (_, k) => gen({ ...req, seed: k }, { sample: k, purpose: 'propose_fix', signal: c.signal })));
+        return PARTIAL_DONE;
+      },
+    };
+    const h = await build({ mode: 'llm-jev', synthesizer: synth, provider, limits: { maxSteps: 2 } });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('max_steps');
+    expect(requests).toHaveLength(3);
+    // before the fix every later round landed in step 1's discarded draft: labelled [step 1], never flushed, step usage zero
+    expect(h.store.generator.map((g) => [g.step, g.sample])).toEqual([[1, 0], [2, 0], [2, 1]]);
+    expect(h.store.steps.map((s) => s.usage.generator.calls)).toEqual([1, 2]);
+    expect(h.store.steps.map((s) => s.usage.generator.inputTokens)).toEqual([1000, 2000]);
+    expect(r.generatorTokensPerStep).toEqual([1200, 2400]);
+    expect(h.of('generator:start').map((e) => [e.step, e.sample])).toEqual([[1, 0], [2, 0], [2, 1]]);
+    expect(h.of('generator:end').map((e) => e.step)).toEqual([1, 2, 2]);
+    expect(h.of('retry').map((e) => [e.step, e.side])).toEqual([[2, 'generator']]);
+    expect(h.of('retry:settled').map((e) => e.step)).toEqual([2]);
+    expect(h.store.steps[1]!.timing.generatorMs).toBeGreaterThan(0);
+  });
+
+  it('a sample that ends after its step was committed still gets its row, under the step it was dispatched in, and is metered', async () => {
+    const provider = deferredProvider();
+    let late: Promise<GenerateResult> | null = null;
+    const synth: Synthesizer = {
+      name: 'late-sample',
+      async synthesize(ctx) {
+        const gen = generateOf(ctx);
+        if (ctx.step === 1) {
+          late = gen({ ...P, seed: 0 }, { sample: 0, purpose: 'propose_fix', signal: new AbortController().signal });
+          await until(() => provider.pending.length === 1);
+          // the step commits with the sample still in flight
+          return PARTIAL_DONE;
+        }
+        provider.pending[0]!.resolve(result(30, 0));
+        await late;
+        return PARTIAL_DONE;
+      },
+    };
+    const h = await build({ mode: 'llm-jev', synthesizer: synth, provider, limits: { maxSteps: 2 } });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('max_steps');
+    // step 1's record was written before the sample ended (its usage cannot include it); the row is not lost with the draft
+    expect(h.store.generator.map((g) => [g.step, g.sample, g.stopReason, g.generationId])).toEqual([[1, 0, 'tool_use', 'gen-0']]);
+    expect(h.store.steps.map((s) => s.usage.generator.calls)).toEqual([0, 0]);
+    expect(h.meter.snapshot().generator.calls).toBe(1);
+    expect(h.of('generator:end').map((e) => [e.step, e.sample])).toEqual([[1, 0]]);
+  });
+
+  it('a sample whose every retry was a 429 is booked at zero as rate_limited; one the deadline cut in a 429 backoff is a timeout marked rateLimited; a result reached through a 429 retry is marked; an error before any byte is a zero error row', async () => {
+    const provider: FakeProvider = {
+      name: 'mock',
+      model: 'z-ai/glm-5.3-flash',
+      requests: [],
+      async generate(_req, o) {
+        // the retries ran out on a 502 before any byte: not served, no callback
+        if (o.sample === 3) throw new ProviderHttpError('openrouter HTTP 502', { status: 502, retryable: true });
+        if (o.sample === 0) {
+          // the chain gave up: the provider reports the fact, then the 429 propagates
+          o.onCancelled?.({ text: '', toolChars: 0, reasoningChars: 0, rateLimited: true });
+          throw new ProviderHttpError('openrouter HTTP 429: Provider returned error', { status: 429, retryable: true });
+        }
+        if (o.sample === 1) {
+          // the deadline lands during the 429 backoff: the fact, then the abort reason
+          await new Promise<void>((resolve) => o.signal.addEventListener('abort', () => resolve(), { once: true }));
+          o.onCancelled?.({ text: '', toolChars: 0, reasoningChars: 0, rateLimited: true });
+          throw o.signal.reason;
+        }
+        return { ...result(10, 2), rateLimited: true };
+      },
+    };
+    const synth: Synthesizer = {
+      name: 'rate-limited-round',
+      async synthesize(ctx) {
+        const gen = generateOf(ctx);
+        const c = [0, 1, 2, 3].map(() => new AbortController());
+        const s0 = gen({ ...P, seed: 0 }, { sample: 0, purpose: 'propose_fix', signal: c[0]!.signal });
+        const s1 = gen({ ...P, seed: 1 }, { sample: 1, purpose: 'propose_fix', signal: c[1]!.signal });
+        const s2 = gen({ ...P, seed: 2 }, { sample: 2, purpose: 'propose_fix', signal: c[2]!.signal });
+        const s3 = gen({ ...P, seed: 3 }, { sample: 3, purpose: 'propose_fix', signal: c[3]!.signal });
+        await expect(s0).rejects.toMatchObject({ status: 429 });
+        await expect(s3).rejects.toMatchObject({ status: 502 });
+        c[1]!.abort(new Error('llm sample deadline 20000 ms'));
+        await expect(s1).rejects.toThrow('deadline');
+        expect((await s2).rateLimited).toBe(true);
+        return PARTIAL_DONE;
+      },
+    };
+    const h = await build({ mode: 'llm-jev', synthesizer: synth, provider, limits: { maxSteps: 1 } });
+    await h.engine.run();
+    const rows = bySample(h.store.generator);
+    expect(rows.map((g) => [g.sample, g.stopReason, g.cancelled ?? false, g.rateLimited ?? false])).toEqual([
+      [0, 'rate_limited', true, true],
+      [1, 'timeout', true, true],
+      [2, 'tool_use', false, true],
+      [3, 'error', true, false],
+    ]);
+    // nothing was served: zero is a fact — not an estimate, not a sibling's prompt tokens
+    for (const k of [0, 1, 3]) expect(rows[k]!.usage).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 1 });
+    expect(rows[0]!.generationId).toBeUndefined();
+    // every dispatched sample is a call; only the served one has tokens and money
+    expect(h.meter.snapshot().generator.calls).toBe(4);
+    expect(h.store.steps[0]!.usage.generator).toEqual({ inputTokens: 1000, outputTokens: 200, costUsd: 0.004, calls: 4 });
+    expect(bySample(h.of('generator:end')).map((e) => [e.sample, e.finishReason])).toEqual([[0, 'rate_limited'], [1, 'timeout'], [2, 'tool_use'], [3, 'error']]);
+    expect(h.of('budget:unpriced')).toEqual([]);
+    // the step's verify tallies see every row: 4 samples, the deadline's timeout; the 429 and the 502 are neither timeouts nor cancellations
+    expect(h.store.steps[0]!.verify).toMatchObject({ samples: 4, timeouts: 1, cancelled: 0, malformed: 0 });
+  });
+
+  it("the provider's cancellation facts win over the estimate: ids on the row, a usage frame read and priced as a completed call, streamed sizes (tool + reasoning + text) from the provider", async () => {
+    const frameUsage = { inputTokens: 1350, outputTokens: 1500, costUsd: 0.0009525, calls: 1, reasoningTokens: 1447 };
+    const provider: FakeProvider = {
+      name: 'mock',
+      model: 'z-ai/glm-5.3-flash',
+      requests: [],
+      generate(_req, o) {
+        return new Promise<GenerateResult>((_, reject) => {
+          o.signal.addEventListener(
+            'abort',
+            () => {
+              if (o.sample === 0) o.onCancelled?.({ generationId: 'gen-frame', servedProvider: 'Wafer', model: 'z-ai/glm-5.3-flash', text: '', toolChars: 40, reasoningChars: 400, usage: frameUsage });
+              else o.onCancelled?.({ generationId: 'gen-open', servedProvider: 'CoreWeave', text: 'x'.repeat(8), toolChars: 40, reasoningChars: 400 });
+              reject(o.signal.reason);
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    const synth: Synthesizer = {
+      name: 'cancellation-facts',
+      async synthesize(ctx) {
+        const gen = generateOf(ctx);
+        const c = [0, 1].map(() => new AbortController());
+        const s0 = gen({ ...P, seed: 0 }, { sample: 0, purpose: 'propose_fix', signal: c[0]!.signal });
+        const s1 = gen({ ...P, seed: 1 }, { sample: 1, purpose: 'propose_fix', signal: c[1]!.signal });
+        c[0]!.abort(new Error('llm sample deadline 20000 ms'));
+        await expect(s0).rejects.toThrow('deadline');
+        c[1]!.abort(new Error('llm sample cancelled: commit'));
+        await expect(s1).rejects.toThrow('cancelled');
+        return PARTIAL_DONE;
+      },
+    };
+    const h = await build({ mode: 'llm-jev', synthesizer: synth, provider, limits: { maxSteps: 1 } });
+    await h.engine.run();
+    const [r0, r1] = bySample(h.store.generator);
+    // the frame had arrived: its reading, priced by the provider, `calls: 1`, not estimated; the ids ride the row
+    expect(r0).toMatchObject({ step: 1, sample: 0, stopReason: 'timeout', cancelled: true, generationId: 'gen-frame', servedProvider: 'Wafer', model: 'z-ai/glm-5.3-flash', reasoningTokens: 1447 });
+    expect(r0!.usage).toEqual(frameUsage);
+    expect(r0!.rateLimited).toBeUndefined();
+    // no frame: the estimate — prompt chars / 4 in (the only finished-looking row is cancelled, so no sibling), the provider's 448 streamed chars / 4 = 112 out, at the run's mean rate so far
+    const inTok = Math.ceil((P.system.length + P.messages[0]!.content.length) / 4);
+    const meanRate = frameUsage.costUsd / (frameUsage.inputTokens + frameUsage.outputTokens);
+    expect(r1).toMatchObject({ step: 1, sample: 1, stopReason: 'cancelled', cancelled: true, generationId: 'gen-open', servedProvider: 'CoreWeave' });
+    expect(r1!.usage).toMatchObject({ inputTokens: inTok, outputTokens: 112, calls: 1, estimated: true });
+    expect(r1!.usage.costUsd).toBeCloseTo(meanRate * (inTok + 112), 15);
+    expect(h.meter.snapshot().generator.calls).toBe(2);
+  });
+
+  it('StepRecord.verify (llm-jev only): the sample tallies and the evidence\'s candidatesTested, with what the synthesizer reported through reportVerify merged over them', async () => {
+    const provider = deferredProvider();
+    const synth: Synthesizer = {
+      name: 'verify-counts',
+      async synthesize(ctx) {
+        const gen = generateOf(ctx);
+        const c = [0, 1, 2].map(() => new AbortController());
+        const calls = c.map((ac, k) => gen({ ...P, seed: k }, { sample: k, purpose: 'propose_fix', signal: ac.signal }));
+        await until(() => provider.pending.length === 3);
+        provider.pending[0]!.resolve(result(20, 0));
+        await calls[0];
+        c[1]!.abort(new Error('llm sample deadline 20000 ms'));
+        await expect(calls[1]).rejects.toThrow('deadline');
+        c[2]!.abort(new Error('llm sample cancelled: commit'));
+        await expect(calls[2]).rejects.toThrow('cancelled');
+        // two reports in one step merge, the later winning on a shared key
+        ctx.reportVerify?.({ distinct: 2, passers: 1, graceMs: 250, candidatesTested: 12 });
+        ctx.reportVerify?.({ candidatesTested: 640, localisationMissed: true });
+        const run: Proposal = { goal: 'verify', action: { kind: 'run', command: 'pytest -q' }, plan: { done: [], remaining: [LEDGER_ITEM], openProblems: [] }, rawText: '' };
+        run.evidence = evidence({ candidatesTested: 3 });
+        return run;
+      },
+    };
+    const h = await build({ mode: 'llm-jev', synthesizer: synth, provider, limits: { maxSteps: 1 } });
+    await h.engine.run();
+    const [s1] = h.store.steps;
+    expect(s1!.proposer).toBe('synth');
+    expect(s1!.verify).toEqual({ samples: 3, distinct: 2, malformed: 0, timeouts: 1, cancelled: 1, misanchored: 0, candidatesTested: 640, passers: 1, partials: 0, graceMs: 250, localisationMissed: true });
+
+    // without a report the evidence's count stands in; a jev-only row is untouched (no `verify`, no `reportVerify` in its context)
+    const quiet: Synthesizer = {
+      name: 'evidence-only',
+      async synthesize() {
+        const run: Proposal = { goal: 'verify', action: { kind: 'run', command: 'pytest -q' }, plan: { done: [], remaining: [LEDGER_ITEM], openProblems: [] }, rawText: '' };
+        run.evidence = evidence({ candidatesTested: 1445 });
+        return run;
+      },
+    };
+    const h2 = await build({ mode: 'llm-jev', synthesizer: quiet, provider: deferredProvider(), limits: { maxSteps: 1 } });
+    await h2.engine.run();
+    expect(h2.store.steps[0]!.verify).toEqual({ samples: 0, distinct: 0, malformed: 0, timeouts: 0, cancelled: 0, misanchored: 0, candidatesTested: 1445, passers: 0, partials: 0, graceMs: 0, localisationMissed: false });
+    const contexts: SynthesisContext[] = [];
+    const h3 = await build({
+      mode: 'jev-only',
+      synthesizer: {
+        name: 'jev-only-quiet',
+        async synthesize(ctx) {
+          contexts.push(ctx);
+          return quiet.synthesize(ctx);
+        },
+      },
+      limits: { maxSteps: 1 },
+    });
+    await h3.engine.run();
+    expect(contexts[0]!.reportVerify).toBeUndefined();
+    expect('verify' in h3.store.steps[0]!).toBe(false);
   });
 });

@@ -452,6 +452,49 @@ export function toCancelledGeneration(p: StreamPartial, price: (t: TokenBreakdow
   return out;
 }
 
+/**
+ * The `onCancelled` facts of a call that ended rate-limited without a stream (core/types.ts `CancelledGeneration.rateLimited`):
+ * the retry chain's every attempt was answered HTTP 429, or the signal aborted the call during a 429 backoff. Nothing was
+ * served — zero streamed sizes, no ids, no usage — so the engine records the sample at zero, not from an estimate.
+ */
+export function rateLimitedCancellation(): CancelledGeneration {
+  return { text: '', toolChars: 0, reasoningChars: 0, rateLimited: true };
+}
+
+/** HTTP 429 from the API or the upstream provider (`Provider returned error` with code 429 on a mid-stream frame counts too). */
+export function isRateLimit(e: unknown): boolean {
+  return e instanceof ProviderHttpError && e.status === 429;
+}
+
+/**
+ * The 429 bookkeeping of one call, kept beside `withRetry` (which owns the attempts and the Retry-After / backoff sleeps):
+ * `attempts` = how many attempts the rate limiter answered, `last` = whether the most recent failure was a 429 — the fact that
+ * decides `rateLimited` when the chain gives up or an abort lands during the backoff. Wrap the attempt with `track`.
+ */
+export interface RateLimitLedger {
+  attempts: number;
+  last: boolean;
+  track<T>(attempt: () => Promise<T>): Promise<T>;
+}
+
+export function rateLimitLedger(): RateLimitLedger {
+  const ledger: RateLimitLedger = {
+    attempts: 0,
+    last: false,
+    async track(attempt) {
+      try {
+        return await attempt();
+      } catch (e) {
+        // an abort reason or a non-HTTP failure is not a 429: the last word was something else
+        ledger.last = isRateLimit(e);
+        if (ledger.last) ledger.attempts += 1;
+        throw e;
+      }
+    },
+  };
+  return ledger;
+}
+
 /** Non-negative finite integer from an untrusted field; anything else counts as 0. */
 export function countOf(v: Json | undefined): number {
   return isFiniteNumber(v) && v >= 0 ? Math.round(v) : 0;
