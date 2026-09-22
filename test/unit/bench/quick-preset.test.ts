@@ -14,6 +14,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import { parseCliArgs } from '../../../src/cli/args.js';
 import { QUICK_CONCURRENCY, QUICK_SPEND_CAP_USD, QUICK_TASK_IDS, withQuickPreset, type BenchFlags } from '../../../src/bench/cli.js';
 
 const flags = (over: Partial<BenchFlags> = {}): BenchFlags => ({ ...over }) as BenchFlags;
@@ -47,5 +48,20 @@ describe('§3.5 / M16 the --quick preset', () => {
 
   it('gives --quick --live a cap, so M16’s preset cannot trip the "--live requires --spend-cap" guard', () => {
     expect(withQuickPreset(flags({ quick: true, live: true })).spendCap).toBe('0.05');
+  });
+});
+
+/**
+ * Review defect 6. The preset is reachable from `runBenchFromFlags` but NOT from a command line: `src/cli/args.ts`
+ * owns the flag table (`BOOLEAN_FLAGS` + `FLAGS`) and carries `archiveRuns` but not `quick`, and `src/cli` is
+ * outside this wave's writable set — exactly as the `BenchFlags` widening above says. This case states the gap
+ * instead of leaving it silent: it is the failing half of §3.5's deliverable, and it goes RED (so it is deleted,
+ * with this comment) the moment args.ts lands the `'quick'` row.
+ */
+describe('§3.5 the gap: `--quick` cannot be typed yet', () => {
+  it('`jevcode bench --quick` is rejected by the parser until src/cli/args.ts carries the flag', () => {
+    expect(() => parseCliArgs(['bench', '--quick'])).toThrow(/Unknown option '--quick'/);
+    // the sibling boolean of the same wave IS in the table, so this is a missing row and not a parser limitation
+    expect(parseCliArgs(['bench', '--archive-runs']).archiveRuns).toBe(true);
   });
 });

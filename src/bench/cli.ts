@@ -17,6 +17,13 @@ import type { BenchDepsWithSynth, BenchOptions } from './types.js';
  * `--archive-runs` and `--quick`. cli/args.ts owns the flag table (`BOOLEAN_FLAGS` + `FLAGS`) and is not this
  * wave's to edit, so the parsed value is read through this widening: `ParsedFlags` is assignable to
  * it, and the key resolves once args.ts carries `'archiveRuns'` / `'quick'` in `BOOLEAN_FLAGS`.
+ *
+ * Review defect 6, stated rather than left silent: `'quick'` is NOT in that table today, so
+ * `jevcode bench --quick` is rejected by the parser ("Unknown option '--quick'") and the preset below is
+ * reachable only from `runBenchFromFlags` — a bench arm that builds its flags in code, and the unit test.
+ * `test/unit/bench/quick-preset.test.ts` asserts that rejection, so the gap is a red test the day it closes
+ * rather than a deliverable that silently ships unreachable. Landing the row is a src/cli change and belongs
+ * to whichever wave owns that file.
  */
 export type BenchFlags = ParsedFlags & { archiveRuns?: boolean; quick?: boolean };
 
