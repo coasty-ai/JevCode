@@ -9,14 +9,23 @@
  * typed twice, which the caller records in `RunMeta.overrides[]`; this module has no opinion
  * about that and no way to be talked out of a violation.
  *
- * The non-obvious invariant is in `outsideOwn`: the `∖ syncedDirty` term [D2] is what keeps the
+ * The non-obvious invariant is in `outsideOwn`: the `∖ carried` term [D2] is what keeps the
  * `[a] include · [d] drop · [x] refuse` question rare enough to be worth asking. §2.6 already
  * keeps untouched carried paths out of the commit, so they are absent from the diff; this
- * subtraction is the belt for the path that is both carried AND genuinely edited, whose diff
- * correctly holds the parent's hunks too and must not be reported as "outside its slice".
+ * subtraction is the belt for the path that is carried and still byte-identical yet reaches the
+ * diff anyway, whose hunks are the parent's and must not be reported as "outside its slice".
  * `land.test.ts` asserts a 200-entry synced-dirty set produces ZERO prompts (corner row 19).
  *
- * Pure: no git, no clock, no I/O. The caller brings the diff, the counts and the two shas.
+ * The subtracted set is `carriedPaths(dir, syncedDirty)` — worktree.ts's ONE definition of "did
+ * this agent leave the parent's file alone" ([D2]), the same set `commit.ts` stages against — and
+ * NOT the raw `syncedDirty` path list. Subtracting the raw list would blind the question to
+ * exactly the file two siblings are most likely to both edit: a parent-dirty path that this agent
+ * REWROTE outside its slice, which `computeAddSet` then stages, commits and lands in silence.
+ * `outsideOwn` therefore takes the worktree `dir` and does the hash comparison itself; there is
+ * no exported entry point that lets a caller hand in the unfiltered list instead.
+ *
+ * Pure except `outsideOwn`, which reads the worktree to compute `carried` (fs only, never git,
+ * never a clock). The caller brings the diff, the counts and the two shas.
  */
 import type { TestCounts } from '../core/types.js';
 import { VERIFY_TAIL_LINES } from '../core/limits.js';
@@ -24,11 +33,18 @@ import { parseTestOutput, runnerFromCommand } from '../workspace/tests.js';
 import { parseOwnGlob, ownsPath } from './split/globs.js';
 import type { OwnGlob } from './split/globs.js';
 import type { SyncedDirtyEntry } from './types.js';
+import { carriedPaths } from './worktree.js';
 
 /** One file of `git diff baseSha..<pinned>`; `added`/`removed` are the `+` and `-` LINES. */
 export interface DiffFile {
   path: string;
   status: 'A' | 'M' | 'D' | 'R';
+  /**
+   * The rename or copy SOURCE (`git diff --find-renames --name-status`'s first column), null for
+   * every other status. Without it `git mv src/foo.test.ts src/foo.old.ts` reaches rule 1 as a
+   * plain `src/foo.old.ts`, matches no test glob, and the deletion of a test file is not seen.
+   */
+  from: string | null;
   added: readonly string[];
   removed: readonly string[];
 }
@@ -130,8 +146,26 @@ export function countAssertions(lines: readonly string[]): number {
   return n;
 }
 
+/**
+ * A rename OUT of the test globs is a deletion of a test file, and the only signal that it
+ * happened is `from`: `git mv src/foo.test.ts src/foo.old.ts` arrives as one `R` entry whose
+ * `path` matches nothing. A rename that lands on another test path (`foo.test.ts` →
+ * `bar.test.ts`) is not a deletion — the file is still collected — and falls through to the
+ * assertion-delta check like any other modification.
+ */
+function renamedOutOfTests(input: HardRuleInput, f: DiffFile): string | null {
+  if (f.status !== 'R' || f.from === null || f.from === '') return null;
+  if (!matchesTestGlob(input.testGlobs, f.from)) return null;
+  return matchesTestGlob(input.testGlobs, f.path) ? null : f.from;
+}
+
 function checkTests(input: HardRuleInput, out: HardRuleViolation[]): void {
   for (const f of input.files) {
+    const renamedAway = renamedOutOfTests(input, f);
+    if (renamedAway !== null) {
+      out.push({ rule: HARD_RULES.tests, reason: `deleted the test file ${renamedAway}` });
+      continue;
+    }
     if (!matchesTestGlob(input.testGlobs, f.path)) continue;
     if (f.status === 'D') {
       out.push({ rule: HARD_RULES.tests, reason: `deleted the test file ${f.path}` });
@@ -185,9 +219,36 @@ function checkForbidden(input: HardRuleInput, out: HardRuleViolation[]): void {
 // Rule 4 — the merge introduces no conflict markers
 // ---------------------------------------------------------------------------------------
 
-/** `^<<<<<<< ` and `^>>>>>>> ` — both, so a legitimate diff-of-a-diff needs both to be flagged. */
+/**
+ * Every line that opens, separates or closes a conflict hunk. Seven is only git's DEFAULT marker
+ * length: `merge.conflictStyle`'s companion `conflict-marker-size` (settable per path in
+ * `.gitattributes`, and therefore settable by an agent that can write one) makes it any number
+ * ≥ 7, and a hard-coded seven would miss the whole hunk. `{7,}` is greedy-safe: a 41-character
+ * fence matches the first alternative and is still one fence.
+ *
+ * Module-private on purpose: a `/g` regex carries `lastIndex`, and an exported one would be a
+ * shared mutable object the next `.test()` caller silently walks off the end of. `matchAll`
+ * clones it, so the single use below is safe; `hasConflictMarkers` is the whole public surface.
+ */
+const CONFLICT_FENCE_RE = /^(<{7,}|={7,}|>{7,})/gm;
+
+/**
+ * Both an OPENING `<` fence and a CLOSING `>` fence, so a document that merely shows one of them
+ * — a changelog quoting `<<<<<<<`, a `=======` rule under a Markdown heading, a diff-of-a-diff —
+ * is not flagged. The `=` separator participates in the scan (it is a fence line, and `diff3`
+ * style adds `|||||||` between it and the opening) but is neither required nor sufficient on its
+ * own: `=======` alone is the single most common false positive in prose.
+ */
 export function hasConflictMarkers(text: string): boolean {
-  return /^<<<<<<< /m.test(text) && /^>>>>>>> /m.test(text);
+  let open = false;
+  let close = false;
+  for (const m of text.matchAll(CONFLICT_FENCE_RE)) {
+    const fence = m[1] ?? '';
+    if (fence.startsWith('<')) open = true;
+    else if (fence.startsWith('>')) close = true;
+    if (open && close) return true;
+  }
+  return false;
 }
 
 function checkConflictMarkers(input: HardRuleInput, out: HardRuleViolation[]): void {
@@ -226,12 +287,25 @@ export function checkHardRules(input: HardRuleInput): HardRuleResult {
 export interface OutsideOwnInput {
   changed: readonly string[];
   own: readonly string[];
+  /** `Manifest.syncedDirty` verbatim; the still-carried subset of it is computed here, not by the caller */
   syncedDirty: readonly SyncedDirtyEntry[];
   incidentalGlobs: readonly string[];
+  /**
+   * The volume folds case (APFS / NTFS), as §3.4 rule 3 computed it for this run. On a folding
+   * volume `SRC/Shared.ts` and `src/shared.ts` are ONE file, so an `own` of `src/**` owns both
+   * and neither is outside the slice. Required, not defaulted: the disjointness argument this
+   * question sits on top of already knows the answer, and guessing `false` here would ask the
+   * human about a file the agent does own.
+   */
+  fold: boolean;
 }
 
-/** `changed ∩ complement(own) ∖ syncedDirty ∖ incidentalGlobs`, sorted and deduplicated. */
-export function outsideOwn(input: OutsideOwnInput): string[] {
+/**
+ * `changed ∩ complement(own) ∖ carried ∖ incidentalGlobs`, sorted and deduplicated. Not exported:
+ * every caller goes through `outsideOwn`, which computes `carried` itself, so there is no way to
+ * pass the raw `syncedDirty` path list in its place (see the module header).
+ */
+function outsideOwnWith(carriedList: readonly string[], input: OutsideOwnInput): string[] {
   const globs: OwnGlob[] = [];
   for (const raw of input.own) {
     const p = parseOwnGlob(raw);
@@ -239,16 +313,30 @@ export function outsideOwn(input: OutsideOwnInput): string[] {
     // so reaching one here means widening ownership on a malformed string, which we refuse to do.
     if (p.ok) globs.push(p.glob);
   }
-  const carried = new Set(input.syncedDirty.map((e) => e.path));
+  // The sync's spelling of a path and the diff's need not agree on a folding volume either.
+  const fold = (s: string): string => (input.fold ? s.toLowerCase() : s);
+  const carried = new Set(carriedList.map(fold));
   const out = new Set<string>();
   for (const p of input.changed) {
     if (p === '') continue;
-    if (ownsPath(globs, p)) continue;
-    if (carried.has(p)) continue;
+    if (ownsPath(globs, p, input.fold)) continue;
+    if (carried.has(fold(p))) continue;
     if (matchesTestGlob(input.incidentalGlobs, p)) continue;
     out.add(p);
   }
   return [...out].sort();
+}
+
+/**
+ * [G8] The paths to ask the human about: `changed ∩ complement(own) ∖ carried ∖ incidentalGlobs`.
+ *
+ * `dir` is the AGENT WORKTREE, and the fs reads it costs are the point: `carried` is
+ * `carriedPaths(dir, syncedDirty)` [D2] — the parent-dirty files this agent left byte-identical —
+ * and a parent-dirty file the agent REWROTE is deliberately not in it. That file is in the commit
+ * set (§2.6), in the diff, and outside the slice, so it is exactly what the question exists for.
+ */
+export async function outsideOwn(dir: string, input: OutsideOwnInput): Promise<string[]> {
+  return outsideOwnWith(await carriedPaths(dir, input.syncedDirty), input);
 }
 
 /** How many paths the §4.8 one-liner names before it says "+N more". */

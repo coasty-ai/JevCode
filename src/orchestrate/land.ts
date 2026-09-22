@@ -266,18 +266,56 @@ export async function mergePinned(runGit: RunGit, dockDir: string, pinned: strin
 }
 
 /**
- * [D14] Put the dock back exactly as it was: `reset --hard <previousDockHead>` AND a scoped
- * `clean -fdx`, whose `-e` patterns are `syncedIgnored ∪ orchestrate.dockCleanExclude`. The `-x`
- * is required (the artefacts are gitignored) and is exactly why the exclusions are.
+ * The exclusions no caller can drop. `clean -fdx` on a dock that was given the parent's `.env`
+ * (`syncedIgnored`, §2.3) and has a populated `node_modules/` is two disasters one empty array
+ * away: a deleted credential the harness copied in and cannot recreate, and a re-costed install
+ * on every failed verify. `orchestrate.dockCleanExclude` defaults to a superset of the second,
+ * but a default is a thing a caller can pass around, and this is not.
  */
-export async function restoreDock(runGit: RunGit, dockDir: string, previousHead: string, exclude: readonly string[]): Promise<void> {
-  if (SHA_RE.test(previousHead)) await runGit(dockDir, ['reset', '--hard', previousHead]);
+export const DOCK_CLEAN_FLOOR: readonly string[] = ['.env*', 'node_modules/'];
+
+export interface RestoreDockResult {
+  /** false = the dock was NOT restored; the caller must not hand it to the next agent */
+  ok: boolean;
+  /** the dock is at `previousHead` */
+  reset: boolean;
+  /** the scoped `clean -fdx` ran and succeeded */
+  cleaned: boolean;
+  /** why it was refused or failed, for the transcript; null when `ok` */
+  reason: string | null;
+}
+
+/**
+ * [D14] Put the dock back exactly as it was: `reset --hard <previousDockHead>` AND a scoped
+ * `clean -fdx`, whose `-e` patterns are `DOCK_CLEAN_FLOOR ∪ syncedIgnored ∪
+ * orchestrate.dockCleanExclude`. The `-x` is required (the artefacts are gitignored) and is
+ * exactly why the exclusions are.
+ *
+ * The two halves stand or fall together. A `previousHead` that is not an object name — a ref, an
+ * empty string, `HEAD~1` — is refused and **nothing runs**: scrubbing every untracked file out of
+ * a tree that still holds a failed merge is the exact opposite of "the dock is exactly as it was"
+ * (row 39), and it is what the old code did, because the reset was guarded and the clean was not.
+ * A reset that git itself refuses is the same case and skips the clean for the same reason.
+ */
+export async function restoreDock(runGit: RunGit, dockDir: string, previousHead: string, exclude: readonly string[]): Promise<RestoreDockResult> {
+  if (!SHA_RE.test(previousHead)) {
+    // The value is not echoed: it is caller-supplied and reaches the transcript and land.jsonl.
+    return { ok: false, reset: false, cleaned: false, reason: 'the dock was not restored: previousHead is not an object name, so neither the reset nor the clean ran' };
+  }
+  const reset = await runGit(dockDir, ['reset', '--hard', previousHead]);
+  if (!reset.ok) return { ok: false, reset: false, cleaned: false, reason: 'the dock was not restored: `reset --hard` failed, so the clean was skipped' };
+
   const args = ['clean', '-fdx'];
-  for (const e of exclude) {
-    if (e === '' || e.includes('\0') || e.startsWith('-')) continue;
+  const seen = new Set<string>();
+  for (const e of [...DOCK_CLEAN_FLOOR, ...exclude]) {
+    if (e === '' || e.includes('\0') || e.startsWith('-') || seen.has(e)) continue;
+    seen.add(e);
     args.push('-e', e);
   }
-  await runGit(dockDir, args);
+  const cleaned = await runGit(dockDir, args);
+  return cleaned.ok
+    ? { ok: true, reset: true, cleaned: true, reason: null }
+    : { ok: false, reset: true, cleaned: false, reason: 'the dock was reset but `clean -fdx` failed: it may still hold the verify commands’ debris' };
 }
 
 /**
@@ -340,7 +378,21 @@ export interface AcquireLandLockOptions {
   host?: string;
   clock?: Clock;
   isAlive?: (pid: number) => boolean;
+  /** the read seam, as `acquireRunLock` has one (`src/session/lock.ts:80`); tests drive the CAS with it */
+  readLock?: (runDir: string) => Promise<LandLock | null>;
+  /** overrides `LAND_LOCK_MAX_AGE_MS`; ≤ 0 disables the age rule */
+  maxAgeMs?: number;
 }
+
+/**
+ * How old a same-host lock may be before a live pid stops protecting it. A pid is a 15-bit
+ * number on most of these systems and wraps: a `land.lock` left by a machine that hard-powered
+ * off names a pid that some unrelated process owns an hour later, and `kill(pid, 0)` says "alive"
+ * forever. Twelve hours is chosen to be longer than any landing queue can honestly take (§6.4's
+ * wall clock caps are minutes, and a queue holds the lock for ONE attempt at a time) and shorter
+ * than "the user will never come back to this run".
+ */
+export const LAND_LOCK_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 export function landLockPath(runDir: string): string {
   return join(runDir, ORCHESTRATE_SUBDIR, LAND_LOCK_FILE);
@@ -388,37 +440,109 @@ export function landLockHeldMessage(lock: LandLock): string {
   return `the landing queue is held by pid ${lock.pid} since ${lock.startedAt || 'unknown'} (another jevcode?); it retries after the queue step`;
 }
 
+/** ours (this pid on this host) · stale (replaceable) · held (a refusal that names the holder). */
+type LockVerdict = 'ours' | 'stale' | 'held';
+
+/**
+ * Who may declare a lock dead.
+ *
+ * A DIFFERENT host is never ours to judge: this process cannot ask that machine whether pid 4242
+ * is running, and on a synced `~/.jevcode` (CD §11) the two run dirs are the same bytes. The old
+ * test required `existing.host === host` for the REFUSAL, which is the same condition inverted —
+ * so the default `host: ''` caller stole every lock a named device held.
+ *
+ * On the same host the pid governs, with `startedAt` as the backstop: pids are recycled, so a
+ * lock older than `maxAgeMs` is reclaimable even when `kill(pid, 0)` answers. An unparsable or
+ * empty `startedAt` is treated as age-unknown and therefore NOT expired — liveness alone decides,
+ * which is the conservative direction (a refusal the user can resolve by deleting the file).
+ */
+function judgeLock(
+  existing: LandLock,
+  o: { pid: number; host: string; now: number; maxAgeMs: number; isAlive: (pid: number) => boolean },
+): LockVerdict {
+  if (existing.pid === o.pid && existing.host === o.host) return 'ours';
+  if (existing.host !== o.host) return 'held';
+  if (!o.isAlive(existing.pid)) return 'stale';
+  if (o.maxAgeMs <= 0) return 'held';
+  const started = Date.parse(existing.startedAt);
+  if (!Number.isFinite(started)) return 'held';
+  return o.now - started > o.maxAgeMs ? 'stale' : 'held';
+}
+
+function sameLock(a: LandLock | null, b: LandLock | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.pid === b.pid && a.host === b.host && a.startedAt === b.startedAt;
+}
+
 /**
  * O_EXCL + pid liveness — one writer by construction, which is what makes `land.jsonl`
- * append-only and auditable. A live foreign lock REFUSES (naming the holder); a stale one (dead
- * pid, or another host) is replaced through write-to-temp + rename, so a concurrent reader never
- * sees a torn file. Reimplemented from `src/session/lock.ts:91`, not imported: §8.1 rule 1.
+ * append-only and auditable. A live foreign lock REFUSES (naming the holder); a stale one (a dead
+ * pid on THIS host, or one older than `LAND_LOCK_MAX_AGE_MS`) is replaced through write-to-temp +
+ * rename, so a concurrent reader never sees a torn file. Reimplemented from
+ * `src/session/lock.ts:91`, not imported: §8.1 rule 1.
+ *
+ * The steal is a compare-and-swap, not a read-then-write. `rename(2)` is atomic but it is not
+ * conditional, so two processes that read the same dead-pid lock in the same tick would both
+ * rename in and both believe they hold the queue — two writers on an append-only log. The lock is
+ * therefore re-read and re-judged immediately before the rename (abort if it changed at all) and
+ * re-read immediately after it (abort unless the file now holds OUR pid). The second read is what
+ * makes the window actually closed rather than merely narrow: `pid`+`host` identifies one
+ * process, so of any number of racing stealers exactly one finds itself in the file.
+ *
+ * Never throws. An unreadable run dir, a full disk or a permission error is a refusal with the
+ * errno in the reason; the caller is a queue step that will come round again.
  */
 export async function acquireLandLock(runDir: string, opts: AcquireLandLockOptions = {}): Promise<AcquireLandLockResult> {
   const pid = opts.pid ?? process.pid;
   const host = opts.host ?? '';
   const clock = opts.clock ?? ((): number => Date.now());
   const isAlive = opts.isAlive ?? isPidAlive;
+  const read = opts.readLock ?? readLandLock;
+  const maxAgeMs = opts.maxAgeMs ?? LAND_LOCK_MAX_AGE_MS;
   const path = landLockPath(runDir);
   const lock: LandLock = { pid, startedAt: new Date(clock()).toISOString(), host };
   const text = `${JSON.stringify(lock)}\n`;
+  const judge = (l: LandLock): LockVerdict => judgeLock(l, { pid, host, now: clock(), maxAgeMs, isAlive });
 
-  await mkdir(join(runDir, ORCHESTRATE_SUBDIR), { recursive: true });
-  try {
-    await writeFile(path, text, { flag: 'wx', mode: 0o600 });
-    return { ok: true, handle: { path, lock }, replaced: null };
-  } catch (e) {
-    if (errnoCode(e) !== 'EEXIST') throw e;
-  }
-
-  const existing = await readLandLock(runDir);
-  if (existing !== null && existing.pid !== pid && existing.host === host && isAlive(existing.pid)) {
-    return { ok: false, reason: landLockHeldMessage(existing), holder: existing };
-  }
   const tmp = `${path}.${pid}.tmp`;
-  await writeFile(tmp, text, { mode: 0o600 });
-  await rename(tmp, path);
-  return { ok: true, handle: { path, lock }, replaced: existing !== null && existing.pid !== pid ? existing : null };
+  try {
+    await mkdir(join(runDir, ORCHESTRATE_SUBDIR), { recursive: true });
+    try {
+      await writeFile(path, text, { flag: 'wx', mode: 0o600 });
+      return { ok: true, handle: { path, lock }, replaced: null };
+    } catch (e) {
+      if (errnoCode(e) !== 'EEXIST') return { ok: false, reason: `the landing queue lock could not be written (${errnoCode(e) ?? 'unknown'})`, holder: null };
+    }
+
+    const existing = await read(runDir);
+    // An unparsable file is not a holder: it names nobody, so there is nobody to refuse for.
+    if (existing !== null && judge(existing) === 'held') return { ok: false, reason: landLockHeldMessage(existing), holder: existing };
+
+    // (1) re-read and re-judge: the lock we are about to replace must still be the one we judged
+    const before = await read(runDir);
+    if (!sameLock(before, existing)) {
+      const reason = before === null ? 'the landing queue lock changed while it was being replaced' : landLockHeldMessage(before);
+      return { ok: false, reason, holder: before };
+    }
+    if (before !== null && judge(before) === 'held') return { ok: false, reason: landLockHeldMessage(before), holder: before };
+
+    await writeFile(tmp, text, { mode: 0o600 });
+    await rename(tmp, path);
+
+    // (2) whoever renamed last owns the file; everybody else finds a stranger's pid and stands down
+    const after = await read(runDir);
+    if (after === null || after.pid !== pid || after.host !== host) {
+      return { ok: false, reason: after === null ? 'the landing queue lock vanished while it was being taken' : landLockHeldMessage(after), holder: after };
+    }
+    return { ok: true, handle: { path, lock }, replaced: existing !== null && existing.pid !== pid ? existing : null };
+  } catch (e) {
+    try {
+      await rm(tmp, { force: true });
+    } catch {
+      // the temp file may never have been created; there is nothing to report and nowhere to report it
+    }
+    return { ok: false, reason: `the landing queue lock could not be taken (${errnoCode(e) ?? 'unknown'})`, holder: null };
+  }
 }
 
 /** Remove the lock, but only when it is still the one this handle wrote. Never throws. */

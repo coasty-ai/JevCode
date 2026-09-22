@@ -106,7 +106,7 @@ export type { VerifyResolution, VerifyResolveInput, VerifySource } from './verif
 
 // §3.7: the decomposition record
 export { buildManifest, dockBranchOf, manifestPath, nodeManifestIo, readManifest, sameDelegation, writeManifest } from './manifest.js';
-export type { BuildManifestInput, ManifestIo, ReadResult, WriteResult } from './manifest.js';
+export type { BuildManifestInput, BuildResult, ManifestIdContext, ManifestIo, ReadResult, WriteResult } from './manifest.js';
 
 // ---------------------------------------------------------------------------------------
 // Isolation and the commit (§2.3, §2.6) — the harness commits, or nothing in §5 executes [G1]
@@ -157,11 +157,13 @@ export {
   releaseLandLock,
   restoreDock,
   revListCount,
+  DOCK_CLEAN_FLOOR,
   LAND_LOCK_FILE,
+  LAND_LOCK_MAX_AGE_MS,
   LAND_LOG_FILE,
   ORCHESTRATE_SUBDIR,
 } from './land.js';
-export type { AcquireLandLockOptions, AcquireLandLockResult, LandLock, LandLockHandle, LandQueueState, LandStep, QueueAgent } from './land.js';
+export type { AcquireLandLockOptions, AcquireLandLockResult, LandLock, LandLockHandle, LandQueueState, LandStep, QueueAgent, RestoreDockResult } from './land.js';
 
 export { detectStall } from './stall.js';
 export type { HeartbeatSample, StallSignal, StallVerdict } from './stall.js';

@@ -5,8 +5,12 @@
  * Corner row 40 ("the diff deletes tests or drops the collected count") is asserted as a property
  * over generated test diffs with a seeded PRNG written inline.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
+import { sha256Hex } from '../../../src/core/hash.js';
 import { DEFAULT_SPLIT_POLICY } from '../../../src/orchestrate/types.js';
 import type { SyncedDirtyEntry } from '../../../src/orchestrate/types.js';
 import {
@@ -41,7 +45,32 @@ function input(over: Partial<HardRuleInput> = {}): HardRuleInput {
 }
 
 function file(path: string, over: Partial<DiffFile> = {}): DiffFile {
-  return { path, status: 'M', added: [], removed: [], ...over };
+  return { path, status: 'M', from: null, added: [], removed: [], ...over };
+}
+
+/**
+ * A throwaway directory standing in for the agent worktree `outsideOwn` hashes against. No git:
+ * `carriedPaths` is fs only, and that is the whole point of the [D2] comparison.
+ */
+const scratch: string[] = [];
+
+afterEach(() => {
+  while (scratch.length > 0) rmSync(scratch.pop() ?? '', { recursive: true, force: true });
+});
+
+function worktree(files: Record<string, string> = {}): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'jev-critic-')));
+  scratch.push(dir);
+  for (const [rel, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, rel)), { recursive: true });
+    writeFileSync(join(dir, rel), content);
+  }
+  return dir;
+}
+
+/** The `syncedDirty` entry the [D2] sync would have written for `path` holding `syncedContent`. */
+function syncedEntry(path: string, syncedContent: string): SyncedDirtyEntry {
+  return { path, sha256: sha256Hex(Buffer.from(syncedContent)), mode: 0o644 };
 }
 
 function rules(res: ReturnType<typeof checkHardRules>): string[] {
@@ -92,6 +121,26 @@ describe('rule 1 — tests are not removed or weakened', () => {
     const res = checkHardRules(input({ files: [file('test/unit/store.test.ts', { status: 'D', removed: ['expect(a).toBe(1)'] })] }));
     expect(rules(res)).toEqual([HARD_RULES.tests]);
     expect(reasons(res)[0]).toBe('deleted the test file test/unit/store.test.ts');
+  });
+
+  /**
+   * Review finding 7. `git mv src/foo.test.ts src/foo.old.ts` is one `R` entry whose `path`
+   * matches no test glob: without `from` the rule never runs and the file leaves the suite.
+   */
+  it('a rename OUT of the test globs is a deletion, named by its source', () => {
+    const res = checkHardRules(input({ files: [file('src/foo.old.ts', { status: 'R', from: 'src/foo.test.ts' })] }));
+    expect(rules(res)).toEqual([HARD_RULES.tests]);
+    expect(reasons(res)).toEqual(['deleted the test file src/foo.test.ts']);
+  });
+
+  it('a rename BETWEEN test paths is not a deletion, and is still measured for assertions', () => {
+    expect(checkHardRules(input({ files: [file('test/unit/b.test.ts', { status: 'R', from: 'test/unit/a.test.ts' })] }))).toEqual({ ok: true });
+    const weakened = checkHardRules(input({ files: [file('test/unit/b.test.ts', { status: 'R', from: 'test/unit/a.test.ts', removed: ['expect(a).toBe(1)'] })] }));
+    expect(reasons(weakened)).toEqual(['removed 1 assertion in test/unit/b.test.ts']);
+  });
+
+  it('a rename INTO the test globs from a non-test path is not a deletion', () => {
+    expect(checkHardRules(input({ files: [file('test/unit/a.test.ts', { status: 'A', from: 'src/scratch.ts' })] }))).toEqual({ ok: true });
   });
 
   it('a deleted NON-test file, and a test file that gains assertions, are fine', () => {
@@ -170,6 +219,16 @@ describe('rule 4 — the merge introduces no conflict markers', () => {
     expect(hasConflictMarkers('no markers here <<<<<<< inline\n')).toBe(false);
   });
 
+  /** Review finding 14b: `conflict-marker-size` is settable per path in `.gitattributes`. */
+  it('any marker size of seven or more is found, and `=======` alone is not a conflict', () => {
+    expect(hasConflictMarkers('a\n<<<<<<<<<<< HEAD\nx\n===========\ny\n>>>>>>>>>>> theirs\n')).toBe(true);
+    expect(hasConflictMarkers(`${'<'.repeat(41)} HEAD\nx\n${'>'.repeat(41)} theirs\n`)).toBe(true);
+    expect(hasConflictMarkers('a\n<<<<<<< HEAD\nx\n|||||||\nz\n=======\ny\n>>>>>>> theirs\n')).toBe(true); // diff3 style
+    expect(hasConflictMarkers('Heading\n=======\n\nBody\n')).toBe(false); // a Markdown setext rule
+    expect(hasConflictMarkers('a\n>>>>>>>>>>> theirs\n')).toBe(false); // a closing fence alone
+    expect(hasConflictMarkers('a\n<<<<<< six\nx\n>>>>>> six\n')).toBe(false); // six is not a fence
+  });
+
   it('reports the paths the caller found', () => {
     const res = checkHardRules(input({ conflictMarkerPaths: ['src/a.ts', 'src/b.ts'] }));
     expect(rules(res)).toEqual([HARD_RULES.conflicts]);
@@ -197,22 +256,70 @@ describe('rule 5 — [G3] the pinned sha still matches at merge time', () => {
 });
 
 describe('[G8] outsideOwn and the include/drop question', () => {
-  const synced = (paths: readonly string[]): SyncedDirtyEntry[] => paths.map((p) => ({ path: p, sha256: 'f'.repeat(64), mode: 0o644 }));
-
-  it('is changed ∩ complement(own) ∖ syncedDirty ∖ incidentalGlobs', () => {
-    expect(outsideOwn({
+  it('is changed ∩ complement(own) ∖ carried ∖ incidentalGlobs', async () => {
+    const dir = worktree({ 'src/loop/engine.ts': 'the parent was mid-edit\n' });
+    expect(await outsideOwn(dir, {
       changed: ['src/tui/Pane.tsx', 'package-lock.json', 'dist/x.js', 'src/loop/engine.ts', 'docs/NOTES.md'],
       own: ['src/tui/**'],
-      syncedDirty: synced(['src/loop/engine.ts']),
+      syncedDirty: [syncedEntry('src/loop/engine.ts', 'the parent was mid-edit\n')],
       incidentalGlobs: ['docs/**'],
+      fold: false,
     })).toEqual(['dist/x.js', 'package-lock.json']);
   });
 
-  it('[D2] a 200-entry synced-dirty set produces ZERO escape prompts (corner row 19)', () => {
-    const paths = Array.from({ length: 200 }, (_, i) => `parent/f${i}.txt`);
-    const outside = outsideOwn({ changed: paths, own: ['src/tui/**'], syncedDirty: synced(paths), incidentalGlobs: [] });
+  it('[D2] a 200-entry synced-dirty set produces ZERO escape prompts (corner row 19)', async () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 200; i++) files[`parent/f${i}.txt`] = `parent ${i}\n`;
+    const dir = worktree(files);
+    const paths = Object.keys(files);
+    const outside = await outsideOwn(dir, {
+      changed: paths,
+      own: ['src/tui/**'],
+      syncedDirty: paths.map((p) => syncedEntry(p, files[p] ?? '')),
+      incidentalGlobs: [],
+      fold: false,
+    });
     expect(outside).toEqual([]);
     expect(buildIncludeDropQuestion('fix-store', outside)).toBeNull();
+  });
+
+  /**
+   * Review finding 1. `carried` is the STILL-BYTE-IDENTICAL subset [D2], never the raw
+   * `syncedDirty` path list: a parent-dirty file the agent rewrote outside its slice is in the
+   * §2.6 commit set and in the diff, so it is exactly what the question exists to ask about.
+   */
+  it('reports a parent-dirty path the agent REWROTE outside its slice, and stays silent while it is untouched', async () => {
+    const dir = worktree({ 'src/shared.ts': 'the agent rewrote it\n' });
+    const input = {
+      changed: ['src/shared.ts'],
+      own: ['src/a/**'],
+      syncedDirty: [{ path: 'src/shared.ts', sha256: 'x', mode: 420 }],
+      incidentalGlobs: [],
+      fold: false,
+    };
+    expect(await outsideOwn(dir, input)).toEqual(['src/shared.ts']);
+
+    const untouched = worktree({ 'src/shared.ts': 'the parent was mid-edit\n' });
+    expect(await outsideOwn(untouched, { ...input, syncedDirty: [syncedEntry('src/shared.ts', 'the parent was mid-edit\n')] })).toEqual([]);
+  });
+
+  it('a carried path the agent DELETED, and one the sync deleted, are judged by the same [D2] rule', async () => {
+    const dir = worktree({});
+    // the sync deleted it and the agent left it deleted: still carried
+    expect(await outsideOwn(dir, { changed: ['gone.txt'], own: ['src/**'], syncedDirty: [{ path: 'gone.txt', sha256: '', mode: 0 }], incidentalGlobs: [], fold: false })).toEqual([]);
+    // the sync wrote it and the agent removed it: no longer carried, so it is outside the slice
+    expect(await outsideOwn(dir, { changed: ['was-here.txt'], own: ['src/**'], syncedDirty: [syncedEntry('was-here.txt', 'parent\n')], incidentalGlobs: [], fold: false })).toEqual(['was-here.txt']);
+  });
+
+  it('[14c] on a folding volume SRC/Shared.ts and src/shared.ts are one file', async () => {
+    const dir = worktree({ 'src/shared.ts': 'parent\n' });
+    const input = { changed: ['SRC/Shared.ts'], own: ['src/**'], syncedDirty: [], incidentalGlobs: [], fold: true };
+    expect(await outsideOwn(dir, input)).toEqual([]);
+    expect(await outsideOwn(dir, { ...input, fold: false })).toEqual(['SRC/Shared.ts']);
+    // and the carried subtraction folds with it
+    const carried = { changed: ['SRC/Shared.ts'], own: ['src/a/**'], syncedDirty: [syncedEntry('src/shared.ts', 'parent\n')], incidentalGlobs: [], fold: true };
+    expect(await outsideOwn(dir, carried)).toEqual([]);
+    expect(await outsideOwn(dir, { ...carried, fold: false })).toEqual(['SRC/Shared.ts']);
   });
 
   it('builds §4.8\'s exact string', () => {
@@ -229,8 +336,8 @@ describe('[G8] outsideOwn and the include/drop question', () => {
     expect(q?.lines).toHaveLength(6);
   });
 
-  it('an unparsable own glob owns nothing (it never widens ownership)', () => {
-    expect(outsideOwn({ changed: ['src/a.ts'], own: ['!src/**'], syncedDirty: [], incidentalGlobs: [] })).toEqual(['src/a.ts']);
+  it('an unparsable own glob owns nothing (it never widens ownership)', async () => {
+    expect(await outsideOwn(worktree(), { changed: ['src/a.ts'], own: ['!src/**'], syncedDirty: [], incidentalGlobs: [], fold: false })).toEqual(['src/a.ts']);
   });
 });
 

@@ -10,9 +10,14 @@
  * validated `Manifest`. It never throws: an unreadable manifest is a `{ ok: false, reason }`, which the
  * caller turns into `no_split`.
  *
- * `manifestId` is NOT taken from the caller: it is recomputed here through `canonical.ts`, the one
- * implementation `normalize.ts` also calls, so corner row 12's adoption key cannot drift after §3.5's drop
- * rule rebuilds an agent list.
+ * `manifestId` is NOT taken from the file either: `readManifest` recomputes it through `canonical.ts`, the
+ * one implementation `normalize.ts` also calls, so corner row 12's adoption key cannot drift after §3.5's
+ * drop rule rebuilds an agent list — and cannot be FORGED. The checksum is an unkeyed sha256, i.e.
+ * corruption detection: anyone who can edit `manifest-<n>.json` can recompute it. Only the recomputed
+ * `manifestId` ties the id the checkpoint adopts on to the `agents[]` (their `own`, their caps) actually in
+ * the file, so a hand-edited manifest that keeps the original id is refused instead of adopted. Two of
+ * §2.2's five id inputs — `task` and `remaining` — are not stored in the manifest, so the caller passes
+ * them in; a manifest that is not this run's delegation therefore does not read back at all.
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -22,6 +27,7 @@ import { isJsonObject, isStringArray, parseJson } from '../core/json.js';
 import { AGENT_TASK_CHARS, DIRTY_ENTRIES_MAX, MANIFEST_BYTES, OWN_GLOBS_MAX, OWN_GLOB_CHARS, VERIFY_COMMANDS_MAX } from '../core/limits.js';
 import { clip } from '../core/text.js';
 import { checksumOf, manifestIdOf } from './canonical.js';
+import { parseOwnGlob } from './split/globs.js';
 import type { ChoiceVerdict, EngineMode, Json } from '../core/types.js';
 import type { AgentRole, AgentSpec, Clock, DemandReason, Manifest, NormalizedSplit, RejectedOption, SplitKind, SyncedDirtyEntry } from './types.js';
 
@@ -30,6 +36,12 @@ const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const BASE_SHA_RE = /^[0-9a-f]{7,64}$/;
 const DOCK_RE = /^jevcode\/dock-[A-Za-z0-9_-]{1,16}$/;
+/**
+ * A `runId` this module will put in a ref name. Narrower than "a non-empty string" on purpose: §2.2
+ * reserves `dock`/`dock-*` so that `jevcode/dock-<runId8>` is well-formed, and a `runId` holding `/`, a
+ * space, a `..` or nothing at all makes it neither well-formed nor the branch the writer meant.
+ */
+const RUN_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,199}$/;
 
 /** A defensive ceiling on the agent list: §3.4 rule 7 clamps to `maxChildren`, far below this. */
 const AGENTS_MAX = 16;
@@ -102,18 +114,27 @@ export interface BuildManifestInput {
   now: Clock;
 }
 
-/** §2.2 / §3.7: `jevcode/dock-<runId8>`; §2.2 reserves `dock` and `dock-*` as slugs for exactly this. */
-export function dockBranchOf(runId: string): string {
+/**
+ * §2.2 / §3.7: `jevcode/dock-<runId8>`; §2.2 reserves `dock` and `dock-*` as slugs for exactly this.
+ *
+ * `null` for a `runId` that is not branch-safe, reported the way the rest of this module reports a bad
+ * input — a value, never a throw. `''` would have produced the bare `jevcode/dock-`, and a `runId` with a
+ * `/` or a space a ref name that is either invalid or names something else entirely.
+ */
+export function dockBranchOf(runId: string): string | null {
+  if (!RUN_ID_RE.test(runId)) return null;
   return `jevcode/dock-${runId.slice(0, 8)}`;
 }
 
 /**
  * The agent as it is written: the task redacted and clipped, `own` and `verify` clipped only.
  *
- * `own` and `verify` are deliberately NOT redacted. Both are re-read as behaviour — `own` decides what a
- * child may write and what §5.3 measures the diff against, `verify` is executed verbatim — and a redaction
- * marker inside either would silently change what they mean. §3.4 rule 9 flags a `detectSecrets` hit in them
- * on the confirm card (`⚠ secret?`, a count, never the value) instead, which is the human's decision to make.
+ * `own` and `verify` are CLIPPED, never redacted. Both are re-read as behaviour — `own` decides what a
+ * child may write and what §5.3 measures the diff against, `verify` is an executed command — so a
+ * `[REDACTED:…]` marker inside either would change what it means: a redacted glob owns a different file or
+ * none, and a redacted command is a different command (or one that no longer runs). §3.4 rule 9 scans
+ * `task`, `own` AND `verify` with `detectSecrets` and surfaces a hit through `secretHits` on the §4.6
+ * confirm card (`⚠ secret?`, a count, never the value), which is the human's decision to make.
  */
 function writtenAgent(a: AgentSpec, redact: (s: string) => string): AgentSpec {
   return {
@@ -131,7 +152,16 @@ function writtenAgent(a: AgentSpec, redact: (s: string) => string): AgentSpec {
   };
 }
 
-export function buildManifest(input: BuildManifestInput): Manifest {
+export type BuildResult = { ok: true; manifest: Manifest } | { ok: false; reason: string };
+
+/**
+ * §3.7's manifest, or a reason. The one refusal is a `runId` that cannot name the dock branch: building the
+ * manifest anyway would write a `dockBranch` `readManifest` refuses (an unreadable manifest is re-spawned
+ * forever) or, worse, a ref name that is not the one the run meant.
+ */
+export function buildManifest(input: BuildManifestInput): BuildResult {
+  const dockBranch = dockBranchOf(input.runId);
+  if (dockBranch === null) return { ok: false, reason: `runId ${JSON.stringify(input.runId)} cannot name a dock branch: it must match ${String(RUN_ID_RE)}` };
   const agents = input.split.agents.map((a) => writtenAgent(a, input.redact));
   const body: Omit<Manifest, 'checksum'> = {
     v: 1,
@@ -145,7 +175,7 @@ export function buildManifest(input: BuildManifestInput): Manifest {
     confidence: input.confidence,
     baseSha: input.baseSha,
     repoKey: input.repoKey,
-    dockBranch: dockBranchOf(input.runId),
+    dockBranch,
     syncedDirty: input.syncedDirty.slice(0, DIRTY_ENTRIES_MAX).map((e) => ({ path: e.path, sha256: e.sha256, mode: e.mode })),
     dirtyOverlap: input.dirtyOverlap.slice(0, DIRTY_ENTRIES_MAX),
     agents,
@@ -155,7 +185,7 @@ export function buildManifest(input: BuildManifestInput): Manifest {
     demand: input.demand,
     createdAt: new Date(input.now()).toISOString(),
   };
-  return { ...body, checksum: checksumOf(body) };
+  return { ok: true, manifest: { ...body, checksum: checksumOf(body) } };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -224,6 +254,15 @@ function parseAgent(v: Json, at: number): AgentResult {
   const own = v['own'];
   if (!isStringArray(own) || own.length === 0 || own.length > OWN_GLOBS_MAX) return bad(`agents[${at}].own is not 1..${OWN_GLOBS_MAX} strings`);
   if (own.some((g) => g.length === 0 || g.length > OWN_GLOB_CHARS)) return bad(`agents[${at}].own holds a glob over ${OWN_GLOB_CHARS} characters`);
+  // A count and a length are not the sub-language: these globs drive §2.4's ownership enforcement the
+  // moment the delegation is adopted, so every one of them is parsed by the ONE parser that decides what
+  // `own` means (§3.4 rule 2), and the first failure is reported verbatim. The string is kept exactly as
+  // the file spells it — `parseOwnGlob` trims and NFC-normalises, and a manifest whose globs only become
+  // legal after that is not the one the normaliser wrote, so its `manifestId` must not match either.
+  for (const [j, g] of own.entries()) {
+    const parsed = parseOwnGlob(g);
+    if (!parsed.ok) return bad(`agents[${at}].own[${j}] is not a legal own glob: ${parsed.reason}`);
+  }
   const role = oneOf(v, 'role', ROLES);
   if (role === null) return bad(`agents[${at}].role is not one of ${ROLES.join(', ')}`);
   const verify = v['verify'];
@@ -280,8 +319,21 @@ function parseRejected(v: Json): { ok: true; rejected: RejectedOption[] } | { ok
   return { ok: true, rejected: out };
 }
 
-/** §3.7: read, validate field by field, then re-check the checksum. Returns a reason; never throws. */
-export async function readManifest(io: ManifestIo, step: number): Promise<ReadResult> {
+/**
+ * The two §2.2 `manifestId` inputs the manifest does not store. The caller holds them (they are the run's
+ * own task and its remaining plan items), and without them the id cannot be recomputed — which is the
+ * only check that ties the adoption key to the contents.
+ */
+export interface ManifestIdContext {
+  task: string;
+  remaining: readonly string[];
+}
+
+/**
+ * §3.7: read, validate field by field, re-check the checksum, then RECOMPUTE `manifestId` from the parsed
+ * contents and `context`. Returns a reason; never throws.
+ */
+export async function readManifest(io: ManifestIo, step: number, context: ManifestIdContext): Promise<ReadResult> {
   const rel = manifestPath(step);
   let text: string | null;
   try {
@@ -302,6 +354,7 @@ export async function readManifest(io: ManifestIo, step: number): Promise<ReadRe
   const runId = str(o, 'runId', ID_CHARS);
   const sessionId = str(o, 'sessionId', ID_CHARS);
   if (runId === null || runId.length === 0) return bad('runId is missing');
+  if (!RUN_ID_RE.test(runId)) return bad(`runId ${JSON.stringify(runId)} is not branch-safe: it must match ${String(RUN_ID_RE)}`);
   if (sessionId === null || sessionId.length === 0) return bad('sessionId is missing');
   const stepOut = num(o, 'step');
   if (stepOut === null || !Number.isSafeInteger(stepOut) || stepOut < 0) return bad('step is not a non-negative integer');
@@ -320,6 +373,7 @@ export async function readManifest(io: ManifestIo, step: number): Promise<ReadRe
   if (repoKeyRaw !== null && (typeof repoKeyRaw !== 'string' || repoKeyRaw.length > ID_CHARS)) return bad('repoKey is not a bounded string or null');
   const dockBranch = str(o, 'dockBranch', 64);
   if (dockBranch === null || !DOCK_RE.test(dockBranch)) return bad('dockBranch is not `jevcode/dock-<runId8>`');
+  if (dockBranch !== dockBranchOf(runId)) return bad(`dockBranch ${dockBranch} is not the one runId ${runId} derives`);
 
   const dirty = parseSyncedDirty(o['syncedDirty'] ?? null);
   if (!dirty.ok) return dirty;
@@ -373,6 +427,15 @@ export async function readManifest(io: ManifestIo, step: number): Promise<ReadRe
     checksum,
   };
   if (checksumOf(manifest) !== checksum) return bad(`${rel} fails its checksum: it was edited or truncated`);
+  // The checksum above is an UNKEYED sha256: it catches a truncated or corrupted file, and nothing else,
+  // because whoever edited the file could recompute it. The id is what the checkpoint adopts on (row 12),
+  // so it is recomputed from what the file actually says and compared — otherwise a manifest with the
+  // original `manifestId` and a rewritten `agents[]` (other `own`, other caps) would be adopted as if it
+  // were the delegation the human confirmed.
+  const recomputed = manifestIdOf({ task: context.task, remaining: context.remaining, splitKind, agents, baseSha });
+  if (recomputed !== manifestId) {
+    return bad(`${rel}: manifestId does not match the contents it names — the manifest's task, agents or baseSha are not the ones ${manifestId.slice(0, 12)} was computed from (recomputed ${recomputed.slice(0, 12)})`);
+  }
   return { ok: true, manifest };
 }
 

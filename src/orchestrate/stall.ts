@@ -63,15 +63,25 @@ function noStepProgress(history: readonly HeartbeatSample[], now: number, stallM
   return age >= stallMs ? `no progress ${minutes(age)}` : null;
 }
 
-/** §7.1: "the last 3 committed steps produced no `changedFiles` and no test-count change". */
+/**
+ * §7.1: "the last 3 committed steps produced no `changedFiles` and no test-count change".
+ *
+ * `changedFiles` is CUMULATIVE against the base (see `HeartbeatSample`), so what this row asks for is the
+ * DIFFERENCE over the window — the same compare `churn` makes on `netLines` — and not the raw count.
+ * Reading the raw count as a per-step delta made the signal fire only for an agent whose total changed
+ * file count is zero, i.e. never for the one it exists to catch: an agent that changed files early and
+ * then stopped.
+ */
 function noFileProgress(history: readonly HeartbeatSample[]): string | null {
   const last = history[history.length - 1];
   if (last === undefined || last.phase !== 'running' || history.length < 3) return null;
-  const window = history.slice(-3);
-  if (window.some((s) => s.changedFiles !== 0)) return null;
-  // The count must be unchanged across the window AND against the sample before it, when there is one: a
-  // test count that moved on entering the window is progress the agent made.
-  const counts = history.slice(-4).map((s) => s.testCount);
+  // The window is the last 3 samples, measured against the sample before them when there is one: a file
+  // (or a test) that appeared on entering the window is progress the agent made. The same four samples
+  // answer both halves of the row.
+  const window = history.slice(-4);
+  const base = window[0];
+  if (base === undefined || last.changedFiles !== base.changedFiles) return null;
+  const counts = window.map((s) => s.testCount);
   const first = counts[0];
   if (counts.some((c) => c !== first)) return null;
   return 'no files changed in 3 steps';

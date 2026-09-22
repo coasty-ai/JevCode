@@ -29,14 +29,15 @@ function sample(over: Partial<HeartbeatSample> & { at: number }): HeartbeatSampl
 }
 
 /**
- * `count` samples one heartbeat apart, ending at `T0 + span`. `netLines` advances by default so a series
- * never churns by accident: a test that wants churn pins `netLines` itself.
+ * `count` samples one heartbeat apart, ending at `T0 + span`. `netLines` AND the cumulative `changedFiles`
+ * both advance by default, so a series never churns and never looks file-frozen by accident: a test that
+ * wants churn pins `netLines` itself, and one that wants `no_file_progress` pins `changedFiles` itself.
  */
 function series(count: number, span: number, at: (i: number, t: number) => Partial<HeartbeatSample>): HeartbeatSample[] {
   const start = T0 + span - (count - 1) * HB;
   return Array.from({ length: count }, (_, i) => {
     const t = start + i * HB;
-    return sample({ at: t, lastJsonLineAt: t, netLines: i * 10, ...at(i, t) });
+    return sample({ at: t, lastJsonLineAt: t, netLines: i * 10, changedFiles: i + 1, ...at(i, t) });
   });
 }
 
@@ -50,7 +51,8 @@ describe('§7.1 detectStall — no step progress', () => {
 
   it('does not fire one millisecond early, and measures from the first sample at that step', () => {
     const now = T0 + STALL;
-    const history = [sample({ at: T0 - 60_000, step: 3 }), sample({ at: T0, step: 4 }), sample({ at: now - 1, step: 4, lastJsonLineAt: now })];
+    // the cumulative changedFiles advances, so only the step clock is under test here
+    const history = [sample({ at: T0 - 60_000, step: 3, changedFiles: 1 }), sample({ at: T0, step: 4, changedFiles: 2 }), sample({ at: now - 1, step: 4, changedFiles: 3, lastJsonLineAt: now })];
     expect(detectStall(history, now - 1, POLICY, HB).signal).toBeNull();
     expect(detectStall(history, now, POLICY, HB).message).toBe('no progress 10 m');
   });
@@ -82,8 +84,19 @@ describe('§7.1 detectStall — no file progress', () => {
     const now = T0 + 3 * HB;
     expect(detectStall(series(4, 3 * HB, (i) => ({ changedFiles: 0, testCount: i === 0 ? 9 : 10 })), now, POLICY, HB).signal).toBeNull();
     expect(detectStall(series(4, 3 * HB, (i) => ({ changedFiles: 0, testCount: i === 3 ? 11 : 10 })), now, POLICY, HB).signal).toBeNull();
+    // "a changed file" is a cumulative count that MOVED, not one nonzero sample: `changedFiles` is
+    // measured against the base, so 0,1,2,3 is an agent changing a file a step and 2,2,2,2 is one that
+    // changed two files once and has done nothing since (which is the signal, below).
+    expect(detectStall(series(4, 3 * HB, (i) => ({ changedFiles: i, testCount: 10 })), now, POLICY, HB).signal).toBeNull();
     expect(detectStall(series(4, 3 * HB, (i) => ({ changedFiles: i === 3 ? 2 : 0, testCount: 10 })), now, POLICY, HB).signal).toBeNull();
     expect(detectStall(series(2, HB, () => ({ changedFiles: 0 })), now, POLICY, HB).signal).toBeNull();
+  });
+
+  it('fires on an agent that changed files early and then stopped: the count is cumulative', () => {
+    // The case the row exists for, and the one a per-step reading of `changedFiles` could never see: 7
+    // files changed against the base and not one more in three heartbeats.
+    const history = series(4, 3 * HB, () => ({ changedFiles: 7, testCount: 10 }));
+    expect(detectStall(history, T0 + 3 * HB, POLICY, HB)).toEqual({ signal: 'no_file_progress', message: 'no files changed in 3 steps', action: 'notify', quiet: false });
   });
 
   it('a null test count throughout is "unchanged", not "changed"', () => {
