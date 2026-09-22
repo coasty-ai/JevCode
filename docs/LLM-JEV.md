@@ -235,3 +235,66 @@ repositories** (SWE 6,960 ranked / 20 tested); **change 3** — zero-token timeo
 `adds_implicit_none_exit` over 58 runs, and neither named correctness loss caught. Change 8 has no counter-example here.
 Ring 1 **FAILs** the `--jev off` gate (loses `gcd`, `mergesort`, `units`); Ring 2 is 5/5 pass but **REJECT** (Jev
 requests up on `units`).
+
+## 2026-09-22 — iteration 2 measured: SWE off zero, the in-sample regression recovered, and a warm plane that is faster and still must stay off
+
+Full report `experiments/results/llm-jev-iter2.md`, script output `…-iter2.tool.md`, records and their archives under
+`bench/results/iter2-{fresh,insample,bb}-*` (branch `bench-iter2`). Build `d86c385`, jevcode 0.5.0, generator
+`openrouter z-ai/glm-5.3-flash`, Jev `jev-1.13.0`, total spend **$1.0413** of a $4 cap. Same 18 + 28 tasks and the
+same limits as iteration 1, so the two are paired task for task.
+
+**0. Read every wall number next to its loadavg.** 15 cores, shared all day with a peer session, a second
+continuously-running `jevcode bench` and a 142 %-CPU `tsc`; recorded `loadavg[0]` per record ranges **2.9 to 175**
+(iteration 1: 2.4–45). Pass, cost and every counter are unaffected; wall is not, and two task losses (`account`,
+`hunk_merge`) are budget casualties that pass in a quieter arm of the same build. One window is load-matched and is
+the only timing result quoted: the **back-to-back QuixBugs triple** (warm-off → warm-on → `jev-off-tuned`, 8 tasks
+each, 17:46–17:53 Z). It also **corrects iteration 1**: `llm-jev` generates its own load (8 SIEVE lanes ×
+concurrency 4), so iteration 1's QuixBugs arm ran at loadavg 4.2→23.2 against a tuned control pinned at 3.1–3.4.
+The "26.0 s vs 19.7 s, ratio median 1.406" of that report is a 5–7× load gap as much as a program difference; at
+matched load the per-task median is **1.163** (slower on 6/8, at 0.28× the cost).
+
+**1. Fresh 18: 14/18** [54.8 %, 91.0 %] against the tuned generator's 9/18 [29.0 %, 71.0 %], **b = 5 / c = 0,
+sign p = 0.0312** (iteration 1: 12/18, b = 4 / c = 1, p = 0.1875); correct-by-verdict 13 vs 9; $0.2489 vs $0.2435.
+**SWE moves off zero: 2/4** (`django__django-15375`, `django__django-16100`), and the five-step `replan_stop` that
+ended all four iteration-1 repository runs is gone — the three that still stop by replan do so at **14, 17 and 14
+steps** having tested **1,060 candidates against 751 priced** (iteration 1: 20 tested against 6,960 priced).
+QuixBugs is 8/8, zero overfits. Ladder long-2 is 4/6 again but a *different* four, and a third run of the tier at this build (the back-to-back
+warm-off arm) scores **5/6**: across three samples (4/6, 4/6, 5/6) `deadline_queue`, `dep_order` and
+`token_bucket` always solve, `route_match` never does, and `csv_schema` and `hunk_merge` flip — so the tier reads
+**3 stable + 2 coin-flips** and neither iteration's 4/6 is a level. The shared solves cost a third of iteration
+1's steps (`deadline_queue` 9 → 3, `dep_order` 12 → 3). `token_bucket` is a strong overfit in **all four** ladder
+long-2 arms run today, always at the same divergence; its rule was never written.
+
+**2. In-sample 28: 27/28 pass, 25/28 correct, with the regression recovered.** `django__django-15128` — iteration 1's only loss, the
+case change 9 was written for — ends **`complete` at 6 steps** and passes. The single loss is ladder `account` at
+`max_replans` under **loadavg 99–175**, which passes at loadavg 13 in the warm arm forty minutes later (b = 1 /
+c = 1, p = 0.75). **`detect_cycle` is gold-identical** — the overfit iteration 1 named for change 5. `stats` is
+still weakly overfit and `wrap` picks up a fresh one that is gold-identical in the other arm the same evening.
+Cost and Jev traffic rose 2.1× against iteration 1 on a slice whose median loadavg was 88 against 16.
+
+**3. Predictions.** `doneClaimEscalation` fires 8× fresh / 3× in-sample and is what buys SWE and django-15128
+(**held**). `rankPoolCap` turns 6,960 priced / 20 tested into 751 / 1,060 (**held**). The deadline high-water mark
+is exact — **no goal's deadline shrank after a zero-token timeout in any of six arms** (0 of 45 `llm:deadline`
+events) — and zero-token timeouts fall 46.6 % → **27.2 %** of fresh samples and 33.6 % → **6.9 %** in-sample
+(sample-seconds 63.6 % → 40.9 % and 46.0 % → 19.8 %) (**held; the residual 27 % is not fixed**). The localiser
+fallback **half-holds**: Ring 1's QuixBugs `--jev off` gate now passes (`gcd`, `mergesort` recovered) with the
+plane off *and* on, but the ladder gate still fails on `units`, so Ring 1 is red. Ring 2 is 5/5 pass, REJECT.
+
+**4. The warm A/B: faster, safe as a transport, and it loses tasks — keep the default OFF.** Over 93,460 offered
+screens in seven warm-on arms: **0 fallbacks, 0 restarts, 0 screen:mismatch, 0 `disabledReason`, 0 wedges**;
+iteration 1's `nothing ran` / `LaneError` signature never appears, and Ring 1 with the plane on completes in
+12.5 min where iteration 1 had to kill it. At matched load warm is **23 % faster** (median per-task ratio
+**0.767**, faster on **7/7** both-solved; 207.8 s → 154.6 s) with the S0 bucket shares unchanged. But warm-on
+loses QuixBugs tasks cold solves — `topological_ordering` **twice independently** (loadavg 150 and 35) and
+`shortest_path_length` once, 4 cold-wins against 2 warm-wins over 54 paired tasks (the two ladder pairs are at
+parity: 5/6 both ways in the back-to-back pair, both missing only `route_match`). The cause is a calibration
+defect, not the transport: `src/synth/sieve/runner.ts:847` teaches `tRunMs` from cold runs only, and with the
+plane on the only candidates reaching the cold path are those whose hot screen hit a deadline (`:740-750`,
+`newDeadlineHit` → `deadlineRecheck()`), so the sample is **nothing but timeouts** — `run median 11,655 ms`
+against 510 ms cold on the same batch — `refineTRun` writes it into the run plan, `runs left` collapses 1,315 → 16
+and every later batch reports `0 tested (nothing ran)`. Fix that (and give `warm.serve` the adapted per-case
+timeout instead of the lane run cap, `:736`) and re-run the matched pair before flipping the default.
+Also recorded: `JEVCODE_WARM=on` is a **no-op on SWE-bench** — `warmModeFor` admits only the `quixbugs` and
+`pytest` runners and the SWE oracle's runner is `other` — so the A/B covers 14 of the 18 tasks, and nothing in the
+output says so. And the warm counters live **only** in the live `transcript.log`, which `--archive-runs` does not
+copy (`src/synth/search/types.ts:129-141`); every warm number above was harvested by hand.

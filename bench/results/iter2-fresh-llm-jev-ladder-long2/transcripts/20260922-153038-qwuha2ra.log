@@ -1,0 +1,716 @@
+[run] started · llm+jev verified · Two things are wrong with the hunk merger under `src/`. ⏎  ⏎ A `Hunk` carries `start` as a 1-based diff line number, and `Hunk.index()` is supposed to turn ⏎ t…
+[run] git main · clean
+[step 1] synth · baseline · 36/42 pass, 6 failed, 0 errors in 624 ms (pytest, pytest, python3 -m pytest -q)
+[step 1] synth · goal · g1: fix tests/test_hunks.py::test_index_is_the_zero_based_offset in tests/test_hunks.py (1 test, attempt 1, picked by jev)
+[step 1] synth · llm:fire · goal g1 round 1 (ladder): 1/3 samples fired, staggered, deadline 20000 ms, max_tokens 3000, $0.0018 reserved
+[step 1] synth · site · g1: src/hunks.py:32:insert (gap, indent 8) on committed: mutation 20, template 3, donor 30 — insert after anchor L31
+[step 1] synth · verify · g1: 53 tested on 8 lanes (53 unchanged); runs left 1439, test wall left 87 s; run median 327 ms, t_run 327 ms · 53 candidates, 53 tested
+[step 1] synth · llm:fire · goal g1 round 1: released 2 more samples (top-site seeds returned no passer), $0.0053 reserved
+[step 1] synth · llm:release · g1: samples 1..2 released (the top-site seed batch returned without a passer)
+[step 1] synth · site · g1: src/hunks.py:31:insert (gap, indent 8) on committed: mutation 20, template 33, donor 29 — insert before anchor L31
+[step 1] synth · verify · g1: 81 tested on 8 lanes (47 regressed, 34 unchanged); runs left 1358, test wall left 83 s; run median 272 ms, t_run 272 ms · 81 candidates, 81 tested
+[step 1] synth · site · g1: src/apply.py:20:insert (gap, indent 8) on committed: mutation 254, template 123, donor 243 — insert after anchor L19
+[step 1] warning · generator retried 3 times over 1s — gave up
+[step 1] synth · llm:deadline · goal g1: this round timed out with 0 output tokens (nothing served); its next round waits 30000 ms (1 × 1.5 on 20000 ms, capped at the ladder maximum 45000 ms)
+[step 1] synth · llm:sample · k=0 timeout 20002 ms: 0 candidates, est. $0.0008 — deadline 20000 ms passed
+[step 1] warning · generator retried 2 times over 452ms — gave up
+[step 1] synth · llm:sample · k=1 timeout 20003 ms: 0 candidates, est. $0.0008 — deadline 20000 ms passed
+[step 1] warning · generator retried 3 times over 1s — gave up
+[step 1] synth · llm:sample · k=2 timeout 20003 ms: 0 candidates, est. $0.0008 — deadline 20000 ms passed
+[step 1] synth · llm:round · goal g1 round 1: 3 fired, 0 valid, 0 malformed, 0 length, 3 timeout, 0 cancelled, 0 error, 0 distinct candidates, 23816 ms, $0.0023 (est. $0.0023)
+[step 1] synth · verify · g1: 560 tested on 8 lanes (560 unchanged); runs left 798, test wall left 65 s; run median 195 ms, t_run 195 ms · 560 candidates, 560 tested
+[step 1] synth · site · g1: src/apply.py:19:insert (gap, indent 8) on committed: mutation 254, template 93, donor 243 — insert before anchor L19
+[step 1] synth · verify · g1: 545 tested on 8 lanes (545 unchanged); runs left 253, test wall left 42 s; run median 258 ms, t_run 258 ms · 545 candidates, 545 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 248, test wall left 41 s; run median 464 ms, t_run 464 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 35 tested on 8 lanes (35 unchanged); runs left 213, test wall left 39 s; run median 455 ms, t_run 455 ms · 35 candidates, 35 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 208, test wall left 38 s; run median 327 ms, t_run 327 ms · 5 candidates, 5 tested
+[step 1] synth · site · g1: src/merge.py:32:insert (gap, indent 8) on committed: mutation 88, template 28, donor 90 — insert after anchor L31
+[step 1] synth · verify · g1: 206 tested on 8 lanes (206 unchanged); runs left 2, test wall left 27 s; run median 331 ms, t_run 331 ms · 206 candidates, 206 tested
+[step 1] synth · verify · g1: 2 tested on 8 lanes (2 unchanged); runs left 0, test wall left 27 s; run median 206 ms, t_run 206 ms · 2 candidates, 2 tested
+[step 1] synth · search · g1 budget (phase SEEDS, RANK, sites 11, requests 29, runs 1492, plausible 0) · 4359 candidates, 1492 tested
+[step 1] synth · budget · g1: budget-hit step 1 of 4 (progress: 6 new sites of 6 tested); the goal stays open
+[step 1] synth · ledger · fixed 0, open 6, parked 0
+[step 1] proposal · run $ python3 -m pytest -q 'tests/test_hunks.py' · "record the failing behaviour of tests/test_hunks.py::test_index_is_the_zero_based_offset"
+[step 1] intent · verify · 1.00 (confidence 1.00)
+[step 1] risk 0.00 ok · destructive 0 · irreversible 0
+[step 1] done · exit 1 · exit 1 · 185ms
+[step 1] judge 0.00 · tests 8p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 1] plan · 0 done · 7 remaining
+[step 1] run $ python3 -m pytest -q 'tests/test_hunk… · risk 0.00 ok · tests 8p/4f/0e · judge 0.00 · 1m8s · $0.002
+[step 2] synth · goal · g1: fix tests/test_hunks.py::test_index_is_the_zero_based_offset in tests/test_hunks.py (1 test, attempt 2, picked by jev)
+[step 2] synth · llm:fire · goal g1 round 1 (ladder): 1/3 samples fired, staggered, deadline 30000 ms (backed off 1 × 1.5 from 20000 ms after 1 zero-token timeout on this goal; the ladder maximum is 45000 ms), max_tokens 3000, $0.0019 reserved
+[step 2] synth · site · g1: src/apply.py:25:insert (gap, indent 4) on committed: mutation 224, template 0, donor 238 — exit gap of the loop enclosing L19; gap after L24 (block_end, dedent 1)
+[step 2] synth · verify · g1: 432 tested on 8 lanes (432 unchanged); runs left 1068, test wall left 71 s; run median 278 ms, t_run 278 ms · 432 candidates, 432 tested
+[step 2] synth · llm:fire · goal g1 round 1: released 2 more samples (top-site seeds returned no passer), $0.0056 reserved
+[step 2] synth · llm:release · g1: samples 1..2 released (the top-site seed batch returned without a passer)
+[step 2] synth · site · g1: src/merge.py:32:insert (gap, indent 8) on committed: donor 70 — insert after anchor L31
+[step 2] synth · verify · g1: 69 tested on 8 lanes (69 unchanged); runs left 999, test wall left 68 s; run median 271 ms, t_run 271 ms · 69 candidates, 69 tested
+[step 2] synth · site · g1: src/merge.py:22:replace on committed: mutation 253, template 110, donor 66 — jev anchor #1 in conflicts
+[step 2] warning · generator retried 3 times over 1s — gave up
+[step 2] synth · llm:deadline · goal g1: this round timed out with 0 output tokens (nothing served); its next round waits 45000 ms (2 × 1.5 on 20000 ms, capped at the ladder maximum 45000 ms)
+[step 2] synth · llm:deadline · goal g1: 2 consecutive rounds of this goal served nothing — its next round fires half as many samples at the grown deadline (never none: the step keeps its LLM candidates)
+[step 2] synth · llm:sample · k=0 timeout 30007 ms: 0 candidates, est. $0.0009 — deadline 30000 ms passed
+[step 2] synth · llm:sample · k=1 valid 9931 ms: 1 candidates
+[step 2] synth · llm:sample · k=2 valid 15627 ms: 1 candidates
+[step 2] synth · llm:round · goal g1 round 1: 3 fired, 2 valid, 0 malformed, 0 length, 1 timeout, 0 cancelled, 0 error, 2 distinct candidates, 36275 ms, $0.0019 (est. $0.0009)
+[step 2] synth · verify · g1: 392 tested on 8 lanes (392 unchanged); runs left 607, test wall left 48 s; run median 330 ms, t_run 330 ms · 392 candidates, 392 tested
+[step 2] synth · verify · g1: 141 tested on 8 lanes (141 unchanged); runs left 466, test wall left 42 s; run median 242 ms, t_run 242 ms · 141 candidates, 141 tested
+[step 2] synth · verify · g1: 2 tested on 8 lanes (1 regressed, 1 plausible); runs left 462, test wall left 41 s; run median 200 ms, t_run 200 ms; streamed batch ended on its first passer · 2 candidates, 2 tested
+[step 2] synth · llm:phase · g1: round 1 (ladder) batch 1: 2 LLM candidates classified as they streamed in; a passer landed — deciding now with the round closed
+[step 2] synth · guard · g1: holds the lone passer llm/sample_2_0 at src/hunks.py:31:replace as suspect (adds_special_case; general 0.13 < 0.3): never released on the budget reserve — the step ends on its partial or parks unless a later passer wins
+[step 2] synth · llm:fire · goal g1 round 2: 2 consecutive rounds of this goal served nothing — firing 2 of 3 samples at 45000 ms instead of the full round
+[step 2] synth · llm:fire · goal g1 round 2 (ladder): 2/3 samples fired, deadline 45000 ms (backed off 2 × 1.5 from 31254 ms after 2 zero-token timeouts on this goal; the ladder maximum is 45000 ms), max_tokens 3000, $0.0038 reserved
+[step 2] synth · llm:feedback · g1: round 1 ran 2 candidates without a passer; feedback round L1′ (1 of 2 this run) with the verdicts and 3 more listing members
+[step 2] synth · llm:sample · k=1 valid 12742 ms: 2 candidates
+[step 2] synth · verify · g1: 2 tested on 8 lanes (1 plausible, 1 regressed); runs left 458, test wall left 28 s; run median 183 ms, t_run 183 ms; streamed batch ended on its first passer · 2 candidates, 2 tested
+[step 2] synth · llm:phase · g1: round 2 (ladder) batch 1: 2 LLM candidates classified as they streamed in; a passer landed — deciding now with the round still in flight
+[step 2] synth · llm:sample · k=0 valid 21109 ms: 2 candidates
+[step 2] synth · llm:round · goal g1 round 2: 2 fired, 2 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 4 distinct candidates, 21177 ms, $0.0015
+[step 2] synth · verify · g1: 1 tested on 8 lanes (1 plausible); runs left 455, test wall left 20 s; run median 172 ms, t_run 172 ms; streamed batch ended on its first passer · 2 candidates, 1 tested
+[step 2] synth · llm:phase · g1: round 2 (ladder) batch 2: 1 LLM candidate classified as they streamed in; a passer landed — deciding now with the round closed
+[step 2] synth · guard · g1: harvested 34 test calls over 18 functions of src.apply, src.hunks, src.merge, src.preview, src.text (tests/test_hunks.py); 32 perturbed inputs for the probe
+[step 2] synth · guard · g1: arbitrated 2 passers (1 held) in 1 cluster (probe 32 inputs, 2/2 signatures); escape 0.70, max general 0.20; all-overfit signature
+[step 2] synth · guard · g1: all-overfit signature (escape 0.70 ≥ 0.5, max general 0.20 < 0.3); dropping the 2 passers (kept in tried, none is committed); searching on
+[step 2] synth · verify · g1: 0 tested on 8 lanes (nothing ran); runs left 455, test wall left 20 s · 0 candidates, 0 tested
+[step 2] synth · verify · g1: 0 tested on 8 lanes (nothing ran); runs left 455, test wall left 20 s · 0 candidates, 0 tested
+[step 2] synth · verify · g1: 0 tested on 8 lanes (nothing ran); runs left 455, test wall left 20 s · 0 candidates, 0 tested
+[step 2] synth · search · g1 parked: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset (phase SKETCH, SIEVE, sites 11, requests 18, runs 1044, plausible 3) · 1156 candidates, 1039 tested
+[step 2] synth · goal · g2: fix tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line in tests/test_hunks.py (1 test, attempt 1, picked by jev)
+[step 2] synth · llm:fire · g2 round 1: skipped (LLM counters spent: 0 rounds, 1 samples, $0.0028 left)
+[step 2] synth · search · g2 budget (phase SEEDS, SIEVE, sites 11, requests 10, runs 0, plausible 0) · 0 candidates, 0 tested
+[step 2] synth · budget · g2: budget-hit step 1 of 4 (nothing new: 1 of 2 stagnant); the goal stays open
+[step 2] synth · ledger · fixed 0, open 5, parked 1
+[step 2] proposal · run $ python3 -m pytest -q 'tests/test_hunks.py' · "record the failing behaviour of tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line"
+[step 2] intent · verify · 1.00 (confidence 1.00)
+[step 2] risk 0.00 ok · destructive 0 · irreversible 0
+[step 2] done · exit 1 · exit 1 · 173ms
+[step 2] judge 0.00 · tests 8p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 2] plan · 0 done · 7 remaining
+[step 2] run $ python3 -m pytest -q 'tests/test_hunk… · risk 0.00 ok · tests 8p/4f/0e · judge 0.00 · 1m16s · $0.009
+[step 3] synth · goal · g2: fix tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line in tests/test_hunks.py (1 test, attempt 2, picked by jev)
+[step 3] synth · llm:deadline · the serving provider is slow (served p90 21109 ms > the ladder default deadline 20000 ms): every further sample of this run caps reasoning at 512 tokens to shorten it
+[step 3] synth · llm:fire · goal g2 round 1 (ladder): 1/3 samples fired, staggered, deadline 42218 ms (adapted from the served p90 21109 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0018 reserved
+[step 3] synth · llm:fire · goal g2 round 1: released 2 more samples (top-site seeds returned no passer), $0.0054 reserved
+[step 3] synth · llm:release · g2: samples 1..2 released (the top site has no seed candidates)
+[step 3] synth · site · g2: src/apply.py:20:insert (gap, indent 8) on committed: mutation 0, template 0, donor 30 — insert after anchor L19
+[step 3] synth · site · g2: src/apply.py:19:insert (gap, indent 8) on committed: mutation 0, template 0, donor 29 — insert before anchor L19
+[step 3] synth · site · g2: src/apply.py:25:insert (gap, indent 4) on committed: mutation 0, template 0, donor 30 — exit gap of the loop enclosing L19; gap after L24 (block_end, dedent 1)
+[step 3] synth · site · g2: src/merge.py:32:insert (gap, indent 8) on committed: mutation 0, template 0, donor 1 — insert after anchor L31
+[step 3] synth · site · g2: src/hunks.py:31:replace on committed: mutation 48, template 38, donor 48 — jev anchor #1 in Hunk.index
+[step 3] synth · verify · g2: 116 tested on 8 lanes (29 unchanged, 87 regressed); runs left 1383, test wall left 85 s; run median 284 ms, t_run 284 ms; load ×2.3, case timeout 500→1131 ms · 116 candidates, 116 tested
+[step 3] synth · verify · g2: 101 tested on 8 lanes (79 regressed, 21 unchanged, 1 partial); runs left 1281, test wall left 81 s; run median 260 ms, t_run 260 ms · 101 candidates, 101 tested
+[step 3] synth · site · g2: src/apply.py:19:replace on committed: mutation 86, template 52, donor 249 — jev anchor #1 in apply
+[step 3] synth · llm:sample · k=0 valid 10861 ms: 1 candidates
+[step 3] synth · llm:sample · k=1 valid 16932 ms: 0 candidates (duplicate)
+[step 3] synth · verify · g2: 338 tested on 8 lanes (338 unchanged); runs left 943, test wall left 68 s; run median 257 ms, t_run 257 ms · 338 candidates, 338 tested
+[step 3] synth · llm:sample · k=2 valid 29430 ms: 1 candidates
+[step 3] synth · llm:round · goal g2 round 1: 3 fired, 3 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 2 distinct candidates, 29468 ms, $0.0018
+[step 3] synth · verify · g2: 120 tested on 8 lanes (120 unchanged); runs left 823, test wall left 62 s; run median 301 ms, t_run 301 ms · 120 candidates, 120 tested
+[step 3] synth · site · g2: src/merge.py:31:replace on committed: mutation 109, template 99, donor 146 — jev anchor #1 in merge
+[step 3] synth · verify · g2: 309 tested on 8 lanes (309 unchanged); runs left 514, test wall left 47 s; run median 291 ms, t_run 291 ms · 309 candidates, 309 tested
+[step 3] synth · verify · g2: 106 tested on 8 lanes (106 unchanged); runs left 408, test wall left 41 s; run median 293 ms, t_run 293 ms · 106 candidates, 106 tested
+[step 3] synth · site · g2: src/merge.py:33:replace on committed: mutation 176, template 114, donor 80 — jev anchor #2 in merge
+[step 3] synth · verify · g2: 334 tested on 8 lanes (334 unchanged); runs left 74, test wall left 25 s; run median 313 ms, t_run 313 ms · 334 candidates, 334 tested
+[step 3] synth · site · g2: src/merge.py:22:replace on committed: mutation 2, template 6, donor 1 — jev anchor #1 in conflicts
+[step 3] synth · verify · g2: 6 tested on 8 lanes (6 unchanged); runs left 68, test wall left 25 s; run median 260 ms, t_run 260 ms · 6 candidates, 6 tested
+[step 3] synth · verify · g2: 2 tested on 8 lanes (1 regressed, 1 plausible); runs left 64, test wall left 24 s; run median 191 ms, t_run 191 ms; streamed batch ended on its first passer · 2 candidates, 2 tested
+[step 3] synth · llm:phase · g2: round 1 (ladder) batch 1: 2 LLM candidates classified as they streamed in; a passer landed — deciding now with the round closed
+[step 3] synth · guard · g2: holds the lone passer llm/sample_2_0 at src/hunks.py:31:replace as suspect (deletes_statement, adds_special_case; general 0.11 < 0.3): never released on the budget reserve — the step ends on its partial or parks unless a later passer wins
+[step 3] synth · llm:fire · goal g2 round 2 (ladder): 2/3 samples fired, deadline 45000 ms (adapted from the served p90 29430 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0038 reserved
+[step 3] synth · llm:feedback · g2: round 1 ran 2 candidates without a passer; feedback round L1′ (1 of 2 this run) with the verdicts and 3 more listing members
+[step 3] synth · verify · g2: 0 tested on 8 lanes (nothing ran); runs left 64, test wall left 0 s · 0 candidates, 0 tested
+[step 3] synth · llm:phase · g2: round 2 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 3] synth · llm:cancel · goal g2 round 2: 2 in-flight samples cancelled (budget), metered from what they streamed
+[step 3] warning · generator retried 2 times over 454ms — gave up
+[step 3] warning · generator retried 2 times over 469ms — gave up
+[step 3] synth · llm:sample · k=0 cancelled 23990 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 3] synth · llm:sample · k=1 cancelled 23990 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 3] synth · llm:round · goal g2 round 2: 2 fired, 0 valid, 0 malformed, 0 length, 0 timeout, 2 cancelled, 0 error, 0 distinct candidates, 23991 ms, $0.0018 (est. $0.0018)
+[step 3] synth · verify · g2: 0 tested on 8 lanes (nothing ran); runs left 64, test wall left 0 s · 0 candidates, 0 tested
+[step 3] synth · guard · g2: the budget reserve is spent but the held suspect llm/sample_2_0 at src/hunks.py:31:replace (general 0.11 < 0.3) is not released; the step ends on its partial or parks
+[step 3] synth · verify · g2: 0 tested on 8 lanes (nothing ran); runs left 64, test wall left 0 s · 0 candidates, 0 tested
+[step 3] synth · guard · g2: the budget reserve is spent but the held suspect llm/sample_2_0 at src/hunks.py:31:replace (general 0.11 < 0.3) is not released; the step ends on its partial or parks
+[step 3] synth · verify · g2: 0 tested on 8 lanes (nothing ran); runs left 64, test wall left 0 s · 0 candidates, 0 tested
+[step 3] synth · guard · g2: the budget reserve is spent but the held suspect llm/sample_2_0 at src/hunks.py:31:replace (general 0.11 < 0.3) is not released; the step ends on its partial or parks
+[step 3] synth · verify · g2: 0 tested on 8 lanes (nothing ran); runs left 64, test wall left 0 s · 0 candidates, 0 tested
+[step 3] synth · guard · g2: the budget reserve is spent but the held suspect llm/sample_2_0 at src/hunks.py:31:replace (general 0.11 < 0.3) is not released; the step ends on its partial or parks
+[step 3] synth · verify · g2: 0 tested on 8 lanes (nothing ran); runs left 64, test wall left 0 s · 0 candidates, 0 tested
+[step 3] synth · guard · g2: the budget reserve is spent but the held suspect llm/sample_2_0 at src/hunks.py:31:replace (general 0.11 < 0.3) is not released; the step ends on its partial or parks
+[step 3] synth · verify · g2: full-suite regression run of the held partial composite/pair:near_duplicate_rebind>off_by_one_atom at src/hunks.py:31: 30/42 pass, 12 failed, 0 errors in 255 ms · 1 candidates, 1 tested
+[step 3] synth · progress · g2: the held partial composite/pair:near_duplicate_rebind>off_by_one_atom at src/hunks.py:31 is no partial on the full suite (7 newly failing, 0 of 1 goal tests newly passing); dropped
+[step 3] synth · search · g2 budget (phase SKETCH, SIEVE, sites 11, requests 30, runs 1437, plausible 1) · 1934 candidates, 1432 tested
+[step 3] synth · ledger · fixed 0, open 4, parked 2
+[step 3] proposal · run $ python3 -m pytest -q 'tests/test_hunks.py' · "record the failing behaviour of tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line"
+[step 3] intent · verify · 1.00 (confidence 1.00)
+[step 3] risk 0.00 ok · destructive 0 · irreversible 0
+[step 3] done · exit 1 · exit 1 · 190ms
+[step 3] judge 0.00 · tests 8p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 3] loop · the same step repeated 3 times · run:54ec57189e30:cb2878abcdc5
+[step 3] run $ python3 -m pytest -q 'tests/test_hunk… · risk 0.00 ok · tests 8p/4f/0e · judge 0.00 · 1m37s · $0.010
+[step 4] replan · gather context · 0.70 (confidence 0.64) · "After repeating the same run command with the same result 3 times, Jev directs `gather_context` (p=0.70, task_impossible=0.00): read or search the code and its tests before acting again, because the repeated step was based on a wrong assumption."
+[step 4] synth · directive · gather_context: rotated source order of g3 (1); rotated source order of g4 (1); rotated source order of g5 (1); rotated source order of g6 (1); file beam 5 → 10; re-localise g3, g4, g5, g6 with the latest failure text
+[step 4] synth · goal · g3: fix tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index in tests/test_hunks.py (1 test, attempt 1, picked by jev)
+[step 4] synth · llm:fire · goal g3 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 29430 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0018 reserved
+[step 4] synth · llm:fire · goal g3 round 1: released 2 more samples (top-site seeds returned no passer), $0.0054 reserved
+[step 4] synth · llm:release · g3: samples 1..2 released (the top site has no seed candidates)
+[step 4] synth · site · g3: src/hunks.py:31:insert (gap, indent 8) on committed: template 5, donor 0, mutation 0 — insert before anchor L31
+[step 4] synth · verify · g3: 5 tested on 8 lanes (5 unchanged); runs left 1495, test wall left 91 s; run median 228 ms, t_run 228 ms · 5 candidates, 5 tested
+[step 4] synth · site · g3: src/apply.py:20:insert (gap, indent 8) on committed: template 7, donor 30, mutation 0 — insert after anchor L19
+[step 4] synth · verify · g3: 7 tested on 8 lanes (7 unchanged); runs left 1488, test wall left 90 s; run median 286 ms, t_run 286 ms · 7 candidates, 7 tested
+[step 4] synth · site · g3: src/apply.py:19:insert (gap, indent 8) on committed: template 7, donor 29, mutation 0 — insert before anchor L19
+[step 4] synth · verify · g3: 7 tested on 8 lanes (7 unchanged); runs left 1481, test wall left 90 s; run median 269 ms, t_run 269 ms · 7 candidates, 7 tested
+[step 4] synth · site · g3: src/apply.py:25:insert (gap, indent 4) on committed: template 8, donor 30, mutation 0 — exit gap of the loop enclosing L19; gap after L24 (block_end, dedent 1)
+[step 4] synth · verify · g3: 8 tested on 8 lanes (8 unchanged); runs left 1473, test wall left 90 s; run median 349 ms, t_run 349 ms · 8 candidates, 8 tested
+[step 4] synth · site · g3: src/merge.py:32:insert (gap, indent 8) on committed: template 5, donor 1, mutation 0 — insert after anchor L31
+[step 4] synth · verify · g3: 5 tested on 8 lanes (5 unchanged); runs left 1468, test wall left 89 s; run median 251 ms, t_run 251 ms · 5 candidates, 5 tested
+[step 4] synth · site · g3: src/hunks.py:31:replace on committed: template 6, donor 0, mutation 0 — jev anchor #1 in Hunk.index
+[step 4] synth · verify · g3: 5 tested on 8 lanes (3 unchanged, 2 regressed); runs left 1463, test wall left 89 s; run median 261 ms, t_run 261 ms · 5 candidates, 5 tested
+[step 4] synth · site · g3: src/apply.py:19:replace on committed: template 2, donor 30, mutation 2 — jev anchor #1 in apply
+[step 4] synth · verify · g3: 2 tested on 8 lanes (2 unchanged); runs left 1461, test wall left 89 s; run median 213 ms, t_run 213 ms · 2 candidates, 2 tested
+[step 4] synth · verify · g3: 6 tested on 8 lanes (6 unchanged); runs left 1455, test wall left 88 s; run median 271 ms, t_run 271 ms · 6 candidates, 6 tested
+[step 4] synth · site · g3: src/merge.py:31:replace on committed: template 5, donor 9, mutation 0 — jev anchor #1 in merge
+[step 4] synth · verify · g3: 5 tested on 8 lanes (5 unchanged); runs left 1450, test wall left 88 s; run median 378 ms, t_run 378 ms · 5 candidates, 5 tested
+[step 4] synth · verify · g3: 6 tested on 8 lanes (6 unchanged); runs left 1444, test wall left 88 s; run median 269 ms, t_run 269 ms · 6 candidates, 6 tested
+[step 4] synth · site · g3: src/merge.py:33:replace on committed: template 10, donor 3, mutation 0 — jev anchor #2 in merge
+[step 4] synth · verify · g3: 8 tested on 8 lanes (8 unchanged); runs left 1436, test wall left 87 s; run median 294 ms, t_run 294 ms · 8 candidates, 8 tested
+[step 4] synth · verify · g3: 106 tested on 8 lanes (106 unchanged); runs left 1330, test wall left 82 s; run median 303 ms, t_run 303 ms · 106 candidates, 106 tested
+[step 4] synth · site · g3: src/merge.py:22:replace on committed: template 9, donor 1, mutation 2 — jev anchor #1 in conflicts
+[step 4] synth · verify · g3: 8 tested on 8 lanes (8 unchanged); runs left 1322, test wall left 82 s; run median 242 ms, t_run 242 ms · 8 candidates, 8 tested
+[step 4] warning · generator retried 3 times over 1s — gave up
+[step 4] synth · llm:sample · k=1 error 17698 ms: 0 candidates — rate-limited (HTTP 429), nothing served: openrouter HTTP 429: Provider returned error
+[step 4] synth · llm:deadline · goal g3: this round timed out with 0 output tokens (nothing served); its next round waits 45000 ms (1 × 1.5 on 45000 ms, capped at the ladder maximum 45000 ms)
+[step 4] synth · llm:sample · k=0 timeout 45003 ms: 0 candidates, est. $0.0008 — deadline 45000 ms passed
+[step 4] synth · llm:sample · k=2 timeout 45001 ms: 0 candidates, est. $0.0008 — deadline 45000 ms passed
+[step 4] synth · llm:round · goal g3 round 1: 3 fired, 0 valid, 0 malformed, 0 length, 2 timeout, 0 cancelled, 1 error, 1 rate-limited (HTTP 429, nothing served), 0 distinct candidates, 45005 ms, $0.0016 (est. $0.0016)
+[step 4] synth · verify · g3: 0 tested on 8 lanes (nothing ran); runs left 1322, test wall left 46 s · 0 candidates, 0 tested
+[step 4] synth · llm:phase · g3: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 4] synth · search · g3 parked: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index (phase LLM, SIEVE, sites 11, requests 10, runs 178, plausible 0) · 404 candidates, 178 tested
+[step 4] synth · goal · g4: fix tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers in tests/test_hunks.py (1 test, attempt 1, picked by jev)
+[step 4] synth · llm:fire · goal g4 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 29430 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0018 reserved
+[step 4] synth · llm:fire · goal g4 round 1: released 1 more samples (top-site seeds returned no passer), $0.0035 reserved
+[step 4] synth · llm:release · g4: samples 1..2 released (the top site has no seed candidates)
+[step 4] synth · site · g4: src/hunks.py:31:insert (gap, indent 8) on committed: template 10, donor 0, mutation 0 — insert before anchor L31
+[step 4] synth · verify · g4: 10 tested on 8 lanes (8 unchanged, 2 regressed); runs left 1312, test wall left 46 s; run median 316 ms, t_run 316 ms · 10 candidates, 10 tested
+[step 4] synth · site · g4: src/merge.py:32:insert (gap, indent 8) on committed: template 10, donor 1, mutation 0 — insert after anchor L31
+[step 4] synth · verify · g4: 10 tested on 8 lanes (10 unchanged); runs left 1302, test wall left 45 s; run median 332 ms, t_run 332 ms · 10 candidates, 10 tested
+[step 4] synth · site · g4: src/merge.py:31:insert (gap, indent 4) on committed: template 10, donor 90, mutation 86 — insert before anchor L31
+[step 4] synth · verify · g4: 185 tested on 8 lanes (185 unchanged); runs left 1117, test wall left 37 s; run median 266 ms, t_run 266 ms · 185 candidates, 185 tested
+[step 4] synth · site · g4: src/apply.py:20:insert (gap, indent 8) on committed: template 14, donor 30, mutation 0 — insert after anchor L19
+[step 4] synth · verify · g4: 14 tested on 8 lanes (14 unchanged); runs left 1103, test wall left 36 s; run median 281 ms, t_run 281 ms · 14 candidates, 14 tested
+[step 4] synth · site · g4: src/apply.py:19:insert (gap, indent 8) on committed: template 14, donor 29, mutation 0 — insert before anchor L19
+[step 4] synth · verify · g4: 14 tested on 8 lanes (14 unchanged); runs left 1089, test wall left 35 s; run median 282 ms, t_run 282 ms · 14 candidates, 14 tested
+[step 4] synth · site · g4: src/hunks.py:31:replace on committed: template 4, donor 0, mutation 0 — jev anchor #1 in Hunk.index
+[step 4] synth · verify · g4: 2 tested on 8 lanes (2 unchanged); runs left 1087, test wall left 35 s; run median 201 ms, t_run 201 ms · 2 candidates, 2 tested
+[step 4] synth · site · g4: src/merge.py:31:replace on committed: template 0, donor 9, mutation 0 — jev anchor #1 in merge
+[step 4] synth · site · g4: src/apply.py:19:replace on committed: template 0, donor 30, mutation 2 — jev anchor #1 in apply
+[step 4] synth · site · g4: src/merge.py:33:replace on committed: template 14, donor 3, mutation 0 — jev anchor #2 in merge
+[step 4] synth · verify · g4: 12 tested on 8 lanes (12 unchanged); runs left 1075, test wall left 34 s; run median 311 ms, t_run 311 ms · 12 candidates, 12 tested
+[step 4] synth · site · g4: src/hunks.py:54:replace on committed: template 139, donor 99, mutation 141 — jev anchor #1 in replaced_lines
+[step 4] synth · llm:sample · k=0 valid 22129 ms: 0 candidates (tried)
+[step 4] synth · verify · g4: 342 tested on 8 lanes (79 unchanged, 263 regressed); runs left 733, test wall left 24 s; run median 184 ms, t_run 184 ms · 342 candidates, 342 tested
+[step 4] synth · verify · g4: 115 tested on 8 lanes (106 regressed, 9 unchanged); runs left 618, test wall left 21 s; run median 178 ms, t_run 178 ms · 115 candidates, 115 tested
+[step 4] synth · llm:sample · k=1 valid 32757 ms: 0 candidates (empty_old)
+[step 4] synth · llm:round · goal g4 round 1: 2 fired, 2 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 0 distinct candidates, 32760 ms, $0.0010
+[step 4] synth · verify · g4: 0 tested on 8 lanes (nothing ran); runs left 618, test wall left 14 s · 0 candidates, 0 tested
+[step 4] synth · llm:phase · g4: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 4] synth · verify · g4: 12 tested on 8 lanes (11 unchanged, 1 regressed); runs left 606, test wall left 13 s; run median 218 ms, t_run 218 ms · 12 candidates, 12 tested
+[step 4] synth · verify · g4: 6 tested on 8 lanes (6 regressed); runs left 600, test wall left 13 s; run median 208 ms, t_run 208 ms · 6 candidates, 6 tested
+[step 4] synth · search · g4 budget (phase SKETCH, SIEVE, sites 11, requests 18, runs 722, plausible 0) · 959 candidates, 722 tested
+[step 4] synth · budget · g4: budget-hit step 1 of 4 (nothing new: 1 of 2 stagnant); the goal stays open
+[step 4] synth · ledger · fixed 0, open 3, parked 3
+[step 4] proposal · run $ python3 -m pytest -q 'tests/test_hunks.py' · "record the failing behaviour of tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers"
+[step 4] intent · verify · 1.00 (confidence 1.00)
+[step 4] risk 0.00 ok · destructive 0 · irreversible 0
+[step 4] done · exit 1 · exit 1 · 115ms
+[step 4] judge 0.00 · tests 8p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 4] plan · 0 done · 7 remaining
+[step 4] run $ python3 -m pytest -q 'tests/test_hunk… · risk 0.00 ok · tests 8p/4f/0e · judge 0.00 · 1m22s · $0.005
+[step 5] synth · goal · g4: fix tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers in tests/test_hunks.py (1 test, attempt 2, picked by jev)
+[step 5] synth · llm:fire · goal g4 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 32757 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 5] synth · llm:fire · goal g4 round 1: released 2 more samples (top-site seeds returned no passer), $0.0056 reserved
+[step 5] synth · llm:release · g4: samples 1..2 released (the seed phase found no passer)
+[step 5] synth · llm:deadline · goal g4: this round timed out with 0 output tokens (nothing served); its next round waits 45000 ms (1 × 1.5 on 45000 ms, capped at the ladder maximum 45000 ms)
+[step 5] synth · llm:sample · k=0 timeout 45002 ms: 0 candidates, est. $0.0009 — deadline 45000 ms passed
+[step 5] synth · llm:sample · k=1 timeout 45001 ms: 0 candidates, est. $0.0009 — deadline 45000 ms passed
+[step 5] synth · llm:sample · k=2 timeout 45002 ms: 0 candidates, est. $0.0009 — deadline 45000 ms passed
+[step 5] synth · llm:round · goal g4 round 1: 3 fired, 0 valid, 0 malformed, 0 length, 3 timeout, 0 cancelled, 0 error, 0 distinct candidates, 45003 ms, $0.0026 (est. $0.0026)
+[step 5] synth · verify · g4: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 46 s · 0 candidates, 0 tested
+[step 5] synth · llm:phase · g4: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 5] synth · search · g4 parked: exhausted composite, donor, mutation, template, token_beam at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/merge.py:32 (gap), src/merge.py:31 (gap), +7 more) for tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers (phase LLM, SIEVE, sites 11, requests 0, runs 0, plausible 0) · 0 candidates, 0 tested
+[step 5] synth · goal · g5: fix tests/test_merge.py::test_merge_refuses_a_left_side_that_overlaps_itself in tests/test_merge.py (1 test, attempt 1, picked by jev)
+[step 5] synth · llm:fire · goal g5 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 32757 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0018 reserved
+[step 5] synth · llm:fire · goal g5 round 1: released 1 more samples (top-site seeds returned no passer), $0.0036 reserved
+[step 5] synth · llm:release · g5: samples 1..2 released (the top site has no seed candidates)
+[step 5] synth · site · g5: src/hunks.py:31:insert (gap, indent 8) on committed: template 5, donor 0, mutation 0 — insert before anchor L31
+[step 5] synth · verify · g5: 5 tested on 8 lanes (4 unchanged, 1 regressed); runs left 1490, test wall left 45 s; run median 644 ms, t_run 644 ms; load ×3.1, case timeout 500→1575 ms · 5 candidates, 5 tested
+[step 5] synth · site · g5: src/merge.py:32:insert (gap, indent 8) on committed: template 10, donor 1, mutation 0 — insert after anchor L31
+[step 5] synth · verify · g5: 10 tested on 8 lanes (8 unchanged, 2 regressed); runs left 1480, test wall left 43 s; run median 589 ms, t_run 589 ms · 10 candidates, 10 tested
+[step 5] synth · site · g5: src/merge.py:31:insert (gap, indent 4) on committed: template 10, donor 1, mutation 0 — insert before anchor L31
+[step 5] synth · verify · g5: 10 tested on 8 lanes (4 unchanged, 6 regressed); runs left 1470, test wall left 42 s; run median 698 ms, t_run 698 ms · 10 candidates, 10 tested
+[step 5] synth · site · g5: src/apply.py:20:insert (gap, indent 8) on committed: template 10, donor 30, mutation 0 — insert after anchor L19
+[step 5] synth · verify · g5: 10 tested on 8 lanes (8 unchanged, 2 regressed); runs left 1460, test wall left 41 s; run median 582 ms, t_run 582 ms · 10 candidates, 10 tested
+[step 5] synth · site · g5: src/apply.py:19:insert (gap, indent 8) on committed: template 11, donor 29, mutation 0 — insert before anchor L19
+[step 5] synth · verify · g5: 11 tested on 8 lanes (9 unchanged, 2 regressed); runs left 1449, test wall left 39 s; run median 614 ms, t_run 614 ms · 11 candidates, 11 tested
+[step 5] synth · site · g5: src/hunks.py:31:replace on committed: template 3, donor 0, mutation 0 — jev anchor #1 in Hunk.index
+[step 5] synth · verify · g5: 2 tested on 8 lanes (1 unchanged, 1 regressed); runs left 1447, test wall left 38 s; run median 635 ms, t_run 635 ms · 2 candidates, 2 tested
+[step 5] synth · site · g5: src/merge.py:31:replace on committed: template 0, donor 9, mutation 0 — jev anchor #1 in merge
+[step 5] synth · site · g5: src/apply.py:19:replace on committed: template 0, donor 30, mutation 2 — jev anchor #1 in apply
+[step 5] synth · site · g5: src/merge.py:22:replace on committed: template 14, donor 1, mutation 2 — jev anchor #1 in conflicts
+[step 5] synth · verify · g5: 12 tested on 8 lanes (8 unchanged, 4 regressed); runs left 1435, test wall left 37 s; run median 596 ms, t_run 596 ms · 12 candidates, 12 tested
+[step 5] synth · site · g5: src/merge.py:33:replace on committed: template 14, donor 3, mutation 0 — jev anchor #2 in merge
+[step 5] synth · verify · g5: 12 tested on 8 lanes (6 unchanged, 6 regressed); runs left 1423, test wall left 36 s; run median 633 ms, t_run 633 ms · 12 candidates, 12 tested
+[step 5] synth · site · g5: src/merge.py:17:replace on committed: template 95, donor 63, mutation 254 — jev anchor #1 in clashes
+[step 5] warning · generator retried 3 times over 1s — gave up
+[step 5] synth · llm:sample · k=1 error 17265 ms: 0 candidates — rate-limited (HTTP 429), nothing served: openrouter HTTP 429: Provider returned error
+[step 5] warning · generator retried 3 times over 1s — gave up
+[step 5] synth · llm:sample · k=0 error 17480 ms: 0 candidates — rate-limited (HTTP 429), nothing served: openrouter HTTP 429: Provider returned error
+[step 5] synth · llm:round · goal g5 round 1: 2 fired, 0 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 2 error, 2 rate-limited (HTTP 429, nothing served), 0 distinct candidates, 17480 ms, $0.0000; every fired sample was rate-limited — the round is not exhausted
+[step 5] synth · llm:round · g5 round 1: rate-limited, refunded — every fired sample (2) was answered HTTP 429 and nothing was served ($0 booked); the round and its 2 samples return to the step's LLM counters (1 rounds, 3 samples, $0.0039 left); not exhausted — the next step re-fires
+[step 5] synth · verify · g5: 369 tested on 8 lanes (40 unchanged, 329 regressed); runs left 1054, test wall left 0 s; run median 655 ms, t_run 655 ms · 369 candidates, 369 tested
+[step 5] synth · verify · g5: 0 tested on 8 lanes (nothing ran); runs left 1054, test wall left 0 s · 0 candidates, 0 tested
+[step 5] synth · llm:phase · g5: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 5] synth · search · g5 parked: exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/merge.py:32 (gap), src/merge.py:31 (gap), +8 more) for tests/test_merge.py::test_merge_refuses_a_left_side_that_overlaps_itself (phase LLM, SIEVE, sites 12, requests 11, runs 441, plausible 0) · 682 candidates, 441 tested
+[step 5] synth · ledger · fixed 0, open 1, parked 5
+[step 5] proposal · run $ python3 -m pytest -q 'tests/test_merge.py' · "record the failing behaviour of tests/test_merge.py::test_merge_refuses_a_left_side_that_overlaps_itself"
+[step 5] intent · verify · 1.00 (confidence 1.00)
+[step 5] risk 0.00 ok · destructive 0 · irreversible 0
+[step 5] done · exit 1 · exit 1 · 492ms
+[step 5] judge 0.00 · tests 7p/2f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 5] plan · 0 done · 7 remaining
+[step 5] run $ python3 -m pytest -q 'tests/test_merg… · risk 0.00 ok · tests 7p/2f/0e · judge 0.00 · 1m32s · $0.002
+[step 6] synth · goal · g6: fix tests/test_merge.py::test_merge_refuses_a_right_side_that_overlaps_itself in tests/test_merge.py (1 test, attempt 1, picked by single)
+[step 6] synth · llm:fire · goal g6 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 32757 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0018 reserved
+[step 6] synth · llm:fire · goal g6 round 1: released 2 more samples (top-site seeds returned no passer), $0.0054 reserved
+[step 6] synth · llm:release · g6: samples 1..2 released (the top site has no seed candidates)
+[step 6] synth · site · g6: src/merge.py:32:insert (gap, indent 8) on committed: template 0, donor 1, mutation 0 — insert after anchor L31
+[step 6] synth · site · g6: src/merge.py:31:insert (gap, indent 4) on committed: template 0, donor 1, mutation 0 — insert before anchor L31
+[step 6] synth · site · g6: src/apply.py:20:insert (gap, indent 8) on committed: template 0, donor 30, mutation 0 — insert after anchor L19
+[step 6] synth · site · g6: src/apply.py:19:insert (gap, indent 8) on committed: template 0, donor 29, mutation 0 — insert before anchor L19
+[step 6] synth · site · g6: src/hunks.py:31:replace on committed: template 1, donor 0, mutation 0 — jev anchor #1 in Hunk.index
+[step 6] synth · verify · g6: 1 tested on 8 lanes (1 regressed); runs left 1499, test wall left 89 s; run median 716 ms, t_run 716 ms · 1 candidates, 1 tested
+[step 6] synth · site · g6: src/merge.py:31:replace on committed: template 0, donor 9, mutation 0 — jev anchor #1 in merge
+[step 6] synth · site · g6: src/apply.py:19:replace on committed: template 0, donor 30, mutation 2 — jev anchor #1 in apply
+[step 6] synth · site · g6: src/merge.py:22:replace on committed: template 2, donor 1, mutation 2 — jev anchor #1 in conflicts
+[step 6] synth · verify · g6: 2 tested on 8 lanes (2 regressed); runs left 1497, test wall left 88 s; run median 721 ms, t_run 721 ms · 2 candidates, 2 tested
+[step 6] synth · site · g6: src/merge.py:33:replace on committed: template 2, donor 3, mutation 0 — jev anchor #2 in merge
+[step 6] synth · site · g6: src/merge.py:17:replace on committed: template 8, donor 24, mutation 4 — jev anchor #1 in clashes
+[step 6] synth · verify · g6: 10 tested on 8 lanes (9 regressed, 1 unchanged); runs left 1487, test wall left 87 s; run median 851 ms, t_run 851 ms · 10 candidates, 10 tested
+[step 6] synth · verify · g6: 100 tested on 8 lanes (100 regressed); runs left 1387, test wall left 77 s; run median 651 ms, t_run 651 ms · 100 candidates, 100 tested
+[step 6] warning · generator retried 3 times over 1s — gave up
+[step 6] synth · llm:sample · k=2 error 17876 ms: 0 candidates — rate-limited (HTTP 429), nothing served: openrouter HTTP 429: Provider returned error
+[step 6] synth · llm:sample · k=1 valid 39577 ms: 0 candidates (tried)
+[step 6] synth · llm:sample · k=0 valid 39816 ms: 0 candidates (tried)
+[step 6] synth · llm:round · goal g6 round 1: 3 fired, 2 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 1 error, 1 rate-limited (HTTP 429, nothing served), 0 distinct candidates, 39816 ms, $0.0009
+[step 6] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1387, test wall left 51 s · 0 candidates, 0 tested
+[step 6] synth · llm:phase · g6: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 6] synth · search · g6 parked: exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/merge.py:32 (gap), src/merge.py:31 (gap), +8 more) for tests/test_merge.py::test_merge_refuses_a_right_side_that_overlaps_itself (phase LLM, SIEVE, sites 12, requests 11, runs 113, plausible 0) · 382 candidates, 113 tested
+[step 6] synth · done · every goal parked: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; 2 consecutive budget-hit steps that tested nothing new; exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index; exhausted composite, donor, mutation, templa…
+[step 6] synth · ledger · fixed 0, open 0, parked 6
+[step 6] proposal · done partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: 2 consecutive budget-hit steps that tested nothing new; tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index: exhausted composite, donor, mutation, template at 11 s…
+[step 6] intent · finish · 1.00 (confidence 1.00)
+[step 6] risk 0.00 ok · destructive 0 · irreversible 0
+[step 6] done · partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: 2 consecutive budget-hit steps that tested nothing new; tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index: exhausted composite, donor, mutation, template at 11 sites (src…
+[step 6] judge skipped · complete n/a
+[step 6] plan · 0 done · 7 remaining
+[step 6] done partial: fixed 0 of 6 failing tests; te… · risk 0.00 ok · skipped · 40s · $0.001
+[step 7] synth · done · every goal parked: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; 2 consecutive budget-hit steps that tested nothing new; exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index; exhausted composite, donor, mutation, templa…
+[step 7] synth · ledger · fixed 0, open 0, parked 6
+[step 7] proposal · done partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: 2 consecutive budget-hit steps that tested nothing new; tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index: exhausted composite, donor, mutation, template at 11 s…
+[step 7] intent · finish · 1.00 (confidence 1.00)
+[step 7] risk 0.00 ok · destructive 0 · irreversible 0
+[step 7] done · partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: 2 consecutive budget-hit steps that tested nothing new; tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index: exhausted composite, donor, mutation, template at 11 sites (src…
+[step 7] judge skipped · complete n/a
+[step 7] done partial: fixed 0 of 6 failing tests; te… · risk 0.00 ok · skipped · 0.0s · $0.000
+[step 8] synth · done · every goal parked: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; 2 consecutive budget-hit steps that tested nothing new; exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index; exhausted composite, donor, mutation, templa…
+[step 8] synth · ledger · fixed 0, open 0, parked 6
+[step 8] proposal · done partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: 2 consecutive budget-hit steps that tested nothing new; tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index: exhausted composite, donor, mutation, template at 11 s…
+[step 8] intent · finish · 1.00 (confidence 1.00)
+[step 8] risk 0.00 ok · destructive 0 · irreversible 0
+[step 8] done · partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: 2 consecutive budget-hit steps that tested nothing new; tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index: exhausted composite, donor, mutation, template at 11 sites (src…
+[step 8] judge skipped · complete n/a
+[step 8] loop · the same step repeated 3 times · done:132083b89f82
+[step 8] done partial: fixed 0 of 6 failing tests; te… · risk 0.00 ok · skipped · 0.0s · $0.000
+[step 9] replan · gather context · 0.97 (confidence 0.96) · "After repeating the same done proposal 3 times, Jev directs `gather_context` (p=0.97, task_impossible=0.00): read or search the code and its tests before acting again, because the repeated step was based on a wrong assumption."
+[step 9] synth · directive · gather_context: reopened g1, g2, g3, g4, g5, g6 (parked by the search; attempts reset for the re-localisation); rotated source order of g1 (1); sites of g1 dropped; rotated source order of g2 (1); sites of g2 dropped; rotated source order of g3 (2); sites of g3 dropped; rotated source order of g4 (2); sites of g4 dropped; rotated source order of g5 (2); sites of g5 dropped; rotated source order of g6 (2); sites of g6 dropped; re-localise g1, g2, g3, g4, g5, g6 with the latest failure text
+[step 9] synth · goal · g1: fix tests/test_hunks.py::test_index_is_the_zero_based_offset in tests/test_hunks.py (1 test, attempt 1, picked by jev)
+[step 9] synth · llm:fire · goal g1 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (backed off 2 × 1.5 from 45000 ms after 2 zero-token timeouts on this goal; the ladder maximum is 45000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 9] synth · llm:fire · goal g1 round 1: released 2 more samples (top-site seeds returned no passer), $0.0057 reserved
+[step 9] synth · llm:release · g1: samples 1..2 released (the seed phase found no passer)
+[step 9] synth · verify · g1: 1 tested on 8 lanes (1 plausible); runs left 1498, test wall left 89 s; run median 378 ms, t_run 378 ms; streamed batch ended on its first passer · 1 candidates, 1 tested
+[step 9] synth · llm:phase · g1: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in (+1 seed leftover); a passer landed — deciding now with the round still in flight
+[step 9] synth · guard · g1: holds the lone passer llm/sample_0_1 at src/hunks.py:31:replace as suspect (adds_special_case; general 0.10 < 0.3): never released on the budget reserve — the step ends on its partial or parks unless a later passer wins
+[step 9] warning · generator retried 2 times over 482ms — gave up
+[step 9] synth · llm:deadline · goal g1: this round timed out with 0 output tokens (nothing served); its next round waits 45000 ms (3 × 1.5 on 45000 ms, capped at the ladder maximum 45000 ms)
+[step 9] synth · llm:sample · k=0 timeout 45003 ms: 0 candidates, est. $0.0009 — deadline 45000 ms passed
+[step 9] warning · generator retried 2 times over 496ms — gave up
+[step 9] synth · llm:sample · k=1 timeout 45001 ms: 0 candidates, est. $0.0009 — deadline 45000 ms passed
+[step 9] synth · llm:sample · k=2 timeout 45001 ms: 0 candidates, est. $0.0009 — deadline 45000 ms passed
+[step 9] synth · llm:round · goal g1 round 1: 3 fired, 0 valid, 0 malformed, 0 length, 3 timeout, 0 cancelled, 0 error, 0 distinct candidates, 45006 ms, $0.0027 (est. $0.0027)
+[step 9] synth · verify · g1: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 45 s · 0 candidates, 0 tested
+[step 9] synth · llm:phase · g1: round 1 (ladder) batch 2: 0 LLM candidates classified as they streamed in
+[step 9] synth · search · g1 parked: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset (phase LLM, SIEVE, sites 11, requests 11, runs 2, plausible 1) · 0 candidates, 1 tested
+[step 9] synth · goal · g2: fix tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line in tests/test_hunks.py (1 test, attempt 1, picked by jev)
+[step 9] synth · llm:fire · goal g2 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 39577 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 9] synth · site · g2: src/hunks.py:35:replace on committed: template 91, donor 27, mutation 88 — jev anchor #1 in Hunk.last_index
+[step 9] synth · llm:sample · k=0 valid 10714 ms: 1 candidates
+[step 9] synth · verify · g2: 177 tested on 8 lanes (174 unchanged, 3 plausible); runs left 1318, test wall left 28 s; run median 602 ms, t_run 602 ms · 177 candidates, 177 tested
+[step 9] synth · grace · g2: a seed passer landed with the LLM round in flight; waited 0 ms of 6000 for sample 0 — 1 LLM candidate arrived, running them before the decision
+[step 9] synth · verify · g2: 1 tested on 8 lanes (1 regressed); runs left 1316, test wall left 26 s; run median 751 ms, t_run 751 ms · 1 candidates, 1 tested
+[step 9] synth · guard · g2: harvested 34 test calls over 18 functions of src.apply, src.hunks, src.merge, src.preview, src.text (tests/test_hunks.py); 32 perturbed inputs for the probe
+[step 9] synth · guard · g2: arbitrated 3 passers (0 held) in 1 cluster (probe 32 inputs, 3/3 signatures); escape 0.70, max general 0.16; all-overfit signature
+[step 9] synth · guard · g2: all-overfit signature (escape 0.70 ≥ 0.5, max general 0.16 < 0.3); dropping the 3 passers (kept in tried, none is committed); searching on
+[step 9] synth · verify · g2: 0 tested on 8 lanes (nothing ran); runs left 1316, test wall left 26 s · 0 candidates, 0 tested
+[step 9] synth · llm:fire · goal g2 round 1: released 2 more samples (top-site seeds returned no passer), $0.0041 reserved
+[step 9] synth · llm:release · g2: samples 1..2 released (the seed phase found no passer)
+[step 9] synth · verify · g2: 0 tested on 8 lanes (nothing ran); runs left 1316, test wall left 26 s · 0 candidates, 0 tested
+[step 9] synth · llm:phase · g2: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 9] synth · llm:cancel · goal g2 round 1: 2 in-flight samples cancelled (budget), metered from what they streamed
+[step 9] synth · llm:sample · k=1 cancelled 31 ms: 0 candidates, est. $0.0010 — llm sample cancelled: budget
+[step 9] synth · llm:sample · k=2 cancelled 31 ms: 0 candidates, est. $0.0010 — llm sample cancelled: budget
+[step 9] synth · llm:round · goal g2 round 1: 3 fired, 1 valid, 0 malformed, 0 length, 0 timeout, 2 cancelled, 0 error, 1 distinct candidates, 19782 ms, $0.0027 (est. $0.0021)
+[step 9] synth · verify · g2: 0 tested on 8 lanes (nothing ran); runs left 1316, test wall left 26 s · 0 candidates, 0 tested
+[step 9] synth · search · g2 budget (phase SKETCH, SIEVE, sites 12, requests 17, runs 182, plausible 3) · 321 candidates, 178 tested
+[step 9] synth · budget · g2: budget-hit step 1 of 4 (nothing new: 1 of 2 stagnant); the goal stays open
+[step 9] synth · ledger · fixed 0, open 5, parked 1
+[step 9] proposal · run $ python3 -m pytest -q 'tests/test_hunks.py' · "record the failing behaviour of tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line"
+[step 9] intent · verify · 1.00 (confidence 1.00)
+[step 9] risk 0.00 ok · destructive 0 · irreversible 0
+[step 9] done · exit 1 · exit 1 · 472ms
+[step 9] judge 0.00 · tests 8p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 9] plan · 0 done · 7 remaining
+[step 9] run $ python3 -m pytest -q 'tests/test_hunk… · risk 0.00 ok · tests 8p/4f/0e · judge 0.00 · 1m6s · $0.003
+[step 10] synth · goal · g2: fix tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line in tests/test_hunks.py (1 test, attempt 2, picked by jev)
+[step 10] synth · llm:fire · goal g2 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 39577 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 10] synth · verify · g2: 101 tested on 8 lanes (95 unchanged, 3 partial, 3 plausible); runs left 1396, test wall left 83 s; run median 759 ms, t_run 759 ms · 101 candidates, 101 tested
+[step 10] synth · guard · g2: arbitrated 3 passers (0 held) in 1 cluster (probe 32 inputs, 3/3 signatures); escape 0.78, max general 0.12; all-overfit signature
+[step 10] synth · guard · g2: all-overfit signature (escape 0.78 ≥ 0.5, max general 0.12 < 0.3); dropping the 3 passers (kept in tried, none is committed); searching on with the batch's best partial held
+[step 10] synth · llm:fire · goal g2 round 1: released 2 more samples (top-site seeds returned no passer), $0.0057 reserved
+[step 10] synth · llm:release · g2: samples 1..2 released (the seed phase found no passer)
+[step 10] warning · generator retried 3 times over 1s — gave up
+[step 10] synth · llm:sample · k=0 error 17822 ms: 0 candidates — rate-limited (HTTP 429), nothing served: openrouter HTTP 429: Provider returned error
+[step 10] synth · llm:deadline · goal g2: this round timed out with 0 output tokens (nothing served); its next round waits 45000 ms (1 × 1.5 on 45000 ms, capped at the ladder maximum 45000 ms)
+[step 10] synth · llm:sample · k=1 timeout 45004 ms: 0 candidates, est. $0.0009 — deadline 45000 ms passed
+[step 10] synth · llm:sample · k=2 timeout 45011 ms: 0 candidates, est. $0.0009 — deadline 45000 ms passed
+[step 10] synth · llm:round · goal g2 round 1: 3 fired, 0 valid, 0 malformed, 0 length, 2 timeout, 0 cancelled, 1 error, 1 rate-limited (HTTP 429, nothing served), 0 distinct candidates, 56951 ms, $0.0018 (est. $0.0018)
+[step 10] synth · verify · g2: 0 tested on 8 lanes (nothing ran); runs left 1396, test wall left 38 s · 0 candidates, 0 tested
+[step 10] synth · llm:phase · g2: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 10] synth · verify · g2: full-suite regression run of the held partial composite/pair:arithmetic_swap>off_by_one_literal at src/hunks.py:35: 37/42 pass, 5 failed, 0 errors in 561 ms · 1 candidates, 1 tested
+[step 10] synth · progress · g2: the held partial composite/pair:arithmetic_swap>off_by_one_literal at src/hunks.py:35 is no partial on the full suite (0 newly failing, 0 of 1 goal tests newly passing); dropped
+[step 10] synth · search · g2 parked: exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +8 more) for tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line (phase LLM, SIEVE, sites 12, requests 1, runs 105, plausible 3) · 108 candidates, 101 tested
+[step 10] synth · goal · g3: fix tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index in tests/test_hunks.py (1 test, attempt 1, picked by jev)
+[step 10] synth · llm:fire · goal g3 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (backed off 1 × 1.5 from 45000 ms after 1 zero-token timeout on this goal; the ladder maximum is 45000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 10] synth · llm:fire · goal g3 round 1: released 2 more samples (top-site seeds returned no passer), $0.0057 reserved
+[step 10] synth · llm:release · g3: samples 1..2 released (the seed phase found no passer)
+[step 10] synth · verify · g3: 0 tested on 8 lanes (nothing ran); runs left 1395, test wall left 1 s · 0 candidates, 0 tested
+[step 10] synth · llm:phase · g3: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 10] synth · llm:cancel · goal g3 round 1: 3 in-flight samples cancelled (budget), metered from what they streamed
+[step 10] warning · generator retried 2 times over 377ms — gave up
+[step 10] synth · llm:sample · k=0 cancelled 37046 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 10] synth · llm:sample · k=1 cancelled 37045 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 10] synth · llm:sample · k=2 cancelled 37045 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 10] synth · llm:round · goal g3 round 1: 3 fired, 0 valid, 0 malformed, 0 length, 0 timeout, 3 cancelled, 0 error, 0 distinct candidates, 37047 ms, $0.0027 (est. $0.0027)
+[step 10] synth · verify · g3: 0 tested on 8 lanes (nothing ran); runs left 1395, test wall left 1 s · 0 candidates, 0 tested
+[step 10] synth · verify · g3: 0 tested on 8 lanes (nothing ran); runs left 1395, test wall left 1 s · 0 candidates, 0 tested
+[step 10] synth · search · g3 budget (phase SKETCH, RANK, sites 11, requests 27, runs 0, plausible 0) · 28 candidates, 0 tested
+[step 10] synth · budget · g3: budget-hit step 1 of 4 (nothing new: 1 of 2 stagnant); the goal stays open
+[step 10] synth · ledger · fixed 0, open 4, parked 2
+[step 10] proposal · run $ python3 -m pytest -q 'tests/test_hunks.py' · "record the failing behaviour of tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index"
+[step 10] intent · verify · 1.00 (confidence 1.00)
+[step 10] risk 0.00 ok · destructive 0 · irreversible 0
+[step 10] done · exit 1 · exit 1 · 611ms
+[step 10] judge 0.00 · tests 8p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 10] loop · the same step repeated 3 times · run:54ec57189e30:cb2878abcdc5
+[step 10] plan · 0 done · 7 remaining
+[step 10] run $ python3 -m pytest -q 'tests/test_hunk… · risk 0.00 ok · tests 8p/4f/0e · judge 0.00 · 1m38s · $0.007
+[step 11] replan · change approach · 0.99 (confidence 0.99) · "After repeating the same run command with the same result 3 times with gather_context already directed at step 4 and the output unchanged, Jev directs `change_approach` (p=0.99, escalation=SEEDS → SKETCH/WIDENED): escalate the search phase SEEDS → SKETCH/WIDENED — rotate the goal's source order, reopen every parked goal, widen the site beam and allow the WIDENED phase, instead of repeating a step that has not moved."
+[step 11] synth · directive · change_approach: rotated source order of g3 (3); sites of g3 rebuilt; site beam 6 → 10; WIDENED phase enabled over the beam functions
+[step 11] synth · goal · g3: fix tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index in tests/test_hunks.py (1 test, attempt 2, picked by jev)
+[step 11] synth · llm:fire · goal g3 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (backed off 1 × 1.5 from 45000 ms after 1 zero-token timeout on this goal; the ladder maximum is 45000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 11] synth · site · g3: src/merge.py:31:insert (gap, indent 4) on committed: mutation 0, template 0, donor 1 — insert before anchor L31
+[step 11] synth · llm:fire · goal g3 round 1: released 2 more samples (top-site seeds returned no passer), $0.0057 reserved
+[step 11] synth · llm:release · g3: samples 1..2 released (the seed phase found no passer)
+[step 11] synth · llm:sample · k=0 valid 13276 ms: 0 candidates (tried)
+[step 11] synth · llm:sample · k=1 valid 13310 ms: 0 candidates (tried)
+[step 11] synth · llm:sample · k=2 timeout 45000 ms: 0 candidates, est. $0.0010 — deadline 45000 ms passed
+[step 11] synth · llm:round · goal g3 round 1: 3 fired, 2 valid, 0 malformed, 0 length, 1 timeout, 0 cancelled, 0 error, 0 distinct candidates, 45018 ms, $0.0019 (est. $0.0010)
+[step 11] synth · verify · g3: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 29 s · 0 candidates, 0 tested
+[step 11] synth · llm:phase · g3: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 11] synth · widened · g3: 21 sites (10 gaps, 11 lines) over 5 functions, by line evidence then distance from L31, cut 24; resuming at 0: src/merge.py:22 (gap, indent 4), src/merge.py:33 (gap, indent 4), src/merge.py:32
+[step 11] synth · site · g3: src/merge.py:22:insert (gap, indent 4) on committed: mutation 86, template 0, donor 90 — gap after L21 (mid_block); in conflicts
+[step 11] synth · verify · g3: 175 tested on 8 lanes (175 unchanged); runs left 1325, test wall left 14 s; run median 548 ms, t_run 548 ms · 175 candidates, 175 tested
+[step 11] synth · site · g3: src/merge.py:33:insert (gap, indent 4) on committed: mutation 86, template 6, donor 89 — gap after L32 (block_end, dedent 1); in merge
+[step 11] synth · verify · g3: 149 tested on 8 lanes (149 unchanged); runs left 1176, test wall left 0 s; run median 633 ms, t_run 633 ms · 149 candidates, 149 tested
+[step 11] synth · widened · g3: WIDENED cost 520 candidates enumerated, 324 tested, 324 runs; cursor 6/21
+[step 11] synth · search · g3 budget (phase WIDENED, RANK, sites 33, requests 10, runs 324, plausible 0) · 521 candidates, 324 tested
+[step 11] synth · ledger · fixed 0, open 3, parked 3
+[step 11] proposal · run $ python3 -m pytest -q 'tests/test_hunks.py' · "record the failing behaviour of tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index"
+[step 11] intent · verify · 1.00 (confidence 1.00)
+[step 11] risk 0.00 ok · destructive 0 · irreversible 0
+[step 11] done · exit 1 · exit 1 · 460ms
+[step 11] judge 0.00 · tests 8p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 11] plan · 0 done · 7 remaining
+[step 11] run $ python3 -m pytest -q 'tests/test_hunk… · risk 0.00 ok · tests 8p/4f/0e · judge 0.00 · 1m14s · $0.001
+[step 12] synth · goal · g4: fix tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers in tests/test_hunks.py (1 test, attempt 1, picked by jev)
+[step 12] synth · llm:fire · goal g4 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (backed off 1 × 1.5 from 45000 ms after 1 zero-token timeout on this goal; the ladder maximum is 45000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 12] synth · site · g4: src/apply.py:25:insert (gap, indent 4) on committed: donor 30, mutation 0, template 16 — exit gap of the loop enclosing L19; gap after L24 (block_end, dedent 1)
+[step 12] synth · verify · g4: 16 tested on 8 lanes (16 unchanged); runs left 1484, test wall left 54 s; run median 657 ms, t_run 657 ms · 16 candidates, 16 tested
+[step 12] synth · llm:fire · goal g4 round 1: released 2 more samples (top-site seeds returned no passer), $0.0056 reserved
+[step 12] synth · llm:release · g4: samples 1..2 released (the top-site seed batch returned without a passer)
+[step 12] synth · llm:sample · k=0 valid 23012 ms: 0 candidates (tried)
+[step 12] synth · llm:sample · k=1 valid 30268 ms: 0 candidates (tried)
+[step 12] synth · llm:sample · k=2 valid 30576 ms: 0 candidates (tried)
+[step 12] synth · llm:round · goal g4 round 1: 3 fired, 3 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 0 distinct candidates, 32135 ms, $0.0016
+[step 12] synth · verify · g4: 0 tested on 8 lanes (nothing ran); runs left 1484, test wall left 23 s · 0 candidates, 0 tested
+[step 12] synth · llm:phase · g4: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 12] synth · widened · g4: 21 sites (10 gaps, 11 lines) over 5 functions, by line evidence then distance from L31, cut 24; resuming at 0: src/hunks.py:54 (gap, indent 4), src/merge.py:33 (gap, indent 4), src/merge.py:32
+[step 12] synth · site · g4: src/hunks.py:54:insert (gap, indent 4) on committed: donor 95, mutation 46, template 0 — gap after L53 (mid_block); in replaced_lines
+[step 12] synth · verify · g4: 140 tested on 8 lanes (22 unchanged, 118 regressed); runs left 1344, test wall left 17 s; run median 260 ms, t_run 260 ms · 140 candidates, 140 tested
+[step 12] synth · site · g4: src/merge.py:33:insert (gap, indent 4) on committed: donor 32, mutation 0, template 2 — gap after L32 (block_end, dedent 1); in merge
+[step 12] synth · verify · g4: 33 tested on 8 lanes (33 unchanged); runs left 1311, test wall left 15 s; run median 294 ms, t_run 294 ms · 33 candidates, 33 tested
+[step 12] synth · site · g4: src/merge.py:32:replace on committed: donor 97, mutation 50, template 18 — widened over merge (beam #2)
+[step 12] synth · verify · g4: 153 tested on 8 lanes (153 unchanged); runs left 1158, test wall left 8 s; run median 271 ms, t_run 271 ms · 153 candidates, 153 tested
+[step 12] synth · site · g4: src/apply.py:16:insert (gap, indent 4) on committed: donor 100, mutation 88, template 30 — gap after L15 (mid_block); in apply
+[step 12] synth · verify · g4: 188 tested on 8 lanes (188 unchanged); runs left 970, test wall left 0 s; run median 265 ms, t_run 265 ms · 188 candidates, 188 tested
+[step 12] synth · verify · g4: 0 tested on 8 lanes (nothing ran); runs left 970, test wall left 0 s · 0 candidates, 0 tested
+[step 12] synth · verify · g4: 0 tested on 8 lanes (nothing ran); runs left 970, test wall left 0 s · 0 candidates, 0 tested
+[step 12] synth · verify · g4: 0 tested on 8 lanes (nothing ran); runs left 970, test wall left 0 s · 0 candidates, 0 tested
+[step 12] synth · verify · g4: 0 tested on 8 lanes (nothing ran); runs left 970, test wall left 0 s · 0 candidates, 0 tested
+[step 12] synth · verify · g4: 0 tested on 8 lanes (nothing ran); runs left 970, test wall left 0 s · 0 candidates, 0 tested
+[step 12] synth · verify · g4: 0 tested on 8 lanes (nothing ran); runs left 970, test wall left 0 s · 0 candidates, 0 tested
+[step 12] synth · verify · g4: 0 tested on 8 lanes (nothing ran); runs left 970, test wall left 0 s · 0 candidates, 0 tested
+[step 12] synth · widened · g4: WIDENED cost 3602 candidates enumerated, 514 tested, 514 runs; cursor 12/21
+[step 12] synth · search · g4 budget (phase WIDENED, RANK, sites 33, requests 29, runs 530, plausible 0) · 3648 candidates, 530 tested
+[step 12] synth · budget · g4: budget-hit step 1 of 4 (nothing new: 1 of 2 stagnant); the goal stays open
+[step 12] synth · ledger · fixed 0, open 3, parked 3
+[step 12] proposal · run $ python3 -m pytest -q 'tests/test_hunks.py' · "record the failing behaviour of tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers"
+[step 12] intent · verify · 1.00 (confidence 1.00)
+[step 12] risk 0.00 ok · destructive 0 · irreversible 0
+[step 12] done · exit 1 · exit 1 · 213ms
+[step 12] judge 0.00 · tests 8p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 12] plan · 0 done · 7 remaining
+[step 12] run $ python3 -m pytest -q 'tests/test_hunk… · risk 0.00 ok · tests 8p/4f/0e · judge 0.00 · 58s · $0.002
+[step 13] synth · goal · g4: fix tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers in tests/test_hunks.py (1 test, attempt 2, picked by jev)
+[step 13] synth · llm:fire · goal g4 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (backed off 1 × 1.5 from 45000 ms after 1 zero-token timeout on this goal; the ladder maximum is 45000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 13] synth · llm:fire · goal g4 round 1: released 2 more samples (top-site seeds returned no passer), $0.0056 reserved
+[step 13] synth · llm:release · g4: samples 1..2 released (the seed phase found no passer)
+[step 13] synth · llm:sample · k=0 valid 18145 ms: 0 candidates (tried)
+[step 13] synth · llm:sample · k=2 valid 18147 ms: 0 candidates (tried)
+[step 13] synth · llm:sample · k=1 valid 18968 ms: 1 candidates
+[step 13] synth · llm:round · goal g4 round 1: 3 fired, 3 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 1 distinct candidates, 19074 ms, $0.0017
+[step 13] synth · verify · g4: 1 tested on 8 lanes (1 regressed); runs left 1498, test wall left 21 s; run median 165 ms, t_run 165 ms · 1 candidates, 1 tested
+[step 13] synth · llm:phase · g4: round 1 (ladder) batch 1: 1 LLM candidate classified as they streamed in
+[step 13] synth · llm:fire · goal g4 round 2 (ladder): 3/3 samples fired, deadline 45000 ms (backed off 1 × 1.5 from 45000 ms after 1 zero-token timeout on this goal; the ladder maximum is 45000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0056 reserved
+[step 13] synth · llm:feedback · g4: round 1 ran 1 candidates without a passer; feedback round L1′ (1 of 2 this run) with the verdicts and 3 more listing members
+[step 13] synth · llm:sample · k=1 valid 11051 ms: 0 candidates (tried)
+[step 13] synth · llm:sample · k=2 valid 11511 ms: 0 candidates (tried)
+[step 13] synth · llm:sample · k=0 valid 12104 ms: 1 candidates
+[step 13] synth · llm:round · goal g4 round 2: 3 fired, 3 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 1 distinct candidates, 12198 ms, $0.0014
+[step 13] synth · verify · g4: 1 tested on 8 lanes (1 regressed); runs left 1496, test wall left 8 s; run median 140 ms, t_run 140 ms · 1 candidates, 1 tested
+[step 13] synth · llm:phase · g4: round 2 (ladder) batch 1: 1 LLM candidate classified as they streamed in
+[step 13] synth · verify · g4: 16 tested on 8 lanes (16 unchanged); runs left 1480, test wall left 8 s; run median 273 ms, t_run 273 ms; load ×2.0, case timeout 500→1016 ms · 16 candidates, 16 tested
+[step 13] synth · widened · g4: 21 sites (10 gaps, 11 lines) over 5 functions, by line evidence then distance from L31, cut 24; resuming at 12: src/apply.py:22 (gap, indent 8), src/apply.py:22, src/apply.py:23 (gap, indent 8)
+[step 13] synth · verify · g4: 5 tested on 8 lanes (5 unchanged); runs left 1475, test wall left 7 s; run median 248 ms, t_run 248 ms · 5 candidates, 5 tested
+[step 13] synth · verify · g4: 39 tested on 8 lanes (39 unchanged); runs left 1436, test wall left 6 s; run median 266 ms, t_run 266 ms · 39 candidates, 39 tested
+[step 13] synth · verify · g4: 5 tested on 8 lanes (5 unchanged); runs left 1431, test wall left 5 s; run median 230 ms, t_run 230 ms · 5 candidates, 5 tested
+[step 13] synth · verify · g4: 5 tested on 8 lanes (5 unchanged); runs left 1426, test wall left 5 s; run median 236 ms, t_run 236 ms · 5 candidates, 5 tested
+[step 13] synth · verify · g4: 35 tested on 8 lanes (35 unchanged); runs left 1391, test wall left 3 s; run median 280 ms, t_run 280 ms · 35 candidates, 35 tested
+[step 13] synth · verify · g4: 5 tested on 8 lanes (5 unchanged); runs left 1386, test wall left 3 s; run median 245 ms, t_run 245 ms · 5 candidates, 5 tested
+[step 13] synth · verify · g4: 5 tested on 8 lanes (5 unchanged); runs left 1381, test wall left 3 s; run median 270 ms, t_run 270 ms · 5 candidates, 5 tested
+[step 13] synth · verify · g4: 5 tested on 8 lanes (5 unchanged); runs left 1376, test wall left 3 s; run median 221 ms, t_run 221 ms · 5 candidates, 5 tested
+[step 13] synth · verify · g4: 5 tested on 8 lanes (5 unchanged); runs left 1371, test wall left 2 s; run median 216 ms, t_run 216 ms · 5 candidates, 5 tested
+[step 13] synth · verify · g4: 42 tested on 8 lanes (42 unchanged); runs left 1329, test wall left 0 s; run median 308 ms, t_run 308 ms · 42 candidates, 42 tested
+[step 13] synth · widened · g4: WIDENED cost 2962 candidates enumerated, 151 tested, 151 runs; cursor 18/21
+[step 13] synth · search · g4 budget (phase WIDENED, SIEVE, sites 33, requests 15, runs 171, plausible 0) · 2980 candidates, 169 tested
+[step 13] synth · ledger · fixed 0, open 2, parked 4
+[step 13] proposal · run $ python3 -m pytest -q 'tests/test_hunks.py' · "record the failing behaviour of tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers"
+[step 13] intent · verify · 1.00 (confidence 1.00)
+[step 13] risk 0.00 ok · destructive 0 · irreversible 0
+[step 13] done · exit 1 · exit 1 · 201ms
+[step 13] judge 0.00 · tests 8p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 13] loop · the same step repeated 3 times · run:54ec57189e30:cb2878abcdc5
+[step 13] plan · 0 done · 7 remaining
+[step 13] run $ python3 -m pytest -q 'tests/test_hunk… · risk 0.00 ok · tests 8p/4f/0e · judge 0.00 · 43s · $0.005
+[step 14] replan · change approach · 0.88 (confidence 0.86) · "After repeating the same run command with the same result 3 times, Jev directs `change_approach` (p=0.88, task_impossible=0.00): keep the goal but reach it a different way: a different fix, file, or technique than the repeated one."
+[step 14] synth · directive · change_approach: rotated source order of g5 (3)
+[step 14] synth · goal · g5: fix tests/test_merge.py::test_merge_refuses_a_left_side_that_overlaps_itself in tests/test_merge.py (1 test, attempt 1, picked by jev)
+[step 14] synth · llm:fire · goal g5 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 32757 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 14] synth · site · g5: src/apply.py:25:insert (gap, indent 4) on committed: mutation 0, template 12, donor 30 — exit gap of the loop enclosing L19; gap after L24 (block_end, dedent 1)
+[step 14] synth · verify · g5: 12 tested on 8 lanes (10 unchanged, 2 regressed); runs left 1488, test wall left 25 s; run median 258 ms, t_run 258 ms · 12 candidates, 12 tested
+[step 14] synth · llm:fire · goal g5 round 1: released 2 more samples (top-site seeds returned no passer), $0.0058 reserved
+[step 14] synth · llm:release · g5: samples 1..2 released (the top-site seed batch returned without a passer)
+[step 14] synth · site · g5: src/merge.py:17:replace on committed: mutation 2 — jev anchor #1 in clashes
+[step 14] synth · llm:sample · k=1 valid 14118 ms: 1 candidates
+[step 14] synth · llm:sample · k=0 valid 15103 ms: 1 candidates
+[step 14] synth · verify · g5: 2 tested on 8 lanes (2 plausible); runs left 1484, test wall left 10 s; run median 157 ms, t_run 157 ms; streamed batch ended on its first passer · 2 candidates, 2 tested
+[step 14] synth · llm:phase · g5: round 1 (ladder) batch 1: 2 LLM candidates classified as they streamed in; a passer landed — deciding now with the round still in flight
+[step 14] synth · guard · g5: harvested 67 test calls over 18 functions of src.apply, src.hunks, src.merge, src.preview, src.text (tests/test_merge.py); 32 perturbed inputs for the probe
+[step 14] synth · guard · g5: arbitrated 2 passers (0 held) in 1 cluster (probe 32 inputs, 2/2 signatures); escape 0.60, max general 0.21; all-overfit signature
+[step 14] synth · guard · g5: all-overfit signature (escape 0.60 ≥ 0.5, max general 0.21 < 0.3); dropping the 2 passers (kept in tried, none is committed); searching on
+[step 14] synth · llm:sample · k=2 valid 21612 ms: 1 candidates
+[step 14] synth · llm:round · goal g5 round 1: 3 fired, 3 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 3 distinct candidates, 22255 ms, $0.0020
+[step 14] synth · verify · g5: 1 tested on 8 lanes (1 plausible); runs left 1482, test wall left 3 s; run median 147 ms, t_run 147 ms; streamed batch ended on its first passer · 1 candidates, 1 tested
+[step 14] synth · llm:phase · g5: round 1 (ladder) batch 2: 1 LLM candidate classified as they streamed in; a passer landed — deciding now with the round closed
+[step 14] synth · guard · g5: holds the lone passer llm/sample_2_0 at src/hunks.py:31:replace as suspect (deletes_statement, adds_special_case; general 0.13 < 0.3): never released on the budget reserve — the step ends on its partial or parks unless a later passer wins
+[step 14] synth · llm:fire · goal g5 round 2 (ladder): 3/3 samples fired, deadline 45000 ms (adapted from the served p90 32757 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0057 reserved
+[step 14] synth · llm:feedback · g5: round 1 ran 3 candidates without a passer; feedback round L1′ (1 of 2 this run) with the verdicts and 3 more listing members, need: src/merge.py
+[step 14] synth · verify · g5: 0 tested on 8 lanes (nothing ran); runs left 1482, test wall left 0 s · 0 candidates, 0 tested
+[step 14] synth · llm:phase · g5: round 2 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 14] synth · llm:cancel · goal g5 round 2: 3 in-flight samples cancelled (budget), metered from what they streamed
+[step 14] synth · llm:sample · k=0 cancelled 3024 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 14] synth · llm:sample · k=1 cancelled 3024 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 14] synth · llm:sample · k=2 cancelled 3023 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 14] synth · llm:round · goal g5 round 2: 3 fired, 0 valid, 0 malformed, 0 length, 0 timeout, 3 cancelled, 0 error, 0 distinct candidates, 3024 ms, $0.0027 (est. $0.0027)
+[step 14] synth · verify · g5: 0 tested on 8 lanes (nothing ran); runs left 1482, test wall left 0 s · 0 candidates, 0 tested
+[step 14] synth · guard · g5: the budget reserve is spent but the held suspect llm/sample_2_0 at src/hunks.py:31:replace (general 0.13 < 0.3) is not released; the step ends on its partial or parks
+[step 14] synth · verify · g5: 0 tested on 8 lanes (nothing ran); runs left 1482, test wall left 0 s · 0 candidates, 0 tested
+[step 14] synth · guard · g5: the budget reserve is spent but the held suspect llm/sample_2_0 at src/hunks.py:31:replace (general 0.13 < 0.3) is not released; the step ends on its partial or parks
+[step 14] synth · verify · g5: 0 tested on 8 lanes (nothing ran); runs left 1482, test wall left 0 s · 0 candidates, 0 tested
+[step 14] synth · guard · g5: the budget reserve is spent but the held suspect llm/sample_2_0 at src/hunks.py:31:replace (general 0.13 < 0.3) is not released; the step ends on its partial or parks
+[step 14] synth · search · g5 budget (phase SKETCH, SIEVE, sites 13, requests 29, runs 18, plausible 3) · 111 candidates, 15 tested
+[step 14] synth · budget · g5: budget-hit step 1 of 4 (nothing new: 1 of 2 stagnant); the goal stays open
+[step 14] synth · ledger · fixed 0, open 2, parked 4
+[step 14] proposal · run $ python3 -m pytest -q 'tests/test_merge.py' · "record the failing behaviour of tests/test_merge.py::test_merge_refuses_a_left_side_that_overlaps_itself"
+[step 14] intent · verify · 1.00 (confidence 1.00)
+[step 14] risk 0.00 ok · destructive 0 · irreversible 0
+[step 14] done · exit 1 · exit 1 · 286ms
+[step 14] judge 0.00 · tests 7p/2f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 14] run $ python3 -m pytest -q 'tests/test_merg… · risk 0.00 ok · tests 7p/2f/0e · judge 0.00 · 29s · $0.008
+[step 15] synth · goal · g5: fix tests/test_merge.py::test_merge_refuses_a_left_side_that_overlaps_itself in tests/test_merge.py (1 test, attempt 2, picked by jev)
+[step 15] synth · llm:fire · goal g5 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 32757 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 15] synth · llm:fire · goal g5 round 1: released 2 more samples (top-site seeds returned no passer), $0.0057 reserved
+[step 15] synth · llm:release · g5: samples 1..2 released (the seed phase found no passer)
+[step 15] synth · verify · g5: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 15] synth · llm:phase · g5: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 15] synth · llm:cancel · goal g5 round 1: 3 in-flight samples cancelled (budget), metered from what they streamed
+[step 15] warning · generator retried 2 times over 395ms — gave up
+[step 15] synth · llm:sample · k=0 cancelled 18651 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 15] synth · llm:sample · k=1 cancelled 18650 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 15] synth · llm:sample · k=2 cancelled 18648 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 15] synth · llm:round · goal g5 round 1: 3 fired, 0 valid, 0 malformed, 0 length, 0 timeout, 3 cancelled, 0 error, 0 distinct candidates, 18651 ms, $0.0027 (est. $0.0027)
+[step 15] synth · widened · g5: 24 sites (12 gaps, 12 lines) over 5 functions, by line evidence then distance from L31, cut 24; resuming at 0: src/merge.py:22 (gap, indent 4), src/merge.py:17 (gap, indent 4), src/merge.py:33 (gap, indent 4)
+[step 15] synth · site · g5: src/merge.py:22:insert (gap, indent 4) on committed: mutation 0, template 0, donor 1 — gap after L21 (mid_block); in conflicts
+[step 15] synth · verify · g5: 0 tested on 8 lanes (nothing ran); runs left 1495, test wall left 0 s · 5 candidates, 0 tested
+[step 15] synth · widened · g5: WIDENED cost 149 candidates enumerated, 0 tested, 0 runs; cursor 6/24
+[step 15] synth · search · g5 budget (phase WIDENED, RANK, sites 37, requests 1, runs 0, plausible 0) · 149 candidates, 0 tested
+[step 15] synth · ledger · fixed 0, open 1, parked 5
+[step 15] proposal · run $ python3 -m pytest -q 'tests/test_merge.py' · "record the failing behaviour of tests/test_merge.py::test_merge_refuses_a_left_side_that_overlaps_itself"
+[step 15] intent · verify · 1.00 (confidence 1.00)
+[step 15] risk 0.00 ok · destructive 0 · irreversible 0
+[step 15] done · exit 1 · exit 1 · 285ms
+[step 15] judge 0.00 · tests 7p/2f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 15] loop · the same step repeated 3 times · run:62e33cd696d9:ebdd325b9af2
+[step 15] plan · 0 done · 7 remaining
+[step 15] run $ python3 -m pytest -q 'tests/test_merg… · risk 0.00 ok · tests 7p/2f/0e · judge 0.00 · 19s · $0.001
+[step 16] replan · change approach · 0.94 (confidence 0.93) · "After repeating the same run command with the same result 3 times, Jev directs `change_approach` (p=0.94, task_impossible=0.00): keep the goal but reach it a different way: a different fix, file, or technique than the repeated one."
+[step 16] synth · directive · change_approach: rotated source order of g6 (3)
+[step 16] synth · goal · g6: fix tests/test_merge.py::test_merge_refuses_a_right_side_that_overlaps_itself in tests/test_merge.py (1 test, attempt 1, picked by single)
+[step 16] synth · llm:fire · goal g6 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 32757 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 16] synth · site · g6: src/apply.py:25:insert (gap, indent 4) on committed: mutation 0, template 0, donor 30 — exit gap of the loop enclosing L19; gap after L24 (block_end, dedent 1)
+[step 16] synth · site · g6: src/merge.py:33:insert (gap, indent 4) on committed: mutation 0, template 2, donor 1 — gap after L32 (block_end, dedent 1); in merge
+[step 16] synth · verify · g6: 2 tested on 8 lanes (2 regressed); runs left 1498, test wall left 13 s; run median 305 ms, t_run 305 ms · 2 candidates, 2 tested
+[step 16] synth · llm:fire · goal g6 round 1: released 2 more samples (top-site seeds returned no passer), $0.0057 reserved
+[step 16] synth · llm:release · g6: samples 1..2 released (the top-site seed batch returned without a passer)
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · llm:phase · g6: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 16] synth · llm:cancel · goal g6 round 1: 3 in-flight samples cancelled (budget), metered from what they streamed
+[step 16] warning · generator retried 3 times over 1s — gave up
+[step 16] warning · generator retried 3 times over 1s — gave up
+[step 16] warning · generator retried 3 times over 1s — gave up
+[step 16] synth · llm:sample · k=0 cancelled 13561 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 16] synth · llm:sample · k=1 cancelled 13130 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 16] synth · llm:sample · k=2 cancelled 13130 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 16] synth · llm:round · goal g6 round 1: 3 fired, 0 valid, 0 malformed, 0 length, 0 timeout, 3 cancelled, 0 error, 0 distinct candidates, 13561 ms, $0.0027 (est. $0.0027)
+[step 16] synth · widened · g6: 23 sites (11 gaps, 12 lines) over 5 functions, by line evidence then distance from L31, cut 24; resuming at 0: src/merge.py:22 (gap, indent 4), src/merge.py:17 (gap, indent 4), src/merge.py:32
+[step 16] synth · site · g6: src/merge.py:22:insert (gap, indent 4) on committed: mutation 0, template 0, donor 1 — gap after L21 (mid_block); in conflicts
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · site · g6: src/merge.py:32:replace on committed: mutation 1, template 2, donor 1 — widened over merge (beam #1)
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1498, test wall left 0 s · 0 candidates, 0 tested
+[step 16] synth · widened · g6: WIDENED cost 2064 candidates enumerated, 0 tested, 0 runs; cursor 12/23
+[step 16] synth · search · g6 budget (phase WIDENED, RANK, sites 37, requests 30, runs 2, plausible 0) · 2097 candidates, 2 tested
+[step 16] synth · budget · g6: budget-hit step 1 of 4 (nothing new: 1 of 2 stagnant); the goal stays open
+[step 16] synth · ledger · fixed 0, open 1, parked 5
+[step 16] proposal · run $ python3 -m pytest -q 'tests/test_merge.py' · "record the failing behaviour of tests/test_merge.py::test_merge_refuses_a_right_side_that_overlaps_itself"
+[step 16] intent · verify · 1.00 (confidence 1.00)
+[step 16] risk 0.00 ok · destructive 0 · irreversible 0
+[step 16] done · exit 1 · exit 1 · 168ms
+[step 16] judge 0.00 · tests 7p/2f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 16] run $ python3 -m pytest -q 'tests/test_merg… · risk 0.00 ok · tests 7p/2f/0e · judge 0.00 · 16s · $0.002
+[step 17] synth · goal · g6: fix tests/test_merge.py::test_merge_refuses_a_right_side_that_overlaps_itself in tests/test_merge.py (1 test, attempt 2, picked by single)
+[step 17] synth · llm:fire · goal g6 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 32757 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 17] synth · llm:fire · goal g6 round 1: released 2 more samples (top-site seeds returned no passer), $0.0056 reserved
+[step 17] synth · llm:release · g6: samples 1..2 released (the seed phase found no passer)
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · llm:phase · g6: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 17] synth · llm:cancel · goal g6 round 1: 3 in-flight samples cancelled (budget), metered from what they streamed
+[step 17] warning · generator retried 2 times over 457ms — gave up
+[step 17] warning · generator retried 2 times over 447ms — gave up
+[step 17] warning · generator retried 2 times over 387ms — gave up
+[step 17] synth · llm:sample · k=0 cancelled 8440 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 17] synth · llm:sample · k=1 cancelled 8439 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 17] synth · llm:sample · k=2 cancelled 8439 ms: 0 candidates, est. $0.0009 — llm sample cancelled: budget
+[step 17] synth · llm:round · goal g6 round 1: 3 fired, 0 valid, 0 malformed, 0 length, 0 timeout, 3 cancelled, 0 error, 0 distinct candidates, 8440 ms, $0.0026 (est. $0.0026)
+[step 17] synth · widened · g6: 23 sites (11 gaps, 12 lines) over 5 functions, by line evidence then distance from L31, cut 24; resuming at 12: src/apply.py:22 (gap, indent 8), src/apply.py:22, src/apply.py:23 (gap, indent 8)
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · verify · g6: 0 tested on 8 lanes (nothing ran); runs left 1500, test wall left 0 s · 0 candidates, 0 tested
+[step 17] synth · widened · g6: WIDENED cost 5266 candidates enumerated, 0 tested, 0 runs; cursor 23/23
+[step 17] synth · search · g6 budget (phase WIDENED, RANK, sites 37, requests 30, runs 0, plausible 0) · 5266 candidates, 0 tested
+[step 17] synth · ledger · fixed 0, open 0, parked 6
+[step 17] proposal · run $ python3 -m pytest -q 'tests/test_merge.py' · "record the failing behaviour of tests/test_merge.py::test_merge_refuses_a_right_side_that_overlaps_itself"
+[step 17] intent · verify · 1.00 (confidence 1.00)
+[step 17] risk 0.00 ok · destructive 0 · irreversible 0
+[step 17] done · exit 1 · exit 1 · 181ms
+[step 17] judge 0.00 · tests 7p/2f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 17] run $ python3 -m pytest -q 'tests/test_merg… · risk 0.00 ok · tests 7p/2f/0e · judge 0.00 · 13s · $0.003
+[step 18] synth · done · every goal parked: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +8 more) for tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line; 2 consecutive budget-hit steps that tested nothing new; 2 consecutive budget-hit steps that tested …
+[step 18] synth · ledger · fixed 0, open 0, parked 6
+[step 18] proposal · done partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +8 more) for tests/test_hunks.py::t…
+[step 18] intent · finish · 1.00 (confidence 1.00)
+[step 18] risk 0.00 ok · destructive 0 · irreversible 0
+[step 18] done · partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +8 more) for tests/test_hunks.py::test_last_…
+[step 18] judge skipped · complete n/a
+[step 18] done partial: fixed 0 of 6 failing tests; te… · risk 0.00 ok · skipped · 0.0s · $0.000
+[step 19] synth · done · every goal parked: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +8 more) for tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line; 2 consecutive budget-hit steps that tested nothing new; 2 consecutive budget-hit steps that tested …
+[step 19] synth · ledger · fixed 0, open 0, parked 6
+[step 19] proposal · done partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +8 more) for tests/test_hunks.py::t…
+[step 19] intent · finish · 1.00 (confidence 1.00)
+[step 19] risk 0.00 ok · destructive 0 · irreversible 0
+[step 19] done · partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +8 more) for tests/test_hunks.py::test_last_…
+[step 19] judge skipped · complete n/a
+[step 19] done partial: fixed 0 of 6 failing tests; te… · risk 0.00 ok · skipped · 0.0s · $0.000
+[step 20] synth · done · every goal parked: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +8 more) for tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line; 2 consecutive budget-hit steps that tested nothing new; 2 consecutive budget-hit steps that tested …
+[step 20] synth · ledger · fixed 0, open 0, parked 6
+[step 20] proposal · done partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +8 more) for tests/test_hunks.py::t…
+[step 20] intent · finish · 1.00 (confidence 1.00)
+[step 20] risk 0.00 ok · destructive 0 · irreversible 0
+[step 20] done · partial: fixed 0 of 6 failing tests; tests/test_hunks.py::test_index_is_the_zero_based_offset: exhausted composite, donor, mutation, template at 11 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +7 more) for tests/test_hunks.py::test_index_is_the_zero_based_offset; tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line: exhausted composite, donor, mutation, template at 12 sites (src/hunks.py:32 (gap), src/hunks.py:31 (gap), src/apply.py:20 (gap), src/apply.py:19 (gap), +8 more) for tests/test_hunks.py::test_last_…
+[step 20] judge skipped · complete n/a
+[step 20] loop · the same step repeated 3 times · done:82906a29815a
+[step 20] done partial: fixed 0 of 6 failing tests; te… · risk 0.00 ok · skipped · 0.0s · $0.000
+[run] budget max_replans reached at step start
+[run] finished · max_replans · 20 steps · 14m38s · $0.063 (generator $0.029 · jev $0.034) · exit 4

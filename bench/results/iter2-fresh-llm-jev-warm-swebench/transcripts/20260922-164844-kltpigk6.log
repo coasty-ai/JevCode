@@ -1,0 +1,341 @@
+[run] started · llm+jev verified · method_decorator() should preserve wrapper assignments ⏎ Description ⏎   ⏎ the function that is passed to the decorator is a partial object and does not have a…
+[run] git detached 004b4620 · clean
+[step 1] synth · oracle · no_pick: no block reads as a reproduction (best is_reproduction 0.41 on block 0) (1 request, 315 ms, package django)
+[step 1] synth · oracle · L2 reproduction writer: llm_weak (llm_weak oracle repro::236d42f2 from an LLM-written script (script_1: reproduces_issue 0.37 in [0.3, 0.7); failure_kind exception_raised): assert t.hello_world() == "hello" -> AttributeError: 'functools.partial' object has no attribute…; llm-written reproduction — never completes a run; 3 samples, 1 request, 23384 ms, $0.0006)
+[step 1] synth · introspect · ran in 1719 ms: 1 operand, 1 classes, 0 predicates, 3 attributes, 11 module names; bound_method: partial (0 predicates)
+[step 1] synth · localize · g1: 2 introspection sites after the 12 located, 1 merged onto located site: django/utils/decorators.py:42 (gap, indent 12; introspection: gap before the raising statement L42 of django/utils/decorators.py); django/contrib/admin/sites.py:26 (gap, indent 0; introspection: module-level import gap of django/contrib/admin/sites.py); django/contrib/admin/sites.py:244 (gap, indent 8; introspection: class-body gap of AdminSite after admin_view (L201-243))
+[step 1] synth · localize · g1: django/utils/decorators.py, django/utils/functional.py, django/contrib/admin/decorators.py (15 requests, 14 sites)
+[step 1] synth · scope · 6 test files (related): tests/utils_tests/test_decorators.py, tests/utils_tests/test_functional.py, tests/decorators/tests.py, tests/auth_tests/test_decorators.py, tests/validation/tests.py, tests/expressions/tests.py; 6 test files import or are named after django/utils/decorators.py, django/utils/functional.py, django/contrib/admin/decorators.py; command: python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests
+[step 1] synth · history · 5 commits, 15 change runs in 3 files (5 git commands; -Smethod_decorator: 4; -SAttributeError: 1; -S__name__: 5) (1888 ms)
+[step 1] synth · llm:fire · goal g1 round 1 (repository): 4/4 samples fired, deadline 30000 ms, max_tokens 3000, $0.0081 reserved
+[step 1] synth · llm:fire · g1: the L1 round overlaps the scoped baseline (repository step 1, §7.1)
+[step 1] synth · baseline · 233/235 scoped tests pass, 0 failed, 0 errors in 3225 ms; reproduction repro::236d42f2 fails (AttributeError: 'functools.partial' object has no attribute '__name__') in 2484 ms (repository, other, python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests)
+[step 1] synth · goal · g1: fix repro::236d42f2 in django/utils/decorators.py (1 test, attempt 1, picked by single)
+[step 1] synth · llm:sample · k=0 empty 25590 ms: 0 candidates
+[step 1] synth · llm:phase · g1: round 1 closed with no fresh candidate (1 arrival)
+[step 1] synth · site · g1: django/utils/functional.py:251:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 1] synth · llm:sample · k=1 timeout 30025 ms: 0 candidates, est. $0.0011 — deadline 30000 ms passed
+[step 1] synth · llm:sample · k=2 timeout 30026 ms: 0 candidates, est. $0.0011 — deadline 30000 ms passed
+[step 1] warning · generator retried 2 times over 402ms — gave up
+[step 1] synth · llm:sample · k=3 timeout 30028 ms: 0 candidates, est. $0.0011 — deadline 30000 ms passed
+[step 1] synth · llm:round · goal g1 round 1: 4 fired, 0 valid, 0 malformed, 0 length, 3 timeout, 0 cancelled, 0 error, 0 distinct candidates, 30030 ms, $0.0040 (est. $0.0033)
+[step 1] synth · verify · g1: 4 tested on 4 lanes (4 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 12, test wall left 22 s; reproduction median 1250 ms; t_run reproduction 1250 ms (live), scoped 3225 ms · 4 candidates, 4 tested
+[step 1] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 7, test wall left 18 s; reproduction median 1172 ms; t_run reproduction 1230 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 1] synth · site · g1: django/utils/functional.py:250:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 1] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 2, test wall left 14 s; reproduction median 919 ms; t_run reproduction 1125 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 3 tested on 4 lanes (3 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 0, test wall left 11 s; reproduction median 1205 ms; t_run reproduction 1154 ms (live), scoped 3225 ms; 1 deferred · 4 candidates, 3 tested
+[step 1] synth · search · g1 budget (phase SEEDS, RANK, sites 14, requests 4, runs 17, plausible 0) · 622 candidates, 17 tested
+[step 1] synth · budget · g1: budget-hit step 1 of 4 (progress: 2 new sites of 2 tested); the goal stays open
+[step 1] synth · ledger · fixed 0, open 1, parked 0
+[step 1] proposal · run $ python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests · "record the failing behaviour of repro::236d42f2"
+[step 1] intent · verify · 1.00 (confidence 1.00)
+[step 1] risk 0.00 ok · destructive 0 · irreversible 0
+[step 1] done · exit 0 · exit 0 · 1s
+[step 1] judge 1.00 · tests 233p/0f/0e pass · 0 of 0 claims accepted · complete n/a
+[step 1] plan · 0 done · 2 remaining
+[step 1] run $ python tests/runtests.py --parallel 1… · risk 0.00 ok · tests 233p/0f/0e · judge 1.00 · 1m43s · $0.006
+[step 2] synth · goal · g1: fix repro::236d42f2 in django/utils/decorators.py (1 test, attempt 2, picked by single)
+[step 2] synth · llm:fire · goal g1 round 1 (repository): 4/6 samples fired, deadline 30000 ms, max_tokens 3000, $0.0086 reserved
+[step 2] synth · llm:sample · k=3 empty 20141 ms: 0 candidates
+[step 2] synth · llm:sample · k=0 empty 20588 ms: 0 candidates
+[step 2] synth · llm:sample · k=1 timeout 30036 ms: 0 candidates, est. $0.0012 — deadline 30000 ms passed
+[step 2] synth · llm:sample · k=2 timeout 30063 ms: 0 candidates, est. $0.0012 — deadline 30000 ms passed
+[step 2] synth · llm:round · goal g1 round 1: 4 fired, 0 valid, 0 malformed, 0 length, 2 timeout, 0 cancelled, 0 error, 0 distinct candidates, 30073 ms, $0.0044 (est. $0.0025)
+[step 2] synth · verify · g1: 1 tested on 4 lanes (1 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1499, test wall left 76 s; reproduction median 974 ms; t_run reproduction 1143 ms (live), scoped 3225 ms · 1 candidates, 1 tested
+[step 2] synth · llm:phase · g1: round 1 (repository) batch 1: 0 LLM candidates classified as they streamed in (+1 seed leftover)
+[step 2] synth · site · g1: django/utils/functional.py:251:insert (gap, indent 4) on committed: template 0, donor 249 — insert after anchor L250
+[step 2] synth · verify · g1: 40 tested on 4 lanes (36 unchanged, 4 timeout); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1459, test wall left 0 s; reproduction median 2302 ms; t_run reproduction 1143 ms (live), scoped 3225 ms · 40 candidates, 40 tested
+[step 2] synth · search · g1 budget (phase SEEDS, SIEVE, sites 14, requests 0, runs 41, plausible 0) · 249 candidates, 41 tested
+[step 2] synth · budget · g1: budget-hit step 2 of 4 (nothing new: 1 of 2 stagnant); the goal stays open
+[step 2] synth · ledger · fixed 0, open 1, parked 0
+[step 2] proposal · run $ python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests · "record the failing behaviour of repro::236d42f2"
+[step 2] intent · verify · 1.00 (confidence 1.00)
+[step 2] risk 0.00 ok · destructive 0 · irreversible 0
+[step 2] done · exit 0 · exit 0 · 3s
+[step 2] judge 1.00 · tests 233p/0f/0e pass · 0 of 0 claims accepted · complete n/a
+[step 2] run $ python tests/runtests.py --parallel 1… · risk 0.00 ok · tests 233p/0f/0e · judge 1.00 · 1m56s · $0.004
+[step 3] synth · goal · g1: fix repro::236d42f2 in django/utils/decorators.py (1 test, attempt 3, picked by single)
+[step 3] synth · llm:fire · goal g1 round 1 (repository): 4/6 samples fired, deadline 51180 ms (adapted from the served p90 25590 ms; the repository default is 30000 ms), max_tokens 3000, $0.0086 reserved
+[step 3] synth · llm:sample · k=3 empty 7049 ms: 0 candidates
+[step 3] synth · llm:sample · k=0 valid 24373 ms: 1 candidates
+[step 3] synth · llm:sample · k=2 valid 32735 ms: 1 candidates
+[step 3] synth · llm:sample · k=1 empty 47080 ms: 0 candidates
+[step 3] synth · llm:round · goal g1 round 1: 4 fired, 2 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 2 distinct candidates, 47111 ms, $0.0042
+[step 3] synth · verify · g1: 2 tested on 4 lanes (2 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1498, test wall left 59 s; reproduction median 1806 ms; t_run reproduction 1143 ms (live), scoped 3225 ms · 2 candidates, 2 tested
+[step 3] synth · llm:phase · g1: round 1 (repository) batch 1: 2 LLM candidates classified as they streamed in
+[step 3] synth · llm:deadline · the serving provider is slow (served p90 47080 ms > the repository default deadline 30000 ms): every further sample of this run caps reasoning at 512 tokens to shorten it
+[step 3] synth · llm:fire · goal g1 round 2 (repository): 2/6 samples fired, deadline 90000 ms (adapted from the served p90 47080 ms; the repository default is 30000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0047 reserved
+[step 3] synth · llm:feedback · g1: round 1 ran 2 candidates without a passer; feedback round L1′ (1 of 2 this run) with the verdicts and 3 more listing members, need: django/utils/decorators.py
+[step 3] synth · llm:sample · k=1 valid 19311 ms: 1 candidates
+[step 3] synth · verify · g1: 1 tested on 4 lanes (1 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; reproduction median 2051 ms; t_run reproduction 1143 ms (live), scoped 3225 ms · 1 candidates, 1 tested
+[step 3] synth · llm:phase · g1: round 2 (repository) batch 1: 1 LLM candidate classified as they streamed in
+[step 3] synth · llm:cancel · goal g1 round 2: 1 in-flight samples cancelled (budget), metered from what they streamed
+[step 3] synth · llm:sample · k=0 cancelled 57920 ms: 0 candidates, est. $0.0015 — llm sample cancelled: budget
+[step 3] synth · llm:round · goal g1 round 2: 2 fired, 1 valid, 0 malformed, 0 length, 0 timeout, 1 cancelled, 0 error, 1 distinct candidates, 57921 ms, $0.0026 (est. $0.0015)
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · site · g1: django/utils/decorators.py:85:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · site · g1: django/utils/decorators.py:84:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · site · g1: django/contrib/admin/sites.py:244:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · site · g1: django/contrib/admin/sites.py:243:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · site · g1: django/utils/functional.py:250:replace: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · site · g1: django/utils/decorators.py:84:replace: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · site · g1: django/contrib/admin/sites.py:243:replace: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · site · g1: django/contrib/admin/decorators.py:29:replace: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · site · g1: django/utils/decorators.py:19:replace: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · site · g1: django/contrib/admin/decorators.py:25:replace: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · site · g1: django/utils/decorators.py:42:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 3] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 1 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 3] synth · search · g1 budget (phase SEEDS, RANK, sites 14, requests 30, runs 3, plausible 0) · 5542 candidates, 3 tested
+[step 3] synth · budget · g1: budget-hit step 3 of 4 (progress: 2 new sites of 2 tested); the goal stays open
+[step 3] synth · ledger · fixed 0, open 1, parked 0
+[step 3] proposal · run $ python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests · "record the failing behaviour of repro::236d42f2"
+[step 3] intent · verify · 1.00 (confidence 1.00)
+[step 3] risk 0.00 ok · destructive 0 · irreversible 0
+[step 3] done · exit 0 · exit 0 · 1s
+[step 3] judge 1.00 · tests 233p/0f/0e pass · 0 of 0 claims accepted · complete n/a
+[step 3] loop · the same step repeated 3 times · run:d95404db5e77:069490dcfc51
+[step 3] plan · 0 done · 2 remaining
+[step 3] run $ python tests/runtests.py --parallel 1… · risk 0.00 ok · tests 233p/0f/0e · judge 1.00 · 2m27s · $0.008
+[step 4] replan · change approach · 0.53 (confidence 0.44) · "Jev found no listed recovery applicable after repeating the same run command with the same result 3 times (p=0.53, task_impossible=0.00); propose a different action from anything shown in recent steps."
+[step 4] synth · directive · change_approach: rotated source order of g1 (1); sites of g1 rebuilt; site beam 6 → 10; WIDENED phase enabled over the beam functions
+[step 4] synth · goal · g1: fix repro::236d42f2 in django/utils/decorators.py (1 test, attempt 4, picked by single)
+[step 4] synth · localize · g1: 2 introspection sites after the 20 located, 1 merged onto located site: django/utils/decorators.py:42 (gap, indent 12; introspection: gap before the raising statement L42 of django/utils/decorators.py); django/contrib/admin/sites.py:26 (gap, indent 0; introspection: module-level import gap of django/contrib/admin/sites.py); django/contrib/admin/sites.py:244 (gap, indent 8; introspection: class-body gap of AdminSite after admin_view (L201-243))
+[step 4] synth · localize · g1: 2 history sites after the 22 located: django/utils/functional.py:27 (replace; history: the lines a past commit added); django/utils/functional.py:25 (gap, indent 4; history: where a past commit removed lines)
+[step 4] synth · llm:fire · goal g1 round 1 (repository): 4/6 samples fired, deadline 90000 ms (adapted from the served p90 47080 ms; the repository default is 30000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0086 reserved
+[step 4] synth · llm:sample · k=0 empty 6814 ms: 0 candidates
+[step 4] synth · llm:sample · k=1 empty 21619 ms: 0 candidates
+[step 4] synth · llm:sample · k=2 length 71768 ms: 0 candidates — finish_reason length: the reply was cut off; the goal’s next round doubles max_tokens once
+[step 4] synth · llm:sample · k=3 length 72853 ms: 0 candidates — finish_reason length: the reply was cut off; the goal’s next round doubles max_tokens once
+[step 4] synth · llm:round · goal g1 round 1: 4 fired, 0 valid, 0 malformed, 2 length, 0 timeout, 0 cancelled, 0 error, 0 distinct candidates, 72855 ms, $0.0053
+[step 4] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1500, test wall left 33 s; t_run reproduction 1143 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 4] synth · llm:phase · g1: round 1 (repository) batch 1: 0 LLM candidates classified as they streamed in
+[step 4] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1495, test wall left 30 s; reproduction median 693 ms; t_run reproduction 726 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 4] synth · verify · g1: 7 tested on 4 lanes (7 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1488, test wall left 28 s; reproduction median 445 ms; t_run reproduction 459 ms (live), scoped 3225 ms · 7 candidates, 7 tested
+[step 4] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1483, test wall left 27 s; reproduction median 80 ms; t_run reproduction 445 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 4] synth · verify · g1: 10 tested on 4 lanes (10 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1473, test wall left 24 s; reproduction median 446 ms; t_run reproduction 426 ms (live), scoped 3225 ms · 10 candidates, 10 tested
+[step 4] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1468, test wall left 22 s; reproduction median 650 ms; t_run reproduction 446 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 4] synth · verify · g1: 9 tested on 4 lanes (9 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1459, test wall left 19 s; reproduction median 523 ms; t_run reproduction 530 ms (live), scoped 3225 ms · 9 candidates, 9 tested
+[step 4] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1454, test wall left 16 s; reproduction median 653 ms; t_run reproduction 530 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 4] synth · verify · g1: 6 tested on 4 lanes (6 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1448, test wall left 14 s; reproduction median 563 ms; t_run reproduction 547 ms (live), scoped 3225 ms · 6 candidates, 6 tested
+[step 4] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1443, test wall left 12 s; reproduction median 509 ms; t_run reproduction 541 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 4] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1438, test wall left 10 s; reproduction median 559 ms; t_run reproduction 536 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 4] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1433, test wall left 6 s; reproduction median 791 ms; t_run reproduction 551 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 4] synth · site · g1: django/utils/decorators.py:83:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 4] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1428, test wall left 4 s; reproduction median 626 ms; t_run reproduction 597 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 4] synth · verify · g1: 5 tested on 4 lanes (5 unchanged); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1423, test wall left 1 s; reproduction median 873 ms; t_run reproduction 718 ms (live), scoped 3225 ms · 5 candidates, 5 tested
+[step 4] synth · site · g1: django/utils/decorators.py:82:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 4] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1423, test wall left 1 s; t_run reproduction 718 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 4] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1423, test wall left 1 s; t_run reproduction 718 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 4] synth · site · g1: django/utils/decorators.py:75:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 4] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1423, test wall left 1 s; t_run reproduction 718 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 4] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1423, test wall left 1 s; t_run reproduction 718 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 4] synth · site · g1: django/utils/decorators.py:76:insert: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks
+[step 4] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1423, test wall left 1 s; t_run reproduction 718 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 4] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1423, test wall left 1 s; t_run reproduction 718 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 4] synth · search · g1 budget (phase SEEDS, RANK, sites 24, requests 30, runs 77, plausible 0) · 3163 candidates, 77 tested
+[step 4] synth · ledger · fixed 0, open 0, parked 1
+[step 4] proposal · run $ python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests · "record the failing behaviour of repro::236d42f2"
+[step 4] intent · verify · 1.00 (confidence 1.00)
+[step 4] risk 0.00 ok · destructive 0 · irreversible 0
+[step 4] done · exit 0 · exit 0 · 1s
+[step 4] judge 1.00 · tests 233p/0f/0e pass · 0 of 0 claims accepted · complete n/a
+[step 4] plan · 0 done · 2 remaining
+[step 4] run $ python tests/runtests.py --parallel 1… · risk 0.00 ok · tests 233p/0f/0e · judge 1.00 · 1m51s · $0.006
+[step 5] synth · done · every goal parked: 4 consecutive budget-hit steps (hard cap)
+[step 5] synth · ledger · fixed 0, open 0, parked 1
+[step 5] proposal · done partial: fixed 0 of 1 failing tests; repro::236d42f2: 4 consecutive budget-hit steps (hard cap); oracle from the issue: llm_weak (llm_weak oracle repro::236d42f2 from an LLM-written script (script_1: reproduces_issue 0.37 in [0.3, 0.7); failure_kind exception_raised): assert t.hello_world() == "hello" -> AttributeError: 'functools.partial' object has no attribute…; llm-written reproduction — never completes a run); regression scope: 6 test files (related): 6 test files import or are named after django/utils/decorators.py, django/utils/functional.py, django/contrib/admin/decora…
+[step 5] intent · finish · 1.00 (confidence 1.00)
+[step 5] risk 0.00 ok · destructive 0 · irreversible 0
+[step 5] done · partial: fixed 0 of 1 failing tests; repro::236d42f2: 4 consecutive budget-hit steps (hard cap); oracle from the issue: llm_weak (llm_weak oracle repro::236d42f2 from an LLM-written script (script_1: reproduces_issue 0.37 in [0.3, 0.7); failure_kind exception_raised): assert t.hello_world() == "hello" -> AttributeError: 'functools.partial' object has no attribute…; llm-written reproduction — never completes a run); regression scope: 6 test files (related): 6 test files import or are named after django/utils/decorators.py, django/utils/functional.py, django/contrib/admin/decorators.py
+[step 5] judge skipped · complete n/a
+[step 5] plan · 0 done · 2 remaining
+[step 5] done partial: fixed 0 of 1 failing tests; re… · risk 0.00 ok · skipped · 0.0s · $0.000
+[step 6] synth · done · every goal parked: 4 consecutive budget-hit steps (hard cap)
+[step 6] synth · ledger · fixed 0, open 0, parked 1
+[step 6] proposal · done partial: fixed 0 of 1 failing tests; repro::236d42f2: 4 consecutive budget-hit steps (hard cap); oracle from the issue: llm_weak (llm_weak oracle repro::236d42f2 from an LLM-written script (script_1: reproduces_issue 0.37 in [0.3, 0.7); failure_kind exception_raised): assert t.hello_world() == "hello" -> AttributeError: 'functools.partial' object has no attribute…; llm-written reproduction — never completes a run); regression scope: 6 test files (related): 6 test files import or are named after django/utils/decorators.py, django/utils/functional.py, django/contrib/admin/decora…
+[step 6] intent · finish · 1.00 (confidence 1.00)
+[step 6] risk 0.00 ok · destructive 0 · irreversible 0
+[step 6] done · partial: fixed 0 of 1 failing tests; repro::236d42f2: 4 consecutive budget-hit steps (hard cap); oracle from the issue: llm_weak (llm_weak oracle repro::236d42f2 from an LLM-written script (script_1: reproduces_issue 0.37 in [0.3, 0.7); failure_kind exception_raised): assert t.hello_world() == "hello" -> AttributeError: 'functools.partial' object has no attribute…; llm-written reproduction — never completes a run); regression scope: 6 test files (related): 6 test files import or are named after django/utils/decorators.py, django/utils/functional.py, django/contrib/admin/decorators.py
+[step 6] judge skipped · complete n/a
+[step 6] done partial: fixed 0 of 1 failing tests; re… · risk 0.00 ok · skipped · 0.0s · $0.000
+[step 7] synth · done · every goal parked: 4 consecutive budget-hit steps (hard cap)
+[step 7] synth · ledger · fixed 0, open 0, parked 1
+[step 7] proposal · done partial: fixed 0 of 1 failing tests; repro::236d42f2: 4 consecutive budget-hit steps (hard cap); oracle from the issue: llm_weak (llm_weak oracle repro::236d42f2 from an LLM-written script (script_1: reproduces_issue 0.37 in [0.3, 0.7); failure_kind exception_raised): assert t.hello_world() == "hello" -> AttributeError: 'functools.partial' object has no attribute…; llm-written reproduction — never completes a run); regression scope: 6 test files (related): 6 test files import or are named after django/utils/decorators.py, django/utils/functional.py, django/contrib/admin/decora…
+[step 7] intent · finish · 1.00 (confidence 1.00)
+[step 7] risk 0.00 ok · destructive 0 · irreversible 0
+[step 7] done · partial: fixed 0 of 1 failing tests; repro::236d42f2: 4 consecutive budget-hit steps (hard cap); oracle from the issue: llm_weak (llm_weak oracle repro::236d42f2 from an LLM-written script (script_1: reproduces_issue 0.37 in [0.3, 0.7); failure_kind exception_raised): assert t.hello_world() == "hello" -> AttributeError: 'functools.partial' object has no attribute…; llm-written reproduction — never completes a run); regression scope: 6 test files (related): 6 test files import or are named after django/utils/decorators.py, django/utils/functional.py, django/contrib/admin/decorators.py
+[step 7] judge skipped · complete n/a
+[step 7] loop · the same step repeated 3 times · done:68e9661c7827
+[step 7] done partial: fixed 0 of 1 failing tests; re… · risk 0.00 ok · skipped · 0.0s · $0.000
+[step 8] replan · gather context · 0.27 (confidence 0.15) · "After repeating the same done proposal 3 times, Jev directs `gather_context` (p=0.27, task_impossible=0.00): read or search the code and its tests before acting again, because the repeated step was based on a wrong assumption."
+[step 8] synth · directive · gather_context: reopened g1 (parked by the search; attempts reset for the re-localisation); rotated source order of g1 (2); sites of g1 dropped; file beam 5 → 10; re-localise g1 with the latest failure text
+[step 8] synth · goal · g1: fix repro::236d42f2 in django/utils/decorators.py (1 test, attempt 1, picked by single)
+[step 8] synth · localize · g1: 1 introspection site after the 19 located: django/utils/decorators.py:42 (gap, indent 12; introspection: gap before the raising statement L42 of django/utils/decorators.py)
+[step 8] synth · localize · g1: 2 history sites after the 20 located: django/utils/functional.py:27 (replace; history: the lines a past commit added); django/utils/functional.py:25 (gap, indent 4; history: where a past commit removed lines)
+[step 8] synth · llm:fire · goal g1 round 1 (repository): 3/6 samples fired, deadline 90000 ms (adapted from the served p90 71768 ms; the repository default is 30000 ms), max_tokens 6000, reasoning max_tokens 512, $0.0105 reserved
+[step 8] synth · llm:sample · k=0 empty 16892 ms: 0 candidates
+[step 8] synth · llm:sample · k=2 empty 36032 ms: 0 candidates
+[step 8] synth · llm:sample · k=1 valid 47205 ms: 0 candidates (misanchored)
+[step 8] synth · llm:round · goal g1 round 1: 3 fired, 1 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 0 distinct candidates, 47209 ms, $0.0033
+[step 8] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1500, test wall left 59 s; t_run reproduction 718 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 8] synth · llm:phase · g1: round 1 (repository) batch 1: 0 LLM candidates classified as they streamed in
+[step 8] synth · site · g1: django/utils/functional.py:251:insert (gap, indent 4) on committed: donor 204 — insert after anchor L250
+[step 8] synth · verify · g1: 104 tested on 4 lanes (103 unchanged, 1 timeout); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1396, test wall left 0 s; reproduction median 1324 ms; t_run reproduction 626 ms (live), scoped 3225 ms · 104 candidates, 104 tested
+[step 8] synth · search · g1 budget (phase SEEDS, SIEVE, sites 22, requests 19, runs 104, plausible 0) · 204 candidates, 104 tested
+[step 8] synth · budget · g1: budget-hit step 1 of 4 (nothing new: 1 of 2 stagnant); the goal stays open
+[step 8] synth · ledger · fixed 0, open 1, parked 0
+[step 8] proposal · run $ python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests · "record the failing behaviour of repro::236d42f2"
+[step 8] intent · verify · 1.00 (confidence 1.00)
+[step 8] risk 0.00 ok · destructive 0 · irreversible 0
+[step 8] done · exit 0 · exit 0 · 1s
+[step 8] judge 1.00 · tests 233p/0f/0e pass · 0 of 0 claims accepted · complete n/a
+[step 8] plan · 0 done · 2 remaining
+[step 8] run $ python tests/runtests.py --parallel 1… · risk 0.00 ok · tests 233p/0f/0e · judge 1.00 · 1m49s · $0.004
+[step 9] synth · goal · g1: fix repro::236d42f2 in django/utils/decorators.py (1 test, attempt 2, picked by single)
+[step 9] synth · llm:fire · goal g1 round 1 (repository): 3/6 samples fired, deadline 90000 ms (adapted from the served p90 71768 ms; the repository default is 30000 ms), max_tokens 6000, reasoning max_tokens 512, $0.0105 reserved
+[step 9] synth · llm:sample · k=0 empty 10619 ms: 0 candidates
+[step 9] synth · llm:sample · k=1 empty 10823 ms: 0 candidates
+[step 9] synth · llm:sample · k=2 timeout 90002 ms: 0 candidates, est. $0.0011 — deadline 90000 ms passed
+[step 9] synth · llm:round · goal g1 round 1: 3 fired, 0 valid, 0 malformed, 0 length, 1 timeout, 0 cancelled, 0 error, 0 distinct candidates, 90009 ms, $0.0024 (est. $0.0011)
+[step 9] synth · verify · g1: 0 tested on 4 lanes (nothing ran); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1500, test wall left 16 s; t_run reproduction 626 ms (live), scoped 3225 ms · 0 candidates, 0 tested
+[step 9] synth · llm:phase · g1: round 1 (repository) batch 1: 0 LLM candidates classified as they streamed in
+[step 9] synth · site · g1: django/utils/functional.py:251:insert (gap, indent 4) on committed: donor 100 — insert after anchor L250
+[step 9] synth · verify · g1: 43 tested on 4 lanes (39 unchanged, 4 timeout); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1457, test wall left 0 s; reproduction median 883 ms; t_run reproduction 626 ms (live), scoped 3225 ms · 43 candidates, 43 tested
+[step 9] synth · search · g1 budget (phase SEEDS, SIEVE, sites 22, requests 0, runs 43, plausible 0) · 100 candidates, 43 tested
+[step 9] synth · ledger · fixed 0, open 0, parked 1
+[step 9] proposal · run $ python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests · "record the failing behaviour of repro::236d42f2"
+[step 9] intent · verify · 1.00 (confidence 1.00)
+[step 9] risk 0.00 ok · destructive 0 · irreversible 0
+[step 9] done · exit 0 · exit 0 · 1s
+[step 9] judge 1.00 · tests 233p/0f/0e pass · 0 of 0 claims accepted · complete n/a
+[step 9] loop · the same step repeated 3 times · run:d95404db5e77:069490dcfc51
+[step 9] plan · 0 done · 2 remaining
+[step 9] run $ python tests/runtests.py --parallel 1… · risk 0.00 ok · tests 233p/0f/0e · judge 1.00 · 1m49s · $0.003
+[step 10] replan · change approach · 0.77 (confidence 0.72) · "Jev found no listed recovery applicable after repeating the same run command with the same result 3 times (p=0.77, task_impossible=0.00); propose a different action from anything shown in recent steps."
+[step 10] synth · directive · change_approach: reopened g1; rotated source order of g1 (3); sites of g1 rebuilt
+[step 10] synth · goal · g1: fix repro::236d42f2 in django/utils/decorators.py (1 test, attempt 3, picked by single)
+[step 10] synth · localize · g1: 1 introspection site after the 19 located: django/utils/decorators.py:42 (gap, indent 12; introspection: gap before the raising statement L42 of django/utils/decorators.py)
+[step 10] synth · localize · g1: 2 history sites after the 20 located: django/utils/functional.py:27 (replace; history: the lines a past commit added); django/utils/functional.py:25 (gap, indent 4; history: where a past commit removed lines)
+[step 10] synth · llm:fire · goal g1 round 1 (repository): 4/6 samples fired, deadline 90000 ms (adapted from the served p90 71768 ms; the repository default is 30000 ms), max_tokens 6000, reasoning max_tokens 512, $0.0139 reserved
+[step 10] synth · llm:sample · k=1 empty 11937 ms: 0 candidates
+[step 10] synth · llm:sample · k=0 empty 19924 ms: 0 candidates
+[step 10] synth · llm:sample · k=3 empty 22713 ms: 0 candidates
+[step 10] synth · llm:sample · k=2 valid 33781 ms: 1 candidates
+[step 10] synth · llm:round · goal g1 round 1: 4 fired, 1 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 1 distinct candidates, 33851 ms, $0.0031
+[step 10] synth · verify · g1: 1 tested on 4 lanes (1 plausible); reproduction repro::236d42f2 (a pass confirmed by a second run) then regression; runs left 1497, test wall left 64 s; reproduction median 1603 ms; regression run median 3119 ms; t_run reproduction 848 ms (live), scoped 3119 ms; streamed batch ended on its first passer · 1 candidates, 1 tested
+[step 10] synth · llm:phase · g1: round 1 (repository) batch 1: 1 LLM candidate classified as they streamed in; a passer landed — deciding now with the round closed
+[step 10] synth · guard · g1: lone passer llm/sample_2_0 at django/utils/decorators.py:40:replace looks duplicates_block but general 0.47 ≥ 0.3 keeps it
+[step 10] synth · guard · g1: network-dependent reproduction; Q16 on the lone passer llm/sample_2_0 at django/utils/decorators.py:40: general 0.47 ≥ 0.3, committing it
+[step 10] synth · search · g1 commit (phase LLM, SIEVE, sites 22, requests 21, runs 2, plausible 1) · 1 candidates, 1 tested
+[step 10] synth · ledger · fixed 1, open 0, parked 0
+[step 10] proposal · patch django/utils/decorators.py +2 −1 · "apply verified fix: repro::236d42f2 now passes (233→234 of 236), no regressions; llm/sample_2_0 at django/utils/decorators.py:40"
+[step 10] intent · edit · 1.00 (confidence 1.00)
+[step 10] risk 0.00 ok · destructive 0 · irreversible 0
+[step 10] done · patch applied (1 file) · 1 file (django/utils/decorators.py)
+[step 10] judge skipped · complete n/a
+[step 10] plan · 0 done · 2 remaining
+[step 10] patch django/utils/decorators.py +2 −1 "apply verified fix: repro::236d…" · risk 0.00 ok · 1 file +2 −1 · 42s · $0.003 · /diff 10
+[step 11] synth · files · 855 Python files: 854 unchanged since the last load (reused), 1 analysed (1253 ms)
+[step 11] synth · baseline · lane regression run adopted as the scoped baseline: every touched file reads as the lane's post-image; only the reproduction is re-run
+[step 11] synth · baseline · 233/235 scoped tests pass, 0 failed, 0 errors in 3119 ms; reproduction repro::236d42f2 PASSES () in 748 ms (repository, other, python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests)
+[step 11] synth · verify · django/utils/decorators.py changed since the engine's last test run: python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests
+[step 11] synth · ledger · fixed 1, open 0, parked 0
+[step 11] proposal · run $ python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite utils_tests.test_decorators utils_tests.test_functional decorators.tests auth_tests.test_decorators validation.tests expressions.tests · "verify the suite after fixing repro::236d42f2 (django/utils/decorators.py changed since the last test run; expect 233 of 235 tests to pass and the reproduction to pass, 233 passed in the last run)"
+[step 11] intent · verify · 1.00 (confidence 1.00)
+[step 11] risk 0.00 ok · destructive 0 · irreversible 0
+[step 11] done · exit 0 · exit 0 · 2s · 1 file (django/utils/decorators.py)
+[step 11] judge 1.00 · tests 233p/0f/0e pass · 1 of 1 claims accepted · complete 0.66
+[step 11] plan · 1 done · 1 remaining
+[step 11] run $ python tests/runtests.py --parallel 1… · risk 0.00 ok · 1 file · tests 233p/0f/0e · judge 1.00 · 4.8s · $0.0002 · /diff 11
+[step 12] synth · done · baseline green: 234 tests pass, 1 fix committed
+[step 12] synth · ledger · fixed 1, open 0, parked 0
+[step 12] proposal · done all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed · "all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed"
+[step 12] intent · finish · 1.00 (confidence 1.00)
+[step 12] risk 0.00 ok · destructive 0 · irreversible 0
+[step 12] done · all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed
+[step 12] judge skipped · complete 0.81
+[step 12] plan · 2 done · 0 remaining
+[step 12] done all 233 tests pass; the reproduction re… · risk 0.00 ok · skipped · 0.2s · $0.0002
+[step 13] synth · done · baseline green: 234 tests pass, 1 fix committed
+[step 13] synth · ledger · fixed 1, open 0, parked 0
+[step 13] proposal · done all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed · "all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed"
+[step 13] intent · finish · 1.00 (confidence 1.00)
+[step 13] risk 0.00 ok · destructive 0 · irreversible 0
+[step 13] done · all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed
+[step 13] judge skipped · complete 0.78
+[step 13] done all 233 tests pass; the reproduction re… · risk 0.00 ok · skipped · 0.2s · $0.0002
+[step 14] synth · done · baseline green: 234 tests pass, 1 fix committed
+[step 14] synth · ledger · fixed 1, open 0, parked 0
+[step 14] proposal · done all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed · "all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed"
+[step 14] intent · finish · 1.00 (confidence 1.00)
+[step 14] risk 0.00 ok · destructive 0 · irreversible 0
+[step 14] done · all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed
+[step 14] judge skipped · complete 0.78
+[step 14] loop · the same step repeated 3 times · done:50a87068af31
+[step 14] done all 233 tests pass; the reproduction re… · risk 0.00 ok · skipped · 0.2s · $0.0002
+[step 15] replan · gather context · 0.26 (confidence 0.28) · "After repeating the same done proposal 3 times, Jev directs `gather_context` (p=0.26, task_impossible=0.00): read or search the code and its tests before acting again, because the repeated step was based on a wrong assumption."
+[step 15] synth · directive · gather_context: nothing to change
+[step 15] synth · done · baseline green: 234 tests pass, 1 fix committed
+[step 15] synth · ledger · fixed 1, open 0, parked 0
+[step 15] proposal · done all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed · "all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed"
+[step 15] intent · finish · 1.00 (confidence 1.00)
+[step 15] risk 0.00 ok · destructive 0 · irreversible 0
+[step 15] done · all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed
+[step 15] judge skipped · complete 0.76
+[step 15] done all 233 tests pass; the reproduction re… · risk 0.00 ok · skipped · 0.5s · $0.0003
+[step 16] synth · done · baseline green: 234 tests pass, 1 fix committed
+[step 16] synth · ledger · fixed 1, open 0, parked 0
+[step 16] proposal · done all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed · "all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed"
+[step 16] intent · finish · 1.00 (confidence 1.00)
+[step 16] risk 0.00 ok · destructive 0 · irreversible 0
+[step 16] done · all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed
+[step 16] judge skipped · complete 0.67
+[step 16] done all 233 tests pass; the reproduction re… · risk 0.00 ok · skipped · 0.2s · $0.0001
+[step 17] synth · done · baseline green: 234 tests pass, 1 fix committed
+[step 17] synth · ledger · fixed 1, open 0, parked 0
+[step 17] proposal · done all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed · "all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed"
+[step 17] intent · finish · 1.00 (confidence 1.00)
+[step 17] risk 0.00 ok · destructive 0 · irreversible 0
+[step 17] done · all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed
+[step 17] judge skipped · complete 0.67
+[step 17] loop · the same step repeated 3 times · done:50a87068af31
+[step 17] done all 233 tests pass; the reproduction re… · risk 0.00 ok · skipped · 0.1s · $0.0001
+[step 18] replan · change approach · 0.97 (confidence 0.96) · "After repeating the same done proposal 3 times with gather_context already directed at step 15 and the output unchanged, Jev directs `change_approach` (p=0.97, escalation=SEEDS → SKETCH/WIDENED): escalate the search phase SEEDS → SKETCH/WIDENED — rotate the goal's source order, reopen every parked goal, widen the site beam and allow the WIDENED phase, instead of repeating a step that has not moved."
+[step 18] synth · directive · change_approach: nothing to change
+[step 18] synth · done · baseline green: 234 tests pass, 1 fix committed
+[step 18] synth · ledger · fixed 1, open 0, parked 0
+[step 18] proposal · done all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed · "all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed"
+[step 18] intent · finish · 1.00 (confidence 1.00)
+[step 18] risk 0.00 ok · destructive 0 · irreversible 0
+[step 18] done · all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed
+[step 18] judge skipped · complete 0.70
+[step 18] done all 233 tests pass; the reproduction re… · risk 0.00 ok · skipped · 0.3s · $0.0003
+[step 19] synth · done · baseline green: 234 tests pass, 1 fix committed
+[step 19] synth · ledger · fixed 1, open 0, parked 0
+[step 19] proposal · done all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed · "all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed"
+[step 19] intent · finish · 1.00 (confidence 1.00)
+[step 19] risk 0.00 ok · destructive 0 · irreversible 0
+[step 19] done · all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed
+[step 19] judge skipped · complete 0.69
+[step 19] done all 233 tests pass; the reproduction re… · risk 0.00 ok · skipped · 0.3s · $0.0002
+[step 20] synth · done · baseline green: 234 tests pass, 1 fix committed
+[step 20] synth · ledger · fixed 1, open 0, parked 0
+[step 20] proposal · done all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed · "all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed"
+[step 20] intent · finish · 1.00 (confidence 1.00)
+[step 20] risk 0.00 ok · destructive 0 · irreversible 0
+[step 20] done · all 233 tests pass; the reproduction repro::236d42f2 passes; 1 fix committed
+[step 20] judge skipped · complete 0.68
+[step 20] loop · the same step repeated 3 times · done:50a87068af31
+[step 20] done all 233 tests pass; the reproduction re… · risk 0.00 ok · skipped · 0.2s · $0.0002
+[run] budget max_replans reached at step start
+[run] finished · max_replans · 20 steps · 12m27s · $0.037 (generator $0.028 · jev $0.009) · exit 4
