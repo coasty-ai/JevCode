@@ -310,3 +310,150 @@ export const EXIT_CODES = {
   /** TUI-DESIGN §13.5: SIGHUP / EIO */
   sighup: 129,
 } as const;
+
+// ---------------------------------------------------------------------------------------
+// `explainFsError` — errors that name the fix (TUI-DESIGN-4 §7.4, P-D4)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * TUI-DESIGN-4 §7.4: what the caller was doing when the errno came back, so one code can pick the right row
+ * (`EACCES` on the runs dir and `EACCES` on the config file want different sentences).
+ */
+export type FsOp =
+  /** creating `<JEVCODE_HOME>/runs` (or `--runs-dir`) at launch */
+  | 'runs-dir'
+  /** writing inside an existing run directory mid-run */
+  | 'run-dir'
+  /** reading the config file */
+  | 'config'
+  /** anything else that touched the file system */
+  | 'other';
+
+export interface FsErrorContext {
+  op?: FsOp;
+  /** the directory or file the operation named; interpolated into the line */
+  path?: string;
+  /**
+   * TUI-DESIGN-4 §7.4 edge 2: the `~` abbreviation. `shortPath` (§3.4, `src/core/text.ts`) is S3's module and is
+   * not imported here — `src/errors.ts` is in the eager bundle and must stay dependency-free — so the caller
+   * passes it. Default: identity.
+   */
+  shorten?: (p: string) => string;
+  /** TUI-DESIGN-4 §7.4 edge 1: a path can contain a token. Default: identity (the caller normally passes `config.redact`). */
+  redact?: (s: string) => string;
+}
+
+export interface FsExplanation {
+  /** the sentence: what failed, with the path */
+  readonly line: string;
+  /** TUI-DESIGN-4 §7.4 edge 4: at most two rows, so it fits the flat tier */
+  readonly fix: readonly string[];
+  /** the errno behind it */
+  readonly code: string;
+  /** the exit code this condition deserves: 2 for a configuration/permission problem, 3 when the run cannot be resumed */
+  readonly exitCode: number;
+}
+
+/** TUI-DESIGN-4 §7.4 edge 4. */
+export const FS_FIX_MAX_ROWS = 2;
+
+/**
+ * TUI-DESIGN-4 §7.4 edge 1: a path reaches a terminal row, so drop C0/C1 controls and DEL, collapse newlines and
+ * tabs to a space and strip the bidi controls §14.1 names. `terminalSafeLine` proper lives in
+ * `src/tui/blocking/lines.ts`, which pulls in `plain.ts` and `composer/width.ts`; `errors.ts` is eager and stays
+ * import-free, so the same rule is re-stated here in four lines.
+ */
+function safeText(s: string): string {
+  return s
+    .replace(/\r\n|\r|\n| | |\t/g, ' ')
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+    // eslint-disable-next-line no-misleading-character-class
+    .replace(/[؜‎‏‪-‮⁦-⁩﻿]/g, '')
+    .trim();
+}
+
+/** Walk a `cause` chain (a CheckpointError wraps the errno error) to the first string `code`, bounded. */
+function errnoOf(e: unknown): string | null {
+  let cur: unknown = e;
+  for (let depth = 0; depth < 8 && typeof cur === 'object' && cur !== null; depth++) {
+    const code = (cur as { code?: unknown }).code;
+    if (typeof code === 'string' && /^E[A-Z]+$/.test(code)) return code;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/** The syscall the errno came from, when the platform recorded one (`mkdir`, `open`, `write`, …). */
+function syscallOf(e: unknown): string | null {
+  let cur: unknown = e;
+  for (let depth = 0; depth < 8 && typeof cur === 'object' && cur !== null; depth++) {
+    const s = (cur as { syscall?: unknown }).syscall;
+    if (typeof s === 'string' && s.length > 0) return s;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/**
+ * TUI-DESIGN-4 §7.4 (P-D4): turn a raw errno into a sentence that names the value, the source, the constraint and
+ * the consequence — the standard `limits.maxSteps: "lots" (from file:<path>) is not an integer >= 1` already set.
+ * Returns null for anything unclassified, which keeps today's `[ui] error: <raw errno>` fallback (plus
+ * `run with JEVCODE_DEBUG=1 for the stack`).
+ *
+ * Pure. Windows errnos fall through to null (edge 3): macOS and Linux are the supported platforms.
+ */
+export function explainFsError(e: unknown, ctx: FsErrorContext = {}): FsExplanation | null {
+  const code = errnoOf(e);
+  if (code === null) return null;
+  const op = ctx.op ?? 'other';
+  const redact = ctx.redact ?? ((s: string) => s);
+  const shorten = ctx.shorten ?? ((p: string) => p);
+  const shown = safeText(redact(shorten(ctx.path ?? '')));
+  const where = shown.length > 0 ? shown : 'the run directory';
+  const build = (line: string, fix: readonly string[], exitCode: number): FsExplanation => ({
+    line,
+    fix: fix.slice(0, FS_FIX_MAX_ROWS),
+    code,
+    exitCode,
+  });
+  const syscall = syscallOf(e);
+  switch (code) {
+    case 'EACCES':
+    case 'EPERM':
+    case 'EROFS': {
+      if (op === 'config') return build(`cannot read ${where}: permission denied`, [`chmod u+r ${where}, or pass --config <path>`], EXIT_CODES.config);
+      if (op === 'runs-dir' || syscall === 'mkdir')
+        return build(`cannot create the runs directory ${where}: permission denied`, ['set JEVCODE_HOME to a writable directory, or pass --runs-dir <dir>'], EXIT_CODES.config);
+      return build(`cannot write inside ${where}: permission denied`, ['set JEVCODE_HOME to a writable directory, or pass --runs-dir <dir>'], EXIT_CODES.config);
+    }
+    case 'ENOSPC':
+    case 'EDQUOT':
+      return build(`the disk holding ${where} is full`, ['free space, or pass --runs-dir <dir> on another volume'], EXIT_CODES.config);
+    case 'ENOENT': {
+      if (op === 'config') return build(`cannot read ${where}: no such file`, ['pass --config <path>, or remove the setting that names it'], EXIT_CODES.config);
+      if (op === 'run-dir')
+        return build(`the run directory ${where} disappeared during the run`, ['this run cannot be resumed; the transcript above is complete'], EXIT_CODES.checkpoint);
+      return null;
+    }
+    case 'EMFILE':
+    case 'ENFILE':
+      return build('too many open files', ['raise the file-descriptor limit (ulimit -n)'], EXIT_CODES.config);
+    default:
+      return null;
+  }
+}
+
+/**
+ * TUI-DESIGN-4 §7.4: "every launch-time failure routes through `fatalExit` … and a correct code (**2** for a
+ * configuration/permission problem, not 1)". Wrap a classified errno in the typed error that carries that code;
+ * anything already typed (a `CheckpointError`'s 3, an `AbortError`'s 130) is returned untouched, and an
+ * unclassified errno stays unclassified so the raw-errno fallback keeps its job.
+ */
+export function fsErrorToJevCodeError(e: unknown, ctx: FsErrorContext = {}): JevCodeError | null {
+  if (e instanceof JevCodeError) return e;
+  const x = explainFsError(e, ctx);
+  if (x === null) return null;
+  return x.exitCode === EXIT_CODES.checkpoint
+    ? new CheckpointError(x.line, ctx.path ?? '', { cause: e })
+    : new ConfigError(x.line, { cause: e });
+}

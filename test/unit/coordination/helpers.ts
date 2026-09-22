@@ -10,6 +10,7 @@ import { withChecksum } from '../../../src/coordination/records.js';
 import type { Ack, AnyRecord, Claim, DeviceRecord, Fold, Heartbeat, Lease, Message, RecordKind, RecordOrigin, SelfIdentity, Stamp } from '../../../src/coordination/types.js';
 import type { Timers } from '../../../src/coordination/watch.js';
 import { commonsPaths } from '../../../src/coordination/paths.js';
+import { leaseRels } from '../../../src/coordination/leases.js';
 
 export const DEV_A = 'k3q7m2ab';
 export const DEV_B = 'zz5wq7cd';
@@ -321,10 +322,15 @@ export async function putHeartbeat(root: string, hb: Heartbeat, fs: CoordFs = no
   await putFile(p, `${JSON.stringify(hb)}\n`, fs);
   return p;
 }
+/**
+ * §4.3 (design revision 5): a lease with a `repoKey` is written under BOTH `keyDir(repoKey)` and `keyDir(wsKey)`.
+ * The fixture does what the writer does, so a test that plants a lease is testing the layout the fence reads.
+ * Returns the FIRST path (the `repoKey` copy when there is one).
+ */
 export async function putLease(root: string, l: Lease, fs: CoordFs = nodeFs): Promise<string> {
-  const p = commonsPaths(root).leaseFile(l.deviceId, l.repoKey, l.leaseId);
-  await putFile(p, `${JSON.stringify(l)}\n`, fs);
-  return p;
+  const paths = leaseRels(l).map((rel) => join(commonsPaths(root).deviceDir('leases', l.deviceId), rel));
+  for (const p of paths) await putFile(p, `${JSON.stringify(l)}\n`, fs);
+  return paths[0] as string;
 }
 export async function putMessage(root: string, m: Message, tMs: number, fs: CoordFs = nodeFs): Promise<string> {
   const p = commonsPaths(root).messageFile(m.from.deviceId, m.to, tMs, m.stamp.n);

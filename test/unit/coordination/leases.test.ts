@@ -13,10 +13,13 @@ import {
   check,
   collapsePaths,
   coordRecordOf,
+  FENCE_WAIT_CAP_MS,
+  STRICT_WAIT_MS,
   declare,
-  f2Wake,
-  fenceWait,
+  fenceWake,
+  fenceYield,
   isExclusiveTreeCommand,
+  leaseRels,
   leaseSnapshot,
   release,
   renew,
@@ -26,7 +29,7 @@ import {
 import { openLedger } from '../../../src/coordination/ledger.js';
 import { nodeFs, type CoordFs } from '../../../src/coordination/fs.js';
 import { LEASE_PATHS_MAX } from '../../../src/coordination/ids.js';
-import { commonsPaths } from '../../../src/coordination/paths.js';
+import { commonsPaths, keyDir } from '../../../src/coordination/paths.js';
 import { LEASE_TTL_MS } from '../../../src/coordination/records.js';
 import type { LeaseIntent } from '../../../src/coordination/types.js';
 import { DEV_A, DEV_B, KEY_B, REPO, SELF, T0, TRUSTED, WS, claim, entry, fakeClock, foldOf, iso, makeHeartbeat, makeLease, makeMessage, makeSelf, putHeartbeat, putLease, runId, signed, stamp, tempHome } from './helpers.js';
@@ -64,11 +67,42 @@ describe('check (§4.3 step 2, pure)', () => {
     expect(c.expiresInMs).toBeGreaterThan(0);
   });
 
-  it('§11 row 8: a different branch is a SOFT fact — two checkouts cannot clobber each other', () => {
-    const fold = foldOf([...peerHolding(['src/x.ts'], { repo: { branch: 'feature' } }, { branch: 'feature' })]);
-    const r = check(fold, self, intent());
-    expect(r.kind === 'conflict' && r.conflicts[0]?.severity).toBe('soft');
-    expect(r.kind === 'conflict' && r.conflicts[0]?.sameBranch).toBe(false);
+  it('§4.3 step 2 (revision 5): severity is about the WORKING TREE, not the branch', () => {
+    // a different BRANCH in the SAME checkout is still `hard`: one working tree is the only way two sessions can
+    // clobber each other's bytes, and switching branches does not give them two.
+    const otherBranch = foldOf([...peerHolding(['src/x.ts'], { repo: { branch: 'feature' } }, { branch: 'feature' })]);
+    const r1 = check(otherBranch, self, intent());
+    expect(r1.kind === 'conflict' && r1.conflicts[0]?.severity).toBe('hard');
+    expect(r1.kind === 'conflict' && r1.conflicts[0]?.sameBranch).toBe(false);
+    // a different `wsKey` — a second clone of one repo — is `soft` WHATEVER the branch. Two clones on one branch
+    // cannot overwrite each other's files any more than two branches can, which is the doc's own reason for `soft`;
+    // revision 2's "same branch → hard" bought a 60 s wait plus a pane between clones for a merge-time concern.
+    const otherTree = foldOf([...peerHolding(['src/x.ts'], {}, { wsKey: 'ws:00000000deadbeef' })]);
+    const r2 = check(otherTree, self, intent());
+    expect(r2.kind === 'conflict' && r2.conflicts[0]?.severity).toBe('soft');
+    expect(r2.kind === 'conflict' && r2.conflicts[0]?.sameBranch).toBe(true);
+  });
+
+  it('§4.3 step 2 (revision 5): an `intent` is a DECLARED FACT, never a conflict; only holding types conflict', () => {
+    // every writer writes `intent` at step 1, and an F1 yield downgrades to it — so revision 4's "every live,
+    // unexpired lease is a conflict" made the F2 re-declarer conflict with the peer that had just yielded to it,
+    // and made every strict step conflict with every peer's step-1 declaration.
+    const declaredOnly = foldOf([...peerHolding(['src/x.ts'], {}, { type: 'intent' })]);
+    const r = check(declaredOnly, self, intent());
+    expect(r.kind).toBe('clear');
+    expect(r.declared.map((d) => d.path)).toEqual(['src/x.ts']);
+    expect(r.declared[0]).toMatchObject({ by: 'studio', step: 3 });
+    // … and it is NOT in the fence snapshot either, so the peer's intent → exclusive rewrite counts as `appeared`
+    expect([...r.snapshot]).toEqual([]);
+    for (const type of ['exclusive', 'command', 'lane', 'worktree', 'takeover'] as const) {
+      const held = foldOf([...peerHolding(['src/x.ts'], {}, { type, ...(type === 'takeover' ? { claim: claim({ deviceId: DEV_B, runId: runId(9), pid: 900 }) } : {}) })]);
+      expect(check(held, self, intent()).kind, type).toBe('conflict');
+    }
+    // the snapshot holds the overlapping EXCLUSIVE leases, and nothing else
+    const exclusive = foldOf([...peerHolding(['src/x.ts'], {}, { type: 'exclusive' })]);
+    expect([...check(exclusive, self, intent()).snapshot]).toEqual([`${runId(9)}-9`]);
+    const command = foldOf([...peerHolding(['src/x.ts'], {}, { type: 'command' })]);
+    expect([...check(command, self, intent()).snapshot]).toEqual([]);
   });
 
   it('a released lease, a dead holder and my own run are all clear', () => {
@@ -326,8 +360,8 @@ describe('§4.5 the strict fence — F1 yield on sight, F2 the lowest stamp re-d
     // A's in-memory counter has run ahead, so the second writer holds the lower stamp: revision 2's "lower stamp wins"
     // read as a local test made BOTH proceed here, which is the failure G1(c) forbids.
     const { a, b } = await twoEngines(62, 0);
-    const snapA = leaseSnapshot(a.fold);
-    const snapB = leaseSnapshot(b.fold);
+    const snapA = leaseSnapshot(check(a.fold, a.self, mine()));
+    const snapB = leaseSnapshot(check(b.fold, b.self, mine()));
     const decA = await declare(a, mine(), 'strict', { snapshot: snapA });
     const decB = await declare(b, mine(), 'strict', { snapshot: snapB });
     expect(decA.fence).toBe('decided');
@@ -340,51 +374,179 @@ describe('§4.5 the strict fence — F1 yield on sight, F2 the lowest stamp re-d
     expect([decA.proceed, decB.proceed].filter(Boolean)).toHaveLength(1); // never zero, never two
 
     // F2 never fires for B while A still holds `exclusive`: B waits for a real release, which is correct
-    const wait = fenceWait(b, mine(), decB);
-    await wait.yield();
+    const wait = await fenceYield(b, mine(), decB);
     await b.refresh('leases');
-    expect(wait.wake(b.fold)).toBe(false);
+    expect(wait.wake(b.fold, b.fold.at.monoMs)).toBe('keep-waiting');
+    // the capture holds what F2 decides from: the leaseId, the stamp, the device and MY deadline (§4.5, revision 5)
+    expect(wait.captured.yieldedTo.map((y) => y.leaseId)).toEqual([decA.leaseId]);
+    expect(wait.captured.mine).toEqual(decB.stamp);
+    expect(wait.captured.yieldedTo[0]?.sameDevice).toBe(true); // same store, same device: pid death is the event
+    expect(wait.captured.yieldedTo[0]?.staleAtMono).toBeNull();
+    // same-device, so the cap never binds and the deadline is the plain strict wait
+    expect(wait.captured.deadlineMono).toBe(b.fold.at.monoMs + STRICT_WAIT_MS);
   });
 
   it('(ii) both-see: F1 yields on both sides, then F2 lets only the LOWEST stamp re-declare and proceed', async () => {
     const { a, b, disarm } = await twoEngines(62, 0, { barrier: true });
-    const snapA = leaseSnapshot(a.fold);
-    const snapB = leaseSnapshot(b.fold);
+    const snapA = leaseSnapshot(check(a.fold, a.self, mine()));
+    const snapB = leaseSnapshot(check(b.fold, b.self, mine()));
     // both renames land before either readdir — the symmetric case arrival cannot separate
     const [decA, decB] = await Promise.all([declare(a, mine(), 'strict', { snapshot: snapA }), declare(b, mine(), 'strict', { snapshot: snapB })]);
     disarm();
     if (decA.fence !== 'decided' || decB.fence !== 'decided') throw new Error('expected two decided fences');
     expect(decA.proceed || decB.proceed).toBe(false); // F1: nobody proceeds on sight
-    const waitA = fenceWait(a, mine(), decA);
-    const waitB = fenceWait(b, mine(), decB);
-    await waitA.yield();
-    await waitB.yield();
+    const waitA = await fenceYield(a, mine(), decA);
+    const waitB = await fenceYield(b, mine(), decB);
     await a.refresh('leases');
     await b.refresh('leases');
-    // F2: exactly one wake fires, and it is the lower stamp (B)
+    // F2: exactly one wake says `redeclare`, and it is the lower stamp (B)
     expect(decB.stamp.n).toBeLessThan(decA.stamp.n);
-    expect(waitB.wake(b.fold)).toBe(true);
-    expect(waitA.wake(a.fold)).toBe(false);
-    expect([waitA.wake(a.fold), waitB.wake(b.fold)].filter(Boolean)).toHaveLength(1);
+    expect(waitB.wake(b.fold, b.fold.at.monoMs)).toBe('redeclare');
+    expect(waitA.wake(a.fold, a.fold.at.monoMs)).toBe('keep-waiting');
     // and its re-declare proceeds: everyone else is `intent`, so `appeared` is empty
     const again = await waitB.redeclare();
     expect(again.fence === 'decided' && again.proceed).toBe(true);
   });
 
-  it('(ii) the same script decides identically with NO Jev and NO prompter — it is pure code', async () => {
-    // there is nothing to stub: `declare` / `f2Wake` take a fold and a stamp and return a boolean. Running the
-    // decision twice over the same facts must produce the same answer, which is what `jev-off` / `--no-input` get.
+  it('(ii) the minimum is taken over the CAPTURED stamps, not the fold — a GC\u2019d peer lease still counts', async () => {
     const { a, b, disarm } = await twoEngines(62, 0, { barrier: true });
-    const [decA, decB] = await Promise.all([declare(a, mine(), 'strict', { snapshot: leaseSnapshot(a.fold) }), declare(b, mine(), 'strict', { snapshot: leaseSnapshot(b.fold) })]);
+    const [decA, decB] = await Promise.all([declare(a, mine(), 'strict', { snapshot: leaseSnapshot(check(a.fold, a.self, mine())) }), declare(b, mine(), 'strict', { snapshot: leaseSnapshot(check(b.fold, b.self, mine())) })]);
     disarm();
     if (decA.fence !== 'decided' || decB.fence !== 'decided') throw new Error('expected two decided fences');
-    await fenceWait(a, mine(), decA).yield();
-    await fenceWait(b, mine(), decB).yield();
+    const waitA = await fenceYield(a, mine(), decA);
+    await fenceYield(b, mine(), decB);
+    // B's lease disappears entirely (its owner GC'd it). A captured B's stamp, so A still knows B goes first.
+    for (const rel of leaseRels({ repoKey: REPO, wsKey: WS, leaseId: decB.leaseId })) await nodeFs.unlink(join(commonsPaths(a.root).deviceDir('leases', DEV_A), rel));
+    await a.refresh('leases');
+    expect(a.fold.leases.has(decB.leaseId)).toBe(false);
+    expect(waitA.captured.yieldedTo.map((y) => y.leaseId)).toEqual([decB.leaseId]);
+    expect(waitA.wake(a.fold, a.fold.at.monoMs)).toBe('keep-waiting'); // B is the minimum and A never learns otherwise
+  });
+
+  it('(ii) a THIRD writer that arrived after the capture keeps everyone waiting', async () => {
+    const { a, b, disarm } = await twoEngines(62, 0, { barrier: true });
+    const [decA, decB] = await Promise.all([declare(a, mine(), 'strict', { snapshot: leaseSnapshot(check(a.fold, a.self, mine())) }), declare(b, mine(), 'strict', { snapshot: leaseSnapshot(check(b.fold, b.self, mine())) })]);
+    disarm();
+    if (decA.fence !== 'decided' || decB.fence !== 'decided') throw new Error('expected two decided fences');
+    await fenceYield(a, mine(), decA);
+    const waitB = await fenceYield(b, mine(), decB);
     await b.refresh('leases');
-    const first = f2Wake(b.fold, decB.stamp, decB.appeared);
-    const second = f2Wake(b.fold, decB.stamp, decB.appeared);
+    expect(waitB.wake(b.fold, b.fold.at.monoMs)).toBe('redeclare'); // B is the minimum of the capture
+    // … until a third, uncaptured writer turns up holding the same path: re-declaring would only yield again
+    const ridC = runId(7);
+    await putHeartbeat(b.root, makeHeartbeat({ deviceId: DEV_B, runId: ridC, sessionId: ridC, claim: claim({ deviceId: DEV_B, runId: ridC, pid: 700 }), stamp: stamp(7, DEV_B, ridC) }));
+    await putLease(b.root, makeLease({ deviceId: DEV_B, runId: ridC, sessionId: ridC, leaseId: `${ridC}-7`, type: 'exclusive', paths: ['src/engine.ts'], stamp: stamp(7, DEV_B, ridC) }));
+    await b.refresh('all');
+    expect(waitB.wake(b.fold, b.fold.at.monoMs)).toBe('keep-waiting');
+  });
+
+  it('(ii) cross-device: the post-yield deadline runs to the PEER\u2019s staleness, capped, and then says `deadline`', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const rid = runId(3);
+    const ridPeer = runId(9);
+    // a FOREIGN peer holding the same path: its death is only visible at ttl + slack, which is past strictWaitMs
+    await putHeartbeat(t.root, makeHeartbeat({ deviceId: DEV_B, runId: ridPeer, sessionId: ridPeer, claim: claim({ deviceId: DEV_B, runId: ridPeer, pid: 900 }), stamp: stamp(90, DEV_B, ridPeer) }));
+    await putLease(t.root, makeLease({ deviceId: DEV_B, runId: ridPeer, sessionId: ridPeer, leaseId: `${ridPeer}-90`, type: 'exclusive', paths: ['src/engine.ts'], stamp: stamp(90, DEV_B, ridPeer) }));
+    const l = openLedger({ home: t.home, self: makeSelf({ runId: rid, sessionId: rid }), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await l.open();
+    const dec = await declare(l, mine(), 'strict', { snapshot: new Set<string>() });
+    if (dec.fence !== 'decided') throw new Error('expected a decided fence');
+    expect(dec.proceed).toBe(false); // F1: I saw it
+    const wait = await fenceYield(l, mine(), dec);
+    const y = wait.captured.yieldedTo[0];
+    expect(y?.sameDevice).toBe(false);
+    expect(y?.staleAtMono).not.toBeNull();
+    // the wait runs to the peer's staleness instant, not to strictWaitMs — and never past the derived cap
+    const waited = wait.captured.deadlineMono - l.fold.at.monoMs;
+    expect(waited).toBeGreaterThan(STRICT_WAIT_MS);
+    expect(waited).toBeLessThanOrEqual(FENCE_WAIT_CAP_MS);
+    // the peer crashes after the yield: nothing more is written, and staleness is the only event left
+    expect(wait.wake(l.fold, l.fold.at.monoMs)).toBe('keep-waiting');
+    clock.advance(waited + 1);
+    await l.refresh('all');
+    // past its staleness the captured lease stops fencing; I am the only stamp left, so it is my turn
+    expect(wait.wake(l.fold, l.fold.at.monoMs)).toBe('redeclare');
+    await l.close();
+  });
+
+  it('(ii) the same script decides identically with NO Jev and NO prompter — it is pure code', async () => {
+    // there is nothing to stub: `declare` / `fenceWake` take a fold and a capture and return a word. Running the
+    // decision twice over the same facts must produce the same answer, which is what `jev-off` / `--no-input` get.
+    const { a, b, disarm } = await twoEngines(62, 0, { barrier: true });
+    const [decA, decB] = await Promise.all([declare(a, mine(), 'strict', { snapshot: leaseSnapshot(check(a.fold, a.self, mine())) }), declare(b, mine(), 'strict', { snapshot: leaseSnapshot(check(b.fold, b.self, mine())) })]);
+    disarm();
+    if (decA.fence !== 'decided' || decB.fence !== 'decided') throw new Error('expected two decided fences');
+    await fenceYield(a, mine(), decA);
+    const waitB = await fenceYield(b, mine(), decB);
+    await b.refresh('leases');
+    const first = fenceWake(b.fold, b.self, mine(), waitB.captured, b.fold.at.monoMs);
+    const second = fenceWake(b.fold, b.self, mine(), waitB.captured, b.fold.at.monoMs);
     expect(first).toBe(second);
-    expect(first).toBe(true);
+    expect(first).toBe('redeclare');
+  });
+
+  it('(iv) TWO DIRECTORIES, ONE LEASE: two runs in ONE checkout whose keyDir diverges still see each other', async () => {
+    // §4.3 / §4.5 (design revision 5). A workspace with an unborn HEAD and no origin has `repoKey: null` at run 1
+    // and a real `repoKey` at run 2 because the first commit landed in between; a `rev-list --max-parents=0` that
+    // fails on one side (a corrupt pack, a flaky mount, the 2 s timeout) produces the same split. Under revision 4's
+    // single `keyDir(repoKey ?? wsKey)` the two runs leased in DIFFERENT directories, each readdir was honest and
+    // empty, and BOTH proceeded under `strict` — the exact G1(c) failure. The fix is on the write side: a declare
+    // writes the same record under `keyDir(repoKey)` AND `keyDir(wsKey)`, and the safety proof then runs in the
+    // `wsKey` directory, which two runs in one checkout share by construction.
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const ridA = runId(1);
+    const ridB = runId(2);
+    const open2 = async (rid: string, repoKey: string | null, pid: number) => {
+      const l = openLedger({ home: t.home, self: makeSelf({ runId: rid, sessionId: rid, repoKey }), pid, now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+      await l.open();
+      return l;
+    };
+    // run A: the rev-list failed, so it has only its wsKey. run B: same checkout, but it computed the repoKey.
+    const a = await open2(ridA, null, 111);
+    const b = await open2(ridB, REPO, 222);
+    await putHeartbeat(t.root, makeHeartbeat({ runId: ridA, sessionId: ridA, pid: 111, claim: claim({ runId: ridA, pid: 111 }), stamp: stamp(1, DEV_A, ridA), repo: { repoKey: null } }));
+    await putHeartbeat(t.root, makeHeartbeat({ runId: ridB, sessionId: ridB, pid: 222, claim: claim({ runId: ridB, pid: 222 }), stamp: stamp(1, DEV_A, ridB) }));
+    await a.refresh('all');
+    await b.refresh('all');
+    expect(keyDir(REPO)).not.toBe(keyDir(WS)); // the premise: the two runs' key directories really do differ
+
+    // B declares first and its readdir is empty, so it proceeds — and it wrote BOTH copies
+    const decB = await declare(b, mine(), 'strict', { snapshot: leaseSnapshot(check(b.fold, b.self, mine())) });
+    expect(decB.fence === 'decided' && decB.proceed).toBe(true);
+    await expect(nodeFs.stat(commonsPaths(t.root).leaseFile(DEV_A, REPO, decB.leaseId))).resolves.toBeTruthy();
+    await expect(nodeFs.stat(commonsPaths(t.root).leaseFile(DEV_A, WS, decB.leaseId))).resolves.toBeTruthy();
+
+    // A leases under its wsKey only — and SEES B there. F1 fires: at most one writer proceeds, in every interleaving.
+    const decA = await declare(a, mine(), 'strict', { snapshot: leaseSnapshot(check(a.fold, a.self, mine())) });
+    expect(decA.fence).toBe('decided');
+    if (decA.fence !== 'decided') return;
+    expect(decA.proceed).toBe(false);
+    expect(decA.appeared.map((c) => c.leaseId)).toEqual([decB.leaseId]);
+    // and the two copies fold to ONE lease, because the fold is keyed by leaseId
+    expect([...a.fold.leases.keys()].filter((id) => id === decB.leaseId)).toHaveLength(1);
+
+    // A has no repoKey, so its own lease has ONE copy — under the wsKey, which is the directory the proof runs in
+    const wait = await fenceYield(a, mine(), decA);
+    expect(wait.captured.yieldedTo).toHaveLength(1);
+    expect(leaseRels({ repoKey: null, wsKey: WS, leaseId: decA.leaseId })).toHaveLength(1);
+    await expect(nodeFs.stat(commonsPaths(t.root).leaseFile(DEV_A, REPO, decA.leaseId))).rejects.toThrow(/ENOENT/);
+
+    // EVERY rewrite of a two-copy lease rewrites BOTH, in the same order: B's release lands in both directories
+    release(decB, 'committed');
+    await b.close();
+    for (const key of [REPO, WS]) {
+      const text = (await nodeFs.readBounded(commonsPaths(t.root).leaseFile(DEV_A, key, decB.leaseId), 8192)).text;
+      expect(JSON.parse(text).released?.outcome, key).toBe('committed');
+    }
+    // … and so does a downgrade: A's yield is visible in its one directory
+    const yielded = (await nodeFs.readBounded(commonsPaths(t.root).leaseFile(DEV_A, WS, decA.leaseId), 8192)).text;
+    expect(JSON.parse(yielded).type).toBe('intent');
+    release(decA, 'discarded');
+    await a.close();
   });
 
   it('(iii) fence-blind: past MAX_FENCE_DEVICES the fence REFUSES rather than proceeding', async () => {
@@ -396,7 +558,7 @@ describe('§4.5 the strict fence — F1 yield on sight, F2 the lowest stamp re-d
     // more lease subtrees than the fence may walk
     const ids = Array.from({ length: 20 }, (_, i) => `${'abcdefgh'.slice(0, 7)}${String.fromCharCode(97 + (i % 20))}`);
     for (const id of new Set(ids)) await nodeFs.mkdir(commonsPaths(t.root).leaseDir(id, REPO), 0o700);
-    const dec = await declare(l, intent({ paths: ['src/engine.ts'], type: 'exclusive' }), 'strict', { snapshot: [] });
+    const dec = await declare(l, intent({ paths: ['src/engine.ts'], type: 'exclusive' }), 'strict', { snapshot: new Set<string>() });
     expect(dec.fence).toBe('decided'); // 20 subtrees is well inside the 256 bound
     const blind = await l.refreshFence({ maxDevices: 3 });
     expect(blind.complete).toBe(false);
@@ -420,12 +582,12 @@ describe('§4.5 the strict fence — F1 yield on sight, F2 the lowest stamp re-d
     await putHeartbeat(t.root, makeHeartbeat({ runId: runId(2), sessionId: runId(2), pid: 222, claim: claim({ runId: runId(2), pid: 222 }), stamp: stamp(1, DEV_A, runId(2)), repo: { repoKey: null } }));
     await a.refresh('all');
     await b.refresh('all');
-    const decA = await declare(a, mine(), 'strict', { snapshot: leaseSnapshot(a.fold) });
+    const decA = await declare(a, mine(), 'strict', { snapshot: leaseSnapshot(check(a.fold, a.self, mine())) });
     expect(decA.fence === 'decided' && decA.proceed).toBe(true);
     // the file really is under `keyDir(wsKey)` — 'ws:' is never a path component (review major 13)
     expect(commonsPaths(t.root).leaseDir(DEV_A, WS)).toContain(`ws-${WS.slice(3)}`);
     await expect(nodeFs.stat(commonsPaths(t.root).leaseFile(DEV_A, WS, decA.leaseId))).resolves.toBeTruthy();
-    const decB = await declare(b, mine(), 'strict', { snapshot: leaseSnapshot(b.fold) });
+    const decB = await declare(b, mine(), 'strict', { snapshot: leaseSnapshot(check(b.fold, b.self, mine())) });
     expect(decB.fence === 'decided' && decB.proceed).toBe(false); // B sees A across the wsKey directory
   });
 
@@ -439,7 +601,7 @@ describe('§4.5 the strict fence — F1 yield on sight, F2 the lowest stamp re-d
     await putHeartbeat(t.root, makeHeartbeat({ deviceId: DEV_B, runId: runId(9), sessionId: runId(9), claim: claim({ deviceId: DEV_B, runId: runId(9), pid: 900 }), stamp: stamp(9, DEV_B, runId(9)) }));
     const l = openLedger({ home: t.home, self: makeSelf({ runId: rid, sessionId: rid }), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
     await l.open();
-    const dec = await declare(l, intent({ paths: ['src/mine.ts'], type: 'exclusive' }), 'strict', { snapshot: leaseSnapshot(l.fold) });
+    const dec = await declare(l, intent({ paths: ['src/mine.ts'], type: 'exclusive' }), 'strict', { snapshot: leaseSnapshot(check(l.fold, l.self, intent({ paths: ['src/mine.ts'], type: 'exclusive' }))) });
     expect(dec.fence).toBe('decided');
     if (dec.fence !== 'decided') return;
     expect(dec.appeared).toEqual([]);
@@ -489,7 +651,7 @@ describe('§4.5 review blocker 1: the strict fence is never answered by a readdi
     };
     const l = openLedger({ home: t.home, self: makeSelf({ runId: runId(1), sessionId: runId(1) }), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs, isPidAlive: () => true });
     await l.open();
-    const snapshot = leaseSnapshot(l.fold);
+    const snapshot = leaseSnapshot(check(l.fold, l.self, intent({ paths: ['src/engine.ts'], type: 'exclusive' })));
     armed = true;
     // the seed's (mtime, size) must move, or the incremental scanner never re-reads it and never parks
     await putLease(t.root, { ...seed, reason60: 'renewed' });
@@ -529,7 +691,7 @@ describe('§4.1 facts and the StepRecord row', () => {
   });
 
   it('a clear check produces no facts and the signed-peer fixture still parses', () => {
-    const facts = buildFacts({ step: 1, check: { kind: 'clear', snapshot: [] }, others: 0 });
+    const facts = buildFacts({ step: 1, check: { kind: 'clear', snapshot: new Set<string>(), declared: [] }, others: 0 });
     expect(facts).toEqual({ step: 1, conflicts: [], requested: [], messages: [], others: 0 });
     expect(signed(makeLease({ deviceId: DEV_B }), KEY_B).hmac).toMatch(/^[0-9a-f]{64}$/);
   });

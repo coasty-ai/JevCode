@@ -17,7 +17,7 @@ import type { CoordFs } from './fs.js';
 import { DIR_MODE, FILE_MODE, errnoCode } from './fs.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { OID_RE, REPO_KEY_RE, RUN_ID_RE, SLUG_RE, isValidBranch } from './ids.js';
-import { commonsPaths, isSlugName, sessionWorktreeDir } from './paths.js';
+import { commonsPaths, isSlugName, keyDir, sessionWorktreeDir } from './paths.js';
 import { oneLine } from './records.js';
 import type { WorktreeInfo, WorktreeRecord } from './types.js';
 
@@ -104,6 +104,8 @@ export interface WorktreeIo {
   root: string;
   /** the jevcode home — `~/.jevcode/worktrees/<repoKey>/<slug>/` is a SIBLING of the coordination dir */
   home: string;
+  /** §3.1 (revision 5): the per-host subtree that holds `worktrees/<keyDir>/<slug>.json` — local truth, never mirrored */
+  hostKey?: string;
   git?: RunGit;
   nowIso?: string;
 }
@@ -138,7 +140,7 @@ export async function createWorktree(io: WorktreeIo, input: CreateWorktreeInput)
   if (!REPO_KEY_RE.test(input.repoKey)) throw new ConfigError(`worktree: '${input.repoKey}' is not a repo key`, { setting: 'coordination' });
   if (!SLUG_RE.test(input.slug)) throw new ConfigError(`worktree: '${input.slug}' is not a slug (${SLUG_RE.source})`, { setting: 'coordination' });
   if (!RUN_ID_RE.test(input.runId) || !RUN_ID_RE.test(input.sessionId)) throw new ConfigError('worktree: runId and sessionId must be run-id shaped', { setting: 'coordination' });
-  const paths = commonsPaths(io.root);
+  const paths = commonsPaths(io.root, io.hostKey);
   const file = paths.worktreeFile(input.repoKey, input.slug);
   const dir = sessionWorktreeDir(io.home, input.repoKey, input.slug);
   const branch = input.branch ?? `${BRANCH_PREFIX}${input.slug}`;
@@ -163,7 +165,9 @@ export async function createWorktree(io: WorktreeIo, input: CreateWorktreeInput)
     createdAt: io.nowIso ?? new Date().toISOString(),
     syncedIgnored: [...(input.syncedIgnored ?? [])],
   });
-  await io.fs.mkdir(join(paths.worktreesDir, input.repoKey), DIR_MODE);
+  // + re-check (7): the DIRECTORY component is `keyDir(repoKey)` — `paths.worktreeFile` already encodes it, so the raw
+  // key here made `mkdir` create `worktrees/ws:…/` while the write targeted `worktrees/ws-…/` and ENOENT'd (M13 again).
+  await io.fs.mkdir(join(paths.worktreesDir, keyDir(input.repoKey)), DIR_MODE);
   await io.fs.writeAtomic(file, `${JSON.stringify(record)}\n`, { fsync: true, mode: FILE_MODE });
   return { dir, branch, record };
 }
@@ -178,10 +182,10 @@ async function exists(fs: CoordFs, path: string): Promise<boolean> {
 }
 
 /** Every valid metadata record for one repo, by slug; malformed and stray files are skipped, never joined into a path. */
-export async function listWorktrees(io: Pick<WorktreeIo, 'fs' | 'root' | 'home'>, repoKey: string): Promise<(WorktreeRecord & { dir: string })[]> {
+export async function listWorktrees(io: Pick<WorktreeIo, 'fs' | 'root' | 'home' | 'hostKey'>, repoKey: string): Promise<(WorktreeRecord & { dir: string })[]> {
   if (!REPO_KEY_RE.test(repoKey)) return [];
-  const paths = commonsPaths(io.root);
-  const dir = join(paths.worktreesDir, repoKey);
+  const paths = commonsPaths(io.root, io.hostKey);
+  const dir = join(paths.worktreesDir, keyDir(repoKey));
   let names: string[];
   try {
     names = await io.fs.readdir(dir);
@@ -242,7 +246,7 @@ export interface RemoveWorktreeInput {
  * directory still exists is `'unknown'` and is never touched without `force`.
  */
 export async function removeWorktree(io: WorktreeIo, input: RemoveWorktreeInput): Promise<RemoveWorktreeResult> {
-  const paths = commonsPaths(io.root);
+  const paths = commonsPaths(io.root, io.hostKey);
   const verdict = await worktreeVerdict(io, input);
   if (verdict.refused !== null) return { removed: false, refused: verdict.refused, detail: verdict.detail };
   const { rec, listedEntry } = verdict;

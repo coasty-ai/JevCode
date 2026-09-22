@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { byRunId, childrenOf, emptyFoldState, leaseKeysOf, listSessions, maxStampN, messageOrigin, originOf, seenEpochs, sessionTargets, FOLD_CAPS } from '../../../src/coordination/fold.js';
-import { GONE_KEEP_MS, HEARTBEAT_TTL_MS, SYNC_SLACK_SHARED_MS } from '../../../src/coordination/records.js';
+import { GONE_KEEP_MS, HEARTBEAT_TTL_MS, SYNC_SLACK_SHARED_MS, lockReplaceVerdict } from '../../../src/coordination/records.js';
 import { DEV_A, DEV_B, REPO, SELF, T0, TRUSTED, UNVERIFIED, WS, claim, entry, foldOf, iso, makeAck, makeDevice, makeHeartbeat, makeLease, makeMessage, makeSelf, runId, shuffled, stamp } from './helpers.js';
 import type { RecordEntry } from '../../../src/coordination/fold.js';
 
@@ -310,5 +310,52 @@ describe('targets, lease keys and the stamp seed', () => {
     const fold = foldOf([entry(makeHeartbeat(), SELF), peerBeat(120), entry(makeLease({ stamp: stamp(77) }), SELF), entry(makeMessage({ stamp: stamp(300, DEV_B, runId(9)) }), TRUSTED)]);
     expect(maxStampN(fold)).toBe(300);
     expect(UNVERIFIED.authenticated).toBe(false);
+  });
+});
+
+describe('§3.2 / §10.3 (revision 5): the CLONED flag', () => {
+  /**
+   * ITEM 5 FIXTURE — two live beats under ONE deviceId with different `bootId`s.
+   *
+   * That is one `deviceKey` on two machines, so the key can no longer speak for either of them. A peer never
+   * deletes or rewrites anything of theirs; it marks the device and suspends every gated action for it until it is
+   * re-paired. For my OWN deviceId it is the `duplicate-identity` case and the later booter adopts a new id.
+   *
+   * Fails before the fix: `Heartbeat` has no `bootId`, `Fold.cloned` does not exist and `flags.cloned` is absent.
+   */
+  it('two live beats from one FOREIGN deviceId with different bootIds mark it cloned', () => {
+    const a = makeHeartbeat({ deviceId: DEV_B, runId: runId(9), sessionId: runId(9), pid: 901, bootId: 'boot-1', claim: claim({ deviceId: DEV_B, runId: runId(9), pid: 901 }), stamp: stamp(9, DEV_B, runId(9)) });
+    const b = makeHeartbeat({ deviceId: DEV_B, runId: runId(10), sessionId: runId(10), pid: 902, bootId: 'boot-2', claim: claim({ deviceId: DEV_B, runId: runId(10), pid: 902 }), stamp: stamp(10, DEV_B, runId(10)) });
+    const fold = foldOf([entry(a, TRUSTED), entry(b, TRUSTED), entry(makeDevice({ deviceId: DEV_B, label: 'studio' }), TRUSTED)]);
+    expect(fold.cloned.has(DEV_B)).toBe(true);
+    expect(fold.devices.get(DEV_B)?.cloned).toBe(true);
+    for (const row of listSessions(fold, makeSelf())) if (row.deviceId === DEV_B) expect(row.flags.cloned).toBe(true);
+  });
+
+  it('two live beats with the SAME bootId are just two runs, and one beat is never a clone', () => {
+    const a = makeHeartbeat({ deviceId: DEV_B, runId: runId(9), sessionId: runId(9), pid: 901, bootId: 'boot-1', claim: claim({ deviceId: DEV_B, runId: runId(9), pid: 901 }), stamp: stamp(9, DEV_B, runId(9)) });
+    const b = makeHeartbeat({ deviceId: DEV_B, runId: runId(10), sessionId: runId(10), pid: 902, bootId: 'boot-1', claim: claim({ deviceId: DEV_B, runId: runId(10), pid: 902 }), stamp: stamp(10, DEV_B, runId(10)) });
+    expect(foldOf([entry(a, TRUSTED), entry(b, TRUSTED)]).cloned.has(DEV_B)).toBe(false);
+    expect(foldOf([entry(a, TRUSTED)]).cloned.has(DEV_B)).toBe(false);
+    // a record that carries NO bootId (an older build) can never make a device look cloned
+    const legacy = makeHeartbeat({ deviceId: DEV_B, runId: runId(11), sessionId: runId(11), pid: 903, claim: claim({ deviceId: DEV_B, runId: runId(11), pid: 903 }), stamp: stamp(11, DEV_B, runId(11)) });
+    expect(foldOf([entry(a, TRUSTED), entry(legacy, TRUSTED)]).cloned.has(DEV_B)).toBe(false);
+  });
+
+  it('§3.4 (revision 5): `lockReplaceVerdict` never overrides a FRESH peer beat, whatever the pid says', () => {
+    const peerLive = { deviceId: DEV_B, label: 'studio', step: 7, beatAgeMs: 20_000 };
+    // revision 4 protected only a MISSING bootId, so the moment a clone's pid happened to be alive locally the
+    // verdict was `stale-reused-pid`, the live run.lock was replaced and two engines co-wrote one state.json
+    const verdict = lockReplaceVerdict({ lock: { pid: 4242, bootId: 'boot-other' }, peerLive, self: { bootId: 'boot-mine', isPidAlive: () => false } });
+    expect(verdict).toMatchObject({ replace: false, reason: 'peer-live' });
+    expect(verdict.replace === false && verdict.detail60).toContain('studio');
+    // only `peerLive === null` lets anything be replaced
+    const self = { bootId: 'boot-mine', isPidAlive: () => true };
+    expect(lockReplaceVerdict({ lock: null, peerLive: null, self })).toMatchObject({ replace: true, reason: 'no-lock' });
+    expect(lockReplaceVerdict({ lock: { pid: 1, bootId: 'boot-other' }, peerLive: null, self })).toMatchObject({ replace: true, reason: 'other-boot' });
+    expect(lockReplaceVerdict({ lock: { pid: 1, bootId: 'boot-mine' }, peerLive: null, self: { ...self, isPidAlive: () => false } })).toMatchObject({ replace: true, reason: 'dead-pid' });
+    // a lock with NO bootId and a live pid is never auto-replaced — `sessions unlock` is the only way out (§3.4)
+    expect(lockReplaceVerdict({ lock: { pid: 1 }, peerLive: null, self })).toMatchObject({ replace: false, reason: 'boot-unknown' });
+    expect(lockReplaceVerdict({ lock: { pid: 1, bootId: 'boot-mine' }, peerLive: null, self })).toMatchObject({ replace: false, reason: 'held' });
   });
 });

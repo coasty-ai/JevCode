@@ -131,8 +131,8 @@ describe('inbox (pure) and the seen set', () => {
     expect(consumerIdOf({ sessionId: null }, 'abcdefgh')).toBe('tui-abcdefgh');
     const { t, l } = await harness({ self: { sessionId: null, runId: null } });
     expect([...(await loadSeen(l))]).toEqual([]);
-    // the seen file lives under inbox/seen/, where no deviceId regex can ever match it
-    expect(commonsPaths(t.root).seenFile(consumerIdOf(l.self, l.actor8))).toBe(join(t.root, 'inbox', 'seen', `tui-${l.actor8}.json`));
+    // §3.1: the seen file lives under inbox/seen/<deviceId>/, where no deviceId regex can ever match the 'seen' level
+    expect(commonsPaths(t.root).seenFile(DEV_A, consumerIdOf(l.self, l.actor8))).toBe(join(t.root, 'inbox', 'seen', DEV_A, `tui-${l.actor8}.json`));
   });
 });
 
@@ -337,5 +337,58 @@ describe('§11 row 45: `sessions pause <id>` from any shell reaches the run', ()
     await run2.close();
     expect(SEEN_MAX).toBe(2_000);
     expect(serializeRecord({ a: 1 })).toBe('{"a":1}\n');
+  });
+});
+
+describe('§3.2 / §5.4 rule 5 (revision 5): bootId, pid and the cloned-device suspension', () => {
+  const base = { self: { deviceId: DEV_A, bootId: 'boot-mine' }, trusted: new Set([DEV_B]), remoteControl: 'confirm' as const };
+
+  /**
+   * ITEM 5 FIXTURE — `bootId` DENIES the no-confirm same-device path.
+   *
+   * "Same device" is the READ LOCATION, which is necessary but no longer sufficient: a `pause` sitting in my own
+   * local subtree written by another BOOT SESSION under one shared `deviceId` is not mine to apply silently, because
+   * the machine that wrote it is not this machine (§3.2 `duplicate-identity`).
+   *
+   * Fails before the fix: `Message.from` has no `bootId` and the local-subtree `pause` applies with no confirm.
+   */
+  it('a control message from ANOTHER boot in my own subtree needs the local [y]', () => {
+    const mine = makeMessage({ type: 'pause', from: { deviceId: DEV_A, label: 'mbp', sessionId: runId(1), runId: runId(1), user: 'p', pid: 4242, bootId: 'boot-mine' }, stamp: stamp(3, DEV_A, runId(1)) });
+    expect(classifyIncoming(mine, { ...base, origin: SELF })).toMatchObject({ action: 'pause', needsConfirm: false });
+    const otherBoot = makeMessage({ type: 'pause', from: { deviceId: DEV_A, label: 'mbp', sessionId: runId(1), runId: runId(1), user: 'p', pid: 4242, bootId: 'boot-other' }, stamp: stamp(3, DEV_A, runId(1)) });
+    expect(classifyIncoming(otherBoot, { ...base, origin: SELF })).toMatchObject({ action: 'pause', needsConfirm: true });
+    // an older build wrote no bootId at all: unknown stays permissive, exactly as an unknown hostKey does
+    const legacy = makeMessage({ type: 'pause', from: { deviceId: DEV_A, label: 'mbp', sessionId: runId(1), runId: runId(1), user: 'p' }, stamp: stamp(3, DEV_A, runId(1)) });
+    expect(classifyIncoming(legacy, { ...base, origin: SELF })).toMatchObject({ action: 'pause', needsConfirm: false });
+  });
+
+  it('a CLONED device loses every gated action until it is re-paired', () => {
+    const from = { deviceId: DEV_B, label: 'studio', sessionId: runId(9), runId: runId(9), user: 'p', pid: 900, bootId: 'boot-b' };
+    const steer = makeMessage({ type: 'steer', from, stamp: stamp(3, DEV_B, runId(9)) });
+    // paired and hmac-valid: a steer applies
+    expect(classifyIncoming(steer, { ...base, origin: TRUSTED })).toMatchObject({ action: 'steer', downgraded: false });
+    // … but two live beats under one deviceId with different bootIds mean one deviceKey on two machines, so that
+    // key can no longer speak for either of them (§3.2, §10.3): the steer is a note and a control type asks.
+    const cloned = new Set([DEV_B]);
+    expect(classifyIncoming(steer, { ...base, origin: TRUSTED, cloned })).toMatchObject({ action: 'note', downgraded: true });
+    const pause = makeMessage({ type: 'pause', from, stamp: stamp(4, DEV_B, runId(9)) });
+    expect(classifyIncoming(pause, { ...base, origin: TRUSTED, remoteControl: 'allow', cloned })).toMatchObject({ needsConfirm: true });
+    expect(classifyIncoming(pause, { ...base, origin: TRUSTED, remoteControl: 'allow' })).toMatchObject({ needsConfirm: false });
+  });
+
+  it('`from.pid` travels for display and audit, and is NEVER a liveness input', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true, bootId: 'boot-mine', pid: 4242 });
+    await l.open();
+    const sent = await send(l, { to: runId(9), type: 'note', text: 'hello' });
+    const text = (await nodeFs.readBounded(sent.path, 4096)).text;
+    const parsed = parseRecord(text, 'message', { deviceId: DEV_A, target: runId(9) });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.record.from.pid).toBe(4242);
+    expect(parsed.record.from.bootId).toBe('boot-mine');
+    await l.close();
   });
 });

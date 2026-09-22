@@ -14,7 +14,7 @@ import { DIR_MODE, FILE_MODE, classifyLedgerError } from './fs.js';
 import { DEVICE_ID_RE, MSG_ID_RE, isValidRelPath, isValidTarget } from './ids.js';
 import { ACK_TRACK_MAX_MS, asHandle, type LedgerHandle } from './ledger.js';
 import { ackRel, messageRel } from './paths.js';
-import { CONTROL_MESSAGE_TTL_MS, CONTROL_MESSAGE_TYPES, MESSAGE_FILES_MAX, MESSAGE_TTL_MS, READ_MAX_BYTES, compareStamp, finalizeRecord, fitsRecordSize, oneLine } from './records.js';
+import { CONTROL_MESSAGE_TTL_MS, CONTROL_MESSAGE_TYPES, MESSAGE_FILES_MAX, MESSAGE_TTL_MS, READ_MAX_BYTES, compareStamp, finalizeRecord, fitsRecordSize, oneLine, sameBoot } from './records.js';
 import type { Ack, AckOutcome, Authority, Fold, Ledger, Message, MessageType, PurgeReport, RecordOrigin, SelfIdentity, SessionActivity } from './types.js';
 
 /** §5.1: a device sending more than this per minute mutes itself for 10 min with one notice */
@@ -100,7 +100,17 @@ export async function send(ledger: Ledger, m: SendInput): Promise<{ id: string; 
       v: 1,
       kind: 'message',
       id,
-      from: { deviceId: h.self.deviceId, label: h.self.label, sessionId: h.self.sessionId, runId: h.self.runId, user: h.self.user },
+      // §5.1 / §5.4 rule 5 (revision 5): `pid` is DISPLAY AND AUDIT only — never an `isPidAlive` input, because a
+      // sender's pid means nothing in the reader's pid table. `bootId` DENIES the no-confirm same-device path below.
+      from: {
+        deviceId: h.self.deviceId,
+        label: h.self.label,
+        sessionId: h.self.sessionId,
+        runId: h.self.runId,
+        user: h.self.user,
+        pid: h.claim.pid,
+        ...(h.bootId !== null ? { bootId: h.bootId } : {}),
+      },
       to: m.to,
       type: m.type,
       text,
@@ -146,11 +156,11 @@ export function inbox(fold: Fold, self: SelfIdentity, seen: ReadonlySet<string>)
   return out.sort((a, b) => compareStamp(a.stamp, b.stamp));
 }
 
-// ── seen set (`coordination/seen/<sessionId>.json`) ───────────────────────────────────────────────────────────────────
+// ── seen set (§3.1: `inbox/seen/<deviceId>/<consumerId>.json`) ───────────────────────────────────────────────────────
 
 async function readSeen(h: LedgerHandle, consumerId: string): Promise<Set<string>> {
   try {
-    const r = await h.fs.readBounded(h.paths.seenFile(consumerId), READ_MAX_BYTES);
+    const r = await h.fs.readBounded(h.paths.seenFile(h.self.deviceId, consumerId), READ_MAX_BYTES);
     if (r.overflow) return new Set();
     const parsed = parseJson(r.text);
     if (!parsed.ok || !isJsonObject(parsed.value) || parsed.value['v'] !== 1 || !Array.isArray(parsed.value['ids'])) return new Set();
@@ -180,8 +190,8 @@ async function markSeen(h: LedgerHandle, id: string): Promise<void> {
   seen.add(id);
   const ids = [...seen].slice(-SEEN_MAX);
   stateOf(h).seen = new Set(ids);
-  await h.fs.mkdir(h.paths.seenDir, DIR_MODE);
-  await h.fs.writeAtomic(h.paths.seenFile(consumerIdOf(h.self, h.actor8)), `${JSON.stringify({ v: 1, ids })}\n`, { fsync: false, mode: FILE_MODE });
+  await h.fs.mkdir(h.paths.seenDir(h.self.deviceId), DIR_MODE);
+  await h.fs.writeAtomic(h.paths.seenFile(h.self.deviceId, consumerIdOf(h.self, h.actor8)), `${JSON.stringify({ v: 1, ids })}\n`, { fsync: false, mode: FILE_MODE });
 }
 
 // ── ack / awaitAck ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -269,8 +279,10 @@ export async function purgeInbox(ledger: Ledger, o: { deviceId?: string; target?
     const m = e.record as Message;
     if (!matches(m)) continue;
     try {
-      await h.removeOwn('inbox', messageRel(m.to, Date.parse(m.t), m.stamp.n));
-      report.removed++;
+      // + re-check (lower 1): delete the file we READ, and count a removal only when one happened. Rebuilding the rel
+      // from `m.t` / `m.stamp.n` does not round-trip (a clipped `t`, a different seq in the name), and `removeOwn`
+      // swallows ENOENT — so the old form reported removals for files it had never found.
+      if (await h.removeOwnFile('inbox', e.path)) report.removed++;
     } catch (err) {
       report.failed.push({ path: e.path, code: classifyLedgerError(err) });
     }
@@ -286,11 +298,11 @@ export async function purgeInbox(ledger: Ledger, o: { deviceId?: string; target?
     const ids = [...seen].slice(-SEEN_MAX);
     stateOf(h).seen = new Set(ids);
     try {
-      await h.fs.mkdir(h.paths.seenDir, DIR_MODE);
-      await h.fs.writeAtomic(h.paths.seenFile(consumerIdOf(h.self, h.actor8)), `${JSON.stringify({ v: 1, ids })}\n`, { fsync: false, mode: FILE_MODE });
+      await h.fs.mkdir(h.paths.seenDir(h.self.deviceId), DIR_MODE);
+      await h.fs.writeAtomic(h.paths.seenFile(h.self.deviceId, consumerIdOf(h.self, h.actor8)), `${JSON.stringify({ v: 1, ids })}\n`, { fsync: false, mode: FILE_MODE });
       report.muted = muted;
     } catch (err) {
-      report.failed.push({ path: h.paths.seenFile(consumerIdOf(h.self, h.actor8)), code: classifyLedgerError(err) });
+      report.failed.push({ path: h.paths.seenFile(h.self.deviceId, consumerIdOf(h.self, h.actor8)), code: classifyLedgerError(err) });
     }
   }
   return report;
@@ -374,10 +386,28 @@ export interface IncomingDisposition {
  * `remoteControl: 'confirm'` (and under `'allow'` a forged `resume` would spawn a headless run that spends money).
  * + review blocker 5: a trusted device must ALSO be hmac-valid (`origin.authenticated`), not merely listed.
  */
-export function classifyIncoming(msg: Message, o: { self: Pick<SelfIdentity, 'deviceId'>; trusted: ReadonlySet<string>; remoteControl: RemoteControl; origin: RecordOrigin }): IncomingDisposition {
+export function classifyIncoming(
+  msg: Message,
+  o: { self: Pick<SelfIdentity, 'deviceId' | 'bootId'>; trusted: ReadonlySet<string>; remoteControl: RemoteControl; origin: RecordOrigin; cloned?: ReadonlySet<string> },
+): IncomingDisposition {
   const authority: Authority = o.origin.self ? 'self' : o.origin.authenticated && o.trusted.has(msg.from.deviceId) ? 'trusted' : 'unverified';
-  const sameDevice = authority === 'self';
-  const trusted = authority !== 'unverified';
+  /**
+   * §5.4 rule 5 (design revision 5): `bootId` DENIES the no-confirm same-device path for the control types.
+   *
+   * "Same device" is the READ LOCATION (blocker 6), and that is still necessary — but it is no longer sufficient: a
+   * `pause` sitting in my own local subtree written by another BOOT SESSION under one shared `deviceId` is not mine
+   * to apply silently, because the machine that wrote it is not this machine (§3.2 `duplicate-identity`). Unknown on
+   * either side stays permissive, exactly as an unknown `hostKey` does — an older build wrote no `bootId` at all.
+   */
+  const sameBootSession = sameBoot(msg.from.bootId, o.self.bootId);
+  const sameDevice = authority === 'self' && sameBootSession;
+  /**
+   * §3.2 / §10.3 (revision 5): a CLONED device — two live beats under one deviceId with different `bootId`s — holds
+   * one `deviceKey` on two machines, so that key can no longer speak for either. Every GATED action is suspended for
+   * it until it is re-paired: its messages still arrive and still display, they simply cannot apply themselves.
+   */
+  const cloned = o.cloned?.has(msg.from.deviceId) === true;
+  const trusted = authority !== 'unverified' && !cloned;
   const plain = (action: IncomingDisposition['action']): IncomingDisposition => ({ action, downgraded: false, needsConfirm: false, refused: null, authority });
   switch (msg.type) {
     case 'note':
@@ -388,13 +418,15 @@ export function classifyIncoming(msg: Message, o: { self: Pick<SelfIdentity, 'de
     case 'request-release':
       return plain(msg.type);
     case 'steer':
-      return trusted ? plain('steer') : { action: 'note', downgraded: true, needsConfirm: false, refused: null, authority };
+      if (trusted) return plain('steer');
+      return { action: 'note', downgraded: true, needsConfirm: false, refused: cloned ? 'device id is on two machines (cloned) — pair again' : null, authority };
     case 'abort':
       return { action: 'abort', downgraded: false, needsConfirm: true, refused: null, authority };
     case 'pause':
     case 'end':
     case 'resume': {
       if (sameDevice) return plain(msg.type);
+      if (cloned) return { action: msg.type, downgraded: false, needsConfirm: true, refused: null, authority };
       if (o.remoteControl === 'never') return { action: 'note', downgraded: true, needsConfirm: false, refused: `remote ${msg.type} disabled (coordination.remoteControl: never)`, authority };
       if (trusted && o.remoteControl === 'allow') return plain(msg.type);
       return { action: msg.type, downgraded: false, needsConfirm: true, refused: null, authority };

@@ -5,6 +5,8 @@
  * File names are parsed with the §3.1 regexes and anything else is skipped and counted, never joined into a path.
  */
 import { join } from 'node:path';
+import { hostRoot } from './ids.js';
+export { DEVICES_DIR, hostRoot } from './ids.js';
 import { CONSUMER_ID_RE, DEVICE_ID_RE, LEASE_ID_RE, MSG_ID_RE, MSG_T_RE, RUN_ID_RE, SEQ_RE, SLUG_RE, isValidTarget } from './ids.js';
 
 // ── key ⇄ directory component (+ review major 13) ─────────────────────────────────────────────────────────────────────
@@ -42,6 +44,34 @@ export function decodeTargetComponent(name: string): string {
 export function leaseRel(repoKey: string, leaseId: string): string {
   return join(keyDir(repoKey), `${leaseId}.json`);
 }
+/**
+ * §4.3 / §4.5 (design revision 5): **two directories, one lease.** Whenever `repoKey` is non-null and
+ * `keyDir(repoKey) !== keyDir(wsKey)`, the SAME record is written under both — same `leaseId`, same stamp, byte
+ * identical (it already carries `repoKey`, `remoteKey` and `wsKey`), and the fold is keyed by `leaseId`, so the two
+ * copies fold to ONE lease and `byPath`, `check()` and `appeared` are unchanged.
+ *
+ * Why: two runs in ONE checkout can disagree about `repoKey` — a workspace with an unborn HEAD and no origin has
+ * `repoKey: null` at run 1 and a real one at run 2 because the first commit landed in between, and a
+ * `rev-list --max-parents=0` that fails on one side (a corrupt pack, a flaky mount, the 2 s timeout) produces the
+ * same split. Under revision 4's single directory both leased, neither saw the other, and both proceeded under
+ * `strict`. The safety proof of §4.5 then runs in the `keyDir(wsKey)` directory, which two runs in one checkout
+ * share BY CONSTRUCTION (`wsKey` is known at startup with zero spawns and cannot fail) — and `hard` severity is
+ * defined by exactly that key, so the directory that carries the proof is the one that carries every conflict the
+ * fence has to decide.
+ *
+ * Order is fixed: `keyDir(repoKey)` first, `keyDir(wsKey)` second, for every rewrite as well as the declare.
+ * (+ review major 13: `ws:`/`rm:` become `ws-`/`rm-` in the path; the record keeps the colon form.)
+ */
+export function leaseRels(lease: { repoKey: string | null; wsKey: string; leaseId: string }): string[] {
+  const dirs = lease.repoKey === null ? [lease.wsKey] : [lease.repoKey, lease.wsKey];
+  const out: string[] = [];
+  for (const key of dirs) {
+    const rel = leaseRel(key, lease.leaseId);
+    if (!out.includes(rel)) out.push(rel);
+  }
+  return out;
+}
+
 /** `inbox/<deviceId>/<target-dir>/<t>-<seq>.json`, relative to the device subtree. */
 export function messageRel(target: string, tMs: number, seq: number): string {
   return join(encodeTargetComponent(target), `${tMs}-${seq}.json`);
@@ -56,6 +86,8 @@ export const MIRROR_DIR = 'jevcode-commons';
 export const DEVICE_FILE = 'device.json';
 /** ~/.jevcode/worktrees/<repoKey>/<slug>/ — session worktrees, outside the checkout and every sandbox root (§6.5) */
 export const WORKTREES_DIR = 'worktrees';
+/** §9.3 (design revision 5): the one fixed name inside a run's mirror dir; never parsed as anything but `kind:'claims'`. */
+export const CLAIMS_FILE = 'claims.json';
 
 export function coordinationRoot(home: string): string {
   return join(home, COORDINATION_DIR);
@@ -72,7 +104,7 @@ export function sessionWorktreeDir(home: string, repoKey: string, slug: string):
  * truth: never mirrored, never published.
  */
 export function deviceClaimsDir(root: string, hostKey: string): string {
-  return join(root, 'devices', hostKey, 'claims');
+  return join(hostRoot(root, hostKey), 'claims');
 }
 export function deviceClaimFile(root: string, hostKey: string, runId: string): string {
   return join(deviceClaimsDir(root, hostKey), `${runId}.json`);
@@ -89,6 +121,12 @@ export const FOLD_KINDS = ['registry', 'leases', 'inbox', 'acks'] as const;
 
 export interface Commons {
   readonly root: string;
+  /**
+   * §3.1 (revision 5): `devices/<hostKey>/` — every file below it is per-HOST local truth and is never mirrored. Empty
+   * when the caller could not name a `hostKey` at all; `commonsPaths` then falls back to the root so a mirror-only
+   * `Commons` (which has no identity files) still builds.
+   */
+  readonly hostDir: string;
   deviceFile: string;
   /** the 0600 commons key — its own file so both `device.json` copies stay the public subset (§10.3, review #42) */
   deviceKeyFile: string;
@@ -96,8 +134,8 @@ export interface Commons {
   /** `trusted-devices.json` — NOT `~/.jevcode/trust.json`, which is the TUI's workspace-trust gate */
   trustedFile: string;
   ignoredFile: string;
-  /** `inbox/seen/` — under the inbox kind, not a sibling of it ('seen' can never be read as a deviceId) */
-  seenDir: string;
+  /** `inbox/seen/<deviceId>/` — under the inbox kind, not a sibling of it ('seen' can never be read as a deviceId) */
+  seenDir(deviceId: string): string;
   worktreesDir: string;
   kindRoot(kind: CommonsKind): string;
   deviceDir(kind: CommonsKind, deviceId: string): string;
@@ -112,24 +150,31 @@ export interface Commons {
   /** `acks/<deviceId>/<msgId>/<consumerId>.json` — the CONSUMER PROCESS, not the session (review major 8) */
   ackFile(deviceId: string, msgId: string, consumerId: string): string;
   runsDir(deviceId: string, runId: string): string;
-  /** `inbox/seen/<consumerId>.json` — the message dedupe set of one CONSUMER process (§5.1, review #13) */
-  seenFile(consumerId: string): string;
+  /** §9.3 (revision 5): `runs/<deviceId>/<runId>/claims.json` — the authenticated `kind:'claims'` projection */
+  claimsFile(deviceId: string, runId: string): string;
+  /** `inbox/seen/<deviceId>/<consumerId>.json` — the message dedupe set of one CONSUMER process (§5.1, review #13) */
+  seenFile(deviceId: string, consumerId: string): string;
   worktreeFile(repoKey: string, slug: string): string;
 }
 
-/** Path builders over a root (the local store or a mirror root). Components are the caller's validated ids. */
-export function commonsPaths(root: string): Commons {
+/**
+ * Path builders over a root (the local store or a mirror root). Components are the caller's validated ids.
+ * `hostKey` names the §3.1 per-host identity subtree; a mirror root has no identity files, so it may be omitted.
+ */
+export function commonsPaths(root: string, hostKey?: string): Commons {
   const kindRoot = (kind: CommonsKind): string => join(root, kind);
   const deviceDir = (kind: CommonsKind, deviceId: string): string => join(root, kind, deviceId);
+  const hostDir = hostKey === undefined ? root : hostRoot(root, hostKey);
   return {
     root,
-    deviceFile: join(root, DEVICE_FILE),
-    deviceKeyFile: join(root, 'device.key'),
-    repokeysDir: join(root, 'repokeys'),
-    trustedFile: join(root, 'trusted-devices.json'),
-    ignoredFile: join(root, 'ignored-devices.json'),
-    seenDir: join(root, 'inbox', 'seen'),
-    worktreesDir: join(root, WORKTREES_DIR),
+    hostDir,
+    deviceFile: join(hostDir, DEVICE_FILE),
+    deviceKeyFile: join(hostDir, 'device.key'),
+    repokeysDir: join(hostDir, 'repokeys'),
+    trustedFile: join(hostDir, 'trusted-devices.json'),
+    ignoredFile: join(hostDir, 'ignored-devices.json'),
+    seenDir: (deviceId) => join(root, 'inbox', 'seen', deviceId),
+    worktreesDir: join(hostDir, WORKTREES_DIR),
     kindRoot,
     deviceDir,
     deviceRecordFile: (deviceId) => join(deviceDir('registry', deviceId), DEVICE_FILE),
@@ -141,8 +186,9 @@ export function commonsPaths(root: string): Commons {
     ackDir: (deviceId, msgId) => join(deviceDir('acks', deviceId), msgId),
     ackFile: (deviceId, msgId, consumerId) => join(deviceDir('acks', deviceId), ackRel(msgId, consumerId)),
     runsDir: (deviceId, runId) => join(deviceDir('runs', deviceId), runId),
-    seenFile: (consumerId) => join(root, 'inbox', 'seen', `${consumerId}.json`),
-    worktreeFile: (repoKey, slug) => join(root, WORKTREES_DIR, keyDir(repoKey), `${slug}.json`),
+    claimsFile: (deviceId, runId) => join(deviceDir('runs', deviceId), runId, CLAIMS_FILE),
+    seenFile: (deviceId, consumerId) => join(root, 'inbox', 'seen', deviceId, `${consumerId}.json`),
+    worktreeFile: (repoKey, slug) => join(hostDir, WORKTREES_DIR, keyDir(repoKey), `${slug}.json`),
   };
 }
 
