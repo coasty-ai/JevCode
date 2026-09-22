@@ -236,13 +236,13 @@ repositories** (SWE 6,960 ranked / 20 tested); **change 3** — zero-token timeo
 Ring 1 **FAILs** the `--jev off` gate (loses `gcd`, `mergesort`, `units`); Ring 2 is 5/5 pass but **REJECT** (Jev
 requests up on `units`).
 
-## 2026-09-22 — iteration 3 (implemented, unmeasured)
+## 2026-09-22 — iteration 3 (implemented; only Ring 1 measured)
 
-Branch `oos-iter-3` from `d86c385`. The four items OOS iteration 2 analysed with evidence and did not land. **Nothing
-here is measured**: this entry records what changed and on what evidence, and every number in it comes from the
-iteration-1 records replayed offline (`bench/results/iter1-*/runs/<runId>/{decisions,steps,jev}.jsonl.gz`,
-`~/.jevcode/runs/20260922-013715-nlsygcax`) or from a code sweep of `bench/data`, never from a run of this build.
-`experiments/results/` gets its numbers when the next slice is taken.
+Branch `oos-iter-3` from `d86c385`. The four items OOS iteration 2 analysed with evidence and did not land. **The only thing measured on this build is the
+Ring-1 gate at the end** ($0, offline, mock provider); every other number comes from the iteration-1 records replayed
+offline (the archived `decisions.jsonl.gz` / `steps.jsonl.gz` / `model_patch.diff.gz` of each `bench/results/iter1-…`
+run, and `~/.jevcode/runs/20260922-013715-nlsygcax`) or from a code sweep of `bench/data`. No pass, wall or cost
+number for the mode is claimed here; `experiments/results/` gets those when the next slice is taken.
 
 **1. `late_guard` — a thresholdless overfit signal for a guard the patch puts too late.**
 `src/synth/py/structure.ts` `guardClauses` / `isLateGuard` (+ `guardPlacement`), differenced by
@@ -322,6 +322,32 @@ and confirm stages spend the whole localise budget, and both code fallbacks that
 `affordable(0)`, i.e. behind the very budget whose exhaustion is what they exist for. Both gates are gone: the
 affordable prefix of the function beam is ASKED about and the rest is answered in code, and an anchor with no Jev
 evidence is ordered after every anchor that has some, so a starved beam can never outrank a Choice.
+
+**Ring 1, the one thing here that IS measured** (offline, $0, mock provider, at `6e22007`; the four arms of
+`experiments/harness-next/quick.mts ring1` run by hand at `--concurrency 2/3` because a live bench held the machine at
+load 40–130 all morning, which is also why the Jev-ON reference arm is noisy):
+
+| task | Jev on | Jev off | verdict |
+|---|---|---|---|
+| `gcd` | pass, 6 steps / 110.7 s | pass, 6 steps / 168.7 s | **kept** (only slower, 1.52×) |
+| `kth` | pass, 8 steps / 366.3 s | **fail**, `max_replans`, 17 steps | **LOST** — the one remaining Ring-1 loss |
+| `mergesort` | fail, `replan_stop`, 10 steps | not run (the Jev-on arm did not solve it) | vacuous |
+| `tagcloud` | pass, 2 steps / 8.1 s | pass, 2 steps / 3.8 s | **kept** |
+| `units` | pass, 4 steps / 83.5 s | pass, 5 steps / 188.7 s | **kept** (only slower, 2.26×) — was the iteration-1 loss |
+
+So the ladder half of the gate is **green** (on 2/2 → off 2/2) where iteration 1 lost `units`, and the QuixBugs half
+still fails on `kth`. The first `--jev off` run of `kth` with these fixes does reach replace sites in the code order
+(it visited none at all before), but `REPLACE_SITES_MAX` = 6 and the SEEDS cut take the first six in file order and
+`kth`'s gold is the tenth code line of its only function, so the site the fix made available is not one the step
+reaches. **That cut — a site budget justified by a Jev ranking's quality, applied where there is no ranking — is the
+next point, and it is not one of this iteration's four items.**
+
+**What Ring 1 caught in this branch's own work.** The first run of the ladder arm at `33279b2` read "every passer of
+the batch is structurally suspect and the pick `composite/donor_body_unit:parse_size:2stmt` (deletes_statement,
+adds_special_case) answered general 0.50 < 0.7; dropping the 3 passers" and `replan_stop`ped `units` **with Jev ON**
+at 15 steps. `deletes_statement` fires on a gold-shaped REWRITE, and the `units` gold IS a rewrite. Membership of
+`POOL_SUSPECT_SIGNALS` is now "swept against the golds and found on none of them", which only `late_guard` and
+`mutates_new_argument` are; the other four stay lone-passer signals. That is the whole reason to run the gate.
 
 Files: `src/synth/py/{structure,index}.ts`, `src/synth/search/{guard,llm,subgoal,index,types}.ts`,
 `src/synth/llm/source.ts`, `src/synth/localize/{index,types}.ts`, `src/synth/search/sites.ts`, `src/bench/{step-records,types}.ts`,
