@@ -1776,6 +1776,58 @@ rule that keeps them from colliding is the one CD already established and this d
 
 ---
 
+### 8.5 As built — the engine wave (`2400a0c`) and its review fixes (`0424bd3`), 2026-09-22
+
+Contract **1.5 landed**, directly after CD's 1.4, in the order §8.4 rule 1 requires. Every row below is verified
+against the code on `main`; where the design text and the code differ, the code is described and the reason given.
+
+| § | As built | Note |
+| --- | --- | --- |
+| §3.1 the gate | shut by default: `DEFAULT_SPLIT_POLICY.split = 'off'` (`src/orchestrate/types.ts:83`), and `decomposeShutByOptions(policy, depth, hasLedger)` returns `'split_off'` / `'child_depth'` / `'no_ledger'` from the OPTIONS alone, before any measurement | M2 is a **real golden**, not an assertion: `test/fixtures/loop/m2-golden-a17c7f6.json`, captured from `a17c7f6` and replayed by `test/unit/loop/decompose-m2.test.ts` ("every generator prompt is byte-identical to the pre-wave run") — 19 prompts byte-identical, event types unchanged. §8.4 rule 4 is therefore enforced by a fixture and not by a promise |
+| §5.7 / [D1] the launch | `Engine.land(input, ask?)` — `ask?: (offer: LandPreflightOffer) => Promise<BlockingAnswer>`. `LandPreflightOffer` is **structurally a `BlockingRequest`** (`{ id, step, kind: 'land-preflight', detail, overlap, choices: ['c','s','x'], stop, exitCode }`), so the same pane renders it and the same answer type comes back, but it is its own declared shape because it also carries `overlap`. `ask` absent ⇒ the answer is `'stop'`, i.e. `[x]` | the engine has no modal slot of its own. A headless or scripted caller that passes no asker must get the conservative branch, never a silent commit of the human's working tree |
+| §5.7 refusal | a **failed `git status` refuses**: `launchOverlap` reports `ok: false` with `overlap: []`, which is indistinguishable from "your checkout is clean". `land()` now treats `!ok` as its own case — one warn transcript line, `{ seeded: null, overlap: [] }`, nothing committed or stashed, the dock branch stays and `/diff` still works | review 2026-09-22 finding 1. Falling through to the offer branch made an empty pathspec mean "stash your **entire** working tree" |
+| §5.7 `[c]` | commits **`--only` the overlap**: `git add -- <paths> && git commit --only -m <message> -- <paths>` (`src/loop/launch.ts:161`) | review finding 2. A bare `git commit` would sweep every unrelated staged change the human had waiting into a harness commit they did not review. `--only` plus the trailing pathspec commits exactly the named paths. `[c]` and `[s]` each re-run the pre-flight and seed the merge as a SECOND judged step; with `overlap` non-empty **no merge action is proposed at all**, because `git merge` would abort with "Your local changes … would be overwritten by merge" |
+| §2.3 / §3.4 the facts | `measureRepoFacts(runGit, dir, read) → RepoFacts { fold, existingBranches, syncedDirty, unmeasured }` (`src/loop/stages/decompose.ts:563`). `fold` = `git config --get core.ignorecase` (exit 1 means the key is unset, which is a case-SENSITIVE volume, not a failure); `existingBranches` = `git for-each-ref --format=%(refname:short) refs/heads`; `syncedDirty` is the real dirty set, hashed over the BYTES and bounded by `DIRTY_ENTRIES_MAX`. It never throws — what git cannot answer is NAMED in `unmeasured` | all three run **behind the gate's short-circuit**, so with `orchestrate.split` off none of them is made and M2 is untouched. They replaced hardcoded `false` / `[]` / `[]`, each of which made the planner more permissive than the truth: `fold: false` let rule 3's disjointness proof pass while two agents owned one tree on a case-folding volume; `existingBranches: []` meant rule 1's collision rename never fired; `syncedDirty: []` meant the [D1] card row could never render |
+| §3.1 refusal | a non-empty `unmeasured` shuts the gate with `GateReason 'unmeasured'` (`src/orchestrate/split/gate.ts:95`), rendered as "could not measure the repository facts a safe split needs" | an unmeasured fact refuses rather than guessing permissive — the one direction this module never goes |
+| [D1] the card | `DecomposeFacts.dirtyOverlap` is derived **at manifest time**, by `dirtyOverlapOf(syncedDirty, own, fold)` against the CHOSEN split, and takes the first headline row whenever it is non-empty (`dirtyOverlapWarning`) | it cannot live in `RepoFacts`: before normalisation there are no `own` lists to intersect with. `fold` rides through to `ownsPath`, so on a case-folding volume a dirty `src/Foo/x.ts` IS owned by `src/foo/**` |
+| [G3] child seatbelt | `src/sandbox/seatbelt.ts` denies, for a depth-1 (`agentChild`) profile, the **main worktree's** `HEAD`, `index`, `ORIG_HEAD`, `MERGE_HEAD`, the `sequencer/` directory, and refs in all three storage formats (`refs/`, `packed-refs`, `reftable/`) | `extensions.refStorage = reftable` makes the first two inert on its own, so all three are denied rather than the two that happen to exist today. `ORIG_HEAD` / `MERGE_HEAD` / `sequencer/` are cheap to deny and each one steers what a resumed merge, rebase or cherry-pick does |
+| [G3] refusal | a depth-1 profile **without `gitCommonDir` is refused** — `ConfigError('a depth-1 (agentChild) seatbelt profile needs gitCommonDir: without it the [G3] ref denies would point at nothing', { setting: 'gitCommonDir' })` | fail closed. A deny list computed from an absent common dir is a deny list of nothing, which would have read as "profile applied" |
+| §2.4 belt 2 | an **empty `own` owns nothing**: the ownership filter returns `{ status: 'blocked', reason: '<prefix>… (owns nothing: this agent was spawned without a usable \`own\` list)' }` (`src/loop/stages/risk.ts:604`) | returning `null` there made belt 2 read "owns everything" — the one place in the design where a missing value inverted the safety property. `src/orchestrate/critic.ts` applies the same rule to an unparsable `own` glob |
+| §6.2 [G6] the meter | `SpendMeter.hold?(agentId, usd)`, `release?(agentId)` and `heldUsd?(): number` are **optional interface members**, always finite and `>= 0`, `heldUsd() === snapshot().heldUsd`; the hold belongs to the meter that took it, is never forwarded to the parent, and `exceeded()` does not count it [D6]. `restore` re-materialises the reserve under `RESTORED_HOLD_ID = '__restored__'` (`src/spend/meter.ts:50`) | optional because a fake meter in a test has no reserve to model; consumers read them with the call-optional idiom and the snapshot field as fallback (`5dfa1de`). Adoption must cross the restored total with the live `run.lock`s and then `release(RESTORED_HOLD_ID)`, or the reserve is counted twice — pinned by `test/unit/spend/meter.test.ts` |
+| §3.1 [G5] `hasLedger` | `OrchestrationOptions.hasLedger` is now **derived**: `hasLedger() = this.coord !== null \|\| opts.orchestration?.hasLedger === true` (`src/loop/engine.ts:3452`) | the field rode the orchestration options only because contract 1.4 had not yet landed `EngineOptions.coordination`. It has (W2b, `7efac12`), so the FACT comes from the handle; the field stays as the override contract 1.5's callers and fakes already set. Without it the drift [G5] warns about was exactly reachable: a parent delegating with no ledger to track the children in |
+| §3.6 pre-flight | `EngineDeps.preflightProbe?: PreflightProbe`, resolved by `createEngine` to `nodePreflightProbe()` (`engine.ts:242`, `:281`, `:3660`) | contract 1.4 (W2b) §3.6 added the seam so the disk / memory / cpu / fds pre-flight is testable without a machine. `src/orchestrate/preflight.ts` reports `unmeasured(limit)` for each quantity it could not read — `du -sk` past its ceiling is "unmeasured", not "enormous" |
+
+**Owners must add — what the TUI session has landed so far, and what is round 5.** §8.1 assigns the whole control
+surface to the TUI session. Landed on main and verified by commit subject:
+
+| Commit | What landed |
+| --- | --- |
+| `2e20108` | the `decompose` stage joins every TUI stage table — `why.ts` `STAGES` and the `stepWhyBlocks` order (decompose leads), `status/lines.ts` `STEP_WORDS`, the timeline `D` letter, and the exported `TIMELINE_EXCLUDED_STAGES = ['replan','complete']` |
+| `d8490fa` | `decompose:skipped` is `--json=verbose` only; `childCapUsd` / `followUpDecision` pass `heldUsd` through to `sessionRemainingUsd` [D6] |
+| `5291e9b` | `sessionRemainingUsd(cap, spent, heldUsd = 0)` subtracts the session meter's live-agent reservations [D6] |
+| `3f4a2c3` | both `sessionRemainingUsd` call sites subtract the session meter's held reserve — money held for live agents gates a new run exactly like spend |
+| `5dfa1de` | the two `heldUsd` reads use the call-optional method with the snapshot field as fallback ([G6]) — one idiom for every future consumer |
+| `9da99e2` | `jevcode bench --archive-runs` (requested by the harness session for the llm-jev iteration-1 branch) |
+| `f9d033e` | every run's decider is wrapped in `createCachingDecider` (`src/jev/cache.ts`) — a per-run request-hash cache whose hits bill nothing |
+
+Still round 5, and **absent from main today** (each verified by the symbol not existing):
+
+- `src/cli/session.ts` — the `AgentSupervisor` and the **[G7] parking blocker**: no `parkingBlocker` and no
+  `AgentSupervisor` anywhere under `src/`.
+- the **agents tab**: `PaneTab` is `'d' \| 'p' \| 't' \| 's'` and `PANE_TABS` has four members
+  (`src/tui/pane/model.ts:245`), so `PaneTab 'a'`, `TAB_TITLE.a` and `cycleTab`'s third argument [G20] [D7] are
+  not there; neither `src/cli/agents.ts` nor `src/tui/agents/lines.ts` nor `src/tui/pane/agents.ts` exists.
+- the **undo wiring** for a delegated run: `/undo` and `/rewind` are in the command registry, but nothing carries
+  the human note into `EngineOptions.humanDirective` / `undoLog` across an agent boundary.
+
+Two surfaces the engine wave *did* need on day one are already there, so round 5 finds them landed rather than
+pending: `BlockingKind 'land-preflight'` and `'lease-conflict'` (`c7087e2`, the TUI session's one-commit
+exception) with their four case lines in `src/tui/blocking/lines.ts` — `land pre-flight` / `[c] commit first
+[s] stash   [x] cancel`, `lease conflict` / `[w] wait   [c] continue   [t] worktree   [q] stop`, and the two
+`pausedWord` rows `paused: land pre-flight` and `paused: lease conflict`.
+
+---
+
 ## 9. Measurement
 
 | # | What | How | Gate |

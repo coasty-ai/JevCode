@@ -1992,7 +1992,8 @@ export interface CoordinationOptions {
   default?: 'proceed' | 'wait';                    // the --no-input / no-blocker fallback under strict (§4.4)
   remoteControl?: 'allow' | 'confirm' | 'never';   // §10.3, default 'confirm'
   syncRuns?: 'off' | 'projection' | 'with-bodies';  // §9.3, default 'projection' when sync is on; 'with-bodies' disables the mirror projection and says so on enable
-  ledger?: Ledger;                                 // opened by the caller after the first frame; absent → presence off, claims off
+  ledger: LedgerHandle | null;                     // AS BUILT (§14 item 20): required and nullable, and the WRITER type — `null` = presence off, claims off.
+                                                   // `Ledger` (types.ts) is the narrow READER base and is NOT an alias for `LedgerHandle`; consumers import `LedgerHandle`.
   peerLive?: (runId: string) => { deviceId: string; label: string; step: number; beatAgeMs: number } | null; // synchronous, over an already folded ledger (§3.4)
   identity?: SelfIdentity;                         // deviceId / label / wsKey computed by the caller (ids.ts); repoKey may still be null here
 }
@@ -3398,6 +3399,45 @@ import time, and the prompt size distribution per mode before and after compacti
     chain on the local disk at an unmounted mount point, shadowing the real share when it returns. An unmounted
     `sharedDir` stays `offline` and is retried; a real one gains exactly one directory, which is what makes `sessions sync
     enable` on a fresh folder come up at all (+ re-check (8)).
+
+20. **As built — §12.0.1 after W2b (merged `7efac12`, with the `BlockingKind` members at `c7087e2`).** §12.0.1 was
+    written before the engine had a `coordinate` stage. Every row below is a change to the **design text**, verified
+    by reading `src/core/types.ts`, `src/loop/engine.ts`, `src/loop/coordination.ts` and `src/coordination/index.ts`
+    on main. Nothing decided in items 16–19 is withdrawn; `budgetTokens` + `windowTokens` (item 16(d)) is now landed
+    rather than promised. The TUI session records the same list as binding for round 5 in
+    `docs/TUI-DESIGN-5.md` §15.2, which supersedes its own §15.1 rows 1, 2 and 17.
+
+| § | Corrected to match the code | Why the code is shaped this way |
+| --- | --- | --- |
+| §12.0.1 `CoordinationOptions.ledger` | `ledger: LedgerHandle \| null` — **required and nullable**, not `ledger?: Ledger` | the engine calls `enqueue`, `writeOwn`, `refreshFence`, `foreignLive`, `forkVerdict`, `claim` and `readRunClaim`, none of which is on the narrow base; making it required and `null`-valued removes the third state ("absent" vs "null") the engine would otherwise have to treat alike. `enabled: false` and `ledger: null` are the same thing to the engine, and `test/unit/loop/engine-coordination-off.test.ts` pins that |
+| §12.0.1 / §12.0.4 `Ledger` | **`Ledger` is NOT an alias for `LedgerHandle`.** The two names are a real split: `Ledger` (`types.ts:492`) is the narrow base — `root`, `self`, `fold`, `open`, `setIdentity`, `subscribe`, `close` — and every write verb (`declare`, `send`, `ack`, `gc`, …) takes THAT, recovering the handle internally with `asHandle()`. `LedgerHandle` (`ledger.ts`) `extends Ledger` with the writer members; it is what `openLedger` returns and what `EngineOptions.coordination.ledger` carries. Any line reading "`Ledger` is aliased to `LedgerHandle`" is withdrawn | renaming the base was the alternative and was rejected: it rewrites every signature in `leases.ts`, `mailbox.ts`, `subwork.ts` and `worktree.ts` for a word, and `Ledger` is the right name for what a READER holds. Consumers import `LedgerHandle`; the naming note lives at the top of `src/coordination/index.ts` |
+| §12.0.1 `leases` | the field is spelled **`claims`** (`'advisory' \| 'strict' \| 'off'`), as the block in §12.0.1 already writes it — the spelling is confirmed landed, and every `leases:` option name elsewhere in this document reads `claims` | it names the sixth record kind (`claims.json`, item 16(e)), not the lease files |
+| §4.2 the stage | `StageName` gains `'coordinate'`, between `risk` and `execute` (`types.ts`, one call site at `engine.ts:1353`). `StepTiming.coordinateMs?` is the gate's own wall; `StepTiming.coordWaitMs?` is the inline strict wait inside it, and **only the wait** is subtracted from `harnessMs` — in both engine derivations and the `llm-jev` one | the gate itself is harness work and belongs inside the 50 ms budget (p95 < 2 ms advisory, < 5 ms strict, §4.2 G1(b)/(c)); a step that waited 40 s for a peer did not spend 40 s of harness, so the wait is subtracted exactly like `confirmMs` |
+| §4.2 the record | `StepRecord.coord: StepCoord { conflicts[], requested?[], decision?: 'proceed' \| 'continue' \| 'wait' \| 'worktree' \| 'blind', waitedMs? }` | `blind` is `fence:'blind'`: a bound was reached before the enumeration finished and strict refused to guess |
+| §4.2 / §5.4 events | `coordination:facts { step, coord }`; `coordination:decision { step, decision, by: 'fence' \| 'human' \| 'default', waitedMs, paths }`; `session:message { message: DeliverableMessage, disposition: MessageDisposition, applied: AckOutcome \| null }`. `NoticeKind` gains `'coordination'` and `'session'` | the decision carries `by` so a `default: 'proceed'` under `--no-input` is distinguishable from a human `[c]` in the record, not only in the transcript |
+| §7.1 / §12.0.3 status | `EngineRunPhase = 'starting' \| 'running' \| 'pausing' \| 'paused' \| 'blocked' \| 'aborting' \| 'ended'`; `EngineStatus.{ phase?, subwork?, coordination?: CoordinationStatus }`, all three **absent** (not empty) with no ledger | `phase` is derived in ONE place (`phaseOf`) from flags already on the status, so the heartbeat and the status line cannot disagree; absent-not-empty is what keeps `--json=verbose` byte-identical to the pre-wave run |
+| §5.2 / §6 message types | `MessageType` gains `budget`, `review`, `kick`, `land` (15 members); `Lease.type` gains `'agent'` | contract 1.5's orchestration verbs ride the same mailbox rather than a second channel (ORCHESTRATION-DESIGN §8.1 assigns them to this module) |
+| §13.3 panes | `BlockingKind` gains `'land-preflight'` and `'lease-conflict'` (`c7087e2`, the TUI session's one-commit exception). The four case lines are in `src/tui/blocking/lines.ts`: `land pre-flight` / `[c] commit first   [s] stash   [x] cancel`, `lease conflict` / `[w] wait   [c] continue   [t] worktree   [q] stop`, and the two `pausedWord` rows `paused: land pre-flight` / `paused: lease conflict` | the pane keys had to exist before the engine could open either pane; splitting the member from its rendering would have shipped a `BlockingKind` the surface renders as nothing |
+| §3.3 heartbeat | `Heartbeat.context` is `{ pct, files, historyEntries, summaryAt, tokensInWindow, budgetTokens, windowTokens, compactions }` — item 16(d) as landed. The six write points are `CoordinationRuntime.start` (1, `run:ready`), `.beat` (2, the `.then` off the settled checkpoint IIFE — `engine.ts:5232` — and the release at commit/discard), the 15 s timer (3, armed at `start`, cleared at `phase:'ended'`), `.set` (4, an `emitStatus` transition, coalesced to ≤ 1 write / 250 ms), `.finish` (5) and `.finishSync` (6, the `'exit'` handler, LOCAL only) | `budgetTokens` and `windowTokens` are two different numbers and `/context`'s header needs both; the beat is never on the step path because it hangs off the IIFE the loop already awaits elsewhere |
+| §3.6 / §5.7 engine seams | `EngineDeps.preflightProbe?: PreflightProbe` (defaulted to `nodePreflightProbe()` by `createEngine`); `OrchestrationOptions.hasLedger` is now **derived** — `hasLedger() = this.coord !== null \|\| opts.orchestration?.hasLedger === true` (`engine.ts:3452`) | the field rode the orchestration options only because contract 1.4 had not landed `EngineOptions.coordination`; it has, so the FACT comes from the handle and the field stays as the override contract 1.5's fakes already set |
+| §5.4 inbox | the engine applies **only** `disposition.needsConfirm === false` and acks those itself; a gated message is emitted with `applied: null` and is the surface's `[y]` call (`coordination.ts:292`) | the engine has no modal slot; applying a gated verb from the loop would make `remoteControl: 'confirm'` a lie |
+| §9.3 resume gates | two gates run before the loop: `forkGate(runId)` (an **authenticated** superseding claim only — an unverified one is a notice) and `claimGate(runId, [ownEpoch, persistedEpoch])` via `claimRefusal` over the signed `claims.json` projections. A qualified superseding claim is `stopReason: 'error'`, **exit 2** | the projections survive a peer being offline, which live heartbeats do not; item 18's "highest qualified epoch" is the comparator both gates use |
+| §4.2 the TUI word | `PENDING_TUI_STAGES = ['coordinate']` is **deleted**. `coordinate` is in `why.ts` `STAGES` and the `stepWhyBlocks` order, `status/lines.ts` `STEP_WORDS`, and the timeline strip as letter `O` / short `coord` (`6280ab9`, completed by `5ba6092`, which also pins the strip letters `DICPROXJ`) | the allow-list existed only so the guard could land before the surface had the word; it has it |
+
+    **One caveat the surface must hold, stated here because it is not visible from the types** (and recorded as the
+    same rule in TUI-DESIGN-5 §15.2). Our own record reaches `ledger.fold` **synchronously** through `adoptOwn`,
+    labelled `self` by write location, before any watcher fires — but `adoptOwn` calls `rebuild()` and **not**
+    `emit()`, so no subscriber is notified for our own write. A push-only view therefore lags its own row by the
+    100 ms watch debounce (up to the 15 s poll with no working `fs.watch`). The rule: read `ledger.fold` on mount
+    and after every own write, then subscribe. This is deliberate — emitting on our own write would re-enter the
+    fold from inside the writer's own call stack.
+
+    **The OFF invariant is a test, not a claim.** `test/unit/loop/engine-coordination-off.test.ts` pins four cases:
+    absent `coordination` (no `coordinate` stage, no coordination events, no `coord` / `coordinateMs` on any row);
+    `ledger: null` identical to absent (same prompts, same events, same rows); a real ledger with `enabled: false`
+    writing nothing under the coordination root and changing no prompt; and a bench run defaulting to OFF even with
+    a handle, with an explicit `enabled` beating the default (§4.1).
+
 
 ### Rejected critiques
 

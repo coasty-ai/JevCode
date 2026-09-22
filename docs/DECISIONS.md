@@ -1114,3 +1114,18 @@ runs spend wall and Jev requests (per question kind, per stage), with every prop
 and any task-named change disallowed; the 22 tasks join the development set only after that iteration is measured on a fresh slice.
 Still unmeasured, and stated as such: `llm-sieve`, any repeat run, the per-question ablation, an independent ladder correctness
 oracle (`perturb.ts`'s own `LADDER_HARNESS` still judges), and SWE correctness beyond pass (`src/bench/headtohead.ts:92`).
+
+## 2026-09-22 `Ledger` and `LedgerHandle` are a real split, not an alias; consumers hold the handle
+
+`src/coordination/types.ts` keeps `Ledger` as the narrow READER base — `root`, `self`, `fold`, `open`, `setIdentity`,
+`subscribe`, `close` — and `src/coordination/ledger.ts` declares `LedgerHandle extends Ledger` with the writer members
+(`enqueue`, `writeOwn`, `refreshFence`, `foreignLive`, `forkVerdict`, `claim`, `stamps`, `mirror`, …). Every write verb
+(`declare`, `send`, `ack`, `gc`, …) takes the **base** and recovers the handle internally with `asHandle()`, so a caller
+may hold the small type; `openLedger` returns `LedgerHandle`, and `EngineOptions.coordination.ledger: LedgerHandle | null`
+carries it, because the engine calls all of them. **There is no `Ledger` alias for `LedgerHandle`** — this reverses
+TUI-DESIGN-5 §15.1 row 1, and §15.2 records the reversal as binding for round 5. Reason: the alternative was renaming the
+base, which rewrites every signature in `leases.ts`, `mailbox.ts`, `subwork.ts` and `worktree.ts` for a word, and `Ledger`
+is the right name for what a reader holds. Consequences: COORDINATION-DESIGN §12.0.1's `ledger?: Ledger` line is corrected
+to `ledger: LedgerHandle | null` (required and nullable — `null` is presence off, and the engine has one less state to
+handle than "absent or null"); §14 item 20 records the whole W2b as-built list; the naming note lives at the top of
+`src/coordination/index.ts` so a new consumer reads it before it picks a type.
