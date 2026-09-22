@@ -122,7 +122,7 @@ export type {
   SecretCandidate,
 } from './questions.js';
 
-export { buildPlan, dedupe, expandGlobs, rankIndex, rerunAction, secretCandidateId, slugOf } from './plan.js';
+export { buildPlan, contradictsId, dedupe, expandGlobs, rankId, rankIndex, rerunAction, sameMeaningId, secretCandidateId, slugOf } from './plan.js';
 export type { PlanBands } from './plan.js';
 export type { PlanCandidate, PlanInput } from './plan.js';
 
@@ -493,7 +493,22 @@ export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
   // to reach the report, though, or `jev: not asked (<reason>)` would silently read as "asked and
   // agreed"; so the metadata is merged onto the first plan instead of being thrown away.
   const haveLateAnswers = Object.keys(late.answers).length > 0;
-  const withJevMeta = (p: ImportPlan): ImportPlan => ({ ...p, jev: jevTotal });
+  // Review follow-up D3: `jevTotal` carries `answers` because `PlanInput.jev` needs them for the
+  // second pass — but `ImportPlan['jev']` is COUNTERS ONLY (§4.6.1), and `buildPlan` is careful
+  // to project them out. Spreading `jevTotal` straight onto the plan put the whole answer map
+  // into `plan.json` and onto stdout under `--json`: not a secret (a Noul is a number), but a
+  // field the contract does not declare, that no surface renders, and that would grow the
+  // artefact without bound. Projected explicitly here so the two paths agree.
+  const withJevMeta = (p: ImportPlan): ImportPlan => ({
+    ...p,
+    jev: {
+      requests: jevTotal.requests,
+      questions: jevTotal.questions,
+      usd: jevTotal.usd,
+      fallbacks: jevTotal.fallbacks,
+      ...(jevTotal.reason === undefined ? {} : { reason: jevTotal.reason }),
+    },
+  });
 
   if (opts.destState !== undefined) return haveLateAnswers ? buildPlan(withAnswers) : withJevMeta(first);
   // §4.7.5: the re-run matrix is evaluated at PLAN time — the report has to be able to say

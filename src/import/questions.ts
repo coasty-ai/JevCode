@@ -248,7 +248,7 @@ export function sameMeaningQuestions(cands: readonly PairCandidate[], sample: Je
   const withHeadings = sample !== 'none';
   const questions: Record<string, Question> = {};
   const pairs = cands.map((c, i) => {
-    questions[`same_meaning_${i}`] = noul(
+    questions[c.id] = noul(
       `Do the two files in pairs[${i}] — ${ref(c.a.path)} and ${ref(c.b.path)} — say the same thing, so that importing both would store the same instruction twice?`,
       {
         true: {
@@ -303,7 +303,7 @@ export function mattersHereQuestions(cands: readonly NoteCandidate[], workspace:
   if (cands.length === 0) return EMPTY;
   const questions: Record<string, Question> = {};
   const notes = cands.map((c, i) => {
-    questions[`rank_${i}`] = score(`How likely is the note at ${ref(c.path)} to change what an agent does in ${ref(workspace)} this week?`, [...RANK_LEVELS]);
+    questions[c.id] = score(`How likely is the note at ${ref(c.path)} to change what an agent does in ${ref(workspace)} this week?`, [...RANK_LEVELS]);
     return { id: c.id, index: i, path: c.path, kind: c.kind, scope: c.scope, bytes: c.bytes };
   });
   return { state: { workspace, notes }, questions, groups: ['IV'] };
@@ -327,7 +327,7 @@ export function contradictsQuestions(cands: readonly ConflictCandidate[], sample
   const withSentences = sample === 'head400';
   const questions: Record<string, Question> = {};
   const conflicts = cands.map((c, i) => {
-    questions[`contradicts_${i}`] = noul(
+    questions[c.id] = noul(
       `In conflicts[${i}], two imported instructions give opposed advice about "${c.noun}": one says "${c.positiveMarker}", the other says "${c.negativeMarker}". Would following both at once be impossible?`,
       {
         true: {

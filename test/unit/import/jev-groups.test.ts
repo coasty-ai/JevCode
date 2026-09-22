@@ -13,11 +13,18 @@
  * refused answer produce the same plan. That is exactly why it needs a test that asserts the
  * question was ASKED, not merely that the plan is sane.
  *
- * The question-id ↔ index contract these pin, which the TUI also depends on:
+ * The question-id contract these pin, which the TUI also depends on. Review follow-up D2 made
+ * the ids **content-keyed rather than ordinal**, because the plan is built twice: the second
+ * pass runs after the duplicate folds the first pass's own answers caused, so an ordinal list
+ * is shorter the second time and every entry after a fold silently took its neighbour's answer.
  *
- *   `same_meaning_<i>` → the i-th dedupe pair in the Jaccard band, in `dedupe().band` order
- *   `rank_<i>`         → the i-th memory-topic row, in plan-row order
- *   `contradicts_<i>`  → the i-th conflict pair, in `findConflicts()` order
+ *   `same_meaning_<aItemId>_<bItemId>`  → that dedupe pair          (`sameMeaningId`)
+ *   `rank_<planRowId>`                  → that memory-topic row     (`rankId`)
+ *   `contradicts_<aItemId>_<bItemId>`   → that conflict pair        (`contradictsId`)
+ *
+ * All three helpers are exported from `src/import/index.ts`; item and row ids derive from the
+ * source and the destination, never from position, so the ids are stable across passes and
+ * across runs of the same corpus.
  */
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
@@ -25,7 +32,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { nodeImportFs, planImport } from '../../../src/import/index.js';
+import { nodeImportFs, planImport, renderPlanJson } from '../../../src/import/index.js';
 import type { ImportClock, ImportEnvironment } from '../../../src/import/index.js';
 import type { Answer, Decider, Json, Question } from '../../../src/core/types.js';
 
@@ -96,7 +103,7 @@ describe('§4.4.3 groups III–V reach Jev on the real path', () => {
     const notes = plan.rows.filter((r) => r.source.display.includes('conventions-'));
     expect(notes, 'the pair folded into a single row').toHaveLength(1);
     expect(notes[0]?.warnings.join(' ')).toMatch(/same as .*conventions-/);
-    expect(notes[0]?.warnings.join(' ')).toMatch(/jev same_meaning_\d+ p=0\.95/);
+    expect(notes[0]?.warnings.join(' ')).toMatch(/jev same_meaning_[0-9a-f]+_[0-9a-f]+ p=0\.95/);
   });
 
   it('the group III payload carries the headings the sample permits, and never a body', async () => {
@@ -125,6 +132,27 @@ describe('§4.4.3 groups III–V reach Jev on the real path', () => {
     const notes = plan.rows.filter((r) => r.source.display.includes('conventions-'));
     expect(notes, 'uncertain duplicate ⇒ keep both').toHaveLength(2);
     for (const r of notes) expect(r.warnings.join(' ')).not.toMatch(/same as/);
+  });
+
+  it('the plan carries Jev COUNTERS only — the answer map never reaches plan.json (D3)', async () => {
+    const env = await nearDuplicates();
+    const cap = capturingDecider(0.95);
+    const plan = await planImport({ env, fs: nodeImportFs(), clock, jevcodeVersion: '0.3.0', trust: 'trust', decider: cap.decider });
+    expect(Object.keys(plan.jev).sort()).toEqual(['fallbacks', 'questions', 'requests', 'usd']);
+    const json = renderPlanJson(plan);
+    expect(json).not.toContain('"answers"');
+    // the answer OBJECTS are what must not be there; a `why`/`warning` that cites the question
+    // id is provenance and is meant to be there (§4.6.1's `why` examples do exactly that), so
+    // assert on the serialised Answer shape rather than on the id text
+    expect(json).not.toContain('"noul":');
+    expect(json).not.toContain('"probabilities"');
+
+    // …and on the path that does NOT re-plan (a refusal: no answers, so no row changes) the
+    // metadata is still merged onto the first plan, which is where the leak used to be
+    const refusing: Decider = { model: 'x', provider: 'openrouter', ask: async () => { throw new Error('HTTP 429'); } };
+    const refused = await planImport({ env, fs: nodeImportFs(), clock, jevcodeVersion: '0.3.0', trust: 'trust', decider: refusing });
+    expect(Object.keys(refused.jev).sort()).toEqual(['fallbacks', 'questions', 'reason', 'requests', 'usd']);
+    expect(renderPlanJson(refused)).not.toContain('"answers"');
   });
 
   it('a refusing Jev is indistinguishable from --no-jev in its effect, and never throws', async () => {

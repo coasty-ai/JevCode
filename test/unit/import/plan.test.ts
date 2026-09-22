@@ -20,6 +20,7 @@ import {
   rankIndex,
   rerunAction,
   ruleSpecOf,
+  sameMeaningId,
   slugOf,
 } from '../../../src/import/plan.js';
 import type { PlanCandidate, PlanInput } from '../../../src/import/plan.js';
@@ -462,7 +463,9 @@ describe('buildPlan', () => {
     const shared = 'alpha beta gamma delta epsilon zeta eta theta iota kappa';
     const a = candidate({ item: item('/ws/a.md', { tools: ['claude-code'] }), doc: doc(`${shared} lambda`, { bands: ['dupbucket'] }) });
     const b = candidate({ item: item('/ws/b.md', { tools: ['codex'] }), doc: doc(`${shared} mu nu`, { bands: ['dupbucket'] }) });
-    const answers: Record<string, Answer> = { same_meaning_0: { type: 'noul', noul: 0.84 } };
+    // review follow-up D2: the id is content-keyed (`same_meaning_<aId>_<bId>`), not an ordinal,
+    // so it survives the re-index that the fold this very answer causes would otherwise force
+    const answers: Record<string, Answer> = { [sameMeaningId(a.item.id, b.item.id)]: { type: 'noul', noul: 0.84 } };
     const plan = buildPlan(planInput([a, b], { jev: { answers, requests: 1, questions: 1, usd: 0.0001, fallbacks: 0 } }));
     expect(plan.rows).toHaveLength(1);
     expect([...plan.rows[0]?.source.tools ?? []].sort()).toEqual(['claude-code', 'codex']);

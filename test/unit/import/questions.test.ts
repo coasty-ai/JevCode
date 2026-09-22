@@ -170,7 +170,8 @@ describe('§0 principle 3 the state carries no value bytes', () => {
     const none = sameMeaningQuestions(pairCands, 'none');
     expect(JSON.stringify(none.state), 'no heading text under `none`').not.toContain('Rules');
     // the pair itself is still asked about — only the heading payload is withheld
-    expect(Object.keys(none.questions)).toEqual(['same_meaning_0']);
+    // review follow-up D2: the id is the candidate's own, not its position in the array
+    expect(Object.keys(none.questions)).toEqual([pairCands[0]!.id]);
     expect(JSON.stringify(none.state)).toContain('AGENTS.md');
     for (const sample of ['headings', 'head400'] as const) {
       expect(JSON.stringify(sameMeaningQuestions(pairCands, sample).state), sample).toContain('Rules');
@@ -181,7 +182,7 @@ describe('§0 principle 3 the state carries no value bytes', () => {
     expect(contradictsQuestions(conflictCands, 'none').questions).toEqual({});
     expect(contradictsQuestions(conflictCands, 'none').groups).toEqual([]);
     const headings = contradictsQuestions(conflictCands, 'headings');
-    expect(Object.keys(headings.questions)).toEqual(['contradicts_0']);
+    expect(Object.keys(headings.questions)).toEqual([conflictCands[0]!.id]);
     expect(JSON.stringify(headings.state)).not.toContain('write prose');
     expect(JSON.stringify(headings.state)).toContain('patch');
     const head400 = contradictsQuestions(conflictCands, 'head400');

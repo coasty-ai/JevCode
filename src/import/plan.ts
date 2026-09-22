@@ -299,14 +299,37 @@ export function rerunAction(args: {
   destSha256: string | null;
   markers: readonly string[];
   markerInteriorChanged: boolean;
+  /**
+   * True only for a destination we SHARE with the human — `AGENTS.md`, `MEMORY.md` — where our
+   * bytes sit inside a marker pair and the markers are the only way to tell them apart from
+   * theirs. False for a whole-file destination (`memory/<slug>.md`, `rules/<slug>.md`,
+   * `commands/<n>.md`), which a `create` writes end to end with no markers in it at all.
+   */
+  appendable?: boolean;
 }): { action: ImportAction; why: string } {
-  const { manifestEntry: entry, sourceSha256, destExists, markers, markerInteriorChanged } = args;
+  const { manifestEntry: entry, sourceSha256, destExists, destSha256, markers, markerInteriorChanged } = args;
+  const appendable = args.appendable !== false;
   if (entry === null) {
     if (!destExists) return { action: 'create', why: 'no manifest entry, destination absent' };
     if (markers.length > 0) return { action: 'merge', why: `no manifest entry, ${markers.length} import block${markers.length === 1 ? '' : 's'} already present` };
     return { action: 'append', why: 'no manifest entry, destination exists without an import block' };
   }
   if (!destExists) return { action: 'create', why: `destination was removed since ${entry.importId}; re-creating` };
+
+  // Review follow-up D1: a whole-file destination has no markers to look for — demanding one
+  // made every `create` come back `review` on the second run, which is §1 property 6's dominant
+  // case (on a first import almost nothing exists yet) and told the human their files had been
+  // edited when nothing had touched them. The file IS ours end to end, so its own sha is the
+  // honest test: unchanged ⇒ nothing to do, source moved on ⇒ rewrite it, destination moved on
+  // ⇒ the human edited what we wrote, so hands off.
+  if (!appendable) {
+    if (destSha256 !== null && destSha256 !== entry.destSha256) {
+      return { action: 'review', why: `the destination changed since ${entry.importId}; nothing was written` };
+    }
+    if (sourceSha256 !== entry.sourceSha256) return { action: 'update', why: 'manifest entry exists, source sha256 changed' };
+    return { action: 'skip:unchanged', why: 'manifest entry exists, source and destination sha256 unchanged' };
+  }
+
   if (!markers.includes(entry.importId)) return { action: 'review', why: 'the block was edited or removed; nothing was written' };
   if (markerInteriorChanged) return { action: 'review', why: 'the block was edited; nothing was written' };
   if (sourceSha256 !== entry.sourceSha256) return { action: 'update', why: 'manifest entry exists, source sha256 changed' };
@@ -543,6 +566,28 @@ export interface PlanBands {
   conflicts: ConflictCandidate[];
 }
 
+/**
+ * §4.4.3 groups III–V: **content-keyed** question ids (review follow-up D2).
+ *
+ * These used to be ordinals — `rank_0`, `rank_1`, … — assigned while collecting in pass 1 and
+ * read back by position in pass 2. But pass 2 runs *after* the duplicate folds pass 1's own
+ * answers caused, so the list it re-indexes is shorter: every note after a folded pair shifted
+ * by one and silently received its neighbour's Score. Keying on the row and item ids, which are
+ * derived from the source and the destination and never from position, removes the whole class.
+ *
+ * The TUI reads these ids straight off the question map; they are stable across passes and
+ * across runs of the same corpus.
+ */
+export function sameMeaningId(a: string, b: string): string {
+  return `same_meaning_${a}_${b}`;
+}
+export function rankId(rowId: string): string {
+  return `rank_${rowId}`;
+}
+export function contradictsId(a: string, b: string): string {
+  return `contradicts_${a}_${b}`;
+}
+
 /** The longest run of headings the two documents share, in order — group III's state (§4.4.3). */
 function commonHeadingRun(a: readonly string[], b: readonly string[]): number {
   let best = 0;
@@ -667,7 +712,7 @@ export function buildPlan(input: PlanInput, bands?: PlanBands): ImportPlan {
   const drafts: Draft[] = [];
   const dupGroupOf = new Map<string, string>();
   dd.band.forEach((pair, i) => {
-    const id = `same_meaning_${i}`;
+    const id = sameMeaningId(pair.a, pair.b);
     if (bands) bands.pairs.push(pairCandidate(id, pair, candidates));
     const same = resolveNoul(answers, id, 0.6);
     const gid = `dup-${i + 1}`;
@@ -729,13 +774,14 @@ export function buildPlan(input: PlanInput, bands?: PlanBands): ImportPlan {
   if (cf.capped) notices.push(`conflict scan capped at ${thousands(IMPORT_LIMITS.dedupePairs)} pairs (${thousands(candidates.length)} candidates)`);
   conflicts.forEach((con, i) => {
     const gid = `conflict-${i + 1}`;
-    if (bands) bands.conflicts.push(conflictCandidate(`contradicts_${i}`, con, candidates));
-    const p = resolveNoul(answers, `contradicts_${i}`);
+    const cid = contradictsId(con.a, con.b);
+    if (bands) bands.conflicts.push(conflictCandidate(cid, con, candidates));
+    const p = resolveNoul(answers, cid);
     for (const id of [con.a, con.b]) {
       const d = drafts.find((x) => x.candidate.item.id === id);
       if (!d) continue;
       d.group = gid;
-      d.extraWhy.push(`conflict: opposed polarity on "${con.noun}"${p === null ? '' : ` (jev contradicts_${i} p=${p.toFixed(2)})`}`);
+      d.extraWhy.push(`conflict: opposed polarity on "${con.noun}"${p === null ? '' : ` (jev ${cid} p=${p.toFixed(2)})`}`);
     }
   });
   const conflicted = new Set(conflicts.flatMap((c) => [c.a, c.b]));
@@ -834,6 +880,7 @@ export function buildPlan(input: PlanInput, bands?: PlanBands): ImportPlan {
       destSha256: state?.sha256 ?? null,
       markers: state?.markers ?? [],
       markerInteriorChanged: entry !== null && state !== null && state.sha256 !== entry.destSha256,
+      appendable: APPENDABLE.includes(d.destKind),
     });
 
     let action: ImportAction = dest === null ? 'suggest' : matrix.action;
@@ -899,9 +946,9 @@ export function buildPlan(input: PlanInput, bands?: PlanBands): ImportPlan {
 
   // ---- 7. §4.5 pass 4: the budget ------------------------------------------------------
   const scores: Record<string, number> = {};
-  indexCandidates.forEach((ic, i) => {
-    if (bands) bands.notes.push({ id: `rank_${i}`, path: ic.row.source.display, kind: ic.row.class, scope: ic.row.scope, bytes: ic.row.bytes });
-    const s = resolveScore(answers, `rank_${i}`);
+  indexCandidates.forEach((ic) => {
+    if (bands) bands.notes.push({ id: rankId(ic.row.id), path: ic.row.source.display, kind: ic.row.class, scope: ic.row.scope, bytes: ic.row.bytes });
+    const s = resolveScore(answers, rankId(ic.row.id));
     if (s !== null) scores[ic.row.id] = s;
   });
   const ranked = rankIndex(
@@ -1163,7 +1210,7 @@ function keyGroupRows(
     const dest = destinationPath('mcp', d.scope, 'mcp');
     const entry = dest === null ? null : manifestEntryFor(manifest, workspaceKey, dest, d.scope);
     const state = dest === null ? null : (destState[dest] ?? null);
-    const action: ImportAction = entry !== null ? rerunAction({ manifestEntry: entry, sourceSha256: item.sha256, destExists: state !== null, destSha256: state?.sha256 ?? null, markers: state?.markers ?? [], markerInteriorChanged: false }).action : state === null ? 'create' : 'merge';
+    const action: ImportAction = entry !== null ? rerunAction({ manifestEntry: entry, sourceSha256: item.sha256, destExists: state !== null, destSha256: state?.sha256 ?? null, markers: state?.markers ?? [], markerInteriorChanged: false, appendable: false }).action : state === null ? 'create' : 'merge';
     const warnings = servers.size > IMPORT_LIMITS.mcpServers ? [`mcp budget ${IMPORT_LIMITS.mcpServers} reached; ${servers.size - IMPORT_LIMITS.mcpServers} servers not imported`] : [];
     out.push(
       makeRow({
