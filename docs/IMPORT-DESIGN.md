@@ -1909,7 +1909,7 @@ naming the incoming rows, so the merge is an append.
 
 | # | File | Change | LOC |
 | --- | --- | --- | --- |
-| 1 | `src/core/types.ts` [H] | `// contract 1.6`: `SourceTool`, `SourceItem`, `SourceScope`, `SourceFormat`, `ImportClass`, `ImportAction`, `PlanRow`, `ImportPlan`, `ImportProbe`, `ImportManifest`, `MemoryItem`, `MemoryKind`, `RuleTrigger`, `ProjectCommand`, `McpServerRecord`. Widen: `InstructionRecord += kind?, scope?`; `EngineOptions.memory?: {index?, rules?, topics?}`; `NoticeKind += 'import'`; `RunMeta.imports?: readonly string[]`; (amendment) `CheckpointState.kept?[].kind += 'memory'` | ~190 |
+| 1 | `src/core/types.ts` [H] | **LANDED** (§7.8) — `// contract 1.6`: `SourceTool`, `SourceItem`, `SourceScope`, `SourceFormat`, `ImportClass`, `ImportAction`, `PlanRow`, `ImportPlan`, `ImportProbe`, `ImportManifest`, `MemoryItem`, `MemoryKind`, `RuleTrigger`, `ProjectCommand`, `McpServerRecord`. Widen: `InstructionRecord += kind?, scope?`; `EngineOptions.memory?: {index?, rules?, topics?}`; `NoticeKind += 'import'`; `RunMeta.imports?: readonly string[]`; (amendment) `CheckpointState.kept?[].kind += 'memory'` | ~190 |
 | 2 | `src/core/limits.ts` [H] | `IMPORT_LIMITS` (Appendix B), plus the re-export of the three `PROMPT_LIMITS` values §2.10.3 touches | ~70 |
 | 3 | `test/unit/core/limits.test.ts` [H] | every bound positive and finite; `agentsAppendBytes + 24 KiB ≤ INSTRUCTIONS_MAX_BYTES`; the two shares in `(0, 0.5)` | ~35 |
 
@@ -1963,8 +1963,8 @@ naming the incoming rows, so the merge is an append.
 
 | # | Owner | File | Change | LOC |
 | --- | --- | --- | --- | --- |
-| 41 | [H] | `src/provider/prompts.ts` | `## Memory (index)` in the once-per-run system prompt after `## Project instructions`; `## Rules in scope` and `## Memory in scope` as **per-step** user-message sections; every bound from `limits.ts`; filed as an amendment to `CD` row 19 **[G2.2]** | ~130 |
-| 42 | [H] | `src/loop/context.ts` | the fill-order slot after `kept`; the **share-based** budgets **[G2.7]**; clip notices; `EngineStatus.context?` counts the two sections | ~110 |
+| 41 **landed** (§7.8) | [H] | `src/provider/prompts.ts` | `## Memory (index)` in the once-per-run system prompt after `## Project instructions`; `## Rules in scope` and `## Memory in scope` as **per-step** user-message sections; every bound from `limits.ts`; filed as an amendment to `CD` row 19 **[G2.2]** | ~130 |
+| 42 **landed** (§7.8; as `src/loop/context/{limits,meter,memory}.ts` — the policy became a directory at CD 1.4) | [H] | `src/loop/context.ts` | the fill-order slot after `kept`; the **share-based** budgets **[G2.7]**; clip notices; `EngineStatus.context?` counts the two sections | ~110 |
 | 43 | [T] | `src/tui/plain-composer.ts`, `src/cli/session.ts` | the `--plain` / SR / `--ascii` / `--no-input` twins of the overlay, the conflict prompt and the credential prompt, all from `lines.ts` | ~150 |
 | 44 | [T] | `test/pty/smoke/r4-import-*.steps` (9) + `test/pty/round4.pty.test.ts` | `offer`, `overlay`, `resize`, `plain`, `sr`, `ascii`, `pipe`, `empty`, `ctrlc` | ~260 |
 | 45 | [T] | generated | `docs/COMMANDS.md`, `man/jevcode.1`, `completions/jevcode.{bash,zsh,fish}` regenerated with `import` and `memory`; the existing drift gate enforces the commit | 0 |
