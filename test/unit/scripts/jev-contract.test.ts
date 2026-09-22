@@ -5,6 +5,10 @@
  * router can break the principle, so each case is driven against a fixture tree: a router call site with no
  * contract block, a block missing a clause, a fallback whose named test does not exist, a Question spelled out by
  * hand instead of built by `src/jev/questions.ts`, and an answer that feeds a correctness gate.
+ *
+ * Plus the two ways the ratchet could be loosened without anyone noticing: a call the formatter wrapped onto its
+ * own line (`await ctx.decider` / newline / `.ask(…)`), which a per-line scan misses entirely, and an allow-list row
+ * that grants more un-annotated sites than the file has — headroom a new site could be added into silently.
  */
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -105,6 +109,32 @@ describe('the jev-contract lint', () => {
     const r = lint(root);
     expect(r.out).toContain('jev-contract: ok');
     expect(r.code).toBe(0);
+  });
+
+  it('catches a call the formatter wrapped, and anchors it at the receiver so the block above still counts', () => {
+    const wrapped = (block: string): string =>
+      `import { choice } from '../jev/questions.js';\nexport async function routeRunFirst(ctx) {\n${block}\n  const res = await ctx.decider\n    .ask(state, { run_first: choice('which first?', scopes) }, opts);\n  return rank(res);\n}\n`;
+    const bare = lint(tree({ 'src/synth/oracle/scope.ts': wrapped('  // pick a scope') }));
+    expect(bare.code).toBe(1);
+    expect(bare.out).toContain('1 Jev call site(s) with no jev-contract block');
+    const annotated = lint(tree({ 'src/synth/oracle/scope.ts': wrapped(GOOD_BLOCK), 'test/unit/scope.test.ts': '\n' }));
+    expect(annotated.out).toContain('1 with a four-clause block');
+    expect(annotated.code).toBe(0);
+  });
+
+  it('catches the other split too — the receiver line ending in the dot', () => {
+    const body = `import { choice } from '../jev/questions.js';\nexport async function route(ctx) {\n  const res = await ctx.decider.\n    ask(state, { run_first: choice('which first?', scopes) }, opts);\n  return rank(res);\n}\n`;
+    const r = lint(tree({ 'src/synth/oracle/scope.ts': body }));
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('1 Jev call site(s) with no jev-contract block');
+  });
+
+  it('is a ratchet: an allow-list row wider than the file is an error, not a note', () => {
+    // src/loop/engine.ts is grandfathered for one un-annotated site; a copy of the tree where it has none must fail
+    const r = lint(tree({ 'src/loop/engine.ts': 'export const engine = 1;\n' }));
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('the allow-list grandfathers 1 un-annotated Jev call site(s) but the file has 0');
+    expect(r.out).toContain('tighten the row to 0');
   });
 
   it('exits 2 when the root has no src directory', () => {

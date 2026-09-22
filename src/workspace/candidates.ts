@@ -28,12 +28,21 @@ export interface CandidateEntry {
   /** dropped for size, type or content; kept so invalidation does not re-stat it */
   excluded: boolean;
   /**
-   * HARNESS-NEXT-DESIGN §3 M7 (wave S0): the mtime the entry's `binary` verdict was sniffed at. `noteChanged` skips
-   * the 8 KB sniff when both `mtimeMs` and `bytes` are unchanged — the file cannot have new content under the same
-   * size AND the same modification time, and the verdict is derived from content alone. Absent on an entry that was
-   * never stat-gated (an old cache, a stat that failed), which simply sniffs.
+   * HARNESS-NEXT-DESIGN §3 M7 (wave S0): the `mtime` and `ctime` the entry's `binary` verdict was sniffed at.
+   * `noteChanged` skips the 8 KB sniff only when `bytes`, `mtimeMs` **and** `ctimeMs` are all unchanged.
+   *
+   * mtime and size alone are not enough, and the writers that break them are ordinary agent commands: `tar -x`,
+   * `cp -p`, `rsync -t`, `unzip` and anything restoring a cached build artefact all set mtime from the archive, so a
+   * same-size file can gain new content under an unchanged (even an older) mtime — and a file that became binary
+   * would stay a listed text candidate. `ctime` is the inode-change time: the kernel moves it on every write **and**
+   * on `utimes`/`utimensat`, and no userspace API can set it backwards, so a restored mtime cannot hide behind it.
+   * It rides the same `lstat` the gate already makes, so the extra field costs nothing.
+   *
+   * Absent on an entry that was never stat-gated (an old cache, a stat that failed), which simply sniffs.
    */
   mtimeMs?: number;
+  /** the ctime of the same `lstat` — see `mtimeMs`; both must match for the sniff to be reused */
+  ctimeMs?: number;
 }
 
 export interface CandidateDeps {
@@ -118,6 +127,20 @@ async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T
   return results;
 }
 
+/**
+ * §3 M7 stat gate: may the 8 KB `binary` sniff that produced `prev` be reused for `st`?
+ *
+ * Only when size, mtime **and** ctime all match. Dropping ctime would be wrong for writers an agent runs every day
+ * (`tar -x`, `cp -p`, `rsync -t`, `unzip`, a restored build cache): they set mtime from the archive, so new content
+ * can arrive under an unchanged — or older — mtime at an unchanged size. ctime moves on every write and on every
+ * `utimes`, and userspace cannot move it backwards, so it closes that hole for free out of the same `lstat`.
+ *
+ * An entry from before the gate carries neither stamp; `undefined === number` is false, so it simply sniffs once.
+ */
+export function statGateHit(prev: CandidateEntry | undefined, st: { size: number; mtimeMs: number; ctimeMs: number }): prev is CandidateEntry {
+  return prev !== undefined && prev.bytes === st.size && prev.mtimeMs === st.mtimeMs && prev.ctimeMs === st.ctimeMs;
+}
+
 export function createCandidateCache(deps: CandidateDeps): CandidateCache {
   let cache: Map<string, CandidateEntry> | null = null;
   let building: Promise<Map<string, CandidateEntry>> | null = null;
@@ -139,11 +162,10 @@ export function createCandidateCache(deps: CandidateDeps): CandidateCache {
     } catch {
       return null;
     }
-    if (!st.isFile()) return { bytes: st.size, binary: false, touchedThisRun: touched, excluded: true, mtimeMs: st.mtimeMs };
-    if (st.size > MAX_CANDIDATE_BYTES) return { bytes: st.size, binary: false, touchedThisRun: touched, excluded: true, mtimeMs: st.mtimeMs };
-    // §3 M7 stat gate: same size and same mtime as the sniff that produced `binary` ⇒ same content, no re-read
-    if (prev !== undefined && prev.mtimeMs === st.mtimeMs && prev.bytes === st.size) {
-      return { bytes: st.size, binary: prev.binary, touchedThisRun: touched, excluded: prev.binary, mtimeMs: st.mtimeMs };
+    if (!st.isFile()) return { bytes: st.size, binary: false, touchedThisRun: touched, excluded: true, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+    if (st.size > MAX_CANDIDATE_BYTES) return { bytes: st.size, binary: false, touchedThisRun: touched, excluded: true, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+    if (statGateHit(prev, st)) {
+      return { bytes: st.size, binary: prev.binary, touchedThisRun: touched, excluded: prev.binary, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
     }
     let binary = false;
     try {
@@ -151,7 +173,7 @@ export function createCandidateCache(deps: CandidateDeps): CandidateCache {
     } catch {
       return null;
     }
-    return { bytes: st.size, binary, touchedThisRun: touched, excluded: binary, mtimeMs: st.mtimeMs };
+    return { bytes: st.size, binary, touchedThisRun: touched, excluded: binary, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
   }
 
   async function names(): Promise<string[]> {

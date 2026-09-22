@@ -6,10 +6,23 @@
  * This module is that switch. It replaces the Decider slot with one of two deterministic doubles:
  *
  *   `escape`      — every Choice is answered with all its mass on the escape option (`ESCAPE_KEY`, or whatever
- *                   `none_of…` key the batch carries), every Noul with the inert 0.5 of DESIGN §5.4 rule 6, every
- *                   Score with level 0. The escape option is one of the five fallback triggers of §1.2 clause 3, so
- *                   this is "Jev has no opinion": each call site runs its documented code path, and a site that
- *                   silently used Jev's answer anyway shows up as a behaviour difference, not as a crash.
+ *                   `none_of…` key the batch carries), every Noul with the inert 0.5 of DESIGN §5.4 rule 6, and
+ *                   every Score at its **top** level. The escape option is one of the five fallback triggers of
+ *                   §1.2 clause 3, so this is "Jev has no opinion": each call site runs its documented code path,
+ *                   and a site that silently used Jev's answer anyway shows up as a behaviour difference, not as
+ *                   a crash.
+ *
+ *                   The Score polarity is the one place "no opinion" is not symmetric, and getting it wrong would
+ *                   invert the safety principle. Every Score in this tree is a risk dimension whose levels run
+ *                   ascending in severity (`src/loop/stages/risk.ts RISK_LEVEL_TEXTS`, `src/synth/oracle/questions.ts`,
+ *                   `src/perf/jev-latency.ts`): level 0 of `destructive` is "nothing existing is lost" and of
+ *                   `irreversible` is "no lasting effect". An inert level 0 would therefore answer every harm Score
+ *                   with the most permissive reading available — `verdict ok, risk 0.000` on a proposal the mock
+ *                   decider it replaces escalates to levels n−2/n−1 on a `DANGEROUS_COMMAND` match — which is
+ *                   exactly what §1.2 clause 2 forbids ("Jev can escalate to ask/block; it can never release what
+ *                   code denies") and what the harm-gate bullet spells out ("A failed or timed-out Q20 means ask …
+ *                   Never allow"). The top level is the only inert answer that cannot release anything: it can cost
+ *                   wall-clock (a `review`/`block` the code guard then resolves) and never correctness.
  *   `unreachable` — every ask rejects with a `JevHttpError` 503, the real outage of §8 R-9 (`no healthy upstream`
  *                   killed three runs in the head-to-head). This is what the per-router fallback tests drive.
  *
@@ -65,7 +78,9 @@ export function jevOffAnswer(question: Question): Answer {
       return choiceAnswer(question, escape === undefined ? {} : { [escape]: 1 });
     }
     case 'score':
-      return scoreAnswer(question, { 0: 1 });
+      // the top level, never level 0: see the header — Score levels are ascending in severity everywhere in this
+      // tree, so the conservative "no opinion" is the most severe one. `criteria` is Score's level list (2..10).
+      return scoreAnswer(question, { [Math.max(0, question.criteria.length - 1)]: 1 });
   }
 }
 

@@ -62,16 +62,34 @@ describe('timeline recorder', () => {
     expect(r.snapshot().steps).toEqual([]);
   });
 
-  it('stops recording when a second run opens in the same process rather than blending the two', () => {
+  it('stops recording when a second run opens while the first still has a step open, rather than blending the two', () => {
     const r = new TimelineRecorder({ enabled: true, now: fakeClock().now });
     r.beginRun('run-1', 'llm-jev');
-    r.beginStep(1);
-    r.endStep();
+    r.beginStep(1); // still open: the two runs would interleave into one set of buckets
     r.beginRun('run-2', 'llm-jev');
     r.beginStep(1);
     expect(r.isEnabled()).toBe(false);
     expect(r.snapshot().contended).toBe(true);
     expect(r.endStep()).toBeNull();
+  });
+
+  it('keeps measuring a second run that starts after the first finished (a session host runs engines in sequence)', () => {
+    const c = fakeClock();
+    const r = new TimelineRecorder({ enabled: true, now: c.now });
+    r.beginRun('run-1', 'llm-jev');
+    r.beginStep(1);
+    r.add('lane', 5, 'python3');
+    r.endStep();
+    r.endRun(); // what writeTimelineFile does once the snapshot is on disk
+    r.beginRun('run-2', 'llm-jev');
+    r.beginStep(1);
+    r.add('lane', 7, 'python3');
+    const step = r.endStep();
+    expect(r.isEnabled()).toBe(true);
+    expect(r.snapshot().contended).toBe(false);
+    expect(r.snapshot().runId).toBe('run-2');
+    expect(step?.buckets.lane.sumMs).toBe(7); // run 1's 5 ms did not leak in
+    expect(r.snapshot().steps).toHaveLength(1);
   });
 
   it('caps the entry list per step and counts what it dropped (a QuixBugs step runs ~1,375 candidates)', () => {

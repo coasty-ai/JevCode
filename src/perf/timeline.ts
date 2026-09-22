@@ -126,10 +126,15 @@ export class TimelineRecorder {
     return this.enabled && !this.contended;
   }
 
-  /** Open a run. A second open run marks the recorder contended and it records nothing further. */
+  /**
+   * Open a run. Contention is an *overlap*, not a sequence: two engines sharing the process interleave their steps
+   * and the buckets would be the sum of both, so the recorder gives up and records nothing further. A run that has
+   * already ended (no step open, `endRun()` called at flush) leaves the recorder free for the next one — a session
+   * host or a probe that runs two engines back to back must keep measuring run 2.
+   */
   beginRun(runId: string, mode: string): void {
     if (!this.enabled) return;
-    if (this.runId !== null && this.runId !== runId) {
+    if (this.runId !== null && this.runId !== runId && this.current !== null) {
       this.contended = true;
       this.current = null;
       return;
@@ -138,6 +143,16 @@ export class TimelineRecorder {
     this.mode = mode;
     this.steps = [];
     this.current = null;
+  }
+
+  /**
+   * Close the run: the next `beginRun` starts clean. Called by `writeTimelineFile` after the snapshot is on disk;
+   * `contended` is deliberately sticky, because a contended snapshot's numbers are not trustworthy either way.
+   */
+  endRun(): void {
+    this.endStep();
+    this.runId = null;
+    this.stageName = '';
   }
 
   beginStep(step: number): void {
@@ -283,6 +298,9 @@ export async function writeTimelineFile(dir: string, recorder: TimelineRecorder 
     await writeFile(join(dir, TIMELINE_FILE), `${JSON.stringify(recorder.snapshot(), null, 2)}\n`, 'utf8');
   } catch {
     /* a timeline that cannot be written is not a run failure */
+  } finally {
+    // the run is over whether or not the file landed; the next run in this process gets a clean recorder
+    recorder.endRun();
   }
 }
 

@@ -56,8 +56,60 @@ const CLAUSE_KEYS = ['escape', 'guard', 'fallback', 'no-gating'];
 
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', 'bench']);
 
-/** `x.ask(` / `x?.ask(` on a value — not `.asking(`, not a type position. Stateless: built fresh per test. */
-const ASK_SITE = { test: (s) => /[\w$)\]]\s*\??\.\s*ask\s*\(/.test(s) };
+// `x.ask(` / `x?.ask(` on a value — not `.asking(`, not a type position.
+//
+// A per-line regex is not enough: a formatter that wraps the chain (`await ctx.decider` / newline / `.ask(state, …)`)
+// would hide the site entirely, and because the allow-list ratchets on *un-annotated sites per file*, a reformat
+// both hides the new site and drops an existing file below its allowance. So the scan also follows the two ways
+// prettier can split the call, and anchors the site at the receiver's line (which is where the contract block goes).
+/** the whole call on one line */
+const ASK_ON_LINE = /[\w$)\]]\s*\??\s*\.\s*ask\s*\(/;
+/** `\n  .ask(` — the receiver ended the line before */
+const ASK_DOT_FIRST = /^\s*\??\s*\.\s*ask\s*\(/;
+/** `\n  ask(` — the line before ended with the dot */
+const ASK_NAME_FIRST = /^\s*ask\s*\(/;
+/** a line that ends in something a `.ask(` can be called on */
+const RECEIVER_TAIL = /[\w$)\]]\s*\??\s*$/;
+const RECEIVER_DOT_TAIL = /[\w$)\]]\s*\??\s*\.\s*$/;
+
+/** The nearest earlier line that is neither blank nor a comment, or -1. */
+function receiverLineAbove(lines, i) {
+  for (let j = i - 1; j >= 0; j--) {
+    if (lines[j].trim() === '') continue;
+    if (isComment(lines[j])) continue;
+    return j;
+  }
+  return -1;
+}
+
+/**
+ * The 0-based line of every Jev call site in `lines`, anchored at the receiver (ascending, each site once).
+ * A forwarder (`ask: (a, b) => other.ask(a, b)`) is plumbing, not a decision site.
+ */
+function askSiteLines(lines) {
+  const out = [];
+  const push = (j) => {
+    if (j >= 0 && !isForwarder(lines[j]) && out[out.length - 1] !== j) out.push(j);
+  };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (isComment(line)) continue;
+    if (ASK_ON_LINE.test(line)) {
+      if (!isForwarder(line)) push(i);
+      continue;
+    }
+    if (ASK_DOT_FIRST.test(line)) {
+      const j = receiverLineAbove(lines, i);
+      if (j >= 0 && RECEIVER_TAIL.test(lines[j])) push(j);
+      continue;
+    }
+    if (ASK_NAME_FIRST.test(line)) {
+      const j = receiverLineAbove(lines, i);
+      if (j >= 0 && RECEIVER_DOT_TAIL.test(lines[j])) push(j);
+    }
+  }
+  return out;
+}
 
 function walk(dir, out = []) {
   let entries;
@@ -111,7 +163,6 @@ function parseAnnotation(block) {
 
 export function checkTree(root) {
   const errors = [];
-  const notes = [];
   const srcDir = join(root, 'src');
   const files = walk(srcDir);
   const allowByFile = new Map(ALLOW.map((a) => [a.file, a]));
@@ -126,7 +177,8 @@ export function checkTree(root) {
 
     // a file takes part in asking when it sends a request or builds questions; the rules below are about those files,
     // not about a renderer fixture that happens to spell a Question out for a snapshot
-    const asks = ASK_SITE.test(src);
+    const askLines = askSiteLines(lines);
+    const asks = askLines.length > 0;
     const buildsQuestions = /from '.*jev\/questions\.js'/.test(src);
 
     // clause 1, structurally: only the builders may spell a Question out
@@ -148,14 +200,12 @@ export function checkTree(root) {
       }
     }
 
-    lines.forEach((line, i) => {
-      if (isComment(line) || isForwarder(line)) return;
-      if (!ASK_SITE.test(line)) return;
+    for (const i of askLines) {
       sites += 1;
       const ann = parseAnnotation(commentBlockAbove(lines, i));
       if (ann === null) {
         unannotatedByFile.set(rel, (unannotatedByFile.get(rel) ?? 0) + 1);
-        return;
+        continue;
       }
       contracted += 1;
       const where = `${rel}:${i + 1} (${ann.router || 'unnamed router'})`;
@@ -172,7 +222,7 @@ export function checkTree(root) {
       const window = lines.slice(i, i + 25).join('\n');
       const gate = /\b(?:complete|completed|approved|allowed|accepted|verdict)\s*=(?!=)|return\s+\{[^}]*\b(?:complete|approved|allowed)\b/.exec(window);
       if (gate !== null) errors.push(`${where}: clause 4: the answer feeds "${gate[0].trim()}" — a router may order work, never gate correctness or acceptance`);
-    });
+    }
   }
 
   for (const [file, count] of unannotatedByFile) {
@@ -183,12 +233,14 @@ export function checkTree(root) {
       errors.push(`${file}: ${count} un-annotated Jev call sites, the allow-list grandfathers ${allowed.sites} — annotate the new one with a jev-contract block`);
     }
   }
+  // the ratchet only tightens if shrinking is mandatory: an over-wide row is headroom a new un-annotated site can
+  // hide in (and a reformat that hides a site would otherwise pass silently), so a stale row is an error, not a note
   for (const a of ALLOW) {
     if (!existsSync(join(root, a.file))) continue;
     const count = unannotatedByFile.get(a.file) ?? 0;
-    if (count < a.sites) notes.push(`${a.file}: allow-list says ${a.sites} un-annotated site(s), found ${count} — the row can shrink`);
+    if (count < a.sites) errors.push(`${a.file}: the allow-list grandfathers ${a.sites} un-annotated Jev call site(s) but the file has ${count} — tighten the row to ${count}${count === 0 ? ' (or drop it)' : ''}`);
   }
-  return { errors, notes, sites, contracted, allowListed: sites - contracted };
+  return { errors, sites, contracted, allowListed: sites - contracted };
 }
 
 const isMain = process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
@@ -198,8 +250,7 @@ if (isMain) {
     console.error(`jev-contract: ${root}/src is not a directory`);
     process.exit(2);
   }
-  const { errors, notes, sites, contracted, allowListed } = checkTree(root);
-  for (const n of notes) console.log(`jev-contract: note: ${n}`);
+  const { errors, sites, contracted, allowListed } = checkTree(root);
   if (errors.length > 0) {
     console.error(`the Jev-safety contract (HARNESS-NEXT-DESIGN §1.2) is not met:\n${errors.map((e) => `  ${e}`).join('\n')}`);
     process.exit(1);

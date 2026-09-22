@@ -309,12 +309,24 @@ interface StepDraft {
   jevRequests: JevRequestRecord[];
   generatorRecords: GeneratorCallRecord[];
   usage: StepUsage;
-  /** imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none */
-  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null };
+  /**
+   * imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none.
+   *
+   * `jevMs` is what the decider *reports* (`AskResult.latencyMs`) — the client's cost basis, the number jev.jsonl
+   * and `/jev` show. `jevWallMs` is the wall the engine actually spent inside `decider.ask`, measured here.
+   * HARNESS-NEXT-DESIGN §4.4 / §5: `harnessMs` subtracts the larger of the two, because a decider that does its
+   * work in-process and reports `latencyMs: 0` (every mock and stub, `src/jev/mock.ts`, `src/bench/stub-decider.ts`,
+   * `src/jev/off.ts`) would otherwise spend the 50 ms harness budget on the test double's own CPU — which is what
+   * made the gate look fixable by making the double faster. The two are within noise of each other for a real HTTP
+   * decider, so this only ever tightens the gated number.
+   */
+  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null; jevWallMs: number };
   /** docs/LLM-JEV-DESIGN.md §7.5: wall of synthesize() (synth modes); null when the propose stage was the generator's */
   synthMs: number | null;
   /** the Jev latency spent inside synthesize(); `timing.jevMs - synthJevMs` is the shell's share */
   synthJevMs: number;
+  /** the same split for the measured ask wall: `timing.jevWallMs - synthJevWallMs` is the shell's measured share */
+  synthJevWallMs: number;
   /** docs/LLM-JEV-DESIGN.md §4.8: the in-flight samples of the llm-jev round, for the batch wall in `timing.generatorMs` */
   generatorBatch: { inFlight: number; startedAt: number };
   /**
@@ -364,6 +376,16 @@ function addUsage(a: TokenUsage, b: TokenUsage): void {
   a.costUsd += Number.isFinite(b.costUsd) ? b.costUsd : 0;
   a.calls += b.calls;
 }
+/**
+ * The Jev time `harnessMs` is charged for: the larger of what the decider reported and what the engine measured
+ * inside `decider.ask`. HARNESS-NEXT-DESIGN §4.4 — a mock, a stub or the `--jev off` double reports `latencyMs: 0`
+ * and does its work on this thread, so charging `jevMs` alone hands the whole of the double's CPU to the gated
+ * harness budget. For a real HTTP decider the two agree to within the await, so nothing recorded moves.
+ */
+function jevChargedMs(draft: Pick<StepDraft, 'timing'>): number {
+  return Math.max(draft.timing.jevMs, draft.timing.jevWallMs);
+}
+
 function zeroTiming(): StepTiming {
   return { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 0 };
 }
@@ -1516,9 +1538,10 @@ class EngineImpl implements Engine {
       jevRequests: [],
       generatorRecords: [],
       usage: { generator: zeroUsage(), jev: zeroUsage() },
-      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null },
+      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null, jevWallMs: 0 },
       synthMs: null,
       synthJevMs: 0,
+      synthJevWallMs: 0,
       generatorBatch: { inFlight: 0, startedAt: 0 },
       closed: false,
       verify: { samples: 0, timeouts: 0, cancelled: 0, malformed: 0, reported: null },
@@ -1614,6 +1637,9 @@ class EngineImpl implements Engine {
     const retry = this.retryHooks('jev', draft.step, stage);
     // HARNESS-NEXT-DESIGN §4.4: `jevWaitMs` per stage — per router once §3.x labels its asks
     const endJevWait = stepTimeline.span('jev', stage);
+    // and the same wall as a plain number, always: `harnessMs` is derived from it so an in-process decider that
+    // reports `latencyMs: 0` cannot charge its own CPU to the gated harness budget (see StepDraft.timing)
+    const askT0 = this.clock();
     try {
       res = await this.opts.decider.ask(state, questions, { signal: this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
       retry.settled(true);
@@ -1622,6 +1648,7 @@ class EngineImpl implements Engine {
       trace(`engine.ask ${stage} rejected ${e instanceof Error ? e.name : typeof e}`);
       throw e;
     } finally {
+      draft.timing.jevWallMs += Math.max(0, this.clock() - askT0);
       endJevWait();
     }
     trace(`engine.ask ${stage} resolved attempts=${res.attempts}`);
@@ -2265,12 +2292,14 @@ class EngineImpl implements Engine {
             const sctx = this.synthesisContext(draft, contextFiles);
             const s0 = this.clock();
             const jev0 = draft.timing.jevMs;
+            const jevWall0 = draft.timing.jevWallMs;
             try {
               p = await this.stage('propose', () => runSynthStage(ctx, synthesizer, sctx));
             } finally {
               // docs/LLM-JEV-DESIGN.md §7.5: the synth wall and the Jev latency spent inside it (the shell's share is the rest)
               draft.synthMs = Math.max(0, this.clock() - s0);
               draft.synthJevMs = Math.max(0, draft.timing.jevMs - jev0);
+              draft.synthJevWallMs = Math.max(0, draft.timing.jevWallMs - jevWall0);
             }
             // llm-jev: the round's per-sample rows (cancelled estimates included) reach generator.jsonl exactly as after runProposeStage; a no-op in jev-only
             this.flushGeneratorRecords(draft);
@@ -2428,6 +2457,13 @@ class EngineImpl implements Engine {
     // a `run` with nothing dirty has nothing to copy: no pre-image directory (clean tracked files are recoverable from HEAD)
     if (source === 'run' && targets.length === 0) return null;
     const t0 = this.clock();
+    // HARNESS-NEXT-DESIGN §5/§6 S0 charters a *reduction* of imagesMs (p95 19.9–24.5 ms, target 15 ms). Wave S0
+    // instrumented it and did not reduce it, and once `harnessMs` stopped being charged the decider double's CPU
+    // this span became the whole of the gated number: on the `step-overhead` fixture `images:pre` is 386 ms total
+    // at p95 38.1 ms against `listing:note-changed` 26 ms, `store` 117 ms and `jev` 98 ms over 203 asks. The cost
+    // is the serial 15 MiB pre-image copy inside `writePreImages` — `src/checkpoint/images.ts`, owned by another
+    // branch in flight. DEFERRED, with that owner; `experiments/harness-next/quick.mts` prints the deferral on
+    // every Ring-0 run so it cannot be quietly forgotten.
     const endImages = stepTimeline.span('images', 'pre');
     try {
       const r = await writePreImages(this.runDir, draft.step, targets, { root: this.workspace.root, source, now: () => this.clock() });
@@ -2499,7 +2535,7 @@ class EngineImpl implements Engine {
       this.timing.harnessMs += t.harnessMs;
       this.timing.synthMs = (this.timing.synthMs ?? 0) + (t.synthMs ?? 0);
     } else {
-      this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs);
+      this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - jevChargedMs(draft) - draft.timing.execMs - draft.timing.confirmMs);
     }
   }
 
@@ -2510,7 +2546,8 @@ class EngineImpl implements Engine {
    */
   private llmJevTiming(draft: StepDraft, total: number): StepTiming {
     const synthMs = draft.synthMs ?? 0;
-    const shellJevMs = Math.max(0, draft.timing.jevMs - draft.synthJevMs);
+    // the shell's Jev share, charged at the larger of reported latency and measured wall (see StepDraft.timing)
+    const shellJevMs = Math.max(Math.max(0, draft.timing.jevMs - draft.synthJevMs), Math.max(0, draft.timing.jevWallMs - draft.synthJevWallMs));
     return {
       generatorMs: draft.timing.generatorMs,
       jevMs: draft.timing.jevMs,
@@ -2852,7 +2889,7 @@ class EngineImpl implements Engine {
             generatorMs: draft.timing.generatorMs,
             jevMs: draft.timing.jevMs,
             execMs: draft.timing.execMs,
-            harnessMs: Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs),
+            harnessMs: Math.max(0, total - draft.timing.generatorMs - jevChargedMs(draft) - draft.timing.execMs - draft.timing.confirmMs),
             totalMs: total,
             // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
             ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),

@@ -35,6 +35,8 @@ import { measureIntakeLatency, type IntakeLatencyResult } from './intake-latency
 import { measureStates, type StatesResult } from './states.js';
 import type { StaticAppendResult } from './static-append.js';
 import type { JevLatencyResult } from './jev-latency.js';
+import type { LaneRunResult } from './lane-run.js';
+import type { SandboxSpawnResult } from './sandbox-spawn.js';
 import { resultRows, updateReadmePerformance } from './readme.js';
 
 export const LOAD_MAX = 8;
@@ -43,8 +45,20 @@ export const LOAD_QUIET = 2;
 export const LOAD_WAIT_MS = 30_000;
 export const LOAD_RETRIES = 3;
 
-export type ProbeName = 'first-frame' | 'step-overhead' | 'static-append' | 'render-lag' | 'composer-latency' | 'intake-latency' | 'states';
+export type ProbeName = 'first-frame' | 'step-overhead' | 'static-append' | 'render-lag' | 'composer-latency' | 'intake-latency' | 'states' | 'lane-run' | 'sandbox-spawn';
+/** the release set: what a bare `jevcode perf` runs, what the README is rewritten from, what the gate is. */
 const ALL_PROBES: readonly ProbeName[] = ['first-frame', 'step-overhead', 'static-append', 'render-lag', 'composer-latency', 'intake-latency', 'states'];
+/**
+ * HARNESS-NEXT-DESIGN §5 Ring 0 — opt-in probes: `JEVCODE_PERF_ONLY=lane-run jevcode perf`.
+ *
+ * They are deliberately NOT in the release set. `lane-run` spawns real interpreters and needs `python3` plus the
+ * bench fixtures, and both are measurement instruments for the Fastlane waves rather than gates on this tree; §8
+ * R-4's standing rule for this margin is that new work is off the measured path or it does not ship. Naming one of
+ * them already makes the run `partial`, which by the header's contract is never a release number and never reaches
+ * the README — so the release gate, its wall and its dependencies are byte-for-byte what they were before S0.
+ */
+const RING0_PROBES: readonly ProbeName[] = ['lane-run', 'sandbox-spawn'];
+const KNOWN_PROBES: readonly ProbeName[] = [...ALL_PROBES, ...RING0_PROBES];
 
 export interface PerfResult {
   measuredAt: string;
@@ -64,6 +78,9 @@ export interface PerfResult {
   intakeLatency: IntakeLatencyResult | null;
   states: StatesResult | null;
   jevLatency: JevLatencyResult | null;
+  /** HARNESS-NEXT-DESIGN §5 Ring 0, opt-in (see RING0_PROBES): null unless JEVCODE_PERF_ONLY named them */
+  laneRun: LaneRunResult | null;
+  sandboxSpawn: SandboxSpawnResult | null;
   pass: boolean;
 }
 
@@ -73,9 +90,9 @@ function selectedProbes(env: NodeJS.ProcessEnv): ProbeName[] {
   const only = env['JEVCODE_PERF_ONLY'];
   if (only === undefined || only.trim() === '') return [...ALL_PROBES];
   const wanted = new Set(only.split(',').map((s) => s.trim()).filter(Boolean));
-  const unknown = [...wanted].filter((w) => !ALL_PROBES.includes(w as ProbeName));
-  if (unknown.length > 0) throw new Error(`JEVCODE_PERF_ONLY: unknown probe(s) ${unknown.join(', ')} (known: ${ALL_PROBES.join(', ')})`);
-  return ALL_PROBES.filter((p) => wanted.has(p));
+  const unknown = [...wanted].filter((w) => !KNOWN_PROBES.includes(w as ProbeName));
+  if (unknown.length > 0) throw new Error(`JEVCODE_PERF_ONLY: unknown probe(s) ${unknown.join(', ')} (known: ${KNOWN_PROBES.join(', ')})`);
+  return KNOWN_PROBES.filter((p) => wanted.has(p));
 }
 
 /** Wait for a quiet machine: 1-minute load ≤ LOAD_MAX, re-read up to LOAD_RETRIES times LOAD_WAIT_MS apart. */
@@ -180,6 +197,8 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
   let intake: IntakeLatencyResult | null = null;
   let states: StatesResult | null = null;
   let jev: JevLatencyResult | null = null;
+  let laneRun: LaneRunResult | null = null;
+  let sandboxSpawn: SandboxSpawnResult | null = null;
 
   if (probes.includes('first-frame')) {
     log('perf: first frame (run + chat × 40x120 / 24x80 / 8x40; 10 cold + 10 warm runs each under a pseudo-TTY, zero network asserted)…\n');
@@ -220,6 +239,17 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
     log('perf: zero clears per state and geometry segment (review, palette, picker, wizard, secret row, intake card, render faults, resize idle/live 40→12→40, Ctrl+L)…\n');
     states = await measureStates({ root, bin, onProgress: progress });
   }
+  // HARNESS-NEXT-DESIGN §5 Ring 0: opt-in, `partial`, imported lazily so a release run never loads them
+  if (probes.includes('sandbox-spawn')) {
+    log('perf: the seatbelt wrapper alone (sandbox-exec -f <profile> /bin/sh -c true vs bare; report only, §5 P2b)…\n');
+    const { measureSandboxSpawn } = await import('./sandbox-spawn.js');
+    sandboxSpawn = await measureSandboxSpawn({ onProgress: progress });
+  }
+  if (probes.includes('lane-run')) {
+    log('perf: one real candidate run, cold spawn vs the persistent runner (§5 P2 — the >= 2x gate wave S1 is judged by)…\n');
+    const { measureLaneRun } = await import('./lane-run.js');
+    laneRun = await measureLaneRun({ onProgress: progress });
+  }
   if (flags.live) {
     log('perf: Jev latency (live)…\n');
     const { measureJevLatency } = await import('./jev-latency.js');
@@ -228,7 +258,9 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
   const loadEnd = loadavg()[0] ?? 0;
 
   const staticPass = probes.includes('static-append') ? (staticAppend?.pass ?? false) : undefined;
-  const gates: boolean[] = [firstFrame?.pass, overhead?.pass, staticPass, lag?.pass, composer?.pass, intake?.pass, states?.pass].filter((v): v is boolean => v !== undefined);
+  // laneRun fails the run only when a warm arm was actually measured and missed the >= 2x gate; a pending arm
+  // (no src/sandbox/pool.ts yet) and sandbox-spawn are report-only, per §5's probe table
+  const gates: boolean[] = [firstFrame?.pass, overhead?.pass, staticPass, lag?.pass, composer?.pass, intake?.pass, states?.pass, laneRun?.pass].filter((v): v is boolean => v !== undefined);
   const pass = gates.length > 0 && gates.every(Boolean);
   const cpu = cpus();
   const result: PerfResult = {
@@ -247,6 +279,8 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
     intakeLatency: intake,
     states,
     jevLatency: jev,
+    laneRun,
+    sandboxSpawn,
     pass,
   };
   mkdirSync(resolve(out, '..'), { recursive: true });

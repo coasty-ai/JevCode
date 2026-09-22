@@ -147,6 +147,24 @@ export function resultRows(r: PerfResult): Row[] {
     for (const s of st.scenarios.filter((x) => !x.pass && !x.name.startsWith('resize') && x.name !== 'ctrl-l')) rows.push({ measurement: `state \`${s.name}\` ${s.rows}×${s.columns}`, result: `exit ${s.exitCode} (want ${s.expectedExit})${s.timedOut ? ' timeout' : ''}; clears ${s.segments.map((g) => `${g.clears}/${g.allowed}`).join(' ')}`, gate: '', status: 'FAIL' });
   }
   if (r.jevLatency) rows.push({ measurement: 'Jev latency p50 / p95 (live)', result: `${ms(r.jevLatency.p50)} / ${ms(r.jevLatency.p95)}`, gate: 'report', status: '' });
+  // HARNESS-NEXT-DESIGN §5 Ring 0, opt-in (`JEVCODE_PERF_ONLY=lane-run,sandbox-spawn`). A run that names one of
+  // them is `partial`, so these rows only ever reach the console table — never the README's release section.
+  const sp = r.sandboxSpawn;
+  if (sp) {
+    rows.push({ measurement: `Seatbelt wrapper per spawn, p50 (§5 P2b: \`sandbox-exec -f <profile> /bin/sh -c true\` − bare, ${sp.runs} runs each)`, result: `${ms(sp.seatbelt?.p50)} − ${ms(sp.bare.p50)} = ${ms(sp.wrapperMs, 2)}`, gate: 'report only, never a gate (§5)', status: '' });
+  }
+  const lr = r.laneRun;
+  if (lr) {
+    for (const m of lr.modes) {
+      rows.push({
+        measurement: `Lane run, \`${m.mode}\` — one real candidate run, cold spawn vs the persistent runner (§5 P2; \`${m.command || 'n/a'}\`, ${lr.runs} runs)`,
+        result: m.cold === null ? '–' : `cold p50 ${ms(m.cold.p50)} / p95 ${ms(m.cold.p95)}${m.warm ? ` · warm p50 ${ms(m.warm.p50)} → ${(m.speedup ?? 0).toFixed(2)}×` : ''}`,
+        gate: `warm ≥ ${lr.gateSpeedup}× or M6 is dropped, not softened (§6 S1, §8 R-1)`,
+        status: m.gate === 'pending' ? 'pending (no warm runner before wave S1)' : m.gate === 'unavailable' ? `unavailable (${m.note})` : m.gate,
+      });
+    }
+    if (lr.floors.length > 0) rows.push({ measurement: 'Lane-run floors, p50 (§5: what a warm runner can and cannot remove)', result: lr.floors.map((f) => `${f.name} ${ms(f.p50)}`).join(' · '), gate: 'report', status: '' });
+  }
   return rows;
 }
 

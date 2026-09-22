@@ -234,6 +234,9 @@ function result(): PerfResult {
       pass: true,
     },
     jevLatency: null,
+    // §5 Ring 0 probes: opt-in, never in a release result (a named Ring-0 probe makes the run `partial`)
+    laneRun: null,
+    sandboxSpawn: null,
     pass: false,
   };
 }
