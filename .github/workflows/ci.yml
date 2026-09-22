@@ -1,0 +1,75 @@
+# CI: the gates that must be green before a tag is pushed.
+#
+# Deliberately the same commands, in the same order, as the publish job in release.yml — so a green
+# run here means the release job will not fail on anything but the publish itself. Node 22 is the
+# supported floor (package.json `engines` is >=22.12.0; .nvmrc pins 22.23.2); release.yml runs on
+# Node 24 because npm trusted publishing needs 11.5.1+. Nothing here touches the network after
+# `npm ci`: the package has zero runtime dependencies and the build smoke asserts it.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck, test, build, pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      JEVCODE_ASSERT_NO_NETWORK: '1' # the build smoke renders the first frame with no HTTP
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # scripts/gen-docs.mjs --check dates the man page from package.json's commit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck (tsc strict, then the no-any rule)
+        run: npm run typecheck
+
+      - name: Jev-safety contract (every Jev call site is a router, never an authority)
+        run: npm run jev-contract
+
+      - name: Unit tests
+        run: npm test -- --maxWorkers=3
+
+      - name: Build the bundle and the attribution file
+        run: npm run build
+
+      - name: Release tarball gates
+        run: npm run pack:check
+
+      - name: Generated docs are current (man page, completions, KEYS.md, COMMANDS.md)
+        run: node scripts/gen-docs.mjs --check
+
+      # The README is the npm package page and rots silently. Two classes of rot have bitten before:
+      # a version number written into prose (the binary renders its own from package.json) and an
+      # unresolved <owner> / <this repo> placeholder in a command a reader is told to run.
+      - name: README carries no hard-coded version and no placeholder
+        run: |
+          fail=0
+          if grep -nE '[0-9]+\.[0-9]+\.[0-9]+' README.md; then
+            echo "::error file=README.md::hard-coded version in the README; the binary prints its own from package.json" >&2
+            fail=1
+          fi
+          if grep -nE '<owner>|<this repo>|PLACEHOLDER|<your-' README.md; then
+            echo "::error file=README.md::unresolved placeholder in the README" >&2
+            fail=1
+          fi
+          exit $fail

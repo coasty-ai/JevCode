@@ -2,8 +2,8 @@
 
 All notable changes to `jevcode`. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses semantic versioning. `package.json` is the single source of truth for the version and is bumped
-by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-22 (`package.json` reads 0.4.0; the
-0.5.0 entry is the round-4 tree awaiting its bump); nothing has been pushed to the npm registry or the Homebrew tap.
+by the release procedure in `docs/RELEASE.md`; it currently reads 0.5.0, and the 0.5.0 entry below is that tree.
+Nothing has been published to the npm registry or the Homebrew tap yet.
 
 ## [0.5.0] — 2026-09-22 (not yet published)
 
