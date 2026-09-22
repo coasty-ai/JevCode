@@ -154,6 +154,24 @@ describe('change 2: the pool of the record, and the clean pool beside it', () =>
     expect(POOL_SUSPECT_SIGNALS.has('adds_special_case')).toBe(false);
   });
 
+  /**
+   * The membership rule, and what breaking it cost. A signal may only say "this pool has no gold"
+   * when it has been SWEPT against the golds and found on none of them; `late_guard` and
+   * `mutates_new_argument` have been, the other four have not. `deletes_statement` is the proof:
+   * it fires on a gold-shaped REWRITE, which deletes statements by construction. Ladder `units`
+   * with Jev ON (run `20260922-165453-txeukybg`) dropped its three passers because the pick
+   * `composite/donor_body_unit:parse_size:2stmt at src/units.py:25:replace`
+   * (`deletes_statement, adds_special_case`) answered general 0.50 < 0.7 — and the `units` gold
+   * IS a rewrite of `parse_duration`'s three statements into five. That task passed before the
+   * rule and `replan_stop`s at 15 steps with `deletes_statement` in the set.
+   */
+  it('only a signal with a gold sweep behind it may call a pool gold-free; a rewrite`s `deletes_statement` may not', () => {
+    expect([...POOL_SUSPECT_SIGNALS].sort()).toEqual(['late_guard', 'mutates_new_argument']);
+    for (const s of ['adds_special_case', 'deletes_statement', 'duplicates_block', 'guards_other_variable', 'dead_guard'] as const) expect(POOL_SUSPECT_SIGNALS.has(s)).toBe(false);
+    // and they are all still signals: the lone-passer advisory sees every one of them
+    for (const s of POOL_SUSPECT_SIGNALS) expect(SUSPICION_SIGNAL_WHY[s]).toBeTruthy();
+  });
+
   it('the pool is no longer committed by a code rule: Q15/Q16 is asked, the signals are in the state, and the recorded 0.44 refuses the pick', async () => {
     const mem = createGuardMemory(DC_BASE);
     const notes: string[] = [];

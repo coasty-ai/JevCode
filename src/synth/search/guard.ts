@@ -163,19 +163,34 @@ export const LONE_PASSER_VOUCH_MIN_NOUL = OVERRIDE_HIGH;
 /** Signals from which the stronger (vouch) bound applies. */
 export const STRONG_SIGNALS_MIN = 2;
 /**
- * OOS iteration 3, item 2: the signals that say a passer has the SHAPE of an overfit, as opposed
- * to the one that only ranks passers against each other.
+ * OOS iteration 3, item 2: the signals that may say a POOL contains no gold, as opposed to the
+ * ones that only doubt a single passer. Membership is not "is this a good signal" — every
+ * `SuspicionSignal` is one — it is "has this signal been SWEPT against the golds and found on
+ * none of them". A signal a gold can carry turns a pool the gold is IN into a pool the rule calls
+ * gold-free, and then the arbitration's vouch bound refuses the fix.
  *
- * `adds_special_case` is excluded on purpose and by measurement: it is the input of
- * `fewestSpecialCases`, and the golds add special cases too — `detect_cycle`'s gold
- * (`hare is None or hare.successor is None`) adds one conditional and one literal, `wrap`'s adds
- * none, `next_permutation`'s none. A signal every second gold carries cannot be the evidence that
- * a pool contains no gold. Of the six that remain, `late_guard` is swept here — 0 of 41 QuixBugs
- * gold patches and 0 of 65 ladder gold files (26 tasks) — `mutates_new_argument`'s sweep over the
- * same corpus is review-oos-iter-1-2026-09-22.md finding 2 ("zero refusals" of a gold), and the
- * other four are the run-3 overfit shapes (jev-only-quixbugs-3-inspection.md §1).
+ * Only two qualify today:
+ *   - `late_guard` — swept in this branch: 0 of 41 QuixBugs gold patches, 0 of 65 ladder gold
+ *     files (26 tasks), and 3 of the 46 committed patches of iteration 1, all three of them that
+ *     measurement's correctness losses.
+ *   - `mutates_new_argument` — swept over the same corpus by review-oos-iter-1-2026-09-22.md
+ *     finding 2 ("Sweep of all 41 QuixBugs golds and 20 ladder golds: zero refusals").
+ *
+ * The others are excluded, each for a measured reason:
+ *   - `adds_special_case` is the input of `fewestSpecialCases` and the golds add special cases
+ *     too (`detect_cycle`'s gold adds one conditional and one literal);
+ *   - `deletes_statement` fires on a gold-shaped REWRITE, which deletes statements by
+ *     construction. Measured: ladder `units` with Jev on (run `20260922-165453-txeukybg`) —
+ *     "every passer of the batch is structurally suspect and the pick
+ *     `composite/donor_body_unit:parse_size:2stmt at src/units.py:25:replace`
+ *     (deletes_statement, adds_special_case) answered general 0.50 < 0.7; dropping the 3 passers"
+ *     — and the gold for `units` IS a rewrite of `parse_duration`'s three statements into five.
+ *     That run passed before this rule and `replan_stop`s at 15 steps with it.
+ *   - `duplicates_block`, `guards_other_variable` and `dead_guard` have no gold sweep behind them
+ *     yet, and `deletes_statement` is what an unswept signal costs. They stay lone-passer signals
+ *     (where a single Q16 answer decides and nothing is dropped) until one is taken.
  */
-export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['deletes_statement', 'duplicates_block', 'guards_other_variable', 'dead_guard', 'mutates_new_argument', 'late_guard']);
+export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['mutates_new_argument', 'late_guard']);
 /**
  * A hold is started or kept only while the step has this much left: the wall of ~15 median
  * QuixBugs runs per lane and two lanes' worth of SIEVE batches, so the decision that releases the
