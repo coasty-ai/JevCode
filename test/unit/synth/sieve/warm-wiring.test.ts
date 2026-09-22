@@ -34,7 +34,8 @@ let tmp: string | null = null;
 afterEach(() => {
   if (tmp !== null) rmSync(tmp, { recursive: true, force: true });
   tmp = null;
-  delete process.env[WARM_ENV_FLAG];
+  // the file opted in (beforeAll): a case that switched the plane off puts it back for the next case
+  process.env[WARM_ENV_FLAG] = 'on';
 });
 
 function ctxFor(): RunnerContext {
