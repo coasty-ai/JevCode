@@ -16,9 +16,37 @@ recorded in §14 item 14). **Revision 3** applies the third adversarial review
 surface / concurrency / security / pause-context) together with the two owner decisions it was written for: (i) the identity and
 trust files stay under `~/.jevcode/coordination/` but become per-host by construction, and (ii) `SessionHost.pause(opts?)` is
 widened with the four contract fixes the surface needs. §14 item 15 maps every review item number to the section it changed;
-the items not adopted as proposed are at the end of §14. `D §n` is `docs/DESIGN.md`,
+the items not adopted as proposed are at the end of §14.
+
+**Revision 4** applies the blockers-only re-review of revision 3 (`docs/research/coordination/re-review-blockers-2026-09-21.md`:
+blockers 1, 3 and 7 resolved; 2, 4, 5 and 6 partial) together with the five code decisions it re-opened — among them decision (d),
+**reversed by the owner**: `ContextUsage` is `budgetTokens` + `windowTokens` everywhere and `windowBudget` is gone from the contract.
+`D §n` is `docs/DESIGN.md`,
 `TD §n` is `docs/TUI-DESIGN.md`, `TD3 §n` is `docs/TUI-DESIGN-3.md`. Read §1 → §2 → your owner's rows in §12 → the sections they
 name.
+
+**What revision 4 changed** (details in §14 item 17; the re-review's blocker numbers in brackets). **(2)** the §12.0.4 write API
+gained `purgeInbox()` (thirteen functions), exact types for `WorktreeInfo` / `SweepReport` / `GcReport` / `SyncStatus`, one stated
+error semantics for every verb (`CoordinationError` with a closed code union; `gc` / `sweep` / `purgeInbox` report EROFS/ENOSPC
+instead of throwing), `gc({ device })` taking a label or an id8, and `--i-know-it-is-gone` back in W1 item 15. **(4)** the strict
+fence is fully normative in two rules: **yield on sight, never proceed on sight** (F1), and **the lowest stamp among the writers
+that yielded to each other re-declares and proceeds** (F2) — so the promised "the lower stamp proceeds, the other yields" is what
+happens when both see each other, at most one writer proceeds in **any** interleaving, and the whole path is code with no Jev and
+no human on it (`jev-off`, `--no-input` and an unreachable Jev are all deterministic); a lease is
+keyed by `keyDir(repoKey ?? wsKey)`, so a run whose `repoKey` is still null fences by `wsKey` instead of having no directory at all;
+and the fence reads **every** device's lease subtree, not the ≤ `MAX_DEVICES` folded ones, refusing `'fence-blind'` rather than
+proceeding blind when it cannot finish (§4.5). **(5)** `keyId` is bound to `deviceId` — per-device keys exchanged at pairing, the
+verifier looking the key up by the **path** `deviceId` and never by the record's own `keyId` (§10.3, §12.0.4) — the §9.3 `/resume`
+refusal counts only trust- and HMAC-qualified foreign epochs, `claim.epoch` is bounded (`MAX_CLAIM_EPOCH`, 1e9) and `claims[]` is
+capped at 64, `--force-takeback` mints above the unqualified maximum too, and a takeback claim for a run with no local dir is
+persisted under `devices/<hostKey>/claims/<runId>.json`. **(6)** `hostKey` includes a **machine identifier** (`IOPlatformUUID` via
+`ioreg` on macOS, `/etc/machine-id` on Linux, read once at device creation and kept private), records carry `hostKey` and a record
+whose `hostKey` is not mine is never `sameDevice`, §10.1 requires the mirror root to realpath-differ from the coordination root,
+`claim.deviceId` joined the id-vs-path binding list, and `adoptDevice?` is reachable in the shared-home case through the
+`duplicate-identity` rule. **(3, text)** §10.7 and the §12.0.5 fork row no longer state the withdrawn stamp-ownership rule.
+**(1)** `setIdentity` does a one-shot walk of any root it adds and `label` joined `IdentityPatch`. **(7)** §8.5's `outputRef`
+sentence, §8.3's read count and §8.2's budget are re-costed for the ~88 KiB the history can now carry. The five code decisions of
+§14 item 16 are restated with the re-review's conditions, decision (d) reversed.
 
 **What revision 3 changed** (details in §14 item 15; the review's item numbers in brackets). Blockers: `Ledger.setIdentity()`
 re-derives watch roots, inbox targets, the lease dir and the stamp when `sessionId`/`runId`/`repoKey` change [1]; the §12.0.4
@@ -69,8 +97,9 @@ port, mDNS or daemon**; `run.lock` acquisition and release stay synchronous so t
    counters and no in-place edits, so any dumb transport (a synced folder, a per-device git ref) is a correct bus with no merge
    conflicts, and a torn or half-synced file is skipped by its self-checksum. Single-writer holds **by construction, not by
    convention**: the identity files a device writes live under `coordination/devices/<hostKey>/` with
-   `hostKey = sha8(hostname(), userInfo().username)`, so two machines that share one `~/.jevcode` through a sync client still
-   write different files (§3.1, §11 row 3); the message dedupe set moved to `inbox/seen/<deviceId>/<consumerId>.json` (§5.1);
+   `hostKey = sha8(hostname(), userInfo().username, machineId)` — the **machine identifier** is what makes the hash differ for two
+   default-named machines with the same username, which `hostname + user` alone did not (§3.2) — so two machines that share one
+   `~/.jevcode` through a sync client still write different files (§3.1, §11 row 3); the message dedupe set moved to `inbox/seen/<deviceId>/<consumerId>.json` (§5.1);
    and which device wrote a record is decided by the subtree it was read from, never by a field inside it (§12.0.4).
    (`~/.jevcode/sessions/index.jsonl` keeps its own,
    different invariant — many processes appending atomic ≤ 512 B lines under `O_APPEND`, `src/session/index.ts:4`; nothing here
@@ -168,16 +197,17 @@ umask, so the mode has to be explicit at every call or another local user can re
 sessions/                                TUI-owned (src/session/**)
   index.jsonl                            unchanged append-only v:1 index (index.ts:19-33); gains kinds `session:end`, `relocate`, `handoff`; `run:start` gains `parentSessionId?` (§5.4, §6.5)
 coordination/                            THE LEDGER ("commons" internally) — harness-owned (src/coordination/**); local truth; the per-device subtrees are mirrored to <sharedDir>/jevcode-commons/ when sync is on (§9), the per-host ones NEVER
-  devices/<hostKey>/                     PER-HOST LOCAL TRUTH — hostKey = sha8(hostname(), userInfo().username); one writer even when ~/.jevcode itself is synced (§11 row 3); never mirrored
-    device.json                          { v:1, deviceId, label, host, user, createdAt, commonsKey? }  0600; written by the CLI only: at creation and on `sessions label` (§3.2). The W5 pairing secret lives HERE and nowhere else (§10.3)
-    trusted-devices.json                 { v:1, devices: [{ deviceId, label, keyId, pairedAt }] }   the paired peers (§10.3; pairing deferred to W5). Renamed from `trusted.json` so it is never read as — or confused with — the workspace-instruction trust store `~/.jevcode/trust.json` (`src/config/trust.ts:2`), which this design does not touch
+  devices/<hostKey>/                     PER-MACHINE LOCAL TRUTH — hostKey = sha8(hostname(), userInfo().username, machineId) (§3.2); one writer even when ~/.jevcode itself is synced by two default-named machines (§11 row 3); never mirrored
+    device.json                          { v:1, deviceId, label, host, user, machineId, createdAt, deviceKey?, keyId? }  0600; written by the CLI only: at creation and on `sessions label` (§3.2). `machineId` is the machine identifier this hostKey was derived from, stored so a changed one is detected (§3.2); `deviceKey` is THIS device's 32-byte signing key (W5, §10.3) and lives HERE and nowhere else
+    trusted-devices.json                 { v:1, devices: [{ deviceId, label, keyId, key, pairedAt }] }   the paired peers and THEIR keys — `key` is that peer's own 32-byte key, received at pairing, and it is the ONLY key a record from that deviceId is ever verified with (§10.3; pairing deferred to W5). Renamed from `trusted.json` so it is never read as — or confused with — the workspace-instruction trust store `~/.jevcode/trust.json` (`src/config/trust.ts:2`), which this design does not touch
     ignored-devices.json                 { v:1, devices: [{ deviceId, at }] }   local tombstones for dead devices (§4.6 row 4); the LABEL is rendered from the current fold, never stored (it is peer-controlled)
     repokeys/<sha16(realpath ws)>.json   { v:1, repoKey, kind:'roots'|'remote', commonDir60, at }   the repoKey cache — local only, never mirrored, never inside a sandbox-writable root
     worktrees/<repoKey>/<slug>.json      { v:1, runId, sessionId, deviceId, dir60, branch, base, createdAt, syncedIgnored: [rel ≤ 64] }   session-worktree metadata, outside the checkout (§6.5)
+    claims/<runId>.json                  { v:1, runId, claim, at }   the claim a takeback minted for a run with NO local run dir (`sessions unlock --device`, §9.3); read back by the next mint so one epoch is never issued twice
   registry/<deviceId>/                   ONLY this device writes here (internally `commons/<deviceId>/live/`)
-    device.json                          the PUBLIC SUBSET of devices/<hostKey>/device.json: { v:1, deviceId, label, host, user, jevcode, createdAt, syncMode, keyId?, checksum } — no key material ever (a "copy of device.json" would mirror the W5 commonsKey); mirrored; never parsed as a heartbeat
+    device.json                          the PUBLIC SUBSET of devices/<hostKey>/device.json: { v:1, deviceId, hostKey, label, host, user, jevcode, createdAt, syncMode, keyId?, checksum } — no key material and no machineId ever (a "copy of device.json" would mirror the W5 deviceKey); keyId NAMES this device's key, it is never how a verifier finds one (§10.3); mirrored; never parsed as a heartbeat
     <runId>.json                         heartbeat (§3.3), tmp+rename; kept ≥ 24 h after phase:'ended' then GC'd by this device
-  leases/<deviceId>/<repoKey>/<runId>-<seq>.json    path lease (§4.3); one file per lease
+  leases/<deviceId>/<keyDir>/<runId>-<seq>.json     path lease (§4.3); one file per lease. keyDir = keyDir(repoKey ?? wsKey): the key with its ':' replaced by '-' ('ws-3f9a…', 'rm-…', or the bare 16 hex of a roots key) — a ':' in a path component fails on SMB-from-Windows, exFAT and Windows sync clients (§11 row 5), and a run whose repoKey is still null leases under its wsKey so the strict fence is never blind (§4.5)
   inbox/<deviceId>/<target>/<epochMs>-<seq>.json    messages this device SENT (internally `outbox/`); target = <sessionId> | @<repoKey> | @all (§5.1); a recipient folds inbox/*/<target>/. The name carries epoch MILLISECONDS, never the ISO `t`: a `:` in a file name fails on SMB-from-Windows, exFAT and Windows sync clients, all of which §9.1 supports
   inbox/seen/<deviceId>/<consumerId>.json           the message dedupe set { v:1, ids: [msgId ≤ 2,000] } — one writer: that CONSUMER PROCESS (§5.1). `seen` is 4 chars and DEVICE_ID_RE is `^[a-z2-7]{8}$`, so the name can never collide with a device subtree
   acks/<deviceId>/<msgId>/<consumerId>.json         receipts: one file per consuming PROCESS (§5.1) — a sessionless TUI, a `--plain` run and a second `jevcode -c` on one paused session all have their own consumerId, so no ack file has two writers
@@ -195,29 +225,36 @@ of its first run, `src/cli/session.ts:1885`, and stays run-id shaped for childre
 `MSG_FILE_RE = /^\d{13}-\d{1,9}\.json$/` for a message file name (epoch ms, no colon),
 `OID_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/` for every commit id a record carries, `BRANCH_RE` (git's own `check-ref-format
 --branch` rules: no leading `-`, no `..`, no `@{`, no control characters, ≤ 200 chars) and
-`LANE_DIR_RE = /^tmp\/synth\/lane\d{1,3}$/` for `Lease.laneDir` (§6.2). Anything else is skipped and counted
+`LANE_DIR_RE = /^tmp\/synth\/lane\d{1,3}$/` for `Lease.laneDir` (§6.2), and — new in revision 4 —
+`KEY_DIR_RE = /^(ws-|rm-)?[0-9a-f]{16}$/` for the `<keyDir>` lease component (the colon-free spelling of a `repoKey` / `wsKey`,
+above). Anything else is skipped and counted
 (`fold.skipped`), never joined into a path. **The ids inside a record must equal the path components it was read from** —
-`record.deviceId` / `from.deviceId` / `stamp.deviceId` = the `<deviceId>` component, `to` = the `<target>` component, `msgId` =
-the `<msgId>` component — otherwise `parseRecord` fails with `reason:'id'` (§12.0.4); this is what makes "same device" a fact
-about the file's location rather than about its content (§5.4).
+`record.deviceId` / `from.deviceId` / `stamp.deviceId` / **`claim.deviceId`** (revision 4: the ownership fence's own device field
+was the one id the reader did not bind, so a record could carry a foreign `claim.deviceId` and change which side won a tie) = the
+`<deviceId>` component, `to` = the `<target>` component, `msgId` = the `<msgId>` component, and a lease's
+`keyDir(repoKey ?? wsKey)` = the `<keyDir>` component — otherwise `parseRecord` fails with `reason:'id'` (§12.0.4); this is what
+makes "same device" a fact about the file's location rather than about its content (§5.4). Every record also carries the writer's
+`hostKey`, and a record read from my **own** local subtree whose `hostKey` is not mine is never `sameDevice`: it raises the
+`duplicate-identity` notice of §3.2 instead.
 
 ### 3.2 Identity facts (all code)
 
 | Fact | Definition | Notes |
 | --- | --- | --- |
-| `deviceId` | 8 base32 chars, random, created once in `coordination/devices/<hostKey>/device.json` | the file is per host, so the common cases need no prompt at all: a restored `~/.jevcode` on the same host finds its own `hostKey` and re-adopts its id; a wholesale copy to a new Mac has no file under the new `hostKey` and mints a new id (the old host's directory stays untouched and read-only), and a `~/.jevcode` shared live by two machines simply has two `devices/` entries. Identity is therefore a **pure read** — `readDeviceIdentity(home, { hostname, user }) → { kind:'ok', self } \| { kind:'missing' } \| { kind:'foreign', existing }` over one file — and `createDevice(home, facts, { adoptFrom? })` is the only writer; `src/coordination/**` owns neither a prompter nor a default. `kind:'foreign'` can now only mean a `hostKey` collision or a hand-edited file, and it is resolved by the TUI-owned `Prompter.adoptDevice?(existing): Promise<boolean>` (`src/cli/session.ts:384`) — default **false** (keep the old record read-only, start a new id), ordered **after** the trust gate in the §12.0.1 startup list so the two modals never contend for the one modal slot. §11 row 27 |
+| `hostKey` | `sha8(hostname(), userInfo().username, machineId)` — **8 hex chars over three inputs, not two** | `machineId` is the OS's own machine identifier: `IOPlatformUUID` from `ioreg -rd1 -c IOPlatformExpertDevice` on macOS, `/etc/machine-id` (else `/var/lib/dbus/machine-id`) on Linux. It is read **asynchronously, once per process**, on the `ledger.open()` path (never before the first frame, never inside the synchronous lock path) and cached; `createDevice` records it in `devices/<hostKey>/device.json` as `machineId` so a later change is detected. Revision 3's two-input hash collided **exactly in the case §11 row 3 supports**: two default-named Macs (`MacBook-Pro.local`), two cloned VMs or a corporate image sharing one `~/.jevcode` produced one `hostKey`, hence one `deviceId`, hence each machine reading the other's records out of its own local subtree as `sameDevice: true` — the other machine's `pause` / `end` applied with no `[y]`, and `isPidAlive` was evaluated against a foreign pid table. When the identifier cannot be read (an unusual Linux image, a container with no `/etc/machine-id`), the hash falls back to the two-input form, `machineId: null` is recorded, and `sessions who` prints `machine id unavailable — two machines sharing this home would share one device id` once. A `machineId` that is present and **differs** from the live one makes `readDeviceIdentity` return `kind:'foreign'` (the adopt prompt, below) |
+| `deviceId` | 8 base32 chars, random, created once in `coordination/devices/<hostKey>/device.json` | the file is per host, so the common cases need no prompt at all: a restored `~/.jevcode` on the same host finds its own `hostKey` and re-adopts its id; a wholesale copy to a new Mac has no file under the new `hostKey` and mints a new id (the old host's directory stays untouched and read-only), and a `~/.jevcode` shared live by two machines simply has two `devices/` entries. Identity is therefore a **pure read** — `readDeviceIdentity(home, { hostname, user }) → { kind:'ok', self } \| { kind:'missing' } \| { kind:'foreign', existing }` over one file — and `createDevice(home, facts, { adoptFrom? })` is the only writer; `src/coordination/**` owns neither a prompter nor a default. `kind:'foreign'` means a `hostKey` collision, a **changed or newly-unreadable `machineId`** (a restored image, a re-generated `/etc/machine-id`, a cloned VM) or a hand-edited file, and it is resolved by the TUI-owned `Prompter.adoptDevice?(existing): Promise<boolean>` (`src/cli/session.ts:384`) — default **false** (keep the old record read-only, start a new id), ordered **after** the trust gate in the §12.0.1 startup list so the two modals never contend for the one modal slot. **The prompt is reachable in the shared-home case** (revision 4), which revision 3 had made unreachable by construction: the ordinary two-machine shared home now yields two `hostKey`s and needs no prompt at all, and the residual case a hash cannot separate — two clones that really do report one `IOPlatformUUID`, or a machine with no identifier — is caught at fold time by the **`duplicate-identity` rule**: a record in my own LOCAL `<kind>/<myDeviceId>/` subtree whose `hostKey` is not mine, or whose `bootId` is not mine while `isPidAlive(pid)` is false, is treated as **foreign** (never `sameDevice`, never a pid check, §3.4), raises one `notice kind:'coordination'` `another machine is using device id <id8> (host <host>) — [a] take a new id  [i] ignore`, and offers `adoptDevice?` at the next start. §11 row 27, §11 row 3 |
 | `label` | defaults to `hostname()` (what `run.lock` stores today, `lock.ts:118` reads it back); `jevcode sessions label "mbp"` | ≤ 24 chars, redacted, `indexOneLine`; two devices with one label (two Macs both `MacBook-Pro.local`) render as `label#<id4>` wherever the fold holds a duplicate, and `device:<label>` targets then require the `#id4` form |
 | `wsKey` | `'ws:' + sha256(realpath(toplevel ?? workspace))[0:16]` | always known at startup with zero spawns; same-device identity before `repoKey` exists; non-git workspaces have only this |
 | `repoKey` | `sha256(sorted root-commit oids).slice(0,16)` from `git rev-list --max-parents=0 HEAD` (`kind:'roots'`); when `git rev-parse --is-shallow-repository` is `true` or HEAD is unborn, `'rm:' + sha256(normaliseRemote(origin URL))[0:16]` (`kind:'remote'`; no origin → `wsKey` only). **`normaliseRemote(url)` is specified, not implied**: parse both the scp-like (`git@host:o/r.git`) and the URL forms, **drop the userinfo entirely** (origin URLs routinely embed credentials — `https://x-access-token:ghs_…@github.com/o/r.git` — and hashing them would publish a truncated token fingerprint across devices, which §10.2 forbids, besides giving two devices with different tokens different keys so the row-40 shallow match could never fire), lowercase the host, drop a default port, strip a trailing `.git` and any trailing `/`, and hash the canonical `host/path`. Unit-tested so `git@github.com:o/r.git`, `https://u:tok@github.com/o/r` and `ssh://git@github.com/o/r.git` all yield one key | computed **after** `run:ready` on the heartbeat path (off the critical path; the two-spawn budget of TD §12.1 / `engine.ts:3159-3165` holds), cached in `coordination/devices/<hostKey>/repokeys/<sha16(realpath ws)>.json` and validated by regex on read — a mismatch or malformed value recomputes. A heartbeat carries **both** keys when both are computable (`repo.repoKey`, `repo.remoteKey`); matching accepts either, so a `--depth 1` CI clone and a full clone of one repo meet. Stable across clones, devices and linked worktrees (same `commonDir`, `src/workspace/gitstate.ts:40-41`, `:218`). Heartbeats written before the key exists carry `repoKey: null` and are matched by `wsKey` |
 | `superKey` | `repoKey` of the superproject when `git rev-parse --show-superproject-working-tree` is non-empty | one more spawn, only when `.git` is a file (a submodule or linked worktree), cached alongside |
 | lease paths | relative to the git **toplevel** (`RevParseFacts.prefix` re-applied, `gitstate.ts:35`, `:216`) | a subdirectory workspace on device B and the toplevel on device A compare equal; NFC-normalised; case-folded for overlap only when the **workspace root's volume** is case-insensitive — probed per workspace at `run:ready` without writing: `stat()` of a case-swapped spelling of an existing entry (`.GIT` for `.git`, else the root's own last component) succeeds only on such a volume (`fsCaseInsensitive` is per volume, not per device — an external case-sensitive disk differs from the boot volume) |
 | `stamp` | `{ n, deviceId, runId }` — a **per-run** Lamport counter: `n` starts at `max(every stamp in the fold, own subtree included, gone records included, and the sender's own `inbox/<myDeviceId>/**` files) + 1` when the run's ledger handle opens, and bumps to `max(n, observed) + 1` on every fold and every issue | the total order is `(n, deviceId, runId)`; two processes on one device holding the same `n` are ordered by `runId` (unique, `RUN_ID_RE`); no counter is persisted anywhere but in the records that carry it, so a crash cannot re-issue a stamp lower than one already published by this run. An observed `n` is adopted only when `observed − own < 1e9` (a hostile `stamp.n` of 2^60 would otherwise poison every reader's counter for good: `n + 1 === n`); a larger value is a `shape` rejection. The stamp **displays and orders**; it decides no ownership (see `claim`) and it is not the trigger of the overlap fence (§4.5). A lease's stamp is minted **once at declare** and kept through every rewrite of that `leaseId` (`intent` → `exclusive` → `released`): only `renewedAt` / `released` change, so a peer's two observations of one lease can never disagree on order |
-| `claim` | `{ epoch, deviceId, runId, at }` — the run's **incarnation**, minted once per process at `createEngine` (a new run, `--resume`, or a takeover import) as `epoch = max(run.json.claims[].epoch, every imported claim) + 1`, appended to `run.json.claims[]`, written into `run.lock.claim` and carried unchanged on every heartbeat (`Heartbeat.claim`), on the `takeover` lease and in `run.json.forked` | **This, not `stamp`, is the fence for run ownership** (§2.1 rule 5, §3.4, §9.3). It is derived from the run's own persisted history, so it is monotonic per run and identical for every observer of a given process — unlike `n`, which bumps on every fold and every issue and is overwritten in the single per-run heartbeat file, so two engines never see the same pair of values (the interleaving of review item #3: A beats n=48, B n=50, A folds and beats 51, B folds 51 → both "hold"). Order: higher `epoch` wins (the later incarnation, which by construction read its predecessor's state); equal epochs → lower `deviceId`, then lower `runId`. One immutable value per process means the decision depends on who claimed the run, never on sync timing |
+| `claim` | `{ epoch, deviceId, runId, at }` — the run's **incarnation**, minted once per process at `createEngine` (a new run, `--resume`, or a takeover import) as `epoch = max(run.json.claims[].epoch, every imported claim) + 1`, appended to `run.json.claims[]`, written into `run.lock.claim` and carried unchanged on every heartbeat (`Heartbeat.claim`), on the `takeover` lease and in `run.json.forked` | **This, not `stamp`, is the fence for run ownership** (§2.1 rule 5, §3.4, §9.3). It is derived from the run's own persisted history, so it is monotonic per run and identical for every observer of a given process — unlike `n`, which bumps on every fold and every issue and is overwritten in the single per-run heartbeat file, so two engines never see the same pair of values (the interleaving of review item #3: A beats n=48, B n=50, A folds and beats 51, B folds 51 → both "hold"). Order: higher `epoch` wins (the later incarnation, which by construction read its predecessor's state); equal epochs → lower `deviceId`, then lower `runId`. One immutable value per process means the decision depends on who claimed the run, never on sync timing. **Bounded** (revision 4): `epoch` must satisfy `0 ≤ epoch ≤ MAX_CLAIM_EPOCH` (1e9) or the record is a `bounds` rejection — `Number.isSafeInteger` alone let a planted `9007199254740990` make every successor unmintable and the run permanently unresumable (§9.3); at ~1 claim per resume, 1e9 is not reachable by use. `RunMeta.claims[]` is capped at 64 entries: past that the engine keeps the **first** (the origin incarnation, which is the provenance) and the newest 63, which is safe because only the maximum epoch is ever compared |
 
 ### 3.3 Heartbeat record `commons/<deviceId>/live/<runId>.json` (≤ 4 KiB, redacted, checksummed) — "the highest detail"
 
 ```
-{ v:1, kind:'heartbeat'|'bench', deviceId, label, host, user, pid, bootAt, bootId, jevcode,   bootId = the OS boot identity (§3.4), never wall arithmetic
+{ v:1, kind:'heartbeat'|'bench', deviceId, hostKey, label, host, user, pid, bootAt, bootId, jevcode,   bootId = the OS boot identity (§3.4); hostKey binds the record to the MACHINE (§3.2) so a record under my own deviceId written by another machine is never sameDevice
   runId, sessionId, parentSessionId|null, parentRunId|null, source:'cli'|'bench'|'perf', title60|null, task60,
   repo: { wsKey, repoKey|null, remoteKey|null, superKey?, basename, branch|null, head: oid|null, dirtyAtStart, linkedWorktree, worktreeSlug|null },
   mode, phase: 'starting'|'running'|'pausing'|'paused'|'blocked'|'aborting'|'ended',
@@ -260,7 +297,7 @@ suspension check of §4.2.
 
 | Record is | live when | else |
 | --- | --- | --- |
-| same device | `phase !== 'ended'` ∧ `isPidAlive(pid)` (`lock.ts:27-35`) ∧ **`bootId === mine`** — the boot IDENTITY, read from `/proc/sys/kernel/random/boot_id` (Linux) or `sysctl -n kern.bootsessionuuid` (macOS; one bounded synchronous **local** spawn — the lock path must stay synchronous so the `'exit'` handler can release, `lock.ts:5`, and §3.5's no-`*Sync` rule is about the ledger's own file I/O, never about a local `sysctl` — taken at most once per process and cached). Beat age is **not** a liveness input on the same device: `now − beatAt > ttlMs` (45 s = 3 × 15 s) only sets a `hung?` display flag (`sessions who`: `● mbp … (no beat 4 m — hung?)`), so a live process on a pane, in a debugger or with a wall-clock jump is never read as crashed and its leases are never ignored while its pid lives | `stale`; `stale-reused-pid` **only** when a recorded `bootId` differs from mine. A record or lock without a `bootId` (written by an older build) whose pid answers `kill(pid, 0)` is **never** auto-replaced: `sessions who` shows `pid N alive, boot unknown — sessions unlock <id> if that process is gone` and `takeRunLock` refuses. The wall-arithmetic rule of revision 2 (`startedAt ≥ bootAt` with `bootAt = wallNow − os.uptime()`) is withdrawn: a forward clock step Δ (NTP after sleep, a VM snapshot restore, a manual set) larger than the process's age-since-boot makes a LIVE process read `stale-reused-pid`, after which `takeRunLock` replaces its `run.lock` and a second engine opens the same run dir — the one-writer invariant of `state.json`, broken by a clock. `bootAt` stays in the record for display |
+| same device — which means the record was read from my own LOCAL subtree **and** its `hostKey` is mine (§3.2 `duplicate-identity`); a local-subtree record with a foreign `hostKey` is judged by the foreign row and never by `isPidAlive` | `phase !== 'ended'` ∧ `isPidAlive(pid)` (`lock.ts:27-35`) ∧ **`bootId === mine`** — the boot IDENTITY, read from `/proc/sys/kernel/random/boot_id` (Linux) or `sysctl -n kern.bootsessionuuid` (macOS; one bounded synchronous **local** spawn — the lock path must stay synchronous so the `'exit'` handler can release, `lock.ts:5`, and §3.5's no-`*Sync` rule is about the ledger's own file I/O, never about a local `sysctl` — taken at most once per process and cached). Beat age is **not** a liveness input on the same device: `now − beatAt > ttlMs` (45 s = 3 × 15 s) only sets a `hung?` display flag (`sessions who`: `● mbp … (no beat 4 m — hung?)`), so a live process on a pane, in a debugger or with a wall-clock jump is never read as crashed and its leases are never ignored while its pid lives | `stale`; `stale-reused-pid` **only** when a recorded `bootId` differs from mine. A record or lock without a `bootId` (written by an older build) whose pid answers `kill(pid, 0)` is **never** auto-replaced: `sessions who` shows `pid N alive, boot unknown — sessions unlock <id> if that process is gone` and `takeRunLock` refuses. The wall-arithmetic rule of revision 2 (`startedAt ≥ bootAt` with `bootAt = wallNow − os.uptime()`) is withdrawn: a forward clock step Δ (NTP after sleep, a VM snapshot restore, a manual set) larger than the process's age-since-boot makes a LIVE process read `stale-reused-pid`, after which `takeRunLock` replaces its `run.lock` and a second engine opens the same run dir — the one-writer invariant of `state.json`, broken by a clock. `bootAt` stays in the record for display |
 | other device, sync on | `phase !== 'ended'` ∧ `monotonicNow − arrivalMono(record) < ttlMs + syncSlackMs` (120 s shared-dir, 180 s git) — the RECEIVER's monotonic clock, re-stamped **whenever the record's `checksum` changes** (not when `beatSeq` increases: a resumed process restarts `beatSeq` at 1, so a "beatSeq must advance" rule would freeze `arrivalMono` at the previous process's value and read a live resumed run as `stale` after ttl + slack); wall `beatAt` is display-only | `stale`; `beatAt > wallNow + 300 s` → `skewed` flag (still live; `sessions who` prints `clock skew ~7 m on <label>`) |
 | any, `.icloud` placeholder / ENOENT during a listed read | `unknown` for one fold cycle (not stale) | — |
 
@@ -302,7 +339,7 @@ guessing).
 
 ### 3.5 Watcher and fold cache (`src/coordination/watch.ts`)
 
-One `fs.watch(dir, { persistent: false })` per `commons/*/live`, `commons/*/leases/<repoKey>` and per `commons/*/outbox/` **root**
+One `fs.watch(dir, { persistent: false })` per `commons/*/live`, `commons/*/leases/<keyDir>` (the colon-free spelling of `repoKey ?? wsKey`, §3.1) and per `commons/*/outbox/` **root**
 (filtered in memory to my targets — a per-target watch would `ENOENT` until a peer first writes there), debounced 100 ms exactly
 like `useGitHead` (`src/tui/useGitHead.ts:1-30`), plus a 15 s poll (sync tools and NFS do not always emit events).
 Each change re-parses ONLY the changed file (≤ 8 KiB) and updates an in-memory
@@ -310,8 +347,8 @@ Each change re-parses ONLY the changed file (≤ 8 KiB) and updates an in-memory
 byPath: Map<rel, leaseId[]>, messages: Message[], acks, devices, skipped }` (device+run keying and `byRun()` per §3.4; the fold
 holds ALL parsed messages, bounded, and the pure `inbox(fold, self, seen)` filters them to my targets, so `setIdentity` widens
 the inbox with no re-read). The engine
-never lists directories on the step path under `advisory`; under `strict` it lists exactly one (`leases/<repoKey>/` of every
-watched subtree, §4.5). Caps: ≤ 512 heartbeats, ≤ 2,048 leases, ≤ 200 messages per target; overflow drops the oldest by stamp
+never lists directories on the step path under `advisory`; under `strict` it lists `leases/<keyDir>/` of every device subtree
+(the fence is not bounded by `MAX_DEVICES`, §4.5). Caps: ≤ 512 heartbeats, ≤ 2,048 leases, ≤ 200 messages per target; overflow drops the oldest by stamp
 from memory (files untouched) and counts. Memory ≤ ~6 MiB.
 
 **Bounded breadth (`MAX_DEVICES`, 16).** A `deviceId` is any `^[a-z2-7]{8}$`, so a hostile — or merely looping — writer in the
@@ -322,6 +359,10 @@ first, then this device, then the most-recently-seen by subtree mtime, up to `MA
 capped the same way, the poll stats the three kind roots first and descends only into subtrees whose mtime changed, and at most
 N files are parsed per tick with a `setImmediate` yield between them. At most `MAX_DEVICES × 3` directories plus the three kind
 roots are watched, so `EMFILE` (which would drop the ledger to poll-only) cannot be provoked from the shared folder (§10.9).
+**One bound does not apply to the `strict` fence** (revision 4): `MAX_DEVICES` is a memory and descriptor bound on the *fold*, and
+letting it also bound the fence would mean the 17th device is invisible to a mode whose whole promise is that overlap is decided,
+not discovered. The fence therefore reads **every** `leases/*/<keyDir>/` subtree under its own bounds and refuses rather than
+proceeds when it cannot finish (§4.5).
 
 **No synchronous cross-device I/O at all.** `open()` and the poll are fully asynchronous: the mirror-root probe is
 `Promise.race([fs.promises.stat(mirrorRoot), sleep(1_000)])` → `offline` on timeout, retried on the 15 s tick. A `statSync`
@@ -341,7 +382,18 @@ changes during the life of one process: `sessionId` and `runId` are null for a T
 and on `/resume` of another session (`src/cli/session.ts:2304` reassigns `sessionId`), `repoKey` is null until the engine computes
 it after `run:ready` (§3.2), and `branch` moves. `Ledger.setIdentity(patch)` (§12.0.4) therefore re-derives the watch roots, the
 inbox targets, the lease directory and the run's stamp seed in place; the engine calls it once after `run:ready`, and the host at
-`run:start`, `run:end` and `/resume`. Without it a `to: <sessionId>` message to the TUI's first run would never be folded,
+`run:start`, `run:end` and `/resume`; `label` is in the patch too (`sessions label` changes it mid-process, and every record this
+device writes afterwards must carry the new one).
+**A root the patch adds is walked once, immediately** (revision 4). `fs.watch` reports *future* changes only, so a newly-watched
+`leases/*/<keyDir>/` that already holds a peer's exclusive lease would be empty in the fold until the 15 s poll — and the first
+`check()` after `run:ready` would read `clear` by ignorance, which under `strict` is precisely the clobber the mode exists to
+prevent. `setIdentity` therefore computes the set difference of the old and new root lists and, for each **added** root, performs
+one bounded `readdir` + parse (the same code path the poll uses, ≤ `MAX_DEVICES` subtrees, yielding between files) before it
+resolves the change notification; the walk runs on the ledger's own promise chain, so a `check()` issued after `setIdentity`
+returns sees it. A patch that only narrows the root set does no I/O. The same serialisation answers the mid-pass case: a
+`setIdentity` landing while a poll pass is in flight bumps a **generation counter**; the pass in flight finishes against its own
+snapshot and its results are merged (records are keyed by `deviceId/runId` and by `leaseId`, so a merge cannot duplicate one), and
+the added roots are covered by the one-shot walk rather than by waiting a tick for the next pass. Without it a `to: <sessionId>` message to the TUI's first run would never be folded,
 `@<repoKey>` broadcasts would be missed until the process restarted, `leases/*/<myRepoKey>/` would never be watched, and a fresh
 clone with no `repokeys/` cache would never meet a running peer at the first coordinate. Matching while a key is still null is
 explicit: a lease or beat carrying `wsKey` matches a peer whose record carries the same `wsKey` **whenever either side lacks a
@@ -402,7 +454,7 @@ with the transcript line `step 8 approved but not executed: coordination chose <
 Budget: `leases.overlap(myPaths)` over the in-memory fold is `O(paths × liveLeases)` map lookups. Under `advisory` the lease
 write is fire-and-forget on the ledger chain and there is **no file I/O on the step path**: `coordinateMs` p95 < 2 ms. Under
 `strict` the exclusive lease write is awaited (`writeFileAtomic` with `fsync:false` — tmp + rename, ~1 ms) and followed by one
-`readdir` of `leases/<repoKey>/` per subtree (§4.5): `coordinateMs` p95 < 5 ms. Any inline wait is booked in
+`readdir` of `leases/<keyDir>/` per subtree, bounded by `MAX_FENCE_DEVICES` / `STRICT_FENCE_MS` (§4.5): `coordinateMs` p95 < 5 ms. Any inline wait is booked in
 `draft.timing.coordWaitMs` and subtracted from `harnessMs` exactly like `confirmMs` in all three formulas (`engine.ts:2470`,
 `:2486`, `:2823`); `StepTiming.coordinateMs?` (optional, additive) reports the gate's own time. A `BudgetError` from the wall
 deadline (`armWallDeadline` on the shared controller, `:1082`) that lands during the wait is a rule-1 discard with the cache file
@@ -416,17 +468,26 @@ It runs for `edit | write | patch` (targets = `draft.patchTargets`, set by the r
 
 **Suspension check** (a laptop lid closed or `Ctrl-Z` mid-step — the process, not the run, was frozen): at the gate, if
 `monotonicNow − lastBeatMono > ttlMs`, the fold is stale and peers have long treated this run's leases as expired. The engine
-then (a) re-folds `live/` and `leases/<repoKey>/` synchronously (one `readdir` each, ≤ 10 ms), (b) renews its leases and beats at
+then (a) re-folds `live/` and `leases/<keyDir>/` synchronously (one `readdir` each, ≤ 10 ms), (b) renews its leases and beats at
 once, (c) compares every target's current sha256 with `fileMemory` (§8.4 — the content the proposal was built on; pre-images do not
 exist yet at this point) — any mismatch is a rule-1 discard with `harnessProblem kind:'replan'` `targets changed while this
 session was suspended (src/x.ts by mbp@8bc0d11)` and `replayable:false`. The same monotonic check runs once more immediately
 before `stage('execute')` (`:2330`), after `takePreImages`, comparing the pre-image hashes with `fileMemory`; a `run` (no
 targets) only re-beats. §11 row 39; `engine-suspend.test.ts` (fake clock jump).
 
-### 4.3 Path lease `commons/<deviceId>/leases/<repoKey>/<runId>-<seq>.json` (≤ 8 KiB)
+### 4.3 Path lease `commons/<deviceId>/leases/<keyDir>/<runId>-<seq>.json` (≤ 8 KiB)
+
+`keyDir = keyDir(repoKey ?? wsKey)` — the key with its `:` replaced by `-` (§3.1). Two consequences, both new in revision 4:
+a `rm:`-flavoured `repoKey` no longer puts a colon in a directory name (illegal on SMB-from-Windows, exFAT and Windows sync
+clients, §11 row 5), and **a run whose `repoKey` is still null leases under its `wsKey`** instead of having no lease directory at
+all. Revision 3's path had a literal `<repoKey>` component with no fallback, so a fresh clone before `run:ready`, a shallow clone
+with no origin and a non-git workspace wrote their leases nowhere while §4.3 step 2 was happily matching such a peer *by* `wsKey`
+— the fence was structurally blind for exactly the sessions most likely to be started side by side. `setIdentity({ repoKey })`
+after `run:ready` re-derives the directory, and the lease is re-declared there at the next coordinate point; the `wsKey`-keyed
+copy is released `outcome:'ended'` in the same pass, so one run never holds two live leases for one step.
 
 ```
-{ v:1, kind:'lease', leaseId:'<runId>-<seq>', runId, sessionId, deviceId, label, repoKey, remoteKey|null, wsKey, branch|null, head|null,
+{ v:1, kind:'lease', leaseId:'<runId>-<seq>', runId, sessionId, deviceId, hostKey, label, repoKey|null, remoteKey|null, wsKey, branch|null, head|null,
   type: 'intent'|'exclusive'|'command'|'lane'|'worktree'|'takeover',
   paths: [rel ≤ 64; a trailing '/' means the subtree], truncated: bool, command60?, exclusiveTree?: bool,
   laneDir?: 'tmp/synth/lane<k>' (RUN-relative, never absolute — §10.2; LANE_DIR_RE on read, §6.2), slug?,
@@ -444,7 +505,9 @@ Lifecycle — **declare → check → proceed | wait | worktree | change approac
    When > 64 paths, the engine collapses to directory prefixes (`src/tui/`) with `truncated: true` — overlap on prefixes is
    conservative (more conflicts, never fewer).
 2. **check** — `overlap()` against every live, unexpired lease on the same `repoKey` / `remoteKey` (or `wsKey` when *either*
-   side lacks a `repoKey`, §3.5) whose owner heartbeat is live. **Severity is about the working tree, not the branch**: `hard`
+   side lacks a `repoKey`, §3.5) whose owner heartbeat is live. Matching and the directory now agree: a peer with no `repoKey`
+   writes under `keyDir(wsKey)`, which is the directory a `wsKey` match reads, so "matched by `wsKey`" is a path the check
+   actually visits. **Severity is about the working tree, not the branch**: `hard`
    iff the peer's `wsKey` equals mine or either `wsKey` is unknown (the same checkout — the only way two sessions can clobber
    each other's bytes); a different `wsKey` is `soft` regardless of branch, with the fact carrying `push/merge: <branch>` (two
    clones on one branch cannot overwrite each other's files any more than two branches can — the doc's own reason for `soft` —
@@ -461,7 +524,9 @@ Lifecycle — **declare → check → proceed | wait | worktree | change approac
 4. **wait** (`strict` only) — first inline: the proposal stays in memory, `phase:'blocked'`, the stage shows
    `waiting for mbp to release src/x.ts (14 s of 60 s) · [c] continue · [t] worktree · [p] pause`, the wait is a wakeable `sleep`
    (`src/core/time.ts:62`; the `retryWaker` pattern, `engine.ts:976-988`) woken by the watcher when the peer's lease is released,
-   by `[c]`, or by the deadline. Expiry and staleness are time facts that emit no fs event, so the wait also **arms one timer at
+   by `[c]`, by the deadline, or — after a fence yield (§4.5 F2) — when **every** exclusive lease this run yielded to has become
+   `intent`, been released or gone stale, in which case the lowest stamp among that set and this run re-declares `exclusive` and
+   re-runs the fence instead of continuing to wait. Expiry and staleness are time facts that emit no fs event, so the wait also **arms one timer at
    `min(peer-stale instant, lease-expiry instant, deadline)`**, re-armed on each fold change; without it those two wakes would
    wait for the 15 s poll and M2's "< 200 ms" would hold only for the release file. The inline wait is **skipped** (straight to
    the decision below) only when the peer's `stage === 'execute'` on a `command` lease with `exclusiveTree` (a build or test run
@@ -514,29 +579,102 @@ change_approach: 'the plan can reach the goal without these paths for now' })` (
 `can_proceed_without_clobbering`, `can_wait_be_short`, `can_worktree_merge_cleanly`, `can_plan_avoid_paths` (`questions.ts:37`;
 both-sided criteria). Answer probability < 0.55 or `none_of_these` → the human pane. Code fallback (Jev unreachable, `jev-off`,
 `--no-input`, no blocker): `wait` when `sameBranch ∧ theyTouched ∧ owner live`, else `proceed` with a notice; under `--no-input`
-the answer is `stop` only when `coordination.default === 'wait'` is configured. The existing `jev-unreachable` pane is NOT raised for
+the answer is `stop` only when `coordination.default === 'wait'` is configured.
+
+**The fence is not this judgment.** When `declare(…, 'strict', seen)` returns a non-empty `appeared` (§4.5), the *first* decision
+is the tiebreak of §4.5 — pure code over `appeared[].stamp`, no Jev request, no pane, identical in `jev-on`, `jev-off`,
+`--no-input` and with Jev unreachable. Only the side the tiebreak says **proceeds** then runs the judgment above (it may still
+choose `wait` / `worktree` / `change_approach` on the merits); the side that **yields** never asks anything, because asking would
+make the outcome depend on a judge one of the two racers might not have. The judge's fact set is unchanged: it never needed a
+stamp field, because it is never the thing that breaks the tie. The existing `jev-unreachable` pane is NOT raised for
 a coordination question (it is not a Jev stage failure).
 
 ### 4.5 Fencing and the double-claim window
 
-Two `exclusive` leases whose `paths` overlap on one `repoKey` and one working tree conflict; the lower `stamp` `(n, deviceId,
+Two `exclusive` leases whose `paths` overlap on one key and one working tree conflict; the lower `stamp` `(n, deviceId,
 runId)` is displayed as `holder`, the higher as `contested` — **display only**. The same-device race (both sessions pass
 `overlap()` inside the 100 ms debounce, both write) is closed **before** execute under `strict` by a write-then-read fence: the
-engine **awaits** its own exclusive lease's rename (no fsync; `~1 ms`), then lists the peers' `leases/<repoKey>/` dirs once (one
-`readdir` per watched subtree + ≤ 2 KiB reads of new files, < 3 ms, still before `takePreImages`). (A fire-and-forget write would
+engine **awaits** its own exclusive lease's rename (no fsync; `~1 ms`), then lists the peers' `leases/<keyDir>/` dirs once (one
+`readdir` per subtree + ≤ 2 KiB reads of new files, < 3 ms, still before `takePreImages`). (A fire-and-forget write would
 let both `readdir` before either file exists — the reason `strict` pays the awaited write.)
 
-**The re-judge rule is symmetric and decided by arrival, not by stamp order**: *whoever sees the other yields*. Formally, the
+**The rule is symmetric and driven by arrival**: *whoever sees the other yields*. Formally, the
 re-fold returns `appeared` — every overlapping exclusive lease present now that was **absent from the fold `check()` used** — and
-a non-empty `appeared` re-runs the judgment NOW (or waits), **regardless of stamp order**; when both sides see each other, the
-lower stamp proceeds after its re-judgment and the higher waits, so exactly one proceeds. Revision 2 re-judged only when the lease
+a non-empty `appeared` settles the race **before** any judgment. Arrival decides *who has to yield*; the stamp is consulted only
+for the symmetric case arrival cannot separate — both writers seeing each other — which is why revision 2's "re-judge when the
+other's stamp is lower" was wrong (it used the stamp where arrival was the fact) and why the stamp is nevertheless the tiebreak
+below.
+
+**The mechanism, normative** (revision 4 — revision 3 named the outcome, "the lower stamp proceeds and the higher waits", but
+gave no mechanism, and the §4.4 code fallback then produced `proceed` on *both* sides because `theyTouched` is false for both at
+the fence: with Jev unreachable, `jev-off` or `--no-input`, two engines edited one checkout under `strict`, the exact G1(c)
+failure). Two rules, in this order:
+
+> **(F1) Yield on sight, never proceed on sight.** A non-empty `appeared` **always** yields — whatever the stamps say. The
+> yield rewrites my own lease back to `type:'intent'` (so I stop being a fence for anyone else) and enters the §4.3 step-4 wait.
+> An empty `appeared` proceeds.
+>
+> **(F2) The stamp decides who retries.** The wait gains one wake condition: *when every overlapping `exclusive` lease I yielded
+> to has become `intent`, been released, or gone stale*, the writer with the **lowest `stamp`** among that set and itself
+> re-declares `exclusive` and re-runs the fence; the others keep waiting for a real release.
+
+Nothing else is consulted on this path — not Jev, not a pane, not `theyTouched`, not `coordination.default` — so `jev-on`,
+`jev-off`, `--no-input`, a Jev outage and a bench machine all decide identically, in code, from data already in hand
+(`LeaseConflict.stamp`; a lease's stamp is minted **once at declare** and survives every rewrite, §3.2, so two observers can
+never disagree about it, and `compareStamp` is a total order).
+
+Why F1 alone cannot let two writers proceed: two overlapping writers can both have an empty `appeared` only if each `readdir`ed
+before the other's rename, and that is impossible — the second renamer's `readdir` follows its own rename, and the first
+writer's file was already there. So **at most one writer proceeds, in every interleaving**. Revision 3's "lower stamp proceeds"
+read as a *local* test and, applied locally, breaks exactly the one-sees case this section was written for: A renames first,
+`readdir`s, sees nothing and proceeds; B renames second with a *lower* stamp, sees A — and a local stamp test would have B
+proceed as well. F1 makes sight, not order, the thing that stops you.
+
+Why F2 makes the decision **live** rather than merely safe: in the both-see case F1 has both writers yield, and without F2 both
+would sit in the wait until `strictWaitMs` and discard two steps. F2 breaks the symmetry with the one total order both sides
+already agree on. Both downgrade to `intent` within a millisecond of each other, both wakes fire, **only the lowest stamp
+re-declares**, its second fence finds `appeared` empty (everyone else is `intent`) and it proceeds — one decision, ~2 ms later.
+So the outcome revision 3 promised holds: *when both see each other, the lower stamp proceeds and the other waits*. In the
+one-sees case the writer that proceeded still holds an `exclusive` lease, so F2's wake condition is false and the yielder simply
+waits, which is correct. With three or more racers the same two rules terminate: every round hands the work to the current
+minimum, which is a strict total order, so there is no livelock; a writer that crashes after yielding is removed by staleness
+(already a wake condition, §4.3 step 4), and the next-lowest takes its turn.
+
+**Yielding is the §4.3 step-4 `wait` path**, entered without a judgment: `phase:'blocked'`, the stage line
+`yielded to <label> on src/x.ts (fence) · [c] continue · [t] worktree · [p] pause`, and past `strictWaitMs` the existing rule-1
+discard + `lease-conflict` pane. Under `--no-input` / no blocker the yield still holds for `strictWaitMs` and then discards the
+step with `harnessProblem kind:'replan'` — never `proceed`, because "both proceed" is the one outcome `strict` promises cannot
+happen. The writer that proceeds runs the §4.4 judgment on the merits afterwards, which may still choose to wait.
+
+**Blind is refused, not assumed** (revision 4). `MAX_DEVICES` (16) bounds the *fold*; the fence does not inherit it, because the
+17th subtree holding a live overlapping lease would otherwise be invisible to the one mode that promises a decision. The strict
+re-fold enumerates `leases/*/<keyDir>/` for **every** device subtree that exists — one `readdir` of `leases/`, then one per
+subtree — under two of its own bounds: `MAX_FENCE_DEVICES` (256) and `STRICT_FENCE_MS` (250 ms, `Promise.race`). If either bound
+is reached before the enumeration completes, `declare` does **not** return `appeared`; it returns
+`{ kind:'fence-blind', scanned, total }`, and the step is a rule-1 discard with the `lease-conflict` pane reading
+`cannot see every device's leases (scanned 256 of 1,402) — strict cannot decide this step`, keys `[c] continue anyway` (this one
+step is treated as `advisory`, §4.3 step 4), `[t] worktree`, `[p] pause`, `[q] stop`; with no blocker the answer is
+`coordination.default` (`proceed` by default, `wait` → stop). Ignored devices (§4.6, the ignored-device rule) are excluded from the count, so the
+ordinary fix for a hostile or junk-filled folder — `sessions gc --device … --i-know-it-is-gone` — also restores the fence.
+`advisory` is untouched: it has no fence and no `readdir`, and its breadth stays the `MAX_DEVICES` fold.
+
+Revision 2 re-judged only when the lease
 seen at the re-fold had a *lower* stamp than mine, which fails the one-sees interleaving that the barrier in M3 cannot produce:
 A (n=60, beating) is folded by B → B opens at n=61; A beats twice → 62; A declares exclusive at 63, B declares at 62; A's
 `readdir` sees nothing and proceeds; B's `readdir` sees 63 > 62, reads itself as holder and proceeds too — two edits on one
 checkout under `strict`, exactly the failure G1(c) forbids ("decided before pre-images, never discovered after two edits
-landed"). Under the arrival rule B yields because it can *prove* A could not have seen it (A's `readdir` preceded B's rename), and
-A proceeds. `leases.test.ts` scripts it: write A, `readdir` A, write B with `stamp < A`, `readdir` B → B re-judges and A's
-`coordination:decision` precedes its pre-images. Under `advisory` there is no fence and no
+landed"). Under F1 B yields simply **because it saw A** — its own lower stamp is irrelevant at that moment — and A, whose
+`appeared` is empty, proceeds. F2 never fires for B: A holds an `exclusive` lease the whole time, so the "everything I yielded
+to is now `intent`" condition is false and B waits for a real release, which is the correct outcome. `leases.test.ts` scripts all three cases, and every one of them runs with **no Jev and no prompter installed**, which
+is what proves the path is deterministic: (i) *one-sees* — write A, `readdir` A, write B with `stamp < A`, `readdir` B → B
+yields although its stamp is lower, and A's `coordination:decision` precedes its pre-images; (ii) *both-see* — write A, write B,
+`readdir` both → **both** yield to `intent` (F1), the F2 wake fires, only the lower stamp re-declares and proceeds, exactly one
+`takePreImages` happens, and the same script under `jev-off`, under `--no-input` and with a throwing Jev stub produces
+byte-identical decisions; a three-way variant asserts the global minimum wins and the other two wait; (iii) *fence-blind* — 1,402 lease
+subtrees with `STRICT_FENCE_MS` forced to 1 ms → `kind:'fence-blind'`, no pre-images, the pane text above, and `[c]` then
+proceeding as `advisory` for that one step. A fourth case covers the null key: a run with `repoKey: null` declares under
+`keyDir(wsKey)`, a peer in the same checkout sees it, and `setIdentity({ repoKey })` moves the directory with one release and
+one re-declare. Under `advisory` there is no fence and no
 `readdir`: the same race produces two facts, a `note` to both, and `theyTouched` post-hoc — by design. A lease that arrives later
 (another device, through sync) is re-judged at the NEXT coordinate point; the step in flight is never interrupted by a late lease,
 and its result is caught as `theyTouched` (post-hoc hash compare) with a `note` `both sessions changed store.ts` to both.
@@ -547,7 +685,7 @@ it is a decision.
 
 | Situation | Detection | Recovery |
 | --- | --- | --- |
-| owner died (SIGKILL, OOM, power) | same device: pid dead (`isPidAlive`) or `bootId !== mine`; other device: no arrival for `ttl + slack`; a lease is ignored once its own `expiresAt − renewedAt` has elapsed on the receiver's monotonic clock (§4.3 step 2), and always once its owner heartbeat is stale | `gone` record keeps what was in flight 10 min; `/resume` takes the lock (dead pid = replaceable, `lock.ts:117-125`) and offers `[r]` **only** from `state.interruptedDetail.cache` with a matching `{ resumes, at }` — never from the mere presence of `cache/step-<n>.json`, which after a `[f] fresh` at step n and a later crash in that fresh step would replay the proposal the human had just rejected (a SIGKILL writes no cache at all, so "present" can only be a stale one; the engine renames `cache/step-n.json` → `cache/step-n.superseded.json` when a fresh step n starts); own GC deletes ended/expired files after 24 h — our own `acks/<msgId>/` once the message is gone or `expiresAt + 24 h` passed, and `inbox/seen/<dev>/<consumerId>.json` for a session with no `run:start` in 30 d (capped to the 200 newest), §5.1 — **except `takeover` leases and `run.json.claims[]`, which are permanent facts and are never expired or GC'd** (§9.3) |
+| owner died (SIGKILL, OOM, power) | same device: pid dead (`isPidAlive`) or `bootId !== mine`; other device: no arrival for `ttl + slack`; a lease is ignored once its own `expiresAt − renewedAt` has elapsed on the receiver's monotonic clock (§4.3 step 2), and always once its owner heartbeat is stale | `gone` record keeps what was in flight 10 min; `/resume` takes the lock (dead pid = replaceable, `lock.ts:117-125`) and offers `[r]` **only** from `state.interruptedDetail.cache` with a matching `{ resumes, at }` — never from the mere presence of `cache/step-<n>.json`, which after a `[f] fresh` at step n and a later crash in that fresh step would replay the proposal the human had just rejected (a SIGKILL writes no cache at all, so "present" can only be a stale one; the engine renames `cache/step-n.json` → `cache/step-n.superseded.json` when a fresh step n starts); own GC deletes ended/expired files after 24 h — our own `acks/<msgId>/` once the message is gone or `expiresAt + 24 h` passed, and `inbox/seen/<dev>/<consumerId>.json` for a session with no `run:start` in 30 d (capped to the 200 newest), §5.1 — **except `takeover` leases and `run.json.claims[]`, which are permanent facts and are never expired or GC'd** (§9.3; `claims[]` is *bounded* at `MAX_CLAIMS_PER_RUN` = 64 — the first entry plus the newest 63 — which prunes middle history only, never the origin and never the maximum, the two values anything reads, §3.2) |
 | owner suspended (lid closed, `Ctrl-Z`) holding a lease | same device: pid alive → still live, `hung?` after 45 s; other device: stale after `ttl + slack` | peers proceed (`strict` peers wait ≤ 60 s first); on wake the owner's §4.2 suspension check re-folds, renews and hash-compares its targets before anything executes; a changed target is a rule-1 discard, never a clobber |
 | owner offline holding a lease (split brain) | arrival age grows past `ttl + slack` | peers proceed; on return the owner folds `released.changed` of the others → `theyTouched` at its next coordinate → judgment / `handoff` note asks the human to merge |
 | lease renewal write failed (ENOSPC) | lease expires while owner live | peer proceeds; post-hoc hash conflict → `note` to both; the owner's status zone shows `⇄ off (ENOSPC)` after one warning |
@@ -670,7 +808,7 @@ when sync is on.
 | pause | `/pause [now] [<target>]` | `sessions pause [--now] <target>` | `pause` |
 | resume | `/resume <x> [--here \| --on device:<label>] [--replay \| --fresh] [--force]` | `sessions resume …` | `resume` (routed) |
 | end | `/end [now] [<target>]` | `sessions end [--now] <target>` | `end` |
-| who / inbox | `/who`, `/inbox` | `sessions who [--all\|--json]`, `sessions inbox [--follow\|--sent\|--purge <label>]` | folds only |
+| who / inbox | `/who`, `/inbox` | `sessions who [--all\|--json]`, `sessions inbox [--follow\|--sent\|--purge <label\|id8>]` | folds only; `--purge` goes through `purgeInbox()` (§12.0.4) — foreign messages are marked seen locally, only our own sent files are deleted, nothing foreign is ever unlinked (rule 1) |
 
 Every remote command a receiver applies writes the existing index line with an additive `by: 'self' | 'peer:<sid8>' |
 'device:<id8>'` field (`pause` kind exists, `steer` kind exists, `session:end` is new; ≤ 512 B still, `index.ts:446-471`) and a
@@ -718,10 +856,18 @@ whose `from.deviceId` merely *equals* mine passes any content test: a forged fil
 spends money; forged leases and heartbeats under my deviceId would read `sameDevice: true` and have `isPidAlive(pid)` evaluated
 against an attacker-chosen pid. The rules, therefore: (1) same-device ⇔ the file was read from the **local**
 `~/.jevcode/coordination/<kind>/<myDeviceId>/` subtree — files under my own deviceId in the mirror serve `syncLagMs` only and are
-never folded as records; (2) `parseRecord(text, kind, ctx: { origin:'local'|'mirror', deviceId, target? })` returns `reason:'id'`
-whenever `record.deviceId` / `from.deviceId` / `stamp.deviceId` ≠ the `<deviceId>` component, or `to` ≠ the `<target>` directory
+never folded as records; (2) `parseRecord(text, kind, ctx: { origin:'local'|'mirror', deviceId, hostKey, target?, msgId?, keyDir? })`
+returns `reason:'id'`
+whenever `record.deviceId` / `from.deviceId` / `stamp.deviceId` / **`claim.deviceId`** ≠ the `<deviceId>` component, or `to` ≠ the
+`<target>` directory, or a lease's `keyDir(repoKey ?? wsKey)` ≠ the `<keyDir>` directory
 (§3.1); (3) `sameDevice` in `SessionActivity` and `LeaseConflict` is derived from the read location, not from a comparison of
-ids. `mailbox.test.ts`: a forged same-device `pause` planted in the mirror produces the `[y]` row, never an applied pause.
+ids; (4) **and it is denied by a foreign `hostKey`** (revision 4): every record carries the writer's `hostKey` (§3.2), and a
+record read from my own local subtree whose `hostKey` is not mine is folded as **foreign** with the `duplicate-identity` notice,
+so the residual shared-home collision (two clones that really do report one machine identifier) cannot silently apply a `pause`
+or evaluate `isPidAlive` against another machine's pid table. `hostKey` is a **disqualifier only** — it can never *grant*
+same-device status, which still requires the local read location, so a forged `hostKey` can at worst make an attacker's own
+record look foreign. `mailbox.test.ts`: a forged same-device `pause` planted in the mirror produces the `[y]` row, never an
+applied pause; a local-subtree record with another machine's `hostKey` produces the notice and the `[y]` row too.
 
 **Every run host delivers; an ack is always written.** `createSessionController` in **all three** modes (TUI, `--plain`,
 `--json`) opens the ledger, subscribes and runs the `inbox()` → `engine.deliver` loop — revision 2 left this to be read out of
@@ -797,8 +943,11 @@ It joins the same registry.
    `SynthesisContext.cache?: { writeSample(goalId, round, sample, json): void; readRound(goalId, round): SampleArrival[] }` and
    `SynthesisContext.onRound?(goalId, round, arrived: number[]): void`, which the synthesizer calls from its own `onSample` and
    at each fire (W3 item 28); `PausePoint.synthPhase?: string` is replaced by the typed
-   `llm?: { goalId: string; round: number; arrived: number[] }` (the free-text `synth` event is explicitly not a source, §14
-   rejected critiques). Until W3 lands, P3 reports `round: null, replayable: false` rather than a value the engine cannot know;
+   `llm?: { goalId: string; round: number; arrived: number[] }` **everywhere** — there is no `synthPhase` in any shape, event or
+   table (the free-text `synth` event is explicitly not a source, §14
+   rejected critiques). P3 therefore reports the **real** `round` and `arrived` from those hooks, not `round: null` (revision 4:
+   the interim wording of revision 3 discarded a paid-for round on every llm-jev pause, and the hooks are typed in the same W0
+   item the TUI codes against);
    `synthState.llm` keeps the 4 KiB index (`LLM_CACHE_PERSIST_BYTES`, `source.ts:81`). The sample bodies are run-local: they are
    never mirrored (§9.3's projection carries no bodies), so a cross-device import sets `round: null` and starts a fresh step.
    Replay: `LlmSourceDeps.replay?: (goalId,
@@ -894,11 +1043,23 @@ the shared controller** (grafted). `pause()` is synchronous and the TUI calls it
    which `finish()` awaits only at `:3007` — after the final `state.json` write (`:2994`), the stop line and `buildEnd`
    (`:3003-3005`) — while `interruptedDetail.replayable` was frozen into the snapshot at `:2973`; the heartbeat's `pausePoint`
    copy, the only source for a cross-device card, could therefore promise `replayable: true` for a file that never existed.
-   **`replayable` is defined once, here**: `proposal !== null && !draft.executeStarted && pauseCacheWrote` (§12.0.2 P2 and §7.3
-   step 2 cite this sentence and add no second definition). A cache write failure is a notice only (`noteDiskError` blocks for
-   `state.json` alone, `:1256`) — the card then offers no `[r]`. When a *fresh* step n starts (the human chose `[f]`, or the
-   replay was refused), the engine first renames `cache/step-n.json` → `cache/step-n.superseded.json`, so no later card can offer
-   a rejected proposal (§4.6 row 1);
+**`replayable` is defined once, in one sentence, and §12.0.2 P3 and §7.3 step 2 quote it rather than restate it**:
+   *`replayable` = (a proposal was written to the step cache) `||` (≥ 1 arrived LLM sample was written to the step cache), both
+   as **recorded in the cache that was actually written**; `false` when the cache write failed or `execute` had started.*
+   In code: `replayable := cacheWrote && !draft.executeStarted && (cached.proposal !== null || cached.llmRound?.arrived.length > 0)`.
+   The llm-jev disjunct is why this is one sentence and not two: a pause-now in `propose` with three samples on disk and no
+   assembled proposal **is** replayable (`LlmSourceDeps.replay` re-asks only the missing ones, §6.4), and revision 3's three
+   spellings — `proposal !== null && !executeStarted && pauseCacheWrote`, `proposal !== null && !executeStarted`, and
+   `proposal !== null` — disagreed about exactly that case as well as about a failed write.
+   A cache write failure is a notice only (`noteDiskError` blocks for
+   `state.json` alone, `:1256`) — the card then offers no `[r]`. Two more facts ride the same file so the card can refuse a
+   *stale* cache as well as a failed one: `interruptedDetail` carries **`{ resumes: number; at: string }`** (the run's resume
+   counter and the instant the cache was written), and `[r]` is offered **only when the cache's `{ resumes, at }` pair matches
+   the one in `state.interruptedDetail`** — never from the mere presence of `cache/step-<n>.json` (§4.6 row 1, §11 rows 1/30).
+   And when a *fresh* step n starts (the human chose `[f]`, or the replay was refused, or a lease-conflict `[c]` re-ran the
+   step), the engine **first renames `cache/step-<n>.json` → `cache/step-<n>.superseded.json`** — explicitly, as the first write
+   of the fresh step, before any stage runs — so no later card and no later `--replay` can offer a proposal the human already
+   rejected (a SIGKILL writes no cache at all, so a *present* one can only be stale);
 3. sets `this.pauseNow = true; this.pauseRequested = true` and emits `pause:requested`;
 4. unless `currentStage === 'execute'` **or a blocking pane is awaited (`this.blocked !== null`)**, calls
    `this.controller.abort(new AbortError('human_pause'))`. The pane case is the `blockWaker`'s alone: `awaitBlocker`'s `aborted`
@@ -908,7 +1069,7 @@ the shared controller** (grafted). `pause()` is synchronous and the TUI calls it
 
 | In-flight stage | What happens |
 | --- | --- |
-| `intent`, `context`, `propose`, `risk` (the Jev call **or** the human `review` confirm awaiting an answer — `confirm()` rejects with the `AbortError`, `engine.ts:2537-2542`, and does not double-abort because `this.signal.aborted` is true), `coordinate` (incl. an inline strict wait), `replan` | the stage throws; `runStep` discards under rule 1 exactly as an abort (`!draft.executeStarted`, `engine.ts:2665-2670`: `interrupted = { step, stage, proposal }`, `types.ts:966`), plus `state.interruptedDetail? = { cache:'cache/step-<n>.json', targetsSha, replayable, partialChars }` with **`replayable := proposal !== null && !executeStarted`** (the stage name does not matter — a proposal exists and nothing ran; jev-off's `stage = 'execute'` label before `computeTargets`, `:2304-2305`, is covered by `executeStarted`); the loop top classifies (`engine.ts:1099`) → `classifyAbort` gains `reason === 'human_pause'` → `{ interrupt:'human_pause', stop:'human_pause' }` (`stop.ts:41-48`; `AbortReason` (`errors.ts:252`) and `InterruptReason` (`types.ts:392`) gain the member; the `AbortError` exit-code ternary at `errors.ts:259` maps `human_pause` to `EXIT_CODES.budget` = 4, `errors.ts:289`, so a serialised error never reads exit 1) → `finish('human_pause')`. Exit 4, resumable without `--force` (`stop.ts:9`). `run:end` lands in < 500 ms (M4) |
+| `intent`, `context`, `propose`, `risk` (the Jev call **or** the human `review` confirm awaiting an answer — `confirm()` rejects with the `AbortError`, `engine.ts:2537-2542`, and does not double-abort because `this.signal.aborted` is true), `coordinate` (incl. an inline strict wait), `replan` | the stage throws; `runStep` discards under rule 1 exactly as an abort (`!draft.executeStarted`, `engine.ts:2665-2670`: `interrupted = { step, stage, proposal }`, `types.ts:966`), plus `state.interruptedDetail? = { cache:'cache/step-<n>.json', targetsSha, replayable, partialChars, resumes, at }` with `replayable` exactly as step 2 defines it (the stage name does not matter — what matters is what landed in the cache and whether execute started; jev-off's `stage = 'execute'` label before `computeTargets`, `:2304-2305`, is covered by `executeStarted`); the loop top classifies (`engine.ts:1099`) → `classifyAbort` gains `reason === 'human_pause'` → `{ interrupt:'human_pause', stop:'human_pause' }` (`stop.ts:41-48`; `AbortReason` (`errors.ts:252`) and `InterruptReason` (`types.ts:392`) gain the member; the `AbortError` exit-code ternary at `errors.ts:259` maps `human_pause` to `EXIT_CODES.budget` = 4, `errors.ts:289`, so a serialised error never reads exit 1) → `finish('human_pause')`. Exit 4, resumable without `--force` (`stop.ts:9`). `run:end` lands in < 500 ms (M4) |
 | `execute` | NOT interrupted (a half-applied `run` is worse than 20 more seconds; a killed test leaves partial effects). The controller is **not** aborted. `pauseNow` + `pauseRequested` are set; the status shows `pausing · execute finishes first (12 s) — Esc Esc aborts` (`EngineStatus.pauseNow?`, additive); after `draft.executeFinished = true` (`engine.ts:2337`) and `takePostImages` (`:2339`), `runStep` checks `this.pauseNow` **before** `stage('judge')` (`:2347`; `stage()` does no signal pre-check, `:1539`) and, when set, skips the judge: `draft.judge = null; draft.completion = null; draft.interruptedAt = { stage:'judge', reason:'human_pause' }; draft.notes.push('interrupted before judge')` — the rule-3 shape (`:2680-2685`) written directly, no signal involved — then commits; the loop top's `pauseRequested` finishes the run. `edit \| write \| patch` executes are sub-second |
 | `judge` (jev-on / jev-only / llm-jev, after execute) | the controller is aborted; the Jev call rejects; `handleStepError` rule 3 (`draft.executeFinished`, `:2680-2685`) commits the executed action with `judge: null` — the real outcome is kept, one Jev call saved |
 | a blocking pane awaited (`engine.ts:1108-1125`) | `awaitBlocker` (`:1189-1230`) races only abort / answer / retry timer, so `pause()` adds a **`blockWaker`**: `private blockWaker: AbortController \| null`, created per `awaitBlocker`, pushed into `races` as a never-resolving `sleep` on its signal that resolves `{ answer:'pause', auto:false }` when aborted; `pause()` aborts it. `BlockingAnswer` gains `'pause' \| 'wait' \| 'worktree'` (`types.ts:1161`); the loop top handles `if (answer === 'pause' \|\| answer === 'worktree') return this.finish('human_pause')` **before** the `answer === 'stop' \|\| req.kind === 'drift'` line (`:1114`) and without `adoptBlockedError` (the pane's error is not this stop's error). `pause()` does **not** abort the controller here (step 4), so the waker is the only wake. Two panes are exceptions: `drift` keeps its own rule (`[p] pin` / `[q] stop`, exit 2 at `:1114`) and `pause()` there reads as `[q]`; **`checkpoint-degraded` maps `pause()` to `[r] retry the write`** and keeps `[r] [c] [q]` only — pausing there cannot end as `human_pause` exit 4, because the pane exists precisely because `state.json` could not be written and `finish()`'s final `writeState` hits the same disk, which `noteDiskError` turns into `checkpointDegraded` (the `!this.finishing` guard at `engine.ts:1264-1266`; `buildEnd`'s `resumable = stateWritten && !this.checkpointDegraded`, `:2981`) → exit 3, `resumable: false`, no `pause:point`. If the retry succeeds, the loop top pauses normally; if it fails, the row reads exit 3 / not resumable (§12.0.2 P6, §7.6) |
@@ -944,8 +1105,10 @@ device / this `wsKey`.
 Flow (`src/cli/session.ts resumeRun`, before `createEngine`; `engine.ts:3143-3153` unchanged in order):
 
 1. Load as today (`src/checkpoint/resume.ts:186-205`). New checks, in order: (a) foreign liveness via the fold → refuse with the
-   `--device` hint (§3.4), and — permanently, not only while a peer is live — a `claim.epoch` in the fold's
-   `runs/*/<runId>/run.json` that supersedes the local `run.json.claims[]` → refused unless `--force-takeback` (§9.3, item #14);
+   `--device` hint (§3.4), and — permanently, not only while a peer is live — a **trust- and hmac-qualified** `claim.epoch` in
+   the fold's `runs/*/<runId>/run.json` that supersedes the local maximum (`run.json.claims[]`, `imports[]` and
+   `devices/<hostKey>/claims/<runId>.json`) → refused unless `--force-takeback`; an unqualified one is a card line, never a
+   refusal (§9.3, item #14 and the revision-4 qualifier);
    (b) `repoKey` / `remoteKey` / `wsKey` **and the git `prefix`** of the current workspace vs `run.json` → relocation (below);
    (c) HEAD drift (`headMoved`, `engine.ts:3190`) now also computes `changedSincePause` = files of `post/<lastStep>.json` whose
    current sha256 ≠ recorded (≤ 64 files, the images.ts streaming budget) and, when the old head is an ancestor (`git merge-base
@@ -975,7 +1138,11 @@ Flow (`src/cli/session.ts resumeRun`, before `createEngine`; `engine.ts:3143-315
    (the identity rule makes it the exact transcript); another device → the `/who` activity row for that run
    (step / stage / action80 / touched / spend, refreshed per fold change) labelled `watching mbp · updates every 15 s + sync lag`.
 3. **Replay — one rule, two entry points** (`EngineOptions.resume.replay: true` at `createEngine`, or the in-process
-   `pendingReplay` of §4.3 step 4): `runStep()` restores `draft.proposal` / `patchTargets` from the cache, verifies every
+   `pendingReplay` of §4.3 step 4). Two gates first, both explicit: the cache's `{ resumes, at }` must equal
+   `state.interruptedDetail`'s — a cache from an earlier life of the run is refused, which is the same rule the card uses to
+   withhold `[r]` — and a **fresh** step n always renames `cache/step-<n>.json` → `cache/step-<n>.superseded.json` as its first
+   write, so a rejected proposal can never be replayed later by `--replay` or by a card (§4.6 row 1, §11 rows 1/30). Then:
+   `runStep()` restores `draft.proposal` / `patchTargets` from the cache, verifies every
    target's sha256 against the cache (mismatch → no replay: fresh step at intent with the interrupted proposal as a prompt fact,
    §11 row 30), emits `proposal` with `verdict: 'replay'` (additive `verdict?: 'replay'` on the proposal event, `types.ts:1403`;
    `plain.ts` / TUI print `(replayed)`), skips intent / context / propose, **always re-runs `risk`** (a Jev call, no generator
@@ -1100,12 +1267,34 @@ the safety net. Fill order (a section that does not fit shrinks to its floor bef
 200) → directives (8 × 600) → kept (≤ 24 × 300) → **files in view** (≤ 40 %) → **recent steps** (≤ 30 %) → **summary** (≤ 6 KiB) →
 **other sessions** (≤ 6 KiB) → candidates (300 lines).
 
+**Re-costed for the history §8.3 can now carry** (revision 4). Since every output above the 600-char body cap gets a file, the
+tiers can ask for ~88 KiB: 2 × 32 KiB (`headTail(24k, 8k)`) + 4 × 6 KiB (`headTail(4k, 2k)`) + 6 one-liners ≈ 90.7k chars. At the
+default budget (128k window → ~239k chars) the **recent steps** allowance is 30 % ≈ 71.8k chars, so the tiers do **not** all fit,
+and revision 3's text implied they would. Three consequences, decided:
+(a) **the section allowance wins, and the fit is computed before the read** — the history is assembled newest-first against its
+30 %, each tier costed from `fullOutputChars` (already in the entry) and degraded rather than dropped when it does not fit
+(32 KiB → `headTail(12k, 4k)` → the 600-char body → the one-liner), so a tier that cannot be shown is never read from disk;
+(b) **$/step does not move** — `budgetChars` caps the *assembled* prompt, not the sections, so the money term of §8.2 and the
+~$0.006 / ~$0.14 per step figures of §8.9 stand unchanged; what the bigger history changes is the **mix** (it can crowd out
+files-in-view, which is why the fill order puts files first) and the number of file reads, which is a `promptBuildMs` question;
+(c) **at the 60k floor the newest output is clipped** — 40 % files-in-view (24k) + 30 % history (18k) cannot hold one whole
+32 KiB output, so below ~110k of budget the newest tier degrades to `headTail(12k, 4k)` and `/context` says
+`budget 60k chars — the newest output is clipped to 16k (read jevcode:outputs/step-7.txt for the rest)`, which keeps the §8.5
+"no clip is silent" rule true at the floor as well. The `ctx` meter needs no new arithmetic: `promptChars` / `pct` are measured on
+the **assembled** prompt after shrinking, so the meter is correct by construction; `/context` gains the history line
+`recent steps 71k of 71k (2 whole, 4 clipped, 6 one-line)` so the degradation is visible rather than inferred.
+
 ### 8.3 Tiered history (`src/loop/history.ts`; `CheckpointState.history?: HistoryEntry[]` ≤ 12, additive)
 
 Each entry is the `WindowEntry` shape (`types.ts:901`; `output` stays ≤ 600 chars like `WindowEntry.output`, `:912`) plus
 `outputRef?: 'outputs/step-<n>.txt'` and `fullOutputChars`. **`state.json` stays small**: at prompt build, entries 1–2 (newest) are
-expanded by reading their `outputs/step-<n>.txt` (≤ 32 KiB each, `headTail(24k, 8k)`, memoised per step — ≤ 2 file reads per
-prompt); 3–6 show `headTail(4k, 2k)` from the same files when present, else their 600-char body; 7–12 one line `[step n]
+expanded by reading their `outputs/step-<n>.txt` (≤ 32 KiB each, `headTail(24k, 8k)`, memoised per step); 3–6 show
+`headTail(4k, 2k)` from the same files when present, else their 600-char body. **The read budget is up to 6 files and ≤ 88 KiB
+per prompt, not the "≤ 2 file reads" of revision 3** (revision 4: that number predated tiers 3–6 reading the same files), and the
+fit is computed from `fullOutputChars` *before* any read, so a tier the 30 % allowance cannot show is never opened (§8.2) —
+in practice 2–3 reads warm. The reads are local run-dir files, memoised per `(step, path, size)` for the life of the process, so
+a step rebuild and a compaction pay nothing; `promptBuildMs` p95 < 5 ms is measured on that warm path and `perf/step-overhead.ts`
+carries a separate **cold-start** row (first prompt after `--resume`, all six files unread) with its own budget of 25 ms. 7–12 one line `[step n]
 <action> → <outcome> (<chars> chars; full text: read jevcode:outputs/step-n.txt)`. Jev's `window` (4 × 400/200) is derived from the
 same records, unchanged. `foldStepsIntoState` (`resume.ts:147`) rebuilds `history` with the same bounds (the 600-char bodies come
 from `StepRecord.outcome.exec`, the long bodies from the files). **Every `run` / `read` output longer than the 600-char body cap**
@@ -1140,8 +1329,14 @@ concat only.
 ### 8.5 Never truncated silently
 
 Every clip carries the recovery path: `…[N chars omitted; full text: read jevcode:outputs/step-7.txt]`, `[lines 120–260 of 900;
-read src/x.ts for the rest]`. An `outputRef` whose file is absent — the only case being a run imported from another device, whose
-`outputs/` are not mirrored (§9.3) — renders `…[N chars omitted; full text stayed on <label>]`, and the
+read src/x.ts for the rest]`. An `outputRef` whose file is absent renders a line that names **why** it is absent, because there are two causes, not one
+(revision 4 — revision 3 said "the only case being a run imported from another device", which stops being true on the first run
+that fills its own cap): a run **imported** from another device, whose `outputs/` are not mirrored (§9.3), renders
+`…[N chars omitted; full text stayed on <label>]`; a **local** file the ≤ 64 MiB-per-run cap has already evicted (§8.3 deletes
+oldest-first) renders `…[N chars omitted; the full text was evicted at 64 MiB — earlier steps are in steps.jsonl]`. The engine
+tells them apart without a stat race by recording the eviction: `CheckpointState.history[].outputRef` is cleared and
+`outputEvicted: true` set on the entry when its file is deleted, so an absent-but-not-evicted ref means the import case. Either
+way the
 `read jevcode:outputs/step-<n>.txt` pseudo-path returns that same line rather than ENOENT, so no pointer ever dangles and no clip
 is silent (G3(a)). The `read` caps rise to 16 files / 32 KiB / 128 KiB (`core/limits.ts`). The meter turns amber at
 85 % and red at 95 % with `/compact now`.
@@ -1278,10 +1473,34 @@ mbp`; `[full text stayed on mbp]` stands in for every absent `outputRef` (§8.5)
 the projection), not the `takeover` lease: leases carry a 10-min ttl renewed only while their holder beats, and a holder's own GC
 deletes ended/expired files after 24 h, so "the origin sees the takeover lease" could not hold for a run that B took over and
 then paused (`ended` heartbeat, expired lease). Every `/resume` — **with or without a local run dir** — therefore reads
-`runs/*/<runId>/run.json` from the fold and refuses when any foreign `claims[]` / `imports[]` epoch exceeds the local maximum:
-`taken over by mbp at 14:02 (claim 4); /resume --force-takeback re-takes it`. `--force-takeback` mints a claim above every claim
-it can see and re-takes the run with the **local** set; importing B's work is the separate, explicit
-`--import-from device:<label>`. `takeover` leases and `claims[]` are never expired or GC'd (§4.6 row 1).
+`runs/*/<runId>/run.json` from the fold and refuses when a **qualified** foreign `claims[]` / `imports[]` epoch exceeds the local
+maximum: `taken over by mbp at 14:02 (claim 4); /resume --force-takeback re-takes it`.
+
+**Qualified means the same thing here as everywhere else a foreign record changes a run** (revision 4; §3.4 and §10.3 already
+said it for the exit-2 stop, and this was the second door left open): the `run.json` must have been read from the subtree of a
+device in `trusted-devices.json` **and** carry a valid hmac from *that device's* key (§10.3). An unqualified epoch is displayed
+on the card — `mbp claims 4 (unverified) — ignored; sessions pair to make it count` — and refuses nothing. Without the
+qualifier, planting `runs/<anydev>/<myRunId>/run.json` with `claims:[{ epoch: 9007199254740990 }]` made **every** `/resume` on
+**every** device demand `--force-takeback`, whose successor epoch is unmintable at the safe-integer ceiling — a permanently
+unresumable run, from a file anyone with write access to the shared folder could drop, and one that is never GC'd because claims
+are permanent. Two more bounds close the same hole from the other side: `parseRecord` rejects any `claim.epoch` above
+`MAX_CLAIM_EPOCH` (1e9) as `bounds` before it reaches a comparison, so the ceiling is unreachable by construction, and
+`RunMeta.claims[]` is capped at 64 entries (first + newest 63, §3.2) so an append-only array cannot grow without limit on a
+long-lived run.
+
+`--force-takeback` deliberately **does** look at unqualified epochs — it mints above `max(every epoch it can see, qualified or
+not)` + 1 — because the point of the flag is to end up higher than anything any observer will ever compare against; the
+asymmetry is the decision (unverified claims cannot *refuse*, but they are not ignored when *minting*). It re-takes the run with
+the **local** set; importing B's work is the separate, explicit `--import-from device:<label>`.
+`takeover` leases and `claims[]` are never expired or GC'd (§4.6 row 1; the 64-entry bound of §3.2 prunes middle history only).
+
+**A takeback for a run with no local run dir is persisted locally** (revision 4). `writeTakeoverLease` (`sessions unlock <id>
+--device <label>`, §12.0.4) mints a claim, and revision 3 wrote it into the lease only — a record with a 10-min ttl that the
+holder's own GC deletes after 24 h — so a later local `/resume` of that run re-minted the **same** epoch and `compareClaim`
+returned 0, which is the one value the fork rule cannot break. The claim is therefore also written to
+`devices/<hostKey>/claims/<runId>.json` (`{ v:1, runId, claim, at }`, local, never mirrored, §3.1), and the `Claim` mint at
+`createEngine` reads `max(run.json.claims[], imports[], that file) + 1`. `engine-takeover.test.ts`: unlock --device, no local run
+dir, then `/resume` → the new claim is strictly above the takeback's.
 
 **Fork rule** (both resuming at once, both offline moments ago): two live heartbeats for one `runId` (visible side by side
 because the fold is keyed by `deviceId/runId`, §3.4) are compared by **`claim.epoch`, never by the rolling stamp and never by
@@ -1319,7 +1538,15 @@ paths**, not as a `~/.jevcode` spelling: `seatbelt.ts:169` hardcodes `canonicalP
 `JEVCODE_HOME` (perf runs, tests, anyone who moves the home) the ledger would sit outside that deny and be readable by every
 sandboxed command. W3 item 30 therefore passes `coordinationRoot(jevcodeDir(env, home, cwd))` and `sharedDir` explicitly to
 `seatbeltProfile`;
-   a `sharedDir` under the workspace, `runTmp`, `runHome` or any `extraWritableRoots` is a `ConfigError` with the fix line. The
+   a `sharedDir` under the workspace, `runTmp`, `runHome` or any `extraWritableRoots` is a `ConfigError` with the fix line.
+   **The containment check is on realpaths, and the mirror root must differ from the coordination root** (revision 4):
+   `realpath(sharedDir + '/jevcode-commons')` must not equal, contain or be contained by `realpath(coordinationRoot(home))`, and
+   the same check is re-run at every `open()`, not only at configure time. One symlink otherwise restored the forged-same-device
+   path this design spent §5.4 closing: with the mirror resolving into the local store, the "excluding the subtree named with my
+   own deviceId" rule of §9.1 excludes nothing (it is the same directory), every mirror-planted record is read from the LOCAL
+   path, and `sameDevice` is true for files an attacker wrote. A violation is a `ConfigError`
+   `coordination.sharedDir resolves inside ~/.jevcode/coordination — choose a folder outside it` at configure time and an
+   `offline` + one notice at `open()` (a symlink can appear after the config was written), never a silent fold. The
    `repoKey` cache and the worktree metadata live under `~/.jevcode/coordination/`, never in `<commonDir>` (writable for a main tree) and never as
    files inside a checkout. On Linux (no sandbox) the same rules hold as policy: records remain untrusted input (§2.1 rule 6). **Stated residual**: without
 a seatbelt there is nothing but file permissions (0600/0700, §10.4) between a command this run itself launched and the ledger, so
@@ -1334,15 +1561,33 @@ basenames and `config` dropped entirely — revision 2 said "the realpath stays 
 whole, which put the realpath, the instruction paths and the `{ source, fingerprint }` of every secret into the shared folder.
 The complete list of what does leave is the §9.1 enable line, and it is enforced by the projection function, not by a convention.
    `/tell` runs `detectSecrets` with the existing `secret detected — send anyway?` row and count-only ack (`secret-ack`, `types.ts`).
-3. **Authenticity without a server** (pairing, W5): `jevcode sessions pair` prints a one-time 8-word phrase → 32-byte
-   `commonsKey` (scrypt), entered once on the other device, stored 0600 in `coordination/devices/<hostKey>/device.json` — the one
-   file that is never mirrored and never copied, which is why `registry/<deviceId>/device.json` is defined as the **public
-   subset** (`deviceId`, `label`, `host`, `user`, `jevcode`, `createdAt`, `syncMode`, `keyId`) and not as "a copy of
-   `device.json`"; records carry `hmac = HMAC-SHA256(key, canonical)` and a `keyId` that names the key, never key material.
+3. **Authenticity without a server** (pairing, W5). **`keyId` is bound to `deviceId`: keys are per device, and a record is
+   verified with the key of the device whose subtree it was read from — never with the key its own `keyId` field names**
+   (revision 4). Revision 3's sketch was one group `commonsKey` derived from the pairing phrase, which authenticates the
+   *group* and nothing inside it: every paired device could forge records as every other paired device — auto-stop their runs,
+   poison their resumes, inject `steer`s, and under `remoteControl:'allow'` pause, end or spend money on headless resumes, and
+   seed imports. The construction instead: `createDevice` generates this device's own 32-byte `deviceKey` once, stored 0600 in
+   `coordination/devices/<hostKey>/device.json` — the one file that is never mirrored and never copied, which is why
+   `registry/<deviceId>/device.json` is defined as the **public subset** (`deviceId`, `hostKey`, `label`, `host`, `user`,
+   `jevcode`, `createdAt`, `syncMode`, `keyId`) and not as "a copy of `device.json`". `jevcode sessions pair` prints a one-time
+   8-word phrase → a scrypt-derived **transport** key used once, to move each side's `deviceKey` to the other; each device
+   stores the peer's `{ deviceId, label, keyId, key, pairedAt }` in its own `trusted-devices.json` and the transport key is
+   discarded. Records carry `hmac = HMAC-SHA256(deviceKey_of_writer, canonicalText)` where the canonical text **begins with the
+   writer's `deviceId` and `hostKey`** and covers every field but `hmac`, and `keyId = sha8(deviceKey)` is for display and
+   rotation only. Verification is one lookup **by the path `deviceId`** in `trusted-devices.json`; a record whose `keyId` does
+   not match that entry's is `unverified` (and says so), never verified against some other device's key — so "find a key that
+   matches this record" is not a code path that exists. Rotation: `sessions pair --rotate` mints a new `deviceKey` + `keyId` and
+   re-pairs; records signed with the previous `keyId` are `unverified` from then on, which is the intended blast radius.
+   **Stated residual**: HMAC is symmetric, so a device you paired with holds your key and can impersonate you to a third device
+   that also paired with you. Two devices — the case this design is written for — have no third party, and the residual is
+   removed in W5 by switching the signature to Ed25519 (`node:crypto` has it natively, so the no-new-dependency rule holds) with
+   `trusted-devices.json` holding public keys only; the record shape does not change, only what `hmac`/`keyId` mean.
    Unpaired or invalid records still display (`unverified`) and still count for conflict detection (a forged "I'm editing X" can
    only make us more cautious), but the **gated actions are the complete list of everything a record can do to a run**: `steer`,
    `pause`, `resume`, `end` — **and, new in revision 3, the exit-2 fork/foreign-live stop and the `takeRunLock` resume refusal**
-   (§3.4, §9.3) and an essential-set **import** (§9.3). Each needs an hmac-valid record from a `trusted-devices.json` device;
+   (§3.4, §9.3), **the permanent claim-supersession refusal of `/resume` (revision 4 — the second door the re-review found
+   open: an unqualified planted claim could lock a run out of every device forever)** and an essential-set **import** (§9.3).
+   Each needs an hmac-valid record from a `trusted-devices.json` device, verified with **that device's** key;
    `abort` always needs the local `[y]`. Revision 2 listed only the four message verbs, while §3.4 and §9.3 let an *unauthenticated*
    heartbeat stop a run and lock it out of `/resume` — a forged `{ runId: <mine>, deviceId: <other>, phase:'running' }` file was
    enough — which contradicted this section's own floor and §10.9's "never block a run under advisory". Until pairing lands,
@@ -1366,8 +1611,17 @@ The complete list of what does leave is the §9.1 enable line, and it is enforce
    the generator's prompt. The mitigations are the ones the rest of the design already relies on (Jev's risk stage judges the
    proposal, not the prompt; `review`/`block` verdicts; the sandbox), and `coordination.notify: 'mentions'` / `claims: 'off'` +
    `sync: off` remove peer text entirely.
-7. **Fencing prevents silent double writers** (§4.5, §9.3): takeover / relocation / exclusive leases carry a higher stamp; the
-   lower-stamp engine stops with exit 2 rather than co-write; a fork keeps both tails on disk and never lets step count decide.
+7. **Fencing prevents silent double writers** (§4.5, §9.3) — **by claim epoch, not by stamp** (revision 4 must-fix; this
+   sentence still carried the ownership rule revision 3 withdrew). Two fences, with different jobs. *Run ownership*: every
+   incarnation of a run mints one immutable `claim` at `createEngine` (`epoch = max(claims[], imports[], a persisted takeback)
+   + 1`, §3.2); the higher epoch holds, ties break by `deviceId` then `runId`, and the superseded engine stops with exit 2
+   rather than co-write — but only for an **authenticated** foreign record (§3.4, §10.3), and an unauthenticated one is a
+   notice, a `⚠ forked` flag and a `[c]/[q]` pane. A fork keeps both tails on disk (`steps.forked-<epoch>.jsonl`,
+   `pre.forked-*`, `post.forked-*`) and never lets step count decide. `takeover` leases and `claims[]` are permanent facts, never
+   expired or GC'd. *Workspace overlap*: the `strict` write-then-read fence of §4.5, where the `stamp` still appears — as the
+   **tiebreak** when two writers see each other, and as display order — but never as a statement about who owns the run. The two
+   were one rule in revision 2 ("the takeover lease carries a higher stamp" beside "the lower stamp holds") and contradicted each
+   other; they are now one fence each, with `compareClaim` and `compareStamp` as the two total orders.
 8. **Audit.** Every applied remote message is a transcript line through the redacting emit, an `ack` record and — for `steer` /
    `pause` / `end` / `resume` — an index line with `by`, so `jevcode sessions` history shows who did what from where.
 9. **Denial-of-service bounds.** Caps on records per fold, bytes per record (per kind — 4 / 8 / 2 KiB — refused, not truncated;
@@ -1389,7 +1643,7 @@ The complete list of what does leave is the §9.1 enable line, and it is enforce
 | --- | --- | --- | --- | --- | --- |
 | 1 | SIGKILL / power loss mid-run leaves `run.lock`, a live-looking heartbeat and open leases | same device: stale the moment the pid is gone; other device: after `ttl + slack`; leases past `expiresAt` ignored; `gone` facts kept 10 min | `isPidAlive` false / arrival age; `phase !== 'ended'` | `/resume` takes the lock (dead pid replaceable), card says `crashed during step 8 (propose)` and offers `[r]` only from `state.interruptedDetail.cache` with a matching `{ resumes, at }` — never from the mere presence of `cache/step-<n>.json` (§4.6 row 1); `sessions reindex` fixes the index `live` flag; own GC after 24 h, never of a `takeover` lease or `claims[]` | `records.test.ts` (fake clock), `engine-crash-card.test.ts` (kill a child process, assert card text) |
 | 2 | pid reuse after reboot — and a forward clock step on a LIVE process | lock / heartbeat read as live by `kill(pid,0)` | `bootId !== mine` (boot identity, §3.4), never wall arithmetic | reused pid: judged `stale-reused-pid`; `takeRunLock` replaces with `run.lock pid N was started in another boot session; replaced`; `sessions unlock` accepts it. No `bootId` recorded (older build) + live pid: **never** replaced — `pid N alive, boot unknown — sessions unlock <id> if that process is gone` | `lock.test.ts` boot-identity case **and** the clock-step case: `startedAt = boot + 10 min`, reader's clock stepped `+15 min`, pid alive → still live, lock not replaced |
-| 3 | `~/.jevcode` itself in a synced folder — (a) device B replaces device A's live lock, (b) both machines co-write the ledger's own identity files | (a) today silent replacement + `state.prev` churn; (b) revision 2 gave both machines ONE `deviceId` (one `coordination/device.json`), so the adopt prompt ping-ponged and `seen/`, `repokeys/`, `trusted.json`, `ignored-devices.json` were co-written into "conflicted copies" — exactly what §2.1 rule 1 says cannot happen | (a) live foreign heartbeat for `runId` (`peerLive`) or `lock.host !== hostname()` with a live foreign beat; (b) `devices/<hostKey>/` differs per machine by construction | (a) `takeRunLock` refuses naming the device; if A is gone: `sessions unlock <id> --device <label>` writes a `takeover` lease with a higher `claim.epoch`; A, on return, stops at its next loop top with exit 2 **when the record is authenticated**, else the `[c]/[q]` pane (§3.4). (b) per-host identity files (§3.1): two hosts = two `hostKey` directories = two deviceIds, no file with two writers, no adopt prompt; a device whose `device.json.host` differs from `hostname()` is a `foreign` read, never an automatic rewrite | `ledger.test.ts` two-device fixture (separate homes) **and** a shared-home fixture: two ledgers over ONE `JEVCODE_HOME`, different hostnames → two deviceIds, no write to the other's files; `engine-takeover.test.ts` |
+| 3 | `~/.jevcode` itself in a synced folder — (a) device B replaces device A's live lock, (b) both machines co-write the ledger's own identity files | (a) today silent replacement + `state.prev` churn; (b) revision 2 gave both machines ONE `deviceId` (one `coordination/device.json`), so the adopt prompt ping-ponged and `seen/`, `repokeys/`, `trusted.json`, `ignored-devices.json` were co-written into "conflicted copies" — exactly what §2.1 rule 1 says cannot happen | (a) live foreign heartbeat for `runId` (`peerLive`) or `lock.host !== hostname()` with a live foreign beat; (b) `devices/<hostKey>/` differs per machine by construction **because `hostKey` hashes the machine identifier as well as the hostname and user** (§3.2) — revision 3's two-input hash collided for exactly the two default-named Macs this row is about | (a) `takeRunLock` refuses naming the device; if A is gone: `sessions unlock <id> --device <label>` writes a `takeover` lease with a higher `claim.epoch`; A, on return, stops at its next loop top with exit 2 **when the record is authenticated**, else the `[c]/[q]` pane (§3.4). (b) per-machine identity files (§3.1): two machines = two `hostKey` directories = two deviceIds, no file with two writers, no adopt prompt — **including when both machines are called `MacBook-Pro.local` under one username**; a device whose stored `machineId` differs from the live one is a `foreign` read (the adopt prompt), never an automatic rewrite; and the residual (VM clones reporting one identifier) is caught at fold time by `duplicate-identity` — the other machine's records under my own deviceId are folded as FOREIGN, so its `pause` / `end` never apply without `[y]` and `isPidAlive` is never run against its pid table (§3.2, §11 row 59) | `ledger.test.ts` two-device fixture (separate homes) **and** two shared-home fixtures over ONE `JEVCODE_HOME`: same hostname + user + different machine ids → two deviceIds and no cross-writes; identical machine ids → `duplicate-identity`, foreign fold, adopt prompt; `engine-takeover.test.ts` |
 | 4 | sync tool writes "conflicted copy" or partial files | impossible for our records (single writer); strays skipped | filename regex / checksum mismatch | `sessions who` shows `skipped N`; `sessions gc` deletes conflicted copies ONLY under our subtree | `records.test.ts` fixtures |
 | 5 | iCloud `.icloud` placeholder or unmounted shared dir at startup; a mirror on SMB-from-Windows or exFAT | `unknown`, not stale; startup never blocks — the root probe is `Promise.race([stat, sleep(1s)])`, never a `statSync` that a hard mount would block for the kernel's timeout (§3.5) | ENOENT / `.icloud` on a listed file; root `stat` times out | local truth unaffected; copies retried; `⇄ offline` after 15 min. Every file name the ledger writes is portable: message files are `<epochMs>-<seq>.json` (`MSG_FILE_RE`), never an ISO `t` — a `:` is illegal on SMB-from-Windows, exFAT and Windows sync clients, and would have failed the mirror copy of **every** message while leaving the device reading `⇄ offline` | `sync-shared-dir.test.ts`, incl. a never-resolving `stat` (open resolves `offline` within the bound) and an `fs` spy asserting no `*Sync` call reaches a mirror path |
 | 6 | clock skew / a clock jump on one device | staleness from monotonic arrival time (foreign) and pid + `bootId` (local); order from Lamport; **expiry** of leases and messages from the receiver's monotonic clock plus the writer's own delta (§4.3 step 2, §5.1) | `beatAt > now + 300 s` → `skewed` (display) | treated live; `sessions who` prints the skew; fencing unaffected; a reader ±15 min neither drops a live peer's renewing lease nor silently discards a `pause` message | `records.test.ts` skew cases **plus**: a lease and a `pause` message read with the receiver ±15 min (neither expires early nor outlives its ttl), and the same-device clock-step case of row 2 |
@@ -1442,6 +1696,12 @@ The complete list of what does leave is the §9.1 enable line, and it is enforce
 | 53 | a forged `ack` from a third device suppressing a control message | the sender neither deletes the message nor reports success | an ack counts only from the subtree of the device where the target session is (or was last) live, and for a same-device target only from the local subtree (§5.1) | the message stays until a believed ack or its 10-min expiry; the CLI twin prints `no ack yet (expires in 7 m)` or `ack from <label> (unverified)`; pre-pairing, targeted control messages are GC'd on expiry only | `mailbox.test.ts` ack from a third subtree → ignored, message not deleted |
 | 54 | a shared folder with thousands of device subtrees (hostile or a looping writer) | bounded work: ≤ `MAX_DEVICES` (16) subtrees per kind walked, watched and parsed | subtree count above the cap | trusted → self → most-recently-seen are kept; the rest are `fold.skipped` with one notice `⇄ 47 device subtrees ignored — sessions who --all · sessions gc --device …`; ≤ `MAX_DEVICES × 3` + 3 watch descriptors; parsing yields between files; the first `readFold` keeps its 500 ms budget | `watch.test.ts` with 5,000 subtrees: descriptor count, poll duration and event-loop lag all bounded |
 | 55 | a run resumed twice in one session, then messaged (`pause`, `tell`) | every message after the first resume is delivered exactly once | `actor8` is minted per PROCESS and `seq` is that process's counter, so ids never repeat across lives (§5.1) | the recipient's `seen` union does not drop it and the sender's GC does not delete it; a sessionless TUI dedupes under `inbox/seen/<deviceId>/tui-<actor8>.json` and re-toasts nothing after a restart | `mailbox.test.ts`: pause, resume, send → new id, delivered, not GC'd; TUI restart → no re-toast |
+| 56 | two `strict` writers each see the other's exclusive lease at the fence (the both-see interleaving) | exactly one proceeds, decided by code alone, ~2 ms later | both `appeared` sets are non-empty | **F1** both yield on sight (downgrade to `intent`, §4.3 step-4 wait), **F2** the wake fires when every yielded-to lease is `intent`/released/stale and only the **lowest stamp** re-declares and proceeds — no Jev request, no pane, no `theyTouched`, so `jev-off`, `--no-input` and an unreachable Jev behave identically (§4.5). Revision 3's code fallback returned `proceed` on both sides, and a purely local stamp test would have done the same in the one-sees case | `leases.test.ts` both-see × {jev-on, jev-off, --no-input, throwing Jev stub}: one `takePreImages`; three-way variant: the global minimum wins |
+| 57 | a `strict` run whose `repoKey` is still null (fresh clone, shallow clone, non-git workspace), and a lease folder too wide to scan | neither is a silent hole | the lease path is `keyDir(repoKey ?? wsKey)`, so a null key still has a directory the `wsKey` match reads; the fence counts subtrees | null key: the peer is seen and fenced, and `setIdentity({ repoKey })` moves the directory with one release + one re-declare. Too wide: `MAX_FENCE_DEVICES` (256) / `STRICT_FENCE_MS` (250 ms) → `fence:'blind'` → the `lease-conflict` pane `cannot see every device's leases (scanned 256 of 1,402)`, `[c]` = advisory for this step; `gc --device … --i-know-it-is-gone` restores it (§4.5) | `leases.test.ts` null-key fence and `fence-blind` with 1,402 subtrees |
+| 58 | a paired device forging records as **another** paired device | it cannot, for any third device | keys are per device; verification looks the key up by the **path** `deviceId` in `trusted-devices.json` and uses that entry's key only — the record's own `keyId` is never the lookup input (§10.3) | the forgery is `unverified`, so it stops nothing, resumes nothing, steers nothing and suppresses no ack. Residual (stated): HMAC is symmetric, so a device *you* paired with can impersonate *you* to a third device you both paired with — removed in W5 by Ed25519 public keys, same record shape | `records.test.ts`: a record signed with device C's key under device A's path → `verified:false`; `mailbox.test.ts`: it cannot apply a `steer` |
+| 59 | two machines that really do report one machine identifier (VM clones) sharing one `~/.jevcode` | never one `deviceId` acting as two, and never `sameDevice` across machines | `hostKey` includes the machine id, so the ordinary case has two entries and no prompt; the residual is caught by `duplicate-identity` — a record in my own local subtree whose `hostKey` is not mine, or whose `bootId` is not mine while `isPidAlive` is false | the record is folded as **foreign** (no pid check on a foreign pid table, no un-confirmed `pause` / `end`), one notice, and `Prompter.adoptDevice?` at the next start; declining mints a fresh `deviceId` (§3.2) | `ledger.test.ts` shared-home fixture × {different machine ids → two deviceIds, identical machine ids → `duplicate-identity` + adopt prompt} |
+| 60 | `coordination.sharedDir` resolving (through a symlink) inside `~/.jevcode/coordination/` | refused, at configure time and at every `open()` | `realpath(sharedDir/jevcode-commons)` equals, contains or is contained by `realpath(coordinationRoot(home))` | `ConfigError` `coordination.sharedDir resolves inside ~/.jevcode/coordination — choose a folder outside it`; a symlink that appears later makes `open()` go `offline` with one notice rather than fold mirror files as local (§10.1). Without the check one symlink restores the forged-same-device path of row 52 | `sync-shared-dir.test.ts` symlinked mirror → refused at configure, `offline` at open |
+| 61 | a planted `claims[]` / `imports[]` epoch at the safe-integer ceiling, or from an unpaired device | neither makes a run unresumable | `parseRecord` rejects `claim.epoch > MAX_CLAIM_EPOCH` (1e9) as `bounds`; the §9.3 refusal counts only trust- and hmac-qualified epochs | an unqualified claim is a card line (`mbp claims 4 (unverified) — ignored`), never a refusal; `--force-takeback` still mints above the unqualified maximum, so the flag always produces the highest epoch any observer will compare; `claims[]` is capped at 64 (first + newest 63) | `records.test.ts` ceiling fixture → `bounds`; `engine-takeover.test.ts`: planted unqualified claim → `/resume` succeeds; qualified one → refused |
 
 ---
 
@@ -1484,7 +1744,9 @@ config schema (W1 item 12) and handed to `createEngine`; the engine never reads 
 caller after `renderer.firstFrame()` (§3.5) — one per process, shared by the TUI (no run) and the engine
 (`EngineOptions.coordination.ledger`); the engine never opens a second one. Because it is opened once and the identity is not
 static, the handle is **mutable in one way only**: `ledger.setIdentity(patch)` (§12.0.4), called by the engine after `run:ready`
-(`repoKey`, `runId`) and by the host at `run:start`, `run:end` and `/resume` (`sessionId`, `runId`, `branch`). `open()` and the
+(`repoKey`, `runId`) and by the host at `run:start`, `run:end`, `/resume` and `sessions label` (`sessionId`, `runId`, `branch`,
+`label`). It returns a promise that resolves once any **added** watch root has been walked once (§3.5); the engine awaits it
+after `run:ready`, before its first `coordinate`, and every other caller may ignore it. `open()` and the
 poll do no synchronous I/O at all (§3.5), so a dead mirror mount can never block the first frame or the composer.
 
 Startup order (the one modal slot, TD §0): first frame → trust gate → `adoptDevice?` if identity read `foreign` → ledger
@@ -1525,7 +1787,10 @@ export interface PausePoint {
   reason: PausePointReason;
   /** 'boundary' = nothing to replay (resume is a fresh step at intent); else the run-relative cache file of §7.2 that `--replay` reads */
   resumableAt: 'boundary' | `cache/step-${number}.json`;
-  /** §7.2 `replayable` := proposal !== null && !executeStarted && the cache write succeeded; the card shows `[r]` only when this AND every targetsSha still matches */
+  /** §7.2 step 2's ONE definition, quoted: (a proposal was written to the step cache) || (>= 1 arrived LLM sample was written
+   *  to the step cache), both as RECORDED in the cache that was actually written; false when the cache write failed or execute
+   *  had started. The card shows `[r]` only when this AND every targetsSha still matches AND the cache's { resumes, at } pair
+   *  matches state.interruptedDetail's (§7.3 step 2). */
   replayable: boolean;
   /** phase === 'pane': which pane */
   pane?: BlockingKind;
@@ -1547,6 +1812,23 @@ export type PausePointReason =
 | { type: 'pause:point'; point: PausePoint }
 // EngineStatus gains: the last PausePoint of this process (set when the point is reached, until run:end; null on a fresh or resumed engine)
 EngineStatus.pausePoint?: PausePoint | null;
+
+/** §7.3 step 3: a REPLAYED step emits the ordinary `proposal` event with one additive member, so `plain.ts`, the TUI and
+ *  `transcript.log` can print `(replayed)` from one field instead of inferring it. The rest of the event is unchanged. */
+| { type: 'proposal'; step: number; proposal: Proposal; verdict?: 'replay' }   // `verdict?: 'replay'` additive on types.ts:1403
+
+/** §7.2 step 2 / §7.3 step 2: the card's state, named. `resumes` + `at` are what make `[r]` refuse a SUPERSEDED cache — the
+ *  pair must match `state.interruptedDetail`'s, and a fresh step n renames `cache/step-n.json` → `cache/step-n.superseded.json`
+ *  before anything else runs (§4.6 row 1, §11 rows 1/30). */
+export interface InterruptedDetail {
+  cache: `cache/step-${number}.json`;
+  targetsSha: Record<string, string | null>;
+  replayable: boolean;            // §7.2 step 2's one definition
+  partialChars: number;
+  resumes: number; at: string;
+  relocate?: { slug: string; reason: 'lease-conflict' };
+}
+CheckpointState.interruptedDetail?: InterruptedDetail;
 ```
 
 Mapping. `EngineStatus.phase?: EngineRunPhase` (§7.1: `starting | running | pausing | paused | blocked | aborting | ended`) is
@@ -1598,8 +1880,8 @@ one-writer rule holds); a live run gets the `end` message (§5.4).
 | # | Point | `pause({at:'step'})` | `pause({at:'now'})` | `end()` | Persisted, in order | `PausePoint` | Stop / exit / resumable |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | P1 | **step boundary** — `idle` between steps, before `run:ready`, or while `pendingCheckpoint` settles | flag → loop top `finish('human_pause')` (`engine.ts:1106`) | same as `step` (nothing to interrupt) | as pause + `RunMeta.ended` | final `state.json` (`stopReason:'human_pause'`) → heartbeat `phase:'ended'` (§3.3 point 5) → `run:end`; TUI: index `run:end` (+ `session:end`) | `{ step: state.step + 1, round: null, phase: 'idle', reason: 'step', resumableAt: 'boundary', replayable: false }` | `human_pause` / **4** / yes, no `--force` (end: `--force`) |
-| P2 | **mid-stage, nothing executed** — `replan`, `intent`, `context`, `propose` (generator streaming), `risk` (the Jev call or the human `review` confirm), `coordinate` (incl. a strict inline wait) | flag; the stage completes; the step commits whole; then P1 | (1) synchronous draft snapshot → `cache/step-<n>.json` via `persist(store.writeCache(…))` (`:1410`); (2) `pauseNow = pauseRequested = true`, `pause:requested`; (3) `controller.abort(AbortError('human_pause'))`; the stage throws → rule-1 discard `interrupted = { step, stage, proposal }` (`:2666`) + `interruptedDetail = { cache, targetsSha, replayable, partialChars }` → `finish('human_pause')` | as `now` (or `step`) + `ended` | `cache/step-<n>.json` (enqueued at the call, awaited by `finish` ≤ 5 s) → late `generator.jsonl` rows `discarded:true` → final `state.json` (`interrupted` + `interruptedDetail`) → heartbeat `ended` → leases `outcome:'discarded'` → `run:end` | `{ step: n, round: null, phase: <stage>, reason: 'now', resumableAt: 'cache/step-n.json', replayable: proposal !== null }` | `human_pause` / 4 / yes; `run:end` < 500 ms (M4) |
-| P3 | **mid-LLM-round** (llm-jev: `propose` with `LlmSource` samples in flight) | the round completes (every sample or the round deadline), the step commits → P1 | as P2 plus `LlmSource.cancel('pause')` (§6.7): every arrived sample is already on disk in `cache/llm/<goalId>/<round>/<sample>.json` (§6.4); the snapshot's `llmRound = { goalId, round, arrived: [ids] }`; replay re-asks only the missing samples (`LlmSourceDeps.replay`) | as `now` | as P2, the sample files having been written engine-side as they arrived | `{ step: n, round: <round>, phase: 'propose', llm: { goalId, round, arrived }, reason: 'now', resumableAt: 'cache/step-n.json', replayable: true }` — and, until W3's `SynthesisContext.cache` / `onRound` hooks land, `{ round: null, replayable: false }`, because nothing in the frozen shapes lets the engine see `goalId` / `round` (§6.4) | `human_pause` / 4 / yes |
+| P2 | **mid-stage, nothing executed** — `replan`, `intent`, `context`, `propose` (generator streaming), `risk` (the Jev call or the human `review` confirm), `coordinate` (incl. a strict inline wait) | flag; the stage completes; the step commits whole; then P1 | (1) synchronous draft snapshot → `cache/step-<n>.json` via `persist(store.writeCache(…))` (`:1410`); (2) `pauseNow = pauseRequested = true`, `pause:requested`; (3) `controller.abort(AbortError('human_pause'))`; the stage throws → rule-1 discard `interrupted = { step, stage, proposal }` (`:2666`) + `interruptedDetail = { cache, targetsSha, replayable, partialChars }` → `finish('human_pause')` | as `now` (or `step`) + `ended` | `cache/step-<n>.json` (enqueued at the call, awaited by `finish` ≤ 5 s) → late `generator.jsonl` rows `discarded:true` → final `state.json` (`interrupted` + `interruptedDetail`) → heartbeat `ended` → leases `outcome:'discarded'` → `run:end` | `{ step: n, round: null, phase: <stage>, reason: 'now', resumableAt: 'cache/step-n.json', replayable: <§7.2 step 2's one definition> }` | `human_pause` / 4 / yes; `run:end` < 500 ms (M4) |
+| P3 | **mid-LLM-round** (llm-jev: `propose` with `LlmSource` samples in flight) | the round completes (every sample or the round deadline), the step commits → P1 | as P2 plus `LlmSource.cancel('pause')` (§6.7): every arrived sample is already on disk in `cache/llm/<goalId>/<round>/<sample>.json` (§6.4); the snapshot's `llmRound = { goalId, round, arrived: [ids] }`; replay re-asks only the missing samples (`LlmSourceDeps.replay`) | as `now` | as P2, the sample files having been written engine-side as they arrived | `{ step: n, round: <the real round>, phase: 'propose', llm: { goalId, round, arrived: [ids] }, reason: 'now', resumableAt: 'cache/step-n.json', replayable: <§7.2 step 2's one definition — here true as soon as ONE sample landed in the cache, with or without an assembled proposal> }`. **P3 reports the real `round` and `arrived`**: the engine knows its own sample batches through `SynthesisContext.cache` / `onRound` (W0 item 1 types them, W3 item 28 wires them), so the interim `{ round: null, replayable: false }` of revision 3 is withdrawn — it would have thrown away a paid-for round on every llm-jev pause | `human_pause` / 4 / yes |
 | P4 | **mid-test / mid-command** — `execute` in flight (`run`, or a sub-second `edit \| write \| patch`). **The rule is WAIT, never kill**: neither pause kind aborts the controller; the command runs to its own end or `commandTimeoutMs`; the status reads `pausing · execute finishes first (12 s) — Esc Esc aborts`; a kill is `abort('human_abort')` (rule 2, committed as `interrupted`, exit 130) | execute → post-images → judge → commit → P1 | execute → post-images → **judge skipped** (`pauseNow` read before `stage('judge')`, `:2347`) → commit with `interruptedAt: { stage: 'judge', reason: 'human_pause' }` → P1 | same + `ended` | `steps.jsonl` row + `state.json` (IIFE `:2922`) → final `state.json` → heartbeat → leases `outcome:'committed'` → `run:end` | `{ step: n + 1, round: null, phase: 'idle', reason: 'now-after-execute' (or 'step'), resumableAt: 'boundary', replayable: false }` | `human_pause` / 4 / yes |
 | P5 | **`judge` in flight** (after execute) | judge completes → commit → P1 | controller aborted; the Jev call rejects; rule 3 (`:2680-2685`) commits the executed action with `judge: null` | same | as P4 | `{ step: n + 1, phase: 'idle', reason: 'now-after-execute', resumableAt: 'boundary', replayable: false }` | `human_pause` / 4 / yes |
 | P6 | **a blocking pane is open** (`jev-unreachable`, `key-rejected`, `spend-limit`, `checkpoint-degraded`, `sandbox-unavailable`, `lease-conflict`; the step that raised it is already a rule-1 discard, `interrupted` set) | `pause()` aborts the `blockWaker`; `awaitBlocker` resolves `{ answer: 'pause' }`; the loop top calls `finish('human_pause')` before `:1114`, without `adoptBlockedError` | identical (nothing is in flight) | same + `ended` | final `state.json` (`interrupted` from the discard; `interruptedDetail` only for `lease-conflict`, §4.3 step 4) → heartbeat → `run:end` | `{ step: interrupted?.step ?? state.step + 1, round: null, phase: 'pane', pane: <kind>, reason: 'pane', resumableAt: interruptedDetail?.cache ?? 'boundary', replayable: pane === 'lease-conflict' && targets match }` — the `?? state.step + 1` matters for a pane raised from the commit IIFE (`:2922-2934` → `noteDiskError` → `installBlock`), which never sets `this.interrupted`, and that case also reads `resumableAt: 'boundary'` | `human_pause` / 4 / yes; `/resume` re-raises the condition if it still holds (§11 row 37). Keys: `[p]` pauses, `[q]` stops (§4.3 step 4). **Two exceptions**: `drift` keeps `[p] pin` / `[q] stop` only (exit 2, `:1114`) and `pause()` there reads as `[q]`; **`checkpoint-degraded`** keeps `[r] retry the write` / `[c] continue` / `[q] stop` and `pause()` there maps to `[r]` — it cannot end as `human_pause` exit 4, because the pane exists because `state.json` failed and `finish()`'s final `writeState` hits the same disk → `checkpointDegraded` (the `!this.finishing` guard, `:1264-1266`; `buildEnd`'s `resumable = stateWritten && !this.checkpointDegraded`, `:2981`) → exit 3, `resumable:false`, no `pause:point`. A successful retry pauses normally at the loop top |
@@ -1645,7 +1927,8 @@ export interface ContextUsage {
   tokensInWindow: number;
   /** round(budgetChars / CHARS_PER_TOKEN) — the PROMPT BUDGET, which is min(0.55 × generatorContextTokens, the money bound) (§8.2),
    *  so pct === round(100 × tokensInWindow / budgetTokens). Renamed from the agreed `windowBudget`, which read as "the model's
-   *  window" and made `ctx 41%` look like 41 % of the window when it is 41 % of a budget that is itself ~55 % of it. */
+   *  window" and made `ctx 41%` look like 41 % of the window when it is 41 % of a budget that is itself ~55 % of it.
+   *  Settled in revision 4 (§14 item 16(d), reversed by the owner): `windowBudget` is not a member and there is no alias. */
   budgetTokens: number;
   /** the model's own context window in tokens (`generatorPricing.contextTokens`), so `/context` can print `budget 70k of 128k window (55 %)` */
   windowTokens: number;
@@ -1678,12 +1961,12 @@ object on every `status` line; `/context` lists the sections (§8.7).
 | File | What the surface imports from it (through `index.ts`) |
 | --- | --- |
 | `src/coordination/index.ts` (new, W0) | the ONLY import path for `src/session/**`, `src/cli/**`, `src/tui/**`: re-exports everything below |
-| `records.ts` | `Heartbeat`, `Lease`, `Message`, `Ack`, `DeviceRecord`, `Stamp`, `Claim`, `Liveness`, `parseRecord`, `checksumOf`, `compareStamp`, `compareClaim`, `isLive`, `byRun`, `overlap`, `redactRecord`, `oneLineSafe`, `peerTransitions` |
+| `records.ts` | `Heartbeat`, `Lease`, `Message`, `Ack`, `DeviceRecord`, `Stamp`, `Claim`, `Liveness`, `parseRecord`, `checksumOf`, `compareStamp`, `compareClaim`, `isLive`, `byRun`, `overlap`, `redactRecord`, `oneLineSafe`, `peerTransitions`, `CoordinationError`, `MAX_CLAIM_EPOCH` |
 | `ids.ts` | `readDeviceIdentity(home, facts)` + `createDevice(home, facts, opts?)` (the pure reader / writer split of §3.2 — there is no `deviceIdentity()` that prompts), `hostKeyOf(facts)`, `wsKeyOf(realpath)`, `repoKeyOf(...)`, `normaliseRemote(url)`, `mintActor8()`, `mintConsumerId(sessionId \| null)`, the validators `DEVICE_ID_RE`, `HOST_KEY_RE`, `REPO_KEY_RE`, `MSG_ID_RE`, `CONSUMER_ID_RE`, `TARGET_RE`, `MSG_FILE_RE`, `OID_RE`, `BRANCH_RE`, `LANE_DIR_RE`, `SLUG_RE`, `SEQ_RE`, `LEASE_ID_RE` (§3.1) |
 | `ledger.ts` | `COORDINATION_DIR`, `coordinationRoot(home)`, `commonsPaths(root)`, `openLedger(opts): Ledger`, `readFold(opts): Promise<Fold>` |
 | `watch.ts` | the implementation behind `Ledger.subscribe` (fs.watch + poll + debounce) |
 | `leases.ts` | `check`, `declare`, `release`, `renew`, `LeaseIntent`, `LeaseCheck`, `LeaseConflict`, `LeaseHandle`, `CoordinationFacts` |
-| `mailbox.ts` | `send`, `inbox`, `ack`, `awaitAck`, `resolveTarget` |
+| `mailbox.ts` | `send`, `inbox`, `ack`, `awaitAck`, `resolveTarget`, `purgeInbox` |
 | `heartbeat.ts`, `judge.ts`, `sync-shared-dir.ts`, `worktree.ts` | engine-internal **implementations**; the surface never imports them directly — it calls the ledger **write API** below, which `index.ts` re-exports and which is the only way the TUI writes a coordination file (revision 2 declared these engine-internal while W1 item 15 / W2 item 22 / W3 item 31 assigned `/worktree`, `/spawn`, `sessions gc`, `sessions unlock --device`, `sessions label`, `sessions sync disable` — all of them writers — to the surface, which the facade had no signature for) |
 
 **Store layout (decided; reconciles §3.1).** Root: **`~/.jevcode/coordination/`** = `join(jevcodeDir(env, home, cwd), 'coordination')`
@@ -1695,17 +1978,18 @@ writes only under `<kind>/<deviceId>/`; each run only its own files):
 | Agreed path | Design's internal spelling (kept in the text) | Writer |
 | --- | --- | --- |
 | `coordination/registry/<deviceId>/<runId>.json` | `commons/<deviceId>/live/<runId>.json` — the heartbeat (§3.3) | that run's process |
-| `coordination/registry/<deviceId>/device.json` | `commons/<deviceId>/device.json` — the **public subset** of the per-host record: no `commonsKey`, no key material, ever (§10.3) | the CLI (`sessions label`, creation) through `setDeviceLabel` |
-| `coordination/leases/<deviceId>/<repoKey>/<runId>-<seq>.json` | `commons/<deviceId>/leases/<repoKey>/…` (§4.3) | that run's process |
+| `coordination/registry/<deviceId>/device.json` | `commons/<deviceId>/device.json` — the **public subset** of the per-machine record: no `deviceKey`, no `machineId`, no key material, ever (§10.3) | the CLI (`sessions label`, creation) through `setDeviceLabel` |
+| `coordination/leases/<deviceId>/<keyDir>/<runId>-<seq>.json` | `commons/<deviceId>/leases/<keyDir>/…` (§4.3); `keyDir = keyDir(repoKey ?? wsKey)` — the key with `:` → `-`, so no path component ever holds a colon and a run with no `repoKey` still has a lease directory | that run's process |
 | `coordination/inbox/<deviceId>/<target>/<epochMs>-<seq>.json` | `commons/<deviceId>/outbox/<target>/…` (§5.1) — the **sender's** device writes; a recipient's inbox is the union over `inbox/*/<target>/` | the sender |
 | `coordination/acks/<deviceId>/<msgId>/<consumerId>.json` | `commons/<deviceId>/acks/…` (§5.1) | the consuming **process** (`consumerId = <sessionId ?? 'tui' \| 'cli'>-<actor8>`) |
 | `coordination/inbox/seen/<deviceId>/<consumerId>.json` | `commons/<deviceId>/seen/…` (§5.1) — renamed from `coordination/seen/<sessionId>.json` | that consumer process |
 | `coordination/runs/<deviceId>/<runId>/…` | `commons/<deviceId>/runs/…` (§9.3 essential set) | that run's process |
-| `coordination/devices/<hostKey>/{device.json, trusted-devices.json, ignored-devices.json, repokeys/<sha16>.json, worktrees/<repoKey>/<slug>.json}` | the same names under `sessions/` in revision 2's §3.1, now **per host** and never mirrored (§3.1) | `src/coordination/**` — moved so that **one owner writes one directory** (`sessions/` is `src/session/**`'s), and keyed by `hostKey` so that a synced `~/.jevcode` still has one writer per file |
+| `coordination/devices/<hostKey>/{device.json, trusted-devices.json, ignored-devices.json, repokeys/<sha16>.json, worktrees/<repoKey>/<slug>.json, claims/<runId>.json}` (`hostKey` includes the machine identifier, §3.2; `claims/` persists a takeback for a run with no local dir, §9.3) | the same names under `sessions/` in revision 2's §3.1, now **per host** and never mirrored (§3.1) | `src/coordination/**` — moved so that **one owner writes one directory** (`sessions/` is `src/session/**`'s), and keyed by `hostKey` so that a synced `~/.jevcode` still has one writer per file |
 
 `sessions sync disable` removes `{registry,leases,inbox,acks,runs}/<deviceId>/` from the mirror (refused while a local run is
-live, §9.1). Watch roots: `registry/*/`, `leases/*/<repoKey>/`, `inbox/*/` plus the three kind roots themselves (to learn of a new
-device), for at most `MAX_DEVICES` (16) device subtrees per kind — the §3.5 bound; `devices/<hostKey>/` is local truth and is not
+live, §9.1). Watch roots: `registry/*/`, `leases/*/<keyDir>/`, `inbox/*/` plus the three kind roots themselves (to learn of a new
+device), for at most `MAX_DEVICES` (16) device subtrees per kind — the §3.5 bound; the `strict` **fence** is the one reader that
+is not bounded by it (`MAX_FENCE_DEVICES` 256 / `STRICT_FENCE_MS` 250 ms, else `'fence-blind'`, §4.5); `devices/<hostKey>/` is local truth and is not
 watched at all. The
 seatbelt read-denies `~/.jevcode/coordination/**` (§10.1). Path components are validated exactly as §3.1 says; `device.json` is the one
 fixed name inside `registry/<deviceId>/` and is never parsed as a heartbeat.
@@ -1716,28 +2000,43 @@ comment (refused, never truncated); every string leaf passed the run's `redact()
 `checksum = sha256Hex(stableStringify(record minus { checksum, hmac }))` (`src/core/hash.ts:5`, `:12`). The reader is
 
 ```ts
-export function parseRecord<K extends RecordKind>(text: string, kind: K, ctx: { origin: 'local' | 'mirror'; deviceId: string; target?: string; msgId?: string }):
-  | { ok: true; record: RecordOf<K>; sameDevice: boolean }
+export function parseRecord<K extends RecordKind>(text: string, kind: K, ctx: {
+  origin: 'local' | 'mirror'; deviceId: string; hostKey: string;          // hostKey = MINE; a local record with another hostKey is not sameDevice (§3.2, §5.4 rule 4)
+  target?: string; msgId?: string; keyDir?: string;                       // the <keyDir> directory a lease was read from (§3.1)
+  trust?: (deviceId: string) => { keyId: string; key: Uint8Array } | null; // trusted-devices.json lookup BY PATH deviceId; the record's own keyId is never the lookup input (§10.3)
+}):
+  | { ok: true; record: RecordOf<K>; sameDevice: boolean; verified: boolean }
   | { ok: false; reason: 'size' | 'json' | 'shape' | 'version' | 'id' | 'checksum' | 'bounds' };
 ```
 
 with these rules (§2.1 rule 6, §3.1, §5.4): the per-kind size cap is the writer's own (heartbeat 4 KiB, lease 8 KiB, message
 2 KiB, ack/device 2 KiB — **not** the 64 KiB read bound, which only stops a 50 MB file from being read at all); every field is
-type-checked; every counter (`stamp.n`, `claim.epoch`, `pid`, `step`, `beatSeq`, `maxSteps`) must be `Number.isSafeInteger` ≥ 0;
+type-checked; every counter (`stamp.n`, `pid`, `step`, `beatSeq`, `maxSteps`) must be `Number.isSafeInteger` ≥ 0 and `claim.epoch` additionally
+`≤ MAX_CLAIM_EPOCH` (1e9) — a planted epoch at the safe-integer ceiling otherwise makes every successor unmintable and the run
+permanently unresumable (§9.3);
 every array is bounded to its documented length (`subwork` ≤ 16, `leases` ≤ 8, `paths` ≤ 64, `next3` ≤ 3, `files` ≤ 32, …) with
 `reason:'bounds'`; every string leaf must equal `clip(indexOneLine(s), cap)` or the record is `shape`-rejected; `repo.head`,
 `Lease.head`, `released.head` and `refs.commit` must pass `OID_RE` and `refs.branch` `BRANCH_RE` (a failing field is nulled, not
 the record); `laneDir` must pass `LANE_DIR_RE`; and `reason:'id'` is returned whenever `record.deviceId` / `from.deviceId` /
-`stamp.deviceId` ≠ `ctx.deviceId`, `to` ≠ `ctx.target` or `msgId` ≠ `ctx.msgId` — the ids must match the path the file was read
-from. `sameDevice` is `ctx.origin === 'local' && ctx.deviceId === self.deviceId`; it is never derived from a field. A failed parse
-is `fold.skipped++`, never an error; `hmac?` + `keyId?` are the W5 slot (§10.3).
+`stamp.deviceId` / **`claim.deviceId`** ≠ `ctx.deviceId`, `to` ≠ `ctx.target`, `msgId` ≠ `ctx.msgId` or
+`keyDir(repoKey ?? wsKey)` ≠ `ctx.keyDir` — the ids must match the path the file was read
+from. `sameDevice` is `ctx.origin === 'local' && ctx.deviceId === self.deviceId && record.hostKey === ctx.hostKey`; it is never
+derived from a field alone — the read location is necessary, and the `hostKey` match is the extra *necessary* condition that
+makes the residual shared-home collision safe (§3.2, §5.4 rule 4); a local record failing only the `hostKey` test parses `ok`
+with `sameDevice: false` and raises the `duplicate-identity` notice, because dropping it would hide the collision. `verified` is
+`true` only when `ctx.trust(ctx.deviceId)` returns a key and the `hmac` matches it (§10.3); it is **never** an input to `ok`, so
+unverified records still display and still count for conflict detection. A failed parse
+is `fold.skipped++`, never an error.
 
 ```ts
 /** §3.2: the per-run Lamport stamp — ORDER AND DISPLAY ONLY; total order = (n, deviceId, runId); `runId` is the run id, or the minted `actor8` of a CLI sender (§5.1) */
 export interface Stamp { n: number; deviceId: string; runId: string }
 export function compareStamp(a: Stamp, b: Stamp): -1 | 0 | 1;
-/** §3.2: the run's incarnation — the ONLY fence for run ownership (fork, takeover, resume refusal). Higher epoch wins; ties by deviceId, then runId. */
+/** §3.2: the run's incarnation — the ONLY fence for run ownership (fork, takeover, resume refusal). Higher epoch wins; ties by deviceId, then runId.
+ *  `epoch` is bounded by MAX_CLAIM_EPOCH (1e9) and `deviceId` must equal the path component the record was read from (§9.3). */
 export interface Claim { epoch: number; deviceId: string; runId: string; at: string }
+export const MAX_CLAIM_EPOCH = 1e9;
+export const MAX_CLAIMS_PER_RUN = 64;   // RunMeta.claims[]: first + newest 63 (§3.2); only the maximum is ever compared
 export function compareClaim(a: Claim, b: Claim): -1 | 0 | 1;
 /** §7.1 — named `EngineRunPhase`, not `RunPhase`: the TUI already exports a different `RunPhase` (`src/tui/useEngine.tsx:102`) */
 export type EngineRunPhase = 'starting' | 'running' | 'pausing' | 'paused' | 'blocked' | 'aborting' | 'ended';
@@ -1745,7 +2044,8 @@ export type EngineRunPhase = 'starting' | 'running' | 'pausing' | 'paused' | 'bl
 /** registry/<deviceId>/<runId>.json — ≤ 4 KiB — §3.3, typed */
 export interface Heartbeat {
   v: 1; kind: 'heartbeat' | 'bench';
-  deviceId: string; label: string; host: string; user: string; pid: number; bootAt: string; bootId: string | null; jevcode: string;
+  deviceId: string; hostKey: string;                         // hostKey binds the record to the MACHINE (§3.2); it can only DENY sameDevice, never grant it (§5.4 rule 4)
+  label: string; host: string; user: string; pid: number; bootAt: string; bootId: string | null; jevcode: string;
   runId: string; sessionId: string; parentSessionId: string | null; parentRunId: string | null;
   source: RunSource; title60: string | null; task60: string;
   repo: { wsKey: string; repoKey: string | null; remoteKey: string | null; superKey?: string; basename: string; branch: string | null; head: string | null; dirtyAtStart: boolean; linkedWorktree: boolean; worktreeSlug: string | null };
@@ -1769,8 +2069,9 @@ export interface Heartbeat {
 
 /** leases/<deviceId>/<repoKey>/<runId>-<seq>.json — ≤ 8 KiB — §4.3, typed */
 export interface Lease {
-  v: 1; kind: 'lease'; leaseId: string; runId: string; sessionId: string; deviceId: string; label: string;
-  repoKey: string; remoteKey: string | null; wsKey: string; branch: string | null; head: string | null;
+  v: 1; kind: 'lease'; leaseId: string; runId: string; sessionId: string; deviceId: string; hostKey: string; label: string;
+  repoKey: string | null; remoteKey: string | null; wsKey: string;   // the file lives under keyDir(repoKey ?? wsKey) — a null repoKey leases by wsKey, it does not skip the fence (§4.3)
+  branch: string | null; head: string | null;
   type: 'intent' | 'exclusive' | 'command' | 'lane' | 'worktree' | 'takeover';
   paths: string[]; truncated: boolean; command60?: string; exclusiveTree?: boolean; laneDir?: string; slug?: string;
   reason60: string; step: number; stage: StageName; stamp: Stamp;   // minted once at declare, kept through every rewrite (§3.2)
@@ -1784,7 +2085,7 @@ export interface Lease {
 export type MessageType = 'heads-up' | 'handoff' | 'note' | 'request-release' | 'steer' | 'pause' | 'resume' | 'end' | 'abort' | 'ack' | 'who';
 export interface Message {
   v: 1; kind: 'message'; id: string;                        // `<deviceId>-<actor8>-<seq>` (MSG_ID_RE)
-  from: { deviceId: string; label: string; sessionId: string | null; runId: string | null; user: string };
+  from: { deviceId: string; hostKey: string; label: string; sessionId: string | null; runId: string | null; user: string };
   to: string;                                               // '<sessionId>' | '@<repoKey>' | '@all'
   type: MessageType; text: string;                          // ≤ 600 (DIRECTIVE_MAX_CHARS)
   refs: { commit?: string; branch?: string; files?: string[]; leaseId?: string; runId?: string; step?: number; msgId?: string; target?: string };
@@ -1793,14 +2094,16 @@ export interface Message {
 
 /** acks/<deviceId>/<msgId>/<consumerId>.json — §5.1; `by` is the CONSUMER PROCESS, not the session. `expired` is never written: it is what awaitAck reports locally. */
 export type AckOutcome = 'delivered' | 'applied' | 'refused' | 'expired';
-export interface Ack { v: 1; kind: 'ack'; msgId: string; by: string /* consumerId */; sessionId: string | null; deviceId: string; at: string; outcome: AckOutcome; detail60?: string; stamp: Stamp; keyId?: string; checksum: string; hmac?: string }
+export interface Ack { v: 1; kind: 'ack'; msgId: string; by: string /* consumerId */; sessionId: string | null; deviceId: string; hostKey: string; at: string; outcome: AckOutcome; detail60?: string; stamp: Stamp; keyId?: string; checksum: string; hmac?: string }
 
-/** registry/<deviceId>/device.json — the PUBLIC subset (§3.1, §10.3): never `commonsKey`, never any key material. `keyId` names a pairing key; the secret lives only in devices/<hostKey>/device.json. */
-export interface DeviceRecord { v: 1; deviceId: string; label: string; host: string; user: string; jevcode: string; createdAt: string; syncMode: 'off' | 'shared-dir' | 'git'; keyId?: string; checksum: string }
+/** registry/<deviceId>/device.json — the PUBLIC subset (§3.1, §10.3): never `deviceKey`, never `machineId`, never any key material. `keyId` NAMES this device's key; the key itself lives in devices/<hostKey>/device.json and, for peers, in their trusted-devices.json. */
+export interface DeviceRecord { v: 1; deviceId: string; hostKey: string; label: string; host: string; user: string; jevcode: string; createdAt: string; syncMode: 'off' | 'shared-dir' | 'git'; keyId?: string; checksum: string }
+//  keyId = sha8(that device's own deviceKey) — a NAME for display and rotation. Verification never looks a key up by keyId:
+//  it looks the WRITER'S deviceId (the path component) up in trusted-devices.json and uses that entry's key only (§10.3).
 ```
 
 One heartbeat on disk, for the shape (values illustrative, redacted):
-`{"v":1,"kind":"heartbeat","deviceId":"k3q7m2ab","label":"mbp","host":"MacBook-Pro.local","user":"p","pid":4242,"bootAt":"2026-09-21T06:02:11.000Z","jevcode":"0.9.0","runId":"20260921-234432-rpywkq2v","sessionId":"20260921-234432-rpywkq2v","parentSessionId":null,"parentRunId":null,"source":"cli","title60":null,"task60":"fix store rotation","repo":{"wsKey":"ws:3f9a2c1d8bc0d11e","repoKey":"9c3a7ac066816f2b","remoteKey":null,"basename":"JevCode","branch":"main","head":"3f9a2c1…","dirtyAtStart":false,"linkedWorktree":false,"worktreeSlug":null},"mode":"jev-on","phase":"running","step":7,"maxSteps":40,"stage":"propose","action80":"edit src/checkpoint/store.ts","pausing":false,"pauseNow":false,"blocked":null,"retrying":null,"stopReason":null,"plan":{"done":3,"remaining":4,"unverified":1,"next3":["…"]},"declared":{"step":8,"paths":["src/checkpoint/store.ts"],"type":"intent","truncated":false},"touched":{"step":7,"files":["src/checkpoint/store.ts"]},"touchedRecent":["src/checkpoint/store.ts"],"leases":["20260921-234432-rpywkq2v-8"],"subwork":[],"spend":{"generatorUsd":0.12,"jevUsd":0.03,"sessionUsd":0.15,"capUsd":2},"tokens":{"used":48211,"cap":null},"wallMs":724000,"maxWallMs":1800000,"context":{"pct":41,"files":6,"historyEntries":12,"summaryAt":null,"tokensInWindow":29000,"budgetTokens":70400,"compactions":0},"startedAt":"…","beatAt":"…","beatSeq":49,"ttlMs":45000,"stamp":{"n":41,"deviceId":"k3q7m2ab","runId":"20260921-234432-rpywkq2v"},"checksum":"<sha256 hex>"}`
+`{"v":1,"kind":"heartbeat","deviceId":"k3q7m2ab","hostKey":"7e21ab90","label":"mbp","host":"MacBook-Pro.local","user":"p","pid":4242,"bootAt":"2026-09-21T06:02:11.000Z","jevcode":"0.9.0","runId":"20260921-234432-rpywkq2v","sessionId":"20260921-234432-rpywkq2v","parentSessionId":null,"parentRunId":null,"source":"cli","title60":null,"task60":"fix store rotation","repo":{"wsKey":"ws:3f9a2c1d8bc0d11e","repoKey":"9c3a7ac066816f2b","remoteKey":null,"basename":"JevCode","branch":"main","head":"3f9a2c1…","dirtyAtStart":false,"linkedWorktree":false,"worktreeSlug":null},"mode":"jev-on","phase":"running","step":7,"maxSteps":40,"stage":"propose","action80":"edit src/checkpoint/store.ts","pausing":false,"pauseNow":false,"blocked":null,"retrying":null,"stopReason":null,"plan":{"done":3,"remaining":4,"unverified":1,"next3":["…"]},"declared":{"step":8,"paths":["src/checkpoint/store.ts"],"type":"intent","truncated":false},"touched":{"step":7,"files":["src/checkpoint/store.ts"]},"touchedRecent":["src/checkpoint/store.ts"],"leases":["20260921-234432-rpywkq2v-8"],"subwork":[],"spend":{"generatorUsd":0.12,"jevUsd":0.03,"sessionUsd":0.15,"capUsd":2},"tokens":{"used":48211,"cap":null},"wallMs":724000,"maxWallMs":1800000,"context":{"pct":41,"files":6,"historyEntries":12,"summaryAt":null,"tokensInWindow":29000,"budgetTokens":70400,"compactions":0},"startedAt":"…","beatAt":"…","beatSeq":49,"ttlMs":45000,"stamp":{"n":41,"deviceId":"k3q7m2ab","runId":"20260921-234432-rpywkq2v"},"checksum":"<sha256 hex>"}`
 
 **Read API — pure functions over the fold; the fold is the only I/O boundary:**
 
@@ -1824,7 +2127,8 @@ export function oneLineSafe(s: string, cap: number): string;
 /** who is asking — everything liveness and matching need; computed by ids.ts; `runId`/`sessionId` null for a TUI without a run or a CLI twin, which is why `Ledger.setIdentity` exists (§3.5) */
 export interface SelfIdentity { deviceId: string; hostKey: string; label: string; host: string; user: string; bootAt: string; bootId: string | null; consumerId: string; sessionId: string | null; runId: string | null; wsKey: string; repoKey: string | null; remoteKey: string | null; branch: string | null }
 /** the mutable part — every fact the watch roots, the inbox filter, the lease dir and the stamp seed are derived from */
-export type IdentityPatch = Partial<Pick<SelfIdentity, 'sessionId' | 'runId' | 'repoKey' | 'remoteKey' | 'branch'>>;
+export type IdentityPatch = Partial<Pick<SelfIdentity, 'sessionId' | 'runId' | 'repoKey' | 'remoteKey' | 'branch' | 'label'>>;
+//  `label` is in the patch because `sessions label` changes it mid-process and every record written afterwards must carry the new one (§3.5).
 export type Liveness = 'live' | 'stale' | 'stale-reused-pid' | 'gone' | 'unknown';   // §3.4 (`gone` = stale ≤ 10 min with facts kept)
 
 export interface SessionActivity {
@@ -1854,13 +2158,22 @@ export interface Ledger {
    *  (the mirror probe is `Promise.race([stat, sleep(1_000)])` → `offline`) */
   open(): Promise<void>;
   /**
-   * §3.5, blocker #1: the identity is not static. Re-derives the watch roots (`leases/*/<repoKey>/`), the inbox targets
-   * (`<sessionId>`, `@<repoKey>`, `@<remoteKey>`, `@all`), the lease directory and the run's stamp seed, keeps the already-parsed
-   * records, and emits one `{ kind:'poll' }` change so subscribers re-render. Called by the engine once after `run:ready`
-   * (`repoKey`, `runId`) and by the host at `run:start`, `run:end` and `/resume` (`sessionId`, `runId`, `branch`). Cheap: no new
+   * §3.5, blocker #1: the identity is not static. Re-derives the watch roots (`leases/*/<keyDir>/`), the inbox targets
+   * (`<sessionId>`, `@<repoKey>`, `@<remoteKey>`, `@all`), the lease directory, the label and the run's stamp seed, keeps the
+   * already-parsed records, and emits one `{ kind:'poll' }` change so subscribers re-render. Called by the engine once after
+   * `run:ready` (`repoKey`, `runId`) and by the host at `run:start`, `run:end`, `/resume` and `sessions label`. Cheap: no new
    * `open()`, no re-read of unchanged files; idempotent for an unchanged patch.
+   *
+   * Revision 4: the re-derivation is synchronous, but a root the patch ADDS is walked once before the returned promise
+   * resolves (one bounded `readdir` + parse per added root, the poll's own code path). `fs.watch` reports future changes only,
+   * so without the walk the first `check()` on a freshly-watched `leases/*/<keyDir>/` would read `clear` by ignorance until the
+   * 15 s poll — under `strict`, the clobber the mode exists to prevent. The engine **awaits** it after `run:ready`, before its
+   * first `coordinate` (which is not on the step path); every other caller may ignore the promise. A patch that only narrows
+   * the root set resolves without I/O. A `setIdentity` landing mid-poll bumps a generation counter: the pass in flight
+   * finishes against its own snapshot and merges (records are keyed by `deviceId/runId` and `leaseId`, so a merge cannot
+   * duplicate), and the added roots come from this walk rather than from the next tick.
    */
-  setIdentity(patch: IdentityPatch): void;
+  setIdentity(patch: IdentityPatch): Promise<void>;
   /** change notifications; the unsubscribe function; callbacks run on the debounce tick, never inside a watcher callback */
   subscribe(cb: (fold: Readonly<Fold>, change: FoldChange) => void): () => void;
   close(): Promise<void>;
@@ -1882,39 +2195,110 @@ events; it stats the kind roots first and descends only where the mtime changed,
 file (≤ 8 KiB) and updates the fold incrementally; a watcher error → `{ kind: 'offline' }` and poll-only until the root stats
 again. G1(a)'s 15 s bound is this poll.
 
-**Write API — the surface's verbs, with exact signatures (blocker #2).** `src/session/**`, `src/cli/**` and `src/tui/**` are
-assigned work that writes ledger files (`/worktree {list,take,back,fork}`, `/spawn`, `sessions gc [--device] [--lanes]
-[--unignore]`, `sessions unlock --device`, `sessions label`, `sessions sync status|disable`, and P7's "the TUI creates the
+**Write API — the surface's verbs, with exact signatures (blocker #2; thirteen functions after revision 4 added
+`purgeInbox`).** `src/session/**`, `src/cli/**` and `src/tui/**` are
+assigned work that writes ledger files (`/worktree {list,take,back,fork}`, `/spawn`, `sessions gc [--device
+--i-know-it-is-gone] [--lanes] [--unignore]`, `sessions inbox --purge`, `sessions unlock --device`, `sessions label`,
+`sessions sync status|disable`, and P7's "the TUI creates the
 worktree"), while `worktree.ts`, `sync-shared-dir.ts` and `heartbeat.ts` are engine-internal. The resolution is **not** to let the
 surface import them: `index.ts` exports these functions, they are the only way a non-harness file writes under
 `~/.jevcode/coordination/**`, and each keeps the one-writer rule inside the harness's own code:
 
 ```ts
 /** §6.5 / P7: `git worktree add --lock --reason jevcode:<runId>:<sessionId> -b jevcode/<slug> <dir> <base>`, the metadata file
- *  under devices/<hostKey>/worktrees/<repoKey>/<slug>.json, the parent's dirty-set copy and a `type:'worktree'` lease. */
+ *  under devices/<hostKey>/worktrees/<repoKey>/<slug>.json, the parent's dirty-set copy and a `type:'worktree'` lease.
+ *  Rejects: 'dirty-base' (base has uncommitted changes and `dirtySync` is false), 'branch-exists' (`jevcode/<slug>` exists and
+ *  is not ours), 'slug-taken' (metadata for that slug exists), 'not-found' (unknown repoKey). */
 export function createWorktree(ledger: Ledger, o: { repoKey: string; slug: string; base: string; runId: string; sessionId: string; dirtySync?: boolean }): Promise<{ dir: string; branch: string; syncedIgnored: string[] }>;
-/** `/worktree list`: metadata joined with `git worktree list --porcelain` state (locked, dirty, merged, ageDays) — read-only. */
+/** `/worktree list`: metadata joined with `git worktree list --porcelain` state — read-only; never rejects (an unreadable
+ *  worktree is one row with `ours:false` and the errno in `lockReason`). */
 export function listWorktrees(home: string, repoKey: string): Promise<WorktreeInfo[]>;
-/** `/worktree back`, `[x] remove anyway`: the four §6.6 guards, `force` only for the twice-confirmed path; never a user worktree. */
+/** `/worktree back`, `[x] remove anyway`: the four §6.6 guards, `force` only for the twice-confirmed path; never a user
+ *  worktree. Refusals are the RESULT, not an exception (the caller renders them as pane rows). */
 export function removeWorktree(home: string, o: { repoKey: string; slug: string; force?: boolean }): Promise<{ removed: boolean; reason?: 'dirty' | 'unmerged' | 'live' | 'not-ours' }>;
-/** `sessions gc --lanes` and the hourly timer: the lane / worktree sweep of §6.2 and §6.6 with every guard. */
+/** `sessions gc --lanes` and the hourly timer: the lane / worktree sweep of §6.2 and §6.6 with every guard. Per-entry failures
+ *  are counted in the report; the sweep never throws mid-way. */
 export function sweep(home: string, o: { repoKey?: string; retentionDays?: number; dryRun?: boolean }): Promise<SweepReport>;
 /** `sessions gc`: OUR OWN files only (§4.6) — expired messages, acks past their retention, ended heartbeats > 24 h, `seen` files
- *  of sessions idle > 30 d, conflicted copies under our subtree, the 0700/0600 chmod sweep. Never a takeover lease or claims[]. */
+ *  of sessions idle > 30 d, conflicted copies under our subtree, the 0700/0600 chmod sweep. Never a takeover lease or claims[].
+ *  `device` / `unignore` accept a LABEL, a `label#id4` or an id8 and are resolved by the §5.3 `device:` rules → 'unknown-device'
+ *  / 'ambiguous-device' (with candidates) before anything is written. Per-file EROFS/ENOSPC/EACCES are counted in
+ *  `GcReport.errors`, never thrown: a GC that aborts half-way leaves the store worse than one that reports. */
 export function gc(ledger: Ledger, o?: { device?: string; unignore?: string; neverStarted?: boolean; lanes?: boolean; dryRun?: boolean }): Promise<GcReport>;
-/** `sessions unlock <id> --device <label>`: a `type:'takeover'` lease carrying a claim one above every claim we can see (§9.3). */
+/** `sessions inbox --purge <label|id8>` (revision 4 — the one surface verb W1 item 15 had with no facade function, which would
+ *  have forced the direct ledger delete rule 1 forbids). Rule 1 also decides its SEMANTICS: another device's message files are
+ *  not ours to unlink, so a purge is two acts and the report says which. Messages FROM that device are marked seen locally
+ *  (appended to `inbox/seen/<myDeviceId>/<myConsumerId>.json`, ≤ 2,000, oldest dropped) so they never surface on this device
+ *  again — including after a restart, which is the user's actual request; messages this device SENT to that target are deleted,
+ *  because those are ours. Nothing foreign is ever unlinked, so a sync client has nothing to resurrect.
+ *  Rejects: 'unknown-device', 'ambiguous-device'. Per-file errno is counted, not thrown. */
+export function purgeInbox(ledger: Ledger, o: { device?: string; target?: string; sent?: boolean; olderThanMs?: number; dryRun?: boolean }): Promise<{ suppressed: number; deleted: number; errors: { code: string; path60: string }[] }>;
+/** `sessions unlock <id> --device <label>`: a `type:'takeover'` lease carrying a claim one above every claim we can see, AND
+ *  the local `devices/<hostKey>/claims/<runId>.json` record of it, so a later local `/resume` of a run with no local dir cannot
+ *  re-issue that epoch (§9.3). Rejects: 'offline' (sync on but the mirror is unreachable — a takeover nobody can read is worse
+ *  than a refusal), 'not-found' (no such runId in the fold), 'unknown-device'. */
 export function writeTakeoverLease(ledger: Ledger, o: { runId: string; reason60: string }): Promise<{ leaseId: string; claim: Claim }>;
-/** `sessions label "mbp"`: writes devices/<hostKey>/device.json AND the public registry/<deviceId>/device.json subset (both ours). */
+/** `sessions label "mbp"`: writes devices/<hostKey>/device.json AND the public registry/<deviceId>/device.json subset (both
+ *  ours), then `ledger.setIdentity({ label })`. Rejects: 'label-too-long' (> 24 chars after redact + indexOneLine). */
 export function setDeviceLabel(home: string, label: string): Promise<void>;
-/** `sessions gc --device <label> --i-know-it-is-gone` / `--unignore`: the local tombstone list (§4.6 row 4). */
+/** `sessions gc --device <label> --i-know-it-is-gone` / `--unignore`: the local tombstone list (§4.6, the ignored-device rule).
+ *  These take a RESOLVED id8 — the CLI resolves the label through `gc`'s rules first, so there is exactly one resolution point. */
 export function ignoreDevice(home: string, deviceId: string): Promise<void>;
 export function unignoreDevice(home: string, deviceId: string): Promise<void>;
-/** `sessions sync disable`: removes OUR `{registry,leases,inbox,acks,runs}/<deviceId>/` from the mirror; refused while a local run is live (§9.1). */
+/** `sessions sync disable`: removes OUR `{registry,leases,inbox,acks,runs}/<deviceId>/` from the mirror; refused while a local
+ *  run is live (§9.1) — the refusal is the RESULT, not an exception. Rejects: 'offline' (mirror unreachable). */
 export function syncDisable(home: string, sharedDir: string): Promise<{ removed: number } | { refused: 'run-live'; runId: string }>;
-/** `sessions sync status`: lag, last successful copy, offline code, bytes this session. */
+/** `sessions sync status`: lag, last successful copy, offline code, bytes this session. Pure over ledger state; never rejects. */
 export function syncStatus(ledger: Ledger): SyncStatus;
 /** §3.4: the synchronous `peerLive` the lock path needs, over an already folded ledger; returns the highest FOREIGN claim. */
 export function foreignLive(fold: Fold, self: SelfIdentity, runId: string): { deviceId: string; label: string; step: number; beatAgeMs: number; claim: Claim; verified: boolean } | null;
+
+/** The four report types the verbs above return (revision 4 — referenced once and never defined in revision 3). */
+export interface WorktreeInfo {
+  slug: string; dir: string; branch: string; base: string; repoKey: string;
+  runId: string; sessionId: string; deviceId: string; createdAt: string; ageDays: number;
+  locked: boolean; lockReason: string | null;          // git's own lock reason `jevcode:<runId>:<sessionId>` — the only marker (§6.5)
+  ours: boolean;                                        // lockReason parses as ours AND metadata exists under devices/<hostKey>/worktrees/
+  dirty: boolean; ahead: number; behind: number; merged: boolean;   // porcelain + one `rev-list --left-right --count`
+  live: boolean;                                        // a live heartbeat in the fold whose `repo.worktreeSlug` is this slug
+  syncedIgnored: string[];                              // ≤ 64 rel paths copied from the parent's dirty set (§6.5)
+}
+export interface SweepReport {
+  scanned: number; dryRun: boolean; ms: number;
+  removed: { kind: 'lane' | 'worktree'; id: string; bytes: number }[];
+  kept: { kind: 'lane' | 'worktree'; id: string; reason: 'dirty' | 'unmerged' | 'live' | 'not-ours' | 'young' | 'guard' }[];
+  failed: { id: string; code: string }[];               // EROFS / ENOSPC / EACCES / EBUSY, counted not thrown
+}
+export interface GcReport {
+  dryRun: boolean; bytes: number;
+  deleted: { messages: number; acks: number; seen: number; heartbeats: number; leases: number; conflictedCopies: number };
+  chmod: number;                                        // files/dirs re-moded by the one-time 0700/0600 sweep (§10.4)
+  skipped: { reason: 'foreign' | 'claims' | 'takeover' | 'live' | 'ignored'; n: number }[];   // never deleted, by rule (§4.6)
+  errors: { code: string; path60: string }[];           // ≤ 8; the rest are counted in `errorsTotal`
+  errorsTotal: number;
+  ignored?: { deviceId: string; label: string } | null; // what --device / --unignore resolved to
+}
+export interface SyncStatus {
+  mode: 'off' | 'shared-dir' | 'git'; root: string | null;
+  state: 'online' | 'offline' | 'never'; code: string | null;   // the classified errno behind `⇄ off (<code>)` (§3.3)
+  lagMs: number | null; lastCopyAt: string | null; queued: number; bytesThisSession: number;
+  devicesSeen: number; skippedDevices: number;          // §3.5 MAX_DEVICES bookkeeping
+}
+
+/** One error type for all thirteen verbs (revision 4): a write verb NEVER throws a bare errno and never rejects with a string.
+ *  Rule: a refusal the user can act on is a RESULT (`removeWorktree().reason`, `syncDisable().refused`); a precondition the
+ *  caller got wrong, or an environment that cannot serve the verb at all, is a `CoordinationError`; a per-file failure inside a
+ *  bulk verb (`gc`, `sweep`, `purgeInbox`) is counted in the report. Unclassified errnos surface as code 'io' with the errno in
+ *  `detail60`, so the surface never has to pattern-match on `err.code` from `node:fs`. */
+export type CoordinationErrorCode =
+  | 'dirty-base' | 'branch-exists' | 'slug-taken' | 'not-found' | 'not-ours'
+  | 'label-too-long' | 'unknown-device' | 'ambiguous-device'
+  | 'offline' | 'readonly' | 'no-space' | 'denied' | 'io';
+export class CoordinationError extends Error {
+  readonly code: CoordinationErrorCode;
+  readonly detail60: string;                            // redacted, one line, ready to render
+  readonly candidates?: SessionActivity[];              // 'ambiguous-device' only (§5.3 listing)
+}
 ```
 
 Everything else the surface needs is a pure read (`listSessions`, `check`, `inbox`, `resolveTarget`, `byRun`,
@@ -1939,16 +2323,27 @@ export type LeaseCheck =
   | { kind: 'conflict'; conflicts: LeaseConflict[]; contested: boolean /* DISPLAY: an overlapping exclusive lease with a LOWER stamp exists */; requested: { path: string; by: string; agoMs: number }[]; snapshot: LeaseSnapshot };
 /** §4.5: the set of overlapping exclusive leaseIds this check saw, so the re-fold can say which ones APPEARED afterwards */
 export type LeaseSnapshot = ReadonlySet<string>;
-/** pure, O(paths × liveLeases): every live, unexpired lease on my repoKey / remoteKey (or wsKey when both are null) whose owner heartbeat is live */
+/** pure, O(paths × liveLeases): every live, unexpired lease on my repoKey / remoteKey (or wsKey when EITHER side lacks one,
+ *  §4.3 step 2) whose owner heartbeat is live */
 export function check(fold: Fold, self: SelfIdentity, mine: LeaseIntent): LeaseCheck;
 /** advisory: one fire-and-forget write on the ledger chain (type 'intent'); nothing awaited */
 export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'advisory'): LeaseHandle;
-/** strict: type 'exclusive', the rename awaited (~1 ms, no fsync), then ONE readdir of every watched peer's leases/<repoKey>/.
- *  `appeared` = overlapping exclusive leases present now but ABSENT from `check().snapshot` — a non-empty `appeared` re-runs the
- *  judgment regardless of stamp order (the symmetric arrival rule of §4.5); when both sides see each other the lower stamp
- *  proceeds and the higher waits, so exactly one proceeds. */
-export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'strict', seen: LeaseSnapshot): Promise<LeaseHandle & { refold: LeaseCheck; appeared: LeaseConflict[] }>;
-export interface LeaseHandle { leaseId: string; stamp: Stamp; renew(): void; release(outcome: NonNullable<Lease['released']>['outcome'], changed?: Record<string, string | null>, head?: string): void }
+/** strict: type 'exclusive' under keyDir(repoKey ?? wsKey), the rename awaited (~1 ms, no fsync), then ONE readdir of EVERY
+ *  device's leases/<keyDir>/ — the fence is not bounded by MAX_DEVICES, only by MAX_FENCE_DEVICES (256) and STRICT_FENCE_MS
+ *  (250 ms) (§4.5). Two outcomes, both explicit:
+ *   - `fence:'decided'` with `appeared` = overlapping exclusive leases present now but ABSENT from `check().snapshot`, and
+ *     `proceed` = `appeared.length === 0` (§4.5 F1: yield on SIGHT, never proceed on sight — a local stamp test here is what
+ *     let both writers proceed in the one-sees case). Pure code, no Jev, no pane, identical under jev-off / --no-input / Jev
+ *     unreachable, and at most one overlapping writer ever gets `proceed:true` in any interleaving. `proceed:false` means
+ *     YIELD: `handle.downgrade()` to 'intent', then the §4.3 step-4 wait, whose F2 wake rule lets the LOWEST stamp among the
+ *     yielded-to set re-declare and re-run the fence — that is where "the lower stamp proceeds" actually happens.
+ *   - `fence:'blind'` when a bound was reached before the enumeration finished: strict refuses to guess, and the caller takes
+ *     the rule-1 discard + `lease-conflict` pane (`[c]` treats this one step as advisory). */
+export type StrictDeclare =
+  | (LeaseHandle & { fence: 'decided'; refold: LeaseCheck; appeared: LeaseConflict[]; proceed: boolean })
+  | (LeaseHandle & { fence: 'blind'; scanned: number; total: number });
+export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'strict', seen: LeaseSnapshot): Promise<StrictDeclare>;
+export interface LeaseHandle { leaseId: string; stamp: Stamp; renew(): void; downgrade(): Promise<void> /* 'exclusive' → 'intent' on a fence yield (§4.5 F1); same stamp, same leaseId */; release(outcome: NonNullable<Lease['released']>['outcome'], changed?: Record<string, string | null>, head?: string): void }
 export function release(handle: LeaseHandle, outcome: NonNullable<Lease['released']>['outcome'], changed?: Record<string, string | null>, head?: string): void;
 /** §4.1 advisory facts for one step; StepRecord.coord? is Pick<…, 'conflicts' | 'requested'> reduced to §4.1's { path, holder: label, holderStep, agoMs, sameBranch, theyTouched } */
 export interface CoordinationFacts { step: number; conflicts: LeaseConflict[] /* ≤ 8 */; requested: { path: string; by: string; agoMs: number }[] /* ≤ 8 */; messages: { from: string; type: MessageType; text: string /* ≤ 300 */; at: string }[] /* ≤ 8 */; others: number }
@@ -1957,7 +2352,8 @@ export interface CoordinationFacts { step: number; conflicts: LeaseConflict[] /*
 Outcomes by claim mode. **`advisory`**: `check()` may return `conflict`; the engine turns it into facts (`StepRecord.coord`, a
 `notice kind:'coordination' level:'warn'`, a `heads-up` message, a `coordination:facts` event) and the step proceeds — the API has no
 `wait`. **`strict`**: the engine's `coordinate` stage (harness-internal) turns `conflict` into `wait | worktree | change_approach |
-proceed | stop` (§4.4) and reports `coordination:decision`; the TUI sees the `lease-conflict` pane only past `strictWaitMs`, with
+proceed | stop` (§4.4) and reports `coordination:decision`; the fence of §4.5 runs **before** that judgment and needs neither Jev
+nor the TUI. The TUI sees the `lease-conflict` pane past `strictWaitMs` — or at once on `fence:'blind'` — with
 `BlockingAnswer` `'wait' | 'continue' | 'worktree' | 'pause'` (`[w] [c] [t] [q]`, §4.3 step 4; `'continue'` is the existing member
 re-used as `[c] continue anyway`). **`off`**: `check` is never called. The newcomer pane (§4.7) needs no lease call:
 `listSessions(fold, self).filter(a => a.liveness === 'live' && a.sameRepo)`.
@@ -2021,7 +2417,7 @@ Every agreed case maps to §11 rows (rows 45–50 are added there for the cases 
 | --- | --- | --- | --- |
 | crashed session leaving a lease | 1, 10, 18 | same device: stale the moment the pid is gone, its leases ignored regardless of `expiresAt`; foreign: after `ttl + slack`; `gone` facts kept 10 min for the card | `records.test.ts`, `engine-crash-card.test.ts` |
 | clock skew across devices | 6 | liveness from the receiver's monotonic arrival time; `skewed` (> 300 s) is a display flag; order from Lamport stamps | `records.test.ts` skew |
-| offline device returning with stale state | 11, 31 | peers proceed; on return `released.changed` → `theyTouched` → judgment / `handoff`; a double resume → the fork rule (stamp, never step count) | `ledger.test.ts` offline/online, `engine-takeover.test.ts`, `import-fork.test.ts` |
+| offline device returning with stale state | 11, 31 | peers proceed; on return `released.changed` → `theyTouched` → judgment / `handoff`; a double resume → the fork rule by **`claim.epoch`** — the run's immutable per-process incarnation, never the rolling stamp and never the step count (§3.2, §9.3); ties by `deviceId` then `runId`, and the exit-2 stop only for an authenticated superseding claim | `ledger.test.ts` offline/online, `engine-takeover.test.ts`, `import-fork.test.ts` |
 | same repo via two clones / worktrees | 7, 8, 24, 35, 40 | one `repoKey` (root commits) or `remoteKey`; toplevel-relative paths; different branch → `soft` fact | `leases.test.ts` prefix + soft, `ids.test.ts` |
 | one session paused for a day holding a lease | **45** | a run on a pane is live and renews; a paused run holds nothing; strict peers skip the wait for a blocked peer | `leases.test.ts` blocked-peer skip, `engine-blocker.test.ts` |
 | a session killed mid-step | 1, 29, **46** | no row committed; `run.lock` and leases go stale by pid; the card names the stage and the files that differ from `pre/<step>/` | `engine-crash-card.test.ts` (kill during execute) |
@@ -2035,6 +2431,11 @@ Every agreed case maps to §11 rows (rows 45–50 are added there for the cases 
 | a shared folder with thousands of device subtrees | **54** | ≤ `MAX_DEVICES` (16) subtrees walked, watched and parsed; the rest counted with one notice (§3.5, §10.9) | `watch.test.ts` 5,000 subtrees |
 | a resumed run's messages | **55** | `actor8` per process ⇒ ids never repeat across lives; per-consumer `seen` and acks | `mailbox.test.ts` pause / resume / send |
 | two machines sharing one `~/.jevcode` | **3** | per-host identity files (`devices/<hostKey>/`) — two deviceIds, no co-written file, no adopt ping-pong (§3.1) | `ledger.test.ts` shared-home fixture |
+| two strict writers that see each other at the fence | **56** | F1 yield on sight (never proceed on sight, which is what keeps the one-sees case safe), F2 the lowest stamp re-declares and proceeds; pure code, no Jev and no pane on that path, so `jev-off` / `--no-input` / Jev unreachable are identical (§4.5) | `leases.test.ts` both-see in four Jev configurations + a three-way variant |
+| a strict run with no `repoKey`, or a lease folder too wide to scan | **57** | leases are keyed by `keyDir(repoKey ?? wsKey)`; the fence reads every device subtree under `MAX_FENCE_DEVICES` / `STRICT_FENCE_MS` and returns `fence:'blind'` rather than proceeding blind (§4.5) | `leases.test.ts` null-key + `fence-blind` |
+| a paired device forging as another paired device; a planted claim at the integer ceiling | **58**, **61** | keys are per device and looked up by the path `deviceId`, never by the record's `keyId`; `claim.epoch ≤ MAX_CLAIM_EPOCH`; the `/resume` refusal counts only qualified epochs (§9.3, §10.3) | `records.test.ts` wrong-key + ceiling fixtures, `engine-takeover.test.ts` |
+| two machines with one machine identifier; a symlinked shared dir | **59**, **60** | `hostKey` includes the machine id, a foreign `hostKey` in my own subtree is `duplicate-identity` + the adopt prompt, and the mirror root must realpath-differ from the coordination root (§3.2, §10.1) | `ledger.test.ts` shared-home ×2, `sync-shared-dir.test.ts` symlink |
+| a user purging another device's messages | **53** | rule 1 holds: foreign messages are marked seen locally (they never surface again on this device), only our own sent files are deleted — `purgeInbox()` reports both counts (§12.0.4) | `mailbox.test.ts` purge: nothing foreign unlinked, nothing re-toasted |
 | permission boundaries between sessions (no laundering) | 26, **50** | a message never widens rights; peer text only inside the fenced block; children inherit and cannot widen; the sandbox cannot read or forge records | `mailbox.test.ts`, `seatbelt.test.ts`, `prompts-context.test.ts` |
 
 
@@ -2051,12 +2452,12 @@ additive. LOC are new / changed lines excluding tests; tests roughly equal. Each
 
 | # | File | Change | LOC |
 | --- | --- | --- | --- |
-| 1 | `src/core/types.ts` | `EngineRunPhase` (**not** `RunPhase` — `src/tui/useEngine.tsx:102` already exports that name with other members); `StageName` + `'coordinate'` (:240); `StepTiming.coordinateMs?` (:379); `InterruptReason` + `'human_pause'` (:392); `StepRecord.coord?` (:394, beside `verify` :424); `CheckpointState.phase?`, `.history?`, `.fileCache?`, `.fileMemory?`, `.kept?`, `.summaryAt?`, `.interruptedDetail?` (:936-983; `interrupted` :966); `RunMeta.repoKey?`, `.remoteKey?`, `.superKey?`, `.wsKey?`, `.deviceId?`, `.relocations?`, `.imports?`, `.forked?`, `.undoUnavailableBelow?`, `.ended?`, `.worktree?` (:1017); `GeneratorCallRecord.discarded?` (:1053); `CheckpointStore.updateMeta` `Pick` widened + `writeCache(rel, json)` (:1091); `SessionRef.parentSessionId?` (:1151); `BlockingKind` + `'lease-conflict'`, `BlockingAnswer` + `'pause' \| 'wait' \| 'worktree'` (:1160-1161); `EngineOptions.coordination?: { enabled?, claims?, strictWaitMs?, ledger?, peerLive?, identity? }`, `.contextPolicy?`, `.resume.replay?` (:1174, :1180); `SynthesisContext.coordination?`, `.cache?: { writeSample(goalId, round, sample, json): void; readRound(goalId, round): SampleArrival[] }` and `.onRound?(goalId, round, arrived)` (:1261, beside `reportVerify` :1306 — without them the engine cannot write `cache/llm/**` or fill `PausePoint.round`, §6.4); `EngineStatus.phase?`, `.pauseNow?`, `.context?`, `.coordination?: { live, conflicts, inbox }`, `.subwork?` (:1348); `NoticeKind` + `'session' \| 'coordination'` (:1375); **`UiLabel` + `'[session]'` (:1378)** and `BARE_NOTICE_KINDS` + both kinds (`src/tui/plain.ts:284`, TUI-owned); `EngineEvent` + `coordination:facts`, `coordination:decision`, `session:message`, `session:peer`, `context:compacted`, `heartbeat`; `proposal.verdict?: 'replay'` (:1382, :1403); `Engine.pause(opts?)`, `Engine.deliver?(msg)` (:1449-1469); **plus the §12.0 items**: `PausePoint` (with `llm?`, not `synthPhase?`), `PausePointReason`, `pause:point`, `EngineStatus.pausePoint?`, `ContextUsage` (`budgetTokens` + `windowTokens`, not `windowBudget`), `CheckpointState.compactions?` / `.lastCompactionAt?` / `.lastPromptChars?`, `interruptedDetail` gaining `resumes` / `at`, `RunMeta.claims?: Claim[]`, `EpilogueContext.ended?`, `Engine.end?()`, `CoordinationOptions` (incl. `syncRuns`), `contextPolicy.mode` / `.kept`, exported `Stamp` / `Claim` / `EngineRunPhase` / `Liveness` / `AckOutcome`, and the `// contract 1.4` header line directly after `// contract 1.3` | ~250 |
+| 1 | `src/core/types.ts` | `EngineRunPhase` (**not** `RunPhase` — `src/tui/useEngine.tsx:102` already exports that name with other members); `StageName` + `'coordinate'` (:240); `StepTiming.coordinateMs?` (:379); `InterruptReason` + `'human_pause'` (:392); `StepRecord.coord?` (:394, beside `verify` :424); `CheckpointState.phase?`, `.history?`, `.fileCache?`, `.fileMemory?`, `.kept?`, `.summaryAt?`, `.interruptedDetail?` (:936-983; `interrupted` :966); `RunMeta.repoKey?`, `.remoteKey?`, `.superKey?`, `.wsKey?`, `.deviceId?`, `.relocations?`, `.imports?`, `.forked?`, `.undoUnavailableBelow?`, `.ended?`, `.worktree?` (:1017); `GeneratorCallRecord.discarded?` (:1053); `CheckpointStore.updateMeta` `Pick` widened + `writeCache(rel, json)` (:1091); `SessionRef.parentSessionId?` (:1151); `BlockingKind` + `'lease-conflict'`, `BlockingAnswer` + `'pause' \| 'wait' \| 'worktree'` (:1160-1161); `EngineOptions.coordination?: { enabled?, claims?, strictWaitMs?, ledger?, peerLive?, identity? }`, `.contextPolicy?`, `.resume.replay?` (:1174, :1180); `SynthesisContext.coordination?`, `.cache?: { writeSample(goalId, round, sample, json): void; readRound(goalId, round): SampleArrival[] }` and `.onRound?(goalId, round, arrived)` (:1261, beside `reportVerify` :1306 — without them the engine cannot write `cache/llm/**` or fill `PausePoint.round`, §6.4); `EngineStatus.phase?`, `.pauseNow?`, `.context?`, `.coordination?: { live, conflicts, inbox }`, `.subwork?` (:1348); `NoticeKind` + `'session' \| 'coordination'` (:1375); **`UiLabel` + `'[session]'` (:1378)** and `BARE_NOTICE_KINDS` + both kinds (`src/tui/plain.ts:284`, TUI-owned); `EngineEvent` + `coordination:facts`, `coordination:decision`, `session:message`, `session:peer`, `context:compacted`, `heartbeat`; `proposal.verdict?: 'replay'` on the `proposal` event (:1382, :1403; §12.0.2); `Engine.pause(opts?)`, `Engine.deliver?(msg)` (:1449-1469); **plus the §12.0 items**: `PausePoint` (with `llm?`, not `synthPhase?`), `PausePointReason`, `pause:point`, `EngineStatus.pausePoint?`, `ContextUsage` (`budgetTokens` + `windowTokens`, not `windowBudget`), `CheckpointState.compactions?` / `.lastCompactionAt?` / `.lastPromptChars?`, the named `InterruptedDetail` (with `resumes` / `at`), `RunMeta.claims?: Claim[]` (`MAX_CLAIMS_PER_RUN` 64) and `MAX_CLAIM_EPOCH`, `EpilogueContext.ended?`, `Engine.end?()`, `CoordinationOptions` (incl. `syncRuns`), `contextPolicy.mode` / `.kept`, exported `Stamp` / `Claim` / `EngineRunPhase` / `Liveness` / `AckOutcome`, and the `// contract 1.4` header line directly after `// contract 1.3` | ~250 |
 | 2 | `src/errors.ts` | `AbortReason` + `'human_pause'` (:252); the exit-code ternary maps it to `EXIT_CODES.budget` (:259, :289) | ~4 |
 | 3 | `src/core/limits.ts` (new) | every window / history / read / prompt / context bound; `window.ts:10-15`, `resume.ts:20-24`, `prompts.ts:11-24`, `execute.ts:64-80`, `seed.ts:11` import from it | ~90 |
-| 4 | `src/coordination/ids.ts` (new) | `hostKeyOf`, the pure `readDeviceIdentity` + `createDevice` split (no prompter — §3.2), label dedupe `label#id4`, `wsKey`, `repoKey` roots / `normaliseRemote` + `remoteKey` fallback (+ cache under `coordination/devices/<hostKey>/repokeys/`, regex-validated), `superKey`, per-run Lamport stamp `(n, deviceId, runId)` **and the per-process `Claim` mint** (`epoch = max(run.json.claims[], imports) + 1`), `mintActor8` / `mintConsumerId`, the validators (incl. `hostKey`, `consumerId`, `TARGET_RE`, `MSG_FILE_RE`, `OID_RE`, `BRANCH_RE`, `LANE_DIR_RE`), per-workspace case-sensitivity probe by `stat`, and the `bootId` reader (`/proc/sys/kernel/random/boot_id`, `kern.bootsessionuuid`) | ~230 |
-| 5 | `src/coordination/records.ts` (new) | Heartbeat (incl. `kind:'bench'`) / Lease / Message / Ack / Device schemas, **`parseRecord(text, kind, ctx)`** — per-kind caps, per-field types, safe integers, array bounds, leaf re-derivation, id-vs-path checks, `reason:'bounds'`, checksum, hmac slot (§12.0.4) — `isLive` (pid + **`bootId`** same-device; monotonic arrival re-stamped on checksum change for foreign; `hung` flag), `byRun`, `compareClaim`, `peerTransitions`, `oneLineSafe`, `overlap`, `redactRecord`, canonical JSON | ~520 |
-| 5b | `src/coordination/index.ts` (new) | the facade of §12.0.4 — the only import path for `src/session/**` / `src/cli/**` / `src/tui/**`; W0 ships every type of §12.0 and the pure functions (`listSessions`, `check`, `inbox`, `resolveTarget`, `compareStamp`, `compareClaim`, `byRun`, `peerTransitions`, `oneLineSafe`, `checksumOf`, `parseRecord`, `isLive`, `overlap`); `readFold` / `openLedger` (with `setIdentity`) / `declare` / `release` / `send` / `ack` / `awaitAck` **and the write API** (`createWorktree`, `listWorktrees`, `removeWorktree`, `sweep`, `gc`, `writeTakeoverLease`, `setDeviceLabel`, `ignoreDevice`, `unignoreDevice`, `syncDisable`, `syncStatus`, `foreignLive`) are exported from W1 / W3 with exactly the §12.0.4 signatures — the TUI codes against those signatures from W0 and its tests fake the `Ledger` | ~60 |
+| 4 | `src/coordination/ids.ts` (new) | `machineIdOf()` (async, once per process, cached: `ioreg -rd1 -c IOPlatformExpertDevice` on macOS, `/etc/machine-id` → `/var/lib/dbus/machine-id` on Linux, `null` on failure) and `hostKeyOf(facts)` over **three** inputs (§3.2), the pure `readDeviceIdentity` + `createDevice` split (no prompter — §3.2; `createDevice` records `machineId` and mints this device's `deviceKey` + `keyId`), `keyDir(key)` + `KEY_DIR_RE`, label dedupe `label#id4`, `wsKey`, `repoKey` roots / `normaliseRemote` + `remoteKey` fallback (+ cache under `coordination/devices/<hostKey>/repokeys/`, regex-validated), `superKey`, per-run Lamport stamp `(n, deviceId, runId)` **and the per-process `Claim` mint** (`epoch = max(run.json.claims[], imports) + 1`), `mintActor8` / `mintConsumerId`, the validators (incl. `hostKey`, `consumerId`, `TARGET_RE`, `MSG_FILE_RE`, `OID_RE`, `BRANCH_RE`, `LANE_DIR_RE`), per-workspace case-sensitivity probe by `stat`, and the `bootId` reader (`/proc/sys/kernel/random/boot_id`, `kern.bootsessionuuid`) — read **once per process on the way to the lock, never inside it**, so `acquireRunLock` stays synchronous and spawn-free and **every** lock writer passes an already-resolved `bootId` (§14 item 16(a)) | ~245 |
+| 5 | `src/coordination/records.ts` (new) | Heartbeat (incl. `kind:'bench'`) / Lease / Message / Ack / Device schemas, **`parseRecord(text, kind, ctx)`** — per-kind caps, per-field types, safe integers (`claim.epoch ≤ MAX_CLAIM_EPOCH`), array bounds, leaf re-derivation, the id-vs-path checks **including `claim.deviceId` and a lease's `keyDir`**, the `hostKey` same-device test, `verified` from `ctx.trust(pathDeviceId)`, `reason:'bounds'`, checksum (§12.0.4) — `CoordinationError` and its code union, `isLive` (pid + **`bootId`** same-device; monotonic arrival re-stamped on checksum change for foreign; `hung` flag), `byRun`, `compareClaim`, `peerTransitions`, `oneLineSafe`, `overlap`, `redactRecord`, canonical JSON | ~520 |
+| 5b | `src/coordination/index.ts` (new) | the facade of §12.0.4 — the only import path for `src/session/**` / `src/cli/**` / `src/tui/**`; W0 ships every type of §12.0 and the pure functions (`listSessions`, `check`, `inbox`, `resolveTarget`, `compareStamp`, `compareClaim`, `byRun`, `peerTransitions`, `oneLineSafe`, `checksumOf`, `parseRecord`, `isLive`, `overlap`); `readFold` / `openLedger` (with `setIdentity`) / `declare` / `release` / `send` / `ack` / `awaitAck` **and the thirteen-function write API** (`createWorktree`, `listWorktrees`, `removeWorktree`, `sweep`, `gc`, `purgeInbox`, `writeTakeoverLease`, `setDeviceLabel`, `ignoreDevice`, `unignoreDevice`, `syncDisable`, `syncStatus`, `foreignLive`) with `WorktreeInfo` / `SweepReport` / `GcReport` / `SyncStatus` / `CoordinationError` are exported from W1 / W3 with exactly the §12.0.4 signatures — the TUI codes against those signatures from W0 and its tests fake the `Ledger` | ~60 |
 | 6 | `src/loop/stop.ts` | `classifyAbort` `'human_pause'` branch (:41-48) | ~6 |
 
 Tests: `test/unit/coordination/{ids,records}.test.ts` — including **two processes, same device, same `n`** (stamps differ by
@@ -2064,7 +2465,7 @@ Tests: `test/unit/coordination/{ids,records}.test.ts` — including **two proces
 three URL forms, `isLive` of a same-device record with a 5-min-old beat and a live pid (live, `hung`), a live pid with a
 **stepped clock** (still live — the row-2 case), a resumed process whose `beatSeq` restarts at 1 (still live, arrival re-stamped
 on checksum change), and the hostile `parseRecord` fixtures of §11 row 26 (60 KiB `label`, `\x9b31m` in `task60`, RLO in
-`label`, `stamp.n: 1e300`, over-long arrays, id-vs-path mismatch, a `laneDir` outside `LANE_DIR_RE`);
+`label`, `stamp.n: 1e300`, over-long arrays, id-vs-path mismatch **including a foreign `claim.deviceId` and a lease under the wrong `keyDir`**, `claim.epoch: 9007199254740990` → `bounds`, a `laneDir` outside `LANE_DIR_RE`), **`hostKeyOf` over three inputs** (two default-named hosts with one username and different machine ids → different keys; an unreadable machine id → the two-input fallback plus the notice), `keyDir()` round-tripping `ws:` / `rm:` / roots keys, and `parseRecord` `verified` (right key → true, another paired device's key → false, no trust entry → false, `ok` in all three);
 `test/unit/loop/stop.test.ts` extended; `test/unit/errors.test.ts` (`AbortError('human_pause').exitCode === 4`). Note to the
 TUI session: `STOP_REASON_SET` (`index.ts:128-142`) is untouched — no new `StopReason`.
 
@@ -2072,23 +2473,31 @@ TUI session: `STOP_REASON_SET` (`index.ts:128-142`) is untouched — no new `Sto
 
 | # | Owner | File | Change | LOC |
 | --- | --- | --- | --- | --- |
-| 7 | harness | `src/coordination/ledger.ts` (new) | paths (incl. `devices/<hostKey>/`), **async-only** `open()` (caller-side, after first frame; `Promise.race([stat, sleep(1s)])` for the mirror root, no `*Sync` anywhere but the exit-handler ended beat), **`setIdentity(patch)`** re-deriving watch roots / inbox targets / lease dir / stamp seed, `writeLocal` (`atomic.ts:19` with `{ mode: 0o600 }`, parents `0o700`; awaited variant for `strict`), fold readers over ≤ `MAX_DEVICES` subtrees with `fold.skippedDevices`, tombstones + `unignoreDevice`, and the **write API** of §12.0.4 (`gc`, `foreignLive`, `writeTakeoverLease`, `setDeviceLabel`, `ignoreDevice`, `syncDisable`, `syncStatus`; `createWorktree` / `listWorktrees` / `removeWorktree` / `sweep` re-exported from `worktree.ts`), the ledger promise chain with per-op timeout and errno classification → `⇄ off (<code>)`; never touches `noteDiskError` | ~560 |
-| 8 | harness | `src/coordination/watch.ts` (new) | fs.watch on `live/`, `leases/<repoKey>/`, `outbox/` roots of ≤ `MAX_DEVICES` subtrees + the three kind roots + 15 s poll (mtime-gated descent, N files per tick with a `setImmediate` yield), 100 ms debounce (`useGitHead.ts` pattern), incremental fold keyed by `deviceId/runId` with caps, `arrivalMono` re-stamped on checksum change, `gone` retention, re-derivation on `setIdentity` | ~280 |
+| 7 | harness | `src/coordination/ledger.ts` (new) | paths (incl. `devices/<hostKey>/`), **async-only** `open()` (caller-side, after first frame; `Promise.race([stat, sleep(1s)])` for the mirror root, no `*Sync` anywhere but the exit-handler ended beat), **`setIdentity(patch)`** (`Promise<void>`) re-deriving watch roots / inbox targets / lease dir (`keyDir`) / label / stamp seed **plus the one-shot walk of every added root** and the poll generation counter (§3.5), `writeLocal` (`atomic.ts:19` with `{ mode: 0o600 }`, parents `0o700`; awaited variant for `strict`), fold readers over ≤ `MAX_DEVICES` subtrees with `fold.skippedDevices`, tombstones + `unignoreDevice`, and the persisted takeback claim (`devices/<hostKey>/claims/<runId>.json`, §9.3) and the **write API** of §12.0.4 (`gc` with label-or-id8 resolution, `foreignLive`, `writeTakeoverLease`, `setDeviceLabel`, `ignoreDevice`, `syncDisable`, `syncStatus`; `createWorktree` / `listWorktrees` / `removeWorktree` / `sweep` re-exported from `worktree.ts`), the ledger promise chain with per-op timeout and errno classification → `⇄ off (<code>)`; never touches `noteDiskError` | ~560 |
+| 8 | harness | `src/coordination/watch.ts` (new) | fs.watch on `live/`, `leases/<keyDir>/`, `outbox/` roots of ≤ `MAX_DEVICES` subtrees + the three kind roots + 15 s poll (mtime-gated descent, N files per tick with a `setImmediate` yield), 100 ms debounce (`useGitHead.ts` pattern), incremental fold keyed by `deviceId/runId` with caps, `arrivalMono` re-stamped on checksum change, `gone` retention, re-derivation on `setIdentity` | ~280 |
 | 9 | harness | `src/coordination/heartbeat.ts` (new) | six write points, 15 s timer from `run:ready` to `ended` (pane-agnostic), coalesced phase writes, **local-only** sync ended-marker writer, `bootId` / `claim` / `lockHeld` / `pausePoint` fields, lease renewal (timer + on-wake), `lastBeatMono`, `subwork` from the lane hook and synth events, bench presence record | ~220 |
-| 10 | harness | `src/coordination/leases.ts` (new) | declare / exclusive (stamp minted once, kept through rewrites) / renew / release, prefix collapse, **`wsKey`-based severity**, **monotonic expiry**, the awaited-write + re-fold under `strict` returning `appeared` (the symmetric arrival rule, §4.5), the wait-skip rule (`blocked` only) and the `min(stale, expiry, deadline)` wake timer, `CoordinationFacts` builder (hash compare within the images.ts budget; `requested` facts), `command` class matcher, `coordWaitMs` accounting | ~440 |
+| 10 | harness | `src/coordination/leases.ts` (new) | declare / exclusive (stamp minted once, kept through rewrites) / renew / release, prefix collapse, **`wsKey`-based severity**, **monotonic expiry**, the awaited-write + re-fold under `strict` returning `StrictDeclare` — `appeared`, **F1** (`proceed = appeared.length === 0`; a non-empty `appeared` always yields: `handle.downgrade()` to `intent` plus the step-4 wait, no judgment), **F2** (the wake rule that lets the lowest stamp among the yielded-to set re-declare and re-run the fence) and `fence:'blind'` past `MAX_FENCE_DEVICES` / `STRICT_FENCE_MS` (§4.5) — the wait-skip rule (`blocked` only) and the `min(stale, expiry, deadline)` wake timer, `CoordinationFacts` builder (hash compare within the images.ts budget; `requested` facts), `command` class matcher, `coordWaitMs` accounting | ~440 |
 | 11 | harness | `src/coordination/judge.ts` (new) | the Choice + paired Nouls (`questions.ts:37`, `:63`), code fallbacks, `--no-input` rule | ~150 |
 | 12 | TUI | `src/config/**` | `coordination.{enabled, claims, strictWaitMs, default, sync, sharedDir, git, ttlMs, syncSlackMs, maxDevices, remoteControl, notify, label, syncRuns: 'off'\|'projection'\|'with-bodies', maxChildren, childDepth, worktreeRetentionDays}`, `context.{mode: 'relaxed'\|'legacy', historySteps, fileCacheBytes, compactEvery, compaction, kept: 'code'\|'jev', budgetChars, showUsage}`; `sharedDir` containment check; `resolve.ts:788` relocation by `repoKey`/`remoteKey`/`wsKey` **and the git `prefix`**; `bench/conditions.ts` pins `context.mode` in every arm | ~250 |
-| 13 | TUI | `src/session/lock.ts` | `RunLock.deviceId?`, `.sessionId?`, `.claim?`, `.bootId?`; `acquireRunLock` options `peerLive?` (synchronous, caller-folded), `bootId?`; the **boot-identity** rule (never wall arithmetic; a lock with no `bootId` and a live pid is never replaced); the foreign-live `ConfigError` text with its `unverified` variant | ~80 |
+| 13 | TUI | `src/session/lock.ts` | `RunLock.deviceId?`, `.sessionId?`, `.claim?`, `.bootId?`; `acquireRunLock` options `peerLive?` (synchronous, caller-folded), `bootId?`; the **boot-identity** rule (never wall arithmetic; a lock with no `bootId` and a live pid is never replaced) — `bootId` is a **required, already-resolved argument** on every path that creates a lock, so the lock writer never computes or spawns (§14 item 16(a)); the foreign-live `ConfigError` text with its `unverified` variant | ~80 |
 | 14 | TUI | `src/session/index.ts` | kinds `session:end`, `relocate`, `handoff`; `by?` on `pause` / `steer`; `run:start.parentSessionId?`; `INDEX_KINDS` (:36), `parseIndexBody` (:190), fold → `SessionRow.ended?`, `.devices?`, `.parentSessionId?` (child sessions never become a `-c` target); the `resumeOf` rule (:323-329) kept | ~100 |
-| 15 | TUI | `src/cli/sessions.ts` | `who [--all\|--json]`, `tell`, `headsup`, `request`, `pause`, `resume`, `end`, `inbox [--follow\|--sent\|--purge]`, `unlock --device\|(boot rule)`, `gc [--device] [--unignore] [--never-started] [--lanes]`, `label`, `sync status\|disable`, `stats`; the `<id-suffix>` target resolver with the §5.3 precedence and ambiguity listing; the plain-path bounded `peerLive` fold; every write through the §12.0.4 write API, never a direct file write | ~430 |
+| 15 | TUI | `src/cli/sessions.ts` | `who [--all\|--json]`, `tell`, `headsup`, `request`, `pause`, `resume`, `end`, `inbox [--follow\|--sent\|--purge <label\|id8>]` (through `purgeInbox()`, never a direct delete), `unlock --device\|(boot rule)`, `gc [--device <label\|id8> --i-know-it-is-gone] [--unignore <label\|id8>] [--never-started] [--lanes]` (the `--i-know-it-is-gone` confirmation §4.6 requires, restored here in revision 4), `label`, `sync status\|disable`, `stats`; the `<id-suffix>` target resolver with the §5.3 precedence and ambiguity listing; the plain-path bounded `peerLive` fold; every write through the §12.0.4 write API, never a direct file write | ~430 |
 | 16 | TUI | `src/session/picker-lines.ts`, `src/tui/App.tsx` | wire `live` from the fold (`● live on <label>`, `→ taken over`, `⚠ forked`, `hung?`), child sessions indented under `parentSessionId`, `Ctrl-E` ended rows | ~80 |
 
 Tests: `test/unit/coordination/{ledger,watch,heartbeat,leases,judge}.test.ts` (fake fs + clock; two-device fixtures; the strict
-fence in **both** interleavings — both-see (one holder) and **one-sees** (write A, `readdir` A, write B with `stamp < A`,
-`readdir` B → B re-judges, A's `coordination:decision` precedes its pre-images); the scripted beat interleaving of §11 row 31
-(A 48, B 50, A folds, A beats 51, B folds → exactly one loser by claim); a **shared-home** fixture (two ledgers, one
-`JEVCODE_HOME`, two hostnames → two deviceIds, no co-written file); skewed-expiry fixtures for a lease and a `pause` message at
-±15 min; `setIdentity` widening the inbox and the watch roots mid-process; `watch.test.ts` with 5,000 device subtrees
+fence in **both** interleavings — **both-see** (write A, write B, `readdir` both → the lower stamp proceeds, the higher yields,
+exactly one `takePreImages`, re-run under `jev-on` / `jev-off` / `--no-input` / a throwing Jev stub for byte-identical
+decisions) and **one-sees** (write A, `readdir` A, write B with `stamp < A`,
+`readdir` B → B yields, A's `coordination:decision` precedes its pre-images) — plus `fence-blind` (1,402 lease subtrees,
+`STRICT_FENCE_MS` forced to 1 ms → no pre-images, the pane, `[c]` → advisory for that step) and the **null-key** case (a run
+with `repoKey: null` leasing under `keyDir(wsKey)`, seen by a peer, then moved by `setIdentity({ repoKey })` with one release
+and one re-declare); the scripted beat interleaving of §11 row 31
+(A 48, B 50, A folds, A beats 51, B folds → exactly one loser by claim); two **shared-home** fixtures (two ledgers, one
+`JEVCODE_HOME`: different machine ids → two deviceIds and no co-written file; identical machine ids **and** identical
+hostname/user → `duplicate-identity`, the foreign fold, the adopt prompt, and no `isPidAlive` call on the foreign pid); skewed-expiry fixtures for a lease and a `pause` message at
+±15 min; `setIdentity` widening the inbox and the watch roots mid-process **and walking a newly-added root once** (a peer's exclusive
+lease written before the patch is in the fold when the returned promise resolves — the test fails if the fold waits for the
+15 s poll), plus a `label` patch changing the next record's label; `watch.test.ts` with 5,000 device subtrees
 (descriptors, poll time and lag bounded); a never-resolving `stat` at `open()` → `offline` within the bound); `test/unit/session/{lock,index}.test.ts` extended;
 `test/unit/cli/sessions-*.test.ts` (`sessions-target.test.ts`: `<id-suffix>` on two runs of one day); `test/unit/config/coordination.test.ts`.
 
@@ -2097,7 +2506,7 @@ fence in **both** interleavings — both-see (one holder) and **one-sees** (writ
 | # | Owner | File | Change | LOC |
 | --- | --- | --- | --- | --- |
 | 17 | harness | `src/loop/engine.ts` | `pause(opts)` `void`: synchronous draft snapshot → `this.pauseCache = persist(store.writeCache(cache/step-n.json))` → flags → `controller.abort(AbortError('human_pause'))` unless `execute` **or `this.blocked !== null`** (:965-969); `finish('human_pause')` awaits `pauseCache` before `buildCheckpointState()` (:2973) and emits `pause:point` after `stateWritten` (:3000); the `cache/step-n.json` → `.superseded.json` rename at the start of a fresh step; `draft.partialText` accumulator in `onDelta`/`onToolDelta` (:1932-1940); `abortOverride` in `abort()` (:886) + `classifyStop()` at :1099, :2342, :2662 + `markLastResort` (:903); `blockWaker` in `awaitBlocker` (:1189-1230) + `'pause' \| 'worktree' \| 'wait' \| 'continue-anyway'` handling at the loop top before :1114; `pauseNow` skip of `stage('judge')` after :2339 with the rule-3 shape; `'coordinate'` stage between :2317 and :2318 (declare / check / wait / suspension check / `stageBlock` throw), `pendingReplay` + `coordOverride` consumed at the top of `runStep` (:2165), `coordWaitMs` subtraction (:2470, :2486, :2823); heartbeat + lease release on `pendingCheckpoint.then(...)` after :2934 (outside the IIFE's try/catch); `draft.discarded` in `absorbDiscardedTiming` (:2455) + `discarded:true` rows in `pushGeneratorRecord` (:2007); `deliver(msg)`; replay entry (hash gate → `risk` re-run → confirm re-ask); `phase` / `pauseNow` / `context` / `subwork` in `status()` (:1406); ended marker + lease `ended` in `finish` (:2952-3012) and the `'exit'` handler (:886-897); `peerLive` into `takeRunLock` (:471, :3152, :3217) with the `bootId` rule and the authenticated-only exit-2 stop (§3.4); the `Claim` mint + `run.json.claims[]` append at `createEngine`; `meta.ended` and the superseding-claim `--force` gates beside :3151; `wsKey`/`deviceId` at `store.create` (:3215), `repoKey` after `run:ready` **followed by `ledger.setIdentity({ repoKey, runId })`** (and `sessionId` from the host); constructor restore lines (:674-735) and `buildCheckpointState` (:1453) for every new field | ~560 |
-| 18 | harness | `src/loop/history.ts` (new), `src/loop/context-cache.ts` (new), `src/loop/compaction.ts` (new) | tiered history (600-char bodies in state, an `outputs/step-<n>.txt` for **every** output above that cap, ≤ 2 expansions at prompt build, `[full text stayed on <label>]` for an absent ref); file cache + `fileMemory` + zero-cost read; `context.mode: 'legacy'` restoring HEAD's window and prompt; the money-aware `budgetChars`; code fold + llm template + the `context.kept: 'jev'` Noul pass (refused in `jev-off`); `lastPromptChars` persisted at commit | ~680 |
+| 18 | harness | `src/loop/history.ts` (new), `src/loop/context-cache.ts` (new), `src/loop/compaction.ts` (new) | tiered history (600-char bodies in state, an `outputs/step-<n>.txt` for **every** output above that cap, **fit computed from `fullOutputChars` before any read** so ≤ 6 reads / ≤ 88 KiB and often 2–3, memoised per `(step, path, size)`, tiers degrading `32 KiB → headTail(12k,4k) → body → one-liner` against the 30 % allowance, `outputEvicted` distinguishing `[full text stayed on <label>]` from `[evicted at 64 MiB]`, §8.2 / §8.3 / §8.5); file cache + `fileMemory` + zero-cost read; `context.mode: 'legacy'` as **one builder behind a switch** restoring HEAD's window and prompt — the switch also gates the execute-side changes (the `jevcode:outputs/…` pseudo-path and the zero-cost unchanged read, W2 item 21), so a legacy step is HEAD's step (§14 item 16(b)); the money-aware `budgetChars`; code fold + llm template + the `context.kept: 'jev'` Noul pass (refused in `jev-off`); `lastPromptChars` persisted at commit | ~680 |
 | 19 | harness | `src/provider/prompts.ts` | `## Files in view`, `## Recent steps` tiered, `## Summary`, `## Other sessions` (fenced, untrusted-data line), `## Files changed by other sessions`, `## Kept`, fill order, markers; `buildCommonState` (`state.ts:125`) unchanged except `coord.conflicts` when non-empty | ~210 |
 | 20 | harness | `src/checkpoint/store.ts`, `src/checkpoint/resume.ts` | `CHECKPOINT_FILES` + `cache`, `outputs`, `context`, `coordination` (:29-53); `writeOutput`, `writeCache` on the per-file chains; `updateMeta` `Pick` + `next` builder for the new `RunMeta` fields (:435-455); `foldStepsIntoState` (:147-183): `interruptedDetail` drops with `interrupted` (:169), `history` rebuild, `fileMemory` refresh; replay validation (`targetsSha`); `forked` handling on import | ~240 |
 | 21 | harness | `src/loop/stages/execute.ts` | `jevcode:outputs/step-<n>.txt` pseudo-path; unchanged-file short-circuit; caps from `limits.ts` | ~50 |
@@ -2119,19 +2528,22 @@ context** (today it asserts only id uniqueness, `:29-40`); pty `.steps` for the 
 
 | # | Owner | File | Change | LOC |
 | --- | --- | --- | --- | --- |
-| 25 | harness | `src/coordination/mailbox.ts` (new) | send (`<deviceId>-<actor8>-<seq>` ids) / inbox fold / per-CONSUMER acks / `inbox/seen/<deviceId>/<consumerId>.json` / targeted-vs-broadcast GC / expiry / mute; automatic `heads-up` / `handoff` (`subject120`) / `note` producers; `request-release` as a fact (advisory) or a bounded hold (strict); HEAD watcher via `readHead` | ~340 |
-| 26 | harness | `src/coordination/sync-shared-dir.ts` (new) | **the mirror projection of §9.3 (the only thing copied; `syncRuns:'with-bodies'` disables it)**, mirror copy on the ledger chain, incremental `steps.jsonl` mirror, lag measurement from our own subtree in the mirror (never folded as records), `.icloud` handling, offline state, essential-set mirror + import (trusted sources only, explicit `[i]`, row-count / `post/<step>.json` preconditions, claim-ordered, `forked` tails, `undoUnavailableBelow`) + takeover, `sync disable` self-removal refused while a run is live | ~420 |
+| 25 | harness | `src/coordination/mailbox.ts` (new) | send (`<deviceId>-<actor8>-<seq>` ids) / inbox fold / **`purgeInbox`** (foreign messages marked seen, only our own sent files deleted — §12.0.4) / per-CONSUMER acks / `inbox/seen/<deviceId>/<consumerId>.json` / targeted-vs-broadcast GC / expiry / mute; automatic `heads-up` / `handoff` (`subject120`) / `note` producers; `request-release` as a fact (advisory) or a bounded hold (strict); HEAD watcher via `readHead` | ~340 |
+| 26 | harness | `src/coordination/sync-shared-dir.ts` (new) | **the mirror projection of §9.3 (the only thing copied; `syncRuns:'with-bodies'` disables it)**, the **mirror-root realpath check** (must not equal, contain or be contained by the coordination root — at configure time and at every `open()`, §10.1), mirror copy on the ledger chain, incremental `steps.jsonl` mirror, lag measurement from our own subtree in the mirror (never folded as records), `.icloud` handling, offline state, essential-set mirror + import (trusted sources only, explicit `[i]`, row-count / `post/<step>.json` preconditions, claim-ordered, `forked` tails, `undoUnavailableBelow`) + takeover, `sync disable` self-removal refused while a run is live | ~420 |
 | 27 | harness | `src/coordination/worktree.ts` (new) | the facade's `createWorktree` / `listWorktrees` / `removeWorktree` / `sweep` (§12.0.4) over `worktree add --lock --reason jevcode:<runId>:<sessionId> -b jevcode/<slug>`, metadata under `coordination/devices/<hostKey>/worktrees/`, dirty-set sync (`lanes.ts:45` rule; ignored files listed in metadata), the §6.6 guards **plus the six lane-sweep guards of §6.2** (`LANE_DIR_RE`, local-subtree-only, `resolveRunDir` containment, `lstat` per component, gitdir inside a matching repo, realpath inside `<runDir>/tmp/synth/`) | ~300 |
-| 28 | harness | `src/synth/llm/source.ts`, `src/synth/sieve/lanes.ts`, `src/synth/search/index.ts`, `src/synth/search/llm.ts` | `CancelReason` + `'pause'` (:118); `LlmSourceDeps.replay?` consulted before dispatch (:364-380, :373 comment); the synthesizer calls `SynthesisContext.cache?.writeSample` from its own `onSample` (`llm.ts:416-431`) and `onRound?` at each fire, so the engine can write `cache/llm/**` and fill `PausePoint.llm` (§6.4); `LaneContext.coordination?` hook called after `worktree add` (:214) and in `disposeLanes` (:302-322); `LaneContext.disposeSignal?` used when `ctx.signal.aborted`; the synthesizer's abort path disposes lanes; `subwork` events | ~220 |
+| 28 | harness | `src/synth/llm/source.ts`, `src/synth/sieve/lanes.ts`, `src/synth/search/index.ts`, `src/synth/search/llm.ts` | `CancelReason` + `'pause'` (:118); `LlmSourceDeps.replay?` consulted before dispatch (:364-380, :373 comment); the synthesizer calls `SynthesisContext.cache?.writeSample` from its own `onSample` (`llm.ts:416-431`) and `onRound?` at each fire, so the engine can write `cache/llm/**` and fill `PausePoint.llm` with the **real** `round` / `arrived` (§6.4, §12.0.2 P3); `replay` **reads the round DIRECTORY** (`cache.readRound(goalId, round)` over `cache/llm/<goalId>/<round>/`) and never trusts `cache/step-n.json.llmRound`, because `writeSample` is `void` and a lost write would otherwise make the engine re-use a sample it does not have (§14 item 16(c)); `LaneContext.coordination?` hook called after `worktree add` (:214) and in `disposeLanes` (:302-322); `LaneContext.disposeSignal?` used when `ctx.signal.aborted`; the synthesizer's abort path disposes lanes; `subwork` events | ~220 |
 | 29 | harness | `src/bench/runner.ts` | `bench.lock` (`acquireRunLock` recipe); one `kind:'bench'` presence heartbeat per process; `coordination.enabled:false` for its engines; `IN_PROGRESS` + `complete` state → record | ~90 |
 | 30 | harness | `src/sandbox/seatbelt.ts` | `sharedDir`, the git transport dir and the **resolved** `coordinationRoot(jevcodeDir(env, home, cwd))` in the read-deny list (:157-161 pattern) — passed in, not re-derived from `join(home, '.jevcode')` (:169), so a `JEVCODE_HOME` ledger is denied too (§10.1) | ~35 |
 | 31 | TUI | `src/cli/session.ts`, `src/tui/**` | `/spawn` child-run flow (own `sessionId` + `parentSessionId`), `/worktree`, `/merge <slug>` (a task, never a git write), `sessions gc` output, sync enable warning text | ~200 |
 
 Tests: `test/unit/coordination/{mailbox,sync-shared-dir,worktree}.test.ts` (mailbox: two consumers on one sessionId ack one
 broadcast in two files; a broadcast survives the first ack; pause → resume → send is delivered and not GC'd; a mirror-planted
-same-device `pause` produces the `[y]` row; a third device's ack is ignored; a sessionless TUI restart re-toasts nothing.
+same-device `pause` produces the `[y]` row; a third device's ack is ignored; a sessionless TUI restart re-toasts nothing;
+`purgeInbox` unlinks **no** foreign file, suppresses those messages permanently across a restart, and deletes only our own sent
+ones.
 sync: the projection carries no `proposal`, no `rawText`, no `partial.text`, no `ui.json`, no absolute `workspace`, no `config`;
-an import from an untrusted subtree is refused without `[i]`; an import with a missing `post/<step>.json` retries.
+an import from an untrusted subtree is refused without `[i]`; an import with a missing `post/<step>.json` retries; a
+`sharedDir` symlinked inside the coordination root is a `ConfigError` at configure and `offline` at `open()`.
 worktree: `laneDir:'post'`, `'.'`, a symlinked component and a foreign lease are all skipped and counted), `test/unit/synth/llm-round-cache.test.ts` (engine-side cache + `replay` dep),
 `test/unit/synth/lanes-leases.test.ts` (hook calls; dispose after an aborted signal), `test/unit/bench/{runner-lock,runner-presence}.test.ts`,
 `test/unit/sandbox/seatbelt.test.ts` extended, `test/unit/coordination/import-fork.test.ts`.
@@ -2151,8 +2563,12 @@ worktree: `laneDir:'post'`, `'.'`, a symlinked component and a foreign lease are
 
 ### W5 — deferred (file as follow-ups, not this round)
 
-`sync-git.ts` (per-device refs transport), pairing / HMAC (`sessions pair`), an E2E relay, mirrored `pre/` for cross-device `/undo`,
-in-process workspace rebind. `remoteControl: 'confirm'` holds the security floor without them (§10.3).
+`sync-git.ts` (per-device refs transport), pairing (`sessions pair`: the one-time phrase → a scrypt transport key → the
+**per-device** key exchange of §10.3, `trusted-devices.json` gaining each peer's `key`, `sessions pair --rotate`), record
+`hmac` / `keyId` and the `verified` plumbing, an E2E relay, mirrored `pre/` for cross-device `/undo`,
+in-process workspace rebind, and the Ed25519 upgrade that removes §10.3's stated residual (`node:crypto`, public keys in
+`trusted-devices.json`, same record shape). `remoteControl: 'confirm'` holds the security floor without them (§10.3): every
+gated action that cannot be verified is a notice, a flag and a prompt.
 
 Landing order: W0 → W1 (both owners in parallel; the TUI card can be built against `EngineOptions.resume.replay` from W0) → W2
 (parallel) → W3 → W4. The local case is proven end-to-end after W2 before any cross-device code exists.
@@ -2171,7 +2587,7 @@ Landing order: W0 → W1 (both owners in parallel; the TUI card can be built aga
 | M6 | lanes, children and a bench visible | llm-jev run with the mock source in 2 lanes; `sessions who --json` from a third process; a bench process with 3 mock tasks | `subwork` lists 2 lanes with run-relative `laneDir`; `leases` has 2 `type:'lane'`; after SIGKILL of the run, `sessions gc` prunes both lanes and reports bytes; a `/spawn` child's `handoff` appears in the parent's inbox and its next prompt's `## Other sessions`; the child has its own `sessionId` and the parent row is not `live` while only the child runs; `who` shows one `bench` row with `tasks 1/3` |
 | M7 | cross-device (two-worktree live scenario; claim-epoch fencing, authenticated stops) | two `JEVCODE_HOME`s (devices A and B) on one machine, `coordination.sync=shared-dir` pointing at one temp dir, two linked worktrees of one repo on different branches; A pauses at step 3; B runs `jevcode --resume <id>`; then both resume at once from a fresh pause | B refuses while A is live (message names A's label); after A's `run:end`, B imports the essential set, writes a `takeover` lease, relocates by `repoKey`, resumes with the same `sessionId`; A's later `/resume` is refused (`→ B`) unless `--force-takeback`; `undo` on B reports `pre-images stayed on A`; in the fork case the **superseded claim** stops with exit 2 (and, with the devices unpaired, only warns — the `[c]/[q]` pane — until they are trusted), its tail lands in `steps.forked-*`, and a following import chooses by claim with the loser's higher step count; a takeover followed by a pause and a fake clock `+48 h` still refuses A's `/resume` (the claim is permanent, the lease is not); the whole scenario runs under `test/live` with a real `git` and is timed (import < 2 s for a 7-step run) |
 | M8 | context relaxed, re-reads gone, outputs whole at every size | replay the QuixBugs subset of `glm-jev-off-baseline.md` (`account`, `inventory`, `table`, `detect_cycle`) under `jev-off` with the recorded generator prompts | read-ish steps before the first edit drop from 13 / 18 / 7 to ≤ 3 each in a generator-transcript replay (fixture-driven, offline); a `read` of an unchanged in-view file returns `unchanged since step N` with zero generator tokens; **a 3 KiB `run` output at step N appears whole in the step N+1 prompt** (the band revision 2 dropped); every clipped section carries a `full text:` marker (grep over the built prompts); `state.json` grows by < 16 KiB over 40 steps; $/step is recorded before and after the change |
-| M9 | budgets and gates | `npm run perf` step-overhead with coordination explicitly on (advisory row, strict row); first-frame probe | `harnessMs` p95 < 50 ms, `coordinateMs` p95 < 2 ms advisory / < 5 ms strict, `promptBuildMs` p95 < 5 ms, `imagesMs` p95 reported; zero `coordination/` (commons) I/O before `firstFrame()`; Jev request bytes per step identical to HEAD (recorded fixture diff) with `claims:'off'` and in the advisory run's conflict-free steps; **the whole generator prompt byte-identical to HEAD under `context.mode:'legacy'`** (the switch every bench arm pins, §2.1 rule 9) |
+| M9 | budgets and gates | `npm run perf` step-overhead with coordination explicitly on (advisory row, strict row); first-frame probe | `harnessMs` p95 < 50 ms, `coordinateMs` p95 < 2 ms advisory / < 5 ms strict, `promptBuildMs` p95 < 5 ms, `imagesMs` p95 reported; zero `coordination/` (commons) I/O before `firstFrame()`; Jev request bytes per step identical to HEAD (recorded fixture diff) with `claims:'off'` and in the advisory run's conflict-free steps; **the whole generator prompt byte-identical to HEAD under `context.mode:'legacy'`** (the switch every bench arm pins, §2.1 rule 9) — the golden covers **all three modes** (`jev-on`, `jev-off`, `llm-jev`) **and a `relaxed` → `legacy` resume** (a run paused under `relaxed` and resumed with `legacy`, whose first prompt must still be HEAD's bytes: the fold rebuilds `history` / `fileCache` that legacy must then ignore), and the same switch gates the execute-side changes so a legacy step equals HEAD's step, not merely HEAD's prompt (§14 item 16(b)) |
 
 Timing to record in `docs/STATUS.md`: pause-now → `run:end` (target < 500 ms), heartbeat staleness detection (same-device pid-based:
 immediate; ≤ ttl + slack via the mirror, plus the measured `sync lag` for iCloud vs Dropbox vs Syncthing), strict wait wake latency
@@ -2223,7 +2639,8 @@ import time, and the prompt size distribution per mode before and after compacti
     that `~/.jevcode/sessions/` is written by `src/session/**` alone — §3.1 rewritten, §9.1 and §10.1 adjusted (`~/.jevcode/coordination/**`
     joins the seatbelt read-deny list). (b) **New additive contract items** (W0 item 1, header `// contract 1.4`): `PausePoint`,
     `PausePointReason`, the `pause:point` event, `EngineStatus.pausePoint?`, `ContextUsage` with the agreed members `tokensInWindow`,
-    `windowBudget` (renamed `budgetTokens` + `windowTokens` in revision 3, item #51), `compactions`, `lastCompactionAt` beside §8.7's, `CheckpointState.compactions?` / `.lastCompactionAt?`,
+    `windowBudget` (renamed `budgetTokens` + `windowTokens` in revision 3, item #51, and **settled** in revision 4 by the
+    owner's reversal of item 16(d) — the old name is not a member and has no alias), `compactions`, `lastCompactionAt` beside §8.7's, `CheckpointState.compactions?` / `.lastCompactionAt?`,
     `Engine.end?()`, `Engine.pause(opts)` gaining `by`, `Engine.deliver?()` returning `AckOutcome`, `CoordinationOptions`,
     `Stamp` / `EngineRunPhase` / `Liveness` / `AckOutcome` exported (revision 3 adds `Claim`); `Heartbeat.pausePoint?`, `.claim`, `.bootId`, `.lockHeld` and the token fields in `Heartbeat.context`;
     `Ack` gains `deviceId`, `detail60?`, `stamp`, `checksum`. (c) **New facade** `src/coordination/index.ts` (W0 item 5b) — the only import
@@ -2317,31 +2734,74 @@ import time, and the prompt size distribution per mode before and after compacti
 | 63 | §5.3 (`resolveTarget` precedence), §12.0.4 |
 | 64 | §11 rows 1–7, 15, 18, 26, 27, 30, 31, 37, 45, 46 and the new 51–55; the W0–W3 test lines; M3, M7, M8, M9 |
 
-16. **Decisions taken 2026-09-21 (harness session).** Five contract-adjacent questions this document left implicit, answered by the
-    harness session so the TUI session can code against them; each is a decision, not a proposal, and none changes an agreed member
-    except where item 15 already flagged it.
+16. **Decisions taken 2026-09-21 (harness session), as amended by the re-review.** Five contract-adjacent questions this document
+    left implicit, answered by the harness session so the TUI session can code against them; each is a decision, not a proposal.
+    The blockers-only re-review accepted all five and attached one condition to each; the conditions are folded into the bullets
+    below, and **decision (d) is reversed by the owner**.
     - **`bootId` is written into `run.lock` at creation, never derived later.** The boot identity (§3.4) is read once per process and
       cached (`sysctl -n kern.bootsessionuuid` on macOS, `/proc/sys/kernel/random/boot_id` on Linux) and `acquireRunLock` writes it
       into the lock file it creates, so **the synchronous lock path never spawns**: the `sysctl` happens on the way to the lock, not
       inside it, and the `'exit'` handler can still release synchronously (`src/session/lock.ts:5`). A lock file without a `bootId`
       (older build) whose pid is alive stays un-replaceable, as §3.4 says; the reader compares, it never computes. W0 item 4 owns the
-      reader, W1 item 13 the lock fields.
+      reader, W1 item 13 the lock fields. **Condition (re-review):** `bootId` is a **required, already-resolved argument** on
+      every path that creates or replaces a lock — `acquireRunLock`, `takeRunLock` and `sessions unlock` alike — so no lock
+      writer can ever compute one lazily and none is written without it; a lock with no `bootId` and a live pid stays
+      un-replaceable, which is the rule a lazily-resolved writer would have quietly broken.
     - **`context.mode: 'legacy'` is the new prompt builder behind a mode switch, not a second code path.** One builder, one switch,
       and a **golden byte-identity test** is what defines `legacy`: the whole generator prompt under `context.mode: 'legacy'` is
       byte-identical to HEAD's on a recorded fixture (M9), so the relaxed policy can move freely and the comparison arm cannot rot.
       Its lifetime (the open half of item 15) is therefore cheap to keep: the switch costs one config value and one fixture.
+      **Conditions (re-review):** the golden covers **all three modes** and a **`relaxed` → `legacy` resume** (the fold rebuilds
+      `history` / `fileCache`, which legacy must then ignore — the one case where a mode switch can leak state across a resume),
+      and the switch **also gates the execute-side changes** (the `jevcode:outputs/step-<n>.txt` pseudo-path, the zero-cost
+      unchanged read) so a legacy step equals HEAD's step and not merely HEAD's prompt bytes (M9, W2 items 18 / 21).
     - **`SynthesisContext.cache` / `onRound` are additive and called from the synthesizer's own `onSample`.** The engine never reaches
       into the LLM source: the synthesizer calls `cache?.writeSample(goalId, round, sample, json)` from the `onSample` it already has
       (`src/synth/search/llm.ts`) and `onRound?(goalId, round, arrived)` at each fire, both optional, so an engine without the hooks
       behaves exactly as today and `PausePoint.llm` / `cache/llm/**` simply stay absent (§6.4, §12.0.2 P3, W3 item 28).
-    - **`ContextUsage.windowBudget` is kept for now**, pending the TUI session's ack on the rename. Revision 3 item #51 renames it to
-      `budgetTokens` + `windowTokens` and §12.0.3 / W0 item 1 spell the new shape; until the TUI session acks it with the rest of
-      §14 item 15, the **agreed** member name from §12.0 stands, because it is the one contract member this revision renames and the
-      surface has already scoped work against it. One ack flips it in one place.
+      **Condition (re-review):** `LlmSourceDeps.replay` reads the **round directory** (`cache.readRound(goalId, round)` over
+      `cache/llm/<goalId>/<round>/`), never `cache/step-n.json.llmRound` — `writeSample` is `void`, so a lost write would
+      otherwise have the engine believe it holds a sample that is not on disk and skip re-asking for it. With the hooks typed in
+      W0, P3 reports the real `round` and `arrived`; revision 3's interim `{ round: null, replayable: false }` is withdrawn.
+    - **`ContextUsage` is `budgetTokens` + `windowTokens`; `windowBudget` does not exist — REVERSED by the owner (revision 4).**
+      The revision-3 decision was to keep the agreed name pending the TUI session's ack; the owner reversed it, and the re-review
+      records why the reversal is the cheap direction: revision 3 already carried `budgetTokens` + `windowTokens` in §12.0.3,
+      §8.7, §3.3 and W0 item 1, and `/context`'s header `budget 70k of 128k window (55 %)` **needs** the window as its own
+      member, so the old single name could not serve both numbers. There is no transition period and no alias: `windowBudget`
+      appears nowhere in the contract, `budgetTokens` is the prompt budget (what `pct` is a percentage of) and `windowTokens` is
+      the model's window. The TUI adopts both names; §12.0.3 is the shape.
     - **`RunMeta.claims[]` is append-only, typed after the round-3 contract line.** A claim is never rewritten, expired or GC'd (§4.6
       row 1, §9.3); `createEngine` appends one entry per incarnation and reads the maximum epoch back out. The declaration goes in
       `src/core/types.ts` **after** the round-3 `// contract 1.3` header line, under `// contract 1.4`, so the TUI's uncommitted
       header does not conflict and the `+1` line drift of item 14(g) resolves itself when round 3 lands.
+      **Conditions (re-review):** the array is **capped** at `MAX_CLAIMS_PER_RUN` (64 — the first entry plus the newest 63, safe
+      because only the maximum is ever compared) and each `epoch` is bounded by `MAX_CLAIM_EPOCH` (1e9) at parse time; and
+      `writeTakeoverLease`'s claim for a run with **no local run dir** is persisted to
+      `devices/<hostKey>/claims/<runId>.json`, which the next mint reads — without it a later local `/resume` re-issued that very
+      epoch and `compareClaim` returned 0, the one value the fork rule cannot break (§9.3).
+
+17. **Recorded changes from the blockers-only re-review (revision 4).**
+    `docs/research/coordination/re-review-blockers-2026-09-21.md` — one adversarial reviewer over the seven blockers of
+    revision 3 plus the five code decisions: **resolved 1, 3, 7; partial 2, 4, 5, 6**, with text-level must-fixes for 3. Every
+    gap is closed in place as decided behaviour with a named test; nothing is deferred to W5 except the pairing *implementation*
+    (the key model itself is decided, §10.3). The item map:
+
+| Re-review gap | Applied in |
+| --- | --- |
+| **1** — a root `setIdentity` adds gets no one-shot walk; a patch mid-poll-pass; `label` not in `IdentityPatch` | §3.5 (one-shot walk of added roots + the poll generation counter), §12.0.4 `setIdentity(): Promise<void>` and `IdentityPatch` + `label`, W1 items 7 / 15, W1 tests |
+| **2** — no facade function for `inbox --purge`; `WorktreeInfo` / `SweepReport` / `GcReport` / `SyncStatus` undefined; error semantics for 10 of 12 verbs; `gc({device})` label-or-id8 unstated; `--i-know-it-is-gone` dropped from W1 item 15 | §12.0.4 write API (`purgeInbox` — thirteen functions — the four report types, `CoordinationError` + its code union and the result-vs-throw-vs-report rule, per-verb rejects, label-or-id8 resolution), §4.6 (ignored-device rule unchanged), W0 item 5b, W1 items 7 / 15, W3 item 25, §12.0.5 purge row, §11 row 53 |
+| **3** — two stale sentences still stating the withdrawn stamp-ownership rule; `claim.deviceId` unbound; `claim.epoch` unbounded | **§10.7 rewritten** (two fences: `claim` for ownership, `stamp` for overlap order and the tiebreak), **§12.0.5 fork row rewritten** (claim epochs, never stamp, never step count), §3.1 + §5.4 + §12.0.4 `parseRecord` (`claim.deviceId` in the id-vs-path list), §3.2 + §12.0.4 (`MAX_CLAIM_EPOCH`, `MAX_CLAIMS_PER_RUN`), §11 row 61 |
+| **4** — the both-see tiebreak had no normative mechanism (and the code fallback proceeded on both sides); the fence is blind when `repoKey` is null; peers beyond `MAX_DEVICES` are invisible | §4.5 (**F1** yield on sight / **F2** the lowest stamp re-declares — so the promised outcome "the lower stamp proceeds, the other yields" holds in the both-see case, with the safety proof that at most one proceeds in *any* interleaving and the liveness argument that a total order cannot livelock; **no Jev and no human on that path**), §4.3 step 4 (the F2 wake condition), §4.4 (the fence precedes the judgment), §4.3 + §3.1 (`keyDir(repoKey ?? wsKey)`, `KEY_DIR_RE`), §3.5 + §4.5 (the fence is **not** bounded by `MAX_DEVICES`: `MAX_FENCE_DEVICES` / `STRICT_FENCE_MS`, else `fence:'blind'`), §12.0.4 `StrictDeclare`, W1 item 10, §11 rows 56 / 57, M3 |
+| **5** — `/resume` refusal unqualified (a planted ceiling epoch made runs permanently unresumable); `keyId` never bound to `deviceId`; no cap on `claims[]`; `writeTakeoverLease`'s claim persisted nowhere | §9.3 (trust- + hmac-qualified refusal, `--force-takeback` minting above the **unqualified** maximum, the persisted `devices/<hostKey>/claims/<runId>.json`), §7.3 step 1(a), §10.3 (**per-device keys**, lookup by the path `deviceId`, `keyId` never the lookup input, rotation, the stated symmetric-HMAC residual and the W5 Ed25519 removal), §3.1 (`trusted-devices.json` gains `key`; `device.json` gains `deviceKey`), §12.0.4 (`DeviceRecord`, `parseRecord.verified`, `ctx.trust`), §3.2 + §12.0.4 (`MAX_CLAIM_EPOCH`, `MAX_CLAIMS_PER_RUN`), W5, §11 rows 58 / 61 |
+| **6** — `hostKey` collides in the supported shared-home case, so `adoptDevice?` is unreachable and two machines read each other as same-device; `sharedDir` may symlink into the coordination root; `claim.deviceId` unchecked | §3.2 (the `hostKey` row: machine identifier, how it is read, the fallback; the `duplicate-identity` rule that makes `adoptDevice?` reachable), §2.1 rule 1, §3.1 (tree + `device.json.machineId`), §3.3 / §12.0.4 (records carry `hostKey`), §3.4 (the same-device row), §5.4 rule (4) (`hostKey` **denies** but never grants), §10.1 (the mirror root must realpath-differ, checked at configure **and** at every `open()`), §11 rows 59 / 60, W0 item 4, W3 item 26 |
+| **7** — §8.5's "only an imported run" is false once the 64 MiB cap evicts; §8.3's "≤ 2 file reads" is stale; §8.2 not re-costed for ~88 KiB | §8.5 (two named causes, `outputEvicted` to tell them apart), §8.3 (up to 6 reads / ≤ 88 KiB, **fit computed before the read**, memoisation, the cold-start perf row), §8.2 (the re-costing: the 30 % allowance wins, tiers degrade, $/step unchanged, the 60k-floor behaviour, the `/context` history line), W2 item 18 |
+| decision (a) bootId · (b) legacy golden · (c) `replay` reads the round directory · (d) **reversed** · (e) `claims[]` cap | §14 item 16 (a)–(e) with the conditions folded in; W0 item 4, W1 item 13 (a); M9, W2 items 18 / 21 (b); §6.4, §12.0.2 P3, W3 item 28 (c); §12.0.3, §8.7, §3.3, W0 item 1 and item 14(b)'s note (d); §3.2, §9.3, §12.0.4 (e) |
+| pause-point addendum (one `replayable` sentence; `{ resumes, at }` + the `.superseded.json` rename stated; P3's real `round` / `arrived`; the replayed `proposal` event; `lastPromptChars`; `BlockingAnswer`) | §7.2 step 2 (the single definition, quoted by both other sites), §7.2 stage table, §12.0.2 (`PausePoint.replayable` comment, P2, P3, the `proposal` event, the named `InterruptedDetail`), §7.3 steps 2–3, §6.4, §12.0.3 / §12.0.4 (`lastPromptChars`), W0 item 1 |
+
+    Two numbers revision 4 picked are offered for ratification with the rest: **`MAX_FENCE_DEVICES` = 256** and
+    **`STRICT_FENCE_MS` = 250 ms** (§4.5 — they decide how wide a folder `strict` can still fence before it refuses; they are
+    deliberately far above `MAX_DEVICES` = 16, because a fold bound and a correctness bound answer different questions), and
+    **`MAX_CLAIM_EPOCH` = 1e9** with **`MAX_CLAIMS_PER_RUN` = 64** (§3.2).
 
 ### Rejected critiques
 
@@ -2380,8 +2840,9 @@ review can see which branch the design is on:
 - **#55 — drop `expired` from `AckOutcome`.** Not taken as a type change: the member stays and is defined as what `awaitAck` and
   the CLI twin report locally when no ack arrived before the expiry; no consumer ever writes one.
 - **#51 — keep the agreed member name `windowBudget`.** Renamed to `budgetTokens` (with a new `windowTokens`) despite being part
-  of the §12.0 agreement, because the old name is what made `ctx 41%` read as 41 % of the model window. This is the one contract
-  member this revision renames; the TUI session should ack it with the rest of §14 item 15.
+  of the §12.0 agreement, because the old name is what made `ctx 41%` read as 41 % of the model window, and because `/context`
+  needs the window as a member of its own. **Settled in revision 4** by the owner's reversal of §14 item 16(d): the rename is
+  not pending an ack, `windowBudget` is not a member, and there is no alias (§12.0.3).
 
 From the earlier two reviews, these were not adopted as proposed:
 
