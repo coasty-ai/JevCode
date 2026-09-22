@@ -28,6 +28,8 @@ import {
   pickGoalDetailed,
   reconcile,
   reopenOnChange,
+  mergeCoupledClusters,
+  splitBySiteBudget,
 } from '../../../../src/synth/search/goals.js';
 import { createMemory, dropMemory, getMemory } from '../../../../src/synth/search/memory.js';
 import { analyse } from '../../../../src/synth/py/index.js';
@@ -119,6 +121,128 @@ describe('clusterFailures: pytest tracebacks', () => {
     ]);
     expect(keyFrame(frames)?.path).toBe('/ws/pkg/mod.py');
     expect(keyFrame([])).toBeNull();
+  });
+});
+
+/**
+ * docs/research/llm-jev/oos-analysis-2026-09-22.md ranked change 4. Q3: `crossfile`
+ * (`20260922-054652-dcxbrltg`, stop `max_replans`) made SEVEN goals — one per failing test — over
+ * three files for a defect needing coupled hunks: 168 sites, 12,153 candidates enumerated, 5,138
+ * tested, **plausible 0**. `masked` (`20260922-...`, stop `replan_stop`) is the same error the
+ * other way: ONE goal over 4 coupled tests in one file, 69 sites, 7,027 enumerated, 4,525 tested,
+ * **plausible 0**. Q5: QuixBugs transfers precisely because its pool is one goal, fully testable
+ * in one round — so the one-file, <= 2-failing-test shape must not move.
+ */
+describe('clusterFailures: coupled goals (OOS 2026-09-22 ranked change 4)', () => {
+  /** three tests, three innermost frames in three files, all reached through one caller — crossfile's shape */
+  const CROSSFILE_OUT = [
+    '=== FAILURES ===',
+    '_____ test_load _____',
+    'tests/test_pipeline.py:5: in test_load',
+    '    run()',
+    'src/pipeline.py:20: in run',
+    '    load(path)',
+    'src/load.py:11: in load',
+    '    raise ValueError',
+    'E   ValueError',
+    '_____ test_clean _____',
+    'tests/test_pipeline.py:9: in test_clean',
+    '    run()',
+    'src/pipeline.py:20: in run',
+    '    clean(rows)',
+    'src/clean.py:31: in clean',
+    '    raise KeyError',
+    'E   KeyError',
+    '_____ test_totals _____',
+    'tests/test_pipeline.py:13: in test_totals',
+    '    run()',
+    'src/pipeline.py:20: in run',
+    '    totals(rows)',
+    'src/totals.py:44: in totals',
+    '    raise TypeError',
+    'E   TypeError',
+    '=== short test summary info ===',
+    '',
+  ].join('\n');
+
+  it('three tests whose chains meet at one caller are ONE goal, not three (crossfile: 7 per-test goals over 3 files, plausible 0)', () => {
+    const b = baselineOf(['test_load', 'test_clean', 'test_totals'].map((t) => failure(`tests/test_pipeline.py::${t}`, t, '', 'raised')));
+    const goals = clusterFailures(b, { output: CROSSFILE_OUT });
+    expect(goals).toHaveLength(1);
+    expect(goals[0]?.tests).toEqual(['tests/test_pipeline.py::test_load', 'tests/test_pipeline.py::test_clean', 'tests/test_pipeline.py::test_totals']);
+    // the shared caller's file and every innermost file are suspected, so the sites cover the coupled hunks
+    expect(new Set(goals[0]?.suspectedFiles ?? [])).toEqual(new Set(['src/pipeline.py', 'src/load.py', 'src/clean.py', 'src/totals.py']));
+  });
+
+  it('tests with no caller in common stay separate goals: the same file is NOT a reason to merge', () => {
+    const mk = (test: string, fn: string, line: number): string => `_____ ${test} _____\ntests/test_m.py:5: in ${test}\n    ${fn}()\nsrc/m.py:${line}: in ${fn}\n    raise ValueError\nE   ValueError\n`;
+    const out = `=== FAILURES ===\n${mk('test_a', 'alpha', 10)}${mk('test_b', 'beta', 90)}=== short test summary info ===\n`;
+    const b = baselineOf(['test_a', 'test_b'].map((t) => failure(`tests/test_m.py::${t}`, t, '', 'ValueError')));
+    const goals = clusterFailures(b, { output: out });
+    expect(goals.map((g) => g.tests.map((t) => t.split('::')[1]))).toEqual([['test_a'], ['test_b']]);
+  });
+
+  it('a QuixBugs-shaped workspace (one file, <= 2 failing tests, no source traceback) is still ONE goal', () => {
+    // run_tests.py prints "(at gcd_test.py:47: ...)" and no source frame at all
+    const b = baselineOf([
+      failure('gcd_test.py::test_gcd[13-13]', 'gcd(13, 13)', '13', 'RecursionError (at gcd_test.py:47: path = ...)'),
+      failure('gcd_test.py::test_gcd[20-100]', 'gcd(20, 100)', '20', 'RecursionError (at gcd_test.py:47: path = ...)'),
+    ]);
+    const goals = clusterFailures(b, { sourcePaths: ['gcd.py'], defaultFiles: ['gcd.py'] });
+    expect(goals).toHaveLength(1);
+    expect(goals[0]?.tests).toHaveLength(2);
+    expect(goals[0]?.suspectedFiles).toEqual(['gcd.py']);
+  });
+
+  it('mergeCoupledClusters is transitive and order-free, and never merges on a cluster\'s own key frame', () => {
+    const src = (path: string, fn: string): { path: string; line: number; fn: string; kind: 'source' } => ({ path, line: 1, fn, kind: 'source' });
+    const clusters = [
+      { reason: 'frame src/a.py:a', members: [0], suspectedFiles: ['src/a.py'], missingNames: [] },
+      { reason: 'frame src/b.py:b', members: [1], suspectedFiles: ['src/b.py'], missingNames: [] },
+      { reason: 'frame src/c.py:c', members: [2], suspectedFiles: ['src/c.py'], missingNames: [] },
+    ];
+    // 0 and 1 share caller `run`; 1 and 2 share caller `mid`; so all three are one goal
+    const chains = new Map<number, readonly { path: string; line: number; fn: string | null; kind: 'source' | 'test' }[]>([
+      [0, [src('src/p.py', 'run'), src('src/a.py', 'a')]],
+      [1, [src('src/p.py', 'run'), src('src/q.py', 'mid'), src('src/b.py', 'b')]],
+      [2, [src('src/q.py', 'mid'), src('src/c.py', 'c')]],
+    ]);
+    const keys = new Map<number, string>([
+      [0, 'src/a.py|a'],
+      [1, 'src/b.py|b'],
+      [2, 'src/c.py|c'],
+    ]);
+    expect(mergeCoupledClusters(clusters, chains, keys)).toHaveLength(1);
+    expect(mergeCoupledClusters([...clusters].reverse(), chains, keys)).toHaveLength(1);
+    // two clusters split off one function by FRAME_LINE_WINDOW share only their own key node: not merged
+    const same = [
+      { reason: 'frame src/m.py:f', members: [0], suspectedFiles: ['src/m.py'], missingNames: [] },
+      { reason: 'frame src/m.py:f', members: [1], suspectedFiles: ['src/m.py'], missingNames: [] },
+    ];
+    const sameChains = new Map<number, readonly { path: string; line: number; fn: string | null; kind: 'source' | 'test' }[]>([
+      [0, [src('src/m.py', 'f')]],
+      [1, [src('src/m.py', 'f')]],
+    ]);
+    const sameKeys = new Map<number, string>([
+      [0, 'src/m.py|f'],
+      [1, 'src/m.py|f'],
+    ]);
+    expect(mergeCoupledClusters(same, sameChains, sameKeys)).toHaveLength(2);
+  });
+
+  it('splitBySiteBudget splits a multi-test goal whose sites outgrow the runs left, and nothing else (masked: 1 goal, 4 tests, 69 sites, plausible 0)', () => {
+    const parent = goal('g1', ['t::a', 't::b', 't::c', 't::d'], { suspectedFiles: ['src/report.py'] });
+    // 69 sites against 40 runs left: the goal cannot be decided as a unit this step
+    const split = splitBySiteBudget(parent, 69, 40);
+    expect(split.map((g) => g.id)).toEqual(['g1.1', 'g1.2', 'g1.3', 'g1.4']);
+    expect(split.map((g) => g.tests)).toEqual([['t::a'], ['t::b'], ['t::c'], ['t::d']]);
+    for (const g of split) expect(g.suspectedFiles).toEqual(['src/report.py']);
+    // the sites fit the budget: untouched, same object
+    expect(splitBySiteBudget(parent, 40, 69)).toEqual([parent]);
+    expect(splitBySiteBudget(parent, 69, 69)).toEqual([parent]);
+    // a single-test goal has nothing to split into, however many sites it has
+    const one = goal('g2', ['t::a'], { suspectedFiles: ['src/report.py'] });
+    expect(splitBySiteBudget(one, 1000, 1)).toEqual([one]);
   });
 });
 
