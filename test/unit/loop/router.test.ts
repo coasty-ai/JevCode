@@ -125,9 +125,10 @@ describe('the router table with a decider that throws (routers: on)', () => {
     expect(r.intent).toBe(INTENT_FALLBACK);
     expect(r.answer).toBe('none_of_these');
     expect(r.planStillValid).toBe(1);
-    // the code order is the step: investigate leads, and `verify` leads instead when a change is unverified
-    expect(codeIntentOrder({ changeUnverified: false })[0]).toBe(INTENT_FALLBACK);
-    expect(codeIntentOrder({ changeUnverified: true })[0]).toBe('verify');
+    // the code order is the step: investigate leads, and `verify` leads instead when a change is unverified —
+    // one fact, the only one the function reads (review 2026-09-22 defect 8: the unread `runGreen` is gone)
+    expect(codeIntentOrder({ changeUnverified: false })).toEqual(['investigate', 'verify', 'edit', 'fix_environment', 'finish']);
+    expect(codeIntentOrder({ changeUnverified: true })).toEqual(['verify', 'investigate', 'edit', 'fix_environment', 'finish']);
   });
 
   it('judge outcome is the parsed counts when the decider throws', async () => {
@@ -296,6 +297,31 @@ describe('the router table with a decider that throws (routers: on)', () => {
     expect(ledger).toMatchObject({ issued: 3, applied: 0, dropped: 3, waitMs: 0 });
     expect(ledger?.rows.map((r) => r.id)).toEqual(['RL1', 'RL4', 'RL6']);
     for (const row of ledger?.rows ?? []) expect(row.appliedAt).toBeNull();
+  });
+
+  it('I3 against a SLOW decider: RL1 holds the step for its 250 ms deadline, not for the 500 ms ask', async () => {
+    // review 2026-09-22 defect 7: `waitMs` used to be the type literal `0` written unconditionally, so the
+    // assertion above held with every deadline and race mechanism deleted. Both numbers are measured now, and
+    // this is the case that tells them apart: an ask the step would have waited 500 ms for inline.
+    const slow = stageCtx({
+      step: 12,
+      ask: async () => {
+        await new Promise((r) => setTimeout(r, 500));
+        return { intent: choiceOver(['investigate', 'edit', 'verify', 'fix_environment', 'finish', 'none_of_these'], 'edit', 0.95), can_edit: noulA(0.95), can_investigate: noulA(0.05), can_verify: noulA(0.05), can_fix_environment: noulA(0.05), can_finish: noulA(0.05), plan_still_valid: noulA(0.9) };
+      },
+    });
+    const t0 = Date.now();
+    const r = await runIntentStage(slow, common());
+    const wall = Date.now() - t0;
+    // the stage returned on the code order at the deadline: the answer was never applied
+    expect(r.intent).toBe(INTENT_FALLBACK);
+    expect(wall).toBeLessThan(450);
+    expect(wall).toBeGreaterThanOrEqual(200);
+    const ledger = commitStepRouters('r-router', 12);
+    expect(ledger).toMatchObject({ issued: 1, applied: 0, dropped: 1, waitMs: 0 });
+    // heldMs is the measurement waitMs is derived from: ~250, bounded well below the ask it raced
+    expect(ledger?.heldMs).toBeGreaterThanOrEqual(200);
+    expect(ledger?.heldMs).toBeLessThan(450);
   });
 
   it('I4: a router answer landing after step commit is dropped, and the committed step cannot be resurrected', async () => {

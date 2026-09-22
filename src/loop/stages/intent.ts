@@ -172,10 +172,17 @@ export function resolveIntentWithLedger(res: ChoiceResolution<Intent>, answers: 
  * contract 1.9 (Fastlane) §2.2 RL1: the intent the CODE picks, with no Jev answer at all — the order the step is
  * already executing when the router issues its ask. `INTENT_FALLBACK` (`investigate`) leads, except that a change
  * this run executed and never verified makes `verify` the step the harness itself would take next (the same fact
- * `resolveIntentWithLedger` uses, `state.ts commonChangeUnverified`), and a green, current run demotes both.
+ * `resolveIntentWithLedger` uses, `state.ts commonChangeUnverified`).
+ *
+ * **One fact, and only one** (review 2026-09-22, defect 8). This took a `runGreen` and promised in prose that "a
+ * green, current run demotes both"; the body never read it, so the caller computed and passed it for nothing and
+ * the unimplemented half of the rule was untestable. The parameter and the sentence are gone rather than guessed
+ * at: what a green run should lead with (`edit`? `finish`?) is a measurement for the §8 arms, not an invention
+ * here, and `resolveIntentWithLedger` already reads `runGreen` where it has a rule for it.
+ *
  * Pure, total, and sufficient alone: the stage runs on `codeIntentOrder()[0]` whenever Jev does not answer in time.
  */
-export function codeIntentOrder(input: { changeUnverified: boolean; runGreen?: boolean }): readonly Intent[] {
+export function codeIntentOrder(input: { changeUnverified: boolean }): readonly Intent[] {
   const rest = INTENT_LIST.filter((i) => i !== INTENT_FALLBACK && i !== 'verify');
   if (input.changeUnverified) return ['verify', INTENT_FALLBACK, ...rest];
   return [INTENT_FALLBACK, 'verify', ...rest];
@@ -251,7 +258,7 @@ export async function runIntentStage(ctx: StageContext, common: JsonObject): Pro
     confidence = answered.confidence;
   } else {
     // RL1: the code order is what the step runs; Jev's answer re-orders it when it lands inside the deadline
-    const codeOrder = codeIntentOrder({ changeUnverified: ledgerInput.changeUnverified, runGreen: ledgerInput.runGreen === true });
+    const codeOrder = codeIntentOrder({ changeUnverified: ledgerInput.changeUnverified });
     const codeRoute: IntentAsked = { ...codeAnswer, resolved: { ...codeAnswer.resolved, option: codeOrder[0] ?? INTENT_FALLBACK } };
     routed = stepTokenFor(ctx.runId, ctx.step);
     const route = await routeSpeculative<IntentAsked>({
