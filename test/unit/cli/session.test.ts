@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BlockingRequest, Engine, EngineMode, EngineOptions } from '../../../src/core/types.js';
-import { COMMAND_ERRORS, EXIT_CONFIRM_ROW, GENERATOR_IGNORED_NOTE, STEER_ERRORS, INTAKE_KEPT, LOGIN_SAVED_TOAST, MODE_JEV_OFF_SET, MODE_JEV_ONLY_SET, MODE_JEV_ON_SET, MODE_LLM_JEV_SET, MODE_SET_ITEM, NO_SESSION_YET, RENAME_CUT_NOTE, SESSION_CAP_CHAT_REFUSAL, STARTING_STEER_CAP, applyRawEdits, exportFilePath, isInCi, isInteractive, jevcodeDir, mockReviewStep, modeSetItem, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps, type WizardReason } from '../../../src/cli/session.js';
+import { COMMAND_ERRORS, EXIT_CONFIRM_ROW, GENERATOR_IGNORED_NOTE, STEER_ERRORS, INTAKE_KEPT, LOGIN_SAVED_TOAST, MODE_JEV_OFF_SET, MODE_JEV_ONLY_SET, MODE_JEV_ON_SET, MODE_LLM_JEV_SET, MODE_SET_ITEM, NO_SESSION_YET, RENAME_CUT_NOTE, SESSION_CAP_CHAT_REFUSAL, STARTING_STEER_CAP, applyRawEdits, exportFilePath, isInCi, isInteractive, jevcodeDir, mockReviewStep, modeSetItem, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps, type WizardReason, jevCacheHitsOf, jevCostValue } from '../../../src/cli/session.js';
 import { helpLines } from '../../../src/tui/commands/palette.js';
 import { modeBadgeWord } from '../../../src/tui/status/lines.js';
 import { MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
@@ -1795,5 +1795,17 @@ describe('TUI-DESIGN-4 §3.2: the F-B frames are built by the REAL `session.ts` 
     await h.command('/jev');
     const rows = (h.renderer.notes.at(-1)?.detail ?? '').split('\n');
     expect(rows).toEqual(['decider not resolved yet — the first question resolves it']);
+  });
+});
+
+describe('/jev cost row: Jev cache hits (llm-jev iteration 1, src/jev/cache.ts)', () => {
+  it('jevCacheHitsOf sums the explicit per-step field and treats an absent field as 0', () => {
+    expect(jevCacheHitsOf([])).toBe(0);
+    expect(jevCacheHitsOf([{}, { jevCacheHits: 3 }, { jevCacheHits: 0 }, { jevCacheHits: 9 }])).toBe(12);
+  });
+  it('jevCostValue appends "· N cache hits" only when the run had any, with the singular form at one', () => {
+    expect(jevCostValue('$0.007', 1787, 0)).toBe('$0.007 · 1787 questions');
+    expect(jevCostValue('$0.007', 1, 1)).toBe('$0.007 · 1 question · 1 cache hit');
+    expect(jevCostValue('$0.007', 1787, 12)).toBe('$0.007 · 1787 questions · 12 cache hits');
   });
 });

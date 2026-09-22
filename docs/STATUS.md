@@ -1467,6 +1467,5 @@ this release and are named here rather than loosened.
 directory) and `src/loop/stop.ts` `stopTranscriptLine → ''` (both behaviours already delivered from round-4-owned files, so the patch
 is a no-op for every call site); plus the two test-file edits above and the allowlist request.
 
-**Owed after this merge** (small, on `main`): the `/jev` `cache hits` row and the `jevcode report` column reading
-`StepRecord.jevCacheHits` (per-request views read `JevRequestRecord.cached`, never `usage.calls === 0`); the fullscreen frame-height
+**Owed after this merge** (small, on `main`): ~~the `/jev` `cache hits` row~~ (landed right after the merge: the `cost` row ends with `· N cache hits`, from Σ `StepRecord.jevCacheHits`; the report bundle already carries the per-step field in `steps.tail.jsonl`); the fullscreen frame-height
 post-condition (the 368 frames above) as a fix or a round-5 slot; the `lease-conflict` / `land-preflight` pane prose (round 5, D-AF).

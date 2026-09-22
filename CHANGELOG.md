@@ -12,6 +12,8 @@ of what landed, with every gate number, is `docs/STATUS.md`, "Round 4"). The bra
 gets one grammar, a resize never deletes scrollback, Enter walks the palette, the conversation is turns, file edits
 get a real diff — and the product stops failing quietly.
 
+- `/jev`'s `cost` row ends with `· N cache hits` when the run served any Jev request from its per-run request-hash cache (llm-jev iteration 1; read from the explicit per-step `jevCacheHits`, never from `usage.calls === 0`).
+
 ### Added — the renderer, the palette and the grammar
 
 - **An opt-in full-screen renderer** (§1.3): `--fullscreen`, `--renderer fullscreen`, `JEVCODE_RENDERER=fullscreen`

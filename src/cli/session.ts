@@ -1188,6 +1188,23 @@ function newestRunId(s: SessionRow): string | null {
   return r ? r.runId : null;
 }
 
+/**
+ * llm-jev iteration 1 (src/jev/cache.ts): requests a run served from its request-hash cache, Σ `StepRecord.jevCacheHits` over the
+ * run's committed steps. Read from the explicit per-step field the engine derives from `jevRequests[].cached` — never from
+ * `usage.calls === 0`, which the bench's stub decider reports on every request.
+ */
+export function jevCacheHitsOf(records: readonly Pick<StepRecord, 'jevCacheHits'>[]): number {
+  let n = 0;
+  for (const r of records) n += r.jevCacheHits ?? 0;
+  return n;
+}
+
+/** The `/jev` block's `cost` value: `$0.007 · 1,787 questions` and, only when the run had any, `· 12 cache hits`. */
+export function jevCostValue(jevUsdText: string, questions: number, cacheHits: number): string {
+  const base = `${jevUsdText} · ${questions} question${questions === 1 ? '' : 's'}`;
+  return cacheHits > 0 ? `${base} · ${cacheHits} cache hit${cacheHits === 1 ? '' : 's'}` : base;
+}
+
 export function createSessionController(o: SessionControllerOptions): SessionController {
   const deps = o.deps ?? {};
   const { env, cwd, flags } = o;
@@ -3007,7 +3024,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     jevRows.push({ kind: 'kv', key: 'decider', value: `${head}${resolved ? ` ${glyphs().arrow} resolved ${resolved}` : ''}${drift ? ` · drift@step ${drift.step} ${glyphs().arrow} ${drift.served}` : ''}` });
     jevRows.push({ kind: 'kv', key: 'latency', value: `p50 ${p(50)} · p95 ${p(95)}` });
-    jevRows.push({ kind: 'kv', key: 'cost', value: `${usd3(jevUsd)} · ${questions} question${questions === 1 ? '' : 's'}` });
+    jevRows.push({ kind: 'kv', key: 'cost', value: jevCostValue(usd3(jevUsd), questions, jevCacheHitsOf((current ?? lastFinishedRun())?.records ?? [])) });
     // TUI-DESIGN-2 §2.6 / §12: `intake: <n> messages · p50 <ms> ms · $<usd> · last: <kind> <p>`
     if (chat.messages > 0) {
       const segs = [`${chat.messages} message${chat.messages === 1 ? '' : 's'}`, `p50 ${chat.p50Ms === null ? '—' : `${Math.round(chat.p50Ms)} ms`}`, stepCostText(chat.costUsd)];
