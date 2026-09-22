@@ -1322,13 +1322,21 @@ export interface SessionRef {
   intake?: { kind: IntakeKind; probability: number; requestHash: string };
 }
 /**
- * NOT widened by contract 1.5. ORCHESTRATION-DESIGN §5.7 [D1] wants a `'land-preflight'` member, but `BlockingKind` is
- * consumed by FOUR exhaustive sites outside the harness (`src/tui/blocking/lines.ts` ×2, `src/tui/status/lines.ts`, and a
- * `Record<BlockingKind, …>` in `test/unit/tui/pane/blocking.test.ts`), so the member is not additive in this repo and
- * belongs to the TUI session's wave. Until it lands, §5.7's `[c] / [s] / [x]` is asked through `Engine.land`'s injected
- * asker (`LandPreflightOffer`, `src/loop/launch.ts`), which needs no pane at all.
+ * contract 1.4 (W2b) / contract 1.5: widened by the TUI session's explicit exception, in one commit with the minimal case
+ * lines at the FOUR exhaustive sites outside the harness (`src/tui/blocking/lines.ts` ×2, `src/tui/status/lines.ts`, and a
+ * `Record<BlockingKind, …>` in `test/unit/tui/pane/blocking.test.ts`) — `BlockingKind` is the one union in this file that is
+ * not additive, so the member and its four cases can never be separate commits.
+ *
+ *  - `'land-preflight'` — ORCHESTRATION-DESIGN §5.7 [D1]: the dirty-checkout offer `[c] / [s] / [x]`. `Engine.land`'s injected
+ *    asker (`LandPreflightOffer`, `src/loop/launch.ts`) stays the seam the engine calls; the offer is now also renderable as a
+ *    pane verbatim, because it already carries `id` / `step` / `detail` / `stop` / `exitCode`.
+ *  - `'lease-conflict'` — COORDINATION-DESIGN §4.3 step 4: the strict claim wait, answered `[w] wait` / `[c] continue` /
+ *    `[t] worktree` / `[p] pause` / `[q] stop` (`BlockingAnswer` already carries every one of them).
+ *
+ * The pane TEXT in `src/tui/**` is a placeholder the TUI session's round 5 replaces; the union member and the answers are the
+ * contract.
  */
-export type BlockingKind = 'jev-unreachable' | 'key-rejected' | 'spend-limit' | 'checkpoint-degraded' | 'drift' | 'sandbox-unavailable';
+export type BlockingKind = 'jev-unreachable' | 'key-rejected' | 'spend-limit' | 'checkpoint-degraded' | 'drift' | 'sandbox-unavailable' | 'land-preflight' | 'lease-conflict';
 /** contract 1.5 (§5.7 [D1]): the launch pre-flight's answers — `[c] commit` and `[s] stash` each seed a judged step of their own; `[x] cancel` is the existing 'stop'. */
 export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin' | 'pause' | 'wait' | 'worktree' | 'commit' | 'stash'; // contract 1.4 (§12.0.2 P6 / P7, §4.3 step 4): `pause()` while a pane is awaited wakes the blocker with 'pause'; the lease-conflict pane adds `[w] wait` (keep waiting, the next coordinate re-checks) and `[t] worktree` (stop for relocation) — 'pause' and 'worktree' are the resumable stop at the loop top
 export interface BlockingRequest {
