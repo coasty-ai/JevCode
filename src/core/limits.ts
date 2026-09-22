@@ -81,6 +81,17 @@ export const OTHER_SESSIONS_MAX_CHARS = 6 * 1024;
  */
 export const OTHER_SESSIONS_SHARE = 0.05;
 
+/**
+ * contract 1.4 (COORDINATION-DESIGN §8.8 column 3) / TUI-DESIGN-5 §8.2 R13: the share of ONE `propose_fix` sample's
+ * user message that `SynthesisContext.contextText` may take (`src/synth/llm/source.ts`). The fix prompt's own sections
+ * are bounded by `PROMPT_LIMITS_FIX` — `fixPromptCharBound()` is ~120 k chars at the 4-listing default — so 24 KiB is
+ * a tenth of the message and ~7 k tokens at `CHARS_PER_TOKEN`: enough for the task, the plan, the files in view and
+ * the recent steps, and never enough to displace the code the sample has to edit. A longer view is clipped HEAD-first
+ * (the head carries the task and the plan; the tail is the oldest history) with a named notice — §8.2's "no clip is
+ * silent" — never truncated in silence.
+ */
+export const LLM_SAMPLE_CONTEXT_MAX_CHARS = 24 * 1024;
+
 // --- §3.2 / §9.3 run claims (COORDINATION-DESIGN W0 item 1) -----------------------------
 /**
  * contract 1.4: `RunMeta.claims[]` is capped at 64 — the FIRST row (the origin incarnation, which is the
