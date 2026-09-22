@@ -51,6 +51,7 @@ import { sleep } from '../../../src/core/time.js';
 import { AbortError, EditError, FileNotFoundError, JevHttpError, PatchError, PathEscapeError, ProviderHttpError } from '../../../src/errors.js';
 import type { CheckpointStoreWithContext } from '../../../src/checkpoint/types.js';
 import type { DiskError } from '../../../src/checkpoint/store.js';
+import { capRunClaims } from '../../../src/checkpoint/store.js';
 import { createEngine, type EngineDeps, type GitProbe } from '../../../src/loop/engine.js';
 import type { PreflightProbe } from '../../../src/orchestrate/index.js';
 
@@ -577,6 +578,11 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
       // contract 1.5 (ORCHESTRATION-DESIGN §5.7 tail): the landed merges and the /rewind floor are scalar replaces
       if (patch.landed !== undefined) st.meta.landed = structuredClone(patch.landed);
       if (patch.undoUnavailableBelow !== undefined) st.meta.undoUnavailableBelow = patch.undoUnavailableBelow;
+      // contract 1.4 (COORDINATION-DESIGN W0 item 1, §3.2): `claims` APPENDS, capped first + newest 63;
+      // `claimEpochHigh` is a monotonic MAX — the same rule the disk store applies, so a fake-store test of the
+      // engine's mint asserts the shape a real `run.json` would carry.
+      if (patch.claims !== undefined) st.meta.claims = capRunClaims([...(st.meta.claims ?? []), ...patch.claims]);
+      if (patch.claimEpochHigh !== undefined) st.meta.claimEpochHigh = Math.max(st.meta.claimEpochHigh ?? 0, patch.claimEpochHigh);
     },
     async writeCache(rel, json) {
       if (st.failCache !== null) throw st.failCache;

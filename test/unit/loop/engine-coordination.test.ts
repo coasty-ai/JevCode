@@ -264,6 +264,43 @@ describe('§8.8 `## Other sessions` in the next prompt', () => {
   });
 });
 
+/**
+ * contract 1.4 (COORDINATION-DESIGN W0 item 1, §3.2 / §9.3): the engine writes `RunMeta.claims[]` and
+ * `RunMeta.claimEpochHigh` at each mint, and the resume gate reads them back as the LOCAL set.
+ */
+describe('W0 item 1: run.json carries the claims this device minted', () => {
+  it('a run on a ledger records its claim row and the high-water mark', async () => {
+    const { ledger } = await ledgerOn();
+    const h = await build(ledger);
+    await h.engine.run();
+    const meta = h.store.meta;
+    expect(meta?.claims?.map((c) => [c.epoch, c.deviceId, c.authority])).toEqual([[ledger.claim.epoch, 'k3q7m2ab', 'self']]);
+    expect(meta?.claimEpochHigh).toBe(ledger.claim.epoch);
+    // the row is the ledger's own claim, not a re-derivation
+    expect(meta?.claims?.[0]?.at).toBe(ledger.claim.at);
+  });
+
+  it('a resume after two mints shows BOTH claims and the high-water mark, which never falls', async () => {
+    const first = await ledgerOn();
+    const a = await build(first.ledger);
+    await a.engine.run();
+    expect(a.store.meta?.claims).toHaveLength(1);
+
+    // What an earlier incarnation on this device left behind and the fold has since GC'd: epoch 5. The resumed
+    // process mints its own epoch (the fresh ledger's) — `run.json` must carry BOTH and keep the higher mark.
+    a.store.meta!.claims = [{ epoch: 5, deviceId: 'k3q7m2ab', at: '2026-09-21T06:00:00.000Z', authority: 'self' }];
+    a.store.meta!.claimEpochHigh = 5;
+    const second = await ledgerOn();
+    // the step cap is raised, or the resume is refused on the stored `max_steps` before `run:ready` ever fires
+    const b = await build(second.ledger, { store: a.store, runsDir: a.runsDir, limits: { maxSteps: 4 }, resume: { runId: a.engine.runId, force: true } });
+    await b.engine.run();
+    const meta = b.store.meta;
+    expect(meta?.claims?.map((c) => c.epoch)).toEqual([5, second.ledger.claim.epoch]);
+    // monotonic: this incarnation's epoch is lower, so the mark stays where the older one put it
+    expect(meta?.claimEpochHigh).toBe(5);
+  });
+});
+
 describe('§12.0.3 the status meter', () => {
   it('EngineStatus.coordination lists the live peer with its cloned flag, and phase/subwork are present', async () => {
     const { ledger } = await ledgerOn({ peerHoldsPaths: ['src/other.py'] });

@@ -85,6 +85,7 @@ import type { AskResult,
   RunCounters,
   RunGitMeta,
   RunLimits,
+  RunClaimRow,
   RunMeta,
   RunResult,
   SampleOptions,
@@ -675,6 +676,10 @@ class EngineImpl implements Engine {
   private readonly coord: CoordinationRuntime | null;
   /** contract 1.4 (W3), §6 / W3 item 28: `SynthesisContext.coordination`, built once per run by `synthSubwork()` */
   private subworkAdapter: SynthSubwork | null = null;
+  /** contract 1.4 (W0 item 1), §3.2 / §9.3: `RunMeta.claims[]` as this process knows it — the resumed rows plus every mint it made */
+  private localClaims: RunClaimRow[] = [];
+  /** contract 1.4 (W0 item 1), §3.2 / §9.3: `RunMeta.claimEpochHigh` — the monotonic high-water mark, resumed and then raised at each mint */
+  private claimEpochHigh = 0;
   /**
    * §12.0.1 rule 5: `setIdentity({ repoKey, runId })` after `run:ready`; its promise resolves once every newly
    * reachable watch root has been walked ONCE. Awaited before the FIRST `coordinate` and never again — `fs.watch`
@@ -999,6 +1004,11 @@ class EngineImpl implements Engine {
     this.memoryIndexChars = memoryIndexChars(memoryIndex);
     this.synthesizer = init.opts.synthesizer ?? null;
     this.resumed = init.resume !== null;
+    // contract 1.4 (W0 item 1, §9.3): the epochs THIS device has already minted or accepted for the run, as the
+    // resumed `run.json` recorded them. The resume gate's local set starts here rather than at this process's own
+    // claim, which is what stops an epoch GC'd out of the fold from being re-minted.
+    this.localClaims = [...(init.resume?.meta.claims ?? [])];
+    this.claimEpochHigh = init.resume?.meta.claimEpochHigh ?? 0;
     this.resumeStop = null;
     this.gitState = init.gitState;
     this.gitMeta = runGitMetaOf(init.gitState ?? notRepoState('git-missing', { probedAt: nowIso(), probeMs: 0 }));
@@ -1444,13 +1454,32 @@ class EngineImpl implements Engine {
    * Awaited ONCE, before the first step of a resumed run — it reads signed `claims.json` projections, which is the
    * only evidence available when the peer that took the run over is currently offline.
    */
+  /**
+   * contract 1.4 (COORDINATION-DESIGN W0 item 1, §3.2 / §9.3): persist one `claims[]` mint in `run.json`.
+   *
+   * The row is this process's own claim (`authority: 'self'` — this device minted it) and the high-water mark is
+   * raised to it; the store appends and caps at `MAX_CLAIMS_PER_RUN` and takes the MAX of the two epoch marks, so a
+   * resumed run accumulates its incarnations and never lowers the bar. Fire-and-forget on the meta queue like every
+   * other `updateMeta`: coordination never delays a step, and a run with no ledger never reaches here, which is why
+   * such a run's `run.json` carries neither member.
+   */
+  private persistClaimMint(): void {
+    if (this.coord === null) return;
+    const claim = this.coord.ledger.claim;
+    if (this.localClaims.some((c) => c.epoch === claim.epoch && c.deviceId === claim.deviceId)) return;
+    const row: RunClaimRow = { epoch: claim.epoch, deviceId: claim.deviceId, at: claim.at, authority: 'self' };
+    this.localClaims.push(row);
+    this.claimEpochHigh = Math.max(this.claimEpochHigh, claim.epoch);
+    this.persist(this.store.updateMeta({ claims: [row], claimEpochHigh: this.claimEpochHigh }), CHECKPOINT_FILES.meta);
+  }
+
   private async checkResumeClaim(): Promise<void> {
     if (this.coord === null || !this.resumed) return;
-    // the epochs THIS device minted: this process's, plus the one persisted beside the run for a takeover it made
-    // with no local run dir. `RunMeta.claims[]` (W0 item 1) would widen this set; until it lands these are the two
-    // that exist, and a missing local epoch can only make the gate MORE conservative, never less.
+    // the epochs THIS device minted: `RunMeta.claims[]` and `claimEpochHigh` as `run.json` recorded them (W0 item 1
+    // — the set the fold can no longer see, because ended heartbeats are GC'd after 24 h), this process's own claim,
+    // and the one persisted beside the run for a takeover it made with no local run dir.
     const persisted = await this.coord.ledger.readRunClaim(this.runId).catch(() => null);
-    const local = [this.coord.ledger.claim.epoch, ...(persisted === null ? [] : [persisted.epoch])];
+    const local = [this.coord.ledger.claim.epoch, ...(persisted === null ? [] : [persisted.epoch]), ...this.localClaims.map((c) => c.epoch), ...(this.claimEpochHigh > 0 ? [this.claimEpochHigh] : [])];
     const refusal = await this.coord.claimGate(this.runId, local).catch(() => null);
     if (refusal === null) return;
     const label = this.coord.ledger.fold.devices.get(refusal.deviceId)?.label ?? refusal.deviceId.slice(0, 8);
@@ -2154,6 +2183,10 @@ class EngineImpl implements Engine {
       this.coordReady = coord
         .setIdentity({ runId: this.runId, sessionId: this.opts.session?.sessionId ?? this.runId, ...(this.gitMeta.head !== null && this.gitMeta.head.kind === 'branch' ? { branch: this.gitMeta.head.name } : {}) })
         .catch(() => undefined);
+      // contract 1.4 (W0 item 1, §3.2 / §9.3): the mint. The ledger minted this incarnation's claim when it opened;
+      // `run.json` is where it survives the GC of every record it came from, so it is written here — once per
+      // process, beside the heartbeat that announces the same epoch.
+      this.persistClaimMint();
     }
     // TUI-DESIGN §12.2: the git banner and the instruction files as one event right after run:ready (notice-only, never a gate)
     this.emit({ type: 'workspace', git: this.gitMeta, instructions: (this.opts.instructions?.files ?? []).map((f) => ({ ...f })), sandbox: this.sandbox.level });

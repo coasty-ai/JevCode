@@ -81,6 +81,18 @@ export const OTHER_SESSIONS_MAX_CHARS = 6 * 1024;
  */
 export const OTHER_SESSIONS_SHARE = 0.05;
 
+// --- §3.2 / §9.3 run claims (COORDINATION-DESIGN W0 item 1) -----------------------------
+/**
+ * contract 1.4: `RunMeta.claims[]` is capped at 64 — the FIRST row (the origin incarnation, which is the
+ * provenance) plus the newest 63 (§3.2, §4.6 row 1 as amended). Only the origin and the maximum are ever read, so
+ * pruning the middle is lossless.
+ *
+ * This is the file-header move of the duplicated copy in `src/coordination/claims.ts`: `src/checkpoint/**` writes
+ * the capped array and must not import the ledger to learn the bound, and this module imports nothing, which is
+ * exactly why it exists. `test/unit/core/limits-claims.test.ts` pins the two to the same number.
+ */
+export const MAX_CLAIMS_PER_RUN = 64;
+
 // --- §8.6 compaction ----------------------------------------------------------------------
 export const COMPACT_EVERY = 8;
 /** the built prompt passing this share of the budget triggers a compaction after the step commits */

@@ -27,8 +27,8 @@ import type { Log } from './log.js';
  * importing `LedgerHandle` from there is a compile-time cycle only, which TypeScript resolves and esbuild never sees.
  */
 import type { LedgerHandle } from '../coordination/ledger.js';
-import type { SelfIdentity, SubworkEntry } from '../coordination/types.js';
-export type { LedgerHandle, SelfIdentity, SubworkEntry };
+import type { Authority, SelfIdentity, SubworkEntry } from '../coordination/types.js';
+export type { Authority, LedgerHandle, SelfIdentity, SubworkEntry };
 
 export type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 export type JsonObject = { [k: string]: Json };
@@ -1263,6 +1263,37 @@ export interface RunMeta {
   undoUnavailableBelow?: number;
   /** contract 1.6 (IMPORT-DESIGN §7.1 row 1, widening 4 / §4.7.5): the import ids whose memory this run was given, newest last */
   imports?: readonly string[];
+  /**
+   * contract 1.4 (COORDINATION-DESIGN W0 item 1, §3.2 / §9.3, `RunClaimMeta`): every incarnation of this run this
+   * device has minted or accepted, oldest first, newest last. Written by the engine at each `claims[]` mint through
+   * the ledger and read back by the resume gate as the LOCAL set: the fold only knows the epochs of records it can
+   * still SEE, so a run whose earlier incarnations were GC'd (an ended heartbeat goes after 24 h) would otherwise
+   * re-mint an epoch a previous incarnation already used, and `compareClaim` would return 0 for two live processes —
+   * the one case §9.3's fork rule cannot decide.
+   *
+   * Capped at `MAX_CLAIMS_PER_RUN` (64) keeping the FIRST row and the newest 63 (§3.2, §4.6 row 1 as amended): only
+   * the origin (the provenance) and the maximum are ever read, so pruning the middle is lossless. Each row carries
+   * the authority it was read with, so an unverified foreign row never raises the bar (re-review (5)).
+   * ABSENT on a run with no ledger.
+   */
+  claims?: readonly RunClaimRow[];
+  /**
+   * contract 1.4 (W0 item 1, §3.2 / §9.3): `max(epoch)` this device has ever minted or accepted for the run — the
+   * monotonic high-water mark fed back through `nextEpoch(runId, { epochHigh })`. It survives the pruning of
+   * `claims[]` and the GC of every record the epoch came from, which is why it is a scalar of its own.
+   * ABSENT on a run with no ledger.
+   */
+  claimEpochHigh?: number;
+}
+
+/** contract 1.4 (COORDINATION-DESIGN §3.2, `RunClaimMeta.claims[]`): one incarnation of a run, as `run.json` keeps it. */
+export interface RunClaimRow {
+  epoch: number;
+  deviceId: string;
+  /** the minting process's start (ISO) — §3.2's `at` */
+  at: string;
+  /** how the row was read: `self` (this device minted it), `trusted`, or `unverified` (never raises the bar) */
+  authority: Authority;
 }
 /** TUI-DESIGN §15 item 10 */
 export type RunSource = 'cli' | 'bench' | 'perf';
@@ -1318,7 +1349,8 @@ export interface CheckpointStore {
   load(): Promise<{ meta: RunMeta; state: CheckpointState; recoveredFrom: 'state' | 'prev' }>;
   /** TUI-DESIGN §15 item 10: patch type gains 'title' | 'instructions' | 'git' (git: scalar replace); contract 1.4: 'ended' (scalar replace; null clears it on a forced reopen, §7.4) */
   /** contract 1.5 (ORCHESTRATION-DESIGN §5.7 tail, corner row 44): `landed` / `undoUnavailableBelow` join the patchable scalars — additive, every existing caller compiles */
-  updateMeta(patch: Partial<Pick<RunMeta, 'overrides' | 'resumes' | 'resolvedJevModel' | 'jevModelDrift' | 'title' | 'instructions' | 'git' | 'ended' | 'landed' | 'undoUnavailableBelow'>>): Promise<void>;
+  /** contract 1.4 (COORDINATION-DESIGN W0 item 1): `claims` APPENDS and is capped at `MAX_CLAIMS_PER_RUN` (first + newest 63); `claimEpochHigh` is a monotonic MAX, never a plain replace */
+  updateMeta(patch: Partial<Pick<RunMeta, 'overrides' | 'resumes' | 'resolvedJevModel' | 'jevModelDrift' | 'title' | 'instructions' | 'git' | 'ended' | 'landed' | 'undoUnavailableBelow' | 'claims' | 'claimEpochHigh'>>): Promise<void>;
   /** write tmp + fsync; rename state.json -> state.prev.json; rename tmp -> state.json */
   writeState(state: CheckpointState): Promise<void>;
   /** synchronous last resort used by shutdown() on a second Ctrl-C or on 'exit' */
