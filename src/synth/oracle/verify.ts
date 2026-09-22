@@ -178,6 +178,10 @@ export async function runRepositoryQueue(ctx: RunnerContext, mem: RunnerMemory, 
   if (mem.lanes !== undefined && mem.lanes.mode !== 'inplace' && mem.lanes.lanes.length < oracle.lanes) {
     await mem.lanes.disposeLanes();
     delete mem.lanes;
+    // the warm workers' cwd is a lane directory that no longer exists (sieve/runner.ts does the
+    // same at its own rebuild); this queue never serves warm, but it must not leave one behind
+    mem.warm?.dispose();
+    delete mem.warm;
   }
   const pool = mem.lanes ?? (await createLanes(ctx, oracle));
   mem.lanes = pool;
