@@ -1547,8 +1547,10 @@ export function guardPlacement(g: GuardClause, roots?: readonly string[]): { rea
  */
 export function isLateGuard(g: GuardClause, opts: { roots?: readonly string[]; hoistable?: boolean } = {}): boolean {
   if (g.position === 0) return false;
-  const roots = opts.roots;
-  if (roots !== undefined && roots.length === 0) return false;
+  const roots = opts.roots ?? g.roots;
+  // a condition over nothing but literals and builtins (`if True:`) has no operand to be placed
+  // relative to, so its position says nothing and it is never late
+  if (roots.length === 0) return false;
   const p = guardPlacement(g, roots);
   return p.reads > 0 || ((opts.hoistable ?? true) && p.binds === 0);
 }

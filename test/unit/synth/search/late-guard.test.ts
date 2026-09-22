@@ -77,6 +77,13 @@ describe('guardClauses / isLateGuard read the placement, not the condition', () 
     expect(isLateGuard(g)).toBe(false);
   });
 
+  it('a condition over nothing but builtins and literals has no operand to be placed relative to, so its position says nothing', () => {
+    const mod = analyse(['def f(a):', '    a = a + 1', '    if True:', '        return 0', '    return a', ''].join('\n'));
+    const g = guardClauses(mod, mod.blocks[0]!)[0]!;
+    expect(g).toMatchObject({ position: 1, operands: [], roots: [] });
+    expect(isLateGuard(g)).toBe(false);
+  });
+
   it('stats: the committed guard sits behind two statements that read `ordered`; the gold guard is the first statement of `median`', () => {
     const after = analyse(STATS_OVERFIT);
     const median = after.blocks.find((b) => b.name === 'median')!;
