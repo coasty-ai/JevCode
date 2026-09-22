@@ -326,7 +326,10 @@ describe('paletteRows / paletteLines', () => {
     const def = values.find((r) => r.name === `/mode ${DEFAULT_MODE}`);
     expect(def?.text.trimEnd().endsWith(' (default)')).toBe(true);
     expect(values.filter((r) => r.text.includes('(default)'))).toHaveLength(1);
-    expect(values.find((r) => r.name === '/mode llm-jev')?.text).toContain(`${MODE_BADGE_WORD['llm-jev']}: candidate patches`);
+    // the llm-jev row is the default row since 6aed085: its title is cut to make room for ` (default)` at 80 columns, so only the
+    // badge word (the title's head) is asserted here; the full hint is checked on a non-default row below
+    expect(values.find((r) => r.name === '/mode llm-jev')?.text).toContain(MODE_BADGE_WORD['llm-jev']);
+    expect(values.find((r) => r.name === '/mode jev-on')?.text).toContain(`${MODE_BADGE_WORD['jev-on']}: `);
     expect(values.find((r) => r.name === '/mode jev-only')?.text).toContain('no generating LLM; code proposes, Jev deci');
     for (const name of ['theme', 'panel', 'transcript', 'copy', 'logout', 'help']) {
       const spec = findCommand(name) as CommandSpec;
