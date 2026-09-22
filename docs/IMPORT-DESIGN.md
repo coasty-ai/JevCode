@@ -2088,6 +2088,9 @@ One paid run, recorded in `docs/STATUS.md`:
 These are the decisions the owner should make before W1; every one has a default in this document so the
 build is not blocked on an answer.
 
+**Ratified 2026-09-22** (harness owner; the TUI session concurred): **Q4** `--jev-sample` defaults to `headings`. Every
+other question ships with its stated default; the contract line is `// contract 1.6`, after orchestration's 1.5.
+
 1. **`memory-local` and `.gitignore`.** Should apply *offer* to append `.jevcode/memory-local/` to
    `.gitignore` (one line, shown as a diff), or only report it? **Default here:** offer, off by default in the
    overlay. Arguments against: touching `.gitignore` is a repo-visible side effect of a command whose whole

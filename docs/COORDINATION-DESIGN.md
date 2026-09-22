@@ -2803,6 +2803,14 @@ import time, and the prompt size distribution per mode before and after compacti
     deliberately far above `MAX_DEVICES` = 16, because a fold bound and a correctness bound answer different questions), and
     **`MAX_CLAIM_EPOCH` = 1e9** with **`MAX_CLAIMS_PER_RUN` = 64** (§3.2).
 
+    **Ratified 2026-09-22** (harness owner; the TUI session concurred on the same day): `MAX_FENCE_DEVICES` 256 and
+    `STRICT_FENCE_MS` 250 ms; `MAX_CLAIM_EPOCH` 1e9 and `MAX_CLAIMS_PER_RUN` 64 (the cap is a deliberate softening of §4.6
+    row 1, safe because only the origin and the maximum are ever read); `setIdentity` returns `Promise<void>`; `keyDir()` is the
+    on-disk lease component (nothing has shipped, so there is no migration — W1 items 8/10 and the perf/watch tests use it);
+    F2's wake rule is W1 engine work in `leases.ts` (item 10), not only the fence function; W5 pairing ships the per-device
+    HMAC keys as written, with Ed25519 signatures (`node:crypto`, no new dependency) as the W5 follow-on that removes the
+    stated impersonation residual.
+
 ### Rejected critiques
 
 Every finding of the three reviews is applied above in place — **no item of the third review (revision 3) was rejected outright**.

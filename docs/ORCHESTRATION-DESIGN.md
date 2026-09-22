@@ -1822,6 +1822,12 @@ numbers M3 prints.
 
 ## 10. Open questions for the owner
 
+**Ratified 2026-09-22** (harness owner; the TUI session concurred): **Q1** `orchestrate.split` ships `off` with the
+one-time hint; **Q2** `PaneTab 'a'` is placed last and skipped when no delegation exists, with the dynamic
+`cycleTab(tab, dir, tabs)` / `paneTabsFor(hasDelegation)` at all three call sites; **Q3** `orchestrate.land` ships `step`.
+Every other question below ships with the default written in its item; the contract line is `// contract 1.5`, after
+coordination's 1.4 and before import's 1.6.
+
 1. **`orchestrate.split` default.** This document ships **`off`** with a one-time hint [G21], against the winner's
    `ask`, because the manifest card is new surface and M10 has not run. Ratify, or accept `ask` after M10 passes.
 2. **The tab letter and its cycle position.** `PaneTab 'a'` placed last and skipped when no delegation exists [G20],
