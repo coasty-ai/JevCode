@@ -71,6 +71,9 @@ function plain(v: unknown, max: number): string | null {
   const one = v
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/[`]{3,}/g, '~~~')
+    // `### step N: <action>` is one line, so an inline `## Task` cannot be a heading — but it reads like one, and a
+    // renderer that re-wraps could make it one. One `#` survives so the text stays legible.
+    .replace(/#{2,}/g, '#')
     .replace(/^[#>\s]+/, '')
     .trim();
   return one.length === 0 ? null : one.slice(0, max);
@@ -98,7 +101,11 @@ function readJudge(v: unknown): NonNullable<WindowEntry['judge']> | undefined {
   const tests = v['tests'];
   if (isJsonObject(tests)) {
     if (tests['source'] === 'parsed' && isFiniteNumber(tests['passed']) && isFiniteNumber(tests['failed']) && isFiniteNumber(tests['errors'])) {
-      judge['tests'] = { source: 'parsed', passed: Math.max(0, Math.floor(tests['passed'])), failed: Math.max(0, Math.floor(tests['failed'])), errors: Math.max(0, Math.floor(tests['errors'])) };
+      const passed = Math.max(0, Math.floor(tests['passed']));
+      const failed = Math.max(0, Math.floor(tests['failed']));
+      const errors = Math.max(0, Math.floor(tests['errors']));
+      // `allPassed` is recomputed from the counts, never taken from the record (`JudgeTests` declares it)
+      judge['tests'] = { source: 'parsed', allPassed: failed === 0 && errors === 0 && passed > 0, passed, failed, errors };
     } else {
       const allPassed = ratio(tests['allPassed']);
       if (allPassed !== null) judge['tests'] = { source: 'judged', allPassed };
@@ -129,8 +136,16 @@ function readHistoryEntry(v: unknown): HistoryEntry | null {
   };
   const reason = plain(v['reason'], HISTORY_REASON_CHARS);
   if (reason !== null) e.reason = reason;
-  // the body is shown inside a fence, so its newlines are kept — only its length is bounded
-  if (isString(v['output']) && v['output'].length > 0) e.output = v['output'].slice(0, HISTORY_BODY_CHARS);
+  // The body is shown INSIDE a fence (`prompts.ts` `tieredEntry`), so its newlines are kept — but a restored body that
+  // carries its own fence would close that one and everything after it would be prompt, not data. Defang the fence and
+  // any line-leading heading marker, then bound the length. (Only restored bodies pass through here: a live run's
+  // output goes straight from `draft.output`, so a legitimate `# comment` in this run's output is untouched.)
+  if (isString(v['output']) && v['output'].length > 0) {
+    e.output = v['output']
+      .replace(/[`]{3,}/g, '~~~')
+      .replace(/^[ \t]*#+[ \t]*/gm, '')
+      .slice(0, HISTORY_BODY_CHARS);
+  }
   if (v['truncated'] === true) e.truncated = true;
   const completion = ratio(v['completion']);
   if (completion !== null) e.completion = completion;

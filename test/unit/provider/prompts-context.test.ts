@@ -3,7 +3,9 @@
  * `## Recent steps` and the rolling `## Summary`, filled in the §8.2 order inside the model-aware budget, with every clip
  * naming its recovery path — plus the §8.9 gate: promptBuildMs p95 < 5 ms over a 12-step window and 60 KiB files.
  */
+import { readFileSync, writeFileSync } from 'node:fs';
 import { cpus, loadavg } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { FileView, Plan } from '../../../src/core/types.js';
 import { buildHistoryEntry, expandHistory, needsOutputFile, outputRefFor, outputView, pushHistory } from '../../../src/loop/context/history.js';
@@ -49,6 +51,43 @@ function history(n: number, chars: number, allowance = Number.MAX_SAFE_INTEGER) 
 
 function file(path: string, chars: number, pinnedBy: PromptFileInView['pinnedBy'] = 'read', truncatedBytes = 0): PromptFileInView {
   return { path, content: 'c'.repeat(chars), bytes: chars + truncatedBytes, truncatedBytes, pinnedBy, lastUsedStep: 4, omitted: false };
+}
+
+/** A deterministic, section-complete legacy input: intent, harness notes, a directive, changed files, a two-entry window. */
+function goldenInput(mode: 'jev-on' | 'jev-off'): PromptInput {
+  const long = `${'H'.repeat(1_000)}${'M'.repeat(500)}${'T'.repeat(500)}`;
+  const entries = [
+    buildWindowEntry({
+      step: 1,
+      intent: 'investigate',
+      action: 'read src/a.ts',
+      outcome: { status: 'executed', summary: 'read 1 file(s)', changedFiles: [] },
+      output: long,
+      judge: { succeeded: 0.82, errorPresent: 0.05, newInfo: 0.71, tests: null, doneClaims: [] },
+      completion: 0.25,
+      shownFiles: ['src/a.ts', 'tests/test_a.ts'],
+      notes: ['from run 20260919-100000-aaaaaaaa'],
+      error: null,
+    }),
+    buildWindowEntry({ step: 2, intent: 'edit', action: 'edit src/a.ts', outcome: { status: 'blocked', reason: 'needs review' }, output: null, judge: null, completion: null, shownFiles: [], notes: [], error: null }),
+  ];
+  return {
+    mode,
+    step: 3,
+    task: 'Fix f() in src/a.ts so that tests/test_a.ts passes',
+    plan: { done: [{ text: 'read the failing test', evidence: { step: 1, judged: 0.9, tests: [], verified: true } }], remaining: ['fix f', 'run the suite'], unverified: [], openProblems: ['the fixture is stale'], harnessProblems: [{ kind: 'human', text: 'use pytest -x', step: 0 }] } as unknown as Plan,
+    intent: { intent: 'edit', answer: 'edit', probability: 0.77, pairedNoul: 0.7, verdict: 'chosen' },
+    hints: {},
+    directive: null,
+    loopNotice: null,
+    window: entries,
+    workspace: { changedFiles: ['src/a.ts'], resumed: true, testCommand: 'pytest -q', git: true },
+    contextFiles: mode === 'jev-on' ? [{ path: 'src/a.ts', content: 'export const f = () => 1;\n', bytes: 26, truncatedBytes: 0 }] : [],
+    candidates: mode === 'jev-on' ? null : [{ path: 'src/a.ts', bytes: 26 }, { path: 'tests/test_a.ts', bytes: 64 }],
+    toolName: 'propose_action',
+    humanDirectives: ['keep the public API'],
+    pinnedFiles: ['README.md'],
+  };
 }
 
 function context(over: Partial<PromptContextView> = {}): PromptContextView {
@@ -141,6 +180,21 @@ describe('§8.8 the relaxed user message', () => {
     expect(buildPrompt(base).shrunk).toBe(false);
     expect(buildPrompt(base).shownFiles).toEqual([]);
     expect(buildPrompt(base).chars).toBeLessThanOrEqual(PROMPT_LIMITS.maxUserMessageChars);
+  });
+
+  // review follow-up (b): the legacy pin as a committed golden. The reviewer proved `buildUserMessage` byte-identical to
+  // ec61170 over 12 fixtures, so today's bytes ARE HEAD's; this fixture freezes them. Regenerate deliberately with
+  // `JEVCODE_UPDATE_GOLDEN=1 npx vitest run --project unit test/unit/provider/prompts-context.test.ts` and read the diff.
+  it('legacy golden: the message under the pin is byte for byte what HEAD emits', () => {
+    for (const mode of ['jev-on', 'jev-off'] as const) {
+      const text = buildUserMessage(goldenInput(mode));
+      const file = fileURLToPath(new URL(`../../fixtures/provider/legacy-${mode}.txt`, import.meta.url));
+      if (process.env['JEVCODE_UPDATE_GOLDEN'] === '1') writeFileSync(file, text);
+      expect(text).toBe(readFileSync(file, 'utf8'));
+      // the golden is the legacy shape, not a relaxed message that happened to be captured
+      expect(text).not.toContain('## Files in view');
+      expect(text).not.toContain('jevcode:outputs/');
+    }
   });
 
   it('a 32 KiB output is shown whole in the newest tier and the file section says which window it shows', () => {

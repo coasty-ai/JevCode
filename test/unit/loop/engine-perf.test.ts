@@ -1,9 +1,19 @@
+import { cpus, loadavg } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Harness } from './fakes.js';
 import { createFakeSandbox, execResult, makeEngine, turn } from './fakes.js';
 import { contextBudgetChars } from '../../../src/loop/context/limits.js';
 
 const harnesses: Harness[] = [];
+
+/**
+ * The wall-clock half of these tests. This machine is shared with bench and perf runs, and `harnessMs` is real time, so
+ * under load the number says nothing about the code — the gated home for it is `perf/step-overhead.ts`, which refuses to
+ * publish a release number above `LOAD_QUIET`. Everything structural in these tests runs either way.
+ */
+function timingIsMeaningful(): boolean {
+  return (loadavg()[0] ?? 0) <= cpus().length;
+}
 afterEach(() => {
   for (const h of harnesses.splice(0)) h.cleanup();
 });
@@ -38,9 +48,10 @@ describe('per-step cost is flat', () => {
     // nothing of §8 is persisted under the legacy view
     expect(h.store.last()!).not.toHaveProperty('history');
     expect(h.store.outputs.size).toBe(0);
-    const harness = h.store.steps.map((s) => s.timing.harnessMs);
-    for (const ms of harness) expect(ms).toBeLessThan(50);
-    expect(r.timing.harnessMs).toBeLessThan(50 * 12);
+    if (timingIsMeaningful()) {
+      for (const ms of h.store.steps.map((s) => s.timing.harnessMs)) expect(ms).toBeLessThan(50);
+      expect(r.timing.harnessMs).toBeLessThan(50 * 12);
+    }
   });
 
   it('relaxed view (§8.3): the prompt grows to the history window, stays inside the budget, and Jev stays flat', async () => {
@@ -52,18 +63,31 @@ describe('per-step cost is flat', () => {
     expect(sizes[6]!).toBeGreaterThan(sizes[0]! * 2);
     for (const n of sizes) expect(n).toBeLessThanOrEqual(contextBudgetChars());
     // §8.2 replaces flatness with a BOUND: the relaxed prompt grows with the tiers and the compaction folds it back
-    // (a sawtooth by design), but it never passes the budget and the history section never passes its 30 % allowance.
-    const ctx = (h.engine.status() as { context?: { recentSteps: { chars: number; allowanceChars: number } } }).context!;
-    expect(ctx.recentSteps.chars).toBeLessThanOrEqual(ctx.recentSteps.allowanceChars);
+    // (a sawtooth by design). The invariant is per STEP, not per run, so it is checked on every `status` the engine
+    // emitted: the history section never passes its 30 % allowance, at any point in the run.
+    const meters = h.events
+      .filter((e) => e.type === 'status')
+      .map((e) => (e as { status: { context?: { promptChars: number; recentSteps: { chars: number; allowanceChars: number } } } }).status.context)
+      .filter((c): c is NonNullable<typeof c> => c !== undefined);
+    // the samples before the first prompt build are the restored object (§12.0.3: promptChars 0, no plan yet)
+    const planned = meters.filter((m) => m.promptChars > 0);
+    expect(meters.length).toBeGreaterThan(planned.length);
+    expect(planned.length).toBeGreaterThanOrEqual(sizes.length);
+    for (const m of planned) {
+      expect(m.recentSteps.allowanceChars).toBe(Math.floor(contextBudgetChars() * 0.3));
+      expect(m.recentSteps.chars).toBeLessThanOrEqual(m.recentSteps.allowanceChars);
+    }
     expect(Math.max(...sizes)).toBeLessThanOrEqual(Math.floor(contextBudgetChars() * 0.4) + Math.floor(contextBudgetChars() * 0.3) + 20_000);
-    // the compaction at step 8 really does fold it back: the step-9 prompt is smaller than the step-8 one
+    // and the compaction at step 8 really does fold it back: the step-9 prompt is smaller than the step-8 one
     expect(sizes[8]!).toBeLessThan(sizes[7]!);
     // §8.1 two windows: Jev's state is flat, exactly as before
     const judgeStates = h.decider.callsAt('judge').map((c) => JSON.stringify(c.state).length);
     expect(Math.max(...judgeStates.slice(4)) - Math.min(...judgeStates.slice(4))).toBeLessThan(Math.min(...judgeStates.slice(4)) * 0.15);
-    // §8.9: the step overhead is unchanged (nothing synchronous, ≤ 16 stats + ≤ 2 output reads per build)
-    for (const ms of h.store.steps.map((s) => s.timing.harnessMs)) expect(ms).toBeLessThan(50);
-    expect(r.timing.harnessMs).toBeLessThan(50 * 12);
+    // §8.9: the step overhead is unchanged (nothing synchronous, one stat round trip + ≤ 6 memoised output reads)
+    if (timingIsMeaningful()) {
+      for (const ms of h.store.steps.map((s) => s.timing.harnessMs)) expect(ms).toBeLessThan(50);
+      expect(r.timing.harnessMs).toBeLessThan(50 * 12);
+    }
     expect(r.tokensPerStep.every((t) => t === r.tokensPerStep[0])).toBe(true);
     expect(r.generatorTokensPerStep.every((t) => t === r.generatorTokensPerStep[0])).toBe(true);
     expect(r.tokensPerStep).toEqual(r.generatorTokensPerStep.map((g, i) => g + r.jevTokensPerStep[i]!));
