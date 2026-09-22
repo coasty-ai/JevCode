@@ -519,6 +519,10 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
       signal: ctx.signal,
       budget: budgetView(mem),
       attemptHash: attemptsHash(attempts),
+      // contract 1.4 (COORDINATION-DESIGN §8.8 column 3) / TUI-DESIGN-5 §8.2 R13: the engine's relaxed view, bounded
+      // and fenced into every sample by `withSampleContext`. Spread so the member is ABSENT when the engine built
+      // none (`jev-only`, `view: 'legacy'`) and the fire input is the object it was.
+      ...(ctx.contextText === undefined || ctx.contextText.length === 0 ? {} : { contextText: ctx.contextText }),
     };
     // the feedback round fires whole (§4.6: "all"); the class decides otherwise unless a test overrides it
     if (o.stagger !== undefined) input.stagger = o.stagger;
