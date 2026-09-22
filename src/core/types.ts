@@ -14,6 +14,9 @@
 // contract 1.5 (2026-09-22): orchestration — decompose stage, manifest, agents, landing queue per docs/ORCHESTRATION-DESIGN.md §4.1; every item is optional or a new union member; Action, STOP_REASON_SET, exitCodeFor, MODES and CheckpointEnvelope.version are untouched.
 // contract 1.6 (2026-09-22): import — memory, rules, commands, MCP and the import plan per docs/IMPORT-DESIGN.md §7.1 row 1; the 22 section-1 shapes move here verbatim from src/import/types.ts, which re-exports them; every widening is an optional member or a new union member; CheckpointEnvelope.version stays 1.
 // contract 1.7 (2026-09-22): TUI round 4 — block rows, annotateBlock, diff detail kind, ui.renderer, peer view, per docs/TUI-DESIGN-4.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
+// contract 1.9 (2026-09-22): Fastlane — speculative routers (S4), the bounded sieve fast path (route R9) and the
+// S2 generator-path counters, per docs/LLM-LOOP-DESIGN.md §5; every item is optional or a default-preserving
+// widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
 /**
@@ -438,6 +441,12 @@ export interface StepTiming {
    * nothing waited.
    */
   coordWaitMs?: number;
+  // slot C — contract 1.9 (Fastlane) §5.2: the fast-path round's own wall, the sibling of `synthMs`. Both absent on
+  // every step where the round did not run, which is what keeps `fastPath: 'off'` byte-identical (I2).
+  /** contract 1.9 (Fastlane) §4.4: wall of the fast-path round, measured by the facade's own clock, inside `harnessMs` */
+  fastPathMs?: number;
+  /** contract 1.9 (Fastlane) §4.4: Jev latency spent INSIDE the fast-path round (localiser + arbitration), already inside `jevMs` */
+  fastPathJevMs?: number;
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
@@ -520,10 +529,94 @@ export interface StepRecord {
    * escape diff finds. Reported, not refused; the critic's include/drop question reads it. Absent = nothing escaped.
    */
   escaped?: readonly string[];
+  // slot C — contract 1.9 (Fastlane) §5.2
+  /** contract 1.9 (Fastlane) §4: the fast path's decision and what the round cost. Absent when the fast path was never armed. */
+  fastPath?: StepFastPath;
+  /**
+   * contract 1.9 (Fastlane) §4.3 T3: `scopeUsable()` over the step's own last test run — the "narrow test command reads
+   * green" hole, made visible in the data (§6 row 14).
+   *
+   * §5.2 asks for this on every step; I2 (`fastPath: 'off'` is byte-identical to today's `jev-on`) forbids a new row on a
+   * step that today writes none. I2 wins: the member is written only on an ARMED step, so the bench arm carries it and a
+   * `--fast-path off` run's `steps.jsonl` is unchanged.
+   */
+  scopeUsable?: boolean;
 }
 
-/** docs/LLM-JEV-DESIGN.md §9.4 */
-export type StepProposer = 'synth' | 'generic';
+/** docs/LLM-JEV-DESIGN.md §9.4; contract 1.9 (Fastlane) §5.2 (slot C) widens it with `fastpath` — the bounded sieve round proposed the step */
+export type StepProposer = 'synth' | 'generic' | 'fastpath';
+
+/**
+ * contract 1.9 (Fastlane) §5.2 (slot C): why the fast path did not fire, or how it failed. A closed union, not a free
+ * string, so the decline histogram of docs/LLM-LOOP-DESIGN.md §8 is exhaustive and a new reason cannot appear unnamed.
+ */
+export type FastPathReason =
+  /** the round fired and proposed: no clause declined and nothing failed */
+  | 'none'
+  | 'off'
+  | 'not_jev_on'
+  | 'no_synthesizer'
+  | 'no_parsed_run'
+  | 'scope_unusable'
+  | 'all_passing'
+  | 'workspace_changed'
+  | 't_run_too_slow'
+  | 'multi_file'
+  | 'too_many_failures'
+  | 'repository_class'
+  | 'no_wall'
+  | 'fingerprint_seen'
+  | 'attempts_exhausted'
+  | 'disarmed'
+  | 'loop_tripped'
+  | 'pause_pending'
+  | 'lease_conflict'
+  | 'oracle_class'
+  | 'too_many_sites'
+  | 'pool_exceeds_run_budget'
+  | 'no_sites'
+  | 'empty_step_budget'
+  | 'no_passer'
+  | 'confirm_timeout'
+  | 'held'
+  | 'error';
+
+/**
+ * contract 1.9 (Fastlane) §4 (slot C): one fast-path decision, as it lands on `StepRecord.fastPath`.
+ *
+ * `refused` is NOT `no_passer` (§4.5): the guard drops passers silently (`structuralRejection`, `mutationRefused`, a
+ * lone passer held under the Noul floor), so a step that found and refused passers records `refused` with the counts.
+ */
+export interface StepFastPath {
+  /** `fired` = the round ran; `declined` = a predicate clause said no before any cost; `failed` = the round ran and did not produce a usable proposal */
+  decision: 'fired' | 'declined' | 'failed';
+  /** the clause that declined, or the failure — the per-reason histogram of §8 reads this */
+  reason: FastPathReason;
+  /** 1 = engine-side, free; 2 = inside the facade, after the round's own baseline (§4.3) */
+  stage: 1 | 2;
+  outcome: 'proposed' | 'no_passer' | 'refused' | 'timeout' | 'error' | 'skipped';
+  /** the engine's last parsed test run's wall (T5), 0 when unknown */
+  tRunMs: number;
+  /** sites the round's localiser returned; 0 = not observed */
+  sites: number;
+  /** candidate pool the round priced; 0 = not observed (the facade sees sites, not the pool) */
+  poolSize: number;
+  runMode: 'SIEVE' | 'RANK';
+  candidatesTested: number;
+  testRuns: number;
+  jevRequests: number;
+  /** the facade's own clock diff, independent of the synthesizer's accounting */
+  wallMs: number;
+  /** the wall share the round was installed with; `wallMs <= budgetMs` is a gate on every fired step */
+  budgetMs: number;
+  passer: boolean;
+  confirmedCold: boolean;
+  structuralDrops: number;
+  held: number;
+  dropped: number;
+  /** one-strike disarm (§4.5): the fast path is out for the rest of the run */
+  disarmed: boolean;
+}
 
 /** docs/LLM-JEV-DESIGN.md §9.2 stage 1 / §9.3: code-computed counts of one llm-jev step's LLM round and verification. */
 export interface StepVerifySummary {
@@ -1070,6 +1163,12 @@ export interface LastTestRun {
   failed: number;
   errors: number;
   allPassed: boolean;
+  // slot C — contract 1.9 (Fastlane) §5.2
+  /**
+   * contract 1.9 (Fastlane) §4.3 T5: the run's wall, so the fast-path predicate survives a resume. `lastTestRunOutput` is
+   * in-memory only; without this member a restarted run would have to arm blind or never arm. Absent = unknown.
+   */
+  durationMs?: number;
 }
 
 export interface CheckpointState {
@@ -1544,6 +1643,14 @@ export interface EngineOptions {
   extraReadableRoots?: readonly string[];
   /** jev-only mode: proposes actions with Jev + code search, no generating LLM (required when mode === 'jev-only') */
   synthesizer?: Synthesizer;
+  // slot C — contract 1.9 (Fastlane) §5.2
+  /**
+   * contract 1.9 (Fastlane) §0.3: the bounded sieve fast path (route R9). `'auto'` is the default in `jev-on` and
+   * `'off'` in every other mode; the engine derives it, so no `src/config` and no `src/cli` change exists. Env
+   * override: `JEVCODE_FASTPATH=off|auto`, read inside `src/loop` exactly as `JEVCODE_WARM` is read in
+   * `src/synth/warm/plane.ts`. `'off'` is byte-identical to today's `jev-on` (I2).
+   */
+  fastPath?: 'auto' | 'off';
   /** injectable clock for perf/unit tests */
   now?: () => number;
   /** injected exit for tests of the forced second Ctrl-C path (TUI-DESIGN §13.4: always injected by cli/session.ts) */
