@@ -1359,9 +1359,14 @@ on before that commit lands; §7.5 carries the table.
 
 `docs/LLM-LOOP-DESIGN.md` §8 asks for the predictions to be written down **before** the arms run; this is that entry, and
 nothing live has run against it. Two bench arms exist as of this commit: **`jev-on-next`** — the `jev-on` engine (the
-generator still proposes) with the §2 router table on, the §3 S2 generation mechanisms on, the §4 bounded sieve fast path
-armed, and the `jev-off-tuned` generation parameters pinned — and **`jev-on-next-nofast`**, the same arm with the fast path
-off. The control is not optional: it is the only same-build contrast in the plan, because the recorded rows
+generator still proposes) with the §2 router table on, ~~the §3 S2 generation mechanisms on~~, the §4 bounded sieve fast
+path armed, and the `jev-off-tuned` generation parameters pinned — and **`jev-on-next-nofast`**, the same arm with the
+fast path off. **Corrected before any arm ran (finishing pass F05):** the S2 clause was false. Both arms run
+`engineModeOf === 'jev-on'` and every §3 mechanism is on the llm-jev sample path, which `jev-on` never enters — nothing
+sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only from that path, and hedging plus the §3.4 reasoning cap
+live in `src/synth/llm/source.ts`. The arms carry TWO mechanisms, not three; `armMechanisms` records `s2: 'off'` and
+`measurementRows` carries an `R-s2` row saying why. Wiring S2 onto `jev-on` is F17 (LLM-LOOP-DESIGN §9.1), and what
+summary.json records is the value the run reported, never a constant. The control is not optional: it is the only same-build contrast in the plan, because the recorded rows
 (`experiments/results/llm-jev-iter1.md`: fresh 18 `llm-jev` 12/18, `jev-off-tuned` 9/18, 26.0 s vs 19.7 s on the 8
 both-solved; in-sample 28 `llm-jev` 27/28) were taken at `751e3bf` and `main` now carries the nine unmeasured changes of
 `oos-iter-2`. If `oos-iter-2` is measured on the same 18 + 28 first, those rows replace the `751e3bf` ones and the confound

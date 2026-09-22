@@ -470,7 +470,8 @@ export interface ConditionConfig {
   /**
    * contract 1.9 (Fastlane) §8.1: the wave mechanisms this arm ran with. Recorded on every arm (all-off on the six older
    * ones) so a results directory answers "was the fast path armed?" from summary.json alone — the question every row of
-   * §8.3 is conditional on.
+   * §8.3 is conditional on. "Ran with" is meant literally: F05 found `s2` recorded as `true` on two arms that could not
+   * reach a single S2 mechanism, so `s2` is now clamped by the arm's mode and overridden by what the run reported.
    */
   mechanisms: ArmMechanisms;
 }
