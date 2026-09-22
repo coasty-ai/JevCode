@@ -179,6 +179,7 @@ import type { FastPathBudget, FastPathRunState } from '../synth/search/fastpath.
 import { detectLayout } from '../synth/search/index.js';
 import { isRepositoryWorkspace } from '../synth/oracle/index.js';
 import { synthesizerHandles } from '../synth/index.js';
+import { warmPlaneEnabled } from '../synth/warm/index.js';
 import { scopeUsable } from '../workspace/tests.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
 import { runJudgeStage } from './stages/judge.js';
@@ -3158,6 +3159,9 @@ class EngineImpl implements Engine {
       disarmed: state.disarmed,
       loopTripped: this.detector.tripped(),
       pausePending: this.pauseRequested,
+      // §4.5 / I8: with the warm plane on, a warm-screened passer is indistinguishable from a cold-confirmed one in
+      // the evidence the facade can see, so the route refuses to enter rather than record a coldness it cannot check
+      warmEnabled: warmPlaneEnabled(),
     });
     if (free !== null) return decline(free);
     // stage 1b: the listing behind T2 / T6 / T8, paid for only now

@@ -76,6 +76,7 @@ function input(over: Partial<FastPathStage1Input> = {}): FastPathStage1Input {
     loopTripped: false,
     pausePending: false,
     leaseConflict: false,
+    warmEnabled: false,
     ...over,
   };
 }
@@ -144,6 +145,12 @@ describe('fastPathStage1', () => {
     expect(reasonOf({ state: { seen: new Set([FINGERPRINT]), attempts: new Map() } })).toBe('fingerprint_seen');
     expect(reasonOf({ state: { seen: new Set<string>(), attempts: new Map([[FINGERPRINT, FASTPATH_ATTEMPTS_MAX]]) } })).toBe('attempts_exhausted');
     expect(reasonOf({ disarmed: true })).toBe('disarmed');
+  });
+
+  it('§4.5 / I8: with the warm plane ON the route refuses to arm — a coldness it cannot check is never claimed', () => {
+    expect(reasonOf({ warmEnabled: true })).toBe('warm_plane');
+    // and it is free: the clause is decided before the listing, the budget or anything that could spend
+    expect(reasonOf({ warmEnabled: true, handles: false, suspects: [] })).toBe('warm_plane');
   });
 
   it('T12: a tripped loop detector, a pending pause and a known lease conflict each decline (§6 rows 6, 7, 9)', () => {
@@ -257,7 +264,7 @@ describe('the fast-path record', () => {
     const result: FastPathRoundResult = {
       kind: 'proposed',
       proposal: { goal: 'fix', action: { kind: 'patch', diff: 'd' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' },
-      telemetry: { wallMs: 8_000, jevMs: 900, jevRequests: 4, testRuns: 22, sites: 3, poolSize: 41, runMode: 'SIEVE', candidatesTested: 41, passer: true, confirmedCold: true, structuralDrops: 0, held: 0, dropped: 0 },
+      telemetry: { wallMs: 8_000, jevMs: 900, jevRequests: 4, testRuns: 22, sites: 3, poolSize: 41, runMode: 'SIEVE', candidatesTested: 41, passer: true, confirmedCold: true, structuralDrops: 0, heldAny: false, dropped: 0 },
     };
     // §8 R-b reads `wallMs <= budgetMs`, so `budgetMs` is the round's own CEILING (share + confirm reserve + grace) —
     // the bound the abort enforces. The installed wall share is recorded beside it as `shareMs`: only the sieve's
@@ -275,10 +282,10 @@ describe('the fast-path record', () => {
       kind: 'failed',
       reason: 'confirm_timeout',
       outcome: 'refused',
-      telemetry: { wallMs: 9_000, jevMs: 0, jevRequests: 0, testRuns: 30, sites: 2, poolSize: 30, runMode: 'SIEVE', candidatesTested: 30, passer: true, confirmedCold: false, structuralDrops: 2, held: 1, dropped: 0 },
+      telemetry: { wallMs: 9_000, jevMs: 0, jevRequests: 0, testRuns: 30, sites: 2, poolSize: 30, runMode: 'SIEVE', candidatesTested: 30, passer: true, confirmedCold: false, structuralDrops: 2, heldAny: true, dropped: 0 },
     };
     const b = { wallMs: 21_000, testRuns: 64, jevRequests: 6, reserveMs: 1_800, graceMs: 2_000 };
-    expect(firedRecord(result, { tRunMs: 240, budget: b, disarmed: true })).toMatchObject({ decision: 'failed', outcome: 'refused', reason: 'confirm_timeout', structuralDrops: 2, held: 1, disarmed: true });
+    expect(firedRecord(result, { tRunMs: 240, budget: b, disarmed: true })).toMatchObject({ decision: 'failed', outcome: 'refused', reason: 'confirm_timeout', structuralDrops: 2, heldAny: true, disarmed: true });
   });
 });
 

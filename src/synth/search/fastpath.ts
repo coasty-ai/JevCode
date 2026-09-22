@@ -115,9 +115,11 @@ export function fastPathStage2(i: FastPathStage2Input): FastPathStage2Verdict {
  * own re-check over the only surface a `Proposal` exposes — its code-computed `evidence` — so a synthesizer that ever
  * stops enforcing it cannot quietly put an unconfirmed patch in front of the risk stage.
  *
- * With `JEVCODE_WARM` off (I8, mandatory for every number this design quotes) every lane run is already cold, so
- * "cold-confirmed" reduces to "the regression run exists and passed": a non-empty run (`after.total > 0`), nothing
- * newly failing, at least one newly passing goal test, and no net loss of passing tests.
+ * This reduction — "the regression run exists and passed" — is sound ONLY while every lane run is cold, and nothing in
+ * a `Proposal`'s evidence says whether the run that produced it was warm-screened. The precondition is therefore
+ * enforced where it can be, at stage 1: `fastPathStage1Free` refuses to arm at all when `warmPlaneEnabled()`
+ * (`JEVCODE_WARM`, I8), with the named reason `'warm_plane'` and before any wall is spent. A false
+ * `confirmedCold: true` is then unreachable rather than merely unlikely.
  */
 export function coldConfirmed(p: Proposal): boolean {
   const e = p.evidence;
@@ -206,7 +208,8 @@ export interface FastPathTelemetry {
   passer: boolean;
   confirmedCold: boolean;
   structuralDrops: number;
-  held: number;
+  /** a lone passer was being held at the round's last guard decision (`GuardFields.held`), a presence not a count */
+  heldAny: boolean;
   dropped: number;
 }
 
@@ -245,7 +248,8 @@ export interface FastPathRunnerOptions {
 
 /** The guard bookkeeping a `SubGoalResult` carries at runtime beside its typed `Decision` fields (guard.ts `GuardFields`). */
 interface GuardCounts {
-  held: number;
+  /** `GuardFields.held` is `HoldKind | null` — a presence, never a count; the record's member says so too */
+  heldAny: boolean;
   dropped: number;
   structuralDrops: number;
 }
@@ -256,7 +260,7 @@ function guardCountsOf(value: unknown): GuardCounts {
     const v = o[k];
     return typeof v === 'number' && Number.isFinite(v) ? v : 0;
   };
-  return { held: o['held'] === null || o['held'] === undefined ? 0 : 1, dropped: num('dropped'), structuralDrops: num('structuralDrops') };
+  return { heldAny: o['held'] !== null && o['held'] !== undefined, dropped: num('dropped'), structuralDrops: num('structuralDrops') };
 }
 
 const EMPTY_TELEMETRY: FastPathTelemetry = {
@@ -271,7 +275,7 @@ const EMPTY_TELEMETRY: FastPathTelemetry = {
   passer: false,
   confirmedCold: false,
   structuralDrops: 0,
-  held: 0,
+  heldAny: false,
   dropped: 0,
 };
 
@@ -293,10 +297,39 @@ export class FastPathRunner {
     return this.lastTrace;
   }
 
-  private lastGuard: GuardCounts = { held: 0, dropped: 0, structuralDrops: 0 };
-  /** the stage-2 verdict the clamp's `observe` reached, and the abort it raised */
+  private lastGuard: GuardCounts = { heldAny: false, dropped: 0, structuralDrops: 0 };
+  /** the stage-2 verdict this round reached, and the abort it raised */
   private stage2: FastPathReason | null = null;
+  /** §4.3 stage 2: the round's oracle-class verdict has been reached (the clamp's `observe`), once per ROUND */
+  private judgedOracle = false;
+  /** §4.3 stage 2: the round's site-count verdict has been reached (the wrapped localiser), once per ROUND */
+  private judgedSites = false;
+  /**
+   * the baseline the round STARTED with. `RunMemory` outlives the round (one synthesizer per `runId`), so
+   * `mem.baseline !== null` does not mean "this round measured one": on round 2 it is round 1's. Identity against
+   * this is what tells the two apart — `rebaseline` assigns a fresh object.
+   */
+  private entryBaseline: unknown = null;
+  /** the last measured (oracle, budget) the clamp saw, for the end-of-round check when no verdict was reached */
+  private lastMeasured: { oracle: OracleModel; budget: StepBudget } | null = null;
+  /** read through a method so the compiler does not narrow the field to `null` across the round's awaits */
+  private measured(): { oracle: OracleModel; budget: StepBudget } | null {
+    return this.lastMeasured;
+  }
   private aborter: AbortController | null = null;
+
+  /**
+   * §4.3 stage 2, in one place: the verdict, and the abort it raises. `sites` is what the caller knows — the wrapped
+   * localiser knows the real count, the clamp's pre-candidate call does not and passes 1 (the clause is then vacuous
+   * and only the oracle class and the run plan are judged).
+   */
+  private judgeStage2(oracle: OracleModel, budget: StepBudget, sites: number): void {
+    if (this.stage2 !== null) return;
+    const v = fastPathStage2({ oracle, budget, sites, poolSize: 0 });
+    if (v.ok) return;
+    this.stage2 = v.reason;
+    this.aborter?.abort();
+  }
 
   constructor(opts: FastPathRunnerOptions = {}) {
     this.now = opts.now ?? ((): number => Date.now());
@@ -347,8 +380,14 @@ export class FastPathRunner {
     const state = this.state(ctx.runId);
     const started = this.now();
     this.lastTrace = null;
-    this.lastGuard = { held: 0, dropped: 0, structuralDrops: 0 };
+    this.lastGuard = { heldAny: false, dropped: 0, structuralDrops: 0 };
     this.stage2 = null;
+    // §4.3 stage 2 is a per-ROUND verdict: every flag it keys off is reset here, and the round's entry baseline is
+    // recorded so a measurement an EARLIER round made is never mistaken for this round's.
+    this.judgedOracle = false;
+    this.judgedSites = false;
+    this.lastMeasured = null;
+    this.entryBaseline = runMemory(ctx.runId).baseline;
 
     const own = new AbortController();
     this.aborter = own;
@@ -386,7 +425,7 @@ export class FastPathRunner {
         poolSize: t?.candidatesEnumerated ?? 0,
         runMode: t?.runMode ?? 'SIEVE',
         candidatesTested: t?.candidatesTested ?? 0,
-        held: this.lastGuard.held,
+        heldAny: this.lastGuard.heldAny,
         dropped: this.lastGuard.dropped,
         structuralDrops: this.lastGuard.structuralDrops,
         ...over,
@@ -395,7 +434,18 @@ export class FastPathRunner {
 
     try {
       const proposal = await synth.synthesize(inner);
-      // §4.3 stage 2: the verdict is raised from inside the round (the clamp's `observe`, the wrapped localiser) and
+      // §4.3 stage 2: a round that reached NO verdict (a localiser cache hit on an unchanged workspace, so neither the
+      // clamp's fresh-baseline call nor the localiser ran) is judged here on the measurement it did have, rather than
+      // proposing out of a round whose eligibility was never established.
+      if (!this.judgedOracle && !this.judgedSites) {
+        const m = this.measured();
+        if (m === null) {
+          ctx.emit({ type: 'synth', step: ctx.step, phase: 'fastpath:declined', detail: 'stage 2: no baseline was measured' });
+          return { kind: 'declined', reason: 'no_wall', telemetry: telemetry() };
+        }
+        this.judgeStage2(m.oracle, m.budget, this.trace()?.sitesConsidered ?? 1);
+      }
+      // the verdict is raised from inside the round (the clamp's `observe`, the wrapped localiser) and
       // aborts it. A search that does not poll its signal can still reach here with a proposal; the decline stands —
       // the round was refused before a candidate was priced, and a refused round proposes nothing.
       const late = this.stage2;
@@ -453,12 +503,15 @@ export class FastPathRunner {
       // §4.3 stage 2: this fires straight after `fitOracle`, before any candidate runs — the cheapest place the
       // oracle class and the run budget can be judged, and the only one that costs a single baseline run.
       observe: (mem, budget): void => {
-        // before the round's own baseline the oracle is `UNMEASURED_ORACLE` and judging it would refuse every round
+        // before ANY baseline the oracle is `UNMEASURED_ORACLE` and judging it would refuse every round
         if (this.stage2 !== null || mem.baseline === null) return;
-        const v = fastPathStage2({ oracle: mem.oracle, budget, sites: 1, poolSize: 0 });
-        if (v.ok) return;
-        this.stage2 = v.reason;
-        this.aborter?.abort();
+        this.lastMeasured = { oracle: mem.oracle, budget };
+        // and a baseline THIS round did not measure is the previous round's: `freshBudget` runs at the top of
+        // `synthesize()`, before the re-baseline a changed workspace is about to force, so judging there would abort
+        // round 2 on round 1's oracle. That case is judged at the localiser instead, or at the end of the round.
+        if (mem.baseline === this.entryBaseline || this.judgedOracle) return;
+        this.judgedOracle = true;
+        this.judgeStage2(mem.oracle, budget, 1);
       },
     };
     const entry = { synth: this.create(this.wrap(this.makeDeps()), clamp), clamp };
@@ -482,11 +535,15 @@ export class FastPathRunner {
       ...deps,
       searchSubGoal: async (c: SynthesisContext, mem: RunMemory, goal: Goal) => capture(await deps.searchSubGoal(c, mem, goal)),
       searchBestGuess: async (c: SynthesisContext, mem: RunMemory, goal: Goal) => capture(await deps.searchBestGuess(c, mem, goal)),
+      // §4.3 stage 2's deterministic point: the localiser runs after the round's baseline and BEFORE any candidate is
+      // enumerated or priced, and it is the only place the real site count exists. The clamp's `observe` is the
+      // earlier, cheaper half (the oracle class, one baseline run in); this is the whole predicate.
       locate: async (c: SynthesisContext, mem: RunMemory, goal: Goal): Promise<LocalizeResult> => {
         const r = await deps.locate(c, mem, goal);
-        if (r.sites.length > FASTPATH_MAX_SITES && this.stage2 === null) {
-          this.stage2 = 'too_many_sites';
-          this.aborter?.abort();
+        if (!this.judgedSites && mem.baseline !== null) {
+          this.judgedSites = true;
+          this.lastMeasured = { oracle: mem.oracle, budget: mem.stepBudget };
+          this.judgeStage2(mem.oracle, mem.stepBudget, r.sites.length);
         }
         return r;
       },

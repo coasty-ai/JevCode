@@ -136,6 +136,16 @@ export interface FastPathFreeInput {
   loopTripped: boolean;
   /** T12 */
   pausePending: boolean;
+  /**
+   * §4.5 / I8: the warm plane is switched on for this process (`warmPlaneEnabled`, `JEVCODE_WARM`).
+   *
+   * The whole acceptance rule reduces "cold-confirmed" to "the regression run exists and passed" only while every
+   * lane run is cold; with the plane on, a warm-screened passer produces the same `shadow_test_run` evidence and
+   * would be recorded `confirmedCold: true` on no evidence of coldness at all. The fast path owns its synthesizer but
+   * not the plane's switch, so it refuses to enter rather than make a claim it cannot check — a named decline before
+   * any wall is spent, not a false record after it.
+   */
+  warmEnabled: boolean;
 }
 
 /** The clauses that need the workspace listing (T2, T6, T8) or the cluster's identity (T9–T11), evaluated second. */
@@ -169,6 +179,8 @@ export function fastPathStage1Free(i: FastPathFreeInput): FastPathReason | null 
   // T1
   if (i.option !== 'auto') return 'off';
   if (i.mode !== 'jev-on') return 'not_jev_on';
+  // §4.5 / I8: free, and before anything else that could spend — see `warmEnabled` above
+  if (i.warmEnabled) return 'warm_plane';
   // T11 — disarm before anything else, so a disarmed run costs one comparison per step
   if (i.disarmed) return 'disarmed';
   // T3: a parsed test run of the workspace's own test command, with something failing
@@ -246,7 +258,7 @@ export function declinedRecord(reason: FastPathReason, tRunMs: number, disarmed:
     passer: false,
     confirmedCold: false,
     structuralDrops: 0,
-    held: 0,
+    heldAny: false,
     dropped: 0,
     disarmed,
   };
@@ -278,7 +290,7 @@ export function firedRecord(result: FastPathRoundResult, o: { tRunMs: number; bu
     passer: t.passer,
     confirmedCold: t.confirmedCold,
     structuralDrops: t.structuralDrops,
-    held: t.held,
+    heldAny: t.heldAny,
     dropped: t.dropped,
     disarmed: o.disarmed,
   };

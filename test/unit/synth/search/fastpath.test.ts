@@ -29,7 +29,7 @@ import type { FastPathBudget } from '../../../../src/synth/search/fastpath.js';
 import type { Goal } from '../../../../src/synth/search/types.js';
 import type { SubGoalResult } from '../../../../src/synth/search/subgoal.js';
 import type { SourceFile } from '../../../../src/synth/types.js';
-import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedRun, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
+import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
 import { committedBase, oracle } from './helpers.js';
 import { makeTrace } from './proposal-helpers.js';
 
@@ -330,6 +330,34 @@ describe('FastPathRunner.run', () => {
     expect(r.telemetry.wallMs).toBeLessThanOrEqual(fastPathCeilingMs(b));
     // and the round's wall is on the run's own ledger, so the aggregate over rounds is bounded
     expect(runner.state(ctx.runId).wallSpentMs).toBeGreaterThanOrEqual(r.telemetry.wallMs);
+    runner.dispose(ctx.runId);
+  });
+
+  it("reaches its OWN stage-2 verdict on round 2: the previous round's oracle never decides this one (§4.3)", async () => {
+    // round 1 measures a repository-class oracle and is declined. Round 2 runs on a CHANGED workspace whose baseline
+    // is fast — the memory is shared (one synthesizer per runId), so the round must re-measure before it judges.
+    let calls = 0;
+    const seen: { clamp: FastPathClamp | null; budgets: RunMemory['stepBudget'][] } = { clamp: null, budgets: [] };
+    const { deps } = roundDeps({}, seen);
+    const staged: SearchDeps = {
+      ...deps,
+      runTests: async () => {
+        calls += 1;
+        return { summary: summary({ command: TEST_COMMAND, failing: [GCD_TEST], passing: [GCD_OTHER_TEST], durationMs: calls === 1 ? 400_000 : 20 }), output: '' };
+      },
+    };
+    const runner = new FastPathRunner({ deps: () => staged, create: (d, clamp) => new LedgerSieveSynthesizer(d, { fastPath: clamp }) });
+    const ctx = ctxFor();
+    const first = await runner.run(ctx, budget());
+    expect(first).toMatchObject({ kind: 'declined', reason: 'oracle_class' });
+    // a counted decline, not a disarm — the fast path may try the next cluster
+    expect(runner.state(ctx.runId).disarmed).toBe(false);
+    // round 2: the workspace changed since that baseline, so the round re-measures and judges what IT measured
+    const second = await runner.run({ ...ctx, step: ctx.step + 1, window: [...ctx.window, executedPatch(ctx.step, ['gcd.py'])] }, budget());
+    // it re-measured, and the verdict it acted on is its own: a stale `oracle_class` would have aborted it before
+    // `runTests` ran a second time
+    expect(calls).toBe(2);
+    expect(second).not.toMatchObject({ kind: 'declined', reason: 'oracle_class' });
     runner.dispose(ctx.runId);
   });
 

@@ -571,6 +571,8 @@ export type FastPathReason =
   | 'loop_tripped'
   | 'pause_pending'
   | 'lease_conflict'
+  /** §4.5 / I8: the warm plane is switched on, so "cold-confirmed" cannot be claimed — the round is not entered */
+  | 'warm_plane'
   | 'oracle_class'
   | 'too_many_sites'
   | 'pool_exceeds_run_budget'
@@ -618,7 +620,12 @@ export interface StepFastPath {
   passer: boolean;
   confirmedCold: boolean;
   structuralDrops: number;
-  held: number;
+  /**
+   * a lone passer is being HELD after the round's last guard decision (`GuardFields.held: HoldKind | null`). A
+   * presence, not a count — the guard holds at most one passer at a time — so the member is a boolean and the §8
+   * reading is "rounds that ended holding", never "passers held".
+   */
+  heldAny: boolean;
   dropped: number;
   /** one-strike disarm (§4.5): the fast path is out for the rest of the run */
   disarmed: boolean;

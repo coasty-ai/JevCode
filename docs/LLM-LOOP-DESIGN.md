@@ -605,7 +605,7 @@ All must hold.
 
 | # | condition | source |
 |---|---|---|
-| T1 | `mode === 'jev-on'` and `fastPath === 'auto'` | option |
+| T1 | `mode === 'jev-on'` and `fastPath === 'auto'`, and the warm plane is OFF (`warmPlaneEnabled()`, I8 — §4.5) | option, `src/synth/warm/plane.ts` |
 | T2 | `synthesizerHandles(wsInfo, files)` true (cached once per run) | `src/synth/index.ts:305` |
 | T3 | the last executed action was a test `run` (`isTestCommand`, `stages/execute.ts:33`) whose parse is **`scopeUsable`** with `failed + errors >= 1` | `src/workspace/tests.ts:540` |
 | T4 | no workspace write since that run (`lastChangeStep` / `changedFiles`) | engine state |
@@ -633,6 +633,14 @@ hole in the *judge* — which this design does not fix — becomes visible in th
 one-strike disarm.
 
 #### Stage 2 — inside the facade, after the synth's own baseline + `fitOracle` + `locate`, before one candidate runs
+
+The verdict is **per round and reached on a measurement that round made**. `RunMemory` outlives the round (one
+synthesizer per `runId`), so `mem.baseline !== null` does not mean "this round measured one": the facade records the
+round's ENTRY baseline and the clamp's `observe` judges only a baseline whose identity differs from it — otherwise
+round 2 would abort on round 1's oracle at the `freshBudget` that runs before the re-baseline a changed workspace is
+about to force. The wrapped localiser is the deterministic point (after the baseline, before any candidate is
+enumerated, and the only place the real site count exists); a round that reaches neither is judged on its last
+measurement at the end, and a round that measured nothing at all declines rather than proposing.
 
 **The fast path fires iff the round would be a SIEVE round.**
 
@@ -735,9 +743,12 @@ other ask; the measured median is 4.5 per QuixBugs task and `FASTPATH_JEV_MAX` c
   **and** a non-timed-out full-suite regression run with nothing newly failing.
 
 With `JEVCODE_WARM` off (I8, mandatory here) every run is already cold, so this reduces to the regression run
-existing and passing. If the warm plane is ever turned on, `screened: true` without `confirmedCold` can never
-reach `decide()`, and a screen mismatch re-queues the whole batch cold — which will usually hit the wall cap
-first, a clean budget exit.
+existing and passing. **That reduction is a PRECONDITION, and it is enforced rather than assumed** (review fix,
+slot C): nothing in a `Proposal`'s evidence says whether the run behind it was warm-screened, so a warm-screened
+passer would be recorded `confirmedCold: true` on no evidence of coldness at all. `fastPathStage1Free` therefore
+refuses to arm while `warmPlaneEnabled()` is true — the named decline `'warm_plane'`, before any wall is spent —
+so a false `confirmedCold` is unreachable rather than merely unlikely. The fast path owns its synthesizer but not
+the plane's switch, which is why the answer is "do not enter" rather than "turn it off".
 
 Anything else — `{kind:'budget'|'parked'}`, a `run`/`done` proposal, a throw, a timeout, a dropped or unreleasably
 held passer — means **the LLM proposes as usual**, and the wall already spent is the only loss.
@@ -856,7 +867,8 @@ export interface StepFastPath {
   passer: boolean;
   confirmedCold: boolean;
   structuralDrops: number;
-  held: number;
+  /** `GuardFields.held` is `HoldKind | null` — a presence, not a count; the record says so */
+  heldAny: boolean;
   dropped: number;
   disarmed: boolean;
 }
@@ -875,7 +887,7 @@ export interface StepRouter {
 `FastPathReason` is a **string union**, not a free string, so the decline histogram of §8 is exhaustive:
 `'off' | 'not_jev_on' | 'no_synthesizer' | 'no_parsed_run' | 'scope_unusable' | 'all_passing' | 'workspace_changed' |
 't_run_too_slow' | 'multi_file' | 'too_many_failures' | 'repository_class' | 'no_wall' | 'fingerprint_seen' |
-'attempts_exhausted' | 'disarmed' | 'loop_tripped' | 'pause_pending' | 'lease_conflict' | 'oracle_class' |
+'attempts_exhausted' | 'disarmed' | 'loop_tripped' | 'pause_pending' | 'lease_conflict' | 'warm_plane' | 'oracle_class' |
 'too_many_sites' | 'pool_exceeds_run_budget' | 'no_sites' | 'empty_step_budget' | 'confirm_timeout' | 'held' | 'error'`.
 
 **`StepProposer`** (`src/core/types.ts:526`) widens:
