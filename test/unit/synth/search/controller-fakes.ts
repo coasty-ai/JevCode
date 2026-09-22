@@ -394,6 +394,8 @@ export interface FakeRoundScript {
   deadlineMs?: number;
   /** the round never closes on its own (a sample past its deadline); `cancel()` closes it */
   hang?: boolean;
+  /** dollars each fired sample holds against the step's counter until it lands (source.ts `reservedUsd`, §4.11); default 0 */
+  holdUsd?: number;
 }
 
 export interface FakeLlmRecord {
@@ -452,7 +454,7 @@ class FakeRound implements LlmRound {
     const t = setTimeout(() => {
       if (this.ended) return;
       const applied: LlmApplied[] = a.candidates.map((c) => applyCandidate(c) as LlmApplied);
-      this.buffer.push({ sample: k, status: 'valid', ms: a.delayMs ?? 0, candidates: a.candidates as LlmApplied['candidate'][], applied, dropped: a.dropped ?? [], need: a.need ?? null, analysis: null, usage: null, usd: 0.001, estimated: false, generationId: null, detail: '' });
+      this.buffer.push({ sample: k, status: 'valid', ms: a.delayMs ?? 0, candidates: a.candidates as LlmApplied['candidate'][], applied, dropped: a.dropped ?? [], need: a.need ?? null, analysis: null, usage: null, usd: 0.001, estimated: false, rateLimited: false, generationId: null, detail: '' });
       this.delivered += 1;
       if (this.delivered >= this.script.arrivals.length && !(this.script.hang ?? false)) this.end();
       else this.wake();
@@ -541,7 +543,9 @@ class FakeRound implements LlmRound {
   summary(): LlmRoundSummary | null {
     const fired = this.staggered && !this.wasReleased ? Math.min(1, this.script.arrivals.length) : this.script.arrivals.length;
     const cancelled = this.cancelledAs === null ? 0 : Math.max(0, fired - this.delivered);
-    return { goalId: this.goalId, round: this.round, klass: this.klass, n: this.n, fired, valid: this.delivered, empty: 0, malformed: 0, length: 0, timeouts: 0, cancelled, errors: 0, misanchored: 0, syntaxErrors: 0, compileFailed: 0, duplicates: 0, tried: 0, distinct: this.delivered, needs: 0, wallMs: Date.now() - this.startedMs, usd: this.delivered * 0.001, estimatedUsd: 0, deadlineMs: this.deadlineMs, closed: this.ended };
+    // like the source: every fired sample holds `holdUsd` until it lands; a closed round holds nothing
+    const inFlight = this.ended ? 0 : Math.max(0, fired - this.delivered);
+    return { goalId: this.goalId, round: this.round, klass: this.klass, n: this.n, fired, valid: this.delivered, empty: 0, malformed: 0, length: 0, timeouts: 0, cancelled, errors: 0, misanchored: 0, syntaxErrors: 0, compileFailed: 0, duplicates: 0, tried: 0, distinct: this.delivered, needs: 0, wallMs: Date.now() - this.startedMs, usd: this.delivered * 0.001, estimatedUsd: 0, reservedUsd: inFlight * (this.script.holdUsd ?? 0), deadlineMs: this.deadlineMs, closed: this.ended };
   }
 }
 

@@ -1,7 +1,13 @@
-/** The LLM counters of the StepBudget (docs/LLM-JEV-DESIGN.md §4.6, §4.11): `freshBudget` fills them from the class and the spend, `decideLlmN` sizes a round, `llmClassOf` names the class; they never end a step. */
+/**
+ * The LLM counters of the StepBudget (docs/LLM-JEV-DESIGN.md §4.6, §4.11): `freshBudget` fills them from the class and the
+ * spend, `decideLlmN` sizes a round, `llmClassOf` names the class; they never end a step. The hold of a round in flight
+ * (`llmHoldOf`, `llmRoundAffordable`): the source reserves each fired sample's estimate and charges the counter at settle
+ * alone, so the next round is gated on the counter less the hold, never on the counter as it reads.
+ */
 import { describe, expect, it } from 'vitest';
 
-import { LLM_ROUNDS_PER_STEP, LLM_STEP_USD_MAX, decideLlmN, freshBudget, llmClassOf, llmStepUsd } from '../../../../src/synth/search/budget.js';
+import type { LlmRoundSummary } from '../../../../src/synth/llm/source.js';
+import { LLM_ROUNDS_PER_STEP, LLM_STEP_USD_MAX, decideLlmN, freshBudget, llmClassOf, llmHoldOf, llmRoundAffordable, llmStepUsd, llmUsdHeadroom } from '../../../../src/synth/search/budget.js';
 import { fastOracle, slowOracle } from './controller-fakes.js';
 
 const limits = { maxWallMs: 3_600_000 };
@@ -48,5 +54,53 @@ describe('llmClassOf, llmStepUsd, decideLlmN', () => {
     expect(decideLlmN(fastOracle(), { llmRoundsLeft: 0, llmSamplesLeft: 8, llmUsdLeft: 0.02 }, 'quixbugs')).toBe(0);
     expect(decideLlmN(fastOracle(), { llmRoundsLeft: 2, llmSamplesLeft: 8, llmUsdLeft: 0 }, 'quixbugs')).toBe(0);
     expect(decideLlmN(fastOracle(), { llmRoundsLeft: 2, llmSamplesLeft: 0, llmUsdLeft: 0.02 }, 'quixbugs')).toBe(0);
+  });
+});
+
+/** An open round's summary: `fired` samples, `landed` of them settled valid, each in flight holding `holdUsd`. */
+function openRound(fired: number, landed: number, holdUsd: number, over: Partial<LlmRoundSummary> = {}): LlmRoundSummary {
+  return { goalId: 'g1', round: 1, klass: 'quixbugs', n: fired, fired, valid: landed, empty: 0, malformed: 0, length: 0, timeouts: 0, cancelled: 0, errors: 0, misanchored: 0, syntaxErrors: 0, compileFailed: 0, duplicates: 0, tried: 0, distinct: landed, needs: 0, wallMs: 100, usd: landed * 0.004, estimatedUsd: 0, reservedUsd: (fired - landed) * holdUsd, deadlineMs: 20_000, closed: false, ...over };
+}
+
+describe('the hold of a round in flight (§4.11): llmHoldOf, llmUsdHeadroom, llmRoundAffordable, decideLlmN', () => {
+  it('reads the hold and the per-sample estimate off an open round; nothing without a round or once it closed', () => {
+    // 4 fired, 1 landed: 3 in flight holding $0.005 each
+    expect(llmHoldOf(openRound(4, 1, 0.005))).toEqual({ reservedUsd: 0.015, perSampleUsd: 0.005 });
+    // every settled status releases its hold: 4 fired, 1 valid + 1 timeout + 1 cancelled settled → 1 in flight
+    expect(llmHoldOf(openRound(4, 1, 0.005, { timeouts: 1, cancelled: 1, reservedUsd: 0.005 }))).toEqual({ reservedUsd: 0.005, perSampleUsd: 0.005 });
+    expect(llmHoldOf(null)).toEqual({ reservedUsd: 0, perSampleUsd: 0 });
+    expect(llmHoldOf(undefined)).toEqual({ reservedUsd: 0, perSampleUsd: 0 });
+    expect(llmHoldOf(openRound(4, 4, 0.005, { closed: true }))).toEqual({ reservedUsd: 0, perSampleUsd: 0 });
+    // a hand-built summary without `reservedUsd` (test fakes) holds nothing
+    const bare: LlmRoundSummary = openRound(4, 1, 0.005);
+    delete bare.reservedUsd;
+    expect(llmHoldOf(bare)).toEqual({ reservedUsd: 0, perSampleUsd: 0 });
+  });
+  it('the headroom is the counter less the hold; a round is affordable only when that covers one sample', () => {
+    const budget = { llmRoundsLeft: 1, llmSamplesLeft: 4, llmUsdLeft: 0.02 };
+    expect(llmUsdHeadroom(budget)).toBeCloseTo(0.02, 9);
+    expect(llmUsdHeadroom(budget, { reservedUsd: 0.015 })).toBeCloseTo(0.005, 9);
+    // no hold: the §4.2 rule as before — a positive counter, rounds and samples left
+    expect(llmRoundAffordable(budget)).toBe(true);
+    expect(llmRoundAffordable({ ...budget, llmUsdLeft: 0 })).toBe(false);
+    expect(llmRoundAffordable({ ...budget, llmRoundsLeft: 0 })).toBe(false);
+    expect(llmRoundAffordable({ ...budget, llmSamplesLeft: 0 })).toBe(false);
+    // the whole counter held by the round in flight: the counter alone reads as $0.02 of headroom, less the hold it covers nothing
+    expect(llmRoundAffordable(budget, { reservedUsd: 0.02, perSampleUsd: 0.005 })).toBe(false);
+    expect(llmRoundAffordable(budget, llmHoldOf(openRound(4, 0, 0.005)))).toBe(false);
+    // three quarters held: $0.005 left covers exactly one $0.005 sample (the 1e-9 tolerance of coversSample)
+    expect(llmRoundAffordable(budget, llmHoldOf(openRound(4, 1, 0.005)))).toBe(true);
+    // held beyond the counter (the step budget shrank under the round): never affordable
+    expect(llmRoundAffordable({ ...budget, llmUsdLeft: 0.01 }, { reservedUsd: 0.015, perSampleUsd: 0.005 })).toBe(false);
+    // a hold with no per-sample estimate: a positive headroom suffices, none does not
+    expect(llmRoundAffordable(budget, { reservedUsd: 0.019 })).toBe(true);
+    expect(llmRoundAffordable(budget, { reservedUsd: 0.02 })).toBe(false);
+  });
+  it('decideLlmN is 0 while the round in flight holds what the counter reads, and the class N once the hold leaves a sample', () => {
+    const budget = { llmRoundsLeft: 1, llmSamplesLeft: 4, llmUsdLeft: 0.02 };
+    expect(decideLlmN(fastOracle(), budget, 'quixbugs', null, llmHoldOf(openRound(4, 0, 0.005)))).toBe(0);
+    expect(decideLlmN(fastOracle(), budget, 'quixbugs', null, llmHoldOf(openRound(4, 1, 0.005)))).toBe(4);
+    // the default (no hold) is the counter as it reads
+    expect(decideLlmN(fastOracle(), budget, 'quixbugs')).toBe(4);
   });
 });

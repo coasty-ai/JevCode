@@ -3,8 +3,9 @@ import { describe, expect, it } from 'vitest';
 import type { CompileCheck } from '../../../../src/synth/llm/candidates.js';
 import type { SynthesizerGeneration } from '../../../../src/core/types.js';
 import type { CancelledGeneration, GenerateResult } from '../../../../src/core/types.js';
-import { LLM_CACHE_PERSIST_BYTES, LLM_DEFAULT_GENERATION, LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, UNFINISHED_REASONING_ALLOWANCE_TOKENS, affordableSamples, coversSample, createLlmSource, estimatedSampleUsage, sampleDeadlineMs, samplesFor, unfinishedSampleUsage, type LlmBudget, type LlmFireInput, type LlmSource, type SampleArrival } from '../../../../src/synth/llm/source.js';
-import type { GenerateFn } from '../../../../src/synth/llm/types.js';
+import { ProviderHttpError } from '../../../../src/errors.js';
+import { LLM_CACHE_PERSIST_BYTES, LLM_DEFAULT_GENERATION, LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, UNFINISHED_REASONING_ALLOWANCE_TOKENS, affordableSamples, coversSample, createLlmSource, endedRateLimited, estimatedSampleUsage, maxTokensBase, rateLimitedUsage, sampleDeadlineMs, samplesFor, unfinishedSampleUsage, unservedRateLimited, type LlmBudget, type LlmFireInput, type LlmSource, type SampleArrival } from '../../../../src/synth/llm/source.js';
+import { reasoningEnabled, type GenerateFn } from '../../../../src/synth/llm/types.js';
 import { listingSet } from '../../../../src/synth/llm/prompt.js';
 import { calcFiles, proposeFixCall, scriptedGenerate, type HunkIn } from './fixtures.js';
 
@@ -438,5 +439,122 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     expect(gen.calls()).toBe(0);
     expect([samplesFor('quixbugs'), samplesFor('ladder'), samplesFor('repository', 500), samplesFor('repository', 5000)]).toEqual([4, 3, 6, 4]);
     expect([sampleDeadlineMs('quixbugs', null), sampleDeadlineMs('quixbugs', 3000), sampleDeadlineMs('quixbugs', 9000), sampleDeadlineMs('ladder', null, 12_000), sampleDeadlineMs('repository', 1000)]).toEqual([20_000, 10_000, 18_000, 12_000, 30_000]);
+  });
+});
+
+describe('rate-limited samples and rounds (core/types.ts CancelledGeneration.rateLimited, §4.13)', () => {
+  const rateLimit = (): ProviderHttpError => new ProviderHttpError('HTTP 429: rate limited', { status: 429, retryable: true });
+  const refused: GenerateFn = () => Promise.reject(rateLimit());
+
+  it('classifies an end: a 429 ProviderHttpError (the chain gave up) or the provider\'s onCancelled fact (aborted in a 429 backoff); a 5xx or a plain abort is not rate-limited', () => {
+    const fact = { text: '', toolChars: 0, reasoningChars: 0, rateLimited: true as const };
+    expect(endedRateLimited(rateLimit(), null)).toBe(true);
+    expect(endedRateLimited(new Error('aborted during the backoff'), fact)).toBe(true);
+    expect(endedRateLimited(new ProviderHttpError('HTTP 503', { status: 503, retryable: true }), null)).toBe(false);
+    expect(endedRateLimited(new Error('cancelled'), { text: 'partial', toolChars: 12, reasoningChars: 0 })).toBe(false);
+    expect(rateLimitedUsage()).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 1 });
+    // unserved = a fired sample that settled without a result AND was rate-limited; a served result behind a retry and the cache replay are not
+    expect(unservedRateLimited({ sample: 0, status: 'error', rateLimited: true })).toBe(true);
+    expect(unservedRateLimited({ sample: 1, status: 'cancelled', rateLimited: true })).toBe(true);
+    expect(unservedRateLimited({ sample: 0, status: 'valid', rateLimited: true })).toBe(false);
+    expect(unservedRateLimited({ sample: 0, status: 'error', rateLimited: false })).toBe(false);
+    expect(unservedRateLimited({ sample: -1, status: 'cached', rateLimited: false })).toBe(false);
+  });
+
+  it('a sample the rate limiter refused is booked at $0 with its hold released and flagged; a round of nothing but those is a rate-limited round — not an exhausted one', async () => {
+    const events: string[] = [];
+    const src = createLlmSource({ generate: refused, pricing: PRICING, emit: (phase, detail) => events.push(`${phase}: ${detail}`) });
+    const b = budget();
+    expect(src.fire(fireInput(b, { n: 2, stagger: false }))).toMatchObject({ fired: true, samples: 2 });
+    // in flight: two holds stand, nothing is classified yet
+    expect(src.round()).toMatchObject({ fired: 2, closed: false, rateLimited: 0, rateLimitedRound: false });
+    expect(src.round()!.reservedUsd).toBeCloseTo(2 * RESERVATION, 12);
+    const arrivals = await drain(src);
+    expect(arrivals.map((a) => [a.sample, a.status, a.rateLimited, a.usd, a.estimated])).toEqual([
+      [0, 'error', true, 0, false],
+      [1, 'error', true, 0, false],
+    ]);
+    expect(arrivals[0]!.detail).toMatch(/^rate-limited \(HTTP 429\), nothing served: HTTP 429: rate limited$/);
+    expect(arrivals[0]!.usage).toEqual(rateLimitedUsage());
+    expect(src.round()).toMatchObject({ fired: 2, errors: 2, rateLimited: 2, rateLimitedRound: true, closed: true, usd: 0, estimatedUsd: 0, reservedUsd: 0, distinct: 0 });
+    // the round and its samples were taken at fire (the controller refunds them off `rateLimitedRound`); the dollars never moved
+    expect(b.roundsLeft).toBe(1);
+    expect(b.samplesLeft).toBe(6);
+    expect(b.usdLeft).toBe(0.02);
+    expect(events.find((e) => e.startsWith('llm:round'))).toMatch(/2 rate-limited \(HTTP 429, nothing served\).*every fired sample was rate-limited — the round is not exhausted$/);
+    // nothing was seen, so nothing is cached: the next fire under the same key generates again
+    expect(src.exportCache()).toEqual({});
+    expect(src.fire(fireInput(budget(), { n: 1, stagger: false }))).toMatchObject({ fired: true, samples: 1 });
+    await drain(src);
+  });
+
+  it('the onCancelled fact marks a sample aborted in a 429 backoff; a result reached through a 429 retry carries the flag but counts as served, so the round is not rate-limited', async () => {
+    const served = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]), usage: { inputTokens: 4000, outputTokens: 300 } }));
+    const gen: GenerateFn = async (req, o) => {
+      if (o.sample === 0) {
+        o.onCancelled?.({ text: '', toolChars: 0, reasoningChars: 0, rateLimited: true });
+        throw new Error('the abort landed in the backoff');
+      }
+      return { ...(await served.generate(req, o)), rateLimited: true };
+    };
+    const src = createLlmSource({ generate: gen, pricing: PRICING });
+    const b = budget();
+    src.fire(fireInput(b, { n: 2, stagger: false }));
+    const arrivals = await drain(src);
+    expect(arrivals.map((a) => [a.sample, a.status, a.rateLimited])).toEqual([
+      [0, 'error', true],
+      [1, 'valid', true],
+    ]);
+    expect(arrivals[0]!.usd).toBe(0);
+    expect(arrivals[1]!.usd).toBeCloseTo((4000 * 0.5 + 300 * 2) / 1e6, 12);
+    expect(arrivals[1]!.candidates).toHaveLength(1);
+    expect(src.round()).toMatchObject({ fired: 2, valid: 1, errors: 1, rateLimited: 1, rateLimitedRound: false, closed: true });
+    expect(0.02 - b.usdLeft).toBeCloseTo((4000 * 0.5 + 300 * 2) / 1e6, 12);
+  });
+
+  it('a staggered round is classified only once it closed: sample 0 refused alone is not a rate-limited round until the released samples were refused too', async () => {
+    const src = createLlmSource({ generate: refused, pricing: PRICING });
+    const b = budget();
+    src.fire(fireInput(b, { n: 2 }));
+    expect(await src.collect()).toMatchObject({ sample: 0, status: 'error', rateLimited: true });
+    expect(src.round()).toMatchObject({ fired: 1, rateLimited: 1, rateLimitedRound: false, closed: false });
+    src.release();
+    await drain(src);
+    expect(src.round()).toMatchObject({ fired: 2, rateLimited: 2, rateLimitedRound: true, closed: true });
+  });
+
+  it('a 5xx the chain gave up on stays a plain error, booked from what its stream left (the reasoning allowance), never $0', async () => {
+    const gen: GenerateFn = () => Promise.reject(new ProviderHttpError('HTTP 503', { status: 503, retryable: true }));
+    const src = createLlmSource({ generate: gen, pricing: PRICING });
+    const b = budget();
+    src.fire(fireInput(b, { n: 1, stagger: false }));
+    const [a] = await drain(src);
+    expect(a).toMatchObject({ status: 'error', rateLimited: false, estimated: true });
+    expect(a!.usd).toBeCloseTo(LOST(PROMPT_TOKENS), 12);
+    expect(src.round()).toMatchObject({ errors: 1, rateLimited: 0, rateLimitedRound: false });
+  });
+});
+
+describe('reasoningEnabled / maxTokensBase (§4.5): every reasoning variant but {enabled: false} asks for reasoning tokens', () => {
+  it.each([
+    ['unsent', undefined, false, LLM_MAX_TOKENS],
+    ['{enabled: false}', { enabled: false as const }, false, LLM_MAX_TOKENS],
+    ["{effort: 'low'}", { effort: 'low' as const }, true, LLM_MAX_TOKENS_REASONING],
+    ['{maxTokens: 800}', { maxTokens: 800 }, true, LLM_MAX_TOKENS_REASONING],
+  ])('%s → reasoningEnabled %s, base %d', (_label, reasoning, enabled, base) => {
+    expect(reasoningEnabled(reasoning)).toBe(enabled);
+    expect(maxTokensBase(reasoning)).toBe(base);
+  });
+
+  it('maxTokensBase(null) is the plain base; a fire input pinning {maxTokens} sends it verbatim with the reasoning-on base and books its unfinished samples with the allowance', async () => {
+    expect(maxTokensBase(null)).toBe(LLM_MAX_TOKENS);
+    const gen = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]), usage: { inputTokens: 4000, outputTokens: 300 } }));
+    const src = createLlmSource({ generate: gen.generate, pricing: PRICING });
+    expect(src.fire(fireInput(budget(), { n: 1, stagger: false, reasoning: { maxTokens: 800 } })).fired).toBe(true);
+    expect(gen.requests().at(-1)).toMatchObject({ maxTokens: LLM_MAX_TOKENS_REASONING, reasoning: { maxTokens: 800 } });
+    await drain(src);
+    // the estimator agrees: a thinking budget is reasoning on, so a lost sample carries the allowance
+    expect(unfinishedSampleUsage({ siblingInputTokens: 10, promptChars: 0, partial: null, reasoning: reasoningEnabled({ maxTokens: 800 }), pricing: PRICING }).outputTokens).toBe(UNFINISHED_REASONING_ALLOWANCE_TOKENS);
+    expect(unfinishedSampleUsage({ siblingInputTokens: 10, promptChars: 0, partial: null, reasoning: reasoningEnabled({ enabled: false }), pricing: PRICING }).outputTokens).toBe(0);
   });
 });

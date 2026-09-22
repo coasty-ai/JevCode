@@ -7,7 +7,8 @@
  * experiments/results/ and experiments/designs/contrarian.md.
  */
 import type { RunLimits } from '../../core/types.js';
-import { samplesFor } from '../llm/source.js';
+import { coversSample, samplesFor } from '../llm/source.js';
+import type { LlmRoundSummary } from '../llm/source.js';
 import type { OracleClass as LlmClass } from '../llm/types.js';
 import type { Candidate, Site, TestRunSummary } from '../types.js';
 import { countCaseTimeouts, isCaseNotRun, isCaseTimeout } from '../verify/quixbugs.js';
@@ -811,9 +812,52 @@ export function llmClassOf(oracle: Pick<OracleModel, 'tRunMs'>, goals: number, r
   return goals >= 2 ? 'ladder' : 'quixbugs';
 }
 
-/** N for the next round: the class's N (§4.6), bounded by the samples left this step; 0 when the rounds or the dollars are spent (§4.2). */
-export function decideLlmN(oracle: Pick<OracleModel, 'tRunMs'>, budget: Pick<StepBudget, 'llmRoundsLeft' | 'llmSamplesLeft' | 'llmUsdLeft'>, klass: LlmClass, tReproMs: number | null = null): number {
-  if (budget.llmRoundsLeft <= 0 || budget.llmUsdLeft <= 0 || budget.llmSamplesLeft <= 0) return 0;
+/**
+ * What a round still in flight holds against the step's dollar counter (docs/LLM-JEV-DESIGN.md §4.11). The source
+ * reserves every fired sample's full estimate until it settles and never debits the hold — the counter is charged the
+ * price at settle alone — so `llmUsdLeft` read for the *next* round's headroom must have the hold taken off it, or the
+ * round in flight is counted twice: once as the counter it has not been charged to yet, once as the samples it pays for.
+ */
+export interface LlmHold {
+  /** dollars the in-flight samples hold (`LlmRoundSummary.reservedUsd`; 0 without an open round) */
+  reservedUsd?: number;
+  /** the next round's per-sample estimate (what the source reserves for one sample); 0 = unknown, a positive headroom then suffices */
+  perSampleUsd?: number;
+}
+
+/**
+ * The hold an open round's summary reports: what its in-flight samples hold, and — the nearest estimate of the next
+ * round's sample the loop has — what one of them holds (the source reserves each sample's full estimate, so the hold
+ * per in-flight sample is that estimate). Both 0 without a round or once it closed (every hold released).
+ */
+export function llmHoldOf(round: LlmRoundSummary | null | undefined): Required<LlmHold> {
+  if (round === null || round === undefined || round.closed) return { reservedUsd: 0, perSampleUsd: 0 };
+  const reservedUsd = Math.max(0, round.reservedUsd ?? 0);
+  // the fired samples that have not settled: the cache replay (sample −1) is never in `fired` and has no `cached` counter here
+  const settled = round.valid + round.empty + round.malformed + round.length + round.timeouts + round.cancelled + round.errors;
+  const inFlight = Math.max(0, round.fired - settled);
+  return { reservedUsd, perSampleUsd: inFlight > 0 ? reservedUsd / inFlight : 0 };
+}
+
+/** The step's dollar headroom for another round beyond what the round in flight holds: `llmUsdLeft − reservedUsd`. */
+export function llmUsdHeadroom(budget: Pick<StepBudget, 'llmUsdLeft'>, hold: LlmHold = {}): number {
+  return budget.llmUsdLeft - (hold.reservedUsd ?? 0);
+}
+
+/**
+ * Whether another round can fire this step (§4.2 skip conditions, §4.11): rounds and samples left, and the dollar counter
+ * covering one sample beyond the hold of the round in flight (`coversSample`: with no estimate, a positive headroom).
+ */
+export function llmRoundAffordable(budget: Pick<StepBudget, 'llmRoundsLeft' | 'llmSamplesLeft' | 'llmUsdLeft'>, hold: LlmHold = {}): boolean {
+  return budget.llmRoundsLeft > 0 && budget.llmSamplesLeft > 0 && coversSample(llmUsdHeadroom(budget, hold), hold.perSampleUsd ?? 0);
+}
+
+/**
+ * N for the next round: the class's N (§4.6), bounded by the samples left this step; 0 when the rounds or the dollars are
+ * spent (§4.2) — the dollars less what the round in flight holds when the caller passes its `hold` (§4.11).
+ */
+export function decideLlmN(oracle: Pick<OracleModel, 'tRunMs'>, budget: Pick<StepBudget, 'llmRoundsLeft' | 'llmSamplesLeft' | 'llmUsdLeft'>, klass: LlmClass, tReproMs: number | null = null, hold: LlmHold = {}): number {
+  if (!llmRoundAffordable(budget, hold)) return 0;
   const n = klass === 'repository' ? samplesFor(klass, tReproMs ?? oracle.tRunMs.goalSubset) : samplesFor(klass);
   return Math.max(0, Math.min(n, budget.llmSamplesLeft));
 }

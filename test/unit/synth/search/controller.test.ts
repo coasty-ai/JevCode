@@ -1192,7 +1192,7 @@ describe('repository mode (Django/sympy-shaped workspace): oracle goal, best gue
       const p2 = await h.synth.synthesize(ctx2);
       expect(p2.action.kind).toBe('patch');
       expect(ctx2.askCalls.map((c) => Object.keys(c.questions))).toEqual([['general_cand_01']]);
-      expect(p2.plan.openProblems).toEqual([`possible overfit: relational_swap at ${MODULE}:3 passes every test, but Jev rated no test-passing candidate a general fix; review the change`, note]);
+      expect(p2.plan.openProblems).toEqual([`possible overfit: relational_swap at ${MODULE}:3 passes every test, but Jev did not vouch for this lone passer as a general fix; review the change`, note]);
       expect(JSON.parse(p2.rawText) as { note?: string }).toMatchObject({ note: 'possible overfit', arbitrated: true });
       expect(guardEvents(ctx2)).toEqual([`g1: ${NETWORK_ORACLE_OPEN_PROBLEM}; Q16 on the lone passer ${PASSER}: general 0.12 < ${LONE_PASSER_HOLD_MAX_NOUL}, committing it as possible overfit`]);
       dropMemory(runId);

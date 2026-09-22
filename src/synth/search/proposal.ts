@@ -697,7 +697,11 @@ export function proposePatch(ctx: SynthesisContext, applied: AppliedCandidate, g
   if (paths.length > maxFiles) throw new ProposalError(`diff touches ${paths.length} files (${paths.join(', ')}); a ${applied.candidate.source} candidate may touch at most ${maxFiles}`);
   const notes: string[] = [];
   const e = evidence ?? undefined;
-  if (note === 'possible overfit') notes.push(`possible overfit: ${describeEdit(applied)} passes every test, but Jev rated no test-passing candidate a general fix; review the change`);
+  // two sources, both a lone passer Jev did not vouch for: the guard's vouch-bound hold (guard.ts rule (b): two or more structural
+  // signals, general 0.3 ≤ p < 0.7, released on the budget reserve or at step end) and a network-dependent / LLM-written oracle's
+  // lone passer with general < 0.3 (index.ts arbitrateNetworkPasser). The all-overfit set (rule (1)) is dropped and never carries it.
+  // Kept short: openProblemNotes clips at PLAN_ITEM_MAX_CHARS, and describeEdit alone runs to ~60 chars on a repository path.
+  if (note === 'possible overfit') notes.push(`possible overfit: ${describeEdit(applied)} passes every test, but Jev did not vouch for this lone passer as a general fix; review the change`);
   // a progress commit says so in the words the evidence measured (proposal + evidence agree: newlyPassing = its tests, goalTests = the goal's)
   if (note === 'partial') notes.push(e === undefined ? `partial fix: ${describeEdit(applied)} fixes some of ${testsLabel(goal)} without regressions; the rest stay open` : `${partialFixSummary(goal, e)} (${describeEdit(applied)})`);
   notes.push(...(opts.notes ?? []));

@@ -2912,7 +2912,7 @@ intent or context request is made.
 | 4e Seeds → lanes | code SIEVE when `t_run ≤ 2 s`; Q8–Q10 (full-criteria Nouls in chunks ≤ 50 for 11–150 candidates, `fullCriteriaNouls`) in RANK; at repository sites `mutation` is marked exhausted instead of ranked | sites, base files | `src/synth/search/subgoal.ts visitSeedBatch`, `src/synth/rank/index.ts` |
 | 4f LLM round L1 | the LLM: N `propose_fix` samples, staggered on QuixBugs/ladder class (sample 0 with the seeds, 1..N−1 released when the top-site batch has no passer), whole on repository class (fired before the scoped baseline at step 1) | listings ∪ failure evidence ∪ attempt ledger | `src/synth/search/llm.ts createSearchLlm.fire`, `src/synth/llm/source.ts createLlmSource`, `src/synth/search/subgoal.ts startLlm`, `src/synth/search/index.ts fireEarlyRound` |
 | 4g Order | code runs every distinct sample when it can; Jev Q17 orders them only when `distinct > runsLeft` or `t_run > 2 s` (RANK) | ≤ 8 distinct samples as hunk views | `src/synth/llm/rank.ts`, `src/synth/search/subgoal.ts runLlmRound` |
-| 4h Verify | lanes (8/4/2 by measured `t_run`); the queue is awaitable so lanes start on the first parsed sample; ≤ 5 full-suite runs per step | queue in key order | `src/synth/sieve/queue.ts` (`open`/`next`/`close`), `src/synth/sieve/runner.ts runQueue`, `src/synth/oracle/verify.ts runRepositoryQueue` |
+| 4h Verify | lanes (8/4/2 by measured `t_run`); the queue is awaitable so lanes start on the first parsed sample; a batch begun while the queue streams ends on its first plausible outcome (`runQueue` and `runRepositoryQueue` alike), so the controller decides at once, cancels the round's losers as `commit` and re-enters the stream when the guard holds; workers parked in `next()` are released (`VerifyQueue.next(signal)`, `runner.ts awaitNextJob`) when dispatch stops, the step signal fires or the wall no longer fits one run; ≤ 5 full-suite runs per step | queue in key order | `src/synth/sieve/queue.ts` (`open`/`next(signal)`/`close`), `src/synth/sieve/runner.ts runQueue`, `awaitNextJob`, `src/synth/oracle/verify.ts runRepositoryQueue` |
 | 4i Guard | code: 0 plausible → hold partial; one behaviour cluster holding a seed and an LLM passer → the LLM member (`preferLlmInCluster`, no Jev); ≥ 2 clusters → Q15/Q16; the seed-vs-LLM grace waits ≤ min(6 s, deadline left) for sample 0 | `VerifyOutcome[]` of seeds ∪ arrived LLM candidates | `src/synth/search/guard.ts decide`, `src/synth/search/subgoal.ts afterSeedBatch` |
 | 4j Proposal | code | committed candidate → unified diff (≤ 4 files for an `llm` winner), `ProposalEvidence{selection: 'llm'…}`; the claiming `run` carries `evidence.completion`; the revert route emits `revert_last_change` | `src/synth/search/proposal.ts proposePatch`, `completionEvidence`, `proposeRevert` |
 | 5 Risk | code `ok` before any Jev request for a verified patch, a verification run, a verified `done`, a recoverable revert, a `read`; otherwise Jev Q20 harm-only (`destructive`, `irreversible`) | proposal, targets, evidence | `src/loop/stages/risk.ts runHarmOnlyRiskStage`, `codeRiskReason` |
@@ -3093,9 +3093,17 @@ the ones the probes held or routing margins.
   take `sourcePriorAt(3) − i·ε` on the QuixBugs/ladder class (after the three seed sources) and
   `1.0 − i·ε` on the repository class (before every seed) — `subgoal.ts llmJobs`;
   `SOURCE_ORDER_PRIOR.llm = 0.35` serves only the `jobFor` default path. The queue is awaitable
-  (`open()` / `next()` / `close()`): `runQueue`'s worker awaits `next()` while a round streams
+  (`open()` / `next(signal)` / `close()`): `runQueue`'s worker awaits `next()` while a round streams
   (`runLlmStreaming`, cheap oracles), so lanes start on the first parsed sample;
-  `runRepositoryQueue` does the same. The full-suite passer cap is per step
+  `runRepositoryQueue` does the same. A batch begun while the queue streams ends on its first
+  plausible outcome in both runners (`JobQueue.streaming`, `passerStop`: the runs already on a
+  lane complete, the jobs still queued wait for the next call), so the controller decides at once
+  over what landed, cancels the round's losers as `commit` when the guard commits, and re-enters
+  the stream when it holds (`runLlmStreaming`); a worker parked in `next()` is released without
+  closing the stream (`VerifyQueue.next(signal)`, `runner.ts awaitNextJob`) when dispatch stops
+  (a decisive passer, the passer cap, the run count, a lane failure), the step signal fires or the
+  wall no longer fits one run — no worker waits out a round's slowest sample or its deadline.
+  The full-suite passer cap is per step
   (`RunnerMemory.passersThisStep`, `MAX_FULL_SUITE_RUNS_PER_STEP` 5, DECISIONS 2026-09-21).
   Lanes are unchanged (`src/synth/sieve/lanes.ts`: `candidate_file`, `git worktree`, `cp -R`,
   `inplace`).
@@ -3108,22 +3116,53 @@ the ones the probes held or routing margins.
   the round is cancelled with reason `commit` at `settleLlm`; when the goal search ends otherwise
   the reason is `budget`.
 - **The LLM phase** (`subgoal.ts visitLlm`, phase `'LLM'` between SEEDS and SKETCH in
-  `search/types.ts PHASES`). SIEVE (`t_run ≤ 2 s`): the round's arrivals stream into the shared
+  `search/types.ts PHASES`; on repository class `subgoal.ts phaseLadder` places it first —
+  `['LLM', 'SEEDS', 'SKETCH', 'BEAM', 'WIDENED']` — so the round fired after `locate` is consumed
+  before a single seed is enumerated; QuixBugs/ladder and jev-only keep `PHASES`). SIEVE (`t_run ≤ 2 s`): the round's arrivals stream into the shared
   queue as they land. RANK: `collectForRank` waits for N−1 arrivals, the deadline or the close,
   `decideRunPlan` sizes K, Q17 orders when `q17Needed`, the top K run. Then the feedback round L1′
   (`round: 2`) when round 1 ran and found no passer: the ledger carries every verdict, `## Code`
   widens by `LLM_FEEDBACK_WIDEN` 3 members (6 on a strong fix-absent signal) or the samples'
   `need` paths (`needPathsOf`, ≤ 3), temperatures 0.6 / 1.0, fired whole; at most
-  `LLM_FEEDBACK_ROUNDS_PER_GOAL` 2 per goal per run and `LLM_ROUNDS_PER_STEP` 2 per step.
-- **Guard** (`src/synth/search/guard.ts`). `clusterByBehaviour` groups passers by P2P outcome
-  vector ∪ perturbation-probe signature; a cluster holding any `llm` member is represented by
-  `preferLlmInCluster` — the LLM member with the most agreement (`Candidate.prior`), ties by edit
-  cost. `decide`: 0 plausible → `holdBestPartial`; one cluster that mixes a code seed and an LLM
-  passer → commit the LLM member with no Jev request (the measured rationale: GLM jev-off wrote
-  16/16 gold-or-equivalent patches where it passed, the code seeds 7 overfits in 53 solves); an
-  all-seed single cluster keeps the existing Q15/Q16 arbitration (so jev-only behaviour is
-  unchanged); ≥ 2 clusters → Q15/Q16 with `llmFirst` before `byEditCost` on ties. The lone-passer
-  holds of §21.2 still apply within the step.
+  `LLM_FEEDBACK_ROUNDS_PER_GOAL` 2 per goal per run and `LLM_ROUNDS_PER_STEP` 2 per step. L1′,
+  SKETCH and BEAM are gated on a round still being able to fire (`llmRoundsAvailable` →
+  `budget.ts llmRoundAffordable`): rounds and samples left, and the step's dollar counter less
+  what the open round's in-flight samples hold (`LlmRoundSummary.reservedUsd`, `llmHoldOf`) still
+  covering one sample — the source holds each fired sample's full estimate until it settles and
+  charges the counter the price at settle alone, so the counter as it reads would count a round
+  in flight as headroom for a round the source refuses. `decideLlmN` takes the same hold.
+- **Guard** (`src/synth/search/guard.ts`; as built after the 2026-09-21 head-to-head fix, groups
+  D/E). `clusterByBehaviour` groups passers by P2P outcome vector ∪ perturbation-probe signature;
+  on a ladder-class workspace the probe is the harvest/replay harness `LADDER_HARNESS`
+  (`perturb.ts`, shared with the ladder-verdicts script): the goal's test calls are harvested
+  once, perturbed, and replayed on every passer's tree. A cluster holding any `llm` member is
+  represented by `preferLlmInCluster` — the LLM member with the most agreement (`Candidate.prior`),
+  ties by edit cost. `decide`: **0 plausible** → `holdBestPartial`. **1 plausible** → commit,
+  subject to the code-computed suspicion signals (`suspicionSignals`: `deletes_statement`,
+  `duplicates_block`, `guards_other_variable`, `dead_guard`, and `adds_special_case` — the edit
+  adds a conditional or a literal over the line it replaces, `specialCaseScore` > 0: `if x:`,
+  `return 0`, `** 2`, the shape of every lone passer the head-to-head committed as an overfit).
+  Any signal asks the Q16 advisory whenever a Jev request is left, inside the budget reserve too;
+  a `general` p below 0.3 (`LONE_PASSER_HOLD_MAX_NOUL`) holds the passer as the `suspect` with an
+  **unreleasable** hold (`unreleasable`: not released on the reserve, not at step end —
+  `commitSuspect` returns null and the step ends on its honest partial or parks); two or more
+  signals with 0.3 ≤ p < 0.7 (`LONE_PASSER_VOUCH_MIN_NOUL`) hold it while the step can afford the
+  hold and release it as `possible overfit` — the only source of that note. One cluster that
+  mixes a code seed and an LLM passer → commit the LLM member, no Jev request (GLM jev-off wrote
+  16/16 gold-or-equivalent patches where it passed, the code seeds 7 overfits in 53 solves).
+  **≥ 2 clusters → code first**: the cluster with a strict majority of the independent support
+  (distinct source × site pairs, `majorityCluster`) → its representative; else the representative
+  adding the fewest special cases (`fewestSpecialCases`), when alone at the minimum; **Jev only on
+  the residual tie** (and on an all-seed single cluster of ≥ 2): one Q15 `genuine_fix` Choice +
+  Q16 `general_<xx>` Nouls over ≤ 20 representatives, with the **perturbation table** — the inputs
+  on which the representatives' outputs differ, each output (`PERTURBATION_ROWS_MAX` 12) — in the
+  state. **The all-overfit signature** — P(escape) ≥ `SUSPECT_ESCAPE_MIN` 0.5 ∧ max general Noul <
+  `SUSPECT_NOUL_MAX` 0.3 — **drops the set**: nothing is held or committed, not now, not on the
+  reserve, not at step end; the passers stay in `tried` and the search runs on with the batch's
+  best partial held (before the fix the smallest edit was held and committed at step end as
+  `possible overfit`; the head-to-head committed five such overfits where the baseline committed
+  none). Otherwise the Choice argmax is committed under the §5.4 override rule, `llmFirst` before
+  `byEditCost` on ties.
 - **Proposal** (`src/synth/search/proposal.ts`). `patchMaxFiles(applied)` is
   `VERIFIED_PATCH_MAX_FILES` 4 for an `llm` winner and `MAX_PATCH_FILES` 2 for code sources;
   `selectionOf` reports `'llm'` when the winner's source is `llm`; the winner is re-expressed
@@ -3138,7 +3177,11 @@ the ones the probes held or routing margins.
   null || lastChangeStep === revertExecutedStep))`. After a commit, `adoptableLaneRun` adopts the
   lane's green full run as the baseline — no re-run — when every loaded Python file equals the
   lane's base (the touched ones its `after`) and no file appeared or vanished; a still-failing
-  suite is re-run so the ledger can cluster from the full output. On repositories only the scoped
+  suite is re-run so the ledger can cluster from the full output. Once the engine has executed a
+  full-suite run after the commit that is not green, that run contradicts the lane on this very
+  tree: the lane run is not adopted (again) and the suite is re-run in the workspace
+  (`engineRunContradictsBaseline`) — the engine's own claiming run is the authority, the lane
+  supplies evidence only while the engine's run agrees with it. On repositories only the scoped
   regression run is adopted; the reproduction is always re-run in the workspace because it is the
   completion fact's evidence.
 - **Completion evidence** (`proposal.ts completionEvidence`, `core/types.ts CompletionEvidence`).
@@ -3148,9 +3191,15 @@ the ones the probes held or routing margins.
   OracleOutcome | null, command}`. The engine's `isCompleteByFact` (§22.6) ANDs it with its own
   parsed run.
 - **Revert route** (`search/index.ts revertDue`, `finishRevert`, `rollbackUnexecutedPatch`;
-  `proposal.ts proposeRevert`). Trigger: the engine's suite run after the commit passed fewer
-  tests than the pre-patch baseline (the scoped part on repositories), or the synthesizer's own
-  fresh baseline did. The reverse diff of `mem.committed.at(-1)` is proposed as a `patch` whose
+  `proposal.ts proposeRevert`). Triggers: (1) the engine's suite run after the commit passed
+  fewer tests than the pre-patch baseline (the scoped part on repositories), or the synthesizer's
+  own fresh baseline did; (2) as built — the window carries no test ids, so §6.5's "a goal test
+  in `newlyPassing` fails" is read from the synthesizer's own run: when the engine's full-suite
+  run after the commit fails tests (or passes none) the baseline does not know
+  (`engineRunContradictsBaseline`), the suite is re-run in the workspace this step (never the
+  lane's run: `adoptableLaneRun` refuses while the engine's run disagrees), and a goal test the
+  commit's `evidence.newlyPassing` showed that fails in that run re-opens the goal and reverts.
+  The reverse diff of `mem.committed.at(-1)` is proposed as a `patch` whose
   goal starts with `revert` (`revert_last_change`) — no LLM, no Jev; risk is code-`ok` when every
   target is recoverable (`recoverableRevertOk`); the candidate stays `tried`, the goal re-opens
   and its localisation cache is dropped (`workspace_disagreed`); once per committed patch
@@ -3388,10 +3437,13 @@ are in the same journals.
   of arriving candidates start after the baseline because the runner's classification needs it.
 - Lane-baseline adoption compares the whole loaded Python tree byte for byte and adopts only a
   green run (§22.5), not "the sha256 of every touched file".
-- The revert trigger is count-based (`passed` against the pre-patch baseline); the window's
-  `judge.tests` carries no test ids, so "a goal test in `newlyPassing` fails" cannot be read.
-  `revert_last_change` is a `patch` whose goal starts with `revert`; no claiming run follows an
-  executed revert.
+- The revert triggers are the count (`passed` against the pre-patch baseline) and, since the
+  window's `judge.tests` carries no test ids, a second trigger read from the synthesizer's own
+  re-run of the workspace rather than from the engine's parsed ids: the engine's claiming run
+  contradicting the baseline re-opens the goal whose test fails in that re-run (§22.5 "Revert
+  route"); the lane run is adopted as the baseline only while the engine's run agrees with it
+  (`adoptableLaneRun`). `revert_last_change` is a `patch` whose goal starts with `revert`; no
+  claiming run follows an executed revert.
 - §6.2's "one cluster → commit at once, no Jev" applies only to a cluster holding both a seed and
   an LLM member; an all-seed single cluster of ≥ 2 keeps Q15/Q16 (all-overfit detection), so
   jev-only behaviour is identical.
@@ -3456,6 +3508,29 @@ source: the stage-2 `*Ext` types and the stage-3 local copies were deleted and `
 `synth/llm/*` import the core names. `src/cli/session.ts buildSynthesizer` now builds the
 synthesizer against `SynthesizerOptions` with `mode: 'llm-jev'` and `LLM_DEFAULT_GENERATION`
 under `--mode llm-jev`, and passes `config.generator.pricing` as `EngineOptions.generatorPricing`.
+
+**Review fixes (2026-09-21, groups A–C).** Deviations the review closed; the bullets above
+describe the code as it now stands.
+- The streamed batch no longer waits for the round to end: a batch begun while the queue streams
+  ends on its first plausible outcome in both runners (`JobQueue.streaming`), the controller
+  decides at once and cancels the losers as `commit`, and re-enters the stream when the guard
+  holds; parked workers are released through `VerifyQueue.next(signal)` / `awaitNextJob` when
+  dispatch stops, the step signal fires or the wall no longer fits a run (§22.2 row 4h, §22.5
+  "Sieve").
+- `phaseLadder` orders the repository class `['LLM', 'SEEDS', 'SKETCH', 'BEAM', 'WIDENED']`
+  (§22.5 "The LLM phase"); design §4.2's `PHASES` stands for the other classes.
+- `revertDue` gained the second trigger as built, and `adoptableLaneRun` refuses the lane run once
+  the engine's full-suite run after the commit is not green (§22.5).
+- The source's fire-time reservation is a hold, never a debit (`source.ts` `reservedUsd`; the
+  counter is charged at settle), and the loop sizes the next round on the counter less that hold
+  (`budget.ts llmRoundAffordable` / `llmHoldOf`, `subgoal.ts llmRoundsAvailable`, `decideLlmN`);
+  a budget re-installed at a re-baseline carries `min(fresh, previous)` and leaves the hold to
+  the source (`search/index.ts freshBudget`), since debiting it there would charge the samples
+  twice.
+- L2 runs its scripts in scratch copies under `<runDir>/tmp/synth/repro`
+  (`search/index.ts LLM_REPRO_SCRATCH_DIR`; worktree copies when `ctx.workspaceInfo.git`, `cp -R`
+  otherwise — no `.git` probe in the sandbox), behind the write/process code filters and the
+  runtime network tell of design §4.10.
 
 ### 22.10 Open items
 

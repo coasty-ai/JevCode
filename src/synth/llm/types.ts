@@ -22,9 +22,14 @@ export interface SampleGenerateOptions extends SampleOptions {
 /** `SynthesisContext.generate` as the contract states it (per-sample signal; the engine meters and records), made required, with the cancellation facts. */
 export type GenerateFn = (req: GenerateRequest, o: SampleGenerateOptions) => Promise<GenerateResult>;
 
-/** True when the request asks for reasoning tokens — the `max_tokens` cap then rises to `LLM_MAX_TOKENS_REASONING` (§4.5). */
+/**
+ * True when the request asks for reasoning tokens — the `max_tokens` cap then rises to `LLM_MAX_TOKENS_REASONING` (§4.5).
+ * Every `GenerateReasoning` variant but `{enabled: false}` does: `{effort}` and the additive `{maxTokens}` (OpenRouter's
+ * `reasoning.max_tokens`, a thinking budget) both have the model think before it answers, so both imply the reasoning-on
+ * base; unsent (undefined) leaves the model's default and the plain base.
+ */
 export function reasoningEnabled(r: GenerateReasoning | undefined): boolean {
-  return r !== undefined && 'effort' in r;
+  return r !== undefined && !('enabled' in r);
 }
 
 /** The LLM's `CandidateSourceName`. */

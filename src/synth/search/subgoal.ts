@@ -37,7 +37,7 @@ import { applyCandidate } from '../verify/apply.js';
 import { progress } from '../verify/progress.js';
 import { appliedOnCommitted, dropHeldPartial, heldPartialOutcome } from './bases.js';
 import type { GuardMemory } from './bases.js';
-import { SIEVE_MAX_T_RUN_MS, decideRunPlan, runsLeft } from './budget.js';
+import { SIEVE_MAX_T_RUN_MS, decideRunPlan, llmHoldOf, llmRoundAffordable, runsLeft } from './budget.js';
 import type { SearchOverrides } from './directive.js';
 import { commitSuspect, gateHeldPartial } from './guard.js';
 import { LLM_FEEDBACK_ROUNDS_PER_GOAL, LLM_FEEDBACK_WIDEN, attemptsFromArrival, llmMemory, needPathsOf, recordAttempts } from './llm.js';
@@ -992,9 +992,14 @@ function closeRound(L: LlmLoop): void {
   L.arrived = new Set();
 }
 
-/** An LLM round may still fire this step: SKETCH/BEAM (Q11–Q14) wait for that (§4.2 phase ladder). */
+/**
+ * An LLM round may still fire this step: SKETCH/BEAM (Q11–Q14) wait for that (§4.2 phase ladder), and the feedback round
+ * L1′ is taken only then. The open round's hold comes off the dollar counter first (§4.11): its in-flight samples are not
+ * charged until they settle, so the counter alone would count them as headroom for a round the source will refuse.
+ */
 function llmRoundsAvailable(st: LoopState): boolean {
-  return st.llm !== null && st.mem.stepBudget.llmRoundsLeft > 0 && st.mem.stepBudget.llmUsdLeft > 0;
+  const L = st.llm;
+  return L !== null && llmRoundAffordable(st.mem.stepBudget, llmHoldOf(L.round?.summary()));
 }
 
 function releaseLlm(st: LoopState, why: string): void {

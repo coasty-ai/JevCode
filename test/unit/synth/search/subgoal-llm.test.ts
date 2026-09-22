@@ -333,6 +333,39 @@ describe('the race and the grace (§4.2, §6.2)', () => {
     expect(r.trace.llm).toMatchObject({ rounds: 1, valid: 0 });
     expect(llm.rec.fires.map((f) => f.round)).toEqual([1]);
   });
+
+  it('a round still in flight holds the counter (§4.11): its hold comes off the dollars before the next round is sized — no L1′, SKETCH runs; a smaller hold leaves the counter for L1′ and SKETCH waits', async () => {
+    // RANK (an expensive oracle): the round stays open after "N−1 or the deadline", so the loop reads its hold at the feedback gate and at SKETCH
+    const run = async (holdUsd: number): Promise<{ fires: number[]; sketchCalls: number[] }> => {
+      const { file, replace } = gcdFixture();
+      // Q7 (the RANK oracle's edit-class prior) is the one question the loop asks here
+      const ctx = fakeCtx({ ask: (qs) => ({ [EDIT_CLASS_QUESTION_ID]: choiceOn(qs[EDIT_CLASS_QUESTION_ID]!, 'substitute_one_token') }) });
+      const mem = fakeMemory([file], baseline(), { oracle: slowOracle(), stepBudget: llmBudget({ jev: 60 }) });
+      const goal = fakeGoal();
+      // sample 0 lands at once (unchanged); sample 1 never lands within the test — it holds `holdUsd` until the search ends
+      const llm = fakeLlm({
+        rounds: (o) =>
+          o.round === 1
+            ? { arrivals: [{ candidates: [cand(replace, 'return gcd(a % b, a)', { source: 'llm', op: 'sample_0_0' })], delayMs: 2 }, { candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_1_0' })], delayMs: 60_000 }], staggered: false, hang: true, deadlineMs: 60_000, holdUsd }
+            : null,
+      });
+      const deps = fakeSubGoalDeps({
+        sites: [replace],
+        seed: (source, site) => (source === 'mutation' ? [cand(site, WRONG, { op: 'identifier_substitution' })] : []),
+        sketch: (site) => ({ candidates: [cand(site, 'return gcd(a, b % a)', { source: 'template', op: 'sketch_P4' })], requests: 3 }),
+      });
+      deps.llm = llm;
+      await searchSubGoal(ctx, mem, goal, deps);
+      // the counter itself is never charged by the fake: on its own it reads as $0.02 of headroom in both runs
+      expect(mem.stepBudget.llmUsdLeft).toBeCloseTo(0.02, 9);
+      expect(llm.rec.cancelled).toEqual(['budget']);
+      return { fires: llm.rec.fires.map((f) => f.round), sketchCalls: deps.rec.sketchCalls };
+    };
+    // the one sample in flight holds the whole $0.02: no round can fire — the feedback round is not attempted and SKETCH is not gated
+    expect(await run(0.02)).toEqual({ fires: [1], sketchCalls: [5] });
+    // it holds $0.005: $0.015 of headroom covers a sample — L1′ is attempted (skipped by the script) and SKETCH waits for the rounds
+    expect(await run(0.005)).toEqual({ fires: [1, 2], sketchCalls: [] });
+  });
 });
 
 describe('RANK on an expensive oracle (§4g): Q17 orders the arrived candidates, never withholds one', () => {

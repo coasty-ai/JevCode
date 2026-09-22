@@ -7,7 +7,12 @@
  * the step's LLM counters (budget.ts `decideLlmN`), wraps a fired round as an `LlmRound` whose
  * arrivals are pumped into a buffer (so the grace of §6.2 can wait on the first one and the LLM
  * phase can drain the rest), asks Q17 for an order in RANK mode, and keeps one `LlmSource` per run
- * (its cache, running p50 and doubled `max_tokens` outlive a step). Request shape: the pinned
+ * (its cache, running p50 and doubled `max_tokens` outlive a step; its transcript lines are logged
+ * under the step that is current when they are emitted, not the step the source was built in). A
+ * round the rate limiter refused whole (`LlmRoundSummary.rateLimitedRound`: every fired sample
+ * answered HTTP 429, nothing served, $0 booked) is refunded to the step's LLM counters when it
+ * ends — `llm:round … rate-limited, refunded` — so the next step re-fires it: such a round is
+ * not exhausted. Request shape: the pinned
  * generation parameters (`SearchLlmOptions.generation`, default llm/source.ts `LLM_DEFAULT_GENERATION`
  * per the §10.2 live findings — `reasoning: {effort: 'low'}`, OpenRouter refuses `{enabled: false}`
  * on the z-ai endpoint — the one object the bench records and the synthesizer echoes) and estimates
@@ -27,7 +32,7 @@ import type { OracleClass } from '../llm/types.js';
 import { outline, tracebackFrames } from '../localize/outline.js';
 import type { LocalizeResult, SourceFile } from '../types.js';
 import { heldPartialOutcome } from './bases.js';
-import { decideLlmN, llmClassOf } from './budget.js';
+import { decideLlmN, llmClassOf, llmHoldOf } from './budget.js';
 import type { SearchMemory } from './memory.js';
 import type { Goal, StepBudget } from './types.js';
 
@@ -139,10 +144,13 @@ class PumpedRound implements LlmRound {
   private wasReleased: boolean;
   /** when `release()` fired samples 1..N−1: their deadline runs from here, not from the round's start */
   private releasedMs: number | null = null;
+  /** called once when the source closed this round (its summary, or null when another round had taken the source over), before the loop sees the end */
+  private readonly onEnded: ((summary: LlmRoundSummary | null) => void) | null;
 
-  constructor(src: LlmSource, meta: RoundMeta, now: () => number) {
+  constructor(src: LlmSource, meta: RoundMeta, now: () => number, onEnded: ((summary: LlmRoundSummary | null) => void) | null = null) {
     this.src = src;
     this.now = now;
+    this.onEnded = onEnded;
     this.goalId = meta.goalId;
     this.round = meta.round;
     this.klass = meta.klass;
@@ -160,14 +168,21 @@ class PumpedRound implements LlmRound {
   }
 
   private async pump(): Promise<void> {
+    let summary: LlmRoundSummary | null = null;
     for (;;) {
       // the source's `collect()` reads its current round; once another round took over, this one is over for us
       if (!this.mine()) break;
       const a = await this.src.collect();
-      if (a === null) break;
+      if (a === null) {
+        // the round closed (every fired sample settled): its summary is read now, while the source still holds it
+        summary = this.mine() ? this.src.round() : null;
+        break;
+      }
       this.buffer.push(a);
       this.wake();
     }
+    // the hook runs before the loop is woken, so a refund it makes is on the counters the loop reads next (`rest()` resolves after it)
+    this.onEnded?.(summary);
     this.ended = true;
     this.wake();
   }
@@ -299,6 +314,8 @@ export interface SearchLlmOptions {
 
 interface RunLlm {
   source: LlmSource;
+  /** the step's context, rebound at every fire: the source's transcript lines (`llm:fire`, `llm:sample`, `llm:round`) are logged under the step that is current when they are emitted, never under the step the source was built in */
+  ctx: SynthesisContext;
   /** dollars spent by the run's rounds (estimates included) */
   spentUsd: number;
   /** the step's compile check (temp files removed at step end) */
@@ -393,11 +410,17 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
     const holder: { run: RunLlm | null } = { run: null };
     // the source's compile check is fixed at creation; it delegates to the check bound to the current step's sandbox
     const compile: CompileCheck = (path, source) => (holder.run?.current ? holder.run.current(path, source) : Promise.resolve({ ok: true }));
+    // the emitter likewise: the source outlives the step it was built in, so the step is resolved at emit time from the context the
+    // latest fire (or spend) handed in — a round of step 5 logs under step 5, not under the step-1 context this closure was made with
+    const stepCtx = (): SynthesisContext => holder.run?.ctx ?? ctx;
     const source = createLlmSource({
       generate,
       compile,
       pricing,
-      emit: (phase, detail) => ctx.emit({ type: 'synth', step: ctx.step, phase, detail }),
+      emit: (phase, detail) => {
+        const c = stepCtx();
+        c.emit({ type: 'synth', step: c.step, phase, detail });
+      },
       onSample: (a) => {
         if (holder.run !== null) holder.run.spentUsd += a.usd;
       },
@@ -406,10 +429,15 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
       probeP90Ms: opts.probeP90Ms ?? null,
       ...(opts.generation === undefined ? {} : { generation: opts.generation }),
     });
-    const run: RunLlm = { source, spentUsd: 0, compile: null, current: null };
+    const run: RunLlm = { source, ctx, spentUsd: 0, compile: null, current: null };
     holder.run = run;
     runs.set(ctx.runId, run);
     return run;
+  }
+
+  /** The step's context becomes the run's current one (the emitter and the compile check follow it). */
+  function bindStep(run: RunLlm, ctx: SynthesisContext): void {
+    run.ctx = ctx;
   }
 
   /** The compile check of this step: `python3 -c "import ast…"` through the step's sandbox on a temp file. */
@@ -426,13 +454,16 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
       return null;
     };
     if (run === null) return skip('no generator channel');
+    bindStep(run, ctx);
     const files = committedFiles(mem);
     if (files === null) return skip('no committed base');
     const repo = mem.repository;
     const repository = repo !== undefined;
     const tReproMs = repository ? mem.oracle.tRunMs.goalSubset : null;
     const klass = llmClassOf(mem.oracle, mem.goals.length, repository);
-    const n = decideLlmN(mem.oracle, mem.stepBudget, klass, tReproMs);
+    // §4.11: the open round's hold (its in-flight samples' full estimates, `LlmRoundSummary.reservedUsd`) comes off the dollar
+    // counter before the round is sized — the counter alone would count what a draining round still holds as headroom
+    const n = decideLlmN(mem.oracle, mem.stepBudget, klass, tReproMs, llmHoldOf(run.source.round()));
     // §4.2: spent counters skip the generation, not the site cache — the source still re-queues the cached untried candidates
     // of an earlier step first; it refuses to generate on the same counters itself
     const spent = n <= 0;
@@ -490,7 +521,20 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
     const startedMs = now();
     const fired = run.source.fire(input);
     const meta = { goalId: goal.id, round: o.round, klass, n: input.n ?? n, startedMs };
-    if (fired.fired) return new PumpedRound(run.source, { ...meta, staggered: input.stagger ?? klass !== 'repository', deadlineMs: fired.deadlineMs }, now);
+    /**
+     * Round end. A round the rate limiter refused whole (every fired sample answered HTTP 429 — the chain gave up, or the
+     * abort landed in a 429 backoff — nothing served) is no evidence about the goal: the round comes back to the step's
+     * counters so the next step (or this one) fires it again — it is not exhausted. Dollars need no refund: the source
+     * charges at settle and booked every refused sample at $0 with its hold released, so `llmUsdLeft` never moved.
+     */
+    const onEnded = (s: LlmRoundSummary | null): void => {
+      if (s === null || s.rateLimitedRound !== true) return;
+      input.budget.roundsLeft += 1;
+      input.budget.samplesLeft += s.fired;
+      const sb = mem.stepBudget;
+      ctx.emit({ type: 'synth', step: ctx.step, phase: 'llm:round', detail: `${goal.id} round ${o.round}: rate-limited, refunded — every fired sample (${s.fired}) was answered HTTP 429 and nothing was served ($0 booked); the round and its ${s.fired} sample${s.fired === 1 ? '' : 's'} return to the step's LLM counters (${sb.llmRoundsLeft} rounds, ${sb.llmSamplesLeft} samples, $${sb.llmUsdLeft.toFixed(4)} left); not exhausted — the next step re-fires` });
+    };
+    if (fired.fired) return new PumpedRound(run.source, { ...meta, staggered: input.stagger ?? klass !== 'repository', deadlineMs: fired.deadlineMs }, now, onEnded);
     // a cache replay is a round of its own (its candidates arrive through the queue and the round closes after them)
     if (fired.cached > 0 && fired.key !== null) return new PumpedRound(run.source, { ...meta, n: fired.cached, staggered: false, deadlineMs: LLM_REPLAY_DEADLINE_MS }, now);
     return skip(spent ? spentNote : fired.reason);
@@ -504,7 +548,9 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
     spentUsd: (runId) => runs.get(runId)?.spentUsd ?? 0,
     recordSpend: (ctx, usd) => {
       const run = runOf(ctx);
-      if (run !== null && Number.isFinite(usd) && usd > 0) run.spentUsd += usd;
+      if (run === null) return;
+      bindStep(run, ctx);
+      if (Number.isFinite(usd) && usd > 0) run.spentUsd += usd;
     },
     exportCache: (runId) => runs.get(runId)?.source.exportCache() ?? null,
     stepEnd: async (ctx) => {

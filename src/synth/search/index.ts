@@ -10,6 +10,8 @@
  * run) plus the goal picker and the directive handler are injected through `SearchDeps`, so the
  * §2.2 control flow is unit-tested with fakes and src/synth/index.ts wires the real modules.
  */
+import { join } from 'node:path';
+
 import { toJson } from '../../core/json.js';
 import { clip } from '../../core/text.js';
 import { PLAN_ITEM_MAX_CHARS } from '../../loop/plan.js';
@@ -65,6 +67,8 @@ export const MAX_WORKSPACE_PY_FILES = 1200;
 export const MAX_PY_FILE_BYTES = 512 * 1024;
 /** §4.1: a timed-out baseline parks every goal with this reason and proposes the full command so the engine's judge sees it. */
 export const SUITE_TOO_SLOW = 'suite too slow';
+/** where the L2 reproduction writer's scratch copies of the workspace live, under the run directory (docs/LLM-JEV-DESIGN.md §4.10; beside search/llm.ts `LLM_COMPILE_DIR`) — never the workspace, never the sandbox's shared tmp */
+export const LLM_REPRO_SCRATCH_DIR = 'tmp/synth/repro';
 /** A rejected patch's reason is quoted in the `rollback` synth event up to this many characters (the window keeps ≤ 600). */
 const ROLLBACK_REASON_CHARS = 160;
 /**
@@ -589,7 +593,16 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     }
   }
 
-  /** The step budget; in llm-jev the LLM counters are filled from the run's spend and the ledger size (budget.ts `LlmBudgetInput`). `carry`: a budget re-installed within the step (a re-baseline) keeps what an earlier round of the step already spent. */
+  /**
+   * The step budget; in llm-jev the LLM counters are filled from the run's spend and the ledger size (budget.ts
+   * `LlmBudgetInput`). `carry`: a budget re-installed within the step (a re-baseline) keeps what an earlier round of the
+   * step already spent — every counter is the smaller of the fresh and the previous value. A round still in flight at
+   * the carry (the early repository round, `fireEarlyRound`) keeps its hold across it with no adjustment here: the
+   * source's reservation is its own ledger against whatever counter is live (search/llm.ts `budgetView` reads
+   * `mem.stepBudget` at every access), never a debit, and the counter is charged the price at settle alone — so taking
+   * the hold off the carried counter would charge the samples twice (docs/LLM-JEV-DESIGN.md §4.11). The loop reads the
+   * hold where it sizes the next round instead (budget.ts `llmRoundAffordable`, subgoal.ts `llmRoundsAvailable`).
+   */
   private freshBudget(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch, carry: boolean): ReturnType<typeof freshBudget> {
     const llm = this.llmBudgetInput(ctx, mem);
     const fresh = freshBudget(ctx.limits, mem.oracle, this.wallRemaining(ctx, scratch), { now: this.deps.now, ...(llm === null ? {} : { llm }) });
@@ -823,6 +836,22 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     this.emit(ctx, 'search', `${goal.id} ${r.kind}${r.kind === 'parked' ? `: ${r.reason}` : ''} (phase ${r.trace.phase}, ${r.trace.runMode}, sites ${r.trace.sitesConsidered}, requests ${r.trace.jevRequests}, runs ${r.trace.testRuns}, plausible ${r.trace.plausible}${r.trace.unstable === undefined || r.trace.unstable === 0 ? '' : `, unstable ${r.trace.unstable}`})`, {
       candidates: r.trace.candidatesEnumerated,
       tested: r.trace.candidatesTested,
+    });
+    // docs/LLM-JEV-DESIGN.md §9.3: the step's verification counts for `StepRecord.verify`. The engine tallies
+    // `samples`, `timeouts`, `cancelled`, `malformed` from its own sample rows and merges what is reported here over
+    // them; on the recursed pass (a park → second search) both searches' sums are reported, since a later call in the
+    // step replaces the earlier one.
+    ctx.reportVerify?.({
+      candidatesTested: (prior?.candidatesTested ?? 0) + r.trace.candidatesTested,
+      passers: (prior?.plausible ?? 0) + r.trace.plausible,
+      partials: r.kind === 'commit' && !r.allGoalTestsPass ? 1 : 0,
+      ...(r.trace.llm === undefined
+        ? {}
+        : {
+            distinct: (prior?.llm?.distinct ?? 0) + r.trace.llm.distinct,
+            misanchored: (prior?.llm?.misanchored ?? 0) + r.trace.llm.misanchored,
+            graceMs: (prior?.llm?.graceMs ?? 0) + r.trace.llm.graceMs,
+          }),
     });
 
     switch (r.kind) {
@@ -1414,6 +1443,10 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         framework: pkg.framework,
         extraction: found.extraction,
         workspace: root,
+        // the scripts run in scratch copies, never the workspace: worktree copies when it is a git checkout (the run-start
+        // probe already knows; no `.git` probe in the sandbox), `cp -R` copies otherwise, under the run's own scratch
+        workspaceGit: ctx.workspaceInfo.git,
+        scratchDir: join(ctx.runDir, LLM_REPRO_SCRATCH_DIR),
         run: sandboxRunFn(ctx.sandbox, ctx.signal),
         ...(python === undefined ? {} : { python }),
         generate,

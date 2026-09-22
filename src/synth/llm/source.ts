@@ -19,7 +19,13 @@
  * re-installed mid-round (the repository step-1 overlap) whole: a sample lands on the counter that
  * is live when it settles, and until then its hold stands against that counter.
  * Every started sample settles exactly once (a rejecting compile check or a throwing callback
- * becomes an `error` arrival), so a round always closes. Rounds are cached in memory by (goal,
+ * becomes an `error` arrival), so a round always closes. A sample the rate limiter refused — every
+ * attempt of the provider's retry chain answered HTTP 429 (the chain gave up: a 429
+ * `ProviderHttpError`), or the abort landed in a 429 backoff (the provider's
+ * `CancelledGeneration.rateLimited` fact) — was never served: it is booked at $0 (its hold comes
+ * back, the counter is not charged) and marked `rateLimited`; a round whose every fired sample
+ * ended so reports `rateLimitedRound`, and the controller (search/llm.ts) refunds the round to the
+ * step's counters — a rate-limited round is not an exhausted one. Rounds are cached in memory by (goal,
  * listing set, attempt ledger, round): a re-fire with the same key replays the cached patches
  * (converted and compile-checked against the current base) and skips generation when ≥ N
  * distinct untried candidates are already known. A `fire()` while a cancelled or fully-fired
@@ -30,6 +36,7 @@
  * sample is started and priced; repro.ts reuses them for L2.
  */
 import { sha12 } from '../../core/hash.js';
+import { ProviderHttpError } from '../../errors.js';
 import type { CancelledGeneration, GeneratePurpose, GenerateReasoning, GenerateRequest, GenerateResult, Json, SynthesizerGeneration, TokenUsage } from '../../core/types.js';
 import { monotonicNow, percentile } from '../../core/time.js';
 import { linkedAbort } from '../../provider/sse.js';
@@ -233,6 +240,13 @@ export interface SampleArrival {
   estimated: boolean;
   generationId: string | null;
   detail: string;
+  /**
+   * true when the sample met HTTP 429: it ended rate-limited without a result — a 429 `ProviderHttpError` (the retry chain
+   * gave up) or the provider's `CancelledGeneration.rateLimited` fact (the abort landed in a 429 backoff); nothing was served,
+   * so `usd` is 0 and the counter is not charged — or its result came through a 429 retry (`GenerateResult.rateLimited`; the
+   * result stands, the flag is a fact for the round's classification). Every arrival states it (`emptyArrival`: false).
+   */
+  rateLimited: boolean;
 }
 
 /** The LLM counters of the StepBudget (§4.11); stage 4 adds them to `StepBudget` itself. */
@@ -309,6 +323,15 @@ export interface LlmRoundSummary {
   estimatedUsd: number;
   /** dollars the in-flight samples still hold against `budget.usdLeft` (their full estimates; 0 once the round closed): the source itself refuses a sample the counter cannot cover beyond it, and a caller reading the counter for headroom subtracts it. Optional so hand-built summaries (test fakes) need not state it; the source always does. */
   reservedUsd?: number;
+  /** fired samples that ended rate-limited without a result (HTTP 429 on every attempt, or aborted in a 429 backoff): booked at $0, nothing served. Optional like `reservedUsd`; the source always states it. */
+  rateLimited?: number;
+  /**
+   * true once the round closed with ≥ 1 fired sample and every fired sample ended rate-limited without a result: the round
+   * produced nothing because the rate limiter refused it, not because the model had nothing — the controller (search/llm.ts)
+   * refunds the round to the step's counters and the next step re-fires; such a round is NOT exhausted. A cache replay (sample
+   * −1) does not count as fired; a sample whose result came through a 429 retry counts as served. Optional like `reservedUsd`.
+   */
+  rateLimitedRound?: boolean;
   deadlineMs: number;
   closed: boolean;
 }
@@ -473,7 +496,26 @@ export function affordableSamples(usdLeft: number, perSampleUsd: number): number
 }
 
 function emptyArrival(sample: number, status: SampleStatus, ms: number, detail: string): SampleArrival {
-  return { sample, status, ms, candidates: [], applied: [], dropped: [], need: null, analysis: null, usage: null, usd: 0, estimated: false, generationId: null, detail };
+  return { sample, status, ms, candidates: [], applied: [], dropped: [], need: null, analysis: null, usage: null, usd: 0, estimated: false, generationId: null, detail, rateLimited: false };
+}
+
+/**
+ * Whether a sample that yielded no result ended rate-limited (core/types.ts `CancelledGeneration.rateLimited`, provider/sse.ts
+ * `isRateLimit`): the error the chain gave up with is a 429 `ProviderHttpError`, or the provider delivered the rate-limited fact
+ * through `onCancelled` (the abort landed in a 429 backoff; the error is then the abort reason). Nothing was served either way.
+ */
+export function endedRateLimited(error: unknown, partial: CancelledGeneration | null): boolean {
+  return (error instanceof ProviderHttpError && error.status === 429) || partial?.rateLimited === true;
+}
+
+/** A sample that ended rate-limited without a result is served nothing and billed nothing (the engine's row says the same: `stopReason` 'rate_limited', zero usage). */
+export function rateLimitedUsage(): TokenUsage {
+  return { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 1 };
+}
+
+/** The fired samples of a round that were never served: settled without a result and rate-limited (`SampleArrival.rateLimited`). */
+export function unservedRateLimited(a: Pick<SampleArrival, 'sample' | 'status' | 'rateLimited'>): boolean {
+  return a.sample >= 0 && a.rateLimited && (a.status === 'error' || a.status === 'cancelled' || a.status === 'timeout');
 }
 
 function readPersistedCache(json: Json | null | undefined): Map<string, { round: number; shas: string[] }> {
@@ -538,6 +580,9 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   function summaryOf(st: RoundState): LlmRoundSummary {
     const count = (s: SampleStatus): number => st.arrivals.filter((a) => a.status === s).length;
     const drops = (r: DroppedPatch['reason']): number => st.arrivals.reduce((n, a) => n + a.dropped.filter((d) => d.reason === r).length, 0);
+    // the fired samples that settled (the cache replay, sample −1, is not fired); the round is rate-limited when all of them were refused
+    const settledFired = st.arrivals.filter((a) => a.sample >= 0);
+    const rateLimited = settledFired.filter(unservedRateLimited).length;
     return {
       goalId: st.input.goalId,
       round: st.input.round,
@@ -562,6 +607,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       usd: st.arrivals.reduce((s, a) => s + a.usd, 0),
       estimatedUsd: st.arrivals.filter((a) => a.estimated).reduce((s, a) => s + a.usd, 0),
       reservedUsd: reservedUsd(st),
+      rateLimited,
+      rateLimitedRound: st.closed && st.fired.size > 0 && settledFired.length === st.fired.size && rateLimited === st.fired.size,
       deadlineMs: st.deadlineMs,
       closed: st.closed,
     };
@@ -581,7 +628,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     st.queue.close();
     st.resolveDone();
     const s = summaryOf(st);
-    emit('llm:round', `goal ${s.goalId} round ${s.round}: ${s.fired} fired, ${s.valid} valid, ${s.malformed} malformed, ${s.length} length, ${s.timeouts} timeout, ${s.cancelled} cancelled, ${s.errors} error, ${s.distinct} distinct candidates, ${s.wallMs} ms, $${s.usd.toFixed(4)}${s.estimatedUsd > 0 ? ` (est. $${s.estimatedUsd.toFixed(4)})` : ''}`);
+    emit('llm:round', `goal ${s.goalId} round ${s.round}: ${s.fired} fired, ${s.valid} valid, ${s.malformed} malformed, ${s.length} length, ${s.timeouts} timeout, ${s.cancelled} cancelled, ${s.errors} error${(s.rateLimited ?? 0) > 0 ? `, ${s.rateLimited} rate-limited (HTTP 429, nothing served)` : ''}, ${s.distinct} distinct candidates, ${s.wallMs} ms, $${s.usd.toFixed(4)}${s.estimatedUsd > 0 ? ` (est. $${s.estimatedUsd.toFixed(4)})` : ''}${s.rateLimitedRound === true ? '; every fired sample was rate-limited — the round is not exhausted' : ''}`);
   }
 
   /** Record one arrival. The queue push, the pending count and the close run in `finally`, so a throwing `emit`/`onSample` cannot leave the round open. */
@@ -624,18 +671,25 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
 
   async function handleEnd(st: RoundState, k: number, end: SampleEnd): Promise<SampleArrival> {
     if (end.kind !== 'result') {
+      const detail = end.kind === 'timeout' ? `deadline ${st.deadlineMs} ms passed` : end.kind === 'cancelled' ? (end.error instanceof Error ? end.error.message : 'cancelled') : messageOf(end.error);
+      if (endedRateLimited(end.error, st.partials.get(k) ?? null)) {
+        // the rate limiter refused the sample (every attempt a 429, or the abort landed in a 429 backoff): nothing was served and
+        // nothing is billed — the hold comes back, the counter is not charged, and the round's classification reads the flag
+        chargeSettled(st, k, 0);
+        return { ...emptyArrival(k, end.kind, end.ms, `rate-limited (HTTP 429), nothing served: ${detail}`), usage: rateLimitedUsage(), rateLimited: true };
+      }
       // no priced result — a timeout, a cancellation or a provider error alike is booked from what its stream left (§4.8, §4.13: never
       // `max_tokens`); the reservation comes back and every accounting is complete
       const usage = unfinishedUsage(st, k);
       chargeSettled(st, k, usage.costUsd);
-      const detail = end.kind === 'timeout' ? `deadline ${st.deadlineMs} ms passed` : end.kind === 'cancelled' ? (end.error instanceof Error ? end.error.message : 'cancelled') : messageOf(end.error);
       return { ...emptyArrival(k, end.kind, end.ms, detail), usage, usd: usage.costUsd, estimated: usage.estimated === true };
     }
     const { result } = end;
     const usd = costOf(result.usage, pricing);
     chargeSettled(st, k, usd);
     if (st.siblingInput === null && result.usage.inputTokens > 0) st.siblingInput = result.usage.inputTokens;
-    const base: SampleArrival = { ...emptyArrival(k, 'valid', end.ms, ''), usage: result.usage, usd, generationId: result.generationId ?? null };
+    // a result reached through a 429 retry carries the fact (the result stands; the round's classification reads it)
+    const base: SampleArrival = { ...emptyArrival(k, 'valid', end.ms, ''), usage: result.usage, usd, generationId: result.generationId ?? null, rateLimited: result.rateLimited === true };
     if (isLengthStop(result.stopReason)) {
       lengthGoals.add(st.input.goalId);
       return { ...base, status: 'length', detail: 'finish_reason length: the reply was cut off; the goal’s next round doubles max_tokens once' };

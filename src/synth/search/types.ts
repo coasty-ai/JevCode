@@ -139,7 +139,7 @@ export interface Arbitration {
   pChoice: Record<string, number>;
   pEscape: number;
   noul: Record<string, number>;
-  /** pEscape ≥ 0.9 && max(noul) < 0.1 */
+  /** the all-overfit signature (guard.ts rule (1)): pEscape ≥ SUSPECT_ESCAPE_MIN (0.5) && max(noul) < SUSPECT_NOUL_MAX (0.3); the set is dropped, not held — nothing is committed now, on the budget reserve or at step end */
   suspect: boolean;
   requests: number;
 }
