@@ -2,13 +2,22 @@ import { describe, expect, it } from 'vitest';
 
 import type { CompileCheck } from '../../../../src/synth/llm/candidates.js';
 import type { SynthesizerGeneration } from '../../../../src/core/types.js';
-import { LLM_CACHE_PERSIST_BYTES, LLM_DEFAULT_GENERATION, LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, createLlmSource, sampleDeadlineMs, samplesFor, type LlmBudget, type LlmFireInput, type LlmSource, type SampleArrival } from '../../../../src/synth/llm/source.js';
+import type { CancelledGeneration, GenerateResult } from '../../../../src/core/types.js';
+import { LLM_CACHE_PERSIST_BYTES, LLM_DEFAULT_GENERATION, LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, UNFINISHED_REASONING_ALLOWANCE_TOKENS, affordableSamples, coversSample, createLlmSource, estimatedSampleUsage, sampleDeadlineMs, samplesFor, unfinishedSampleUsage, type LlmBudget, type LlmFireInput, type LlmSource, type SampleArrival } from '../../../../src/synth/llm/source.js';
+import type { GenerateFn } from '../../../../src/synth/llm/types.js';
 import { listingSet } from '../../../../src/synth/llm/prompt.js';
 import { calcFiles, proposeFixCall, scriptedGenerate, type HunkIn } from './fixtures.js';
 
 const files = calcFiles();
 const listings = listingSet({ files, frames: [{ path: 'src/calc.py', line: 4 }], anchors: [] });
 const PRICING = { inputPerM: 0.5, outputPerM: 2 };
+
+/** the fake prompt ('sys' + 'user k') is 9 chars: 3 prompt tokens before a sibling lands */
+const PROMPT_TOKENS = Math.ceil(('sys'.length + 'user 0'.length) / 4);
+/** what one sample reserves at fire before any sibling landed: prompt chars / 4 in, max_tokens out */
+const RESERVATION = (PROMPT_TOKENS * PRICING.inputPerM + LLM_DEFAULT_GENERATION.maxTokens * PRICING.outputPerM) / 1e6;
+/** what a sample that never returned is booked at with nothing streamed: the reasoning allowance */
+const LOST = (inputTokens: number): number => (inputTokens * PRICING.inputPerM + UNFINISHED_REASONING_ALLOWANCE_TOKENS * PRICING.outputPerM) / 1e6;
 
 const FIX_A: HunkIn[] = [{ old: '    return a + b', new: '    return (a or 0) + b', near_line: 4 }];
 const FIX_B: HunkIn[] = [{ old: '    return a + b', new: '    return b if a is None else a + b', near_line: 4 }];
@@ -113,7 +122,7 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     await drain(src);
   });
 
-  it('books a provider error at the estimated full cost, and release() fires nothing once the dollar counter is spent or the step ended', async () => {
+  it('books a provider error from its stream (the allowance, never max_tokens), and release() fires nothing once the dollar counter cannot cover another sample or the step ended', async () => {
     const gen = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]), usage: { inputTokens: 4000, outputTokens: 300 } }));
     // the failure lands after sample 0, so the estimate takes the sibling's prompt tokens
     const failing: typeof gen.generate = (req, o) => (o.sample === 1 ? new Promise((_, reject) => setTimeout(() => reject(new Error('HTTP 502 after retries')), 30)) : gen.generate(req, o));
@@ -122,16 +131,20 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     src.fire(fireInput(b, { n: 2, stagger: false }));
     const arrivals = await drain(src);
     const err = arrivals.find((a) => a.sample === 1)!;
-    const estimate = (4000 * 0.5 + LLM_DEFAULT_GENERATION.maxTokens * 2) / 1e6;
+    // the sibling landed first: its 4,000 prompt tokens, and on the output side only the reasoning allowance (nothing streamed)
+    const estimate = LOST(4000);
     expect(err).toMatchObject({ status: 'error', estimated: true, detail: 'HTTP 502 after retries', candidates: [] });
+    expect(err.usage).toMatchObject({ inputTokens: 4000, outputTokens: UNFINISHED_REASONING_ALLOWANCE_TOKENS, estimated: true });
     expect(err.usd).toBeCloseTo(estimate, 9);
     expect(0.02 - b.usdLeft).toBeCloseTo(estimate + (4000 * 0.5 + 300 * 2) / 1e6, 9);
     expect(src.round()).toMatchObject({ errors: 1, valid: 1, closed: true });
-    // sample 0 spends the whole dollar counter: release() starts none of samples 1..N−1 and the round closes
-    const spent = budget({ usdLeft: 0.001 });
+    // the counter covers exactly one reservation: sample 0 fires; once it settled the sibling-priced reservation of sample 1 no longer fits,
+    // so release() starts none of samples 1..N−1 and the round closes
+    const spent = budget({ usdLeft: RESERVATION + 0.0001 });
     src.fire(fireInput(spent, { goalId: 'g2', n: 3 }));
     expect((await src.collect())!.status).toBe('valid');
-    expect(spent.usdLeft).toBeLessThanOrEqual(0);
+    expect(spent.usdLeft).toBeGreaterThan(0);
+    expect(coversSample(spent.usdLeft, estimatedSampleUsage({ siblingInputTokens: 4000, promptChars: 9, maxTokens: LLM_DEFAULT_GENERATION.maxTokens, pricing: PRICING }).costUsd)).toBe(false);
     src.release();
     expect(gen.calls()).toBe(2);
     expect(await src.collect()).toBeNull();
@@ -156,7 +169,8 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     const next = src.fire(fireInput(budget(), { goalId: 'g2', n: 1, stagger: false, userFor: () => 'user 9', step: 0 }));
     expect(next).toMatchObject({ fired: true, samples: 1 });
     await done;
-    expect(0.02 - b1.usdLeft).toBeCloseTo(2 * ((Math.ceil(('sys'.length + 'user 0'.length) / 4) * 0.5 + LLM_DEFAULT_GENERATION.maxTokens * 2) / 1e6), 9);
+    // the losers never streamed: booked at prompt chars / 4 in and the reasoning allowance out; their reservations came back
+    expect(0.02 - b1.usdLeft).toBeCloseTo(2 * LOST(PROMPT_TOKENS), 9);
     const arrivals = await drain(src);
     expect(arrivals.map((a) => [a.sample, a.status])).toEqual([[0, 'valid']]);
     expect(src.round()).toMatchObject({ goalId: 'g2', closed: true });
@@ -218,10 +232,10 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     const timedOut = arrivals.find((a) => a.sample === 0)!;
     expect(timedOut).toMatchObject({ status: 'timeout', estimated: true, candidates: [] });
     expect(timedOut.ms).toBeLessThan(400);
-    // estimate: the sibling's prompt tokens (sample 1 landed first) and max_tokens output at the served rate
-    const estimate = (5000 * 0.5 + LLM_DEFAULT_GENERATION.maxTokens * 2) / 1e6;
+    // estimate: the sibling's prompt tokens (sample 1 landed first) and, nothing having streamed, the reasoning allowance — not max_tokens
+    const estimate = LOST(5000);
     expect(timedOut.usd).toBeCloseTo(estimate, 9);
-    expect(timedOut.usage).toMatchObject({ inputTokens: 5000, outputTokens: LLM_DEFAULT_GENERATION.maxTokens, estimated: true });
+    expect(timedOut.usage).toMatchObject({ inputTokens: 5000, outputTokens: UNFINISHED_REASONING_ALLOWANCE_TOKENS, estimated: true });
     expect(src.round()).toMatchObject({ timeouts: 1, valid: 1, closed: true });
     expect(src.round()!.estimatedUsd).toBeCloseTo(estimate, 9);
     expect(0.02 - b.usdLeft).toBeCloseTo(estimate + (5000 * 0.5 + 100 * 2) / 1e6, 9);
@@ -249,6 +263,144 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     parent.abort(new Error('step over'));
     const [a] = await drain(src);
     expect(a!.status).toBe('cancelled');
+  });
+
+  it('holds every sample\'s full estimate from fire to settle, fires only what the dollar counter covers beyond the holds, and charges the counter at settle for the price alone', async () => {
+    const gen = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]), latencyMs: 30, usage: { inputTokens: 4000, outputTokens: 300 } }));
+    const events: string[] = [];
+    const src = createLlmSource({ generate: gen.generate, pricing: PRICING, emit: (phase, detail) => events.push(`${phase}: ${detail}`) });
+    // headroom for two reservations of four requested samples
+    const b = budget({ usdLeft: 2 * RESERVATION + 0.001 });
+    expect(affordableSamples(b.usdLeft, RESERVATION)).toBe(2);
+    const fired = src.fire(fireInput(b, { n: 4, stagger: false }));
+    expect(fired).toMatchObject({ fired: true, samples: 2 });
+    if (fired.fired) expect(fired.reservedUsd).toBeCloseTo(2 * RESERVATION, 9);
+    expect(gen.calls()).toBe(2);
+    // in flight the counter itself is untouched — the hold is the source's own ledger — and, read against the hold, it has no headroom
+    // for another sample (what an L1′ or another goal asking the source would be told)
+    expect(b.usdLeft).toBeCloseTo(2 * RESERVATION + 0.001, 12);
+    expect(b.samplesLeft).toBe(6);
+    expect(src.round()!.reservedUsd).toBeCloseTo(2 * RESERVATION, 9);
+    expect(coversSample(b.usdLeft - src.round()!.reservedUsd!, RESERVATION)).toBe(false);
+    expect(events.some((e) => e.startsWith('llm:fire') && e.includes('2/4 samples fired') && e.includes('reserved'))).toBe(true);
+    await drain(src);
+    // settled: each sample cost its price and nothing else moved on the counter; the holds are gone
+    const priced = (4000 * 0.5 + 300 * 2) / 1e6;
+    expect(2 * RESERVATION + 0.001 - b.usdLeft).toBeCloseTo(2 * priced, 9);
+    expect(src.round()).toMatchObject({ fired: 2, valid: 2, closed: true, reservedUsd: 0 });
+    // cents of headroom fire nothing at all (the §4.2 skip is "cannot cover one sample", not "≤ 0")
+    const cents = budget({ usdLeft: RESERVATION / 2 });
+    expect(src.fire(fireInput(cents, { goalId: 'g2', n: 4, stagger: false }))).toMatchObject({ fired: false, reason: 'no_usd' });
+    expect(gen.calls()).toBe(2);
+    expect(cents.usdLeft).toBeCloseTo(RESERVATION / 2, 12);
+    expect(cents.roundsLeft).toBe(2);
+    // no pricing: estimates are 0 and any positive counter covers a sample; a spent counter covers none
+    expect(coversSample(0.0001, 0)).toBe(true);
+    expect(coversSample(0, 0)).toBe(false);
+    expect(affordableSamples(0.01, 0)).toBe(Number.POSITIVE_INFINITY);
+    expect(affordableSamples(0, 0.001)).toBe(0);
+  });
+
+  it('the hold is never a debit: a step budget re-installed mid-round (a live view, the repository step-1 overlap) is charged the prices alone at settle, the holds stand against whichever counter is live, and a draining round\'s holds refuse a new round the counter cannot cover beyond them', async () => {
+    const gen = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]), latencyMs: 30, usage: { inputTokens: 4000, outputTokens: 300 } }));
+    let settled = 0;
+    let bothSettled!: () => void;
+    const settledTwice = new Promise<void>((resolve) => {
+      bothSettled = resolve;
+    });
+    const src = createLlmSource({
+      generate: gen.generate,
+      pricing: PRICING,
+      onSample: () => {
+        settled += 1;
+        if (settled === 2) bothSettled();
+      },
+    });
+    const first = budget({ usdLeft: 2 * RESERVATION + 0.001 });
+    let installed = first;
+    // the adapter's budget view: every read and write goes to the step budget installed now
+    const view: LlmBudget = {
+      get roundsLeft() {
+        return installed.roundsLeft;
+      },
+      set roundsLeft(v: number) {
+        installed.roundsLeft = v;
+      },
+      get samplesLeft() {
+        return installed.samplesLeft;
+      },
+      set samplesLeft(v: number) {
+        installed.samplesLeft = v;
+      },
+      get usdLeft() {
+        return installed.usdLeft;
+      },
+      set usdLeft(v: number) {
+        installed.usdLeft = v;
+      },
+    };
+    expect(src.fire(fireInput(view, { n: 4, stagger: false }))).toMatchObject({ fired: true, samples: 2 });
+    // in flight: the round and sample counters were taken on the first budget, the dollar counter was not touched
+    expect(first.roundsLeft).toBe(1);
+    expect(first.samplesLeft).toBe(6);
+    expect(first.usdLeft).toBeCloseTo(2 * RESERVATION + 0.001, 12);
+    // a re-baseline installs a fresh step budget while the samples are in flight: the two holds now stand against it, so a round for
+    // another goal is refused (it cannot cover a sample beyond them) and the refusal touches neither counter
+    const fresh = budget({ usdLeft: 2 * RESERVATION + 0.001 });
+    installed = fresh;
+    expect(src.fire(fireInput(view, { goalId: 'g2', n: 1, stagger: false }))).toMatchObject({ fired: false, reason: 'no_usd' });
+    expect(gen.calls()).toBe(2);
+    expect(fresh.roundsLeft).toBe(2);
+    expect(fresh.usdLeft).toBeCloseTo(2 * RESERVATION + 0.001, 12);
+    await settledTwice;
+    // settled: the prices landed on the fresh counter (live at settle), the first budget is whole — no reservation was ever debited
+    // from one budget and credited to another
+    const priced = (4000 * 0.5 + 300 * 2) / 1e6;
+    expect(first.usdLeft).toBeCloseTo(2 * RESERVATION + 0.001, 12);
+    expect(fresh.usdLeft).toBeCloseTo(2 * RESERVATION + 0.001 - 2 * priced, 9);
+    // the holds are released with the round: the fresh counter now covers one sample of the next round
+    expect(affordableSamples(fresh.usdLeft, RESERVATION)).toBe(1);
+    expect(src.fire(fireInput(view, { goalId: 'g3', n: 4, stagger: false }))).toMatchObject({ fired: true, samples: 1 });
+    await drain(src);
+    expect(gen.calls()).toBe(3);
+  });
+
+  it('books a cancelled sample from the facts its stream left — streamed chars / 4 plus the reasoning allowance, or the usage frame when it arrived', async () => {
+    const facts = new Map<number, CancelledGeneration>([
+      [0, { text: '', toolChars: 800, reasoningChars: 0 }],
+      // the stream carried 6,000 reasoning chars: more than the allowance, so it counts instead
+      [1, { text: 'x'.repeat(40), toolChars: 0, reasoningChars: 6000 }],
+      // the accounting frame had arrived before the abort: priced like a completed call
+      [2, { text: '', toolChars: 300, reasoningChars: 0, usage: { inputTokens: 4000, outputTokens: 350, costUsd: 0.0011, calls: 1 } }],
+    ]);
+    const generate: GenerateFn = (_req, o) =>
+      new Promise<GenerateResult>((_resolve, reject) => {
+        o.signal.addEventListener('abort', () => {
+          const f = facts.get(o.sample);
+          if (f !== undefined) o.onCancelled?.(f);
+          reject(o.signal.reason);
+        });
+      });
+    const src = createLlmSource({ generate, pricing: PRICING });
+    const b = budget({ usdLeft: 0.05 });
+    src.fire(fireInput(b, { n: 4, stagger: false }));
+    expect(src.inFlight()).toBe(4);
+    await src.cancel('commit');
+    const arrivals = (await drain(src)).sort((x, y) => x.sample - y.sample);
+    expect(arrivals.map((a) => a.status)).toEqual(['cancelled', 'cancelled', 'cancelled', 'cancelled']);
+    expect(arrivals[0]!.usage).toMatchObject({ inputTokens: PROMPT_TOKENS, outputTokens: 200 + UNFINISHED_REASONING_ALLOWANCE_TOKENS, estimated: true });
+    expect(arrivals[1]!.usage).toMatchObject({ inputTokens: PROMPT_TOKENS, outputTokens: 10 + 1500, estimated: true });
+    expect(arrivals[2]).toMatchObject({ estimated: false, usd: 0.0011 });
+    expect(arrivals[2]!.usage).toMatchObject({ inputTokens: 4000, outputTokens: 350, costUsd: 0.0011 });
+    // sample 3 left no facts (the abort landed before its headers): the allowance alone
+    expect(arrivals[3]!.usage).toMatchObject({ inputTokens: PROMPT_TOKENS, outputTokens: UNFINISHED_REASONING_ALLOWANCE_TOKENS, estimated: true });
+    const booked = arrivals.reduce((s, a) => s + a.usd, 0);
+    expect(0.05 - b.usdLeft).toBeCloseTo(booked, 9);
+    expect(src.round()).toMatchObject({ cancelled: 4, closed: true });
+    expect(src.round()!.estimatedUsd).toBeCloseTo(booked - 0.0011, 9);
+    // the same estimator, standalone: reasoning off drops the allowance
+    expect(unfinishedSampleUsage({ siblingInputTokens: 4000, promptChars: 0, partial: { text: '', toolChars: 800, reasoningChars: 0 }, reasoning: false, pricing: PRICING })).toMatchObject({ inputTokens: 4000, outputTokens: 200, estimated: true });
+    expect(unfinishedSampleUsage({ siblingInputTokens: null, promptChars: 4000, partial: null, reasoning: true, pricing: null })).toMatchObject({ inputTokens: 1000, outputTokens: UNFINISHED_REASONING_ALLOWANCE_TOKENS, costUsd: 0 });
   });
 
   it('replays a cached round for the same (goal, listings, attempts, round) key and skips generation when ≥ N untried candidates are known', async () => {

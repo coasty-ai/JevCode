@@ -6,9 +6,18 @@
  * AbortController linked to the parent signal and a deadline; every sample is parsed, anchored
  * and compile-checked on arrival and pushed into an awaitable queue (`collect()` yields the
  * next arrival, null at round end) so lanes start before the last sample lands; `cancel()`
- * aborts the losers and resolves once their accounting is complete. A sample the provider never
- * priced — cancelled, timed out or failed — is metered at its estimated full cost (sibling prompt
- * tokens + `max_tokens` output at the served rate) until the engine's ledger says otherwise.
+ * aborts the losers and resolves once their accounting is complete. Dollars are **reserved at
+ * fire**: every sample started holds its full estimated cost (`estimatedSampleUsage`: sibling
+ * prompt tokens + `max_tokens` output at the served rate) against `budget.usdLeft` before the
+ * request goes out — a round fires only as many samples as the counter covers beyond what every
+ * sample still in flight holds (§4.11) — and the hold is released when the sample settles. The
+ * hold is the source's own ledger (`reservedUsd` on the outcome and the round summary), never a
+ * debit: the counter is charged at settle alone, for what the sample cost — the provider's price
+ * for a result, or `unfinishedSampleUsage` for a sample the provider never priced (cancelled,
+ * timed out, failed): what it streamed (the `onCancelled` facts, when the generator forwards them)
+ * / 4 plus a fixed reasoning allowance — never `max_tokens`. Charging at settle keeps a step budget
+ * re-installed mid-round (the repository step-1 overlap) whole: a sample lands on the counter that
+ * is live when it settles, and until then its hold stands against that counter.
  * Every started sample settles exactly once (a rejecting compile check or a throwing callback
  * becomes an `error` arrival), so a round always closes. Rounds are cached in memory by (goal,
  * listing set, attempt ledger, round): a re-fire with the same key replays the cached patches
@@ -17,11 +26,11 @@
  * round is still draining supersedes it (the old round keeps its accounting and cache write);
  * only a staggered round still awaiting `release()` is refused with `round_open`.
  *
- * `generateWithDeadline` and `estimatedSampleUsage` are the one place a sample is started and
- * priced; repro.ts reuses both for L2.
+ * `generateWithDeadline`, `estimatedSampleUsage` and `unfinishedSampleUsage` are the one place a
+ * sample is started and priced; repro.ts reuses them for L2.
  */
 import { sha12 } from '../../core/hash.js';
-import type { GeneratePurpose, GenerateReasoning, GenerateRequest, GenerateResult, Json, SynthesizerGeneration, TokenUsage } from '../../core/types.js';
+import type { CancelledGeneration, GeneratePurpose, GenerateReasoning, GenerateRequest, GenerateResult, Json, SynthesizerGeneration, TokenUsage } from '../../core/types.js';
 import { monotonicNow, percentile } from '../../core/time.js';
 import { linkedAbort } from '../../provider/sse.js';
 import type { SourceFile } from '../types.js';
@@ -135,6 +144,8 @@ export interface SampleRunOptions {
   signal: AbortSignal;
   deadlineMs: number;
   now?: () => number;
+  /** §4.8 facts of a stream the abort cut after its headers (forwarded to the generator; the estimate is `unfinishedSampleUsage`'s) */
+  onCancelled?: (partial: CancelledGeneration) => void;
 }
 
 /** Start one sample: a linked AbortController, a deadline timer, and an outcome that never rejects. */
@@ -147,7 +158,7 @@ export function generateWithDeadline(generate: GenerateFn, req: GenerateRequest,
   // the call starts synchronously so a caller can observe it right after `fire()` (and so the accounting sees one call per fired sample)
   let started: Promise<GenerateResult>;
   try {
-    started = generate(req, { sample: o.sample, purpose: o.purpose, signal: controller.signal });
+    started = generate(req, { sample: o.sample, purpose: o.purpose, signal: controller.signal, ...(o.onCancelled === undefined ? {} : { onCancelled: o.onCancelled }) });
   } catch (e) {
     started = Promise.reject(e instanceof Error ? e : new Error(String(e)));
   }
@@ -267,7 +278,9 @@ export interface LlmFireInput {
   cacheKey?: string;
 }
 
-export type FireOutcome = { fired: true; samples: number; cached: number; deadlineMs: number; key: string } | { fired: false; reason: 'no_rounds' | 'no_usd' | 'no_samples' | 'cached' | 'aborted' | 'round_open'; cached: number; key: string | null };
+export type FireOutcome =
+  | { fired: true; samples: number; cached: number; deadlineMs: number; key: string; /** dollars the fired samples hold against `budget.usdLeft` until they settle (the source's hold, not a debit: the counter is charged at settle) */ reservedUsd: number }
+  | { fired: false; reason: 'no_rounds' | 'no_usd' | 'no_samples' | 'cached' | 'aborted' | 'round_open'; cached: number; key: string | null };
 
 export interface LlmRoundSummary {
   goalId: string;
@@ -294,6 +307,8 @@ export interface LlmRoundSummary {
   wallMs: number;
   usd: number;
   estimatedUsd: number;
+  /** dollars the in-flight samples still hold against `budget.usdLeft` (their full estimates; 0 once the round closed): the source itself refuses a sample the counter cannot cover beyond it, and a caller reading the counter for headroom subtracts it. Optional so hand-built summaries (test fakes) need not state it; the source always does. */
+  reservedUsd?: number;
   deadlineMs: number;
   closed: boolean;
 }
@@ -372,6 +387,10 @@ interface RoundState {
   arrivals: SampleArrival[];
   /** sha → the patch that produced it, for the cache */
   patchOf: Map<string, PatchSpec>;
+  /** sample → dollars held at its start (its full estimate), released when it settles */
+  reserved: Map<number, number>;
+  /** sample → the `onCancelled` facts, when its stream was cut after the headers */
+  partials: Map<number, CancelledGeneration>;
 }
 
 /** The provider's cost when it gave one, else the served rate over the tokens; 0 without pricing. */
@@ -390,12 +409,67 @@ export interface SampleEstimateInput {
   pricing: LlmPricing | null;
 }
 
-/** The estimated full cost of a sample the provider never priced — cancelled, timed out or failed (§4.8, §8.1): sibling prompt tokens + `max_tokens` output at the served rate. */
+/** chars per token of every size estimate (§4.8: "streamed tool-argument chars / 4") */
+export const CHARS_PER_TOKEN = 4;
+/**
+ * Output tokens booked for a sample that never returned, beyond what it streamed: GLM bills its reasoning (§4.13: it cannot
+ * be disabled), and a stream cut before its answer has mostly spent that already. One fixed figure, exported with
+ * `unfinishedSampleUsage` so the engine's ledger can book the same estimate.
+ */
+export const UNFINISHED_REASONING_ALLOWANCE_TOKENS = 1000;
+
+/** The most a sample can cost — the reservation taken at fire (§4.11): sibling prompt tokens (else chars / 4) + `max_tokens` output at the served rate. */
 export function estimatedSampleUsage(e: SampleEstimateInput): TokenUsage {
-  const inputTokens = e.siblingInputTokens ?? Math.ceil(e.promptChars / 4);
+  const inputTokens = e.siblingInputTokens ?? Math.ceil(e.promptChars / CHARS_PER_TOKEN);
   const usage: TokenUsage = { inputTokens, outputTokens: e.maxTokens, costUsd: 0, calls: 1, estimated: true };
   usage.costUsd = costOf(usage, e.pricing);
   return usage;
+}
+
+export interface UnfinishedSampleInput {
+  /** a sibling sample's `prompt_tokens` (same prefix); null before the first sibling lands → chars / 4 */
+  siblingInputTokens: number | null;
+  promptChars: number;
+  /** the `onCancelled` facts, when the abort landed after the response headers; null when nothing is known about the stream */
+  partial: CancelledGeneration | null;
+  /** the request asked for reasoning tokens: the allowance applies */
+  reasoning: boolean;
+  pricing: LlmPricing | null;
+}
+
+/**
+ * The one estimator here for a sample the provider never priced — cancelled, timed out or failed (§4.8, §4.13), exported so
+ * the engine's ledger can book the same figure: a usage frame that had already arrived is priced like a completed call;
+ * otherwise input = a sibling's prompt tokens (else chars / 4) and output = streamed answer chars / 4 plus the reasoning
+ * allowance (the streamed reasoning when it is larger; nothing when reasoning was off), at the served rate. The stream's
+ * facts are the `onCancelled` callback's, so a generator that does not forward it books the allowance alone. Never `max_tokens`.
+ */
+export function unfinishedSampleUsage(e: UnfinishedSampleInput): TokenUsage {
+  const frame = e.partial?.usage;
+  if (frame !== undefined) {
+    const usage: TokenUsage = { ...frame, calls: 1 };
+    if (!(Number.isFinite(usage.costUsd) && usage.costUsd > 0)) usage.costUsd = costOf({ ...usage, costUsd: 0 }, e.pricing);
+    return usage;
+  }
+  const inputTokens = e.siblingInputTokens ?? Math.ceil(e.promptChars / CHARS_PER_TOKEN);
+  const answerChars = e.partial === null ? 0 : e.partial.toolChars + e.partial.text.length;
+  const reasoningTokens = e.partial === null ? 0 : Math.ceil(e.partial.reasoningChars / CHARS_PER_TOKEN);
+  const allowance = e.reasoning ? Math.max(UNFINISHED_REASONING_ALLOWANCE_TOKENS, reasoningTokens) : reasoningTokens;
+  const usage: TokenUsage = { inputTokens, outputTokens: Math.ceil(answerChars / CHARS_PER_TOKEN) + allowance, costUsd: 0, calls: 1, estimated: true };
+  usage.costUsd = costOf(usage, e.pricing);
+  return usage;
+}
+
+/** Whether `usdLeft` covers one more sample at `perSampleUsd` (a 0 estimate — no pricing — needs only a positive counter). */
+export function coversSample(usdLeft: number, perSampleUsd: number): boolean {
+  return usdLeft > 0 && usdLeft + 1e-9 >= perSampleUsd;
+}
+
+/** Samples `usdLeft` can cover at `perSampleUsd` (unbounded when the estimate is 0: no pricing; 0 when the counter is spent). */
+export function affordableSamples(usdLeft: number, perSampleUsd: number): number {
+  if (!(usdLeft > 0)) return 0;
+  if (!(perSampleUsd > 0)) return Number.POSITIVE_INFINITY;
+  return Math.floor(usdLeft / perSampleUsd + 1e-9);
 }
 
 function emptyArrival(sample: number, status: SampleStatus, ms: number, detail: string): SampleArrival {
@@ -424,19 +498,42 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   const lengthGoals = new Set<string>();
   const validMs: number[] = [];
   let state: RoundState | null = null;
+  /** every round not yet closed — the current one and any superseded round still draining with its holds */
+  const live = new Set<RoundState>();
   let cacheSeq = 0;
 
   const maxTokensFor = (goalId: string, base = gen.maxTokens): number => (lengthGoals.has(goalId) ? base * 2 : base);
   const p50ValidMs = (): number | null => percentile(validMs, 50);
   const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-  function estimateUsage(st: RoundState, k: number): TokenUsage {
-    return estimatedSampleUsage({ siblingInputTokens: st.siblingInput, promptChars: st.input.system.length + st.input.userFor(k).length, maxTokens: st.maxTokens, pricing });
+  const promptChars = (st: RoundState, k: number): number => st.input.system.length + st.input.userFor(k).length;
+
+  /** The most sample k can cost: what `startSample` reserves. */
+  function reservationUsage(st: RoundState, k: number): TokenUsage {
+    return estimatedSampleUsage({ siblingInputTokens: st.siblingInput, promptChars: promptChars(st, k), maxTokens: st.maxTokens, pricing });
   }
 
-  function charge(st: RoundState, usd: number): void {
+  /** What a sample that never returned is booked at: the shared estimator over the facts its stream left (§4.8, §4.13). */
+  function unfinishedUsage(st: RoundState, k: number): TokenUsage {
+    const reasoning = st.input.reasoning ?? gen.reasoning;
+    return unfinishedSampleUsage({ siblingInputTokens: st.siblingInput, promptChars: promptChars(st, k), partial: st.partials.get(k) ?? null, reasoning: reasoningEnabled(reasoning ?? undefined), pricing });
+  }
+
+  /**
+   * Book a settled sample: its hold is released and what it cost comes off the counter that is live now (in flight a sample
+   * holds its full estimate; settled it has cost its price). Nothing is ever credited to the counter, so a step budget
+   * re-installed mid-round is charged the prices alone.
+   */
+  function chargeSettled(st: RoundState, k: number, usd: number): void {
+    st.reserved.delete(k);
     if (Number.isFinite(usd) && usd > 0) st.input.budget.usdLeft -= usd;
   }
+
+  const reservedUsd = (st: RoundState): number => [...st.reserved.values()].reduce((a, b) => a + b, 0);
+  /** What every open round holds: a superseded round drains with its holds until it closes. */
+  const heldUsd = (): number => [...live].reduce((s, st) => s + reservedUsd(st), 0);
+  /** The counter's headroom for one more sample: what it reads minus what the samples in flight hold (§4.11). */
+  const headroom = (b: LlmBudget): number => b.usdLeft - heldUsd();
 
   function summaryOf(st: RoundState): LlmRoundSummary {
     const count = (s: SampleStatus): number => st.arrivals.filter((a) => a.status === s).length;
@@ -464,6 +561,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       wallMs: st.closed ? st.wallMs : Math.round(now() - st.startedMs),
       usd: st.arrivals.reduce((s, a) => s + a.usd, 0),
       estimatedUsd: st.arrivals.filter((a) => a.estimated).reduce((s, a) => s + a.usd, 0),
+      reservedUsd: reservedUsd(st),
       deadlineMs: st.deadlineMs,
       closed: st.closed,
     };
@@ -472,6 +570,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   function maybeClose(st: RoundState): void {
     if (st.closed || st.pending > 0 || !(st.released || st.noMore)) return;
     st.closed = true;
+    live.delete(st);
     st.wallMs = Math.round(now() - st.startedMs);
     // the cache keeps every distinct patch ever seen under this key (tried ones included, so they are answered at once next time)
     const prev = cache.get(st.key);
@@ -525,15 +624,16 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
 
   async function handleEnd(st: RoundState, k: number, end: SampleEnd): Promise<SampleArrival> {
     if (end.kind !== 'result') {
-      // no priced result — a timeout, a cancellation or a provider error alike is booked at the estimated full cost (§4.8; every accounting is complete)
-      const usage = estimateUsage(st, k);
-      charge(st, usage.costUsd);
+      // no priced result — a timeout, a cancellation or a provider error alike is booked from what its stream left (§4.8, §4.13: never
+      // `max_tokens`); the reservation comes back and every accounting is complete
+      const usage = unfinishedUsage(st, k);
+      chargeSettled(st, k, usage.costUsd);
       const detail = end.kind === 'timeout' ? `deadline ${st.deadlineMs} ms passed` : end.kind === 'cancelled' ? (end.error instanceof Error ? end.error.message : 'cancelled') : messageOf(end.error);
-      return { ...emptyArrival(k, end.kind, end.ms, detail), usage, usd: usage.costUsd, estimated: true };
+      return { ...emptyArrival(k, end.kind, end.ms, detail), usage, usd: usage.costUsd, estimated: usage.estimated === true };
     }
     const { result } = end;
     const usd = costOf(result.usage, pricing);
-    charge(st, usd);
+    chargeSettled(st, k, usd);
     if (st.siblingInput === null && result.usage.inputTokens > 0) st.siblingInput = result.usage.inputTokens;
     const base: SampleArrival = { ...emptyArrival(k, 'valid', end.ms, ''), usage: result.usage, usd, generationId: result.generationId ?? null };
     if (isLengthStop(result.stopReason)) {
@@ -554,9 +654,12 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
 
   function startSample(st: RoundState, k: number): boolean {
     if (st.closed || st.noMore || st.fired.has(k)) return false;
-    // the §4.2 skip conditions hold per sample: sample 0 may have spent the dollar counter, the step may have ended before release()
-    if (st.input.signal.aborted || st.input.budget.samplesLeft <= 0 || st.input.budget.usdLeft <= 0) return false;
+    // the §4.2 skip conditions hold per sample, and the dollar counter must cover this sample's full estimate beyond what the
+    // samples already in flight hold (§4.11): sample 0 may have taken the headroom, the step may have ended before release()
+    const reservation = reservationUsage(st, k).costUsd;
+    if (st.input.signal.aborted || st.input.budget.samplesLeft <= 0 || !coversSample(headroom(st.input.budget), reservation)) return false;
     st.input.budget.samplesLeft -= 1;
+    st.reserved.set(k, reservation);
     st.fired.add(k);
     st.pending += 1;
     const req: GenerateRequest = {
@@ -573,7 +676,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     if (reasoning !== null) req.reasoning = reasoning;
     if (k > 0) req.seed = sampleSeed(st.input.step, k);
     const t0 = now();
-    const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, deadlineMs: st.deadlineMs, now });
+    const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, deadlineMs: st.deadlineMs, now, onCancelled: (partial) => st.partials.set(k, partial) });
     st.runs.set(k, run);
     void run.promise
       .then((end) => handleEnd(st, k, end))
@@ -610,6 +713,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       seen: new Map(),
       arrivals: [],
       patchOf: new Map(),
+      reserved: new Map(),
+      partials: new Map(),
     };
   }
 
@@ -626,9 +731,10 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     const cachedUntried = hit === undefined ? 0 : hit.shas.filter((s) => !input.tried?.has(s)).length;
     if (input.signal.aborted) return { fired: false, reason: 'aborted', cached: cachedUntried, key };
     if (input.budget.roundsLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_rounds', cached: 0, key };
-    if (input.budget.usdLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_usd', cached: 0, key };
+    if (headroom(input.budget) <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_usd', cached: 0, key };
     const st = newRound(input, key, n);
     state = st;
+    live.add(st);
     if (hit !== undefined && hit.patches.length > 0) {
       st.pending += 1;
       const t0 = now();
@@ -647,10 +753,15 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       maybeClose(st);
       return { fired: false, reason: 'cached', cached: cachedUntried, key };
     }
-    if (input.budget.roundsLeft <= 0 || input.budget.usdLeft <= 0 || input.budget.samplesLeft <= 0) {
+    // §4.11: a round fires only when the dollar counter covers one sample's full estimate beyond what the samples still in flight
+    // hold (a few cents of headroom fire nothing); each further sample takes its own hold in `startSample`, so N is bounded by
+    // `affordableSamples` as well as the class
+    const perSample = reservationUsage(st, 0).costUsd;
+    const room = headroom(input.budget);
+    if (input.budget.roundsLeft <= 0 || !coversSample(room, perSample) || input.budget.samplesLeft <= 0) {
       st.noMore = true;
       maybeClose(st);
-      return { fired: false, reason: input.budget.roundsLeft <= 0 ? 'no_rounds' : input.budget.usdLeft <= 0 ? 'no_usd' : 'no_samples', cached: cachedUntried, key };
+      return { fired: false, reason: input.budget.roundsLeft <= 0 ? 'no_rounds' : !coversSample(room, perSample) ? 'no_usd' : 'no_samples', cached: cachedUntried, key };
     }
     input.budget.roundsLeft -= 1;
     const stagger = input.stagger ?? staggered(input.klass);
@@ -659,8 +770,9 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       for (let k = 1; k < n; k++) startSample(st, k);
       st.released = true;
     }
-    emit('llm:fire', `goal ${input.goalId} round ${input.round} (${input.klass}): ${st.fired.size}/${n} samples fired${stagger ? ', staggered' : ''}, deadline ${st.deadlineMs} ms, max_tokens ${st.maxTokens}${cachedUntried > 0 ? `, ${cachedUntried} cached` : ''}`);
-    return { fired: true, samples: st.fired.size, cached: cachedUntried, deadlineMs: st.deadlineMs, key };
+    const reserved = reservedUsd(st);
+    emit('llm:fire', `goal ${input.goalId} round ${input.round} (${input.klass}): ${st.fired.size}/${n} samples fired${stagger ? ', staggered' : ''}, deadline ${st.deadlineMs} ms, max_tokens ${st.maxTokens}, $${reserved.toFixed(4)} reserved${cachedUntried > 0 ? `, ${cachedUntried} cached` : ''}`);
+    return { fired: true, samples: st.fired.size, cached: cachedUntried, deadlineMs: st.deadlineMs, key, reservedUsd: reserved };
   }
 
   function release(): void {
@@ -669,9 +781,9 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     st.released = true;
     let fired = 0;
     for (let k = 1; k < st.n; k++) if (startSample(st, k)) fired += 1;
-    if (fired > 0) emit('llm:fire', `goal ${st.input.goalId} round ${st.input.round}: released ${fired} more samples (top-site seeds returned no passer)`);
+    if (fired > 0) emit('llm:fire', `goal ${st.input.goalId} round ${st.input.round}: released ${fired} more samples (top-site seeds returned no passer), $${reservedUsd(st).toFixed(4)} reserved`);
     else if (!st.noMore && st.n > 1) {
-      const why = st.input.signal.aborted ? 'step aborted' : st.input.budget.usdLeft <= 0 ? 'llm dollar counter spent' : st.input.budget.samplesLeft <= 0 ? 'no samples left' : 'all fired';
+      const why = st.input.signal.aborted ? 'step aborted' : !coversSample(headroom(st.input.budget), reservationUsage(st, 1).costUsd) ? 'llm dollar counter cannot cover another sample' : st.input.budget.samplesLeft <= 0 ? 'no samples left' : 'all fired';
       emit('llm:fire', `goal ${st.input.goalId} round ${st.input.round}: release() fired nothing (${why})`);
     }
     maybeClose(st);
@@ -687,7 +799,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       run.abort(reason);
       aborted += 1;
     }
-    if (aborted > 0) emit('llm:cancel', `goal ${st.input.goalId} round ${st.input.round}: ${aborted} in-flight samples cancelled (${reason}), metered at the estimated full cost`);
+    if (aborted > 0) emit('llm:cancel', `goal ${st.input.goalId} round ${st.input.round}: ${aborted} in-flight samples cancelled (${reason}), metered from what they streamed`);
     maybeClose(st);
     return st.done;
   }

@@ -6,11 +6,21 @@
  * `CandidateSourceName` and `Site.span?` the block-anchored span (src/synth/types.ts); `LlmCandidate` /
  * `LlmSite` are the narrowed forms the source produces.
  */
-import type { GenerateReasoning, SynthesisContext } from '../../core/types.js';
+import type { CancelledGeneration, GenerateReasoning, GenerateRequest, GenerateResult, SampleOptions } from '../../core/types.js';
 import type { Candidate, Site } from '../types.js';
 
-/** `SynthesisContext.generate` as the contract states it (per-sample signal; the engine meters and records), made required. */
-export type GenerateFn = NonNullable<SynthesisContext['generate']>;
+/**
+ * `SampleOptions` plus the §4.8 / §4.13 cancellation facts: the source hands `onCancelled` through so a sample aborted
+ * after its response headers is booked from what it streamed (source.ts `unfinishedSampleUsage`), never from `max_tokens`.
+ * `SynthesisContext.generate` reads only `SampleOptions` and still satisfies this type (the key is optional); until the
+ * engine forwards the callback the source books the reasoning allowance alone.
+ */
+export interface SampleGenerateOptions extends SampleOptions {
+  onCancelled?: (partial: CancelledGeneration) => void;
+}
+
+/** `SynthesisContext.generate` as the contract states it (per-sample signal; the engine meters and records), made required, with the cancellation facts. */
+export type GenerateFn = (req: GenerateRequest, o: SampleGenerateOptions) => Promise<GenerateResult>;
 
 /** True when the request asks for reasoning tokens — the `max_tokens` cap then rises to `LLM_MAX_TOKENS_REASONING` (§4.5). */
 export function reasoningEnabled(r: GenerateReasoning | undefined): boolean {

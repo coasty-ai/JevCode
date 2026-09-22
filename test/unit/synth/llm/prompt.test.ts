@@ -81,6 +81,36 @@ describe('hints: h1 gated on P(top) ≥ 0.9', () => {
     expect(msg).not.toContain('Jev put');
   });
 
+  it('renders a widened listing set in full (the feedback round L1′): every member the caller built, need paths included, under the widened char bound', () => {
+    // twelve one-function files: the four of round 1 and the members a widened round adds
+    const many = new Map<string, SourceFile>(files);
+    for (let i = 0; i < 10; i++) many.set(`src/m${i}.py`, sourceFile(`src/m${i}.py`, `def f${i}(x):\n    return x + ${i}\n`));
+    const frames = [{ path: 'src/calc.py', line: 4 }];
+    const anchors = Array.from({ length: 10 }, (_, i) => ({ path: `src/m${i}.py`, line: 2 }));
+    const round1 = listingSet({ files: many, frames, anchors });
+    expect(round1).toHaveLength(PROMPT_LIMITS_FIX.listings);
+    // round 2 (§4.9): `need` paths first among the anchors, then the next 3 members
+    const widen = 3;
+    const need = [{ path: 'src/m7.py', line: 1 }, { path: 'src/m8.py', line: 1 }];
+    const round2 = listingSet({ files: many, frames, anchors: [...need, ...anchors], maxListings: PROMPT_LIMITS_FIX.listings + widen });
+    expect(round2).toHaveLength(PROMPT_LIMITS_FIX.listings + widen);
+    const msg1 = buildFixUserMessage(baseInput({ listings: round1 }));
+    const msg2 = buildFixUserMessage(baseInput({ listings: round2 }));
+    const shown = (msg: string): string[] => [...msg.matchAll(/^(src\/\S+) — fn /gm)].map((m) => m[1]!);
+    expect(shown(msg1)).toEqual(['src/calc.py', 'src/m0.py', 'src/m1.py', 'src/m2.py']);
+    expect(shown(msg2)).toEqual(['src/calc.py', 'src/m7.py', 'src/m8.py', 'src/m0.py', 'src/m1.py', 'src/m2.py', 'src/m3.py']);
+    expect(msg2).toContain('L2:     return x + 8');
+    expect(msg2).not.toBe(msg1);
+    expect(msg2.length).toBeLessThan(fixPromptCharBound(widen));
+    expect(fixPromptCharBound(widen)).toBeGreaterThan(fixPromptCharBound());
+    // an explicit cap still wins, and nothing renders beyond listings + listingsWidenMax however many members are handed in
+    expect(shown(buildFixUserMessage(baseInput({ listings: round2, maxListings: 2 })))).toEqual(['src/calc.py', 'src/m7.py']);
+    const twelve = listingSet({ files: many, frames, anchors, maxListings: 12 });
+    expect(twelve).toHaveLength(11);
+    expect(shown(buildFixUserMessage(baseInput({ listings: twelve })))).toHaveLength(PROMPT_LIMITS_FIX.listings + PROMPT_LIMITS_FIX.listingsWidenMax);
+    expect(fixPromptCharBound(100)).toBe(fixPromptCharBound(PROMPT_LIMITS_FIX.listingsWidenMax));
+  });
+
   it('listingSet keeps the ≤ 3 deepest frames, folds anchors inside a listed span and caps at 4', () => {
     const set = listingSet({
       files,
