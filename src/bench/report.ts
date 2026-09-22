@@ -138,11 +138,12 @@ export const CONDITIONS_PARAGRAPH =
   'after a `length` stop, reasoning effort low, a 20 s per-call deadline that drops the call — no retry, the step ends — and ' +
   'meters it from an estimate, plan capped at 200 chars). ' +
   '**jev-on-next** and **jev-on-next-nofast** (contract 1.9, docs/LLM-LOOP-DESIGN.md §8.1) are the LLM-loop wave: the ' +
-  'jev-on engine — the generator still proposes — with the router table on, the S2 generation mechanisms on (one hedge ' +
-  'per round at clamp(2 × TTFB p50, 3 s, 8 s), the byte-stable prefix, a 256-token reasoning cap on the cheap classes) ' +
-  'and the jev-off-tuned generation parameters. They differ in ONE mechanism: `jev-on-next` arms the bounded sieve fast ' +
+  'jev-on engine — the generator still proposes — with the router table on and the jev-off-tuned generation parameters. ' +
+  'The §3 S2 mechanisms (one hedge per round, the byte-stable prefix, the reasoning cap) are NOT among them and the ' +
+  'arms’ `mechanisms.s2` says `off`: S2 lives on the llm-jev sample path and these arms run `jev-on`, which never ' +
+  'enters it (F05; F17 in §9.1 owns wiring it). They differ in ONE mechanism: `jev-on-next` arms the bounded sieve fast ' +
   'path (`fastPath: auto`, the structural predicate decides per step) and `jev-on-next-nofast` does not. That pair is the ' +
-  'wave\'s only same-build contrast, and without it a jev-on-next win confounds tuned generation, S2, the routers and the ' +
+  'wave\'s only same-build contrast, and without it a jev-on-next win confounds tuned generation, the routers and the ' +
   'fast path; both run at `--concurrency 1`, because the fast path runs test commands inside the step. ' +
   'Generation parameters are PINNED per arm (the table below); jev-off ' +
   'runs exactly the checked-in baseline parameters, never the user config.';

@@ -28,6 +28,7 @@
  */
 import { formatDuration } from '../core/time.js';
 import type { BenchCondition, BenchSuite, FastPathReason } from '../core/types.js';
+import { armMechanisms } from './conditions.js';
 import { isEvaluated, median } from './metrics.js';
 import { emptyStepsSummary, mergeStepsSummaries } from './step-records.js';
 import type { BenchRecord, StepsSummary } from './types.js';
@@ -163,7 +164,7 @@ export const ERROR_BUCKET_BAR = 0.05;
 export type RowStatus = 'pass' | 'fail' | 'reported' | 'not_evaluable';
 
 export interface MeasurementRow {
-  id: 'R-a' | 'R-b' | 'R-c' | 'R-d' | 'R-e';
+  id: 'R-a' | 'R-b' | 'R-c' | 'R-d' | 'R-e' | 'R-s2';
   title: string;
   /** false = reported, never gates (R-e is the only one) */
   gating: boolean;
@@ -250,6 +251,22 @@ export function measurementRows(records: readonly BenchRecord[], condition: Benc
     // §2.4: the ratification is reverted by a HARMFUL command allowed under a dropped ask. That judgement is made by
     // reading the steps, not by a counter, so the row reports the two counts and says what would revert it.
     detail: `code verdicts ${all.risk.codeVerdicts}, Jev unavailable ${all.risk.jevUnavailable} over ${all.steps} step(s) — any step where a HARMFUL command was allowed under a dropped ask reverts the §2.4 ratification`,
+  });
+
+  // F05. The §3 generation path is the wave's third mechanism and it has no row, because on these arms it has no RUN:
+  // `jev-on-next*` are the `jev-on` engine, and every S2 mechanism lives on the synthesizer sample path
+  // (`src/synth/llm/source.ts` for hedging and the §3.4 cap; `PromptInput.prefixOrder` has no writer; `onFirstByte` is
+  // forwarded only from the sample path). The arms used to RECORD `s2: true` regardless, which is the half of this the
+  // conditions file fixes; this row is the other half — the table says so out loud instead of leaving a mechanism
+  // unmentioned, which reads as "measured, nothing to report". It reports and never gates: an arm that cannot run a
+  // mechanism must not fail the wave for it (§8.5's clauses are R-a/R-b/R-c and the predictions).
+  const s2 = armMechanisms(condition).s2;
+  out.push({
+    id: 'R-s2',
+    title: 'S2 (§3): hedging, byte-stable prefix, reasoning cap',
+    gating: false,
+    status: s2 === 'off' ? 'not_evaluable' : 'reported',
+    detail: s2 === 'off' ? "S2 lives on the llm-jev sample path; this arm's mode is jev-on" : `S2 ${s2}: TTFB n=${all.s2.ttfbMs.length}, hedges ${all.s2.hedges} (${all.s2.hedgeWins} won), cache ${all.s2.cacheInput === 0 ? 'not measured' : `${all.s2.cacheRead}/${all.s2.cacheInput}`}`,
   });
   return out;
 }

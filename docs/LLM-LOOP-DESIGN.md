@@ -1338,13 +1338,21 @@ gate on the merged tree. Commits use explicit paths — never `git add -A`, neve
 | arm | mode | `fastPath` | `routers` | generation | what it isolates |
 |---|---|---|---|---|---|
 | `jev-on` (plain) | `jev-on` | off | off | today's default | **the missing baseline** |
-| `jev-on-next-nofast` | `jev-on` | **off** | on (after B) | tuned + S2 | S2 + routers, without the fast path |
-| `jev-on-next` | `jev-on` | auto | on (after B) | tuned + S2 | the whole wave |
+| `jev-on-next-nofast` | `jev-on` | **off** | on (after B) | tuned (`s2: off`) | routers, without the fast path |
+| `jev-on-next` | `jev-on` | auto | on (after B) | tuned (`s2: off`) | routers + the fast path |
 | `llm-jev` | — | — | — | — | **recorded** rows, `experiments/results/llm-jev-iter1.md` |
 | `jev-off-tuned` | — | — | — | — | **recorded** rows, same file |
 
+**S2 is NOT on these arms, and the table used to say it was** (F05). Both run `engineModeOf === 'jev-on'`, and every
+§3 mechanism lives on the llm-jev sample path: nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only
+from that path, and hedging plus the §3.4 reasoning cap are in `src/synth/llm/source.ts`, which `jev-on` never enters.
+`armMechanisms` now clamps a pinned `s2` to `'off'` outside `llm-jev`, `pinnedGeneration` no longer carries the S2
+block on these arms, and `measurementRows` carries an `R-s2` row that reads `not_evaluable` with the reason. What
+summary.json records is the OBSERVED value when a run reports one (`conditionConfig(…, { s2: observedS2(rows) })`),
+never a constant — so wiring S2 onto `jev-on` (F17) cannot make the record wrong in the other direction either.
+
 **The `jev-on-next-nofast` control is the single most valuable device in the plan.** Without it a
-`jev-on-next` win confounds tuned generation + S2 + routers + the fast path. The two arms run as a **paired
+`jev-on-next` win confounds tuned generation + routers + the fast path. The two arms run as a **paired
 in-session contrast**, not as separate sessions that drift.
 
 **The plain `jev-on` arm is a required addition** (graft, judge 2 §10): there are **no recorded `jev-on` rows** in

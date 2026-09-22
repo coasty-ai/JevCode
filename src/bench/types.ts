@@ -407,8 +407,11 @@ export interface PinnedGeneration {
    */
   synthesizer?: SynthesizerGeneration;
   /**
-   * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §3: the S2 mechanisms the `jev-on-next*` arms pin. Absent on every
-   * other arm, which is what "S2 is off here" means in summary.json.
+   * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §3: the pinned S2 mechanisms of an arm that can RUN them.
+   * Absent on every arm today (F05): the block rode on `jev-on-next*`, whose mode is `jev-on`, where no S2
+   * mechanism is reachable — nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only on the
+   * synthesizer sample path, and hedging plus the §3.4 cap live in `src/synth/llm/source.ts`. It comes back with
+   * F17 (§9.1), on whichever arm the mechanisms are wired onto. Absent is what "S2 is off here" means.
    */
   s2?: S2Generation;
 }
@@ -423,11 +426,24 @@ export interface S2Generation {
   reasoningMaxTokens: number | null;
 }
 
+/**
+ * contract 1.9 (Fastlane) §8.1 / F05: the §3 generation path as a STATE of the run, not a promise made before it.
+ * `'partial'` is the honest answer when some of the run's steps reported S2 and others did not — it is never rounded
+ * up to `'on'`, because the arm's whole purpose is a one-mechanism contrast.
+ */
+export type S2State = 'on' | 'partial' | 'off';
+
 /** contract 1.9 (Fastlane) §8.1: which of the wave's three mechanisms an arm runs with (bench/conditions.ts `armMechanisms`). */
 export interface ArmMechanisms {
   fastPath: 'off' | 'auto';
   routers: boolean;
-  s2: boolean;
+  /**
+   * F05: what the RUN did, never a constant. `armMechanisms` yields the arm's pinned value and refuses to pin
+   * anything but `'off'` on an arm whose `engineModeOf` is not `'llm-jev'` (no S2 mechanism is reachable outside the
+   * synthesizer sample path); `conditionConfig`'s `observed` argument overrides it with the value read off the run's
+   * own records at the end of the run, so the record cannot disagree with what ran in either direction.
+   */
+  s2: S2State;
 }
 
 export interface ConditionConfig {

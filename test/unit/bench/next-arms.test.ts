@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CONDITIONS } from '../../../src/cli/args.js';
 import { resolveFastPathOption } from '../../../src/loop/engine.js';
-import { CONDITION_ORDER, MECHANISM_ENV_VARS, armMechanisms, buildEngineOptions, conditionConfig, engineModeOf, isNextArm, parseConditions, pinMechanismEnv, pinnedGeneration, requiresSerialBench, usesSynthesizer, usesTunedProvider } from '../../../src/bench/conditions.js';
+import { CONDITION_ORDER, MECHANISM_ENV_VARS, armMechanisms, buildEngineOptions, conditionConfig, engineModeOf, isNextArm, observedS2, parseConditions, pinMechanismEnv, pinnedGeneration, requiresSerialBench, usesSynthesizer, usesTunedProvider } from '../../../src/bench/conditions.js';
 import { computeSuiteMetrics } from '../../../src/bench/metrics.js';
 import { evaluateAcceptRule, evaluatePredictions, FASTPATH_REASONS, FRESH_18, measurementRows, recorded, RECORDED_BUILD } from '../../../src/bench/next-arms.js';
 import { buildRecord, runBenchWithSources, validateOptions } from '../../../src/bench/runner.js';
@@ -47,17 +47,16 @@ describe('the jev-on-next arms (§8.1)', () => {
       expect(usesTunedProvider(arm)).toBe(false);
       expect(isNextArm(arm)).toBe(true);
       expect(pinnedGeneration(arm, 'z-ai/glm-5.3-flash')).toMatchObject({ proposer: 'generator', maxTokens: 1500, deadlineMs: 20_000, repositoryDeadlineMs: 30_000, lengthHandling: 'double-once' });
-      expect(pinnedGeneration(arm, 'z-ai/glm-5.3-flash').s2).toEqual({ hedges: { perRound: 1, afterMsMin: 3_000, afterMsMax: 8_000, ttfbP50Multiple: 2 }, prefix: 'byte-stable', reasoningMaxTokens: 256 });
     }
-    // the tuned object, minus the S2 block, is what the arms pin: the two differ only in `s2`
-    const { s2, ...next } = pinnedGeneration('jev-on-next', 'm');
-    expect(s2).toBeDefined();
-    expect(next).toEqual(pinnedGeneration('jev-off-tuned', 'm'));
+    // F05: the arms ARE the tuned object. The S2 block used to ride on them and named mechanisms `jev-on` cannot
+    // reach; the block returns with F17 (docs/LLM-LOOP-DESIGN.md §9.1), on whatever arm can actually run it.
+    expect(pinnedGeneration('jev-on-next', 'm')).toEqual(pinnedGeneration('jev-off-tuned', 'm'));
+    expect(pinnedGeneration('jev-on-next', 'm').s2).toBeUndefined();
     // ONE mechanism apart — that is what makes the pair a contrast
-    expect(armMechanisms('jev-on-next')).toEqual({ fastPath: 'auto', routers: true, s2: true });
-    expect(armMechanisms('jev-on-next-nofast')).toEqual({ fastPath: 'off', routers: true, s2: true });
+    expect(armMechanisms('jev-on-next')).toEqual({ fastPath: 'auto', routers: true, s2: 'off' });
+    expect(armMechanisms('jev-on-next-nofast')).toEqual({ fastPath: 'off', routers: true, s2: 'off' });
     for (const older of ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned'] as const) {
-      expect(armMechanisms(older)).toEqual({ fastPath: 'off', routers: false, s2: false });
+      expect(armMechanisms(older)).toEqual({ fastPath: 'off', routers: false, s2: 'off' });
     }
     expect(parseConditions('jev-on-next,jev-on-next-nofast')).toEqual(['jev-on-next', 'jev-on-next-nofast']);
   });
@@ -78,8 +77,8 @@ describe('the jev-on-next arms (§8.1)', () => {
       if (prev === undefined) delete process.env['JEVCODE_FASTPATH'];
       else process.env['JEVCODE_FASTPATH'] = prev;
     }
-    expect(conditionConfig('jev-on-next', opts, 'm').mechanisms).toEqual({ fastPath: 'auto', routers: true, s2: true });
-    expect(conditionConfig('llm-jev', opts, 'm').mechanisms).toEqual({ fastPath: 'off', routers: false, s2: false });
+    expect(conditionConfig('jev-on-next', opts, 'm').mechanisms).toEqual({ fastPath: 'auto', routers: true, s2: 'off' });
+    expect(conditionConfig('llm-jev', opts, 'm').mechanisms).toEqual({ fastPath: 'off', routers: false, s2: 'off' });
   });
 
   /**
@@ -164,6 +163,74 @@ describe('the jev-on-next arms (§8.1)', () => {
 
   it('are reachable from the CLI — src/cli/args.ts CONDITIONS equals CONDITION_ORDER (the cross-slot handoff landed with the flag rows)', () => {
     expect([...CONDITIONS]).toEqual([...CONDITION_ORDER]);
+  });
+});
+
+/**
+ * F05 — the record must not describe a run that did not happen.
+ *
+ * `armMechanisms` pinned `s2: true` for both next arms and `pinnedGeneration` pinned the whole
+ * `S2_GENERATION` block on them, so summary.json said the §3 generation path was live. It was not, and
+ * nothing read the flag: `conditionConfig` applies `mech.fastPath` and `mech.routers` and `mech.s2` had
+ * no reader anywhere in src. Both arms run `engineModeOf === 'jev-on'`, and in `jev-on` no S2 mechanism
+ * is reachable — nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only on the
+ * synthesizer sample path, and hedging plus the §3.4 reasoning cap live in `src/synth/llm/source.ts`,
+ * which `jev-on` never enters. The head-to-head is measured from that file days later.
+ *
+ * Two rules, and the second is what keeps the first from rotting:
+ *
+ *   1. a PINNED `s2` other than `'off'` requires `engineModeOf(condition) === 'llm-jev'`; and
+ *   2. what summary.json records is the OBSERVED value when the run reported one — never a constant —
+ *      so slot A (F25) wiring S2 onto the `jev-on` path cannot make the record disagree with the run in
+ *      the other direction either.
+ */
+describe('§8.1 the recorded mechanisms are the mechanisms that ran (F05)', () => {
+  const opts = baseOptions('/r', '/o');
+
+  it('a pinned s2 implies the arm is on the llm-jev sample path, for every condition', () => {
+    for (const c of CONDITION_ORDER) {
+      const m = armMechanisms(c);
+      if (m.s2 !== 'off') expect(engineModeOf(c)).toBe('llm-jev');
+      // and the two arms whose row claimed it are `jev-on`, so they claim it no longer
+      expect(conditionConfig(c, opts, 'm').mechanisms.s2).toBe(m.s2);
+    }
+    expect(armMechanisms('jev-on-next')).toEqual({ fastPath: 'auto', routers: true, s2: 'off' });
+    expect(armMechanisms('jev-on-next-nofast')).toEqual({ fastPath: 'off', routers: true, s2: 'off' });
+  });
+
+  it('no arm pins the S2 generation block either — the next arms ARE the tuned object', () => {
+    for (const arm of ['jev-on-next', 'jev-on-next-nofast'] as const) {
+      expect(pinnedGeneration(arm, 'm').s2).toBeUndefined();
+      expect(pinnedGeneration(arm, 'm')).toEqual(pinnedGeneration('jev-off-tuned', 'm'));
+    }
+  });
+
+  it('summary.json records the OBSERVED value when the run reported one, and falls back to off', () => {
+    // absent -> 'off': the member does not exist in this build, and an absent fact is not an 'on'
+    expect(observedS2([])).toBe('off');
+    expect(observedS2([{ step: 1 }, { step: 2, mechanisms: {} }])).toBe('off');
+    expect(observedS2([{ mechanisms: { s2: 'on' } }, { mechanisms: { s2: 'on' } }])).toBe('on');
+    // some steps ran it and some did not: that is 'partial', never rounded up to 'on'
+    expect(observedS2([{ mechanisms: { s2: 'on' } }, { mechanisms: { s2: 'off' } }])).toBe('partial');
+    expect(observedS2([{ mechanisms: { s2: 'partial' } }])).toBe('partial');
+    // a value the union does not know is not a measurement
+    expect(observedS2([{ mechanisms: { s2: 'yes' } }])).toBe('off');
+    // and the observation WINS over the arm's row, in both directions: the record follows the run
+    expect(armMechanisms('jev-on-next', 'on').s2).toBe('on');
+    expect(conditionConfig('jev-on-next', opts, 'm', { s2: 'partial' }).mechanisms.s2).toBe('partial');
+    expect(conditionConfig('jev-on-next', opts, 'm').mechanisms.s2).toBe('off');
+  });
+
+  it('the measurement table carries an S2 row that says why it cannot be evaluated', () => {
+    const rows = measurementRows([], 'jev-on-next', ['quixbugs']);
+    const s2 = rows.find((r) => r.id === 'R-s2');
+    expect(s2).toBeDefined();
+    expect(s2!.status).toBe('not_evaluable');
+    expect(s2!.detail).toBe("S2 lives on the llm-jev sample path; this arm's mode is jev-on");
+    // it reports, it does not gate: §8.5's clauses are unchanged by it
+    expect(s2!.gating).toBe(false);
+    const rule = evaluateAcceptRule({ records: [], arm: 'jev-on-next', control: 'jev-on-next-nofast', rows, predictions: [], gatesGreen: true });
+    expect(rule.clauses.map((c) => c.n)).toEqual([1, 2, 3, 4, 5]);
   });
 });
 
@@ -265,7 +332,7 @@ describe('the §8.3 rows', () => {
       withSynth('b', 'jev-on-next', [step({ fastPath: { decision: 'declined', reason: 'multi_file', stage: 1, outcome: 'skipped', wallMs: 1, budgetMs: 45_000 }, router: { issued: 1, applied: 1, dropped: 0, waitMs: 0 } })]),
     ];
     const rows = measurementRows(clean, 'jev-on-next', ['quixbugs']);
-    expect(rows.map((r) => [r.id, r.status])).toEqual([['R-a', 'pass'], ['R-b', 'pass'], ['R-c', 'pass'], ['R-d', 'pass'], ['R-e', 'reported']]);
+    expect(rows.map((r) => [r.id, r.status])).toEqual([['R-a', 'pass'], ['R-b', 'pass'], ['R-c', 'pass'], ['R-d', 'pass'], ['R-e', 'reported'], ['R-s2', 'not_evaluable']]);
 
     const dirty = [
       withSynth('a', 'jev-on-next', [step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', wallMs: 60_000, budgetMs: 45_000 }, router: { issued: 1, applied: 0, dropped: 1, waitMs: 120 } })]),
@@ -273,7 +340,7 @@ describe('the §8.3 rows', () => {
       withSynth('b', 'jev-on-next', [step({ fastPath: { decision: 'declined', reason: 'error', stage: 2, outcome: 'error', wallMs: 1, budgetMs: 1 } }), step({ step: 2, fastPath: { decision: 'declined', reason: 'error', stage: 2, outcome: 'error', wallMs: 1, budgetMs: 1 } })]),
     ];
     const bad = measurementRows(dirty, 'jev-on-next', ['quixbugs']);
-    expect(bad.map((r) => [r.id, r.status])).toEqual([['R-a', 'fail'], ['R-b', 'fail'], ['R-c', 'fail'], ['R-d', 'fail'], ['R-e', 'reported']]);
+    expect(bad.map((r) => [r.id, r.status])).toEqual([['R-a', 'fail'], ['R-b', 'fail'], ['R-c', 'fail'], ['R-d', 'fail'], ['R-e', 'reported'], ['R-s2', 'not_evaluable']]);
     expect(bad[2]!.detail).toContain('the predicate is wrong, not the budget');
     // 2 stage-2 declines out of 3 rounds that ran
     expect(bad[2]!.detail).toContain('quixbugs 2/3 = 0.67');
