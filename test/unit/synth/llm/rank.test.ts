@@ -26,11 +26,19 @@ function input(n: number): Q17Input {
 }
 
 describe('Q17: order only, chunked Nouls', () => {
-  it('is asked only when the queue cannot run every distinct sample or a run is expensive', () => {
+  // OOS 2026-09-22 ranked change 1 ("can I just run them all?"): the t_run clause is gone, because
+  // `runsLeft` already prices t_run. Evidence: 707 requests / 64,961 `candidate_*` questions, 99 % of
+  // the ladder's (393/397) and 100 % of SWE's (302/302) fired in `plausible = 0` steps, and of 65,076
+  // answers 96.3 % fell in [0.0, 0.1) with 13 at or above 0.5.
+  it('is asked only when the queue cannot run every distinct sample; a pool that fits the run budget is never ordered, however costly one run is (OOS 2026-09-22 ranked change 1)', () => {
     expect(q17Needed(3, 8, 300)).toBe(false);
     expect(q17Needed(9, 8, 300)).toBe(true);
-    expect(q17Needed(2, 8, 2500)).toBe(true);
+    // the pool fits the runs left: the goal test decides it for free, so no request is spent on an order
+    expect(q17Needed(2, 8, 2500)).toBe(false);
     expect(q17Needed(1, 0, 2500)).toBe(false);
+    // a pool larger than the budget still ranks, at any t_run
+    expect(q17Needed(9, 8, 2500)).toBe(true);
+    expect(q17Needed(2, 1, 100)).toBe(true);
   });
 
   it('builds one Choice over ≤ 8 candidates plus full-criteria Nouls in chunks ≤ 50 with position-free keys', () => {

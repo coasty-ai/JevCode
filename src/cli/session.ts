@@ -171,6 +171,7 @@ import { panelLines, toDecisionRow, type DecisionRow, type PaneState } from '../
 import { TOAST_INFO_MS } from '../tui/toasts.js';
 import { modeBadgeWord } from '../tui/status/lines.js';
 import { JEV_PROVIDERS } from '../jev/providers.js';
+import { createCachingDecider } from '../jev/cache.js';
 import { budgetItems, BUDGET_THRESHOLDS, type BudgetPct } from '../tui/budget/lines.js';
 // TUI-DESIGN-2 §3 (D-C): the conversational intake — pure builders in src/chat/**, the state machine of §3.1 lives here (§3.8)
 import { buildIntakeState, chatKindAfterNo, filesBucket, routeOf, routeOfKind, runIntake, testsFromCandidates, type ChatKind, type ChatRoute, type IntakeResult } from '../chat/intake.js';
@@ -2017,7 +2018,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const started = nowIso();
     try {
       const provider = await providerOf(cfg, flags, mode);
-      const decider = await deciderOf(cfg, flags);
+      // llm-jev iteration 1 (168a599): a per-RUN request-hash cache — hits bill nothing (usage zeroed, calls 0); a fresh
+      // wrapper per run IS the `clear()` at run start; the engine records StepRecord.jevCacheHits from the zero-call rows
+      const decider = createCachingDecider(await deciderOf(cfg, flags));
       const remaining = sessionRemainingUsd(sessionCapOf(), sessionTotal());
       const childCap = Math.max(0, Math.min(limits.spendCapUsd, remaining));
       const meter = sessionMeter.child(childCap);
@@ -2351,7 +2354,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       if (!known) sessionMeter.add('generator', { inputTokens: 0, outputTokens: 0, costUsd: loaded.state.spend.generator.costUsd, calls: 0 });
       if (!known) sessionMeter.add('jev', { inputTokens: 0, outputTokens: 0, costUsd: loaded.state.spend.jev.costUsd, calls: 0 });
       const provider = await providerOf(rcfg, augmented, identity.mode);
-      const decider = await deciderOf(rcfg, augmented);
+      const decider = createCachingDecider(await deciderOf(rcfg, augmented)); // per-run cache; a resumed run starts empty
       const genCfg: GeneratorConfig | null = identity.mode === 'jev-only' || flags.mock || flags.mockGenerator ? null : rcfg.generator();
       const gen = genCfg ?? { temperature: null, maxTokens: 4096 };
       const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : rcfg.decider();

@@ -15,7 +15,7 @@ import { join } from 'node:path';
 import { toJson } from '../../core/json.js';
 import { clip } from '../../core/text.js';
 import { PLAN_ITEM_MAX_CHARS } from '../../loop/plan.js';
-import type { ClaimingCompletionEvidence } from '../../loop/stages/complete.js';
+import type { ClaimingCompletionEvidence, CompletionWitness } from '../../loop/stages/complete.js';
 import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, SynthesisContext, Synthesizer, SynthesizerGeneration, WindowEntry } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
 import { SPEC_FILE } from '../../workspace/tests.js';
@@ -26,7 +26,7 @@ import type { IntrospectedNames } from '../introspect/index.js';
 import type { ReproSpec, VerifyReproResult } from '../oracle/goal.js';
 import { LLM_ORACLE_OPEN_PROBLEM, isLlmOracle, writeReproduction } from '../llm/repro.js';
 import type { ReproWriterResult } from '../llm/repro.js';
-import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, NETWORK_ORACLE_OPEN_PROBLEM, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, mergeSummaries, oracleNeedsArbitration, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, venvPython, verifyRepro } from '../oracle/index.js';
+import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, NETWORK_ORACLE_OPEN_PROBLEM, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, isReproTestId, mergeSummaries, oracleNeedsArbitration, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, venvPython, verifyRepro } from '../oracle/index.js';
 import type { CriterionStrength, OracleSearch, OracleSearchInput, TracebackFrame } from '../oracle/index.js';
 import { analyse } from '../py/structure.js';
 import { forgetUnchangedTried, subsetCommand } from '../sieve/runner.js';
@@ -40,7 +40,7 @@ import { LLM_SERVED_PRICING, llmMemory } from './llm.js';
 import type { SubGoalLlm } from './llm.js';
 import { defaultOverrides, handleDirective, invalidateStaleSites } from './directive.js';
 import type { DirectiveMemory, DirectiveResult } from './directive.js';
-import { MAX_BUDGET_HIT_STEPS, MAX_CONSECUTIVE_BUDGET_HITS, MAX_PROGRESS_COMMITS_PER_GOAL, clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
+import { MAX_BUDGET_HIT_STEPS, MAX_CONSECUTIVE_BUDGET_HITS, MAX_PROGRESS_COMMITS_PER_GOAL, clusterFailures, ledgerLine, newGoal, splitBySiteBudget, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
 import { LONE_PASSER_HOLD_MAX_NOUL, adviseLonePasser, commitSuspect } from './guard.js';
 import type { GoalPick } from './goals.js';
 import { attachPlanItems, diffHash, getMemory, planItemFor, rebuildFromPlan, recordClaims, recordCommit, repositoryFromPersisted, resolveClaims, restoreMemory, toPersisted } from './memory.js';
@@ -290,6 +290,29 @@ export function normaliseTestCommand(command: string): string {
 }
 
 /** The full-suite command: the workspace detector's (normalised, see above), else the pytest default. */
+/**
+ * Change 8 (docs/research/llm-jev/oos-analysis-2026-09-22.md Q4): the selections that witness the
+ * committed fix. A ledger goal's tests are exactly the tests that FAILED at the base commit — that
+ * is what made them a goal — so a goal test the committed baseline now shows passing is a
+ * failing → passing transition, the only kind of run that witnesses anything. The issue reproduction
+ * is one selection per variant; the scoped tests that flipped are one further selection (they are one
+ * run of one scope, so they are one witness, not one each). A scoped suite that passed before the
+ * patch as well is not in this set: it shows nothing broke, which it showed already.
+ *
+ * `sympy-20428` yields exactly `[{repro, repro::8813d39a}]` — its claiming run's `newlyPassing` was
+ * `["repro::8813d39a"]` and nothing else — so `secondWitnessHolds` refuses its `done`.
+ */
+function completionWitnesses(mem: RunMemory, baseline: TestRunSummary): CompletionWitness[] {
+  const passing = new Set(baseline.passing);
+  const flipped = new Set<string>();
+  for (const g of mem.goals) if (g.status === 'fixed') for (const t of g.tests) if (passing.has(t)) flipped.add(t);
+  const ids = [...flipped].sort();
+  const witnesses: CompletionWitness[] = ids.filter(isReproTestId).map((id) => ({ kind: 'repro', selection: id }));
+  const regression = ids.filter((id) => !isReproTestId(id));
+  if (regression.length > 0) witnesses.push({ kind: 'regression', selection: regression.join(' ') });
+  return witnesses;
+}
+
 export function baselineCommand(ctx: SynthesisContext): string {
   return normaliseTestCommand(ctx.workspaceInfo.testCommand?.command ?? DEFAULT_TEST_COMMAND);
 }
@@ -778,7 +801,23 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       // workspace (read from the window, else from mem.lastEngineRun, which outlives it), never another run then.
       this.emit(ctx, 'done', `baseline green: ${baseline.passed} tests pass, ${mem.committed.length} fix${mem.committed.length === 1 ? '' : 'es'} committed`);
       const network = repo === undefined ? null : networkOracleNote(repo);
-      return proposeDone(ctx, mem, 'green', undefined, network === null ? [] : [network]);
+      const green = proposeDone(ctx, mem, 'green', undefined, network === null ? [] : [network]);
+      // Change 8 (oos-analysis-2026-09-22.md Q4, `20260922-063746-h3qflvih`): the green `done` of a
+      // repository run is the run's own self-termination — the engine's `isCompleteByFact` stops on it
+      // with no evidence to weigh (`verifiedDone` alone). The same §6.6 facts the claiming run carries
+      // travel on it now, plus the witnesses of `completionWitnesses`, so a `done` whose only witness is
+      // the engine's own issue reproduction does not end the run. Off the repository class and outside
+      // llm-jev the proposal is untouched; `proposeDone` returns a `run` when §5.5 still has blockers.
+      if (!this.llmJev || repo === undefined || green.action.kind !== 'done') return green;
+      const doneCommand = mem.baseline?.command ?? baselineCommand(ctx);
+      const doneSel = { selection: mem.committed.at(-1)?.candidate.source === 'llm' ? ('llm' as const) : ('sieve' as const), candidatesTested: 0, arbitrated: false };
+      const doneCompletion: ClaimingCompletionEvidence = {
+        ...completionEvidence(ctx, mem, doneCommand, repo),
+        ...(repo.knownFailures <= 0 ? {} : { knownFailures: repo.knownFailures }),
+        witnesses: completionWitnesses(mem, baseline),
+      };
+      // the `done` executes nothing, so before and after are the one committed baseline it reports
+      return withEvidence(green, { ...runEvidence(baseline, baseline, undefined, doneSel, doneCommand), completion: doneCompletion });
     }
 
     // No `read` under any intent: the synthesizer holds every source file (loadPythonFiles), and
@@ -922,6 +961,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         if (reason === null) {
           goal.status = 'open';
           this.emit(ctx, 'budget', `${goal.id}: budget-hit step ${goal.budgetSteps ?? 0} of ${MAX_BUDGET_HIT_STEPS} (${progress ? `progress: ${r.trace.newSitesTested} new site${r.trace.newSitesTested === 1 ? '' : 's'} of ${r.trace.sitesTested} tested` : `nothing new: ${goal.budgetHits} of ${MAX_CONSECUTIVE_BUDGET_HITS} stagnant`}); the goal stays open`);
+        } else if (this.splitOnSiteBudget(ctx, mem, goal, loc, r.trace)) {
+          forgetHeld(mem, goal);
         } else {
           if (hit === null) park(goal, reason);
           forgetHeld(mem, goal);
@@ -933,6 +974,33 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         goal.status = 'open';
         return this.subsetRun(ctx, mem, goal, r.trace);
     }
+  }
+
+  /**
+   * docs/research/llm-jev/oos-analysis-2026-09-22.md ranked change 4, the splitting half.
+   *
+   * `masked` was ONE goal over four coupled tests in one file with 69 sites: it enumerated 7,027
+   * candidates, tested 4,525, never reached the sites its later tests name, and ended
+   * `replan_stop` with `plausible 0`. A goal whose site list outgrows what a step's runs can
+   * reach cannot be decided as a unit, and parking it throws the untried tests away.
+   *
+   * So on the step where such a goal would PARK, its tests continue as one goal each instead
+   * (`splitBySiteBudget`), each with its own localisation and its own site order. The comparison
+   * is measured, not chosen: the sites the goal HAS against the sites this step's runs REACHED.
+   * A goal that never parks is untouched, and a one-test goal has nothing to split into — so this
+   * is strictly a better fallback than the park it replaces, never a new decomposition rule.
+   */
+  private splitOnSiteBudget(ctx: SynthesisContext, mem: RunMemory, goal: Goal, loc: LocalizeResult | undefined, trace: GoalSearchTrace): boolean {
+    if (loc === undefined) return false;
+    const parts = splitBySiteBudget(goal, loc.sites.length, trace.sitesTested);
+    if (parts.length < 2) return false;
+    const at = mem.goals.indexOf(goal);
+    if (at < 0) return false;
+    mem.goals.splice(at, 1, ...parts);
+    mem.localizeCache.delete(goal.id);
+    attachPlanItems(parts, ctx.plan.remaining);
+    this.emit(ctx, 'ledger', `${goal.id}: ${loc.sites.length} sites but this step's runs reached ${trace.sitesTested}; continuing its ${parts.length} tests as ${parts.map((g) => g.id).join(', ')} instead of parking`);
+    return true;
   }
 
   /**

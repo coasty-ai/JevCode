@@ -204,6 +204,37 @@ export const RANK_K_COMPACT = 5;
  */
 export const RANK_K_SITE_MAX = 16;
 
+/**
+ * "Can I just run them all?" — the one test that decides whether an ordering request buys
+ * anything (docs/research/llm-jev/oos-analysis-2026-09-22.md ranked change 1). A ranking request
+ * buys an ORDER over a pool; it buys nothing when the goal test can decide every member of the
+ * pool inside the runs the step still has, because the first passer then arrives before any order
+ * is consulted. That is exactly why QuixBugs transfers (Q5: a 9–11-site pool at t_run ≤ 520 ms is
+ * fully testable in one round, 3 sieve requests across all ten tasks) while the ladder and SWE
+ * paid 707 requests / 64,961 questions, 99–100 % of them in steps whose search found
+ * `plausible = 0` — an order over a pool with no fix in it.
+ *
+ * The comparison is pool-against-budget and nothing else. `runsLeft` already prices t_run: it
+ * divides the wall left by the measured run at the current lane count, so an expensive run
+ * shrinks `left` rather than needing a second t_run gate of its own. An empty pool fits (there is
+ * nothing to order).
+ */
+export function poolFitsRunBudget(n: number, left: number): boolean {
+  return n <= left;
+}
+
+/**
+ * The candidates one ranking request set may price: never more than the runs the step can still
+ * spend. OOS 2026-09-22 Q4 — sympy-16792 ranked 27,754 of its 28,878 enumerated candidates and
+ * could test 1,191 of them, spending 178 sieve requests / 26,489 questions to order a pool 24× the
+ * run budget, every one of them in a `plausible = 0` step. A candidate that no run this step can
+ * reach cannot be chosen by the order, so it is not priced; §2.3 leaves it out of `tried` and it
+ * comes back enumerable on the next step.
+ */
+export function rankPoolCap(left: number): number {
+  return Math.max(0, Math.floor(left));
+}
+
 // ---------------------------------------------------------------------------------------
 // Runner detection
 // ---------------------------------------------------------------------------------------
@@ -884,17 +915,23 @@ export interface RunPlanOptions {
 }
 
 /**
- * §2.4, the central decision: SIEVE when the whole candidate set fits the run budget and a run
- * is cheap (tests rank, no Jev request); otherwise RANK with K = 3 at replace sites, 5 at insert
+ * §2.4, the central decision: SIEVE when the whole candidate set fits the run budget
+ * (`poolFitsRunBudget`: tests rank, no Jev request); otherwise RANK with K = 3 at replace sites, 5 at insert
  * sites, and 5 whenever the set is large enough for compact Nouls. The cut is a budget, never a
  * probability threshold: a confident wrong rank costs a step, not the fix. On a repository-class
  * oracle whose goal-subset run is the cheap reproduction (`hasCheapGoalSubset`) and with
  * `sitesLeft` given, K rises to the site's share of the runs left, at most RANK_K_SITE_MAX.
+ *
+ * OOS 2026-09-22 ranked change 1: the SIEVE cut is `poolFitsRunBudget` alone. The old second
+ * clause (`t_run ≤ SIEVE_MAX_T_RUN_MS`) sent a pool the goal test could have decided whole to
+ * RANK — one request for an order over candidates that were all going to run anyway. `runsLeft`
+ * already prices t_run, so the clause only ever bought Jev requests. SIEVE_MAX_T_RUN_MS stays the
+ * oracle-class line elsewhere (guard.ts `sieveHoldApplies`, refineTRun's keep band).
  */
 export function decideRunPlan(cands: readonly Candidate[] | number, site: Pick<Site, 'kind'>, oracle: OracleModel, budget: StepBudget, opts: RunPlanOptions = {}): RunPlan {
   const n = typeof cands === 'number' ? cands : cands.length;
   const left = runsLeft(oracle, budget);
-  if (n <= left && oracle.tRunMs.goalSubset <= SIEVE_MAX_T_RUN_MS) return { mode: 'SIEVE', k: n, runsAllowed: n };
+  if (poolFitsRunBudget(n, left)) return { mode: 'SIEVE', k: n, runsAllowed: n };
   let k = site.kind === 'insert' ? RANK_K_INSERT : RANK_K_REPLACE;
   if (n >= COMPACT_NOUL_MIN_CANDIDATES) k = Math.max(k, RANK_K_COMPACT);
   if (opts.sitesLeft !== undefined && oracleClass(oracle) === 'repository_class' && hasCheapGoalSubset(oracle)) {

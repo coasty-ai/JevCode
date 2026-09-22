@@ -1495,11 +1495,14 @@ on fresh file bytes, which is why the wording is "deterministic given (state, bu
 - `'llm'`: one generator call with the opencode template (`Objective · Important details · Work state (Completed / Active /
   Blocked) · Next move · Relevant files`) over the prior summary + entries older than the newest 2 + the plan, ≤ 4,096 output
   tokens, shown as `[step N] compaction $0.002`, metered, falls back to `'code'` on any error. Jev is never asked to summarise.
-- After compaction: history keeps the newest 2 entries verbatim, older ones collapse to one-liners; `context:compacted { step,
-  chars: before → after, by }` event. **It is classified as a transcript item, not a TUI-only decoration** (W0): `itemsFromEvent`
-  (`src/tui/plain.ts:310-400`, the single source of item lines) gains one case with the shared line
-  `compaction: 41k → 12k chars (code)`, which the TUI may decorate with its `─ compaction ─` separator but never replace with a
-  row of its own — otherwise `transcript.log`, `--plain` and the TUI stop being identical. `pause:point` is classified the other
+- After compaction: history keeps the newest 2 entries verbatim, older ones collapse to one-liners. **As built** (amended
+  2026-09-22 to the landed engine, `src/loop/engine.ts:4348-4356`): the engine emits the typed `context:compacted { step, chars:
+  { before, after }, by }` event (prompt chars on both sides, measured with the planner the prompt uses) **and, beside it, one
+  `notice { kind: 'ui', level: 'info', label: '[ui]' }` whose text is** `compaction: <before> → <after> prompt chars (code);
+  <folded> at step <n> (<why>)` with the event JSON in `detail`. The notice is the transcript item — it reaches `transcript.log`,
+  `--plain` and the TUI through the ordinary notice path, so the three stay identical — and `itemsFromEvent` has **no** case for
+  the typed event (a case would print the line twice). The TUI may decorate the notice with its `─ compaction ─` separator but
+  never replace it with a row of its own. `pause:point` is classified the other
   way: **pane-only, no transcript line** (the §7.6 strings for a pause are the existing local epilogue item).
 - **Kept items** (`CheckpointState.kept?: { kind:'fact'|'file'|'decision', text ≤ 300, step, by:'jev'|'human'|'code' }[]` ≤ 24):
   at each compaction the code extracts candidates (failing test ids + assertion lines, `edit applied to X (1 match)` summaries,
