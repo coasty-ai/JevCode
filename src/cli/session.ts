@@ -2021,8 +2021,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       // llm-jev iteration 1 (168a599): a per-RUN request-hash cache — hits bill nothing (usage zeroed, calls 0); a fresh
       // wrapper per run IS the `clear()` at run start; the engine records StepRecord.jevCacheHits from the zero-call rows
       const decider = createCachingDecider(await deciderOf(cfg, flags));
-      // ORCHESTRATION-DESIGN [D6]: money reserved for live agents gates a new run like spend (SpendSnapshot.heldUsd, on main since 2400a0c)
-      const remaining = sessionRemainingUsd(sessionCapOf(), sessionTotal(), (sessionMeter.snapshot().heldUsd ?? 0));
+      // ORCHESTRATION-DESIGN [D6]: money reserved for live agents gates a new run like spend (SpendMeter.heldUsd?() is OPTIONAL by design [G6] so every fake still satisfies the interface; the snapshot field is its twin)
+      const remaining = sessionRemainingUsd(sessionCapOf(), sessionTotal(), (sessionMeter.heldUsd?.() ?? sessionMeter.snapshot().heldUsd ?? 0));
       const childCap = Math.max(0, Math.min(limits.spendCapUsd, remaining));
       const meter = sessionMeter.child(childCap);
       // jev-only never validates the generator section (§15.3); llm-jev validates it like jev-on AND takes the synthesizer (docs/LLM-JEV-DESIGN.md)
@@ -2348,7 +2348,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         title = index.find((s) => s.sessionId === fields.sessionId)?.title ?? null;
       }
       const resumedSpend = loaded.state.spend.totalUsd;
-      const remaining = sessionRemainingUsd(sessionCapOf(), sessionTotal() - (known ? resumedSpend : 0), (sessionMeter.snapshot().heldUsd ?? 0));
+      const remaining = sessionRemainingUsd(sessionCapOf(), sessionTotal() - (known ? resumedSpend : 0), (sessionMeter.heldUsd?.() ?? sessionMeter.snapshot().heldUsd ?? 0));
       const childCap = Math.max(0, Math.min(rec.limits.spendCapUsd, remaining));
       pushThresholds(rec.limits);
       const meter = sessionMeter.child(childCap);
