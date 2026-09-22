@@ -6,7 +6,7 @@
  * notation, a loop banner after `[run] end`, a spinner glyph outside the accent — each named by its V number.
  */
 import { describe, expect, it } from 'vitest';
-import { checkPolish, paintRow, stripAnsi, type PolishResult as Result } from '../../../scripts/pty/polish-check.mjs';
+import { RUN_END_RE, RUN_STARTED_RE, checkPolish, paintRow, runEndSelfTest, stripAnsi, v13Rows, type PolishResult as Result } from '../../../scripts/pty/polish-check.mjs';
 
 const BSU = '\x1b[?2026h';
 const ESU = '\x1b[?2026l';
@@ -18,7 +18,13 @@ const RESET = '\x1b[22m';
 const RULE = '─'.repeat(80);
 const MARK = ['                ██ ███████ ██    ██  ██████  ██████  ██████  ███████', '                ██ ██      ██    ██ ██      ██    ██ ██   ██ ██', '                ██ █████   ██    ██ ██      ██    ██ ██   ██ █████', '            ██  ██ ██       ██  ██  ██      ██    ██ ██   ██ ██', `             ████  ███████   ████    ██████  ██████  ██████  ███████  ${PINK2}◆${OFF} ${DIM}0.3.0${RESET}`];
 const HEAD = `${DIM}    [run]${RESET} jevcode session · proj | step 0/– starting\r\n`;
-const console_ = (prompt: string, status: string, badge = 'jev+llm'): string[] => [`${DIM}╭─ ${RESET}${PINK}\x1b[1m${badge}${RESET}${OFF}${DIM} ${'─'.repeat(80 - 13 - badge.length - 4)} proj ─╮${RESET}`, `${DIM}│ ${RESET}${PINK}› ${OFF}${prompt}${' '.repeat(Math.max(0, 74 - stripAnsi(prompt).length))}${DIM} │${RESET}`, `${DIM}├${'─'.repeat(78)}┤${RESET}`, `${DIM}│ ${RESET}${status}${' '.repeat(Math.max(0, 76 - stripAnsi(status).length))}${DIM} │${RESET}`, `${DIM}╰${'─'.repeat(78)}╯${RESET}`];
+/**
+ * The console box, **80 cells on every row** — TUI-DESIGN-4 §2.9 P-R13's V22 is exactly the predicate that a frame
+ * never mixes two widths, so a fixture whose top edge is 75 cells and whose prompt row is 78 would fail it (and
+ * did, until the integrator widened them on 2026-09-22). Top edge: `╭─ ` (3) + badge + ` ` (1) + dashes +
+ * ` proj ─╮` (8) = 80. Prompt and status: `│ ` (2) + body padded to 76 + ` │` (2) = 80.
+ */
+const console_ = (prompt: string, status: string, badge = 'jev+llm'): string[] => [`${DIM}╭─ ${RESET}${PINK}\x1b[1m${badge}${RESET}${OFF}${DIM} ${'─'.repeat(68 - badge.length)} proj ─╮${RESET}`, `${DIM}│ ${RESET}${PINK}› ${OFF}${prompt}${' '.repeat(Math.max(0, 74 - stripAnsi(prompt).length))}${DIM} │${RESET}`, `${DIM}├${'─'.repeat(78)}┤${RESET}`, `${DIM}│ ${RESET}${status}${' '.repeat(Math.max(0, 76 - stripAnsi(status).length))}${DIM} │${RESET}`, `${DIM}╰${'─'.repeat(78)}╯${RESET}`];
 const frame = (scroll: readonly string[], dyn: readonly string[]): string => `${BSU}\x1b[?25l${[...scroll, ...dyn].join('\r\n')}\r\n\x1b[?25h${ESU}`;
 const IDLE_STATUS = 'idle                                   step 0/–  sess $0.00/10.00 ok  ? help';
 const PLACEHOLDER = `${DIM}Say hi, ask a question, or describe a task…${RESET}`;
@@ -27,8 +33,10 @@ const splashDyn = (): string[] => [RULE, '                ██ ▓▒░', '  
 const STEP = ` ${DIM}[step 1]${RESET} run $ python -m pytest -q tests/test_core.py · risk 0.00 ok\r\n          · tests 4p/3f/0e · judge 0.49 · 4.9s · $0.006`;
 const YOU = `${DIM}    ${RESET}${PINK2}\x1b[1m[you]${RESET}${OFF} Fix the failing tests in tests/test_core.py without changing the\r\n          tests.`;
 const BOT = `${PINK}\x1b[1m[jevcode]${RESET}${OFF} Hi. I'm ready when you are — describe a change you want in proj, or\r\n          ask what I can do.`;
-const RUN_START = `${DIM}    [run]${RESET} start 20260921-212813-uo5luiq4 mode=jev-on task: Fix the failing tests\r\n          in tests/test_core.py without changing the tests.`;
-const RUN_END = `${DIM}    [run]${RESET} end replan_stop steps=9 wall=14s cost=$0.025 (gen $0.000, jev $0.025)\r\n          exit 4`;
+// TUI-DESIGN-4 §3.6 (D-V, G1): `started · <badge> · <task>` and `finished · <reason> · <n> steps · …` — the run id
+// left the frame for the epilogue, and no row carries a `k=v` pair any more (which is what un-defers V13, §11)
+const RUN_START = `${DIM}    [run]${RESET} started \u00b7 jev+llm \u00b7 Fix the failing tests in tests/test_core.py\r\n          without changing the tests.`;
+const RUN_END = `${DIM}    [run]${RESET} finished \u00b7 replan_stop \u00b7 9 steps \u00b7 14s \u00b7 $0.025 (generator $0.000\r\n          \u00b7 jev $0.025) \u00b7 exit 4`;
 const UI_BLOCK = `${DIM}     [ui]${RESET} stopped — replan_stop (exit 4)\r\n          run       20260921-212813-uo5luiq4\r\n          files     ~/.jevcode/runs/20260921-212813-uo5luiq4/\r\n                    (transcript.log, state.json, jevcode.log)`;
 const STRIP_HEAD = '─── ▸ jev s1 · 75 decisions · risk 0.00 ok ';
 const STRIP_TAIL = ' [d] [p] [t] [s] ──';
@@ -45,11 +53,13 @@ const by = (results: Result[], id: string): Result => results.find((r) => r.id =
 const failing = (results: Result[]): string[] => results.filter((r) => r.pass === false).map((r) => r.id);
 
 describe('checkPolish over a capture that honours TUI-DESIGN-3 §9', () => {
-  it('every gated predicate passes; V13 / V19 / V20 / V21 are skipped without a timing file', () => {
+  it('every gated predicate passes; V13 is gated (D-V landed); V19 / V20 / V21 are skipped without a timing file', () => {
     const { results } = checkPolish(goodCapture(), { rows: 24, cols: 80, version: '0.3.0' });
     expect(failing(results)).toEqual([]);
     for (const id of ['V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8', 'V9', 'V10', 'V11', 'V12', 'V14', 'V15', 'V16', 'V17', 'V18']) expect(by(results, id).pass, `${id}: ${by(results, id).detail}`).toBe(true);
-    for (const id of ['V13', 'V19', 'V20', 'V21']) expect(by(results, id).pass).toBeNull();
+    // TUI-DESIGN-4 §11: V13 is un-deferred by D-V and now gated; V19–V21 still need a timing file
+    expect(by(results, 'V13').pass).toBe(true);
+    for (const id of ['V19', 'V20', 'V21']) expect(by(results, id).pass).toBeNull();
     expect(by(results, 'V1').detail).toContain('11 dynamic rows');
     expect(by(results, 'V3').detail).toMatch(/^\d distinct SGR foregrounds/);
   });
@@ -80,6 +90,33 @@ describe('one defect per predicate (each named by its V number)', () => {
     const cap = HEAD + frame([], splashDyn()) + frame([], [RULE, ...console_(PLACEHOLDER, IDLE_STATUS)]);
     expect(run(cap)).toEqual(expect.arrayContaining(['V1', 'V2']));
   });
+  /**
+   * TUI-DESIGN-4 §2.9 P-R13: V22 is the torn-frame predicate — one frame, two widths. The baseline it was written
+   * against is A2's `out/tear`, 4 of 24 frames carrying a box row whose right border is the truncation ellipsis
+   * while the rule row is already the new width. V6 catches neither half: no row here is wider than the terminal.
+   */
+  it('V22: a frame whose box rows are not the width of its own rule row, and a box row ending in the ellipsis', () => {
+    const narrowBox = console_(PLACEHOLDER, IDLE_STATUS).map((r) => r.replace(/─{20}/, '─'.repeat(12)));
+    expect(run(HEAD + frame([], idleDyn()) + frame([], [RULE, ...MARK, ...narrowBox]))).toEqual(expect.arrayContaining(['V22']));
+    const truncated = console_(PLACEHOLDER, IDLE_STATUS).map((r, i) => (i === 1 ? `${r.slice(0, -1)}…` : r));
+    expect(run(HEAD + frame([], idleDyn()) + frame([], [RULE, ...MARK, ...truncated]))).toEqual(expect.arrayContaining(['V22']));
+    // …and the good capture, whose every box row is its rule row's width, passes
+    expect(run(goodCapture())).not.toEqual(expect.arrayContaining(['V22']));
+  });
+
+  /**
+   * TUI-DESIGN-4 §2.9 P-R13 / A2 D10: V23 is "no continuation row indented past its rung's gutter" — with §3.1's
+   * blocks (D-W) a kv row's value column is a legal hang past 10, so the predicate learns the columns a block's
+   * own rows open at and flags only an indent that matches none of them.
+   */
+  it('V23: a continuation indented past the gutter and past every column of its block', () => {
+    const block = `${DIM}     [ui]${RESET} status\r\n          run        none\r\n                                   stray continuation`;
+    expect(run(HEAD + frame([], idleDyn()) + frame(['', block], idleDyn()))).toEqual(expect.arrayContaining(['V23']));
+    // the same block with the continuation under its own value column is legal
+    const ok = `${DIM}     [ui]${RESET} status\r\n          run        none at all, a value long enough to wrap\r\n                     under its own column`;
+    expect(run(HEAD + frame([], idleDyn()) + frame(['', ok], idleDyn()))).not.toEqual(expect.arrayContaining(['V23']));
+  });
+
   it('V2: an idle frame without the mark before the first run', () => {
     const cap = HEAD + frame([], splashDyn()) + frame([], idleDyn()) + frame([], [`${DIM}─── ◆ jevcode 0.3.0 ${'─'.repeat(60)}${RESET}`, ...console_(PLACEHOLDER, IDLE_STATUS)]);
     expect(run(cap)).toContain('V2');
@@ -169,5 +206,88 @@ describe('one defect per predicate (each named by its V number)', () => {
     // a slow intake fails V19
     const slow = checkPolish(cap, { rows: 24, cols: 80, timing: { steps: [{ t: 0, step: 1, op: 'mark', arg: 'hi-sent' }, { t: 1600, step: 2, op: 'mark', arg: 'hi-reply' }], chunks } }).results;
     expect(by(slow, 'V19').pass).toBe(false);
+  });
+});
+
+/**
+ * TUI-DESIGN-4 §11 and §3.7 (the R2 guard): the two predicates round 4 changes. V13 is un-deferred by D-V and
+ * gated; V17's anchor is a glyph-agnostic exported constant whose ZERO-match in a capture that demonstrably ran
+ * is a hard failure, not the vacuous `no run ended in this capture` pass round 3 reported.
+ */
+describe('V13 / V17 after D-V (TUI-DESIGN-4 §11, §3.7)', () => {
+  it('the run-frame anchors match BOTH glyph sets and refuse the round-3 grammar they replaced', () => {
+    expect(runEndSelfTest()).toEqual({ ok: true, failures: [] });
+    expect(RUN_END_RE.test('    [run] finished · complete · 4 steps')).toBe(true);
+    expect(RUN_END_RE.test('    [run] finished - complete - 4 steps')).toBe(true);
+    expect(RUN_END_RE.test('    [run] end complete steps=4')).toBe(false);
+    expect(RUN_STARTED_RE.test('    [run] started - jev+llm - t')).toBe(true);
+  });
+
+  it('V13: a `k=v` pair and a ` | ` separator are caught; the allowlisted rows are not', () => {
+    expect(v13Rows(['    [step 1] intent · edit · 0.82 (confidence 0.71)'])).toEqual([]);
+    expect(v13Rows(['    [step 1] intent=edit p=0.82'])).toHaveLength(1);
+    expect(v13Rows(['    [step 1] outcome blocked: a | b'])).toHaveLength(1);
+    // the three allowlisted producers (§3.6 edge 10 plus the prologue header the inventory missed)
+    expect(v13Rows(['    [run] seeded from run r1: kind=edit'])).toEqual([]);
+    expect(v13Rows(['    [step 2] directive move=change_approach'])).toEqual([]);
+    expect(v13Rows(['    [run] jevcode session · proj | step 0/– starting'])).toEqual([]);
+    // under --ascii the console's own `|` edges are not separators
+    expect(v13Rows(['| a row inside the box |'], true)).toEqual([]);
+  });
+
+  it('V13 is gated by default and skipped with `v13: false`', () => {
+    const cap = goodCapture();
+    expect(by(checkPolish(cap, { rows: 24, cols: 80 }).results, 'V13').pass).toBe(true);
+    expect(by(checkPolish(cap, { rows: 24, cols: 80, v13: false }).results, 'V13').pass).toBeNull();
+    // the same capture with one `k=v` row fails
+    const bad = cap + frame(['', `${DIM}    [step 2]${RESET} intent=edit p=0.82 c=0.71`], idleDyn());
+    expect(by(checkPolish(bad, { rows: 24, cols: 80 }).results, 'V13').pass).toBe(false);
+  });
+
+  it('V17: zero anchor matches in a capture whose run started AND stopped is a HARD FAILURE, never a vacuous pass', () => {
+    // a capture written by a pre-D-V build: `[run] end …` is present, the round-4 anchor matches nothing
+    const staleEnd = `${DIM}    [run]${RESET} end replan_stop steps=9 wall=14s`;
+    const stale = HEAD + frame([], splashDyn()) + frame([], idleDyn()) + frame(['', RUN_START, STEP], liveDyn()) + frame(['', staleEnd, '', UI_BLOCK], idleDyn());
+    const r = by(checkPolish(stale, { rows: 24, cols: 80, v13: false }).results, 'V17');
+    expect(r.pass).toBe(false);
+    expect(r.detail).toContain('the anchor is stale');
+  });
+
+  it('V17: a capture with no run at all is skipped, not passed and not failed', () => {
+    const noRun = HEAD + frame([], splashDyn()) + frame([], idleDyn()) + frame(['', YOU, '', BOT], idleDyn());
+    const r = by(checkPolish(noRun, { rows: 24, cols: 80 }).results, 'V17');
+    expect(r.pass).toBeNull();
+    expect(r.detail).toBe('no run in this capture');
+  });
+
+  /**
+   * Review finding 8: the hard failure used to depend on a `[ui] stopped —` row being present too, so ANY
+   * capture whose epilogue is absent — the one-shot and signal paths write it to stderr, outside the frame
+   * scrollback — fell through to the same vacuous pass with different prose. The failure now depends on the
+   * run having STARTED, with exactly one exemption: the driver killed the child on its timeout.
+   */
+  it('V17: a stale anchor fails even when the `[ui] stopped —` epilogue row is absent', () => {
+    const staleEnd = `${DIM}    [run]${RESET} end replan_stop steps=9 wall=14s`;
+    const noEpilogue = HEAD + frame([], splashDyn()) + frame([], idleDyn()) + frame(['', RUN_START, STEP], liveDyn()) + frame(['', staleEnd], idleDyn());
+    const r = by(checkPolish(noEpilogue, { rows: 24, cols: 80, v13: false }).results, 'V17');
+    expect(r.pass).toBe(false);
+    expect(r.detail).toContain('the anchor is stale');
+    expect(r.detail).not.toContain('although the run stopped');
+    // …and the one legitimate reason a started run has no end row: the driver's timeout killed it
+    const killed = by(checkPolish(noEpilogue, { rows: 24, cols: 80, v13: false, timing: { steps: [{ t: 1, step: 4, op: 'timeout' }], chunks: [] } }).results, 'V17');
+    expect(killed.pass).toBeNull();
+    expect(killed.detail).toContain('killed on the driver timeout');
+  });
+
+  /**
+   * Review finding 7: the session-header allowlist row was spelt with a literal `·`, but `sessionHeaderItem`
+   * goes out through `glyphTwin` — so V13 failed on EVERY `--ascii` capture, including round 3's V21 twin
+   * sweep. The allowlist is glyph-agnostic and the self-test covers both glyph sets.
+   */
+  it('V13: the session-header allowlist row is glyph-agnostic (an --ascii capture is not red)', () => {
+    expect(v13Rows(['    [run] jevcode session - proj | step 0/- starting'], true)).toEqual([]);
+    expect(v13Rows(['    [run] jevcode session · proj | step 0/– starting'], false)).toEqual([]);
+    // a row that merely looks like it is not allowlisted
+    expect(v13Rows(['    [run] jevcode sessions · proj | step 0/- starting'], true)).toHaveLength(1);
   });
 });

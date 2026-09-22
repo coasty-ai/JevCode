@@ -104,6 +104,15 @@ export interface KeyState {
   minsize: boolean;
   /** the retry row is up (`UiState.retrying !== null`, §13.2): a bare `r` on an empty draft is `[r] retry now` */
   retrying: boolean;
+  /**
+   * TUI-DESIGN-4 §4.7 E12 / E13: the whole draft is a `/token` (`draft.trim() === commandToken(draft.trim())`).
+   * Optional and **false by default**, so both rules are inert until the controller supplies it (§9.2's `App.tsx`
+   * request): Ctrl-C then also clears the draft, and `/` at the end of such a draft **reopens** the palette — it is
+   * not inserted, because a second slash would make the draft `/mode/`, a token that matches nothing.
+   */
+  draftTokenOnly?: boolean;
+  /** TUI-DESIGN-4 §4.7 E13: the cursor sits at the end of the draft — the reopen rule never fires mid-token. */
+  cursorAtEnd?: boolean;
 }
 
 /** TUI-DESIGN §3.1: a fresh state for a mounted session or one-shot renderer. */
@@ -123,6 +132,8 @@ export function initialKeyState(mode: 'session' | 'one-shot' = 'session'): KeySt
     overlayArmed: false,
     minsize: false,
     retrying: false,
+    draftTokenOnly: false,
+    cursorAtEnd: true,
   };
 }
 
@@ -165,7 +176,12 @@ export type KeyAction =
   | { type: 'export' }
   /** TUI-DESIGN-3 §4.5: a rebound key that equals a command (`session:cost` → `/cost`, `files:undo` → `/undo`, …); the App routes the line as typed */
   | { type: 'slash'; line: string }
-  | { type: 'palette'; op: 'move' | 'page' | 'accept' | 'run' | 'close'; by?: -1 | 1 }
+  /**
+   * TUI-DESIGN-4 §4.2 P-P1: Enter is `enter` — the controller runs it through `paletteNavState` / `paletteStep`, which
+   * is the only place that knows whether the draft is armed. `run` is round 3's op, no longer emitted by the resolver;
+   * it stays in the union so an out-of-tree dispatcher keeps compiling until §9.2's `App.tsx` row lands.
+   */
+  | { type: 'palette'; op: 'move' | 'page' | 'accept' | 'enter' | 'run' | 'close'; by?: -1 | 1 }
   | { type: 'picker'; op: 'move' | 'page' | 'open' | 'accept' | 'preview' | 'allWorkspaces' | 'rename' | 'deleteArm' | 'deleteConfirm' | 'close'; by?: -1 | 1 }
   | { type: 'review'; op: 'approve' | 'decline' | 'note' | 'expand' | 'whyArm' | 'why' | 'noteSubmit' | 'noteCancel'; dim?: 1 | 2 | 3 | 4 | 5 }
   | { type: 'gate'; op: 'send' | 'dismiss' }
@@ -185,8 +201,16 @@ export const REVIEW_PENDING_TOAST = 'review pending: y n d e w · Esc declines';
 export const INTAKE_PENDING_TOAST = 'intake pending: y n · Esc keeps the text';
 
 const CSI_LEAK = /^\[(?:I|O|\?\d+[uc]|\d+;\d+R|27;\d+;\d+~|<\d+;\d+;\d+[Mm]|\?62;[\d;]*c)$/;
+/**
+ * TUI-DESIGN-4 §4.7 E10: an SGR (`[<64;10;5M`) or X10 (`[M` + three bytes) mouse report from an **outer** program's
+ * tracking mode is delivered by Ink as text. It is dropped in every context, so it can never reach a draft, a palette
+ * query or a wizard field.
+ */
+export const MOUSE_RE = /^\[(?:<[0-9;]+[Mm]|M[\s\S]{3})$/;
 const OSC_LEAK = /^\]\d+;/;
 const XTERM_NEWLINE = /^\[27;[2-8];13~$/;
+/** TUI-DESIGN-4 §4.7 E9: `/` plus up to eight name characters in one unbracketed chunk still opens the palette. */
+const PALETTE_CHUNK_RE = /^\/[a-z0-9-]{0,8}$/;
 
 let graphemes: Intl.Segmenter | null = null;
 /** one lazily created grapheme segmenter (never on the first-frame path, §4.1) */
@@ -291,6 +315,7 @@ function chordable(k: KeyEvent): boolean {
 
 function textActions(k: KeyEvent): KeyAction[] {
   if (k.input.length > 1) {
+    // (`MOUSE_RE` is applied once, at the top of `resolveKey`, so every context drops a mouse report — §4.7 E10)
     if (CSI_LEAK.test(k.input) || OSC_LEAK.test(k.input)) return [{ type: 'filtered', reason: 'csi-leak' }];
     if (graphemeCount(k.input) > 1) return [{ type: 'paste', text: k.input }];
   }
@@ -413,6 +438,14 @@ function composerAction(id: string, s: KeyState, k: KeyEvent): KeyAction[] | nul
     case 'composer:completeBack':
       return [{ type: 'complete', dir: -1 }];
     case 'composer:palette':
+      // TUI-DESIGN-4 §4.7 E13: at the **end** of a draft that is exactly a `/token` the slash **reopens** the card
+      // and is NOT inserted — a second slash would make the draft `/mode/`, whose token matches nothing, so the
+      // reopened card would read `no command matches /mode/`: worse than the trap the rule exists to undo. It
+      // cannot fire mid-prompt (a prompt has a space or does not start with `/`). `//` at column 0 still escapes:
+      // the first `/` opens the card, so the second one is typed **with the palette open** and is resolved by
+      // `resolvePalette` (which sends a printable straight to `textActions`), never by this branch — this case is
+      // reached only with the card closed, i.e. after an Esc.
+      if (s.draftTokenOnly === true && s.cursorAtEnd === true) return [{ type: 'openPalette' }];
       return s.draftEmpty ? [{ type: 'insert', text: k.input }, { type: 'openPalette' }] : textActions(k);
     case 'composer:mention':
       return [{ type: 'insert', text: k.input }, { type: 'openMention' }];
@@ -486,6 +519,13 @@ function resolveComposer(s: KeyState, k: KeyEvent, now: number, b: Bindings, con
   // §13.2 `[r] retry now`: a bare `r` on an empty draft while the retry row is up (the `[`/`]` empty-draft rule's shape;
   // with a draft, or once `retry:settled` cleared the row, `r` is text again)
   if (s.retrying && s.draftEmpty && k.input === 'r' && !k.key.shift && isPrintable(k)) return { state: cleared, actions: [{ type: 'retryNow' }] };
+  // TUI-DESIGN-4 §4.7 E9: a **non-paste** chunk that is `/` plus up to eight name characters, delivered as one
+  // `useInput` on an empty draft, opens the palette with the remainder as the query. Measured: `send /m` arrives as a
+  // single `input === '/m'`, which matches no key binding, so today it draws `› /m` with no palette at all. The length
+  // and charset bound keeps a 2 KB unbracketed burst text, and a bracketed paste never reaches here (handled above).
+  if (s.draftEmpty && k.input.length > 1 && PALETTE_CHUNK_RE.test(k.input) && isPrintable(k) && lookupBinding(b, 'composer', '/') === 'composer:palette') {
+    return { state: cleared, actions: [{ type: 'insert', text: k.input }, { type: 'openPalette' }] };
+  }
   const ks = keyString(k);
   if (ks !== null) {
     const found = lookup(cleared, ks, contexts, now, b);
@@ -655,7 +695,9 @@ function resolvePalette(s: KeyState, k: KeyEvent, now: number, b: Bindings): Ste
   if (isCtrl(k, 'd')) return interrupt(s, 'ctrl-d', now);
   if (k.key.escape) return interrupt(s, 'esc', now);
   if (k.paste) return one({ type: 'paste', text: k.input });
-  if (isEnter(k)) return one({ type: 'palette', op: 'run' });
+  // TUI-DESIGN-4 §4.2: Enter is not "run" — the nav machine decides between cycling, accepting and running, and a
+  // pasted CR never gets here (`k.paste` is handled above), so §4.1's theorem holds for a held Enter as well.
+  if (isEnter(k)) return one({ type: 'palette', op: 'enter' });
   if (isNewlineKey(k)) return { state: s, actions: [] };
   const ks = keyString(k);
   if (ks !== null) {
@@ -823,6 +865,11 @@ function sameArmed(a: Armed, b: Armed): boolean {
  */
 export function resolveKey(ui: KeyState, k: KeyEvent, nowMs: number, bindings: Bindings = DEFAULT_BINDINGS): KeyAction[] {
   if (k.key.eventType === 'release' || k.key.eventType === 'repeat') return filtered('event-type');
+  // TUI-DESIGN-4 §4.7 E10: with no tracking enabled the terminal sends nothing, or `ESC[A`/`ESC[B`, which move the
+  // marker — desirable. If SGR reporting is on from an **outer** program Ink delivers `[<64;10;5M` as text, so it is
+  // dropped here, before the context dispatch: a mouse click must never reach a draft, a palette query or a wizard
+  // field. A bracketed paste is left alone (its content is the user's, whatever it looks like).
+  if (k.paste !== true && k.input.length > 1 && MOUSE_RE.test(k.input)) return filtered('mouse-report');
   const now = Number.isFinite(nowMs) ? nowMs : 0;
   let state = ui;
   const actions: KeyAction[] = [];

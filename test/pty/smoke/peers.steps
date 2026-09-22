@@ -1,0 +1,17 @@
+# TUI-DESIGN-4 §7.10 (P-D10): the TUI side of the peer registry, driven by the stub (JEVCODE_FAULT=peer:2).
+# Two instances in one workspace ran to completion with ZERO mention of each other. The three surfaces: the
+# status segment `2 here` (counts only — never a pid, never a path, and the FIRST thing dropped when the status
+# line runs out of columns), the session-open item naming `/peers`, and `/peers` itself as a real block.
+expect \x1b\[\?25l
+expect Say hi
+expect another jevcode is working in this workspace
+sleep 0.3
+send /peers
+sleep 0.2
+send \r
+expect peers [·-] 
+sleep 0.3
+send /exit
+sleep 0.2
+send \r
+eof

@@ -432,7 +432,13 @@ export function explainFsError(e: unknown, ctx: FsErrorContext = {}): FsExplanat
     }
     case 'ENOSPC':
     case 'EDQUOT':
-      return build(`the disk holding ${where} is full`, ['free space, or pass --runs-dir <dir> on another volume'], EXIT_CODES.config);
+      /**
+       * TUI-DESIGN-4 §7.4 row 2 and §7.7's edge disagree on the code for one good reason: a full disk while the
+       * LAUNCH creates the runs directory is a configuration problem the user fixes with `--runs-dir` (exit 2),
+       * while a full disk while writing INSIDE a run directory means this run cannot be checkpointed or its
+       * bundle finished (exit 3) — which is the row `jevcode report` and `checkpoint:degraded` both want.
+       */
+      return build(`the disk holding ${where} is full`, ['free space, or pass --runs-dir <dir> on another volume'], op === 'run-dir' ? EXIT_CODES.checkpoint : EXIT_CODES.config);
     case 'ENOENT': {
       if (op === 'config') return build(`cannot read ${where}: no such file`, ['pass --config <path>, or remove the setting that names it'], EXIT_CODES.config);
       if (op === 'run-dir')

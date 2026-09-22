@@ -6,14 +6,19 @@
  * score order (Suggested first), and an exact alias pins its owner to the top (score 1000, like an exact name — `/s` shows `/status`
  * before `/steer`). Command rows carry a 3-cell dim alias column (the shortest alias) between the name and the title, hidden below
  * 50 columns; every command row is exactly the width. Unavailable rows carry `(idle only)` / `(live only)`; argument sub-rows of
- * the highlighted command fill spare rows (the `/mode` row equal to `DEFAULT_MODE` reads ` (default)`); the last row is
- * `(i/N)  Tab completes · Enter runs an exact match · Esc closes` with `▲`/`▼` when scrolled. Widths are O2's `stringWidth` (§4.2, cell-identical with string-width@8.2.2); cuts are by grapheme
- * cluster, and a parenthesised list is cut at a comma so the title ends `…)` as frame F-K shows.
+ * the highlighted command fill spare rows (the `/mode` row equal to `DEFAULT_MODE` reads ` (default)`, and TUI-DESIGN-4
+ * §4.3 puts the value cursor `▹` on the one the keys are walking); the last row is `(i/N)  <state footer>` with `▲`/`▼`
+ * when scrolled — TUI-DESIGN-4 §4.4 makes that footer say what Enter does **in this state** (`paletteFooterText`), and
+ * §4.7 E2 replaces the empty card with a sentence. Widths are O2's `stringWidth` (§4.2, cell-identical with
+ * string-width@8.2.2); cuts are by grapheme cluster, and a parenthesised list is cut at a comma so the title ends `…)`
+ * as frame F-K shows. TUI-DESIGN-4 §4.6 adds `paletteNumberedLines`, the one numbered formatter `--plain` and the
+ * screen reader share.
  */
 import type { StopReason } from '../../core/types.js';
 import { cellWidth, stringWidth } from '../composer/width.js';
 import { KEY_ACTIONS, KEY_CONTEXTS, displayKey, type Bindings, type KeyContext } from '../keys/bindings.js';
 import { rank } from './fuzzy.js';
+import { paletteNavState, type PaletteNavState } from './nav.js';
 import { COMMANDS, POPULAR, findCommand, shortestAlias, type CommandSpec } from './registry.js';
 
 /** TUI-DESIGN §5.3: the state that decides the Suggested group. */
@@ -40,7 +45,8 @@ export type PaletteTag = 'Suggested' | 'recent';
 
 /** TUI-DESIGN §5.3: one row of the palette, structured so the Ink overlay can colour the parts. */
 export interface PaletteRow {
-  readonly kind: 'command' | 'value' | 'footer';
+  /** TUI-DESIGN-4 §4.7 E2: `note` is the S-NONE inline row (`no command matches /zz — keep typing, or Esc to clear`). */
+  readonly kind: 'command' | 'value' | 'footer' | 'note';
   readonly text: string;
   readonly selected: boolean;
   /** command rows: the `/name`; value rows: `/name value` */
@@ -56,8 +62,19 @@ export interface PaletteRow {
   readonly alias?: string | null;
 }
 
-/** TUI-DESIGN §5.3: the palette footer, verbatim (§24), before the `▲`/`▼` scroll marks. */
-export const PALETTE_FOOTER = 'Tab completes · Enter runs an exact match · Esc closes';
+/**
+ * TUI-DESIGN-4 §4.4: the footer is **state-aware** — `paletteFooterText(state, ctx)` replaces round 3's one constant,
+ * which said "Enter runs an exact match" while the draft was `/` and Enter did not. `PALETTE_FOOTER` is kept as the
+ * S-BROWSE rendering (the footer a bare `/` draws), the one importers reference.
+ */
+export const PALETTE_FOOTER = 'Enter next · Tab picks · Esc closes';
+/** TUI-DESIGN-4 §4.7 E2: the S-NONE inline row, before the `(0/0)` footer. */
+export function noMatchRow(tok: string, ascii = false): string {
+  return `no command matches ${tok} ${ascii ? '-' : '—'} keep typing, or Esc to clear`;
+}
+/** TUI-DESIGN-4 §4.3 P-P4: the value cursor of an argument sub-row — never the command marker `▌` (`>`). */
+export const VALUE_MARKER = '▹ ';
+export const VALUE_MARKER_ASCII = '- ';
 /** TUI-DESIGN §24: the Suggested tag. */
 export const SUGGESTED = 'Suggested';
 /** TUI-DESIGN-3 §4.1 rule 6 / §10: the Recent tag. */
@@ -174,7 +191,7 @@ function tokenOf(query: string): string {
 }
 
 /** TUI-DESIGN-3 §4.3: the first argument token of a query (`/budget sp` → `sp`), case-folded; null when the query is the name alone */
-function argTokenOf(query: string): string | null {
+export function argTokenOf(query: string): string | null {
   const m = /^\/?\S*\s+(\S*)/.exec(query.trimStart());
   return m === null ? null : (m[1] ?? '').toLowerCase();
 }
@@ -256,23 +273,154 @@ export function paletteMatches(query: string, state: PaletteState): PaletteMatch
 }
 
 /**
- * TUI-DESIGN §5.3 / TUI-DESIGN-3 §4.1 rule 3: the ghost after the typed token. A prefix of the top match ghosts its rest
- * (`+tatus (+N)`); an alias hit (the token is an alias of the top match, exactly or as a prefix, so the name does not simply
- * extend it) ghosts the arrow ` → /status` — `arrow` set, `rest` empty — and `→` at the end of the text accepts it as `/status `.
- * `more` is the count of other matches in both forms. Null when the token is the exact name or nothing matches.
+ * TUI-DESIGN-4 §4.3 P-P2: the ghost **is** the highlight. Three shapes, one union:
+ * `rest` — the marked row extends the typed token (`/mo` ▸ `de +1`); `arrow` — it does not, because the token is an
+ * alias or a fuzzy hit (`/q` ▸ ` → /exit +2`; this subsumes TD3 §4.1 rule 3, so the two rounds land one type);
+ * `value` — an argument value of the marked sub-row (`/mode j` ▸ `ev-on +1`). `more` is the count of the other rows
+ * of the same list in every shape.
  */
-export type PaletteGhost = { readonly rest: string; readonly more: number; readonly arrow?: string };
+export type PaletteGhost =
+  | { readonly kind: 'rest'; readonly rest: string; readonly more: number }
+  | { readonly kind: 'arrow'; readonly target: string; readonly more: number }
+  | { readonly kind: 'value'; readonly rest: string; readonly more: number };
 
-/** TUI-DESIGN §5.3 / TUI-DESIGN-3 §4.1 rule 3 `paletteGhost` — see `PaletteGhost`. */
-export function paletteGhost(query: string, matches: readonly PaletteMatch[]): PaletteGhost | null {
-  const top = matches[0];
-  if (top === undefined) return null;
+/**
+ * TUI-DESIGN-3 §4.1 rule 3: round 3's two-member shape, still what `App.tsx` reads at `:1709` and `:2157`. Kept until
+ * S1 lands §9.2's `App.tsx` row (`paletteGhostFor(query, matches, pal.selected)`); `Composer.tsx` renders both.
+ */
+export type PaletteGhostLegacy = { readonly rest: string; readonly more: number; readonly arrow?: string };
+
+/** TUI-DESIGN-3 §4.1 rule 3 `paletteGhost` — the round-3 entry point: the ghost of `matches[0]`, in the legacy shape. */
+export function paletteGhost(query: string, matches: readonly PaletteMatch[]): PaletteGhostLegacy | null {
+  const g = paletteGhostFor(query, matches, 0);
+  if (g === null) return null;
+  if (g.kind === 'arrow') return { rest: '', more: g.more, arrow: g.target };
+  return { rest: g.rest, more: g.more };
+}
+
+function wrapIndex(i: number, n: number): number {
+  if (n <= 0) return 0;
+  const k = Math.floor(Number.isFinite(i) ? i : 0) % n;
+  return k < 0 ? k + n : k;
+}
+
+/**
+ * TUI-DESIGN-4 §4.3 P-P2 `paletteGhostFor` — "what will Tab give me" and "what is the marker on" are one question, so
+ * the ghost reads `matches[selected]`, never `matches[0]` (A4 p5 captured a marker on `/llm` beside a `/mode +5`
+ * ghost). With an argument token typed, `selected` is the **value** cursor `j` over the filtered sub-rows, exactly as
+ * `completeDraft` already uses it, and the ghost previews `V[j]`. Null when there is nothing to preview.
+ */
+export function paletteGhostFor(query: string, matches: readonly PaletteMatch[], selected: number): PaletteGhost | null {
   const q = tokenOf(query);
+  const argToken = argTokenOf(query);
+  const spec = q === '' ? null : findCommand(q);
+  if (argToken !== null && spec !== null) {
+    const list = argValues(spec, argToken);
+    const v = list[wrapIndex(selected, list.length)];
+    if (v === undefined) return null;
+    // the same rule the command branch uses (P-P2): a marked row that **extends** the token ghosts its rest, one that
+    // does not ghosts the arrow. `rank` is a subsequence scorer, so `/mode j` marks `llm-jev` as well as the three
+    // `jev-*` values — without the arrow the ghost would vanish on exactly the row Tab is about to accept, which is
+    // the defect this round exists to close.
+    if (!v.toLowerCase().startsWith(argToken)) return { kind: 'arrow', target: `/${spec.name} ${v}`, more: list.length - 1 };
+    const rest = v.slice(argToken.length);
+    return rest === '' ? null : { kind: 'value', rest, more: list.length - 1 };
+  }
+  const top = matches[Math.min(Math.max(0, Math.floor(selected) || 0), Math.max(0, matches.length - 1))];
+  if (top === undefined) return null;
   const more = matches.length - 1;
-  if (q !== '' && top.spec.aliases.includes(q)) return { rest: '', more, arrow: `/${top.spec.name}` };
-  if (top.spec.name.startsWith(q)) return top.spec.name === q ? null : { rest: top.spec.name.slice(q.length), more };
-  if (q !== '' && top.spec.aliases.some((a) => a.startsWith(q))) return { rest: '', more, arrow: `/${top.spec.name}` };
-  return null;
+  const name = top.spec.name;
+  if (q !== '' && top.spec.aliases.includes(q)) return { kind: 'arrow', target: `/${name}`, more };
+  if (name.startsWith(q)) return name === q ? null : { kind: 'rest', rest: name.slice(q.length), more };
+  return { kind: 'arrow', target: `/${name}`, more };
+}
+
+/**
+ * TUI-DESIGN-4 §4.3 P-P4: the arg-0 sub-rows for a typed argument token — `rank`ed by the partial as round 3 landed it,
+ * falling back to the whole list when nothing ranks (S-ARGBAD: the user must still be able to see the valid values).
+ */
+export function argValues(spec: CommandSpec, argToken: string): readonly string[] {
+  const all = spec.args[0]?.values;
+  if (all === undefined) return [];
+  if (argToken === '') return all;
+  const ranked = rank(argToken, all, Number.POSITIVE_INFINITY).map((r) => r.candidate);
+  return ranked.length === 0 ? all : ranked;
+}
+
+/** TUI-DESIGN-4 §4.4: what the state footer needs beyond the state itself. */
+export interface PaletteFooterCtx {
+  /** the resolved owner, without `/` — the marked row in BROWSE/ONE/ARMED/PICKED, the draft's command in the arg states */
+  readonly name?: string | null;
+  /** the arg-0 token as typed (S-ARGDONE / S-ARGBAD) */
+  readonly arg?: string | null;
+  /** the command cannot run now — S-ARMED says so and the whole row is drawn dim */
+  readonly unavailable?: 'idle' | 'live' | null;
+  /** arg 0 carries enum / `setting` values, so Tab adds an argument */
+  readonly hasValues?: boolean;
+  /** S-FREE: the name of arg 0 (`type the title`) */
+  readonly argName?: string | null;
+  readonly ascii?: boolean;
+}
+
+/**
+ * TUI-DESIGN-4 §4.4 `paletteFooterText` — the footer says what Enter does, in every state. The command name is always
+ * the **resolved owner** (`/q` reads `Enter runs /exit`), which is the single best guard against an alias surprise.
+ * `·` → ` - ` under `--ascii`, as round 3's constant already did.
+ */
+export function paletteFooterText(state: PaletteNavState, ctx: PaletteFooterCtx = {}): string {
+  const name = ctx.name == null || ctx.name === '' ? null : `/${ctx.name}`;
+  const parts: string[] = [];
+  switch (state) {
+    case 'none':
+      break;
+    case 'one':
+      parts.push(name === null ? 'Enter picks' : `Enter picks ${name}`);
+      break;
+    case 'browse':
+      parts.push('Enter next', 'Tab picks');
+      break;
+    case 'picked':
+      parts.push(name === null ? 'Tab picks' : `Tab picks ${name}`, 'Enter next');
+      break;
+    case 'armed':
+      parts.push(`Enter runs ${name ?? ''}`.trimEnd());
+      if (ctx.unavailable === 'idle' || ctx.unavailable === 'live') parts.push(`${ctx.unavailable} only`);
+      else if (ctx.hasValues === true) parts.push('Tab adds an argument');
+      break;
+    case 'free':
+      parts.push(`Enter runs ${name ?? ''}`.trimEnd());
+      if (ctx.argName != null && ctx.argName !== '') parts.push(`type the ${ctx.argName}`);
+      break;
+    case 'arg':
+      parts.push('Enter next value', 'Tab picks');
+      break;
+    case 'argdone':
+      parts.push(`Enter runs ${[name, ctx.arg].filter((x) => x != null && x !== '').join(' ')}`.trimEnd());
+      break;
+    case 'argbad':
+      parts.push(`Enter runs ${[name, ctx.arg].filter((x) => x != null && x !== '').join(' ')}`.trimEnd(), 'no such value');
+      break;
+  }
+  parts.push('Esc closes');
+  return parts.join(ctx.ascii === true ? ' - ' : ' · ');
+}
+
+/** TUI-DESIGN-4 §4.4: the footer context for a `(query, state, selected)` — the one place the states and their names agree. */
+function footerCtxFor(nav: PaletteNavState, query: string, state: PaletteState, matches: readonly PaletteMatch[], sel: number, ascii: boolean): PaletteFooterCtx {
+  const q = tokenOf(query);
+  const draftSpec = q === '' ? null : findCommand(q);
+  const marked = matches[sel]?.spec ?? null;
+  const spec = nav === 'free' || nav === 'arg' || nav === 'argdone' || nav === 'argbad' ? draftSpec : marked;
+  const a0 = spec?.args[0];
+  const unavailable = spec === null || spec === undefined || spec.availableDuringTask === 'any' ? null : (spec.availableDuringTask === 'idle') === state.live ? spec.availableDuringTask : null;
+  return {
+    name: spec?.name ?? null,
+    arg: argTokenOf(query),
+    unavailable,
+    hasValues: a0?.values !== undefined,
+    argName: a0?.name ?? null,
+    ascii,
+  };
 }
 
 /**
@@ -282,8 +430,15 @@ export function paletteGhost(query: string, matches: readonly PaletteMatch[]): P
  * TUI-DESIGN-3 §4.1 rule 4 / §4.2 row anatomy (76 cells inside the card, 60 flat): marker `▌ ` / two spaces (2) ·
  * name `padEnd(12)` · alias `padEnd(2)` + space (3, ≥ 50 columns) · title clipped with `…` to the remaining budget ·
  * two spaces + the group tag at the right edge when one exists; every row (command, value, footer) is exactly `columns` cells.
+ *
+ * TUI-DESIGN-4 §4.3 / §4.4 / §4.7 E2 add: the value cursor `▹` (`-`) on `V[valueIndex]` whenever an argument token is
+ * present (never confused with the command marker), a `… +N more` clause when the row budget cuts values, the
+ * **state** footer (which is all a one-row palette keeps), and the S-NONE inline row in place of the blank card.
+ * `selected` is the command marker `i` and `valueIndex` the **value** cursor `j` (§4.3 P-P3: two cursors, never one
+ * number). `j` defaults to 0, so a caller that does not track it yet marks the first value; in the argument states
+ * the marker is pinned to the draft's own command row, because §4.2's keys move `j` there and never `i`.
  */
-export function paletteRows(query: string, state: PaletteState, selected: number, rows: number, columns: number, ascii = false): PaletteRow[] {
+export function paletteRows(query: string, state: PaletteState, selected: number, rows: number, columns: number, ascii = false, valueIndex?: number): PaletteRow[] {
   const n = Math.max(0, Math.floor(Number.isFinite(rows) ? rows : 0));
   if (n === 0) return [];
   const width = Math.max(1, Math.floor(Number.isFinite(columns) ? columns : 80));
@@ -292,23 +447,46 @@ export function paletteRows(query: string, state: PaletteState, selected: number
   const marker = ascii ? '> ' : '▌ ';
   const blank = '  ';
   const sel = total === 0 ? 0 : Math.min(Math.max(0, Math.floor(selected) || 0), total - 1);
-  if (n === 1) return [footer(sel, total, false, false, width, ascii)];
+  const nav = paletteNavState(query, matches, sel);
+  const argToken = argTokenOf(query);
+  // TUI-DESIGN-4 §4.3 P-P3: `i` and `j` are **two** cursors and one number can never stand for both. In the argument
+  // states §4.2's keys walk `V`, so the command marker is pinned to the draft's own row (`/mode j` keeps `▌` on
+  // `/mode` however far `i` was moved before the argument was typed) and `j` comes from `valueIndex` alone. Deriving
+  // the value cursor from `selected` put `▌` on `/model`, dropped every sub-row and printed `(0/0)`.
+  const draftTok = tokenOf(query);
+  const draftSpec = draftTok === '' ? null : findCommand(draftTok);
+  const overValues = nav === 'arg' || nav === 'argdone' || nav === 'argbad';
+  const draftAt = draftSpec === null ? -1 : matches.findIndex((m) => m.spec === draftSpec);
+  const mark = overValues && draftAt >= 0 ? draftAt : sel;
+  const fctx = footerCtxFor(nav, query, state, matches, mark, ascii);
+  const selSpec = matches[mark]?.spec;
+  const arg0 = selSpec?.args[0];
+  const values = selSpec === undefined || arg0?.values === undefined ? [] : argValues(selSpec, argToken ?? '');
+  // the `(i/N)` prefix counts the list the keys are walking: the values in the argument states, the matches elsewhere
+  const vsel = values.length === 0 ? 0 : wrapIndex(valueIndex ?? 0, values.length);
+  const mkFooter = (up: boolean, down: boolean, shown: number): PaletteRow =>
+    footerRow(nav, fctx, overValues ? vsel : mark, overValues ? values.length : total, up, down, width, ascii, overValues ? Math.max(0, values.length - shown) : 0);
+  if (n === 1) return [mkFooter(false, false, values.length)];
   const body = n - 1;
+  // TUI-DESIGN-4 §4.7 E2: zero matches draws a sentence, never an empty card
+  if (total === 0) {
+    const note = pad(cut(`  ${noMatchRow(tokenOf(query) === '' ? query.trim() : `/${tokenOf(query)}`, ascii)}`, width, ascii), width);
+    return [{ kind: 'note', text: note, selected: false, dim: false, spans: [], suggested: false, tag: null }, mkFooter(false, false, 0)];
+  }
   // TUI-DESIGN-3 §4.2 F-P2: an exact token (`/m`) whose command has value sub-rows keeps them on screen even when the matches
   // overflow — the command rows shrink to `max(2, body − values)` and the footer's ▼ says the rest scrolls; otherwise the
   // matches come first and the sub-rows take the spare rows (F-K)
-  const exactSpec = tokenOf(query) === '' ? null : findCommand(tokenOf(query));
-  const exactValues = exactSpec !== null && exactSpec === matches[sel]?.spec ? (exactSpec.args[0]?.values?.length ?? 0) : 0;
+  const exactValues = draftSpec !== null && draftSpec === matches[mark]?.spec ? (draftSpec.args[0]?.values?.length ?? 0) : 0;
   const commandRows = total > body && exactValues > 0 ? Math.min(total, body, Math.max(2, body - exactValues)) : Math.min(total, body);
   let start = 0;
-  if (total > commandRows) start = Math.min(Math.max(0, sel - Math.floor(commandRows / 2)), total - commandRows);
+  if (total > commandRows) start = Math.min(Math.max(0, mark - Math.floor(commandRows / 2)), total - commandRows);
   const out: PaletteRow[] = [];
   // TUI-DESIGN-3 §4.1 rule 4: the alias column is hidden below 50 columns — the name column then keeps today's 15 cells
   const aliasCol = width >= ALIAS_MIN_COLUMNS;
   const nameCol = aliasCol ? NAME_COL : Math.min(NAME_COL + ALIAS_COL, Math.floor(width / 2));
   for (let i = start; i < start + commandRows; i++) {
     const m = matches[i] as PaletteMatch;
-    const isSel = i === sel;
+    const isSel = i === mark;
     const name = `/${m.spec.name}`;
     const alias = shortestAlias(m.spec);
     const unavailable = (m.spec.availableDuringTask === 'idle' && state.live) || (m.spec.availableDuringTask === 'live' && !state.live);
@@ -322,33 +500,36 @@ export function paletteRows(query: string, state: PaletteState, selected: number
     const shift = isSel ? marker.length : blank.length;
     out.push({ kind: 'command', text, selected: isSel, name, dim: unavailable, spans: m.spans.map(([a, b]) => [a + shift, b + shift] as [number, number]), suggested: m.suggested, tag, alias: aliasCol ? alias : null });
   }
-  // argument sub-rows of the selected command; TUI-DESIGN-3 §4.3: a typed partial (`/budget sp`) filters them to the same
-  // candidates Tab cycles through, the value equal to the token highlighted
-  const selSpec = matches[sel]?.spec;
-  const arg0 = selSpec?.args[0];
+  // argument sub-rows of the selected command; TUI-DESIGN-3 §4.3 filters them to the same candidates Tab cycles through and
+  // TUI-DESIGN-4 §4.3 P-P4 puts the value cursor `▹` on `V[j]` (only once an argument token exists: an armed command with
+  // no argument yet previews its values with no cursor)
+  let shownValues = 0;
   if (selSpec !== undefined && arg0?.values !== undefined && out.length < body) {
-    const argToken = argTokenOf(query);
-    const values = argToken === null || argToken === '' ? arg0.values : rank(argToken, arg0.values, Number.POSITIVE_INFINITY).map((r) => r.candidate);
-    for (const v of values) {
+    const cursor = ascii ? VALUE_MARKER_ASCII : VALUE_MARKER;
+    for (let vi = 0; vi < values.length; vi++) {
+      const v = values[vi] as string;
       if (out.length >= body) break;
+      const isCur = argToken !== null && vi === vsel;
       const hint = arg0.valueHints?.[v];
       const label = `/${selSpec.name} ${v}${hint?.args ? ` ${hint.args}` : ''}`;
-      const head = `${blank}${pad(label, VALUE_COL)}${cells(label) >= VALUE_COL ? ' ' : ''}`;
+      const head = `${isCur ? cursor : blank}${pad(label, VALUE_COL)}${cells(label) >= VALUE_COL ? ' ' : ''}`;
       const avail = width - cells(head);
       // the ` (default)` suffix survives the cut: the title is cut to the room left beside it
       const suffix = arg0.defaultValue === v ? ' (default)' : '';
       const hintText = hint ? `${cut(hint.title, Math.max(0, avail - cells(suffix)), ascii)}${suffix}` : '';
       const text = pad(cut(`${head}${hintText}`, width, ascii), width);
-      out.push({ kind: 'value', text, selected: argToken !== null && argToken !== '' && v.toLowerCase() === argToken, name: `/${selSpec.name} ${v}`, dim: false, spans: [], suggested: false, tag: null });
+      out.push({ kind: 'value', text, selected: isCur, name: `/${selSpec.name} ${v}`, dim: false, spans: [], suggested: false, tag: null });
+      shownValues++;
     }
   }
-  out.push(footer(sel, total, start > 0, start + commandRows < total, width, ascii));
+  out.push(mkFooter(start > 0, start + commandRows < total, shownValues));
   return out;
 }
 
-function footer(sel: number, total: number, up: boolean, down: boolean, width: number, ascii: boolean): PaletteRow {
+function footerRow(nav: PaletteNavState, ctx: PaletteFooterCtx, sel: number, total: number, up: boolean, down: boolean, width: number, ascii: boolean, hiddenValues: number): PaletteRow {
   const marks = `${up ? (ascii ? ' ^' : ' ▲') : ''}${down ? (ascii ? ' v' : ' ▼') : ''}`;
-  const text = pad(cut(`  (${total === 0 ? 0 : sel + 1}/${total})  ${ascii ? PALETTE_FOOTER.replace(/ · /g, ' - ') : PALETTE_FOOTER}${marks}`, width, ascii), width);
+  const more = hiddenValues > 0 ? `${ascii ? ' - ' : ' · '}${ascii ? '...' : '…'} +${hiddenValues} more` : '';
+  const text = pad(cut(`  (${total === 0 ? 0 : sel + 1}/${total})  ${paletteFooterText(nav, ctx)}${more}${marks}`, width, ascii), width);
   return { kind: 'footer', text, selected: false, dim: false, spans: [], suggested: false, tag: null };
 }
 
@@ -356,6 +537,72 @@ function footer(sel: number, total: number, up: boolean, down: boolean, width: n
 export function paletteLines(query: string, state: PaletteState, selected: number, rows: number, columns: number, ascii = false): string[] {
   return paletteRows(query, state, selected, rows, columns, ascii).map((r) => r.text);
 }
+
+/** TUI-DESIGN-4 §4.6: the numbered block caps at this many command rows, then names where the rest is. */
+export const NUMBERED_MAX_ROWS = 40;
+
+/**
+ * TUI-DESIGN-4 §4.6: how many command rows the block shows. The cap never fires at `NUMBERED_MAX_ROWS + 1`: a
+ * `… 1 more — /help commands` tail costs exactly the row it replaces, and hiding one command would make it
+ * unpickable by number while the header still counted it (with 41 commands that command is `/ui`). From two hidden
+ * rows up the tail earns its place.
+ */
+export function numberedShown(total: number): number {
+  const n = Math.max(0, Math.floor(Number.isFinite(total) ? total : 0));
+  return n <= NUMBERED_MAX_ROWS + 1 ? n : NUMBERED_MAX_ROWS;
+}
+
+/** TUI-DESIGN-4 §4.6: the one-shot `--plain` prompt for the turn in which a bare integer picks a command. */
+export function numberedPrompt(n: number): string {
+  return `pick 1-${n}, or type a message > `;
+}
+
+/**
+ * TUI-DESIGN-4 §4.6 `paletteNumberedLines` — **one formatter for both twins**: the `--plain` composer's answer to a
+ * submitted `/`, and the screen reader's palette block. Neither surface has a palette today, so the numbered list is
+ * the whole affordance; Gemini CLI's numbered radio options are the precedent.
+ *
+ *   commands (41) — type a number or a name, then Enter
+ *     1  /help        keys by context, commands with one-liners, per-terminal notes
+ *    41  /exit        leave (exit 0; confirms first while a run is live)
+ *
+ * The rows are `paletteMatches` in palette order, so the number the user types and the row they read can never
+ * disagree; `numberedPick` resolves one back to its command.
+ */
+export function paletteNumberedLines(query: string, state: PaletteState, columns: number, ascii = false): string[] {
+  const width = Math.max(20, Math.floor(Number.isFinite(columns) ? columns : 80));
+  const matches = paletteMatches(query, state);
+  const total = matches.length;
+  const dash = ascii ? '-' : '—';
+  const out = [cut(`commands (${total}) ${dash} type a number or a name, then Enter`, width, ascii)];
+  const shown = numberedShown(total);
+  const numCol = String(shown).length + 1;
+  for (let i = 0; i < shown; i++) {
+    const m = matches[i] as PaletteMatch;
+    const head = `${String(i + 1).padStart(numCol)}  ${pad(`/${m.spec.name}`, NAME_COL)} `;
+    out.push(cut(`${head}${m.spec.title}`, width, ascii));
+  }
+  if (total > shown) out.push(cut(`${ascii ? '...' : '…'} ${total - shown} more ${dash} /help commands`, width, ascii));
+  return out;
+}
+
+/** TUI-DESIGN-4 §4.6: the command a number picks out of `paletteNumberedLines` (1-based, `null` outside `1..N`). */
+export function numberedPick(query: string, state: PaletteState, n: number): CommandSpec | null {
+  if (!Number.isInteger(n)) return null;
+  const matches = paletteMatches(query, state);
+  return n >= 1 && n <= numberedShown(matches.length) ? ((matches[n - 1] as PaletteMatch).spec) : null;
+}
+
+/**
+ * TUI-DESIGN-4 §4.6: the one line a screen reader hears on every highlight change — `--plain --screen-reader` and the
+ * TUI under SR emit it byte-identically (the declared SR-only normaliser; precedent `SR_REVIEW_MENU`). The caller
+ * coalesces to at most one per `SR_PALETTE_COALESCE_MS` so hammering Enter cannot flood.
+ */
+export function srPaletteLine(index: number, total: number, spec: CommandSpec): string {
+  return `palette: ${index + 1} of ${total} · /${spec.name} · ${spec.title} · Enter next, Tab picks, Esc closes`;
+}
+/** TUI-DESIGN-4 §4.6: at most one screen-reader palette line per this many ms. */
+export const SR_PALETTE_COALESCE_MS = 400;
 
 /** TUI-DESIGN §5.3 / TUI-DESIGN-3 §10: the per-terminal notes of the help block, verbatim (the two theme notes are round 3's). */
 export const HELP_NOTES: readonly string[] = [
@@ -405,8 +652,15 @@ export const HELP_COMPACTION_LEVELS: readonly string[] = [
   'the context title shares its first packed line; no `notes` header',
   'only the primary key of each action',
   'the key contexts packed into one block (`<context>: …` markers) — every command keeps its own line',
-  'the per-terminal notes are dropped — a command line (`/exit`) outranks a terminal tip',
+  'the per-terminal notes are dropped — a command line (`/exit`) outranks a terminal tip — and the `keys` header shares the first packed row',
+  'the key table gives way to one pointer row — `/help keys` still prints it, and no command is ever cut (TUI-DESIGN-4: 41 commands)',
 ];
+/**
+ * TUI-DESIGN-4 §3.3 / §4.6: level 5's key row. With 41 commands the level-4 block is 61 rows at 80 columns, one over
+ * `HELP_MAX_LINES`, and the tail cut would drop `/peers` and `/ui` — the two commands a user is least likely to know.
+ * The keys are the part that has both its own topic (`/help keys`) and a generated document, so they yield first.
+ */
+export const HELP_KEYS_POINTER = '  … /help keys prints the key table (docs/KEYS.md has it too)';
 
 /** TUI-DESIGN-3 §4.1 rule 7: the head of a command's help line — `  /status, /s [usage]` (aliases after the name, table order). */
 export function helpCommandHead(c: CommandSpec): string {
@@ -443,10 +697,16 @@ export function helpLines(columns: number, opts: HelpOptions = {}): string[] {
     if (c.availableDuringTask === 'idle') return opts.live ? ' (idle only)' : '';
     return opts.live ? '' : ' (live only)';
   };
-  const render = (level: 0 | 1 | 2 | 3 | 4): string[] => {
+  const render = (level: 0 | 1 | 2 | 3 | 4 | 5): string[] => {
     const lines: string[] = [];
-    if (topic !== 'commands') {
-      lines.push('keys');
+    if (topic !== 'commands' && level >= 5 && topic !== 'keys') {
+      // TUI-DESIGN-4: the keys give way to their pointer before any command line is cut
+      lines.push('keys', cut(ascii ? HELP_KEYS_POINTER.replace('…', '...') : HELP_KEYS_POINTER, width, ascii));
+    } else if (topic !== 'commands') {
+      // TUI-DESIGN-4: at level ≥ 4 the `keys` header shares the first packed row (level 1's rule for context titles),
+      // which is the one row that keeps the whole key table at the default 80 columns with 41 commands
+      const keyHead: string[] = [];
+      if (level < 4) lines.push('keys');
       /** level ≥ 3: one packed block, each context's first item prefixed `<context>: ` */
       const merged: string[] = [];
       for (const ctx of KEY_CONTEXTS) {
@@ -473,7 +733,14 @@ export function helpLines(columns: number, opts: HelpOptions = {}): string[] {
           lines.push(...packed.slice(1));
         }
       }
-      if (level >= 3) lines.push(...packLines(merged, width, '  ', sep));
+      if (level >= 3) {
+        const packed = packLines(merged, width, '  ', sep);
+        if (level >= 4 && packed.length > 0) {
+          keyHead.push(cut(`keys  ${(packed[0] as string).trimStart()}`, width, ascii), ...packed.slice(1));
+          lines.push(...keyHead);
+        } else lines.push(...packed);
+      }
+      if (level >= 4 && lines.length === 0) lines.push('keys');
     }
     if (topic !== 'keys') {
       lines.push('commands');
@@ -494,7 +761,7 @@ export function helpLines(columns: number, opts: HelpOptions = {}): string[] {
     return lines;
   };
   let lines = render(0);
-  for (const level of [1, 2, 3, 4] as const) if (lines.length > HELP_MAX_LINES) lines = render(level);
+  for (const level of [1, 2, 3, 4, 5] as const) if (lines.length > HELP_MAX_LINES) lines = render(level);
   if (lines.length > HELP_MAX_LINES) {
     const kept = lines.slice(0, HELP_MAX_LINES - 1);
     kept.push(cut(HELP_POINTER, width, ascii));

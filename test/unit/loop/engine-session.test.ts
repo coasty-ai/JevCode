@@ -428,7 +428,7 @@ describe('parity replay (§15.1, §15.3): transcript.log = itemsFromEvent over t
       }
     }
     expect(h.store.transcript).toEqual(expected);
-    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end /);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] /);
     // the event list did carry every new kind (the writers agree whatever lines O10's plain.ts gives them)
     const kinds = new Set(h.events.map((e) => e.type));
     for (const k of ['workspace', 'budget:clamp', 'secret-ack', 'steer:queued', 'steer:applied', 'notice', 'confirm:resolved', 'budget:warn'] as const) expect(kinds.has(k)).toBe(true);

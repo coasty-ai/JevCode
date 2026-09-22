@@ -1,4 +1,4 @@
 # run --task-file <file>: the first-frame header names the file; the run completes (F15)
 expect task from todo.md
-expect end (complete|max_steps|generator_done)
+expect finished [·-] (complete|max_steps|generator_done)
 eof

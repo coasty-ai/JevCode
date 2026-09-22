@@ -4,7 +4,7 @@
  * stripping, tab expansion, CRLF pastes, IME commits inserted whole.
  */
 import { describe, expect, it } from 'vitest';
-import { CSI_LEAK_RE, OSC_LEAK_RE, TAB_SPACES, expandTabs, filterInput, normaliseChunk } from '../../../../src/tui/composer/filter.js';
+import { CSI_LEAK_RE, OSC_ANSWER_MAX_BODY, OSC_ANSWER_MIN_CHARS, OSC_ANSWER_RE, OSC_LEAK_RE, TAB_SPACES, expandTabs, filterInput, isOscAnswerBody, normaliseChunk } from '../../../../src/tui/composer/filter.js';
 import { CONTROL_OR_BIDI_RE } from './helpers.js';
 
 const text = (s: string) => ({ ok: true as const, text: s });
@@ -156,5 +156,104 @@ describe('normaliseChunk', () => {
     expect(expandTabs('a\tb\t')).toBe('a    b    ');
     expect(expandTabs('none')).toBe('none');
     expect(expandTabs('')).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §2.7 (D6, P-R8) — an OSC answer whose `]` Ink stripped is not typed into the draft.
+// ---------------------------------------------------------------------------------------
+describe('P-R8: the `]`-less OSC answer (TUI-DESIGN-4 §2.7)', () => {
+  it('§10 S2: the six OSC shapes are dropped with reason `osc`', () => {
+    const shapes: [string, string][] = [
+      ['OSC 11 answer, `]` stripped (the measured case: `│ › 11;rgb:0000/0000/0000`)', '11;rgb:0000/0000/0000'],
+      ['OSC 11 answer with BEL', '11;rgb:1e1e/1e1e/1e1e\u0007'],
+      ['OSC 11 answer with the ST tail', '11;rgb:ffff/ffff/ffff\u001b\\'],
+      ['OSC 4 palette answer', '4;1;rgb:cc00/0000/0000'],
+      ['OSC 52 clipboard answer (base64; privacy-correct to drop)', '52;c;aGVsbG8gd29ybGQ='],
+      ['OSC 10 foreground answer, `]` intact (round 3 already dropped this one)', ']10;rgb:d0d0/d0d0/d0d0'],
+    ];
+    for (const [name, chunk] of shapes) expect(filterInput(chunk), name).toEqual(drop('osc'));
+  });
+
+  it('edge 5: two answers concatenated — the measured hang (`Ctrl-D ×2 stops exiting`, driver exit 124)', () => {
+    expect(filterInput('11;rgb:0000/0000/0000\u0007]11;rgb:0000/0000/0000\u0007')).toEqual(drop('osc'));
+    expect(filterInput(']11;rgb:0000/0000/0000\u0007]10;rgb:d0d0/d0d0/d0d0\u0007')).toEqual(drop('osc'));
+    // ESC-separated too (the round-3 fold, now including answer bodies)
+    expect(filterInput('\u001b]11;rgb:0000/0000/0000\u001b]10;rgb:0000/0000/0000')).toEqual(drop('osc'));
+  });
+
+  it('edge 2: an over-long OSC 52 body is dropped, never inserted as a remainder', () => {
+    const long = `52;c;${'A'.repeat(OSC_ANSWER_MAX_BODY + 100)}`;
+    expect(long.length).toBeGreaterThan(OSC_ANSWER_MAX_BODY);
+    expect(filterInput(long)).toEqual(drop('osc'));
+    expect(isOscAnswerBody(long)).toBe(true);
+    // the band between the printable cap (256) and 4096 is the one the design's two long arms both miss, because the
+    // OSC 52 selection parameter sits between the number and the payload — it is dropped too
+    expect(filterInput(`52;c;${'A'.repeat(500)}\u0007`)).toEqual(drop('osc'));
+    expect(filterInput(`52;c;${'A'.repeat(500)}`)).toEqual(drop('osc'));
+  });
+
+  it('edge 1: 20 "a human typed this" negatives — a typed digit-semicolon string arrives one keystroke at a time', () => {
+    const typed = ['1', '1', ';', 'r', 'g', 'b', ':', '0', '0', '0', '0', 'a', 'Z', ' ', '/', '=', ';', '4', '2', '!'];
+    expect(typed).toHaveLength(20);
+    for (const ch of typed) expect(filterInput(ch), ch).toEqual(text(ch));
+    // …and a multi-character chunk the caller knows is the user's is never an answer
+    expect(filterInput('11;rgb:0000/0000/0000', {}, { paste: true })).toEqual(text('11;rgb:0000/0000/0000'));
+    expect(filterInput('11;rgb:0000/0000/0000', {}, { typing: true })).toEqual(text('11;rgb:0000/0000/0000'));
+    // a chunk with a newline is user text (an answer never carries one)
+    expect(filterInput('11;rgb:0000\n0000')).toEqual(text('11;rgb:0000\n0000'));
+    // below the minimum length the rule cannot fire at all
+    expect(OSC_ANSWER_MIN_CHARS).toBe(6);
+    expect(filterInput('1;ab')).toEqual(text('1;ab'));
+    expect(isOscAnswerBody('1;ab')).toBe(false);
+  });
+
+  it('round-4 review finding 5: a MULTI-character human / IME chunk of the shape `<digits>;<printable>` is text, not an answer', () => {
+    // the 20 negatives above are all single characters, so none of them exercises the shape the rule fires on; these
+    // are the chunks a non-bracketed paste, an IME commit or a fast burst delivers whole, and §2.7 edge 1's
+    // "no preceding keystroke in the tick" gate is the composer's to pass, not this module's
+    const prose = [
+      '2024;my notes here',
+      '80;this is a pasted line of text',
+      '1;a b c d e f g h',
+      '12;TODO: fix the parser',
+      '3;こんにちは世界', // an IME commit behind a numeric prefix
+      '2024;summary', // one `;` only: an OSC 52 answer always carries its selection parameter
+      '404;not found',
+      '8080;localhost',
+    ];
+    for (const chunk of prose) {
+      expect(isOscAnswerBody(chunk), chunk).toBe(false);
+      expect(filterInput(chunk), chunk).toEqual(text(chunk));
+    }
+    // …while the real answers of the same length class are still dropped
+    for (const answer of ['11;rgb:0000/0000/0000', '4;1;rgb:cc00/0000/0000', '52;c;aGVsbG8=', '11;#1e1e1e']) {
+      expect(isOscAnswerBody(answer), answer).toBe(true);
+    }
+  });
+
+  it('edge 4 / A105: the CSI tail stays a documented limit and is still INSERTED — the new rule must not swallow it', () => {
+    for (const tail of ['24;80R', '27;2;13~', '13;2u', '57414;1:3u']) {
+      expect(filterInput(tail), tail).toEqual(text(tail));
+      expect(isOscAnswerBody(tail), tail).toBe(false);
+    }
+  });
+
+  it('edge 6: the rule is a pure predicate — the review box swallowing printable keys is unaffected, and nothing is logged', () => {
+    // `filterInput` never returns the dropped body, only the trace category, so an OSC 52 clipboard answer
+    // (which may carry the user's clipboard) leaves no copy behind
+    const r = filterInput('52;c;c2VjcmV0');
+    expect(r).toEqual(drop('osc'));
+    expect(JSON.stringify(r)).not.toContain('c2VjcmV0');
+  });
+
+  it('edge 7: the same chunk under a screen reader (the filter runs before any prompt reader) — identical answer', () => {
+    expect(filterInput('11;rgb:0000/0000/0000', { eventType: 'press' })).toEqual(drop('osc'));
+  });
+
+  it('the regexes are exported and the module doc no longer claims only the ESC is stripped', () => {
+    expect(OSC_ANSWER_RE.test('11;rgb:0000/0000/0000')).toBe(true);
+    expect(OSC_ANSWER_RE.test(']11;rgb:0000/0000/0000')).toBe(true);
+    expect(OSC_LEAK_RE.test('11;rgb:0000/0000/0000')).toBe(false); // the round-3 rule, which is what let it through
   });
 });

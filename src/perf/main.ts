@@ -35,6 +35,7 @@ import { measureComposerLatency, type ComposerLatencyResult } from './composer-l
 import { measureIntakeLatency, type IntakeLatencyResult } from './intake-latency.js';
 import { measureIdleFrames, type IdleFramesResult } from './idle-frames.js';
 import { measureStates, type StatesResult } from './states.js';
+import { measureScrollLatency, type ScrollLatencyResult } from './scroll-latency.js';
 import type { StaticAppendResult } from './static-append.js';
 import type { JevLatencyResult } from './jev-latency.js';
 import type { LaneRunResult } from './lane-run.js';
@@ -47,9 +48,10 @@ export const LOAD_QUIET = 2;
 export const LOAD_WAIT_MS = 30_000;
 export const LOAD_RETRIES = 3;
 
-export type ProbeName = 'first-frame' | 'step-overhead' | 'static-append' | 'render-lag' | 'composer-latency' | 'intake-latency' | 'idle-frames' | 'states' | 'lane-run' | 'sandbox-spawn';
+/** TUI-DESIGN-4 contract 1.7 item 11 / §11: `scroll-latency` is round 4's new probe (fullscreen only, D-S). */
+export type ProbeName = 'first-frame' | 'step-overhead' | 'static-append' | 'render-lag' | 'composer-latency' | 'intake-latency' | 'idle-frames' | 'states' | 'scroll-latency' | 'lane-run' | 'sandbox-spawn';
 /** the release set: what a bare `jevcode perf` runs, what the README is rewritten from, what the gate is. */
-const ALL_PROBES: readonly ProbeName[] = ['first-frame', 'step-overhead', 'static-append', 'render-lag', 'composer-latency', 'intake-latency', 'idle-frames', 'states'];
+const ALL_PROBES: readonly ProbeName[] = ['first-frame', 'step-overhead', 'static-append', 'render-lag', 'composer-latency', 'intake-latency', 'idle-frames', 'states', 'scroll-latency'];
 /**
  * HARNESS-NEXT-DESIGN §5 Ring 0 — opt-in probes: `JEVCODE_PERF_ONLY=lane-run jevcode perf`.
  *
@@ -81,6 +83,8 @@ export interface PerfResult {
   /** TUI-DESIGN-3 §3.9 / §9: the idle wordmark loop's frame and byte budget over 31 s (null before round 3's `idle-frames` probe ran) */
   idleFrames: IdleFramesResult | null;
   states: StatesResult | null;
+  /** TUI-DESIGN-4 §11 / D-S: the fullscreen scroll gate; `skipped` (never a failure) when fullscreen was refused */
+  scrollLatency: ScrollLatencyResult | null;
   jevLatency: JevLatencyResult | null;
   /** HARNESS-NEXT-DESIGN §5 Ring 0, opt-in (see RING0_PROBES): null unless JEVCODE_PERF_ONLY named them */
   laneRun: LaneRunResult | null;
@@ -201,6 +205,7 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
   let intake: IntakeLatencyResult | null = null;
   let idle: IdleFramesResult | null = null;
   let states: StatesResult | null = null;
+  let scroll: ScrollLatencyResult | null = null;
   let jev: JevLatencyResult | null = null;
   let laneRun: LaneRunResult | null = null;
   let sandboxSpawn: SandboxSpawnResult | null = null;
@@ -248,6 +253,10 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
     log('perf: zero clears per state and geometry segment (review, palette, picker, wizard, secret row, intake card, render faults, resize idle/live 40→12→40, Ctrl+L)…\n');
     states = await measureStates({ root, bin, onProgress: progress });
   }
+  if (probes.includes('scroll-latency')) {
+    log('perf: scroll latency (real pty, chat --renderer fullscreen at 40x120 with 20 000 items: scroll key → frame p95 < 16 ms, ≤ 6 KB per scroll frame, a width-change rebuild < 50 ms; skipped with the refusal text when fullscreen is not available)…\n');
+    scroll = await measureScrollLatency({ root, bin, onProgress: progress });
+  }
   // HARNESS-NEXT-DESIGN §5 Ring 0: opt-in, `partial`, imported lazily so a release run never loads them
   if (probes.includes('sandbox-spawn')) {
     log('perf: the seatbelt wrapper alone (sandbox-exec -f <profile> /bin/sh -c true vs bare; report only, §5 P2b)…\n');
@@ -269,7 +278,7 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
   const staticPass = probes.includes('static-append') ? (staticAppend?.pass ?? false) : undefined;
   // laneRun fails the run only when a warm arm was actually measured and missed the >= 2x gate; a pending arm
   // (no src/sandbox/pool.ts yet) and sandbox-spawn are report-only, per §5's probe table
-  const gates: boolean[] = [firstFrame?.pass, overhead?.pass, staticPass, lag?.pass, composer?.pass, intake?.pass, idle?.pass, states?.pass, laneRun?.pass].filter((v): v is boolean => v !== undefined);
+  const gates: boolean[] = [firstFrame?.pass, overhead?.pass, staticPass, lag?.pass, composer?.pass, intake?.pass, idle?.pass, states?.pass, scroll?.pass, laneRun?.pass].filter((v): v is boolean => v !== undefined);
   const pass = gates.length > 0 && gates.every(Boolean);
   const cpu = cpus();
   const result: PerfResult = {
@@ -288,6 +297,7 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
     intakeLatency: intake,
     idleFrames: idle,
     states,
+    scrollLatency: scroll,
     jevLatency: jev,
     laneRun,
     sandboxSpawn,

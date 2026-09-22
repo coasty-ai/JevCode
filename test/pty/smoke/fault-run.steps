@@ -1,0 +1,27 @@
+# TUI-DESIGN-4 §7.3 item 6 / §10 S6: the boundaries that only render while a run is LIVE — `live`, `pane`,
+# `overlay`. The shipped 4-step `--mock` trajectory leaves those slots closed, which is why `render:live` and
+# `render:pane` never fired at 24×80 and the probe measured the unfaulted frame; this scenario starts a long run
+# and forces the panel open, so the slot renders and the fault fires. One steps file, three JEVCODE_FAULT values
+# (run-smoke.sh picks the value per scenario name).
+#
+# The exit is ONE Ctrl-C (abort the live run) and then `/exit`, never Ctrl-C twice: the second interrupt is
+# EXIT_NOW_130 only while the run is still live, so a two-interrupt ending would race the run's own end and the
+# scenario's exit code would depend on the machine's speed.
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.5
+send start the fault run
+sleep 0.2
+send \r
+expect \[run\](?:\x1b\[[0-9;]*m)* started [·-] 
+send /panel
+sleep 0.2
+send \r
+sleep 2
+send \x03
+expect Follow-up, question|Say hi
+sleep 0.4
+send /exit
+sleep 0.2
+send \r
+eof

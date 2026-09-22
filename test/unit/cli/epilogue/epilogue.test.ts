@@ -9,10 +9,12 @@ import { EXIT_CODES } from '../../../../src/errors.js';
 import { exitCodeFor } from '../../../../src/loop/stop.js';
 import {
   EXIT_CODE_TABLE,
+  FILES_GONE,
   FILES_SUFFIX,
   NOT_RESUMABLE,
   REPORT_SUFFIX,
   abbreviateDir,
+  epilogueBlockRows,
   epilogueExitCode,
   epilogueItemLines,
   epilogueLines,
@@ -31,24 +33,24 @@ const jevHttp: SerializedError = { name: 'JevHttpError', code: 'jev_http', messa
 
 describe('epilogueLines (§13.5)', () => {
   it('renders the documented five-line block for an API failure after retries', () => {
-    expect(epilogueLines(jevHttp, { ...ctx, stopReason: 'error' }, redact)).toEqual([
+    expect(epilogueLines(jevHttp, { ...ctx, stopReason: 'error' }, redact, 120)).toEqual([
       'jevcode: stopped — jev_http: Jev HTTP 429: Rate limit exceeded (exit 5)',
-      `  run       ${id}`,
-      `  files     ~/.jevcode/runs/${id}/  (transcript.log, state.json, jevcode.log)`,
-      `  resume    jevcode run --resume ${id}`,
-      `  report    jevcode report ${id}   (redacted bundle written locally; nothing is sent)`,
+      `  run        ${id}`,
+      `  files      ~/.jevcode/runs/${id}/  (transcript.log, state.json, jevcode.log)`,
+      `  resume     jevcode run --resume ${id}`,
+      `  report     jevcode report ${id}   (redacted bundle written locally; nothing is sent)`,
     ]);
     expect(FILES_SUFFIX).toBe('(transcript.log, state.json, jevcode.log)');
     expect(REPORT_SUFFIX).toBe('(redacted bundle written locally; nothing is sent)');
   });
 
   it('not resumable → `state.json missing — not resumable`; exit 3 when the checkpoint degraded (given or derived)', () => {
-    const lines = epilogueLines(null, { ...ctx, resumable: false, stopReason: 'complete', exitCode: 3 }, redact);
+    const lines = epilogueLines(null, { ...ctx, resumable: false, stopReason: 'complete', exitCode: 3 }, redact, 120);
     expect(lines[0]).toBe('jevcode: stopped — complete (exit 3)');
-    expect(lines[3]).toBe(`  resume    ${NOT_RESUMABLE}`);
+    expect(lines[3]).toBe(`  resume     ${NOT_RESUMABLE}`);
     expect(NOT_RESUMABLE).toBe('state.json missing — not resumable');
     // `[c] continue without checkpoints` → degraded: a non-error stop derives 3 through exitCodeFor
-    expect(epilogueLines(null, { ...ctx, resumable: false, stopReason: 'complete', degraded: true }, redact)[0]).toBe('jevcode: stopped — complete (exit 3)');
+    expect(epilogueLines(null, { ...ctx, resumable: false, stopReason: 'complete', degraded: true }, redact, 120)[0]).toBe('jevcode: stopped — complete (exit 3)');
     expect(epilogueExitCode(jevHttp, { ...ctx, stopReason: 'error', degraded: true })).toBe(5); // an error keeps its own code
   });
 
@@ -73,7 +75,7 @@ describe('epilogueLines (§13.5)', () => {
     const config: SerializedError = { name: 'ConfigError', code: 'config', message: 'no API key', exitCode: 2 };
     expect(epilogueLines(config, { runId: null, runDir: null, resumable: false }, redact)).toEqual(['jevcode: stopped — config: no API key (exit 2)']);
     // every row keeps the four trailing lines
-    expect(epilogueLines(null, { ...ctx, stopReason: 'signal', signal: 'SIGTERM' }, redact)).toHaveLength(5);
+    expect(epilogueLines(null, { ...ctx, stopReason: 'signal', signal: 'SIGTERM' }, redact, 120)).toHaveLength(5);
   });
 
   it('a canary in the thrown message is redacted; newlines and controls never reach the line', () => {
@@ -106,7 +108,7 @@ describe('epilogueLines (§13.5)', () => {
   });
 
   it('a run without a known directory omits the files row; ~ only for a real home', () => {
-    const rows = epilogueRows({ runId: id, runDir: null, resumable: true });
+    const rows = epilogueRows({ runId: id, runDir: null, resumable: true }, 118);
     expect(rows.map((r) => r.split(/\s+/)[0])).toEqual(['run', 'resume', 'report']);
     expect(abbreviateDir('/tmp/runs/x', '/Users/me')).toBe('/tmp/runs/x/');
     expect(abbreviateDir('/Users/me/.jevcode/runs/x/', '/Users/me/')).toBe('~/.jevcode/runs/x/');
@@ -132,7 +134,7 @@ describe('epilogueLines (§13.5)', () => {
     const item = epilogueItemLines(jevHttp, ctx, redact);
     expect(item.text).toBe('stopped — jev_http: Jev HTTP 429: Rate limit exceeded (exit 5)');
     expect(item.detail).toEqual(epilogueRows(ctx));
-    expect(item.detail[0]).toBe(`run       ${id}`);
+    expect(item.detail[0]).toBe(`run        ${id}`);
   });
 
   it('is pure: equal inputs give equal lines, the context and error are never mutated', () => {
@@ -143,6 +145,56 @@ describe('epilogueLines (§13.5)', () => {
     expect(epilogueItemLines(frozenErr, frozenCtx, redact)).toEqual(epilogueItemLines(frozenErr, frozenCtx, redact));
     expect(frozenCtx.exitCode).toBeUndefined();
     expect(frozenErr.message).toBe(jevHttp.message);
+  });
+});
+
+
+describe('TUI-DESIGN-4 §3.3 / §3.4: the epilogue is a block at a width', () => {
+  it('every row fits the width at 40 / 80 / 120 and a continuation hangs under the VALUE column, not column 0', () => {
+    for (const width of [30, 70, 110]) {
+      const rows = epilogueRows(ctx, width);
+      for (const r of rows) expect(r.length, `${width}: ${r}`).toBeLessThanOrEqual(width);
+      // at 70 and 110 the block is in the standard/wide tier, so a continuation hangs under the value column (11);
+      // at 30 it is the tight tier, where the key keeps its own row and the value is indented 2 (F-B4)
+      const hang = width < 34 ? /^ {2}\S/ : /^ {11}\S/;
+      for (const r of rows.slice(1)) if (r.startsWith(' ')) expect(r, `${width}: ${r}`).toMatch(hang);
+    }
+  });
+
+  it('the `files` row at width 70 keeps the run id intact — it is never split mid-token', () => {
+    const rows = epilogueRows(ctx, 70);
+    expect(rows.join('\n')).toContain(id);
+    expect(rows.filter((r) => r.includes(id.slice(0, 8)) && !r.includes(id))).toEqual([]);
+  });
+
+  it('§7.2 item 4: `files` lists only what exists, and a vanished run directory replaces the whole row', () => {
+    expect(epilogueRows({ ...ctx, files: ['transcript.log'] }, 110)[1]).toBe(`files      ~/.jevcode/runs/${id}/  (transcript.log)`);
+    // §7.2 item 4 / §12: a directory that exists but holds NOTHING the run wrote is the `rundir:chmod` fault —
+    // it takes the `gone` row, and the undocumented `(empty)` sentence (which appears nowhere in §12) is gone
+    const empty = epilogueRows({ ...ctx, files: [] }, 110);
+    const emptyAt = empty.findIndex((r) => r.startsWith('resume'));
+    expect(empty.slice(1, emptyAt).join(' ').replace(/\s+/g, ' ')).toBe(`files ~/.jevcode/runs/${id}/ — ${FILES_GONE}`);
+    expect(empty.join('\n')).not.toContain('(empty)');
+    const gone = epilogueRows({ ...ctx, gone: true }, 110);
+    const goneAt = gone.findIndex((r) => r.startsWith('resume'));
+    expect(gone.slice(1, goneAt).join(' ').replace(/\s+/g, ' ')).toBe(`files ~/.jevcode/runs/${id}/ — ${FILES_GONE}`);
+    expect(gone.join('\n')).not.toContain(FILES_SUFFIX);
+  });
+
+  it('`resumable: false` keeps the §12 sentence at every width', () => {
+    for (const width of [70, 110]) expect(epilogueRows({ ...ctx, resumable: false }, width).join('\n')).toContain('not resumable');
+    // at the tight tier the sentence wraps, but it is never replaced or dropped
+    expect(epilogueRows({ ...ctx, resumable: false }, 30).join(' ').replace(/\s+/g, ' ')).toContain('not resumable');
+  });
+
+  it('`abbreviateDir` is a thin wrapper over `shortPath` and still never elides by default', () => {
+    expect(abbreviateDir(`/Users/me/.jevcode/runs/${id}`, '/Users/me')).toBe(`~/.jevcode/runs/${id}/`);
+    expect(abbreviateDir(`/other/place/runs/${id}`, '/Users/me', 24)).toBe(`/other/place/runs/${id}/`);
+  });
+
+  it('the block rows are the five kinds, not strings', () => {
+    expect(epilogueBlockRows(ctx).map((r) => r.kind)).toEqual(['kv', 'kv', 'kv', 'kv']);
+    expect(epilogueBlockRows({ runId: null, runDir: null, resumable: false })).toEqual([]);
   });
 });
 

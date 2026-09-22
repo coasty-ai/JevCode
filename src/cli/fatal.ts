@@ -15,6 +15,8 @@
 import { writeSync as fsWriteSync } from 'node:fs';
 import type { Engine, SerializedError, SignalName } from '../core/types.js';
 import { serializeError } from '../loop/stop.js';
+import { EXIT_CODES, type FsErrorContext, type FsExplanation, type FsOp, explainFsError, fsErrorToJevCodeError } from '../errors.js';
+import { shortPath } from '../core/text.js';
 import { type EpilogueContext, epilogueLines, terminalSafeLine } from './epilogue.js';
 
 /**
@@ -23,6 +25,31 @@ import { type EpilogueContext, epilogueLines, terminalSafeLine } from './epilogu
  */
 export const RESTORE = '\x1b[?2004l\x1b[?2026l\x1b[0 q\x1b[?25h\x1b[0m';
 
+/**
+ * TUI-DESIGN-4 §1.3.1: leave the alternate screen (`ESC[?1049l`). It is **not** part of `RESTORE`, because a
+ * classic-renderer session never entered it and must not have its screen swapped on the way out; it is written
+ * only when the flag below says the mount entered it.
+ *
+ * The flag and the bytes live HERE rather than in `src/tui/terminal.ts` (where §1.3.1 first put them) for one
+ * reason: `terminal.ts` already imports `RESTORE` from this module, so importing the flag back would close an
+ * `cli/fatal ⇄ tui/terminal` cycle on the eager fatal path. `terminal.ts` re-exports all three, so
+ * `markAlternateScreen` / `alternateScreenEntered` / `ALT_SCREEN_LEAVE` keep their §1.3.1 import sites.
+ */
+export const ALT_SCREEN_LEAVE = '\x1b[?1049l';
+
+/** the module-level flag §1.3.1 names: set once by `createTuiRenderer` when it mounts Ink with `alternateScreen: true` */
+let altScreenEntered = false;
+
+/** TUI-DESIGN-4 §1.3.1: record that Ink entered the alternate screen, so every restore path leaves it first. */
+export function markAlternateScreen(entered = true): void {
+  altScreenEntered = entered;
+}
+
+/** true when a mount has declared the alternate screen entered (tests; every restore path reads the same flag). */
+export function alternateScreenEntered(): boolean {
+  return altScreenEntered;
+}
+
 /** Bound on `renderer.unmount()` inside fatalExit (mirrors UNMOUNT_TIMEOUT_MS in tui/App.tsx without importing Ink here). */
 export const FATAL_UNMOUNT_TIMEOUT_MS = 2000;
 
@@ -30,11 +57,45 @@ export const FATAL_UNMOUNT_TIMEOUT_MS = 2000;
 export const HANGUP_EXIT_CODE = 129;
 
 /**
+ * TUI-DESIGN-4 §2.8 P-R11 / §12: EPIPE on stdout used to exit 129 with an **empty** stderr, so a `| head` left no
+ * trace of a run that had in fact been checkpointed. One line says where it is; the code stays 129 (§14.1 row 9:
+ * `EXIT_CODE_TABLE` uses it for SIGHUP and changing it is a compatibility break for no gain). Returns `null` when
+ * there is no directory to name — a launch-time hang-up has nothing to say.
+ */
+export function hangupStderrLine(runDir: string | null, runsDir: string | null, shorten: (p: string) => string = (p) => p): string | null {
+  const dir = runDir ?? runsDir;
+  if (typeof dir !== 'string' || dir.length === 0) return null;
+  return `jevcode: stdout closed; run checkpointed at ${terminalSafeLine(shorten(dir))}`;
+}
+
+/** TUI-DESIGN-4 §7.4 row 2 / §7.7 edge: the errnos that mean "this run cannot be checkpointed" rather than "this path is wrong". */
+const DISK_FULL_CODES: ReadonlySet<string> = new Set(['ENOSPC', 'EDQUOT']);
+
+/** TUI-DESIGN-4 §7.4 / §12: what an unclassified error adds to the `[ui] error: <raw errno>` fallback. */
+export const DEBUG_STACK_HINT = 'run with JEVCODE_DEBUG=1 for the stack';
+
+/**
  * TUI-DESIGN §13.4 step 4: the epilogue plus, under `JEVCODE_DEBUG=1`, the stack — every line through `redact`,
  * control characters dropped. Pure.
  */
-export function fatalLines(err: SerializedError, ctx: EpilogueContext, redact: (s: string) => string, opts: { stack?: string | null; debug?: boolean } = {}): string[] {
+export function fatalLines(
+  err: SerializedError,
+  ctx: EpilogueContext,
+  redact: (s: string) => string,
+  opts: { stack?: string | null; debug?: boolean; explain?: FsExplanation | null } = {},
+): string[] {
   const lines = epilogueLines(err, ctx, redact);
+  /**
+   * TUI-DESIGN-4 §7.4 (P-D4): a classified file-system failure gets its fix block — at most two rows, so it fits
+   * the flat tier. An **unclassified** error keeps today's epilogue; `DEBUG_STACK_HINT` is what the `[ui] error:`
+   * fallback adds there (§7.4's last paragraph), and that row belongs to the renderer, not to the epilogue.
+   */
+  if (opts.explain !== undefined && opts.explain !== null) {
+    for (const fix of opts.explain.fix) {
+      const line = terminalSafeLine(redact(fix));
+      if (line.length > 0) lines.push(`  ${line}`);
+    }
+  }
   if (opts.debug === true && typeof opts.stack === 'string' && opts.stack.length > 0) {
     for (const raw of opts.stack.split(/\r?\n/)) {
       const line = terminalSafeLine(redact(raw));
@@ -55,6 +116,14 @@ export interface FatalDeps {
   redact: (s: string) => string;
   /** the epilogue context at the time of the fault (run id, dir, resumable) */
   context: () => EpilogueContext;
+  /**
+   * TUI-DESIGN-4 §7.4: the directories an errno can name, read when the fault happens. Without them only a
+   * `mkdir` of a path ending in `/runs` and the live `context().runDir` can be placed, and everything else keeps
+   * the unclassified path (exit 1) rather than being mislabelled.
+   */
+  places?: () => FsErrorPlaces;
+  /** TUI-DESIGN-4 §7.4 edge 2: the `~` abbreviation of the path in the sentence; default: `shortPath` against `context().home` */
+  shorten?: (p: string) => string;
   /** the live engine, if any */
   engine?: () => Pick<Engine, 'abort'> | null;
   /** `renderer.unmount()` when a renderer is mounted; Ink's `Instance.unmount()` returns void, App's wrapper a promise — both are accepted */
@@ -123,7 +192,39 @@ export function createFatalExit(deps: FatalDeps): FatalExit {
   let pending: Promise<void> | null = null;
 
   const run = async (e: unknown): Promise<void> => {
-    const err = serializeError(e, deps.redact);
+    /**
+     * TUI-DESIGN-4 §7.4: "every launch-time failure routes through `fatalExit` so it gets the terminal restore,
+     * **stderr**, the epilogue and a correct code (**2** for a configuration/permission problem, not 1)". A read-only
+     * `$HOME` used to print `[ui] error: EACCES: permission denied, mkdir '<home>/runs'` on **stdout**, with an empty
+     * stderr, no epilogue and exit 1. Anything already typed (a CheckpointError's 3) keeps its own code.
+     */
+    let epilogueCtx: EpilogueContext = { runId: null, runDir: null, resumable: false };
+    try {
+      epilogueCtx = deps.context();
+    } catch {
+      /* a broken context must not stop the exit; the epilogue below re-reads it under its own guard */
+    }
+    // §7.4 edge 2: `~` for the home prefix, through the ONE shortener (§3.4). `width: 0` disables the left
+    // elision — an epilogue row may wrap, but a run id is never cut.
+    const home = epilogueCtx.home;
+    const shorten = deps.shorten ?? ((pth: string): string => shortPath(pth, { root: '', width: 0, ...(typeof home === 'string' && home !== '' ? { home } : {}) }));
+    const places: FsErrorPlaces = { ...(deps.places?.() ?? {}) };
+    if (places.runDir === undefined && epilogueCtx.runDir !== null) places.runDir = epilogueCtx.runDir;
+    const fsCtx = fsErrorContext(e, deps.redact, places, shorten);
+    const explain = fsCtx === null ? null : explainFsError(e, fsCtx);
+    const base = serializeError((fsCtx === null ? null : fsErrorToJevCodeError(e, fsCtx)) ?? e, deps.redact);
+    /**
+     * TUI-DESIGN-4 §7.4 row 2: a full disk **inside a live run directory** means this run cannot be checkpointed
+     * or its bundle finished — exit 3, the row `jevcode report` (§7.7's edge) and `checkpoint:degraded` both want.
+     * The same errno while the LAUNCH creates the runs directory stays a configuration problem the user fixes
+     * with `--runs-dir` (exit 2), so the split keys on `fsCtx.op`, not on the code alone.
+     *
+     * The design puts this in `explainFsError` (`src/errors.ts`); that file is the harness session's under the
+     * 2026-09-22 ownership rule, so the hunk is OWED TO THE HARNESS SESSION (docs/STATUS.md 'Round 4') and the
+     * split is made at this call site meanwhile. It is a no-op here once the hunk lands.
+     */
+    const runDirDiskFull = fsCtx?.op === 'run-dir' && DISK_FULL_CODES.has(errnoCode(e) ?? '');
+    const err: SerializedError = runDirDiskFull ? { ...base, exitCode: EXIT_CODES.checkpoint } : base;
     // (1) the exit code first, so an 'exit' fired by anything below already carries it
     try {
       deps.setExitCode?.(err.exitCode);
@@ -151,7 +252,7 @@ export function createFatalExit(deps: FatalDeps): FatalExit {
     const stack = e instanceof Error && typeof e.stack === 'string' ? e.stack : null;
     const debug = (deps.env ?? {})['JEVCODE_DEBUG'] === '1';
     try {
-      deps.write(2, `${fatalLines(err, deps.context(), deps.redact, { stack, debug }).join('\n')}\n`);
+      deps.write(2, `${fatalLines(err, deps.context(), deps.redact, { stack, debug, explain }).join('\n')}\n`);
     } catch {
       /* EPIPE on stderr: nothing left to say */
     }
@@ -214,6 +315,70 @@ function errnoCode(e: unknown): string | null {
   return null;
 }
 
+/** Walk a bounded `cause` chain for a string member (a CheckpointError wraps the errno error). */
+function chainString(e: unknown, key: 'code' | 'path' | 'syscall'): string | null {
+  let cur: unknown = e;
+  for (let depth = 0; depth < 8 && typeof cur === 'object' && cur !== null; depth++) {
+    const v = (cur as Record<string, unknown>)[key];
+    if (typeof v === 'string' && v.length > 0) return v;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/** `<dir>` or anything under it (never a sibling: `/a/runs2` is not inside `/a/runs`). */
+function inside(path: string, dir: string | null | undefined): boolean {
+  if (typeof dir !== 'string' || dir.length === 0) return false;
+  const base = dir.length > 1 && dir.endsWith('/') ? dir.slice(0, -1) : dir;
+  return path === base || path.startsWith(`${base}/`);
+}
+
+/** The places a launch- or run-time errno can come from, as the caller knows them. */
+export interface FsErrorPlaces {
+  /** `<JEVCODE_HOME>/runs` or `--runs-dir` (the directory the launch creates) */
+  runsDir?: string | null;
+  /** the live run's own directory (`<runsDir>/<id>`) */
+  runDir?: string | null;
+  /** the resolved config file */
+  configPath?: string | null;
+}
+
+/**
+ * TUI-DESIGN-4 §7.4: **which** of the four rows an errno belongs to. Round 4's first pass labelled every error
+ * carrying a string `path` as `op: 'runs-dir'`, which broke three rows at once: a config-file EACCES printed
+ * `cannot create the runs directory <config path>`, a mid-run ENOENT could never reach row 3 (`'runs-dir'` +
+ * ENOENT falls through `explainFsError`'s switch), and an unrelated workspace-file errno was relabelled a
+ * runs-dir failure with its exit code flipped from 1 to 2.
+ *
+ * `null` means "not one of the four rows" — the caller then keeps the unclassified path (exit 1), which is the
+ * whole point: only an error we can *name* gets a sentence and a code.
+ */
+export function fsErrorOp(path: string, places: FsErrorPlaces, syscall: string | null = null): FsOp | null {
+  if (inside(path, places.configPath) && path === (places.configPath ?? '')) return 'config';
+  if (inside(path, places.runDir)) return 'run-dir';
+  if (inside(path, places.runsDir)) return 'runs-dir';
+  // the launch has no resolved runs dir yet when the mkdir of it is what failed
+  if (syscall === 'mkdir' && /(?:^|\/)runs$/.test(path)) return 'runs-dir';
+  return null;
+}
+
+/**
+ * TUI-DESIGN-4 §7.4: the §7.4 rows are about the **file system**. A stream `'error'` (an ENOSPC on stdout, §13.4)
+ * carries no `path` and keeps today's path: it is a broken terminal, not a misconfigured runs directory, and
+ * re-labelling it would make the epilogue lie. `EMFILE`/`ENFILE` (row 5) name no path at all and are classified
+ * on the code alone.
+ */
+function fsErrorContext(e: unknown, redact: (s: string) => string, places: FsErrorPlaces, shorten?: (p: string) => string): FsErrorContext | null {
+  const code = chainString(e, 'code');
+  const withShorten = shorten === undefined ? {} : { shorten };
+  if (code === 'EMFILE' || code === 'ENFILE') return { op: 'other', redact, ...withShorten };
+  const path = chainString(e, 'path');
+  if (path === null) return null;
+  const op = fsErrorOp(path, places, chainString(e, 'syscall'));
+  if (op === null) return null;
+  return { op, redact, path, ...withShorten };
+}
+
 /** The stream errors that mean "the terminal is gone" rather than "a bug" (TUI-DESIGN §13.4). */
 export function isHangupError(e: unknown): boolean {
   const code = errnoCode(e);
@@ -232,7 +397,12 @@ export function installFatalHandlers(deps: FatalHandlerDeps, proc: FatalProcess 
     void fatalExit(e);
   };
   let hungUp = false;
-  const hangup = (): void => {
+  /**
+   * `why: 'stream'` is a stdout/stderr/stdin EIO or EPIPE — §2.8 P-R11's line is about a CLOSED PIPE, so only that
+   * path says it. A SIGHUP or a stdin `'end'` keeps the historical silence: the terminal is gone, and
+   * `jevcode: stdout closed` would be the wrong sentence for it.
+   */
+  const hangup = (why: 'stream' | 'signal' = 'signal'): void => {
     if (hungUp || fatalExit.fired()) return;
     hungUp = true;
     const signal: SignalName = 'SIGHUP';
@@ -246,6 +416,16 @@ export function installFatalHandlers(deps: FatalHandlerDeps, proc: FatalProcess 
     } catch {
       /* nothing else to do on a dead terminal */
     }
+    // §2.8 P-R11: one line to stderr before the exit, guarded — stderr may be closed too (and often is)
+    if (why === 'stream') try {
+      const ctx = deps.context();
+      const home = ctx.home;
+      const shorten = deps.shorten ?? ((pth: string): string => shortPath(pth, { root: '', width: 0, ...(typeof home === 'string' && home !== '' ? { home } : {}) }));
+      const line = hangupStderrLine(ctx.runDir, deps.places?.().runsDir ?? null, shorten);
+      if (line !== null) deps.write(2, `${deps.redact(line)}\n`);
+    } catch {
+      /* the other end is gone as well: 129 with an empty stderr is the historical behaviour */
+    }
     deps.exit(HANGUP_EXIT_CODE);
   };
   const onStreamError = (e: unknown): void => {
@@ -253,9 +433,9 @@ export function installFatalHandlers(deps: FatalHandlerDeps, proc: FatalProcess 
       onFatal(e);
       return;
     }
-    hangup();
+    hangup('stream');
   };
-  const onSighup = (): void => hangup();
+  const onSighup = (): void => hangup('signal');
   const onStdinEnd = (): void => {
     let gate = false;
     try {
@@ -263,7 +443,7 @@ export function installFatalHandlers(deps: FatalHandlerDeps, proc: FatalProcess 
     } catch {
       gate = false;
     }
-    if (gate) hangup();
+    if (gate) hangup('signal');
   };
   // (a) EIO/EPIPE before any SIGHUP logic
   const streams = deps.streams ?? [];
@@ -335,7 +515,9 @@ export function createRestoreTerminal(io: { stdin: Pick<FatalStdin, 'isRaw' | 's
     if (!restoreWritten && io.stdout.isTTY === true) {
       restoreWritten = true;
       try {
-        writeSync(1, RESTORE);
+        // §1.3.1: leave the alternate screen BEFORE the restore, and only when a mount entered it — a crash or a
+        // SIGHUP must never strand the user looking at a blank alternate buffer
+        writeSync(1, `${altScreenEntered ? ALT_SCREEN_LEAVE : ''}${RESTORE}`);
       } catch {
         /* the terminal is gone */
       }
@@ -356,6 +538,10 @@ export interface FatalWiringDeps {
   engine?: () => Pick<Engine, 'abort'> | null;
   unmount?: () => void | Promise<void>;
   unmountTimeoutMs?: number;
+  /** TUI-DESIGN-4 §7.4: the runs dir / run dir / config path an errno can name */
+  places?: () => FsErrorPlaces;
+  /** TUI-DESIGN-4 §7.4 edge 2: override the `~` abbreviation */
+  shorten?: (p: string) => string;
   /** default: `process` */
   proc?: FatalProcessLike;
   /** default: `fs.writeSync` */
@@ -409,6 +595,8 @@ export function wireFatalHandlers(d: FatalWiringDeps): FatalWiring {
     ...(d.engine ? { engine: d.engine } : {}),
     ...(d.unmount ? { unmount: d.unmount } : {}),
     ...(d.unmountTimeoutMs !== undefined ? { unmountTimeoutMs: d.unmountTimeoutMs } : {}),
+    ...(d.places ? { places: d.places } : {}),
+    ...(d.shorten ? { shorten: d.shorten } : {}),
   };
   const fatalExit = createFatalExit(deps);
   const uninstall = installFatalHandlers(deps, proc, fatalExit);

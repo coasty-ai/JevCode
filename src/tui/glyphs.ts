@@ -28,6 +28,8 @@ export interface GlyphSet {
   readonly dagger: string;
   /** `•` → `*` */
   readonly bullet: string;
+  /** TUI-DESIGN-4 §12 / §1.3.3 edge 1: the fullscreen viewport's `▲ <n> earlier rows` marker — `▲` → `^` */
+  readonly triangleUp: string;
   /** bar track and separator `·` → `-` */
   readonly dot: string;
   /** review ruler band mark `┆` → `:` */
@@ -82,9 +84,14 @@ export interface GlyphSet {
   readonly roundBottomLeft: string;
   /** `╯` → `+` */
   readonly roundBottomRight: string;
-  /** console divider `├` → `+` */
+  /**
+   * console divider `├` → `|` (TUI-DESIGN-4 §2.8 P-R9). The ascii twin is the **vertical** bar, not `+`: with `+` the
+   * divider `+---…---+` and the bottom edge `+---…---+` are byte-identical, so `--ascii` draws the status compartment
+   * as a second box. `|---…---|` reads as a divider inside one box and `consoleDivider(w) !== consoleBottom(w)` for
+   * every `w ≥ 4`.
+   */
   readonly teeLeft: string;
-  /** console divider `┤` → `+` */
+  /** console divider `┤` → `|` (TUI-DESIGN-4 §2.8 P-R9; see `teeLeft`) */
   readonly teeRight: string;
   /** composer prompt, wizard field, picker filter `›` → `>` (TUI-DESIGN-2 §4.4) */
   readonly prompt: string;
@@ -113,6 +120,7 @@ const UNICODE: GlyphSet = {
   branch: '⎇',
   dagger: '†',
   bullet: '•',
+  triangleUp: '▲',
   dot: '·',
   band: '┆',
   full: '█',
@@ -165,6 +173,7 @@ const ASCII: GlyphSet = {
   branch: 'br',
   dagger: '+',
   bullet: '*',
+  triangleUp: '^',
   dot: '-',
   band: ':',
   full: '#',
@@ -194,8 +203,8 @@ const ASCII: GlyphSet = {
   roundTopRight: '+',
   roundBottomLeft: '+',
   roundBottomRight: '+',
-  teeLeft: '+',
-  teeRight: '+',
+  teeLeft: '|',
+  teeRight: '|',
   prompt: '>',
   chevronRight: '>',
   chevronDown: 'v',

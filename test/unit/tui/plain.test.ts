@@ -1,4 +1,7 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve as resolvePath } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   BARE_NOTICE_KINDS,
@@ -13,9 +16,17 @@ import {
   READLINE_CONFIRM_KEYS,
   READLINE_MAX_PROMPTS,
   READLINE_NOTE_PROMPT,
+  RUN_END_PATTERN,
+  RUN_END_RE,
+  RUN_FINISHED_WORD,
+  RUN_STARTED_RE,
+  RUN_STARTED_TAIL_PATTERN,
+  RUN_STARTED_WORD,
   clipDetail,
+  dominantRiskClause,
   confirmHeaderLines,
   confirmPreviewLines,
+  createItemStreamState,
   createPlainRenderer,
   createReadlineConfirmer,
   formatTranscriptItem,
@@ -25,8 +36,10 @@ import {
   localItem,
   normaliseNote,
   oneLine,
+  outcomeSummaryText,
   plainFirstLine,
   retrySettledText,
+  riskItemText,
   sanitizeStream,
   sessionHeaderItem,
   stepSummaryText,
@@ -44,6 +57,8 @@ import { makeProposal, makeStepRecord } from '../../fixtures/checkpoint/make.js'
 import { fakeEngine, loadRunEvents, mkConfirmRequest, tick } from '../../fixtures/tui/fixtures.js';
 // TUI-DESIGN-2 §3.7 / §6 item 11: the --plain twin of Renderer.restoreDraft
 import { intakeKeptEcho } from '../../../src/tui/plain.js';
+import { stopTranscriptLine } from '../../../src/loop/stop.js';
+import { MODE_BADGE_WORD } from '../../../src/config/defaults.js';
 
 class Sink extends PassThrough {
   text = '';
@@ -88,22 +103,140 @@ describe('itemsFromEvent / formatTranscriptItem', () => {
     }
   });
 
-  it('formats the documented line shapes', () => {
+  it('formats the documented line shapes (TUI-DESIGN-4 §3.6, D-V: sentence case, ` · ` the one separator, no `k=v`, no `|`)', () => {
     const intent = itemsFromEvent({ type: 'intent', step: 3, intent: 'edit', answer: 'edit', probability: 0.82, confidence: 0.71 }, 0)[0]!;
-    expect(formatTranscriptItem(intent)).toBe('[step 3] intent=edit p=0.82 c=0.71');
+    expect(formatTranscriptItem(intent)).toBe('[step 3] intent · edit · 0.82 (confidence 0.71)');
     const fallback = itemsFromEvent({ type: 'intent', step: 3, intent: 'investigate', answer: 'none_of_these', probability: 0.4, confidence: 0.1 }, 0)[0]!;
-    expect(formatTranscriptItem(fallback)).toBe('[step 3] intent=investigate p=0.40 c=0.10 (jev answered none_of_these)');
+    expect(formatTranscriptItem(fallback)).toBe('[step 3] intent · investigate · 0.40 (confidence 0.10) · Jev answered none_of_these');
     const risk = itemsFromEvent(loadRunEvents().find((e) => e.type === 'risk' && e.step === 2)!, 7)[0]!;
-    expect(formatTranscriptItem(risk)).toBe('[step 2] risk=0.50 review: destructive: level 2 (0.50)');
+    // §3.6 (G3): ONE row — an `ok` verdict used to cost 8 terminal rows — and the audit string moves to the TUI-only detail
+    expect(formatTranscriptItem(risk)).toBe('[step 2] risk 0.50 review · destructive 2 · /why s2.risk.destructive');
+    expect(risk.detail).toBe('destructive: level 2 (0.50)');
     expect(risk.verdict).toBe('review');
+    const okRisk = itemsFromEvent({ type: 'risk', step: 1, risk: { dims: { destructive: { risk: 0.01, probability: 1, expected: 0, tailMass: 0, bound: 'expected', confidence: 1, level: 0 }, out_of_scope: { risk: 0, probability: 1, expected: 0, tailMass: 0, bound: 'expected', confidence: 1, level: 0 }, plan_mismatch: { risk: 0, probability: 1, expected: 0, tailMass: 0, bound: 'expected', confidence: 1, level: 0 }, irreversible: { risk: 0, probability: 1, expected: 0, tailMass: 0, bound: 'expected', confidence: 1, level: 0 } }, risk: 0.01, verdict: 'ok', reason: 'risk 0.01 (ok) from destructive: expected level 0.00 of 3; dominant level 0 "nothing is lost"; Jev confidence 1.00' } }, 0)[0]!;
+    expect(formatTranscriptItem(okRisk)).toBe('[step 1] risk 0.01 ok · destructive 0 · irreversible 0');
     const proposal = itemsFromEvent(loadRunEvents().find((e) => e.type === 'proposal' && e.step === 2)!, 9)[0]!;
-    expect(formatTranscriptItem(proposal)).toBe('[step 2] proposal edit src/a.py: fix the off-by-one | plan done=1 remaining=2 open=0');
-    expect(proposal.detail).toBe('--- old\nrange(n)\n+++ new\nrange(n + 1)');
+    // §3.6 / §6.1 (G2, G7): the target names the file and its counts; the plan counts moved to the `plan` item
+    expect(formatTranscriptItem(proposal)).toBe('[step 2] proposal · edit src/a.py +1 −1 · "fix the off-by-one"');
+    // §6.2 / A6-2: the `edit` preview is a real unified diff now, not two blobs labelled `--- old` / `+++ new`
+    expect(proposal.detail).toBe('--- a/src/a.py\n+++ b/src/a.py\n@@ -1 +1 @@\n-range(n)\n\\ No newline at end of file\n+range(n + 1)\n\\ No newline at end of file');
+    expect(proposal.detailKind).toBe('diff');
     const end = itemsFromEvent(loadRunEvents().at(-1)!, 20)[0]!;
-    expect(formatTranscriptItem(end)).toBe('[run] end max_steps steps=2 wall=9s cost=$0.010 (gen $0.010, jev $0.000)');
+    // §3.6 (G1): ONE form everywhere; the `(generator … · jev …)` split is always present
+    expect(formatTranscriptItem(end)).toBe('[run] finished · max_steps · 2 steps · 9s · $0.010 (generator $0.010 · jev $0.000)');
     const resolved = itemsFromEvent({ type: 'confirm:resolved', step: 2, id: 'c-2', approved: false, aborted: false }, 1)[0]!;
-    expect(formatTranscriptItem(resolved)).toBe('[step 2] confirm c-2 declined');
+    // §3.6 (G5): the confirm id is machine-only (it is in decisions.jsonl)
+    expect(formatTranscriptItem(resolved)).toBe('[step 2] review declined');
     expect(resolved.key).toBe('2:confirm:resolved:1');
+  });
+
+  it('§3.6 (G1): `run:start` names the mode badge and the task, `run:ready` is deleted as an item, and the run id is in neither', () => {
+    const start = itemsFromEvent({ type: 'run:start', runId: '20260922-035503-kntk2yw3', mode: 'jev-on', resumedFromStep: null, task: 'fix the failing test' }, 0)[0]!;
+    expect(formatTranscriptItem(start)).toBe('[run] started · jev+llm · fix the failing test');
+    expect(start.text).not.toContain('20260922');
+    const resumed = itemsFromEvent({ type: 'run:start', runId: 'r1', mode: 'jev-only', resumedFromStep: 7, task: 't' }, 0)[0]!;
+    expect(formatTranscriptItem(resumed)).toBe('[run] started · jev-only · resumed at step 7 · t');
+    expect(itemsFromEvent({ type: 'run:ready', runId: 'r1', step: 0, maxSteps: 40, task: 't', resumed: false }, 0)).toEqual([]);
+    /**
+     * §3.6 (G1): the `stop:` line is deleted too — `[run] finished` already says it. `src/loop/stop.ts` is the
+     * harness session's under the 2026-09-22 ownership rule, so the deletion lands in the ONE formatter instead:
+     * every sink §3.7 lists (transcript.log, `--plain`, the TUI, the session controller) reads `itemsFromEvent`,
+     * so dropping it here drops it everywhere, and the `--json` event is untouched.
+     */
+    expect(itemsFromEvent({ type: 'transcript', step: null, level: 'info', text: '' }, 0)).toEqual([]);
+    for (const reason of ['complete', 'human_abort', 'max_steps', 'human_pause'] as const) {
+      expect(itemsFromEvent({ type: 'transcript', step: null, level: 'info', text: stopTranscriptLine(reason, 5) }, 0)).toEqual([]);
+      expect(itemsFromEvent({ type: 'transcript', step: null, level: 'warn', text: stopTranscriptLine(reason, 5, 'a detail') }, 0)).toEqual([]);
+    }
+    // a generator line that merely BEGINS with the word is not the frame line and survives
+    expect(itemsFromEvent({ type: 'transcript', step: 2, level: 'info', text: 'stop: the tests are red at step 5 of the plan' }, 0)).toHaveLength(1);
+    expect(itemsFromEvent({ type: 'transcript', step: 2, level: 'info', text: 'stop: complete at step 5 — and then some' }, 0)).toHaveLength(1);
+  });
+
+  it('§3.6 (G2): the `plan` item is emitted only when a count changed, and the same event object decides the same way for every sink', () => {
+    const plan = (done: string[], remaining: string[]): Extract<EngineEvent, { type: 'plan' }> => ({ type: 'plan', step: 1, plan: { done: done.map((text) => ({ text, evidence: { step: 1, judged: -1 } })), remaining, unverified: [], openProblems: [], harnessProblems: [] }, rejectedDone: [], unverifiedDone: [] });
+    itemsFromEvent({ type: 'run:start', runId: 'r1', mode: 'jev-on', resumedFromStep: null, task: 't' }, 0);
+    const first = plan([], ['a', 'b', 'c']);
+    expect(itemsFromEvent(first, 0).map(formatTranscriptItem)).toEqual(['[step 1] plan · 0 done · 3 remaining']);
+    // the SAME event object seen by a second sink takes the SAME branch (useEngine.tsx and session.ts both call this)
+    expect(itemsFromEvent(first, 0).map(formatTranscriptItem)).toEqual(['[step 1] plan · 0 done · 3 remaining']);
+    expect(itemsFromEvent(plan([], ['a', 'b', 'c']), 0)).toEqual([]);
+    expect(itemsFromEvent(plan(['a'], ['b', 'c']), 0).map(formatTranscriptItem)).toEqual(['[step 1] plan · 1 done · 2 remaining']);
+    // a new run always emits its first plan again
+    itemsFromEvent({ type: 'run:start', runId: 'r2', mode: 'jev-on', resumedFromStep: null, task: 't' }, 0);
+    expect(itemsFromEvent(plan(['a'], ['b', 'c']), 0)).toHaveLength(1);
+  });
+
+  it('§3.6 (G4): `outcome blocked/declined/failed` is a one-row summary, with the whole reason as the TUI-only detail', () => {
+    const reason = 'risk 0.85 (block) from destructive: expected level 3.00 of 3; dominant level 3 "overwrites a tracked file whose content cannot be regenerated"; Jev confidence 0.90; Jev judged the action does not carry out intent `edit` (matches_intent=0.08)';
+    const blocked = itemsFromEvent({ type: 'outcome', step: 4, outcome: { status: 'blocked', reason } }, 0)[0]!;
+    expect(formatTranscriptItem(blocked)).toBe('[step 4] blocked · destructive 3 · "overwrites a tracked file whose content cannot be regenerat…"');
+    expect(blocked.detail).toBe(reason);
+    expect(blocked.text).not.toContain('matches_intent=');
+    const failed = itemsFromEvent({ type: 'outcome', step: 4, outcome: { status: 'failed', error: 'patch failed: calc/ops.py:12 — patch does not apply' } }, 0)[0]!;
+    expect(formatTranscriptItem(failed)).toBe('[step 4] failed · "patch failed: calc/ops.py:12 — patch does not apply"');
+    // executed: the duplicated `exit 0 (exit 0, 10ms)` collapses and `read 1 file(s)` is pluralised
+    const executed = itemsFromEvent({ type: 'outcome', step: 2, outcome: { status: 'executed', summary: 'read 3 file(s)', changedFiles: [] } }, 0)[0]!;
+    expect(formatTranscriptItem(executed)).toBe('[step 2] done · read 3 files');
+    const one = itemsFromEvent({ type: 'outcome', step: 2, outcome: { status: 'executed', summary: 'read 1 file(s)', changedFiles: [] } }, 0)[0]!;
+    expect(formatTranscriptItem(one)).toBe('[step 2] done · read 1 file');
+  });
+
+  it('§14.2 item 6: a `failed` outcome keeps its WHOLE §6.7 diagnosis in transcript.log and `--plain`', () => {
+    // `outcome.error` is not a `RiskAssessment.reason` — it is the two-message text §6.7 builds, and it repeats
+    // nothing printed above it. The 60-cell clip cut `PATCH_ERROR_MESSAGES_MAX = 2`'s second message mid-path in
+    // the only place a `--plain` user ever sees it (both sinks drop `detail`).
+    const two = 'patch failed: calc/ops.py:12 — patch does not apply; calc/io.py:4 — patch does not apply';
+    expect(two.length).toBe(88);
+    const failed = itemsFromEvent({ type: 'outcome', step: 4, outcome: { status: 'failed', error: two } }, 0)[0]!;
+    expect(formatTranscriptItem(failed)).toBe(`[step 4] failed · "${two}"`);
+    expect(failed.text).toContain('calc/io.py:4');
+    expect(failed.text).not.toContain('…');
+    // a 120-character ENOENT message survives too; only `TRANSCRIPT_TEXT_MAX` bounds it
+    const enoent = `ENOENT: no such file or directory, open '${'d/'.repeat(30)}x.py'`;
+    expect(enoent.length).toBeGreaterThan(100);
+    expect(itemsFromEvent({ type: 'outcome', step: 4, outcome: { status: 'failed', error: enoent } }, 0)[0]!.text).toContain(enoent);
+    // …and a pathological one is still bounded by the item cap
+    const huge = itemsFromEvent({ type: 'outcome', step: 4, outcome: { status: 'failed', error: 'z'.repeat(5000) } }, 0)[0]!;
+    expect(huge.text.length).toBeLessThanOrEqual(600);
+    // `blocked` / `declined` DO repeat the risk row one line above, so they keep the 60-cell summary
+    expect(outcomeSummaryText('declined', 'risk 0.85 (block) from destructive: x; dominant level 3 "a"; y')).toBe('declined · destructive 3 · "a"');
+  });
+
+  it('§14.2 item 14: the `risk` row and the `outcome blocked` row one line below name the SAME dimension', () => {
+    const dims = {
+      destructive: { risk: 0.2, probability: 1, expected: 0.2, tailMass: 0, bound: 'expected' as const, confidence: 1, level: 1 },
+      out_of_scope: { risk: 0.85, probability: 1, expected: 0.85, tailMass: 0, bound: 'expected' as const, confidence: 1, level: 3 },
+    };
+    // a reason whose FIRST clause is not the at-max dimension: the old code named `destructive` in the outcome row
+    // and `out_of_scope` in the risk row one line above it
+    const reason = 'risk 0.85 (block) from destructive: expected level 1.00 of 3; dominant level 1 "small"; Jev confidence 1.00 | out_of_scope: expected level 3.00 of 3; dominant level 3 "leaves the task"; Jev confidence 1.00';
+    const risk = { dims, risk: 0.85, verdict: 'block' as const, reason };
+    expect(riskItemText(risk, 4)).toBe('risk 0.85 block · out_of_scope 3 "leaves the task" · /why s4.risk.out_of_scope');
+    expect(outcomeSummaryText('blocked', reason, risk)).toBe('blocked · out_of_scope 3 · "leaves the task"');
+    expect(dominantRiskClause(risk)).toEqual({ dim: 'out_of_scope', level: 3, text: 'leaves the task' });
+    // and the two rows agree even when the dims are silent about the dimension the reason names
+    expect(dominantRiskClause({ dims: {}, reason })).toEqual({ dim: 'destructive', level: 1, text: 'small' });
+    expect(dominantRiskClause({ dims: {}, reason: 'nothing parseable' })).toBeNull();
+  });
+
+  it('§14.2 item 15: two interleaved run ids do not share the `plan` baseline', () => {
+    const plan = (done: string[], remaining: string[]): Extract<EngineEvent, { type: 'plan' }> => ({ type: 'plan', step: 1, plan: { done: done.map((text) => ({ text, evidence: { step: 1, judged: -1 } })), remaining, unverified: [], openProblems: [], harnessProblems: [] }, rejectedDone: [], unverifiedDone: [] });
+    const parent = createItemStreamState();
+    const child = createItemStreamState();
+    itemsFromEvent({ type: 'run:start', runId: 'parent', mode: 'jev-on', resumedFromStep: null, task: 't' }, 0, parent);
+    itemsFromEvent({ type: 'run:start', runId: 'child', mode: 'jev-on', resumedFromStep: null, task: 't' }, 0, child);
+    expect(itemsFromEvent(plan([], ['a', 'b', 'c']), 0, parent)).toHaveLength(1);
+    // the child's IDENTICAL counts must not be suppressed by the parent's baseline
+    expect(itemsFromEvent(plan([], ['a', 'b', 'c']), 0, child)).toHaveLength(1);
+    // …and the child's own repeat still is
+    expect(itemsFromEvent(plan([], ['a', 'b', 'c']), 0, child)).toHaveLength(0);
+    // the child's `run:start` cannot reset the parent's baseline
+    expect(itemsFromEvent(plan([], ['a', 'b', 'c']), 0, parent)).toHaveLength(0);
+    // one stream, two runs in sequence: `run:end` drops the finished run's entry, so the map cannot grow per run
+    expect(parent.planKeys.size).toBe(1);
+    itemsFromEvent({ type: 'run:end', result: (loadRunEvents().at(-1) as Extract<EngineEvent, { type: 'run:end' }>).result }, 0, parent);
+    expect(parent.planKeys.size).toBe(0);
   });
 
   it('bounds and sanitises text from events', () => {
@@ -123,7 +256,9 @@ describe('itemsFromEvent / formatTranscriptItem', () => {
     const req = mkConfirmRequest('c1', 1, { kind: 'write', path: 'x.sh', content: 'echo \u001b[2Jhi\nprintf "\u001b]0;title\u0007"' });
     for (const line of confirmPreviewLines(req)) expect(line).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
     const item = itemsFromEvent({ type: 'proposal', step: 1, proposal: req.proposal }, 0)[0]!;
-    expect(item.detail).toBe('echo [2Jhi\nprintf "]0;title"');
+    // §6.2: a `write` preview is a unified diff against /dev/null; the control bytes are still gone
+    expect(item.detail).toBe('--- /dev/null\n+++ b/x.sh\n@@ -0,0 +1,2 @@\n+echo [2Jhi\n+printf "]0;title"\n\\ No newline at end of file');
+    expect(item.detail).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
   });
 
   it('the header item formats to the plain first line and never collides with event keys', () => {
@@ -182,9 +317,9 @@ describe('createPlainRenderer', () => {
     }
     expect(out.text.split('\n').filter((l, i, a) => i < a.length - 1 || l !== '')).toEqual(expected);
     // step 1 stream had no trailing newline: the proposal line must start a fresh line
-    expect(out.text).toContain('"paths": ["tests/test_a.py"]}}\n[step 1] proposal read tests/test_a.py');
+    expect(out.text).toContain('"paths": ["tests/test_a.py"]}}\n[step 1] proposal · read tests/test_a.py');
     // step 2 stream ended with a newline: no blank line is inserted
-    expect(out.text).toContain('{"goal": "fix"}\n[step 2] proposal edit');
+    expect(out.text).toContain('{"goal": "fix"}\n[step 2] proposal · edit');
     expect(aborts).toEqual([]);
   });
 
@@ -242,7 +377,10 @@ describe('createReadlineConfirmer', () => {
     const header = confirmHeaderLines(mkConfirmRequest('c1', 3));
     expect(header).toHaveLength(CONFIRM_HEADER_ROWS);
     for (const line of header) expect(out.text).toContain(`[step 3] ${line}`);
-    expect(out.text).toContain('--- old');
+    // TUI-DESIGN-4 §6.3 "Identity": the readline twin renders the SAME `diffRows` output — signs, not `--- old` blobs
+    expect(out.text).not.toContain('--- old');
+    expect(out.text).toContain('-x = 1');
+    expect(out.text).toContain('+x = 2');
     expect(out.text).toContain(`[step 3] ${READLINE_CONFIRM_KEYS} > `);
     expect(READLINE_CONFIRM_KEYS).toBe('[y] approve  [n] decline  [d] decline+note');
     (stdin as PassThrough).write('maybe\n');
@@ -298,11 +436,11 @@ describe('synth transcript items (jev-only)', () => {
     const items = itemsFromEvent(full, 5);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ key: '2:synth:5', seq: 5, step: 2, kind: 'synth', level: 'info' });
-    expect(formatTranscriptItem(items[0]!)).toBe('[step 2] synth rank: top candidate `return 2` (candidates=12, tested=3)');
-    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'localise', detail: 'src/a.py:2' }, 0)[0]!.text).toBe('synth localise: src/a.py:2');
-    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'd', tested: 0 }, 0)[0]!.text).toBe('synth p: d (tested=0)');
-    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'd', candidates: 4 }, 0)[0]!.text).toBe('synth p: d (candidates=4)');
-    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'a\nb\u001b[2J' }, 0)[0]!.text).toBe('synth p: a ⏎ b[2J');
+    expect(formatTranscriptItem(items[0]!)).toBe('[step 2] synth · rank · top candidate `return 2` · 12 candidates, 3 tested');
+    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'localise', detail: 'src/a.py:2' }, 0)[0]!.text).toBe('synth · localise · src/a.py:2');
+    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'd', tested: 0 }, 0)[0]!.text).toBe('synth · p · d · 0 tested');
+    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'd', candidates: 4 }, 0)[0]!.text).toBe('synth · p · d · 4 candidates');
+    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'a\nb\u001b[2J' }, 0)[0]!.text).toBe('synth · p · a ⏎ b[2J');
     expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'x'.repeat(2000) }, 0)[0]!.text.length).toBeLessThanOrEqual(600);
   });
 
@@ -320,9 +458,9 @@ describe('synth transcript items (jev-only)', () => {
     await r.unmount();
     const lines = out.text.split('\n');
     expect(lines).toContain('partial');
-    expect(lines).toContain('[run] start r1 mode=jev-only task: t');
-    expect(lines).toContain('[step 1] synth localise: src/a.py:2 (candidates=3)');
-    expect(lines).toContain('[step 1] synth select: chose `return 2` (candidates=3, tested=1)');
+    expect(lines).toContain('[run] started · jev-only · t');
+    expect(lines).toContain('[step 1] synth · localise · src/a.py:2 · 3 candidates');
+    expect(lines).toContain('[step 1] synth · select · chose `return 2` · 3 candidates, 1 tested');
   });
 });
 
@@ -339,7 +477,7 @@ describe('confirmHeaderLines (TUI-DESIGN §6.1, §15.2: 6 → 8 rows)', () => {
     expect(lines).toEqual(reviewHeaderLines(req, 8, 80));
     expect(lines).toHaveLength(8);
     for (const l of lines) expect(cellWidth(l)).toBeLessThanOrEqual(80);
-    expect(lines[0]).toBe('review  step 3  risk 0.50 (exp)  edit src/a.py "fix the off-by-one"');
+    expect(lines[0]).toBe('review  step 3  risk 0.50 (exp)  edit src/a.py +1 −1 "fix the off-by-one"');
     expect(lines[1]).toBe(CONFIRM_KEYS_LINE);
     expect(CONFIRM_KEYS_LINE).toBe(REVIEW_KEYS_80);
     expect(lines[7]).toBe('5 matches_intent  —  not judged this step');
@@ -443,12 +581,12 @@ describe('itemsFromEvent: the contract 1.1 engine items (TUI-DESIGN §15.1 item 
   const line = (e: EngineEvent, seq = 0): string[] => itemsFromEvent(e, seq).map(formatTranscriptItem);
 
   it('steer:queued / steer:applied / steer:withdrawn / pause:requested', () => {
-    expect(line({ type: 'steer:queued', step: 8, index: 1, text: 'also update the docs', queued: 1 })).toEqual(['[step 8] steer queued (1) for step 8: also update the docs']);
+    expect(line({ type: 'steer:queued', step: 8, index: 1, text: 'also update the docs', queued: 1 })).toEqual(['[step 8] steer queued · step 8 · "also update the docs" · 1 waiting']);
     expect(itemsFromEvent({ type: 'steer:queued', step: 8, index: 1, text: 'x', queued: 3 }, 4)[0]).toMatchObject({ kind: 'steer:queued', key: '8:steer:queued:4', seq: 4, level: 'info' });
-    expect(line({ type: 'steer:applied', step: 8, count: 2, superseded: ['replan: change approach', 'a\nb'] })).toEqual(['[step 8] steer applied to step 8 (2 directives; superseded: "replan: change approach", "a ⏎ b")']);
-    expect(line({ type: 'steer:applied', step: 8, count: 1, superseded: [] })).toEqual(['[step 8] steer applied to step 8 (1 directive)']);
-    expect(line({ type: 'steer:withdrawn', step: 8, index: 2 })).toEqual(['[step 8] steer withdrawn (2)']);
-    expect(line({ type: 'pause:requested', step: 5 })).toEqual(['[step 5] pause requested: stopping after step 5']);
+    expect(line({ type: 'steer:applied', step: 8, count: 2, superseded: ['replan: change approach', 'a\nb'] })).toEqual(['[step 8] steer applied · step 8 · 2 directives · superseded "replan: change approach", "a ⏎ b"']);
+    expect(line({ type: 'steer:applied', step: 8, count: 1, superseded: [] })).toEqual(['[step 8] steer applied · step 8 · 1 directive']);
+    expect(line({ type: 'steer:withdrawn', step: 8, index: 2 })).toEqual(['[step 8] steer withdrawn · 2']);
+    expect(line({ type: 'pause:requested', step: 5 })).toEqual(['[step 5] pausing · the run stops after step 5']);
     expect(itemsFromEvent({ type: 'pause:requested', step: 5 }, 0)[0]?.kind).toBe('pause');
   });
 
@@ -474,11 +612,11 @@ describe('itemsFromEvent: the contract 1.1 engine items (TUI-DESIGN §15.1 item 
   });
 
   it('retry:settled: one `warning:` line only when the chain failed or lasted > 10 s; `retry` itself is pane-only', () => {
-    expect(line({ type: 'retry:settled', side: 'jev', step: 3, attempts: 3, ok: false, totalWaitMs: 41_000 })).toEqual(['[step 3] warning: jev retry chain: 3 attempts over 41s — gave up']);
-    expect(line({ type: 'retry:settled', side: 'generator', step: null, attempts: 2, ok: true, totalWaitMs: 12_500 })).toEqual(['[run] warning: generator retry chain: 2 attempts over 12s — recovered']);
+    expect(line({ type: 'retry:settled', side: 'jev', step: 3, attempts: 3, ok: false, totalWaitMs: 41_000 })).toEqual(['[step 3] warning · jev retried 3 times over 41s — gave up']);
+    expect(line({ type: 'retry:settled', side: 'generator', step: null, attempts: 2, ok: true, totalWaitMs: 12_500 })).toEqual(['[run] warning · generator retried 2 times over 12s — recovered']);
     expect(line({ type: 'retry:settled', side: 'jev', step: 3, attempts: 2, ok: true, totalWaitMs: 10_000 })).toEqual([]);
     expect(line({ type: 'retry:settled', side: 'jev', step: 3, attempts: 1, ok: true, totalWaitMs: 0 })).toEqual([]);
-    expect(retrySettledText({ type: 'retry:settled', side: 'jev', step: 3, attempts: 1, ok: false, totalWaitMs: 500 })).toBe('warning: jev retry chain: 1 attempt over 500ms — gave up');
+    expect(retrySettledText({ type: 'retry:settled', side: 'jev', step: 3, attempts: 1, ok: false, totalWaitMs: 500 })).toBe('warning · jev retried 1 time over 500ms — gave up');
     expect(itemsFromEvent({ type: 'retry:settled', side: 'jev', step: 3, attempts: 3, ok: false, totalWaitMs: 41_000 }, 0)[0]).toMatchObject({ kind: 'retry', level: 'warn' });
     expect(line({ type: 'retry', side: 'jev', step: 3, stage: 'risk', info: { attempt: 2, maxAttempts: 3, waitMs: 12_000, retryAfter: true, cause: { kind: 'http', status: 429, code: null, message: 'rate limited' } } })).toEqual([]);
   });
@@ -492,7 +630,7 @@ describe('itemsFromEvent: the contract 1.1 engine items (TUI-DESIGN §15.1 item 
     expect(items.map((i) => i.key)).toEqual(['run:workspace:5', 'run:workspace:6']);
     expect(items[0]!.text).toBe(gitBannerLine(git).text);
     const none: EngineEvent = { type: 'workspace', git: { repo: false, reason: 'not-a-repo', head: null, upstream: null, linkedWorktree: false, prefix: '', dirtyAtStart: { modified: 0, staged: 0, untracked: 0 } }, instructions: [], sandbox: 'none' };
-    expect(line(none)).toEqual(['[run] git none · not a git repository: changes made by commands are not recoverable, /diff compares against step pre-images only']);
+    expect(line(none)).toEqual(['[run] git · no repository — changes are not recoverable; /diff <step> compares pre-images']);
     const moved: EngineEvent = { type: 'workspace', git: { ...git, resumedOn: { kind: 'detached', oid: '91ab3c4d5e6f7a8b' } }, instructions: [], sandbox: 'seatbelt' };
     const drift = itemsFromEvent(moved, 0);
     expect(drift).toHaveLength(2);
@@ -518,14 +656,16 @@ describe('itemsFromEvent: the contract 1.1 engine items (TUI-DESIGN §15.1 item 
   });
 
   it('confirm:resolved with a note (§6.4) and run:end with the exit code (§13.5)', () => {
-    expect(line({ type: 'confirm:resolved', step: 2, id: 'c-2', approved: false, aborted: false, note: 'wrong file' })).toEqual(['[step 2] confirm c-2 declined (note: wrong file)']);
-    expect(line({ type: 'confirm:resolved', step: 2, id: 'c-2', approved: false, aborted: false })).toEqual(['[step 2] confirm c-2 declined']);
-    expect(line({ type: 'confirm:resolved', step: 2, id: 'c-2', approved: true, aborted: false, note: 'ignored on approve?' })).toEqual(['[step 2] confirm c-2 approved (note: ignored on approve?)']);
+    // §3.6 (G5): `review declined · "<note>"` — the confirm id is machine-only (it is in decisions.jsonl)
+    expect(line({ type: 'confirm:resolved', step: 2, id: 'c-2', approved: false, aborted: false, note: 'wrong file' })).toEqual(['[step 2] review declined · "wrong file"']);
+    expect(line({ type: 'confirm:resolved', step: 2, id: 'c-2', approved: false, aborted: false })).toEqual(['[step 2] review declined']);
+    expect(line({ type: 'confirm:resolved', step: 2, id: 'c-2', approved: true, aborted: false, note: 'ignored on approve?' })).toEqual(['[step 2] review approved · "ignored on approve?"']);
     const end = loadRunEvents().at(-1)!;
     expect(end.type).toBe('run:end');
     if (end.type !== 'run:end') return;
-    expect(line(end)).toEqual(['[run] end max_steps steps=2 wall=9s cost=$0.010 (gen $0.010, jev $0.000)']);
-    expect(line({ ...end, exitCode: 4, resumable: true, paths: { runDir: '/r', transcript: '/r/transcript.log', log: '/r/jevcode.log' } })).toEqual(['[run] end max_steps steps=2 wall=9s cost=$0.010 (gen $0.010, jev $0.000) exit 4']);
+    // §3.6 (G1): ONE form everywhere; the `(generator … · jev …)` split is always present
+    expect(line(end)).toEqual(['[run] finished · max_steps · 2 steps · 9s · $0.010 (generator $0.010 · jev $0.000)']);
+    expect(line({ ...end, exitCode: 4, resumable: true, paths: { runDir: '/r', transcript: '/r/transcript.log', log: '/r/jevcode.log' } })).toEqual(['[run] finished · max_steps · 2 steps · 9s · $0.010 (generator $0.010 · jev $0.000) · exit 4']);
   });
 
   it('pane-only contract-1.1 events yield nothing: confirm:request, decision, status, retry, checkpoint, exec:output, step:end', () => {
@@ -877,8 +1017,8 @@ describe('the three-writer identity (TUI-DESIGN §15.1, §15.3, §19.1)', () => 
       const transcript = h.store.transcript;
       expect(transcript.length).toBeGreaterThan(5);
       expect(transcript).toContain('[ui] budget: session cap $10 → $15 (applies now)');
-      expect(transcript.some((l) => /^\[step \d+\] steer queued \(1\) for step \d+: also update the docs$/.test(l))).toBe(true);
-      expect(transcript.some((l) => /^\[run\] git none · not a git repository/.test(l))).toBe(true);
+      expect(transcript.some((l) => /^\[step \d+\] steer queued · step \d+ · "also update the docs" · 1 waiting$/.test(l))).toBe(true);
+      expect(transcript.some((l) => /^\[run\] git · no repository — changes are not recoverable/.test(l))).toBe(true);
 
       // the TUI twin: Transcript.tsx renders formatTranscriptItem(item) for every item the reducer built from the same events
       let seq = 0;
@@ -942,10 +1082,11 @@ describe('TUI-DESIGN-2 §4.5: stepSummaryText and the `step` item (one line per 
       completion: 0.93,
       timing: { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 1234 },
     });
-    expect(stepSummaryText(r, { generator: 0.003, jev: 0.001 })).toBe('edit kth.py "guard k > len" · risk 0.12 ok · 1 file · tests 41p/0f/0e · judge 0.89 · complete 0.93 · 1.2s · $0.004');
+    // §6.6: the outcome segment gains the churn (`1 file +1 −1`) and the `/diff <N>` pointer is the LAST segment
+    expect(stepSummaryText(r, { generator: 0.003, jev: 0.001 })).toBe('edit kth.py "guard k > len" · risk 0.12 ok · 1 file +1 −1 · tests 41p/0f/0e · judge 0.89 · complete 0.93 · 1.2s · $0.004 · /diff 4');
     const item = itemsFromEvent({ type: 'step:end', record: r, costUsd: { generator: 0.003, jev: 0.001 } }, 5)[0]!;
     expect(item).toMatchObject({ kind: 'step', step: 4, key: '4:step:5', level: 'info' });
-    expect(formatTranscriptItem(item)).toBe('[step 4] edit kth.py "guard k > len" · risk 0.12 ok · 1 file · tests 41p/0f/0e · judge 0.89 · complete 0.93 · 1.2s · $0.004');
+    expect(formatTranscriptItem(item)).toBe('[step 4] edit kth.py "guard k > len" · risk 0.12 ok · 1 file +1 −1 · tests 41p/0f/0e · judge 0.89 · complete 0.93 · 1.2s · $0.004 · /diff 4');
   });
 
   it('verdict words, outcomes, the completion cut, the four-decimal cost below $0.001 and the token form without cost (jev-only `jev 1.4k`, else `gen … jev …`)', () => {
@@ -1002,5 +1143,183 @@ describe('TUI-DESIGN-2 §3.10: [you] / [jevcode] items are kind `chat` in every 
     const lines = out.text.split('\n');
     expect(lines).toContain('[you] hi');
     expect(lines).toContain("[jevcode] Hi. I'm ready when you are — describe a change you want in proj, or ask what I can do.");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §3.7 "Guard against R2": every `[run]` anchor `src/perf/**`, `test/pty/**` and `scripts/pty/**` need
+// is an exported NAMED constant here, glyph-agnostic, with a self-test over real round-4 item text in BOTH glyph
+// sets — a zero match is a hard failure, never a vacuous pass (today `polish-check.mjs:399` reports V17 as success
+// with `no run ended in this capture` when its anchor misses, which is exactly the R2 failure mode).
+// ---------------------------------------------------------------------------------------------------------------
+
+describe('§3.7: the exported run-frame anchors match in both glyph sets', () => {
+  const started = formatTranscriptItem(itemsFromEvent({ type: 'run:start', runId: '20260922-120000-ab12cd34', mode: 'jev-on', resumedFromStep: null, task: 'fix the failing test' }, 0)[0]!);
+  const end = loadRunEvents().at(-1)!;
+  const finished = formatTranscriptItem(itemsFromEvent(end, 0)[0]!);
+
+  it('the round-4 rows they anchor on are what the formatter produces', () => {
+    expect(started).toBe('[run] started · jev+llm · fix the failing test');
+    expect(finished).toMatch(/^\[run\] finished · max_steps · 2 steps · /);
+    expect(RUN_STARTED_WORD).toBe('started');
+    expect(RUN_FINISHED_WORD).toBe('finished');
+  });
+
+  for (const [name, g] of [
+    ['unicode', glyphSet({})],
+    ['ascii', glyphSet({ ascii: true })],
+  ] as const) {
+    it(`${name}: RUN_STARTED_RE / RUN_END_RE / END_PATTERN / RUN_STARTED_PATTERN all match, none vacuously`, () => {
+      const s = glyphTwin(started, g);
+      const f = glyphTwin(finished, g);
+      expect(RUN_STARTED_RE.test(s)).toBe(true);
+      expect(RUN_END_RE.test(f)).toBe(true);
+      // the perf constants are strings the callers wrap in `new RegExp`
+      expect(new RegExp(RUN_END_PATTERN).test(f)).toBe(true);
+      expect(new RegExp(`\\[run\\] ${RUN_STARTED_TAIL_PATTERN}`).test(s)).toBe(true);
+      // and they do NOT match the other row, so a stale window cannot silently become the whole capture (R2)
+      expect(RUN_END_RE.test(s)).toBe(false);
+      expect(RUN_STARTED_RE.test(f)).toBe(false);
+      // the round-3 leading-space form `polish-check.mjs` sees in a capture (≤ 9 cells of gutter)
+      expect(RUN_STARTED_RE.test(`    ${s}`)).toBe(true);
+      expect(RUN_END_RE.test(`    ${f}`)).toBe(true);
+    });
+  }
+
+  it('the old round-3 anchors no longer match, so nothing can pass on a stale pattern', () => {
+    expect(/^ {0,9}\[run\] end /.test(finished)).toBe(false);
+    expect(new RegExp('end [a-z_]+ steps=').test(finished)).toBe(false);
+    expect(new RegExp('\\[run\\] start ').test(started)).toBe(false);
+  });
+
+  // §14.2 review item 5: the error clause used to sit between the stop reason and the step count, so the very
+  // constant `src/perf/pty.ts:800` and `render-lag.ts:386` import stopped matching for exactly the runs that end
+  // badly — and `render-lag.ts` does `capture.search(new RegExp(END_PATTERN))`, so a silent non-match turns the
+  // lag window into the whole capture and the gate into a lie. That is R2.
+  const errored = formatTranscriptItem(
+    itemsFromEvent(
+      {
+        type: 'run:end',
+        exitCode: 1,
+        result: {
+          ...(loadRunEvents().at(-1) as Extract<EngineEvent, { type: 'run:end' }>).result,
+          stopReason: 'error',
+          error: { name: 'ProviderError', code: 'PROVIDER_HTTP', message: 'connection reset by peer', exitCode: 1 },
+        },
+      },
+      0,
+    )[0]!,
+  );
+
+  it('a run that ended with an error still matches every anchor, in both glyph sets (item 5)', () => {
+    expect(errored).toBe('[run] finished · error · 2 steps · 9s · $0.010 (generator $0.010 · jev $0.000) · exit 1 · PROVIDER_HTTP: connection reset by peer');
+    for (const g of [glyphSet({}), glyphSet({ ascii: true })]) {
+      const f = glyphTwin(errored, g);
+      expect(RUN_END_RE.test(f)).toBe(true);
+      expect(new RegExp(RUN_END_PATTERN).test(f)).toBe(true);
+      expect(RUN_END_RE.test(`    ${f}`)).toBe(true);
+    }
+    // the diagnosis is the LAST segment, after `exit <n>` — §12's `run:end` string has no error clause before it
+    expect(errored.indexOf('exit 1')).toBeLessThan(errored.indexOf('PROVIDER_HTTP'));
+  });
+
+  it('the `llm-jev` badge does not smuggle a second ` · ` into the run-frame row (item 18)', () => {
+    const row = formatTranscriptItem(itemsFromEvent({ type: 'run:start', runId: 'r1', mode: 'llm-jev', resumedFromStep: null, task: 'fix the failing test' }, 0)[0]!);
+    // the console's own badge is `llm+jev · verified`; the ROW's grammar says ` · ` is the one inline separator
+    expect(MODE_BADGE_WORD['llm-jev']).toBe('llm+jev · verified');
+    expect(row).toBe('[run] started · llm+jev verified · fix the failing test');
+    expect(row.split(' · ')).toHaveLength(3);
+    expect(RUN_STARTED_RE.test(row)).toBe(true);
+    // every other mode is byte-unchanged
+    for (const [mode, badge] of [
+      ['jev-on', 'jev+llm'],
+      ['jev-only', 'jev-only'],
+      ['jev-off', 'llm-only'],
+    ] as const) {
+      expect(formatTranscriptItem(itemsFromEvent({ type: 'run:start', runId: 'r1', mode, resumedFromStep: null, task: 't' }, 0)[0]!)).toBe(`[run] started · ${badge} · t`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §14.2 review item 13: `plain.ts` is the ONE item formatter and is on every sink's first-frame path
+// (`--plain`'s included), so what it drags in behind one function is a product fact, not a style question. The
+// pure line diff moved to `src/tui/diff/text.ts`, which imports **nothing at all**; `src/undo/diff.ts` — which
+// opens files and spawns `git` — is out of the graph. The remaining `node:fs*` / `node:child_process` importers
+// are a DECLARED allowlist: each is named with the round-4 requirement that puts it there, so a new one is a
+// visible failure rather than a silent regression.
+// ---------------------------------------------------------------------------------------------------------------
+
+describe('§14.2 item 13: the item formatter\'s static import graph', () => {
+  const root = fileURLToPath(new URL('../../../', import.meta.url));
+  const rel = (f: string): string => f.slice(root.length);
+
+  /** Value imports only (`import type` is erased), resolved the way Node resolves this project's ESM. */
+  const graph = (entry: string): { files: Set<string>; builtins: Map<string, Set<string>> } => {
+    const files = new Set<string>();
+    const builtins = new Map<string, Set<string>>();
+    const visit = (f: string): void => {
+      if (files.has(f)) return;
+      files.add(f);
+      const src = readFileSync(f, 'utf8');
+      const re = /(?:^|\n)\s*(?:import|export)\s+(?!type\s)([^'";]*?\sfrom\s+)?['"]([^'"]+)['"]/g;
+      let m = re.exec(src);
+      while (m !== null) {
+        const spec = m[2] ?? '';
+        if (spec.startsWith('node:')) {
+          const who = builtins.get(spec) ?? new Set<string>();
+          who.add(rel(f));
+          builtins.set(spec, who);
+        } else if (spec.startsWith('.')) {
+          const base = resolvePath(dirname(f), spec).replace(/\.js$/, '');
+          for (const ext of ['.ts', '.tsx', '/index.ts']) {
+            if (existsSync(base + ext)) {
+              visit(base + ext);
+              break;
+            }
+          }
+        }
+        m = re.exec(src);
+      }
+    };
+    visit(entry);
+    return { files, builtins };
+  };
+
+  it('`src/tui/diff/text.ts` imports nothing, and `summary.ts` reaches no Node built-in through it', () => {
+    const text = graph(`${root}src/tui/diff/text.ts`);
+    expect([...text.files].map(rel)).toEqual(['src/tui/diff/text.ts']);
+    expect([...text.builtins.keys()]).toEqual([]);
+  });
+
+  it('`plain.ts` no longer pulls `src/undo/diff.ts` (and therefore `checkpoint/images.ts` and `workspace/git.ts` behind it)', () => {
+    const { files } = graph(`${root}src/tui/plain.ts`);
+    const names = [...files].map(rel);
+    expect(names).not.toContain('src/undo/diff.ts');
+    expect(names.filter((n) => n.startsWith('src/checkpoint/'))).toEqual(['src/checkpoint/store.ts']); // S6's blocking/lines.ts
+    expect(names).not.toContain('src/loop/engine.ts');
+    expect(names).toContain('src/tui/diff/text.ts');
+  });
+
+  it('every `node:fs*` / `node:child_process` importer in the graph is on the declared allowlist', () => {
+    const { builtins } = graph(`${root}src/tui/plain.ts`);
+    const heavy = new Set<string>();
+    for (const [spec, who] of builtins) if (spec.startsWith('node:fs') || spec === 'node:child_process') for (const w of who) heavy.add(w);
+    expect([...heavy].sort()).toEqual([
+      // §3.6 G6: `gitBannerLine` is an item text, so the formatter must reach it (it spawns nothing at import time)
+      'src/checkpoint/store.ts',
+      // §6.3 edge 8: `isSecretPath`, purely lexical (sandbox/paths.ts:120–135 — "safe to run over a 5,000-entry listing")
+      'src/core/atomic.ts',
+      // contract 1.5 (2400a0c) / W2b (7efac12): `src/tui/review/lines.ts` needs `buildRiskQuestions` / `riskLevelTexts` from
+      // `src/loop/stages/risk.ts`, which now imports `ownsPath` / `parseOwnGlob` from the ORCHESTRATE BARREL (`src/orchestrate/index.ts`),
+      // and the barrel re-exports these three `node:fs` / `child_process` importers. Nothing in the formatter calls them; the reach is
+      // the barrel's. Requested of the harness session (round-4 merge, 2026-09-22): import the leaf module in risk.ts, then delete
+      // these three rows so the guard tightens again.
+      'src/orchestrate/land.ts',
+      'src/orchestrate/manifest.ts',
+      'src/orchestrate/worktree.ts',
+      'src/sandbox/paths.ts',
+      'src/workspace/gitstate.ts',
+    ]);
   });
 });

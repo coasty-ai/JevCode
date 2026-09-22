@@ -102,8 +102,8 @@ Reserved and never rebindable (A24): `Ctrl+C`, `Ctrl+D`, `Ctrl+M`, `Ctrl+[`, `Ct
 | `palette:down` | `↓`, `Ctrl+N` | next row |  |  |
 | `palette:pageUp` | `PgUp` | page up |  |  |
 | `palette:pageDown` | `PgDn` | page down |  |  |
-| `palette:accept` | `Tab` | complete the highlighted row into the draft and keep editing |  | reserved — never rebindable |
-| `palette:run` | `Enter` | run — only on an exact name/alias match; otherwise the draft is kept and an error item is appended |  | reserved — never rebindable |
+| `palette:accept` | `Tab` | put the highlighted row in the draft |  | reserved — never rebindable |
+| `palette:run` | `Enter` | run the armed draft; otherwise move to the next row |  | reserved — never rebindable |
 | `palette:close` | `Esc` | close (the draft is kept; the token is remembered so / stays closed while it is unchanged) |  | reserved — never rebindable |
 
 ## Ctrl-C / Esc / Ctrl-D

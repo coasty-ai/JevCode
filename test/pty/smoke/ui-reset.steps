@@ -1,0 +1,16 @@
+# TUI-DESIGN-4 §7.1: `/ui reset` clears every pane latch and answers `ui reset — <n> panes unlatched` (or
+# `nothing was latched`). It is one of the four commands that take 37 → 41 this round, and it is the explicit
+# unlatch the design chose INSTEAD of an auto-retry timer (A7 open question 1: a timer risks re-entering the
+# render loop at 1/5 Hz). Driven with no fault, so the answer is the empty state.
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.4
+send /ui reset
+sleep 0.2
+send \r
+expect nothing was latched
+sleep 0.3
+send /exit
+sleep 0.2
+send \r
+eof

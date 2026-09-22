@@ -109,32 +109,36 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     const r = await drive({
       name: 'chat-submit-focus',
       args: ['chat', ...LONG_RUN],
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), `expect ${PLACEHOLDER_STEER}`, 'send k', `expect ${PROMPT} ${SGR_GAP}k`, 'send \\x03', `expect ${PLACEHOLDER_STEER}`, 'send \\x03', 'expect end human_abort', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), `expect ${PLACEHOLDER_STEER}`, 'send k', `expect ${PROMPT} ${SGR_GAP}k`, 'send \\x03', `expect ${PLACEHOLDER_STEER}`, 'send \\x03', 'expect finished [·-] human_abort', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     // TUI-DESIGN-2 §3.1 rows 1 and 5: the submission is a `[you]` bubble first, then the intake (mock: `coding_task`) starts the run
     expect(plain).toContain('[you] make the tests pass');
-    expect(plain).toMatch(/\[run\] start \S+ mode=jev-on task: make the tests pass/);
-    expect(plain.indexOf('[you] make the tests pass')).toBeLessThan(plain.indexOf('[run] start'));
-    // §4.5: `run:ready` is one of the kinds the compact transcript hides — the TUI never shows it, transcript.log keeps it
-    expect(plain).not.toMatch(/\[run\] ready \S+ step 0\/200/);
-    expect(r.transcript()!.some((l) => /^\[run\] ready \S+ step 0\/200$/.test(l))).toBe(true);
+    expect(plain).toMatch(/\[run\] started [·-] jev\+llm [·-] make the tests pass/);
+    expect(plain.indexOf('[you] make the tests pass')).toBeLessThan(plain.indexOf('[run] started'));
+    // TUI-DESIGN-4 §3.6 (D-V, G1): `run:ready` is DELETED as an item — the event kind stays for `--json` and
+    // `useEngine`, but nothing writes a row, so it is absent from the frame AND from transcript.log. Before
+    // round 4 it was merely hidden by the compact transcript (§4.5) and transcript.log still carried it.
+    expect(plain).not.toMatch(/\[run\] ready /);
+    expect(r.transcript()!.some((l) => /^\[run\] ready /.test(l))).toBe(false);
+    // …and the run id it used to repeat is now in exactly one place, the epilogue
+    expect(r.transcript()!.filter((l) => /^\[run\] started [·-] /.test(l))).toHaveLength(1);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 
-  it('steer while live → `steer queued (1) for step N: <text>` item in the scrollback and transcript.log', async () => {
+  it('steer while live → `steer queued · step N · "<text>" · 1 waiting` item in the scrollback and transcript.log (TUI-DESIGN-4 §3.6 G5)', async () => {
     const r = await drive({
       name: 'chat-steer',
       args: ['chat', ...LONG_RUN],
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send keep the CHANGELOG format', `expect ${PROMPT} ${SGR_GAP}keep the CHANGELOG format`, 'send \\r', 'expect steer queued \\(1\\) for step \\d+: keep the CHANGELOG format', 'send \\x03', 'expect end (human_abort|complete)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send keep the CHANGELOG format', `expect ${PROMPT} ${SGR_GAP}keep the CHANGELOG format`, 'send \\r', 'expect steer queued [·-] step \\d+ [·-] "keep the CHANGELOG format"', 'send \\x03', 'expect finished [·-] (human_abort|complete)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const transcript = r.transcript();
     expect(transcript).not.toBeNull();
-    expect(transcript!.some((l) => /^\[step \d+\] steer queued \(1\) for step \d+: keep the CHANGELOG format$/.test(l))).toBe(true);
+    expect(transcript!.some((l) => /^\[step \d+\] steer queued [·-] step \d+ [·-] "keep the CHANGELOG format" [·-] 1 waiting$/.test(l))).toBe(true);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 
@@ -172,7 +176,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     expect(plain).not.toContain(token);
-    expect(plain).not.toMatch(/\[run\] start /);
+    expect(plain).not.toMatch(/\[run\] started [·-] /);
     expect(r.runDirs()).toEqual([]);
     const history = join(r.home, 'history.jsonl');
     expect(existsSync(history)).toBe(true);
@@ -189,7 +193,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
       name: 'chat-no-color',
       args: ['chat', ...MOCK_RUN, '--mock-steps', '4'],
       env: { NO_COLOR: '1' },
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'expect end complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'expect finished [·-] complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -213,7 +217,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
         rows,
         cols,
         // `fix the failing test`, not `fix it`: the mock intake (TUI-DESIGN-2 §3.13) reads a ≤ 2-word line without `?` as `ambiguous`
-        steps: [...CHAT_OPEN_NARROW, ...submitTask('fix the failing test'), 'expect end complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+        steps: [...CHAT_OPEN_NARROW, ...submitTask('fix the failing test'), 'expect finished [·-] complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
       });
       expect(r.timeouts).toBe(0);
       expect(r.code).toBe(0);
@@ -350,7 +354,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
         rows: 40,
         cols: 100,
         // `jev s<N> · <n> decisions`: the collapsed panel strip once decisions exist (TUI-DESIGN-2 §4.6), the round-2 twin of the pane header
-        steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'expect jev s\\d+ · \\d+ decisions', `send ${draft}`, `expect ${PROMPT} ${SGR_GAP}${draft}`, 'mark storm-start', ...stormSteps(), 'mark storm-end', 'send Z', `expect ${PROMPT} ${SGR_GAP}${draft}Z`, SETTLED_100, ...cycles, 'send \\x03', `expect ${PLACEHOLDER_STEER}`, 'send \\x03', 'expect end human_abort', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+        steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'expect jev s\\d+ · \\d+ decisions', `send ${draft}`, `expect ${PROMPT} ${SGR_GAP}${draft}`, 'mark storm-start', ...stormSteps(), 'mark storm-end', 'send Z', `expect ${PROMPT} ${SGR_GAP}${draft}Z`, SETTLED_100, ...cycles, 'send \\x03', `expect ${PLACEHOLDER_STEER}`, 'send \\x03', 'expect finished [·-] human_abort', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
       });
       const all = units(r.text);
       fs = frames(r.text);

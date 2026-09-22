@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { RESTORE as FATAL_RESTORE } from '../../../src/cli/fatal.js';
 import { EventEmitter } from 'node:events';
-import { DECSCUSR_BAR, RESIZE_DEBOUNCE_MS, RESTORE, createResizeDebounce, createRestoreTerminal, createSuspensionQueue, installTerminalHygiene, processRestoreTerminal, rearmRestoreTerminal, restoreTerminal, setProcessRestore, suspendProcess, writeCursorShape, type HygieneProcess } from '../../../src/tui/terminal.js';
+import { DECSCUSR_BAR, RESTORE, createRestoreTerminal, createSuspensionQueue, installTerminalHygiene, processRestoreTerminal, rearmRestoreTerminal, restoreTerminal, setProcessRestore, suspendProcess, writeCursorShape, type HygieneProcess } from '../../../src/tui/terminal.js';
 
 describe('RESTORE (§14.2)', () => {
   it('is the fatal path\'s string: 2004l 2026l DECSCUSR 0 cursor-show SGR0; no clears', () => {
@@ -50,36 +50,8 @@ describe('RESTORE (§14.2)', () => {
   });
 });
 
-describe('createResizeDebounce (§14.1)', () => {
-  it('30 triggers 2 ms apart → one call 50 ms after the last; cancel drops it', () => {
-    let now = 0;
-    const timers: { at: number; fn: () => void }[] = [];
-    const set = (fn: () => void, ms: number): unknown => {
-      const t = { at: now + ms, fn };
-      timers.push(t);
-      return t;
-    };
-    const clear = (h: unknown): void => {
-      const i = timers.indexOf(h as { at: number; fn: () => void });
-      if (i !== -1) timers.splice(i, 1);
-    };
-    let calls = 0;
-    const d = createResizeDebounce(() => (calls += 1), RESIZE_DEBOUNCE_MS, { setTimeout: set, clearTimeout: clear });
-    for (let i = 0; i < 30; i++) {
-      d.trigger();
-      now += 2;
-    }
-    expect(timers).toHaveLength(1);
-    expect(timers[0]?.at).toBe(58 + 50);
-    expect(d.pending).toBe(true);
-    timers[0]?.fn();
-    expect(calls).toBe(1);
-    d.trigger();
-    d.cancel();
-    expect(timers.filter((t) => t.at > 108)).toHaveLength(0);
-    expect(d.pending).toBe(false);
-  });
-});
+// `createResizeDebounce` and its two assertions are DELETED with the export (TUI-DESIGN-4 §2.2 P-R2, §9.2's
+// `src/tui/index.ts` row): the debounce's one consumer, `App.tsx`'s `wrapColumns`, is gone.
 
 describe('createSuspensionQueue (§4.8)', () => {
   it('delivers directly, buffers while suspended, flushes in order on resume, and bounds the buffer', () => {

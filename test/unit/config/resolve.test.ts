@@ -9,7 +9,7 @@ import { defaultRunSpendCapUsd } from '../../../src/config/ui.js';
 import type { RunMeta } from '../../../src/core/types.js';
 import { fingerprint } from '../../../src/config/mask.js';
 import { ConfigError } from '../../../src/errors.js';
-import { configTableLines } from '../../../src/cli/config-table.js';
+import { configTableLines, configTableRows } from '../../../src/cli/config-table.js';
 import { writeCredentials } from '../../../src/config/credentials.js';
 
 const FIX = join(import.meta.dirname, '../../fixtures/config');
@@ -815,7 +815,7 @@ describe('TUI-DESIGN-2 §2.3: decider.provider — auto-detection, precedence, k
     expect(c.entries.get('decider.provider')).toEqual({ value: 'typesafe', source: `file:${path}` });
     expect(c.entries.get('decider.apiKey')).toEqual({ value: TS_KEY, source: `file:${path}` });
     expect(c.record()['decider.providerSource']).toEqual({ value: `file:${path}`, source: 'derived' });
-    expect(configTableLines(c.record(), { sandboxLevel: 'none' }).find((l) => l.startsWith('decider.provider '))).toMatch(/^decider\.provider\s+typesafe\s+file:/);
+    expect(configTableRows(c.record()).find((r) => r.setting === 'decider.provider')?.source).toMatch(/^file:/);
     // the saved provider steers the key order too (§2.3 step 3): TYPESAFE_API_KEY in the shell wins over JEV_API_KEY
     expect((await resolve(run(), { ...env, JEV_API_KEY: JEV_KEY, TYPESAFE_API_KEY: `${TS_KEY}-shell` })).decider().apiKey).toBe(`${TS_KEY}-shell`);
   });
@@ -876,15 +876,15 @@ describe('TUI-DESIGN-2 §2.3: decider.provider — auto-detection, precedence, k
     expect(rec['decider.model']).toEqual({ value: 'jev-1.13.0', source: 'default' });
     expect(rec['decider.apiKey']).toEqual({ value: { source: 'env', fingerprint: fingerprint(TS_KEY) }, source: 'env' });
     expect(JSON.stringify(rec)).not.toContain(TS_KEY.slice(0, 12));
-    const lines = configTableLines(rec, { sandboxLevel: 'none' });
-    expect(lines.find((l) => l.startsWith('decider.provider '))).toMatch(/^decider\.provider\s+typesafe\s+derived \(auto: TYPESAFE_API_KEY is set\)$/);
-    expect(lines.find((l) => l.startsWith('decider.baseUrl '))).toMatch(/^decider\.baseUrl\s+https:\/\/api\.typesafe\.ai\/v1\/systemone\s+default \(typesafe\)$/);
-    expect(lines.find((l) => l.startsWith('decider.model '))).toMatch(/^decider\.model\s+jev-1\.13\.0\s+default \(typesafe\)$/);
-    expect(lines.some((l) => l.includes('providerSource'))).toBe(false);
+    const tableRows = configTableRows(rec);
+    expect(tableRows.find((r) => r.setting === 'decider.provider')?.source).toBe('derived (auto: TYPESAFE_API_KEY is set)');
+    expect(tableRows.find((r) => r.setting === 'decider.baseUrl')?.source).toBe('default (typesafe)');
+    expect(tableRows.find((r) => r.setting === 'decider.model')?.source).toBe('default (typesafe)');
+    expect(tableRows.some((r) => r.setting.includes('providerSource'))).toBe(false);
     const or = (await resolve(run(), { JEV_PROVIDER: 'openrouter', OPENROUTER_API_KEY: OR_KEY })).record();
     expect(or['decider.provider']).toEqual({ value: 'openrouter', source: 'env' });
     expect(or['decider.providerSource']).toEqual({ value: 'env', source: 'derived' });
-    expect(configTableLines(or, { sandboxLevel: 'none' }).find((l) => l.startsWith('decider.model '))).toMatch(/default \(openrouter\)$/);
+    expect(configTableRows(or).find((r) => r.setting === 'decider.model')?.source).toBe('default (openrouter)');
     const meta: RunMeta = { runId: 'r', task: 't', workspace: cwd, mode: 'jev-only', config: rec, versions: { jevcode: '0', node: '0' }, createdAt: '2026-09-21T00:00:00.000Z', overrides: [], resumes: [], resolvedJevModel: null, jevModelDrift: null };
     expect(resumeIdentityFromRunMeta(meta)).toMatchObject({ jevProvider: 'typesafe', jevModel: 'jev-1.13.0', jevBaseUrl: 'https://api.typesafe.ai/v1/systemone' });
   });
@@ -897,7 +897,7 @@ describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
     expect(dflt.entries.get('mode')).toEqual({ value: DEFAULT_MODE, source: 'default' });
     expect(dflt.record()['mode']).toEqual({ value: DEFAULT_MODE, source: 'default' });
     // §2.6 / §12: `mode  <DEFAULT_MODE>  default`
-    expect(configTableLines(dflt.record(), { sandboxLevel: 'none' }).find((l) => l.startsWith('mode '))).toMatch(new RegExp(`^mode\\s+${DEFAULT_MODE}\\s+default$`));
+    expect(configTableRows(dflt.record()).find((r) => r.setting === 'mode')).toEqual({ setting: 'mode', value: DEFAULT_MODE, source: 'default', atDefault: true });
     // file `mode: jev-on` → source file:<path>, cap default $2.00 (§8.1 S1 row)
     await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ mode: 'jev-on' }));
     const file = await resolve(run());
@@ -906,9 +906,10 @@ describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
     expect(file.entries.get('limits.spendCapUsd')).toEqual({ value: '2', source: 'default' });
     expect(file.limits().spendCapUsd).toBe(2);
     expect(file.sessionSpendCap(file.mode)).toEqual({ value: 10, source: 'derived', derived: true });
-    const modeLine = configTableLines(file.record(), { sandboxLevel: 'none' }).find((l) => l.startsWith('mode '));
-    expect(modeLine).toMatch(/^mode\s+jev-on\s+file:/);
-    expect(modeLine).toContain(join(cwd, 'jevcode.json'));
+    const modeRow = configTableRows(file.record()).find((r) => r.setting === 'mode');
+    expect(modeRow).toEqual({ setting: 'mode', value: 'jev-on', source: `file:${join(cwd, 'jevcode.json')}`, atDefault: false });
+    // TUI-DESIGN-4 §3.3 / F-B3: the rendered row carries the SHORT parenthetical; the path stays in the record and in --json
+    expect(configTableLines(file.record(), { sandboxLevel: 'none', width: 110 }).find((l) => l.startsWith('mode '))).toMatch(/^mode\s+jev-on\s+\(file\)$/);
     // the Open Assist dotenv beats the file, ./.env beats it, the process env beats both, a flag beats everything
     const oa = join(root, 'open-assist');
     await mkdir(oa);
@@ -977,7 +978,7 @@ describe('TUI-DESIGN-3 §1.1 / §1.8 (S3): modeFromParsedFlags is the one argv r
     expect(c.decider()).toMatchObject({ provider: 'typesafe', providerSource: 'auto:typesafe-key', apiKey: TS_KEY });
     expect(c.entries.get('generator.apiKey')).toMatchObject({ value: OR_KEY });
     expect(c.missingSecrets('jev-on')).toEqual([]);
-    expect(configTableLines(c.record(), { sandboxLevel: 'none' }).find((l) => l.startsWith('decider.provider '))).toMatch(/^decider\.provider\s+typesafe\s+derived \(auto: TYPESAFE_API_KEY is set\)$/);
+    expect(configTableRows(c.record()).find((r) => r.setting === 'decider.provider')?.source).toBe('derived (auto: TYPESAFE_API_KEY is set)');
     // the forbidden shape: a file jevProvider is rule 1 and beats rule 2c
     await writeCredentials({ apiKey: OR_KEY, jevApiKey: OR_KEY, provider: 'openrouter', jevProvider: 'openrouter' }, { env: {}, home, cwd }, 'wizard');
     expect((await resolve(run(), { TYPESAFE_API_KEY: TS_KEY })).decider()).toMatchObject({ provider: 'openrouter', apiKey: OR_KEY });
@@ -994,7 +995,53 @@ describe('TUI-DESIGN-3 §1.1 / §1.8 (S3): modeFromParsedFlags is the one argv r
     expect(c.entries.get('seen.defaultMode')).toEqual({ value: 'jev-on', source: `file:${join(cwd, 'jevcode.json')}` });
     expect(c.warnings).toEqual([]);
     expect(c.record()['seen.defaultMode']).toEqual({ value: 'jev-on', source: `file:${join(cwd, 'jevcode.json')}` });
-    expect(configTableLines(c.record(), { sandboxLevel: 'none' }).some((l) => l.startsWith('seen.defaultMode'))).toBe(false);
-    expect(configTableLines(c.record(), { sandboxLevel: 'none', all: true }).find((l) => l.startsWith('seen.defaultMode'))).toMatch(/^seen\.defaultMode\s+jev-on\s+file:/);
+    expect(configTableRows(c.record()).some((r) => r.setting === 'seen.defaultMode')).toBe(false);
+    expect(configTableRows(c.record(), { all: true }).find((r) => r.setting === 'seen.defaultMode')?.source).toMatch(/^file:/);
+  });
+});
+
+describe('TUI-DESIGN-4 §7.5 (P-D5): resolveConfig records the problems `jevcode config` reports', () => {
+  it('the measured broken config produces a problem per bad row and the unknown keys verbatim', async () => {
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ maxSteps: 'lots', theme: 'nope', temperature: 'hot', notASetting: 1, generator: { model: 123 } }));
+    const c = await resolve(run());
+    const rec = c.record();
+    expect(rec['limits.maxSteps']?.problem).toEqual({ kind: 'wrong-type', expected: 'an integer ≥ 1' });
+    expect(rec['ui.theme']?.problem).toEqual({ kind: 'wrong-type', expected: 'one of dark|light|daltonized|ansi' });
+    expect(rec['generator.temperature']?.problem).toEqual({ kind: 'wrong-type', expected: 'a number between 0 and 2' });
+    // a nested object and an invented name are not settings: they are unknown FILE KEYS, not rows
+    expect(c.unknownFileKeys).toEqual(['notASetting', 'generator']);
+    expect(Object.keys(rec)).not.toContain('notASetting');
+  });
+
+  it('a row at its default and a well-formed row carry no problem, and the record never throws', async () => {
+    const c = await resolve(run());
+    for (const [name, v] of Object.entries(c.record())) expect(v.problem ?? null, name).toBeNull();
+    expect(c.unknownFileKeys).toEqual([]);
+  });
+
+  it('`ui.fps: 240` never reaches the record as a problem — `resolveLaunchSettings` has already clamped it (§7.5 edge)', async () => {
+    const c = await resolve(run(), { JEVCODE_FPS: '240' });
+    expect(c.record()['ui.fps']).toEqual({ value: '30', source: 'env' });
+    // the `⚠ clamped to 30` row is `settingProblem`'s job for any layer that does NOT pre-clamp (defaults.test.ts)
+  });
+});
+
+describe('TUI-DESIGN-4 §8 (the round-4 config rows): ResolvedConfig.context()', () => {
+  it('always carries the three rows §8 gives a default, and NOTHING else until the user sets it', async () => {
+    const c = await resolve(run());
+    // `context.mode` / `context.compaction` / `context.compactEvery` have a `defaultValue` in §8, so they always
+    // resolve and JevCode's config layer pins them; the other three are absent, so `src/core/limits.ts` keeps them
+    expect(c.context?.()).toEqual({ view: 'relaxed', compaction: 'code', compactEvery: 8 });
+    expect(Object.keys(c.context?.() ?? {}).sort()).toEqual(['compactEvery', 'compaction', 'view']);
+    for (const name of ['context.mode', 'context.compaction', 'context.compactEvery']) {
+      expect(c.record()[name]?.source, name).toBe('default');
+    }
+  });
+
+  it('reads the env and the config file, and skips a malformed value rather than throwing', async () => {
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ contextHistorySteps: 20, contextBudgetChars: 'lots' }));
+    const c = await resolve(run(), { JEVCODE_CONTEXT_COMPACTION: 'off', JEVCODE_CONTEXT_MODE: 'legacy', JEVCODE_CONTEXT_FILE_CACHE_BYTES: '65536' });
+    expect(c.context?.()).toEqual({ view: 'legacy', compaction: 'off', compactEvery: 8, historySteps: 20, fileCacheBytes: 65536 });
+    expect(c.record()['context.budgetChars']?.problem).toEqual({ kind: 'wrong-type', expected: 'an integer ≥ 1' });
   });
 });

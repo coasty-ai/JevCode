@@ -140,7 +140,9 @@ describe('cards (TUI-DESIGN-2 §4.7, §12 "Cards")', () => {
     expect(rows.length).toBeLessThanOrEqual(8);
     expect(rows[0]).toBe(`╭─ commands ${'─'.repeat(80 - 13)}╮`);
     expect(rows[1]).toMatch(/^│ ▌ \/budget/);
-    expect(rows.at(-2)).toMatch(/Tab completes · Enter runs an exact match · Esc closes\s*│$/);
+    // MINIMAL, MARKED pin move (S4, TUI-DESIGN-4 §4.4): round 3's one footer constant became `paletteFooterText`,
+    // and `/b` is /budget's exact alias, so the state is S-ARMED on the owner and the footer says what Enter does
+    expect(rows.at(-2)).toMatch(/Enter runs \/budget · Tab adds an argument · Esc closes\s*│$/);
     expect(rows.at(-1)).toBe(`╰${'─'.repeat(78)}╯`);
     for (const l of rows) expect(stringWidth(l)).toBe(80);
     cleanup();
@@ -164,9 +166,12 @@ describe('cards (TUI-DESIGN-2 §4.7, §12 "Cards")', () => {
     const req = mkConfirmRequest('c1', 7);
     const rows = strip(render(<Overlay kind="review" rows={9} previewRows={4} columns={80} terminalRows={24} top={0} data={{ review: { req, note: null } }} chrome={3} />).lastFrame());
     expect(rows).toHaveLength(13);
-    expect(rows[0]).toMatch(/^╭─ review · step 7 · risk 0\.50 \(exp\) · edit src\/a\.py "fix the off-by-one" ─+╮$/);
+    // TUI-DESIGN-4 §6.1 / §6.3 (D-Z): the title takes `editSummary`'s target (`+1 −1`) and closes its quote
+    // before truncating (A6-22); the preview is `diffRows`, not two blobs labelled `--- old` / `+++ new` (A6-2)
+    expect(rows[0]).toMatch(/^╭─ review · step 7 · risk 0\.50 \(exp\) · edit src\/a\.py \+1 −1 "fix the off-by-…" ─+╮$/);
     expect(rows[1]).toMatch(/^│ \[y\] approve \[n\] decline/);
-    expect(rows[8]).toMatch(/^│ {3}--- old/);
+    expect(rows[8]).toMatch(/^│ {3}╶──── src\/a\.py/);
+    expect(rows.some((l) => l.includes('--- old'))).toBe(false);
     expect(rows[12]).toBe(`╰${'─'.repeat(78)}╯`);
     for (const l of rows) expect(stringWidth(l)).toBe(80);
     cleanup();

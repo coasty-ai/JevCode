@@ -91,7 +91,20 @@ function checkInvariants(i: LayoutInput, note: (msg: string) => void): void {
   if (l.gate !== 0 && l.gate !== 1) note(`gate∉{0,1} ${tag}`);
   if (l.gate === 1 && (l.chrome === 0 || i.gate !== 1 || overlay === 'wizard')) note(`gate outside the console ${tag}`);
   if (boxed && i.gate === 1 && overlay !== 'wizard' && l.gate !== 1) note(`gate row missing ${tag}`);
-  if (rows >= 3 && l.status !== 1) note(`status≠1 ${tag}`);
+  /**
+   * TUI-DESIGN-4 §2.5 P-R5 amends TD §2.1 A100's `status · notice · composer`: at minimum size the order is
+   * **notice → composer → status**, because at budget 1 (rows 3–4) A100 spent the only row on a spinner-less
+   * status row and left no explanation of why every pane is gone. Outside minsize `status === 1` is unchanged.
+   * P-R6: under `overlay: 'wizard'` the minsize slot is notice(1) · wizard(1) and there is NO composer.
+   */
+  if (l.degraded === 'minsize') {
+    if (budget >= 1 && l.overlay < 1) note(`P-R5 notice not first ${tag}`);
+    if (overlay === 'wizard') {
+      if (l.composer !== 0) note(`P-R6 minsize wizard composer≠0 ${tag}`);
+      if (budget >= 2 && l.overlay !== 2) note(`P-R6 minsize wizard overlay≠2 ${tag}`);
+    } else if (budget >= 2 && l.composer !== 1) note(`P-R5 composer second ${tag}`);
+    if (budget >= 3 && l.status !== 1) note(`status≠1 at minsize budget≥3 ${tag}`);
+  } else if (rows >= 3 && l.status !== 1) note(`status≠1 ${tag}`);
   if (rows < 3 && (l.degraded !== 'static-only' || l.total !== 0)) note(`rows<3 not static-only ${tag}`);
   if (rows >= 5 && overlay !== 'wizard' && l.composer < 1 + l.gate) note(`composer<1+gate ${tag}`);
   const degradedExpected = rows < 3 ? 'static-only' : rows < MIN_ROWS || columns < MIN_COLUMNS ? 'minsize' : 'none';
@@ -147,8 +160,11 @@ function checkInvariants(i: LayoutInput, note: (msg: string) => void): void {
     }
   } else if (l.degraded === 'minsize') {
     if (l.rule !== 0 || l.live !== 0 || l.pane !== 0 || l.queue !== 0 || l.preview !== 0 || l.banner !== 0 || l.chrome !== 0 || l.gate !== 0) note(`minsize extra fields ${tag}`);
-    if (l.overlay !== Math.min(1, Math.max(0, budget - 1))) note(`minsize notice ${tag}`);
-    if (l.composer !== Math.min(1, Math.max(0, budget - 2))) note(`minsize composer ${tag}`);
+    // TUI-DESIGN-4 §2.5 P-R5 (notice → composer → status) and P-R6 (wizard: notice(1) · wizard(1), no composer)
+    const noticeWant = overlay === 'wizard' ? 2 : 1;
+    if (l.overlay !== Math.min(noticeWant, budget)) note(`minsize notice ${tag}`);
+    if (l.composer !== (overlay === 'wizard' ? 0 : Math.min(1, Math.max(0, budget - 1)))) note(`minsize composer ${tag}`);
+    if (l.status !== Math.min(1, Math.max(0, budget - noticeWant - (overlay === 'wizard' ? 0 : 1)))) note(`minsize status ${tag}`);
   }
   // TUI-DESIGN-2 §4.2: the console's top edge sits after the preview; the `›` row is one below it (below the gate row when up)
   if (consoleTop(l) + l.chrome + l.composer + l.status !== l.total) note(`consoleTop ${tag}`);
@@ -264,8 +280,13 @@ describe('computeLayout invariants (TUI-DESIGN §2.1)', () => {
 
   it('rows 3–4 and rows ≤ 2 behave as the §2.2 tail rows say', () => {
     expect(cells(computeLayout(input({ rows: 2 })))).toBe('0·0·0·0·0·0·0·0·0 = 0');
-    expect(cells(computeLayout(input({ rows: 3 })))).toBe('0·0·0·0·0·0·0·0·1 = 1');
-    expect(cells(computeLayout(input({ rows: 4 })))).toBe('0·0·0·0·0·1·0·0·1 = 2');
+    // TUI-DESIGN-4 §2.5 P-R5: notice → composer → status. At budget 1 the one row is the NOTICE (the explanation),
+    // not a spinner-less status row; at budget 2 the composer joins it and status is the one that yields.
+    expect(cells(computeLayout(input({ rows: 3 })))).toBe('0·0·0·0·0·1·0·0·0 = 1');
+    expect(cells(computeLayout(input({ rows: 4 })))).toBe('0·0·0·0·0·1·0·1·0 = 2');
+    // P-R6: the wizard takes notice(1) · wizard(1) and no composer, so at budget 2 the whole slot is the overlay
+    expect(cells(computeLayout(input({ rows: 4, overlay: 'wizard' })))).toBe('0·0·0·0·0·2·0·0·0 = 2');
+    expect(cells(computeLayout(input({ rows: 6, overlay: 'wizard' })))).toBe('0·0·0·0·0·2·0·0·1 = 3');
     expect(cells(computeLayout(input({ rows: 6 })))).toBe('0·0·0·0·0·1·0·1·1 = 3');
     expect(computeLayout(input({ rows: 6 })).degraded).toBe('minsize');
     expect(computeLayout(input({ rows: 24, columns: 39 })).degraded).toBe('minsize');

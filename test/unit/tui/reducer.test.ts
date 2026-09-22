@@ -147,9 +147,10 @@ describe("uiReducer: today's rules kept", () => {
     s = uiReducer(s, ev({ type: 'synth', step: 1, phase: 'localise', detail: 'src/a.py:2', candidates: 3 }));
     s = uiReducer(s, ev({ type: 'synth', step: 1, phase: 'select', detail: 'chose return 2', candidates: 3, tested: 1 }));
     expect(s.items.map((i) => i.kind)).toEqual(['run:start', 'synth', 'synth']);
-    expect(s.synth).toBe('synth select: chose return 2 (candidates=3, tested=1)');
+    // TUI-DESIGN-4 §3.6 / §3.7 G2 (D-V): `synth · <phase> · <detail> · <n> candidates, <k> tested`
+    expect(s.synth).toBe('synth · select · chose return 2 · 3 candidates, 1 tested');
     expect(s.synthView).toMatchObject({ step: 1, phase: 'select', tested: 1 });
-    expect(liveLines(s.live, 2, 80, s.toolChars, s.synth)).toEqual(['synth select: chose return 2 (candidates=3, tested=1)']);
+    expect(liveLines(s.live, 2, 80, s.toolChars, s.synth)).toEqual(['synth · select · chose return 2 · 3 candidates, 1 tested']);
     expect(uiReducer(s, ev({ type: 'proposal', step: 1, proposal: mkProposal() })).synth).toBeNull();
     expect(uiReducer(s, ev({ type: 'outcome', step: 1, outcome: { status: 'noop', summary: 'x' } })).synth).toBeNull();
     expect(uiReducer(s, ev({ type: 'run:end', result: mkRunResult('max_steps') })).synth).toBeNull();

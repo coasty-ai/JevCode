@@ -140,8 +140,8 @@ export const KEY_ACTIONS: readonly KeyActionSpec[] = [
   { id: 'palette:down', short: 'down', context: 'palette', keys: ['down', 'ctrl+n'], title: 'next row' },
   { id: 'palette:pageUp', short: 'page up', context: 'palette', keys: ['pageup'], title: 'page up' },
   { id: 'palette:pageDown', short: 'page down', context: 'palette', keys: ['pagedown'], title: 'page down' },
-  { id: 'palette:accept', short: 'complete', context: 'palette', keys: ['tab'], title: 'complete the highlighted row into the draft and keep editing', reserved: true },
-  { id: 'palette:run', short: 'run exact match', context: 'palette', keys: ['return'], title: 'run — only on an exact name/alias match; otherwise the draft is kept and an error item is appended', reserved: true },
+  { id: 'palette:accept', short: 'complete', context: 'palette', keys: ['tab'], title: 'put the highlighted row in the draft', reserved: true },
+  { id: 'palette:run', short: 'run exact match', context: 'palette', keys: ['return'], title: 'run the armed draft; otherwise move to the next row', reserved: true },
   { id: 'palette:close', short: 'close', context: 'palette', keys: ['escape'], title: 'close (the draft is kept; the token is remembered so / stays closed while it is unchanged)', reserved: true },
 ];
 

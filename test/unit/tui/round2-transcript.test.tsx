@@ -162,13 +162,18 @@ describe('the label gutter, the wrap rule and detail rows in a mounted transcrip
     // the `[ui] stopped` head has a spacer above (rule 9) and its four detail rows sit under column 10; `files` hangs under its value
     expect(rows[endAt + 2]).toBe('');
     expect(rows[endAt + 3]).toBe('     [ui] stopped — replan_stop (exit 4)');
+    // TUI-DESIGN-4 §3.1.3 / §3.3: the epilogue is a BLOCK now — its kv rows sit at the 10-cell key column with a
+    // one-cell separator (value column 11, `epilogue.ts`'s old `padEnd(10)` plus the separator §3.1.3 declares),
+    // and the block itself wraps the `files` / `report` rows under that column at the body width (§3.4's measured
+    // motivation: a continuation at column 0 read as a new key). The transcript's own `detailRows` hang is then a
+    // no-op on rows the block already fitted.
     expect(rows.slice(endAt + 4)).toEqual([
-      `${G}run       ${id}`,
-      `${G}files     ~/.jevcode/runs/${id}/`,
-      `${G}          (transcript.log, state.json, jevcode.log)`,
-      `${G}resume    jevcode run --resume ${id}`,
-      `${G}report    jevcode report ${id}`,
-      `${G}          (redacted bundle written locally; nothing is sent)`,
+      `${G}run        ${id}`,
+      `${G}files      ~/.jevcode/runs/${id}/  (transcript.log,`,
+      `${G}           state.json, jevcode.log)`,
+      `${G}resume     jevcode run --resume ${id}`,
+      `${G}report     jevcode report ${id}   (redacted bundle`,
+      `${G}           written locally; nothing is sent)`,
     ]);
     for (const r of rows) expect(stringWidth(r)).toBeLessThanOrEqual(80);
   });

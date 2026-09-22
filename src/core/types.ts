@@ -2420,8 +2420,22 @@ export interface Renderer {
   setHost?(host: SessionHost): void;
   /** TUI-DESIGN §15 item 16: session settings; theme / notify / … apply to new items and the dynamic region only */
   setUi?(ui: UiConfig): void;
-  /** TUI-DESIGN §15 item 16: appends a local item — idle time only (§15.1) */
-  notify?(text: string, opts?: { level?: 'info' | 'warn' | 'error'; detail?: string; label?: UiLabel }): void;
+  /**
+   * TUI-DESIGN §15 item 16: appends a local item — idle time only (§15.1). contract 1.7 item 1 (TUI-DESIGN-4
+   * §3.1.6): `detailRows` is the PRE-SPLIT body with a colour role per row (`null` = the default role, which is
+   * what an undecorated detail row already is) and `detailKind` names the body's kind. Both are optional and
+   * additive: a renderer that ignores them keeps today's `detail` behaviour byte for byte.
+   */
+  notify?(
+    text: string,
+    opts?: {
+      level?: 'info' | 'warn' | 'error';
+      detail?: string;
+      label?: UiLabel;
+      detailRows?: readonly { readonly text: string; readonly role: string | null }[];
+      detailKind?: 'diff' | 'table' | 'text';
+    },
+  ): void;
   /** TUI-DESIGN-2 §6 item 11 / §3.7: Esc on the intake card puts the submitted text back into the composer */
   restoreDraft?(text: string): void;
   /** TUI-DESIGN-2 §6 item 11 / §3.6: the LLM turn's streamed text for the live region ('' empties it) */

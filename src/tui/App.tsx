@@ -33,15 +33,26 @@ import type { TrustInputs } from '../config/trust.js';
 import { REWIND_CHOICE, type RewindStep } from '../undo/plan.js';
 import { bannerRow } from './pane/banner.js';
 import { defaultTab, cycleTab } from './pane/model.js';
-import { helpLines, paletteGhost, paletteMatches, type PaletteState } from './commands/palette.js';
+import { argTokenOf, argValues, helpLines, paletteGhostFor, paletteMatches, type PaletteState } from './commands/palette.js';
 import type { CommandAction, DispatchContext } from './commands/dispatch.js';
 import { completeDraft, dispatchCtxOf, recentCommands } from './commands/local.js';
 import { rank } from './commands/fuzzy.js';
+// TUI-DESIGN-4 §4.2 (D-X): the palette's Enter-cycling state machine, pure
+import { PALETTE_PAGE, moveIndex, paletteNavState, paletteStep, type NavKey } from './commands/nav.js';
+import { commandToken } from './commands/parse.js';
+import { findCommand } from './commands/registry.js';
 import { Composer, draftRows, hitSpans, openExternalEditor, promptFor, useComposer, type ComposerMode } from './composer/Composer.js';
 import { Console, pickerConsoleTitle, wizardConsoleTitle } from './Console.js';
+// TUI-DESIGN-4 §2.5 (P-R6): the read-only-wizard toast at minsize
+import { WIZARD_MINSIZE_TOAST } from './onboarding/lines.js';
 import { consoleInnerWidth } from './console-lines.js';
 import { attentionAt, useIdleLoop, useMotion } from './motion.js';
 import { SPLASH_MS, WORDMARK_MIN_COLUMNS, brandSpan, splashFrame, type GridBand, type SplashSpan } from './splash.js';
+import { guardStdout, type GuardedStream } from './scrollback-guard.js';
+import { computeFullLayout, type FullLayout } from './fullscreen/layout.js';
+import { selectRenderer } from './fullscreen/select.js';
+import { Viewport } from './fullscreen/ViewportBox.js';
+import { applyScrollAt, emptyIndex, positionRungs, rebuildFor, resolveTop, type ScrollKey, type ViewportIndex } from './fullscreen/viewport.js';
 import { wordmarkFrame, wordmarkWanted, type WordmarkSetting } from './wordmark.js';
 import { nextPanel, parsePanelCommand } from './pane/commands.js';
 import { createBuffer, type Snapshot } from './composer/buffer.js';
@@ -58,7 +69,7 @@ import { Overlay, overlayPreviewWant, overlayWant, type IntakeOverlay, type Over
 import { Pane, RULE_MAX_CELLS, paneStateOf, plainRule, ruleRowText } from './Pane.js';
 import { PaneBoundary, RENDER_FAULTS_FIRED, renderFaultFor, type PaneFailure } from './PaneBoundary.js';
 import { INITIAL_PICKER, PICKER_PANE_WANT, moveRunsToTrash, pickerLines, pickerReducer, pickerRule, readPickerPreview, selectedRewindStep, selectedSession, visibleRewindSteps, visibleSessions } from './Picker.js';
-import { IDENTITY_NO_TTY, formatTranscriptItem, headerItem, sanitizeStream, sessionHeaderItem, type TranscriptItem, type TranscriptLevel } from './plain.js';
+import { IDENTITY_NO_TTY, formatTranscriptItem, headerItem, sanitizeStream, sessionHeaderItem, transcriptDumpChunks, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { maskGlyphFor, maskHits, type ReviewNote } from './Review.js';
 import type { FollowupInput } from './review/lines.js';
 import { reviewRowForDigit } from './review/lines.js';
@@ -68,7 +79,7 @@ import { copyRedacted } from './secrets/clipboard.js';
 import { spinnerActive, useSpinner } from './spinner.js';
 import { kShort, modeBadge, statusLineText, type StatusLineOptions, type StatusLineState } from './status/lines.js';
 import { StatusLine, statusView } from './StatusLine.js';
-import { createResizeDebounce, installTerminalHygiene, processRestoreTerminal, rearmRestoreTerminal, restoreTerminal, suspendProcess, writeCursorShape, type TerminalHygiene } from './terminal.js';
+import { installTerminalHygiene, markAlternateScreen, printToPrimaryScreen, processRestoreTerminal, rearmRestoreTerminal, restoreTerminal, suspendProcess, waitForAnyKey, writeCursorShape, type TerminalHygiene } from './terminal.js';
 import { themeFor, textProps, type ColorRole, type Theme } from './theme.js';
 import { TOAST_ERROR_MS, TOAST_INFO_MS } from './toasts.js';
 import { Transcript } from './Transcript.js';
@@ -79,6 +90,39 @@ import { stepWhyBlocks, whyBlock, whyErrorText } from './why.js';
 
 export const DEFAULT_ROWS = 24;
 export const DEFAULT_COLUMNS = 80;
+
+/**
+ * TUI-DESIGN-4 §2.2 P-R1: **the** monotonic clock of this round, defined once and used by both timing sites —
+ * P-R1's 8 ms synchronous-commit storm guard and §7.8's 45 s submission watchdog. It is deliberately NOT the
+ * injectable `p.now ?? Date.now` of the App (a wall clock): §7.8 edge 4 forbids a wall clock for a deadline because
+ * an NTP jump fires it early or late, and the same hazard would disable an 8 ms guard for the length of the jump.
+ */
+export function nowMs(): number {
+  return performance.now();
+}
+
+/**
+ * §2.2 P-R1: the storm guard. `instance.rerender` is a synchronous `updateContainerSync` + `flushSyncWork`, and §2.0
+ * measured ~2 SIGWINCH events per driver resize, so 20 driver resizes are ~40 events; the debounce catches the tail
+ * either way.
+ */
+export const SYNC_COMMIT_MIN_MS = 8;
+
+/**
+ * §2.2 P-R1: does this SIGWINCH get a synchronous commit? **Any shrinking dimension** (the stale, taller tree must
+ * never be painted at the new viewport — that is the one clear per shrink the gate allows) **and every width
+ * change** (P-R2 deleted `wrapColumns`, so the draft and the box edges follow the same `columns`; A2's `out/tear`
+ * capture found the stray `│` with dead space after it on a width **grow**, which is why a grow counts too).
+ * Rate-limited by `SYNC_COMMIT_MIN_MS`: `instance.rerender` is a synchronous `updateContainerSync` +
+ * `flushSyncWork`, and §2.0 measured ~2 SIGWINCH events per driver resize, so a 20-resize drag is ~40 events.
+ *
+ * Exported because it IS the decision: the listener around it is three lines of plumbing.
+ */
+export function shouldSyncCommit(prev: { rows: number; columns: number }, next: { rows: number; columns: number }, now: number, lastSyncAt: number): boolean {
+  const shrank = next.rows < prev.rows || next.columns < prev.columns;
+  const widthChanged = next.columns !== prev.columns;
+  return (shrank || widthChanged) && now - lastSyncAt >= SYNC_COMMIT_MIN_MS;
+}
 export const LIVE_ROWS = CAP.live;
 export const STATUS_ROWS = 1;
 /** The rule separating scrollback (<Static>) from the live panes; also how tests find the dynamic region. */
@@ -145,6 +189,31 @@ export function streamCaretOn(spinnerFrame: number, reducedMotion: boolean): boo
 export function runIsLive(run: RunPhase): boolean {
   return run === 'live' || run === 'aborting' || run === 'pausing';
 }
+/**
+ * TUI-DESIGN-4 §1.3.2: the fullscreen allocator's slots as the classic `Layout` the rest of the tree reads.
+ * `consoleTop` / `composerTop` / `overlayTop` sum only the rows ABOVE a slot, so the mapping is order-free: the
+ * header rides in `pane` (it is the wordmark slot, one tier up) and the viewport in `queue`. `live` and `banner`
+ * have no fullscreen tenant. `budget` is `rows` itself, not `rows − 2`: `total === rows` EXACTLY is the whole point.
+ */
+export function fullLayoutAsLayout(f: FullLayout, rows: number): Layout {
+  return {
+    budget: Number.isFinite(rows) ? Math.max(0, Math.floor(rows)) : 0,
+    degraded: f.degraded === 'minsize' ? 'minsize' : 'none',
+    status: f.status,
+    rule: f.rule,
+    live: 0,
+    banner: 0,
+    pane: f.header,
+    queue: f.viewport,
+    overlay: f.overlay,
+    preview: f.preview,
+    composer: f.composer,
+    chrome: f.chrome,
+    gate: f.gate,
+    total: f.total,
+  };
+}
+
 /** §3.1 rows 1, 10, 11: a chat request is in flight — the phase is set and no engine run owns the session. */
 export function chatThinking(s: Pick<UiState, 'run' | 'thinking'>): boolean {
   return s.thinking !== null && !runIsLive(s.run);
@@ -411,6 +480,14 @@ export interface AppProps {
   bindings?: Bindings;
   /** tests: disable the 1 Hz tick */
   tickMs?: number;
+  /**
+   * TUI-DESIGN-4 §1.3: the renderer. `classic` (the default) is byte-for-byte round 3's tree — §1.3.5's discipline
+   * and the whole risk mitigation for the second renderer. `fullscreen` swaps `<Static>` for `<Viewport>` and
+   * `computeLayout` for `computeFullLayout`, and nothing else: Console, Overlay, Review, Composer, StatusLine,
+   * `<Transcript>`'s builders and the key resolver are the same objects. `createTuiRenderer` decides (§1.3.1) —
+   * Ink fixes `alternateScreen` in its constructor, so this prop is fixed for the life of the mount.
+   */
+  renderer?: 'classic' | 'fullscreen';
 }
 
 interface PaletteUi {
@@ -584,6 +661,9 @@ export function App(p: AppProps): React.JSX.Element {
   const windowSize = useWindowSize();
   const rows = bridge.geometry?.rows ?? windowSize.rows;
   const columns = bridge.geometry?.columns ?? windowSize.columns;
+  // TUI-DESIGN-4 §1.3: the opt-in renderer, fixed at mount (`createTuiRenderer` decided it, §1.3.1). Every fullscreen
+  // branch below is gated on this one boolean, so with `classic` the tree is byte-for-byte round 3's (§1.3.5).
+  const fullscreen = (p.renderer ?? 'classic') === 'fullscreen';
   // TUI-DESIGN-2 §4.1: the chrome tier is a function of geometry alone (boxed ≥ 16 rows and ≥ 40 columns, never under a screen reader)
   const chrome = chromeRows(rows, columns, launch.screenReader);
   const boxed = chrome === CAP.chrome;
@@ -644,7 +724,6 @@ export function App(p: AppProps): React.JSX.Element {
   const pendingExit = useRef<((a: boolean) => void) | null>(null);
   const pendingBlocking = useRef<((a: BlockingAnswer) => void) | null>(null);
   const pendingIntake = useRef<{ card: IntakeOverlay; resolve: (a: IntakeAnswer) => void } | null>(null);
-  const [wrapColumns, setWrapColumns] = useState(columns);
   const gitHead = useGitHead(bridge.gitDirs.gitDir, bridge.gitDirs.commonDir, state.git?.head ?? null);
 
   // ----- toasts, items, exits
@@ -720,12 +799,11 @@ export function App(p: AppProps): React.JSX.Element {
     return off;
   }, [p.source, notifyTimers]);
 
-  // ----- resize debounce for the composer re-wrap (§14.1)
-  useEffect(() => {
-    const d = createResizeDebounce(() => setWrapColumns(columns));
-    d.trigger();
-    return () => d.cancel();
-  }, [columns]);
+  // TUI-DESIGN-4 §2.2 P-R2: the 50 ms `wrapColumns` debounce is GONE. It kept the draft one width behind the box
+  // edges for up to 50 ms (≈ 130 ms at `--fps 15`), which A2 measured as 4 of 24 frames carrying a box row whose
+  // right border is the truncation ellipsis. One value cannot skew, and the work the debounce was protecting
+  // (`draftRows`) already runs on every render at `wrapInner`, so nothing new is paid per keystroke — it is paid on
+  // the synchronous commits P-R1 already performs. `createResizeDebounce` / `RESIZE_DEBOUNCE_MS` retire with it.
   // TUI-DESIGN-3 §3.6 / §6 item 8: a geometry change is activity for the idle loop's attention clock (never at mount)
   const geometryRef = useRef({ rows, columns });
   useEffect(() => {
@@ -815,6 +893,17 @@ export function App(p: AppProps): React.JSX.Element {
     if (overlay !== 'review') notifyTimers.reviewGone();
   }, [overlay, notifyTimers]);
 
+  // ----- TUI-DESIGN-4 §1.3.1: a refused `fullscreen` falls back to `classic` and appends exactly ONE `[ui]` note
+  // naming the reason. `createTuiRenderer` decided it before `render()` and carried the sentence on
+  // `launch.rendererRefusal` (contract 1.7 §8 item 6); this is the one place it becomes a transcript row.
+  const rendererRefusalText = launch.rendererRefusal;
+  const refusalSaid = useRef(false);
+  useEffect(() => {
+    if (rendererRefusalText === undefined || rendererRefusalText === '' || refusalSaid.current) return;
+    refusalSaid.current = true;
+    noteLine(rendererRefusalText, { label: '[ui]' });
+  }, [rendererRefusalText, noteLine]);
+
   // ----- run:end exits (Ctrl-D ×2 `[y]`, `/exit` `[y]`): 0 always, the run:end item carries the run's code (§13.5)
   const runPhase = state.run;
   useEffect(() => {
@@ -828,7 +917,7 @@ export function App(p: AppProps): React.JSX.Element {
   // ----- the draft mirror (§15 item 20)
   const buffer = composer.buffer;
   // TUI-DESIGN-2 §4.3: the console lays the draft out at the inner width (`columns − 4`)
-  const wrapInner = boxed ? consoleInnerWidth(wrapColumns) : wrapColumns;
+  const wrapInner = boxed ? consoleInnerWidth(columns) : columns;
   useEffect(() => {
     dispatch({ type: 'draft', draft: composer.mirror(wrapInner, promptFor(glyphs)) });
   }, [buffer, wrapInner, composer, dispatch, glyphs]);
@@ -1098,6 +1187,15 @@ export function App(p: AppProps): React.JSX.Element {
         send(routeSend(action.text, [], { run: s.run, ranBefore: s.runsEnded > 0 }), { kind: 'command', text: line });
         return;
       }
+      case 'scrollback': {
+        // §1.3.4: the fullscreen renderer prints to the primary screen here; `classic` falls through to the host,
+        // which answers the §12 line (`your terminal's scrollback already has the transcript`)
+        if (!fullscreen) break;
+        composer.clear();
+        remember();
+        void doScrollback().catch((e: unknown) => noteLine(`error: /scrollback: ${e instanceof Error ? e.message : String(e)}`, { label: '[ui]', level: 'error' }));
+        return;
+      }
       case 'copy': {
         // TUI-DESIGN-3 §4.4 F7: `/copy diff` asks the host (it builds the diff exactly as `/diff` does, then `copyFn` + the toast)
         if (action.what === 'diff') {
@@ -1222,8 +1320,47 @@ export function App(p: AppProps): React.JSX.Element {
     }
   };
 
+  /**
+   * TUI-DESIGN-4 §1.3.4: `/scrollback` under the fullscreen renderer — `suspendTerminal()` (which leaves the
+   * alternate screen), the whole transcript printed to the PRIMARY screen through the one formatter so native copy
+   * and find work for as long as the user wants, a key, then resume. Under `classic` this is never called: the
+   * command falls through to the host, whose §12 answer is that the terminal's own scrollback already has it.
+   *
+   * `/scrollback` while a run is live is allowed — the `<Static>` items an engine produces during the dump go
+   * through the existing suspension queue and are delivered, in order, after the resume (§4.8).
+   */
+  const doScrollback = async (): Promise<void> => {
+    const bus = p.source as Partial<EventBus>;
+    const chunks = transcriptDumpChunks(stateRef.current.items, glyphs);
+    if (chunks.length === 0) {
+      toast('nothing in the transcript yet');
+      return;
+    }
+    await printToPrimaryScreen({
+      chunks,
+      suspendTerminal: () => suspendTerminal(),
+      // the SAME stream Ink renders to (`guardStdout`'s proxy forwards every non-clear write untouched), so the
+      // dump lands on the primary screen in order with everything else Ink has already flushed
+      write: (text) => stdout.write(text),
+      waitForKey: () => waitForAnyKey(process.stdin),
+      ...(bus.suspend && bus.resume ? { onQueue: { suspend: () => bus.suspend?.(), resume: () => bus.resume?.() } } : {}),
+      repaint: () => {
+        writeCursorShape(stdout);
+        write('');
+      },
+    });
+  };
+
   const doSuspend = async (): Promise<void> => {
-    if (process.stdout.isTTY !== true || stdout !== process.stdout) return;
+    /**
+     * Ctrl+Z is only ever driven against the REAL terminal: a test mount (`StubStdout`) or a piped stdout must
+     * never SIGSTOP the process. TUI-DESIGN-4 §1.4 made the identity check subtler — `createTuiRenderer` hands
+     * Ink `guardStdout(process.stdout)`, a Proxy, so `stdout === process.stdout` is false for the real terminal
+     * too and this guard silently disabled Ctrl+Z for every user (measured: the pty leg's `ESC[?2004h` after
+     * SIGCONT never came back, because `suspendProcess` was never called). `guardStdout` is memoised per
+     * underlying stream, so `guardStdout(process.stdout)` IS the proxy Ink was given.
+     */
+    if (process.stdout.isTTY !== true || (stdout !== process.stdout && stdout !== guardStdout(process.stdout as unknown as GuardedStream))) return;
     const bus = p.source as Partial<EventBus>;
     // §14.2: the process-wide exit string is written for the shell, re-armed for the real exit, and the DECSCUSR bar
     // (reset by RESTORE) is re-applied with the one forced repaint after `fg`
@@ -1319,8 +1456,16 @@ export function App(p: AppProps): React.JSX.Element {
         };
         dispatch({ type: 'overlay', overlay: 'exitConfirm' });
         return;
+      /**
+       * TUI-DESIGN-4 §4.7 E12: Ctrl-C with the palette open and the whole draft a single `/token` closes the card
+       * AND clears the draft — the measured trap is that closing alone leaves a half-typed `/budgett` behind with
+       * no card and no placeholder, so the next Ctrl-C reads as "clear the draft" and the exit takes three keys.
+       * A draft with an ARGUMENT keeps today's close-only behaviour, and Ctrl-C twice still exits 0.
+       */
+      case 'CLOSE_OVERLAY_AND_CLEAR':
       case 'CLOSE_OVERLAY': {
         const k = s.overlay;
+        if (action === 'CLOSE_OVERLAY_AND_CLEAR') composer.clear();
         if (k === 'followup') {
           pendingFollowup.current?.resolve('cancel');
           pendingFollowup.current = null;
@@ -1482,30 +1627,89 @@ export function App(p: AppProps): React.JSX.Element {
             return;
         }
       }
+      /**
+       * TUI-DESIGN-4 §4.2 (D-X, P-P1) — **Tab goes deeper. Enter runs what is written. Enter with nothing written
+       * yet walks the list.** Every palette key goes through the pure machine in `src/tui/commands/nav.ts`
+       * (`paletteNavState` → `paletteStep` → `NavEffect`); this case only executes the effect. Cycling therefore
+       * never calls `routeSubmit`, `parseCommand` or `dispatchCommand`, which is what keeps a held Enter inside
+       * D-F's 16 ms budget, and §4.1's safety theorem holds structurally: from `/` the chain yields S-BROWSE,
+       * whose Enter is `move`, so no sequence of Enter presses alone can run anything.
+       *
+       * Measured before this landed (perf `palette-cycle`): Enter SUBMITTED the draft `/`, so 200 Enters produced
+       * `[ui] error: / — not a command` 200 times and 4 of 200 key frames — the series' p95 was 20 s.
+       *
+       * `@`-mentions keep round 3's behaviour: they are a file list, not the command machine.
+       */
       case 'palette': {
         const pal = paletteRef.current;
         if (pal === null) return;
-        switch (action.op) {
-          case 'move':
-          case 'page': {
-            const count = pal.mode === 'mention' ? Math.min(8, pal.candidates.length) : paletteMatches(composer.buffer.text.trim(), paletteState()).length;
-            const by = (action.by ?? 1) * (action.op === 'page' ? 7 : 1);
-            setPalette({ ...pal, selected: count === 0 ? 0 : Math.min(Math.max(0, pal.selected + by), count - 1) });
-            return;
+        if (pal.mode === 'mention') {
+          switch (action.op) {
+            case 'move':
+            case 'page': {
+              const count = Math.min(8, pal.candidates.length);
+              const by = (action.by ?? 1) * (action.op === 'page' ? PALETTE_PAGE : 1);
+              setPalette({ ...pal, selected: count === 0 ? 0 : Math.min(Math.max(0, pal.selected + by), count - 1) });
+              return;
+            }
+            case 'accept':
+              execute({ type: 'complete', dir: 1 }, ks);
+              return;
+            case 'enter':
+            case 'run':
+              execute({ type: 'complete', dir: 1 }, ks);
+              closeOverlay('palette');
+              return;
+            case 'close':
+              closeOverlay('palette');
+              return;
           }
+          return;
+        }
+        if (action.op === 'close') {
+          closeOverlay('palette');
+          return;
+        }
+        // §4.2's seven keys. Shift-Tab reaches the App as `move by -1` (`keys/resolve.ts:722`), which the machine
+        // answers identically to `up` in every state but S-ONE — recorded as a deviation rather than widening the
+        // resolver's op union, which every round-2/3 key fixture pins.
+        const key: NavKey = action.op === 'accept' ? 'tab' : action.op === 'page' ? (action.by === -1 ? 'pageup' : 'pagedown') : action.op === 'move' ? (action.by === -1 ? 'up' : 'down') : 'enter';
+        const draft = composer.buffer.text;
+        const matches = paletteMatches(draft.trim(), paletteState());
+        const navState = paletteNavState(draft, matches, pal.selected);
+        const effect = paletteStep(navState, key, { draft, matches, selected: pal.selected });
+        switch (effect.kind) {
+          case 'move':
+            if (effect.over === 'matches') {
+              setPalette({ ...pal, selected: moveIndex(pal.selected, effect, matches.length) });
+              return;
+            }
+            /**
+             * §4.2 S-ARG / S-ARGDONE: `over: 'values'` moves the value cursor `j` and **never touches the draft**
+             * — the same index `completeDraft` uses and `paletteGhostFor` previews, so the marked value shows as
+             * the ghost after the cursor and Tab accepts exactly what is previewed. Writing it into the draft
+             * instead would make the state S-ARGDONE, whose Enter is `run`: the measured consequence was the
+             * SECOND Enter of a cycle executing `/mode jev-on` (perf `palette-arg`, 2 of 200 keys).
+             */
+            const tok = argTokenOf(draft);
+            const spec = tok === null ? null : findCommand(commandToken(draft.trimStart()));
+            const values = spec === null || tok === null ? [] : argValues(spec, tok);
+            setPalette({ ...pal, selected: moveIndex(pal.selected, effect, values.length) });
+            return;
           case 'accept':
             execute({ type: 'complete', dir: 1 }, ks);
             return;
           case 'run':
-            if (pal.mode === 'mention') {
-              execute({ type: 'complete', dir: 1 }, ks);
-              closeOverlay('palette');
-              return;
-            }
             onEnter();
             return;
-          case 'close':
-            closeOverlay('palette');
+          case 'appendSpace': {
+            if (!/\s$/.test(draft)) composer.set(`${draft} `);
+            return;
+          }
+          case 'toast':
+            toast(effect.text);
+            return;
+          case 'none':
             return;
         }
         return;
@@ -1690,6 +1894,17 @@ export function App(p: AppProps): React.JSX.Element {
         return;
       }
       case 'wizard':
+        /**
+         * TUI-DESIGN-4 §2.5 (P-R6, D4) — "the one answer to 'can the user still type?', stated once": **no**, at
+         * minsize the wizard is read-only. Every key is consumed and answers `WIZARD_MINSIZE_TOAST` with NO wizard
+         * state change — an invisible masked field during API-key entry is its own hazard, and a numbered choice
+         * whose options are off screen is not a choice. Esc and Ctrl-C are unchanged (they are `interrupt`
+         * actions, not `wizard` ones), and growing back to ≥ 40×8 restores the wizard with the draft intact.
+         */
+        if (layoutRef.current?.degraded === 'minsize') {
+          toast(WIZARD_MINSIZE_TOAST);
+          return;
+        }
         wizard.apply(action);
         return;
       case 'blocking': {
@@ -1700,15 +1915,16 @@ export function App(p: AppProps): React.JSX.Element {
       }
       default: {
         // composer edits (§4)
-        const r = composer.apply(action, { columns: wrapColumns, rows });
+        const r = composer.apply(action, { columns, rows });
         if (r.kind === 'toast') toastItem(r.text, r.level);
         else if (r.kind === 'submit') onEnter();
         else if (r.kind === 'ghost') {
           const pal = paletteRef.current;
           if (pal && pal.mode === 'command') {
-            const ghost = paletteGhost(composer.buffer.text.trim(), paletteMatches(composer.buffer.text.trim(), paletteState()));
+            // §4.3 P-P2: the ghost the `→` key accepts is the MARKED row's, the same one the composer draws
+            const ghost = paletteGhostFor(composer.buffer.text.trim(), paletteMatches(composer.buffer.text.trim(), paletteState()), pal.selected);
             // TUI-DESIGN-3 §4.1 rule 3: an alias ghost (` → /status`) accepts as `/status `; a prefix ghost appends its rest
-            if (ghost) composer.set(ghost.arrow !== undefined ? `${ghost.arrow} ` : `${composer.buffer.text.trimEnd()}${ghost.rest}`);
+            if (ghost) composer.set(ghost.kind === 'arrow' ? `${ghost.target} ` : `${composer.buffer.text.trimEnd()}${ghost.rest}`);
           }
         }
         // the palette closes when the `/` token is gone or a space follows the command (§5.3)
@@ -1747,10 +1963,30 @@ export function App(p: AppProps): React.JSX.Element {
   };
 
   const layoutRef = useRef<Layout | null>(null);
+  // TUI-DESIGN-4 §1.3.3: what the scroll keys need from the last frame (null under the classic renderer)
+  const scrollRef = useRef<{ rows: number; height: number } | null>(null);
+  /**
+   * §1.3.3: the scroll keys, handled **before** `resolveKey` and only under `fullscreen`, so the key resolver,
+   * `docs/KEYS.md`, `completions/*` and `man/jevcode.1` are untouched (§1.3.5's discipline). `PgUp`/`PgDn` and
+   * `Shift+↑`/`Shift+↓` are free in the `composer` context (`bindings.ts:129–130, 141–142` bind PgUp/PgDn in
+   * `picker` and `palette` only); **`Home`/`End` are NOT** — `bindings.ts:92–93` give them to the composer — so the
+   * ends are `Ctrl+Home` / `Ctrl+End`. Returns null when the event is not a scroll key.
+   */
+  const scrollKeyOf = (ev: KeyEvent): ScrollKey | null => {
+    if (ev.paste === true) return null;
+    const k = ev.key;
+    if (k.home && k.ctrl) return 'top';
+    if (k.end && k.ctrl) return 'bottom';
+    if (k.pageUp) return 'pageUp';
+    if (k.pageDown) return 'pageDown';
+    if (k.shift && k.upArrow) return 'lineUp';
+    if (k.shift && k.downArrow) return 'lineDown';
+    return null;
+  };
   const keyState = (): KeyState => {
     const s = stateRef.current;
     const b = composer.buffer;
-    const m = composer.mirror(wrapColumns);
+    const m = composer.mirror(columns);
     const n = noteRef.current;
     traceLine(`tui.keystate overlay=${s.overlay} overlayArmed=${s.overlayArmed} pending=${s.pendingReview !== null}`);
     return {
@@ -1772,6 +2008,18 @@ export function App(p: AppProps): React.JSX.Element {
       overlayArmed: s.overlayArmed,
       minsize: layoutRef.current?.degraded === 'minsize',
       retrying: s.retrying !== null,
+      /**
+       * TUI-DESIGN-4 §4.7 E12 / E13 (§9.2's `App.tsx` row): the whole draft is a single `/token`. Both rules are
+       * inert until this is supplied — E12 makes Ctrl-C with the palette open `CLOSE_OVERLAY_AND_CLEAR` (today it
+       * only closed the overlay, leaving the half-typed `/budgett` behind, which is the measured trap), and E13
+       * lets `/` at the END of such a draft reopen the palette instead of inserting a second slash.
+       * The note field's stashed human draft is the one E12 clears, exactly as `draftEmpty` above reads it.
+       */
+      draftTokenOnly: ((): boolean => {
+        const text = (s.noteMode && n !== null ? n.stash.text : b.text).trim();
+        return text.length > 0 && text === commandToken(text);
+      })(),
+      cursorAtEnd: b.cursor >= b.text.length,
     };
   };
 
@@ -1837,6 +2085,17 @@ export function App(p: AppProps): React.JSX.Element {
       const actions = resolveKey(reviewKey ? ks : composerKs, ev, t, bindings);
       for (const a of actions) execute(a, composerKs);
       return;
+    }
+    // TUI-DESIGN-4 §1.3.3: the fullscreen viewport's scroll keys, ahead of the resolver and only while the composer
+    // owns the keyboard (a picker, a palette or an armed review keeps PgUp/PgDn for itself, exactly as today)
+    if (ks.overlay === 'none' && !ks.picker && !ks.noteMode) {
+      const geom = scrollRef.current;
+      const sk = geom === null ? null : scrollKeyOf(ev);
+      if (sk !== null && geom !== null) {
+        // §1.3.3: the anchor lives in `UiState.scroll` (contract 1.7) and moves through the one reducer
+        dispatch({ type: 'scroll', scroll: applyScrollAt(stateRef.current.scroll, sk, geom.rows, geom.height) });
+        return;
+      }
     }
     const actions = resolveKey(ks, ev, t, bindings);
     for (const a of actions) execute(a, ks);
@@ -2004,6 +2263,7 @@ export function App(p: AppProps): React.JSX.Element {
     }),
     {},
   );
+  const visible = useVisibleItems(state.items, state.staticEpoch);
   const overlayKind: OverlayKind = state.overlay;
   // §6.5: under a screen reader the review does not collapse the composer — the answer is a typed line
   const srReview = sr && overlayKind === 'review' && state.overlayArmed;
@@ -2034,7 +2294,10 @@ export function App(p: AppProps): React.JSX.Element {
         },
         null,
       )
-    : wanted
+    : // §1.3.2: in `fullscreen` the header slot IS the mark in the tall tier — `wordmarkWanted`'s pane rules (panel,
+      // picker, review, the live run) are about the classic pane slot, which the fullscreen tree does not have; the
+      // allocator has already decided whether five rows are affordable (`full.header === CAP.splash`).
+      wanted || fullscreen
       ? guard('pane', () => wordmarkFrame({ columns, version: VERSION, glyphs }), null)
       : null;
   const wordmarkOn = mark !== null && mark.rows.length > 0;
@@ -2060,19 +2323,35 @@ export function App(p: AppProps): React.JSX.Element {
     // TUI-DESIGN-3 §3.7: the mark is granted whole or not at all (never its top rows)
     paneWhole: wordmarkOn,
   };
-  const layout = computeLayout(layoutInput);
+  // TUI-DESIGN-4 §1.3.2: the fullscreen renderer gets a SECOND allocator whose post-condition is `total === rows`
+  // exactly (one row of error costs a full-screen clear per keystroke — A1 measured 37 clears for 36 frames). Its
+  // slots are mapped onto the classic `Layout` so `consoleTop` / `composerTop` / `overlayTop` — which only ever sum
+  // the rows ABOVE a slot — stay the one cursor arithmetic: `pane` carries the header and `queue` the viewport.
+  const full: FullLayout | null = fullscreen
+    ? computeFullLayout({ rows, columns, overlay: overlayKind, overlayWant: layoutInput.overlayWant, previewWant: layoutInput.previewWant, expanded: state.expanded, composerWant, gate: gateUp, screenReader: launch.screenReader })
+    : null;
+  const layout = full === null ? computeLayout(layoutInput) : fullLayoutAsLayout(full, rows);
   layoutRef.current = layout;
-  const markShown = wordmarkOn && layout.pane > 0;
+  // in fullscreen the header slot draws the 5-row mark only in the tall tier; the compact / narrow tiers draw the
+  // 1-row brand strip there (§1.3.2's table), so the mark is never cut to its top rows
+  const markShown = full === null ? wordmarkOn && layout.pane > 0 : wordmarkOn && full.header === CAP.splash;
   // TUI-DESIGN-3 §3.6: the idle sweep — active only while the mark has rows, after the settle, with motion allowed and attention awake;
   // the quiet-after-key rule lives inside the hook (never in `isActive`); the App renders `loop.band`, never `loopBand(loop.k)`
   const attention = attentionAt(state.nowMs, state.lastActivityAt);
-  const loop = useIdleLoop({ shown: markShown && !splashOn, splashRunning: state.splash === 'running', enabled: wordmarkSetting === 'sweep' && !reducedMotion && depth > 0, attention, nowMs: state.nowMs, lastKeystrokeAt: state.lastKeystrokeAt });
+  // TUI-DESIGN-4 §1.2 P-H2: the mark stays up during a run at >= WORDMARK_LIVE_MIN_ROWS rows, but the sweep is FROZEN while live —
+  // a run still writes zero decoration frames, so the `dynamic <= maxFps + 1` and `idle-frames` gates are untouched
+  const loop = useIdleLoop({ shown: markShown && !splashOn && !runIsLive(state.run), splashRunning: state.splash === 'running', enabled: wordmarkSetting === 'sweep' && !reducedMotion && depth > 0, attention, nowMs: state.nowMs, lastKeystrokeAt: state.lastKeystrokeAt });
   // Per-row span arrays, memoised on the mark and the band tick: a key frame re-renders the App but the five <SplashRow>s keep
   // their props (React skips them; Ink's Yoga cache keeps their layout), so the persistent mark costs a key frame nothing.
-  const markRowSpans = useMemo((): readonly (readonly MarkSpan[])[] => {
-    if (mark === null) return [];
-    const all = mark.spans(loop.band);
-    return mark.rows.map((_row, i) => all.filter((sp) => sp.row === i));
+  // TUI-DESIGN-4 §1.2 P-H3 (= §7.3 P-P3 item 2): `mark.spans(...)` ran in the render body outside every boundary, so a
+  // throw there reached Ink's InternalErrorBoundary and took the whole frame. It is guarded now, and the fallback is
+  // BLANK rows of the same height — the idle tenant disappearing silently is the correct degradation; the `[ui]` item
+  // the guard reports after commit carries the detail. The rows themselves render inside `<PaneBoundary pane="wordmark">`.
+  const markView = useMemo((): { rows: readonly string[]; spans: readonly (readonly MarkSpan[])[] } => {
+    if (mark === null) return { rows: [], spans: [] };
+    const all = guard<readonly SplashSpan[] | null>('wordmark', () => mark.spans(loop.band), null);
+    if (all === null) return { rows: mark.rows.map(() => ''), spans: mark.rows.map(() => NO_MARK_SPANS) };
+    return { rows: mark.rows, spans: mark.rows.map((_row, i) => all.filter((sp) => sp.row === i)) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mark, loop.phase, loop.k]);
   const top = composerTop(layout);
@@ -2126,6 +2405,17 @@ export function App(p: AppProps): React.JSX.Element {
                       : 'task';
   const paneState = guard('pane', () => paneStateOf(state), { tab: state.tab, step: state.step, rows: [], plan: null, timeline: [], synth: null, mode: state.mode });
   const pickerView = pickerOpen ? guard('pane', () => pickerLines(picker, { filter: picker.renaming ? '' : buffer.text, rows: layout.pane, columns, nowMs: state.nowMs, glyphs }), null) : null;
+  // TUI-DESIGN-4 §1.3.3: the wrapped-row index. `rebuildFor` appends incrementally, rebuilds on a width or glyph
+  // change and returns the SAME object when neither moved (edge 7: a `/theme` never rebuilds it), so the ref keeps
+  // one index for the life of the mount and the classic renderer never builds one at all.
+  const viewportRef = useRef<ViewportIndex>(emptyIndex(columns, glyphs));
+  if (full !== null) viewportRef.current = guard('viewport', () => rebuildFor(viewportRef.current, visible, columns, glyphs), viewportRef.current);
+  const viewportIndex = viewportRef.current;
+  const viewportTop = full === null ? 0 : resolveTop(viewportIndex, state.scroll, full.viewport);
+  scrollRef.current = full === null ? null : { rows: viewportIndex.rows.length, height: full.viewport };
+  // §1.3.2: the position segment's rung ladder, fed to `panelStrip` as its rightmost segment — dropped after the
+  // brand and before any pane information, so a 40-column fullscreen strip still names where you are
+  const position = full === null ? null : positionRungs(viewportTop, full.viewport, viewportIndex.rows.length);
   const rule = guard(
     'rule',
     () =>
@@ -2139,22 +2429,57 @@ export function App(p: AppProps): React.JSX.Element {
         panel: pickerOpen ? 'full' : state.panel,
         splash: state.splash,
         splashTime: state.splash === 'running' ? motion.time : null,
-        ranBefore,
+        // §1.3.2: the fullscreen rule row is the branded strip from frame 0 — it is the only place the position
+        // segment can go, and the header above it is the mark, so there is no pre-run `brandRow` state to keep
+        ranBefore: full === null ? ranBefore : true,
         // TUI-DESIGN-3 §3.3: the plain rule while the mark has rows (before the first run:ready); the strip keeps the row afterwards
-        wordmark: markShown,
+        wordmark: full === null && markShown,
         version: VERSION,
         glyphs,
         pickerHeader: pickerOpen ? pickerRule(picker, columns, glyphs) : null,
+        // §1.3.2: right-aligned, in place of the `[d] [p] [t] [s]` tail (classic passes nothing and keeps the tail)
+        ...(position !== null && full !== null && full.header === CAP.splash ? { position } : {}),
       }),
     plainRule(columns, glyphs),
   );
+  /**
+   * §1.3.2: the `compact` / `narrow` fullscreen header row **is** P-H1's strip, verbatim — `panelStrip` with
+   * `brand: true` and the right-aligned position ladder. In the `tall` tier the header is the 5-row mark and the
+   * strip is the rule row below it (F-H3), so this is null there and the rule row carries the segment instead.
+   */
+  const fullHeaderRow: string | null =
+    full === null || full.header !== 1
+      ? null
+      : guard(
+          'rule',
+          () =>
+            ruleRowText({
+              state: paneState,
+              latencies: state.jevLatencies,
+              paneRows: 0,
+              columns,
+              overlay: overlayKind,
+              terminalRows: rows,
+              panel: 'collapsed',
+              splash: 'done',
+              splashTime: null,
+              ranBefore: true,
+              version: VERSION,
+              glyphs,
+              pickerHeader: null,
+              ...(position !== null ? { position } : {}),
+            }),
+          plainRule(columns, glyphs),
+        );
   const statusState = guard<StatusLineState | null>('status', () => statusView({ ...state, git: state.git === null ? null : { ...state.git, head: gitHead.head ?? state.git.head, frozen: gitHead.frozen } }, { picker: pickerOpen }), null);
   const badge = modeBadge(state.modeBadge.mode, state.modeBadge.pending, glyphs);
   const consoleTitle = wizardHosted ? wizardConsoleTitle(wizard.state.step, glyphs) : pickerOpen && picker.kind ? pickerConsoleTitle(picker.kind, glyphs) : null;
   const gateRow = gateUp === 1 && gateRef.current ? (gateLines(gateRef.current.hits, consoleInnerWidth(columns))[0] ?? null) : null;
-  const visible = useVisibleItems(state.items, state.staticEpoch);
-  const queueLines = guard<string[]>('queue', () => queueRows(state.queue, state.step + 1, layout.queue, columns, glyphs), []);
-  const ghost = palette && palette.mode === 'command' ? guard('composer', () => paletteGhost(buffer.text.trim(), paletteMatches(buffer.text.trim(), paletteState())), null) : null;
+  const queueLines = guard<string[]>('queue', () => queueRows(state.queue, state.step + 1, full === null ? layout.queue : 0, columns, glyphs), []);
+  // TUI-DESIGN-4 §4.3 P-P2 (§9.2's `App.tsx` row): "what will Tab give me" and "what is the marker on" are ONE
+  // question, so the ghost reads `matches[selected]`, never `matches[0]` — A4 p5 captured a marker on `/llm` beside a
+  // `/mode +5` ghost, and with §4.2's Enter cycling the ghost would otherwise never move at all.
+  const ghost = palette && palette.mode === 'command' ? guard('composer', () => paletteGhostFor(buffer.text.trim(), paletteMatches(buffer.text.trim(), paletteState()), palette.selected), null) : null;
   // the App owns the single cursor: hidden unless a child places it during its render
   setCursorPosition(undefined);
   const staticOnly = layout.degraded === 'static-only';
@@ -2163,16 +2488,54 @@ export function App(p: AppProps): React.JSX.Element {
 
   return (
     <Box flexDirection="column">
-      {/* §13.4: each <Static> item has its own boundary inside <Transcript>; this outer one is the last resort and retries with the next item */}
-      <PaneBoundary pane="transcript" onFail={onPaneFail} resetKey={visible.length}>
-        <Transcript items={visible} header={header} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} />
-      </PaneBoundary>
+      {/*
+        TUI-DESIGN-4 §1.3: `classic` keeps `<Static>` — the terminal's own scrollback, wheel scrolling, find and
+        whole-session copy. `fullscreen` replaces it with the header at the physical top and a keyboard-scrolled
+        `<Viewport>`; Ink is mounted with `alternateScreen` + `incrementalRendering` forced, so nothing is written
+        above row 1 at all. Everything below this block is the SAME tree in both renderers (§1.3.5).
+      */}
+      {full === null ? (
+        /* §13.4: each <Static> item has its own boundary inside <Transcript>; this outer one is the last resort and retries with the next item */
+        <PaneBoundary pane="transcript" onFail={onPaneFail} resetKey={visible.length}>
+          <Transcript items={visible} header={header} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} />
+        </PaneBoundary>
+      ) : null}
+      {full !== null && full.header > 0 ? (
+        /* §1.3.2: the header — the 5-row mark in the `tall` tier, P-H1's 1-row brand strip in `compact` / `narrow` */
+        <PaneBoundary
+          pane="wordmark"
+          onFail={onPaneFail}
+          fault={fault}
+          log={logName}
+          resetKey={state.runId ?? ''}
+          fallback={() => (
+            <Box flexDirection="column" height={full.header} overflow="hidden">
+              {Array.from({ length: full.header }, (_unused, i) => (
+                <Text key={`fhf${i}`} wrap="truncate">
+                  {' '}
+                </Text>
+              ))}
+            </Box>
+          )}
+        >
+          <Box flexDirection="column" height={full.header} overflow="hidden">
+            {fullHeaderRow !== null ? (
+              <RuleRow text={fullHeaderRow} theme={theme} color={depth} glyphs={glyphs} band={null} />
+            ) : (
+              markView.rows.slice(0, full.header).map((row, i) => <SplashRow key={`fh${i}`} row={row} spans={markView.spans[i] ?? NO_MARK_SPANS} theme={theme} color={depth} />)
+            )}
+          </Box>
+        </PaneBoundary>
+      ) : null}
       {!staticOnly && layout.rule > 0 ? (
         <Box height={layout.rule} overflow="hidden">
           <RuleRow text={rule} theme={theme} color={depth} glyphs={glyphs} band={ruleBand} />
         </Box>
       ) : null}
-      {!staticOnly && layout.live > 0 ? (
+      {full !== null ? (
+        <Viewport index={viewportIndex} height={full.viewport} scroll={state.scroll} theme={theme} color={depth} showAbove onFail={onPaneFail} fault={fault} log={logName} />
+      ) : null}
+      {full === null && !staticOnly && layout.live > 0 ? (
         <PaneBoundary pane="live" onFail={onPaneFail} fault={fault} log={logName}>
           <Box flexDirection="column" height={layout.live} overflow="hidden">
             {liveRows.slice(0, layout.live).map((line, i, shown) => (
@@ -2184,25 +2547,46 @@ export function App(p: AppProps): React.JSX.Element {
           </Box>
         </PaneBoundary>
       ) : null}
-      {!staticOnly && layout.banner > 0 && banner !== null ? (
+      {full === null && !staticOnly && layout.banner > 0 && banner !== null ? (
         <Box height={1} overflow="hidden">
           <Text wrap="truncate" {...textProps(theme, 'warn', depth)}>
             {banner}
           </Text>
         </Box>
       ) : null}
-      {!staticOnly && markShown && mark !== null ? (
-        <Box flexDirection="column" height={layout.pane} overflow="hidden">
-          {mark.rows.slice(0, layout.pane).map((row, i) => (
-            <SplashRow key={`s${i}`} row={row} spans={markRowSpans[i] ?? NO_MARK_SPANS} theme={theme} color={depth} />
-          ))}
-        </Box>
-      ) : !staticOnly && layout.pane > 0 ? (
+      {full === null && !staticOnly && markShown && mark !== null ? (
+        // P-H3 / §1.3.2 edge 5: the boundary's fallback is BLANK rows of the SAME height — the idle tenant
+        // disappearing silently is the correct degradation, and the rendered height must keep equalling the height
+        // `computeLayout` granted (the default one-row red notice would make the frame `layout.pane − 1` rows short
+        // and would duplicate the `[ui]` item the App already appends). `resetKey` lets the next run try again.
+        <PaneBoundary
+          pane="wordmark"
+          onFail={onPaneFail}
+          fault={fault}
+          log={logName}
+          resetKey={state.runId ?? ''}
+          fallback={() => (
+            <Box flexDirection="column" height={layout.pane} overflow="hidden">
+              {Array.from({ length: layout.pane }, (_unused, i) => (
+                <Text key={`sf${i}`} wrap="truncate">
+                  {' '}
+                </Text>
+              ))}
+            </Box>
+          )}
+        >
+          <Box flexDirection="column" height={layout.pane} overflow="hidden">
+            {markView.rows.slice(0, layout.pane).map((row, i) => (
+              <SplashRow key={`s${i}`} row={row} spans={markView.spans[i] ?? NO_MARK_SPANS} theme={theme} color={depth} />
+            ))}
+          </Box>
+        </PaneBoundary>
+      ) : full === null && !staticOnly && layout.pane > 0 ? (
         <PaneBoundary pane="pane" onFail={onPaneFail} fault={fault} log={logName} resetKey={state.runId ?? ''}>
           <Pane state={paneState} rows={layout.pane} columns={columns} overlay={overlayKind} terminalRows={rows} lines={pickerView?.lines ?? null} selected={pickerView?.selected ?? null} glyphs={glyphs} theme={theme} color={depth} {...(pickerOpen ? {} : { size: state.panel === 'open' ? 'open' : 'full' })} />
         </PaneBoundary>
       ) : null}
-      {!staticOnly && layout.queue > 0 ? (
+      {full === null && !staticOnly && layout.queue > 0 ? (
         <Box flexDirection="column" height={layout.queue} overflow="hidden">
           {queueLines.slice(0, layout.queue).map((line, i) => (
             <Text key={`q${i}`} wrap="truncate" {...textProps(theme, 'dim', depth)}>
@@ -2233,7 +2617,6 @@ export function App(p: AppProps): React.JSX.Element {
           <Console
             buffer={state.noteMode || collapsing ? EMPTY_BUFFER : buffer}
             columns={columns}
-            bodyColumns={wrapColumns}
             height={wizardHosted ? layout.overlay : Math.max(1, layout.composer - layout.gate)}
             top={cTop}
             scrollTop={composer.scrollTop}
@@ -2273,7 +2656,7 @@ export function App(p: AppProps): React.JSX.Element {
             </Box>
           )}
         >
-          <Composer buffer={state.noteMode || collapsing ? EMPTY_BUFFER : buffer} columns={wrapColumns} height={layout.composer} top={top} scrollTop={composer.scrollTop} cursor={setCursorPosition} active={composerActive && !state.noteMode} mode={composerMode} rows={rows} live={runLive} spans={hitSpans(state.noteMode ? [] : composer.hits())} ghost={ghost} searchRow={composer.searchRow()} glyphs={glyphs} theme={theme} color={depth} onScroll={(n) => composer.setScrollTop(n)} />
+          <Composer buffer={state.noteMode || collapsing ? EMPTY_BUFFER : buffer} columns={columns} height={layout.composer} top={top} scrollTop={composer.scrollTop} cursor={setCursorPosition} active={composerActive && !state.noteMode} mode={composerMode} rows={rows} live={runLive} spans={hitSpans(state.noteMode ? [] : composer.hits())} ghost={ghost} searchRow={composer.searchRow()} glyphs={glyphs} theme={theme} color={depth} onScroll={(n) => composer.setScrollTop(n)} />
         </PaneBoundary>
       ) : null}
       {layout.status > 0 && layout.chrome === 0 ? (
@@ -2396,11 +2779,32 @@ export function terminalTitle(text: string | null): string {
 }
 
 export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
-  const stdout = opts.stdout ?? process.stdout;
+  const rawStdout = opts.stdout ?? process.stdout;
+  // TUI-DESIGN-4 §1.4: every byte Ink writes goes through the scrollback guard, which rewrites `clearTerminal`'s
+  // 11-character `ESC[2J ESC[3J ESC[H` to `ESC[2J ESC[H` (an `ESC[3J` erases the terminal's saved-lines buffer — the
+  // user's whole history) and elides the duplicated `fullStaticOutput` prefix that follows it in the same chunk.
+  // Ink keys its instance map by the stream object (`render.js:45–58`), so the SAME proxy goes everywhere: `render()`,
+  // the `resize` listener's geometry reads, the title and the cursor-shape write. `installTerminalHygiene` and
+  // `fatal.ts`'s `RESTORE` keep the raw stream (§1.4 edge 8) — neither ever writes `3J`.
+  const stdout = guardStdout(rawStdout);
   const stdin = opts.stdin ?? process.stdin;
   const env = opts.env ?? process.env;
   const mode = opts.mode ?? 'one-shot';
-  const launch = opts.launch ?? resolveLaunchSettings({}, env);
+  const launchBase = opts.launch ?? resolveLaunchSettings({}, env);
+  // TUI-DESIGN-4 §1.3.1: the renderer is chosen HERE, once — Ink fixes `alternateScreen` in its constructor
+  // (`ink.js:256`), so it cannot be toggled in place. A refused `fullscreen` falls back to `classic` and rides on
+  // `launch.rendererRefusal` as one `[ui]` note; the non-TTY rows are silent (there is no frame to pin anything to).
+  const selection = selectRenderer({
+    wanted: launchBase.renderer,
+    rows: rawStdout.rows ?? DEFAULT_ROWS,
+    columns: rawStdout.columns ?? DEFAULT_COLUMNS,
+    screenReader: launchBase.screenReader,
+    term: env['TERM'],
+    isTTY: rawStdout.isTTY === true,
+    ...(opts.interactive !== undefined ? { interactive: opts.interactive } : {}),
+  });
+  const launch: LaunchSettings = selection.refusal === null ? launchBase : { ...launchBase, rendererRefusal: selection.refusal };
+  const fullscreen = selection.renderer === 'fullscreen';
   const bus = createEventBus();
   // With a piped stdin nobody can press y/n, so the box renders and then declines (§10).
   const confirmer = stdin.isTTY ? createTuiConfirmer() : createTuiConfirmer({ autoDeclineMs: opts.confirmTimeoutMs ?? 0, identity: IDENTITY_NO_TTY });
@@ -2412,9 +2816,9 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
   // TUI-DESIGN §14.1 / §16 `ui.title` (opt-in): one OSC 2 write at setUi, reset at unmount; never written unless enabled
   let titleSet = false;
   let offResize: (() => void) | null = null;
-  if (stdout.isTTY === true && stdout === process.stdout) {
+  if (rawStdout.isTTY === true && rawStdout === process.stdout) {
     // §14.2: the mount shares the one process-wide restore, so unmount / SIGTSTP / the 'exit' hook write RESTORE once
-    hygiene = installTerminalHygiene({ io: { stdout, stdin }, onSuspend: () => bridge.command({ type: 'suspend' }), restore: processRestoreTerminal() });
+    hygiene = installTerminalHygiene({ io: { stdout: rawStdout, stdin }, onSuspend: () => bridge.command({ type: 'suspend' }), restore: processRestoreTerminal() });
     writeCursorShape(stdout);
   }
   // §14.1 / §18: a `resize` listener registered before Ink's. It stores the new geometry on the bridge and schedules
@@ -2426,30 +2830,44 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
   // (research 20 §1 — one per shrink segment, §18). Grows and width-only changes never clear and take the async path.
   let instance: Instance | null = null;
   const tree = (): React.JSX.Element => (
-    <App task={opts.task} resumeId={opts.resumeId} source={bus} confirmer={confirmer} onAbort={opts.onAbort} mode={mode} {...(opts.cwd !== undefined ? { cwd: opts.cwd } : {})} launch={launch} bridge={bridge} log={log} fault={opts.fault ?? env['JEVCODE_FAULT']} env={env} {...(opts.now ? { now: opts.now } : {})} {...(opts.home !== undefined ? { home: opts.home } : {})} {...(opts.runsDir !== undefined ? { runsDir: opts.runsDir } : {})} {...(opts.onExit ? { onExit: opts.onExit } : {})} {...(opts.bindings ? { bindings: opts.bindings } : {})} />
+    <App task={opts.task} resumeId={opts.resumeId} source={bus} confirmer={confirmer} onAbort={opts.onAbort} mode={mode} {...(opts.cwd !== undefined ? { cwd: opts.cwd } : {})} launch={launch} bridge={bridge} log={log} fault={opts.fault ?? env['JEVCODE_FAULT']} env={env} renderer={selection.renderer} {...(opts.now ? { now: opts.now } : {})} {...(opts.home !== undefined ? { home: opts.home } : {})} {...(opts.runsDir !== undefined ? { runsDir: opts.runsDir } : {})} {...(opts.onExit ? { onExit: opts.onExit } : {})} {...(opts.bindings ? { bindings: opts.bindings } : {})} />
   );
   const geometryOf = (): { rows: number; columns: number } => {
     const s = stdout as { rows?: number; columns?: number };
     return { rows: s.rows || DEFAULT_ROWS, columns: s.columns || DEFAULT_COLUMNS };
   };
-  let lastRows = geometryOf().rows;
+  // TUI-DESIGN-4 §2.2 P-R1: commit synchronously on **any** shrinking dimension and on **every** width change — a
+  // width-only change never shrank the row count, so the old `g.rows < lastRows` test let the box edges follow the new
+  // width while the body still wrapped at the old one (measured: 4 of 24 frames carry a truncation ellipsis as their
+  // right border). `SYNC_COMMIT_MIN_MS` is the storm guard; the async debounce still catches the tail.
+  let last = geometryOf();
+  let lastSyncAt = 0;
   const onEarlyResize = (): void => {
     const g = geometryOf();
     bridge.geometry = g;
     bridge.notify();
-    const shrank = g.rows < lastRows;
-    lastRows = g.rows;
-    if (shrank && instance !== null) instance.rerender(tree());
+    const now = nowMs();
+    const commit = shouldSyncCommit(last, g, now, lastSyncAt);
+    last = g;
+    if (commit && instance !== null) {
+      lastSyncAt = now;
+      instance.rerender(tree());
+    }
   };
   if (typeof stdout.on === 'function') stdout.on('resize', onEarlyResize);
 
+  // §1.3: `fullscreen` FORCES the alternate screen and incremental rendering, never defaults them — A1 measured that
+  // full-screen on the PRIMARY screen writes `ESC[2J ESC[3J` at unmount (the user's scrollback, gone) and that the
+  // default renderer misses D-F's 16 ms key gate at 60×200 without incremental rendering.
+  if (fullscreen) markAlternateScreen();
   const mounted = render(tree(), {
     stdout,
     stdin,
     exitOnCtrlC: false,
     patchConsole: false,
     maxFps: launch.fps,
-    incrementalRendering: launch.renderMode === 'incremental',
+    incrementalRendering: fullscreen || launch.renderMode === 'incremental',
+    ...(fullscreen ? { alternateScreen: true } : {}),
     kittyKeyboard: { mode: 'disabled' },
     isScreenReaderEnabled: launch.screenReader,
     ...(opts.interactive !== undefined ? { interactive: opts.interactive } : {}),
@@ -2494,6 +2912,26 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
       instance = null;
       if (hygiene) hygiene.restore();
       if (titleSet) stdout.write(terminalTitle(null));
+      /**
+       * TUI-DESIGN-4 §1.3.4: **after** the restore (whose `ESC[?1049l` put us back on the primary screen) the
+       * fullscreen session writes its whole transcript out, so it ends with the same scrollback classic would have
+       * left. Produced by `transcriptDumpChunks` — the same `formatTranscriptItem` rows `createPlainRenderer`
+       * writes — so the dump is byte-identical to a `--plain` run of the same script. Skipped for the classic
+       * renderer (its scrollback already holds it), for `ui.fullscreenDump: false`, and for an empty transcript.
+       * Written in bounded chunks so a slow link cannot push the exit past `UNMOUNT_TIMEOUT_MS`; a crash before
+       * this point leaves no dump, and `transcript.log` stays the documented source of truth.
+       */
+      if (fullscreen && (bridge.ui?.fullscreenDump ?? true)) {
+        const items = bridge.stateReader?.()?.items ?? [];
+        for (const chunk of transcriptDumpChunks(items, glyphSet({ ascii: launch.ascii, screenReader: launch.screenReader }))) {
+          try {
+            rawStdout.write(chunk);
+          } catch {
+            // the other end is gone (EPIPE, a closed pager): the dump is best-effort, transcript.log is not
+            break;
+          }
+        }
+      }
     },
     setHost(host) {
       bridge.host = host;

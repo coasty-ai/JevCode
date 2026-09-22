@@ -1,0 +1,22 @@
+{"t":148,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":149,"step":2,"op":"expect","arg":"\\x1b\\[\\?2004h"}
+{"t":951,"step":3,"op":"sleep","arg":"0.8"}
+{"t":954,"step":4,"op":"resize","arg":"8 80"}
+{"t":1356,"step":5,"op":"sleep","arg":"0.4"}
+{"t":1358,"step":6,"op":"resize","arg":"16 80"}
+{"t":1759,"step":7,"op":"sleep","arg":"0.4"}
+{"t":1762,"step":8,"op":"resize","arg":"24 80"}
+{"t":2165,"step":9,"op":"sleep","arg":"0.4"}
+{"t":2168,"step":10,"op":"resize","arg":"40 80"}
+{"t":2569,"step":11,"op":"sleep","arg":"0.4"}
+{"t":2572,"step":12,"op":"resize","arg":"24 80"}
+{"t":2972,"step":13,"op":"sleep","arg":"0.4"}
+{"t":2975,"step":14,"op":"resize","arg":"12 80"}
+{"t":3376,"step":15,"op":"sleep","arg":"0.4"}
+{"t":3379,"step":16,"op":"resize","arg":"24 80"}
+{"t":4181,"step":17,"op":"sleep","arg":"0.8"}
+{"t":4182,"step":18,"op":"send","arg":"\\x03"}
+{"t":4483,"step":19,"op":"sleep","arg":"0.3"}
+{"t":4483,"step":20,"op":"send","arg":"\\x03"}
+{"t":4532,"step":21,"op":"eof","arg":""}
+{"t":4532,"step":0,"op":"exit","arg":"0"}

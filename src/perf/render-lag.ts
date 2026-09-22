@@ -74,7 +74,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { END_PATTERN, NO_FPS, RUN_STARTED_PATTERN, classCounts, classifyFrames, clearReSelfTest, clearsAfter, cursorStats, firstDynamicFrameOffset, frameAt, frameTime, framesPerSecondByClass, keyLatencies, keystrokeSteps, maxStepSeen, paintedMax, safeKey, sendTimes, splitFrames, staticRows, summarise, throttleMs, typist, wordmarkCells, type Chunk, type Frame, type FrameClass, type FrameClassCounts, type LatencySummary, type TypistStep } from './pty.js';
+import { END_PATTERN, NO_FPS, RUN_STARTED_PATTERN, classCounts, count3J, framesTallerThan, classifyFrames, clearReSelfTest, clearsAfter, cursorStats, firstDynamicFrameOffset, frameAt, frameTime, framesPerSecondByClass, keyLatencies, keystrokeSteps, maxStepSeen, paintedMax, safeKey, sendTimes, splitFrames, staticRows, summarise, throttleMs, typist, wordmarkCells, type Chunk, type Frame, type FrameClass, type FrameClassCounts, type LatencySummary, type TypistStep } from './pty.js';
 
 export { CLEAR_RE, clearReSelfTest } from './pty.js';
 
@@ -139,6 +139,18 @@ export interface LagGeometry {
   frameClasses: FrameClassCounts;
   /** tallest dynamic region painted after the first frame */
   regionMax: number;
+  /**
+   * TUI-DESIGN-4 §11 (new gate row) / §1.4: `ESC[3J` sequences anywhere in this geometry's capture. `ESC[3J`
+   * deletes the user's **scrollback**, which is theirs; the gate is 0, measured, not asserted by a self-test.
+   */
+  esc3J: number;
+  /**
+   * TUI-DESIGN-4 §11 (new gate row): frames whose painted dynamic region is taller than the terminal. This
+   * probe never resizes, so there is no settling frame to skip and the gate is exactly 0.
+   */
+  tallFrames: number;
+  /** the tallest over-tall frame's painted rows (0 when none), so a failure names the size */
+  tallFrameMax: number;
   cursorHidesMaxPerFrame: number;
   cursorFramesWithoutShow: number;
   cursorShownAtEnd: boolean;
@@ -389,6 +401,10 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
     const firstDyn = firstDynamicFrameOffset(r.capture);
     const firstIdx = Math.max(0, frameAt(frames, firstDyn));
     const regionMax = paintedMax(frames, firstIdx + 1);
+    // §11's two new rows, MEASURED here (the self-tests in `readme.ts` are the precondition, not the gate)
+    const esc3J = count3J(r.capture);
+    const tall = framesTallerThan(frames, rows, { from: firstIdx + 1 });
+    const tallFrameMax = tall.reduce((m, f) => Math.max(m, f.painted), 0);
     const lat = keyLatencies(r.timing, frames, r.chunks, measured);
     const first = lat[0];
     const last = lat[lat.length - 1];
@@ -426,7 +442,10 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
     const runStartOk = runStartFrames < 0 || runStartFrames <= runStartGate;
     const verdict = lagVerdict(lag, baseline);
     const lagOk = verdict.ok;
-    const hygieneOk = clears === 0 && cursor.hidesMaxPerFrame <= 1 && cursor.framesWithoutShow === 0 && cursor.shownAtEnd && regionMax <= rows - 2 && r.code === 0 && !r.timedOut;
+    // TUI-DESIGN-4 §11: the two new rows join the hygiene verdict — a capture with one `ESC[3J`, or with one
+    // frame taller than the terminal, is a FAILING capture whatever its latency numbers say.
+    const hygieneOk =
+      clears === 0 && esc3J === 0 && tall.length === 0 && cursor.hidesMaxPerFrame <= 1 && cursor.framesWithoutShow === 0 && cursor.shownAtEnd && regionMax <= rows - 2 && r.code === 0 && !r.timedOut;
     const pass = hygieneOk && (!gated || (lagOk && fpsOk && splashOk && runStartOk));
     return {
       rows,
@@ -464,6 +483,9 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
       runStartOk,
       frameClasses: classCounts(classes),
       regionMax,
+      esc3J,
+      tallFrames: tall.length,
+      tallFrameMax,
       cursorHidesMaxPerFrame: cursor.hidesMaxPerFrame,
       cursorFramesWithoutShow: cursor.framesWithoutShow,
       cursorShownAtEnd: cursor.shownAtEnd,
@@ -503,7 +525,7 @@ export async function measureRenderLag(opts: { root: string; bin: string; steps?
   const mockSteps = opts.steps ?? 3000;
   const realisticStepMs = opts.stepMs ?? REALISTIC_STEP_MS;
   const line = (g: LagGeometry): string =>
-    `render lag ${describeGeometry(g)} (step ${g.stepMs} ms${g.gated ? '' : ', lag/fps reported only'}): lag p50 ${g.lagP50?.toFixed(2)} p95 ${g.lagP95?.toFixed(2)} (net ${g.lagNetP95?.toFixed(2)}) max ${g.lagMax?.toFixed(2)} ms (${g.samples} samples${g.lagOk ? '' : '; OVER'}), clears ${g.clears}, frames ${g.frames} (${g.frameClasses.static} static, ${g.frameClasses.key} key, ${g.frameClasses.dynamic} dynamic), fps max ${g.fpsMax?.toFixed(0)} mean ${g.fpsMean?.toFixed(1)} (static ${g.fpsStaticMax?.toFixed(0)}, key ${g.fpsKeyMax?.toFixed(0)}, dynamic ${g.fpsDynamicMax?.toFixed(0)}; gate dynamic ≤ ${g.fpsGate}${g.fpsOk ? '' : ' EXCEEDED'}), splash ${g.splashFrames} dynamic frames in ${g.splashWindowMs} ms (+ ${g.splashStaticFrames} static, ${g.splashKeyFrames} key; ${g.splashWordmarkFrames} with the wordmark; first frame ${g.splashInFirstFrame ? 'is' : 'is not'} splash frame 0; gate ≤ ${g.splashGate}${g.splashOk ? '' : ' EXCEEDED'}), run-start bucket ${g.runStartFrames} dynamic frames in 1 s (gate ≤ ${g.runStartGate}${g.runStartOk ? '' : ' EXCEEDED'}), region max ${g.regionMax}, cursor hides ≤ ${g.cursorHidesMaxPerFrame} / ${g.cursorFramesWithoutShow} frames without show, typing p95 ${g.typing.p95?.toFixed(1)} ms (${g.keysWhileLive}/${g.typing.samples} keys while live, step ${g.stepsSeen}/${g.mockSteps}, ${g.stepsPerSecond?.toFixed(1)} steps/s, ${g.staticRowsPerSecond?.toFixed(0)} static rows/s), exit ${g.exitCode}${g.timedOut ? ' TIMEOUT' : ''} → ${g.pass ? 'pass' : 'FAIL'}`;
+    `render lag ${describeGeometry(g)} (step ${g.stepMs} ms${g.gated ? '' : ', lag/fps reported only'}): lag p50 ${g.lagP50?.toFixed(2)} p95 ${g.lagP95?.toFixed(2)} (net ${g.lagNetP95?.toFixed(2)}) max ${g.lagMax?.toFixed(2)} ms (${g.samples} samples${g.lagOk ? '' : '; OVER'}), clears ${g.clears}, frames ${g.frames} (${g.frameClasses.static} static, ${g.frameClasses.key} key, ${g.frameClasses.dynamic} dynamic), fps max ${g.fpsMax?.toFixed(0)} mean ${g.fpsMean?.toFixed(1)} (static ${g.fpsStaticMax?.toFixed(0)}, key ${g.fpsKeyMax?.toFixed(0)}, dynamic ${g.fpsDynamicMax?.toFixed(0)}; gate dynamic ≤ ${g.fpsGate}${g.fpsOk ? '' : ' EXCEEDED'}), splash ${g.splashFrames} dynamic frames in ${g.splashWindowMs} ms (+ ${g.splashStaticFrames} static, ${g.splashKeyFrames} key; ${g.splashWordmarkFrames} with the wordmark; first frame ${g.splashInFirstFrame ? 'is' : 'is not'} splash frame 0; gate ≤ ${g.splashGate}${g.splashOk ? '' : ' EXCEEDED'}), run-start bucket ${g.runStartFrames} dynamic frames in 1 s (gate ≤ ${g.runStartGate}${g.runStartOk ? '' : ' EXCEEDED'}), region max ${g.regionMax}, ESC[3J ${g.esc3J}, tall frames ${g.tallFrames}${g.tallFrames > 0 ? ` (tallest ${g.tallFrameMax} rows > ${g.rows})` : ''}, cursor hides ≤ ${g.cursorHidesMaxPerFrame} / ${g.cursorFramesWithoutShow} frames without show, typing p95 ${g.typing.p95?.toFixed(1)} ms (${g.keysWhileLive}/${g.typing.samples} keys while live, step ${g.stepsSeen}/${g.mockSteps}, ${g.stepsPerSecond?.toFixed(1)} steps/s, ${g.staticRowsPerSecond?.toFixed(0)} static rows/s), exit ${g.exitCode}${g.timedOut ? ' TIMEOUT' : ''} → ${g.pass ? 'pass' : 'FAIL'}`;
   const baseline = await measureLagBaseline();
   opts.onProgress?.(`lag probe floor (bare idle node, ${baseline.seconds} s): p50 ${baseline.p50?.toFixed(2)} p95 ${baseline.p95?.toFixed(2)} max ${baseline.max?.toFixed(2)} ms (${baseline.samples} samples) → ${baseline.ok ? `calibration applies: gate on p95 − ${baseline.p50?.toFixed(2)} ms` : 'floor too noisy, raw p95 gated'}`);
   const run = async (spec: GeometrySpec): Promise<LagGeometry> => {

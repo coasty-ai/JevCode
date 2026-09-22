@@ -54,6 +54,11 @@ const DARK_GOLDEN: GoldenTable = {
   code: { ansi16: 'whiteBright', ansi256: 254, truecolor: '#e5e5e5' },
   sweep: { ansi16: 'whiteBright', ansi256: 224, truecolor: '#fbd0dc' },
   accent2: PINK2,
+  // TUI-DESIGN-4 §6.2: the four diff roles reuse the already-checked meaning colours (no new cube cell)
+  added: GREEN,
+  removed: RED,
+  hunk: PINK,
+  diffMeta: DIM,
 };
 
 const LPINK = { ansi16: 'magenta', ansi256: 125, truecolor: '#be185d' } as const;
@@ -82,6 +87,10 @@ const LIGHT_GOLDEN: GoldenTable = {
   code: { ansi16: 'black', ansi256: 234, truecolor: '#1e1e1e' },
   sweep: LPINK2,
   accent2: LPINK2,
+  added: { ansi16: 'green', ansi256: 29, truecolor: '#15803d' },
+  removed: LRED,
+  hunk: LPINK,
+  diffMeta: DIM,
 };
 
 const DBLUE = { ansi16: 'blue', ansi256: 75, truecolor: '#60A5FA' } as const;
@@ -90,6 +99,8 @@ const DALTONIZED_GOLDEN: GoldenTable = {
   error: DBLUE,
   block: { ...DBLUE, bold: true },
   ok: { ansi16: 'cyan', ansi256: 117, truecolor: '#7DD3FC' },
+  // §6.2: `removed` moves onto the same blue; `added` keeps green
+  removed: DBLUE,
 };
 
 const GOLDEN: Readonly<Record<Exclude<ThemeName, 'ansi'>, GoldenTable>> = { dark: DARK_GOLDEN, light: LIGHT_GOLDEN, daltonized: DALTONIZED_GOLDEN };
@@ -380,8 +391,10 @@ describe('(2) WCAG contrast at the §2 thresholds (body ≥ 4.5:1, marker / edge
   const CELL_EXCEPTIONS: readonly { readonly theme: Exclude<ThemeName, 'ansi'>; readonly role: ColorRole; readonly bg: string; readonly ratio: number; readonly carriedBy: string }[] = [
     // light `ok` renders as cell 29 `#00875f`: body grade on white (4.50 — 4.4964 unrounded, at the edge), 4.53 on #ffffff, below body on Solarized light
     { theme: 'light', role: 'ok', bg: '#fdf6e3', ratio: 4.2, carriedBy: '✓' },
+    // TUI-DESIGN-4 §6.2: light `added` is the same darkened green (cell 29), so it carries the same one exception — with `+` as its marker
+    { theme: 'light', role: 'added', bg: '#fdf6e3', ratio: 4.2, carriedBy: '+' },
   ];
-  it('every ansi256 cell meets the body / marker threshold on its theme’s three backgrounds, except the one named: light ok cell 29 on Solarized light (4.20)', () => {
+  it('every ansi256 cell meets the body / marker threshold on its theme’s three backgrounds, except the two named: light ok / added cell 29 on Solarized light (4.20)', () => {
     const seen: string[] = [];
     for (const name of ['dark', 'light', 'daltonized'] as const) {
       for (const role of COLOR_ROLES) {
@@ -816,6 +829,10 @@ describe('(5) markers wherever §2.1 requires one; identical in every theme', ()
     code: '╶',
     sweep: '',
     accent2: '',
+    added: '+',
+    removed: '-',
+    hunk: '@@',
+    diffMeta: '···',
   };
   it('the §2.1 marker column, in all four themes; validateTheme passes each', () => {
     for (const name of THEME_NAMES) {

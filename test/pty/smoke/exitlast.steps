@@ -5,7 +5,7 @@ sleep 0.3
 send make the tests pass
 sleep 0.2
 send \r
-expect end max_steps
+expect finished [·-] max_steps
 expect Follow-up, question
 sleep 0.3
 send \x03

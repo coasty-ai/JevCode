@@ -62,6 +62,12 @@ export interface CommandSpec {
   readonly category: CommandCategory;
   /** §5.3 Suggested-group key (which state suggests this command first) */
   readonly suggestWhen?: 'stop' | 'budget-stop' | 'unauthorized' | 'changed-files' | 'rewind-menu';
+  /**
+   * TUI-DESIGN-4 §4.5 (D-X): reached **through a selection surface** (the palette's accept/cycle, the `--plain`
+   * numbered pick) this command gets a one-row confirm whose Enter is inert. A hand-typed `/exit` is unaffected —
+   * the gate is `DispatchContext.fromPalette`, a provenance ref, never `overlay === 'palette'`.
+   */
+  readonly destructive?: true;
 }
 
 /** TUI-DESIGN §9.4: the `/budget` settings. */
@@ -115,6 +121,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'new',
     aliases: ['nw'],
     args: [],
+    destructive: true,
     availableDuringTask: 'idle',
     plain: 'yes',
     title: 'end the session; the next prompt starts a new one here',
@@ -183,6 +190,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'abort',
     aliases: [],
     args: [],
+    destructive: true,
     availableDuringTask: 'live',
     plain: 'yes',
     title: 'stop the run now (= Esc Esc); the step in flight is discarded',
@@ -389,6 +397,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'config',
     aliases: ['cf'],
     args: [],
+    // TUI-DESIGN-4 §3.3 (S3's §9.2 request): `configTableLines` already takes `{ all }`; this is the missing flag spec
+    flags: [{ name: 'all', title: 'show every setting, including the rows folded at their defaults' }],
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'masked settings table with sources and the effective session cap',
@@ -467,11 +477,12 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'copy',
     aliases: ['cp'],
-    args: [{ name: 'what', kind: 'enum', values: ['last', 'proposal', 'diff', 'draft'], optional: true, hint: '[last|proposal|diff|draft]', valueHints: { last: { title: 'the last transcript item' }, proposal: { title: 'the last proposal' }, diff: { title: 'the run\'s diff, as /diff prints it' }, draft: { title: 'the composer draft' } } }],
+    // TUI-DESIGN-4 §5.5 P-C13 (S5's §9.2 request): `last` copies the whole turn, `conversation` the whole ledger
+    args: [{ name: 'what', kind: 'enum', values: ['last', 'proposal', 'diff', 'draft', 'conversation'], optional: true, hint: '[last|proposal|diff|draft|conversation]', valueHints: { last: { title: 'the last chat turn, unclipped' }, proposal: { title: 'the last proposal' }, diff: { title: 'the run\'s diff, as /diff prints it' }, draft: { title: 'the composer draft' }, conversation: { title: 'the whole conversation as you:/jevcode: blocks' } } }],
     availableDuringTask: 'any',
     plain: 'n/a',
-    title: 'copy the last item, proposal, diff or draft (redacted)',
-    usage: '[last|proposal|diff|draft]',
+    title: 'copy the last turn, proposal, diff, draft or conversation (redacted)',
+    usage: '[last|proposal|diff|draft|conversation]',
     semantics: '§10.5',
     category: 'ui',
   },
@@ -523,6 +534,8 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'history',
     aliases: [],
     args: [{ name: 'op', kind: 'enum', values: ['clear'], hint: 'clear' }],
+    // TUI-DESIGN-4 §4.5: `/history`'s only argument is `clear`, so every resolution of it is the destructive one
+    destructive: true,
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'clear the prompt history (after y/N)',
@@ -545,12 +558,59 @@ export const COMMANDS: readonly CommandSpec[] = [
     name: 'exit',
     aliases: ['q', 'quit'],
     args: [],
+    destructive: true,
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'leave (exit 0; confirms first while a run is live)',
     usage: '—',
     semantics: 'exit 0 (`exitConfirm` first while live; `--exit-code=last-run` opt-in)',
     category: 'session',
+  },
+  // TUI-DESIGN-4: the four commands round 4 adds (37 → 41). §9.2 routes every one of them to S4's registry; the
+  // handlers are S1's (`/fullscreen`, `/scrollback`, §1.3.1/§1.3.4) and S6's (`/peers`, `/ui reset`, §7.10/§7.1).
+  {
+    name: 'fullscreen',
+    aliases: [],
+    args: [],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'pin the header at the top of the screen (persists ui.renderer; needs a relaunch)',
+    usage: '—',
+    semantics: 'persist `ui.renderer: fullscreen` and offer a relaunch — the renderer is fixed at `render()` (§1.3.1), so it never switches in place; under `fullscreen` already, it persists `classic` back',
+    category: 'ui',
+  },
+  {
+    name: 'scrollback',
+    aliases: [],
+    args: [],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'print the transcript to the primary screen for copy and find',
+    usage: '—',
+    semantics: 'fullscreen only: suspend, print the whole transcript through `createPlainRenderer`, wait for a key, resume (§1.3.4); under `classic` it answers that the terminal\'s own scrollback already has it',
+    category: 'ui',
+  },
+  {
+    name: 'peers',
+    aliases: [],
+    args: [],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'other jevcode instances working in this workspace',
+    usage: '—',
+    semantics: 'a block `peers · <n> here, <m> stale` with one kv row per peer — workspace, started <t> ago, state — never a pid and never a path (§7.10)',
+    category: 'session',
+  },
+  {
+    name: 'ui',
+    aliases: [],
+    args: [{ name: 'action', kind: 'setting', values: ['reset'], hint: 'reset', valueHints: { reset: { title: 'unlatch every pane that failed to render' } } }],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'ui maintenance: reset re-enables panes that failed to render',
+    usage: 'reset',
+    semantics: 'clears every `guard()` pane latch (§7.1) and answers `ui reset — <n> panes unlatched` or `nothing was latched`',
+    category: 'ui',
   },
 ];
 

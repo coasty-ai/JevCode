@@ -53,6 +53,18 @@ export const REVIEW_RECHECK_MS = 100;
 export const STATIC_SOFT_CAP = 20_000;
 /** Raw decisions kept per step for `/why` (the last 3 steps, §7.1). */
 export const DECISION_STEPS_KEPT = 3;
+/**
+ * TUI-DESIGN-4 §7.13 (b): decisions kept **within** one step. `keepSteps` bounded the number of steps but not the
+ * decisions inside one, so a steer storm in a single step grew the map without limit. The newest are kept: `/why`
+ * reads the tail.
+ */
+export const DECISIONS_PER_STEP_KEPT = 200;
+/**
+ * TUI-DESIGN-4 §7.8 (P-D8): a submission that has produced no `run:start`, no `thinking` phase change and no stream
+ * byte for this long gets one `[ui]` row offering `Esc`. The deadline is measured on the **monotonic** `nowMs()`
+ * (§2.2 P-R1 = `performance.now()`), never `Date.now`, so an NTP jump can neither fire it early nor suppress it.
+ */
+export const SUBMIT_WATCHDOG_MS = 45_000;
 /** The sparkline reads the last 12 Jev requests (§7.4). */
 export const JEV_LATENCIES_KEPT = 12;
 /** The 1 Hz tick (§15 item 20 `nowMs`). */
@@ -284,6 +296,13 @@ export type UiAction =
   | { type: 'git'; zone: GitZone | null }
   | { type: 'local-item'; item: TranscriptItem }
   | { type: 'local'; text: string; label?: TranscriptItem['label']; level?: TranscriptLevel; detail?: string }
+  /**
+   * TUI-DESIGN-4 §1.3.3 / §9.2 (`useEngine.tsx`'s row): the fullscreen viewport's scroll anchor. The reducer is
+   * `applyScrollAt` in `src/tui/fullscreen/viewport.ts` — the App computes the next anchor with the geometry it
+   * has and dispatches the RESULT, so this case stays a pure assignment and `UiState.scroll` has exactly one
+   * writer. The classic renderer never dispatches it and leaves the field at `{ anchor: 'bottom' }`.
+   */
+  | { type: 'scroll'; scroll: UiState['scroll'] }
   | { type: 'picker'; open: boolean }
   | { type: 'title'; title: string | null }
   | { type: 'spend:session'; session: { totalUsd: number; capUsd: number } | null }
@@ -431,6 +450,13 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
     }
     case 'confirm:settled':
       return state.pendingConfirm?.id === action.id ? clearReview(state) : state;
+    case 'scroll': {
+      // §1.3.3: identity when the anchor did not move, so a PgUp at the top of the index costs no re-render
+      const cur = state.scroll;
+      const next = action.scroll;
+      if (cur.anchor === next.anchor && (cur.anchor === 'bottom' || cur.top === (next as { top: number }).top)) return state;
+      return { ...state, scroll: next };
+    }
     case 'event':
       return applyEvent(state, action.event, action.at ?? state.nowMs);
     case 'key': {
@@ -527,7 +553,11 @@ function sameDraft(a: DraftMirror, b: DraftMirror): boolean {
 /**
  * Append items; past the `<Static>` soft cap the array restarts with a new epoch (A28: a keyed remount, nothing re-printed).
  * TUI-DESIGN-2 §4.5: under the `compact` view the stage kinds are stamped `hidden: true` at append time (a later `/transcript
- * full` shows new items only, R4); `UiState.items` keeps every item for `/export`.
+ * full` shows new items only, R4).
+ *
+ * TUI-DESIGN-4 §7.13 (a): the old comment claimed `UiState.items` keeps **every** item for `/export`; the line
+ * below discards the array at the soft cap and starts a new epoch, which is the whole point of the cap. `/export`
+ * reads `transcript.log`, not this array — the array is what the renderer holds, and it is bounded.
  */
 function appendItems(state: UiState, items: readonly TranscriptItem[]): UiState {
   if (items.length === 0) return state;
@@ -541,13 +571,59 @@ function pushLatency(list: readonly (number | null)[], ms: number | null): reado
   return next.length > JEV_LATENCIES_KEPT ? next.slice(next.length - JEV_LATENCIES_KEPT) : next;
 }
 
+/**
+ * TUI-DESIGN-4 §7.13 (b): bound both dimensions — the last `DECISION_STEPS_KEPT` steps, and inside each step the
+ * last `DECISIONS_PER_STEP_KEPT` decisions. A steer storm inside one step used to grow this array without limit.
+ */
 function keepSteps(map: ReadonlyMap<number, readonly Decision[]>, d: Decision): Map<number, readonly Decision[]> {
   const next = new Map(map);
-  next.set(d.step, [...(next.get(d.step) ?? []), d]);
+  const grown = [...(next.get(d.step) ?? []), d];
+  next.set(d.step, grown.length > DECISIONS_PER_STEP_KEPT ? grown.slice(grown.length - DECISIONS_PER_STEP_KEPT) : grown);
   const steps = [...next.keys()].sort((a, b) => b - a);
   for (const s of steps.slice(DECISION_STEPS_KEPT)) next.delete(s);
   return next;
 }
+
+/**
+ * TUI-DESIGN-4 §7.8 item 3: is the submission watchdog due? Pure, so the App can call it from its 1 Hz tick with
+ * the monotonic clock and the test can call it with a number.
+ *
+ * `lastSignMs` is the monotonic stamp of the **last sign of life** for this submission — the submit itself, any
+ * `thinking` phase change, any live byte, any retry row (edges 1 and 2: a legitimately slow first token and a
+ * visible retry countdown both reset it, so neither trips the line).
+ */
+export function submitWatchdogDue(lastSignMs: number | null, nowMs: number, windowMs: number = SUBMIT_WATCHDOG_MS): boolean {
+  if (lastSignMs === null || !Number.isFinite(lastSignMs) || !Number.isFinite(nowMs)) return false;
+  return nowMs - lastSignMs >= windowMs;
+}
+
+/** TUI-DESIGN-4 §7.8: the development override the `stuck-submit` pty scenario sets (a 45 s wait does not fit a 60 s driver budget). */
+export const SUBMIT_WATCHDOG_ENV_VAR = 'JEVCODE_SUBMIT_WATCHDOG_MS';
+/** the clamp: below this the watchdog would fire on a normal first token; above it the scenario would never finish */
+export const SUBMIT_WATCHDOG_MIN_MS = 250;
+export const SUBMIT_WATCHDOG_MAX_MS = 10 * 60_000;
+
+/**
+ * TUI-DESIGN-4 §7.8: the effective watchdog window. `SUBMIT_WATCHDOG_MS` is the product's 45 s; the environment
+ * override exists so the `stuck-submit` pty scenario can observe the row inside `drive.exp`'s 60 s budget. A
+ * value that is not a finite number, or one outside the clamp, is ignored — a typo must never silently disable
+ * the watchdog or make it fire on every slow token.
+ */
+export function submitWatchdogMs(env: Readonly<Record<string, string | undefined>> = process.env): number {
+  const raw = env[SUBMIT_WATCHDOG_ENV_VAR];
+  if (typeof raw !== 'string' || raw.trim() === '') return SUBMIT_WATCHDOG_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return SUBMIT_WATCHDOG_MS;
+  return Math.min(SUBMIT_WATCHDOG_MAX_MS, Math.max(SUBMIT_WATCHDOG_MIN_MS, Math.round(n)));
+}
+
+/** TUI-DESIGN-4 §7.8 item 3 / §12: the one row the watchdog appends. */
+export function submitWatchdogLine(windowMs: number = SUBMIT_WATCHDOG_MS): string {
+  return `the request has not answered in ${Math.round(windowMs / 1000)}s — Esc cancels it, or press Ctrl-C twice to leave`;
+}
+
+/** TUI-DESIGN-4 §7.8 item 1 / §12: the toast when `host.abort()` reports it did not act. */
+export const NOTHING_TO_ABORT_TOAST = 'nothing to abort';
 
 /** The `run:start` reset row of the transition table (the fix for today's never-cleared `done`). */
 function resetForRun(s: UiState, e: Extract<EngineEvent, { type: 'run:start' }>, now: number): UiState {

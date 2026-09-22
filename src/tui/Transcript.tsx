@@ -6,7 +6,12 @@
  *
  * - **the label gutter** (D-L, rule 1): a fixed 10-cell right-aligned label column — `[jevcode]` / `[sandbox]` sit flush, shorter
  *   labels are padded on the left, `[step 100]` touches the edge and longer labels push the body by the excess — so every body
- *   starts at column 10 (`LABEL_GUTTER`) and wrapped rows hang there;
+ *   starts at column 10 (`LABEL_GUTTER`) and wrapped rows hang there. **TUI-DESIGN-4 §2.3 (D-AB)** turns that one shape into a
+ *   three-rung ladder by terminal width (`src/tui/gutter.ts`, zero-import, every name re-exported here): `gutter` at ≥ 34
+ *   columns, `stacked` (the label on its own row, the body indented 2) at 24–33, `flush` (no gutter, the label the first token
+ *   of row 0 — §5.1 P-C3) below 24; and it caps one **engine-produced** item at `STATIC_ITEM_MAX_ROWS` rows, the last of them
+ *   `… +N rows (transcript.log)`. An item carrying `detailRows` from a command block is **exempt** (§3.1.5 gives it its own cap
+ *   and its own footer, so `/config --all`, `/help`, `/plan` and `/diff --all` are never cut to 23 rows);
  * - **the wrap** (rule 3): the body is pre-split by `wrapBody` (segment-aware at ` · `, the no-orphan rule) into one `<Text>` per
  *   row, which also removes Ink's trailing-space artefacts;
  * - **detail rows** (rule 4, TUI-only): indented under the body column; a `label  value` table row (`/^\S+\s{2,}/`, the epilogue)
@@ -17,8 +22,12 @@
  *   the body is the meaning (default for chat, steps, `[ui]` notes and detail rows; `warn` / `error` by level or verdict; `dim` only
  *   for `[run] git …`); fence lines (`/^```\w*$/`) draw as `╶──── <lang>` in the `code` role — the only text substitution beyond `--ascii`.
  *
- * Identity (§5.3): strip each row's leading spaces, join with one space, collapse space runs → `formatTranscriptItem(item)`
- * (`normaliseRows`). Colours come from the theme (`/theme` changes new items only, R4); the `epoch` key remounts `<Static>` with
+ * Identity (§5.3, TUI-DESIGN-4 §2.4): strip each row's leading spaces, join with one space — **empty at a cut**, the row
+ * indices `wrapBodyCut` reports for a token the wrap had to split by grapheme — collapse space runs →
+ * `formatTranscriptItem(item)` (`normaliseRows(rows, cuts)`). In `stacked` the declared clause is one more row to strip (the
+ * label row joins the body with one space); in `flush` the label already *is* row 0's first token. The cap row is the one case
+ * where the rows do not reconstruct the item and is declared a truncation marker, the same class as `clipDetail`'s
+ * `…[N lines omitted]`. Colours come from the theme (`/theme` changes new items only, R4); the `epoch` key remounts `<Static>` with
  * a fresh array past the 20,000-item soft cap (the header is printed with epoch 0 only). Every item renders inside its own
  * `PaneBoundary` (§13.4). The component is memoised: a hidden-only batch changes no prop, so it dirties no `<Static>` subtree
  * (§4.5); the App's `keySeq` hands `<Static>` a fresh `style` per key so a key's frame takes Ink's immediate path (TD2 D-F).
@@ -27,10 +36,17 @@ import { memo, useMemo, type ComponentProps } from 'react';
 import { Box, Static, Text } from 'ink';
 import { PaneBoundary, paneFailedLine, type PaneFailure } from './PaneBoundary.js';
 import { stringWidth } from './composer/width.js';
-import { formatTranscriptItem, stepLabel, type TranscriptItem } from './plain.js';
+import { formatTranscriptItem, isChatLabel, stepLabel, type TranscriptItem } from './plain.js';
 import { itemRole, labelRole, textProps, themeFor, type ColorOn, type ColorRole, type Theme } from './theme.js';
 import { GLYPHS, glyphTwin, type GlyphSet } from './glyphs.js';
-import { joinWrapped, wrapBody } from './transcript/wrap.js';
+import { FLUSH_MIN_COLUMNS, LABEL_GUTTER, STACKED_MIN_COLUMNS, STATIC_ITEM_MAX_ROWS, cappedTailRow, cappedTailRowAscii, cappedTailRungs, capItemRows, gutterBodyWidth, gutterIndent, gutterMode, isCappedTailRow, rungBodyWidth, type GutterMode } from './gutter.js';
+import { joinWrapped, wrapBody, wrapBodyCut } from './transcript/wrap.js';
+
+/**
+ * TUI-DESIGN-4 §2.3 / §3.1.2: `src/tui/gutter.ts` is the rung's home (zero imports, so the no-Ink `block/lines.ts` and the
+ * first-frame path can reach it); every name is re-exported here so no existing importer of `Transcript.tsx` changes.
+ */
+export { FLUSH_MIN_COLUMNS, LABEL_GUTTER, STACKED_MIN_COLUMNS, STATIC_ITEM_MAX_ROWS, cappedTailRow, cappedTailRowAscii, cappedTailRungs, capItemRows, gutterBodyWidth, gutterIndent, gutterMode, isCappedTailRow, rungBodyWidth, type GutterMode };
 
 /** The former `itemColor` rule, now theme-driven (kept as a named export for the tests). */
 export function itemColor(item: TranscriptItem, theme: Theme = themeFor('dark'), enabled: ColorOn = true): { color?: string; dimColor?: boolean; bold?: boolean } {
@@ -43,9 +59,6 @@ export const STATIC_ITEM_PANE = 'static';
 
 /** TUI-DESIGN-2 §4.5 / §9: the only text substitution beyond `--ascii` — a line that is exactly a code fence. */
 export const FENCE_RE = /^```(\w*)$/;
-
-/** TUI-DESIGN-3 §5.1 rule 1 (D-L): bodies start at this column; labels are right-aligned in the `LABEL_GUTTER − 1` cells before the space. */
-export const LABEL_GUTTER = 10;
 
 /** TUI-DESIGN-3 §5.1 rule 4: a detail row shaped like the epilogue's `label     value` table hangs its wrap under the value. */
 export const DETAIL_TABLE_RE = /^(\S+\s{2,})/;
@@ -108,15 +121,46 @@ export function gutterLabel(label: string): string {
   return pad > 0 ? `${' '.repeat(pad)}${label}` : label;
 }
 
-/** TUI-DESIGN-3 §5.1 rule 1: the body's width at a commit width — `columns − max(9, label cells) − 1`. */
+/**
+ * TUI-DESIGN-3 §5.1 rule 1 + TUI-DESIGN-4 §2.3 (D-AB): the body's width at a commit width — the **rung's** body width
+ * (`columns − max(9, label cells) − 1` in `gutter`, `columns − 2` in `stacked`, `columns` in `flush`), never below 1.
+ */
 export function bodyWidth(columns: number, label: string): number {
-  return Math.max(1, Math.floor(columns) - Math.max(LABEL_GUTTER - 1, stringWidth(label)) - 1);
+  return gutterBodyWidth(columns, stringWidth(label));
+}
+
+/**
+ * TUI-DESIGN-4 §2.3: an item carrying `detailRows` from a command block (§3.1.3) is **exempt** from
+ * `STATIC_ITEM_MAX_ROWS` — it already carries its own §3.1.5 cap (`/config` 24 · `/help` 60 · `/plan` 40 · `/diff` 42 ·
+ * `/diff --all` `Infinity`) and its own `… +N more · <command>` footer, so capping it at 24 rows would destroy every
+ * documented escape hatch. The contract member (§8 item 1) is landed by the `plain.ts` owner, so the predicate reads
+ * it structurally and answers `false` until then; engine items (`itemsFromEvent`, `stepSummaryText`, `[sandbox]`)
+ * never carry it.
+ */
+export function isBlockItem(item: TranscriptItem): boolean {
+  if (!('detailRows' in item)) return false;
+  const rows = (item as { readonly detailRows?: unknown }).detailRows;
+  return Array.isArray(rows) && rows.length > 0;
+}
+
+/**
+ * TUI-DESIGN-3 §5.1 rule 3 + TUI-DESIGN-4 §2.3: the body's rows and their cut indices at a commit width. One row and no
+ * cuts without geometry. `cap` applies D-AB's per-item row cap to an **engine-produced** item: beyond
+ * `STATIC_ITEM_MAX_ROWS` the first 23 rows are kept and the last becomes `… +N rows (transcript.log)` (the `--ascii`
+ * twin uses `...`). The cap row is a declared truncation marker, so `cuts` past it are dropped with the rows.
+ */
+export function bodyRowsCut(text: string, columns: number | undefined, label: string, g: GlyphSet = GLYPHS.unicode, cap = false): { rows: string[]; cuts: readonly number[]; capped: boolean } {
+  if (columns === undefined || !Number.isFinite(columns) || columns <= 0) return { rows: [text], cuts: [], capped: false };
+  const w = wrapBodyCut(text, bodyWidth(columns, label), g);
+  if (!cap || w.rows.length <= STATIC_ITEM_MAX_ROWS) return { rows: w.rows, cuts: w.cuts, capped: false };
+  const tailWidth = bodyWidth(columns, label);
+  const rows = capItemRows(w.rows, (n) => cappedTailRow(n, tailWidth, g.mode === 'ascii'));
+  return { rows, cuts: w.cuts.filter((c) => c < rows.length - 1), capped: true };
 }
 
 /** TUI-DESIGN-3 §5.1 rule 3: the body's rows at a commit width (`wrapBody`); one row without geometry. */
-export function bodyRows(text: string, columns: number | undefined, label: string, g: GlyphSet = GLYPHS.unicode): string[] {
-  if (columns === undefined || !Number.isFinite(columns) || columns <= 0) return [text];
-  return wrapBody(text, bodyWidth(columns, label), g);
+export function bodyRows(text: string, columns: number | undefined, label: string, g: GlyphSet = GLYPHS.unicode, cap = false): string[] {
+  return bodyRowsCut(text, columns, label, g, cap).rows;
 }
 
 /**
@@ -136,11 +180,20 @@ export function detailRows(line: string, width: number | undefined, g: GlyphSet 
 }
 
 /**
- * TUI-DESIGN-3 §5.3: the identity normaliser over a rendered item's rows (the label row and its hanging continuations; detail
- * rows excluded by the caller) — strip leading spaces, join with one space, collapse runs → `formatTranscriptItem(item)`.
+ * TUI-DESIGN-3 §5.3 / TUI-DESIGN-4 §2.4: the identity normaliser over a rendered item's rows (the label row and its hanging
+ * continuations; detail rows excluded by the caller) — strip leading spaces, join with one space **except at a cut**,
+ * collapse runs → `formatTranscriptItem(item)`. `cuts` defaults to `[]`, which is exactly the round-3 behaviour, so the two
+ * existing in-process helpers keep compiling while they are moved to `joinWrapped(rows, cuts)`. In the `stacked` rung the
+ * label row is row 0 and joins the body with one space — one more row to strip, no new clause; in `flush` the label is
+ * already row 0's first token.
  */
-export function normaliseRows(rows: readonly string[]): string {
-  return joinWrapped(rows);
+export function normaliseRows(rows: readonly string[], cuts: readonly number[] = []): string {
+  return joinWrapped(rows, cuts);
+}
+
+/** TUI-DESIGN-4 §2.3: true when a rendered item's last row is the cap's truncation marker, at any rung of its ladder (the identity test skips those items). */
+export function isCapRow(row: string): boolean {
+  return isCappedTailRow(row);
 }
 
 /** TUI-DESIGN-2 §4.5 / §9: a fence line becomes `╶──── <lang>` / `╶────`; anything else is returned unchanged. */
@@ -152,13 +205,20 @@ export function fenceRow(text: string, g: GlyphSet = GLYPHS.unicode): { text: st
 }
 
 /**
- * TUI-DESIGN-2 §4.5 / TUI-DESIGN-3 §5.1 rule 9: a spacer row above a `[you]` turn, above the first `[jevcode]` item of a turn,
- * above `[run] start` / `[run] end`, and above a `[ui]` item that carries a detail body (`/jev`, `/cost`, the epilogue, `/help`).
+ * TUI-DESIGN-2 §4.5 / TUI-DESIGN-3 §5.1 rule 9 + **TUI-DESIGN-4 §5.1 P-C1 (D-Y)**: one spacer per **turn**, not per
+ * item — above the **first** item of a chat turn, above `[run] start` / `[run] end`, and above a `[ui]` item that
+ * carries a detail body (`/jev`, `/cost`, the epilogue, `/help`).
+ *
+ * Round 3 had `if (item.label === '[you]') return true;` **unconditionally** while `[jevcode]` one line later was
+ * already conditioned on `prev.label !== item.label`, so a 3-line `[you]` message drew a blank row between every line
+ * (6 rows for 3 lines; 17 for the 9-line paste A5 measured). Both branches are now the one rule
+ * `isChatLabel(item.label) ⇒ prev.label !== item.label`, which is exactly `isTurnContinuation`'s negation — the two
+ * halves of D-Y ship together, so a continuation item never draws a dim label *and* a blank row above it (the dim
+ * label says "same turn" and the blank row said "new block": §5.1's table wants one signal, not two).
  */
 export function spacerAbove(item: TranscriptItem, prev: TranscriptItem | null): boolean {
   if (prev === null) return false;
-  if (item.label === '[you]') return true;
-  if (item.label === '[jevcode]') return prev.label !== '[jevcode]';
+  if (isChatLabel(item.label)) return !isTurnContinuation(item, prev);
   if (item.label === '[ui]' && item.detail !== undefined && item.detail !== '') return true;
   return item.kind === 'run:start' || item.kind === 'run:end';
 }
@@ -174,25 +234,95 @@ export function bodyRole(item: TranscriptItem): ColorRole | null {
   return role;
 }
 
-/** TUI-DESIGN-3 §5.1 rule 2 (D-O): the label's props — the two chat labels in their pinks, bold; every other label dim. */
-export function labelProps(item: TranscriptItem, theme: Theme, color: ColorOn): { color?: string; dimColor?: boolean; bold?: boolean } {
+/**
+ * TUI-DESIGN-4 §5.1 (D-Y, as ratified): a **turn** is a maximal run of contiguous visible items sharing the same chat
+ * label. `prev` is the visible predecessor (under `compact` too), so "same label ⇒ same turn" is the whole rule; a
+ * `[ui]`/`[run]`/`[step]` item is its own block and is never a continuation.
+ */
+export function isTurnContinuation(item: TranscriptItem, prev: TranscriptItem | null): boolean {
+  return prev !== null && isChatLabel(item.label) && prev.label === item.label;
+}
+
+/**
+ * TUI-DESIGN-3 §5.1 rule 2 (D-O) + TUI-DESIGN-4 §5.1 (D-Y): the label's props — the two chat labels in their pinks,
+ * bold on the **first** item of a turn; the *same text* at `dim` on every continuation item, **including the item that
+ * is a surviving blank line**, so the gutter stays a column of labels instead of a column of shouting. Every other
+ * label is dim as before. This is a **colour-only** change: `gutterLabel(label)` is still rendered unconditionally
+ * (`Transcript.tsx`'s one `<Text {...lProps}>` below), `stripAnsi` is unchanged, and every TUI row still normalises to
+ * `formatTranscriptItem(item)` — under `NO_COLOR` the two forms are byte-identical.
+ */
+export function labelProps(item: TranscriptItem, theme: Theme, color: ColorOn, continuation = false): { color?: string; dimColor?: boolean; bold?: boolean } {
   const role = labelRole(item);
+  if (continuation && role !== 'dim') return textProps(theme, 'dim', color);
   const props = textProps(theme, role, color);
   return role === 'dim' || Object.keys(props).length === 0 ? props : { ...props, bold: true };
 }
 
+/**
+ * TUI-DESIGN-4 §2.3 (D-AB): **every row one item commits**, at its rung — the body rows and, under them, the rows of
+ * a plain `detail` string — with the cap applied to the **whole** budget when the item is engine-produced.
+ *
+ * The cap is keyed on the item's SOURCE, and the source owns all of its rows: `clipDetail` bounds a detail's source
+ * *lines*, not its rendered rows, so at a narrow rung each of those lines re-wraps into four to eight rows and an
+ * item whose body alone is under 24 rows still commits far more (measured on this tree: one `[run]` item with a
+ * six-line epilogue detail draws 27 rows at 10 columns and 34 at 16). Capping the body alone would leave exactly the
+ * wall D-AB exists to close. An item carrying `detailRows` from a command block is exempt whole (§3.1.5 gives it its
+ * own cap and footer), and the tail names everything not drawn, wherever the cut falls.
+ */
+export function itemRenderRows(item: TranscriptItem, columns: number | undefined, g: GlyphSet = GLYPHS.unicode): { body: string[]; detail: string[]; mode: GutterMode; indent: number; width: number | undefined; fence: boolean; capped: boolean } {
+  const label = glyphTwin(itemLabel(item), g);
+  const f = fenceRow(item.text, g);
+  const hasWidth = columns !== undefined && Number.isFinite(columns) && columns > 0;
+  const mode: GutterMode = hasWidth ? gutterMode(columns) : 'gutter';
+  // `flush`: the label is the first token of row 0, so the body text carries it and the plain join already returns the item
+  const text = mode === 'flush' ? `${label} ${f.fence ? f.text : glyphTwin(item.text, g)}` : f.fence ? f.text : glyphTwin(item.text, g);
+  const gutterLabelCells = mode === 'gutter' ? label : '';
+  const body = bodyRows(text, hasWidth ? columns : undefined, gutterLabelCells, g, false);
+  const width = hasWidth ? bodyWidth(columns, gutterLabelCells) : undefined;
+  const indent = hasWidth ? gutterIndent(columns, stringWidth(label)) : LABEL_GUTTER;
+  const detail = itemLines(item, g).detail.flatMap((d) => detailRows(d, width, g));
+  // the `stacked` rung spends one of the item's rows on the label's own row, so the cap's budget is one smaller
+  // there: `STATIC_ITEM_MAX_ROWS` bounds what the ITEM commits to the scrollback, not what this function returns
+  const max = STATIC_ITEM_MAX_ROWS - (mode === 'stacked' ? 1 : 0);
+  if (isBlockItem(item) || body.length + detail.length <= max) return { body, detail, mode, indent, width, fence: f.fence, capped: false };
+  const tailWidth = width ?? Number.POSITIVE_INFINITY;
+  const all = capItemRows([...body, ...detail], (n) => cappedTailRow(n, tailWidth, g.mode === 'ascii'), max);
+  return { body: all.slice(0, Math.min(body.length, all.length)), detail: all.slice(Math.min(body.length, all.length)), mode, indent, width, fence: f.fence, capped: true };
+}
+
+/**
+ * TUI-DESIGN-4 §2.3 (D-AB) / §5.1 P-C3: one rendered item at its rung. `gutter` is round 3's shape unchanged. In
+ * `stacked` the label takes its own row and the body hangs at 2 cells, so a 24–33-column terminal keeps every
+ * character instead of wrapping a 1-cell body. In `flush` the label box is dropped entirely and the label is
+ * prefixed into the body's text — `columns ≤ 10` degrades to plain wrapped text rather than a zero-width body
+ * (`flexShrink={0}` on a 9-cell box would otherwise eat the whole row). The cap is applied to engine items only.
+ */
 function TranscriptRow({ item, prev, theme, color, glyphs, columns }: { item: TranscriptItem; prev: TranscriptItem | null; theme: Theme; color: ColorOn; glyphs: GlyphSet; columns: number | undefined }): React.JSX.Element {
   const label = glyphTwin(itemLabel(item), glyphs);
-  const fence = fenceRow(item.text, glyphs);
-  const body = fence.fence ? fence.text : glyphTwin(item.text, glyphs);
   const role = bodyRole(item);
-  const bodyProps = fence.fence ? textProps(theme, 'code', color) : role === null ? {} : textProps(theme, role, color);
-  const lProps = labelProps(item, theme, color);
-  const { detail } = itemLines(item, glyphs);
+  const r = itemRenderRows(item, columns, glyphs);
+  const bodyProps = r.fence ? textProps(theme, 'code', color) : role === null ? {} : textProps(theme, role, color);
+  const lProps = labelProps(item, theme, color, isTurnContinuation(item, prev));
   const hasWidth = columns !== undefined && Number.isFinite(columns) && columns > 0;
-  const rows = bodyRows(body, hasWidth ? columns : undefined, label, glyphs);
-  const width = hasWidth ? bodyWidth(columns, label) : undefined;
-  const indent = Math.max(LABEL_GUTTER - 1, stringWidth(label)) + 1;
+  const bodyRowEls = r.body.map((row, i) => (
+    <Text key={`${item.key}:b${i}`} wrap="truncate" {...bodyProps}>
+      {row}
+    </Text>
+  ));
+  const detailEls = r.detail.map((row, i) => (
+    <Box key={`${item.key}:d${i}`} {...(r.indent > 0 ? { marginLeft: r.indent } : {})}>
+      <Text wrap="truncate">{row}</Text>
+    </Box>
+  ));
+  if (hasWidth && r.mode !== 'gutter') {
+    return (
+      <Box flexDirection="column" marginTop={spacerAbove(item, prev) ? 1 : 0} width={columns}>
+        {r.mode === 'stacked' ? <Text wrap="truncate" {...lProps}>{label}</Text> : null}
+        <Box flexDirection="column" {...(r.mode === 'stacked' ? { marginLeft: 2 } : {})}>{bodyRowEls}</Box>
+        {detailEls}
+      </Box>
+    );
+  }
   return (
     <Box flexDirection="column" marginTop={spacerAbove(item, prev) ? 1 : 0} {...(hasWidth ? { width: columns } : {})}>
       <Box flexDirection="row">
@@ -200,22 +330,10 @@ function TranscriptRow({ item, prev, theme, color, glyphs, columns }: { item: Tr
           <Text {...lProps}>{gutterLabel(label)}</Text>
         </Box>
         <Box flexDirection="column" flexGrow={1} marginLeft={1}>
-          {hasWidth ? (
-            rows.map((r, i) => (
-              <Text key={`${item.key}:b${i}`} wrap="truncate" {...bodyProps}>
-                {r}
-              </Text>
-            ))
-          ) : (
-            <Text {...bodyProps}>{body}</Text>
-          )}
+          {hasWidth ? bodyRowEls : <Text {...bodyProps}>{r.body[0] ?? ''}</Text>}
         </Box>
       </Box>
-      {detail.flatMap((d, i) => detailRows(d, width, glyphs).map((r, k) => (
-        <Box key={`${item.key}:d${i}.${k}`} marginLeft={indent}>
-          <Text wrap="truncate">{r}</Text>
-        </Box>
-      )))}
+      {detailEls}
     </Box>
   );
 }

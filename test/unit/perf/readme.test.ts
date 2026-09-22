@@ -49,6 +49,10 @@ function geometry(rows: number, over: Partial<LagGeometry> = {}): LagGeometry {
     runStartOk: true,
     frameClasses: { static: 180, key: 150, dynamic: 70 },
     regionMax: rows - 2,
+    // TUI-DESIGN-4 §11's two new measured rows: zero in a healthy capture
+    esc3J: 0,
+    tallFrames: 0,
+    tallFrameMax: 0,
     cursorHidesMaxPerFrame: 1,
     cursorFramesWithoutShow: 0,
     cursorShownAtEnd: true,
@@ -219,6 +223,8 @@ function result(): PerfResult {
       deviations: ['the live gate is the S6 scenario'],
       pass: true,
     },
+    // TUI-DESIGN-4 §11 / D-S: the fullscreen scroll probe is not part of this fixture's board
+    scrollLatency: null,
     states: {
       clearReSelfTest: true,
       scenarios: [

@@ -41,6 +41,8 @@ export type InterruptAction =
   | 'OPEN_EXIT_CONFIRM'
   | 'DELETE_FORWARD'
   | 'CLOSE_OVERLAY'
+  /** TUI-DESIGN-4 §4.7 E12: close the palette **and** clear the draft — only when the whole draft is the `/token` */
+  | 'CLOSE_OVERLAY_AND_CLEAR'
   | 'PANE_Q'
   | 'WIZARD_EXIT_2'
   | 'NONE';
@@ -77,7 +79,8 @@ function result(state: KeyState, action: InterruptAction): { state: KeyState; ac
 /**
  * TUI-DESIGN §3.3 `reduceInterrupts` — every cell of the matrix and the S5 sub-rows:
  * ctrl-c: aborting → EXIT_NOW_130; S5 overlay → per its row (wizard: WIZARD_EXIT_2 when no run exists, else
- * CLOSE_OVERLAY; blocking → PANE_Q; secret gate → CLEAR_DRAFT, which also cancels the send; palette /
+ * CLOSE_OVERLAY; blocking → PANE_Q; secret gate → CLEAR_DRAFT, which also cancels the send; palette →
+ * CLOSE_OVERLAY_AND_CLEAR when the whole draft is the token (TUI-DESIGN-4 §4.7 E12) else CLOSE_OVERLAY;
  * follow-up / undo / exitConfirm → CLOSE_OVERLAY); text → CLEAR_DRAFT (also under a visible review);
  * review && draftEmpty → ABORT_REVIEW; live && one-shot → ABORT_EXIT_130; live && session → ABORT_STAY;
  * idle → armed ≤ 1.5 s ? EXIT_0 : HINT_CTRL_C (arm).
@@ -105,6 +108,11 @@ export function reduceInterrupts(s: KeyState, key: InterruptKey, now: number): {
           return result(disarm(s), 'PANE_Q');
         case 'secret':
           return result(disarm(s), 'CLEAR_DRAFT');
+        case 'palette':
+          // TUI-DESIGN-4 §4.7 E12: today's CLOSE_OVERLAY leaves `/zz` in the composer with no card and no placeholder —
+          // half the measured trap. When the whole draft is the token there is nothing worth keeping, so it goes too;
+          // a draft with an argument (`/budget 5`) keeps today's behaviour. Ctrl-C twice still exits 0.
+          return result(disarm(s), s.draftTokenOnly === true ? 'CLOSE_OVERLAY_AND_CLEAR' : 'CLOSE_OVERLAY');
         default:
           return result(disarm(s), 'CLOSE_OVERLAY');
       }

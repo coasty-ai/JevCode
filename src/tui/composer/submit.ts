@@ -15,7 +15,7 @@
  */
 import type { SecretHit, SessionHost } from '../../core/types.js';
 import type { OverlayKind } from '../layout.js';
-import { dispatchCommand, unknownCommandText, type CommandAction, type DispatchContext } from '../commands/dispatch.js';
+import { dispatchCommand, unknownCommandText, type CommandAction, type ConfirmKind, type DispatchContext } from '../commands/dispatch.js';
 import { commandToken, isCommandLine } from '../commands/parse.js';
 import { isExactCommand, type CommandSpec } from '../commands/registry.js';
 import type { KeyRunPhase } from '../keys/resolve.js';
@@ -35,6 +35,35 @@ export const STILL_THINKING_TOAST = 'one moment — still thinking';
  * handled apart (it cancels the request and exits); everything else answers `STILL_THINKING_TOAST`.
  */
 export const READ_ONLY_WHILE_THINKING: ReadonlySet<string> = new Set(['status', 'cost', 'jev', 'help', 'panel', 'transcript', 'theme']);
+/** TUI-DESIGN-4 §5.3 P-C8: a second Enter within this window submits the multi-line draft anyway. */
+export const MULTILINE_ARM_MS = 3000;
+
+/**
+ * TUI-DESIGN-4 §5.3 P-C8 (b) / §12: a multi-line draft whose **first** line is not a command but which hides one on a
+ * later line. A submitted message is sent as text, so the command would be prose — the warning says so once.
+ */
+export function multilineCommandNotice(line: number, command: string): string {
+  return `line ${line} looks like ${command}; a submitted message is sent as text — remove it or press Enter again`;
+}
+
+/**
+ * TUI-DESIGN-4 §5.3 P-C8 (b): the 1-based line number and token of the first line of `text` that is exactly a known
+ * command, or null. Only a **whole** line counts (`commandToken` resolves names and aliases, so a pasted `/usr/bin`
+ * or a markdown `/ item` is never a hit), and line 1 is skipped — a draft whose first line is a command is a command.
+ */
+export function hiddenCommandLine(text: string): { readonly line: number; readonly command: string } | null {
+  const lines = text.split('\n');
+  if (lines.length < 2) return null;
+  for (let i = 1; i < lines.length; i++) {
+    const t = (lines[i] ?? '').trim();
+    if (!isCommandLine(t)) continue;
+    const tok = commandToken(t);
+    // `commandToken` lower-cases, and `dispatchCommand` is case-insensitive (`/EXIT` runs), so the comparison is
+    // too — otherwise `/EXIT` on line 4 is silently prose, which is exactly the defect P-C8 exists to close
+    if (tok !== '' && isExactCommand(tok) && t.toLowerCase() === tok) return { line: i + 1, command: tok };
+  }
+  return null;
+}
 
 /** TUI-DESIGN-3 §4.4 F14: what a resolved command does while a chat request is thinking. */
 export function whileThinking(spec: Pick<CommandSpec, 'name'>): 'run' | 'exit' | 'busy' {
@@ -108,17 +137,35 @@ export interface SubmitInput {
    * dropped — read-only commands run, the rest answer the still-thinking toast (`busy`); text still waits for the reply.
    */
   readonly allowCommandsWhileSubmitting?: boolean;
+  /**
+   * TUI-DESIGN-4 §4.5 (D-X): the provenance ref — an **accept** (Tab / `→` / S-ONE's Enter) or a **cycle** set it, any
+   * composer edit, paste, history recall, `closeOverlay`, submit or `/new` clears it. Never `overlay === 'palette'`.
+   */
+  readonly fromPalette?: boolean;
+  /**
+   * TUI-DESIGN-4 §5.3 P-C8: when the multi-line warning was shown (ms); a second Enter within `MULTILINE_ARM_MS`
+   * submits. **`undefined` means the caller does not implement P-C8** and the scan is skipped entirely — a warning
+   * whose arm nobody stores would make a multi-line draft containing a command line unsendable. `null` is "this
+   * caller stores the arm and it is not set", which is what turns the rule on. (`--plain` has no composer and
+   * readline submits one line at a time, so neither half applies there — §5.3 edge g.)
+   */
+  readonly multilineArmedAt?: number | null;
+  /** TUI-DESIGN-4 §5.3 P-C8: the clock for that window (the App passes `Date.now()`); defaults to `0`, i.e. never armed. */
+  readonly now?: number;
 }
 
 /** TUI-DESIGN §4.9: the routing decision the controller executes. */
 export type SubmitDecision =
   | { readonly kind: 'ignore'; readonly reason: 'submitting' | 'empty' | 'run-ending' }
   | { readonly kind: 'newline'; readonly text: string }
-  | { readonly kind: 'command'; readonly action: CommandAction; readonly spec: CommandSpec; readonly line: string }
+  /** TUI-DESIGN-4 §4.5: `confirm` is non-null only for a destructive command reached through a selection surface */
+  | { readonly kind: 'command'; readonly action: CommandAction; readonly spec: CommandSpec; readonly line: string; readonly confirm: ConfirmKind | null }
   /** TUI-DESIGN-3 §4.4 F21: `keepDraft` false → the App clears the draft (availability errors have nothing to edit) */
   | { readonly kind: 'error'; readonly text: string; readonly label: '[ui]'; readonly keepDraft: boolean }
   /** TUI-DESIGN-3 §4.4 F14: a command that must wait for the thinking reply — toast, draft kept */
   | { readonly kind: 'busy'; readonly toast: typeof STILL_THINKING_TOAST }
+  /** TUI-DESIGN-4 §5.3 P-C8: a command hidden on line N of a multi-line draft — warn once, keep the draft, arm 3 s */
+  | { readonly kind: 'confirm-multiline'; readonly text: string; readonly label: '[ui]'; readonly line: number; readonly command: string }
   | { readonly kind: 'chip-missing'; readonly n: number; readonly text: string; readonly label: '[ui]' }
   | { readonly kind: 'hold'; readonly toast: typeof STARTING_TOAST }
   | { readonly kind: 'gate'; readonly full: string; readonly hits: readonly SecretHit[] }
@@ -181,18 +228,28 @@ export function routeSubmit(i: SubmitInput): SubmitDecision {
   const resolved = (r: ReturnType<typeof dispatchCommand>, line: string): SubmitDecision => {
     if (!r.ok) return { kind: 'error', text: r.text, label: '[ui]', keepDraft: r.keepDraft };
     if (thinking && whileThinking(r.spec) === 'busy') return { kind: 'busy', toast: STILL_THINKING_TOAST };
-    return { kind: 'command', action: r.action, spec: r.spec, line };
+    return { kind: 'command', action: r.action, spec: r.spec, line, confirm: r.confirm };
   };
+  const dispatch: DispatchContext = i.fromPalette === true ? { ...i.dispatch, fromPalette: true } : i.dispatch;
   if (i.overlay === 'palette') {
     const token = commandToken(text.trimStart());
-    if (token === '' || !isExactCommand(token)) return { kind: 'error', text: unknownCommandText(token === '' ? text.trim().split(/\s+/)[0] ?? '/' : token), label: '[ui]', keepDraft: true };
-    return resolved(dispatchCommand(text.trimStart(), i.dispatch), text.trim());
+    if (token === '' || !isExactCommand(token)) return { kind: 'error', text: unknownCommandText(token === '' ? text.trim() : token, i.run !== 'none'), label: '[ui]', keepDraft: true };
+    return resolved(dispatchCommand(text.trimStart(), dispatch), text.trim());
   }
   if (/(^|[^\\])\\$/.test(text)) return { kind: 'newline', text: text.slice(0, -1) };
   const lead = text.trimStart();
-  if (isCommandLine(lead)) return resolved(dispatchCommand(lead, i.dispatch), text.trim());
+  if (isCommandLine(lead)) return resolved(dispatchCommand(lead, dispatch), text.trim());
   if (text.startsWith('//')) text = text.slice(1); // literal slash-leading prompt
   if (text.trim() === '') return { kind: 'ignore', reason: 'empty' };
+  // TUI-DESIGN-4 §5.3 P-C8 (b): a command hidden on a later line of a multi-line draft warns once and keeps the draft;
+  // a second Enter inside the 3 s window submits. The arm never expires into a silent send — it warns again.
+  const armedAt = i.multilineArmedAt ?? null;
+  const nowMs = Number.isFinite(i.now) ? (i.now as number) : 0;
+  const stillArmed = armedAt !== null && nowMs - armedAt >= 0 && nowMs - armedAt <= MULTILINE_ARM_MS;
+  if (i.multilineArmedAt !== undefined && !stillArmed) {
+    const hidden = hiddenCommandLine(text);
+    if (hidden !== null) return { kind: 'confirm-multiline', text: multilineCommandNotice(hidden.line, hidden.command), label: '[ui]', line: hidden.line, command: hidden.command };
+  }
   const expanded = (i.expand ?? ((t: string) => expandChips(t, i.chips)))(text);
   if (!expanded.ok) return { kind: 'chip-missing', n: expanded.n, text: `remove [Pasted #${expanded.n}] or paste again`, label: '[ui]' };
   const full = expanded.text;

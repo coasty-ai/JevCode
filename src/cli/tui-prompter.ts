@@ -23,7 +23,7 @@ import { childCapUsd } from '../tui/budget/lines.js';
 import type { UndoAskKey } from '../undo/plan.js';
 import type { Prompter, WizardOutcome, WizardReason } from './session.js';
 // TUI-DESIGN-2 §3.7: the ambiguity card's rows come from the one string source shared with `--plain` and the screen reader
-import { INTAKE_CARD_BODY, intakeCardTitle, intakeRowLines } from '../chat/lines.js';
+import { intakeCardBody, intakeCardTitle, intakeRowLines } from '../chat/lines.js';
 import type { IntakeOverlay } from '../tui/Overlay.js';
 
 /** the controller hooks the wizard host bridge calls back into */
@@ -266,7 +266,10 @@ export function createTuiPrompter(): TuiPrompterBundle {
       const r = renderer;
       if (!r) return Promise.resolve('keep');
       const columns = prompter.columns?.() ?? 80;
-      const card: IntakeOverlay = { title: intakeCardTitle(message, columns - 4), body: [INTAKE_CARD_BODY], flat: intakeRowLines(columns) };
+      // MINIMAL, MARKED EDIT BY SLOT S5 (TUI-DESIGN-4 §5.6 P-C17 b): the boxed body is a `fitRung` ladder over the
+      // card's INNER width, so `Ctrl-C cancels` is dropped before `Enter does nothing` instead of the whole clause
+      // being truncated away. `intakeCardLines` applies `glyphTwin`, so the rungs are built in the unicode set.
+      const card: IntakeOverlay = { title: intakeCardTitle(message, columns - 4), body: [intakeCardBody(columns - 4)], flat: intakeRowLines(columns) };
       return cancellable(r.promptIntake(card), 'keep');
     },
     trust(inputs: TrustInputs, o?: { reopen?: boolean }) {

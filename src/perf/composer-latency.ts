@@ -52,12 +52,17 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { END_PATTERN, NO_FPS, RUN_STARTED_PATTERN, SGR_GAP, classCounts, classifyFrames, clearsAfter, composerEndsWithKey, cursorStats, firstDynamicFrameOffset, frameAt, framesPerSecondByClass, keyLatencies, keystrokeSteps, maxStepSeen, paintedMax, paintedRowsChanged, safeKey, sendTimes, splitFrames, summarise, throttleMs, typist, type FrameClassCounts, type KeyFrameMatcher, type LatencySummary, type TypistStep } from './pty.js';
+import { END_PATTERN, NO_FPS, RUN_STARTED_PATTERN, SGR_GAP, classCounts, classifyFrames, clearsAfter, composerEndsWithKey, composerRowChanged, cursorStats, firstDynamicFrameOffset, frameAt, framesPerSecondByClass, keyLatencies, keystrokeSteps, maxStepSeen, paintedMax, paintedRowsChanged, safeKey, sendTimes, splitFrames, summarise, throttleMs, typist, type FrameClassCounts, type KeyFrameMatcher, type LatencySummary, type TypistStep } from './pty.js';
 import { REALISTIC_STEP_MS, STRESS_STEP_MS } from './render-lag.js';
 
 export const MAX_FPS = 30;
 
-export type ComposerSeriesName = 'idle' | 'idle-loop' | 'live' | 'live-stress' | 'palette' | 'review' | 'burst30';
+/**
+ * TUI-DESIGN-4 §11 / contract 1.7 item 11 adds two: `palette-cycle` (200 **Enter** presses over the full command
+ * list, gated) and `palette-arg` (200 Enters in S-ARG over `/mode `, reported). Today's gated `palette` series
+ * types `/Z…`, i.e. **zero matches and no ghost** — the cheap path; the 41-row + sub-row path had never been gated.
+ */
+export type ComposerSeriesName = 'idle' | 'idle-loop' | 'live' | 'live-stress' | 'palette' | 'palette-cycle' | 'palette-arg' | 'review' | 'burst30';
 
 export interface ComposerSeries {
   name: ComposerSeriesName;
@@ -178,9 +183,44 @@ function planIdle(n: number, spacingMs: number, waitMs?: number): Plan {
 }
 
 function planPalette(n: number, spacingMs: number): Plan {
-  const plan = newPlan([...PROLOGUE, { op: 'send', text: '/' }, { op: 'expect', pattern: 'Tab completes', timeoutMs: 20_000 }, { op: 'sleep', ms: 300 }]);
+  const plan = newPlan([...PROLOGUE, { op: 'send', text: '/' }, { op: 'expect', pattern: 'Tab picks', timeoutMs: 20_000 }, { op: 'sleep', ms: 300 }]);
   // the first key is Z: no command name contains it, so the palette shows zero matches and no ghost text for the whole query
   typeMeasured(plan, n, spacingMs, (i) => safeKey(25 - (i % 26)));
+  plan.steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: '\x1b' }, { op: 'sleep', ms: 150 }, { op: 'send', text: '\x03' }, PLACEHOLDER, ...EXIT_IDLE);
+  return plan;
+}
+
+/**
+ * TUI-DESIGN-4 §4.2 / §11: `palette-cycle` — the palette open on the FULL command list (no filter, so every row is
+ * a candidate and the footer counts them), then 200 **Enter** presses. Enter walks the list and rewrites the
+ * composer row with the selected command (`› /resume +36`), so the frame is matched by the row CHANGING, not by
+ * it ending with the key. Gated: p95 < 16 ms, max < 50 ms. `§4.5`'s destructive confirm is never reached — Enter
+ * on an accepted destructive command opens a confirm ROW, and Enter on that row does nothing (the theorem).
+ */
+function planPaletteCycle(n: number, spacingMs: number): Plan {
+  const plan = newPlan([...PROLOGUE, { op: 'send', text: '/' }, { op: 'expect', pattern: 'Tab picks', timeoutMs: 20_000 }, { op: 'sleep', ms: 300 }], composerRowChanged);
+  typeMeasured(plan, n, spacingMs, () => '\r');
+  plan.steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: '\x1b' }, { op: 'sleep', ms: 150 }, { op: 'send', text: '\x03' }, PLACEHOLDER, ...EXIT_IDLE);
+  return plan;
+}
+
+/**
+ * TUI-DESIGN-4 §4.2 / §11: `palette-arg` — the same Enter cycle one level deeper, in S-ARG over `/mode `, where
+ * each press walks the VALUE list. Reported, not gated: the value list is short, so the cycle wraps often and the
+ * series exists to show the sub-row path is not slower than the command path.
+ */
+function planPaletteArg(n: number, spacingMs: number): Plan {
+  // The card has to be OPEN for S-ARG to exist, and only the `/` KEY at an empty draft opens it
+  // (`keys/resolve.ts` `composer:palette`). One `send '/mode '` is a single input event whose charset includes a
+  // SPACE, so §4.7 E9 classifies it as paste-like: it lands as text with no card at all, the Enters then take the
+  // ordinary submit path, `/mode` runs once and the remaining 198 presses fall on an empty draft. Measured before
+  // this was fixed: 2 of 200 key frames and 18 frames in the whole capture. The three writes below are the
+  // sequence a human makes.
+  const plan = newPlan(
+    [...PROLOGUE, { op: 'send', text: '/' }, { op: 'expect', pattern: 'Tab picks', timeoutMs: 20_000 }, { op: 'send', text: 'mode' }, { op: 'sleep', ms: 200 }, { op: 'send', text: ' ' }, { op: 'sleep', ms: 400 }],
+    composerRowChanged,
+  );
+  typeMeasured(plan, n, spacingMs, () => '\r');
   plan.steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: '\x1b' }, { op: 'sleep', ms: 150 }, { op: 'send', text: '\x03' }, PLACEHOLDER, ...EXIT_IDLE);
   return plan;
 }
@@ -209,7 +249,7 @@ function planReview(n: number, spacingMs: number): Plan {
   const plan = newPlan([...PROLOGUE, ...START_RUN, RUN_STARTED, { op: 'send', text: '/panel full' }, { op: 'sleep', ms: 150 }, { op: 'send', text: '\r' }, { op: 'expect', pattern: `▾${SGR_GAP} decisions`, timeoutMs: 20_000 }, { op: 'expect', pattern: '\\[y\\] approve', timeoutMs: 20_000 }, { op: 'sleep', ms: 600 }], paintedRowsChanged, false);
   typeMeasured(plan, n, spacingMs, () => 'e');
   // approve: the run finishes its remaining mocked steps, then /exit
-  plan.steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: 'y' }, { op: 'expect', pattern: 'confirm \\S+ approved', timeoutMs: 20_000 }, { op: 'expect', pattern: END_PATTERN, timeoutMs: 30_000 }, FOLLOWUP, ...EXIT_IDLE);
+  plan.steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: 'y' }, { op: 'expect', pattern: 'review approved', timeoutMs: 20_000 }, { op: 'expect', pattern: END_PATTERN, timeoutMs: 30_000 }, FOLLOWUP, ...EXIT_IDLE);
   return plan;
 }
 
@@ -331,6 +371,9 @@ export async function measureComposerLatency(opts: { root: string; bin: string; 
   report(await runSeries(opts.root, opts.bin, { name: 'live', plan: planLive(n, 100), spacingMs: 100, args: live, env: {}, stepMs: realisticStepMs, stress: false, gated: true }, gate));
   report(await runSeries(opts.root, opts.bin, { name: 'live-stress', plan: planLive(n, 100), spacingMs: 100, args: live, env: {}, stepMs: STRESS_STEP_MS, stress: true, gated: false }, gate));
   report(await runSeries(opts.root, opts.bin, { name: 'palette', plan: planPalette(n, 100), spacingMs: 100, args: [], env: {}, stepMs: null, stress: false, gated: true }, gate));
+  // TUI-DESIGN-4 §11: the two Enter-cycle series — the 41-row path (gated) and the S-ARG sub-row path (reported)
+  report(await runSeries(opts.root, opts.bin, { name: 'palette-cycle', plan: planPaletteCycle(n, 100), spacingMs: 100, args: [], env: {}, stepMs: null, stress: false, gated: true }, gate));
+  report(await runSeries(opts.root, opts.bin, { name: 'palette-arg', plan: planPaletteArg(n, 100), spacingMs: 100, args: [], env: {}, stepMs: null, stress: false, gated: false }, gate));
   report(await runSeries(opts.root, opts.bin, { name: 'review', plan: planReview(n, 100), spacingMs: 100, args: ['--mock-steps', '5'], env: { JEVCODE_MOCK_REVIEW_AT: '2' }, stepMs: null, stress: false, gated: true }, gate));
   report(await runSeries(opts.root, opts.bin, { name: 'burst30', plan: planIdle(n, 30), spacingMs: 30, args: [], env: {}, stepMs: null, stress: false, gated: false }, gate));
   return { gateP95Ms: gate.p95, gateMaxMs: gate.max, maxFps: MAX_FPS, throttleMs: throttleMs(MAX_FPS), series, deviations: [...COMPOSER_DEVIATIONS], pass: series.every((s) => s.pass) };

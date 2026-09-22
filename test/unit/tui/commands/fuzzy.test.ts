@@ -89,7 +89,7 @@ describe('score / rank (TUI-DESIGN §5.4)', () => {
   it('fixed orderings for the commands and paths of the design', () => {
     const names = commandNames().map((n) => n.slice(1));
     expect(rank('res', names).map((r) => r.candidate)).toEqual(['resume']);
-    expect(rank('re', names).map((r) => r.candidate)).toEqual(['resume', 'rename', 'rewind', 'report', 'provider']);
+    expect(rank('re', names).map((r) => r.candidate)).toEqual(['resume', 'rename', 'rewind', 'report', 'fullscreen', 'provider']); // TUI-DESIGN-4: /fullscreen joins the subsequence tail
     expect(rank('sess', names)[0]?.candidate).toBeUndefined(); // `sessions` is an alias, not a name
     expect(rank('bud', names).map((r) => r.candidate)).toEqual(['budget']);
     expect(rank('b', names).map((r) => r.candidate).slice(0, 3)).toEqual(['budget', 'abort', 'calibration']);

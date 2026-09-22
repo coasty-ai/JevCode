@@ -9,7 +9,7 @@ import { render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup } from 'ink-testing-library';
 import type { CursorPosition } from 'ink';
-import { Composer, PLACEHOLDERS, PROMPT, PROMPT_UNICODE, composerView, draftRows, hitSpans, placeholderFor, placeholderParts, placeholderRow, promptFor } from '../../../src/tui/composer/Composer.js';
+import { Composer, PLACEHOLDERS, PROMPT, PROMPT_UNICODE, composerView, draftRows, ghostSpan, ghostText, hitSpans, multilineHint, placeholderFor, placeholderParts, placeholderRow, promptFor } from '../../../src/tui/composer/Composer.js';
 import { createBuffer, reduceBuffer } from '../../../src/tui/composer/buffer.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
 import { detectSecrets } from '../../../src/core/redact.js';
@@ -156,5 +156,58 @@ describe('<Composer> (§4.3)', () => {
     cleanup();
     const s = mountComposer('fix parse_date', { searchRow: "(reverse-i-search)'par': fix parse_date" });
     expect(s.frame().split('\n')[0]).toBe("(reverse-i-search)'par': fix parse_date");
+  });
+});
+
+describe('TUI-DESIGN-4 §4.3 P-P2 / §4.7 E11 / §5.3 P-C8 (a): the ghost and the multi-line send hint', () => {
+  it('`ghostText` renders the three round-4 shapes and round 3\'s two-member one, with the `--ascii` arrow twin', () => {
+    expect(ghostText({ kind: 'rest', rest: 'de', more: 1 })).toBe('de +1');
+    expect(ghostText({ kind: 'rest', rest: 'de', more: 0 })).toBe('de');
+    expect(ghostText({ kind: 'arrow', target: '/exit', more: 2 })).toBe(' → /exit +2');
+    expect(ghostText({ kind: 'arrow', target: '/exit', more: 2 }, GLYPHS.ascii)).toBe(' -> /exit +2');
+    expect(ghostText({ kind: 'value', rest: 'ev-on', more: 1 })).toBe('ev-on +1');
+    // round 3's shape, still what App.tsx builds until §9.2's row lands
+    expect(ghostText({ rest: 'tatus', more: 3 })).toBe('tatus +3');
+    expect(ghostText({ rest: '', more: 2, arrow: '/status' })).toBe(' → /status +2');
+  });
+  it('E11: the ghost is cut to the room left on the draft\'s last row — under four cells only ` +N`, under three nothing', () => {
+    const g = { kind: 'value', rest: 'max-generator-tokens', more: 5 } as const;
+    expect(ghostSpan(g, 40)).toBe('max-generator-tokens +5');
+    // the COUNT is what survives the cut at every width: the rows on screen already spell the name, and nothing
+    // else on the frame says how many other rows there are (a tail-first truncation gave `max-generator-to…`)
+    expect(ghostSpan(g, 12)).toBe('max-gene… +5');
+    expect(ghostSpan(g, 10)).toBe('max-ge… +5');
+    expect(ghostSpan(g, 8)).toBe('max-… +5');
+    expect(ghostSpan(g, 6)).toBe('ma… +5');
+    for (const room of [5, 6, 7, 8, 9, 10, 11, 12, 16, 20]) {
+      expect(ghostSpan(g, room), `room ${room}`).toContain('+5');
+      expect(stringWidth(ghostSpan(g, room)), `room ${room}`).toBeLessThanOrEqual(room);
+    }
+    expect(ghostSpan(g, 4)).toBe(' +5');
+    expect(ghostSpan(g, 3)).toBe(' +5');
+    expect(ghostSpan(g, 2)).toBe('');
+    expect(ghostSpan(g, 0)).toBe('');
+    expect(ghostSpan(g, Number.NaN)).toBe('');
+    // with no other rows to count there is no suffix to keep, so the name itself is cut
+    expect(ghostSpan({ kind: 'value', rest: 'max-generator-tokens', more: 0 }, 10)).toBe('max-gener…');
+    // the worst measured case fits at 40 columns: `/budget ` + the longest value + ` +5` = 33 cells
+    expect(stringWidth('/budget ') + stringWidth(ghostSpan(g, 40))).toBe(31);
+    // nothing is lost — the rows carry the information
+    expect(ghostSpan({ kind: 'rest', rest: 'de', more: 0 }, 99)).toBe('de');
+  });
+  it('P-C8 (a): a multi-line draft says how to send it, and the span is dropped below PLACEHOLDER_HINT_MIN_COLUMNS', () => {
+    expect(multilineHint(3)).toBe('3 lines · ⏎ send');
+    expect(multilineHint(3, GLYPHS.ascii)).toBe('3 lines - Enter send');
+    const text = 'one\ntwo\nthree';
+    const buf = (t: string) => reduceBuffer(createBuffer(), { type: 'insert', text: t });
+    const wide = render(<Composer buffer={buf(text)} columns={100} innerColumns={100} height={4} top={0} scrollTop={0} rows={24} mode="task" active cursor={() => undefined} />);
+    expect((wide.lastFrame() ?? '').replace(/\x1b\[[0-9;]*m/g, '')).toContain('3 lines · ⏎ send');
+    cleanup();
+    const narrow = render(<Composer buffer={buf(text)} columns={60} innerColumns={60} height={4} top={0} scrollTop={0} rows={24} mode="task" active cursor={() => undefined} />);
+    expect((narrow.lastFrame() ?? '').replace(/\x1b\[[0-9;]*m/g, '')).not.toContain('3 lines');
+    cleanup();
+    // a single-line draft never carries it
+    const single = render(<Composer buffer={buf('one')} columns={100} innerColumns={100} height={4} top={0} scrollTop={0} rows={24} mode="task" active cursor={() => undefined} />);
+    expect((single.lastFrame() ?? '').replace(/\x1b\[[0-9;]*m/g, '')).not.toContain('send');
   });
 });

@@ -1,0 +1,6 @@
+# TUI-DESIGN-4 §7.4 (P-D4): a read-only $HOME. Before: `[ui] error: EACCES: permission denied, mkdir '<home>/runs'`
+# on STDOUT, an empty stderr, no epilogue and exit 1. After: the launch failure routes through `fatalExit`, so the
+# sentence and its fix reach STDERR with the epilogue, the terminal is restored, and the code is 2 (a configuration
+# or permission problem), not 1. run-smoke.sh greps stderr for `cannot create the runs directory` and the fix row.
+expect cannot create the runs directory
+eof

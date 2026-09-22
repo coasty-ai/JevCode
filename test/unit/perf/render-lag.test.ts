@@ -105,7 +105,8 @@ describe('measureLagBaseline (the probe source runs in a bare node)', () => {
 describe('runStartBucket (TUI-DESIGN-3 §5.2 A5 / §9 "run-start bucket")', () => {
   const fr = (rows: readonly string[]): string => `${BSU}\x1b[?25l${rows.join('\r\n')}\r\n\x1b[?25h${ESU}`;
   const idle = ['─── ◆ jevcode 0.3.0 ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ idle │', '╰──╯'];
-  const start = ['    [run] start 20260921-120000-ab12cd34 mode=jev-on task: t', '─── ◆ jevcode 0.3.0 ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ ▓ context  step 0/40 │', '╰──╯'];
+  // TUI-DESIGN-4 §3.6 (D-V, G1) / §3.7: the run's opening item, the fixture `RUN_STARTED_PATTERN` must keep matching
+  const start = ['    [run] started \u00b7 jev+llm \u00b7 t', '─── ◆ jevcode 0.3.0 ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ ▓ context  step 0/40 │', '╰──╯'];
   const live = ['─── ▸ jev s1 · 2 decisions ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ ▓ propose  step 1/40 │', '╰──╯'];
   it('counts the `dynamic` frames within one second of the `[run] start` frame; static frames in the window are not counted; −1 without a run', () => {
     const cap = fr(idle) + fr(idle) + fr(start) + fr(live) + fr(live) + fr(['[step 1] run $ pytest -q · risk 0.00 ok', ...live]) + fr(live) + fr(live);

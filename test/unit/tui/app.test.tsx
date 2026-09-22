@@ -16,6 +16,9 @@ import { REVIEW_KEYS_80 } from '../../../src/tui/review/lines.js';
 import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { IDENTITY_NO_TTY, formatTranscriptItem, itemsFromEvent, plainFirstLine } from '../../../src/tui/plain.js';
 import { PLACEHOLDERS } from '../../../src/tui/composer/Composer.js';
+// MINIMAL, MARKED (S4): the `?` help-block case pins a whole command head, which only `helpCommandHead` produces
+import { helpCommandHead } from '../../../src/tui/commands/palette.js';
+import { findCommand, type CommandSpec } from '../../../src/tui/commands/registry.js';
 import { WORDMARK } from '../../../src/tui/splash.js';
 import { VERSION } from '../../../src/version.js';
 import { DEFAULT_MODE, MODE_BADGE_WORD } from '../../../src/config/defaults.js';
@@ -103,11 +106,15 @@ describe('<App> transcript, live region and pane', () => {
     fe.emit({ type: 'status', status: mkStatus(3, 'judge') });
     await tick(20);
     // TUI-DESIGN-2 §4.6: the panel is collapsed by default (the strip on the rule row); /panel full opens today's pane
-    expect(m.lastFrame()).toMatch(/─── ▸ jev s3 · 3 decisions/);
+    // DECLARED CARVE-OUT, SLOT S1 (TUI-DESIGN-4 §1.2 edge 9 / §9.2's App.tsx row): the post-run strip leads with `◆ jevcode`
+    expect(m.lastFrame()).toMatch(/─── ◆ jevcode ─ ▸ jev s3 · 3 decisions/);
     m.dispatch({ type: 'panel', panel: 'full' });
     await tick(20);
     const f = m.lastFrame();
-    expect(f).toContain('─── ▾ decisions s3');
+    // DECLARED CARVE-OUT, SLOT S1 (TUI-DESIGN-4 §1.2 edge 9 + P-H1 edge 5): with a panel open `paneRuleRow` IS the
+    // rule row and the 5-row mark is down, so the tab header carries the brand too — the word `jevcode` is on screen
+    // in every post-run state (D-T a). See `round4-header-app.test.tsx` for the byte-exact rows.
+    expect(f).toContain('─── ◆ jevcode ─ ▾ decisions s3');
     expect(f).toContain('[d]ecisions [p]lan [t]ime [s]ynth');
     expect(f).toMatch(/s3 risk\s+destructive\s+L1 .*\[review\]/);
     expect(f).toMatch(/s3 risk\s+irreversible\s+L1 .*\[block\]/);
@@ -123,17 +130,18 @@ describe('<App> transcript, live region and pane', () => {
     m.stdin.write(']');
     await tick(10);
     expect(m.state()?.panel).toBe('open');
-    expect(m.lastFrame()).toContain('─── ▾ decisions s1');
+    // DECLARED CARVE-OUT, SLOT S1 (§1.2 edge 9 + P-H1 edge 5): the open panel's tab header takes the brand prefix
+    expect(m.lastFrame()).toContain('─── ◆ jevcode ─ ▾ decisions s1');
     m.stdin.write(']');
     await tick(10);
-    expect(m.lastFrame()).toContain('─── ▾ plan s1');
+    expect(m.lastFrame()).toContain('─── ◆ jevcode ─ ▾ plan s1');
     m.stdin.write('[');
     await tick(10);
-    expect(m.lastFrame()).toContain('─── ▾ decisions s1');
+    expect(m.lastFrame()).toContain('─── ◆ jevcode ─ ▾ decisions s1');
     m.stdin.write('d');
     await tick(10);
     expect(m.lastFrame()).toContain('› d');
-    expect(m.lastFrame()).toContain('─── ▾ decisions s1');
+    expect(m.lastFrame()).toContain('─── ◆ jevcode ─ ▾ decisions s1');
   });
 
   it('renders the whole scripted run in `full`: every transcript row is formatTranscriptItem(item) word-wrapped with a hanging indent (TUI-DESIGN-2 §9); run:end reopens the composer with the follow-up placeholder', async () => {
@@ -155,7 +163,8 @@ describe('<App> transcript, live region and pane', () => {
       }
     }
     // a short item is byte-identical on one row (label, one space, text)
-    expect(f).toContain('[run] ready 20260919-120000-ab12 step 0/40');
+    // TUI-DESIGN-4 §3.7, the ONE declared `app.test.tsx` carve-out (W0, slot S5): D-V deletes the `run:ready`
+    // item, so the `[run] ready …` assertion that stood here moved verbatim into `round4-chat-app.test.tsx`.
     expect(f).toContain('idle exit 4');
     expect(f).toContain(`› ${PLACEHOLDERS.followup}`);
     expect(m.state()?.run).toBe('none');
@@ -227,9 +236,12 @@ describe('<App> review (§6)', () => {
     // typing keeps deferring (visibleAt = lastKeystrokeAt + 1000)
     await tick(1250);
     const f = m.lastFrame();
-    expect(f).toContain('╭─ review · step 3 · risk 0.50 (exp) · edit src/a.py "fix the off-by-one" ─');
+    // DECLARED CARVE-OUT, SLOT S5 (§9.1): D-Z re-pins this title — `editSummary` now names the file AND its counts
+    // (§6.1, the §6 frame at TUI-DESIGN-4:2540), and the preview body is `diffRows`, not the old `--- old` blob.
+    expect(f).toContain('╭─ review · step 3 · risk 0.50 (exp) · edit src/a.py +1 −1 "fix the off-by-one" ─');
     expect(f).toContain(REVIEW_KEYS_80);
-    expect(f).toContain('--- old');
+    expect(f).toContain('╶──── src/a.py');
+    expect(f).toContain('@@ -1 +1 @@');
     expect(f).toContain('(review pending');
     // the draft `y` under the review: Ctrl-C clears it (F5 text rule outranks), the box stays
     m.stdin.write(CTRL_C);
@@ -460,22 +472,37 @@ describe('<App> composer, steer, paste, gate, palette (§4, §5, §8.6, §10)', 
     const m = mountApp({ mode: 'session', host });
     m.stdin.write('/');
     await tick(20);
-    expect(m.lastFrame()).toContain('Tab completes · Enter runs an exact match · Esc closes');
+    // MINIMAL, MARKED pin move (S4, TUI-DESIGN-4 §4.4): `PALETTE_FOOTER` is now the S-BROWSE **state** footer —
+    // round 3's one constant said "Enter runs an exact match" while the draft was `/` and Enter did not.
+    expect(m.lastFrame()).toContain('Enter next · Tab picks · Esc closes');
     expect(m.lastFrame()).toMatch(/palette\s/);
-    m.stdin.write('budgett');
+    // MINIMAL, MARKED pin move (S4, TUI-DESIGN-4 §4.7 E12): the typo carries an ARGUMENT. `/budgett` alone is a
+    // token-only draft, so the moment §9.2's `App.tsx` row supplies `draftTokenOnly` the first Ctrl-C becomes
+    // `CLOSE_OVERLAY_AND_CLEAR` and the "the draft is kept" assertion four lines down stops being true; with an
+    // argument the draft is kept in both worlds, so this case never has to move again.
+    m.stdin.write('budgett 5');
     await tick(10);
     m.stdin.write('\r');
     await tick(20);
-    expect(host.notes).toContain('error: unknown command /budgett; type / to list commands');
-    expect(m.lastFrame()).toContain('› /budgett');
+    /**
+     * TUI-DESIGN-4 §4.2 (D-X) is LANDED (integrator 2026-09-22), so Enter with the palette OPEN no longer submits:
+     * `/budgett` matches nothing, which is S-NONE, whose Enter is the §12 toast. The draft is untouched and
+     * nothing is dispatched — which is the point of §4.1's safety theorem. Closing the palette first (Esc) and
+     * pressing Enter still produces round 3's `[ui] error: …` sentence; that path is pinned in
+     * `round4-palette-app.test.tsx`.
+     */
+    expect(m.lastFrame()).toContain('nothing to pick — no command matches /budgett');
+    expect(host.notes).not.toContain('error: /budgett — not a command · type / to list commands');
+    expect(m.lastFrame()).toContain('› /budgett 5');
     expect(host.submitted).toEqual([]);
     m.stdin.write(CTRL_C); // S5 palette: closes the palette, the draft is kept
     await tick(20);
-    expect(m.lastFrame()).toContain('› /budgett');
-    expect(m.lastFrame()).not.toContain('Tab completes');
+    expect(m.lastFrame()).toContain('› /budgett 5');
+    expect(m.lastFrame()).not.toContain('Tab picks');
     m.stdin.write(CTRL_C); // S1: clears the draft
     await tick(20);
-    expect(m.lastFrame()).not.toContain('/budgett');
+    // the composer row is empty; `/budgett` may still be on screen inside the §4.2 toast, which lives 2 s
+    expect(m.lastFrame()).not.toContain('› /budgett');
     m.stdin.write('/status');
     await tick(10);
     m.stdin.write('\r');
@@ -541,7 +568,12 @@ describe('<App> composer, steer, paste, gate, palette (§4, §5, §8.6, §10)', 
     m.stdin.write('?');
     await tick(20);
     expect(m.lastFrame()).toContain('[ui] keys');
-    expect(m.lastFrame()).toContain('Shift+Enter needs a keyboard protocol');
+    // MINIMAL, MARKED pin move (S4, TUI-DESIGN-4 §4.6): with 41 commands the help block compacts one level further at
+    // this width, and `HELP_COMPACTION_LEVELS` level 4 drops the per-terminal notes before any command line — "a
+    // command line outranks a terminal tip". The block itself is what this case is about, so it pins a whole
+    // command head, a string only `helpCommandHead` can produce (`palette.test.ts` owns the ladder); a bare
+    // `/exit` would pass on any frame that happens to mention the command.
+    expect(m.lastFrame()).toContain(helpCommandHead(findCommand('help') as CommandSpec));
   });
 
   it('a toast replaces the status left zone for 2 s and expires on the tick', async () => {
@@ -599,7 +631,8 @@ describe('createTuiRenderer', () => {
     await r.unmount();
     const all = stripSgr(out.frames.join(''));
     expect(all).toContain('step 0/');
-    expect(all).toContain('[run] ready r1 step 0/40');
+    // TUI-DESIGN-4 §3.7, the ONE declared `app.test.tsx` carve-out (W0, slot S5): the `[run] ready r1 step 0/40`
+    // assertion that stood here moved verbatim into `round4-chat-app.test.tsx`.
     expect(all).toContain(plainFirstLine('piped task', null));
     expect(all).toContain('[ui] recent: "fix parse_date tz"');
   });

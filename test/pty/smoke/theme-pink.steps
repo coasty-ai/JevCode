@@ -10,7 +10,7 @@ sleep 0.2
 send \r
 expect \[run\](?:\x1b\[[0-9;]*m)* start 
 mark started
-expect end (complete|max_steps|generator_done)
+expect finished [·-] (complete|max_steps|generator_done)
 expect Follow-up, question
 send /exit
 sleep 0.2

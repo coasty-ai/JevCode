@@ -17,7 +17,9 @@
  */
 import { createInterface, type Interface } from 'node:readline';
 import type { SecretHit, SessionHost, SubmitOutcome } from '../core/types.js';
-import { dispatchCommand, type CommandAction, type DispatchContext } from './commands/dispatch.js';
+import { confirmPlainPrompt } from './commands/confirm.js';
+import { dispatchCommand, type CommandAction, type ConfirmKind, type DispatchContext } from './commands/dispatch.js';
+import { numberedPick, numberedPrompt, numberedShown, paletteMatches, paletteNumberedLines, type PaletteState } from './commands/palette.js';
 import { isCommandLine } from './commands/parse.js';
 import type { CommandSpec } from './commands/registry.js';
 import { routeSend, secretSpans, type SubmitDecision, deniedMentionNotice } from './composer/submit.js';
@@ -35,6 +37,15 @@ export const CTRL_C_AGAIN_HINT = 'press Ctrl-C again to exit';
 export const STEER_QUEUE_FULL_HINT = 'steer queue full (8)';
 /** A line typed while the run is ending (Esc Esc / abort in flight) goes nowhere; the hint says so. */
 export const RUN_ENDING_HINT = 'run is ending; wait for run:end';
+/** TUI-DESIGN-4 §4.6: the columns the numbered block is formatted in on a pipe (`columns()` is 80 there). */
+export const PLAIN_COLUMNS = 80;
+/** TUI-DESIGN-4 §4.5 / §4.6 (a): the readline answer that is not `y` cancels a confirmed pick. */
+export const CONFIRM_DECLINED_HINT = 'not done';
+
+/** TUI-DESIGN-4 §4.6: the `PaletteState` the `--plain` numbered list ranks with — no Suggested group, no history, just `live`. */
+export function plainPaletteState(live: boolean): PaletteState {
+  return { lastStop: null, unauthorized: false, changedFiles: false, rewindMenu: false, live };
+}
 
 /** TUI-DESIGN §5.2: the `[ui] error:` text (without the label) for a command the readline composer cannot run. */
 export function plainUnavailableError(spec: CommandSpec): string {
@@ -115,6 +126,9 @@ export interface ReadlineComposer {
 /** TUI-DESIGN §4.10 / §10.2: the pending gate — a text to send, or a command line whose spans the composer registers itself. */
 type GateState = { kind: 'send'; full: string; hits: readonly SecretHit[] } | { kind: 'command'; line: string; hits: readonly SecretHit[] } | null;
 
+/** TUI-DESIGN-4 §4.5: a destructive command picked by number, waiting for its readline `y/N`. */
+type ConfirmState = { readonly kind: ConfirmKind; readonly line: string } | null;
+
 /** TUI-DESIGN §1 / §14.2: the readline composer over `{ terminal: false }`. */
 export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineComposer {
   const { host } = opts;
@@ -129,6 +143,11 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
   let closing = false;
   let lastCtrlC: number | null = null;
   let gate: GateState = null;
+  // TUI-DESIGN-4 §4.6: the one-shot numbered list — `N` while a bare integer picks a command, null otherwise. It is
+  // **visible**: the prompt says so for exactly that turn, so a user who typed `/` by accident and then a genuine
+  // numeric prompt (`12`) can see why the number is special.
+  let pendingList: number | null = null;
+  let confirm: ConfirmState = null;
   let secretSeq = 0;
   // TUI-DESIGN §1 / §6.5: the borrower of the 'line' stream (the readline confirmer during a review), and its EOF listeners
   let borrower: ((line: string) => void) | null = null;
@@ -146,7 +165,9 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
     stderr.write(`${text}\n`);
   };
   const showPrompt = (): void => {
-    if (!closed && borrower === null) rl.prompt();
+    if (closed || borrower !== null) return;
+    rl.setPrompt(pendingList === null ? promptText : numberedPrompt(pendingList));
+    rl.prompt();
   };
   /** §1: the composer's prompt comes back when the run a submission started ends (session mode only) */
   const repromptWhenRunEnds = (): void => {
@@ -223,9 +244,14 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
     host.history()?.append('command', line);
   }
 
-  /** TUI-DESIGN §5.1 / §5.2: `/` lines through `dispatchCommand`; errors are `[ui] error:` items and never submit. */
-  async function command(line: string): Promise<void> {
-    const r = dispatchCommand(line, ctx());
+  /**
+   * TUI-DESIGN §5.1 / §5.2: `/` lines through `dispatchCommand`; errors are `[ui] error:` items and never submit.
+   * TUI-DESIGN-4 §4.6 (a): a line the **numbered pick** produced carries `fromPalette`, so a destructive command
+   * gets the §4.5 gate here as a readline `y/N` — without it, `/` then a mistyped digit runs `/new`, `/exit` or
+   * `/abort` with no confirmation at all.
+   */
+  async function command(line: string, fromPalette = false): Promise<void> {
+    const r = dispatchCommand(line, { ...ctx(), ...(fromPalette ? { fromPalette: true } : {}) });
     if (!r.ok) {
       note(r.text);
       return;
@@ -233,6 +259,11 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
     const support = plainSupports(r.spec, r.action);
     if (!support.ok) {
       note(support.error);
+      return;
+    }
+    if (r.confirm !== null) {
+      confirm = { kind: r.confirm, line };
+      opts.output.write(`${confirmPlainPrompt(r.confirm)} `);
       return;
     }
     // TUI-DESIGN §10.2: `/steer <text>`, `/rename <title>` (any rest argument) pass the same gate as a prompt
@@ -245,8 +276,31 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
     await runCommand(line, []);
   }
 
+  /** TUI-DESIGN-4 §4.6: print the numbered command list as one `[ui]` item and arm the one-shot pick. */
+  function showNumbered(): void {
+    const state = plainPaletteState(live());
+    const lines = paletteNumberedLines('', state, PLAIN_COLUMNS);
+    const head = lines[0] ?? '';
+    const rest = lines.slice(1);
+    host.note(head, { label: '[ui]', level: 'info', ...(rest.length > 0 ? { detail: rest.join('\n') } : {}) });
+    // the prompt names the pickable range, which is the number of COMMAND rows — never the tail row
+    pendingList = numberedShown(paletteMatches('', state).length);
+  }
+
   async function handle(raw: string): Promise<void> {
     const text = sanitizeStream(raw.replace(/\r$/, ''));
+    if (confirm !== null) {
+      // TUI-DESIGN-4 §4.5: only `y` proceeds — an empty line (readline's Enter) is "no", as the inert Enter is in the TUI
+      const pending = confirm;
+      confirm = null;
+      const a = text.trim().toLowerCase();
+      if (a !== 'y' && a !== 'yes') {
+        hint(CONFIRM_DECLINED_HINT);
+        return;
+      }
+      await runCommand(pending.line, []);
+      return;
+    }
     if (gate !== null) {
       // TUI-DESIGN §4.10 plain twin: only `y` sends; anything else cancels and shows the tip
       const pending = gate;
@@ -260,9 +314,25 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
       else await runCommand(pending.line, secretSpans(pending.line, pending.hits));
       return;
     }
+    // TUI-DESIGN-4 §4.6: the list is one-shot — every line clears it, and only a bare integer in `1..N` picks
+    const pick = pendingList;
+    pendingList = null;
     if (text.trim() === '') return;
+    if (pick !== null && /^\d{1,3}$/.test(text.trim())) {
+      const spec = numberedPick('', plainPaletteState(live()), Number(text.trim()));
+      if (spec !== null) {
+        await command(`/${spec.name}`, true);
+        return;
+      }
+      // out of `1..N`: a bare integer is an ordinary prompt, exactly as it is in every other turn
+    }
     const lead = text.trimStart();
     if (isCommandLine(lead)) {
+      // TUI-DESIGN-4 §4.6: a submitted line that is exactly `/` prints the numbered list instead of an error
+      if (lead.trim() === '/') {
+        showNumbered();
+        return;
+      }
       await command(lead.trim());
       return;
     }
@@ -289,7 +359,7 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
         note(`error: ${e instanceof Error ? e.message : String(e)}`);
       })
       .then(() => {
-        if (gate === null) showPrompt();
+        if (gate === null && confirm === null) showPrompt();
       });
   });
 
@@ -323,6 +393,20 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
       return;
     }
     if (p === 'aborting') return;
+    // TUI-DESIGN-4 §4.5 / §4.6 (b): a pending prompt is **cancelled** by Ctrl-C, never left armed behind an
+    // ordinary `> `. `showPrompt()` reads only `pendingList`, so an armed `confirm` survived the interrupt
+    // invisibly and the next line the user typed was consumed as its answer: `/` → `2` → `start fresh? [y/N]` →
+    // Ctrl-C → `> ` → the message `yes` ended the session. The numbered one-shot closes too, which is the twin of
+    // E12 (Ctrl-C with the palette open closes the card). Ctrl-C twice still exits 0: the arm below is unchanged.
+    if (confirm !== null) {
+      confirm = null;
+      hint(CONFIRM_DECLINED_HINT);
+    }
+    if (gate !== null) {
+      gate = null;
+      hint(GATE_DISMISS_TIP);
+    }
+    pendingList = null;
     const t = now();
     if (lastCtrlC !== null && t - lastCtrlC <= window) {
       closed = true;

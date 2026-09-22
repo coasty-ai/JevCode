@@ -162,24 +162,36 @@ describe('panelLines (TUI-DESIGN-2 §4.6)', () => {
 describe('reviewCardLines and reviewCardTitle (TUI-DESIGN-2 §4.7, §12 "Cards")', () => {
   const req: ConfirmRequest = workedRequest();
   it('the title: `review · step 7 · risk 0.44 (tail) · edit src/a.py "<goal>"`; ≥ 120 adds `(tail on <dim>)`, the full goal and ` · jev 244ms`', () => {
-    expect(reviewCardTitle(req, 80)).toBe('review · step 7 · risk 0.44 (tail) · edit src/a.py "make parse_date timezone-aware"');
-    expect(reviewCardTitle(req, 120)).toBe('review · step 7 · risk 0.44 (tail on plan_mismatch) · edit src/a.py "make parse_date timezone-aware" · jev 244ms');
-    expect(reviewCardTitle({ ...req, proposal: { ...req.proposal, goal: 'x'.repeat(100) } }, 80)).toBe(`review · step 7 · risk 0.44 (tail) · edit src/a.py "${'x'.repeat(39)}…"`);
+    // TUI-DESIGN-4 §6.1 / §6.3 (D-Z): the title takes `editSummary`'s target, so every edit action names its
+    // files AND its churn (`+1 −1`) — a `patch` used to read `18 line unified diff` (A6-1)
+    expect(reviewCardTitle(req, 80)).toBe('review · step 7 · risk 0.44 (tail) · edit src/a.py +1 −1 "make parse_date timezone-aware"');
+    expect(reviewCardTitle(req, 120)).toBe('review · step 7 · risk 0.44 (tail on plan_mismatch) · edit src/a.py +1 −1 "make parse_date timezone-aware" · jev 244ms');
+    expect(reviewCardTitle({ ...req, proposal: { ...req.proposal, goal: 'x'.repeat(100) } }, 80)).toBe(`review · step 7 · risk 0.44 (tail) · edit src/a.py +1 −1 "${'x'.repeat(39)}…"`);
   });
-  it('H-F1: the full card at 80 columns with its 6 preview rows — 9 header rows + 6 preview = 15 rows, every one exactly 80 cells', () => {
+  it('H-F1 after D-Z: the full card at 80 columns — 9 header rows + the diff preview, every row exactly 80 cells', () => {
+    // TUI-DESIGN-4 §6.3 (A6-2, A6-8): the preview is `diffRows`, not two blobs labelled `--- old` / `+++ new`; the
+    // worked `edit` is a one-line change, so it asks for 4 rows (a fence, the hunk header, `-` and `+`).
+    // §14.2 review item 8: an `edit`'s two sides are a SNIPPET — `Action.edit` is an "exact, unique match" and
+    // `unifiedDiff(old, new)` numbers it from 1 — so the two number columns would claim the change lands at line 1
+    // of the file whatever its real offset. An `edit` keeps its `@@` row, which is honest about being
+    // snippet-relative, and drops the columns; a `patch` and a `write` are file-absolute and keep them.
     const lines = reviewCardLines(req, 9, 6, 80);
-    expect(lines).toHaveLength(15);
+    expect(lines).toHaveLength(13);
     for (const l of lines) expect(cellWidth(l)).toBe(80);
-    expect(lines[0]).toBe('╭─ review · step 7 · risk 0.44 (tail) · edit src/a.py "make parse_date timez… ─╮');
+    // A6-22: the goal's quote is closed before the title is truncated
+    expect(lines[0]).toBe('╭─ review · step 7 · risk 0.44 (tail) · edit src/a.py +1 −1 "make parse_dat…" ─╮');
     expect(lines[1]).toBe(`│ ${REVIEW_KEYS_80} │`);
     expect(lines[2]?.startsWith('│ dimension')).toBe(true);
     expect(lines[3]?.startsWith('│ 1 destructive')).toBe(true);
     expect(lines[6]?.startsWith('│ 4 irreversible')).toBe(true);
     expect(lines[7]?.startsWith('│ 5 matches_intent')).toBe(true);
-    expect(lines[8]).toBe(`│   --- old${' '.repeat(80 - 4 - 9)} │`);
-    expect(lines[9]).toBe(`│   return datetime.strptime(s, FMT)${' '.repeat(80 - 4 - 34)} │`);
-    expect(lines[12]).toBe('│   return datetime.strptime(s, FMT).replace(tzinfo=timezone.utc)              │');
-    expect(lines[14]).toBe(`╰${'─'.repeat(78)}╯`);
+    expect(lines[8]).toBe(`│   ╶──── src/a.py${' '.repeat(80 - 4 - 16)} │`);
+    expect(lines[9]).toBe(`│   @@ -1 +1 @@${' '.repeat(80 - 4 - 13)} │`);
+    expect(lines[10]).toBe(`│   -return datetime.strptime(s, FMT)${' '.repeat(80 - 4 - 35)} │`);
+    expect(lines[11]).toBe(`│   +return datetime.strptime(s, FMT).replace(tzinfo=timezone.utc)${' '.repeat(80 - 4 - 64)} │`);
+    expect(lines[12]).toBe(`╰${'─'.repeat(78)}╯`);
+    // no `/diff` pointer on a PRE-apply card (§6.3 item 3): the overlay swallows printable keys and step 7 has no image yet
+    for (const l of lines) expect(l).not.toContain('/diff');
     // the body rows are the flat header's rows 2..8 at the inner width
     const flat = reviewHeaderLines(req, 8, 76);
     expect(lines.slice(1, 8).map((l) => l.slice(2, -2).trimEnd())).toEqual(flat.slice(1).map((l) => l.trimEnd()));
@@ -218,7 +230,8 @@ describe('reviewCardLines and reviewCardTitle (TUI-DESIGN-2 §4.7, §12 "Cards")
     expect(gated[1]?.startsWith('│ Looks like this contains a secret')).toBe(true);
     const cut = reviewCardLines(req, 9, 2, 80);
     expect(cut).toHaveLength(11);
-    expect(cut[9]).toMatch(/^│ …\[\d+ more preview lines · e expands\]\s+│$/);
+    // §6.3 item 3 (closes A6-11): the tail names the rows hidden at THIS budget and the rows `e` would grant
+    expect(cut[9]).toMatch(/^│ …\[\+\d+ rows · e expands to \d+\]\s+│$/);
     const ascii = reviewCardLines(req, 9, 4, 80, GLYPHS.ascii);
     for (const l of ascii) {
       expect(l).toMatch(/^[\x20-\x7e]*$/);
@@ -236,8 +249,11 @@ describe('the new glyphs (TUI-DESIGN-2 §4.9)', () => {
       [u.roundTopRight, '+'],
       [u.roundBottomLeft, '+'],
       [u.roundBottomRight, '+'],
-      [u.teeLeft, '+'],
-      [u.teeRight, '+'],
+      // MINIMAL, MARKED EDIT BY SLOT S2 (TUI-DESIGN-4 §2.8 P-R9): the ascii tees are `|`, not `+`. With `+` the
+      // console divider `+---…---+` and the bottom edge `+---…---+` are byte-identical, so `--ascii` draws the status
+      // compartment as a second box; `|---…---|` reads as a divider inside one box. The rest of the file is untouched.
+      [u.teeLeft, '|'],
+      [u.teeRight, '|'],
       [u.prompt, '>'],
       [u.chevronRight, '>'],
       [u.chevronDown, 'v'],
@@ -278,7 +294,9 @@ describe('ruleRowText (TUI-DESIGN-2 §4.6, §5.4; findings 2 and 4)', () => {
     expect(ruleRowText(ruleInput())).toBe(brandRow('0.2.0', 80));
     // the intake's `s0 intake` rows (§3.11) ride along before any run — still the brand row
     expect(ruleRowText(ruleInput({ state: paneState({ rows: [], lastRisk: null, step: 0, chatRows: [row(0, 'intake', 'intent')] }) }))).toBe(brandRow('0.2.0', 80));
-    expect(ruleRowText(ruleInput({ ranBefore: true }))).toBe('─── ▸ jev · no decisions yet ──────────────────────────────── [d] [p] [t] [s] ──');
+    // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H1 / edge 9, D-T a): after the first `run:ready` the strip carries the
+    // permanent `◆ jevcode` prefix. `panelStrip` itself is unchanged without the option — only `ruleRowText` passes it.
+    expect(ruleRowText(ruleInput({ ranBefore: true }))).toBe('─── ◆ jevcode ─ ▸ jev · no decisions yet ──────────────────── [d] [p] [t] [s] ──');
     expect(ruleRowText(ruleInput({ ranBefore: true, state: paneState({ rows: [], lastRisk: null, step: 3 }) }))).toContain('▸ jev');
   });
   it('finding 4: an open or full panel draws the ▾ tab header before the first run too (never a headerless hole); no rows granted → the brand row', () => {
@@ -294,6 +312,7 @@ describe('ruleRowText (TUI-DESIGN-2 §4.6, §5.4; findings 2 and 4)', () => {
     expect(ruleRowText(ruleInput({ panel: 'open', paneRows: 0, splash: 'running', splashTime: 50, columns: 60 }))).toBe(brandRow('0.2.0', 60, 50));
     // after run:ready the same header; collapsed → the strip
     expect(ruleRowText(ruleInput({ ranBefore: true, panel: 'open', paneRows: 6 }))).toContain('─── ▾ decisions s0');
-    expect(ruleRowText(ruleInput({ ranBefore: true, panel: 'collapsed', paneRows: 0 }))).toContain('─── ▸ jev');
+    // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H1 / edge 9): the post-run collapsed strip leads with the brand
+    expect(ruleRowText(ruleInput({ ranBefore: true, panel: 'collapsed', paneRows: 0 }))).toContain('─── ◆ jevcode ─ ▸ jev');
   });
 });

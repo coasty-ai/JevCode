@@ -26,6 +26,7 @@ import { MODE_SET_ITEM } from '../../src/cli/session.js';
 import {
   BADGE_DEFAULT,
   BADGE_DEFAULT_TEXT,
+  BADGE_DEFAULT_HEAD,
   BADGE_JEV_LLM,
   BADGE_JEV_ONLY,
   CHAT_OPEN,
@@ -125,7 +126,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     expect(plain).toContain('[you] hi');
     expect(plain).toMatch(/\[jevcode\] Hi\. I'm ready when you are — describe a change you want in\s+\S+, or ask what I can do\./);
     // §3.1 row 6: no run — no `[run] start`, no run directory
-    expect(plain).not.toMatch(/\[run\] start /);
+    expect(plain).not.toMatch(/\[run\] started [·-] /);
     expect(r.runDirs()).toEqual([]);
     // §4.4: a chat reply is a turn, so the placeholder flips to `followup`
     expect(plain).toContain('Follow-up, question, or /command…');
@@ -143,16 +144,23 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     const r = await drive({
       name: 'r2-chat-facts',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, 'send what can you do?', echoStep('what can you do?'), 'send \\r', labelStep('jevcode', 'JevCode is a coding agent'), 'send which mode is this?', echoStep('which mode is this?'), 'send \\r', labelStep('jevcode', `Mode: ${BADGE_DEFAULT}`), ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send what can you do?', echoStep('what can you do?'), 'send \\r', labelStep('jevcode', 'JevCode is a coding agent'), 'send which mode is this?', echoStep('which mode is this?'), 'send \\r', labelStep('jevcode', `Mode: ${BADGE_DEFAULT_HEAD}`), ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     expect(plain).toContain('[jevcode] JevCode is a coding agent where Jev, a decision model, makes every');
-    // TUI-DESIGN-3 §1.9: the mode sentence names the default badge; the copy is generator-neutral ("the code model", never Claude)
-    expect(plain).toMatch(new RegExp(`\\[jevcode\\] Mode: ${BADGE_DEFAULT} — `));
+    /**
+     * TUI-DESIGN-3 §1.9: the mode sentence names the default badge; the copy is generator-neutral ("the code
+     * model", never Claude). Since the round-3 `DEFAULT_MODE` flip the badge is `llm+jev · verified` — two words
+     * — and at 80 columns the item WRAPS between them (`[jevcode] Mode: llm+jev` / `· verified — …`), so neither
+     * the step nor this regex could ever see the whole badge on one line. Both halves are asserted instead
+     * (pre-existing red, fixed by the integrator 2026-09-22).
+     */
+    expect(plain).toMatch(new RegExp(`\\[jevcode\\] Mode: ${BADGE_DEFAULT_HEAD}`));
+    expect(plain).toContain('· verified — the code model writes candidate patches');
     expect(plain).not.toContain('Claude writes');
-    expect(plain).not.toMatch(/\[run\] start /);
+    expect(plain).not.toMatch(/\[run\] started [·-] /);
     expect(r.runDirs()).toEqual([]);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
@@ -161,7 +169,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     const r = await drive({
       name: 'r2-chat-task',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '4'],
-      steps: [...CHAT_OPEN, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', labelStep('you', 'fix the failing test'), RUN_STARTED_STEP, labelStep('step 1', ''), 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', labelStep('you', 'fix the failing test'), RUN_STARTED_STEP, labelStep('step 1', ''), 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -194,7 +202,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     expect(reply[0]!).toBeGreaterThanOrEqual(card.at(-1)!);
     const plain = stripAnsi(r.text);
     expect(plain).not.toContain('Okay — edit it and press Enter');
-    expect(plain).not.toMatch(/\[run\] start /);
+    expect(plain).not.toMatch(/\[run\] started [·-] /);
     expect(r.runDirs()).toEqual([]);
   }
 
@@ -252,11 +260,11 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
       name: 'r2-chat-ambiguous-y',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'],
       env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
-      steps: [...CHAT_OPEN, 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect run this as a task\\?', 'sleep 0.25', 'send y', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect run this as a task\\?', 'sleep 0.25', 'send y', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
-    expect(stripAnsi(r.text)).toMatch(/\[run\] start \S+ mode=jev-on task: the date parsing/);
+    expect(stripAnsi(r.text)).toMatch(/\[run\] started [·-] jev\+llm [·-] the date parsing/);
     expect(r.runDirs()).toHaveLength(1);
   });
 
@@ -274,7 +282,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     expect(plain).toContain('run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text > n');
     expect(plain).toMatch(/^ *\[you\] the date parsing$/m);
     expect(plain).toMatch(/^ *\[jevcode\] /m);
-    expect(plain).not.toMatch(/\[run\] start /);
+    expect(plain).not.toMatch(/\[run\] started [·-] /);
     expect(r.runDirs()).toEqual([]);
   });
 
@@ -320,18 +328,28 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     expect(filesContaining(r, 'AAAAAAAAAAAA')).toEqual([]);
   });
 
-  it('/jev and /cost after a greeting: `intake: 1 message · p50 <ms> ms · $<usd> · last: greeting_or_smalltalk <p>` and `chat $<usd> for 1 message (~$<each> each, p50 <ms> ms)` (§2.6, §3.9, §12)', async () => {
+  /**
+   * TUI-DESIGN-4 §3.1 / §3.5 (D-W) turned `/jev` and `/cost` into **key–value blocks**: one `[ui] <head>` item
+   * with a rendered body, the keys in a left column and the values in the second. The old free-text rows
+   * (`intake: 1 message · …`, a bare `chat $…` line) are gone; the same rows are pinned in
+   * `test/unit/tui/block/__snapshots__/snapshots.test.ts.snap` and `test/unit/cli/session-chat.test.ts:224`,
+   * and this leg is the pty twin of them (integrator 2026-09-22, §3's pins are disjoint from §3.7's — see :173).
+   */
+  it('/jev and /cost after a greeting: the §3.1 kv blocks — `intake  1 message · p50 <ms> ms · $<usd> · last …` and `chat  $<usd> for 1 message …` (§2.6, §3.9, §12)', async () => {
     const r = await drive({
       name: 'r2-jev-cost',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi\\.'), 'send /jev', echoStep('/jev'), 'send \\r', 'expect intake: 1 message', 'send /cost', echoStep('/cost'), 'send \\r', 'expect chat \\$', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi\\.'), 'send /jev', echoStep('/jev'), 'send \\r', 'expect intake {2,}1 message', 'send /cost', echoStep('/cost'), 'send \\r', 'expect chat {2,}\\$', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
-    expect(plain).toMatch(/^ *intake: 1 message · p50 \d+ ms · \$\d+\.\d+$/m); // TUI-DESIGN-3 §5.1 rule 1 / §5.4: the `/jev` detail rows hang at column 10 under the `[ui]` head
-    expect(plain).toMatch(/^ *last: greeting or smalltalk \(\d\.\d\d\)$/m); // TUI-DESIGN-3 §10: the last-intake row
-    expect(plain).toMatch(/^ *chat \$\d+\.\d+ for 1 message \(~\$[\d.e+-]+ each, p50 \d+ ms\)$/m);
+    // §3.1: the block's body hangs under the `[ui]` head; the value column starts at a fixed offset
+    expect(plain).toMatch(/^ *intake {2,}1 message · p50 \d+ ms · \$\d+\.\d+ · last greeting or smalltalk$/m);
+    expect(plain).toMatch(/^ *\(\d\.\d\d\)$/m); // the wrapped tail of the last-intake value, at the value column
+    expect(plain).toMatch(/^ *decider {2,}/m);
+    expect(plain).toMatch(/^ *latency {2,}p50 /m);
+    expect(plain).toMatch(/^ *chat {2,}\$\d+\.\d+ · 1 message · p50 \d+ ms$/m);
     expect(r.runDirs()).toEqual([]);
   });
 });
@@ -382,7 +400,7 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
       name: 'r2-mode-switch-anthropic',
       args: ['chat', '--mock', '--mock-steps', '3', '--mode', 'jev-only'],
       env: { ...NO_NETWORK, ANTHROPIC_API_KEY: FAKE_KEY, TYPESAFE_API_KEY: FAKE_KEY },
-      steps: [...CHAT_OPEN, 'send /llm on', echoStep('/llm on'), 'send \\r', `expect ${BADGE_JEV_LLM} from the next run`, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} · next run`), 'send /mode', echoStep('/mode'), 'send \\r', `expect next run: ${BADGE_JEV_LLM}`, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} ─`), 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send /llm on', echoStep('/llm on'), 'send \\r', `expect ${BADGE_JEV_LLM} from the next run`, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} · next run`), 'send /mode', echoStep('/mode'), 'send \\r', `expect next run: ${BADGE_JEV_LLM}`, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} ─`), 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -394,13 +412,15 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
     expect(modeItem).not.toBeNull();
     // §1.5: pending badge before the run, promoted at `run:start` (the run's `mode=jev-on`), no ` · next run` afterwards
     expect(plain).toMatch(/^╭─ jev\+llm · next run ─/m);
-    expect(plain).toMatch(/\[run\] start \S+ mode=jev-on task: fix the failing test/);
+    expect(plain).toMatch(/\[run\] started [·-] jev\+llm [·-] fix the failing test/);
     const all = syncFrames(r.text);
-    const started = syncFramesWith(all, /^ *\[run\] start /);
+    const started = syncFramesWith(all, /^ *\[run\] started [·-] /);
     expect(started.length).toBe(1);
     const afterStart = all.slice(started[0]!).filter((f) => f.dynamic.some((l) => l.startsWith('╭─ ')));
     expect(afterStart.length).toBeGreaterThan(0);
-    for (const f of afterStart) expect(f.dynamic.find((l) => l.startsWith('╭─ '))).toMatch(/^╭─ jev\+llm ─/);
+    // the CONSOLE's top edge is the LAST `╭─ ` row of a frame: an open palette (`╭─ commands ─`) draws its own box
+    // above it, and `EXIT_IDLE`'s `/exit` opens exactly that (§4.2) — `find` picked the palette's and failed
+    for (const f of afterStart) expect(f.dynamic.filter((l) => l.startsWith('╭─ ')).at(-1)).toMatch(/^╭─ jev\+llm ─/);
     expect(plain).not.toContain(FAKE_KEY);
     // design §12: `mode <badge> (next run: <badge>)` — the tree's first word idle is the pending mode (docs/STATUS.md "Round 2", deviation)
     console.log(`mode item idle after /llm on: "${modeItem![0]}"`);
@@ -485,15 +505,15 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
   });
 
   it('run:start cancels the splash: a one-shot `run` starting before 700 ms leaves no wordmark frame while the run is live; the mark returns with `[run] end` (TUI-DESIGN-3 §3.2)', async () => {
-    const r = await drive({ name: 'r2-splash-run-cancel', args: ['run', 'fix the failing test', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], steps: [...RUN_OPEN, 'mark started', 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
+    const r = await drive({ name: 'r2-splash-run-cancel', args: ['run', 'fix the failing test', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], steps: [...RUN_OPEN, 'mark started', 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text);
-    const started = syncFramesWith(all, /^ *\[run\] start /);
+    const started = syncFramesWith(all, /^ *\[run\] started [·-] /);
     expect(started.length).toBe(1);
     // §5.3: `run:start` is a cancel row — no frame from the start item on draws a wordmark while the run is live; the frames before it
     // may, and TUI-DESIGN-3 §3.2 (`run:end → idle`) brings the mark back at ≥ 24 rows in the frame that commits `[run] end`
-    const ended = all.findIndex((f) => f.lines.some((l) => /^ *\[run\] end /.test(l)));
+    const ended = all.findIndex((f) => f.lines.some((l) => /^ *\[run\] finished [·-] /.test(l)));
     expect(ended).toBeGreaterThan(started[0]!);
     const before = all.slice(0, started[0]!).filter((f) => f.dynamic.some((l) => WORDMARK_RE.test(l))).length;
     for (const f of all.slice(started[0]!, ended)) expect(f.dynamic.some((l) => WORDMARK_RE.test(l))).toBe(false);
@@ -520,7 +540,9 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     const body = first!.lines.slice(first!.ruleIndex);
     expect(body.filter((l) => /##/.test(l)).length).toBe(5);
     expect(body.some((l) => /#\+\./.test(l))).toBe(true);
-    expect(body.some((l) => l.startsWith(`+- ${BADGE_DEFAULT_TEXT} -`))).toBe(true);
+    // TD §14.1: the frame is the ASCII twin, so the badge is too — `llm+jev · verified` draws as `llm+jev - verified`
+    // (pre-existing red since the round-3 `DEFAULT_MODE` flip gave the default badge a `·`; integrator 2026-09-22)
+    expect(body.some((l) => l.startsWith(`+- ${BADGE_DEFAULT_TEXT.replaceAll('·', '-')} -`)), JSON.stringify(body.slice(0, 12))).toBe(true);
     expect(body.some((l) => /^\| > Say hi, ask a question, or describe a task\.\.\./.test(l))).toBe(true);
     expect(plain).toMatch(/\* \d+\.\d+\.\d+/); // the resting mark's ascii caption `* <version>` (TUI-DESIGN-3 §3.5) replaces the brand row at ≥ 21 rows
     expect(plain).toMatch(/^\+- run this as a task\? -+\+$/m);
@@ -537,7 +559,7 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
       name: 'r2-panel',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '4'],
       // the strip precedes the console in every frame: expect it before the placeholder of the same frame (expect consumes its buffer up to each match)
-      steps: [...CHAT_OPEN, 'send make the tests pass', echoStep('make the tests pass'), 'send \\r', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ▸${PROMPT_GAP} jev s\\d+ · \\d+ decisions`, `expect ${PLACEHOLDER_FOLLOWUP}`, 'send /panel', echoStep('/panel'), 'send \\r', `expect ▾${PROMPT_GAP} decisions`, 'expect more rows', 'mark open', 'send Z', echoStep('Z'), 'send \\x03', 'send /panel off', echoStep('/panel off'), 'send \\r', `expect ▸${PROMPT_GAP} jev`, 'mark closed', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send make the tests pass', echoStep('make the tests pass'), 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ▸${PROMPT_GAP} jev s\\d+ · \\d+ decisions`, `expect ${PLACEHOLDER_FOLLOWUP}`, 'send /panel', echoStep('/panel'), 'send \\r', `expect ▾${PROMPT_GAP} decisions`, 'expect more rows', 'mark open', 'send Z', echoStep('Z'), 'send \\x03', 'send /panel off', echoStep('/panel off'), 'send \\r', `expect ▸${PROMPT_GAP} jev`, 'mark closed', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -559,8 +581,16 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
   });
 
   /** the dynamic rows of the last frame whose header names `tab`, and its pane row count (rule → console top) */
+  /**
+   * TUI-DESIGN-4 §1.2 P-H1 (finding 5): the open / full panel's tab header now carries the `◆ jevcode` brand
+   * whenever the strip has room, so a short tab title (`timeline s4`, `synth s4`) draws
+   * `─── ◆ jevcode ─ ▾ timeline s4 ───…` where a long one (`decisions s4 · c~ derived |2p−1|`) still draws
+   * `─── ▾ decisions …`. Every matcher here is brand-tolerant (integrator 2026-09-22).
+   */
+  const TAB_STRIP = (tab: string): RegExp => new RegExp(`^─── (?:◆ jevcode ─ )?▾ ${tab}`);
+
   function paneRows(r: Drive, tab: string): { rows: number; pane: number } {
-    const all = syncFrames(r.text).filter((f) => new RegExp(`^─── ▾ ${tab}`).test(f.dynamic[0] ?? ''));
+    const all = syncFrames(r.text).filter((f) => TAB_STRIP(tab).test(f.dynamic[0] ?? ''));
     expect(all.length).toBeGreaterThan(0);
     const dyn = all.at(-1)!.dynamic;
     const consoleTop = dyn.findIndex((l) => l.startsWith('╭─ '));
@@ -578,7 +608,7 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
         echoStep('make the tests pass'),
         'send \\r',
         RUN_STARTED_STEP,
-        'expect end (complete|max_steps)',
+        'expect finished [·-] (complete|max_steps)',
         `expect ${PLACEHOLDER_FOLLOWUP}`,
         'sleep 0.3',
         ALT('J'),
@@ -623,7 +653,7 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
     expect(r.code).toBe(0);
     // full = 12 pane rows: rule + 12 + the 5-row console = 18 dynamic rows (≤ rows − 2 = 22); open tabs: 6 pane rows or fewer (synth has fewer rows)
     const all = syncFrames(r.text);
-    const decisions = all.filter((f) => /^─── ▾ decisions/.test(f.dynamic[0] ?? ''));
+    const decisions = all.filter((f) => TAB_STRIP('decisions').test(f.dynamic[0] ?? ''));
     expect(decisions.length).toBeGreaterThan(0);
     const paneOf = (dyn: readonly string[]): number => dyn.findIndex((l) => l.startsWith('╭─ ')) - 1;
     const fullFrames = decisions.filter((f) => paneOf(f.dynamic) === 12);
@@ -644,7 +674,7 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
       name: 'r2-panel-alt-d',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '4'],
       timeoutS: 5,
-      steps: [...CHAT_OPEN, 'send make the tests pass', echoStep('make the tests pass'), 'send \\r', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.3', ALT('d'), `expect ▾${PROMPT_GAP} decisions`, 'send \\x03', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send make the tests pass', echoStep('make the tests pass'), 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.3', ALT('d'), `expect ▾${PROMPT_GAP} decisions`, 'send \\x03', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(stripAnsi(r.text)).not.toMatch(/[›>] ½/);
@@ -683,16 +713,19 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
     const r = await drive({
       name: 'r2-transcript-full',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'],
-      steps: [...CHAT_OPEN, 'send /transcript full', echoStep('/transcript full'), 'send \\r', 'sleep 0.3', 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.3', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send /transcript full', echoStep('/transcript full'), 'send \\r', 'sleep 0.3', 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.3', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const rows = staticRows(r.text);
-    // the stage kinds hidden by `compact` are drawn in `full`, and so is `run:ready`
-    expect(rows.some((l) => /^ *\[step 1\] intent=/.test(l))).toBe(true);
-    expect(rows.some((l) => /^ *\[step 1\] proposal /.test(l))).toBe(true);
+    // the stage kinds hidden by `compact` are drawn in `full`. TUI-DESIGN-4 §3.6 / §3.7 G1–G2 (D-V) rewrote the
+    // three stage rows (`intent=edit p=0.82` → `intent · edit · 0.82 (confidence …)`) and **deleted `run:ready`
+    // as an item**, so the row that used to prove `full` shows it is gone from every sink — this test's point is
+    // that the compact-hidden STAGES are drawn, and those three still are, glyph-agnostically.
+    expect(rows.some((l) => /^ *\[step 1\] intent [·-] /.test(l))).toBe(true);
+    expect(rows.some((l) => /^ *\[step 1\] proposal [·-] /.test(l))).toBe(true);
     expect(rows.some((l) => /^ *\[step 1\] judge /.test(l))).toBe(true);
-    expect(rows.some((l) => /^ *\[run\] ready /.test(l))).toBe(true);
+    expect(rows.some((l) => /^ *\[run\] ready /.test(l))).toBe(false);
     // identity (a): after stripAnsi, the rows equal formatTranscriptItem(item) word-wrapped — rebuilt against transcript.log with the
     // continuation indent dropped (the design's hanging indent of `label.length + 1` cells; a full-width wrap rebuilds the same way)
     const transcript = r.transcript()!;
@@ -705,12 +738,17 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
     console.log(`/transcript full: ${transcript.length} transcript lines rebuilt from ${rows.length} rows (${reflow.wrappedRows} continuation rows, ${continuation} of them indented ≥ 9 cells)`);
   });
 
-  it('chrome-tiers: boxed at 24x80, flat at 12x60 (badge leads the status), boxed again; ≤ 1 clear in the shrink segment, 0 in the grow', async () => {
+  /**
+   * The flat tier is anchored on its SHAPE, not on the badge prefix: TUI-DESIGN-2 §1.5 drops that prefix FIRST
+   * when the status row runs short, and round 3's default `llm-jev` carries an 18-cell badge
+   * (`llm+jev · verified`) that a 60-column status row cannot hold. `frameTier` below is the real assertion.
+   */
+  it('chrome-tiers: boxed at 24x80, flat at 12x60 (the status row at column 0), boxed again; ≤ 1 clear in the shrink segment, 0 in the grow', async () => {
     const r = await drive({
       name: 'r2-chrome-tiers',
       args: ['chat', '--mock'],
       // an expect right after each resize (the driver's `sleep` drains and consumes the pty, so a frame that arrived during a sleep is gone for a later expect), then a settle
-      steps: [...CHAT_OPEN, 'send A', echoStep('A'), 'resize 12 60', `expect ${BADGE_DEFAULT}${PROMPT_GAP} · idle`, 'sleep 0.5', 'send B', echoStep('AB'), 'resize 24 80', topEdgeStep(BADGE_DEFAULT), 'sleep 0.5', 'send C', echoStep('ABC'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send A', echoStep('A'), 'resize 12 60', 'expect \\nidle {2,}step 0/', 'sleep 0.5', 'send B', echoStep('AB'), 'resize 24 80', topEdgeStep(BADGE_DEFAULT), 'sleep 0.5', 'send C', echoStep('ABC'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -723,10 +761,13 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
     expect(frameTier(segments[0]!.unit!)).toBe('boxed');
     expect(frameTier(segments[1]!.unit!)).toBe('flat');
     expect(frameTier(segments[2]!.unit!)).toBe('boxed');
-    // §1.5 flat: `<badge> · <leftWord>` leads the status left zone; no box row anywhere in the flat frame
+    // §1.5 flat: the status row is the LAST row and starts at column 0; no box row anywhere in the flat frame.
+    // The `<badge> · <leftWord>` prefix is the FIRST segment §1.5 drops when the row runs short, and round 3's
+    // default `llm-jev` badge (`llm+jev · verified`, 18 cells) does not fit a 60-column status row — so the
+    // assertion is on the left word, and on the prefix only while it fits.
     const flat = segments[1]!.unit!;
     expect(flat.lines.slice(flat.ruleIndex).some(isBoxEdge)).toBe(false);
-    expect(flat.lines.at(-1)).toMatch(new RegExp(`^${BADGE_DEFAULT} · idle`));
+    expect(flat.lines.at(-1)).toMatch(new RegExp(`^(?:${BADGE_DEFAULT} \u00b7 )?idle {2,}step 0/`));
     // TUI-DESIGN-3 §3.2: the flat tier draws no wordmark
     expect(flat.lines.some((l) => WORDMARK_RE.test(l))).toBe(false);
     expect(flat.rows).toBeLessThanOrEqual(10);

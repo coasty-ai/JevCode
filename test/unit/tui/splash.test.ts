@@ -217,4 +217,33 @@ describe('brandRow (TUI-DESIGN-2 §5.4)', () => {
     expect(brandSpan('─'.repeat(80))).toBeNull();
     expect(brandSpan('')).toBeNull();
   });
+
+  /**
+   * TUI-DESIGN-4 §1.2 P-H1: `brandSpan` used to assume a version token follows `jevcode` and ended the span at the
+   * next space. The strip's prefix is `◆ jevcode ─ ▸ jev s4 …` — the following token is a rule cell, not a version —
+   * so the span now ends at `jevcode` unless a real version token follows. The `brandRow` form is byte-identical.
+   */
+  it('the span ends after a VERSION token and at `jevcode` when the next token is not one (P-H1)', () => {
+    const at = (row: string, g = GLYPHS.unicode): string | null => {
+      const sp = brandSpan(row, g);
+      return sp === null ? null : row.slice(sp.from, sp.to);
+    };
+    // round 2's form, unchanged
+    expect(at('─── ◆ jevcode 0.4.0 ────')).toBe('◆ jevcode 0.4.0');
+    expect(at('─── ◆ jevcode 1.2.3-rc.1 ────')).toBe('◆ jevcode 1.2.3-rc.1');
+    expect(at('─── ◆ jevcode 0.4.0+build ────')).toBe('◆ jevcode 0.4.0+build');
+    // round 4's strip prefix: a rule cell, a chevron or a word follows — the span stops at `jevcode`
+    expect(at('─── ◆ jevcode ─ ▸ jev s4 · 7 decisions ──── [d] [p] [t] [s] ──')).toBe('◆ jevcode');
+    expect(at('─── * jevcode - > jev s4 ----', GLYPHS.ascii)).toBe('* jevcode');
+    expect(at('─── ◆ jevcode')).toBe('◆ jevcode');
+    // the pulse glyphs all count, and `jevcodex` is not the brand
+    for (const glyph of ['░', '▒', '▓', '◆']) expect(at(`── ${glyph} jevcode ─ ▸ jev`)).toBe(`${glyph} jevcode`);
+    expect(brandSpan('─── ◆ jevcodex 0.4.0 ───')).toBeNull();
+    // finding 22: a `jevcodex` BEFORE the real brand must not swallow the scan — the second occurrence wins
+    expect(at('── ◆ jevcodex ─ ◆ jevcode 0.4.0 ──')).toBe('◆ jevcode 0.4.0');
+    expect(at('── ◆ jevcodex ─ ◆ jevcode ─ ▸ jev s4 ──')).toBe('◆ jevcode');
+    // and the span really is the SECOND occurrence, not the first
+    const row = '── ◆ jevcodex ─ ◆ jevcode 0.4.0 ──';
+    expect(brandSpan(row)?.from).toBe(row.indexOf('◆ jevcode 0.4.0'));
+  });
 });

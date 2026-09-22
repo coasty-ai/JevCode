@@ -14,7 +14,7 @@ import { DEFAULT_COMPLETE_THRESHOLD } from '../config/defaults.js';
 import { RUN_ID_RE } from '../checkpoint/run-id.js';
 import { RISK_DIMENSIONS, type RiskDimension } from '../core/types.js';
 import { eighthBar } from './bars.js';
-import { GLYPHS, padEndCells, padStartCells, type GlyphSet } from './glyphs.js';
+import { GLYPHS, cellWidth, padEndCells, padStartCells, type GlyphSet } from './glyphs.js';
 import { CONTEXT_SELECT_THRESHOLD, NEAR_THRESHOLD_DELTA, RISK_BLOCK_THRESHOLD, RISK_REVIEW_THRESHOLD } from './pane/model.js';
 import { PLAN_ACCEPT_THRESHOLD } from '../loop/plan.js';
 
@@ -321,32 +321,144 @@ function shortT(t: number): string {
   return s.startsWith('0') ? s.slice(1) : s;
 }
 
-function pct(x: number): string {
-  return `${(x * 100).toFixed(x * 100 < 10 && x > 0 ? 1 : 0)}%`;
+/**
+ * TUI-DESIGN-4 §3.3 / §2.6: wrap `text` at word boundaries into rows of at most `width` cells, continuations at
+ * `hang` cells. A token wider than the room is cut into room-sized pieces rather than dropped — which is what
+ * keeps a row's TRAILING COUNT on screen: `renderBlock`'s ceiling would otherwise elide the end of the row, and
+ * the end of every row this file builds is the number the row exists to report.
+ */
+function hangRows(text: string, width: number, hang: number): string[] {
+  const w = Math.max(1, Math.floor(width));
+  const body = text.replace(/\s+$/, '');
+  if (cellWidth(body) <= w) return [body];
+  // the row's OWN leading indent is part of its first line (`  labels: …`, `  ECE …`); the hang is where the
+  // continuations go. Space RUNS are kept, because a run inside one of these rows is column alignment.
+  const lead = /^\s*/.exec(body)?.[0] ?? '';
+  const pad = ' '.repeat(Math.max(0, Math.min(hang, w - 1)));
+  const parts = body.slice(lead.length).split(/( +)/).filter((x) => x !== '');
+  const out: string[] = [];
+  let line = lead;
+  let gap = '';
+  let started = false;
+  const flush = (): void => {
+    if (started) out.push(line.replace(/\s+$/, ''));
+    line = pad;
+    gap = '';
+    started = false;
+  };
+  for (const part of parts) {
+    if (/^ +$/.test(part)) {
+      if (started) gap += part;
+      continue;
+    }
+    const candidate = `${line}${gap}${part}`;
+    if (cellWidth(candidate) <= w) {
+      line = candidate;
+      gap = '';
+      started = true;
+      continue;
+    }
+    flush();
+    // §2.6's rung rule for the HANG itself: the full hang, then two cells, then column 0 — a token that fits the
+    // row must never be split just because the hang does not leave room for it (`exec.ok/tests.allPassed`)
+    const rung = [`${pad}${part}`, `  ${part}`, part].find((c) => cellWidth(c) <= w);
+    if (rung !== undefined) {
+      line = rung;
+      started = true;
+      continue;
+    }
+    // a single token wider than the whole row: cut it into pieces (lossless) so nothing after it is lost either
+    let rest = part;
+    while (cellWidth(rest) > w) {
+      let piece = '';
+      let i = 0;
+      while (i < rest.length && cellWidth(piece + rest[i]!) <= w) piece += rest[i++]!;
+      if (piece === '') break;
+      out.push(piece);
+      rest = rest.slice(piece.length);
+    }
+    line = rest;
+    started = true;
+  }
+  flush();
+  return out.length > 0 ? out : [body];
+}
+
+/**
+ * TUI-DESIGN-3 rule 3 / TUI-DESIGN-4 §3.3: the label-source segments packed at ` · ` into rows of at most `width`,
+ * continuations hanging under the `labels: ` column. A segment wider than the row is WRAPPED at the hang (never
+ * left whole for `renderBlock` to elide): the last token of a segment is its count, and a truncated label row
+ * loses exactly that.
+ */
+function packLabels(segments: readonly string[], width: number, g: GlyphSet): string[] {
+  const head = '  labels: ';
+  const hangCells = head.length;
+  const hang = ' '.repeat(hangCells);
+  const sep = ` ${g.dot} `;
+  const out: string[] = [];
+  let line = head;
+  let empty = true;
+  const flush = (): void => {
+    if (empty) return;
+    for (const r of hangRows(line, width, hangCells)) out.push(r);
+    line = hang;
+    empty = true;
+  };
+  for (const seg of segments) {
+    const candidate = empty ? `${line}${seg}` : `${line}${sep}${seg}`;
+    if (empty || cellWidth(candidate) <= width) {
+      line = candidate;
+      empty = false;
+      continue;
+    }
+    flush();
+    line = `${hang}${seg}`;
+    empty = false;
+  }
+  if (!empty) for (const r of hangRows(line, width, hangCells)) out.push(r);
+  return out.length > 0 ? out : [head.trimEnd()];
 }
 
 /**
  * TUI-DESIGN §7.6 `/calibration` block (the `[ui]` label is the item's): `calibration  N runs  N decisions  N with a label`,
- * the label sources, the 10 bins `bin  n  mean p  observed  bar`, `ECE 0.031 (10 equal-width bins)   near-threshold (|p−t| ≤ 0.03): 57 (1.2%)`,
- * the per-threshold counts and `sharpness: 71% outside 0.2–0.8` (ranges use the en dash, `-` under `--ascii`).
+ * the label sources, the 10 bins `bin  n  mean p  observed  bar`, `ECE 0.031 (10 equal-width bins)   near-threshold (|p−t| ≤ 0.03): 57 (1 %)`,
+ * the per-threshold counts and `sharpness: 71 % outside 0.2–0.8` (TUI-DESIGN-4 §3.1.4: `12 %` is the one percent form) (ranges use the en dash, `-` under `--ascii`).
  */
-export function calibrationBlock(stats: CalibrationStats, g: GlyphSet = GLYPHS.unicode): string[] {
+export function calibrationBlock(stats: CalibrationStats, g: GlyphSet = GLYPHS.unicode, width = 70): string[] {
   const lines: string[] = [`calibration  ${stats.runs} runs  ${stats.decisions} decisions  ${stats.labelled} with a label`];
   const sources = (Object.keys(LABEL_SOURCE_TEXT) as LabelSource[]).map((k) => `${LABEL_SOURCE_TEXT[k]} ${stats.sources[k]}`);
-  lines.push(`  labels: ${sources.slice(0, 2).join(` ${g.dot} `)}`, `          ${sources.slice(2).join(` ${g.dot} `)}`);
-  lines.push(`  ${padEndCells('bin', 9)} ${padStartCells('n', 5)}  mean p  observed  bar`);
+  // TUI-DESIGN-4 §3.3: at width 30 the `bar` column goes first, then `observed`; the bin / n / mean p core stays
+  const w = Number.isFinite(width) ? Math.floor(width) : 70;
+  // §11 (“no row wider than the terminal”): the four label sources were two FIXED rows of up to 88 cells, so at
+  // 80 columns (body 70) both overflowed. They pack at ` · ` now, hanging under the `labels: ` column (TD3 rule 3).
+  lines.push(...packLabels(sources, w, g));
+  // the widest bin row is `  bin(9) n(5)  meanP(6)  observed(8)  bar(10)` = 47 cells; without the bar 35, without
+  // either 25 — so the two thresholds ARE the measured row widths, not round numbers (§11's no-row-wider-than-the-
+  // terminal gate is what they serve). The screen reader never gets the bar (it is decoration, §3.3 edge 9).
+  const showBar = w >= 47 && g.mode !== 'sr';
+  const showObserved = w >= 35;
+  lines.push(`  ${padEndCells('bin', 9)} ${padStartCells('n', 5)}  mean p${showObserved ? '  observed' : ''}${showBar ? '  bar' : ''}`);
   for (const b of stats.bins) {
     const range = `${b.lo.toFixed(1)}${g.range}${b.hi.toFixed(1)}`;
     const meanP = b.meanP === null ? padStartCells(g.dash, 6) : padStartCells(b.meanP.toFixed(2), 6);
-    const observed = b.observed === null ? padStartCells(g.dash, 8) : padStartCells(b.observed.toFixed(2), 8);
-    const bar = b.observed === null || g.mode === 'sr' ? '' : `  ${eighthBar(b.observed, 10, g)}`;
-    lines.push(`  ${padEndCells(range, 9)} ${padStartCells(String(b.n), 5)}  ${meanP}  ${observed}${bar}`.trimEnd());
+    const observed = !showObserved ? '' : b.observed === null ? `  ${padStartCells(g.dash, 8)}` : `  ${padStartCells(b.observed.toFixed(2), 8)}`;
+    const bar = b.observed === null || !showBar ? '' : `  ${eighthBar(b.observed, 10, g)}`;
+    lines.push(`  ${padEndCells(range, 9)} ${padStartCells(String(b.n), 5)}  ${meanP}${observed}${bar}`.trimEnd());
   }
   const eceText = stats.ece === null ? `ECE ${g.dash} (no labels)` : `ECE ${stats.ece.toFixed(3)} (${stats.bins.length} equal-width bins)`;
-  const nearPct = stats.decisions > 0 ? pct(stats.near.total / stats.decisions) : '0%';
-  lines.push(`  ${eceText}   near-threshold (|p${g.minus}t| ${g.le} ${NEAR_THRESHOLD_DELTA.toFixed(2)}): ${stats.near.total} (${nearPct})`);
-  lines.push(`  ${stats.near.byThreshold.map((t) => `${t.name}@${shortT(t.threshold)} ${t.count}`).join('  ')}`);
-  lines.push(`  sharpness: ${stats.sharpness === null ? g.dash : `${Math.round(stats.sharpness * 100)}%`} outside 0.2${g.range}0.8`);
+  // TUI-DESIGN-4 §3.1.4 / §14.1 row 7: `12 %` is the ONE percent form — one space, no decimals
+  const nearPct = stats.decisions > 0 ? `${Math.round(100 * (stats.near.total / stats.decisions))} %` : '0 %';
+  const nearText = `near-threshold (|p${g.minus}t| ${g.le} ${NEAR_THRESHOLD_DELTA.toFixed(2)}): ${stats.near.total} (${nearPct})`;
+  // §11: the joined row is 74 cells and an 80-column terminal's body is 70, so the second clause takes its own row
+  // when the pair does not fit — never a truncation, which would eat the count (§2.6's rule, applied here)
+  const joined = `  ${eceText}   ${nearText}`;
+  // §2.6's rule: a row that does not fit is LADDERED (the pair splits) and then WRAPPED at the hang — never
+  // elided, because the end of each of these rows is the count the row exists to report
+  if (cellWidth(joined) <= w) lines.push(joined);
+  else lines.push(...hangRows(`  ${eceText}`, w, 2), ...hangRows(`  ${nearText}`, w, 2));
+  lines.push(...hangRows(`  ${stats.near.byThreshold.map((t) => `${t.name}@${shortT(t.threshold)} ${t.count}`).join('  ')}`, w, 2));
+  // TUI-DESIGN-4 §3.1.4: `12 %` is THE percent form, one space and no decimals — `nearPct` above and this row
+  lines.push(...hangRows(`  sharpness: ${stats.sharpness === null ? g.dash : `${Math.round(stats.sharpness * 100)} %`} outside 0.2${g.range}0.8`, w, 2));
   return lines;
 }
 

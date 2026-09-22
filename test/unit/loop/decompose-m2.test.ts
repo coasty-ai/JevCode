@@ -196,11 +196,12 @@ describe('M2 against the pre-wave commit a17c7f6 (the real golden)', () => {
     sandboxCommands: string[];
     invalidations: number;
     transcript: string[];
+    transcriptCommit?: string;
   };
   /** contract 1.7 §3.6 (D-V): the one row the wave deletes on every run */
   const STOP_ROW = /^\[run\] (?:warn: )?stop: /;
-  /** the run:end row carries a real wall clock; normalise it or the golden is a stopwatch, not a contract */
-  const norm = (l: string): string => l.replace(/wall=\d+(?:\.\d+)?m?s/, 'wall=<n>');
+  /** the run:end row carries a real wall clock (`· 173ms ·` in round 4's sentence); normalise every duration token or the golden is a stopwatch, not a contract */
+  const norm = (l: string): string => l.replace(/wall=\d+(?:\.\d+)?m?s/g, 'wall=<n>').replace(/ [·-] \d+(?:\.\d+)?\s?(?:ms|s|m)(?= [·-] |$)/g, ' · <t>');
 
   it('every generator prompt is byte-identical to the pre-wave run', async () => {
     const off = await run({ splitPolicy: { ...DEFAULT_SPLIT_POLICY, split: 'off' }, orchestration: { depth: 0 } });
@@ -233,17 +234,15 @@ describe('M2 against the pre-wave commit a17c7f6 (the real golden)', () => {
       const b = count(now);
       for (const [k, v] of a) expect(b.get(k) ?? 0, `${k} count`).toBe(k === 'transcript' ? v - 1 : v);
       for (const k of b.keys()) expect(a.has(k), `${k} is new`).toBe(true);
-      // and the ONLY transcript line the golden has that today's run does not is the stop row
+      // the transcript: the golden's `transcript` was RE-CAPTURED on the merged round-4 tree (its `transcriptCommit`),
+      // because TUI round 4 (TUI-DESIGN-4 §3.6/§3.7) rewrote every engine-item sentence and folds the per-step plan
+      // row — the events did not change (the histogram above is still a17c7f6's), their rendering did. So today's
+      // rows equal the golden's line for line, the stop row is gone from both (D-V), and no sink prints a bare `[run]`.
       const today = h.store.transcript.map(norm);
       const before = golden.transcript.map(norm);
-      const missing = before.filter((l) => !today.includes(l));
-      expect(missing.every((l) => STOP_ROW.test(l)), `unexpected missing lines: ${missing.filter((l) => !STOP_ROW.test(l)).join(' | ')}`).toBe(true);
-      expect(missing).toHaveLength(1);
-      // nothing new was added to the transcript either
-      expect(today.filter((l) => !before.includes(l))).toEqual([]);
-      // and the row really is gone, not merely reordered
+      expect(today).toEqual(before);
       expect(today.filter((l) => STOP_ROW.test(l))).toEqual([]);
-      expect(before.filter((l) => STOP_ROW.test(l))).toHaveLength(1);
+      expect(today.filter((l) => /^\[run\]\s*$/.test(l)), 'no sink prints a bare [run]').toEqual([]);
     } finally {
       h.cleanup();
     }

@@ -1,0 +1,16 @@
+# TUI-DESIGN-4 §7.3 item 2: round 3's wordmark is the idle tenant — the thing on screen for most of a session —
+# and rendered OUTSIDE every boundary. With the boundary in place the mark's five rows degrade to five BLANK rows
+# of the same height (§1.2 P-H3: a notice row would change the budget), the rest of the frame is untouched, and
+# the run continues. JEVCODE_FAULT=render:wordmark.
+expect \x1b\[\?25l
+expect Say hi
+sleep 1.2
+send hi
+sleep 0.2
+send \r
+expect \[jevcode\]
+sleep 0.5
+send /exit
+sleep 0.2
+send \r
+eof

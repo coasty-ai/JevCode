@@ -9,7 +9,7 @@ expect \[run\](?:\x1b\[[0-9;]*m)* start
 sleep 0.4
 send \x1b
 expect Esc again aborts the run
-expect end human_pause
+expect finished [·-] human_pause
 expect paused after step
 expect Follow-up, question
 send /exit

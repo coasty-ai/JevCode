@@ -3,9 +3,20 @@
  * `consoleLines().length === body + gate + 4`, the top edge places the badge left and the dir right (and degrades to a
  * card edge when the dir cannot fit), the divider and bottom edge, the H-A1 / H-A1w edges byte for byte, the `--ascii` twin.
  */
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { createElement } from 'react';
+import { cleanup, render } from 'ink-testing-library';
+import { afterEach, describe, expect, it } from 'vitest';
+import { Console, type ConsoleProps } from '../../../src/tui/Console.js';
+import { createBuffer, reduceBuffer } from '../../../src/tui/composer/buffer.js';
+import type { StatusLineState } from '../../../src/tui/status/lines.js';
 import { consoleBottom, consoleDivider, consoleInnerWidth, consoleLines, consoleRow, consoleTopEdge, consoleTopEdgeParts } from '../../../src/tui/console-lines.js';
 import { GLYPHS, cellWidth } from '../../../src/tui/glyphs.js';
+
+afterEach(() => cleanup());
+
+/** round-4 review finding 9: the retired prop must not even be DECLARED (§9.2's `Console.tsx` row). */
+const CONSOLE_SOURCE = readFileSync(new URL('../../../src/tui/Console.tsx', import.meta.url), 'utf8');
 
 describe('consoleLines (TUI-DESIGN-2 §4.3)', () => {
   it('every row is exactly columns cells for 40..400; the row count is body + gate + 4', () => {
@@ -58,6 +69,68 @@ describe('consoleLines (TUI-DESIGN-2 §4.3)', () => {
       expect(l).toMatch(/^[\x20-\x7e]*$/);
       expect(cellWidth(l)).toBe(40);
     }
-    expect(ascii[2]).toBe(`+${'-'.repeat(38)}+`);
+    // TUI-DESIGN-4 §2.8 (P-R9): the ascii divider is `|---…---|`, not `+---…---+` — with `+` it was byte-identical to
+    // the bottom edge, so the status compartment read as a second box
+    expect(ascii[2]).toBe(`|${'-'.repeat(38)}|`);
+    expect(ascii.at(-1)).toBe(`+${'-'.repeat(38)}+`);
+    expect(ascii[2]).not.toBe(ascii.at(-1));
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §2.2 (P-R2) — one geometry per frame.
+// ---------------------------------------------------------------------------------------
+describe('TUI-DESIGN-4 §2.2 (P-R2): the draft wraps at the same `columns` the edges use', () => {
+  const idle: StatusLineState = { run: 'none', mode: null, status: null, ready: null, done: null, runId: null, overlay: 'none', pendingReview: null, retrying: null, blocking: null, errors: 0, stageStartedAt: null, toasts: [], git: null, spend: { run: null, session: { totalUsd: 0, capUsd: 1.25 } }, draft: { secretHits: 0 }, nowMs: 0 };
+  const noop = (): void => undefined;
+  const strip = (s: string | undefined): string[] => (s ?? '').replace(/\x1b\[[0-9;]*m/g, '').replace(/\n$/, '').split('\n');
+  const consoleAt = (columns: number, text: string): React.JSX.Element =>
+    createElement(Console, {
+      buffer: reduceBuffer(createBuffer(), { type: 'insert', text }),
+      columns,
+      height: 4,
+      top: 1,
+      scrollTop: 0,
+      cursor: noop,
+      active: true,
+      mode: 'task' as const,
+      rows: 24,
+      badge: 'jev-only',
+      dir: 'proj',
+      status: idle,
+      statusOptions: {},
+    });
+
+  it('§10 S2: render at 80 with a 120-char draft, re-render at 44 — every row is 44 cells in the SAME commit', () => {
+    const draft = 'x'.repeat(120);
+    const ui = render(consoleAt(80, draft));
+    for (const l of strip(ui.lastFrame())) expect(cellWidth(l), `80: ${l}`).toBe(80);
+    // the re-render is ONE commit at the new width: before P-R2 the edges followed `columns` while the body still
+    // wrapped at the debounced `wrapColumns`, and A2 measured 4 of 24 frames carrying a box row that ended in `…`
+    ui.rerender(consoleAt(44, draft));
+    const rows = strip(ui.lastFrame());
+    expect(rows.length).toBeGreaterThan(3);
+    for (const l of rows) expect(cellWidth(l), `44: ${l}`).toBe(44);
+    for (const l of rows) expect(l.endsWith('\u2026'), `44: ${l}`).toBe(false);
+    cleanup();
+  });
+
+  it('round-4 review finding 9: `bodyColumns` is GONE from `ConsoleProps` — there is no second width left to pass', () => {
+    // §9.2's `Console.tsx` row reads "S1 (drop `bodyColumns`, §2.2 P-R2)", and S1's W2 commit has landed: `App.tsx`
+    // passes it nowhere and `wrapColumns` / `createResizeDebounce` / `RESIZE_DEBOUNCE_MS` are gone. Leaving the prop
+    // DECLARED — even ignored — is the escape hatch P-R2 exists to remove, so the assertion is on the type and the
+    // declaration, not on a behaviour an ignored prop could still satisfy.
+    // @ts-expect-error `bodyColumns` is no longer a member of ConsoleProps (TUI-DESIGN-4 §2.2 P-R2)
+    const retired: Partial<ConsoleProps> = { bodyColumns: 120 };
+    expect(retired).toEqual({ bodyColumns: 120 });
+    expect(CONSOLE_SOURCE).not.toMatch(/^\s*bodyColumns\??:/m);
+    // …and one geometry per frame is still what the box draws: every row is exactly `columns` at every width
+    const draft = 'the quick brown fox jumps over the lazy dog and keeps on running past the fence';
+    // `ink-testing-library`'s stdout is a FIXED 100 columns, so a rendered sweep above it measures Ink, not the box
+    for (const columns of [44, 60, 80, 100]) {
+      const rows = strip(render(consoleAt(columns, draft)).lastFrame());
+      for (const l of rows) expect(cellWidth(l), `${columns}: ${l}`).toBe(columns);
+      cleanup();
+    }
   });
 });

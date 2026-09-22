@@ -12,6 +12,7 @@ import { ConfigError, UsageError } from '../errors.js';
 import { parseDuration } from '../core/time.js';
 import { RUN_ID_RE } from '../checkpoint/run-id.js';
 import { RENDER_MODES, parseFps } from '../config/launch.js';
+import { RENDERERS } from '../config/ui.js';
 import { DEFAULT_MODE, MAX_FPS, MIN_FPS, MODE_BADGE_WORD } from '../config/defaults.js';
 import { THEMES } from '../tui/commands/registry.js';
 
@@ -59,6 +60,8 @@ export const STRING_FLAGS = [
   'theme',
   'fps',
   'renderMode',
+  // TUI-DESIGN-4 §1.3.1: `--renderer classic|fullscreen` — a LAUNCH setting (Ink fixes `alternateScreen` in its constructor)
+  'renderer',
   'exitCode',
   'keybindings',
   'log',
@@ -118,6 +121,8 @@ export const BOOLEAN_FLAGS = [
   'writeCache',
   // TUI-DESIGN-3 §0.1 (D-Q): `jevcode config --all` shows the hidden bookkeeping rows (`seen.*`)
   'all',
+  // TUI-DESIGN-4 §1.3.1: `--fullscreen` is the short form of `--renderer fullscreen` (the flag wins over the env)
+  'fullscreen',
 ] as const;
 
 export type StringFlagKey = (typeof STRING_FLAGS)[number];
@@ -216,6 +221,10 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'theme', name: 'theme', type: 'string', commands: UI, arg: THEMES.join('|'), help: 'colour theme (no auto-detect)' },
   { key: 'fps', name: 'fps', type: 'string', commands: UI, arg: '<n>', help: 'render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch' },
   { key: 'renderMode', name: 'render-mode', type: 'string', commands: UI, arg: RENDER_MODES.join('|'), help: 'Ink render mode (default standard); fixed at launch' },
+  // TUI-DESIGN-4 §1.3.1 (D-S): the opt-in pinned-header renderer. Both are LAUNCH flags — Ink fixes `alternateScreen`
+  // in its constructor, so the choice cannot be toggled in place; `/fullscreen` persists `ui.renderer` and offers a relaunch.
+  { key: 'renderer', name: 'renderer', type: 'string', commands: UI, arg: RENDERERS.join('|'), help: 'renderer (default classic); fullscreen pins the header on the alternate screen (needs 18 rows / 40 cols); fixed at launch' },
+  { key: 'fullscreen', name: 'fullscreen', type: 'boolean', commands: UI, help: 'shorthand for --renderer fullscreen' },
   { key: 'ascii', name: 'ascii', type: 'boolean', commands: UI, help: 'ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch' },
   { key: 'title', name: 'title', type: 'boolean', commands: UI, help: 'set the terminal title (OSC 2)' },
   { key: 'screenReader', name: 'screen-reader', type: 'boolean', commands: UI, help: 'screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch' },
@@ -586,6 +595,16 @@ export function parseCliArgs(argv: readonly string[], io: ParseOptions = {}): Pa
   if (flags.theme !== undefined) {
     flags.theme = flags.theme.trim().toLowerCase();
     oneOf(command, 'theme', flags.theme, THEMES);
+  }
+  if (flags.renderer !== undefined) {
+    flags.renderer = flags.renderer.trim().toLowerCase();
+    oneOf(command, 'renderer', flags.renderer, RENDERERS);
+    // TUI-DESIGN-4 §1.3.1: `--fullscreen` is the SHORT FORM of `--renderer fullscreen`, so the two must agree.
+    // `resolveLaunchSettings` applies `--fullscreen` last and would otherwise silently override an explicit
+    // `--renderer classic` on the same command line — a flag the user typed, ignored without a word.
+    if (flags.fullscreen === true && flags.renderer !== 'fullscreen') {
+      throw new UsageError(`--fullscreen and --renderer ${flags.renderer} disagree: --fullscreen is the short form of --renderer fullscreen. ${usageHint(command)}`);
+    }
   }
   if (flags.renderMode !== undefined) {
     flags.renderMode = flags.renderMode.trim().toLowerCase();

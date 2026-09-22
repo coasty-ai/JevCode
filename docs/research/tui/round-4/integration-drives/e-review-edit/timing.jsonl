@@ -1,0 +1,29 @@
+{"t":101,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":101,"step":2,"op":"expect","arg":"Say hi"}
+{"t":502,"step":3,"op":"sleep","arg":"0.4"}
+{"t":502,"step":4,"op":"send","arg":"make the tests pass"}
+{"t":703,"step":5,"op":"sleep","arg":"0.2"}
+{"t":704,"step":6,"op":"send","arg":"\\r"}
+{"t":1731,"step":7,"op":"expect","arg":"╭─ (?:\\x1b\\[[0-9;]*m)*review · step 4"}
+{"t":1731,"step":8,"op":"expect","arg":"\\[y\\] approve"}
+{"t":2232,"step":9,"op":"sleep","arg":"0.5"}
+{"t":2232,"step":10,"op":"mark","arg":"card"}
+{"t":2232,"step":11,"op":"send","arg":"e"}
+{"t":2834,"step":12,"op":"sleep","arg":"0.6"}
+{"t":2834,"step":13,"op":"mark","arg":"expanded"}
+{"t":2834,"step":14,"op":"send","arg":"y"}
+{"t":2847,"step":15,"op":"expect","arg":"review approved"}
+{"t":3347,"step":16,"op":"sleep","arg":"0.5"}
+{"t":3347,"step":17,"op":"mark","arg":"approved"}
+{"t":3372,"step":18,"op":"expect","arg":"finished [·-] (complete|max_steps|generator_done)"}
+{"t":3872,"step":19,"op":"sleep","arg":"0.5"}
+{"t":3872,"step":20,"op":"send","arg":"/diff"}
+{"t":4172,"step":21,"op":"sleep","arg":"0.3"}
+{"t":4172,"step":22,"op":"send","arg":"\\r"}
+{"t":5172,"step":23,"op":"sleep","arg":"1.0"}
+{"t":5172,"step":24,"op":"mark","arg":"diff"}
+{"t":5172,"step":25,"op":"send","arg":"/exit"}
+{"t":5372,"step":26,"op":"sleep","arg":"0.2"}
+{"t":5372,"step":27,"op":"send","arg":"\\r"}
+{"t":5435,"step":28,"op":"eof","arg":""}
+{"t":5435,"step":0,"op":"exit","arg":"0"}

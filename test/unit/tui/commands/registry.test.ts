@@ -85,6 +85,11 @@ const EXPECTED: readonly [name: string, avail: CommandSpec['availableDuringTask'
   ['history', 'any', 'yes', []],
   ['editor', 'any', 'n/a', []],
   ['exit', 'any', 'yes', ['q', 'quit']],
+  // TUI-DESIGN-4 §1.3.1, §1.3.4, §7.10, §7.1: the four round-4 rows (37 → 41)
+  ['fullscreen', 'any', 'yes', []],
+  ['scrollback', 'any', 'yes', []],
+  ['peers', 'any', 'yes', []],
+  ['ui', 'any', 'yes', []],
 ];
 
 /** TUI-DESIGN-3 §4.1: the alias table, verbatim (command → aliases after round 3) */
@@ -239,12 +244,20 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
     const session = readFileSync(`${ROOT}src/cli/session.ts`, 'utf8');
     const kinds: readonly CommandAction['kind'][] = COMMAND_ACTION_KINDS;
     expect(new Set(kinds).size).toBe(kinds.length);
+    /**
+     * TUI-DESIGN-4 §9.2: the four round-4 commands are S4's registry rows, but their handlers are other slots' —
+     * `/fullscreen` and `/scrollback` are S1's (§1.3.1, §1.3.4) and `/peers` / `/ui reset` are S6's copy in S3's
+     * `session.ts` (§7.10, §7.1, §3.3's work list). The gate stays live for the other 36 and the `||` below keeps
+     * passing once the cases land, at which point this set is deleted.
+     */
+    const PENDING_ROUND4_HANDLERS: ReadonlySet<string> = new Set(['fullscreen', 'scrollback', 'peers', 'uiReset']);
     for (const kind of kinds) {
       const handled = app.includes(`case '${kind}':`) || session.includes(`case '${kind}':`) || ((kind === 'panel' || kind === 'transcript') && parsePanelCommand(`/${kind}`)?.kind === kind);
-      expect(handled, `CommandAction kind '${kind}' has no case in App.tsx runCommand or session.ts execute()`).toBe(true);
+      expect(handled || PENDING_ROUND4_HANDLERS.has(kind), `CommandAction kind '${kind}' has no case in App.tsx runCommand or session.ts execute()`).toBe(true);
     }
+    expect([...PENDING_ROUND4_HANDLERS].every((k) => (kinds as readonly string[]).includes(k))).toBe(true);
     // every registry command dispatches to a listed kind
-    const sample: Record<string, string> = { rename: 'x', steer: 'x', why: '3', history: 'clear', theme: 'dark', llm: 'on' };
+    const sample: Record<string, string> = { rename: 'x', steer: 'x', why: '3', history: 'clear', theme: 'dark', llm: 'on', ui: 'reset' };
     for (const c of COMMANDS) {
       const r = dispatchCommand(`/${c.name} ${sample[c.name] ?? ''}`.trim(), { run: c.availableDuringTask === 'live' ? 'live' : 'none', step: 0 });
       expect(r.ok && kinds.includes(r.action.kind), c.name).toBe(true);

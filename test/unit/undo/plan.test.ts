@@ -31,6 +31,8 @@ import {
   undoAsksDone,
   undoLogEntry,
   undoNote,
+  undoBlockHead,
+  undoBlockRows,
   undoSummaryLine,
   type CurrentFileState,
   type UndoPlanInput,
@@ -239,6 +241,30 @@ describe('the ask overlay (§12.4, §24)', () => {
     const s = startUndoAsks(planUndo(input({ post: image(7, { ok: edited }), current: { ok: cur('aaa') } })));
     expect(undoAsksDone(s)).toBe(true);
     expect(reduceUndoAsk(s, 'esc')).toBe(s);
+  });
+});
+
+describe('TUI-DESIGN-4 §6.8 (D-Z): /undo is a block, not one unbounded line', () => {
+  it('the head names the step and both counts; the body is one kv row per side', () => {
+    expect(undoBlockHead(4, 3, 1)).toBe('undo · step 4 · 3 restored, 1 skipped');
+    expect(undoBlockHead(4, 3, 0)).toBe('undo · step 4 · 3 restored');
+    expect(undoBlockHead(1, 0, 0)).toBe('undo · step 1 · 0 restored');
+    expect(undoBlockRows(['src/a.py', 'src/b.py'], [{ path: 'build/out.txt', reason: 'not-recoverable', message: NOT_RECOVERABLE_COMMAND }])).toEqual([
+      { key: 'restored', value: 'src/a.py, src/b.py' },
+      { key: 'skipped', value: `build/out.txt — ${NOT_RECOVERABLE_COMMAND}` },
+    ]);
+    // §3.1.7: nothing restored gets the sentence from the caller, never an empty row here
+    expect(undoBlockRows([], [])).toEqual([]);
+    expect(undoBlockRows(['a'], [])).toEqual([{ key: 'restored', value: 'a' }]);
+    // a skipped file with no message falls back to its reason
+    expect(undoBlockRows([], [{ path: 'x', reason: 'declined' }])).toEqual([{ key: 'skipped', value: 'x — declined' }]);
+    // LIST_MAX + `(+N)` bounds the value exactly as `undoSummaryLine` bounds its clause
+    const many = Array.from({ length: 25 }, (_, i) => `f${i}.py`);
+    const row = undoBlockRows(many, [])[0]!;
+    expect(row.value).toContain('… 15 more');
+    expect(row.value.length).toBeLessThan(many.join(', ').length);
+    // the one-line form stays: `src/undo/apply.ts` puts it in the outcome
+    expect(undoSummaryLine(4, ['src/a.py'], [])).toBe('undo step 4: restored 1 file (src/a.py)');
   });
 });
 

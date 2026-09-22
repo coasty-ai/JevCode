@@ -26,11 +26,10 @@ describe('budgets', () => {
     expect(st.interrupted).toMatchObject({ step: 1, stage: 'execute' });
     expect(st.interrupted?.proposal?.action).toEqual({ kind: 'run', command: 'pytest -q' });
     expect(st.spend.totalUsd).toBeGreaterThanOrEqual(0.5);
-    // the stop line goes through the shared item model; the run:end line is the last one (§10)
-    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
-    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    // TUI-DESIGN-4 §3.7 G1 (D-V): the `stop:` line is deleted; the run:end line is the last one (§10)
+    expect(h.store.transcript.some((l) => l.includes('stop: spend_cap'))).toBe(false);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] spend_cap [·-] 0 steps [·-] /);
     expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
-    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end spend_cap steps=0 /);
     // usage in RunResult includes the paid call
     expect(r.usage.generator.costUsd).toBeCloseTo(0.5);
   });

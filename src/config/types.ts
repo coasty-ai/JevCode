@@ -28,6 +28,15 @@ export type SettingName =
   | 'limits.allowUnpriced'
   | 'limits.maxGeneratorTokens'
   | 'session.spendCapUsd'
+  // TUI-DESIGN-4 §8 (the round-4 config rows): the relaxed-context policy of docs/COORDINATION-DESIGN.md §8, resolved
+  // here so `jevcode config` prints it and a config file can set it. OPTIONAL everywhere — `ResolvedConfig.context()`
+  // returns only the members that were actually set, and the engine keeps its own defaults for the rest (§8.1 limits).
+  | 'context.mode'
+  | 'context.compaction'
+  | 'context.compactEvery'
+  | 'context.historySteps'
+  | 'context.fileCacheBytes'
+  | 'context.budgetChars'
   | 'ui.theme'
   | 'ui.fps'
   | 'ui.renderMode'
@@ -100,6 +109,22 @@ export interface BooleanFlagBinding {
   negate: boolean;
 }
 
+/**
+ * TUI-DESIGN-4 §7.5 (P-D5): the shape `jevcode config` validates a resolved value against, so the command a user
+ * reaches for when something is wrong actually tells them. Absent = free text (a path, a model id, an API key).
+ * `clamp` marks a bound that is applied rather than refused (`ui.fps: 240` is a `⚠ clamped to 30` row, not a `✗`).
+ */
+export type SettingShape =
+  | { kind: 'int'; min?: number; max?: number; clamp?: true }
+  | { kind: 'number'; min?: number; max?: number; clamp?: true }
+  | { kind: 'boolean' }
+  | { kind: 'enum'; values: readonly string[] }
+  | { kind: 'usd'; none?: true }
+  | { kind: 'duration' };
+
+/** TUI-DESIGN-4 §7.5: the problem a row carries — the contract shape of `ConfigRecordValue.problem` (§8 item 7). */
+export type SettingProblem = { readonly kind: 'unknown-key' | 'wrong-type' | 'out-of-range'; readonly expected: string };
+
 export interface SettingSpec {
   name: SettingName;
   /** ParsedFlags key of a value flag; absent when the setting has no value flag (pricing overrides, boolean-only settings) */
@@ -129,6 +154,8 @@ export interface SettingSpec {
   ignoredFileKey?: string;
   /** TUI-DESIGN-3 §0.1 (D-Q): a bookkeeping row `jevcode config` hides unless `--all` (`seen.*`); `--json` keeps it */
   hidden?: true;
+  /** TUI-DESIGN-4 §7.5: what a value must look like; `jevcode config` reports a row that does not (`✗ expected …`) */
+  shape?: SettingShape;
 }
 
 export interface LoadedDotenv {
@@ -164,6 +191,12 @@ export interface ResolveOptions {
 export interface ResolvedConfigWithDiagnostics extends ResolvedConfig {
   /** non-fatal findings (unknown pricing model, unknown config-file keys, ...) */
   readonly warnings: readonly string[];
+  /**
+   * TUI-DESIGN-4 §7.5 item 4: the config-file keys that name no setting, verbatim and in file order, so
+   * `configTableLines` can build the one warning row that names the nearest valid setting for each. Optional so no
+   * fake of this interface outside `config/resolve.ts` breaks.
+   */
+  readonly unknownFileKeys?: readonly string[];
   /** every layer consulted for a setting, for error messages and `jevcode config` */
   sourcesConsulted(setting: SettingName): readonly string[];
 }
