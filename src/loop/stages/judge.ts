@@ -15,6 +15,8 @@
  * the engine computed (`verifiedDone`).
  */
 import { noul, ref } from '../../jev/questions.js';
+import { routeSpeculative } from '../../jev/router.js';
+import { RL4_JUDGE_DEADLINE_MS, noteStepRoute, routersOn, stepTokenFor } from '../routers.js';
 import { clip } from '../../core/text.js';
 import type { Answer, Decision, DoneClaimResult, JsonObject, JudgeResult, Proposal, ProposalEvidence, Question } from '../../core/types.js';
 import type { StageContext } from '../engine.js';
@@ -221,29 +223,94 @@ export async function runJudgeStage(ctx: StageContext, common: JsonObject, propo
   questions[TASK_COMPLETE_ID] = buildCompleteQuestion();
   const state = buildJudgeState(common, proposal, executed, reduced ? [] : claims, ctx.redact);
   let judge: JudgeResult | null = null;
-  let completion = 0;
+  let completion: number | null = 0;
   const claimProbabilities = new Map<string, number>();
-  await ctx.ask('judge', state, questions, (answers, rows: Decision[]) => {
-    for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
-    completion = noulOf(answers, TASK_COMPLETE_ID, 0);
-    if (reduced) return;
-    const doneClaims: DoneClaimResult[] = claims.map((text, j) => {
-      const p = noulOf(answers, doneClaimId(j), 0);
-      claimProbabilities.set(text, p);
-      return { text, judged: p, accepted: p >= PLAN_ACCEPT_THRESHOLD };
+  const asked = async (): Promise<JudgeAsked> => {
+    let out: JudgeAsked = { judge: null, completion: 0, claims: [] };
+    // jev-contract: RL4 judge + RL5 completion (docs/LLM-LOOP-DESIGN.md §2.2, §2.5)
+    //   escape:   Q19/Q21 and Q22 carry their escapes; an unanswered Noul is inert.
+    //   guard:    with routers on this ask is issued through routeSpeculative under the step signal with a 400 ms
+    //             deadline and a step-scoped token, and a PARSED test run overrides Jev's outcome with the code
+    //             comparison of the parsed counts (codeJudge) — Jev's Nouls are then data in decisions.jsonl.
+    //   fallback: codeJudge() over the harness's own parsed counts and exit code, with completion `null` ("not answered", which no stop rule reads as complete) — test: test/unit/loop/router.test.ts
+    //   no-gating: with routers on nothing here can end a run: a dropped answer judges by code and completes
+    //             nothing. With routers off this site is exactly the pre-1.9 stage.
+    await ctx.ask('judge', state, questions, (answers, rows: Decision[]) => {
+      for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
+      const askedCompletion = noulOf(answers, TASK_COMPLETE_ID, 0);
+      if (reduced) {
+        out = { judge: null, completion: askedCompletion, claims: [] };
+        return;
+      }
+      const doneClaims: DoneClaimResult[] = claims.map((text, j) => {
+        const p = noulOf(answers, doneClaimId(j), 0);
+        return { text, judged: p, accepted: p >= PLAN_ACCEPT_THRESHOLD };
+      });
+      let tests: JudgeResult['tests'] = null;
+      if (executed.tests) {
+        const parsed = executed.tests.parsed;
+        tests = parsed
+          ? { source: 'parsed', allPassed: executed.tests.allPassed === true, passed: parsed.passed, failed: parsed.failed, errors: parsed.errors }
+          : { source: 'judged', allPassed: noulOf(answers, 'tests_pass_unparsed', 0) };
+      }
+      // errorPresent is 0 (not asked) on a read: file contents are not a command failure.
+      out = {
+        judge: { succeeded: noulOf(answers, 'succeeded', 0), errorPresent: read ? 0 : noulOf(answers, 'error_present', 0), newInfo: noulOf(answers, 'new_information', 0), tests, doneClaims },
+        completion: askedCompletion,
+        claims: doneClaims,
+      };
     });
-    let tests: JudgeResult['tests'] = null;
-    if (executed.tests) {
-      const parsed = executed.tests.parsed;
-      tests = parsed
-        ? { source: 'parsed', allPassed: executed.tests.allPassed === true, passed: parsed.passed, failed: parsed.failed, errors: parsed.errors }
-        : { source: 'judged', allPassed: noulOf(answers, 'tests_pass_unparsed', 0) };
-    }
-    // errorPresent is 0 (not asked) on a read: file contents are not a command failure.
-    judge = { succeeded: noulOf(answers, 'succeeded', 0), errorPresent: read ? 0 : noulOf(answers, 'error_present', 0), newInfo: noulOf(answers, 'new_information', 0), tests, doneClaims };
-  });
+    return out;
+  };
+  const apply = (a: JudgeAsked): void => {
+    judge = a.judge;
+    completion = a.completion;
+    for (const c of a.claims) claimProbabilities.set(c.text, c.judged);
+  };
+  if (!routersOn()) {
+    apply(await asked());
+  } else {
+    const route = await routeSpeculative<JudgeAsked>({
+      id: 'RL4',
+      token: stepTokenFor(ctx.runId, ctx.step),
+      codeOrder: [codeJudgeAsked(proposal, executed, claims, reduced)],
+      deadlineMs: RL4_JUDGE_DEADLINE_MS,
+      signal: ctx.signal,
+      ask: async () => [await asked()],
+    });
+    noteStepRoute(ctx.runId, ctx.step, route);
+    const chosen = route.order[0]!;
+    // §2.2 RL4: recorded-only wherever the harness has the fact — a parsed run is judged by the code comparison
+    // of its counts, whatever Jev answered; only an unparsed run keeps Jev's reading.
+    const parsedRun = executed.tests !== null && executed.tests.parsed !== null;
+    apply(route.dropped || parsedRun ? { ...codeJudgeAsked(proposal, executed, claims, reduced), completion: route.dropped ? null : chosen.completion } : chosen);
+  }
   ctx.emit({ type: 'judge', step: ctx.step, judge, completion });
   return { judge, completion, claimProbabilities };
+}
+
+/** what one judge request produced; the stage's three outputs in one value, so a late answer can be dropped whole */
+interface JudgeAsked {
+  judge: JudgeResult | null;
+  completion: number | null;
+  claims: readonly DoneClaimResult[];
+}
+
+/**
+ * contract 1.9 (Fastlane) §2.2 RL4: the judge the CODE computes for a jev-on step — the same `codeJudge()` the
+ * llm-jev path has used since §3 row 7, over this step's parsed counts, exit code and claims. Sufficient alone:
+ * it is what the stage returns when the router drops, and what overrides a Jev answer on a parsed run.
+ */
+export function codeJudgeAsked(proposal: Proposal, executed: ExecutedInfo, claims: readonly string[], reduced: boolean): JudgeAsked {
+  if (reduced) return { judge: null, completion: null, claims: [] };
+  const exec = executed.outcome.status === 'executed' ? executed.outcome.exec : null;
+  const exitCode = typeof exec?.exitCode === 'number' ? exec.exitCode : null;
+  const judged = codeJudge(
+    { tests: executed.tests, exitCode, evidence: proposal.evidence ?? null, testsPassUnparsed: null, knownFailures: knownFailuresOf(proposal.evidence?.completion) },
+    claims,
+    ledgerGoalsOf(claims, proposal.evidence?.goalTests ?? []),
+  );
+  return { judge: judged, completion: null, claims: judged.doneClaims };
 }
 
 /** llm-jev (docs/LLM-JEV-DESIGN.md §3 row 7): code on every step; Q21/Q22 recorded only. */
@@ -258,6 +325,12 @@ async function runCodeJudgeStage(ctx: StageContext, common: JsonObject, proposal
     // 0.00 in the window note and in the step record, claiming an answer nobody gave.
     let completion: number | null = completeDue ? 0 : null;
     if (completeDue) {
+      // jev-contract: RL5 completion (docs/LLM-LOOP-DESIGN.md §2.5) — llm-jev's own rule, unchanged by contract 1.9.
+      //   escape:   Q22 carries its escape.
+      //   guard:    the stop is `Engine.completeAfter` -> `isCompleteByFact()` (complete.ts) over the engine's OWN
+      //             current, passing run; `task_complete` is written to the record and read by no stop rule here.
+      //   fallback: isCompleteByFact() is code and needs no answer; a throwing decider leaves completion unanswered and the run continues — test: test/unit/loop/router.test.ts
+      //   no-gating: recorded-only: a missing or wrong Noul cannot complete a run and cannot prevent one completing.
       await ctx.ask('judge', buildJudgeState(common, proposal, executed, [], ctx.redact), { [TASK_COMPLETE_ID]: buildCompleteQuestion() }, (answers, rows: Decision[]) => {
         for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
         completion = noulOf(answers, TASK_COMPLETE_ID, 0);
@@ -280,6 +353,12 @@ async function runCodeJudgeStage(ctx: StageContext, common: JsonObject, proposal
   // with Q22 not due, a parsed run that claims nothing has no record-only question left to ask
   const recordOnly = buildRecordOnlyQuestions({ testsUnparsed, claims, completeDue });
   if (Object.keys(recordOnly).length > 0) {
+    // jev-contract: RL4 judge (docs/LLM-LOOP-DESIGN.md §2.2) — llm-jev's own rule, unchanged by contract 1.9.
+    //   escape:   Q19/Q21/Q22 carry their escapes; the batch is built by buildRecordOnlyQuestions().
+    //   guard:    the outcome is `codeJudge()` over the harness's own parsed counts below; Jev's Nouls are
+    //             compared to it and a disagreement is written to the transcript, never consumed.
+    //   fallback: the code comparison of the parsed failing counts (codeJudge), which needs no answer — test: test/unit/loop/router.test.ts
+    //   no-gating: recorded-only — `tests_pass_unparsed` is consulted only where the parser read nothing.
     await ctx.ask('judge', state, recordOnly, (answers, rows: Decision[]) => {
       for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
       // review finding 3: the batch is still asked when Q22 is NOT due (the unparsed path, or a
