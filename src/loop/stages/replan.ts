@@ -23,7 +23,7 @@
  *   that loop by construction, with no constant and no task name in the rule.
  */
 import { choice, noul, pairedNouls, ref } from '../../jev/questions.js';
-import { routeSpeculative } from '../../jev/router.js';
+import { routeSpeculative, type StepToken } from '../../jev/router.js';
 import { RL6_REPLAN_DEADLINE_MS, noteStepRoute, routersOn, stepTokenFor } from '../routers.js';
 import type { ChoiceVerdict, EngineMode, JsonObject, Question, ReplanDirective, ReplanMove } from '../../core/types.js';
 import type { StageContext } from '../engine.js';
@@ -269,7 +269,10 @@ export async function runReplanStage(ctx: StageContext, common: JsonObject, dete
   // `impossible` stop below cannot fire from this stage whatever the configured threshold is
   const askImpossible = !synthProposes(ctx.mode);
   const codeAnswer: ReplanAsked = { resolved, taskImpossible: 0, confidence: 0 };
-  const asked = async (): Promise<ReplanAsked> => {
+  // I4 at the WRITE site: the step's own token, held from before the ask so a late answer can see that its step
+  // has committed. Null on the routers-off path, where this callback is the pre-1.9 one, byte for byte.
+  let routed: StepToken | null = null;
+  const asked = async (signal?: AbortSignal): Promise<ReplanAsked> => {
     let out: ReplanAsked = codeAnswer;
     // jev-contract: RL6 next_move (docs/LLM-LOOP-DESIGN.md §2.2, §2.5)
     //   escape:   the Choice carries `none_of_these`; resolveChoice returns the escape as a non-answer.
@@ -280,6 +283,11 @@ export async function runReplanStage(ctx: StageContext, common: JsonObject, dete
     //   fallback: REPLAN_FALLBACK = 'change_approach', the move the stage already resolves to when the Choice is escaped or absent — test: test/unit/loop/router.test.ts
     //   no-gating: with routers on a dropped answer continues the run on the code directive; it can never end one.
     await ctx.ask('replan', state, buildReplanQuestions({ taskImpossible: askImpossible }), (answers, rows) => {
+    // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token, settled
+    // work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it annotates
+    // nothing and applies nothing. `ctx.ask` still takes no per-call signal — that is the `askRecorded` seam of
+    // §7.5, slot B's post-C commit — so the request itself runs on; what it may no longer do is write a verdict.
+      if (signal?.aborted === true || routed?.valid === false) return;
       const r = resolveChoice<ReplanOption>({ choiceId: 'next_move', answers, options: REPLAN_LIST, escape: 'none_of_these', fallback: REPLAN_FALLBACK });
       annotateChoiceRows(rows, 'next_move', r);
       const ti = answers['task_impossible'];
@@ -294,13 +302,14 @@ export async function runReplanStage(ctx: StageContext, common: JsonObject, dete
     taskImpossible = a.taskImpossible;
     confidence = a.confidence;
   } else {
+    routed = stepTokenFor(ctx.runId, ctx.step);
     const route = await routeSpeculative<ReplanAsked>({
       id: 'RL6',
-      token: stepTokenFor(ctx.runId, ctx.step),
+      token: routed,
       codeOrder: [codeAnswer],
       deadlineMs: RL6_REPLAN_DEADLINE_MS,
       signal: ctx.signal,
-      ask: async () => [await asked()],
+      ask: async (signal) => [await asked(signal)],
     });
     noteStepRoute(ctx.runId, ctx.step, route);
     const a = route.order[0] ?? codeAnswer;

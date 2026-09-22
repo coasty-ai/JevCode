@@ -44,6 +44,8 @@ interface CtxOptions {
   step?: number;
   events?: EngineEvent[];
   asked?: StageName[];
+  /** every Decision row the engine would have recorded, AFTER the stage's annotate callback ran (or did not) */
+  rows?: Decision[];
 }
 
 function stageCtx(o: CtxOptions): StageContext {
@@ -72,6 +74,7 @@ function stageCtx(o: CtxOptions): StageContext {
       const answers = await o.ask(stage, questions);
       const rows: Decision[] = Object.keys(questions).map((id) => ({ step, stage, id, question: questions[id]!, answer: answers[id] ?? noulA(0), probability: 0.8, confidence: 0.9, latencyMs: 1, requestHash: 'h' }));
       annotate?.(answers, rows);
+      o.rows?.push(...rows);
       return { answers, rows, latencyMs: 1 };
     },
     generate: () => Promise.reject(new Error('no generator on this path')),
@@ -311,6 +314,60 @@ describe('the router table with a decider that throws (routers: on)', () => {
     stepTokenFor('lru', 3); // a third mint retires step 1
     expect(evicted.valid).toBe(false);
     expect(stepTokenFor('lru', 1).valid).toBe(false);
+  });
+
+  it('defect 2: a dropped ask is cancelled, and a cancelled answer annotates nothing', async () => {
+    const answers = (): Record<string, Answer> => ({
+      intent: choiceOver(['investigate', 'edit', 'verify', 'fix_environment', 'finish', 'none_of_these'], 'edit', 0.95),
+      can_edit: noulA(0.95),
+      can_investigate: noulA(0.05),
+      can_verify: noulA(0.05),
+      can_fix_environment: noulA(0.05),
+      can_finish: noulA(0.05),
+      plan_still_valid: noulA(0.9),
+    });
+    // the ask outlives its step: the router hands the thunk a signal, drops at commit, and aborts it
+    const late: Decision[] = [];
+    const slow = stageCtx({
+      step: 31,
+      rows: late,
+      ask: async () => {
+        await new Promise((r) => setTimeout(r, 30));
+        return answers();
+      },
+    });
+    const pending = runIntentStage(slow, common());
+    commitStepRouters('r-router', 31);
+    expect(await pending).toMatchObject({ intent: INTENT_FALLBACK });
+    // the continuation still ran (ctx.ask takes no per-call signal until the §7.5 engine seam), but the answer it
+    // carries was DROPPED — so it annotates nothing: the row the engine records for a dropped answer must not say
+    // Jev's option was chosen
+    expect(late.find((d) => d.id === 'intent')?.verdict).toBeUndefined();
+
+    // and an answer that lands in time annotates exactly as before
+    const live: Decision[] = [];
+    const fast = stageCtx({ step: 32, rows: live, ask: async () => answers() });
+    expect(await runIntentStage(fast, common())).toMatchObject({ intent: 'edit', verdict: 'chosen' });
+    expect(live.find((d) => d.id === 'intent')?.verdict).toBe('chosen');
+  });
+
+  it('defect 2: the judge stage drops the same way — a cancelled answer re-labels no row', async () => {
+    const rows: Decision[] = [];
+    const slow = stageCtx({
+      step: 33,
+      rows,
+      ask: async (_stage, questions) => {
+        await new Promise((r) => setTimeout(r, 30));
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(0.99);
+        return out;
+      },
+    });
+    const pending = runJudgeStage(slow, common(), runProposal('pytest -q'), executed(), []);
+    commitStepRouters('r-router', 33);
+    expect((await pending).judge?.source).toBe('code');
+    // annotate is what moves task_complete into the `complete` pane; a dropped answer moves nothing
+    expect(rows.find((d) => d.id === 'task_complete')?.stage).toBe('judge');
   });
 
   it('I5: three consecutive Jev failures do not end a run — every stage returns a code answer and none throws', async () => {

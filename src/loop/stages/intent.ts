@@ -18,7 +18,7 @@
  * jev-only, so jev-on and jev-off resolve exactly as §6 says.
  */
 import { choice, noul, pairedNouls, ref } from '../../jev/questions.js';
-import { routeSpeculative } from '../../jev/router.js';
+import { routeSpeculative, type StepToken } from '../../jev/router.js';
 import { RL1_INTENT_DEADLINE_MS, noteStepRoute, routersOn, stepTokenFor } from '../routers.js';
 import type { Answer, EngineMode, Intent, IntentAnswer, JsonObject, Question } from '../../core/types.js';
 import type { StageContext } from '../engine.js';
@@ -216,7 +216,10 @@ export async function runIntentStage(ctx: StageContext, common: JsonObject): Pro
   let confidence = 0;
   // the code answer, complete before any request is made: the stage can finish on this alone
   const codeAnswer: IntentAsked = { resolved, planStillValid, confidence };
-  const asked = async (): Promise<IntentAsked> => {
+  // I4 at the WRITE site: the step's own token, held from before the ask so a late answer can see that its step
+  // has committed. Null on the routers-off path, where this callback is the pre-1.9 one, byte for byte.
+  let routed: StepToken | null = null;
+  const asked = async (signal?: AbortSignal): Promise<IntentAsked> => {
     let out: IntentAsked = codeAnswer;
     // jev-contract: RL1 intent (docs/LLM-LOOP-DESIGN.md §2.2)
     //   escape:   the Choice carries `none_of_these`; resolveChoice returns the escape as a non-answer and
@@ -228,6 +231,11 @@ export async function runIntentStage(ctx: StageContext, common: JsonObject): Pro
     //   no-gating: the answer reaches one sentence of the prompt's intent section and nothing else. It cannot
     //             stop the run, block an action, or withhold a candidate.
     await ctx.ask('intent', state, questions, (answers, rows) => {
+    // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token, settled
+    // work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it annotates
+    // nothing and applies nothing. `ctx.ask` still takes no per-call signal — that is the `askRecorded` seam of
+    // §7.5, slot B's post-C commit — so the request itself runs on; what it may no longer do is write a verdict.
+      if (signal?.aborted === true || routed?.valid === false) return;
       const r = resolve(answers);
       annotateChoiceRows(rows, 'intent', r);
       const psv = answers['plan_still_valid'];
@@ -245,13 +253,14 @@ export async function runIntentStage(ctx: StageContext, common: JsonObject): Pro
     // RL1: the code order is what the step runs; Jev's answer re-orders it when it lands inside the deadline
     const codeOrder = codeIntentOrder({ changeUnverified: ledgerInput.changeUnverified, runGreen: ledgerInput.runGreen === true });
     const codeRoute: IntentAsked = { ...codeAnswer, resolved: { ...codeAnswer.resolved, option: codeOrder[0] ?? INTENT_FALLBACK } };
+    routed = stepTokenFor(ctx.runId, ctx.step);
     const route = await routeSpeculative<IntentAsked>({
       id: 'RL1',
-      token: stepTokenFor(ctx.runId, ctx.step),
+      token: routed,
       codeOrder: [codeRoute],
       deadlineMs: RL1_INTENT_DEADLINE_MS,
       signal: ctx.signal,
-      ask: async () => [await asked()],
+      ask: async (signal) => [await asked(signal)],
     });
     noteStepRoute(ctx.runId, ctx.step, route);
     const chosen = route.order[0] ?? codeRoute;

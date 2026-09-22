@@ -15,7 +15,7 @@
  * the engine computed (`verifiedDone`).
  */
 import { noul, ref } from '../../jev/questions.js';
-import { routeSpeculative } from '../../jev/router.js';
+import { routeSpeculative, type StepToken } from '../../jev/router.js';
 import { RL4_JUDGE_DEADLINE_MS, noteStepRoute, routersOn, stepTokenFor } from '../routers.js';
 import { clip } from '../../core/text.js';
 import type { Answer, Decision, DoneClaimResult, JsonObject, JudgeResult, Proposal, ProposalEvidence, Question } from '../../core/types.js';
@@ -225,7 +225,10 @@ export async function runJudgeStage(ctx: StageContext, common: JsonObject, propo
   let judge: JudgeResult | null = null;
   let completion: number | null = 0;
   const claimProbabilities = new Map<string, number>();
-  const asked = async (): Promise<JudgeAsked> => {
+  // I4 at the WRITE site: the step's own token, held from before the ask so a late answer can see that its step
+  // has committed. Null on the routers-off path, where this callback is the pre-1.9 one, byte for byte.
+  let routed: StepToken | null = null;
+  const asked = async (signal?: AbortSignal): Promise<JudgeAsked> => {
     let out: JudgeAsked = { judge: null, completion: 0, claims: [] };
     // jev-contract: RL4 judge + RL5 completion (docs/LLM-LOOP-DESIGN.md §2.2, §2.5)
     //   escape:   Q19/Q21 and Q22 carry their escapes; an unanswered Noul is inert.
@@ -236,6 +239,11 @@ export async function runJudgeStage(ctx: StageContext, common: JsonObject, propo
     //   no-gating: with routers on nothing here can end a run: a dropped answer judges by code and completes
     //             nothing. With routers off this site is exactly the pre-1.9 stage.
     await ctx.ask('judge', state, questions, (answers, rows: Decision[]) => {
+    // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token, settled
+    // work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it annotates
+    // nothing and applies nothing. `ctx.ask` still takes no per-call signal — that is the `askRecorded` seam of
+    // §7.5, slot B's post-C commit — so the request itself runs on; what it may no longer do is write a verdict.
+      if (signal?.aborted === true || routed?.valid === false) return;
       for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
       const askedCompletion = noulOf(answers, TASK_COMPLETE_ID, 0);
       if (reduced) {
@@ -270,13 +278,14 @@ export async function runJudgeStage(ctx: StageContext, common: JsonObject, propo
   if (!routersOn(ctx.mode)) {
     apply(await asked());
   } else {
+    routed = stepTokenFor(ctx.runId, ctx.step);
     const route = await routeSpeculative<JudgeAsked>({
       id: 'RL4',
-      token: stepTokenFor(ctx.runId, ctx.step),
+      token: routed,
       codeOrder: [codeJudgeAsked(proposal, executed, claims, reduced)],
       deadlineMs: RL4_JUDGE_DEADLINE_MS,
       signal: ctx.signal,
-      ask: async () => [await asked()],
+      ask: async (signal) => [await asked(signal)],
     });
     noteStepRoute(ctx.runId, ctx.step, route);
     const chosen = route.order[0]!;
