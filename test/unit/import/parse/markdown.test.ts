@@ -10,6 +10,21 @@ import {
   stripBlockHtmlComments,
 } from '../../../../src/import/parse/markdown.js';
 
+
+/**
+ * Wall-clock gates on a shared machine: take the BEST of three samples, so a noisy neighbour cannot fail the gate while
+ * genuinely slow code (quadratic regions, the pre-fix 13.9 s) still fails every sample.
+ */
+function bestOfMs(run: () => void, samples = 3): number {
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < samples; i += 1) {
+    const started = performance.now();
+    run();
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
+}
+
 describe('normaliseText — §6 row 25 encodings', () => {
   it('strips a UTF-8 BOM and reports it', () => {
     const r = normaliseText(Buffer.from('﻿# hi\n', 'utf8'));
@@ -85,9 +100,8 @@ describe('stripBlockHtmlComments', () => {
       return out.join('\n');
     };
     for (const text of [rep('<!-- a note that never closes', 400 * 1024), `${rep('<!-- open', 200 * 1024)}\n${rep('--> x', 200 * 1024)}`]) {
-      const started = performance.now();
       const out = stripBlockHtmlComments(text);
-      const ms = performance.now() - started;
+      const ms = bestOfMs(() => stripBlockHtmlComments(text));
       expect(out).toBe(text); // nothing is strippable in either body
       expect(ms, `stripBlockHtmlComments took ${ms.toFixed(0)} ms for ${text.length} chars`).toBeLessThan(200);
     }
@@ -204,9 +218,8 @@ describe('§1 property 14 — parseMarkdown is not quadratic in the number of co
   it('a 400 KiB fence-heavy file parses in under 200 ms', () => {
     const text = fenceHeavy(400 * 1024);
     expect(Buffer.byteLength(text, 'utf8')).toBeGreaterThan(400 * 1024);
-    const started = performance.now();
     const doc = parseMarkdown(text);
-    const ms = performance.now() - started;
+    const ms = bestOfMs(() => parseMarkdown(text));
     // the body really is region-dense: ~6,700 fences, as many spans, and as many refs inside them
     expect(doc.fences).toBeGreaterThan(5_000);
     expect(doc.refs.length).toBeGreaterThan(5_000);
@@ -243,9 +256,8 @@ describe('§1 property 14 — parseMarkdown is not quadratic in the number of co
       n += line.length + 1;
     }
     const text = lines.join('\n');
-    const started = performance.now();
     const doc = parseMarkdown(text);
-    const ms = performance.now() - started;
+    const ms = bestOfMs(() => parseMarkdown(text));
     expect(doc.executables.length).toBeGreaterThan(20_000);
     expect(ms, `parseMarkdown took ${ms.toFixed(0)} ms for ${doc.executables.length} executables`).toBeLessThan(200);
   });
