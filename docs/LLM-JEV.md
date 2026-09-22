@@ -275,8 +275,12 @@ harmful command allowed under a dropped ask reverts the §2.4 ratification on it
 **Two readings pinned, because the design's prose leaves them open.** R-a is written as a p95 with a bar of exactly
 zero; the table takes the **maximum**, which is the same gate unless more than 5 % of steps blocked and is the form a
 single blocked step cannot average its way out of. R-c is written as "stage-1-fired / stage-2-declined ≤ 0.3", a ratio
-that *rises* when the predicate works; the table takes **`stage2Declined / stage1Fired`**, the direction in which the
-stated conclusion ("the predicate is wrong") is the one the number supports.
+that *rises* when the predicate works; the table takes **`stage2Declined / stage1Held`**, the direction in which the
+stated conclusion ("the predicate is wrong") is the one the number supports. `stage1Held` is the count of rows the
+writer recorded at `stage: 2` — the steps that reached the expensive stage at all. A *stage-1-fired* denominator is
+a shape no run produces (the writer sets `decision: 'fired'` only on a successful proposal, always at `stage: 2`),
+which would make R-c unfailable, prediction (e) permanently `not_evaluable`, and R-b blind to a round that overran
+its budget and then timed out.
 
 **The accept rule** (§8.5) is five clauses, evaluated by the same module and printed by
 `experiments/llm-jev/headtohead.mts` under `--candidate jev-on-next --control jev-on-next-nofast`. Clause 1 (the §7

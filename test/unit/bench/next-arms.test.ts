@@ -99,30 +99,36 @@ describe('the jev-on-next arms (§8.1)', () => {
 });
 
 describe('the §5.5 bench bridge', () => {
+  // the rows below are the shapes slot C's writer actually produces (`llm-loop-C-fastpath` src/loop/stages/fastpath.ts
+  // `declinedRecord` / `firedRecord`): `stage: 1` ONLY on a free decline, `stage: 2` on every row of a round that ran,
+  // `decision: 'fired'` ONLY on a proposal, and `decision: 'failed'` with outcome timeout/refused/error otherwise.
   it('folds fastPath, router, riskSource and the S2 verify members out of steps.jsonl', () => {
     const text = [
-      step({ fastPath: { decision: 'fired', reason: 'held', stage: 1, outcome: 'proposed', candidatesTested: 12, testRuns: 3, jevRequests: 2, wallMs: 4000, budgetMs: 45_000 }, router: { issued: 3, applied: 2, dropped: 1, waitMs: 0 }, riskSource: 'code', verify: { ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10 } }),
+      step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', candidatesTested: 12, testRuns: 3, jevRequests: 2, wallMs: 4000, budgetMs: 45_000 }, router: { issued: 3, applied: 2, dropped: 1, waitMs: 0 }, riskSource: 'code', verify: { ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10 } }),
       step({ step: 2, fastPath: { decision: 'declined', reason: 'multi_file', stage: 1, outcome: 'skipped', wallMs: 1, budgetMs: 45_000 }, router: { issued: 2, applied: 2, dropped: 0, waitMs: 7 }, riskSource: 'jev', jevUnavailable: true }),
-      step({ step: 3, fastPath: { decision: 'declined', reason: 'no_passer_class', stage: 2, outcome: 'no_passer', wallMs: 900, budgetMs: 45_000 } }),
-      // a fired step over its own budget: R-b counts it, and it is counted against the budget THAT row carried
-      step({ step: 4, fastPath: { decision: 'fired', reason: 'held', stage: 2, outcome: 'refused', wallMs: 50_000, budgetMs: 45_000, candidatesTested: 1 } }),
+      step({ step: 3, fastPath: { decision: 'declined', reason: 'no_passer_class', stage: 2, outcome: 'skipped', wallMs: 900, budgetMs: 45_000 } }),
+      // a round that ran and blew its own budget: R-b counts it whatever it then decided, and against the budget THAT
+      // row carried. A refusal is `decision: 'failed'` — counting overruns on 'fired' alone misses it entirely.
+      step({ step: 4, fastPath: { decision: 'failed', reason: 'error', stage: 2, outcome: 'refused', wallMs: 50_000, budgetMs: 45_000, candidatesTested: 1 } }),
       // an engine without the wave: no fastPath key at all
       step({ step: 5, timing: { synthMs: 100 } }),
       '{"torn": ',
     ].join('\n');
     const s = summariseStepRows(text);
     expect(s.steps).toBe(5);
-    expect(s.fastPath).toMatchObject({ considered: 4, fired: 2, declined: 2, failed: 0, proposed: 1, refused: 1, timeouts: 0, stage1Fired: 1, stage2Declined: 1, candidatesTested: 13, testRuns: 3, jevRequests: 2, budgetOverruns: 1 });
+    // stage1Held = the rows that REACHED stage 2 (fired + stage-2 declined + stage-2 failed): what the writer records
+    expect(s.fastPath).toMatchObject({ considered: 4, fired: 1, declined: 2, failed: 1, proposed: 1, refused: 1, timeouts: 0, stage1Held: 3, stage2Declined: 1, candidatesTested: 13, testRuns: 3, jevRequests: 2, budgetOverruns: 1 });
     expect(s.fastPath.wallMs).toBe(54_901);
-    // the histogram is over INELIGIBLE steps only: the two fired rows' `held` reason is not a decline
-    expect(s.fastPath.reasons).toEqual({ multi_file: 1, no_passer_class: 1 });
+    // the histogram is over INELIGIBLE steps only: the fired row's `none` reason is not a decline
+    expect(s.fastPath.reasons).toEqual({ multi_file: 1, no_passer_class: 1, error: 1 });
     expect(s.routers).toEqual({ issued: 5, applied: 4, dropped: 1, maxWaitMs: 7 });
     expect(s.risk).toEqual({ codeVerdicts: 1, jevUnavailable: 1 });
     expect(s.s2).toEqual({ ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10 });
 
     const merged = mergeStepsSummaries([s, s, emptyStepsSummary()]);
-    expect(merged.fastPath.fired).toBe(4);
-    expect(merged.fastPath.reasons).toEqual({ multi_file: 2, no_passer_class: 2 });
+    expect(merged.fastPath.fired).toBe(2);
+    expect(merged.fastPath.stage1Held).toBe(6);
+    expect(merged.fastPath.reasons).toEqual({ multi_file: 2, no_passer_class: 2, error: 2 });
     // maxWaitMs is a MAX across runs, not a sum: R-a's bar is "no step ever waited"
     expect(merged.routers).toEqual({ issued: 10, applied: 8, dropped: 2, maxWaitMs: 7 });
     expect(merged.s2.ttfbMs).toEqual([300, 500, 300, 500]);
@@ -183,7 +189,7 @@ describe('the §8.3 rows', () => {
 
   it('pass on a clean arm and name the failure on a dirty one', () => {
     const clean = [
-      withSynth('a', 'jev-on-next', [step({ fastPath: { decision: 'fired', reason: 'held', stage: 1, outcome: 'proposed', wallMs: 100, budgetMs: 45_000 }, router: { issued: 2, applied: 2, dropped: 0, waitMs: 0 } })]),
+      withSynth('a', 'jev-on-next', [step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', wallMs: 100, budgetMs: 45_000 }, router: { issued: 2, applied: 2, dropped: 0, waitMs: 0 } })]),
       // a STRUCTURAL decline (stage 1) is the cheap, expected shape: it costs nothing and does not count against R-c
       withSynth('b', 'jev-on-next', [step({ fastPath: { decision: 'declined', reason: 'multi_file', stage: 1, outcome: 'skipped', wallMs: 1, budgetMs: 45_000 }, router: { issued: 1, applied: 1, dropped: 0, waitMs: 0 } })]),
     ];
@@ -191,15 +197,48 @@ describe('the §8.3 rows', () => {
     expect(rows.map((r) => [r.id, r.status])).toEqual([['R-a', 'pass'], ['R-b', 'pass'], ['R-c', 'pass'], ['R-d', 'pass'], ['R-e', 'reported']]);
 
     const dirty = [
-      withSynth('a', 'jev-on-next', [step({ fastPath: { decision: 'fired', reason: 'held', stage: 1, outcome: 'proposed', wallMs: 60_000, budgetMs: 45_000 }, router: { issued: 1, applied: 0, dropped: 1, waitMs: 120 } })]),
+      withSynth('a', 'jev-on-next', [step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', wallMs: 60_000, budgetMs: 45_000 }, router: { issued: 1, applied: 0, dropped: 1, waitMs: 120 } })]),
       // two stage-2 declines against one stage-1 fire = 2.0, far over the 0.3 bar: the PREDICATE is wrong
       withSynth('b', 'jev-on-next', [step({ fastPath: { decision: 'declined', reason: 'error', stage: 2, outcome: 'error', wallMs: 1, budgetMs: 1 } }), step({ step: 2, fastPath: { decision: 'declined', reason: 'error', stage: 2, outcome: 'error', wallMs: 1, budgetMs: 1 } })]),
     ];
     const bad = measurementRows(dirty, 'jev-on-next', ['quixbugs']);
     expect(bad.map((r) => [r.id, r.status])).toEqual([['R-a', 'fail'], ['R-b', 'fail'], ['R-c', 'fail'], ['R-d', 'fail'], ['R-e', 'reported']]);
     expect(bad[2]!.detail).toContain('the predicate is wrong, not the budget');
+    // 2 stage-2 declines out of 3 rounds that ran
+    expect(bad[2]!.detail).toContain('quixbugs 2/3 = 0.67');
     // R-d names the clause, which is the whole reason it exists beside R-c
     expect(bad[3]!.detail).toContain('error 2 (100.0 %)');
+  });
+
+  it('R-c is FAILABLE on the shape the writer produces (no row is ever `stage: 1, decision: fired`)', () => {
+    // one round proposed, three rounds ran and were thrown out by the stage that costs real work: 3/4 = 0.75, far
+    // over the 0.3 bar. With a stage-1-FIRED denominator this arm read `pass | quixbugs 3/0 = n/a` — the row could
+    // not fail on any run slot C's writer can produce, which is the same as not having the row.
+    const records = [
+      withSynth('a', 'jev-on-next', [step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', wallMs: 100, budgetMs: 45_000 } })]),
+      withSynth('b', 'jev-on-next', [
+        step({ fastPath: { decision: 'declined', reason: 'no_sites', stage: 2, outcome: 'skipped', wallMs: 100, budgetMs: 45_000 } }),
+        step({ step: 2, fastPath: { decision: 'declined', reason: 'no_sites', stage: 2, outcome: 'skipped', wallMs: 100, budgetMs: 45_000 } }),
+        step({ step: 3, fastPath: { decision: 'declined', reason: 'no_sites', stage: 2, outcome: 'skipped', wallMs: 100, budgetMs: 45_000 } }),
+      ]),
+    ];
+    const rc = measurementRows(records, 'jev-on-next', ['quixbugs']).find((r) => r.id === 'R-c')!;
+    expect(rc.status).toBe('fail');
+    expect(rc.detail).toContain('quixbugs 3/4 = 0.75');
+  });
+
+  it('R-b sees a round that blew its budget and then timed out — those rows are `failed`, not `fired`', () => {
+    // every round over the 45 s budget and killed by it: `fired` is 0, so a fired-only R-b read "no step fired" while
+    // the arm spent past its share on every step.
+    const records = [
+      withSynth('a', 'jev-on-next', [
+        step({ fastPath: { decision: 'failed', reason: 'error', stage: 2, outcome: 'timeout', wallMs: 60_000, budgetMs: 45_000 } }),
+        step({ step: 2, fastPath: { decision: 'failed', reason: 'error', stage: 2, outcome: 'timeout', wallMs: 58_000, budgetMs: 45_000 } }),
+      ]),
+    ];
+    const rb = measurementRows(records, 'jev-on-next', ['quixbugs']).find((r) => r.id === 'R-b')!;
+    expect(rb.status).toBe('fail');
+    expect(rb.detail).toContain('0/2 within budget');
   });
 
   it('reads "not evaluable", never "pass", when the arm was never armed', () => {
@@ -227,7 +266,7 @@ describe('the §8.4 predictions and the §8.5 accept rule', () => {
   });
 
   it('does not accept a wave whose control is missing, even when every row passes', () => {
-    const records = Array.from({ length: 18 }, (_, i) => ({ ...rec(`t${i}`, 'jev-on-next'), synth: summariseStepRows(step({ fastPath: { decision: 'fired', reason: 'held', stage: 1, outcome: 'proposed', wallMs: 10, budgetMs: 45_000 }, router: { issued: 1, applied: 1, dropped: 0, waitMs: 0 } })) }));
+    const records = Array.from({ length: 18 }, (_, i) => ({ ...rec(`t${i}`, 'jev-on-next'), synth: summariseStepRows(step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', wallMs: 10, budgetMs: 45_000 }, router: { issued: 1, applied: 1, dropped: 0, waitMs: 0 } })) }));
     const rows = measurementRows(records, 'jev-on-next', ['quixbugs']);
     const predictions = evaluatePredictions({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast' });
     expect(predictions.find((p) => p.id === 'a')).toMatchObject({ status: 'pass' });
@@ -267,9 +306,23 @@ describe('the §8.4 predictions and the §8.5 accept rule', () => {
     expect(evaluatePredictions({ records: slow, arm: 'jev-on-next', control: 'jev-on-next-nofast' }).find((p) => p.id === 'b')).toMatchObject({ status: 'fail' });
   });
 
+  it('(e) is evaluable on the writer\'s shape and counts only the QuixBugs steps its title claims', () => {
+    const fired = (outcome: string): string => step({ fastPath: { decision: outcome === 'proposed' ? 'fired' : 'failed', reason: outcome === 'proposed' ? 'none' : 'error', stage: 2, outcome, wallMs: 100, budgetMs: 45_000 } });
+    const withSteps = (task: string, suite: BenchRecord['suite'], steps: string[]): BenchRecord => ({ ...rec(task, 'jev-on-next', { suite }), synth: summariseStepRows(steps.join('\n')) });
+    const records = [
+      withSteps('q1', 'quixbugs', [fired('proposed'), fired('proposed')]),
+      withSteps('q2', 'quixbugs', [fired('refused')]),
+      // SWE steps are NOT in (e)'s denominator: the prediction is about the QuixBugs steps where stage 1 held
+      withSteps('s1', 'swebench', [fired('refused'), fired('refused'), fired('refused'), fired('refused')]),
+    ];
+    const e = evaluatePredictions({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast' }).find((p) => p.id === 'e')!;
+    expect(e.status).toBe('pass');
+    expect(e.detail).toContain('2/3');
+  });
+
   it('retires route R9 when (a) or (e) fails, and lets clause 4 pass on that branch', () => {
     const records = [
-      ...Array.from({ length: 18 }, (_, i) => ({ ...rec(`t${i}`, 'jev-on-next', { pass: false }), synth: summariseStepRows(step({ fastPath: { decision: 'fired', reason: 'held', stage: 1, outcome: 'refused', wallMs: 10, budgetMs: 45_000 } })) })),
+      ...Array.from({ length: 18 }, (_, i) => ({ ...rec(`t${i}`, 'jev-on-next', { pass: false }), synth: summariseStepRows(step({ fastPath: { decision: 'failed', reason: 'error', stage: 2, outcome: 'refused', wallMs: 10, budgetMs: 45_000 } })) })),
       rec('t0', 'jev-on-next-nofast'),
     ];
     const rows = measurementRows(records, 'jev-on-next', ['quixbugs']);

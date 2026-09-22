@@ -17,8 +17,14 @@
  *     un-gameable form: one blocked step is one router that gated the loop (I3), and it must not average away.
  *   - **R-c** is specified as "stage-1-fired / stage-2-declined ratio … ≤ 0.3; above that the predicate is wrong, not
  *     the budget". Read literally that ratio rises when the predicate works, so the gate is taken in the direction
- *     that makes the stated conclusion true: `stage2Declined / stage1Fired` — of the steps the STRUCTURAL stage let
- *     through, at most 30 % may be thrown out by the stage that costs real work.
+ *     that makes the stated conclusion true: `stage2Declined / stage1Held` — of the steps the STRUCTURAL stage let
+ *     through, at most 30 % may be thrown out by the stage that costs real work. The denominator is the steps that
+ *     REACHED stage 2, not a "stage-1-fired" count: slot C's writer records `stage: 1` only on a free decline
+ *     (`declinedRecord`) and `stage: 2` on every row of a round that ran, so a stage-1-fired denominator is 0 on
+ *     every real run — the row would read `pass … n/a` however badly the predicate was calibrated. A row that cannot
+ *     fail is not a blocking row, and both R-b and prediction (e) had the same shape: they keyed off `fired`, which
+ *     the writer sets only on a successful proposal, so a round that overran its budget and then timed out (recorded
+ *     `decision: 'failed'`) was invisible to the budget row.
  */
 import { formatDuration } from '../core/time.js';
 import type { BenchCondition, BenchSuite } from '../core/types.js';
@@ -155,23 +161,28 @@ export function measurementRows(records: readonly BenchRecord[], condition: Benc
     detail: all.routers.issued === 0 ? 'no router was issued in this arm (the table is off, or no step reached a routed site)' : `max ${all.routers.maxWaitMs} ms over ${all.routers.issued} issued (${all.routers.applied} applied, ${all.routers.dropped} dropped)`,
   });
 
+  // the denominator is every step that RAN A ROUND, not every step that fired: a round that overran and was then
+  // refused or killed by its own budget is `decision: 'failed'`, and it is the case the row exists to catch
+  const rounds = all.fastPath.stage1Held;
   out.push({
     id: 'R-b',
-    title: 'fastPath.wallMs <= budgetMs on every fired step',
+    title: 'fastPath.wallMs <= budgetMs on every step that ran a round',
     gating: true,
-    status: all.fastPath.fired === 0 ? 'not_evaluable' : all.fastPath.budgetOverruns === 0 ? 'pass' : 'fail',
-    detail: all.fastPath.fired === 0 ? 'no step fired' : `${all.fastPath.fired - all.fastPath.budgetOverruns}/${all.fastPath.fired} within budget, total ${formatDuration(all.fastPath.wallMs)}`,
+    status: rounds === 0 ? (all.fastPath.budgetOverruns > 0 ? 'fail' : 'not_evaluable') : all.fastPath.budgetOverruns === 0 ? 'pass' : 'fail',
+    detail: rounds === 0 ? (all.fastPath.budgetOverruns > 0 ? `${all.fastPath.budgetOverruns} overrun(s) on a record that counts no stage-2 round: the summary is inconsistent, read the steps` : 'no step reached stage 2 (no round ran)') : `${rounds - all.fastPath.budgetOverruns}/${rounds} within budget, total ${formatDuration(all.fastPath.wallMs)}`,
   });
 
-  const perSuite = suites.map((suite) => ({ suite, s: armSteps(records, condition, suite) })).filter((x) => x.s.fastPath.stage1Fired > 0 || x.s.fastPath.stage2Declined > 0);
-  const ratios = perSuite.map((x) => ({ suite: x.suite, ratio: x.s.fastPath.stage1Fired === 0 ? null : x.s.fastPath.stage2Declined / x.s.fastPath.stage1Fired, s: x.s }));
-  const over = ratios.filter((r) => r.ratio !== null && r.ratio > STAGE2_DECLINE_BAR);
+  const perSuite = suites.map((suite) => ({ suite, s: armSteps(records, condition, suite) })).filter((x) => x.s.fastPath.stage1Held > 0 || x.s.fastPath.stage2Declined > 0);
+  const ratios = perSuite.map((x) => ({ suite: x.suite, ratio: x.s.fastPath.stage1Held === 0 ? null : x.s.fastPath.stage2Declined / x.s.fastPath.stage1Held, s: x.s }));
+  // a null ratio survives the filter above only when declines were recorded with no round to divide them by — an
+  // impossible summary, and it must read FAIL rather than be waved through as "not over the bar"
+  const over = ratios.filter((r) => (r.ratio === null ? true : r.ratio > STAGE2_DECLINE_BAR));
   out.push({
     id: 'R-c',
-    title: `stage-2 declines / stage-1 fired, per suite <= ${STAGE2_DECLINE_BAR}`,
+    title: `stage-2 declines / steps where stage 1 held, per suite <= ${STAGE2_DECLINE_BAR}`,
     gating: true,
     status: ratios.length === 0 ? 'not_evaluable' : over.length === 0 ? 'pass' : 'fail',
-    detail: ratios.length === 0 ? 'no step reached the predicate' : ratios.map((r) => `${r.suite} ${r.s.fastPath.stage2Declined}/${r.s.fastPath.stage1Fired} = ${r.ratio === null ? 'n/a' : r.ratio.toFixed(2)}`).join(', ') + (over.length === 0 ? '' : ` — over the bar on ${over.map((r) => r.suite).join(', ')}: the predicate is wrong, not the budget (R-d names the clause)`),
+    detail: ratios.length === 0 ? 'no step reached the predicate' : ratios.map((r) => `${r.suite} ${r.s.fastPath.stage2Declined}/${r.s.fastPath.stage1Held} = ${r.ratio === null ? 'n/a — declines with no stage-2 round recorded' : r.ratio.toFixed(2)}`).join(', ') + (over.length === 0 ? '' : ` — over the bar on ${over.map((r) => r.suite).join(', ')}: the predicate is wrong, not the budget (R-d names the clause)`),
   });
 
   const hist = declineHistogram(all);
@@ -304,13 +315,16 @@ export function evaluatePredictions(input: PredictionInput): PredictionResult[] 
     retiresR9: false,
   });
 
-  const fp = armSteps(records, arm).fastPath;
-  const firedShare = fp.stage1Fired === 0 ? null : fp.proposed / fp.stage1Fired;
+  // the QuixBugs filter is the one the title claims, and the denominator is the steps where stage 1 HELD (the rows
+  // the writer records at `stage: 2`) — over `fired` this prediction was never evaluable, so the (e) branch of the
+  // RETIRE rule could never fire
+  const fp = armSteps(records, arm, 'quixbugs').fastPath;
+  const firedShare = fp.stage1Held === 0 ? null : fp.proposed / fp.stage1Held;
   out.push({
     id: 'e',
-    title: "fired AND proposed on >= 60 % of the QuixBugs steps where stage 1 held",
+    title: 'fired AND proposed on >= 60 % of the QuixBugs steps where stage 1 held',
     status: firedShare === null ? 'not_evaluable' : firedShare >= 0.6 ? 'pass' : 'fail',
-    detail: firedShare === null ? 'stage 1 held on no step' : `${fp.proposed}/${fp.stage1Fired} = ${pct(firedShare)}`,
+    detail: firedShare === null ? 'stage 1 held on no QuixBugs step' : `${fp.proposed}/${fp.stage1Held} = ${pct(firedShare)} of the QuixBugs steps where stage 1 held`,
     retiresR9: true,
   });
 

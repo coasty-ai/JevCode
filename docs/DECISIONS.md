@@ -1240,8 +1240,12 @@ loosen the predicate.** A failure of (b) with (a) holding is the one case that p
 **Two readings pinned**, because the design's prose leaves them open and a silent choice is worse than an argued one.
 R-a ("`routers.waitMs` p95 = 0") is taken as the **maximum** — identical unless more than 5 % of steps blocked, and a
 single blocked step must not average away. R-c ("stage-1-fired / stage-2-declined ≤ 0.3") is taken as
-**`stage2Declined / stage1Fired`**, the direction in which the design's own conclusion ("the predicate is wrong, not the
-budget") is what the number supports.
+**`stage2Declined / stage1Held`**, the direction in which the design's own conclusion ("the predicate is wrong, not the
+budget") is what the number supports — and the denominator is the rows the writer records at `stage: 2` (the steps that
+reached the expensive stage), not a "stage-1-fired" count, which is 0 on every run the writer can produce and would
+make the row unfailable. The same correction applies to R-b (overruns are counted over every round that ran, since a
+round that overran and then timed out is `decision: 'failed'`) and to prediction (e), which also now applies the
+QuixBugs filter its wording claims.
 
 **Not ratified here.** §2.4 (the risk polarity change) and the default-mode flip to `jev-on` are separate decisions on
 these rows; §8.5 says so explicitly, and R-e reports the `riskSource: 'code'` and `jevUnavailable` counts so the first of

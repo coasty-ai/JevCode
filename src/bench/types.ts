@@ -147,14 +147,24 @@ export interface FastPathSummary {
   timeouts: number;
   /** §8.3 R-d: the per-reason decline histogram, exhaustive over `FastPathReason` (an 'error' bucket over 5 % is a fail) */
   reasons: Record<string, number>;
-  /** §8.3 R-c: stage-1-fired / stage-2-declined — above 0.3 the PREDICATE is wrong, not the budget */
-  stage1Fired: number;
+  /**
+   * §8.3 R-c: steps where stage 1 HELD — i.e. rows the writer recorded at `stage: 2`, whatever stage 2 then decided
+   * (fired, declined or failed). This is the denominator the writer can actually produce: slot C records `stage: 1`
+   * only on a free decline and `stage: 2` on every row of a round that ran, so a "stage-1-FIRED" count is 0 on every
+   * real run and the ratio below could never fail.
+   */
+  stage1Held: number;
+  /** §8.3 R-c numerator: rows at `stage: 2` that stage 2 declined — above 0.3 of `stage1Held` the PREDICATE is wrong, not the budget */
   stage2Declined: number;
   candidatesTested: number;
   testRuns: number;
   jevRequests: number;
   wallMs: number;
-  /** §8.3 R-b: fired steps whose `wallMs` exceeded their own `budgetMs`; must be 0 */
+  /**
+   * §8.3 R-b: steps that RAN A ROUND (`stage: 2`) whose `wallMs` exceeded their own `budgetMs`; must be 0. Counting
+   * only `decision: 'fired'` rows would miss the shape that matters most — a round that blew the budget and then
+   * timed out or was refused is recorded `decision: 'failed'`.
+   */
   budgetOverruns: number;
 }
 

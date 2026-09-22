@@ -221,8 +221,8 @@ function metricRows(conds: readonly BenchCondition[], m: Record<string, Conditio
     // contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §8.3: the wave's rows. Every one reads 0 on an arm that was never
     // armed, and `considered` is what tells "armed and declined every step" apart from "never armed" (§5.5).
     row('fast path: considered / fired / declined / failed', (x) => `${x.synth.fastPath.considered} / ${x.synth.fastPath.fired} / ${x.synth.fastPath.declined} / ${x.synth.fastPath.failed}`),
-    row('fast path: proposed / refused / timeouts / budget overruns (R-b)', (x) => `${x.synth.fastPath.proposed} / ${x.synth.fastPath.refused} / ${x.synth.fastPath.timeouts} / ${x.synth.fastPath.budgetOverruns}`),
-    row('fast path: stage-1 fired / stage-2 declined (R-c)', (x) => `${x.synth.fastPath.stage1Fired} / ${x.synth.fastPath.stage2Declined}${x.synth.fastPath.stage1Fired === 0 ? '' : ` = ${(x.synth.fastPath.stage2Declined / x.synth.fastPath.stage1Fired).toFixed(2)}`}`),
+    row('fast path: proposed / refused / timeouts / budget overruns over the rounds that ran (R-b)', (x) => `${x.synth.fastPath.proposed} / ${x.synth.fastPath.refused} / ${x.synth.fastPath.timeouts} / ${x.synth.fastPath.budgetOverruns}`),
+    row('fast path: stage-1 held / stage-2 declined (R-c)', (x) => `${x.synth.fastPath.stage1Held} / ${x.synth.fastPath.stage2Declined}${x.synth.fastPath.stage1Held === 0 ? '' : ` = ${(x.synth.fastPath.stage2Declined / x.synth.fastPath.stage1Held).toFixed(2)}`}`),
     row('fast path: candidates tested / test runs / Jev requests / wall', (x) => `${x.synth.fastPath.candidatesTested} / ${x.synth.fastPath.testRuns} / ${x.synth.fastPath.jevRequests} / ${formatDuration(x.synth.fastPath.wallMs)}`),
     row('fast path: decline reasons (R-d)', (x) => declineReasons(x.synth)),
     row('routers: issued / applied / dropped / max wait ms (R-a)', (x) => `${x.synth.routers.issued} / ${x.synth.routers.applied} / ${x.synth.routers.dropped} / ${x.synth.routers.maxWaitMs}`),

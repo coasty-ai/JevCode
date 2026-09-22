@@ -21,7 +21,7 @@ import type { FastPathSummary, StepsSummary } from './types.js';
 export const STEPS_FILE = 'steps.jsonl';
 
 export function emptyFastPathSummary(): FastPathSummary {
-  return { considered: 0, fired: 0, declined: 0, failed: 0, proposed: 0, refused: 0, timeouts: 0, reasons: {}, stage1Fired: 0, stage2Declined: 0, candidatesTested: 0, testRuns: 0, jevRequests: 0, wallMs: 0, budgetOverruns: 0 };
+  return { considered: 0, fired: 0, declined: 0, failed: 0, proposed: 0, refused: 0, timeouts: 0, reasons: {}, stage1Held: 0, stage2Declined: 0, candidatesTested: 0, testRuns: 0, jevRequests: 0, wallMs: 0, budgetOverruns: 0 };
 }
 
 export function emptyStepsSummary(): StepsSummary {
@@ -42,7 +42,7 @@ const VERIFY_COUNTS = ['samples', 'distinct', 'malformed', 'timeouts', 'cancelle
 
 /** contract 1.9 (Fastlane) §5.5: the `StepFastPath` counters summed straight across (`reasons` is a histogram, `wallMs` a total). */
 const FASTPATH_COUNTS = ['candidatesTested', 'testRuns', 'jevRequests', 'wallMs'] as const;
-const FASTPATH_TOTALS = ['considered', 'fired', 'declined', 'failed', 'proposed', 'refused', 'timeouts', 'stage1Fired', 'stage2Declined', 'budgetOverruns'] as const;
+const FASTPATH_TOTALS = ['considered', 'fired', 'declined', 'failed', 'proposed', 'refused', 'timeouts', 'stage1Held', 'stage2Declined', 'budgetOverruns'] as const;
 
 /**
  * contract 1.9 (Fastlane) §5.5 / §8.3: one step's `fastPath`, `router`, `riskSource` and `jevUnavailable` folded in. The
@@ -63,9 +63,13 @@ function addWaveMembers(s: StepsSummary, row: JsonObject): void {
     if (outcome === 'proposed') f.proposed += 1;
     else if (outcome === 'refused') f.refused += 1;
     else if (outcome === 'timeout') f.timeouts += 1;
-    // R-c: the ratio is stage-1-fired over stage-2-declined, so each stage is counted where the row says it stopped
-    if (fp['stage'] === 1 && decision === 'fired') f.stage1Fired += 1;
-    if (fp['stage'] === 2 && decision === 'declined') f.stage2Declined += 1;
+    // R-c: the ratio is over the steps where stage 1 HELD, and the writer says a step held by recording it at
+    // `stage: 2` — `declinedRecord` is the only `stage: 1` row it writes (llm-loop-C-fastpath fastpath.ts §5.2), so
+    // "stage 1 fired" is a shape no run produces and a ratio built on it can never fail. `stage1Held` counts every
+    // row that reached stage 2, whatever stage 2 then decided.
+    const ranRound = fp['stage'] === 2;
+    if (ranRound) f.stage1Held += 1;
+    if (ranRound && decision === 'declined') f.stage2Declined += 1;
     // R-d: the histogram is over INELIGIBLE steps (declined or failed) — a fired row's `reason` is not a decline and
     // counting it would dilute every share the 5 % error bar is measured against. Unknown reasons get their own bucket
     // rather than being dropped, so a `FastPathReason` the table has not heard of shows up as a failure, not as silence.
@@ -75,11 +79,13 @@ function addWaveMembers(s: StepsSummary, row: JsonObject): void {
       const v = fp[k];
       if (isFiniteNumber(v)) f[k] += v;
     }
-    // R-b: a fired step whose wall exceeded its own budget. Both numbers come off the same row, so a run whose budget
-    // arithmetic changed mid-flight is still judged against the budget IT was given.
+    // R-b: a step that RAN A ROUND and whose wall exceeded its own budget. Both numbers come off the same row, so a
+    // run whose budget arithmetic changed mid-flight is still judged against the budget IT was given. The gate is on
+    // the round, not on the decision: a round that overran and then timed out or was refused is `decision: 'failed'`,
+    // and a fired-only count would read "no step fired" on the very run that spent past its share on every step.
     const wall = fp['wallMs'];
     const budget = fp['budgetMs'];
-    if (decision === 'fired' && isFiniteNumber(wall) && isFiniteNumber(budget) && wall > budget) f.budgetOverruns += 1;
+    if (ranRound && isFiniteNumber(wall) && isFiniteNumber(budget) && wall > budget) f.budgetOverruns += 1;
   }
   const router = row['router'];
   if (isJsonObject(router)) {
