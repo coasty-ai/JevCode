@@ -280,9 +280,43 @@ export interface DeviceRecord {
   checksum: string;
 }
 
-export type RecordKind = 'heartbeat' | 'lease' | 'message' | 'ack' | 'device';
-export type RecordOf<K extends RecordKind> = K extends 'heartbeat' ? Heartbeat : K extends 'lease' ? Lease : K extends 'message' ? Message : K extends 'ack' ? Ack : DeviceRecord;
-export type AnyRecord = Heartbeat | Lease | Message | Ack | DeviceRecord;
+/**
+ * runs/<deviceId>/<runId>/claims.json — ≤ 4 KiB — the AUTHENTICATED CLAIM PROJECTION (§9.3, design revision 5).
+ *
+ * The SIXTH record kind, and the only file the §7.3 step 1(a) / §9.3 claim refusal ever reads. Revision 4 required
+ * an hmac on `run.json` or on its projection but defined `hmac` / `keyId` on the five record kinds only, so NO
+ * foreign epoch could ever be qualified: the refusal was fail-safe against a planted ceiling and silently dead for
+ * the legitimate takeover it was written for. `run.json` is `CheckpointStore`'s artefact — its canonical form would
+ * change with every additive `RunMeta` field, invalidating signatures an older build wrote — so the authenticated
+ * epoch lives in a RECORD, where `MAX_CLAIM_EPOCH`, the id-vs-path binding, the size cap and `verified` already are.
+ *
+ * Written by the run's OWN process at every `claims[]` mint (`createEngine`, an import, and `writeTakeoverLease` —
+ * which writes it even for a run with no local run dir) and again whenever `forked` or `ended` changes. An epoch
+ * counts only when the parse is `ok` AND `verified` AND the PATH's deviceId is in `trusted-devices.json`.
+ */
+export interface ClaimsProjection {
+  v: 1;
+  kind: 'claims';
+  deviceId: string;
+  hostKey?: string;
+  runId: string;
+  sessionId: string;
+  /** ≤ MAX_CLAIMS_PER_RUN (64): the first + the newest 63 (§3.2); every epoch 0 ≤ e ≤ MAX_CLAIM_EPOCH or `bounds` */
+  claims: Claim[];
+  /** ≤ 16 — `imports[].claim` reduced; no sha256 of a body, no workspace path */
+  imports: { fromDeviceId: string; at: string; epoch: number }[];
+  forked?: { atStep: number; loserEpoch: number; winnerEpoch: number; at: string };
+  ended?: { at: string; by: 'human' | 'remote' };
+  at: string;
+  stamp: Stamp;
+  keyId?: string;
+  checksum: string;
+  hmac?: string;
+}
+
+export type RecordKind = 'heartbeat' | 'lease' | 'message' | 'ack' | 'device' | 'claims';
+export type RecordOf<K extends RecordKind> = K extends 'heartbeat' ? Heartbeat : K extends 'lease' ? Lease : K extends 'message' ? Message : K extends 'ack' ? Ack : K extends 'claims' ? ClaimsProjection : DeviceRecord;
+export type AnyRecord = Heartbeat | Lease | Message | Ack | DeviceRecord | ClaimsProjection;
 
 /** §3.5: the in-memory fold every reader uses (caps: ≤ 512 heartbeats, ≤ 2,048 leases, ≤ 200 messages per target) */
 export interface Fold {
@@ -419,7 +453,7 @@ export interface SessionActivity {
 }
 
 export type FoldChange =
-  | { kind: 'heartbeat' | 'lease' | 'message' | 'ack' | 'device'; deviceId: string; id: string }
+  | { kind: 'heartbeat' | 'lease' | 'message' | 'ack' | 'device' | 'claims'; deviceId: string; id: string }
   | { kind: 'poll' }
   | { kind: 'offline'; code: string }
   | { kind: 'online' };

@@ -8,16 +8,16 @@
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { ConfigError } from '../errors.js';
-import { authorityOf, compareClaim, forkVerdict, hmacValid, isValidClaim, mintClaim, sameClaim, withHmac, type ForkVerdict } from './claims.js';
+import { MAX_CLAIM_EPOCH, authorityOf, capClaims, compareClaim, forceTakebackPlan, forkVerdict, hmacValid, isValidClaim, mintClaim, sameClaim, withHmac, type ForkVerdict } from './claims.js';
 import { ackOrigin, buildFold, emptyFold, emptyFoldState, leaseKeysOf, maxStampN, seenEpochs, sessionDevices, sessionTargets, type FoldState, type RecordEntry } from './fold.js';
 import type { CoordFs } from './fs.js';
 import { DIR_MODE, FILE_MODE, classifyLedgerError, nodeFs, withTimeout } from './fs.js';
 import { DEVICE_ID_RE, LABEL_MAX_CHARS, LANE_DIR_RE, RUN_ID_RE, actor8Of, hostKeyOf, buildDeviceRecord, createStampClock, parseDeviceRecord, readCommonsKey, readIgnoredDevices, readMachineRecord, readTrustKeys, writeMachineRecord, ACTOR8_RE, readTrusted, trustDevice, writeDeviceRecord, writeTrusted, ignoreDevice as writeIgnoreDevice, unignoreDevice as writeUnignoreDevice, type RandomBytes, type StampClock } from './ids.js';
-import { COMMONS_KINDS, DEVICE_FILE, FOLD_KINDS, commonsPaths, coordinationRoot, decodeTargetComponent, deviceClaimFile, deviceClaimsDir, isDeviceIdDir, isTargetDir, leaseRel, parseAckName, parseHeartbeatName, parseLeaseName, parseMessageName, type Commons, type CommonsKind } from './paths.js';
-import { CoordinationError, CONTROL_MESSAGE_TTL_MS, LEASE_TTL_MS, MESSAGE_TTL_MS, READ_MAX_BYTES, SYNC_SLACK_SHARED_MS, adoptableStampN, fitsRecordSize, finalizeRecord, parseRecord, sameHost, serializeRecord, type Now, type ParseContext, type ParseRecordResult } from './records.js';
+import { COMMONS_KINDS, DEVICE_FILE, FOLD_KINDS, commonsPaths, coordinationRoot, decodeTargetComponent, deviceClaimFile, deviceClaimsDir, CLAIMS_FILE, isDeviceIdDir, isTargetDir, leaseRels, parseAckName, parseHeartbeatName, parseLeaseName, parseMessageName, type Commons, type CommonsKind } from './paths.js';
+import { CLAIM_IMPORTS_MAX, CoordinationError, CONTROL_MESSAGE_TTL_MS, LEASE_TTL_MS, MESSAGE_TTL_MS, READ_MAX_BYTES, SYNC_SLACK_SHARED_MS, adoptableStampN, fitsRecordSize, finalizeRecord, parseRecord, sameHost, serializeRecord, type Now, type ParseContext, type ParseRecordResult } from './records.js';
 import { ICLOUD_PLACEHOLDER_RE, MIRROR_OFFLINE_NOTICE_MS, createMirror, type Mirror } from './sync-shared-dir.js';
 import { createWatcher, nodeTimers, type Timers, type WatchFn, type Watcher } from './watch.js';
-import type { Ack, Authority, Claim, DeviceRecord, Fold, FoldChange, GcReport, Heartbeat, IdentityPatch, Lease, Ledger, Message, RecordKind, RecordOrigin, SelfIdentity, Stamp, SyncStatus } from './types.js';
+import type { ClaimsProjection, Ack, Authority, Claim, DeviceRecord, Fold, FoldChange, GcReport, Heartbeat, IdentityPatch, Lease, Ledger, Message, RecordKind, RecordOrigin, SelfIdentity, Stamp, SyncStatus } from './types.js';
 
 export { COORDINATION_DIR, commonsPaths, coordinationRoot } from './paths.js';
 
@@ -264,6 +264,12 @@ export interface LedgerHandle extends Ledger {
   nextEpoch(runId: string, o?: { epochHigh?: number }): number;
   /** §9.3 / §11 row 3: a `takeover` lease carrying a LATER claim than the origin's; awaited */
   takeoverLease(o: { runId: string; sessionId: string; reason60: string; claim?: Claim; epochHigh?: number }): Promise<Lease>;
+  /** §9.3 (revision 5): write `runs/<myDeviceId>/<runId>/claims.json` — the authenticated claim projection */
+  writeClaimsProjection(o: { runId: string; sessionId: string; claims: readonly Claim[]; imports?: readonly { fromDeviceId: string; at: string; epoch: number }[]; forked?: ClaimsProjection['forked']; ended?: ClaimsProjection['ended'] }): Promise<void>;
+  /** §9.3 (revision 5): every epoch in every `runs/<dev>/<runId>/claims.json`, with the authority its parse gave it */
+  readClaimEpochs(runId: string): Promise<{ epoch: number; deviceId: string; qualified: boolean }[]>;
+  /** §9.3 (revision 5): `--force-takeback`'s epoch, or `CoordinationError 'epoch-exhausted'` */
+  forceTakebackEpochFor(runId: string, local?: readonly number[]): Promise<{ epoch: number; droppedUnqualified: number }>;
   /**
    * §9.3 (design revision 4): the claim this device last minted for a run it may have no local dir for, persisted at
    * `devices/<hostKey>/claims/<runId>.json` and read back by the NEXT mint. Without it `sessions unlock --device` on a
@@ -345,6 +351,8 @@ function stemMatchesPath(kind: RecordKind, r: ParseRecordResult<RecordKind>, ste
       return (rec as Ack).by === stem;
     case 'device':
       return true; // the one fixed name in a registry subtree; the device id is the path component
+    case 'claims':
+      return true; // §9.3: the one fixed name inside a run's mirror dir; the runId is the path component
   }
 }
 
@@ -1055,6 +1063,9 @@ class LedgerImpl implements LedgerHandle {
       deviceId: this.self.deviceId,
       bootAt: this.self.bootAt,
       ...(this.self.hostKey !== undefined ? { hostKey: this.self.hostKey } : {}),
+      // §3.2 / §3.4 (revision 5): the `duplicate-identity` discriminator — a record in my own subtree from another
+      // boot session is judged by beat FRESHNESS, never as mine
+      bootId: this.bootId,
       isPidAlive: this.isPidAlive,
       syncSlackMs: this.o.syncSlackMs ?? SYNC_SLACK_SHARED_MS,
       now: this.clock(),
@@ -1291,6 +1302,99 @@ class LedgerImpl implements LedgerHandle {
   }
 
   /** §9.3: the takeover carries a LATER claim than the origin's, so §9.3's fork rule and every later resume see it (blocker 3). */
+  /**
+   * §9.3 (design revision 5): write `runs/<myDeviceId>/<runId>/claims.json` — the AUTHENTICATED claim projection.
+   *
+   * Called by the run's own process at EVERY `claims[]` mint (`createEngine` through the facade, an import, and
+   * `writeTakeoverLease` — which writes it even for a run with no local run dir) and again whenever `forked` or
+   * `ended` changes. It is a RECORD: `finalizeRecord` redacts and checksums it, `sign` puts this device's hmac on it
+   * and `fitsRecordSize` refuses rather than truncates, exactly like every other write path.
+   */
+  async writeClaimsProjection(o: { runId: string; sessionId: string; claims: readonly Claim[]; imports?: readonly { fromDeviceId: string; at: string; epoch: number }[]; forked?: ClaimsProjection['forked']; ended?: ClaimsProjection['ended'] }): Promise<void> {
+    if (!RUN_ID_RE.test(o.runId)) throw new CoordinationError('not-found', `claims: '${o.runId}' is not a run id`);
+    const rows = capClaims(o.claims.filter((c) => c.deviceId === this.self.deviceId && c.runId === o.runId));
+    const record: ClaimsProjection = this.sign(
+      finalizeRecord(
+        {
+          v: 1,
+          kind: 'claims',
+          deviceId: this.self.deviceId,
+          ...(this.self.hostKey !== undefined ? { hostKey: this.self.hostKey } : {}),
+          runId: o.runId,
+          sessionId: o.sessionId,
+          claims: rows,
+          imports: (o.imports ?? []).slice(-CLAIM_IMPORTS_MAX).map((i) => ({ fromDeviceId: i.fromDeviceId, at: i.at, epoch: i.epoch })),
+          ...(o.forked !== undefined ? { forked: o.forked } : {}),
+          ...(o.ended !== undefined ? { ended: o.ended } : {}),
+          at: new Date(this.now()).toISOString(),
+          stamp: this.stamps.issue(),
+          checksum: '',
+        } satisfies ClaimsProjection,
+        this.redact,
+      ),
+    );
+    if (!fitsRecordSize('claims', record)) throw new CoordinationError('io', 'coordination: claims projection exceeds 4 KiB');
+    await this.writeOwn('runs', join(o.runId, CLAIMS_FILE), record, { fsync: true });
+  }
+
+  /**
+   * §9.3 (design revision 5): read every `runs/<deviceId>/<runId>/claims.json` in the store, LOCAL AND FOREIGN, and
+   * report each epoch with the authority its parse gave it.
+   *
+   * QUALIFIED means what it means everywhere else a foreign record changes a run: the parse is `ok`, the record is
+   * `verified` under the key of the device whose subtree it was read from, and that deviceId is in
+   * `trusted-devices.json`. `MAX_CLAIM_EPOCH` is enforced on this path — the path a planted projection actually
+   * takes — so the ceiling is unreachable before any comparison sees it. An unqualified epoch is reported, never
+   * refused: the card displays it and `--force-takeback` still mints above it.
+   */
+  async readClaimEpochs(runId: string): Promise<{ epoch: number; deviceId: string; qualified: boolean }[]> {
+    if (!RUN_ID_RE.test(runId)) return [];
+    const out: { epoch: number; deviceId: string; qualified: boolean }[] = [];
+    const roots: { paths: Commons; source: string | null }[] = [{ paths: this.paths, source: null }];
+    if (this.mirror !== null && this.mirror.state !== 'offline') roots.push({ paths: this.mirror.paths, source: this.mirror.root });
+    for (const store of roots) {
+      const ids = ((await this.listDir(store.paths.kindRoot('runs'))) ?? []).filter(isDeviceIdDir).sort().slice(0, MAX_GC_DEVICES);
+      for (const deviceId of ids) {
+        if (this.ignored.has(deviceId)) continue; // §4.6: an ignored subtree is never an import or a claim source
+        const path = store.paths.claimsFile(deviceId, runId);
+        let text: string;
+        try {
+          const r = await withTimeout(this.fs.readBounded(path, READ_MAX_BYTES), this.opTimeoutMs, `read ${path}`);
+          if (r.overflow) continue;
+          text = r.text;
+        } catch {
+          continue;
+        }
+        // `runId` is bound to the PATH component, and the key is found by the PATH's deviceId — never by a `keyId`
+        const parsed = parseRecord(text, 'claims', { deviceId, runId, trust: (d) => this.trustKeys.get(d) ?? null });
+        if (!parsed.ok) continue;
+        const self = store.source === null && deviceId === this.self.deviceId;
+        const qualified = self || (parsed.verified && this.trustKeys.has(deviceId));
+        for (const c of parsed.record.claims) out.push({ epoch: c.epoch, deviceId, qualified });
+        for (const i of parsed.record.imports) out.push({ epoch: i.epoch, deviceId, qualified });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * §9.3 (design revision 5): `/resume --force-takeback`'s epoch. `local` is this device's own truth
+   * (`run.json.claims[]`, `imports[]`, `devices/<hostKey>/claims/<runId>.json`) — FILTERED, never refused.
+   * Refuses `'epoch-exhausted'` when `max(Q) === MAX_CLAIM_EPOCH`: at the ceiling the honest answer is that nothing
+   * can take the run over, because minting an epoch EQUAL to the maximum yields `compareClaim === 0`, the one value
+   * the fork rule cannot break.
+   */
+  async forceTakebackEpochFor(runId: string, local: readonly number[] = []): Promise<{ epoch: number; droppedUnqualified: number }> {
+    const rows = await this.readClaimEpochs(runId);
+    const persisted = await this.readRunClaim(runId);
+    const localAll = [...local, ...this.epochsFor(runId), ...(persisted === null ? [] : [persisted.epoch])];
+    const plan = forceTakebackPlan({ local: localAll, foreign: rows.map((r) => ({ epoch: r.epoch, qualified: r.qualified })) });
+    if (plan.epoch === null) {
+      throw new CoordinationError('epoch-exhausted', `claim epochs for this run reached the bound (${MAX_CLAIM_EPOCH}); nothing can take it over — start a new run from this state`);
+    }
+    return { epoch: plan.epoch, droppedUnqualified: plan.droppedUnqualified };
+  }
+
   /** §9.3: `devices/<hostKey>/claims/<runId>.json` — this device's own record of what it last minted for a run. */
   async readRunClaim(runId: string): Promise<Claim | null> {
     const hostKey = this.self.hostKey;
@@ -1357,8 +1461,13 @@ class LedgerImpl implements LedgerHandle {
       checksum: '',
     }, this.redact));
     if (!fitsRecordSize('lease', lease)) throw new CoordinationError('io', 'coordination: takeover lease exceeds 8 KiB');
-    await this.writeOwn('leases', leaseRel(repoKey, leaseId), lease, { fsync: true });
+    // §4.3 (revision 5): both key directories, so a peer that computed a different key still sees the takeover
+    for (const rel of leaseRels(lease)) await this.writeOwn('leases', rel, lease, { fsync: true });
     await this.writeRunClaim(claim);
+    // §9.3 (revision 5): `writeTakeoverLease` writes the AUTHENTICATED projection too — including for a run with no
+    // local run dir, under its own `runs/<myDeviceId>/<runId>/` — so a takeback is visible to the devices it binds.
+    // The lease is a 10-min ttl the holder's own GC deletes after 24 h; `claims[]` is the permanent fact (§4.6 row 1).
+    await this.writeClaimsProjection({ runId: o.runId, sessionId: o.sessionId, claims: [claim] });
     return lease;
   }
 
@@ -1637,6 +1746,8 @@ function changeOf(e: RecordEntry): FoldChange {
       return { kind: 'ack', deviceId: e.deviceId, id: (e.record as Ack).msgId };
     case 'device':
       return { kind: 'device', deviceId: e.deviceId, id: e.deviceId };
+    case 'claims':
+      return { kind: 'claims', deviceId: e.deviceId, id: (e.record as ClaimsProjection).runId };
   }
 }
 

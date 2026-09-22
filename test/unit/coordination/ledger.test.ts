@@ -12,8 +12,8 @@ import { GC_RETENTION_MS, MAX_DEVICES, SEEN_RETENTION_MS, TRACKED_ACKS_MAX, igno
 import { nodeFs } from '../../../src/coordination/fs.js';
 import { commonsPaths } from '../../../src/coordination/paths.js';
 import { mintCommonsKey, readCommonsKey, trustDevice, writeCommonsKey } from '../../../src/coordination/ids.js';
-import { EPOCH_MAX, canMintAbove, qualifiedEpochs } from '../../../src/coordination/claims.js';
-import { MESSAGE_TTL_MS } from '../../../src/coordination/records.js';
+import { EPOCH_MAX, MAX_CLAIM_EPOCH, canMintAbove, forceTakebackPlan, qualifiedEpochs } from '../../../src/coordination/claims.js';
+import { MESSAGE_TTL_MS, parseRecord, serializeRecord, withChecksum } from '../../../src/coordination/records.js';
 import { sessionTargets } from '../../../src/coordination/fold.js';
 import { check, declare } from '../../../src/coordination/leases.js';
 import { loadSeen, purgeInbox } from '../../../src/coordination/mailbox.js';
@@ -759,6 +759,121 @@ describe('+ re-check: runtime trust, the persisted sessionless id, and the seen 
     await expect(nodeFs.stat(stale)).rejects.toThrow(/ENOENT/);
     await expect(nodeFs.stat(fresh)).resolves.toBeTruthy();
     await l.close();
+  });
+});
+
+describe("§9.3 (revision 5): the sixth record kind — the AUTHENTICATED claim projection", () => {
+  const projection = (o: { deviceId: string; runId: string; epochs: number[]; imports?: { fromDeviceId: string; at: string; epoch: number }[] }) =>
+    withChecksum({
+      v: 1 as const,
+      kind: 'claims' as const,
+      deviceId: o.deviceId,
+      runId: o.runId,
+      sessionId: o.runId,
+      claims: o.epochs.map((epoch) => claim({ epoch, deviceId: o.deviceId, runId: o.runId, pid: 900 })),
+      imports: o.imports ?? [],
+      at: iso(T0),
+      stamp: stamp(1, o.deviceId, o.runId),
+      checksum: '',
+    });
+
+  const put = async (root: string, rec: ReturnType<typeof projection>, key?: string) => {
+    const signedRec = key === undefined ? rec : signed(rec, key, rec.deviceId);
+    await putFile(commonsPaths(root).claimsFile(rec.deviceId, rec.runId), `${JSON.stringify(signedRec)}\n`);
+  };
+
+  /**
+   * ITEM 4 FIXTURE — revision 4 left the §7.3 1(a) refusal DEAD.
+   *
+   * It required an hmac on `run.json` or on its projection but defined `hmac` / `keyId` on the five record kinds
+   * only, so no foreign epoch could ever be qualified: fail-safe against a planted ceiling and silently disabled for
+   * the legitimate takeover. The sixth kind is what makes the refusal live.
+   *
+   * Fails before the fix: `parseRecord(text, 'claims', …)` is not a kind, and `readClaimEpochs` does not exist.
+   */
+  it("a foreign epoch counts only when it is ok AND verified AND from a trusted device", async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const rid = runId(9);
+    await put(t.root, projection({ deviceId: DEV_B, runId: rid, epochs: [7] }), KEY_B); // signed …
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await l.open();
+    // … but NOT paired: the epoch is reported and unqualified (the card shows it; it refuses nothing)
+    expect(await l.readClaimEpochs(rid)).toEqual([{ epoch: 7, deviceId: DEV_B, qualified: false }]);
+    await l.pairDevice({ deviceId: DEV_B, label: 'studio', keyHex: KEY_B });
+    expect(await l.readClaimEpochs(rid)).toEqual([{ epoch: 7, deviceId: DEV_B, qualified: true }]);
+    // a paired device whose signature does NOT match its key is unqualified again — `verified` is not `ok`
+    await put(t.root, projection({ deviceId: DEV_B, runId: rid, epochs: [8] }), KEY_A);
+    expect(await l.readClaimEpochs(rid)).toEqual([{ epoch: 8, deviceId: DEV_B, qualified: false }]);
+    await l.close();
+  });
+
+  it('MAX_CLAIM_EPOCH is enforced on THIS parse path — the one a planted projection takes', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const rid = runId(9);
+    const planted = projection({ deviceId: DEV_B, runId: rid, epochs: [1] });
+    // a planted safe-integer ceiling: it must be `bounds` BEFORE it can reach any comparison
+    const hostile = withChecksum({ ...planted, claims: [{ ...planted.claims[0]!, epoch: 9_007_199_254_740_990 }], checksum: '' });
+    expect(parseRecord(serializeRecord(hostile), 'claims', { deviceId: DEV_B, runId: rid })).toEqual({ ok: false, reason: 'bounds' });
+    // and the reader simply does not see it
+    await putFile(commonsPaths(t.root).claimsFile(DEV_B, rid), `${JSON.stringify(hostile)}\n`);
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await l.open();
+    expect(await l.readClaimEpochs(rid)).toEqual([]);
+    await l.close();
+  });
+
+  it('the projection is bound to BOTH path components it sits under', async () => {
+    const rid = runId(9);
+    const rec = projection({ deviceId: DEV_B, runId: rid, epochs: [3] });
+    expect(parseRecord(serializeRecord(rec), 'claims', { deviceId: DEV_B, runId: rid }).ok).toBe(true);
+    // another run's directory
+    expect(parseRecord(serializeRecord(rec), 'claims', { deviceId: DEV_B, runId: runId(8) })).toEqual({ ok: false, reason: 'id' });
+    // another device's subtree
+    expect(parseRecord(serializeRecord(rec), 'claims', { deviceId: DEV_A, runId: rid })).toEqual({ ok: false, reason: 'id' });
+  });
+
+  it('writeTakeoverLease writes the projection too — even for a run with NO local run dir', async () => {
+    const h = await harness();
+    await h.l.open();
+    const rid = runId(9);
+    const lease = await writeTakeoverLease(h.l, { runId: rid, sessionId: rid, reason60: 'that device is gone' });
+    const path = commonsPaths(h.root, h.l.hostKey).claimsFile(DEV_A, rid);
+    const text = (await nodeFs.readBounded(path, 4096)).text;
+    const parsed = parseRecord(text, 'claims', { deviceId: DEV_A, runId: rid });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.record.claims.map((c) => c.epoch)).toEqual([lease.claim?.epoch]);
+    // it is a permanent fact, so it is our OWN local truth and therefore qualified without any pairing
+    expect(await h.l.readClaimEpochs(rid)).toEqual([{ epoch: lease.claim?.epoch, deviceId: DEV_A, qualified: true }]);
+  });
+
+  it("--force-takeback: Q filtered AT the bound, U strictly BELOW, mint max(Q ∪ U) + 1, else 'epoch-exhausted'", async () => {
+    // pure algebra first (§9.3's own table)
+    expect(forceTakebackPlan({ local: [3], foreign: [] }).epoch).toBe(4);
+    // an UNQUALIFIED epoch is minted over — the point of the flag is to end up above anything any observer compares
+    expect(forceTakebackPlan({ local: [3], foreign: [{ epoch: 50, qualified: false }] }).epoch).toBe(51);
+    // … but one planted AT the ceiling is DROPPED, not minted over: an unqualified epoch refuses nothing, so a
+    // hostile one must not be able to disable the flag (revision 4 minted 1e9 + 1, above the parse bound, and every
+    // other device then rejected the winner's own records as `bounds`)
+    const hostile = forceTakebackPlan({ local: [3], foreign: [{ epoch: MAX_CLAIM_EPOCH, qualified: false }] });
+    expect(hostile.epoch).toBe(4);
+    expect(hostile.droppedUnqualified).toBe(1);
+    // a QUALIFIED epoch at the ceiling is a real state, and the honest answer is a refusal
+    expect(forceTakebackPlan({ local: [3], foreign: [{ epoch: MAX_CLAIM_EPOCH, qualified: true }] })).toMatchObject({ epoch: null, exhausted: true });
+    expect(forceTakebackPlan({ local: [MAX_CLAIM_EPOCH], foreign: [] })).toMatchObject({ epoch: null, exhausted: true });
+    // local truth is FILTERED, never refused: an out-of-range local row is ignored and the run still loads
+    expect(forceTakebackPlan({ local: [3, 9_007_199_254_740_990], foreign: [] }).epoch).toBe(4);
+
+    // and the ledger wires the refusal
+    const h = await harness();
+    await h.l.open();
+    const rid = runId(9);
+    await putFile(commonsPaths(h.root).claimsFile(DEV_A, rid), `${JSON.stringify(withChecksum({ v: 1 as const, kind: 'claims' as const, deviceId: DEV_A, runId: rid, sessionId: rid, claims: [claim({ epoch: MAX_CLAIM_EPOCH, deviceId: DEV_A, runId: rid })], imports: [], at: iso(T0), stamp: stamp(1, DEV_A, rid), checksum: '' }))}\n`);
+    await expect(h.l.forceTakebackEpochFor(rid)).rejects.toMatchObject({ code: 'epoch-exhausted' });
   });
 });
 

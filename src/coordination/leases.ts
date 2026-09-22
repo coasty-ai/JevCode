@@ -9,7 +9,7 @@ import { ConfigError } from '../errors.js';
 import { leaseOrigin } from './fold.js';
 import { asHandle, type LedgerHandle } from './ledger.js';
 import { LANE_DIR_RE, LEASE_PATHS_MAX, isValidRelPath, sameRepo } from './ids.js';
-import { leaseRel } from './paths.js';
+import { leaseRels } from './paths.js';
 import { HEARTBEAT_TTL_MS, LEASE_TTL_MS, SYNC_SLACK_SHARED_MS, compareStamp, fitsRecordSize, finalizeRecord, honouredTtlMs, oneLine, overlap, type Now } from './records.js';
 import { HOLDING_LEASE_TYPES } from './types.js';
 import type { CoordinationFacts, DeclaredFact, FenceYield, Fold, Heartbeat, Lease, LeaseCheck, LeaseConflict, LeaseHandle, LeaseIntent, LeaseOutcome, LeaseSnapshot, Ledger, Message, SelfIdentity, Stamp, StrictDeclare } from './types.js';
@@ -292,33 +292,8 @@ function buildLease(h: LedgerHandle, mine: LeaseIntent, type: Lease['type'], sta
   return lease;
 }
 
-/**
- * §4.3 / §4.5 (design revision 5): **two directories, one lease.** Whenever `repoKey` is non-null and
- * `keyDir(repoKey) !== keyDir(wsKey)`, the SAME record is written under both — same `leaseId`, same stamp, byte
- * identical (it already carries `repoKey`, `remoteKey` and `wsKey`), and the fold is keyed by `leaseId`, so the two
- * copies fold to ONE lease and `byPath`, `check()` and `appeared` are unchanged.
- *
- * Why: two runs in ONE checkout can disagree about `repoKey` — a workspace with an unborn HEAD and no origin has
- * `repoKey: null` at run 1 and a real one at run 2 because the first commit landed in between, and a
- * `rev-list --max-parents=0` that fails on one side (a corrupt pack, a flaky mount, the 2 s timeout) produces the
- * same split. Under revision 4's single directory both leased, neither saw the other, and both proceeded under
- * `strict`. The safety proof of §4.5 then runs in the `keyDir(wsKey)` directory, which two runs in one checkout
- * share BY CONSTRUCTION (`wsKey` is known at startup with zero spawns and cannot fail) — and `hard` severity is
- * defined by exactly that key, so the directory that carries the proof is the one that carries every conflict the
- * fence has to decide.
- *
- * Order is fixed: `keyDir(repoKey)` first, `keyDir(wsKey)` second, for every rewrite as well as the declare.
- * (+ review major 13: `ws:`/`rm:` become `ws-`/`rm-` in the path; the record keeps the colon form.)
- */
-export function leaseRels(lease: Pick<Lease, 'repoKey' | 'wsKey' | 'leaseId'>): string[] {
-  const dirs = lease.repoKey === null ? [lease.wsKey] : [lease.repoKey, lease.wsKey];
-  const out: string[] = [];
-  for (const key of dirs) {
-    const rel = leaseRel(key, lease.leaseId);
-    if (!out.includes(rel)) out.push(rel);
-  }
-  return out;
-}
+/** §4.3 / §4.5 (revision 5): the two directories one lease is written to — defined in `paths.ts`, re-exported here. */
+export { leaseRels } from './paths.js';
 
 function makeHandle(h: LedgerHandle, initial: Lease, awaitedWrites: boolean): LeaseHandle & { current(): Lease; captureYield(appeared: readonly LeaseConflict[]): void } {
   let current = initial;

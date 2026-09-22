@@ -7,10 +7,10 @@ import { byteLength, clip } from '../core/text.js';
 import type { JsonObject } from '../core/types.js';
 import { DIRECTIVE_MAX_CHARS } from '../core/types.js';
 import { checksumOf, withChecksum } from './checksum.js';
-import { MAX_CLAIM_EPOCH, hmacValid, isValidClaim } from './claims.js';
+import { MAX_CLAIM_EPOCH, MAX_CLAIMS_PER_RUN, hmacValid, isValidClaim } from './claims.js';
 import { keyDir } from './paths.js';
 import { ACTOR8_RE, CONSUMER_ID_RE, COUNTER_MAX, DEVICE_ID_RE, LANE_DIR_RE, LEASE_ID_RE, LEASE_PATHS_MAX, HOST_KEY_RE, MSG_ID_RE, OID_RE, REPO_KEY_RE, RUN_ID_RE, SLUG_RE, TOUCHED_RECENT_MAX, isValidBranch, isValidRelPath, isValidTarget } from './ids.js';
-import type { Ack, AnyRecord, DeviceRecord, Heartbeat, Lease, LivenessEnv, LivenessVerdict, Message, RecordKind, RecordOf, RecordOrigin, Stamp } from './types.js';
+import type { Ack, AnyRecord, ClaimsProjection, DeviceRecord, Heartbeat, Lease, LivenessEnv, LivenessVerdict, Message, RecordKind, RecordOf, RecordOrigin, Stamp } from './types.js';
 
 export { checksumOf, withChecksum } from './checksum.js';
 
@@ -83,7 +83,7 @@ export function coordinationCodeOf(errno: string | null): CoordinationErrorCode 
 // ── bounds ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** §3.3 / §4.3 / §5.1: the on-disk size each record kind may reach — refused, never truncated. */
-export const RECORD_MAX_BYTES: Readonly<Record<RecordKind, number>> = { heartbeat: 4096, lease: 8192, message: 2048, ack: 2048, device: 2048 };
+export const RECORD_MAX_BYTES: Readonly<Record<RecordKind, number>> = { heartbeat: 4096, lease: 8192, message: 2048, ack: 2048, device: 2048, claims: 4096 };
 /** §2.1 rule 6: no read pulls more than this into memory. */
 export const READ_MAX_BYTES = 65_536;
 /** §3.3: the heartbeat interval and the ttl (3 beats) */
@@ -445,6 +445,7 @@ const RECORD_KEYS: Readonly<Record<RecordKind, ReadonlySet<string>>> = {
   message: new Set(['v', 'kind', 'id', 'from', 'hostKey', 'to', 'type', 'text', 'refs', 'by', 't', 'stamp', 'expiresAt', 'keyId', 'checksum', 'hmac']),
   ack: new Set(['v', 'kind', 'msgId', 'by', 'sessionId', 'deviceId', 'hostKey', 'at', 'outcome', 'detail60', 'stamp', 'keyId', 'checksum', 'hmac']),
   device: new Set(['v', 'kind', 'deviceId', 'hostKey', 'label', 'host', 'user', 'jevcode', 'createdAt', 'syncMode', 'keyId', 'checksum', 'hmac']),
+  claims: new Set(['v', 'kind', 'deviceId', 'hostKey', 'runId', 'sessionId', 'claims', 'imports', 'forked', 'ended', 'at', 'stamp', 'keyId', 'checksum', 'hmac']),
 };
 
 /** Every top-level key of `o` is one this kind declares (`undefined` members are dropped before the write). */
@@ -454,7 +455,52 @@ function keysAllowed(kind: RecordKind, o: JsonObject): boolean {
   return true;
 }
 
-const CHECKERS: Record<RecordKind, (o: JsonObject) => Bad | null> = { heartbeat: checkHeartbeat, lease: checkLease, message: checkMessage, ack: checkAck, device: checkDevice };
+/** §9.3 (design revision 5): `imports[]` is bounded at 16 — a reduced row per import, never a body or a workspace. */
+export const CLAIM_IMPORTS_MAX = 16;
+
+/**
+ * §9.3 (design revision 5): the sixth kind. This is the parse path a PLANTED projection takes, which is what finally
+ * puts `MAX_CLAIM_EPOCH` and the id-vs-path binding where the §7.3 1(a) refusal actually reads — revision 4 attributed
+ * the bound to `parseRecord` while the only reader of a foreign epoch was `run.json`, which goes through no parser at
+ * all. Every epoch here is bounded BEFORE it can reach a comparison, so the ceiling is unreachable by construction.
+ */
+function checkClaims(o: JsonObject): Bad | null {
+  if (o['kind'] !== 'claims') return 'shape';
+  const bad = checkId(o['deviceId'], DEVICE_ID_RE) ?? checkId(o['runId'], RUN_ID_RE) ?? checkId(o['sessionId'], RUN_ID_RE);
+  if (bad !== null) return bad;
+  if (o['hostKey'] !== undefined && (!isStr(o['hostKey']) || !HOST_KEY_RE.test(o['hostKey']))) return 'id';
+  if (!isStr(o['at'])) return 'shape';
+  const claims = o['claims'];
+  if (!Array.isArray(claims) || claims.length > MAX_CLAIMS_PER_RUN) return 'bounds';
+  for (const c of claims) {
+    if (!isJsonObject(c)) return 'shape';
+    // the bound FIRST: a planted `9007199254740990` must be `bounds`, not `shape`, and must never reach a comparison
+    if (typeof c['epoch'] === 'number' && !(Number.isSafeInteger(c['epoch']) && c['epoch'] >= 1 && c['epoch'] <= MAX_CLAIM_EPOCH)) return 'bounds';
+    if (!isValidClaim(c)) return 'shape';
+    // every claim in the projection belongs to the run and the device the FILE's path names (bound in locationMatches)
+    if (c['deviceId'] !== o['deviceId'] || c['runId'] !== o['runId']) return 'id';
+  }
+  const imports = o['imports'];
+  if (!Array.isArray(imports) || imports.length > CLAIM_IMPORTS_MAX) return 'bounds';
+  for (const i of imports) {
+    if (!isJsonObject(i) || !isStr(i['at'])) return 'shape';
+    if (checkId(i['fromDeviceId'], DEVICE_ID_RE) !== null) return 'id';
+    if (typeof i['epoch'] !== 'number' || !Number.isSafeInteger(i['epoch']) || i['epoch'] < 1 || i['epoch'] > MAX_CLAIM_EPOCH) return 'bounds';
+  }
+  const forked = o['forked'];
+  if (forked !== undefined) {
+    if (!isJsonObject(forked) || !isCount(forked['atStep']) || !isStr(forked['at'])) return 'shape';
+    for (const k of ['loserEpoch', 'winnerEpoch'] as const) {
+      const v = forked[k];
+      if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1 || v > MAX_CLAIM_EPOCH) return 'bounds';
+    }
+  }
+  const ended = o['ended'];
+  if (ended !== undefined && !(isJsonObject(ended) && isStr(ended['at']) && (ended['by'] === 'human' || ended['by'] === 'remote'))) return 'shape';
+  return checkStamp(o['stamp']);
+}
+
+const CHECKERS: Record<RecordKind, (o: JsonObject) => Bad | null> = { heartbeat: checkHeartbeat, lease: checkLease, message: checkMessage, ack: checkAck, device: checkDevice, claims: checkClaims };
 
 /**
  * + review blocker 6: a record must agree with the PATH it was read from. Nothing in a record binds its `deviceId` to the
@@ -517,6 +563,11 @@ function locationMatches(kind: RecordKind, o: JsonObject, ctx: ParseContext): bo
       return o['deviceId'] === ctx.deviceId && stampDevice === ctx.deviceId;
     case 'device':
       return o['deviceId'] === ctx.deviceId;
+    case 'claims':
+      // §9.3 (revision 5): the projection is bound to BOTH path components it sits under — `runs/<deviceId>/<runId>/`
+      // — so a planted file cannot claim another run's epochs or another device's authority.
+      if (ctx.runId !== undefined && o['runId'] !== ctx.runId) return false;
+      return o['deviceId'] === ctx.deviceId && stampDevice === ctx.deviceId;
   }
 }
 
@@ -556,6 +607,8 @@ export function recordKindOf(r: AnyRecord): RecordKind {
       return 'message';
     case 'ack':
       return 'ack';
+    case 'claims':
+      return 'claims';
   }
 }
 
@@ -573,6 +626,10 @@ export function isAck(r: AnyRecord): r is Ack {
 }
 export function isDeviceRecord(r: AnyRecord): r is DeviceRecord {
   return !('kind' in r);
+}
+/** §9.3 (revision 5): the authenticated claim projection — the only reader of a foreign epoch. */
+export function isClaimsProjection(r: AnyRecord): r is ClaimsProjection {
+  return 'kind' in r && r.kind === 'claims';
 }
 
 // ── liveness (§3.4) ───────────────────────────────────────────────────────────────────────────────────────────────────

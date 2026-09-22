@@ -7,15 +7,19 @@
  */
 
 // contract types (§12.0.4 shapes, structurally identical; see ./types.ts header for the `+` additions)
+export { HOLDING_LEASE_TYPES } from './types.js';
 export type {
   Ack,
   AckOutcome,
   AnyRecord,
   Authority,
   Claim,
+  ClaimsProjection,
   CoordStageName,
   CoordinationFacts,
+  DeclaredFact,
   DeviceRecord,
+  FenceYield,
   Fold,
   FoldChange,
   GcReport,
@@ -67,6 +71,8 @@ export {
   canMintAbove,
   capClaims,
   forceTakebackEpoch,
+  forceTakebackPlan,
+  ordinaryMintEpoch,
   claimHolder,
   compareClaim,
   forkVerdict,
@@ -149,12 +155,15 @@ export {
   CONTROL_MESSAGE_TTL_MS,
   CONTROL_MESSAGE_TYPES,
   GONE_KEEP_MS,
+  CLAIM_IMPORTS_MAX,
   HEARTBEAT_MS,
   HEARTBEAT_TTL_MS,
   LEASE_TTL_MS,
   MESSAGE_TTL_MS,
   READ_MAX_BYTES,
+  HONOURED_TTL_MAX_MS,
   RECORD_MAX_BYTES,
+  RECORD_TTL_MAX_MS,
   SKEW_MS,
   SYNC_SLACK_GIT_MS,
   SYNC_SLACK_SHARED_MS,
@@ -164,12 +173,15 @@ export {
   coordinationCodeOf,
   finalizeRecord,
   fitsRecordSize,
+  honouredTtlMs,
   isAck,
+  isClaimsProjection,
   isDeviceRecord,
   isHeartbeat,
   isLease,
   isLive,
   isMessage,
+  lockReplaceVerdict,
   oneLine,
   overlap,
   parseRecord,
@@ -177,6 +189,7 @@ export {
   recordBytes,
   recordKindOf,
   redactRecord,
+  sameBoot,
   sameHost,
   serializeRecord,
   withChecksum,
@@ -186,7 +199,7 @@ export {
   STAMP_ADOPT_MAX_DELTA,
   adoptableStampN,
 } from './records.js';
-export type { CoordinationErrorCode, Now, OverlapOptions, ParseContext, ParseFailure, ParseRecordResult } from './records.js';
+export type { CoordinationErrorCode, LockReplace, Now, OverlapOptions, ParseContext, ParseFailure, ParseRecordResult, PeerLiveFacts, RunLockFacts } from './records.js';
 export { canonicalText, checksumValid } from './checksum.js';
 
 // fold.ts — the pure reduction and listSessions (§3.5, §3.6)

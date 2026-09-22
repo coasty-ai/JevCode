@@ -106,10 +106,10 @@ export function highEpoch(epochs: readonly number[]): number {
  * `claims:[{ epoch: 9007199254740990 }]` makes every `/resume` on every device demand `--force-takeback` whose successor
  * epoch is unmintable — the run is permanently unresumable, and claims are never GC'd. Bounded to `MAX_CLAIMS_PER_RUN`.
  *
- * TODO(rev5) §7.3 1(a): `run.json` and the §9.3 essential-set projection carry no `hmac` / `keyId` yet, so no foreign
- * `claims[]` / `imports[]` row can be presented here as anything but `'unverified'` — the qualification path is
- * therefore FAIL-SAFE (a foreign epoch never raises the bar) and the legitimate M7 refusal is silently disabled until
- * those records are signed. The bound below applies whatever the authority, which is what stops a planted 1e9.
+ * Revision 5: the rows now COME from somewhere — `readClaimEpochs(ledger, runId)` reads the authenticated
+ * `runs/<deviceId>/<runId>/claims.json` projections through `parseRecord(text, 'claims', { runId, trust })`, so a
+ * foreign epoch can finally be `'trusted'` and the §7.3 1(a) refusal is live rather than fail-safe-and-dead. The
+ * bound below still applies whatever the authority, which is what stops a planted 1e9 either way.
  */
 export function qualifiedEpochs(rows: readonly { epoch: number; authority: Authority }[], o: { max?: number } = {}): number[] {
   const out: number[] = [];
@@ -127,6 +127,66 @@ export function qualifiedEpochs(rows: readonly { epoch: number; authority: Autho
  */
 export function canMintAbove(seenEpochs: readonly number[]): boolean {
   return highEpoch(seenEpochs) < MAX_CLAIM_EPOCH;
+}
+
+/**
+ * §9.3 (design revision 5): the `--force-takeback` algebra, exactly as the design states it.
+ *
+ * ```
+ * Q = { local run.json claims[].epoch } ∪ { local imports[].claim.epoch } ∪ { devices/<hostKey>/claims/<runId>.json }
+ *     ∪ { QUALIFIED foreign epochs from runs/*\/<runId>/claims.json }      each filtered to 0 ≤ e ≤ MAX_CLAIM_EPOCH
+ * U = { UNQUALIFIED foreign epochs }                                        each filtered to 0 ≤ e <  MAX_CLAIM_EPOCH
+ * ordinary mint      epoch = max(Q_local) + 1
+ * --force-takeback   epoch = max(Q ∪ U)   + 1
+ * refusal            max(Q) === MAX_CLAIM_EPOCH  →  CoordinationError 'epoch-exhausted'
+ * ```
+ *
+ * `U` is filtered STRICTLY BELOW the bound, so an unqualified epoch planted AT the ceiling is dropped rather than
+ * minted over: an unqualified epoch refuses nothing, so minting above it is a courtesy and a hostile one must not be
+ * able to disable the flag. `Q` is filtered AT the bound, so reaching it is a real state and the honest answer is a
+ * refusal — the alternative (clamping the OUTPUT and minting an epoch EQUAL to the maximum) yields
+ * `compareClaim === 0`, the one value the fork rule cannot break, which is the bug the persisted takeback claim was
+ * added to fix. Revision 4's rule clamped the output, so a planted unqualified `1e9` made the flag mint `1e9 + 1` —
+ * above the parse bound, so every other device then rejected the winner's own records as `bounds`.
+ */
+export interface TakebackInputs {
+  /** local truth: `run.json.claims[]`, `imports[]`, `devices/<hostKey>/claims/<runId>.json` — FILTERED, never refused */
+  local: readonly number[];
+  /** foreign epochs from `runs/*\/<runId>/claims.json` with the authority their parse reported */
+  foreign: readonly { epoch: number; qualified: boolean }[];
+}
+
+export interface TakebackPlan {
+  /** the epoch to mint, or null when the run is epoch-exhausted */
+  epoch: number | null;
+  /** `max(Q) === MAX_CLAIM_EPOCH`: nothing can take this run over any more */
+  exhausted: boolean;
+  /** unqualified epochs dropped for being AT or above the bound — the card says so (§9.3) */
+  droppedUnqualified: number;
+}
+
+export function forceTakebackPlan(o: TakebackInputs): TakebackPlan {
+  const inBand = (e: number, top: 'at' | 'below'): boolean =>
+    Number.isSafeInteger(e) && e >= FIRST_EPOCH && (top === 'at' ? e <= MAX_CLAIM_EPOCH : e < MAX_CLAIM_EPOCH);
+  const q: number[] = [];
+  for (const e of o.local) if (inBand(e, 'at')) q.push(e); // local truth is FILTERED, never refused (§9.3)
+  for (const r of o.foreign) if (r.qualified && inBand(r.epoch, 'at')) q.push(r.epoch);
+  let droppedUnqualified = 0;
+  const u: number[] = [];
+  for (const r of o.foreign) {
+    if (r.qualified) continue;
+    if (inBand(r.epoch, 'below')) u.push(r.epoch);
+    else if (Number.isSafeInteger(r.epoch) && r.epoch >= MAX_CLAIM_EPOCH) droppedUnqualified++;
+  }
+  const maxQ = q.length === 0 ? 0 : Math.max(...q);
+  if (maxQ === MAX_CLAIM_EPOCH) return { epoch: null, exhausted: true, droppedUnqualified };
+  const top = Math.max(maxQ, u.length === 0 ? 0 : Math.max(...u));
+  return { epoch: Math.max(FIRST_EPOCH, top + 1), exhausted: false, droppedUnqualified };
+}
+
+/** §9.3: the ORDINARY mint — local truth only, because the refusal gate guarantees no qualified foreign epoch exceeds it. */
+export function ordinaryMintEpoch(local: readonly number[]): number {
+  return Math.max(FIRST_EPOCH, highEpoch(local) + 1);
 }
 
 /**
