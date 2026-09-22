@@ -154,7 +154,7 @@ export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env:
     fold.devices.set(d.deviceId, { ...d, lastSeen: lastSeen.get(d.deviceId) ?? d.createdAt, syncLagMs, ignored: env.ignoredDevices.has(d.deviceId), cloned: false });
   }
 
-  // heartbeats — one per (device, run) file; several records for one runId = a fork (§9.3): the lowest CLAIM holds
+  // heartbeats — one per (device, run) file; several records for one runId = a fork (§9.3): the HIGHEST claim epoch holds
   // (+ review blocker 3: the claim is immutable, so both sides of a fork reach the same verdict whatever the sync timing)
   heartbeats.sort((a, b) => byStampDesc(a.hb, b.hb));
   const kept = heartbeats.length > FOLD_CAPS.heartbeats ? heartbeats.slice(0, FOLD_CAPS.heartbeats) : heartbeats;
@@ -344,7 +344,7 @@ function activityOf(fold: Fold, self: SelfIdentity, hb: Heartbeat & { arrivalMon
   for (const l of byRun.get(hb.runId) ?? []) {
     if (l.deviceId === hb.deviceId) leases.push(l);
     // + blocker 3: a takeover outranks a record by CLAIM (a later incarnation), never by the folding stamp
-    else if (l.type === 'takeover' && l.claim !== undefined && compareClaim(l.claim, hb.claim) > 0) takenOver = true;
+    else if (l.type === 'takeover' && l.claim !== undefined && compareClaim(l.claim, hb.claim) < 0) takenOver = true;
   }
   const device = fold.devices.get(hb.deviceId);
   return {
@@ -435,9 +435,10 @@ export function listSessions(fold: Fold, self: SelfIdentity, opts: { all?: boole
 }
 
 /**
- * + review blocker 3 / major 12: every heartbeat the fold holds for one runId, **the CLAIM HOLDER first** (`[0]` is the
- * holder by `compareClaim`, which is the ownership fence — never the folding stamp, never arrival order). Records are
- * deduplicated by (deviceId, pid), so two processes of one device on one runId are two rows, as §9.3 needs them to be.
+ * + review blocker 3 / major 12: every heartbeat the fold holds for one runId, in **rank order** (`compareClaim`, which
+ * is the ownership fence — never the folding stamp, never arrival order), so `[0]` carries the HIGHEST epoch (§3.2).
+ * Records are deduplicated by (deviceId, pid), so two processes of one device on one runId are two rows, as §9.3 needs
+ * them to be. Authority is NOT filtered here — `seenEpochs` and `claimHolderOf` apply the §9.3 qualifier themselves.
  */
 export function byRunId(fold: Fold, runId: string): (Heartbeat & { arrivalMono: number })[] {
   const out: (Heartbeat & { arrivalMono: number })[] = [];
@@ -452,9 +453,18 @@ export function byRunId(fold: Fold, runId: string): (Heartbeat & { arrivalMono: 
   return out.sort((a, b) => compareClaim(a.claim, b.claim) || compareStamp(a.stamp, b.stamp));
 }
 
-/** The claim holder for one runId, or null when the fold holds no record of it. */
-export function claimHolderOf(fold: Fold, runId: string): (Heartbeat & { arrivalMono: number }) | null {
-  return byRunId(fold, runId)[0] ?? null;
+/**
+ * §3.2 / §9.3: the claim holder for one runId — the record with the highest **QUALIFIED** epoch (mine, or a trust- and
+ * hmac-qualified foreign one), or null when the fold holds no qualified record of it. `includeUnverified` is the
+ * display opt-in, exactly as on `foreignLive` and `seenEpochs`: a planted beat must never be able to name itself the
+ * holder on a path that gates anything (§11 row 51).
+ */
+export function claimHolderOf(fold: Fold, runId: string, o: { includeUnverified?: boolean } = {}): (Heartbeat & { arrivalMono: number }) | null {
+  for (const hb of byRunId(fold, runId)) {
+    if (o.includeUnverified !== true && authorityOf(originOf(fold, hb)) === 'unverified') continue;
+    return hb;
+  }
+  return null;
 }
 
 /**

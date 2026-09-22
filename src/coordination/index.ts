@@ -70,6 +70,7 @@ export {
   authorityOf,
   canMintAbove,
   capClaims,
+  claimRefusal,
   forceTakebackEpoch,
   forceTakebackPlan,
   ordinaryMintEpoch,

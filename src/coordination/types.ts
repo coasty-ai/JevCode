@@ -28,17 +28,26 @@ export interface Stamp {
  * + review blocker 3: the fork / foreign-liveness fence. The Lamport `Stamp` folds (`max(n, observed) + 1` on every fold
  * AND every issue) and the heartbeat is one file per run overwritten every beat, so two engines comparing stamps can both
  * read themselves as the holder. A `Claim` is minted ONCE per process and never changes, so both sides compute the same
- * verdict from the same pair of records whatever the sync timing: the holder is the LOWEST claim (the first claimer keeps
- * the run; a newcomer yields), ordered `(epoch, startedAt, deviceId, pid)`.
+ * verdict from the same pair of records whatever the sync timing.
+ *
+ * §3.2 / §9.3 / §10.7 (owner decision, §14 item 18): the holder is the **HIGHEST QUALIFIED epoch** — the LATER
+ * incarnation, which by construction read its predecessor's state. That is the whole purpose of an epoch: a legitimate
+ * `/resume` or takeover mints above what it replaced and the stale process must stop. Ties break by `deviceId`, then
+ * `runId` (`at`, then `pid`, are the as-built last resort for two processes of ONE device on ONE run).
  */
 export interface Claim {
   /** the run incarnation: 1 for a fresh run, `max(every epoch seen for this runId) + 1` for a resume / takeover / import */
   epoch: number;
   deviceId: string;
   runId: string;
+  /** this process's start (ISO) — §3.2's `at`; audit, and the last-resort tiebreak below `(epoch, deviceId, runId)` */
+  at: string;
+  /**
+   * as built (§14 item 19): display and audit only — never an `isPidAlive` input across devices, and never compared
+   * above `at`. It exists so `(epoch, deviceId, runId)` — which is not total for two processes of one device on one
+   * run — still yields a total order, the one thing the fork rule cannot do without.
+   */
   pid: number;
-  /** this process's start (ISO) — the tiebreak between two claims that minted the same epoch */
-  startedAt: string;
 }
 
 /** + review blockers 5 / 6: where a record came from and whether it is authentic — decided by the reader, never by the record. */
@@ -350,7 +359,7 @@ export interface Fold {
   ignored: Map<string, Heartbeat & { arrivalMono: number }>;
   skipped: number;
   at: { wallMs: number; monoMs: number };
-  /** + §9.3 fork rule: every heartbeat for a runId beyond the holder (the lowest CLAIM), by runId; absent = none */
+  /** + §9.3 fork rule: every heartbeat for a runId beyond the holder (the HIGHEST claim epoch, §14 item 18), by runId; absent = none */
   forks?: Map<string, (Heartbeat & { arrivalMono: number })[]>;
   /** + review blockers 5 / 6: the origin of every heartbeat in `live` / `gone` / `forks`, by `${deviceId}/${runId}` */
   origins: Map<string, RecordOrigin>;
@@ -654,7 +663,7 @@ export interface RunClaimMeta {
   /** `max(epoch)` this device has ever minted or accepted for the run */
   claimEpochHigh: number;
   /** append-only, newest last, ≤ CLAIMS_MAX rows */
-  claims: { epoch: number; deviceId: string; startedAt: string; authority: Authority }[];
+  claims: { epoch: number; deviceId: string; at: string; authority: Authority }[];
 }
 
 /** §6.5 worktree metadata — `coordination/worktrees/<repoKey>/<slug>.json`, outside every checkout and sandbox root */
