@@ -1044,24 +1044,30 @@ ascending; the 1.4 line sits directly after 1.3 (where the harness rebased it); 
 ## 2026-09-22 Harness-owned files touched by the TUI session arrive as hunks
 
 **Widened 2026-09-22 at `d297b29` (finishing pass F17).** As drafted this paragraph named four paths, while both sessions had
-long been treating eleven-plus as harness-owned (the peer's own round-5 patch header enumerates them) and four top-level `src/`
-directories were on neither list. The partition below is complete: every top-level directory of `src/` appears in exactly one
-bucket, asserted by `test/unit/hygiene/decisions-consistency.test.ts`.
+long been treating eleven as harness-owned and four top-level `src/` directories were on neither list. The peer's own
+round-5 patch header enumerates its eleven verbatim — `src/loop/**`, `src/synth/**`, `src/coordination/**`,
+`src/orchestrate/**`, `src/import/**`, `src/models/**`, `src/provider/**`, `src/spend/**`, `src/checkpoint/**`,
+`src/errors.ts` and "every non-TUI block of `src/core/types.ts`"
+(`docs/research/tui/round-5/harness-session-hunks.patch` on `r5-impl`, quoted in
+`docs/research/coordination/peer-hunks-r5-2026-09-22.md`) — and its reverse list is the five directories below.
+The partition below is complete: every top-level directory of `src/` appears in exactly one bucket, asserted by
+`test/unit/hygiene/decisions-consistency.test.ts`.
 
 <!-- ownership:begin -->
 **Harness-owned:** `src/bench/**`, `src/checkpoint/**`, `src/coordination/**`, `src/core/**` (additive optional members inside
 EXISTING contract blocks only — never a new header; the contract block itself is the peer's), `src/import/**`, `src/jev/**`,
 `src/loop/**` (`engine.ts` included), `src/models/**`, `src/orchestrate/**`, `src/perf/**`, `src/provider/**`, `src/sandbox/**`,
-`src/synth/**`, `src/workspace/**`, and the single file `src/errors.ts`. Also `scripts/**`, `test/unit/**`, `experiments/**`,
-`docs/*-DESIGN.md`, `docs/LLM-JEV.md`, `docs/DECISIONS.md`, `docs/MERGE-QUEUE.md` and `docs/research/**`.
+`src/spend/**`, `src/synth/**`, `src/workspace/**`, and the single file `src/errors.ts`. Also `scripts/**`,
+`test/unit/**`, `experiments/**`, `docs/*-DESIGN.md`, `docs/LLM-JEV.md`, `docs/DECISIONS.md`, `docs/MERGE-QUEUE.md`
+and `docs/research/**`.
 
 **TUI-owned** (the reverse list, and the harness session may not edit these at all — it writes the exact sentence it needs into
 its report instead): `src/chat/**`, `src/cli/**`, `src/config/**`, `src/session/**`, `src/tui/**`, plus `README.md`,
 `docs/COMMANDS.md` and `docs/STATUS.md`.
 
 **Owned by hunk** (both sessions legitimately land in these, so whoever is not holding the tree sends a hunk or commits alone at
-a hash the other rebases over — the same protocol as the harness files below): `src/spend/**` (the harness's decompose stage and
-the TUI's `SpendMeter.setCap` both live here), `src/undo/**` (TUI round 4 and the harness's checkpoint images), `vitest.config.ts`
+a hash the other rebases over — the same protocol as the harness files below): `src/undo/**` (TUI round 4 landed in
+`plan.ts`, `r5-impl` lands there again, and the harness owns the checkpoint images it restores from), `vitest.config.ts`
 and the `scripts` block of `package.json`. The last two are in neither session's original list and both are landing targets this
 pass (F07, F11); a `package.json` edit additionally obliges the editor to re-run `node scripts/gen-docs.mjs` (see the `manDate()`
 row of `docs/HARNESS-NEXT-DESIGN.md` §9.1).
