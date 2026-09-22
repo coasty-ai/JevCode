@@ -274,6 +274,41 @@ export interface Message {
   hmac?: string;
 }
 
+/**
+ * The PUBLIC projection of a `Message` (TUI round-5 request R5-H1): every member a reader outside
+ * `src/coordination/**` may see, so a `--json` sink can serialise an inbox without hand-shaping a row model.
+ * `publicMessage()` (`./records.ts`) is the only constructor; it is TOTAL over `MessageType`.
+ *
+ * What is DROPPED and why — the list is argued per member in
+ * `docs/research/coordination/peer-hunks-r5-2026-09-22.md`, and the key set is pinned by a test:
+ *   `hostKey`              — `sha8(hostname(), username, machineId)`: the one field the design names a **device
+ *                            secret derivative** (TUI-DESIGN-5 §7 row 61, §2.3; the very reason `SelfIdentityView` exists).
+ *   `hmac`                 — an HMAC under this device's paired commons key; row 61 names claim HMACs explicitly.
+ *   `checksum`             — sha256 over the canonical text, and that text CONTAINS `hostKey`. With every other
+ *                            member public the checksum is a known-plaintext oracle over an 8-hex-char digest
+ *                            (~4.3e9 candidates), i.e. a recoverable `hostKey`. It is dropped for that reason,
+ *                            not for tidiness; a reader that wants integrity re-reads the record.
+ *   `from.pid`, `from.bootId` — machine / boot bindings (§3.2 revision 5); `pid` is display-and-audit only and
+ *                            `bootId` can only DENY `sameDevice`, so neither means anything to an outside reader.
+ *   `from.user`            — an INPUT of `hostKeyOf`, and no TUI view carries it (`SessionActivityView` /
+ *                            `SelfIdentityView` are `deviceId8` + `label`). §9.1 does allow usernames into a
+ *                            shared folder, so this is the VIEW rule, not a secrecy proof — stated, not blurred.
+ *   `v`, `kind`, `stamp`, `expiresAt` — wire / ordering bookkeeping of the record, not of the message. Every one
+ *                            of them can be added back later: this shape is additive-only by construction.
+ */
+export interface PublicMessage {
+  id: string;
+  /** `deviceId8` is `deviceId.slice(0, 8)` — the whole id today (`DEVICE_ID_RE` is 8 base32 chars), named as
+   *  TUI-DESIGN-5 §8.1's `SessionActivityView` / `SelfIdentityView` name it, so one vocabulary covers every view. */
+  from: { deviceId8: string; label: string; sessionId: string | null; runId: string | null };
+  to: string;
+  type: MessageType;
+  text: string;
+  refs: Message['refs'];
+  by?: 'human' | 'engine';
+  t: string;
+}
+
 /** acks/<deviceId>/<msgId>/<sessionId>.json — §5.1 */
 export type AckOutcome = 'delivered' | 'applied' | 'refused' | 'expired';
 export interface Ack {

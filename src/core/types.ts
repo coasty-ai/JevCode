@@ -2460,6 +2460,16 @@ export interface ContextPolicyOptions {
   /** 0 disables the interval trigger */
   compactEvery?: number;
   compaction?: CompactionMode;
+  /**
+   * docs/COORDINATION-DESIGN.md §8.6 / §12.0.1: who RANKS the kept items the prompt's `## Kept (do not re-derive)`
+   * renders. Extraction is always code; this switch only decides the ordering pass.
+   *   `'code'` (default) — deterministic across devices and resumes (G3(d)), free, and available in `jev-off`:
+   *                        the `'code'` compactor stays exactly what it claims to be.
+   *   `'jev'`            — ONE bounded Jev request per compaction (§8.9: ~$0.001 per 8 steps), REFUSED under
+   *                        `jev-off`, and an escape or a failure falls back to the code order — Jev routes, never
+   *                        gates (`rankKept`, `src/loop/context/compaction.ts`).
+   */
+  kept?: 'code' | 'jev';
   budgetChars?: number;
 }
 
