@@ -122,13 +122,13 @@ describe('P1 — step boundary', () => {
     expect(h.of('run:end')[0]).toMatchObject({ exitCode: 4, resumable: true });
     const p = point(h);
     expect(p).toEqual({ step: 2, round: null, phase: 'idle', reason: 'step', resumableAt: 'boundary', replayable: false, by: 'self', end: false });
-    // order: … status → pause:point → transcript stop line → run:end
+    // order: … status → pause:point → run:end. contract 1.7 (TUI-DESIGN-4 §3.6, D-V) deleted the transcript stop
+    // line that used to sit between the point and run:end, so the slot it occupied is asserted EMPTY as well.
     const iPoint = indexOf(h, (e) => e.type === 'pause:point');
-    const iStop = indexOf(h, (e) => e.type === 'transcript' && /^stop: human_pause/.test(e.text));
     const iEnd = indexOf(h, (e) => e.type === 'run:end');
     expect(iPoint).toBeGreaterThan(0);
-    expect(iPoint).toBeLessThan(iStop);
-    expect(iStop).toBeLessThan(iEnd);
+    expect(iPoint).toBeLessThan(iEnd);
+    expect(indexOf(h, (e) => e.type === 'transcript' && /^stop: /.test(e.text))).toBe(-1);
     expect(h.events[iPoint - 1]?.type).toBe('status');
     // the state carries the same object; status() reads it until run:end; a fresh engine reads null
     expect(h.store.last()!.pausePoint).toEqual(p);
@@ -136,7 +136,9 @@ describe('P1 — step boundary', () => {
     expect(h.engine.status().pausePoint).toEqual(p);
     expect(h.engine.status().pauseNow).toBe(false);
     // the transcript is unchanged by the event (pause:point yields no line)
-    expect(h.store.transcript.at(-2)).toBe('[run] warn: stop: human_pause at step 1');
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
+    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
   });
 
   it('pause now between steps (before run) is the same as pause at step: nothing to interrupt, zero steps, exit 4', async () => {

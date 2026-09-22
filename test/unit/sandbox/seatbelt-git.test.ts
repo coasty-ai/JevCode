@@ -226,6 +226,31 @@ describe.skipIf(!darwin)('createSandbox forwards the git options into the profil
     expect(readdirSync(runDir).filter((f) => f.endsWith('.sb')).length).toBe(3);
   });
 
+  it('ORCHESTRATION-DESIGN §5.2 [G3]: `agentChild` reaches buildProfile AND the profile-path hash, so the [D10] pair coexists', () => {
+    const dir = temp('jev-sbg-');
+    const ws = join(dir, 'ws');
+    mkdirSync(join(ws, '.git'), { recursive: true });
+    const runDir = join(dir, 'run');
+    const base = { workspaceRoot: ws, runDir, profile: 'seatbelt' as const, noNetwork: false, secretReadDenies: [], redact: (x: string) => x, gitDir: join(ws, '.git'), gitCommonDir: join(ws, '.git') };
+    // §5.2 [D10] is exactly this pair: the supervisor's own depth-0 sandbox over the agent's worktree, and the
+    // child engine's depth-1 sandbox over the SAME worktree in the SAME run dir. Forwarded but not hashed, the
+    // two would collide on one `sandbox-<hash>.sb` and the later profile would silently overwrite the earlier.
+    const supervisor = createSandbox(base, FAST_KILL);
+    const child = createSandbox({ ...base, agentChild: true }, FAST_KILL);
+    expect(supervisor.level).toBe('seatbelt');
+    expect(child.level).toBe('seatbelt');
+    const files = readdirSync(runDir).filter((f) => f.endsWith('.sb')).sort();
+    expect(files.length).toBe(2);
+    const bodies = files.map((f) => readFileSync(join(runDir, f), 'utf8'));
+    const denying = bodies.filter((b) => b.includes('packed-refs'));
+    expect(denying).toHaveLength(1);
+    // and the supervisor's profile is byte-identical to the one it would get with no orchestration at all
+    expect(bodies.find((b) => !b.includes('packed-refs'))).toBe(readFileSync(join(runDir, files.find((f) => !readFileSync(join(runDir, f), 'utf8').includes('packed-refs'))!), 'utf8'));
+    // `agentChild: false` is not a different sandbox from an absent one — same name, one more file is NOT created
+    createSandbox({ ...base, agentChild: false }, FAST_KILL);
+    expect(readdirSync(runDir).filter((f) => f.endsWith('.sb')).length).toBe(2);
+  });
+
   it('a linked worktree can `git commit` (writes into the main .git) while config, config.worktree, hooks and modules/*/config stay unwritable', async () => {
     const dir = temp('jev-sbg-');
     const main = join(dir, 'main');

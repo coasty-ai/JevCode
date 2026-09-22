@@ -42,6 +42,22 @@ export interface ProfileOptions {
   gitCommonDir?: string;
   /** TUI-DESIGN §12.7: resolved `${XDG_CONFIG_HOME:-~/.config}/jevcode` + legacy dirs, appended to the `file-read*` denies. */
   configDirs?: readonly string[];
+  /**
+   * ORCHESTRATION-DESIGN §5.2 [G3]: set when `EngineOptions.orchestration.depth === 1`.
+   *
+   * A linked worktree's common dir is a WRITE ROOT (the `gitRoots` block below puts it there so
+   * `git commit` can reach `refs/`, `logs/` and `objects/`), and the §12.7 denies cover only the
+   * executable knobs. The landing layer pins `refs/heads/jevcode/<slug>` to a sha ONCE and re-checks
+   * that same sha at merge time; a child that could move the ref, rewrite the reflog, repack
+   * `packed-refs` or repoint another worktree's `HEAD` in between would defeat the re-check and get
+   * an unverified tree merged into the dock — and under `orchestrate.land: 'step'`, into the user's
+   * checkout. So a depth-1 profile denies all four, and only a depth-1 one: the supervisor builds its
+   * OWN `Sandbox` per worktree from the PARENT's configuration ([D10]), never sets this flag, and it
+   * is that profile — not this one — that runs [G1]'s `git add` / `git commit` in an agent worktree.
+   * An agent's own engine never writes a ref (`src/workspace/git.ts` writes only the index and the
+   * working tree: `restore --worktree`, `add -A -N`, `apply`), so the deny costs it nothing.
+   */
+  agentChild?: boolean;
 }
 
 /** SBPL string literal: double-quoted with backslash and quote escaped. */
@@ -156,6 +172,20 @@ export function buildProfile(opts: ProfileOptions): string {
     if (ttyDeny.length > 0) lines.push(`(deny file-write* ${ttyDeny.join(' ')})`);
   } else {
     lines.push(`(deny file-write* ${[...gitDenies, ...ttyDeny].join(' ')})`);
+  }
+  // ORCHESTRATION-DESIGN §5.2 [G3]: the child deny list, its own rule so nothing else can weaken it
+  // (`protectGit: false` is the infrastructure sandbox's knob and has no business relaxing this one).
+  // It sits after the write allow because later rules win; without the ordering the deny is inert.
+  // The four paths are relative to the git COMMON dir: `refs/` and `packed-refs` hold the branch the
+  // landing layer pinned, `logs/` its reflog, and `worktrees/<name>/HEAD` the file that decides what
+  // any linked worktree — this agent's own included — considers its current branch. The agent's own
+  // per-worktree `logs/` and `refs/` live under `<commonDir>/worktrees/<name>/` and stay writable.
+  if (opts.agentChild === true) {
+    const agentCommon = commonDir ?? join(ws, '.git');
+    lines.push(
+      `(deny file-write* (subpath ${sbplString(join(agentCommon, 'refs'))}) (literal ${sbplString(join(agentCommon, 'packed-refs'))}) (subpath ${sbplString(join(agentCommon, 'logs'))}) ` +
+        `(regex ${sbplRegex(`^${regexQuote(join(agentCommon, 'worktrees'))}/[^/]+/HEAD$`)}))`,
+    );
   }
 
   const reads: string[] = [];

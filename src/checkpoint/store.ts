@@ -54,6 +54,13 @@ export const CHECKPOINT_FILES = {
   drafts: 'drafts',
   /** contract 1.4 (COORDINATION-DESIGN §7.2, §6.4): pause-now snapshots `cache/step-<n>.json` and the LLM round cache, written by writeCache() */
   cache: 'cache',
+  /**
+   * contract 1.5 (docs/ORCHESTRATION-DESIGN.md §8.2 D0 item 4, §3.7, §2.5): the delegation's artefacts —
+   * `manifest-<step>.json`, `agent-<slug>.task`, `agent-<slug>.seed.json`, `review-<n>.json` / `.used`, `land.jsonl`,
+   * `land.lock`. Written through the SAME `writeCache` / `readCache` / `renameCache` triple as `cache/`, selected by an
+   * `orchestrate/`-prefixed rel, so there is one validated, redacted, per-file-serialised writer and not two.
+   */
+  orchestrate: 'orchestrate',
   // docs/COORDINATION-DESIGN.md §8.3 / §8.6 (W2 item 20): the context policy's artefacts under the same run directory
   /** whole step outputs: outputs/step-<n>.txt (≤ 1 MiB each, ≤ 64 MiB per run) */
   outputs: 'outputs',
@@ -82,6 +89,42 @@ export function cacheRelPath(rel: string): string | null {
   if (norm === '.' || norm.startsWith('../') || norm === '..' || norm.startsWith('/')) return null;
   if (norm.split('/').some((c) => c.length === 0 || c === '.' || c === '..')) return null;
   return norm;
+}
+
+/**
+ * contract 1.5 (§3.7): one `orchestrate/` artefact is at most this many bytes after redaction. The manifest's own bound
+ * is `MANIFEST_BYTES` (32 KiB, `src/core/limits.ts`) and is enforced by `src/orchestrate/manifest.ts`; this is the
+ * store's floor-to-ceiling guard for every artefact under the directory, in the same spirit as `MAX_FILE_BYTES` above:
+ * a checkpoint artefact larger than this is not something JevCode produced.
+ */
+export const ORCHESTRATE_FILE_BYTES = 256 * 1024;
+
+const ORCHESTRATE_PREFIX = `${CHECKPOINT_FILES.orchestrate}/`;
+
+/**
+ * contract 1.5: which of the two cache-shaped roots a rel names. `orchestrate/<x>` goes to `<runDir>/orchestrate/<x>`;
+ * everything else keeps contract 1.4's `<runDir>/cache/<rel>`. `file` is the run-relative path — the error text, and the
+ * per-file chain key, so the two roots can never share a queue even when they hold the same leaf name.
+ */
+interface CacheTarget {
+  root: string;
+  /** the path under `root`, already normalised */
+  rel: string;
+  /** `<root>/<rel>`, run-relative */
+  file: string;
+  /** the byte ceiling for a write to this root */
+  maxBytes: number;
+}
+
+export function cacheTarget(rel: string): CacheTarget | null {
+  const norm = cacheRelPath(rel);
+  if (norm === null) return null;
+  if (norm.startsWith(ORCHESTRATE_PREFIX)) {
+    const sub = norm.slice(ORCHESTRATE_PREFIX.length);
+    if (sub.length === 0) return null;
+    return { root: CHECKPOINT_FILES.orchestrate, rel: sub, file: norm, maxBytes: ORCHESTRATE_FILE_BYTES };
+  }
+  return { root: CHECKPOINT_FILES.cache, rel: norm, file: `${CHECKPOINT_FILES.cache}/${norm}`, maxBytes: MAX_FILE_BYTES };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -213,6 +256,13 @@ export type Redactor = (s: string) => string;
 export interface DiskCheckpointStore extends CheckpointStore {
   /** Warnings collected by the most recent load() or readStepsAfter() (torn lines, prev fallback). */
   lastWarnings(): readonly string[];
+  /**
+   * TUI-DESIGN-4 §7.2 P-D2 item 1, the second entry point to `CheckpointStoreOptions.onDegrade`: the ENGINE cannot
+   * pass constructor options (its `CheckpointStoreFactory` is `(runsDir, runId, redact)`, `engine.ts:173`, and a
+   * resume REPLACES the store with the one `loadForResume` built), so it registers here instead and detaches at
+   * `run:end`. One listener slot, two ways in. `null` detaches.
+   */
+  setDegradeListener(cb: ((info: DiskError) => void) | null): void;
   /** TUI-DESIGN §15 item 10: ui.json (required on the disk store; optional on the contract so fakes type-check). */
   writeUi(ui: Json): Promise<void>;
   /** contract 1.4 (COORDINATION-DESIGN §7.2, §6.4): the cache files (required on the disk store; optional on the contract). */
@@ -392,6 +442,25 @@ export interface CheckpointStoreOptions {
   onDegrade?: (info: DiskError) => void;
 }
 
+/** The one member of `DiskCheckpointStore` the engine needs; a fake store without it is simply not wired. */
+interface DegradeAware {
+  setDegradeListener(cb: ((info: DiskError) => void) | null): void;
+}
+
+function isDegradeAware(store: object): store is DegradeAware {
+  return typeof (store as { setDegradeListener?: unknown }).setDegradeListener === 'function';
+}
+
+/**
+ * TUI-DESIGN-4 §7.2 item 1: point a store's own disk-error classification at a listener. Returns false when the
+ * store does not report (an old fake), so the caller keeps today's behaviour instead of failing to construct.
+ */
+export function attachDegradeListener(store: CheckpointStore, cb: ((info: DiskError) => void) | null): boolean {
+  if (!isDegradeAware(store)) return false;
+  store.setDegradeListener(cb);
+  return true;
+}
+
 export function createCheckpointStore(runDir: string, redact: Redactor, opts: CheckpointStoreOptions = {}): DiskCheckpointStore {
   const dir = runDir;
   const pathOf = (name: string): string => join(dir, name);
@@ -404,6 +473,8 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
    * renames would leave no valid envelope at all.
    */
   let primaryUnusable = false;
+  /** §7.2 item 1: the current sink. Seeded from the constructor option; the engine replaces it with `setDegradeListener`. */
+  let degradeListener: ((info: DiskError) => void) | null = opts.onDegrade ?? null;
 
   function fail(message: string, cause?: unknown): CheckpointError {
     return new CheckpointError(`${message} (${dir})`, dir, cause === undefined ? {} : { cause });
@@ -423,7 +494,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
     if (info !== null && !degradedKeys.has(info.key)) {
       degradedKeys.add(info.key);
       try {
-        opts.onDegrade?.(info);
+        degradeListener?.(info);
       } catch {
         /* a broken reporter never breaks the write path: the notice is best effort, the throw is not */
       }
@@ -765,14 +836,17 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
      * fsync: a lost cache file costs one replay, never the run), the parent created on demand, serialised per file.
      */
     writeCache(rel: string, json: Json) {
-      const norm = cacheRelPath(rel);
-      if (norm === null) return Promise.reject(fail(`cache path ${JSON.stringify(rel)} is not a relative path inside ${CHECKPOINT_FILES.cache}/`));
-      const file = `${CHECKPOINT_FILES.cache}/${norm}`;
+      // contract 1.5 (§8.2 D0 item 4): an `orchestrate/`-prefixed rel lands under <runDir>/orchestrate/ instead; everything
+      // else is contract 1.4's <runDir>/cache/<rel>, byte for byte.
+      const target = cacheTarget(rel);
+      if (target === null) return Promise.reject(fail(`cache path ${JSON.stringify(rel)} is not a relative path inside ${CHECKPOINT_FILES.cache}/ or ${CHECKPOINT_FILES.orchestrate}/`));
+      const { root, rel: norm, file, maxBytes } = target;
       return enqueue(file, async () => {
         const text = JSON.stringify(redactDeep(json, redact));
         if (text === undefined) throw fail(`cannot serialise ${file}`);
+        if (Buffer.byteLength(text, 'utf8') + 1 > maxBytes) throw fail(`${file} is ${Buffer.byteLength(text, 'utf8') + 1} bytes; refusing to write more than ${maxBytes}`);
         try {
-          await writeFileAtomic(join(dir, CHECKPOINT_FILES.cache, ...norm.split('/')), `${text}\n`, { mkdir: true });
+          await writeFileAtomic(join(dir, root, ...norm.split('/')), `${text}\n`, { mkdir: true });
         } catch (e) {
           throw failWrite(CHECKPOINT_FILES.cache, `cannot write ${file}: ${describe(e)}`, e);
         }
@@ -785,13 +859,16 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
      * to supersede); both names are validated like every cache path and the rename rides the source file's chain.
      */
     renameCache(from: string, to: string) {
-      const a = cacheRelPath(from);
-      const b = cacheRelPath(to);
-      if (a === null || b === null) return Promise.reject(fail(`cache path ${JSON.stringify(a === null ? from : to)} is not a relative path inside ${CHECKPOINT_FILES.cache}/`));
-      const file = `${CHECKPOINT_FILES.cache}/${a}`;
+      const a = cacheTarget(from);
+      const b = cacheTarget(to);
+      if (a === null || b === null) return Promise.reject(fail(`cache path ${JSON.stringify(a === null ? from : to)} is not a relative path inside ${CHECKPOINT_FILES.cache}/ or ${CHECKPOINT_FILES.orchestrate}/`));
+      // contract 1.5: a rename stays inside ONE root — `review-<n>.json` → `review-<n>.used` (§2.5), `step-<n>.json` →
+      // `step-<n>.superseded.json` (§7.3). Crossing the two would move an artefact out from under its own chain key.
+      if (a.root !== b.root) return Promise.reject(fail(`cannot rename ${a.file} to ${b.file}: a cache rename never crosses ${CHECKPOINT_FILES.cache}/ and ${CHECKPOINT_FILES.orchestrate}/`));
+      const file = a.file;
       return enqueue(file, async () => {
         try {
-          await rename(join(dir, CHECKPOINT_FILES.cache, ...a.split('/')), join(dir, CHECKPOINT_FILES.cache, ...b.split('/')));
+          await rename(join(dir, a.root, ...a.rel.split('/')), join(dir, b.root, ...b.rel.split('/')));
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
           throw failWrite(CHECKPOINT_FILES.cache, `cannot rename ${file}: ${describe(e)}`, e);
@@ -801,16 +878,16 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
 
     /** contract 1.4 (§7.3 step 3): the cache file back as JSON; null when missing, unreadable or not JSON (the replay is then simply unavailable). */
     async readCache(rel: string) {
-      const norm = cacheRelPath(rel);
-      if (norm === null) return null;
-      const path = join(dir, CHECKPOINT_FILES.cache, ...norm.split('/'));
-      // defence in depth: the joined path must stay under <runDir>/cache (normalise() folds any separator the platform accepts)
-      const base = join(dir, CHECKPOINT_FILES.cache) + sep;
+      const target = cacheTarget(rel);
+      if (target === null) return null;
+      const path = join(dir, target.root, ...target.rel.split('/'));
+      // defence in depth: the joined path must stay under <runDir>/<root> (normalise() folds any separator the platform accepts)
+      const base = join(dir, target.root) + sep;
       if (!normalize(path).startsWith(base)) return null;
       let text: string;
       try {
         const st = await stat(path);
-        if (st.size > MAX_FILE_BYTES) return null;
+        if (st.size > target.maxBytes) return null;
         text = await readFile(path, 'utf8');
       } catch {
         return null;
@@ -883,6 +960,10 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
 
     lastWarnings() {
       return [...warnings];
+    },
+
+    setDegradeListener(cb: ((info: DiskError) => void) | null) {
+      degradeListener = cb;
     },
   };
   return store;

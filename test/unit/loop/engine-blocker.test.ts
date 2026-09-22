@@ -227,7 +227,7 @@ describe('checkpoint-degraded (§13.3)', () => {
     expect(r.stopReason).toBe('max_steps');
     expect(r.steps).toBe(3);
     // once per (file, code) although state.json failed at every commit and at the end
-    expect(h.of('notice').filter((n) => n.kind === 'checkpoint:degraded')).toEqual([{ type: 'notice', step: 1, kind: 'checkpoint:degraded', level: 'error', text: 'checkpoint degraded: ENOSPC on state.json' }]);
+    expect(h.of('notice').filter((n) => n.kind === 'checkpoint:degraded')).toEqual([{ type: 'notice', step: 1, kind: 'checkpoint:degraded', level: 'error', text: 'checkpoint degraded: ENOSPC on state.json — the disk is full; this run cannot be resumed' }]);
     expect(script.requests).toHaveLength(1);
     expect(script.requests[0]).toMatchObject({ kind: 'checkpoint-degraded', detail: 'ENOSPC on state.json', stop: 'error', exitCode: 3, step: 1 });
     expect(h.of('blocking:resolved')).toEqual([{ type: 'blocking:resolved', id: script.requests[0]!.id, answer: 'continue', auto: false }]);
@@ -285,7 +285,7 @@ describe('checkpoint-degraded (§13.3)', () => {
     expect(r.stopReason).toBe('max_steps');
     const degraded = h.of('notice').filter((n) => n.kind === 'checkpoint:degraded');
     expect(degraded).toHaveLength(1);
-    expect(degraded[0]!.text).toBe('checkpoint degraded: ENOSPC on jev.jsonl');
+    expect(degraded[0]!.text).toBe('checkpoint degraded: ENOSPC on jev.jsonl — the disk is full; this run cannot be resumed');
     expect(h.of('blocking:request')).toEqual([]);
     expect(h.of('run:end')[0]!.exitCode).toBe(4);
     const store2 = createFakeStore();
@@ -507,7 +507,7 @@ describe('checkpoint-degraded at the end and across --resume (§13.3, §13.5)', 
     const r = await h.engine.run();
     expect(r.stopReason).toBe('max_steps');
     expect(r.steps).toBe(2);
-    expect(h.of('notice').filter((n) => n.kind === 'checkpoint:degraded')).toEqual([{ type: 'notice', step: null, kind: 'checkpoint:degraded', level: 'error', text: 'checkpoint degraded: ENOSPC on state.json' }]);
+    expect(h.of('notice').filter((n) => n.kind === 'checkpoint:degraded')).toEqual([{ type: 'notice', step: null, kind: 'checkpoint:degraded', level: 'error', text: 'checkpoint degraded: ENOSPC on state.json — the disk is full; this run cannot be resumed' }]);
     expect(h.of('blocking:request')).toEqual([]);
     expect(h.engine.status().blocked).toBeNull();
     const end = h.of('run:end')[0]!;
