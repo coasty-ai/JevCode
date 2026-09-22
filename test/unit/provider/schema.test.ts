@@ -1,7 +1,7 @@
 /** provider/schema.ts — the strict-mode gate and the one Gemini rewrite. */
 import { describe, expect, it } from 'vitest';
 import { PROPOSE_ACTION_TOOL } from '../../../src/provider/actions.js';
-import { checkOpenAiStrict, geminiToolSchema } from '../../../src/provider/schema.js';
+import { MAX_DEPTH, MAX_PROPERTIES, checkOpenAiStrict, geminiToolSchema } from '../../../src/provider/schema.js';
 import type { JsonObject } from '../../../src/core/types.js';
 import { PROPOSE_TOOL } from './helpers.js';
 
@@ -52,6 +52,36 @@ describe('checkOpenAiStrict', () => {
       properties: { a: { anyOf: [{ type: 'string' }, { type: 'object', properties: { b: { type: 'string' } }, required: ['b'] }] } },
     };
     expect(checkOpenAiStrict(anyOf).reasons).toEqual(['#/properties/a/anyOf/1: object without "additionalProperties": false']);
+  });
+
+  it("rejects what the API's own bounds reject: >5 levels of nesting, the tuple/contains forms and a boolean subschema", () => {
+    // OpenAI strict mode allows 5 levels counting the root; the sixth is a 400, so the walk reports it rather than
+    // passing it (the doc's promise: a false "ok" cannot turn into a 400 at request time).
+    const nest = (depth: number): JsonObject => {
+      let node: JsonObject = { type: 'string' };
+      for (let i = 0; i < depth - 1; i += 1) node = { type: 'object', additionalProperties: false, required: ['a'], properties: { a: node } };
+      return node;
+    };
+    expect(checkOpenAiStrict(nest(MAX_DEPTH)).ok).toBe(true);
+    const tooDeep = checkOpenAiStrict(nest(MAX_DEPTH + 1));
+    expect(tooDeep.ok).toBe(false);
+    expect(tooDeep.reasons.some((r) => r.includes(`nested deeper than ${MAX_DEPTH} levels`))).toBe(true);
+
+    const tuple: JsonObject = { type: 'object', additionalProperties: false, required: ['a'], properties: { a: { type: 'array', prefixItems: [{ type: 'string' }] } } };
+    expect(checkOpenAiStrict(tuple).reasons).toEqual(['#/properties/a: unsupported keyword "prefixItems"']);
+
+    const contains: JsonObject = { type: 'object', additionalProperties: false, required: ['a'], properties: { a: { type: 'array', contains: { type: 'string' } } } };
+    expect(checkOpenAiStrict(contains).reasons).toEqual(['#/properties/a: unsupported keyword "contains"']);
+
+    const boolSub: JsonObject = { type: 'object', additionalProperties: false, required: ['a'], properties: { a: { type: 'array', items: true } } };
+    expect(checkOpenAiStrict(boolSub).reasons).toEqual(['#/properties/a/items: a schema must be an object, not boolean']);
+  });
+
+  it('rejects a schema past the 5000-property total, once', () => {
+    const properties: JsonObject = {};
+    for (let i = 0; i < MAX_PROPERTIES + 1; i += 1) properties[`p${i}`] = { type: 'string' };
+    const wide: JsonObject = { type: 'object', additionalProperties: false, required: Object.keys(properties), properties };
+    expect(checkOpenAiStrict(wide).reasons).toEqual([`#: more than ${MAX_PROPERTIES} object properties in total (strict mode's limit)`]);
   });
 
   it('terminates on a self-referential schema', () => {

@@ -19,7 +19,7 @@
  *    `context_length_exceeded_behavior: 'error'` so an oversized step fails loudly instead of being quietly truncated.
  */
 import type { GenerateReasoning } from '../core/types.js';
-import { getJson, joinUrl } from './http.js';
+import { getJson, joinUrl, sortModels } from './http.js';
 import { createChatProvider } from './openai-compat.js';
 import type { ChatQuirks, ChatRequestBody, EffortWord } from './openai-compat.js';
 import { effortOf, pickEffort } from './openai-compat.js';
@@ -52,7 +52,7 @@ export const FIREWORKS_QUIRKS: ChatQuirks = {
   transport: 'sse',
   headers: (apiKey) => ({ authorization: `Bearer ${apiKey}` }),
   maxTokensField: 'max_tokens',
-  systemRole: 'system',
+  systemRole: () => 'system',
   strictTools: true,
   toolChoice: 'named',
   parallelToolCalls: true,
@@ -62,7 +62,7 @@ export const FIREWORKS_QUIRKS: ChatQuirks = {
   costField: null,
   seed: true,
   temperature: () => true,
-  reasoning: (r) => fireworksReasoning(r),
+  reasoning: (r) => (r === undefined ? null : fireworksReasoning(r)),
   extras: { context_length_exceeded_behavior: 'error' },
 };
 
@@ -105,5 +105,5 @@ export async function listFireworksModels(apiKey: string, deps: ProviderDeps, ba
     const info = fireworksModelInfo(row);
     if (info) out.push(info);
   }
-  return out.sort((a, b) => (b.created ?? 0) - (a.created ?? 0) || a.id.localeCompare(b.id));
+  return sortModels(out);
 }

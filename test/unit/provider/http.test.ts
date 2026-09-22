@@ -89,6 +89,35 @@ describe('the retry chain', () => {
     expect(cancelled).toEqual([{ text: '', toolChars: 0, reasoningChars: 0, rateLimited: true }]);
   });
 
+  it('a chain that dies on MID-STREAM 429 frames reports what was served, not zeros', async () => {
+    // The recorded xAI transcript up to (but not including) its finish_reason / usage frames, then a 429 delivered as
+    // a mid-stream error frame — the shape every one of these APIs may send after a 200 (`isRateLimit` counts it).
+    // Tokens were served and billed here, so the rate-limited record must carry the streamed facts: reporting the
+    // zero-sized "nothing was served" record instead would book the sample at zero rather than let the engine estimate.
+    const served = fixture('xai-tool.sse').split('\n\n').filter((c) => c.trim().length > 0).slice(0, -3).join('\n\n');
+    const frame = 'data: {"id":"4c9688b9-da1c-9fc6-bf6d-8ea4ea03b60e","object":"chat.completion.chunk","created":0,"model":"grok-4.7","choices":[{"index":0,"delta":{},"finish_reason":"error"}],"error":{"code":429,"type":"rate_limit_exceeded","message":"Too many requests"}}';
+    const body = `${served}\n\n${frame}\n\n`;
+    const f = scriptedFetch([
+      { status: 200, body },
+      { status: 200, body },
+      { status: 200, body },
+    ]);
+    const { deps } = providerDeps(f.fetch);
+    const cancelled: CancelledGeneration[] = [];
+    const p = createXaiProvider(providerCfg({ model: 'grok-4.7', priced: true }), deps).generate(request(), genOpts({ onCancelled: (c) => cancelled.push(c) }));
+    await expect(p).rejects.toMatchObject({ status: 429, retryable: true });
+    expect(f.calls.length).toBe(3);
+    expect(cancelled.length).toBe(1);
+    const rec = cancelled[0]!;
+    expect(rec.rateLimited).toBe(true);
+    expect(rec.toolChars).toBeGreaterThan(0);
+    expect(rec.reasoningChars).toBeGreaterThan(0);
+    expect(rec.generationId).toBe('4c9688b9-da1c-9fc6-bf6d-8ea4ea03b60e');
+    expect(rec.model).toBe('grok-4.7');
+    // the accounting frame never arrived, so there is nothing to price: the engine estimates from the sizes above
+    expect(rec.usage).toBeUndefined();
+  });
+
   it('honours Retry-After over the backoff schedule', async () => {
     const f = scriptedFetch([{ status: 429, headers: { 'retry-after': '2' }, body: '{}' }, { status: 200, body: fixture('xai-tool.sse') }]);
     const { deps, sleeps } = providerDeps(f.fetch);

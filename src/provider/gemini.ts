@@ -31,7 +31,7 @@ import { createCaller, getJson, googleErrorFields, joinUrl, runGeneration, valid
 import type { ConsumeContext, HeldPartial } from './http.js';
 import type { EffortWord } from './openai-compat.js';
 import { effortOf, pickEffort } from './openai-compat.js';
-import { TransportError, clipMessage, countOf, getArr, getNum, getObj, getStr, notify, parseJsonObject, parseSse, resolveDeps, sanitiseRequestId } from './sse.js';
+import { TransportError, clipMessage, countOf, getArr, getNum, getObj, getStr, isRateLimit, notify, parseJsonObject, parseSse, resolveDeps, sanitiseRequestId } from './sse.js';
 import type { GenerationProvider, ModelInfo, ProviderConfig, ProviderDeps, ProviderOutcome, StreamPartial, TokenBreakdown } from './types.js';
 
 export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
@@ -80,7 +80,15 @@ export function geminiThinkingLevels(model: string): readonly EffortWord[] | nul
 }
 
 /** ai.google.dev/gemini-api/docs/openai: the shim's own effort → budget mapping, reused for the 2.5 family. */
-const BUDGET_BY_EFFORT: Readonly<Record<'none' | 'minimal' | 'low' | 'medium' | 'high', number>> = { none: 0, minimal: 1024, low: 1024, medium: 8192, high: 24_576 };
+type BudgetWord = 'none' | 'minimal' | 'low' | 'medium' | 'high';
+const BUDGET_BY_EFFORT: Readonly<Record<BudgetWord, number>> = { none: 0, minimal: 1024, low: 1024, medium: 8192, high: 24_576 };
+/** The words that table prices, as an `allowed` set: a requested effort it lacks (`xhigh`, `max`) resolves through `EFFORT_CHAINS` like everywhere else — down to `high`, never up to a near-minimum budget. */
+const BUDGET_LEVELS: readonly BudgetWord[] = ['none', 'minimal', 'low', 'medium', 'high'];
+
+/** The 2.5-family thinking budget for a requested effort word, resolved through the shared substitution chain. Exported for the test that pins the chain (core's `ReasoningEffort` cannot spell `xhigh` / `max` yet). */
+export function geminiThinkingBudget(wanted: EffortWord): number {
+  return BUDGET_BY_EFFORT[pickEffort(wanted, BUDGET_LEVELS) ?? 'low'];
+}
 
 /**
  * LLM-JEV-DESIGN §4.12 → `thinkingConfig`. Gemini 3: a level, with `{enabled: false}` becoming the lowest the family
@@ -96,7 +104,7 @@ export function geminiThinkingConfig(r: GenerateReasoning, model: string): Gemin
     const level = pickEffort(wanted, levels);
     return level === null ? null : { thinkingLevel: level };
   }
-  const budget = BUDGET_BY_EFFORT[wanted === 'none' ? 'none' : wanted === 'minimal' ? 'minimal' : wanted === 'medium' ? 'medium' : wanted === 'high' ? 'high' : 'low'];
+  const budget = geminiThinkingBudget(wanted);
   if (/^gemini-2\.5-pro/.test(model)) return { thinkingBudget: Math.max(128, budget) };
   return { thinkingBudget: budget };
 }
@@ -261,6 +269,9 @@ async function consumeGemini(stream: ReadableStream<Uint8Array>, ctx: ConsumeCon
       ctx.held.partial = heldOf(st);
       throw ctx.opts.signal.reason;
     }
+    // A 429 delivered as a mid-stream error frame cut a stream that had already been served: keep its facts so the
+    // chain's rate-limited record is what streamed, not zeros (http.ts `HeldPartial.streamed`).
+    if (isRateLimit(e)) ctx.held.streamed = heldOf(st);
     throw e;
   }
   // There is no [DONE] sentinel: the stream simply ends. A stream that ended without the accounting frame was cut.

@@ -27,7 +27,7 @@ import { createFireworksProvider, listFireworksModels, FIREWORKS_BASE_URL, FIREW
 import { createMetaProvider, listMetaModels, META_BASE_URL, META_DEFAULT_MODEL } from './meta.js';
 import { createXaiProvider, listXaiModels, XAI_BASE_URL, XAI_DEFAULT_MODEL } from './xai.js';
 import { getJson, joinUrl, sortModels } from './http.js';
-import { getArr, getNum, getStr } from './sse.js';
+import { getArr, getNum, getObj, getStr } from './sse.js';
 import { isJsonObject } from '../core/json.js';
 import type { GeneratorConfig, JsonObject } from '../core/types.js';
 import type { GenerationProvider, ModelInfo, Pricing, ProviderConfig, ProviderDeps, ProviderId } from './types.js';
@@ -49,18 +49,18 @@ export interface ProviderSpec {
   readonly docsUrl: string;
   readonly supports: ProviderCapabilities;
   readonly create: (cfg: ProviderConfig, deps: ProviderDeps) => GenerationProvider;
-  /** the provider's own catalogue endpoint, filtered to text-generation models */
-  readonly listModels: (apiKey: string, deps?: ProviderDeps) => Promise<ModelInfo[]>;
+  /**
+   * The provider's own catalogue endpoint, filtered to text-generation models. `deps` is REQUIRED — its `redact` is
+   * what keeps a key out of an error body (a gateway that echoes the `Authorization` header or a `?key=` query into
+   * its 401 body would otherwise write it into `state.json` through `ProviderHttpError.toJSON()`, §10 F9), so there
+   * is deliberately no default bag with an identity redactor.
+   */
+  readonly listModels: (apiKey: string, deps: ProviderDeps) => Promise<ModelInfo[]>;
   /**
    * Why a forced (single, named) tool call cannot be requested, when it cannot: the API rejects it, so the client
    * downgrades the choice to `auto`. Absent ⇒ a named `tool_choice` is sent as asked.
    */
   readonly forcedToolLimitation?: string;
-}
-
-/** `listModels` takes an optional deps bag; a caller that passes none gets the real fetch and an identity redactor. */
-function listDeps(deps: ProviderDeps | undefined): ProviderDeps {
-  return deps ?? { redact: (s: string) => s };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -112,10 +112,10 @@ export function openRouterModelInfo(row: JsonObject): ModelInfo | null {
   const id = getStr(row, 'id');
   if (id === null) return null;
   const params = (getArr(row, 'supported_parameters') ?? []).filter((v): v is string => typeof v === 'string');
-  const modalities = (getArr(getObjSafe(row, 'architecture'), 'input_modalities') ?? []).filter((v): v is string => typeof v === 'string');
-  const outputs = (getArr(getObjSafe(row, 'architecture'), 'output_modalities') ?? []).filter((v): v is string => typeof v === 'string');
+  const modalities = (getArr(getObj(row, 'architecture'), 'input_modalities') ?? []).filter((v): v is string => typeof v === 'string');
+  const outputs = (getArr(getObj(row, 'architecture'), 'output_modalities') ?? []).filter((v): v is string => typeof v === 'string');
   if (outputs.length > 0 && !outputs.includes('text')) return null;
-  const price = getObjSafe(row, 'pricing');
+  const price = getObj(row, 'pricing');
   const perM = (key: string): number | null => {
     const raw = price?.[key];
     const n = typeof raw === 'string' ? Number.parseFloat(raw) : typeof raw === 'number' ? raw : Number.NaN;
@@ -130,7 +130,7 @@ export function openRouterModelInfo(row: JsonObject): ModelInfo | null {
   const name = getStr(row, 'name');
   const ctx = getNum(row, 'context_length');
   const created = getNum(row, 'created');
-  const maxOut = getNum(getObjSafe(row, 'top_provider'), 'max_completion_tokens');
+  const maxOut = getNum(getObj(row, 'top_provider'), 'max_completion_tokens');
   const expiry = getStr(row, 'expiration_date');
   return {
     id,
@@ -144,11 +144,6 @@ export function openRouterModelInfo(row: JsonObject): ModelInfo | null {
     ...(expiry !== null ? { shutdownDate: expiry } : {}),
     ...(pricing !== null ? { pricing } : {}),
   };
-}
-
-function getObjSafe(row: JsonObject, key: string): JsonObject | null {
-  const v = row[key];
-  return isJsonObject(v) ? v : null;
 }
 
 export async function listOpenRouterModels(apiKey: string, deps: ProviderDeps, baseUrl = 'https://openrouter.ai/api/v1'): Promise<ModelInfo[]> {
@@ -182,7 +177,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     supports: { tools: true, structuredOutput: true, reasoning: true, vision: true },
     // the Messages client takes the core GeneratorConfig; ProviderConfig carries every field it reads
     create: (cfg, deps) => createAnthropicProvider(asGeneratorConfig(cfg, 'anthropic'), deps),
-    listModels: (apiKey, deps) => listAnthropicModels(apiKey, listDeps(deps)),
+    listModels: (apiKey, deps) => listAnthropicModels(apiKey, deps),
   },
   {
     id: 'openrouter',
@@ -193,7 +188,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     docsUrl: 'https://openrouter.ai/docs/api-reference/chat-completion',
     supports: { tools: true, structuredOutput: true, reasoning: true, vision: true },
     create: (cfg, deps) => createOpenRouterProvider(asGeneratorConfig(cfg, 'openrouter'), deps),
-    listModels: (apiKey, deps) => listOpenRouterModels(apiKey, listDeps(deps)),
+    listModels: (apiKey, deps) => listOpenRouterModels(apiKey, deps),
   },
   {
     id: 'openai',
@@ -204,7 +199,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     docsUrl: 'https://developers.openai.com/api/docs/api-reference/responses/create',
     supports: { tools: true, structuredOutput: true, reasoning: true, vision: true },
     create: (cfg, deps) => createOpenAiProvider(cfg, deps),
-    listModels: (apiKey, deps) => listOpenAiModels(apiKey, listDeps(deps)),
+    listModels: (apiKey, deps) => listOpenAiModels(apiKey, deps),
   },
   {
     id: 'gemini',
@@ -215,7 +210,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     docsUrl: 'https://ai.google.dev/api/generate-content',
     supports: { tools: true, structuredOutput: true, reasoning: true, vision: true },
     create: (cfg, deps) => createGeminiProvider(cfg, deps),
-    listModels: (apiKey, deps) => listGeminiModels(apiKey, listDeps(deps)),
+    listModels: (apiKey, deps) => listGeminiModels(apiKey, deps),
   },
   {
     id: 'fireworks',
@@ -226,7 +221,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     docsUrl: 'https://docs.fireworks.ai/api-reference/post-chatcompletions',
     supports: { tools: true, structuredOutput: true, reasoning: true, vision: true },
     create: (cfg, deps) => createFireworksProvider(cfg, deps),
-    listModels: (apiKey, deps) => listFireworksModels(apiKey, listDeps(deps)),
+    listModels: (apiKey, deps) => listFireworksModels(apiKey, deps),
   },
   {
     id: 'meta',
@@ -238,7 +233,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     // no structured-output surface documented, and the tool surface cannot be forced (see forcedToolLimitation)
     supports: { tools: true, structuredOutput: false, reasoning: true, vision: false },
     create: (cfg, deps) => createMetaProvider(cfg, deps),
-    listModels: (apiKey, deps) => listMetaModels(apiKey, listDeps(deps)),
+    listModels: (apiKey, deps) => listMetaModels(apiKey, deps),
     forcedToolLimitation:
       'api.meta.ai answers 400 `only "auto" is supported for tool_choice`: a named or required choice is downgraded to auto, and the client also has to use the non-streaming surface (streaming drops tool calls and usage)',
   },
@@ -251,7 +246,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     docsUrl: 'https://docs.x.ai/docs/api-reference',
     supports: { tools: true, structuredOutput: true, reasoning: true, vision: true },
     create: (cfg, deps) => createXaiProvider(cfg, deps),
-    listModels: (apiKey, deps) => listXaiModels(apiKey, listDeps(deps)),
+    listModels: (apiKey, deps) => listXaiModels(apiKey, deps),
   },
 ];
 

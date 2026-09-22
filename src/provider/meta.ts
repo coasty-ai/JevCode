@@ -53,7 +53,7 @@ export const META_QUIRKS: ChatQuirks = {
   transport: 'json',
   headers: (apiKey) => ({ authorization: `Bearer ${apiKey}` }),
   maxTokensField: 'max_tokens',
-  systemRole: 'system',
+  systemRole: () => 'system',
   strictTools: true,
   // measured: named / `required` choices are a 400 here
   toolChoice: 'auto-only',
@@ -64,7 +64,7 @@ export const META_QUIRKS: ChatQuirks = {
   costField: null,
   seed: true,
   temperature: () => true,
-  reasoning: (r) => metaReasoning(r),
+  reasoning: (r) => (r === undefined ? null : metaReasoning(r)),
 };
 
 export function createMetaProvider(cfg: ProviderConfig, deps: ProviderDeps): GenerationProvider {

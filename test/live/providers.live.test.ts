@@ -17,9 +17,10 @@ import { describe, expect, it } from 'vitest';
 import { ProviderHttpError } from '../../src/errors.js';
 import { PROPOSE_ACTION_TOOL } from '../../src/provider/actions.js';
 import { createProvider, providerFor } from '../../src/provider/registry.js';
+import { createOpenAiProvider } from '../../src/provider/openai.js';
 import { pricingFor } from '../../src/provider/pricing.js';
 import type { GenerateRequest, ToolSpec } from '../../src/core/types.js';
-import type { ProviderConfig, ProviderId } from '../../src/provider/types.js';
+import type { GenerationProvider, ProviderConfig, ProviderId } from '../../src/provider/types.js';
 
 const LIVE = process.env['JEVCODE_LIVE'] === '1';
 
@@ -142,6 +143,37 @@ describe('live providers', () => {
       }
     });
   }
+
+  it('openai chat surface: the per-model system role, the pinned effort with tools, and the request it refuses to build', async ({ skip }) => {
+    if (!LIVE) skip('JEVCODE_LIVE is not "1"');
+    const key = process.env['OPENAI_API_KEY'] ?? '';
+    if (!key) skip('OPENAI_API_KEY is empty');
+    const redact = redactor(key);
+    const chat = (model: string): GenerationProvider => createOpenAiProvider({ ...configFor('openai', key), model, maxTokens: 256 }, { redact }, { api: 'chat' });
+    const ask = (over: Partial<GenerateRequest> = {}): GenerateRequest => ({ ...REQUEST, maxTokens: 256, ...over });
+    // the same request without the §4.12 / tool members at all (exactOptionalPropertyTypes: omitted, not undefined)
+    const plain: GenerateRequest = { system: REQUEST.system, messages: REQUEST.messages, maxTokens: 256, temperature: null };
+
+    // a 4.x-era id: the system prompt goes out as `system`, the role every OpenAI-compatible server knows
+    const legacy = await chat('gpt-4.1-mini').generate(plain, { signal: AbortSignal.timeout(120_000) });
+    expect(legacy.usage.inputTokens).toBeGreaterThan(0);
+
+    // the flagship with tools: `reasoning_effort` is pinned to `none`, which is the only value this surface accepts there
+    const pinned = await chat('gpt-5.6-terra').generate(ask({}), { signal: AbortSignal.timeout(120_000) });
+    expect(pinned.toolCalls.length).toBe(1);
+    expect(pinned.toolCalls[0]!.input).not.toBeNull();
+
+    // gpt-6-astra rejects `none` AND 400s for every other value with tools present: no request is built at all
+    const refused = await chat('gpt-6-astra')
+      .generate(ask({}), { signal: AbortSignal.timeout(120_000) })
+      .catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(ProviderHttpError);
+    expect((refused as ProviderHttpError).status).toBe(0);
+    expect((refused as ProviderHttpError).retryable).toBe(false);
+    process.stdout.write(
+      redact(`openai chat: legacy=${legacy.model} pinned=${pinned.model} tools=${pinned.toolCalls.length} cost=$${(legacy.usage.costUsd + pinned.usage.costUsd).toFixed(6)} refused=${(refused as Error).message.slice(0, 60)}…\n`),
+    );
+  });
 
   it("openai accepts the harness's own propose_action schema without strict mode", async ({ skip }) => {
     if (!LIVE) skip('JEVCODE_LIVE is not "1"');

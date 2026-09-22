@@ -28,6 +28,7 @@ import {
   getNum,
   getObj,
   getStr,
+  isRateLimit,
   isRetryableStatus,
   notify,
   parseSse,
@@ -88,8 +89,13 @@ export interface ChatQuirks {
   transport: 'sse' | 'json';
   headers: (apiKey: string) => Record<string, string>;
   maxTokensField: 'max_tokens' | 'max_completion_tokens';
-  /** OpenAI's reasoning-era name for the system message; everyone else takes `system` */
-  systemRole: 'system' | 'developer';
+  /**
+   * The role the system prompt goes out under, per model. `developer` is OpenAI's reasoning-era name for it;
+   * `system` is the only role a third-party OpenAI-compatible server can be relied on to know (api.openai.com itself
+   * accepts both on both families — measured 2026-09-21 — so this is about the gateways, not about an OpenAI 400).
+   * A function, like `temperature`, because one table serves every model of a provider.
+   */
+  systemRole: (model: string) => 'system' | 'developer';
   /** send `strict: true` on a tool whose schema passes `checkOpenAiStrict` (never on one that would 400) */
   strictTools: boolean;
   /** 'auto-only': the API rejects `required` and named choices (api.meta.ai), so a forced choice is downgraded */
@@ -107,8 +113,14 @@ export interface ChatQuirks {
   seed: boolean;
   /** whether a non-null `temperature` may be sent for this model (GPT-5.x+ answers 400 for any sampling parameter) */
   temperature: (model: string) => boolean;
-  /** LLM-JEV-DESIGN §4.12 → wire fields; null = this provider/model takes no reasoning control and the parameter is omitted */
-  reasoning: (r: GenerateReasoning, model: string, hasTools: boolean) => Partial<ChatRequestBody> | null;
+  /**
+   * LLM-JEV-DESIGN §4.12 → wire fields; null = this provider/model takes no reasoning control and the parameter is
+   * omitted. Called on EVERY request, `r` undefined when the caller asked for nothing: "the model's own default" is a
+   * value the API can reject too (OpenAI's chat surface 400s on a reasoning-era id with tools unless
+   * `reasoning_effort: 'none'` is present — omission included), so a quirk must be able to pin a field the caller
+   * never mentioned. A quirk with nothing to say about `undefined` returns null and the parameter stays off the wire.
+   */
+  reasoning: (r: GenerateReasoning | undefined, model: string, hasTools: boolean) => Partial<ChatRequestBody> | null;
   /** fixed extras (Fireworks' context-overflow behaviour, OpenAI's `store: false`) */
   extras?: Partial<ChatRequestBody>;
   /** non-200 body reader (all four use OpenAI's envelope) */
@@ -130,9 +142,15 @@ const EFFORT_CHAINS: Readonly<Record<EffortWord, readonly EffortWord[]>> = {
  * The effort word to send for `wanted` on a model that accepts `allowed`, or null when none of the chain fits (the
  * parameter is then omitted, i.e. the model's own default runs — never a 400 and never a silent rewrite to something
  * far from what was asked). Reasoning-effort value sets are model-specific on every provider here.
+ *
+ * Generic in the accepted set so a caller whose words are a narrower union (gemini.ts's budget table) gets that union
+ * back and can index its own record without a cast.
  */
-export function pickEffort(wanted: EffortWord, allowed: readonly EffortWord[]): EffortWord | null {
-  for (const candidate of EFFORT_CHAINS[wanted]) if (allowed.includes(candidate)) return candidate;
+export function pickEffort<T extends EffortWord>(wanted: EffortWord, allowed: readonly T[]): T | null {
+  for (const candidate of EFFORT_CHAINS[wanted]) {
+    const hit = allowed.find((a) => a === candidate);
+    if (hit !== undefined) return hit;
+  }
   return null;
 }
 
@@ -150,7 +168,7 @@ export function effortOf(r: GenerateReasoning): EffortWord | null {
 /** Exported so every client's test can assert the exact wire body. */
 export function buildChatBody(q: ChatQuirks, cfg: ProviderConfig, req: GenerateRequest): ChatRequestBody {
   const messages: ChatRequestBody['messages'] = [];
-  if (req.system.length > 0) messages.push({ role: q.systemRole, content: req.system });
+  if (req.system.length > 0) messages.push({ role: q.systemRole(cfg.model), content: req.system });
   for (const m of req.messages) messages.push({ role: m.role, content: m.content });
   const body: ChatRequestBody = { model: cfg.model, messages };
   if (q.transport === 'sse') {
@@ -168,7 +186,7 @@ export function buildChatBody(q: ChatQuirks, cfg: ProviderConfig, req: GenerateR
   // null means "do not send the parameter" (core/types.ts GenerateRequest); cfg.temperature is not a fallback.
   if (req.temperature !== null && q.temperature(cfg.model)) body.temperature = req.temperature;
   if (req.seed !== undefined && q.seed) body.seed = req.seed;
-  if (req.reasoning !== undefined) Object.assign(body, q.reasoning(req.reasoning, cfg.model, hasTools) ?? {});
+  Object.assign(body, q.reasoning(req.reasoning, cfg.model, hasTools) ?? {});
   if (q.extras) Object.assign(body, q.extras);
   return body;
 }
@@ -249,20 +267,38 @@ function chunkError(q: ChatQuirks, err: JsonObject, redact: (s: string) => strin
   });
 }
 
+/**
+ * Merge one `usage` object into the accounting state. A stream may carry SEVERAL of them (a gateway that repeats a
+ * partial object before `[DONE]`, a provider that sends a running total and then a final one), so the merge is
+ * field-by-field and DEGENERATE frames are ignored outright: a `usage` carrying neither `prompt_tokens` nor
+ * `completion_tokens` says nothing, and letting it overwrite a real frame with zeros would bill the call at $0 with a
+ * clean `stop` — exactly the silent $0 TUI-DESIGN §9.5 forbids. Such a frame does not satisfy `usageRequired` either
+ * (`sawUsage` is set only once a token count was actually read), so a stream that carries nothing else still fails
+ * loudly as a transport error instead of being recorded free.
+ */
 function readUsage(q: ChatQuirks, usage: JsonObject, st: ChatState): void {
+  const promptRaw = getNum(usage, 'prompt_tokens');
+  const completionRaw = getNum(usage, 'completion_tokens');
+  if (promptRaw === null && completionRaw === null) return;
   st.sawUsage = true;
-  const prompt = Math.max(0, Math.round(getNum(usage, 'prompt_tokens') ?? 0));
-  const details = getObj(usage, 'prompt_tokens_details');
-  const cached = Math.max(0, Math.round(getNum(details, 'cached_tokens') ?? 0));
-  const cacheWrite = Math.max(0, Math.round(getNum(details, 'cache_write_tokens') ?? 0));
-  st.tokens.cacheRead = Math.min(cached, prompt);
-  st.tokens.cacheWrite = Math.min(cacheWrite, prompt - st.tokens.cacheRead);
-  st.tokens.input = prompt - st.tokens.cacheRead - st.tokens.cacheWrite;
-  const completion = Math.max(0, Math.round(getNum(usage, 'completion_tokens') ?? 0));
-  // Fireworks mirrors the count under both names; xAI and OpenAI use completion_tokens_details.
-  const rt = getNum(getObj(usage, 'completion_tokens_details'), 'reasoning_tokens') ?? getNum(getObj(usage, 'output_tokens_details'), 'reasoning_tokens');
-  st.reasoningTokens = rt !== null ? Math.max(0, Math.round(rt)) : null;
-  st.tokens.output = billedOutput(q, usage, prompt, completion, st.reasoningTokens ?? 0);
+  // the prompt total the state already holds, so a frame that omits `prompt_tokens` keeps the last real reading
+  let prompt = st.tokens.input + st.tokens.cacheRead + st.tokens.cacheWrite;
+  if (promptRaw !== null) {
+    prompt = Math.max(0, Math.round(promptRaw));
+    const details = getObj(usage, 'prompt_tokens_details');
+    const cached = Math.max(0, Math.round(getNum(details, 'cached_tokens') ?? 0));
+    const cacheWrite = Math.max(0, Math.round(getNum(details, 'cache_write_tokens') ?? 0));
+    st.tokens.cacheRead = Math.min(cached, prompt);
+    st.tokens.cacheWrite = Math.min(cacheWrite, prompt - st.tokens.cacheRead);
+    st.tokens.input = prompt - st.tokens.cacheRead - st.tokens.cacheWrite;
+  }
+  if (completionRaw !== null) {
+    const completion = Math.max(0, Math.round(completionRaw));
+    // Fireworks mirrors the count under both names; xAI and OpenAI use completion_tokens_details.
+    const rt = getNum(getObj(usage, 'completion_tokens_details'), 'reasoning_tokens') ?? getNum(getObj(usage, 'output_tokens_details'), 'reasoning_tokens');
+    st.reasoningTokens = rt !== null ? Math.max(0, Math.round(rt)) : st.reasoningTokens;
+    st.tokens.output = billedOutput(q, usage, prompt, completion, st.reasoningTokens ?? 0);
+  }
   if (q.costField !== null) {
     const ticks = getNum(usage, q.costField.field);
     if (ticks !== null && ticks >= 0) st.cost = ticks / q.costField.perUsd;
@@ -404,6 +440,9 @@ async function consumeChatSse(q: ChatQuirks, stream: ReadableStream<Uint8Array>,
       ctx.held.partial = heldOf(st);
       throw ctx.opts.signal.reason;
     }
+    // A 429 delivered as a mid-stream error frame cut a stream that had already been served: keep its facts so the
+    // chain's rate-limited record is what streamed, not zeros (http.ts `HeldPartial.streamed`).
+    if (isRateLimit(e)) ctx.held.streamed = heldOf(st);
     throw e;
   }
   if (!sawDone && !(st.finishReason !== null && st.sawUsage)) {

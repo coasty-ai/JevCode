@@ -71,6 +71,47 @@ describe('fireworks: the stream', () => {
     expect(f.calls[0]!.headers['authorization']).toBe(`Bearer ${cfg().apiKey}`);
   });
 
+  it('ignores a degenerate trailing usage frame instead of billing the call at $0 (TUI-DESIGN §9.5)', async () => {
+    // An OpenAI-compatible gateway that repeats a PARTIAL usage object before [DONE]. Replacing the real frame with it
+    // would report {input: 0, output: 0, cost: $0} under a clean `tool_calls` stop, and `usageRequired` would be
+    // satisfied by the empty frame, so nothing would flag it. Neither count present ⇒ the frame says nothing.
+    const recorded = fixture('fireworks-tool.sse');
+    const degenerate = `data: {"id":"chatcmpl-6e2f4f05a36549c28cfdcb10b01e2eb0","object":"chat.completion.chunk","created":1790046880,"model":"${MODEL}","choices":[],"usage":{"total_tokens":260}}\n\n`;
+    const withRepeat = recorded.replace('data: [DONE]', `${degenerate}data: [DONE]`);
+    const f = scriptedFetch([{ status: 200, body: splitEvery(withRepeat, 19) }]);
+    const { deps } = providerDeps(f.fetch);
+    const res = await createFireworksProvider(cfg({ priced: true }), deps).generate(request({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' } }), genOpts());
+    expect(res.usage).toEqual({ inputTokens: 234, outputTokens: 26, costUsd: (234 * 2 + 26 * 10) / 1e6, calls: 1, reasoningTokens: 0 });
+    expect(res.stopReason).toBe('tool_calls');
+  });
+
+  it('a stream whose only usage frame is degenerate fails loudly rather than reporting a free call', async () => {
+    // the same frame, but as the ONLY one: `sawUsage` must stay false so `usageRequired` turns it into a transport error
+    const onlyDegenerate = fixture('fireworks-tool.sse').replace(/"usage":\{[^}]*"prompt_tokens"[^\n]*\}\}/, '"usage":{"total_tokens":260}}');
+    expect(onlyDegenerate).not.toContain('"prompt_tokens"');
+    const f = scriptedFetch([{ status: 200, body: onlyDegenerate }, { status: 200, body: onlyDegenerate }, { status: 200, body: onlyDegenerate }]);
+    const { deps } = providerDeps(f.fetch);
+    const err = await createFireworksProvider(cfg({ priced: true }), deps).generate(request(), genOpts()).catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 0, retryable: true });
+    expect((err as Error).message).toContain('without a usage frame');
+    expect(f.calls.length).toBe(3);
+  });
+
+  it('merges a split usage frame field by field (a running total then the completion side)', async () => {
+    // a gateway that sends the prompt side first and the completion side with the final frame: neither wipes the other
+    const recorded = fixture('fireworks-tool.sse');
+    const promptOnly = `data: {"id":"chatcmpl-6e2f4f05a36549c28cfdcb10b01e2eb0","object":"chat.completion.chunk","created":1790046880,"model":"${MODEL}","choices":[],"usage":{"prompt_tokens":234,"prompt_tokens_details":{"cached_tokens":34}}}\n\n`;
+    const completionOnly = `data: {"id":"chatcmpl-6e2f4f05a36549c28cfdcb10b01e2eb0","object":"chat.completion.chunk","created":1790046880,"model":"${MODEL}","choices":[],"usage":{"completion_tokens":26}}\n\n`;
+    // `"usage":{` — the accounting frame, not the `"usage":null` every content chunk carries
+    const split = recorded.replace(/data: \{[^\n]*"usage":\{[^\n]*\n\n/, `${promptOnly}${completionOnly}`);
+    expect(split).not.toContain('"completion_tokens_details"');
+    const f = scriptedFetch([{ status: 200, body: split }]);
+    const { deps } = providerDeps(f.fetch);
+    const res = await createFireworksProvider(cfg({ priced: true }), deps).generate(request(), genOpts());
+    // 200 uncached + 34 cache reads on the input side, and the completion side survived the second frame
+    expect(res.usage).toEqual({ inputTokens: 234, outputTokens: 26, costUsd: (200 * 2 + 34 * 0.2 + 26 * 10) / 1e6, calls: 1 });
+  });
+
   it('reports a length stop verbatim', async () => {
     const f = scriptedFetch([sse('fireworks-length.sse')]);
     const { deps } = providerDeps(f.fetch);

@@ -21,6 +21,16 @@
  *  - `strict: true` is sent only for a schema OpenAI's strict mode accepts (provider/schema.ts). The harness's own
  *    `propose_action` schema (oneOf + const + minItems + an optional property) does not qualify, so it goes out
  *    non-strict — which the live check confirms is accepted and still produces valid arguments.
+ *  - `developer` is the reasoning-era name for the system message; api.openai.com accepts it AND `system` on both
+ *    families (checked on gpt-4.1-mini and gpt-5.6-terra / gpt-6-astra), but `system` is the only one a third-party
+ *    OpenAI-compatible server is sure to know — so the chat surface picks the role per model (`openAiSystemRole`)
+ *    rather than pinning `developer`, exactly as it picks `temperature`.
+ *  - A reasoning-era id that does not accept `reasoning_effort: 'none'` (gpt-6-astra: `does not support 'none' with
+ *    this model. Supported values are: 'low', 'medium', 'high', and 'xhigh'`) therefore cannot take function tools on
+ *    `/chat/completions` at all — `none` is a 400, and every other value (omission included) is the 400 above. That
+ *    request is refused here, before the fetch, rather than sent as a guaranteed 400.
+ *  - `reasoning_effort: 'max'` is a 400 on `/chat/completions` for both gpt-5.6-terra and gpt-6-astra but a 200 on
+ *    `/v1/responses` for both, so the chat surface has its own word list (`openAiChatEfforts`).
  */
 import { ProviderHttpError } from '../errors.js';
 import { parseJson } from '../core/json.js';
@@ -30,7 +40,7 @@ import { createCaller, getJson, joinUrl, openAiErrorFields, runGeneration, sortM
 import type { ConsumeContext, HeldPartial } from './http.js';
 import { createChatProvider, effortOf, pickEffort } from './openai-compat.js';
 import type { ChatQuirks, ChatRequestBody, EffortWord } from './openai-compat.js';
-import { TransportError, clipMessage, countOf, getArr, getNum, getObj, getStr, isRetryableStatus, notify, parseSse, resolveDeps, sanitiseRequestId } from './sse.js';
+import { TransportError, clipMessage, countOf, getArr, getNum, getObj, getStr, isRateLimit, isRetryableStatus, notify, parseSse, resolveDeps, sanitiseRequestId } from './sse.js';
 import type { GenerationProvider, ModelInfo, ProviderConfig, ProviderDeps, ProviderOutcome, StreamPartial, TokenBreakdown } from './types.js';
 
 export const OPENAI_BASE_URL = 'https://api.openai.com/v1';
@@ -61,6 +71,30 @@ export function openAiEfforts(model: string): readonly EffortWord[] | null {
 /** GPT-5.x and later answer 400 for any sampling parameter; only the 4.x / 3.5 families still take one. */
 export function openAiAcceptsTemperature(model: string): boolean {
   return /^(gpt-4o|gpt-4\.1|gpt-4-|gpt-4$|gpt-3\.5|chatgpt-4o)/.test(model);
+}
+
+/**
+ * The words `/v1/chat/completions` accepts — the Responses vocabulary MINUS `max`. Measured 2026-09-21: chat answers
+ * `400 Unsupported value: 'reasoning_effort' does not support 'max' with this model` on BOTH gpt-5.6-terra and
+ * gpt-6-astra (`Supported values are: 'none', 'low', 'medium', 'high', 'xhigh'` / the same without `none`), while
+ * `/v1/responses` accepts `max` on both. The effort set is per SURFACE as well as per model, so the chat quirk
+ * substitutes down the chain (`max` → `xhigh`) instead of sending a value only the other surface takes.
+ */
+export function openAiChatEfforts(model: string): readonly EffortWord[] | null {
+  const all = openAiEfforts(model);
+  return all === null ? null : all.filter((e) => e !== 'max');
+}
+
+/**
+ * The role the system prompt goes out under on `/chat/completions`. Measured 2026-09-21, api.openai.com accepts BOTH
+ * `system` and `developer` on both families (4.1-mini and 5.6-terra / 6-astra), so this is not about an OpenAI 400: it
+ * is about the OTHER half of this surface's audience. `developer` is the reasoning-era name OpenAI documents for the
+ * reasoning models, and `system` is the only role a third-party OpenAI-compatible server can be relied on to know —
+ * pinning `developer` for everyone is what a gateway pointed at this surface would reject. `openAiEfforts` already
+ * names the reasoning-era families, so it is the same table.
+ */
+export function openAiSystemRole(model: string): 'system' | 'developer' {
+  return openAiEfforts(model) !== null ? 'developer' : 'system';
 }
 
 /** LLM-JEV-DESIGN §4.12 → `reasoning: {effort}`; `{maxTokens}` has no counterpart (no thinking budget on either OpenAI surface) and is dropped. */
@@ -230,7 +264,11 @@ function readResponseObject(resp: JsonObject | null, st: RespState, ctx: Consume
     const rt = getNum(getObj(usage, 'output_tokens_details'), 'reasoning_tokens');
     st.reasoningTokens = rt !== null ? Math.max(0, Math.round(rt)) : st.reasoningTokens;
   }
-  // The terminal event repeats the whole output array: it is the authority on every tool call's arguments.
+  // The terminal event repeats the whole output array: it is the authority on every tool call's arguments — but only
+  // when it actually carries them. An EMPTY `arguments` string is not an authority: a snapshot that repeats the item
+  // with `"arguments": ""` would otherwise erase the streamed deltas, and `respOutcome` turns an empty string into
+  // `{}`, i.e. a truncated call reported as a well-formed empty proposal with the raw text needed to diagnose it gone.
+  // Same rule as the `response.output_item.done` path below: non-empty wins, nothing else overwrites.
   const output = getArr(resp, 'output');
   if (output) {
     for (const [i, item] of output.entries()) {
@@ -239,7 +277,7 @@ function readResponseObject(resp: JsonObject | null, st: RespState, ctx: Consume
       const acc = accFor(st, i);
       acc.name = getStr(item, 'name') ?? acc.name;
       const args = getStr(item, 'arguments');
-      if (args !== null) acc.finalArgs = args;
+      if (args !== null && args.length > 0) acc.finalArgs = args;
     }
   }
 }
@@ -340,7 +378,8 @@ async function consumeResponses(stream: ReadableStream<Uint8Array>, ctx: Consume
         case 'response.function_call_arguments.done': {
           const acc = accFor(st, getNum(ev, 'output_index') ?? 0);
           const args = getStr(ev, 'arguments');
-          if (args !== null) acc.finalArgs = args;
+          // non-empty only: an empty `arguments` never outranks what the deltas already spelled out
+          if (args !== null && args.length > 0) acc.finalArgs = args;
           break;
         }
         case 'response.reasoning_text.delta':
@@ -370,6 +409,9 @@ async function consumeResponses(stream: ReadableStream<Uint8Array>, ctx: Consume
       ctx.held.partial = respHeld(st);
       throw ctx.opts.signal.reason;
     }
+    // A 429 delivered as a mid-stream error frame cut a stream that had already been served: keep its facts so the
+    // chain's rate-limited record is what streamed, not zeros (http.ts `HeldPartial.streamed`).
+    if (isRateLimit(e)) ctx.held.streamed = respHeld(st);
     throw e;
   }
   if (!terminal) throw new TransportError('stream', 'openai: stream ended before response.completed / response.incomplete');
@@ -385,6 +427,10 @@ async function consumeResponses(stream: ReadableStream<Uint8Array>, ctx: Consume
  * Live 2026-09-21: with function tools present, `gpt-5.6-terra` answers 400 unless `reasoning_effort` is exactly `none`
  * — including when the field is omitted. So on a reasoning-era id the field is pinned to `none` whenever tools are sent;
  * without tools the caller's level is honoured through the usual substitution chain.
+ *
+ * A reasoning-era id that does not ACCEPT `none` (gpt-6-astra, per `EFFORTS_GPT6`) therefore has no way to send tools
+ * on this surface at all: every value 400s and so does omitting the field. That combination fails here, before the
+ * request is built, rather than spending a round trip on a guaranteed 400 — with the remedy in the message.
  */
 export const OPENAI_CHAT_QUIRKS: ChatQuirks = {
   id: 'openai',
@@ -393,7 +439,7 @@ export const OPENAI_CHAT_QUIRKS: ChatQuirks = {
   transport: 'sse',
   headers: (apiKey) => ({ authorization: `Bearer ${apiKey}` }),
   maxTokensField: 'max_completion_tokens',
-  systemRole: 'developer',
+  systemRole: openAiSystemRole,
   strictTools: true,
   toolChoice: 'named',
   parallelToolCalls: true,
@@ -404,10 +450,18 @@ export const OPENAI_CHAT_QUIRKS: ChatQuirks = {
   seed: false,
   temperature: openAiAcceptsTemperature,
   reasoning: (r, model, hasTools): Partial<ChatRequestBody> | null => {
-    const allowed = openAiEfforts(model);
+    const allowed = openAiChatEfforts(model);
     if (allowed === null) return null;
-    if (hasTools) return allowed.includes('none') ? { reasoning_effort: 'none' } : null;
-    const effort = openAiReasoningEffort(r, model);
+    if (hasTools) {
+      if (allowed.includes('none')) return { reasoning_effort: 'none' };
+      throw new ProviderHttpError(
+        `openai: ${model} cannot be sent function tools on /v1/chat/completions — it rejects reasoning_effort 'none' and 400s for every other value, omission included; use the Responses surface for this model (the default, api: 'responses')`,
+        { status: 0, retryable: false },
+      );
+    }
+    if (r === undefined) return null;
+    const wanted = effortOf(r);
+    const effort = wanted === null ? null : pickEffort(wanted, allowed);
     return effort === null ? null : { reasoning_effort: effort };
   },
   extras: { store: false },

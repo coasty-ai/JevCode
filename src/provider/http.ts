@@ -40,6 +40,12 @@ import type { ModelInfo, ProviderConfig, ProviderDeps, ProviderOutcome, StreamPa
 /** §4.8: filled in a client's abort branch with what the stream had produced; read after the retry loop rethrows the abort reason. */
 export interface HeldPartial {
   partial: StreamPartial | null;
+  /**
+   * What the stream had produced when a MID-STREAM 429 frame killed the attempt (`isRateLimit`). Separate from
+   * `partial`, which stays the abort-only slot: this one is read only on the rate-limited ending, so `onCancelled`
+   * still fires exactly where core/types.ts documents it — just with the tokens that were served instead of zeros.
+   */
+  streamed: StreamPartial | null;
 }
 
 /** Everything a `consume` implementation needs besides the byte stream. */
@@ -227,7 +233,7 @@ export async function runGeneration(
   attempt: (held: HeldPartial) => Promise<ProviderOutcome>,
 ): Promise<GenerateResult> {
   const t0 = d.now();
-  const held: HeldPartial = { partial: null };
+  const held: HeldPartial = { partial: null, streamed: null };
   const limited = rateLimitLedger();
   const tablePrice = (t: TokenBreakdown): number => (cfg.priced === true ? costFromPricing(cfg.pricing, t) : Number.NaN);
   let out: ProviderOutcome;
@@ -238,7 +244,9 @@ export async function runGeneration(
     // §4.8: `held.partial` is set only by an abort that landed on an open stream, and only the abort reason reaches here
     // then. A throwing callback is a harness bug and must surface (typed 'internal', like a throwing onDelta), not vanish.
     if (held.partial !== null) notify(opts.onCancelled, toCancelledGeneration(held.partial, tablePrice));
-    else if (limited.last) notify(opts.onCancelled, rateLimitedCancellation());
+    // A chain that ended on 429s reports the fact. When the last 429 was a mid-stream frame the stream HAD been served
+    // (and billed), so the record is the streamed one with the flag added rather than "nothing was served".
+    else if (limited.last) notify(opts.onCancelled, held.streamed === null ? rateLimitedCancellation() : rateLimitedCancellation(toCancelledGeneration(held.streamed, tablePrice)));
     throw e;
   }
   return {

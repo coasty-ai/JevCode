@@ -482,12 +482,17 @@ export function toCancelledGeneration(p: StreamPartial, price: (t: TokenBreakdow
 }
 
 /**
- * The `onCancelled` facts of a call that ended rate-limited without a stream (core/types.ts `CancelledGeneration.rateLimited`):
- * the retry chain's every attempt was answered HTTP 429, or the signal aborted the call during a 429 backoff. Nothing was
- * served — zero streamed sizes, no ids, no usage — so the engine records the sample at zero, not from an estimate.
+ * The `onCancelled` facts of a call that ended rate-limited (core/types.ts `CancelledGeneration.rateLimited`): the retry
+ * chain's every attempt was answered HTTP 429, or the signal aborted the call during a 429 backoff.
+ *
+ * With no argument nothing was served — zero streamed sizes, no ids, no usage — so the engine records the sample at zero
+ * rather than from an estimate. `served` is for the other shape of the same ending: a 429 that arrived as a MID-STREAM
+ * error frame (`isRateLimit` counts those), where the stream had opened and tokens had been served and billed before the
+ * limiter cut it. Reporting zeros there would under-bill the run, so the streamed facts are kept and only the
+ * `rateLimited` flag is added.
  */
-export function rateLimitedCancellation(): CancelledGeneration {
-  return { text: '', toolChars: 0, reasoningChars: 0, rateLimited: true };
+export function rateLimitedCancellation(served?: CancelledGeneration): CancelledGeneration {
+  return served === undefined ? { text: '', toolChars: 0, reasoningChars: 0, rateLimited: true } : { ...served, rateLimited: true };
 }
 
 /** HTTP 429 from the API or the upstream provider (`Provider returned error` with code 429 on a mid-stream frame counts too). */

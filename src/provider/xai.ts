@@ -21,7 +21,7 @@
  */
 import type { GenerateReasoning, JsonObject } from '../core/types.js';
 import { isJsonObject } from '../core/json.js';
-import { getJson, joinUrl } from './http.js';
+import { getJson, joinUrl, sortModels } from './http.js';
 import { createChatProvider } from './openai-compat.js';
 import type { ChatQuirks, ChatRequestBody, EffortWord } from './openai-compat.js';
 import { effortOf, pickEffort } from './openai-compat.js';
@@ -53,7 +53,7 @@ export const XAI_QUIRKS: ChatQuirks = {
   transport: 'sse',
   headers: (apiKey) => ({ authorization: `Bearer ${apiKey}` }),
   maxTokensField: 'max_tokens',
-  systemRole: 'system',
+  systemRole: () => 'system',
   strictTools: true,
   toolChoice: 'named',
   parallelToolCalls: true,
@@ -63,7 +63,7 @@ export const XAI_QUIRKS: ChatQuirks = {
   costField: { field: 'cost_in_usd_ticks', perUsd: XAI_TICKS_PER_USD },
   seed: true,
   temperature: () => true,
-  reasoning: (r) => xaiReasoning(r),
+  reasoning: (r) => (r === undefined ? null : xaiReasoning(r)),
 };
 
 export function createXaiProvider(cfg: ProviderConfig, deps: ProviderDeps): GenerationProvider {
@@ -112,5 +112,5 @@ export async function listXaiModels(apiKey: string, deps: ProviderDeps, baseUrl 
     const info = xaiModelInfo(row);
     if (info) out.push(info);
   }
-  return out.sort((a, b) => (b.created ?? 0) - (a.created ?? 0) || a.id.localeCompare(b.id));
+  return sortModels(out);
 }

@@ -3,12 +3,12 @@
  * the registry (Anthropic and OpenRouter). Every catalogue fixture was recorded from the live endpoint on 2026-09-21.
  */
 import { describe, expect, it } from 'vitest';
-import { ConfigError } from '../../../src/errors.js';
+import { ConfigError, ProviderHttpError } from '../../../src/errors.js';
 import { PROVIDERS, PROVIDER_IDS, anthropicModelInfo, createProvider, keyEnvFor, listAnthropicModels, listOpenRouterModels, openRouterModelInfo, providerFor, requireProvider } from '../../../src/provider/registry.js';
 import { pricingFor, priceRowFor, isKnownPrice } from '../../../src/provider/pricing.js';
 import type { GenerationProvider, ProviderConfig } from '../../../src/provider/types.js';
 import type { GeneratorConfig, Provider } from '../../../src/core/types.js';
-import { fixture, providerDeps, scriptedFetch } from '../provider/helpers.js';
+import { FAKE_KEYS, fixture, providerDeps, scriptedFetch } from '../provider/helpers.js';
 
 const cfg = (over: Partial<ProviderConfig> = {}): ProviderConfig => ({
   model: 'm',
@@ -52,6 +52,27 @@ describe('PROVIDERS', () => {
       expect(p.name, spec.id).toBe(spec.id);
       expect(p.model, spec.id).toBe(spec.defaultModel);
       expect(typeof p.generate, spec.id).toBe('function');
+    }
+  });
+
+  it("every catalogue routes its error body through the caller's redactor — a gateway that echoes the key never reaches state.json", async () => {
+    // `listModels` takes a REQUIRED deps bag for this reason: a proxy that quotes the Authorization header or a
+    // `?key=` URL back in its 401 would otherwise put the key in `ProviderHttpError.body` / `.message`, and from
+    // there into the epilogue and state.json (§10 F9) — which a default identity redactor would have allowed.
+    const keys: Record<string, string> = { anthropic: 'sk-ant-test-key-000000000000000000000000', openrouter: 'sk-or-v1-testkey000000000000000000000000000000', ...FAKE_KEYS };
+    for (const spec of PROVIDERS) {
+      const key = keys[spec.id]!;
+      const body = JSON.stringify({ error: { message: `Invalid API key ${key} (sent as ?key=${key})`, type: 'authentication_error', code: 'invalid_api_key' } });
+      const f = scriptedFetch([{ status: 401, body }]);
+      const { deps } = providerDeps(f.fetch);
+      const err = await spec.listModels(key, deps).catch((e: unknown) => e);
+      expect(err, spec.id).toBeInstanceOf(ProviderHttpError);
+      const http = err as ProviderHttpError;
+      const dumped = `${http.message}\n${http.body}\n${JSON.stringify(http.toJSON())}`;
+      expect(dumped, spec.id).not.toContain(key);
+      expect(dumped, spec.id).toContain('[REDACTED:pattern]');
+      // and the key travelled in a header, never in the URL or the query
+      expect(f.calls[0]!.url, spec.id).not.toContain(key);
     }
   });
 

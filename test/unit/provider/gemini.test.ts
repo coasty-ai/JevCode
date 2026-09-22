@@ -6,7 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { AbortError, ProviderHttpError } from '../../../src/errors.js';
 import { PROPOSE_ACTION_TOOL } from '../../../src/provider/actions.js';
-import { buildGeminiBody, createGeminiProvider, geminiThinkingConfig, geminiThinkingLevels, listGeminiModels } from '../../../src/provider/gemini.js';
+import { buildGeminiBody, createGeminiProvider, geminiThinkingBudget, geminiThinkingConfig, geminiThinkingLevels, listGeminiModels } from '../../../src/provider/gemini.js';
 import type { CancelledGeneration } from '../../../src/core/types.js';
 import { PROPOSE_TOOL, fixture, genOpts, providerCfg, providerDeps, request, scriptedFetch, splitEvery } from './helpers.js';
 
@@ -69,6 +69,17 @@ describe('gemini: the request body', () => {
     // an explicit budget is always a budget
     expect(geminiThinkingConfig({ maxTokens: 4096 }, 'gemini-3.8-flash')).toEqual({ thinkingBudget: 4096 });
     expect(buildGeminiBody(cfg(), request({ reasoning: { effort: 'low' } })).generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'low' });
+  });
+
+  it('resolves a 2.5 budget through the shared effort chain, so the highest efforts get the highest budget', () => {
+    expect(geminiThinkingBudget('none')).toBe(0);
+    expect(geminiThinkingBudget('minimal')).toBe(1024);
+    expect(geminiThinkingBudget('low')).toBe(1024);
+    expect(geminiThinkingBudget('medium')).toBe(8192);
+    expect(geminiThinkingBudget('high')).toBe(24_576);
+    // the table has no `xhigh` / `max`: EFFORT_CHAINS walks DOWN to `high`, never to the near-minimum `low`
+    expect(geminiThinkingBudget('xhigh')).toBe(24_576);
+    expect(geminiThinkingBudget('max')).toBe(24_576);
   });
 });
 

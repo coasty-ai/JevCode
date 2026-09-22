@@ -9,11 +9,15 @@
  *    JSON-Schema subset: the root is an object, every object sets `additionalProperties: false` and lists EVERY property
  *    in `required` (an optional field is modelled as `type: ["string", "null"]`), and `pattern` / `minLength` /
  *    `maxLength` / `minimum` / `maximum` / `minItems` / `maxItems` / `format` / `default` / `oneOf` / `allOf` / `not` /
- *    `if` / `then` / `else` / `patternProperties` / `const` are not supported (`anyOf` is, over single-schema
- *    alternatives, and so are `$defs` / `$ref`). `PROPOSE_ACTION_TOOL` violates four of those rules, so the clients ask
- *    `checkOpenAiStrict` first and send `strict: true` only for a schema that passes — never a rewritten schema, and
- *    never a `strict: true` the API would answer 400 to. The reasons are kept so a test (and `--why`) can show why a
- *    given tool went out non-strict.
+ *    `if` / `then` / `else` / `patternProperties` / `const` / the tuple forms (`prefixItems`, array `items`) /
+ *    `contains` are not supported (`anyOf` is, over single-schema alternatives, and so are `$defs` / `$ref`), a
+ *    subschema is always an object and never the boolean `true` / `false`, and the whole schema is bounded by
+ *    `MAX_DEPTH` / `MAX_PROPERTIES`. The last three were re-checked live on 2026-09-21 with `strict: true`:
+ *    `prefixItems` → 400 `array schema missing items`, `contains` → 400 `'contains' is not permitted`, `items: true`
+ *    → 400 `array schema items is not an object`.  `PROPOSE_ACTION_TOOL` violates
+ *    four of those rules, so the clients ask `checkOpenAiStrict` first and send `strict: true` only for a schema that
+ *    passes — never a rewritten schema, and never a `strict: true` the API would answer 400 to. The reasons are kept so
+ *    a test (and `--why`) can show why a given tool went out non-strict.
  *  - Gemini's `functionDeclarations[].parametersJsonSchema` takes standard JSON Schema but supports `anyOf` only:
  *    `oneOf` / `allOf` / `patternProperties` / `if`-`then` are "silently ignored", which would hand the model a shapeless
  *    `action` object. `geminiToolSchema` therefore performs exactly ONE rewrite — `oneOf` → `anyOf`, recursively — and
@@ -54,6 +58,13 @@ export const OPENAI_STRICT_UNSUPPORTED: readonly string[] = [
   'unevaluatedItems',
   'dependentSchemas',
   'dependentRequired',
+  'dependencies',
+  // the tuple / positional array forms and the array-membership assertions: silently ignored at best, 400 at worst
+  'prefixItems',
+  'additionalItems',
+  'contains',
+  'minContains',
+  'maxContains',
 ];
 
 export interface StrictCheck {
@@ -62,27 +73,39 @@ export interface StrictCheck {
   reasons: readonly string[];
 }
 
-/** The deepest nesting `checkOpenAiStrict` walks (OpenAI's own limit is 5 levels / 5000 properties; a deeper schema is reported, not crashed on). */
-const MAX_DEPTH = 12;
+/**
+ * OpenAI's DOCUMENTED strict-mode bounds (guides/structured-outputs "Supported schemas"): up to 5 levels of nesting and
+ * 5000 object properties in total. Measured 2026-09-21, api.openai.com accepted 6- and 8-level strict schemas, so the
+ * nesting bound is not enforced there today — it is kept anyway because the two errors are not symmetric. Reporting a
+ * schema the API would have taken costs only strict mode (the tool still goes out, non-strict, which the live check
+ * confirms produces valid arguments); NOT reporting one the API refuses is a non-retryable 400 that kills the step —
+ * the day the documented limit starts being enforced, or the first time the request goes to an OpenAI-compatible
+ * server that enforces it. The root schema counts as level 1, so a subschema at walk depth >= MAX_DEPTH is the sixth.
+ */
+export const MAX_DEPTH = 5;
+export const MAX_PROPERTIES = 5000;
 
 /**
  * Whether `schema` may be sent with `strict: true`. Conservative by construction: anything the walk cannot verify
- * (a `$ref` target outside the document, a depth beyond MAX_DEPTH) counts as a violation, so a false "ok" cannot
- * turn into a 400 at request time.
+ * (a `$ref` target outside the document, a depth beyond MAX_DEPTH, a boolean subschema) counts as a violation, so a
+ * false "ok" cannot turn into a 400 at request time.
  */
 export function checkOpenAiStrict(schema: JsonObject): StrictCheck {
   const reasons: string[] = [];
   const seen = new Set<JsonObject>();
+  let properties = 0;
+  let overflowed = false;
 
   const walk = (node: Json, path: string, depth: number): void => {
     if (!isJsonObject(node)) {
-      if (Array.isArray(node)) reasons.push(`${path}: a schema must be an object, not an array`);
+      // a boolean subschema (`items: true`, `additionalProperties: {}`-as-`true`) is JSON Schema but not strict mode
+      reasons.push(`${path}: a schema must be an object, not ${Array.isArray(node) ? 'an array' : node === null ? 'null' : typeof node}`);
       return;
     }
     if (seen.has(node)) return; // a $ref cycle expressed by shared objects: walked once
     seen.add(node);
-    if (depth > MAX_DEPTH) {
-      reasons.push(`${path}: nested deeper than ${MAX_DEPTH} levels`);
+    if (depth >= MAX_DEPTH) {
+      reasons.push(`${path}: nested deeper than ${MAX_DEPTH} levels (strict mode's limit)`);
       return;
     }
     for (const key of OPENAI_STRICT_UNSUPPORTED) {
@@ -98,6 +121,11 @@ export function checkOpenAiStrict(schema: JsonObject): StrictCheck {
     if (isObject) {
       if (node['additionalProperties'] !== false) reasons.push(`${path}: object without "additionalProperties": false`);
       const keys = isJsonObject(props) ? Object.keys(props) : [];
+      properties += keys.length;
+      if (properties > MAX_PROPERTIES && !overflowed) {
+        overflowed = true; // a total, so it is reported once rather than once per object past the line
+        reasons.push(`${path}: more than ${MAX_PROPERTIES} object properties in total (strict mode's limit)`);
+      }
       const required = Array.isArray(node['required']) ? node['required'].filter((r): r is string => typeof r === 'string') : [];
       for (const k of keys) if (!required.includes(k)) reasons.push(`${path}/properties/${k}: not listed in "required" (strict mode requires every property)`);
       for (const r of required) if (!keys.includes(r)) reasons.push(`${path}: "required" names "${r}", which is not a property`);

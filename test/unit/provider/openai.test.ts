@@ -13,8 +13,10 @@ import {
   isOpenAiChatModel,
   listOpenAiModels,
   openAiAcceptsTemperature,
+  openAiChatEfforts,
   openAiEfforts,
   openAiReasoningEffort,
+  openAiSystemRole,
 } from '../../../src/provider/openai.js';
 import { buildChatBody } from '../../../src/provider/openai-compat.js';
 import type { CancelledGeneration } from '../../../src/core/types.js';
@@ -155,13 +157,44 @@ describe('openai: the Responses stream', () => {
     expect(cancelled[0]!.text).toBe('');
   });
 
-  it('a stream that ends before a terminal event is a retryable transport failure, and a terminal event without usage too', async () => {
+  it('a stream that ends before a terminal event is a retryable transport failure', async () => {
     const head = fixture('openai-responses-tool.sse').split('event: response.completed')[0]!;
     const f = scriptedFetch([{ status: 200, body: head }, { status: 200, body: head }, { status: 200, body: head }]);
     const { deps, sleeps } = providerDeps(f.fetch);
     await expect(createOpenAiProvider(cfg(), deps).generate(request(), genOpts())).rejects.toMatchObject({ status: 0, retryable: true });
     expect(f.calls.length).toBe(3);
     expect(sleeps.length).toBe(2);
+  });
+
+  it('a terminal event that carries no usage is a retryable transport failure too, never a silent $0', async () => {
+    // the recorded transcript with `"usage"` renamed out of the terminal `response.completed`: every other field stays
+    const noUsage = fixture('openai-responses-tool.sse').replace('"usage":{', '"usage_absent":{');
+    expect(noUsage).not.toContain('"usage":{');
+    const f = scriptedFetch([{ status: 200, body: noUsage }, { status: 200, body: noUsage }, { status: 200, body: noUsage }]);
+    const { deps } = providerDeps(f.fetch);
+    const err = await createOpenAiProvider(cfg({ priced: true }), deps)
+      .generate(request({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' } }), genOpts())
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 0, retryable: true });
+    expect((err as Error).message).toContain('terminal event carried no usage');
+    expect(f.calls.length).toBe(3);
+  });
+
+  it('a terminal snapshot that repeats a tool call with empty arguments never erases the streamed ones', async () => {
+    // Recorded truncated call (`{"goal":"`), with the terminal `response.incomplete` snapshot's own copy of the
+    // arguments blanked — the shape an OpenAI-compatible gateway produces when it omits them. The raw text must
+    // survive: turning it into `{}` would report a cut-off call as a well-formed empty proposal.
+    const raw = fixture('openai-responses-length.sse');
+    const cut = raw.lastIndexOf('event: response.incomplete');
+    const blanked = raw.slice(0, cut) + raw.slice(cut).replace('"arguments":"{\\"goal\\":\\""', '"arguments":""');
+    expect(blanked).toContain('"arguments":""');
+    expect(blanked.length).toBeLessThan(raw.length);
+    const f = scriptedFetch([{ status: 200, body: blanked }]);
+    const { deps } = providerDeps(f.fetch);
+    const res = await createOpenAiProvider(cfg({ priced: true }), deps).generate(request({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' }, maxTokens: 16 }), genOpts());
+    expect(res.stopReason).toBe('length');
+    expect(res.toolCalls[0]!.rawJson).toBe('{"goal":"');
+    expect(res.toolCalls[0]!.input).toBeNull();
   });
 
   it('maps the recorded 400 for an unsupported parameter, redacting the body and keeping it non-retryable', async () => {
@@ -192,6 +225,46 @@ describe('openai: the Chat Completions surface', () => {
     expect(body.store).toBe(false);
     // without tools the caller's level is honoured
     expect(buildChatBody(OPENAI_CHAT_QUIRKS, cfg(), request({ reasoning: { effort: 'medium' } })).reasoning_effort).toBe('medium');
+    // and the pin does not depend on the caller asking for reasoning at all: omitting the field is the same 400
+    expect(buildChatBody(OPENAI_CHAT_QUIRKS, cfg(), request({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' } })).reasoning_effort).toBe('none');
+    // a model with no reasoning control at all still sends nothing
+    expect('reasoning_effort' in buildChatBody(OPENAI_CHAT_QUIRKS, cfg({ model: 'gpt-4.1' }), request({ tools: [PROPOSE_TOOL] }))).toBe(false);
+  });
+
+  it('drops `max` from the chat vocabulary — the word only the Responses surface takes', () => {
+    // live 2026-09-21: chat 400s on `max` for gpt-5.6-terra AND gpt-6-astra; /v1/responses answers 200 for both
+    expect(openAiEfforts('gpt-6-astra')).toContain('max');
+    expect(openAiChatEfforts('gpt-6-astra')).toEqual(['low', 'medium', 'high', 'xhigh']);
+    expect(openAiChatEfforts('gpt-5.6-terra')).toEqual(['none', 'low', 'medium', 'high', 'xhigh']);
+    expect(openAiChatEfforts('gpt-4o')).toBeNull();
+  });
+
+  it('sends the system prompt as `developer` only on the reasoning-era ids — every other id (and every gateway) takes `system`', () => {
+    expect(openAiSystemRole('gpt-5.6-terra')).toBe('developer');
+    expect(openAiSystemRole('gpt-6-astra')).toBe('developer');
+    expect(openAiSystemRole('o4-mini')).toBe('developer');
+    // the 4.x-era ids this surface exists for answer 400 `Invalid value: 'developer'`
+    expect(openAiSystemRole('gpt-4.1')).toBe('system');
+    expect(openAiSystemRole('gpt-4o')).toBe('system');
+    expect(openAiSystemRole('llama-4-maverick')).toBe('system');
+    expect(buildChatBody(OPENAI_CHAT_QUIRKS, cfg({ model: 'gpt-4.1' }), request()).messages[0]).toEqual({ role: 'system', content: 'You are the generator.' });
+  });
+
+  it('refuses to build a chat request that cannot succeed: tools on a reasoning-era id with no `none` level', async () => {
+    // gpt-6-astra rejects reasoning_effort 'none' AND 400s for every other value when tools are present (including
+    // omission), so there is no body to send: the client says so instead of spending a round trip on it.
+    const f = scriptedFetch([]);
+    const { deps } = providerDeps(f.fetch);
+    const err = await createOpenAiProvider(cfg({ model: 'gpt-6-astra' }), deps, { api: 'chat' })
+      .generate(request({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' } }), genOpts())
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderHttpError);
+    expect((err as ProviderHttpError).retryable).toBe(false);
+    expect((err as ProviderHttpError).status).toBe(0);
+    expect((err as Error).message).toContain('use the Responses surface');
+    expect(f.calls.length).toBe(0);
+    // without tools the same model is fine on this surface
+    expect(buildChatBody(OPENAI_CHAT_QUIRKS, cfg({ model: 'gpt-6-astra' }), request({ reasoning: { effort: 'low' } })).reasoning_effort).toBe('low');
   });
 
   it('maps the recorded 400 the quirks table exists to avoid, keeping the API\'s own remedy in the message', async () => {
