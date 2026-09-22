@@ -1420,8 +1420,11 @@ class LedgerImpl implements LedgerHandle {
             // §6.2 (a): a lane lease of a run that is no longer live names a lane dir the sweep may prune
             // + review major 15: the sweep `rm -rf`s what this names, so the shape is re-tested HERE, at the point of
             // use, not only where the lease was built — a record that reached the store by any other route is refused.
-            if (l.type === 'lane' && l.laneDir !== undefined && LANE_DIR_RE.test(l.laneDir) && l.released === undefined && this.fold.live.get(l.runId) === undefined)
-              report.staleLanes.push({ runId: l.runId, laneDir: l.laneDir });
+            // §4.3 (revision 5): one lease has TWO files on disk, so the lane is reported ONCE — the report names
+            // lanes, not files, and a caller that `rm -rf`s a listed dir must not be handed it twice.
+            if (l.type === 'lane' && l.laneDir !== undefined && LANE_DIR_RE.test(l.laneDir) && l.released === undefined && this.fold.live.get(l.runId) === undefined) {
+              if (!report.staleLanes.some((row) => row.runId === l.runId && row.laneDir === l.laneDir)) report.staleLanes.push({ runId: l.runId, laneDir: l.laneDir });
+            }
             const closed = l.released !== undefined ? l.released.at : l.expiresAt;
             if (old(closed, retention)) await rm('leases', e.path, 'lease');
             break;

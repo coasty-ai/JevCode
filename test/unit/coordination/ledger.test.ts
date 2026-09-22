@@ -136,7 +136,9 @@ describe('review blocker 1: setIdentity re-derives everything keyed on a moved f
 
   it('the lease dir follows repoKey: a fresh clone and a running peer meet at the first coordinate', async () => {
     const h = await harness({ self: { repoKey: null } });
-    await putLease(h.root, makeLease({ deviceId: DEV_B, runId: runId(9), sessionId: runId(9), leaseId: `${runId(9)}-9`, stamp: stamp(9, DEV_B, runId(9)) }));
+    // a peer in ANOTHER checkout of the same repo: its `wsKey` copy is in a directory we do not fold, so only the
+    // `repoKey` this patch adds can reach it (a peer in MY checkout would already be visible — see the dual-key test)
+    await putLease(h.root, makeLease({ deviceId: DEV_B, runId: runId(9), sessionId: runId(9), leaseId: `${runId(9)}-9`, wsKey: 'ws:00000000deadbeef', stamp: stamp(9, DEV_B, runId(9)) }));
     await h.l.open();
     expect(h.l.fold.leases.size).toBe(0); // REPO is not a key we fold yet
     // §3.5 (design revision 4): the one-shot walk means the new root is already folded when the promise resolves —
@@ -333,7 +335,9 @@ describe('review blocker 2: the write verbs the surface owns', () => {
     await putHeartbeat(h.root, makeHeartbeat({ deviceId: DEV_B, runId: runId(23), sessionId: runId(23), phase: 'ended', beatAt: iso(old), stamp: stamp(1, DEV_B, runId(23)), claim: claim({ deviceId: DEV_B, runId: runId(23), pid: 923 }) }));
     await h.l.open();
     const report = await gcOf(h.l);
-    expect(report.byKind).toEqual({ heartbeat: 1, lease: 1, message: 1, ack: 0 });
+    // §4.3 (revision 5): the expired lease has TWO copies on disk (keyDir(repoKey) and keyDir(wsKey)), so the GC
+    // removes two files for one lease — the fold, keyed by leaseId, still saw exactly one.
+    expect(report.byKind).toEqual({ heartbeat: 1, lease: 2, message: 1, ack: 0 });
     expect(report.staleLanes).toEqual([{ runId: runId(22), laneDir: 'tmp/synth/lane3' }]);
     expect(report.failed).toEqual([]);
     await expect(nodeFs.stat(commonsPaths(h.root).heartbeatFile(DEV_B, runId(23)))).resolves.toBeTruthy();

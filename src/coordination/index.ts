@@ -283,7 +283,7 @@ export { DIR_MODE, FILE_MODE, LEDGER_ERROR_CODES, OFFLINE_CODES, classifyLedgerE
 export type { BoundedRead, CoordFs, FsStat, LedgerErrorCode } from './fs.js';
 
 // leases.ts — declare / check / release / renew (§4.3, §4.5)
-export { FACTS_MAX, FACT_TEXT_MAX, STRICT_WAIT_MS, TREE_PATH, buildFacts, check, collapsePaths, coordRecordOf, declare, f2Wake, fenceWait, isExclusiveTreeCommand, leaseSnapshot, release, renew, requestedFor, shouldSkipInlineWait } from './leases.js';
+export { FACTS_MAX, FACT_TEXT_MAX, FENCE_WAIT_CAP_MS, STRICT_WAIT_MS, TREE_PATH, buildFacts, check, collapsePaths, coordRecordOf, declare, fenceWake, fenceYield, isExclusiveTreeCommand, leaseRels, leaseSnapshot, release, renew, requestedFor, shouldSkipInlineWait } from './leases.js';
 export type { CheckOptions, FenceWait } from './leases.js';
 
 // mailbox.ts — send / inbox / ack / awaitAck / resolveTarget and the permission boundary (§5, §10.3)

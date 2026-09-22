@@ -179,8 +179,16 @@ export interface Lease {
   runId: string;
   sessionId: string;
   deviceId: string;
+  /** §3.1 / §4.3: the writer's `hostKey` — binds the lease to the MACHINE, like every other record (§3.2) */
+  hostKey?: string;
   label: string;
-  repoKey: string;
+  /**
+   * §4.3 (design revision 5): the run's real `repoKey`, or `null` when it does not have one yet (before `run:ready`,
+   * a shallow clone with no origin, a non-git workspace). It is NOT back-filled with `wsKey`: the two keys are both
+   * in the record, and the FILE is written under `keyDir(repoKey)` **and** `keyDir(wsKey)` when they differ, so the
+   * reader accepts either directory and `check()` can match by `wsKey` whenever either side lacks a `repoKey`.
+   */
+  repoKey: string | null;
   remoteKey: string | null;
   wsKey: string;
   branch: string | null;
@@ -470,18 +478,40 @@ export interface LeaseConflict {
   stamp: Stamp;
 }
 export type LeaseCheck =
-  | { kind: 'clear'; /** + the lease ids the judgment was made over — the strict fence's "was it there before my write?" set */ snapshot: readonly string[] }
+  | { kind: 'clear'; declared: DeclaredFact[]; snapshot: LeaseSnapshot }
   | {
       kind: 'conflict';
       conflicts: LeaseConflict[];
       /**
        * an overlapping exclusive lease with a LOWER stamp exists (§4.5), OR — review blocker 4 — one appeared in the
-       * write-then-read window that the judgment could not have seen. Either way the judgment re-runs NOW.
+       * write-then-read window that the judgment could not have seen. DISPLAY only.
        */
       contested: boolean;
       requested: { path: string; by: string; agoMs: number }[];
-      snapshot: readonly string[];
+      declared: DeclaredFact[];
+      snapshot: LeaseSnapshot;
     };
+
+/**
+ * §4.3 step 2 / §12.0.4 (design revision 5): an overlapping lease of type `'intent'` — a DECLARATION, not a hold.
+ *
+ * It is the §5.2 `heads-up` trigger and an advisory fact, and it NEVER makes `check()` return `kind:'conflict'`.
+ * Revision 4's "every live, unexpired lease is a conflict" had two consequences that made `strict` unusable: the F2
+ * re-declarer conflicted with the very peer that had just yielded to it (a yield rewrites the lease to `intent`), and
+ * every `strict` step conflicted with every peer's step-1 `intent`, which is what EVERY writer writes before it knows
+ * whether it may proceed. Only the HOLDING types conflict: `exclusive | command | lane | worktree | takeover`.
+ */
+export interface DeclaredFact {
+  path: string;
+  /** the holder's label */
+  by: string;
+  leaseId: string;
+  step: number;
+  agoMs: number;
+}
+
+/** §4.3 step 2 (revision 5): the lease types that are a HOLD, and therefore a conflict. `intent` is not one. */
+export const HOLDING_LEASE_TYPES: ReadonlySet<Lease['type']> = new Set(['exclusive', 'command', 'lane', 'worktree', 'takeover']);
 
 /**
  * + review blocker 4: the strict write-then-read fence is SYMMETRIC. `refold` is the judgment re-run after my own rename
@@ -514,18 +544,66 @@ export type StrictDeclare =
   | (LeaseHandle & { fence: 'decided'; refold: LeaseCheck; appeared: LeaseConflict[]; proceed: boolean })
   | (LeaseHandle & { fence: 'blind'; scanned: number; total: number });
 
-/** §4.5: the overlapping exclusive lease ids a `check()` saw, so the re-fold can say which APPEARED afterwards. */
-export type LeaseSnapshot = ReadonlySet<string> | readonly string[];
+/**
+ * §4.5 (design revision 5): the `leaseId`s of the overlapping leases that were **`exclusive`** at that `check()`.
+ *
+ * Three properties follow, and they are what make `appeared` mean what F1 needs. (i) It holds `leaseId`s — not stamps,
+ * not paths: a `leaseId` is minted once with its lease and survives every rewrite (§3.2), so a peer's
+ * `intent → exclusive → released` sequence is one identity throughout and the TWO on-disk copies of one lease
+ * (§4.3, revision 5) are one entry. (ii) A lease that was `intent` here is NOT in the set, so a peer that turned
+ * `exclusive` between my check and my re-fold is correctly `appeared` — which is the whole race the fence exists for.
+ * (iii) My own `leaseId` is in neither set.
+ *
+ * Revision 4's snapshot was every leaseId in the fold, which made (ii) false: a peer's `intent` was already in `seen`,
+ * so its rewrite to `exclusive` inside the write-then-read window never `appeared`, and the fence missed exactly the
+ * interleaving it exists for.
+ */
+export type LeaseSnapshot = ReadonlySet<string>;
+
+/**
+ * §4.5 F2 (design revision 5): what a yield CAPTURES, so the later decision cannot drift with the fold.
+ *
+ * Taken at the moment of the downgrade, from `appeared`. `fenceWake` computes the minimum over THESE stamps and never
+ * over the fold's current copies, so a lease a peer's GC has already removed still counts and both sides of a
+ * both-see race compute the same minimum from the same two records.
+ */
+export interface FenceYield {
+  /** my own lease's stamp — one end of the F2 comparison */
+  mine: Stamp;
+  yieldedTo: {
+    leaseId: string;
+    stamp: Stamp;
+    deviceId: string;
+    sameDevice: boolean;
+    /**
+     * `arrivalMono + ttlMs + syncSlackMs` of the lease's OWNER heartbeat — the instant this side will call it stale on
+     * its OWN monotonic clock. `null` for a same-device lease, where pid death is the event and staleness is immediate.
+     */
+    staleAtMono: number | null;
+  }[];
+  /**
+   * §4.3 step 4: `max(strictWaitMs, the latest staleAtMono)`, capped at `ttlMs + syncSlackMs + 5_000` (170 s at the
+   * defaults). A yield is not a judgment — it is a safety act F1 took on this run's behalf — so discarding the step
+   * because the PEER died is exactly the liveness failure F2 exists to prevent, and across devices a crashed peer is
+   * only detectable at `ttl + slack` (165 s), which is past `strictWaitMs` (60 s). A derived bound, not a new tunable.
+   */
+  deadlineMono: number;
+}
+
 export interface LeaseHandle {
   leaseId: string;
   stamp: Stamp;
   renew(): void;
   /**
-   * §4.5 F1 (design revision 4): `'exclusive'` → `'intent'` on a fence yield — same stamp, same leaseId, so every
-   * observer keeps agreeing about the order while this side stops being a fence for anyone else. Awaited: the yield is
-   * only real once the rename has landed.
+   * §4.5 F1: `'exclusive'` → `'intent'` on a fence yield — same stamp, same leaseId, so every observer keeps agreeing
+   * about the order while this side stops being a fence for anyone else, and F2's wake condition on the other side
+   * ("everything I yielded to is now `intent`") can become true. Rewritten in BOTH key directories (§4.3, revision 5).
+   * Awaited: the yield is only real once the renames have landed.
+   *
+   * Revision 5: it RETURNS the `FenceYield` the later F2 decision is made from — captured here, from `appeared`, so
+   * the decision cannot drift with the fold.
    */
-  downgrade(): Promise<void>;
+  downgrade(): Promise<FenceYield>;
   release(outcome: LeaseOutcome, changed?: Record<string, string | null>, head?: string): void;
 }
 

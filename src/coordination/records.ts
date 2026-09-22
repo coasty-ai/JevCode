@@ -344,9 +344,12 @@ function checkHeartbeat(o: JsonObject): Bad | null {
 
 function checkLease(o: JsonObject): Bad | null {
   if (o['kind'] !== 'lease') return 'shape';
-  let bad = checkId(o['leaseId'], LEASE_ID_RE) ?? checkId(o['runId'], RUN_ID_RE) ?? checkId(o['sessionId'], RUN_ID_RE) ?? checkId(o['deviceId'], DEVICE_ID_RE) ?? checkId(o['repoKey'], REPO_KEY_RE) ?? checkIdOrNull(o['remoteKey'], REPO_KEY_RE) ?? checkId(o['wsKey'], REPO_KEY_RE);
+  let bad = checkId(o['leaseId'], LEASE_ID_RE) ?? checkId(o['runId'], RUN_ID_RE) ?? checkId(o['sessionId'], RUN_ID_RE) ?? checkId(o['deviceId'], DEVICE_ID_RE) ?? checkIdOrNull(o['repoKey'], REPO_KEY_RE) ?? checkIdOrNull(o['remoteKey'], REPO_KEY_RE) ?? checkId(o['wsKey'], REPO_KEY_RE);
   if (bad !== null) return bad;
   if (!(o['leaseId'] as string).startsWith(`${o['runId'] as string}-`)) return 'id';
+  // §4.3 (revision 5): `repoKey` may be null (before `run:ready`, a shallow clone, a non-git workspace); `wsKey`
+  // never is, because it is the key the run always has and the directory the fence's safety proof runs in.
+  if (o['hostKey'] !== undefined && (!isStr(o['hostKey']) || !HOST_KEY_RE.test(o['hostKey']))) return 'id';
   for (const k of ['label', 'reason60', 'stage', 'issuedAt', 'expiresAt', 'renewedAt'] as const) if (!isStr(o[k])) return 'shape';
   if (!oneOf(LEASE_TYPES)(o['type']) || !isBool(o['truncated']) || !isCount(o['step'])) return 'shape';
   if (!isOidOrNull(o['head']) || !isBranchOrNull(o['branch'])) return 'id'; // review #36
@@ -489,10 +492,15 @@ function locationMatches(kind: RecordKind, o: JsonObject, ctx: ParseContext): bo
       const claim = o['claim'];
       const claimDevice = isJsonObject(claim) ? claim['deviceId'] : ctx.deviceId; // + re-review (3): claim.deviceId is bound too
       if (o['deviceId'] !== ctx.deviceId || stampDevice !== ctx.deviceId || claimDevice !== ctx.deviceId) return false;
-      // §4.3 (revision 4): the lease's own `keyDir(repoKey ?? wsKey)` must equal the directory it sits in, or a peer
-      // could park a lease for MY repo under a key nobody folds — invisible to the fence that is supposed to see it.
+      // §3.1 / §4.3 (revision 5): a lease with a `repoKey` is written under BOTH `keyDir(repoKey)` and
+      // `keyDir(wsKey)`, so the reader accepts EITHER and nothing else; a lease whose `repoKey` is null is still
+      // bound to the single `keyDir(wsKey)`. Both keys are inside the record, so a file still cannot be planted
+      // under an unrelated key directory — invisible to the fence that is supposed to see it.
       if (ctx.keyDir !== undefined) {
         const repoKey = o['repoKey'];
+        const wsKey = o['wsKey'];
+        if (typeof wsKey !== 'string') return false;
+        if (keyDir(wsKey) === ctx.keyDir) return true;
         return typeof repoKey === 'string' && keyDir(repoKey) === ctx.keyDir;
       }
       return true;
