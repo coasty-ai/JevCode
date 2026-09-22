@@ -26,7 +26,7 @@ and was not reproduced when the machine was quieter.
 
 ## 2. Ctrl-C before raw mode is a default SIGINT death with no epilogue
 
-Under a load average above 50 (this machine while ~20 agents ran), `\x03` sent 1.4 s after the
+Under a load average above 50 (the reference machine while ~20 agents ran), `\x03` sent 1.4 s after the
 first frame sometimes arrived while the pty was still in cooked mode (the byte was echoed as
 `^C`). The kernel delivered SIGINT, Node's default handler killed the process (expect's `wait`
 reports `CHILDKILLED SIGINT` with exit status 0), the cursor was restored by Ink's exit hook but

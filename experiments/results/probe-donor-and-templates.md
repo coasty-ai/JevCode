@@ -554,7 +554,7 @@ No question asks Jev to count or compute; "so that all `tests` pass" asks for a 
   vs saved 0.99 / 0.42 / 0.99 (the `possible_change` hedge moved 0.09, consistent with REPORT §6 mid-band noise).
 
 **Literature.** The file cites no external literature with URLs; its only citations are to the internal
-`/Users/prateekjannu/Documents/jev-research/REPORT.md` (sections checked above) and `anchor-probe.md`. The one external
+`<research-notes>/REPORT.md` (sections checked above) and `anchor-probe.md`. The one external
 concept used, the "plastic surgery hypothesis" invoked in the `swebench_donor_coverage.py` docstring, was uncited; it is
 Barr, Brun, Devanbu, Harman, Sarro, "The Plastic Surgery Hypothesis", FSE 2014, DOI 10.1145/2635868.2635898 (ACM page
 returned HTTP 403 on 2026-09-20; the author's copy https://earlbarr.com/publications/psh.pdf was fetched, 877 KB PDF).

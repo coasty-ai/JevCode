@@ -2,8 +2,8 @@
  * Phase 4 — apply, resume, undo (docs/IMPORT-DESIGN.md §4.7, §4.8.2, §4.9; §6 group F).
  *
  * Everything here runs over the injected `ImportWriteFs`: **`src/import/**` performs no writes of its
- * own** (§0, the one-sentence contract), so the harness can land the whole engine without touching a
- * file the TUI session owns. The four properties this module exists to hold:
+ * own** (§0, the one-sentence contract), so every write is one the caller granted. The four properties
+ * this module exists to hold:
  *
  *   - **[G1.1] the plan is what gets applied.** Every source is re-`stat`ed and re-hashed immediately
  *     before its destination is rendered; a mismatch demotes the row and writes nothing (§4.7.2).

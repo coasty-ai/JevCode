@@ -8,7 +8,7 @@ On the 22 cheap-test tasks (QuixBugs 10 + ladder 12) llm-jev beats the generator
 
 ## 1. Setup, arms run and arms not run
 
-- Worktree `/Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/llmjev-clean`, HEAD `626fc40` (`git status`: only the `node_modules` symlink untracked). No `jevcode.json` in the worktree, no `~/.config/jevcode/config.json`; the generator and decider come from `src/config/defaults.ts` (`DEFAULT_JEV_MODEL = typesafe/jev-1.13-20260917`).
+- Worktree `<repo>/.claude/worktrees/llmjev-clean`, HEAD `626fc40` (`git status`: only the `node_modules` symlink untracked). No `jevcode.json` in the worktree, no `~/.config/jevcode/config.json`; the generator and decider come from `src/config/defaults.ts` (`DEFAULT_JEV_MODEL = typesafe/jev-1.13-20260917`).
 - Condition recorded in every `summary.json`: `conditions["llm-jev"] = {mode llm-jev, generatorModel z-ai/glm-5.3-flash, deciderModel jev-1.13.0, generation: {proposer synthesizer, sampleTemperatures [0, 0.8], maxTokens 3000 (double-once on length), reasoning {effort: low}, deadlineMs 20000 / repositoryDeadlineMs 30000, servedRate $0.15/$0.5 per M}}` — the pinned §10.1 parameters, echoed by the synthesizer.
 - **`jev-off-tuned`: not run.** `src/cli/args.ts:284` has its own list `CONDITIONS = [jev-on, jev-off, jev-only, llm-jev]`, so `--conditions jev-off-tuned` exits 2 with `--conditions: expected one of jev-on|jev-off|jev-only|llm-jev, got "jev-off-tuned"` before `src/bench/conditions.ts parseConditions` (which does know the arm) is reached. All three tuned suites failed this way at 23:33:44 Z (logs `/tmp/jevonly/glm-jev-off-tuned-{quixbugs,ladder,swebench}.log`), $0 spent. Running it needs a one-line CLI change in a follow-up commit; this report does not make it.
 - **`llm-sieve`: not run** (as instructed): `src/synth/index.ts:322` throws `ConfigError("synthesizer: mode \"llm-sieve\" is not wired in this build")`.
@@ -234,7 +234,7 @@ Run ids (`~/.jevcode/runs/<runId>/{transcript.log, steps.jsonl, generator.jsonl,
 - llm-jev SWE re-run (benchId 20260921-233627-abc756, 23:36:27 → 23:46:04 Z): sympy__sympy-17139 `20260921-233639-bagbxrvr`, django__django-15128 `20260921-233657-y2aeuf5o`, django__django-15315 `20260921-234432-rpywkq2v`
 - Baseline run ids: `experiments/results/glm-jev-off-baseline.md`.
 
-Exact commands (all from the worktree; `<main>` = `/Users/prateekjannu/Documents/vscode/JevCode`; the six head-to-head suites were chained sequentially by `/tmp/jevonly/h2h-driver.sh`, logs `/tmp/jevonly/<out>.log` ending in `exit N`):
+Exact commands (all from the worktree; `<main>` = `<repo>`; the six head-to-head suites were chained sequentially by `/tmp/jevonly/h2h-driver.sh`, logs `/tmp/jevonly/<out>.log` ending in `exit N`):
 
 ```
 cd <main>/.claude/worktrees/llmjev-clean

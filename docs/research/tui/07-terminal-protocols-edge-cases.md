@@ -2,7 +2,7 @@
 
 Research note for the interactive (chat-style) JevCode TUI. Written 2026-09-20. All web sources carry
 their URL and the fetch date; local sources are paths under the repo (`node_modules/ink` is Ink 7.1.1,
-`package.json` `"version": "7.1.1"`). Measurements were made on this machine (macOS 26.6.2, Apple Silicon,
+`package.json` `"version": "7.1.1"`). Measurements were made on the reference machine (macOS 26.6.2, Apple Silicon,
 Node v22.23.2, ICU 78.2 / Unicode 17.0 per `process.versions`) with a Python `pty.fork()` driver at
 `/tmp/jevtui/pty_drive2.py` (millisecond-accurate `select` pump) because the Bash tool's stdin is a socket
 and macOS `script(1)` refuses it (`tcgetattr/ioctl: Operation not supported on socket`). `tmux` is not

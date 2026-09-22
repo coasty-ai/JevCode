@@ -52,7 +52,7 @@ export function isComplete(completion: number | null, threshold: number): boolea
  * Today (`routers: 'off'`, every mode but llm-jev) the decision is Jev's Noul against the threshold. With
  * routers on it is demoted to recorded-only on exactly the steps where the harness has the fact itself — a step
  * carrying `ProposalEvidence`, which is what `isCompleteByFact()` reads. In `jev-on` that is **zero steps
- * today**, so I2 holds trivially and nothing changes until the fast path (slot C, route R9) commits its first
+ * today**, so I2 holds trivially and nothing changes until the fast path (route R9) commits its first
  * evidence-bearing proposal; from then on a run completes on the code fact where today it waits for a Noul.
  *
  * Pure, so the engine seam (`Engine.completeAfter`, `src/loop/engine.ts`, §7.5) is a one-line call. Returning

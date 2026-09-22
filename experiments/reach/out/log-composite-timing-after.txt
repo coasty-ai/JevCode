@@ -1,5 +1,0 @@
-corpus 400 files loaded in 2329 ms; site sympy/core/function.py:510: return Float(self._imp_(*self.args), prec)
-signature units: 0 in 1223 ms
-donor-body units: 48 in 3045 ms
-
-

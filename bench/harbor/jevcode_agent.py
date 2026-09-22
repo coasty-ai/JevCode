@@ -11,7 +11,7 @@ Usage (from the repo root, see README):
         -a bench.harbor.jevcode_agent:JevCodeAgent -m anthropic/claude-sonnet-5 \
         --ae ANTHROPIC_API_KEY=... --ae JEV_API_KEY=... --ak max_wall=7h30m --ak spend_cap_usd=5
 
-Only ``harbor.*`` and the standard library are imported. Untested on this machine (Harbor needs
+Only ``harbor.*`` and the standard library are imported. Untested on the reference machine (Harbor needs
 Python >= 3.12); kept faithful to the documented BaseInstalledAgent API fetched 2026-09-19.
 """
 

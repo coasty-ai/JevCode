@@ -193,7 +193,7 @@ Judgments decided by code thresholds on Jev's numbers (each is design-sanctioned
 
 None is a program-name key; all were set by looking at the failing programs of the very benchmark whose score is reported. The quixbugs-4-overfit results (3/3) that exercise them are therefore in-sample.
 
-### 4.4 REPORT.md rules (`~/Documents/jev-research/REPORT.md` §14) against the code
+### 4.4 REPORT.md rules (the private research report, §14) against the code
 
 | rule | status | evidence |
 | --- | --- | --- |
@@ -325,7 +325,7 @@ grep -n -E "evidence|override|skip|fact|verdict =" src/loop/stages/risk.ts
 grep -n -E "singleFile|files\.length|=== 1|skip|chunk|CHUNK|254|250" src/synth/localize/index.ts
 grep -n -E "length === 1|length <= 1|one goal|skip" src/synth/search/goals.ts
 grep -n -E "ctx\.ask\(|askArbitrate|questions\[|GENUINE_FIX_ID\]|generalKey|general_" src/synth/search/guard.ts
-grep -n -i -E "rule|must|never|always|batch|escape|Noul|threshold|0\.5|dated|pin|count|compute|definition|example" ~/Documents/jev-research/REPORT.md
+grep -n -i -E "rule|must|never|always|batch|escape|Noul|threshold|0\.5|dated|pin|count|compute|definition|example" <research-report>
 
 # 5. secrets
 grep -rn --include='*.ts' -E "env\b|process\.env|API_KEY|apiKey|scrub|allowlist|ALLOW|PATH" src/sandbox | grep -v "\.test\.ts"

@@ -11,7 +11,7 @@ Every claim below carries its source and the fetch date. Sources used:
 - npm registry JSON: `https://registry.npmjs.org/@anthropic-ai/claude-code` and `/latest`, plus the 2.1.278 tarball and the
   `@anthropic-ai/claude-code-darwin-arm64` metadata, 2026-09-20.
 - The upstream `CHANGELOG.md`: `https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md` (7,158 lines, 2026-09-20).
-- The native binary installed on this machine, `~/.local/share/claude/versions/2.1.267` (200,489,184 bytes), inspected with
+- The native binary installed on the reference machine, `~/.local/share/claude/versions/2.1.267` (200,489,184 bytes), inspected with
   `file`, `codesign -dv`, `strings -n 3` (951,011 printable runs) and by executing it offline (`--version`, `--help`, `doctor`,
   and an onboarding first frame in a pty with `CLAUDE_CONFIG_DIR` pointed at a throwaway directory), 2026-09-20. Quotes of
   minified source text from the binary are marked "binary strings".
@@ -139,7 +139,7 @@ throwaway `CLAUDE_CONFIG_DIR` prints `Search: OK (bundled)`; `docs:troubleshooti
   `Fix:` lines. `--bare` "skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and
   CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1" (`claude --help`, 2.1.267, run 2026-09-20).
 
-### 1.6 Startup measurements (this machine: Apple Silicon, macOS 26, Node 22.23.2; 2026-09-20)
+### 1.6 Startup measurements (the reference machine: Apple Silicon, macOS 26, Node 22.23.2; 2026-09-20)
 
 | Measurement | Result | How |
 | --- | --- | --- |
@@ -212,7 +212,7 @@ still evidence that a 200 MB Bun binary is not faster to first frame than JevCod
   "`NO_FLICKER` mode", e.g. "Added focus view toggle (`Ctrl+O`) in `NO_FLICKER` mode"; 2.1.88 was published 2026-03-30);
   `CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN=1` forces classic and "Takes precedence over `CLAUDE_CODE_NO_FLICKER` and the `tui` setting".
   A startup dialog offers the switch and "stops offering after it has shown the dialog on three launches"; after two crashed starts
-  CC "keeps using the classic renderer" and prints `Claude Code's fullscreen renderer has repeatedly failed to start on this machine`.
+  CC "keeps using the classic renderer" and prints `Claude Code's fullscreen renderer has repeatedly failed to start on the reference machine`.
 - Synchronized output: "Claude Code probes the terminal for synchronized-output support at startup and uses it when the terminal
   reports it." `CLAUDE_CODE_FORCE_SYNC_OUTPUT=1` "force-enable DEC private mode 2026 synchronized output when your terminal supports
   it but is not auto-detected … Has no effect under tmux." "tmux releases through the 3.6 series don't implement synchronized output".
@@ -767,7 +767,7 @@ auto-updates, telemetry, error reporting, the `/feedback` command … release no
   removing `<Static>`). The dev.to "claude-code-kit" article is dated 2026-04-01 and is not relied on.
 - The exact OSC sequence per notification channel (see Open question 7); functions `notifyITerm2`/`notifyKitty`/`notifyGhostty`/`notifyBell`
   exist but their payloads are not visible as literals.
-- Comments by Anthropic staff on issue #769 (GitHub API rate-limited anonymously; `gh` not installed on this machine; the WebFetch rendering
+- Comments by Anthropic staff on issue #769 (GitHub API rate-limited anonymously; `gh` not installed on the reference machine; the WebFetch rendering
   of the issue page showed no comments). The renderer-rewrite quotes come from the HN thread instead.
 - That `CLAUDE_CODE_NO_FLICKER` shipped in exactly 2.1.88 (blog claim): the CHANGELOG mentions "`NO_FLICKER` mode" in the 2.1.89–2.1.92 range
   and 2.1.88 has no CHANGELOG section; the registry dates 2.1.88 to 2026-03-30.

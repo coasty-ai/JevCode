@@ -7,7 +7,7 @@ Live measurement answering two questions the verification (`experiments/results/
 - **C1c** — both-solved medians and the per-task wall-ratio distribution are printed beside every pooled median, with a solved-and-self-terminated column.
 - **C1d / C1e** — every dollar figure carries its estimated and table-rated share.
 
-Everything ran from the frozen worktree `/Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/llmjev-v2` at HEAD `066816f` (`git status`: only the `node_modules` symlink untracked, unchanged before and after), jevcode **0.3.0** in every `run.json`, results written under the main checkout by absolute `--out`. No source was edited and nothing was committed. Every command was
+Everything ran from the frozen worktree `<repo>/.claude/worktrees/llmjev-v2` at HEAD `066816f` (`git status`: only the `node_modules` symlink untracked, unchanged before and after), jevcode **0.3.0** in every `run.json`, results written under the main checkout by absolute `--out`. No source was edited and nothing was committed. Every command was
 `env -u ANTHROPIC_API_KEY node --env-file=<main>/.env node_modules/.bin/tsx src/cli/main.tsx bench --live …` (`NODE_OPTIONS=--max-old-space-size=8192` added for SWE-bench); no key appears in this document or in the logs under `/tmp/jevonly/`. Generator `openrouter z-ai/glm-5.3-flash` throughout; Jev `typesafe/jev-1.13-20260917` (wire id `jev-1.13.0`) on the `llm-jev` arms only. **Total spend $1.6752** (cap $6).
 
 ## 0. Verdict
@@ -35,7 +35,7 @@ Arms ran strictly one after another, suites sequentially within an arm (QuixBugs
 ### 1.1 Exact commands
 
 ```
-cd /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/llmjev-v2
+cd <repo>/.claude/worktrees/llmjev-v2
 
 # arm 1 — same-build plain baseline on the original 28
 env -u ANTHROPIC_API_KEY node --env-file=<main>/.env node_modules/.bin/tsx src/cli/main.tsx bench \

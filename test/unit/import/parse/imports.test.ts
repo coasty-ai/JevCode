@@ -20,7 +20,7 @@ function depsOf(files: Readonly<Record<string, string>>) {
 }
 
 describe('resolveImports — §6 row 32', () => {
-  it('inlines the real one-liner: CoArena/CLAUDE.md is exactly `@AGENTS.md`', async () => {
+  it('inlines a one-line CLAUDE.md whose whole body is `@AGENTS.md`', async () => {
     const { deps } = depsOf({ '/repo/AGENTS.md': '# Conventions\n\nUse pnpm.\n' });
     const r = await resolveImports('@AGENTS.md\n', { file: '/repo/CLAUDE.md', root: ROOT, deps });
     expect(r.resolved).toBe(1);

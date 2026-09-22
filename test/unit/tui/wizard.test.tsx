@@ -6,7 +6,7 @@
  * wizard mid-run; every row ≤ columns cells.
  */
 // Load-sensitive REAL-RENDERER tests (Ink on a real event loop): under a shared-machine load spike a single case can miss its
-// frame window and fail while passing alone (round-4/5 owner's passes, harness session 2026-09-22). Every top-level suite
+// frame window and fail while passing alone (observed on a loaded machine). Every top-level suite
 // carries `{ retry: 1 }`: one retry absorbs a hiccup; a real regression still fails twice and stays red.
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';

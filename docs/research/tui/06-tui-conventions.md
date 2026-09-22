@@ -519,7 +519,7 @@ branch (read 2026-09-20), so the reply would be delivered as a raw string; test 
   `border: rounded` (rounded, single, double, hidden, bold), `nerdFontsVersion: ""` (“empty disables
   icons”); k9s `noIcons` “Toggles icons display as not all terminal support these chars”
   (all 2026-09-20). Ink `borderStyle="classic"` is the ASCII border (readme, 2026-09-20).
-- Locale: JevCode's sandbox passes `LANG` through (README “Sandbox guarantees”), and this machine
+- Locale: JevCode's sandbox passes `LANG` through (README “Sandbox guarantees”), and the reference machine
   reports `LANG=C.UTF-8`; the composite rule should be `unicode = !(TERM==='linux') && /utf-?8/i.test(LC_ALL||LC_CTYPE||LANG||'')`
   on POSIX, the is-unicode-supported allow-list on Windows, overridable with `--ascii`/`JEVCODE_ASCII=1`.
 

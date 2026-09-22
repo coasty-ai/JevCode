@@ -8,7 +8,7 @@ llm-jev v2 passes **28/28** (Wilson 95 % [88 %, 100 %]) against the baseline's 1
 
 ## 1. Setup, arms run and arms not run
 
-- Worktree `/Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/llmjev-v2`, HEAD `066816f`; `node_modules` symlinked to the main checkout. No `jevcode.json` in the worktree, no `~/.config/jevcode/config.json`; generator and decider from `src/config/defaults.ts`.
+- Worktree `<repo>/.claude/worktrees/llmjev-v2`, HEAD `066816f`; `node_modules` symlinked to the main checkout. No `jevcode.json` in the worktree, no `~/.config/jevcode/config.json`; generator and decider from `src/config/defaults.ts`.
 - `llm-jev` condition recorded in every `summary.json`: `{mode llm-jev, generatorModel z-ai/glm-5.3-flash, deciderModel jev-1.13.0, generation: {proposer synthesizer, sampleTemperatures [0, 0.8], maxTokens 3000 (double-once), reasoning {effort: low}, deadlineMs 20000 / repositoryDeadlineMs 30000, servedRate $0.15/$0.5 per M, synthesizer: {sampleDeadline {min 10 s, max 20 s, repository 30 s}, sampleTemperature {first 0, rest 0.8, feedbackFirst 0.6, feedbackRest 1}}}` — the pinned §10.1 parameters, unchanged from v1.
 - `jev-off-tuned` condition recorded: `{mode jev-off, generatorModel z-ai/glm-5.3-flash, deciderModel null, maxTokens 1500, generation: {proposer generator, maxTokens 1500, reasoning {effort: low}, deadlineMs 20000 / repositoryDeadlineMs 30000, lengthHandling double-once, servedRate …}}`; every record carries `tuned: {timeouts, doubled}` (46 dropped calls, 0 doublings over the 28 tasks) and `jevRequests 0`. A dropped call ends its step with `error generator_response: … call dropped at the provider's deadline (stopReason timeout); not re-asked` and three consecutive drops end the run (`stopReason error`: QuixBugs `lis`, SWE `django-15315` — the latter after its fix had landed, so it still passes).
 - **`llm-sieve`: not run** — `src/synth/index.ts` throws `ConfigError("synthesizer: mode \"llm-sieve\" is not wired in this build")`; criterion 5a stays not evaluable.
@@ -217,7 +217,7 @@ Spend (`summary.json spentUsd`): smoke $0.0019; llm-jev v2 QuixBugs $0.0263 (GLM
 
 Bench ids and windows (UTC, 2026-09-22): smoke `20260922-013456-d656f5` 01:34:56 → 01:36; llm-jev QuixBugs `20260922-013715-13bec2` 01:37:15 → 01:40:54; ladder `20260922-014054-a36b9b` 01:40:54 → 01:46:20; SWE `20260922-014620-81f53b` 01:46:20 → 01:55:12; tuned QuixBugs `20260922-015512-0cce6a` 01:55:12 → 01:58:14; ladder `20260922-015814-0d4f1a` 01:58:14 → 02:06:58; SWE `20260922-020658-7ab68d` 02:06:58 → 02:21:31. Run ids per task are in the §4 tables (`~/.jevcode/runs/<runId>/{transcript.log, steps.jsonl, generator.jsonl, jev.jsonl, decisions.jsonl, model_patch.diff}`); baseline and v1 run ids are in their reports. RSS samples: `/tmp/jevonly/{llm-jev-v2,glm-jev-off-tuned}-swebench.rss` (epoch, max single-process RSS KB, summed RSS KB, every 10 s).
 
-Exact commands (`<main>` = `/Users/prateekjannu/Documents/vscode/JevCode`; the six head-to-head suites were chained by `/tmp/jevonly/h2h-v2-driver.sh`, logs `/tmp/jevonly/<out>.log` ending in `exit 0`):
+Exact commands (`<main>` = `<repo>`; the six head-to-head suites were chained by `/tmp/jevonly/h2h-v2-driver.sh`, logs `/tmp/jevonly/<out>.log` ending in `exit 0`):
 
 ```
 cd <main>/.claude/worktrees/llmjev-v2

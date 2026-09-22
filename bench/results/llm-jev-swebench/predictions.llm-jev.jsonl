@@ -1,6 +1,0 @@
-{"instance_id":"django__django-15128","model_name_or_path":"jevcode-llm-jev-z-ai__glm-5.3-flash","model_patch":""}
-{"instance_id":"django__django-15315","model_name_or_path":"jevcode-llm-jev-z-ai__glm-5.3-flash","model_patch":""}
-{"instance_id":"sympy__sympy-11618","model_name_or_path":"jevcode-llm-jev-z-ai__glm-5.3-flash","model_patch":""}
-{"instance_id":"sympy__sympy-15345","model_name_or_path":"jevcode-llm-jev-z-ai__glm-5.3-flash","model_patch":"diff --git a/sympy/printing/mathematica.py b/sympy/printing/mathematica.py\nindex ea7e3a2d94..dd10d86c2f 100644\n--- a/sympy/printing/mathematica.py\n+++ b/sympy/printing/mathematica.py\n@@ -100,6 +100,7 @@ def _print_Function(self, expr):\n                 if cond(*expr.args):\n                     return \"%s[%s]\" % (mfunc, self.stringify(expr.args, \", \"))\n         return expr.func.__name__ + \"[%s]\" % self.stringify(expr.args, \", \")\n+    _print_Max = _print_Function\n \n     def _print_Integral(self, expr):\n         if len(expr.variables) == 1 and not expr.limits[0][1:]:\n"}
-{"instance_id":"sympy__sympy-17139","model_name_or_path":"jevcode-llm-jev-z-ai__glm-5.3-flash","model_patch":""}
-{"instance_id":"sympy__sympy-19954","model_name_or_path":"jevcode-llm-jev-z-ai__glm-5.3-flash","model_patch":""}

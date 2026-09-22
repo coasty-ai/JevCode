@@ -5,6 +5,7 @@
  * Appends one JSON line per Jev request to experiments/results/probe-selection.raw.jsonl.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { createJevDecider } from '../../src/jev/client.ts';
 import { choice, contextNoul, noul } from '../../src/jev/questions.ts';
 import type { Json, Question } from '../../src/core/types.ts';
@@ -14,7 +15,7 @@ import { buildPool, buildSet, permuteSet, type CandidatePool, type CandidateSet 
 const args = process.argv.slice(2);
 const phase = args[0] ?? 'main';
 const flag = (n: string): string | undefined => { const i = args.indexOf(`--${n}`); return i >= 0 ? args[i + 1] : undefined; };
-const RESULTS = '/Users/prateekjannu/Documents/vscode/JevCode/experiments/results';
+const RESULTS = fileURLToPath(new URL('../results', import.meta.url));
 const RAW = `${RESULTS}/probe-selection.raw.jsonl`;
 const POOLS = '/tmp/jevonly/pools.json';
 const CAP = Number(flag('cap') ?? '1.00');

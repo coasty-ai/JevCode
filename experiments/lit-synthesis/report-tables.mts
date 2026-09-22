@@ -1,6 +1,7 @@
 /** Renders the Markdown tables for lit-guided-synthesis.md from results/slot-probe-b{1,3,5}.json. Usage: tsx report-tables.mts */
 import { readFileSync, existsSync } from 'node:fs';
-const DIR = '/Users/prateekjannu/Documents/vscode/JevCode/experiments/lit-synthesis/results';
+import { fileURLToPath } from 'node:url';
+const DIR = fileURLToPath(new URL('./results', import.meta.url));
 type Beam = { holes: number; requests: number; beam: string[]; truthRank: number; passRank: number; logpTruth: number | null; testsGoldOk: boolean };
 type Slot = { i: number; cls: string; truth: string; nOptions: number; covered: boolean; cloze: { top1: boolean; rank: number; p: number; escape: number }; prefix: { top1: boolean; rank: number; p: number; escape: number } };
 type Prog = { program: string; lines: number; oracleTests: number; totalTests: number; goldPassesAll: boolean; buggy: string; fixed: string; kind: { truth: string; pick: string; p: number; ok: boolean }; wrongToken: { truth: string[]; pick: string; p: number; ok: boolean; nTokens: number }; shapeSame: boolean; slots: Slot[]; s2: Beam | null; s1: Beam | null; costUsd: number; requests: number };

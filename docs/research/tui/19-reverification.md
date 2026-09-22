@@ -10,7 +10,7 @@ misstates them (the fix is a rewording, not a redesign).
 Tooling used today: `curl` against `raw.githubusercontent.com`, `api.github.com`, `registry.npmjs.org`,
 `code.claude.com`, `devblogs.microsoft.com`, `can-i-use-terminal.github.io`; a Python `pty.fork` driver; the
 installed `ink@7.1.1`, `terminal-size@4.0.1`; Node v22.23.2 (`node --version`) and its bundled npm 10.9.8
-(`npm --version`), both read on this machine 2026-09-20. `tmux` and `brew` are absent (`command not found`).
+(`npm --version`), both read on the reference machine 2026-09-20. `tmux` and `brew` are absent (`command not found`).
 
 ---
 
@@ -27,7 +27,7 @@ installed `ink@7.1.1`, `terminal-size@4.0.1`; Node v22.23.2 (`node --version`) a
 | 7 | Heuristic secret filter (`sk-…`, `ghp_…`) is "future work" | **REFUTED** | `src/core/redact.ts` `patternRedact` already covers `sk-or-v1-`, `sk-ant-`, `sk-(proj-\|live_\|test_)?`, `AIza`, `gh[pousr]_`, `github_pat_`, `authorization: bearer`, `x-api-key:` (tested). Not covered: AWS `AKIA…`, PEM, JWT. File 16 §1.1 already records this. |
 | 8 | OSC 52 in "VS Code 1.93 (June 2024 addon)" | **REFUTED** | VS Code **1.91** ("June 2024 (version 1.91)", dated 2024-07-03) added OSC 52 via `@xterm/addon-clipboard@0.2.0-beta.4` (PR #214262 merged 2024-06-06). 1.93 is the August 2024 release (2024-09-05) and its notes never mention OSC 52. The "1.93" came from can-i-use-terminal, which is wrong. |
 | 9 | xterm.js #5600 2026-01-10; VS Code 1.109 (2026-02-04) `enableKittyKeyboardProtocol` default true; WT Preview 1.25 (2026-03-05) | **PARTIALLY REFUTED** | PR and both dates VERIFIED. **Default true at 1.109 is REFUTED**: tag `1.109.0` ships `default: false, tags: ['experimental','advanced'], experiment: { mode: 'auto' }`; the default is `true` from tag `1.110.1` onward (checked 1.110.1–1.117.0 and `main`). |
-| 10 | Trusted publishing needs npm ≥ 11.5.1, Node ≥ 22.14 | **VERIFIED** + material addendum | docs: "requires npm CLI version 11.5.1 or later and Node version 22.14.0 or higher". **No Node 22.x release bundles npm 11**: 22.22.3 → npm 10.9.8, and this machine's 22.23.2 reports npm 10.9.8. First Node to bundle npm 11.5.1 is **24.5.0 (2025-07-31)**. npm 11.5.1 `engines`: `^20.17.0 \|\| >=22.9.0`, so `npm i -g npm@11` works on 22.23.2. |
+| 10 | Trusted publishing needs npm ≥ 11.5.1, Node ≥ 22.14 | **VERIFIED** + material addendum | docs: "requires npm CLI version 11.5.1 or later and Node version 22.14.0 or higher". **No Node 22.x release bundles npm 11**: 22.22.3 → npm 10.9.8, and the reference machine's 22.23.2 reports npm 10.9.8. First Node to bundle npm 11.5.1 is **24.5.0 (2025-07-31)**. npm 11.5.1 `engines`: `^20.17.0 \|\| >=22.9.0`, so `npm i -g npm@11` works on 22.23.2. |
 | 11 | tmux 3.7 DECRQM 2026 / synchronized output / `escape-time` 500 ms while requests pending | **VERIFIED** against CHANGES + 3.7 source; **UNVERIFIED** locally | All three items are in "CHANGES FROM 3.6b TO 3.7"; 3.7 released 2026-06-26. The 500 ms is a *floor* applied to `escape-time` while queries are pending (`if (delay < 500) delay = 500;`, `tty-keys.c`) and `INPUT_REQUEST_TIMEOUT 500` (`input.c`). 3.7b fixed a sync-update redraw regression. No local install possible (no tmux, no brew). |
 | 12 | Notifications: review after ~6 s idle; run end after ~60 s | **VERIFIED** with clarification | docs:hooks: `permission_prompt` "once you haven't typed for about six seconds. The timer starts when the permission prompt appears, and each keystroke defers it" (an idle gate with debounce semantics, not a fixed delay); `idle_prompt` "about 60 seconds after Claude finishes responding, and only if you haven't typed since". |
 
@@ -328,7 +328,7 @@ protocol (CSI =|?|>|< u)", author Tyriar, "merged commit 91c4761 into xtermjs:ma
 **VS Code 1.109** (`https://raw.githubusercontent.com/microsoft/vscode-docs/main/release-notes/v1_109.md`, 2026-09-20):
 `Date: 2026-02-04`, heading `# January 2026 (version 1.109)`; highlights bullet "Kitty keyboard support is now available
 to all users"; Terminal section: "**Setting**: `setting(terminal.integrated.enableKittyKeyboardProtocol)`" and "The
-[Kitty keyboard protocol](…) has been implemented and will be rolling out to stable this release." and "This requires
+Kitty keyboard protocol (link elided in the note) has been implemented and will be rolling out to stable this release." and "This requires
 the program running in the terminal to support the protocol and request to enable it when it runs. A big benefit you
 will see immediately is shift+enter should work in some agentic CLIs without the need to run something like
 `/terminalSetup`." Date **VERIFIED**; the notes never say "default true".
@@ -475,7 +475,7 @@ defers it until the composer has been idle ~1 s), restart on any key, fire at ~6
 
 ---
 
-## 13. Measurements made today (all 2026-09-20, this machine: macOS Darwin 25.6.0, Node v22.23.2, npm 10.9.8)
+## 13. Measurements made today (all 2026-09-20, the reference machine: macOS Darwin 25.6.0, Node v22.23.2, npm 10.9.8)
 
 | What | Result | How |
 | --- | --- | --- |
@@ -520,7 +520,7 @@ defers it until the composer has been idle ~1 s), restart on any key, fire at ~6
 | X6 | Publish with the current `package.json` | `"private": true` blocks it; `files` ships `docs/` and a 2.5 MB map; no LICENSE file |
 | X7 | Ship the §1 layout (live 2 + pane 12 + review 16 + queue 3 + composer 6 + status 1) | 40–41 rows on a 22-row budget → Ink overflow → `ESC[2J` per keystroke (08 §11: 29,765 B) |
 | X8 | Read `process.stdout.columns` in composer/rule code | 0 in a 0×0 pty; Ink's helper already falls back to `COLUMNS`/`LINES` then 80×24 |
-| X9 | Build tmux from source on this machine to "confirm locally" | No libevent/ncurses headers; not a project dependency; CHANGES + tagged source are the primary record |
+| X9 | Build tmux from source on the reference machine to "confirm locally" | No libevent/ncurses headers; not a project dependency; CHANGES + tagged source are the primary record |
 | X10 | Model the 6 s notification as a fixed delay | It is an idle gate deferred by keystrokes in terminal sessions |
 | X11 | Trust 2026 inside tmux 3.7/3.7a | 3.7b's "end of a synchronized update again triggers a redraw" fix |
 

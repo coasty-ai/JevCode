@@ -4,7 +4,7 @@ Research for the JevCode interactive TUI (prompt composer, slash commands, sessi
 prompts, Jev decisions view). Date of all reads and fetches: **2026-09-20**. Author: research agent.
 
 **Method.** Every Ink claim below was read from the *installed* package at
-`/Users/prateekjannu/Documents/vscode/JevCode/node_modules/ink/build/` (ink 7.1.1, `package.json` `"version": "7.1.1"`,
+`<repo>/node_modules/ink/build/` (ink 7.1.1, `package.json` `"version": "7.1.1"`,
 `"engines": {"node": ">=22"}`), cited as `file.js:line`. Behaviour that could not be settled by reading was probed by
 running the installed parser modules directly and by rendering real Ink trees against (a) fake TTY streams with exact
 geometry and byte counting and (b) a real pty created with macOS `script -q /dev/null sh -c 'stty rows 24 cols 80; node …'`.

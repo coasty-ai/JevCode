@@ -803,7 +803,7 @@ async function buildItem(f: Found, spec: SourceSpec, ctx: BuildContext): Promise
 // ---------------------------------------------------------------------------------------
 
 /**
- * §4.2: discover every artefact the atlas knows about on this machine. Read-only, bounded, and
+ * §4.2: discover every artefact the atlas knows about on the local machine. Read-only, bounded, and
  * total: a cap, an `EACCES` or a malformed file is a notice or a `skip:*`, never an exception and
  * never an early return that loses the rows found so far.
  */

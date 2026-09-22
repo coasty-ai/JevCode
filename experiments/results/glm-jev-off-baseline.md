@@ -8,7 +8,7 @@ was changed; nothing was committed.
 
 ## Setup (verified, not assumed)
 
-- Frozen worktree `/Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/baseline-clean`, HEAD `214bf55`
+- Frozen worktree `<repo>/.claude/worktrees/baseline-clean`, HEAD `214bf55`
   (includes `2a92d0b`: default generator OpenRouter `z-ai/glm-5.3-flash`); `node_modules` symlinked to the main checkout.
   No `jevcode.json` in the worktree and no `~/.config/jevcode/config.json`, so the generator came from `src/config/defaults.ts`.
 - Every command: `env -u ANTHROPIC_API_KEY node --env-file=<main>/.env node_modules/.bin/tsx src/cli/main.tsx bench --live …`
@@ -43,40 +43,40 @@ was changed; nothing was committed.
 Run 1 — QuixBugs 10 (`bench/results/glm-jev-off-quixbugs`, benchId `20260921-175447-e8d6f6`, 17:54:47Z → 18:06:56Z, 12 min):
 
 ```
-cd /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/baseline-clean
-env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env node_modules/.bin/tsx src/cli/main.tsx bench \
+cd <repo>/.claude/worktrees/baseline-clean
+env -u ANTHROPIC_API_KEY node --env-file=<repo>/.env node_modules/.bin/tsx src/cli/main.tsx bench \
   --suite quixbugs --conditions jev-off --live \
   --task-id bitcount,bucketsort,detect_cycle,find_in_sorted,gcd,kth,lis,mergesort,shortest_path_length,wrap \
   --concurrency 4 --max-steps 12 --max-wall 8m --spend-cap 0.6 --task-spend-cap 0.06 \
-  --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/glm-jev-off-quixbugs
+  --out <repo>/bench/results/glm-jev-off-quixbugs
 # log /tmp/jevonly/glm-off-quixbugs.log ("exit 0")
 ```
 
 Run 2 — ladder short tier, all 12 (`bench/results/glm-jev-off-ladder`, benchId `20260921-180729-566772`, 18:07:29Z → 18:32:17Z, 25 min):
 
 ```
-env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env node_modules/.bin/tsx src/cli/main.tsx bench \
+env -u ANTHROPIC_API_KEY node --env-file=<repo>/.env node_modules/.bin/tsx src/cli/main.tsx bench \
   --suite ladder --conditions jev-off --live --tasks 12 \
   --concurrency 3 --max-steps 25 --max-wall 12m --spend-cap 1.0 --task-spend-cap 0.1 \
-  --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/glm-jev-off-ladder
+  --out <repo>/bench/results/glm-jev-off-ladder
 # log /tmp/jevonly/glm-off-ladder.log ("exit 0"); --tasks 12 selects exactly the twelve short-tier tasks (src/bench/ladder/tasks.ts)
 ```
 
 Run 3 — SWE-bench Verified, 6 issue-oracle-valid instances (`bench/results/glm-jev-off-swebench`, benchId `20260921-183246-5e025c`, 18:32:46Z → 19:33:06Z, 60 min):
 
 ```
-NODE_OPTIONS=--max-old-space-size=8192 env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env node_modules/.bin/tsx src/cli/main.tsx bench \
+NODE_OPTIONS=--max-old-space-size=8192 env -u ANTHROPIC_API_KEY node --env-file=<repo>/.env node_modules/.bin/tsx src/cli/main.tsx bench \
   --suite swebench --conditions jev-off --live \
   --task-id sympy__sympy-15345,sympy__sympy-17139,sympy__sympy-19954,sympy__sympy-11618,django__django-15128,django__django-15315 \
   --concurrency 2 --max-steps 25 --max-wall 25m --spend-cap 1.2 --task-spend-cap 0.25 \
-  --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/glm-jev-off-swebench
+  --out <repo>/bench/results/glm-jev-off-swebench
 # log /tmp/jevonly/glm-off-swebench.log ("exit 0"); the bench process stayed at ~1 GB RSS; bare clones reused from ~/.jevcode/runs/bench-cache
 ```
 
 Verdicts (main checkout, code only, no Jev):
 
 ```
-cd /Users/prateekjannu/Documents/vscode/JevCode
+cd <repo>
 env -u ANTHROPIC_API_KEY node node_modules/.bin/tsx experiments/inspect/quixbugs-verdicts.mts bench/results/glm-jev-off-quixbugs   # -> bench/results/glm-jev-off-quixbugs/verdicts.md
 env -u ANTHROPIC_API_KEY node node_modules/.bin/tsx experiments/inspect/ladder-verdicts.mts   bench/results/glm-jev-off-ladder     # -> bench/results/glm-jev-off-ladder/verdicts.md
 ```

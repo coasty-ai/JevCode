@@ -1,15 +1,15 @@
 /**
  * **The post-C engine seam of the router table** (docs/LLM-LOOP-DESIGN.md §7.5, contract 1.9 "Fastlane").
  *
- * Slot B landed `routeSpeculative`, the six stage conversions and the per-step token, and deferred five things
- * to a commit that could hold `src/loop/engine.ts` alone (§7.1: no two slots hold that file at once). Until they
- * landed, the wave's two headline promises were only half true:
+ * `routeSpeculative`, the six stage conversions and the per-step token landed first, and five things were
+ * deferred to a change that could hold `src/loop/engine.ts` alone. Until they landed, the two headline
+ * promises of the router table were only half true:
  *
  *   (a) a dropped router ask was cancelled AT THE ROUTER and still ran to completion inside `askRecorded` —
  *       charging its metering, its `jev.jsonl` row, its `decision` events and its `draft` mutations to a step
  *       whose `StepRecord` had already been written (review 2026-09-22, defect 2; I4);
  *   (b) `EngineOptions.routers` was read by nobody, so the only switch was a process-wide env var, and the env
- *       BEAT an explicit option in both mechanisms (slot D's finding) — an arm's own row was not the truth;
+ *       BEAT an explicit option in both mechanisms — an arm's own row was not the truth;
  *   (c) `StepTiming.routerWaitMs`, `StepRecord.router`, `riskSource` and `jevUnavailable` had no writer, so I3
  *       and the §5.2 audit trail did not exist in any real run;
  *   (d) `completionDecision` (RL5) was written and unit-tested and no run reached it;
@@ -341,7 +341,7 @@ describe('(e) the retry waker survives an abandoned router ask', () => {
 });
 
 // ---------------------------------------------------------------------------------------
-// slot A's defect 11 — a hedge twin must not open a second round
+// a hedge twin must not open a second round
 // ---------------------------------------------------------------------------------------
 
 const SAMPLE_REQ: GenerateRequest = { system: 'sys', messages: [{ role: 'user', content: 'propose' }], maxTokens: 256, temperature: 0.6 };
@@ -349,7 +349,7 @@ const SYNTH_PROPOSAL: Proposal = { goal: 'read after the round', action: { kind:
 
 /**
  * One sample of the round, **awaited to its end**, and then a HEDGE TWIN of it started in the window the
- * engine's own `finally` opens — the shape of slot A's defect 11. No `goalId`, so `PausePoint.llmRound.round`
+ * engine's own `finally` opens. No `goalId`, so `PausePoint.llmRound.round`
  * falls back to `draft.llmRounds - 1` and the ROUND COUNTER is what the assertion reads.
  */
 function twinAfterOriginSynth(latch: { ready: () => void; hold: Promise<void> }): Synthesizer {

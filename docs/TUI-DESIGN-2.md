@@ -249,7 +249,7 @@ Resolution inside `resolveConfig` (the `generator.provider` block at `resolve.ts
 
 | Step | Rule | `providerSource` |
 | --- | --- | --- |
-| 1 | `decider.provider` through `lookup`: flag > `JEV_PROVIDER` > `./.env` > `<OPEN_ASSIST_PATH>/.env` > file `jevProvider` > default `auto`; any other value → `ConfigError` (exit 2) naming the source | `flag` · `env` · `dotenv:<path>` · `file:<path>` |
+| 1 | `decider.provider` through `lookup`: flag > `JEV_PROVIDER` > `./.env` > `<extra .env file>` > file `jevProvider` > default `auto`; any other value → `ConfigError` (exit 2) naming the source | `flag` · `env` · `dotenv:<path>` · `file:<path>` |
 | 2a | `auto` + a configured `decider.baseUrl` (any layer but default) whose host `providerForHost` recognises | `auto:base-url` |
 | 2b | `auto` + `JEV_API_KEY` set (env or dotenv) → `openrouter` — today's users configured it for OpenRouter and are not redirected to a host their key does not belong to | `auto:openrouter-key` |
 | 2c | `auto` + `TYPESAFE_API_KEY` set (env or dotenv) → `typesafe` | `auto:typesafe-key` |

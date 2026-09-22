@@ -2,18 +2,18 @@
 
 All notable changes to `jevcode`. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses semantic versioning. `package.json` is the single source of truth for the version and is bumped
-by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-22 (`package.json` reads 0.4.0; the
-0.5.0 entry is the round-4 tree awaiting its bump); nothing has been pushed to the npm registry or the Homebrew tap.
+by the release procedure in `docs/RELEASE.md`; it currently reads 0.5.0, and the 0.5.0 entry below is that tree.
+Nothing has been published to the npm registry or the Homebrew tap yet.
 
 ## [0.5.0] — 2026-09-22 (not yet published)
 
-Round 4 of the interactive TUI (`docs/TUI-DESIGN-4.md`, six concurrent slots and one integration pass; the record
+Round 4 of the interactive TUI (`docs/TUI-DESIGN-4.md`; the record
 of what landed, with every gate number, is `docs/STATUS.md`, "Round 4"). The brand stays on screen, command output
 gets one grammar, a resize never deletes scrollback, Enter walks the palette, the conversation is turns, file edits
 get a real diff — and the product stops failing quietly.
 
 - `/jev`'s `cost` row ends with `· N cache hits` when the run served any Jev request from its per-run request-hash cache (llm-jev iteration 1; read from the explicit per-step `jevCacheHits`, never from `usage.calls === 0`).
-- Two bench arms for the LLM-loop wave, `jev-on-next` and `jev-on-next-nofast` (contract 1.9, `docs/LLM-LOOP-DESIGN.md` §8): the `jev-on` engine with the router table, the S2 generation mechanisms and — on the first of the two — the bounded sieve fast path, with the mechanisms pinned per arm into `summary.json` and both refused at any concurrency but 1. `comparison.md` gains the fast-path, router and TTFB rows; `src/bench/step-records.ts` bridges them out of `steps.jsonl` (without it every one of those fields is written to the run directory and is invisible to every table); `experiments/llm-jev/headtohead.mts` prints the §8.3 blocking rows, the §8.4 predictions and the §8.5 accept rule. A bench run now also clears `JEVCODE_FASTPATH` and `JEVCODE_ROUTERS` from its own environment before the first engine is built and says so in the log, because the engine resolves both of those env-first: the pinned row is otherwise a description of an intention rather than of the run. No live run has been taken, and `--conditions jev-on-next` is still rejected by `src/cli/args.ts`'s own allow-list.
+- Two bench arms for the LLM-loop work, `jev-on-next` and `jev-on-next-nofast` (contract 1.9, `docs/LLM-LOOP-DESIGN.md` §8): the `jev-on` engine with the router table, the S2 generation mechanisms and — on the first of the two — the bounded sieve fast path, with the mechanisms pinned per arm into `summary.json` and both refused at any concurrency but 1. `comparison.md` gains the fast-path, router and TTFB rows; `src/bench/step-records.ts` bridges them out of `steps.jsonl` (without it every one of those fields is written to the run directory and is invisible to every table); `experiments/llm-jev/headtohead.mts` prints the §8.3 blocking rows, the §8.4 predictions and the §8.5 accept rule. A bench run now also clears `JEVCODE_FASTPATH` and `JEVCODE_ROUTERS` from its own environment before the first engine is built and says so in the log, because the engine resolves both of those env-first: the pinned row is otherwise a description of an intention rather than of the run. No live run has been taken, and `--conditions jev-on-next` is still rejected by `src/cli/args.ts`'s own allow-list.
 
 ### Added — the renderer, the palette and the grammar
 
@@ -197,7 +197,7 @@ get a real diff — and the product stops failing quietly.
 
 ## [0.4.0] — 2026-09-21 (not yet published; `package.json` bump is the integrator's)
 
-Round 3 of the interactive TUI (`docs/TUI-DESIGN-3.md`, five concurrent slots; the record of what landed is `docs/STATUS.md`,
+Round 3 of the interactive TUI (`docs/TUI-DESIGN-3.md`; the record of what landed is `docs/STATUS.md`,
 "Round 3"). One default, one key, one brand: `jev+llm` is the default mode, one OpenRouter key runs Jev and the code model, the
 wordmark stays on screen and the palette is TypeSafe's pink.
 
@@ -271,7 +271,7 @@ wordmark stays on screen and the palette is TypeSafe's pink.
 
 ## [0.3.0] — 2026-09-21 (not yet published)
 
-Round 2 of the interactive TUI (`docs/TUI-DESIGN-2.md`, six concurrent slots; what landed and what was verified is
+Round 2 of the interactive TUI (`docs/TUI-DESIGN-2.md`; what landed and what was verified is
 recorded in `docs/STATUS.md`, "Round 2"). Three faults, one rule: a bare `jevcode` asked for two keys, every Enter was
 a paid run, and the screen was crowded — now the default mode needs one key, Jev classifies every submission before any
 run starts, and the interactive surface is one rounded console, one line per step and a collapsed Jev panel.
@@ -331,7 +331,7 @@ run starts, and the interactive surface is one rounded console, one line per ste
   together — ticking through Ink's `useAnimation` at 50 ms (≤ 15 frames), cancelled by the first key, a run start or
   any overlay, settling into the brand rule row `─── ◆ jevcode 0.2.0 ───`. `--no-animation` / `JEVCODE_REDUCED_MOTION`
   and a screen reader mount settled; `--plain` has no splash; below 64 columns only the brand row.
-- **Probes, scenarios and docs for round 2** (this slot). `src/perf/intake-latency.ts` (Enter → `[you]` bubble frame
+- **Probes, scenarios and docs for round 2**. `src/perf/intake-latency.ts` (Enter → `[you]` bubble frame
   and Enter → `[jevcode]` reply frame against the mock decider at 0 ms and delayed 150 ms; gates < 16 ms and ≤ 40 ms
   p95), a splash frame-count bucket per render-lag geometry (≤ `maxFps` + 1 frames in the first 700 ms) and a
   "splash frame 0 is the first frame" row in the first-frame probe (`JEVCODE_ASSERT_NO_CONFIG_BEFORE_FRAME=1` set for

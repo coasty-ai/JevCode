@@ -21,7 +21,7 @@ import type { EnumerateOptions, Site } from '../../../../src/synth/types.js';
 import { MARK } from '../../../../src/synth/beam/state.js';
 import { sourceFile } from './helpers.js';
 
-const CORPUS = new URL('../../../../experiments/probe-tokens/out/corpus.json', import.meta.url);
+const CORPUS = new URL('../../../fixtures/synth/corpus.json', import.meta.url);
 
 interface Item {
   name: string;

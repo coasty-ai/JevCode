@@ -195,7 +195,7 @@ export interface FastPathSummary {
   reasons: Record<string, number>;
   /**
    * §8.3 R-c: steps where stage 1 HELD — i.e. rows the writer recorded at `stage: 2`, whatever stage 2 then decided
-   * (fired, declined or failed). This is the denominator the writer can actually produce: slot C records `stage: 1`
+   * (fired, declined or failed). This is the denominator the writer can actually produce: it records `stage: 1`
    * only on a free decline and `stage: 2` on every row of a round that ran, so a "stage-1-FIRED" count is 0 on every
    * real run and the ratio below could never fail.
    */

@@ -16,7 +16,7 @@ import type { EnumerateOptions, FailureView, JevAsk, Site, SourceFile } from '..
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = join(HERE, '../../../fixtures/synth/sketch');
-export const CORPUS_PATH = join(HERE, '../../../../experiments/probe-tokens/out/corpus.json');
+export const CORPUS_PATH = join(HERE, '../../../fixtures/synth/corpus.json');
 
 export function fixture(name: string): string {
   return readFileSync(join(FIXTURES, name), 'utf8');
@@ -59,7 +59,7 @@ export const GCD_FAILURES: FailureView[] = [
 ];
 
 // ---------------------------------------------------------------------------------------
-// The measured corpus (experiments/probe-tokens/out/corpus.json)
+// The measured corpus (test/fixtures/synth/corpus.json)
 // ---------------------------------------------------------------------------------------
 
 export interface CorpusItem {

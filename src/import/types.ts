@@ -108,7 +108,7 @@ export interface SourceSpec {
   optIn?: string;
 }
 
-/** §3.1: the resolved form of one `RootSpec` on this machine. */
+/** §3.1: the resolved form of one `RootSpec` on the local machine. */
 export interface ResolvedRoot {
   tool: SourceTool;
   kind: RootSpec['kind'];
@@ -210,8 +210,7 @@ export interface ImportFs {
 
 /**
  * §4.7: the write seam the CLI supplies (§0 contract). `src/import/**` performs no writes of its
- * own — `apply.ts` calls these, and the harness can therefore land the whole engine without
- * touching a file the TUI session owns.
+ * own — `apply.ts` calls these, so every write the import engine performs is one the caller granted.
  */
 export interface ImportWriteFs extends ImportFs {
   /**

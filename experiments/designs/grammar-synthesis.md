@@ -445,7 +445,7 @@ position **given** (this measures the shape Choice, not localisation).
 Reproduce:
 
 ```
-cd /Users/prateekjannu/Documents/vscode/JevCode
+cd <repo>
 node_modules/.bin/tsx experiments/grammar-synthesis/sketch-probe.mts offline                 # pool coverage, $0
 env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx experiments/grammar-synthesis/sketch-probe.mts live run1        # $0.0077
 env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx experiments/grammar-synthesis/sketch-probe.mts live run2        # $0.0077

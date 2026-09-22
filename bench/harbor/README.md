@@ -5,8 +5,8 @@ This directory is reserved for the Harbor adapter that lets JevCode be evaluated
 ## Why a Harbor adapter at all
 
 - The local runner in `bench/data/terminal-bench/` (10 path-rewritten tasks, Python 3.9, no containers) can only ever produce "plausibly solved" numbers on a subset. Leaderboard-comparable numbers need Harbor + the published dataset `terminal-bench/terminal-bench@4.0.0` (66 tasks, 5 attempts each = 330 trials) on a Linux sandbox provider.
-- Harbor is the official harness: `harbor` on PyPI, **0.23.0** (2026-09-12), `requires_python >= 3.12` (this Mac has 3.9, so install a 3.12+ first: `uv python install 3.12` or Homebrew). Install: `uv tool install 'harbor[modal]'` or `pip install 'harbor[modal,daytona]'` (TB `tasks/README.md`).
-- Sandboxes: Docker is the default `-e docker` and is not installed here. Options on this Mac: `-e apple-container` (Apple's `container` CLI, macOS 26 + arm64 — both true here; single-container tasks only, so 14 of 66 TB tasks are excluded), `-e podman` (Linux VM), or the providers the TB maintainers use: `-e modal` / `-e daytona` (needed for the 3 GPU and 11 multi-container tasks). See research §5.
+- Harbor is the official harness: `harbor` on PyPI, **0.23.0** (2026-09-12), `requires_python >= 3.12` (the reference machine has 3.9, so install a 3.12+ first: `uv python install 3.12` or Homebrew). Install: `uv tool install 'harbor[modal]'` or `pip install 'harbor[modal,daytona]'` (TB `tasks/README.md`).
+- Sandboxes: Docker is the default `-e docker` and is not installed here. Options on the reference machine: `-e apple-container` (Apple's `container` CLI, macOS 26 + arm64 — both true here; single-container tasks only, so 14 of 66 TB tasks are excluded), `-e podman` (Linux VM), or the providers the TB maintainers use: `-e modal` / `-e daytona` (needed for the 3 GPU and 11 multi-container tasks). See research §5.
 
 ## Which Harbor base class
 

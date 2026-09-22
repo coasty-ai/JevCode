@@ -54,7 +54,7 @@ describe('listModels: network', () => {
     const res = await listModels('openrouter', null, testDeps({ fetch: f.fetch }));
     expect(res.source).toBe('network');
     expect(f.calls[0]?.headers['authorization']).toBeUndefined();
-    expect(f.calls[0]?.headers['http-referer']).toContain('jevcode');
+    expect(f.calls[0]?.headers['http-referer']).toMatch(/jevcode/i);
   });
 });
 

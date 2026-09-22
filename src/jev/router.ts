@@ -36,8 +36,8 @@
  * **I4, no late APPLICATION.** Application is guarded by a step-scoped `StepToken` invalidated at step commit: a
  * late answer is recorded `dropped` and applied to nothing, and its ask is aborted (clause 6). What the router
  * alone cannot yet promise is that the *engine* writes nothing late: `ctx.ask` takes no per-call signal until the
- * `askRecorded` seam of §7.5 lands (slot B's post-C commit, §7.1 — no two slots hold `engine.ts` at once), so
- * until then a decider that ignores its signal can still finish inside `askRecorded` and charge its own step.
+ * `askRecorded` seam of §7.5 lands, so until then a decider that ignores its signal can still finish inside
+ * `askRecorded` and charge its own step.
  */
 import { linkedAbort } from '../core/abort.js';
 import { AbortError, JevModelDriftError, isAbortError, isBudgetError } from '../errors.js';
@@ -251,7 +251,7 @@ export async function routeSpeculative<T>(input: RouteInput<T>): Promise<RouteRe
  * `JEVCODE_WARM` is read in `src/synth/warm/plane.ts`. The default is **off** in every mode on `main`; only the
  * bench arm turns it on. An unset or unrecognised value is off, so nothing about a user run changes by accident.
  *
- * **The explicit option wins; the env only fills an ABSENT option** (§7.5 seam (b), slot D's finding). This used
+ * **The explicit option wins; the env only fills an ABSENT option** (§7.5 seam (b)). This used
  * to OR the env in, so an exported `JEVCODE_ROUTERS=on` armed an arm whose own row said `routers: 'off'` and
  * `jev-on-next-nofast`'s one-mechanism contrast was destroyed without a single observable difference in the
  * output. A caller that says what it wants gets what it said; a caller that says nothing gets the environment's

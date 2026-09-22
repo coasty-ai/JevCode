@@ -19,7 +19,7 @@ export interface Item {
   name: string; kind: 'replace' | 'insert'; indent: string; buggy_line: string | null; fix_line: string;
   marked_program: string; buggy_program: string; tests: Json[]; tests_kind: 'json' | 'pytest_source';
 }
-export function loadCorpus(): Item[] { return JSON.parse(readFileSync(join(HERE, 'out/corpus.json'), 'utf8')) as Item[]; }
+export function loadCorpus(): Item[] { return JSON.parse(readFileSync(join(HERE, '../../test/fixtures/synth/corpus.json'), 'utf8')) as Item[]; }
 
 // ---------------------------------------------------------------------------- tokenizer
 export type TokClass = 'identifier' | 'keyword' | 'literal' | 'number' | 'string' | 'operator' | 'punct';
