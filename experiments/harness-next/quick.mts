@@ -76,11 +76,16 @@ const PENDING_PROBES = [
  * Work §6 S0 names that this tree does not have, with the reason and the owner. Printed, not silently omitted:
  * a wave that reports "all gates met" while three of its deliverables are missing is the failure mode §5 exists
  * to prevent.
+ *
+ * The list is pruned when a row LANDS, and for the same reason it is printed: a deferral printed at every Ring
+ * run for work that shipped is the same lie one direction over. Removed at the finishing-pass integration
+ * (2026-09-22): "the TTFB callback on src/provider/sse.ts, and `--quick` in src/bench/cli.ts" — `onFirstByte` is
+ * called from both stream paths (src/provider/sse.ts:197, :252, at most once per request) and `'quick'` is in
+ * `BOOLEAN_FLAGS` and `FLAGS` (src/cli/args.ts:86, :278), pinned by test/unit/bench/quick-preset.test.ts.
  */
 const DEFERRED = [
   { what: 'imagesMs reduction (p95 19.9–24.5 ms, target 15 ms)', why: 'the serial 15 MiB pre-image copy is in src/checkpoint/images.ts, owned by another branch in flight; S0 instrumented it (`images:pre` / `images:post` spans) and did not reduce it' },
   { what: 'src/loop/replay.ts + `jevcode inspect --replay <run-id>` (M15, Ring 1 proper)', why: 'the flag lands in src/cli/inspect.ts, owned by another branch; the `--jev off` gate below is the part of Ring 1 that is free of it' },
-  { what: 'the TTFB callback on src/provider/sse.ts, and `--quick` in src/bench/cli.ts', why: 'both feed fields in src/core/types.ts (§4.4), owned by another branch; they land with the S2 generator wave' },
 ];
 
 const HARNESS_GATE_MS = 50;

@@ -677,9 +677,10 @@ first implementation therefore got wrong. They are the normative reading of §3.
    measured it. ~~§3.5's `--quick` remains unreachable from a command line until `src/cli/args.ts` carries the
    `'quick'` row~~ — **struck 2026-09-22 (`d297b29`): the row landed at `0fb7af3`** (`src/cli/args.ts:86` in
    `BOOLEAN_FLAGS` and `:278` in `FLAGS`), so `jevcode bench --quick` parses and the preset applies;
-   `test/unit/bench/quick-preset.test.ts` pins that it parses. The header comment in `src/bench/cli.ts:21–25`,
-   which still states the rejection, is code and is outside the documentation slot; it is recorded in the
-   finishing pass's notes (and is fixed on the integration branch).
+   `test/unit/bench/quick-preset.test.ts` pins that it parses. The header comment in `src/bench/cli.ts` that still
+   stated the rejection is code and was outside the documentation slot; F23 corrected it on `finish-B`, and the
+   matching `DEFERRED` row `experiments/harness-next/quick.mts` printed at every Ring run went with the
+   finishing-pass integration.
 
 ### 3.7 As built, the engine's side of §3.2 (`c811899`)
 
