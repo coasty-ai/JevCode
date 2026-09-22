@@ -616,6 +616,38 @@ function jevChargedMs(draft: Pick<StepDraft, 'timing'>): number {
 function zeroTiming(): StepTiming {
   return { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 0 };
 }
+
+/**
+ * F13 (finishing pass): the OPTIONAL `StepTiming` buckets that are summed onto the run.
+ *
+ * `imagesMs`, `synthMs`, `decomposeMs` and `jevWallMs` were summed; `coordinateMs`, `coordWaitMs` (contract 1.4
+ * W2b, COORDINATION-DESIGN §4.2) and `fastPathMs` / `fastPathJevMs` (contract 1.9 Fastlane §4.4, §5.2) were
+ * written per step and summed nowhere, so `state.json`'s run timing block silently disagreed with the sum of
+ * `steps.jsonl` and an archived run could not be read for its coordinate or fast-path wall at all.
+ *
+ * `routerWaitMs` is deliberately NOT here: contract 1.9 §0.4 I3 asserts it per ROUTED SITE (it reads 0 on every
+ * path that is not a bug) and the bench-wide row is still open (docs/LLM-LOOP-DESIGN.md §7.5, recorded gaps), so
+ * a run-level sum would be a figure no design names.
+ */
+export const RUN_TIMING_BUCKETS = ['imagesMs', 'synthMs', 'decomposeMs', 'coordinateMs', 'coordWaitMs', 'fastPathMs', 'fastPathJevMs', 'jevWallMs'] as const;
+
+/**
+ * Fold one committed step's timing into the run's. The five required members add; each optional bucket adds only
+ * where the step carried it, so a bucket no step of the run wrote stays ABSENT on the run — which is what keeps a
+ * coordination-off / fast-path-off run's `state.json` byte-identical (contract 1.9 I2,
+ * test/unit/loop/engine-coordination-off.test.ts).
+ */
+export function addStepTimingToRun(run: StepTiming, step: StepTiming): void {
+  run.generatorMs += step.generatorMs;
+  run.jevMs += step.jevMs;
+  run.execMs += step.execMs;
+  run.harnessMs += step.harnessMs;
+  run.totalMs += step.totalMs;
+  for (const k of RUN_TIMING_BUCKETS) {
+    const v = step[k];
+    if (v !== undefined) run[k] = (run[k] ?? 0) + v;
+  }
+}
 function zeroCounters(): RunCounters {
   return { blocked: 0, reviews: 0, declined: 0, failed: 0, loops: 0, replans: 0, reads: 0 };
 }
@@ -4798,6 +4830,13 @@ class EngineImpl implements Engine {
     this.timing.totalMs += total;
     // contract 1.5 (§4.1 [D13]): a discarded step still paid for its decomposition (corner row 8)
     if (draft.timing.decomposeMs > 0) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + draft.timing.decomposeMs;
+    // F13 (finishing pass): and for its coordinate gate and its fast-path round, which were short the same way as
+    // the commit path. The attempt really spent this wall — §9.1 rule 1 replays the step NUMBER with a fresh draft,
+    // so nothing here is counted twice — and each stays absent when the discarded attempt never reached it.
+    if (draft.timing.coordinateMs > 0) this.timing.coordinateMs = (this.timing.coordinateMs ?? 0) + draft.timing.coordinateMs;
+    if (draft.timing.coordWaitMs > 0) this.timing.coordWaitMs = (this.timing.coordWaitMs ?? 0) + draft.timing.coordWaitMs;
+    if (draft.fastPathMs > 0) this.timing.fastPathMs = (this.timing.fastPathMs ?? 0) + draft.fastPathMs;
+    if (draft.fastPathJevMs > 0) this.timing.fastPathJevMs = (this.timing.fastPathJevMs ?? 0) + draft.fastPathJevMs;
     if (this.mode === 'llm-jev') {
       const t = this.llmJevTiming(draft, total);
       this.timing.harnessMs += t.harnessMs;
@@ -5539,16 +5578,10 @@ class EngineImpl implements Engine {
             // nothing was asked.
             ...(draft.timing.jevWallMs > 0 ? { jevWallMs: draft.timing.jevWallMs } : {}),
           };
-    this.timing.generatorMs += timing.generatorMs;
-    this.timing.jevMs += timing.jevMs;
-    this.timing.execMs += timing.execMs;
-    this.timing.harnessMs += timing.harnessMs;
-    this.timing.totalMs += timing.totalMs;
-    if (timing.imagesMs !== undefined) this.timing.imagesMs = (this.timing.imagesMs ?? 0) + timing.imagesMs;
-    if (timing.synthMs !== undefined) this.timing.synthMs = (this.timing.synthMs ?? 0) + timing.synthMs;
-    if (timing.decomposeMs !== undefined) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + timing.decomposeMs;
-    // OOS iteration 2, defect 3: summed for the run's own `RunResult.timing` (state.json), like the buckets above
-    if (timing.jevWallMs !== undefined) this.timing.jevWallMs = (this.timing.jevWallMs ?? 0) + timing.jevWallMs;
+    // F13 (finishing pass): ONE fold over `RUN_TIMING_BUCKETS`, so `RunResult.timing` is by construction the sum of
+    // the `steps.jsonl` rows. Four buckets (`coordinateMs`, `coordWaitMs`, `fastPathMs`, `fastPathJevMs`) were
+    // written per step and named in no run-level sum; an inline list is exactly how they were missed.
+    addStepTimingToRun(this.timing, timing);
     // TUI-DESIGN §9.2: the per-step cost series behind `stepsLeftEstimate`
     this.costPerStep.push(draft.usage.generator.costUsd + draft.usage.jev.costUsd);
     const generatorTokens = draft.usage.generator.inputTokens + draft.usage.generator.outputTokens;
