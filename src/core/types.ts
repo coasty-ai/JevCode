@@ -1846,6 +1846,12 @@ export type EngineEvent =
   | { type: 'session:message'; message: DeliverableMessage; disposition: MessageDisposition; applied: AckOutcome | null }
   // contract 1.4 (§8.6, §12.0.4): the context-policy branch emits it after a compaction; `chars` is before → after
   | { type: 'context:compacted'; step: number; chars: { before: number; after: number }; by: 'code' | 'llm' }
+  // contract 1.4 (Q16): the meter crossed the §8.6 compaction line (`COMPACT_AT_PCT`, 85 % of the PROMPT BUDGET) UPWARD — one
+  // event per crossing, never one per step, and the compaction that follows lowers the meter and re-arms it. Emitted only
+  // where the relaxed meter exists: never under `view: 'legacy'`, never in jev-only / llm-jev. `pct`, `budgetTokens` and
+  // `tokensInWindow` are the `ContextUsage` members of the build that crossed. There is deliberately no `itemsFromEvent`
+  // case — how (and whether) to draw it is the TUI's call, like `context:compacted`.
+  | { type: 'context:warn'; step: number; pct: number; budgetTokens: number; tokensInWindow: number }
   // contract 1.5 (ORCHESTRATION-DESIGN §4.1): twelve additive members; the json stream stays `v: 1` and an
   // unknown-type-ignoring consumer is unaffected. The `agent:*` members are HOST-emitted (the supervisor, §8.3 item 34),
   // not engine-emitted — they ride the same emitter so every surface reads one stream.

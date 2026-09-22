@@ -41,6 +41,8 @@ const NEEDLES: Readonly<Record<string, string>> = {
   npm: `npm_${A36}`,
   huggingface: 'hf_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh',
   gitlab: 'glpat-0123456789abcdefghijkl',
+  xai: 'xai-0123456789abcdefghij0123456789abcdefghij',
+  fireworks: 'fw_0123456789abcdefghij',
 };
 
 const FAMILIES: readonly string[] = [...REDACTING_PATTERNS.map((p) => p.family), ...WARN_ONLY_PATTERNS.map((p) => p.family)];
@@ -108,6 +110,14 @@ const clock: ImportClock = { now: () => new Date('2026-09-21T12:00:00.000Z'), mo
  */
 const exactLayer = createRedactor(FIXTURE_SECRETS.map((value, i) => ({ name: `fixture.secret.${i}`, value })));
 const writeTimeRedact = (s: string): string => redactSpans(s, detectSecrets(s, exactLayer), '[REDACTED:pattern]');
+/**
+ * The exact half on its own, in the shape `planImport({ redact })` and `renderReport(_, _, { redact })`
+ * both take. The two renderers used to compose the pattern families ALONE, so the `hunter2-…` /
+ * `corporate-…` / band halves of this gate could only ever be graded on `report.md` and `plan.json`
+ * by luck — nothing in the plan happened to carry them. Threading it makes the report path a real
+ * assertion rather than a vacuous one.
+ */
+const exactRedact = (s: string): string => exactLayer.redact(s);
 
 /** Every state and question set handed to Jev, verbatim, for the grep (§1 property 4, §4.4.3). */
 interface Capture {
@@ -204,11 +214,11 @@ function filesUnder(dir: string): readonly (readonly [string, string])[] {
 // ---------------------------------------------------------------------------------------
 
 describe('the needle table cannot drift (§1 property 4 [G2.3])', () => {
-  it('has one needle for every family redact.ts exports, and at least 15 of them', () => {
-    expect(REDACTING_PATTERNS).toHaveLength(6);
+  it('has one needle for every family redact.ts exports, and at least 17 of them', () => {
+    expect(REDACTING_PATTERNS).toHaveLength(8);
     expect(WARN_ONLY_PATTERNS).toHaveLength(9);
-    expect(FAMILIES).toHaveLength(15);
-    expect(ALL_NEEDLES.length).toBeGreaterThanOrEqual(15);
+    expect(FAMILIES).toHaveLength(17);
+    expect(ALL_NEEDLES.length).toBeGreaterThanOrEqual(17);
     for (const family of FAMILIES) expect(NEEDLES[family], `no fixture needle for family "${family}"`).toBeDefined();
     // every needle is recognised as its own family, so the fixture really exercises the pattern
     for (const family of FAMILIES) {
@@ -252,8 +262,8 @@ describe('import-leak — no secret leaves its file (§1 property 4, §8.3)', ()
     });
 
     // ----- report (§4.6) -----
-    const report = renderReport(plan);
-    const planJson = renderPlanJson(plan);
+    const report = renderReport(plan, 'unicode', { redact: exactRedact });
+    const planJson = renderPlanJson(plan, { redact: exactRedact });
 
     // ----- apply (§4.7) over exactly the rows a human could approve -----
     const approved = applicableRows(plan);
@@ -323,7 +333,7 @@ describe('import-leak — no secret leaves its file (§1 property 4, §8.3)', ()
     const fs = nodeWriteFs();
     const plan = await planImport({ env: f.env, fs, clock, jevcodeVersion: '0.3.0', trust: 'trust', decider: null, redact: writeTimeRedact });
     expect(plan.jev.requests).toBe(0);
-    const text = `${renderReport(plan)}\n${renderPlanJson(plan)}`;
+    const text = `${renderReport(plan, 'unicode', { redact: exactRedact })}\n${renderPlanJson(plan, { redact: exactRedact })}`;
     for (const needle of [...ALL_NEEDLES, ...FIXTURE_SECRETS]) expect(text.includes(needle)).toBe(false);
   });
 });

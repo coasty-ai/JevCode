@@ -3,7 +3,7 @@
  * the step's prompt is built and after a compaction — from chars, with `CHARS_PER_TOKEN = 3.4` as the token estimate. Pure;
  * the engine keeps the last object and `status()` returns it unchanged.
  */
-import { CHARS_PER_TOKEN, DEFAULT_GENERATOR_CONTEXT_TOKENS, METER_AMBER_PCT, METER_RED_PCT, type ContextBudget } from './limits.js';
+import { CHARS_PER_TOKEN, COMPACT_AT_PCT, DEFAULT_GENERATOR_CONTEXT_TOKENS, METER_AMBER_PCT, METER_RED_PCT, type ContextBudget } from './limits.js';
 import type { CompactionMode, ContextUsage, MemoryUsage, RecentStepsUsage } from '../../core/types.js';
 import type { ContextCheckpointExtension } from '../../checkpoint/types.js';
 
@@ -85,6 +85,18 @@ export function restoredContextUsage(state: ContextCheckpointExtension, budget: 
 }
 
 export type MeterLevel = 'ok' | 'amber' | 'red';
+
+/**
+ * contract 1.4 (Q16): did this build cross the §8.6 compaction line (`COMPACT_AT_PCT`) going UP?
+ *
+ * The arming state is the previous `ContextUsage.pct` itself, so there is no flag to keep in sync: a run that sits at
+ * 90 % for six steps warns once, and the fold that drops it to 60 % re-arms the next crossing by moving `previousPct`
+ * back under the line. The comparison is on the rounded percent the meter reports, so the event can never disagree
+ * with the number a surface is showing.
+ */
+export function contextWarnCrossed(previousPct: number, pct: number): boolean {
+  return pct >= COMPACT_AT_PCT && previousPct < COMPACT_AT_PCT;
+}
 
 /** §8.5: amber at 85 %, red at 95 %. */
 export function meterLevel(pct: number): MeterLevel {

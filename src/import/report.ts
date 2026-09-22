@@ -9,7 +9,8 @@
  *
  * Pure and deterministic: no clock, no locale, no `process` beyond the debug gate, no ANSI, no
  * network, no writes. Byte-capped at `reportBytes`. §1 property 4 is enforced in two steps: the
- * rendered text is redacted against all fifteen families, **and then** a debug assertion refuses
+ * rendered text is redacted against the caller's exact layer (`RenderOptions.redact`, §2.9) and all
+ * seventeen pattern families, **and then** a debug assertion refuses
  * to return a report any `REDACTING_PATTERNS` or `WARN_ONLY_PATTERNS` family still matches a
  * line of. That order matters — the assertion used to run on raw output, so an attacker-chosen
  * *filename* (`docs/AKIA….md`) aborted the whole dry run instead of being masked.
@@ -18,10 +19,33 @@ import { IMPORT_LIMITS } from '../core/limits.js';
 import { REDACTING_PATTERNS, WARN_ONLY_PATTERNS } from '../core/redact.js';
 import { clipBytes } from '../core/text.js';
 import { redactSecrets } from './parse/markdown.js';
+import type { ExactDetector } from '../core/redact.js';
 import type { ImportPlan, PlanRow } from './types.js';
 
 /** `--ascii` (§6 row 89): every glyph has an ASCII twin. */
 export type ReportView = 'unicode' | 'ascii';
+
+/** §1 property 4 / §2.9: what both renderers take beyond the plan. */
+export interface RenderOptions {
+  /**
+   * §2.9: the session redactor's **exact `SecretSet` layer only** — the same value
+   * `planImport({ redact })` takes, i.e. `createRedactor(secrets).redact`. Both renderers compose
+   * it with the pattern families exactly as `planImport` does (`redactSecrets(s, exact)`), so this
+   * option can only ever ADD cover: without it the families are still scanned, and a caller that
+   * passes a finished two-layer redactor is wasteful but never wrong.
+   *
+   * It exists because the families cannot catch a *configured* secret that has no shape — a bare
+   * password, a passphrase, an internally issued token. Every other seam (headings, `sources.jsonl`,
+   * the Jev bodies, the write-time render) already threads it; `report.md` and `plan.json` are
+   * named by §1 property 4 in the same breath and were the two that did not.
+   */
+  redact?: (s: string) => string;
+}
+
+/** The `ExactDetector` shape `redactSecrets` wants, or `undefined` when the caller supplied no layer. */
+function exactLayer(opts?: RenderOptions): ExactDetector | undefined {
+  return opts?.redact !== undefined ? { redact: opts.redact } : undefined;
+}
 
 /** §4.6.2: the thirteen section heads, in order, all always rendered. */
 export const REPORT_SECTIONS: readonly string[] = [
@@ -157,9 +181,10 @@ function destGroup(rows: readonly PlanRow[], head: string): { rows: PlanRow[]; b
 
 /**
  * §4.6.2: `report.md`, deterministic, cell-measured, `≤ reportBytes` (1 MiB) and free of ANSI.
- * `view === 'ascii'` swaps every glyph for its twin (§6 row 89).
+ * `view === 'ascii'` swaps every glyph for its twin (§6 row 89). `opts.redact` is the exact
+ * `SecretSet` layer (§2.9), composed with the pattern families before the text is returned.
  */
-export function renderReport(plan: ImportPlan, view: ReportView = 'unicode'): string {
+export function renderReport(plan: ImportPlan, view: ReportView = 'unicode', opts?: RenderOptions): string {
   const g = view === 'ascii' ? ASCII : UNICODE;
   const rows = plan.rows;
   const out: string[] = [];
@@ -270,7 +295,7 @@ export function renderReport(plan: ImportPlan, view: ReportView = 'unicode'): st
   // source the user did not write, and `display` is the worst of them because a filename is
   // chosen by whoever made the file. The assertion below is the net for a family the redactor
   // and the probes disagree about; it must not be the thing that a filename trips.
-  text = redactSecrets(text);
+  text = redactSecrets(text, exactLayer(opts));
   if (Buffer.byteLength(text, 'utf8') > IMPORT_LIMITS.reportBytes) {
     const clipped = clipBytes(text, IMPORT_LIMITS.reportBytes - 80);
     text = `${clipped.text}\n\n_report clipped at ${thousands(IMPORT_LIMITS.reportBytes)} bytes_\n`;
@@ -279,8 +304,8 @@ export function renderReport(plan: ImportPlan, view: ReportView = 'unicode'): st
   return text;
 }
 
-/** §4.6.1: the `--json` form — one object, no prose, no ANSI, no secrets. */
-export function renderPlanJson(plan: ImportPlan): string {
+/** §4.6.1: the `--json` form — one object, no prose, no ANSI, no secrets; `opts.redact` is the §2.9 exact layer. */
+export function renderPlanJson(plan: ImportPlan, opts?: RenderOptions): string {
   // §1 property 4 names `plan.json` in the same breath as `report.md`, and §4.6.2 puts this exact
   // string on stdout under `--json`. Review defect 9 redacted the report because its own leak
   // assertion was crashing; `plan.json` had no assertion, so nothing forced the issue — but the
@@ -292,7 +317,7 @@ export function renderPlanJson(plan: ImportPlan): string {
   // and cannot miss a member added later. It is safe for the JSON contract: `[REDACTED:pattern]`
   // contains no quote, backslash or control character, so the result still parses, and a plan
   // with nothing to redact is returned byte for byte unchanged.
-  return `${redactSecrets(JSON.stringify(plan, null, 2))}\n`;
+  return `${redactSecrets(JSON.stringify(plan, null, 2), exactLayer(opts))}\n`;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -334,7 +359,7 @@ export function parseReport(markdown: string): { rows: readonly { id: string; ac
 
 const DEBUG = process.env['NODE_ENV'] !== 'production';
 
-/** The fifteen families as non-global probes, built once: a `/g` regex carries `lastIndex` state. */
+/** The seventeen families as non-global probes, built once: a `/g` regex carries `lastIndex` state. */
 const SECRET_PROBES: readonly { family: string; re: RegExp }[] = [...REDACTING_PATTERNS.map((p) => ({ family: p.family, re: p.re })), ...WARN_ONLY_PATTERNS].map(({ family, re }) => ({
   family,
   re: new RegExp(re.source, re.flags.replace('g', '')),

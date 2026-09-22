@@ -16,6 +16,7 @@ import {
   secretSpans,
   type SecretHit,
 } from '../../../src/core/redact.js';
+import { redactDeep } from '../../../src/checkpoint/store.js';
 import { parseDotenvText } from '../../../src/config/env.js';
 
 const FIX = join(import.meta.dirname, '../../fixtures/config');
@@ -240,7 +241,7 @@ describe('detectSecrets (TUI-DESIGN §10.1)', () => {
       expect(text.slice(h.start, h.end), key).toBe(key);
     }
     expect(WARN_ONLY_PATTERNS.map((p) => p.family)).toEqual(['aws', 'slack', 'slack_webhook', 'pem', 'jwt', 'stripe', 'npm', 'huggingface', 'gitlab']);
-    expect(REDACTING_PATTERNS.map((p) => p.family)).toEqual(['openrouter', 'anthropic', 'sk', 'google', 'github', 'github_pat']);
+    expect(REDACTING_PATTERNS.map((p) => p.family)).toEqual(['openrouter', 'anthropic', 'sk', 'google', 'github', 'github_pat', 'xai', 'fireworks']);
     for (const p of WARN_ONLY_PATTERNS) expect(p.re.global, p.family).toBe(true);
   });
 
@@ -533,5 +534,73 @@ describe('secretSpans / redactSpans (TUI-DESIGN §10.2, §10.7)', () => {
     expect(redactSpans(text, overlapping)).toBe(`send ${DRAFT_MARKER}${text.slice(25)}`);
     expect(redactSpans('', [])).toBe('');
     expect(redactSpans(text, hits, '[REDACTED:composer#1]')).toContain('[REDACTED:composer#1]');
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// DESIGN §8.4 — the two provider families added in hygiene round 5
+// ---------------------------------------------------------------------------------------
+
+/**
+ * xAI and Fireworks keys are handed to JevCode through `generator.apiKey` / `XAI_API_KEY` /
+ * `FIREWORKS_API_KEY` like every other provider's, but until now neither shape was a family: a key
+ * pasted into a prompt, echoed by a `printenv` or quoted in an error body went to `report.md`,
+ * `state.json` and the transcript intact unless it happened to be registered as an exact secret.
+ *
+ * Meta's Model API is deliberately NOT here — its key shape is not documented anywhere in this
+ * repository, and a guessed prefix would either mangle ordinary output or mask nothing at all.
+ */
+const XAI_KEY = `xai-${'abcdefghij0123456789ABCDEFGHIJ0123456789'}`;
+const FW_KEY = `fw_${'abcdefghij0123456789'}`;
+/** One character short of each family's minimum tail: ordinary output, and it must survive. */
+const XAI_SHORT = `xai-${'abcdefghij0123456789ABCDEFGHIJ012345678'}`;
+const FW_SHORT = `fw_${'abcdefghij012345678'}`;
+
+describe('xAI and Fireworks are redacting families (DESIGN §8.4)', () => {
+  it('patternRedact masks both in text, before config resolution', () => {
+    for (const key of [XAI_KEY, FW_KEY]) {
+      const out = patternRedact(`export KEY=${key}\n`);
+      expect(out, key).not.toContain(key);
+      expect(out, key).toContain(PATTERN_MARKER);
+    }
+  });
+
+  it('both are masked in nested JSON through redactDeep', () => {
+    const redactor = createRedactor([]);
+    const doc = { env: { XAI_API_KEY: XAI_KEY }, rows: [{ note: `fireworks ${FW_KEY} ok` }] };
+    const out = JSON.stringify(redactDeep(doc, (s) => redactor.redact(s)));
+    expect(out).not.toContain(XAI_KEY);
+    expect(out).not.toContain(FW_KEY);
+    expect(out.match(/\[REDACTED:pattern\]/g)).toHaveLength(2);
+  });
+
+  it('a near-miss (one character short of the minimum tail) is ordinary output and survives', () => {
+    for (const near of [XAI_SHORT, FW_SHORT]) {
+      expect(patternRedact(`value=${near}`), near).toContain(near);
+      expect(detectSecrets(`value=${near}`), near).toEqual([]);
+    }
+  });
+
+  it('detectSecrets reports each with its prefix-only label and warnOnly=false', () => {
+    const table: [string, string, string][] = [
+      [XAI_KEY, 'xai', 'xai-…'],
+      [FW_KEY, 'fireworks', 'fw_…'],
+    ];
+    for (const [key, family, label] of table) {
+      const text = `token=${key} end`;
+      const hits = detectSecrets(text);
+      expect(hits, key).toHaveLength(1);
+      const h = hits[0]!;
+      expect(h.family, key).toBe(family);
+      expect(h.label, key).toBe(label);
+      expect(h.warnOnly, key).toBe(false);
+      expect(text.slice(h.start, h.end), key).toBe(key);
+    }
+  });
+
+  it('the two families join REDACTING_PATTERNS, which is now eight of the seventeen', () => {
+    expect(REDACTING_PATTERNS.map((p) => p.family)).toEqual(['openrouter', 'anthropic', 'sk', 'google', 'github', 'github_pat', 'xai', 'fireworks']);
+    expect(REDACTING_PATTERNS.length + WARN_ONLY_PATTERNS.length).toBe(17);
+    for (const p of REDACTING_PATTERNS) expect(p.re.global, p.family).toBe(true);
   });
 });

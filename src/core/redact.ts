@@ -5,9 +5,9 @@
  * deliberately no generic long-token rule: 40-hex git SHAs, npm integrity hashes and base64 blobs
  * are ordinary output for a coding agent and must survive intact.
  *
- * `detectSecrets` is the composer's gate (§10.2): it reports the span of every hit — the six
- * redacting families, the warn-only families (C44 staging: they never mask automatically) and the
- * exact configured secrets — so the host can hand every span to `addSecret` on `y`.
+ * `detectSecrets` is the composer's gate (§10.2): it reports the span of every hit — the eight
+ * redacting families, the nine warn-only families (C44 staging: they never mask automatically) and
+ * the exact configured secrets — so the host can hand every span to `addSecret` on `y`.
  */
 import type { Json, SecretHit } from './types.js';
 
@@ -72,6 +72,13 @@ const FORMAT_PATTERNS: readonly RegExp[] = [
   /(?<![A-Za-z0-9])AIza[0-9A-Za-z_-]{35}/g,
   /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9]{36,}/g,
   /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{22,}/g,
+  // xAI (`xai-` + a 40+ base62 tail) and Fireworks (`fw_` + a 20+ base62 tail). Appended rather than
+  // inserted: `REDACTING_FAMILIES` indexes this array positionally, so a new row at the end leaves
+  // every existing family's index alone. There is deliberately NO Meta row — the Meta Model API's
+  // key shape is documented nowhere in this repository, and a guessed prefix would either mangle
+  // ordinary output or mask nothing; it stays out until a real sample settles the shape.
+  /(?<![A-Za-z0-9])xai-[A-Za-z0-9]{40,}/g,
+  /(?<![A-Za-z0-9])fw_[A-Za-z0-9]{20,}/g,
 ];
 
 /** Header values: the header name stays, the value goes; an already-redacted marker is left alone so the name survives. */
@@ -219,7 +226,7 @@ interface FamilySpec extends SecretFamily {
   find?: (s: string) => readonly { start: number; end: number }[];
 }
 
-/** The six redacting families (`FORMAT_PATTERNS`), one label rule each; `sk-proj-` is labelled OpenAI (P55). */
+/** The eight redacting families (`FORMAT_PATTERNS`), one label rule each; `sk-proj-` is labelled OpenAI (P55). */
 const REDACTING_FAMILIES: readonly FamilySpec[] = [
   { family: 'openrouter', re: FORMAT_PATTERNS[0]!, needles: ['sk-or-v1-'], label: () => `sk-or-${ELLIPSIS}` },
   { family: 'anthropic', re: FORMAT_PATTERNS[1]!, needles: ['sk-ant-'], label: () => `sk-ant-${ELLIPSIS}` },
@@ -232,6 +239,8 @@ const REDACTING_FAMILIES: readonly FamilySpec[] = [
   { family: 'google', re: FORMAT_PATTERNS[3]!, needles: ['AIza'], label: () => `AIza${ELLIPSIS}` },
   { family: 'github', re: FORMAT_PATTERNS[4]!, needles: ['ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_'], label: prefixLabel(4) },
   { family: 'github_pat', re: FORMAT_PATTERNS[5]!, needles: ['github_pat_'], label: () => `github_pat_${ELLIPSIS}` },
+  { family: 'xai', re: FORMAT_PATTERNS[6]!, needles: ['xai-'], label: () => `xai-${ELLIPSIS}` },
+  { family: 'fireworks', re: FORMAT_PATTERNS[7]!, needles: ['fw_'], label: () => `fw_${ELLIPSIS}` },
 ];
 
 /**
@@ -420,7 +429,7 @@ function scanFamily(s: string, f: FamilySpec, warnOnly: boolean, accepted: Secre
 
 /**
  * TUI-DESIGN §10.1: every secret span in `s` — exact configured secrets first (labelled
- * `your <NAME>`, one hit per secret when `exact` is a `Redactor`), then the six redacting
+ * `your <NAME>`, one hit per secret when `exact` is a `Redactor`), then the eight redacting
  * families, then the warn-only families. Spans never overlap (an earlier, more specific family
  * wins) and are sorted by start; labels never carry the secret's tail. Pure; a 256 KB input scans
  * in under the 5 ms budget because each family is gated by a literal pre-check before its regex

@@ -127,7 +127,8 @@ export type { PlanBands } from './plan.js';
 export type { PlanCandidate, PlanInput } from './plan.js';
 
 export { REPORT_SECTIONS, parseReport, renderPlanJson, renderReport } from './report.js';
-export type { ReportView } from './report.js';
+// §1 property 4 / §2.9: both renderers take the exact `SecretSet` layer, the same value `planImport({ redact })` takes.
+export type { RenderOptions, ReportView } from './report.js';
 
 export {
   APPLY_ORDER,
