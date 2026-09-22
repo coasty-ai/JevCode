@@ -19,6 +19,7 @@ import { compareRank, isUnstableOutcome, laneEnv, runRepositoryQueue, runSamples
 import { committedBase } from '../../../../src/synth/search/index.js';
 import type { Base, Lane, VerifyJob } from '../../../../src/synth/search/types.js';
 import type { LanePool } from '../../../../src/synth/sieve/lanes.js';
+import { VerifyQueue } from '../../../../src/synth/sieve/queue.js';
 import { MAX_FULL_SUITE_RUNS_PER_STEP } from '../../../../src/synth/sieve/runner.js';
 import type { RunnerContext, RunnerMemory } from '../../../../src/synth/sieve/runner.js';
 import type { AppliedCandidate, SourceFile } from '../../../../src/synth/types.js';
@@ -361,6 +362,44 @@ describe('the awaitable queue (docs/LLM-JEV-DESIGN.md §4.8)', () => {
     expect(out.map((o) => o.status)).toEqual(['plausible']);
     // the one job cost the reproduction, its confirmation re-run and the scoped regression
     expect(h.mem.stepBudget.testRunsLeft).toBe(16 - 3);
+  });
+
+  const HUNG = 'hung';
+  const bounded = <T>(p: Promise<T>, ms = 3000): Promise<T | typeof HUNG> => Promise.race([p, new Promise<typeof HUNG>((resolve) => setTimeout(() => resolve(HUNG), ms))]);
+  const opts = (h: Harness) => ({ spec, regression: { command: SCOPED, timeoutMs: 120_000 }, now: h.clock });
+
+  it('a batch begun while the queue streams ends on its first plausible (§4.2, §6.2): the parked worker is released without closing the stream, the passer is returned at once and a later arrival waits for the next call', async () => {
+    const h = harness([], { lanes: 2 });
+    const q = new VerifyQueue();
+    q.open();
+    q.add(h.job('return gcd(b, a % b)  # FIX', 0.9));
+    // worker 1 runs the passer (reproduction, confirmation, regression); worker 2 parks on `next()` and would wait for the close
+    const out = await bounded(runRepositoryQueue(h.ctx, h.mem, q, fakeGoal({ id: 'g1', tests: [REPRO_ID] }), 4, opts(h)));
+    expect(out).not.toBe(HUNG);
+    if (out === HUNG) return;
+    expect(out.map((o) => o.status)).toEqual(['plausible']);
+    expect(q.streaming).toBe(true);
+    expect(h.events[0]).toMatch(/streamed batch ended on its first passer/);
+    expect(h.mem.passersThisStep).toBe(1);
+    // a sample landing after the stop stays queued for the next call (the guard may hold and re-enter the stream)
+    q.add(h.job('return gcd(a, b)  # other', 0.8));
+    expect(q.size).toBe(1);
+    q.close();
+    const again = await runRepositoryQueue(h.ctx, h.mem, q, fakeGoal({ id: 'g1', tests: [REPRO_ID] }), 4, opts(h));
+    expect(again.map((o) => o.status)).toEqual(['unchanged']);
+  });
+
+  it('the wall rule releases a worker parked in next(): when the wall left no longer fits one reproduction run the batch returns without waiting for the close', async () => {
+    // t_repro 600 ms against a 700 ms wall: the park ends after ≈ 100 ms, nothing ran, the stream is untouched
+    const h = harness([], { wallMs: 700 });
+    const q = new VerifyQueue();
+    q.open();
+    const t0 = Date.now();
+    const out = await bounded(runRepositoryQueue(h.ctx, h.mem, q, fakeGoal({ id: 'g1', tests: [REPRO_ID] }), 4, opts(h)));
+    expect(out).toEqual([]);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(80);
+    expect(q.streaming).toBe(true);
+    expect(h.commands).toHaveLength(0);
   });
 });
 

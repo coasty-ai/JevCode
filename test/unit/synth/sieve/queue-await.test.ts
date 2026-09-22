@@ -60,6 +60,33 @@ describe('VerifyQueue streaming', () => {
     expect((await q.next())?.candidate.id).toBe('low');
     expect(await q.next()).toBeNull();
   });
+
+  it('next(signal): an abort releases the parked caller with null and gives up its place in line; the stream stays open and a later add goes to the next live waiter', async () => {
+    const q = new VerifyQueue();
+    q.open();
+    const ac = new AbortController();
+    const parked = q.next(ac.signal);
+    const live = q.next();
+    ac.abort();
+    expect(await parked).toBeNull();
+    expect(q.streaming).toBe(true);
+    // the released waiter is gone: the job lands with the live one, nothing is lost
+    q.add(jobFor(candidate(site, 'return gcd(b, a % b)', { id: 'a' }), base));
+    expect((await live)?.candidate.id).toBe('a');
+    expect(q.size).toBe(0);
+    // an already-aborted signal: null at once on an empty queue, the head when it holds one
+    expect(await q.next(ac.signal)).toBeNull();
+    q.add(jobFor(candidate(site, 'return gcd(a, b % a)', { id: 'b' }), base));
+    expect((await q.next(ac.signal))?.candidate.id).toBe('b');
+    // a waiter handed a job removes its abort listener: aborting afterwards is a no-op
+    const later = new AbortController();
+    const served = q.next(later.signal);
+    q.add(jobFor(candidate(site, 'return gcd(b, a - b)', { id: 'c' }), base));
+    expect((await served)?.candidate.id).toBe('c');
+    later.abort();
+    q.close();
+    expect(await q.next()).toBeNull();
+  });
 });
 
 describe('the llm source in the queue (§6.1, §4.7 step 6)', () => {

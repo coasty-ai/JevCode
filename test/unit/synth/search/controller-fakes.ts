@@ -251,31 +251,34 @@ export function fakeQueue(o: { ordered?: boolean } = {}): SearchQueue & { items:
       q.streaming = false;
       for (const w of waiters.splice(0)) w(null);
     },
-    next(): Promise<VerifyJob | null> {
+    next(signal?: AbortSignal): Promise<VerifyJob | null> {
       const head = items.shift();
       if (head !== undefined) return Promise.resolve(head);
-      if (!q.streaming) return Promise.resolve(null);
-      return new Promise((resolve) => waiters.push(resolve));
+      if (!q.streaming || signal?.aborted === true) return Promise.resolve(null);
+      return new Promise((resolve) => {
+        const waiter = (j: VerifyJob | null): void => {
+          signal?.removeEventListener('abort', release);
+          resolve(j);
+        };
+        const release = (): void => {
+          const at = waiters.indexOf(waiter);
+          if (at !== -1) waiters.splice(at, 1);
+          resolve(null);
+        };
+        signal?.addEventListener('abort', release, { once: true });
+        waiters.push(waiter);
+      });
     },
   };
   return q;
 }
 
-/** Drain up to `n` jobs: synchronously while the queue holds them, awaiting `next()` while it streams (sieve/runner.ts's worker). */
-async function takeJobs(queue: SearchQueue, n: number): Promise<VerifyJob[]> {
-  const jobs: VerifyJob[] = [];
-  while (jobs.length < n) {
-    const head = queue.pop(1)[0];
-    if (head !== undefined) {
-      jobs.push(head);
-      continue;
-    }
-    if (queue.next === undefined) break;
-    const j = await queue.next();
-    if (j === null) break;
-    jobs.push(j);
-  }
-  return jobs;
+/** The next job: popped while the queue holds one, awaited through `next()` while it streams (sieve/runner.ts's worker); null when there is none. */
+async function takeJob(queue: SearchQueue): Promise<VerifyJob | null> {
+  const head = queue.pop(1)[0];
+  if (head !== undefined) return head;
+  if (queue.next === undefined) return null;
+  return queue.next();
 }
 
 export function fakeSubGoalDeps(o: FakeSubGoalOptions): SubGoalDeps & { rec: Recorded } {
@@ -311,18 +314,26 @@ export function fakeSubGoalDeps(o: FakeSubGoalOptions): SubGoalDeps & { rec: Rec
     },
     createQueue: () => fakeQueue(),
     runQueue: async (_ctx, mem, queue, _goal, runsAllowed) => {
-      const jobs = await takeJobs(queue, runsAllowed);
+      const jobs: VerifyJob[] = [];
       rec.runBatches.push(jobs);
       const batch = rec.runBatches.length;
       const cost = o.runCost ?? { runs: 1, wallMs: 0 };
-      mem.stepBudget.testRunsLeft -= cost.runs * jobs.length;
-      mem.stepBudget.testWallLeftMs -= cost.wallMs * jobs.length;
-      const outcomes = jobs.map((j) => {
+      // like sieve/runner.ts: a batch begun while the queue streams (an LLM round landing samples) ends on its first plausible outcome
+      const streamed = queue.streaming === true;
+      const outcomes: VerifyOutcome[] = [];
+      while (jobs.length < runsAllowed) {
+        const j = await takeJob(queue);
+        if (j === null) break;
+        jobs.push(j);
+        mem.stepBudget.testRunsLeft -= cost.runs;
+        mem.stepBudget.testWallLeftMs -= cost.wallMs;
         const subset = o.subsetOf?.(j, batch);
-        return outcomeOf(j, o.statusOf?.(j, batch) ?? 'unchanged', subset === undefined ? {} : { subset });
-      });
-      // like sieve/runner.ts: only a completed (classified) candidate is `tried`
-      for (const out of outcomes) mem.tried.add(sha12(out.applied.diff));
+        const out = outcomeOf(j, o.statusOf?.(j, batch) ?? 'unchanged', subset === undefined ? {} : { subset });
+        // like sieve/runner.ts: only a completed (classified) candidate is `tried`
+        mem.tried.add(sha12(out.applied.diff));
+        outcomes.push(out);
+        if (streamed && out.status === 'plausible') break;
+      }
       return outcomes;
     },
     decide: async (_ctx, mem, _goal, results) => {
