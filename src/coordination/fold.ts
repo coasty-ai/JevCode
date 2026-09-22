@@ -154,7 +154,7 @@ export function buildFold(entries: Iterable<RecordEntry>, state: FoldState, env:
     fold.devices.set(d.deviceId, { ...d, lastSeen: lastSeen.get(d.deviceId) ?? d.createdAt, syncLagMs, ignored: env.ignoredDevices.has(d.deviceId), cloned: false });
   }
 
-  // heartbeats — one per (device, run) file; several records for one runId = a fork (§9.3): the lowest CLAIM holds
+  // heartbeats — one per (device, run) file; several records for one runId = a fork (§9.3): the HIGHEST claim epoch holds
   // (+ review blocker 3: the claim is immutable, so both sides of a fork reach the same verdict whatever the sync timing)
   heartbeats.sort((a, b) => byStampDesc(a.hb, b.hb));
   const kept = heartbeats.length > FOLD_CAPS.heartbeats ? heartbeats.slice(0, FOLD_CAPS.heartbeats) : heartbeats;

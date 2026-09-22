@@ -359,7 +359,7 @@ export interface Fold {
   ignored: Map<string, Heartbeat & { arrivalMono: number }>;
   skipped: number;
   at: { wallMs: number; monoMs: number };
-  /** + §9.3 fork rule: every heartbeat for a runId beyond the holder (the lowest CLAIM), by runId; absent = none */
+  /** + §9.3 fork rule: every heartbeat for a runId beyond the holder (the HIGHEST claim epoch, §14 item 18), by runId; absent = none */
   forks?: Map<string, (Heartbeat & { arrivalMono: number })[]>;
   /** + review blockers 5 / 6: the origin of every heartbeat in `live` / `gone` / `forks`, by `${deviceId}/${runId}` */
   origins: Map<string, RecordOrigin>;

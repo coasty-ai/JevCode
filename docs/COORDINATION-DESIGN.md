@@ -229,7 +229,9 @@ sessions/                                TUI-owned (src/session/**)
   index.jsonl                            unchanged append-only v:1 index (index.ts:19-33); gains kinds `session:end`, `relocate`, `handoff`; `run:start` gains `parentSessionId?` (§5.4, §6.5)
 coordination/                            THE LEDGER ("commons" internally) — harness-owned (src/coordination/**); local truth; the per-device subtrees are mirrored to <sharedDir>/jevcode-commons/ when sync is on (§9), the per-host ones NEVER
   devices/<hostKey>/                     PER-MACHINE LOCAL TRUTH — hostKey = sha8(hostname(), userInfo().username, machineId) (§3.2); one writer even when ~/.jevcode itself is synced by two default-named machines (§11 row 3); never mirrored
-    device.json                          { v:1, deviceId, label, host, user, machineId, createdAt, deviceKey?, keyId? }  0600; written by the CLI only: at creation and on `sessions label` (§3.2). `machineId` is the machine identifier this hostKey was derived from, stored so a changed one is detected (§3.2); `deviceKey` is THIS device's 32-byte signing key (W5, §10.3) and lives HERE and nowhere else
+    device.json                          { v:1, deviceId, hostKey, label, host, user, jevcode, createdAt, syncMode, keyId?, checksum }  0600; written by the CLI only: at creation and on `sessions label` (§3.2)
+    device.key                           AS BUILT (§14 item 19, review #42): THIS device's 32-byte signing key, 64 hex chars, 0600, ITS OWN FILE — never a field of device.json, so both device.json copies stay the one public subset and no additive writer or redaction gap can publish the key to the share. `readCommonsKey` / `writeCommonsKey` are its only readers (§10.3)
+    machine.json                         AS BUILT: { v:1, machineId, hostKey, tuiActor8 } — the OS machine identifier this hostKey was derived from, stored so a changed one is detected (§3.2), plus the PERSISTED actor8 of a sessionless consumer (+ re-check (9)). Private, never mirrored
     trusted-devices.json                 { v:1, devices: [{ deviceId, label, keyId, key, pairedAt }] }   the paired peers and THEIR keys — `key` is that peer's own 32-byte key, received at pairing, and it is the ONLY key a record from that deviceId is ever verified with (§10.3; pairing deferred to W5). Renamed from `trusted.json` so it is never read as — or confused with — the workspace-instruction trust store `~/.jevcode/trust.json` (`src/config/trust.ts:2`), which this design does not touch
     ignored-devices.json                 { v:1, devices: [{ deviceId, at }] }   local tombstones for dead devices (§4.6 row 4); the LABEL is rendered from the current fold, never stored (it is peer-controlled)
     repokeys/<sha16(realpath ws)>.json   { v:1, repoKey, kind:'roots'|'remote', commonDir60, at }   the repoKey cache — local only, never mirrored, never inside a sandbox-writable root
@@ -1749,8 +1751,10 @@ The complete list of what does leave is the §9.1 enable line, and it is enforce
    (revision 4). Revision 3's sketch was one group `commonsKey` derived from the pairing phrase, which authenticates the
    *group* and nothing inside it: every paired device could forge records as every other paired device — auto-stop their runs,
    poison their resumes, inject `steer`s, and under `remoteControl:'allow'` pause, end or spend money on headless resumes, and
-   seed imports. The construction instead: `createDevice` generates this device's own 32-byte `deviceKey` once, stored 0600 in
-   `coordination/devices/<hostKey>/device.json` — the one file that is never mirrored and never copied, which is why
+   seed imports. The construction instead: device creation generates this device's own 32-byte `deviceKey` once, stored 0600 in its own file —
+   `coordination/devices/<hostKey>/device.key` (as built, §14 item 19 / review #42: NOT a field of `device.json`, so that
+   record type has exactly one shape and neither copy of it can carry key material) — a file that is never mirrored and
+   never copied, which is why
    `registry/<deviceId>/device.json` is defined as the **public subset** (`deviceId`, `hostKey`, `label`, `host`, `user`,
    `jevcode`, `createdAt`, `syncMode`, `keyId`) and not as "a copy of `device.json`". `jevcode sessions pair` prints a one-time
    8-word phrase → a scrypt-derived **transport** key used once, to move each side's `deviceKey` to the other; each device
@@ -2185,11 +2189,11 @@ object on every `status` line; `/context` lists the sections (§8.7).
 | File | What the surface imports from it (through `index.ts`) |
 | --- | --- |
 | `src/coordination/index.ts` (new, W0) | the ONLY import path for `src/session/**`, `src/cli/**`, `src/tui/**`: re-exports everything below |
-| `records.ts` | `Heartbeat`, `Lease`, `Message`, `Ack`, `DeviceRecord`, **`ClaimsProjection`** (revision 5, §9.3), `Stamp`, `Claim`, `Liveness`, `parseRecord`, `checksumOf`, `compareStamp`, `compareClaim`, `isLive`, `byRun`, `overlap`, `redactRecord`, `oneLineSafe`, `peerTransitions`, `CoordinationError`, `MAX_CLAIM_EPOCH`, **`MAX_GC_DEVICES`** |
-| `ids.ts` | `readDeviceIdentity(home, facts)` + `createDevice(home, facts, opts?)` (the pure reader / writer split of §3.2 — there is no `deviceIdentity()` that prompts), `hostKeyOf(facts)`, `wsKeyOf(realpath)`, `repoKeyOf(...)`, `normaliseRemote(url)`, `mintActor8()`, `mintConsumerId(sessionId \| null)`, the validators `DEVICE_ID_RE`, `HOST_KEY_RE`, `REPO_KEY_RE`, `MSG_ID_RE`, `CONSUMER_ID_RE`, `TARGET_RE`, `MSG_FILE_RE`, `OID_RE`, `BRANCH_RE`, `LANE_DIR_RE`, `SLUG_RE`, `SEQ_RE`, `LEASE_ID_RE` (§3.1) |
-| `ledger.ts` | `COORDINATION_DIR`, `coordinationRoot(home)`, `commonsPaths(root)`, `openLedger(opts): Ledger`, `readFold(opts): Promise<Fold>` |
+| `records.ts` (+ `types.ts`, `claims.ts`, `fold.ts`) | `Heartbeat`, `Lease`, `Message`, `Ack`, `DeviceRecord`, **`ClaimsProjection`** (revision 5, §9.3), `Stamp`, `Claim`, `Liveness`, `parseRecord`, `checksumOf`, `compareStamp`, `compareClaim`, `isLive`, `overlap`, `redactRecord`, `CoordinationError`, `MAX_CLAIM_EPOCH`. **As built** the module split is by concern rather than by one file: the contract *types* are `types.ts`, the claim fence and record authenticity (`compareClaim`, `forkVerdict`, `claimHolder`, `claimRefusal`, `hmacOf` / `hmacValid` / `withHmac`, `authorityOf`) are `claims.ts`, and the fold's readers — **`byRunId`** (the design's `byRun`), `claimHolderOf`, `seenEpochs`, `listSessions`, `originOf` / `ackOrigin` — are `fold.ts`. `oneLine` is the redacting one-liner (the design's `oneLineSafe`); `peerTransitions` is §3.6's rule table, still to land with the renderers. `MAX_GC_DEVICES` is `ledger.ts`, beside the enumeration it bounds |
+| `ids.ts` | **as built**: `deviceIdentity(opts)` (the pure reader, with a `status`; it never prompts) + `adoptNewDevice(opts)` (the explicit writer, §3.2 clone adoption), `hostKeyOf(host, user, machineId?)`, `wsKeyOf(realpath)`, `repoKeyOf(...)`, `normaliseOriginUrl(url)`, `mintActor8()`, `consumerIdOf(self, actor8)` (in `mailbox.ts`, where the `seen` file it names is written), `hostRoot(root, hostKey)`, the `devices/<hostKey>/` readers and writers — `readTrusted` / `writeTrusted` / `trustDevice` / `readTrustKeys` / `readIgnoredDevices` / `ignoreDevice` / `unignoreDevice` / `readCommonsKey` / `writeCommonsKey` / `readMachineRecord` / `writeMachineRecord` / `read`+`writeRepoKeyCache`, **each taking `(fs, hostDir, …)`** — and the validators `DEVICE_ID_RE`, `HOST_KEY_RE`, `REPO_KEY_RE`, `MSG_ID_RE`, `CONSUMER_ID_RE`, `OID_RE`, `LANE_DIR_RE`, `SLUG_RE`, `SEQ_RE`, `LEASE_ID_RE`, `RUN_ID_RE`, `ACTOR8_RE`, `isValidTarget`, `isValidBranch`, `isValidRelPath` (§3.1) |
+| `ledger.ts` + `paths.ts` | `COORDINATION_DIR`, `coordinationRoot(home)`, **`commonsPaths(root, hostKey?)`** (§3.1 per-host; `paths.ts` owns it), `openLedger(opts): Ledger`, `readFold(opts): Promise<Fold>`, the `Ledger`-taking write verbs (`gc`, `setDeviceLabel`, `syncDisable`, `syncStatus`, `writeTakeoverLease`, `ignoreDeviceOn`, `unignoreDeviceOn`, `pairDeviceOn`, `unpairDeviceOn`), `MAX_DEVICES`, `MAX_FENCE_DEVICES`, `STRICT_FENCE_MS`, `MAX_GC_DEVICES`, `ENTRIES_MAX`, `TRACKED_ACKS_MAX`, `ACK_TRACK_MAX_MS` |
 | `watch.ts` | the implementation behind `Ledger.subscribe` (fs.watch + poll + debounce) |
-| `leases.ts` | `check`, `declare`, `release`, `renew`, `LeaseIntent`, `LeaseCheck`, `LeaseConflict`, `LeaseHandle`, `CoordinationFacts`, **`FenceYield`**, **`fenceWake`** (revision 5, §4.5) |
+| `leases.ts` | `check`, `declare`, `release`, `renew`, `LeaseIntent`, `LeaseCheck`, `LeaseConflict`, `LeaseHandle`, `CoordinationFacts`, **`FenceYield`**, **`fenceWake`**, and as built **`fenceYield`** / **`FenceWait`** (F1 + F2 as one object), **`leaseSnapshot`**, **`LeaseSnapshot`**, **`DeclaredFact`**, **`StrictDeclare`**, **`FENCE_WAIT_CAP_MS`**, **`STRICT_WAIT_MS`** (revision 5, §4.3 / §4.5) |
 | `mailbox.ts` | `send`, `inbox`, `ack`, `awaitAck`, `resolveTarget`, `purgeInbox` |
 | `heartbeat.ts`, `judge.ts`, `sync-shared-dir.ts`, `worktree.ts` | engine-internal **implementations**; the surface never imports them directly — it calls the ledger **write API** below, which `index.ts` re-exports and which is the only way the TUI writes a coordination file (revision 2 declared these engine-internal while W1 item 15 / W2 item 22 / W3 item 31 assigned `/worktree`, `/spawn`, `sessions gc`, `sessions unlock --device`, `sessions label`, `sessions sync disable` — all of them writers — to the surface, which the facade had no signature for) |
 
@@ -2263,8 +2267,13 @@ is `fold.skipped++`, never an error.
 export interface Stamp { n: number; deviceId: string; runId: string }
 export function compareStamp(a: Stamp, b: Stamp): -1 | 0 | 1;
 /** §3.2: the run's incarnation — the ONLY fence for run ownership (fork, takeover, resume refusal). Higher epoch wins; ties by deviceId, then runId.
- *  `epoch` is bounded by MAX_CLAIM_EPOCH (1e9) and `deviceId` must equal the path component the record was read from (§9.3). */
-export interface Claim { epoch: number; deviceId: string; runId: string; at: string }
+ *  `epoch` is bounded by MAX_CLAIM_EPOCH (1e9) and `deviceId` must equal the path component the record was read from (§9.3).
+ *  AS BUILT (§14 items 18 / 19): `pid` is carried too — display and audit, and the last-resort tiebreak after `at`, because
+ *  `(epoch, deviceId, runId)` is not total for two processes of ONE device on ONE run and `compareClaim === 0` for two
+ *  different processes is the one value the fork rule cannot break. `compareClaim` is a RANK comparator: negative means `a`
+ *  OUTRANKS `b`, so `sort(compareClaim)[0]` is the holder. The holder is the highest QUALIFIED epoch (§9.3): an unqualified
+ *  foreign claim raises `⚠ forked` and never takes the run (§11 row 51). */
+export interface Claim { epoch: number; deviceId: string; runId: string; at: string; pid: number }
 export const MAX_CLAIM_EPOCH = 1e9;
 export const MAX_CLAIMS_PER_RUN = 64;   // RunMeta.claims[]: first + newest 63 (§3.2); only the maximum is ever compared
 export function compareClaim(a: Claim, b: Claim): -1 | 0 | 1;
@@ -2294,8 +2303,16 @@ export interface Heartbeat {
   context: { pct: number; files: number; historyEntries: number; summaryAt: number | null; tokensInWindow: number; budgetTokens: number; compactions: number };
   pausePoint?: PausePoint;                                  // §12.0.2: on the final phase:'ended' beat of a human_pause
   startedAt: string; beatAt: string; beatSeq: number; ttlMs: number; stamp: Stamp; claim: Claim;
+  truncated?: boolean;                                      // AS BUILT (review blocker 2): the beat DEGRADED to fit 4 KiB and says so — touchedRecent → subwork → plan.next3 → the path sets
   keyId?: string; checksum: string; hmac?: string;
 }
+//  AS BUILT (§14 item 19): `hostKey` and `bootId` are OPTIONAL on the record (`hostKey?: string`,
+//  `bootId?: string | null`). Both are DISQUALIFIERS, never grants (§3.2, §5.4 rule 4): a record that omits one is read
+//  permissively and only a KNOWN difference denies `sameDevice` — which is what lets an older build's beat still fold.
+//  Making them required would have made every pre-revision-5 record a `shape` rejection, i.e. a silent fold-wide outage
+//  on upgrade. `sameHost(a, b)` and `sameBoot(a, b)` are the two comparisons, and both return true when either side is
+//  unknown. `buildHeartbeat` returns `{ ok: true; record; degraded: boolean } | { ok: false; reason: 'size' }`, and the
+//  writer takes `onDegraded?: () => void` so the first degraded beat raises exactly one notice.
 
 /** leases/<deviceId>/<repoKey>/<runId>-<seq>.json — ≤ 8 KiB — §4.3, typed */
 export interface Lease {
@@ -2327,7 +2344,7 @@ export interface Message {
 export type AckOutcome = 'delivered' | 'applied' | 'refused' | 'expired';
 export interface Ack { v: 1; kind: 'ack'; msgId: string; by: string /* consumerId */; sessionId: string | null; deviceId: string; hostKey: string; at: string; outcome: AckOutcome; detail60?: string; stamp: Stamp; keyId?: string; checksum: string; hmac?: string }
 
-/** registry/<deviceId>/device.json — the PUBLIC subset (§3.1, §10.3): never `deviceKey`, never `machineId`, never any key material. `keyId` NAMES this device's key; the key itself lives in devices/<hostKey>/device.json and, for peers, in their trusted-devices.json. */
+/** registry/<deviceId>/device.json — the PUBLIC subset (§3.1, §10.3): never `deviceKey`, never `machineId`, never any key material. `keyId` NAMES this device's key; the key itself lives in **`devices/<hostKey>/device.key`** (as built, §14 item 19: its own 0600 file, so this record type has exactly one shape and neither copy of it can carry key material) and, for peers, in their `trusted-devices.json`. */
 export interface DeviceRecord { v: 1; deviceId: string; hostKey: string; label: string; host: string; user: string; jevcode: string; createdAt: string; syncMode: 'off' | 'shared-dir' | 'git'; keyId?: string; checksum: string }
 //  keyId = sha8(that device's own deviceKey) — a NAME for display and rotation. Verification never looks a key up by keyId:
 //  it looks the WRITER'S deviceId (the path component) up in trusted-devices.json and uses that entry's key only (§10.3).
@@ -2356,12 +2373,20 @@ One heartbeat on disk, for the shape (values illustrative, redacted):
 ```ts
 /** §3.5: the in-memory fold every reader uses (caps: ≤ 512 heartbeats, ≤ 2,048 leases, ≤ 200 messages per target) */
 export interface Fold {
-  live: Map<string, Heartbeat & { arrivalMono: number; sameDevice: boolean }>;          // key `${deviceId}/${runId}` — two devices' beats for one runId must coexist (§3.4)
-  gone: Map<string, Heartbeat & { arrivalMono: number; goneAtMono: number; sameDevice: boolean }>;   // stale ≤ 10 min, keeps stage/action80/touched (§3.4)
-  leases: Map<string, Lease & { sameDevice: boolean }>; byPath: Map<string, string[]>;  // leaseId → lease; toplevel-relative path → leaseIds
-  messages: Message[]; acks: Map<string, Ack[]>;                            // ALL messages the fold parsed (bounded), acks by msgId — the pure `inbox(fold, self, seen)` does the target filtering
-  devices: Map<string, DeviceRecord & { lastSeen: string; syncLagMs: number | null; ignored: boolean }>;   // ≤ MAX_DEVICES (§3.5)
-  skipped: number; skippedDevices: number; at: { wallMs: number; monoMs: number };
+  live: Map<string, Heartbeat & { arrivalMono: number }>;                   // by runId; a second beat for one runId is in `forks`, so two devices' records coexist (§3.4)
+  gone: Map<string, Heartbeat & { arrivalMono: number; goneAtMono: number }>;   // stale ≤ 10 min, keeps stage/action80/touched (§3.4)
+  leases: Map<string, Lease>; byPath: Map<string, string[]>;                // leaseId → lease; toplevel-relative path → leaseIds
+  inbox: Message[]; acks: Map<string, Ack[]>;                               // every message parsed for one of my targets (bounded), acks by msgId — the pure `inbox(fold, self, seen)` does the seen / expiry filtering
+  devices: Map<string, DeviceRecord & { lastSeen: string; syncLagMs: number | null; ignored: boolean; cloned: boolean }>;   // ≤ MAX_DEVICES (§3.5)
+  skipped: number; at: { wallMs: number; monoMs: number };
+  //  AS BUILT (§14 item 19). `sameDevice` is NOT a field of the folded records — it is `origins`, below: the read
+  //  LOCATION (blocker 6), which a per-record boolean invited callers to shortcut into a field comparison.
+  //  `skippedDevices` moved to `LedgerStatus.devicesSkipped`, because it is a property of the SCAN, not of the reduction.
+  liveness: Map<string, Liveness>;          // + review major 12: the verdict of EVERY record, by `${deviceId}/${runId}/${pid}` — a fork row has a verdict too
+  ignored: Map<string, Heartbeat & { arrivalMono: number }>;   // + review minor 25: tombstoned subtrees, kept OUT of live/gone/leases/inbox and walked only by `who --all`
+  cloned: Set<string>;                      // §3.2 / §10.3 (revision 5): device ids seen live under two different bootIds — every gated action suspended until re-pairing
+  forks?: Map<string, (Heartbeat & { arrivalMono: number })[]>;   // §9.3: every heartbeat for a runId beyond the holder (the HIGHEST qualified claim, §14 item 18)
+  origins: Map<string, RecordOrigin>;       // blockers 5 / 6: where each record was read and whether its hmac verified — the ONLY source of "is this mine?"
 }
 /** §3.4: every heartbeat for one runId, ordered by claim then stamp; `forked` = more than one live, `peerLive` = the highest foreign claim */
 export function byRun(fold: Fold, runId: string): (Heartbeat & { arrivalMono: number; sameDevice: boolean })[];
@@ -2426,6 +2451,35 @@ export interface Ledger {
   /** change notifications; the unsubscribe function; callbacks run on the debounce tick, never inside a watcher callback */
   subscribe(cb: (fold: Readonly<Fold>, change: FoldChange) => void): () => void;
   close(): Promise<void>;
+
+  // ── AS BUILT (revisions 4 / 5; §14 item 19): the rest of the interface `openLedger` returns ──────────────────────
+  readonly hostKey: string;                 // §3.1: the per-host identity subtree this process writes, `devices/<hostKey>/`
+  readonly bootId: string | null;           // §3.2 / §3.4: this boot's identity; null when none could be resolved
+  readonly claim: Claim;                    // blocker 3: this process's immutable claim
+  status(): LedgerStatus;
+  refresh(scope?: 'all' | 'leases'): Promise<void>;
+  refreshFence(o?: { maxDevices?: number; budgetMs?: number }): Promise<FenceScan>;   // §4.5: the strict enumeration; `complete:false` → `fence:'blind'`
+  forkVerdict(runId: string): ForkVerdict;                                  // §9.3 (§14 item 18)
+  nextEpoch(runId: string, o?: { epochHigh?: number }): number;             // review major 11: `epochHigh` = `RunClaimMeta.claimEpochHigh`
+  takeoverLease(o: { runId: string; sessionId: string; reason60: string; claim?: Claim; epochHigh?: number }): Promise<Lease>;
+  writeClaimsProjection(o: { runId: string; sessionId: string; claims: readonly Claim[]; imports?: readonly { fromDeviceId: string; at: string; epoch: number }[]; forked?: ClaimsProjection['forked']; ended?: ClaimsProjection['ended'] }): Promise<void>;
+  readClaimEpochs(runId: string): Promise<{ epoch: number; deviceId: string; qualified: boolean }[]>;   // §9.3: every epoch in every `runs/<dev>/<runId>/claims.json`, with its authority
+  forceTakebackEpochFor(runId: string, local?: readonly number[]): Promise<{ epoch: number; droppedUnqualified: number }>;   // throws `'epoch-exhausted'`
+  readRunClaim(runId: string): Promise<Claim | null>;                       // `devices/<hostKey>/claims/<runId>.json`
+  pairDevice(o: { deviceId: string; label: string; keyHex: string; pairedAt?: string }): Promise<void>;   // §10.3: pair INSIDE a running process …
+  reloadTrust(): Promise<void>;                                             // … and re-read every record's authority at once (+ re-check (10))
+  unpairDevice(deviceId: string): Promise<void>;
+  ignoreDevice(deviceId: string, label: string): Promise<void>;
+  unignoreDevice(deviceId: string): Promise<void>;
+  resolveDeviceRef(ref: string, extra?: readonly string[]): string | null;  // + re-review (2): label | label#id4 | id8 | full id
+  allDeviceIds(): Promise<string[]>;                                        // + re-check (4): every subtree on DISK, bounded by MAX_GC_DEVICES
+  setDeviceLabel(label: string): Promise<DeviceRecord>;
+  syncStatus(): SyncStatus;
+  syncDisable(): Promise<{ removed: readonly CommonsKind[] }>;
+  removeOwn(kind: CommonsKind, relInDevice: string): Promise<boolean>;      // + re-check (lower 1): `true` when a file was there; a GC counts, never throws
+  trackLease(leaseId: string, mover: LeaseMover): void;                     // §3.5 (revision 5): `setIdentity({ repoKey })` moves the leases this handle holds …
+  untrackLease(leaseId: string): void;                                      // … one release + one re-declare per tracked lease when the key set changes
+  trackAck(msgId: string, ttlMs?: number): void;                            // §5.1: watch `acks/*/<msgId>/` for `awaitAck`; ≤ TRACKED_ACKS_MAX, dropped after ACK_TRACK_MAX_MS
 }
 export type FoldChange =
   | { kind: 'heartbeat' | 'lease' | 'message' | 'ack' | 'device'; deviceId: string; id: string }
@@ -2497,7 +2551,11 @@ export function purgeInbox(ledger: Ledger, o: { device?: string; target?: string
  *  the local `devices/<hostKey>/claims/<runId>.json` record of it, so a later local `/resume` of a run with no local dir cannot
  *  re-issue that epoch (§9.3). Rejects: 'offline' (sync on but the mirror is unreachable — a takeover nobody can read is worse
  *  than a refusal), 'not-found' (no such runId in the fold), 'unknown-device'. */
-export function writeTakeoverLease(ledger: Ledger, o: { runId: string; reason60: string }): Promise<{ leaseId: string; claim: Claim }>;
+/** AS BUILT: it returns the `Lease` itself (whose `claim` and `leaseId` are the two fields the design named, plus the stamp
+ *  and expiry the CLI prints), takes the `sessionId` the record requires, and writes the `kind:'claims'` projection beside it
+ *  (§9.3) so a takeback is visible to the devices it binds. `Ledger.takeoverLease({ …, epochHigh? })` is the method it wraps;
+ *  `epochHigh` is `RunClaimMeta.claimEpochHigh` (review major 11). */
+export function writeTakeoverLease(ledger: Ledger, o: { runId: string; sessionId?: string; reason60?: string; claim?: Claim }): Promise<Lease>;
 /** `sessions label "mbp"`: writes devices/<hostKey>/device.json AND the public registry/<deviceId>/device.json subset (both
  *  ours), then `ledger.setIdentity({ label })` — which is why revision 5 gives it the LEDGER and not a bare `home`: revision
  *  4's `(home, label)` named a function it could not call, and every record written after the rename must carry the new
@@ -2532,8 +2590,15 @@ export function unpairDevice(ledger: Ledger, o: { deviceId: string }): Promise<{
 export function syncDisable(home: string, sharedDir: string): Promise<{ removed: number } | { refused: 'run-live'; runId: string }>;
 /** `sessions sync status`: lag, last successful copy, offline code, bytes this session. Pure over ledger state; never rejects. */
 export function syncStatus(ledger: Ledger): SyncStatus;
-/** §3.4: the synchronous `peerLive` the lock path needs, over an already folded ledger; returns the highest FOREIGN claim. */
-export function foreignLive(fold: Fold, self: SelfIdentity, runId: string): { deviceId: string; label: string; step: number; beatAgeMs: number; claim: Claim; verified: boolean } | null;
+/** §3.4: the synchronous `peerLive` the lock path needs, over an already folded ledger; returns the highest FOREIGN claim.
+ *  AS BUILT: a METHOD on `Ledger`, not a free function — the origin of a record (blocker 6) lives in the ledger's own
+ *  `fold.origins`, and a free function taking a bare `self` would have had to re-derive "is this mine?" from the record's
+ *  own `deviceId`, which is exactly the thing that may not decide it. Verified-only is the DEFAULT (review major 7);
+ *  `includeUnverified` is the display opt-in, shared with `claimHolderOf` and `seenEpochs`. */
+foreignLive(runId: string, o?: { includeUnverified?: boolean }): PeerLive | null;
+/** any live heartbeat for `runId` that is not this process (same device: another pid) */
+peerLive(runId: string, o?: { excludePid?: number }): PeerLive | null;
+export interface PeerLive { deviceId: string; label: string; step: number; beatAgeMs: number; stamp: Stamp; claim: Claim; authority: Authority; verified: boolean }
 
 /** The four report types the verbs above return (revision 4 — referenced once and never defined in revision 3). */
 export interface WorktreeInfo {
@@ -2545,12 +2610,16 @@ export interface WorktreeInfo {
   live: boolean;                                        // a live heartbeat in the fold whose `repo.worktreeSlug` is this slug
   syncedIgnored: string[];                              // ≤ 64 rel paths copied from the parent's dirty set (§6.5)
 }
-export interface SweepReport {
-  scanned: number; dryRun: boolean; ms: number;
-  removed: { kind: 'lane' | 'worktree'; id: string; bytes: number }[];
-  kept: { kind: 'lane' | 'worktree'; id: string; reason: 'dirty' | 'unmerged' | 'live' | 'not-ours' | 'young' | 'guard' }[];
-  failed: { id: string; code: string }[];               // EROFS / ENOSPC / EACCES / EBUSY, counted not thrown
+export interface SweepReport {                          // AS BUILT: keyed by SLUG, which is what `removeWorktree` refuses by
+  removed: string[];
+  kept: { slug: string; reason: NonNullable<RemoveWorktreeResult['refused']>; detail: string }[];   // the reason comes from the one guard function and is never re-spelled here
+  failed: { slug: string; code: string }[];             // + re-review (2): EROFS / ENOSPC / EACCES / EBUSY, counted not thrown
 }
+//  AS BUILT, and the verb is `sweepWorktrees(io: WorktreeIo, { repoKey, workspace, liveIds?, retentionMs?, nowMs? })`
+//  rather than `sweep(home, …)`: the VCS is an injected seam (`WorktreeIo.runGit`), so the sweep is testable without a
+//  real checkout, and `liveIds` is passed in because the guard is "a live heartbeat for this slug" — a fold fact the
+//  caller already holds and the sweep must not re-read. `createWorktree`, `removeWorktree` and `listWorktreeInfo` take
+//  the same `WorktreeIo` for the same reason, not a bare `home` / `Ledger`.
 export interface GcReport {
   dryRun: boolean; bytes: number;
   deleted: { messages: number; acks: number; seen: number; heartbeats: number; leases: number; conflictedCopies: number };
@@ -2636,7 +2705,12 @@ export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'advisory'): Le
 export type StrictDeclare =
   | (LeaseHandle & { fence: 'decided'; refold: LeaseCheck; appeared: LeaseConflict[]; proceed: boolean })
   | (LeaseHandle & { fence: 'blind'; scanned: number; total: number });
-export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'strict', seen: LeaseSnapshot): Promise<StrictDeclare>;
+/** AS BUILT: the fourth parameter is `CheckOptions`, whose `snapshot?: LeaseSnapshot` is the design's `seen`. One options
+ *  object, because the strict re-fold also needs `stamp` (my own, once issued), `fileMemory`, `caseFold` and `now` — the
+ *  same bag `check()` takes, so the fence and the check it fences cannot drift apart. */
+export function declare(ledger: Ledger, mine: LeaseIntent, mode: 'strict', opts?: CheckOptions): Promise<StrictDeclare>;
+/** AS BUILT (§4.5): the snapshot accessor, so a caller reads the contract rather than a field. */
+export function leaseSnapshot(check: LeaseCheck): LeaseSnapshot;
 export interface LeaseHandle { leaseId: string; stamp: Stamp; renew(): void; downgrade(): Promise<FenceYield> /* 'exclusive' → 'intent' on a fence yield (§4.5 F1), in BOTH key directories; same stamp, same leaseId; returns what F2 will decide from */; release(outcome: NonNullable<Lease['released']>['outcome'], changed?: Record<string, string | null>, head?: string): void }
 /** §4.5 F2 (revision 5): what a yield CAPTURES, so the later decision cannot drift with the fold. Taken at the moment of the
  *  downgrade, from `appeared`. The minimum is computed over these captured stamps and never over the fold's current copies,
@@ -2716,6 +2790,117 @@ by: 'human' | 'remote' }`; `RunMeta.claims?: Claim[]` (append-only, the ownershi
 `.wsKey?`, `.deviceId?` (§7.3 step 5, §9.3); `BlockingKind` + `'lease-conflict'`; `BlockingAnswer` + `'pause' | 'wait' |
 'worktree'`; `NoticeKind` + `'session' | 'coordination'`; **`UiLabel` + `'[session]'`** (§5.3);
 `EpilogueContext.ended?: boolean` (§7.4).
+
+**As built after revisions 4 and 5 — the rest of `src/coordination/index.ts`, verified against the exports (§14 item 19).**
+Everything above is the contract; this is the remainder of the facade, and the three shapes whose names moved. The two
+deliberate deviations from the text are at the end.
+
+```ts
+// ── paths.ts: the per-host layout of §3.1 ─────────────────────────────────────────────────────────────────────────
+/** `hostKey` names `devices/<hostKey>/` (§3.1). A MIRROR root has no identity files, so it may be omitted and `hostDir`
+ *  then falls back to the root — which is why the parameter is optional rather than required. */
+export function commonsPaths(root: string, hostKey?: string): Commons;
+export interface Commons {
+  readonly root: string; readonly hostDir: string;      // hostDir = hostRoot(root, hostKey) = `<root>/devices/<hostKey>`
+  deviceFile: string; deviceKeyFile: string;            // devices/<hostKey>/{device.json, device.key} — see DEVIATION 1
+  repokeysDir: string; trustedFile: string; ignoredFile: string; worktreesDir: string;
+  kindRoot(kind: CommonsKind): string; deviceDir(kind: CommonsKind, deviceId: string): string;
+  deviceRecordFile(deviceId: string): string; heartbeatFile(deviceId: string, runId: string): string;
+  leaseDir(deviceId: string, repoKey: string): string; leaseFile(deviceId: string, repoKey: string, leaseId: string): string;
+  outboxDir(deviceId: string, target: string): string; messageFile(deviceId: string, target: string, tMs: number, seq: number): string;
+  ackDir(deviceId: string, msgId: string): string;
+  ackFile(deviceId: string, msgId: string, consumerId: string): string;   // acks/<dev>/<msgId>/<consumerId>.json — the CONSUMER PROCESS (review major 8)
+  runsDir(deviceId: string, runId: string): string;
+  claimsFile(deviceId: string, runId: string): string;                    // runs/<dev>/<runId>/claims.json (§9.3, revision 5)
+  seenDir(deviceId: string): string; seenFile(deviceId: string, consumerId: string): string;   // inbox/seen/<dev>/<consumerId>.json — UNDER the inbox kind, so 'seen' can never read as a deviceId
+  worktreeFile(repoKey: string, slug: string): string;
+}
+export function hostRoot(root: string, hostKey: string): string;
+/** §4.3 (revision 5): a lease with a `repoKey` is written under BOTH key directories, so a writer needs both rels. */
+export function leaseRels(lease: { repoKey: string | null; wsKey: string; leaseId: string }): string[];
+
+// ── records.ts / claims.ts: the three predicates the lock and ttl paths share ─────────────────────────────────────
+export function lockReplaceVerdict(o: { lock: RunLockFacts | null; peerLive: PeerLiveFacts | null; self?: { bootId?: string | null; isPidAlive?: (pid: number) => boolean } }): LockReplace;
+export function sameBoot(a: string | null | undefined, b: string | null | undefined): boolean;   // unknown on either side stays permissive
+export function honouredTtlMs(ttlMs: number): number;                    // + re-check (5): the ttl a READER honours, whatever a record claims
+export function forceTakebackPlan(o: TakebackInputs): TakebackPlan;      // §9.3's Q / U algebra, with `exhausted`
+export function ordinaryMintEpoch(local: readonly number[]): number;     // §9.3: local truth only — the refusal gate guarantees no qualified foreign epoch exceeds it
+export function claimRefusal(local: readonly number[], foreign: readonly { epoch: number; deviceId: string; qualified: boolean }[]): { deviceId: string; epoch: number } | null;   // §7.3 1(a), §14 item 18
+export function hmacOf(record: object, keyHex: string, writer: HmacWriter | string): string;
+export function hmacValid(record: object, keyHex: string | null | undefined, writer: HmacWriter | string): boolean;
+export function withHmac<T extends object>(record: T, keyHex: string | null | undefined, writer: HmacWriter | string): T;
+export interface HmacWriter { deviceId: string; hostKey?: string | undefined }
+//  §10.3 (revision 4): the canonical text is `<writerDeviceId>\n<writerHostKey>\n` + the checksum's own text, and the
+//  verifier supplies BOTH from the PATH the file was read at. With one group key an unbound signature would let any
+//  paired device forge records under another paired device's id.
+
+// ── fold.ts / mailbox.ts ──────────────────────────────────────────────────────────────────────────────────────────
+export function seenEpochs(fold: Fold, runId: string, o?: { includeUnverified?: boolean }): number[];
+export function claimHolderOf(fold: Fold, runId: string, o?: { includeUnverified?: boolean }): (Heartbeat & { arrivalMono: number }) | null;
+export function ackOrigin(fold: Fold, ack: Pick<Ack, 'deviceId' | 'msgId' | 'by'>): RecordOrigin;   // §5.1: a "believed" ack is a LOCATION rule, so `awaitAck` asks the fold, never the record
+export function consumerIdOf(self: Pick<SelfIdentity, 'sessionId'>, actor8: string): string;        // `<sessionId ?? 'tui'>-<actor8>`
+export function awaitAck(ledger: Ledger, msgId: string, timeoutMs?: number): Promise<Ack | null>;   // AWAIT_ACK_MS default; `trackAck` arms the watch
+
+// ── leases.ts: the F1 / F2 machinery as ONE object ────────────────────────────────────────────────────────────────
+/** AS BUILT: `fenceYield` performs the downgrade and hands back everything F2 needs, so the engine's wait loop only ever
+ *  asks `wake(fold, nowMono)`. `fenceWake` stays exported as the pure decision the loop is tested through. */
+export function fenceYield(ledger: Ledger, mine: LeaseIntent, decided: LeaseHandle): Promise<FenceWait>;
+export interface FenceWait {
+  readonly captured: FenceYield;
+  wake(fold: Fold, nowMono: number): 'keep-waiting' | 'redeclare' | 'deadline';
+  redeclare(): Promise<StrictDeclare>;                  // re-runs check() and passes ITS snapshot as the next `seen`
+}
+
+// ── fs.ts / sync-shared-dir.ts ────────────────────────────────────────────────────────────────────────────────────
+//  `CoordFs.realpath(path): Promise<string>` — + re-review (6)(ii): §10.1 bounded `sharedDir` by string containment
+//  alone, so a symlink inside it (or a `sharedDir` pointing AT the coordination root) made every mirrored file read back
+//  out of our own local subtree as `origin.self` — the forged same-device `pause` path, open again. Both roots are now
+//  resolved and the mirror is refused when either contains the other.
+export interface MirrorOptions { fs: CoordFs; sharedDir: string; localRoot?: string; deviceId: string; monotonicNow: () => number; opTimeoutMs?: number; onState?: (state: MirrorState, code: string | null) => void }
+//  `Mirror.refused: string | null` is that refusal, distinct from `offlineCode`: offline is retried, refused never is.
+
+// ── the constants and the renames ─────────────────────────────────────────────────────────────────────────────────
+export const MAX_DEVICES = 16;            // §3.5: device subtrees walked, watched and parsed per kind
+export const MAX_FENCE_DEVICES = 256;     // §4.5: the strict fence is bounded by this and STRICT_FENCE_MS, never by MAX_DEVICES
+export const STRICT_FENCE_MS = 250;       // past either → `fence:'blind'`
+export const MAX_GC_DEVICES = 1_024;      // §4.6: the disk enumeration bound for resolving a LABEL
+export const ENTRIES_MAX = 4_096;         // the fold's total record bound, across kinds
+export const TRACKED_ACKS_MAX = 128;      // §5.1: msgIds `awaitAck` watches at once …
+export const ACK_TRACK_MAX_MS = 3_600_000;// … and how long one stays armed
+export const FENCE_WAIT_CAP_MS = HEARTBEAT_TTL_MS + SYNC_SLACK_SHARED_MS + 5_000;   // §4.3 step 4: the post-yield deadline ceiling (the 170 s of §14 item 18)
+export const HOLDING_LEASE_TYPES: ReadonlySet<Lease['type']>;   // §4.3 step 2: exclusive | command | lane | worktree | takeover — an 'intent' is a declaration, never a hold
+```
+
+| Revision-3 / 4 name | As built | Why |
+| --- | --- | --- |
+| `EPOCH_MAX` | **`MAX_CLAIM_EPOCH`** | one `MAX_*` prefix for every bound; the old name is re-exported so nothing downstream broke on the rename |
+| `CLAIMS_MAX` | **`MAX_CLAIMS_PER_RUN`** | same, and the new name says *per run* — the cap is on one `RunMeta.claims[]`, not on the store |
+| `encodeKeyComponent` / `decodeKeyComponent` | **`keyDir`** / **`keyOfDir`** | the function makes a *directory name*; the old pair read like a general codec and was used as one. Both old names are kept as aliases |
+| `MACHINE_ID_RE` / `machineIdOf` | **`HOST_KEY_RE`** / **`hostKeyOf`** | revision 3 hashed two inputs and called the result a machine id; §3.2's value hashes three (hostname, user, **machine identifier**) and names a HOST, and the OS's own identifier is now a separate fact (`MachineRecord.machineId`, in the private `devices/<hostKey>/machine.json`). Keeping the old name for the hash and adding a real machine id under it would have been two things called the same |
+| `sameMachine` | **`sameHost`** | follows `hostKey`; `sameBoot` is its sibling for `bootId` |
+| `foreignLive(fold, self, runId)` | **`Ledger.foreignLive(runId, { includeUnverified? })`** | the origin of a record is the ledger's `fold.origins`, not something a bare `self` can re-derive (blocker 6) |
+| `sweep(home, …)` | **`sweepWorktrees(io, …)`** | the VCS is an injected seam; see `SweepReport` above |
+| `readDeviceIdentity` / `createDevice` | **`deviceIdentity`** / **`adoptNewDevice`** | one reader with a `status`, and one explicit adopter. `adoptNewDevice` returns `{ status, device, path, hostKey, adoptedFrom?, newKey?, processOnly? }`: `adoptedFrom` is the id this machine walked away from, `newKey: true` says a cloned `deviceKey` spoke for two machines so a fresh one was minted (§3.2, §10.3), and `processOnly: true` says `device.json` did not read back our own id — a shared, synced home, where the new id holds for THIS PROCESS only rather than being written over the other machine's file |
+| `ignoreDevice(home, …)` / `readTrusted(home)` / … | **`…(fs, hostDir, …)`** | every `ids.ts` helper takes the **host dir** (`commonsPaths(root, hostKey).hostDir`), never a bare `home`: `devices/<hostKey>/` is the one directory these files live in, and passing the resolved dir makes it impossible to write a per-host file at the root of a synced `~/.jevcode` — the exact bug §3.1 exists to prevent. The `Ledger`-taking verbs (`ignoreDeviceOn`, `unignoreDeviceOn`, `pairDeviceOn`, `unpairDeviceOn`) are the surface's entry points and resolve the ref first |
+| — | **`PausePoint`, `PausePointReason`** | re-exported by `src/coordination/types.ts` from **`src/core/types.ts` (contract 1.4)**, not redeclared: `Heartbeat.pausePoint?` and the §12.0.2 event must be the *same* type or a beat could carry a shape the resume card cannot read |
+
+**Two as-built deviations from the text above, with their reasons.**
+
+1. **`deviceKey` is its own file, not a field of `device.json`.** §10.3 says the key "lives in `devices/<hostKey>/device.json`".
+   As built it is `devices/<hostKey>/device.key` (0600, 64 hex chars, `Commons.deviceKeyFile`), and `device.json` carries
+   `keyId` only. Reason (review #42): there are **two** `device.json` files — the private per-host one and the published
+   `registry/<deviceId>/device.json` — they are built by the same `buildDeviceRecord` and `parseDeviceRecord`, and the
+   published one is mirrored. One record type with a secret field means exactly one omission, one `redactRecord` gap or one
+   future additive writer publishes the group key to every device on the share, with no way to notice. Separating them makes
+   the public subset the *only* shape either copy can have, so the mirror cannot carry key material even by mistake, and the
+   0600 mode applies to a file that holds nothing else. `readCommonsKey` / `writeCommonsKey` are the only two readers.
+2. **The mirror's `probe()` creates the mirror root and never its parent.** `CoordFs.mkdir` is recursive, so creating
+   `<sharedDir>/jevcode-commons` blind would materialise the whole chain on the LOCAL disk whenever `sharedDir` is an
+   unmounted mount point — shadowing the real share when it comes back, and mirroring to a directory no other device can
+   ever see. `probe()` therefore stats the parent first and never creates it: an unmounted `sharedDir` stays `offline` (and
+   is retried), a real one gains exactly one directory. The bootstrap this preserves is + re-check (8): `sessions sync
+   enable` on a folder with no `jevcode-commons` yet must come up, and before the `mkdir` it could not — the root's ENOENT
+   failed the probe into `offline`, and `copy()` / `remove()` return early while offline, so nothing ever created it.
 
 #### 12.0.5 (d) Edge cases — decided behaviour, one test per row
 
@@ -3180,6 +3365,36 @@ import time, and the prompt size distribution per mode before and after compacti
     `unverifiedFork: boolean` (the row-51 notice), and `claimHolderOf` / `seenEpochs` / `foreignLive` share one
     `includeUnverified?` display opt-in. The §7.3 1(a) / §9.3 `/resume` refusal is now one predicate,
     `claimRefusal(local, foreign)` — refuse only when a **qualified** foreign epoch strictly exceeds the local maximum.
+
+19. **As built (the §12.0.4 / §3.1 / §10.3 reconciliation after revisions 4 and 5).** §12.0.4 was written before the code
+    and had drifted from `src/coordination/index.ts` in the ways below. Every row is a change to the **design text**,
+    verified against the exports; where the code deviates from a decision the design made on purpose, the deviation is
+    stated with its reason rather than absorbed. Nothing decided earlier is withdrawn — `budgetTokens` + `windowTokens`,
+    contract 1.4 after 1.3, and every ratification paragraph of items 17 and 18 stand as written.
+
+| § | Corrected to match the code | Why the code is shaped this way |
+| --- | --- | --- |
+| §12.0.4 `Claim` | `{ epoch, deviceId, runId, at, pid }`; `compareClaim` documented as a RANK comparator and the holder as the highest **qualified** epoch | item 18; `pid` keeps the order total for two processes of one device on one run |
+| §12.0.4 `Fold` | `inbox` (not `messages`); `liveness`, `ignored`, `cloned`, `forks?`, `origins` added; `sameDevice` removed from the three maps; `skippedDevices` moved to `LedgerStatus.devicesSkipped` | `sameDevice` is the read LOCATION (blocker 6) and a per-record boolean invited a field comparison; a skipped subtree is a fact about the SCAN |
+| §12.0.4 `Ledger` | the as-built members listed in the interface: `hostKey`, `bootId`, `claim`, `status`, `refresh`, `refreshFence`, `forkVerdict`, `nextEpoch(runId, { epochHigh? })`, `takeoverLease({ …, epochHigh? })`, `writeClaimsProjection`, `readClaimEpochs`, `forceTakebackEpochFor`, `readRunClaim`, `pairDevice`, `reloadTrust`, `unpairDevice`, `ignoreDevice`, `unignoreDevice`, `resolveDeviceRef`, `allDeviceIds`, `setDeviceLabel`, `syncStatus`, `syncDisable`, `removeOwn → Promise<boolean>`, `trackLease` / `untrackLease`, `trackAck(msgId, ttlMs?)` | `setIdentity → Promise<void>` was already right (revision 4's walk of an added root); the rest are the revision-4/5 items that never made it back into the contract |
+| §12.0.4 `foreignLive` | a `Ledger` **method** with `{ includeUnverified? }`, plus `peerLive` and the `PeerLive` shape | the origin of a record is `fold.origins`, which a free function over a bare `self` cannot reach without re-deriving "is this mine?" from the record |
+| §12.0.4 lease API | `declare(…, 'strict', opts?: CheckOptions)` where `opts.snapshot` is the design's `seen`; `leaseSnapshot(check)`; `fenceYield(ledger, mine, decided) → FenceWait` beside the pure `fenceWake` | the strict re-fold needs the same option bag `check()` takes, so the fence and the check it fences cannot drift; `FenceWait` puts F1's capture and F2's decision in one object the wait loop can hold |
+| §12.0.4 `Heartbeat` | `truncated?`; `hostKey?` and `bootId?` are OPTIONAL | both are DISQUALIFIERS, never grants, so a record that omits one must still fold — requiring them would have `shape`-rejected every older build's beat |
+| §12.0.4 `SweepReport` / worktrees | `{ removed: string[]; kept: { slug, reason, detail }[]; failed: { slug, code }[] }`, and `sweepWorktrees(io, …)` | keyed by the slug `removeWorktree` refuses by; the VCS is an injected seam |
+| §12.0.4 `commonsPaths` | `commonsPaths(root, hostKey?)` with `hostDir`, `deviceKeyFile`, `claimsFile`, `seenDir` / `seenFile`, `ackFile(deviceId, msgId, consumerId)`; plus `hostRoot`, `leaseRels` | §3.1's per-host layout and revision 5's dual-directory lease write; a MIRROR root has no identity files, hence the optional `hostKey` |
+| §12.0.4 files table | `ids.ts` helpers take `(fs, hostDir, …)`; `deviceIdentity` / `adoptNewDevice` replace `readDeviceIdentity` / `createDevice`; `byRunId` is the design's `byRun`; the claim fence lives in `claims.ts` and the fold's readers in `fold.ts` | passing the resolved host dir makes it impossible to write a per-host file at the root of a synced `~/.jevcode` — the bug §3.1 exists to prevent |
+| §12.0.4 constants / renames | `MAX_FENCE_DEVICES`, `STRICT_FENCE_MS`, `MAX_DEVICES`, `MAX_GC_DEVICES`, `ENTRIES_MAX`, `TRACKED_ACKS_MAX`, `ACK_TRACK_MAX_MS`, `FENCE_WAIT_CAP_MS`, `HOLDING_LEASE_TYPES`; `EPOCH_MAX → MAX_CLAIM_EPOCH`, `CLAIMS_MAX → MAX_CLAIMS_PER_RUN`, `encodeKeyComponent → keyDir`, `MACHINE_ID_RE` / `machineIdOf → HOST_KEY_RE` / `hostKeyOf`, `sameMachine → sameHost` | the rename table in §12.0.4 gives each one its reason; the two epoch names are re-exported under the old spelling so nothing downstream broke |
+| §12.0.4 other | `hmacOf` / `hmacValid` / `withHmac(record, key, writer)` and `HmacWriter`; `consumerIdOf`; `ackOrigin`; `awaitAck → Promise<Ack \| null>`; `lockReplaceVerdict({ lock, peerLive, self? })`; `sameBoot`; `honouredTtlMs`; `forceTakebackPlan`; `ordinaryMintEpoch`; `claimRefusal`; `seenEpochs(fold, runId, { includeUnverified? })`; `CoordFs.realpath`; `MirrorOptions.localRoot`; `Mirror.refused`; `LedgerStatus.{ mirrorOffline, mirrorOfflineNotice, devicesSkipped }`; `buildHeartbeat` → `degraded` with the writer's `onDegraded`; `Message.from.{ pid, bootId }`; `adoptNewDevice` → `{ hostKey, adoptedFrom?, newKey?, processOnly? }`; `pairDeviceOn` / `unpairDeviceOn` / `unignoreDeviceOn`; `PausePoint` / `PausePointReason` re-exported from core contract 1.4 | each is listed in the as-built block of §12.0.4 with the review item it came from; the `CoordinationError` codes (`'self-device'`, `'not-paired'`, `'too-many-devices'`, `'epoch-exhausted'`), `StrictDeclare`, `LeaseSnapshot`, `DeclaredFact`, `check().declared`, `SweepReport.failed` and `Message.from` were already correct and are unchanged |
+
+    **Two deviations, kept and stated** (both in §12.0.4's as-built block, and in §3.1 / §10.3 where the text made the
+    original promise). **(1)** `deviceKey` lives in its own 0600 `devices/<hostKey>/device.key`, not as a field of
+    `device.json` (review #42): there are two `device.json` files built by one `buildDeviceRecord`, and the published one
+    is mirrored, so a secret field would be one omission or one future additive writer away from publishing the group key
+    to the share. Both copies now stay the one public subset by construction. **(2)** the mirror's `probe()` `mkdir`s the
+    mirror root and **never** its parent: `CoordFs.mkdir` is recursive, so creating it blind would materialise the whole
+    chain on the local disk at an unmounted mount point, shadowing the real share when it returns. An unmounted
+    `sharedDir` stays `offline` and is retried; a real one gains exactly one directory, which is what makes `sessions sync
+    enable` on a fresh folder come up at all (+ re-check (8)).
 
 ### Rejected critiques
 
