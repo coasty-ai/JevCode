@@ -1,0 +1,22 @@
+expect \x1b\[\?25l
+sleep 1.0
+mark wizard
+resize 12 60
+sleep 0.8
+resize 8 40
+sleep 0.8
+resize 5 30
+sleep 0.8
+resize 40 120
+sleep 0.9
+mark grown
+send \x1b
+sleep 0.7
+mark options
+resize 12 60
+sleep 0.8
+resize 24 80
+sleep 0.9
+send \x03
+sleep 0.8
+eof

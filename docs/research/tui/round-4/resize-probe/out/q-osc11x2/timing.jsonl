@@ -1,0 +1,16 @@
+{"t":109,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":1310,"step":2,"op":"sleep","arg":"1.2"}
+{"t":1310,"step":3,"op":"send","arg":"\\x1b]11;rgb:0000/0000/0000\\x07"}
+{"t":1310,"step":4,"op":"send","arg":"\\x1b]11;rgb:1111/1111/1111\\x07"}
+{"t":2310,"step":5,"op":"sleep","arg":"1.0"}
+{"t":2310,"step":6,"op":"mark","arg":"sent"}
+{"t":2310,"step":7,"op":"send","arg":"\\x03"}
+{"t":2710,"step":8,"op":"sleep","arg":"0.4"}
+{"t":2710,"step":9,"op":"send","arg":"\\x04"}
+{"t":2910,"step":10,"op":"sleep","arg":"0.2"}
+{"t":2910,"step":11,"op":"send","arg":"\\x04"}
+{"t":3710,"step":12,"op":"sleep","arg":"0.8"}
+{"t":18710,"step":13,"op":"timeout","arg":"eof"}
+{"t":29248,"step":0,"op":"kill-on-timeout","arg":"SIGKILL"}
+{"t":29251,"step":0,"op":"signal","arg":"SIGKILL"}
+{"t":29251,"step":0,"op":"exit","arg":"137"}

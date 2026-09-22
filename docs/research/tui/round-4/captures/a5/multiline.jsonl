@@ -1,0 +1,19 @@
+{"t":111,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":112,"step":2,"op":"expect","arg":"Say hi"}
+{"t":202,"step":3,"op":"expect","arg":"sess \\$"}
+{"t":604,"step":4,"op":"sleep","arg":"0.4"}
+{"t":604,"step":5,"op":"send","arg":"hello there"}
+{"t":604,"step":6,"op":"send","arg":"\\x0a"}
+{"t":604,"step":7,"op":"send","arg":"indented second line"}
+{"t":604,"step":8,"op":"send","arg":"\\x0a"}
+{"t":604,"step":9,"op":"send","arg":"third"}
+{"t":1004,"step":10,"op":"sleep","arg":"0.4"}
+{"t":1004,"step":11,"op":"mark","arg":"typed"}
+{"t":1004,"step":12,"op":"send","arg":"\\r"}
+{"t":3004,"step":13,"op":"sleep","arg":"2.0"}
+{"t":3004,"step":14,"op":"mark","arg":"replied"}
+{"t":3004,"step":15,"op":"send","arg":"/exit"}
+{"t":3304,"step":16,"op":"sleep","arg":"0.3"}
+{"t":3304,"step":17,"op":"send","arg":"\\r"}
+{"t":3350,"step":18,"op":"eof","arg":""}
+{"t":3350,"step":0,"op":"exit","arg":"0"}

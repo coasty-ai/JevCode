@@ -1,0 +1,15 @@
+{"t":107,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":107,"step":2,"op":"expect","arg":"Say hi"}
+{"t":197,"step":3,"op":"expect","arg":"sess \\$"}
+{"t":698,"step":4,"op":"sleep","arg":"0.5"}
+{"t":698,"step":5,"op":"send","arg":"\\033[200~please explain alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha beta gamma delta epsilon zeta eta theta alpha b\\033[201~"}
+{"t":1498,"step":6,"op":"sleep","arg":"0.8"}
+{"t":1498,"step":7,"op":"mark","arg":"pasted"}
+{"t":1498,"step":8,"op":"send","arg":"\\r"}
+{"t":3998,"step":9,"op":"sleep","arg":"2.5"}
+{"t":3998,"step":10,"op":"mark","arg":"replied"}
+{"t":3998,"step":11,"op":"send","arg":"/exit"}
+{"t":4298,"step":12,"op":"sleep","arg":"0.3"}
+{"t":4298,"step":13,"op":"send","arg":"\\r"}
+{"t":4343,"step":14,"op":"eof","arg":""}
+{"t":4343,"step":0,"op":"exit","arg":"0"}

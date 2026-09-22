@@ -1,0 +1,35 @@
+expect \x1b\[\?25l
+sleep 1.4
+mark settled
+resize 23 79
+resize 22 78
+resize 21 77
+resize 20 76
+resize 19 75
+resize 18 74
+resize 17 73
+resize 16 72
+resize 15 71
+resize 14 70
+resize 15 71
+resize 16 72
+resize 18 74
+resize 20 76
+resize 22 78
+resize 24 80
+resize 26 82
+resize 28 84
+resize 30 86
+resize 24 80
+sleep 1.5
+mark stormed
+send Z
+sleep 0.5
+mark echoed
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.6
+eof

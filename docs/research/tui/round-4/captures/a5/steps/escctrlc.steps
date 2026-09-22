@@ -1,0 +1,28 @@
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.4
+send some draft text I am typing
+sleep 0.4
+send \x1b
+sleep 0.5
+mark after-esc
+send \x1b
+sleep 0.5
+mark after-esc2
+send more typing here
+sleep 0.4
+send \x03
+sleep 0.5
+mark after-ctrlc
+send \x1b[A
+sleep 0.5
+mark after-up
+send \x1b[A
+sleep 0.4
+mark after-up2
+send \x03
+sleep 0.3
+send \x03
+sleep 0.5
+eof

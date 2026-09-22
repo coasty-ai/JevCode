@@ -1,0 +1,25 @@
+{"t":107,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":1309,"step":2,"op":"sleep","arg":"1.2"}
+{"t":1309,"step":3,"op":"send","arg":"the quick brown fox jumps over the lazy dog and keeps typing well past one hundred characters of plain ascii text here"}
+{"t":1911,"step":4,"op":"sleep","arg":"0.6"}
+{"t":1911,"step":5,"op":"mark","arg":"draft"}
+{"t":1913,"step":6,"op":"resize","arg":"24 60"}
+{"t":2814,"step":7,"op":"sleep","arg":"0.9"}
+{"t":2814,"step":8,"op":"mark","arg":"narrow"}
+{"t":2816,"step":9,"op":"resize","arg":"24 100"}
+{"t":3717,"step":10,"op":"sleep","arg":"0.9"}
+{"t":3717,"step":11,"op":"mark","arg":"wide"}
+{"t":3720,"step":12,"op":"resize","arg":"24 44"}
+{"t":4622,"step":13,"op":"sleep","arg":"0.9"}
+{"t":4622,"step":14,"op":"mark","arg":"narrower"}
+{"t":4625,"step":15,"op":"resize","arg":"24 80"}
+{"t":5527,"step":16,"op":"sleep","arg":"0.9"}
+{"t":5527,"step":17,"op":"mark","arg":"back"}
+{"t":5527,"step":18,"op":"send","arg":"\\x03"}
+{"t":5827,"step":19,"op":"sleep","arg":"0.3"}
+{"t":5827,"step":20,"op":"send","arg":"\\x04"}
+{"t":6027,"step":21,"op":"sleep","arg":"0.2"}
+{"t":6027,"step":22,"op":"send","arg":"\\x04"}
+{"t":6261,"step":23,"op":"sleep","arg":"0.8"}
+{"t":6261,"step":23,"op":"eof-during-sleep","arg":"0.8"}
+{"t":6261,"step":0,"op":"exit","arg":"0"}

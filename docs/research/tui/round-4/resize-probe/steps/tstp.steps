@@ -1,0 +1,25 @@
+sleep 1.4
+mark settled
+send abcdef
+sleep 0.4
+send \x1a
+sleep 1.0
+mark stopped
+signal CONT
+sleep 1.2
+mark resumed
+resize 12 60
+sleep 0.8
+resize 24 80
+sleep 0.9
+mark cycled
+send Z
+sleep 0.5
+mark echoed
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.8
+eof

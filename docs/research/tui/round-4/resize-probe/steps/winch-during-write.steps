@@ -1,0 +1,25 @@
+sleep 1.2
+send make the tests pass
+sleep 0.2
+send \r
+sleep 0.6
+mark running
+resize 12 60
+resize 24 80
+resize 12 60
+resize 24 80
+sleep 0.05
+resize 14 62
+sleep 0.02
+resize 24 80
+sleep 2.0
+mark done
+send \x03
+sleep 0.4
+send \x03
+sleep 1.0
+send \x04
+sleep 0.2
+send \x04
+sleep 0.8
+eof

@@ -1,0 +1,15 @@
+{"t":113,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":113,"step":2,"op":"expect","arg":"Say hi"}
+{"t":203,"step":3,"op":"expect","arg":"sess \\$"}
+{"t":705,"step":4,"op":"sleep","arg":"0.5"}
+{"t":705,"step":5,"op":"send","arg":"\\033[200~here is the code:\\n```python\\ndef f(x):\\n    if x:\\n\\n        return 1\\n    return 0\\n```\\nwhat do you think?\\033[201~"}
+{"t":1308,"step":6,"op":"sleep","arg":"0.6"}
+{"t":1308,"step":7,"op":"mark","arg":"pasted"}
+{"t":1308,"step":8,"op":"send","arg":"\\r"}
+{"t":3808,"step":9,"op":"sleep","arg":"2.5"}
+{"t":3808,"step":10,"op":"mark","arg":"replied"}
+{"t":3808,"step":11,"op":"send","arg":"/exit"}
+{"t":4110,"step":12,"op":"sleep","arg":"0.3"}
+{"t":4110,"step":13,"op":"send","arg":"\\r"}
+{"t":4154,"step":14,"op":"eof","arg":""}
+{"t":4154,"step":0,"op":"exit","arg":"0"}

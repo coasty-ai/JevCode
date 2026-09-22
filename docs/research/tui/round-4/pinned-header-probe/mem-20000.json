@@ -1,0 +1,2 @@
+{"items":20000,"rows80":40000,"rows200":20000,"heapItemsMb":2.4,"heapIndex80Mb":15.7,"heapIndex200Mb":15.4,"rssMb":113.2,"rebuild80Ms":24.6,"rebuild200Ms":27.7,"slicePerFrameMs":0.0002,"acc":40000}
+{"items":5000,"rows80":10000,"rows200":5000,"heapItemsMb":0.3,"heapIndex80Mb":3.8,"heapIndex200Mb":3.9,"rssMb":66,"rebuild80Ms":11.8,"rebuild200Ms":9.9,"slicePerFrameMs":0.0001,"acc":40000}

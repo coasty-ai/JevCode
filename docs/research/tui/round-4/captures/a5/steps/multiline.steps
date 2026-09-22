@@ -1,0 +1,18 @@
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.4
+send hello there
+send \x0a
+send     indented second line
+send \x0a
+send third
+sleep 0.4
+mark typed
+send \r
+sleep 2.0
+mark replied
+send /exit
+sleep 0.3
+send \r
+eof

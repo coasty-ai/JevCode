@@ -1,0 +1,13 @@
+expect \x1b\[\?25l
+sleep 1.2
+send \\x1b[I
+send \\x1b]11;rgb:0000/0000/0000\\x07
+sleep 1.0
+mark sent
+send \x03
+sleep 0.4
+send \x04
+sleep 0.2
+send \x04
+sleep 0.8
+eof

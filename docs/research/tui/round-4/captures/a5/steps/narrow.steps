@@ -1,0 +1,18 @@
+expect \x1b\[\?25l
+sleep 0.6
+send what is the meaning of this repository and how do I use it well
+sleep 0.3
+send \r
+sleep 2.5
+mark replied
+resize 20 34
+sleep 1.2
+mark resized
+send hi
+sleep 0.2
+send \r
+sleep 2.0
+send /exit
+sleep 0.2
+send \r
+eof

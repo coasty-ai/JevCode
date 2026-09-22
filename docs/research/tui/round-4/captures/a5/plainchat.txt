@@ -1,0 +1,7 @@
+[run] jevcode session · ws-6auz0W | step 0/– starting
+> [sandbox] seatbelt — writes confined to the workspace and run dirs; harness secret files, ~/.ssh, ~/.aws unreadable; reads elsewhere and network allowed unless --no-network
+hello there
+[you] hello there
+run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text > the date parsing
+> run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text > /exit
+> run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text > ^C

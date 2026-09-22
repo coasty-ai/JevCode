@@ -1,0 +1,14 @@
+expect \x1b\[\?25l
+sleep 1.4
+mark settled
+resize 24 81
+sleep 1.2
+mark widthonly
+resize 30 81
+sleep 1.2
+mark rowsgrow
+send \x04
+sleep 0.2
+send \x04
+sleep 0.6
+eof
