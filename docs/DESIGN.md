@@ -3436,6 +3436,21 @@ columns and folds R-a and R-b into the §5 accept rule; `experiments/harness-nex
 `--arm` (rings 1 and 2 used to hard-code `llm-jev`, so a Ring-2 run of this wave would have read
 zeros for a reason that had nothing to do with the fast path) and clamps that arm to concurrency 1.
 
+Two consequences of pinning the mechanisms are recorded here rather than left to be discovered from
+a table. **First, pinning an option is not enough: both mechanisms are resolved env-FIRST inside the
+engine** (slot C's `resolveFastPathOption` reads `JEVCODE_FASTPATH` before `EngineOptions.fastPath`,
+in both directions; slot B's `routersOn` ORs `JEVCODE_ROUTERS=on` in). An exported
+`JEVCODE_FASTPATH=off` would run `jev-on-next` disarmed while `summary.json` recorded `'auto'`, and
+an exported `JEVCODE_FASTPATH=auto` would run the `jev-on-next-nofast` **control** armed while it
+recorded `'off'` — destroying the one-mechanism contrast clause 4 rests on, silently and in the
+flattering direction. `runBenchWithSources` therefore calls `conditions.ts pinMechanismEnv()` before
+any engine is built, unconditionally, and logs each switch it removed; after that the pinned value
+is the effective one. **Second, `armMechanisms` returns `fastPath: 'off'` for the six older arms**,
+which once slot C lands is a deliberate divergence from the product default (`'auto'` in `jev-on`):
+a bench `jev-on` row measures the engine *without* route R9, because it is the same-build no-fast-path
+reference the wave is read against. §8.5's note that the default-mode flip is "a separate decision on
+these rows" is exactly this: the `jev-on` bench row is not a measurement of the shipped default.
+
 ### 22.9 Deviations from `docs/LLM-JEV-DESIGN.md` recorded in the stage reports
 
 Each implementer's `deviations_from_design` (workflow journals `wf_7afb7438-077` for stages 1–3

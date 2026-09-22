@@ -10,16 +10,17 @@
  *      the cases that must NOT read as a pass (no control, no gate report, an arm that was never armed);
  *   4. the one cross-slot gap: `src/cli/args.ts` keeps its own `--conditions` allow-list.
  */
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CONDITIONS } from '../../../src/cli/args.js';
-import { CONDITION_ORDER, armMechanisms, buildEngineOptions, conditionConfig, engineModeOf, isNextArm, parseConditions, pinnedGeneration, requiresSerialBench, usesSynthesizer, usesTunedProvider } from '../../../src/bench/conditions.js';
+import { CONDITION_ORDER, MECHANISM_ENV_VARS, armMechanisms, buildEngineOptions, conditionConfig, engineModeOf, isNextArm, parseConditions, pinMechanismEnv, pinnedGeneration, requiresSerialBench, usesSynthesizer, usesTunedProvider } from '../../../src/bench/conditions.js';
 import { computeSuiteMetrics } from '../../../src/bench/metrics.js';
 import { evaluateAcceptRule, evaluatePredictions, FASTPATH_REASONS, FRESH_18, measurementRows, recorded, RECORDED_BUILD } from '../../../src/bench/next-arms.js';
-import { buildRecord, validateOptions } from '../../../src/bench/runner.js';
+import { buildRecord, runBenchWithSources, validateOptions } from '../../../src/bench/runner.js';
 import { emptyStepsSummary, mergeStepsSummaries, summariseStepRows, withWaveMembers } from '../../../src/bench/step-records.js';
 import type { BenchRecord, StepsSummary } from '../../../src/bench/types.js';
 import type { BenchCondition } from '../../../src/core/types.js';
-import { baseOptions, createFakeDeps, fakeRunResult, syntheticSource } from './helpers.js';
+import { baseOptions, createFakeDeps, fakeRunResult, syntheticSource, tempDir } from './helpers.js';
 
 const step = (over: Record<string, unknown>): string => JSON.stringify({ step: 1, proposer: 'synth', ...over });
 
@@ -60,7 +61,9 @@ describe('the jev-on-next arms (§8.1)', () => {
     expect(parseConditions('jev-on-next,jev-on-next-nofast')).toEqual(['jev-on-next', 'jev-on-next-nofast']);
   });
 
-  it('write their mechanisms into EngineOptions and summary.json, never reading them from the environment', () => {
+  // NB this asserts what buildEngineOptions RETURNS. The engine resolves both mechanisms env-first, so the option
+  // below is only the effective one because the runner clears the two switches — the test after next.
+  it('write their mechanisms into EngineOptions and summary.json from the arm\'s own row', () => {
     const opts = baseOptions('/r', '/o');
     const input = { task: 't', workspace: '/w', provider: { model: 'm' }, decider: {}, meter: {} } as unknown as Parameters<typeof buildEngineOptions>[0];
     const prev = process.env['JEVCODE_FASTPATH'];
@@ -76,6 +79,61 @@ describe('the jev-on-next arms (§8.1)', () => {
     }
     expect(conditionConfig('jev-on-next', opts, 'm').mechanisms).toEqual({ fastPath: 'auto', routers: true, s2: true });
     expect(conditionConfig('llm-jev', opts, 'm').mechanisms).toEqual({ fastPath: 'off', routers: false, s2: false });
+  });
+
+  /**
+   * The arm's row in summary.json is only the truth if nothing beats it at resolution time, and both mechanisms are
+   * resolved from the environment FIRST: slot C's `resolveFastPathOption` (llm-loop-C-fastpath@5ddcbf6
+   * src/loop/engine.ts) reads `JEVCODE_FASTPATH` before the option — in BOTH directions — and slot B's `routersOn`
+   * (llm-loop-B-routers src/loop/routers.ts) ORs `JEVCODE_ROUTERS=on` in. An exported `JEVCODE_FASTPATH=off` would
+   * run `jev-on-next` disarmed while recording `'auto'`; an exported `JEVCODE_FASTPATH=auto` would run the
+   * `jev-on-next-nofast` CONTROL armed while recording `'off'`, destroying the one-mechanism contrast clause 4
+   * rests on. Neither is observable in the output. So the bench clears both before any engine is built.
+   */
+  it('clears the mechanism env switches so the PINNED option is the effective one', () => {
+    expect([...MECHANISM_ENV_VARS]).toEqual(['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS']);
+    const env: Record<string, string | undefined> = { JEVCODE_FASTPATH: 'auto', JEVCODE_ROUTERS: 'on', JEVCODE_WARM: 'off' };
+    expect(pinMechanismEnv(env)).toEqual([
+      { name: 'JEVCODE_FASTPATH', was: 'auto' },
+      { name: 'JEVCODE_ROUTERS', was: 'on' },
+    ]);
+    expect('JEVCODE_FASTPATH' in env).toBe(false);
+    expect('JEVCODE_ROUTERS' in env).toBe(false);
+    // only these two: JEVCODE_WARM is the documented escape every arm of the recorded runs was taken under
+    expect(env['JEVCODE_WARM']).toBe('off');
+    expect(pinMechanismEnv(env)).toEqual([]);
+
+    // a mirror of slot C's precedence (engine.ts `resolveFastPathOption`), which is env-first in both directions.
+    // Replace it with the real import once slot C has merged; the point it pins is that the ONLY way the arm's
+    // pinned value survives is an empty environment.
+    const resolveLikeSlotC = (option: 'auto' | 'off', e: Record<string, string | undefined>): 'auto' | 'off' => (e['JEVCODE_FASTPATH'] === 'off' ? 'off' : e['JEVCODE_FASTPATH'] === 'auto' ? 'auto' : option);
+    for (const pinned of ['auto', 'off'] as const) {
+      expect(resolveLikeSlotC(pinned, { JEVCODE_FASTPATH: 'auto' })).not.toBe(pinned === 'auto' ? 'off' : pinned);
+      const cleared: Record<string, string | undefined> = { JEVCODE_FASTPATH: pinned === 'auto' ? 'off' : 'auto' };
+      pinMechanismEnv(cleared);
+      expect(resolveLikeSlotC(pinned, cleared)).toBe(pinned);
+    }
+  });
+
+  it('the runner clears them before any engine is built, and says so', async () => {
+    const t = await tempDir();
+    try {
+      const prev = process.env['JEVCODE_FASTPATH'];
+      process.env['JEVCODE_FASTPATH'] = 'auto';
+      const lines: string[] = [];
+      const { deps } = createFakeDeps({ script: () => ({ result: { steps: 1, tokensPerStep: [10], generatorTokensPerStep: [10], jevTokensPerStep: [0], jevLatencyMs: [], counters: { blocked: 0, reviews: 0, declined: 0, failed: 0, loops: 0, replans: 0, reads: 0 } }, decisions: 0, spendUsd: 0 }) });
+      const opts = baseOptions(join(t.dir, 'runs'), join(t.dir, 'out'), { conditions: ['jev-on'], concurrency: 1, log: (l) => lines.push(l) });
+      try {
+        await runBenchWithSources([syntheticSource({ id: 'a' })], opts, deps);
+        expect(process.env['JEVCODE_FASTPATH']).toBeUndefined();
+        expect(lines.some((l) => l.includes('JEVCODE_FASTPATH=auto'))).toBe(true);
+      } finally {
+        if (prev === undefined) delete process.env['JEVCODE_FASTPATH'];
+        else process.env['JEVCODE_FASTPATH'] = prev;
+      }
+    } finally {
+      await t.cleanup();
+    }
   });
 
   it('are measured at --concurrency 1, and the runner refuses anything else (§8.2 / §6 row 15)', () => {

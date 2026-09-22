@@ -359,10 +359,47 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
   if (input.extraReadableRoots && input.extraReadableRoots.length > 0) out.extraReadableRoots = [...input.extraReadableRoots];
   // contract 1.9 (Fastlane) §8.1: the arm's mechanisms are pinned per condition, never read from the user's env — an arm
   // whose fast path was on because JEVCODE_FASTPATH happened to be exported is not the arm summary.json says it is.
+  // Writing the option is only half of it: both mechanisms are resolved env-FIRST inside the engine, so the runner
+  // calls `pinMechanismEnv` before any engine is built and the pinned value below is the effective one.
+  //
+  // The six older arms get an explicit `fastPath: 'off'`, which is a DIVERGENCE from the product default once slot C
+  // lands ('auto' in `jev-on`): a bench `jev-on` row measures the engine WITHOUT route R9. That is deliberate — it is
+  // the same-build, no-fast-path reference the wave is read against, and §8.5 says the default-mode flip is a separate
+  // decision on these rows — but it is recorded here, in `armMechanisms` and in docs/DESIGN.md §22.8 rather than left
+  // to be discovered from a table. A run that wants the shipped default must use `jev-on-next-nofast`'s sibling arm or
+  // the product itself, not the `jev-on` bench row.
   const mech = armMechanisms(input.condition);
   out.fastPath = mech.fastPath;
   out.routers = mech.routers ? 'on' : 'off';
   return out;
+}
+
+/**
+ * contract 1.9 (Fastlane) §8.1: the env switches that would otherwise BEAT the arm's pinned mechanisms.
+ *
+ * Both are resolved inside the engine before the option: slot C's `resolveFastPathOption` reads `JEVCODE_FASTPATH`
+ * first in both directions, and slot B's `routersOn` ORs `JEVCODE_ROUTERS=on` in. An exported `JEVCODE_FASTPATH=off`
+ * therefore runs `jev-on-next` DISARMED while `summary.json` records `mechanisms.fastPath: 'auto'`, and an exported
+ * `JEVCODE_FASTPATH=auto` runs the `jev-on-next-nofast` CONTROL armed while it records `'off'` — which destroys the
+ * one-mechanism contrast §8.5 clause 4 rests on, silently, in the direction that makes the wave look better.
+ */
+export const MECHANISM_ENV_VARS: readonly string[] = ['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS'];
+
+/**
+ * Removes those switches from the bench process's environment and returns what it removed, so the runner can say so
+ * in the log. After this call the pinned option IS the option the engine resolves, which is what makes
+ * `summary.json.conditions[arm].mechanisms` a record of the run rather than of an intention. `JEVCODE_WARM` and the
+ * rest are left alone: they are documented escapes the recorded arms were taken under.
+ */
+export function pinMechanismEnv(env: Record<string, string | undefined> = process.env): { name: string; was: string }[] {
+  const cleared: { name: string; was: string }[] = [];
+  for (const name of MECHANISM_ENV_VARS) {
+    const was = env[name];
+    if (was === undefined) continue;
+    cleared.push({ name, was });
+    delete env[name];
+  }
+  return cleared;
 }
 
 /** jev-off and jev-off-tuned are the generator-only factory; every other arm the full engine (the synthesizer arms with `engineOpts.synthesizer` set). */

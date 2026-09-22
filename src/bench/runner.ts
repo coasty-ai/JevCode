@@ -15,7 +15,7 @@ import { percentile } from '../core/time.js';
 import type { ActionOutcome, BenchCondition, BenchSuite, BenchTaskRecord, Decider, Engine, Provider, RunResult, Sandbox, SandboxRunOptions, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
 import { ConfigError, toJevCodeError } from '../errors.js';
 import { createNullProvider } from '../provider/null.js';
-import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isBenchCondition, isNextArm, requiresGenerator, requiresSerialBench, servedRateFor, synthesizerGenerationOf, synthesizerModeOf, tunedParamsFor, usesStubDecider, usesSynthesizer, usesTunedProvider } from './conditions.js';
+import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isBenchCondition, isNextArm, pinMechanismEnv, requiresGenerator, requiresSerialBench, servedRateFor, synthesizerGenerationOf, synthesizerModeOf, tunedParamsFor, usesStubDecider, usesSynthesizer, usesTunedProvider } from './conditions.js';
 import { readGeneratorRecords, summariseGeneratorRecords } from './generator-records.js';
 import { computeSuiteMetrics, isNotRun, suitesIn, withPairComplete } from './metrics.js';
 import { readStepsSummary } from './step-records.js';
@@ -392,6 +392,11 @@ export async function runBench(opts: BenchOptions, deps: BenchDepsWithSynth): Pr
 export async function runBenchWithSources(sources: readonly BenchTaskSource[], opts: BenchOptions, deps: BenchDepsWithSynth): Promise<BenchRunOutput> {
   validateOptions(opts, deps);
   const log = opts.log ?? ((): void => undefined);
+  // contract 1.9 (Fastlane) §8.1: before any engine is built. Both mechanisms are resolved env-FIRST inside the
+  // engine, so an exported JEVCODE_FASTPATH/JEVCODE_ROUTERS would beat the arm's pinned row and summary.json would
+  // describe a run that did not happen — including the control arm running ARMED, which is the one contrast the
+  // accept rule rests on. Clearing is unconditional: the older arms pin their mechanisms too.
+  for (const { name, was } of pinMechanismEnv()) log(`[bench] cleared ${name}=${was} from the environment: §8.1 pins each arm's mechanisms (summary.json.conditions[arm].mechanisms), and the engine reads the env before the option`);
   const now = opts.now ?? ((): Date => new Date());
   const mocked = !opts.live;
   const conditions = orderConditions(opts.conditions);
