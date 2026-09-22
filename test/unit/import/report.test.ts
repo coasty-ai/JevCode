@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { IMPORT_LIMITS } from '../../../src/core/limits.js';
-import { REDACTING_PATTERNS, WARN_ONLY_PATTERNS } from '../../../src/core/redact.js';
+import { REDACTING_PATTERNS, WARN_ONLY_PATTERNS, createRedactor, detectSecrets } from '../../../src/core/redact.js';
 import { REPORT_SECTIONS, parseReport, renderPlanJson, renderReport } from '../../../src/import/report.js';
 import type { ImportPlan, PlanRow } from '../../../src/import/types.js';
 
@@ -197,5 +197,53 @@ describe('§2.8 the report is byte-capped', () => {
     const big = renderReport({ ...plan, rows: many });
     expect(Buffer.byteLength(big, 'utf8')).toBeLessThanOrEqual(IMPORT_LIMITS.reportBytes);
     expect(big).toContain('_report clipped at 1,048,576 bytes_');
+  });
+});
+
+/**
+ * §1 property 4 / §2.9: the exact `SecretSet` layer belongs on the report path too.
+ *
+ * `renderReport` and `renderPlanJson` called `redactSecrets(text)` with no exact layer, so the
+ * seventeen pattern families were the whole defence: a *configured* secret that matches none of
+ * them — a bare password, a corporate passphrase, an internally issued token — reached `report.md`
+ * and `plan.json` intact. §2.9 puts the configured layer first precisely because that class of
+ * secret has no shape, and the two artefacts are named in the same breath as every other seam.
+ */
+describe('§1 property 4 — the exact layer reaches report.md and plan.json', () => {
+  const CONFIGURED = 'hunter2-the-fixture-password';
+  const exact = createRedactor([{ name: 'generator.apiKey', value: CONFIGURED }]);
+  const opts = { redact: (s: string): string => exact.redact(s) };
+
+  /** The plan says the secret out loud, in the two source-controlled strings a row carries. */
+  function poisoned(): ImportPlan {
+    const first = plan.rows[0] as PlanRow;
+    return { ...plan, rows: [{ ...first, why: `matched by the operator rule (${CONFIGURED})`, warnings: [`the body quotes ${CONFIGURED}`] }] };
+  }
+
+  it('the fixture secret matches no pattern family — only the exact layer can catch it', () => {
+    expect(detectSecrets(CONFIGURED)).toEqual([]);
+  });
+
+  it('with the exact layer, both artefacts mask it', () => {
+    const report = renderReport(poisoned(), 'unicode', opts);
+    const json = renderPlanJson(poisoned(), opts);
+    for (const [label, text] of [
+      ['report.md', report],
+      ['plan.json', json],
+    ] as const) {
+      expect(text.includes(CONFIGURED), `${label} leaked the configured secret`).toBe(false);
+      expect(text, label).toContain('[REDACTED:');
+    }
+    // `--ascii` is the same document, so it cannot be the way out either
+    expect(renderReport(poisoned(), 'ascii', opts)).not.toContain(CONFIGURED);
+    // and the plan the caller handed in is never mutated
+    expect(poisoned().rows[0]?.why).toContain(CONFIGURED);
+  });
+
+  it('without it the two artefacts are byte-for-byte what they always were (the option is additive)', () => {
+    const p = poisoned();
+    expect(renderReport(p)).toBe(renderReport(p, 'unicode', {}));
+    expect(renderPlanJson(p)).toBe(renderPlanJson(p, {}));
+    expect(renderReport(plan, 'unicode', opts)).toBe(renderReport(plan));
   });
 });
