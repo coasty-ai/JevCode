@@ -131,7 +131,7 @@ import { computeContextUsage, restoredContextUsage } from './context/meter.js';
 import type { ContextReadHooks, ContextSummary } from './context/types.js';
 import { acquireRunLock, releaseRunLock } from '../session/lock.js';
 import { seedNoticeText } from '../session/seed.js';
-import { nextBudgetWarn, seedAnnounced, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
+import { nextBudgetWarn, seedAnnounced, sessionRemainingUsd, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
 import { checkpointDegradedDetail, driftDetail, keyRejectedDetail } from '../tui/blocking/lines.js';
 import { EQUIVALENT_IDS, equivalentIdsRow, equivalentJevModel, jevModelMatches, normaliseModelId, sameJevWeights } from '../jev/providers.js';
 import { VERSION } from '../version.js';
@@ -467,20 +467,6 @@ function addUsage(a: TokenUsage, b: TokenUsage): void {
   a.costUsd += Number.isFinite(b.costUsd) ? b.costUsd : 0;
   a.calls += b.calls;
 }
-/**
- * contract 1.5 (ORCHESTRATION-DESIGN §3.1, §6.1 [D6]): what is left of the session budget NET OF HOLDS.
- *
- * The rendered twin is `sessionRemainingUsd` (`src/tui/budget/lines.ts:184`), which `src/loop/**` may not
- * import; D0 item 3 gives that one an optional third `heldUsd` argument and the two must stay in step. A
- * hold is money already promised to an agent that has not spent it yet, so the money gate reads it as gone
- * — which is the whole of [D6]: without it a parent can promise the same dollar to two children.
- */
-function sessionRemainingNetOfHolds(capUsd: number, spentUsd: number, heldUsd: number): number {
-  if (capUsd === Number.POSITIVE_INFINITY) return Number.POSITIVE_INFINITY;
-  const cap = Number.isFinite(capUsd) ? capUsd : 0;
-  return cap - Math.max(0, Number.isFinite(spentUsd) ? spentUsd : 0) - Math.max(0, Number.isFinite(heldUsd) ? heldUsd : 0);
-}
-
 function zeroTiming(): StepTiming {
   return { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 0 };
 }
@@ -3165,9 +3151,9 @@ class EngineImpl implements Engine {
   private decomposeReserveUsd(): number {
     const policy = this.opts.splitPolicy ?? DEFAULT_SPLIT_POLICY;
     const snap = this.opts.meter.snapshot();
-    // [D6]: `sessionRemainingUsd(cap, spent, heldUsd = 0)` is D0 item 3's change and is not in the tree yet,
-    // so the hold is subtracted here. One line to delete when the third argument lands.
-    const remaining = Math.max(0, sessionRemainingNetOfHolds(snap.capUsd, snap.totalUsd, snap.heldUsd ?? 0));
+    // [D6]: a hold is money already promised to an agent that has not spent it yet, so the reserve reads it as gone.
+    // `sessionRemainingUsd`'s third argument (D0 item 3) landed, so this is the ONE arithmetic — the twin is deleted.
+    const remaining = Math.max(0, sessionRemainingUsd(snap.capUsd, snap.totalUsd, snap.heldUsd ?? 0));
     return Math.max(0, Math.min(remaining * policy.reserveFraction, policy.maxReserveUsd));
   }
 
@@ -3224,7 +3210,7 @@ class EngineImpl implements Engine {
       freeMemBytes: probe.freeMemBytes() ?? 0,
       freeDiskBytes: disk?.freeBytes ?? 0,
       repoBytes,
-      sessionRemainingUsd: Math.max(0, sessionRemainingNetOfHolds(snap.capUsd, snap.totalUsd, snap.heldUsd ?? 0)),
+      sessionRemainingUsd: Math.max(0, sessionRemainingUsd(snap.capUsd, snap.totalUsd, snap.heldUsd ?? 0)),
       isReplanStep: this.detector.tripped(),
       orchestrationProblemAgeSteps: problem === undefined ? null : Math.max(0, this.step + 1 - problem.step),
       verification: verification.commands,
