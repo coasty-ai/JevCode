@@ -1054,9 +1054,15 @@ instructions carry the rule; an uncommitted edit in a shared file is a merge blo
 
 ## 2026-09-22 Wall-clock gates on the shared machine: bounded workers, best-of-N, and hermetic process checks
 
-Full unit runs use `--maxWorkers=3`; wall-clock assertions take the best of N samples (`engine-perf` harnessMs skips when
-`loadavg > cpus`, `prompts-context`'s build gate is best-of-5, `parse/markdown`'s three gates best-of-3); a test that inspects the
-host's process table matches only the process it spawned (`sandbox/run.test.ts` tags its `sleep` uniquely). Reason: two sessions and
+Full unit runs use `--maxWorkers=3` — since the finishing pass that bound is the unit project's own `maxWorkers` in
+`vitest.config.ts` (`allowOnly: false` beside it), so plain `npm test` IS the bounded run and no gate depends on remembering the
+flag; CI keeps the runner default. Wall-clock assertions take the best of N samples (`engine-perf` harnessMs skips when
+`loadavg > cpus`, `prompts-context`'s build gate is best-of-5, `parse/markdown`'s three gates best-of-3, `coordination/fold`'s
+`listSessions` budget best-of-5, `jev/mock-candidates`'s 1000-view answer budget best-of-3, `synth/llm/repro`'s concurrency
+wall behind the `engine-perf` load guard, and `synth/search/subgoal-llm`'s grace pinned on a frozen clock instead of the wall);
+a test that inspects the host's process table matches only the process it spawned (`sandbox/run.test.ts` tags its `sleep`
+uniquely); and the unit project's `setupFiles` (`test/unit/setup-env.ts`) deletes the mechanism env vars before every file, so a
+gate run measures the tree and not the shell the measuring session exported into. Reason: two sessions and
 up to a dozen agents ran suites concurrently at load 30–100; unbounded runs manufactured failures in tests verified green moments
 earlier, `sandbox/run.test.ts` failed whenever any other worktree ran the same suite, and single-sample budgets (50 ms, 200 ms) failed
 on the load alone. Consequences: a gate that still fails best-of-N is a real regression; release perf numbers come only from
