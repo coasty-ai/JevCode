@@ -124,6 +124,18 @@ export interface VerifyOutcome {
   full?: TestRunSummary;
   progress: Progress;
   status: VerifyStatus;
+  /**
+   * docs/HARNESS-NEXT-DESIGN.md §3 M6: at least one of this candidate's runs was produced by a
+   * warm lane worker (a fork of a persistent interpreter) rather than a fresh process. A screen,
+   * not a verdict — see `confirmedCold`.
+   */
+  screened?: boolean;
+  /**
+   * The `plausible` verdict was re-established by a cold, fresh-spawn full-suite run. Set on
+   * every screened passer the sieve returns: the rule is that a hot-screened passer never
+   * reaches `search/guard.ts decide()` without it, and the confirmation is never skipped.
+   */
+  confirmedCold?: boolean;
 }
 
 export interface BehaviourCluster {

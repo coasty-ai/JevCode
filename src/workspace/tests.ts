@@ -354,6 +354,141 @@ export function unittestScope(command: string): ScopeBuilder {
   };
 }
 
+/**
+ * A test name for `-t` / `-run`: the last `::`-separated segment of a node id, with a pytest
+ * parametrisation suffix (`test_a[0-x]`) dropped — the id of one case is not a filter pattern.
+ */
+function testNameOf(target: string): string {
+  const t = target.trim();
+  const last = t.split('::').pop() ?? '';
+  const at = last.indexOf('[');
+  return (at === -1 ? last : last.slice(0, at)).trim();
+}
+
+/** A JS test path (`src/a.test.ts`, `src/a.test.ts::renders`) → the file part; '' when the target is a bare name. */
+function jsFileOf(target: string): string {
+  const head = (target.trim().split('::')[0] ?? '').trim();
+  return looksLikeJsPath(head) ? head : '';
+}
+
+function looksLikeJsPath(t: string): boolean {
+  return t.includes('/') || /\.(m|c)?(j|t)sx?$/.test(t);
+}
+
+/**
+ * Append runner arguments to a command. A package-manager wrapper (`npm test`, `pnpm test`)
+ * swallows everything after the script name unless it is preceded by `--`, so a scope appended
+ * without it silently runs the whole suite — exactly the failure mode the scope-usability guard
+ * exists to catch, and cheaper to avoid here.
+ */
+function appendRunnerArgs(command: string, args: readonly string[]): string {
+  if (args.length === 0) return command;
+  const head = command.trim().split(/\s+/)[0] ?? '';
+  const needsSeparator = (head === 'npm' || head === 'pnpm') && !/\s--(\s|$)/.test(command);
+  return `${command}${needsSeparator ? ' --' : ''} ${args.join(' ')}`;
+}
+
+/**
+ * jest: file paths are regexes matched against the full path (`jest <pattern>`), test names go
+ * through `-t`. Paths are passed as literal fragments — `jest` treats the positional argument as
+ * a regex, so the metacharacters of a real path (`.`) are escaped.
+ */
+export function jestScope(command: string): ScopeBuilder {
+  return (targets) => {
+    const paths: string[] = [];
+    const names: string[] = [];
+    for (const t of targets) {
+      const f = jsFileOf(t);
+      if (f !== '') paths.push(f.replace(/[.+*?^$()[\]{}|\\]/g, '\\$&'));
+      const n = t.includes('::') || f === '' ? testNameOf(t) : '';
+      if (n !== '') names.push(n);
+    }
+    if (paths.length === 0 && names.length === 0) return command;
+    const args = [...uniq(paths).map(quoteArg)];
+    for (const n of uniq(names)) args.push('-t', quoteArg(n));
+    return appendRunnerArgs(command, args);
+  };
+}
+
+/** vitest: file paths are substring filters, test names go through `-t` (the same shape as jest, without the regex escaping). */
+export function vitestScope(command: string): ScopeBuilder {
+  return (targets) => {
+    const paths: string[] = [];
+    const names: string[] = [];
+    for (const t of targets) {
+      const f = jsFileOf(t);
+      if (f !== '') paths.push(f);
+      const n = t.includes('::') || f === '' ? testNameOf(t) : '';
+      if (n !== '') names.push(n);
+    }
+    if (paths.length === 0 && names.length === 0) return command;
+    const args = [...uniq(paths).map(quoteArg)];
+    for (const n of uniq(names)) args.push('-t', quoteArg(n));
+    return appendRunnerArgs(command, args);
+  };
+}
+
+/**
+ * cargo: `cargo test <filter>` matches a substring of the test path (`module::test_name`), so a
+ * Rust path target is turned into its module path and a name target passes through. `--` is never
+ * appended: everything here is a cargo-level filter, not a harness argument.
+ */
+export function cargoScope(command: string): ScopeBuilder {
+  return (targets) => {
+    const filters: string[] = [];
+    for (const t of targets) {
+      const s = t.trim();
+      if (s === '') continue;
+      const head = s.split('::')[0] ?? '';
+      if (/\.rs$/.test(head) || head.includes('/')) {
+        const mod = head
+          .replace(/\.rs$/, '')
+          .replace(/^(\.\/)?(src|tests|benches)\//, '')
+          .split('/')
+          .filter((p) => p !== '' && p !== 'mod' && p !== 'lib' && p !== 'main')
+          .join('::');
+        const rest = s.split('::').slice(1).join('::');
+        const full = [mod, rest].filter((p) => p !== '').join('::');
+        if (full !== '') filters.push(full);
+      } else {
+        filters.push(s);
+      }
+    }
+    return appendRunnerArgs(command, uniq(filters).map(quoteArg));
+  };
+}
+
+/**
+ * go: packages are directories (`./pkg/...`), test names go through one alternation `-run`
+ * pattern. The package list replaces the command's own `./...` when the targets name packages.
+ */
+export function goScope(command: string): ScopeBuilder {
+  const base = command.replace(/\s+\.\/\.\.\.\s*$/, '').trim();
+  return (targets) => {
+    const pkgs: string[] = [];
+    const names: string[] = [];
+    for (const t of targets) {
+      const s = t.trim();
+      if (s === '') continue;
+      const head = s.split('::')[0] ?? '';
+      if (/\.go$/.test(head) || head.includes('/')) {
+        const dir = /\.go$/.test(head) ? head.slice(0, Math.max(0, head.lastIndexOf('/'))) : head.replace(/\/+$/, '');
+        pkgs.push(dir === '' ? '.' : dir.startsWith('.') ? dir : `./${dir}`);
+      }
+      const n = s.includes('::') || !looksLikeGoPath(head) ? testNameOf(s) : '';
+      if (n !== '') names.push(n);
+    }
+    if (pkgs.length === 0 && names.length === 0) return command;
+    const args = uniq(pkgs).length === 0 ? ['./...'] : uniq(pkgs).map(quoteArg);
+    if (names.length > 0) args.push('-run', quoteArg(`^(${uniq(names).join('|')})$`));
+    return appendRunnerArgs(base, args);
+  };
+}
+
+function looksLikeGoPath(t: string): boolean {
+  return t.includes('/') || /\.go$/.test(t);
+}
+
 /** The scope builder for a runner, or null when the runner cannot run a subset by name. */
 export function scopeBuilderFor(runner: TestRunner, command: string): ScopeBuilder | null {
   switch (runner) {
@@ -365,9 +500,29 @@ export function scopeBuilderFor(runner: TestRunner, command: string): ScopeBuild
       return sympyScope(command);
     case 'unittest':
       return unittestScope(command);
+    case 'jest':
+      return jestScope(command);
+    case 'vitest':
+      return vitestScope(command);
+    case 'cargo':
+      return cargoScope(command);
+    case 'go':
+      return goScope(command);
     default:
       return null;
   }
+}
+
+/**
+ * The scope-usability guard (docs/HARNESS-NEXT-DESIGN.md §6 S1, risks R-11 and R-14). A scoped
+ * run is evidence only when it reported a non-zero collected/total count: a wrong scope string
+ * runs zero tests on every runner here, and "0 failing" then reads as success. Zero collected
+ * means the scope is unusable, and the caller must fall back to the full suite and record
+ * `scope_unusable` — never treat the empty run as a pass.
+ */
+export function scopeUsable(counts: TestCounts | null): boolean {
+  if (counts === null) return false;
+  return counts.passed + counts.failed + counts.errors + counts.skipped > 0;
 }
 
 // ---------------------------------------------------------------------------------------
