@@ -16,7 +16,7 @@ import { toJson } from '../../core/json.js';
 import { clip } from '../../core/text.js';
 import { PLAN_ITEM_MAX_CHARS } from '../../loop/plan.js';
 import type { ClaimingCompletionEvidence, CompletionWitness } from '../../loop/stages/complete.js';
-import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, SynthesisContext, Synthesizer, SynthesizerGeneration, WindowEntry } from '../../core/types.js';
+import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, StepVerifySummary, SynthesisContext, Synthesizer, SynthesizerGeneration, WindowEntry } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
 import { SPEC_FILE } from '../../workspace/tests.js';
 import { harvestHistory } from '../history/index.js';
@@ -48,7 +48,7 @@ import type { EngineRun, PersistedRepositoryState, RepositoryMode, RepositorySco
 import { BEST_GUESS_NOTE, bestGuessGoalText, commitEvidence, completionEvidence, goalTestsPassing, isFullSuiteRun, proposeDone, proposePatch, proposeRevert, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
 import { commitProgress, everySiteSeedsExhausted, isTestPath, newTrace, taskIdentifiers } from './subgoal.js';
 import type { ProgressOptions, RegressionRun, SubGoalMemory, SubGoalResult } from './subgoal.js';
-import type { Base, Goal, GoalSearchTrace, Lane, PersistedSearchState, VerifyOutcome } from './types.js';
+import type { Base, Goal, GoalSearchTrace, Lane, LlmTrace, PersistedSearchState, VerifyOutcome } from './types.js';
 import { isPersistedSearchState } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -578,6 +578,27 @@ export interface RunScratch {
   freshRepro: VerifyReproResult | null;
 }
 
+/**
+ * contract 1.9 (Fastlane) §3.1 / §3.2 / §3.4 (docs/LLM-LOOP-DESIGN.md §3): the generator-path figures of this step's
+ * LLM rounds, for `StepRecord.verify`. Summed over both passes of a recursed step exactly like the counts beside them
+ * (`prior` is the first search's trace). Every member is ABSENT when nothing measured it: a run with hedging off must
+ * not report `hedges: 0` as if a hedge had been declined, and a provider that served no cache must not report a
+ * `cacheHitRate` of 0, which reads as "the cache missed" rather than "nothing was measured". `cacheHitRate` is
+ * computed from the summed READ and the summed INPUT tokens, never averaged over the rounds' own rates.
+ */
+function fastlaneCounts(prior: LlmTrace | undefined, llm: LlmTrace): Partial<StepVerifySummary> {
+  const ttfbMs = [...(prior?.ttfbMs ?? []), ...(llm.ttfbMs ?? [])];
+  const hedges = (prior?.hedges ?? 0) + (llm.hedges ?? 0);
+  const cacheRead = (prior?.cacheRead ?? 0) + (llm.cacheRead ?? 0);
+  const cacheWrite = (prior?.cacheWrite ?? 0) + (llm.cacheWrite ?? 0);
+  const cacheInput = (prior?.cacheInput ?? 0) + (llm.cacheInput ?? 0);
+  return {
+    ...(ttfbMs.length > 0 ? { ttfbMs } : {}),
+    ...(hedges > 0 ? { hedges, hedgeWins: (prior?.hedgeWins ?? 0) + (llm.hedgeWins ?? 0) } : {}),
+    ...(cacheRead > 0 || cacheWrite > 0 ? { cacheRead, cacheWrite, ...(cacheInput > 0 ? { cacheHitRate: cacheRead / cacheInput } : {}) } : {}),
+  };
+}
+
 export class LedgerSieveSynthesizer implements Synthesizer {
   readonly name = 'ledger-sieve';
   private readonly deps: SearchDeps;
@@ -896,6 +917,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
             distinct: (prior?.llm?.distinct ?? 0) + r.trace.llm.distinct,
             misanchored: (prior?.llm?.misanchored ?? 0) + r.trace.llm.misanchored,
             graceMs: (prior?.llm?.graceMs ?? 0) + r.trace.llm.graceMs,
+            ...fastlaneCounts(prior?.llm, r.trace.llm),
           }),
     });
 

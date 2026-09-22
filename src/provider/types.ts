@@ -26,6 +26,13 @@ export interface SseOptions {
   idleTimeoutMs?: number;
   /** Upper bound on one buffered event (default 16 MiB); exceeding it is a non-retryable error. */
   maxEventBytes?: number;
+  /**
+   * contract 1.9 (Fastlane) §3.1: called at most once, with the ms from THIS call to the first byte of the body.
+   * The header phase is not in it — `http.ts` and the two hand-rolled clients replace it with a callback measured
+   * from the request going out, which is the figure `GenerateOptions.onFirstByte` documents. A throwing callback
+   * is a harness bug and is raised as a typed 'internal' error (`notify`), never swallowed.
+   */
+  onFirstByte?: (ms: number) => void;
 }
 
 /** Injectable side effects shared by the HTTP providers (tests pass fakes; production uses the defaults). */
@@ -243,6 +250,13 @@ export interface OpenRouterRequestBody {
 export type OpenRouterReasoning = { enabled: false } | { effort: ReasoningEffort } | { max_tokens: number };
 export interface OpenRouterProviderPrefs {
   require_parameters: boolean;
+  /**
+   * contract 1.9 (Fastlane) §3.2 (research 07 §2.2 ProviderPreferences): the upstream providers to try, in order.
+   * Sent verbatim from core `GenerateProviderPrefs.order`; omitted when the caller gave none, so today's requests
+   * are byte-identical. `only` is deliberately NOT modelled: `order` keeps `allow_fallbacks` at its default true,
+   * so a rotated hedge twin degrades to the router's own choice instead of failing closed.
+   */
+  order?: readonly string[];
 }
 export interface OpenRouterToolDef {
   type: 'function';

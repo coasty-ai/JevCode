@@ -256,7 +256,7 @@ function heldOf(st: GeminiState): StreamPartial {
 async function consumeGemini(stream: ReadableStream<Uint8Array>, ctx: ConsumeContext): Promise<ProviderOutcome> {
   const st = newState();
   try {
-    for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs })) {
+    for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) })) {
       if (ctx.opts.signal.aborted) throw ctx.opts.signal.reason;
       const data = rec.data.trim();
       if (data.length === 0) continue;

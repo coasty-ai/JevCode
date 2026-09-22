@@ -3268,11 +3268,18 @@ class EngineImpl implements Engine {
         wake: retry.wake,
         ...(sample !== undefined
           ? {
+              // contract 1.9 (Fastlane) §3.1: the engine keeps the facts for the row AND hands them to the synthesizer's
+              // own callback when it asked for one — the sample's accounting is the synthesizer's, the row is the engine's.
               onCancelled: (partial: CancelledGeneration) => {
                 held.partial = partial;
+                sample.onCancelled?.(partial);
               },
             }
           : {}),
+        // contract 1.9 (Fastlane) §3.1: time to first byte, forwarded verbatim. It is the §3.2 hedge's only input, so the
+        // channel must not swallow it; absent when the caller asked for none, which is a one-shot propose call and every
+        // sample of a synthesizer that does not measure TTFB.
+        ...(sample?.onFirstByte === undefined ? {} : { onFirstByte: sample.onFirstByte }),
       });
       retry.settled(true);
     } catch (e) {

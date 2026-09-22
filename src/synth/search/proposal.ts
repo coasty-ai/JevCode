@@ -509,8 +509,12 @@ export function traceRecord(trace: GoalSearchTrace): JsonObject {
     bySource,
   };
   if (trace.unstable !== undefined) rec['unstable'] = trace.unstable;
-  // llm-jev (docs/LLM-JEV-DESIGN.md §9.3 `StepRecord.verify`): the rounds' counts travel in the step's rawText
-  if (trace.llm !== undefined) rec['llm'] = { ...trace.llm };
+  // llm-jev (docs/LLM-JEV-DESIGN.md §9.3 `StepRecord.verify`): the rounds' counts travel in the step's rawText.
+  // contract 1.9 (Fastlane) §3.1: `ttfbMs` is a readonly array on the trace and a plain one in the record.
+  if (trace.llm !== undefined) {
+    const { ttfbMs, ...counts } = trace.llm;
+    rec['llm'] = { ...counts, ...(ttfbMs === undefined ? {} : { ttfbMs: [...ttfbMs] }) };
+  }
   if (trace.winner) rec['winner'] = editRecord(trace.winner);
   return rec;
 }

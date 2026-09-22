@@ -185,6 +185,19 @@ export interface PromptInput {
    * Absent or empty elides `## Agents` entirely, so a run that never delegated builds the same bytes as before (M2).
    */
   agents?: readonly string[];
+  /**
+   * contract 1.9 (Fastlane) §3.3 (docs/LLM-LOOP-DESIGN.md §3.3): where the cacheable head of the message ends.
+   *
+   * `'legacy'` (the default, and what `undefined` means) is the order this file has always built: `# Step N` + the
+   * task, the plan, the intent, the hints, then the workspace. Every one of the first four changes at every step, so
+   * the provider's prompt cache misses on the very first token and the whole message is re-billed as input.
+   *
+   * `'pinned'` builds the SAME sections with the stable ones first — task → workspace (the repo map) → files →
+   * everything volatile → window — which is §3.3's `system → repo map → files → window`. Nothing is added, removed
+   * or rewritten: only the order changes, and only for a caller that asks. The `view: 'legacy'` goldens therefore
+   * stay byte-identical (§7.6's gate), and `prefixChars` on the build says how long the head that repeats is.
+   */
+  prefixOrder?: 'legacy' | 'pinned';
 }
 
 export interface SystemPromptOptions {
@@ -233,6 +246,12 @@ export interface PromptBuild {
    * identical to the one it produced before 1.6.
    */
   memory?: PromptMemoryBuild;
+  /**
+   * contract 1.9 (Fastlane) §3.3: chars of the cacheable head — the leading sections that do not change between
+   * steps of one run (`prefixOrder: 'pinned'`). ABSENT under the legacy order, where there is no such head:
+   * the message opens with `# Step N`, so nothing after the system prompt repeats.
+   */
+  prefixChars?: number;
 }
 
 /** TUI-DESIGN §11.3 (D6): the instruction text never exceeds 32 KiB in the prompt, whatever the loader passed. */
@@ -388,14 +407,39 @@ function windowSection(window: WindowEntry[]): string {
   return lines.join('\n');
 }
 
-function workspaceSection(ws: PromptWorkspaceInfo): string {
-  const lines = ['## Workspace'];
-  lines.push(ws.git ? 'git repository: yes' : 'git repository: no');
-  lines.push(ws.testCommand ? `detected test command: \`${ws.testCommand}\`` : 'detected test command: none');
+/**
+ * contract 1.9 (Fastlane) §3.3 (review defect 4): the workspace facts, split by WHETHER THEY CHANGE WITHIN A RUN.
+ * `stable` is what §3.3 calls the repo map — is this a git repository, what command runs the tests — and it is the
+ * same bytes at step 3 and at step 30. `changed` is the list of files this run has edited, which grows at every
+ * commit: a "cacheable head" containing it would break at the first edit, which is the defect this split fixes.
+ */
+function workspaceParts(ws: PromptWorkspaceInfo): { stable: string[]; changed: string } {
+  const stable = ['## Workspace'];
+  stable.push(ws.git ? 'git repository: yes' : 'git repository: no');
+  stable.push(ws.testCommand ? `detected test command: \`${ws.testCommand}\`` : 'detected test command: none');
   const files = ws.changedFiles.slice(0, 50);
   const label = ws.resumed ? 'resumed run: these files differ from the last commit' : 'files changed by this run';
-  lines.push(`${label}: ${files.length === 0 ? 'none' : files.join(', ')}${ws.changedFiles.length > 50 ? `, … (${ws.changedFiles.length - 50} more)` : ''}`);
-  return lines.join('\n');
+  const changed = `${label}: ${files.length === 0 ? 'none' : files.join(', ')}${ws.changedFiles.length > 50 ? `, … (${ws.changedFiles.length - 50} more)` : ''}`;
+  return { stable, changed };
+}
+
+/** The legacy `## Workspace` section: the repo map and the changed files in one block, byte for byte as before. */
+function workspaceSection(ws: PromptWorkspaceInfo): string {
+  const { stable, changed } = workspaceParts(ws);
+  return [...stable, changed].join('\n');
+}
+
+/** §3.3: the repo map alone — the part of `## Workspace` a run repeats verbatim, and the only part the head may hold. */
+function workspaceStableSection(ws: PromptWorkspaceInfo): string {
+  return workspaceParts(ws).stable.join('\n');
+}
+
+/**
+ * §3.3: the volatile half, behind the step heading. The heading keeps the parenthesis form so `sectionName` still
+ * measures it under `Workspace` — `/context` reports one bucket under both orders, as it did before the split.
+ */
+function workspaceChangedSection(ws: PromptWorkspaceInfo): string {
+  return `## Workspace (changed by this run)\n${workspaceParts(ws).changed}`;
 }
 
 function contextSection(files: FileView[]): string {
@@ -785,24 +829,60 @@ function measure(sections: readonly string[]): Record<string, number> {
   return out;
 }
 
+/**
+ * contract 1.9 (Fastlane) §3.3: the prefix order the input asked for. `'pinned'` is the only value that changes
+ * anything, and `undefined` is `'legacy'` — so every existing caller, and every `view: 'legacy'` golden, is unaffected.
+ */
+function pinned(input: PromptInput): boolean {
+  return input.prefixOrder === 'pinned';
+}
+
+/** §3.3: the task alone, without the `# Step N` heading that makes the legacy head change at every step. */
+function taskSection(input: PromptInput): string {
+  return `## Task\n${clip(input.task, PROMPT_LIMITS.taskChars)}`;
+}
+
+/**
+ * §3.3: the `# Step N` heading, moved onto the section that FOLLOWS it in the pinned order (the plan) rather
+ * than left standing alone. `sectionName` already strips exactly this prefix, so the per-section measurement
+ * behind `/context` keeps the same section NAMES under both orders — only the heading's own chars move from
+ * the `Task` bucket into the `Plan` one.
+ */
+function withStepHeading(step: number, section: string): string {
+  return `# Step ${step}\n\n${section}`;
+}
+
 /** The legacy message (no context view): byte-identical to what the engine sent before §8 landed. */
-function assembleLegacy(input: PromptInput): string[] {
-  const sections: string[] = [];
-  sections.push(`# Step ${input.step}\n\n## Task\n${clip(input.task, PROMPT_LIMITS.taskChars)}`);
-  sections.push(planSection(input.plan));
+function assembleLegacy(input: PromptInput): { sections: string[]; prefixChars: number | null } {
+  const plan = planSection(input.plan);
   const intent = intentSection(input);
-  if (intent) sections.push(intent);
   const hints = hintsSection(input);
-  if (hints) sections.push(hints);
-  sections.push(workspaceSection(input.workspace));
-  if (input.mode === 'jev-on') sections.push(contextSection(input.contextFiles));
-  else sections.push(candidateSection(input.candidates ?? []));
-  sections.push(windowSection(input.window));
+  const workspace = workspaceSection(input.workspace);
+  const files = input.mode === 'jev-on' ? contextSection(input.contextFiles) : candidateSection(input.candidates ?? []);
+  const window = windowSection(input.window);
   // contract 1.5 (corner row 24): elided when this run has no agent facts, so the legacy message is unchanged
   const agents = agentsSection(input.agents ?? [], AGENTS_SECTION_CHARS);
+  const reply = replySection(input.toolName);
+  const volatileTail: string[] = [plan];
+  if (intent) volatileTail.push(intent);
+  if (hints) volatileTail.push(hints);
+  if (!pinned(input)) {
+    const sections = [withStepHeading(input.step, taskSection(input)), ...volatileTail, workspace, files, window];
+    if (agents) sections.push(agents);
+    sections.push(reply);
+    return { sections, prefixChars: null };
+  }
+  // §3.3 `system → repo map → files → window`: the head is the task and the repo map (the two things a run repeats
+  // verbatim) plus the file bodies; the step number, the plan, the intent and the hints — all of which change every
+  // step — move behind them, and the window, which only grows, stays last before the reply.
+  // review defect 4: `prefixChars` is counted over the STABLE sections only — the task and the repo map. The file
+  // bodies keep §3.3's place (they are the large thing a run usually repeats) but nothing guarantees they repeat:
+  // in jev-on Jev selects them per step. Over-reporting the head would claim a cache hit the provider never gives.
+  const stable = [taskSection(input), workspaceStableSection(input.workspace)];
+  const sections = [...stable, files, withStepHeading(input.step, volatileTail[0] ?? ''), ...volatileTail.slice(1), workspaceChangedSection(input.workspace), window];
   if (agents) sections.push(agents);
-  sections.push(replySection(input.toolName));
-  return sections;
+  sections.push(reply);
+  return { sections, prefixChars: stable.reduce((n, t) => n + t.length, 0) + 2 * stable.length };
 }
 
 /**
@@ -816,16 +896,28 @@ function assembleLegacy(input: PromptInput): string[] {
  * and take the §2.10.3 shares of the budget. Both elide when the view carries no memory, which is why a run without
  * `EngineOptions.memory` assembles exactly the sections it assembled before 1.6.
  */
-function assembleRelaxed(input: PromptInput, ctx: PromptContextView, budget: number): { sections: string[]; shownFiles: string[]; shrunk: boolean; memory?: PromptMemoryBuild } {
+function assembleRelaxed(input: PromptInput, ctx: PromptContextView, budget: number): { sections: string[]; shownFiles: string[]; shrunk: boolean; memory?: PromptMemoryBuild; prefixChars: number | null } {
   const sections: string[] = [];
   const head: string[] = [];
-  head.push(`# Step ${input.step}\n\n## Task\n${clip(input.task, PROMPT_LIMITS.taskChars)}`);
-  head.push(planSection(input.plan));
+  // contract 1.9 (Fastlane) §3.3: the same five fixed sections either way — only their order differs, so the budget
+  // arithmetic below (`left`) reads the same total under both orders and no section's survival changes.
+  const volatileHead: string[] = [planSection(input.plan)];
   const intent = intentSection(input);
-  if (intent) head.push(intent);
+  if (intent) volatileHead.push(intent);
   const hints = hintsSection(input);
-  if (hints) head.push(hints);
-  head.push(workspaceSection(input.workspace));
+  if (hints) volatileHead.push(hints);
+  const workspace = workspaceSection(input.workspace);
+  let prefixChars: number | null = null;
+  if (pinned(input)) {
+    // the repo map is the one fixed section a run repeats verbatim; the budgeted `## Files in view` follows the head
+    // and is measured as part of it only when it fits, which `take` decides below — so the head reported here is the
+    // guaranteed part: the task and the repo map. Review defect 4: the workspace's changed-file line is NOT in it.
+    const stable = [taskSection(input), workspaceStableSection(input.workspace)];
+    head.push(...stable, withStepHeading(input.step, volatileHead[0] ?? ''), ...volatileHead.slice(1), workspaceChangedSection(input.workspace));
+    prefixChars = stable.reduce((n, t) => n + t.length, 0) + 2 * stable.length;
+  } else {
+    head.push(withStepHeading(input.step, taskSection(input)), ...volatileHead, workspace);
+  }
   const reply = replySection(input.toolName);
   sections.push(...head);
   // the fixed head and the reply are never shrunk; everything else fills what is left
@@ -890,25 +982,27 @@ function assembleRelaxed(input: PromptInput, ctx: PromptContextView, budget: num
     if (!take(candidates)) shrunk = true;
   }
   sections.push(reply);
-  return { sections, shownFiles, shrunk, ...(memory === undefined ? {} : { memory }) };
+  return { sections, shownFiles, shrunk, prefixChars, ...(memory === undefined ? {} : { memory }) };
 }
 
 /** One user message per step (§7 layout; §13 omits the Jev sections and lists candidates) with the facts behind the meter. */
 export function buildPrompt(input: PromptInput): PromptBuild {
   const ctx = input.context;
   if (ctx === undefined) {
-    const sections = assembleLegacy(input);
+    const { sections, prefixChars } = assembleLegacy(input);
     const joined = sections.join('\n\n');
     const clipped = joined.length > PROMPT_LIMITS.maxUserMessageChars;
     const text = clipped ? headTail(joined, PROMPT_LIMITS.maxUserMessageChars - 2_000, 1_500) : joined;
-    return { text, chars: text.length, sections: measure(sections), shrunk: clipped, shownFiles: [] };
+    // §3.3: a clipped message has no cacheable head to report — `headTail` rewrote it
+    return { text, chars: text.length, sections: measure(sections), shrunk: clipped, shownFiles: [], ...(prefixChars === null || clipped ? {} : { prefixChars }) };
   }
   const budget = Math.max(1, Math.floor(ctx.budgetChars));
   const built = assembleRelaxed(input, ctx, budget);
   // contract 1.6: absent when the view carried no memory, so a memory-less build's object is what it was before
   const memory = built.memory === undefined ? {} : { memory: built.memory };
+  const prefix = built.prefixChars === null ? {} : { prefixChars: built.prefixChars };
   const joined = built.sections.join('\n\n');
-  if (joined.length <= budget) return { text: joined, chars: joined.length, sections: measure(built.sections), shrunk: built.shrunk, shownFiles: built.shownFiles, ...memory };
+  if (joined.length <= budget) return { text: joined, chars: joined.length, sections: measure(built.sections), shrunk: built.shrunk, shownFiles: built.shownFiles, ...prefix, ...memory };
   // the last-resort safety net (§8.2): head + tail of the whole message, marked — and inside the budget at any budget
   const tail = Math.min(1_500, Math.floor(budget / 4));
   const text = headTail(joined, Math.max(1, budget - tail - 200), tail);

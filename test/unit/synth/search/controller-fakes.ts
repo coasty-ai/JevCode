@@ -5,7 +5,7 @@
  * progress. Nothing here touches Jev, the sandbox or the file system.
  */
 import { sha12 } from '../../../../src/core/hash.js';
-import type { Answer, Json, Question, SynthesisContext, WindowEntry } from '../../../../src/core/types.js';
+import type { Answer, Json, Question, StepVerifySummary, SynthesisContext, WindowEntry } from '../../../../src/core/types.js';
 import { defaultOverrides } from '../../../../src/synth/search/directive.js';
 import type { RunMemory, SearchDeps } from '../../../../src/synth/search/index.js';
 import { committedBase } from '../../../../src/synth/search/index.js';
@@ -41,11 +41,13 @@ export interface AskCall {
 
 export type AskScript = (questions: Record<string, Question>, state: Json, call: number) => Record<string, Answer>;
 
-/** A ctx whose `ask` answers from `script` and records; `synthState` set calls are recorded too. */
-export function fakeCtx(o: CtxOptions & { ask?: AskScript; runId?: string; synthState?: Json | null; task?: string } = {}): SynthesisContext & { askCalls: AskCall[]; synthStates: (Json | null)[]; events: ReturnType<typeof makeCtx>['events'] } {
+/** A ctx whose `ask` answers from `script` and records; `synthState` sets and `reportVerify` calls are recorded too. */
+export function fakeCtx(o: CtxOptions & { ask?: AskScript; runId?: string; synthState?: Json | null; task?: string } = {}): SynthesisContext & { askCalls: AskCall[]; synthStates: (Json | null)[]; verifyReports: Partial<StepVerifySummary>[]; events: ReturnType<typeof makeCtx>['events'] } {
   const base = makeCtx(o);
   const askCalls: AskCall[] = [];
   const synthStates: (Json | null)[] = [];
+  // docs/LLM-JEV-DESIGN.md §9.3: what the controller reports for `StepRecord.verify` (the engine merges it over its own tallies)
+  const verifyReports: Partial<StepVerifySummary>[] = [];
   const script = o.ask;
   return {
     ...base,
@@ -54,6 +56,10 @@ export function fakeCtx(o: CtxOptions & { ask?: AskScript; runId?: string; synth
     synthState: o.synthState ?? null,
     askCalls,
     synthStates,
+    verifyReports,
+    reportVerify: (counts) => {
+      verifyReports.push(counts);
+    },
     ask: async (_stage, state, questions) => {
       askCalls.push({ state, questions });
       if (script === undefined) throw new Error('ctx.ask was not scripted for this test');
@@ -396,6 +402,8 @@ export interface FakeRoundScript {
   hang?: boolean;
   /** dollars each fired sample holds against the step's counter until it lands (source.ts `reservedUsd`, §4.11); default 0 */
   holdUsd?: number;
+  /** contract 1.9 (Fastlane) §3.1 / §3.2 / §3.4: the generator-path figures this round reports on its summary */
+  fastlane?: Pick<LlmRoundSummary, 'ttfbMs' | 'hedges' | 'hedgeWins' | 'hedgesRefused' | 'cacheRead' | 'cacheWrite' | 'cacheInputTokens'>;
 }
 
 export interface FakeLlmRecord {
@@ -545,7 +553,7 @@ class FakeRound implements LlmRound {
     const cancelled = this.cancelledAs === null ? 0 : Math.max(0, fired - this.delivered);
     // like the source: every fired sample holds `holdUsd` until it lands; a closed round holds nothing
     const inFlight = this.ended ? 0 : Math.max(0, fired - this.delivered);
-    return { goalId: this.goalId, round: this.round, klass: this.klass, n: this.n, fired, valid: this.delivered, empty: 0, malformed: 0, length: 0, timeouts: 0, cancelled, errors: 0, misanchored: 0, syntaxErrors: 0, compileFailed: 0, duplicates: 0, tried: 0, distinct: this.delivered, needs: 0, wallMs: Date.now() - this.startedMs, usd: this.delivered * 0.001, estimatedUsd: 0, reservedUsd: inFlight * (this.script.holdUsd ?? 0), deadlineMs: this.deadlineMs, closed: this.ended };
+    return { goalId: this.goalId, round: this.round, klass: this.klass, n: this.n, fired, valid: this.delivered, empty: 0, malformed: 0, length: 0, timeouts: 0, cancelled, errors: 0, misanchored: 0, syntaxErrors: 0, compileFailed: 0, duplicates: 0, tried: 0, distinct: this.delivered, needs: 0, wallMs: Date.now() - this.startedMs, usd: this.delivered * 0.001, estimatedUsd: 0, reservedUsd: inFlight * (this.script.holdUsd ?? 0), deadlineMs: this.deadlineMs, closed: this.ended, ...(this.script.fastlane ?? {}) };
   }
 }
 
