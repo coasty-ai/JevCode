@@ -53,7 +53,7 @@ export type WhyRef =
   /** TUI-DESIGN-2 §3.11: `intake` (the Choice), `intake.reply`, `intake.about_<key>`, `intake.can_<kind>` — the last intake's step-0 rows */
   | { kind: 'intake'; id: string };
 
-const STAGES: ReadonlySet<string> = new Set<StageName>(['decompose', 'replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete']);
+const STAGES: ReadonlySet<string> = new Set<StageName>(['decompose', 'replan', 'intent', 'context', 'propose', 'risk', 'coordinate', 'execute', 'judge', 'complete']);
 
 /** TUI-DESIGN-2 §3.11: the `/why` argument grammar of the intake rows — `intake` alone is the Choice itself */
 const INTAKE_REF_RE = /^intake(?:\.([a-z][a-z0-9_]*))?$/;
@@ -256,8 +256,9 @@ export function whyBlock(d: Decision, ctx: WhyContext = {}, g: GlyphSet = GLYPHS
 
 /** TUI-DESIGN §7.7 Ctrl+O: one `/why`-style block per stage of `step` (probabilities and criteria), in stage order. */
 export function stepWhyBlocks(decisions: readonly Decision[], step: number, g: GlyphSet = GLYPHS.unicode): string[][] {
-  // ORCHESTRATION-DESIGN §3: `decompose` runs in runStep() before replan/intent, so it leads the loop order
-  const order: readonly StageName[] = ['decompose', 'replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete'];
+  // ORCHESTRATION-DESIGN §3: `decompose` runs in runStep() before replan/intent, so it leads the loop order;
+  // COORDINATION-DESIGN §4.2: the `coordinate` gate sits after the risk confirm and before pre-images
+  const order: readonly StageName[] = ['decompose', 'replan', 'intent', 'context', 'propose', 'risk', 'coordinate', 'execute', 'judge', 'complete'];
   const mine = decisions.filter((d) => d.step === step);
   const blocks: string[][] = [];
   for (const stage of order) {

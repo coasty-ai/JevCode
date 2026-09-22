@@ -1,8 +1,9 @@
 /**
  * The `t` tab (TUI-DESIGN §7.2 "timeline"): two rows per step at 80 columns, newest first —
  * `time  s7  intent .21s  ctx .24s  propose 6.1s  risk .23s  exec 1.2s  judge .19s` /
- * `      s7  ICPPPPRXXXJ…  total 8.2s  h 31ms` (letters D I C P R X J sized round(ms/total·40); `D` = the
- * orchestration `decompose` stage, present only when a step ran it — ORCHESTRATION-DESIGN §3, §8.3) — and
+ * `      s7  ICPPPPRXXXJ…  total 8.2s  h 31ms` (letters D I C P R O X J sized round(ms/total·40); `D` = the
+ * orchestration `decompose` stage, `O` = the coordination `coordinate` gate (COORDINATION-DESIGN §4.2: a lease wait can
+ * take seconds, so it earns a cell), each present only when a step ran it — ORCHESTRATION-DESIGN §3, §8.3) — and
  * one row per step at ≥ 120 columns with 30 letters plus `gen 5.4k $0.032`. Pure; every row ≤ `columns`.
  */
 import type { StageName } from '../../core/types.js';
@@ -21,13 +22,14 @@ export const NO_TIMELINE_YET = '(no timeline yet)';
  */
 export const TIMELINE_EXCLUDED_STAGES: readonly StageName[] = ['replan', 'complete'];
 
-/** The seven lettered stages of the strip, in loop order (§7.2 "letters I C P R X J" plus `D` for `decompose`). */
+/** The eight lettered stages of the strip, in loop order (§7.2 "letters I C P R X J" plus `D` for `decompose` and `O` for `coordinate`). */
 export const TIMELINE_STAGES: readonly { stage: StageName; letter: string; short: string }[] = [
   { stage: 'decompose', letter: 'D', short: 'decomp' },
   { stage: 'intent', letter: 'I', short: 'intent' },
   { stage: 'context', letter: 'C', short: 'ctx' },
   { stage: 'propose', letter: 'P', short: 'propose' },
   { stage: 'risk', letter: 'R', short: 'risk' },
+  { stage: 'coordinate', letter: 'O', short: 'coord' },
   { stage: 'execute', letter: 'X', short: 'exec' },
   { stage: 'judge', letter: 'J', short: 'judge' },
 ];
