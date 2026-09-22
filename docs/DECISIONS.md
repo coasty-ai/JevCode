@@ -1095,3 +1095,22 @@ resume takes over and the stale process must stop; a minimum-holder rule would c
 `forkVerdict`, `claimHolderOf`, `byRunId` and the `/resume` refusal follow the maximum; `--force-takeback` mints above the maximum of
 qualified and (strictly-below-bound) unqualified epochs and refuses `'epoch-exhausted'` at the bound; qualified foreign epochs come
 from the sixth record kind `claims` at `runs/<deviceId>/<runId>/claims.json`, never from `run.json`.
+
+## 2026-09-22 Out of sample, llm-jev ties the tuned generator; the default stands on the same-build claim only
+
+The measurement the GREEN entry asked for exists (`experiments/results/llm-jev-headtohead-v2.oos.md`, commit `c01ec8a`, frozen
+`066816f`, $1.68 live). Same build, the original 28: `llm-jev` 28/28 vs **plain** `jev-off` 21/28 — not the 19/28 the v2 report used,
+because six tasks flip between two runs of the same baseline arm (noise ≈ ±2) — discordance 7–0 (p = 0.0078), correct 26 vs 20
+with the same two discordant losses, both-solved wall 0.225×, cost 0.245×. **Out of sample**, on 22 tasks nobody tuned against:
+13/22 vs 12/22 for the hygiene-tuned generator (2–1 discordant, indistinguishable), pooled median wall **1.385× against**, cost
+**2.68× against** (2,330 Jev requests vs 0). Per suite: the ten new QuixBugs programs are 10/10 on both arms with **zero overfits on
+either side** (the first evidence the guard thresholds hold off their fitting set) and `llm-jev` wins only efficiency there
+(3 steps / 34 s / $0.0008 vs 6 / 79 s / $0.0026); the ladder long tier is 3/8 vs 2/8 at 3.7× wall and 2.9× cost, ending on
+`replan_stop` / `max_replans`; the four SWE instances are 0/4 on both arms with `llm-jev` spending 2.9× (one instance alone $0.22 and
+432 Jev requests before the 25-minute cap). Decision: the `llm-jev` default **stands**, on the same-build claim and the one-line-bug
+regime, and the README/STATUS footnote says so in one line (peer commit `5b5bdc6`); the `verified` badge names the same-build claim,
+never out-of-sample correctness. Consequences: the next harness iteration is driven by an analysis of where the 22 out-of-sample
+runs spend wall and Jev requests (per question kind, per stage), with every proposed change judged for re-fitting to those 22 tasks
+and any task-named change disallowed; the 22 tasks join the development set only after that iteration is measured on a fresh slice.
+Still unmeasured, and stated as such: `llm-sieve`, any repeat run, the per-question ablation, an independent ladder correctness
+oracle (`perturb.ts`'s own `LADDER_HARNESS` still judges), and SWE correctness beyond pass (`src/bench/headtohead.ts:92`).
