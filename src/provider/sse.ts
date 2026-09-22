@@ -492,6 +492,12 @@ export function toTokenUsage(t: TokenBreakdown, costUsd: number, reasoningTokens
   // contract 1.9 (Fastlane) §3.4: the cached shares of `inputTokens` the API itself reported, surfaced so the §3.3
   // prefix pinning can be measured (`StepVerifySummary.cacheRead` / `cacheWrite` / `cacheHitRate`). Set only when the
   // call really read or wrote cache, so a provider that caches nothing produces exactly the object it produced before.
+  //
+  // Review defect 9, decided rather than left implicit: this widening is UNGATED, so every `generator.jsonl` usage row
+  // of a cache-serving provider grows two members in every mode. It is the only place the harness can learn the figures
+  // (`LlmSource` sums them off the arrivals' `TokenUsage`), and a record shape that changes with a flag is worse than
+  // one that grows once. test/unit/provider/cache-usage.test.ts pins both halves: an uncached call's object is
+  // unchanged, and no records reader (the bench summariser, the checkpoint replay) rejects the wider rows.
   if (t.cacheRead > 0) usage.cacheReadTokens = t.cacheRead;
   if (t.cacheWrite > 0) usage.cacheWriteTokens = t.cacheWrite;
   return usage;
