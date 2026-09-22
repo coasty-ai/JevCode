@@ -70,10 +70,10 @@ export type { DisjointResult, OwnGlob, OwnGlobKind, ValidateOwnOptions, Validate
 export { gateReasonText, splitGate } from './split/gate.js';
 export type { GateInput, GateVerdict } from './split/gate.js';
 
-export { enumerateSplits, prefixTree, topLevelDirs, PRELUDE_SLUG } from './split/enumerate.js';
+export { enumerateSplits, prefixTree, topLevelDirs, PREFIX_TREE_MAX, PRELUDE_SLUG } from './split/enumerate.js';
 export type { EnumerateInput } from './split/enumerate.js';
 
-export { normalizeSplit, SLUG_RE } from './split/normalize.js';
+export { normalizeSplit, AGENT_WALL_FLOOR_MS, SLUG_RE } from './split/normalize.js';
 export type { NormalizeInput } from './split/normalize.js';
 
 export {
@@ -85,9 +85,12 @@ export {
   planDecomposeQuestions,
   rankScoreId,
   selfContainedId,
+  DECOMPOSE_STATE_LIMITS,
   MAX_DECOMPOSE_QUESTIONS,
   MAX_RANK_QUESTIONS,
   OPTION_KEY_OF,
+  RANK_LEVELS,
+  RANK_STATE_LIMITS,
   SPLIT_ESCAPE,
   SPLIT_KIND_OF,
   WHICH_SPLIT,
@@ -98,7 +101,7 @@ export { applyDropRule, rankLandingOrder, rankSplits } from './split/rank.js';
 export type { DropResult, LandingAgent, RankInput } from './split/rank.js';
 
 // §5.1: the verification set, resolved by code
-export { resolveVerification, verifyForOwn, NO_VERIFICATION_REASON } from './verify.js';
+export { resolveVerification, verifyForOwn, NO_VERIFICATION_REASON, VERIFY_COMMAND_CHARS } from './verify.js';
 export type { VerifyResolution, VerifyResolveInput, VerifySource } from './verify.js';
 
 // §3.7: the decomposition record
@@ -111,7 +114,7 @@ export type { BuildManifestInput, ManifestIo, ReadResult, WriteResult } from './
 export { applyDirtySnapshot, carriedPaths, cleanProbe, dirtyPaths, dirtySnapshot, parseStatusZ, statusEntries } from './worktree.js';
 export type { DirtyFile, StatusZEntry, WorktreeFacade } from './worktree.js';
 
-export { commitMessage, commitStep, computeAddSet, syncedDirtyEntry, uncommitLast } from './commit.js';
+export { commitMessage, commitStep, computeAddSet, syncedDirtyEntry, uncommitLast, SUMMARY_CHARS } from './commit.js';
 export type { AddSet, AddSetInput, CommitStepOptions, CommitStepResult } from './commit.js';
 
 // ---------------------------------------------------------------------------------------
@@ -127,6 +130,7 @@ export {
   outsideOwn,
   parseVerifyCounts,
   tailLines,
+  totalCount,
   BRANCH_MOVED,
   HARD_RULES,
 } from './critic.js';
@@ -144,8 +148,10 @@ export {
   landLogPath,
   mergePinned,
   nextLandStep,
+  parseLandLock,
   pinBranch,
   queueOrder,
+  readLandLock,
   rebaseOnDock,
   recheckPin,
   releaseLandLock,
@@ -155,7 +161,7 @@ export {
   LAND_LOG_FILE,
   ORCHESTRATE_SUBDIR,
 } from './land.js';
-export type { AcquireLandLockResult, LandLock, LandLockHandle, LandQueueState, LandStep, QueueAgent } from './land.js';
+export type { AcquireLandLockOptions, AcquireLandLockResult, LandLock, LandLockHandle, LandQueueState, LandStep, QueueAgent } from './land.js';
 
 export { detectStall } from './stall.js';
 export type { HeartbeatSample, StallSignal, StallVerdict } from './stall.js';
