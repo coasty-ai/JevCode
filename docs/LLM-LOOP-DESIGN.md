@@ -8,7 +8,8 @@ jev-on*) and design 3 (*week-1 cut first*) and two factual corrections carried i
 `experiments/**`, `docs/**`, `scripts/jev-contract.mjs`, `test/**`.
 **Never touched:** `src/tui`, `src/cli`, `src/config`, `src/session`, `src/chat`.
 
-Every line number in this document was read off `main` at `36f1104` on 2026-09-22. Where an earlier document's
+Every line number in this document was read off `main` at **`d86c385`** (post-`oos-iter-2`) on 2026-09-22,
+and re-verified after merging that `main`. Where an earlier document's
 number has drifted, the correction is called out at the site; a patch written to the old number lands in the
 wrong place.
 
@@ -251,12 +252,18 @@ shape a losing fast path would deepen, and §8 pre-registers against it.
 
 ### 1.8 Known defects this design must live with
 
-- **Ring 1 `--jev off` is RED.** The localiser returns `sitesConsidered: 0` with every Choice escaped and every
-  Noul inert; `gcd`, `mergesort` and `units` are lost. The allow-list row for `src/synth/localize/index.ts` still
-  claims "code order is the fallback" when the measurement says the candidate list is dropped. **The fast path
-  routes through that same localiser**, so with Jev off it would arm, enumerate nothing and spend its budget —
-  a failure that looks exactly like an honest decline. §7 makes Ring 1 green under `--jev off` a **hard merge
-  gate on both B and C**.
+- **Ring 1 `--jev off`: a code fix has landed but is UNMEASURED.** Ring 1 was red at iteration 1 (`gcd`,
+  `mergesort` and `units` lost; the localiser returned `sitesConsidered: 0` — with every Choice escaped,
+  `choiceProbs` dropped the escape and left every other option at probability 0, so the site list came back
+  empty and the step parked with "no site located"). `oos-iter-2` landed the fix at **`0d61eef`** (*"an escaped
+  Choice falls through to the code order, not to no site at all"*, with
+  `test/unit/synth/localize/jev-off-fallback.test.ts`). **But `docs/DECISIONS.md` still records the iteration-1
+  verdict, and iteration 2's own decision text says it "is measured on the same 18 + 28 before any of it is
+  called an improvement" — so the gate is fixed in code and not yet green in measurement.** The fast path
+  routes through that same localiser, so with Jev off a still-broken localiser would make it arm, enumerate
+  nothing and spend its budget — a failure that looks exactly like an honest decline. §7.7 therefore keeps Ring
+  1 green under `--jev off` as a **hard merge gate on both B and C**; what changed is that the gate is now a
+  *re-measurement*, not a fix slot B must write.
 - **`runFactsRef` is process-global.** `src/synth/index.ts:83`:
   `const runFactsRef: { current: RunFacts | null } = { current: null };` — written at `:120` and `:139`, read at
   `:90` and `:156` *after awaits*. `src/bench/runner.ts` runs `--concurrency` tasks in **one** process, so two
@@ -477,9 +484,12 @@ fires. But the moment R9 commits, a run can complete on a code fact where today 
 That is the intended direction (completion is structurally excluded from Jev, §1.2 of the harness doc) and it is
 a **behaviour change named in CHANGELOG**, not smuggled in as additive.
 
-**RL6 (replan stop).** Demoting `stop_and_report` removes a stop the tree currently relies on: the OOS record
-shows **every** `llm-jev` SWE run ending in `replan_stop` at 5 steps. Those runs will now burn their step cap
-instead. The polarity is right under I1 — a mis-routed Q18 is currently a *lost task* — and the code loop
+**RL6 (replan stop).** Demoting `stop_and_report` removes a stop the tree relies on: the iteration-1 record
+shows **every** `llm-jev` SWE run ending in `replan_stop` at 5 steps of a 25-step budget. `main` has already
+moved *part* of the way here without this wave — `oos-iter-2` change 9 (`9a161a1`) makes a refused completion
+claim climb `PHASE_ESCALATION` (`src/loop/stages/replan.ts:138`) before any move may end the run, because that
+deadlock, not a mis-routed Q18, was the actual cause of the 5-step stops. RL6 is the remaining, larger step: it
+removes the Jev-decided stop entirely. Those runs will then burn their step cap instead. The polarity is right under I1 — a mis-routed Q18 is currently a *lost task* — and the code loop
 detector, the step cap and the wall cap are unchanged, so the worst case is a **cap exit instead of an early
 exit**. The cost is real and lands in the `$/task` column, which §8 reports and which must be inspected before
 the arm is judged on solve count alone.
@@ -750,7 +760,7 @@ facade surfaces `GuardFields.dropped / structuralDrops / held / signals` into th
 | stage-1 miss | pure code | LLM proposes, no cost | `decision: 'declined'`, `stage: 1`, `reason` |
 | stage-2 miss | after baseline + `fitOracle` + `locate` | LLM proposes | `decision: 'declined'`, `stage: 2`, `reason`, `runMode: 'RANK'` |
 | `emptyStepBudget` trap | `candidatesTested === 0` with `kind: 'budget'` | LLM proposes | `outcome: 'error'`, `reason: 'empty_step_budget'` — **and the facade's first unit test asserts `candidatesTested > 0` on a known-solvable cluster**, because this failure is indistinguishable from an honest decline without it |
-| localiser returns 0 sites (the Ring 1 defect) | `sites === 0` | LLM proposes | `reason: 'no_sites'` — **gated on Ring 1 green under `--jev off` before C merges**, because otherwise a Jev outage turns the fast path into a silent "found nothing" |
+| localiser returns 0 sites (the Ring 1 defect — code-fixed at `0d61eef`, unmeasured) | `sites === 0` | LLM proposes, **disarm** | `reason: 'no_sites'` — **gated on Ring 1 RE-MEASURED green under `--jev off` before C merges**, because otherwise a Jev outage turns the fast path into a silent "found nothing" |
 | passers found and refused | guard fields | LLM proposes, **disarm** | `outcome: 'refused'`, `held`, `structuralDrops`, `dropped` |
 | cold confirm failed / timed out | `isPlausible` | LLM proposes, **disarm** | `outcome: 'refused'`, `confirmedCold: false` |
 | round timeout | wall bound 1 or 2 | LLM proposes, **disarm** | `outcome: 'timeout'`, `wallMs` |
@@ -1012,7 +1022,8 @@ and `:5063`). **No two slots hold `engine.ts` at the same time.**
 3. **The facade's first unit test asserts `candidatesTested > 0`** on a known-solvable cluster (§6 row 13).
 4. **I2 golden**: `fastPath: 'off'` on the existing `jev-on` fixtures is byte-identical.
 5. `fastPath.wallMs <= budgetMs` on every fired step in the test fixtures.
-6. **Ring 1 green under `--jev off`** — a **hard merge gate** (see §7.7).
+6. **Ring 1 re-measured green under `--jev off`** — a **hard merge gate** (see §7.7). The code fix landed at
+   `0d61eef`; the measurement has not been taken.
 7. `node scripts/check-pack.mjs` at the 3.5 MB unpacked gate.
 
 ### 7.4 Slot D — bench and measurement
@@ -1076,7 +1087,8 @@ over a recorded run directory showing the new columns non-empty; the `--concurre
 6. **The `docs/DECISIONS.md` ratification row for §2.4 exists and is merged.** B does not land without it.
 7. **I2 golden** under `routers: 'off'`; and a **re-captured** `jev-on` golden under `routers: 'on'`, with the
    header saying which capture is which.
-8. **Ring 1 green under `--jev off`** — a hard merge gate (§7.7).
+8. **Ring 1 re-measured green under `--jev off`**, and the `src/synth/localize/index.ts` allow-list row
+   (`jev-contract.mjs:48`) justified by that run or replaced — a hard merge gate (§7.7).
 9. `npx vitest run --maxWorkers=3`, `npm run check`.
 
 ### 7.6 Slot A — the S2 generator path
@@ -1094,22 +1106,32 @@ declined when the budget cannot hold one more estimated-full-cost sample; cancel
 
 ### 7.7 The cross-cutting gate: Ring 1 under `--jev off`
 
-Ring 1 with `JEVCODE_JEV=off` must complete all five tasks. It is **red today** (`gcd`, `mergesort`, `units`
-lost; the localiser returns `sitesConsidered: 0` with every Choice escaped and every Noul inert), and the
-allow-list row for `src/synth/localize/index.ts` still claims "code order is the fallback" when the measurement
-says the candidate list is dropped.
+Ring 1 with `JEVCODE_JEV=off` must complete all five tasks.
 
-This is a **hard merge gate on both B and C**, not a hedge:
+**The status changed under this document while it was being written**, and the change is favourable. At
+iteration 1 the ring was red (`gcd`, `mergesort`, `units` lost) because the localiser returned
+`sitesConsidered: 0`. `oos-iter-2` landed the fix at **`0d61eef`** — an escaped Choice now falls through to the
+code order rather than to no site at all — with a named unit test
+(`test/unit/synth/localize/jev-off-fallback.test.ts`). **It has not been re-measured:** `docs/DECISIONS.md` still
+carries the iteration-1 verdict, and iteration 2's own text says it is measured on the same 18 + 28 before any
+of it is called an improvement.
 
-- **B** must fix it, because RS2/RL2's code-order fallback is the mechanism that makes it green, and because the
-  allow-list row is currently false.
-- **C** must wait for it, because the fast path routes through that same localiser: with Jev off it would arm,
-  enumerate nothing, and spend its budget — a silent zero-site failure that looks exactly like an honest decline
-  and would make the §8 decline histogram lie.
+So the gate stands, with its content changed from *write a fix* to *produce the measurement*:
 
-If the localiser fallback cannot be fixed in B, the fallback position is that **C's stage-2 predicate additionally
-refuses when the decider is the off-decider**, and the arm ships with the limitation stated. That is a worse
-outcome and it must be an explicit decision, not a drift.
+- **Before B merges**, Ring 1 under `--jev off` must be **run and green**, and the allow-list row for
+  `src/synth/localize/index.ts` (`jev-contract.mjs:48`, still claiming "code order is the fallback") must be
+  either justified by that green run or replaced by a four-clause block. The claim is now true in code; the row
+  should stop resting on prose.
+- **Before C merges**, the same green run, because the fast path routes through that same localiser: with Jev
+  off a regression there would make it arm, enumerate nothing and spend its budget — a silent zero-site failure
+  that looks exactly like an honest decline, and one that would make the §8 decline histogram lie.
+- **Slot C additionally adds its own belt**, independent of the ring: a stage-2 round that comes back with
+  `sites === 0` records `reason: 'no_sites'` and **disarms** (§4.5), so even an unfixed or re-broken localiser
+  costs one round per run rather than every round.
+
+If Ring 1 does not come back green, the fallback position is Q3's: **C's stage-2 predicate additionally refuses
+when the decider is the off-decider**, and the arm ships with the limitation stated. That is a worse outcome and
+it must be an explicit decision, not a drift.
 
 ### 7.8 Rebase discipline
 
@@ -1152,6 +1174,15 @@ contrast against the arm that preceded it.
 - `alwaysDecline` confirmer.
 - Baselines are **not re-run**: `experiments/llm-jev/results.ts` merges the recorded rows by
   `(suite, task, condition)`.
+- **Build-drift caveat, and it is not small.** The recorded `llm-jev` and `jev-off-tuned` rows were taken at
+  **`751e3bf`**. `main` is now **`d86c385`** and carries `oos-iter-2` — nine changes including the replan
+  escalation (`9a161a1`), the repository `rankPoolCap` (`39de7cb`), the deadline high-water mark (`11f169e`)
+  and the localiser fallback (`0d61eef`) — **none of which has been measured**. Comparing `jev-on-next` to
+  those recorded rows therefore confounds this wave with all of iteration 2. Two consequences, both binding:
+  the **`jev-on-next-nofast` control and the plain `jev-on` arm are the only same-build contrasts in the plan,
+  and §8.5 clause 4 rests on the control, not on the recorded rows**; and if `oos-iter-2` is measured on the
+  same 18 + 28 first (as its own decision text commits it to), those fresh rows replace the `751e3bf` ones as
+  this wave's baseline and the confound disappears. **Prefer that ordering.**
 - Every live command runs as
   `env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env …`.
 - If `/tmp/jevcode-perf-window-open` exists, nothing starts.
@@ -1235,10 +1266,12 @@ ratification. Nothing else in the wave depends on this.
 **Default: off until §8.5 accepts, then a separate one-line decision recorded in `docs/DECISIONS.md`.** Do not
 bundle the flip with the wave's merge.
 
-**Q3 — If Ring 1 under `--jev off` cannot be made green inside slot B, does C ship?**
+**Q3 — If Ring 1 under `--jev off` does not come back green, does C ship?**
+The localiser fix landed on `main` at `0d61eef` but has **not been re-measured**, so this question is now about
+a measurement rather than about writing a fix.
 **Default: yes, with the stage-2 predicate additionally refusing when the decider is the off-decider, and the
-limitation stated in `docs/STATUS.md` and in the arm's report.** This is a worse outcome than fixing the
-localiser and must be an explicit decision; see §7.7.
+limitation stated in `docs/STATUS.md` and in the arm's report.** This is a worse outcome than a green ring and
+must be an explicit decision; see §7.7.
 
 **Q4 — `ROUTER_DEADLINE_MS = 400`.**
 It sits between Jev's p50 (237 ms) and p95 (547 ms), so roughly **one healthy answer in ten is discarded** —
