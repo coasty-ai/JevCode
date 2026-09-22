@@ -24,7 +24,7 @@ const script: EngineScript = (_task, mode) => ({
 
 describe('llm-jev condition', () => {
   it('is the fourth condition: parsed, generator AND synthesizer required, real generator model in the config', () => {
-    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned']);
+    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned', 'jev-on-next', 'jev-on-next-nofast']);
     expect(isBenchCondition('llm-jev')).toBe(true);
     expect(parseConditions('llm-jev,jev-off')).toEqual(['llm-jev', 'jev-off']);
     expect(requiresGenerator(['llm-jev'])).toBe(true);

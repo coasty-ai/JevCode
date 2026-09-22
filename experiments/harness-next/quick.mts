@@ -30,7 +30,9 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { loadavg, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { CONDITION_ORDER, isBenchCondition, isNextArm } from '../../src/bench/conditions.ts';
 import { parseVerdictsMarkdown, type Verdict } from '../../src/bench/headtohead.ts';
+import type { BenchCondition } from '../../src/core/types.ts';
 // §5 "What is measured on every Ring-2 run" lives in its own module so a bare bench directory and this ring are
 // summarised by the same code (HARNESS-NEXT-DESIGN §6 S0 names the file)
 import { ms, printQuickTable, readRecords, rowsFrom, type RawRecord, type TaskBaseline } from '../fastlane/quick-table.mts';
@@ -99,6 +101,12 @@ interface Flags {
   out: string | null;
   verdicts: string | null;
   concurrency: number;
+  /**
+   * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §5.5: the arm rings 1 and 2 run. It used to be the literal
+   * `llm-jev` in both places, so a Ring-2 run of the fast-path wave measured an arm with no fast path in it and its
+   * `fastPath` rows read zero for a reason that had nothing to do with the fast path.
+   */
+  arm: BenchCondition;
 }
 
 function num(v: string, flag: string): number {
@@ -108,7 +116,7 @@ function num(v: string, flag: string): number {
 }
 
 function parseFlags(argv: readonly string[]): Flags {
-  const f: Flags = { ring: 'all', live: false, canary: false, timeline: false, spendCap: 0.05, out: null, verdicts: null, concurrency: 3 };
+  const f: Flags = { ring: 'all', live: false, canary: false, timeline: false, spendCap: 0.05, out: null, verdicts: null, concurrency: 3, arm: 'llm-jev' };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = (): string => {
@@ -130,6 +138,13 @@ function parseFlags(argv: readonly string[]): Flags {
     else if (a === '--out') f.out = next();
     else if (a === '--verdicts') f.verdicts = next();
     else if (a === '--concurrency') f.concurrency = Math.max(1, Math.floor(num(next(), '--concurrency')));
+    else if (a === '--arm' || a === '--conditions') {
+      const v = next();
+      // one arm: both rings pair a single condition against itself under two environments (Ring 1) or read its rows
+      // (Ring 2). A comma list would silently measure the first and label it as all of them.
+      if (!isBenchCondition(v)) throw new Error(`${a} must be one bench condition (got ${JSON.stringify(v)}; use ${CONDITION_ORDER.join(', ')})`);
+      f.arm = v;
+    }
     else if (a === '--help' || a === '-h') {
       console.log(readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(0, 30).join('\n'));
       process.exit(0);
@@ -142,6 +157,17 @@ const flags = parseFlags(process.argv.slice(2));
 const ROOT = process.cwd();
 const BIN = join(ROOT, 'bin/jevcode.js');
 const runRing = (n: 0 | 1 | 2): boolean => flags.ring === 'all' || flags.ring === n;
+/**
+ * contract 1.9 (Fastlane) §8.2 / §6 row 15: an arm that can enter the fast path is measured at `--concurrency 1`. The
+ * bench itself refuses anything else (`validateOptions`), so clamping here turns "the ring exits non-zero with a config
+ * error" into "the ring runs the arm the way it must be run" — and says so, because a silently halved concurrency is
+ * how a wall number becomes incomparable with the row above it.
+ */
+function armConcurrency(): number {
+  if (!isNextArm(flags.arm) || flags.concurrency === 1) return flags.concurrency;
+  console.log(`  (--concurrency ${flags.concurrency} -> 1: ${flags.arm} runs the fast path's tests inside the step, LLM-LOOP-DESIGN §8.2)`);
+  return 1;
+}
 
 /**
  * A child process with an explicit environment delta. A key set to `null` is *removed*: the Jev-on arm of the
@@ -266,7 +292,7 @@ function jevArm(suite: 'quixbugs' | 'ladder', ids: readonly string[], jevOff: bo
   const dir = mkdtempSync(join(tmpdir(), `fastlane-jev${jevOff ? 'off' : 'on'}-${suite}-`));
   const r = run(
     process.execPath,
-    [BIN, 'bench', '--suite', suite, '--task-id', ids.join(','), '--conditions', 'llm-jev', '--concurrency', String(flags.concurrency), '--out', dir],
+    [BIN, 'bench', '--suite', suite, '--task-id', ids.join(','), '--conditions', flags.arm, '--concurrency', String(armConcurrency()), '--out', dir],
     // explicit both ways: the on-arm must not inherit a JEVCODE_JEV from the shell
     { JEVCODE_JEV: jevOff ? 'off' : null },
   );
@@ -330,7 +356,7 @@ function ring2(verdicts: Map<string, Verdict>): ReturnType<typeof rowsFrom> {
     const ids = wanted.filter((t) => t.suite === suite).map((t) => t.id);
     if (ids.length === 0) continue;
     const dir = mkdtempSync(join(tmpdir(), `fastlane-ring2-${suite}-`));
-    const args = [BIN, 'bench', '--suite', suite, '--task-id', ids.join(','), '--conditions', 'llm-jev', '--concurrency', String(flags.concurrency), '--out', dir];
+    const args = [BIN, 'bench', '--suite', suite, '--task-id', ids.join(','), '--conditions', flags.arm, '--concurrency', String(armConcurrency()), '--out', dir];
     if (flags.live) args.push('--live', '--spend-cap', String(flags.spendCap));
     const r = run(process.execPath, args, { JEVCODE_JEV: null });
     if (r.code !== 0) console.log(`  bench ${suite} exited ${r.code}\n${r.out.split('\n').slice(-12).join('\n')}`);

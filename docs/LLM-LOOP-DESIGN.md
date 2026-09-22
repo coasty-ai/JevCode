@@ -1033,7 +1033,7 @@ directory and is invisible to every bench table.** `StepsSummary` gains:
     considered: number; fired: number; declined: number; failed: number;
     proposed: number; refused: number; timeouts: number;
     reasons: Record<string, number>;      // the per-reason decline histogram
-    stage1Fired: number; stage2Declined: number;
+    stage1Held: number; stage2Declined: number;   // stage1Held = rows recorded at `stage: 2` (see §8.3 R-c)
     candidatesTested: number; testRuns: number; jevRequests: number;
     wallMs: number; budgetOverruns: number;
   };
@@ -1324,10 +1324,18 @@ discordant pairs, Wilson intervals, the median-wall Wilcoxon, `$/task` and `$/so
 | row | source | pass condition |
 |---|---|---|
 | R-a | `routers.waitMs` p95 over every step | **= 0** |
-| R-b | `fastPath.wallMs <= budgetMs` over every fired step, where `budgetMs` is the round's ceiling (§4.4) | **100 %** |
-| R-c | stage-1-fired / stage-2-declined ratio, per suite | **≤ 0.3**; above that the **predicate** is wrong, not the budget |
+| R-b | `fastPath.wallMs <= budgetMs` over every step that RAN A ROUND (`stage: 2`), where `budgetMs` is the round's ceiling (§4.4) | **100 %** |
+| R-c | stage-2-declined / steps where stage 1 HELD (`stage: 2` rows), per suite | **≤ 0.3**; above that the **predicate** is wrong, not the budget |
 | R-d | the per-reason `fastPath.reason` decline histogram on every ineligible step | exhaustive over `FastPathReason`, no `'error'` bucket > 5 % |
 | R-e | `riskSource: 'code'` count and `jevUnavailable` count | reported; any step where a *harmful* command was allowed under a dropped ask **reverts the §2.4 ratification** |
+
+**As built, both denominators are the rounds that ran, not the rows marked `fired`.** The writer (§5.2
+`declinedRecord` / `firedRecord`) records `stage: 1` only on a free decline and `stage: 2` on every row of a round
+that ran, and sets `decision: 'fired'` only on a successful proposal. A "stage-1-fired" count is therefore 0 on
+every run the writer can produce: R-c built on it reads `pass … n/a` however badly the predicate is calibrated,
+prediction (e) is permanently `not_evaluable` (so the (e) branch of the RETIRE rule can never fire), and a
+budget-overrun count keyed off `fired` misses the shape that matters most — a round that blew the 45 s budget and
+then timed out or was refused, which is `decision: 'failed'`.
 
 R-c says the predicate is miscalibrated; **R-d says which clause is doing it.** Both are needed: a ratio alone
 does not name the mistake.
@@ -1363,10 +1371,14 @@ The wave is accepted when **all** hold:
 1. Every gate in §7 is green on the merged tree, including Ring 1 under `--jev off`.
 2. R-a and R-b pass. R-c passes on every suite, or the predicate is revised and the arms re-run.
 3. Prediction (a) holds **and** (b) holds.
-4. (f) holds, i.e. the paired control attributes the win to the fast path — **or** the fast path is retired under
-   §8.4 and the wave ships as S2 + routers alone, with `fastPath` defaulted `'off'` in every mode.
-5. R-e shows no allowed harmful command; otherwise §2.4 is reverted and slot B's risk change is backed out
-   independently of the rest.
+4. (f) holds, i.e. the paired control attributes the win to the fast path — **or** (f) was EVALUATED and lost while
+   the fast path is retired under §8.4, and the wave ships as S2 + routers alone with `fastPath` defaulted `'off'`
+   in every mode. As built, the escape requires an evaluated (f): "the control never ran" is `not_evaluable`, never
+   a pass — a retired R9 does not substitute for the contrast, or "ship S2 + routers alone" is a hope rather than a
+   measured statement.
+5. R-e's `riskSource: 'code'` and `jevUnavailable` counts are **reported** for the §2.4 judgement. As built this
+   clause carries NO machine condition: whether a harmful command was allowed under a dropped ask is read off the
+   steps by a person. If one was, §2.4 is reverted and slot B's risk change is backed out independently of the rest.
 
 **The default-mode flip to `jev-on` is not part of this accept rule.** It is a separate decision on these rows.
 

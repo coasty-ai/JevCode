@@ -1288,3 +1288,44 @@ that file at a time (slot C holds it). Until that post-C commit the expressible 
 per bench worker process, and a dropped ask — cancelled at the router — still runs to completion inside
 `askRecorded` and charges its metering and its records to the step that issued it. The bench arm does not turn
 on before that commit lands; §7.5 carries the table.
+
+## 2026-09-22 The LLM-loop wave's arms and predictions, registered before anything runs
+
+`docs/LLM-LOOP-DESIGN.md` §8 asks for the predictions to be written down **before** the arms run; this is that entry, and
+nothing live has run against it. Two bench arms exist as of this commit: **`jev-on-next`** — the `jev-on` engine (the
+generator still proposes) with the §2 router table on, the §3 S2 generation mechanisms on, the §4 bounded sieve fast path
+armed, and the `jev-off-tuned` generation parameters pinned — and **`jev-on-next-nofast`**, the same arm with the fast path
+off. The control is not optional: it is the only same-build contrast in the plan, because the recorded rows
+(`experiments/results/llm-jev-iter1.md`: fresh 18 `llm-jev` 12/18, `jev-off-tuned` 9/18, 26.0 s vs 19.7 s on the 8
+both-solved; in-sample 28 `llm-jev` 27/28) were taken at `751e3bf` and `main` now carries the nine unmeasured changes of
+`oos-iter-2`. If `oos-iter-2` is measured on the same 18 + 28 first, those rows replace the `751e3bf` ones and the confound
+disappears — **that ordering is preferred**. Both arms are refused at any `--concurrency` but 1.
+
+**Registered predictions** (`src/bench/next-arms.ts` evaluates each, `experiments/llm-jev/headtohead.mts` prints them):
+(a) solved ≥ 12/18 on the fresh slice — evaluated only over the recorded 18 task ids (`FRESH_18`, compared as a SET of
+`(suite, task)`; a partial, different or over-full slice reads n/a, since a slice that is not the recorded one must
+neither pass nor retire a route);
+(b) median wall on the both-solved tasks below 26.0 s and within 10 % of 19.7 s; (c) ladder long-2 keeps ≥ 3/6;
+(d) `routerWaitMs` 0 on every step; (e) fired-and-proposed on ≥ 60 % of the QuixBugs steps where stage 1 held;
+(f) `jev-on-next` − `jev-on-next-nofast` on solve count > 0. **A failure of (a) or (e) RETIRES route R9; it does not
+loosen the predicate.** A failure of (b) with (a) holding is the one case that permits a *narrowing* retune.
+
+**Two readings pinned**, because the design's prose leaves them open and a silent choice is worse than an argued one.
+R-a ("`routers.waitMs` p95 = 0") is taken as the **maximum** — identical unless more than 5 % of steps blocked, and a
+single blocked step must not average away. R-c ("stage-1-fired / stage-2-declined ≤ 0.3") is taken as
+**`stage2Declined / stage1Held`**, the direction in which the design's own conclusion ("the predicate is wrong, not the
+budget") is what the number supports — and the denominator is the rows the writer records at `stage: 2` (the steps that
+reached the expensive stage), not a "stage-1-fired" count, which is 0 on every run the writer can produce and would
+make the row unfailable. The same correction applies to R-b (overruns are counted over every round that ran, since a
+round that overran and then timed out is `decision: 'failed'`) and to prediction (e), which also now applies the
+QuixBugs filter its wording claims.
+
+**Not ratified here.** §2.4 (the risk polarity change) and the default-mode flip to `jev-on` are separate decisions on
+these rows; §8.5 says so explicitly, and R-e reports the `riskSource: 'code'` and `jevUnavailable` counts so the first of
+them can be argued from evidence.
+
+**Known gap, owned elsewhere.** `src/cli/args.ts CONDITIONS` keeps its own hard-coded `--conditions` allow-list and is not
+derived from `CONDITION_ORDER`, so `bin/jevcode.js bench --conditions jev-on-next` is rejected at the argv boundary even
+though `parseConditions` and `runBench` accept it. Adding the two rows there (and to the `arg`/`help`/usage strings) is the
+one change this wave needs outside `src/bench/**`; `test/unit/config/args.test.ts` and `test/unit/bench/next-arms.test.ts`
+both pin the gap so it cannot be forgotten, and **no live arm can run until it lands**.

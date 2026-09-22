@@ -13,6 +13,7 @@ gets one grammar, a resize never deletes scrollback, Enter walks the palette, th
 get a real diff — and the product stops failing quietly.
 
 - `/jev`'s `cost` row ends with `· N cache hits` when the run served any Jev request from its per-run request-hash cache (llm-jev iteration 1; read from the explicit per-step `jevCacheHits`, never from `usage.calls === 0`).
+- Two bench arms for the LLM-loop wave, `jev-on-next` and `jev-on-next-nofast` (contract 1.9, `docs/LLM-LOOP-DESIGN.md` §8): the `jev-on` engine with the router table, the S2 generation mechanisms and — on the first of the two — the bounded sieve fast path, with the mechanisms pinned per arm into `summary.json` and both refused at any concurrency but 1. `comparison.md` gains the fast-path, router and TTFB rows; `src/bench/step-records.ts` bridges them out of `steps.jsonl` (without it every one of those fields is written to the run directory and is invisible to every table); `experiments/llm-jev/headtohead.mts` prints the §8.3 blocking rows, the §8.4 predictions and the §8.5 accept rule. A bench run now also clears `JEVCODE_FASTPATH` and `JEVCODE_ROUTERS` from its own environment before the first engine is built and says so in the log, because the engine resolves both of those env-first: the pinned row is otherwise a description of an intention rather than of the run. No live run has been taken, and `--conditions jev-on-next` is still rejected by `src/cli/args.ts`'s own allow-list.
 
 ### Added — the renderer, the palette and the grammar
 
