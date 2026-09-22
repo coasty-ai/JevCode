@@ -2076,6 +2076,20 @@ export interface EngineStatus {
   subwork?: readonly SubworkEntry[];
   /** contract 1.4 (W2b) (§3.6, §8.7, §12.0.3): the `⇄` status zone and the `/who` pane; absent when coordination is off */
   coordination?: CoordinationStatus;
+  /**
+   * contract 1.9 (Fastlane) §8.1 (F25, the finishing pass): the three mechanisms of the wave, as this engine
+   * RESOLVED them — not as an arm intended them.
+   *
+   * `ConditionConfig.mechanisms` records what the bench asked for, and an exported `JEVCODE_FASTPATH` or
+   * `JEVCODE_ROUTERS` used to beat it silently (§7.5a item 2); `mechanisms.s2: true` was recorded for
+   * `jev-on-next` while none of the four S2 mechanisms ran on its propose path at all. This member is the
+   * engine's own answer, so a summary can be checked against the run rather than against its intention.
+   *
+   * `s2: 'partial'` is the honest middle: the §3.1/§3.3/§3.4 measurement half is on and the §3.2 hedge is off
+   * because `JEVCODE_HEDGE=off` said so — a hedge counter of 0 then means "switched off", not "nothing was
+   * slow enough". Absent on an engine that does not resolve them (fakes, the generator-only factory).
+   */
+  mechanisms?: { s2: 'on' | 'partial' | 'off'; routers: 'on' | 'off'; fastPath: 'auto' | 'off' };
 }
 
 /**

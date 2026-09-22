@@ -1324,6 +1324,56 @@ the change is stated and the golden re-captured with a reason** (§3.3); a budge
 declined when the budget cannot hold one more estimated-full-cost sample; cancelled-leg cost still reaching
 `generator.jsonl`.
 
+#### 7.6a S2 on the `jev-on` propose path, as built (the finishing pass, F25)
+
+Slot A built all four S2 mechanisms **inside `src/synth/llm/source.ts`**, which `jev-on` never enters. So the
+`jev-on-next` arm recorded `mechanisms.s2: true` while, on its own propose call: `PromptInput.prefixOrder` was
+never set (§3.3 off), `onFirstByte` was forwarded only on the synthesizer's sample path (§3.1 unmeasured — and
+therefore §3.2's threshold had no input), and the hedge and the provider-order rotation belonged to the round
+(§3.2 off). The §8.3 S2 row was structurally empty for every jev-on arm, not because nothing happened but
+because nothing was wired.
+
+As built now:
+
+- **the switch** is `s2Mode(mode, env)` in `src/synth/llm/hedge.ts` — `jev-on` only and **default off**
+  (§0.3's rule for a new mechanism), armed by `JEVCODE_S2=on`. `'partial'` is the honest middle: the §3.1 /
+  §3.3 / §3.4 measurement half on and the §3.2 hedge off because `JEVCODE_HEDGE=off` said so, so a hedge
+  counter of 0 in a record means "switched off" rather than "nothing was slow enough".
+  **Because the default is off, `router-golden.test.ts` was NOT re-captured** and every `view: 'legacy'` prompt
+  golden is untouched: an S2-off `jev-on` run is the pre-1.9 run, byte for byte.
+- **§3.3** `Engine.promptInput()` sets `prefixOrder: 'pinned'` under the switch. The head — task, then the repo
+  map — repeats verbatim across steps whose changed-file lists differ, which is the property the test asserts.
+- **§3.1** the propose call forwards `onFirstByte`; the readings feed `Engine.p50TtfbMs()` (with the
+  synthesizer's own `LLM_DEADLINE_ADAPT.minSamples` floor, review defect 8) and this step's
+  `StepRecord.verify.ttfbMs`. Bounded at `TTFB_READINGS_MAX`.
+- **§3.2** `hedgedCall` (`src/synth/llm/hedge.ts`) races the one call: the origin goes out at once, and if it
+  has produced no first byte for `hedgeAfterMs(p50)` one twin follows it on the **rotated** upstream order,
+  under the twin's own sample index (`HEDGE_TWIN_OFFSET`, which `hedgeOriginOf` reads back). The first result
+  wins, the loser is aborted and **booked** through the same estimator the synthesizer's loser uses
+  (`recordUnfinishedSample`), so both legs reach `generator.jsonl`: a hedge is faster, never free. A leg that
+  REJECTS while the other is live is not the call's answer, so a hedged call is never less reliable than an
+  unhedged one.
+- **§3.4** the provider's `cacheReadTokens` / `cacheWriteTokens` are summed per step onto
+  `StepRecord.verify.cacheRead` / `cacheWrite`. `src/bench/step-records.ts` already folds all five members off
+  `steps.jsonl` into `StepsSummary.s2`, so the §8.3 row needed no bench change.
+- **`EngineStatus.mechanisms: { s2, routers, fastPath }`** (optional, additive) is the engine's own answer about
+  what it resolved, as against `ConditionConfig.mechanisms`, which records what an arm intended.
+
+**What the shared helper is, exactly.** `src/synth/llm/hedge.ts` owns the DECISION half of §3.2 / §3.4 — the
+threshold, the twin index, the rotation, the reasoning-cap composition, the switch — and `source.ts` imports and
+re-exports every one of them unchanged (its behaviour is byte-identical; `test/unit/synth/llm/hedge.test.ts`,
+`source.test.ts`, `cache-and-reasoning-cap.test.ts` and `test/unit/provider/provider-order.test.ts` are the
+pin). What is **not** shared is the round's scheduling: the dollar hold, `samplesLeft`, the heartbeat row and
+the arrival ledger have no meaning for a single call, and moving them would have been a rewrite of the round
+rather than an extraction.
+
+**Two gaps, recorded rather than papered over.** (1) The bench cannot yet PIN S2 per arm: that needs
+`EngineOptions.s2` in `src/core/types.ts` plus `armMechanisms` / `MECHANISM_ENV_VARS` in
+`src/bench/conditions.ts`, both outside slot A's file list — until then `jev-on-next` must export
+`JEVCODE_S2=on`, which `pinMechanismEnv` does not clear. (2) The §3.4 reasoning cap has no jev-on consumer: the
+propose request sends no `reasoning` parameter at all, so there is nothing to cap. Adding one would be a new
+mechanism, not a wiring fix.
+
 ### 7.7 The cross-cutting gate: Ring 1 under `--jev off`
 
 Ring 1 with `JEVCODE_JEV=off` must complete all five tasks.

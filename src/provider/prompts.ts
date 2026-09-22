@@ -196,6 +196,12 @@ export interface PromptInput {
    * everything volatile → window — which is §3.3's `system → repo map → files → window`. Nothing is added, removed
    * or rewritten: only the order changes, and only for a caller that asks. The `view: 'legacy'` goldens therefore
    * stay byte-identical (§7.6's gate), and `prefixChars` on the build says how long the head that repeats is.
+   *
+   * **Who asks** (F25, the finishing pass). Until then NOBODY did — the member was built and never set, which is
+   * why the `jev-on-next` arm's `mechanisms.s2: true` was false in fact. `Engine.promptInput()` now sets it
+   * whenever the S2 switch resolves to anything but `'off'` (`s2Mode`, `src/synth/llm/hedge.ts`: `jev-on` only,
+   * `JEVCODE_S2=on`, default off). The default is what keeps `test/unit/loop/router-golden.test.ts` and every
+   * `view: 'legacy'` golden valid without a re-capture: an S2-off run still asks for the legacy order.
    */
   prefixOrder?: 'legacy' | 'pinned';
 }

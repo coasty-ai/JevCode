@@ -22,7 +22,7 @@ import { createEmitter } from '../core/events.js';
 import { sha12 } from '../core/hash.js';
 import { toJson } from '../core/json.js';
 import { clip } from '../core/text.js';
-import { monotonicNow, nowIso, sleep } from '../core/time.js';
+import { monotonicNow, nowIso, percentile, sleep } from '../core/time.js';
 // TUI-DESIGN §8.6 (F7): the steer bounds are defined once, next to PendingDirective; re-exported below under the engine's names
 import { DEFAULT_COMMIT_IDENTITY, DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type { AskResult,
@@ -185,7 +185,8 @@ import { isRepositoryWorkspace } from '../synth/oracle/index.js';
 import { synthesizerHandles } from '../synth/index.js';
 // contract 1.9 (Fastlane) §3.2: a hedge twin's sample index carries its origin — the one fact `noteSampleStart` needs
 // to tell "a second copy of a sample of the open round" from "a new round" (slot A's defect 11)
-import { hedgeOriginOf } from '../synth/llm/source.js';
+import { LLM_DEADLINE_ADAPT, hedgeOriginOf } from '../synth/llm/source.js';
+import { hedgedCall, providerOrderFor, s2Mode } from '../synth/llm/hedge.js';
 import { warmPlaneEnabled } from '../synth/warm/index.js';
 import { scopeUsable } from '../workspace/tests.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
@@ -528,7 +529,18 @@ interface StepDraft {
    * docs/LLM-JEV-DESIGN.md §9.3 (llm-jev): the step's verification counts for `StepRecord.verify` — the engine's own tallies
    * of the sample rows it wrote, and what the synthesizer reported through `SynthesisContext.reportVerify` (merged over them).
    */
-  verify: { samples: number; timeouts: number; cancelled: number; malformed: number; reported: Partial<StepVerifySummary> | null };
+  verify: {
+    samples: number;
+    timeouts: number;
+    cancelled: number;
+    malformed: number;
+    reported: Partial<StepVerifySummary> | null;
+    /**
+     * contract 1.9 (Fastlane) §3.1–§3.4 (F25): what the ENGINE measured about this step's own propose call.
+     * Filled only when the S2 switch is on, so an S2-off step's `StepRecord` is byte-identical to HEAD's.
+     */
+    s2: { ttfbMs: number[]; hedges: number; hedgeWins: number; cacheRead: number; cacheWrite: number };
+  };
   /** docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): who proposed — the synthesizer, or the generic per-step fallback (stage 4); null in the other modes */
   proposer: StepProposer | null;
   /** contract 1.9 (Fastlane) §5.2: the fast path's row for this step; null when it never armed (I2: nothing is written then) */
@@ -614,6 +626,45 @@ function addUsage(a: TokenUsage, b: TokenUsage): void {
 function jevChargedMs(draft: Pick<StepDraft, 'timing'>): number {
   return Math.max(draft.timing.jevMs, draft.timing.jevWallMs);
 }
+
+// ---------------------------------------------------------------------------------------
+// contract 1.9 (Fastlane) §3 (F25) — the S2 generation path on the `jev-on` propose call
+// ---------------------------------------------------------------------------------------
+
+/**
+ * §3.1: how many TTFB readings a run keeps. The p50 is a running statistic, not a series: past a few hundred
+ * readings another one cannot move it, and an unbounded array on a 40-step run with a hedge per step is memory
+ * spent on nothing. The per-step copy takes the same bound so a pathological step cannot grow `steps.jsonl`.
+ */
+export const TTFB_READINGS_MAX = 256;
+
+/**
+ * §3.2: one leg of a hedged one-shot propose call, as `Engine.generate` sees it. `sample` is set ONLY on the
+ * twin (`HEDGE_TWIN_OFFSET`), so an unhedged call's events and `generator.jsonl` row are byte-identical to HEAD's.
+ */
+interface OneShotLeg {
+  signal: AbortSignal;
+  onFirstByte: (ms: number) => void;
+  sample?: number;
+}
+
+/**
+ * §3.2: what the twin sends — the origin's request with its upstream order ROTATED, so the provider that is
+ * currently silent is the twin's last choice instead of its first. A request without a `providerPrefs.order`
+ * (which is every request the loop sends today) is returned unchanged, and the twin is then a pure latency race.
+ */
+function twinRequest(req: GenerateRequest): GenerateRequest {
+  const order = req.providerPrefs?.order ?? [];
+  if (order.length < 2) return req;
+  return { ...req, providerPrefs: { requireParameters: req.providerPrefs?.requireParameters ?? true, order: [...providerOrderFor(order, true)] } };
+}
+
+/** §3.1–§3.4: did the engine measure anything about this step's own propose call? Only then is `verify` written. */
+function s2Measured(draft: Pick<StepDraft, 'verify'>): boolean {
+  const s2 = draft.verify.s2;
+  return s2.ttfbMs.length > 0 || s2.hedges > 0 || s2.cacheRead > 0 || s2.cacheWrite > 0;
+}
+
 function zeroTiming(): StepTiming {
   return { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 0 };
 }
@@ -998,6 +1049,18 @@ class EngineImpl implements Engine {
    * all false, which is the whole of I2 (byte identity).
    */
   private readonly fastPathOption: 'auto' | 'off';
+  /**
+   * contract 1.9 (Fastlane) §3 (F25): the S2 generation path's effective mode for this run — `jev-on` only,
+   * `JEVCODE_S2=on`, default off. `'partial'` is the measurement half without the §3.2 hedge (`JEVCODE_HEDGE=off`).
+   * Every S2 mechanism on the propose path is behind `this.s2 !== 'off'`, so an S2-off run is the pre-1.9 run byte
+   * for byte: the legacy prefix order, no TTFB callback, no twin, and no `StepRecord.verify` on a jev-on step.
+   */
+  private readonly s2: 'on' | 'partial' | 'off';
+  /**
+   * contract 1.9 (Fastlane) §3.1: every TTFB this run's propose calls observed — the input of the §3.2 threshold,
+   * exactly as `ttfbMsAll` is in the synthesizer's source. Bounded: a long run must not accumulate a reading per step.
+   */
+  private readonly ttfbMsAll: number[] = [];
   private fastPathRunner: FastPathRunner | null = null;
   /** T2, cached once per run: does the fast path's own synthesizer cover this workspace (`synthesizerHandles`)? */
   private fastPathHandles: boolean | null = null;
@@ -1148,6 +1211,8 @@ class EngineImpl implements Engine {
     this.synthesizer = init.opts.synthesizer ?? null;
     // contract 1.9 (Fastlane) §0.3: the engine derives the default from the mode; the env override is the bench's switch
     this.fastPathOption = resolveFastPathOption(this.mode, init.opts.fastPath);
+    // §3 / §0.3: read once, at construction, like every other mechanism switch
+    this.s2 = s2Mode(this.mode);
     this.resumed = init.resume !== null;
     // contract 1.4 (W0 item 1, §9.3): the epochs THIS device has already minted or accepted for the run, as the
     // resumed `run.json` recorded them. The resume gate's local set starts here rather than at this process's own
@@ -1679,6 +1744,9 @@ class EngineImpl implements Engine {
       // contract 1.4 (W2b) (§3.6, §7.1, §6.1): the coordination zone, the lifecycle word and the sub-work rows.
       // All three are ABSENT with no ledger, so `--json=verbose` on a run without coordination is byte-identical.
       ...(this.coord !== null ? { phase: this.runPhase(), coordination: this.coord.status(), subwork: this.coord.subworkRows() } : {}),
+      // contract 1.9 (Fastlane) §8.1 (F25): what this engine RESOLVED, so a bench summary can be checked against the
+      // run instead of against its own intention. All three are read once at construction and never move.
+      mechanisms: { s2: this.s2, routers: routersOn(this.mode, this.opts.routers) ? 'on' : 'off', fastPath: this.fastPathOption },
     };
     return status;
   }
@@ -2898,7 +2966,7 @@ class EngineImpl implements Engine {
       synthJevWallMs: 0,
       generatorBatch: { inFlight: 0, startedAt: 0 },
       closed: false,
-      verify: { samples: 0, timeouts: 0, cancelled: 0, malformed: 0, reported: null },
+      verify: { samples: 0, timeouts: 0, cancelled: 0, malformed: 0, reported: null, s2: { ttfbMs: [], hedges: 0, hedgeWins: 0, cacheRead: 0, cacheWrite: 0 } },
       proposer: null,
       fastPath: null,
       scopeUsable: null,
@@ -2976,7 +3044,7 @@ class EngineImpl implements Engine {
       // contract 1.9 (Fastlane) §7.5 seam (b): spread in only when the caller pinned it, so a run that pins
       // nothing hands the stages exactly the object it handed them before the wave (I2)
       ...(this.opts.routers !== undefined ? { routers: this.opts.routers } : {}),
-      generate: (req, attempt) => self.generate(draft, req, attempt),
+      generate: (req, attempt) => self.generateProposal(draft, req, attempt),
       noteMalformed: (attempt) => {
         const rec = draft.generatorRecords.find((r) => r.attempt === attempt);
         if (rec) rec.malformed = true;
@@ -3518,6 +3586,62 @@ class EngineImpl implements Engine {
   }
 
   /**
+   * contract 1.9 (Fastlane) §3.1 (F25): the run's TTFB p50, `null` until there is enough of it to act on.
+   *
+   * The `LLM_DEADLINE_ADAPT.minSamples` floor is the synthesizer's own rule and it is here for the same reason
+   * (review defect 8): one fast first byte is not evidence about a run, and acting on it would pin the §3.2
+   * threshold at its 3 s floor for the rest of the run from a single observation.
+   */
+  private p50TtfbMs(): number | null {
+    return this.ttfbMsAll.length >= LLM_DEADLINE_ADAPT.minSamples ? percentile(this.ttfbMsAll, 50) : null;
+  }
+
+  /** §3.1: one propose leg's time to first byte — the run's p50, and this step's `StepRecord.verify.ttfbMs`. */
+  private noteProposeFirstByte(draft: StepDraft, ms: number): void {
+    if (!(Number.isFinite(ms) && ms >= 0)) return;
+    if (this.ttfbMsAll.length < TTFB_READINGS_MAX) this.ttfbMsAll.push(ms);
+    if (draft.verify.s2.ttfbMs.length < TTFB_READINGS_MAX) draft.verify.s2.ttfbMs.push(ms);
+  }
+
+  /**
+   * contract 1.9 (Fastlane) §3.1–§3.3 (F25): the propose stage's call, with the S2 generation path on it.
+   *
+   * With the switch off this is `generate` and nothing else — the same one call, the same options object, byte for
+   * byte what `jev-on` has always sent. With it on the call becomes a §3.2 race: the origin goes out at once, and if
+   * it has produced NO FIRST BYTE for `hedgeAfterMs(this run's TTFB p50)` one twin follows it on the ROTATED upstream
+   * order. The first leg with a result wins, the other is cancelled and booked, and the counters land on
+   * `StepRecord.verify` so the §8.3 S2 row is a measurement rather than an intention.
+   *
+   * The decision half — the threshold, the twin index, the rotation — is `src/synth/llm/hedge.ts`, the same module
+   * the synthesizer's round uses. What is NOT shared is the round's scheduling: the dollar hold, `samplesLeft` and
+   * the arrival ledger have no meaning for one call.
+   */
+  private async generateProposal(draft: StepDraft, req: GenerateRequest, attempt: number): Promise<GenerateResult> {
+    if (this.s2 === 'off') return this.generate(draft, req, attempt);
+    const out = await hedgedCall<GenerateResult>({
+      signal: this.signal,
+      // `'partial'` is the measurement half without the hedge: `JEVCODE_HEDGE=off` said so explicitly
+      hedge: this.s2 === 'on',
+      p50TtfbMs: () => this.p50TtfbMs(),
+      onHedge: (text) => this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `hedge: ${text}` }),
+      run: (leg) =>
+        this.generate(draft, leg.twin ? twinRequest(req) : req, attempt, undefined, {
+          signal: leg.signal,
+          onFirstByte: (ms) => {
+            this.noteProposeFirstByte(draft, ms);
+            leg.onFirstByte(ms);
+          },
+          ...(leg.twin ? { sample: leg.sample } : {}),
+        }),
+    });
+    draft.verify.s2.hedges += out.hedges;
+    draft.verify.s2.hedgeWins += out.hedgeWins;
+    // the winner's latency is the step's; the loser's is booked on its own cancelled row
+    draft.timing.generatorMs += out.result.latencyMs;
+    return out.result;
+  }
+
+  /**
    * The one metered, recorded path to the generating LLM. Without `sample` it is the propose stage's call (jev-on, jev-off:
    * one attempt, the engine's signal). With `sample` (llm-jev, docs/LLM-JEV-DESIGN.md §4.8) it is one sample of the
    * synthesizer's round: the sample's signal is linked to the engine's, every event and the generator.jsonl row carry the
@@ -3525,7 +3649,7 @@ class EngineImpl implements Engine {
    * (`recordUnfinishedSample`) and rejects with the signal's reason, a sample already cancelled when it arrives is never
    * dispatched (no event, no row, no metering), and `timing.generatorMs` takes the wall of the round, not the sum of the samples.
    */
-  private async generate(draft: StepDraft, req: GenerateRequest, attempt: number, sample?: SampleOptions): Promise<GenerateResult> {
+  private async generate(draft: StepDraft, req: GenerateRequest, attempt: number, sample?: SampleOptions, leg?: OneShotLeg): Promise<GenerateResult> {
     // Defence in depth for docs/JEV-ONLY.md: even with a real provider in the slot, jev-only never reaches it.
     if (this.mode === 'jev-only') throw new ConfigError('jev-only mode: the generating LLM must not be called', { setting: 'mode' });
     // §4.8: a sample cancelled before it reached the channel (a loser cancellation racing a stagger fire, or the engine
@@ -3535,7 +3659,10 @@ class EngineImpl implements Engine {
     // contract 1.4 (§12.0.2 P3): the round the pause cache names comes from the synthesizer's own sample options, never from
     // the free-text `synth` event; the samples of one batch carry the same pair, so the last one dispatched is the round
     if (sample?.goalId !== undefined) draft.llmGoal = { goalId: sample.goalId, round: sample.goalRound ?? Math.max(0, draft.llmRounds - 1) };
-    const at = sample === undefined ? {} : { sample: sample.sample };
+    // contract 1.9 (Fastlane) §3.2 (F25): a hedge TWIN of the one-shot propose call carries its twin index on every
+    // event and on its `generator.jsonl` row, which is how `hedgeOriginOf` reads it back. The ORIGIN keeps the shape
+    // it has always had (no `sample`), so an unhedged jev-on step's rows are byte-identical to HEAD's.
+    const at = sample === undefined ? (leg?.sample === undefined ? {} : { sample: leg.sample }) : { sample: sample.sample };
     if (sample !== undefined) {
       // contract 1.4 (COORDINATION-DESIGN §6.4, §7.3 step 3, P3): a sample that arrived before the pause is served from the round
       // cache — no provider call, no metering, no row (nothing was bought); the events say so for the renderers
@@ -3565,7 +3692,7 @@ class EngineImpl implements Engine {
     const endSampleWait = stepTimeline.span('sample', sample === undefined ? 'one-shot' : `sample${sample.sample}`);
     try {
       res = await this.opts.provider.generate(req, {
-        signal: link?.signal ?? this.signal,
+        signal: link?.signal ?? leg?.signal ?? this.signal,
         ...at,
         onDelta: (text) => {
           textChars += text.length;
@@ -3592,7 +3719,7 @@ class EngineImpl implements Engine {
         // contract 1.9 (Fastlane) §3.1: time to first byte, forwarded verbatim. It is the §3.2 hedge's only input, so the
         // channel must not swallow it; absent when the caller asked for none, which is a one-shot propose call and every
         // sample of a synthesizer that does not measure TTFB.
-        ...(sample?.onFirstByte === undefined ? {} : { onFirstByte: sample.onFirstByte }),
+        ...(sample?.onFirstByte === undefined ? (leg?.onFirstByte === undefined ? {} : { onFirstByte: leg.onFirstByte }) : { onFirstByte: sample.onFirstByte }),
       });
       retry.settled(true);
     } catch (e) {
@@ -3608,6 +3735,13 @@ class EngineImpl implements Engine {
         const stopReason = link.signal.aborted ? abortStopReason(sample.signal.aborted ? sample.signal.reason : this.signal.reason) : partial?.rateLimited === true ? 'rate_limited' : 'error';
         this.recordUnfinishedSample(draft, req, attempt, sample, { latencyMs, streamedChars, stopReason, partial });
       }
+      // §3.2 (F25): "a hedge makes a step faster, never free" — the cancelled leg of a hedged propose call is booked
+      // through the SAME estimator the synthesizer's loser is, so both legs reach `generator.jsonl` and the meter.
+      if (sample === undefined && leg !== undefined) {
+        const latencyMs = Math.max(0, this.clock() - t0);
+        const stopReason = leg.signal.aborted ? 'cancelled' : 'error';
+        this.recordUnfinishedSample(draft, req, attempt, { sample: leg.sample ?? 0, purpose: 'propose_fix' }, { latencyMs, streamedChars: toolChars + textChars, stopReason, partial: held.partial });
+      }
       throw e;
     } finally {
       endSampleWait();
@@ -3621,8 +3755,15 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §9.5: noteUsage read the raw (possibly NaN) cost; the record, the event, the step draft and the sum take the clamped copy
     const usage = pricedUsage(res.usage);
     addUsage(draft.usage.generator, usage);
-    // the one-sample call adds the provider's latency; a round's samples close their batch wall in noteSampleEnd
-    if (sample === undefined) draft.timing.generatorMs += res.latencyMs;
+    // the one-sample call adds the provider's latency; a round's samples close their batch wall in noteSampleEnd.
+    // §3.2 (F25): a hedged call has two legs and only the WINNER's latency is the step's, so `generateProposal` adds
+    // it once after the race rather than each leg adding its own here.
+    if (sample === undefined && leg === undefined) draft.timing.generatorMs += res.latencyMs;
+    // §3.4 (F25): the provider's own cache shares of this step's propose call, for `StepRecord.verify` and the §8.3 row
+    if (this.s2 !== 'off') {
+      draft.verify.s2.cacheRead += Number.isFinite(res.usage.cacheReadTokens) ? (res.usage.cacheReadTokens ?? 0) : 0;
+      draft.verify.s2.cacheWrite += Number.isFinite(res.usage.cacheWriteTokens) ? (res.usage.cacheWriteTokens ?? 0) : 0;
+    }
     const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
     if (sample !== undefined && draft.arrivedSamples.length < CACHED_SAMPLES_MAX) {
       // contract 1.4 (§6.4): the arrived sample joins the step's round cache (bounded), so a pause-now keeps what was bought
@@ -3677,6 +3818,7 @@ class EngineImpl implements Engine {
    * `candidatesTested`, `distinct`, `misanchored`, `passers`, `partials`, `graceMs`, `localisationMissed`).
    */
   private verifySummary(draft: StepDraft, proposal: Proposal | null): StepVerifySummary {
+    const s2 = draft.verify.s2;
     const own: StepVerifySummary = {
       samples: draft.verify.samples,
       distinct: 0,
@@ -3689,6 +3831,13 @@ class EngineImpl implements Engine {
       partials: 0,
       graceMs: 0,
       localisationMissed: false,
+      // contract 1.9 (Fastlane) §3.1–§3.4 (F25): what the ENGINE measured about this step's propose call. Each member
+      // is ABSENT when nothing measured it, which is what keeps the llm-jev shape (where the synthesizer reports its
+      // own, merged over these below) exactly what it was — an S2-off step contributes none of them.
+      ...(s2.ttfbMs.length > 0 ? { ttfbMs: [...s2.ttfbMs] } : {}),
+      ...(s2.hedges > 0 ? { hedges: s2.hedges, hedgeWins: s2.hedgeWins } : {}),
+      ...(s2.cacheRead > 0 ? { cacheRead: s2.cacheRead } : {}),
+      ...(s2.cacheWrite > 0 ? { cacheWrite: s2.cacheWrite } : {}),
     };
     return { ...own, ...(draft.verify.reported ?? {}) };
   }
@@ -3759,7 +3908,8 @@ class EngineImpl implements Engine {
     draft: StepDraft,
     req: GenerateRequest,
     attempt: number,
-    sample: SampleOptions,
+    // F25: only the index and the purpose are read, so a hedged one-shot leg books itself through the same estimator
+    sample: Pick<SampleOptions, 'sample' | 'purpose'>,
     o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' | 'rate_limited'; partial: CancelledGeneration | null },
   ): void {
     const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
@@ -5037,6 +5187,11 @@ class EngineImpl implements Engine {
       contextFiles,
       candidates,
       toolName: 'propose_action',
+      // contract 1.9 (Fastlane) §3.3 (F25): the byte-stable prefix — task -> repo map -> files -> everything
+      // volatile -> window. Nothing is added, removed or rewritten; only the order changes, and only under the S2
+      // switch, which is `jev-on` only and off by default. That default is what keeps `router-golden.test.ts` and
+      // every `view: 'legacy'` prompt golden valid without a re-capture.
+      ...(this.s2 === 'off' ? {} : { prefixOrder: 'pinned' as const }),
       // TUI-DESIGN §8.6: one hints line per directive for exactly this step; §15 item 11: the @-mentioned files
       humanDirectives: this.activeHuman?.step === draft.step ? [...this.activeHuman.texts] : [],
       pinnedFiles: [...(this.opts.seed?.pinnedFiles ?? [])],
@@ -5763,7 +5918,7 @@ class EngineImpl implements Engine {
     // own call, both have a reporter and neither is `llm-jev` + `proposer: 'synth'`. The llm-jev shape is unchanged —
     // that arm always reports or has tallies to write — so contract 1.9 optionality and the llm-jev goldens hold, and a
     // step nobody reported on still writes no `verify` member at all.
-    if (draft.verify.reported !== null || (this.mode === 'llm-jev' && draft.proposer === 'synth')) record.verify = this.verifySummary(draft, proposal);
+    if (draft.verify.reported !== null || s2Measured(draft) || (this.mode === 'llm-jev' && draft.proposer === 'synth')) record.verify = this.verifySummary(draft, proposal);
     // contract 1.4 (W2b) (§4.1): a conditional spread everywhere else, a conditional assignment here — a step
     // whose gate saw nothing writes the row it wrote before this wave, which is half of what M2 means by zero cost
     if (draft.coord !== null) record.coord = draft.coord;
