@@ -313,15 +313,14 @@ describe('finish() in flight reads as finished (§8.6: a steer confirmed to the 
     const results: Record<string, unknown> = {};
     h.engine.events.on('transcript', (e) => {
       if (/^budget max_steps reached at step start$/.test(e.text)) results['beforeFinish'] = h.engine.steer('survives the pause');
-      // §3.7 G1: the stop EVENT still fires at the same point in the lifecycle — the deletion is in the item
-      // formatter (`itemsFromEvent`), so no sink prints it, but the event is still the lifecycle anchor this
-      // ordering test needs. `src/loop/stop.ts` is the harness session's, so the event text is unchanged.
-      if (/^stop: [a-z_]+ at step \d+/.test(e.text) || e.text === '') {
-        results['onStopLine'] = h.engine.steer('too late');
-        results['unsteerOnStop'] = h.engine.unsteer();
-        results['annotateOnStop'] = h.engine.annotate('late line');
-        h.engine.pause();
-      }
+    });
+    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop:` transcript line is deleted, so the last-event arm of this
+    // test re-anchors on `run:end` — the same "finish() is in flight / already done" window it was probing.
+    h.engine.events.on('run:end', () => {
+      results['onStopLine'] = h.engine.steer('too late');
+      results['unsteerOnStop'] = h.engine.unsteer();
+      results['annotateOnStop'] = h.engine.annotate('late line');
+      h.engine.pause();
     });
     const realWrite = store.writeState.bind(store);
     store.writeState = async (state) => {
