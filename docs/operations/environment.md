@@ -61,7 +61,7 @@ The decider's four variables do not carry the `JEVCODE_` prefix: `JEV_PROVIDER`,
 | --- | --- | --- | --- |
 | `JEVCODE_WORKSPACE` | `workspace` | the working directory | the directory a run may change |
 | `JEVCODE_HOME` | `runsDir` | `~/.jevcode` | the JevCode home; the runs directory is `runs` inside it, and the coordination ledger and the model cache live beside it |
-| `JEVCODE_EXTRA_ENV_FILE` | `extraEnvFile` | — | an additional `.env` file whose keys are read as a fallback, below `./.env` and above the configuration file |
+| `OPEN_ASSIST_PATH` | `openAssistPath` | — | a checkout whose `.env` is read as an additional fallback layer, below `./.env` and above the configuration file. `docs/DESIGN.md` §3 still spells this row `--extra-env-file` / `JEVCODE_EXTRA_ENV_FILE`; the built name is the one above |
 | `JEVCODE_CONFIG` | `configFile` | the search order | the configuration file to read |
 | `JEVCODE_SANDBOX` | `sandbox` | `auto` | the sandbox profile; `none` disables the system profile |
 
@@ -112,7 +112,7 @@ configuration file cannot change one.
 | `JEVCODE_TRACE` | `log.file` plus the level | — | the same as the log file variable with the level forced to `trace` |
 | `JEVCODE_UPDATE_NOTIFY` | `update.notify` | `false` | the post-run update notice; `NO_UPDATE_NOTIFIER` disables it |
 
-<!-- src/config/defaults.ts:116-274 SETTINGS -->
+<!-- src/config/defaults.ts:116-200 SETTINGS -->
 
 ### Variables that are not JevCode's own
 
@@ -127,7 +127,7 @@ configuration file cannot change one.
 | `XDG_CONFIG_HOME` | where the configuration file and keybindings live |
 | `INK_SCREEN_READER` | a second accepted spelling of the screen-reader setting |
 
-<!-- src/provider/ids.ts:35-43 PROVIDER_KEY_ENV; src/config/defaults.ts:65 KNOWN_KEY_ENV;
+<!-- src/provider/ids.ts:36-44 PROVIDER_KEY_ENV; src/config/defaults.ts:70 KNOWN_KEY_ENV;
      src/tui/color-shim.ts:9-37 -->
 
 Four of these join the redaction set whenever they are set in your shell, whichever provider you
@@ -136,13 +136,13 @@ exported for another tool is therefore still masked in JevCode's output. On top 
 key in a loaded `.env` file or in the configuration file whose **name** contains `KEY`, `TOKEN`,
 `SECRET`, `PASSWORD` or `CREDENTIAL` joins the set too, whatever it is called.
 
-<!-- src/config/defaults.ts:65 KNOWN_KEY_ENV; src/config/resolve.ts:592-606;
+<!-- src/config/defaults.ts:70 KNOWN_KEY_ENV; src/config/resolve.ts:592-606;
      src/core/redact.ts:56 SECRET_NAME_RE -->
 
 ## A `.env` file is not the environment
 
 This distinction matters for the two groups below. A `.env` file — the one in the working
-directory, or the one `extraEnvFile` names — is read as a **configuration layer**. Its values
+directory, or the one under the path `openAssistPath` names — is read as a **configuration layer**. Its values
 never enter the process environment.
 
 So a name from Group 1 works in a `.env` file, because the settings resolver reads that layer.

@@ -201,7 +201,7 @@ malformed question batch. Swallowing any of them is how an aborted run keeps run
 step token is what makes that safe. It is minted per `(runId, step)`, checked immediately before
 an answer is applied, and invalidated at step commit. A late answer is recorded as `dropped` and
 applied to nothing.
-<!-- src/loop/routers.ts:114 stepTokenFor, src/jev/router.ts:82 invalidateStepToken -->
+<!-- src/loop/routers.ts:113 stepTokenFor, src/jev/router.ts:82 invalidateStepToken -->
 
 Two subtleties in `src/loop/routers.ts` that are easy to get wrong:
 
@@ -280,7 +280,7 @@ and `JEVCODE_FASTPATH=off` turns it off.
 | **RS5** | guard arbitration | **not a router** — awaited, already escape-bearing | — | n/a |
 | **R9** | the bounded sieve fast path | branch route, code-decided; **no Jev question is added** | — | yes |
 
-<!-- deadlines: src/loop/routers.ts:38-41. "built" = `grep -rl routeSpeculative src` returns
+<!-- deadlines: src/loop/routers.ts:37-40. "built" = `grep -rl routeSpeculative src` returns
      router.ts, routers.ts, engine.ts, stages/intent.ts, stages/judge.ts, stages/replan.ts only.
      The full table with fallbacks and consumers is docs/LLM-LOOP-DESIGN.md §2.2. -->
 

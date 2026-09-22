@@ -75,13 +75,16 @@ Other measured things:
 - **`jev-only` with zero generating-model calls.** On a 40-program suite, all 40 records carry
   `generatorCalls: 0`, zero generator tokens and zero generator cost. Repaired 39/40 on the
   cases the workspace exposes; **37/40 correct** by a separate verdict script, with 2 overfits
-  named. Recorded in [`JEV-ONLY.md`](../JEV-ONLY.md) and the README's results table.
+  named. Recorded in [`JEV-ONLY.md`](../JEV-ONLY.md); the line-by-line parse of every
+  `jev-only` record is `experiments/results/jev-only-audit.md` §2.2.
 - **The issue oracle**: valid on 9 of 30 SWE-bench Verified instances — 7 strong, 2 weak — at
   $0.0096.
 - **The contract lint**: 34 Jev call sites, 10 carrying a four-clause block, 24 allow-listed.
   Reproduce with `npm run jev-contract`.
-- **Build and package**: bundle 2,786,493 B; unpacked 3,003,627 B; tarball 1,015,735 B; 10
-  files; 0 runtime dependencies.
+- **Build and package**, from `npm run build` and `node scripts/check-pack.mjs` on this tree:
+  bundle 2,854,413 B; unpacked 2,991,973 B; tarball 1,009,511 B; 10 files; 0 runtime
+  dependencies. Byte counts move with the bundler's version and with the size of `README.md`,
+  which is in the tarball.
 
 ## What is not measured
 

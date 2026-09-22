@@ -10,7 +10,7 @@ make no network request, spend no money and behave exactly as a run behaves toda
 
 The normative specification is [`../ORCHESTRATION-DESIGN.md`](../ORCHESTRATION-DESIGN.md).
 
-<!-- src/orchestrate/types.ts:82-107 DEFAULT_SPLIT_POLICY; src/orchestrate/split/gate.ts:84 the first check -->
+<!-- src/orchestrate/types.ts:82-107 DEFAULT_SPLIT_POLICY; src/orchestrate/split/gate.ts:86 the first check -->
 
 ## The whole path
 

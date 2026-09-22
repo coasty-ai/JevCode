@@ -87,14 +87,15 @@ flowchart TD
 
 ## Measured build facts
 
-These come from one build of the tree that carries version 0.5.0. They are a measurement, not a
-promise; re-run `npm run build` and `node scripts/check-pack.mjs` to get your own.
+These come from one `npm run build` plus `node scripts/check-pack.mjs` on this tree at version
+0.5.0. They are a measurement, not a promise: the bundler's own version moves the byte counts,
+and `README.md` is inside the tarball, so re-run both commands to get your own.
 
 | Quantity | Value |
 | --- | --- |
-| `dist/jevcode.mjs`, minified | 2,786,493 bytes |
-| unpacked package | 3,003,627 bytes, against a gate of 3,500,000 |
-| gzipped tarball | 1,015,735 bytes, against a gate of 1,500,000 |
+| `dist/jevcode.mjs`, minified | 2,854,413 bytes |
+| unpacked package | 2,991,973 bytes, against a gate of 3,500,000 |
+| gzipped tarball | 1,009,511 bytes, against a gate of 1,500,000 |
 | files in the package | 10 |
 | runtime dependencies | 0 |
 

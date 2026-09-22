@@ -22,7 +22,7 @@ flowchart TD
   LOC["LOCALISE: traceback frames first, then a ranked search"]
   SITES["SITES: physical lines, insert gaps, whole multi-line statements"]
   SEEDS["CANDIDATE SOURCES — code proposes"]
-  BUDGET{"is one run cheap?<br/>measured t_run at or under 2 s"}
+  BUDGET{"does the whole pool fit the runs the step has left?"}
   SIEVE["SIEVE: run EVERY candidate through the goal tests<br/>in shadow lanes, never the workspace"]
   RANK["RANK: Jev orders the pool first, one Noul per candidate"]
   PASSERS{"how many candidates passed?"}
@@ -36,8 +36,8 @@ flowchart TD
   PICK --> ORACLE --> LOC
   PICK --> LOC
   LOC --> SITES --> SEEDS --> BUDGET
-  BUDGET -->|"cheap"| SIEVE
-  BUDGET -->|"expensive"| RANK --> SIEVE
+  BUDGET -->|"it fits"| SIEVE
+  BUDGET -->|"it does not"| RANK --> SIEVE
   SIEVE --> PASSERS
   PASSERS -->|"exactly one, suspicious"| HOLD --> GUARD
   PASSERS -->|"several"| GUARD
@@ -105,21 +105,31 @@ a matter of discipline.
 ## Sieve or rank
 
 With thousands of candidates and a test suite that takes real time, you cannot run everything.
-The choice between the two strategies is arithmetic on one measured number: `t_run`, the wall
-time of one goal-subset test run.
+The choice between the two strategies is one comparison: **does the pool fit the test runs the
+step has left?**
 
 | Condition | Strategy |
 | --- | --- |
-| `t_run` at or under **2,000 ms** | **SIEVE** — run every candidate and let the tests rank them |
-| `t_run` above that | **RANK** — ask Jev to order the pool first, one full-criteria Noul per candidate, then run down the order |
+| the pool fits the runs left | **SIEVE** — run every candidate and let the tests rank them. No Jev request is spent: the first passer arrives before any order would have been consulted |
+| it does not | **RANK** — ask Jev to order the pool first, then run down the order as far as the budget reaches |
 
-The threshold is `SIEVE_MAX_T_RUN_MS` in `src/synth/search/budget.ts`, and the constant carries
-its own justification: at the true line the whole first-order set runs in a median 3.8 s
-eight ways in parallel, where per-run times are 87–395 ms; above 2 s per run the arithmetic
-flips, because a repository-class suite means 1,641 mutants at 5–60 s each.
+The cut is `poolFitsRunBudget(n, left)` in `src/synth/search/budget.ts`, which is simply
+`n <= left`. `runsLeft` divides the wall the step has left by the *measured* cost of one run,
+multiplied by the lane count, and caps that by the run count the step has left — so an
+expensive test suite shrinks `left` rather than needing a threshold of its own.
+<!-- src/synth/search/budget.ts:222 poolFitsRunBudget, :911 runsLeft, :952 decideRunPlan -->
 
-There is hysteresis for loaded machines. A measured batch median up to 1.5× the threshold does
-**not** flip a sieve-eligible suite to RANK: the lanes are loaded, not the suite slow.
+`SIEVE_MAX_T_RUN_MS = 2000` still exists and is still worth knowing, but it is **no longer the
+cut**. It is the oracle-class line: at or under two seconds per goal-subset run the suite is
+QuixBugs-class, above it repository-class, and that class decides how candidates are ordered
+and whether the edit-class prior is asked up front. The clause was removed from the cut because
+it sent pools the goal test could have decided whole into RANK, buying one Jev request for an
+order over candidates that were all going to run anyway.
+
+There is hysteresis on that class line for loaded machines. A measured batch median up to 1.5×
+it does **not** move a sieve-eligible suite to the slower class: the lanes are loaded, not the
+suite slow.
+<!-- SIEVE_MAX_T_RUN_MS src/synth/search/budget.ts:27, SIEVE_KEEP_FACTOR :128, the class line :638 -->
 
 ## Shadow lanes
 

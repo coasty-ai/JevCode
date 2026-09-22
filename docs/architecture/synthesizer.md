@@ -81,9 +81,11 @@ export function createSynthesizer(opts: SynthesizerOptions): Synthesizer {
 
 Read the first branch carefully: `jev-only` short-circuits to a bare `LedgerSieveSynthesizer`
 with **no language-model source wired in at all**. The zero-generator-call property is not a
-runtime check that could be bypassed; there is nothing to call. The measured consequence: across
-the 609 `jev-only` benchmark task records in this repository, `generatorCalls` is `0` on every
-one.
+runtime check that could be bypassed; there is nothing to call. The measured consequence: an
+audit parsed every `jev-only` benchmark record across 21 recorded result sets and found
+`generatorCalls: 0`, `cost.generator: 0` and zero generator tokens on every finished one.
+<!-- experiments/results/jev-only-audit.md §2.2. The records themselves are not committed:
+     `bench/results/` is gitignored. -->
 
 A third arm name, `llm-sieve`, is accepted by the type but is not wired. Asked for it, the
 factory throws rather than silently running a different one.
@@ -182,11 +184,11 @@ The search visits five **phases** in order: `SEEDS`, `LLM`, `SKETCH`, `BEAM`, `W
 <!-- PHASES, src/synth/search/types.ts:13 -->
 `SKETCH` runs at the top 3 sites; `BEAM` at the top 2, and only when at least 35 Jev requests
 remain in the step's budget, because the beam can spend up to 31 per line.
-<!-- SKETCH_TOP_SITES=3, BEAM_TOP_SITES=2, BEAM_MIN_JEV_REQUESTS_LEFT=35: src/synth/search/subgoal.ts:66-71 -->
+<!-- SKETCH_TOP_SITES=3, BEAM_TOP_SITES=2, BEAM_MIN_JEV_REQUESTS_LEFT=35: src/synth/search/subgoal.ts:67-71 -->
 
 One enumeration bound is worth knowing: at most **254** candidates per site per source per
 chunk — the 255-option Choice limit, minus the escape.
-<!-- ENUMERATE_CAP, src/synth/search/subgoal.ts:64 -->
+<!-- ENUMERATE_CAP, src/synth/search/subgoal.ts:65 -->
 
 The candidate-source diagram above lists the sources by these names.
 
@@ -253,7 +255,7 @@ lane modes:
 
 Lane counts are sized from the measured run cost: 8 lanes when one run is under a second, 4 on
 pytest modules, 2 on a large non-git workspace.
-<!-- LANES_FAST_SUITE=8, LANES_PYTEST=4, LANES_LARGE_NON_GIT=2, LARGE_WORKSPACE_BYTES=50 MiB: src/synth/search/budget.ts:32-39 -->
+<!-- LANES_FAST_SUITE=8, LANES_PYTEST=4, LANES_LARGE_NON_GIT=2, LARGE_WORKSPACE_BYTES=50 MiB: src/synth/search/budget.ts:34-40 -->
 
 `src/synth/sieve/queue.ts` is code only — no Jev question — and does the free pre-checks once,
 at enqueue time, so the runner only ever sees jobs worth a test run: one job per (base, site,
@@ -390,7 +392,7 @@ returns the first reason to decline:
 | T12 | the loop detector tripped, or a pause is pending |
 | T9 | no spend left |
 
-<!-- FASTPATH_MAX_FAILING=8, FASTPATH_MAX_T_RUN_MS=800: src/loop/stages/fastpath.ts:28-30 -->
+<!-- FASTPATH_MAX_FAILING=8, FASTPATH_MAX_T_RUN_MS=800: src/loop/stages/fastpath.ts:27-29 -->
 
 `fastPathStage1Workspace` then adds the clauses that cost a workspace listing: exactly one
 non-test source file implicated (T6), not a repository shape (T8), no lease conflict, the
@@ -417,7 +419,7 @@ One round's share is bounded four ways:
 | test runs in one round | 400 |
 | Jev requests in one round | 6 — up to 5 for the localiser and one for arbitration; zero is legal |
 
-<!-- FASTPATH_WALL_SHARE=0.35, FASTPATH_WALL_MAX_MS=45_000, FASTPATH_RUN_WALL_SHARE=0.25: src/loop/stages/fastpath.ts:32-46. FASTPATH_TEST_RUNS_MAX=400, FASTPATH_JEV_MAX=6, FASTPATH_GRACE_MS=2_000: src/synth/search/fastpath.ts:34-40 -->
+<!-- FASTPATH_WALL_SHARE=0.35, FASTPATH_WALL_MAX_MS=45_000, FASTPATH_RUN_WALL_SHARE=0.25: src/loop/stages/fastpath.ts:33-47. FASTPATH_TEST_RUNS_MAX=400, FASTPATH_JEV_MAX=6, FASTPATH_GRACE_MS=2_000: src/synth/search/fastpath.ts:36-40 -->
 
 The cold-confirm reserve is held **outside** the wall share and published to the sieve, so the
 sieve stops dispatching new candidates into it. A passer without its confirm run is not a
@@ -429,7 +431,7 @@ The round constructs its own synthesizer, one per run id, with exactly the body
 `createSynthesizer({ mode: 'jev-only' })` uses — `new LedgerSieveSynthesizer(searchDeps())` —
 plus a one-round budget clamp. Zero generator calls, zero generator dollars. The synthesizer and
 its search memory are disposed at run end.
-<!-- src/synth/search/fastpath.ts:333 (the constructor), :500-522 (per-runId reuse) -->
+<!-- src/synth/search/fastpath.ts:337-339 (the constructor's default `create`), :291 (the per-runId map), :499-527 (`synthFor`), :369-371 (`dispose`) -->
 
 An accepted result becomes the step's proposal at the normal place and goes through the
 unchanged risk, confirm, coordinate, budget, execute and judge path. The fast path proposes; it

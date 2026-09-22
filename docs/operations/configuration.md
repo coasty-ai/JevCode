@@ -14,7 +14,7 @@ Highest first:
 1. **a flag** on the command line
 2. **the process environment**
 3. **`./.env`** in the working directory
-4. **an additional `.env` file**, if `extraEnvFile` names one
+4. **the `.env` of the checkout `openAssistPath` names**, if you named one
 5. **a configuration file**
 6. **the built-in default**
 
@@ -142,14 +142,16 @@ means the setting is unset unless you set it.
 | --- | --- | --- | --- | --- |
 | `workspace` | `--workspace` | `JEVCODE_WORKSPACE` | `workspace` | the working directory |
 | `runsDir` | `--runs-dir` | `JEVCODE_HOME` | `runsDir` | `~/.jevcode/runs` |
-| `extraEnvFile` | `--extra-env-file <path>` | `JEVCODE_EXTRA_ENV_FILE` | `extraEnvFile` | — |
+| `openAssistPath` | `--open-assist-path <dir>` | `OPEN_ASSIST_PATH` | `openAssistPath` | — |
 | `configFile` | `--config` | `JEVCODE_CONFIG` | — | the search order above |
 | `sandbox` | `--sandbox` | `JEVCODE_SANDBOX` | `sandbox` | `auto` |
 | `noNetwork` | `--no-network` | — | `noNetwork` | `false` |
 
-`extraEnvFile` names an additional `.env` file whose keys are read as a fallback. It sits
+`openAssistPath` names a checkout whose `.env` is read as an additional fallback layer. It sits
 between `./.env` and the configuration file in the precedence chain, so it fills in what neither
-the environment nor the local `.env` supplied.
+the environment nor the local `.env` supplied. (`docs/DESIGN.md` §3 spells this row
+`--extra-env-file` / `JEVCODE_EXTRA_ENV_FILE`; the built flag, variable and file key are the
+three above.)
 
 `JEVCODE_HOME` names the JevCode home directory, and the runs directory is `runs` inside it.
 `--runs-dir` sets the runs directory itself.

@@ -25,16 +25,18 @@ One command runs all of them:
 npm run check
 ```
 
-That is exactly three things, in order:
+That is exactly five things, in order:
 
 | step | command | what it enforces |
 | --- | --- | --- |
 | 1 | `tsc -p tsconfig.json --noEmit` | the TypeScript project typechecks under its strict settings |
 | 2 | `node scripts/no-any.mjs` | **no `any` anywhere** in `src/`, `test/`, `perf/` or `scripts/` |
 | 3 | `node scripts/jev-contract.mjs` | every decision call site is either annotated or grandfathered, and no question id is one of the forbidden ones |
-| 4 | `vitest run --project unit` | the unit suite |
+| 4 | `node scripts/check-doc-links.mjs` | every relative link in `README.md` and `docs/**` resolves to a file that exists |
+| 5 | `vitest run --project unit` | the unit suite |
 
-Steps 1 and 2 are both `npm run typecheck`. Steps 3 and 4 are `npm run jev-contract` and `npm test`.
+Steps 1 and 2 are both `npm run typecheck`. Steps 3, 4 and 5 are `npm run jev-contract`,
+`npm run check:docs` and `npm test`.
 
 Two more suites exist and are not in `npm run check`:
 
@@ -173,7 +175,7 @@ record, and saying so in the test name is part of the job.
 | `CHANGELOG.md` | every release; the curated record, distinct from generated release notes |
 | [`docs/DECISIONS.md`](../DECISIONS.md) | whenever a default moves, a claim is withdrawn, or a rule is written down. Regenerate its table of contents with `node scripts/gen-decisions-toc.mjs` |
 | the design document your change touches | the as-built sections; a citation that has gone stale is marked stale rather than quietly rewritten |
-| `README.md`'s Performance section | never by hand — `npm run perf` rewrites it from the measurement file so the table cannot drift |
+| [`docs/measurements/performance.md`](../measurements/performance.md) | after every complete `npm run perf`; the numbers are transcribed from `perf/results/latest.json`, which the probe writes. `npm run perf` also rewrites a `## Performance` section of `README.md` when one exists — today's `README.md` has none, and the probe says so rather than failing |
 
 ## Related
 

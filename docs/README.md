@@ -208,7 +208,7 @@ specifications, not tutorials.
 | [`JEV-ONLY-DESIGN.md`](JEV-ONLY-DESIGN.md) | The Ledger + Sieve search: candidate sources, localisation, the sieve-or-rank rule, the guard, budgets and the evaluation ladder. |
 | [`LLM-JEV-DESIGN.md`](LLM-JEV-DESIGN.md) | The generating model as one candidate source inside that search, the seeds-versus-model race, and completion as a code fact. |
 | [`HARNESS-NEXT-DESIGN.md`](HARNESS-NEXT-DESIGN.md) | Nineteen speed mechanisms and the principle that bounds them, plus the warm verification plane. |
-| [`LLM-LOOP-DESIGN.md`](LLM-LOOP-DESIGN.md) | The speculative router table and the bounded fast path, with the arms and predictions registered before anything ran. Both switches ship off. |
+| [`LLM-LOOP-DESIGN.md`](LLM-LOOP-DESIGN.md) | The speculative router table and the bounded fast path, with the arms and predictions registered before anything ran. The routers ship off in every mode; the fast path is `auto` under `jev-on` only, so it is off in the default mode. |
 | [`COORDINATION-DESIGN.md`](COORDINATION-DESIGN.md) | How concurrent sessions see each other: the ledger, leases, a mailbox, heartbeats, and pause and resume from anywhere. |
 | [`ORCHESTRATION-DESIGN.md`](ORCHESTRATION-DESIGN.md) | Children in worktrees, a critic made of code, and a landing queue. Ships with the split gate shut. |
 | [`IMPORT-DESIGN.md`](IMPORT-DESIGN.md) | Discover, classify, plan, apply — with the first three phases writing nothing at all. |

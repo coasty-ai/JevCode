@@ -60,7 +60,8 @@ wizard asks which provider writes the code (OpenRouter or Anthropic), takes the 
 prompt — never echoed, never accepted as a command-line argument — and then offers to reuse that
 same key for Jev; when `TYPESAFE_API_KEY` is present, Jev speaks to TypeSafe natively and the wizard's second
 step offers it. It can verify the keys before you start, and tells you the price of doing so
-first (free health checks plus one Jev decision, about $0.0001). It asks once whether you trust
+first: one real Jev decision at about $0.00002, one 1-token completion at about $0.000002, and
+a free key-info call. It asks once whether you trust
 this project's `AGENTS.md`. Keys land in `~/.config/jevcode/config.json`, written `0600` in a
 `0700` directory. Then the session opens and you type your first task.
 
@@ -68,8 +69,10 @@ Without a terminal — `--no-input`, `--json`, or a pipe — JevCode does not pr
 code 2 and prints the exact environment variable or `jevcode login` command that would fix it.
 
 `jevcode login` re-runs the wizard. `jevcode config` prints every setting with the source it came
-from. A second `.env` file can be read as a fallback with `--extra-env-file <path>` (or `JEVCODE_EXTRA_ENV_FILE`).
-`jevcode doctor`, which checks your setup in one pass, arrives in 0.6.0.
+from. A second `.env` file can be read as a fallback with `--open-assist-path <dir>` (or `OPEN_ASSIST_PATH`),
+which names a checkout whose `.env` fills in what your own environment did not.
+There is no `jevcode doctor`: it is deferred (`docs/TUI-DESIGN.md` §22, A75), and `jevcode
+config` plus `jevcode login --status` are the read-only view today.
 
 Try it in 60 seconds on the demo workspace in the repository checkout (`examples/demo-py`), a small Python
 package with two planted bugs:

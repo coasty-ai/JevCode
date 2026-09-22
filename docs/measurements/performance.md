@@ -7,8 +7,12 @@ left alone.
 They are **machine-bound**. Every figure below was taken on one laptop under a stated load. Treat them as a
 description of that run, not as a specification of your machine.
 
-`npm run perf` measures all of it, writes the raw values to `perf/results/latest.json`, rewrites the README's
-Performance section from that file so the table cannot drift from the data, and **exits 1 when any gate fails**.
+`npm run perf` measures all of it, writes the raw values to `perf/results/latest.json`, and **exits 1 when
+any gate fails**. It also offers to rewrite a `## Performance` section of `README.md` from that file so the
+table cannot drift from the data; this README has no such section, so the probe prints
+`README.md has no "## Performance" section; nothing rewritten` and the numbers below are transcribed from
+`perf/results/latest.json` by hand.
+<!-- src/perf/main.ts:315-318, src/perf/readme.ts:410-421 updateReadmePerformance -->
 
 ## The budgets
 
@@ -118,8 +122,9 @@ the other pages here.
 | scroll latency | page-up and page-down over 20,000 transcript items in the full-screen renderer |
 
 Two flags help while iterating: keeping every capture and timing file for inspection, and running a subset of
-probes. A subset run is written with a "partial" marker, never counts as a release number, and never reaches the
-README.
+probes. A subset run is still written to the output file, but it carries `partial: true`, it never counts as a
+release number, and it never rewrites a README section.
+<!-- src/perf/main.ts:193 (`partial`), :314-318 -->
 
 ## Reading these against a release
 

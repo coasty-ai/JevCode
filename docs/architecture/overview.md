@@ -109,15 +109,16 @@ the decider on its own — it is handed the stage's own ask as a function argume
 ## The modules
 
 Line counts are whole-file counts of `.ts` and `.tsx` under each directory, taken from the
-tree this page was written against: **454 files, 166,034 lines** across 21 top-level modules.
+tree this page was written against: **454 files, 166,032 lines** across 21 top-level modules.
+Reproduce with `find src \( -name '*.ts' -o -name '*.tsx' \) | xargs wc -l | tail -1`.
 
 | module | lines | what it owns |
 |---|---:|---|
 | `src/synth` | 45,121 | The Ledger + Sieve synthesizer: localisation, candidate generation, shadow-lane verification, the overfit guard. See [The synthesizer](synthesizer.md). |
 | `src/tui` | 28,656 | The interactive terminal interface: transcript, panes, composer, slash commands, review panels. |
-| `src/loop` | 14,075 | The step loop, its eight stages, budgets, loop detection, the context policy, the commit rule. |
+| `src/loop` | 14,074 | The step loop, its eight stages, budgets, loop detection, the context policy, the commit rule. |
 | `src/cli` | 9,722 | Argument parsing, the command dispatch, the session controller, login, the machine-readable stream. |
-| `src/import` | 8,592 | Reads configuration and instruction files other agents left behind and plans an import. Writes nothing itself. |
+| `src/import` | 8,591 | Reads configuration and instruction files other agents left behind and plans an import. Writes nothing itself. |
 | `src/coordination` | 8,381 | The on-disk ledger several sessions on one machine use to see each other's claims and leases. |
 | `src/bench` | 8,047 | The benchmark runner, its conditions and its suite loaders. |
 | `src/provider` | 6,309 | Generator surfaces: Anthropic, OpenRouter, OpenAI-compatible endpoints, and the prompt and action schema. |
@@ -180,7 +181,8 @@ grep -rn "from '\.\./\(tui\|cli\|session\|config\)" src/orchestrate src/coordina
 
 It prints nothing on this tree.
 
-`npm run check` runs the type check, the Jev-contract lint and the unit tests together.
+`npm run check` runs the type check, the Jev-contract lint, the documentation link check
+(`scripts/check-doc-links.mjs`) and the unit tests together.
 
 ## The four modes
 
@@ -205,9 +207,14 @@ stops the run. It emits the same event union, and `decision`, `jev:request`, `in
 `context`, `risk`, `judge` and `replan` never fire.
 <!-- src/loop/generator-only.ts:1-18 -->
 
-The measured claim for `jev-only` is worth stating exactly, because it is easy to disbelieve:
-across the 609 recorded `jev-only` benchmark task records in this repository, `generatorCalls`
-is **0 on every one**.
+The measured claim for `jev-only` is worth stating exactly, because it is easy to disbelieve.
+An audit parsed every `jev-only` benchmark record line by line across **21 recorded result
+sets**: every finished record carries `generatorCalls: 0`, `cost.generator: 0` and zero
+generator tokens, and every `summary.json` carries `spentUsd.generator: 0`. The bench itself
+marks a `jev-only` record with a non-zero count `invalid`, and `src/provider/null.ts` throws if
+`generate()` is reached at all.
+<!-- experiments/results/jev-only-audit.md §2 rows 2 and §2.2. The records are not in the
+     repository: `bench/results/` is gitignored. -->
 
 ## Durable state
 

@@ -80,7 +80,7 @@ Read it carefully, because three facts hide in it.
 The `jev-off` branch of the step is short: propose, compute the action's targets, apply the
 child-agent ownership refusal if this run is a child, then execute. No risk stage, no judge, no
 completion question. A `done` proposal stops the run.
-<!-- src/loop/engine.ts:4258-4288 -->
+<!-- src/loop/engine.ts:4260-4287 -->
 
 There is one more stage, `decompose`, which runs before `replan` and `intent` and only when
 task splitting is possible at all. It short-circuits on `split: 'off'` — the default — before
@@ -193,7 +193,7 @@ Before anything is asked, a code refusal runs: `ownershipRefusal` blocks a child
 writing outside the paths it owns. It is decided before the targets are even stat'ed, and it
 is a property of the child rather than of the mode — `jev-off` runs no risk stage, so its
 branch of the step calls the same function directly.
-<!-- src/loop/stages/risk.ts:675 and :737; src/loop/engine.ts:4269 -->
+<!-- src/loop/stages/risk.ts:675 and :737; src/loop/engine.ts:4281 -->
 
 `ownershipRefusal` returns `null` for a parent run and for any run without a delegation, which
 is why nothing here changes an ordinary run.
@@ -214,7 +214,7 @@ A blocked or declined step **still commits**. It does not loop back to propose i
 step. The reason travels to the next step through the recent window, which is where the writer
 sees it. That distinction matters for reading the records: a blocked step consumes a step from
 `max_steps` and appears in `steps.jsonl` like any other.
-<!-- src/loop/engine.ts:4234-4260 and the `draft.outcome === null` guard at :4290 -->
+<!-- src/loop/engine.ts:4240-4258 and the `draft.outcome === null` guard at :4289 -->
 
 ### execute — `runExecuteStage`
 
@@ -289,8 +289,11 @@ const routerLedger = routersOn(this.mode, this.opts.routers)
 <!-- src/loop/engine.ts:5446 -->
 
 `commitStepRouters` invalidates the step's token — after which no in-flight answer may be
-applied to it — and returns the step's rows, which become `record.router`,
-`timing.routerWaitMs`, `riskSource` and `jevUnavailable`.
+applied to it — and returns the step's rows, which become `record.router` and
+`timing.routerWaitMs` later in the same commit. `record.riskSource` and `record.jevUnavailable`
+come from the draft the risk stage wrote, and are behind the same switch because the routers-off
+risk stage returns neither member.
+<!-- src/loop/engine.ts:5640-5646; the draft members are set at :4236-4237 -->
 
 The switch around it is not decoration. With the routers off, a run must **not** close its
 `(runId, step)` keys: a closed key hands every later request for that key a dead token, so
@@ -301,7 +304,7 @@ The mirror-image case is a step that was **discarded** rather than committed —
 that landed before anything ran, with the run about to replay the same step number.
 `discardStepRouters` invalidates the token but deliberately leaves the key open, so the replayed
 attempt's routers are not born already dropped.
-<!-- src/loop/routers.ts:128 and :146 -->
+<!-- src/loop/routers.ts:127 and :145 -->
 
 ## The checkpoint overlap
 
@@ -344,7 +347,7 @@ These apply only when the routers are switched on, which is not the default in a
 | RL4 judge | `runJudgeStage` | 400 ms | the code comparison of the parsed test counts |
 | RL6 replan | `runReplanStage` | 500 ms | `REPLAN_FALLBACK = 'change_approach'` |
 
-<!-- deadlines: src/loop/routers.ts:38-41. Converted sites: grep routeSpeculative over src returns intent.ts, judge.ts, replan.ts only. -->
+<!-- deadlines: src/loop/routers.ts:37-40. Converted sites: grep routeSpeculative over src returns intent.ts, judge.ts, replan.ts only. -->
 
 RL3, the risk site, is not in the table because it is not a router: it is a code-first gate
 where Jev may only escalate. RL5, completion, is the demotion described above. Both are covered

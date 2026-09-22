@@ -45,7 +45,7 @@ generation parameters it was handed.
 | --- | --- |
 | `quixbugs` | small single-function Python programs with one seeded bug each |
 | `ladder` | a graded difficulty ladder built for the decider-only mode |
-| `swebench` | a checked-in subset of SWE-bench Verified, evaluated with the official script in a local virtual environment |
+| `swebench` | a checked-in subset of SWE-bench Verified, graded by a **local-virtualenv replica** of the official `eval.sh` — no Docker, the official apply chain and the official log parsers ported, the evaluator named `local-venv` on every record. It is **not** the official harness, and every table that quotes it says so |
 | `terminal-bench` | ten Terminal-Bench tasks, run through a local shim |
 
 Terminal-Bench numbers carry a standing label in every table: **local shim, not comparable to

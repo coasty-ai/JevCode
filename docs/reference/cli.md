@@ -75,7 +75,7 @@ print what a run *would* resolve to.
 | `--impossible-threshold` | `<p>` | task-impossible probability threshold |
 | `--workspace` | `<dir>` | workspace directory; default the current directory |
 | `--runs-dir` | `<dir>` | run directory root; default `~/.jevcode/runs` |
-| `--extra-env-file` | `<path>` | an additional `.env` file whose keys are read as a fallback |
+| `--open-assist-path` | `<dir>` | a checkout whose `.env` is read as an additional fallback layer |
 | `--config` | `<file>` | config file; default `./jevcode.json`, else `${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json` |
 | `--sandbox` | `auto\|seatbelt\|none` | sandbox profile |
 | `--no-network` | | deny network access to sandboxed commands |
@@ -211,11 +211,13 @@ failure. `--exit-code last-run` returns the last run's code instead.
 | `JEV_PROVIDER`, `JEV_BASE_URL`, `JEV_MODEL` | the decision model's provider, endpoint and model id |
 | `JEVCODE_HOME` | root of `runs/`, `sessions/` and history; default `~/.jevcode` |
 | `JEVCODE_CONFIG`, `JEVCODE_KEYBINDINGS` | file paths |
-| `JEVCODE_EXTRA_ENV_FILE` | an additional `.env` file read as a fallback |
+| `OPEN_ASSIST_PATH` | a checkout whose `.env` is read as an additional fallback layer |
 | `JEVCODE_SPEND_CAP_USD`, `JEVCODE_SESSION_SPEND_CAP_USD` | spend caps |
 | `JEVCODE_THEME`, `JEVCODE_FPS`, `JEVCODE_ASCII`, `JEVCODE_SCREEN_READER`, `JEVCODE_REDUCED_MOTION`, `JEVCODE_RENDERER`, `JEVCODE_WORDMARK` | interface settings |
 | `JEVCODE_LOG`, `JEVCODE_LOG_LEVEL`, `JEVCODE_TRACE` | log file and level; keys never appear in logs |
-| `JEVCODE_ROUTERS`, `JEVCODE_FASTPATH`, `JEVCODE_WARM`, `JEVCODE_JEV` | the default-off mechanism switches — see [Status](../status/README.md) |
+| `JEVCODE_ROUTERS=on`, `JEVCODE_WARM=on` | arm the two default-off mechanisms — see [Status](../status/README.md) |
+| `JEVCODE_FASTPATH=off\|auto` | the bounded fast path, which is `auto` under `--mode jev-on` and off in every other mode |
+| `JEVCODE_JEV=off\|escape\|unreachable` | replace the decision model with a deterministic double; unset means Jev is on |
 | `NO_COLOR`, `FORCE_COLOR` | colour control |
 | `CI`, `TERM=dumb` | select the plain renderer |
 

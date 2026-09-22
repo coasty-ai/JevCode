@@ -14,9 +14,9 @@ orientation: what ships, what the gates are, what is set up, and what is not.
 | published to the registry | **no** — the registry returns 404 for the package name |
 | git tag | **none exists** |
 | git remote | present |
-| `repository`, `homepage`, `bugs` in `package.json` | **not set** — provenance verification compares the repository field against the publishing workflow's repository, so this must be filled in before the first publish |
-| Homebrew formula | present, with **placeholder** `homepage`, `url` and `sha256` |
-| `CHANGELOG.md` header line | **stale** — it says the package reads 0.4.0; it reads 0.5.0 |
+| `repository`, `homepage`, `bugs` in `package.json` | **set**, all three at `github.com/coasty-ai/JevCode`. Provenance verification compares the repository field against the publishing workflow's repository, so they have to stay in step with it |
+| Homebrew formula | present. `homepage` is real; **`url` and `sha256` are placeholders** — the `url` names a tarball that is not on the registry, and the digest is deliberately invalid |
+| `CHANGELOG.md` header line | current — it names 0.5.0, and says nothing has been published |
 
 Until a release exists, **every install instruction that names the registry or the tap is unavailable**, and
 the README says so rather than printing a command that cannot work.
@@ -76,7 +76,8 @@ of interface work plus several harness waves landing the same day put the unpack
 
 ### The rest
 
-`npm run check` (typecheck, no-`any`, the decision-call lint, the unit suite) and `npm run perf` both run
+`npm run check` (typecheck, no-`any`, the decision-call lint, the documentation link check, the unit
+suite) and `npm run perf` both run
 before a release. The performance gate needs the machine quiet at both ends to produce a release number; see
 [the performance page](../measurements/performance.md).
 
@@ -106,13 +107,19 @@ pinned in `.nvmrc`.
 
 ## One-time setup, still outstanding
 
-Three things must happen before the first release, and none of them has:
+Two things must happen before the first release, and neither has:
 
-1. **Set `repository`, `homepage` and `bugs` in `package.json`.** Provenance verification compares the
-   repository field against the workflow's repository, so a wrong or missing value breaks attestation.
-2. **Create the package on the registry and configure trusted publishing** for this repository and this
+1. **Create the package on the registry and configure trusted publishing** for this repository and this
    workflow file. No token secret is needed.
-3. **Create the tap repository and copy the formula into it**, replacing the placeholder `homepage`.
+2. **Create the tap repository and copy the formula into it.** The formula's `url` and `sha256` stay
+   placeholders until the release job prints the real digest.
+
+`package.json` already carries `repository`, `homepage` and `bugs`, and `main` has to be pushed to that
+remote before the first publish: provenance verification compares `repository.url` with the workflow's
+repository. Three strings in the source still name an older owner in lower case and need the same update —
+`OPENROUTER_REFERER` in `src/provider/openrouter.ts`, `DEFAULT_REFERER` in `src/jev/types.ts` and
+`ISSUES_URL` in `src/cli/report.ts`.
+<!-- docs/RELEASE.md "One-time setup" items 1-3. -->
 
 ## The release itself, in outline
 
