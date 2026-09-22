@@ -2,8 +2,8 @@
 
 Status: draft v2, 2026-09-19 (v1 plus the design review of the same day, §18). Versions and
 adopt/reject items marked `[R]` are taken from `docs/RESEARCH.md`; everything else follows
-the build prompt and `~/Documents/jev-research/REPORT.md` (cited as REPORT §n). Deviations
-are listed in §16.
+the build prompt and the research report the project was specified against — a private
+document, not part of this repository, cited as REPORT §n. Deviations are listed in §16.
 
 ## 1. What JevCode is
 
