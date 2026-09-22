@@ -77,6 +77,13 @@ export interface StepBudget {
   jevRequestsLeft: number;
   testRunsLeft: number;
   testWallLeftMs: number;
+  /**
+   * contract 1.9 (Fastlane) §4.4: wall inside `testWallLeftMs` that is RESERVED and must not be spent on dispatching
+   * another candidate — the fast path's cold-confirm reserve. The sieve stops starting new lane runs while only this
+   * much is left, so the passer's full-suite confirm still has wall when the candidate phase ends. Absent (every other
+   * caller) = 0, which is exactly today's dispatch rule.
+   */
+  reserveWallMs?: number;
   startedMs: number;
   recursed: boolean;
   /**

@@ -11,7 +11,7 @@
  */
 import type { EngineMode, FastPathReason, LastTestRun, StepFastPath } from '../../core/types.js';
 import type { FastPathBudget, FastPathRoundResult, FastPathRunState } from '../../synth/search/fastpath.js';
-import { FASTPATH_GRACE_MS, FASTPATH_JEV_MAX, FASTPATH_TEST_RUNS_MAX, fastPathFingerprint } from '../../synth/search/fastpath.js';
+import { FASTPATH_GRACE_MS, FASTPATH_JEV_MAX, FASTPATH_TEST_RUNS_MAX, fastPathCeilingMs, fastPathFingerprint } from '../../synth/search/fastpath.js';
 
 export { fastPathFingerprint };
 
@@ -37,6 +37,19 @@ export const FASTPATH_WALL_SHARE = 0.35;
 export const FASTPATH_WALL_MIN_T_RUN_MULTIPLE = 8;
 /** §4.4: the cold-confirm reserve, held OUTSIDE the wall share — a passer without its confirm run is not a result. */
 export const FASTPATH_CONFIRM_RESERVE_MULTIPLE = 2;
+/**
+ * §4.4: the share of the RUN's whole wall every fast-path round of the run may spend BETWEEN THEM.
+ *
+ * T9 bounds one round; nothing bounded the sum, and rounds keep arming while wall remains, so a long run could spend
+ * an unbounded fraction of itself in the fast path and still hand every step back to the LLM. The ledger is kept on
+ * `FastPathRunState.wallSpentMs` and enters the budget as `runWallLeftMs`.
+ */
+export const FASTPATH_RUN_WALL_SHARE = 0.25;
+
+/** §4.4: the run-wide fast-path wall ledger's cap, from the run's own wall limit. */
+export function fastPathRunWallCapMs(maxWallMs: number): number {
+  return Math.max(0, Math.floor(Math.max(0, maxWallMs) * FASTPATH_RUN_WALL_SHARE));
+}
 
 // ---------------------------------------------------------------------------------------
 // §4.4 — the budget
@@ -47,9 +60,24 @@ export interface FastPathBudgetInput {
   tRunMs: number;
   /** the full-suite run's wall, when known; the goal-subset run stands in when it is not */
   fullSuiteMs?: number;
-  /** wall the STEP has left, which is what the share is taken of */
-  stepWallRemainingMs: number;
-  /** runs the oracle can afford, when the caller knows it; the clamp mins with the honest budget in any case */
+  /**
+   * wall the RUN has left, which is what the share is taken of.
+   *
+   * The design's table says "the step's remaining wall"; `Limits` has no per-step wall (`checkBudgets` bounds the RUN,
+   * `engine.ts wallRemainingMs`), so there is no such number to pass and the field is named for what it really is. The
+   * aggregate is bounded by `runWallLeftMs` below rather than by a step limit that does not exist.
+   */
+  wallRemainingMs: number;
+  /**
+   * §4.4: what the run-wide fast-path wall ledger has left (`fastPathRunWallCapMs` minus the wall earlier rounds
+   * spent). Omitted = unbounded, which is what the pure unit tests of the share arithmetic want.
+   */
+  runWallLeftMs?: number;
+  /**
+   * runs the oracle can afford, when the caller knows it. The engine has no oracle at stage 1, so it passes nothing
+   * and the oracle-derived bound enters where it is actually known: the clamp mins this cap with the synthesizer's own
+   * `testRunsLeft`, which `freshBudget` computed from the fitted oracle (`src/synth/search/index.ts`).
+   */
   runsAffordable?: number;
 }
 
@@ -62,7 +90,8 @@ export interface FastPathBudgetInput {
  */
 export function fastPathBudget(i: FastPathBudgetInput): FastPathBudget | null {
   const tRun = Math.max(1, Math.floor(i.tRunMs));
-  const share = Math.min(FASTPATH_WALL_MAX_MS, Math.floor(Math.max(0, i.stepWallRemainingMs) * FASTPATH_WALL_SHARE));
+  const ledger = i.runWallLeftMs === undefined ? Number.POSITIVE_INFINITY : Math.max(0, Math.floor(i.runWallLeftMs));
+  const share = Math.min(FASTPATH_WALL_MAX_MS, ledger, Math.floor(Math.max(0, i.wallRemainingMs) * FASTPATH_WALL_SHARE));
   const floor = FASTPATH_WALL_MIN_T_RUN_MULTIPLE * tRun;
   if (share < floor) return null;
   const wallMs = Math.min(share, FASTPATH_WALL_MAX_MS);
@@ -213,6 +242,7 @@ export function declinedRecord(reason: FastPathReason, tRunMs: number, disarmed:
     jevRequests: 0,
     wallMs: 0,
     budgetMs: 0,
+    shareMs: 0,
     passer: false,
     confirmedCold: false,
     structuralDrops: 0,
@@ -222,8 +252,16 @@ export function declinedRecord(reason: FastPathReason, tRunMs: number, disarmed:
   };
 }
 
-/** The record of a round that ran: what it decided, what it saw and what it cost (§4.7's table, one row per outcome). */
-export function firedRecord(result: FastPathRoundResult, o: { tRunMs: number; budgetMs: number; disarmed: boolean }): StepFastPath {
+/**
+ * The record of a round that ran: what it decided, what it saw and what it cost (§4.7's table, one row per outcome).
+ *
+ * `budgetMs` is the round's CEILING (`fastPathCeilingMs`: share + confirm reserve + grace), not the wall share, because
+ * §8 row R-b reads `wallMs <= budgetMs` as a gate on every fired step and the share does not bound the round: only the
+ * sieve's `testWallLeftMs` is clamped to it, while the round's baseline run, the localiser and the confirm run are all
+ * outside that counter. The ceiling IS the bound (the abort ceiling enforces it), so the gate is now a fact rather than
+ * a claim. The installed share is recorded beside it as `shareMs`.
+ */
+export function firedRecord(result: FastPathRoundResult, o: { tRunMs: number; budget: FastPathBudget; disarmed: boolean }): StepFastPath {
   const t = result.telemetry;
   const base = {
     reason: result.kind === 'proposed' ? ('none' as FastPathReason) : result.reason,
@@ -235,7 +273,8 @@ export function firedRecord(result: FastPathRoundResult, o: { tRunMs: number; bu
     testRuns: t.testRuns,
     jevRequests: t.jevRequests,
     wallMs: t.wallMs,
-    budgetMs: o.budgetMs,
+    budgetMs: fastPathCeilingMs(o.budget),
+    shareMs: o.budget.wallMs,
     passer: t.passer,
     confirmedCold: t.confirmedCold,
     structuralDrops: t.structuralDrops,

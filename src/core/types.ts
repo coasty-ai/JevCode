@@ -607,8 +607,14 @@ export interface StepFastPath {
   jevRequests: number;
   /** the facade's own clock diff, independent of the synthesizer's accounting */
   wallMs: number;
-  /** the wall share the round was installed with; `wallMs <= budgetMs` is a gate on every fired step */
+  /**
+   * the round's own CEILING — the wall share plus the cold-confirm reserve plus the grace (`fastPathCeilingMs`), which
+   * is the bound the abort actually enforces. `wallMs <= budgetMs` is a gate on every fired step (§8 row R-b); the
+   * share alone is not that bound, because only the sieve's test wall is clamped to it.
+   */
   budgetMs: number;
+  /** the wall share installed on the round's synthesizer (`budget.testWallLeftMs` is clamped to it plus the reserve) */
+  shareMs: number;
   passer: boolean;
   confirmedCold: boolean;
   structuralDrops: number;

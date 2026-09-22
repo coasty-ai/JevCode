@@ -17,14 +17,16 @@ import {
   FASTPATH_MAX_FAILING,
   FASTPATH_MAX_T_RUN_MS,
   FASTPATH_WALL_MAX_MS,
+  FASTPATH_RUN_WALL_SHARE,
   FASTPATH_WALL_MIN_T_RUN_MULTIPLE,
   declinedRecord,
   fastPathBudget,
+  fastPathRunWallCapMs,
   fastPathStage1,
   firedRecord,
 } from '../../../src/loop/stages/fastpath.js';
 import type { FastPathStage1Input } from '../../../src/loop/stages/fastpath.js';
-import { FASTPATH_JEV_MAX, fastPathFingerprint } from '../../../src/synth/search/fastpath.js';
+import { FASTPATH_JEV_MAX, fastPathCeilingMs, fastPathFingerprint } from '../../../src/synth/search/fastpath.js';
 import type { FastPathRoundResult } from '../../../src/synth/search/fastpath.js';
 
 const harnesses: Harness[] = [];
@@ -61,7 +63,7 @@ function input(over: Partial<FastPathStage1Input> = {}): FastPathStage1Input {
     layoutDetected: true,
     spendLeftUsd: 4,
     wallLeftMs: 600_000,
-    budget: fastPathBudget({ tRunMs: 240, stepWallRemainingMs: 300_000 }),
+    budget: fastPathBudget({ tRunMs: 240, wallRemainingMs: 300_000 }),
     fingerprint: FINGERPRINT,
     disarmed: false,
     state: { seen: new Set<string>(), attempts: new Map<string, number>() },
@@ -127,7 +129,7 @@ describe('fastPathStage1', () => {
   it('T9: never enter a round the run cannot pay for or cannot finish', () => {
     expect(reasonOf({ spendLeftUsd: 0 })).toBe('no_wall');
     expect(reasonOf({ budget: null })).toBe('no_wall');
-    const b = fastPathBudget({ tRunMs: 240, stepWallRemainingMs: 300_000 })!;
+    const b = fastPathBudget({ tRunMs: 240, wallRemainingMs: 300_000 })!;
     expect(reasonOf({ wallLeftMs: 2 * (b.wallMs + b.reserveMs) })).toBe('FIRE');
     expect(reasonOf({ wallLeftMs: 2 * (b.wallMs + b.reserveMs) - 1 })).toBe('no_wall');
   });
@@ -157,7 +159,7 @@ describe('fastPathStage1', () => {
 
 describe('fastPathBudget', () => {
   it('takes a share of the step wall, capped, with the confirm reserve held outside it', () => {
-    const b = fastPathBudget({ tRunMs: 300, fullSuiteMs: 900, stepWallRemainingMs: 60_000 });
+    const b = fastPathBudget({ tRunMs: 300, fullSuiteMs: 900, wallRemainingMs: 60_000 });
     expect(b).not.toBeNull();
     expect(b!.wallMs).toBe(21_000);
     expect(b!.reserveMs).toBe(1_800);
@@ -165,7 +167,7 @@ describe('fastPathBudget', () => {
   });
 
   it('never exceeds the hard ceiling however long the step has left', () => {
-    const b = fastPathBudget({ tRunMs: 300, stepWallRemainingMs: 60 * 60_000 });
+    const b = fastPathBudget({ tRunMs: 300, wallRemainingMs: 60 * 60_000 });
     expect(b!.wallMs).toBe(FASTPATH_WALL_MAX_MS);
   });
 
@@ -173,12 +175,23 @@ describe('fastPathBudget', () => {
     // the floor is 8 x t_run; a share under it buys at most seven candidates
     const tRunMs = 700;
     const justUnder = Math.ceil((FASTPATH_WALL_MIN_T_RUN_MULTIPLE * tRunMs - 1) / 0.35);
-    expect(fastPathBudget({ tRunMs, stepWallRemainingMs: justUnder - 100 })).toBeNull();
-    expect(fastPathBudget({ tRunMs, stepWallRemainingMs: justUnder + 1_000 })).not.toBeNull();
+    expect(fastPathBudget({ tRunMs, wallRemainingMs: justUnder - 100 })).toBeNull();
+    expect(fastPathBudget({ tRunMs, wallRemainingMs: justUnder + 1_000 })).not.toBeNull();
   });
 
   it('caps the run count at what the oracle can afford when the caller knows it', () => {
-    expect(fastPathBudget({ tRunMs: 100, stepWallRemainingMs: 120_000, runsAffordable: 12 })!.testRuns).toBe(12);
+    expect(fastPathBudget({ tRunMs: 100, wallRemainingMs: 120_000, runsAffordable: 12 })!.testRuns).toBe(12);
+  });
+
+  it('bounds the AGGREGATE, not only each round: the run-wide fast-path wall ledger declines once it is spent', () => {
+    const cap = fastPathRunWallCapMs(600_000);
+    expect(cap).toBe(FASTPATH_RUN_WALL_SHARE * 600_000);
+    // a round never takes more than what the ledger has left, however much run wall remains
+    const tight = fastPathBudget({ tRunMs: 300, wallRemainingMs: 600_000, runWallLeftMs: 9_000 });
+    expect(tight!.wallMs).toBe(9_000);
+    // and once the ledger is spent the round is refused rather than shrunk below the floor
+    expect(fastPathBudget({ tRunMs: 300, wallRemainingMs: 600_000, runWallLeftMs: 2_000 })).toBeNull();
+    expect(fastPathBudget({ tRunMs: 300, wallRemainingMs: 600_000, runWallLeftMs: 0 })).toBeNull();
   });
 });
 
@@ -197,8 +210,14 @@ describe('the fast-path record', () => {
       proposal: { goal: 'fix', action: { kind: 'patch', diff: 'd' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' },
       telemetry: { wallMs: 8_000, jevMs: 900, jevRequests: 4, testRuns: 22, sites: 3, poolSize: 41, runMode: 'SIEVE', candidatesTested: 41, passer: true, confirmedCold: true, structuralDrops: 0, held: 0, dropped: 0 },
     };
-    const rec = firedRecord(result, { tRunMs: 240, budgetMs: 21_000, disarmed: false });
+    // §8 R-b reads `wallMs <= budgetMs`, so `budgetMs` is the round's own CEILING (share + confirm reserve + grace) —
+    // the bound the abort enforces. The installed wall share is recorded beside it as `shareMs`: only the sieve's
+    // test wall is clamped to the share, so a round's measured wall is over it whenever the baseline run is not free.
+    const b = { wallMs: 21_000, testRuns: 64, jevRequests: 6, reserveMs: 1_800, graceMs: 2_000 };
+    const rec = firedRecord(result, { tRunMs: 240, budget: b, disarmed: false });
     expect(rec).toMatchObject({ decision: 'fired', stage: 2, outcome: 'proposed', reason: 'none', candidatesTested: 41, confirmedCold: true });
+    expect(rec.budgetMs).toBe(fastPathCeilingMs(b));
+    expect(rec.shareMs).toBe(21_000);
     expect(rec.wallMs).toBeLessThanOrEqual(rec.budgetMs);
   });
 
@@ -209,7 +228,8 @@ describe('the fast-path record', () => {
       outcome: 'refused',
       telemetry: { wallMs: 9_000, jevMs: 0, jevRequests: 0, testRuns: 30, sites: 2, poolSize: 30, runMode: 'SIEVE', candidatesTested: 30, passer: true, confirmedCold: false, structuralDrops: 2, held: 1, dropped: 0 },
     };
-    expect(firedRecord(result, { tRunMs: 240, budgetMs: 21_000, disarmed: true })).toMatchObject({ decision: 'failed', outcome: 'refused', reason: 'confirm_timeout', structuralDrops: 2, held: 1, disarmed: true });
+    const b = { wallMs: 21_000, testRuns: 64, jevRequests: 6, reserveMs: 1_800, graceMs: 2_000 };
+    expect(firedRecord(result, { tRunMs: 240, budget: b, disarmed: true })).toMatchObject({ decision: 'failed', outcome: 'refused', reason: 'confirm_timeout', structuralDrops: 2, held: 1, disarmed: true });
   });
 });
 

@@ -245,7 +245,11 @@ describe('FastPathRunner.run', () => {
     const installed = seen.budgets.at(-1);
     expect(installed).toBeDefined();
     expect(installed!.testRunsLeft).toBeLessThanOrEqual(11);
-    expect(installed!.testWallLeftMs).toBeLessThanOrEqual(9_000);
+    // §4.4: the counter carries the candidate share PLUS the cold-confirm reserve, and the reserve is published so the
+    // sieve stops dispatching candidates into it — the reserve is installed, not merely computed
+    expect(installed!.testWallLeftMs).toBeLessThanOrEqual(9_000 + 1_000);
+    expect(installed!.testWallLeftMs).toBeGreaterThan(9_000);
+    expect(installed!.reserveWallMs).toBe(1_000);
     expect(installed!.jevRequestsLeft).toBeLessThanOrEqual(3);
     expect([installed!.llmRoundsLeft, installed!.llmSamplesLeft, installed!.llmUsdLeft]).toEqual([0, 0, 0]);
     runner.dispose(ctx.runId);
@@ -296,6 +300,36 @@ describe('FastPathRunner.run', () => {
     const ctx: SynthesisContext = { ...ctxFor(), signal: paused.signal };
     await expect(runner.run(ctx, budget())).rejects.toThrow(AbortError);
     expect(entered).toBe(true);
+    runner.dispose(ctx.runId);
+  });
+
+  it('never overruns its own ceiling, and the ledger the run keeps is debited by every round (§4.4)', async () => {
+    // a round whose baseline run and whose search each cost real wall: the wall SHARE bounds only the sieve's own
+    // counter, so the measured round is over it — the ceiling (share + reserve + grace) is the bound that holds
+    const seen: { clamp: FastPathClamp | null; budgets: RunMemory['stepBudget'][] } = { clamp: null, budgets: [] };
+    const { deps, file } = roundDeps({}, seen);
+    const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+    const slow: SearchDeps = {
+      ...deps,
+      runTests: async (c, cmd, t) => {
+        await sleep(120);
+        return deps.runTests(c, cmd, t);
+      },
+      searchSubGoal: async (_c, _mem, goal) => {
+        await sleep(120);
+        return commitFor(goal, file, {});
+      },
+    };
+    const runner = new FastPathRunner({ deps: () => slow, create: (d, clamp) => new LedgerSieveSynthesizer(d, { fastPath: clamp }) });
+    const ctx = ctxFor();
+    const b = budget({ wallMs: 60, testRuns: 8, reserveMs: 400, graceMs: 4_000 });
+    const r = await runner.run(ctx, b);
+    expect(r.kind).toBe('proposed');
+    // the share alone is NOT the bound — this is exactly what the record must not claim
+    expect(r.telemetry.wallMs).toBeGreaterThan(b.wallMs);
+    expect(r.telemetry.wallMs).toBeLessThanOrEqual(fastPathCeilingMs(b));
+    // and the round's wall is on the run's own ledger, so the aggregate over rounds is bounded
+    expect(runner.state(ctx.runId).wallSpentMs).toBeGreaterThanOrEqual(r.telemetry.wallMs);
     runner.dispose(ctx.runId);
   });
 

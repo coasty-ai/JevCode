@@ -173,7 +173,7 @@ import { checkpointOrchestration, decomposeShutByOptions, measureRepoFacts, pars
 import { isTestCommand, runExecuteStage } from './stages/execute.js';
 // contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9): the bounded sieve fast path — a pure engine-side
 // predicate and budget here, the round itself behind the synth facade.
-import { declinedRecord, fastPathBudget, fastPathStage1Free, fastPathStage1Workspace, firedRecord } from './stages/fastpath.js';
+import { declinedRecord, fastPathBudget, fastPathRunWallCapMs, fastPathStage1Free, fastPathStage1Workspace, firedRecord } from './stages/fastpath.js';
 import { FastPathRunner, fastPathFingerprint, fastPathSuspects } from '../synth/search/fastpath.js';
 import { detectLayout } from '../synth/search/index.js';
 import { isRepositoryWorkspace } from '../synth/oracle/index.js';
@@ -3140,7 +3140,16 @@ class EngineImpl implements Engine {
     // stage 1b: the listing behind T2 / T6 / T8, paid for only now
     const listing = (await this.listCandidatesTimed()).map((c) => c.path);
     if (this.fastPathHandles === null) this.fastPathHandles = synthesizerHandles(this.wsInfo, listing);
-    const budget = fastPathBudget({ tRunMs, stepWallRemainingMs: this.wallRemainingMs() });
+    // §4.4: the share is taken of the RUN's remaining wall (there is no per-step wall limit in `Limits`), and it is
+    // additionally bounded by what the run-wide fast-path ledger has left, so the AGGREGATE over rounds is bounded too.
+    // `fullSuiteMs` is passed only when the loop's own run really was the full suite — the unscoped detected command.
+    const fullSuiteMs = this.wsInfo.testCommand !== null && run !== null && run.command.trim() === this.wsInfo.testCommand.command.trim() ? tRunMs : undefined;
+    const budget = fastPathBudget({
+      tRunMs,
+      ...(fullSuiteMs === undefined ? {} : { fullSuiteMs }),
+      wallRemainingMs: this.wallRemainingMs(),
+      runWallLeftMs: Math.max(0, fastPathRunWallCapMs(this.opts.limits.maxWallMs) - state.wallSpentMs),
+    });
     const suspects = fastPathSuspects(this.lastTestRunOutput, listing, this.opts.task);
     const fingerprint = fastPathFingerprint(suspects[0] ?? '', [`${run?.command ?? ''}#${run?.failed ?? 0}/${run?.errors ?? 0}`]);
     const gate = fastPathStage1Workspace({
@@ -3162,7 +3171,7 @@ class EngineImpl implements Engine {
     const result = await runner.run(this.synthesisContext(draft, []), budget);
     draft.fastPathMs = result.telemetry.wallMs;
     draft.fastPathJevMs = result.telemetry.jevMs;
-    draft.fastPath = firedRecord(result, { tRunMs, budgetMs: budget.wallMs, disarmed: state.disarmed });
+    draft.fastPath = firedRecord(result, { tRunMs, budget, disarmed: state.disarmed });
     if (result.kind !== 'proposed') {
       // T10: the cluster is not tried again this run — `mem.tried` is monotone, so a second round would enumerate nothing
       state.seen.add(fingerprint);

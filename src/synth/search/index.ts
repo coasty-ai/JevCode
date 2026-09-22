@@ -170,8 +170,16 @@ export interface SearchDeps {
 export interface FastPathClamp {
   /** upper bound on `testRunsLeft` */
   testRuns: number;
-  /** upper bound on `testWallLeftMs` */
+  /** upper bound on the CANDIDATE phase's wall; `testWallLeftMs` is clamped to `wallMs + reserveMs` */
   wallMs: number;
+  /**
+   * §4.4: the cold-confirm reserve, INSTALLED rather than merely computed. It is added to the clamped
+   * `testWallLeftMs` and published as `StepBudget.reserveWallMs`, so the sieve stops dispatching candidates with this
+   * much wall still in the counter and the passer's confirm run has somewhere to come from. Without it a round that
+   * spends its share on candidates reaches the guard with ~0 wall, the hold/confirm is refused, and the one-strike
+   * disarm takes the fast path out for the run — the exact failure §4.4 says must never happen.
+   */
+  reserveMs: number;
   /** upper bound on `jevRequestsLeft`; 0 is legal (the localiser falls to code order) */
   jevRequests: number;
   /**
@@ -670,7 +678,11 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     const fp = this.fastPath;
     if (fp !== undefined) {
       fresh.testRunsLeft = Math.min(fresh.testRunsLeft, fp.testRuns);
-      fresh.testWallLeftMs = Math.min(fresh.testWallLeftMs, fp.wallMs);
+      // §4.4: the counter carries the candidate share AND the confirm reserve; `reserveWallMs` is what keeps the
+      // second out of the first, so the reserve is held outside the share in the code and not only in the table.
+      const reserve = Math.max(0, Math.floor(fp.reserveMs));
+      fresh.testWallLeftMs = Math.min(fresh.testWallLeftMs, fp.wallMs + reserve);
+      fresh.reserveWallMs = Math.min(reserve, fresh.testWallLeftMs);
       fresh.jevRequestsLeft = Math.min(fresh.jevRequestsLeft, fp.jevRequests);
       fresh.llmRoundsLeft = 0;
       fresh.llmSamplesLeft = 0;

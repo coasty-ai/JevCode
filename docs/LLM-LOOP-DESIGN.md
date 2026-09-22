@@ -681,15 +681,34 @@ if (fp !== undefined) {
 | dimension | cap |
 |---|---|
 | wall | `fastPathBudgetMs = clamp(min(FASTPATH_WALL_MAX_MS = 45_000, 0.35 × stepWallRemaining), FASTPATH_WALL_MIN_MS = 8 × tRunMs, FASTPATH_WALL_MAX_MS)` — below the floor the round cannot test enough to matter, so **decline rather than enter** |
-| test runs | `min(FASTPATH_TEST_RUNS_MAX = 400, runsLeft(oracle, stepBudget))` — against QuixBugs class's own 1 500; this is one round, not a step |
+| test runs | `min(FASTPATH_TEST_RUNS_MAX = 400, runsLeft(oracle, stepBudget))` — against QuixBugs class's own 1 500; this is one round, not a step. The engine has no oracle at stage 1, so the `runsLeft` half enters where the oracle exists: the clamp mins 400 with the synthesizer's own `testRunsLeft`, which `freshBudget` computed from the fitted oracle |
 | Jev requests | `FASTPATH_JEV_MAX = 6` — up to 5 for `locate` (Q2–Q6) and one for RS5 arbitration. **Zero is legal**: with the budget spent or Jev down, `locate` falls to code order and `decide`'s `canAsk` guard drops arbitration |
 | generator | **0 by construction** (`mode: 'jev-only'`) |
 | full-suite runs | today's `MAX_FULL_SUITE_RUNS_PER_STEP = 5`, counted on `mem.passersThisStep` |
 | cold-confirm reserve | `2 × tRunMs.fullSuite`, held **outside** the wall share |
+| run-wide wall | `FASTPATH_RUN_WALL_SHARE = 0.25 × maxWallMs` over **all** rounds of the run (`FastPathRunState.wallSpentMs`) — T9 bounds one round, this bounds their sum |
 
 **The cold-confirm reserve is held outside the wall share** because *a passer without its confirm run is not a
 result*. Spending the last of the wall on one more candidate and then having no wall to confirm it produces
 exactly the failure mode the fast path must never have.
+
+**The reserve is INSTALLED, not merely computed** (review fix, slot C): the clamp sets
+`testWallLeftMs = min(honest, wallMs + reserveMs)` and publishes `StepBudget.reserveWallMs = reserveMs`, which the
+sieve's dispatch rule (`runQueue`'s `stopDispatch`, the streaming park and the retry loop) holds back — a run already
+on a lane may spend it, no NEW candidate is dispatched into it. `reserveWallMs` is absent for every other caller and
+absent means 0, so this is exactly today's dispatch rule everywhere but the fast path. Without it the counter the
+confirm run debits is the same counter the candidates emptied, `budgetAllowsHold` refuses, and the round ends in a
+one-strike disarm — the §4.4 failure mode, reachable.
+
+**`budgetMs` in the record is the round's CEILING, not the share.** Only `testWallLeftMs` is clamped to the share; the
+round's own baseline run, the localiser's asks and the confirm run are all outside that counter, so a round's measured
+wall is routinely over its share by construction. The bound that actually holds is
+`fastPathCeilingMs = wallMs + reserveMs + graceMs`, which the abort enforces, so that is what the record carries and
+what R-b tests. The installed share is recorded beside it as `shareMs`.
+
+**There is no per-step wall limit.** `Limits` bounds the RUN (`maxWallMs`, `checkBudgets`), so the share is taken of
+the run's remaining wall and `FastPathBudgetInput.wallRemainingMs` is named for that. The aggregate is bounded by the
+run-wide ledger row above rather than by a per-step number that does not exist.
 
 **Three bounds, in order of who actually stops the round:**
 
@@ -830,7 +849,10 @@ export interface StepFastPath {
   testRuns: number;
   jevRequests: number;
   wallMs: number;
+  /** the round's CEILING (share + confirm reserve + grace) — the bound R-b tests, and the one the abort enforces */
   budgetMs: number;
+  /** the wall share installed on the round's synthesizer */
+  shareMs: number;
   passer: boolean;
   confirmedCold: boolean;
   structuralDrops: number;
@@ -1021,7 +1043,8 @@ and `:5063`). **No two slots hold `engine.ts` at the same time.**
 2. `npx vitest run --maxWorkers=3` — the full unit suite.
 3. **The facade's first unit test asserts `candidatesTested > 0`** on a known-solvable cluster (§6 row 13).
 4. **I2 golden**: `fastPath: 'off'` on the existing `jev-on` fixtures is byte-identical.
-5. `fastPath.wallMs <= budgetMs` on every fired step in the test fixtures.
+5. `fastPath.wallMs <= budgetMs` (the round's CEILING, §4.4) on every fired step in the test fixtures, asserted on a
+   round with a real slow baseline rather than on a hand-built telemetry literal.
 6. **Ring 1 re-measured green under `--jev off`** — a **hard merge gate** (see §7.7). The code fix landed at
    `0d61eef`; the measurement has not been taken.
 7. `node scripts/check-pack.mjs` at the 3.5 MB unpacked gate.
@@ -1200,7 +1223,7 @@ discordant pairs, Wilson intervals, the median-wall Wilcoxon, `$/task` and `$/so
 | row | source | pass condition |
 |---|---|---|
 | R-a | `routers.waitMs` p95 over every step | **= 0** |
-| R-b | `fastPath.wallMs <= budgetMs` over every fired step | **100 %** |
+| R-b | `fastPath.wallMs <= budgetMs` over every fired step, where `budgetMs` is the round's ceiling (§4.4) | **100 %** |
 | R-c | stage-1-fired / stage-2-declined ratio, per suite | **≤ 0.3**; above that the **predicate** is wrong, not the budget |
 | R-d | the per-reason `fastPath.reason` decline histogram on every ineligible step | exhaustive over `FastPathReason`, no `'error'` bucket > 5 % |
 | R-e | `riskSource: 'code'` count and `jevUnavailable` count | reported; any step where a *harmful* command was allowed under a dropped ask **reverts the §2.4 ratification** |

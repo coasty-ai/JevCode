@@ -43,11 +43,15 @@ export const FASTPATH_GRACE_MS = 2_000;
 
 /** §4.4: the one-round share the facade installs. Built by `fastPathBudget()` in `src/loop/stages/fastpath.ts`. */
 export interface FastPathBudget {
-  /** the wall share; `budget.testWallLeftMs` is clamped to it and is the bound that actually stops the round */
+  /** the CANDIDATE phase's wall share; `budget.testWallLeftMs` is clamped to `wallMs + reserveMs` */
   wallMs: number;
   testRuns: number;
   jevRequests: number;
-  /** the cold-confirm reserve, held OUTSIDE `wallMs`: a passer without its confirm run is not a result (§4.4) */
+  /**
+   * the cold-confirm reserve, held OUTSIDE `wallMs`: a passer without its confirm run is not a result (§4.4). It is
+   * INSTALLED, not merely computed — the clamp adds it to `testWallLeftMs` and publishes it as
+   * `StepBudget.reserveWallMs`, which stops the sieve dispatching new candidates into it.
+   */
   reserveMs: number;
   /** slack before the abort ceiling; `FASTPATH_GRACE_MS` unless a test overrides it */
   graceMs: number;
@@ -199,6 +203,11 @@ export interface FastPathRunState {
   seen: Set<string>;
   /** T11: rounds entered per fingerprint */
   attempts: Map<string, number>;
+  /**
+   * §4.4: wall every round of this run has spent BETWEEN THEM, against `fastPathRunWallCapMs`. T9 bounds one round;
+   * without this the sum over a long run is unbounded, because a new round arms whenever wall remains.
+   */
+  wallSpentMs: number;
 }
 
 export interface FastPathRunnerOptions {
@@ -281,7 +290,7 @@ export class FastPathRunner {
   state(runId: string): FastPathRunState {
     let s = this.states.get(runId);
     if (s === undefined) {
-      s = { disarmed: false, seen: new Set<string>(), attempts: new Map<string, number>() };
+      s = { disarmed: false, seen: new Set<string>(), attempts: new Map<string, number>(), wallSpentMs: 0 };
       this.states.set(runId, s);
     }
     return s;
@@ -341,6 +350,7 @@ export class FastPathRunner {
     const { synth, clamp } = this.synthFor(ctx.runId);
     clamp.testRuns = Math.max(0, Math.floor(budget.testRuns));
     clamp.wallMs = Math.max(0, Math.floor(budget.wallMs));
+    clamp.reserveMs = Math.max(0, Math.floor(budget.reserveMs));
     clamp.jevRequests = Math.max(0, Math.floor(budget.jevRequests));
 
     ctx.emit({ type: 'synth', step: ctx.step, phase: 'fastpath:entered', detail: `one sieve round: ${clamp.wallMs} ms wall (+${Math.round(budget.reserveMs)} ms confirm reserve), ${clamp.testRuns} runs, ${clamp.jevRequests} Jev requests, 0 generator samples` });
@@ -408,6 +418,8 @@ export class FastPathRunner {
       return { kind: 'failed', reason: 'error', outcome: 'error', telemetry: telemetry() };
     } finally {
       this.aborter = null;
+      // §4.4: the run-wide ledger is debited on EVERY exit — a decline, a failure and a re-raised abort all spent wall
+      state.wallSpentMs += Math.max(0, this.now() - started);
     }
   }
 
@@ -417,6 +429,7 @@ export class FastPathRunner {
     const clamp: FastPathClamp = {
       testRuns: FASTPATH_TEST_RUNS_MAX,
       wallMs: 0,
+      reserveMs: 0,
       jevRequests: FASTPATH_JEV_MAX,
       // §4.3 stage 2: this fires straight after `fitOracle`, before any candidate runs — the cheapest place the
       // oracle class and the run budget can be judged, and the only one that costs a single baseline run.

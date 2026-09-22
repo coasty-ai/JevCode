@@ -243,6 +243,23 @@ describe('runQueue on the QuixBugs runner (scripted run_tests.py JSON)', () => {
     await runQueue(ctxFor(quixbugsFake(() => (t += 700))), mem4, fifoQueue(jobs()), GOAL, 100, { now: () => t });
     expect(mem4.stepBudget.testWallLeftMs).toBe(5000 - 4 * 700);
   });
+  it('contract 1.9 (Fastlane) §4.4: `reserveWallMs` is held back from dispatch, so the confirm run still has wall', async () => {
+    const o = (): ReturnType<typeof oracle> => oracle({ runner: 'quixbugs', lanes: 1 });
+    const jobs = (): ReturnType<typeof job>[] => [cands.unchanged, cands.unchanged, cands.unchanged, cands.unchanged].map((c) => job(c, b0));
+    // without a reserve the four candidates eat the whole 5 s counter
+    let t0 = 1000;
+    const open = memFor(o(), { stepBudget: budget({ testWallLeftMs: 5_000 }) });
+    const all = await runQueue(ctxFor(quixbugsFake(() => (t0 += 1_000))), open, fifoQueue(jobs()), GOAL, 100, { now: () => t0 });
+    expect(all.length).toBe(4);
+    expect(open.stepBudget.testWallLeftMs).toBe(1_000);
+    // with 3 s of it reserved, dispatch stops while the reserve is still in the counter — that is what the passer's
+    // full-suite confirm run is paid from, instead of the round reaching the guard with nothing left and disarming
+    let t1 = 1000;
+    const held = memFor(o(), { stepBudget: budget({ testWallLeftMs: 5_000, reserveWallMs: 3_000 }) });
+    const some = await runQueue(ctxFor(quixbugsFake(() => (t1 += 1_000))), held, fifoQueue(jobs()), GOAL, 100, { now: () => t1 });
+    expect(some.length).toBeLessThan(4);
+    expect(held.stepBudget.testWallLeftMs).toBeGreaterThanOrEqual(3_000);
+  });
   it('the fifth passer stops dispatch (§4.3), but a QuixBugs passer whose run already completed is never thrown away', async () => {
     // one lane: dispatch stops after the fifth passer, the rest stays in the queue (nothing was spent on it)
     const q1 = fifoQueue(Array.from({ length: 7 }, () => job(cands.plausible, b0)));
