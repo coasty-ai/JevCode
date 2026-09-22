@@ -557,6 +557,33 @@ per `HARNESS-NEXT-DESIGN.md` §3 M16.
 `LLM_HEDGES_PER_ROUND` in limits (shared), `ROUTER_DEADLINE_MS` in `src/jev/router.ts`, the `FASTPATH_*` constants
 in `src/loop/stages/fastpath.ts`. This is what keeps slots A and C from colliding in limits.ts.
 
+### 3.6 As built (slot A, after review — 2026-09-22)
+
+Six refinements the review of the slot-A branch forced, each one a thing the section above left implicit and the
+first implementation therefore got wrong. They are the normative reading of §3.1–§3.5 from here on.
+
+1. **§3.1 reaches production.** "Threaded into the four clients" is not enough: the sanctioned generator channel
+   is `SynthesisContext.generate`, and `SampleOptions` carried no callbacks, so `onFirstByte` never left the
+   synthesizer. `SampleOptions` now carries `onFirstByte?` and `onCancelled?` (contract 1.9, additive) and
+   `src/loop/engine.ts` forwards both — the engine keeps its own `onCancelled` for the generator.jsonl row and
+   calls the synthesizer's as well. Without this hop `p50TtfbMs()` is permanently null, the §3.2 threshold is
+   pinned at its ceiling and the "cancelled the moment its first byte lands" rule never fires.
+2. **§3.1 is once per `generate()`, not per attempt** (`reportFirstByte`, `src/provider/sse.ts`). `withRetry`
+   wraps the whole attempt, and a retryable error frame on a 200 lands after the stream opened.
+3. **§3.2 hedges only the source's CURRENT round.** A superseded round drains with its accounting but no reader:
+   a twin fired there spends a live sample on an arrival that is discarded.
+4. **§3.2's `hedgeWins` is the twin's delivery**, not the loser's cancellability — the recorded shape the hedge
+   exists for is an origin that is already a zero-token timeout when the twin answers. And `p50TtfbMs()` needs
+   `LLM_DEADLINE_ADAPT.minSamples` readings, like every other running statistic in the source.
+5. **§3.3's head is task → repo map, and the repo map is the STABLE half of `## Workspace`.** The changed-file
+   list grows at every edit of a run, so it moves behind the step heading (`## Workspace (changed by this run)`)
+   and `prefixChars` counts only what is guaranteed to repeat. The file bodies keep their §3.3 position but are
+   not counted: in jev-on Jev reselects them per step.
+6. **§3.4's figures are recorded**, through the hop the §9.3 counts already take: round summary →
+   `GoalSearchTrace.llm` → `SynthesisContext.reportVerify` → `StepRecord.verify`, each member absent when nothing
+   measured it. §3.5's `--quick` remains unreachable from a command line until `src/cli/args.ts` carries the
+   `'quick'` row; `test/unit/bench/quick-preset.test.ts` asserts today's rejection so the gap is visible.
+
 ---
 
 ## §4 The synth fast path (route R9)
