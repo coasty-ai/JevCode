@@ -77,17 +77,20 @@ export interface RememberedPartial {
 }
 
 /**
- * A test-passing candidate the guard holds within the step (guard.ts §2.6 hold rules): the
- * all-overfit signature's smallest edit, or a lone passer whose code-computed structural signals
- * Q16 confirmed as doubtful (p < LONE_PASSER_HOLD_MAX_NOUL). Committed at step end, or replaced
- * by the arbitration when a later batch adds a passer.
+ * A test-passing candidate the guard holds within the step (guard.ts §2.6 hold rules): a lone
+ * passer whose code-computed structural signals Q16 rated doubtful. Below LONE_PASSER_HOLD_MAX_NOUL
+ * the hold is never released (guard.ts `unreleasable`: `commitSuspect` drops it at step end and
+ * the goal ends on its partial or parks); between that and LONE_PASSER_VOUCH_MIN_NOUL (two or more
+ * signals) it is committed at step end or on the budget reserve as `possible overfit`. Either way
+ * a later batch's passer is decided against it. The all-overfit signature no longer holds
+ * anything: its set is dropped (guard.ts rule (1)).
  */
 export interface HeldPasser extends RememberedPartial {
   /** the phase the passer was held in (for the transcript; the hold lasts to the step end or the budget reserve) */
   phase?: Phase;
-  /** the structural signals behind the hold (empty for the all-overfit signature) */
+  /** the structural signals behind the hold */
   signals?: string[];
-  /** the Q16 `general` p Jev gave the lone passer, when asked */
+  /** the Q16 `general` p Jev gave the lone passer, when asked; below LONE_PASSER_HOLD_MAX_NOUL the hold is unreleasable */
   noul?: number;
 }
 
@@ -118,8 +121,9 @@ export interface GuardState {
   /** partials seen this run per goal (source of `pairsOfPartials`), bounded */
   partials: RememberedPartial[];
   /**
-   * A test-passing candidate flagged by the suspect rule, committed at step end if nothing better.
-   * Scoped to its goal so a later goal's step end never commits another goal's flagged passer.
+   * A test-passing candidate flagged by the lone-passer rule (b), committed at step end if nothing
+   * better — or dropped there when Jev confidently doubted it (guard.ts `unreleasable`). Scoped to
+   * its goal so a later goal's step end never commits another goal's flagged passer.
    */
   suspect: HeldPasser | null;
   /** a lone passer of a SIEVE batch, held until its site's other seed sources ran (guard.ts rule (a)) */

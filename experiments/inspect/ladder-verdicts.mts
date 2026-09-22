@@ -34,7 +34,9 @@
  *
  * Usage: node_modules/.bin/tsx experiments/inspect/ladder-verdicts.mts [resultsDir] [--out <file>] [--seed <int>] [--per-fn-cap <N>]
  *   default resultsDir bench/results/jev-only-ladder-7-final, default out <resultsDir>/verdicts.md
- * Nothing here asks Jev; python3 is the only external program.
+ * Nothing here asks Jev; python3 is the only external program. The harvest/replay harness is
+ * src/synth/search/perturb.ts LADDER_HARNESS, shared with the guard's ladder-class behaviour probe
+ * (the guard replays the same perturbed calls per passer; this script judges the committed tree).
  */
 import { execFile } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -42,6 +44,8 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+
+import { LADDER_HARNESS } from '../../src/synth/search/perturb.ts';
 
 const exec = promisify(execFile);
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -217,239 +221,10 @@ async function tokenIdentical(patched: string, reference: string): Promise<{ sam
 }
 
 // ---------------------------------------------------------------------------------------
-// The harness: `harvest` on the gold tree, `replay` on each tree
+// The harness: `harvest` on the gold tree, `replay` on each tree — src/synth/search/perturb.ts
+// LADDER_HARNESS, the same generator the guard's ladder-class behaviour probe runs (2026-09-21;
+// it lived here first). Written to a file once per run and invoked per mode.
 // ---------------------------------------------------------------------------------------
-
-const HARNESS = String.raw`
-import base64, datetime, functools, importlib, importlib.util, inspect, json, math, os, pickle, random, signal, sys, types
-mode = sys.argv[1]
-proto = os.fdopen(os.dup(1), "w")
-sys.stdout = sys.stderr
-BOUND = 400
-
-def canon(x, depth=0):
-    if depth > 6:
-        return "..."
-    if isinstance(x, dict):
-        return "{" + ", ".join("%s: %s" % (canon(k, depth + 1), canon(v, depth + 1)) for k, v in sorted(x.items(), key=lambda kv: canon(kv[0], depth + 1))) + "}"
-    if isinstance(x, (set, frozenset)):
-        return type(x).__name__ + "{" + ", ".join(sorted(canon(v, depth + 1) for v in x)) + "}"
-    if isinstance(x, list):
-        return "[" + ", ".join(canon(v, depth + 1) for v in x) + "]"
-    if isinstance(x, tuple) and type(x) is tuple:
-        return "(" + ", ".join(canon(v, depth + 1) for v in x) + ("," if len(x) == 1 else "") + ")"
-    if type(x).__repr__ is object.__repr__ and hasattr(x, "__dict__"):
-        return "%s(%s)" % (type(x).__name__, canon(vars(x), depth + 1))
-    return repr(x)
-
-def call_text(qualname, args, kwargs):
-    parts = [canon(a) for a in args] + ["%s=%s" % (k, canon(v)) for k, v in kwargs.items()]
-    return "%s(%s)" % (qualname, ", ".join(parts))
-
-class _Timeout(BaseException):
-    pass
-def _alarm(signum, frame):
-    raise _Timeout()
-signal.signal(signal.SIGALRM, _alarm)
-
-if mode == "harvest":
-    tree, modules, seed, out_path, per_fn_cap = sys.argv[2], sys.argv[3].split(","), int(sys.argv[4]), sys.argv[5], int(sys.argv[6])
-    sys.path.insert(0, tree)
-    mods, import_errors = {}, {}
-    for m in modules:
-        try:
-            mods[m] = importlib.import_module("src." + m)
-        except BaseException as exc:
-            import_errors[m] = type(exc).__name__
-    records, bases, seen = [], [], set()
-    current = [None]
-    functions = []
-    wrapped = {}
-    def make_wrapper(modname, qualname, func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            try:
-                blob = pickle.dumps((args, kwargs), protocol=4)
-                key = (modname, qualname, blob)
-                if key not in seen:
-                    seen.add(key)
-                    records.append({"module": modname, "qualname": qualname, "blob": base64.b64encode(blob).decode(), "how": "recorded", "source": current[0] or "import", "text": call_text(qualname, args, kwargs)[:BOUND]})
-                    bases.append((modname, qualname, pickle.loads(blob), current[0] or "import"))
-            except Exception:
-                pass
-            return func(*args, **kwargs)
-        return wrapper
-    for m, mod in mods.items():
-        for name, obj in list(vars(mod).items()):
-            if name.startswith("_"):
-                continue
-            if inspect.isfunction(obj) and obj.__module__ == mod.__name__:
-                w = make_wrapper(m, name, obj)
-                wrapped[id(obj)] = w
-                setattr(mod, name, w)
-                functions.append("%s.%s" % (m, name))
-            elif inspect.isclass(obj) and obj.__module__ == mod.__name__:
-                for mname, meth in list(vars(obj).items()):
-                    if mname.startswith("_") or not inspect.isfunction(meth):
-                        continue
-                    w = make_wrapper(m, "%s.%s" % (name, mname), meth)
-                    wrapped[id(meth)] = w
-                    setattr(obj, mname, w)
-                    functions.append("%s.%s.%s" % (m, name, mname))
-    for mod in mods.values():
-        for name, obj in list(vars(mod).items()):
-            if not name.startswith("_") and id(obj) in wrapped:
-                setattr(mod, name, wrapped[id(obj)])
-    tests_dir = os.path.join(tree, "tests")
-    stats = {"tests_run": 0, "tests_failed": 0, "tests_skipped": 0, "test_modules": 0, "test_modules_failed": 0}
-    POS = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-    for fname in sorted(os.listdir(tests_dir)) if os.path.isdir(tests_dir) else []:
-        if not (fname.startswith("test") and fname.endswith(".py")):
-            continue
-        stats["test_modules"] += 1
-        try:
-            spec = importlib.util.spec_from_file_location("ladder_tests_" + fname[:-3], os.path.join(tests_dir, fname))
-            tmod = importlib.util.module_from_spec(spec)
-            sys.modules[spec.name] = tmod
-            current[0] = fname + " (import)"
-            spec.loader.exec_module(tmod)
-        except BaseException:
-            stats["test_modules_failed"] += 1
-            continue
-        for tname, tobj in list(vars(tmod).items()):
-            if not tname.startswith("test") or not callable(tobj):
-                continue
-            try:
-                params = inspect.signature(tobj).parameters
-            except (TypeError, ValueError):
-                params = {}
-            if any(p.default is inspect.Parameter.empty and p.kind in POS for p in params.values()):
-                stats["tests_skipped"] += 1
-                continue
-            current[0] = "%s::%s" % (fname, tname)
-            stats["tests_run"] += 1
-            signal.setitimer(signal.ITIMER_REAL, 5.0)
-            try:
-                tobj()
-            except BaseException:
-                stats["tests_failed"] += 1
-            finally:
-                signal.setitimer(signal.ITIMER_REAL, 0)
-    current[0] = None
-    recorded = len(records)
-    def perturbations(v):
-        out = []
-        if isinstance(v, bool):
-            pass
-        elif isinstance(v, int):
-            out += [("int_plus_one", v + 1), ("int_minus_one", v - 1), ("float_half_below", v - 0.5), ("float_half_above", v + 0.5)]
-        elif isinstance(v, float):
-            out += [("float_plus_half", v + 0.5), ("float_minus_half", v - 0.5), ("float_to_half", math.floor(v) + 0.5)]
-        elif isinstance(v, str):
-            out += [("str_empty", ""), ("str_one_char", v[:1] if v else "a")]
-        elif isinstance(v, list):
-            out += [("list_empty", []), ("tuple_for_list", tuple(v))]
-            if len(v) != 1:
-                out.append(("list_singleton", v[:1]))
-            if len(v) > 1:
-                out.append(("list_drop_last", v[:-1]))
-        elif isinstance(v, tuple):
-            out += [("tuple_empty", ()), ("list_for_tuple", list(v))]
-            if len(v) != 1:
-                out.append(("tuple_singleton", v[:1]))
-        elif isinstance(v, dict):
-            out.append(("dict_empty", {}))
-            if len(v) > 1:
-                out.append(("dict_singleton", dict(list(v.items())[:1])))
-        elif isinstance(v, (set, frozenset)):
-            out.append(("set_empty", type(v)()))
-        elif isinstance(v, datetime.date):
-            out += [("date_plus_one", v + datetime.timedelta(days=1)), ("date_minus_one", v - datetime.timedelta(days=1))]
-        out.append(("none", None))
-        return out
-    per_fn = {}
-    for modname, qualname, (args, kwargs), source in bases:
-        first = 1 if "." in qualname else 0
-        cands = []
-        for i in range(first, len(args)):
-            for how, nv in perturbations(args[i]):
-                cands.append((how, tuple(args[:i]) + (nv,) + tuple(args[i + 1:]), dict(kwargs)))
-        for k in list(kwargs):
-            for how, nv in perturbations(kwargs[k]):
-                nk = dict(kwargs)
-                nk[k] = nv
-                cands.append((how, tuple(args), nk))
-        for how, nargs, nkwargs in cands:
-            try:
-                blob = pickle.dumps((nargs, nkwargs), protocol=4)
-            except Exception:
-                continue
-            key = (modname, qualname, blob)
-            if key in seen:
-                continue
-            seen.add(key)
-            per_fn.setdefault((modname, qualname), []).append({"module": modname, "qualname": qualname, "blob": base64.b64encode(blob).decode(), "how": how, "source": "perturbed from " + source, "text": call_text(qualname, nargs, nkwargs)[:BOUND]})
-    rng = random.Random(seed)
-    for key in sorted(per_fn):
-        lst = per_fn[key]
-        rng.shuffle(lst)
-        records.extend(sorted(lst[:per_fn_cap], key=lambda r: r["text"]))
-    with open(out_path, "w") as f:
-        json.dump({"inputs": records, "functions": functions, "recorded": recorded, "stats": stats, "import_errors": import_errors}, f)
-    proto.write(json.dumps({"probe": "ok", "recorded": recorded, "inputs": len(records), "functions": len(functions), "stats": stats, "import_errors": import_errors}) + "\n")
-    proto.flush()
-    sys.exit(0)
-
-if mode == "replay":
-    tree, inputs_path, timeout_s = sys.argv[2], sys.argv[3], float(sys.argv[4])
-    sys.path.insert(0, tree)
-    with open(inputs_path) as f:
-        data = json.load(f)
-    mods = {}
-    outputs = []
-    for inp in data["inputs"]:
-        try:
-            mod = mods.get(inp["module"])
-            if mod is None:
-                mod = importlib.import_module("src." + inp["module"])
-                mods[inp["module"]] = mod
-            fn = mod
-            for part in inp["qualname"].split("."):
-                fn = getattr(fn, part)
-        except BaseException as exc:
-            outputs.append({"r": "RESOLVE_ERROR " + type(exc).__name__, "t": None, "a": ""})
-            continue
-        try:
-            args, kwargs = pickle.loads(base64.b64decode(inp["blob"]))
-        except BaseException as exc:
-            outputs.append({"r": "UNPICKLE_ERROR " + type(exc).__name__, "t": None, "a": ""})
-            continue
-        signal.setitimer(signal.ITIMER_REAL, timeout_s)
-        t = None
-        try:
-            result = fn(*args, **kwargs)
-            if isinstance(result, types.GeneratorType):
-                result = list(result)
-            r = canon(result)
-            try:
-                t = bool(result)
-            except BaseException:
-                t = None
-        except _Timeout:
-            r = "TIMEOUT"
-        except BaseException as exc:
-            r = "ERROR " + type(exc).__name__
-        finally:
-            signal.setitimer(signal.ITIMER_REAL, 0)
-        try:
-            after = canon((args, kwargs))
-        except BaseException as exc:
-            after = "CANON_ERROR " + type(exc).__name__
-        outputs.append({"r": r[:BOUND], "t": t, "a": after[:BOUND]})
-    proto.write(json.dumps({"probe": "ok", "outputs": outputs}) + "\n")
-    proto.flush()
-    sys.exit(0)
-`.trim();
 
 interface HarvestReport {
   recorded: number;
@@ -480,7 +255,8 @@ function lastJson(stdout: string): Record<string, unknown> | null {
 
 async function harvest(harness: string, goldTree: string, modules: string[], seed: number, perFnCap: number, outPath: string): Promise<HarvestReport | { error: string }> {
   try {
-    const { stdout, stderr } = await exec('python3', [harness, 'harvest', goldTree, modules.join(','), String(seed), outPath, String(perFnCap)], { env: ENV, timeout: 120_000, maxBuffer: 16 * 1024 * 1024, cwd: goldTree });
+    // LADDER_HARNESS argv: harvest <tree> <modules,csv> <test_modules,csv|''> <seed> <per_fn_cap> <out_path>; the modules are import names, the empty test list means every tests/test*.py
+    const { stdout, stderr } = await exec('python3', [harness, 'harvest', goldTree, modules.map((m) => `src.${m}`).join(','), '', String(seed), String(perFnCap), outPath], { env: ENV, timeout: 120_000, maxBuffer: 16 * 1024 * 1024, cwd: goldTree });
     const o = lastJson(stdout);
     if (o === null) return { error: `harvest gave no protocol line (${stderr.trim().split('\n').pop() ?? ''})` };
     return { recorded: Number(o['recorded']), inputs: Number(o['inputs']), functions: Number(o['functions']), stats: (o['stats'] as Record<string, number>) ?? {}, importErrors: (o['import_errors'] as Record<string, string>) ?? {} };
@@ -491,7 +267,8 @@ async function harvest(harness: string, goldTree: string, modules: string[], see
 
 async function replay(harness: string, tree: string, inputsPath: string, count: number): Promise<Replay[] | { error: string }> {
   try {
-    const { stdout, stderr } = await exec('python3', [harness, 'replay', tree, inputsPath, String(PER_INPUT_TIMEOUT_MS / 1000)], { env: ENV, timeout: count * PER_INPUT_TIMEOUT_MS + 10_000, maxBuffer: 64 * 1024 * 1024, cwd: tree });
+    // LADDER_HARNESS argv: replay <tree> <@inputs-file | inputs-json> <timeout_s>
+    const { stdout, stderr } = await exec('python3', [harness, 'replay', tree, `@${inputsPath}`, String(PER_INPUT_TIMEOUT_MS / 1000)], { env: ENV, timeout: count * PER_INPUT_TIMEOUT_MS + 10_000, maxBuffer: 64 * 1024 * 1024, cwd: tree });
     const o = lastJson(stdout);
     if (o === null) return { error: `replay gave no protocol line (${stderr.trim().split('\n').pop() ?? ''})` };
     const outputs = o['outputs'];
@@ -612,7 +389,7 @@ async function main(): Promise<void> {
   records.sort((a, b) => pos(a.task) - pos(b.task) || (a.task < b.task ? -1 : 1));
   const benchId = benchIdOf(opts.resultsDir);
   const scratch = mkdtempSync(join(tmpdir(), 'ladder-verdicts-'));
-  writeFileSync(join(scratch, 'ladder_harness.py'), HARNESS);
+  writeFileSync(join(scratch, 'ladder_harness.py'), LADDER_HARNESS);
   const rows: Row[] = [];
   try {
     for (const rec of records) {

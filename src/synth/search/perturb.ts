@@ -11,6 +11,16 @@
  *     the chain lengths the tests build, ±1..3, each acyclic and with the tail linked back to the
  *     head. These cannot be JSON, so they travel as Python expressions the probe evaluates in the
  *     candidate module's namespace (`__jev_chain(__jev_class('node', 'Node'), 'successor', 4, None)`).
+ *   - ladder-class workspaces (`src/<module>.py` + `tests/test_<module>.py`, no QuixBugs program):
+ *     the test calls are HARVESTED — every public function and method of the `src` modules is
+ *     wrapped by a recorder on the committed tree, the goal's test functions are called, and each
+ *     recorded call is perturbed one argument at a time (ints ±1 and x±0.5, floats ±0.5, strings
+ *     emptied / one character, sequences emptied / singleton / last dropped, tuple↔list, dicts and
+ *     sets emptied, dates ±1 day, None). The arguments are pickled, so dataclasses and dates travel
+ *     too; each candidate replays them and the signature is the canonical result text plus whether
+ *     the call mutated its arguments (`textstats`: `tokens.append(n)` mutates the caller's list).
+ *     The generator is the one experiments/inspect/ladder-verdicts.mts judges the bench with
+ *     (`LADDER_HARNESS`; the script imports it from here), so the guard runs the verdict's inputs.
  *
  * Why (jev-only-quixbugs-3-inspection.md §1): the two overfits of run 3 pass every visible test
  * and differ from the gold only on inputs the tests do not build — `detect_cycle`'s committed
@@ -26,7 +36,7 @@ import type { Json, Sandbox } from '../../core/types.js';
 import { isJsonArray, isJsonObject, isString, parseJson } from '../../core/json.js';
 import type { LanePool } from '../sieve/lanes.js';
 import type { Goal, OracleModel, VerifyOutcome } from './types.js';
-import type { SourceFile } from '../types.js';
+import type { AppliedCandidate, SourceFile } from '../types.js';
 import { shellQuote } from '../verify/text.js';
 
 // ---------------------------------------------------------------------------------------
@@ -71,7 +81,37 @@ export type PerturbationKind =
   | 'str_empty'
   | 'swap_same_type_args'
   | 'linked_list_acyclic'
-  | 'linked_list_cycle';
+  | 'linked_list_cycle'
+  // harvested test calls (ladder-class; the kinds LADDER_HARNESS emits)
+  | 'recorded'
+  | 'float_half_below'
+  | 'float_half_above'
+  | 'float_plus_half'
+  | 'float_minus_half'
+  | 'float_to_half'
+  | 'str_one_char'
+  | 'tuple_for_list'
+  | 'tuple_empty'
+  | 'list_for_tuple'
+  | 'tuple_singleton'
+  | 'dict_empty'
+  | 'dict_singleton'
+  | 'set_empty'
+  | 'date_plus_one'
+  | 'date_minus_one'
+  | 'none';
+
+/** A recorded (or perturbed) test call of a ladder-class workspace: the function and its pickled arguments. */
+export interface HarvestedCall {
+  /** import name of the module (`src.shipping`) */
+  module: string;
+  /** `shipping_cost` or `Account.withdraw` */
+  qualname: string;
+  /** base64 of `pickle.dumps((args, kwargs))` */
+  blob: string;
+  /** `shipping_cost(49.5, 'standard')` — the canonical call text, bounded */
+  text: string;
+}
 
 export interface PerturbedInput {
   /** positional arguments for `fn(*input)`; ignored when `exprs` is set */
@@ -81,6 +121,8 @@ export interface PerturbedInput {
   how: PerturbationKind;
   /** Python expressions for the positional arguments, evaluated by the probe in the candidate module's namespace (linked lists) */
   exprs?: string[];
+  /** a harvested test call (ladder-class), replayed by LADDER_HARNESS; `input` is empty */
+  call?: HarvestedCall;
 }
 
 /** `gcd(13, 13)` → { name: 'gcd', args: [13, 13] }; null for pytest ids or a truncated (`…`) call. */
@@ -160,7 +202,8 @@ export function perturbationsOf(args: readonly Json[]): { input: Json[]; how: Pe
 }
 
 /** Key of an input for deduplication: the JSON arguments, or the expressions. */
-export function inputKey(p: Pick<PerturbedInput, 'input' | 'exprs'>): string {
+export function inputKey(p: Pick<PerturbedInput, 'input' | 'exprs' | 'call'>): string {
+  if (p.call !== undefined) return `call:${p.call.module}.${p.call.qualname}:${p.call.blob}`;
   return p.exprs !== undefined ? `py:${p.exprs.join('\u001f')}` : JSON.stringify(p.input);
 }
 
@@ -645,6 +688,552 @@ export function createLaneProbe(ctx: LaneProbeContext, pool: LanePool, program: 
           const command = behaviourProbeCommand({ name: program, candidatePath, inputs, perInputTimeoutMs, pythonPath: [dirname(candidatePath)] });
           const res = await ctx.sandbox.run(command, { timeoutMs: probeTimeoutMs(inputs.length, perInputTimeoutMs), maxOutputBytes: PROBE_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir });
           return parseBehaviourProbe(res.stdout);
+        });
+        if (sig !== null) out.set(o.applied.candidate.id, sig);
+      }),
+    );
+    return out;
+  };
+}
+
+/** How one input reads in a transcript or in Jev's perturbation table: the call text, the expressions, or the JSON arguments. */
+export function describeInput(p: PerturbedInput): string {
+  if (p.call !== undefined) return p.call.text;
+  if (p.exprs !== undefined) return p.exprs.join(', ');
+  return `(${p.input.map((v) => JSON.stringify(v)).join(', ')})`;
+}
+
+// ---------------------------------------------------------------------------------------
+// Ladder-class workspaces: harvested test calls (the ladder-verdicts generator, moved here)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Harvested inputs replayed per candidate: each is one guarded call inside one process, worst case
+ * LADDER_PROBE_INPUT_TIMEOUT_MS, so 32 keeps a candidate's replay ≤ 34 s even when every call
+ * loops. A ladder call takes microseconds (a whole pytest run is ≈ 300 ms), so the probe usually
+ * pays interpreter start-up, not the cap.
+ */
+export const LADDER_MAX_PROBE_INPUTS = 32;
+/** Per-call SIGALRM budget of the replay (a loop is behaviour, recorded as TIMEOUT). */
+export const LADDER_PROBE_INPUT_TIMEOUT_MS = 1000;
+/** Wall of the one harvest process: each test function runs under a 5 s alarm and a ladder suite has ≤ 15 of them. */
+export const LADDER_HARVEST_TIMEOUT_MS = 30_000;
+/** Perturbed inputs kept per function at harvest (seeded shuffle; the verdict script keeps 80, the guard replays a bounded set anyway). */
+export const LADDER_PER_FUNCTION_CAP = 12;
+/** Seed of the harvest's shuffle: the same inputs for every candidate of a decision and across runs. */
+export const LADDER_HARVEST_SEED = 20260921;
+/** `src` modules the recorder wraps, at most (a ladder task has 1–3). */
+export const LADDER_MAX_MODULES = 12;
+/** Output cap of the harvest process: 12 perturbed calls per function × a dozen functions × ≈ 300 B of base64 pickle. */
+export const LADDER_HARVEST_OUTPUT_BYTES = 1024 * 1024;
+
+const LADDER_HEREDOC = 'JEVCODE_LADDER_HARNESS';
+
+const LADDER_KINDS: ReadonlySet<string> = new Set<PerturbationKind>([
+  'recorded',
+  'int_plus_one',
+  'int_minus_one',
+  'float_half_below',
+  'float_half_above',
+  'float_plus_half',
+  'float_minus_half',
+  'float_to_half',
+  'str_empty',
+  'str_one_char',
+  'list_empty',
+  'tuple_for_list',
+  'list_singleton',
+  'list_drop_last',
+  'tuple_empty',
+  'list_for_tuple',
+  'tuple_singleton',
+  'dict_empty',
+  'dict_singleton',
+  'set_empty',
+  'date_plus_one',
+  'date_minus_one',
+  'none',
+]);
+
+function isPerturbationKind(s: string): s is PerturbationKind {
+  return LADDER_KINDS.has(s);
+}
+
+/**
+ * The harvest-and-replay harness of experiments/inspect/ladder-verdicts.mts (moved here so the guard
+ * probes with the verdict's inputs), one stdlib python3 process per mode:
+ *
+ *   harvest <tree> <modules,csv> <test_modules,csv|''> <seed> <per_fn_cap> <out_path|->
+ *     imports the modules from `tree` (on sys.path), wraps every public function and every
+ *     public method of every class they define with a recorder, imports the test modules (the
+ *     given tree-relative paths, or `tests/test*.py` when none) and calls each zero-argument test
+ *     function under a 5 s alarm, so the recorder sees the literal arguments the tests pass plus
+ *     every nested call. Each distinct call is perturbed one argument at a time (the `perturbations`
+ *     function below), ≤ per_fn_cap perturbed inputs per function (seeded shuffle). The records
+ *     go to `out_path`, or ride on the protocol line as `records` when it is `-`.
+ *   replay <tree> <inputs-json | @path> <timeout_s>
+ *     unpickles each input fresh, calls it under a SIGALRM timer, and emits the canonical result
+ *     text (dict items and set members sorted, generators drained, address-only reprs replaced by
+ *     the object's fields) or the exception class, its truthiness, the canonical arguments after
+ *     the call and whether they changed — a fix that mutates its input is a different behaviour.
+ *
+ * The harness's own prints go to stderr; the one protocol line is the last `{…}` line on stdout.
+ */
+export const LADDER_HARNESS = String.raw`
+import base64, datetime, functools, importlib, importlib.util, inspect, json, math, os, pickle, random, signal, sys, types
+mode = sys.argv[1]
+proto = os.fdopen(os.dup(1), "w")
+sys.stdout = sys.stderr
+BOUND = 400
+
+def canon(x, depth=0):
+    if depth > 6:
+        return "..."
+    if isinstance(x, dict):
+        return "{" + ", ".join("%s: %s" % (canon(k, depth + 1), canon(v, depth + 1)) for k, v in sorted(x.items(), key=lambda kv: canon(kv[0], depth + 1))) + "}"
+    if isinstance(x, (set, frozenset)):
+        return type(x).__name__ + "{" + ", ".join(sorted(canon(v, depth + 1) for v in x)) + "}"
+    if isinstance(x, list):
+        return "[" + ", ".join(canon(v, depth + 1) for v in x) + "]"
+    if isinstance(x, tuple) and type(x) is tuple:
+        return "(" + ", ".join(canon(v, depth + 1) for v in x) + ("," if len(x) == 1 else "") + ")"
+    if type(x).__repr__ is object.__repr__ and hasattr(x, "__dict__"):
+        return "%s(%s)" % (type(x).__name__, canon(vars(x), depth + 1))
+    return repr(x)
+
+def call_text(qualname, args, kwargs):
+    parts = [canon(a) for a in args] + ["%s=%s" % (k, canon(v)) for k, v in kwargs.items()]
+    return "%s(%s)" % (qualname, ", ".join(parts))
+
+class _Timeout(BaseException):
+    pass
+def _alarm(signum, frame):
+    raise _Timeout()
+signal.signal(signal.SIGALRM, _alarm)
+
+if mode == "harvest":
+    tree, modules, test_modules, seed, per_fn_cap, out_path = sys.argv[2], [m for m in sys.argv[3].split(",") if m], [t for t in sys.argv[4].split(",") if t], int(sys.argv[5]), int(sys.argv[6]), sys.argv[7]
+    sys.path.insert(0, tree)
+    mods, import_errors = {}, {}
+    for m in modules:
+        try:
+            mods[m] = importlib.import_module(m)
+        except BaseException as exc:
+            import_errors[m] = type(exc).__name__
+    records, bases, seen = [], [], set()
+    current = [None]
+    functions = []
+    wrapped = {}
+    def make_wrapper(modname, qualname, func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                blob = pickle.dumps((args, kwargs), protocol=4)
+                key = (modname, qualname, blob)
+                if key not in seen:
+                    seen.add(key)
+                    records.append({"module": modname, "qualname": qualname, "blob": base64.b64encode(blob).decode(), "how": "recorded", "source": current[0] or "import", "text": call_text(qualname, args, kwargs)[:BOUND]})
+                    bases.append((modname, qualname, pickle.loads(blob), current[0] or "import"))
+            except Exception:
+                pass
+            return func(*args, **kwargs)
+        return wrapper
+    for m, mod in mods.items():
+        for name, obj in list(vars(mod).items()):
+            if name.startswith("_"):
+                continue
+            if inspect.isfunction(obj) and obj.__module__ == mod.__name__:
+                w = make_wrapper(m, name, obj)
+                wrapped[id(obj)] = w
+                setattr(mod, name, w)
+                functions.append("%s.%s" % (m, name))
+            elif inspect.isclass(obj) and obj.__module__ == mod.__name__:
+                for mname, meth in list(vars(obj).items()):
+                    if mname.startswith("_") or not inspect.isfunction(meth):
+                        continue
+                    w = make_wrapper(m, "%s.%s" % (name, mname), meth)
+                    wrapped[id(meth)] = w
+                    setattr(obj, mname, w)
+                    functions.append("%s.%s.%s" % (m, name, mname))
+    for mod in mods.values():
+        for name, obj in list(vars(mod).items()):
+            if not name.startswith("_") and id(obj) in wrapped:
+                setattr(mod, name, wrapped[id(obj)])
+    tests_dir = os.path.join(tree, "tests")
+    if test_modules:
+        test_files = [os.path.join(tree, rel) for rel in test_modules]
+    elif os.path.isdir(tests_dir):
+        test_files = [os.path.join(tests_dir, f) for f in sorted(os.listdir(tests_dir)) if f.startswith("test") and f.endswith(".py")]
+    else:
+        test_files = []
+    stats = {"tests_run": 0, "tests_failed": 0, "tests_skipped": 0, "test_modules": 0, "test_modules_failed": 0}
+    POS = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    for path in test_files:
+        fname = os.path.basename(path)
+        if not os.path.isfile(path):
+            continue
+        stats["test_modules"] += 1
+        try:
+            spec = importlib.util.spec_from_file_location("ladder_tests_" + fname[:-3], path)
+            tmod = importlib.util.module_from_spec(spec)
+            sys.modules[spec.name] = tmod
+            current[0] = fname + " (import)"
+            spec.loader.exec_module(tmod)
+        except BaseException:
+            stats["test_modules_failed"] += 1
+            continue
+        for tname, tobj in list(vars(tmod).items()):
+            if not tname.startswith("test") or not callable(tobj):
+                continue
+            try:
+                params = inspect.signature(tobj).parameters
+            except (TypeError, ValueError):
+                params = {}
+            if any(p.default is inspect.Parameter.empty and p.kind in POS for p in params.values()):
+                stats["tests_skipped"] += 1
+                continue
+            current[0] = "%s::%s" % (fname, tname)
+            stats["tests_run"] += 1
+            signal.setitimer(signal.ITIMER_REAL, 5.0)
+            try:
+                tobj()
+            except BaseException:
+                stats["tests_failed"] += 1
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+    current[0] = None
+    recorded = len(records)
+    def perturbations(v):
+        out = []
+        if isinstance(v, bool):
+            pass
+        elif isinstance(v, int):
+            out += [("int_plus_one", v + 1), ("int_minus_one", v - 1), ("float_half_below", v - 0.5), ("float_half_above", v + 0.5)]
+        elif isinstance(v, float):
+            out += [("float_plus_half", v + 0.5), ("float_minus_half", v - 0.5), ("float_to_half", math.floor(v) + 0.5)]
+        elif isinstance(v, str):
+            out += [("str_empty", ""), ("str_one_char", v[:1] if v else "a")]
+        elif isinstance(v, list):
+            out += [("list_empty", []), ("tuple_for_list", tuple(v))]
+            if len(v) != 1:
+                out.append(("list_singleton", v[:1]))
+            if len(v) > 1:
+                out.append(("list_drop_last", v[:-1]))
+        elif isinstance(v, tuple):
+            out += [("tuple_empty", ()), ("list_for_tuple", list(v))]
+            if len(v) != 1:
+                out.append(("tuple_singleton", v[:1]))
+        elif isinstance(v, dict):
+            out.append(("dict_empty", {}))
+            if len(v) > 1:
+                out.append(("dict_singleton", dict(list(v.items())[:1])))
+        elif isinstance(v, (set, frozenset)):
+            out.append(("set_empty", type(v)()))
+        elif isinstance(v, datetime.date):
+            out += [("date_plus_one", v + datetime.timedelta(days=1)), ("date_minus_one", v - datetime.timedelta(days=1))]
+        out.append(("none", None))
+        return out
+    per_fn = {}
+    for modname, qualname, (args, kwargs), source in bases:
+        first = 1 if "." in qualname else 0
+        cands = []
+        for i in range(first, len(args)):
+            for how, nv in perturbations(args[i]):
+                cands.append((how, tuple(args[:i]) + (nv,) + tuple(args[i + 1:]), dict(kwargs)))
+        for k in list(kwargs):
+            for how, nv in perturbations(kwargs[k]):
+                nk = dict(kwargs)
+                nk[k] = nv
+                cands.append((how, tuple(args), nk))
+        for how, nargs, nkwargs in cands:
+            try:
+                blob = pickle.dumps((nargs, nkwargs), protocol=4)
+            except Exception:
+                continue
+            key = (modname, qualname, blob)
+            if key in seen:
+                continue
+            seen.add(key)
+            per_fn.setdefault((modname, qualname), []).append({"module": modname, "qualname": qualname, "blob": base64.b64encode(blob).decode(), "how": how, "source": "perturbed from " + source, "text": call_text(qualname, nargs, nkwargs)[:BOUND]})
+    rng = random.Random(seed)
+    for key in sorted(per_fn):
+        lst = per_fn[key]
+        rng.shuffle(lst)
+        records.extend(sorted(lst[:per_fn_cap], key=lambda r: r["text"]))
+    summary = {"probe": "ok", "recorded": recorded, "inputs": len(records), "functions": len(functions), "stats": stats, "import_errors": import_errors}
+    if out_path == "-":
+        summary["records"] = records
+    else:
+        with open(out_path, "w") as f:
+            json.dump({"inputs": records, "functions": functions, "recorded": recorded, "stats": stats, "import_errors": import_errors}, f)
+    proto.write(json.dumps(summary) + "\n")
+    proto.flush()
+    sys.exit(0)
+
+if mode == "replay":
+    tree, spec, timeout_s = sys.argv[2], sys.argv[3], float(sys.argv[4])
+    sys.path.insert(0, tree)
+    if spec.startswith("@"):
+        with open(spec[1:]) as f:
+            inputs = json.load(f)["inputs"]
+    else:
+        inputs = json.loads(spec)
+    mods = {}
+    outputs = []
+    for inp in inputs:
+        try:
+            mod = mods.get(inp["module"])
+            if mod is None:
+                mod = importlib.import_module(inp["module"])
+                mods[inp["module"]] = mod
+            fn = mod
+            for part in inp["qualname"].split("."):
+                fn = getattr(fn, part)
+        except BaseException as exc:
+            outputs.append({"r": "RESOLVE_ERROR " + type(exc).__name__, "t": None, "a": "", "m": False})
+            continue
+        try:
+            args, kwargs = pickle.loads(base64.b64decode(inp["blob"]))
+        except BaseException as exc:
+            outputs.append({"r": "UNPICKLE_ERROR " + type(exc).__name__, "t": None, "a": "", "m": False})
+            continue
+        try:
+            before = canon((args, kwargs))
+        except BaseException:
+            before = None
+        signal.setitimer(signal.ITIMER_REAL, timeout_s)
+        t = None
+        try:
+            result = fn(*args, **kwargs)
+            if isinstance(result, types.GeneratorType):
+                result = list(result)
+            r = canon(result)
+            try:
+                t = bool(result)
+            except BaseException:
+                t = None
+        except _Timeout:
+            r = "TIMEOUT"
+        except BaseException as exc:
+            r = "ERROR " + type(exc).__name__
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        try:
+            after = canon((args, kwargs))
+        except BaseException as exc:
+            after = "CANON_ERROR " + type(exc).__name__
+        outputs.append({"r": r[:BOUND], "t": t, "a": after[:BOUND], "m": before is not None and after != before})
+    proto.write(json.dumps({"probe": "ok", "outputs": outputs}) + "\n")
+    proto.flush()
+    sys.exit(0)
+`.trim();
+
+/** What a ladder-class workspace gives the harvest: the `src` modules to wrap and the goal's test modules to run. */
+export interface LadderLayout {
+  /** import names (`src.shipping`) */
+  modules: string[];
+  /** workspace-relative test module paths (`tests/test_shipping.py`) */
+  testModules: string[];
+}
+
+/**
+ * The ladder layout behind a goal: pytest modules named by its test ids and a `src/` package of
+ * modules (`src/<name>.py`, packages allowed, `__init__` skipped), on a workspace with no QuixBugs
+ * program (`programNameOf` is null). Every `src` module is wrapped, not only the suspected ones:
+ * a candidate at a WIDENED site edits a module the traceback never named, and the recorder must
+ * see that module's calls too. Null elsewhere (repositories: their tests need fixtures, their
+ * packages are installed under other names; they keep the P2P vectors).
+ */
+export function ladderLayoutOf(goal: Pick<Goal, 'tests' | 'failures'>, files: ReadonlyMap<string, SourceFile>): LadderLayout | null {
+  const testModules = testModulePaths(goal);
+  if (testModules.length === 0 || programNameOf(goal, files) !== null) return null;
+  const modules = [...files.keys()]
+    .filter((p) => /^src\/(?:\w+\/)*\w+\.py$/.test(p) && !p.endsWith('__init__.py'))
+    .sort()
+    .slice(0, LADDER_MAX_MODULES)
+    .map((p) => p.slice(0, -3).replace(/\//g, '.'));
+  if (modules.length === 0) return null;
+  return { modules, testModules };
+}
+
+export interface LadderHarvestOptions {
+  /** the tree on sys.path (a lane's directory) */
+  tree: string;
+  modules: readonly string[];
+  /** tree-relative test module paths; empty → every `tests/test*.py` */
+  testModules: readonly string[];
+  seed?: number;
+  perFnCap?: number;
+  /** file the full record set is written to (the verdict script); absent → the records ride on the protocol line */
+  outPath?: string;
+}
+
+function harnessCommand(args: readonly string[]): string {
+  return `PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 python3 - ${args.map(shellQuote).join(' ')} <<'${LADDER_HEREDOC}'\n${LADDER_HARNESS}\n${LADDER_HEREDOC}`;
+}
+
+/** The `sh -c` command of one harvest (LADDER_HARNESS `harvest`). */
+export function ladderHarvestCommand(o: LadderHarvestOptions): string {
+  return harnessCommand(['harvest', o.tree, o.modules.join(','), o.testModules.join(','), String(o.seed ?? LADDER_HARVEST_SEED), String(o.perFnCap ?? LADDER_PER_FUNCTION_CAP), o.outPath ?? '-']);
+}
+
+export interface LadderReplayOptions {
+  tree: string;
+  /** the harvested inputs (those without `call` are skipped) */
+  inputs: readonly PerturbedInput[];
+  perInputTimeoutMs: number;
+  /** a harvest file written with `outPath`; when given the inputs travel by file, not argv */
+  inputsPath?: string;
+}
+
+/** The `sh -c` command of one replay (LADDER_HARNESS `replay`) on `tree`. */
+export function ladderReplayCommand(o: LadderReplayOptions): string {
+  const calls: Json[] = [];
+  for (const p of o.inputs) if (p.call !== undefined) calls.push({ module: p.call.module, qualname: p.call.qualname, blob: p.call.blob });
+  return harnessCommand(['replay', o.tree, o.inputsPath !== undefined ? `@${o.inputsPath}` : JSON.stringify(calls), String(o.perInputTimeoutMs / 1000)]);
+}
+
+/** The last `{…}` line of a harness's stdout, parsed; null when there is none. */
+function lastProtocolLine(stdout: string): Record<string, Json> | null {
+  const lines = stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('{'));
+  for (const line of lines.reverse()) {
+    const parsed = parseJson(line);
+    if (parsed.ok && isJsonObject(parsed.value)) return parsed.value;
+  }
+  return null;
+}
+
+function harvestedInput(v: Json): PerturbedInput | null {
+  if (!isJsonObject(v)) return null;
+  const module = v['module'];
+  const qualname = v['qualname'];
+  const blob = v['blob'];
+  const text = v['text'];
+  const how = v['how'];
+  const source = v['source'];
+  if (!isString(module) || !isString(qualname) || !isString(blob) || !isString(text) || !isString(how) || !isPerturbationKind(how)) return null;
+  return { input: [], derivedFrom: isString(source) ? source : 'harvest', how, call: { module, qualname, blob, text } };
+}
+
+export interface LadderHarvest {
+  inputs: PerturbedInput[];
+  /** distinct calls the tests made */
+  recorded: number;
+  /** functions and methods wrapped */
+  functions: number;
+  importErrors: Record<string, string>;
+}
+
+/**
+ * The inputs of a harvest protocol line: the perturbed calls first, round-robin over the functions
+ * (so `report` does not take every slot from `letter_grade`), then the recorded originals (the
+ * tests assert on those, but a nested call's arguments are asserted nowhere); ≤ `max`,
+ * deduplicated. Null when the line is missing or not `ok`.
+ */
+export function parseLadderHarvest(stdout: string, max = LADDER_MAX_PROBE_INPUTS): LadderHarvest | null {
+  const o = lastProtocolLine(stdout);
+  if (o === null || o['probe'] !== 'ok') return null;
+  const records = o['records'];
+  const all = isJsonArray(records) ? records.map(harvestedInput).filter((p): p is PerturbedInput => p !== null) : [];
+  const perFn = new Map<string, PerturbedInput[]>();
+  const recorded: PerturbedInput[] = [];
+  for (const p of all) {
+    if (p.call === undefined) continue;
+    if (p.how === 'recorded') {
+      recorded.push(p);
+      continue;
+    }
+    const key = `${p.call.module}.${p.call.qualname}`;
+    const list = perFn.get(key) ?? [];
+    list.push(p);
+    perFn.set(key, list);
+  }
+  const out: PerturbedInput[] = [];
+  const seen = new Set<string>();
+  const take = (p: PerturbedInput): void => {
+    const k = inputKey(p);
+    if (seen.has(k) || out.length >= max) return;
+    seen.add(k);
+    out.push(p);
+  };
+  for (let round = 0; out.length < max; round++) {
+    let any = false;
+    for (const list of perFn.values()) {
+      const p = list[round];
+      if (p === undefined) continue;
+      any = true;
+      take(p);
+    }
+    if (!any) break;
+  }
+  for (const p of recorded) take(p);
+  const importErrors: Record<string, string> = {};
+  const ie = o['import_errors'];
+  if (isJsonObject(ie)) for (const [k, v] of Object.entries(ie)) if (isString(v)) importErrors[k] = v;
+  const n = (v: Json | undefined): number => (typeof v === 'number' ? v : 0);
+  return { inputs: out, recorded: n(o['recorded']), functions: n(o['functions']), importErrors };
+}
+
+/** One replayed call as the signature and Jev's perturbation table show it: the canonical result, plus the arguments when the call changed them. */
+export function ladderOutputText(result: string, argsAfter: string, mutated: boolean): string {
+  return mutated ? `${result} [arguments mutated to ${argsAfter}]` : result;
+}
+
+/**
+ * The behaviour signature from a replay's stdout (`outputs:` + one text per input, like
+ * `parseBehaviourProbe`), null when the process produced no protocol line.
+ */
+export function parseLadderReplay(stdout: string): string | null {
+  const o = lastProtocolLine(stdout);
+  if (o === null || o['probe'] !== 'ok') return null;
+  const outputs = o['outputs'];
+  if (!isJsonArray(outputs)) return null;
+  const texts: string[] = [];
+  for (const v of outputs) {
+    if (!isJsonObject(v)) return null;
+    const r = v['r'];
+    const a = v['a'];
+    texts.push(ladderOutputText(isString(r) ? r : JSON.stringify(r), isString(a) ? a : '', v['m'] === true).slice(0, PROBE_OUTPUT_BOUND));
+  }
+  return `outputs:${texts.join('\u001f')}`;
+}
+
+/**
+ * The harvest on the committed tree: a lane gets the committed files (`sample` only names a
+ * candidate for the lane API — its files are stripped, nothing but the committed tree is
+ * written), LADDER_HARNESS records and perturbs the goal's test calls. Null when the process
+ * gave no protocol line (an import that fails, no tests directory, the wall).
+ */
+export async function harvestLadderInputs(ctx: LaneProbeContext, pool: LanePool, committed: ReadonlyMap<string, SourceFile>, sample: AppliedCandidate, layout: LadderLayout, max = LADDER_MAX_PROBE_INPUTS): Promise<LadderHarvest | null> {
+  return pool.withLane(async (lane) => {
+    await pool.applyToLane(lane, { candidate: sample.candidate, files: [], diff: '' }, committed);
+    const command = ladderHarvestCommand({ tree: lane.dir, modules: layout.modules, testModules: layout.testModules });
+    const res = await ctx.sandbox.run(command, { timeoutMs: LADDER_HARVEST_TIMEOUT_MS, maxOutputBytes: LADDER_HARVEST_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir });
+    return parseLadderHarvest(res.stdout, max);
+  });
+}
+
+/**
+ * The replay of the harvested calls on each plausible candidate, on the sieve's lanes like
+ * `createLaneProbe`: the candidate goes into a free lane over its base's files and the lane is the
+ * tree. A candidate whose process produced no protocol line gets no signature. Inputs without a
+ * `call` (none on a ladder workspace) are ignored.
+ */
+export function createLadderProbe(ctx: LaneProbeContext, pool: LanePool, perInputTimeoutMs: number = LADDER_PROBE_INPUT_TIMEOUT_MS): BehaviourProbe {
+  return async (plausible, inputs) => {
+    const out = new Map<string, string>();
+    const calls = inputs.filter((p) => p.call !== undefined);
+    if (calls.length === 0) return out;
+    await Promise.all(
+      plausible.map(async (o) => {
+        const sig = await pool.withLane(async (lane) => {
+          await pool.applyToLane(lane, o.applied, o.job.base.files);
+          const command = ladderReplayCommand({ tree: lane.dir, inputs: calls, perInputTimeoutMs });
+          const res = await ctx.sandbox.run(command, { timeoutMs: probeTimeoutMs(calls.length, perInputTimeoutMs), maxOutputBytes: PROBE_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir });
+          return parseLadderReplay(res.stdout);
         });
         if (sig !== null) out.set(o.applied.candidate.id, sig);
       }),
