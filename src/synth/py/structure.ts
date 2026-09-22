@@ -997,3 +997,190 @@ export function scopeAt(mod: PyModule, line: number): LineScope {
 export function lineScopes(mod: PyModule): LineScope[] {
   return mod.lines.map((_, k) => scopeAt(mod, k + 1));
 }
+
+// ---------------------------------------------------------------------------------------
+// Exits and parameter mutation
+//
+// Two structural properties of a function the overfit guard reads off the source of a patched
+// file, before and after the patch (docs/research/llm-jev/oos-analysis-2026-09-22.md Q6, ranked
+// change 5): does control reach the end of the body (an implicit `return None`), and which
+// parameters does the body mutate in place. Both are token-level like the rest of this module —
+// nothing shells out to python — and both are LOWER bounds: a construct the rules do not model
+// reads as "no exit here" / "no mutation here", so a caller only ever sees what can be proved.
+// ---------------------------------------------------------------------------------------
+
+/** The inline suite of a one-liner compound statement (`if x: break`), split on `;`; empty when the body is indented under the header. */
+function inlineParts(st: Statement): Token[][] {
+  if (st.colonIndex === null || st.colonIndex >= st.tokens.length - 1) return [];
+  return splitTopLevel(st.tokens.slice(st.colonIndex + 1), ';').filter((p) => p.length > 0);
+}
+
+interface SuiteNode {
+  st: Statement;
+  /** statements indented under `st` (empty for a leaf or a one-liner) */
+  body: SuiteNode[];
+}
+
+/** The statements directly inside `block` (nested def/class bodies excluded), nested by indentation so a header owns the suite under it. */
+function suiteOf(mod: PyModule, block: Block): SuiteNode[] {
+  const roots: SuiteNode[] = [];
+  const open: { node: SuiteNode; indent: number }[] = [];
+  for (const st of mod.statements) {
+    if (st.blockIndex !== block.index) continue;
+    while (open.length > 0 && st.indent <= open[open.length - 1]!.indent) open.pop();
+    const node: SuiteNode = { st, body: [] };
+    const parent = open[open.length - 1];
+    if (parent === undefined) roots.push(node);
+    else parent.node.body.push(node);
+    if (st.header) open.push({ node, indent: st.indent });
+  }
+  return roots;
+}
+
+/** The two statements that leave a function from anywhere inside it. */
+const EXIT_KINDS: ReadonlySet<StatementKind> = new Set(['return', 'raise']);
+const LOOP_KINDS: ReadonlySet<StatementKind> = new Set(['for', 'while']);
+
+/** Does the one-liner body of a header leave the function (`if x: return 1`, `else: raise E`)? */
+function inlineExits(st: Statement): boolean {
+  return inlineParts(st).some((p) => EXIT_KINDS.has(classify(p).kind));
+}
+
+/** Does a branch — a header's indented suite, or its one-liner body — leave the function on every path? */
+function branchExits(node: SuiteNode): boolean {
+  return inlineExits(node.st) || suiteExits(node.body);
+}
+
+/** `while True:` / `while 1:` — the one loop header that cannot finish on its own, so only a `break` (or an exit) leaves it. */
+function isEndlessLoop(st: Statement): boolean {
+  if (st.kind !== 'while' || st.colonIndex === null) return false;
+  const cond = st.tokens.slice(1, st.colonIndex);
+  const only = cond.length === 1 ? cond[0] : undefined;
+  return only !== undefined && ((only.type === 'NAME' && only.text === 'True') || (only.type === 'NUMBER' && only.text === '1'));
+}
+
+/** Does `node`'s body `break` out of `node` itself? A `break` inside a nested loop binds to that loop and is not one. */
+function breaksOut(node: SuiteNode): boolean {
+  const isBreak = (st: Statement): boolean => st.kind === 'break' || inlineParts(st).some((p) => classify(p).kind === 'break');
+  const walk = (nodes: readonly SuiteNode[]): boolean =>
+    nodes.some((n) => {
+      if (LOOP_KINDS.has(n.st.kind)) return false;
+      return isBreak(n.st) || walk(n.body);
+    });
+  return inlineParts(node.st).some((p) => classify(p).kind === 'break') || walk(node.body);
+}
+
+/**
+ * Does this suite leave the enclosing function on EVERY path — by `return`/`raise`, by an
+ * if/elif/else chain whose every branch does, by a `with` whose body does, or by a `while True:`
+ * that no `break` leaves? Statements after the first exiting one are dead code and do not change
+ * the answer. `for`, `try` and anything else read as "control can reach the next statement".
+ */
+function suiteExits(nodes: readonly SuiteNode[]): boolean {
+  for (let i = 0; i < nodes.length; i++) {
+    const n = nodes[i]!;
+    const kind = n.st.kind;
+    if (EXIT_KINDS.has(kind)) return true;
+    if (kind === 'if') {
+      // the whole chain: `if` … `elif`* … `else`, siblings at this indent
+      const chain: SuiteNode[] = [n];
+      let j = i + 1;
+      while (j < nodes.length) {
+        const next = nodes[j]!;
+        if (next.st.kind !== 'elif' && next.st.kind !== 'else') break;
+        chain.push(next);
+        j += 1;
+        if (next.st.kind === 'else') break;
+      }
+      // without an `else` the chain can fall through with no branch taken
+      if (chain[chain.length - 1]!.st.kind === 'else' && chain.every(branchExits)) return true;
+      i = j - 1;
+      continue;
+    }
+    if (kind === 'while' && isEndlessLoop(n.st) && !breaksOut(n)) return true;
+    if (kind === 'with' && branchExits(n)) return true;
+  }
+  return false;
+}
+
+/**
+ * Can control reach the END of `block`'s body — i.e. does the function have an IMPLICIT
+ * `return None` exit? `def f(): pass` yes; a body ending in `return`/`raise`, a full if/else whose
+ * branches all exit, and a `while True:` no `break` leaves, no. Unmodelled constructs (`try`,
+ * `for`) read as "can fall through", so the answer is only ever used as a DIFFERENCE between two
+ * revisions of one function, where the unmodelled part cancels out.
+ */
+export function fallsOffEnd(mod: PyModule, block: Block): boolean {
+  if (block.kind !== 'def') return false;
+  const header = mod.statements[block.statementIndex];
+  if (header !== undefined && inlineExits(header)) return false; // `def f(): return 1`
+  return !suiteExits(suiteOf(mod, block));
+}
+
+/**
+ * Methods of the standard containers that mutate their receiver IN PLACE (list, set, dict,
+ * collections.deque). The structural property is "the object the caller passed changes"; every
+ * name here is a documented in-place mutator of a builtin container and none of them has a
+ * non-mutating meaning on one, so the set is a property of the language, not a tuned list.
+ */
+const MUTATING_METHODS: ReadonlySet<string> = new Set([
+  'append', 'appendleft', 'extend', 'extendleft', 'insert', 'remove', 'pop', 'popitem', 'clear', 'sort', 'reverse', 'rotate',
+  'add', 'discard', 'update', 'setdefault', 'difference_update', 'intersection_update', 'symmetric_difference_update',
+]);
+
+/**
+ * Parameters of `block` whose object the body mutates in place, so the CALLER sees the change:
+ * an in-place method call (`values.remove(mid)`), an item or attribute assignment (`xs[i] = v`,
+ * `o.field = v`) or `del xs[i]`. Deliberately excluded, so the result is a lower bound rather
+ * than a guess:
+ *   - `*args` / `**kwargs`, which Python rebuilds per call — mutating them cannot reach the caller;
+ *   - the receiver of a method (the first parameter of a `def` inside a `class`), whose attribute
+ *     assignment is ordinary object state, not an argument mutation;
+ *   - a parameter the body REBINDS anywhere (`values = list(values)`), after which the name need
+ *     not stand for the caller's object;
+ *   - anything inside a nested `def`.
+ */
+export function mutatedParameters(mod: PyModule, block: Block): string[] {
+  if (block.kind !== 'def') return [];
+  const parent = block.parent === null ? undefined : mod.blocks[block.parent];
+  const receiver = parent !== undefined && parent.kind === 'class' ? block.params[0]?.name : undefined;
+  const names = new Set(block.params.filter((p) => p.star === '' && p.name !== receiver).map((p) => p.name));
+  const body = mod.statements.filter((s) => s.blockIndex === block.index);
+  for (const st of body) for (const n of st.binds) names.delete(n);
+  if (names.size === 0) return [];
+
+  const mutated = new Set<string>();
+  const addSubscriptTarget = (span: readonly Token[]): void => {
+    const head = span[0];
+    if (head !== undefined && head.type === 'NAME' && names.has(head.text) && isOp(span[1], '[')) mutated.add(head.text);
+  };
+  for (const st of body) {
+    for (const a of st.attrAssigns) if (names.has(a.receiver)) mutated.add(a.receiver);
+    const toks = st.tokens;
+    for (let k = 0; k + 3 < toks.length; k++) {
+      const recv = toks[k]!;
+      if (recv.type !== 'NAME' || !names.has(recv.text)) continue;
+      if (isOp(toks[k - 1], '.')) continue; // `holder.values.remove(...)` is not the parameter `values`
+      const method = toks[k + 2];
+      if (isOp(toks[k + 1], '.') && method !== undefined && method.type === 'NAME' && MUTATING_METHODS.has(method.text) && isOp(toks[k + 3], '(')) mutated.add(recv.text);
+    }
+    if (st.kind === 'assign') for (const span of assignTargetSpans(toks)) addSubscriptTarget(span);
+    if (st.kind === 'augassign') {
+      const op = findTopLevel(toks, (t) => t.type === 'OP' && AUG_OPS.has(t.text));
+      if (op > 0) addSubscriptTarget(toks.slice(0, op));
+    }
+    if (st.keyword === 'del') addSubscriptTarget(toks.slice(1));
+  }
+  return [...mutated];
+}
+
+/** Dotted name of a block inside its module (`Outer.method`): the identity that matches one function across two revisions of a file. */
+export function qualifiedName(mod: PyModule, block: Block): string {
+  const parts: string[] = [];
+  let b: Block | undefined = block;
+  while (b !== undefined) {
+    parts.unshift(b.name);
+    b = b.parent === null ? undefined : mod.blocks[b.parent];
+  }
+  return parts.join('.');
+}
