@@ -24,3 +24,9 @@ perf/results/*
 !bench/results/glm-*/
 !bench/results/llm-jev-*/
 !bench/results/oos-*/
+
+# bench --archive-runs output (src/bench/archive.ts): a results directory in bench/results now
+# archives its runs' records by default, ~4 MB gz per 22-task slice. The un-ignore rules above
+# would otherwise commit them on every bench run. A record archive is checked in DELIBERATELY and
+# as one file, the way experiments/results/oos-2026-09-22-runs.tar.gz was.
+bench/results/*/runs/

@@ -2408,7 +2408,10 @@ class EngineImpl implements Engine {
     draft.timing.jevMs += res.latencyMs;
     const ids = Object.keys(questions);
     // TUI-DESIGN-2 §2.4 / §6 item 6: the client's cost basis rides the record (jev.jsonl) and the run-level aggregate (`/jev`, costBlock)
-    const record: JevRequestRecord = { step: draft.step, stage, requestHash: res.requestHash, latencyMs: res.latencyMs, questions: ids.length, usage, model: res.model, attempts: res.attempts, ...(res.costBasis !== undefined ? { costBasis: res.costBasis } : {}) };
+    // review finding 8: a hit is MARKED, never inferred from `usage.calls === 0` — the bench's
+    // stub decider reports 0 calls on every request, so the inference counted every stubbed
+    // request as a cache hit
+    const record: JevRequestRecord = { step: draft.step, stage, requestHash: res.requestHash, latencyMs: res.latencyMs, questions: ids.length, usage, model: res.model, attempts: res.attempts, ...(res.costBasis !== undefined ? { costBasis: res.costBasis } : {}), ...(res.cached === true ? { cached: true } : {}) };
     if (res.costBasis !== undefined) this.jevBasisCounts[res.costBasis] += 1;
     draft.jevRequests.push(record);
     this.jevLatencyMs.push(res.latencyMs);
@@ -4662,7 +4665,7 @@ class EngineImpl implements Engine {
       completion: draft.completion,
       decisions: draft.decisions,
       jevRequests: draft.jevRequests,
-      ...(() => { const hits = draft.jevRequests.filter((r) => r.usage.calls === 0).length; return hits > 0 ? { jevCacheHits: hits } : {}; })(),
+      ...(() => { const hits = draft.jevRequests.filter((r) => r.cached === true).length; return hits > 0 ? { jevCacheHits: hits } : {}; })(),
       usage: draft.usage,
       timing,
       loopSignatures: signatures,

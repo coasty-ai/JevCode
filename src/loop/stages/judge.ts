@@ -282,7 +282,10 @@ async function runCodeJudgeStage(ctx: StageContext, common: JsonObject, proposal
   if (Object.keys(recordOnly).length > 0) {
     await ctx.ask('judge', state, recordOnly, (answers, rows: Decision[]) => {
       for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
-      completion = noulOf(answers, TASK_COMPLETE_ID, 0);
+      // review finding 3: the batch is still asked when Q22 is NOT due (the unparsed path, or a
+      // step with claims), and the callback ran unconditionally — recording a 0 for a question
+      // nobody was asked. `null` is the type's own word for "not asked".
+      if (completeDue) completion = noulOf(answers, TASK_COMPLETE_ID, 0);
       if (testsUnparsed) testsPassUnparsed = noulOf(answers, 'tests_pass_unparsed', 0);
       jevClaims = claims.map((_c, j) => noulOf(answers, doneClaimId(j), 0));
     });

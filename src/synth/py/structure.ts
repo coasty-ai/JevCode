@@ -1070,11 +1070,63 @@ function breaksOut(node: SuiteNode): boolean {
   return inlineParts(node.st).some((p) => classify(p).kind === 'break') || walk(node.body);
 }
 
+/** The sibling clauses a compound header owns at this indent: `elif`/`else` after `if`, `except`/`else`/`finally` after `try`. */
+function clauseChain(nodes: readonly SuiteNode[], start: number, kinds: ReadonlySet<StatementKind>): { chain: SuiteNode[]; next: number } {
+  const chain: SuiteNode[] = [nodes[start]!];
+  let j = start + 1;
+  while (j < nodes.length) {
+    const next = nodes[j]!;
+    if (!kinds.has(next.st.kind)) break;
+    chain.push(next);
+    j += 1;
+  }
+  return { chain, next: j };
+}
+
+const IF_CLAUSES: ReadonlySet<StatementKind> = new Set(['elif', 'else']);
+const TRY_CLAUSES: ReadonlySet<StatementKind> = new Set(['except', 'else', 'finally']);
+
+/**
+ * Does a `try` statement leave the function on every path? Review finding 1: reading `try` as
+ * "falls through" is not a conservative lower bound once the rule is a DIFFERENCE, because a
+ * patch that WRAPS exiting code in `try/except` flips the answer and the wrapped function reads
+ * as newly falling off its end. The real rule:
+ *   - a `finally` suite that exits leaves the statement whatever the body did (it runs last and
+ *     its `return`/`raise` wins, even over one propagating out of the try);
+ *   - otherwise the try-suite must exit AND every `except` must exit; an `else` suite runs only
+ *     when the try-suite completed, so if the try-suite exits the `else` is unreachable, and if
+ *     the rule needed the `else` the try-suite did not exit and the answer is already false.
+ * A bare `try` with no `except` and no exiting `finally` can still propagate, so it is false.
+ */
+function tryExits(chain: readonly SuiteNode[]): boolean {
+  const head = chain[0]!;
+  const clauses = chain.slice(1);
+  if (clauses.some((c) => c.st.kind === 'finally' && branchExits(c))) return true;
+  const excepts = clauses.filter((c) => c.st.kind === 'except');
+  if (excepts.length === 0) return false;
+  return branchExits(head) && excepts.every(branchExits);
+}
+
+/**
+ * Does a `for` / `while` leave the function? Only through its `else`: the loop body may run zero
+ * times, so nothing in it is guaranteed, but the `else` suite runs exactly when the loop finished
+ * without `break` — so `for … else: return x` with no `break` out of the loop always exits.
+ * `while True:` with no `break` is the other case (it never finishes at all) and is handled by
+ * `isEndlessLoop`.
+ */
+function loopExits(chain: readonly SuiteNode[]): boolean {
+  const head = chain[0]!;
+  if (isEndlessLoop(head.st) && !breaksOut(head)) return true;
+  const alt = chain.find((c) => c.st.kind === 'else');
+  return alt !== undefined && branchExits(alt) && !breaksOut(head);
+}
+
 /**
  * Does this suite leave the enclosing function on EVERY path — by `return`/`raise`, by an
- * if/elif/else chain whose every branch does, by a `with` whose body does, or by a `while True:`
+ * if/elif/else chain whose every branch does, by a `with` whose body does, by a `try` whose body
+ * and handlers do (or whose `finally` does), by a loop whose `else` does, or by a `while True:`
  * that no `break` leaves? Statements after the first exiting one are dead code and do not change
- * the answer. `for`, `try` and anything else read as "control can reach the next statement".
+ * the answer. Anything still unmodelled reads as "control can reach the next statement".
  */
 function suiteExits(nodes: readonly SuiteNode[]): boolean {
   for (let i = 0; i < nodes.length; i++) {
@@ -1082,22 +1134,24 @@ function suiteExits(nodes: readonly SuiteNode[]): boolean {
     const kind = n.st.kind;
     if (EXIT_KINDS.has(kind)) return true;
     if (kind === 'if') {
-      // the whole chain: `if` … `elif`* … `else`, siblings at this indent
-      const chain: SuiteNode[] = [n];
-      let j = i + 1;
-      while (j < nodes.length) {
-        const next = nodes[j]!;
-        if (next.st.kind !== 'elif' && next.st.kind !== 'else') break;
-        chain.push(next);
-        j += 1;
-        if (next.st.kind === 'else') break;
-      }
+      const { chain, next } = clauseChain(nodes, i, IF_CLAUSES);
       // without an `else` the chain can fall through with no branch taken
       if (chain[chain.length - 1]!.st.kind === 'else' && chain.every(branchExits)) return true;
-      i = j - 1;
+      i = next - 1;
       continue;
     }
-    if (kind === 'while' && isEndlessLoop(n.st) && !breaksOut(n)) return true;
+    if (kind === 'try') {
+      const { chain, next } = clauseChain(nodes, i, TRY_CLAUSES);
+      if (tryExits(chain)) return true;
+      i = next - 1;
+      continue;
+    }
+    if (LOOP_KINDS.has(kind)) {
+      const { chain, next } = clauseChain(nodes, i, IF_CLAUSES);
+      if (loopExits(chain)) return true;
+      i = next - 1;
+      continue;
+    }
     if (kind === 'with' && branchExits(n)) return true;
   }
   return false;
@@ -1115,6 +1169,25 @@ export function fallsOffEnd(mod: PyModule, block: Block): boolean {
   const header = mod.statements[block.statementIndex];
   if (header !== undefined && inlineExits(header)) return false; // `def f(): return 1`
   return !suiteExits(suiteOf(mod, block));
+}
+
+/**
+ * Every statement kind that appears directly inside `block` (nested def/class bodies excluded).
+ *
+ * Review finding 1: `fallsOffEnd` is only sound as a DIFFERENCE between two revisions when the
+ * constructs it does not model are in BOTH of them. A patch that introduces a construct the
+ * analysis reads differently breaks that argument by itself, so the caller skips the rule when
+ * the after revision of a function contains a kind its before revision did not. That is the
+ * precondition of the difference argument, stated as code.
+ */
+export function statementKinds(mod: PyModule, block: Block): Set<StatementKind> {
+  const out = new Set<StatementKind>();
+  for (const st of mod.statements) {
+    if (st.blockIndex !== block.index) continue;
+    out.add(st.kind);
+    for (const part of inlineParts(st)) out.add(classify(part).kind);
+  }
+  return out;
 }
 
 /**
@@ -1141,6 +1214,49 @@ const MUTATING_METHODS: ReadonlySet<string> = new Set([
  *   - anything inside a nested `def`.
  */
 export function mutatedParameters(mod: PyModule, block: Block): string[] {
+  return mutatedParameterDetails(mod, block)
+    .filter((m) => m.exempt === null)
+    .map((m) => m.name);
+}
+
+/** Why a mutation of a parameter is ordinary rather than a change the caller did not ask for. */
+export type MutationExemption = 'memoisation' | 'returns_receiver';
+
+export interface ParameterMutation {
+  name: string;
+  /** what the body did: an in-place method, an item/attribute write, or `del` */
+  via: 'method' | 'subscript' | 'attribute' | 'del';
+  /** set when the shape is a documented, intended in-place idiom (review finding 2) */
+  exempt: MutationExemption | null;
+}
+
+/**
+ * Is `name` (or an element/attribute of it) handed back by a `return` of this block?
+ * `ReturnFact.expr` is the source text of the returned expression, so the test is whether the
+ * parameter HEADS it: `return values`, `return values[-1]`, `return values[0].x` — but not
+ * `return len(values)`, which hands back a number and keeps the mutation to itself.
+ */
+function returnsParameter(mod: PyModule, block: Block, name: string): boolean {
+  const fn = mod.functions.find((f) => f.blockIndex === block.index);
+  const head = new RegExp(`^${name}\\s*(?:$|[[.])`);
+  return (fn?.returns ?? []).some((r) => r.expr !== null && head.test(r.expr.trim()));
+}
+
+/**
+ * Every parameter mutation the body performs, with the intended-idiom exemptions of review
+ * finding 2 marked rather than silently dropped (a caller that wants the raw facts can read
+ * them; `mutatedParameters` returns only the unexempted names).
+ *
+ * The two exemptions, both structural:
+ *   - `memoisation`: the body writes a subscript of the parameter and READS a subscript of the
+ *     same parameter somewhere in the body. `if k not in d: d[k] = 0` and every cache-fill is
+ *     this shape; a caller passing a dict to be filled is the point of the call.
+ *   - `returns_receiver`: `sort()` / `reverse()` (the two in-place methods with no return value,
+ *     so the only way to use them is on an object the caller keeps) on a parameter the function
+ *     then RETURNS, itself or an element of it. `values.sort(); return values[-1]` is an
+ *     ordinary in-place API, not a change smuggled past the caller.
+ */
+export function mutatedParameterDetails(mod: PyModule, block: Block): ParameterMutation[] {
   if (block.kind !== 'def') return [];
   const parent = block.parent === null ? undefined : mod.blocks[block.parent];
   const receiver = parent !== undefined && parent.kind === 'class' ? block.params[0]?.name : undefined;
@@ -1149,20 +1265,42 @@ export function mutatedParameters(mod: PyModule, block: Block): string[] {
   for (const st of body) for (const n of st.binds) names.delete(n);
   if (names.size === 0) return [];
 
-  const mutated = new Set<string>();
+  const mutated = new Map<string, ParameterMutation>();
+  const add = (name: string, via: ParameterMutation['via'], exempt: MutationExemption | null): void => {
+    const held = mutated.get(name);
+    // an unexempted mutation always wins: one bad write is enough, however many good ones there are
+    if (held === undefined || (held.exempt !== null && exempt === null)) mutated.set(name, { name, via, exempt });
+  };
+  /** does any statement READ `name[...]` outside an assignment target (the memoisation half)? */
+  const readsSubscript = (name: string): boolean =>
+    body.some((st) => {
+      const toks = st.tokens;
+      const targets = st.kind === 'assign' ? assignTargetSpans(toks) : [];
+      const inTarget = new Set(targets.flatMap((span) => span.map((t) => t.start)));
+      for (let k = 0; k + 1 < toks.length; k++) {
+        const t = toks[k]!;
+        if (t.type !== 'NAME' || t.text !== name || !isOp(toks[k + 1], '[')) continue;
+        if (isOp(toks[k - 1], '.')) continue;
+        if (!inTarget.has(t.start)) return true;
+      }
+      return false;
+    });
   const addSubscriptTarget = (span: readonly Token[]): void => {
     const head = span[0];
-    if (head !== undefined && head.type === 'NAME' && names.has(head.text) && isOp(span[1], '[')) mutated.add(head.text);
+    if (head === undefined || head.type !== 'NAME' || !names.has(head.text) || !isOp(span[1], '[')) return;
+    add(head.text, 'subscript', readsSubscript(head.text) ? 'memoisation' : null);
   };
   for (const st of body) {
-    for (const a of st.attrAssigns) if (names.has(a.receiver)) mutated.add(a.receiver);
+    for (const a of st.attrAssigns) if (names.has(a.receiver)) add(a.receiver, 'attribute', null);
     const toks = st.tokens;
     for (let k = 0; k + 3 < toks.length; k++) {
       const recv = toks[k]!;
       if (recv.type !== 'NAME' || !names.has(recv.text)) continue;
       if (isOp(toks[k - 1], '.')) continue; // `holder.values.remove(...)` is not the parameter `values`
       const method = toks[k + 2];
-      if (isOp(toks[k + 1], '.') && method !== undefined && method.type === 'NAME' && MUTATING_METHODS.has(method.text) && isOp(toks[k + 3], '(')) mutated.add(recv.text);
+      if (!isOp(toks[k + 1], '.') || method === undefined || method.type !== 'NAME' || !MUTATING_METHODS.has(method.text) || !isOp(toks[k + 3], '(')) continue;
+      const ordering = method.text === 'sort' || method.text === 'reverse';
+      add(recv.text, 'method', ordering && returnsParameter(mod, block, recv.text) ? 'returns_receiver' : null);
     }
     if (st.kind === 'assign') for (const span of assignTargetSpans(toks)) addSubscriptTarget(span);
     if (st.kind === 'augassign') {
@@ -1171,7 +1309,7 @@ export function mutatedParameters(mod: PyModule, block: Block): string[] {
     }
     if (st.keyword === 'del') addSubscriptTarget(toks.slice(1));
   }
-  return [...mutated];
+  return [...mutated.values()];
 }
 
 /** Dotted name of a block inside its module (`Outer.method`): the identity that matches one function across two revisions of a file. */

@@ -58,6 +58,7 @@ import {
   SIEVE_MAX_T_RUN_MS,
   poolFitsRunBudget,
   rankPoolCap,
+  siteShare,
 } from '../../../../src/synth/search/budget.js';
 import { MAX_FULL_SUITE_RUNS_PER_STEP } from '../../../../src/synth/sieve/runner.js';
 import type { TestRunSummary } from '../../../../src/synth/types.js';
@@ -536,9 +537,10 @@ describe('repository-class runs per step from the measured oracle, and the budge
     expect(decideRunPlan(727, replace, sympy, b, { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: RANK_K_SITE_MAX, runsAllowed: RANK_K_SITE_MAX });
     expect(decideRunPlan(727, replace, sympy, b, { sitesLeft: 4 })).toEqual({ mode: 'RANK', k: 16, runsAllowed: 16 });
     // a small share never undercuts the fixed rule (3 at replace sites, 5 at gaps and on compact sets)
-    // 10 candidates against 20 runs left is a SIEVE now (ranked change 1); 100 against 20 is not
-    expect(decideRunPlan(10, replace, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'SIEVE', k: 10, runsAllowed: 10 });
-    expect(decideRunPlan(10, insert, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'SIEVE', k: 10, runsAllowed: 10 });
+    // 10 candidates against 20 runs left is a SIEVE now (ranked change 1); 100 against 20 is not.
+    // The site's share caps what the SIEVE may SPEND here (review finding 7): floor(20/12) = 1.
+    expect(decideRunPlan(10, replace, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'SIEVE', k: 10, runsAllowed: 1 });
+    expect(decideRunPlan(10, insert, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'SIEVE', k: 10, runsAllowed: 1 });
     expect(decideRunPlan(100, replace, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
     // never above the runs left
     expect(decideRunPlan(727, replace, sympy, budget({ testRunsLeft: 2, testWallLeftMs: 600_000 }), { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: 2, runsAllowed: 2 });
@@ -573,15 +575,53 @@ describe('repository-class runs per step from the measured oracle, and the budge
     expect(poolFitsRunBudget(0, 0)).toBe(true); // an empty pool needs no order
   });
 
-  it('rankPoolCap prices only the candidates a run this step could reach: sympy-16792 ranked 27,754 to test 1,191 (OOS 2026-09-22 Q4)', () => {
-    expect(rankPoolCap(1191)).toBe(1191);
-    expect(rankPoolCap(0)).toBe(0);
-    expect(rankPoolCap(-5)).toBe(0);
-    // the priced pool is the run budget, not the enumeration: 27,754 - 1,191 candidates no run can reach
-    const priced = Math.min(27_754, rankPoolCap(1191));
-    expect(priced).toBe(1191);
-    // at 150 candidates per repository chunk that is 8 requests where the run spent 178
-    expect(Math.ceil(priced / 150)).toBeLessThan(178);
+  /**
+   * Review finding 5: the first version capped at `runsLeft` — the STEP's budget over every site
+   * still to visit (4,574 in the reviewer's probe) where the visit itself runs `plan.k` = 5. It
+   * priced ~1,000x more candidates than the order could pick and left ~90 % of change 1's saving
+   * on the table. The cap is `k` plus at most `k` of margin for the `fixProbablyAbsent` signal.
+   */
+  it('rankPoolCap prices the ORDER, not the step: k = 5 prices at most 10, never runsLeft (review finding 5)', () => {
+    expect(rankPoolCap(5, 4574)).toBe(10);
+    expect(rankPoolCap(3, 4574)).toBe(6);
+    expect(rankPoolCap(16, 4574)).toBe(32);
+    // never more than the runs actually left, and never less than k itself
+    expect(rankPoolCap(5, 7)).toBe(7);
+    expect(rankPoolCap(5, 5)).toBe(5);
+    expect(rankPoolCap(5, 2)).toBe(2);
+    expect(rankPoolCap(0, 4574)).toBe(0);
+    expect(rankPoolCap(5, 0)).toBe(0);
+    expect(rankPoolCap(-5, 10)).toBe(0);
+    // sympy-16792 (OOS 2026-09-22 Q4): 27,754 ranked to test 1,191 in 178 requests. At k = 5 the
+    // priced pool is 10, which is ONE request of the 150-candidate repository chunk.
+    const priced = Math.min(27_754, rankPoolCap(5, 1191));
+    expect(priced).toBe(10);
+    expect(Math.ceil(priced / 150)).toBe(1);
+  });
+
+  /**
+   * Review finding 7: `decideRunPlan` returned `runsAllowed = n` for SIEVE, ignoring `sitesLeft`.
+   * With a 60 s oracle, 1 lane and a 20 min wall the step has 20 runs for 12 sites, so an
+   * 18-candidate pool at the first source of the first site took 18 of them and starved 11 sites.
+   */
+  it('SIEVE spreads the run budget over the sites too: the reviewer\'s 60 s oracle never spends 18 runs at one site (review finding 7)', () => {
+    const slow = oracle({ runner: 'pytest', lanes: 1, tRunMs: { goalSubset: 60_000, fullSuite: 60_000 } });
+    const b = budget({ testRunsLeft: 1500, testWallLeftMs: 20 * 60_000 });
+    expect(runsLeft(slow, b)).toBe(20); // floor(20 min x 1 lane / 60 s)
+    const plan = decideRunPlan(18, replace, slow, b, { sitesLeft: 12 });
+    // the pool fits the STEP, so it is still a SIEVE — but it may not spend the whole step here
+    expect(plan.mode).toBe('SIEVE');
+    expect(plan.runsAllowed).toBe(1); // floor(20 / 12)
+    expect(plan.runsAllowed).toBeLessThan(18);
+    // with no sitesLeft given (the best-guess path, callers outside the loop) the whole pool runs
+    expect(decideRunPlan(18, replace, slow, b)).toEqual({ mode: 'SIEVE', k: 18, runsAllowed: 18 });
+    // at the last site the share is the whole remaining budget
+    expect(decideRunPlan(18, replace, slow, b, { sitesLeft: 1 })).toEqual({ mode: 'SIEVE', k: 18, runsAllowed: 18 });
+    // siteShare itself: never 0 while a run is left, so a site can always make progress
+    expect(siteShare(20, 12)).toBe(1);
+    expect(siteShare(60, 4)).toBe(15);
+    expect(siteShare(1, 12)).toBe(1);
+    expect(siteShare(0, 12)).toBe(0);
   });
 
   it('the sized take is confined to the cheap repository oracle: equal-cost and QuixBugs-class plans are unchanged', () => {

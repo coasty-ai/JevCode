@@ -845,12 +845,22 @@ async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, 
     everythingQueued = true;
   } else {
     if (mem.stepBudget.jevRequestsLeft <= 0) return BUDGET_EXIT;
-    // OOS 2026-09-22 ranked change 1: price only the candidates a run this step could reach.
-    // sympy-16792 ranked 27,754 of 28,878 to test 1,191 — 178 requests for an order over a pool
-    // 24× its run budget. The remainder is never queued, so it stays out of `tried` and comes
-    // back enumerable next step (§2.3); `everythingQueued` below still compares against the whole
-    // `fresh` set, so a truncated pool never marks the source exhausted.
-    const priced = fresh.slice(0, rankPoolCap(runsLeft(mem.oracle, mem.stepBudget)));
+    // OOS 2026-09-22 ranked change 1: price only the candidates the order can reach — this visit
+    // runs `plan.k` of them, so the cap is k plus the margin the `fixProbablyAbsent` signal needs
+    // (`rankPoolCap`; review finding 5 — the first version capped at `runsLeft`, the whole step's
+    // budget over every site, which priced ~1,000× more than the order could ever pick). The rest
+    // is never queued, stays out of `tried` and comes back enumerable next step (§2.3), and
+    // `everythingQueued` below still compares against the whole `fresh` set, so a truncated pool
+    // never marks the source exhausted.
+    const priced = fresh.slice(0, rankPoolCap(plan.k, runsLeft(mem.oracle, mem.stepBudget)));
+    // Review finding 6: `visitPairs` above may have spent the step's runs since `decideRunPlan`
+    // measured them. An empty priced pool would reach `rank([])`, which answers
+    // `fixProbablyAbsent: true` over nothing and marks the source exhausted at this site with no
+    // question asked and no candidate tried. A spent budget ends the step instead.
+    if (priced.length === 0) {
+      note(st, 'budget', `${goal.id}: ${siteKey(site)}: the step's runs were spent before ${source} could be ranked; ending the step with the source still open`);
+      return BUDGET_EXIT;
+    }
     const ranked = await deps.rank(ctx, mem, priced, site, goal);
     spend(mem, ranked.requests);
     trace.jevRequests += ranked.requests;
@@ -1163,7 +1173,7 @@ async function runLlmRound(st: LoopState, round: LlmRound): Promise<BatchOutcome
   if (plan.mode === 'RANK' && q17Needed(cands.length, left, mem.oracle.tRunMs.goalSubset) && mem.stepBudget.jevRequestsLeft > 0) {
     // §4g: Jev orders the distinct samples (|distinct| > runsLeft, OOS ranked change 1); it never withholds a run.
     // Only the samples a run this step could reach are priced (`rankPoolCap`), as on the seed path.
-    const priced = cands.slice(0, rankPoolCap(left));
+    const priced = cands.slice(0, rankPoolCap(plan.k, left));
     const applied = priced.map((c) => L.applied.get(c.id)).filter((a): a is LlmApplied => a !== undefined);
     const order = await L.deps.order(ctx, goal, applied, committed.files);
     spend(mem, order.requests);

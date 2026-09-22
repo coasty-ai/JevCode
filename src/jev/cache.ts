@@ -41,13 +41,23 @@ export interface CachingDecider extends Decider {
   clear(): void;
 }
 
-/** A hit costs nothing: no tokens, no call, no wall. */
+/**
+ * A hit costs nothing: no tokens, no call, no wall.
+ *
+ * Review finding 9: `answers` is DEEP-COPIED, not aliased. The spread kept one object for every
+ * hit of a hash, so a consumer that annotated or normalised an answer in place would have
+ * poisoned every later hit of that request — a bug that only appears once something upstream
+ * starts mutating, and then silently. The clone costs one small object per hit, against a
+ * request the cache just avoided.
+ */
 function asHit(served: AskResult): AskResult {
   return {
     ...served,
+    answers: structuredClone(served.answers),
     usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 },
     latencyMs: 0,
     attempts: 1,
+    cached: true,
   };
 }
 
@@ -82,7 +92,10 @@ export function createCachingDecider(inner: Decider, keyOf: (model: string, stat
     inFlight.set(key, p);
     try {
       const result = await p;
-      done.set(key, result);
+      // review finding 9: the ENTRY is a private copy too. The first ask returns the inner
+      // decider's own object, so without this a consumer mutating that first result would edit
+      // the cache in place and every later hit would serve the mutation.
+      done.set(key, { ...result, answers: structuredClone(result.answers) });
       return result;
     } finally {
       // a throw is never remembered: the next ask must be free to reach the provider

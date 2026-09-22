@@ -14,9 +14,9 @@
  * all counted and logged, and `archiveRuns` resolves either way. The bench has already finished by
  * the time it is called; losing its records is better than losing its results.
  */
-import { createReadStream, createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { mkdir, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 
@@ -100,25 +100,57 @@ export async function archiveRuns(i: ArchiveRunsInput): Promise<ArchiveRunsResul
 }
 
 /**
- * Archive without being asked when the results directory is the repository's own
+ * The repository a path belongs to: the nearest ancestor directory holding a `package.json`.
+ *
+ * Review operational note: the first version compared against `join(process.cwd(), 'bench',
+ * 'results')`, which is cwd-relative — a bench run started from anywhere but the repository root
+ * either archived nothing or, worse, matched some other tree's `bench/results`. The repository
+ * root is a property of the OUTPUT PATH, so it is derived from it. No `git` call: a checkout
+ * without `.git` (a tarball, a container copy) is still the repository, and shelling out on a
+ * path decision is not worth it.
+ */
+export function repoRootOf(dir: string): string | null {
+  let cur = resolve(dir);
+  for (;;) {
+    if (existsSync(join(cur, 'package.json'))) return cur;
+    const up = dirname(cur);
+    if (up === cur) return null;
+    cur = up;
+  }
+}
+
+/** `<repo>/bench/results` for the repository the results directory is in, or null when it is in none. */
+export function benchResultsRootOf(outDir: string): string | null {
+  const root = repoRootOf(outDir);
+  return root === null ? null : join(root, 'bench', 'results');
+}
+
+const normalisePath = (x: string): string => resolve(x).replace(/\\/g, '/').replace(/\/+$/, '');
+
+/**
+ * Archive without being asked when the results directory is its own repository's
  * `bench/results/...` and no flag said otherwise (`archiveRuns === undefined`).
  *
  * Why this default and not "always": the 44 run directories the 2026-09-22 out-of-sample analysis
  * reads live under `~/.jevcode/runs/`, outside the repository, and had to be tarred by hand
  * afterwards to make the analysis reproducible from a checkout. `bench/results/*` is the tree the
- * repository keeps (.gitignore un-ignores `oos-*`, `llm-jev-*`, `live-*`, `jev-only-*`, `glm-*`),
- * so a result directory there is exactly the one that must carry its own records. A results
- * directory somewhere else is a scratch run and is left alone. An explicit `--archive-runs` /
- * `--no-archive-runs` always wins, which is why the test is `undefined` and not falsy.
+ * repository keeps, so a result directory there is exactly the one that must carry its own
+ * records. A results directory somewhere else is a scratch run and is left alone. An explicit
+ * `--archive-runs` / `--no-archive-runs` always wins, which is why the test is `undefined` and
+ * not falsy.
+ *
+ * `resultsRoot` is derived from `outDir` when the caller does not pass one, so the decision does
+ * not depend on where the process was started.
  */
-export function archiveByDefault(outDir: string, resultsRoot: string): boolean {
-  const norm = (x: string): string => resolve(x).replace(/\\/g, '/').replace(/\/+$/, '');
-  const root = norm(resultsRoot);
-  const dir = norm(outDir);
+export function archiveByDefault(outDir: string, resultsRoot?: string): boolean {
+  const rootPath = resultsRoot ?? benchResultsRootOf(outDir);
+  if (rootPath === null) return false;
+  const root = normalisePath(rootPath);
+  const dir = normalisePath(outDir);
   return dir === root || dir.startsWith(`${root}/`);
 }
 
-/** `archiveRuns` when it was set, else the `bench/results` default. */
-export function archiveRunsDue(flag: boolean | undefined, outDir: string, resultsRoot: string): boolean {
+/** `archiveRuns` when it was set, else the `bench/results` default for the results directory's own repository. */
+export function archiveRunsDue(flag: boolean | undefined, outDir: string, resultsRoot?: string): boolean {
   return flag ?? archiveByDefault(outDir, resultsRoot);
 }

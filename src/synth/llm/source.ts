@@ -145,19 +145,39 @@ export const LLM_REASONING_CAP_TOKENS = 512;
  */
 export const LLM_TIMEOUT_BACKOFF = {
   /**
-   * The next sample's deadline for the goal. 1.5 puts the class ceiling exactly three growths
+   * The next ROUND's deadline for the goal. 1.5 puts the class ceiling exactly three growths
    * above the class default on both classes (20 s → 30 → 45 = `cheapMaxMs`; 30 s → 45 → 67.5 →
    * 90 = `repositoryMaxMs`), so a goal reaches the maximum a class allows inside one step's round
    * budget (`StepBudget.llmRoundsLeft` 2 per step, §4.11) rather than after it.
+   *
+   * Review finding 10: the growth is booked once per ROUND, not once per sample. A round fires
+   * its samples in PARALLEL, so a provider serving nothing returns 5 zero-token timeouts at once;
+   * per-sample growth took the goal from 20 s straight to the 45 s ceiling on a single round and
+   * armed the pause at the same instant. One round of silence is one piece of evidence.
    */
   factor: 1.5,
   /**
-   * Consecutive zero-token timeouts on one goal that pause its sampling. Two is the smallest
-   * number that is a pattern rather than one slow request: one such sample is the tail the
+   * Rounds of one goal that must come back entirely empty before its NEXT round is halved. Two is
+   * the smallest number that is a pattern rather than one slow round: one is the tail the
    * back-off above is for, two in a row means the provider is serving this goal nothing.
    */
   pauseAfter: 2,
+  /**
+   * What a "pause" now is (review finding 10): the next round fires ceil(N / 2) samples at the
+   * grown deadline, instead of not firing at all. `fire(round: 1)` happens ONCE per step per
+   * goal, so refusing it removed EVERY LLM candidate from that step — on long_chain (27 of 44
+   * samples timed out) roughly every other step, on exactly the tasks the change exists to
+   * rescue. Halving keeps the goal sampling while spending half the dollars on a provider that
+   * is currently serving nothing; a divisor of 2 is the only one that is a halving rather than a
+   * tuned fraction, and the ceil keeps it at ≥ 1 sample for any N.
+   */
+  pausedSampleDivisor: 2,
 } as const;
+
+/** The samples a goal's round fires while it is backed off: ceil(N / 2), never below 1 (review finding 10). */
+export function pausedSampleCount(n: number): number {
+  return Math.max(1, Math.ceil(Math.max(0, n) / LLM_TIMEOUT_BACKOFF.pausedSampleDivisor));
+}
 
 /** The class's default deadline — the floor of the adaptive one. */
 export function classDeadlineMs(klass: OracleClass, deadline: SynthesizerGeneration['sampleDeadline'] = LLM_SAMPLE_DEADLINE): number {
@@ -655,12 +675,14 @@ export function isZeroTokenTimeout(kind: SampleEnd['kind'], partial: CancelledGe
 
 /** The goal's zero-token-timeout state (§4.8 rev 4); per goal and in memory, nothing persists. */
 export interface TimeoutBackoff {
-  /** consecutive zero-token timeouts on this goal; any sample that produced something clears it */
+  /** consecutive ROUNDS of this goal that produced nothing at all; any served sample clears it */
   streak: number;
   /** ×`LLM_TIMEOUT_BACKOFF.factor` growths the goal's deadline carries (one-way, like the reasoning cap) */
   growths: number;
-  /** the goal's next round is paused (armed by `pauseAfter` consecutive zero-token timeouts; the refused `fire` clears it) */
+  /** the goal's next round fires `pausedSampleCount(n)` samples (armed by `pauseAfter` empty rounds; firing clears it) */
   paused: boolean;
+  /** a zero-token timeout has already been booked for the round in flight — the round grows once, however many samples time out */
+  bookedThisRound: boolean;
 }
 
 /** The fired samples of a round that were never served: settled without a result and rate-limited (`SampleArrival.rateLimited`). */
@@ -712,7 +734,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   function backoffOf(goalId: string): TimeoutBackoff {
     const cur = backoff.get(goalId);
     if (cur !== undefined) return cur;
-    const fresh: TimeoutBackoff = { streak: 0, growths: 0, paused: false };
+    const fresh: TimeoutBackoff = { streak: 0, growths: 0, paused: false, bookedThisRound: false };
     backoff.set(goalId, fresh);
     return fresh;
   }
@@ -725,18 +747,24 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
    */
   function noteZeroTokenTimeout(goalId: string, klass: OracleClass, baseMs: number): void {
     const b = backoffOf(goalId);
+    // review finding 10: ONE growth per round. A round fires its samples in parallel, so five
+    // zero-token timeouts are one observation of a provider serving nothing, not five.
+    if (b.bookedThisRound) return;
+    b.bookedThisRound = true;
     b.growths += 1;
     b.streak += 1;
-    emit('llm:deadline', `goal ${goalId}: a sample timed out with 0 output tokens (nothing served); the next sample of this goal waits ${backedOffDeadlineMs(klass, baseMs, b.growths)} ms (${b.growths} × ${LLM_TIMEOUT_BACKOFF.factor} on ${baseMs} ms, capped at the ${klass} maximum ${deadlineCeilingMs(klass)} ms)`);
+    emit('llm:deadline', `goal ${goalId}: this round timed out with 0 output tokens (nothing served); its next round waits ${backedOffDeadlineMs(klass, baseMs, b.growths)} ms (${b.growths} × ${LLM_TIMEOUT_BACKOFF.factor} on ${baseMs} ms, capped at the ${klass} maximum ${deadlineCeilingMs(klass)} ms)`);
     if (b.streak < LLM_TIMEOUT_BACKOFF.pauseAfter) return;
     b.streak = 0;
     b.paused = true;
-    emit('llm:deadline', `goal ${goalId}: ${LLM_TIMEOUT_BACKOFF.pauseAfter} consecutive samples timed out with 0 output tokens — LLM sampling for this goal is paused for one round (the next fire() is refused and clears the pause)`);
+    emit('llm:deadline', `goal ${goalId}: ${LLM_TIMEOUT_BACKOFF.pauseAfter} consecutive rounds of this goal served nothing — its next round fires half as many samples at the grown deadline (never none: the step keeps its LLM candidates)`);
   }
 
   /** A sample the provider produced something for ends the goal's streak; the growth it earned stands (one-way, like the reasoning cap). */
   function noteProduced(goalId: string): void {
-    backoffOf(goalId).streak = 0;
+    const b = backoffOf(goalId);
+    b.streak = 0;
+    b.bookedThisRound = true; // a served sample settles the round: no growth from its stragglers
   }
 
   /**
@@ -1014,15 +1042,20 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     // §4.8 rev 4: the goal's sampling is paused for one round after `pauseAfter` consecutive
     // zero-token timeouts. Refusing here costs the step nothing — no round, no sample, no dollar is
     // taken — and the refusal itself is what ends the pause, so it lasts exactly one round.
-    const paused = backoffOf(input.goalId);
-    if (paused.paused) {
-      paused.paused = false;
-      emit('llm:fire', `goal ${input.goalId} round ${input.round}: paused for this round — ${LLM_TIMEOUT_BACKOFF.pauseAfter} consecutive samples of this goal timed out with 0 output tokens; the next round fires again at ${backedOffDeadlineMs(input.klass, input.deadlineMs ?? sampleDeadlineMs(input.klass, latencyOf(), gen.sampleDeadline), paused.growths)} ms`);
-      return { fired: false, reason: 'paused', cached: cachedUntried, key };
+    const backedOff = backoffOf(input.goalId);
+    // review finding 10: a backed-off goal fires HALF its samples at the grown deadline; it is
+    // never refused outright. `fire(round: 1)` is once per step per goal, so refusing it removed
+    // every LLM candidate from the step — on the very tasks (long_chain: 27 of 44 samples timed
+    // out) the back-off exists to rescue. Firing clears the flag, so the halving lasts one round.
+    const samples = backedOff.paused ? pausedSampleCount(n) : n;
+    if (backedOff.paused) {
+      backedOff.paused = false;
+      emit('llm:fire', `goal ${input.goalId} round ${input.round}: ${LLM_TIMEOUT_BACKOFF.pauseAfter} consecutive rounds of this goal served nothing — firing ${samples} of ${n} samples at ${backedOffDeadlineMs(input.klass, input.deadlineMs ?? sampleDeadlineMs(input.klass, latencyOf(), gen.sampleDeadline), backedOff.growths)} ms instead of the full round`);
     }
+    backedOff.bookedThisRound = false; // a new round may book one growth of its own
     if (input.budget.roundsLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_rounds', cached: 0, key };
     if (headroom(input.budget) <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_usd', cached: 0, key };
-    const st = newRound(input, key, n);
+    const st = newRound(input, key, samples);
     state = st;
     live.add(st);
     if (hit !== undefined && hit.patches.length > 0) {

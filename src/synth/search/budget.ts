@@ -224,15 +224,25 @@ export function poolFitsRunBudget(n: number, left: number): boolean {
 }
 
 /**
- * The candidates one ranking request set may price: never more than the runs the step can still
- * spend. OOS 2026-09-22 Q4 — sympy-16792 ranked 27,754 of its 28,878 enumerated candidates and
- * could test 1,191 of them, spending 178 sieve requests / 26,489 questions to order a pool 24× the
- * run budget, every one of them in a `plausible = 0` step. A candidate that no run this step can
- * reach cannot be chosen by the order, so it is not priced; §2.3 leaves it out of `tried` and it
- * comes back enumerable on the next step.
+ * The candidates one ranking request set may price. OOS 2026-09-22 Q4 — sympy-16792 ranked 27,754
+ * of its 28,878 enumerated candidates and could test 1,191, spending 178 sieve requests / 26,489
+ * questions to order a pool 24× the run budget, every one of them in a `plausible = 0` step.
+ *
+ * Review finding 5: the first version capped at `runsLeft`, which is the STEP's budget spread over
+ * every site still to visit — 4,574 where the visit itself will run `plan.k` = 5. Pricing a
+ * candidate the order cannot reach is the whole defect, and at the site the order reaches exactly
+ * `k` of them. So the cap is `k`, plus at most `k` more: the margin is what the ranker's
+ * `fixProbablyAbsent` signal is read off (an escape probability over a pool of only the k winners
+ * says nothing), and doubling is the smallest margin that leaves as many rejected candidates as
+ * accepted ones. It never exceeds the runs actually left, so a spent budget prices nothing.
+ *
+ * 2 × k is a shape, not a tuned number: at k = 5 it prices ≤ 10 where the old cap priced
+ * `runsLeft`, and the ranker's chunking (150 per repository request) then needs ONE request where
+ * the record spent 178.
  */
-export function rankPoolCap(left: number): number {
-  return Math.max(0, Math.floor(left));
+export function rankPoolCap(k: number, left: number): number {
+  const kk = Math.max(0, Math.floor(k));
+  return Math.max(0, Math.min(Math.max(kk, Math.min(2 * kk, Math.floor(left))), Math.floor(left)));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -904,6 +914,17 @@ export function runsLeft(oracle: OracleModel, budget: StepBudget): number {
   return Math.max(0, Math.min(budget.testRunsLeft, byWall));
 }
 
+/**
+ * One site's share of the runs the step has left: `floor(left / sitesLeft)`, at least 1 when
+ * there is any run at all (a site that can run nothing makes no progress and the step would
+ * simply stall). The same arithmetic on both sides of the SIEVE/RANK cut (review finding 7).
+ */
+export function siteShare(left: number, sitesLeft: number): number {
+  const sites = Math.max(1, Math.floor(sitesLeft));
+  const runs = Math.max(0, Math.floor(left));
+  return runs === 0 ? 0 : Math.max(1, Math.floor(runs / sites));
+}
+
 export interface RunPlanOptions {
   /**
    * sites still to visit in this phase, this one included (search/subgoal.ts visitPhase): with a
@@ -931,12 +952,19 @@ export interface RunPlanOptions {
 export function decideRunPlan(cands: readonly Candidate[] | number, site: Pick<Site, 'kind'>, oracle: OracleModel, budget: StepBudget, opts: RunPlanOptions = {}): RunPlan {
   const n = typeof cands === 'number' ? cands : cands.length;
   const left = runsLeft(oracle, budget);
-  if (poolFitsRunBudget(n, left)) return { mode: 'SIEVE', k: n, runsAllowed: n };
+  if (poolFitsRunBudget(n, left)) {
+    // Review finding 7: SIEVE must spread the budget over the sites too. `poolFitsRunBudget` asks
+    // whether the pool fits the STEP's runs; it does not ask whether one site may spend them all.
+    // With a 60 s oracle, 1 lane and a 20 min wall the step has 20 runs for 12 sites, so an
+    // 18-candidate pool at the first source of the first site used to take 18 of them and starve
+    // the other 11 sites. The site's share is the same arithmetic RANK already uses below.
+    const allowed = opts.sitesLeft === undefined ? n : Math.min(n, siteShare(left, opts.sitesLeft));
+    return { mode: 'SIEVE', k: n, runsAllowed: allowed };
+  }
   let k = site.kind === 'insert' ? RANK_K_INSERT : RANK_K_REPLACE;
   if (n >= COMPACT_NOUL_MIN_CANDIDATES) k = Math.max(k, RANK_K_COMPACT);
   if (opts.sitesLeft !== undefined && oracleClass(oracle) === 'repository_class' && hasCheapGoalSubset(oracle)) {
-    const share = Math.floor(left / Math.max(1, Math.floor(opts.sitesLeft)));
-    k = Math.max(k, Math.min(RANK_K_SITE_MAX, share));
+    k = Math.max(k, Math.min(RANK_K_SITE_MAX, siteShare(left, opts.sitesLeft)));
   }
   k = Math.min(k, left);
   return { mode: 'RANK', k, runsAllowed: k };
