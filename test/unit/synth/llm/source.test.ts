@@ -265,7 +265,7 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     expect(a!.status).toBe('cancelled');
   });
 
-  it('reserves every sample\'s full estimate at fire, fires only what the dollar counter covers, and refunds the reservation at settle', async () => {
+  it('holds every sample\'s full estimate from fire to settle, fires only what the dollar counter covers beyond the holds, and charges the counter at settle for the price alone', async () => {
     const gen = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]), latencyMs: 30, usage: { inputTokens: 4000, outputTokens: 300 } }));
     const events: string[] = [];
     const src = createLlmSource({ generate: gen.generate, pricing: PRICING, emit: (phase, detail) => events.push(`${phase}: ${detail}`) });
@@ -276,14 +276,15 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     expect(fired).toMatchObject({ fired: true, samples: 2 });
     if (fired.fired) expect(fired.reservedUsd).toBeCloseTo(2 * RESERVATION, 9);
     expect(gen.calls()).toBe(2);
-    // in flight the counter holds the reservations (an L1′ or another goal sees no headroom), not zero
-    expect(b.usdLeft).toBeCloseTo(0.001, 9);
+    // in flight the counter itself is untouched — the hold is the source's own ledger — and, read against the hold, it has no headroom
+    // for another sample (what an L1′ or another goal asking the source would be told)
+    expect(b.usdLeft).toBeCloseTo(2 * RESERVATION + 0.001, 12);
     expect(b.samplesLeft).toBe(6);
-    // the summary reports what is still held, so a caller re-installing the step budget mid-round can carry it over
     expect(src.round()!.reservedUsd).toBeCloseTo(2 * RESERVATION, 9);
+    expect(coversSample(b.usdLeft - src.round()!.reservedUsd!, RESERVATION)).toBe(false);
     expect(events.some((e) => e.startsWith('llm:fire') && e.includes('2/4 samples fired') && e.includes('reserved'))).toBe(true);
     await drain(src);
-    // settled: each sample holds its price, the reservation came back
+    // settled: each sample cost its price and nothing else moved on the counter; the holds are gone
     const priced = (4000 * 0.5 + 300 * 2) / 1e6;
     expect(2 * RESERVATION + 0.001 - b.usdLeft).toBeCloseTo(2 * priced, 9);
     expect(src.round()).toMatchObject({ fired: 2, valid: 2, closed: true, reservedUsd: 0 });
@@ -298,6 +299,70 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     expect(coversSample(0, 0)).toBe(false);
     expect(affordableSamples(0.01, 0)).toBe(Number.POSITIVE_INFINITY);
     expect(affordableSamples(0, 0.001)).toBe(0);
+  });
+
+  it('the hold is never a debit: a step budget re-installed mid-round (a live view, the repository step-1 overlap) is charged the prices alone at settle, the holds stand against whichever counter is live, and a draining round\'s holds refuse a new round the counter cannot cover beyond them', async () => {
+    const gen = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]), latencyMs: 30, usage: { inputTokens: 4000, outputTokens: 300 } }));
+    let settled = 0;
+    let bothSettled!: () => void;
+    const settledTwice = new Promise<void>((resolve) => {
+      bothSettled = resolve;
+    });
+    const src = createLlmSource({
+      generate: gen.generate,
+      pricing: PRICING,
+      onSample: () => {
+        settled += 1;
+        if (settled === 2) bothSettled();
+      },
+    });
+    const first = budget({ usdLeft: 2 * RESERVATION + 0.001 });
+    let installed = first;
+    // the adapter's budget view: every read and write goes to the step budget installed now
+    const view: LlmBudget = {
+      get roundsLeft() {
+        return installed.roundsLeft;
+      },
+      set roundsLeft(v: number) {
+        installed.roundsLeft = v;
+      },
+      get samplesLeft() {
+        return installed.samplesLeft;
+      },
+      set samplesLeft(v: number) {
+        installed.samplesLeft = v;
+      },
+      get usdLeft() {
+        return installed.usdLeft;
+      },
+      set usdLeft(v: number) {
+        installed.usdLeft = v;
+      },
+    };
+    expect(src.fire(fireInput(view, { n: 4, stagger: false }))).toMatchObject({ fired: true, samples: 2 });
+    // in flight: the round and sample counters were taken on the first budget, the dollar counter was not touched
+    expect(first.roundsLeft).toBe(1);
+    expect(first.samplesLeft).toBe(6);
+    expect(first.usdLeft).toBeCloseTo(2 * RESERVATION + 0.001, 12);
+    // a re-baseline installs a fresh step budget while the samples are in flight: the two holds now stand against it, so a round for
+    // another goal is refused (it cannot cover a sample beyond them) and the refusal touches neither counter
+    const fresh = budget({ usdLeft: 2 * RESERVATION + 0.001 });
+    installed = fresh;
+    expect(src.fire(fireInput(view, { goalId: 'g2', n: 1, stagger: false }))).toMatchObject({ fired: false, reason: 'no_usd' });
+    expect(gen.calls()).toBe(2);
+    expect(fresh.roundsLeft).toBe(2);
+    expect(fresh.usdLeft).toBeCloseTo(2 * RESERVATION + 0.001, 12);
+    await settledTwice;
+    // settled: the prices landed on the fresh counter (live at settle), the first budget is whole — no reservation was ever debited
+    // from one budget and credited to another
+    const priced = (4000 * 0.5 + 300 * 2) / 1e6;
+    expect(first.usdLeft).toBeCloseTo(2 * RESERVATION + 0.001, 12);
+    expect(fresh.usdLeft).toBeCloseTo(2 * RESERVATION + 0.001 - 2 * priced, 9);
+    // the holds are released with the round: the fresh counter now covers one sample of the next round
+    expect(affordableSamples(fresh.usdLeft, RESERVATION)).toBe(1);
+    expect(src.fire(fireInput(view, { goalId: 'g3', n: 4, stagger: false }))).toMatchObject({ fired: true, samples: 1 });
+    await drain(src);
+    expect(gen.calls()).toBe(3);
   });
 
   it('books a cancelled sample from the facts its stream left — streamed chars / 4 plus the reasoning allowance, or the usage frame when it arrived', async () => {

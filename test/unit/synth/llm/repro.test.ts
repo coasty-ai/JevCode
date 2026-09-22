@@ -4,7 +4,7 @@ import type { Answer, GenerateRequest, Question, ToolCall } from '../../../../sr
 import { ESCAPE_KEY } from '../../../../src/jev/questions.js';
 import { LLM_REPRODUCTION_CRITERIA, Q18, isLlmOracle, issueQuoteAnchored, q18Questions, readQ18, scriptProblems, statusDelta, writeReproduction, type Q18Script, type ReproLane, type ReproScratch, type ReproWriterInput } from '../../../../src/synth/llm/repro.js';
 import { WRITE_REPRODUCTION_TOOL_NAME } from '../../../../src/synth/llm/schema.js';
-import { LLM_DEFAULT_GENERATION, UNFINISHED_REASONING_ALLOWANCE_TOKENS } from '../../../../src/synth/llm/source.js';
+import { LLM_DEFAULT_GENERATION, UNFINISHED_REASONING_ALLOWANCE_TOKENS, estimatedSampleUsage } from '../../../../src/synth/llm/source.js';
 import { extractBlocks } from '../../../../src/synth/oracle/extract.js';
 import { REPRODUCTION_CRITERIA } from '../../../../src/synth/oracle/questions.js';
 import { REPRO_SENTINEL } from '../../../../src/synth/oracle/runner.js';
@@ -54,11 +54,13 @@ interface FakeRunOptions {
   laneStatus?: (call: number) => string;
   /** exit code of `git worktree add` (default 0) */
   worktreeAddExit?: number;
+  /** what the scratch's `.git` probe finds at the workspace root (default: a git checkout) */
+  git?: boolean;
 }
 
 /**
- * A VerifyRunFn standing for the sandbox: answers the scratch's git commands (a worktree add reports `/scratch/lane<k>`),
- * and recognises each script by its marker to answer the sentinel harness per run index.
+ * A VerifyRunFn standing for the sandbox: answers the scratch's probe and copy commands (a worktree add or a `cp -R` reports
+ * `/scratch/lane<k>`), and recognises each script by its marker to answer the sentinel harness per run index.
  */
 function fakeRun(plan: Record<string, RunSpec[]>, o: FakeRunOptions = {}): FakeRun {
   const seen: Record<string, number> = {};
@@ -69,12 +71,17 @@ function fakeRun(plan: Record<string, RunSpec[]>, o: FakeRunOptions = {}): FakeR
   let statusCalls = 0;
   const run: VerifyRunFn = async (command: string, opts: VerifyRunOptions) => {
     commands.push({ command, cwd: opts.cwd });
+    if (command.includes('/.git ]')) return { stdout: o.git === false ? 'copy\n' : 'worktree\n', stderr: '', exitCode: 0 };
     if (command.includes('worktree add')) {
       const k = /lane(\d+)/.exec(command)?.[1] ?? '0';
       return { stdout: `/scratch/lane${k}\n/scratch/lane${k}.dirty.patch\n`, stderr: '', exitCode: o.worktreeAddExit ?? 0 };
     }
+    if (command.includes('cp -R')) {
+      const k = /lane(\d+)/.exec(command)?.[1] ?? '0';
+      return { stdout: `/scratch/lane${k}\n-\n`, stderr: '', exitCode: 0 };
+    }
     if (command.includes('status --porcelain')) return { stdout: o.laneStatus?.(statusCalls++) ?? '', stderr: '', exitCode: 0 };
-    if (command.includes('checkout -q') || command.includes('worktree remove')) return { stdout: '', stderr: '', exitCode: 0 };
+    if (command.includes('checkout -q') || command.includes('worktree remove') || command.startsWith('rm -rf ')) return { stdout: '', stderr: '', exitCode: 0 };
     calls += 1;
     inFlight += 1;
     maxInFlight = Math.max(maxInFlight, inFlight);
@@ -183,14 +190,12 @@ describe('L2 reproduction writer: code checks', () => {
     expect(scriptProblems('name = input()')).toBe('reads stdin');
     expect(scriptProblems('import subprocess\nsubprocess.run(["ls"])')).toBe('spawns a process');
     expect(scriptProblems('import os\nos.system("ls")')).toBe('spawns a process');
-    expect(scriptProblems('import requests\nrequests.get("http://x")')).toBe('imports a network module');
-    expect(scriptProblems('from urllib.request import urlopen')).toBe('imports a network module');
-    expect(scriptProblems('import socket')).toBe('imports a network module');
-    expect(scriptProblems('from http.client import HTTPConnection')).toBe('imports a network module');
     // file writes: write-mode open (positional, keyword, Path.open), os writers, shutil, pathlib writers
     expect(scriptProblems("open('settings_repro.py', 'w').write('x')")).toBe('opens a file for writing');
     expect(scriptProblems('with open(p, mode="a") as f:\n    f.write("x")')).toBe('opens a file for writing');
     expect(scriptProblems("Path('x').open('wb')")).toBe('opens a file for writing');
+    expect(scriptProblems("Path('log').open('a')")).toBe('opens a file for writing');
+    expect(scriptProblems("import io\nio.open('f', 'w')")).toBe('opens a file for writing');
     expect(scriptProblems("open('data.txt', 'r+')")).toBe('opens a file for writing');
     expect(scriptProblems("import os\nos.remove('app/models.py')")).toMatch(/through `os`/);
     expect(scriptProblems("import os\nos.makedirs('pkg/new', exist_ok=True)")).toMatch(/through `os`/);
@@ -201,6 +206,14 @@ describe('L2 reproduction writer: code checks', () => {
     expect(scriptProblems("Path('f').unlink()")).toBe('writes files through pathlib');
     // read-only scripts stay: a read-mode open, a file name with a `w`, urllib.parse, str.replace, a plain assert
     expect(scriptProblems("open('wax.txt').read()")).toBeNull();
+    // a file *name* made of mode letters is not a mode
+    expect(scriptProblems("open('a').read()")).toBeNull();
+    expect(scriptProblems("Path('w').read_text()")).toBeNull();
+    // the network is not a static rule (§4.10): the package under repair may be a network library itself, and the sandbox has no
+    // network — a script that actually needed it is caught by the base run's `detectNetworkUse`
+    expect(scriptProblems('import requests\nfrom requests.models import Response\nassert Response().ok is False')).toBeNull();
+    expect(scriptProblems('import socket\nfrom urllib3.util import parse_url\nassert parse_url("http://x").host == "x"')).toBeNull();
+    expect(scriptProblems('from http.client import HTTPConnection\nassert HTTPConnection("x").port == 80')).toBeNull();
     expect(scriptProblems("open('notes.txt', 'r')")).toBeNull();
     expect(scriptProblems('from urllib.parse import urlparse\nurlparse("http://x")')).toBeNull();
     expect(scriptProblems('s = "a b".replace(" ", "_")\nassert s == "a_b"')).toBeNull();
@@ -352,7 +365,7 @@ describe('L2 reproduction writer: the writer', () => {
     expect(scratch.roots().every((r) => r.startsWith('/lane'))).toBe(true);
     expect(runner.commands().every((c) => c.cwd !== '/work')).toBe(true);
 
-    // the default scratch cannot create a copy (a non-git workspace, a refused worktree add): the scripts are rejected, not run in /work
+    // the default scratch cannot create a copy (a refused worktree add): the scripts are rejected, not run in /work
     const broken = fakeRun({ a: [{ raise: 'TypeError' }] }, { worktreeAddExit: 128 });
     const gen2 = scriptedGenerate(() => ({ toolCall: call(SCRIPTS[0]!, QUOTE) }));
     const none = await writeReproduction(writerInput({ generate: gen2.generate, run: broken.run, n: 1, ask: q18Ask({}, 0.9) }));
@@ -361,6 +374,71 @@ describe('L2 reproduction writer: the writer', () => {
     expect(none.trials[0]!.reason).toMatch(/^no scratch copy to run in \(ReproScratchError: scratch copy lane0 failed \(exit 128\)/);
     expect(broken.calls()).toBe(0);
     expect(none.note).toMatch(/no LLM-written script survived/);
+  });
+
+  it('a workspace that is not a git checkout gets plain `cp -R` copies with a repository of their own for the status / restore, removed with rm -rf — the scripts still never run in the workspace', async () => {
+    const runner = fakeRun({ a: [{ raise: 'TypeError' }, { raise: 'TypeError' }] }, { git: false, laneStatus: (call) => (call === 1 ? '?? repro_out.txt\0' : '') });
+    const gen = scriptedGenerate(() => ({ toolCall: call(SCRIPTS[0]!, QUOTE) }));
+    const res = await writeReproduction(writerInput({ generate: gen.generate, run: runner.run, n: 1, ask: q18Ask({}, 0.9) }));
+    const cmds = runner.commands();
+    const text = cmds.map((c) => c.command);
+    // the probe found no `.git`: no worktree, a `cp -R` of the workspace plus `git init && add -A && commit` inside the copy
+    expect(text.some((c) => c.includes("[ -e '/work'/.git ]"))).toBe(true);
+    expect(text.some((c) => c.includes('worktree add') || c.includes('worktree prune') || c.includes('worktree remove'))).toBe(false);
+    const copy = text.find((c) => c.includes("cp -R '/work'/. \"$d\""));
+    expect(copy).toBeDefined();
+    expect(copy).toContain('git -C "$d" init -q --template= && git -C "$d" add -A');
+    // the base run happened in the copy, never in /work (it wrote a file, so there was no confirmation run)
+    const python = cmds.filter((c) => c.command.includes('b64decode'));
+    expect(python).toHaveLength(1);
+    expect(python.every((c) => c.cwd === '/scratch/lane0')).toBe(true);
+    expect(cmds.every((c) => c.cwd !== '/work' || !c.command.includes('b64decode'))).toBe(true);
+    // the first run left a file: the copy was restored without a dirt replay (a plain copy has none), and the script was rejected for it
+    const restore = text.find((c) => c.includes('checkout -q -- .'));
+    expect(restore).toBeDefined();
+    expect(restore).not.toContain('apply --whitespace=nowarn');
+    expect(res.outcome).toBe('llm_none');
+    expect(res.trials[0]!.reason).toMatch(/^wrote to the workspace copy \(repro_out\.txt\)/);
+    // disposed with rm -rf (the copy and, by default, its parent directory)
+    expect(text.some((c) => c.startsWith("rm -rf '/scratch/lane0' && rm -rf '/scratch'"))).toBe(true);
+    // `git: false` stated by the caller skips the probe
+    const stated = fakeRun({ a: [{ raise: 'TypeError' }, { raise: 'TypeError' }] });
+    await writeReproduction(writerInput({ generate: scriptedGenerate(() => ({ toolCall: call(SCRIPTS[0]!, QUOTE) })).generate, run: stated.run, n: 1, workspaceGit: false, ask: q18Ask({}, 0.9) }));
+    expect(stated.commands().some((c) => c.command.includes('/.git ]'))).toBe(false);
+    expect(stated.commands().some((c) => c.command.includes('cp -R'))).toBe(true);
+  });
+
+  it('fires only as many samples as the step\'s dollar counter covers at their full estimate, and none when it cannot cover one (§4.11)', async () => {
+    const pricing = { inputPerM: 0.5, outputPerM: 2 };
+    const gen = scriptedGenerate((k) => ({ toolCall: call(SCRIPTS[k]!, QUOTE), usage: { inputTokens: 4000, outputTokens: 300 } }));
+    // one sample's full estimate: the prompt's chars / 4 in, the reasoning-on max_tokens base out, at the served rate
+    const probe = scriptedGenerate(() => ({ toolCall: call(SCRIPTS[0]!, QUOTE), usage: { inputTokens: 4000, outputTokens: 300 } }));
+    await writeReproduction(writerInput({ generate: probe.generate, n: 1, run: fakeRun({ a: [{ raise: 'TypeError' }, { raise: 'TypeError' }] }).run, scratch: fakeScratch(1), ask: q18Ask({}, 0.9) }));
+    const req = probe.requests()[0]!;
+    const promptChars = req.system.length + req.messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : 0), 0);
+    const perSample = estimatedSampleUsage({ siblingInputTokens: null, promptChars, maxTokens: LLM_DEFAULT_GENERATION.maxTokens, pricing }).costUsd;
+    expect(perSample).toBeGreaterThan(0.005);
+    // headroom for two of the three samples: two fire, and the counter is charged what they cost
+    const two = { usdLeft: 2 * perSample + 0.0001 };
+    const res = await writeReproduction(writerInput({ generate: gen.generate, run: fakeRun({ a: [{ raise: 'TypeError' }, { raise: 'TypeError' }], b: [{ raise: 'TypeError' }, { raise: 'TypeError' }] }).run, scratch: fakeScratch(2), pricing, budget: two, ask: q18Ask({ script_0: 0.9 }, 0.9) }));
+    expect(gen.calls()).toBe(2);
+    expect(res.trials).toHaveLength(2);
+    const priced = (4000 * 0.5 + 300 * 2) / 1e6;
+    expect(2 * perSample + 0.0001 - two.usdLeft).toBeCloseTo(2 * priced, 9);
+    expect(res.outcome).toBe('llm_valid');
+    // cents of headroom: nothing fires, nothing is charged, no Jev request
+    const cents = { usdLeft: perSample / 2 };
+    let asked = 0;
+    const none = await writeReproduction(writerInput({ generate: gen.generate, run: fakeRun({}).run, scratch: fakeScratch(1), pricing, budget: cents, ask: async () => ((asked += 1), { answers: {} }) }));
+    expect(gen.calls()).toBe(2);
+    expect(none).toMatchObject({ outcome: 'llm_none', trials: [], requests: 0, usd: 0, estimatedUsd: 0, goal: null, pick: null });
+    expect(none.note).toMatch(/cannot cover one write_reproduction sample/);
+    expect(cents.usdLeft).toBeCloseTo(perSample / 2, 12);
+    expect(asked).toBe(0);
+    // no pricing: estimates are 0 and a positive counter covers every sample; a spent counter covers none
+    const spent = { usdLeft: 0 };
+    expect((await writeReproduction(writerInput({ generate: gen.generate, run: fakeRun({}).run, scratch: fakeScratch(1), budget: spent, ask: q18Ask({}, 0.9) }))).outcome).toBe('llm_none');
+    expect(gen.calls()).toBe(2);
   });
 
   it('runs the first base runs concurrently across the lanes and confirms only the scripts that failed once, also in parallel', async () => {

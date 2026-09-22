@@ -1,13 +1,15 @@
 /**
  * L2 — the reproduction writer (docs/LLM-JEV-DESIGN.md §4.10; repository class only, once per
  * run, when the workspace has no failing test and the code oracle is not valid). N = 3 parallel
- * `write_reproduction` samples (temperature 0 / 0.7 / 0.7). Code then refuses a script that exits,
- * reads stdin, spawns a process, imports a network module or writes files (`scriptProblems`), one
+ * `write_reproduction` samples (temperature 0 / 0.7 / 0.7), as many as the step's dollar counter
+ * covers at their full estimate (§4.11). Code then refuses a script that exits, reads stdin,
+ * spawns a process or writes files (`scriptProblems`; the network is a runtime tell, §4.10), one
  * whose `issue_quote` is not a verbatim ≥ 6-token substring of the issue (the assertion must be
  * anchored in the issue text, not in the model's reading of it), and a duplicate; the rest run
  * under the sentinel harness **in a scratch copy of the workspace, never the workspace itself**
  * (`ReproScratch`: one lane per concurrent run; by default `git worktree` copies under the
- * sandbox's tmp with the workspace's uncommitted changes replayed) — the first base runs
+ * sandbox's tmp with the workspace's uncommitted changes replayed, plain `cp -R` copies of a
+ * workspace that is not a git checkout) — the first base runs
  * concurrently across the lanes, a confirmation run only for the scripts that failed once, again
  * concurrently — with criterion `{form: 'no_exception'}`, and rejects one that did not run, passes
  * at base, stops on a NameError/ImportError-class exception, needs the network, changed a file of
@@ -38,7 +40,7 @@ import type { CodeBlock, Extraction, FailureKind, ReproRunResult, Verdict } from
 import { shellQuote } from '../verify/text.js';
 import type { VerifyRunFn, VerifyRunResult } from '../verify/types.js';
 import { REPRO_LIMITS, WRITE_REPRODUCTION_TOOL, WRITE_REPRODUCTION_TOOL_NAME, isLengthStop, parseWriteReproduction, type ReproductionOutput } from './schema.js';
-import { LLM_DEFAULT_GENERATION, costOf, generateWithDeadline, sampleSeed, unfinishedSampleUsage, type LlmBudget, type LlmPricing, type SampleEnd } from './source.js';
+import { LLM_DEFAULT_GENERATION, affordableSamples, costOf, estimatedSampleUsage, generateWithDeadline, sampleSeed, unfinishedSampleUsage, type LlmBudget, type LlmPricing, type SampleEnd } from './source.js';
 import { reasoningEnabled, type GenerateFn } from './types.js';
 
 export type LlmOracleOutcome = 'llm_valid' | 'llm_weak';
@@ -129,23 +131,26 @@ export function issueQuoteAnchored(issue: string, quote: string, minTokens = ISS
   return false;
 }
 
-/** `open(..., 'w' | 'a' | 'x' | '+')` (also `io.open`, `codecs.open`, `Path.open`): a mode literal made of mode letters only, so a file *name* containing `w` is not one. */
-const WRITE_OPEN_RE = /\bopen\s*\([^)]*['"][rbtU]*[wax+][rwaxbt+U]*['"]/;
+/**
+ * `open(..., 'w' | 'a' | 'x' | '+')` (also `io.open`, `codecs.open`): a mode literal made of mode letters only, in the mode's
+ * place — after a comma or `mode=`, or first in a method call (`Path(...).open('w')`) — so a file *name* made of mode letters
+ * (`open('a')`) is not one.
+ */
+const WRITE_OPEN_RE = /(?:\.open\s*\(\s*|\bopen\s*\([^)]*(?:,|\bmode\s*=)\s*)['"][rbtU]*[wax+][rwaxbt+U]*['"]/;
 /** `os` calls that create, change or remove files, or spawn / signal processes. */
 const OS_WRITE_RE = /\bos\.(?:remove|unlink|rename|renames|replace|makedirs|mkdir|rmdir|removedirs|truncate|chmod|chown|symlink|link|open|write|fdopen|popen|fork|forkpty|exec\w*|spawn\w*|kill|killpg)\s*\(/;
 const SHUTIL_RE = /\bshutil\./;
 /** pathlib writers whose names no common string / data-frame method shares (`.rename` / `.replace` are left to the scratch copy). */
 const PATHLIB_WRITE_RE = /\.(?:write_text|write_bytes|mkdir|unlink|rmdir|touch|symlink_to|hardlink_to)\s*\(/;
 const PROCESS_RE = /\bsubprocess\b|\bos\.system\s*\(|\bmultiprocessing\b|\bpty\.(?:spawn|fork)\s*\(/;
-/** network modules (`urllib.parse` is pure URL parsing and stays allowed). */
-const NETWORK_MODULES = 'socket|ssl|urllib(?!\\.parse\\b)|urllib3|requests|httpx|aiohttp|ftplib|smtplib|poplib|imaplib|telnetlib|xmlrpc|websockets?|paramiko|http\\.client|http\\.server';
-const NETWORK_IMPORT_RE = new RegExp(`^\\s*(?:import\\s+(?:${NETWORK_MODULES})\\b|from\\s+(?:${NETWORK_MODULES})\\b[\\w.]*\\s+import\\b)`, 'm');
 
 /**
- * A script the harness refuses before running it: too long, exits the process, reads stdin, spawns a process, imports a
- * network module, or writes files (write-mode `open`, `os.remove` / `rename` / `makedirs` …, `shutil.*`, pathlib writers).
- * The prompt's "no network, no files" is a code rule here; whatever slips past it runs in a scratch copy and is caught by
- * the copy's status afterwards.
+ * A script the harness refuses before running it: too long, exits the process, reads stdin, spawns a process, or writes
+ * files (write-mode `open`, `os.remove` / `rename` / `makedirs` …, `shutil.*`, pathlib writers). The prompt's "no files" is
+ * a code rule here; whatever slips past it runs in a scratch copy and is caught by the copy's status afterwards. "No network"
+ * is not a static rule: a repository-class package may be a network library itself (`requests`, `urllib3`, `httpx`), so an
+ * import proves nothing; the sandbox has no network and the base run's `detectNetworkUse` (import + URL literal + network
+ * error, §4.10) rejects the script that actually needed it.
  */
 export function scriptProblems(script: string): string | null {
   const lines = script.split('\n');
@@ -153,7 +158,6 @@ export function scriptProblems(script: string): string | null {
   if (/\bsys\.exit\s*\(|\bexit\s*\(|\bquit\s*\(|\bos\._exit\s*\(/.test(script)) return 'calls sys.exit / exit (the harness reads SystemExit as an exception)';
   if (/\binput\s*\(/.test(script)) return 'reads stdin';
   if (PROCESS_RE.test(script)) return 'spawns a process';
-  if (NETWORK_IMPORT_RE.test(script)) return 'imports a network module';
   if (WRITE_OPEN_RE.test(script)) return 'opens a file for writing';
   if (OS_WRITE_RE.test(script)) return 'creates, changes or removes files through `os`';
   if (SHUTIL_RE.test(script)) return 'copies, moves or removes files (shutil)';
@@ -335,17 +339,23 @@ export const SCRATCH_UNTRACKED_MAX = 200;
 
 export interface WorktreeScratchInput {
   run: VerifyRunFn;
-  /** the committed workspace (a git checkout) */
+  /** the committed workspace */
   workspace: string;
+  /** whether `workspace` is a git checkout (its root has a `.git` entry: worktree copies) or not (`cp -R` copies); probed with `[ -e <workspace>/.git ]` when unset */
+  git?: boolean;
   lanes: number;
   /** parent directory of the copies; default `$TMPDIR/jevcode-repro-<tag>` — the sandbox's writable tmp, resolved inside the sandbox shell */
   dir?: string;
   timeoutMs?: number;
 }
 
+type ScratchMode = 'worktree' | 'copy';
+
 interface WorktreeLane {
   root: string;
-  /** the workspace's tracked changes against HEAD, as a patch file next to the copy */
+  /** `worktree`: a detached worktree of the workspace's repository; `copy`: `cp -R` of a workspace that is not a git checkout, with a repository of its own for the status / restore */
+  mode: ScratchMode;
+  /** the workspace's tracked changes against HEAD, as a patch file next to the copy ('' for a plain copy) */
   patch: string;
   /** `git status --porcelain -z` of the copy right after the dirt replay */
   baseline: string;
@@ -391,8 +401,11 @@ function failureTail(res: VerifyRunResult): string {
  * The default scratch: `git worktree add --detach <copy> HEAD` per lane (created lazily, ≤ `lanes`), the workspace's
  * uncommitted changes replayed into it (tracked ones as a `git diff --binary` patch, untracked files by tar when there are
  * ≤ 200), the copy's status snapshotted, and after every run the status re-read: a difference is what the script wrote,
- * and the copy is restored (`checkout -- . && clean -fdq` + replay). Every command goes through `run` — the sandbox — with
- * the workspace as cwd, so the copies live under the sandbox's writable tmp (`$TMPDIR`) unless `dir` says otherwise.
+ * and the copy is restored (`checkout -- . && clean -fdq` + replay). A workspace that is not a git checkout (no `.git`
+ * entry at its root — `git: false`, or the probe says so) gets a plain `cp -R` copy per lane instead, with a repository of
+ * its own initialised inside (`git init && add -A && commit`) so the same status / restore applies; it is removed with
+ * `rm -rf`. Every command goes through `run` — the sandbox — with the workspace as cwd, so the copies live under the
+ * sandbox's writable tmp (`$TMPDIR`) unless `dir` says otherwise.
  */
 export function createWorktreeScratch(input: WorktreeScratchInput): ReproScratch {
   const max = Math.max(1, Math.floor(input.lanes));
@@ -413,18 +426,42 @@ export function createWorktreeScratch(input: WorktreeScratchInput): ReproScratch
   };
   /** replay the workspace's dirt into the copy at `$d` (its patch at `$p`); shell fragment, needs `d` and `p` set */
   const replay = `{ [ ! -s "$p" ] || git -C "$d" apply --whitespace=nowarn "$p"; } && n=$(git -C ${ws} ls-files --others --exclude-standard | wc -l | tr -d ' ') && { [ "$n" -eq 0 ] || [ "$n" -gt ${SCRATCH_UNTRACKED_MAX} ] || git -C ${ws} ls-files -z --others --exclude-standard | tar -C ${ws} -c --null -T - -f - | tar -x -C "$d" -f -; }`;
+  /** a plain copy gets a repository of its own (no hook templates, no signing) so status / restore work as in a worktree lane; shell fragment, needs `d` set */
+  const initCopy = `git -C "$d" init -q --template= && git -C "$d" add -A && git -C "$d" -c user.name=jevcode -c user.email=jevcode@localhost -c commit.gpgsign=false commit -q --allow-empty -m scratch`;
   const statusCmd = (root: string): string => `git -C ${shellQuote(root)} status --porcelain -z --untracked-files=all`;
+  /** remove a copy: a worktree through git (falling back to rm + prune), a plain copy with rm */
+  const removeCmd = (lane: WorktreeLane): string =>
+    lane.mode === 'worktree'
+      ? `{ git -C ${ws} worktree remove --force ${shellQuote(lane.root)} || { rm -rf ${shellQuote(lane.root)} && git -C ${ws} worktree prune; }; } && rm -f ${shellQuote(lane.patch)}`
+      : `rm -rf ${shellQuote(lane.root)}`;
+
+  let modeKnown: Promise<ScratchMode> | null = null;
+  /** `worktree` when the workspace root is a git checkout (a `.git` directory, or the `.git` file of a worktree / submodule), else `copy`; probed once */
+  function mode(): Promise<ScratchMode> {
+    if (modeKnown === null) {
+      modeKnown =
+        input.git === undefined
+          ? sh(`[ -e ${ws}/.git ] && echo worktree || echo copy`).then((res): ScratchMode => (runOk(res) && res.stdout.trim() === 'worktree' ? 'worktree' : 'copy'))
+          : Promise.resolve(input.git ? 'worktree' : 'copy');
+    }
+    return modeKnown;
+  }
 
   async function create(k: number): Promise<WorktreeLane> {
+    const m = await mode();
     const dir = input.dir === undefined ? `"\${TMPDIR:-/tmp}/jevcode-repro-${tag}"` : shellQuote(input.dir);
-    const cmd = `d=${dir}/lane${k} && p="$d.dirty.patch" && rm -rf "$d" "$p" && mkdir -p "$(dirname "$d")" && git -C ${ws} worktree prune && git -C ${ws} worktree add --detach "$d" HEAD >/dev/null && git -C ${ws} diff --binary HEAD > "$p" && ${replay} && printf '%s\\n%s\\n' "$d" "$p"`;
+    const fresh = `d=${dir}/lane${k} && p="$d.dirty.patch" && rm -rf "$d" "$p" && mkdir -p "$(dirname "$d")"`;
+    const cmd =
+      m === 'worktree'
+        ? `${fresh} && git -C ${ws} worktree prune && git -C ${ws} worktree add --detach "$d" HEAD >/dev/null && git -C ${ws} diff --binary HEAD > "$p" && ${replay} && printf '%s\\n%s\\n' "$d" "$p"`
+        : `${fresh} && mkdir -p "$d" && cp -R ${ws}/. "$d" && ${initCopy} && printf '%s\\n-\\n' "$d"`;
     const res = await shOk(cmd, `scratch copy lane${k}`);
     const lines = res.stdout.split('\n').filter((l) => l.trim() !== '');
     const root = lines.at(-2)?.trim() ?? '';
     const patch = lines.at(-1)?.trim() ?? '';
     if (!root.startsWith('/') || patch === '') throw new ReproScratchError(`scratch copy lane${k}: the copy path was not reported (${clip(res.stdout.trim(), 120)})`);
     const status = await sh(statusCmd(root), root);
-    return { root, patch, baseline: runOk(status) ? status.stdout : '', lastStatus: null, busy: true };
+    return { root, mode: m, patch: m === 'worktree' ? patch : '', baseline: runOk(status) ? status.stdout : '', lastStatus: null, busy: true };
   }
 
   function wake(): void {
@@ -466,7 +503,8 @@ export function createWorktreeScratch(input: WorktreeScratchInput): ReproScratch
     const status = lane.lastStatus ?? (await statusOf(lane));
     lane.lastStatus = null;
     if (status === lane.baseline) return;
-    await shOk(`d=${shellQuote(lane.root)} && p=${shellQuote(lane.patch)} && git -C "$d" checkout -q -- . && git -C "$d" clean -fdq && ${replay}`, `scratch copy restore`);
+    const back = `d=${shellQuote(lane.root)} && p=${shellQuote(lane.patch)} && git -C "$d" checkout -q -- . && git -C "$d" clean -fdq`;
+    await shOk(lane.mode === 'worktree' ? `${back} && ${replay}` : back, `scratch copy restore`);
   }
 
   async function withLane<T>(fn: (lane: ReproLane) => Promise<T>): Promise<T> {
@@ -488,7 +526,7 @@ export function createWorktreeScratch(input: WorktreeScratchInput): ReproScratch
       } catch {
         // a copy that cannot be restored is dropped; the next acquirer creates a fresh one
         lanes.splice(lanes.indexOf(lane), 1);
-        void sh(`git -C ${ws} worktree remove --force ${shellQuote(lane.root)} >/dev/null 2>&1; rm -rf ${shellQuote(lane.root)} ${shellQuote(lane.patch)}; git -C ${ws} worktree prune`).catch(() => undefined);
+        void sh(`{ ${removeCmd(lane)}; } >/dev/null 2>&1`).catch(() => undefined);
       }
       wake();
     }
@@ -502,7 +540,7 @@ export function createWorktreeScratch(input: WorktreeScratchInput): ReproScratch
     for (const lane of gone) {
       const parent = input.dir === undefined ? ` && rm -rf ${shellQuote(dirname(lane.root))}` : '';
       try {
-        const res = await sh(`{ git -C ${ws} worktree remove --force ${shellQuote(lane.root)} || { rm -rf ${shellQuote(lane.root)} && git -C ${ws} worktree prune; }; } && rm -f ${shellQuote(lane.patch)}${parent}`);
+        const res = await sh(`${removeCmd(lane)}${parent}`);
         if (!runOk(res)) problems.push(failureTail(res));
       } catch (e) {
         problems.push(e instanceof Error ? e.message : String(e));
@@ -545,6 +583,8 @@ export interface ReproWriterInput {
   extraction: Extraction;
   /** absolute path of the committed workspace — the scripts never run in it: it is copied (`scratch`) */
   workspace: string;
+  /** whether `workspace` is a git checkout (`ctx.workspaceInfo.git`): worktree copies, else `cp -R` copies; the default scratch probes when unset */
+  workspaceGit?: boolean;
   run: VerifyRunFn;
   /** interpreter for the scripts; default the workspace's `.venv/bin/python` when present (the copies have no venv of their own) */
   python?: string;
@@ -559,7 +599,11 @@ export interface ReproWriterInput {
   now?: () => number;
   /** served rate for estimates and for results without a cost; null → estimates cost 0 */
   pricing?: LlmPricing | null;
-  /** the step's LLM counters; only `usdLeft` is charged (L2 is one round per run, outside the L1 round/sample counters) */
+  /**
+   * the step's LLM counters; only `usdLeft` is read and charged (L2 is one round per run, outside the L1 round/sample counters):
+   * the round fires as many of its N samples as the counter covers at their full estimate (§4.11) — none when it cannot cover
+   * one — and is charged what they cost
+   */
   budget?: Pick<LlmBudget, 'usdLeft'> | null;
   /**
    * `reasoning` and the max_tokens base of every sample (§10.1: pinned per bench arm, the object the synthesizer echoes); default
@@ -645,10 +689,19 @@ function wroteFiles(changed: string[] | null): string | null {
 export async function writeReproduction(input: ReproWriterInput): Promise<ReproWriterResult> {
   const now = input.now ?? monotonicNow;
   const started = now();
-  const n = input.n ?? REPRO_SAMPLES;
   const system = buildReproSystemPrompt();
   const user = buildReproUserMessage({ task: input.task, repository: input.repository, packageName: input.packageName, framework: input.framework, extraction: input.extraction });
   const gen = input.generation ?? LLM_DEFAULT_GENERATION;
+  const pricing = input.pricing ?? null;
+  // §4.11: the round fires only as many samples as the step's dollar counter covers at their full estimate (prompt chars / 4 in,
+  // max_tokens out at the served rate; 0 without pricing, when any positive counter covers them all) — none when it cannot cover one
+  const requested = input.n ?? REPRO_SAMPLES;
+  const perSample = estimatedSampleUsage({ siblingInputTokens: null, promptChars: system.length + user.length, maxTokens: gen.maxTokens, pricing }).costUsd;
+  const n = input.budget ? Math.min(requested, affordableSamples(input.budget.usdLeft, perSample)) : requested;
+  if (n <= 0) {
+    const usdLeft = input.budget?.usdLeft ?? 0;
+    return { outcome: 'llm_none', goal: null, pick: null, trials: [], requests: 0, note: `no LLM-written script: the step's LLM dollar counter ($${usdLeft.toFixed(4)}) cannot cover one write_reproduction sample ($${perSample.toFixed(4)} estimated)`, durationMs: Math.round(now() - started), usd: 0, estimatedUsd: 0 };
+  }
   const partials = new Map<number, CancelledGeneration>();
   const runs = Array.from({ length: n }, (_, k) => {
     const req: GenerateRequest = { system, messages: [{ role: 'user', content: user }], maxTokens: gen.maxTokens, temperature: REPRO_TEMPERATURES[k] ?? REPRO_TEMPERATURES.at(-1) ?? 0.7, tools: [WRITE_REPRODUCTION_TOOL], toolChoice: { name: WRITE_REPRODUCTION_TOOL_NAME }, providerPrefs: { requireParameters: true } };
@@ -658,9 +711,8 @@ export async function writeReproduction(input: ReproWriterInput): Promise<ReproW
     return generateWithDeadline(input.generate, req, { sample: k, purpose: 'write_reproduction', signal: input.signal, deadlineMs: input.deadlineMs ?? REPRO_DEADLINE_MS, now, onCancelled: (partial) => partials.set(k, partial) });
   });
   const ends = await Promise.all(runs.map((r) => r.promise));
-  const pricing = input.pricing ?? null;
   const sibling = ends.find((e): e is Extract<SampleEnd, { kind: 'result' }> => e.kind === 'result' && e.result.usage.inputTokens > 0);
-  // a sample that never returned is booked from what it streamed plus the reasoning allowance — the estimator the L1 source and the engine share (§4.8, §4.13)
+  // a sample that never returned is booked from what it streamed plus the reasoning allowance — the L1 source's estimator (§4.8, §4.13)
   const estimate = (k: number): TokenUsage => unfinishedSampleUsage({ siblingInputTokens: sibling?.result.usage.inputTokens ?? null, promptChars: system.length + user.length, partial: partials.get(k) ?? null, reasoning: reasoningEnabled(gen.reasoning ?? undefined), pricing });
   const trials = ends.map((end, k) => readSample(k, end, () => estimate(k), pricing));
   const usd = trials.reduce((s, t) => s + t.usd, 0);
@@ -704,7 +756,7 @@ export async function writeReproduction(input: ReproWriterInput): Promise<ReproW
     const python = input.python ?? (await venvPython(input.workspace));
     const runOptions: Omit<ReproRunOptions, 'workspace'> = python === undefined ? options : { ...options, python };
     const owned = input.scratch === undefined || input.scratch === null;
-    const scratch: ReproScratch = input.scratch ?? createWorktreeScratch({ run: input.run, workspace: input.workspace, lanes: Math.max(1, Math.min(input.lanes ?? n, prepared.length)), ...(input.scratchDir === undefined ? {} : { dir: input.scratchDir }), timeoutMs: SCRATCH_COMMAND_TIMEOUT_MS });
+    const scratch: ReproScratch = input.scratch ?? createWorktreeScratch({ run: input.run, workspace: input.workspace, ...(input.workspaceGit === undefined ? {} : { git: input.workspaceGit }), lanes: Math.max(1, Math.min(input.lanes ?? n, prepared.length)), ...(input.scratchDir === undefined ? {} : { dir: input.scratchDir }), timeoutMs: SCRATCH_COMMAND_TIMEOUT_MS });
     try {
       // first base runs, concurrently across the lanes (the pool bounds them to `scratch.lanes`)
       const first = await Promise.all(prepared.map((c) => runOnLane(scratch, input.run, c.chunks, runOptions, input.signal)));

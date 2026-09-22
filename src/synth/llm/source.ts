@@ -7,13 +7,17 @@
  * and compile-checked on arrival and pushed into an awaitable queue (`collect()` yields the
  * next arrival, null at round end) so lanes start before the last sample lands; `cancel()`
  * aborts the losers and resolves once their accounting is complete. Dollars are **reserved at
- * fire**: every sample started takes its full estimated cost (`estimatedSampleUsage`: sibling
- * prompt tokens + `max_tokens` output at the served rate) off `budget.usdLeft` before the request
- * goes out — a round fires only as many samples as the counter covers — and the reservation comes
- * back when the sample settles for what it actually cost: the provider's price for a result, or
- * `unfinishedSampleUsage` for a sample the provider never priced (cancelled, timed out, failed):
- * what it streamed (the `onCancelled` facts) / 4 plus a fixed reasoning allowance, the one
- * estimator the engine's ledger uses too — never `max_tokens`.
+ * fire**: every sample started holds its full estimated cost (`estimatedSampleUsage`: sibling
+ * prompt tokens + `max_tokens` output at the served rate) against `budget.usdLeft` before the
+ * request goes out — a round fires only as many samples as the counter covers beyond what every
+ * sample still in flight holds (§4.11) — and the hold is released when the sample settles. The
+ * hold is the source's own ledger (`reservedUsd` on the outcome and the round summary), never a
+ * debit: the counter is charged at settle alone, for what the sample cost — the provider's price
+ * for a result, or `unfinishedSampleUsage` for a sample the provider never priced (cancelled,
+ * timed out, failed): what it streamed (the `onCancelled` facts, when the generator forwards them)
+ * / 4 plus a fixed reasoning allowance — never `max_tokens`. Charging at settle keeps a step budget
+ * re-installed mid-round (the repository step-1 overlap) whole: a sample lands on the counter that
+ * is live when it settles, and until then its hold stands against that counter.
  * Every started sample settles exactly once (a rejecting compile check or a throwing callback
  * becomes an `error` arrival), so a round always closes. Rounds are cached in memory by (goal,
  * listing set, attempt ledger, round): a re-fire with the same key replays the cached patches
@@ -275,7 +279,7 @@ export interface LlmFireInput {
 }
 
 export type FireOutcome =
-  | { fired: true; samples: number; cached: number; deadlineMs: number; key: string; /** dollars taken off `budget.usdLeft` for the fired samples until they settle */ reservedUsd: number }
+  | { fired: true; samples: number; cached: number; deadlineMs: number; key: string; /** dollars the fired samples hold against `budget.usdLeft` until they settle (the source's hold, not a debit: the counter is charged at settle) */ reservedUsd: number }
   | { fired: false; reason: 'no_rounds' | 'no_usd' | 'no_samples' | 'cached' | 'aborted' | 'round_open'; cached: number; key: string | null };
 
 export interface LlmRoundSummary {
@@ -303,7 +307,7 @@ export interface LlmRoundSummary {
   wallMs: number;
   usd: number;
   estimatedUsd: number;
-  /** dollars the in-flight samples still hold off `budget.usdLeft` (their reservations; 0 once the round closed) — what a caller re-installing the step budget mid-round carries over. Optional so hand-built summaries (test fakes) need not state it; the source always does. */
+  /** dollars the in-flight samples still hold against `budget.usdLeft` (their full estimates; 0 once the round closed): the source itself refuses a sample the counter cannot cover beyond it, and a caller reading the counter for headroom subtracts it. Optional so hand-built summaries (test fakes) need not state it; the source always does. */
   reservedUsd?: number;
   deadlineMs: number;
   closed: boolean;
@@ -383,7 +387,7 @@ interface RoundState {
   arrivals: SampleArrival[];
   /** sha → the patch that produced it, for the cache */
   patchOf: Map<string, PatchSpec>;
-  /** sample → dollars reserved at its start, returned when it settles */
+  /** sample → dollars held at its start (its full estimate), released when it settles */
   reserved: Map<number, number>;
   /** sample → the `onCancelled` facts, when its stream was cut after the headers */
   partials: Map<number, CancelledGeneration>;
@@ -409,8 +413,8 @@ export interface SampleEstimateInput {
 export const CHARS_PER_TOKEN = 4;
 /**
  * Output tokens booked for a sample that never returned, beyond what it streamed: GLM bills its reasoning (§4.13: it cannot
- * be disabled), and a stream cut before its answer has mostly spent that already. One fixed figure so the source's ledger
- * and the engine's agree (`unfinishedSampleUsage` is the estimator both use).
+ * be disabled), and a stream cut before its answer has mostly spent that already. One fixed figure, exported with
+ * `unfinishedSampleUsage` so the engine's ledger can book the same estimate.
  */
 export const UNFINISHED_REASONING_ALLOWANCE_TOKENS = 1000;
 
@@ -434,10 +438,11 @@ export interface UnfinishedSampleInput {
 }
 
 /**
- * The one estimator for a sample the provider never priced — cancelled, timed out or failed (§4.8, §4.13), shared with the
- * engine's ledger: a usage frame that had already arrived is priced like a completed call; otherwise input = a sibling's
- * prompt tokens (else chars / 4) and output = streamed answer chars / 4 plus the reasoning allowance (the streamed reasoning
- * when it is larger; nothing when reasoning was off), at the served rate. Never `max_tokens`.
+ * The one estimator here for a sample the provider never priced — cancelled, timed out or failed (§4.8, §4.13), exported so
+ * the engine's ledger can book the same figure: a usage frame that had already arrived is priced like a completed call;
+ * otherwise input = a sibling's prompt tokens (else chars / 4) and output = streamed answer chars / 4 plus the reasoning
+ * allowance (the streamed reasoning when it is larger; nothing when reasoning was off), at the served rate. The stream's
+ * facts are the `onCancelled` callback's, so a generator that does not forward it books the allowance alone. Never `max_tokens`.
  */
 export function unfinishedSampleUsage(e: UnfinishedSampleInput): TokenUsage {
   const frame = e.partial?.usage;
@@ -493,6 +498,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   const lengthGoals = new Set<string>();
   const validMs: number[] = [];
   let state: RoundState | null = null;
+  /** every round not yet closed — the current one and any superseded round still draining with its holds */
+  const live = new Set<RoundState>();
   let cacheSeq = 0;
 
   const maxTokensFor = (goalId: string, base = gen.maxTokens): number => (lengthGoals.has(goalId) ? base * 2 : base);
@@ -512,17 +519,21 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     return unfinishedSampleUsage({ siblingInputTokens: st.siblingInput, promptChars: promptChars(st, k), partial: st.partials.get(k) ?? null, reasoning: reasoningEnabled(reasoning ?? undefined), pricing });
   }
 
-  /** Book a settled sample: its reservation comes back, what it cost goes out (in flight a sample holds its full estimate, settled its price). */
+  /**
+   * Book a settled sample: its hold is released and what it cost comes off the counter that is live now (in flight a sample
+   * holds its full estimate; settled it has cost its price). Nothing is ever credited to the counter, so a step budget
+   * re-installed mid-round is charged the prices alone.
+   */
   function chargeSettled(st: RoundState, k: number, usd: number): void {
-    const reserved = st.reserved.get(k);
-    if (reserved !== undefined) {
-      st.reserved.delete(k);
-      st.input.budget.usdLeft += reserved;
-    }
+    st.reserved.delete(k);
     if (Number.isFinite(usd) && usd > 0) st.input.budget.usdLeft -= usd;
   }
 
   const reservedUsd = (st: RoundState): number => [...st.reserved.values()].reduce((a, b) => a + b, 0);
+  /** What every open round holds: a superseded round drains with its holds until it closes. */
+  const heldUsd = (): number => [...live].reduce((s, st) => s + reservedUsd(st), 0);
+  /** The counter's headroom for one more sample: what it reads minus what the samples in flight hold (§4.11). */
+  const headroom = (b: LlmBudget): number => b.usdLeft - heldUsd();
 
   function summaryOf(st: RoundState): LlmRoundSummary {
     const count = (s: SampleStatus): number => st.arrivals.filter((a) => a.status === s).length;
@@ -559,6 +570,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   function maybeClose(st: RoundState): void {
     if (st.closed || st.pending > 0 || !(st.released || st.noMore)) return;
     st.closed = true;
+    live.delete(st);
     st.wallMs = Math.round(now() - st.startedMs);
     // the cache keeps every distinct patch ever seen under this key (tried ones included, so they are answered at once next time)
     const prev = cache.get(st.key);
@@ -642,12 +654,11 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
 
   function startSample(st: RoundState, k: number): boolean {
     if (st.closed || st.noMore || st.fired.has(k)) return false;
-    // the §4.2 skip conditions hold per sample, and the dollar counter must cover this sample's full estimate on top of what the
+    // the §4.2 skip conditions hold per sample, and the dollar counter must cover this sample's full estimate beyond what the
     // samples already in flight hold (§4.11): sample 0 may have taken the headroom, the step may have ended before release()
     const reservation = reservationUsage(st, k).costUsd;
-    if (st.input.signal.aborted || st.input.budget.samplesLeft <= 0 || !coversSample(st.input.budget.usdLeft, reservation)) return false;
+    if (st.input.signal.aborted || st.input.budget.samplesLeft <= 0 || !coversSample(headroom(st.input.budget), reservation)) return false;
     st.input.budget.samplesLeft -= 1;
-    st.input.budget.usdLeft -= reservation;
     st.reserved.set(k, reservation);
     st.fired.add(k);
     st.pending += 1;
@@ -720,9 +731,10 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     const cachedUntried = hit === undefined ? 0 : hit.shas.filter((s) => !input.tried?.has(s)).length;
     if (input.signal.aborted) return { fired: false, reason: 'aborted', cached: cachedUntried, key };
     if (input.budget.roundsLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_rounds', cached: 0, key };
-    if (input.budget.usdLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_usd', cached: 0, key };
+    if (headroom(input.budget) <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_usd', cached: 0, key };
     const st = newRound(input, key, n);
     state = st;
+    live.add(st);
     if (hit !== undefined && hit.patches.length > 0) {
       st.pending += 1;
       const t0 = now();
@@ -741,13 +753,15 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       maybeClose(st);
       return { fired: false, reason: 'cached', cached: cachedUntried, key };
     }
-    // §4.11: a round fires only when the dollar counter covers one sample's full estimate (a few cents of headroom fire nothing);
-    // each further sample reserves its own estimate in `startSample`, so N is bounded by `affordableSamples` as well as the class
+    // §4.11: a round fires only when the dollar counter covers one sample's full estimate beyond what the samples still in flight
+    // hold (a few cents of headroom fire nothing); each further sample takes its own hold in `startSample`, so N is bounded by
+    // `affordableSamples` as well as the class
     const perSample = reservationUsage(st, 0).costUsd;
-    if (input.budget.roundsLeft <= 0 || !coversSample(input.budget.usdLeft, perSample) || input.budget.samplesLeft <= 0) {
+    const room = headroom(input.budget);
+    if (input.budget.roundsLeft <= 0 || !coversSample(room, perSample) || input.budget.samplesLeft <= 0) {
       st.noMore = true;
       maybeClose(st);
-      return { fired: false, reason: input.budget.roundsLeft <= 0 ? 'no_rounds' : !coversSample(input.budget.usdLeft, perSample) ? 'no_usd' : 'no_samples', cached: cachedUntried, key };
+      return { fired: false, reason: input.budget.roundsLeft <= 0 ? 'no_rounds' : !coversSample(room, perSample) ? 'no_usd' : 'no_samples', cached: cachedUntried, key };
     }
     input.budget.roundsLeft -= 1;
     const stagger = input.stagger ?? staggered(input.klass);
@@ -769,7 +783,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     for (let k = 1; k < st.n; k++) if (startSample(st, k)) fired += 1;
     if (fired > 0) emit('llm:fire', `goal ${st.input.goalId} round ${st.input.round}: released ${fired} more samples (top-site seeds returned no passer), $${reservedUsd(st).toFixed(4)} reserved`);
     else if (!st.noMore && st.n > 1) {
-      const why = st.input.signal.aborted ? 'step aborted' : !coversSample(st.input.budget.usdLeft, reservationUsage(st, 1).costUsd) ? 'llm dollar counter cannot cover another sample' : st.input.budget.samplesLeft <= 0 ? 'no samples left' : 'all fired';
+      const why = st.input.signal.aborted ? 'step aborted' : !coversSample(headroom(st.input.budget), reservationUsage(st, 1).costUsd) ? 'llm dollar counter cannot cover another sample' : st.input.budget.samplesLeft <= 0 ? 'no samples left' : 'all fired';
       emit('llm:fire', `goal ${st.input.goalId} round ${st.input.round}: release() fired nothing (${why})`);
     }
     maybeClose(st);
