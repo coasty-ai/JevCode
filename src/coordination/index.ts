@@ -229,7 +229,24 @@ export {
 } from './fold.js';
 export type { FoldEnv, FoldState, RecordEntry } from './fold.js';
 
-// ledger.ts / paths.ts / watch.ts — the store, the handle, readFold, the watcher (§3.1, §3.5, §12.0.4)
+/**
+ * ledger.ts / paths.ts / watch.ts — the store, the handle, readFold, the watcher (§3.1, §3.5, §12.0.4).
+ *
+ * contract 1.4 (W2b), the one naming note the surface needs: §12.0.4 calls the opened object `Ledger`; as built the
+ * name is SPLIT and both halves are exported here.
+ *
+ *   `Ledger`        (`types.ts`)  — the narrow base: `root`, `self`, `fold`, `open`, `setIdentity`, `subscribe`, `close`.
+ *                                  Every write verb (`declare`, `send`, `ack`, `gc`, …) takes THIS, and recovers the
+ *                                  handle internally with `asHandle()`, so a caller can hold the small type.
+ *   `LedgerHandle`  (`ledger.ts`) — `extends Ledger` with the forty members a WRITER needs (`enqueue`, `writeOwn`,
+ *                                  `refreshFence`, `foreignLive`, `forkVerdict`, `claim`, `stamps`, `mirror`, …). It is
+ *                                  what `openLedger` returns and what `EngineOptions.coordination.ledger` carries,
+ *                                  because the engine calls all of them.
+ *
+ * The design's `openLedger(opts): Ledger` line is corrected to `LedgerHandle` in the same commit. Renaming the base to
+ * something else was the alternative and was rejected: it would rewrite every signature in `leases.ts`, `mailbox.ts`,
+ * `subwork.ts` and `worktree.ts` for a word, and `Ledger` is the right name for the thing a READER holds.
+ */
 export {
   ACK_TRACK_MAX_MS,
   ENTRIES_MAX,

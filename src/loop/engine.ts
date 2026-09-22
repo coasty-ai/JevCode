@@ -170,6 +170,7 @@ import {
   nodeManifestIo,
   nodePreflightProbe,
   preflight,
+  type PreflightProbe,
   readManifest,
   resolveVerification,
   sameDelegation,
@@ -218,9 +219,18 @@ export interface EngineDeps {
   loadForResume?: ResumeLoader;
   /** default: workspace/gitstate.ts probeGitState (TUI-DESIGN §12.1); a probe that rejects reads as `git-missing` */
   probeGitState?: GitProbe;
+  /**
+   * contract 1.4 (W2b), ORCHESTRATION-DESIGN §3.6: the resource pre-flight's seam. Default `nodePreflightProbe()`,
+   * which reads `statfs`, `os.freemem()`, `availableParallelism()`, `du -sk` and the soft `RLIMIT_NOFILE` — five facts
+   * that differ per machine and per minute, so the P9 delegate pause point and the §8.3 row-12 gate could not be
+   * driven end to end without injecting them. `preflight` itself was already pure; this was the last impure edge on
+   * the decompose path, and it sat INSIDE `decomposeFacts` where no `EngineDeps` could reach it.
+   */
+  preflightProbe?: PreflightProbe;
 }
 
 interface ResolvedDeps {
+  preflightProbe: PreflightProbe;
   createCheckpointStore: CheckpointStoreFactory;
   createWorkspace: WorkspaceFactory;
   createSandbox: SandboxFactory;
@@ -253,7 +263,10 @@ async function resolveDeps(deps: EngineDeps): Promise<ResolvedDeps> {
     }
   }
   const probeGitState: GitProbe = deps.probeGitState ?? ((root) => realProbeGitState(root));
-  return { createCheckpointStore, createWorkspace, createSandbox, newRunId, loadForResume, probeGitState };
+  // §3.6: resolved ONCE per engine, not once per gate — an injected probe must be the same object across the run or
+  // a test cannot count its calls, and `nodePreflightProbe()` is a closure bag with no state worth rebuilding.
+  const preflightProbe: PreflightProbe = deps.preflightProbe ?? nodePreflightProbe();
+  return { createCheckpointStore, createWorkspace, createSandbox, newRunId, loadForResume, probeGitState, preflightProbe };
 }
 
 async function storeBasedLoadForResume(_runsDir: string, _runId: string, _redact: Redact, store: CheckpointStore): Promise<ResumeLoad> {
@@ -596,6 +609,8 @@ class EngineImpl implements Engine {
   private readonly sandbox: Sandbox;
   private readonly wsInfo: WorkspaceInfo;
   private readonly clock: () => number;
+  /** contract 1.4 (W2b), §3.6: the injected resource pre-flight (`EngineDeps.preflightProbe`) */
+  private readonly preflightProbe: PreflightProbe;
   private readonly systemPrompt: string;
   /** jev-only propose stage; null in the other modes (createEngine rejects jev-only without one) */
   private readonly synthesizer: Synthesizer | null;
@@ -858,8 +873,11 @@ class EngineImpl implements Engine {
     headDrift: string | null;
     /** contract 1.4 (§7.4): the resume reopens an ended run under --force */
     reopened?: boolean;
+    /** contract 1.4 (W2b), §3.6: the resource pre-flight seam (`EngineDeps.preflightProbe`), resolved by createEngine */
+    preflightProbe?: PreflightProbe;
   }) {
     this.runId = init.runId;
+    this.preflightProbe = init.preflightProbe ?? nodePreflightProbe();
     this.reopened = init.reopened === true;
     this.replayRequested = init.resume !== null && init.opts.resume?.replay === true;
     this.opts = init.opts;
@@ -3167,7 +3185,7 @@ class EngineImpl implements Engine {
     const git = this.workspace.gitState?.() ?? null;
     const headOid = git !== null && git.head !== null && git.head.kind === 'branch' ? git.head.oid : null;
     const listing = (await this.workspace.listCandidates().catch(() => [])).map((c) => c.path);
-    const probe = nodePreflightProbe();
+    const probe = this.preflightProbe;
     const disk = await probe.diskFree(this.workspace.root);
     const repoBytes = (await probe.repoBytes(this.workspace.root)) ?? 0;
     const fit = await preflight(probe, { repoRoot: this.workspace.root, want: policy.maxAgents, minFreeBytes: MIN_FREE_BYTES, agentMemBytes: AGENT_MEM_BYTES });
@@ -5005,7 +5023,7 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     // TUI-DESIGN §8.5: run.lock after store.create
     lock = takeRunLock(runDir, runId);
   }
-  return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume, gitState: git, runDir, lock: lock ?? { held: false, warning: null }, headDrift, reopened });
+  return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume, gitState: git, runDir, lock: lock ?? { held: false, warning: null }, headDrift, reopened, preflightProbe: d.preflightProbe });
 }
 
 /**

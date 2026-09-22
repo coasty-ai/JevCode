@@ -234,9 +234,9 @@ const oneOf =
 
 const PHASES = ['starting', 'running', 'pausing', 'paused', 'blocked', 'aborting', 'ended'] as const;
 const SOURCES = ['cli', 'bench', 'perf'] as const;
-const LEASE_TYPES = ['intent', 'exclusive', 'command', 'lane', 'worktree', 'takeover'] as const;
+const LEASE_TYPES = ['intent', 'exclusive', 'command', 'lane', 'worktree', 'takeover', 'agent'] as const;
 const LEASE_OUTCOMES = ['committed', 'discarded', 'expired', 'ended'] as const;
-const MESSAGE_TYPES = ['heads-up', 'handoff', 'note', 'request-release', 'steer', 'pause', 'resume', 'end', 'abort', 'ack', 'who'] as const;
+const MESSAGE_TYPES = ['heads-up', 'handoff', 'note', 'request-release', 'steer', 'pause', 'resume', 'end', 'abort', 'ack', 'who', 'budget', 'review', 'kick', 'land'] as const;
 const ACK_OUTCOMES = ['delivered', 'applied', 'refused', 'expired'] as const;
 const SUBWORK_KINDS = ['sample', 'lane', 'probe', 'child'] as const;
 

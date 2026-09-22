@@ -15,6 +15,19 @@
 // contract 1.7 (2026-09-22): TUI round 4 — block rows, annotateBlock, diff detail kind, ui.renderer, peer view, per docs/TUI-DESIGN-4.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
+/**
+ * contract 1.4 (W2b): the TWO type-only imports this file makes outside `core/`, both erased by `verbatimModuleSyntax`.
+ *
+ * COORDINATION-DESIGN §12.0.4 declares the ledger's types in `src/coordination/types.ts` "until they move to
+ * `core/types.ts` after the round-3 hash"; that move is 700 lines and is not this wave's. `EngineOptions.coordination`
+ * needs the REAL handle (the engine calls `enqueue` / `writeOwn` / `refreshFence` / `setIdentity` on it), so a
+ * structural twin here — the `DeliverableMessage` trick — would have to restate thirty members and would drift. A
+ * type-only edge is erased at runtime, so `src/coordination/**` importing `StageName` from here and this file
+ * importing `LedgerHandle` from there is a compile-time cycle only, which TypeScript resolves and esbuild never sees.
+ */
+import type { LedgerHandle } from '../coordination/ledger.js';
+import type { SelfIdentity, SubworkEntry } from '../coordination/types.js';
+export type { LedgerHandle, SelfIdentity, SubworkEntry };
 
 export type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 export type JsonObject = { [k: string]: Json };
@@ -241,8 +254,21 @@ export interface JevResponse {
   provider?: string;
 }
 
-/** contract 1.5 (ORCHESTRATION-DESIGN §4.1): `decompose` is the optional stage that runs before `replan`/`intent` and, on approval, delegates the step */
-export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | 'execute' | 'judge' | 'complete' | 'decompose';
+/**
+ * contract 1.5 (ORCHESTRATION-DESIGN §4.1): `decompose` is the optional stage that runs before `replan`/`intent` and, on approval, delegates the step.
+ * contract 1.4 (W2b) (COORDINATION-DESIGN §4.2): `coordinate` is the micro-stage between the overlapped checkpoint and
+ * `checkBudgets` / `takePreImages` — declare / check / wait / decide, the earliest truthful point for a claim and the
+ * latest before anything touches the workspace. It runs only for a change action (`edit | write | patch | run`) and
+ * only while `EngineOptions.coordination.ledger` is a handle; `read` and `done` never coordinate.
+ */
+export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | 'execute' | 'judge' | 'complete' | 'decompose' | 'coordinate';
+
+/**
+ * contract 1.4 (W2b) (COORDINATION-DESIGN §7.1): the run's LIFECYCLE, as the heartbeat and the status line spell it.
+ * Deliberately NOT called `RunPhase`: `src/tui/useEngine.tsx:102` already exports that name with other members
+ * (§7.1 / §14 item #44). `PausePoint.phase` is a different thing — the LOCATION a pause landed at.
+ */
+export type EngineRunPhase = 'starting' | 'running' | 'pausing' | 'paused' | 'blocked' | 'aborting' | 'ended';
 
 /**
  * The verdict written on a resolved Choice (loop/stages/choose.ts): `chosen` = Jev's answer with its paired Noul >= floor,
@@ -393,9 +419,36 @@ export interface StepTiming {
   synthMs?: number;
   /** contract 1.5 (ORCHESTRATION-DESIGN §4.1 [D13]): wall of the `decompose` stage (gate → enumerate → normalise → rank → confirm); absent when the gate was shut */
   decomposeMs?: number;
+  /** contract 1.4 (W2b) (COORDINATION-DESIGN §4.2): wall of the `coordinate` gate itself — p95 < 2 ms advisory, < 5 ms strict; absent when the stage did not run */
+  coordinateMs?: number;
+  /**
+   * contract 1.4 (W2b) (§4.2): the INLINE STRICT WAIT inside `coordinateMs`, subtracted from `harnessMs` exactly like
+   * `confirmMs` in all three formulas — a step that waited 40 s for a peer did not spend 40 s of harness. Absent when
+   * nothing waited.
+   */
+  coordWaitMs?: number;
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
+
+/**
+ * contract 1.4 (W2b) (COORDINATION-DESIGN §4.1): `StepRecord.coord`. `conflicts` and `requested` are exactly what
+ * `coordRecordOf(buildFacts(…))` returns (`src/coordination/leases.ts`), both bounded at 8 rows; `decision` and
+ * `waitedMs` are the engine's own two facts about the gate, so `/why` can say why a step started late without
+ * re-deriving it from the transcript.
+ */
+export interface StepCoord {
+  conflicts: { path: string; holder: string; holderStep: number; agoMs: number; sameBranch: boolean | null; theyTouched: boolean }[];
+  requested?: { path: string; by: string; agoMs: number }[];
+  /**
+   * §4.4 / §4.5, strict only: `proceed` = the fence was clear; `continue` = the human's `[c]` (or the `--no-input`
+   * `default: 'proceed'`) overrode a live conflict; `wait` / `worktree` = the step was discarded under rule 1;
+   * `blind` = `fence:'blind'` — a bound was reached before the enumeration finished and strict refused to guess.
+   */
+  decision?: 'proceed' | 'continue' | 'wait' | 'worktree' | 'blind';
+  /** the inline wait this step actually spent, ms (the `coordWaitMs` of `StepTiming`); absent when nothing waited */
+  waitedMs?: number;
+}
 export type InterruptReason = 'signal' | 'human_abort' | 'wall_time' | 'error' | 'human_pause'; // contract 1.4 (§12.0.2 P4/P5, W0 item 1): a pause-now that skipped or cut the judge
 
 export interface StepRecord {
@@ -418,6 +471,13 @@ export interface StepRecord {
   /** 0..3 entries, see §6 */
   loopSignatures: string[];
   stoppedAt?: StoppedAt;
+  /**
+   * contract 1.4 (W2b) (COORDINATION-DESIGN §4.1): what the `coordinate` gate saw and decided for this step. Under
+   * `advisory` a conflict is a FACT and nothing is delayed; under `strict` `decision` names the judgment. Absent when
+   * the stage did not run (coordination off, a `read` / `done` action, no ledger), which is what keeps a run without a
+   * ledger byte-identical on disk.
+   */
+  coord?: StepCoord;
   interruptedAt?: { stage: StageName; reason: InterruptReason };
   /** stage failure (§6), redacted */
   error?: { stage: StageName; code: string; message: string };
@@ -1351,6 +1411,35 @@ export interface BlockingRequest {
   exitCode: number;
 }
 
+/**
+ * contract 1.4 (W2b) (COORDINATION-DESIGN §12.0.1): `EngineOptions.coordination`, as landed.
+ *
+ * Two names differ from the W2b brief and the design's is kept, as §12.0 requires: the mode is `claims` (not
+ * `leases`) because the design says `coordination.claims` everywhere the TUI codes against, and the handle is
+ * `LedgerHandle` (not `Ledger`) because as built the facade splits the name — `Ledger` is the narrow base every
+ * write verb takes, `LedgerHandle` is what `openLedger` returns (§12.0.4, corrected in the same commit).
+ */
+export interface CoordinationOptions {
+  /** the handle the caller opened after the first frame; `null` = presence off, claims off, everything below ignored */
+  ledger: LedgerHandle | null;
+  /** §4.1: default `session.source !== 'bench'`; an explicit value wins. `false` is the same as `ledger: null` for the engine */
+  enabled?: boolean;
+  /** §4.1: default `'advisory'` — a conflict is a fact and nothing is delayed. `'strict'` decides before pre-images; `'off'` is presence only */
+  claims?: 'advisory' | 'strict' | 'off';
+  /** §4.3 step 4: the inline strict wait, default `STRICT_WAIT_MS` (60 s), wakeable */
+  strictWaitMs?: number;
+  /** §4.4: what a strict conflict does with no blocker (`--no-input`, `--plain` pipe, bench); default `'proceed'` */
+  default?: 'proceed' | 'wait';
+  /** §10.3: how a FOREIGN device's `pause` / `end` / `resume` is treated; default `'confirm'` (the `[y]` row is the surface's) */
+  remoteControl?: 'allow' | 'confirm' | 'never';
+  /** §9.3: the run-body projection; default `'projection'` when sync is on */
+  syncRuns?: 'off' | 'projection' | 'with-bodies';
+  /** §3.4: a synchronous read over the already-folded ledger; the engine uses it for the resume gates when it has no handle yet */
+  peerLive?: (runId: string) => { deviceId: string; label: string; step: number; beatAgeMs: number } | null;
+  /** §3.2: `deviceId` / `label` / `wsKey` computed by the caller (`ids.ts`); `repoKey` may still be null here */
+  identity?: SelfIdentity;
+}
+
 export interface EngineOptions {
   task: string;
   mode: EngineMode;
@@ -1432,6 +1521,16 @@ export interface EngineOptions {
   orchestration?: OrchestrationOptions;
   /** contract 1.5 (§4.1, §6.4): every resolved `orchestrate.*` setting the decompose stage reads; absent = `DEFAULT_SPLIT_POLICY` (`split: 'off'`) */
   splitPolicy?: OrchestrationPolicy;
+  /**
+   * contract 1.4 (W2b) (COORDINATION-DESIGN §12.0.1): the coordination ledger and its policy, built by
+   * `src/cli/session.ts` from the TUI-owned config schema and handed to `createEngine`. The engine never reads a
+   * config file and never opens a ledger of its own (§12.0.1 rule 5: one handle per process, opened by the caller
+   * after `renderer.firstFrame()`).
+   *
+   * ABSENT, or `ledger: null`, is OFF: no heartbeat, no lease, no inbox, no `coordinate` stage, no new I/O, and a
+   * prompt and event sequence byte-identical to a build without this wave (`engine-coordination-off.test.ts`).
+   */
+  coordination?: CoordinationOptions;
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 
@@ -1580,11 +1679,47 @@ export interface EngineStatus {
    * delegation settled or when this run never delegated; absent on a process that cannot delegate at all.
    */
   orchestration?: { manifestId: string; agents: number; live: number; landed: number; reserveUsd: number; heldUsd: number } | null;
+  /**
+   * contract 1.4 (W2b) (COORDINATION-DESIGN §7.1): the run's lifecycle word, derived in ONE place (`phaseOf`) from the
+   * flags already here — `pauseRequested` → `pausing`, `blocked !== null` → `blocked`, and so on. The heartbeat and the
+   * status line read the same value. Absent on a fake engine that does not track one.
+   */
+  phase?: EngineRunPhase;
+  /** contract 1.4 (W2b) (§6.1): the live sub-work rows — samples, lanes, probes, children — capped at 16, the heartbeat's own set */
+  subwork?: readonly SubworkEntry[];
+  /** contract 1.4 (W2b) (§3.6, §8.7, §12.0.3): the `⇄` status zone and the `/who` pane; absent when coordination is off */
+  coordination?: CoordinationStatus;
+}
+
+/**
+ * contract 1.4 (W2b) (COORDINATION-DESIGN §3.6, §8.7, §12.0.3): everything the `⇄ 2 live · 1 heads-up · ✉ 1` zone,
+ * the resume card and `src/session/lock.ts`'s `lockReplaceVerdict` need from a LIVE engine, riding the `status` event.
+ * It is a projection of the fold, never the fold: nothing here is a `Map`, a record or a mutable ledger object.
+ */
+export interface CoordinationStatus {
+  /** §3.6: one row per peer run on this repo that is not this run; `cloned` is `Fold.cloned` — one deviceKey on two machines, so every gated action is suspended for it until it is re-paired (§10.3) */
+  peers: readonly { runId: string; sessionId: string; deviceId: string; label: string; step: number; stage: string; phase: EngineRunPhase; beatAgeMs: number; sameDevice: boolean; blocked: string | null; live: boolean; cloned: boolean }[];
+  /** `peers.filter(live).length`, so the zone does not have to count */
+  live: number;
+  /** §4.1: the conflicts the LAST `coordinate` saw; 0 between steps and whenever the gate was clear */
+  conflicts: number;
+  /** unread messages addressed to this run's session */
+  inbox: number;
+  /** §9.1 / §9.2: the shared-dir mirror, `null` when there is none */
+  mirror: { state: 'unknown' | 'online' | 'offline'; code: string | null; lagMs: number | null } | null;
+  /** §12.0.4: the LOCAL store is failing — the zone reads `⇄ off (<code>)`. A mirror fault never sets this */
+  off: string | null;
+  /**
+   * §4.3 step 4 / §7.1: a strict wait is holding this step. `phase` is `'blocked'` while it is set, and `untilMs` is
+   * the WALL deadline the pane counts down to, so the surface never has to know the engine's monotonic clock.
+   */
+  waiting: { paths: readonly string[]; holder: string; untilMs: number } | null;
 }
 
 // TUI-DESIGN §15 item 14: notices and renderer labels
 /** contract 1.5 (ORCHESTRATION-DESIGN §4.1): 'orchestration' = the delegation surface's notices (spawned, adopted, landed, the declined split) */
-export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui' | 'orchestration';
+/** contract 1.4 (W2b) (COORDINATION-DESIGN §4.1, §5.4): 'coordination' = the ledger's own health and the claim gate; 'session' = a peer's message or transition (`[session] mbp: …`). Additive — `BARE_NOTICE_KINDS` is a Set and `plain.ts` falls through for an unknown kind. */
+export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui' | 'orchestration' | 'coordination' | 'session';
 /** the only labels formatTranscriptItem prints instead of stepLabel() (item 19, §15.1); TUI-DESIGN-2 §6 item 1 / §3.10: the chat bubbles */
 export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]' | '[you]' | '[jevcode]';
 export type ChatLabel = Extract<UiLabel, '[you]' | '[jevcode]'>;
@@ -1593,7 +1728,10 @@ export type IntakeKind = 'greeting_or_smalltalk' | 'question_about_this_tool' | 
 
 export type EngineEvent =
   | { type: 'synth'; step: number; phase: string; detail: string; candidates?: number; tested?: number } // jev-only synthesizer progress
-  | { type: 'run:start'; runId: string; task: string; mode: EngineMode; resumedFromStep: number | null }
+  // contract 1.4 (W2b) (§6.5, §12.0.1): `parentSessionId` is recorded on the FIRST event of the run, so a child's
+  // session tree is a fact before `run:ready` — the picker indents it, `-c` never picks it, and the session meter
+  // folds its spend into the parent's. Optional: an ordinary run omits it, and every existing emitter compiles.
+  | { type: 'run:start'; runId: string; task: string; mode: EngineMode; resumedFromStep: number | null; parentSessionId?: string | null }
   // TUI-DESIGN §15 item 14: optional session fields, built as `{ …, sessionId: session?.sessionId ?? runId, parentRunId: session?.parentRunId ?? null }`
   | { type: 'run:ready'; runId: string; step: number; maxSteps: number; task: string; resumed: boolean; sessionId?: string; parentRunId?: string | null; sandbox?: SandboxLevel; noNetwork?: boolean; maxReplans?: number }
   | { type: 'step:start'; step: number; startedAt: string }
@@ -1649,6 +1787,25 @@ export type EngineEvent =
   | { type: 'secret-ack'; step: number | null; count: number }
   // contract 1.4 (COORDINATION-DESIGN §12.0.2): emitted in finish('human_pause') after the final state.json settled and before the stop line and run:end
   | { type: 'pause:point'; point: PausePoint }
+  /**
+   * contract 1.4 (W2b) (COORDINATION-DESIGN §4.1): what the `coordinate` gate saw — the same object that reaches
+   * `StepRecord.coord`, emitted at `stage:end` of `coordinate` so `--json` and the timeline have it without waiting
+   * for the step to commit. Emitted ONLY when the gate ran and saw something (a clear check emits nothing).
+   */
+  | { type: 'coordination:facts'; step: number; coord: StepCoord }
+  /**
+   * contract 1.4 (W2b) (§4.4, §4.5): the strict judgment, once per decided conflict. `waitedMs` is the inline wait
+   * that preceded it, `by` is who decided — the fence itself, the human's pane answer, or the no-blocker default.
+   */
+  | { type: 'coordination:decision'; step: number; decision: 'proceed' | 'continue' | 'wait' | 'worktree' | 'blind'; by: 'fence' | 'human' | 'default'; waitedMs: number; paths: readonly string[] }
+  /**
+   * contract 1.4 (W2b) (§5.4): a coordination message arrived for this run's session. `disposition` is
+   * `classifyIncoming`'s verdict VERBATIM — the engine applies nothing that needs a `[y]`; the surface reads
+   * `needsConfirm`, asks, and then calls `Engine.deliver(msg)`. `applied` says whether the engine already acted
+   * (a same-device, same-boot control message, or a type that never needs a confirm), so the caller knows whether
+   * an ack is still owed.
+   */
+  | { type: 'session:message'; message: DeliverableMessage; disposition: MessageDisposition; applied: AckOutcome | null }
   // contract 1.4 (§8.6, §12.0.4): the context-policy branch emits it after a compaction; `chars` is before → after
   | { type: 'context:compacted'; step: number; chars: { before: number; after: number }; by: 'code' | 'llm' }
   // contract 1.5 (ORCHESTRATION-DESIGN §4.1): twelve additive members; the json stream stays `v: 1` and an
@@ -1769,6 +1926,20 @@ export interface InterruptedDetail {
 export type AckOutcome = 'delivered' | 'applied' | 'refused' | 'expired';
 
 /**
+ * contract 1.4 (W2b) (§5.4 / §10.3): the structural subset of `classifyIncoming`'s `IncomingDisposition`
+ * (`src/coordination/mailbox.ts`) that rides the `session:message` event — the real verdict is assignable to it.
+ * `authority` and `needsConfirm` are decided by the READ LOCATION, the hmac, the `hostKey` and the `bootId`, never
+ * by the message's own content (§5.4 rules 1-5); the engine copies the verdict, it never recomputes one.
+ */
+export interface MessageDisposition {
+  action: 'note' | 'steer' | 'pause' | 'end' | 'resume' | 'abort' | 'request-release' | 'heads-up' | 'handoff' | 'who' | 'ack' | 'budget' | 'review' | 'kick' | 'land';
+  downgraded: boolean;
+  needsConfirm: boolean;
+  refused: string | null;
+  authority: 'self' | 'trusted' | 'unverified';
+}
+
+/**
  * §5.4 / §12.0.4: the structural subset of a coordination `Message` (src/coordination/records.ts) the engine reads — the real
  * record is assignable to it. `type` 'pause' | 'end' apply (§12.0.2 P8; `text` 'now' selects the soft interrupt); every other
  * type is refused until the messaging wave routes notes and steers (W3).
@@ -1779,6 +1950,8 @@ export interface DeliverableMessage {
   text: string;
   from: { deviceId: string; label: string; sessionId: string | null; runId: string | null };
   by?: 'human' | 'engine';
+  /** contract 1.4 (W2b) (§5.4): a `request-release`'s files and a `handoff`'s commit — the only refs the engine reads */
+  refs?: { files?: readonly string[]; commit?: string; branch?: string; step?: number };
 }
 
 /** §8.6: the compactor in force (`context.compaction`, default `code`). */
