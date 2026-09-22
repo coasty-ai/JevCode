@@ -6,7 +6,7 @@
  * 18-task slice 135 of 290 `propose_fix` samples ended `stopReason:"timeout"` and they cost
  * 3,501 s of 5,506 sample-seconds. The timeout latencies fall in exactly three buckets — 68 at
  * ~20 s, 48 at ~30 s, 10 at ~45 s — the class default and its 1.5× growths; 61 of the 135 fired
- * at a GROWN deadline and cost 1,874 s, while the whole slice served only 11 samples slower than
+ * at a GROWN deadline and cost 1,994 s, while the whole slice served only 11 samples slower than
  * 20 s. All four SWE runs served 0 samples of 7
  * (`iter1-fresh-llm-jev-swebench/runs/20260922-120656-xhmcqzon`: `generator.valid: 0`,
  * `timeouts: 7`, latencies 20/20/20/30/30/30/30 s).

@@ -223,10 +223,18 @@ export function doneClaimEscalation(i: Pick<GatherContextRepeatInput, 'signature
   };
 }
 
-/** The `change_approach` directive that escalates the phase: parsed as `change_approach` by both search/directive.ts and loopdetect.ts `directiveMove`. */
+/**
+ * The `change_approach` directive that escalates the phase: parsed as `change_approach` by both
+ * search/directive.ts and loopdetect.ts `directiveMove`. Change 9's ladder reaches it with an
+ * empty `gatheredAt` (a refused completion claim that was never directed to gather), so the
+ * wording names what actually repeated rather than a gather that did not happen — and
+ * `change_approach` is the only move that reopens a goal the best-guess search parked
+ * (search/directive.ts: `gather_context` leaves that park in place), which is why it is the rung.
+ */
 export function escalationDirectiveText(probability: number, signature: string, gatheredAt: readonly number[]): string {
   const kind = describeSignatureKind(signatureKind(signature));
-  return `After repeating the same ${kind} 3 times with gather_context already directed at step ${gatheredAt.join(', ')} and the output unchanged, Jev directs \`change_approach\` (p=${probability.toFixed(2)}, escalation=${PHASE_ESCALATION}): escalate the search phase ${PHASE_ESCALATION} — rotate the goal's source order, widen the site beam and allow the WIDENED phase, instead of reading again for a command whose output has not moved.`;
+  const after = gatheredAt.length > 0 ? `with gather_context already directed at step ${gatheredAt.join(', ')} and the output unchanged` : 'with nothing proposed in between';
+  return `After repeating the same ${kind} 3 times ${after}, Jev directs \`change_approach\` (p=${probability.toFixed(2)}, escalation=${PHASE_ESCALATION}): escalate the search phase ${PHASE_ESCALATION} — rotate the goal's source order, reopen every parked goal, widen the site beam and allow the WIDENED phase, instead of repeating a step that has not moved.`;
 }
 
 /** The `stop_and_report` directive of the exhausted escalation ladder (change 7). */
