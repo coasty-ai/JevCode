@@ -19,7 +19,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Answer, Decision, EngineEvent, JsonObject, Proposal, Question, StageName } from '../../../src/core/types.js';
-import { JevHttpError } from '../../../src/errors.js';
+import { AbortError, BudgetError, JevHttpError, JevModelDriftError } from '../../../src/errors.js';
+import { QuestionBuildError } from '../../../src/jev/questions.js';
 import type { StageContext } from '../../../src/loop/engine.js';
 import { createLoopDetector } from '../../../src/loop/loopdetect.js';
 import { emptyPlan } from '../../../src/loop/plan.js';
@@ -260,6 +261,29 @@ describe('the router table with a decider that throws (routers: on)', () => {
     expect(codeRiskVerdict(runProposal('rm -rf /'), [], null, null).verdict).toBe('review');
     expect(codeRiskVerdict(runProposal('pytest -q'), [], { command: 'pytest -q', runner: 'pytest' }, null).verdict).toBe('ok');
     expect(codeRiskVerdict(runProposal('pip install requests'), [], null, null).verdict).toBe('review');
+  });
+
+  it('defect 5: the risk stage swallows an OUTAGE, never a stop — a pause, a budget, a drift and a bad batch all propagate', async () => {
+    const intent = { intent: 'verify' as const, answer: 'verify' as const, probability: 1 };
+    const fatals: readonly [string, unknown][] = [
+      ['a human pause', new AbortError('human_pause')],
+      ['a wall-time budget', new BudgetError('wall_time')],
+      ['a served-model drift', new JevModelDriftError('jev-1.13', 'jev-1.12', { firstCall: false })],
+      ['a malformed question batch', new QuestionBuildError('criteria.true.examples needs at least two examples')],
+    ];
+    let step = 40;
+    for (const [, thrown] of fatals) {
+      step += 1;
+      const ctx = stageCtx({ step, ask: () => Promise.reject(thrown) });
+      // `catch {}` turned every one of these into "Jev unavailable, the code verdict stands", and the engine then
+      // walked into confirm() and takePreImages() on an already-aborted run before its own guard unwound it
+      await expect(runRiskStage(ctx, common(), runProposal('pip install requests'), intent)).rejects.toBe(thrown);
+    }
+    // and Jev's OWN failure is still absorbed, with the code verdict and the audit trail
+    const outage = stageCtx({ step: 50, ask: OUTAGE });
+    const r = await runRiskStage(outage, common(), runProposal('pip install requests'), intent);
+    expect(r).toMatchObject({ riskSource: 'code', jevUnavailable: true });
+    expect(r.risk.verdict).toBe('review');
   });
 
   it('I3: every routed site reports waitMs 0, so the step-level routerWaitMs is 0', async () => {

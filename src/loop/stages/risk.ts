@@ -29,6 +29,7 @@
 import { RISK_BLOCK, RISK_REVIEW, levelProb, riskFromProbabilities, scoreConfidence } from '../../jev/confidence.js';
 import { dangerousCommand } from '../../jev/danger.js';
 import { noul, ref, score } from '../../jev/questions.js';
+import { isRouterFatal } from '../../jev/router.js';
 import { routersOn } from '../routers.js';
 import { clip } from '../../core/text.js';
 import { RESEARCH_ACTION_KINDS, RISK_DIMENSIONS, type Action, type ActionKind, type Answer, type Decision, type Intent, type JsonObject, type OrchestrationOptions, type OutcomeStatus, type Proposal, type ProposalEvidence, type Question, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TargetInfo, type TestCommand } from '../../core/types.js';
@@ -775,7 +776,7 @@ export async function runRiskStage(ctx: StageContext, common: JsonObject, propos
     //             dangerousCommand() (src/jev/danger.ts, a DENY-LIST, not a proof) — raises Jev's verdict to
     //             `review` for a deny-listed command, so no Score at level 0 can release one. Everything Jev
     //             answered about keeps its pre-1.9 verdict and its pre-1.9 reason, byte for byte.
-    //   fallback: with NO answer (a JevError, a 503/529, an abort) codeRiskVerdict() is the verdict — the allow-list yields ok, the deny-list and everything unmatched yield review (ask-or-decline, never allow), recorded as jevUnavailable / riskSource 'code' — test: test/unit/loop/router.test.ts
+    //   fallback: with NO answer (a JevError, a 503/529 — Jev's own failures, and ONLY those: isRouterFatal sends a pause, a budget, a model drift and a malformed batch back up) codeRiskVerdict() is the verdict — the allow-list yields ok, the deny-list and everything unmatched yield review (ask-or-decline, never allow), recorded as jevUnavailable / riskSource 'code' — test: test/unit/loop/router.test.ts
     //   no-gating: Jev does not gate — code does. A Jev outage cannot allow what code did not clear, and it
     //             cannot end the run: the stage returns a verdict either way. Routers off = the pre-1.9 stage.
     await ctx.ask('risk', state, buildRiskQuestions({ evidence: withEvidence }), (answers, rows) => {
@@ -793,8 +794,13 @@ export async function runRiskStage(ctx: StageContext, common: JsonObject, propos
   else {
     try {
       await askRisk();
-    } catch {
-      // §2.4 / I5: a JevError, a 503/529 or an abort is not a stage failure here — the code verdict is the answer
+    } catch (e) {
+      // §2.4 / I5: a JevError or a 503/529 is not a stage failure here — the code verdict is the answer. But only
+      // JEV's failures are (review 2026-09-22, defect 5): a bare `catch {}` also swallowed the human pause and
+      // `/stop` that abort this.controller, the wall-time BudgetError, a JevModelDriftError and the
+      // QuestionBuildError of a malformed batch — and the engine then walked into `confirm()` and
+      // `takePreImages()` on an already-aborted run before its own `signal.aborted` guard unwound it.
+      if (isRouterFatal(e)) throw e;
       jevAnswered = false;
     }
   }
