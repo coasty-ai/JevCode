@@ -136,6 +136,24 @@ export function commitStepRouters(runId: string, step: number): RouterLedger | n
   return state.ledger.issued === 0 ? null : state.ledger;
 }
 
+/**
+ * §9.1 rule 1 / §7.5 seam (c): the step was **discarded**, not committed — a blocking pause landed before any
+ * action ran and the run will replay this very step number. The attempt is over (its token is invalidated, so a
+ * router still in flight from it applies nothing), but the KEY must stay open: `commitStepRouters` closes a key
+ * for good, and a closed key hands every later `stepTokenFor` a dead token — so closing here would make every
+ * router of the replayed attempt drop `committed` before it was even issued.
+ */
+export function discardStepRouters(runId: string, step: number): void {
+  const key = keyOf(runId, step);
+  const state = live.get(key);
+  if (state !== undefined) {
+    invalidateStepToken(state.token);
+    live.delete(key);
+  }
+  // it may have been closed by the live LRU while the attempt was running; the replay re-opens it
+  closed.delete(key);
+}
+
 /** Tests only: forget every live step and reopen every closed one. */
 export function resetStepRouters(): void {
   live.clear();

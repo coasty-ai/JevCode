@@ -456,8 +456,10 @@ export interface StepTiming {
    * `heldMs` minus the ask's own elapsed time, asserted per routed site in test/unit/jev/router.test.ts and
    * test/unit/loop/router.test.ts, and due as a bench-wide row); the ask's own latency stays in `jevMs`. Absent = 0.
    *
-   * RESERVED: written by the §7.5 engine seam (`commitStepRouters` in the same `finally` as the `StepRecord`),
-   * which is slot B's post-C commit to src/loop/engine.ts (§7.1). No run emits it yet.
+   * WRITER: the §7.5 engine seam (c) — `commitStepRouters` at step commit in `Engine.commit`, which takes the
+   * step's ledger and invalidates its token in one place. Present on exactly the steps that routed; absent on
+   * every step of every run with the routers off (I2). Asserted on a real step in
+   * test/unit/loop/engine-router-seam.test.ts › *`StepRecord.router` and `StepTiming.routerWaitMs` are written*.
    */
   routerWaitMs?: number;
   // slot C — contract 1.9 (Fastlane) §5.2: the fast-path round's own wall, the sibling of `synthMs`. Both absent on
@@ -560,18 +562,17 @@ export interface StepRecord {
   /**
    * contract 1.9 (Fastlane) §2: the router table's outcome for this step; bounded at 12 rows. Absent = no router ran.
    *
-   * RESERVED with `StepTiming.routerWaitMs`, `riskSource` and `jevUnavailable` below: all four are written by the
-   * §7.5 engine seam (slot B's post-C commit to src/loop/engine.ts, §7.1). `src/loop/routers.ts` builds the
-   * ledger and `src/loop/stages/risk.ts` returns the other two today; the engine drops them until the seam lands.
+   * WRITER (with `StepTiming.routerWaitMs`, `riskSource` and `jevUnavailable` below): the §7.5 engine seam (c),
+   * `Engine.commit`. `src/loop/routers.ts` builds the ledger and `src/loop/stages/risk.ts` returns the other two;
+   * the engine folds all four into the record at step commit, and writes none of them with the routers off.
    */
   router?: StepRouter;
   /**
    * contract 1.9 (Fastlane) §2.4: which verdict actually stood at the risk stage — the audit trail for the ratified
    * code-first polarity. Absent on every run with `routers: 'off'`, where the verdict is Jev's exactly as before.
-   * RESERVED: see `router` above.
    */
   riskSource?: 'code' | 'jev';
-  /** contract 1.9 (Fastlane) §2.4: the harm ask was dropped or failed and the CODE verdict stood. Absent = false. RESERVED: see `router` above. */
+  /** contract 1.9 (Fastlane) §2.4: the harm ask was dropped or failed and the CODE verdict stood. Absent = false. */
   jevUnavailable?: boolean;
   // slot C — contract 1.9 (Fastlane) §5.2
   /** contract 1.9 (Fastlane) §4: the fast path's decision and what the round cost. Absent when the fast path was never armed. */
@@ -1878,11 +1879,11 @@ export interface EngineOptions {
    * the §8 head-to-head measures `jev-on` against. Default **'off'** everywhere on `main`: none of the three
    * reaches a user run before that head-to-head decides.
    *
-   * **RESERVED until the §7.5 engine seam** (review 2026-09-22, defect 3): nothing reads this member yet. The seam
-   * that lifts it off the run and hands it to `routersOn(mode, opt)` at the four routed sites lands in slot B's
-   * post-C commit to `src/loop/engine.ts` (§7.1 allows one slot in that file at a time, and slot C holds it).
-   * Until then the switch a bench arm can express is `JEVCODE_ROUTERS=on|off` in the worker's own process, read
-   * inside `src/loop/routers.ts` and gated on `jev-on` exactly as this member will be.
+   * READ by the §7.5 engine seam (b): `makeContext` puts it on `StageContext.routers` and the four routed sites
+   * call `routersOn(ctx.mode, ctx.routers)`. **This member beats `JEVCODE_ROUTERS`**, in both directions; the env
+   * var only fills an ABSENT option, which is how a worker process and a bisect still express the switch. (It
+   * used to be ORed in, so an exported `on` armed an arm whose own row said `off` — slot D's finding.) The
+   * `jev-on` gate is checked before either.
    */
   routers?: 'on' | 'off';
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)

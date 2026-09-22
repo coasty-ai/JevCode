@@ -237,21 +237,31 @@ export async function runIntentStage(ctx: StageContext, common: JsonObject): Pro
     //   fallback: codeIntentOrder()[0] (INTENT_FALLBACK = 'investigate', or `verify` when a change this run made is unverified) — test: test/unit/loop/router.test.ts
     //   no-gating: the answer reaches one sentence of the prompt's intent section and nothing else. It cannot
     //             stop the run, block an action, or withhold a candidate.
-    await ctx.ask('intent', state, questions, (answers, rows) => {
-    // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token, settled
-    // work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it annotates
-    // nothing and applies nothing. `ctx.ask` still takes no per-call signal — that is the `askRecorded` seam of
-    // §7.5, slot B's post-C commit — so the request itself runs on; what it may no longer do is write a verdict.
-      if (signal?.aborted === true || routed?.valid === false) return;
-      const r = resolve(answers);
-      annotateChoiceRows(rows, 'intent', r);
-      const psv = answers['plan_still_valid'];
-      const row = rows.find((q) => q.id === 'intent');
-      out = { resolved: r, planStillValid: psv && psv.type === 'noul' ? psv.noul : 1, confidence: row ? row.confidence : 0 };
-    });
+    await ctx.ask(
+      'intent',
+      state,
+      questions,
+      (answers, rows) => {
+        // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token,
+        // settled work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it
+        // annotates nothing and applies nothing. The belt stays even though §7.5 seam (a) has landed and
+        // `askRecorded` now abandons the call before this callback can run: the token check is the ONE drop the
+        // signal cannot see (an answer arriving after commit under a signal nobody aborted).
+        if (signal?.aborted === true || routed?.valid === false) return;
+        const r = resolve(answers);
+        annotateChoiceRows(rows, 'intent', r);
+        const psv = answers['plan_still_valid'];
+        const row = rows.find((q) => q.id === 'intent');
+        out = { resolved: r, planStillValid: psv && psv.type === 'noul' ? psv.noul : 1, confidence: row ? row.confidence : 0 };
+      },
+      // §7.5 seam (a): the PER-CALL signal. A router that drops this ask aborts it, and `askRecorded` then
+      // charges nothing, writes no `jev.jsonl` row and emits no `decision` — absent on the routers-off path,
+      // where this argument is `undefined` and the call is the pre-1.9 one.
+      signal,
+    );
     return out;
   };
-  if (!routersOn(ctx.mode)) {
+  if (!routersOn(ctx.mode, ctx.routers)) {
     const answered = await asked();
     resolved = answered.resolved;
     planStillValid = answered.planStillValid;
