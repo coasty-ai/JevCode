@@ -32,6 +32,12 @@
  * round is still draining supersedes it (the old round keeps its accounting and cache write);
  * only a staggered round still awaiting `release()` is refused with `round_open`.
  *
+ * The per-sample deadline is adaptive (§4.8 rev 3, after the v2 head-to-head cut 31 of 100 samples at
+ * a fixed one): `clamp(factor × the running p90 of SERVED-sample latency, the class default, 45 s / 90 s)`,
+ * per run and in memory; when the serving provider's served p90 is past the class default the run caps
+ * every further sample's `reasoning: {maxTokens}` so what it waits for is shorter. The round records the
+ * deadline it fired with (`LlmRoundSummary.deadlineMs`) and the `llm:fire` line says where it came from.
+ *
  * `generateWithDeadline`, `estimatedSampleUsage` and `unfinishedSampleUsage` are the one place a
  * sample is started and priced; repro.ts reuses them for L2.
  */
@@ -90,11 +96,68 @@ export function staggered(klass: OracleClass): boolean {
   return klass !== 'repository';
 }
 
-/** `clamp(2 × running p50 of valid samples, minMs, maxMs)` on QuixBugs/ladder (the probe's p90 for the first round, else the cap), `repositoryMs` on repositories. */
-export function sampleDeadlineMs(klass: OracleClass, p50ValidMs: number | null, probeP90Ms: number | null = null, deadline: SynthesizerGeneration['sampleDeadline'] = LLM_SAMPLE_DEADLINE): number {
-  if (klass === 'repository') return deadline.repositoryMs;
-  if (p50ValidMs === null) return probeP90Ms !== null ? Math.min(deadline.maxMs, Math.max(deadline.minMs, probeP90Ms)) : deadline.maxMs;
-  return Math.min(deadline.maxMs, Math.max(deadline.minMs, 2 * p50ValidMs));
+/**
+ * §4.8 rev 3, after llm-jev-headtohead-v2.md §9 class C′ (31 of 100 samples cut at the deadline, 61 %
+ * on QuixBugs, every timed-out row served by the one provider `Inceptron` whose served samples ran at
+ * p50 7–10 s): the deadline **adapts upward from the running p90 of served-sample latency** and is
+ * never shorter than the class's default. The floor is the class default (`deadline.maxMs` on the
+ * cheap classes, `deadline.repositoryMs` on repositories), the ceiling `cheapMaxMs` / `repositoryMaxMs`.
+ *
+ * Why the p90 and why a factor: what a round loses is its slow tail, and the served latencies are
+ * **right-censored** by the deadline itself (a sample past it is aborted and never served), so the
+ * observed p90 is a lower bound on the tail the next round must fit — the factor buys the headroom the
+ * superseded rule bought with `2 × p50`. The ceiling bounds the wall a round can cost; the first-passer
+ * early stop (`runQueue`, §4.8) is what usually ends a round long before either bound.
+ */
+export const LLM_DEADLINE_ADAPT = {
+  /** factor on the running p90 of served samples */
+  factor: 2,
+  /** served samples needed before the running p90 is used at all */
+  minSamples: 2,
+  /** ceiling on the QuixBugs / ladder classes */
+  cheapMaxMs: 45_000,
+  /** ceiling on the repository class */
+  repositoryMaxMs: 90_000,
+} as const;
+
+/** The per-run cap the samples ask for once the serving provider is slow: `reasoning: {maxTokens}` (GLM bills its reasoning, §4.13). */
+export const LLM_REASONING_CAP_TOKENS = 512;
+
+/** The class's default deadline — the floor of the adaptive one. */
+export function classDeadlineMs(klass: OracleClass, deadline: SynthesizerGeneration['sampleDeadline'] = LLM_SAMPLE_DEADLINE): number {
+  return klass === 'repository' ? deadline.repositoryMs : deadline.maxMs;
+}
+
+/** The ceiling of the adaptive deadline: 45 s on the cheap classes, 90 s on repositories. */
+export function deadlineCeilingMs(klass: OracleClass): number {
+  return klass === 'repository' ? LLM_DEADLINE_ADAPT.repositoryMaxMs : LLM_DEADLINE_ADAPT.cheapMaxMs;
+}
+
+/** The latency facts a deadline is computed from, all per run and in memory (nothing is persisted). */
+export interface SampleLatency {
+  /** running p90 of the samples the provider SERVED this run (a timeout, a cancellation and a 429 served nothing); null until `LLM_DEADLINE_ADAPT.minSamples` of them */
+  p90ServedMs: number | null;
+  /** the §10.2 probe's p90, used while no sample has been served */
+  probeP90Ms?: number | null;
+}
+
+/** `clamp(factor × p90 of served samples, class default, ceiling)`; the probe's p90 stands in before the first served samples, the class default when there is neither. */
+export function sampleDeadlineMs(klass: OracleClass, latency: SampleLatency, deadline: SynthesizerGeneration['sampleDeadline'] = LLM_SAMPLE_DEADLINE): number {
+  const floor = classDeadlineMs(klass, deadline);
+  const clamp = (ms: number): number => Math.min(deadlineCeilingMs(klass), Math.max(floor, Math.round(ms)));
+  if (latency.p90ServedMs !== null) return clamp(LLM_DEADLINE_ADAPT.factor * latency.p90ServedMs);
+  const probe = latency.probeP90Ms ?? null;
+  return probe === null ? floor : clamp(probe);
+}
+
+/**
+ * Is the serving provider slow? Its running p90 of served samples is past the class's default deadline
+ * — i.e. the adaptation above has already lifted the deadline over that default and the samples are
+ * still not landing inside it. The run then caps the reasoning tokens (`LLM_REASONING_CAP_TOKENS`) so
+ * what it waits for is shorter; the cap is one-way (a run never un-caps: rounds stay comparable).
+ */
+export function providerSlow(klass: OracleClass, p90ServedMs: number | null, deadline: SynthesizerGeneration['sampleDeadline'] = LLM_SAMPLE_DEADLINE): boolean {
+  return p90ServedMs !== null && p90ServedMs > classDeadlineMs(klass, deadline);
 }
 
 export function sampleSeed(step: number, k: number): number {
@@ -281,9 +344,9 @@ export interface LlmFireInput {
   verdictOf?: (sha: string) => string | null;
   /** default `maxTokensFor(goalId, base)` — base = the pinned generation's (3,000 with reasoning on, 1,500 off), or the base `reasoning` implies when that is given; doubled once after a `length` drop (§4.5) */
   maxTokens?: number;
-  /** default `sampleDeadlineMs(klass, running p50)` over the pinned generation's clamp */
+  /** default `sampleDeadlineMs(klass, {p90ServedMs: the run's running p90, probeP90Ms})`: the class default lifted by the served tail, never below it (§4.8 rev 3) */
   deadlineMs?: number;
-  /** default the pinned generation's (`{effort: 'low'}` unless the caller pinned otherwise; `{enabled: false}` is HTTP 400 on GLM, §10.2 finding (a)) */
+  /** default the pinned generation's (`{effort: 'low'}` unless the caller pinned otherwise; `{enabled: false}` is HTTP 400 on GLM, §10.2 finding (a)), or the run's `{maxTokens}` cap once the serving provider is slow */
   reasoning?: GenerateReasoning;
   signal: AbortSignal;
   budget: LlmBudget;
@@ -357,6 +420,10 @@ export interface LlmSource {
   maxTokensFor(goalId: string, base?: number): number;
   /** running p50 of valid samples' latency this run, null before the first */
   p50ValidMs(): number | null;
+  /** §4.8 rev 3: running p90 of SERVED samples' latency this run (the adaptive deadline's input), null before `LLM_DEADLINE_ADAPT.minSamples` of them */
+  p90ServedMs(): number | null;
+  /** the per-run reasoning-token cap a slow serving provider earned, else null */
+  reasoningCapTokens(): number | null;
   /** `{goalId: {round, sha12: [...]}}` ≤ 4 KB for `synthState` (§4.11) */
   exportCache(): Json;
 }
@@ -393,6 +460,8 @@ interface RoundState {
   n: number;
   deadlineMs: number;
   maxTokens: number;
+  /** what every sample of this round sends as `reasoning` (null = the parameter is not sent): the pinned setting or the per-run cap (§4.8 rev 3) */
+  reasoning: GenerateReasoning | null;
   queue: ArrivalQueue<SampleArrival>;
   runs: Map<number, SampleRun>;
   fired: Set<number>;
@@ -539,6 +608,10 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   const persisted = readPersistedCache(deps.cache);
   const lengthGoals = new Set<string>();
   const validMs: number[] = [];
+  /** §4.8 rev 3: the latency of every sample the provider served this run (a result arrived), the input of the adaptive deadline */
+  const servedMs: number[] = [];
+  /** the per-run `reasoning: {maxTokens}` cap once the serving provider was seen to be slow; one-way */
+  let reasoningCap: number | null = null;
   let state: RoundState | null = null;
   /** every round not yet closed — the current one and any superseded round still draining with its holds */
   const live = new Set<RoundState>();
@@ -546,7 +619,27 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
 
   const maxTokensFor = (goalId: string, base = gen.maxTokens): number => (lengthGoals.has(goalId) ? base * 2 : base);
   const p50ValidMs = (): number | null => percentile(validMs, 50);
+  const p90ServedMs = (): number | null => (servedMs.length >= LLM_DEADLINE_ADAPT.minSamples ? percentile(servedMs, 90) : null);
   const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+  /** The latency view of the adaptive deadline (§4.8 rev 3): the run's served p90, the probe's p90 before it exists. */
+  const latencyOf = (): SampleLatency => ({ p90ServedMs: p90ServedMs(), probeP90Ms: deps.probeP90Ms ?? null });
+
+  /**
+   * What the next round's samples send as `reasoning`: the pinned setting, or the per-run `{maxTokens}`
+   * cap once the serving provider's served p90 passed the class's default deadline (§4.8 rev 3). A pin
+   * that turned reasoning off (or does not send it) is left alone — there is nothing to cap, and
+   * `{maxTokens}` would turn it on and change the `max_tokens` base with it (§4.5).
+   */
+  function reasoningForRound(klass: OracleClass): GenerateReasoning | null {
+    if (!reasoningEnabled(gen.reasoning ?? undefined)) return gen.reasoning;
+    const p90 = p90ServedMs();
+    if (reasoningCap === null && providerSlow(klass, p90, gen.sampleDeadline)) {
+      reasoningCap = LLM_REASONING_CAP_TOKENS;
+      emit('llm:deadline', `the serving provider is slow (served p90 ${p90 ?? 0} ms > the ${klass} default deadline ${classDeadlineMs(klass, gen.sampleDeadline)} ms): every further sample of this run caps reasoning at ${reasoningCap} tokens to shorten it`);
+    }
+    return reasoningCap === null ? gen.reasoning : { maxTokens: reasoningCap };
+  }
 
   const promptChars = (st: RoundState, k: number): number => st.input.system.length + st.input.userFor(k).length;
 
@@ -557,7 +650,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
 
   /** What a sample that never returned is booked at: the shared estimator over the facts its stream left (§4.8, §4.13). */
   function unfinishedUsage(st: RoundState, k: number): TokenUsage {
-    const reasoning = st.input.reasoning ?? gen.reasoning;
+    const reasoning = st.reasoning;
     return unfinishedSampleUsage({ siblingInputTokens: st.siblingInput, promptChars: promptChars(st, k), partial: st.partials.get(k) ?? null, reasoning: reasoningEnabled(reasoning ?? undefined), pricing });
   }
 
@@ -689,6 +782,9 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     chargeSettled(st, k, usd);
     if (st.siblingInput === null && result.usage.inputTokens > 0) st.siblingInput = result.usage.inputTokens;
     // a result reached through a 429 retry carries the fact (the result stands; the round's classification reads it)
+    // §4.8 rev 3: the provider served this sample — its latency is what the adaptive deadline reads, `length`
+    // and malformed replies included (they were served; only a timeout, a cancellation or a 429 were not)
+    servedMs.push(end.ms);
     const base: SampleArrival = { ...emptyArrival(k, 'valid', end.ms, ''), usage: result.usage, usd, generationId: result.generationId ?? null, rateLimited: result.rateLimited === true };
     if (isLengthStop(result.stopReason)) {
       lengthGoals.add(st.input.goalId);
@@ -697,6 +793,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     const parsed = parseProposeFix(result);
     if (!parsed.ok) return { ...base, status: 'malformed', detail: parsed.reason };
     validMs.push(end.ms);
+
     try {
       const conv = await convert(st, k, parsed.value.patches, deps.compile ?? null);
       return { ...base, ...conv, status: parsed.value.patches.length === 0 ? 'empty' : 'valid', need: parsed.value.need, analysis: parsed.value.analysis, detail: parsed.value.analysis };
@@ -725,9 +822,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       toolChoice: { name: PROPOSE_FIX_TOOL_NAME },
       providerPrefs: { requireParameters: true },
     };
-    // the pinned reasoning verbatim (null = not sent), unless the fire input overrides it
-    const reasoning = st.input.reasoning ?? gen.reasoning;
-    if (reasoning !== null) req.reasoning = reasoning;
+    // the round's reasoning verbatim (null = not sent): the fire input's override, the pinned setting, or the per-run cap
+    if (st.reasoning !== null) req.reasoning = st.reasoning;
     if (k > 0) req.seed = sampleSeed(st.input.step, k);
     const t0 = now();
     const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, deadlineMs: st.deadlineMs, now, onCancelled: (partial) => st.partials.set(k, partial) });
@@ -749,9 +845,10 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       input,
       key,
       n,
-      deadlineMs: input.deadlineMs ?? sampleDeadlineMs(input.klass, p50ValidMs(), deps.probeP90Ms ?? null, gen.sampleDeadline),
+      deadlineMs: input.deadlineMs ?? sampleDeadlineMs(input.klass, latencyOf(), gen.sampleDeadline),
       // the pinned base, or the base an overriding `reasoning` implies (3,000 on, 1,500 off); doubled once for a goal after a `length` drop
       maxTokens: input.maxTokens ?? maxTokensFor(input.goalId, input.reasoning === undefined ? gen.maxTokens : maxTokensBase(input.reasoning)),
+      reasoning: input.reasoning ?? reasoningForRound(input.klass),
       queue: new ArrivalQueue<SampleArrival>(),
       runs: new Map(),
       fired: new Set(),
@@ -825,7 +922,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       st.released = true;
     }
     const reserved = reservedUsd(st);
-    emit('llm:fire', `goal ${input.goalId} round ${input.round} (${input.klass}): ${st.fired.size}/${n} samples fired${stagger ? ', staggered' : ''}, deadline ${st.deadlineMs} ms, max_tokens ${st.maxTokens}, $${reserved.toFixed(4)} reserved${cachedUntried > 0 ? `, ${cachedUntried} cached` : ''}`);
+    const capped = st.reasoning !== null && 'maxTokens' in st.reasoning ? `, reasoning max_tokens ${st.reasoning.maxTokens}` : '';
+    emit('llm:fire', `goal ${input.goalId} round ${input.round} (${input.klass}): ${st.fired.size}/${n} samples fired${stagger ? ', staggered' : ''}, deadline ${st.deadlineMs} ms${st.deadlineMs > classDeadlineMs(input.klass, gen.sampleDeadline) ? ` (adapted from the served p90 ${p90ServedMs() ?? deps.probeP90Ms ?? 0} ms; the ${input.klass} default is ${classDeadlineMs(input.klass, gen.sampleDeadline)} ms)` : ''}, max_tokens ${st.maxTokens}${capped}, $${reserved.toFixed(4)} reserved${cachedUntried > 0 ? `, ${cachedUntried} cached` : ''}`);
     return { fired: true, samples: st.fired.size, cached: cachedUntried, deadlineMs: st.deadlineMs, key, reservedUsd: reserved };
   }
 
@@ -898,6 +996,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     inFlight: () => (state === null ? 0 : state.pending),
     maxTokensFor,
     p50ValidMs,
+    p90ServedMs,
+    reasoningCapTokens: () => reasoningCap,
     exportCache,
   };
 }
