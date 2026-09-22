@@ -186,6 +186,22 @@ function declineReasons(summary: StepsSummary): string {
   return hist.map((h) => `${h.reason} ${h.n} (${(h.share * 100).toFixed(0)} %)`).join(', ');
 }
 
+/**
+ * OOS iteration 2, defect 2 / defect 4: the S1 warm verification plane as one cell. `off` — not an omitted row and
+ * not a line of zeros — when no step of the arm recorded a plane, which is every run with `JEVCODE_WARM` unset: a
+ * warm A/B that quietly loses its row reads as a warm arm that measured nothing.
+ *
+ * `mode` leads because it is the ARM and the counts are only readable under it: `unsupported-runner` with a
+ * `disabledReason` is how the report counts the tasks the A/B did not actually cover, so the reason rides along
+ * rather than being left in the transcript.
+ */
+function warmCell(summary: StepsSummary): string {
+  const w = summary.warm;
+  if (w === undefined) return 'off';
+  const counts = `${w.mode} / ${w.offered} / ${w.screened} / ${w.confirmed} / ${w.mismatches} / ${w.fallbacks}`;
+  return w.disabled === 0 ? counts : `${counts} (${w.disabled} disabled${w.disabledReason === undefined ? '' : `: ${w.disabledReason}`})`;
+}
+
 function metricRows(conds: readonly BenchCondition[], m: Record<string, ConditionMetrics>): string[][] {
   const get = (c: BenchCondition): ConditionMetrics => m[c]!;
   const row = (label: string, f: (x: ConditionMetrics) => string): string[] => [label, ...conds.map((c) => f(get(c)))];
@@ -228,6 +244,11 @@ function metricRows(conds: readonly BenchCondition[], m: Record<string, Conditio
     row('routers: issued / applied / dropped / max wait ms (R-a)', (x) => `${x.synth.routers.issued} / ${x.synth.routers.applied} / ${x.synth.routers.dropped} / ${x.synth.routers.maxWaitMs}`),
     row('risk: code verdicts / Jev unavailable (R-e)', (x) => `${x.synth.risk.codeVerdicts} / ${x.synth.risk.jevUnavailable}`),
     row('S2: TTFB p50 / p90 ms (n) / hedges / hedge wins / cache read+write', (x) => `${fmt(percentile(x.synth.s2.ttfbMs, 50), 0)} / ${fmt(percentile(x.synth.s2.ttfbMs, 90), 0)} (n=${x.synth.s2.ttfbMs.length}) / ${x.synth.s2.hedges} / ${x.synth.s2.hedgeWins} / ${x.synth.s2.cacheRead}+${x.synth.s2.cacheWrite}`),
+    // OOS iterations 2 and 3: the two ARM markers. They are summed into tasks.jsonl and carried through `--resume`,
+    // and until these rows existed they appeared nowhere in the artefact a human reads — the numbers reached the
+    // file and stopped one hop short of the table the arm is judged from.
+    row('warm plane: mode / offered / screened / confirmed / mismatches / fallbacks', (x) => warmCell(x.synth)),
+    row('deadline growth arm', (x) => x.synth.deadlineGrowth ?? 'n/a'),
   ];
 }
 
