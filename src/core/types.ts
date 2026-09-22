@@ -9,6 +9,7 @@
 // contract 1.1 (2026-09-20): additive TUI/session extensions per docs/TUI-DESIGN.md §15; every new field on an existing type is optional; CheckpointEnvelope.version stays 1.
 // contract 1.2 (2026-09-21): conversational intake, Jev providers, mode setting, chat labels per docs/TUI-DESIGN-2.md §6; items 4 and 7 add required fields (every constructor and fake is listed there), item 8 is optional, everything else is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 // contract 1.2 (2026-09-21): docs/LLM-JEV-DESIGN.md §4.8 / §4.12 / §9.3 generator-channel fields, reconciled from stages 1–3 (this file is the single source; provider/* and synth/llm/* declare no contract shapes of their own). All additive and optional.
+// contract 1.4 (2026-09-21): coordination — pause points, context meter, registry API per docs/COORDINATION-DESIGN.md §12.0; every item is optional or a new union member; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
 
@@ -389,7 +390,7 @@ export interface StepTiming {
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
-export type InterruptReason = 'signal' | 'human_abort' | 'wall_time' | 'error';
+export type InterruptReason = 'signal' | 'human_abort' | 'wall_time' | 'error' | 'human_pause'; // contract 1.4 (§12.0.2 P4/P5, W0 item 1): a pause-now that skipped or cut the judge
 
 export interface StepRecord {
   step: number;
@@ -964,6 +965,22 @@ export interface CheckpointState {
   error?: { stage: StageName; code: string };
   /** §9.1 rule 1: a discarded (uncommitted) step */
   interrupted: { step: number; stage: StageName; proposal: Proposal | null } | null;
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §7.2, §12.0.4 "state the card reads"): what a pause-now left behind for `--replay` —
+   * the run-relative cache file, the targets' hashes at the pause, whether a replay is possible, how much of the proposal had
+   * streamed. Present only while `interrupted` names the same step; dropped with it (checkpoint/resume.ts fold, commit).
+   */
+  interruptedDetail?: InterruptedDetail;
+  /**
+   * contract 1.4 (§12.0.2 "when emitted"): the pause point the final `human_pause` write recorded, so the resume card has it
+   * without the heartbeat (the design puts it on `Heartbeat.pausePoint?`; the state carries the same object). Never restored
+   * into a resumed engine's status; the resumed run's next checkpoint drops it.
+   */
+  pausePoint?: PausePoint;
+  /** contract 1.4 (§12.0.3): compactions over the run's life, all resumes (ContextUsage.compactions) */
+  compactions?: number;
+  /** contract 1.4 (§12.0.3): ISO time of the last compaction (ContextUsage.lastCompactionAt) */
+  lastCompactionAt?: string | null;
   consecutiveStageFailures: number;
   /** Σ decisions.length over committed steps (RunResult.jevQuestions); absent in older checkpoints */
   jevQuestions?: number;
@@ -1025,9 +1042,15 @@ export interface RunMeta {
   createdAt: string;
   /** appended on resume (§9); TUI-DESIGN §9.4 (additive): `source` names who raised it — `/budget` (pending value) or a flag; absent reads as 'flag' */
   overrides: { setting: string; from: string; to: string; atStep: number; source?: '/budget' | 'flag' }[];
-  resumes: { resumedAt: string; previousStopReason: StopReason | null }[];
+  /** contract 1.4 (§7.4): `reopened` marks a `--force` resume of an ended run */
+  resumes: { resumedAt: string; previousStopReason: StopReason | null; reopened?: true }[];
   resolvedJevModel: string | null;
   jevModelDrift: { step: number; served: string } | null;
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §7.4, §12.0.2): `end` was requested — written with the final `human_pause` state;
+   * `createEngine` refuses a resume without `--force`; a forced reopen writes `null` (the run is live again; nothing is deleted).
+   */
+  ended?: RunEnded | null;
   /** TUI-DESIGN §15 item 10: the session this run belongs to (default: the run id itself) */
   sessionId?: string;
   /** TUI-DESIGN §15 item 10: the run this one was seeded from (§8.3) */
@@ -1080,6 +1103,8 @@ export interface GeneratorCallRecord {
   servedProvider?: string;
   /** true when the sample hit HTTP 429 — the call recovered by retrying (a completed row), or ended rate-limited (a cancelled row; `CancelledGeneration.rateLimited`) */
   rateLimited?: true;
+  /** contract 1.4 (COORDINATION-DESIGN §7.2, §11 row 41): a late row of a pause-now-discarded step — the number a replay reuses, so the two attempts stay apart */
+  discarded?: true;
 }
 
 export interface CheckpointStore {
@@ -1087,8 +1112,8 @@ export interface CheckpointStore {
   create(meta: RunMeta): Promise<void>;
   /** CheckpointError, exit 3 */
   load(): Promise<{ meta: RunMeta; state: CheckpointState; recoveredFrom: 'state' | 'prev' }>;
-  /** TUI-DESIGN §15 item 10: patch type gains 'title' | 'instructions' | 'git' (git: scalar replace) */
-  updateMeta(patch: Partial<Pick<RunMeta, 'overrides' | 'resumes' | 'resolvedJevModel' | 'jevModelDrift' | 'title' | 'instructions' | 'git'>>): Promise<void>;
+  /** TUI-DESIGN §15 item 10: patch type gains 'title' | 'instructions' | 'git' (git: scalar replace); contract 1.4: 'ended' (scalar replace; null clears it on a forced reopen, §7.4) */
+  updateMeta(patch: Partial<Pick<RunMeta, 'overrides' | 'resumes' | 'resolvedJevModel' | 'jevModelDrift' | 'title' | 'instructions' | 'git' | 'ended'>>): Promise<void>;
   /** write tmp + fsync; rename state.json -> state.prev.json; rename tmp -> state.json */
   writeState(state: CheckpointState): Promise<void>;
   /** synchronous last resort used by shutdown() on a second Ctrl-C or on 'exit' */
@@ -1106,6 +1131,10 @@ export interface CheckpointStore {
   lastWarnings?(): readonly string[];
   /** TUI-DESIGN §15 item 10: ui.json; optional so injected fakes still type-check */
   writeUi?(ui: Json): Promise<void>;
+  /** contract 1.4 (COORDINATION-DESIGN §7.2, §6.4): `<runDir>/cache/<rel>` — a redacted JSON file on a per-file chain, tmp + rename; `rel` is relative to `cache/`, no `..`; optional so injected fakes compile */
+  writeCache?(rel: string, json: Json): Promise<void>;
+  /** contract 1.4 (§7.3 step 3): read `<runDir>/cache/<rel>` back; null when missing or not JSON */
+  readCache?(rel: string): Promise<Json | null>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1158,7 +1187,7 @@ export interface SessionRef {
   intake?: { kind: IntakeKind; probability: number; requestHash: string };
 }
 export type BlockingKind = 'jev-unreachable' | 'key-rejected' | 'spend-limit' | 'checkpoint-degraded' | 'drift' | 'sandbox-unavailable';
-export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin';
+export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin' | 'pause'; // contract 1.4 (§12.0.2 P6): `pause()` while a pane is awaited wakes the blocker with 'pause'
 export interface BlockingRequest {
   id: string;
   step: number;
@@ -1177,7 +1206,8 @@ export interface EngineOptions {
   /** realpath is taken by createWorkspace() */
   workspace: string;
   runsDir: string;
-  resume?: { runId: string; force: boolean };
+  /** contract 1.4 (§7.3 step 3, §12.0.1): `replay` = restore the paused proposal (or the arrived LLM samples) from `cache/step-<n>.json` behind the hash gate; both existing callers compile */
+  resume?: { runId: string; force: boolean; replay?: boolean };
   provider: Provider;
   decider: Decider;
   confirmer: Confirmer;
@@ -1369,6 +1399,12 @@ export interface EngineStatus {
   generatorTokens?: { used: number; cap: number | null };
   /** TUI-DESIGN-2 §2.4 / §2.6 (additive): the cost basis of the Jev requests this process made, for the `/jev` line-2 suffix; null before any */
   jevCostBasis?: JevCostBasis | null;
+  /** contract 1.4 (COORDINATION-DESIGN §7.2): `pause({ at: 'now' })` was requested; with `stage === 'execute'` the status reads `pausing · execute finishes first` */
+  pauseNow?: boolean;
+  /** contract 1.4 (§12.0.2): the last PausePoint of this process — set when the point is reached, until run:end; null on a fresh or resumed engine */
+  pausePoint?: PausePoint | null;
+  /** contract 1.4 (§12.0.3): the context meter; the context-policy branch fills it, the shape is fixed here */
+  context?: ContextUsage;
 }
 
 // TUI-DESIGN §15 item 14: notices and renderer labels
@@ -1433,7 +1469,11 @@ export type EngineEvent =
   | { type: 'workspace'; git: RunGitMeta; instructions: InstructionRecord[]; sandbox: SandboxLevel }
   | { type: 'blocking:request'; request: BlockingRequest }
   | { type: 'blocking:resolved'; id: string; answer: BlockingAnswer; auto: boolean } // auto = the jev-unreachable timer answered
-  | { type: 'secret-ack'; step: number | null; count: number };
+  | { type: 'secret-ack'; step: number | null; count: number }
+  // contract 1.4 (COORDINATION-DESIGN §12.0.2): emitted in finish('human_pause') after the final state.json settled and before the stop line and run:end
+  | { type: 'pause:point'; point: PausePoint }
+  // contract 1.4 (§8.6, §12.0.4): the context-policy branch emits it after a compaction; `chars` is before → after
+  | { type: 'context:compacted'; step: number; chars: { before: number; after: number }; by: 'code' | 'llm' };
 
 export type EngineEventType = EngineEvent['type'];
 
@@ -1445,6 +1485,111 @@ export interface EngineEmitter {
 
 /** TUI-DESIGN §15 item 15 */
 export type SteerResult = { ok: true; index: number; queued: number } | { ok: false; reason: 'empty' | 'full' | 'finished'; queued: number };
+
+// ---------------------------------------------------------------------------------------
+// Pause points, resumable state and the context meter — contract 1.4 (docs/COORDINATION-DESIGN.md §7, §12.0.2, §12.0.3)
+// ---------------------------------------------------------------------------------------
+
+/** §12.0.2: why the run stopped at its pause point */
+export type PausePointReason =
+  | 'step' // pause({ at: 'step' }): the in-flight step committed whole, stopped at the loop top
+  | 'now' // pause({ at: 'now' }): the stage in flight was discarded under rule 1; proposal + arrived samples cached (§7.2)
+  | 'now-after-execute' // pause({ at: 'now' }) landed during execute: execute finished, judge skipped, step committed (§7.2 execute row, §11 row 29)
+  | 'pane' // pause() while a blocking pane was awaited: blockWaker → answer 'pause' (§7.2, §11 row 37)
+  | 'worktree'; // lease-conflict [t]: stopped for relocation; interruptedDetail.relocate set (§4.3 step 5)
+
+/** §12.0.2: where a run stopped, so that /resume can continue it; one per pause point, emitted before `run:end` */
+export interface PausePoint {
+  /** the step /resume starts at: the discarded step's own number (rule 1) or the committed step + 1 */
+  step: number;
+  /** llm-jev only: the 0-based LLM round (the engine's sample batch within the step) whose arrived samples are cached; null otherwise */
+  round: number | null;
+  /** where the pause landed: the stage in flight, 'idle' at a step boundary, 'pane' while a blocking pane was open */
+  phase: StageName | 'idle' | 'pane';
+  reason: PausePointReason;
+  /** 'boundary' = nothing to replay (resume is a fresh step at intent); else the run-relative cache file of §7.2 that `--replay` reads */
+  resumableAt: 'boundary' | `cache/step-${number}.json`;
+  /** §7.2: (proposal !== null || arrived samples > 0) && !executeStarted && the cache write succeeded; the card shows `[r]` only when this AND every targetsSha still matches */
+  replayable: boolean;
+  /** phase === 'pane': which pane */
+  pane?: BlockingKind;
+  /** the last `synth` event's phase of this step when the pause landed inside synthesize() (jev-only / llm-jev) */
+  synthPhase?: string;
+  /** who asked — the index line's `by` (§5.3) */
+  by: 'self' | `peer:${string}` | `device:${string}`;
+  /** `end` (§7.4) was requested: RunMeta.ended is written with the final state; /resume needs --force */
+  end: boolean;
+}
+
+/** §7.2 / §12.0.2: `Engine.pause(opts)` */
+export interface PauseOptions {
+  /** 'step' (default) = the loop-top pause; 'now' = the soft interrupt (an `execute` in flight still runs to its end) */
+  at?: 'step' | 'now';
+  /** who asked (§5.3); default 'self' */
+  by?: PausePoint['by'];
+}
+
+/** §7.4 / §12.0.2: `Engine.end(opts)` */
+export interface EndOptions {
+  at?: 'step' | 'now';
+  /** default 'human' */
+  by?: 'human' | 'remote';
+}
+
+/** §7.4: `RunMeta.ended` */
+export interface RunEnded {
+  at: string;
+  by: 'human' | 'remote';
+}
+
+/** §7.2 / §12.0.4: what a pause-now (or a lease-conflict discard) left for `--replay`; lives beside `CheckpointState.interrupted` */
+export interface InterruptedDetail {
+  cache: `cache/step-${number}.json`;
+  /** sha256 of every target at the pause (null: missing or past the hashing budget); the replay gate re-hashes and compares */
+  targetsSha: Record<string, string | null>;
+  replayable: boolean;
+  /** streamed generator chars of the partial proposal (kept for the card, never replayed as a proposal) */
+  partialChars: number;
+  /** §4.3 step 5: stopped for relocation to a worktree */
+  relocate?: { slug: string; reason: 'lease-conflict' };
+}
+
+/** §5.1 / §12.0.4: what `Engine.deliver` reports back for the ack */
+export type AckOutcome = 'delivered' | 'applied' | 'refused' | 'expired';
+
+/**
+ * §5.4 / §12.0.4: the structural subset of a coordination `Message` (src/coordination/records.ts) the engine reads — the real
+ * record is assignable to it. `type` 'pause' | 'end' apply (§12.0.2 P8; `text` 'now' selects the soft interrupt); every other
+ * type is refused until the messaging wave routes notes and steers (W3).
+ */
+export interface DeliverableMessage {
+  id: string;
+  type: string;
+  text: string;
+  from: { deviceId: string; label: string; sessionId: string | null; runId: string | null };
+  by?: 'human' | 'engine';
+}
+
+/** §8.7 / §12.0.3: the context meter (`EngineStatus.context`) */
+export interface ContextUsage {
+  promptChars: number;
+  budgetChars: number;
+  pct: number;
+  files: number;
+  historyEntries: number;
+  summaryAt: number | null;
+  lastCompactionStep: number | null;
+  /** round(promptChars / CHARS_PER_TOKEN) with CHARS_PER_TOKEN = 3.4 (§8.2) — an estimate; the generator's tokenizer is never called */
+  tokensInWindow: number;
+  /** round(budgetChars / CHARS_PER_TOKEN) = 0.55 × generatorContextTokens (§8.2), so pct === round(100 × tokensInWindow / windowBudget) */
+  windowBudget: number;
+  /** compactions over the run's life, all resumes; persisted as CheckpointState.compactions? */
+  compactions: number;
+  /** ISO time of the last compaction, null before any; persisted as CheckpointState.lastCompactionAt? */
+  lastCompactionAt: string | null;
+  /** §8.6: the compactor in force */
+  compaction: 'code' | 'llm' | 'off';
+}
 
 export interface Engine {
   readonly runId: string;
@@ -1465,8 +1610,17 @@ export interface Engine {
   steer(text: string, opts?: { secretsAcked?: number }): SteerResult;
   /** TUI-DESIGN §15 item 15: withdraw the newest queued directive; null when none */
   unsteer(): PendingDirective | null;
-  /** TUI-DESIGN §15 item 15: stop with 'human_pause' at the next §9.1 rule-1 point; idempotent */
-  pause(): void;
+  /**
+   * TUI-DESIGN §15 item 15: stop with 'human_pause' at the next §9.1 rule-1 point; idempotent. contract 1.4 (COORDINATION-DESIGN
+   * §7.2, §12.0.2): `at: 'step'` (default) is that; `at: 'now'` is the soft interrupt through the shared controller (the draft
+   * snapshot is cached, the stage in flight is discarded under rule 1; an `execute` in flight is never cut); `now` after `step`
+   * upgrades, `step` after `now` is a no-op; stays void.
+   */
+  pause(opts?: PauseOptions): void;
+  /** contract 1.4 (§7.4): pause(opts) + `RunMeta.ended = { at, by }` written with the final state; /resume then needs --force; optional so injected fakes compile */
+  end?(opts?: EndOptions): void;
+  /** contract 1.4 (§5.4, §12.0.2 P8): a coordination message addressed to this run's session; returns what happened, which the caller writes into the ack */
+  deliver?(msg: DeliverableMessage): AckOutcome;
   /** TUI-DESIGN §15 item 15: end the current retry sleep early (F12 `[r]`); false when no retry sleep is active */
   retryNow(): boolean;
   /** TUI-DESIGN §15 item 15: a renderer-originated transcript line while the run is live (§15.1); false once finished, then the renderer keeps it local */
@@ -1534,7 +1688,8 @@ export interface SessionHost {
   /** addSecret per span BEFORE engine.steer; secretsAcked = spans.length */
   steer(text: string, opts: { secretSpans: readonly string[] }): SteerResult;
   unsteer(): PendingDirective | null;
-  pause(): void;
+  /** contract 1.4 (§12.0.1 rule 3): widened to the engine's shape — `at: 'now'` is `/pause now` and the `run:pauseNow` chord */
+  pause(opts?: PauseOptions): void;
   abort(reason: 'human_abort'): void;
   retryNow(): boolean;
   /** a renderer-originated line: engine.annotate() while a run is live, else a local `[ui]` item + `--json` `ui` line (§15.1) */

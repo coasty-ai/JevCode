@@ -27,6 +27,7 @@ import type {
   GitState,
   JevProvider,
   JevRequestRecord,
+  Json,
   PlanDraft,
   Provider,
   Question,
@@ -477,6 +478,10 @@ export interface FakeStore extends CheckpointStore {
   writeDelayMs: number;
   /** when set, writeState never resolves (forced-exit tests) */
   stallWrites: boolean;
+  /** contract 1.4: `cache/<rel>` files written by writeCache(), keyed by rel */
+  cache: Map<string, Json>;
+  /** contract 1.4: when set, writeCache rejects with this error (a cache write failure is a notice only) */
+  failCache: Error | null;
   seed(meta: RunMeta, state: CheckpointState, extraSteps?: StepRecord[]): void;
   last(): CheckpointState | undefined;
 }
@@ -495,6 +500,8 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
     flushes: 0,
     writeDelayMs: 0,
     stallWrites: false,
+    cache: new Map(),
+    failCache: null,
     seed(meta, state, extraSteps = []) {
       st.meta = meta;
       st.states.push(state);
@@ -519,6 +526,16 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
       if (patch.title !== undefined) st.meta.title = patch.title;
       if (patch.instructions !== undefined) st.meta.instructions = patch.instructions;
       if (patch.git !== undefined) st.meta.git = structuredClone(patch.git);
+      // contract 1.4 (§7.4): `ended` replaces as a scalar; null clears it
+      if (patch.ended !== undefined) st.meta.ended = patch.ended === null ? null : { ...patch.ended };
+    },
+    async writeCache(rel, json) {
+      if (st.failCache !== null) throw st.failCache;
+      st.cache.set(rel, structuredClone(json));
+    },
+    async readCache(rel) {
+      const v = st.cache.get(rel);
+      return v === undefined ? null : structuredClone(v);
     },
     async writeState(state) {
       if (st.stallWrites) await new Promise<void>(() => undefined);
@@ -642,7 +659,7 @@ export interface HarnessOptions {
   /** jev-only: the propose stage */
   synthesizer?: Synthesizer;
   task?: string;
-  resume?: { runId: string; force: boolean };
+  resume?: { runId: string; force: boolean; replay?: boolean };
   now?: () => number;
   exit?: (code: number) => never;
   /** TUI-DESIGN-2 §6 item 8: `provider` names the naming scheme of the drift check (engine default openrouter) */

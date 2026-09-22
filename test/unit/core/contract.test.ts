@@ -7,24 +7,37 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type {
+  AckOutcome,
   AskResult,
+  BlockingAnswer,
   ChatLabel,
+  CheckpointState,
+  CheckpointStore,
+  ContextUsage,
   DeciderConfig,
+  Engine,
   EngineEvent,
   EngineOptions,
+  EngineStatus,
   HistoryStore,
   IntakeKind,
+  InterruptReason,
   JevProvider,
   JevProviderSource,
   JevUsage,
+  PauseOptions,
+  PausePoint,
+  PausePointReason,
   Renderer,
   ResolvedConfig,
+  RunMeta,
   SessionHost,
   SessionRef,
   StepRecord,
   SubmitOutcome,
   UiLabel,
 } from '../../../src/core/types.js';
+import { AbortError } from '../../../src/errors.js';
 import { createMockDecider } from '../../../src/jev/mock.js';
 import { JEV_PROVIDERS } from '../../../src/jev/providers.js';
 
@@ -97,6 +110,65 @@ describe('contract 1.2 (TUI-DESIGN-2 §6 items 1–13)', () => {
   it('item 9: ResolvedConfig.mode is an EngineMode (compile-time)', () => {
     const pick: Pick<ResolvedConfig, 'mode'> = { mode: 'jev-only' };
     expect(pick.mode).toBe('jev-only');
+  });
+
+  it('contract 1.4 header: directly after the last earlier contract line (1.3 when present), names §12.0 and keeps the envelope at 1', () => {
+    const lines = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8').split('\n');
+    const headers = lines.map((l, i) => [l, i] as const).filter(([l]) => l.startsWith('// contract '));
+    const i14 = lines.findIndex((l) => l.startsWith('// contract 1.4 (2026-09-21)'));
+    expect(i14).toBeGreaterThan(0);
+    // the 1.4 line is the last header, immediately below the previous one (the TUI's 1.3 line slots in above it)
+    expect(headers.at(-1)?.[1]).toBe(i14);
+    expect(headers.at(-2)?.[1]).toBe(i14 - 1);
+    const i13 = lines.findIndex((l) => l.startsWith('// contract 1.3 (2026-09-21)'));
+    if (i13 >= 0) expect(i13).toBeLessThan(i14);
+    expect(lines[i14]).toContain('docs/COORDINATION-DESIGN.md §12.0');
+    expect(lines[i14]).toContain('CheckpointEnvelope.version stays 1');
+  });
+
+  it('contract 1.4 shapes: PausePoint / PauseOptions / the events / the verbs / the state fields compile in both the old and the new form', () => {
+    const reasons: PausePointReason[] = ['step', 'now', 'now-after-execute', 'pane', 'worktree'];
+    expect(reasons).toHaveLength(5);
+    const point: PausePoint = { step: 3, round: null, phase: 'idle', reason: 'step', resumableAt: 'boundary', replayable: false, by: 'self', end: false };
+    const rich: PausePoint = { ...point, round: 1, phase: 'pane', pane: 'jev-unreachable', reason: 'pane', resumableAt: 'cache/step-3.json', replayable: true, synthPhase: 'llm:fire', by: 'peer:rpywkq2v', end: true };
+    const events: EngineEvent[] = [
+      { type: 'pause:point', point: rich },
+      { type: 'context:compacted', step: 3, chars: { before: 12_000, after: 4_000 }, by: 'code' },
+      { type: 'pause:requested', step: 3 },
+      { type: 'blocking:resolved', id: 'b1', answer: 'pause', auto: false },
+    ];
+    expect(events).toHaveLength(4);
+    const answers: BlockingAnswer[] = ['retry', 'continue', 'stop', 'login', 'pin', 'pause'];
+    expect(answers).toHaveLength(6);
+    const interrupts: InterruptReason[] = ['signal', 'human_abort', 'wall_time', 'error', 'human_pause'];
+    expect(interrupts).toHaveLength(5);
+    // the zero-arg pause() still compiles for every fake; a fake without end / deliver still satisfies Engine
+    const pauses: PauseOptions[] = [{}, { at: 'step' }, { at: 'now', by: 'device:mbp' }];
+    expect(pauses).toHaveLength(3);
+    const calls: string[] = [];
+    const fakeEngine: Pick<Engine, 'pause' | 'end' | 'deliver'> = { pause: () => calls.push('pause') };
+    fakeEngine.pause();
+    fakeEngine.pause({ at: 'now' });
+    expect(fakeEngine.end).toBeUndefined();
+    expect(fakeEngine.deliver).toBeUndefined();
+    expect(calls).toEqual(['pause', 'pause']);
+    const host: Pick<SessionHost, 'pause'> = { pause: () => undefined };
+    host.pause({ at: 'now' });
+    const ack: AckOutcome[] = ['delivered', 'applied', 'refused', 'expired'];
+    expect(ack).toHaveLength(4);
+    const status: Pick<EngineStatus, 'pausePoint' | 'pauseNow' | 'context'> = { pausePoint: null, pauseNow: false };
+    expect(status.context).toBeUndefined();
+    const usage: ContextUsage = { promptChars: 1, budgetChars: 2, pct: 50, files: 0, historyEntries: 0, summaryAt: null, lastCompactionStep: null, tokensInWindow: 0, windowBudget: 1, compactions: 0, lastCompactionAt: null, compaction: 'code' };
+    expect(usage.compaction).toBe('code');
+    const resumes: NonNullable<EngineOptions['resume']>[] = [{ runId: 'r', force: false }, { runId: 'r', force: true, replay: true }];
+    expect(resumes[0]?.replay).toBeUndefined();
+    const stateBits: Pick<CheckpointState, 'interruptedDetail' | 'pausePoint' | 'compactions' | 'lastCompactionAt'>[] = [{}, { interruptedDetail: { cache: 'cache/step-1.json', targetsSha: {}, replayable: true, partialChars: 0 }, pausePoint: point, compactions: 0, lastCompactionAt: null }];
+    expect(stateBits).toHaveLength(2);
+    const meta: Pick<RunMeta, 'ended' | 'resumes'>[] = [{ resumes: [] }, { ended: { at: 't', by: 'remote' }, resumes: [{ resumedAt: 't', previousStopReason: 'human_pause', reopened: true }] }, { ended: null, resumes: [] }];
+    expect(meta).toHaveLength(3);
+    const store: Pick<CheckpointStore, 'writeCache' | 'readCache'> = {};
+    expect(store.writeCache).toBeUndefined();
+    expect(new AbortError('human_pause').exitCode).toBe(4);
   });
 
   it('item 10 (W0 half): SubmitOutcome exists and submit() may resolve with it or with nothing until §3.8 lands', async () => {

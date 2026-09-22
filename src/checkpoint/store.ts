@@ -10,7 +10,7 @@
 import { randomBytes } from 'node:crypto';
 import { renameSync, unlinkSync } from 'node:fs';
 import { appendFile, readFile, rename, stat, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join, normalize, posix, sep } from 'node:path';
 import { writeFileAtomic, writeFileAtomicSync } from '../core/atomic.js';
 import { sha256Hex } from '../core/hash.js';
 import { isJsonArray, isJsonObject, parseJson } from '../core/json.js';
@@ -50,7 +50,22 @@ export const CHECKPOINT_FILES = {
   tmp: 'tmp',
   /** cleared composer drafts, redacted (§10.7) */
   drafts: 'drafts',
+  /** contract 1.4 (COORDINATION-DESIGN §7.2, §6.4): pause-now snapshots `cache/step-<n>.json` and the LLM round cache, written by writeCache() */
+  cache: 'cache',
 } as const;
+
+/**
+ * contract 1.4: a `cache/` relative path is validated, never trusted — relative, normalised, no `..`, no empty component,
+ * `/` separators only (the same containment rule as the run id). Returns the posix-normalised rel or null.
+ */
+export function cacheRelPath(rel: string): string | null {
+  if (typeof rel !== 'string' || rel.length === 0 || rel.length > 256) return null;
+  if (isAbsolute(rel) || rel.includes('\\') || rel.includes('\0')) return null;
+  const norm = posix.normalize(rel);
+  if (norm === '.' || norm.startsWith('../') || norm === '..' || norm.startsWith('/')) return null;
+  if (norm.split('/').some((c) => c.length === 0 || c === '.' || c === '..')) return null;
+  return norm;
+}
 
 // ---------------------------------------------------------------------------------------
 // Disk-error classification (TUI-DESIGN §13.3, §13.5: `checkpoint degraded: <code> on <file>`)
@@ -142,6 +157,9 @@ export interface DiskCheckpointStore extends CheckpointStore {
   lastWarnings(): readonly string[];
   /** TUI-DESIGN §15 item 10: ui.json (required on the disk store; optional on the contract so fakes type-check). */
   writeUi(ui: Json): Promise<void>;
+  /** contract 1.4 (COORDINATION-DESIGN §7.2, §6.4): the cache files (required on the disk store; optional on the contract). */
+  writeCache(rel: string, json: Json): Promise<void>;
+  readCache(rel: string): Promise<Json | null>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -447,6 +465,8 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
           ...(patch.title !== undefined ? { title: patch.title } : {}),
           ...(patch.instructions !== undefined ? { instructions: patch.instructions } : {}),
           ...(patch.git !== undefined ? { git: patch.git } : {}),
+          // contract 1.4 (COORDINATION-DESIGN §7.4): `ended` replaces as a scalar; null (a --force reopen) clears it
+          ...(patch.ended !== undefined ? { ended: patch.ended } : {}),
         };
         await writeMeta(next);
       });
@@ -551,6 +571,45 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
           throw fail(`cannot write ${CHECKPOINT_FILES.ui}: ${describe(e)}`, e);
         }
       });
+    },
+
+    /**
+     * contract 1.4 (COORDINATION-DESIGN §7.2, §6.4): `<runDir>/cache/<rel>` — redacted like every artefact, tmp + rename (no
+     * fsync: a lost cache file costs one replay, never the run), the parent created on demand, serialised per file.
+     */
+    writeCache(rel: string, json: Json) {
+      const norm = cacheRelPath(rel);
+      if (norm === null) return Promise.reject(fail(`cache path ${JSON.stringify(rel)} is not a relative path inside ${CHECKPOINT_FILES.cache}/`));
+      const file = `${CHECKPOINT_FILES.cache}/${norm}`;
+      return enqueue(file, async () => {
+        const text = JSON.stringify(redactDeep(json, redact));
+        if (text === undefined) throw fail(`cannot serialise ${file}`);
+        try {
+          await writeFileAtomic(join(dir, CHECKPOINT_FILES.cache, ...norm.split('/')), `${text}\n`, { mkdir: true });
+        } catch (e) {
+          throw fail(`cannot write ${file}: ${describe(e)}`, e);
+        }
+      });
+    },
+
+    /** contract 1.4 (§7.3 step 3): the cache file back as JSON; null when missing, unreadable or not JSON (the replay is then simply unavailable). */
+    async readCache(rel: string) {
+      const norm = cacheRelPath(rel);
+      if (norm === null) return null;
+      const path = join(dir, CHECKPOINT_FILES.cache, ...norm.split('/'));
+      // defence in depth: the joined path must stay under <runDir>/cache (normalise() folds any separator the platform accepts)
+      const base = join(dir, CHECKPOINT_FILES.cache) + sep;
+      if (!normalize(path).startsWith(base)) return null;
+      let text: string;
+      try {
+        const st = await stat(path);
+        if (st.size > MAX_FILE_BYTES) return null;
+        text = await readFile(path, 'utf8');
+      } catch {
+        return null;
+      }
+      const parsed = parseJson(text);
+      return parsed.ok ? parsed.value : null;
     },
 
     async flush() {

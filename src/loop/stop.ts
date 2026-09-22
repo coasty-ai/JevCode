@@ -43,6 +43,8 @@ export function classifyAbort(reason: unknown): { interrupt: InterruptReason; st
   if (isAbortError(reason)) {
     if (reason.reason === 'human_abort') return { interrupt: 'human_abort', stop: 'human_abort' };
     if (reason.reason === 'signal') return { interrupt: 'signal', stop: 'signal' };
+    // contract 1.4 (COORDINATION-DESIGN §7.2, W0 item 6): the pause-now soft interrupt — exit 4, resumable without --force
+    if (reason.reason === 'human_pause') return { interrupt: 'human_pause', stop: 'human_pause' };
     return { interrupt: 'error', stop: 'error' };
   }
   return { interrupt: 'error', stop: 'error' };
