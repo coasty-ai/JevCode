@@ -164,6 +164,19 @@ describe('§0 principle 3 the state carries no value bytes', () => {
     expect(JSON.stringify(fileKindQuestions(fileCands, 'head400').state)).toContain('Today');
   });
 
+  // review defect 8 — group III sent headings regardless of `--jev-sample`, so `none` was not
+  // the promise it reads as
+  it('group III honours --jev-sample exactly as group II does: no headings under `none`', () => {
+    const none = sameMeaningQuestions(pairCands, 'none');
+    expect(JSON.stringify(none.state), 'no heading text under `none`').not.toContain('Rules');
+    // the pair itself is still asked about — only the heading payload is withheld
+    expect(Object.keys(none.questions)).toEqual(['same_meaning_0']);
+    expect(JSON.stringify(none.state)).toContain('AGENTS.md');
+    for (const sample of ['headings', 'head400'] as const) {
+      expect(JSON.stringify(sameMeaningQuestions(pairCands, sample).state), sample).toContain('Rules');
+    }
+  });
+
   it('group V is suppressed under `none`, carries no sentence under `headings`, and both under `head400` [G2.4]', () => {
     expect(contradictsQuestions(conflictCands, 'none').questions).toEqual({});
     expect(contradictsQuestions(conflictCands, 'none').groups).toEqual([]);

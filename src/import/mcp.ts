@@ -16,6 +16,7 @@
 import { IMPORT_LIMITS } from '../core/limits.js';
 import { detectSecrets, SECRET_NAME_RE } from '../core/redact.js';
 import type { Json } from '../core/types.js';
+import { inBand, isEnvReference } from './secrets.js';
 import type { McpFile, McpServerRecord, SourceTool } from './types.js';
 
 /** §3.10: the eight source dialects the atlas knows. */
@@ -179,9 +180,33 @@ function referencedVars(value: string): readonly string[] {
   return [...value.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)].map((m) => m[1]!);
 }
 
-/** §4.8.3 / §4.4.2 rule 8: a literal that must not travel — the key names a credential, or the value is one. */
-function looksLikeCredential(key: string, value: string): boolean {
-  return SECRET_NAME_RE.test(key) || detectSecrets(value).length > 0;
+/**
+ * §4.8.3 / §4.4.2 rules 2, 3 and 8: a literal that must not travel.
+ *
+ * Three tests, and all three run on the **post-normalisation** value, because a value that is
+ * *part* reference and part literal — `"Bearer sk-ant-… ${SUFFIX}"` — normalises to something
+ * that still holds the literal. Taking the reference branch on it wrote the credential straight
+ * into `.jevcode/mcp.json`.
+ *
+ *   - the key names a credential (`SECRET_NAME_RE`, rule 2);
+ *   - `detectSecrets` recognises a family in the value (rule 3);
+ *   - `band` (env only) the value sits in rule 8's entropy band. There is no Jev in this module,
+ *     and §4.4.3 group I's fallback for a band item with no answer is **secret**, so a band hit
+ *     is substituted like any other credential rather than written out. Headers do not take the
+ *     band: `AUTH_HEADER_RE` already names every header whose value is a credential by
+ *     construction, and a header legitimately carries high-entropy non-credentials (a request
+ *     id, a trace id) that no one gains by turning into a variable.
+ *
+ * A *pure* reference is never a literal and never reaches here (see `isEnvReference`), so
+ * `env: {GITHUB_TOKEN: "${GITHUB_TOKEN}"}` keeps its reference and gains no note.
+ */
+function looksLikeCredential(key: string, value: string, band = false): boolean {
+  return SECRET_NAME_RE.test(key) || detectSecrets(value).length > 0 || (band && inBand(key, value));
+}
+
+/** True when a value, already normalised, is one `${VAR}` and nothing else — §4.4.2 rule 4's free pass. */
+function isPureReference(value: string): boolean {
+  return isEnvReference(value);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -239,17 +264,19 @@ function readEnv(name: string, srv: Readonly<Record<string, Json>>, dialect: Mcp
       draft.notes.push(`env ${key} used a file reference; it was dropped — the importer never reads a referenced file`);
       continue;
     }
-    const reference = normaliseReference(value, dialect);
-    if (reference !== null) {
-      env[key] = reference;
+    // §3.10 first, then §4.8.3: the credential tests run on what would actually be written, so a
+    // value that is part reference and part literal cannot ride the reference branch out.
+    const normalised = normaliseReference(value, dialect) ?? value;
+    if (isPureReference(normalised)) {
+      env[key] = normalised;
       continue;
     }
-    if (looksLikeCredential(key, value)) {
+    if (looksLikeCredential(key, normalised, true)) {
       env[key] = `\${${varName(key)}}`;
       draft.notes.push(`env ${key} held a literal value in the source; only the name was imported`);
       continue;
     }
-    env[key] = value;
+    env[key] = normalised;
   }
   // §3.10: Codex carries variable **names**, never values
   const envKey = asString(srv['env_key']);
@@ -274,21 +301,24 @@ function readHeaders(name: string, srv: Readonly<Record<string, Json>>, dialect:
       draft.notes.push(`header ${key} used a file reference; it was dropped — the importer never reads a referenced file`);
       continue;
     }
-    const reference = normaliseReference(value, dialect);
-    if (reference !== null) {
-      headers[key] = reference;
-      for (const v of referencedVars(reference)) {
+    const normalised = normaliseReference(value, dialect) ?? value;
+    if (isPureReference(normalised)) {
+      headers[key] = normalised;
+      for (const v of referencedVars(normalised)) {
         if (SECRET_NAME_RE.test(v)) draft.notes.push(`header ${key} holds the reference \${${v}}; it is never expanded (§3.10)`);
       }
       continue;
     }
-    if (AUTH_HEADER_RE.test(key) || looksLikeCredential(key, value)) {
+    if (AUTH_HEADER_RE.test(key) || looksLikeCredential(key, normalised)) {
       const generated = `MCP_${varName(name).toUpperCase()}_${AUTH_HEADER_RE.test(key) ? 'AUTH' : varName(key).toUpperCase()}`;
       headers[key] = `\${${generated}}`;
       draft.notes.push(`header ${key} held a literal value in the source; only the name was imported (\${${generated}})`);
       continue;
     }
-    headers[key] = value;
+    headers[key] = normalised;
+    for (const v of referencedVars(normalised)) {
+      if (SECRET_NAME_RE.test(v)) draft.notes.push(`header ${key} holds the reference \${${v}}; it is never expanded (§3.10)`);
+    }
   }
   const bearer = asString(srv['bearer_token_env_var']);
   if (bearer !== null) {
@@ -355,6 +385,16 @@ export function normaliseMcp(input: NormaliseInput): NormaliseResult {
         draft.dropped.push(`${name}.url (file reference)`);
       } else {
         url = normaliseReference(rawUrl, input.dialect) ?? rawUrl;
+        // §4.8.3: a `url` is a literal like any other. `https://user:sk-ant-…@host` and
+        // `…?api_key=ghp_…` carry a credential in the string the record would keep, and this
+        // path never ran `detectSecrets` at all. The whole url is replaced by one variable
+        // name rather than surgically edited: a half-redacted url is still a url someone may
+        // paste, and §4.8.3's rule is that the *name* travels, not the value.
+        if (detectSecrets(url).length > 0) {
+          const generated = `MCP_${varName(name).toUpperCase()}_URL`;
+          url = `\${${generated}}`;
+          draft.notes.push(`url held a literal credential in the source; only the name was imported (\${${generated}})`);
+        }
         for (const v of referencedVars(url)) {
           if (SECRET_NAME_RE.test(v)) draft.notes.push(`url holds the reference \${${v}}; it is never expanded (§3.10)`);
         }

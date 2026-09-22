@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { sha256Hex } from '../../../src/core/hash.js';
-import { applyPlan, resumeImport } from '../../../src/import/apply.js';
+import { applyPlan, resumeImport, undoImport } from '../../../src/import/apply.js';
 import type { AppliedRow, ApplyOptions } from '../../../src/import/apply.js';
 import type { ImportClock, ImportPlan, ImportWriteFs, PlanRow } from '../../../src/import/types.js';
 
@@ -257,9 +257,56 @@ describe('resumeImport (§4.7.6, §1 property 10)', () => {
 
   it('a failed row in the log is NOT treated as done — only `ok: true` skips', async () => {
     const t = await tree();
-    const failed: AppliedRow = { row: 'row000000000', dest: null, sha256Before: null, sha256After: null, mode: 0, bytes: 0, at: '2026-09-21T12:00:00.000Z', ok: false, error: 'EACCES' };
+    const failed: AppliedRow = { row: 'row000000000', dest: null, destRel: '.jevcode/memory/t0.md', sha256Before: null, sha256After: null, mode: 0, bytes: 0, at: '2026-09-21T12:00:00.000Z', ok: false, error: 'EACCES' };
     const r = await resumeImport({ ...t.opts, applyLog: [failed] });
     expect(r.applied.map((a) => a.row)).toContain('row000000000');
     expect(existsSync(join(t.ws, '.jevcode', 'memory', 't0.md'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// review-engine-2026-09-22.md defect 3: a SIGKILL in the write→`appendLog` window leaves the
+// destination written and the row unlogged. The resume must re-evaluate the row against the LIVE
+// destination and must never overwrite the pre-image with post-crash bytes (§1 properties 9 and 10).
+// ---------------------------------------------------------------------------------------
+
+describe('a crash between the write and the log line (review defect 3)', () => {
+  it('re-appends nothing and leaves undo able to reach the original bytes', async () => {
+    const t = await tree();
+    const agents = join(t.ws, 'AGENTS.md');
+    const original = readFileSync(agents, 'utf8');
+    expect(original).toBe('# repo\n');
+
+    const first = await applyPlan(t.opts);
+    expect(first.exitCode).toBe(0);
+    expect(readFileSync(agents, 'utf8').split('<!-- jevcode:import ').length - 1).toBe(1);
+
+    // the crash: every destination is written, but `apply.jsonl` never made it to disk
+    await writeFile(join(t.artifactDir, 'apply.jsonl'), '', { mode: 0o600 });
+
+    const r = await resumeImport({ ...t.opts, applyLog: [] });
+    expect(r.failed).toEqual([]);
+
+    // §1 property 10: no row is applied twice — exactly ONE marker block, and the hand-written head intact
+    const after = readFileSync(agents, 'utf8');
+    expect(after.split('<!-- jevcode:import ').length - 1).toBe(1);
+    expect(after.startsWith('# repo\n')).toBe(true);
+    for (let i = 0; i < 4; i++) expect(readFileSync(join(t.ws, '.jevcode', 'memory', `t${i}.md`), 'utf8')).toBe(`topic ${i} (row00000000${i})\n`);
+
+    // §1 property 9: the pre-image is still the ORIGINAL, not the post-crash bytes
+    const u = await undoImport({
+      fs: t.opts.fs,
+      clock,
+      artifactDir: t.artifactDir,
+      lockPath: t.opts.lockPath,
+      importId: t.opts.plan.importId,
+      applyLog: r.applied,
+      manifest: r.manifest,
+      workspaceKey: t.opts.plan.workspaceKey,
+    });
+    expect(u.left).toEqual([]);
+    expect(readFileSync(agents, 'utf8')).toBe(original);
+    for (let i = 0; i < 4; i++) expect(existsSync(join(t.ws, '.jevcode', 'memory', `t${i}.md`))).toBe(false);
+    expect(u.exitCode).toBe(0);
   });
 });

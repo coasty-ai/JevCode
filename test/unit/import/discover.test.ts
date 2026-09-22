@@ -10,6 +10,7 @@ import { basename, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { IMPORT_LIMITS, type ImportLimits } from '../../../src/core/limits.js';
 import { discover, nodeImportFs, probeImport, readSource, systemClock, type DiscoverOptions } from '../../../src/import/discover.js';
+import { parseMarkdown } from '../../../src/import/parse/markdown.js';
 import { SOURCES, specById } from '../../../src/import/sources.js';
 import type { ImportClock, ImportEnvironment, ImportFs, SourceItem, SourceSpec } from '../../../src/import/types.js';
 
@@ -434,6 +435,149 @@ describe('§6 row 37 — the importer never fetches a URL', () => {
     }
     const r = await run({ env: envOf({ env: { CLAUDE_CONFIG_DIR: 'https://example.com/cc' } }) });
     expect(r.roots.some((root) => root.path.includes('://'))).toBe(false);
+  });
+});
+
+/**
+ * Review defect 8: `discover` passed no redactor at all, and `parseMarkdown` defaulted to
+ * `patternRedact` — the **six** redacting families. A heading carrying one of the **nine**
+ * warn-only ones therefore reached `SourceItem.parse.headings`, which is what `sources.jsonl`
+ * and the group-II Jev state are built from. §1 property 4 counts all fifteen.
+ */
+describe('§1 property 4 — every discovered heading is redacted against all fifteen families', () => {
+  const WARN_ONLY_NEEDLES: readonly { family: string; needle: string }[] = [
+    { family: 'aws', needle: 'AKIAIOSFODNN7EXAMPLE' },
+    { family: 'slack', needle: 'xoxb-123456789012-1234567890123-AbCdEfGhIjKlMnOpQrSt' },
+    { family: 'slack_webhook', needle: 'hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX' },
+    { family: 'pem', needle: '-----BEGIN OPENSSH PRIVATE KEY-----' },
+    { family: 'jwt', needle: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c' },
+    { family: 'stripe', needle: 'sk_live_4eC39HqLyjWDarjtT1zdp7dc' },
+    { family: 'npm', needle: 'npm_abcdefghijklmnopqrstuvwxyz0123456789' },
+    { family: 'huggingface', needle: 'hf_abcdefghijklmnopqrstuvwxyzABCDEFGH' },
+    { family: 'gitlab', needle: 'glpat-abcdefghijklmnopqrstuvwxyz' },
+  ];
+
+  it('a needle from each of the nine warn-only families is masked out of a .md heading', async () => {
+    const body = WARN_ONLY_NEEDLES.map(({ family, needle }) => `# rotated ${family} key ${needle}`).join('\n\n');
+    await write(join(home, '.claude', 'CLAUDE.md'), `${body}\n`);
+    const r = await run({ sources: only(['claude.user-instructions']), limits: limitsWith({ jevHeadings: 20 }) });
+    const headings = r.items[0]?.parse.headings ?? [];
+    expect(headings).toHaveLength(WARN_ONLY_NEEDLES.length);
+    const rendered = JSON.stringify(r.items);
+    for (const { family, needle } of WARN_ONLY_NEEDLES) expect(rendered, family).not.toContain(needle.slice(0, 12));
+    for (const [i, h] of headings.entries()) expect(h, WARN_ONLY_NEEDLES[i]?.family).toContain('[REDACTED:pattern]');
+  });
+
+  it('a .mdc heading is redacted too — parseMdc forwards the same options', async () => {
+    await write(join(repo, '.cursor', 'rules', 'style.mdc'), '---\nglobs: "**/*.ts"\n---\n# key AKIAIOSFODNN7EXAMPLE\n');
+    const r = await run({ sources: only(['cursor.rules']) });
+    expect(r.items[0]?.parse.headings).toEqual(['key [REDACTED:pattern]']);
+  });
+
+  it('DiscoverOptions.redact is the exact layer, and it is threaded into the heading redaction', async () => {
+    // §2.9's reason for putting the configured layer first: a bare password matches no family,
+    // so only a registration can catch it. `redactSpans` marks every span `[REDACTED:pattern]`,
+    // exactly as the write seam does (`leak.test.ts`), so the two do not diverge.
+    await write(join(home, '.claude', 'CLAUDE.md'), '# password hunter2-correct-horse and AKIAIOSFODNN7EXAMPLE\n');
+    const exact = (s: string): string => s.split('hunter2-correct-horse').join('[REDACTED:fixture.secret.0]');
+    const withExact = (await run({ sources: only(['claude.user-instructions']), redact: exact })).items[0]?.parse.headings?.[0] ?? '';
+    expect(withExact).toBe('password [REDACTED:pattern] and [REDACTED:pattern]');
+    // without it the family still fires, and only the bare password survives
+    const without = (await run({ sources: only(['claude.user-instructions']) })).items[0]?.parse.headings?.[0] ?? '';
+    expect(without).toBe('password hunter2-correct-horse and [REDACTED:pattern]');
+  });
+});
+
+/**
+ * Review defect 6(b): `discover` and the facade both parsed every body, so the fixed-but-still
+ * real cost of `parseMarkdown` was paid twice per file. The parse `buildItem` already did is
+ * threaded out on `DiscoverResult.docs`, keyed by `SourceItem.id` — **bounded**, because
+ * `planRows` is 2,000 and one body may be 4 MiB.
+ */
+describe('§1 property 14 — the parse is threaded out so no body is parsed twice', () => {
+  it('a markdown row carries its MarkdownDoc, identical to a fresh parse', async () => {
+    const body = '---\nname: x\n---\n# Heading\n\nAlpha beta gamma.\n';
+    await write(join(home, '.claude', 'CLAUDE.md'), body);
+    const r = await run({ sources: only(['claude.user-instructions']) });
+    const item = r.items[0];
+    expect(item).toBeDefined();
+    const doc = r.docs.get(item?.id ?? '');
+    expect(doc).toBeDefined();
+    expect(doc?.normalisedSha256).toBe(parseMarkdown(body).normalisedSha256);
+    expect(doc?.headings).toEqual(item?.parse.headings);
+    expect(doc?.frontmatter?.keys).toEqual(['name']);
+    expect(doc?.tokens).toEqual(['alpha', 'beta', 'gamma', 'heading']);
+  });
+
+  it('an .mdc row carries its doc too, and a skipped or unparsed row carries none', async () => {
+    await write(join(repo, '.cursor', 'rules', 'style.mdc'), '---\nglobs: "**/*.ts"\n---\n# Style\n');
+    await write(join(home, '.claude', 'settings.json'), '{"model":"x"}');
+    await write(join(home, '.claude', '.credentials.json'), '{"token":"never-read"}');
+    const r = await run({ sources: only(['cursor.rules', 'claude.settings.user', 'claude.credentials']) });
+    const idOf = (suffix: string): string => byDisplay(r.items, suffix)?.id ?? '';
+    expect(r.docs.get(idOf('style.mdc'))?.headings).toEqual(['Style']);
+    expect(r.docs.has(idOf('settings.json'))).toBe(false);
+    expect(r.docs.has(idOf('.credentials.json'))).toBe(false);
+  });
+
+  it('probeImport parses nothing at all, so there is nothing to thread out', async () => {
+    await write(join(home, '.claude', 'CLAUDE.md'), '# Heading\n');
+    const r = await discover({ env: envOf(), fs: nodeImportFs(), clock, sources: only(['claude.user-instructions']) });
+    expect(r.docs.size).toBe(1);
+    expect((await probeImport({ env: envOf(), fs: nodeImportFs(), clock, sources: only(['claude.user-instructions']) })).total).toBe(1);
+  });
+
+  it('the map is bounded by bytes: the rows past the budget keep their parse summary and lose only the doc', async () => {
+    // docBudget: 2 x sourceReadCapBytes of retained body text, so 8 KiB here
+    const limits = limitsWith({ sourceReadCapBytes: 4 * 1024 });
+    const big = `# Heading\n\n${'alpha beta gamma delta '.repeat(120)}`;
+    expect(big.length).toBeGreaterThan(2 * 1024);
+    for (const name of ['a.md', 'b.md', 'c.md', 'd.md', 'e.md']) await write(join(home, '.claude', 'rules', name), big);
+    const r = await run({ sources: only(['claude.rules.user']), limits });
+    expect(r.items).toHaveLength(5);
+    expect(r.docs.size).toBeGreaterThan(0);
+    expect(r.docs.size).toBeLessThan(5);
+    let bytes = 0;
+    for (const doc of r.docs.values()) bytes += doc.text.length;
+    expect(bytes).toBeLessThanOrEqual(2 * limits.sourceReadCapBytes);
+    for (const item of r.items) expect(item.parse).toMatchObject({ ok: true, headings: ['Heading'] });
+  });
+
+  it('the map is bounded by entries too', async () => {
+    const limits = limitsWith({ planRows: 8 }); // docBudget: planRows / 4 = 2 entries
+    for (const name of ['a.md', 'b.md', 'c.md', 'd.md', 'e.md']) await write(join(home, '.claude', 'rules', name), `# ${name}\n`);
+    const r = await run({ sources: only(['claude.rules.user']), limits });
+    expect(r.items).toHaveLength(5);
+    expect(r.docs.size).toBe(2);
+  });
+});
+
+/**
+ * Not in the review — found by the lead while wiring the atlas destinations. Items are keyed by
+ * realpath, so `display` is measured against the canonicalised workspace (`wsReal`); `home`
+ * never got the same treatment, so a `$HOME` reached through a symlink (`/var/…` against a
+ * `/private/var/…` realpath, which is every macOS `mkdtemp`) stopped folding to `~/…`. That is
+ * not cosmetic: `ApplyOptions.sourcePath` inverts `display` to re-read the source (§4.7.2), so
+ * every home-scoped row would fail its re-read, and an absolute home path would be baked into
+ * `MemoryProvenance.path` and `sources.jsonl`.
+ */
+describe('§4.2.5 — display folds to ~/… even when home is reached through a symlink', () => {
+  it('an item, its root display and the transcript cwd notice all use the canonical home', async () => {
+    const linked = join(tmp, 'homelink');
+    await symlink(home, linked);
+    await write(join(home, '.claude', 'CLAUDE.md'), '# user instructions\n');
+    await write(join(home, '.claude', 'projects', 'slug', 'a.jsonl'), JSON.stringify({ type: 'summary', sessionId: 's1', cwd: join(home, 'work'), gitBranch: 'main' }));
+    const r = await discover({
+      env: envOf({ home: linked, workspace: join(linked, 'ws'), gitRoot: null }),
+      fs: nodeImportFs(),
+      clock,
+      sources: only(['claude.user-instructions', 'claude.transcripts']),
+      optIn: ['claude-transcripts'],
+    });
+    expect(byDisplay(r.items, 'CLAUDE.md')?.display).toBe('~/.claude/CLAUDE.md');
+    expect(r.roots.find((root) => root.tool === 'claude-code')?.display).toBe('~/.claude');
+    const notice = r.items.find((i) => i.artefact === 'claude.transcripts')?.notices[0] ?? '';
+    expect(notice).toContain('cwd ~/work');
   });
 });
 

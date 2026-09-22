@@ -114,7 +114,9 @@ describe('§4.4.2 rule 4 / §4.8.3 — env references', () => {
   it('recognises every reference syntax as a whole value, and nothing else', () => {
     const table: [string, string | null][] = [
       ['${GITHUB_TOKEN}', 'GITHUB_TOKEN'],
-      ['${GITHUB_TOKEN:-default}', 'GITHUB_TOKEN'],
+      // a default-value form is not a *pure* reference: it carries a literal (see below)
+      ['${GITHUB_TOKEN:-default}', null],
+      ['${GITHUB_TOKEN:default}', null],
       ['${env:GITHUB_TOKEN}', 'GITHUB_TOKEN'],
       ['{env:GITHUB_TOKEN}', 'GITHUB_TOKEN'],
       ['$GITHUB_TOKEN', 'GITHUB_TOKEN'],
@@ -133,6 +135,21 @@ describe('§4.4.2 rule 4 / §4.8.3 — env references', () => {
     const v = classifyValue('mcpServers.x.env.OPENROUTER_API_KEY', 'OPENROUTER_API_KEY', '${OPENROUTER_API_KEY}');
     expect(v).toMatchObject({ secret: false, band: false, rule: 4 });
     expect(v.shape?.reference).toBe(true);
+  });
+
+  // review, lower — `${VAR:-<literal>}` was a *pure* reference, so it bypassed rules 1, 2 and the band
+  it('a default-value form carries a literal, so it is not the free pass rule 4 gives a pure reference', () => {
+    const withDefault = '${TOKEN:-sk-ant-api03-0123456789012345678901234567890123456789}';
+    expect(referenceName(withDefault)).toBe(null);
+    expect(isEnvReference(withDefault)).toBe(false);
+    expect(shapeOf(withDefault).reference).toBe(false);
+    // …and the literal inside it is now reachable by the rules that catch literals
+    expect(classifyValue('mcpServers.x.env.TOKEN', 'TOKEN', withDefault)).toMatchObject({ secret: true, rule: 3 });
+    expect(classifyValue('a.myToken', 'myToken', '${MY_TOKEN:-hunter2hunter2}')).toMatchObject({ secret: true, rule: 2 });
+    // the forms that carry no literal at all are still pure references
+    for (const pure of ['${TOKEN}', '${env:TOKEN}', '{env:TOKEN}', '$TOKEN', '%TOKEN%']) {
+      expect(referenceName(pure), pure).toBe('TOKEN');
+    }
   });
 });
 
@@ -164,8 +181,27 @@ describe('§4.4.2 rules 1–3 and the band', () => {
       expect(classifyValue(`x.${name}`, name, '9f8e7d6c5b4a39281706f5e4d3c2b1a0998877665544332211ffeeddccbbaa99').band, name).toBe(false);
     }
     // just under the length floor, and the wrong charset, both stay out of the band
-    expect(inBand('clientId', shapeOf('a'.repeat(BAND_MIN_LENGTH - 1) + ''))).toBe(false);
-    expect(inBand('clientId', shapeOf('this is a sentence with spaces in it'))).toBe(false);
+    expect(inBand('clientId', 'a'.repeat(BAND_MIN_LENGTH - 1))).toBe(false);
+    expect(inBand('clientId', 'this is a sentence with spaces in it')).toBe(false);
+  });
+
+  // review, lower — the floor was the *medium bucket* (2.5 b/c); the design says 3.2, and
+  // `ENTROPY_BAND_BITS` was declared and never read
+  it('rule 8’s entropy floor is ENTROPY_BAND_BITS (3.2 b/c), not the medium bucket (2.5)', () => {
+    expect(ENTROPY_BAND_BITS).toBe(3.2);
+    // 24 chars over 8 distinct symbols, uniform ⇒ exactly 3.0 b/c: medium bucket, below the floor
+    const belowFloor = 'abcdefghabcdefghabcdefgh';
+    expect(entropyBits(belowFloor)).toBeCloseTo(3.0, 10);
+    expect(shapeOf(belowFloor)).toMatchObject({ charset: 'alnum', entropyBucket: 'medium', length: 24 });
+    expect(inBand('clientId', belowFloor), '3.0 b/c is below the 3.2 floor').toBe(false);
+    expect(classifyValue('a.clientId', 'clientId', belowFloor)).toMatchObject({ band: false, rule: 9 });
+
+    // 20 chars over 10 distinct symbols ⇒ 3.3219 b/c: still the medium bucket, but above the floor
+    const aboveFloor = 'abcdefghijabcdefghij';
+    expect(entropyBits(aboveFloor)).toBeGreaterThan(ENTROPY_BAND_BITS);
+    expect(shapeOf(aboveFloor).entropyBucket, 'the bucket cannot decide this on its own').toBe('medium');
+    expect(inBand('clientId', aboveFloor)).toBe(true);
+    expect(classifyValue('a.clientId', 'clientId', aboveFloor)).toMatchObject({ band: true, rule: 8 });
   });
 });
 

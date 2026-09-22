@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { sha256Hex } from '../../../src/core/hash.js';
-import { applyPlan, undoImport } from '../../../src/import/apply.js';
+import { applyPlan, preKeyFor, undoImport } from '../../../src/import/apply.js';
 import type { AppliedRow, ApplyOptions } from '../../../src/import/apply.js';
 import type { ImportClock, ImportManifest, ImportPlan, ImportWriteFs, PlanRow } from '../../../src/import/types.js';
 
@@ -248,7 +248,8 @@ describe('undoImport (§4.7.6, §1 property 9, §8.2 R3)', () => {
   it('a pre-image that does not match what was recorded is left alone too', async () => {
     const a = await applied();
     const row = a.log.find((l) => l.dest?.endsWith('kept.md'))!;
-    await writeFile(join(a.artifactDir, 'pre', row.row), 'somebody rewrote the snapshot\n', { mode: 0o600 });
+    // the snapshot is keyed by DESTINATION (review defect 2), not by row
+    await writeFile(join(a.artifactDir, 'pre', preKeyFor(row.dest!)), 'somebody rewrote the snapshot\n', { mode: 0o600 });
     const r = await undoImport(undoOptions(a));
     expect(r.left.map((l) => l.why)).toContain('review — the pre-image does not match what was recorded; left alone');
     expect(readFileSync(join(a.ws, '.jevcode', 'memory', 'kept.md'), 'utf8')).toBe('imported for rowkept000002\n');
@@ -290,10 +291,165 @@ describe('undoImport (§4.7.6, §1 property 9, §8.2 R3)', () => {
     const a = await applied();
     const poisoned: AppliedRow[] = [
       ...a.log,
-      { row: 'rowfailed0001', dest: join(a.ws, '.jevcode', 'memory', 'kept.md'), sha256Before: null, sha256After: null, mode: 0, bytes: 0, at: '2026-09-21T12:00:00.000Z', ok: false, error: 'EACCES' },
+      { row: 'rowfailed0001', dest: join(a.ws, '.jevcode', 'memory', 'kept.md'), destRel: '.jevcode/memory/kept.md', sha256Before: null, sha256After: null, mode: 0, bytes: 0, at: '2026-09-21T12:00:00.000Z', ok: false, error: 'EACCES' },
     ];
     const r = await undoImport(undoOptions(a, { applyLog: poisoned }));
     expect(r.restored).toHaveLength(3);
     expect(readFileSync(join(a.ws, '.jevcode', 'memory', 'kept.md'), 'utf8')).toBe('the original bytes\nwith two lines\n');
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// the adversarial review's undo-side defects (review-engine-2026-09-22.md defect 2, and the
+// "undo re-creates a destination the user deleted" / "entryMatches suffix" items under "Lower")
+// ---------------------------------------------------------------------------------------
+
+interface Custom {
+  dir: string;
+  ws: string;
+  artifactDir: string;
+  lockPath: string;
+  opts: ApplyOptions;
+  log: readonly AppliedRow[];
+  manifest: ImportManifest;
+}
+
+/** An apply over a hand-written row set, so one destination can be shared by two rows. */
+async function applyCustom(
+  rows: readonly { id: string; dest: string; action: PlanRow['action']; scope?: PlanRow['scope']; body: string }[],
+  existing: Readonly<Record<string, { text: string; mode: number }>> = {},
+): Promise<Custom> {
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'jev-undo2-')));
+  dirs.push(dir);
+  const ws = join(dir, 'ws');
+  await mkdir(ws, { recursive: true });
+  for (const [rel, what] of Object.entries(existing)) {
+    const abs = join(ws, rel);
+    await mkdir(dirname(abs), { recursive: true });
+    await writeFile(abs, what.text, { mode: what.mode });
+    await chmod(abs, what.mode);
+  }
+  const planRows: PlanRow[] = [];
+  for (const spec of rows) {
+    const src = join(dir, `${spec.id}.md`);
+    await writeFile(src, spec.body, { mode: 0o644 });
+    const st = await stat(src);
+    planRows.push({
+      id: spec.id,
+      source: { id: spec.id, display: `~/${spec.id}.md`, tools: ['claude-code'], sha256: sha256Hex(spec.body), bytes: st.size, mtimeMs: st.mtimeMs },
+      class: 'memory',
+      dest: spec.dest,
+      action: spec.action,
+      scope: spec.scope ?? 'project',
+      bytes: spec.body.length,
+      why: 'test',
+      warnings: [],
+    });
+  }
+  const plan: ImportPlan = {
+    v: 1,
+    importId: IMPORT_ID,
+    at: '2026-09-21T12:00:00.000Z',
+    jevcodeVersion: '0.3.0',
+    workspace: ws,
+    workspaceKey: ws,
+    gitRoot: ws,
+    trust: 'trust',
+    roots: [],
+    rows: planRows,
+    budget: { memoryBytes: 0, memoryMax: 1, indexLines: 0, indexMax: 1 },
+    jev: { requests: 0, questions: 0, usd: 0, fallbacks: 0 },
+    cannotRead: [],
+    notices: [],
+  };
+  const artifactDir = join(dir, 'imports', IMPORT_ID);
+  const lockPath = join(dir, 'imports', '.lock');
+  const opts: ApplyOptions = {
+    plan,
+    fs: nodeWriteFs(),
+    clock,
+    destRoots: { project: ws, projectLocal: ws, user: join(dir, 'cfg') },
+    artifactDir,
+    lockPath,
+    manifest: null,
+    consent: 'tty',
+    approved: planRows.map((r) => r.id),
+    render: async (_row, text) => ({ text, mode: 0o644, warnings: [] }),
+    sourcePath: (row) => join(dir, `${row.id}.md`),
+  };
+  const result = await applyPlan(opts);
+  expect(result.failed).toEqual([]);
+  expect(result.demoted).toEqual([]);
+  return { dir, ws, artifactDir, lockPath, opts, log: result.applied, manifest: result.manifest };
+}
+
+function undoCustom(c: Custom): Parameters<typeof undoImport>[0] {
+  return { fs: c.opts.fs, clock, artifactDir: c.artifactDir, lockPath: c.lockPath, importId: IMPORT_ID, applyLog: c.log, manifest: c.manifest, workspaceKey: c.ws };
+}
+
+describe('two rows that share one destination (review defect 2, §1 property 9)', () => {
+  it('snapshots the destination once and unwinds it to the ORIGINAL bytes', async () => {
+    const original = '# repo\n\nhand-written\n';
+    const c = await applyCustom(
+      [
+        { id: 'rowappend0001', dest: 'AGENTS.md', action: 'append', body: 'first imported block\n' },
+        { id: 'rowappend0002', dest: 'AGENTS.md', action: 'append', body: 'second imported block\n' },
+      ],
+      { 'AGENTS.md': { text: original, mode: 0o644 } },
+    );
+    const dest = join(c.ws, 'AGENTS.md');
+    // both rows really did append, so row 2's pre-state is NOT the original
+    expect(readFileSync(dest, 'utf8').split('<!-- jevcode:import ').length - 1).toBe(2);
+    expect(c.log).toHaveLength(2);
+
+    const r = await undoImport(undoCustom(c));
+
+    expect(r.left).toEqual([]);
+    expect(r.restored).toEqual([dest]);
+    expect(readFileSync(dest, 'utf8')).toBe(original);
+    expect(statSync(dest).mode & 0o777).toBe(0o644);
+    expect(r.exitCode).toBe(0);
+    // both entries for that destination are gone, because the destination really was restored
+    expect(r.manifest.workspaces[c.ws] ?? []).toEqual([]);
+  });
+});
+
+describe('a destination the human deleted after the import (§4.7.6)', () => {
+  it('is left alone, never re-created from the pre-image', async () => {
+    const a = await applied();
+    const gone = join(a.ws, '.jevcode', 'memory', 'kept.md');
+    await rm(gone);
+
+    const r = await undoImport(undoOptions(a));
+
+    expect(existsSync(gone)).toBe(false);
+    expect(r.restored).not.toContain(gone);
+    expect(r.left.map((l) => l.dest)).toContain(gone);
+    expect(r.left.find((l) => l.dest === gone)?.why).toMatch(/left alone$/);
+    expect(r.exitCode).toBe(2);
+    // and its manifest entry survives, because nothing was restored for it
+    expect((r.manifest.workspaces[a.opts.plan.workspaceKey] ?? []).map((e) => e.dest)).toEqual(['.jevcode/memory/kept.md']);
+  });
+});
+
+describe('manifest entries are matched by exact key, not by path suffix (§4.7.6)', () => {
+  it('a monorepo package AGENTS.md restore does not drop the root AGENTS.md entry', async () => {
+    const c = await applyCustom(
+      [
+        { id: 'rowrootagent1', dest: 'AGENTS.md', action: 'append', body: 'root block\n' },
+        { id: 'rowpkgagents1', dest: 'packages/app/AGENTS.md', action: 'append', body: 'package block\n' },
+      ],
+      { 'AGENTS.md': { text: '# root\n', mode: 0o644 }, 'packages/app/AGENTS.md': { text: '# package\n', mode: 0o644 } },
+    );
+    // the human edited the ROOT file after the import, so only the package file is restored
+    await writeFile(join(c.ws, 'AGENTS.md'), '# root, edited by hand\n', { mode: 0o644 });
+
+    const r = await undoImport(undoCustom(c));
+
+    expect(r.restored).toEqual([join(c.ws, 'packages', 'app', 'AGENTS.md')]);
+    expect(readFileSync(join(c.ws, 'packages', 'app', 'AGENTS.md'), 'utf8')).toBe('# package\n');
+    // `AGENTS.md` is a path *suffix* of `<ws>/packages/app/AGENTS.md`; the root entry is a different
+    // destination and must survive — exactly the mis-match the review found
+    expect((r.manifest.workspaces[c.ws] ?? []).map((e) => e.dest)).toEqual(['AGENTS.md']);
   });
 });

@@ -9,7 +9,7 @@
  */
 import { basename, dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { sha256Hex } from '../../core/hash.js';
-import { patternRedact } from '../../core/redact.js';
+import { PATTERN_MARKER, detectSecrets, redactSpans, type ExactDetector } from '../../core/redact.js';
 import { IMPORT_LIMITS } from '../../core/limits.js';
 import { isWithin } from '../../sandbox/paths.js';
 import type { ExecutableSegment, Frontmatter, ImportRef, MarkdownDoc } from '../types.js';
@@ -21,17 +21,37 @@ const BIDI_RE = /[\u{200e}\u{200f}\u{202a}-\u{202e}\u{2066}-\u{2069}]/gu;
 const ANSI_RE = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g;
 /** C0 and DEL, keeping `\n` and `\t`. */
 const CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
-/** Block-level HTML comments: a comment that owns its lines (Claude strips these when loading). */
-const BLOCK_COMMENT_RE = /^[ \t]*<!--[\s\S]*?-->[ \t]*(?:\r?\n|$)/gm;
 /** A heading line, outside fences. */
 const HEADING_RE = /^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$/;
 /** The most tokens one document contributes to the O(N²) Jaccard pass. */
 const MAX_TOKENS = 4096;
 
-/** §4.3: knobs `parseMarkdown` takes; the defaults are the §2.8 bounds and `patternRedact`. */
+/**
+ * §2.9 / §1 property 4: the **pattern layer**, all fifteen families.
+ *
+ * `patternRedact` masks only the six *redacting* families, so a heading carrying one of the nine
+ * **warn-only** ones (`AKIA…`, `xox…`, a PEM header, a JWT, `sk_live_…`, `npm_…`, `hf_…`,
+ * `glpat-…`, a Slack webhook) went through it untouched and reached `sources.jsonl` and the
+ * group-II Jev request body. §1 property 4 counts all fifteen, so every seam that can carry
+ * source text uses this instead — the same `redactSpans(s, detectSecrets(s, exact))` shape
+ * `test/unit/import/leak.test.ts` pins for the write seam.
+ *
+ * `exact` is the session redactor's exact `SecretSet` layer, threaded from
+ * `planImport({ redact })` (§2.9 puts the configured layer first, because a bare password like
+ * `hunter2-…` matches no family). With none, the fifteen families are still scanned.
+ *
+ * It lives here because `parseMarkdown` is its first consumer — the heading default — and
+ * `src/import/**` may not add to `src/core/redact.ts`.
+ */
+export function redactSecrets(s: string, exact?: ExactDetector): string {
+  return redactSpans(s, detectSecrets(s, exact), PATTERN_MARKER);
+}
+
+/** §4.3: knobs `parseMarkdown` takes; the defaults are the §2.8 bounds and `redactSecrets`. */
 export interface MarkdownOptions {
   headingLimit?: number;
   headingCells?: number;
+  /** §2.9: applied to every heading before it can reach an artefact or Jev; defaults to `redactSecrets` */
   redact?: (s: string) => string;
 }
 
@@ -96,9 +116,84 @@ export function looksBinary(buf: Buffer, sniffBytes: number = IMPORT_LIMITS.bina
   return head.length > 0;
 }
 
-/** §4.3: drop HTML comments that own their lines, before hashing (Claude's own loader rule). */
+/** JS line terminators, so `^` and `$` under the `m` flag are reproduced exactly. */
+function isLineTerminator(c: string | undefined): boolean {
+  return c === '\n' || c === '\r' || c === ' ' || c === ' ';
+}
+
+/**
+ * `[ \t]*(?:\r?\n|$)` starting at `from`: the index the comment's match ends at, or -1 when the
+ * tail does not match. `[ \t]*` is greedy and never usefully backtracks, because neither
+ * alternative can consume a space or a tab. Under `m`, `$` also holds *before* a line
+ * terminator, which is how a lone `\r` (or `U+2028`) ends a match without being consumed.
+ */
+function commentTailEnd(text: string, from: number): number {
+  let t = from;
+  while (t < text.length && (text[t] === ' ' || text[t] === '\t')) t++;
+  if (t >= text.length) return t;
+  if (text[t] === '\r' && text[t + 1] === '\n') return t + 2;
+  if (text[t] === '\n') return t + 1;
+  return isLineTerminator(text[t]) ? t : -1;
+}
+
+/** The first `^` position (under `m`) at or after `from`, or -1 when there is none left. */
+function nextLineStart(text: string, from: number): number {
+  if (from <= 0) return 0;
+  if (from > text.length) return -1;
+  if (isLineTerminator(text[from - 1])) return from;
+  for (let i = from; i < text.length; i++) if (isLineTerminator(text[i])) return i + 1;
+  return -1;
+}
+
+/**
+ * §4.3: drop HTML comments that own their lines, before hashing (Claude's own loader rule) —
+ * `BLOCK_COMMENT_RE`'s replacement, one index pass instead of a backtracking regex.
+ *
+ * The lazy `[\s\S]*?` re-scanned to the end of the body for **every** line-leading `<!--` whose
+ * `-->` candidates all failed the end-of-line tail, which is quadratic: 665 ms for 400 KiB with
+ * no `-->` at all, 11.4 s for 400 KiB of `<!-- open` over `--> x`, and about twenty minutes at
+ * the 4 MiB `sourceReadCapBytes` (the third quadratic of review defect 6's family, and the
+ * worst). Whether a `-->` can close a comment depends only on what follows it, never on where
+ * the comment opened, so the valid closers are found once up front and a monotone cursor walks
+ * them: one pass over the text, one over the closers.
+ */
 export function stripBlockHtmlComments(text: string): string {
-  return text.replace(BLOCK_COMMENT_RE, '');
+  if (!text.includes('<!--')) return text;
+  const closers: number[] = [];
+  const closerEnds: number[] = [];
+  for (let p = text.indexOf('-->'); p !== -1; p = text.indexOf('-->', p + 1)) {
+    const end = commentTailEnd(text, p + 3);
+    if (end >= 0) {
+      closers.push(p);
+      closerEnds.push(end);
+    }
+  }
+  if (closers.length === 0) return text;
+
+  let out = '';
+  let copied = 0;
+  let pos = 0;
+  let ci = 0;
+  while (pos <= text.length) {
+    const start = nextLineStart(text, pos);
+    if (start === -1) break;
+    let open = start;
+    while (open < text.length && (text[open] === ' ' || text[open] === '\t')) open++;
+    // the body is lazy, so the comment closes at the first *valid* `-->` at or after its body
+    let end = -1;
+    if (text.startsWith('<!--', open)) {
+      while (ci < closers.length && closers[ci]! < open + 4) ci++;
+      if (ci < closers.length) end = closerEnds[ci]!;
+    }
+    if (end === -1) {
+      pos = start + 1;
+      continue;
+    }
+    out += text.slice(copied, start);
+    copied = end;
+    pos = end;
+  }
+  return out + text.slice(copied);
 }
 
 /** Fenced blocks and inline code spans, in source order and never overlapping. */
@@ -145,8 +240,36 @@ function codeRegions(text: string): CodeRegion[] {
   return out.sort((a, b) => a.start - b.start);
 }
 
+/**
+ * §1 property 14: the region holding `index`, by binary search.
+ *
+ * `codeRegions` emits regions that are sorted by `start` and never overlap — a span is only
+ * scanned while no fence is open — so the containing region is unique and the rightmost region
+ * whose `start <= index` is the only candidate. The linear `Array.some` this replaces ran once
+ * per line, once per `@ref` and once per plain executable form, which made a fence-heavy 400 KiB
+ * body cost 26 s (`review-engine-2026-09-22.md` defect 6): the heading loop's 5-heading
+ * short-circuit cannot fire when the headings are inside the fences.
+ */
+function regionAt(regions: readonly CodeRegion[], index: number): CodeRegion | null {
+  let lo = 0;
+  let hi = regions.length - 1;
+  let best: CodeRegion | null = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const r = regions[mid]!;
+    if (r.start <= index) {
+      best = r;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return best !== null && index < best.end ? best : null;
+}
+
 function inRegion(regions: readonly CodeRegion[], index: number, kinds: readonly CodeRegion['kind'][]): boolean {
-  return regions.some((r) => kinds.includes(r.kind) && index >= r.start && index < r.end);
+  const r = regionAt(regions, index);
+  return r !== null && kinds.includes(r.kind);
 }
 
 /** §4.3 / §6 row 35: `@path` references outside every fence and code span. */
@@ -168,21 +291,56 @@ function findRefs(text: string, regions: readonly CodeRegion[]): ImportRef[] {
   return out;
 }
 
-function pushIfFree(out: ExecutableSegment[], seg: ExecutableSegment): void {
-  if (out.some((s) => seg.start >= s.start && seg.end <= s.end)) return;
-  out.push(seg);
+/**
+ * Is `seg` already covered by a segment recorded in `stream`?
+ *
+ * Each stream is discovered strictly left to right — the code regions are sorted and do not
+ * overlap, and one regex's matches never nest — so `start` and `end` both increase along it and
+ * the rightmost entry starting at or before `seg.start` carries that prefix's largest `end`.
+ * One binary search therefore gives the same verdict as scanning the whole list. The
+ * `Array.some` this replaces was the sibling of review defect 6: it made a body dense in
+ * *unfenced* `$(…)` forms quadratic (400 KiB cost 1.2 s, and minutes at the 4 MiB
+ * `sourceReadCapBytes`). §2.6 cannot be satisfied by recording fewer segments — a segment that
+ * is not recorded is not fenced inert either.
+ */
+function coveredBy(stream: readonly ExecutableSegment[], seg: ExecutableSegment): boolean {
+  let lo = 0;
+  let hi = stream.length - 1;
+  let best = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (stream[mid]!.start <= seg.start) {
+      best = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return best >= 0 && stream[best]!.end >= seg.end;
 }
 
-/** §2.6: every executable segment in a body — the six forms that must become inert fences. */
+function pushIfFree(streams: readonly (readonly ExecutableSegment[])[], into: ExecutableSegment[], seg: ExecutableSegment): void {
+  for (const s of streams) if (coveredBy(s, seg)) return;
+  into.push(seg);
+}
+
+/**
+ * §2.6: every executable segment in a body — the six forms that must become inert fences.
+ *
+ * The segments are collected in one stream per source (the code regions, then each plain form)
+ * so `pushIfFree` can binary-search instead of rescanning; `streams.flat()` restores the
+ * original push order, and the final sort is stable, so the output is unchanged.
+ */
 function findExecutables(text: string, regions: readonly CodeRegion[]): ExecutableSegment[] {
-  const out: ExecutableSegment[] = [];
+  const fromRegions: ExecutableSegment[] = [];
+  const streams: ExecutableSegment[][] = [fromRegions];
   for (const r of regions) {
-    if (r.kind === 'fence' && r.info.startsWith('!')) out.push({ form: 'fence-bang', start: r.start, end: r.end, text: text.slice(r.start, r.end) });
+    if (r.kind === 'fence' && r.info.startsWith('!')) fromRegions.push({ form: 'fence-bang', start: r.start, end: r.end, text: text.slice(r.start, r.end) });
     if (r.kind === 'span') {
       const inner = text.slice(r.start, r.end).replace(/^`+/, '').replace(/`+$/, '');
       const bang = r.start > 0 && text[r.start - 1] === '!';
-      if (bang) pushIfFree(out, { form: 'backtick-bang', start: r.start - 1, end: r.end, text: inner });
-      else if (inner.startsWith('!')) pushIfFree(out, { form: 'backtick-cmd', start: r.start, end: r.end, text: inner.slice(1) });
+      if (bang) pushIfFree(streams, fromRegions, { form: 'backtick-bang', start: r.start - 1, end: r.end, text: inner });
+      else if (inner.startsWith('!')) pushIfFree(streams, fromRegions, { form: 'backtick-cmd', start: r.start, end: r.end, text: inner.slice(1) });
     }
   }
   const plain: readonly { re: RegExp; form: ExecutableSegment['form'] }[] = [
@@ -191,15 +349,17 @@ function findExecutables(text: string, regions: readonly CodeRegion[]): Executab
     { re: /\$\(([^)\n]*)\)/g, form: 'dollar-paren' },
   ];
   for (const { re, form } of plain) {
+    const into: ExecutableSegment[] = [];
+    streams.push(into);
     re.lastIndex = 0;
     for (;;) {
       const m = re.exec(text);
       if (m === null) break;
       if (inRegion(regions, m.index, ['fence'])) continue;
-      pushIfFree(out, { form, start: m.index, end: m.index + m[0]!.length, text: m[1]! });
+      pushIfFree(streams, into, { form, start: m.index, end: m.index + m[0]!.length, text: m[1]! });
     }
   }
-  return out.sort((a, b) => a.start - b.start);
+  return streams.flat().sort((a, b) => a.start - b.start);
 }
 
 /** §4.4.3 group III: the normalised token set — lowercase, punctuation dropped, frontmatter stripped. */
@@ -220,7 +380,7 @@ function tokenise(body: string): string[] {
 export function parseMarkdown(text: string, opts: MarkdownOptions = {}): MarkdownDoc {
   const limit = opts.headingLimit ?? IMPORT_LIMITS.jevHeadings;
   const cells = opts.headingCells ?? IMPORT_LIMITS.jevHeadingCells;
-  const redact = opts.redact ?? patternRedact;
+  const redact = opts.redact ?? redactSecrets;
   const norm = normaliseText(text);
   const body = stripBlockHtmlComments(norm.text);
   const fmResult = parseFrontmatter(body);

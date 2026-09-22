@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { IMPORT_LIMITS } from '../../../src/core/limits.js';
 import { applyPlan, releaseLock, resumeImport, takeLock, undoImport } from '../../../src/import/apply.js';
-import type { ApplyOptions, LockInfo } from '../../../src/import/apply.js';
+import type { AppliedRow, ApplyOptions, LockInfo } from '../../../src/import/apply.js';
 import type { ImportClock, ImportPlan, ImportWriteFs } from '../../../src/import/types.js';
 
 function nodeWriteFs(): ImportWriteFs {
@@ -244,7 +244,7 @@ describe('the widened lock (§4.7.1 [G1.4], §6 row 75)', () => {
     const log = readFileSync(join(opts.artifactDir, 'apply.jsonl'), 'utf8')
       .split('\n')
       .filter((l) => l.length > 0)
-      .map((l) => JSON.parse(l) as { row: string; ok: boolean; dest: string | null; sha256Before: string | null; sha256After: string | null; mode: number; bytes: number; at: string });
+      .map((l) => JSON.parse(l) as AppliedRow);
     const u = await undoImport({
       fs: opts.fs,
       clock: opts.clock,

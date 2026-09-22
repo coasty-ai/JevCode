@@ -176,6 +176,13 @@ describe('source re-verification (§4.7.2 [G1.1])', () => {
     const sameSize = original.replace('body of', 'BODY OF');
     expect(sameSize.length).toBe(original.length);
     await writeFile(path, sameSize, { mode: 0o644 });
+    // Set the mtime EXPLICITLY rather than trusting the clock to have advanced. The size is
+    // unchanged by construction, so this test's whole premise is that the mtime differs — and
+    // §4.7.2 makes "unchanged mtime AND unchanged size" skip the re-hash deliberately. In a
+    // fast parallel run the write lands in the same millisecond the plan recorded, the
+    // pre-filter then correctly skips, and the test fails for a reason that is not a defect.
+    const later = new Date(Date.now() + 5_000);
+    await utimes(path, later, later);
 
     const r = await applyPlan(t.opts);
     expect(r.demoted.map((d) => d.row)).toEqual([victim.id]);
@@ -216,5 +223,57 @@ describe('source re-verification (§4.7.2 [G1.1])', () => {
     expect(r.failed[0]?.error).toContain('could not re-read the source');
     expect(r.exitCode).toBe(2);
     expect(r.applied).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// review-engine-2026-09-22.md, "Lower": the pre-filter never fires, because a `PlanRow` carries
+// `Date.parse(item.mtime)` (whole ms, `plan.ts:921` over `discover.ts:669`) while `stat` returns a
+// fractional `mtimeMs`. The two must be compared at the precision they share.
+// ---------------------------------------------------------------------------------------
+
+/** The mtime a real `PlanRow` carries: `discover` renders an ISO string, `plan` parses it back. */
+function plannedMtimeMs(mtimeMs: number): number {
+  return Date.parse(new Date(mtimeMs).toISOString());
+}
+
+describe('the mtime+size pre-filter at the precision the plan actually carries (§4.7.2)', () => {
+  it('fires for an untouched source, whose sub-millisecond mtime the plan could never have recorded', async () => {
+    const t = await tree();
+    // a sub-millisecond mtime, which APFS/ext4 keep and an ISO-8601 string cannot express
+    for (const row of t.plan.rows) {
+      await utimes(join(t.srcDir, `${row.source.id}.src`), 1_758_000_000.1235, 1_758_000_000.1235);
+    }
+    const fractional = statSync(join(t.srcDir, `${t.plan.rows[0]!.source.id}.src`)).mtimeMs;
+    expect(Math.floor(fractional)).not.toBe(fractional);
+
+    // the plan pins the whole-ms mtime and a deliberately WRONG sha: the row can only apply if the
+    // pre-filter fired and the re-hash was skipped (§4.7.2 "unchanged mtime AND unchanged size")
+    const rows = t.plan.rows.map((r) => ({
+      ...r,
+      source: { ...r.source, sha256: 'f'.repeat(64), mtimeMs: plannedMtimeMs(statSync(join(t.srcDir, `${r.source.id}.src`)).mtimeMs) },
+    }));
+    const r = await applyPlan({ ...t.opts, plan: { ...t.plan, rows }, approved: rows.map((row) => row.id) });
+    expect(r.demoted).toEqual([]);
+    expect(r.applied).toHaveLength(rows.length);
+    expect(r.exitCode).toBe(0);
+  });
+
+  it('does not fire for a source whose whole-millisecond mtime moved, so the re-hash still catches the swap', async () => {
+    const t = await tree();
+    const victim = t.plan.rows.find((r) => r.dest === '.jevcode/rules/style.md')!;
+    const path = join(t.srcDir, `${victim.source.id}.src`);
+    const rows = t.plan.rows.map((r) => ({ ...r, source: { ...r.source, mtimeMs: plannedMtimeMs(statSync(join(t.srcDir, `${r.source.id}.src`)).mtimeMs) } }));
+    // the swap: same size, a different second, a different sha
+    const original = readFileSync(path, 'utf8');
+    const swapped = original.replace('body of', 'BODY OF');
+    expect(swapped.length).toBe(original.length);
+    await writeFile(path, swapped, { mode: 0o644 });
+    await utimes(path, 1_758_000_100.5, 1_758_000_100.5);
+
+    const r = await applyPlan({ ...t.opts, plan: { ...t.plan, rows }, approved: rows.map((row) => row.id) });
+    expect(r.demoted.map((d) => d.row)).toEqual([victim.id]);
+    expect(r.demoted[0]?.why).toContain('source changed since the plan');
+    expect(existsSync(join(t.ws, '.jevcode', 'rules', 'style.md'))).toBe(false);
   });
 });

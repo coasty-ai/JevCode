@@ -10,6 +10,26 @@
  *
  * Pure: no I/O, no clock, no `process.env`. Every fact about a file arrives as data on
  * `FileInput`, so this module compiles and tests independently of the parsers (W1).
+ *
+ * ## Rule order: the identity rules run **before** the atlas class
+ *
+ * `classifyFile` runs the five *identity* rules — `skip:self` / `skip:third-party` /
+ * `skip:tool-managed` (1), secret basename (2), oversize (3), not-text (4), unsupported format
+ * (5) — ahead of "the atlas row declares a class", which is **rule 6**. §4.4.1 as originally
+ * written put the atlas class first, and that ordering is judged wrong: every artefact the
+ * discovery pass yields comes *from* an atlas row, so rule 1 always fired and rules 2–6 were
+ * unreachable dead code. `skip:self`, `skip:third-party`, `skip:tool-managed`, the
+ * secret-basename rule, `skip:oversize` and `skip:not-text` could not be produced at all, and
+ * once the atlas destinations are wired the repository's own `AGENTS.md` — which *is* a
+ * destination — would have been read as a source and appended to itself on every run.
+ *
+ * The departure is principled, not just a bug fix: identity answers *"this is not the human's
+ * own importable content"* — it is our own output, a vendor's bundle, a file a tool manages for
+ * itself, a credential store, too large to read, or not text at all. No declared class can
+ * override any of those, because the atlas says what a file **is about**, never whether it is
+ * ours to read. Reviewed and accepted 2026-09-22 (`docs/research/import/review-engine-2026-09-22.md`
+ * defect 11); the coordinator has amended §4.4.1 to match, and the rule numbers below — 1–5
+ * identity, 6 atlas, 7–12 content, unchanged — are that amended table's.
  */
 import { IMPORT_LIMITS } from '../core/limits.js';
 import type { Json } from '../core/types.js';
@@ -161,72 +181,77 @@ function verdict(v: FileVerdict): FileVerdict {
 }
 
 /**
- * §4.4.1: the 12 rules, in order, first match wins. **Total** — every input leaves with exactly
- * one verdict, and "unknown" is always a named `skip:*`, never a silent bucket (§4.4.0).
+ * §4.4.1 (amended 2026-09-22): the 12 rules, in order, first match wins. **Total** — every input
+ * leaves with exactly one verdict, and "unknown" is always a named `skip:*`, never a silent
+ * bucket (§4.4.0).
  *
  * Two readings the table leaves implicit are made explicit here and nowhere else:
- * - **rule 1** carries the qualifier *"and the parse succeeded"*; the failing branch is the named
- *   `skip:parse-error` of §6 row 28, attributed to rule 1.
- * - **rule 2** is the identity rule: a realpath that is one of our own destinations
+ * - **rule 1** is the identity rule: a realpath that is one of our own destinations
  *   (`skip:self`, §6 row 9), a vendor-bundled path (`skip:third-party`, §6 row 54) and a path a
  *   tool manages for itself (`skip:tool-managed`). All three say *"this file is not the human's
  *   own content"*, and the table has no other row for the last two.
+ * - **rule 6** carries the qualifier *"and the parse succeeded"*; the failing branch is the named
+ *   `skip:parse-error` of §6 row 28, attributed to rule 6. A parse error that *names* a decode
+ *   failure is `skip:not-text` at rule 4 instead — the more specific reason wins, as §6 rows
+ *   24–25 require.
+ *
+ * See the module header for why the identity rules precede the atlas class.
  */
 export function classifyFile(input: FileInput): FileVerdict {
   const { item, spec } = input;
   const name = basenameOf(item.realpath);
   const fallbackClass = classFromFormat(item.format);
 
-  // 1 — the atlas row declares a class and the parse succeeded
-  if (spec && spec.class) {
-    if (!item.parse.ok) {
-      const reason = item.parse.error ?? 'unparsable';
-      return verdict({ class: fallbackClass, skip: 'skip:parse-error', rule: 1, p: 1, band: false, why: `rule 1 (atlas ${spec.id}) — parse error: ${reason}` });
-    }
-    const always = ALWAYS_SKIP[spec.class];
-    if (always !== undefined) {
-      const cls = spec.class === 'skip' ? fallbackClass : spec.class;
-      return verdict({ class: cls, skip: always, rule: 1, p: 1, band: false, why: `rule 1 (atlas ${spec.id})` });
-    }
-    return verdict({ class: spec.class, skip: null, rule: 1, p: 1, band: false, why: `rule 1 (atlas ${spec.id})` });
-  }
-
-  // 2 — identity: our own destination, a bundled artefact, a tool-managed file
+  // 1 — identity: our own destination, a bundled artefact, a tool-managed file
   if (input.isDestination === true) {
-    return verdict({ class: fallbackClass, skip: 'skip:self', rule: 2, p: 1, band: false, why: 'rule 2 (realpath is a destination)' });
+    return verdict({ class: fallbackClass, skip: 'skip:self', rule: 1, p: 1, band: false, why: 'rule 1 (realpath is a destination)' });
   }
   if (THIRD_PARTY_RE.test(item.realpath.replace(/\\/g, '/'))) {
-    return verdict({ class: fallbackClass, skip: 'skip:third-party', rule: 2, p: 1, band: false, why: 'rule 2 (bundled; only your own skills import)' });
+    return verdict({ class: fallbackClass, skip: 'skip:third-party', rule: 1, p: 1, band: false, why: 'rule 1 (bundled; only your own skills import)' });
   }
   if (TOOL_MANAGED_RE.test(item.realpath.replace(/\\/g, '/'))) {
-    return verdict({ class: fallbackClass, skip: 'skip:tool-managed', rule: 2, p: 1, band: false, why: 'rule 2 (the tool manages this file itself)' });
+    return verdict({ class: fallbackClass, skip: 'skip:tool-managed', rule: 1, p: 1, band: false, why: 'rule 1 (the tool manages this file itself)' });
   }
 
-  // 3 — a secret basename is named, never read
+  // 2 — a secret basename is named, never read
   if (isSecretBasename(name)) {
-    return verdict({ class: 'secret', skip: 'skip:secret', rule: 3, p: 1, band: false, why: `rule 3 (secret basename ${name}; named, not read)` });
+    return verdict({ class: 'secret', skip: 'skip:secret', rule: 2, p: 1, band: false, why: `rule 2 (secret basename ${name}; named, not read)` });
   }
 
-  // 4 — oversize
+  // 3 — oversize
   if (item.bytes > IMPORT_LIMITS.sourceReadCapBytes) {
     return verdict({
       class: fallbackClass,
       skip: 'skip:oversize',
-      rule: 4,
+      rule: 3,
       p: 1,
       band: false,
-      why: `rule 4 (${thousands(item.bytes)} bytes; larger than ${IMPORT_LIMITS.sourceReadCapBytes / (1024 * 1024)} MiB)`,
+      why: `rule 3 (${thousands(item.bytes)} bytes; larger than ${IMPORT_LIMITS.sourceReadCapBytes / (1024 * 1024)} MiB)`,
     });
   }
 
-  // 5 — not text
+  // 4 — not text
   if (isNotText(input)) {
-    return verdict({ class: fallbackClass, skip: 'skip:not-text', rule: 5, p: 1, band: false, why: 'rule 5 (not valid UTF-8, or a NUL in the first 8 KiB)' });
+    return verdict({ class: fallbackClass, skip: 'skip:not-text', rule: 4, p: 1, band: false, why: 'rule 4 (not valid UTF-8, or a NUL in the first 8 KiB)' });
   }
 
-  // 6 — a format no parser claims
+  // 5 — a format no parser claims
   if (UNSUPPORTED_FORMATS.includes(item.format)) {
-    return verdict({ class: fallbackClass, skip: 'skip:unsupported', rule: 6, p: 1, band: false, why: `rule 6 (format ${item.format})` });
+    return verdict({ class: fallbackClass, skip: 'skip:unsupported', rule: 5, p: 1, band: false, why: `rule 5 (format ${item.format})` });
+  }
+
+  // 6 — the atlas row declares a class and the parse succeeded
+  if (spec && spec.class) {
+    if (!item.parse.ok) {
+      const reason = item.parse.error ?? 'unparsable';
+      return verdict({ class: fallbackClass, skip: 'skip:parse-error', rule: 6, p: 1, band: false, why: `rule 6 (atlas ${spec.id}) — parse error: ${reason}` });
+    }
+    const always = ALWAYS_SKIP[spec.class];
+    if (always !== undefined) {
+      const cls = spec.class === 'skip' ? fallbackClass : spec.class;
+      return verdict({ class: cls, skip: always, rule: 6, p: 1, band: false, why: `rule 6 (atlas ${spec.id})` });
+    }
+    return verdict({ class: spec.class, skip: null, rule: 6, p: 1, band: false, why: `rule 6 (atlas ${spec.id})` });
   }
 
   const keys = frontmatterKeys(input);

@@ -529,6 +529,9 @@ export function buildPlan(input: PlanInput): ImportPlan {
   const notices: string[] = [...(input.notices ?? [])];
   const jev = input.jev ?? { answers: {}, requests: 0, questions: 0, usd: 0, fallbacks: 0 };
   const answers = jev.answers;
+  // §4.4.3 group I: built over the *uncapped* candidate list, because that is the list the facade
+  // numbered `secret_<i>` over before the row ceiling below trimmed it (review defect 5).
+  const secretIds = secretQuestionIds(input.candidates);
 
   // ---- 0. the row ceiling -------------------------------------------------------------
   let candidates = input.candidates;
@@ -637,7 +640,9 @@ export function buildPlan(input: PlanInput): ImportPlan {
   }
 
   // ---- 4. §4.5 pass 3: conflicts ------------------------------------------------------
-  const conflicts = findConflicts(candidates, verdicts, dd.band);
+  const cf = findConflicts(candidates, verdicts, dd.band);
+  const conflicts = cf.conflicts;
+  if (cf.capped) notices.push(`conflict scan capped at ${thousands(IMPORT_LIMITS.dedupePairs)} pairs (${thousands(candidates.length)} candidates)`);
   conflicts.forEach((con, i) => {
     const gid = `conflict-${i + 1}`;
     const p = resolveNoul(answers, `contradicts_${i}`);
@@ -689,7 +694,7 @@ export function buildPlan(input: PlanInput): ImportPlan {
 
     // key rows: one file is simultaneously SECRET, CONFIG/permission, WORKFLOW/exec and CONFIG/mcp
     if (c.keys && c.keys.length > 0) {
-      const keyRows = keyGroupRows(c, d, answers, jev.reason, destState, manifest, input.workspaceKey);
+      const keyRows = keyGroupRows(c, d, answers, jev.reason, destState, manifest, input.workspaceKey, secretIds);
       if (keyRows.length > 0) {
         rows.push(...keyRows);
         continue;
@@ -958,6 +963,33 @@ export function allocateSlug(base: string, tool: SourceTool | undefined, taken: 
 // §4.4.2 — one config file becomes several rows
 // ---------------------------------------------------------------------------------------
 
+/**
+ * §4.4.3 group I: which `secret_<i>` question belongs to which band key, **plan-wide**.
+ *
+ * `secretQuestions` numbers its Nouls across the whole candidate list, so a counter that restarts
+ * at every file reads file 2's key with file 1's answer — which can *demote* a real credential
+ * (review defect 5). The map is keyed by `SecretCandidate.id`, the same `<item.id>:<dotted>` the
+ * facade builds the candidates with, so the two agree by construction rather than by both
+ * happening to iterate in the same order.
+ */
+export function secretCandidateId(itemId: string, dotted: string): string {
+  return `${itemId}:${dotted}`;
+}
+
+function secretQuestionIds(candidates: readonly PlanCandidate[]): ReadonlyMap<string, string> {
+  const out = new Map<string, string>();
+  let n = 0;
+  for (const c of candidates) {
+    for (const k of c.keys ?? []) {
+      // the facade's own filter: a band key always has a shape, and only band keys are asked about
+      if (!k.band || k.shape === null) continue;
+      out.set(secretCandidateId(c.item.id, k.leaf.dotted), `secret_${n}`);
+      n += 1;
+    }
+  }
+  return out;
+}
+
 function keyGroupRows(
   c: PlanCandidate,
   d: Draft,
@@ -966,18 +998,19 @@ function keyGroupRows(
   destState: Readonly<Record<string, { sha256: string; markers: readonly string[] } | null>>,
   manifest: ImportManifest | null,
   workspaceKey: string,
+  secretIds: ReadonlyMap<string, string>,
 ): PlanRow[] {
   const keys = c.keys ?? [];
   const out: PlanRow[] = [];
   const item = c.item;
 
   // Jev group I may promote a band key into the secret class and may never demote one out of it.
-  let bandIndex = 0;
   const resolved: KeyVerdict[] = keys.map((k): KeyVerdict => {
     if (!k.band) return k;
-    const id = `secret_${bandIndex}`;
-    bandIndex += 1;
-    const a = answers[id];
+    // no id ⇒ no answer ⇒ `joinSecretVerdict(_, null)` treats the band item as a secret, which is
+    // the conservative side of §0 principle 4. Mis-keying can only over-protect, never demote.
+    const id = secretIds.get(secretCandidateId(item.id, k.leaf.dotted));
+    const a = id === undefined ? undefined : answers[id];
     const p = a && a.type === 'noul' && Number.isFinite(a.noul) ? a.noul : null;
     const joined = joinSecretVerdict({ secret: false, band: true, rule: k.rule, why: k.why }, p);
     return joined.secret ? { ...k, class: 'secret', kind: 'secret', why: joined.why } : k;
@@ -1111,34 +1144,76 @@ export function findConflicts(
   candidates: readonly PlanCandidate[],
   verdicts: ReadonlyMap<string, FileVerdict>,
   _band: readonly { a: string; b: string; jaccard: number }[],
-): readonly { a: string; b: string; noun: string; positiveMarker: string; negativeMarker: string }[] {
+  maxPairs: number = IMPORT_LIMITS.dedupePairs,
+): {
+  conflicts: readonly { a: string; b: string; noun: string; positiveMarker: string; negativeMarker: string }[];
+  pairs: number;
+  capped: boolean;
+} {
   const live = candidates.filter((c) => c.doc !== undefined && verdicts.get(c.item.id)?.skip === null);
   const out: { a: string; b: string; noun: string; positiveMarker: string; negativeMarker: string }[] = [];
+  const order = new Map<string, number>();
+  live.forEach((c, i) => order.set(c.item.id, i));
   const sets = new Map<string, ReadonlySet<string>>();
   const pos = new Map<string, { marker: string; nouns: Set<string> }[]>();
   const neg = new Map<string, { marker: string; nouns: Set<string> }[]>();
+  // **[G1.6]**, as pass 2 does it: bucket first, compare inside a bucket. The precondition's own
+  // key is the shared **noun stem** — a conflict needs a positive imperative in one file and a
+  // negative one in the other *about the same noun* — so an inverted index on that stem is both
+  // the natural bucket and an exact one: it excludes only pairs the precondition would have
+  // rejected anyway. The all-pairs pass it replaces was the last super-linear step left in the
+  // engine, and it truncated at `dedupePairs` without telling anyone.
+  const withNoun = new Map<string, { positives: string[]; negatives: string[] }>();
+  const bucketFor = (noun: string): { positives: string[]; negatives: string[] } => {
+    const found = withNoun.get(noun);
+    if (found !== undefined) return found;
+    const made = { positives: [], negatives: [] };
+    withNoun.set(noun, made);
+    return made;
+  };
   for (const c of live) {
     const text = c.doc?.text ?? '';
-    sets.set(c.item.id, new Set(c.doc?.tokens ?? []));
-    pos.set(c.item.id, markedSentences(text, POSITIVE_MARKERS));
-    neg.set(c.item.id, markedSentences(text, NEGATIVE_MARKERS));
+    const id = c.item.id;
+    sets.set(id, new Set(c.doc?.tokens ?? []));
+    const p = markedSentences(text, POSITIVE_MARKERS);
+    const n = markedSentences(text, NEGATIVE_MARKERS);
+    pos.set(id, p);
+    neg.set(id, n);
+    for (const noun of new Set(p.flatMap((s) => [...s.nouns]))) bucketFor(noun).positives.push(id);
+    for (const noun of new Set(n.flatMap((s) => [...s.nouns]))) bucketFor(noun).negatives.push(id);
   }
+
   let pairs = 0;
-  for (let i = 0; i < live.length; i++) {
-    for (let j = i + 1; j < live.length; j++) {
-      if (pairs >= IMPORT_LIMITS.dedupePairs) return out;
-      pairs++;
-      const a = live[i];
-      const b = live[j];
-      if (a === undefined || b === undefined) continue;
-      const jac = jaccardOf(sets.get(a.item.id) ?? new Set(), sets.get(b.item.id) ?? new Set());
-      if (jac < CONFLICT_BAND.lo || jac >= CONFLICT_BAND.hi) continue;
-      const hit = opposed(pos.get(a.item.id) ?? [], neg.get(b.item.id) ?? []) ?? opposed(pos.get(b.item.id) ?? [], neg.get(a.item.id) ?? []);
-      if (hit === null) continue;
-      out.push({ a: a.item.id, b: b.item.id, noun: hit.noun, positiveMarker: hit.positiveMarker, negativeMarker: hit.negativeMarker });
+  let capped = false;
+  const compared = new Set<string>();
+  const nouns = [...withNoun.keys()].sort();
+  outer: for (const noun of nouns) {
+    const bucket = withNoun.get(noun);
+    if (bucket === undefined) continue;
+    for (const p of bucket.positives) {
+      for (const n of bucket.negatives) {
+        if (p === n) continue;
+        const [x, y] = (order.get(p) ?? 0) <= (order.get(n) ?? 0) ? [p, n] : [n, p];
+        const pk = `${x}\u0000${y}`;
+        if (compared.has(pk)) continue;
+        compared.add(pk);
+        if (pairs >= maxPairs) {
+          capped = true;
+          break outer;
+        }
+        pairs++;
+        const jac = jaccardOf(sets.get(x) ?? new Set(), sets.get(y) ?? new Set());
+        if (jac < CONFLICT_BAND.lo || jac >= CONFLICT_BAND.hi) continue;
+        const hit = opposed(pos.get(x) ?? [], neg.get(y) ?? []) ?? opposed(pos.get(y) ?? [], neg.get(x) ?? []);
+        if (hit === null) continue;
+        out.push({ a: x, b: y, noun: hit.noun, positiveMarker: hit.positiveMarker, negativeMarker: hit.negativeMarker });
+      }
     }
   }
-  return out;
+  // the bucket walk visits by noun, so restore the candidates' own order: `conflict-<i>` is a
+  // stable name only if the list is
+  out.sort((p, q) => (order.get(p.a) ?? 0) - (order.get(q.a) ?? 0) || (order.get(p.b) ?? 0) - (order.get(q.b) ?? 0));
+  return { conflicts: out, pairs, capped };
 }
 
 function opposed(

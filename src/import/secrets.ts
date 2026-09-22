@@ -160,9 +160,19 @@ export function shapeOf(value: string): ValueShape {
 // ---------------------------------------------------------------------------------------
 
 const VAR = '[A-Za-z_][A-Za-z0-9_]*';
-/** `${VAR}`, `${VAR:-default}`, `${VAR:default}`, `${env:VAR}`, `{env:VAR}`, `$VAR`, `%VAR%`. */
+/**
+ * `${VAR}`, `${env:VAR}`, `{env:VAR}`, `$VAR`, `%VAR%` — the forms that hold **no value at all**.
+ *
+ * `${VAR:-default}` and `${VAR:default}` are deliberately *not* here. Rule 4 exists because
+ * `env.GITHUB_TOKEN = "${GITHUB_TOKEN}"` carries no credential byte, so it may skip rules 1, 2
+ * and the band; a default-value form carries a literal in the same string —
+ * `${TOKEN:-sk-ant-…}` — and giving it that free pass wrote the literal straight through. The
+ * shell's own expansion of the default is the *value*, so the whole value is not a reference.
+ * (`mcp.ts` still normalises `${VAR:-default}` to `${VAR}` per §3.10; the default is dropped
+ * there, so what reaches this predicate from that path is already pure.)
+ */
 const REFERENCE_FORMS: readonly RegExp[] = [
-  new RegExp(`^\\$\\{(?:env:)?(${VAR})(?::-?[^}]*)?\\}$`),
+  new RegExp(`^\\$\\{(?:env:)?(${VAR})\\}$`),
   new RegExp(`^\\{env:(${VAR})\\}$`),
   new RegExp(`^\\$(${VAR})$`),
   new RegExp(`^%(${VAR})%$`),
@@ -259,20 +269,29 @@ export function classifyValue(dotted: string, leafName: string, value: Json): Se
   if (isReference) {
     return { secret: false, band: false, rule: 4, why: `key rule 4 (env reference \${${referenceName(str ?? '') ?? ''}})`, shape };
   }
-  if (inBand(leafName, shape)) {
+  if (inBand(leafName, str)) {
     return { secret: false, band: true, rule: 8, why: `key rule 8 (band: ${shape?.length ?? 0} chars, ${shape?.charset ?? 'other'}, entropy ${shape?.entropyBucket ?? 'low'})`, shape };
   }
   return { secret: false, band: false, rule: 9, why: 'key rule 9 (config)', shape };
 }
 
-/** §4.4.2 rule 8: length ≥ 20, charset ∈ {hex, base64url, alnum}, entropy ≥ 3.2 b/c, name not allowlisted. */
-export function inBand(leafName: string, shape: ValueShape | null): boolean {
-  if (shape === null) return false;
-  if (shape.reference) return false;
-  if (shape.length < BAND_MIN_LENGTH) return false;
-  if (shape.charset !== 'hex' && shape.charset !== 'base64url' && shape.charset !== 'alnum') return false;
+/**
+ * §4.4.2 rule 8: length ≥ 20, charset ∈ {hex, base64url, alnum}, Shannon entropy ≥
+ * `ENTROPY_BAND_BITS` (3.2 b/c), the value not a pure reference and the leaf name not on the
+ * allowlist.
+ *
+ * It takes the **value**, not a `ValueShape`, because the band's floor falls *inside* the medium
+ * bucket: `entropyBucket` only says `[2.5, 3.5)`, so a shape cannot decide 3.0 from 3.3. Testing
+ * the bucket instead admitted everything from 2.5 up, which is a different rule from the one the
+ * design states. Pure, and it retains nothing: the value is read, never stored or returned.
+ */
+export function inBand(leafName: string, value: string | null): boolean {
+  if (value === null || value.length < BAND_MIN_LENGTH) return false;
+  const charset = charsetOf(value);
+  if (charset !== 'hex' && charset !== 'base64url' && charset !== 'alnum') return false;
   if (isAllowlistedLeaf(leafName)) return false;
-  return shape.entropyBucket === 'high' || shape.entropyBucket === 'medium';
+  if (isEnvReference(value)) return false;
+  return entropyBits(value) >= ENTROPY_BAND_BITS;
 }
 
 /**

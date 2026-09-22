@@ -75,61 +75,63 @@ function leaf(dotted: string, value: ConfigLeaf['value']): ConfigLeaf {
 // ---------------------------------------------------------------------------------------
 
 describe('§4.4.1 the 12 file rules, in order', () => {
-  it('rule 1 — the atlas row declares a class and the parse succeeded', () => {
-    const v = classifyFile({ item: item('/h/.claude/memory/a.md'), spec });
-    expect(v).toMatchObject({ rule: 1, class: 'memory', skip: null, p: 1, band: false });
-    expect(v.why).toBe('rule 1 (atlas claude.auto-memory.topic)');
-  });
-
-  it('rule 1 — the atlas row declares a class and the parse FAILED ⇒ skip:parse-error (§6 row 28)', () => {
-    const v = classifyFile({ item: item('/h/.claude/memory/a.md', { parse: { ok: false, error: 'unterminated frontmatter' } }), spec });
-    expect(v).toMatchObject({ rule: 1, skip: 'skip:parse-error', class: 'memory' });
-    expect(v.why).toContain('unterminated frontmatter');
-  });
-
-  it('rule 1 — a transcript and a secret atlas class become their named skips', () => {
-    expect(classifyFile({ item: item('/h/.claude/projects/x/s.jsonl'), spec: { ...spec, id: 'claude.transcripts', class: 'transcript' } })).toMatchObject({ rule: 1, skip: 'skip:transcript', class: 'transcript' });
-    expect(classifyFile({ item: item('/h/.codex/auth.json'), spec: { ...spec, id: 'codex.auth', class: 'secret' } })).toMatchObject({ rule: 1, skip: 'skip:secret', class: 'secret' });
-  });
-
-  it('rule 2 — a realpath that is one of our destinations is skip:self (§6 row 9)', () => {
+  it('rule 1 — a realpath that is one of our destinations is skip:self (§6 row 9)', () => {
     const v = classifyFile({ item: item('/ws/.jevcode/memory/project-notes.md'), isDestination: true });
-    expect(v).toMatchObject({ rule: 2, skip: 'skip:self' });
-    expect(v.why).toBe('rule 2 (realpath is a destination)');
+    expect(v).toMatchObject({ rule: 1, skip: 'skip:self' });
+    expect(v.why).toBe('rule 1 (realpath is a destination)');
   });
 
-  it('rule 2 — a bundled artefact is skip:third-party (§6 row 54)', () => {
-    expect(classifyFile({ item: item('/h/.codex/skills/.system/review-agent/SKILL.md') })).toMatchObject({ rule: 2, skip: 'skip:third-party' });
+  it('rule 1 — a bundled artefact is skip:third-party (§6 row 54)', () => {
+    expect(classifyFile({ item: item('/h/.codex/skills/.system/review-agent/SKILL.md') })).toMatchObject({ rule: 1, skip: 'skip:third-party' });
     expect(classifyFile({ item: item('/h/.codex/skills/mine/SKILL.md'), doc: doc('# mine\n\nnotes'), frontmatter: null }).skip).not.toBe('skip:third-party');
   });
 
-  it('rule 2 — a tool-managed file is skip:tool-managed', () => {
-    expect(classifyFile({ item: item('/h/.claude/statsig/cache.md') })).toMatchObject({ rule: 2, skip: 'skip:tool-managed' });
+  it('rule 1 — a tool-managed file is skip:tool-managed', () => {
+    expect(classifyFile({ item: item('/h/.claude/statsig/cache.md') })).toMatchObject({ rule: 1, skip: 'skip:tool-managed' });
   });
 
-  it('rule 3 — a secret basename is named, never read', () => {
+  it('rule 2 — a secret basename is named, never read', () => {
     for (const p of ['/ws/.env', '/h/.ssh/id_rsa', '/h/keys/server.pem', '/h/x/api.key']) {
       const v = classifyFile({ item: item(p) });
-      expect(v, p).toMatchObject({ rule: 3, skip: 'skip:secret', class: 'secret', p: 1 });
+      expect(v, p).toMatchObject({ rule: 2, skip: 'skip:secret', class: 'secret', p: 1 });
     }
-    expect(classifyFile({ item: item('/ws/.env.example') }).rule).not.toBe(3);
+    expect(classifyFile({ item: item('/ws/.env.example') }).rule).not.toBe(2);
   });
 
-  it('rule 4 — oversize (§6 row 29)', () => {
+  it('rule 3 — oversize (§6 row 29)', () => {
     const v = classifyFile({ item: item('/h/.claude/CLAUDE.md', { bytes: 4_299_161 }) });
-    expect(v).toMatchObject({ rule: 4, skip: 'skip:oversize' });
-    expect(v.why).toBe('rule 4 (4,299,161 bytes; larger than 4 MiB)');
+    expect(v).toMatchObject({ rule: 3, skip: 'skip:oversize' });
+    expect(v.why).toBe('rule 3 (4,299,161 bytes; larger than 4 MiB)');
   });
 
-  it('rule 5 — a NUL in the first 8 KiB, or a decode failure, is skip:not-text (§6 rows 24–25)', () => {
-    expect(classifyFile({ item: item('/ws/notes.md'), doc: doc('PNG\u0000\u0000ihdr') })).toMatchObject({ rule: 5, skip: 'skip:not-text' });
-    expect(classifyFile({ item: item('/ws/notes.md', { parse: { ok: false, error: 'not valid UTF-8' } }) })).toMatchObject({ rule: 5, skip: 'skip:not-text' });
+  it('rule 4 — a NUL in the first 8 KiB, or a decode failure, is skip:not-text (§6 rows 24–25)', () => {
+    expect(classifyFile({ item: item('/ws/notes.md'), doc: doc('PNG\u0000\u0000ihdr') })).toMatchObject({ rule: 4, skip: 'skip:not-text' });
+    expect(classifyFile({ item: item('/ws/notes.md', { parse: { ok: false, error: 'not valid UTF-8' } }) })).toMatchObject({ rule: 4, skip: 'skip:not-text' });
   });
 
-  it('rule 6 — js, sh and sqlite have no parser (§6 rows 27, 53)', () => {
-    expect(classifyFile({ item: item('/h/.claude/workflows/deploy.js') })).toMatchObject({ rule: 6, skip: 'skip:unsupported', class: 'command', why: 'rule 6 (format js)' });
-    expect(classifyFile({ item: item('/h/.opencode/state_5.sqlite') })).toMatchObject({ rule: 6, skip: 'skip:unsupported' });
-    expect(classifyFile({ item: item('/h/.claude/hook.sh') })).toMatchObject({ rule: 6, skip: 'skip:unsupported' });
+  it('rule 5 — js, sh and sqlite have no parser (§6 rows 27, 53)', () => {
+    expect(classifyFile({ item: item('/h/.claude/workflows/deploy.js') })).toMatchObject({ rule: 5, skip: 'skip:unsupported', class: 'command', why: 'rule 5 (format js)' });
+    expect(classifyFile({ item: item('/h/.opencode/state_5.sqlite') })).toMatchObject({ rule: 5, skip: 'skip:unsupported' });
+    expect(classifyFile({ item: item('/h/.claude/hook.sh') })).toMatchObject({ rule: 5, skip: 'skip:unsupported' });
+  });
+
+  it('rule 6 — the atlas row declares a class and the parse succeeded', () => {
+    const v = classifyFile({ item: item('/h/.claude/memory/a.md'), spec });
+    expect(v).toMatchObject({ rule: 6, class: 'memory', skip: null, p: 1, band: false });
+    expect(v.why).toBe('rule 6 (atlas claude.auto-memory.topic)');
+  });
+
+  it('rule 6 — the atlas row declares a class and the parse FAILED ⇒ skip:parse-error (§6 row 28)', () => {
+    const v = classifyFile({ item: item('/h/.claude/memory/a.md', { parse: { ok: false, error: 'unterminated frontmatter' } }), spec });
+    expect(v).toMatchObject({ rule: 6, skip: 'skip:parse-error', class: 'memory' });
+    expect(v.why).toContain('unterminated frontmatter');
+  });
+
+  it('rule 6 — a transcript and a secret atlas class become their named skips', () => {
+    expect(classifyFile({ item: item('/h/.claude/projects/x/s.jsonl'), spec: { ...spec, id: 'claude.transcripts', class: 'transcript' } })).toMatchObject({ rule: 6, skip: 'skip:transcript', class: 'transcript' });
+    expect(classifyFile({ item: item('/h/.codex/auth.json'), spec: { ...spec, id: 'codex.auth', class: 'secret' } })).toMatchObject({ rule: 6, skip: 'skip:secret', class: 'secret' });
+    // …and a secret *basename* reaches the same verdict one rule earlier, without the atlas row
+    expect(classifyFile({ item: item('/h/.claude/sessions/a.key'), spec: { ...spec, id: 'claude.session-key', class: 'secret' } })).toMatchObject({ rule: 2, skip: 'skip:secret', class: 'secret' });
   });
 
   it('rule 7 — a path-scoped rule, p = 0.95', () => {
@@ -170,16 +172,64 @@ describe('§4.4.1 the 12 file rules, in order', () => {
   });
 });
 
+describe('§4.4.1 amended 2026-09-22 — the identity rules run before the atlas class (review defect 11)', () => {
+  // Every discovered artefact carries an atlas row, so with the atlas class first these seven
+  // verdicts were unreachable and the repo’s own AGENTS.md would append to itself on every run.
+  it('rule 1 — a source that is one of our own destinations is skip:self, atlas row or not (§6 row 9)', () => {
+    expect(classifyFile({ item: item('/ws/AGENTS.md'), spec, isDestination: true })).toMatchObject({ rule: 1, skip: 'skip:self' });
+  });
+
+  it('rule 1 — a bundled artefact with an atlas row is still skip:third-party (§6 row 54)', () => {
+    expect(classifyFile({ item: item('/h/.codex/skills/.system/review-agent/SKILL.md'), spec })).toMatchObject({ rule: 1, skip: 'skip:third-party' });
+  });
+
+  it('rule 1 — a tool-managed file with an atlas row is still skip:tool-managed', () => {
+    expect(classifyFile({ item: item('/h/.claude/statsig/cache.md'), spec })).toMatchObject({ rule: 1, skip: 'skip:tool-managed' });
+  });
+
+  it('rule 2 — a secret basename under a non-secret atlas row is still named, not read (§6 row 39)', () => {
+    expect(classifyFile({ item: item('/ws/.env'), spec })).toMatchObject({ rule: 2, skip: 'skip:secret', class: 'secret' });
+  });
+
+  it('rule 3 — an oversize file with an atlas row is still skip:oversize (§6 row 29)', () => {
+    expect(classifyFile({ item: item('/h/.claude/CLAUDE.md', { bytes: 4_299_161 }), spec })).toMatchObject({ rule: 3, skip: 'skip:oversize' });
+  });
+
+  it('rule 4 — a binary with an atlas row is still skip:not-text (§6 rows 24–25)', () => {
+    expect(classifyFile({ item: item('/h/.claude/memory/a.md'), spec, doc: doc('PNG\u0000\u0000ihdr') })).toMatchObject({ rule: 4, skip: 'skip:not-text' });
+  });
+
+  it('rule 5 — an unsupported format with an atlas row is still skip:unsupported (§6 rows 27, 53)', () => {
+    expect(classifyFile({ item: item('/h/.claude/workflows/deploy.js'), spec: { ...spec, id: 'claude.workflows', class: 'command' } })).toMatchObject({ rule: 5, skip: 'skip:unsupported' });
+  });
+
+  // A consequence of the amendment worth stating out loud: the atlas's own never-import classes
+  // (`transcript`, `secret`, `skip`) are at rule 6 too, so an oversize transcript reports the
+  // oversize reason rather than the transcript one. Both are honest `skip:*` rows and neither is
+  // ever read; if the report would rather name the transcript, the fix is to hoist the
+  // `ALWAYS_SKIP` branch above rule 3, not to restore the old order.
+  it('rule 3 — a transcript over the read cap reports the oversize reason, not the transcript one', () => {
+    const big = item('/h/.claude/projects/x/s.jsonl', { bytes: 151_000_000 });
+    expect(classifyFile({ item: big, spec: { ...spec, id: 'claude.transcripts', class: 'transcript' } })).toMatchObject({ rule: 3, skip: 'skip:oversize' });
+  });
+
+  it('rule 6 — past the identity rules the atlas class still wins over every content rule', () => {
+    const v = classifyFile({ item: item('/h/.claude/memory/a.md'), spec, frontmatter: fm({ globs: 'src/**', 'argument-hint': 'x' }), doc: doc('# a\n$ARGUMENTS') });
+    expect(v).toMatchObject({ rule: 6, class: 'memory', skip: null, p: 1, band: false });
+    expect(v.why).toBe('rule 6 (atlas claude.auto-memory.topic)');
+  });
+});
+
 describe('§4.4.1 first match wins', () => {
   it('the rule number climbs as each earlier trigger is removed', () => {
     const md = doc('# heading\n\nbody', { headings: ['heading'], lines: 12 });
     const steps: { rule: number; input: FileInput }[] = [
-      { rule: 1, input: { item: item('/h/.claude/memory/a.md', { bytes: 9_000_000 }), spec, isDestination: true, frontmatter: fm({ globs: 's/**' }), doc: md } },
-      { rule: 2, input: { item: item('/h/.claude/memory/a.md', { bytes: 9_000_000 }), isDestination: true, frontmatter: fm({ globs: 's/**' }), doc: md } },
-      { rule: 3, input: { item: item('/h/.claude/memory/.env', { bytes: 9_000_000 }), frontmatter: fm({ globs: 's/**' }), doc: md } },
-      { rule: 4, input: { item: item('/h/.claude/memory/a.md', { bytes: 9_000_000 }), frontmatter: fm({ globs: 's/**' }), doc: md } },
-      { rule: 5, input: { item: item('/h/.claude/memory/a.md'), frontmatter: fm({ globs: 's/**' }), doc: doc('x\u0000y') } },
-      { rule: 6, input: { item: item('/h/.claude/memory/a.js'), frontmatter: fm({ globs: 's/**' }), doc: md } },
+      { rule: 1, input: { item: item('/h/.claude/memory/.env', { bytes: 9_000_000 }), spec, isDestination: true, frontmatter: fm({ globs: 's/**' }), doc: md } },
+      { rule: 2, input: { item: item('/h/.claude/memory/.env', { bytes: 9_000_000 }), spec, frontmatter: fm({ globs: 's/**' }), doc: md } },
+      { rule: 3, input: { item: item('/h/.claude/memory/a.md', { bytes: 9_000_000 }), spec, frontmatter: fm({ globs: 's/**' }), doc: md } },
+      { rule: 4, input: { item: item('/h/.claude/memory/a.md'), spec, frontmatter: fm({ globs: 's/**' }), doc: doc('x\u0000y') } },
+      { rule: 5, input: { item: item('/h/.claude/memory/a.js'), spec, frontmatter: fm({ globs: 's/**' }), doc: md } },
+      { rule: 6, input: { item: item('/h/.claude/memory/a.md'), spec, frontmatter: fm({ globs: 's/**' }), doc: md } },
       { rule: 7, input: { item: item('/h/.claude/memory/a.md'), frontmatter: fm({ globs: 's/**', 'argument-hint': 'x', name: 'n', description: 'd', type: 'project' }), doc: md } },
       { rule: 8, input: { item: item('/h/.claude/memory/a.md'), frontmatter: fm({ 'argument-hint': 'x', name: 'n', description: 'd', type: 'project' }), doc: md } },
       { rule: 9, input: { item: item('/h/.claude/memory/a.md'), frontmatter: fm({ name: 'n', description: 'd', type: 'project' }), doc: md } },
@@ -260,10 +310,14 @@ describe('§4.4.2 the 9 key rules', () => {
   });
 
   it('rule 4 — a pure env reference is CONFIG, not a secret (§4.8.3, §6 row 42)', () => {
-    for (const ref of ['${GITHUB_TOKEN}', '${env:GITHUB_TOKEN}', '{env:GITHUB_TOKEN}', '$GITHUB_TOKEN', '%GITHUB_TOKEN%', '${GITHUB_TOKEN:-none}']) {
+    for (const ref of ['${GITHUB_TOKEN}', '${env:GITHUB_TOKEN}', '{env:GITHUB_TOKEN}', '$GITHUB_TOKEN', '%GITHUB_TOKEN%']) {
       const v = classifyKey(leaf('mcpServers.github.env.GITHUB_TOKEN', ref));
       expect(v, ref).toMatchObject({ rule: 4, class: 'config', kind: 'reference', band: false });
     }
+    // …but `${VAR:-default}` carries a literal, so it does not get rule 4's free pass over rules
+    // 1–3 and the band. (`mcp.ts` still normalises the form to `${VAR}` per §3.10 / §6 row 42 —
+    // it drops the default rather than importing it.)
+    expect(classifyKey(leaf('mcpServers.github.env.GITHUB_TOKEN', '${GITHUB_TOKEN:-none}'))).toMatchObject({ rule: 2, class: 'secret', kind: 'secret' });
   });
 
   it('rule 5 — the permission set is suggestion-only (§6 row 51)', () => {

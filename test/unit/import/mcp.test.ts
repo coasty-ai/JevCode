@@ -172,6 +172,77 @@ describe('credentials never leave their file (§4.8.3, §4.8.1)', () => {
     expect(e?.notes).toContain('env holds the reference ${API_SECRET} for a remote server; it is never expanded (§3.10)');
   });
 
+  // review defect 4 — three paths wrote a literal credential into `.jevcode/mcp.json`
+  describe('the three paths a literal used to escape by (review defect 4)', () => {
+    it('(a) a *mixed* value — one reference beside a literal — is not waved through as a reference', () => {
+      const r = normaliseMcp(
+        input('claude-code', {
+          mcpServers: { a: { command: 'x', env: { AUTH: 'Bearer sk-ant-api03-0123456789012345678901234567890123456789 ${SUFFIX}' } } },
+        }),
+      );
+      expect(JSON.stringify(r), 'the literal must not reach mcp.json').not.toContain('sk-ant-api03');
+      expect(r.servers['a']?.env).toEqual({ AUTH: '${AUTH}' });
+      expect(r.servers['a']?.notes).toContain('env AUTH held a literal value in the source; only the name was imported');
+    });
+
+    it('(a) the same hole in `headers` — a mixed Authorization value', () => {
+      const r = normaliseMcp(
+        input('claude-code', {
+          mcpServers: { linear: { url: 'https://mcp.linear.app/mcp', headers: { Authorization: 'Bearer sk-ant-api03-0123456789012345678901234567890123456789 ${SUFFIX}' } } },
+        }),
+      );
+      expect(JSON.stringify(r)).not.toContain('sk-ant-api03');
+      expect(r.servers['linear']?.headers).toEqual({ Authorization: '${MCP_LINEAR_AUTH}' });
+    });
+
+    it('(b) `url` never saw detectSecrets — a credential in the userinfo was written verbatim', () => {
+      const r = normaliseMcp(
+        input('claude-code', { mcpServers: { remote: { type: 'http', url: 'https://user:sk-ant-api03-0123456789012345678901234567890123456789@mcp.example.com/v1' } } }),
+      );
+      expect(JSON.stringify(r), 'the credential must not reach mcp.json').not.toContain('sk-ant-api03');
+      expect(r.servers['remote']?.url).toBe('${MCP_REMOTE_URL}');
+      expect(r.servers['remote']?.notes).toContain('url held a literal credential in the source; only the name was imported (${MCP_REMOTE_URL})');
+    });
+
+    it('(b) an ordinary url is untouched', () => {
+      const r = normaliseMcp(input('claude-code', { mcpServers: { remote: { type: 'http', url: 'https://mcp.example.com/v1' } } }));
+      expect(r.servers['remote']?.url).toBe('https://mcp.example.com/v1');
+    });
+
+    it('(c) a high-entropy literal under an innocent key is in rule 8’s band, and a band item with no Jev is a secret', () => {
+      const r = normaliseMcp(input('claude-desktop', { mcpServers: { a: { command: 'x', env: { CLIENT: 'Zt4Qx9Lm2Vb7Nk1Pr6Ws3Yd8Hc5Jf0Ga' } } } }));
+      expect(JSON.stringify(r)).not.toContain('Zt4Qx9Lm');
+      expect(r.servers['a']?.env).toEqual({ CLIENT: '${CLIENT}' });
+      expect(r.servers['a']?.notes).toContain('env CLIENT held a literal value in the source; only the name was imported');
+    });
+
+    it('(c) the band’s own floors still let ordinary settings through', () => {
+      const r = normaliseMcp(
+        input('claude-desktop', {
+          // `production` is under the 20-char floor; the model name is not a band charset;
+          // `abcdefgh`×3 is 24 alnum chars at exactly 3.0 b/c, under the 3.2 entropy floor
+          mcpServers: { a: { command: 'x', env: { NODE_ENV: 'production', MODEL: 'z-ai/glm-5.3-flash', PROFILE: 'abcdefghabcdefghabcdefgh' } } },
+        }),
+      );
+      expect(r.servers['a']?.env).toEqual({ NODE_ENV: 'production', MODEL: 'z-ai/glm-5.3-flash', PROFILE: 'abcdefghabcdefghabcdefgh' });
+      expect(r.servers['a']?.notes).toBeUndefined();
+    });
+
+    it('a pure reference is still a pure reference — no substitution, no note', () => {
+      const r = normaliseMcp(input('claude-code', { mcpServers: { a: { command: 'x', env: { GITHUB_TOKEN: '${GITHUB_TOKEN}', OTHER: '${VAR:-fallback}' } } } }));
+      expect(r.servers['a']?.env).toEqual({ GITHUB_TOKEN: '${GITHUB_TOKEN}', OTHER: '${VAR}' });
+      expect(r.servers['a']?.notes ?? []).not.toContain('env GITHUB_TOKEN held a literal value in the source; only the name was imported');
+    });
+
+    it('a `${VAR:-<literal credential>}` default never travels', () => {
+      const r = normaliseMcp(
+        input('claude-code', { mcpServers: { a: { command: 'x', env: { TOKEN: '${TOKEN:-sk-ant-api03-0123456789012345678901234567890123456789}' } } } }),
+      );
+      expect(JSON.stringify(r)).not.toContain('sk-ant-api03');
+      expect(r.servers['a']?.env).toEqual({ TOKEN: '${TOKEN}' });
+    });
+  });
+
   it('a `${file:…}` env value is dropped, never read', () => {
     const r = normaliseMcp(input('windsurf', { mcpServers: { a: { command: 'x', env: { TOKEN: '${file:/etc/secrets/token}' } } } }));
     expect(r.servers['a']?.env).toBeUndefined();

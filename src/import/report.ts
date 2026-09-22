@@ -8,12 +8,16 @@
  * holds, so the report is not allowed to say something the plan does not.
  *
  * Pure and deterministic: no clock, no locale, no `process` beyond the debug gate, no ANSI, no
- * network, no writes. Byte-capped at `reportBytes`. A debug assertion refuses to return a report
- * any `REDACTING_PATTERNS` or `WARN_ONLY_PATTERNS` family matches a line of (§1 property 4).
+ * network, no writes. Byte-capped at `reportBytes`. §1 property 4 is enforced in two steps: the
+ * rendered text is redacted against all fifteen families, **and then** a debug assertion refuses
+ * to return a report any `REDACTING_PATTERNS` or `WARN_ONLY_PATTERNS` family still matches a
+ * line of. That order matters — the assertion used to run on raw output, so an attacker-chosen
+ * *filename* (`docs/AKIA….md`) aborted the whole dry run instead of being masked.
  */
 import { IMPORT_LIMITS } from '../core/limits.js';
 import { REDACTING_PATTERNS, WARN_ONLY_PATTERNS } from '../core/redact.js';
 import { clipBytes } from '../core/text.js';
+import { redactSecrets } from './parse/markdown.js';
 import type { ImportPlan, PlanRow } from './types.js';
 
 /** `--ascii` (§6 row 89): every glyph has an ASCII twin. */
@@ -261,6 +265,12 @@ export function renderReport(plan: ImportPlan, view: ReportView = 'unicode'): st
 
   let text = `${out.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd()}\n`;
   if (view === 'ascii') text = asciiFold(text);
+  // §1 property 4: redact the rendered text, **then** assert (review defect 9). Every string the
+  // report interpolates — `display`, `why`, `warnings`, `notices`, `dest` — is derived from a
+  // source the user did not write, and `display` is the worst of them because a filename is
+  // chosen by whoever made the file. The assertion below is the net for a family the redactor
+  // and the probes disagree about; it must not be the thing that a filename trips.
+  text = redactSecrets(text);
   if (Buffer.byteLength(text, 'utf8') > IMPORT_LIMITS.reportBytes) {
     const clipped = clipBytes(text, IMPORT_LIMITS.reportBytes - 80);
     text = `${clipped.text}\n\n_report clipped at ${thousands(IMPORT_LIMITS.reportBytes)} bytes_\n`;
@@ -323,6 +333,10 @@ const SECRET_PROBES: readonly { family: string; re: RegExp }[] = [...REDACTING_P
  * §4.6.2 / §1 property 4: in debug, refuse to hand back a report any secret family matches a
  * line of. The message names the family and the line number and **never the match** — a leak
  * assertion that printed the leak would be its own bug.
+ *
+ * It runs on the **redacted** text (`renderReport` masks before it asserts), so what it now
+ * catches is a divergence between `detectSecrets`' spans and these probes, not source content:
+ * a hostile filename is masked, and a real disagreement is still loud (review defect 9).
  */
 function assertNoSecretLines(text: string): void {
   if (!DEBUG) return;

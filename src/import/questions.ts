@@ -90,6 +90,11 @@ export interface QuestionBatch {
 
 const EMPTY: QuestionBatch = { state: {}, questions: {}, groups: [] };
 
+/** §4.4.3 group II: ≤ `jevHeadings` (5) per file, each clipped to `jevHeadingCells` (80). */
+function clipHeadings(headings: readonly string[]): string[] {
+  return headings.slice(0, IMPORT_LIMITS.jevHeadings).map((h) => h.slice(0, IMPORT_LIMITS.jevHeadingCells));
+}
+
 /**
  * §4.4.3: the paired Noul id for one option of one Choice. `src/jev/questions.ts pairedNouls`
  * keys by `can_<option>` alone, which is unique only when a batch holds **one** Choice; an import
@@ -216,7 +221,7 @@ export function fileKindQuestions(cands: readonly FileCandidate[], sample: JevSa
       lines: c.lines,
       fences: c.fences,
       frontmatterKeys: [...c.frontmatterKeys],
-      ...(withHeadings ? { headings: c.headings.slice(0, IMPORT_LIMITS.jevHeadings).map((h) => h.slice(0, IMPORT_LIMITS.jevHeadingCells)) } : {}),
+      ...(withHeadings ? { headings: clipHeadings(c.headings) } : {}),
     };
   });
   return { state: { files }, questions, groups: ['II'] };
@@ -231,9 +236,16 @@ export function fileKindQuestions(cands: readonly FileCandidate[], sample: JevSa
  * `[0.6, 0.9)`. Identical sha256 and Jaccard ≥ 0.9 are decided by code; below 0.6 is decided by
  * code. The state carries both paths, tools, byte counts, sha256 prefixes, heading lists, the
  * Jaccard value and the longest common heading run — never a body.
+ *
+ * `headings` obey `--jev-sample` exactly as group II's do: **never under `none`**. A heading is
+ * body text — the one payload in this group a redactor has to be right about — so the flag that
+ * says "send no sample" has to mean it here too. The pair is still asked about; only the
+ * heading lists are withheld, and the Jaccard, the byte counts and the sha256 prefixes are
+ * enough for the question to stand on.
  */
-export function sameMeaningQuestions(cands: readonly PairCandidate[]): QuestionBatch {
+export function sameMeaningQuestions(cands: readonly PairCandidate[], sample: JevSample = 'headings'): QuestionBatch {
   if (cands.length === 0) return EMPTY;
+  const withHeadings = sample !== 'none';
   const questions: Record<string, Question> = {};
   const pairs = cands.map((c, i) => {
     questions[`same_meaning_${i}`] = noul(
@@ -260,8 +272,8 @@ export function sameMeaningQuestions(cands: readonly PairCandidate[]): QuestionB
     return {
       id: c.id,
       index: i,
-      a: { path: c.a.path, tool: c.a.tool, bytes: c.a.bytes, sha8: c.a.sha8, headings: [...c.a.headings] },
-      b: { path: c.b.path, tool: c.b.tool, bytes: c.b.bytes, sha8: c.b.sha8, headings: [...c.b.headings] },
+      a: { path: c.a.path, tool: c.a.tool, bytes: c.a.bytes, sha8: c.a.sha8, ...(withHeadings ? { headings: clipHeadings(c.a.headings) } : {}) },
+      b: { path: c.b.path, tool: c.b.tool, bytes: c.b.bytes, sha8: c.b.sha8, ...(withHeadings ? { headings: clipHeadings(c.b.headings) } : {}) },
       jaccard: Number(c.jaccard.toFixed(3)),
       commonHeadingRun: c.commonHeadingRun,
     };

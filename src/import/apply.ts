@@ -196,6 +196,65 @@ export async function confineDestination(fs: ImportWriteFs, dest: string, root: 
 }
 
 /**
+ * §4.7.4 step 1 / review defect 7: is this buffer exactly what it would be after a UTF-8 round trip?
+ * `toString('utf8')` replaces every invalid sequence with U+FFFD, so a latin-1 `AGENTS.md` byte `e9`
+ * comes back as `ef bf bd` — three bytes that are not the human's file. A destination that fails this
+ * is refused, never corrected: `apply.ts` has no way to know the true encoding, and a rewrite would
+ * destroy bytes undo could not restore.
+ */
+export function isValidUtf8(buf: Buffer): boolean {
+  return Buffer.compare(Buffer.from(buf.toString('utf8'), 'utf8'), buf) === 0;
+}
+
+/**
+ * §4.7.4 step 1 / §1 property 9 / review defect 2: the `pre/` snapshot key is the **destination**,
+ * never the row. Two `append` rows can share one `AGENTS.md`; a per-row snapshot recorded row 2's
+ * pre-image as "original + row 1's block", so undo matched neither and restored nothing. Hashing the
+ * destination also keeps a hostile destination name out of the artefact directory.
+ */
+export function preKeyFor(dest: string): string {
+  return sha256Hex(dest).slice(0, 16);
+}
+
+/**
+ * One line of `pre/index.jsonl`: what a destination looked like **before** this import touched it.
+ * A destination that did not exist is recorded too, with `sha256: null` — the snapshot of an absence
+ * is what tells a resumed run that the file on disk is its own earlier write, not the human's, and
+ * tells undo to delete rather than restore (review defect 3).
+ */
+interface PreEntry {
+  key: string;
+  dest: string;
+  sha256: string | null;
+  mode: number | null;
+  bytes: number;
+}
+
+/** Tolerant: a torn last line is simply not an entry, the same rule `apply.jsonl` follows (§4.7.6). */
+function parsePreIndex(text: string): Map<string, PreEntry> {
+  const out = new Map<string, PreEntry>();
+  for (const line of text.split('\n')) {
+    if (line.length === 0) continue;
+    try {
+      const v: unknown = JSON.parse(line);
+      if (typeof v !== 'object' || v === null) continue;
+      const o = v as { key?: unknown; dest?: unknown; sha256?: unknown; mode?: unknown; bytes?: unknown };
+      if (typeof o.key !== 'string' || typeof o.dest !== 'string') continue;
+      out.set(o.key, {
+        key: o.key,
+        dest: o.dest,
+        sha256: typeof o.sha256 === 'string' ? o.sha256 : null,
+        mode: typeof o.mode === 'number' ? o.mode & 0o777 : null,
+        bytes: typeof o.bytes === 'number' ? o.bytes : 0,
+      });
+    } catch {
+      // a torn line is not an entry
+    }
+  }
+  return out;
+}
+
+/**
  * A plan row's `dest` is repo- or `~`-relative (§4.6.1); this joins it onto its scope's absolute root.
  * A leading `~/` is stripped, and so are the leading segments the root already ends with, so both
  * `~/.config/jevcode/AGENTS.md` against `<home>/.config/jevcode` and `.jevcode/memory/x.md` against
@@ -324,6 +383,10 @@ export interface ApplyOptions {
    * bytes unverified. For `create` the text is the whole file; for `append`/`merge` it is the marker
    * block's interior; for `update` it is the replacement interior; for an `mcp.json` `merge` it is a
    * rendered `McpFile` document, which this module merges into whatever is already on disk.
+   *
+   * `mode` is **advisory and ignored**: §2.2 fixes the destination mode at `0644`, or `0600` for
+   * `memory-local/**` and everything under the config dir, and `modeFor` applies that policy. A
+   * render seam that asked for `0o755` used to get it (review, "Lower").
    */
   render(row: PlanRow, sourceText: string): Promise<{ text: string; mode: number; warnings: readonly string[] }>;
   /** resolves a row's source display back to an absolute path, for the re-stat and re-hash of §4.7.2 */
@@ -337,6 +400,13 @@ export interface AppliedRow {
   row: string;
   /** the **absolute** destination, so `--undo` needs nothing but this log */
   dest: string | null;
+  /**
+   * The row's repo- or `~`-relative destination, **exactly** as the manifest entry records it. Undo
+   * matches manifest entries against this key rather than against a path suffix of `dest`: in a
+   * monorepo `AGENTS.md` is a suffix of `packages/app/AGENTS.md`, so the suffix rule dropped the root
+   * entry whenever a package file was restored (review, "Lower": `entryMatches`).
+   */
+  destRel: string | null;
   sha256Before: string | null;
   sha256After: string | null;
   mode: number;
@@ -361,12 +431,16 @@ function errorText(e: unknown): string {
   return String(e);
 }
 
-/** §2.2: workspace files are `0644` — they are meant to be committed — except `memory-local/**`; the config dir is `0600`. */
-function modeFor(row: PlanRow, rendered: number): number {
+/**
+ * §2.2: workspace files are `0644` — they are meant to be committed — except `memory-local/**`; the
+ * config dir is `0600`. The mode is a **policy**, not the render seam's choice: honouring
+ * `rendered.mode` let a hostile or buggy renderer ask for `0o755` and get it (review, "Lower":
+ * `modeFor`). The two values here are the only two §2.2 allows, and neither is executable.
+ */
+function modeFor(row: PlanRow): 0o600 | 0o644 {
   if (row.scope !== 'project') return 0o600;
   if (row.dest !== null && /(^|[\\/])memory-local([\\/]|$)/.test(row.dest)) return 0o600;
-  const masked = rendered & 0o777;
-  return masked === 0 ? 0o644 : masked;
+  return 0o644;
 }
 
 function rootFor(row: PlanRow, roots: ApplyOptions['destRoots']): string {
@@ -390,12 +464,17 @@ interface RowOutcome {
   notices: readonly string[];
 }
 
-/** §4.7.2 [G1.1] + §4.7.3 [G1.2] + §4.7.4: one row, end to end. Never throws — a failure is an outcome. */
-async function applyRow(row: PlanRow, opts: ApplyOptions, appendLog: (line: AppliedRow) => Promise<void>): Promise<RowOutcome> {
+/**
+ * §4.7.2 [G1.1] + §4.7.3 [G1.2] + §4.7.4: one row, end to end. Never throws — a failure is an outcome.
+ * `resumed` is true under `--resume`, where the row may already be on disk: a SIGKILL can land between
+ * the write and the `apply.jsonl` append, so the row is re-evaluated against the **live** destination
+ * instead of replaying `row.action` (review defect 3).
+ */
+async function applyRow(row: PlanRow, opts: ApplyOptions, appendLog: (line: AppliedRow) => Promise<void>, resumed: boolean): Promise<RowOutcome> {
   const notices: string[] = [];
   const at = opts.clock.now().toISOString();
   const fail = async (error: string): Promise<RowOutcome> => {
-    const line: AppliedRow = { row: row.id, dest: null, sha256Before: null, sha256After: null, mode: 0, bytes: 0, at, ok: false, error };
+    const line: AppliedRow = { row: row.id, dest: null, destRel: row.dest, sha256Before: null, sha256After: null, mode: 0, bytes: 0, at, ok: false, error };
     await appendLog(line);
     return { failed: { row: row.id, error }, notices };
   };
@@ -411,7 +490,10 @@ async function applyRow(row: PlanRow, opts: ApplyOptions, appendLog: (line: Appl
   let sourceSha = row.source.sha256;
   try {
     const st = await opts.fs.stat(sourceAbs);
-    const unchanged = st.mtimeMs === row.source.mtimeMs && st.size === row.source.bytes;
+    // Both sides at whole-millisecond precision: `stat` returns a fractional `mtimeMs` (APFS and ext4
+    // keep nanoseconds) while a `PlanRow` carries `Date.parse(ISO-8601)`, which cannot express one.
+    // Comparing them raw made the pre-filter unfireable, so every row re-hashed (review, "Lower").
+    const unchanged = Math.floor(st.mtimeMs) === Math.floor(row.source.mtimeMs) && st.size === row.source.bytes;
     const buf = await opts.fs.readFile(sourceAbs);
     sourceText = buf.toString('utf8');
     // `mtimeMs` is carried purely as a cheap pre-filter: unchanged mtime AND unchanged size skips the
@@ -445,6 +527,12 @@ async function applyRow(row: PlanRow, opts: ApplyOptions, appendLog: (line: Appl
   notices.push(...rendered.warnings.map((w) => `${row.dest}: ${w}`));
 
   const existingBuf = await opts.fs.readFile(dest).catch(() => null);
+  // Review defect 7: a destination that is not valid UTF-8 is refused, never corrected. Rendering it
+  // through `toString('utf8')` would replace the human's bytes with U+FFFD — a corruption undo could
+  // not reverse, because the snapshot would carry the same replacement characters.
+  if (existingBuf !== null && !isValidUtf8(existingBuf)) {
+    return { demoted: { row: row.id, why: `review — ${row.dest} is not valid UTF-8; nothing was written` }, notices };
+  }
   const existing = existingBuf === null ? null : existingBuf.toString('utf8');
   const sha256Before = existingBuf === null ? null : sha256Hex(existingBuf);
   const header = markerOpen(opts.plan.importId, row.source.tools[0] ?? 'pasted', row.source.display, sourceSha);
@@ -452,7 +540,9 @@ async function applyRow(row: PlanRow, opts: ApplyOptions, appendLog: (line: Appl
   let text: string;
   if (basename(dest) === 'mcp.json') {
     // §4.7.4 step 5: `mcp.json` is never markered — it is a document merge, whatever the action says
-    text = mergedMcp(existing, rendered.text);
+    const merged = mergedMcp(existing, rendered.text, row.dest);
+    if (!merged.ok) return { demoted: { row: row.id, why: `review — ${merged.why}; nothing was written` }, notices };
+    text = merged.text;
   } else if (row.action === 'create' || existing === null) {
     text = rendered.text;
   } else if (row.action === 'update') {
@@ -464,16 +554,23 @@ async function applyRow(row: PlanRow, opts: ApplyOptions, appendLog: (line: Appl
     text = appendBlock(existing, header, rendered.text, opts.plan.importId);
   }
 
-  const mode = modeFor(row, rendered.mode);
+  // §4.7.6 / review defect 3: under `--resume` the destination may already hold this row's write — a
+  // SIGKILL between the write and the `apply.jsonl` append leaves exactly that state. Re-evaluated
+  // against the live destination: the row's own marker header is already there (an `append`/`merge`
+  // would add a second identical block), or the bytes it would write are already the bytes on disk.
+  const alreadyApplied = resumed && existing !== null && (existing === text || existing.includes(header));
+  const finalText = alreadyApplied && existing !== null ? existing : text;
+  const mode = modeFor(row);
   try {
-    await opts.fs.writeFile(dest, text, { mode, mkdir: true });
+    if (!alreadyApplied) await opts.fs.writeFile(dest, finalText, { mode, mkdir: true });
     await opts.fs.chmod(dest, mode);
   } catch (e) {
     return await fail(`could not write ${row.dest}: ${errorText(e)}`);
   }
-  const bytes = Buffer.byteLength(text, 'utf8');
-  const sha256After = sha256Hex(text);
-  const line: AppliedRow = { row: row.id, dest, sha256Before, sha256After, mode, bytes, at, ok: true };
+  if (alreadyApplied) notices.push(`${row.dest}: already written before the interruption; not applied twice`);
+  const bytes = Buffer.byteLength(finalText, 'utf8');
+  const sha256After = sha256Hex(finalText);
+  const line: AppliedRow = { row: row.id, dest, destRel: row.dest, sha256Before, sha256After, mode, bytes, at, ok: true };
   await appendLog(line);
   return {
     applied: line,
@@ -482,12 +579,24 @@ async function applyRow(row: PlanRow, opts: ApplyOptions, appendLog: (line: Appl
   };
 }
 
-/** §4.7.4 step 5: existing servers untouched, new ones added `enabled: false`, name collision → `<name>-<tool>`. */
-function mergedMcp(existing: string | null, incoming: string): string {
+/**
+ * §4.7.4 step 5: existing servers untouched, new ones added `enabled: false`, name collision →
+ * `<name>-<tool>`. **An existing file that does not parse is never merged** (review defect 10):
+ * `parseMcpFile` returns `null` for anything that is not a `v: 1` document — a hand-written
+ * `{"mcpServers": …}`, a newer version, a file with a typo — and merging into `null` silently dropped
+ * every server the human had. The row is demoted to `review` instead; a human's MCP configuration is
+ * not ours to discard.
+ */
+function mergedMcp(existing: string | null, incoming: string, label: string): { ok: true; text: string } | { ok: false; why: string } {
   const incomingFile = parseMcpFile(incoming);
-  if (incomingFile === null) return incoming;
-  const merged = mergeMcpFile(existing === null ? null : parseMcpFile(existing), incomingFile.servers);
-  return renderMcpFile(merged.file);
+  if (existing === null) {
+    if (incomingFile === null) return { ok: true, text: incoming };
+    return { ok: true, text: renderMcpFile(mergeMcpFile(null, incomingFile.servers).file) };
+  }
+  const existingFile = parseMcpFile(existing);
+  if (existingFile === null) return { ok: false, why: `${label} exists but could not be parsed, and its servers are not ours to drop` };
+  if (incomingFile === null) return { ok: false, why: `${label} could not be rendered as an mcp.json` };
+  return { ok: true, text: renderMcpFile(mergeMcpFile(existingFile, incomingFile.servers).file) };
 }
 
 /** The shared core of `applyPlan` and `resumeImport`; `skip` holds the row ids `apply.jsonl` already records as `ok`. */
@@ -533,7 +642,15 @@ async function runApply(opts: ApplyOptions, skip: ReadonlySet<string>, op: 'appl
     const rows = opts.plan.rows.filter((r) => approved.has(r.id) && !skip.has(r.id));
     const ordered = ROW_STEPS.flatMap((step) => rows.filter((r) => stepOf(r) === step));
 
-    // ----- step 1: `pre/` snapshots of every existing destination a row touches, with modes -----
+    // ----- step 1: `pre/` snapshots, one per DESTINATION, byte for byte, with modes -----
+    // Keyed by destination rather than by row (review defect 2): two `append` rows can share one
+    // `AGENTS.md`, and a per-row snapshot recorded row 2's pre-image as "original + row 1's block".
+    // An existing `pre/<key>` is **never** overwritten (review defect 3): after a SIGKILL the
+    // destination on disk is this import's own write, so re-snapshotting it would replace the human's
+    // bytes with ours and make undo a no-op. Every snapshot happens before any row is written, so
+    // "the index already knows this destination" is exactly "we already know its true pre-state".
+    const preIndexPath = `${preDir}${sep}index.jsonl`;
+    const preIndex = parsePreIndex(await opts.fs.readFile(preIndexPath).then((b) => b.toString('utf8')).catch(() => ''));
     for (const row of ordered) {
       if (row.dest === null) continue;
       const root = rootFor(row, opts.destRoots);
@@ -542,15 +659,19 @@ async function runApply(opts: ApplyOptions, skip: ReadonlySet<string>, op: 'appl
       const confined = await confineDestination(opts.fs, joinDestination(root, row.dest), root);
       if (!confined.ok) continue;
       const dest = confined.path;
+      const key = preKeyFor(dest);
+      if (preIndex.has(key)) continue;
       const buf = await opts.fs.readFile(dest).catch(() => null);
-      if (buf === null) continue;
-      const st = await opts.fs.stat(dest).catch(() => null);
-      const mode = st === null ? 0o644 : st.mode & 0o777;
-      await opts.fs.writeFile(`${preDir}${sep}${row.id}`, buf.toString('utf8'), { mode: 0o600, mkdir: true });
-      await opts.fs.appendFile(`${preDir}${sep}index.jsonl`, `${JSON.stringify({ row: row.id, dest, sha256: sha256Hex(buf), mode, bytes: buf.byteLength })}\n`, {
-        mode: 0o600,
-        mkdir: true,
-      });
+      const st = buf === null ? null : await opts.fs.stat(dest).catch(() => null);
+      // an absent destination is recorded too: undo deletes what the import created, and a resumed
+      // run must not mistake its own earlier write for a file the human had
+      const entry: PreEntry =
+        buf === null
+          ? { key, dest, sha256: null, mode: null, bytes: 0 }
+          : { key, dest, sha256: sha256Hex(buf), mode: st === null ? 0o644 : st.mode & 0o777, bytes: buf.byteLength };
+      if (buf !== null) await opts.fs.writeFile(`${preDir}${sep}${key}`, buf, { mode: 0o600, mkdir: true });
+      await opts.fs.appendFile(preIndexPath, `${JSON.stringify(entry)}\n`, { mode: 0o600, mkdir: true });
+      preIndex.set(key, entry);
     }
 
     // ----- steps 2–6, in order, with step 7 (`apply.jsonl`) appended after each write -----
@@ -559,7 +680,7 @@ async function runApply(opts: ApplyOptions, skip: ReadonlySet<string>, op: 'appl
         notices.push(`applied ${applied.length} of ${ordered.length} — jevcode import --resume ${opts.plan.importId}`);
         break;
       }
-      const outcome = await applyRow(row, opts, appendLog);
+      const outcome = await applyRow(row, opts, appendLog, op === 'resume');
       notices.push(...outcome.notices);
       if (outcome.applied !== undefined) applied.push(outcome.applied);
       if (outcome.demoted !== undefined) demoted.push(outcome.demoted);
@@ -623,21 +744,16 @@ export interface UndoResult {
 }
 
 /**
- * A manifest entry's `dest` is repo- or `~`-relative (the contract), while `apply.jsonl` carries the
- * absolute path undo needs. They match when the relative form is a path suffix of the absolute one.
- */
-function entryMatches(entryDest: string, absDest: string): boolean {
-  const rel = (entryDest.startsWith('~/') ? entryDest.slice(2) : entryDest).split(/[\\/]+/).filter((s) => s.length > 0).join('/');
-  const abs = absDest.split(/[\\/]+/).filter((s) => s.length > 0).join('/');
-  return rel.length > 0 && (abs === rel || abs.endsWith(`/${rel}`));
-}
-
-/**
- * §4.7.6: restore every destination whose current sha256 still equals `sha256After`, from `pre/` (or by
- * deleting it, for a `create`), mode included. Anything else is `review — modified since the import;
- * left alone`. **A missing pre-image is a ROW OUTCOME, not an exception** [G1.4]. A credential is never
- * touched — `jevcode logout` already removes keys, and undoing a key the human then started using would
- * break the next run. Takes the lock [G1.4]. Manifest entries are removed only for rows actually restored.
+ * §4.7.6: restore every DESTINATION whose current sha256 still equals the `sha256After` of the last
+ * write this import made to it, from `pre/` (or by deleting it, when the import created it), mode
+ * included. Anything else is `review — modified since the import; left alone`. **A missing pre-image
+ * is a ROW OUTCOME, not an exception** [G1.4]. A credential is never touched — `jevcode logout`
+ * already removes keys, and undoing a key the human then started using would break the next run.
+ * Takes the lock [G1.4]. Manifest entries are removed only for destinations actually restored.
+ *
+ * Per destination, not per row (review defect 2): two `append` rows can share one `AGENTS.md`, and
+ * unwinding them one row at a time compared row 2's log line against a pre-image that never existed.
+ * The destination has exactly one pre-image, so it has exactly one unwind.
  */
 export async function undoImport(opts: UndoOptions): Promise<UndoResult> {
   const lock = await takeLock(opts.fs, opts.clock, opts.lockPath, {
@@ -652,60 +768,77 @@ export async function undoImport(opts: UndoOptions): Promise<UndoResult> {
   }
   const preDir = `${opts.artifactDir}${opts.artifactDir.endsWith(sep) ? '' : sep}pre`;
   // §4.7.6 "restoring the mode" means the **pre-image's** mode, which is not always the one apply
-  // wrote: a `0640` file that apply rewrote `0644` must come back `0640`. `pre/index.jsonl` records it.
-  const preModes = new Map<string, number>();
-  const index = await opts.fs.readFile(`${preDir}${sep}index.jsonl`).then((b) => b.toString('utf8')).catch(() => '');
-  for (const line of index.split('\n')) {
-    if (line.length === 0) continue;
-    try {
-      const entry: unknown = JSON.parse(line);
-      if (typeof entry !== 'object' || entry === null) continue;
-      const o = entry as { row?: unknown; mode?: unknown };
-      if (typeof o.row === 'string' && typeof o.mode === 'number') preModes.set(o.row, o.mode & 0o777);
-    } catch {
-      // a torn line is simply not an entry; the applied mode is the fallback
-    }
+  // wrote: a `0640` file that apply rewrote `0644` must come back `0640`. `pre/index.jsonl` records
+  // it, along with the sha256 the snapshot must still hash to and whether the destination existed at
+  // all — the three facts undo needs and the apply log cannot carry once two rows share a file.
+  const preIndex = parsePreIndex(await opts.fs.readFile(`${preDir}${sep}index.jsonl`).then((b) => b.toString('utf8')).catch(() => ''));
+
+  // one group per destination, in log order; the groups themselves unwind in reverse order of their
+  // last write, so `AGENTS.md` (appended last, §4.7.4 step 6) is undone first
+  const groups = new Map<string, AppliedRow[]>();
+  for (const line of opts.applyLog) {
+    if (!line.ok || line.dest === null) continue;
+    const group = groups.get(line.dest);
+    if (group === undefined) groups.set(line.dest, [line]);
+    else group.push(line);
   }
+
   const restored: string[] = [];
+  /** the relative destinations of every row whose destination really was restored (manifest keys) */
+  const restoredKeys = new Set<string>();
   const left: { dest: string; why: string }[] = [];
   try {
-    // reverse order: `AGENTS.md` was appended last, so it is unwound first
-    for (const line of [...opts.applyLog].reverse()) {
-      if (!line.ok || line.dest === null) continue;
-      const dest = line.dest;
+    for (const [dest, lines] of [...groups.entries()].reverse()) {
+      const first = lines[0]!;
+      const last = lines[lines.length - 1]!;
+      const pre = preIndex.get(preKeyFor(dest));
+      // the snapshot is the authority on what was there before; the log line is the fallback for a
+      // `pre/index.jsonl` that is gone or was never written
+      const existedBefore = pre === undefined ? first.sha256Before !== null : pre.sha256 !== null;
+      const done = (): void => {
+        restored.push(dest);
+        for (const line of lines) if (typeof line.destRel === 'string') restoredKeys.add(line.destRel);
+      };
       const current = await opts.fs.readFile(dest).catch(() => null);
       if (current === null) {
-        if (line.sha256Before === null) {
-          restored.push(dest);
+        // §4.7.6: a destination the human deleted is **left alone** — undo never re-creates one. When
+        // the import created it, its absence is already the state undo wants.
+        if (!existedBefore) {
+          done();
           continue;
         }
-      } else if (sha256Hex(current) !== line.sha256After) {
+        left.push({ dest, why: 'review — the destination was deleted since the import; left alone' });
+        continue;
+      }
+      if (sha256Hex(current) !== last.sha256After) {
         left.push({ dest, why: 'review — modified since the import; left alone' });
         continue;
       }
-      if (line.sha256Before === null) {
+      if (!existedBefore) {
         try {
           await opts.fs.rm(dest);
-          restored.push(dest);
+          done();
         } catch (e) {
           left.push({ dest, why: `could not remove: ${errorText(e)}` });
         }
         continue;
       }
-      const pre = await opts.fs.readFile(`${preDir}${sep}${line.row}`).catch(() => null);
-      if (pre === null) {
+      const image = pre === undefined ? null : await opts.fs.readFile(`${preDir}${sep}${pre.key}`).catch(() => null);
+      if (pre === undefined || image === null) {
         left.push({ dest, why: `review — pre-image unavailable (${preDir} removed); left alone` });
         continue;
       }
-      if (sha256Hex(pre) !== line.sha256Before) {
+      if (sha256Hex(image) !== pre.sha256) {
         left.push({ dest, why: 'review — the pre-image does not match what was recorded; left alone' });
         continue;
       }
-      const mode = preModes.get(line.row) ?? line.mode;
+      const mode = pre.mode ?? last.mode;
       try {
-        await opts.fs.writeFile(dest, pre.toString('utf8'), { mode, mkdir: true });
+        // the raw Buffer: a destination that is not valid UTF-8 never reaches a write at all, and the
+        // one that is must come back byte for byte, not through a lossy round trip (review defect 7)
+        await opts.fs.writeFile(dest, image, { mode, mkdir: true });
         await opts.fs.chmod(dest, mode);
-        restored.push(dest);
+        done();
       } catch (e) {
         left.push({ dest, why: `could not restore: ${errorText(e)}` });
       }
@@ -714,7 +847,9 @@ export async function undoImport(opts: UndoOptions): Promise<UndoResult> {
     await releaseLock(opts.fs, opts.lockPath);
   }
 
-  const keep = (entry: ImportManifestEntry): boolean => entry.importId !== opts.importId || !restored.some((d) => entryMatches(entry.dest, d));
+  // exact key, never a path suffix: `AGENTS.md` is a suffix of `packages/app/AGENTS.md`, so the old
+  // suffix rule dropped a root entry whenever a package file was restored (review, "Lower")
+  const keep = (entry: ImportManifestEntry): boolean => entry.importId !== opts.importId || !restoredKeys.has(entry.dest);
   const workspaces: Record<string, readonly ImportManifestEntry[]> = {};
   for (const [key, entries] of Object.entries(manifest.workspaces)) workspaces[key] = entries.filter(keep);
   manifest = { ...manifest, user: manifest.user.filter(keep), workspaces };

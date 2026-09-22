@@ -10,14 +10,14 @@
  * `sha256`/`bytes`/`mtimeMs` are re-pinned to the files this test actually creates, because a pinned
  * digest of a file that does not exist would test nothing.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { appendFile, chmod, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, lstat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { sha256Hex } from '../../../src/core/hash.js';
-import { APPLY_ORDER, applyPlan, joinDestination, markerClose, markerOpen } from '../../../src/import/apply.js';
+import { APPLY_ORDER, applyPlan, joinDestination, markerClose, markerOpen, preKeyFor } from '../../../src/import/apply.js';
 import type { AppliedRow, ApplyOptions } from '../../../src/import/apply.js';
 import { renderMcpFile } from '../../../src/import/mcp.js';
 import type { ImportClock, ImportPlan, ImportWriteFs, McpFile, PlanRow } from '../../../src/import/types.js';
@@ -244,7 +244,7 @@ describe('applyPlan (§4.7)', () => {
     const log = applyLogOf(t);
     expect(log.length).toBe(r.applied.length);
     for (const line of log) {
-      expect(Object.keys(line).sort()).toEqual(['at', 'bytes', 'dest', 'mode', 'ok', 'row', 'sha256After', 'sha256Before'].sort());
+      expect(Object.keys(line).sort()).toEqual(['at', 'bytes', 'dest', 'destRel', 'mode', 'ok', 'row', 'sha256After', 'sha256Before'].sort());
       expect(line.sha256After).toMatch(/^[0-9a-f]{64}$/);
     }
     // §4.7.5 [G1.3]: the manifest is keyed by workspace
@@ -254,19 +254,43 @@ describe('applyPlan (§4.7)', () => {
     expect(r.manifest.lastRun).toBe('2026-09-21T12:00:00.000Z');
   });
 
-  it('takes pre/ snapshots FIRST, before any row is written (§4.7.4 step 1)', async () => {
+  it('takes pre/ snapshots FIRST, before any row is written, keyed by destination (§4.7.4 step 1)', async () => {
     const t = await tree();
     const dest = join(t.ws, '.jevcode', 'rules', 'style.md');
     await mkdir(dirname(dest), { recursive: true });
     await writeFile(dest, 'the bytes that were there before\n', { mode: 0o644 });
-    const row = t.plan.rows.find((r) => r.dest === '.jevcode/rules/style.md')!;
     await applyPlan(optionsFor(t));
-    expect(readFileSync(join(t.artifactDir, 'pre', row.id), 'utf8')).toBe('the bytes that were there before\n');
+    const real = await realpath(dest);
+    expect(readFileSync(join(t.artifactDir, 'pre', preKeyFor(real)), 'utf8')).toBe('the bytes that were there before\n');
     const index = readFileSync(join(t.artifactDir, 'pre', 'index.jsonl'), 'utf8');
     expect(index).toContain(sha256Hex('the bytes that were there before\n'));
     expect(index).toContain('"mode":420');
+    // a destination that did not exist is recorded as an absence, so undo knows to delete it and a
+    // resumed run cannot mistake its own earlier write for the human's file
+    const created = await realpath(join(t.ws, '.jevcode', 'memory', 'project-notes.md'));
+    expect(index).toContain(`"key":"${preKeyFor(created)}","dest":"${created}","sha256":null`);
+    expect(existsSync(join(t.artifactDir, 'pre', preKeyFor(created)))).toBe(false);
     // and the destination really was rewritten afterwards
     expect(readFileSync(dest, 'utf8')).not.toContain('before\n');
+  });
+
+  it('two rows that share a destination snapshot it once, and the snapshot is the ORIGINAL (review defect 2)', async () => {
+    const t = await tree();
+    // both the `append` row and the `review` row of the fixture name `~/.config/jevcode/AGENTS.md`
+    const dest = join(t.userDir, 'AGENTS.md');
+    await writeFile(dest, '# yours\n', { mode: 0o600 });
+    const rows = t.plan.rows.filter((r) => r.dest === '~/.config/jevcode/AGENTS.md');
+    expect(rows.length).toBeGreaterThan(1);
+    const second = { ...rows[1]!, action: 'append' as const };
+    const plan = { ...t.plan, rows: [...t.plan.rows.filter((r) => r.id !== second.id), second] };
+    await applyPlan(optionsFor(t, { plan, approved: [rows[0]!.id, second.id] }));
+
+    const real = await realpath(dest);
+    expect(readFileSync(join(t.artifactDir, 'pre', preKeyFor(real)), 'utf8')).toBe('# yours\n');
+    const index = readFileSync(join(t.artifactDir, 'pre', 'index.jsonl'), 'utf8').trimEnd().split('\n');
+    expect(index.filter((l) => l.includes(preKeyFor(real)))).toHaveLength(1);
+    // both blocks landed on the one destination
+    expect(readFileSync(dest, 'utf8').split('<!-- jevcode:import ').length - 1).toBe(2);
   });
 
   it('row 66: an `update` replaces the marker block interior and leaves every byte outside it', async () => {
@@ -387,5 +411,106 @@ describe('joinDestination (§2.2 layout)', () => {
     expect(joinDestination('/ws/.jevcode/memory-local', '.jevcode/memory-local/a.md')).toBe('/ws/.jevcode/memory-local/a.md');
     expect(joinDestination('/ws', 'AGENTS.md')).toBe('/ws/AGENTS.md');
     expect(joinDestination('/ws', '../../.git/hooks/pre-commit')).toBe('/.git/hooks/pre-commit');
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// the adversarial review's apply-side defects (review-engine-2026-09-22.md, defects 7 and 10,
+// and the `modeFor` item under "Lower")
+// ---------------------------------------------------------------------------------------
+
+describe('a destination that is not valid UTF-8 (review defect 7)', () => {
+  it('is refused with a `review` that names it, and not one byte of it changes', async () => {
+    const t = await tree();
+    // a latin-1 `AGENTS.md`: `é` is the single byte 0xe9, which `toString(utf8)` turns into ef bf bd
+    const latin1 = Buffer.from('# projet\n\nle café était déjà là\n', 'latin1');
+    expect(latin1.includes(0xe9)).toBe(true);
+    const dest = join(t.userDir, 'AGENTS.md');
+    await writeFile(dest, latin1, { mode: 0o600 });
+    const row = t.plan.rows.find((r) => r.dest === '~/.config/jevcode/AGENTS.md' && r.action === 'append')!;
+
+    const r = await applyPlan(optionsFor(t));
+
+    const why = r.demoted.find((d) => d.row === row.id)?.why ?? '';
+    expect(why).toContain('AGENTS.md');
+    expect(why).toContain('not valid UTF-8');
+    expect(why).toContain('nothing was written');
+    expect(r.exitCode).toBe(2);
+    // byte for byte: no replacement characters, no appended block, no truncation
+    expect(Buffer.compare(readFileSync(dest), latin1)).toBe(0);
+    expect(readFileSync(dest).includes(0xef)).toBe(false);
+    expect(applyLogOf(t).some((l) => l.row === row.id)).toBe(false);
+  });
+
+  it('the pre-image of a non-UTF-8 destination is byte-exact, so nothing is mangled on the way in either', async () => {
+    const t = await tree();
+    const latin1 = Buffer.from('caf\xe9\n', 'latin1');
+    await writeFile(join(t.userDir, 'AGENTS.md'), latin1, { mode: 0o600 });
+    await applyPlan(optionsFor(t));
+    const preDir = join(t.artifactDir, 'pre');
+    const snapshots = existsSync(preDir) ? readdirSync(preDir).filter((n) => n !== 'index.jsonl') : [];
+    const mangled = snapshots.map((n) => readFileSync(join(preDir, n))).filter((b) => b.includes(0xef) && b.includes(0xbf));
+    expect(mangled).toEqual([]);
+  });
+});
+
+describe('an existing mcp.json that does not parse (review defect 10)', () => {
+  it('is `review`, never a merge that drops the human’s servers', async () => {
+    const t = await tree();
+    const dest = join(t.ws, '.jevcode', 'mcp.json');
+    // a hand-written file in another tool's dialect: no `v: 1`, so `parseMcpFile` returns null
+    const handWritten = `{\n  "mcpServers": {\n    "local": { "command": "my-server", "args": ["--port", "1234"] }\n  }\n}\n`;
+    await mkdir(dirname(dest), { recursive: true });
+    await writeFile(dest, handWritten, { mode: 0o644 });
+    const row = t.plan.rows.find((r) => r.dest === '.jevcode/mcp.json')!;
+
+    const r = await applyPlan(optionsFor(t));
+
+    const why = r.demoted.find((d) => d.row === row.id)?.why ?? '';
+    expect(why).toContain('mcp.json');
+    expect(why).toContain('nothing was written');
+    expect(r.exitCode).toBe(2);
+    // the human's servers are still there, byte for byte
+    expect(readFileSync(dest, 'utf8')).toBe(handWritten);
+    expect(applyLogOf(t).some((l) => l.row === row.id)).toBe(false);
+  });
+
+  it('a rendered document that does not parse never replaces servers that do', async () => {
+    const t = await tree();
+    const dest = join(t.ws, '.jevcode', 'mcp.json');
+    const existing: McpFile = {
+      v: 1,
+      servers: { local: { transport: 'stdio', command: 'x', enabled: false, source: { tool: 'cursor', path: '~/.cursor/mcp.json', sha256: 'aa', importId: 'imp_old' } } },
+    };
+    await mkdir(dirname(dest), { recursive: true });
+    await writeFile(dest, renderMcpFile(existing), { mode: 0o644 });
+    const before = readFileSync(dest, 'utf8');
+    const row = t.plan.rows.find((r) => r.dest === '.jevcode/mcp.json')!;
+    const broken: ApplyOptions['render'] = async (r, text) => (r.id === row.id ? { text: 'not an mcp document at all\n', mode: 0o644, warnings: [] } : await renderRow(r, text));
+
+    const result = await applyPlan(optionsFor(t, { render: broken }));
+
+    expect(result.demoted.find((d) => d.row === row.id)?.why).toContain('nothing was written');
+    expect(readFileSync(dest, 'utf8')).toBe(before);
+  });
+});
+
+describe('modeFor is clamped, whatever the render seam returns (§2.2)', () => {
+  it('a hostile render mode of 0o777 never reaches a destination', async () => {
+    const t = await tree();
+    const hostile: ApplyOptions['render'] = async (row, sourceText) => ({ ...(await renderRow(row, sourceText)), mode: 0o777 });
+    const r = await applyPlan(optionsFor(t, { render: hostile }));
+    expect(r.failed).toEqual([]);
+    // §2.2: workspace files 0644, `memory-local/**` and everything under the config dir 0600
+    expect(statSync(join(t.ws, '.jevcode', 'memory', 'project-notes.md')).mode & 0o777).toBe(0o644);
+    expect(statSync(join(t.ws, '.jevcode', 'rules', 'style.md')).mode & 0o777).toBe(0o644);
+    expect(statSync(join(t.ws, '.jevcode', 'memory-local', 'claude-local.md')).mode & 0o777).toBe(0o600);
+    expect(statSync(join(t.userDir, 'commands', 'ft.md')).mode & 0o777).toBe(0o600);
+    // and nothing anywhere came out executable
+    for (const line of applyLogOf(t)) {
+      if (line.dest === null) continue;
+      expect(statSync(line.dest).mode & 0o111).toBe(0);
+      expect(line.mode === 0o644 || line.mode === 0o600).toBe(true);
+    }
   });
 });

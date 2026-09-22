@@ -385,6 +385,61 @@ describe('buildPlan', () => {
     expect(plan.rows[0]).toMatchObject({ class: 'secret', action: 'skip:secret' });
   });
 
+  // review defect 5 — the facade numbers `secret_<i>` across the whole plan, so a per-file
+  // counter reads file 2's key with file 1's answer. That can *demote* a real credential.
+  describe('Jev is_secret answers are keyed plan-wide, not per file (review defect 5)', () => {
+    // two files, one band key each, in plan order
+    const bandKeys = (dotted: string, value: string) => [classifyKey({ path: dotted.split('.'), dotted, value })];
+    function twoFiles(): PlanCandidate[] {
+      const a = candidate({
+        item: item('/h/.cursor/mcp.json', { scope: 'user' }),
+        verdict: { class: 'config', skip: null, rule: 6, p: 1, band: false, why: 'rule 6' },
+        keys: bandKeys('integration.clientId', 'a7f3b2c1d4e5f60718293a4b5c6d7e8f'),
+      });
+      const b = candidate({
+        item: item('/h/.codex/config.toml', { scope: 'user' }),
+        verdict: { class: 'config', skip: null, rule: 6, p: 1, band: false, why: 'rule 6' },
+        keys: bandKeys('service.clientId', 'Zt4Qx9Lm2Vb7Nk1Pr6Ws3Yd8Hc5Jf0Ga'),
+      });
+      expect(a.keys?.[0]?.band, 'file 1 key is in the rule-8 band').toBe(true);
+      expect(b.keys?.[0]?.band, 'file 2 key is in the rule-8 band').toBe(true);
+      return [a, b];
+    }
+    const jevOf = (answers: Record<string, Answer>): NonNullable<PlanInput['jev']> => ({ answers, requests: 1, questions: 2, usd: 0.0001, fallbacks: 0 });
+
+    it('secret_0 → file 1, secret_1 → file 2 — the second answer is not file 1’s again', () => {
+      const plan = buildPlan(
+        planInput(twoFiles(), { jev: jevOf({ secret_0: { type: 'noul', noul: 0.95 }, secret_1: { type: 'noul', noul: 0.05 } }) }),
+      );
+      const rows = plan.rows.filter((r) => r.class === 'secret');
+      expect(rows.map((r) => r.source.display), 'only file 1 is a secret').toEqual(['/h/.cursor/mcp.json']);
+      expect(rows[0]?.why).toContain('p=0.95');
+    });
+
+    it('with the answers flipped, the credential is file 2 — a per-file counter demotes it', () => {
+      const plan = buildPlan(
+        planInput(twoFiles(), { jev: jevOf({ secret_0: { type: 'noul', noul: 0.05 }, secret_1: { type: 'noul', noul: 0.95 } }) }),
+      );
+      const rows = plan.rows.filter((r) => r.class === 'secret');
+      expect(rows.map((r) => r.source.display), 'only file 2 is a secret').toEqual(['/h/.codex/config.toml']);
+      expect(rows[0]?.why).toContain('p=0.95');
+    });
+
+    it('a file with no band key does not consume a question id', () => {
+      const [a, b] = twoFiles();
+      const plain = candidate({
+        item: item('/h/.claude/settings.json', { scope: 'user' }),
+        verdict: { class: 'config', skip: null, rule: 6, p: 1, band: false, why: 'rule 6' },
+        keys: [classifyKey({ path: ['model'], dotted: 'model', value: 'z-ai/glm-5.3-flash' })],
+      });
+      expect(plain.keys?.[0]?.band).toBe(false);
+      const plan = buildPlan(
+        planInput([a!, plain, b!], { jev: jevOf({ secret_0: { type: 'noul', noul: 0.05 }, secret_1: { type: 'noul', noul: 0.95 } }) }),
+      );
+      expect(plan.rows.filter((r) => r.class === 'secret').map((r) => r.source.display)).toEqual(['/h/.codex/config.toml']);
+    });
+  });
+
   it('exact duplicates become one row with the tools unioned (§6 rows 12, 56)', () => {
     const body = '# agents\n\nthe same text in five places';
     const cands = (['codex', 'opencode', 'copilot', 'cursor', 'claude-code'] as SourceTool[]).map((t) => candidate({ item: item(`/ws/${t}/AGENTS.md`, { tools: [t] }), doc: doc(body) }));
@@ -413,12 +468,55 @@ describe('buildPlan', () => {
     expect([...plan.rows[0]?.source.tools ?? []].sort()).toEqual(['claude-code', 'codex']);
   });
 
+  // review, lower — `findConflicts` was an unbucketed O(n²) pass that truncated at `dedupePairs`
+  // with no notice at all, so a large plan silently stopped looking for conflicts
+  describe('§4.5 pass 3 is bucketed, and says so when it truncates (review, lower)', () => {
+    const verdictsOf = (cs: readonly PlanCandidate[]) => new Map(cs.map((c) => [c.item.id, okVerdict] as const));
+
+    it('candidates with no opposed noun in common are never compared at all', () => {
+      const many = Array.from({ length: 200 }, (_, i) =>
+        candidate({ item: item(`/ws/n${i}.md`), doc: doc(`always use widget${i} in this project`, { bands: [`band${i}`] }) }),
+      );
+      const out = findConflicts(many, verdictsOf(many), []);
+      expect(out.pairs, 'an all-pairs pass would be 19,900').toBe(0);
+      expect(out.conflicts).toEqual([]);
+      expect(out.capped).toBe(false);
+    });
+
+    it('the pair count is capped, and the cap is reported rather than swallowed', () => {
+      const many = Array.from({ length: 12 }, (_, i) =>
+        candidate({ item: item(`/ws/c${i}.md`), doc: doc(`always use the patch here.\nnever use the patch there. filler${i}`, { bands: [`band${i}`] }) }),
+      );
+      const out = findConflicts(many, verdictsOf(many), [], 10);
+      expect(out.pairs).toBe(10);
+      expect(out.capped).toBe(true);
+    });
+
+    it('buildPlan turns the truncation into a notice, in the dedupe pass’s style', () => {
+      // 201 candidates that all share the opposed noun "patch" ⇒ 20 100 distinct pairs, over the
+      // 20 000 cap; their Jaccard is far below 0.3, so none of them is an actual conflict
+      const n = 201;
+      const many = Array.from({ length: n }, (_, i) => {
+        const filler = Array.from({ length: 24 }, (_, k) => `w${i}x${k}`).join(' ');
+        return candidate({
+          item: item(`/ws/big${i}.md`),
+          doc: doc(`always use the patch. never use the patch. ${filler}`, { bands: [`band${i}`] }),
+        });
+      });
+      const out = findConflicts(many, verdictsOf(many), []);
+      expect(out.capped).toBe(true);
+      expect(out.conflicts).toEqual([]);
+      const plan = buildPlan(planInput(many));
+      expect(plan.notices).toContain(`conflict scan capped at 20,000 pairs (${n} candidates)`);
+    });
+  });
+
   it('opposed polarity on a shared noun groups two rows for review (§6 row 57)', () => {
     const a = candidate({ item: item('/h/.claude/CLAUDE.md'), doc: doc('# rules for patching\n\nalways explain before patching the code in this repository') });
     const b = candidate({ item: item('/h/.codex/AGENTS.md'), doc: doc('# rules for patching\n\nnever write prose before a patch of the code in this repository') });
-    const conflicts = findConflicts([a, b], new Map([[a.item.id, okVerdict], [b.item.id, okVerdict]]), []);
-    expect(conflicts).toHaveLength(1);
-    expect(conflicts[0]?.noun).toBe('patch');
+    const found = findConflicts([a, b], new Map([[a.item.id, okVerdict], [b.item.id, okVerdict]]), []);
+    expect(found.conflicts).toHaveLength(1);
+    expect(found.conflicts[0]?.noun).toBe('patch');
     const plan = buildPlan(planInput([a, b]));
     expect(plan.rows.every((r) => r.action === 'review')).toBe(true);
     expect(plan.rows.every((r) => r.group === 'conflict-1')).toBe(true);

@@ -109,15 +109,38 @@ describe('§1 property 4 no rendered line carries a secret', () => {
     }
   });
 
-  it('a secret that reached a `why` string is refused at render time, without echoing it', () => {
+  /**
+   * Review defect 9: `assertNoSecretLines` threw under DEBUG — which is on unless
+   * `NODE_ENV=production` — so anything a secret family matched **aborted the whole dry run**.
+   * A `why` string is one thing; a *filename* is another, because it is attacker-chosen and the
+   * report exists to tell you about it. The assertion has to run on already-redacted output, so
+   * a hostile name is masked rather than fatal.
+   */
+  it('a hostile filename is redacted, not fatal — the dry run still produces its report', () => {
     const first = plan.rows[0] as PlanRow;
-    const poisoned: ImportPlan = { ...plan, rows: [{ ...first, why: `key rule 9 — ghp_${'A'.repeat(36)}` }] };
-    expect(() => renderReport(poisoned)).toThrowError(/matches the github secret family/);
-    try {
-      renderReport(poisoned);
-    } catch (e) {
-      expect(String(e)).not.toContain('AAAA');
-    }
+    const display = `docs/AKIAIOSFODNN7EXAMPLE.md`;
+    const hostile: ImportPlan = { ...plan, rows: [{ ...first, source: { ...first.source, display } }] };
+    let report = '';
+    expect(() => {
+      report = renderReport(hostile);
+    }).not.toThrow();
+    expect(report).not.toContain('AKIAIOSFODNN');
+    expect(report).toContain('[REDACTED:pattern]');
+    expect(report).toContain(first.id);
+    expect(renderReport(hostile, 'ascii')).not.toContain('AKIAIOSFODNN');
+  });
+
+  it('every other source-controlled string is redacted too, and the plan itself is untouched', () => {
+    const first = plan.rows[0] as PlanRow;
+    const poisoned: ImportPlan = {
+      ...plan,
+      rows: [{ ...first, why: `key rule 9 — ghp_${'A'.repeat(36)}`, warnings: ['glpat-abcdefghijklmnopqrstuvwxyz'] }],
+      notices: ['~/.claude/CLAUDE.md: hf_abcdefghijklmnopqrstuvwxyzABCDEFGH'],
+    };
+    const report = renderReport(poisoned);
+    for (const needle of ['ghp_AAAA', 'glpat-abcdefghijklmnopqrstuvwxyz', 'hf_abcdefghijklmnopqrstuvwxyzABCDEFGH']) expect(report).not.toContain(needle);
+    // the assertion is still armed: it just runs after the redaction it is a net for
+    expect(poisoned.rows[0]?.why).toContain('ghp_');
   });
 
   it('no full source sha256 is printed — only its eight-character prefix', () => {

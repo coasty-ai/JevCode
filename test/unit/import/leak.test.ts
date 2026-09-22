@@ -306,7 +306,11 @@ describe('import-leak — no secret leaves its file (§1 property 4, §8.3)', ()
     const log = readFileSync(join(f.artifactDir, 'apply.jsonl'), 'utf8');
     for (const line of log.split('\n').filter((l) => l.length > 0)) {
       const parsed = JSON.parse(line) as Record<string, unknown>;
-      expect(Object.keys(parsed).sort()).toEqual(['at', 'bytes', 'dest', 'mode', 'ok', 'row', 'sha256After', 'sha256Before'].sort());
+      // A CLOSED set on purpose: a new field on `AppliedRow` must be examined before it is
+      // allowed into an artefact, because that is how a value would smuggle itself in. `destRel`
+      // (review defect 2, the per-destination snapshot key) is the repo-/`~`-relative
+      // destination — a path, like `dest`, and never a body or a value.
+      expect(Object.keys(parsed).sort()).toEqual(['at', 'bytes', 'dest', 'destRel', 'mode', 'ok', 'row', 'sha256After', 'sha256Before'].sort());
     }
     // …and no `PlanRow` field holds a value: the structural half of the property
     for (const row of plan.rows) {

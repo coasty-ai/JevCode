@@ -17,12 +17,11 @@ import { performance } from 'node:perf_hooks';
 import { basename, join, resolve as resolvePath } from 'node:path';
 import { sha256Hex } from '../core/hash.js';
 import { IMPORT_LIMITS, type ImportLimits } from '../core/limits.js';
-import { patternRedact } from '../core/redact.js';
 import { isSecretBasename, isWithin } from '../sandbox/paths.js';
 import { ALWAYS_EXCLUDED, displayIn, displayRoot, globCanDescend, matchGlob, rootFor, SOURCES } from './sources.js';
 import { parseJsonc } from './parse/jsonc.js';
 import { parseJsonl, transcriptMeta } from './parse/jsonl.js';
-import { looksBinary, parseMarkdown } from './parse/markdown.js';
+import { looksBinary, parseMarkdown, redactSecrets } from './parse/markdown.js';
 import { parseMdc } from './parse/mdc.js';
 import { parseSqlite } from './parse/sqlite.js';
 import { parseToml } from './parse/toml.js';
@@ -32,6 +31,7 @@ import type {
   ImportFs,
   ImportProbe,
   ImportSkipAction,
+  MarkdownDoc,
   ResolvedRoot,
   SourceItem,
   SourceParse,
@@ -55,6 +55,13 @@ export interface DiscoverOptions {
   limits?: ImportLimits;
   /** absolute destination paths, for `skip:self` (§4.2.3) */
   destinations?: readonly string[];
+  /**
+   * §2.9: the **exact** layer only — the session redactor's `SecretSet` pass, threaded from
+   * `planImport({ redact })`. Discovery always additionally scans all fifteen families
+   * (`redactSecrets`), so a caller that has no configured secrets passes nothing rather than
+   * `patternRedact`; passing a pattern-only redactor here would not be wrong, merely redundant.
+   */
+  redact?: (s: string) => string;
   signal?: AbortSignal;
 }
 
@@ -63,6 +70,28 @@ export interface DiscoverResult {
   items: readonly SourceItem[];
   roots: readonly ResolvedRoot[];
   notices: readonly string[];
+  /**
+   * §1 property 14: the `md` / `mdc` parse `buildItem` already performed, keyed by
+   * `SourceItem.id`, so the facade does not read and parse the same body a second time
+   * (review defect 6b).
+   *
+   * **Best-effort and bounded** — `docBudget` caps it, `format: 'text'` rows are not markdown
+   * -parsed by discovery and so are never in it, and `probeImport` parses nothing at all, so a
+   * miss is ordinary and the caller must keep its own parse path for one.
+   */
+  docs: ReadonlyMap<string, MarkdownDoc>;
+}
+
+/**
+ * §1 property 14 / §2.8: what `DiscoverResult.docs` may retain. Following `items` is not an
+ * option — `planRows` is 2,000 and `sourceReadCapBytes` is 4 MiB, so the unbounded map's worst
+ * case is 8 GiB of live bodies. A quarter of `planRows` documents and twice the read cap of
+ * body text (500 entries / 8 MiB at the default bounds, so the two largest readable files
+ * always fit) is the whole budget; past either, an item keeps its `SourceParse` summary, loses
+ * only its doc, and the caller re-parses that one body.
+ */
+export function docBudget(limits: ImportLimits): { maxEntries: number; maxBytes: number } {
+  return { maxEntries: Math.floor(limits.planRows / 4), maxBytes: 2 * limits.sourceReadCapBytes };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -469,44 +498,51 @@ function declaredSkip(spec: SourceSpec): ImportSkipAction {
   return 'skip:unsupported';
 }
 
-function parseFor(format: SourceSpec['format'], text: string, path: string, limits: ImportLimits): SourceParse {
+/**
+ * §4.3: the parse summary one row carries, and — for the two markdown formats — the
+ * `MarkdownDoc` it came from, so `DiscoverResult.docs` can hand the facade the parse instead of
+ * making it repeat one (review defect 6b). `redact` is the heading redactor, already composed
+ * from the exact layer (§2.9).
+ */
+function parseFor(format: SourceSpec['format'], text: string, path: string, limits: ImportLimits, redact: (s: string) => string): { parse: SourceParse; doc: MarkdownDoc | null } {
   const clipHeadings = (h: readonly string[]): readonly string[] => h.slice(0, limits.jevHeadings).map((s) => s.slice(0, limits.jevHeadingCells));
+  const mdOptions = { headingLimit: limits.jevHeadings, headingCells: limits.jevHeadingCells, redact };
   switch (format) {
     case 'md': {
-      const doc = parseMarkdown(text, { headingLimit: limits.jevHeadings, headingCells: limits.jevHeadingCells });
-      return { ok: true, headings: clipHeadings(doc.headings), lines: doc.lines, fences: doc.fences, ...(doc.frontmatter !== null ? { frontmatterKeys: doc.frontmatter.keys } : {}) };
+      const doc = parseMarkdown(text, mdOptions);
+      return { parse: { ok: true, headings: clipHeadings(doc.headings), lines: doc.lines, fences: doc.fences, ...(doc.frontmatter !== null ? { frontmatterKeys: doc.frontmatter.keys } : {}) }, doc };
     }
     case 'mdc': {
-      const r = parseMdc(text, { headingLimit: limits.jevHeadings, headingCells: limits.jevHeadingCells });
-      if (!r.ok) return { ok: false, error: r.error };
+      const r = parseMdc(text, mdOptions);
+      if (!r.ok) return { parse: { ok: false, error: r.error }, doc: null };
       const { doc, frontmatter } = r.value;
-      return { ok: true, headings: clipHeadings(doc.headings), lines: doc.lines, fences: doc.fences, ...(frontmatter !== null ? { frontmatterKeys: frontmatter.keys } : {}) };
+      return { parse: { ok: true, headings: clipHeadings(doc.headings), lines: doc.lines, fences: doc.fences, ...(frontmatter !== null ? { frontmatterKeys: frontmatter.keys } : {}) }, doc };
     }
     case 'json':
     case 'jsonc': {
       const r = parseJsonc(text);
       const lines = text.split('\n').length;
-      if (!r.ok) return { ok: false, error: r.error, lines };
+      if (!r.ok) return { parse: { ok: false, error: r.error, lines }, doc: null };
       const keys = r.value !== null && typeof r.value === 'object' && !Array.isArray(r.value) ? Object.keys(r.value) : [];
-      return { ok: true, lines, frontmatterKeys: keys };
+      return { parse: { ok: true, lines, frontmatterKeys: keys }, doc: null };
     }
     case 'toml': {
       const r = parseToml(text);
       const lines = text.split('\n').length;
-      if (!r.ok) return { ok: false, error: r.error, lines };
-      return { ok: true, lines, frontmatterKeys: r.value.slice(0, 64).map((l) => l.dotted) };
+      if (!r.ok) return { parse: { ok: false, error: r.error, lines }, doc: null };
+      return { parse: { ok: true, lines, frontmatterKeys: r.value.slice(0, 64).map((l) => l.dotted) }, doc: null };
     }
     case 'jsonl': {
       const r = parseJsonl(text, { maxBytes: limits.transcriptScanBytes });
-      if (!r.ok) return { ok: false, error: r.error };
-      return { ok: true, lines: r.value.length };
+      if (!r.ok) return { parse: { ok: false, error: r.error }, doc: null };
+      return { parse: { ok: true, lines: r.value.length }, doc: null };
     }
     case 'sqlite': {
       const r = parseSqlite(path);
-      return { ok: false, error: r.ok ? 'skip:unsupported: sqlite (no reader)' : r.error };
+      return { parse: { ok: false, error: r.ok ? 'skip:unsupported: sqlite (no reader)' : r.error }, doc: null };
     }
     default:
-      return { ok: true, lines: text.split('\n').length };
+      return { parse: { ok: true, lines: text.split('\n').length }, doc: null };
   }
 }
 
@@ -529,6 +565,7 @@ interface Collected {
   items: SourceItem[];
   roots: ResolvedRoot[];
   notices: string[];
+  docs: Map<string, MarkdownDoc>;
   partial: boolean;
 }
 
@@ -540,6 +577,15 @@ async function collect(opts: CollectOptions): Promise<Collected> {
   // §4.2.5: items are keyed by realpath, so the workspace they are displayed against must be the
   // realpath too (macOS `/var` -> `/private/var`). Resolved once; falls back to the given path.
   const wsReal = await opts.fs.realpath(opts.env.workspace).catch(() => resolvePath(opts.env.workspace));
+  // …and for exactly the same reason the **home** must be canonical too: `displayIn` folds to
+  // `~/…` by prefix, so a `$HOME` reached through a symlink (every macOS `mkdtemp`: `/var/…`
+  // against a `/private/var/…` realpath) silently produced an absolute display, which
+  // `ApplyOptions.sourcePath` cannot invert to re-read the source (§4.7.2) and which would be
+  // baked into `MemoryProvenance.path` and `sources.jsonl`.
+  const homeReal = await opts.fs.realpath(opts.env.home).catch(() => resolvePath(opts.env.home));
+  // §2.9: headings go through the exact layer first, then all fifteen families (§1 property 4)
+  const exact = opts.redact === undefined ? undefined : { redact: opts.redact };
+  const redactHeading = (s: string): string => redactSecrets(s, exact);
   const specs = (opts.sources ?? SOURCES).filter((s) => {
     if (s.optIn !== undefined && !optIn.includes(s.optIn)) return !probe;
     if (probe && (s.class === 'skip' || s.class === 'secret')) return false;
@@ -567,6 +613,9 @@ async function collect(opts: CollectOptions): Promise<Collected> {
 
   const notices: string[] = [];
   const drafts = new Map<string, ItemDraft>();
+  const docs = new Map<string, MarkdownDoc>();
+  const budget = docBudget(limits);
+  let docBytes = 0;
   const perSpec = new Map<number, number>();
   const rootExists = new Map<string, boolean>();
   let partial = false;
@@ -626,15 +675,19 @@ async function collect(opts: CollectOptions): Promise<Collected> {
           }
           continue;
         }
-        const item = await buildItem(f, spec, { ...opts, limits, destinations, probe, optIn, wsReal, rootDisplay: displayRoot(path, opts.env.home) });
-        drafts.set(key, { item, tools: new Set(item.tools) });
+        const built = await buildItem(f, spec, { ...opts, limits, destinations, probe, optIn, wsReal, homeReal, redactHeading, rootDisplay: displayRoot(path, opts.env.home) });
+        drafts.set(key, { item: built.item, tools: new Set(built.item.tools) });
+        if (built.doc !== null && docs.size < budget.maxEntries && docBytes + built.doc.text.length <= budget.maxBytes) {
+          docs.set(built.item.id, built.doc);
+          docBytes += built.doc.text.length;
+        }
       }
     }
   }
 
   const items = [...drafts.values()].map((d) => d.item);
   const roots = orderedRoots.map((r) => ({ ...r, exists: rootExists.get(r.path) ?? false }));
-  return { items, roots, notices, partial };
+  return { items, roots, notices, docs, partial };
 }
 
 interface BuildContext extends DiscoverOptions {
@@ -651,15 +704,35 @@ interface BuildContext extends DiscoverOptions {
    * `ApplyOptions.sourcePath` cannot invert (every row then fails its §4.7.2 re-read).
    */
   wsReal: string;
+  /** realpath of the home, for the same reason and with the same consequence */
+  homeReal: string;
+  /** §2.9: the exact layer composed with all fifteen families, applied to every heading */
+  redactHeading: (s: string) => string;
 }
 
-async function buildItem(f: Found, spec: SourceSpec, ctx: BuildContext): Promise<SourceItem> {
+/** One discovered file: the row, and the markdown parse behind it when there was one. */
+interface Built {
+  item: SourceItem;
+  doc: MarkdownDoc | null;
+}
+
+/**
+ * `~/…` measured against the canonical home, falling back to the one the caller gave: a path
+ * this module did not `realpath` itself (a `cwd` another tool recorded in a transcript) may be
+ * in either form.
+ */
+function displayHome(path: string, ctx: BuildContext): string {
+  const real = displayRoot(path, ctx.homeReal);
+  return real.startsWith('~') ? real : displayRoot(path, ctx.env.home);
+}
+
+async function buildItem(f: Found, spec: SourceSpec, ctx: BuildContext): Promise<Built> {
   const limits = ctx.limits;
   const notices: string[] = [];
   const base: SourceItem = {
     id: sha256Hex(f.real).slice(0, 12),
     realpath: f.real,
-    display: displayIn(f.real, ctx.wsReal, ctx.env.home),
+    display: displayIn(f.real, ctx.wsReal, ctx.homeReal),
     tools: [spec.tool],
     artefact: spec.id,
     format: spec.format,
@@ -670,56 +743,59 @@ async function buildItem(f: Found, spec: SourceSpec, ctx: BuildContext): Promise
     parse: { ok: true },
     notices,
   };
+  const bare = (item: SourceItem): Built => ({ item, doc: null });
   if (!f.isFile) {
     notices.push('skip:not-a-file');
-    return base;
+    return bare(base);
   }
   if (f.symlinkOut) {
     notices.push(`skip:symlink — resolves outside ${ctx.rootDisplay}`);
-    return base;
+    return bare(base);
   }
   if (isDestination(f.real, ctx.destinations)) {
     notices.push('skip:self');
-    return base;
+    return bare(base);
   }
   if (spec.class === 'secret' || isSecretBasename(basename(f.real))) {
     notices.push('skip:secret — named, never read');
-    return base;
+    return bare(base);
   }
   if (spec.class === 'skip') {
     notices.push(`${declaredSkip(spec)}${spec.notes !== undefined && spec.notes.length > 0 ? ` — ${spec.notes[0]!.replace(/^skip:[a-z-]+\s*—?\s*/, '')}` : ''}`);
-    return base;
+    return bare(base);
   }
   if (spec.class === 'transcript') {
     if (spec.optIn === undefined || !ctx.optIn.includes(spec.optIn)) {
       notices.push('skip:transcript');
-      return base;
+      return bare(base);
     }
-    if (ctx.probe) return base;
+    if (ctx.probe) return bare(base);
     try {
       const head = await ctx.fs.readPrefix(f.real, limits.transcriptScanBytes);
-      const meta = transcriptMeta(head, { redact: patternRedact });
+      // §2.9 / §1 property 4: the first user message is source text, so it needs all fifteen
+      // families and the exact layer — `patternRedact` would have let a warn-only one through
+      const meta = transcriptMeta(head, { redact: ctx.redactHeading });
       notices.push(
-        `transcript: session ${meta.sessionId ?? 'unknown'} · cwd ${meta.cwd === null ? 'unknown' : displayRoot(meta.cwd, ctx.env.home)} · branch ${meta.gitBranch ?? 'unknown'} · ${meta.records} records${
+        `transcript: session ${meta.sessionId ?? 'unknown'} · cwd ${meta.cwd === null ? 'unknown' : displayHome(meta.cwd, ctx)} · branch ${meta.gitBranch ?? 'unknown'} · ${meta.records} records${
           meta.startedAt !== null ? ` · ${meta.startedAt}` : ''
         }${meta.firstUserMessage !== null ? ` · "${meta.firstUserMessage}"` : ''}`,
       );
-      return { ...base, sha256: sha256Hex(head), parse: { ok: true, lines: meta.records } };
+      return bare({ ...base, sha256: sha256Hex(head), parse: { ok: true, lines: meta.records } });
     } catch (e) {
       notices.push(`skip:parse-error — ${e instanceof Error ? e.message : String(e)}`);
-      return base;
+      return bare(base);
     }
   }
-  if (ctx.probe) return base;
+  if (ctx.probe) return bare(base);
   const read = await readRaw(f.real, ctx.fs, limits);
   if (!read.ok) {
     notices.push(`${read.reason} — ${read.error}`);
-    return { ...base, parse: { ok: false, error: `${read.reason}: ${read.error}` } };
+    return bare({ ...base, parse: { ok: false, error: `${read.reason}: ${read.error}` } });
   }
   const text = read.buf.toString('utf8');
-  const parse = parseFor(spec.format, text, f.real, limits);
+  const { parse, doc } = parseFor(spec.format, text, f.real, limits, ctx.redactHeading);
   if (!parse.ok) notices.push(`skip:parse-error — ${parse.error ?? 'unparsable'}`);
-  return { ...base, sha256: sha256Hex(read.buf), parse };
+  return { item: { ...base, sha256: sha256Hex(read.buf), parse }, doc };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -733,7 +809,7 @@ async function buildItem(f: Found, spec: SourceSpec, ctx: BuildContext): Promise
  */
 export async function discover(opts: DiscoverOptions): Promise<DiscoverResult> {
   const r = await collect(opts);
-  return { items: r.items, roots: r.roots, notices: r.notices };
+  return { items: r.items, roots: r.roots, notices: r.notices, docs: r.docs };
 }
 
 /**

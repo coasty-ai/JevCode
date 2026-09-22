@@ -13,7 +13,6 @@ import { isAbsolute, join } from 'node:path';
 
 import { IMPORT_LIMITS } from '../core/limits.js';
 import { sha256Hex } from '../core/hash.js';
-import { patternRedact } from '../core/redact.js';
 import type { Answer, Decider, Json } from '../core/types.js';
 
 import { classifyConfig, classifyFile, walkLeaves } from './classify.js';
@@ -22,11 +21,11 @@ import { discover, nodeImportFs, probeImport, readSource, systemClock } from './
 import type { DiscoverOptions } from './discover.js';
 import { parseFrontmatter } from './parse/frontmatter.js';
 import { parseJsonc } from './parse/jsonc.js';
-import { parseMarkdown } from './parse/markdown.js';
+import { parseMarkdown, redactSecrets } from './parse/markdown.js';
 import { parseMdc } from './parse/mdc.js';
 import { parseToml } from './parse/toml.js';
 import { findMarkerBlocks, joinDestination } from './apply.js';
-import { buildPlan } from './plan.js';
+import { buildPlan, secretCandidateId } from './plan.js';
 import type { PlanCandidate, PlanInput } from './plan.js';
 import { askImport, fileKindQuestions, mergeBatches, secretQuestions } from './questions.js';
 import type { FileCandidate, JevSample, SecretCandidate } from './questions.js';
@@ -68,6 +67,9 @@ export {
   minhashBands,
   normaliseText,
   parseMarkdown,
+  // the one redactor anything derived from source text should use: the exact layer plus all
+  // fifteen families (§2.9, review defect 8). `patternRedact` covers only six.
+  redactSecrets,
   resolveImports,
   stripBlockHtmlComments,
 } from './parse/markdown.js';
@@ -119,7 +121,7 @@ export type {
   SecretCandidate,
 } from './questions.js';
 
-export { buildPlan, dedupe, expandGlobs, rankIndex, rerunAction, slugOf } from './plan.js';
+export { buildPlan, dedupe, expandGlobs, rankIndex, rerunAction, secretCandidateId, slugOf } from './plan.js';
 export type { PlanCandidate, PlanInput } from './plan.js';
 
 export { REPORT_SECTIONS, parseReport, renderPlanJson, renderReport } from './report.js';
@@ -194,7 +196,14 @@ export interface PlanImportOptions {
   destRoots?: DestRoots;
   /** false when the repo is read-only or there is no git root (§6 rows 83–84) */
   projectWritable?: boolean;
-  /** applied to every heading and every sentence fragment before it can reach Jev or an artefact (§2.9) */
+  /**
+   * §2.9: the session redactor's **exact `SecretSet` layer only** — `config.addSecret`
+   * registrations, i.e. `createRedactor(secrets).redact`. Do NOT pass `patternRedact` or a
+   * finished two-layer redactor here: the engine composes this with `detectSecrets`, which adds
+   * all fifteen families, and it does so for everything derived from source text (headings,
+   * sentence fragments) before any of it can reach a Jev request or an artefact. Passing a
+   * pattern-only redactor would silently leave the nine warn-only families in a heading.
+   */
   redact?: (s: string) => string;
   cannotRead?: readonly CannotRead[];
   signal?: AbortSignal;
@@ -211,7 +220,16 @@ interface Parsed {
 const EMPTY_PARSED: Parsed = { doc: null, frontmatter: null, leaves: [], warnings: [] };
 
 /** §4.2.4 + §4.3: read and parse one item by format. Total — a failure is a warning, never a throw. */
-async function parseItem(item: SourceItem, fs: ImportFs, redact: (s: string) => string): Promise<Parsed> {
+async function parseItem(item: SourceItem, fs: ImportFs, redact: (s: string) => string, docs: ReadonlyMap<string, MarkdownDoc>): Promise<Parsed> {
+  // Review defect 6(b): discovery already parsed this body to build `SourceItem.parse`, and it
+  // hands the result out on `DiscoverResult.docs`. Reusing it skips BOTH a second `readSource`
+  // and a second `parseMarkdown` of the same file. The map is deliberately bounded (500 entries
+  // / 8 MiB of retained text), `format: 'text'` rows are never in it and `probeImport` returns
+  // an empty one — so a miss is normal and must keep working, which is what the fall-through is.
+  const cached = docs.get(item.id);
+  if (cached !== undefined && (item.format === 'md' || item.format === 'mdc')) {
+    return { doc: cached, frontmatter: cached.frontmatter, leaves: [], warnings: [] };
+  }
   const read = await readSource(item, fs, IMPORT_LIMITS);
   if (!read.ok) return { ...EMPTY_PARSED, warnings: [read.error] };
   const text = read.text;
@@ -248,13 +266,29 @@ async function parseItem(item: SourceItem, fs: ImportFs, redact: (s: string) => 
   }
 }
 
+const NO_DOCS: ReadonlyMap<string, MarkdownDoc> = new Map();
+
+/**
+ * Review defect 6(b): discovery hands out the `md`/`mdc` parse it already did, keyed by
+ * `SourceItem.id`, so the facade does not parse the same body twice. The member is read
+ * structurally because it is additive on `DiscoverResult` and a caller may still hand this
+ * function an older result (or `probeImport`'s, which has none) — a miss is normal and simply
+ * falls through to a fresh parse.
+ */
+function discoveredDocs(found: { docs?: ReadonlyMap<string, MarkdownDoc> }): ReadonlyMap<string, MarkdownDoc> {
+  return found.docs ?? NO_DOCS;
+}
+
 /** §4.4.3 group I state — shapes only, so a candidate can never carry a value byte. */
 function secretCandidatesOf(item: SourceItem, keys: readonly KeyVerdict[]): readonly SecretCandidate[] {
   const out: SecretCandidate[] = [];
   for (const k of keys) {
     if (!k.band || k.shape === null) continue;
     out.push({
-      id: `${item.id}:${k.leaf.dotted}`,
+      // Review defect 5 was a mis-keying between this id and the one `plan.ts` looks answers up
+      // by, and it could DEMOTE a real credential. Both sides now derive it from one function so
+      // they cannot drift apart again.
+      id: secretCandidateId(item.id, k.leaf.dotted),
       dotted: k.leaf.dotted,
       leaf: k.leaf.path[k.leaf.path.length - 1] ?? k.leaf.dotted,
       path: item.display,
@@ -286,7 +320,13 @@ function fileCandidateOf(item: SourceItem, doc: MarkdownDoc | null): FileCandida
 export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
   const fs = opts.fs ?? nodeImportFs();
   const clock = opts.clock ?? systemClock();
-  const redact = opts.redact ?? patternRedact;
+  // §2.9 / review defect 8: `opts.redact` is the session redactor's EXACT `SecretSet` layer, not a
+  // finished redactor. Everything derived from source text goes through `redactSecrets`, which
+  // runs that exact layer AND all fifteen families — `patternRedact` alone masks only the six
+  // redacting ones and would leak aws/slack/webhook/PEM/jwt/stripe/npm/hf/glpat into a heading,
+  // and from there into `sources.jsonl` and a Jev request body.
+  const exact = opts.redact !== undefined ? { redact: opts.redact } : undefined;
+  const redact = (s: string): string => redactSecrets(s, exact);
   const now = clock.now();
   const importId = opts.importId ?? newImportId(now, opts.env.workspace);
 
@@ -298,6 +338,9 @@ export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
     ...(opts.optIn !== undefined ? { optIn: opts.optIn } : {}),
     ...(opts.respectGitignore !== undefined ? { respectGitignore: opts.respectGitignore } : {}),
     ...(opts.all !== undefined ? { all: opts.all } : {}),
+    // review defect 8: the EXACT layer only — discovery composes the fifteen families itself.
+    // Passed through rather than defaulted, so "the caller gave none" stays distinguishable.
+    ...(opts.redact !== undefined ? { redact: opts.redact } : {}),
     ...(opts.destinations !== undefined ? { destinations: opts.destinations } : {}),
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     limits: IMPORT_LIMITS,
@@ -311,7 +354,11 @@ export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
   const notices: string[] = [...found.notices];
 
   for (const item of found.items) {
-    const parsed = await parseItem(item, fs, redact);
+    // Review defect 6(b): `parseItem` reuses discovery's parse when it is handed one. The map
+    // arrives on `DiscoverResult.docs` once that lands; until then every lookup misses and the
+    // fall-through re-parses, which is exactly today's behaviour — correct, just not yet fast.
+    // `parse-once.test.ts` is the gate that this stops being empty.
+    const parsed = await parseItem(item, fs, redact, discoveredDocs(found));
     const keys: readonly KeyVerdict[] = parsed.leaves.length > 0 ? classifyConfig(parsed.leaves) : [];
     // §4.4.1 rule 1 is "the atlas row declares a class and the parse succeeded", so the spec that
     // produced this item MUST reach the classifier — without it every atlas row falls through to
