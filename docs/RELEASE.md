@@ -83,7 +83,9 @@ pre-releases look like `0.2.0-rc.1` and land on the `next` dist-tag automaticall
    git push origin v<v>
    ```
 
-   The job (Node 24, npm ≥ 11.5.1, `id-token: write`) runs `npm ci`, `typecheck`, `test`, `build`,
+   The job (Node 24, npm ≥ 11.5.1, `id-token: write`) runs `npm ci`, `check` (typecheck — `tsc --noEmit` plus
+   `scripts/no-any.mjs` — then `jev-contract`, then the unit suite; it ran `typecheck` and `test` as a pair and
+   skipped the Jev contract lint entirely until 2026-09-22), `build`,
    `pack:check`, `gen-docs --check`, packs, publishes with `--provenance --access public --tag next|latest`,
    creates the GitHub Release with the tarball and `SHA256SUMS`, and prints the Homebrew bump lines in the
    job summary. Watch it: `gh run watch`.
