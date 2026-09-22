@@ -5,10 +5,10 @@
  * with its `--force` gate, and remote pause / end through `deliver()`.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BlockingAnswer, EngineEvent, PausePoint } from '../../../src/core/types.js';
+import type { BlockingAnswer, BlockingRequest, EngineEvent, GenerateRequest, GenerateResult, PausePoint, Proposal, Synthesizer } from '../../../src/core/types.js';
 import { ConfigError } from '../../../src/errors.js';
-import type { Harness } from './fakes.js';
-import { createFakeDecider, createFakeProvider, createFakeSandbox, createFakeStore, execResult, makeEngine, turn } from './fakes.js';
+import type { FakeProvider, Harness } from './fakes.js';
+import { createFakeDecider, createFakeProvider, createFakeSandbox, createFakeStore, makeEngine, turn } from './fakes.js';
 
 const harnesses: Harness[] = [];
 afterEach(() => {
@@ -32,6 +32,82 @@ function point(h: Harness): PausePoint {
 /** the index of the first event matching `pred` in the harness's event log */
 function indexOf(h: Harness, pred: (e: EngineEvent) => boolean): number {
   return h.events.findIndex(pred);
+}
+
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 500 && !cond(); i++) await new Promise((r) => setTimeout(r, 1));
+  if (!cond()) throw new Error('condition not met');
+}
+
+// ---------------------------------------------------------------------------------------
+// llm-jev helpers: a provider whose sample 0 ignores the abort (a late arrival), and the synthesizers that fire them
+// ---------------------------------------------------------------------------------------
+
+function result(k: number): GenerateResult {
+  return { text: `sample ${k}`, toolCalls: [{ name: 'propose_action', input: { k }, rawJson: JSON.stringify({ k }) }], usage: { inputTokens: 1000, outputTokens: 200, costUsd: 0.004, calls: 1 }, model: 'z-ai/glm-5.3-flash', stopReason: 'tool_use', latencyMs: 100, generationId: `gen-${k}` };
+}
+
+interface LatchedProvider extends FakeProvider {
+  /** one entry per dispatched sample, in order */
+  pending: (number | undefined)[];
+  /** settle the sample that ignores the abort */
+  resolveSample0(r: GenerateResult): void;
+}
+
+/** sample 0 never reacts to the abort (it lands when the test says so); every other sample rejects with the signal's reason */
+function latchedProvider(): LatchedProvider {
+  const requests: GenerateRequest[] = [];
+  const pending: (number | undefined)[] = [];
+  let resolve0: ((r: GenerateResult) => void) | null = null;
+  return {
+    name: 'mock',
+    model: 'z-ai/glm-5.3-flash',
+    requests,
+    pending,
+    resolveSample0: (r) => resolve0?.(r),
+    generate(req, o) {
+      requests.push(req);
+      pending.push(o.sample);
+      if (o.sample === 0) return new Promise<GenerateResult>((res) => (resolve0 = res));
+      return new Promise<GenerateResult>((_res, rej) => {
+        if (o.signal.aborted) {
+          rej(o.signal.reason);
+          return;
+        }
+        o.signal.addEventListener('abort', () => rej(o.signal.reason), { once: true });
+      });
+    },
+  };
+}
+
+const SAMPLE_REQ: GenerateRequest = { system: 'sys', messages: [{ role: 'user', content: 'fix f' }], maxTokens: 1500, temperature: 0.7 };
+const PROPOSAL: Proposal = { goal: 'read after the round', action: { kind: 'read', paths: ['src/a.py'] }, plan: { done: [], remaining: ['fix f'], openProblems: [] }, rawText: '' };
+
+/** fires sample 0 without awaiting it (it arrives after the discard) and awaits sample 1, which the abort cuts */
+function lateSampleSynth(): Synthesizer {
+  return {
+    name: 'late-sample',
+    async synthesize(ctx) {
+      const gen = ctx.generate;
+      if (gen === undefined) throw new Error('llm-jev must expose SynthesisContext.generate');
+      void gen({ ...SAMPLE_REQ, seed: 0 }, { sample: 0, purpose: 'propose_fix', signal: new AbortController().signal, goalId: 'g1', goalRound: 1 }).catch(() => undefined);
+      await gen({ ...SAMPLE_REQ, seed: 1 }, { sample: 1, purpose: 'propose_fix', signal: new AbortController().signal, goalId: 'g1', goalRound: 1 });
+      return PROPOSAL;
+    },
+  };
+}
+
+/** one sample that ignores the abort: it arrives (and proposes) after the pause snapshot was taken */
+function oneLateSampleSynth(): Synthesizer {
+  return {
+    name: 'one-late-sample',
+    async synthesize(ctx) {
+      const gen = ctx.generate;
+      if (gen === undefined) throw new Error('llm-jev must expose SynthesisContext.generate');
+      await gen({ ...SAMPLE_REQ, seed: 0 }, { sample: 0, purpose: 'propose_fix', signal: new AbortController().signal, goalId: 'g1', goalRound: 1 });
+      return PROPOSAL;
+    },
+  };
 }
 
 describe('P1 — step boundary', () => {
@@ -114,7 +190,7 @@ describe('P2 — mid-stage, nothing executed', () => {
     expect(cache).toMatchObject({ v: 1, step: 1, stage: 'propose', proposal: null, llmRound: null, targets: [] });
     const last = h.store.last()!;
     expect(last.interrupted).toEqual({ step: 1, stage: 'propose', proposal: null });
-    expect(last.interruptedDetail).toEqual({ cache: 'cache/step-1.json', targetsSha: {}, replayable: false, partialChars: 0 });
+    expect(last.interruptedDetail).toEqual({ cache: 'cache/step-1.json', resumes: 1, at: expect.any(String), targetsSha: {}, replayable: false, partialChars: 0 });
     expect(last.pausePoint).toEqual(p);
     expect(h.store.steps).toHaveLength(0);
   });
@@ -302,6 +378,29 @@ describe('P6 — a blocking pane is open', () => {
     expect(h.of('pause:point')).toEqual([]);
   });
 
+  it('a degraded checkpoint keeps its exit: `[c] continue anyway` then a pause ends exit 3, not resumable, with no pause:point', async () => {
+    const store = createFakeStore();
+    let fail = true;
+    const realWrite = store.writeState.bind(store);
+    store.writeState = async (state) => {
+      if (fail) throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' });
+      return realWrite(state);
+    };
+    const blocker = async (): Promise<BlockingAnswer> => 'continue';
+    const h = await build({ store, turns: [read(), read()], limits: { maxSteps: 3 }, engine: { blocker } });
+    h.engine.events.on('blocking:resolved', () => {
+      fail = false; // the final write lands, but the run is degraded from here on
+      h.engine.pause();
+    });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('human_pause');
+    // §12.0.2: a degraded checkpoint is exit 3 and not resumable — the point would promise a state the run cannot stand behind
+    expect(h.of('run:end')[0]).toMatchObject({ exitCode: 3, resumable: false });
+    expect(h.of('pause:point')).toEqual([]);
+    expect(h.engine.status().pausePoint).toBeNull();
+    expect(h.store.last()?.pausePoint).toBeUndefined();
+  });
+
   it('drift is the exception: pause() during the drift pane reads as [q] stop — exit 2, no pause:point', async () => {
     const h = await build({ turns: [read()], limits: { maxSteps: 2 }, deciderModel: { configured: 'typesafe/jev-9.0-20990101', pinned: true }, engine: { blocker: never } });
     h.engine.events.on('blocking:request', (e) => {
@@ -314,6 +413,122 @@ describe('P6 — a blocking pane is open', () => {
     expect(r.stopReason).toBe('error');
     expect(h.of('run:end')[0]!.exitCode).toBe(2);
     expect(h.of('pause:point')).toEqual([]);
+  });
+});
+
+describe('the cached proposal is the pause\'s, never an earlier attempt\'s (§7.3 step 4)', () => {
+  it('fresh resume → a second interruption → --replay: the rejected proposal is not resurrected; the cache file is superseded', async () => {
+    // (1) pause now during risk: the proposal and its targets are cached, the detail stamped for the next resume
+    const decider = createFakeDecider({ delayMs: (ctx) => (ctx.stage === 'risk' ? 5_000 : 0) });
+    const h1 = await build({ decider, turns: [turn({ kind: 'edit', path: 'src/a.py', old: 'return 1', new: 'return 2' })], limits: { maxSteps: 2 } });
+    h1.engine.events.on('stage:start', (e) => {
+      if (e.stage === 'risk') h1.engine.pause({ at: 'now' });
+    });
+    expect((await h1.engine.run()).stopReason).toBe('human_pause');
+    expect(h1.store.last()!.interruptedDetail).toMatchObject({ cache: 'cache/step-1.json', resumes: 1, replayable: true });
+    expect(h1.store.cache.has('step-1.json')).toBe(true);
+
+    // (2) a FRESH resume (no --replay) runs step 1 again and is interrupted once more, this time with no cache of its own
+    const h2 = await build({ store: h1.store, runsDir: h1.runsDir, resume: { runId: h1.engine.runId, force: false }, decider, turns: [read()], limits: { maxSteps: 2 } });
+    h2.engine.events.on('stage:start', (e) => {
+      if (e.stage === 'risk') h2.engine.abort('human_abort');
+    });
+    const r2 = await h2.engine.run();
+    expect(r2.stopReason).toBe('human_abort');
+    const after = h1.store.last()!;
+    expect(after.interrupted).toMatchObject({ step: 1 });
+    // the stale detail did not survive the fresh attempt — and the file it named was renamed out of reach
+    expect(after.interruptedDetail).toBeUndefined();
+    expect(h1.store.cache.has('step-1.json')).toBe(false);
+    expect(h1.store.cache.has('step-1.superseded.json')).toBe(true);
+
+    // (3) --replay now: nothing to replay, a fresh step at intent, the generator asked again
+    const h3 = await build({ store: h1.store, runsDir: h1.runsDir, resume: { runId: h1.engine.runId, force: false, replay: true }, turns: [read()], limits: { maxSteps: 1 } });
+    const r3 = await h3.engine.run();
+    expect(h3.of('transcript').some((t) => /^replay unavailable: no paused proposal for step 1; fresh step at intent$/.test(t.text))).toBe(true);
+    expect(h3.of('proposal').every((e) => e.verdict === undefined)).toBe(true);
+    expect(h3.provider.requests).toHaveLength(1);
+    expect(r3.steps).toBe(1);
+    // the committed step is the fresh read, never the cached edit
+    expect(h1.store.steps.at(-1)!.proposal?.action).toMatchObject({ kind: 'read' });
+  });
+
+  it('a detail stamped for an earlier resume is refused by the engine too (the state survived, the stamp did not)', async () => {
+    const decider = createFakeDecider({ delayMs: (ctx) => (ctx.stage === 'risk' ? 5_000 : 0) });
+    const h1 = await build({ decider, turns: [turn({ kind: 'edit', path: 'src/a.py', old: 'return 1', new: 'return 2' })], limits: { maxSteps: 2 } });
+    h1.engine.events.on('stage:start', (e) => {
+      if (e.stage === 'risk') h1.engine.pause({ at: 'now' });
+    });
+    await h1.engine.run();
+    const last = h1.store.last()!;
+    expect(last.interruptedDetail?.resumes).toBe(1);
+    // a state that already went through one more resume keeps the detail but not its right to replay
+    await h1.store.writeState({ ...last, resumes: last.resumes + 1 });
+    const h2 = await build({ store: h1.store, runsDir: h1.runsDir, resume: { runId: h1.engine.runId, force: false, replay: true }, turns: [read()], limits: { maxSteps: 1 } });
+    await h2.engine.run();
+    expect(h2.of('transcript').some((t) => /^replay unavailable: the paused proposal for step 1 was already superseded by a fresh resume \(stamped for resume 1, this is 2\); fresh step at intent$/.test(t.text))).toBe(true);
+    expect(h2.provider.requests).toHaveLength(1);
+  });
+
+  it('the cache file must be the one the state names: a different { resumes, at } pair is refused', async () => {
+    const decider = createFakeDecider({ delayMs: (ctx) => (ctx.stage === 'risk' ? 5_000 : 0) });
+    const h1 = await build({ decider, turns: [read()], limits: { maxSteps: 2 } });
+    h1.engine.events.on('stage:start', (e) => {
+      if (e.stage === 'risk') h1.engine.pause({ at: 'now' });
+    });
+    await h1.engine.run();
+    // a file from another attempt under the same name (a restored backup, a synced copy)
+    const written = h1.store.cache.get('step-1.json') as Record<string, unknown>;
+    h1.store.cache.set('step-1.json', { ...written, at: '2026-09-21T10:00:00.000Z' });
+    const h2 = await build({ store: h1.store, runsDir: h1.runsDir, resume: { runId: h1.engine.runId, force: false, replay: true }, turns: [read()], limits: { maxSteps: 1 } });
+    await h2.engine.run();
+    expect(h2.of('transcript').some((t) => t.level === 'warn' && /^replay unavailable: cache\/step-1\.json belongs to another attempt \(written 2026-09-21T10:00:00\.000Z, the state names .*\); fresh step 1 at intent$/.test(t.text))).toBe(true);
+    expect(h2.provider.requests).toHaveLength(1);
+  });
+
+  it('a replayed step announces itself: the proposal event carries verdict replay', async () => {
+    const decider = createFakeDecider({ delayMs: (ctx) => (ctx.stage === 'risk' && ctx.step === 1 ? 5_000 : 0) });
+    const h1 = await build({ decider, turns: [read()], limits: { maxSteps: 2 } });
+    h1.engine.events.on('stage:start', (e) => {
+      if (e.stage === 'risk') h1.engine.pause({ at: 'now' });
+    });
+    await h1.engine.run();
+    const h2 = await build({ store: h1.store, runsDir: h1.runsDir, resume: { runId: h1.engine.runId, force: false, replay: true }, turns: [read()], limits: { maxSteps: 1 } });
+    await h2.engine.run();
+    expect(h2.of('proposal').map((e) => e.verdict)).toEqual(['replay']);
+    expect(h2.provider.requests).toHaveLength(0);
+  });
+});
+
+describe('replayable is what the cache holds, not what the draft held a tick later (§12.0.2)', () => {
+  it('a sample that arrives in the same tick as the pause: the cache is empty, so the point and the detail both say not replayable', async () => {
+    const provider = latchedProvider();
+    const h = await build({ mode: 'llm-jev', synthesizer: oneLateSampleSynth(), provider, limits: { maxSteps: 2 } });
+    const running = h.engine.run();
+    await until(() => provider.pending.length === 1);
+    // the snapshot is taken synchronously inside pause(); the sample lands right after it, into the draft only
+    h.engine.pause({ at: 'now' });
+    provider.resolveSample0(result(0));
+    const r = await running;
+    expect(r.stopReason).toBe('human_pause');
+    const cache = h.store.cache.get('step-1.json') as { proposal: Proposal | null; llmRound: { arrived: unknown[] } | null };
+    // the file: no proposal, no arrived sample — and the detail and the point agree with it
+    expect(cache.proposal).toBeNull();
+    expect(cache.llmRound?.arrived ?? []).toEqual([]);
+    const p = point(h);
+    expect(p).toMatchObject({ step: 1, reason: 'now', resumableAt: 'cache/step-1.json', replayable: false });
+    expect(h.store.last()!.interruptedDetail).toMatchObject({ cache: 'cache/step-1.json', replayable: false, partialChars: 0 });
+
+    // --replay says why and buys the sample again: nothing was served from an empty cache
+    const provider2 = latchedProvider();
+    const h2 = await build({ mode: 'llm-jev', synthesizer: oneLateSampleSynth(), provider: provider2, store: h.store, runsDir: h.runsDir, resume: { runId: h.engine.runId, force: false, replay: true }, limits: { maxSteps: 1 } });
+    const running2 = h2.engine.run();
+    await until(() => provider2.pending.length === 1);
+    provider2.resolveSample0(result(0));
+    await running2;
+    expect(h2.of('transcript').some((t) => /^replay unavailable: nothing had arrived when step 1 paused; fresh step at intent$/.test(t.text))).toBe(true);
+    expect(h2.of('transcript').filter((t) => /replayed from/.test(t.text))).toEqual([]);
+    expect(provider2.requests).toHaveLength(1);
   });
 });
 
@@ -332,6 +547,18 @@ describe('P8 — remote pause / end through deliver()', () => {
     expect(outcomes).toEqual(['applied', 'delivered', 'refused']);
     expect(point(h)).toMatchObject({ step: 1, phase: 'propose', reason: 'now', by: 'peer:rpywkq2v', end: false });
     expect(h.engine.deliver!({ id: 'm4', type: 'pause', text: '', from: PEER })).toBe('expired');
+  });
+
+  it('a peer\'s label reaches `by` clamped to the id grammar: 32 chars of [A-Za-z0-9._-], never empty', async () => {
+    const h = await build({ turns: [read(), read()], limits: { maxSteps: 3 } });
+    h.engine.events.on('step:end', () => {
+      h.engine.deliver!({ id: 'm1', type: 'pause', text: 'pause', from: { deviceId: 'k3q7m2ab', label: 'mbp\n[run] warn: forged — ' + 'x'.repeat(80), sessionId: null, runId: null } });
+    });
+    await h.engine.run();
+    const by = point(h).by;
+    expect(by.startsWith('device:')).toBe(true);
+    expect(by.slice('device:'.length)).toBe('mbprunwarnforged' + 'x'.repeat(16));
+    expect(by.slice('device:'.length)).toHaveLength(32);
   });
 
   it('an end message ends with by: remote — RunMeta.ended.by is remote and the point says end', async () => {
@@ -521,8 +748,26 @@ describe('the exit-code table (§12.0.2)', () => {
     expect(h.engine.status().pausePoint).toMatchObject({ step: 1, reason: 'step' });
   });
 
-  it('late sample-less rows: a pause-now-discarded step marks its generator rows discarded, so a replay attempt stays apart', async () => {
-    // jev-off: the propose call completed before the pause (a delayed risk is not available without Jev); use a slow computeTargets-free read + pause at step start of step 2 to discard the second attempt's rows
+  it('a late sample row of a pause-now-discarded step carries discarded: true (§11 row 41); the committed step\'s rows carry no mark', async () => {
+    // llm-jev: sample 0 ignores the abort and lands long after the step was discarded — the row must still be marked, so the
+    // replayed step's `verify.samples` and the cost audit keep the two attempts apart
+    const late = latchedProvider();
+    const h = await build({ mode: 'llm-jev', synthesizer: lateSampleSynth(), provider: late, limits: { maxSteps: 2 } });
+    const running = h.engine.run();
+    await until(() => late.pending.length === 2);
+    // the row lands while the run is already shutting down: the pause point is decided, the state written
+    h.engine.events.on('pause:point', () => late.resolveSample0(result(0)));
+    h.engine.pause({ at: 'now' });
+    const r = await running;
+    expect(r.stopReason).toBe('human_pause');
+    expect(r.steps).toBe(0);
+    await until(() => h.store.generator.some((g) => g.sample === 0));
+    const rows = h.store.generator.filter((g) => g.step === 1);
+    expect(rows.map((g) => [g.sample, g.discarded])).toEqual([[1, true], [0, true]]);
+    expect(point(h)).toMatchObject({ step: 1, phase: 'propose', reason: 'now' });
+  });
+
+  it('a committed step keeps its rows unmarked: only the discarded attempt is flagged', async () => {
     const provider = createFakeProvider((_req, i) => (i === 0 ? read() : turn({ kind: 'read', paths: ['src/a.py'] }, {}, { delayMs: 5_000 })));
     const h = await build({ provider, mode: 'jev-off', limits: { maxSteps: 3 } });
     h.engine.events.on('generator:start', (e) => {
@@ -536,16 +781,40 @@ describe('the exit-code table (§12.0.2)', () => {
   });
 });
 
-describe('P7 — worktree relocation (data shape; the lease-conflict pane lands with the coordination branch)', () => {
-  it('interruptedDetail.relocate and a PausePoint with reason worktree round-trip through the checkpoint state', async () => {
-    const h = await build({ turns: [read()], limits: { maxSteps: 1 } });
-    await h.engine.run();
-    const base = h.store.last()!;
-    const p: PausePoint = { step: 2, round: null, phase: 'pane', pane: 'jev-unreachable', reason: 'worktree', resumableAt: 'cache/step-2.json', replayable: true, by: 'self', end: false };
-    const state = { ...base, interrupted: { step: 2, stage: 'risk' as const, proposal: null }, interruptedDetail: { cache: 'cache/step-2.json' as const, targetsSha: { 'src/a.py': null }, replayable: true, partialChars: 0, relocate: { slug: 'fix-store', reason: 'lease-conflict' as const } }, pausePoint: p };
-    await h.store.writeState(state);
-    expect(h.store.last()!.interruptedDetail?.relocate).toEqual({ slug: 'fix-store', reason: 'lease-conflict' });
-    expect(h.store.last()!.pausePoint).toEqual(p);
-    expect(execResult().ok).toBe(true);
+describe('P7 — the `worktree` answer at a pane (the relocation stop)', () => {
+  it('`[t] worktree` is the resumable stop: human_pause, exit 4, the point reads reason worktree and names the pane', async () => {
+    const decider = createFakeDecider({ retryAt: (ctx) => (ctx.stage === 'intent' ? { count: 0, waitMs: 0, status: 503, exhausted: true } : undefined) });
+    const answers: BlockingRequest[] = [];
+    const blocker = async (req: BlockingRequest): Promise<BlockingAnswer> => {
+      answers.push(req);
+      return 'worktree';
+    };
+    const h = await build({ decider, turns: [read()], limits: { maxSteps: 2 }, engine: { blocker } });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('human_pause');
+    // the pane's own error is not this stop's error (like the `pause` answer, §11 row 37)
+    expect(r.error).toBeUndefined();
+    expect(h.of('blocking:resolved')[0]).toMatchObject({ answer: 'worktree' });
+    expect(h.of('run:end')[0]).toMatchObject({ exitCode: 4, resumable: true });
+    expect(point(h)).toEqual({ step: 1, round: null, phase: 'pane', reason: 'worktree', resumableAt: 'boundary', replayable: false, pane: 'jev-unreachable', by: 'self', end: false });
+    expect(answers).toHaveLength(1);
+  });
+
+  it('`[w] wait` is not a stop: the pane closes and the run goes on (the inline wait belongs to the coordinate stage)', async () => {
+    let first = true;
+    const decider = createFakeDecider({
+      retryAt: (ctx) => {
+        if (ctx.stage !== 'intent' || !first) return undefined;
+        first = false;
+        return { count: 0, waitMs: 0, status: 503, exhausted: true };
+      },
+    });
+    const blocker = async (): Promise<BlockingAnswer> => 'wait';
+    const h = await build({ decider, turns: [read(), read()], limits: { maxSteps: 2 }, engine: { blocker } });
+    const r = await h.engine.run();
+    expect(h.of('blocking:resolved')[0]).toMatchObject({ answer: 'wait' });
+    expect(r.stopReason).toBe('max_steps');
+    expect(h.of('pause:point')).toEqual([]);
+    expect(h.engine.status().blocked).toBeNull();
   });
 });

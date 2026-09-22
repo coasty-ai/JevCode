@@ -407,6 +407,21 @@ describe('contract 1.4 additions (COORDINATION-DESIGN §7.2, §7.4)', () => {
       expect(await store.readCache('bad.json')).toBeNull();
     }));
 
+  it('renameCache supersedes a cache file: the bytes move, the old name is gone, a missing source is not an error, a bad rel rejects', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeCache('step-3.json', { v: 1, step: 3 });
+      await store.renameCache('step-3.json', 'step-3.superseded.json');
+      expect(await store.readCache('step-3.json')).toBeNull();
+      expect(await store.readCache('step-3.superseded.json')).toEqual({ v: 1, step: 3 });
+      expect(await readdir(join(dir, CHECKPOINT_FILES.cache))).toEqual(['step-3.superseded.json']);
+      // nothing to supersede is the common case (a boundary pause wrote no cache)
+      await expect(store.renameCache('step-9.json', 'step-9.superseded.json')).resolves.toBeUndefined();
+      await expect(store.renameCache('../escape.json', 'step-1.json')).rejects.toBeInstanceOf(CheckpointError);
+      await expect(store.renameCache('step-1.json', '/abs.json')).rejects.toBeInstanceOf(CheckpointError);
+    }));
+
   it('a cache rel is validated: relative, no .., no absolute, no backslash; the writer rejects with CheckpointError', () =>
     withTempDir(async (dir) => {
       expect(cacheRelPath('step-1.json')).toBe('step-1.json');

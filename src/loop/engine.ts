@@ -107,7 +107,7 @@ import type { AskResult,
 import { AbortError, CheckpointError, ConfigError, GeneratorResponseError, JevCodeError, JevHttpError, JevModelDriftError, JevResponseError, ProviderHttpError, isAbortError, isBudgetError, isJevCodeError, toJevCodeError, type BudgetKind } from '../errors.js';
 import { CHECKPOINT_FILES, classifyDiskError } from '../checkpoint/store.js';
 import { writePostImages, writePreImages, type ImageSource, type PreImageResult } from '../checkpoint/images.js';
-import { CACHED_SAMPLES_MAX, CACHED_SAMPLE_MAX_CHARS, PARTIAL_TEXT_MAX_CHARS, REPLAY_HASH_MAX_FILES, hashTargets, parseStepCache, promptHashOf, proposalPaths, stepCacheName, stepCacheRel, verifyTargets, type CachedSample, type StepCache } from '../checkpoint/replay.js';
+import { CACHED_SAMPLES_MAX, CACHED_SAMPLE_MAX_CHARS, PARTIAL_TEXT_MAX_CHARS, REPLAY_HASH_MAX_FILES, hashTargets, parseStepCache, promptHashOf, proposalPaths, stepCacheName, stepCacheRel, stepCacheSupersededName, verifyTargets, type CachedSample, type StepCache } from '../checkpoint/replay.js';
 import { acquireRunLock, releaseRunLock } from '../session/lock.js';
 import { seedNoticeText } from '../session/seed.js';
 import { nextBudgetWarn, seedAnnounced, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
@@ -248,6 +248,15 @@ const SPEND_LIMIT_RE = /spend|credit|billing|quota|insufficient/i;
 const REVIEWER_NOTE_MAX = 600;
 /** contract 1.4 (COORDINATION-DESIGN §7.2): finish() waits this long for the pause-now cache write before `replayable` is read as false */
 export const PAUSE_CACHE_BOUND_MS = 2_000;
+/** contract 1.4 (§5.3, §10): a peer's label inside `PausePoint.by` is clamped to this many chars of the id grammar */
+export const PEER_LABEL_MAX = 32;
+/** §5.3: `peer:<sid8>` — the last 8 chars of the sender's session id */
+const PEER_SID_CHARS = 8;
+/** the `by` grammar: [A-Za-z0-9._-] only, ≤ PEER_LABEL_MAX chars, never empty (a stripped label reads `unknown`) */
+function peerLabel(raw: string): string {
+  const clean = raw.replace(/[^A-Za-z0-9._-]/g, '').slice(0, PEER_LABEL_MAX);
+  return clean.length > 0 ? clean : 'unknown';
+}
 
 /**
  * TUI-DESIGN §13.3: what a failing stage asks for, before the loop top installs it. The id and the auto-retry interval
@@ -356,10 +365,12 @@ interface StepDraft {
   // contract 1.4 (COORDINATION-DESIGN §7.2): what a pause-now snapshots
   /** the generator's streamed text and tool-argument fragments of the propose call, ≤ PARTIAL_TEXT_MAX_CHARS (kept for the card, never replayed) */
   partialText: string;
-  /** every streamed char, samples included (InterruptedDetail.partialChars) */
+  /** streamed chars of the PROPOSAL's own text only — a sample's chars belong to its generator row, never to the partial proposal (InterruptedDetail.partialChars) */
   partialChars: number;
-  /** llm-jev: sample batches started this step (PausePoint.round = llmRounds − 1) */
+  /** llm-jev: sample batches started this step (the engine's own fallback round number when the synthesizer names none) */
   llmRounds: number;
+  /** llm-jev: the goal and round the samples of this step were fired for, as the synthesizer named them (SampleOptions); null when it named none */
+  llmGoal: { goalId: string; round: number } | null;
   /** llm-jev: the samples that arrived this step, for the round cache (≤ CACHED_SAMPLES_MAX) */
   arrivedSamples: CachedSample[];
   /** the step restored its proposal from cache/step-<n>.json (§7.3 step 3) */
@@ -375,7 +386,7 @@ interface PendingPausePoint {
   reason: PausePointReason;
   round: number | null;
   pane?: BlockingRequest['kind'];
-  synthPhase?: string;
+  llm?: { goalId: string; round: number; arrived: number[] };
   cache: `cache/step-${number}.json` | null;
 }
 
@@ -676,16 +687,32 @@ class EngineImpl implements Engine {
   private pauseLandedInExecute = false;
   /** the last PausePoint of this process (EngineStatus.pausePoint); null until the point is reached */
   private pausePoint: PausePoint | null = null;
-  /** the cache/step-<n>.json write a pause-now enqueued: awaited (bounded) by finish() so `replayable` and `targetsSha` are facts */
-  private pauseCache: { step: number; rel: `cache/step-${number}.json`; done: Promise<{ ok: boolean; targetsSha: Record<string, string | null> }> } | null = null;
+  /**
+   * the cache/step-<n>.json write a pause-now enqueued, together with WHAT IT WROTE (§12.0.2: `replayable` and the point's
+   * round are facts of the file, not of the draft the discard reads a tick later — a sample or a proposal landing between
+   * the snapshot and the discard must not promise a replay the file cannot serve). `done` is awaited (bounded) by finish().
+   */
+  private pauseCache: {
+    step: number;
+    rel: `cache/step-${number}.json`;
+    /** the resumes counter of the process entitled to replay it (this run's + 1) */
+    resumes: number;
+    at: string;
+    hadProposal: boolean;
+    arrivedCount: number;
+    partialChars: number;
+    round: number | null;
+    llm: { goalId: string; round: number; arrived: number[] } | null;
+    done: Promise<{ ok: boolean; targetsSha: Record<string, string | null> }>;
+  } | null = null;
   /** abort() after a pause-now: the later abort wins the classification and the exit code (§7.2, §11 row 38) */
   private abortOverride: AbortError | null = null;
   /** created per awaitBlocker; pause() aborts it so an awaited pane resolves { answer: 'pause' } (P6) */
   private blockWaker: AbortController | null = null;
   /** §7.2 / §12.0.4: the replay detail beside `interrupted`; cleared with it at commit */
   private interruptedDetail: InterruptedDetail | null = null;
-  /** the last `synth` event's phase of the step in flight (PausePoint.synthPhase) */
-  private lastSynthPhase: string | null = null;
+  /** §12.0.3 / D7: chars of the last generator prompt built this run (CheckpointState.lastPromptChars), persisted at commit */
+  private lastPromptChars: number | null = null;
   /** §7.3 step 3: the cache the next runStep() replays (EngineOptions.resume.replay, gated by the target hashes at run start) */
   private replayCache: StepCache | null = null;
   private readonly replayRequested: boolean;
@@ -775,6 +802,7 @@ class EngineImpl implements Engine {
       this.jevQuestions = s.jevQuestions ?? 0;
       this.synthState = s.synthState ?? null;
       this.resumes = s.resumes;
+      this.lastPromptChars = s.lastPromptChars ?? null;
       this.jevCalls = s.jevLatencyMs.length;
       this.interrupted = s.interrupted;
       // contract 1.4 (§7.3 step 4): the replay detail is restored only while `interrupted` names its step; `pausePoint` is never restored (it is this process's)
@@ -1071,9 +1099,11 @@ class EngineImpl implements Engine {
     // (2) the request line once; an upgrade shows in the status (pauseNow) only
     if (first) this.announce([{ type: 'pause:requested', step: this.step + 1 }]);
     else if (this.started) this.emitStatus();
-    // (3) a pane awaited at the loop top: nothing is in flight — wake it with 'pause' (P6)
-    if (this.blockWaker !== null) {
-      this.blockWaker.abort();
+    // (3) a pane is up (installed, or already awaited at the loop top): nothing is in flight — wake it with 'pause' (P6) and
+    // never abort the shared controller. The `blocked` half matters between installBlock() and awaitBlocker(): the waker does
+    // not exist yet there, and an abort would turn a resumable pane pause into the pane's own stop.
+    if (this.blocked !== null || this.blockWaker !== null) {
+      this.blockWaker?.abort();
       return;
     }
     // (4) the stage in flight is cut through the shared controller; `execute` is never cut (P4, §11 row 29)
@@ -1105,7 +1135,9 @@ class EngineImpl implements Engine {
     if (this.isFinished()) return 'expired';
     if (msg.type !== 'pause' && msg.type !== 'end') return 'refused';
     const sid = msg.from.sessionId ?? msg.from.runId;
-    const by: PausePoint['by'] = sid !== null && sid.length > 0 ? `peer:${sid.slice(-8)}` : `device:${msg.from.label}`;
+    // §5.3 / §10: a peer's own strings reach `by`, which rides state.json, the heartbeat and an index line — clamp them to
+    // the id grammar and 32 chars here, so no record can be widened, split across lines or made to look like another target
+    const by: PausePoint['by'] = sid !== null && sid.length > 0 ? `peer:${peerLabel(sid.slice(-PEER_SID_CHARS))}` : `device:${peerLabel(msg.from.label)}`;
     const at: 'step' | 'now' = /\bnow\b/i.test(msg.text) ? 'now' : 'step';
     const before = { requested: this.pauseRequested, now: this.pauseNow, end: this.endRequested !== null };
     if (msg.type === 'pause') this.pause({ at, by });
@@ -1126,6 +1158,7 @@ class EngineImpl implements Engine {
     const step = draft.step;
     const rel = stepCacheRel(step);
     const proposal = draft.proposal;
+    const arrived = draft.arrivedSamples.map((a) => ({ ...a }));
     const rels: string[] = [];
     if (proposal !== null) {
       for (const t of [...draft.patchTargets.map((t) => t.path), ...proposalPaths(proposal.action)]) if (!rels.includes(t)) rels.push(t);
@@ -1145,13 +1178,26 @@ class EngineImpl implements Engine {
       contextFiles: [...draft.contextFiles],
       directive: draft.directive,
       partial: draft.partialChars > 0 ? { text: sanitizeStream(draft.partialText), chars: draft.partialChars } : null,
-      llmRound: this.mode === 'llm-jev' && draft.llmRounds > 0 ? { round: draft.llmRounds - 1, arrived: draft.arrivedSamples.map((a) => ({ ...a })) } : null,
-      synthPhase: this.lastSynthPhase,
+      llmRound: this.mode === 'llm-jev' && draft.llmRounds > 0 ? { goalId: draft.llmGoal?.goalId ?? null, round: draft.llmGoal?.round ?? draft.llmRounds - 1, arrived } : null,
+      // §7.2 step 2: the same pair goes into `interruptedDetail`, and a replay serves the file only when the two agree
+      resumes: this.resumes + 1,
       at: nowIso(),
+    };
+    // §12.0.2: exactly what the file carries — the discard and finish() read these, never the draft as it looks later
+    const wrote = {
+      step,
+      rel,
+      resumes: this.resumes + 1,
+      at: snap.at,
+      hadProposal: proposal !== null,
+      arrivedCount: snap.llmRound?.arrived.length ?? 0,
+      partialChars: draft.partialChars,
+      round: snap.llmRound?.round ?? null,
+      llm: snap.llmRound !== null && snap.llmRound.goalId !== null ? { goalId: snap.llmRound.goalId, round: snap.llmRound.round, arrived: arrived.map((a) => a.sample) } : null,
     };
     const write = this.store.writeCache;
     if (write === undefined) {
-      this.pauseCache = { step, rel, done: Promise.resolve({ ok: false, targetsSha: {} }) };
+      this.pauseCache = { ...wrote, done: Promise.resolve({ ok: false, targetsSha: {} }) };
       return;
     }
     const done = hashTargets(this.workspace.root, targets).then(async (targetsSha) => {
@@ -1159,7 +1205,7 @@ class EngineImpl implements Engine {
       return { ok: true, targetsSha };
     });
     this.persist(done.then(() => undefined), rel);
-    this.pauseCache = { step, rel, done: done.catch(() => ({ ok: false, targetsSha: {} })) };
+    this.pauseCache = { ...wrote, done: done.catch(() => ({ ok: false, targetsSha: {} })) };
   }
 
   /** contract 1.4 (§7.2): the stop classification of the shared signal, the later abort winning over a pause-now */
@@ -1173,10 +1219,14 @@ class EngineImpl implements Engine {
     this.pauseAt = { step: this.step + 1, phase: 'idle', reason: this.pauseLandedInExecute ? 'now-after-execute' : 'step', round: null, cache: null };
   }
 
-  /** §12.0.2 P6: the point at a pane pause() woke — the step that raised the pane is already a rule-1 discard */
-  private recordPanePause(req: BlockingRequest): void {
+  /**
+   * §12.0.2 P6 / P7: the point at a pane that pause() woke (`pane`) or that the human answered `[t] worktree` (`worktree`,
+   * the lease-conflict relocation of §4.3 step 5) — the step that raised the pane is already a rule-1 discard, so its
+   * `interruptedDetail` (when one was written) is what `--replay` reads after the relocation.
+   */
+  private recordPanePause(req: BlockingRequest, reason: 'pane' | 'worktree'): void {
     const detail = this.interrupted !== null ? this.interruptedDetail : null;
-    this.pauseAt = { step: this.interrupted?.step ?? this.step + 1, phase: 'pane', reason: 'pane', round: null, pane: req.kind, cache: detail?.cache ?? null };
+    this.pauseAt = { step: this.interrupted?.step ?? this.step + 1, phase: 'pane', reason, round: null, pane: req.kind, cache: detail?.cache ?? null };
   }
 
   /**
@@ -1187,14 +1237,17 @@ class EngineImpl implements Engine {
   private noteDiscardDetail(draft: StepDraft, stage: StageName, stop: StopReason): void {
     const cache = this.pauseCache;
     if (cache === null || cache.step !== draft.step) return;
-    this.interruptedDetail = { cache: cache.rel, targetsSha: {}, replayable: draft.proposal !== null || draft.arrivedSamples.length > 0, partialChars: draft.partialChars };
+    // §12.0.2 (one definition of `replayable`): what the snapshot WROTE — a proposal in the file, or arrived samples in it —
+    // and nothing executed. A sample that resolved in the same tick as the pause is not in the file and does not count.
+    const replayable = !draft.executeStarted && (cache.hadProposal || cache.arrivedCount > 0);
+    this.interruptedDetail = { cache: cache.rel, resumes: cache.resumes, at: cache.at, targetsSha: {}, replayable, partialChars: cache.partialChars };
     if (stop !== 'human_pause') return;
     this.pauseAt = {
       step: draft.step,
       phase: stage,
       reason: 'now',
-      round: this.mode === 'llm-jev' && draft.llmRounds > 0 ? draft.llmRounds - 1 : null,
-      ...(this.lastSynthPhase !== null ? { synthPhase: this.lastSynthPhase } : {}),
+      round: cache.round,
+      ...(cache.llm !== null ? { llm: { ...cache.llm, arrived: [...cache.llm.arrived] } } : {}),
       cache: cache.rel,
     };
   }
@@ -1211,11 +1264,21 @@ class EngineImpl implements Engine {
     let cacheOk = false;
     if (cache !== null && this.interruptedDetail !== null && this.interruptedDetail.cache === cache.rel) {
       const waitMs = Math.max(0, Math.min(PAUSE_CACHE_BOUND_MS, deadlineMs - this.clock()));
-      const r = await Promise.race([cache.done, sleep(waitMs).then(() => ({ ok: false, targetsSha: {} as Record<string, string | null> }))]);
+      // the sleep's wake signal ends the timer the moment the race is over (the write won, or the bound did), so the
+      // shutdown never carries a timer nobody waits for; the wake RESOLVES the sleep, so nothing is left unhandled either
+      const waker = new AbortController();
+      let r: { ok: boolean; targetsSha: Record<string, string | null> };
+      try {
+        r = await Promise.race([cache.done, sleep(waitMs, undefined, waker.signal).then(() => ({ ok: false, targetsSha: {} as Record<string, string | null> }))]);
+      } finally {
+        waker.abort();
+      }
       cacheOk = r.ok;
       this.interruptedDetail = { ...this.interruptedDetail, targetsSha: r.targetsSha, replayable: this.interruptedDetail.replayable && r.ok };
     }
     if (reason !== 'human_pause') return;
+    // §12.0.2: `checkpoint-degraded` (exit 3, resumable false) never reaches a pause point — the state the point promises could not be written
+    if (this.checkpointDegraded) return;
     if (this.pauseAt === null) this.recordBoundaryPause();
     const at = this.pauseAt!;
     const detail = at.cache !== null && this.interruptedDetail !== null && this.interruptedDetail.cache === at.cache ? this.interruptedDetail : null;
@@ -1227,7 +1290,7 @@ class EngineImpl implements Engine {
       resumableAt: at.cache !== null && cacheOk ? at.cache : 'boundary',
       replayable: detail !== null && detail.replayable && cacheOk,
       ...(at.pane !== undefined ? { pane: at.pane } : {}),
-      ...(at.synthPhase !== undefined ? { synthPhase: at.synthPhase } : {}),
+      ...(at.llm !== undefined ? { llm: { ...at.llm, arrived: [...at.llm.arrived] } } : {}),
       by: this.pauseBy,
       end: this.endRequested !== null,
     };
@@ -1245,6 +1308,12 @@ class EngineImpl implements Engine {
       this.emit({ type: 'transcript', step: null, level: 'info', text: `replay unavailable: no paused proposal for step ${step}; fresh step at intent` });
       return;
     }
+    // §7.3 step 4: the detail is stamped with the resume counter of the run allowed to replay it; one fresh resume of the
+    // step supersedes it for good (runStep renames the file), so a later --replay can never resurrect the rejected proposal
+    if (detail.resumes !== this.resumes) {
+      this.emit({ type: 'transcript', step: null, level: 'info', text: `replay unavailable: the paused proposal for step ${step} was already superseded by a fresh resume (stamped for resume ${detail.resumes}, this is ${this.resumes}); fresh step at intent` });
+      return;
+    }
     if (!detail.replayable) {
       this.emit({ type: 'transcript', step: null, level: 'info', text: `replay unavailable: nothing had arrived when step ${step} paused; fresh step at intent` });
       return;
@@ -1255,6 +1324,11 @@ class EngineImpl implements Engine {
       this.emit({ type: 'transcript', step: null, level: 'warn', text: `replay unavailable: ${detail.cache} is missing or unreadable; fresh step ${step} at intent` });
       return;
     }
+    // §7.2 step 2: the file must be the one this state names — the `{ resumes, at }` pair, never the mere presence of the file
+    if (cache.resumes !== detail.resumes || cache.at !== detail.at) {
+      this.emit({ type: 'transcript', step: null, level: 'warn', text: `replay unavailable: ${detail.cache} belongs to another attempt (written ${cache.at}, the state names ${detail.at}); fresh step ${step} at intent` });
+      return;
+    }
     const check = await verifyTargets(this.workspace.root, detail.targetsSha);
     if (!check.ok) {
       this.emit({ type: 'transcript', step: null, level: 'warn', text: `replay unavailable: targets changed since the proposal (${check.changed.join(', ')}); fresh step ${step} at intent` });
@@ -1263,6 +1337,21 @@ class EngineImpl implements Engine {
     this.replayCache = cache;
     const what = cache.proposal !== null ? 'the paused proposal (risk re-checked)' : `${cache.llmRound?.arrived.length ?? 0} arrived LLM sample(s), no generator call for them`;
     this.emit({ type: 'transcript', step: null, level: 'info', text: `replaying step ${step} from ${detail.cache}: ${what}` });
+  }
+
+  /**
+   * §7.3 step 4: drop the replay detail and rename `cache/step-<n>.json` → `cache/step-<n>.superseded.json`. Called at the top
+   * of every step that is not a replay: the bytes stay for the audit trail, the proposal is out of reach for good.
+   */
+  private supersedeStepCache(): void {
+    const detail = this.interruptedDetail;
+    this.interruptedDetail = null;
+    if (detail === null) return;
+    const rename = this.store.renameCache;
+    const m = /^cache\/step-(\d+)\.json$/.exec(detail.cache);
+    if (rename === undefined || m === null) return;
+    const n = Number(m[1]);
+    this.persist(rename.call(this.store, stepCacheName(n), stepCacheSupersededName(n)), detail.cache);
   }
 
   /** the cache for exactly this step, or null; a cached proposal is consumed here, a samples-only cache stays for generate() until the step ends */
@@ -1284,10 +1373,14 @@ class EngineImpl implements Engine {
     return hit === undefined ? null : hit.result;
   }
 
-  /** §7.2: the streamed generator chars of the propose call feed the snapshot's partial text (bounded); every sample's chars are counted */
+  /**
+   * §7.2: the streamed generator chars of the propose call feed the snapshot's partial text (bounded). Only the proposal's
+   * own stream counts: an llm-jev sample's chars are its row's (`recordUnfinishedSample`), and counting them would make the
+   * card claim a partial proposal that never existed.
+   */
   private notePartial(draft: StepDraft, text: string, keepText: boolean): void {
-    draft.partialChars += text.length;
     if (!keepText) return;
+    draft.partialChars += text.length;
     const room = PARTIAL_TEXT_MAX_CHARS - draft.partialText.length;
     if (room <= 0) return;
     draft.partialText += text.length <= room ? text : text.slice(0, room);
@@ -1453,8 +1546,9 @@ class EngineImpl implements Engine {
         // pause reads as `[q]` below; `checkpoint-degraded` exists because state.json failed, and finish()'s final write hits the
         // same disk — a pause there cannot end as exit 4, so it reads as `[r] retry the write` and the loop top pauses normally
         // once the write lands (a failing retry re-arms the pane and the run ends exit 3, not resumable).
-        if (answer === 'pause' && req.kind !== 'drift' && req.kind !== 'checkpoint-degraded') {
-          this.recordPanePause(req);
+        // `[t] worktree` (P7, §4.3 step 5) is the same resumable stop: the TUI creates the worktree and resumes with --replay
+        if ((answer === 'pause' || answer === 'worktree') && req.kind !== 'drift' && req.kind !== 'checkpoint-degraded') {
+          this.recordPanePause(req, answer === 'worktree' ? 'worktree' : 'pane');
           return this.finish('human_pause');
         }
         // TUI-DESIGN §13.3: the drift pane offers `[p] pin … for the next run` and `[q] stop` only — every answer ends the run with
@@ -1463,6 +1557,8 @@ class EngineImpl implements Engine {
           this.adoptBlockedError(req);
           return this.finish(req.stop);
         }
+        // `[w] wait` (the lease-conflict pane, §4.3 step 4) is not a stop: the pane closes and the next step's coordinate
+        // stage re-checks the lease — the wait belongs inside that stage, never to the loop top
         this.blocked = null;
         this.blockedError = null;
         if (req.kind === 'checkpoint-degraded') {
@@ -1834,8 +1930,11 @@ class EngineImpl implements Engine {
       jevModelDrift: this.jevModelDrift,
       stopReason: this.stopReason,
       interrupted: this.interrupted,
-      // contract 1.4 (COORDINATION-DESIGN §7.2, §12.0.2): the replay detail rides only with its `interrupted`; the point only in the process that reached it
-      ...(this.interrupted !== null && this.interruptedDetail !== null ? { interruptedDetail: { ...this.interruptedDetail, targetsSha: { ...this.interruptedDetail.targetsSha } } } : {}),
+      // contract 1.4 (COORDINATION-DESIGN §7.2, §12.0.2): the replay detail rides only with its OWN `interrupted` — same step,
+      // and the cache file it names is that step's, so a detail left by an earlier attempt is never written beside a later discard
+      ...(this.interrupted !== null && this.interruptedDetail !== null && this.interruptedDetail.cache === stepCacheRel(this.interrupted.step)
+        ? { interruptedDetail: { ...this.interruptedDetail, targetsSha: { ...this.interruptedDetail.targetsSha } } }
+        : {}),
       ...(this.pausePoint !== null ? { pausePoint: { ...this.pausePoint } } : {}),
       consecutiveStageFailures: this.consecutiveStageFailures,
       jevQuestions: this.jevQuestions,
@@ -1844,6 +1943,8 @@ class EngineImpl implements Engine {
       ...(this.pendingDirectives.length > 0 ? { pendingDirectives: this.pendingDirectives.map((d) => ({ ...d })) } : {}),
       ...(this.undoLog.length > 0 ? { undoLog: this.undoLog.map((u) => ({ ...u, restored: [...u.restored], skipped: u.skipped.map((k) => ({ ...k })) })) } : {}),
       ...(this.checkpointDegraded ? { checkpointDegraded: true } : {}),
+      // contract 1.4 (§12.0.3): the last prompt's chars, so a resumed process's context meter starts from a fact
+      ...(this.lastPromptChars !== null ? { lastPromptChars: this.lastPromptChars } : {}),
       resumes: this.resumes,
       updatedAt: nowIso(),
     };
@@ -1899,6 +2000,7 @@ class EngineImpl implements Engine {
       partialText: '',
       partialChars: 0,
       llmRounds: 0,
+      llmGoal: null,
       arrivedSamples: [],
       replayed: false,
       discarded: false,
@@ -2171,11 +2273,7 @@ class EngineImpl implements Engine {
       signal: this.signal,
       limits: this.opts.limits,
       redact: this.redact,
-      emit: (e) => {
-        // contract 1.4 (§12.0.2 PausePoint.synthPhase): the last synth phase of the step in flight
-        if (e.type === 'synth') self.lastSynthPhase = e.phase;
-        self.emit(e);
-      },
+      emit: (e) => self.emit(e),
       ask: (stage, state, questions) => self.ask(draft, stage, state, questions),
       createdThisRun: this.createdThisRun,
       // TUI-DESIGN §8.6 / §15.3: the human texts join Jev's directive with a blank line and no batch clip (parseDirective only scans for a move name)
@@ -2285,6 +2383,9 @@ class EngineImpl implements Engine {
     // stopping) was never served — reject with the reason before any event, row or metered token
     if (sample !== undefined && sample.signal.aborted) throw sample.signal.reason;
     if (sample !== undefined && this.signal.aborted) throw this.signal.reason;
+    // contract 1.4 (§12.0.2 P3): the round the pause cache names comes from the synthesizer's own sample options, never from
+    // the free-text `synth` event; the samples of one batch carry the same pair, so the last one dispatched is the round
+    if (sample?.goalId !== undefined) draft.llmGoal = { goalId: sample.goalId, round: sample.goalRound ?? Math.max(0, draft.llmRounds - 1) };
     const at = sample === undefined ? {} : { sample: sample.sample };
     if (sample !== undefined) {
       // contract 1.4 (COORDINATION-DESIGN §6.4, §7.3 step 3, P3): a sample that arrived before the pause is served from the round
@@ -2565,11 +2666,13 @@ class EngineImpl implements Engine {
     const draft = this.newDraft(step);
     this.draft = draft;
     this.stageBlock = null;
-    this.lastSynthPhase = null;
     this.emit({ type: 'step:start', step, startedAt: draft.startedAt });
     // contract 1.4 (COORDINATION-DESIGN §7.3 step 3): the paused proposal (or the arrived samples) of exactly this step, gated at run start
     const replay = this.takeReplay(step);
     const replayed = replay !== null && replay.proposal !== null ? replay : null;
+    // §7.3 step 4: no cache for this step means it runs FRESH — whatever a previous pause left is rejected by that fact. The
+    // detail goes now (a later discard must not inherit it) and the file is renamed, so no `--replay` can resurrect it.
+    if (replay === null) this.supersedeStepCache();
     // llm-jev (docs/LLM-JEV-DESIGN.md §3): replan on a trip, otherwise straight to the synth propose stage — no intent or context request
     let stage: StageName = usesJev(this.mode) ? (this.detector.tripped() ? 'replan' : this.mode === 'llm-jev' ? 'propose' : 'intent') : 'propose';
     let changedFiles: string[] = [];
@@ -2628,7 +2731,8 @@ class EngineImpl implements Engine {
           contextFiles = cx.files;
         }
         stage = 'propose';
-        let p: { proposal: Proposal };
+        // contract 1.4 (§12.0.3): `promptChars` rides the propose stage's result (absent for a replay or a synth proposal)
+        let p: { proposal: Proposal; promptChars?: number };
         if (replayed !== null) {
           p = { proposal: replayed.proposal! };
           this.emitReplayedProposal(draft, replayed);
@@ -2668,6 +2772,7 @@ class EngineImpl implements Engine {
         }
         draft.proposal = p.proposal;
         draft.proposeCompleted = true;
+        if (p.promptChars !== undefined) this.lastPromptChars = p.promptChars;
         claimsOf(p.proposal);
         if (llmJev) {
           // §3 row 2: the intent is a code fact of the proposal kind (patch → edit, run → verify, done → finish, read → investigate).
@@ -2704,7 +2809,8 @@ class EngineImpl implements Engine {
         }
       } else {
         stage = 'propose';
-        let p: { proposal: Proposal };
+        // contract 1.4 (§12.0.3): `promptChars` rides the propose stage's result (absent for a replay or a synth proposal)
+        let p: { proposal: Proposal; promptChars?: number };
         if (replayed !== null) {
           p = { proposal: replayed.proposal! };
           this.emitReplayedProposal(draft, replayed);
@@ -2718,6 +2824,7 @@ class EngineImpl implements Engine {
         }
         draft.proposal = p.proposal;
         draft.proposeCompleted = true;
+        if (p.promptChars !== undefined) this.lastPromptChars = p.promptChars;
         claimsOf(p.proposal);
         stage = 'execute';
         draft.patchTargets = await computeTargets(ctx, p.proposal);
@@ -2829,7 +2936,8 @@ class EngineImpl implements Engine {
     draft.replayed = true;
     draft.proposer = cache.proposer;
     this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `step ${draft.step}: replaying the paused proposal from ${stepCacheRel(draft.step)} (intent, context and propose skipped; risk re-checked)` });
-    this.emit({ type: 'proposal', step: draft.step, proposal: cache.proposal! });
+    // contract 1.4 (§7.3 step 3): the event says it is a replay, so `plain.ts` / the TUI can print `(replayed)` without guessing
+    this.emit({ type: 'proposal', step: draft.step, proposal: cache.proposal!, verdict: 'replay' });
   }
 
   /** TUI-DESIGN §12.3: `writePreImages` for the targets (edit|write|patch) or the dirty set (run: `workspace.dirtySet()`, else the changed files). */

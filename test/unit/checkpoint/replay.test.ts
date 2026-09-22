@@ -44,7 +44,7 @@ function cacheJson(over: Partial<StepCache> = {}): Json {
     targets: [{ rel: 'src/a.py', sha256: 'ab'.repeat(32) }],
     partial: { text: 'Working', chars: 7 },
     llmRound: null,
-    synthPhase: null,
+    resumes: 0,
     at: '2026-09-21T12:00:00.000Z',
     ...over,
   };
@@ -64,16 +64,20 @@ describe('the step cache', () => {
     expect(parseStepCache(cacheJson())).toMatchObject({ v: 1, step: 3, stage: 'risk' });
     expect(parseStepCache(cacheJson({ proposal: null, partial: null }))).toMatchObject({ proposal: null, partial: null });
     const sample = { sample: 0, purpose: 'propose_fix', promptHash: 'h', result: { text: '', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, calls: 1 }, model: 'm', stopReason: 'tool_use', latencyMs: 1 } };
-    expect(parseStepCache(cacheJson({ llmRound: { round: 0, arrived: [sample as never] } }))?.llmRound?.arrived).toHaveLength(1);
+    expect(parseStepCache(cacheJson({ llmRound: { goalId: 'g1', round: 0, arrived: [sample as never] } }))?.llmRound).toMatchObject({ goalId: 'g1', round: 0 });
+    expect(parseStepCache(cacheJson({ llmRound: { goalId: null, round: 2, arrived: [] } }))?.llmRound).toMatchObject({ goalId: null, round: 2 });
     expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), v: 2 })).toBeNull();
     expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), step: 0 })).toBeNull();
     expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), stage: 'nope' })).toBeNull();
     expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), proposal: { action: 'edit' } })).toBeNull();
     expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), targets: [{ rel: 1 }] })).toBeNull();
-    expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), llmRound: { round: 0, arrived: [{ sample: 'x' }] } })).toBeNull();
+    expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), llmRound: { goalId: 'g1', round: 0, arrived: [{ sample: 'x' }] } })).toBeNull();
+    expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), llmRound: { goalId: 7, round: 0, arrived: [] } })).toBeNull();
     // the intent block is copied into the draft (and from there into state.json), so every field it names is typed
     expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), intent: { intent: 'fix', answer: 'fix', verdict: 'jev', probability: 'high', confidence: 1, pairedNoul: 1, planStillValid: 1 } })).toBeNull();
     expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), intent: null })).toMatchObject({ intent: null });
+    expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), resumes: -1 })).toBeNull();
+    expect(parseStepCache({ ...(cacheJson() as Record<string, Json>), resumes: null })).toBeNull();
     expect(parseStepCache('text')).toBeNull();
     expect(parseStepCache(null)).toBeNull();
   });
@@ -119,7 +123,7 @@ describe('the resume card (data, not rendering)', () => {
     step: 2,
     stopReason: 'human_pause',
     interrupted: { step: 3, stage: 'risk', proposal: makeProposal({ action: { kind: 'edit', path: 'src/a.py', old: 'a', new: 'b' } }) },
-    interruptedDetail: { cache: 'cache/step-3.json', targetsSha: { 'src/a.py': 'ab'.repeat(32) }, replayable: true, partialChars: 120 },
+    interruptedDetail: { cache: 'cache/step-3.json', resumes: 0, at: '2026-09-21T11:58:00.000Z', targetsSha: { 'src/a.py': 'ab'.repeat(32) }, replayable: true, partialChars: 120 },
     pausePoint: point,
     pendingDirectives: [{ text: 'then run tests', at: '2026-09-21T12:00:00.000Z', index: 0 }],
     updatedAt: '2026-09-21T12:00:00.000Z',
@@ -136,7 +140,7 @@ describe('the resume card (data, not rendering)', () => {
       needsForce: false,
       step: { committed: 2, next: 3 },
       point,
-      inFlight: { step: 3, phase: 'risk', reason: 'now', proposal: { kind: 'edit', summary: 'edit src/a.py' }, partialChars: 120, round: null, arrivedSamples: 0, pane: null },
+      inFlight: { step: 3, phase: 'risk', reason: 'now', proposal: { kind: 'edit', summary: 'edit src/a.py' }, partialChars: 120, round: null, arrivedSamples: 0, llm: null, pane: null },
       replay: { possible: false, cache: 'cache/step-3.json', reason: 'targets not verified yet', changedTargets: [] },
       pendingSteers: 1,
       resumes: 0,
@@ -146,6 +150,15 @@ describe('the resume card (data, not rendering)', () => {
     expect(ok.agoMs).toBeNull();
     const changed = buildResumeCard({ state: paused, meta: makeMeta(), targetsCheck: { ok: false, changed: ['src/a.py'] } });
     expect(changed.replay).toEqual({ possible: false, cache: 'cache/step-3.json', reason: 'targets changed since the proposal (src/a.py) — replay unavailable', changedTargets: ['src/a.py'] });
+    // §7.2 step 2: a cache file from another attempt is refused even when the state still points at that name
+    const other = parseStepCache(cacheJson({ step: 3, resumes: 0, at: '2026-09-21T10:00:00.000Z' }));
+    const mismatched = buildResumeCard({ state: paused, meta: makeMeta(), cache: other, targetsCheck: { ok: true, changed: [] } });
+    expect(mismatched.replay).toMatchObject({ possible: false, reason: 'cache/step-3.json belongs to another attempt (written 2026-09-21T10:00:00.000Z, the state names 2026-09-21T11:58:00.000Z) — replay unavailable' });
+    const matching = parseStepCache(cacheJson({ step: 3, resumes: 0, at: '2026-09-21T11:58:00.000Z' }));
+    expect(buildResumeCard({ state: paused, meta: makeMeta(), cache: matching, targetsCheck: { ok: true, changed: [] } }).replay.possible).toBe(true);
+    // D1 (§7.3 step 4): a detail stamped for an earlier resume is dead — the step already ran fresh once
+    const stale = buildResumeCard({ state: { ...paused, resumes: 1 }, meta: makeMeta(), targetsCheck: { ok: true, changed: [] } });
+    expect(stale.replay).toEqual({ possible: false, cache: 'cache/step-3.json', reason: 'the paused proposal was already superseded by a fresh resume (stamped for resume 0, this is 1) — replay unavailable', changedTargets: [] });
   });
 
   it('a boundary pause, an ended run (needs --force), a crash and a complete run', () => {
@@ -157,17 +170,24 @@ describe('the resume card (data, not rendering)', () => {
     expect(crashed).toMatchObject({ kind: 'crashed', step: { committed: 7, next: 8 }, inFlight: { step: 8, phase: 'propose', reason: 'crash', proposal: null }, point: null });
     const complete = buildResumeCard({ state: makeState({ step: 9, stopReason: 'complete' }), meta: makeMeta() });
     expect(complete).toMatchObject({ kind: 'complete', needsForce: true, inFlight: null });
-    const notReplayable = buildResumeCard({ state: makeState({ step: 1, stopReason: 'human_pause', interrupted: { step: 2, stage: 'propose', proposal: null }, interruptedDetail: { cache: 'cache/step-2.json', targetsSha: {}, replayable: false, partialChars: 40 } }), meta: makeMeta() });
+    const notReplayable = buildResumeCard({ state: makeState({ step: 1, stopReason: 'human_pause', interrupted: { step: 2, stage: 'propose', proposal: null }, interruptedDetail: { cache: 'cache/step-2.json', resumes: 0, at: '2026-09-21T12:00:00.000Z', targetsSha: {}, replayable: false, partialChars: 40 } }), meta: makeMeta() });
     expect(notReplayable.replay).toMatchObject({ possible: false, cache: 'cache/step-2.json', reason: 'nothing to replay: no proposal or sample had arrived when the run paused' });
   });
 
   it('an llm-jev mid-round pause reads the round and the arrived samples from the cache file', () => {
-    const state = makeState({ mode: 'llm-jev', step: 0, stopReason: 'human_pause', interrupted: { step: 1, stage: 'propose', proposal: null }, interruptedDetail: { cache: 'cache/step-1.json', targetsSha: {}, replayable: true, partialChars: 5 }, pausePoint: { step: 1, round: 0, phase: 'propose', reason: 'now', resumableAt: 'cache/step-1.json', replayable: true, synthPhase: 'llm:fire', by: 'peer:rpywkq2v', end: false } });
+    const state = makeState({ mode: 'llm-jev', step: 0, stopReason: 'human_pause', interrupted: { step: 1, stage: 'propose', proposal: null }, interruptedDetail: { cache: 'cache/step-1.json', resumes: 0, at: '2026-09-21T12:00:00.000Z', targetsSha: {}, replayable: true, partialChars: 0 }, pausePoint: { step: 1, round: 2, phase: 'propose', reason: 'now', resumableAt: 'cache/step-1.json', replayable: true, llm: { goalId: 'g1', round: 2, arrived: [0, 1] }, by: 'peer:rpywkq2v', end: false } });
     const sample = { sample: 0, purpose: 'propose_fix', promptHash: 'h', result: { text: '', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, calls: 1 }, model: 'm', stopReason: 'tool_use', latencyMs: 1 } };
-    const cache = parseStepCache(cacheJson({ step: 1, stage: 'propose', proposal: null, targets: [], llmRound: { round: 0, arrived: [sample as never, { ...sample, sample: 1 } as never] }, synthPhase: 'llm:fire' }));
+    const cache = parseStepCache(cacheJson({ step: 1, stage: 'propose', proposal: null, targets: [], llmRound: { goalId: 'g1', round: 2, arrived: [sample as never, { ...sample, sample: 1 } as never] } }));
     const card = buildResumeCard({ state, meta: makeMeta({ mode: 'llm-jev' }), cache, targetsCheck: { ok: true, changed: [] } });
-    expect(card.inFlight).toMatchObject({ step: 1, phase: 'propose', reason: 'now', round: 0, arrivedSamples: 2, synthPhase: 'llm:fire', partialChars: 5 });
+    // the typed round (D4): the goal, its round and the sample ids — no free-text synth phase
+    expect(card.inFlight).toMatchObject({ step: 1, phase: 'propose', reason: 'now', round: 2, arrivedSamples: 2, llm: { goalId: 'g1', round: 2, arrived: [0, 1] }, partialChars: 0 });
     expect(card.replay.possible).toBe(true);
+    // a cache whose round names no goal still reports the round; `llm` stays null
+    const noGoal = parseStepCache(cacheJson({ step: 1, stage: 'propose', proposal: null, targets: [], llmRound: { goalId: null, round: 0, arrived: [sample as never] } }));
+    const { pausePoint: _dropped, ...pointless } = state;
+    void _dropped;
+    const plain = buildResumeCard({ state: pointless, meta: makeMeta({ mode: 'llm-jev' }), cache: noGoal, targetsCheck: { ok: true, changed: [] } });
+    expect(plain.inFlight).toMatchObject({ round: 0, arrivedSamples: 1, llm: null });
   });
 });
 
@@ -178,8 +198,9 @@ describe('checkpoint envelope: version unchanged, the new fields optional', () =
       step: 2,
       stopReason: 'human_pause',
       interrupted: { step: 3, stage: 'propose', proposal: null },
-      interruptedDetail: { cache: 'cache/step-3.json', targetsSha: { 'src/a.py': null }, replayable: false, partialChars: 12, relocate: { slug: 'fix-store', reason: 'lease-conflict' } },
-      pausePoint: { step: 3, round: 1, phase: 'propose', reason: 'now', resumableAt: 'cache/step-3.json', replayable: false, synthPhase: 'llm:round', by: 'device:mbp', end: true },
+      interruptedDetail: { cache: 'cache/step-3.json', resumes: 1, at: '2026-09-21T12:00:00.000Z', targetsSha: { 'src/a.py': null }, replayable: false, partialChars: 12, relocate: { slug: 'fix-store', reason: 'lease-conflict' } },
+      pausePoint: { step: 3, round: 1, phase: 'propose', reason: 'now', resumableAt: 'cache/step-3.json', replayable: false, llm: { goalId: 'g1', round: 1, arrived: [0] }, by: 'device:mbp', end: true },
+      lastPromptChars: 4_210,
       compactions: 2,
       lastCompactionAt: '2026-09-21T12:00:00.000Z',
     });
@@ -195,7 +216,12 @@ describe('checkpoint envelope: version unchanged, the new fields optional', () =
     const folded = foldStepsIntoState(full, [makeStepRecord(3)], '2026-09-21T13:00:00.000Z');
     expect(folded.interrupted).toBeNull();
     expect(folded.interruptedDetail).toBeUndefined();
-    expect(folded.pausePoint).toEqual(full.pausePoint);
+    // D11: the point named step 3 and step 3 committed after it — it is stale, like the detail
+    expect(folded.pausePoint).toBeUndefined();
+    expect(folded.lastPromptChars).toBe(4_210);
+    // a boundary point (step = committed + 1) survives the fold: nothing committed past it
+    const boundaryState = makeState({ step: 2, stopReason: 'human_pause', pausePoint: { step: 4, round: null, phase: 'idle', reason: 'step', resumableAt: 'boundary', replayable: false, by: 'self', end: false } });
+    expect(foldStepsIntoState(boundaryState, [makeStepRecord(3)], '2026-09-21T13:00:00.000Z').pausePoint).toEqual(boundaryState.pausePoint);
     const kept = foldStepsIntoState(full, [], '2026-09-21T13:00:00.000Z');
     expect(kept.interrupted).toEqual(full.interrupted);
     expect(kept.interruptedDetail).toEqual(full.interruptedDetail);

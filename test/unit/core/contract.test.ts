@@ -130,7 +130,7 @@ describe('contract 1.2 (TUI-DESIGN-2 §6 items 1–13)', () => {
     const reasons: PausePointReason[] = ['step', 'now', 'now-after-execute', 'pane', 'worktree'];
     expect(reasons).toHaveLength(5);
     const point: PausePoint = { step: 3, round: null, phase: 'idle', reason: 'step', resumableAt: 'boundary', replayable: false, by: 'self', end: false };
-    const rich: PausePoint = { ...point, round: 1, phase: 'pane', pane: 'jev-unreachable', reason: 'pane', resumableAt: 'cache/step-3.json', replayable: true, synthPhase: 'llm:fire', by: 'peer:rpywkq2v', end: true };
+    const rich: PausePoint = { ...point, round: 1, phase: 'pane', pane: 'jev-unreachable', reason: 'pane', resumableAt: 'cache/step-3.json', replayable: true, llm: { goalId: 'g1', round: 1, arrived: [0, 2] }, by: 'peer:rpywkq2v', end: true };
     const events: EngineEvent[] = [
       { type: 'pause:point', point: rich },
       { type: 'context:compacted', step: 3, chars: { before: 12_000, after: 4_000 }, by: 'code' },
@@ -138,8 +138,8 @@ describe('contract 1.2 (TUI-DESIGN-2 §6 items 1–13)', () => {
       { type: 'blocking:resolved', id: 'b1', answer: 'pause', auto: false },
     ];
     expect(events).toHaveLength(4);
-    const answers: BlockingAnswer[] = ['retry', 'continue', 'stop', 'login', 'pin', 'pause'];
-    expect(answers).toHaveLength(6);
+    const answers: BlockingAnswer[] = ['retry', 'continue', 'stop', 'login', 'pin', 'pause', 'wait', 'worktree'];
+    expect(answers).toHaveLength(8);
     const interrupts: InterruptReason[] = ['signal', 'human_abort', 'wall_time', 'error', 'human_pause'];
     expect(interrupts).toHaveLength(5);
     // the zero-arg pause() still compiles for every fake; a fake without end / deliver still satisfies Engine
@@ -158,16 +158,21 @@ describe('contract 1.2 (TUI-DESIGN-2 §6 items 1–13)', () => {
     expect(ack).toHaveLength(4);
     const status: Pick<EngineStatus, 'pausePoint' | 'pauseNow' | 'context'> = { pausePoint: null, pauseNow: false };
     expect(status.context).toBeUndefined();
-    const usage: ContextUsage = { promptChars: 1, budgetChars: 2, pct: 50, files: 0, historyEntries: 0, summaryAt: null, lastCompactionStep: null, tokensInWindow: 0, windowBudget: 1, compactions: 0, lastCompactionAt: null, compaction: 'code' };
+    const usage: ContextUsage = { promptChars: 1, budgetChars: 2, pct: 50, files: 0, historyEntries: 0, summaryAt: null, lastCompactionStep: null, tokensInWindow: 0, budgetTokens: 1, windowTokens: 2, compactions: 0, lastCompactionAt: null, compaction: 'code' };
     expect(usage.compaction).toBe('code');
+    expect(usage.budgetTokens).toBeLessThanOrEqual(usage.windowTokens);
     const resumes: NonNullable<EngineOptions['resume']>[] = [{ runId: 'r', force: false }, { runId: 'r', force: true, replay: true }];
     expect(resumes[0]?.replay).toBeUndefined();
-    const stateBits: Pick<CheckpointState, 'interruptedDetail' | 'pausePoint' | 'compactions' | 'lastCompactionAt'>[] = [{}, { interruptedDetail: { cache: 'cache/step-1.json', targetsSha: {}, replayable: true, partialChars: 0 }, pausePoint: point, compactions: 0, lastCompactionAt: null }];
+    const stateBits: Pick<CheckpointState, 'interruptedDetail' | 'pausePoint' | 'compactions' | 'lastCompactionAt' | 'lastPromptChars'>[] = [{}, { interruptedDetail: { cache: 'cache/step-1.json', resumes: 1, at: '2026-09-21T12:00:00.000Z', targetsSha: {}, replayable: true, partialChars: 0 }, pausePoint: point, compactions: 0, lastCompactionAt: null, lastPromptChars: 12_000 }];
     expect(stateBits).toHaveLength(2);
     const meta: Pick<RunMeta, 'ended' | 'resumes'>[] = [{ resumes: [] }, { ended: { at: 't', by: 'remote' }, resumes: [{ resumedAt: 't', previousStopReason: 'human_pause', reopened: true }] }, { ended: null, resumes: [] }];
     expect(meta).toHaveLength(3);
-    const store: Pick<CheckpointStore, 'writeCache' | 'readCache'> = {};
+    const store: Pick<CheckpointStore, 'writeCache' | 'readCache' | 'renameCache'> = {};
     expect(store.writeCache).toBeUndefined();
+    expect(store.renameCache).toBeUndefined();
+    // the replayed proposal event is marked; a fresh one carries no verdict
+    const proposals: EngineEvent[] = [{ type: 'proposal', step: 1, proposal: { goal: 'g', action: { kind: 'done', summary: 's' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' }, verdict: 'replay' }];
+    expect(proposals).toHaveLength(1);
     expect(new AbortError('human_pause').exitCode).toBe(4);
   });
 

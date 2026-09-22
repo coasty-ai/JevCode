@@ -160,6 +160,7 @@ export interface DiskCheckpointStore extends CheckpointStore {
   /** contract 1.4 (COORDINATION-DESIGN §7.2, §6.4): the cache files (required on the disk store; optional on the contract). */
   writeCache(rel: string, json: Json): Promise<void>;
   readCache(rel: string): Promise<Json | null>;
+  renameCache(from: string, to: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -588,6 +589,26 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
           await writeFileAtomic(join(dir, CHECKPOINT_FILES.cache, ...norm.split('/')), `${text}\n`, { mkdir: true });
         } catch (e) {
           throw fail(`cannot write ${file}: ${describe(e)}`, e);
+        }
+      });
+    },
+
+    /**
+     * contract 1.4 (§7.3 step 3): rename one cache file — `step-<n>.json` → `step-<n>.superseded.json` when step n runs fresh,
+     * so the bytes stay for the audit trail and no `--replay` can read them again. A missing source is not an error (nothing
+     * to supersede); both names are validated like every cache path and the rename rides the source file's chain.
+     */
+    renameCache(from: string, to: string) {
+      const a = cacheRelPath(from);
+      const b = cacheRelPath(to);
+      if (a === null || b === null) return Promise.reject(fail(`cache path ${JSON.stringify(a === null ? from : to)} is not a relative path inside ${CHECKPOINT_FILES.cache}/`));
+      const file = `${CHECKPOINT_FILES.cache}/${a}`;
+      return enqueue(file, async () => {
+        try {
+          await rename(join(dir, CHECKPOINT_FILES.cache, ...a.split('/')), join(dir, CHECKPOINT_FILES.cache, ...b.split('/')));
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
+          throw fail(`cannot rename ${file}: ${describe(e)}`, e);
         }
       });
     },

@@ -537,6 +537,13 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
       const v = st.cache.get(rel);
       return v === undefined ? null : structuredClone(v);
     },
+    // contract 1.4 (§7.3 step 4): the disk store renames the file; a missing source is not an error
+    async renameCache(from, to) {
+      const v = st.cache.get(from);
+      if (v === undefined) return;
+      st.cache.delete(from);
+      st.cache.set(to, v);
+    },
     async writeState(state) {
       if (st.stallWrites) await new Promise<void>(() => undefined);
       if (st.writeDelayMs > 0) await new Promise((r) => setTimeout(r, st.writeDelayMs));

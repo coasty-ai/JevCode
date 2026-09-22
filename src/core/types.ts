@@ -981,6 +981,8 @@ export interface CheckpointState {
   compactions?: number;
   /** contract 1.4 (§12.0.3): ISO time of the last compaction (ContextUsage.lastCompactionAt) */
   lastCompactionAt?: string | null;
+  /** contract 1.4 (§12.0.3): chars of the last generator prompt this run built, persisted at commit so a resumed process's meter starts from a fact instead of 0 */
+  lastPromptChars?: number;
   consecutiveStageFailures: number;
   /** Σ decisions.length over committed steps (RunResult.jevQuestions); absent in older checkpoints */
   jevQuestions?: number;
@@ -1135,6 +1137,12 @@ export interface CheckpointStore {
   writeCache?(rel: string, json: Json): Promise<void>;
   /** contract 1.4 (§7.3 step 3): read `<runDir>/cache/<rel>` back; null when missing or not JSON */
   readCache?(rel: string): Promise<Json | null>;
+  /**
+   * contract 1.4 (§7.3 step 3): rename a cache file inside `cache/` — the engine supersedes `cache/step-<n>.json` to
+   * `cache/step-<n>.superseded.json` the moment step n runs fresh, so no later `--replay` can resurrect it. A missing
+   * source resolves; only a real failure rejects.
+   */
+  renameCache?(from: string, to: string): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1187,7 +1195,7 @@ export interface SessionRef {
   intake?: { kind: IntakeKind; probability: number; requestHash: string };
 }
 export type BlockingKind = 'jev-unreachable' | 'key-rejected' | 'spend-limit' | 'checkpoint-degraded' | 'drift' | 'sandbox-unavailable';
-export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin' | 'pause'; // contract 1.4 (§12.0.2 P6): `pause()` while a pane is awaited wakes the blocker with 'pause'
+export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin' | 'pause' | 'wait' | 'worktree'; // contract 1.4 (§12.0.2 P6 / P7, §4.3 step 4): `pause()` while a pane is awaited wakes the blocker with 'pause'; the lease-conflict pane adds `[w] wait` (keep waiting, the next coordinate re-checks) and `[t] worktree` (stop for relocation) — 'pause' and 'worktree' are the resumable stop at the loop top
 export interface BlockingRequest {
   id: string;
   step: number;
@@ -1286,6 +1294,10 @@ export interface SampleOptions {
   sample: number;
   purpose: GeneratePurpose;
   signal: AbortSignal;
+  /** contract 1.4 (§12.0.2 P3, §6.4): the synthesizer's goal this sample belongs to — the engine records it on the pause cache and on `PausePoint.llm`; absent outside a goal round */
+  goalId?: string;
+  /** contract 1.4 (§12.0.2 P3): the goal's LLM round this sample was fired in (the synthesizer's own numbering) */
+  goalRound?: number;
 }
 
 export interface SynthesisContext {
@@ -1436,7 +1448,8 @@ export type EngineEvent =
   | { type: 'generator:delta'; step: number; text: string; sample?: number }
   | { type: 'generator:tool-delta'; step: number; chars: number; sample?: number } // cumulative streamed tool-argument chars ("streaming action… N chars")
   | { type: 'generator:end'; step: number; usage: TokenUsage; latencyMs: number; finishReason: string; sample?: number }
-  | { type: 'proposal'; step: number; proposal: Proposal }
+  // contract 1.4 (§7.3 step 3): `verdict: 'replay'` marks a proposal restored from `cache/step-<n>.json` (plain / TUI print `(replayed)`); absent on every fresh proposal
+  | { type: 'proposal'; step: number; proposal: Proposal; verdict?: 'replay' }
   | { type: 'risk'; step: number; risk: RiskAssessment }
   | { type: 'confirm:request'; request: ConfirmRequest }
   | { type: 'confirm:resolved'; step: number; id: string; approved: boolean; aborted: boolean; note?: string } // TUI-DESIGN §15 item 14: note from confirmDetailed
@@ -1502,19 +1515,27 @@ export type PausePointReason =
 export interface PausePoint {
   /** the step /resume starts at: the discarded step's own number (rule 1) or the committed step + 1 */
   step: number;
-  /** llm-jev only: the 0-based LLM round (the engine's sample batch within the step) whose arrived samples are cached; null otherwise */
+  /** llm-jev only: the LLM round whose arrived samples the cache holds — `llm.round` when the synthesizer named one, else the engine's 0-based sample batch of the step; null otherwise. Read from what the cache RECORDED, never from the live draft. */
   round: number | null;
   /** where the pause landed: the stage in flight, 'idle' at a step boundary, 'pane' while a blocking pane was open */
   phase: StageName | 'idle' | 'pane';
   reason: PausePointReason;
   /** 'boundary' = nothing to replay (resume is a fresh step at intent); else the run-relative cache file of §7.2 that `--replay` reads */
   resumableAt: 'boundary' | `cache/step-${number}.json`;
-  /** §7.2: (proposal !== null || arrived samples > 0) && !executeStarted && the cache write succeeded; the card shows `[r]` only when this AND every targetsSha still matches */
+  /**
+   * §7.2, one definition: `(a proposal was written to the cache) || (arrived samples written to the cache > 0)` — both as
+   * RECORDED in the written cache, never as the live draft read at discard time — and false when the cache write failed or
+   * `executeStarted`. The card shows `[r]` only when this AND every `targetsSha` still matches.
+   */
   replayable: boolean;
   /** phase === 'pane': which pane */
   pane?: BlockingKind;
-  /** the last `synth` event's phase of this step when the pause landed inside synthesize() (jev-only / llm-jev) */
-  synthPhase?: string;
+  /**
+   * llm-jev (P3): the round the cache holds, typed — the synthesizer's goal id, its round and the sample ids that ARRIVED
+   * and were written. Sourced from the pause cache (the sample options the synthesizer fires with), never from the
+   * free-text `synth` event. Absent when no goal round was in flight.
+   */
+  llm?: { goalId: string; round: number; arrived: number[] };
   /** who asked — the index line's `by` (§5.3) */
   by: 'self' | `peer:${string}` | `device:${string}`;
   /** `end` (§7.4) was requested: RunMeta.ended is written with the final state; /resume needs --force */
@@ -1545,6 +1566,14 @@ export interface RunEnded {
 /** §7.2 / §12.0.4: what a pause-now (or a lease-conflict discard) left for `--replay`; lives beside `CheckpointState.interrupted` */
 export interface InterruptedDetail {
   cache: `cache/step-${number}.json`;
+  /**
+   * §7.3 step 4: the `resumes` counter of the run that may replay this detail — the writing run's `resumes` + 1, because the
+   * loader increments it on resume. `loadReplay` and `buildResumeCard` require `detail.resumes === state.resumes` (the
+   * resume-ready state), so a detail that survived one fresh resume can never resurrect its proposal in a later `--replay`.
+   */
+  resumes: number;
+  /** ISO time the snapshot was stamped (the pause) */
+  at: string;
   /** sha256 of every target at the pause (null: missing or past the hashing budget); the replay gate re-hashes and compares */
   targetsSha: Record<string, string | null>;
   replayable: boolean;
@@ -1581,8 +1610,10 @@ export interface ContextUsage {
   lastCompactionStep: number | null;
   /** round(promptChars / CHARS_PER_TOKEN) with CHARS_PER_TOKEN = 3.4 (§8.2) — an estimate; the generator's tokenizer is never called */
   tokensInWindow: number;
-  /** round(budgetChars / CHARS_PER_TOKEN) = 0.55 × generatorContextTokens (§8.2), so pct === round(100 × tokensInWindow / windowBudget) */
-  windowBudget: number;
+  /** round(budgetChars / CHARS_PER_TOKEN) = 0.55 × windowTokens (§8.2), so pct === round(100 × tokensInWindow / budgetTokens) */
+  budgetTokens: number;
+  /** the generator model's full context window in tokens (§8.2 `generatorContextTokens`); `budgetTokens` is the 0.55 share of it the run may fill */
+  windowTokens: number;
   /** compactions over the run's life, all resumes; persisted as CheckpointState.compactions? */
   compactions: number;
   /** ISO time of the last compaction, null before any; persisted as CheckpointState.lastCompactionAt? */

@@ -179,9 +179,10 @@ function roundSynth(seen: GenerateResult[][]): Synthesizer {
     async synthesize(ctx) {
       const gen = ctx.generate;
       if (gen === undefined) throw new Error('llm-jev must expose SynthesisContext.generate');
-      ctx.emit({ type: 'synth', step: ctx.step, phase: 'llm:fire', detail: 'goal g1 round 0: 3 samples' });
+      ctx.emit({ type: 'synth', step: ctx.step, phase: 'llm:fire', detail: 'goal g1 round 1: 3 samples' });
       const req: GenerateRequest = { system: 'sys', messages: [{ role: 'user', content: 'fix f' }], maxTokens: 1500, temperature: 0.7, reasoning: { enabled: false } };
-      const results = await Promise.all([0, 1, 2].map((k) => gen({ ...req, seed: k }, { sample: k, purpose: 'propose_fix', signal: new AbortController().signal })));
+      // contract 1.4 (§12.0.2 P3): the samples name their goal and round, so the pause point is typed data, not the `synth` line
+      const results = await Promise.all([0, 1, 2].map((k) => gen({ ...req, seed: k }, { sample: k, purpose: 'propose_fix', signal: new AbortController().signal, goalId: 'g1', goalRound: 1 })));
       seen.push(results);
       const p: Proposal = { goal: 'read after the round', action: { kind: 'read', paths: ['src/a.py'] }, plan: { done: [], remaining: ['fix f'], openProblems: [] }, rawText: '' };
       return p;
@@ -207,15 +208,16 @@ describe('P3 — a mid-LLM-round pause resumes and replays the arrived samples',
     expect(r.steps).toBe(0);
     expect(h.of('run:end')[0]).toMatchObject({ exitCode: 4, resumable: true });
     const p = h.of('pause:point')[0]!.point;
-    expect(p).toEqual({ step: 1, round: 0, phase: 'propose', reason: 'now', resumableAt: 'cache/step-1.json', replayable: true, synthPhase: 'llm:fire', by: 'self', end: false });
-    // the cache: the two arrived samples with their prompt hash; the partial chars of the cut one counted
-    const cache = h.store.cache.get('step-1.json') as { llmRound: { round: number; arrived: { sample: number; promptHash: string }[] }; partial: { chars: number } | null; proposal: null };
+    // the round and the arrived ids are the synthesizer's own facts, read back from what the cache file recorded
+    expect(p).toEqual({ step: 1, round: 1, phase: 'propose', reason: 'now', resumableAt: 'cache/step-1.json', replayable: true, llm: { goalId: 'g1', round: 1, arrived: [0, 1] }, by: 'self', end: false });
+    // the cache: the two arrived samples with their prompt hash; a sample's streamed chars are NOT a partial proposal (D13)
+    const cache = h.store.cache.get('step-1.json') as { llmRound: { goalId: string; round: number; arrived: { sample: number; promptHash: string }[] }; partial: { chars: number } | null; proposal: null };
     expect(cache.proposal).toBeNull();
-    expect(cache.llmRound.round).toBe(0);
+    expect(cache.llmRound).toMatchObject({ goalId: 'g1', round: 1 });
     expect(cache.llmRound.arrived.map((a) => a.sample)).toEqual([0, 1]);
     expect(new Set(cache.llmRound.arrived.map((a) => a.promptHash)).size).toBe(1);
-    expect(cache.partial?.chars).toBe(5);
-    expect(h.store.last()!.interruptedDetail).toEqual({ cache: 'cache/step-1.json', targetsSha: {}, replayable: true, partialChars: 5 });
+    expect(cache.partial).toBeNull();
+    expect(h.store.last()!.interruptedDetail).toEqual({ cache: 'cache/step-1.json', resumes: 1, at: expect.any(String), targetsSha: {}, replayable: true, partialChars: 0 });
     // the discarded attempt's rows: 2 completed + 1 cancelled, all marked discarded, under the step the replay reuses
     const rows = h.store.generator.filter((g) => g.step === 1);
     expect(rows.map((g) => [g.sample, g.cancelled ?? false, g.stopReason, g.discarded])).toEqual([
@@ -259,7 +261,8 @@ describe('P3 — a mid-LLM-round pause resumes and replays the arrived samples',
     h.engine.pause({ at: 'now' });
     const r = await running;
     expect(r.stopReason).toBe('human_pause');
-    expect(h.of('pause:point')[0]!.point).toMatchObject({ step: 1, round: 0, phase: 'propose', reason: 'now', replayable: false, resumableAt: 'cache/step-1.json' });
-    expect(h.store.last()!.interruptedDetail).toMatchObject({ replayable: false });
+    // the round is reported even when nothing arrived (P3 reports the real round and arrived set), but it is not replayable
+    expect(h.of('pause:point')[0]!.point).toMatchObject({ step: 1, round: 1, phase: 'propose', reason: 'now', replayable: false, resumableAt: 'cache/step-1.json', llm: { goalId: 'g1', round: 1, arrived: [] } });
+    expect(h.store.last()!.interruptedDetail).toMatchObject({ replayable: false, partialChars: 0 });
   });
 });

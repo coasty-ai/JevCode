@@ -67,6 +67,14 @@ export function stepCacheName(step: number): string {
   return `step-${step}.json`;
 }
 
+/**
+ * §7.2 step 2: the name `cache/step-<n>.json` takes the moment step n runs FRESH (no replay). The bytes stay for the audit
+ * trail, but no card and no `--replay` can read them again — a proposal the human declined by resuming fresh is dead.
+ */
+export function stepCacheSupersededName(step: number): string {
+  return `step-${step}.superseded.json`;
+}
+
 /** one arrived llm-jev sample of the paused round; `result` is the GenerateResult as JSON (redacted by the store) */
 export interface CachedSample {
   sample: number;
@@ -109,12 +117,20 @@ export interface StepCache {
   directive: ReplanDirective | null;
   /** the proposal's targets and their hashes at the pause (the gate's reference) */
   targets: StepCacheTarget[];
-  /** the partial generator text (≤ PARTIAL_TEXT_MAX_CHARS) and every streamed char; never replayed as a proposal */
+  /** the partial generator text (≤ PARTIAL_TEXT_MAX_CHARS) and its char count — the PROPOSAL's own stream only, never a sample's; never replayed as a proposal */
   partial: { text: string; chars: number } | null;
-  /** llm-jev: the 0-based sample batch of this step and the samples that arrived; the replay serves them without a generator call */
-  llmRound: { round: number; arrived: CachedSample[] } | null;
-  /** the last `synth` event's phase when the pause landed inside synthesize() */
-  synthPhase: string | null;
+  /**
+   * llm-jev: the round of this step and the samples that arrived; the replay serves them without a generator call.
+   * `goalId` / `round` are the synthesizer's own (from the fired samples' `SampleOptions`), null / the engine's 0-based
+   * sample batch of the step when the synthesizer named none.
+   */
+  llmRound: { goalId: string | null; round: number; arrived: CachedSample[] } | null;
+  /**
+   * §7.2 step 2: the `{ resumes, at }` pair `state.interruptedDetail` carries too — `[r]` is offered only when the file's pair
+   * matches the state's, never from the mere presence of the file (§4.6 row 1, §11 row 30). `resumes` is the resume counter of
+   * the run entitled to replay it (the writer's + 1, since the loader increments on resume).
+   */
+  resumes: number;
   at: string;
 }
 
@@ -184,12 +200,13 @@ export function parseStepCache(v: Json): StepCache | null {
   const round = v['llmRound'];
   if (round !== null) {
     if (!isJsonObject(round) || typeof round['round'] !== 'number' || !isJsonArray(round['arrived'])) return null;
+    if (round['goalId'] !== null && !isString(round['goalId'])) return null;
     if (!round['arrived'].every(isCachedSample)) return null;
   }
   const cachedIntent = v['intent'];
   if (cachedIntent !== null && (cachedIntent === undefined || !isStepCacheIntent(cachedIntent))) return null;
   if (!isString(v['at'])) return null;
-  if (v['synthPhase'] !== null && !isString(v['synthPhase'])) return null;
+  if (typeof v['resumes'] !== 'number' || !Number.isInteger(v['resumes']) || v['resumes'] < 0) return null;
   // the shape holds where the engine dereferences; the rest (risk, directive, proposer) is passed through as written
   return v as unknown as StepCache;
 }
@@ -279,10 +296,11 @@ export interface ResumeCardInFlight {
   proposal: { kind: Action['kind']; summary: string } | null;
   /** streamed generator chars of a proposal that had not finished (0 when none) */
   partialChars: number;
-  /** llm-jev: the 0-based round whose samples are cached, and how many arrived */
+  /** llm-jev: the round whose samples are cached, and how many arrived */
   round: number | null;
   arrivedSamples: number;
-  synthPhase: string | null;
+  /** llm-jev: the typed round of `PausePoint.llm` (the synthesizer's goal, its round and the arrived sample ids); null outside a goal round */
+  llm: { goalId: string; round: number; arrived: number[] } | null;
   pane: string | null;
 }
 
@@ -321,6 +339,7 @@ export interface ResumeCard {
 }
 
 export interface ResumeCardInput {
+  /** the RESUME-READY state (`loadForResume().state`: the steps folded, `resumes` incremented) — `InterruptedDetail.resumes` is compared against its `resumes` */
   state: CheckpointState;
   meta: RunMeta;
   /** the parsed cache file when the caller read it (arrived samples, the proposal when the state carries none) */
@@ -329,6 +348,13 @@ export interface ResumeCardInput {
   targetsCheck?: TargetsCheck | null;
   /** epoch ms, for `agoMs`; absent → null */
   nowMs?: number;
+}
+
+/** the typed llm round of a cache file, when it names a goal (the point's own `llm` wins when the state carries one) */
+function llmOfCache(cache: StepCache | null): { goalId: string; round: number; arrived: number[] } | null {
+  const r = cache?.llmRound ?? null;
+  if (r === null || r.goalId === null) return null;
+  return { goalId: r.goalId, round: r.round, arrived: r.arrived.map((a) => a.sample) };
 }
 
 function cardKind(state: CheckpointState, ended: RunEnded | null): ResumeCardKind {
@@ -361,14 +387,18 @@ export function buildResumeCard(input: ResumeCardInput): ResumeCard {
       partialChars: detail?.partialChars ?? cache?.partial?.chars ?? 0,
       round: point?.round ?? cache?.llmRound?.round ?? null,
       arrivedSamples: cache?.llmRound?.arrived.length ?? 0,
-      synthPhase: point?.synthPhase ?? cache?.synthPhase ?? null,
+      llm: point?.llm ?? llmOfCache(cache),
       pane: point?.pane ?? null,
     };
   }
   const check = input.targetsCheck ?? null;
   let replay: ResumeCardReplay;
   if (detail === null) replay = { possible: false, cache: null, reason: 'nothing to replay: the resume is a fresh step at intent', changedTargets: [] };
+  // §7.3 step 4: a detail stamped for an earlier resume survived a fresh run of its step — the proposal was already rejected once
+  else if (detail.resumes !== state.resumes) replay = { possible: false, cache: detail.cache, reason: `the paused proposal was already superseded by a fresh resume (stamped for resume ${detail.resumes}, this is ${state.resumes}) — replay unavailable`, changedTargets: [] };
   else if (!detail.replayable) replay = { possible: false, cache: detail.cache, reason: 'nothing to replay: no proposal or sample had arrived when the run paused', changedTargets: [] };
+  // §7.2 step 2: the file the caller read must be the one the state names — same resume counter, same instant
+  else if (cache !== null && (cache.resumes !== detail.resumes || cache.at !== detail.at)) replay = { possible: false, cache: detail.cache, reason: `${detail.cache} belongs to another attempt (written ${cache.at}, the state names ${detail.at}) — replay unavailable`, changedTargets: [] };
   else if (check !== null && !check.ok) replay = { possible: false, cache: detail.cache, reason: `targets changed since the proposal (${check.changed.join(', ')}) — replay unavailable`, changedTargets: check.changed };
   else if (check === null && Object.keys(detail.targetsSha).length > 0) replay = { possible: false, cache: detail.cache, reason: 'targets not verified yet', changedTargets: [] };
   else replay = { possible: true, cache: detail.cache, reason: '', changedTargets: [] };
