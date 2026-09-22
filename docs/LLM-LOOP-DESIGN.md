@@ -761,7 +761,8 @@ cost risk.
 **`refused` is not `no_passer`.** The guard can refuse passers silently: `structuralRejection` and
 `mutationRefused` drop them before any rule, and a lone passer under `LONE_PASSER_HOLD_MAX_NOUL = 0.3` is held
 **unreleasably**. Reading only `kind` would report "no passer" when the truth is "passers found and refused". The
-facade surfaces `GuardFields.dropped / structuralDrops / held / signals` into the record and such a step records
+facade surfaces `GuardFields.dropped / structuralDrops / held / signals` into the record (`held` as the boolean
+`heldAny`, because `GuardFields.held` is `HoldKind | null` and there is no count to read) and such a step records
 `outcome: 'refused'`, never `'no_passer'`.
 
 ### 4.6 State ownership
@@ -791,7 +792,7 @@ facade surfaces `GuardFields.dropped / structuralDrops / held / signals` into th
 | stage-2 miss | after baseline + `fitOracle` + `locate` | LLM proposes | `decision: 'declined'`, `stage: 2`, `reason`, `runMode: 'RANK'` |
 | `emptyStepBudget` trap | `candidatesTested === 0` with `kind: 'budget'` | LLM proposes | `outcome: 'error'`, `reason: 'empty_step_budget'` — **and the facade's first unit test asserts `candidatesTested > 0` on a known-solvable cluster**, because this failure is indistinguishable from an honest decline without it |
 | localiser returns 0 sites (the Ring 1 defect — code-fixed at `0d61eef`, unmeasured) | `sites === 0` | LLM proposes, **disarm** | `reason: 'no_sites'` — **gated on Ring 1 RE-MEASURED green under `--jev off` before C merges**, because otherwise a Jev outage turns the fast path into a silent "found nothing" |
-| passers found and refused | guard fields | LLM proposes, **disarm** | `outcome: 'refused'`, `held`, `structuralDrops`, `dropped` |
+| passers found and refused | guard fields | LLM proposes, **disarm** | `outcome: 'refused'`, `heldAny`, `structuralDrops`, `dropped` |
 | cold confirm failed / timed out | `isPlausible` | LLM proposes, **disarm** | `outcome: 'refused'`, `confirmedCold: false` |
 | round timeout | wall bound 1 or 2 | LLM proposes, **disarm** | `outcome: 'timeout'`, `wallMs` |
 | throw | try/catch in the facade | LLM proposes, **disarm** | `outcome: 'error'`, `reason` |
