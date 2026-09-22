@@ -462,7 +462,7 @@ export interface StepTiming {
    * test/unit/loop/engine-router-seam.test.ts › *`StepRecord.router` and `StepTiming.routerWaitMs` are written*.
    */
   routerWaitMs?: number;
-  // slot C — contract 1.9 (Fastlane) §5.2: the fast-path round's own wall, the sibling of `synthMs`. Both absent on
+  // contract 1.9 (Fastlane) §5.2: the fast-path round's own wall, the sibling of `synthMs`. Both absent on
   // every step where the round did not run, which is what keeps `fastPath: 'off'` byte-identical (I2).
   /** contract 1.9 (Fastlane) §4.4: wall of the fast-path round, measured by the facade's own clock, inside `harnessMs` */
   fastPathMs?: number;
@@ -574,7 +574,7 @@ export interface StepRecord {
   riskSource?: 'code' | 'jev';
   /** contract 1.9 (Fastlane) §2.4: the harm ask was dropped or failed and the CODE verdict stood. Absent = false. */
   jevUnavailable?: boolean;
-  // slot C — contract 1.9 (Fastlane) §5.2
+  // contract 1.9 (Fastlane) §5.2
   /** contract 1.9 (Fastlane) §4: the fast path's decision and what the round cost. Absent when the fast path was never armed. */
   fastPath?: StepFastPath;
   /**
@@ -601,11 +601,11 @@ export interface StepRouter {
   rows: readonly { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean }[];
 }
 
-/** docs/LLM-JEV-DESIGN.md §9.4; contract 1.9 (Fastlane) §5.2 (slot C) widens it with `fastpath` — the bounded sieve round proposed the step */
+/** docs/LLM-JEV-DESIGN.md §9.4; contract 1.9 (Fastlane) §5.2 widens it with `fastpath` — the bounded sieve round proposed the step */
 export type StepProposer = 'synth' | 'generic' | 'fastpath';
 
 /**
- * contract 1.9 (Fastlane) §5.2 (slot C): why the fast path did not fire, or how it failed. A closed union, not a free
+ * contract 1.9 (Fastlane) §5.2: why the fast path did not fire, or how it failed. A closed union, not a free
  * string, so the decline histogram of docs/LLM-LOOP-DESIGN.md §8 is exhaustive and a new reason cannot appear unnamed.
  */
 export type FastPathReason =
@@ -642,7 +642,7 @@ export type FastPathReason =
   | 'error';
 
 /**
- * contract 1.9 (Fastlane) §4 (slot C): one fast-path decision, as it lands on `StepRecord.fastPath`.
+ * contract 1.9 (Fastlane) §4: one fast-path decision, as it lands on `StepRecord.fastPath`.
  *
  * `refused` is NOT `no_passer` (§4.5): the guard drops passers silently (`structuralRejection`, `mutationRefused`, a
  * lone passer held under the Noul floor), so a step that found and refused passers records `refused` with the counts.
@@ -1320,7 +1320,7 @@ export interface LastTestRun {
   failed: number;
   errors: number;
   allPassed: boolean;
-  // slot C — contract 1.9 (Fastlane) §5.2
+  // contract 1.9 (Fastlane) §5.2
   /**
    * contract 1.9 (Fastlane) §4.3 T5: the run's wall, so the fast-path predicate survives a resume. `lastTestRunOutput` is
    * in-memory only; without this member a restarted run would have to arm blind or never arm. Absent = unknown.
@@ -1709,7 +1709,7 @@ export interface SessionRef {
   intake?: { kind: IntakeKind; probability: number; requestHash: string };
 }
 /**
- * contract 1.4 (W2b) / contract 1.5: widened by the TUI session's explicit exception, in one commit with the minimal case
+ * contract 1.4 (W2b) / contract 1.5: widened as an explicit exception, in one commit with the minimal case
  * lines at the FOUR exhaustive sites outside the harness (`src/tui/blocking/lines.ts` ×2, `src/tui/status/lines.ts`, and a
  * `Record<BlockingKind, …>` in `test/unit/tui/pane/blocking.test.ts`) — `BlockingKind` is the one union in this file that is
  * not additive, so the member and its four cases can never be separate commits.
@@ -1720,7 +1720,7 @@ export interface SessionRef {
  *  - `'lease-conflict'` — COORDINATION-DESIGN §4.3 step 4: the strict claim wait, answered `[w] wait` / `[c] continue` /
  *    `[t] worktree` / `[p] pause` / `[q] stop` (`BlockingAnswer` already carries every one of them).
  *
- * The pane TEXT in `src/tui/**` is a placeholder the TUI session's round 5 replaces; the union member and the answers are the
+ * The pane TEXT in `src/tui/**` is a placeholder a later interface revision replaces; the union member and the answers are the
  * contract.
  */
 export type BlockingKind = 'jev-unreachable' | 'key-rejected' | 'spend-limit' | 'checkpoint-degraded' | 'drift' | 'sandbox-unavailable' | 'land-preflight' | 'lease-conflict';
@@ -1800,7 +1800,7 @@ export interface EngineOptions {
   extraReadableRoots?: readonly string[];
   /** jev-only mode: proposes actions with Jev + code search, no generating LLM (required when mode === 'jev-only') */
   synthesizer?: Synthesizer;
-  // slot C — contract 1.9 (Fastlane) §5.2
+  // contract 1.9 (Fastlane) §5.2
   /**
    * contract 1.9 (Fastlane) §0.3: the bounded sieve fast path (route R9). Absent resolves to `'auto'` under `jev-on`
    * and to `'off'` under every other mode; the engine derives it, so no `src/config` and no `src/cli` change exists. Env
@@ -1882,7 +1882,7 @@ export interface EngineOptions {
    * READ by the §7.5 engine seam (b): `makeContext` puts it on `StageContext.routers` and the four routed sites
    * call `routersOn(ctx.mode, ctx.routers)`. **This member beats `JEVCODE_ROUTERS`**, in both directions; the env
    * var only fills an ABSENT option, which is how a worker process and a bisect still express the switch. (It
-   * used to be ORed in, so an exported `on` armed an arm whose own row said `off` — slot D's finding.) The
+   * used to be ORed in, so an exported `on` armed an arm whose own row said `off`.) The
    * `jev-on` gate is checked before either.
    */
   routers?: 'on' | 'off';
@@ -3065,7 +3065,7 @@ export interface LaunchInput {
 /**
  * contract 1.5 (§5.7 [D1], corner row 53): the pre-flight's offer. Deliberately NOT a `BlockingRequest`:
  * `BlockingKind` is consumed by four exhaustive sites in `src/tui/**`, so a `'land-preflight'` member is not additive
- * and belongs to the TUI session's wave. `stop` / `exitCode` are carried so the offer converts verbatim the day it lands.
+ * and belongs to a separate interface change. `stop` / `exitCode` are carried so the offer converts verbatim the day it lands.
  */
 export interface LandPreflightOffer {
   id: string;

@@ -4,7 +4,7 @@ Research for the JevCode chat-style TUI (gap-fill topic, 2026-09-20). Scope: wha
 types or pastes into the composer, mentions with `@`, recalls from history, or copies out with `/copy`. Every
 claim carries its source and fetch date; local files are cited by path and were read on 2026-09-20. Measurements
 were made under `/tmp/jev-secrets` with the repo's own `tsx`, Node v22.23.2 and `ink` 7.1.1 from
-`/Users/prateekjannu/Documents/vscode/JevCode/node_modules`.
+`<repo>/node_modules`.
 
 Verdict in one paragraph. `src/core/redact.ts` is already the right engine (exact set + format patterns +
 `addSecret`); what is missing is *when it is fed* and *which sinks the composer adds*. The composer adds five sinks

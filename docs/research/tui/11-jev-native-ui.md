@@ -28,7 +28,7 @@ session/permission.tsx` + `packages/opencode/src/permission/index.ts`, Claude Co
 interactive-mode docs, Codex `codex-rs/tui/src/bottom_pane/approval_overlay.rs` + `keymap.rs`, Gemini CLI
 `ToolConfirmationMessage.tsx` + `BaseSelectionList.tsx`, Warp issue #9696.
 
-Measured (scratch scripts in `/tmp/jevtui/`, Node 22.23.2, this machine): glyph widths through Ink's own
+Measured (scratch scripts in `/tmp/jevtui/`, Node 22.23.2, the reference machine): glyph widths through Ink's own
 `string-width` 8.2.2; string-building and `stringWidth` cost of bar rows; Ink re-render cost of a 12-row
 pane with and without bar glyphs via `ink-testing-library` 4.0.0 (repo `node_modules`, nothing installed).
 
@@ -797,7 +797,7 @@ by gh_config; developers.openai.com/codex/security (308 → learn.chatgpt.com/do
 philarchive.org KENWOE (403); unicode.org chart PDFs (redirect chain, PDF unparseable) — replaced by
 NamesList.txt. Not attempted: paid APIs, `npm install`, any git operation.
 
-Measurements (this machine, Node 22.23.2, `/tmp/jevtui/width.mjs` and `render-bench.mjs` importing the
+Measurements (the reference machine, Node 22.23.2, `/tmp/jevtui/width.mjs` and `render-bench.mjs` importing the
 repo's `string-width` 8.2.2, `ink` 7.1.1, `react` 19.3.0, `ink-testing-library` 4.0.0): glyph widths as in
 §3.1; 12 bar rows built in 0.95 µs; `stringWidth` 18.9 µs per 62-column bar row; 12-row pane re-render
 3.13 ms (text) vs 3.74 ms (bars + sparkline).

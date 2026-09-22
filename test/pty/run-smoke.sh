@@ -1,8 +1,8 @@
 #!/bin/sh
 # TUI-DESIGN §19.5 / TUI-DESIGN-2 §8.2 real-pty smoke over the built bundle (bin/jevcode.js): every scenario runs
 # scripts/pty/drive.exp with a fresh JEVCODE_HOME and workspace (the child's cwd is the workspace, so the repository's
-# ./.env is never read, OPEN_ASSIST_PATH points at a directory that does not exist — the default is the package root's
-# sibling ../open-assist, whose .env would otherwise supply keys — and every key variable is unset; a scenario that
+# ./.env is never read, the extra-`.env` setting points at a directory that does not exist — its default is a sibling
+# directory of the package root, whose .env would otherwise supply keys — and every key variable is unset; a scenario that
 # needs a key sets a fake one), then reports the
 # exit code, the clear count after the first dynamic frame (§18 CLEAR_RE, with one Ink clearTerminal `ESC[2J ESC[3J
 # ESC[H` counted once: must be 0 in every scenario without a shrink in rows; research 20 item 1 allows one per shrink —
@@ -25,7 +25,7 @@
 # Hermetic child environment (§8.2; docs/STATUS.md "Round 2" finding 2): HOME, XDG_CONFIG_HOME and JEVCODE_HOME inside
 # the scenario's temp home — `resolveConfig` falls back to the legacy $HOME/.config/jevcode/config.json when the XDG
 # file is absent (src/config/resolve.ts), so a developer's saved login must never be a candidate — JEVCODE_CONFIG and
-# every key variable unset, OPEN_ASSIST_PATH at a directory that does not exist. `run-smoke.sh --hermetic` proves it:
+# every key variable unset, the extra-`.env` setting at a directory that does not exist. `run-smoke.sh --hermetic` proves it:
 # a fake HOME holding a legacy credentials file, the same env construction, `jevcode config` must show no `file:` source
 # (and the control without the isolation must).
 # Usage: test/pty/run-smoke.sh [scenario...]   (default: all). Output dir: .scratch/pty-smoke/.
@@ -54,7 +54,7 @@ BADGE_RE=$(printf '%s' "$BADGE" | sed 's/[+.]/\\&/g')
 # the variables every child loses (see the header); `env -u` takes them one by one
 UNSET="-u CI -u CONTINUOUS_INTEGRATION -u JEV_API_KEY -u TYPESAFE_API_KEY -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY -u JEVCODE_API_KEY -u JEVCODE_MODE -u JEV_PROVIDER -u JEVCODE_CONFIG -u JEVCODE_MOCK_INTAKE -u JEVCODE_MOCK_REVIEW_AT -u JEVCODE_MOCK_JEV_MS -u JEVCODE_ASSERT_NO_NETWORK -u JEVCODE_TRACE -u JEVCODE_FAULT -u JEVCODE_SUBMIT_WATCHDOG_MS -u JEVCODE_ASSERT_HEIGHT"
 # the isolated home of one child: `hermetic_env <home>` prints the VAR=value words every scenario gets
-hermetic_env() { echo "HOME=$1 XDG_CONFIG_HOME=$1/xdg JEVCODE_HOME=$1 OPEN_ASSIST_PATH=$1/no-open-assist"; }
+hermetic_env() { echo "HOME=$1 XDG_CONFIG_HOME=$1/xdg JEVCODE_HOME=$1 OPEN_ASSIST_PATH=$1/no-extra-env"; }
 # TUI-DESIGN-4 §7.1 / §11: the frame count of a capture (every Ink frame of the App opens with ESC[?2026h).
 # A latched pane must not raise it: an unlatched persistent throw was one UNTHROTTLED frame per iteration.
 frames_in() {
@@ -333,7 +333,7 @@ hermetic_check() {
   out=$(cd "$ws" && HOME="$fake_home" env $UNSET $(hermetic_env "$home") node "$BIN" config --workspace "$ws" 2>&1); code=$?
   # the control: the same fake HOME without the smoke's isolation reads the legacy file (so this check is live, not vacuous)
   # shellcheck disable=SC2086
-  ctrl=$(cd "$ws" && HOME="$fake_home" env $UNSET -u XDG_CONFIG_HOME JEVCODE_HOME="$home" OPEN_ASSIST_PATH="$home/no-open-assist" node "$BIN" config --workspace "$ws" 2>&1)
+  ctrl=$(cd "$ws" && HOME="$fake_home" env $UNSET -u XDG_CONFIG_HOME JEVCODE_HOME="$home" OPEN_ASSIST_PATH="$home/no-extra-env" node "$BIN" config --workspace "$ws" 2>&1)
   ok=1; checks=""
   # TUI-DESIGN-4 §3.3: `config-table.ts` renders the source as a `(file)` note row now, not a `file:<path>` column
   echo "$out" | grep -qE '\(file\)|file:' && { ok=0; checks="$checks LEAK:file-source"; } || checks="$checks no-file-source"

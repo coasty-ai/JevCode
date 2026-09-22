@@ -1,6 +1,6 @@
 # Current LLM+Jev loop: map
 
-Scope: synthesis of the six subsystem maps supplied by the harness (map 5, "what Jev is good at", arrived truncated inside its decision-point list; map 6 was not delivered at all — see §7). Anchors were spot-checked read-only against HEAD `2a92d0b` in `/Users/prateekjannu/Documents/vscode/JevCode` on 2026-09-21. Where the maps and HEAD disagree, HEAD is stated and the disagreement is listed in §7. No API calls were made; `test/unit/config/{resolve,validate}.test.ts` were run locally (52/52 pass).
+Scope: synthesis of the six subsystem maps supplied by the harness (map 5, "what Jev is good at", arrived truncated inside its decision-point list; map 6 was not delivered at all — see §7). Anchors were spot-checked read-only against HEAD `2a92d0b` in `<repo>` on 2026-09-21. Where the maps and HEAD disagree, HEAD is stated and the disagreement is listed in §7. No API calls were made; `test/unit/config/{resolve,validate}.test.ts` were run locally (52/52 pass).
 
 Notation: **jev** = a Jev decisions request; **llm** = a generator sampling call; **code** = deterministic harness rule; **human** = confirmer/steer. Latencies are live medians from `docs/live/*/steps.jsonl` (51 steps, Sonnet 5 generator) unless marked *bench* (`bench/results/live-swebench-30/summary.json`). Jev price is $0.042/M input tokens, output free (`4.2e-8`/token).
 

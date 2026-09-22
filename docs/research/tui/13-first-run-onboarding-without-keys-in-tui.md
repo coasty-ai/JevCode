@@ -71,7 +71,7 @@ blocks the loop, zero terminal clears after the first frame (rows − 2 budget),
 
 ### 1.1 Resolution, validation, and where the error surfaces
 
-- Precedence `flag > env > ./.env > <OPEN_ASSIST_PATH>/.env > config file > default`, sources recorded per entry
+- Precedence `flag > env > ./.env > <extra .env file> > config file > default`, sources recorded per entry
   (`src/config/resolve.ts:1-9`, `lookup()` `:141-163`). Empty strings count as unset at every layer: "`.env.example`
   ships `ANTHROPIC_API_KEY=`" (`resolve.ts:140`; `.env.example` lines 4-5, 8).
 - `validateGenerator`: `if (!keyR || keyR.value.trim().length === 0) throw missing(reader, 'generator.apiKey', \`the ${provider} API key\`)`
@@ -515,7 +515,7 @@ verified shape in §4.3.
   then `chmod(path, 0o600)` and `chmod(dir, 0o700)` (mode on `open` applies only to created files, Node docs §1.2; the
   directory is created with `mkdir(dir, { recursive: true, mode: 0o700 })`; "on Windows mode is not supported" — print
   `(Windows: protected by your user profile ACL)` there, as Claude Code documents for `%USERPROFILE%\.claude\.credentials.json`).
-- Never write `./.env`, `./jevcode.json` or the Open Assist `.env`: the workspace is the *agent's* territory, may be a
+- Never write `./.env`, `./jevcode.json` or the extra `.env` file: the workspace is the *agent's* territory, may be a
   git repo without a `.gitignore` entry, and `secretPaths` protection is weaker there (a `.env` outside the workspace
   is unreadable to commands; one inside it is what Codex/Claude Code warn users not to commit). The `saved` line names
   the file so users who prefer env can copy the two names.

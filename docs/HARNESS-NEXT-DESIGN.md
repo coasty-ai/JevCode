@@ -35,9 +35,9 @@ So the question is not "is the mode good"; it is "where is the remaining wall, a
 | 5 | **per-command process cost** | every lane reset, every `ast.parse` check and every candidate test is a fresh `sandbox-exec -f <profile> /bin/sh -c …` (`src/sandbox/run.ts:250`, spawn at `:270`) | source |
 | 6 | **harness** | p95 **45.7 / 51.1 / 52.6 / 49.6 ms** across four recorded perf runs against a **50 ms** gate (`docs/STATUS.md:392`, `:724`, `:769`, `:832`) | STATUS |
 
-Queue 1 is by far the largest and has never been attacked. I measured its fixed cost on this machine today:
+Queue 1 is by far the largest and has never been attacked. I measured its fixed cost on the reference machine today:
 
-**[measured 2026-09-21, this machine, darwin 25.6, n = 8–15 per row, p50]**
+**[measured 2026-09-21, the reference machine, darwin 25.6, n = 8–15 per row, p50]**
 
 | what | p50 | note |
 |---|---|---|
@@ -134,7 +134,7 @@ Every row was fetched **2026-09-21** (the six surveys in `experiments/designs/ha
 
 ## 3. The adopted mechanisms, in full
 
-All repo paths are absolute under `/Users/prateekjannu/Documents/vscode/JevCode`; `new` marks a file that does not exist yet. Magnitudes marked **[proj]** are projections from the components named in §1.1, decided by the probes of §5 — they are not results. Magnitudes marked **[measured]** are from the table in §1.1.
+All repo paths are absolute under `<repo>`; `new` marks a file that does not exist yet. Magnitudes marked **[proj]** are projections from the components named in §1.1, decided by the probes of §5 — they are not results. Magnitudes marked **[measured]** are from the table in §1.1.
 
 ### M1 — Tail-cutting hedged samples
 
@@ -624,7 +624,7 @@ Mechanisms land in the §6 order precisely because each is independently measura
 
 ## 6. Implementation plan, in waves
 
-Seven waves. Every wave leaves `npm run typecheck && npm run test && npm run perf` green, is independently revertible, sits behind a config row whose default is today's behaviour, and is gated by the Ring-0/1/2 table of §5. LOC excludes tests. All paths under `/Users/prateekjannu/Documents/vscode/JevCode`.
+Seven waves. Every wave leaves `npm run typecheck && npm run test && npm run perf` green, is independently revertible, sits behind a config row whose default is today's behaviour, and is gated by the Ring-0/1/2 table of §5. LOC excludes tests. All paths under `<repo>`.
 
 **[fix — wave order changed from the winning design.]** Fastlane's draft ran the generator wave (its S1) before the warm-runner wave (its S2). The measured wall says the opposite: the lane queue is ≈ 62–66 % of wall and the exposed generator wait is 29–30 %, and on a ladder step the LLM round is *hidden inside* the lane wall today (step 1 of `account`: ≈ 33 s of runs against a 23.9 s round). Landing the generator wave first would measure ≈ 0 improvement on the cheap classes and wrongly discredit hedging. **The runner goes first.** Both judgements asked for this ordering.
 
@@ -819,7 +819,7 @@ Ordered by how much of the design they can take down.
 
 **R-15. Merge risk with the coordination workstream.** This is a large, cross-cutting change to the module that produced the repo's only head-to-head win, landing on a tree with 2,000+ unit tests and a thin perf margin, while the coordination design is also editing `src/loop/engine.ts`, `src/core/types.ts`, `src/loop/window.ts` and `src/checkpoint/*` — and that design is itself still under adversarial review (7 blockers at `a2fee9c`). Wave S0 and the additive-fields discipline (every new field optional, conditional spread, `CheckpointEnvelope.version` stays 1) bound the merge cost, but the ordering conflict with COORDINATION W0–W2 is a **scheduling** risk to resolve with that owner before S4.
 
-**R-16. Several cited magnitudes are from papers and vendor pages, not from this codebase.** PASTE's 48.5 % task-completion reduction and SpecBox's 2.9× P99 / 4.53× provisioning numbers were measured on serving-layer agent workloads with different bottlenecks (network tools, 150 ms–3 s container cold starts) than JevCode's local seatbelt-plus-shell model, and the sandbox cold-start ladder came from search-surfaced pages that were not individually re-fetched. They justify the **shape** of the mechanisms (prewarm, slack-budget speculation, promotion/preemption, graded safety), never the magnitudes. Every magnitude in this design is either **[measured]** on this machine today or labelled **[proj]** and decided by probes P1–P3. Two 2026 indexing papers (arXiv 2604.18413, arXiv 2603.27277) could not be verified at all and nothing here depends on them.
+**R-16. Several cited magnitudes are from papers and vendor pages, not from this codebase.** PASTE's 48.5 % task-completion reduction and SpecBox's 2.9× P99 / 4.53× provisioning numbers were measured on serving-layer agent workloads with different bottlenecks (network tools, 150 ms–3 s container cold starts) than JevCode's local seatbelt-plus-shell model, and the sandbox cold-start ladder came from search-surfaced pages that were not individually re-fetched. They justify the **shape** of the mechanisms (prewarm, slack-budget speculation, promotion/preemption, graded safety), never the magnitudes. Every magnitude in this design is either **[measured]** on the reference machine today or labelled **[proj]** and decided by probes P1–P3. Two 2026 indexing papers (arXiv 2604.18413, arXiv 2603.27277) could not be verified at all and nothing here depends on them.
 
 **R-17. The wave reordering is itself a bet.** Landing S1 (the warm runner) before S2 (the generator path) assumes the lane queue really is the critical path on the cheap classes. If probe P2 or the first Ring-2 run shows the queue was never the binding constraint — for instance because the 8 lanes were starved by the awaitable queue rather than busy — then S1's measured win will be small and the waves should swap back. The probe exists precisely so that this is decided in seconds and for free, before two days of work.
 

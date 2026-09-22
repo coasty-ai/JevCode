@@ -1,2 +1,0 @@
-2026-09-21T21:28:44.931Z warn  stop: replan_stop at step 7 (gather_context directed again for done:16ebabf33215 (already directed at step 5))
-2026-09-21T21:28:44.937Z info  run 20260921-212834-6nl3fcv7 ended: replan_stop exit 4 steps 7

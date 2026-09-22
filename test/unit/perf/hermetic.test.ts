@@ -85,7 +85,7 @@ describe.skipIf(!haveBundle)('hermetic child environments (legacy credentials fi
       const env = baseEnv({ rows: 24, columns: 80, env: { JEVCODE_HOME: join(dir, 'home') } }, dir);
       expect(env['HOME']).toBe(dir);
       expect(env['XDG_CONFIG_HOME']).toBe(join(dir, 'xdg'));
-      expect(env['OPEN_ASSIST_PATH']).toBe(join(dir, 'no-open-assist'));
+      expect(env['OPEN_ASSIST_PATH']).toBe(join(dir, 'no-extra-env'));
       expect(Object.keys(env).sort()).toEqual(['HOME', 'JEVCODE_HOME', 'OPEN_ASSIST_PATH', 'PATH', 'PTY_COLS', 'PTY_ROWS', 'TERM', 'XDG_CONFIG_HOME']);
       const out = configOutput(env, ws);
       expect(out).not.toContain('file:');

@@ -69,7 +69,7 @@ describe('resolveConfig precedence', () => {
   });
 
   it('flag > env > ./.env > <OPEN_ASSIST_PATH>/.env > config file > default, one layer at a time', async () => {
-    const oa = join(root, 'open-assist');
+    const oa = join(root, 'extra-env');
     await mkdir(oa);
     await writeFile(join(oa, '.env'), 'JEVCODE_MODEL=from-oa\nJEVCODE_MAX_STEPS=4\nJEV_MODEL=jev-1.13\nJEVCODE_SPEND_CAP_USD=1\n');
     await writeFile(join(cwd, '.env'), 'JEVCODE_MODEL=from-dotenv\nJEVCODE_MAX_STEPS=3\nJEV_MODEL=typesafe/jev-1.13\n');
@@ -307,7 +307,7 @@ describe('resolveConfig files, paths and secrets', () => {
     await expect(resolve(run('--config', join(root, 'obj.json')))).rejects.toThrow(/must be a string, number or boolean/);
   });
 
-  it('Open Assist path: sibling ../open-assist of the package by default, its .env joins the chain, and both dotenvs are secretPaths', async () => {
+  it('the extra .env file: a sibling of the package root by default, its .env joins the chain, and both dotenvs are secretPaths', async () => {
     const sibling = join(root, 'pkg', 'open-assist');
     await mkdir(sibling);
     await writeFile(join(sibling, '.env'), `JEV_API_KEY=${OR_KEY}\nUNUSED_TOKEN=unused-token-value-1234\n`);
@@ -910,8 +910,8 @@ describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
     expect(modeRow).toEqual({ setting: 'mode', value: 'jev-on', source: `file:${join(cwd, 'jevcode.json')}`, atDefault: false });
     // TUI-DESIGN-4 §3.3 / F-B3: the rendered row carries the SHORT parenthetical; the path stays in the record and in --json
     expect(configTableLines(file.record(), { sandboxLevel: 'none', width: 110 }).find((l) => l.startsWith('mode '))).toMatch(/^mode\s+jev-on\s+\(file\)$/);
-    // the Open Assist dotenv beats the file, ./.env beats it, the process env beats both, a flag beats everything
-    const oa = join(root, 'open-assist');
+    // the extra dotenv beats the file, ./.env beats it, the process env beats both, a flag beats everything
+    const oa = join(root, 'extra-env');
     await mkdir(oa);
     await writeFile(join(oa, '.env'), 'JEVCODE_MODE=jev-off\n');
     expect((await resolve(run(), { OPEN_ASSIST_PATH: oa })).entries.get('mode')).toEqual({ value: 'jev-off', source: `dotenv:${join(oa, '.env')}` });

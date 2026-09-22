@@ -15,7 +15,7 @@ fetch date. Nothing in the repo other than this file was modified.
 - `TS` = `https://raw.githubusercontent.com/openai/codex/rust-v0.2.0/codex-cli/` — the last tag at
   which the TypeScript/Ink implementation still existed (tags `rust-v0.2.0`, `rust-v0.5.0`,
   `rust-v0.10.0` return 200 for `src/cli.tsx`; `rust-v0.20.0` returns 404; fetched 2026-09-20).
-- `INK` = `/Users/prateekjannu/Documents/vscode/JevCode/node_modules/ink/build/` (ink 7.1.1 as
+- `INK` = `<repo>/node_modules/ink/build/` (ink 7.1.1 as
   installed; read 2026-09-20). Prior notes on Ink itself: `docs/research/01-ink-stack.md`.
 - Directory listings came from `https://api.github.com/repos/openai/codex/contents/codex-rs/tui/src`
   (and subdirectories) fetched 2026-09-20 before the unauthenticated rate limit was hit; after that,
@@ -497,7 +497,7 @@ whether raw key events are included was **not verified** (the serialiser at L140
 
 ---
 
-## 11. Measurements made (2026-09-20, this machine, Node v22.23.2)
+## 11. Measurements made (2026-09-20, the reference machine, Node v22.23.2)
 
 1. **Ink `<Static>` append cost vs a DECSTBM insert** — `/tmp/codex-research/bench/ink-bytes.mjs`
    (imports `node_modules/ink` and `react` from the repo; fake 120×40 `isTTY` Writable; 300 items

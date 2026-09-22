@@ -1,6 +1,6 @@
 # Adversarial review — `import-engine` @ 3a511a0 (read-only)
 
-Reviewer: an Opus subagent of the harness session, 2026-09-22, in a detached worktree; probes run after the CPU hold.
+Reviewer: an independent read-only review, 2026-09-22, in a detached worktree; probes run after the CPU hold.
 Baseline: `test/unit/import` + `test/unit/sandbox` + `test/unit/perf/import` = 528 tests pass, so every finding is a
 coverage gap. Scope: the harness slot of `docs/IMPORT-DESIGN.md` (`src/import/**`, `src/core/limits.ts`
 IMPORT_LIMITS, `src/perf/import.ts`, the seatbelt fragments).

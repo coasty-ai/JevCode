@@ -8,7 +8,7 @@ ADOPT/REJECT tables and open questions close the file.
 
 ## 0. Method and what could not be verified
 
-- `gh` is not installed on this machine; `api.github.com` unauthenticated listings were exhausted after 4 calls
+- `gh` is not installed on the reference machine; `api.github.com` unauthenticated listings were exhausted after 4 calls
   (`x-ratelimit-remaining: 0`, HTTP 403), so directory listings came from `github.com/<owner>/<repo>/tree/...`
   HTML pages and file contents from `raw.githubusercontent.com` (not rate-limited the same way).
 - The Codex docs moved: `https://developers.openai.com/codex/cli/reference`, `/codex/cli/features` and
@@ -348,7 +348,7 @@ Change tracking: `ActionOutcome.changedFiles`, `CheckpointState.createdThisRun`,
 tracked, createdThisRun, recoverable: tracked || created }` (`src/workspace/files.ts` line 318). The TUI is a run
 monitor: `App.tsx` mounts one `useInput` (Ctrl-C → `onAbort('human_abort')`, `y`/`n` while a confirm is pending).
 
-Measurements on this machine (Apple Silicon, Node 22.23.2, 2026-09-20; scripts under `/tmp/jev-picker/`):
+Measurements on the reference machine (Apple Silicon, Node 22.23.2, 2026-09-20; scripts under `/tmp/jev-picker/`):
 
 | What | Value |
 | --- | --- |

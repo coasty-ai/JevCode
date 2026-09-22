@@ -1420,7 +1420,7 @@ against the current file: new union members, optional fields, or new members on 
 
 ---
 
-## 16. Configuration schema (precedence flag > env > `./.env` > `<OPEN_ASSIST_PATH>/.env` > file > default; sources shown by `jevcode config`)
+## 16. Configuration schema (precedence flag > env > `./.env` > `<extra .env file>` > file > default; sources shown by `jevcode config`)
 
 | Setting | Flag | Env | File key | Default | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -1574,5 +1574,5 @@ in prompt history, clipboard payloads and the `--json` stream"), `docs/research/
 | Deferred | A77 owned kitty handshake, A31 incremental default, C15 `--theme auto` | v1.x after the pty suite and soak tests | F2 fixes the v1 posture. |
 | Deferred | P54 `/redo`, P50 "restore to HEAD" option, P8 `EngineOptions.pins` bypass, `/cd` workspace switching (00 §8 item 12), `run.lock` PID liveness beyond dead-pid detection (item 13) | v1.x | each adds a state the design does not need for the fixed decisions. |
 | Deferred | C44 promotion of AWS/JWT to redacting families | after one week of real `history.jsonl` FP scans (Q35) | staged per 16 §4.1. |
-| Deferred | Windows/ConPTY validation, NVDA/VoiceOver sessions, Terminal.app/mosh matrix cells (Q19, Q20, Q22, item 17) | v1.x | not measurable on this machine. |
+| Deferred | Windows/ConPTY validation, NVDA/VoiceOver sessions, Terminal.app/mosh matrix cells (Q19, Q20, Q22, item 17) | v1.x | not measurable on the reference machine. |
 | Deferred | Markdown/prose rendering of generator text (00 §8 item 8), localisation (item 24) | v1.x / never | R24, A99. |

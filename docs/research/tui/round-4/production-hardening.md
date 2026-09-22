@@ -4,11 +4,11 @@
 Measured 2026-09-21 on macOS 26 (Darwin 25.6.0), Node v22.23.2, Ink 7.1.1, React 19.3.0, from a clean worktree of
 `ec61170` at `/tmp/jevcode-r4-hardening` (built `dist/jevcode.mjs` 2 241 384 B minified, build smoke first frame 25 ms).
 Every pty probe ran `scripts/pty/drive.exp` with a fresh `JEVCODE_HOME`, a fresh copy of `examples/demo-py` as the
-workspace, every key variable unset, and `OPEN_ASSIST_PATH` at a directory that does not exist — the `test/pty/run-smoke.sh`
+workspace, every key variable unset, and `JEVCODE_EXTRA_ENV_FILE` at a directory that does not exist — the `test/pty/run-smoke.sh`
 hermetic recipe. Captures live under `/tmp/jr4h/out/*.cap` (referenced below as `<name>.cap`); the worktree is removed
 after this report, the captures are not part of the tree.
 
-No file in `/Users/prateekjannu/Documents/vscode/JevCode` was modified. No build, perf or pty suite was run in the main checkout.
+No file in `<repo>` was modified. No build, perf or pty suite was run in the main checkout.
 
 ---
 

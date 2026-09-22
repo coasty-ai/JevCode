@@ -16,7 +16,7 @@ Two different artefacts are quoted below; every claim says which.
 | | what it is | how it was read |
 | --- | --- | --- |
 | **PROBED** | the *committed* tree `ec61170` (= `HEAD` for `src/**`: `git diff ec61170 HEAD -- src/tui src/cli` is empty). This is **round 2 plus the parts of round 3 already committed**; `src/tui/wordmark.ts` does **not** exist in it, so the mark is still the 700 ms splash (`splash.ts:14 SPLASH_MS = 700`). | worktree `/tmp/jevcode-r4-resize`, `npm run -s build`, `node bin/jevcode.js … --mock` under `scripts/pty/drive.exp` with a temp `JEVCODE_HOME` and a temp `--workspace` copy of `examples/demo-py`. Worktree removed after the run. |
-| **CODE (in flight)** | the working tree of `/Users/prateekjannu/Documents/vscode/JevCode`, i.e. round 3 **as it is being implemented right now**. Never edited, never built, never run from there; pure modules were copied to `/tmp/jr4-src-r3` and executed with `tsx` for the static sweeps. | `sed`/`grep` for `file:line`; `tsx` for `computeLayout`, `wordmarkWanted`, `wrapBody`, `console-lines`. |
+| **CODE (in flight)** | the working tree of `<repo>`, i.e. round 3 **as it is being implemented right now**. Never edited, never built, never run from there; pure modules were copied to `/tmp/jr4-src-r3` and executed with `tsx` for the static sweeps. | `sed`/`grep` for `file:line`; `tsx` for `computeLayout`, `wordmarkWanted`, `wrapBody`, `console-lines`. |
 
 Probe harness, step files and the load-bearing captures are committed beside this report in
 [`resize-probe/`](resize-probe/) (`run.sh`, `analyze.mjs` = frame/segment/clear parser, `widths.mjs` = per-frame row-width

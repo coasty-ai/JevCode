@@ -88,7 +88,7 @@ describe('the jev-on-next arms (§8.1)', () => {
    * before the option in BOTH directions and `routersOn` ORed `JEVCODE_ROUTERS=on` in, so an exported
    * `JEVCODE_FASTPATH=off` ran `jev-on-next` disarmed while recording `'auto'` and `=auto` ran the
    * `jev-on-next-nofast` CONTROL armed while recording `'off'` — destroying the one-mechanism contrast clause 4
-   * rests on, unobservably. **Both resolvers were inverted by the §7.5 engine seam** (slot B's post-C commit):
+   * rests on, unobservably. **Both resolvers were inverted by the §7.5 engine seam**:
    * the explicit option now wins and the env only fills an absent one. `pinMechanismEnv` stays, as the belt that
    * makes an arm's row true for a worker that pins nothing, and the assertions below now drive the real
    * resolver's new polarity.
@@ -168,7 +168,7 @@ describe('the jev-on-next arms (§8.1)', () => {
 });
 
 describe('the §5.5 bench bridge', () => {
-  // the rows below are the shapes slot C's writer actually produces (`llm-loop-C-fastpath` src/loop/stages/fastpath.ts
+  // the rows below are the shapes the fast-path writer actually produces (src/loop/stages/fastpath.ts
   // `declinedRecord` / `firedRecord`): `stage: 1` ONLY on a free decline, `stage: 2` on every row of a round that ran,
   // `decision: 'fired'` ONLY on a proposal, and `decision: 'failed'` with outcome timeout/refused/error otherwise.
   it('folds fastPath, router, riskSource and the S2 verify members out of steps.jsonl', () => {
@@ -282,7 +282,7 @@ describe('the §8.3 rows', () => {
   it('R-c is FAILABLE on the shape the writer produces (no row is ever `stage: 1, decision: fired`)', () => {
     // one round proposed, three rounds ran and were thrown out by the stage that costs real work: 3/4 = 0.75, far
     // over the 0.3 bar. With a stage-1-FIRED denominator this arm read `pass | quixbugs 3/0 = n/a` — the row could
-    // not fail on any run slot C's writer can produce, which is the same as not having the row.
+    // not fail on any run the fast-path writer can produce, which is the same as not having the row.
     const records = [
       withSynth('a', 'jev-on-next', [step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', wallMs: 100, budgetMs: 45_000 } })]),
       withSynth('b', 'jev-on-next', [
@@ -320,7 +320,7 @@ describe('the §8.3 rows', () => {
     expect(rows.find((r) => r.id === 'R-d')).toMatchObject({ status: 'fail' });
     expect(rows.find((r) => r.id === 'R-d')!.detail).toContain('NOT in FastPathReason: invented_clause');
     expect(FASTPATH_REASONS).toContain('scope_unusable');
-    // slot C's union is the source of truth now (integration, 2026-09-22): the two reasons the mirror was missing
+    // the `FastPathReason` union is the source of truth now: the two reasons an earlier mirror was missing
     // are declines/failures the writer really emits, so R-d must NOT call them unknown
     expect(FASTPATH_REASONS).toContain('warm_plane');
     expect(FASTPATH_REASONS).toContain('no_passer');

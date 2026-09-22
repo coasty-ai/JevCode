@@ -1404,7 +1404,7 @@ directive through the existing field, no other `SynthesisContext` change; `src/s
 rows stay line-for-line identical (`itemsFromEvent` is the only item source; new kinds are new events, never edits); the `s` synth tab renders
 `detail` verbatim until the structured fields land.
 
-## 16. Config schema (`ui.*` and `limits`; precedence flag > env > `./.env` > `<OPEN_ASSIST_PATH>/.env` > file > default; sources shown by `jevcode config`; non-secret `jevcode config set`)
+## 16. Config schema (`ui.*` and `limits`; precedence flag > env > `./.env` > `<extra .env file>` > file > default; sources shown by `jevcode config`; non-secret `jevcode config set`)
 
 | Setting | Flag | Env | File key | Default | Notes |
 | --- | --- | --- | --- | --- | --- |

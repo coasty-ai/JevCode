@@ -15,7 +15,7 @@ Usage: python3 coverage_study.py [--quick] > results.json
 import ast, builtins, difflib, io, json, keyword, os, re, sys, time, tokenize
 from collections import Counter, defaultdict
 
-ROOT = '/Users/prateekjannu/Documents/vscode/JevCode'
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 QB = '/tmp/quixbugs'
 REPOS = '/tmp/jevonly/repos'
 BUILTINS = set(dir(builtins)) | {m for T in (list, dict, set, str, tuple, int, float, bytes, frozenset) for m in dir(T) if not m.startswith('_')} | {'self', 'cls'}

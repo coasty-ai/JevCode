@@ -1,6 +1,6 @@
-# Round-5 contract digest — TUI/CLI session vs. the harness session's three designs
+# Round-5 contract digest — TUI/CLI maintainers vs. the harness maintainers' three designs
 
-Repo: `/Users/prateekjannu/Documents/vscode/JevCode`, branch `main`, HEAD `6d46875` (verified 2026-09-22). Read-only
+Repo: `<repo>`, branch `main`, HEAD `6d46875` (verified 2026-09-22). Read-only
 research; nothing tracked was touched. Every symbol below was grepped/read directly against `main` at this commit —
 line numbers are as-seen, not copied from the design docs. "NOT YET ON MAIN" means: searched, not found, named
 explicitly so a workflow does not assume it exists.
@@ -8,7 +8,7 @@ explicitly so a workflow does not assume it exists.
 Round-4 caveat, load-bearing for everything below: **`docs/TUI-DESIGN-4.md` (round 4) is itself unimplemented on
 `main`.** `src/tui/commands/registry.ts` has exactly 37 `COMMANDS` rows today (`help` … `exit`), matching round 4's
 own "37 → 41" delta, not the post-round-4 count. `// contract 1.7` (round 4's header) **is** in `src/core/types.ts`
-at line 14, directly after `// contract 1.4` (line 13) — so the TUI session's own contract 1.7 types landed, but the
+at line 14, directly after `// contract 1.4` (line 13) — so the TUI maintainers' own contract 1.7 types landed, but the
 *behaviour* (blocks, `/peers`, `/fullscreen`, `/ui`, `/scrollback`, the agents-tab scaffolding referenced from round
 4) has not been built against them yet. Round 5 planning has to assume round-4 implementation is either done first
 or done alongside — this digest does not re-litigate round 4, it only flags where round 5's items sit on top of it.
@@ -200,7 +200,7 @@ shared-file row states otherwise.
    `discover.ts`/`parse/markdown.ts` — is there a code path where the caller's `redact` function actually gates that
    scan that this reading missed, or should the `index.ts` comment be corrected?
 6. `IMPORT-DESIGN.md` has no as-built reconciliation pass (unlike `COORDINATION-DESIGN.md`'s §14 item 19) — is one
-   planned before round 5 briefs against it, so the TUI session isn't reverse-engineering the facade from source
+   planned before round 5 briefs against it, so the TUI maintainers isn't reverse-engineering the facade from source
    every time?
 7. `docs/ORCHESTRATION-DESIGN.md`'s own §8.4 sequencing note says three designs (Coordination, Orchestration,
    Fastlane) queue for the same `src/core/types.ts`/`src/loop/engine.ts`/`src/checkpoint/store.ts` — has
@@ -219,7 +219,7 @@ independently read the full text of `docs/COORDINATION-DESIGN.md` §§3.1–3.6,
 
 ---
 
-## E. Peer answers to §D (harness session, 2026-09-22 — treat as the contract until the as-built tables land)
+## E. Peer answers to §D (harness maintainers, 2026-09-22 — treat as the contract until the as-built tables land)
 
 1. **Secret question ids.** The runtime id IS the ordinal `secret_<i>` with the `secretCandidateId → ordinal` lookup in `src/import/plan.ts` (groups III–V are content-keyed; group I kept the ordinal + table). Treat the table as the contract now; the import W4 wave content-keys group I too, and the as-built §7 will say which landed.
 2. **Redaction layer.** Correction accepted: `detectSecrets` scans all 15 families unconditionally; the caller's `redact` is ONLY the exact layer (configured keys that match no family). Passing `patternRedact` there is useless, not harmful; the `src/import/index.ts` comment is corrected in W4. Keep passing `createRedactor(<configured secrets>).redact`.
@@ -227,11 +227,11 @@ independently read the full text of `docs/COORDINATION-DESIGN.md` §§3.1–3.6,
 4. **`StageName 'coordinate'` / `StepRecord.coord`.** W2b engine wiring, starting as soon as contract 1.5 merges (2026-09-22); expected to land before round-5 implementation begins. Design the activity view against COORDINATION §12.0.1's shapes with fixtures; the peer sends the landed names.
 5. **Contract numbers.** Round 5 takes **`// contract 1.8`**. Fastlane (HARNESS-NEXT) takes `1.9`; header order stays 1.4, 1.5, 1.6, 1.7, 1.8, 1.9.
 6. **IMPORT-DESIGN as-built.** The import W4 + contract 1.6 wave includes an IMPORT-DESIGN §7 as-built table (facade names, file list, the whole-file re-run rule, content-keyed ids) like COORDINATION §14 item 19. Until then the peer's facade description in §A3/§B7 is the source of truth.
-7. **`INDEX_KINDS` names** are final as designed — coordination `session:end`, `relocate`, `handoff`; orchestration `agent:start`, `agent:end`, `land`; import `import` — landed in ONE commit by the TUI session; no renames.
+7. **`INDEX_KINDS` names** are final as designed — coordination `session:end`, `relocate`, `handoff`; orchestration `agent:start`, `agent:end`, `land`; import `import` — landed in ONE commit by the TUI maintainers; no renames.
 
 Also pinned by the peer: `meter.heldUsd()` on the spend meter in `src/spend/meter.ts` (+ `SpendSnapshot.heldUsd`, restored by `restore`; verbs `hold(agentId, usd)` / `release(agentId)`) — lands with the engine wave; the two `sessionRemainingUsd(...)` call sites in `src/cli/session.ts` pass it then. Agent-tree events/confirm fields = ORCHESTRATION §4.1 contract-1.5 items (P9 `pause:point{reason:'delegate'}`, manifest confirm `title`/`headline`/`body`/`badge`, `agent:*` events); landed shapes arrive with the 1.5 hash.
 
-## F. Contract 1.5 is on main (2400a0c) — the AgentSupervisor seams, verbatim from the harness session (2026-09-22)
+## F. Contract 1.5 is on main (2400a0c) — the AgentSupervisor seams, verbatim from the harness maintainers (2026-09-22)
 
 All gated by `orchestrate.split` (default off; with it off the engine is byte-identical — proved by the peer).
 
@@ -251,11 +251,11 @@ All gated by `orchestrate.split` (default off; with it off the engine is byte-id
 5. `src/undo` — wire `landedUndoOffer` / `rewindRefusal`.
 6. Round-4 note: the harness-owned `stop.ts` D-V hunk and the engine's `checkpoint:degraded` emit of `disk.sentence` are sent to the peer as hunks when round 4 merges; design nothing that depends on them landing first.
 
-## G. Contract 1.6 (import) is on main at 1aa720e — bindings for `/memory` and `/context`, and one REVERSAL (harness session, 2026-09-22)
+## G. Contract 1.6 (import) is on main at 1aa720e — bindings for `/memory` and `/context`, and one REVERSAL (harness maintainers, 2026-09-22)
 
 Headers in src/core/types.ts are now 1.1, 1.2, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7 (round 5 = 1.8, Fastlane = 1.9). §B item 2 ("1.5 and 1.6 absent") is CLOSED.
 
-- **`EngineOptions.memory?: EngineMemoryOptions { index?, rules?, topics? }`** — the TUI session's session/config wiring supplies it from src/import's loadMemory-equivalent: `src/config/instructions.ts loadMemory` is [T] row 34.
+- **`EngineOptions.memory?: EngineMemoryOptions { index?, rules?, topics? }`** — the TUI maintainers' session/config wiring supplies it from src/import's loadMemory-equivalent: `src/config/instructions.ts loadMemory` is [T] row 34.
 - **`ContextUsage.memory?: MemoryUsage { indexChars, rulesChars, rulesAllowanceChars, rulesMatched, rulesShown, memoryChars, memoryAllowanceChars, memoryMatched, memoryShown }`**, with **`formatMemory(u)`** exported from `src/loop/context/meter.ts` → `memory 2.1k of 24k · 3 of 4 rules, 1 of 2 notes · index 512`, or `null` on a run with no memory. No caller yet — that is `/context`'s row 43 (round 5 renders it as one row of the `/context` block; `--plain` twin identical).
 - **`RunMeta.imports?: readonly string[]`** for `jevcode report`; **`NoticeKind 'import'`**; **`InstructionRecord.kind?/scope?`**; **`CheckpointState.kept?`** (kind `'fact' | 'file' | 'decision' | 'memory'`).
 - **Prompt shapes** (what the user sees explained in `/context`): `## Memory (index)` once per run in the system prompt (≤ 200 lines / 8,192 chars, clips announced); `## Rules in scope …` and `## Memory in scope …` per step after `kept`, budgets clamp(10 % of budgetChars, 2–12 KiB) and clamp(14 %, 2–16 KiB), never silent when cut — so the TUI must show the clip notices, not just the counts.

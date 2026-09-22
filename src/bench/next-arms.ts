@@ -19,7 +19,7 @@
  *     the budget". Read literally that ratio rises when the predicate works, so the gate is taken in the direction
  *     that makes the stated conclusion true: `stage2Declined / stage1Held` — of the steps the STRUCTURAL stage let
  *     through, at most 30 % may be thrown out by the stage that costs real work. The denominator is the steps that
- *     REACHED stage 2, not a "stage-1-fired" count: slot C's writer records `stage: 1` only on a free decline
+ *     REACHED stage 2, not a "stage-1-fired" count: the fast-path writer records `stage: 1` only on a free decline
  *     (`declinedRecord`) and `stage: 2` on every row of a round that ran, so a stage-1-fired denominator is 0 on
  *     every real run — the row would read `pass … n/a` however badly the predicate was calibrated. A row that cannot
  *     fail is not a blocking row, and both R-b and prediction (e) had the same shape: they keyed off `fired`, which
@@ -115,10 +115,10 @@ export const RECORDED_BOTH_SOLVED_RATIO = 26_000 / 19_700;
 // ---------------------------------------------------------------------------------------
 
 /**
- * §5.2: `FastPathReason` is a string union so the R-d histogram is exhaustive. Slot C landed the union in
- * `src/core/types.ts` (§7.1 writer order put C after this slot), so the mirrored list this slot shipped is gone and
- * the COMPILER owns the exhaustiveness: a missing key and an invented key are both errors in `KNOWN`, which is what
- * the mirror could not do — it went stale the moment slot C merged (it was missing `warm_plane` and `no_passer`,
+ * §5.2: `FastPathReason` is a string union so the R-d histogram is exhaustive. The union lives in
+ * `src/core/types.ts`, so this module keeps no mirrored list of its own and the COMPILER owns the exhaustiveness:
+ * a missing key and an invented key are both errors in `KNOWN`, which is what a mirror could not do — a mirror
+ * goes stale the moment the union gains a member (an earlier one was missing `warm_plane` and `no_passer`,
  * two reasons the writer emits, so R-d would have read `fail … NOT in FastPathReason: no_passer` on a real run).
  */
 const KNOWN: Readonly<Record<FastPathReason, true>> = {
@@ -447,7 +447,7 @@ export function evaluateAcceptRule(input: AcceptInput): AcceptVerdict {
     // §2.4: whether a HARMFUL command was allowed under a dropped ask is read off the steps by a person, not off a
     // counter — there is no machine condition here and the title says so rather than claiming one. R-e's two counts
     // are what the judgement is made from.
-    { n: 5, title: "R-e's riskSource/jevUnavailable counts are reported for the §2.4 judgement (no machine condition)", status: re === undefined ? 'not_evaluable' : 'reported', detail: re === undefined ? 'R-e was not computed' : `${re.detail}; otherwise §2.4 is reverted and slot B's risk change is backed out independently of the rest` },
+    { n: 5, title: "R-e's riskSource/jevUnavailable counts are reported for the §2.4 judgement (no machine condition)", status: re === undefined ? 'not_evaluable' : 'reported', detail: re === undefined ? 'R-e was not computed' : `${re.detail}; otherwise §2.4 is reverted and the risk change is backed out independently of the rest` },
   ];
   const accept = clauses.every((c) => c.status === 'pass' || (c.n === 5 && c.status === 'reported'));
   return { clauses, accept, retireR9 };

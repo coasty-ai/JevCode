@@ -18,9 +18,8 @@
  * subject of the `jev-on` arm and must be absent from every control arm.
  *
  * **Where the switch comes from** (review 2026-09-22, defect 3). `opt` is `EngineOptions.routers`, and the engine
- * seam that reads it off the run and hands it to these four sites lands with the `askRecorded` seam of §7.5 — slot
- * B's post-C commit, because §7.1 forbids two slots holding `src/loop/engine.ts` at once and slot C holds it. Until
- * that commit the option is **reserved** (so tagged in `src/core/types.ts`) and the expressible switch is
+ * seam that reads it off the run and hands it to these four sites lands with the `askRecorded` seam of §7.5. Until
+ * that seam lands the option is **reserved** (so tagged in `src/core/types.ts`) and the expressible switch is
  * `JEVCODE_ROUTERS=on` in the bench worker's own process, under the same `jev-on` gate. No caller passes `opt` yet;
  * it is a parameter and not a global exactly so that the seam is one argument and not a rewrite.
  *
@@ -28,8 +27,8 @@
  * step share one token and one ledger without the engine having to thread anything through `StageContext`.
  * `commitStepRouters(runId, step)` is the engine seam of §2.6 and §5.2: called in the same `finally` that writes
  * the `StepRecord`, it invalidates the token (no router answer may be applied to a committed step) and returns
- * the step's rows. Until that call lands in `src/loop/engine.ts` (slot B's post-C commit, §7.1: no two slots hold
- * `engine.ts` at once) the token is invalidated by the next step's mint, which bounds a late write to one step.
+ * the step's rows. Until that call lands in `src/loop/engine.ts` the token is invalidated by the next step's
+ * mint, which bounds a late write to one step.
  */
 import { createStepToken, emptyRouterLedger, invalidateStepToken, noteRoute, routersEnabled, type RouteResult, type RouterLedger, type StepToken } from '../jev/router.js';
 import type { EngineMode } from '../core/types.js';

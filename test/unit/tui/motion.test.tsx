@@ -8,7 +8,7 @@
  * frame paints synchronously (D-F re-asserted beside the loop).
  */
 // Load-sensitive REAL-RENDERER tests (Ink on a real event loop): under a shared-machine load spike a single case can miss its
-// frame window and fail while passing alone (round-4/5 owner's passes, harness session 2026-09-22). Every top-level suite
+// frame window and fail while passing alone (observed on a loaded machine). Every top-level suite
 // carries `{ retry: 1 }`: one retry absorbs a hiccup; a real regression still fails twice and stays red.
 import { Box, Text, render } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';

@@ -886,4 +886,4 @@ is the result the brief asks for.
 `experiments/grammar-synthesis/out/sketch-*.json`; `bench/data/ladder/README.md`;
 `bench/data/swebench-verified-30.json`; `docs/JEV-ONLY.md`; `docs/DESIGN.md` §5.5, §6, §9, §21;
 `src/core/types.ts` (`SynthesisContext`, `Synthesizer`, `Proposal`, `CheckpointState`, `Sandbox`);
-`src/synth/types.ts`, `src/synth/*/index.ts`; `/Users/prateekjannu/Documents/jev-research/REPORT.md` §7–11, §14.
+`src/synth/types.ts`, `src/synth/*/index.ts`; `<research-notes>/REPORT.md` §7–11, §14.

@@ -14,6 +14,7 @@
  * Usage: env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx experiments/lit-synthesis/slot-probe.mts [maxPrograms] [beam]
  */
 import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join, basename } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -22,7 +23,7 @@ import { choice } from '../../src/jev/questions.ts';
 import type { Json, Question, Answer } from '../../src/core/types.ts';
 
 const ROOT = '/tmp/quixbugs';
-const OUT = '/Users/prateekjannu/Documents/vscode/JevCode/experiments/lit-synthesis/results';
+const OUT = fileURLToPath(new URL('./results', import.meta.url));
 const WORK = '/tmp/jevonly/synth';
 const MAX = Number(process.argv[2] ?? 40);
 const BEAM = Number(process.argv[3] ?? 3);

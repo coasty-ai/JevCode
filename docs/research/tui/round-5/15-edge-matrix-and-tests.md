@@ -1,7 +1,7 @@
 # Round-5 cross-cutting edge matrix and test/gate plan
 
 Scope: coordination, context meter, agent tree, import, provider/model picker — the five round-5 surfaces named in
-the brief. Repo `/Users/prateekjannu/Documents/vscode/JevCode`, worktree `r5-design`, branch `r5-design`; read-only,
+the brief. Repo `<repo>`, worktree `r5-design`, branch `r5-design`; read-only,
 nothing tracked touched. Every file:line below was grepped/read directly against this worktree on 2026-09-22, not
 copied from `docs/research/tui/round-5/00-contract-digest.md` (**§0**, cited as **CD**) without independent
 verification — three corrections to CD are logged in §1.6 and §6. Read order assumed: CD §0/§B/§C/§D, then

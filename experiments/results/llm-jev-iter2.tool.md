@@ -586,7 +586,7 @@ topological_ordering         solved equivalent      differs (differs at token 40
 
 Totals: solved 8/8; gold-identical 5, equivalent 3, overfit 0, unverified 0, miss 0.
 Correct by this script: 8/8 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 0 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-fresh-llm-jev-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-fresh-llm-jev-quixbugs/verdicts.md
 === iter2-fresh-llm-jev-warm-quixbugs ===
 quicksort                    solved equivalent      differs (differs at token 42: '<=' vs '<'); reference cases: patched 13/13, reference 13/13; identical output…
 rpn_eval                     solved gold-identical  token-identical to correct/rpn_eval.py (from model_patch.diff)
@@ -599,7 +599,7 @@ topological_ordering         miss   miss            no patch committed; max_step
 
 Totals: solved 7/8; gold-identical 6, equivalent 1, overfit 0, unverified 0, miss 1.
 Correct by this script: 7/8 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 0 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-fresh-llm-jev-warm-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-fresh-llm-jev-warm-quixbugs/verdicts.md
 === iter2-fresh-jev-off-tuned-quixbugs ===
 quicksort                    solved equivalent      differs (differs at token 42: '<=' vs '<'); reference cases: patched 13/13, reference 13/13; identical output…
 rpn_eval                     solved equivalent      differs (differs at token 110: 'b' vs 'a'); reference cases: patched 6/6, reference 6/6; identical outputs on…
@@ -612,7 +612,7 @@ topological_ordering         solved gold-identical  token-identical to correct/t
 
 Totals: solved 8/8; gold-identical 4, equivalent 4, overfit 0, unverified 0, miss 0.
 Correct by this script: 8/8 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 0 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-fresh-jev-off-tuned-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-fresh-jev-off-tuned-quixbugs/verdicts.md
 === iter2-insample-llm-jev-quixbugs ===
 bitcount                     solved gold-identical  token-identical to correct/bitcount.py (from model_patch.diff)
 bucketsort                   solved gold-identical  token-identical to correct/bucketsort.py (from model_patch.diff)
@@ -627,7 +627,7 @@ wrap                         solved overfit         differs (differs at token 77
 
 Totals: solved 10/10; gold-identical 6, equivalent 3, overfit 1, unverified 0, miss 0.
 Correct by this script: 9/10 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 1 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-insample-llm-jev-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-insample-llm-jev-quixbugs/verdicts.md
 === iter2-insample-llm-jev-warm-quixbugs ===
 bitcount                     solved gold-identical  token-identical to correct/bitcount.py (from model_patch.diff)
 bucketsort                   solved gold-identical  token-identical to correct/bucketsort.py (from model_patch.diff)
@@ -642,7 +642,7 @@ wrap                         solved gold-identical  token-identical to correct/w
 
 Totals: solved 9/10; gold-identical 9, equivalent 0, overfit 0, unverified 0, miss 1.
 Correct by this script: 9/10 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 0 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-insample-llm-jev-warm-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-insample-llm-jev-warm-quixbugs/verdicts.md
 === iter2-bb-llm-jev-warmoff-quixbugs ===
 quicksort                    solved equivalent      differs (differs at token 42: '<=' vs '<'); reference cases: patched 13/13, reference 13/13; identical output…
 rpn_eval                     solved equivalent      differs (differs at token 110: 'b' vs 'a'); reference cases: patched 6/6, reference 6/6; identical outputs on…
@@ -655,7 +655,7 @@ topological_ordering         solved gold-identical  token-identical to correct/t
 
 Totals: solved 8/8; gold-identical 6, equivalent 2, overfit 0, unverified 0, miss 0.
 Correct by this script: 8/8 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 0 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-bb-llm-jev-warmoff-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-bb-llm-jev-warmoff-quixbugs/verdicts.md
 === iter2-bb-llm-jev-warmon-quixbugs ===
 quicksort                    solved gold-identical  token-identical to correct/quicksort.py (from model_patch.diff)
 rpn_eval                     solved equivalent      differs (differs at token 110: 'b' vs 'a'); reference cases: patched 6/6, reference 6/6; identical outputs on…
@@ -668,7 +668,7 @@ topological_ordering         miss   miss            no patch committed; max_step
 
 Totals: solved 7/8; gold-identical 6, equivalent 1, overfit 0, unverified 0, miss 1.
 Correct by this script: 7/8 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 0 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-bb-llm-jev-warmon-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-bb-llm-jev-warmon-quixbugs/verdicts.md
 === iter2-bb-jev-off-tuned-quixbugs ===
 quicksort                    solved gold-identical  token-identical to correct/quicksort.py (from model_patch.diff)
 rpn_eval                     solved overfit         differs (differs at token 93: '(' vs 'float'); reference cases: patched 6/6, reference 6/6; 13/24 perturbed i…
@@ -681,7 +681,7 @@ topological_ordering         solved equivalent      differs (differs at token 40
 
 Totals: solved 8/8; gold-identical 5, equivalent 2, overfit 1, unverified 0, miss 0.
 Correct by this script: 7/8 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 1 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-bb-jev-off-tuned-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-bb-jev-off-tuned-quixbugs/verdicts.md
 ```
 
 ```
@@ -697,7 +697,7 @@ token_bucket       short solved overfit         strong: differs from gold in buc
 short tier: solved 4/6, correct 3/6 (gold-identical 0, equivalent 3); overfit 1 — strong 1 (token_bucket), weak only 0; unverified 0, miss 2
 long tier: solved 0/0, correct 0/0 (gold-identical 0, equivalent 0); overfit 0 — strong 0, weak only 0; unverified 0, miss 0
 all tier: solved 4/6, correct 3/6 (gold-identical 0, equivalent 3); overfit 1 — strong 1 (token_bucket), weak only 0; unverified 0, miss 2
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-fresh-llm-jev-ladder-long2/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-fresh-llm-jev-ladder-long2/verdicts.md
 === iter2-fresh-llm-jev-warm-ladder-long2 ===
 csv_schema         short miss   miss            no patch committed; max_replans after 18 steps
 deadline_queue     short solved equivalent      differs from gold in schedule.py (differs at token 117: '==' vs '<='); identical results, exception classes and post-ca…
@@ -709,7 +709,7 @@ token_bucket       short solved overfit         strong: differs from gold in buc
 short tier: solved 4/6, correct 2/6 (gold-identical 0, equivalent 2); overfit 2 — strong 1 (token_bucket), weak only 1 (hunk_merge); unverified 0, miss 2
 long tier: solved 0/0, correct 0/0 (gold-identical 0, equivalent 0); overfit 0 — strong 0, weak only 0; unverified 0, miss 0
 all tier: solved 4/6, correct 2/6 (gold-identical 0, equivalent 2); overfit 2 — strong 1 (token_bucket), weak only 1 (hunk_merge); unverified 0, miss 2
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-fresh-llm-jev-warm-ladder-long2/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-fresh-llm-jev-warm-ladder-long2/verdicts.md
 === iter2-insample-llm-jev-ladder ===
 calendar_utils     short solved equivalent      differs from gold in calendar_utils.py (differs at token 312: ',' vs ')'); identical results, exception classes and pos…
 events             short solved gold-identical  token-identical to gold/ (events.py; from model_patch.diff (535 bytes))
@@ -726,7 +726,7 @@ units              short solved gold-identical  token-identical to gold/ (units.
 short tier: solved 11/12, correct 10/12 (gold-identical 7, equivalent 3); overfit 1 — strong 0, weak only 1 (stats); unverified 0, miss 1
 long tier: solved 0/0, correct 0/0 (gold-identical 0, equivalent 0); overfit 0 — strong 0, weak only 0; unverified 0, miss 0
 all tier: solved 11/12, correct 10/12 (gold-identical 7, equivalent 3); overfit 1 — strong 0, weak only 1 (stats); unverified 0, miss 1
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-insample-llm-jev-ladder/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-insample-llm-jev-ladder/verdicts.md
 === iter2-insample-llm-jev-warm-ladder ===
 calendar_utils     short solved equivalent      differs from gold in calendar_utils.py (differs at token 312: ',' vs ')'); identical results, exception classes and pos…
 events             short solved gold-identical  token-identical to gold/ (events.py; from model_patch.diff (535 bytes))
@@ -743,7 +743,7 @@ units              short solved equivalent      differs from gold in units.py (d
 short tier: solved 12/12, correct 11/12 (gold-identical 6, equivalent 5); overfit 1 — strong 0, weak only 1 (stats); unverified 0, miss 0
 long tier: solved 0/0, correct 0/0 (gold-identical 0, equivalent 0); overfit 0 — strong 0, weak only 0; unverified 0, miss 0
 all tier: solved 12/12, correct 11/12 (gold-identical 6, equivalent 5); overfit 1 — strong 0, weak only 1 (stats); unverified 0, miss 0
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean/bench/results/iter2-insample-llm-jev-warm-ladder/verdicts.md
+written <repo>/.claude/worktrees/iter2-clean/bench/results/iter2-insample-llm-jev-warm-ladder/verdicts.md
 ```
 
 ## 4. Ring 1 — `quick.mts --ring 1` ($0), run twice: plane off, then plane on
