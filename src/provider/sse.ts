@@ -225,6 +225,35 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOpt
   }
 }
 
+/**
+ * Read a whole non-SSE 200 body as text under the same budgets `parseSse` uses (first byte, then idle between chunks,
+ * and `maxEventBytes` as a hard cap). Needed by the one provider whose streaming surface cannot carry what the harness
+ * needs — api.meta.ai drops tool calls and the usage frame when `stream: true` (provider/meta.ts) — so its client asks
+ * for JSON and still gets the abort, timeout and size guarantees the streaming clients have.
+ */
+export async function readStreamText(stream: ReadableStream<Uint8Array>, opts: SseOptions = {}): Promise<string> {
+  const firstByte = opts.firstByteTimeoutMs ?? FIRST_BYTE_TIMEOUT_MS;
+  const idle = opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS;
+  const maxBytes = opts.maxEventBytes ?? MAX_EVENT_BYTES;
+  const reader = stream.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let out = '';
+  let sawByte = false;
+  try {
+    for (;;) {
+      const r = await readWithTimeout(reader, sawByte ? idle : firstByte, sawByte ? 'idle' : 'first_byte', opts.signal);
+      if (r.done) break;
+      sawByte = true;
+      out += decoder.decode(r.value, { stream: true });
+      if (out.length > maxBytes) throw new ProviderHttpError(`response body exceeds ${maxBytes} bytes`, { status: 0, retryable: false });
+    }
+    out += decoder.decode();
+    return out;
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
 // ---------------------------------------------------------------------------------------
 // Retry policy
 // ---------------------------------------------------------------------------------------

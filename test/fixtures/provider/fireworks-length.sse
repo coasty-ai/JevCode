@@ -1,0 +1,18 @@
+data: {"id":"chatcmpl-f54c8fbaed4e4b248bf2f9613f9b42f6","object":"chat.completion.chunk","created":1790046881,"model":"accounts/fireworks/models/glm-5p3-flash","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-f54c8fbaed4e4b248bf2f9613f9b42f6","object":"chat.completion.chunk","created":1790046881,"model":"accounts/fireworks/models/glm-5p3-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"chatcmpl-tool-ac0979d2c2fd8100","type":"function","function":{"name":"propose_action","arguments":""}}]},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-f54c8fbaed4e4b248bf2f9613f9b42f6","object":"chat.completion.chunk","created":1790046881,"model":"accounts/fireworks/models/glm-5p3-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"goal\": \""}}]},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-f54c8fbaed4e4b248bf2f9613f9b42f6","object":"chat.completion.chunk","created":1790046881,"model":"accounts/fireworks/models/glm-5p3-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"List"}}]},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-f54c8fbaed4e4b248bf2f9613f9b42f6","object":"chat.completion.chunk","created":1790046881,"model":"accounts/fireworks/models/glm-5p3-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" files"}}]},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-f54c8fbaed4e4b248bf2f9613f9b42f6","object":"chat.completion.chunk","created":1790046881,"model":"accounts/fireworks/models/glm-5p3-flash","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" in"}}]},"finish_reason":null,"raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-f54c8fbaed4e4b248bf2f9613f9b42f6","object":"chat.completion.chunk","created":1790046881,"model":"accounts/fireworks/models/glm-5p3-flash","choices":[{"index":0,"delta":{},"finish_reason":"length","raw_output":null}],"usage":null}
+
+data: {"id":"chatcmpl-f54c8fbaed4e4b248bf2f9613f9b42f6","object":"chat.completion.chunk","created":1790046881,"model":"accounts/fireworks/models/glm-5p3-flash","choices":[],"usage":{"prompt_tokens":234,"total_tokens":246,"completion_tokens":12,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0},"output_tokens_details":{"reasoning_tokens":0}}}
+
+data: [DONE]
+

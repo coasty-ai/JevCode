@@ -1,0 +1,507 @@
+/**
+ * OpenAI client over raw fetch + SSE. Two surfaces, one provider:
+ *
+ *  - `api: 'responses'` (the DEFAULT) — `POST /v1/responses`, the API OpenAI recommends for new projects and the only one
+ *    that takes function tools on the current flagships. Measured 2026-09-21 against `gpt-5.6-terra` and `gpt-6-astra`:
+ *    flat strict tools + a named `tool_choice` + `parallel_tool_calls: false` + `reasoning: {effort}` + `store: false`
+ *    stream a forced tool call in ~2 s, and the terminal `response.completed` carries the full usage
+ *    (`input_tokens_details.cached_tokens` / `cache_write_tokens`, `output_tokens_details.reasoning_tokens`).
+ *  - `api: 'chat'` — `POST /v1/chat/completions`, kept for the 4.x-era ids and for OpenAI-compatible gateways. It is a
+ *    thin `openai-compat.ts` quirks table.
+ *
+ * Live findings that shaped the tables (each one is a 400 this client now cannot produce):
+ *  - `temperature` → `400 Unsupported parameter: 'temperature' is not supported with this model` on gpt-5.6-terra, so a
+ *    non-null temperature is sent only for the gpt-4.1 / gpt-4o / gpt-4 / gpt-3.5 families.
+ *  - `seed` → `400 Unknown parameter: 'seed'` on the Responses API: LLM-JEV-DESIGN §4.6's per-sample seed cannot be
+ *    honoured here and is dropped (the sibling samples of a round differ by nothing on OpenAI — the engine's own facts).
+ *  - Chat Completions + function tools → `400 Function tools with reasoning_effort are not supported for gpt-5.6-terra in
+ *    /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'` — and the same 400
+ *    arrives when `reasoning_effort` is omitted entirely (the model's default effort is what it objects to). The chat
+ *    quirks table therefore pins `reasoning_effort: 'none'` whenever tools are present on a reasoning-era id.
+ *  - `strict: true` is sent only for a schema OpenAI's strict mode accepts (provider/schema.ts). The harness's own
+ *    `propose_action` schema (oneOf + const + minItems + an optional property) does not qualify, so it goes out
+ *    non-strict — which the live check confirms is accepted and still produces valid arguments.
+ */
+import { ProviderHttpError } from '../errors.js';
+import { parseJson } from '../core/json.js';
+import type { GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, JsonObject, ToolCall, ToolChoice, ToolSpec } from '../core/types.js';
+import { checkOpenAiStrict } from './schema.js';
+import { createCaller, getJson, joinUrl, openAiErrorFields, runGeneration, sortModels, validateGenerateRequest } from './http.js';
+import type { ConsumeContext, HeldPartial } from './http.js';
+import { createChatProvider, effortOf, pickEffort } from './openai-compat.js';
+import type { ChatQuirks, ChatRequestBody, EffortWord } from './openai-compat.js';
+import { TransportError, clipMessage, countOf, getArr, getNum, getObj, getStr, isRetryableStatus, notify, parseSse, resolveDeps, sanitiseRequestId } from './sse.js';
+import type { GenerationProvider, ModelInfo, ProviderConfig, ProviderDeps, ProviderOutcome, StreamPartial, TokenBreakdown } from './types.js';
+
+export const OPENAI_BASE_URL = 'https://api.openai.com/v1';
+/** developers.openai.com/api/docs/models — the mid-tier 2026-09 flagship: 1.05M context, 128K output, $2/$12 per 1M. */
+export const OPENAI_DEFAULT_MODEL = 'gpt-5.6-terra';
+
+// ---------------------------------------------------------------------------------------
+// Reasoning effort and temperature per model family
+// ---------------------------------------------------------------------------------------
+
+const EFFORTS_GPT6: readonly EffortWord[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORTS_GPT56: readonly EffortWord[] = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORTS_GPT5: readonly EffortWord[] = ['minimal', 'low', 'medium', 'high'];
+const EFFORTS_O_SERIES: readonly EffortWord[] = ['low', 'medium', 'high'];
+
+/**
+ * The effort words a model id accepts, or null for a model with no reasoning control at all (gpt-4.1 / gpt-4o / gpt-4 /
+ * gpt-3.5). `gpt-6-astra` rejects `none` (docs/guides/reasoning) — the substitution chain in openai-compat.ts then picks
+ * `low`, the lowest it does accept, instead of sending a value the API would refuse.
+ */
+export function openAiEfforts(model: string): readonly EffortWord[] | null {
+  if (/^gpt-6/.test(model)) return EFFORTS_GPT6;
+  if (/^gpt-5\.6/.test(model)) return EFFORTS_GPT56;
+  if (/^(gpt-5|o3|o4)/.test(model)) return /^o[34]/.test(model) ? EFFORTS_O_SERIES : EFFORTS_GPT5;
+  return null;
+}
+
+/** GPT-5.x and later answer 400 for any sampling parameter; only the 4.x / 3.5 families still take one. */
+export function openAiAcceptsTemperature(model: string): boolean {
+  return /^(gpt-4o|gpt-4\.1|gpt-4-|gpt-4$|gpt-3\.5|chatgpt-4o)/.test(model);
+}
+
+/** LLM-JEV-DESIGN §4.12 → `reasoning: {effort}`; `{maxTokens}` has no counterpart (no thinking budget on either OpenAI surface) and is dropped. */
+export function openAiReasoningEffort(r: GenerateReasoning, model: string): EffortWord | null {
+  const allowed = openAiEfforts(model);
+  if (allowed === null) return null;
+  const wanted = effortOf(r);
+  return wanted === null ? null : pickEffort(wanted, allowed);
+}
+
+// ---------------------------------------------------------------------------------------
+// Responses API wire types (request side)
+// ---------------------------------------------------------------------------------------
+
+export type ResponsesContentPart = { type: 'input_text'; text: string } | { type: 'output_text'; text: string };
+export type ResponsesInputItem = { type: 'message'; role: 'user' | 'assistant'; content: ResponsesContentPart[] };
+export type ResponsesToolWire = { type: 'function'; name: string; description: string; parameters: JsonObject; strict?: true };
+export type ResponsesToolChoiceWire = 'auto' | 'required' | 'none' | { type: 'function'; name: string };
+export type ResponsesRequestBody = {
+  model: string;
+  input: ResponsesInputItem[];
+  /** the Responses API's system prompt; NOT carried over by `previous_response_id`, so it is sent every turn */
+  instructions?: string;
+  tools?: ResponsesToolWire[];
+  tool_choice?: ResponsesToolChoiceWire;
+  parallel_tool_calls?: false;
+  /** includes hidden reasoning tokens: a small budget can be eaten by thinking (`incomplete_details.reason`) */
+  max_output_tokens: number;
+  reasoning?: { effort: EffortWord };
+  /** false keeps the request out of the 30-day store (and disables `previous_response_id`, which the harness never uses) */
+  store: false;
+  stream: true;
+  temperature?: number;
+};
+
+/**
+ * Exported so tests can assert the exact wire body. The harness's history is plain text, so the input is a flat list of
+ * message items — `input_text` parts for the user turns and `output_text` parts for the assistant ones (the shape a
+ * stored conversation replays; verified live with a three-message history).
+ */
+export function buildResponsesBody(cfg: ProviderConfig, req: GenerateRequest): ResponsesRequestBody {
+  const body: ResponsesRequestBody = {
+    model: cfg.model,
+    input: req.messages.map((m) => ({
+      type: 'message',
+      role: m.role,
+      content: [m.role === 'assistant' ? { type: 'output_text', text: m.content } : { type: 'input_text', text: m.content }],
+    })),
+    max_output_tokens: req.maxTokens,
+    store: false,
+    stream: true,
+  };
+  if (req.system.length > 0) body.instructions = req.system;
+  if (req.tools && req.tools.length > 0) {
+    body.tools = req.tools.map(responsesTool);
+    if (req.toolChoice !== undefined) body.tool_choice = responsesToolChoice(req.toolChoice);
+    body.parallel_tool_calls = false;
+  }
+  if (req.temperature !== null && openAiAcceptsTemperature(cfg.model)) body.temperature = req.temperature;
+  if (req.reasoning !== undefined) {
+    const effort = openAiReasoningEffort(req.reasoning, cfg.model);
+    if (effort !== null) body.reasoning = { effort };
+  }
+  // `seed` is deliberately absent: the Responses API answers 400 `Unknown parameter: 'seed'` (live 2026-09-21).
+  return body;
+}
+
+function responsesTool(t: ToolSpec): ResponsesToolWire {
+  const tool: ResponsesToolWire = { type: 'function', name: t.name, description: t.description, parameters: t.inputSchema };
+  if (checkOpenAiStrict(t.inputSchema).ok) tool.strict = true;
+  return tool;
+}
+
+/** The Responses API's flat form: `{type: 'function', name}`, not Chat Completions' `{type: 'function', function: {name}}`. */
+function responsesToolChoice(tc: ToolChoice): ResponsesToolChoiceWire {
+  if (tc === 'auto' || tc === 'required') return tc;
+  return { type: 'function', name: tc.name };
+}
+
+// ---------------------------------------------------------------------------------------
+// Responses API streaming
+// ---------------------------------------------------------------------------------------
+
+interface CallAcc {
+  name: string;
+  args: string;
+  /** `response.function_call_arguments.done` / the finished item: authoritative over the deltas */
+  finalArgs: string | null;
+}
+
+interface RespState {
+  text: string;
+  refusal: string;
+  reasoningChars: number;
+  toolChars: number;
+  model: string | null;
+  generationId: string | null;
+  calls: Map<number, CallAcc>;
+  order: number[];
+  tokens: TokenBreakdown;
+  reasoningTokens: number | null;
+  sawUsage: boolean;
+  status: string | null;
+  incompleteReason: string | null;
+}
+
+function newRespState(): RespState {
+  return {
+    text: '',
+    refusal: '',
+    reasoningChars: 0,
+    toolChars: 0,
+    model: null,
+    generationId: null,
+    calls: new Map(),
+    order: [],
+    tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
+    reasoningTokens: null,
+    sawUsage: false,
+    status: null,
+    incompleteReason: null,
+  };
+}
+
+function accFor(st: RespState, index: number): CallAcc {
+  let acc = st.calls.get(index);
+  if (!acc) {
+    acc = { name: '', args: '', finalArgs: null };
+    st.calls.set(index, acc);
+    st.order.push(index);
+  }
+  return acc;
+}
+
+/** `{"type": "error", ...}` after a 200, and `response.failed`'s `response.error`: both map to an HTTP-shaped failure. */
+function responsesError(err: JsonObject | null, redact: (s: string) => string, requestId: string | null): ProviderHttpError {
+  const code = getStr(err, 'code') ?? '';
+  const message = getStr(err, 'message') ?? '';
+  const status = getNum(err, 'status') ?? (/rate_limit|slow_down/.test(code) ? 429 : /server|overload/.test(code) ? 503 : 500);
+  return new ProviderHttpError(clipMessage(redact(`openai stream error ${status}${code ? ` ${code}` : ''}: ${message}`)), {
+    status,
+    retryable: isRetryableStatus(status),
+    body: redact(JSON.stringify(err ?? {})).slice(0, 2048),
+    requestId,
+  });
+}
+
+function readResponseObject(resp: JsonObject | null, st: RespState, ctx: ConsumeContext): void {
+  if (!resp) return;
+  st.model = getStr(resp, 'model') ?? st.model;
+  if (st.generationId === null) st.generationId = sanitiseRequestId(getStr(resp, 'id'), ctx.redact);
+  st.status = getStr(resp, 'status') ?? st.status;
+  const incomplete = getObj(resp, 'incomplete_details');
+  st.incompleteReason = getStr(incomplete, 'reason') ?? st.incompleteReason;
+  const usage = getObj(resp, 'usage');
+  if (usage) {
+    st.sawUsage = true;
+    const input = countOf(usage['input_tokens']);
+    const details = getObj(usage, 'input_tokens_details');
+    const cached = Math.min(countOf(details?.['cached_tokens']), input);
+    const written = Math.min(countOf(details?.['cache_write_tokens']), input - cached);
+    st.tokens.cacheRead = cached;
+    st.tokens.cacheWrite = written;
+    st.tokens.input = input - cached - written;
+    // `output_tokens` already includes the hidden reasoning tokens — reported separately, never added twice
+    st.tokens.output = countOf(usage['output_tokens']);
+    const rt = getNum(getObj(usage, 'output_tokens_details'), 'reasoning_tokens');
+    st.reasoningTokens = rt !== null ? Math.max(0, Math.round(rt)) : st.reasoningTokens;
+  }
+  // The terminal event repeats the whole output array: it is the authority on every tool call's arguments.
+  const output = getArr(resp, 'output');
+  if (output) {
+    for (const [i, item] of output.entries()) {
+      if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
+      if (getStr(item, 'type') !== 'function_call') continue;
+      const acc = accFor(st, i);
+      acc.name = getStr(item, 'name') ?? acc.name;
+      const args = getStr(item, 'arguments');
+      if (args !== null) acc.finalArgs = args;
+    }
+  }
+}
+
+function respOutcome(st: RespState): ProviderOutcome {
+  const toolCalls: ToolCall[] = st.order.map((i) => {
+    const acc = st.calls.get(i)!;
+    const raw = acc.finalArgs ?? acc.args;
+    const args = raw.length > 0 ? raw : '{}';
+    const p = parseJson(args);
+    return { name: acc.name, input: p.ok ? p.value : null, rawJson: args };
+  });
+  const refused = st.refusal.length > 0 && st.text.length === 0;
+  let stopReason: string;
+  if (st.status === 'incomplete') stopReason = st.incompleteReason === 'max_output_tokens' ? 'length' : (st.incompleteReason ?? 'incomplete');
+  else if (refused) stopReason = 'refusal';
+  else stopReason = toolCalls.length > 0 ? 'tool_calls' : 'stop';
+  return {
+    text: refused ? st.refusal : st.text,
+    toolCalls,
+    tokens: st.tokens,
+    // OpenAI never returns a price; the table (or NaN) prices the call
+    cost: null,
+    reasoningTokens: st.reasoningTokens,
+    model: st.model,
+    generationId: st.generationId,
+    servedProvider: null,
+    stopReason,
+  };
+}
+
+function respHeld(st: RespState): StreamPartial {
+  return {
+    text: st.text,
+    toolChars: st.toolChars,
+    reasoningChars: st.reasoningChars,
+    model: st.model,
+    generationId: st.generationId,
+    servedProvider: null,
+    tokens: st.sawUsage ? st.tokens : null,
+    cost: null,
+    reasoningTokens: st.reasoningTokens,
+  };
+}
+
+async function consumeResponses(stream: ReadableStream<Uint8Array>, ctx: ConsumeContext): Promise<ProviderOutcome> {
+  const st = newRespState();
+  let terminal = false;
+  try {
+    for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs })) {
+      if (ctx.opts.signal.aborted) throw ctx.opts.signal.reason;
+      const data = rec.data.trim();
+      if (data.length === 0) continue;
+      const parsed = parseJson(data);
+      if (!parsed.ok || typeof parsed.value !== 'object' || parsed.value === null || Array.isArray(parsed.value)) {
+        throw new TransportError('invalid', clipMessage(ctx.redact(`openai: malformed sse data: ${parsed.ok ? 'not a JSON object' : 'not valid JSON'}`)));
+      }
+      const ev = parsed.value;
+      const type = getStr(ev, 'type') ?? rec.event ?? '';
+      switch (type) {
+        case 'response.created':
+        case 'response.in_progress':
+        case 'response.queued':
+          readResponseObject(getObj(ev, 'response'), st, ctx);
+          break;
+        case 'response.output_item.added':
+        case 'response.output_item.done': {
+          const item = getObj(ev, 'item');
+          if (getStr(item, 'type') === 'function_call') {
+            const acc = accFor(st, getNum(ev, 'output_index') ?? st.order.length);
+            acc.name = getStr(item, 'name') ?? acc.name;
+            const args = getStr(item, 'arguments');
+            if (type === 'response.output_item.done' && args !== null && args.length > 0) acc.finalArgs = args;
+          }
+          break;
+        }
+        case 'response.output_text.delta': {
+          const d = getStr(ev, 'delta') ?? '';
+          if (d.length > 0) {
+            st.text += d;
+            notify(ctx.opts.onDelta, d);
+          }
+          break;
+        }
+        case 'response.refusal.delta':
+          st.refusal += getStr(ev, 'delta') ?? '';
+          break;
+        case 'response.function_call_arguments.delta': {
+          const acc = accFor(st, getNum(ev, 'output_index') ?? 0);
+          const d = getStr(ev, 'delta') ?? '';
+          if (d.length > 0) {
+            acc.args += d;
+            st.toolChars += d.length;
+            notify(ctx.opts.onToolDelta, d);
+          }
+          break;
+        }
+        case 'response.function_call_arguments.done': {
+          const acc = accFor(st, getNum(ev, 'output_index') ?? 0);
+          const args = getStr(ev, 'arguments');
+          if (args !== null) acc.finalArgs = args;
+          break;
+        }
+        case 'response.reasoning_text.delta':
+        case 'response.reasoning_summary_text.delta':
+          // thinking text: measured for §4.8, never rendered
+          st.reasoningChars += (getStr(ev, 'delta') ?? '').length;
+          break;
+        case 'response.completed':
+        case 'response.incomplete':
+          readResponseObject(getObj(ev, 'response'), st, ctx);
+          terminal = true;
+          break;
+        case 'response.failed': {
+          readResponseObject(getObj(ev, 'response'), st, ctx);
+          throw responsesError(getObj(getObj(ev, 'response'), 'error'), ctx.redact, ctx.requestId);
+        }
+        case 'error':
+          throw responsesError(getObj(ev, 'error') ?? ev, ctx.redact, ctx.requestId);
+        default:
+          // "new event types may be added": content_part.added/done, output_text.done, obfuscation fields, …
+          break;
+      }
+      if (terminal) break;
+    }
+  } catch (e) {
+    if (ctx.opts.signal.aborted) {
+      ctx.held.partial = respHeld(st);
+      throw ctx.opts.signal.reason;
+    }
+    throw e;
+  }
+  if (!terminal) throw new TransportError('stream', 'openai: stream ended before response.completed / response.incomplete');
+  if (!st.sawUsage) throw new TransportError('stream', 'openai: terminal event carried no usage');
+  return respOutcome(st);
+}
+
+// ---------------------------------------------------------------------------------------
+// Chat Completions quirks (the legacy surface / OpenAI-compatible gateways)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Live 2026-09-21: with function tools present, `gpt-5.6-terra` answers 400 unless `reasoning_effort` is exactly `none`
+ * — including when the field is omitted. So on a reasoning-era id the field is pinned to `none` whenever tools are sent;
+ * without tools the caller's level is honoured through the usual substitution chain.
+ */
+export const OPENAI_CHAT_QUIRKS: ChatQuirks = {
+  id: 'openai',
+  label: 'openai',
+  path: '/chat/completions',
+  transport: 'sse',
+  headers: (apiKey) => ({ authorization: `Bearer ${apiKey}` }),
+  maxTokensField: 'max_completion_tokens',
+  systemRole: 'developer',
+  strictTools: true,
+  toolChoice: 'named',
+  parallelToolCalls: true,
+  streamUsageOptIn: true,
+  usageRequired: true,
+  reasoningOutsideCompletion: false,
+  costField: null,
+  seed: false,
+  temperature: openAiAcceptsTemperature,
+  reasoning: (r, model, hasTools): Partial<ChatRequestBody> | null => {
+    const allowed = openAiEfforts(model);
+    if (allowed === null) return null;
+    if (hasTools) return allowed.includes('none') ? { reasoning_effort: 'none' } : null;
+    const effort = openAiReasoningEffort(r, model);
+    return effort === null ? null : { reasoning_effort: effort };
+  },
+  extras: { store: false },
+};
+
+// ---------------------------------------------------------------------------------------
+// Provider
+// ---------------------------------------------------------------------------------------
+
+export interface OpenAiProviderOptions {
+  /** `responses` (default) or the legacy `chat` surface */
+  api?: 'responses' | 'chat';
+}
+
+export function createOpenAiProvider(cfg: ProviderConfig, deps: ProviderDeps, opts: OpenAiProviderOptions = {}): GenerationProvider {
+  if ((opts.api ?? 'responses') === 'chat') return createChatProvider(OPENAI_CHAT_QUIRKS, cfg, deps);
+  const d = resolveDeps(deps);
+  const caller = createCaller(d);
+  const url = joinUrl(cfg.baseUrl, '/responses');
+
+  return {
+    name: 'openai',
+    model: cfg.model,
+    async generate(req: GenerateRequest, genOpts: GenerateOptions): Promise<GenerateResult> {
+      validateGenerateRequest('openai', req);
+      const body = JSON.stringify(buildResponsesBody(cfg, req));
+      const attempt = (held: HeldPartial): Promise<ProviderOutcome> =>
+        caller.attempt({ label: 'openai', url, headers: { authorization: `Bearer ${cfg.apiKey}` }, body, readError: openAiErrorFields, consume: consumeResponses }, genOpts, held);
+      return runGeneration(d, cfg, genOpts, attempt);
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------
+// Catalogue
+// ---------------------------------------------------------------------------------------
+
+/**
+ * `GET /v1/models` returns EVERY model type with no capability or context metadata (id, object, created, owned_by,
+ * shutdown_date — measured: 130 rows, 118 of them not chat models), so the picker filters by id and the sizes come from
+ * this hand-kept table (docs/models/<id>, 2026-09-21).
+ */
+interface OpenAiCatalogueRow {
+  prefix: string;
+  contextTokens: number;
+  maxOutputTokens: number;
+  reasoning: boolean;
+  vision: boolean;
+}
+const OPENAI_CATALOGUE: readonly OpenAiCatalogueRow[] = [
+  { prefix: 'gpt-6', contextTokens: 1_048_576, maxOutputTokens: 128_000, reasoning: true, vision: true },
+  { prefix: 'gpt-5.6', contextTokens: 1_048_576, maxOutputTokens: 128_000, reasoning: true, vision: true },
+  { prefix: 'gpt-5.5', contextTokens: 400_000, maxOutputTokens: 128_000, reasoning: true, vision: true },
+  { prefix: 'gpt-5.4', contextTokens: 400_000, maxOutputTokens: 128_000, reasoning: true, vision: true },
+  { prefix: 'gpt-5.3', contextTokens: 400_000, maxOutputTokens: 128_000, reasoning: true, vision: true },
+  { prefix: 'gpt-5.2', contextTokens: 400_000, maxOutputTokens: 128_000, reasoning: true, vision: true },
+  { prefix: 'gpt-5.1', contextTokens: 400_000, maxOutputTokens: 128_000, reasoning: true, vision: true },
+  { prefix: 'gpt-5', contextTokens: 400_000, maxOutputTokens: 128_000, reasoning: true, vision: true },
+  { prefix: 'gpt-4.1', contextTokens: 1_047_576, maxOutputTokens: 32_768, reasoning: false, vision: true },
+  { prefix: 'gpt-4o', contextTokens: 128_000, maxOutputTokens: 16_384, reasoning: false, vision: true },
+  { prefix: 'o4-mini', contextTokens: 200_000, maxOutputTokens: 100_000, reasoning: true, vision: true },
+  { prefix: 'o3', contextTokens: 200_000, maxOutputTokens: 100_000, reasoning: true, vision: true },
+];
+
+/** ids that are chat-shaped but not text generators (audio, images, transcription, embeddings, search wrappers, completions-only). */
+const OPENAI_NON_CHAT = /(-realtime|realtime-|-audio|audio-|-transcribe|transcribe|-tts|tts-|-search|search-|embedding|image|moderation|whisper|-instruct|video|live|dall-e|codex-mini|babbage|davinci)/;
+
+export function isOpenAiChatModel(id: string): boolean {
+  return /^(gpt-|o3|o4-|chatgpt-)/.test(id) && !OPENAI_NON_CHAT.test(id);
+}
+
+export function openAiModelInfo(row: JsonObject): ModelInfo | null {
+  const id = getStr(row, 'id');
+  if (id === null || !isOpenAiChatModel(id)) return null;
+  const cat = OPENAI_CATALOGUE.find((c) => id.startsWith(c.prefix));
+  const created = getNum(row, 'created');
+  const owner = getStr(row, 'owned_by');
+  const shutdown = getStr(row, 'shutdown_date');
+  return {
+    id,
+    ...(created !== null ? { created } : {}),
+    ...(owner !== null ? { ownedBy: owner } : {}),
+    ...(shutdown !== null ? { shutdownDate: shutdown } : {}),
+    ...(cat ? { contextTokens: cat.contextTokens, maxOutputTokens: cat.maxOutputTokens, reasoning: cat.reasoning, vision: cat.vision, tools: true } : {}),
+  };
+}
+
+export async function listOpenAiModels(apiKey: string, deps: ProviderDeps, baseUrl = OPENAI_BASE_URL): Promise<ModelInfo[]> {
+  const json = await getJson({ label: 'openai', url: joinUrl(baseUrl, '/models'), headers: { authorization: `Bearer ${apiKey}` }, deps });
+  const out: ModelInfo[] = [];
+  for (const row of getArr(json, 'data') ?? []) {
+    if (typeof row !== 'object' || row === null || Array.isArray(row)) continue;
+    const info = openAiModelInfo(row);
+    if (info) out.push(info);
+  }
+  return sortModels(out);
+}

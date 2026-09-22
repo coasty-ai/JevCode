@@ -1,0 +1,54 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_0ac1713f5a4e1ca7016ab1f29b685487d09c8437630d074816","object":"response","created_at":1790046875,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"You are a coding agent. Reply only by calling the propose_action tool. Keep goal under 8 words.","max_output_tokens":2048,"max_tool_calls":null,"model":"gpt-5.6-terra","moderation":null,"output":[],"parallel_tool_calls":false,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"low","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":{"type":"function","name":"propose_action"},"tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Propose exactly one shell command to run next.","name":"propose_action","output_schema":null,"parameters":{"type":"object","additionalProperties":false,"required":["goal","command"],"properties":{"goal":{"type":"string","description":"one short sentence"},"command":{"type":"string","description":"a non-interactive shell command"}}},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"resp_0ac1713f5a4e1ca7016ab1f29b685487d09c8437630d074816","object":"response","created_at":1790046875,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"You are a coding agent. Reply only by calling the propose_action tool. Keep goal under 8 words.","max_output_tokens":2048,"max_tool_calls":null,"model":"gpt-5.6-terra","moderation":null,"output":[],"parallel_tool_calls":false,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"low","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":{"type":"function","name":"propose_action"},"tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Propose exactly one shell command to run next.","name":"propose_action","output_schema":null,"parameters":{"type":"object","additionalProperties":false,"required":["goal","command"],"properties":{"goal":{"type":"string","description":"one short sentence"},"command":{"type":"string","description":"a non-interactive shell command"}}},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","type":"function_call","status":"in_progress","arguments":"","call_id":"call_cBEV6tbjwi2AdUA5a8HVs37G","name":"propose_action"},"output_index":0,"sequence_number":2}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"{\"","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"Aa1KKVDOpgZVcU","output_index":0,"sequence_number":3}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"goal","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"ay8NeQ961Wvi","output_index":0,"sequence_number":4}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\":\"","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"5Qzdl1sQnHqxq","output_index":0,"sequence_number":5}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"List","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"Vrgia6AsZcu8","output_index":0,"sequence_number":6}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" current","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"Afi3R7oD","output_index":0,"sequence_number":7}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" directory","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"KSkOW7","output_index":0,"sequence_number":8}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":" files","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"Btjxgi0fzY","output_index":0,"sequence_number":9}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\",\"","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"ZadMFUhB1e2YI","output_index":0,"sequence_number":10}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"command","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"b4sClSjR8","output_index":0,"sequence_number":11}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\":\"","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"aWhHPfxKAx5GV","output_index":0,"sequence_number":12}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"ls","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"PVXAL0OeO8hj7B","output_index":0,"sequence_number":13}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"\"}","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","obfuscation":"s3HzV2mAYbOskT","output_index":0,"sequence_number":14}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","arguments":"{\"goal\":\"List current directory files\",\"command\":\"ls\"}","item_id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","output_index":0,"sequence_number":15}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","type":"function_call","status":"completed","arguments":"{\"goal\":\"List current directory files\",\"command\":\"ls\"}","call_id":"call_cBEV6tbjwi2AdUA5a8HVs37G","name":"propose_action"},"output_index":0,"sequence_number":16}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_0ac1713f5a4e1ca7016ab1f29b685487d09c8437630d074816","object":"response","created_at":1790046875,"status":"completed","background":false,"completed_at":1790046877,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"You are a coding agent. Reply only by calling the propose_action tool. Keep goal under 8 words.","max_output_tokens":2048,"max_tool_calls":null,"model":"gpt-5.6-terra","moderation":null,"output":[{"id":"fc_0ac1713f5a4e1ca7016ab1f29cc83087d0ac924ae5e34542fa","type":"function_call","status":"completed","arguments":"{\"goal\":\"List current directory files\",\"command\":\"ls\"}","call_id":"call_cBEV6tbjwi2AdUA5a8HVs37G","name":"propose_action"}],"parallel_tool_calls":false,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"low","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":{"type":"function","name":"propose_action"},"tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Propose exactly one shell command to run next.","name":"propose_action","output_schema":null,"parameters":{"type":"object","additionalProperties":false,"required":["goal","command"],"properties":{"goal":{"type":"string","description":"one short sentence"},"command":{"type":"string","description":"a non-interactive shell command"}}},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":{"input_tokens":198,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":0},"output_tokens":26,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":224},"user":null,"metadata":{}},"sequence_number":17}
+
