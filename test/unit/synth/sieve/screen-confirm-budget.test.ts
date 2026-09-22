@@ -24,13 +24,25 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Lane } from '../../../../src/synth/search/types.js';
 import { runQueue, type RunnerContext, type RunnerMemory } from '../../../../src/synth/sieve/runner.js';
 import { poolFitsRunBudget, runsLeft } from '../../../../src/synth/search/budget.js';
 import { emptyWarmStats, type WarmRunResult, type WarmScreen, type WarmStats } from '../../../../src/synth/warm/index.js';
 import { base, budget, candidate, fakeSandbox, fifoQueue, GCD_BASELINE, GCD_BUGGY, GCD_TESTS, goal, job, oracle, runTestsJson, site, sourceFile } from './helpers.js';
+
+// 2026-09-22: the warm plane is OFF by default (it wedged llm-jev runs on the merged tree); these cases exercise the
+// warm path, so the file opts in for its own duration and restores the caller's environment afterwards.
+const PREV_JEVCODE_WARM = process.env['JEVCODE_WARM'];
+beforeAll(() => {
+  process.env['JEVCODE_WARM'] = 'on';
+});
+afterAll(() => {
+  if (PREV_JEVCODE_WARM === undefined) delete process.env['JEVCODE_WARM'];
+  else process.env['JEVCODE_WARM'] = PREV_JEVCODE_WARM;
+});
+
 
 let tmp: string;
 let ws: string;
