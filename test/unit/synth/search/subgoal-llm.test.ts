@@ -36,8 +36,8 @@ function commitFirstPlausible(results: readonly VerifyOutcome[]): GuardVerdict {
   return pick === undefined ? { kind: 'continue' } : { kind: 'commit', applied: pick.applied, allGoalTestsPass: true, outcome: pick };
 }
 
-function llmBudget(over: { llmRounds?: number; jev?: number } = {}): ReturnType<typeof fakeBudget> {
-  return fakeBudget({ jev: over.jev ?? 30, llmRounds: over.llmRounds ?? 2, llmSamples: 8, llmUsd: 0.02 });
+function llmBudget(over: { llmRounds?: number; jev?: number; wallMs?: number } = {}): ReturnType<typeof fakeBudget> {
+  return fakeBudget({ jev: over.jev ?? 30, llmRounds: over.llmRounds ?? 2, llmSamples: 8, llmUsd: 0.02, ...(over.wallMs === undefined ? {} : { wallMs: over.wallMs }) });
 }
 
 function repositoryOf(goalId: string): RepositoryMode {
@@ -372,7 +372,9 @@ describe('RANK on an expensive oracle (§4g): Q17 orders the arrived candidates,
   it('collects the round, asks the adapter for Q17\'s order, runs the top-k in that order and records the request', async () => {
     const { file, replace } = gcdFixture();
     const ctx = fakeCtx({ ask: (qs) => ({ [EDIT_CLASS_QUESTION_ID]: choiceOn(qs[EDIT_CLASS_QUESTION_ID]!, 'substitute_one_token') }) });
-    const mem = fakeMemory([file], baseline(), { oracle: slowOracle(), stepBudget: llmBudget() });
+    // OOS 2026-09-22 ranked change 1: Q17 fires only when the pool outgrows the runs left, so the
+    // wall here leaves floor(15 s x 4 lanes / 30 s) = 2 runs against 3 distinct samples
+    const mem = fakeMemory([file], baseline(), { oracle: slowOracle(), stepBudget: llmBudget({ wallMs: 15_000 }) });
     const goal = fakeGoal();
     const c1 = cand(replace, 'return gcd(a % b, a)', { source: 'llm', op: 'sample_0_0' });
     const c2 = cand(replace, LLM_FIX, { source: 'llm', op: 'sample_1_0' });
@@ -384,13 +386,14 @@ describe('RANK on an expensive oracle (§4g): Q17 orders the arrived candidates,
     expect(r.kind).toBe('commit');
     // the Q7 prior asked up front on the slow oracle reaches the round as hint h4
     expect(llm.rec.fires[0]).toEqual({ round: 1, editClass: 'substitute_one_token' });
-    // Q17 saw the three distinct candidates and its order became the job order
-    expect(llm.rec.orders).toEqual([[c1.id, c2.id, c3.id]]);
+    // Q17 priced only the 2 samples a run could reach (`rankPoolCap`, OOS ranked change 1: sympy-16792
+    // ranked 27,754 to test 1,191) and its order became the job order
+    expect(llm.rec.orders).toEqual([[c1.id, c2.id]]);
     expect(deps.rec.runBatches).toHaveLength(1);
-    expect(deps.rec.runBatches[0]!.map((j) => j.candidate.id)).toEqual([c3.id, c2.id, c1.id]);
+    expect(deps.rec.runBatches[0]!.map((j) => j.candidate.id)).toEqual([c2.id, c1.id]);
     expect(deps.rec.runBatches[0]!.map((j) => j.p)).toEqual([...deps.rec.runBatches[0]!.map((j) => j.p)].sort((a, b) => b - a));
     expect(r.trace.runMode).toBe('RANK');
-    expect(r.trace.candidatesRanked).toBe(3);
+    expect(r.trace.candidatesRanked).toBe(2);
     // the fake localisation's 2 requests + Q7 + Q17
     expect(r.trace.jevRequests).toBe(4);
     expect(deps.rec.rankCalls).toEqual([]);
@@ -399,12 +402,14 @@ describe('RANK on an expensive oracle (§4g): Q17 orders the arrived candidates,
   it('builds the Q17 request when N−1 samples have arrived (§4.8): the last sample is not waited for and is cancelled when the search ends', async () => {
     const { file, replace } = gcdFixture();
     const ctx = fakeCtx({ ask: (qs) => ({ [EDIT_CLASS_QUESTION_ID]: choiceOn(qs[EDIT_CLASS_QUESTION_ID]!, 'substitute_one_token') }) });
-    const mem = fakeMemory([file], baseline(), { oracle: slowOracle(), stepBudget: llmBudget() });
+    // 2 runs left (floor(15 s x 4 / 30 s)) against 3 collected samples, so Q17 is still needed
+    const mem = fakeMemory([file], baseline(), { oracle: slowOracle(), stepBudget: llmBudget({ wallMs: 15_000 }) });
     const goal = fakeGoal();
     const c1 = cand(replace, 'return gcd(a % b, a)', { source: 'llm', op: 'sample_0_0' });
     const c2 = cand(replace, LLM_FIX, { source: 'llm', op: 'sample_1_0' });
     const c3 = cand(replace, 'return gcd(b, a // b)', { source: 'llm', op: 'sample_2_0' });
-    const llm = fakeLlm({ rounds: (o) => (o.round === 1 ? { arrivals: [{ candidates: [c1], delayMs: 1 }, { candidates: [c2], delayMs: 2 }, { candidates: [c3], delayMs: 5_000 }], staggered: false } : null) });
+    const c4 = cand(replace, 'return gcd(b, a - b)', { source: 'llm', op: 'sample_3_0' });
+    const llm = fakeLlm({ rounds: (o) => (o.round === 1 ? { arrivals: [{ candidates: [c1], delayMs: 1 }, { candidates: [c2], delayMs: 2 }, { candidates: [c3], delayMs: 3 }, { candidates: [c4], delayMs: 5_000 }], staggered: false } : null) });
     const deps = fakeSubGoalDeps({ sites: [replace], statusOf: (job) => (job.candidate.text === LLM_FIX ? 'plausible' : 'unchanged'), decide: commitFirstPlausible });
     deps.llm = llm;
     const r = await searchSubGoal(ctx, mem, goal, deps);
@@ -413,9 +418,9 @@ describe('RANK on an expensive oracle (§4g): Q17 orders the arrived candidates,
     expect(llm.rec.orders).toEqual([[c1.id, c2.id]]);
     expect(deps.rec.runBatches).toHaveLength(1);
     expect(deps.rec.runBatches[0]!.map((j) => j.candidate.id)).toEqual([c1.id, c2.id]);
-    // sample 2 was still in flight when the commit ended the search
+    // the last sample was still in flight when the commit ended the search
     expect(llm.rec.cancelled).toEqual(['commit']);
-    expect(r.trace.llm).toMatchObject({ rounds: 1, samples: 3, valid: 2, cancelled: 1 });
+    expect(r.trace.llm).toMatchObject({ rounds: 1, samples: 4, valid: 3, cancelled: 1 });
   });
 });
 
