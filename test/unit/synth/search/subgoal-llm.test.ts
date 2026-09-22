@@ -618,3 +618,56 @@ describe('the round ends on evidence, not on closure (§4.2, §6.2)', () => {
     expect(r.trace.bySource.llm).toEqual({ enumerated: 2, tested: 2, passed: 2 });
   });
 });
+
+/**
+ * contract 1.9 (Fastlane) §3.1 / §3.2 / §3.4 (review defect 5): the generator-path figures are RECORDED, not just
+ * typed. `LlmRoundSummary` carries them per round; the search sums them onto `GoalSearchTrace.llm`, and search/index.ts
+ * puts them on `StepRecord.verify` through `SynthesisContext.reportVerify` — without that hop no record and no bench
+ * arm can read a TTFB, a hedge or a cache hit rate, and the deliverable is a type with no writer.
+ */
+describe('§3.1 / §3.2 / §3.4 the generator-path figures reach the trace', () => {
+  it('sums TTFB, hedges and the provider cache over the search’s rounds', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: llmBudget() });
+    const goal = fakeGoal();
+    const llm = fakeLlm({
+      graceMs: 1000,
+      rounds: (o) =>
+        o.round === 1
+          ? { arrivals: [{ candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 5 }], fastlane: { ttfbMs: [120, 240], hedges: 1, hedgeWins: 1, hedgesRefused: 0, cacheRead: 900, cacheWrite: 100, cacheInputTokens: 1_200 } }
+          : null,
+    });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: () => [],
+      statusOf: (job) => (job.candidate.text === LLM_FIX ? 'plausible' : 'unchanged'),
+      decide: commitFirstPlausible,
+    });
+    deps.llm = llm;
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('commit');
+    expect(r.trace.llm).toMatchObject({ rounds: 1, ttfbMs: [120, 240], hedges: 1, hedgeWins: 1, cacheRead: 900, cacheWrite: 100, cacheInput: 1_200 });
+  });
+
+  it('leaves them absent when nothing measured them: hedging off and a provider that served no cache', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: llmBudget() });
+    const goal = fakeGoal();
+    const llm = fakeLlm({ graceMs: 1000, rounds: (o) => (o.round === 1 ? { arrivals: [{ candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 5 }] } : null) });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: () => [],
+      statusOf: (job) => (job.candidate.text === LLM_FIX ? 'plausible' : 'unchanged'),
+      decide: commitFirstPlausible,
+    });
+    deps.llm = llm;
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    const llmTrace = r.trace.llm!;
+    // a 0 here would read as "the cache missed" / "no hedge won", which is a different fact from "nothing was measured"
+    expect('hedges' in llmTrace).toBe(false);
+    expect('cacheRead' in llmTrace).toBe(false);
+    expect('ttfbMs' in llmTrace).toBe(false);
+  });
+});

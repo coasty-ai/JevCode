@@ -659,6 +659,11 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const retried = new Map<VerifyStatus, number>();
 
   const wallLeft = (): number => wallAtStart - (now() - batchStart);
+  // contract 1.9 (Fastlane) §4.4: wall the caller reserved for the passer's confirm run. A run already on a lane may
+  // use it (`capMs` below reads `wallLeft`), but no NEW candidate is dispatched into it. 0 for every caller but the
+  // fast path, where it is the difference between a confirmed passer and a one-strike disarm.
+  const reserveWallMs = Math.max(0, budget.reserveWallMs ?? 0);
+  const dispatchWallLeft = (): number => wallLeft() - reserveWallMs;
   // §4.1: the sandbox timeout of a lane run derives from the oracle (the workspace command's
   // timeout tightened to the lane settings), never from a constant
   const laneTimeoutMs = laneRunTimeout(oracle, baseline);
@@ -676,7 +681,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const onAbort = (): void => released.abort();
   ctx.signal.addEventListener('abort', onAbort, { once: true });
   const stopDispatch = (): boolean =>
-    ctx.signal.aborted || laneFailure !== null || passerStop || dispatched >= runsAllowed || budget.testRunsLeft <= 0 || wallLeft() < minRunWallMs || passers >= MAX_FULL_SUITE_RUNS_PER_STEP;
+    ctx.signal.aborted || laneFailure !== null || passerStop || dispatched >= runsAllowed || budget.testRunsLeft <= 0 || dispatchWallLeft() < minRunWallMs || passers >= MAX_FULL_SUITE_RUNS_PER_STEP;
 
   // Load awareness: the batch's measured run median against the oracle's estimate; once it
   // exceeds LOAD_SCALE_MIN_RATIO the per-case cap of the rest of the batch follows it (bounded by 2 s)
@@ -957,7 +962,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
     while (!stopDispatch()) {
       let job = carried.shift() ?? queue.pop(1)[0];
       // a streaming queue (an LLM round landing samples): park until the next job or the close, released early when dispatch stops or the wall runs down (§4.8)
-      if (job === undefined) job = await awaitNextJob(queue, released.signal, wallLeft() - minRunWallMs);
+      if (job === undefined) job = await awaitNextJob(queue, released.signal, dispatchWallLeft() - minRunWallMs);
       if (job === undefined) return;
       const order = dispatched;
       dispatched += 1;
@@ -1014,7 +1019,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const retryQueue: { order: number; pending: PendingRetry }[] = [...carriedRetries.map((pending, i) => ({ order: -carriedRetries.length + i, pending })), ...provisional];
   const provisionalCount = retryQueue.length;
   const toRetry = retryQueue.splice(0, RETRY_TIMEOUTS_MAX_PER_BATCH);
-  const stopRetry = (): boolean => ctx.signal.aborted || laneFailure !== null || budget.testRunsLeft <= 0 || wallLeft() < minRunWallMs;
+  const stopRetry = (): boolean => ctx.signal.aborted || laneFailure !== null || budget.testRunsLeft <= 0 || dispatchWallLeft() < minRunWallMs;
   const retryWorker = async (): Promise<void> => {
     while (!stopRetry()) {
       const next = toRetry.shift();

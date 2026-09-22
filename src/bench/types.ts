@@ -121,6 +121,58 @@ export interface StepsSummary {
    * the arm, so `mergeStepsSummaries` unions rather than sums it.
    */
   deadlineGrowth?: 'served' | 'always' | 'mixed';
+  /**
+   * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §5.5: `src/bench/step-records.ts` is the ONLY bridge from
+   * `steps.jsonl` to `BenchRecord.synth`. Without these members every `fastPath` and `router` field the engine writes
+   * into the run directory is invisible to every bench table — the rows of §8.3 would read zero for a reason that has
+   * nothing to do with the fast path. Rows written by an engine that has no fast path contribute zeros, never an error
+   * (the reader dereferences only what it sums).
+   */
+  fastPath: FastPathSummary;
+  /** §8.3 R-a: the router seam. `maxWaitMs` must be 0 — a router that made the loop WAIT has gated it (§2.1). */
+  routers: { issued: number; applied: number; dropped: number; maxWaitMs: number };
+  /** §8.3 R-e: steps that took the code verdict on risk, and steps where Jev was unavailable at all. */
+  risk: { codeVerdicts: number; jevUnavailable: number };
+  /**
+   * contract 1.9 (Fastlane) §3 / §5.2: the S2 members of `StepVerifySummary`. `ttfbMs` is kept raw so a quantile over a
+   * merged run set is exact rather than an average of averages — the hedge threshold is `2 × running TTFB p50`, so a
+   * p50 that was itself computed from p50s would be measuring the wrong thing.
+   */
+  s2: { ttfbMs: number[]; hedges: number; hedgeWins: number; cacheRead: number; cacheWrite: number };
+}
+
+/** contract 1.9 (Fastlane) §5.5 / §8.3: one run's route-R9 facts, summed over its steps. */
+export interface FastPathSummary {
+  /** steps where the arm was armed and the predicate was evaluated */
+  considered: number;
+  fired: number;
+  declined: number;
+  failed: number;
+  /** fired steps that produced a proposal / that the acceptance rule refused */
+  proposed: number;
+  refused: number;
+  timeouts: number;
+  /** §8.3 R-d: the per-reason decline histogram, exhaustive over `FastPathReason` (an 'error' bucket over 5 % is a fail) */
+  reasons: Record<string, number>;
+  /**
+   * §8.3 R-c: steps where stage 1 HELD — i.e. rows the writer recorded at `stage: 2`, whatever stage 2 then decided
+   * (fired, declined or failed). This is the denominator the writer can actually produce: slot C records `stage: 1`
+   * only on a free decline and `stage: 2` on every row of a round that ran, so a "stage-1-FIRED" count is 0 on every
+   * real run and the ratio below could never fail.
+   */
+  stage1Held: number;
+  /** §8.3 R-c numerator: rows at `stage: 2` that stage 2 declined — above 0.3 of `stage1Held` the PREDICATE is wrong, not the budget */
+  stage2Declined: number;
+  candidatesTested: number;
+  testRuns: number;
+  jevRequests: number;
+  wallMs: number;
+  /**
+   * §8.3 R-b: steps that RAN A ROUND (`stage: 2`) whose `wallMs` exceeded their own `budgetMs`; must be 0. Counting
+   * only `decision: 'fired'` rows would miss the shape that matters most — a round that blew the budget and then
+   * timed out or was refused is recorded `decision: 'failed'`.
+   */
+  budgetOverruns: number;
 }
 
 /**
@@ -323,6 +375,28 @@ export interface PinnedGeneration {
    * derived from it (`maxTokens` = its base, `reasoning`, `deadlineMs` = its `sampleDeadline.maxMs`, `sampleTemperatures`)
    */
   synthesizer?: SynthesizerGeneration;
+  /**
+   * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §3: the S2 mechanisms the `jev-on-next*` arms pin. Absent on every
+   * other arm, which is what "S2 is off here" means in summary.json.
+   */
+  s2?: S2Generation;
+}
+
+/** contract 1.9 (Fastlane) §3.2–§3.4: the pinned S2 generation mechanisms (bench/conditions.ts `S2_GENERATION`). */
+export interface S2Generation {
+  /** §3.2: one hedge per round, issued at clamp(`ttfbP50Multiple` × running TTFB p50, `afterMsMin`, `afterMsMax`) */
+  hedges: { perRound: number; afterMsMin: number; afterMsMax: number; ttfbP50Multiple: number };
+  /** §3.3: 'byte-stable' = the system → repo map → files → window prefix order; 'legacy' = today's assembly */
+  prefix: 'byte-stable' | 'legacy';
+  /** §3.4: the reasoning cap applied on the cheap classes only; null = uncapped */
+  reasoningMaxTokens: number | null;
+}
+
+/** contract 1.9 (Fastlane) §8.1: which of the wave's three mechanisms an arm runs with (bench/conditions.ts `armMechanisms`). */
+export interface ArmMechanisms {
+  fastPath: 'off' | 'auto';
+  routers: boolean;
+  s2: boolean;
 }
 
 export interface ConditionConfig {
@@ -346,6 +420,12 @@ export interface ConditionConfig {
   maxOutputBytes: number;
   completeThreshold: number;
   impossibleThreshold: number;
+  /**
+   * contract 1.9 (Fastlane) §8.1: the wave mechanisms this arm ran with. Recorded on every arm (all-off on the six older
+   * ones) so a results directory answers "was the fast path armed?" from summary.json alone — the question every row of
+   * §8.3 is conditional on.
+   */
+  mechanisms: ArmMechanisms;
 }
 
 export interface Stat {

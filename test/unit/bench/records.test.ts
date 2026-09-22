@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { isValidCall, latencyFit, mergeGeneratorSummaries, parseGeneratorRecords, summariseGeneratorRecords } from '../../../src/bench/generator-records.js';
-import { mergeStepsSummaries, summariseStepRows } from '../../../src/bench/step-records.js';
+import { emptyStepsSummary, mergeStepsSummaries, summariseStepRows } from '../../../src/bench/step-records.js';
 
 const row = (over: Record<string, unknown>): string =>
   JSON.stringify({ step: 1, attempt: 1, promptHash: 'p', model: 'glm', temperature: null, maxTokens: 3000, usage: { inputTokens: 1000, outputTokens: 100, costUsd: 0.0002, calls: 1 }, latencyMs: 2000, stopReason: 'tool_calls', malformed: false, ...over });
@@ -58,7 +58,9 @@ describe('steps.jsonl summary', () => {
       'not json',
     ].join('\n');
     const s = summariseStepRows(text);
-    expect(s).toEqual({ steps: 3, synthSteps: 1, synthMs: 4000, genericSteps: 1, verify: { samples: 4, distinct: 3, malformed: 1, timeouts: 0, cancelled: 2, misanchored: 1, candidatesTested: 9, passers: 1, partials: 0, graceMs: 500, localisationMissed: 1 } });
+    // contract 1.9 (Fastlane) §5.5: a pre-wave row carries no fastPath / router / risk / S2 members, so those blocks
+    // read exactly `emptyStepsSummary()`'s — zeros, never an error (test/unit/bench/next-arms.test.ts owns the folding)
+    expect(s).toEqual({ ...emptyStepsSummary(), steps: 3, synthSteps: 1, synthMs: 4000, genericSteps: 1, verify: { samples: 4, distinct: 3, malformed: 1, timeouts: 0, cancelled: 2, misanchored: 1, candidatesTested: 9, passers: 1, partials: 0, graceMs: 500, localisationMissed: 1 } });
     expect(mergeStepsSummaries([s, s]).verify.candidatesTested).toBe(18);
     expect(mergeStepsSummaries([]).steps).toBe(0);
   });

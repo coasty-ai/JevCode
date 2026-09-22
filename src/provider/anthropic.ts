@@ -25,6 +25,7 @@ import {
   parseJsonObject,
   parseSse,
   readBodyCapped,
+  reportFirstByte,
   requestIdOf,
   resolveDeps,
   sanitiseRequestId,
@@ -153,7 +154,7 @@ function streamError(data: JsonObject, redact: (s: string) => string, requestId:
   });
 }
 
-async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOptions, redact: (s: string) => string, firstByteTimeoutMs: number, requestId: string | null, held: Held): Promise<StreamOutcome> {
+async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOptions, redact: (s: string) => string, firstByteTimeoutMs: number, requestId: string | null, held: Held, onFirstByte?: (ms: number) => void): Promise<StreamOutcome> {
   const blocks = new Map<number, Block>();
   const order: number[] = [];
   let text = '';
@@ -166,7 +167,7 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
   const tokens: TokenBreakdown = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
 
   try {
-    for await (const rec of parseSse(body, { signal: opts.signal, firstByteTimeoutMs })) {
+    for await (const rec of parseSse(body, { signal: opts.signal, firstByteTimeoutMs, ...(onFirstByte === undefined ? {} : { onFirstByte }) })) {
       // parseSse yields every record of a chunk before it reads again; a signal that fired mid-chunk stops here, not at the next read
       if (opts.signal.aborted) throw opts.signal.reason;
       // Live streams pad the JSON with trailing spaces; parse the trimmed text.
@@ -351,8 +352,12 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
       }
       if (!res.body) throw new TransportError('stream', 'anthropic: 200 without a body');
       const remaining = Math.max(1, FIRST_BYTE_TIMEOUT_MS - (d.now() - t0));
+      // contract 1.9 (Fastlane) §3.1: TTFB measured from the request going out (header phase included); `reportFirstByte`
+      // reports it once per `generate()` — this client's retry loop re-runs the body, and a mid-stream 429/5xx frame lands
+      // AFTER the stream opened, so a per-attempt report would enter two readings into the §3.2 threshold's p50.
+      const onFirstByte = opts.onFirstByte === undefined ? undefined : (): void => reportFirstByte(opts, Math.round(d.now() - t0));
       try {
-        return await consumeStream(res.body, opts, d.redact, remaining, requestId, held);
+        return await consumeStream(res.body, opts, d.redact, remaining, requestId, held, onFirstByte);
       } catch (e) {
         if (opts.signal.aborted) throw opts.signal.reason;
         // Typed errors (HTTP/stream errors, renderer-callback bugs via notify) keep their class; anything

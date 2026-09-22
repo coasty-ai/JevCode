@@ -299,6 +299,62 @@ Also recorded: `JEVCODE_WARM=on` is a **no-op on SWE-bench** — `warmModeFor` a
 output says so. And the warm counters live **only** in the live `transcript.log`, which `--archive-runs` does not
 copy (`src/synth/search/types.ts:129-141`); every warm number above was harvested by hand.
 
+## 2026-09-22 — the `jev-on-next` arm: what the LLM-loop wave will be measured with (no rows yet)
+
+Plumbing only, from `docs/LLM-LOOP-DESIGN.md` §8; **nothing live has run**. This entry exists so the arm is
+pre-registered before it produces a number, which is the whole point of §8.4's RETIRE rule.
+
+**The arms.** `jev-on-next` is the `jev-on` engine — the generator still proposes — with three mechanisms on: the §2
+router table, the §3 S2 generation path (one hedge per round at `clamp(2 × TTFB p50, 3 s, 8 s)`, the byte-stable
+prefix, a 256-token reasoning cap on the cheap classes) and the §4 bounded sieve fast path armed (`fastPath: 'auto'`,
+the structural predicate decides per step). Its generation parameters are the `jev-off-tuned` object — max_tokens
+1,500, `{effort: 'low'}`, a 20 s per-sample deadline (30 s on repositories), doubled once after a `length` stop — plus
+the pinned S2 block, all recorded in `summary.json.conditions[arm].generation`. **`jev-on-next-nofast` is the same arm
+with the fast path off**, and it is not optional: without it a `jev-on-next` win confounds tuned generation, S2, the
+routers and the fast path all at once, and §8.5 clause 4 rests on it. Both arms refuse to run at anything but
+`--concurrency 1` (the fast path runs test commands inside the step; at concurrency 4 its wall is a statement about
+how busy the machine was). Neither is an `EngineMode`: `engineModeOf` maps both to `jev-on`, exactly as
+`jev-off-tuned` maps to `jev-off`.
+
+**What it is read against.** The recorded rows of `experiments/results/llm-jev-iter1.md` — fresh 18: `llm-jev`
+**12/18**, `jev-off-tuned` **9/18**, with `llm-jev` 26.0 s against tuned's 19.7 s on the 8 both-solved QuixBugs tasks;
+in-sample 28: `llm-jev` **27/28**. They are merged by `(suite, task, condition)` and **not re-run**. They are also
+**not a same-build baseline**: they were taken at `751e3bf`, and `main` has since taken the nine changes of
+`oos-iter-2`, none of them measured. Every comparison against them confounds this wave with all of iteration 2, which
+is why the `jev-on-next-nofast` control and a plain `jev-on` arm are the only contrasts §8.5 leans on. If
+`oos-iter-2` is measured on the same 18 + 28 first, those rows replace the `751e3bf` ones and the confound goes away;
+that ordering is preferred.
+
+**What is measured.** Five blocking rows (§8.3), all computed by `src/bench/next-arms.ts` from
+`BenchRecord.synth` — which now carries the wave's facts because `src/bench/step-records.ts` folds them out of
+`steps.jsonl` (§5.5; without that bridge every `fastPath` and `router` field is written to the run directory and is
+invisible to every table). R-a: `routers.waitMs` 0 on every step — a router that made the loop wait has gated it.
+R-b: `fastPath.wallMs <= budgetMs` on 100 % of fired steps. R-c: stage-2 declines over stage-1 fired, **per suite**,
+≤ 0.3 — above it the predicate is wrong, not the budget. R-d: the per-reason decline histogram, exhaustive over
+`FastPathReason`, no `'error'` bucket over 5 % — R-c says the predicate is miscalibrated, R-d says which clause did
+it, and a ratio alone does not name the mistake. R-e: `riskSource: 'code'` and `jevUnavailable` counts, reported; a
+harmful command allowed under a dropped ask reverts the §2.4 ratification on its own.
+
+**Two readings pinned, because the design's prose leaves them open.** R-a is written as a p95 with a bar of exactly
+zero; the table takes the **maximum**, which is the same gate unless more than 5 % of steps blocked and is the form a
+single blocked step cannot average its way out of. R-c is written as "stage-1-fired / stage-2-declined ≤ 0.3", a ratio
+that *rises* when the predicate works; the table takes **`stage2Declined / stage1Held`**, the direction in which the
+stated conclusion ("the predicate is wrong") is the one the number supports. `stage1Held` is the count of rows the
+writer recorded at `stage: 2` — the steps that reached the expensive stage at all. A *stage-1-fired* denominator is
+a shape no run produces (the writer sets `decision: 'fired'` only on a successful proposal, always at `stage: 2`),
+which would make R-c unfailable, prediction (e) permanently `not_evaluable`, and R-b blind to a round that overran
+its budget and then timed out.
+
+**The accept rule** (§8.5) is five clauses, evaluated by the same module and printed by
+`experiments/llm-jev/headtohead.mts` under `--candidate jev-on-next --control jev-on-next-nofast`. Clause 1 (the §7
+gates, including Ring 1 under `--jev off`) is a tree fact the script cannot observe: it is `--gates green|red` and
+defaults to **not measured**, which does not accept. Clause 4 has the documented escape — retire route R9 and ship S2
++ routers alone with `fastPath` defaulted `'off'` — and prediction (a) or (e) failing takes that branch, but only
+when (f) itself was EVALUATED and lost: a missing control leaves clause 4 `not_evaluable`, so a wave with no
+same-build contrast cannot read ACCEPT. **A failure retires the route; it does not loosen the predicate.** Clause 5
+is reported, not checked: it prints R-e's two counts for the §2.4 judgement and makes no machine assertion about
+them, which is what its title now says.
+
 ## 2026-09-22 — iteration 3 (implemented; Ring 1 measured, then reviewed and cut back)
 
 Branch `oos-iter-3` from `d86c385`, after the adversarial review of `c469c9e`

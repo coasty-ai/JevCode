@@ -1316,6 +1316,14 @@ async function settleLlm(st: LoopState, outcome: GoalSearchTrace['outcome']): Pr
     closeRound(L);
   }
   const sum = (f: (s: LlmRoundSummary) => number): number => L.summaries.reduce((n, s) => n + f(s), 0);
+  // contract 1.9 (Fastlane) §3.1 / §3.2 / §3.4 (review defect 5): the generator-path figures of the rounds, summed
+  // onto the trace so search/index.ts can put them on `StepRecord.verify`. Each is ABSENT when nothing measured it —
+  // a 0 would read as "the cache missed" or "no hedge won" rather than "the mechanism was off".
+  const ttfbMs = L.summaries.flatMap((s) => [...(s.ttfbMs ?? [])]);
+  const hedges = sum((s) => s.hedges ?? 0);
+  const cacheRead = sum((s) => s.cacheRead ?? 0);
+  const cacheWrite = sum((s) => s.cacheWrite ?? 0);
+  const cacheInput = sum((s) => s.cacheInputTokens ?? 0);
   st.trace.llm = {
     rounds: L.summaries.length,
     samples: sum((s) => s.fired),
@@ -1327,6 +1335,9 @@ async function settleLlm(st: LoopState, outcome: GoalSearchTrace['outcome']): Pr
     misanchored: sum((s) => s.misanchored),
     graceMs: L.graceMs,
     fixAbsent: L.fixAbsent,
+    ...(ttfbMs.length > 0 ? { ttfbMs } : {}),
+    ...(hedges > 0 ? { hedges, hedgeWins: sum((s) => s.hedgeWins ?? 0) } : {}),
+    ...(cacheRead > 0 || cacheWrite > 0 ? { cacheRead, cacheWrite, ...(cacheInput > 0 ? { cacheInput } : {}) } : {}),
     // OOS iteration 3, item 3: which deadline-growth arm produced these rounds (recorded, never a gate)
     deadlineGrowth: L.deps.deadlineGrowth,
   };

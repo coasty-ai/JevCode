@@ -109,7 +109,9 @@ describe('fireworks: the stream', () => {
     const { deps } = providerDeps(f.fetch);
     const res = await createFireworksProvider(cfg({ priced: true }), deps).generate(request(), genOpts());
     // 200 uncached + 34 cache reads on the input side, and the completion side survived the second frame
-    expect(res.usage).toEqual({ inputTokens: 234, outputTokens: 26, costUsd: (200 * 2 + 34 * 0.2 + 26 * 10) / 1e6, calls: 1 });
+    // contract 1.9 (Fastlane) §3.4: the cache READ is now also stated on its own (`cacheReadTokens`), because
+    // `inputTokens` hides it — the §3.3 prefix pinning is measured by exactly this number
+    expect(res.usage).toEqual({ inputTokens: 234, outputTokens: 26, costUsd: (200 * 2 + 34 * 0.2 + 26 * 10) / 1e6, calls: 1, cacheReadTokens: 34 });
   });
 
   it('reports a length stop verbatim', async () => {

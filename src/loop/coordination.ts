@@ -92,6 +92,14 @@ export function resolvedClaims(o: CoordinationOptions): 'advisory' | 'strict' | 
 }
 
 /**
+ * contract 1.9 (Fastlane) §4.3 T12: the conflict half of `check()` as one boolean, pure over an already-folded ledger.
+ * Exported so the predicate that reads it can be tested against a seeded peer lease without a runtime.
+ */
+export function knownLeaseConflict(fold: Parameters<typeof check>[0], self: SelfIdentity, mine: LeaseIntent): boolean {
+  return check(fold, self, mine, { caseFold: false }).kind === 'conflict';
+}
+
+/**
  * §4.2: which actions coordinate. `edit | write | patch` lease their targets; `run` leases its command with
  * `paths: []`; `read` and `done` never coordinate — a read cannot conflict with anything and `done` touches nothing.
  */
@@ -593,6 +601,21 @@ export class CoordinationRuntime {
   /** §4.1: the facts the NEXT prompt's `## Other sessions` section renders (fenced, untrusted-data line). */
   currentFacts(): CoordinationFacts | null {
     return this.facts;
+  }
+
+  /**
+   * contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4.3 T12 / §6 row 9: is a peer ALREADY holding a lease that
+   * conflicts with these paths?
+   *
+   * The same `check()` the `coordinate` micro-stage runs, over the fold this process already holds — pure, no refresh,
+   * no I/O and nothing declared, so a speculative caller (the fast path's stage-1 predicate) can read it for free on
+   * every step. `off` computes no conflict at all (§4.1), which is the same answer the gate would give, and a
+   * `declared` peer intent is a fact rather than a conflict exactly as it is there.
+   */
+  conflictOn(paths: readonly string[], step: number): boolean {
+    if (this.claims === 'off' || paths.length === 0) return false;
+    const mine: LeaseIntent = { paths: [...paths], type: 'intent', reason60: clip(`conflict check ${paths[0] ?? ''}`, SIXTY), step, stage: 'coordinate', branch: null, head: null };
+    return knownLeaseConflict(this.ledger.fold, this.ledger.self, mine);
   }
 
   // ── the resume / fork gates (§9.3, §3.4, §11 rows 31 / 51) ─────────────────────────────────────

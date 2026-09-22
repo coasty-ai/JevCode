@@ -108,6 +108,8 @@ describe('gemini: the stream', () => {
       costUsd: ((240 - 64) * 2 + 64 * 0.2 + 32 * 10) / 1e6,
       calls: 1,
       reasoningTokens: 14,
+      // contract 1.9 (Fastlane) §3.4: `cachedContentTokenCount`, stated on its own beside the input total it is part of
+      cacheReadTokens: 64,
     });
     expect(f.calls[0]!.url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse');
     expect(f.calls[0]!.headers['x-goog-api-key']).toBe(cfg().apiKey);

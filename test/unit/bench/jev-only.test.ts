@@ -33,7 +33,7 @@ const threeWay: EngineScript = (_task, mode) => ({
 describe('conditions helpers', () => {
   it('order, parsing, generator requirement and per-condition config know jev-only', () => {
     // docs/LLM-JEV-DESIGN.md §10.1: llm-jev is the fourth condition (test/unit/bench/llm-jev.test.ts); llm-sieve and jev-off-tuned are the attribution arms (arms.test.ts)
-    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned']);
+    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned', 'jev-on-next', 'jev-on-next-nofast']);
     // llm-jev (docs/LLM-JEV-DESIGN.md): a condition that pays a generator AND runs the synthesizer
     expect(isBenchCondition('llm-jev')).toBe(true);
     expect(requiresGenerator(['llm-jev'])).toBe(true);

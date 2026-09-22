@@ -11,7 +11,7 @@ import { isFiniteNumber, isJsonObject, parseJson } from '../core/json.js';
 import { clip } from '../core/text.js';
 import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
 import type { SleepFn } from '../core/time.js';
-import type { CancelledGeneration, Json, JsonObject, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
+import type { CancelledGeneration, GenerateOptions, Json, JsonObject, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
 import type { Pricing, ProviderDeps, SseOptions, SseRecord, StreamPartial, TokenBreakdown } from './types.js';
 
 export const FIRST_BYTE_TIMEOUT_MS = 30_000;
@@ -160,6 +160,7 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOpt
   const maxBytes = opts.maxEventBytes ?? MAX_EVENT_BYTES;
   const reader = stream.getReader();
   const decoder = new TextDecoder('utf-8');
+  const t0 = monotonicNow();
   let buffer = '';
   let sawByte = false;
   let event: string | undefined;
@@ -191,6 +192,9 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOpt
     for (;;) {
       const r = await readWithTimeout(reader, sawByte ? idle : firstByte, sawByte ? 'idle' : 'first_byte', opts.signal);
       if (r.done) break;
+      // contract 1.9 (Fastlane) §3.1: the first read that returned bytes is the TTFB, reported once and before the
+      // record it carries is parsed — the hedge threshold (§3.2) reads it while the rest of the stream is still open.
+      if (!sawByte) notify(opts.onFirstByte, Math.round(monotonicNow() - t0));
       sawByte = true;
       buffer += decoder.decode(r.value, { stream: true });
       if (buffer.length > maxBytes) {
@@ -237,12 +241,15 @@ export async function readStreamText(stream: ReadableStream<Uint8Array>, opts: S
   const maxBytes = opts.maxEventBytes ?? MAX_EVENT_BYTES;
   const reader = stream.getReader();
   const decoder = new TextDecoder('utf-8');
+  const t0 = monotonicNow();
   let out = '';
   let sawByte = false;
   try {
     for (;;) {
       const r = await readWithTimeout(reader, sawByte ? idle : firstByte, sawByte ? 'idle' : 'first_byte', opts.signal);
       if (r.done) break;
+      // contract 1.9 (Fastlane) §3.1: same TTFB report as `parseSse`, for the one client that reads JSON (meta.ai)
+      if (!sawByte) notify(opts.onFirstByte, Math.round(monotonicNow() - t0));
       sawByte = true;
       out += decoder.decode(r.value, { stream: true });
       if (out.length > maxBytes) throw new ProviderHttpError(`response body exceeds ${maxBytes} bytes`, { status: 0, retryable: false });
@@ -347,6 +354,24 @@ export function notify<T>(fn: ((value: T) => void) | undefined, value: T): void 
   } catch (e) {
     throw toJevCodeError(e);
   }
+}
+
+/**
+ * contract 1.9 (Fastlane) §3.1 (review defect 3): `GenerateOptions.onFirstByte` is documented as "called at most once
+ * per `generate()`", but `withRetry` wraps the WHOLE attempt — so a retryable failure that lands after the stream
+ * opened (research 07 §2.3's `data: {"error": …}` frame on a 200) runs the attempt body again and would report a
+ * second TTFB. Two readings would enter the §3.2 threshold's p50 twice and double-count `StepVerifySummary.ttfbMs`.
+ *
+ * The latch is keyed on the OPTIONS OBJECT, which is exactly what one `generate()` owns and every attempt of it
+ * shares: the harness hears about the first attempt that actually streamed, whatever the client's retry shape is, and
+ * a client added later cannot forget the rule as long as it reports through here. The latch closes BEFORE the callback
+ * runs, so a throwing callback (a harness bug, raised typed by `notify`) cannot let the next attempt report either.
+ */
+const firstByteReported = new WeakSet<GenerateOptions>();
+export function reportFirstByte(opts: GenerateOptions, ms: number): void {
+  if (opts.onFirstByte === undefined || firstByteReported.has(opts)) return;
+  firstByteReported.add(opts);
+  notify(opts.onFirstByte, ms);
 }
 
 /**
@@ -464,6 +489,17 @@ export function toTokenUsage(t: TokenBreakdown, costUsd: number, reasoningTokens
     calls: 1,
   };
   if (reasoningTokens !== null) usage.reasoningTokens = reasoningTokens;
+  // contract 1.9 (Fastlane) §3.4: the cached shares of `inputTokens` the API itself reported, surfaced so the §3.3
+  // prefix pinning can be measured (`StepVerifySummary.cacheRead` / `cacheWrite` / `cacheHitRate`). Set only when the
+  // call really read or wrote cache, so a provider that caches nothing produces exactly the object it produced before.
+  //
+  // Review defect 9, decided rather than left implicit: this widening is UNGATED, so every `generator.jsonl` usage row
+  // of a cache-serving provider grows two members in every mode. It is the only place the harness can learn the figures
+  // (`LlmSource` sums them off the arrivals' `TokenUsage`), and a record shape that changes with a flag is worse than
+  // one that grows once. test/unit/provider/cache-usage.test.ts pins both halves: an uncached call's object is
+  // unchanged, and no records reader (the bench summariser, the checkpoint replay) rejects the wider rows.
+  if (t.cacheRead > 0) usage.cacheReadTokens = t.cacheRead;
+  if (t.cacheWrite > 0) usage.cacheWriteTokens = t.cacheWrite;
   return usage;
 }
 

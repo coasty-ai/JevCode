@@ -419,7 +419,7 @@ async function consumeChatSse(q: ChatQuirks, stream: ReadableStream<Uint8Array>,
   const st = newState();
   let sawDone = false;
   try {
-    for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs })) {
+    for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) })) {
       // parseSse yields every record of a chunk before it reads again; a signal that fired mid-chunk stops here
       if (ctx.opts.signal.aborted) throw ctx.opts.signal.reason;
       const data = rec.data.trim();
@@ -457,7 +457,7 @@ async function consumeChatJson(q: ChatQuirks, stream: ReadableStream<Uint8Array>
   const st = newState();
   let text: string;
   try {
-    text = await readStreamText(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs });
+    text = await readStreamText(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) });
     if (ctx.opts.signal.aborted) throw ctx.opts.signal.reason;
   } catch (e) {
     if (ctx.opts.signal.aborted) {

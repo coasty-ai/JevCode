@@ -120,11 +120,21 @@ export interface WarmPlaneOptions {
  * back to on only when a real-lane integration test and Ring 1 pass with the plane on.
  */
 export function warmModeFor(oracle: Pick<OracleModel, 'runner'>, env: Readonly<Record<string, string | undefined>> = process.env): WarmMode | null {
-  const flag = (env[WARM_ENV_FLAG] ?? '').trim().toLowerCase();
-  if (flag !== 'on' && flag !== '1' && flag !== 'true') return null;
+  if (!warmPlaneEnabled(env)) return null;
   if (oracle.runner === 'quixbugs') return 'quixbugs';
   if (oracle.runner === 'pytest') return 'pytest';
   return null;
+}
+
+/**
+ * Is the warm plane switched ON at all, before any per-oracle shape test? The `JEVCODE_WARM` half of `warmModeFor`,
+ * on its own, for callers that must know whether a run's lane runs CAN be warm without holding an oracle — the fast
+ * path's stage-1 predicate (contract 1.9 (Fastlane) §4.5 / I8: its whole acceptance rule reduces "cold-confirmed" to
+ * "the regression run exists and passed", which is true only while every lane run is cold).
+ */
+export function warmPlaneEnabled(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  const flag = (env[WARM_ENV_FLAG] ?? '').trim().toLowerCase();
+  return flag === 'on' || flag === '1' || flag === 'true';
 }
 
 export function emptyWarmStats(): WarmStats {

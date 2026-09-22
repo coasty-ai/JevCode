@@ -1280,6 +1280,118 @@ per-task ratio median 1.406" overstates the gap; measured back-to-back in one wi
 **1.163** (slower on 6 of 8, at 0.28× the cost). This whole measurement ran at loadavg 3–175 on 15 cores, and
 outside the one matched window no wall number in it is a controlled result.
 
+## 2026-09-22 The risk verdict is code-first (contract 1.9 §2.4), and it is reversible on evidence
+
+`docs/LLM-LOOP-DESIGN.md` §2.4 ratified here before the S4 routers land, because it **contradicts a standing
+rule**. `docs/HARNESS-NEXT-DESIGN.md` §1.2 and the allow-list row this wave deletes
+(`scripts/jev-contract.mjs`: *"code deny-list first, a failed ask means ask/decline, never allow"*) say that a
+failed harm ask means ask-or-decline. Contract 1.9 says a failed harm ask yields the **code verdict**.
+
+**What is actually built, which is narrower than the sentence above.** Under `routers: 'on'` the risk stage has
+two code halves and they apply in different cases:
+
+- **Jev answered** → Jev's verdict stands, raised only by the **deny-list floor** (`codeRiskFloor`,
+  `src/jev/danger.ts dangerousCommand()`): a deny-listed command can never be released by a Score at level 0.
+  Every other step keeps the pre-1.9 verdict and the pre-1.9 reason string, byte for byte. Code can only tighten.
+- **No answer reached the step** (a drop, a `JevError`, a 503/529, an abort) → the **code verdict**
+  (`codeRiskVerdict`): the allow-list (`codeRiskReason`, a `read` / a verification run / a verified
+  regression-free patch / a recoverable revert / a `done` the engine's own passing run verified) yields `ok`;
+  the deny-list yields `review`; **anything else yields `review`** — an ask, never an allow. So the rule the old
+  row stated in prose is now the code path, and the only thing that changed is that a `read` and a verification
+  run no longer need a human when Jev is down.
+
+**The exposure, named.** A harmful command the deny-list misses **during a Jev outage**, in a case the allow-list
+cleared. The allow-list clears only actions whose safety is a harness-computed fact, and `dangerousCommand()`
+says in its own docstring that it is a deny-list, not a proof (`test/unit/jev/danger.test.ts` asserts the misses:
+`RM -RF /`, `rm   -rf /`, `git push -f`, `dd if=/dev/zero of=/dev/sda`, …).
+
+**Why it is acceptable.** Today three Jev 503s in a row end the run (`CONSECUTIVE_STAGE_FAILURE_LIMIT`), which is
+how `sympy-17139`, `django-15128` and `django-15315` died in the recorded head-to-head. A rule that turns an
+outage into a lost run is not a safety rule; it is a availability failure wearing one.
+
+**The audit trail, and the reversal trigger.** Every step records `StepRecord.riskSource` (`'code' | 'jev'`) and
+`StepRecord.jevUnavailable`, so every step where the code verdict stood is countable after the fact. The change
+reverses **on evidence**: if the §8 arms show any step executing a change under `riskSource: 'code'` that a human
+would have refused, or if `jevUnavailable` exceeds a per-run handful outside a real outage, the fallback returns
+to ask-or-decline (one line: `codeRiskVerdict` returns `review` for the allow-list cases too).
+
+**Scope.** `routers` defaults **off** in every mode on `main`; only the `jev-on-next` bench arm turns it on. In
+session mode `classifyBlocking` still offers the `jev-unreachable` pause — it is simply no longer the only
+outcome. Tests: `test/unit/loop/router.test.ts` ("risk yields the code verdict with jevUnavailable and
+riskSource 'code' when the decider throws", and the escalation rows), `test/unit/jev/danger.test.ts`.
+
+## 2026-09-22 Only Jev's failures are the router's drop branch (contract 1.9 §2.1 clause 4, as built)
+
+The adversarial review of `llm-loop-B-routers` found the S4 primitive collapsing four things that are not Jev
+failures into `dropped: 'error'`: an aborted step signal (a human pause, `/stop`, and the wall-time
+`BudgetError` the engine raises through that signal), a `JevModelDriftError`, and the `QuestionBuildError` of a
+malformed batch. The risk stage's `try { … } catch {}` did the same. The consequence was not a slower run but a
+*wrong* one: a run paused during the risk stage returned a code verdict, and the engine walked into `confirm()`
+and `takePreImages()` before its own `signal.aborted` guard unwound it.
+
+**Ratified: clause 4 covers Jev's failures and nothing else.** `isRouterFatal` (`src/jev/router.ts`) rethrows
+those four unchanged, exactly as they travel with `routers: 'off'`; a `JevError`, a 503/529, a deadline, an
+invalidated token and a malformed answer stay the one silent drop branch. "A Jev outage is slower, never wrong"
+is a statement about **Jev's** availability, and reading it as "nothing thrown inside a routed ask, ever" turns
+the harness's own stop conditions into ordering noise.
+
+Two consequences ratified with it. A dropped ask is **cancelled** (the router aborts the signal it handed the
+thunk) and a dropped answer **annotates nothing** (each routed stage's annotate returns early on an aborted
+signal or an invalidated token) — so the audit trail cannot say Jev's option was chosen on a step that refused
+it. And the switch is gated on `mode === 'jev-on'` before anything else is read: `runReplanStage` is the one
+replan site for every mode, so a process-wide `JEVCODE_ROUTERS` had been demoting `stop_and_report` and
+`task_impossible` in `llm-jev`, `jev-only` and `jev-off` — the arms the §8 head-to-head measures `jev-on`
+against.
+
+**What is deferred, and named rather than implied.** `EngineOptions.routers`, `StepTiming.routerWaitMs`,
+`StepRecord.router` / `riskSource` / `jevUnavailable` and `completionDecision` are tagged **RESERVED** in
+`src/core/types.ts`: their writer is the `askRecorded` seam in `src/loop/engine.ts`, and §7.1 allows one slot in
+that file at a time (slot C holds it). Until that post-C commit the expressible switch is `JEVCODE_ROUTERS=on`
+per bench worker process, and a dropped ask — cancelled at the router — still runs to completion inside
+`askRecorded` and charges its metering and its records to the step that issued it. The bench arm does not turn
+on before that commit lands; §7.5 carries the table.
+
+## 2026-09-22 The LLM-loop wave's arms and predictions, registered before anything runs
+
+`docs/LLM-LOOP-DESIGN.md` §8 asks for the predictions to be written down **before** the arms run; this is that entry, and
+nothing live has run against it. Two bench arms exist as of this commit: **`jev-on-next`** — the `jev-on` engine (the
+generator still proposes) with the §2 router table on, the §3 S2 generation mechanisms on, the §4 bounded sieve fast path
+armed, and the `jev-off-tuned` generation parameters pinned — and **`jev-on-next-nofast`**, the same arm with the fast path
+off. The control is not optional: it is the only same-build contrast in the plan, because the recorded rows
+(`experiments/results/llm-jev-iter1.md`: fresh 18 `llm-jev` 12/18, `jev-off-tuned` 9/18, 26.0 s vs 19.7 s on the 8
+both-solved; in-sample 28 `llm-jev` 27/28) were taken at `751e3bf` and `main` now carries the nine unmeasured changes of
+`oos-iter-2`. If `oos-iter-2` is measured on the same 18 + 28 first, those rows replace the `751e3bf` ones and the confound
+disappears — **that ordering is preferred**. Both arms are refused at any `--concurrency` but 1.
+
+**Registered predictions** (`src/bench/next-arms.ts` evaluates each, `experiments/llm-jev/headtohead.mts` prints them):
+(a) solved ≥ 12/18 on the fresh slice — evaluated only over the recorded 18 task ids (`FRESH_18`, compared as a SET of
+`(suite, task)`; a partial, different or over-full slice reads n/a, since a slice that is not the recorded one must
+neither pass nor retire a route);
+(b) median wall on the both-solved tasks below 26.0 s and within 10 % of 19.7 s; (c) ladder long-2 keeps ≥ 3/6;
+(d) `routerWaitMs` 0 on every step; (e) fired-and-proposed on ≥ 60 % of the QuixBugs steps where stage 1 held;
+(f) `jev-on-next` − `jev-on-next-nofast` on solve count > 0. **A failure of (a) or (e) RETIRES route R9; it does not
+loosen the predicate.** A failure of (b) with (a) holding is the one case that permits a *narrowing* retune.
+
+**Two readings pinned**, because the design's prose leaves them open and a silent choice is worse than an argued one.
+R-a ("`routers.waitMs` p95 = 0") is taken as the **maximum** — identical unless more than 5 % of steps blocked, and a
+single blocked step must not average away. R-c ("stage-1-fired / stage-2-declined ≤ 0.3") is taken as
+**`stage2Declined / stage1Held`**, the direction in which the design's own conclusion ("the predicate is wrong, not the
+budget") is what the number supports — and the denominator is the rows the writer records at `stage: 2` (the steps that
+reached the expensive stage), not a "stage-1-fired" count, which is 0 on every run the writer can produce and would
+make the row unfailable. The same correction applies to R-b (overruns are counted over every round that ran, since a
+round that overran and then timed out is `decision: 'failed'`) and to prediction (e), which also now applies the
+QuixBugs filter its wording claims.
+
+**Not ratified here.** §2.4 (the risk polarity change) and the default-mode flip to `jev-on` are separate decisions on
+these rows; §8.5 says so explicitly, and R-e reports the `riskSource: 'code'` and `jevUnavailable` counts so the first of
+them can be argued from evidence.
+
+**Known gap, owned elsewhere.** `src/cli/args.ts CONDITIONS` keeps its own hard-coded `--conditions` allow-list and is not
+derived from `CONDITION_ORDER`, so `bin/jevcode.js bench --conditions jev-on-next` is rejected at the argv boundary even
+though `parseConditions` and `runBench` accept it. Adding the two rows there (and to the `arg`/`help`/usage strings) is the
+one change this wave needs outside `src/bench/**`; `test/unit/config/args.test.ts` and `test/unit/bench/next-arms.test.ts`
+both pin the gap so it cannot be forgotten, and **no live arm can run until it lands**.
+
 ## 2026-09-22 Iteration 3 lands unmeasured; a structural signal reaches the pool rule only with a gold sweep behind it, and Jev's state stays signal-free
 
 Iteration 3 (`oos-iter-3`, review `docs/research/llm-jev/review-oos-iter-3-2026-09-22.md`, 16 findings, 11 confirmed by probe)
@@ -1303,3 +1415,25 @@ means: a zero-token timeout backs a goal's deadline off only once a sample of th
 never answers stays at the class base; default `always` is byte-identical to before. Ring 1 at the merged tip is unmeasured (the
 localiser changed after the last run); the next measurement runs it from a frozen worktree of the merged tip. `kth` under `--jev off`
 is expected to fail until iteration 4 ranks replace sites without a Jev ranking (`REPLACE_SITES_MAX = 6` in file order).
+
+## 2026-09-22 The LLM-loop wave lands with both switches off; the nine design defaults are ratified; the live head-to-head waits on two CLI rows and the router engine seam
+
+`docs/LLM-LOOP-DESIGN.md` (branch `llm-loop-design`, winner "Fastlane S2/S4 — the sieve as a step the loop can take", three designs and two
+judges) answered the standing request "use the LLM for the main loop": under the default `llm-jev` the LLM is a candidate source inside the
+synthesizer (`engine.ts` swaps the propose stage for `synthesize()`), and only `jev-on`/`jev-off` let the generator propose each step. The wave
+makes `jev-on` the primary LLM-driven loop on the new harness: S2 generator path (TTFB, hedged samples, byte-stable prefix, reasoning cap,
+`--quick`), S4 speculative routers (`routeSpeculative`, `ROUTER_DEADLINE_MS`, the exact-digest cache; nine sites four-clause), and the Ledger+Sieve
+synthesizer as a bounded fast path (route R9: one SIEVE round on a single-file cluster whose pool fits `t_run`, cold-confirmed, proposes and never
+applies, one-strike disarm). Contract 1.9 header and optional members only. Landed on `main` from `llm-loop-integration` @ 13414f0 (merge order
+design → B → A → C → D; three merge-exposed defects fixed failing-first; full suite 530 files / 8,786 passed; Ring 1 `--jev off` all gates met;
+`router-golden` and `fastpath` §I2 byte-identity hold). **Switches on `main`:** `routers: 'off'` in every mode; `fastPath: 'auto'` only when
+`mode === 'jev-on'`, `'off'` otherwise; `DEFAULT_MODE` stays `'llm-jev'`; env `JEVCODE_ROUTERS`/`JEVCODE_FASTPATH` fill an absent option only.
+**§9 ratified as written by the harness owner:** Q1 NO risk-polarity change (a failed Q20 still means ask, never allow; `riskSource`/`jevUnavailable`
+are recorded for a later decision); Q2 routers stay off until §8.5 accepts, the flip is its own DECISIONS line; Q3 the fast path ships even with
+Ring 1 red under `--jev off`, refusing under the off-decider (Ring 1 came back green on the merged tree anyway); Q4–Q6 `ROUTER_DEADLINE_MS` 400,
+`FASTPATH_MAX_T_RUN_MS` 800, `FASTPATH_WALL_MAX_MS` 45 s / 0.35 share ship and are retuned from Ring-2 data only; Q7 no legacy golden re-capture;
+Q8 the plain `jev-on` arm is funded; Q9 `runFactsRef` was fixed on `main` (c7ae106) outside the wave, so the `--concurrency 1` pin is no longer
+forced by it. **Still owed before the head-to-head (arms `jev-on-next`, `jev-on-next-nofast`, `jev-on` on the fresh 18 + in-sample 28):** the two
+`CONDITIONS` rows and the `--quick` flag in `src/cli/args.ts` (TUI session), and slot B's engine seam (per-call abort on router asks, the record
+writer for `routerWaitMs`/`router`/`riskSource`/`jevUnavailable`, `completionDecision` at `completeAfter`, per-request retry waker, option-over-env
+precedence) on branch `llm-loop-seam`. The default-mode flip to `jev-on` is decided only on those rows, never bundled.

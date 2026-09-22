@@ -46,6 +46,23 @@ export function isComplete(completion: number | null, threshold: number): boolea
   return completion !== null && completion >= threshold;
 }
 
+/**
+ * contract 1.9 (Fastlane) §2.5 RL5: who decides that the run is complete.
+ *
+ * Today (`routers: 'off'`, every mode but llm-jev) the decision is Jev's Noul against the threshold. With
+ * routers on it is demoted to recorded-only on exactly the steps where the harness has the fact itself — a step
+ * carrying `ProposalEvidence`, which is what `isCompleteByFact()` reads. In `jev-on` that is **zero steps
+ * today**, so I2 holds trivially and nothing changes until the fast path (slot C, route R9) commits its first
+ * evidence-bearing proposal; from then on a run completes on the code fact where today it waits for a Noul.
+ *
+ * Pure, so the engine seam (`Engine.completeAfter`, `src/loop/engine.ts`, §7.5) is a one-line call. Returning
+ * the source, not just the boolean, is what makes the change auditable per step rather than per release.
+ */
+export function completionDecision(i: { routers: boolean; hasEvidence: boolean; completion: number | null; threshold: number; fact: CompletionFactInput }): { complete: boolean; source: 'jev' | 'code' } {
+  if (i.routers && i.hasEvidence) return { complete: isCompleteByFact(i.fact), source: 'code' };
+  return { complete: isComplete(i.completion, i.threshold), source: 'jev' };
+}
+
 // ---------------------------------------------------------------------------------------
 // Change 6(b): when `task_complete` is due at all
 // ---------------------------------------------------------------------------------------

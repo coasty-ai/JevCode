@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { armMechanisms } from '../../../src/bench/conditions.js';
 import { computeSuiteMetrics } from '../../../src/bench/metrics.js';
 import { TOKEN_PRICING_NOTE, bar, renderComparison } from '../../../src/bench/report.js';
 import { buildRecord } from '../../../src/bench/runner.js';
@@ -15,6 +16,7 @@ function cfg(mode: EngineMode): ConditionConfig {
     temperature: null,
     maxTokens: 4096,
     generation: { proposer: 'generator', temperature: null, maxTokens: 4096, reasoning: null, deadlineMs: null, lengthHandling: 'none', servedRate: { inputPerM: 0, outputPerM: 0 } },
+    mechanisms: armMechanisms(mode),
     maxSteps: 3,
     maxWallMs: 60_000,
     maxReplans: 5,
