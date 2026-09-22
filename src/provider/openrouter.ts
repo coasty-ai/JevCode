@@ -48,7 +48,7 @@ import type {
   TokenBreakdown,
 } from './types.js';
 
-export const OPENROUTER_REFERER = 'https://github.com/prateekjannu/jevcode';
+export const OPENROUTER_REFERER = 'https://github.com/coasty-ai/JevCode';
 export const OPENROUTER_TITLE = 'jevcode';
 
 function validateRequest(req: GenerateRequest): void {

@@ -33,9 +33,12 @@
  * engine (no synthesizer, no Jev anywhere). This switch keeps the whole `llm-jev` machine and removes only the
  * router's opinions — the comparison the design's CI gate wants.
  *
- * Reached from the environment (`JEVCODE_JEV=off|escape|unreachable|on`) so it works for the bench, the perf probes
- * and a local run without a flag day; the `--jev off` CLI flag maps onto it in `src/cli/args.ts`, which this wave
- * does not own (declared in contract_changes).
+ * Reached ONLY from the environment (`JEVCODE_JEV=off|escape|unreachable`) by the bench and the perf probes, which set
+ * it themselves (`npm run bench` / `npm run perf`). It is a bench/perf fault switch, not a product setting: every
+ * product command REFUSES to start while it is set — exit 2 (`EXIT_CODES.config`), before any network, `--plain`
+ * identical, the value redacted to its first 16 code points — with the `[setup]` sentence
+ *   `JEVCODE_JEV is set ("<value>") — it is a bench/perf fault switch, not a product setting; unset it, or run the bench and perf suites through npm run bench / npm run perf, which set it themselves`
+ * and the fix line `unset JEVCODE_JEV` (src/cli, 0.6.0). There is no `--jev off` CLI flag.
  */
 import { sha12 } from '../core/hash.js';
 import { toJson } from '../core/json.js';

@@ -1660,3 +1660,17 @@ window that is there, one that is not, and one it cannot attribute".
 and landed on opposite sides of it; `finish-integration` reconciled them in the merge that took both, by applying
 the replacement in place above and keeping this paragraph as the record.
 
+
+## 2026-09-22 The LLM-loop head-to-head is deferred; the default stays `llm-jev`; the repository moves to coasty-ai/JevCode
+
+By the user's direction to finish without further measurement passes, the LLM-loop head-to-head (`jev-on-next` /
+`jev-on-next-nofast` / `jev-on` / `llm-jev` on the fresh 18 + in-sample 28) and the warm-plane re-pair are NOT run in this
+release. Consequences, stated so nobody reads them as measured: `DEFAULT_MODE` stays `'llm-jev'` on the iteration-2 evidence
+(fresh 18: 14/18 vs the tuned generator's 9/18, b = 5 / c = 0, p = 0.031; in-sample 27/28); the LLM-loop wave ships OPT-IN — routers
+off in every mode, `fastPath: 'auto'` only under `mode === 'jev-on'`, S2 wired on the jev-on propose path and recorded per step in
+`EngineStatus.mechanisms` — and its §8.5 accept rule is unevaluated; the warm verification plane stays OFF (its calibration defect
+is fixed at 0556f1a and unmeasured since). Whoever runs the measurement later has everything needed: the arms are typeable, the
+records carry every §8.3 row, the pre-registered predictions and the accept rule are in docs/LLM-LOOP-DESIGN.md §8, and the warm
+criterion is in experiments/results/llm-jev-iter2.tool.md §6.2. The repository's public home is https://github.com/coasty-ai/JevCode
+(package metadata, referers and the issues URL point there); `archive/measurements` preserves every measured artefact removed from
+the public tree.

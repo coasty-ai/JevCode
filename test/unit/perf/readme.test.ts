@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { PerfResult } from '../../../src/perf/main.js';
-import { README_NOT_A_CHECKOUT, isJevCodeCheckout, rewriteReadmePerformance } from '../../../src/perf/main.js';
+import { PERFORMANCE_PAGE, README_NOT_A_CHECKOUT, isJevCodeCheckout, rewriteReadmePerformance } from '../../../src/perf/main.js';
 import type { LagGeometry } from '../../../src/perf/render-lag.js';
 import type { ComposerSeries } from '../../../src/perf/composer-latency.js';
 import type { IntakeSeries } from '../../../src/perf/intake-latency.js';
@@ -465,16 +465,21 @@ describe('rewriteReadmePerformance() writes only inside a JevCode checkout (F01)
     expect(readFileSync(join(noBin, 'README.md'), 'utf8')).toBe(FOREIGN);
   });
 
-  it('rewrites the section in a real checkout, and reports a checkout README that has no such section', () => {
+  it('rewrites the section of the measurements page in a real checkout, and reports a page that has no such section', () => {
     const root = dir('jevcode-perf-checkout-');
     mkdirSync(join(root, 'bin'), { recursive: true });
     writeFileSync(join(root, 'bin/jevcode.js'), '#!/usr/bin/env node\n');
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'jevcode', version: '0.0.0-test' }));
-    writeFileSync(join(root, 'README.md'), '# JevCode\n\n## Performance\n\nold table\n\n## Bench\n\nbench text\n');
+    // the public README carries no table any more; the page under docs/measurements does (PERFORMANCE_PAGE)
+    mkdirSync(join(root, 'docs/measurements'), { recursive: true });
+    const page = join(root, PERFORMANCE_PAGE);
+    writeFileSync(join(root, 'README.md'), '# JevCode\n\nsummary only\n');
+    writeFileSync(page, '# JevCode\n\n## Performance\n\nold table\n\n## Bench\n\nbench text\n');
     expect(isJevCodeCheckout(root)).toBe(true);
 
-    expect(rewriteReadmePerformance(root, 'perf/results/latest.json', result())).toBe('README Performance section rewritten from perf/results/latest.json\n');
-    const written = readFileSync(join(root, 'README.md'), 'utf8');
+    expect(rewriteReadmePerformance(root, 'perf/results/latest.json', result())).toBe(`${PERFORMANCE_PAGE} Performance section rewritten from perf/results/latest.json\n`);
+    expect(readFileSync(join(root, 'README.md'), 'utf8')).toBe('# JevCode\n\nsummary only\n');
+    const written = readFileSync(page, 'utf8');
     expect(written).toContain('| Measurement | Result | Gate | Status |');
     expect(written).toContain('Measured 2026-09-21 (10:00Z)');
     // only that section moved
@@ -482,9 +487,9 @@ describe('rewriteReadmePerformance() writes only inside a JevCode checkout (F01)
     expect(written).toContain('\n## Bench\n\nbench text\n');
     expect(written).not.toContain('old table');
 
-    writeFileSync(join(root, 'README.md'), '# JevCode\n\nno such section\n');
-    expect(rewriteReadmePerformance(root, 'out.json', result())).toBe('README.md has no "## Performance" section; nothing rewritten\n');
-    expect(readFileSync(join(root, 'README.md'), 'utf8')).toBe('# JevCode\n\nno such section\n');
+    writeFileSync(page, '# JevCode\n\nno such section\n');
+    expect(rewriteReadmePerformance(root, 'out.json', result())).toBe(`${PERFORMANCE_PAGE} has no "## Performance" section; nothing rewritten\n`);
+    expect(readFileSync(page, 'utf8')).toBe('# JevCode\n\nno such section\n');
   });
 });
 

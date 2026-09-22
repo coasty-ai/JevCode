@@ -3394,7 +3394,13 @@ class EngineImpl implements Engine {
     if (synthesizer.handles === undefined) return (this.synthHandles = true);
     const listing = await this.listCandidatesTimed();
     const handles = synthesizer.handles(this.wsInfo, listing.map((c) => c.path));
-    if (!handles) this.emit({ type: 'transcript', step: this.step + 1, level: 'info', text: `synthesizer ${synthesizer.name} does not cover this workspace; proposing through the generic per-step fallback (docs/LLM-JEV-DESIGN.md §9.4)` });
+    if (!handles) {
+      // once per run (the answer is cached in `synthHandles`; a resume re-derives it once more): the `[setup]` notice the
+      // renderer shows at run start, so a TypeScript workspace under the default mode is told plainly that the synthesizer
+      // covers Python workspaces with a detected test runner and this run takes the generic per-step propose
+      this.emit({ type: 'notice', step: null, kind: 'config', level: 'info', label: '[setup]', text: `synthesizer ${synthesizer.name} covers Python workspaces with a detected test runner; this workspace takes the generic per-step propose (docs/LLM-JEV-DESIGN.md §9.4)` });
+      this.emit({ type: 'transcript', step: this.step + 1, level: 'info', text: `synthesizer ${synthesizer.name} does not cover this workspace; proposing through the generic per-step fallback (docs/LLM-JEV-DESIGN.md §9.4)` });
+    }
     return (this.synthHandles = handles);
   }
 

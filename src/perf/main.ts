@@ -260,20 +260,23 @@ export function closePerfWindow(path: string, log: (s: string) => void): void {
   }
 }
 
-/** The line a run prints when it declines to touch a README that is not this project's. */
-export const README_NOT_A_CHECKOUT = 'README.md not rewritten (not a JevCode checkout)\n';
+/** The line a run prints when it declines to touch a performance page that is not this project's. */
+export const README_NOT_A_CHECKOUT = 'docs/measurements/performance.md not rewritten (not a JevCode checkout)\n';
+/** Where the release table lives since the public README shrank to a summary: the measurements page carries `## Performance`. */
+export const PERFORMANCE_PAGE = 'docs/measurements/performance.md';
 
 /**
- * The README write path of a complete run, and the only caller of `updateReadmePerformance` outside its own tests.
+ * The page write path of a complete run, and the only caller of `updateReadmePerformance` outside its own tests.
  *
  * `updateReadmePerformance` replaces the `## Performance` section of whatever file it is handed, so the guard has to
- * be here: `<cwd>/README.md` is a JevCode README or the run does not write it. `partial` — the only condition the
+ * be here: `<cwd>/docs/measurements/performance.md` is JevCode's page or the run does not write it (the public
+ * README no longer carries the table). `partial` — the only condition the
  * rewrite used to carry — says which probes were *asked for*, never whose README this is. Returns the line to log.
  */
 export function rewriteReadmePerformance(root: string, out: string, result: PerfResult): string {
   if (!isJevCodeCheckout(root)) return README_NOT_A_CHECKOUT;
-  const ok = updateReadmePerformance(resolve(root, 'README.md'), result);
-  return ok ? `README Performance section rewritten from ${out}\n` : `README.md has no "## Performance" section; nothing rewritten\n`;
+  const ok = updateReadmePerformance(resolve(root, PERFORMANCE_PAGE), result);
+  return ok ? `${PERFORMANCE_PAGE} Performance section rewritten from ${out}\n` : `${PERFORMANCE_PAGE} has no "## Performance" section; nothing rewritten\n`;
 }
 
 export const LOAD_MAX = 8;
