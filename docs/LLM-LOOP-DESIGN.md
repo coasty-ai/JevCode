@@ -1517,3 +1517,19 @@ A hard per-round Jev cap as a `ControllerOptions` member (reported as `fastPath.
 M15 replay.
 The `scopeUsable` hole in the **judge** (§6 row 14) — recorded here, fixed elsewhere.
 The default-mode flip.
+
+**Added by the finishing pass**, each with an owner, because a deferral without one is a silent drop:
+
+- **F17 — S2 on the `jev-on` path.** `armMechanisms` pinned `s2: true` for `jev-on-next` /
+  `jev-on-next-nofast` while no S2 mechanism is reachable in `jev-on`: nothing sets `PromptInput.prefixOrder`,
+  `onFirstByte` is forwarded only on the synthesizer sample path, and hedging plus the §3.4 reasoning cap live in
+  `src/synth/llm/source.ts`, which `jev-on` never enters. The finishing pass made the RECORD match the run (F05:
+  `s2: false` off the `llm-jev` path, no `PinnedGeneration.s2` there, and an `S2` row reading `not_evaluable`);
+  wiring the mechanisms onto `jev-on` is a mechanism change and is **slot A's F25**, which exposes a runtime
+  `mechanisms.s2: 'on' | 'partial' | 'off'` for summary.json to record instead of a constant.
+- **`llm-sieve` still runs L2.** F06 constructs the arm (it used to throw, turning `--conditions llm-sieve` into a
+  run directory of `engine_create_failed` and criterion 5a into a permanent `not_evaluable`), and the stub decider
+  supplies §10.1's "every Jev question replaced by its code default". §10.1's row also says "no L2 (code oracle
+  only)", and the L2 reproduction writer is an llm-jev mechanism the stub does not switch off — it only stubs L2's
+  Jev judgement. Closing it is an `l2: false` `ControllerOptions` switch read in `initRepository`: owner = whoever
+  funds the attribution arm's re-run, and the arm's cost line moves with it.

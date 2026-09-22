@@ -833,9 +833,13 @@ is untouched since `2a92d0b`; the hygiene lives in `src/bench/tuned-provider.ts`
 `DROPPED_CALL_STOP_REASON` in `src/loop/stages/propose.ts` so a dropped call ends the step once). Consequences: `BenchCondition
 = EngineMode | 'llm-sieve' | 'jev-off-tuned'`; `stubbedJevRequests`, the tuned ledger (`timeouts`, `doubled`), `servedRate`,
 the generator-call summary and `os.loadavg()` at engine start go on the record; criterion 5 (attribution) gates which
-questions survive the per-question ablation, not the dominance claim itself. Open: `llm-sieve` is not yet wired in
-`src/synth/index.ts` (the factory throws; the bench records the refusal rather than measuring the wrong arm), and
-`src/cli/args.ts CONDITIONS` does not list the two arms.
+questions survive the per-question ablation, not the dominance claim itself. Open at the time of writing: `llm-sieve` is
+not yet wired in `src/synth/index.ts` (the factory throws; the bench records the refusal rather than measuring the wrong
+arm), and `src/cli/args.ts CONDITIONS` does not list the two arms. **Both closed since** — `0fb7af3` landed the two arms
+in `CONDITIONS`, and the finishing pass (F06) constructs `llm-sieve` as `llm-jev` echoing its own mode, on the grounds
+that "every Jev question replaced by its code default" is the STUB DECIDER's job and not a second search. Residual, on
+the §9.1 list: §10.1's row also says "no L2", and the L2 reproduction writer is an llm-jev mechanism the stub does not
+switch off — it only stubs L2's Jev judgement.
 
 ## 2026-09-21 Merge plan with the TUI session: `src/core/types.ts` has a single writer
 
