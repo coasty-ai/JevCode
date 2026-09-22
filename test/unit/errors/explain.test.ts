@@ -27,19 +27,17 @@ describe('explainFsError (§7.4: errors that name the fix)', () => {
   });
 
   /**
-   * §7.4 row 2 and §7.7's edge want ENOSPC under a live run dir to be exit 3 (this run cannot be checkpointed)
-   * while the same code at LAUNCH stays exit 2 (`--runs-dir` on another volume is the fix). `src/errors.ts` is
-   * the harness session's under the 2026-09-22 ownership rule, so the hunk that puts the split HERE is owed to
-   * them (docs/STATUS.md 'Round 4'); round 4 makes the split at its two readers instead —
-   * `src/cli/fatal.ts` (the `run-dir` op) and `src/cli/report.ts` (§7.7's edge) — both pinned in their own files.
-   * This file therefore pins what `explainFsError` answers TODAY: the line and the fix, and exit 2 everywhere.
+   * §7.4 row 2 and §7.7's edge: ENOSPC under a LIVE run dir is exit 3 (this run cannot be checkpointed) while the same
+   * code at LAUNCH stays exit 2 (`--runs-dir` on another volume is the fix). The split lives HERE since the harness
+   * session landed round 4's owed hunk (0458ddf, 2026-09-22); the two readers — `src/cli/fatal.ts` (the `run-dir` op)
+   * and `src/cli/report.ts` (§7.7's edge) — keep their own pins and now agree with the function.
    */
-  it('ENOSPC names the volume fix; the exit code is config here (the run-dir split lives at the two call sites)', () => {
+  it('ENOSPC names the volume fix; exit 3 inside a live run dir, exit 2 at launch', () => {
     expect(explainFsError(errno('ENOSPC'), { op: 'run-dir', path: '/runs/r1' })).toEqual({
       line: 'the disk holding /runs/r1 is full',
       fix: ['free space, or pass --runs-dir <dir> on another volume'],
       code: 'ENOSPC',
-      exitCode: EXIT_CODES.config,
+      exitCode: EXIT_CODES.checkpoint,
     });
     // the same code while the LAUNCH creates the runs directory: `--runs-dir` on another volume is the fix, exit 2
     expect(explainFsError(errno('ENOSPC'), { op: 'runs-dir', path: '/runs' })?.exitCode).toBe(EXIT_CODES.config);
