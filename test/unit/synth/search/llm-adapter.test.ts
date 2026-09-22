@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { LLM_SERVED_PRICING, attemptsFromArrival, createSearchLlm, listingsFor, llmMemory, needPathsOf, recordAttempts } from '../../../../src/synth/search/llm.js';
-import type { LocalizeResult } from '../../../../src/synth/types.js';
+import { DEFAULT_LOCALIZER_OPTIONS } from '../../../../src/synth/localize/types.js';
+import type { LocalizeResult, Site } from '../../../../src/synth/types.js';
 import { calcFiles, proposeFixCall, scriptedGenerate } from '../llm/fixtures.js';
 import { fakeSandbox } from '../sieve/helpers.js';
 import { fakeBudget, fakeCtx, fakeGoal, fakeMemory, fastOracle, siteAt, summary } from './controller-fakes.js';
@@ -47,6 +48,32 @@ describe('listingsFor', () => {
     const widened = listingsFor(files, loc(), null, { needPaths: ['src/util.py'], widen: 2 });
     expect(widened.listings.map((l) => l.path)).toEqual(['src/util.py', 'src/calc.py']);
     expect(widened.listings[1]).toMatchObject({ name: 'add', origin: 'jev' });
+  });
+
+  /**
+   * Review finding 12. With `escapedAnchors = 40` the escaped branch can hand ONE function ~40
+   * anchors (and up to `40 × (2·window+1)` sites); `listingsFor` used to feed every one of them
+   * to `listingSet`, which then picks its four `## Code` listings from a list the first function
+   * monopolises — a second located function is crowded out of the prompt entirely. The site LIST
+   * still carries all 40 (the search budget spends it); only what reaches the model is balanced,
+   * at `anchorsPerFunction` per located function.
+   */
+  it('one escaped function cannot crowd another out of the `## Code` listings', () => {
+    const many = (file: typeof calc, lines: readonly number[]): Site[] => lines.map((line) => siteAt(file, line));
+    // `calc.py` contributes 40 code-order sites, `util.py` two — the shape an escaped localisation has
+    const flooded: LocalizeResult = {
+      files: [{ path: 'src/calc.py', probability: 1 }, { path: 'src/util.py', probability: 1 }],
+      functions: [],
+      requests: 0,
+      sites: [...many(calc, Array.from({ length: 40 }, (_, i) => 2 + (i % 4))), ...many(util, [2, 2])],
+    };
+    const { anchors, listings } = listingsFor(files, flooded, null);
+    // at most `anchorsPerFunction` anchors per located function reach the prompt
+    const perFn = new Map<string, number>();
+    for (const a of anchors) perFn.set(`${a.path}:${a.fn ?? 'module'}`, (perFn.get(`${a.path}:${a.fn ?? 'module'}`) ?? 0) + 1);
+    expect([...perFn.values()].every((n) => n <= DEFAULT_LOCALIZER_OPTIONS.anchorsPerFunction)).toBe(true);
+    // and the second file is still in the listing SET, not just the anchor count
+    expect(listings.map((l) => l.path)).toContain('src/util.py');
   });
 });
 

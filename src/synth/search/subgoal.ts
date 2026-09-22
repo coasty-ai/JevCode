@@ -1327,6 +1327,8 @@ async function settleLlm(st: LoopState, outcome: GoalSearchTrace['outcome']): Pr
     misanchored: sum((s) => s.misanchored),
     graceMs: L.graceMs,
     fixAbsent: L.fixAbsent,
+    // OOS iteration 3, item 3: which deadline-growth arm produced these rounds (recorded, never a gate)
+    deadlineGrowth: L.deps.deadlineGrowth,
   };
 }
 

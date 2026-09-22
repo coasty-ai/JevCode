@@ -33,6 +33,19 @@ export interface LocalizerOptions {
   functionBeam: number;
   /** Jev line anchors per function (probe-localization: top-3 covers 36/40) */
   anchorsPerFunction: number;
+  /**
+   * Line anchors per function when the line Choice ESCAPED, so the code order stands in
+   * (OOS iteration 3, item 4). `anchorsPerFunction` is 3 because a Jev top-3 covers 36/40 — it is
+   * a bound on a RANKING. The code order is not a ranking: with no traceback frame and no coverage
+   * it is the file's own line order, and a top-3 of it is the first three lines of the function,
+   * which is why `--jev off` on `kth` (gold at L12), `mergesort` and `units` never produced a
+   * replace site anywhere near the defect and replanned into the cap with `plausible 0` at every
+   * step. With no ranking to trust, every line of the located function is offered and the site
+   * budget (search/budget.ts `siteShare`) decides how far the step gets — the same thing WIDENED
+   * already does one phase later. Bounded so a repository-sized function cannot blow the site
+   * list up; a function longer than this still falls back to its first `escapedAnchors` lines.
+   */
+  escapedAnchors: number;
   /** SBFL lines unioned with the Jev anchors (union of two top-3 lists covered 38/40) */
   sbflAnchors: number;
   /** half-width of the site window around an anchor (Q4: within ±3 covers 94 %) */
@@ -53,6 +66,7 @@ export const DEFAULT_LOCALIZER_OPTIONS: Readonly<LocalizerOptions> = {
   fileBeam: 5,
   functionBeam: 5,
   anchorsPerFunction: 3,
+  escapedAnchors: 40,
   sbflAnchors: 3,
   window: 3,
   fileChunkSize: 250,

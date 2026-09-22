@@ -5,6 +5,7 @@
  */
 import type { Json } from '../../core/types.js';
 import type { AppliedCandidate, Candidate, CandidateSourceName, FailureView, LineEdit, Progress, SearchTrace, Site, SourceFile, TestRunSummary } from '../types.js';
+import type { DeadlineGrowthMode } from '../llm/source.js';
 
 export type GoalStatus = 'open' | 'active' | 'parked' | 'fixed';
 /** The phase ladder; 'LLM' (docs/LLM-JEV-DESIGN.md §4.2) runs only when an LLM source is wired, SKETCH/BEAM only once its rounds are spent. */
@@ -236,6 +237,13 @@ export interface LlmTrace {
   graceMs: number;
   /** Q17's fix-absent signal of the last RANK round (routing only, never a gate) */
   fixAbsent: 'strong' | 'weak' | null;
+  /**
+   * OOS iteration 3, item 3: the deadline-growth arm this run ran under
+   * (`JEVCODE_DEADLINE_GROWTH`, default `always`). Recorded on the search so the step's `rawText`
+   * and `StepRecord.verify` carry it and a bench record can say which arm produced it; it gates
+   * nothing. Absent on a trace written before the flag existed.
+   */
+  deadlineGrowth?: DeadlineGrowthMode;
 }
 
 /** What survives a checkpoint (SynthesisContext.synthState); everything else is rebuilt from the plan and the workspace. */
