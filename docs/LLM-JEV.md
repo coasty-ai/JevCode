@@ -5,6 +5,39 @@ candidate source inside it, Jev localising and arbitrating, shadow lanes verifyi
 entry per measurement, with the numbers, the run ids and the report they come from; the design doc holds the plan and the
 criterion, `experiments/results/` holds the reports. Live results only — nothing here is projected.
 
+## §5a Harness environment switches (reference, not a measurement)
+
+Every environment variable that **changes what a run does**, in one table, because four of them
+(`JEVCODE_HEDGE`, `JEVCODE_CASE_TIMEOUT_MS`, `JEVCODE_MAX_CASE_TIMEOUTS`, `JEVCODE_BENCH_CONTEXT`) appeared in no
+document at all before 2026-09-22 and four more existed only inside design prose with no default and no effect —
+so a measurement could inherit one from the shell and nobody could tell from the record. Presentation and settings
+variables (`JEVCODE_MODE`, `JEVCODE_THEME`, `JEVCODE_ASCII`, the `JEVCODE_MOCK_*` and `JEVCODE_ASSERT_*` test hooks,
+…) are NOT here; they belong to the settings table in `src/config/defaults.ts` and to the TUI docs.
+
+**Two rules hold for all of them.** (1) An unset or unrecognised value is always the pre-existing behaviour — a
+typo disarms a switch, it never arms one. (2) Where an in-process option exists for the same mechanism, **the
+explicit option wins and the environment only fills an ABSENT option** (`routersEnabled`, `resolveFastPathOption`,
+`hedgeEnabled`); an arm's recorded row is therefore always the truth about what it ran.
+
+<!-- env-switches:begin -->
+| Switch | Accepted values | Default (unset) | Effect | Read in |
+| --- | --- | --- | --- | --- |
+| `JEVCODE_JEV` | `off` / `0` / `escape` / `down` / `503` / `unreachable` (`off`,`0` → escape; `down`,`503` → unreachable) | unset — the real decider | Replaces the Decider with a deterministic double: every Choice takes the escape option, every Noul is inert at 0.5, every Score sits at its TOP level (so the destructive gate can only tighten). Bench/perf only — there is no `--jev` CLI flag, and the single caller is the bench runner | `src/jev/off.ts` (`jevOffModeFrom`, `withJevOff`), applied at `src/bench/runner.ts` |
+| `JEVCODE_ROUTERS` | `on` (anything else is off) | off in every mode | Arms the contract 1.9 §2 speculative router table (`routeSpeculative`). An explicit `EngineOptions.routers` wins; the env fills only an absent option. The `jev-on` gate stays ahead of both | `src/jev/router.ts` (`routersEnabled`) |
+| `JEVCODE_FASTPATH` | `auto` / `off` | `auto` when the mode is `jev-on`, `off` otherwise | Arms route R9, the Ledger+Sieve fast path. An explicit `EngineOptions.fastPath` wins; the env fills only an absent option | `src/loop/engine.ts` (`resolveFastPathOption`) |
+| `JEVCODE_WARM` | `on` / `1` / `true` (anything else is off) | OFF for every runner | Asks for the warm verification plane (a persistent forked interpreter that SCREENS candidates; a passer is always re-verified by a cold spawn). A runner with no warm shape records `warm.mode: 'unsupported-runner'` instead of silently running cold. Also refuses the fast path outright (`reason: 'warm_plane'`) | `src/synth/warm/plane.ts` (`warmRequested`, `warmModeFor`) |
+| `JEVCODE_HEDGE` | `on` (anything else is off) | off | Arms the contract 1.9 §3.2 hedge: one twin per round fired after `hedgeAfterMs(p50 TTFB)`. A caller's `LlmSourceDeps.hedge` pin wins — but **no site under `src/` sets one**, so this variable is today the ONLY way the hedge can arm | `src/synth/llm/source.ts` (`hedgeEnabled`, `HEDGE_ENV_FLAG`) |
+| `JEVCODE_DEADLINE_GROWTH` | `served` / `always` | `always` (byte-identical to the behaviour before the switch existed) | `served`: a zero-token timeout backs a goal's deadline off only once a sample of that goal has actually been SERVED, so a provider that never answers stays at the class base. Recorded per run on `StepsSummary.deadlineGrowth` | `src/synth/llm/source.ts` (`deadlineGrowthMode`, `DEADLINE_GROWTH_ENV_FLAG`) |
+| `JEVCODE_CASE_TIMEOUT_MS` | a positive integer, milliseconds | 2000 ms (`CASE_TIMEOUT_S = 2`, run_tests.py's own `--timeout`) | The per-case limit inside the GENERATED pytest module. The sieve sets it per shadow lane from the oracle's measured per-test timeout; exported by hand it changes every lane of every QuixBugs run | `src/synth/verify/quixbugs.ts` (`CASE_TIMEOUT_ENV`), consumed by the module built in `src/bench/quixbugs/pytest.ts`, set per lane in `src/synth/sieve/runner.ts` |
+| `JEVCODE_MAX_CASE_TIMEOUTS` | a positive integer | unset — no limit (the sieve sets 1 on its own lanes, `LANE_MAX_CASE_TIMEOUTS`) | After this many case timeouts in one run the remaining cases are reported "not run" rather than called. This is what keeps a hanging candidate from costing the whole per-case budget on every case | `src/synth/verify/quixbugs.ts` (`MAX_CASE_TIMEOUTS_ENV`), consumed by `src/bench/quixbugs/pytest.ts`, set per lane in `src/synth/sieve/runner.ts` |
+| `JEVCODE_BENCH_CONTEXT` | `relaxed` (anything else is legacy) | `legacy` | Flips **every** bench arm's `contextPolicy.view` from legacy to relaxed, i.e. changes the prompt every arm sends. An arm that wants the relaxed view should set `contextPolicy` on its own condition object; this switch is the whole-run override and is easy to leave exported | `src/bench/conditions.ts` |
+<!-- env-switches:end -->
+
+`test/unit/hygiene/env-switches-documented.test.ts` discovers this set from `src/` (an exported `JEVCODE_*` constant
+outside the TUI-owned trees that is used as an `env[…]` subscript, plus three switches read by literal subscript)
+and fails if any of them has no row, if a row has an empty column, if a row names a switch nothing reads, or if a
+row's "Read in" file does not actually read it.
+
 ## 2026-09-21 — first head-to-head against the GLM generator-only baseline (HEAD 626fc40)
 
 Report: `experiments/results/llm-jev-headtohead.md` (tool output `llm-jev-headtohead.tool.md`, `.tool-rerun.md`); probes

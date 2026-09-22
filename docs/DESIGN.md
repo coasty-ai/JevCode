@@ -2848,6 +2848,13 @@ lanes beside the code seeds, and lets the guard commit what passes. Design: `doc
 This section describes what is in the tree at `626fc40` (2026-09-21) — file names are the ones to
 open, not the design's anchors — and lists where the tree departs from the design and why.
 
+> **Every environment switch that changes what a run does is tabulated once, in `docs/LLM-JEV.md` §5a**
+> ("Harness environment switches": name / accepted values / default / effect / reading file, for `JEVCODE_JEV`,
+> `JEVCODE_ROUTERS`, `JEVCODE_FASTPATH`, `JEVCODE_WARM`, `JEVCODE_HEDGE`, `JEVCODE_DEADLINE_GROWTH`,
+> `JEVCODE_CASE_TIMEOUT_MS`, `JEVCODE_MAX_CASE_TIMEOUTS` and `JEVCODE_BENCH_CONTEXT`). Nothing in this section or
+> in §22.3–§22.8 restates a default that table owns. Settings-shaped variables (`JEVCODE_MODE`, `JEVCODE_MODEL`, …)
+> belong to `src/config/defaults.ts`'s settings table instead.
+
 What landed when (`git log 2a92d0b..HEAD`, all 2026-09-21): the map (`214bf55`) and the design
 (`22e5153`); stage 1 — the sanctioned generator channel, mode plumbing and code-fact stages
 (`a0f7fbc`, fixes `64c8d3e`); stage 2 — GLM details on the OpenRouter provider (`61c15b6`, fixes

@@ -1537,3 +1537,31 @@ So: the only Ring-1 `--jev off` run with arm counts is iteration 2's, and it FAI
 counts and predates `856023a` (oos-iter-4), which changed the localiser the gate turns on. **There is no Ring-1 `--jev off`
 measurement at or after `main` `d297b29`, and no release note, README line or design row may claim one.** The next measurement
 runs from a frozen worktree of the merged tip, inside a declared perf window, and lands its counts in this table.
+
+## 2026-09-22 The cross-session merge queue is a file in `docs/`, and every behaviour-changing env switch has one table
+
+Two absences that cost the 2026-09-22 audit the most time, both closed by making the thing a document instead of a
+convention (finishing pass F22).
+
+**1. `docs/MERGE-QUEUE.md`.** Branch state lived only in a private per-session memory file, which the other session
+cannot read. `r5-impl` — **167 files, +39,278 / −3,545 against `main`, the largest unmerged work in the tree** — was
+therefore invisible to anyone reading `docs/`, and so was its conflict surface. The rule from here: *a branch that
+is not in that table does not exist as far as the other session is concerned.* One row per unmerged branch (branch,
+owner session, contents, base commit, gates passed, the files it will conflict on, named to the hunk); the row is
+deleted in the merge commit that lands it. The file also carries the **forward bundle budget**, so a landing cannot
+arrive as a surprise gate raise: 496,373 B of headroom on the last measured 3,003,627, against ≈ 93 KB that round 5
+will spend wiring in `src/models/**` and the five provider adapters + registry — which are in the tree today but
+imported by nothing, so esbuild tree-shakes them and the measured figure does not contain them yet.
+
+**2. `docs/LLM-JEV.md` §5a, "Harness environment switches".** Nine switches that change what a run does, with
+accepted values, default, effect and reading file. Four of them (`JEVCODE_HEDGE`, `JEVCODE_CASE_TIMEOUT_MS`,
+`JEVCODE_MAX_CASE_TIMEOUTS`, `JEVCODE_BENCH_CONTEXT`) were in no document at all; four more
+(`JEVCODE_WARM`, `JEVCODE_FASTPATH`, `JEVCODE_ROUTERS`, `JEVCODE_DEADLINE_GROWTH`) existed only inside design prose
+with no default and no effect stated. Two rules hold across all of them and are now written down: an unset or
+unrecognised value is always the pre-existing behaviour (a typo disarms, never arms), and where an in-process option
+exists the **explicit option wins while the environment fills only an ABSENT option**, so an arm's recorded row is
+always the truth about what it ran. `docs/DESIGN.md` §22 links the table;
+`test/unit/hygiene/env-switches-documented.test.ts` discovers the set from `src/` and fails on a missing row, an
+empty column, a phantom row or a "Read in" file that does not read the switch. Settings-shaped variables
+(`JEVCODE_MODE`, `JEVCODE_MODEL`, `JEVCODE_THEME`, the `JEVCODE_MOCK_*` / `JEVCODE_ASSERT_*` test hooks) stay with
+the settings table in `src/config/defaults.ts` and are explicitly out of §5a's scope.
