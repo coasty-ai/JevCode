@@ -959,8 +959,15 @@ three are non-empty and the batch is ≤ `jevQuestions` (400); `assertQuestionBa
 `{ name, path, leaf, length, charset, entropyBucket, family, fileClass }` — **no value bytes, no substring,
 not even a prefix.**
 
+**Amended 2026-09-22 (contract consistency).** The id is `secret_<candidateId>`, built by
+`secretId(secretCandidateId(itemId, dotted))` and exported from `src/import/plan.ts` beside
+`sameMeaningId`, `rankId` and `contradictsId` — so all four content-keyed groups use **one**
+convention, `questions[c.id]`, and the `secretCandidateId → secret_<n>` side table is retired. The
+ordinal `secret_<i>` below is withdrawn: it was the last place an answer was read back by position,
+which is exactly the coupling review defect 5 broke, on the one side that can *demote* a credential.
+
 ```
-Noul  secret_<i>
+Noul  secret_<candidateId>          (candidateId = `<item.id>:<dotted>`)
 instructions: Is the value stored at `candidates[<i>].path` a credential — an API key,
               token, password or private key?
 true:  definition: the value is a secret a service accepts as proof of identity, and publishing

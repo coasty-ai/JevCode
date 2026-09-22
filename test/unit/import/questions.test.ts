@@ -7,6 +7,11 @@
  * Noul, 2–10 situation levels on every Score, and Jev is never asked to count anything); the
  * state carries **no value bytes**; and `askImport` never throws — a null decider, a throwing
  * decider, an aborted signal and an exhausted budget all return a *complete* outcome.
+ *
+ * Contract note (2026-09-22): all four content-keyed groups use ONE id convention,
+ * `questions[c.id]` with `c.id = <group>_<content key>` — `secretId`, `sameMeaningId`, `rankId`,
+ * `contradictsId`, all exported from `src/import/plan.ts`. Group I's `secret_<i>` ordinal and the
+ * `secretCandidateId → secret_<n>` table it needed are retired.
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { Answer, AskResult, Decider, Json, Question } from '../../../src/core/types.js';
@@ -38,13 +43,17 @@ import {
 } from '../../../src/import/questions.js';
 import type { QuestionBatch } from '../../../src/import/questions.js';
 import { shapeOf } from '../../../src/import/secrets.js';
+import { contradictsId, rankId, sameMeaningId, secretCandidateId, secretId } from '../../../src/import/plan.js';
 
 /** The value that must never appear in any request body. */
 const FIXTURE_VALUE = 'a7f3b2c1d4e5f60718293a4b5c6d7e8f';
 
+// §4.4.3 group I: the candidate id IS the question id — `secret_<item.id>:<dotted>`, built by
+// `secretId(secretCandidateId(…))` in plan.ts, exactly as groups III–V build theirs (2026-09-22:
+// the `secret_<i>` ordinal and its side table are retired).
 const secretCands = [
-  { id: 's1', dotted: 'integration.clientId', leaf: 'clientId', path: '~/.cursor/mcp.json', shape: shapeOf(FIXTURE_VALUE), fileClass: 'config' },
-  { id: 's2', dotted: 'oauth.clientId', leaf: 'clientId', path: '~/.codex/config.toml', shape: shapeOf('b'.repeat(40)), fileClass: 'config' },
+  { id: secretId(secretCandidateId('i1', 'integration.clientId')), dotted: 'integration.clientId', leaf: 'clientId', path: '~/.cursor/mcp.json', shape: shapeOf(FIXTURE_VALUE), fileClass: 'config' },
+  { id: secretId(secretCandidateId('i2', 'oauth.clientId')), dotted: 'oauth.clientId', leaf: 'clientId', path: '~/.codex/config.toml', shape: shapeOf('b'.repeat(40)), fileClass: 'config' },
 ];
 const fileCands = [
   { id: 'f1', path: '~/.claude/notes.md', bytes: 120, lines: 4, fences: 0, frontmatterKeys: [], headings: ['Today', 'Next'] },
@@ -144,6 +153,31 @@ describe('§4.4.3 the five groups obey the REPORT rules', () => {
 // ---------------------------------------------------------------------------------------
 // §0 principle 3 — the state carries shapes, never content
 // ---------------------------------------------------------------------------------------
+
+describe('§4.4.3 one question-id convention across all four content-keyed groups', () => {
+  it('every group keys `questions` by the candidate`s own id — no ordinal anywhere', () => {
+    for (const batch of [secretQuestions(secretCands), sameMeaningQuestions(pairCands), mattersHereQuestions(noteCands, '/ws'), contradictsQuestions(conflictCands, 'headings')]) {
+      const state = batch.state as Record<string, { id: string }[] | string>;
+      const ids = Object.values(state)
+        .filter((v): v is { id: string }[] => Array.isArray(v))
+        .flat()
+        .map((c) => c.id);
+      expect(ids.length).toBeGreaterThan(0);
+      expect(Object.keys(batch.questions).sort()).toEqual([...ids].sort());
+      // an ordinal id would match `<group>_<digits>` and nothing else; none does
+      for (const id of Object.keys(batch.questions)) expect(/_\d+$/.test(id)).toBe(false);
+    }
+  });
+
+  it('the four builders agree on the shape `<group>_<content key>`', () => {
+    expect(secretId(secretCandidateId('i1', 'env.TOKEN'))).toBe('secret_i1:env.TOKEN');
+    expect(sameMeaningId('a', 'b')).toBe('same_meaning_a_b');
+    expect(rankId('r1')).toBe('rank_r1');
+    expect(contradictsId('a', 'b')).toBe('contradicts_a_b');
+    // group I's key is derived, not positional: the same file and key always give the same id
+    expect(secretId(secretCandidateId('i1', 'env.TOKEN'))).toBe(secretId(secretCandidateId('i1', 'env.TOKEN')));
+  });
+});
 
 describe('§0 principle 3 the state carries no value bytes', () => {
   it('group I carries length, charset, bucket, family — and no substring of the value', () => {
@@ -296,12 +330,13 @@ describe('§4.9 askImport returns a complete outcome, always', () => {
   });
 
   it('a working decider accumulates answers, requests, questions and usd, and never exceeds the caps', async () => {
-    const answers: Record<string, Answer> = { secret_0: { type: 'noul', noul: 0.8 } };
+    const id = secretCands[0]!.id;
+    const answers: Record<string, Answer> = { [id]: { type: 'noul', noul: 0.8 } };
     const out = await askImport(batches, { decider: fakeDecider(answers), signal, maxUsd: 0.01 });
     expect(out.requests).toBeLessThanOrEqual(IMPORT_LIMITS.jevRequests);
     expect(out.questions).toBeLessThanOrEqual(IMPORT_LIMITS.jevQuestions);
     expect(out.usd).toBeGreaterThan(0);
-    expect(out.answers['secret_0']).toEqual({ type: 'noul', noul: 0.8 });
+    expect(out.answers[id]).toEqual({ type: 'noul', noul: 0.8 });
     expect(out.reason).toBeUndefined();
     expect(out.fallbacks).toBeGreaterThan(0);
   });
