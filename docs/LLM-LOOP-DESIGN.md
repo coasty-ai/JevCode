@@ -75,11 +75,11 @@ from the environment demoted `stop_and_report` and `task_impossible` in `llm-jev
 well: the control arms §8 exists to measure `jev-on` against. `routersOn(mode, opt?)` in `src/loop/routers.ts`
 returns false for every other mode before it reads the option or the env var.
 
-**`EngineOptions.routers` is RESERVED until the §7.5 engine seam** (as built; review 2026-09-22, defect 3). The
-four routed sites call `routersOn(ctx.mode)`; the argument that carries the option down to them is written by the
-same post-C commit to `src/loop/engine.ts` that lands the `askRecorded` seam, because §7.1 allows one slot in
-that file at a time. Until then the switch a bench arm can express is `JEVCODE_ROUTERS=on` in the worker's own
-process, under the same `jev-on` gate, and the contract comment on the member says so.
+**`EngineOptions.routers` is read, and it BEATS the env var** (as built at `c811899`, §7.5a; review 2026-09-22
+defect 3, then slot D's finding). `makeContext` puts it on `StageContext.routers` and the four routed sites call
+`routersOn(ctx.mode, ctx.routers)`. `JEVCODE_ROUTERS=on|off` fills an **absent** option only — it used to be ORed
+in, so an exported `on` armed an arm whose own `summary.json` row said `off`. `JEVCODE_FASTPATH` was inverted the
+same way in the same commit. The `jev-on` gate is checked before either.
 
 **No new `EngineMode`.** `jev-on-next` is a *bench condition*, not a mode. `MODES` is untouched.
 
@@ -98,9 +98,11 @@ all false. Asserted by a golden in **both** slot B's and slot C's test files, on
 
 **I3 — `routerWaitMs === 0`.** A router contributes zero blocked wall to the step. `jevMs` may grow (the request
 is still made, still metered, still recorded); `routerWaitMs` must read 0. This is asserted per routed site by a
-unit test *and* as a bench-wide blocking row. It is unasserted anywhere today and currently false for every ask
-(`askRecorded` at `engine.ts:2847` is awaited inline), so making it true is a real change, and it is easy to
-break silently later with nothing but latency as the symptom.
+unit test *and* as a bench-wide blocking row. It is easy to break silently later with nothing but latency as the
+symptom, so it is **measured, never written** (§2.1). As built at `c811899` it is also asserted on a REAL step:
+`commitStepRouters` folds the ledger into `StepTiming.routerWaitMs` at step commit, and
+`test/unit/loop/engine-router-seam.test.ts` reads it off a committed `StepRecord` rather than off a hand-built
+ledger. The bench-wide row is still owed (slot D).
 
 **I4 — no late write.** Every router result is applied through a **step-scoped token invalidated at step commit**
 (graft, judge 1 §5). An in-flight ask that outlives its step can never write to a committed `StepRecord` or to a
@@ -546,10 +548,12 @@ reach the step's state through `stateFor`, which used to re-create it lazily —
 `(runId, step)` keys: a closed key gets a permanently-invalid token and a throwaway ledger, `commitStepRouters`
 closes the key before its early return, and the two-step live LRU closes what it evicts.
 
-**What the token cannot promise on its own.** It guards *application*, at the router and again inside each routed
-stage's annotate callback. It does not stop the engine writing: `ctx.ask` takes no per-call signal until the §7.5
-seam, so a decider that ignores the signal the router aborts can still finish inside `askRecorded` and charge its
-metering, its `jev.jsonl` row and its `decision` events to the step that issued it.
+**What the token promises, and what the seam added.** The token guards *application*, at the router and again
+inside each routed stage's annotate callback. Stopping the engine *writing* was the §7.5 seam's job and landed at
+`c811899` (§7.5a item 1): `ctx.ask` takes a per-call signal, so the dropped request is genuinely cancelled, and a
+decider that ignores it and answers anyway is **abandoned** after the await — no metering, no `jev.jsonl` row, no
+`decision` event, no `draft` mutation. The annotate-callback token check stays: it is the one drop the signal
+cannot see, an answer landing after commit under a signal nobody aborted.
 
 ---
 
@@ -629,6 +633,19 @@ first implementation therefore got wrong. They are the normative reading of §3.
    `GoalSearchTrace.llm` → `SynthesisContext.reportVerify` → `StepRecord.verify`, each member absent when nothing
    measured it. §3.5's `--quick` remains unreachable from a command line until `src/cli/args.ts` carries the
    `'quick'` row; `test/unit/bench/quick-preset.test.ts` asserts today's rejection so the gap is visible.
+
+### 3.7 As built, the engine's side of §3.2 (`c811899`)
+
+Slot A's **defect 11**: the twin and the round counter. `Engine.noteSampleEnd` drops `generatorBatch.inFlight`
+to 0 in `generate`'s own `finally`, which runs **before** the source's `handleEnd` / `settle` has marked the
+origin served and cleared its hedge timer. A twin started in that window found `inFlight === 0` and opened a
+second round for one batch — `draft.llmRounds` 2, so `PausePoint.llmRound.round` (contract 1.4 §12.0.2 P3, "one
+round per sample batch") named a round the synthesizer never ran, and the batch wall restarted mid-round.
+
+A twin is by definition a second copy of a sample of the round already open, and it says so in its own index
+(`HEDGE_TWIN_OFFSET` / `hedgeOriginOf`). `noteSampleStart` now takes the sample index: a twin takes the open
+batch's wall when it is the only sample in flight and **never** the round counter. Every other index is
+unchanged. See §7.5a for what was and was not confirmed about reaching that window from `source.ts` today.
 
 ---
 
@@ -1187,18 +1204,19 @@ over a recorded run directory showing the new columns non-empty; the `--concurre
   `test/unit/loop/router.test.ts`, `test/unit/loop/stages/**`, `test/unit/synth/search/router.test.ts`.
 
 **Deferred to slot B's post-C commit, and only that commit** (§7.1: no two slots hold `src/loop/engine.ts` at
-once, and slot C holds it while this lands). Everything below is written and tested except its engine seam:
+once, and slot C held it while slot B landed). **All five landed at `c811899`** (branch `llm-loop-seam`, on the
+integration tip `13414f0`); the consequence column is the state the wave lived in until then, kept because the
+"as built" note below is only readable against it.
 
-| what | where it waits | consequence until it lands |
+| what | consequence until it landed | landed |
 |---|---|---|
-| a per-call signal on `ctx.ask` / `askRecorded` | `engine.ts` | a dropped router ask is cancelled at the router but still runs to completion inside `askRecorded`, charging its metering, `jev.jsonl` row, `decision` events and persists to the step that issued it — after that step's `StepRecord` was written (review 2026-09-22, defect 2) |
-| `EngineOptions.routers` → `routersOn(ctx.mode, opt)` | `engine.ts`, `StageContext` | the switch a bench arm can express is `JEVCODE_ROUTERS=on` per worker process (defect 3) |
-| `commitStepRouters` in the `StepRecord` finally | `engine.ts` | `StepTiming.routerWaitMs`, `StepRecord.router`, `riskSource` and `jevUnavailable` have no writer: the §5.2 audit trail and the I3 bench row do not exist in a real run, and a step's ledger is reclaimed by the live LRU (defect 9) |
-| `completionDecision` at `completeAfter` | `engine.ts:4514` | RL5 is written and unit-tested; no run reaches it |
-| the retry waker keyed per in-flight request | `engine.ts:2930` | an abandoned router ask can still clobber the shown `retryWaker` / `retrying` slot (review defect 6 of the engine set, unconfirmed) |
+| a per-call signal on `ctx.ask` / `askRecorded` | a dropped router ask is cancelled at the router but still runs to completion inside `askRecorded`, charging its metering, `jev.jsonl` row, `decision` events and persists to the step that issued it — after that step's `StepRecord` was written (review 2026-09-22, defect 2) | **landed at `c811899`** — `StageContext.ask` takes a 5th optional `signal`; `askRecorded` links it with the run signal AND abandons the call at a guard after the await |
+| `EngineOptions.routers` → `routersOn(ctx.mode, opt)` | the switch a bench arm can express is `JEVCODE_ROUTERS=on` per worker process (defect 3) | **landed at `c811899`** — `makeContext` → `StageContext.routers` → the four routed sites; and **both** mechanism switches inverted so the explicit option beats the env (see (b) below) |
+| `commitStepRouters` in the `StepRecord` finally | `StepTiming.routerWaitMs`, `StepRecord.router`, `riskSource` and `jevUnavailable` have no writer: the §5.2 audit trail and the I3 bench row do not exist in a real run, and a step's ledger is reclaimed by the live LRU (defect 9) | **landed at `c811899`** — at the head of `Engine.commit`, behind the switch; `discardStepRouters` on the §9.1 rule-1 path |
+| `completionDecision` at `completeAfter` | RL5 is written and unit-tested; no run reaches it | **landed at `c811899`** — routers-on only; in `jev-on` `hasEvidence` is false on every step today, so the Jev branch runs and I2 holds (§2.5) |
+| the retry waker keyed per in-flight request | an abandoned router ask can still clobber the shown `retryWaker` / `retrying` slot (review defect 6 of the engine set, unconfirmed) | **landed at `c811899`** — CONFIRMED by a test and fixed: each call holds its own controller and clears the shared slot only while it owns it |
 
-All five members are tagged **RESERVED** in `src/core/types.ts` so the contract does not claim a record it does
-not yet write.
+The five members are no longer **RESERVED** in `src/core/types.ts`: each names its writer instead.
 
 **Gates:**
 
@@ -1214,6 +1232,52 @@ not yet write.
 8. **Ring 1 re-measured green under `--jev off`**, and the `src/synth/localize/index.ts` allow-list row
    (`jev-contract.mjs:48`) justified by that run or replaced — a hard merge gate (§7.7).
 9. `npx vitest run --maxWorkers=3`, `npm run check`.
+
+#### 7.5a The engine seam, as built (`c811899`, 2026-09-22)
+
+Five things the deferral table did not say, each one a thing the rows above left implicit and the seam therefore
+had to decide. They are the normative reading of §2.1 clause 6, §2.6 and §0.3 from here on.
+
+1. **The per-call signal is a belt AND a guard.** Aborting the linked controller is a *request*: an in-process
+   decider, a client mid-parse or a cache hit can all answer anyway. So `askRecorded` links the caller's signal
+   with the run's (the request really is cancelled) **and** re-reads `signal.aborted` after the await: an answer
+   that arrived for a caller who has gone is **abandoned** — no meter, no `jev.jsonl` row, no `decision` event,
+   no `draft` mutation, not even `jevWallMs`. It rejects with the reason the caller gave, which
+   `routeSpeculative` already catches into its one drop branch. The stages keep their `routed?.valid === false`
+   check in the annotate callback: that is the one drop the signal cannot see (an answer landing after commit
+   under a signal nobody aborted).
+2. **The explicit option beats the environment, in both mechanisms.** §0.3 said "an env override"; slot D found
+   that `routersEnabled` ORed `JEVCODE_ROUTERS=on` in and `resolveFastPathOption` read `JEVCODE_FASTPATH`
+   *first, in both directions*. An arm's own `summary.json` row was therefore not the truth: an exported switch
+   armed `jev-on-next-nofast` or disarmed `jev-on-next` with nothing in the output to show it. Both now read the
+   option first and fall back to the env only when the caller pinned nothing — the `jev-on` gate still ahead of
+   both. `pinMechanismEnv` stays as the belt for a worker that pins nothing.
+3. **`commitStepRouters` is behind the switch, and that is load-bearing.** It closes a `(runId, step)` key
+   whether or not a router ran (defect 6's fix), and a closed key hands out a permanently-invalid token. A
+   routers-**off** run that closed `(runId, 1…n)` would disarm every router of the next run in the same process
+   that reused the run id — which is exactly what an A/B over one fixture is. `router-golden.test.ts`'s
+   routers-on case caught it. Off, the seam is not entered at all.
+4. **A discarded step is not a committed step.** §9.1 rule 1 replays the same step number, so `commitStepRouters`
+   there would drop every router of the replayed attempt `committed` before it was issued. `discardStepRouters`
+   invalidates the attempt's token and deletes its live state while leaving the key **open**.
+5. **RL5 is wired and unreachable, exactly as §2.5 predicted.** `completeAfter` calls `completionDecision` only
+   with the routers on, and passes `hasEvidence = draft.proposal?.evidence !== undefined` — false on every
+   `jev-on` step until route R9 commits its first fast-path proposal. So the routers-on arm completes on Jev's
+   Noul today and `router-golden.test.ts` passes unchanged; the behaviour change lands with R9, not with this
+   commit.
+
+Also landed here, from slot A's list: **defect 11**. `noteSampleEnd` drops `generatorBatch.inFlight` to 0 in
+`generate`'s own `finally`, before the source's `handleEnd` / `settle` has marked the origin served and cleared
+its hedge timer — a twin started in that window found `inFlight === 0` and opened a **second round for one
+batch** (contract 1.4 §12.0.2 P3), so `PausePoint.llmRound.round` named a round the synthesizer never ran and
+the batch wall restarted mid-round. CONFIRMED at the engine seam by a test that fires a twin in that window and
+reads the pause cache. `noteSampleStart` now takes the sample index and `hedgeOriginOf()` decides: a twin takes
+the open batch's wall and never the round counter; every other index is unchanged, so the PausePoint contract
+tests read what they read before. **Not** confirmed as reachable through today's `src/synth/llm/source.ts`
+wiring: every path from the engine's `finally` to `settle`'s `clearHedgeTimer` is microtask-only
+(`generateWithDeadline`'s `.then/.finally`, `handleEnd`'s non-result branch has no `await`, and its result
+branch calls `st.served.add(k)` before any), and a `setTimeout` cannot interleave with a microtask chain. The
+guard is therefore a structural fix for a real engine-side hole rather than a fix for an observed run.
 
 ### 7.6 Slot A — the S2 generator path
 
