@@ -218,11 +218,13 @@ describe('TUI-DESIGN-2 §3.9: money', () => {
     await h.command('/jev');
     const jev = h.renderer.notes.at(-1);
     expect(jev?.text).toBe('jev');
-    // TUI-DESIGN-3 §10 (D-M local text): the intake row and the last-intake row are two rows
-    expect(jev?.detail).toContain('intake: 1 message · p50 118 ms · $0.0002');
-    expect(jev?.detail).toContain('last: greeting or smalltalk (0.90)');
+    // TUI-DESIGN-4 §3.3 / F-B2: kv rows — the key is `intake`, so the value never repeats the word, and the last
+    // intake rides the same row as a ` · ` segment instead of a second `last: …` row
+    // §3.3: the continuation hangs UNDER the value column (11), never at column 0 where it reads as a new key
+    expect(jev?.detail).toContain('intake     1 message · p50 118 ms · $0.0002 · last greeting or\n           smalltalk (0.90)');
     await h.command('/cost');
-    expect(h.renderer.notes.at(-1)?.detail).toContain('chat $0.0002 for 1 message (~$0.0002 each, p50 118 ms)'); // TUI-DESIGN-3 §5.1 rule 11: no scientific notation
+    // §3.1.4: `$0.0001` for a sub-millicent, ` · ` the only inline separator, never scientific notation
+    expect(h.renderer.notes.at(-1)?.detail).toContain('chat       $0.0002 · 1 message · p50 118 ms');
   });
 });
 

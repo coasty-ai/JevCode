@@ -30,6 +30,8 @@ export interface PolishOptions {
   timing?: PolishTiming | null;
   /** the capture decoded as latin1 (byte offsets for the timing's chunk records); defaults to `capture` */
   byteCapture?: string;
+  /** TUI-DESIGN-4 §11: run V13 (default `V13_DEFAULT` = true; false replays a capture from a pre-D-V build) */
+  v13?: boolean;
 }
 export interface PaintedCell {
   ch: string;
@@ -40,6 +42,13 @@ export interface PaintedCell {
 export const BSU: string;
 export const CURSOR_HIDE: string;
 export const RUN_ID_RE: RegExp;
+export const RUN_END_RE: RegExp;
+export const RUN_STARTED_RE: RegExp;
+export const RUN_STOPPED_RE: RegExp;
+export function runEndSelfTest(): { ok: boolean; failures: string[] };
+export const V13_ALLOWLIST: readonly RegExp[];
+export const V13_DEFAULT: boolean;
+export function v13Rows(scrollback: readonly string[], ascii?: boolean): string[];
 export const PINK_FG: Set<string>;
 export const ACCENT_FG: Set<string>;
 export function stripAnsi(s: string): string;

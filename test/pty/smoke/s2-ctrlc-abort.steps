@@ -8,7 +8,7 @@ send \r
 expect \[run\](?:\x1b\[[0-9;]*m)* start 
 sleep 0.5
 send \x03
-expect end human_abort
+expect finished [·-] human_abort
 expect Follow-up, question
 send /exit
 sleep 0.2

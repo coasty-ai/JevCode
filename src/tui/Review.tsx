@@ -14,8 +14,7 @@ import type { ConfirmRequest } from '../core/types.js';
 import { NOTE_LABEL } from './composer/Composer.js';
 import { stringWidth } from './composer/width.js';
 import { GLYPHS, type GlyphSet, truncateCells } from './glyphs.js';
-import { confirmPreviewLines } from './plain.js';
-import { reviewCardLines, reviewHeaderLines, reviewPreviewLines } from './review/lines.js';
+import { reviewCardLines, reviewDiffRoleRows, reviewHeaderLines, reviewPreviewWant, type ReviewPreviewRow } from './review/lines.js';
 import { textProps, themeFor, type ColorOn, type Theme } from './theme.js';
 
 export { NOTE_LABEL };
@@ -72,14 +71,22 @@ export function reviewRows(req: ConfirmRequest, rows: number, columns: number, g
   return lines;
 }
 
-/** §6.1: the preview rows granted by the layout (`confirmPreviewLines(req)` indented, tail when cut). Pure. */
+/** §6.1 / TUI-DESIGN-4 §6.3: the preview rows granted by the layout — `diffRows` from the Action, with the truthful tail. Pure. */
 export function reviewPreview(req: ConfirmRequest, rows: number, columns: number, g: GlyphSet = GLYPHS.unicode): string[] {
-  return reviewPreviewLines(confirmPreviewLines(req), rows, columns, g);
+  return reviewDiffRoleRows(req, rows, columns, g).map((r) => r.text);
 }
 
-/** `LayoutInput.previewWant` for a request (§2.1). */
-export function previewWant(req: ConfirmRequest): number {
-  return confirmPreviewLines(req).length;
+/** §6.3: the same rows with the colour role each takes (`added` / `removed` / `hunk` / `diffMeta`). Pure. */
+export function reviewPreviewRows(req: ConfirmRequest, rows: number, columns: number, g: GlyphSet = GLYPHS.unicode): ReviewPreviewRow[] {
+  return reviewDiffRoleRows(req, rows, columns, g);
+}
+
+/**
+ * `LayoutInput.previewWant` for a request (§2.1). TUI-DESIGN-4 §6.3: the real hunk size, not `old + new + 2` —
+ * a 200-line `edit` used to ask the layout for **402** rows.
+ */
+export function previewWant(req: ConfirmRequest, columns = 80): number {
+  return reviewPreviewWant(req, columns);
 }
 
 /**
@@ -121,7 +128,7 @@ export function Review(p: ReviewProps): React.JSX.Element | null {
   const color = p.color ?? true;
   if (p.boxed === true) return <ReviewCard {...p} glyphs={g} theme={theme} color={color} />;
   const header = reviewRows(p.req, p.rows, p.columns, g, p.note ?? null);
-  const preview = reviewPreview(p.req, p.previewRows, p.columns, g);
+  const preview = reviewPreviewRows(p.req, p.previewRows, p.columns, g);
   const total = header.length + preview.length;
   if (total === 0) return null;
   const verdict = p.req.risk.verdict === 'block' ? 'block' : 'review';
@@ -137,9 +144,9 @@ export function Review(p: ReviewProps): React.JSX.Element | null {
           {line}
         </Text>
       ))}
-      {preview.map((line, i) => (
-        <Text key={`p${i}`} wrap="truncate" {...textProps(theme, 'dim', color)}>
-          {line}
+      {preview.map((row, i) => (
+        <Text key={`p${i}`} wrap="truncate" {...textProps(theme, row.role ?? 'dim', color)}>
+          {row.text}
         </Text>
       ))}
     </Box>
@@ -160,6 +167,8 @@ function ReviewCard(p: ReviewProps & { glyphs: GlyphSet; theme: Theme; color: Co
   const boxed = lines.length >= 3;
   const bodyRows = boxed ? lines.length - 2 : lines.length;
   const headerRows = Math.max(0, bodyRows - (boxed ? Math.min(p.previewRows, Math.max(0, bodyRows - 1)) : 0));
+  // TUI-DESIGN-4 §6.2 (A6-3): the preview band is no longer painted flat `dim` — every row takes its diff role
+  const previewRoles = reviewPreviewRows(p.req, p.previewRows, Math.max(1, p.columns - 4), g).map((r) => r.role);
   if (p.note && p.cursor && boxed) {
     const masked = p.note.gate === null ? stringWidth(`${NOTE_LABEL}${maskHits(p.note.text, p.note.spans ?? [], maskGlyphFor(g))}`) : 0;
     p.cursor({ x: Math.min(p.columns - 3, 2 + masked), y: p.top + 1 });
@@ -186,7 +195,7 @@ function ReviewCard(p: ReviewProps & { glyphs: GlyphSet; theme: Theme; color: Co
         return (
           <Text key={`c${i}`} wrap="truncate">
             <Text {...edges}>{left}</Text>
-            <Text {...(isKeys ? (armed ? { ...textProps(p.theme, verdict, p.color), bold: true } : textProps(p.theme, 'dim', p.color)) : isGate ? textProps(p.theme, 'secret', p.color) : isPreview ? textProps(p.theme, 'dim', p.color) : {})}>{body}</Text>
+            <Text {...(isKeys ? (armed ? { ...textProps(p.theme, verdict, p.color), bold: true } : textProps(p.theme, 'dim', p.color)) : isGate ? textProps(p.theme, 'secret', p.color) : isPreview ? textProps(p.theme, previewRoles[i - 1 - headerRows] ?? 'dim', p.color) : {})}>{body}</Text>
             <Text {...edges}>{right}</Text>
           </Text>
         );

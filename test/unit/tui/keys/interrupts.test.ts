@@ -162,6 +162,25 @@ describe('S5 sub-rows (TUI-DESIGN §3.3)', () => {
     expect(act(s, 'ctrl-d')).toBe('CLOSE_OVERLAY');
     expect(act(st({ overlay: 'palette' }), 'ctrl-c')).toBe('CLOSE_OVERLAY');
   });
+  it('TUI-DESIGN-4 §4.7 E12: the palette + a token-only draft is CLOSE_OVERLAY_AND_CLEAR; with an argument it stays CLOSE_OVERLAY; Ctrl-C twice still exits 0', () => {
+    // the measured trap: `/zz` then Ctrl-C left the card gone, the draft `/zz` still in the composer and no
+    // placeholder — half the reason the audit could not get back to a clean prompt
+    const tokenOnly = st({ overlay: 'palette', draftEmpty: false, draftTokenOnly: true });
+    expect(act(tokenOnly, 'ctrl-c')).toBe('CLOSE_OVERLAY_AND_CLEAR');
+    expect(act(st({ run: 'live', overlay: 'palette', draftEmpty: false, draftTokenOnly: true }), 'ctrl-c')).toBe('CLOSE_OVERLAY_AND_CLEAR');
+    // a draft with an argument (`/budget 5`) keeps today's behaviour: there is something worth keeping
+    expect(act(st({ overlay: 'palette', draftEmpty: false, draftTokenOnly: false }), 'ctrl-c')).toBe('CLOSE_OVERLAY');
+    // Esc and Ctrl-D are UNCHANGED in both shapes (E13: Esc keeps the draft and remembers the token)
+    for (const key of ['esc', 'ctrl-d'] as const) expect(act(tokenOnly, key), key).toBe('CLOSE_OVERLAY');
+    // the flag is absent by default, so the rule is inert until the controller supplies it
+    expect(act(st({ overlay: 'palette', draftEmpty: false }), 'ctrl-c')).toBe('CLOSE_OVERLAY');
+    // Ctrl-C twice still exits 0: the first press closed the overlay and cleared, the second is S0 (hint), the third exits
+    const one = reduceInterrupts(tokenOnly, 'ctrl-c', 10_000);
+    expect(one.action).toBe('CLOSE_OVERLAY_AND_CLEAR');
+    const two = reduceInterrupts({ ...one.state, overlay: 'none', draftEmpty: true, draftTokenOnly: false }, 'ctrl-c', 10_100);
+    expect(two.action).toBe('HINT_CTRL_C');
+    expect(reduceInterrupts(two.state, 'ctrl-c', 10_200).action).toBe('EXIT_0');
+  });
   it('secret gate: Ctrl-C cancels the send and clears the draft; Esc / Ctrl-D dismiss (draft kept)', () => {
     const s = live('secret', { draftEmpty: false });
     expect(act(s, 'ctrl-c')).toBe('CLEAR_DRAFT');

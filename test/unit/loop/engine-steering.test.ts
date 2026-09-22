@@ -426,7 +426,8 @@ describe('§19.4 secret sweep for the steer path against the REAL store', () => 
     expect(state).toContain('and again [REDACTED:composer#1]');
     // the events (every writer) were masked at emit; --plain output is the same item text as transcript.log
     expect(JSON.stringify(events)).not.toContain(secret);
-    expect(readFileSync(join(runDir, 'transcript.log'), 'utf8')).toContain('steer queued (1) for step 1: use the key [REDACTED:composer#1]');
+    // §3.7 G5: `steer queued · step <n> · "<text>" · <k> waiting`
+    expect(readFileSync(join(runDir, 'transcript.log'), 'utf8')).toContain('steer queued · step 1 · "use the key [REDACTED:composer#1]" · 1 waiting');
     // the in-memory envelope helper agrees with what the disk store wrote
     expect(serialiseEnvelope(engine.snapshotState()!, redact)).not.toContain(secret);
   });

@@ -100,9 +100,10 @@ describe('jev-only happy path', () => {
     expect(JSON.stringify(h.store.steps)).not.toContain(SECRET);
     // synth events: emitted, and one transcript.log line each through the shared item model
     expect(h.of('synth').map((e) => e.phase)).toEqual(['localise', 'select', 'finish']);
-    expect(h.store.transcript).toContain('[step 1] synth localise: src/a.py:2 `return 1` (candidates=3)');
-    expect(h.store.transcript).toContain('[step 1] synth select: chose return 2 (1 row) (candidates=3, tested=1)');
-    expect(h.store.transcript).toContain('[step 2] synth finish: tests green');
+    // §3.7 G2: `synth · <phase> · <detail> · <n> candidates, <k> tested`
+    expect(h.store.transcript).toContain('[step 1] synth · localise · src/a.py:2 `return 1` · 3 candidates');
+    expect(h.store.transcript).toContain('[step 1] synth · select · chose return 2 (1 row) · 3 candidates, 1 tested');
+    expect(h.store.transcript).toContain('[step 2] synth · finish · tests green');
     let seq = 0;
     const expected: string[] = [];
     for (const e of h.events) for (const item of itemsFromEvent(e, seq++)) expected.push(formatTranscriptItem(item));
@@ -194,8 +195,8 @@ describe('jev-only failure policy and configuration', () => {
     // the baseline ran through the engine's sandbox; the proposal is the full test command, never edit/write
     // the detector's `pytest -q` is proposed as `python3 -m pytest -q` (pytest is not guaranteed on PATH; same runner for isTestCommand)
     expect(h.store.steps[0]!.proposal?.action).toMatchObject({ kind: 'run', command: 'python3 -m pytest -q' });
-    expect(h.store.transcript.some((l) => /\[step 1\] synth baseline: 2\/2 pass/.test(l))).toBe(true);
-    expect(h.store.transcript.some((l) => /\[step 1\] synth ledger: /.test(l))).toBe(true);
+    expect(h.store.transcript.some((l) => /\[step 1\] synth [·-] baseline [·-] 2\/2 pass/.test(l))).toBe(true);
+    expect(h.store.transcript.some((l) => /\[step 1\] synth [·-] ledger [·-] /.test(l))).toBe(true);
     expect(h.provider.requests).toEqual([]);
   });
 });

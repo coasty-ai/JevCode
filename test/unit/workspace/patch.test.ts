@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { PatchError, PathEscapeError, SecretPathError } from '../../../src/errors.js';
-import { parsePatchFiles } from '../../../src/workspace/patch.js';
+import { PATCH_HUNK_ROWS_MAX, parsePatchErrors, parsePatchFiles, patchFailureMessage, patchHunkDetail } from '../../../src/workspace/patch.js';
 import { FIXTURES, initRepo, makeWorkspace, tempWs, write } from './helpers.js';
 import type { TempWs } from './helpers.js';
 
@@ -159,5 +159,61 @@ describe('applyPatch', () => {
     const w = await makeWorkspace(t);
     await expect(w.applyPatch('--- /dev/null\n+++ b/link/x.txt\n@@ -0,0 +1 @@\n+x\n')).rejects.toBeInstanceOf(PathEscapeError);
     expect(existsSync(join(t.base, 'outside', 'x.txt'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §6.7 (D-Z): git's whole diagnosis, typed — `gitFirstError` kept only the FIRST `error:` line, so
+// git's two-line pair (`error: patch failed: f:12` and `error: f: patch does not apply`) reached the user as half
+// a sentence. Recorded git outputs; the locale is pinned (`GIT_ENV` sets `LC_ALL: 'C'`), so the parse is stable.
+// ---------------------------------------------------------------------------------------------------------------
+
+describe('parsePatchErrors / patchFailureMessage / patchHunkDetail (§6.7)', () => {
+  it('"does not apply": the pair becomes ONE typed entry with the file, the line and git\'s message', () => {
+    const stderr = 'error: patch failed: calc/ops.py:12\nerror: calc/ops.py: patch does not apply\n';
+    expect(parsePatchErrors(stderr)).toEqual([{ file: 'calc/ops.py', line: 12, message: 'patch does not apply' }]);
+    expect(patchFailureMessage(parsePatchErrors(stderr), 'fallback')).toBe('patch failed: calc/ops.py:12 — patch does not apply');
+    expect(patchHunkDetail(parsePatchErrors(stderr))).toBe('calc/ops.py:12   patch does not apply');
+  });
+
+  it('"already exists", "No such file" and "Permission denied" keep git\'s own words and name the path', () => {
+    expect(parsePatchErrors('error: README.md: already exists\n')).toEqual([{ file: 'README.md', line: null, message: 'already exists' }]);
+    expect(parsePatchErrors('error: gone.py: No such file or directory\n')).toEqual([{ file: 'gone.py', line: null, message: 'No such file or directory' }]);
+    expect(parsePatchErrors('error: locked.py: Permission denied\n')).toEqual([{ file: 'locked.py', line: null, message: 'Permission denied' }]);
+    expect(patchFailureMessage(parsePatchErrors('error: README.md: already exists\n'), 'f')).toBe('patch failed: README.md — already exists');
+  });
+
+  it('a non-`error:` stderr yields its first line, and an empty stderr yields the caller\'s fallback', () => {
+    expect(parsePatchErrors('warning: whitespace errors\nfatal: corrupt patch at line 9\n')).toEqual([{ file: '', line: null, message: 'warning: whitespace errors' }]);
+    expect(parsePatchErrors('')).toEqual([]);
+    expect(parsePatchErrors('\n\n')).toEqual([]);
+    expect(patchFailureMessage([], 'git apply --check failed')).toBe('git apply --check failed');
+    expect(patchHunkDetail([])).toBe('');
+  });
+
+  it('two failing files: the outcome line carries the first two messages; edge 10 caps the detail at three rows plus `… +N more`', () => {
+    const two = 'error: patch failed: a.py:1\nerror: a.py: patch does not apply\nerror: patch failed: b.py:9\nerror: b.py: patch does not apply\n';
+    expect(parsePatchErrors(two)).toHaveLength(2);
+    expect(patchFailureMessage(parsePatchErrors(two), 'f')).toBe('patch failed: a.py:1 — patch does not apply; b.py:9 — patch does not apply');
+    const many = Array.from({ length: 200 }, (_, i) => `error: patch failed: f${i}.py:${i + 1}\nerror: f${i}.py: patch does not apply`).join('\n');
+    const hunks = parsePatchErrors(many);
+    expect(hunks).toHaveLength(200);
+    const detail = patchHunkDetail(hunks).split('\n');
+    expect(detail).toHaveLength(PATCH_HUNK_ROWS_MAX + 1);
+    expect(detail.at(-1)).toBe('… +197 more');
+    // §6.7 edge 9: partial apply is impossible (`--check` first, never `--reject`), so no wording may suggest one
+    for (const row of [...detail, patchFailureMessage(hunks, 'f')]) {
+      expect(row).not.toMatch(/reject|partial|partially/i);
+    }
+  });
+
+  it('a real unappliable patch reaches PatchError with the whole diagnosis and leaves the tree clean', async () => {
+    const t = ws();
+    initRepo(t.ws, { 'a.py': A_PY });
+    const w = await makeWorkspace(t);
+    const before = readFileSync(join(t.ws, 'a.py'), 'utf8');
+    await expect(w.applyPatch('--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-THIS LINE IS NOT IN THE FILE\n+nor is this\n')).rejects.toBeInstanceOf(PatchError);
+    expect(readFileSync(join(t.ws, 'a.py'), 'utf8')).toBe(before);
+    await expect(w.applyPatch('--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-THIS LINE IS NOT IN THE FILE\n+nor is this\n')).rejects.toThrow(/patch failed: a\.py/);
   });
 });

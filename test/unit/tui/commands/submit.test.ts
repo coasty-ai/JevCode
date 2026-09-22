@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { SecretHit } from '../../../../src/core/types.js';
-import { CHIP_LABEL_RE, MIN_SECRET_LENGTH, READ_ONLY_WHILE_THINKING, STILL_THINKING_TOAST, TASK_CHARS_LIMIT, TRUNCATION_NOTICE, deniedMentionNotice, expandChips, mentionedPaths, routeSend, routeSubmit, secretSpans, whileThinking, type SubmitInput } from '../../../../src/tui/composer/submit.js';
+import { CHIP_LABEL_RE, MIN_SECRET_LENGTH, MULTILINE_ARM_MS, READ_ONLY_WHILE_THINKING, STILL_THINKING_TOAST, TASK_CHARS_LIMIT, TRUNCATION_NOTICE, deniedMentionNotice, expandChips, hiddenCommandLine, mentionedPaths, multilineCommandNotice, routeSend, routeSubmit, secretSpans, whileThinking, type SubmitInput } from '../../../../src/tui/composer/submit.js';
 import { COMMANDS, findCommand, type CommandSpec } from '../../../../src/tui/commands/registry.js';
 
 const noHits = { detectSecrets: () => [] as readonly SecretHit[] };
@@ -31,8 +31,8 @@ describe('routeSubmit (TUI-DESIGN §4.9)', () => {
     expect(routeSubmit(input({ submitting: true }))).toEqual({ kind: 'ignore', reason: 'submitting' });
   });
   it('a `/` token that matches nothing never submits: error item, draft kept (fixable errors keep it, availability errors clear it — TUI-DESIGN-3 F21, D-K)', () => {
-    expect(routeSubmit(input({ text: '/foo' }))).toEqual({ kind: 'error', text: 'error: unknown command /foo; type / to list commands', label: '[ui]', keepDraft: true });
-    expect(routeSubmit(input({ text: '/bud' }))).toEqual({ kind: 'error', text: 'error: unknown command /bud; type / to list commands', label: '[ui]', keepDraft: true });
+    expect(routeSubmit(input({ text: '/foo' }))).toEqual({ kind: 'error', text: 'error: /foo — not a command · type / to list commands', label: '[ui]', keepDraft: true });
+    expect(routeSubmit(input({ text: '/bud' }))).toEqual({ kind: 'error', text: 'error: /bud — not a command. Did you mean /budget? · type / to list commands', label: '[ui]', keepDraft: true });
     expect(routeSubmit(input({ text: '/export "x' }))).toEqual({ kind: 'error', text: 'error: /export: unterminated quote', label: '[ui]', keepDraft: true });
     expect(routeSubmit(input({ text: '/rename "x' }))).toMatchObject({ kind: 'command', action: { kind: 'rename', title: '"x' } });
     expect(routeSubmit(input({ text: '/budget spend-cap abc' }))).toEqual({ kind: 'error', text: 'error: /budget spend-cap: expected a positive USD amount, got "abc"', label: '[ui]', keepDraft: true });
@@ -92,14 +92,14 @@ describe('routeSubmit (TUI-DESIGN §4.9)', () => {
     expect(routeSubmit(input({ text: '/budget spend-cap 3', run: 'live', dispatch: { run: 'live', step: 3 } }))).toMatchObject({ kind: 'command', action: { kind: 'budget', set: { setting: 'spend-cap', usd: 3 } } });
     expect(routeSubmit(input({ text: '/quit', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'exit' } });
     expect(routeSubmit(input({ text: '/exit', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'exit' } });
-    expect(routeSubmit(input({ text: '/bud', overlay: 'palette' }))).toEqual({ kind: 'error', text: 'error: unknown command /bud; type / to list commands', label: '[ui]', keepDraft: true });
+    expect(routeSubmit(input({ text: '/bud', overlay: 'palette' }))).toEqual({ kind: 'error', text: 'error: /bud — not a command. Did you mean /budget? · type / to list commands', label: '[ui]', keepDraft: true });
     expect(routeSubmit(input({ text: '/budget spend-cap 3', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'budget' } });
-    expect(routeSubmit(input({ text: '/', overlay: 'palette' }))).toEqual({ kind: 'error', text: 'error: unknown command /; type / to list commands', label: '[ui]', keepDraft: true });
+    expect(routeSubmit(input({ text: '/', overlay: 'palette' }))).toEqual({ kind: 'error', text: 'error: / — not a command · type / to list commands', label: '[ui]', keepDraft: true });
     expect(routeSubmit(input({ text: '', overlay: 'palette' }))).toMatchObject({ kind: 'error' });
   });
   it('a `/` after leading whitespace is a command, never a paid run (D-log: slash typos never start a run)', () => {
     expect(routeSubmit(input({ text: ' /help' }))).toMatchObject({ kind: 'command', action: { kind: 'help', topic: 'all' }, line: '/help' });
-    expect(routeSubmit(input({ text: '\t  /foo' }))).toEqual({ kind: 'error', text: 'error: unknown command /foo; type / to list commands', label: '[ui]', keepDraft: true });
+    expect(routeSubmit(input({ text: '\t  /foo' }))).toEqual({ kind: 'error', text: 'error: /foo — not a command · type / to list commands', label: '[ui]', keepDraft: true });
     expect(routeSubmit(input({ text: '  /budget spend-cap abc' }))).toMatchObject({ kind: 'error', text: 'error: /budget spend-cap: expected a positive USD amount, got "abc"' });
     // `//` stays a column-0 escape: with leading whitespace it is neither a command nor the literal-slash form
     expect(routeSubmit(input({ text: ' //x' }))).toMatchObject({ kind: 'submit', full: ' //x' });
@@ -123,7 +123,7 @@ describe('routeSubmit (TUI-DESIGN §4.9)', () => {
     expect(routeSubmit(input({ text: '' }))).toEqual({ kind: 'ignore', reason: 'empty' });
     expect(routeSubmit(input({ text: '   \n\t ' }))).toEqual({ kind: 'ignore', reason: 'empty' });
     expect(routeSubmit(input({ text: '// ' }))).toMatchObject({ kind: 'submit', full: '/ ' });
-    expect(routeSubmit(input({ text: '/ ' }))).toMatchObject({ kind: 'error', text: 'error: unknown command /; type / to list commands' });
+    expect(routeSubmit(input({ text: '/ ' }))).toMatchObject({ kind: 'error', text: 'error: / — not a command · type / to list commands' });
   });
   it('a trailing backslash is a newline with the backslash removed (never a submission)', () => {
     expect(routeSubmit(input({ text: 'line one\\' }))).toEqual({ kind: 'newline', text: 'line one' });
@@ -199,6 +199,67 @@ describe('routeSubmit (TUI-DESIGN §4.9)', () => {
     expect(routeSubmit(input({ text: long, run: 'live' }))).toMatchObject({ kind: 'steer', notice: TRUNCATION_NOTICE });
     expect(routeSubmit(input({ text: 'x'.repeat(TASK_CHARS_LIMIT) }))).toMatchObject({ kind: 'submit', notice: null });
     expect(TRUNCATION_NOTICE).toBe('notice: only the first 12,000 characters reach the generator; @-mention a file for more');
+  });
+  it('TUI-DESIGN-4 §5.3 P-C8 (b): a command hidden on a later line of a multi-line draft warns once and keeps the draft; a second Enter inside 3 s submits', () => {
+    const draft = 'please look at this\nand then\n/exit';
+    // `multilineArmedAt: null` is the caller saying "I store the arm" — with it absent the scan never runs, so a
+    // controller that has not wired P-C8 yet can never swallow a draft (the §9.2 App.tsx request)
+    expect(routeSubmit(input({ text: draft, now: 1000 }))).toMatchObject({ kind: 'submit', full: draft });
+    const first = routeSubmit(input({ text: draft, multilineArmedAt: null, now: 1000 }));
+    expect(first).toEqual({
+      kind: 'confirm-multiline',
+      text: 'line 3 looks like /exit; a submitted message is sent as text — remove it or press Enter again',
+      label: '[ui]',
+      line: 3,
+      command: '/exit',
+    });
+    expect(multilineCommandNotice(3, '/exit')).toBe('line 3 looks like /exit; a submitted message is sent as text — remove it or press Enter again');
+    // the second Enter inside the window submits the whole draft as text
+    expect(routeSubmit(input({ text: draft, multilineArmedAt: 1000, now: 1000 + MULTILINE_ARM_MS }))).toMatchObject({ kind: 'submit', full: draft });
+    // (e) the arm expires into a WARNING, never a silent send
+    expect(routeSubmit(input({ text: draft, multilineArmedAt: 1000, now: 1001 + MULTILINE_ARM_MS }))).toMatchObject({ kind: 'confirm-multiline', line: 3 });
+    expect(MULTILINE_ARM_MS).toBe(3000);
+  });
+  it('TUI-DESIGN-4 §5.3 P-C8 edge cases: the first line wins, `//` is unchanged, and a pasted path or list is never a false positive', () => {
+    // (a) a draft whose FIRST line is a command — unchanged, the whole thing goes to dispatchCommand (never the
+    // P-C8 warning), which is where its arguments are validated exactly as they are today
+    expect(routeSubmit(input({ text: '/help\nsome notes' }))).toMatchObject({ kind: 'error', keepDraft: true });
+    expect(routeSubmit(input({ text: '/steer go\nand then' }), )).toMatchObject({ kind: 'error' });
+    expect(routeSubmit(input({ text: '/help\n/exit', multilineArmedAt: null }))).not.toMatchObject({ kind: 'confirm-multiline' });
+    // (b) `//` at column 0 — the literal-slash path, and its later lines are still scanned
+    expect(routeSubmit(input({ text: '//literal\nplain text', multilineArmedAt: null }))).toMatchObject({ kind: 'submit', full: '/literal\nplain text' });
+    expect(routeSubmit(input({ text: '//literal\n/exit', multilineArmedAt: null }))).toMatchObject({ kind: 'confirm-multiline', line: 2 });
+    // (c) a pasted code block containing a path, (d) a markdown list — `commandToken` only matches registry names
+    expect(routeSubmit(input({ text: 'see\n/usr/bin/env node\nthanks', multilineArmedAt: null }))).toMatchObject({ kind: 'submit' });
+    expect(routeSubmit(input({ text: 'steps:\n/ one\n/ two', multilineArmedAt: null }))).toMatchObject({ kind: 'submit' });
+    // a line that is a command plus an argument is prose, not a hidden command (only a WHOLE line counts)
+    expect(routeSubmit(input({ text: 'hi\n/steer go faster', multilineArmedAt: null }))).toMatchObject({ kind: 'submit' });
+    // a single-line draft is never scanned
+    expect(hiddenCommandLine('/exit')).toBeNull();
+    expect(hiddenCommandLine('hi\n/exit')).toEqual({ line: 2, command: '/exit' });
+    expect(hiddenCommandLine('hi\n  /q  ')).toEqual({ line: 2, command: '/q' }); // an alias counts, whitespace-trimmed
+    expect(hiddenCommandLine('hi\nthere')).toBeNull();
+    expect(hiddenCommandLine('hi\n/nope')).toBeNull();
+    // the FIRST hidden line is the one reported
+    expect(hiddenCommandLine('a\n/new\n/exit')).toEqual({ line: 2, command: '/new' });
+    // a CAPITALISED command line is a command (`dispatchCommand` is case-insensitive, `/EXIT` runs), so the scan is
+    // too — comparing the raw line against the lower-cased token made `/EXIT` on line 4 silently prose, which is
+    // exactly the defect P-C8 (b) exists to close
+    expect(hiddenCommandLine('hi\n/EXIT')).toEqual({ line: 2, command: '/exit' });
+    expect(hiddenCommandLine('a\nb\nc\n/Exit')).toEqual({ line: 4, command: '/exit' });
+    expect(routeSubmit(input({ text: 'a\nb\nc\n/EXIT', multilineArmedAt: null }))).toMatchObject({ kind: 'confirm-multiline', line: 4, command: '/exit' });
+  });
+  it('TUI-DESIGN-4 §4.5: `fromPalette` is carried into the dispatch context and is the ONLY thing that arms a confirm', () => {
+    expect(routeSubmit(input({ text: '/new', overlay: 'palette', fromPalette: true }))).toMatchObject({ kind: 'command', action: { kind: 'new' }, confirm: 'new' });
+    // the palette being OPEN is not provenance: a hand-typed /exit with the card up still exits at once (EXIT_IDLE)
+    expect(routeSubmit(input({ text: '/exit', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'exit' }, confirm: null });
+    expect(routeSubmit(input({ text: '/exit' }))).toMatchObject({ kind: 'command', action: { kind: 'exit' }, confirm: null });
+    // …and a `fromPalette` line typed with NO overlay (the --plain numbered pick) is gated all the same
+    expect(routeSubmit(input({ text: '/exit', fromPalette: true }))).toMatchObject({ kind: 'command', confirm: 'exit' });
+    expect(routeSubmit(input({ text: '/status', fromPalette: true }))).toMatchObject({ kind: 'command', confirm: null });
+    // `/history clear` is destructive but owns its own readline y/N (§4.5), so it is never a `ConfirmKind`: the
+    // overlay is never asked to draw a body `confirmRow` cannot produce
+    expect(routeSubmit(input({ text: '/history clear', overlay: 'palette', fromPalette: true }))).toMatchObject({ kind: 'command', action: { kind: 'historyClear' }, confirm: null });
   });
   it('is pure: the same input yields the same decision and the input is not mutated', () => {
     const i = input({ text: 'hello [Pasted #1, 1 line]', chips: new Map([[1, 'b']]) });

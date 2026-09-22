@@ -59,6 +59,8 @@ _jevcode() {
             '--theme[colour theme (no auto-detect)]:theme:(dark light daltonized ansi)' \
             '--fps[render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch]:n:' \
             '--render-mode[Ink render mode (default standard); fixed at launch]:render-mode:(standard incremental)' \
+            '--renderer[renderer (default classic); fullscreen pins the header on the alternate screen (needs 18 rows / 40 cols); fixed at launch]:renderer:(classic fullscreen)' \
+            '--fullscreen[shorthand for --renderer fullscreen]' \
             '--ascii[ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch]' \
             '--title[set the terminal title (OSC 2)]' \
             '--screen-reader[screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch]' \
@@ -117,6 +119,8 @@ _jevcode() {
             '--theme[colour theme (no auto-detect)]:theme:(dark light daltonized ansi)' \
             '--fps[render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch]:n:' \
             '--render-mode[Ink render mode (default standard); fixed at launch]:render-mode:(standard incremental)' \
+            '--renderer[renderer (default classic); fullscreen pins the header on the alternate screen (needs 18 rows / 40 cols); fixed at launch]:renderer:(classic fullscreen)' \
+            '--fullscreen[shorthand for --renderer fullscreen]' \
             '--ascii[ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch]' \
             '--title[set the terminal title (OSC 2)]' \
             '--screen-reader[screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch]' \
@@ -177,6 +181,8 @@ _jevcode() {
             '--theme[colour theme (no auto-detect)]:theme:(dark light daltonized ansi)' \
             '--fps[render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch]:n:' \
             '--render-mode[Ink render mode (default standard); fixed at launch]:render-mode:(standard incremental)' \
+            '--renderer[renderer (default classic); fullscreen pins the header on the alternate screen (needs 18 rows / 40 cols); fixed at launch]:renderer:(classic fullscreen)' \
+            '--fullscreen[shorthand for --renderer fullscreen]' \
             '--ascii[ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch]' \
             '--title[set the terminal title (OSC 2)]' \
             '--screen-reader[screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch]' \

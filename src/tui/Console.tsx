@@ -10,6 +10,15 @@
  * `⚠ secret?`, a toast (`statusSpans`, D-P: never the whole row). The cursor is the one formula of §4.2:
  * `{ x: 2 + view.cursor.x, y: composerTop(layout) + view.cursor.row }` — `top` here is the top-edge row, so the draft's
  * row 0 is `top + 1 + gate`. The flat tier renders `<Composer>` + `<StatusLine>` instead.
+ *
+ * TUI-DESIGN-4 §2.2 (P-R2): **one geometry per frame.** Every row of this box — the edges, the gate, the draft, the
+ * divider and the status row — is derived from the one `columns` prop. Round 2's finding 6 kept the box and the body
+ * in step by laying the draft out at the App's *debounced* `wrapColumns` and declaring a second `bodyColumns` prop;
+ * A2 measured what that costs on the other side of the debounce (`out/tear`, 24 rows, 80→60→100→44→80): **4 of 24
+ * frames** carry a box row whose right border is the truncation ellipsis, and one grow frame draws a stray `│`
+ * mid-row with dead space after it. One value cannot skew, so `bodyColumns` is **gone** from `ConsoleProps` (§9.2's
+ * `Console.tsx` row) together with `wrapColumns`, `createResizeDebounce` and `RESIZE_DEBOUNCE_MS`: leaving the prop
+ * declared, even ignored, is the escape hatch that would let the skew back in.
  */
 import { Box, Text } from 'ink';
 import type { CursorPosition } from 'ink';
@@ -20,6 +29,7 @@ import type { Span } from './composer/rows.js';
 import { stringWidth } from './composer/width.js';
 import { consoleBottom, consoleDivider, consoleInnerWidth, consoleTopEdgeParts } from './console-lines.js';
 import { GLYPHS, fitCells, padEndCells, truncateCells, type GlyphSet } from './glyphs.js';
+import type { PaletteGhost } from './commands/palette.js';
 import { maskGlyphFor } from './Review.js';
 import { wizardConsoleTitle as wizardStepTitle, wizardLines, type WizardView } from './onboarding/lines.js';
 import { isFieldStep, type OnboardingState } from './onboarding/reducer.js';
@@ -37,12 +47,21 @@ export function wizardConsoleTitle(step: string, g: GlyphSet = GLYPHS.unicode): 
   return title === null ? 'setup' : title.replaceAll(' · ', ` ${g.dot} `);
 }
 
-/** TUI-DESIGN-3 §4.1 rule 3: the palette ghost — the completion after the cursor, or the ` → /owner` arrow of an alias. */
-export type ConsoleGhost = { rest: string; more: number } | { arrow: string };
+/**
+ * TUI-DESIGN-3 §4.1 rule 3 / TUI-DESIGN-4 §4.3 P-P2: the palette ghost — the completion after the cursor, or the
+ * ` → /owner` arrow of an alias or of a marked row that does not extend the token. Round 4's three-member union
+ * (`PaletteGhost`, which carries `more` on the arrow shape too) and round 3's two-member shape are both accepted:
+ * `App.tsx` passes the former since §9.2's `App.tsx` row landed, and the composer renders the same union.
+ */
+export type ConsoleGhost = { rest: string; more: number } | { arrow: string } | PaletteGhost;
 
-/** TUI-DESIGN-3 §4.1 rule 3: the ghost's text after the draft — `get +2` for a completion, ` → /status` (`-> ` ascii) for an alias. */
+/** TUI-DESIGN-3 §4.1 rule 3 / §4.3 P-P2: the ghost's text after the draft — `get +2` for a completion, ` → /status +2` (`-> ` ascii) for an arrow. */
 export function ghostText(ghost: ConsoleGhost | null | undefined, g: GlyphSet = GLYPHS.unicode): string {
   if (!ghost) return '';
+  if ('kind' in ghost) {
+    const more = ghost.more > 0 ? ` +${ghost.more}` : '';
+    return ghost.kind === 'arrow' ? ` ${g.arrow} ${ghost.target}${more}` : `${ghost.rest}${more}`;
+  }
   if ('arrow' in ghost) return ` ${g.arrow} ${ghost.arrow}`;
   return `${ghost.rest}${ghost.more > 0 ? ` +${ghost.more}` : ''}`;
 }
@@ -56,13 +75,6 @@ export interface ConsoleProps {
   buffer: TextBuffer;
   /** the terminal width; the edges, the gate row and the status row are drawn at `consoleInnerWidth(columns)` */
   columns: number;
-  /**
-   * TUI-DESIGN-2 §4.3 (finding 6): the width the draft is laid out at — the App's debounced `wrapColumns` (§14.1), the same
-   * width `composerWant` and the draft mirror use, so the rows the layout grants and the rows the box wraps always agree
-   * (for ≤ 50 ms after a resize the edges already follow the new width while the body still wraps at the old one).
-   * Defaults to `columns`.
-   */
-  bodyColumns?: number;
   /** the composer rows granted (`layout.composer − layout.gate`); the wizard's rows when `wizard` is set */
   height: number;
   /** `consoleTop(layout)` — the top-edge row inside the dynamic region */
@@ -120,8 +132,9 @@ export function Console(p: ConsoleProps): React.JSX.Element {
   const color = p.color ?? true;
   const columns = Math.max(4, Math.floor(p.columns));
   const inner = consoleInnerWidth(columns);
-  // finding 6: the draft wraps at the debounced width; the edges never wait
-  const bodyInner = p.bodyColumns !== undefined && Number.isFinite(p.bodyColumns) ? consoleInnerWidth(Math.max(4, Math.floor(p.bodyColumns))) : inner;
+  // TUI-DESIGN-4 §2.2 (P-R2): one geometry per frame — the draft wraps at `inner`, the width the edges are drawn at.
+  // There is no second width to pass: edge 1's `draftRows` is re-run on every render at `wrapInner`, so the layout's
+  // grant and the box's wrap are computed from this same `columns` in this same commit.
   const height = Math.max(1, Math.floor(p.height));
   const edges = textProps(theme, p.edgeRole ?? (p.live === true ? 'borderFocus' : 'border'), color);
   const head = p.title !== undefined && p.title !== null && p.title !== '' ? p.title : p.badge;
@@ -153,10 +166,10 @@ export function Console(p: ConsoleProps): React.JSX.Element {
   } else {
     const base = promptFor(g);
     const prompt = p.mode === 'filter' ? `${base}${FILTER_LABEL}` : base;
-    const view = composerView({ text: p.buffer.text, cursor: p.buffer.cursor, chips: p.buffer.chips, columns: bodyInner, height, scrollTop: p.scrollTop, spans: p.spans ?? [], prompt, glyphs: g, maskGlyph: maskGlyphFor(g) });
+    const view = composerView({ text: p.buffer.text, cursor: p.buffer.cursor, chips: p.buffer.chips, columns: inner, height, scrollTop: p.scrollTop, spans: p.spans ?? [], prompt, glyphs: g, maskGlyph: maskGlyphFor(g) });
     if (view.scrollTop !== p.scrollTop) p.onScroll?.(view.scrollTop);
     const empty = p.buffer.text.length === 0;
-    const placeholder = placeholderRow(p.mode, p.rows, bodyInner, stringWidth(prompt), g);
+    const placeholder = placeholderRow(p.mode, p.rows, inner, stringWidth(prompt), g);
     // TUI-DESIGN-3 §2.6 (D-O): the prompt is pink at rest and amber while a run is live (steering must not look like idle)
     const promptProps = p.live === true && p.active ? textProps(theme, 'steer', color) : p.active ? textProps(theme, 'accent', color) : {};
     if (p.active && view.cursor !== null && p.searchRow == null) p.cursor({ x: 2 + view.cursor.x, y: bodyTop + view.cursor.row });
@@ -170,12 +183,12 @@ export function Console(p: ConsoleProps): React.JSX.Element {
       const ghostStr = ghostText(ghost, g);
       const showPlaceholder = i === 0 && empty && p.searchRow == null && placeholder !== '';
       if (i === 0 && p.searchRow != null) {
-        bodyRows.push(wrap(<Text>{fitCells(p.searchRow, bodyInner, g)}</Text>, `c${i}`));
+        bodyRows.push(wrap(<Text>{fitCells(p.searchRow, inner, g)}</Text>, `c${i}`));
         continue;
       }
       const used = stringWidth(isPromptRow ? prompt : '') + stringWidth(body) + stringWidth(ghostStr);
-      const ph = showPlaceholder ? truncateCells(placeholder, Math.max(0, bodyInner - used), g) : '';
-      const pad = ' '.repeat(Math.max(0, bodyInner - used - stringWidth(ph)));
+      const ph = showPlaceholder ? truncateCells(placeholder, Math.max(0, inner - used), g) : '';
+      const pad = ' '.repeat(Math.max(0, inner - used - stringWidth(ph)));
       bodyRows.push(
         wrap(
           <>

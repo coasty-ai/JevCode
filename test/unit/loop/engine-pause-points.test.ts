@@ -135,9 +135,10 @@ describe('P1 — step boundary', () => {
     expect(h.store.last()!.interruptedDetail).toBeUndefined();
     expect(h.engine.status().pausePoint).toEqual(p);
     expect(h.engine.status().pauseNow).toBe(false);
-    // the transcript is unchanged by the event (pause:point yields no line)
-    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
-    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    // the transcript is unchanged by the event (pause:point yields no line); TUI-DESIGN-4 §3.7 G1 deleted the
+    // `stop:` line as well, so `[run] finished` is the last row
+    expect(h.store.transcript.some((l) => l.includes('stop: human_pause'))).toBe(false);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] human_pause [·-] /);
     expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
   });
 

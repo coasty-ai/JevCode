@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BlockingRequest, Engine, EngineMode, EngineOptions } from '../../../src/core/types.js';
-import { EXIT_CONFIRM_ROW, GENERATOR_IGNORED_NOTE, INTAKE_KEPT, LOGIN_SAVED_TOAST, MODE_JEV_OFF_SET, MODE_JEV_ONLY_SET, MODE_JEV_ON_SET, MODE_LLM_JEV_SET, MODE_SET_ITEM, NO_SESSION_YET, RENAME_CUT_NOTE, SESSION_CAP_CHAT_REFUSAL, STARTING_STEER_CAP, applyRawEdits, exportFilePath, isInCi, isInteractive, jevcodeDir, mockReviewStep, modeSetItem, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps, type WizardReason } from '../../../src/cli/session.js';
+import { COMMAND_ERRORS, EXIT_CONFIRM_ROW, GENERATOR_IGNORED_NOTE, STEER_ERRORS, INTAKE_KEPT, LOGIN_SAVED_TOAST, MODE_JEV_OFF_SET, MODE_JEV_ONLY_SET, MODE_JEV_ON_SET, MODE_LLM_JEV_SET, MODE_SET_ITEM, NO_SESSION_YET, RENAME_CUT_NOTE, SESSION_CAP_CHAT_REFUSAL, STARTING_STEER_CAP, applyRawEdits, exportFilePath, isInCi, isInteractive, jevcodeDir, mockReviewStep, modeSetItem, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps, type WizardReason } from '../../../src/cli/session.js';
 import { helpLines } from '../../../src/tui/commands/palette.js';
 import { modeBadgeWord } from '../../../src/tui/status/lines.js';
 import { MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
@@ -27,6 +27,8 @@ import { detectSecrets } from '../../../src/core/redact.js';
 import { NOT_RESUMABLE } from '../../../src/cli/epilogue.js';
 import type { Log } from '../../../src/core/log.js';
 import { DEFAULT_THRESHOLDS } from '../../../src/tui/useEngine.js';
+import { PENDING_DIRECTIVES_MAX } from '../../../src/core/types.js';
+import { cellWidth } from '../../../src/tui/glyphs.js';
 import { DEFAULT_MODE } from '../../../src/config/defaults.js';
 import { defaultRunSpendCapUsd } from '../../../src/config/ui.js';
 import { finishedRunLines, harnessDecider, loadedRun, makeController, scriptedRunId, tick, waitFor, type Harness } from './helpers.js';
@@ -261,7 +263,8 @@ describe('startup (§1 session loop)', () => {
     expect(h.renderer.unmounted).toBe(1);
     expect(h.restores).toBe(1);
     // the one-shot epilogue goes to stderr after unmount (§13.5)
-    expect(h.stderr.join('')).toMatch(/^jevcode: stopped — max_steps \(exit 4\)\n  run {7}\d{8}-/);
+    // TUI-DESIGN-4 §3.3: the epilogue is a block — the kv key field is 10 cells plus one separator (column 11)
+    expect(h.stderr.join('')).toMatch(/^jevcode: stopped — max_steps \(exit 4\)\n  run {8}\d{8}-/);
   });
 
   it('one-shot: a complete run whose state.json exists prints `resume    jevcode run --resume <id>` (§13.5; its state seeds a follow-up, §5.2); without the file the row is `state.json missing — not resumable`', async () => {
@@ -275,12 +278,12 @@ describe('startup (§1 session loop)', () => {
     expect(await done).toBe(0);
     const err = h.stderr.join('');
     expect(err).toContain('jevcode: stopped — complete (exit 0)');
-    expect(err).toContain(`resume    jevcode run --resume ${eng.runId}`);
+    expect(err).toContain(`resume     jevcode run --resume ${eng.runId}`);
     expect(err).not.toContain(NOT_RESUMABLE);
 
     const h2 = await build({ mode: 'one-shot', task: 'probe task', script: () => ({ stop: 'complete' }) });
     expect(await h2.controller.run()).toBe(0);
-    expect(h2.stderr.join('')).toContain(`resume    ${NOT_RESUMABLE}`);
+    expect(h2.stderr.join('')).toContain(`resume     ${NOT_RESUMABLE}`);
   });
 
   it('one-shot: a task with a secret and no prompt channel is refused with the §24 line and exit 2 (§10.2)', async () => {
@@ -466,7 +469,8 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
     await h.command('/budget max-steps 14');
     expect(h.controller.view.pending.maxSteps).toBe(14);
     await h.command('/budget');
-    expect(h.renderer.notes.at(-1)?.detail ?? h.renderer.notes.map((n) => n.text).join('\n')).toContain('pending: max-steps 14');
+    // TUI-DESIGN-4 §3.3: one `pending · next /resume or run` rule caption, then a kv row per pending value
+    expect(h.renderer.notes.at(-1)?.detail ?? h.renderer.notes.map((n) => n.text).join('\n')).toContain('max-steps  14');
   });
 
   it('/budget session-spend-cap before the first run survives the first submit (setCap on the same root) and its index line lands with the first run\'s session id (§9.4, §8.2)', async () => {
@@ -485,7 +489,7 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
     const budget = h.index().find((l) => l.kind === 'budget');
     expect(budget).toMatchObject({ kind: 'budget', sessionId: sid, runId: null, setting: 'session.spendCapUsd', from: '10', to: '15' });
     await h.command('/budget');
-    expect(h.renderer.notes.at(-1)?.detail).toContain('session cap $15.00');
+    expect(h.renderer.notes.at(-1)?.detail).toContain('of $15.00');
     // /new: a fresh session with its own (configured) cap
     await h.command('/new');
     expect(h.controller.view.sessionMeter.snapshot().capUsd).toBe(10);
@@ -550,7 +554,8 @@ describe('commands (§5.2)', () => {
     await h.command('/pause');
     expect(h.renderer.notes.at(-1)).toMatchObject({ text: 'error: /pause needs a live run', label: '[ui]', level: 'error' });
     await h.command('/foo');
-    expect(h.renderer.notes.at(-1)?.text).toBe('error: unknown command /foo; type / to list commands');
+    // TUI-DESIGN-4 §3.1.7: the one error shape — `error: /<command> — <what went wrong> · <what to do instead>`
+    expect(h.renderer.notes.at(-1)?.text).toMatch(/^error: \/foo — not a command\b/);
     const p = h.submit('go');
     const eng = await h.factory.nextLive();
     await h.command('/undo');
@@ -578,25 +583,31 @@ describe('commands (§5.2)', () => {
     expect(texts().at(-1)).toBe('help');
     // TUI-DESIGN-3 §4.4 F9: the palette's two-space form (aliases, the title cut to the column) — the same lines in both renderers
     expect(h.renderer.notes.at(-1)?.detail).toContain('  /exit, /q, /quit');
-    expect(h.renderer.notes.at(-1)?.detail).toContain('leave (exit 0; confirms first while a');
-    expect(h.renderer.notes.at(-1)?.detail?.split('\n')).toEqual(helpLines(80, { topic: 'all', live: false }));
+    // TUI-DESIGN-4 §3.3 (TD3 rule 4): the help body is built at the BLOCK BODY width, not at `columns()` — it used
+    // to overflow the terminal by exactly the 10-cell gutter (§3.0's measured defect)
+    expect(h.renderer.notes.at(-1)?.detail).toContain('leave (exit 0; confirms first');
+    expect(h.renderer.notes.at(-1)?.detail?.split('\n')).toEqual(helpLines(70, { topic: 'all', live: false }));
     await h.command('/status');
-    expect(h.renderer.notes.at(-1)?.detail).toContain(`session ${h.controller.view.sessionId}`);
+    expect(h.renderer.notes.at(-1)?.detail).toContain(`session    ${h.controller.view.sessionId}`);
     await h.command('/cost');
     // TUI-DESIGN-3 §5.1 rule 5 (S5's row): the head is the noun `cost`; the run line (DEFAULT_MODE's mode-keyed cap) is the first body row
     const defaultCap = defaultRunSpendCapUsd(DEFAULT_MODE).toFixed(3).replace('.', '\\.');
     expect(h.renderer.notes.at(-1)?.text).toBe('cost');
-    expect(h.renderer.notes.at(-1)?.detail?.split('\n')[0]).toMatch(new RegExp(`^run \\$0\\.115 of \\$${defaultCap}`));
+    expect(h.renderer.notes.at(-1)?.detail?.split('\n')[0]).toMatch(new RegExp(`^run {8}\\$0\\.115 of \\$${defaultCap.replace('\\.000', '\\.00')}`));
     await h.command('/jev');
-    expect(h.renderer.notes.at(-1)?.detail).toContain('decider typesafe/jev-1.13-20260917');
+    expect(h.renderer.notes.at(-1)?.detail).toContain('decider    typesafe/jev-1.13-20260917');
     await h.command('/config');
-    expect(h.renderer.notes.at(-1)?.detail).toContain('limits.spendCapUsd');
+    // TUI-DESIGN-4 §3.3: rows at their default fold behind the footer; `limits.spendCapUsd` is one of them here
+    expect(h.renderer.notes.at(-1)?.text).toMatch(/^config · \d+ set, \d+ at their defaults$/);
+    expect(h.renderer.notes.at(-1)?.detail).toMatch(/… \+\d+ settings at their defaults \(\/config --all\)/);
+    expect(h.renderer.notes.at(-1)?.detail).toContain('╶──── sandbox');
     await h.command('/errors');
-    expect(h.renderer.notes.at(-1)?.detail).toBe('(no warnings or errors yet)');
+    // §3.1.7: an empty state is a sentence, never a parenthesis-only fragment
+    expect(h.renderer.notes.at(-1)?.detail).toBe('nothing to report — no warnings or errors this session');
     await h.command('/plan');
     expect(texts().at(-1)).toBe('plan');
     await h.command('/decisions 3');
-    expect(texts().at(-1)).toBe('decisions (last 0)');
+    expect(texts().at(-1)).toBe('decisions');
     await h.command('/model claude-opus-5');
     expect(h.controller.view.pending.model).toBe('claude-opus-5');
     await h.command('/mode jev-off');
@@ -664,9 +675,9 @@ describe('commands (§5.2)', () => {
     const exporting = h.host.command('/export');
     await tick(5);
     await h.command('/undo');
-    expect(h.renderer.notes.at(-1)?.text).toBe('error: /undo: another command is still running (/export)');
+    expect(h.renderer.notes.at(-1)?.text).toBe('error: /undo — another command is still running (/export) — wait for it to finish');
     await h.command('/rewind');
-    expect(h.renderer.notes.at(-1)?.text).toBe('error: /rewind: another command is still running (/export)');
+    expect(h.renderer.notes.at(-1)?.text).toBe('error: /rewind — another command is still running (/export) — wait for it to finish');
     // a read-only command is never blocked
     await h.command('/status');
     expect(h.renderer.notes.at(-1)?.text).toBe('status');
@@ -674,7 +685,8 @@ describe('commands (§5.2)', () => {
     await exporting;
     expect(h.renderer.notes.at(-1)?.text).toMatch(/^exported 1 run to /);
     await h.command('/undo');
-    expect(h.renderer.notes.at(-1)?.text).toBe('error: /undo: no step of the last run changed files');
+    // TUI-DESIGN-4 §3.1.7: an empty state is never an error — `nothing to undo` is an info item with no `error:` prefix
+    expect(h.renderer.notes.at(-1)?.text).toBe('nothing to undo — the last run changed no files');
   });
 
   it('/theme outlives a re-resolution of the config (/login saved a key) (§8.7)', async () => {
@@ -696,12 +708,15 @@ describe('commands (§5.2)', () => {
     void h.controller.run();
     await h.ready();
     await h.command('/undo');
-    expect(h.renderer.notes.at(-1)?.text).toBe('error: /undo: no finished run in this session yet');
+    expect(h.renderer.notes.at(-1)?.text).toBe('nothing to undo — no run has finished in this session');
     await h.submit('one');
     await h.command('/undo');
-    expect(h.renderer.notes.at(-1)?.text).toBe('error: /undo: no step of the last run changed files');
+    // TUI-DESIGN-4 §3.1.7: an empty state is never an error — `nothing to undo` is an info item with no `error:` prefix
+    expect(h.renderer.notes.at(-1)?.text).toBe('nothing to undo — the last run changed no files');
     await h.command('/rewind');
-    expect(h.renderer.notes.at(-1)?.text).toBe('error: /rewind: no step of the last run changed files');
+    // §3.1.7: `/rewind`'s two states are the SAME empty states `/undo`'s are — an info sentence, never `error:`
+    expect(h.renderer.notes.at(-1)?.text).toBe('nothing to rewind — the last run changed no files');
+    expect(h.renderer.notes.at(-1)?.level).not.toBe('error');
   });
 });
 
@@ -1009,7 +1024,8 @@ describe('the engine exit hook (§13.4)', () => {
     expect(built2.host.steer('early', { secretSpans: [] })).toMatchObject({ ok: true });
     open2!();
     await p2;
-    expect(built2.renderer.notes.some((n) => n.text === 'error: steer queue full (8)')).toBe(true);
+    // §12: the fixed error shape — what went wrong, then what to do instead
+    expect(built2.renderer.notes.some((n) => n.text === `error: ${STEER_ERRORS.full}`)).toBe(true);
     built2.factory.current().release();
     await built2.host.awaitRunEnd();
   });
@@ -1428,7 +1444,9 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
       /* process.exit */
     }
     const block = missing.renderer.notes.find((n) => n.text.startsWith('no key found — set them'));
-    expect(block?.detail).toBe(fixBlockLines(DEFAULT_MODE, 'openrouter').join('\n'));
+    // the fix block is a pre-built line list: `textRows` never re-wraps it, it only elides at the body width
+    expect(block?.detail?.split('\n').length).toBe(fixBlockLines(DEFAULT_MODE, 'openrouter').length);
+    expect(block?.detail).toContain('export OPENROUTER_API_KEY=…   # one key: Jev + the code model');
   });
 });
 
@@ -1478,7 +1496,7 @@ describe('TUI-DESIGN-3 §4.4: the audit rows the controller lands (S3)', () => {
     await plain.ready();
     await plain.command('/panel');
     expect(plain.renderer.notes.at(-2)?.text).toBe('panel · d');
-    expect(plain.renderer.notes.at(-1)?.text).toBe('(no decisions yet)');
+    expect(plain.renderer.notes.at(-1)?.text).toBe('no decisions yet — they appear from the first step');
     await plain.command('/panel p');
     expect(plain.renderer.notes.some((n) => n.text === 'panel · p')).toBe(true);
     await plain.command('/transcript');
@@ -1532,14 +1550,250 @@ describe('TUI-DESIGN-3 §4.4: the audit rows the controller lands (S3)', () => {
     void h.controller.run();
     await h.ready();
     await h.command('/copy diff');
-    expect(h.renderer.notes.at(-1)?.text).toBe('error: /copy: nothing to copy for diff');
+    expect(h.renderer.notes.at(-1)?.text).toBe('error: /copy diff — nothing to copy yet — run a step, or pick another /copy target');
     expect(copies).toEqual([]);
     await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
     await h.command('/jev');
-    expect(h.renderer.notes.at(-1)?.detail).toContain('last: greeting or smalltalk (0.90)');
+    expect((h.renderer.notes.at(-1)?.detail ?? '').replace(/\s+/g, ' ')).toContain('last greeting or smalltalk (0.90)');
     await h.command('/cost');
     expect(h.renderer.notes.at(-1)?.text).toBe('cost');
     // §5.1 rule 6: never scientific notation
     expect(h.renderer.notes.at(-1)?.detail ?? '').not.toMatch(/e-\d/);
+  });
+});
+
+describe('TUI-DESIGN-4 §3.1.7 / §3.3: every empty state is a sentence, and an empty state is never an error', () => {
+  it('the idle answers of `/cost`, `/jev`, `/budget`, `/plan`, `/decisions`, `/errors` and `/diff`', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    const last = (): { text: string; detail?: string; level?: string } => h.renderer.notes.at(-1) as { text: string; detail?: string; level?: string };
+
+    // `/cost` before a run: the head is the noun, the sentence is the body (it used to BE the head)
+    await h.command('/cost');
+    expect(last().text).toBe('cost');
+    expect(last().detail?.split('\n')[0]).toMatch(/^no runs yet — the session has spent \$0\.00 of \$\d+\.\d\d$/);
+
+    await h.command('/jev');
+    expect(last().text).toBe('jev');
+    expect(last().detail?.split('\n')[0]).toBe('decider not resolved yet — the first question resolves it');
+
+    await h.command('/budget');
+    expect(last().text).toBe('budget');
+    expect(last().detail).toContain('nothing pending');
+    // §3.3: the `(next /resume or run)` parenthetical is stated ONCE, as a rule caption, never per row
+    expect(last().detail).not.toContain('pending: none');
+
+    await h.command('/plan');
+    expect(last().detail).toBe('no plan yet — Jev writes one at the first step');
+
+    await h.command('/decisions');
+    expect(last().text).toBe('decisions');
+    expect(last().detail).toBe('no decisions yet — they appear from the first step');
+
+    await h.command('/errors');
+    expect(last().detail).toBe('nothing to report — no warnings or errors this session');
+
+    // the three that used to be `error: …` and are not refusals at all
+    await h.command('/diff');
+    expect(last().text).toBe('nothing to diff — no run in this session yet');
+    expect(last().level).not.toBe('error');
+    await h.command('/undo');
+    expect(last().text).toBe('nothing to undo — no run has finished in this session');
+    expect(last().text.startsWith('error:')).toBe(false);
+    await h.command('/report');
+    expect(last().text).toBe('nothing to report yet — a run has to finish first');
+    expect(last().level).not.toBe('error');
+  });
+
+  it('`/status` is kv rows at the 10-cell key column with `shortPath`, and `/cost` says `1 run`, not `(1 runs)`', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.submit('one');
+    await h.command('/status');
+    const rows = (h.renderer.notes.at(-1)?.detail ?? '').split('\n');
+    expect(h.renderer.notes.at(-1)?.text).toBe('status');
+    expect(rows.map((r) => r.split(/ {2,}/)[0])).toEqual(['run', 'session', 'step', 'workspace', 'sandbox']);
+    for (const r of rows) expect(r.slice(0, 11)).toMatch(/^[a-z ]{10} $|^[a-z]+ {2,}/);
+    await h.command('/cost');
+    // §3.3: a real pluralisation bug — `(1 runs)` in `session.ts` while `costBlock` already got it right
+    expect(h.renderer.notes.at(-1)?.detail).toMatch(/ · 1 run(?![s])/);
+    expect(h.renderer.notes.at(-1)?.detail).not.toContain('1 runs');
+  });
+
+  it('`/history clear` names the number it dropped (§3.1.7, §12)', async () => {
+    const h = await build({ prompts: { historyClear: async () => true } });
+    void h.controller.run();
+    await h.ready();
+    await h.command('/history clear');
+    expect(h.renderer.notes.map((n) => n.text)).toContain('history cleared — 0 entries kept');
+  });
+});
+
+describe('TUI-DESIGN-4 §3.1.7 / §12: the ONE error shape, over the whole table of literal refusals', () => {
+  /**
+   * `error: /<command>[ <arg>] — <what went wrong> — <what to do instead>`, or §12's one-clause variant where the
+   * remedy is joined with a semicolon (`/steer — needs a live run; type the text and press Enter once one is
+   * running`). Either way there are TWO clauses and the separator is never a colon.
+   */
+  const SHAPE = /^\/\S+(?: \S+)? — [^;—]+(?:; | — ).+$/u;
+
+  it('every literal command refusal of `session.ts` matches §3.1.7, in one assertion over the table', () => {
+    const texts = [...Object.values(COMMAND_ERRORS), ...Object.values(STEER_ERRORS)];
+    expect(texts.length).toBeGreaterThanOrEqual(12);
+    for (const t of texts) {
+      expect(t, JSON.stringify(t)).toMatch(SHAPE);
+      // never the old colon form, and never a bare `error:` prefix baked into the table
+      expect(t, JSON.stringify(t)).not.toMatch(/^\/\S+:/);
+      expect(t.startsWith('error:'), JSON.stringify(t)).toBe(false);
+    }
+  });
+
+  it('`/why`\'s two failures take the same shape (one text for the App and the controller)', () => {
+    expect(whyErrorText('s7.risk.x', 'missing').replace(/^error: /, '')).toMatch(SHAPE);
+    expect(whyErrorText('nope', 'grammar').replace(/^error: /, '')).toMatch(SHAPE);
+  });
+
+  it('D-N: the steer-queue depth in the sentence is the constant that enforces it', () => {
+    expect(STEER_ERRORS.full).toContain(`(${STARTING_STEER_CAP} waiting)`);
+    expect(STARTING_STEER_CAP).toBe(PENDING_DIRECTIVES_MAX);
+  });
+
+  it('`/rewind`\'s two empty states are info sentences, exactly as `/undo`\'s are', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.command('/rewind');
+    expect(h.renderer.notes.at(-1)?.text).toBe('nothing to rewind — no run has finished in this session');
+    expect(h.renderer.notes.at(-1)?.level).not.toBe('error');
+  });
+});
+
+describe('TUI-DESIGN-4 §3.1.6 / contract 1.7 item 1: a block\'s colour roles reach the item', () => {
+  it('`/status` hands the renderer `detailRows` with a role per row, and the joined `detail` beside them', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.command('/status');
+    const note = h.renderer.notes.at(-1);
+    expect(note?.text).toBe('status');
+    const rows = note?.detailRows ?? [];
+    expect(rows.length).toBeGreaterThan(0);
+    // `detail` stays: `--plain`, `--json` and `clipDetail` all read it
+    expect(rows.map((r) => r.text).join('\n')).toBe(note?.detail);
+    // §3.1.6: a kv KEY is dim — at the standard tier the key and value share a row, so the row's role is the value's
+    expect(rows.every((r) => r.role === null || typeof r.role === 'string')).toBe(true);
+  });
+
+  it('`/config` rows carry the `dim` role on the table header and the fold footer (§3.1.6)', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.command('/config');
+    const rows = h.renderer.notes.at(-1)?.detailRows ?? [];
+    const header = rows.find((r) => r.text.startsWith('setting'));
+    expect(header?.role).toBe('dim');
+    expect(rows.find((r) => r.text.startsWith('╶────'))?.role).toBe('code');
+  });
+});
+
+describe('TUI-DESIGN-4 §1.3.1 / §3.3: `/fullscreen` persists before it says it persisted', () => {
+  it('writes `ui.renderer` through the config-file writer and names the file it wrote', async () => {
+    const wrote: { key: string; value: string }[] = [];
+    const h = await build({ deps: { writeConfigValue: async (fileKey: string, value: string | number | boolean) => { wrote.push({ key: fileKey, value: String(value) }); return { path: '/x/jevcode.json', displayPath: '/x/jevcode.json' }; } } });
+    void h.controller.run();
+    await h.ready();
+    await h.command('/fullscreen');
+    expect(wrote).toEqual([{ key: 'renderer', value: 'fullscreen' }]);
+    expect(h.renderer.notes.at(-1)?.text).toContain('fullscreen is set for the next launch');
+    expect(h.renderer.notes.at(-1)?.level).not.toBe('error');
+  });
+
+  it('a failed write is an error, and the sentence never claims the setting was saved', async () => {
+    const h = await build({ deps: { writeConfigValue: async () => { throw new Error('EACCES: read-only'); } } });
+    void h.controller.run();
+    await h.ready();
+    await h.command('/fullscreen');
+    const last = h.renderer.notes.at(-1);
+    expect(last?.text).toMatch(/^error: \/fullscreen — could not save ui\.renderer/);
+    expect(last?.text).not.toContain('is set for the next launch');
+  });
+});
+
+describe('TUI-DESIGN-4 §3.3 / §7.2 item 4: the in-session epilogue is built at the terminal width and never lies', () => {
+  it('the item is built at THIS terminal\'s block width, and the run id is never broken in half', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.submit('one');
+    const stopped = h.renderer.notes.filter((n) => n.text.startsWith('stopped — ')).at(-1);
+    expect(stopped, 'a stopped item').toBeTruthy();
+    const rows = (stopped?.detail ?? '').split('\n');
+    // §3.3: built at `blockWidth(columns())` — the harness drives 80 columns, so the body is 70, not the
+    // hard-coded `blockWidth(80)` the call site used to fall back to at every geometry
+    for (const r of rows) expect(cellWidth(r), JSON.stringify(r)).toBeLessThanOrEqual(70);
+    const id = /^run\s+(\S+)/.exec(rows[0] ?? '')?.[1] ?? '';
+    expect(id, rows.join('|')).toMatch(/^\d{8}-\d{6}-/);
+    // §3.1.5: the id survives WHOLE on one row — never `…/runs/2` ⏎ `0260922-…`
+    expect(rows.filter((r) => r.includes(id)).length, rows.join('|')).toBeGreaterThanOrEqual(3);
+  });
+
+  it('§7.2 item 4: the `files` row is one of the two declared forms, and it never advertises a file that is absent', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.submit('one');
+    const stopped = h.renderer.notes.filter((n) => n.text.startsWith('stopped — ')).at(-1);
+    const flat = (stopped?.detail ?? '').split('\n').join(' ').replace(/\s+/g, ' ');
+    const filesRow = /files [^|]*?(?= resume )/.exec(flat)?.[0] ?? '';
+    expect(filesRow, flat).toMatch(/^files /);
+    // the scripted engine of the harness writes no artefacts, so §12's `gone` row is the honest answer here —
+    // the one thing the row may never do is name files that are not on disk
+    expect(flat).toContain('— gone (the run directory was removed or became unwritable during the run)');
+    expect(flat).not.toContain('(transcript.log, state.json, jevcode.log)');
+    for (const f of ['transcript.log', 'state.json', 'jevcode.log']) {
+      const dir = join(h.home, 'runs', scriptedRunId(1));
+      if (!existsSync(join(dir, f))) expect(filesRow, f).not.toContain(`(${f}`);
+    }
+  });
+});
+
+describe('TUI-DESIGN-4 §3.2: the F-B frames are built by the REAL `session.ts` builders, not by hand', () => {
+  it('F-B1 `/status`: `no git repository` (never a branch called `none`) and the session cost segment', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.submit('one');
+    await h.command('/status');
+    const note = h.renderer.notes.at(-1);
+    expect(note?.text).toBe('status');
+    const rows = (note?.detail ?? '').split('\n');
+    const workspace = rows.find((r) => r.startsWith('workspace')) ?? '';
+    // F-B1 writes `workspace  ~/T/a3-ws-jC6j7y · no git repository`; the harness workspace is not a repo
+    expect(workspace).toMatch(/· no git repository$/);
+    expect(workspace).not.toContain('git none');
+    // F-B1 writes `session  <id> · 1 run · $0.001`
+    expect(rows.find((r) => r.startsWith('session'))).toMatch(/ · 1 run · \$\d+\.\d{3}$/);
+    for (const r of rows) expect(cellWidth(r), JSON.stringify(r)).toBeLessThanOrEqual(70);
+  });
+
+  it('§3.1.4: one money form per quantity — `/budget` prints a three-decimal SPEND against a two-decimal CAP', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.command('/budget');
+    const rows = (h.renderer.notes.at(-1)?.detail ?? '').split('\n');
+    expect(rows.find((r) => r.startsWith('run'))).toMatch(/^run\s+\$\d+\.\d{3} of \$\d+\.\d{2}$/);
+    expect(rows.find((r) => r.startsWith('session'))).toMatch(/^session\s+\$\d+\.\d{2} of (\$\d+\.\d{2}|none) · \d+ runs?$/);
+  });
+
+  it('§3.1.7: `/jev`\'s empty state REPLACES the data rows — it never prints a resolved decider beside it', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.command('/jev');
+    const rows = (h.renderer.notes.at(-1)?.detail ?? '').split('\n');
+    expect(rows).toEqual(['decider not resolved yet — the first question resolves it']);
   });
 });

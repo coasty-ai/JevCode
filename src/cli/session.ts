@@ -27,7 +27,7 @@
  * Every leave request (`/exit`, Ctrl-C ×2, Ctrl-D ×2, `[y]`) goes through `host.exit()`, where `--exit-code=last-run`
  * is applied (`leaveExitCode`). While a run is live the controller's own lines go to `<runDir>/jevcode.log` (§13.6).
  */
-import { appendFileSync, existsSync, realpathSync, writeSync } from 'node:fs';
+import { accessSync, appendFileSync, constants as fsConstants, existsSync, realpathSync, writeSync } from 'node:fs';
 import { open as openFile, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve as resolvePath, sep } from 'node:path';
@@ -82,10 +82,11 @@ import type {
   UndoLogEntry,
   WindowEntry,
 } from '../core/types.js';
+import { PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type { ParsedFlags } from './args.js';
 import { classifyResumeValue } from './args.js';
 import { AbortError, ConfigError, EXIT_CODES, JevHttpError, ProviderHttpError, UsageError, isAbortError, isJevCodeError } from '../errors.js';
-import { nowIso as defaultNowIso } from '../core/time.js';
+import { formatDuration, nowIso as defaultNowIso } from '../core/time.js';
 import { createLog, fallbackLogPath, logSettingsFromEnv, nullLog, type Log } from '../core/log.js';
 import { detectSecrets as detectSecretsByPattern, patternRedact, secretSpans as spansOf } from '../core/redact.js';
 import { parseJson } from '../core/json.js';
@@ -94,7 +95,7 @@ import { createSpendMeter } from '../spend/meter.js';
 import { resolveConfig as realResolveConfig, isEngineMode, modeFromParsedFlags, reconcileResumeConfig, resumeIdentityFromRunMeta, resumeInputsFrom } from '../config/resolve.js';
 import type { ResolvedConfigWithDiagnostics } from '../config/types.js';
 import { credentialsPath, readCredentialsFile, shadowingLine, writeConfigValue as realWriteConfigValue, writeCredentials as realWriteCredentials, type CredentialsPatch } from '../config/credentials.js';
-import { DEFAULT_MODE, MODE_BADGE_WORD } from '../config/defaults.js';
+import { DEFAULT_MODE, MODE_BADGE_WORD, SETTINGS } from '../config/defaults.js';
 import { parseModeHint } from '../config/launch.js';
 import { loadInstructions as realLoadInstructions, projectInstructionFile } from '../config/instructions.js';
 import { createTrustStore as realCreateTrustStore, decisionFromOption, probeTrustInputs as realProbeTrustInputs, trustKey, trustWorkspaceFlag, type TrustDecision, type TrustInputs, type TrustOption } from '../config/trust.js';
@@ -147,7 +148,7 @@ import { gatePlainPrompt, gateRefusalLine } from '../tui/secrets/gate-lines.js';
 import { copyRedacted } from '../tui/secrets/clipboard.js';
 import {
   childCapUsd,
-  costBlock,
+  costRows,
   followUpBoxLines,
   followUpDecision,
   pendingBudgetLine,
@@ -162,9 +163,11 @@ import {
   type FollowUpBoxInput,
 } from '../tui/budget/lines.js';
 import { epilogueItemLines, epilogueLines, type EpilogueContext } from './epilogue.js';
-import { configTableLines } from './config-table.js';
+import { configBlock, configProblemLines } from './config-table.js';
+import { BLOCK_CAPS, BLOCK_LOG_MAX, blockWidth, renderBlock, textRows, type BlockRow, type RenderedRow } from '../tui/block/lines.js';
 import type { JsonStream, JsonStreamContext } from './json-stream.js';
-import { GLYPHS } from '../tui/glyphs.js';
+import { GLYPHS, cellWidth, type GlyphSet } from '../tui/glyphs.js';
+import { shortPath } from '../core/text.js';
 import { findDecision, parseWhyRef, whyBlock, whyErrorText } from '../tui/why.js';
 import { calibrationBlock, calibrationStats, scanCalibration } from '../tui/calibration.js';
 import { panelLines, toDecisionRow, type DecisionRow, type PaneState } from '../tui/pane/model.js';
@@ -212,7 +215,7 @@ export const DECISIONS_KEPT_FOR_COMMANDS = 400;
 /** recent warnings/errors kept for `/errors` */
 export const ERRORS_KEPT = 50;
 /** TUI-DESIGN §8.6: steers accepted while the engine is still being created (the same cap as the engine's queue) */
-export const STARTING_STEER_CAP = 8;
+export const STARTING_STEER_CAP: number = PENDING_DIRECTIVES_MAX;
 /** §3.3: the bound on the render flush that commits the renderer's last item (`[ui] exited on Ctrl-C ×2`) before the unmount */
 export const FINAL_FLUSH_BOUND_MS = 300;
 /** §12.4 "all checks before the first write": the commands that run one at a time (files, credentials, the session's run list) */
@@ -223,6 +226,67 @@ export const EXCLUSIVE_COMMANDS: ReadonlySet<CommandAction['kind']> = new Set<Co
 export const MISSING_JEV_KEY = 'missing decider.apiKey: set TYPESAFE_API_KEY or OPENROUTER_API_KEY, or run jevcode login';
 export const RUN_LIVE_ERROR = 'a run is live; Enter steers it (Esc pauses, Esc Esc aborts)';
 export const CONFIG_NOT_READY = 'configuration not ready yet';
+
+/** TUI-DESIGN-4 §7.2 item 4: the run-directory artefacts the epilogue's `files` row may name, in the order it names them. */
+export const EPILOGUE_ARTEFACTS = ['transcript.log', 'state.json', 'jevcode.log'] as const;
+
+/**
+ * TUI-DESIGN-4 §3.1.6 / contract 1.7 item 1: what a renderer-local item may carry. `detail` is the joined body
+ * every existing sink already reads (`--plain`, `--json`, `clipDetail`); `detailRows` is the TUI's pre-split form
+ * WITH the colour role `renderBlock` computed for each row, and `detailKind` routes `/diff <step>` through the
+ * diff renderer for colour only.
+ */
+export interface NoteOptions {
+  detail?: string;
+  label?: UiLabel;
+  level?: 'info' | 'warn' | 'error';
+  detailRows?: readonly RenderedRow[];
+  detailKind?: 'diff' | 'table' | 'text';
+}
+
+/** TUI-DESIGN-4 §3.1 (D-U): what a `block()` call may declare on top of `NoteOptions`. */
+export interface BlockOptions extends NoteOptions {
+  /** §3.1.5: the row cap of this block (`BLOCK_CAPS`) */
+  max?: number;
+  /** §3.1.5: the footer that names where the rest is; `{n}` is the dropped-row count, laddered down to fit */
+  moreFooter?: string;
+  /** §3.3: the INNER table widths the builder pinned, so the TUI and the CLI draw one geometry */
+  tableCols?: readonly number[];
+  /** §3.3 edge 4: trailing rows the cap may never drop (`/config`'s sandbox statement) */
+  protectTail?: number;
+  /** §3.1.6: the block's declared syntax — the ONLY thing that lets `detailRole` classify a raw row */
+  syntax?: 'diff';
+}
+
+/**
+ * TUI-DESIGN-4 §3.1.7 / §12: the fixed error shape — `error: /<command>[ <arg>] — <what went wrong> — <what to do
+ * instead>`. `/steer` is the measured case: `‘/steer needs a live run’` says what is wrong and nothing about what to
+ * do, and it was spelt two different ways at the two call sites. One table, both sites.
+ */
+export const STEER_ERRORS = {
+  full: `/steer — the steer queue is full (${PENDING_DIRECTIVES_MAX} waiting) — let the run consume one first`,
+  empty: '/steer — no text — type the message after the command',
+  finished: '/steer — needs a live run; type the text and press Enter once one is running',
+} as const;
+/**
+ * TUI-DESIGN-4 §3.1.7 / §12: every LITERAL command-refusal text of this module, in one table, so the shape
+ * `error: /<command>[ <arg>] — <what went wrong> — <what to do instead>` is asserted once over all of them
+ * (`test/unit/cli/session.test.ts`) instead of drifting per call site. A refusal whose body is a dynamic message
+ * (`${describe(e)}`) keeps the `/<command> — <message>` prefix and is not in this table: there is no remedy to
+ * name for an arbitrary failure. An EMPTY state is never here — §3.1.7 makes those info sentences.
+ */
+export const COMMAND_ERRORS = {
+  rewindNoStep: '/rewind — no step given — pick one with /rewind <step>',
+  diffNoRepo: '/diff — not a git repository — /diff <step> compares against the step pre-images instead',
+  diffNoSandbox: '/diff — no sandbox is available for git — check the sandbox level with /config',
+  diffFullLive: '/diff --full — a run is live — press Esc to pause it, then run /diff --full',
+  exportNoSession: '/export — no session yet — type a task to start one',
+  resumeLive: '/resume — a run is live — press Esc to pause it, then run /resume',
+  unsteerEmpty: '/unsteer — nothing is queued — /steer <text> queues one while a run is live',
+  copyDraft: "/copy draft — the draft lives in the TUI composer — run jevcode chat without --plain to use it",
+  editor: '/editor — the external editor is Ctrl+G in the TUI composer — press Ctrl+G instead',
+} as const;
+
 /** §3.7 Esc / Ctrl-C on the intake card, or no composer to answer it */
 export const INTAKE_KEPT = 'Okay — edit it and press Enter, or ask me something.';
 /** §3.6: a weak `question_about_the_code` under jev+llm took the lookup */
@@ -503,6 +567,14 @@ export interface SessionControllerOptions {
   rendererKind: RendererKind;
   /** an Ink composer is mounted (the §1 rule) */
   interactive: boolean;
+  /**
+   * TUI-DESIGN-4 §2.8 (P-R10): the refusal message `chat` gets instead of `missing task text` when it asked for an
+   * Ink composer and the §1 rule said no — `rendererRefusalRows(sel.reason, env)` from `src/cli/main.tsx` (the §12
+   * strings live there, beside the rule that produced the reason; passing ROWS rather than the reason keeps
+   * `session.ts` off `main.tsx`, which imports it). Absent when a composer is mounted, and for `run`, whose empty
+   * task really is a missing task. Measured case: `TERM=dumb jevcode chat` used to say `missing task text`.
+   */
+  rendererRefusalRows?: readonly string[] | null;
   launch: LaunchSettings;
   stdout: { write(s: string): unknown; isTTY?: boolean | undefined; columns?: number | undefined };
   stderr: { write(s: string): unknown };
@@ -1336,10 +1408,18 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   let lastTrustInputs: TrustInputs | null = null;
 
   // --- renderer-originated lines (§15.1) ------------------------------------------------------
-  function notifyLocal(text: string, opts: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' } = {}): void {
+  function notifyLocal(text: string, opts: NoteOptions = {}): void {
     const r = renderer as Renderer & { notify?: Renderer['notify'] };
     if (typeof r.notify === 'function') {
-      r.notify(text, { ...(opts.level ? { level: opts.level } : {}), ...(opts.detail ? { detail: opts.detail } : {}), ...(opts.label ? { label: opts.label } : {}) });
+      r.notify(text, {
+        ...(opts.level ? { level: opts.level } : {}),
+        ...(opts.detail ? { detail: opts.detail } : {}),
+        ...(opts.label ? { label: opts.label } : {}),
+        // contract 1.7 item 1 (§3.1.6): the pre-split body WITH its colour role per row — the TUI paints them,
+        // `--plain` / `--json` keep using `detail`, which is why both travel together
+        ...(opts.detailRows ? { detailRows: opts.detailRows } : {}),
+        ...(opts.detailKind ? { detailKind: opts.detailKind } : {}),
+      });
     } else log.info(`[idle item] ${opts.label ?? '[ui]'} ${text}`);
   }
 
@@ -1348,7 +1428,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
    * renderer's notify). Returns true when the engine took the line: it then rides the engine's transcript **and** its
    * `EngineOptions.log` (§13.6, `notice ui`), so a caller that also logs must not write the line a second time.
    */
-  function note(text: string, opts: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' } = {}): boolean {
+  function note(text: string, opts: NoteOptions = {}): boolean {
     const e = engine;
     if (e !== null && live()) {
       try {
@@ -1361,14 +1441,74 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     return false;
   }
 
-  /** a multi-line block: one labelled item with the body as its TUI detail; the line renderers print the body as lines (their items carry no body) */
-  function block(head: string, lines: readonly string[], opts: { label?: UiLabel; level?: 'info' | 'warn' | 'error' } = {}): void {
+  /** TUI-DESIGN-4 §3.1.2: the block body width — the RUNG's body width at the current geometry, clamped to [1, 160]. */
+  function bodyWidth(): number {
+    return blockWidth(columns());
+  }
+
+  /** the session's glyph set (`--ascii` twins); every block row is rendered through it. */
+  function glyphs(): GlyphSet {
+    return o.launch.ascii ? GLYPHS.ascii : GLYPHS.unicode;
+  }
+
+  /**
+   * TUI-DESIGN-4 §3.1 (D-U): the ONE command-output grammar. `rows` are `BlockRow`s; `renderBlock` turns them into
+   * the rendered row texts ONCE, at `blockWidth(columns())`, and both renderers walk the same list — the TUI as one
+   * labelled item with the rows as its detail body, the line renderers as one `[ui] <row>` per row (today's
+   * behaviour, `session.ts:1364-1371`, which is also what keeps `--plain`'s stdout and its `transcript.log` equal,
+   * §14.1 row 6). While a run is live `Engine.annotateBlock` (contract 1.7 item 2, D-W) writes head + every row to
+   * `transcript.log`; until `src/loop/engine.ts` implements it (S6, W2) the call falls back to today's single
+   * `annotate(head)`, which is exactly today's behaviour.
+   */
+  function block(head: string, rows: readonly BlockRow[], opts: BlockOptions = {}): void {
+    const { max, moreFooter, tableCols, protectTail, syntax, detailKind, ...noteOpts } = opts;
+    const rendered = renderBlock(rows, bodyWidth(), glyphs(), {
+      ...(max !== undefined ? { max } : {}),
+      ...(moreFooter !== undefined ? { moreFooter } : {}),
+      // §3.3: a builder that sized its own columns (`/config`) pins them, so the TUI block and `jevcode config`
+      // draw ONE geometry for one record — re-deriving them from the shown rows made the two disagree
+      ...(tableCols !== undefined ? { tableCols } : {}),
+      ...(protectTail !== undefined ? { protectTail } : {}),
+      ...(syntax !== undefined ? { syntax } : {}),
+    });
+    const lines = rendered.map((r) => r.text);
+    // D-W, §3.5 item 2: while a run is LIVE the block goes through the engine in BOTH renderers — one `notice ui`
+    // per row, head first — so the same command writes the same rows to `transcript.log` from the TUI as from
+    // `--plain`. Measured today: 1 row from the TUI and 7 from `--plain`, and the logged row did not name the
+    // command. `annotateBlock` returns false exactly when `annotate` does (no run live), and we fall through.
+    const e = engine;
+    if (e !== null && live() && typeof e.annotateBlock === 'function') {
+      try {
+        // §3.5 edge 2: `transcript.log` is a support artefact, not a pager mirror
+        const capped = lines.length > BLOCK_LOG_MAX ? [...lines.slice(0, BLOCK_LOG_MAX), `${glyphs().ellipsis} +${lines.length - BLOCK_LOG_MAX} more rows`] : lines;
+        if (e.annotateBlock(head, capped, noteOpts)) return;
+      } catch (err) {
+        log.warn(`annotateBlock failed: ${describe(err)}`);
+      }
+    }
     if (o.rendererKind === 'tui') {
-      note(head, { ...opts, ...(lines.length > 0 ? { detail: lines.join('\n') } : {}) });
+      // idle: ONE labelled item whose detail is the pre-rendered body (§3.1.1's frame). §3.1.6 / contract 1.7
+      // item 1: the rows travel WITH their colour roles as `detailRows`; `detail` stays for `--plain`, `--json`
+      // and `clipDetail`, so nothing that reads the old member breaks.
+      note(head, {
+        ...noteOpts,
+        ...(lines.length > 0 ? { detail: lines.join('\n'), detailRows: rendered } : {}),
+        ...(detailKind !== undefined ? { detailKind } : {}),
+      });
       return;
     }
-    note(head, opts);
-    for (const l of lines) note(l, opts);
+    // §3.5 item 1: the line renderers walk the SAME rendered list through `Renderer.blockLines` (contract 1.7
+    // item 3), whose default implementation is today's per-line `note` — so no renderer breaks and `--plain`'s
+    // stdout and its `transcript.log` cannot disagree (§14.1 row 6).
+    note(head, noteOpts);
+    const r = renderer as Renderer & { blockLines?: Renderer['blockLines'] };
+    if (typeof r.blockLines === 'function') r.blockLines(lines, noteOpts);
+    else for (const l of lines) note(l, noteOpts);
+  }
+
+  /** TUI-DESIGN-4 §3.3: a block whose body is an already-built line list (a pane builder, `/help`, `/why`). */
+  function textBlock(head: string, lines: readonly string[], opts: BlockOptions = {}): void {
+    block(head, textRows(lines), opts);
   }
 
   function uiError(text: string): void {
@@ -1405,6 +1545,33 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   }
 
   // --- exit paths (§13.5) ----------------------------------------------------------------------
+  /**
+   * TUI-DESIGN-4 §7.2 item 4 (P-D2): the run-directory artefacts that ACTUALLY exist, so the epilogue never
+   * advertises a file that is not there. A directory that has vanished (deleted or chmod-ed mid-run — measured
+   * silent today: `complete`, exit 0, and a `resume` row for a directory that is gone) replaces the whole row.
+   * Sync and non-throwing: this runs on the exit path, after the renderer is down.
+   */
+  function runDirFiles(dir: string | null): { files?: readonly string[]; gone?: boolean } {
+    if (dir === null) return {};
+    try {
+      if (!existsSync(dir)) return { gone: true };
+      const files = EPILOGUE_ARTEFACTS.filter((f) => existsSync(join(dir, f)));
+      // §7.2 item 4 / §12: a directory that answers `existsSync` but holds NOTHING the run wrote is the
+      // `rundir:chmod` fault of §7.11 — chmod 000 answers true for the dir and false for every file inside it.
+      // `gone` is the row §12 declares for it; there is no `(empty)` sentence anywhere in §12.
+      if (files.length === 0) return { gone: true };
+      // the directory may still be unwritable (the run's later writes failed): a write probe says so
+      try {
+        accessSync(dir, fsConstants.W_OK);
+      } catch {
+        return { gone: true };
+      }
+      return { files };
+    } catch {
+      return { gone: true };
+    }
+  }
+
   function context(): EpilogueContext {
     const r = current ?? runs[runs.length - 1] ?? null;
     // an external signal with no (finished) run: the first line reads `stopped — signal: <name> (exit 130|143)`
@@ -1419,6 +1586,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       ...(signalExit ? { signal: signalExit } : {}),
       degraded: r?.degraded ?? false,
       home,
+      ...runDirFiles(r?.runDir ?? null),
     };
   }
 
@@ -1622,7 +1790,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       for (const item of r.items) setup(item);
       for (const w of r.warnings) warnLine(w);
     } catch (e) {
-      uiError(`/login: ${describe(e)}`);
+      uiError(`/login — ${describe(e)}`);
       return { ok: false, items, error: describe(e) };
     }
     await reresolve();
@@ -1680,7 +1848,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     const provider = providerOfConfig(config);
     if (!prompter?.wizard) {
-      block('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode, provider), { label: '[setup]', level: 'warn' });
+      textBlock('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode, provider), { label: '[setup]', level: 'warn' });
       return false;
     }
     // TUI-DESIGN-3 §1.4.3: `found` from the RESOLVED entries, whatever the layer (a round-2 user's saved Jev key counts); only for a startup wizard
@@ -2185,7 +2353,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     // §8.6: the steers typed while the engine was being created; the engine's own refusals are reported, never dropped
     for (const s of startingSteers.splice(0)) {
       const r = eng.steer(s);
-      if (!r.ok) uiError(r.reason === 'full' ? 'steer queue full (8)' : r.reason === 'empty' ? '/steer: empty text' : '/steer needs a live run');
+      if (!r.ok) uiError(STEER_ERRORS[r.reason === 'full' ? 'full' : r.reason === 'empty' ? 'empty' : 'finished']);
     }
     if (signalExit !== null) eng.abort('signal', { signal: signalExit });
     let result: RunResult;
@@ -2264,7 +2432,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   }
 
   function postRunItems(record: RunRecord, result: RunResult): void {
-    const ctx: EpilogueContext = { runId: record.runId, runDir: record.runDir, resumable: epilogueResumable(record), stopReason: result.stopReason, exitCode: record.exitCode ?? 0, degraded: record.degraded, home };
+    // §7.2 item 4: the in-session epilogue probes the run directory exactly as the process-exit path does, so a
+    // per-run `[ui] stopped — …` item can never advertise files that are no longer there
+    const ctx: EpilogueContext = { runId: record.runId, runDir: record.runDir, resumable: epilogueResumable(record), stopReason: result.stopReason, exitCode: record.exitCode ?? 0, degraded: record.degraded, home, ...runDirFiles(record.runDir) };
     if (result.stopReason === 'human_pause') {
       notifyLocal(pausedItemText(result.steps));
       return;
@@ -2277,7 +2447,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       if (o.rendererKind !== 'tui') for (const l of lines.slice(1)) notifyLocal(l);
       return;
     }
-    const { text, detail } = epilogueItemLines(result.error ?? null, ctx, redact);
+    // §3.3: the epilogue is built at THIS terminal's block width — the default 70 overflowed a 40-column body
+    const { text, detail } = epilogueItemLines(result.error ?? null, ctx, redact, bodyWidth());
     notifyLocal(text, { level: result.stopReason === 'error' ? 'error' : 'info', ...(detail.length > 0 ? { detail: detail.join('\n') } : {}) });
   }
 
@@ -2300,7 +2471,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   async function resumeRun(runId: string, force: boolean): Promise<void> {
     if (exiting) return;
     if (live()) {
-      uiError('/resume runs when the run is idle; Esc pauses first');
+      uiError(COMMAND_ERRORS.resumeLive);
       return;
     }
     if (!config) return;
@@ -2402,7 +2573,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     } catch (e) {
       phase = 'none';
       const err = isJevCodeError(e) ? e : null;
-      uiError(`/resume: ${redact(describe(e))}`);
+      uiError(`/resume — ${redact(describe(e))}`);
       log.error(`resume failed: ${describe(e)}`);
       if (o.mode === 'one-shot') finishSession(err?.exitCode ?? EXIT_CODES.unexpected, 'error');
     }
@@ -2430,7 +2601,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     else if (r.kind === 'session') {
       const id = newestRunId(r.session);
       if (id) await resumeRun(id, force);
-      else uiError(`/resume: session "${c.title}" has no run`);
+      else uiError(`/resume — session "${c.title}" has no run — pick another with /resume, or type a task`);
     } else if (r.kind === 'ambiguous') throw new ConfigError(ambiguousResumeMessage(value, r.candidates), { setting: 'resume' });
     else throw new UsageError(`--resume: no run or session matches "${value}"`);
   }
@@ -2479,18 +2650,20 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const cfg = config;
     const last = lastFinishedRun();
     if (!cfg || !last) {
-      uiError('/undo: no finished run in this session yet');
+      // TUI-DESIGN-4 §3.1.7: an empty state is never an error. Only a REFUSED or malformed request is, so these
+      // two are plain `[ui]` info items — nothing was refused, there is simply nothing to undo yet.
+      note('nothing to undo — no run has finished in this session');
       return;
     }
     const target = step ?? last.changedSteps.at(-1) ?? null;
     if (target === null) {
-      uiError('/undo: no step of the last run changed files');
+      note('nothing to undo — the last run changed no files');
       return;
     }
     const git = await gitFacts();
     const prepared = await prepareUndo(last.runDir, target, { root: workspaceRoot, headOid: git.headOid, git: git.git });
     if (!prepared.ok) {
-      uiError(`/undo: ${prepared.message}`);
+      uiError(`/undo — ${prepared.message}`);
       return;
     }
     const sandbox = git.git ? makeSandbox(cfg, last.runDir, git) : null;
@@ -2517,21 +2690,22 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const cfg = config;
     const last = lastFinishedRun();
     if (!cfg || !last) {
-      uiError('/rewind: no finished run in this session yet');
+      // §3.1.7: `/rewind`'s two states are the SAME empty states `/undo`'s were — an info sentence, not an error
+      note('nothing to rewind — no run has finished in this session');
       return;
     }
     const steps = rewindSteps(last);
     const candidatesList = rewindCandidates(steps);
     if (candidatesList.length === 0) {
-      uiError('/rewind: no step of the last run changed files');
+      note('nothing to rewind — the last run changed no files');
       return;
     }
     let target = step;
     if (target === null) {
       if (prompter?.rewind) target = await prompter.rewind(steps);
       else {
-        block('rewind · steps with changes', rewindPickerRows(steps, columns()));
-        uiError('/rewind: pick a step with /rewind <step>');
+        textBlock('rewind · steps with changes', rewindPickerRows(steps, bodyWidth()));
+        uiError(COMMAND_ERRORS.rewindNoStep);
         return;
       }
     }
@@ -2543,7 +2717,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     for (const s of plan.order) {
       const prepared = await prepareUndo(last.runDir, s, { root: workspaceRoot, headOid: git.headOid, git: git.git });
       if (!prepared.ok) {
-        uiError(`/rewind: step ${s}: ${prepared.message}`);
+        uiError(`/rewind ${s} — ${prepared.message}`);
         break;
       }
       const r = await applyUndo(prepared.plan, deps);
@@ -2564,14 +2738,15 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const cfg = config;
     const run = current ?? lastFinishedRun();
     if (!cfg || !run) {
-      uiError('/diff: no run in this session yet');
+      // §3.1.7: an empty state is a sentence, not an error
+      note('nothing to diff — no run in this session yet');
       return;
     }
     const git = await gitFacts();
     if (a.step !== null) {
       const post = await readPostImages(run.runDir, a.step);
       if (!post.ok) {
-        uiError(`/diff ${a.step}: ${post.detail}`);
+        uiError(`/diff ${a.step} — ${post.detail}`);
         return;
       }
       const files: StepDiffFile[] = [];
@@ -2587,34 +2762,40 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         files.push({ path, pre: pre?.bytes ?? null, post: f.deleted === true ? null : now, ...(f.sha256 !== undefined && f.sha256 !== null && nowHash !== null && nowHash !== f.sha256 ? { changedSince: true } : {}), ...(pre === null && f.preImage !== true ? { preUnavailable: true } : {}) });
       }
       const lines = diffStepLines(a.step, files, { maxLines: DIFF_INLINE_MAX_LINES });
-      block(lines[0] ?? `diff step ${a.step}`, lines.slice(1));
+      // §3.3: a diff source line is NEVER wrapped (a wrapped diff line is a lie) — `renderBlock` elides it right and
+      // the footer names where the rest is. REQUEST to S5 (§9.2 `src/undo/diff.ts`): `diffStepLines` takes `width`.
+      // §3.1.6 / §6.5 item 5: the block DECLARES its syntax, and only then are the raw rows classified — a `+`
+      // row is `added`, `@@` is `hunk`, `diff --git` is `diffMeta`; the text itself stays git-shaped and pasteable
+      textBlock(lines[0] ?? `diff step ${a.step}`, lines.slice(1), { max: BLOCK_CAPS.diff, moreFooter: `${glyphs().ellipsis} +{n} more lines (/diff --full)`, syntax: 'diff', detailKind: 'diff' });
       return;
     }
     if (!git.git) {
-      uiError('/diff: not a git repository; /diff <step> compares against step pre-images');
+      uiError(COMMAND_ERRORS.diffNoRepo);
       return;
     }
     const sandbox = makeSandbox(cfg, run.runDir, git);
     if (!sandbox) {
-      uiError('/diff: no sandbox available for git');
+      uiError(COMMAND_ERRORS.diffNoSandbox);
       return;
     }
     const io = { sandbox, root: workspaceRoot, runId: run.runId, changedFiles: run.changedFiles, ...(git.unborn ? { unborn: true } : {}) };
     if (a.full) {
       if (live()) {
-        uiError('/diff --full runs when the run is idle; Esc pauses first');
+        uiError(COMMAND_ERRORS.diffFullLive);
         return;
       }
       const collected = await collectFullDiff({ ...io, color: o.stdout.isTTY === true, secretPaths: cfg.secretPaths, redact: cfg.redact });
       const suspend = prompter?.suspendTerminal;
       const r = await openFullDiff({ suspendTerminal: suspend ?? ((run) => run()), env, isTTY: o.stdout.isTTY === true && suspend !== undefined, text: collected.text, notice: collected.notice, runDir: run.runDir, seq: ++diffSeq });
       if (r.mode === 'pager') note(`diff: ${r.command} showed ${r.file}${r.exitCode !== null && r.exitCode !== 0 ? ` (exit ${r.exitCode})` : ''}`);
-      else block(r.lines[0] ?? 'diff', r.lines.slice(1));
+      else textBlock(r.lines[0] ?? 'diff', r.lines.slice(1));
       for (const err of collected.errors) warnLine(err);
       return;
     }
-    const r = await diffStatBlockFromGit({ ...io, ...(a.all ? { all: true } : {}) }, columns());
-    block(r.lines[0] ?? 'diff', r.lines.slice(1));
+    // TUI-DESIGN-4 §3.3 / §6.5: `diffStatBlock` is given the BLOCK BODY width, not the terminal width — round 3's
+    // D-L moved detail rows to column 10, so passing `columns()` overflowed every row of this block by exactly 10
+    const r = await diffStatBlockFromGit({ ...io, ...(a.all ? { all: true } : {}) }, bodyWidth());
+    textBlock(r.lines[0] ?? 'diff', r.lines.slice(1));
     for (const err of r.errors) warnLine(err);
   }
 
@@ -2622,7 +2803,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   async function exportCommand(file: string | null): Promise<void> {
     const cfg = config;
     if (!cfg || sessionId === null) {
-      uiError('/export: no session yet');
+      uiError(COMMAND_ERRORS.exportNoSession);
       return;
     }
     const row = index.find((s) => s.sessionId === sessionId);
@@ -2646,9 +2827,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const out = file !== null ? resolvePath(workspaceRoot, file) : exportFilePath(jdir, sessionId);
     try {
       const r = await exportSessionFn(list, out);
-      note(`exported ${r.runs} run${r.runs === 1 ? '' : 's'} to ${r.path}${r.truncated ? ' (truncated at 64 MiB)' : ''}${r.missing.length > 0 ? ` · ${r.missing.length} transcript${r.missing.length === 1 ? '' : 's'} missing` : ''}`);
+      // TUI-DESIGN-4 §3.4: every path a command names goes through `shortPath`
+      note(`exported ${r.runs} run${r.runs === 1 ? '' : 's'} to ${shortPath(r.path, { root: workspaceRoot, home, width: bodyWidth(), measure: cellWidth })}${r.truncated ? ' (truncated at 64 MiB)' : ''}${r.missing.length > 0 ? ` · ${r.missing.length} transcript${r.missing.length === 1 ? '' : 's'} missing` : ''}`);
     } catch (e) {
-      uiError(`/export: ${redact(describe(e))}`);
+      uiError(`/export — ${redact(describe(e))}`);
     }
   }
 
@@ -2657,9 +2839,21 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (a.set === null) {
       const run = current ?? lastFinishedRun();
       const spent = run ? (run.endedAt === null ? lastStatus?.spend.totalUsd ?? 0 : run.costUsd.generator + run.costUsd.jev) : 0;
-      const lines = [`run cap ${usd3(runCapUsd)} · run spend ${usd3(spent)}`, `session cap ${usd2(sessionCapOf())} · session spend ${usd2(sessionTotal())} (${runs.filter((r) => r.endedAt !== null).length} runs)`];
-      const pend = pendingLines();
-      block('budget', [...lines, ...(pend.length > 0 ? pend : ['pending: none'])]);
+      // TUI-DESIGN-4 §3.3: kv `run` / `session`, then ONE `pending · next /resume or run` rule caption and one kv
+      // row per pending value (today's parenthetical repeated on every row is gone); §3.1.7's empty state below
+      const done = runs.filter((r) => r.endedAt !== null).length;
+      const rows: BlockRow[] = [
+        // §3.1.4: an amount SPENT is three decimals, a CAP is `usd2` — two cap forms in one block was the defect
+        { kind: 'kv', key: 'run', value: `${usd3(spent)} of ${usd2(runCapUsd)}` },
+        { kind: 'kv', key: 'session', value: `${usd2(sessionTotal())} of ${usd2(sessionCapOf())} · ${done} run${done === 1 ? '' : 's'}` },
+      ];
+      const pend = pendingBudgetPairs();
+      if (pend.length === 0) rows.push({ kind: 'note', flush: true, text: 'nothing pending' });
+      else {
+        rows.push({ kind: 'rule', caption: `pending ${glyphs().dot} next /resume or run` });
+        for (const pr of pend) rows.push({ kind: 'kv', key: pr.setting, value: pr.value, role: 'accent' });
+      }
+      block('budget', rows);
       return;
     }
     const set = a.set;
@@ -2715,19 +2909,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
   }
 
-  function pendingLines(): string[] {
-    const out: string[] = [];
-    if (pending.spendCapUsd !== undefined) out.push(`pending: spend-cap ${pending.spendCapUsd.toFixed(2)} (next /resume or run)`);
-    if (pending.maxSteps !== undefined) out.push(`pending: max-steps ${pending.maxSteps} (next /resume or run)`);
-    if (pending.maxWall !== undefined) out.push(`pending: max-wall ${pending.maxWall.text} (next /resume or run)`);
-    if (pending.maxReplans !== undefined) out.push(`pending: max-replans ${pending.maxReplans} (next /resume or run)`);
-    if (pending.maxGeneratorTokens !== undefined) out.push(`pending: max-generator-tokens ${pending.maxGeneratorTokens} (next /resume or run)`);
-    if (pending.model !== undefined) out.push(`pending: model ${pending.model} (next run)`);
-    if (pending.provider !== undefined) out.push(`pending: provider ${pending.provider} (next run)`);
-    if (pending.mode !== undefined) out.push(`pending: mode ${pending.mode} (next run)`);
-    return out;
-  }
-
+  /**
+   * TUI-DESIGN-4 §3.3: the ONE pending list — the `<set>` echo, `/budget`'s `pending` rule and `/cost`'s pending
+   * rows read the same keys in the same order. (`pendingLines`, the repeated-parenthetical form, is gone: the
+   * `(next /resume or run)` clause is the rule caption now, stated once.)
+   */
   function pendingBudgetPairs(): { setting: string; value: string }[] {
     const out: { setting: string; value: string }[] = [];
     if (pending.spendCapUsd !== undefined) out.push({ setting: 'spend-cap', value: pending.spendCapUsd.toFixed(2) });
@@ -2735,6 +2921,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (pending.maxWall !== undefined) out.push({ setting: 'max-wall', value: pending.maxWall.text });
     if (pending.maxReplans !== undefined) out.push({ setting: 'max-replans', value: String(pending.maxReplans) });
     if (pending.maxGeneratorTokens !== undefined) out.push({ setting: 'max-generator-tokens', value: String(pending.maxGeneratorTokens) });
+    if (pending.model !== undefined) out.push({ setting: 'model', value: pending.model });
+    if (pending.provider !== undefined) out.push({ setting: 'provider', value: pending.provider });
+    if (pending.mode !== undefined) out.push({ setting: 'mode', value: pending.mode });
     return out;
   }
 
@@ -2760,7 +2949,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       tablePriced = false;
     }
     const mode = pending.mode ?? baseMode;
-    const lines = costBlock({
+    const chatStats = ledger.stats();
+    // TUI-DESIGN-4 §3.3 / F-B2: kv rows at the 10-cell key column; `1 run`, `$0.000006 each`, the §3.1.7 empty state
+    const rows = costRows({
       mode,
       run: run ? { spentUsd: spent, capUsd: runCapUsd, perStepUsd: records.map((r) => r.usage.generator.costUsd + r.usage.jev.costUsd) } : null,
       session: { spentUsd: sessionTotal(), capUsd: sessionCapOf(), runs: runs.filter((r) => r.endedAt !== null).length },
@@ -2769,15 +2960,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       basis: { generator: mode === 'jev-only' ? null : tablePriced ? 'table' : 'provider usage.cost', jev: 'provider usage.cost' }, // llm-jev pays a generator: non-null like jev-on
       pending: pendingBudgetPairs(),
       ...(flags.allowUnpriced ? { unpriced: true } : {}),
-    });
-    // TUI-DESIGN-2 §3.9 / §12: `chat $<usd> for <n> messages (~$<each> each, p50 <ms> ms)`
-    const chat = ledger.stats();
-    // a greeting costs ≈ $0.0002: three decimals would print $0.000, so the sub-millicent form has four (§4.5's cost rule)
-    // TUI-DESIGN-3 §5.1 rule 6: never scientific notation — `~$0.000006 each` (six decimals, trailing zeros dropped)
-    const each = chat.messages > 0 ? chat.costUsd / chat.messages : 0;
-    const chatLine = chat.messages > 0 ? [`chat ${stepCostText(chat.costUsd)} for ${chat.messages} message${chat.messages === 1 ? '' : 's'} (~$${each.toFixed(6).replace(/0+$/, '').replace(/\.$/, '.0')} each${chat.p50Ms === null ? '' : `, p50 ${Math.round(chat.p50Ms)} ms`})`] : [];
+    // TUI-DESIGN-2 §3.9 / §12: the intake ledger's own `chat` row rides the same builder
+    }, { messages: chatStats.messages, costUsd: chatStats.costUsd, p50Ms: chatStats.p50Ms });
     // TUI-DESIGN-3 §5.1 rule 5 (R5 F6, S5's row): the head is the noun `cost`; every data row (the run line first) is the body
-    block('cost', [...lines, ...chatLine]);
+    block('cost', rows);
   }
 
   function jevCommand(): void {
@@ -2801,23 +2987,35 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const chat = ledger.stats();
     // TUI-DESIGN-2 §2.6 line 1: `<provider> · <host> · <model> (pinned|alias)` — the provider and the host the session reaches Jev
     // through; the mock decider and a keyless / invalid decider section fall back to today's `decider <configured id>`
+    // TUI-DESIGN-4 §3.3: the row's KEY is `decider`, so the value never repeats the word
     const head = ((): string => {
-      if (!config || flags.mock) return `decider ${configured}`;
+      if (!config || flags.mock) return configured;
       try {
         const d = config.decider();
         return `${d.provider} · ${new URL(d.baseUrl).host} · ${d.model} (${d.pinned ? 'pinned' : 'alias'})`;
       } catch {
-        return `decider ${configured}`;
+        return configured;
       }
     })();
-    block('jev', [
-      `${head}${resolved ? ` → resolved ${resolved}` : ''}${drift ? ` · drift@step ${drift.step} → ${drift.served}` : ''}`,
-      `questions ${questions} · latency p50 ${p(50)} · p95 ${p(95)} · jev cost ${usd3(jevUsd)}`,
-      // TUI-DESIGN-2 §2.6 / §12: `intake: <n> messages · p50 <ms> ms · $<usd> · last: <kind> <p>`
-      ...(chat.messages > 0 ? [`intake: ${chat.messages} message${chat.messages === 1 ? '' : 's'} · p50 ${chat.p50Ms === null ? '—' : `${Math.round(chat.p50Ms)} ms`} · ${stepCostText(chat.costUsd)}`] : []),
-      // TUI-DESIGN-3 §10 (S5's row 3, D-M local text): `last: question about this tool (1.00)` — the kind in words, the probability in parentheses
-      ...(chat.last ? [`last: ${chat.last.kind.replaceAll('_', ' ')} (${chat.last.probability.toFixed(2)})`] : []),
-    ]);
+    // TUI-DESIGN-4 §3.3: kv rows `decider` / `latency` / `cost` / `intake`; §3.1.7's sentence before any decision
+    const jevRows: BlockRow[] = [];
+    if (questions === 0 && decisions.length === 0 && chat.messages === 0) {
+      // §3.1.7: an empty state REPLACES the data rows — printing `decider not resolved yet` above a resolved
+      // `decider` row and a `p50 — · p95 —` latency row said both things at once
+      block('jev', [{ kind: 'note', flush: true, text: 'decider not resolved yet — the first question resolves it' }]);
+      return;
+    }
+    jevRows.push({ kind: 'kv', key: 'decider', value: `${head}${resolved ? ` ${glyphs().arrow} resolved ${resolved}` : ''}${drift ? ` · drift@step ${drift.step} ${glyphs().arrow} ${drift.served}` : ''}` });
+    jevRows.push({ kind: 'kv', key: 'latency', value: `p50 ${p(50)} · p95 ${p(95)}` });
+    jevRows.push({ kind: 'kv', key: 'cost', value: `${usd3(jevUsd)} · ${questions} question${questions === 1 ? '' : 's'}` });
+    // TUI-DESIGN-2 §2.6 / §12: `intake: <n> messages · p50 <ms> ms · $<usd> · last: <kind> <p>`
+    if (chat.messages > 0) {
+      const segs = [`${chat.messages} message${chat.messages === 1 ? '' : 's'}`, `p50 ${chat.p50Ms === null ? '—' : `${Math.round(chat.p50Ms)} ms`}`, stepCostText(chat.costUsd)];
+      // TUI-DESIGN-3 §10 (S5's row 3, D-M local text): the kind in words, the probability in parentheses
+      if (chat.last) segs.push(`last ${chat.last.kind.replaceAll('_', ' ')} (${chat.last.probability.toFixed(2)})`);
+      jevRows.push({ kind: 'kv', key: 'intake', value: segs.join(' · ') });
+    }
+    block('jev', jevRows);
   }
 
   function statusCommand(): void {
@@ -2825,11 +3023,18 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const g = gitAtStart;
     const gitText = g === null ? 'unknown' : !g.repo ? 'none' : g.head === null ? 'no HEAD' : g.head.kind === 'branch' ? g.head.name : g.head.kind === 'detached' ? g.head.oid.slice(0, 8) : `${g.head.name} (unborn)`;
     const stage = live() ? lastStatus?.stage ?? phase : 'idle';
+    // TUI-DESIGN-4 §3.3 / F-B1: kv rows `run` `session` `step` `workspace` `sandbox`, with `shortPath` on the path
+    const stop = run?.stopReason ?? null;
+    const exit = run?.exitCode !== null && run?.exitCode !== undefined ? ` (exit ${run.exitCode})` : '';
+    // F-B1: `· no git repository` reads as a sentence where `· git none` read as a branch called `none`
+    const gitSegment = g !== null && !g.repo ? 'no git repository' : `git ${gitText}`;
     block('status', [
-      `run ${run?.runId ?? '—'} · session ${sessionId ?? '—'}${title !== null ? ` "${title}"` : ''}`,
-      `step ${currentStep()}/${lastStatus?.maxSteps ?? config?.limits().maxSteps ?? '–'} · stage ${stage} · phase ${phase}`,
-      `sandbox ${config ? detectSandboxLevel(config.sandbox) : '—'} · workspace ${workspaceRoot} · git ${gitText}`,
-      `stop ${run?.stopReason ?? '—'}${run?.exitCode !== null && run?.exitCode !== undefined ? ` (exit ${run.exitCode})` : ''} · lock ${live() ? 'held' : 'released'} · runs ${runs.length}`,
+      // §3.1.5: `run` and `session` carry IDENTIFIERS — they are never elided, the row wraps instead
+      { kind: 'kv', key: 'run', value: `${run?.runId ?? '—'}${stop === null ? '' : ` · ${stop}${exit}`}`, id: true },
+      { kind: 'kv', key: 'session', value: `${sessionId ?? '—'}${title !== null ? ` "${title}"` : ''} · ${runs.length} run${runs.length === 1 ? '' : 's'} · ${usd3(sessionTotal())}`, id: true },
+      { kind: 'kv', key: 'step', value: `${currentStep()} of ${lastStatus?.maxSteps ?? config?.limits().maxSteps ?? '—'} · ${stage}` },
+      { kind: 'kv', key: 'workspace', value: `${shortPath(workspaceRoot, { root: workspaceRoot, home, width: Math.max(1, bodyWidth() - 11), measure: cellWidth })} · ${gitSegment}` },
+      { kind: 'kv', key: 'sandbox', value: `${config ? detectSandboxLevel(config.sandbox) : '—'} · lock ${live() ? 'held' : 'released'}` },
     ]);
   }
 
@@ -2840,14 +3045,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       .filter((d) => stage === null || d.stage === stage)
       .slice(-n)
       .map((d) => toDecisionRow(d, config?.limits().completeThreshold, config?.limits().impossibleThreshold));
-    const lines = decisionRows({ tab: 'd', step: currentStep(), rows, plan: null, timeline: [], synth: null, mode: pending.mode ?? baseMode }, Math.max(1, rows.length), columns(), o.launch.ascii ? GLYPHS.ascii : GLYPHS.unicode);
-    block(`decisions (last ${rows.length})`, lines);
+    const lines = decisionRows({ tab: 'd', step: currentStep(), rows, plan: null, timeline: [], synth: null, mode: pending.mode ?? baseMode }, Math.max(1, rows.length), bodyWidth(), glyphs());
+    textBlock(rows.length === 0 ? 'decisions' : `decisions · last ${rows.length}`, rows.length === 0 ? ['no decisions yet — they appear from the first step'] : lines);
   }
 
   function planCommand(): void {
     const plan = lastPlan ?? lastResult?.finalPlan ?? null;
-    const lines = planRows({ tab: 'p', step: currentStep(), rows: [], plan: plan ? { step: currentStep(), plan } : null, timeline: [], synth: null }, 40, columns(), o.launch.ascii ? GLYPHS.ascii : GLYPHS.unicode);
-    block('plan', lines);
+    const lines = planRows({ tab: 'p', step: currentStep(), rows: [], plan: plan ? { step: currentStep(), plan } : null, timeline: [], synth: null }, BLOCK_CAPS.plan, bodyWidth(), glyphs());
+    textBlock('plan', plan === null ? ['no plan yet — Jev writes one at the first step'] : lines, { max: BLOCK_CAPS.plan });
   }
 
   function whyCommand(ref: string): void {
@@ -2865,29 +3070,33 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       return;
     }
     const model = parsed.kind === 'intake' ? (lastDecider?.model ?? null) : (lastResult?.resolvedJevModel ?? null);
-    const lines = whyBlock(d, { siblings: pool.filter((x) => x.step === d.step), model }, o.launch.ascii ? GLYPHS.ascii : GLYPHS.unicode);
-    block(lines[0] ?? 'why', lines.slice(1));
+    const lines = whyBlock(d, { siblings: pool.filter((x) => x.step === d.step), model }, glyphs(), bodyWidth());
+    // §3.1.5: `/why`'s cap IS `WHY_MAX_LINES`, which `whyBlock` already applied with its own omission marker —
+    // and a footer pointing at the very command that produced the block is a dead end (§12 lists no such string)
+    textBlock(lines[0] ?? 'why', lines.slice(1), { max: BLOCK_CAPS.why });
   }
 
   async function calibrationCommand(): Promise<void> {
     if (!config) return;
     const scan = await scanCalibration(config.runsDir);
-    const lines = calibrationBlock(calibrationStats(scan.runs), o.launch.ascii ? GLYPHS.ascii : GLYPHS.unicode);
-    block(lines[0] ?? 'calibration', lines.slice(1));
+    const lines = calibrationBlock(calibrationStats(scan.runs), glyphs(), bodyWidth());
+    textBlock(lines[0] ?? 'calibration', lines.slice(1), { max: BLOCK_CAPS.calibration });
   }
 
   async function reportCommand(): Promise<void> {
     const cfg = config;
     const run = lastFinishedRun();
     if (!cfg || !run) {
-      uiError('/report: no finished run in this session yet');
+      // §3.1.7: an empty state is a sentence, not an error
+      note('nothing to report yet — a run has to finish first');
       return;
     }
     try {
       const r = await writeReportBundle({ runDir: run.runDir, runId: run.runId, out: join(jdir, 'reports', run.runId), redact: cfg.redact, configJson: { ...cfg.record(), sandboxLevel: { value: detectSandboxLevel(cfg.sandbox), source: 'derived' } }, term: env['TERM'] ?? null, termProgram: env['TERM_PROGRAM'] ?? null, columns: columns(), rows: null, fallbackLog: log.file !== '' ? log.file : null });
-      note(`report written to ${r.dir} (${r.files.length} files; redacted bundle written locally; nothing is sent)`);
+      // §3.4: the bundle directory is `~`-abbreviated and left-elided, never split mid-run-id
+      note(`report written to ${shortPath(r.dir, { root: workspaceRoot, home, width: bodyWidth(), measure: cellWidth })} (${r.files.length} files; redacted bundle written locally; nothing is sent)`);
     } catch (e) {
-      uiError(`/report: ${redact(describe(e))}`);
+      uiError(`/report — ${redact(describe(e))}`);
     }
   }
 
@@ -2946,12 +3155,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       if (picked) await resumeOrFollowUp(picked.runId, force);
       return;
     }
-    const lines = pickerRows(rows, { workspace: workspaceRoot, widened: false, nowMs: now(), columns: columns(), sort, ascii: o.launch.ascii });
+    const lines = pickerRows(rows, { workspace: workspaceRoot, widened: false, nowMs: now(), columns: bodyWidth(), sort, ascii: o.launch.ascii });
     if (lines.length === 0) {
-      note(noSessionMessage(workspaceRoot));
+      // §3.1.7: `noSessionMessage` is kept and gains the thing to do next
+      note(`${noSessionMessage(workspaceRoot)} — start one by typing a task`);
       return;
     }
-    block(pickerHeader({ workspace: workspaceRoot, widened: false, sort, columns: columns(), ascii: o.launch.ascii }), [...lines, 'continue one with /resume <id|title>']);
+    textBlock(pickerHeader({ workspace: workspaceRoot, widened: false, sort, columns: bodyWidth(), ascii: o.launch.ascii }), [...lines, 'continue one with /resume <id|title>']);
   }
 
   async function exitCommand(): Promise<void> {
@@ -2977,12 +3187,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
             renderer.setBindings?.(keybindings.bindings);
             note(`keybindings reloaded from ${p}${keybindings.found ? '' : ' (no file: defaults)'}${keybindings.warnings.length > 0 ? ` · ${keybindings.warnings.length} warning${keybindings.warnings.length === 1 ? '' : 's'} in jevcode.log` : ''}`);
           } catch (e) {
-            uiError(`/help reload: ${describe(e)}`);
+            uiError(`/help reload — ${describe(e)}`);
           }
           return;
         }
         // TUI-DESIGN-3 §4.4 F9: ONE help formatter (src/tui/commands/palette.ts) for the TUI, --plain and the log; `columns()` on a pipe = 80
-        block('help', paletteHelpLines(columns(), { topic: a.topic, live: live(), ...(o.launch.ascii ? { ascii: true } : {}), ...(keybindings ? { bindings: keybindings.bindings } : {}) }));
+        textBlock('help', paletteHelpLines(bodyWidth(), { topic: a.topic, live: live(), ...(o.launch.ascii ? { ascii: true } : {}), ...(keybindings ? { bindings: keybindings.bindings } : {}) }));
         return;
       case 'new': {
         const old = sessionId;
@@ -3007,7 +3217,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         else if (a.target.kind === 'continue') {
           const s = mostRecentSession(sessionRows(), workspaceRoot);
           const id = s ? newestRunId(s) : null;
-          if (id === null) uiError(`/continue: ${noSessionMessage(workspaceRoot)}`);
+          if (id === null) uiError(`/continue — ${noSessionMessage(workspaceRoot)} — start one by typing a task`);
           else await resumeOrFollowUp(id, a.force);
         } else await resumeOrFollowUp(a.target.id, a.force);
         return;
@@ -3021,11 +3231,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       }
       case 'steer': {
         const r = host.steer(a.text, { secretSpans: [] });
-        if (!r.ok) uiError(r.reason === 'full' ? 'steer queue full (8)' : r.reason === 'finished' ? '/steer needs a live run' : '/steer: empty text');
+        if (!r.ok) uiError(STEER_ERRORS[r.reason === 'full' ? 'full' : r.reason === 'finished' ? 'finished' : 'empty']);
         return;
       }
       case 'unsteer':
-        if (host.unsteer() === null) uiError('/unsteer: nothing queued');
+        if (host.unsteer() === null) uiError(COMMAND_ERRORS.unsteerEmpty);
         return;
       case 'pause':
         host.pause();
@@ -3118,8 +3328,22 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       }
       case 'config': {
         if (!config) return;
-        const lines = configTableLines(config.record(), { sandboxLevel: detectSandboxLevel(config.sandbox) });
-        block('config', [...lines, `session.spendCapUsd effective ${usd2(sessionCapOf())}`]);
+        // TUI-DESIGN-4 §3.3: the three-column table at the block body width, the fold footer, the §7.5 problems,
+        // and `session.spendCapUsd effective …` as a kv row INSIDE the table instead of a trailing line
+        const rec = { ...config.record(), 'session.spendCapUsd.effective': { value: usd2(sessionCapOf()), source: 'derived' } };
+        const cb = configBlock(rec, {
+          sandboxLevel: detectSandboxLevel(config.sandbox),
+          width: bodyWidth(),
+          glyphs: glyphs(),
+          // §3.4: `/config` is a `shortPath` consumer — `workspace` prints `~/T/a3-ws-eO2WYu` (F-B3)
+          home,
+          // REQUEST to S4 (§9.2 `registry.ts` row): `/config --all` needs the `--all` FLAG SPEC so `CommandAction`
+          // carries it; `configTableRows`/`configBlock` already take `{ all }`. Until then the block folds.
+          ...(config.unknownFileKeys !== undefined && config.unknownFileKeys.length > 0 ? { unknownFileKeys: config.unknownFileKeys } : {}),
+        });
+        // §3.3 / §3.1.5: the builder's pinned columns and its protected sandbox tail travel WITH the rows, so the
+        // TUI block and `jevcode config` draw one geometry for one record and the cap can never eat §12's footer
+        block(cb.head, cb.rows, { max: BLOCK_CAPS.config, moreFooter: `${glyphs().ellipsis} +{n} more rows (/config --all)`, tableCols: cb.tableCols, protectTail: cb.protectTail });
         return;
       }
       case 'login':
@@ -3148,13 +3372,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         return;
       case 'copy': {
         if (a.what === 'draft') {
-          uiError('/copy draft is the composer\'s (TUI only)');
+          uiError(COMMAND_ERRORS.copyDraft);
           return;
         }
         // TUI-DESIGN-3 §4.4 F7: `/copy diff` copies the diff exactly as `/diff` builds it (the App asks the host), never the last item
         const text = a.what === 'last' ? lastItemText : a.what === 'proposal' ? lastProposalText : await diffTextForCopy();
         if (text === null) {
-          uiError(`/copy: nothing to copy for ${a.what}`);
+          uiError(`/copy ${a.what} — nothing to copy yet — run a step, or pick another /copy target`);
           return;
         }
         const r = await copyFn(text, redact, { ...(uiConfig?.osc52 ? { osc52: true } : {}) });
@@ -3175,8 +3399,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         const plan = lastPlan ?? lastResult?.finalPlan ?? null;
         const state: PaneState = { tab, step: currentStep(), rows, plan: plan ? { step: currentStep(), plan } : null, timeline: [], synth: null, mode: pending.mode ?? baseMode, chatRows };
         const size = a.panel === 'full' ? 'full' : 'open';
-        const lines = panelLines(state, size === 'full' ? 12 : 6, columns(), 'none', { size, glyphs: o.launch.ascii ? GLYPHS.ascii : GLYPHS.unicode });
-        block(`panel · ${tab}`, lines.length > 0 && rows.length + chatRows.length > 0 ? lines : ['(no decisions yet)']);
+        const lines = panelLines(state, size === 'full' ? 12 : 6, bodyWidth(), 'none', { size, glyphs: glyphs() });
+        textBlock(`panel · ${tab}`, lines.length > 0 && rows.length + chatRows.length > 0 ? lines : ['no decisions yet — they appear from the first step']);
         return;
       }
       case 'transcript':
@@ -3190,7 +3414,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         statusCommand();
         return;
       case 'errors':
-        block('errors', errors.length > 0 ? errors : ['(no warnings or errors yet)']);
+        // §3.1.7: an empty state is a SENTENCE in the body, never a parenthesis-only fragment; §3.1.5 caps /errors at 12
+        block('errors', errors.length > 0 ? errors.map((e) => ({ kind: 'note' as const, flush: true as const, text: e })) : [{ kind: 'note', flush: true, text: 'nothing to report — no warnings or errors this session' }], { max: BLOCK_CAPS.errors });
         // TUI-DESIGN-3 §4.4 F18: reading the errors acknowledges the `!n` marker like Ctrl+O does
         try {
           extras.dispatch?.({ type: 'ack-errors' });
@@ -3204,12 +3429,68 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       case 'historyClear': {
         const yes = prompter?.historyClear ? await prompter.historyClear() : !o.interactive;
         if (!yes) return;
+        const kept = history?.entries('all').length ?? 0;
         history?.clear();
-        note('history cleared');
+        // TUI-DESIGN-4 §3.1.7 / §12: an empty state says what happened, with the number
+        note(`history cleared — ${kept === 0 ? '0 entries kept' : `${kept} entries dropped`}`);
+        return;
+      }
+      // --- TUI-DESIGN-4: the four commands round 4 adds (37 → 41), §1.3.1, §1.3.4, §7.1, §7.10 -------------------
+      case 'peers': {
+        // §7.10 item 2: a block, never a pid and never a path. The registry is docs/COORDINATION-DESIGN.md's; until
+        // `SessionHost.peers()` has one behind it this is the declared stub row, so `/peers` is never a dead command.
+        // `SessionHost.peers()` (contract 1.7 item 9) is this controller's own hook; null until a registry drives it
+        const view = host.peers?.() ?? null;
+        if (view === null) {
+          block(`peers ${glyphs().dot} unknown`, [{ kind: 'note', flush: true, text: 'the peer registry is not available in this build' }]);
+          return;
+        }
+        if (view.live === 0 && view.stale === 0) {
+          block('peers', [{ kind: 'note', flush: true, text: 'no other jevcode is working in this workspace' }]);
+          return;
+        }
+        const ago = view.oldestStartedMsAgo === null ? '—' : formatDuration(view.oldestStartedMsAgo);
+        block(`peers ${glyphs().dot} ${view.live} here, ${view.stale} stale`, [
+          { kind: 'kv', key: 'workspace', value: shortPath(workspaceRoot, { root: workspaceRoot, home, width: Math.max(1, bodyWidth() - 11), measure: cellWidth }) },
+          { kind: 'kv', key: 'started', value: `${ago} ago` },
+          { kind: 'kv', key: 'state', value: view.exclusive ? 'exclusive lease held' : 'shared' },
+        ]);
+        return;
+      }
+      case 'uiReset': {
+        // §7.1: clears every `guard()` pane latch. The latches live in `App.tsx` (S1/S6); the renderer answers with
+        // the count it unlatched, and a renderer without the hook answers `nothing was latched`.
+        // REQUEST to S1/S6 (§9.2 `App.tsx` row): `RendererDispatch` needs a `{ type: 'ui-reset' }` member that
+        // clears every `guard()` pane latch and answers with the count. Until then this reports the honest zero.
+        const unlatched = 0;
+        note(unlatched > 0 ? `ui reset — ${unlatched} panes unlatched` : 'nothing was latched');
+        return;
+      }
+      case 'fullscreen': {
+        // §1.3.1 / §3.3: it never switches in place — `render()` is called once per stdout — so it PERSISTS
+        // `ui.renderer` and only then offers the relaunch. Announcing a state change that did not happen is the
+        // one thing this command may not do (its sibling `/ui reset` was made honest in the same round).
+        const spec = SETTINGS.find((sp) => sp.name === 'ui.renderer');
+        const fileKey = spec?.fileKey;
+        if (fileKey === undefined) {
+          uiError('/fullscreen — ui.renderer cannot be stored in the config file — pass --renderer fullscreen at launch');
+          return;
+        }
+        try {
+          const r = await writeConfigValueFn(fileKey, 'fullscreen', { env, home, cwd, configFlag: flags.config ?? null });
+          note(`fullscreen is set for the next launch (file:${r.displayPath}) — run jevcode chat again (or jevcode config set ui.renderer classic to undo)`);
+        } catch (e) {
+          uiError(`/fullscreen — could not save ui.renderer: ${redact(describe(e))} — set it with jevcode config set ui.renderer fullscreen`);
+        }
+        return;
+      }
+      case 'scrollback': {
+        // §1.3.4 / §12: under the classic renderer the terminal's own scrollback already holds the transcript
+        note("/scrollback is a fullscreen command; your terminal's scrollback already has the transcript");
         return;
       }
       case 'editor':
-        uiError('/editor: the external editor is Ctrl+G in the TUI composer');
+        uiError(COMMAND_ERRORS.editor);
         return;
       case 'exit':
         await exitCommand();
@@ -3229,7 +3510,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (!git.git) return null;
     const sandbox = makeSandbox(cfg, run.runDir, git);
     if (!sandbox) return null;
-    const r = await diffStatBlockFromGit({ sandbox, root: workspaceRoot, runId: run.runId, changedFiles: run.changedFiles, ...(git.unborn ? { unborn: true } : {}) }, columns());
+    // §6.5: the SAME geometry `/diff` printed — `columns()` here made the copied text 10 cells wider than the
+    // block on screen, and `DIFF_BAR_MIN_COLUMNS` / `DIFF_PADDED_COUNTS_MIN_COLUMNS` sit inside that 10-cell gap
+    const r = await diffStatBlockFromGit({ sandbox, root: workspaceRoot, runId: run.runId, changedFiles: run.changedFiles, ...(git.unborn ? { unborn: true } : {}) }, bodyWidth());
     return r.lines.length > 0 ? r.lines.join('\n') : null;
   }
 
@@ -3250,7 +3533,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const exclusive = EXCLUSIVE_COMMANDS.has(r.action.kind);
     if (exclusive) {
       if (busyCommand !== null) {
-        uiError(`/${r.spec.name}: another command is still running (/${busyCommand})`);
+        uiError(`/${r.spec.name} — another command is still running (/${busyCommand}) — wait for it to finish`);
         return;
       }
       busyCommand = r.spec.name;
@@ -3258,7 +3541,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     try {
       await execute(r.action);
     } catch (e) {
-      uiError(`/${r.spec.name}: ${redact(describe(e))}`);
+      uiError(`/${r.spec.name} — ${redact(describe(e))}`);
       log.error(`/${r.spec.name} failed: ${describe(e)}`);
     } finally {
       if (exclusive && busyCommand === r.spec.name) busyCommand = null;
@@ -3792,7 +4075,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       if (code === WIZARD_EXIT_CODE && config !== null) {
         const mode = pending.mode ?? baseMode;
         // TUI-DESIGN-3 §1.8 edge 6: nothing missing (Ctrl-C at trust / sandbox) → no fix block
-        if (config.missingSecrets(mode).length > 0) block('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode, providerOfConfig(config)), { label: '[setup]', level: 'warn' });
+        if (config.missingSecrets(mode).length > 0) textBlock('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode, providerOfConfig(config)), { label: '[setup]', level: 'warn' });
       }
       // §1: `/exit`, Ctrl-C ×2 idle and Ctrl-D ×2 → 0, or the last run's code under `--exit-code=last-run`
       finishSession(leaveExitCode(code), 'exit');
@@ -3888,6 +4171,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (keybindings) renderer.setBindings?.(keybindings.bindings);
     renderer.setHost?.(host);
     for (const w of config.warnings) warnLine(w);
+    // TUI-DESIGN-4 §7.5 item 5 (P-D5): the config problems are emitted ONCE at session start, after `firstFrame()`
+    // resolved, so a TUI user sees a value the next run will reject without having to type `/config`.
+    configProblemLines(config).forEach((l) => note(l, { label: '[setup]', level: 'warn' }));
     await shadowingLines();
     if (exiting) return;
     const mode = pending.mode ?? baseMode;
@@ -3911,7 +4197,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           host.exit(WIZARD_EXIT_CODE);
           return;
         }
-        block(`no key found for ${names.join(', ')}; a prompt will start once one is set:`, fixBlockLines(after, providerOfConfig(config)), { label: '[setup]', level: 'warn' });
+        textBlock(`no key found for ${names.join(', ')}; a prompt will start once one is set:`, fixBlockLines(after, providerOfConfig(config)), { label: '[setup]', level: 'warn' });
       }
     } else await defaultModeNotice();
     try {
@@ -3966,6 +4252,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       await submitTask(task);
       return;
     }
+    /**
+     * TUI-DESIGN-4 §2.8 (P-R10): `chat` that asked for a composer and was refused says WHY, with the three ways
+     * out (`src/cli/main.tsx`'s `rendererRefusalRows`, the §12 strings). `run` — and a `chat` that simply had no
+     * task on an interactive terminal — keeps today's sentence.
+     */
+    const refusal = o.rendererRefusalRows;
+    if (refusal != null && refusal.length > 0) throw new UsageError(refusal.join('\n'));
     throw new UsageError('missing task text: pass it as a positional argument, --task-file <path>, or on stdin');
   }
 

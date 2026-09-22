@@ -1,5 +1,8 @@
 # chrome tiers (TUI-DESIGN-2 §4.1; TUI-DESIGN-3 §3.2): boxed at 24x80 (the console's top edge carries the badge; the resting mark under
-# the rule), flat at 12x60 (the badge leads the status left zone, no box rows, no wordmark), boxed again at 24x80 with the mark back; the shrink segment may cost one clear, the grow none.
+# the rule), flat at 12x60 (no box rows, no wordmark, the status row at column 0), boxed again at 24x80 with the mark back; the shrink segment may cost one clear, the grow none.
+# The flat tier is NOT anchored on the badge prefix any more: TUI-DESIGN-2 §1.5 drops that prefix FIRST when the row
+# runs short, and round 3's default `llm-jev` carries an 18-cell badge (`llm+jev · verified`) that cannot fit a
+# 60-column status row. The anchor is the flat shape itself — the prompt and status rows with no `|` box edge.
 # Every expect precedes the sleep that follows its resize: the driver's `sleep` drains (and consumes) the pty, so a row
 # that arrived during a sleep can never be matched afterwards.
 expect \x1b\[\?25l
@@ -7,7 +10,7 @@ expect ╭─ (?:\x1b\[[0-9;]*m)*llm\+jev · verified
 expect sess \$
 sleep 0.3
 resize 12 60
-expect llm\+jev · verified(?:\x1b\[[0-9;]*m)* · idle
+expect \n(?:\x1b\[[0-9;]*m)*(?:›|>) (?:\x1b\[[0-9;]*m)*Say hi
 sleep 0.5
 mark shrunk
 resize 24 80

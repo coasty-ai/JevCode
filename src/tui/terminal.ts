@@ -10,14 +10,18 @@
  */
 import { writeSync as fsWriteSync } from 'node:fs';
 import type { TerminalSuspension } from 'ink';
-import { RESTORE } from '../cli/fatal.js';
+import { ALT_SCREEN_LEAVE, RESTORE, alternateScreenEntered, markAlternateScreen } from '../cli/fatal.js';
 
-export { RESTORE };
+export { RESTORE, ALT_SCREEN_LEAVE, markAlternateScreen, alternateScreenEntered };
 
 /** TUI-DESIGN §4.3 / §14.1: DECSCUSR steady bar, written once at mount (`CSI 6 SP q`); `RESTORE` resets it (`CSI 0 SP q`). */
 export const DECSCUSR_BAR = '\x1b[6 q';
-/** TUI-DESIGN §14.1: the composer re-wrap debounce on resize (Ink coalesces frames itself). */
-export const RESIZE_DEBOUNCE_MS = 50;
+
+/**
+ * §1.3.1's alternate-screen bytes and the module-level flag live in `src/cli/fatal.ts` beside `RESTORE` (which this
+ * module already imports) and are re-exported above, so `fatalExit`'s own restore sees the same flag without
+ * closing a `cli/fatal ⇄ tui/terminal` import cycle. The import sites §1.3.1 names are unchanged.
+ */
 /** TUI-DESIGN §14.2: a self-sent SIGTSTP/SIGSTOP that did not stop the process is detected after this long. */
 export const SUSPEND_FALLBACK_MS = 100;
 /** The suspension queue never grows past this many items (a runaway engine during a long editor session). */
@@ -62,7 +66,12 @@ export function createRestoreTerminal(io: TerminalIo): RestoreTerminal {
     if (!written && io.stdout.isTTY === true) {
       written = true;
       try {
-        writeSync(1, RESTORE);
+        // TUI-DESIGN-4 §1.3.1: leave the alternate screen FIRST, and only when it was entered — without it a crash
+        // or a SIGHUP strands the user on a blank alternate buffer with their shell invisible behind it. The flag is
+        // set by `createTuiRenderer` when it mounts the `fullscreen` renderer, exactly as §1.3.1 specifies (the
+        // design puts the same bytes on `fatal.ts`'s `RESTORE`, which is S6's file; this is the same guarantee on
+        // the process-wide restore every exit path already shares — §14.2 "written once").
+        writeSync(1, `${alternateScreenEntered() ? ALT_SCREEN_LEAVE : ''}${RESTORE}`);
       } catch {
         /* the terminal is gone */
       }
@@ -125,37 +134,13 @@ export function writeCursorShape(stdout: TerminalStdout): boolean {
 }
 
 // ---------------------------------------------------------------------------------------
-// Resize debounce (§14.1 "Sizes")
+// Resize debounce (§14.1 "Sizes") — RETIRED by TUI-DESIGN-4 §2.2 P-R2
+//
+// `createResizeDebounce` / `RESIZE_DEBOUNCE_MS` / `Debounced` are gone with their one consumer, `App.tsx`'s
+// `wrapColumns`. The debounce kept the draft one width behind the box edges for up to 50 ms (≈ 130 ms at
+// `--fps 15`): A2 measured 4 of 24 frames carrying a box row whose right border is the truncation ellipsis.
+// The removal is a PUBLIC API change (`src/tui/index.ts:74`) and is recorded in CHANGELOG.md (S6, §9.2).
 // ---------------------------------------------------------------------------------------
-
-export interface Debounced {
-  trigger(): void;
-  cancel(): void;
-  readonly pending: boolean;
-}
-
-/** TUI-DESIGN §14.1: a trailing debounce — 30 SIGWINCH events → one call 50 ms after the last (§14.2 "SIGWINCH storms"). */
-export function createResizeDebounce(fn: () => void, ms: number = RESIZE_DEBOUNCE_MS, timers: { setTimeout?: (fn: () => void, ms: number) => unknown; clearTimeout?: (h: unknown) => void } = {}): Debounced {
-  const set = timers.setTimeout ?? ((f, m) => setTimeout(f, m));
-  const clear = timers.clearTimeout ?? ((h) => clearTimeout(h as NodeJS.Timeout));
-  let handle: unknown = null;
-  return {
-    trigger() {
-      if (handle !== null) clear(handle);
-      handle = set(() => {
-        handle = null;
-        fn();
-      }, ms);
-    },
-    cancel() {
-      if (handle !== null) clear(handle);
-      handle = null;
-    },
-    get pending() {
-      return handle !== null;
-    },
-  };
-}
 
 // ---------------------------------------------------------------------------------------
 // Suspension queue (§4.8, §12.6, 08 §5)
@@ -200,6 +185,88 @@ export function createSuspensionQueue<T>(deliver: (item: T) => void, max: number
       return queue.length;
     },
   };
+}
+
+// ---------------------------------------------------------------------------------------
+// /scrollback and the on-exit dump (TUI-DESIGN-4 §1.3.4)
+// ---------------------------------------------------------------------------------------
+
+/** §1.3.4: the row printed under the dump while `/scrollback` waits, so the user knows the session is still there. */
+export const SCROLLBACK_RESUME_ROW = '-- end of transcript · press any key to return to jevcode --';
+
+export interface PrimaryScreenDumpDeps {
+  /** already-rendered chunks (`transcriptDumpChunks`) — the one formatter, so this is a `--plain` run's bytes */
+  chunks: readonly string[];
+  /** `useApp().suspendTerminal` without a callback: Ink pauses input and restores the terminal it found */
+  suspendTerminal: () => Promise<TerminalSuspension>;
+  /** the raw stdout write (never the guarded proxy's clear path — the dump is plain text) */
+  write: (s: string) => void;
+  /** `/scrollback` waits for a key here; the on-exit dump passes nothing and returns as soon as the bytes are out */
+  waitForKey?: () => Promise<void>;
+  /** the `<Static>` suspension queue, so items produced during the dump are delivered after the resume (§4.8) */
+  onQueue?: { suspend(): void; resume(): void };
+  /** force one repaint after the resume (`useStdout().write('')`) */
+  repaint?: () => void;
+}
+
+/**
+ * TUI-DESIGN-4 §1.3.4: hand the terminal back (which leaves the alternate screen, `ink.js:894–900`), write the
+ * whole transcript to the PRIMARY screen so native copy and find work, optionally wait for a key, then resume.
+ *
+ * The suspension is resumed in a `finally`, so a write that throws (EPIPE on a closed pager, a terminal that went
+ * away) can never strand the session outside Ink; the queue is resumed in the same place, so items an engine
+ * produced during the dump are delivered in order rather than dropped (§4.8). An empty chunk list is a no-op —
+ * §1.3.4 skips the dump for an empty transcript, and suspending for nothing would flash the screen.
+ */
+export async function printToPrimaryScreen(d: PrimaryScreenDumpDeps): Promise<void> {
+  if (d.chunks.length === 0) return;
+  d.onQueue?.suspend();
+  const s = await d.suspendTerminal();
+  try {
+    for (const chunk of d.chunks) d.write(chunk);
+    if (d.waitForKey) {
+      d.write(`${SCROLLBACK_RESUME_ROW}\n`);
+      await d.waitForKey();
+    }
+  } finally {
+    await s.resume();
+    d.onQueue?.resume();
+    d.repaint?.();
+  }
+}
+
+/**
+ * §1.3.4: one keypress on the primary screen while Ink is suspended. Ink restored the termios it found, so raw
+ * mode is entered for the read and left exactly as it was found. A stdin that is not a TTY (or cannot go raw)
+ * resolves at once rather than hanging the session — the dump is already on screen either way.
+ */
+export function waitForAnyKey(stdin: TerminalStdin & { once?(event: 'readable' | 'data', fn: () => void): unknown; off?(event: 'data', fn: () => void): unknown; resume?(): unknown; pause?(): unknown }): Promise<void> {
+  if (stdin.isTTY !== true || typeof stdin.once !== 'function') return Promise.resolve();
+  const wasRaw = stdin.isRaw === true;
+  try {
+    if (!wasRaw) stdin.setRawMode?.(true);
+  } catch {
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = (): void => {
+      if (done) return;
+      done = true;
+      try {
+        if (!wasRaw) stdin.setRawMode?.(false);
+      } catch {
+        /* the terminal went away: Ink's resume re-applies its own state */
+      }
+      resolve();
+    };
+    try {
+      stdin.resume?.();
+      stdin.once?.('data', finish);
+    } catch {
+      finish();
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------------------

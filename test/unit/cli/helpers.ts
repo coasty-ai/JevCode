@@ -137,6 +137,10 @@ export interface Note {
   label: UiLabel | undefined;
   level: string | undefined;
   detail: string | undefined;
+  /** contract 1.7 item 1 (TUI-DESIGN-4 §3.1.6): the pre-split body with a colour role per row */
+  detailRows?: readonly { readonly text: string; readonly role: string | null }[];
+  /** contract 1.7 item 1 (§6.4): `'diff'` routes the rows through the diff renderer, for colour only */
+  detailKind?: 'diff' | 'table' | 'text';
 }
 
 export interface FakeRenderer extends Renderer {
@@ -159,7 +163,16 @@ export interface FakeRenderer extends Renderer {
   prompts?: Prompter;
   setHost(host: SessionHost): void;
   setUi(ui: UiConfig): void;
-  notify(text: string, opts?: { level?: 'info' | 'warn' | 'error'; detail?: string; label?: UiLabel }): void;
+  notify(
+    text: string,
+    opts?: {
+      level?: 'info' | 'warn' | 'error';
+      detail?: string;
+      label?: UiLabel;
+      detailRows?: readonly { readonly text: string; readonly role: string | null }[];
+      detailKind?: 'diff' | 'table' | 'text';
+    },
+  ): void;
   dispatch(action: UiAction | ChatUiAction): void;
   restoreDraft(text: string): void;
   live(text: string): void;
@@ -207,7 +220,14 @@ export function fakeRenderer(o: { prompts?: Prompter; firstFrameDelayMs?: number
       r.uis.push(ui);
     },
     notify(text, opts = {}) {
-      r.notes.push({ text, label: opts.label, level: opts.level, detail: opts.detail });
+      r.notes.push({
+        text,
+        label: opts.label,
+        level: opts.level,
+        detail: opts.detail,
+        ...(opts.detailRows !== undefined ? { detailRows: opts.detailRows } : {}),
+        ...(opts.detailKind !== undefined ? { detailKind: opts.detailKind } : {}),
+      });
     },
     dispatch(action) {
       r.dispatched.push(action);

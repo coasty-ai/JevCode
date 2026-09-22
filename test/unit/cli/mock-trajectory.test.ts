@@ -5,7 +5,8 @@
  * `generate()`.
  */
 import { describe, expect, it } from 'vitest';
-import { mockStepMs, mockTrajectory } from '../../../src/cli/mock-trajectory.js';
+import { mockBadPatch, mockPatchEnabled, mockStepMs, mockTrajectory, mockTwoFilePatch } from '../../../src/cli/mock-trajectory.js';
+import { editSummary } from '../../../src/tui/diff/summary.js';
 import { createMockProvider } from '../../../src/provider/mock.js';
 import type { GenerateOptions } from '../../../src/core/types.js';
 
@@ -51,5 +52,57 @@ describe('mockTrajectory', () => {
     const instant = createMockProvider({ turns: mockTrajectory(1, 0) }, { sleep: (ms) => { slept.push(ms); return Promise.resolve(); } });
     await instant.generate({ system: '', messages: [], maxTokens: 1, temperature: null }, opts);
     expect(slept).toEqual([200, 200]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §6.9 (D-Z): the patch path is reachable in `--mock` — the patch card, the patch title and the patch
+// failure text had ZERO pty coverage and no TUI unit test (A6-21). Behind `JEVCODE_MOCK_PATCH=1`, so every existing
+// smoke and perf number is byte-unchanged (edge 1).
+// ---------------------------------------------------------------------------------------------------------------
+
+describe('mockPatchEnabled and the two patch turns (§6.9)', () => {
+  it('edge 1: with the env unset the default trajectory is byte-identical to its golden', () => {
+    expect(mockPatchEnabled({})).toBe(false);
+    expect(mockPatchEnabled({ JEVCODE_MOCK_PATCH: '0' })).toBe(false);
+    expect(mockPatchEnabled({ JEVCODE_MOCK_PATCH: 'yes' })).toBe(false);
+    expect(mockPatchEnabled({ JEVCODE_MOCK_PATCH: '1' })).toBe(true);
+    const golden = ['write', 'read', 'run', 'edit', 'write', 'read', 'run', 'edit', 'write', 'read', 'run', 'edit', 'write', 'read', 'run', 'edit', 'write', 'read', 'run', 'edit', 'write', 'read', 'run', 'edit', 'write', 'read', 'run', 'edit', 'write', 'read', 'run', 'edit', 'write', 'read', 'run', 'edit', 'write', 'read', 'run', 'done'];
+    const kinds = mockTrajectory(40, 0, false).map((t) => (t.toolCall!.input as { action: { kind: string } }).action.kind);
+    expect(kinds).toEqual(golden);
+    expect(mockTrajectory(40, 0).map((t) => JSON.stringify(t.toolCall!.input))).toEqual(mockTrajectory(40, 0, false).map((t) => JSON.stringify(t.toolCall!.input)));
+  });
+
+  it('with the flag the cycle is six: a two-file patch and one that deliberately does not apply', () => {
+    const turns = mockTrajectory(13, 0, true);
+    const kinds = turns.map((t) => (t.toolCall!.input as { action: { kind: string } }).action.kind);
+    expect(kinds.slice(0, 6)).toEqual(['write', 'read', 'run', 'edit', 'patch', 'patch']);
+    expect(kinds.at(-1)).toBe('done');
+    expect(kinds.filter((k) => k === 'patch').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('edge 2: the two-file patch targets the scratch files the trajectory itself created — no external fixture', () => {
+    const diff = mockTwoFilePatch(0, 3, 4);
+    expect(diff).toContain('--- a/scratch_0.py');
+    expect(diff).toContain('+++ b/scratch_0.py');
+    expect(diff).toContain('-VALUE_0 = 3');
+    expect(diff).toContain('+VALUE_0 = 4');
+    // the second file is a pure addition, so the card's summary block has two rows with different letters
+    expect(diff).toContain('--- /dev/null');
+    expect(diff).toContain('+++ b/notes_4.md');
+    const s = editSummary({ kind: 'patch', diff })!;
+    expect(s.files.map((f) => [f.letter, f.path])).toEqual([
+      ['M', 'scratch_0.py'],
+      ['A', 'notes_4.md'],
+    ]);
+    expect([s.added, s.deleted]).toEqual([2, 1]);
+  });
+
+  it('edge 3: the bad patch is well-formed (so it reaches `git apply --check`) but can never match', () => {
+    const bad = mockBadPatch(1);
+    expect(bad).toContain('--- a/scratch_1.py');
+    expect(bad).toContain('-THIS LINE IS NOT IN THE FILE');
+    const s = editSummary({ kind: 'patch', diff: bad })!;
+    expect(s.files.map((f) => f.path)).toEqual(['scratch_1.py']);
   });
 });

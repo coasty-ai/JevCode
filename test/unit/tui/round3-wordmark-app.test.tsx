@@ -215,7 +215,8 @@ describe('the hand-offs (TUI-DESIGN-3 §3.2–3.3, D-I)', () => {
     expect(hasMark(m.dyn(), 80)).toBe(false);
     const liveFrom = m.stdout.frames.length;
     readyRun(m);
-    await waitFor(() => (m.dyn()[0] ?? '').startsWith('─── ▸ jev'));
+    // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H1 / D-T a): the post-`run:ready` strip leads with `◆ jevcode`
+    await waitFor(() => (m.dyn()[0] ?? '').startsWith('─── ◆ jevcode ─ ▸ jev'));
     expect(hasMark(m.dyn(), 80)).toBe(false);
     await tick(300);
     for (const d of m.frames().slice(liveFrom)) expect(hasMark(d, 80)).toBe(false);
@@ -223,7 +224,7 @@ describe('the hand-offs (TUI-DESIGN-3 §3.2–3.3, D-I)', () => {
     await waitFor(() => hasMark(m.dyn(), 80));
     const dyn = m.dyn();
     expect(dyn).toHaveLength(11);
-    expect(dyn[0]).toMatch(/^─── ▸ jev /); // the strip keeps the rule row (F-W5); the mark sits under it
+    expect(dyn[0]).toMatch(/^─── ◆ jevcode ─ ▸ jev /); // the strip keeps the rule row with its brand (F-W5, P-H1); the mark sits under it
     expect(dyn[0]).not.toMatch(BRAND_RE);
     expect(dyn[5]).toBe(`${markRow(4, 80)}  ◆ ${VERSION}`);
   });
@@ -232,7 +233,7 @@ describe('the hand-offs (TUI-DESIGN-3 §3.2–3.3, D-I)', () => {
     await settle(m);
     startRun(m);
     readyRun(m);
-    await waitFor(() => (m.dyn()[0] ?? '').startsWith('─── ▸ jev'));
+    await waitFor(() => (m.dyn()[0] ?? '').startsWith('─── ◆ jevcode ─ ▸ jev'));
     endRun(m);
     await waitFor(() => (m.bridge.stateReader?.()?.run ?? 'live') === 'none');
     await tick(120);
@@ -242,7 +243,7 @@ describe('the hand-offs (TUI-DESIGN-3 §3.2–3.3, D-I)', () => {
     m.stdin.write('h');
     await waitFor(() => hasMark(m.dyn(), 80));
     expect(m.dyn()).toHaveLength(11);
-    expect(m.dyn()[0]).toMatch(/^─── ▸ jev /);
+    expect(m.dyn()[0]).toMatch(/^─── ◆ jevcode ─ ▸ jev /);
     expect(m.frame()).toContain('› h');
   });
   it('`/panel` hands the slot to the panel and `/panel off` gives it back to the mark', async () => {

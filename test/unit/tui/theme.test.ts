@@ -124,7 +124,13 @@ describe('themes (§14.1, TUI-DESIGN-2 §4.9)', () => {
     expect(THEMES.dark.roles.assistant.bold).toBe(true);
     expect(THEMES.dark.roles.assistant.marker).toBe('[jevcode]');
     expect(COLOR_ROLES).toContain('accent2');
-    expect(COLOR_ROLES).toHaveLength(20);
+    expect(COLOR_ROLES).toHaveLength(24);
+    // TUI-DESIGN-4 §6.2 (D-Z): the four diff roles, each with its sign already in the row text
+    for (const role of ['added', 'removed', 'hunk', 'diffMeta'] as const) expect(COLOR_ROLES).toContain(role);
+    expect(THEMES.dark.roles.added.marker).toBe('+');
+    expect(THEMES.dark.roles.removed.marker).toBe('-');
+    expect(THEMES.dark.roles.hunk.marker).toBe('@@');
+    expect(THEMES.dark.roles.diffMeta.marker).toBe('···');
   });
 
   it('the §2.1 table (TypeSafe pink): accent #f386a1 / 211 / magentaBright (dark), #be185d / 125 / magenta (light); you, borderFocus, accent2, code, sweep twins', () => {
@@ -186,7 +192,7 @@ describe('themes (§14.1, TUI-DESIGN-2 §4.9)', () => {
     expect(THEMES.daltonized.roles.review.color).toEqual(THEMES.dark.roles.review.color);
     // §2.3: no `chosen` override — pink vs the blue block is the ΔE 34 / 20 pair
     expect(THEMES.daltonized.roles.chosen).toEqual(THEMES.dark.roles.chosen);
-    for (const role of COLOR_ROLES) if (!['error', 'block', 'ok'].includes(role)) expect(THEMES.daltonized.roles[role]).toEqual(THEMES.dark.roles[role]);
+    for (const role of COLOR_ROLES) if (!['error', 'block', 'ok', 'removed'].includes(role)) expect(THEMES.daltonized.roles[role]).toEqual(THEMES.dark.roles[role]);
     expect(THEMES.light.roles.warn.color?.ansi16).not.toBe('yellow');
     expect(THEMES.light.roles.review.color?.ansi16).not.toBe('yellow');
   });
@@ -276,17 +282,19 @@ describe('themes (§14.1, TUI-DESIGN-2 §4.9)', () => {
     const subdir = gitBannerLine(bannerInput(gitState({ prefix: 'pkg/', ahead: 0, dirty: CLEAN_DIRTY })));
     expect(subdir.text).toBe('git main · in subdirectory pkg/ of the repository');
     expect(itemRole(workspaceItem(subdir))).toBe('dim');
-    // the `git none · …` rows carry /undo and /diff guidance (90–115 cells): body grade, never dim (§2.1's dim row; a 50 % dim is 3.3:1)
+    // TUI-DESIGN-4 §3.6 (G6): the non-repository rows carry /diff guidance: body grade, never dim (§2.1's dim row; a 50 % dim is 3.3:1)
     for (const reason of ['not-a-repo', 'git-missing', 'bare', 'timeout'] as const) {
       for (const opts of [{}, { ascii: true }]) {
         const none = gitBannerLine(bannerInput(notRepoState(reason, AT)), opts);
         expect(none.level).toBe('info');
-        expect(none.text.startsWith('git none')).toBe(true);
-        expect(none.text.length).toBeGreaterThanOrEqual(70);
+        expect(none.text.startsWith(opts.ascii === true ? 'git - ' : 'git · ')).toBe(true);
+        expect(none.text.length).toBeGreaterThanOrEqual(40);
         expect(itemRole(workspaceItem(none)), `${reason} ${JSON.stringify(opts)}`).toBeNull();
       }
     }
-    expect(gitBannerLine(bannerInput(notRepoState('not-a-repo', AT))).text).toBe('git none · not a git repository: changes made by commands are not recoverable, /diff compares against step pre-images only');
+    // §3.6 (G6): ONE clause, not two saying the same thing
+    expect(gitBannerLine(bannerInput(notRepoState('not-a-repo', AT))).text).toBe('git · no repository — changes are not recoverable; /diff <step> compares pre-images');
+    expect(gitBannerLine(bannerInput(notRepoState('git-missing', AT))).text).toBe('git · git not found on PATH — /diff <step> compares pre-images');
     // warn wins: the unmerged banner is level warn (amber, not dim); so is the HEAD-drift warning of --resume, which never starts with `git `
     const unmerged = gitBannerLine(bannerInput(gitState({ dirty: { ...CLEAN_DIRTY, unmerged: 2 } })));
     expect(unmerged.level).toBe('warn');

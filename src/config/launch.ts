@@ -30,6 +30,10 @@ export interface LaunchFlags {
   noAnimation?: boolean;
   /** TUI-DESIGN-3 §2.2 (D-R): `--theme` — an explicit theme suppresses the `COLORFGBG` hint (the chain resolves it) */
   theme?: string;
+  /** TUI-DESIGN-4 §1.3.1: `--renderer classic|fullscreen` */
+  renderer?: string;
+  /** TUI-DESIGN-4 §1.3.1: `--fullscreen`, the short form of `--renderer fullscreen` */
+  fullscreen?: boolean;
 }
 
 /** Where each launch member came from; `jevcode config` prints it beside the value (§16). */
@@ -37,6 +41,18 @@ export type LaunchSource = Extract<ConfigSource, 'flag' | 'env' | 'default'>;
 export type LaunchSources = Readonly<Record<keyof LaunchSettings, LaunchSource>>;
 
 export const RENDER_MODES = ['standard', 'incremental'] as const;
+
+/**
+ * TUI-DESIGN-4 §1.3.1: `ui.renderer` is a LAUNCH setting — Ink fixes `alternateScreen` in its constructor
+ * (`node_modules/ink/build/ink.js:256`), so the renderer cannot be toggled in place. Only the **flag** and the **env**
+ * layers are resolvable before the first frame (§1: zero file I/O); the FILE layer is applied by `resolveUiConfig`
+ * through the `ui.renderer` setting row, which is why `renderer` is left **undefined** here when neither argv nor env
+ * names it (`launch.renderer ?? <the file/default chain>` is the reader idiom, §8 item 6).
+ */
+function parseRenderer(text: string): 'classic' | 'fullscreen' | null {
+  const t = text.trim().toLowerCase();
+  return t === 'classic' || t === 'fullscreen' ? t : null;
+}
 
 /** TUI-DESIGN-2 §1.2 / §6 item 14: a `--mode` / `JEVCODE_MODE` value, or null so the next layer applies (the `mode` setting reports a bad value later, with its source). */
 export function parseModeHint(text: string): EngineMode | null {
@@ -205,6 +221,29 @@ export function resolveLaunchSettingsWithSources(flags: LaunchFlags, env: NodeJS
     rmSource = 'flag';
   }
 
+  // TUI-DESIGN-4 §1.3.1: renderer = --fullscreen > --renderer > JEVCODE_RENDERER > (the file row, applied later by
+  // resolveUiConfig) > classic. Left ABSENT when nothing here names it, so the file layer is not shadowed; a bad value
+  // is skipped (nothing can render an error yet) and `jevcode config` reports it with its source.
+  let renderer: LaunchSettings['renderer'];
+  let rendererSource: LaunchSource = 'default';
+  const rendererEnv = envValue(env, 'JEVCODE_RENDERER');
+  const rendererFromEnv = rendererEnv === null ? null : parseRenderer(rendererEnv);
+  if (rendererFromEnv !== null) {
+    renderer = rendererFromEnv;
+    rendererSource = 'env';
+  }
+  const rendererFromFlag = typeof flags.renderer === 'string' ? parseRenderer(flags.renderer) : null;
+  if (rendererFromFlag !== null) {
+    renderer = rendererFromFlag;
+    rendererSource = 'flag';
+  }
+  // `--fullscreen` is the short form of `--renderer fullscreen`; `src/cli/args.ts` raises a usage error when the two
+  // are both given and disagree, so reaching here with `renderer === 'classic'` means only `--fullscreen` was typed.
+  if (flags.fullscreen === true) {
+    renderer = 'fullscreen';
+    rendererSource = 'flag';
+  }
+
   // TUI-DESIGN-3 §6 item 8: the SSH launch source (the fps default's input above), exposed for `ui.wordmark`'s `static` default
   const ssh = isSshSession(env);
 
@@ -231,7 +270,7 @@ export function resolveLaunchSettingsWithSources(flags: LaunchFlags, env: NodeJS
   }
 
   return {
-    settings: { fps, renderMode, screenReader, ascii, noColor, ...(modeHint !== undefined ? { modeHint } : {}), reducedMotion, ...(themeHint !== undefined ? { themeHint } : {}), ssh },
+    settings: { fps, renderMode, screenReader, ascii, noColor, ...(modeHint !== undefined ? { modeHint } : {}), reducedMotion, ...(themeHint !== undefined ? { themeHint } : {}), ssh, ...(renderer !== undefined ? { renderer } : {}) },
     sources: {
       fps: fpsSource,
       renderMode: renderSource,
@@ -242,10 +281,10 @@ export function resolveLaunchSettingsWithSources(flags: LaunchFlags, env: NodeJS
       reducedMotion: rmSource,
       themeHint: themeSource,
       ssh: ssh ? 'env' : 'default',
-      // contract 1.6 (TUI-DESIGN-4 §8 item 6) W0 TYPE SURFACE ONLY: `LaunchSources` is `Record<keyof LaunchSettings, …>`, so the two
-      // new optional members need a row here for this literal to type-check. §1.3.1's `--fullscreen` / `--renderer` /
-      // `JEVCODE_RENDERER` resolution and the refusal matrix are S1's W0 work and replace both rows (and set `settings.renderer`).
-      renderer: 'default',
+      // contract 1.7 (TUI-DESIGN-4 §8 item 6 / §1.3.1)
+      renderer: rendererSource,
+      // the refusal is not a configured value: it is produced at MOUNT by `createTuiRenderer`, which is the first place
+      // rows / columns / TERM / the screen-reader fact are all known (§1.3.1's matrix). Never 'flag' or 'env'.
       rendererRefusal: 'default',
     },
   };

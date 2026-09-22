@@ -26,17 +26,23 @@ import type {
   UiConfig,
   UiLabel,
 } from '../core/types.js';
-import { DEFAULT_COMPLETE_THRESHOLD } from '../config/defaults.js';
+import { DEFAULT_COMPLETE_THRESHOLD, MODE_BADGE_WORD } from '../config/defaults.js';
 import { AbortError } from '../errors.js';
 import { clip, firstLine } from '../core/text.js';
 import { formatDuration } from '../core/time.js';
 import { MIN_SECRET_LENGTH, detectSecrets as detectSecretsByPattern, patternRedact } from '../core/redact.js';
 import { gitBannerLine, headDriftWarning, headMoved } from '../workspace/gitstate.js';
+// TUI-DESIGN-4 §6.1 / §6.2 (D-Z): the one edit summariser, and the PURE line diff (§14.2 review item 13 — the
+// `undo/diff.ts` entry point pulls `node:fs/promises`, `checkpoint/images.ts`, `sandbox/paths.ts` and
+// `workspace/git.ts` in behind `unifiedDiff`, and this module is on the first-frame path of every sink)
+import { unifiedDiff } from './diff/text.js';
+import { editSummary, editTargetText, type EditSummary } from './diff/summary.js';
+import type { ColorRole } from './theme.js';
 import { budgetItems } from './budget/lines.js';
 // TUI-DESIGN §14.1 / §24: `--ascii` substitutes the glyph table on stdout only (glyphs.ts imports plain.ts's hoisted `sanitizeStream`; the cycle is safe: both use the other inside functions)
 import { glyphSet, glyphTwin, type GlyphSet } from './glyphs.js';
 import { RETRY_SLOW_MS, blockingRowsStructured } from './blocking/lines.js';
-import { REVIEW_KEYS_80, reviewHeaderLines } from './review/lines.js';
+import { REVIEW_KEYS_80, reviewDiffLines, reviewHeaderLines } from './review/lines.js';
 import { gatePlainPrompt, secretAckText } from './secrets/gate-lines.js';
 
 // ---------------------------------------------------------------------------------------
@@ -99,6 +105,14 @@ export interface TranscriptItem {
   readonly label?: UiLabel;
   /** TUI-DESIGN-2 §4.5 / §6 item 17: hidden by the TUI's `compact` transcript (stamped at append time); `--plain` and transcript.log ignore it */
   readonly hidden?: boolean;
+  /**
+   * contract 1.7 item 1 (TUI-DESIGN-4 §3.1.3, §6.4): the TUI's pre-split form of `detail` — already-rendered rows
+   * with the colour role each takes. `detail: string` STAYS and is what `--plain`, `--json` and `clipDetail` use, so
+   * this is a default-preserving widening: a producer that sets neither member behaves exactly as before.
+   */
+  readonly detailRows?: readonly { readonly text: string; readonly role: ColorRole }[];
+  /** contract 1.7 item 1 (§6.4): `'diff'` routes the detail through `diffRows`; absent means `'text'`. Never sniffed — only a declared kind routes. */
+  readonly detailKind?: 'diff' | 'table' | 'text';
 }
 
 /** TUI-DESIGN-2 §3.10: the two bubble labels; an item carrying one is of kind `chat` in every sink */
@@ -112,6 +126,8 @@ export const TRANSCRIPT_DETAIL_MAX_LINES = 60;
 export const TRANSCRIPT_DETAIL_MAX_CHARS = 6000;
 const TASK_MAX = 160;
 const LIST_MAX = 5;
+/** TUI-DESIGN-4 §3.6: the `replan` item names `task impossible <p>` only from this probability up. */
+export const REPLAN_IMPOSSIBLE_MIN = 0.5;
 
 // C0 (minus \t \n \r), DEL and C1: everything a terminal could read as an escape or control sequence.
 // eslint-disable-next-line no-control-regex
@@ -142,6 +158,38 @@ export function kTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
+/**
+ * TUI-DESIGN-4 §3.7 (the R2 guard): the run-frame anchors, **glyph-agnostic** and exported by name so
+ * `src/perf/pty.ts`, `test/pty/helpers.ts` and `scripts/pty/polish-check.mjs` import them instead of hard-coding a
+ * `·` that silently stops matching in every `--ascii` capture. `Transcript.tsx:90` renders every item through
+ * `glyphTwin`, and `glyphs.ts:116` `dot: '·'` vs `:168` `dot: '-'`, so an `--ascii` capture carries
+ * `finished - complete - 4 steps`. A zero-match anchor is a hard failure, never a vacuous pass.
+ */
+/**
+ * Written as an ALTERNATION, never a bracket class. The same source string is compiled by three engines: JS
+ * `RegExp` (UTF-16), Tcl ARE (`drive.exp`, characters) and **Python `re` over BYTES** (`perf/drivers/pty_type.py`,
+ * which matches the raw pty capture). `·` is U+00B7 = two UTF-8 bytes, so `[·-]` in a bytes regex is the one-byte
+ * class `{0xC2, 0xB7, 0x2D}` and can never match the two-byte `·` followed by a space.
+ *
+ * MEASURED 2026-09-22 (integrator): with the bracket form, every perf scenario that waits for `[run] started`
+ * matched nothing on a **unicode** capture and everything on an `--ascii` one — `composer live`,
+ * `composer live-stress`, `composer review` and five `states` scenarios reported `0/200 keys` and exit 124 after
+ * a 20 s wait for a row that had been on screen for 20 s. `(?:·|-)` is one character in all three engines.
+ */
+export const GLYPH_DOT_CLASS = '(?:·|-)';
+/** the word the `[run] started` row opens with (no glyph) */
+export const RUN_STARTED_WORD = 'started';
+/** the word the `[run] finished` row opens with (no glyph) */
+export const RUN_FINISHED_WORD = 'finished';
+/** `src/perf/pty.ts:804` `RUN_STARTED_PATTERN`'s tail — `<SGR>` is the caller's own insertion before `\\[run\\]` */
+export const RUN_STARTED_TAIL_PATTERN = `${RUN_STARTED_WORD} ${GLYPH_DOT_CLASS} `;
+/** `src/perf/pty.ts:800` `END_PATTERN` — `finished · complete · 4 steps` in either glyph set */
+export const RUN_END_PATTERN = `${RUN_FINISHED_WORD} ${GLYPH_DOT_CLASS} [a-z_]+ ${GLYPH_DOT_CLASS} \\d+ steps`;
+/** `scripts/pty/polish-check.mjs:397` V17's run-end anchor, as a named constant */
+export const RUN_END_RE = new RegExp(`^ {0,9}\\[run\\] ${RUN_FINISHED_WORD} ${GLYPH_DOT_CLASS} `);
+/** the `[run] started` anchor over a stripped capture row */
+export const RUN_STARTED_RE = new RegExp(`^ {0,9}\\[run\\] ${RUN_STARTED_TAIL_PATTERN}`);
+
 export function stepLabel(step: number | null): string {
   return step === null ? '[run]' : `[step ${step}]`;
 }
@@ -154,17 +202,43 @@ export interface ActionDescription {
   preview: string;
 }
 
+/** TUI-DESIGN-4 §3.6 / §12: ` · ` is the ONE inline separator of an engine item (`glyphTwin` renders it ` - ` under `--ascii`). */
+export const SEP = ' · ';
+/** §6.1: the target of an edit action is cut to this many cells before it reaches a one-line item. */
+export const EDIT_TARGET_CELLS = 60;
+
+/**
+ * TUI-DESIGN-4 §6.1 / §6.2 (D-Z, A6-2): the reviewable body of an edit action as a **unified diff**, so the review
+ * card, the `<Static>` detail body, `--plain`'s `printRequest` and `/copy proposal` all show signs, hunks and line
+ * numbers instead of two whole blobs labelled `--- old` / `+++ new`. `null` for an action that is not an edit, and
+ * for an `edit` whose two sides are identical (the caller then keeps its own text).
+ */
+export function actionDiffText(a: Action): string | null {
+  if (a.kind === 'patch') return a.diff.trim() === '' ? null : a.diff;
+  if (a.kind === 'edit') {
+    const rows = unifiedDiff(a.old, a.new, { aPath: `a/${a.path}`, bPath: `b/${a.path}` });
+    return rows.length === 0 ? null : rows.join('\n');
+  }
+  if (a.kind === 'write') {
+    // a write is a pure addition: `/dev/null` on the old side is exactly what git emits for a new file
+    const rows = unifiedDiff('', a.content, { aPath: '/dev/null', bPath: `b/${a.path}` });
+    return rows.length === 0 ? null : rows.join('\n');
+  }
+  return null;
+}
+
 export function describeAction(a: Action): ActionDescription {
   switch (a.kind) {
     case 'read':
       return { kind: a.kind, target: a.paths.slice(0, LIST_MAX).join(', ') + (a.paths.length > LIST_MAX ? ` (+${a.paths.length - LIST_MAX})` : ''), preview: '' };
     case 'edit':
-      return { kind: a.kind, target: a.path, preview: `--- old\n${a.old}\n+++ new\n${a.new}` };
     case 'write':
-      return { kind: a.kind, target: a.path, preview: a.content };
     case 'patch': {
-      const lines = a.diff.split('\n').length;
-      return { kind: a.kind, target: `${lines} line unified diff`, preview: a.diff };
+      // §6.1 (A6-1): every edit action names its files and counts — a `patch` used to read `18 line unified diff`
+      const summary = editSummary(a);
+      const fallback = a.kind === 'patch' ? `${a.diff.split('\n').length} line unified diff` : a.path;
+      const target = summary === null ? fallback : editTargetText(summary, EDIT_TARGET_CELLS);
+      return { kind: a.kind, target: target === '' ? fallback : target, preview: actionDiffText(a) ?? (a.kind === 'write' ? a.content : a.kind === 'patch' ? a.diff : `--- old\n${a.old}\n+++ new\n${a.new}`) };
     }
     case 'run':
       return { kind: a.kind, target: `$ ${firstLine(a.command)}`, preview: a.command };
@@ -173,59 +247,183 @@ export function describeAction(a: Action): ActionDescription {
   }
 }
 
+/** §6.4: the declared detail kind of a proposal's body — `'diff'` for the three edit kinds, absent for `read` / `run` / `done`. */
+export function actionDetailKind(a: Action): 'diff' | 'text' | undefined {
+  return a.kind === 'edit' || a.kind === 'write' || a.kind === 'patch' ? 'diff' : undefined;
+}
+
 export function actionLabel(a: Action): string {
   const d = describeAction(a);
   return clip(oneLine(`${d.kind} ${d.target}`), 200);
 }
 
-/** Bounded, terminal-safe multi-line detail (TUI scrollback body and the readline confirmer's preview). */
-export function clipDetail(s: string): string {
+/** TUI-DESIGN-4 §6.5 item 3: a diff block's body may be far longer than a note's, bounded only by this. */
+export const TRANSCRIPT_DIFF_DETAIL_MAX_CHARS = 200_000;
+
+/**
+ * Bounded, terminal-safe multi-line detail (TUI scrollback body and the readline confirmer's preview).
+ *
+ * TUI-DESIGN-4 §6.5 item 3 (A6-5): the 60-line clip is the **default**, not a law — `/diff --all`, documented as
+ * lifting the 40-row cap, was silently re-capped at 60 here. A caller that knows its own cap passes `maxLines`
+ * (`Infinity` for `--all`) and, for a diff block, the raised `maxChars`.
+ */
+export function clipDetail(s: string, opts: { maxLines?: number; maxChars?: number } = {}): string {
+  const maxLines = opts.maxLines === undefined || Number.isNaN(opts.maxLines) ? TRANSCRIPT_DETAIL_MAX_LINES : Math.max(1, Math.floor(Math.min(opts.maxLines, Number.MAX_SAFE_INTEGER)));
+  const maxChars = opts.maxChars === undefined || !Number.isFinite(opts.maxChars) ? TRANSCRIPT_DETAIL_MAX_CHARS : Math.max(1, Math.floor(opts.maxChars));
   const lines = sanitizeStream(s.replace(/\r\n|\r/g, '\n')).split('\n');
-  let out = lines.length > TRANSCRIPT_DETAIL_MAX_LINES ? `${lines.slice(0, TRANSCRIPT_DETAIL_MAX_LINES).join('\n')}\n…[${lines.length - TRANSCRIPT_DETAIL_MAX_LINES} lines omitted]` : lines.join('\n');
-  if (out.length > TRANSCRIPT_DETAIL_MAX_CHARS) out = `${out.slice(0, TRANSCRIPT_DETAIL_MAX_CHARS)}…`;
+  let out = lines.length > maxLines ? `${lines.slice(0, maxLines).join('\n')}\n…[${lines.length - maxLines} lines omitted]` : lines.join('\n');
+  if (out.length > maxChars) out = `${out.slice(0, maxChars)}…`;
   return out;
 }
 
-function outcomeText(o: ActionOutcome): { text: string; level: TranscriptLevel } {
+/** §3.6: the engine writes `read 3 file(s)`; the item says `read 3 files` (and `read 1 file`). */
+export function pluraliseCounts(summary: string): string {
+  return summary.replace(/\b(\d+) ([a-z]+)\(s\)/g, (_, n: string, word: string) => `${n} ${word}${Number(n) === 1 ? '' : 's'}`);
+}
+
+/** §3.6: `12 kB` / `840 B` — the context row's size, rounded, never `12.0kB`. */
+export function formatSizeShort(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '? B';
+  if (bytes < 1000) return `${Math.round(bytes)} B`;
+  const kb = bytes / 1000;
+  return kb < 10 ? `${kb.toFixed(1)} kB` : `${Math.round(kb)} kB`;
+}
+
+/** One `<dim>: …; dominant level <k> "<text>"; …` clause of a `RiskAssessment.reason` (§3.6 edge 9 keeps the reason itself untouched). */
+export interface RiskReasonClause {
+  dim: string;
+  level: number;
+  text: string;
+}
+
+/**
+ * §3.6 / §3.7 G3–G4: read the dominant-dimension clauses **out of** `RiskAssessment.reason` instead of interpolating
+ * the whole 200-character string into the scrollback. `reason` itself is untouched — it is stored in
+ * `decisions.jsonl`, returned in `RunResult` and fed back to the generator, so changing it would change model
+ * behaviour and every bench baseline (edge 9).
+ */
+export function parseRiskReason(reason: string): RiskReasonClause[] {
+  const out: RiskReasonClause[] = [];
+  const re = /([a-z_]+): [^;]*; dominant level (\d+) "([^"]*)"/g;
+  let m = re.exec(reason);
+  while (m !== null) {
+    out.push({ dim: m[1] ?? '', level: Number(m[2]), text: (m[3] ?? '').trim() });
+    m = re.exec(reason);
+  }
+  return out;
+}
+
+/** §3.6: the level text a one-row outcome / risk summary quotes, clipped. */
+export const RISK_LEVEL_TEXT_CELLS = 80;
+/** §3.6: the `outcome blocked/declined/failed` summary quotes at most this much of the level text. */
+export const OUTCOME_LEVEL_TEXT_CELLS = 60;
+
+/** The shape `riskItemText` and `outcomeSummaryText` both read: just enough of a `RiskAssessment` to name a dimension. */
+export interface RiskDims {
+  dims: Record<string, { risk: number; level: number }>;
+  reason: string;
+}
+
+/**
+ * §3.6 / §14.2 review item 14: the ONE dominant-dimension selection. `risk` and the `outcome blocked` row one line
+ * below it must name the same dimension; they used to agree only because `assessRisk` happens to emit the at-max
+ * clauses first (`src/loop/stages/risk.ts:274–284`), so any future reason whose first clause is not the at-max
+ * dimension would have produced two contradicting rows. The dimension comes from `dims` (the numbers), the level
+ * and its text from the matching clause of `reason` (the words).
+ */
+export function dominantRiskClause(risk: RiskDims): { dim: string; level: number; text: string } | null {
+  let dom = '';
+  let best = Number.NEGATIVE_INFINITY;
+  for (const [dim, d] of Object.entries(risk.dims)) {
+    if (Number.isFinite(d.risk) && d.risk > best) {
+      best = d.risk;
+      dom = dim;
+    }
+  }
+  const clauses = parseRiskReason(risk.reason);
+  // `assessRisk` writes one clause per **at-max** dimension, so a clause naming `dom` is the right one. When the
+  // two disagree (a tie the dims order breaks differently, or a reason from an older run) the CLAUSE wins whole —
+  // dimension, level and text together — because naming `dom` beside another dimension's level text is the one
+  // outcome that is worse than either answer on its own.
+  const match = clauses.find((c) => c.dim === dom);
+  const clause = match ?? clauses[0];
+  if (clause !== undefined) return { dim: clause.dim, level: clause.level, text: clause.text };
+  if (dom === '') return null;
+  return { dim: dom, level: risk.dims[dom]?.level ?? 0, text: '' };
+}
+
+/**
+ * §3.6 (D-V, the row that removes the last `k=v` from the scrollback): `blocked · destructive 2 · "<level text>"`
+ * instead of the whole `RiskAssessment.reason` — which carried `matches_intent=0.08` and repeated, verbatim and 200
+ * characters long, the `risk` row printed one line above it. The full reason becomes the item's TUI-only `detail`.
+ *
+ * Only `blocked` and `declined` come through here: both carry a `RiskAssessment.reason`, so the clip is safe — the
+ * clipped clause repeats the `risk` row printed one line above. `failed` carries `outcome.error`, which is §6.7's
+ * patch diagnosis and appears **nowhere else** in `transcript.log` or `--plain` (§14.2 review item 6).
+ */
+export function outcomeSummaryText(status: 'blocked' | 'declined', raw: string, risk?: RiskDims): string {
+  const clause = risk !== undefined ? dominantRiskClause(risk) : null;
+  const first = clause ?? parseRiskReason(raw)[0] ?? null;
+  if (first !== null && first.dim !== '') return `${status}${SEP}${first.dim} ${first.level}${SEP}"${clip(first.text, OUTCOME_LEVEL_TEXT_CELLS)}"`;
+  return `${status}${SEP}"${clip(oneLine(raw).trim(), OUTCOME_LEVEL_TEXT_CELLS)}"`;
+}
+
+/**
+ * §3.6 / §6.7 / §14.2 review item 6: a `failed` outcome keeps its **whole** diagnosis. `outcome.error` is not a
+ * `RiskAssessment.reason`; it is the two-message text §6.7 builds (`patch failed: calc/ops.py:12 — patch does not
+ * apply; calc/io.py:4 — patch does not apply`, 88 characters), and `transcript.log` and `--plain` have no `detail`
+ * to fall back on, so a 60-cell clip cut §6.7's second message — the whole point of `PATCH_ERROR_MESSAGES_MAX = 2`
+ * — off in the only place a `--plain` user ever sees it. The item's own `TRANSCRIPT_TEXT_MAX` is the bound.
+ */
+export function outcomeFailedText(error: string): string {
+  return `failed${SEP}"${oneLine(error).trim()}"`;
+}
+
+function outcomeText(o: ActionOutcome, risk?: RiskDims): { text: string; level: TranscriptLevel; detail?: string } {
   switch (o.status) {
     case 'executed': {
-      const parts = [`outcome executed: ${o.summary}`];
+      // §3.6: `done · <summary> · exit 0 · 10ms · 1 file (a.py)` — the duplicated `exit 0 (exit 0, 10ms)` collapses
+      const parts = [`done`, pluraliseCounts(o.summary)];
       if (o.exec) {
-        const flags = [`exit ${o.exec.exitCode ?? 'null'}`];
-        if (o.exec.killedBy) flags.push(`killed by ${o.exec.killedBy}`);
-        if (o.exec.truncated) flags.push('output truncated');
-        if (o.exec.orphans.length > 0) flags.push(`${o.exec.orphans.length} orphan pid(s)`);
-        flags.push(formatDuration(o.exec.durationMs));
-        parts.push(`(${flags.join(', ')})`);
+        parts.push(`exit ${o.exec.exitCode ?? 'null'}`);
+        if (o.exec.killedBy) parts.push(`killed by ${o.exec.killedBy}`);
+        if (o.exec.truncated) parts.push('output truncated');
+        if (o.exec.orphans.length > 0) parts.push(`${o.exec.orphans.length} orphan pids`);
+        parts.push(formatDuration(o.exec.durationMs));
       }
-      if (o.changedFiles.length > 0) parts.push(`changed=${o.changedFiles.length}: ${o.changedFiles.slice(0, LIST_MAX).join(', ')}`);
-      return { text: parts.join(' '), level: o.exec && !o.exec.ok ? 'warn' : 'info' };
+      if (o.changedFiles.length > 0) {
+        const names = o.changedFiles.slice(0, LIST_MAX).join(', ') + (o.changedFiles.length > LIST_MAX ? `, +${o.changedFiles.length - LIST_MAX}` : '');
+        parts.push(`${o.changedFiles.length} file${o.changedFiles.length === 1 ? '' : 's'} (${names})`);
+      }
+      return { text: parts.join(SEP), level: o.exec && !o.exec.ok ? 'warn' : 'info' };
     }
     case 'noop':
-      return { text: `outcome noop: ${o.summary}`, level: 'info' };
+      return { text: `done${SEP}${pluraliseCounts(o.summary)}`, level: 'info' };
     case 'blocked':
-      return { text: `outcome blocked: ${o.reason}`, level: 'warn' };
+      return { text: outcomeSummaryText('blocked', o.reason, risk), level: 'warn', detail: o.reason };
     case 'declined':
-      return { text: `outcome declined: ${o.reason}`, level: 'warn' };
+      return { text: outcomeSummaryText('declined', o.reason, risk), level: 'warn', detail: o.reason };
     case 'failed':
-      return { text: `outcome failed: ${o.error}`, level: 'warn' };
+      // §6.7: the diagnosis, whole — it is nowhere else in transcript.log or `--plain` (the `detail` is TUI-only)
+      return { text: outcomeFailedText(o.error), level: 'warn', detail: o.error };
     case 'interrupted':
-      return { text: `outcome interrupted${o.exec?.signal ? ` (signal ${o.exec.signal})` : ''}`, level: 'warn' };
+      return { text: `interrupted${o.exec?.signal ? `${SEP}signal ${o.exec.signal}` : ''}`, level: 'warn' };
   }
 }
 
+/** §3.6: `judge 0.90 · no tests · 0 of 0 claims accepted · complete 0.05` — six `k=v` pairs become four sentences. */
 function judgeText(judge: JudgeResult | null, completion: number | null): string {
   const c = completion === null ? 'n/a' : p2(completion);
-  if (judge === null) return `judge skipped completion=${c}`;
-  let tests = 'none';
+  if (judge === null) return `judge skipped${SEP}complete ${c}`;
+  let tests = 'no tests';
   if (judge.tests) {
     tests =
       judge.tests.source === 'parsed'
-        ? `${judge.tests.passed}p/${judge.tests.failed}f/${judge.tests.errors}e ${judge.tests.allPassed ? 'pass' : 'fail'}`
-        : `judged all_passed=${p2(judge.tests.allPassed)}`;
+        ? `tests ${judge.tests.passed}p/${judge.tests.failed}f/${judge.tests.errors}e ${judge.tests.allPassed ? 'pass' : 'fail'}`
+        : `tests judged ${p2(judge.tests.allPassed)}`;
   }
   const accepted = judge.doneClaims.filter((d) => d.accepted).length;
-  return `judge succeeded=${p2(judge.succeeded)} error_present=${p2(judge.errorPresent)} new_info=${p2(judge.newInfo)} tests=${tests} claims=${accepted}/${judge.doneClaims.length} completion=${c}`;
+  return `judge ${p2(judge.succeeded)}${SEP}${tests}${SEP}${accepted} of ${judge.doneClaims.length} claims accepted${SEP}complete ${c}`;
 }
 
 function quoteList(xs: readonly string[]): string {
@@ -235,24 +433,24 @@ function quoteList(xs: readonly string[]): string {
     .join('; ');
 }
 
-/** One line per `synth` event (jev-only): `synth <phase>: <detail> (candidates=…, tested=…)`, counts only when present. */
+/** TUI-DESIGN-4 §3.6: `synth · rank · top candidate \`return 2\` · 12 candidates, 3 tested`; counts only when present. */
 export function synthText(e: Extract<EngineEvent, { type: 'synth' }>): string {
   const counts: string[] = [];
-  if (e.candidates !== undefined) counts.push(`candidates=${e.candidates}`);
-  if (e.tested !== undefined) counts.push(`tested=${e.tested}`);
-  return `synth ${e.phase}: ${e.detail}${counts.length > 0 ? ` (${counts.join(', ')})` : ''}`;
+  if (e.candidates !== undefined) counts.push(`${e.candidates} candidates`);
+  if (e.tested !== undefined) counts.push(`${e.tested} tested`);
+  return `synth${SEP}${e.phase}${SEP}${e.detail}${counts.length > 0 ? `${SEP}${counts.join(', ')}` : ''}`;
 }
 
-/** TUI-DESIGN §24: `steer queued (N) for step S: <text>` — N is the queue length after this steer. */
+/** TUI-DESIGN-4 §3.6: `steer queued · step 8 · "<text>" · 1 waiting` — the queue length after this steer. */
 export function steerQueuedText(e: Extract<EngineEvent, { type: 'steer:queued' }>): string {
-  return `steer queued (${e.queued}) for step ${e.step}: ${e.text}`;
+  return `steer queued${SEP}step ${e.step}${SEP}"${e.text}"${SEP}${e.queued} waiting`;
 }
 
 /** TUI-DESIGN §24: `steer applied to step S (N directives; superseded: <text ≤ 80>)`; the superseded clause only when something was. */
 export function steerAppliedText(e: Extract<EngineEvent, { type: 'steer:applied' }>): string {
   const n = `${e.count} directive${e.count === 1 ? '' : 's'}`;
-  const superseded = e.superseded.length > 0 ? `; superseded: ${e.superseded.map((s) => `"${clip(oneLine(s), 80)}"`).join(', ')}` : '';
-  return `steer applied to step ${e.step} (${n}${superseded})`;
+  const superseded = e.superseded.length > 0 ? `${SEP}superseded ${e.superseded.map((s) => `"${clip(oneLine(s), 80)}"`).join(', ')}` : '';
+  return `steer applied${SEP}step ${e.step}${SEP}${n}${superseded}`;
 }
 
 /**
@@ -261,9 +459,9 @@ export function steerAppliedText(e: Extract<EngineEvent, { type: 'steer:applied'
  */
 export function retrySettledText(e: Extract<EngineEvent, { type: 'retry:settled' }>): string | null {
   if (e.ok && e.totalWaitMs <= RETRY_SLOW_MS) return null;
-  const attempts = `${e.attempts} attempt${e.attempts === 1 ? '' : 's'}`;
+  const times = `${e.attempts} time${e.attempts === 1 ? '' : 's'}`;
   const short = e.ok ? 'recovered' : 'gave up';
-  return `warning: ${e.side} retry chain: ${attempts} over ${formatDuration(Math.max(0, e.totalWaitMs))} — ${short}`;
+  return `warning${SEP}${e.side} retried ${times} over ${formatDuration(Math.max(0, e.totalWaitMs))} — ${short}`;
 }
 
 /** TUI-DESIGN §13.3 / §24: the blocking pane's reason row as the transcript item (the keys stay in the pane). */
@@ -284,13 +482,71 @@ export function blockingResolvedText(e: Extract<EngineEvent, { type: 'blocking:r
 export const BARE_NOTICE_KINDS: ReadonlySet<NoticeKind> = new Set<NoticeKind>(['offline', 'online', 'checkpoint:degraded', 'checkpoint:restored', 'sandbox', 'drift', 'seeded', 'instructions', 'config', 'pricing', 'lock']);
 
 /**
+ * §3.6 (D-V, G3): the `risk` item in ONE row. `ok` names the two harm levels (`risk 0.01 ok · destructive 0 ·
+ * irreversible 0`, which used to cost **8 terminal rows**); `review` / `block` name the dominant dimension, quote
+ * its level text and point at `/why`. The whole audit string becomes the item's TUI-only `detail`.
+ */
+export function riskItemText(risk: { dims: Record<string, { risk: number; level: number }>; risk: number; verdict: 'ok' | 'review' | 'block'; reason: string }, step: number | null): string {
+  const head = `risk ${p2(risk.risk)} ${risk.verdict}`;
+  if (risk.verdict === 'ok') {
+    const harm = ['destructive', 'irreversible'].map((dim) => `${dim} ${risk.dims[dim]?.level ?? 0}`);
+    return `${head}${SEP}${harm.join(SEP)}`;
+  }
+  // §14.2 review item 14: the same selector the `outcome blocked` row one line below uses
+  const clause = dominantRiskClause(risk);
+  const dom = clause?.dim ?? '';
+  const level = clause?.level ?? 0;
+  const quoted = clause === null || clause.text === '' ? '' : ` "${clip(clause.text, RISK_LEVEL_TEXT_CELLS)}"`;
+  const why = step === null ? '' : `${SEP}/why s${step}.risk.${dom}`;
+  return `${head}${SEP}${dom} ${level}${quoted}${why}`;
+}
+
+/**
+ * §3.6 (D-V, G2): the `plan` item is emitted **only when a count changed** since the last one (the first plan of a
+ * run always emits) — today it is byte-identical on every step. The "last counts" live here rather than in a
+ * renderer because all three sinks must agree; the `WeakMap` makes the decision **per event object**, so the two
+ * callers that see the same bus event in one process (`useEngine.tsx:649` and `session.ts:1504`) take the same
+ * branch instead of the second one deciding "unchanged" because the first advanced the counter.
+ */
+const planDecision = new WeakMap<object, boolean>();
+
+/**
+ * §14.2 review item 15: the "last plan counts" state, **per event stream**. Contract 1.5 landed child engines that
+ * run in the same process as the parent, so a module-level singleton let an interleaved child `plan` event with the
+ * same counts suppress the parent's, and let the child's `run:start` reset the parent's baseline. A caller that
+ * drives more than one engine passes its own state; `itemsFromEvent(e, seq)` with no state uses the process-wide
+ * one, which is what every single-engine caller has always had.
+ */
+export interface ItemStreamState {
+  /** the run each `plan` key belongs to, cleared at `run:end` so a long session does not grow one entry per run */
+  readonly planKeys: Map<string, string>;
+  /** the run id of the most recent `run:start` seen **on this stream** — what a `plan` event (which carries none) belongs to */
+  runId: string;
+}
+
+export function createItemStreamState(): ItemStreamState {
+  return { planKeys: new Map<string, string>(), runId: '' };
+}
+
+const defaultStreamState = createItemStreamState();
+
+function planEmits(e: Extract<EngineEvent, { type: 'plan' }>, key: string, state: ItemStreamState): boolean {
+  const seen = planDecision.get(e);
+  if (seen !== undefined) return seen;
+  const emits = state.planKeys.get(state.runId) !== key;
+  state.planKeys.set(state.runId, key);
+  planDecision.set(e, emits);
+  return emits;
+}
+
+/**
  * Transcript items for one engine event (0, 1 or a few; kinds per §10 and TUI-DESIGN §15.1's item table).
  * `seq` is the caller's monotonic counter for the first item produced; keys are `${step}:${kind}:${seq + i}`.
  * Events that feed the panes only (decision, status, stage:*, deltas, exec:output, retry, checkpoint, ...) yield [].
  */
-export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
+export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamState = defaultStreamState): TranscriptItem[] {
   let n = 0;
-  const one = (step: number | null, kind: TranscriptKind, text: string, level: TranscriptLevel = 'info', extra: { verdict?: 'ok' | 'review' | 'block'; detail?: string; label?: UiLabel } = {}): TranscriptItem => {
+  const one = (step: number | null, kind: TranscriptKind, text: string, level: TranscriptLevel = 'info', extra: { verdict?: 'ok' | 'review' | 'block'; detail?: string; label?: UiLabel; detailKind?: 'diff' | 'table' | 'text' } = {}): TranscriptItem => {
     const s = seq + n;
     n += 1;
     return {
@@ -303,51 +559,82 @@ export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
       ...(extra.verdict ? { verdict: extra.verdict } : {}),
       ...(extra.detail ? { detail: extra.detail } : {}),
       ...(extra.label ? { label: extra.label } : {}),
+      ...(extra.detailKind ? { detailKind: extra.detailKind } : {}),
     };
   };
-  const make = (step: number | null, kind: TranscriptKind, text: string, level: TranscriptLevel = 'info', extra: { verdict?: 'ok' | 'review' | 'block'; detail?: string; label?: UiLabel } = {}): TranscriptItem[] => [one(step, kind, text, level, extra)];
+  const make = (step: number | null, kind: TranscriptKind, text: string, level: TranscriptLevel = 'info', extra: { verdict?: 'ok' | 'review' | 'block'; detail?: string; label?: UiLabel; detailKind?: 'diff' | 'table' | 'text' } = {}): TranscriptItem[] => [one(step, kind, text, level, extra)];
   switch (e.type) {
-    case 'run:start':
-      return make(null, 'run:start', `start ${e.runId} mode=${e.mode}${e.resumedFromStep !== null ? ` resumed from step ${e.resumedFromStep}` : ''} task: ${clip(oneLine(e.task), TASK_MAX)}`);
+    case 'run:start': {
+      // §3.6 (G1): `started · jev+llm · <task>`; the run id moves to the epilogue and `/status`
+      state.runId = e.runId;
+      state.planKeys.delete(e.runId);
+      // §14.2 review item 18: ` · ` is the ONE inline separator of an engine item, and `MODE_BADGE_WORD['llm-jev']`
+      // is `llm+jev · verified`, so the badge would smuggle a second one into a row whose grammar forbids it — a
+      // reader (and a grep) would see four segments. The badge is flattened for this row only; the console's own
+      // badge is untouched.
+      const badge = (MODE_BADGE_WORD[e.mode] ?? e.mode).split(SEP).join(' ');
+      const resumed = e.resumedFromStep !== null ? `resumed at step ${e.resumedFromStep}${SEP}` : '';
+      return make(null, 'run:start', `${RUN_STARTED_WORD}${SEP}${badge}${SEP}${resumed}${clip(oneLine(e.task), TASK_MAX)}`);
+    }
     case 'run:ready':
-      return make(null, 'run:ready', `ready ${e.runId} step ${e.step}/${e.maxSteps}${e.resumed ? ' (resumed)' : ''}`);
+      // §3.6 (G1): deleted as an item — the kind stays for `--json` and `useEngine`. Saves one row and one id per run
+      return [];
     case 'intent':
-      return make(e.step, 'intent', `intent=${e.intent} p=${p2(e.probability)} c=${p2(e.confidence)}${e.answer !== e.intent ? ` (jev answered ${e.answer})` : ''}`);
-    case 'context':
-      return make(e.step, 'context', `context ${e.files.length} files ${kTokens(e.bytes)}B of ${e.candidates} candidates: ${e.files.slice(0, LIST_MAX).join(', ')}${e.files.length > LIST_MAX ? ` (+${e.files.length - LIST_MAX})` : ''}`);
+      return make(e.step, 'intent', `intent${SEP}${e.intent}${SEP}${p2(e.probability)} (confidence ${p2(e.confidence)})${e.answer !== e.intent ? `${SEP}Jev answered ${e.answer}` : ''}`);
+    case 'context': {
+      if (e.files.length === 0) return make(e.step, 'context', `context${SEP}nothing to read of ${e.candidates} candidates`);
+      const names = `${e.files.slice(0, LIST_MAX).join(', ')}${e.files.length > LIST_MAX ? ` (+${e.files.length - LIST_MAX})` : ''}`;
+      return make(e.step, 'context', `context${SEP}${e.files.length} of ${e.candidates} files${SEP}${formatSizeShort(e.bytes)}${SEP}${names}`);
+    }
     case 'synth':
       // jev-only synthesizer progress: one line per event, so it lands in transcript.log like every other item
       return make(e.step, 'synth', synthText(e));
     case 'proposal': {
+      // §3.6 (G2, G7): `proposal · edit a.py +12 −3 · "<goal>"`; the plan counts move to the `plan` item, which already carries them
       const d = describeAction(e.proposal.action);
-      const plan = e.proposal.plan;
-      const text = `proposal ${d.kind} ${d.target}: ${e.proposal.goal} | plan done=${plan.done.length} remaining=${plan.remaining.length} open=${plan.openProblems.length}`;
-      return make(e.step, 'proposal', text, 'info', d.preview ? { detail: clipDetail(d.preview) } : {});
+      const goal = oneLine(e.proposal.goal).trim();
+      const text = `proposal${SEP}${d.kind} ${d.target}${goal === '' ? '' : `${SEP}"${goal}"`}`;
+      const kind = actionDetailKind(e.proposal.action);
+      return make(e.step, 'proposal', text, 'info', { ...(d.preview ? { detail: clipDetail(d.preview) } : {}), ...(kind !== undefined ? { detailKind: kind } : {}) });
     }
     case 'risk':
-      return make(e.step, 'risk', `risk=${p2(e.risk.risk)} ${e.risk.verdict}: ${e.risk.reason}`, e.risk.verdict === 'block' ? 'warn' : 'info', { verdict: e.risk.verdict });
+      // §3.6 (G3): one row; the audit string is the item's TUI-only detail (the `reason` itself is untouched, edge 9)
+      return make(e.step, 'risk', riskItemText(e.risk, e.step), e.risk.verdict === 'block' ? 'warn' : 'info', { verdict: e.risk.verdict, detail: clipDetail(e.risk.reason) });
     case 'confirm:resolved':
-      // TUI-DESIGN §6.4 / §24: `confirm <id> declined (note: <note>)` when the reviewer left a `d` note
-      return make(e.step, 'confirm:resolved', `confirm ${e.id} ${e.aborted ? 'aborted' : e.approved ? 'approved' : 'declined'}${e.note ? ` (note: ${e.note})` : ''}`, e.aborted ? 'warn' : 'info');
+      // §3.6 (G5): `review declined · "<note>"` — the confirm id is machine-only (it is in decisions.jsonl)
+      return make(e.step, 'confirm:resolved', `review ${e.aborted ? 'aborted' : e.approved ? 'approved' : 'declined'}${e.note ? `${SEP}"${e.note}"` : ''}`, e.aborted ? 'warn' : 'info');
     case 'outcome': {
       const o = outcomeText(e.outcome);
-      return make(e.step, 'outcome', o.text, o.level);
+      return make(e.step, 'outcome', o.text, o.level, o.detail !== undefined ? { detail: clipDetail(o.detail) } : {});
     }
     case 'judge':
       return make(e.step, 'judge', judgeText(e.judge, e.completion));
     case 'plan': {
+      // §3.6 (G2): `plan · 1 done · 2 remaining`, emitted only when a count changed since the last plan item
       const p = e.plan;
-      let text = `plan done=${p.done.length} remaining=${p.remaining.length} unverified=${p.unverified.length} problems=${p.openProblems.length + p.harnessProblems.length}`;
-      if (e.rejectedDone.length > 0) text += ` rejected: ${quoteList(e.rejectedDone)}`;
-      if (e.unverifiedDone.length > 0) text += ` unverified: ${quoteList(e.unverifiedDone)}`;
+      const key = `${p.done.length}/${p.remaining.length}/${p.unverified.length}/${p.openProblems.length + p.harnessProblems.length}/${e.rejectedDone.join('\u0000')}`;
+      if (!planEmits(e, key, state)) return [];
+      let text = `plan${SEP}${p.done.length} done${SEP}${p.remaining.length} remaining`;
+      if (e.rejectedDone.length > 0) text += `${SEP}rejected ${quoteList(e.rejectedDone)}`;
       return make(e.step, 'plan', text, e.rejectedDone.length > 0 ? 'warn' : 'info');
     }
     case 'loop:tripped':
-      return make(e.step, 'loop:tripped', `loop tripped: ${e.signature} x${e.occurrences}`, 'warn');
-    case 'replan':
-      return make(e.step, 'replan', `replan ${e.directive.move} p=${p2(e.directive.probability)} c=${p2(e.directive.confidence)} impossible=${p2(e.directive.taskImpossible)}: ${e.directive.text}`, 'warn');
+      return make(e.step, 'loop:tripped', `loop${SEP}the same step repeated ${e.occurrences} times${SEP}${e.signature}`, 'warn');
+    case 'replan': {
+      // §3.6 (G5): `replan · change approach · 0.61 (confidence 0.50) · "<text>"`; the impossible figure only at ≥ 0.50
+      const move = e.directive.move.replace(/_/g, ' ');
+      const impossible = e.directive.taskImpossible >= REPLAN_IMPOSSIBLE_MIN ? `${SEP}task impossible ${p2(e.directive.taskImpossible)}` : '';
+      return make(e.step, 'replan', `replan${SEP}${move}${SEP}${p2(e.directive.probability)} (confidence ${p2(e.directive.confidence)})${impossible}${SEP}"${oneLine(e.directive.text).trim()}"`, 'warn');
+    }
     case 'transcript':
-      return make(e.step, 'transcript', e.level === 'info' ? e.text : `${e.level}: ${e.text}`, e.level);
+      // §3.6 / §3.7 G1 (D-V): the `stop:` line is DELETED as an item — `[run] finished · <reason> · …` already says
+      // it, and the same stop used to be stated three times in three consecutive rows (A3 §2.9). The design put the
+      // deletion at `src/loop/stop.ts:56`; that file is the harness session's under the 2026-09-22 ownership rule,
+      // so the deletion lands here instead, in the ONE formatter §3.6 names first. Every sink §3.7 lists reads this
+      // function — transcript.log (`src/loop/engine.ts:1981`), `--plain`, the TUI and the session controller — so
+      // the four stay identical, and `--json` consumers, which read EVENTS and never item text, are untouched.
+      // The hunk owed to `stop.ts` is a cosmetic follow-up (the event would then carry ''), not a behaviour change.
+      return e.text.trim() === '' || STOP_LINE_RE.test(e.text) ? [] : make(e.step, 'transcript', e.level === 'info' ? e.text : `${e.level}: ${e.text}`, e.level);
     case 'error':
       return make(e.step, 'error', `error ${e.error.code}: ${e.error.message}${e.fatal ? ' (fatal)' : ''}`, 'error');
     case 'notice':
@@ -365,9 +652,9 @@ export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
     case 'steer:applied':
       return make(e.step, 'steer:applied', steerAppliedText(e));
     case 'steer:withdrawn':
-      return make(e.step, 'steer:withdrawn', `steer withdrawn (${e.index})`);
+      return make(e.step, 'steer:withdrawn', `steer withdrawn${SEP}${e.index}`);
     case 'pause:requested':
-      return make(e.step, 'pause', `pause requested: stopping after step ${e.step}`);
+      return make(e.step, 'pause', `pausing${SEP}the run stops after step ${e.step}`);
     case 'budget:warn':
       // TUI-DESIGN §9.2 / §24: `[run] budget: …` through the shared money lines; 80 % and 95 % are warnings, 50 % is information
       return budgetItems(e).map((text) => one(null, 'budget', text, e.pct >= 80 ? 'warn' : 'info'));
@@ -399,11 +686,22 @@ export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
       return make(e.step, 'secret-ack', secretAckText(e.count));
     case 'run:end': {
       const r = e.result;
+      // §14.2 review item 15: the run's plan baseline dies with the run, so a session does not grow one entry per run
+      state.planKeys.delete(state.runId);
+      // §3.6 (G1): ONE form everywhere. The `(generator … · jev …)` split is ALWAYS present — it is what a user
+      // checks when a bill surprises them — and, being attached to the cost token, is what TD3 rule 3 wraps as a unit
+      const cost = `${usd(r.usage.generator.costUsd + r.usage.jev.costUsd)} (generator ${usd(r.usage.generator.costUsd)}${SEP}jev ${usd(r.usage.jev.costUsd)})`;
+      // §14.2 review item 5: the error clause is the LAST segment, after `exit <n>`. It used to sit between the
+      // stop reason and the step count, where it broke the exported `RUN_END_PATTERN` — the anchor `src/perf`,
+      // `test/pty` and `polish-check.mjs` grep for — for exactly the runs that end badly. `render-lag.ts:386` does
+      // `capture.search(new RegExp(END_PATTERN))`, and a silent non-match turns the lag window into the whole
+      // capture and the gate into a lie: R2, the failure §3.7's guard exists to prevent.
+      const err = r.error ? `${SEP}${r.error.code}: ${clip(oneLine(r.error.message), 80)}` : '';
+      const exit = e.exitCode !== undefined ? `${SEP}exit ${e.exitCode}` : '';
       return make(
         null,
         'run:end',
-        // TUI-DESIGN §13.5: the run:end item carries the exit code when the engine reports one
-        `end ${r.stopReason} steps=${r.steps} wall=${formatDuration(r.wallMs)} cost=${usd(r.usage.generator.costUsd + r.usage.jev.costUsd)} (gen ${usd(r.usage.generator.costUsd)}, jev ${usd(r.usage.jev.costUsd)})${r.error ? ` error=${r.error.code}: ${r.error.message}` : ''}${e.exitCode !== undefined ? ` exit ${e.exitCode}` : ''}`,
+        `${RUN_FINISHED_WORD}${SEP}${r.stopReason}${SEP}${r.steps} steps${SEP}${formatDuration(r.wallMs)}${SEP}${cost}${exit}${err}`,
         r.stopReason === 'complete' ? 'info' : r.stopReason === 'error' ? 'error' : 'warn',
       );
     }
@@ -432,20 +730,46 @@ export function stepWallText(ms: number): string {
   return formatDuration(ms);
 }
 
+/**
+ * TUI-DESIGN-4 §6.6 / F-E2: the target of the `[step N]` row's **action** segment. An `edit` / `write` already names
+ * its file, and §6.6 puts the churn in the *outcome* segment (`1 file +3 −0`), so repeating ` +3 −0` here would state
+ * it twice in one row — F-E2 and §3.6's compact-run frame both draw `write scratch_0.py "Create scratch_0.py"`.
+ * A `patch` has no other name (A6-1), so it keeps §6.1's `editTargetText`.
+ */
+function stepTargetText(a: Action): string {
+  if (a.kind === 'edit' || a.kind === 'write') return a.path;
+  return describeAction(a).target;
+}
+
 function stepActionText(r: StepRecord): string {
   const p = r.proposal;
   if (p === null) return r.intent !== null ? `${r.intent} (no proposal)` : '(no proposal)';
   const d = describeAction(p.action);
-  const target = clip(oneLine(d.target), STEP_TARGET_CELLS);
+  const target = clip(oneLine(stepTargetText(p.action)), STEP_TARGET_CELLS);
   const goal = p.action.kind === 'edit' || p.action.kind === 'write' || p.action.kind === 'patch' ? oneLine(p.goal).trim() : '';
   return `${d.kind} ${target}${goal !== '' ? ` "${clip(goal, STEP_GOAL_CHARS)}"` : ''}`.trim();
 }
 
-function stepOutcomeText(o: ActionOutcome | null): string | null {
+/**
+ * TUI-DESIGN-4 §6.6 (D-Z, A6-6): the `[step N]` row's outcome segment. `3 files +18 −4` — the counts come from
+ * §6.1's `editSummary` on the **proposal's** action, which is already in `StepRecord.proposal`, so there is no new
+ * engine field and no extra I/O. Edge 2: when the two name sets disagree (a rename git resolved differently) the
+ * names come from `changedFiles` and the **counts are dropped**; edge 1: a `run` that changed files has no counts.
+ */
+function stepOutcomeText(o: ActionOutcome | null, action: Action | null = null): string | null {
   if (o === null) return null;
   switch (o.status) {
-    case 'executed':
-      return o.changedFiles.length > 0 ? `${o.changedFiles.length} file${o.changedFiles.length === 1 ? '' : 's'}` : null;
+    case 'executed': {
+      const n = o.changedFiles.length;
+      if (n === 0) return null;
+      const files = `${n} file${n === 1 ? '' : 's'}`;
+      const summary: EditSummary | null = action === null ? null : editSummary(action);
+      if (summary === null || summary.truncatedFiles > 0) return files;
+      const named = new Set(summary.files.map((f) => f.path));
+      const changed = new Set(o.changedFiles);
+      if (named.size !== changed.size || [...named].some((x) => !changed.has(x))) return files;
+      return `${files} +${summary.added} −${summary.deleted}`;
+    }
     case 'noop':
       return 'skipped';
     case 'declined':
@@ -454,6 +778,11 @@ function stepOutcomeText(o: ActionOutcome | null): string | null {
     case 'interrupted':
       return o.status;
   }
+}
+
+/** §6.6: the last segment of a `[step N]` row — dropped first by TD3 rule 3, because it is a pointer, not information. */
+export function diffHintText(step: number): string {
+  return `/diff ${step}`;
 }
 
 /**
@@ -465,7 +794,7 @@ export function stepSummaryText(r: StepRecord, costUsd?: { generator: number; je
   if (r.interruptedAt !== undefined) return `interrupted at ${r.interruptedAt.stage} (${r.interruptedAt.reason})`;
   const parts: string[] = [stepActionText(r)];
   if (r.risk !== null) parts.push(`risk ${p2(r.risk.risk)} ${r.risk.verdict === 'ok' ? 'ok' : `[${r.risk.verdict}]`}`);
-  const outcome = stepOutcomeText(r.outcome);
+  const outcome = stepOutcomeText(r.outcome, r.proposal?.action ?? null);
   if (outcome !== null) parts.push(outcome);
   const tests = r.judge?.tests;
   if (tests && tests.source === 'parsed') parts.push(`tests ${tests.passed}p/${tests.failed}f/${tests.errors}e`);
@@ -480,12 +809,53 @@ export function stepSummaryText(r: StepRecord, costUsd?: { generator: number; je
     const jev = r.usage.jev.inputTokens + r.usage.jev.outputTokens;
     parts.push(gen > 0 ? `gen ${kTokens(gen)} jev ${kTokens(jev)}` : `jev ${kTokens(jev)}`);
   }
+  // §6.6: the `/diff <N>` pointer is the LAST segment and is conditional on the step having changed files, so it is
+  // never a dead command and TD3 rule 3 drops it before it drops the cost
+  if (r.outcome !== null && r.outcome.status === 'executed' && r.outcome.changedFiles.length > 0) parts.push(diffHintText(r.step));
   return parts.join(' · ');
 }
 
 /** The one-line form written to transcript.log, by the plain renderer and by the TUI's <Static> rows. A `label` (TUI-DESIGN §15.1) replaces the step label. */
 export function formatTranscriptItem(item: TranscriptItem): string {
-  return `${item.label ?? stepLabel(item.step)} ${item.text}`;
+  // TUI-DESIGN-4 §5.2 P-C4: a blank line of a pasted turn survives as an empty item, whose stored row is `[you]`
+  // with NO trailing space — the same in transcript.log, in `--plain` and in the TUI
+  return `${item.label ?? stepLabel(item.step)} ${item.text}`.trimEnd();
+}
+
+/**
+ * §3.6 / §3.7 G1: the engine's stop line, exactly as `stopTranscriptLine` builds it
+ * (`stop: <reason> at step <n>[ (<detail>)]`, `src/loop/stop.ts:56`). Anchored at both ends so no generator or
+ * command output that merely starts with the word can be swallowed.
+ */
+const STOP_LINE_RE = /^stop: [a-z_]+ at step \d+(?: \(.*\))?$/s;
+
+/** TUI-DESIGN-4 §1.3.4: the dump is written in chunks of this many characters so a slow link cannot push the exit past `UNMOUNT_TIMEOUT_MS`. */
+export const SCROLLBACK_CHUNK_CHARS = 64 * 1024;
+
+/**
+ * TUI-DESIGN-4 §1.3.4: the whole transcript as the PRIMARY screen should see it — one row per item, exactly the
+ * bytes `createPlainRenderer` writes for the same items (`glyphTwin(formatTranscriptItem(item))` and a newline,
+ * `:1289` and `:1320`). Going through the one formatter is what makes the `/scrollback` print and the on-exit dump
+ * byte-identical to a `--plain` run of the same script, which is the property §1.3.4 claims and §10 tests.
+ *
+ * The result is split into chunks of at most `SCROLLBACK_CHUNK_CHARS`, never mid-row, so a very long transcript
+ * over a slow link is a sequence of bounded writes rather than one multi-megabyte one. An empty item list gives an
+ * empty array — §1.3.4 skips the dump then.
+ */
+export function transcriptDumpChunks(items: readonly TranscriptItem[], g: GlyphSet, chunkChars: number = SCROLLBACK_CHUNK_CHARS): string[] {
+  const limit = Number.isFinite(chunkChars) && chunkChars > 0 ? Math.floor(chunkChars) : SCROLLBACK_CHUNK_CHARS;
+  const out: string[] = [];
+  let cur = '';
+  for (const item of items) {
+    const row = `${glyphTwin(formatTranscriptItem(item), g)}\n`;
+    if (cur.length > 0 && cur.length + row.length > limit) {
+      out.push(cur);
+      cur = '';
+    }
+    cur += row;
+  }
+  if (cur.length > 0) out.push(cur);
+  return out;
 }
 
 /**
@@ -493,8 +863,23 @@ export function formatTranscriptItem(item: TranscriptItem): string {
  * idle help, `[ui] error:` for idle commands, …): printed by `--plain` and the TUI, carried by `--json` as a
  * `ui` line, never in any transcript.log. `seq` is the renderer's own counter; keys never collide with event items.
  */
-export function localItem(text: string, seq: number, opts: { label?: UiLabel; level?: TranscriptLevel; detail?: string } = {}): TranscriptItem {
+export function localItem(
+  text: string,
+  seq: number,
+  opts: {
+    label?: UiLabel;
+    level?: TranscriptLevel;
+    detail?: string;
+    /** contract 1.7 item 1 (§3.1.3, §6.4): the TUI's pre-split form of the body, with a colour role per row */
+    detailRows?: readonly { readonly text: string; readonly role: ColorRole }[];
+    /** contract 1.7 item 1 (§6.4): `'diff'` routes the rows through `diffRows`; the default `'text'` is today's behaviour */
+    detailKind?: 'diff' | 'table' | 'text';
+    /** §6.5 item 3: the caller's own cap instead of the fixed `TRANSCRIPT_DETAIL_MAX_LINES` (`Infinity` for `/diff --all`) */
+    maxDetailLines?: number;
+  } = {},
+): TranscriptItem {
   const label = opts.label ?? '[ui]';
+  const diff = opts.detailKind === 'diff';
   return {
     key: `local:${label}:${seq}`,
     seq,
@@ -505,7 +890,9 @@ export function localItem(text: string, seq: number, opts: { label?: UiLabel; le
     text: clip(oneLine(text), TRANSCRIPT_TEXT_MAX),
     local: true,
     label,
-    ...(opts.detail ? { detail: clipDetail(opts.detail) } : {}),
+    ...(opts.detail ? { detail: clipDetail(opts.detail, { ...(opts.maxDetailLines !== undefined ? { maxLines: opts.maxDetailLines } : {}), ...(diff ? { maxChars: TRANSCRIPT_DIFF_DETAIL_MAX_CHARS } : {}) }) } : {}),
+    ...(opts.detailRows !== undefined ? { detailRows: opts.detailRows } : {}),
+    ...(opts.detailKind !== undefined ? { detailKind: opts.detailKind } : {}),
   };
 }
 
@@ -678,11 +1065,11 @@ export function createReadlineConfirmer(stdin: ConfirmInput, stdout: ConfirmOutp
   };
 
   function printRequest(req: ConfirmRequest): void {
+    // TUI-DESIGN-4 §6.3 "Identity": the readline twin renders the SAME rows through the SAME builder (indent 2, no
+    // colour, the same truthful tail) — that is the declared normaliser for this surface
     const lines = confirmHeaderLines(req);
-    const preview = confirmPreviewLines(req);
-    const shown = preview.slice(0, previewRows);
-    const body = [...lines.map((l) => `${stepLabel(req.step)} ${l}`), ...shown.map((l) => `  ${l}`)];
-    if (preview.length > shown.length) body.push(`  …[${preview.length - shown.length} preview lines omitted]`);
+    const preview = reviewDiffLines(req, previewRows, CONFIRM_HEADER_COLUMNS, glyphs);
+    const body = [...lines.map((l) => `${stepLabel(req.step)} ${l}`), ...preview];
     write(`${body.join('\n')}\n`);
   }
 
@@ -982,6 +1369,15 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
       const item = localItem(text, localSeq++, { ...(o.label ? { label: o.label } : {}), ...(o.level ? { level: o.level } : {}), ...(o.detail ? { detail: o.detail } : {}) });
       endStream();
       write(`${formatTranscriptItem(item)}\n`);
+    },
+    /**
+     * contract 1.7 item 3 (TUI-DESIGN-4 §3.5, D-W): the row-list form of a block body. `lines` are the
+     * ALREADY-RENDERED row texts `renderBlock` produced; each becomes one `[ui] <row>` item, head first, so
+     * `--plain`'s stdout and `--plain`'s `transcript.log` carry the same rows the TUI's `<Static>` body does.
+     * This IS today's per-line `note` — written out so the default and the override cannot drift.
+     */
+    blockLines(rows, o = {}) {
+      for (const row of rows) this.notify(row, o);
     },
     // TUI-DESIGN-2 §3.7 / §6 item 11: the readline composer cannot be refilled, so the kept text is echoed (redacted) as a bare line
     restoreDraft(text) {

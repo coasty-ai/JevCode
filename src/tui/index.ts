@@ -71,5 +71,27 @@ export { retryRow, retryLastRow, retryLiveLines, retryCauseText, retryViewFrom, 
 export { THEMES, themeFor, textProps, itemRole, validateTheme, colorAt, depthOf } from './theme.js';
 export type { Theme, ThemeName, ColorRole, ColorTriple, ColorOn } from './theme.js';
 export { colorEnabled, applyNoColorShim } from './color-shim.js';
-export { RESTORE, DECSCUSR_BAR, restoreTerminal, processRestoreTerminal, rearmRestoreTerminal, createRestoreTerminal, installTerminalHygiene, createResizeDebounce, createSuspensionQueue, suspendProcess, writeCursorShape } from './terminal.js';
+export { RESTORE, DECSCUSR_BAR, restoreTerminal, processRestoreTerminal, rearmRestoreTerminal, createRestoreTerminal, installTerminalHygiene, createSuspensionQueue, suspendProcess, writeCursorShape } from './terminal.js';
 export { createNotifier, createNotifyTimers, notifySequence, notifyPayload, detectNotifyMethod, REVIEW_NOTIFY_MS, RUN_END_NOTIFY_MS } from './notify.js';
+// TUI-DESIGN-4 round 4 (S1): the header, the scrollback guard, P-R1's clock and the opt-in fullscreen renderer
+export { nowMs, SYNC_COMMIT_MIN_MS, shouldSyncCommit } from './App.js';
+export { wordmarkFrame, wordmarkWanted, WORDMARK_MIN_ROWS, WORDMARK_POST_RUN_MIN_ROWS, WORDMARK_LIVE_MIN_ROWS } from './wordmark.js';
+export type { WordmarkInput, WordmarkSetting } from './wordmark.js';
+export { brandSegment } from './pane/model.js';
+export type { StripOptions } from './pane/model.js';
+export { guardStdout, isGuarded, isLogClearWrite, CLEAR_TERMINAL, CLEAR_SAFE } from './scrollback-guard.js';
+export { computeFullLayout, fullscreenRefusal, FULL_MIN_ROWS, FULL_MIN_COLUMNS, FULL_HERO_MIN_ROWS, FULL_MIN_VIEWPORT_ROWS } from './fullscreen/layout.js';
+export type { FullLayout, FullLayoutInput, FullscreenRefusalInput } from './fullscreen/layout.js';
+export { buildIndex, appendItems, rebuildFor, emptyIndex, rowsFor, cutsFor, resolveTop, sliceRows, applyScroll, applyScrollAt, atBottom, positionRungs, positionRung, earlierRowsAbove, earlierRowsDropped, SCROLL_BOTTOM, VIEWPORT_ITEM_CAP } from './fullscreen/viewport.js';
+export type { Scroll, ScrollKey, ViewportIndex, ViewportRow } from './fullscreen/viewport.js';
+export { Viewport, VIEWPORT_PANE } from './fullscreen/ViewportBox.js';
+export type { ViewportProps } from './fullscreen/ViewportBox.js';
+export { FullApp } from './fullscreen/FullApp.js';
+export type { FullAppProps } from './fullscreen/FullApp.js';
+export { selectRenderer } from './fullscreen/select.js';
+export type { RendererSelection, RendererSelectionInput } from './fullscreen/select.js';
+export { fullLayoutAsLayout } from './App.js';
+export { ALT_SCREEN_LEAVE, markAlternateScreen, alternateScreenEntered } from './terminal.js';
+// TUI-DESIGN-4 §1.3.4: `/scrollback` and the on-exit dump
+export { SCROLLBACK_RESUME_ROW, printToPrimaryScreen, waitForAnyKey, type PrimaryScreenDumpDeps } from './terminal.js';
+export { SCROLLBACK_CHUNK_CHARS, transcriptDumpChunks } from './plain.js';

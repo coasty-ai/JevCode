@@ -138,6 +138,13 @@ const echoOf = (key: string): string => `expect ${key}${SGR_GAP}(?: +${SGR_GAP} 
 /** a marker key typed into the draft, then a wait for its echo, then a settle */
 const marker = (key: string): string[] => ['send ' + key, echoOf(key), sleepStep(300)];
 const EXPECT_TIMEOUT_S = 40;
+/**
+ * TUI-DESIGN-4 §7.12: the degradation notice was `ui: <pane> pane failed to render (<Error.name>) — …` and is now
+ * `ui: <pane> failed (<Error.name>) — run continues; see <log>`. The App-level `[ui]` item (`App.tsx`, S1's file)
+ * still carries the old spelling until §9.2's row lands, so the anchor accepts BOTH and the scenario is correct
+ * before and after — a stale anchor is the one way a fault scenario reports a vacuous pass (A3 risk R2).
+ */
+const paneFailedPattern = (pane: string): string => `ui: ${pane} (?:pane failed to render|failed) \\(`;
 
 interface Spec {
   name: string;
@@ -174,7 +181,7 @@ function specs(): Spec[] {
       columns,
       args: [...MOCK_RUN, '--mock-steps', '5'],
       env: { JEVCODE_MOCK_REVIEW_AT: '2' },
-      steps: [...PROLOGUE, 'send start the perf run', sleepStep(200), 'send \\r', ...(card ? [`expect ${topEdgePattern('review · step 2')}`] : []), 'expect \\[y\\] approve', sleepStep(400), 'send y', 'expect confirm \\S+ approved', `expect ${END_PATTERN}`, 'expect Follow-up, question', ...EXIT_IDLE],
+      steps: [...PROLOGUE, 'send start the perf run', sleepStep(200), 'send \\r', ...(card ? [`expect ${topEdgePattern('review · step 2')}`] : []), 'expect \\[y\\] approve', sleepStep(400), 'send y', 'expect review approved', `expect ${END_PATTERN}`, 'expect Follow-up, question', ...EXIT_IDLE],
       expectedExit: 0,
     });
     out.push({
@@ -183,7 +190,7 @@ function specs(): Spec[] {
       columns,
       args: ['--mock'],
       env: {},
-      steps: [...PROLOGUE, 'send /', ...(card ? [`expect ${topEdgePattern('commands')}`] : []), 'expect Tab completes', sleepStep(200), 'send he', sleepStep(200), 'send \\x1b', sleepStep(200), 'send \\x03', 'expect Say hi', ...EXIT_IDLE],
+      steps: [...PROLOGUE, 'send /', ...(card ? [`expect ${topEdgePattern('commands')}`] : []), 'expect Tab picks', sleepStep(200), 'send he', sleepStep(200), 'send \\x1b', sleepStep(200), 'send \\x03', 'expect Say hi', ...EXIT_IDLE],
       expectedExit: 0,
     });
     out.push({
@@ -235,18 +242,52 @@ function specs(): Spec[] {
     columns: 80,
     args: [...MOCK_RUN, '--mock-steps', '4'],
     env: { JEVCODE_FAULT: 'render:composer' },
-    steps: ['expect \\x1b\\[\\?25l', 'expect composer pane failed to render', sleepStep(500), 'send start the perf run', sleepStep(200), 'send \\r', `expect ${RUN_STARTED_PATTERN}`, `expect ${END_PATTERN}`, sleepStep(500), ...EXIT_IDLE],
+    steps: ['expect \\x1b\\[\\?25l', `expect ${paneFailedPattern('composer')}`, sleepStep(500), 'send start the perf run', sleepStep(200), 'send \\r', `expect ${RUN_STARTED_PATTERN}`, `expect ${END_PATTERN}`, sleepStep(500), ...EXIT_IDLE],
     expectedExit: 0,
   });
-  // render:pane throws when the decisions pane first renders; round 2 collapses the panel to a strip (TUI-DESIGN-2 §4.6), so the
-  // scenario opens it with `/panel` (any) right after the run starts — the pane then renders and the fault fires
+  /**
+   * TUI-DESIGN-4 §7.3 item 6: `render:pane` never fired at 24×80 with the shipped 4-step trajectory, because the
+   * decisions slot stays CLOSED — round 2 collapses the panel to a strip (TUI-DESIGN-2 §4.6) — so the probe
+   * measured the **unfaulted** frame. The slot is forced open with `/panel` right after the run starts, the run
+   * is long enough (`--mock-steps 30`) for the pane to render many times, and `JEVCODE_MOCK_REVIEW_AT=2` puts a
+   * review card in the same frame so the overlay slot is open too. §7.3 edge 1 (`region ≤ rows − 2` in a fault
+   * scenario) is `budgetOk`, which every segment of every scenario is already judged on.
+   */
   out.push({
     name: 'fault-pane',
     rows: 24,
     columns: 80,
-    args: [...MOCK_RUN, '--mock-steps', '40', '--max-steps', '40'],
-    env: { JEVCODE_FAULT: 'render:pane' },
-    steps: [...PROLOGUE, 'send start the perf run', sleepStep(200), 'send \\r', `expect ${RUN_STARTED_PATTERN}`, 'send /panel', sleepStep(150), 'send \\r', 'expect pane pane failed to render', `expect ${END_PATTERN}`, 'expect Follow-up, question', ...EXIT_IDLE],
+    args: [...MOCK_RUN, '--mock-steps', '30', '--max-steps', '30'],
+    env: { JEVCODE_FAULT: 'render:pane', JEVCODE_MOCK_REVIEW_AT: '2' },
+    steps: [
+      ...PROLOGUE,
+      'send start the perf run',
+      sleepStep(200),
+      'send \\r',
+      `expect ${RUN_STARTED_PATTERN}`,
+      'send /panel',
+      sleepStep(150),
+      'send \\r',
+      `expect ${paneFailedPattern('pane')}`,
+      'send y',
+      `expect ${END_PATTERN}`,
+      'expect Follow-up, question',
+      ...EXIT_IDLE,
+    ],
+    expectedExit: 0,
+  });
+  /**
+   * TUI-DESIGN-4 §7.3 item 6: the other half — `render:live`. The live region only exists while a run streams
+   * (`layout.live > 0`), so the fault is driven from inside a 30-step run rather than from the idle frame the
+   * old two scenarios measured.
+   */
+  out.push({
+    name: 'fault-live',
+    rows: 24,
+    columns: 80,
+    args: [...MOCK_RUN, '--mock-steps', '30', '--max-steps', '30'],
+    env: { JEVCODE_FAULT: 'render:live' },
+    steps: [...PROLOGUE, 'send start the perf run', sleepStep(200), 'send \\r', `expect ${RUN_STARTED_PATTERN}`, `expect ${paneFailedPattern('live')}`, `expect ${END_PATTERN}`, 'expect Follow-up, question', ...EXIT_IDLE],
     expectedExit: 0,
   });
   const resizeMarkers = (hi: number): NonNullable<Spec['markers']> => [
@@ -449,7 +490,18 @@ export async function measureStates(opts: { root: string; bin: string; onProgres
   return {
     clearReSelfTest: selfTest,
     scenarios,
-    notDriven: ['retry row (JEVCODE_FAULT=jev:429 is not implemented in this tree)', 'blocking pane (JEVCODE_FAULT=jev:401 / persist:ENOSPC are not implemented in this tree)'],
+    /**
+     * TUI-DESIGN-4 §7.11 registers thirteen scenarios; `src/tui/faults.ts` PARSES all thirteen, but only the
+     * `render:<pane>` family has a consumer in the tree today (`PaneBoundary`, `Transcript`, the App guard).
+     * The rest need an injection point in files this round does not own, so they are reported as not driven
+     * rather than silently absent (a fault with no consumer is a vacuous pass, which is what §7.11 exists to stop).
+     */
+    notDriven: [
+      'retry row (JEVCODE_FAULT=jev:429 parses but the mock decider has no injection point)',
+      'blocking pane (JEVCODE_FAULT=jev:401 parses but the auth pane has no injection point)',
+      'degraded checkpoint (JEVCODE_FAULT=persist:<CODE> / rundir:rm parse but the store has no injection point)',
+      'submit watchdog (JEVCODE_FAULT=submit:hang parses but host.submit has no injection point)',
+    ],
     pass: selfTest && scenarios.every((s) => s.pass),
   };
 }

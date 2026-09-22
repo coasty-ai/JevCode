@@ -1,0 +1,249 @@
+{
+  "runId": "20260922-124041-6pfwdoal",
+  "task": "Fix the failing tests in tests/test_core.py without changing the tests.",
+  "workspace": "/private/tmp/jevcode-r4-ws-hN8See",
+  "mode": "llm-jev",
+  "config": {
+    "mode": {
+      "value": "llm-jev",
+      "source": "default"
+    },
+    "generator.provider": {
+      "value": "openrouter",
+      "source": "default"
+    },
+    "decider.provider": {
+      "value": "typesafe",
+      "source": "derived"
+    },
+    "generator.model": {
+      "value": "z-ai/glm-5.3-flash",
+      "source": "default"
+    },
+    "generator.apiKey": {
+      "value": {
+        "source": "env",
+        "fingerprint": "fbd87ce1"
+      },
+      "source": "env"
+    },
+    "generator.maxTokens": {
+      "value": "4096",
+      "source": "default"
+    },
+    "decider.baseUrl": {
+      "value": "https://api.typesafe.ai/v1/systemone",
+      "source": "default"
+    },
+    "decider.apiKey": {
+      "value": {
+        "source": "env",
+        "fingerprint": "9219b257"
+      },
+      "source": "env"
+    },
+    "decider.model": {
+      "value": "jev-1.13.0",
+      "source": "default"
+    },
+    "limits.spendCapUsd": {
+      "value": "0.30",
+      "source": "flag"
+    },
+    "limits.maxSteps": {
+      "value": "40",
+      "source": "default"
+    },
+    "limits.maxWall": {
+      "value": "30m",
+      "source": "default"
+    },
+    "limits.maxReplans": {
+      "value": "5",
+      "source": "default"
+    },
+    "limits.completeThreshold": {
+      "value": "0.85",
+      "source": "default"
+    },
+    "limits.impossibleThreshold": {
+      "value": "0.85",
+      "source": "default"
+    },
+    "workspace": {
+      "value": "/tmp/jevcode-r4-ws-hN8See",
+      "source": "flag"
+    },
+    "runsDir": {
+      "value": "/tmp/jevcode-r4-home-XX3k9W/runs",
+      "source": "env"
+    },
+    "sandbox": {
+      "value": "auto",
+      "source": "default"
+    },
+    "noNetwork": {
+      "value": "false",
+      "source": "default"
+    },
+    "plain": {
+      "value": "false",
+      "source": "default"
+    },
+    "limits.allowUnpriced": {
+      "value": "false",
+      "source": "default"
+    },
+    "context.mode": {
+      "value": "relaxed",
+      "source": "default"
+    },
+    "context.compaction": {
+      "value": "code",
+      "source": "default"
+    },
+    "context.compactEvery": {
+      "value": "8",
+      "source": "default"
+    },
+    "ui.theme": {
+      "value": "dark",
+      "source": "default"
+    },
+    "seen.defaultMode": {
+      "value": "llm-jev",
+      "source": "file:/Users/prateekjannu/.config/jevcode/config.json"
+    },
+    "ui.title": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.renderer": {
+      "value": "classic",
+      "source": "default"
+    },
+    "ui.fullscreenDump": {
+      "value": "true",
+      "source": "default"
+    },
+    "ui.osc52": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.history": {
+      "value": "true",
+      "source": "default"
+    },
+    "ui.noInput": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.trustWorkspace": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.budgetWarnings": {
+      "value": "true",
+      "source": "default"
+    },
+    "ui.allowSecretMention": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.exitCode": {
+      "value": "zero",
+      "source": "default"
+    },
+    "log.level": {
+      "value": "info",
+      "source": "default"
+    },
+    "update.notify": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.fps": {
+      "value": "30",
+      "source": "default"
+    },
+    "ui.renderMode": {
+      "value": "standard",
+      "source": "default"
+    },
+    "ui.screenReader": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.ascii": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.noColor": {
+      "value": "false",
+      "source": "default"
+    },
+    "configFile": {
+      "value": "/Users/prateekjannu/.config/jevcode/config.json",
+      "source": "default"
+    },
+    "openAssistPath": {
+      "value": "/tmp/jevcode-r4-home-XX3k9W/no-open-assist",
+      "source": "env"
+    },
+    "session.spendCapUsd": {
+      "value": "1.5",
+      "source": "derived"
+    },
+    "decider.providerSource": {
+      "value": "auto:typesafe-key",
+      "source": "derived"
+    }
+  },
+  "versions": {
+    "jevcode": "0.4.0",
+    "node": "v22.23.2"
+  },
+  "createdAt": "2026-09-22T12:40:41.688Z",
+  "overrides": [],
+  "resumes": [],
+  "resolvedJevModel": "jev-1.13.0",
+  "jevModelDrift": null,
+  "sessionId": "20260922-124041-6pfwdoal",
+  "parentRunId": null,
+  "source": "cli",
+  "git": {
+    "repo": true,
+    "head": {
+      "kind": "branch",
+      "name": "main",
+      "oid": "0d2a1f7d15a4706e61b4282e3d0ad12a79bf7580"
+    },
+    "upstream": null,
+    "linkedWorktree": false,
+    "prefix": "",
+    "ahead": null,
+    "behind": null,
+    "dirtyAtStart": {
+      "modified": 0,
+      "staged": 0,
+      "untracked": 1092,
+      "unmerged": 0
+    },
+    "end": {
+      "head": {
+        "kind": "branch",
+        "name": "main",
+        "oid": "0d2a1f7d15a4706e61b4282e3d0ad12a79bf7580"
+      },
+      "upstream": null,
+      "ahead": null,
+      "behind": null,
+      "dirty": {
+        "modified": 1,
+        "staged": 0,
+        "untracked": 1092
+      }
+    }
+  },
+  "instructions": []
+}

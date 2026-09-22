@@ -178,3 +178,43 @@ describe('ruleRow', () => {
     expect(ruleRow('plan s7', ' [d]ecisions ', 40, GLYPHS.ascii)).toMatch(ASCII_RE);
   });
 });
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §2.8 (P-R9) — the ascii tees, and the glyph-twin gate for every new glyph.
+// ---------------------------------------------------------------------------------------
+describe('P-R9: the ascii console tees are `|`, not `+` (TUI-DESIGN-4 §2.8)', () => {
+  it('the tees differ from the corners, so a divider can never be byte-identical to an edge', () => {
+    const u = GLYPHS.unicode;
+    const a = GLYPHS.ascii;
+    expect([u.teeLeft, u.teeRight]).toEqual(['├', '┤']);
+    expect([a.teeLeft, a.teeRight]).toEqual(['|', '|']);
+    expect([a.roundTopLeft, a.roundTopRight, a.roundBottomLeft, a.roundBottomRight]).toEqual(['+', '+', '+', '+']);
+    expect(a.teeLeft).not.toBe(a.roundBottomLeft);
+    expect(a.teeRight).not.toBe(a.roundBottomRight);
+    // `│` (vbar / boxVertical) already maps to `|`, so a row of `├──┤` and a row of `│  │` read as the same box
+    expect([a.vbar, a.boxVertical]).toEqual(['|', '|']);
+  });
+
+  it('glyphTwin maps both tees, and a whole divider row becomes `|---…---|`', () => {
+    expect(glyphTwin('├────┤', GLYPHS.ascii)).toBe('|----|');
+    expect(glyphTwin('╰────╯', GLYPHS.ascii)).toBe('+----+');
+    expect(glyphTwin('╭─ jev-only ── proj ─╮', GLYPHS.ascii)).toBe('+- jev-only -- proj -+');
+    expect(glyphTwin('├────┤', GLYPHS.unicode)).toBe('├────┤');
+    expect(glyphTwin('├────┤', GLYPHS.sr)).toBe('├────┤');
+  });
+
+  it('§14.1: every glyph of the table still has a one-to-one, pure-ASCII twin (the P-R9 change keeps the invariant)', () => {
+    for (const [k, v] of Object.entries(GLYPHS.unicode)) {
+      if (k === 'mode') continue;
+      const twin = (GLYPHS.ascii as unknown as Record<string, string | readonly string[]>)[k];
+      if (typeof v === 'string') {
+        expect(typeof twin, k).toBe('string');
+        expect(twin as string, k).toMatch(ASCII_RE);
+        expect(glyphTwin(v, GLYPHS.ascii), k).toBe(twin);
+      } else {
+        expect(Array.isArray(twin), k).toBe(true);
+        expect((twin as readonly string[]).length, k).toBe(v.length);
+      }
+    }
+  });
+});

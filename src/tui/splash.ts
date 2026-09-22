@@ -251,18 +251,34 @@ export function brandRow(version: string, columns: number, t: number | null = nu
   return ruleRow(`${brandGlyph(t, g)} jevcode ${version}`, '', columns, g);
 }
 
+/** A version token after `jevcode` (`0.4.0`, `1.2.3-rc.1`, `0.4.0+build`); anything else ends the brand span at `jevcode`. */
+const VERSION_TOKEN = /^\d+(?:\.\d+)*(?:[-+][0-9A-Za-z.+-]*)?$/;
+
 /**
- * TUI-DESIGN-2 §5.4 (finding 10): the `[from, to)` code-unit span of `<glyph> jevcode <version>` in a rule row, for the
- * `accent` colour — any of the four pulse glyphs (`░ ▒ ▓ ◆`, or their `--ascii` twins) counts, so the accent never blinks
- * off while the one-line splash pulses below 64 columns. Null when the row is not a brand row.
+ * TUI-DESIGN-2 §5.4 (finding 10), generalised by TUI-DESIGN-4 §1.2 P-H1: the `[from, to)` code-unit span of
+ * `<glyph> jevcode[ <version>]` in a rule row, for the `accent` colour — any of the four pulse glyphs (`░ ▒ ▓ ◆`, or
+ * their `--ascii` twins) counts, so the accent never blinks off while the one-line splash pulses below 64 columns.
+ * The span ends **after the version** when the next token is one (the `brandRow` form, byte-identical to round 2) and
+ * **at `jevcode`** when it is not — which is the strip's `◆ jevcode ─ ▸ jev s4 …` prefix (P-H1), where the following
+ * token is a rule cell, not a version. Null when the row carries no brand (a pre-run strip, a truncated row).
  */
 export function brandSpan(row: string, g: GlyphSet = GLYPHS.unicode): { from: number; to: number } | null {
   for (const glyph of [g.brand, g.shade1, g.shade2, g.shade3]) {
-    const at = row.indexOf(`${glyph} jevcode `);
-    if (at === -1) continue;
-    const afterLabel = at + `${glyph} jevcode `.length;
-    const end = row.indexOf(' ', afterLabel);
-    return { from: at, to: end === -1 ? row.length : end };
+    const label = `${glyph} jevcode`;
+    // rescan past a boundary failure: `◆ jevcodex … ◆ jevcode 0.4.0` must still colour the real brand (finding 22)
+    for (let from = 0; ; ) {
+      const at = row.indexOf(label, from);
+      if (at === -1) break;
+      from = at + 1;
+      const afterLabel = at + label.length;
+      // `jevcodex` is not the brand; the label must end the row or be followed by a space
+      if (afterLabel < row.length && row[afterLabel] !== ' ') continue;
+      if (afterLabel >= row.length) return { from: at, to: afterLabel };
+      const rest = row.slice(afterLabel + 1);
+      const cut = rest.indexOf(' ');
+      const token = cut === -1 ? rest : rest.slice(0, cut);
+      return VERSION_TOKEN.test(token) && token !== '' ? { from: at, to: afterLabel + 1 + token.length } : { from: at, to: afterLabel };
+    }
   }
   return null;
 }

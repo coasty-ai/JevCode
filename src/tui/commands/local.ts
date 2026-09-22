@@ -9,6 +9,7 @@ import type { SessionHost } from '../../core/types.js';
 import type { KeyRunPhase } from '../keys/resolve.js';
 import { argumentCandidates, type DispatchContext } from './dispatch.js';
 import { rank } from './fuzzy.js';
+import { noCompletionsToast } from './nav.js';
 import { paletteMatches, RECENT_MAX, type PaletteState } from './palette.js';
 import { commandName, isCommandLine } from './parse.js';
 import { findCommand, takesRest, type CommandSpec } from './registry.js';
@@ -130,10 +131,8 @@ export interface CompletionContext {
   readonly palette: PaletteState;
 }
 
-/** TUI-DESIGN-3 §4.3 / §10: the toast when the argument under the cursor has no candidates. */
-export function noCompletionsToast(arg: string): string {
-  return `no completions for ${arg}`;
-}
+/** TUI-DESIGN-3 §4.3 / §10: the toast when the argument under the cursor has no candidates (the one definition lives in `nav.ts`, TUI-DESIGN-4 §4.2). */
+export { noCompletionsToast };
 
 /** TUI-DESIGN-3 §4.3: the outcome of one Tab. */
 export type Completion =

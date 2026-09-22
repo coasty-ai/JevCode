@@ -11,7 +11,7 @@
 //   5. `npm pack --dry-run --json` lists exactly the allowlist derived from package.json `files`
 //      (directories expanded recursively) plus package.json; extras and missing entries are named
 //   6. no forbidden path: *.map, meta.json, src/, docs/, test files, .env*
-//   7. unpacked size < 3 MB (the wave-3 bundle is 1.86 MB) and the gzipped tarball < 1.5 MB
+//   7. unpacked size < 3.5 MB (the wave-3 bundle was 1.86 MB; 0.5.0 is 3.0 MB) and the gzipped tarball < 1.5 MB
 //   8. `node bin/jevcode.js --version` prints the package.json version
 //
 // `npm pack` is run with --ignore-scripts so the `prepack` hook (a full rebuild) does not fire here.
@@ -21,7 +21,11 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const UNPACKED_MAX = 3_000_000; // bytes
+// 3.0 MB through 0.4.0 (unpacked 2,694,880 at round 4's integration). Raised to 3.5 MB on 2026-09-22 at 0.5.0: round 4's TUI
+// (+~400 KB of source: blocks, fullscreen renderer, palette navigation, diff rows, faults) and the harness waves merged the same
+// day (coordination W2b, orchestration contract 1.5, import contract 1.6, llm-jev iteration 1) put the unpacked package at
+// 3,003,627 — 0.12 % over. Still zero runtime dependencies and one file; the tarball gate is unchanged.
+const UNPACKED_MAX = 3_500_000; // bytes
 const TARBALL_MAX = 1_500_000; // bytes
 const FORBIDDEN = [
   [/\.map$/, 'source map'],

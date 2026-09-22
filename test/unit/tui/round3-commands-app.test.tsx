@@ -149,7 +149,7 @@ describe('the popular set through the mounted App (TUI-DESIGN-3 §4.1, §8 S4)',
     m.stdin.write('n');
     await waitFor(() => m.state()?.overlay === 'none');
   });
-  it('the palette frame carries the alias column and the Popular order; the ghost reads the top row (`› /help +36`); `/m` pins /mode over /model with the `+5` count', async () => {
+  it('the palette frame carries the alias column and the Popular order; the ghost reads the top row (`› /help +40`); `/m` pins /mode over /model with the `+5` count', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
     await settle(m);
@@ -160,7 +160,9 @@ describe('the popular set through the mounted App (TUI-DESIGN-3 §4.1, §8 S4)',
     expect(frame).toContain('  /mode       m  engine mode: show, or set for the next run');
     expect(frame).toContain('  /model      ml generator model for the next run only');
     expect(frame).toContain('  /cost       c  run and session spend, per-step cost, pending caps');
-    expect(frame).toContain('› /help +36');
+    // MINIMAL, MARKED pin move (S4, TUI-DESIGN-4 §4.6): the command set is 41 after this round, so the ghost's
+    // "other matches" count is +40 (`/fullscreen`, `/scrollback`, `/peers`, `/ui`)
+    expect(frame).toContain('› /help +40');
     m.stdin.write('m');
     await waitFor(() => m.lastFrame().includes('▌ /mode       m  '));
     const fm = m.lastFrame();
@@ -177,7 +179,10 @@ describe('the popular set through the mounted App (TUI-DESIGN-3 §4.1, §8 S4)',
     const m = mountApp({ mode: 'session', host });
     await settle(m);
     await enter(m, '/budgett');
-    await waitFor(() => host.notes.includes('error: unknown command /budgett; type / to list commands'));
+    // MINIMAL, MARKED pin move (S4, TUI-DESIGN-4 §3.1.7): the unknown-command shape; `budgett` is not a subsequence
+    // of any command name or alias, so `rank` clears no candidate, there is no `Did you mean` clause — and with no
+    // clause the sentence carries no full stop before the `·`
+    await waitFor(() => host.notes.includes('error: /budgett — not a command · type / to list commands'));
     expect(m.lastFrame()).toContain('› /budgett');
     m.stdin.write('\x15'); // Ctrl-U clears the line
     await waitFor(() => !m.lastFrame().includes('› /budgett'));

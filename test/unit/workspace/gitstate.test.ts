@@ -162,13 +162,14 @@ describe('gitBannerLine (§12.2)', () => {
     ).toBe('git wtbranch (linked worktree of /Users/me/proj) · clean');
     expect(gitBannerLine(bannerInput(state({ head: { kind: 'unborn', name: 'main' }, upstream: null, ahead: null, behind: null, dirty: { modified: 0, staged: 0, untracked: 2, renamed: 0, unmerged: 0, submodules: 0, entries: [] } }))).text).toBe('git main (unborn, no commits yet) · 2 untracked');
     expect(gitBannerLine(bannerInput(state({ prefix: 'pkg/api/', upstream: null, ahead: null, behind: null, dirty: { modified: 0, staged: 0, untracked: 0, renamed: 0, unmerged: 0, submodules: 0, entries: [] } }))).text).toBe('git main · in subdirectory pkg/api/ of the repository');
-    expect(gitBannerLine(bannerInput(notRepoState('not-a-repo', AT))).text).toBe('git none · not a git repository: changes made by commands are not recoverable, /diff compares against step pre-images only');
-    expect(gitBannerLine(bannerInput(notRepoState('bare', AT))).text).toBe('git none · bare repository: no work tree to edit; /undo and /diff use step pre-images only');
-    expect(gitBannerLine(bannerInput(notRepoState('bare', AT)), { ascii: true }).text).toBe('git none - bare repository: no work tree to edit; /undo and /diff use step pre-images only');
+    // TUI-DESIGN-4 §3.6 / §3.7 G6 (D-V): ONE clause, not two saying the same thing, and the `none` token goes
+    expect(gitBannerLine(bannerInput(notRepoState('not-a-repo', AT))).text).toBe('git · no repository — changes are not recoverable; /diff <step> compares pre-images');
+    expect(gitBannerLine(bannerInput(notRepoState('bare', AT))).text).toBe('git · bare repository, no work tree — /diff <step> compares pre-images');
+    expect(gitBannerLine(bannerInput(notRepoState('bare', AT)), { ascii: true }).text).toBe('git - bare repository, no work tree — /diff <step> compares pre-images');
     expect(notRepoReason(undefined)).toBe(notRepoReason('not-a-repo'));
-    expect(gitBannerLine(bannerInput(notRepoState('git-missing', AT))).text).toBe('git none · git not found on PATH: /undo and /diff use step pre-images only');
+    expect(gitBannerLine(bannerInput(notRepoState('git-missing', AT))).text).toBe('git · git not found on PATH — /diff <step> compares pre-images');
     // `timeout` covers every "dirty snapshot unknown" outcome (a status that timed out, failed or overflowed) until O1 adds a distinct reason
-    expect(gitBannerLine(bannerInput(notRepoState('timeout', AT))).text).toBe('git none · git status failed or timed out: /undo and /diff use step pre-images only');
+    expect(gitBannerLine(bannerInput(notRepoState('timeout', AT))).text).toBe('git · git status failed or timed out — /diff <step> compares pre-images');
     const unmerged = gitBannerLine(bannerInput(state({ upstream: null, ahead: null, behind: null, dirty: { modified: 412, staged: 0, untracked: 0, renamed: 0, unmerged: 1, submodules: 0, entries: [] } })));
     expect(unmerged).toEqual({ text: 'git main · 412 modified · working tree has unmerged paths (u) — commands may fail on conflict markers', level: 'warn' });
   });

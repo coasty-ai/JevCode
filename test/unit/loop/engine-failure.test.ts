@@ -164,7 +164,8 @@ describe('stage failure policy', () => {
     expect(r.counters.failed).toBe(1);
     expect(r.stopReason).toBe('max_steps');
     // and it reads as a failed outcome in transcript.log, like every other renderer
-    expect(h.store.transcript).toContain('[step 1] outcome failed: FileNotFoundError: no such file: nope.py');
+    // §3.7 G4: the `failed` outcome is a one-row summary; the whole reason is the item's TUI-only detail
+    expect(h.store.transcript).toContain('[step 1] failed · "FileNotFoundError: no such file: nope.py"');
   });
 
   it('action errors are outcomes, not stage failures: EditError -> failed with a fail: signature', async () => {

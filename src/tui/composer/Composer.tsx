@@ -20,7 +20,8 @@ import { Box, Text } from 'ink';
 import type { CursorPosition } from 'ink';
 import type { HistoryStore, SecretHit } from '../../core/types.js';
 import type { KeyAction } from '../keys/resolve.js';
-import { GLYPHS, glyphTwin, type GlyphSet } from '../glyphs.js';
+import { GLYPHS, cellWidth, glyphTwin, truncateCells, type GlyphSet } from '../glyphs.js';
+import type { PaletteGhost, PaletteGhostLegacy } from '../commands/palette.js';
 import { textProps, themeFor, type ColorOn, type Theme } from '../theme.js';
 import { editorRefusalToast } from '../secrets/gate-lines.js';
 import { chipSpans, createBuffer, normaliseText, reduceBuffer, snapshotOf, type BufferAction, type ChipRef, type Snapshot, type TextBuffer } from './buffer.js';
@@ -78,6 +79,51 @@ export type ComposerMode = 'task' | 'followup' | 'steer' | 'review' | 'thinking'
 export const SHORT_PLACEHOLDER_ROWS = 16;
 /** TUI-DESIGN-2 §4.4: the hint suffix appears from this many inner cells. */
 export const PLACEHOLDER_HINT_MIN_COLUMNS = 100;
+/**
+ * TUI-DESIGN-4 §4.3 P-P2 / §4.7 E11: the ghost the composer draws after the cursor. Round 4's three-member union and
+ * round 3's two-member shape are both accepted — `App.tsx:2157` still builds the latter until §9.2's row lands.
+ */
+export type ComposerGhost = PaletteGhost | PaletteGhostLegacy;
+
+/**
+ * TUI-DESIGN-4 §4.3 P-P2: the ghost as one string — ` → /exit +2` for the arrow shape, `de +1` for a rest or a value.
+ * `→` becomes `->` under `--ascii` (`glyphs.arrow`); the ` +N` suffix rule is round 3's, unchanged.
+ */
+export function ghostText(ghost: ComposerGhost, g: GlyphSet = GLYPHS.unicode): string {
+  const more = ghost.more > 0 ? ` +${ghost.more}` : '';
+  if ('kind' in ghost) return ghost.kind === 'arrow' ? ` ${g.arrow} ${ghost.target}${more}` : `${ghost.rest}${more}`;
+  return ghost.arrow !== undefined && ghost.arrow !== '' ? ` ${g.arrow} ${ghost.arrow}${more}` : `${ghost.rest}${more}`;
+}
+
+/**
+ * TUI-DESIGN-4 §4.7 E11: the ghost is cut to the room left on the draft's last row (`inner − cellWidth(row) − 1`).
+ * Under four cells only the ` +N` count survives, under three nothing does — the palette rows carry the information,
+ * so nothing is lost. Worst measured case `/budget ` + `max-generator-tokens` + ` +5` = 33 cells, which fits at 40.
+ *
+ * **The count is the part that survives the cut**, at every width: the rows on screen already spell the name the
+ * ghost previews, but nothing else on the frame says how many other rows there are. So the truncation eats the
+ * name and keeps ` +N` (`max-gen… +5`, never `max-generator-to…`); only when even ` +N` does not fit does the
+ * span go empty.
+ */
+export function ghostSpan(ghost: ComposerGhost, room: number, g: GlyphSet = GLYPHS.unicode): string {
+  const full = ghostText(ghost, g);
+  const r = Number.isFinite(room) ? Math.floor(room) : 0;
+  if (r >= cellWidth(full)) return full;
+  if (r < 3) return '';
+  const more = ghost.more > 0 ? ` +${ghost.more}` : '';
+  const mw = cellWidth(more);
+  if (r < 4) return more !== '' && mw <= r ? more : '';
+  if (more === '') return truncateCells(full, r, g);
+  // keep the suffix: truncate only the name part, and fall back to the count alone when the name has no room left
+  const base = full.slice(0, full.length - more.length);
+  return r - mw >= 2 ? `${truncateCells(base, r - mw, g)}${more}` : mw <= r ? more : truncateCells(full, r, g);
+}
+
+/** TUI-DESIGN-4 §5.3 P-C8 (a) / §12: the right-hand span a multi-line draft carries — `3 lines · ⏎ send`. */
+export function multilineHint(lines: number, g: GlyphSet = GLYPHS.unicode): string {
+  return `${lines} lines ${g.dot} ${g.mode === 'ascii' ? 'Enter' : '⏎'} send`;
+}
+
 /** the gap between a placeholder and its inline hint */
 export const PLACEHOLDER_HINT_GAP = '   ';
 
@@ -580,8 +626,8 @@ export interface ComposerProps {
   /** a run is live: the `>` takes the `steer` role (amber); `accent` (pink) at rest — TUI-DESIGN-3 D-O */
   live?: boolean;
   spans?: readonly Span[];
-  /** the ghost completion after the cursor (dim), or an alias's ` → /owner` arrow (TUI-DESIGN-3 §4.1 rule 3) */
-  ghost?: { rest: string; more: number } | { arrow: string } | null;
+  /** the ghost completion after the cursor (dim): TUI-DESIGN-4 §4.3's three-member union or round 3's shape */
+  ghost?: ComposerGhost | null;
   /** Ctrl-R row */
   searchRow?: string | null;
   glyphs?: GlyphSet;
@@ -620,19 +666,32 @@ export function Composer(p: ComposerProps): React.JSX.Element {
   // TUI-DESIGN-3 §2.6 (D-O): pink at rest, amber while a run is live
   const promptProps = p.live === true && p.active ? textProps(theme, 'steer', color) : p.active ? textProps(theme, 'accent', color) : {};
   const dx = p.cursorOffsetX ?? 0;
+  // TUI-DESIGN-4 §5.3 P-C8 (a): the multi-line send hint, only while the draft has an interior newline and only at
+  // the width where the other right-hand spans survive
+  const newlines = p.buffer.text.includes('\n') ? p.buffer.text.split('\n').length : 0;
+  const multi = newlines > 1 && (p.innerColumns ?? p.columns) >= PLACEHOLDER_HINT_MIN_COLUMNS ? multilineHint(newlines, g) : null;
   if (p.active && view.cursor !== null && p.searchRow == null) p.cursor({ x: dx + view.cursor.x, y: p.top + view.cursor.row });
   else if (p.active && p.searchRow != null) p.cursor({ x: Math.min(dx + p.columns - 1, dx + stringWidth(p.searchRow)), y: p.top });
   else p.cursor(undefined);
   const rowsOut = view.rows.map((r, i) => {
     const isPromptRow = view.scrollTop + i === 0 && r.startsWith(prompt);
     const body = isPromptRow ? r.slice(prompt.length) : r;
-    const ghost = p.ghost && view.cursor !== null && view.cursor.row === i && p.buffer.cursor >= p.buffer.text.length ? p.ghost : null;
+    const onCursorRow = view.cursor !== null && view.cursor.row === i && p.buffer.cursor >= p.buffer.text.length;
+    // TUI-DESIGN-4 §4.7 E11: the ghost never pushes the row past the console's inner width
+    const ghost = p.ghost != null && onCursorRow ? ghostSpan(p.ghost, (p.innerColumns ?? p.columns) - cellWidth(r) - 1, g) : '';
+    // TUI-DESIGN-4 §5.3 P-C8 (a): `N lines · ⏎ send` on the last row of a multi-line draft, right-aligned, dropped
+    // below PLACEHOLDER_HINT_MIN_COLUMNS with the other right-hand spans (the flat tier included)
+    // the span sits on the last row of the DRAFT (never on a padding row below it), and gives way to the `↓N`
+    // marker, which already owns that corner when the draft scrolls
+    const hint = multi !== null && view.hiddenBelow === 0 && i === Math.min(view.rows.length, view.totalRows - view.scrollTop) - 1 ? multi : '';
+    const gap = hint === '' ? 0 : (p.innerColumns ?? p.columns) - cellWidth(r) - cellWidth(ghost) - cellWidth(hint);
     return (
       <Box key={`c${i}`} height={1} overflow="hidden">
         <Text wrap="truncate">
           {isPromptRow ? <Text {...promptProps}>{prompt}</Text> : null}
           {body}
-          {ghost ? <Text {...textProps(theme, 'dim', color)}>{'arrow' in ghost ? ` ${g.arrow} ${ghost.arrow}` : `${ghost.rest}${ghost.more > 0 ? ` +${ghost.more}` : ''}`}</Text> : null}
+          {ghost === '' ? null : <Text {...textProps(theme, 'dim', color)}>{ghost}</Text>}
+          {hint !== '' && gap >= 1 ? <Text {...textProps(theme, 'dim', color)}>{`${' '.repeat(gap)}${hint}`}</Text> : null}
           {i === 0 && empty && !p.searchRow && placeholder !== '' ? <Text {...textProps(theme, 'placeholder', color)}>{placeholder}</Text> : null}
         </Text>
       </Box>

@@ -81,8 +81,12 @@ describe('diffStatBlock (§12.6, §24)', () => {
     expect(rows.map((r) => `${r.letter}${r.dirtyBefore ? '†' : ''} ${r.path}`)).toEqual(['M† src/a.py', 'B img/logo.png', 'R new/name.py', 'D gone.txt', 'A src/new.py', 'S vendor/lib', '? notes.txt', '? big.bin']);
     expect(summary).toEqual({ files: 8, added: 136, deleted: 18, untracked: 2, binary: 1, skipped: 1 });
     const lines = diffStatBlock(input, 80);
-    expect(lines[0]).toBe('diff (run r1 · 8 files · +136 −18 · 2 untracked · 1 binary · 1 skipped)');
-    expect(diffStatHeader('x', { files: 0, added: 0, deleted: 0, untracked: 0, binary: 0, skipped: 0 })).toBe('diff (run x · 0 files · +0 −0 · 0 untracked · 0 binary · 0 skipped)');
+    // TUI-DESIGN-4 §6.5 item 2: the head is SHORT by construction (it is never truncated again, A6-4) and the
+    // non-zero untracked / binary / skipped clauses move to their own rows at the bottom of the block
+    expect(lines[0]).toBe('diff · run r1 · 8 files · +136 −18');
+    expect(lines.filter((l) => /^\d+ (untracked|binary|skipped)$/.test(l))).toEqual(['2 untracked', '1 binary', '1 skipped']);
+    expect(diffStatHeader('x', { files: 0, added: 0, deleted: 0, untracked: 0, binary: 0, skipped: 0 })).toBe('diff · run x · no changes');
+    expect(diffStatHeader('20260922-035503-kntk2yw3', { files: 1, added: 1, deleted: 0, untracked: 0, binary: 0, skipped: 0 })).toBe('diff · run kntk2yw3 · 1 file · +1 −0');
     expect(lines[1]).toMatch(/^ M src\/a\.py† +\+120 −12 +\++-+$/);
     expect(lines[2]).toMatch(/^ B img\/logo\.png +bin$/);
     expect(lines[3]).toMatch(/^ R old\/name\.py → new\/name\.py +\+3 −1 +\+-$/);
@@ -92,6 +96,39 @@ describe('diffStatBlock (§12.6, §24)', () => {
     expect(lines).toContain(DIFF_LEGEND);
     expect(lines).toContain('   skipped huge.log: size');
     for (const l of lines) expect(stringCells(l)).toBeLessThanOrEqual(80);
+  });
+
+  it('A6-17 / §6.5 item 4: the bar is suppressed when EVERY row\'s churn is equal — a full bar everywhere is noise', () => {
+    // four files, identical churn: the bar scaled to the largest row is 10 full cells on every row
+    const equal = '5\t5\ta.py\x005\t5\tb.py\x005\t5\tc.py\x005\t5\td.py\x00';
+    const rows = diffStatBlock({ runId: 'r', numstat: equal }, 100).slice(1, 5);
+    expect(rows).toHaveLength(4);
+    for (const l of rows) expect(l).not.toMatch(/[+-]{3,}\s*$/);
+    expect(rows.every((l) => /\+5 −5\s*$/.test(l))).toBe(true);
+    // one row differing brings the bar back for every row
+    const unequal = '5\t5\ta.py\x005\t5\tb.py\x0050\t0\tc.py\x00';
+    const mixed = diffStatBlock({ runId: 'r', numstat: unequal }, 100).slice(1, 4);
+    expect(mixed.filter((l) => /[+-]{2,}\s*$/.test(l))).toHaveLength(3);
+    // a single row is not "every row equal" — one file still gets its bar
+    expect(diffStatBlock({ runId: 'r', numstat: '5\t5\ta.py\x00' }, 100)[1]).toMatch(/[+-]{2,}$/);
+    // and the bar is still dropped below 52 columns, equal churn or not
+    for (const l of diffStatBlock({ runId: 'r', numstat: unequal }, 50).slice(1, 4)) expect(l).not.toMatch(/\+{2,}-*$/);
+  });
+
+  it('§6.5 item 2 / §10: the short head is never truncated at 40 / 80 / 120 columns', () => {
+    for (const columns of [40, 80, 120]) {
+      const lines = diffStatBlock(input, columns);
+      // A6-4: the head used to be cut to `columns` BEFORE the `[ui] ` label was prepended, which provably
+      // destroyed `0 skipped)` at 80 columns and still wrapped. It is short by construction now.
+      expect(lines[0]).toBe('diff · run r1 · 8 files · +136 −18');
+      expect(stringCells(lines[0]!)).toBe(34);
+      expect(lines[0]).not.toContain('…');
+      for (const l of lines) expect(stringCells(l)).toBeLessThanOrEqual(columns);
+    }
+    // the longest possible head — a full run id, four digits of files and five of churn — still fits 52 cells
+    const worst = diffStatHeader('20260922-035503-kntk2yw3', { files: 2000, added: 99999, deleted: 99999, untracked: 9, binary: 9, skipped: 9 });
+    expect(worst).toBe('diff · run kntk2yw3 · 2000 files · +99999 −99999');
+    expect(stringCells(worst)).toBeLessThanOrEqual(52);
   });
 
   it('row cap 40 with the --all lift; the legend only when a shown row carries †', () => {
@@ -145,7 +182,7 @@ describe('diffStatBlock (§12.6, §24)', () => {
   });
 
   it('empty input renders the header only; duplicate paths collapse; untracked wins nothing over a tracked twin', () => {
-    expect(diffStatBlock({ runId: 'r', numstat: '' }, 80)).toEqual(['diff (run r · 0 files · +0 −0 · 0 untracked · 0 binary · 0 skipped)']);
+    expect(diffStatBlock({ runId: 'r', numstat: '' }, 80)).toEqual(['diff · run r · no changes']);
     const { rows } = diffStatRows({ runId: 'r', numstat: '1\t0\tx\x001\t0\tx\x00', untracked: [{ path: 'x' }] });
     expect(rows).toHaveLength(1);
     expect(EMPTY_TREE_OID).toBe('4b825dc642cb6eb9a060e54bf8d69288fbee4904');

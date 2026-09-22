@@ -158,11 +158,21 @@ export function computeLayout(i: LayoutInput): Layout {
     return z;
   }
   if (rows < MIN_ROWS || columns < MIN_COLUMNS) {
-    // A100: status · notice · composer
+    /**
+     * TUI-DESIGN-4 §2.5 P-R5 — the order becomes **notice → composer → status**, amending TD §2.1 A100's
+     * `status · notice · composer`. At budget 1 (rows 3–4) A100's order spent the only row on a spinner-less
+     * status row and left the user with no explanation of why every pane is gone; the notice IS the explanation.
+     *
+     * TUI-DESIGN-4 §2.5 P-R6 (D4) — under `overlay: 'wizard'` the slot is **notice(1) · wizard(1)** and there is
+     * **no composer**: at minsize the wizard is read-only (§2.5's "one answer, stated once"), so a composer whose
+     * Enter cannot start anything must not be drawn under it. PROBED at 40×5 on a first run: the user was invited
+     * to type a task during onboarding. Keys are consumed and answer `WIZARD_MINSIZE_TOAST`.
+     */
     z.degraded = 'minsize';
+    const wizard = i.overlay === 'wizard';
+    z.overlay = take(wizard ? CAP.minsize + 1 : CAP.minsize);
+    if (!wizard) z.composer = take(1);
     z.status = take(1);
-    z.overlay = take(CAP.minsize);
-    z.composer = take(1);
     z.total = budget - rem;
     return z;
   }

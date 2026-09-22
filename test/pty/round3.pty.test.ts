@@ -119,13 +119,13 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
     const r = await drive({
       name: 'r3-wordmark-handoff',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'],
-      steps: [...CHAT_OPEN, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.4', 'send /panel', echoStep('/panel'), 'send \\r', `expect ▾${SGR_GAP} decisions`, 'sleep 0.3', 'send /panel off', echoStep('/panel off'), 'send \\r', `expect ▸${SGR_GAP} jev`, 'sleep 0.3', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.4', 'send /panel', echoStep('/panel'), 'send \\r', `expect ▾${SGR_GAP} decisions`, 'sleep 0.3', 'send /panel off', echoStep('/panel off'), 'send \\r', `expect ▸${SGR_GAP} jev`, 'sleep 0.3', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text);
-    const start = all.findIndex((f) => f.lines.some((l) => /^ {0,9}\[run\] start /.test(l)));
-    const end = all.findIndex((f) => f.lines.some((l) => /^ {0,9}\[run\] end /.test(l)));
+    const start = all.findIndex((f) => f.lines.some((l) => /^ {0,9}\[run\] started [·-] /.test(l)));
+    const end = all.findIndex((f) => f.lines.some((l) => /^ {0,9}\[run\] finished [·-] /.test(l)));
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
     // the mark is hidden for the whole run; the frame that commits `[run] end` commits the state change with it, so the mark may
@@ -166,11 +166,11 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
   });
 
   it('wordmark-22 after a mock run: no mark until the first key after `[run] end` (the epilogue stays on screen), then F-W5 on that key', async () => {
-    const r = await drive({ name: 'r3-wordmark-22-postrun', args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], rows: 22, cols: 80, steps: [...CHAT_OPEN, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.5', 'mark ended', 'send h', echoStep('h'), 'sleep 0.3', 'send \\x03', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
+    const r = await drive({ name: 'r3-wordmark-22-postrun', args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], rows: 22, cols: 80, steps: [...CHAT_OPEN, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.5', 'mark ended', 'send h', echoStep('h'), 'sleep 0.3', 'send \\x03', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text);
-    const end = all.findIndex((f) => f.lines.some((l) => /^ {0,9}\[run\] end /.test(l)));
+    const end = all.findIndex((f) => f.lines.some((l) => /^ {0,9}\[run\] finished [·-] /.test(l)));
     const echo = all.findIndex((f, i) => i > end && f.dynamic.some((l) => /[›>] h/.test(l)));
     expect(end).toBeGreaterThan(0);
     expect(echo).toBeGreaterThan(end);
@@ -197,7 +197,7 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
 
 describe.skipIf(!hasExpect)('pty round 3: the TypeSafe pink (TUI-DESIGN-3 §2)', () => {
   it('TERM=xterm-256color: the first frame carries `38;5;211` and no `38;5;117`; after `[run] start` the edges carry `38;5;169` and no `38;5;74`; `[you]` and `[jevcode]` labels are the two pinks', async () => {
-    const r = await drive({ name: 'r3-theme-pink', args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi\\.'), 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'mark started', 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
+    const r = await drive({ name: 'r3-theme-pink', args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi\\.'), 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'mark started', 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const first = r.text.slice(r.text.indexOf('\x1b[?25l'), r.text.indexOf('\x1b[?25h'));
@@ -228,12 +228,12 @@ describe.skipIf(!hasExpect)('pty round 3: the TypeSafe pink (TUI-DESIGN-3 §2)',
 });
 
 describe.skipIf(!hasExpect)('pty round 3: the hero-frame checklist (TUI-DESIGN-3 §9, polish.steps)', () => {
-  const POLISH = [FIRST_FRAME_STEP, 'expect step 0/', CAPTION_STEP, IDLE_STEP, 'sleep 0.3', 'send hi', echoStep('hi'), 'send \\r', 'mark hi-sent', labelStep('you', 'hi'), labelStep('jevcode', 'Hi\\.'), 'mark hi-reply', 'sleep 0.3', 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', labelStep('you', 'fix the failing test'), RUN_STARTED_STEP, labelStep('step 1', ''), 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.5', 'send /cost', echoStep('/cost'), 'send \\r', 'expect raise: /budget', 'sleep 0.3', ...EXIT_IDLE];
+  const POLISH = [FIRST_FRAME_STEP, 'expect step 0/', CAPTION_STEP, IDLE_STEP, 'sleep 0.3', 'send hi', echoStep('hi'), 'send \\r', 'mark hi-sent', labelStep('you', 'hi'), labelStep('jevcode', 'Hi\\.'), 'mark hi-reply', 'sleep 0.3', 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', labelStep('you', 'fix the failing test'), RUN_STARTED_STEP, labelStep('step 1', ''), 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.5', 'send /cost', echoStep('/cost'), 'send \\r', 'expect raise it', 'sleep 0.3', ...EXIT_IDLE];
   for (const [rows, cols] of [
     [24, 80],
     [40, 120],
   ] as const) {
-    it(`polish ${rows}x${cols}: V1–V18 pass over the capture (V19 from the marks; V13 deferred, V20's rates need the typist)`, async () => {
+    it(`polish ${rows}x${cols}: V1–V18 pass over the capture (V19 from the marks; V13 gated since D-V, V20's rates need the typist)`, async () => {
       const r = await drive({ name: `r3-polish-${rows}x${cols}`, args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '4'], rows, cols, steps: POLISH });
       expect(r.timeouts).toBe(0);
       expect(r.code).toBe(0);
@@ -257,7 +257,7 @@ describe.skipIf(!hasExpect)('pty round 3: the hero-frame checklist (TUI-DESIGN-3
       const rows = t.rows ?? 24;
       const cols = t.cols ?? 80;
       const open = rows < 16 ? [FIRST_FRAME_STEP, `expect ${t.ascii ? 'Say hi' : PLACEHOLDER_TASK}`, RAW_MODE_STEP, 'expect \\[sandbox\\]'] : [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, IDLE_STEP];
-      const r = await drive({ name: `r3-polish-${t.name}`, args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3', ...t.args], rows, cols, ...(t.env ? { env: t.env } : {}), steps: [...open, 'sleep 0.3', 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.3', ...EXIT_IDLE] });
+      const r = await drive({ name: `r3-polish-${t.name}`, args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3', ...t.args], rows, cols, ...(t.env ? { env: t.env } : {}), steps: [...open, 'sleep 0.3', 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.3', ...EXIT_IDLE] });
       expect(r.timeouts, t.name).toBe(0);
       expect(r.code, t.name).toBe(0);
       const { results } = checkPolish(r.text, { rows, cols, ascii: t.ascii === true });
@@ -372,13 +372,19 @@ describe.skipIf(!hasExpect)('pty round 3: the one-key wizard edges (TUI-DESIGN-3
 });
 
 describe.skipIf(!hasExpect)('pty round 3: commands, trust and keybindings (TUI-DESIGN-3 §4)', () => {
+  /**
+   * TUI-DESIGN-4 §4.7 E12 / §9.2's `App.tsx` row is LANDED (integrator 2026-09-22): `KeyState.draftTokenOnly`
+   * is supplied and `CLOSE_OVERLAY_AND_CLEAR` has a consumer, so the last leg — Ctrl-C on `/budgett` with the
+   * palette open — closes the card **and** clears the draft in one key. Before it landed this scenario's final
+   * `expect` timed out; every other leg (the ghost, the alias run, the panel toggle) already passed.
+   */
   it('commands-idle: `/s` ghosts ` → /status` and runs /status; `/p d` opens the decisions tab and a second `/p d` collapses it; `/budgett` keeps its draft', async () => {
     const r = await drive({
       name: 'r3-commands-idle',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'],
       // `/` and `s` are two keystrokes: `composer:palette` (keys/resolve.ts:416) opens the palette on the `/` key alone and the ghost is
       // drawn only while it is open (App.tsx:2149) — one `send /s` write is a single input event and opens no palette
-      steps: [...CHAT_OPEN, 'send /', 'expect Tab completes', 'send s', 'expect → /status', 'sleep 0.3', 'send \\r', labelStep('ui', 'status'), 'sleep 0.3', 'send /p d', echoStep('/p d'), 'send \\r', `expect ▾${SGR_GAP} decisions`, 'sleep 0.3', 'send /p d', echoStep('/p d'), 'send \\r', 'sleep 0.5', 'mark collapsed', 'send /budgett', echoStep('/budgett'), 'send \\r', 'sleep 0.4', 'mark errored', 'send \\x03', `expect ${PLACEHOLDER_TASK}|${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send /', 'expect Tab picks', 'send s', 'expect → /status', 'sleep 0.3', 'send \\r', labelStep('ui', 'status'), 'sleep 0.3', 'send /p d', echoStep('/p d'), 'send \\r', `expect ▾${SGR_GAP} decisions`, 'sleep 0.3', 'send /p d', echoStep('/p d'), 'send \\r', 'sleep 0.5', 'mark collapsed', 'send /budgett', echoStep('/budgett'), 'send \\r', 'sleep 0.4', 'mark errored', 'send \\x03', `expect ${PLACEHOLDER_TASK}|${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -397,7 +403,7 @@ describe.skipIf(!hasExpect)('pty round 3: commands, trust and keybindings (TUI-D
     const r = await drive({
       name: 'r3-commands-live',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '200', '--max-steps', '200', '--max-replans', '50'],
-      steps: [...CHAT_OPEN, 'send make the tests pass', echoStep('make the tests pass'), 'send \\r', RUN_STARTED_STEP, 'expect Type to steer', 'send /undo', echoStep('/undo'), 'send \\r', 'sleep 0.4', 'mark undone', 'send \\x03', 'expect end human_abort', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send make the tests pass', echoStep('make the tests pass'), 'send \\r', RUN_STARTED_STEP, 'expect Type to steer', 'send /undo', echoStep('/undo'), 'send \\r', 'sleep 0.4', 'mark undone', 'send \\x03', 'expect finished [·-] human_abort', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -433,7 +439,7 @@ describe.skipIf(!hasExpect)('pty round 3: commands, trust and keybindings (TUI-D
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     expect(plain).toMatch(/› \?/);
-    expect(plain).not.toContain('Tab completes');
+    expect(plain).not.toContain('Tab picks');
   });
 });
 

@@ -25,6 +25,7 @@ import {
   TAGLINE,
   TAGLINE_MIN_COLUMNS,
   WORDMARK_MIN_COLUMNS,
+  WORDMARK_LIVE_MIN_ROWS,
   WORDMARK_MIN_ROWS,
   WORDMARK_POST_RUN_MIN_ROWS,
   captionFits,
@@ -243,7 +244,8 @@ describe('wordmarkWanted (TUI-DESIGN-3 §3.1)', () => {
     i.rows >= 21 &&
     i.columns >= 64 &&
     !i.screenReader &&
-    !(i.run === 'live' || i.run === 'aborting' || i.run === 'pausing') &&
+    // TUI-DESIGN-4 §1.2 P-H2 (D-T b): the mark stays up during a live run once `rows >= WORDMARK_LIVE_MIN_ROWS`
+    (!(i.run === 'live' || i.run === 'aborting' || i.run === 'pausing') || i.rows >= WORDMARK_LIVE_MIN_ROWS) &&
     i.panel === 'collapsed' &&
     !i.pickerOpen &&
     i.overlay !== 'review' &&
@@ -271,6 +273,33 @@ describe('wordmarkWanted (TUI-DESIGN-3 §3.1)', () => {
     expect(wordmarkWanted({ ...base, postRun: true, rows: 21 })).toBe(false);
     expect(wordmarkWanted({ ...base, postRun: false, rows: 21 })).toBe(true);
     expect(wordmarkWanted({ ...base, rows: Number.NaN })).toBe(false);
+  });
+  it('TUI-DESIGN-4 §1.2 P-H2 (D-T b): the mark stays up during a live run at >= 32 rows, and yields at 31', () => {
+    expect(WORDMARK_LIVE_MIN_ROWS).toBe(32);
+    for (const run of RUNS) {
+      expect(wordmarkWanted({ ...base, run, rows: 32 }), `${run} @32`).toBe(true);
+      expect(wordmarkWanted({ ...base, run, rows: 31 }), `${run} @31`).toBe(run === 'none' || run === 'starting');
+    }
+    // the arithmetic behind 32: rule 1 + live 2 + banner 1 + queue 2 + mark 5 + chrome 3 + composer 1 + status 1 = 16,
+    // so 32 rows still leave 16 rows of conversation — the floor
+    expect(WORDMARK_LIVE_MIN_ROWS - 16).toBe(16);
+    // edge 1: a panel opening mid-run still wins the slot, at any height
+    for (const panel of ['open', 'full'] as const) expect(wordmarkWanted({ ...base, run: 'live', rows: 60, panel })).toBe(false);
+    // edge 2: a review arming mid-run still hides the mark
+    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, overlay: 'review' })).toBe(false);
+    // edge 4: at >= 32 rows `WORDMARK_POST_RUN_MIN_ROWS` is a no-op (the mark was already up) — asserted, not deleted,
+    // because 21..31 rows still need it
+    expect(WORDMARK_POST_RUN_MIN_ROWS).toBe(24);
+    expect(wordmarkWanted({ ...base, postRun: true, rows: 32, run: 'live' })).toBe(true);
+    expect(wordmarkWanted({ ...base, postRun: true, rows: 24 })).toBe(true);
+    expect(wordmarkWanted({ ...base, postRun: true, rows: 23 })).toBe(false);
+    // the screen reader, the flat tier and `off` still win over the new clause
+    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, screenReader: true })).toBe(false);
+    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, boxed: false })).toBe(false);
+    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, setting: 'off' })).toBe(false);
+    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, columns: 63 })).toBe(false);
+    // `static` (SSH / reduced motion) shows the mark during a run too — zero frames either way (edge 5)
+    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, setting: 'static' })).toBe(true);
   });
   it('equals the §3.1 predicate over 1,000 random inputs', () => {
     const rnd = mulberry32(0x0d1);

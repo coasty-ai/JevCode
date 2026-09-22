@@ -1,0 +1,15 @@
+# TUI-DESIGN-4 §7.1 (P-D1) / §10 S6: a builder that throws on EVERY render degrades ONCE.
+# JEVCODE_FAULT=render:transcript:lines:sticky (§7.11 scenario 1). Before the latch this was throw -> dispatch ->
+# render -> throw forever, one <Static> item per iteration on Ink's immediate path — an unkillable flood.
+# Gates (run-smoke.sh): exactly one `failed (` row, 0 clears after the first frame, 1 RESTORE, exit 0.
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.3
+send hello there
+sleep 0.2
+send \r
+sleep 3
+send \x03
+sleep 0.3
+send \x03
+eof

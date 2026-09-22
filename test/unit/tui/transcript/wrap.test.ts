@@ -3,12 +3,17 @@
  * with the separator), the word rule otherwise, the no-orphan rule (a final token < 4 cells joins the previous word), the
  * F-R4 step row and `[run] end … exit 4` byte for byte, the `--ascii` separator, and the §5.3 identity normaliser over 1,000
  * random step summaries: no token is ever split, dropped or reordered, and no continuation row is narrower than 4 cells.
+ *
+ * TUI-DESIGN-4 §2.4 (P-R3) adds the half that was wrong: a token wider than the row is hard-split by grapheme, and the
+ * unconditional space join then **invents a space inside it**. `wrapBodyCut` reports those row indices as `cuts` and
+ * `joinWrapped(rows, cuts)` joins them with nothing, so the identity is exact at every width — the property test below
+ * runs 500 generated bodies × widths 4…120 with **no** "no token wider than the row" precondition.
  */
 import { describe, expect, it } from 'vitest';
 import { stringWidth } from '../../../../src/tui/composer/width.js';
 import { GLYPHS } from '../../../../src/tui/glyphs.js';
 import { formatTranscriptItem, localItem, stepSummaryText } from '../../../../src/tui/plain.js';
-import { ORPHAN_MIN_CELLS, joinOrphan, joinWrapped, segmentSeparator, wrapBody } from '../../../../src/tui/transcript/wrap.js';
+import { ORPHAN_MIN_CELLS, joinOrphan, joinWrapped, segmentSeparator, wrapBody, wrapBodyCut } from '../../../../src/tui/transcript/wrap.js';
 import { makeStepRecord } from '../../../fixtures/checkpoint/make.js';
 import { mulberry32, pick } from '../composer/helpers.js';
 
@@ -141,5 +146,161 @@ describe('the §5.3 identity normaliser over random step summaries (1,000 StepRe
       expect(joinWrapped(['     [ui]', ...rows])).toBe(formatTranscriptItem(item));
     }
     expect(wrapped).toBeGreaterThan(300);
+  });
+});
+
+
+describe('TUI-DESIGN-4 §2.4 (P-R3): the identity normaliser is exact under a hard grapheme cut', () => {
+  // the body this document measured: 30 → 4 rows and 40 → 3 rows both joined to the wrong string before P-R3
+  const BODY = 'edited packages/app/src/components/SomeVeryLongName.test.tsx in one step';
+
+  it('the measured table: 30 / 40 / 70 cells — false, false, true before; true, true, true now', () => {
+    const at30 = wrapBodyCut(BODY, 30);
+    const at40 = wrapBodyCut(BODY, 40);
+    const at70 = wrapBodyCut(BODY, 70);
+    expect(at30.rows).toHaveLength(4);
+    expect(at40.rows).toHaveLength(3);
+    expect(at70.rows).toHaveLength(2);
+    // the old, cut-blind join is still wrong at 30 and 40 — which is exactly why the cuts exist
+    expect(joinWrapped(at30.rows)).not.toBe(BODY);
+    expect(joinWrapped(at40.rows)).not.toBe(BODY);
+    expect(joinWrapped(at70.rows)).toBe(BODY);
+    // …and the cut-aware join is right at all three
+    expect(joinWrapped(at30.rows, at30.cuts)).toBe(BODY);
+    expect(joinWrapped(at40.rows, at40.cuts)).toBe(BODY);
+    expect(joinWrapped(at70.rows, at70.cuts)).toBe(BODY);
+    expect(at30.cuts.length).toBeGreaterThan(0);
+    expect(at70.cuts).toEqual([]);
+  });
+
+  it('`wrapBody` is the thin wrapper: `wrapBodyCut(...).rows` byte for byte, so no caller changes', () => {
+    for (const w of [4, 12, 30, 40, 70, 200]) {
+      expect(wrapBody(STEP, w)).toEqual(wrapBodyCut(STEP, w).rows);
+      expect(wrapBody(BODY, w, GLYPHS.ascii)).toEqual(wrapBodyCut(BODY, w, GLYPHS.ascii).rows);
+    }
+  });
+
+  it('edges 1, 2, 5, 6: cuts are row indices (a wide cluster needs no special case), never 0, empty for an empty body or width ≤ 0', () => {
+    expect(wrapBodyCut('', 10)).toEqual({ rows: [''], cuts: [] });
+    expect(wrapBodyCut(STEP, 0)).toEqual({ rows: [STEP], cuts: [] });
+    expect(wrapBodyCut(STEP, Number.NaN)).toEqual({ rows: [STEP], cuts: [] });
+    const cjk = wrapBodyCut('日本語'.repeat(20), 9);
+    expect(cjk.cuts).not.toContain(0);
+    expect(joinWrapped(cjk.rows, cjk.cuts)).toBe('日本語'.repeat(20));
+    for (const c of cjk.cuts) expect(Number.isInteger(c)).toBe(true);
+  });
+
+  it('edge 3: a continuation that begins with the `· ` separator is NOT a cut (the join must put the space back)', () => {
+    const w = wrapBodyCut(STEP, 70);
+    expect(w.rows[1]?.startsWith('· ')).toBe(true);
+    expect(w.cuts).toEqual([]);
+    expect(joinWrapped(w.rows, w.cuts)).toBe(STEP);
+  });
+
+  it('edge 4: `joinOrphan` never moves a whole token into a cut row', () => {
+    // a body whose last row is a 1-cell cut piece: the orphan rule must leave it alone
+    const rows = ['abcdefgh', 'i'];
+    expect(joinOrphan(rows, 8, '', [1])).toEqual(rows);
+    expect(joinOrphan(['a b c', '4'], 10, '', [])).toEqual(['a b', 'c 4']);
+    // over every generated body the rule holds: a cut row never gains a space-joined token
+    for (let w = 4; w <= 40; w++) {
+      const out = wrapBodyCut(BODY, w);
+      expect(joinWrapped(out.rows, out.cuts), `${w}`).toBe(BODY);
+    }
+  });
+
+  it('edge 7: the `stacked` and `flush` rungs compose — the label row is never a cut', () => {
+    const out = wrapBodyCut(BODY, 22);
+    expect(joinWrapped(['[ui]', ...out.rows], out.cuts.map((c) => c + 1))).toBe(`[ui] ${BODY}`);
+  });
+
+  // round-4 review finding 13: the widths are a **declared, deterministic sample**, not 4…120 × 500 = 58.5 k wraps.
+  // The six rung boundaries are always in it (the `flush` / `stacked` / `gutter` thresholds of §2.3 and the 40-column
+  // supported minimum); the rest is a seeded stride, so the case count is fixed and the run time does not depend on
+  // machine load. The test also carries its own timeout: at `testTimeout: 20_000` it failed under a concurrent bench.
+  const PROPERTY_WIDTHS: readonly number[] = [...new Set([4, 23, 24, 33, 34, 40, ...Array.from({ length: 24 }, (_, i) => 4 + i * 5)])].sort((a, b) => a - b);
+
+  it('§10 S2: the property — 500 generated bodies (words 1…60 cells, with and without ` · `) always re-join', () => {
+    expect(PROPERTY_WIDTHS[0]).toBe(4);
+    expect(PROPERTY_WIDTHS.at(-1)).toBe(119);
+    for (const boundary of [4, 23, 24, 33, 34, 40]) expect(PROPERTY_WIDTHS).toContain(boundary);
+    const rnd = mulberry32(20260922);
+    let cutCases = 0;
+    let cases = 0;
+    for (let i = 0; i < 500; i++) {
+      const words: string[] = [];
+      const n = 1 + Math.floor(rnd() * 8);
+      for (let k = 0; k < n; k++) {
+        const len = 1 + Math.floor(rnd() * 60);
+        words.push('abcdefghijklmnopqrstuvwxyz0123456789/._-'[Math.floor(rnd() * 40)]!.repeat(len));
+      }
+      const text = rnd() < 0.5 ? words.join(' ') : words.join(' · ');
+      for (const width of PROPERTY_WIDTHS) {
+        const out = wrapBodyCut(text, width);
+        cases += 1;
+        expect(joinWrapped(out.rows, out.cuts), `${width}: ${JSON.stringify(text)}`).toBe(text);
+        for (const r of out.rows) expect(stringWidth(r), `${width}: ${JSON.stringify(r)}`).toBeLessThanOrEqual(Math.max(width, stringWidth(text)));
+        if (out.cuts.length > 0) cutCases += 1;
+      }
+    }
+    expect(cases).toBe(500 * PROPERTY_WIDTHS.length);
+    expect(cutCases).toBeGreaterThan(100);
+  }, 60_000);
+
+  it('§10 S2: the two explicit TD3 §5.3 cases and the measured 53-cell-path case', () => {
+    for (const [text, width] of [[STEP, 70], [END, 74], [TASK, 70]] as const) {
+      const out = wrapBodyCut(text, width);
+      expect(joinWrapped(out.rows, out.cuts)).toBe(text);
+    }
+    const path = `edited ${'p'.repeat(53)} in one step`;
+    for (let w = 4; w <= 120; w++) {
+      const out = wrapBodyCut(path, w);
+      expect(joinWrapped(out.rows, out.cuts), `${w}`).toBe(path);
+    }
+  });
+});
+
+describe('§11 "no row wider than the terminal" at the two narrowest widths (integrator 2026-09-22)', () => {
+  /**
+   * Measured defect (S1's §9.2 request to S2): at 1 and 2 columns the segment branch kept the whole ` · `
+   * separator token, so `a · b · c` committed `["a","· b","· c"]` — a 3-cell row in a 1-cell terminal, in BOTH
+   * renderers (`itemRenderRows` and `buildIndex` call `wrapBodyCut`). A continuation row opens with a 2-cell
+   * lead, so it needs 3 cells to carry one cell of content; below that floor the body takes the word rule, which
+   * §2.4 already names as the segment rule's fallback.
+   */
+  it('the segment lead is dropped below its own width, and the §5.3 join still returns the body', () => {
+    for (const g of [GLYPHS.unicode, GLYPHS.ascii]) {
+      const sep = segmentSeparator(g);
+      const body = `alpha${sep}beta${sep}gamma`;
+      for (const width of [1, 2]) {
+        const w = wrapBodyCut(body, width, g);
+        for (const r of w.rows) expect(stringWidth(r), `${g.mode} @${width}: ${JSON.stringify(r)}`).toBeLessThanOrEqual(width);
+        expect(w.rows.some((r) => r.startsWith(`${g.dot} `))).toBe(false);
+        expect(joinWrapped(w.rows, w.cuts)).toBe(body);
+      }
+      // 3 cells is the floor where the lead fits again: the segment rule is back and the join still holds
+      const three = wrapBodyCut(body, 3, g);
+      for (const r of three.rows) expect(stringWidth(r)).toBeLessThanOrEqual(3);
+      expect(three.rows.some((r) => r.startsWith(`${g.dot} `))).toBe(true);
+      expect(joinWrapped(three.rows, three.cuts)).toBe(body);
+    }
+  });
+
+  it('every width from 1 to 40 bounds every row, for a body with segments, long tokens and wide graphemes', () => {
+    const bodies = ['a · b · c', 'step 4 · tests 12p/3f/0e · cost $0.01 · 4.2s', 'x · supercalifragilisticexpialidocious · y', '見 · 本 · 帳', 'one'];
+    for (const g of [GLYPHS.unicode, GLYPHS.ascii]) {
+      for (const raw of bodies) {
+        const body = g.mode === 'ascii' ? raw.replaceAll(' · ', ' - ') : raw;
+        for (let width = 1; width <= 40; width++) {
+          for (const r of wrapBody(body, width, g)) {
+            // a single grapheme cluster wider than the whole terminal is irreducible (`見` is 2 cells at 1 column):
+            // the rule is that the wrap never commits a row it could have split
+            const atomic = [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(r)].length === 1;
+            if (atomic) continue;
+            expect(stringWidth(r), `${g.mode} @${width}: ${JSON.stringify(r)}`).toBeLessThanOrEqual(width);
+          }
+        }
+      }
+    }
   });
 });

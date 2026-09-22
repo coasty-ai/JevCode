@@ -162,7 +162,7 @@ describe('foldIndex (TUI-DESIGN §8.2)', () => {
   });
 
   it('empty input folds to nothing', () => {
-    expect(foldIndex([])).toEqual({ sessions: new Map(), skipped: 0, chat: new Map() });
+    expect(foldIndex([])).toEqual({ sessions: new Map(), skipped: 0, skips: { 'not-json': 0, 'bad-shape': 0, 'over-length': 0, 'unknown-kind': 0 }, chat: new Map() });
   });
 
   it('a run:end whose stopReason is not a StopReason is skipped and counted, never folded into a typed row', () => {
@@ -396,7 +396,7 @@ describe('appendIndexLine / readIndex / reindex (I/O)', () => {
   });
 
   it('readIndex: a missing file is an empty index, a torn last line is skipped, an unreadable file reports error', async () => {
-    expect(await readIndex(join(dir, 'nope.jsonl'))).toEqual({ sessions: [], skipped: 0, chat: new Map() });
+    expect(await readIndex(join(dir, 'nope.jsonl'))).toEqual({ sessions: [], skipped: 0, skips: { 'not-json': 0, 'bad-shape': 0, 'over-length': 0, 'unknown-kind': 0 }, chat: new Map(), bytes: 0, windowed: false });
     const path = join(dir, 'index.jsonl');
     await writeFile(path, `${J(start())}\n${J(end())}\n${J(start({ runId: R2 })).slice(0, 30)}`);
     const idx = await readIndex(path);
@@ -441,7 +441,7 @@ describe('appendIndexLine / readIndex / reindex (I/O)', () => {
     await writeFile(join(runs, runId(5), 'run.json'), '{broken');
     const out = join(dir, 'sessions', 'index.jsonl');
     const res = await reindex(runs, out);
-    expect(res).toEqual({ runs: 3, skipped: 1 });
+    expect(res).toEqual({ runs: 3, skipped: 1, newer: 0 });
     const text = await readFile(out, 'utf8');
     const lines = text.split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(lines.map((l) => [l['kind'], l['runId'] ?? l['sessionId']])).toEqual([
@@ -458,7 +458,7 @@ describe('appendIndexLine / readIndex / reindex (I/O)', () => {
     const folded = await readIndex(out);
     expect(folded.sessions.find((s) => s.sessionId === a)?.title).toBe('tz fixes');
     // a missing runs dir is an empty index
-    expect(await reindex(join(dir, 'missing'), join(dir, 'x.jsonl'))).toEqual({ runs: 0, skipped: 0 });
+    expect(await reindex(join(dir, 'missing'), join(dir, 'x.jsonl'))).toEqual({ runs: 0, skipped: 0, newer: 0 });
     expect(await readFile(join(dir, 'x.jsonl'), 'utf8')).toBe('');
   });
 
@@ -482,7 +482,7 @@ describe('appendIndexLine / readIndex / reindex (I/O)', () => {
     await writeFile(join(d, 'state.json'), serialiseEnvelope(makeState({ runId: id, step: 12, stopReason: 'complete', spend: spend(0.3, 0.02), updatedAt: '2026-09-20T14:30:00.000Z' }), (s) => s));
     const out = join(dir, 'sessions', 'index.jsonl');
     const redact = (s: string): string => s.replace(/sk-or-v1-[a-z0-9]+/g, '[REDACTED:pattern]');
-    expect(await reindex(runs, out, { redact })).toEqual({ runs: 1, skipped: 0 });
+    expect(await reindex(runs, out, { redact })).toEqual({ runs: 1, skipped: 0, newer: 0 });
     const text = await readFile(out, 'utf8');
     expect(text).not.toContain('sk-or-v1-abc');
     const lines = text.split('\n').filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
@@ -547,5 +547,184 @@ describe('property: every redacted index line is ≤ 512 bytes or dropped (A106,
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * TUI-DESIGN-4 §7.6 (P-D6) / §10 (S6 `session/index.test.ts`): one fixture per skip reason → exact counts; a torn
+ * final line; a 200 k-line file with the window → the newest N sessions, **< 100 ms**.
+ *
+ * Measured before the window: `jevcode sessions` over an index containing garbage, NUL bytes and an over-length
+ * line printed `no session in <ws> yet` — identical to a fresh install — and the 51 MB / 200 k-line fold took
+ * **581 ms**, once per session open, on the post-first-frame path.
+ */
+describe('index health and the bounded fold (§7.6)', () => {
+  let dir = '';
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'jevcode-idx-health-'));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('item 1: foldIndex counts skipped lines by reason', async () => {
+    const { indexSkipReason } = await import('../../../src/session/index.js');
+    const good = JSON.stringify(start());
+    const notJson = 'this is not json at all';
+    const torn = '{"v":1,"t":"2026-09-20T14:0';
+    const unknownKind = JSON.stringify({ v: 1, t: T(3), kind: 'wibble', sessionId: S1 });
+    const badShape = JSON.stringify({ v: 1, t: T(4), kind: 'run:start', sessionId: S1 }); // no runId
+    const overLength = JSON.stringify({ v: 1, t: T(5), kind: 'rename', sessionId: S1, title60: 'x'.repeat(INDEX_LINE_MAX_BYTES) });
+    const r = foldIndex([good, notJson, torn, unknownKind, badShape, overLength]);
+    expect(r.skipped).toBe(5);
+    expect(r.skips).toEqual({ 'not-json': 2, 'bad-shape': 1, 'over-length': 1, 'unknown-kind': 1 });
+    expect(r.sessions.size).toBe(1);
+    // the classifier is exported so a fixture can name its own reason
+    expect(indexSkipReason(notJson)).toBe('not-json');
+    expect(indexSkipReason(torn)).toBe('not-json');
+    expect(indexSkipReason(unknownKind)).toBe('unknown-kind');
+    expect(indexSkipReason(badShape)).toBe('bad-shape');
+    expect(indexSkipReason(overLength)).toBe('over-length');
+    // edge 4: a NUL byte inside the line is not JSON, never fatal
+    expect(indexSkipReason('{"v":1,\u0000}')).toBe('not-json');
+  });
+
+  it('item 2 / §12: the two health sentences', async () => {
+    const { indexSkippedNotice, indexTooLargeNotice } = await import('../../../src/session/index.js');
+    expect(indexSkippedNotice(3)).toBe('3 index lines were unreadable and skipped — run jevcode sessions reindex');
+    expect(indexSkippedNotice(1)).toBe('1 index line was unreadable and skipped — run jevcode sessions reindex');
+    expect(indexTooLargeNotice(51 * 1024 * 1024)).toBe('the session index is 51 MB — jevcode sessions prune keeps the recent ones');
+    // never `0 MB`: a file past the 8 MiB threshold always reports at least 1
+    expect(indexTooLargeNotice(9 * 1024 * 1024)).toBe('the session index is 9 MB — jevcode sessions prune keeps the recent ones');
+  });
+
+  it('item 3 + edge 1: the read is the last INDEX_FOLD_MAX_BYTES and never starts mid-line', async () => {
+    const path = join(dir, 'index.jsonl');
+    const lines: string[] = [];
+    for (let i = 1; i <= 40; i++) lines.push(JSON.stringify(start({ t: T(i % 60), sessionId: runId(i), runId: runId(i) })));
+    await writeFile(path, `${lines.join('\n')}\n`);
+    const whole = await readIndex(path);
+    expect(whole.windowed).toBe(false);
+    expect(whole.sessions).toHaveLength(40);
+    // a window that lands in the middle of a line: the partial head line is dropped, never miscounted
+    const size = (await readFile(path, 'utf8')).length;
+    const windowed = await readIndex(path, { maxBytes: Math.floor(size / 2) });
+    expect(windowed.windowed).toBe(true);
+    expect(windowed.bytes).toBe(size);
+    expect(windowed.skipped).toBe(0); // the torn head line was cut off at the newline, not folded as garbage
+    expect(windowed.sessions.length).toBeGreaterThan(0);
+    expect(windowed.sessions.length).toBeLessThan(40);
+  });
+
+  it('edge 2: a line longer than the window is dropped at the newline scan, and a line past the write cap is counted `over-length`', async () => {
+    const path = join(dir, 'index.jsonl');
+    await writeFile(path, `${'x'.repeat(4096)}\n${JSON.stringify(start())}\n`);
+    // the window covers the good last line whole and only the tail of the 4 KiB line, which the scan discards
+    const r = await readIndex(path, { maxBytes: 512 });
+    expect(r.windowed).toBe(true);
+    expect(r.sessions).toHaveLength(1);
+    expect(r.skipped).toBe(0);
+    /**
+     * A window whose head is a torn fragment yields nothing rather than a fragment, and is NOT counted: every
+     * windowed read begins mid-line by construction, so counting that would put a spurious skip on every large
+     * index. The window here still ends on the good line's newline.
+     */
+    const inside = await readIndex(path, { maxBytes: 32 });
+    expect(inside.sessions).toHaveLength(0);
+    expect(inside.skipped).toBe(0);
+    // the same over-length line, folded whole, is counted by reason
+    expect(foldIndex(['x'.repeat(4096)]).skips['over-length']).toBe(1);
+
+    /**
+     * Review finding 14: the window contains NO newline at all — a single line longer than the whole window.
+     * Before the fix `readTail` returned an empty string, the fold saw zero lines, `skipped` stayed 0, and
+     * `jevcode sessions` printed the FRESH-INSTALL sentence over exactly the pathological index the skip
+     * counter exists to expose. §7.6 edge 2: skipped **and counted**.
+     */
+    const onlyLine = join(dir, 'one-huge-line.jsonl');
+    await writeFile(onlyLine, 'x'.repeat(4096));
+    const huge = await readIndex(onlyLine, { maxBytes: 64 });
+    expect(huge.windowed).toBe(true);
+    expect(huge.sessions).toHaveLength(0);
+    expect(huge.skipped).toBe(1);
+    expect(huge.skips['over-length']).toBe(1);
+    // …so the caller offers the repair path instead of the fresh-install sentence
+    const { indexSkippedNotice } = await import('../../../src/session/index.js');
+    expect(indexSkippedNotice(huge.skipped)).toBe('1 index line was unreadable and skipped — run jevcode sessions reindex');
+  });
+
+  /**
+   * TUI-DESIGN-4 §7.6 edge 3: a window holding only `rename`/`budget` lines for a session whose `run:start` is
+   * outside it shows the session with the fields it has, and never crashes.
+   */
+  it('edge 3: a window with only rename/budget lines still shows the session', async () => {
+    const path = join(dir, 'tail-only.jsonl');
+    const id = start().sessionId;
+    const rename = { v: 1, t: '2026-09-22T03:00:00.000Z', kind: 'rename', sessionId: id, title60: 'the renamed one' };
+    const budget = { v: 1, t: '2026-09-22T03:01:00.000Z', kind: 'budget', sessionId: id, runId: null, setting: 'limits.spendCapUsd', from: '2', to: '5' };
+    await writeFile(path, `${JSON.stringify(start())}\n${'#'.repeat(2000)}\n${JSON.stringify(rename)}\n${JSON.stringify(budget)}\n`);
+    // the window covers the rename and the budget lines whole and only the tail of the 2 KiB padding line
+    const r = await readIndex(path, { maxBytes: 400 });
+    expect(r.windowed).toBe(true);
+    expect(r.sessions).toHaveLength(1);
+    expect(r.sessions[0]!.sessionId).toBe(id);
+    expect(r.sessions[0]!.title).toBe('the renamed one');
+  });
+
+  /** TUI-DESIGN-4 §7.6 edge 4: a torn last line from a concurrent `O_APPEND` write is skipped and counted. */
+  it('edge 4: a torn LAST line with the window active is skipped and counted', async () => {
+    const path = join(dir, 'torn.jsonl');
+    await writeFile(path, `${'#'.repeat(2000)}\n${JSON.stringify(start())}\n{"v":1,"t":"2026-09-22T03:0`);
+    const r = await readIndex(path, { maxBytes: 600 });
+    expect(r.windowed).toBe(true);
+    expect(r.sessions).toHaveLength(1);
+    expect(r.skipped).toBe(1);
+    expect(r.skips['not-json']).toBe(1);
+  });
+
+  it('edge 5: an empty or absent index reports nothing', async () => {
+    const path = join(dir, 'index.jsonl');
+    await writeFile(path, '');
+    const r = await readIndex(path);
+    expect(r).toMatchObject({ sessions: [], skipped: 0, bytes: 0, windowed: false });
+    expect(r.skips).toEqual({ 'not-json': 0, 'bad-shape': 0, 'over-length': 0, 'unknown-kind': 0 });
+  });
+
+  it('edge 6 (the gate): 200 000 index lines fold in under 100 ms with the window', async () => {
+    const path = join(dir, 'index.jsonl');
+    const chunk: string[] = [];
+    for (let i = 0; i < 200_000; i++) chunk.push(JSON.stringify(start({ t: T(i % 60), sessionId: runId((i % 500) + 1), runId: runId((i % 500) + 1) })));
+    await writeFile(path, `${chunk.join('\n')}\n`);
+    /**
+     * A wall-clock gate on a shared machine: the BEST of three samples, the convention this repo adopted for the
+     * `parseMarkdown` gates (2026-09-22). A noisy neighbour cannot fail it; the pre-window 581 ms — and any
+     * regression that reads the whole file again — fails every sample. The window itself is asserted separately,
+     * so a fold that silently stopped windowing would fail on `windowed` rather than on the clock.
+     */
+    let r = await readIndex(path);
+    let ms = Number.POSITIVE_INFINITY;
+    for (let i = 0; i < 3; i++) {
+      const t0 = performance.now();
+      r = await readIndex(path);
+      ms = Math.min(ms, performance.now() - t0);
+    }
+    expect(r.windowed).toBe(true);
+    expect(r.sessions.length).toBeGreaterThan(0);
+    expect(r.bytes).toBeGreaterThan(8 * 1024 * 1024);
+    process.stderr.write(`readIndex(200k lines, ${(r.bytes / 1048576).toFixed(1)} MiB): best of 3 = ${ms.toFixed(1)} ms\n`);
+    // the gate: 581 ms at 51 MB before the window
+    expect(ms).toBeLessThan(100);
+  }, 120_000);
+
+  it('§7.9 edge: reindex skips and counts a run written by a newer build', async () => {
+    const runs = join(dir, 'runs');
+    const ok = join(runs, '20260920-140000-aaaaaaaa');
+    const newer = join(runs, '20260920-140100-bbbbbbbb');
+    await mkdir(ok, { recursive: true });
+    await mkdir(newer, { recursive: true });
+    await writeFile(join(ok, 'run.json'), JSON.stringify(makeMeta({ runId: '20260920-140000-aaaaaaaa' })));
+    await writeFile(join(newer, 'run.json'), JSON.stringify({ ...makeMeta({ runId: '20260920-140100-bbbbbbbb' }), v: 99 }));
+    const r = await reindex(runs, join(dir, 'out.jsonl'));
+    expect(r).toEqual({ runs: 1, skipped: 1, newer: 1 });
   });
 });

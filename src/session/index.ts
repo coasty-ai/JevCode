@@ -6,13 +6,13 @@
  * `foldIndex` is pure; `readIndex` / `appendIndexLine` / `reindex` are the only I/O.
  */
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { clip } from '../core/text.js';
 import type { EngineMode, IntakeKind, JevProvider, RunMeta, RunRow, RunSource, SessionRow, StopReason } from '../core/types.js';
 import type { ChatRoute } from '../chat/intake.js';
-import { isRunMeta, parseEnvelope } from '../checkpoint/store.js';
+import { isRunMeta, parseEnvelope, refuseNewerRunMeta } from '../checkpoint/store.js';
 import { exitCodeFor } from '../loop/stop.js';
 import { oneLine } from '../tui/plain.js';
 
@@ -61,7 +61,8 @@ export function text60(s: string, redact: (s: string) => string): string {
 
 /**
  * TUI-DESIGN §8.1: legacy `run.json` reads as `{ sessionId: runId, parentRunId: null, source: 'bench' | 'cli', instructions: [] }`
- * (`isRunMeta` checks v1 fields only, so old files load unchanged).
+ * (`isRunMeta` checks v1 fields only, so *older* files load unchanged; TUI-DESIGN-4 §7.9's `refuseNewerRunMeta`
+ * is what stops a **newer** one loading silently).
  */
 export function sessionFieldsOf(meta: RunMeta): { sessionId: string; parentRunId: string | null; source: RunSource; instructions: RunMeta['instructions'] & object } {
   return {
@@ -168,23 +169,51 @@ interface IndexRecord {
   ms: number;
 }
 
+/**
+ * TUI-DESIGN-4 §7.6 item 1: why a physical line was skipped, so `jevcode sessions` can say
+ * `<n> index lines were unreadable and skipped — run jevcode sessions reindex` instead of printing the
+ * fresh-install sentence over a corrupt index.
+ */
+export type IndexSkipReason = 'not-json' | 'bad-shape' | 'over-length' | 'unknown-kind';
+
+/** TUI-DESIGN-4 §7.6: the per-reason tally `foldIndex` returns beside the total. */
+export type IndexSkips = Readonly<Record<IndexSkipReason, number>>;
+
+export const NO_INDEX_SKIPS: IndexSkips = { 'not-json': 0, 'bad-shape': 0, 'over-length': 0, 'unknown-kind': 0 };
+
 /** Parse one physical line into an IndexLine; null for JSON that is torn, not `v:1`, an unknown kind, or missing its keys. */
 export function parseIndexLine(line: string): IndexLine | null {
-  return parseIndexRecord(line)?.line ?? null;
+  const r = parseIndexRecord(line);
+  return r === null || 'reason' in r ? null : r.line;
 }
 
-function parseIndexRecord(line: string): IndexRecord | null {
+/**
+ * TUI-DESIGN-4 §7.6: classify a line the fold could not use. `over-length` wins over everything (a line past the
+ * write-side cap was never produced by this build), then JSON, then the kind, then the shape.
+ */
+export function indexSkipReason(line: string): IndexSkipReason {
+  if (Buffer.byteLength(line, 'utf8') > INDEX_LINE_MAX_BYTES) return 'over-length';
   const parsed = parseJson(line);
-  if (!parsed.ok || !isJsonObject(parsed.value)) return null;
+  if (!parsed.ok || !isJsonObject(parsed.value)) return 'not-json';
+  const kind = parsed.value['kind'];
+  if (typeof kind !== 'string' || !INDEX_KINDS.includes(kind)) return 'unknown-kind';
+  return 'bad-shape';
+}
+
+function parseIndexRecord(line: string): IndexRecord | { reason: IndexSkipReason } | null {
+  if (Buffer.byteLength(line, 'utf8') > INDEX_LINE_MAX_BYTES) return { reason: 'over-length' };
+  const parsed = parseJson(line);
+  if (!parsed.ok || !isJsonObject(parsed.value)) return { reason: 'not-json' };
   const o = parsed.value;
   const t = o['t'];
-  if (o['v'] !== INDEX_VERSION || typeof t !== 'string' || !hasCanonicalIsoShape(t) || typeof o['kind'] !== 'string' || !INDEX_KINDS.includes(o['kind'])) return null;
+  if (typeof o['kind'] !== 'string' || !INDEX_KINDS.includes(o['kind'])) return { reason: 'unknown-kind' };
+  if (o['v'] !== INDEX_VERSION || typeof t !== 'string' || !hasCanonicalIsoShape(t)) return { reason: 'bad-shape' };
   const stamp = Date.parse(t);
-  if (!Number.isFinite(stamp)) return null;
+  if (!Number.isFinite(stamp)) return { reason: 'bad-shape' };
   const sessionId = o['sessionId'];
-  if (typeof sessionId !== 'string') return null;
+  if (typeof sessionId !== 'string') return { reason: 'bad-shape' };
   const parsedLine = parseIndexBody(o, o['kind'], t, sessionId);
-  return parsedLine === null ? null : { line: parsedLine, ms: stamp };
+  return parsedLine === null ? { reason: 'bad-shape' } : { line: parsedLine, ms: stamp };
 }
 
 function parseIndexBody(o: Readonly<Record<string, unknown>>, kind: string, t: string, sessionId: string): IndexLine | null {
@@ -285,14 +314,17 @@ interface SessionFold {
  * torn, non-`v:1` and unknown lines are skipped and counted. TUI-DESIGN-2 §3.9: `chat` lines add their cost to the
  * session's `totalUsd` and are summed per source in `chat` (what `seedMeterFromIndex` restores on /resume).
  */
-export function foldIndex(lines: readonly string[]): { sessions: Map<string, SessionRow>; skipped: number; chat: Map<string, ChatSpendRow> } {
+export function foldIndex(lines: readonly string[]): { sessions: Map<string, SessionRow>; skipped: number; skips: IndexSkips; chat: Map<string, ChatSpendRow> } {
   const folds = new Map<string, SessionFold>();
   let skipped = 0;
+  // TUI-DESIGN-4 §7.6 item 1: the same skips, counted by reason
+  const skips: Record<IndexSkipReason, number> = { ...NO_INDEX_SKIPS };
   for (const raw of lines) {
     if (raw.length === 0 || raw.trim() === '') continue;
     const rec = parseIndexRecord(raw);
-    if (rec === null) {
+    if (rec === null || 'reason' in rec) {
       skipped++;
+      skips[rec === null ? 'bad-shape' : rec.reason] += 1;
       continue;
     }
     const { line, ms: at } = rec;
@@ -385,7 +417,7 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
     sessions.set(f.row.sessionId, f.row);
     if (f.chat.jev > 0 || f.chat.generator > 0 || f.chat.messages > 0) chat.set(f.row.sessionId, { ...f.chat });
   }
-  return { sessions, skipped, chat };
+  return { sessions, skipped, skips, chat };
 }
 
 /** Split file text into lines, dropping the trailing empty fragment; a torn last line stays and is skipped by the fold. */
@@ -400,21 +432,90 @@ function errnoCode(e: unknown): string | null {
 }
 
 /**
- * TUI-DESIGN §8.2: one `readFile`, then the fold; sessions sorted by `lastUsed` descending. A missing file is an empty
- * index; any other read error (EACCES, EISDIR) is reported in `error` with an empty result — the session works without
- * its history. `chat` (TUI-DESIGN-2 §3.9) is the per-session chat spend the controller seeds its meter from.
+ * TUI-DESIGN-4 §7.6 item 3: the window `readIndex` folds, read **from the end**. The index is append-only and
+ * time-ordered, so its tail is what the picker needs; older history stays on disk and is reachable through
+ * `jevcode sessions reindex`. Measured before the window: a 51 MB / 200 k-line index took **581 ms** to fold,
+ * once per session open, on the post-first-frame path.
  */
-export async function readIndex(path: string): Promise<{ sessions: SessionRow[]; skipped: number; chat: Map<string, ChatSpendRow>; error?: string }> {
-  let text: string;
+export const INDEX_FOLD_MAX_BYTES = 8 * 1024 * 1024;
+
+/** TUI-DESIGN-4 §7.6 item 4: past this size the session emits one `[ui]` notice offering `jevcode sessions prune`. */
+export const INDEX_PRUNE_NOTICE_BYTES = INDEX_FOLD_MAX_BYTES;
+
+/** TUI-DESIGN-4 §7.6 item 4 / §12: `the session index is <n> MB — jevcode sessions prune keeps the recent ones`. */
+export function indexTooLargeNotice(bytes: number): string {
+  return `the session index is ${Math.max(1, Math.round(bytes / (1024 * 1024)))} MB — jevcode sessions prune keeps the recent ones`;
+}
+
+/** TUI-DESIGN-4 §7.6 item 2 / §12: `<n> index lines were unreadable and skipped — run jevcode sessions reindex`. */
+export function indexSkippedNotice(skipped: number): string {
+  return `${skipped} index line${skipped === 1 ? '' : 's'} ${skipped === 1 ? 'was' : 'were'} unreadable and skipped — run jevcode sessions reindex`;
+}
+
+export interface ReadIndexResult {
+  sessions: SessionRow[];
+  skipped: number;
+  /** TUI-DESIGN-4 §7.6 item 1: the same skips by reason */
+  skips: IndexSkips;
+  chat: Map<string, ChatSpendRow>;
+  /** the file's size in bytes (0 when absent or unreadable) */
+  bytes: number;
+  /** TUI-DESIGN-4 §7.6 item 3: true when only the last `INDEX_FOLD_MAX_BYTES` were folded */
+  windowed: boolean;
+  error?: string;
+}
+
+/**
+ * TUI-DESIGN-4 §7.6 edge 1: the last `max` bytes of `path`, starting at the first `\n` inside the window so a tail
+ * read never begins mid-line. Files at or under the window are read whole. Returns the text and whether the read
+ * was windowed.
+ */
+async function readTail(path: string, max: number): Promise<{ text: string; bytes: number; windowed: boolean; truncatedLine: boolean }> {
+  const size = (await stat(path)).size;
+  if (size <= max) return { text: await readFile(path, 'utf8'), bytes: size, windowed: false, truncatedLine: false };
+  const fh = await open(path, 'r');
   try {
-    text = await readFile(path, 'utf8');
-  } catch (e) {
-    if (errnoCode(e) === 'ENOENT') return { sessions: [], skipped: 0, chat: new Map() };
-    return { sessions: [], skipped: 0, chat: new Map(), error: `${errnoCode(e) ?? 'error'}: cannot read ${path}` };
+    const buf = Buffer.allocUnsafe(max);
+    const { bytesRead } = await fh.read(buf, 0, max, size - max);
+    const window = buf.subarray(0, bytesRead);
+    const nl = window.indexOf(0x0a);
+    /**
+     * §7.6 edge 2: no newline anywhere inside the 8 MiB window means a **single line longer than the window**.
+     * The fold can never see it — the text handed on is empty — so `truncatedLine` carries the fact out and
+     * `readIndex` counts it as one `over-length` skip. Without the flag `jevcode sessions` printed the
+     * fresh-install sentence over exactly the pathological index the skip counter exists to expose.
+     */
+    const truncatedLine = nl < 0;
+    const from = truncatedLine ? bytesRead : nl + 1;
+    return { text: window.subarray(from).toString('utf8'), bytes: size, windowed: true, truncatedLine };
+  } finally {
+    await fh.close();
   }
-  const { sessions, skipped, chat } = foldIndex(splitIndexText(text));
-  const rows = [...sessions.values()].sort((a, b) => ms(b.lastUsed) - ms(a.lastUsed));
-  return { sessions: rows, skipped, chat };
+}
+
+/**
+ * TUI-DESIGN §8.2: one bounded read, then the fold; sessions sorted by `lastUsed` descending. A missing file is an
+ * empty index; any other read error (EACCES, EISDIR) is reported in `error` with an empty result — the session works
+ * without its history. `chat` (TUI-DESIGN-2 §3.9) is the per-session chat spend the controller seeds its meter from.
+ *
+ * TUI-DESIGN-4 §7.6: the read is capped at `INDEX_FOLD_MAX_BYTES` **from the end**, and the result carries the file
+ * size, the windowed flag and the per-reason skip tally so the caller can offer `reindex` / `prune`.
+ */
+export async function readIndex(path: string, opts: { maxBytes?: number } = {}): Promise<ReadIndexResult> {
+  const max = opts.maxBytes ?? INDEX_FOLD_MAX_BYTES;
+  let read: { text: string; bytes: number; windowed: boolean; truncatedLine: boolean };
+  try {
+    read = await readTail(path, max);
+  } catch (e) {
+    if (errnoCode(e) === 'ENOENT') return { sessions: [], skipped: 0, skips: NO_INDEX_SKIPS, chat: new Map(), bytes: 0, windowed: false };
+    return { sessions: [], skipped: 0, skips: NO_INDEX_SKIPS, chat: new Map(), bytes: 0, windowed: false, error: `${errnoCode(e) ?? 'error'}: cannot read ${path}` };
+  }
+  const fold = foldIndex(splitIndexText(read.text));
+  // §7.6 edge 2: the line that swallowed the whole window is skipped AND counted
+  const skipped = fold.skipped + (read.truncatedLine ? 1 : 0);
+  const skips: IndexSkips = read.truncatedLine ? { ...fold.skips, 'over-length': fold.skips['over-length'] + 1 } : fold.skips;
+  const rows = [...fold.sessions.values()].sort((a, b) => ms(b.lastUsed) - ms(a.lastUsed));
+  return { sessions: rows, skipped, skips, chat: fold.chat, bytes: read.bytes, windowed: read.windowed };
 }
 
 /** Apply the E13 rule to every free-text field of a line before it is serialised. */
@@ -483,7 +584,7 @@ export interface ReindexOptions {
  * `run:start` with `resumeOf` at its `resumedAt`, so the fold's `RunRow.resumes` matches run.json. Unreadable run dirs
  * are skipped and counted.
  */
-export async function reindex(runsDir: string, out: string, opts: ReindexOptions = {}): Promise<{ runs: number; skipped: number }> {
+export async function reindex(runsDir: string, out: string, opts: ReindexOptions = {}): Promise<{ runs: number; skipped: number; newer: number }> {
   const redact = opts.redact ?? ((s: string): string => s);
   let names: string[];
   try {
@@ -494,12 +595,20 @@ export async function reindex(runsDir: string, out: string, opts: ReindexOptions
   }
   const lines: IndexLine[] = [];
   let skipped = 0;
+  let newer = 0;
   let runs = 0;
   for (const name of names) {
     const dir = join(runsDir, name);
     let meta: RunMeta;
     try {
       const parsed = parseJson(await readFile(join(dir, 'run.json'), 'utf8'));
+      // TUI-DESIGN-4 §7.9 edge: a run written by a newer build is skipped and counted separately — it is not
+      // corrupt, and `jevcode report` must still be able to bundle it.
+      if (parsed.ok && refuseNewerRunMeta(parsed.value, name) !== null) {
+        newer++;
+        skipped++;
+        continue;
+      }
       if (!parsed.ok || !isRunMeta(parsed.value)) {
         skipped++;
         continue;
@@ -567,5 +676,5 @@ export async function reindex(runsDir: string, out: string, opts: ReindexOptions
   const tmp = `${out}.${process.pid}.tmp`;
   await writeFile(tmp, body, { mode: 0o600 });
   await rename(tmp, out);
-  return { runs, skipped };
+  return { runs, skipped, newer };
 }

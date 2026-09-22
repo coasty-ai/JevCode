@@ -3,5 +3,5 @@ expect \x1b\[\?25l
 expect \[run\](?:\x1b\[[0-9;]*m)* start 
 sleep 0.3
 send \x03
-expect end human_abort
+expect finished [·-] human_abort
 eof

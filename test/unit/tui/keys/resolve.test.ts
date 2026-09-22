@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildBindings } from '../../../../src/tui/keys/bindings.js';
 import { CHORD_WINDOW_MS, ESC_REBUFFER_MS, WHY_WINDOW_MS } from '../../../../src/tui/keys/interrupts.js';
-import { DELETE_ARM, REVIEW_PENDING_TOAST, WHY_ARM, initialKeyState, isPrintable, keyString, resolveKey, type KeyAction, type KeyEvent, type KeyFlags, type KeyState } from '../../../../src/tui/keys/resolve.js';
+import { DELETE_ARM, MOUSE_RE, REVIEW_PENDING_TOAST, WHY_ARM, initialKeyState, isPrintable, keyString, resolveKey, type KeyAction, type KeyEvent, type KeyFlags, type KeyState } from '../../../../src/tui/keys/resolve.js';
 
 const FLAGS: KeyFlags = { upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, pageDown: false, pageUp: false, home: false, end: false, return: false, escape: false, ctrl: false, shift: false, tab: false, backspace: false, delete: false, meta: false, super: false, hyper: false };
 
@@ -439,7 +439,7 @@ describe('S5 overlays (TUI-DESIGN §3.3 sub-rows)', () => {
     expect(acts(b, text('x'))).toEqual([]);
     expect(acts(b, paste('q'))).toEqual([]);
   });
-  it('palette: printable filters, ↑↓/Ctrl-P/N/PgUp/PgDn move, Tab accepts, Enter runs (exact match only, decided by the controller), Esc/Ctrl-C/Ctrl-D close', () => {
+  it('palette: printable filters, ↑↓/Ctrl-P/N/PgUp/PgDn move, Tab accepts, Enter is the nav machine\'s `enter` (TUI-DESIGN-4 §4.2 P-P1), Esc/Ctrl-C/Ctrl-D close', () => {
     const p = st({ overlay: 'palette', draftEmpty: false, cursorRow: 'first' });
     expect(acts(p, text('b'))).toEqual([{ type: 'insert', text: 'b' }]);
     expect(acts(p, text('/'))).toEqual([{ type: 'insert', text: '/' }]);
@@ -448,7 +448,8 @@ describe('S5 overlays (TUI-DESIGN §3.3 sub-rows)', () => {
     expect(acts(p, k('pagedown'))).toEqual([{ type: 'palette', op: 'page', by: 1 }]);
     expect(acts(p, k('tab'))).toEqual([{ type: 'palette', op: 'accept' }]);
     expect(acts(p, k('shift+tab'))).toEqual([{ type: 'palette', op: 'move', by: -1 }]);
-    expect(acts(p, k('return'))).toEqual([{ type: 'palette', op: 'run' }]);
+    // TUI-DESIGN-4 §4.2 P-P1: `run` became `enter` — the controller decides between cycling, accepting and running
+    expect(acts(p, k('return'))).toEqual([{ type: 'palette', op: 'enter' }]);
     expect(acts(after(p, k('escape'), 0), ESC_EXPIRED, 31)).toEqual([{ type: 'interrupt', action: 'CLOSE_OVERLAY' }]);
     expect(acts(p, k('ctrl+c'))).toEqual([{ type: 'interrupt', action: 'CLOSE_OVERLAY' }]);
     expect(acts(p, k('ctrl+d'))).toEqual([{ type: 'interrupt', action: 'CLOSE_OVERLAY' }]);
@@ -707,6 +708,57 @@ describe('Esc re-buffer and bracketed paste (TUI-DESIGN §3.3)', () => {
     // under an armed review a pasted `y` after Esc: decline fires, the paste is ignored (a pasted string never matches a key)
     const rev = after(review, k('escape'), 0);
     expect(acts(rev, paste('y'), 10)).toEqual([{ type: 'interrupt', action: 'DECLINE' }]);
+  });
+});
+
+describe('TUI-DESIGN-4 §4.7 E9 / E10 / E13: one-chunk `/m`, mouse reports and the reopen rule', () => {
+  it('E9: a NON-paste chunk that is `/` + up to eight name characters on an empty draft opens the palette with the remainder as the query', () => {
+    // measured: `send /m` arrives as ONE useInput with input === '/m', which matches no key binding, so today the
+    // frame reads `› /m` with no palette at all
+    expect(acts(st(), text('/m'))).toEqual([{ type: 'insert', text: '/m' }, { type: 'openPalette' }]);
+    expect(acts(st(), text('/budget'))).toEqual([{ type: 'insert', text: '/budget' }, { type: 'openPalette' }]);
+    expect(acts(st(), text('/history-'))).toEqual([{ type: 'insert', text: '/history-' }, { type: 'openPalette' }]);
+    // a BRACKETED paste never opens it (pastes are handled first)
+    expect(acts(st(), paste('/m'))).toEqual([{ type: 'paste', text: '/m' }]);
+    // the length and charset bound keeps a burst text: nine name characters, an interior space, a capital, no slash
+    expect(acts(st(), text('/abcdefghi'))).toEqual([{ type: 'paste', text: '/abcdefghi' }]);
+    expect(acts(st(), text('/m x'))).toEqual([{ type: 'paste', text: '/m x' }]);
+    expect(acts(st(), text('/M'))).toEqual([{ type: 'paste', text: '/M' }]);
+    expect(acts(st(), text('//m'))).toEqual([{ type: 'paste', text: '//m' }]);
+    // and only on an EMPTY draft — mid-prompt it is ordinary text
+    expect(acts(st({ draftEmpty: false }), text('/m'))).toEqual([{ type: 'paste', text: '/m' }]);
+    // a bare `/` is round 3's single-character binding, unchanged
+    expect(acts(st(), text('/'))).toEqual([{ type: 'insert', text: '/' }, { type: 'openPalette' }]);
+  });
+  it('E10: an SGR or X10 mouse report from an outer program is dropped in EVERY context, so it can never reach a draft or a query', () => {
+    expect(MOUSE_RE.test('[<64;10;5M')).toBe(true);
+    expect(MOUSE_RE.test('[<0;12;30m')).toBe(true);
+    expect(MOUSE_RE.test('[M !!')).toBe(true);
+    expect(MOUSE_RE.test('[<64;10;5')).toBe(false);
+    expect(MOUSE_RE.test('hello')).toBe(false);
+    for (const s0 of [st(), st({ draftEmpty: false }), st({ overlay: 'palette', draftEmpty: false }), st({ overlay: 'wizard' }), st({ overlay: 'review', reviewArmed: true, run: 'live' }), st({ overlay: 'secret' }), st({ overlay: 'blocking' }), st({ run: 'live' }), st({ minsize: true })]) {
+      expect(acts(s0, text('[<64;10;5M')), JSON.stringify(s0.overlay)).toEqual([{ type: 'filtered', reason: 'mouse-report' }]);
+      expect(acts(s0, text('[M !!')), JSON.stringify(s0.overlay)).toEqual([{ type: 'filtered', reason: 'mouse-report' }]);
+    }
+    // a bracketed paste is the user's content, whatever it looks like
+    expect(acts(st(), paste('[<64;10;5M'))).toEqual([{ type: 'paste', text: '[<64;10;5M' }]);
+  });
+  it('E13: `/` typed at the END of a draft that is exactly a `/token` REOPENS the palette and is NOT inserted; Esc keeps its contract', () => {
+    const closed = st({ draftEmpty: false, draftTokenOnly: true, cursorAtEnd: true });
+    // the draft is left EXACTLY as it stands: a second slash would make it `/mode/`, a token that matches nothing,
+    // so the reopened card would read `no command matches /mode/` — worse than the trap the rule exists to undo
+    expect(acts(closed, text('/'))).toEqual([{ type: 'openPalette' }]);
+    expect(acts(closed, text('/')).some((a) => a.type === 'insert')).toBe(false);
+    // not mid-token (the cursor is elsewhere), not with an argument, and not by default
+    expect(acts(st({ draftEmpty: false, draftTokenOnly: true, cursorAtEnd: false }), text('/'))).toEqual([{ type: 'insert', text: '/' }]);
+    expect(acts(st({ draftEmpty: false, draftTokenOnly: false, cursorAtEnd: true }), text('/'))).toEqual([{ type: 'insert', text: '/' }]);
+    expect(acts(st({ draftEmpty: false }), text('/'))).toEqual([{ type: 'insert', text: '/' }]);
+    expect(initialKeyState('session').draftTokenOnly).toBe(false);
+    // an EMPTY draft still inserts the slash it opens on (round 3's rule, and the first half of `//`)
+    expect(acts(st(), text('/'))).toEqual([{ type: 'insert', text: '/' }, { type: 'openPalette' }]);
+    // …and `//` at column 0 still escapes: the second slash is typed with the CARD OPEN, where `resolvePalette`
+    // sends a printable straight to the buffer and never reaches the `composer:palette` branch
+    expect(acts(st({ overlay: 'palette', draftEmpty: false, draftTokenOnly: true, cursorAtEnd: true }), text('/'))).toEqual([{ type: 'insert', text: '/' }]);
   });
 });
 

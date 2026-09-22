@@ -32,6 +32,10 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { percentile } from '../core/time.js';
+// TUI-DESIGN-4 §3.7 (the R2 guard): the run-frame anchors come from the ONE formatter, glyph-agnostic by
+// construction. A hard-coded `·` silently stops matching in every `--ascii` capture and turns the render-lag
+// window into the whole capture — the exact failure mode A3 recorded as risk R2.
+import { RUN_END_PATTERN, RUN_STARTED_TAIL_PATTERN } from '../tui/plain.js';
 
 export const BSU = '\x1b[?2026h';
 export const ESU = '\x1b[?2026l';
@@ -54,6 +58,29 @@ export function clearReSelfTest(): boolean {
     return r;
   };
   return must.every(hit) && !hit('\x1b[2K') && !hit('\x1b[1A');
+}
+
+/**
+ * TUI-DESIGN-4 §11 (new gate row "no `ESC[3J` ever") / §1.4: `ESC[3J` deletes the user's **scrollback**, which is
+ * theirs, not ours. A clear after a shrink is `ESC[2J ESC[H` and nothing else — Ink's own `clearTerminal`
+ * (`ESC[2J ESC[3J ESC[H`) is exactly what `guardStdout` (§1.4) rewrites.
+ */
+export const NO_3J_RE = /\x1b\[[0-9;]*3J/g;
+
+/** §11: the count of `ESC[3J` sequences in a capture; the gate is **0**, in every capture, at every geometry. */
+export function count3J(s: string): number {
+  return (s.match(NO_3J_RE) ?? []).length;
+}
+
+/** §11: run before the `NO_3J` gate — the regex must match the bare and parameterised forms and nothing adjacent. */
+export function no3JSelfTest(): boolean {
+  const hit = (x: string): boolean => {
+    NO_3J_RE.lastIndex = 0;
+    const r = NO_3J_RE.test(x);
+    NO_3J_RE.lastIndex = 0;
+    return r;
+  };
+  return hit('\x1b[3J') && hit('\x1b[?3J') === false && hit('\x1b[0;3J') && !hit('\x1b[2J') && !hit('\x1b[2K') && !hit('\x1b[3K') && !hit('3J');
 }
 
 /** Number of `CLEAR_RE` matches in `s` (`String.prototype.match` with a global regex ignores and resets `lastIndex`). */
@@ -462,6 +489,26 @@ export function paintedRows(body: string): number | null {
   return null;
 }
 
+/**
+ * TUI-DESIGN-4 §11 (new gate row "no frame taller than the terminal"): every frame whose painted dynamic region
+ * exceeds `rows`, as `{ index, painted }`. The **first frame after a resize** is skipped (`skipAfterResize`): the
+ * driver's two SIGWINCHes land between Ink's measure and its paint, so exactly one settling frame at the old
+ * geometry is expected and is not a defect (§2.0 consequence (d)).
+ *
+ * `limit` is `rows` in the classic renderer; the fullscreen renderer's post-condition is equality, which the
+ * caller checks with `paintedRows(frame) === rows` per frame.
+ */
+export function framesTallerThan(frames: readonly Frame[], rows: number, opts: { from?: number; skip?: readonly number[] } = {}): { index: number; painted: number }[] {
+  const skip = new Set(opts.skip ?? []);
+  const out: { index: number; painted: number }[] = [];
+  for (let i = opts.from ?? 0; i < frames.length; i++) {
+    if (skip.has(i)) continue;
+    const painted = paintedRows(frames[i]!.body);
+    if (painted !== null && painted > rows) out.push({ index: i, painted });
+  }
+  return out;
+}
+
 /** The tallest dynamic region painted by `frames[from..]` (0 when none paints a rule row). */
 export function paintedMax(frames: readonly Frame[], from = 0): number {
   let max = 0;
@@ -579,6 +626,17 @@ export const composerEndsWithKey: KeyFrameMatcher = (frame, key) => composerRow(
 export const paintedRowsChanged: KeyFrameMatcher = (frame, _key, before) => {
   const now = paintedRows(frame.body);
   const was = before === null ? null : paintedRows(before.body);
+  return now !== null && was !== null && now !== was;
+};
+
+/**
+ * TUI-DESIGN-4 §4.2 / §11: the composer's row DIFFERS from the screen the key acted on. The palette's Enter cycle
+ * REPLACES the draft with the selected command (`› /resume +36`), so no row can end with the key itself and
+ * `composerEndsWithKey` never matches — but every press rewrites the row, which is exactly the frame to measure.
+ */
+export const composerRowChanged: KeyFrameMatcher = (frame, _key, before) => {
+  const now = composerRow(frame.body);
+  const was = before === null ? null : composerRow(before.body);
   return now !== null && was !== null && now !== was;
 };
 
@@ -796,12 +854,147 @@ export function toTypistSteps(lines: readonly string[], timeoutMs: number): Typi
   return out;
 }
 
-/** The transcript's end item: `end <reason> steps=…` (any stop reason, `max_replans` included). */
-export const END_PATTERN = 'end [a-z_]+ steps=';
+/**
+ * The transcript's end item: `finished · <reason> · <n> steps` in either glyph set (TUI-DESIGN-4 §3.6 G1 rewrote
+ * `end <reason> steps=…`; §3.7 moves this constant **in the same commit**). Imported, never re-spelt.
+ */
+export const END_PATTERN = RUN_END_PATTERN;
 /** an SGR run between two visible spans — Tcl ARE (drive.exp) and Python bytes regex (the typist) read it alike */
 export const SGR_GAP = '(?:\\x1b\\[[0-9;]*m)*';
-/** TUI-DESIGN-2 §4.5: every transcript label is its own dim span (`ESC[2m[run]ESC[22m start …`), so a sentinel spanning label and text carries a gap */
-export const RUN_STARTED_PATTERN = `\\[run\\]${SGR_GAP} start `;
+/**
+ * TUI-DESIGN-2 §4.5: every transcript label is its own dim span **and so is the text after it** —
+ * `ESC[2m[run]ESC[22m ESC[…mstarted …` — so a sentinel spanning label and text carries **two** gaps, one on each
+ * side of the space, exactly as `test/pty/helpers.ts`'s `labelStep` has always written it.
+ *
+ * MEASURED 2026-09-22 (integrator): with one gap this pattern matched nothing on a real capture, and because it
+ * is the `RUN_STARTED` step of every perf scenario that needs a live run, `composer live`, `composer live-stress`,
+ * `composer review` and the `states` scenarios `fault-pane`, `fault-live`, `resize`, `resize-live` and
+ * `review 12x60` all timed out at exit 124 with `0/200 keys located` — the run they were measuring had started
+ * fine, 20 s earlier. §3.7's G1 migration moved the constant and dropped the second gap with it.
+ */
+export const RUN_STARTED_PATTERN = `\\[run\\]${SGR_GAP} ${SGR_GAP}${RUN_STARTED_TAIL_PATTERN}`;
+
+// ---------------------------------------------------------------------------------------
+// Glyph-agnostic named anchors (TUI-DESIGN-4 §11, D-V ratification)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * TUI-DESIGN-4 §11 / D-V: every window this harness measures is delimited by a **named** anchor, not by a literal
+ * typed into a `.steps` file. Two properties are gated:
+ *
+ *  1. **glyph-agnostic** — the same anchor must match the unicode and the `--ascii` rendering of the same row, so a
+ *     `--ascii` capture measures the same window (`anchorSelfTest` runs both glyph sets);
+ *  2. **zero match is a hard failure** — A3's risk R2 is that a stale anchor silently turns the render-lag window
+ *     into the whole capture and the gate into a lie. `locateAnchor` throws rather than returning -1.
+ *
+ * `src/perf/pty.ts:END_PATTERN` and `:RUN_STARTED_PATTERN` (the two constants D-V moves, §3.7 G1) are registered
+ * here so the self-test covers them; §9.3 W4 adds the rest of §3.7's inventory in the same commit as the rewrite.
+ */
+export interface NamedAnchor {
+  /** the name a scenario or a probe refers to */
+  readonly name: string;
+  /** the pattern, as a source string shared with `drive.exp` (Tcl ARE) and the Python typist */
+  readonly pattern: string;
+  /** rows that must match — one per glyph set (unicode, ascii) */
+  readonly samples: readonly string[];
+  /** rows that must NOT match (the near misses a stale anchor would swallow) */
+  readonly negatives?: readonly string[];
+}
+
+/** TUI-DESIGN-4 §11: the registry. One row per window this harness measures. */
+export const NAMED_ANCHORS: readonly NamedAnchor[] = [
+  {
+    name: 'run-started',
+    pattern: RUN_STARTED_PATTERN,
+    // one sample per glyph set (TUI-DESIGN-4 §11: a two-glyph-set self-test, or `--ascii` measures a different
+    // window) PLUS the byte shape a real frame actually writes — the label is its own dim span and the text after
+    // it opens another, so the space sits BETWEEN two SGR runs. Neither sample below had that shape, which is how
+    // an anchor with one gap passed its own self-test and matched nothing on a capture (measured 2026-09-22).
+    samples: [
+      '[run] started \u00b7 jev+llm \u00b7 fix the failing test',
+      '\x1b[2m[run]\x1b[22m started - jev+llm - fix the failing test',
+      '\x1b[2m[run]\x1b[22m \x1b[2mstarted \u00b7 jev+llm \u00b7 fix the failing test\x1b[22m',
+      '\x1b[2m[run]\x1b[22m \x1b[2mstarted - jev+llm - fix the failing test\x1b[22m',
+    ],
+    negatives: ['[run] ready', '[step 1] started', '[run] start 20260922-000000-aaaaaaaa'],
+  },
+  {
+    name: 'run-end',
+    pattern: END_PATTERN,
+    samples: [
+      '[run] finished \u00b7 complete \u00b7 12 steps \u00b7 4.9s',
+      '\x1b[2m[run]\x1b[22m finished - max_replans - 3 steps - 1.0s',
+      // TUI-DESIGN-4 §3.6 review item 5: an ERRORED run. The error clause is the LAST segment, after `exit <n>`,
+      // precisely so the anchor still matches — an anchor that misses the runs that end badly is the one that
+      // turns a measurement into a crash (`locateAnchor` throws on zero matches).
+      '[run] finished \u00b7 error \u00b7 3 steps \u00b7 1.0s \u00b7 $0.00 (generator $0.00 \u00b7 jev $0.00) \u00b7 exit 5 \u00b7 jev_http: 500 from the decider',
+      '[run] finished - error - 3 steps - 1.0s - $0.00 (generator $0.00 - jev $0.00) - exit 5 - jev_http: 500 from the decider',
+      // the real byte shape: the label's span closes, the text's opens (this anchor never spans the two, but the
+      // sample is here so the registry's shapes and a capture's cannot drift again)
+      '\x1b[2m[run]\x1b[22m \x1b[2mfinished \u00b7 complete \u00b7 12 steps \u00b7 4.9s\x1b[22m',
+    ],
+    negatives: ['[run] finished', '12 steps', '[run] end complete steps=12'],
+  },
+];
+
+/**
+ * TUI-DESIGN-4 §11 (integrator 2026-09-22): the self-test also compiles every pattern the way the **typist**
+ * does — a Python-style BYTES match — because that is the engine that reads a real capture and the one where a
+ * bracket class over a multi-byte glyph silently stops matching. `Buffer` + a `latin1` view is the same test:
+ * a pattern that only matches when the subject is decoded is exactly the defect.
+ */
+export function anchorBytesOk(a: NamedAnchor): boolean {
+  // the `latin1` round trip makes each UTF-8 byte one code unit, so a JS RegExp sees the subject byte-wise —
+  // the same way `re.compile(pattern.encode()).search(bytes)` does in `perf/drivers/pty_type.py`
+  const bytes = (s: string): string => Buffer.from(s, 'utf8').toString('latin1');
+  const re = new RegExp(bytes(a.pattern), 's');
+  return a.samples.every((sample) => re.test(bytes(sample))) && (a.negatives ?? []).every((n) => !re.test(bytes(n)));
+}
+
+/** TUI-DESIGN-4 §11: the anchor with this name, or a throw naming the registry (a typo is never a silent skip). */
+export function namedAnchor(name: string): NamedAnchor {
+  const a = NAMED_ANCHORS.find((x) => x.name === name);
+  if (a === undefined) throw new Error(`unknown perf anchor "${name}"; known: ${NAMED_ANCHORS.map((x) => x.name).join(', ')}`);
+  return a;
+}
+
+/**
+ * TUI-DESIGN-4 §11: the two-glyph-set self-test. Every registered anchor must match **every** sample and **no**
+ * negative; the caller runs this before any gate reads a window, exactly as `clearReSelfTest` is run today.
+ */
+export function anchorSelfTest(): { ok: boolean; failures: string[] } {
+  const failures: string[] = [];
+  for (const a of NAMED_ANCHORS) {
+    let re: RegExp;
+    try {
+      re = new RegExp(a.pattern);
+    } catch (e) {
+      failures.push(`${a.name}: not a regex (${e instanceof Error ? e.message : String(e)})`);
+      continue;
+    }
+    for (const s of a.samples) if (!re.test(s)) failures.push(`${a.name}: no match in sample ${JSON.stringify(s)}`);
+    for (const s of a.negatives ?? []) if (re.test(s)) failures.push(`${a.name}: matched the negative ${JSON.stringify(s)}`);
+    // …and the same patterns compiled BYTE-wise, the way the typist reads a real capture (integrator 2026-09-22)
+    if (!anchorBytesOk(a)) failures.push(`${a.name}: the pattern does not hold byte-wise — a multi-byte glyph inside a bracket class is one byte to \`perf/drivers/pty_type.py\``);
+  }
+  return { ok: failures.length === 0, failures };
+}
+
+/**
+ * TUI-DESIGN-4 §11: the offset of a named anchor in a capture. **Zero matches is a hard failure** — the window
+ * would otherwise silently become the whole capture (A3 risk R2). `occurrence` is 1-based.
+ */
+export function locateAnchor(capture: string, name: string, occurrence = 1): number {
+  const a = namedAnchor(name);
+  const re = new RegExp(a.pattern, 'g');
+  let seen = 0;
+  for (let m = re.exec(capture); m !== null; m = re.exec(capture)) {
+    seen += 1;
+    if (seen === occurrence) return m.index;
+  }
+  throw new Error(`perf anchor "${name}" (/${a.pattern}/) matched ${seen} time(s) in the capture; occurrence ${occurrence} is required — the measured window would be wrong`);
+}
+
 /** the console's top edge with a badge or a card's title edge (`╭─ <title>`, TUI-DESIGN-2 §4.3 / §4.7): the title's colour span is skipped */
 export function topEdgePattern(title: string): string {
   return `╭─ ${SGR_GAP}${title}`;

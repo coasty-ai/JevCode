@@ -65,10 +65,12 @@ export const ANSI_COLORS: readonly AnsiColor[] = [
  * `border` / `borderFocus` (the box glyphs / the status word), `code` (the fence rows) and `sweep` (splash motion only).
  * TUI-DESIGN-3 §2.1 adds `accent2` — the secondary pink: the wordmark caption's `◆`, the palette / mention `▌` on the
  * selected row, the middle step of the run-end edge fade (decoration only, no marker).
+ * TUI-DESIGN-4 §6.2 (D-Z) adds the four diff roles — `added` / `removed` / `hunk` / `diffMeta` — every one of which has its
+ * sign already in the row's text (`+`, `-`, `@@`, `···`), so `NO_COLOR` / `--no-color` / `TERM=dumb` lose nothing.
  */
-export type ColorRole = 'error' | 'warn' | 'ok' | 'block' | 'review' | 'steer' | 'dim' | 'accent' | 'secret' | 'chosen' | 'rule' | 'placeholder' | 'you' | 'assistant' | 'badge' | 'border' | 'borderFocus' | 'code' | 'sweep' | 'accent2';
+export type ColorRole = 'error' | 'warn' | 'ok' | 'block' | 'review' | 'steer' | 'dim' | 'accent' | 'secret' | 'chosen' | 'rule' | 'placeholder' | 'you' | 'assistant' | 'badge' | 'border' | 'borderFocus' | 'code' | 'sweep' | 'accent2' | 'added' | 'removed' | 'hunk' | 'diffMeta';
 
-export const COLOR_ROLES: readonly ColorRole[] = ['error', 'warn', 'ok', 'block', 'review', 'steer', 'dim', 'accent', 'secret', 'chosen', 'rule', 'placeholder', 'you', 'assistant', 'badge', 'border', 'borderFocus', 'code', 'sweep', 'accent2'];
+export const COLOR_ROLES: readonly ColorRole[] = ['error', 'warn', 'ok', 'block', 'review', 'steer', 'dim', 'accent', 'secret', 'chosen', 'rule', 'placeholder', 'you', 'assistant', 'badge', 'border', 'borderFocus', 'code', 'sweep', 'accent2', 'added', 'removed', 'hunk', 'diffMeta'];
 
 /** TUI-DESIGN-2 §4.9: one colour at three depths — the ANSI-16 name always, the 256 index and the truecolor hex when the theme has them. */
 export interface ColorTriple {
@@ -133,6 +135,12 @@ const DARK: Theme = {
     sweep: { color: c('whiteBright', 224, '#fbd0dc'), marker: '' },
     // ----- TUI-DESIGN-3 §2.1
     accent2: { color: PINK_SECONDARY, marker: '' },
+    // ----- TUI-DESIGN-4 §6.2 (D-Z): the diff roles. The sign is in the text, so these reuse the already contrast-checked
+    // meaning colours (`ok`'s green, `error`'s red, the primary pink) rather than introducing a fifth and sixth cube cell.
+    added: { color: c('green', 78, '#4ADE80'), marker: '+' },
+    removed: { color: c('red', 203, '#F87171'), marker: '-' },
+    hunk: { color: PINK_PRIMARY, marker: '@@' },
+    diffMeta: { dimColor: true, marker: '···' },
   },
 };
 
@@ -162,12 +170,17 @@ const LIGHT: Theme = {
     accent2: { color: LIGHT_PINK_SECONDARY, marker: '' },
     sweep: { color: LIGHT_PINK_SECONDARY, marker: '' },
     code: { color: c('black', 234, '#1e1e1e'), marker: '╶' },
+    // §6.2: the light twins darken both diff colours exactly as `ok` / `error` darken (green 1.73:1 and red 2.74:1 on white)
+    added: { color: c('green', 29, '#15803d'), marker: '+' },
+    removed: { color: c('red', 124, '#b91c1c'), marker: '-' },
+    hunk: { color: LIGHT_PINK_PRIMARY, marker: '@@' },
   },
 };
 
 /**
  * TUI-DESIGN §14.1 / TUI-DESIGN-3 §2.3: `dark` with the review/block family moved off red — `error` / `block` blue (pink vs blue is
  * ΔE2000 34.1 for deuteranopes, 20.4 for protanopes), `ok` the freed cyan, `review` amber; `[chosen]` inherits pink (no override).
+ * TUI-DESIGN-4 §6.2: `removed` moves onto the same blue (a red / green diff is the canonical deuteranope failure).
  */
 const DALTONIZED: Theme = {
   name: 'daltonized',
@@ -177,6 +190,8 @@ const DALTONIZED: Theme = {
     block: { color: c('blue', 75, '#60A5FA'), bold: true, marker: '[block]' },
     review: { color: c('yellow', 214, '#FBBF24'), marker: '[review]' },
     ok: { color: c('cyan', 117, '#7DD3FC'), marker: '✓' },
+    // §6.2: `daltonized` swaps `removed` off red onto the same blue `error` takes; `added` keeps green (the `-` / `+` marker carries it either way)
+    removed: { color: c('blue', 75, '#60A5FA'), marker: '-' },
   },
 };
 
@@ -248,7 +263,10 @@ export function textProps(theme: Theme, role: ColorRole, on: ColorOn): { color?:
 export function itemRole(item: Pick<TranscriptItem, 'level' | 'verdict' | 'kind' | 'local' | 'label'> & { readonly text?: string }): ColorRole | null {
   if (item.level === 'error' || item.verdict === 'block') return 'error';
   if (item.level === 'warn' || item.verdict === 'review') return 'warn';
-  if (item.kind === 'workspace' && item.text !== undefined && item.text.startsWith('git ') && !item.text.startsWith('git none')) return 'dim';
+  // TUI-DESIGN-4 §3.6 (G6): the non-repository banner now opens `git · …` (it was `git none · …`); it is a
+  // 90-cell sentence carrying `/diff` guidance and stays at body grade, while the one-line status banner
+  // (`git main · 3 modified`) keeps its dim
+  if (item.kind === 'workspace' && item.text !== undefined && item.text.startsWith('git ') && !item.text.startsWith('git · ') && !item.text.startsWith('git - ') && !item.text.startsWith('git none')) return 'dim';
   return null;
 }
 

@@ -22,6 +22,7 @@ import type {
   CheckpointState,
   ConfigRecordValue,
   ConfigSource,
+  ContextPolicyOptions,
   DeciderConfig,
   EngineMode,
   GeneratorConfig,
@@ -53,6 +54,7 @@ import {
   SESSION_CAP_MULTIPLIER,
   SETTINGS,
   SECRET_SETTINGS,
+  settingProblem,
   TRACE_ENV,
   TRACE_LOG_LEVEL,
   configDirsFor,
@@ -622,6 +624,26 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   const mockedGenerator = mocked || flags.mockGenerator === true;
 
   /** TUI-DESIGN §16: rows that exist only by derivation (`derived`) or as an ignored file value (`ignored:launch`). */
+  /**
+   * TUI-DESIGN-4 §7.5 item 1 (P-D5): every row that carries a value the next run will reject is tagged here, so
+   * `jevcode config` — the command a user reaches for when something is wrong — says so instead of printing the
+   * value as if it were fine. A `default`-sourced row is fine by construction and is never checked; a masked secret
+   * has no string to check. Pure and non-throwing: the record is written into `run.json`.
+   */
+  function withProblems(rows: Record<string, ConfigRecordValue>): Record<string, ConfigRecordValue> {
+    const out: Record<string, ConfigRecordValue> = {};
+    for (const [name, row] of Object.entries(rows)) {
+      const spec = SETTINGS.find((x) => x.name === name);
+      if (spec === undefined || row.source === 'default' || row.source === 'derived' || typeof row.value !== 'string') {
+        out[name] = row;
+        continue;
+      }
+      const problem = settingProblem(spec, row.value);
+      out[name] = problem === null ? row : { ...row, problem };
+    }
+    return out;
+  }
+
   function derivedRows(): Record<string, ConfigRecordValue> {
     const out: Record<string, ConfigRecordValue> = {};
     if (!entries.has('session.spendCapUsd')) {
@@ -684,8 +706,43 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     secretPaths,
     redact: redactor.redact,
     redactJson: redactor.redactJson,
-    record: () => ({ ...maskEntries(entries, secretNames), ...derivedRows() }),
+    record: () => withProblems({ ...maskEntries(entries, secretNames), ...derivedRows() }),
     warnings,
+    // TUI-DESIGN-4 §7.5 item 4: verbatim, in file order — `configTableLines` builds the one warning row
+    unknownFileKeys: configFile?.unknownKeys ?? [],
+    // TUI-DESIGN-4 §8 (the round-4 config rows): docs/COORDINATION-DESIGN.md §8's policy, resolve only.
+    //
+    // WHICH members are present, exactly: the three rows §8 gives a `defaultValue` — `context.mode` (relaxed),
+    // `context.compaction` (code) and `context.compactEvery` (8) — ALWAYS resolve, so `context()` always carries
+    // them and JevCode's config layer is what pins those three. That is deliberate: they are the policy this
+    // product chooses, and `jevcode config` must be able to show and explain them. The other three
+    // (`historySteps`, `fileCacheBytes`, `budgetChars`) have NO default here, so they are absent unless the user
+    // set one and `src/core/limits.ts`'s own defaults stay in force for them.
+    //
+    // A malformed value is reported by `jevcode config` (§7.5) and skipped here rather than thrown, because the
+    // record must never throw.
+    context(): ContextPolicyOptions {
+      const out: { -readonly [K in keyof ContextPolicyOptions]: ContextPolicyOptions[K] } = {};
+      const view = entries.get('context.mode')?.value.trim().toLowerCase();
+      if (view === 'relaxed' || view === 'legacy') out.view = view;
+      const compaction = entries.get('context.compaction')?.value.trim().toLowerCase();
+      if (compaction === 'code' || compaction === 'llm' || compaction === 'off') out.compaction = compaction;
+      const int = (name: SettingName, min: number): number | null => {
+        const raw = entries.get(name)?.value.trim();
+        if (raw === undefined || raw === '') return null;
+        const n = Number(raw);
+        return Number.isInteger(n) && n >= min ? n : null;
+      };
+      const every = int('context.compactEvery', 0);
+      if (every !== null) out.compactEvery = every;
+      const steps = int('context.historySteps', 1);
+      if (steps !== null) out.historySteps = steps;
+      const cache = int('context.fileCacheBytes', 0);
+      if (cache !== null) out.fileCacheBytes = cache;
+      const budget = int('context.budgetChars', 1);
+      if (budget !== null) out.budgetChars = budget;
+      return out;
+    },
     sourcesConsulted: (name) => reader.sources(name),
     // TUI-DESIGN §15 item 17 / §11.1 (D5): non-throwing; the generator key is skipped for jev-only and --mock*, the Jev key for --mock
     // (llm-jev needs both: the generator writes candidates inside the Jev-only search, docs/LLM-JEV-DESIGN.md)

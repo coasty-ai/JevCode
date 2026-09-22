@@ -16,7 +16,7 @@ sleep 0.3
 # F21: the availability error cleared the draft, so ONE Ctrl-C aborts the live run (a kept draft would swallow it — that is the
 # assertion); two in a row would be the double-Ctrl-C exit instead of the abort
 send \x03
-expect end human_abort
+expect finished [·-] human_abort
 expect Follow-up, question
 send /exit
 sleep 0.2

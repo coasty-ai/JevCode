@@ -340,7 +340,8 @@ describe('probeGitState: spawn accounting and classification (§12.1, A140)', ()
     expect(g).toMatchObject({ gitDir: `${base}/.git`, commonDir: `${base}/.git`, topLevel: base, head: null, upstream: null, ahead: null, behind: null });
     expect(g.dirty).toEqual({ modified: 0, staged: 0, untracked: 0, renamed: 0, unmerged: 0, submodules: 0, entries: [] });
     expect(toRunGitMeta(g)).toMatchObject({ repo: false, reason: 'timeout', head: null });
-    expect(gitBannerLine(bannerInput(g)).text).toBe('git none · git status failed or timed out: /undo and /diff use step pre-images only');
+    // §3.7 G6: one clause, and `git none` becomes `git`
+    expect(gitBannerLine(bannerInput(g)).text).toBe('git · git status failed or timed out — /diff <step> compares pre-images');
 
     // Node reports the stdout cap with a string code and `killed` undefined; the partial listing must not read as the whole
     const overflow = (): ExecFileException => {

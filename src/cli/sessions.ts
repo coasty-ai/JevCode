@@ -10,7 +10,7 @@ import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ParsedFlags } from './args.js';
 import { EXIT_CODES } from '../errors.js';
-import { readIndex, reindex, splitIndexText, foldIndex } from '../session/index.js';
+import { INDEX_PRUNE_NOTICE_BYTES, indexSkippedNotice, indexTooLargeNotice, readIndex, reindex, splitIndexText, foldIndex } from '../session/index.js';
 import { lockInUseMessage, readRunLock, releaseRunLock, isPidAlive } from '../session/lock.js';
 import { noSessionMessage, pickerHeader, pickerRows } from '../session/picker-lines.js';
 
@@ -36,16 +36,27 @@ export async function sessionsList(flags: ParsedFlags, io: SessionsIo): Promise<
   const r = await readIndex(io.indexPath);
   if (r.error) io.stderr.write(`jevcode sessions: ${r.error}\n`);
   if (flags.json) {
-    io.stdout.write(`${JSON.stringify({ sessions: r.sessions, skipped: r.skipped }, null, 2)}\n`);
+    io.stdout.write(`${JSON.stringify({ sessions: r.sessions, skipped: r.skipped, skips: r.skips, bytes: r.bytes, windowed: r.windowed }, null, 2)}\n`);
     return EXIT_CODES.ok;
   }
   const columns = typeof io.stdout.columns === 'number' && io.stdout.columns > 0 ? io.stdout.columns : 80;
   const rows = pickerRows(r.sessions, { workspace: io.workspace, widened: true, nowMs: io.now?.() ?? Date.now(), columns, ascii: io.ascii === true });
+  /**
+   * TUI-DESIGN-4 §7.6 item 2: an index full of garbage printed `no session in <ws> yet` — identical to a fresh
+   * install — and never named the repair path. The health rows come first, before the picker rows or the empty
+   * state, so the sentence that explains the emptiness is above it.
+   */
+  const health = (): void => {
+    if (r.skipped > 0) io.stdout.write(`${indexSkippedNotice(r.skipped)}\n`);
+    if (r.bytes > INDEX_PRUNE_NOTICE_BYTES) io.stdout.write(`${indexTooLargeNotice(r.bytes)}\n`);
+  };
   if (rows.length === 0) {
+    health();
     io.stdout.write(`${noSessionMessage(io.workspace)}\n`);
     if (!existsSync(io.indexPath) && (await runDirCount(io.runsDir)) > 0) io.stdout.write("the index is missing but runs exist: run 'jevcode sessions reindex'\n");
     return EXIT_CODES.ok;
   }
+  health();
   io.stdout.write(`${pickerHeader({ workspace: io.workspace, widened: true, columns, ascii: io.ascii === true })}\n${rows.join('\n')}\n`);
   return EXIT_CODES.ok;
 }

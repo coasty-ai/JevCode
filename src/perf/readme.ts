@@ -8,6 +8,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import type { PerfResult } from './main.js';
 import { IDLE_HOLD_MS } from './idle-frames.js';
 import { LAG_MAX_MS, LAG_P95_MS, SPLASH_MS, SPLASH_SETTLE_MS, describeGeometry, type LagGeometry } from './render-lag.js';
+import { NAMED_ANCHORS, anchorSelfTest, no3JSelfTest } from './pty.js';
 
 export interface Row {
   measurement: string;
@@ -128,7 +129,26 @@ export function resultRows(r: PerfResult): Row[] {
     rows.push({ measurement: `Terminal clears after the first frame during the live run (${QUAD})`, result: lagQuad(r, (g) => String(g.clears)), gate: '0', status: pf(all.every((g) => g.clears === 0)) });
     rows.push({ measurement: `Dynamic region, tallest painted (${QUAD})`, result: lagQuad(r, (g) => `${g.regionMax} rows`), gate: '≤ rows − 2', status: pf(all.every((g) => g.regionMax <= g.rows - 2)) });
     rows.push({ measurement: `Cursor hides per frame, max · frames not ending with \`ESC[?25h\` · cursor shown at exit (${QUAD})`, result: lagQuad(r, (g) => `${g.cursorHidesMaxPerFrame} · ${g.cursorFramesWithoutShow} · ${String(g.cursorShownAtEnd)}`), gate: '≤ 1 · 0 · true', status: pf(all.every((g) => g.cursorHidesMaxPerFrame <= 1 && g.cursorFramesWithoutShow === 0 && g.cursorShownAtEnd)) });
+    // TUI-DESIGN-4 §11's two new gate rows, as MEASUREMENTS over every geometry (the self-tests below are the
+    // preconditions: they prove the detectors work, these prove the product does)
+    rows.push({ measurement: `\`ESC[3J\` sequences in the capture (${QUAD}) — the user's scrollback is theirs (TUI-DESIGN-4 §11, §1.4)`, result: lagQuad(r, (g) => String(g.esc3J)), gate: '0, every geometry', status: pf(all.every((g) => g.esc3J === 0)) });
+    rows.push({
+      measurement: `Frames taller than the terminal (${QUAD}) — \`paintedRows ≤ rows\`, every frame after the first (TUI-DESIGN-4 §11)`,
+      result: lagQuad(r, (g) => (g.tallFrames === 0 ? '0' : `${g.tallFrames} (tallest ${g.tallFrameMax} > ${g.rows})`)),
+      gate: '0, every geometry',
+      status: pf(all.every((g) => g.tallFrames === 0)),
+    });
     rows.push({ measurement: '`CLEAR_RE` self-test (matches `ESC[2J`, `ESC[3J`, `ESC c`, `ESC[?1049h`; not `ESC[2K`)', result: String(lag.clearReSelfTest), gate: 'true', status: pf(lag.clearReSelfTest) });
+    // TUI-DESIGN-4 §11 new rows: the two self-tests that must pass before any gate reads a window
+    const no3J = no3JSelfTest();
+    rows.push({ measurement: '`NO_3J` self-test — the `ESC[3J` detector matches the bare and parameterised forms and neither `ESC[2J` nor `ESC[2K`/`ESC[3K` (TUI-DESIGN-4 §11, §1.4: `ESC[3J` deletes the user\'s scrollback)', result: String(no3J), gate: 'true', status: pf(no3J) });
+    const anchors = anchorSelfTest();
+    rows.push({
+      measurement: `Named-anchor self-test — every measured window's anchor matches **both** glyph sets and none of its negatives, and a zero match is a hard failure, never a silent whole-capture window (TUI-DESIGN-4 §11, D-V; ${NAMED_ANCHORS.map((a) => `\`${a.name}\``).join(' · ')})`,
+      result: anchors.ok ? 'ok' : anchors.failures.slice(0, 3).join(' | '),
+      gate: 'every anchor, both glyph sets',
+      status: pf(anchors.ok),
+    });
   }
   const comp = r.composerLatency;
   if (comp) {
@@ -168,6 +188,18 @@ export function resultRows(r: PerfResult): Row[] {
     const cl = st.scenarios.find((s) => s.name === 'ctrl-l');
     if (cl) rows.push({ measurement: `Ctrl+L repaint (3-row draft, pane open, ${cl.rows}×${cl.columns}): visible frame content equals the frame before it, in one BSU/ESU pair`, result: `${String(cl.repaintEqual)} (${cl.repaintFrames} frame)`, gate: 'true', status: pf(cl.repaintEqual === true) });
     for (const s of st.scenarios.filter((x) => !x.pass && !x.name.startsWith('resize') && x.name !== 'ctrl-l')) rows.push({ measurement: `state \`${s.name}\` ${s.rows}×${s.columns}`, result: `exit ${s.exitCode} (want ${s.expectedExit})${s.timedOut ? ' timeout' : ''}; clears ${s.segments.map((g) => `${g.clears}/${g.allowed}`).join(' ')}`, gate: '', status: 'FAIL' });
+  }
+  // TUI-DESIGN-4 §11 / D-S: the fullscreen scroll gate. A refusal is a SKIP with its reason, never a failure —
+  // the row still tells the reader which renderer the machine could run.
+  const sc = r.scrollLatency;
+  if (sc) {
+    if (sc.skipped !== null) {
+      rows.push({ measurement: `Scroll key → frame, fullscreen only (${sc.rows}×${sc.columns}, ${sc.items} items)`, result: `skipped — ${sc.skipped}`, gate: `p95 < ${sc.gateP95Ms} ms, max < ${sc.gateMaxMs} ms`, status: 'skip' });
+    } else {
+      rows.push({ measurement: `Scroll key → frame, p50 / p95 / max (fullscreen, ${sc.latency.samples}/${sc.keys} PgUp/PgDn located, ${sc.rows}×${sc.columns}, ${sc.items} items)`, result: `${ms(sc.latency.p50)} / ${ms(sc.latency.p95)} / ${ms(sc.latency.max)}`, gate: `p95 < ${sc.gateP95Ms} ms, max < ${sc.gateMaxMs} ms`, status: pf(sc.latencyOk) });
+      rows.push({ measurement: 'Bytes in the widest scroll frame · width-change rebuild · frames not exactly `rows` tall (fullscreen post-condition)', result: `${sc.frameBytesMax} B · ${sc.rebuildMs === null ? 'n/a' : `${ms(sc.rebuildMs)}`} · ${sc.offHeightFrames}`, gate: `≤ ${sc.frameBytesGate} B · < ${sc.rebuildGate} ms · 0`, status: pf(sc.frameBytesOk && sc.rebuildOk && sc.offHeightFrames === 0) });
+      rows.push({ measurement: 'Scroll hygiene: clears after the first frame · `ESC[3J` · cursor shown at exit', result: `${sc.clears} · ${sc.esc3J} · ${String(sc.cursorShownAtEnd)}`, gate: '0 · 0 · true', status: pf(sc.clears === 0 && sc.esc3J === 0 && sc.cursorShownAtEnd) });
+    }
   }
   if (r.jevLatency) rows.push({ measurement: 'Jev latency p50 / p95 (live)', result: `${ms(r.jevLatency.p50)} / ${ms(r.jevLatency.p95)}`, gate: 'report', status: '' });
   // HARNESS-NEXT-DESIGN §5 Ring 0, opt-in (`JEVCODE_PERF_ONLY=lane-run,sandbox-spawn`). A run that names one of

@@ -121,7 +121,7 @@ describe('steer / unsteer (§8.6 queue)', () => {
     expect(h.of('steer:withdrawn')).toEqual([]);
     expect(h.events).toHaveLength(before);
     expect(h.engine.status().pendingDirectives).toBe(2);
-    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end /);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] /);
   });
 
   it('a steer during the run is emitted with the step that will consume it, and that step consumes it', async () => {
@@ -161,11 +161,10 @@ describe('pause (§9.1 rule 1: only at the loop top)', () => {
     expect(last.stopReason).toBe('human_pause');
     expect(last.step).toBe(1);
     expect(last.interrupted).toBeNull();
-    // the stop and end lines go through the shared item model like every other stop
-    // contract 1.7 (TUI-DESIGN-4 §3.6, D-V): the `stop: <reason> at step N` row is DELETED — the run:end line
-    // below already carries the reason, and the pair read as a stutter. No sink prints an empty `[run]`.
+    // TUI-DESIGN-4 §3.7 G1 (D-V): the `stop:` line is deleted; `[run] finished` is the one row that says it
+    expect(h.store.transcript.some((l) => l.includes('stop: human_pause'))).toBe(false);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] human_pause [·-] 1 steps [·-] /);
     expect(h.store.transcript.filter((l) => /^\[run\] (?:warn: )?stop: /.test(l))).toEqual([]);
-    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end human_pause steps=1 /);
     expect(h.of('run:end')[0]!.result.stopReason).toBe('human_pause');
   });
 
@@ -348,8 +347,8 @@ describe('finish() in flight reads as finished (§8.6: a steer confirmed to the 
     expect(h.of('steer:withdrawn')).toEqual([]);
     expect(h.of('notice').filter((n) => n.kind === 'ui')).toEqual([]);
     // the transcript ends with the run:end line: no steer or [ui] line after it
-    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end /);
-    expect(h.store.transcript.filter((l) => /steer|late/.test(l))).toEqual(['[step 2] steer queued (1) for step 2: survives the pause']);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] /);
+    expect(h.store.transcript.filter((l) => /steer|late/.test(l))).toEqual(['[step 2] steer queued · step 2 · "survives the pause" · 1 waiting']);
     expect(h.engine.steer('after end')).toEqual({ ok: false, reason: 'finished', queued: 1 });
   });
 

@@ -12,9 +12,10 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import type { ResolvedConfigWithDiagnostics } from '../../../src/config/types.js';
 import { parseCliArgs } from '../../../src/cli/args.js';
-import { ensureWiring, firstFrameTask, loginFlagsFrom, readTask, selectRenderer, versionJson } from '../../../src/cli/main.js';
+import { ensureWiring, firstFrameTask, loginFlagsFrom, readTask, rendererRefusal, rendererRefusalLine, rendererRefusalRows, selectRenderer, versionJson } from '../../../src/cli/main.js';
 import { RESTORE, createRestoreTerminal, processRestoreTerminal, restoreTerminal, setProcessRestore } from '../../../src/tui/terminal.js';
 import { UsageError } from '../../../src/errors.js';
+import { makeController } from './helpers.js';
 import { buildProvider, defaultEngineFactory } from '../../../src/cli/session.js';
 import { VERSION } from '../../../src/version.js';
 import { INK_VERSION, REACT_VERSION } from '../../../src/cli/report.js';
@@ -22,24 +23,90 @@ import { INK_VERSION, REACT_VERSION } from '../../../src/cli/report.js';
 const tty = { stdinIsTTY: true, stdoutIsTTY: true, env: { TERM: 'xterm-256color' } };
 const pipe = { stdinIsTTY: false, stdoutIsTTY: false, env: { TERM: 'xterm-256color' } };
 
+// MINIMAL, MARKED EDIT BY SLOT S2 (TUI-DESIGN-4 §2.8 P-R10): `RendererSelection` gains `reason` — the first clause of
+// the §1 rule that failed, `null` when the renderer is interactive. PROBED: `TERM=dumb jevcode chat` reports
+// `jevcode: missing task text` (exit 2) and the word `TERM` never appears, so the user is told their command is
+// malformed when in fact their terminal was refused. Only the `reason` key is added to these four `toEqual`s; the new
+// describe below is the P-R10 coverage. The rest of the file is untouched.
 describe('selectRenderer (§1 table)', () => {
   it('chat on a TTY → Ink session; run on a TTY → Ink one-shot', () => {
-    expect(selectRenderer({ command: 'chat' }, 'chat', tty)).toEqual({ kind: 'tui', mode: 'session', readline: false, interactive: true });
-    expect(selectRenderer({ command: 'run', task: 'x' }, 'run', tty)).toEqual({ kind: 'tui', mode: 'one-shot', readline: false, interactive: true });
+    expect(selectRenderer({ command: 'chat' }, 'chat', tty)).toEqual({ kind: 'tui', mode: 'session', readline: false, interactive: true, reason: null });
+    expect(selectRenderer({ command: 'run', task: 'x' }, 'run', tty)).toEqual({ kind: 'tui', mode: 'one-shot', readline: false, interactive: true, reason: null });
   });
   it('--plain on a TTY → plain renderer with the readline composer (session for chat, one-shot steering for run)', () => {
-    expect(selectRenderer({ command: 'chat', plain: true }, 'chat', tty)).toEqual({ kind: 'plain', mode: 'session', readline: true, interactive: false });
-    expect(selectRenderer({ command: 'run', plain: true, task: 'x' }, 'run', tty)).toEqual({ kind: 'plain', mode: 'one-shot', readline: true, interactive: false });
+    expect(selectRenderer({ command: 'chat', plain: true }, 'chat', tty)).toEqual({ kind: 'plain', mode: 'session', readline: true, interactive: false, reason: 'flag' });
+    expect(selectRenderer({ command: 'run', plain: true, task: 'x' }, 'run', tty)).toEqual({ kind: 'plain', mode: 'one-shot', readline: true, interactive: false, reason: 'flag' });
   });
   it('a pipe, CI, TERM=dumb and --no-input → plain, no readline, one-shot (C46)', () => {
-    expect(selectRenderer({ command: 'chat' }, 'chat', pipe)).toEqual({ kind: 'plain', mode: 'one-shot', readline: false, interactive: false });
+    expect(selectRenderer({ command: 'chat' }, 'chat', pipe)).toEqual({ kind: 'plain', mode: 'one-shot', readline: false, interactive: false, reason: 'stdin-not-tty' });
     expect(selectRenderer({ command: 'run', task: 'x' }, 'run', { ...tty, env: { CI: '1' } })).toMatchObject({ kind: 'plain', readline: false, interactive: false });
     expect(selectRenderer({ command: 'run', task: 'x' }, 'run', { ...tty, env: { TERM: 'dumb' } })).toMatchObject({ kind: 'plain', readline: false });
-    expect(selectRenderer({ command: 'run', task: 'x', noInput: true }, 'run', tty)).toEqual({ kind: 'plain', mode: 'one-shot', readline: false, interactive: false });
+    expect(selectRenderer({ command: 'run', task: 'x', noInput: true }, 'run', tty)).toEqual({ kind: 'plain', mode: 'one-shot', readline: false, interactive: false, reason: 'flag' });
   });
   it('--json → the NDJSON renderer, non-interactive, one-shot, on a TTY too', () => {
-    expect(selectRenderer({ command: 'run', json: true, task: 'x' }, 'run', tty)).toEqual({ kind: 'json', mode: 'one-shot', readline: false, interactive: false });
-    expect(selectRenderer({ command: 'chat', json: true }, 'chat', pipe)).toEqual({ kind: 'json', mode: 'one-shot', readline: false, interactive: false });
+    expect(selectRenderer({ command: 'run', json: true, task: 'x' }, 'run', tty)).toEqual({ kind: 'json', mode: 'one-shot', readline: false, interactive: false, reason: 'flag' });
+    expect(selectRenderer({ command: 'chat', json: true }, 'chat', pipe)).toEqual({ kind: 'json', mode: 'one-shot', readline: false, interactive: false, reason: 'stdin-not-tty' });
+  });
+});
+
+describe('P-R10: the refusal is named, and `TERM` is one of the names (TUI-DESIGN-4 §2.8)', () => {
+  it('the first failing clause of the §1 rule wins, in the rule\'s own order', () => {
+    expect(rendererRefusal({ command: 'chat' }, tty)).toBeNull();
+    expect(rendererRefusal({ command: 'chat' }, { ...tty, stdinIsTTY: false })).toBe('stdin-not-tty');
+    expect(rendererRefusal({ command: 'chat' }, { ...tty, stdoutIsTTY: false })).toBe('stdout-not-tty');
+    expect(rendererRefusal({ command: 'chat' }, { ...tty, env: { CI: '1' } })).toBe('ci');
+    expect(rendererRefusal({ command: 'chat' }, { ...tty, env: { TERM: 'dumb' } })).toBe('dumb');
+    expect(rendererRefusal({ command: 'chat', plain: true }, tty)).toBe('flag');
+    expect(rendererRefusal({ command: 'chat', json: true }, tty)).toBe('flag');
+    expect(rendererRefusal({ command: 'chat', noInput: true }, tty)).toBe('flag');
+    // a pipe under CI reports the pipe: it is the thing the user can most plausibly change
+    expect(rendererRefusal({ command: 'chat' }, { stdinIsTTY: false, stdoutIsTTY: false, env: { CI: '1', TERM: 'dumb' } })).toBe('stdin-not-tty');
+  });
+
+  it('§12: the `TERM=dumb` sentence and its three ways out, byte for byte', () => {
+    expect(selectRenderer({ command: 'chat' }, 'chat', { ...tty, env: { TERM: 'dumb' } }).reason).toBe('dumb');
+    expect(rendererRefusalRows('dumb', { TERM: 'dumb' })).toEqual([
+      'jevcode: chat needs an interactive terminal; this one reports TERM=dumb, so the plain renderer is used.',
+      "· run 'jevcode chat --plain' for the line renderer",
+      '· or \'jevcode run "<task>"\' for a one-shot run',
+      '· or set a real TERM (e.g. TERM=xterm-256color)',
+    ]);
+    // the word `TERM` appears, which is the whole point of the defect
+    expect(rendererRefusalRows('dumb', { TERM: 'dumb' }).join('\n')).toContain('TERM');
+  });
+
+  /**
+   * The defect P-R10 names is not the sentence: it is that nothing consumed it, so `TERM=dumb jevcode chat`
+   * answered `missing task text`. The controller now takes the ROWS (built by `main.tsx`, the §12 strings) and
+   * raises them instead — for `chat` only, because `run` without a task really IS a missing task.
+   */
+  it('the refusal reaches the usage error: `chat` says why, `run` still says `missing task text`', async () => {
+    const rows = rendererRefusalRows('dumb', { TERM: 'dumb' });
+    const refused = await makeController({ mode: 'one-shot', task: null, options: { rendererRefusalRows: rows } });
+    expect(await refused.controller.run()).toBe(2);
+    const said = refused.stderr.join('');
+    expect(said).toContain('chat needs an interactive terminal');
+    expect(said).toContain('TERM=dumb');
+    expect(said).toContain('set a real TERM');
+    expect(said).not.toContain('missing task text');
+    // `run` (no rows passed) keeps today's sentence
+    const plain = await makeController({ mode: 'one-shot', task: null });
+    expect(await plain.controller.run()).toBe(2);
+    expect(plain.stderr.join('')).toContain('missing task text');
+  });
+
+  it('every other reason gets its own sentence and the two general ways out (no TERM row)', () => {
+    for (const reason of ['ci', 'stdin-not-tty', 'stdout-not-tty', 'flag'] as const) {
+      const rows = rendererRefusalRows(reason, { TERM: 'xterm-256color' });
+      expect(rows, reason).toHaveLength(3);
+      expect(rows[0], reason).toMatch(/^jevcode: chat needs an interactive terminal; .+\.$/);
+      expect(rows.join('\n'), reason).not.toContain('set a real TERM');
+      expect(rendererRefusalLine(reason)).toBe(rows[0]);
+    }
+    expect(rendererRefusalLine('ci')).toContain('CI is set');
+    expect(rendererRefusalLine('stdin-not-tty')).toContain('stdin is not a terminal');
+    expect(rendererRefusalLine('stdout-not-tty')).toContain('stdout is not a terminal');
+    expect(rendererRefusalLine('dumb', { TERM: 'screen' })).toContain('TERM=screen');
   });
 });
 
