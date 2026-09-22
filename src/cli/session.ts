@@ -135,7 +135,7 @@ import { readPostImages, readPreImage } from '../checkpoint/images.js';
 import { INDEX_FILE, appendIndexLine as realAppendIndexLine, readIndex as realReadIndex, sessionFieldsOf, text60, type ChatSpendRow, type IndexLine } from '../session/index.js';
 import { buildSeed, carriedSteers, seedSource, type SeedParent } from '../session/seed.js';
 import { defaultExportPath, exportSession as realExportSession, type ExportRun } from '../session/export.js';
-import { COORDINATION_NOT_OPEN, COORDINATION_OFF_CLAUSE, coordinationAvailability, coordinationEnabledFrom, coordinationOffText, settingReader, type CoordinationOffReason } from '../session/coordination.js';
+import { COORDINATION_IDLE_CLAUSE, COORDINATION_NOT_OPEN, COORDINATION_OFF_CLAUSE, coordinationAvailability, coordinationEnabledFrom, coordinationOffText, settingReader, type CoordinationOffReason } from '../session/coordination.js';
 import { activityView, peerViewOf, selfView, WHO_EMPTY, whoHeader, whoRows } from '../session/peers.js';
 import { ambiguousResumeMessage, noSessionMessage, pickerHeader, pickerRows, recentSessionHint, resolveResumeTarget } from '../session/picker-lines.js';
 // TUI-DESIGN-5 §2.14 (R5-1): the WRITE half. `openSessionLedger` is the only place `src/coordination/**` is loaded,
@@ -3859,7 +3859,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         if (rows === null) {
           // gap 1 / §12.1: `COORDINATION_NOT_OPEN` stays the PREFIX (round5.pty.test.ts pins it), and when the
           // ledger will never open in this configuration the clause says which of the two causes it is
-          block(`who ${glyphs().dot} unknown`, [{ kind: 'note', flush: true, text: coordinationOffText(COORDINATION_NOT_OPEN, coordinationReason()) }]);
+          block(`who ${glyphs().dot} unknown`, [{ kind: 'note', flush: true, text: coordinationReason() === null ? `${COORDINATION_NOT_OPEN} — ${COORDINATION_IDLE_CLAUSE}` : coordinationOffText(COORDINATION_NOT_OPEN, coordinationReason()) }]);
           return;
         }
         // §12.1's SR column (S1–S5): `whoRowText` renders `whoSentence` in the screen-reader set (§14.2 #60)

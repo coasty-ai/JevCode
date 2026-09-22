@@ -120,13 +120,37 @@ every provider key is selectable with search.
 - `jevcode import`'s source is a **positional**, not `--source <id>`: `--source` is already a hidden flag whose
   values are `cli|perf`, and one name cannot mean two things.
 
-### Known gaps in this release (each is named, none is hidden)
+### Closed after the integration pass (the gap-closure and lean finishing passes, 2026-09-22)
 
-- **`jevcode sessions <verb>`'s thirteen new verbs answer `the session ledger is not available in this build`**
-  and exit 2 for a real user: nothing constructs a `SessionsCoordination` in production yet.
-- **`/import`, `/memory`, `/model`'s picker and the agents tab's store** are built and registered but not mounted
-  or driven in the shell; each answers out loud and points at the CLI twin where one works.
-- **`context.kept: jev`** is accepted and printed and does not reach the engine.
+- **The session ledger is live in production.** `openCoordination()` (one function, the shape of `openSessionLedger`) opens the
+  ledger after the first frame, reads `ledger.fold` on mount and after every own write, and closes it on exit; the thirteen
+  `jevcode sessions <verb>` verbs, `/who`, `/peers`, the `peers` status zone and the chat `peers` fact all read the same
+  fold through one handle. A ledger that cannot open degrades to the `unknown` answers; it never takes the session down.
+- **The model picker, the `/import` overlay and the resume card's sub-state are mounted** in the shell: `/model` opens the
+  pane-slot picker (Enter sets the model for the next run only), `/import` opens the overlay (`y` applies exactly the
+  applicable rows and never a secret row), and the card keys route only while the card is open. `--plain` sessions print the
+  numbered one-shot rows for both.
+- **`jevcode doctor [--json]`** — seventeen pass/warn/fail rows with a one-line fix each: Node ≥ 22.12, a key row per provider
+  (fingerprint form only, never bytes), free reachability probes (openrouter.ai/api/v1/key, api.anthropic.com/v1/models, the
+  TypeSafe health endpoint — no priced call), sandbox-exec availability, config file `0600` in a `0700` directory, runs dir
+  writable, terminal capabilities, version. Exit 0 unless a row fails; a key-less machine is all warnings, each naming its variable.
+- **`--extra-env-file <path>` / `JEVCODE_EXTRA_ENV_FILE` / `extraEnvFile`** — an additional `.env` file whose keys are read as a
+  fallback. Replaces an internally named setting that never shipped publicly; the value is a file, and with the row unset no
+  second dotenv is read.
+- **`JEVCODE_JEV` is a bench/perf switch only.** Any product command started with it set refuses before any network with
+  `JEVCODE_JEV is set ("…") — it is a bench/perf fault switch, not a product setting; unset it, or run the bench and perf suites
+  through npm run bench / npm run perf, which set it themselves` (exit 2); `bench` and `perf` are exempt.
+- **`context:warn` renders** — `ctx 87% amber · /compact now` (red past the second threshold), identical in the TUI, `--plain`
+  and `transcript.log`; `context.kept` (`code` | `jev`) now reaches the engine; the `[sandbox]` startup item tells a chosen
+  `--sandbox none` from a genuinely unavailable sandbox; `sessions reindex` prints how many run records were written by a newer
+  JevCode; a missing generator key names the resolved provider's variable; `sessions inbox --json` serialises coordination's
+  `publicMessage` projection (no host key, pid, checksum or HMAC) plus `unverified`.
+
+### Known gap in this release
+
+- **No `AgentSupervisor`**: `/split`, `/agents`, `/agent`, `/land` and `/spawn` answer `<verb> is not available in this
+  build — no agent is running`, the agents tab never appears, and `jevcode agents list` reads a manifest and prints `planned`
+  rows. This is the production state the design intends for this round; the engine's delegation stages are opt-in and off.
 
 ## [0.5.0] — 2026-09-22 (not yet published)
 

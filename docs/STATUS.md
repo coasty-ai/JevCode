@@ -1692,38 +1692,24 @@ went from `2 to import` to `3 to import` with the fix.
    the gate it *will* take is §4.6's **manifest confirm** (D-AM) on the review surface. Both halves are pinned
    in `dispatch.test.ts` so a later round moves it deliberately.
 
-### Not driven by a store in this build — the three honest gaps, named
+### The three gaps, after the integration pass (gap-closure wave wf_b190d4b0-0f3 + lean finishing pass wf_9fa3b9c6-6ab, 2026-09-22)
 
-These are the round's real remaining work. Each is **registered, documented and answers out loud**; none of them
-is silent, and none of them is hidden behind a feature flag.
+1. **CLOSED — `openCoordination()` is in production.** Opened after `renderer.firstFrame()` resolves, one handle shared by the
+   write half (mint, beat, leases) and the read half (`ledger.fold` on mount and after every own write, then the subscription);
+   feeds the thirteen `jevcode sessions` verbs (`src/cli/main.tsx`), `/who`, `/peers`, the `peers` status zone (UiState
+   `fold`/`selfId` + the `peers:fold` action) and the chat `peers` fact; `coordination.enabled=false` or an unwritable home
+   degrade to the `unknown` answers with the §12 sentence; a ledger failure never takes the session down. `/who` and `/peers`
+   agree on one fold (`consider` in `src/session/peers.ts` takes a liveness fallback). Tests: `test/unit/session/peers.test.ts`,
+   `test/unit/cli/sessions.test.ts`, `test/unit/tui/round5-shell-app.test.tsx`, the `r5-who` pty scenario.
+2. **CLOSED — the three surfaces are mounted.** `src/tui/Picker.tsx`'s `models` arm (`/model` opens the pane-slot picker; Enter =
+   next run only, D-AQ/Q18), `src/tui/App.tsx` opens the `import` overlay from `/import`, `PickerState.card` routes the six card
+   ops; `--plain` routes the same producers (`importPlainLines`, `modelsPlainLines`). Tests: `round5-shell-app.test.tsx` (44),
+   `test/unit/tui/import/**`, `test/unit/tui/models/**`, the `r5-model-picker` / `r5-import-overlay` pty scenarios.
+3. **OPEN BY DESIGN — no `AgentSupervisor`** (unchanged from the integration pass; the engine's delegation stages are opt-in and
+   off in 0.6.0).
 
-1. **Nothing constructs a `SessionsCoordination` in production.** `commandSessions` is called from
-   `src/cli/main.tsx` with no `coordination` member, so the thirteen new `jevcode sessions <verb>` verbs answer
-   `jevcode sessions <verb>: the session ledger is not available in this build` and **exit 2** for a real user.
-   Inside a session the same gap makes `/who` answer `who · unknown / the session ledger is not open yet` and
-   `/peers` answer `peers · unknown`. What is missing is one `openCoordination()` — an
-   `await import('../coordination/index.js')` plus `openLedger` and `close`, the same shape as
-   `openSessionLedger` in `src/session/publish.ts`. It is in **no** §9.1 cell, so no slot owned it and the
-   integration pass did not invent an owner; it is the single biggest remaining gap in §2.10. The **write** half
-   is wired and does run: a `--mock` run opens the ledger, mints its claim and beats (the `r5-who` pty scenario's
-   step 0 exercises it, and the beat-file key-byte scan over `$home/coordination` is clean).
-2. **Three surfaces are built and not mounted in the shared React shell.** `src/tui/Picker.tsx` has no `'models'`
-   arm (so `/model` still shows the current and pending model rather than opening the pane-slot picker, and the
-   `r5-model-picker` pty scenario's rule row is missing); `src/tui/App.tsx` never opens the `'import'` overlay
-   (`Overlay.tsx`'s arm, `CAP.import` and `importLines` are all there and unit-tested); and `PickerState.card`
-   for §2.8's resume-card sub-state is absent, so `keys/resolve.ts`'s six `cardOpen`/`cardClose`/`card*` ops and
-   their `bindings.ts` rows are inert. All three are `src/tui/{App,Picker,Console}.tsx` work — R5-4's §9.2
-   shared-shell row — and all three answer honestly meanwhile.
-3. **`AgentSupervisor` does not exist** (§4.0 says so), so `/split`, `/agents`, `/agent`, `/land` and `/spawn`
-   answer `<verb> is not available in this build — no agent is running`, the `'a'` tab and its eight keys never
-   appear, and `jevcode agents list` reads a manifest and prints `planned` rows. This is the **production**
-   state the design intends for this round, not a gap in the round's own work.
-
-Two smaller ones, for completeness: `context.kept: jev` is accepted, printed and validated and cannot reach the
-engine (`ContextPolicyOptions` has no member — request R5-H2); and the ledger **handle** is still seated with the
-identity claim while the heartbeat carries the minted one (request R5-H3 — peers rank by the beat, so nothing
-disagrees today).
-
+The two smaller ones are closed too: `context.kept` reaches the engine (`ContextPolicyOptions.kept`, harness 64f0474 + the
+resolver here), and the ledger handle is seated with the minted claim (`LedgerHandle.reseatClaim`, harness 64f0474).
 ### Hunks owed to the harness session
 
 **No harness-owned file was edited.** `src/loop/**`, `src/synth/**`, `src/coordination/**`, `src/orchestrate/**`,
@@ -1779,3 +1765,43 @@ three of them are not yet driven by a store, and the round says so in the produc
 If the owner wants one thing next it is `openCoordination()` — one function, the same shape as
 `openSessionLedger`, which turns thirteen `jevcode sessions` verbs and two slash commands from an honest refusal
 into the feature §2 designs.
+
+### Owner's pass (0.6.0, the merged tree — what ships)
+
+Merged `main` at `d297b29` (every harness wave of 2026-09-22: contracts 1.5–1.9, R13 context under `llm-jev`, R14 provider tables,
+R5-H1..H3, the warm-plane fix, the LLM loop) into `r5-impl` (`ba5ce7a`; the one code conflict was the two contract header lines,
+kept in order 1.8 then 1.9). Then the gap-closure wave (`652da27`), the lean finishing pass (`1b918f0` — the harness finishing
+audit's items #4–#8, #19–#22, `jevcode doctor`, the hand-offs), the gate run and the 0.6.0 bump (`98ddf44`).
+
+**Gates on the finished tree (2026-09-22 15:47–16:04 PDT, 1-minute load 3.4 → 1.7):**
+
+| gate | result |
+| --- | --- |
+| `npx tsc -p tsconfig.json --noEmit` · `node scripts/no-any.mjs` | clean · ok |
+| `npx vitest run --project unit --maxWorkers=3` | **576 files, 9,994 passed**, 8 skipped, 0 failed (twice: before and after the bump) |
+| `node scripts/gen-docs.mjs --check` | clean |
+| `npm run build` | bundle **3,259,691 B**; first-frame smoke 67–70 ms; `--version` → `jevcode 0.6.0` |
+| `node scripts/check-pack.mjs` | all gates; unpacked **3,496,260 B** against 3,500,000 (3.7 KB of headroom — the harness session's bundle-splitting evaluation is what brings this down), tarball 1,176,628 B, 10 files, 0 dependencies |
+| `env -u CI npx vitest run --project pty` | **96 / 96** (7 files, round 5's included) |
+| `env -u CI sh test/pty/run-smoke.sh` | exit 0, every scenario PASS |
+| `node bin/jevcode.js perf` (sentinel held; load 3.33 → 1.69, so by the suite's own ≤ 2 rule not a release number) | first frame, harness overhead, render lag, static append, idle frames, all composer series but one, 15 of 18 state scenarios pass; **red, all previously known:** composer `palette-arg` 70/200 keys located; `states` review 12×60 / fault-pane / fault-live time out on their anchors; `scroll-latency` (the opt-in fullscreen renderer) p95 48.8 ms vs 16, width rebuild 81 ms vs 50; **new and marginal:** intake mock0 bubble p95 **17.3 ms vs 16** (the mock150 twin passes at 15.2; re-measure quiet before calling it a regression) |
+
+**Live drive of the 0.6.0 build** (`docs/live/tui/round-5/run-live.sh live-round5-owner 24 80 …`, TypeSafe `jev-1.13.0`, the
+`llm-jev` default, `--spend-cap 0.30`; artefacts `live-round5-owner.*`): driver exit **0**, 0 timeouts, 0 clears, **0 key bytes**;
+first frame 110 ms, composer 200 ms, splash settled 555 ms, `hi` → reply 379 ms, task → `[run] started` 256 ms; run 31.2 s:
+pytest **7 / 0 at step 2**, `replan_stop` at step 14, **$0.0071** (generator $0.0014 · jev $0.0057), 1,086 Jev questions;
+`/who`, `/context` and `/jev` answered before and after the run. The first attempt of this drive (and the integration pass's own
+`live-round5-default`) timed out on one scenario line copied from round 4 — `intake {2,}1 message` after the run, when the
+intake row correctly counts **two** submissions (the greeting and the task); the line now reads `intake {2,}\d+ messages?`.
+
+Two observations from the live capture, stated plainly: (1) `/who` in an **idle** session (before its first run) answers
+`who · unknown — the session ledger is not open yet — it opens with your first run; \`jevcode sessions who\` lists the other
+sessions now` — the gap wave's documented residual (an idle TUI has no row to publish, so it opens the ledger with its first run);
+`jevcode sessions who` reads the shared folder from any directory at any time. (2) The `ctx NN%` status cell did not appear in
+this 24×80 live run although the relaxed context was active (the `[ui] compaction: …` row proves it); the same cell renders at
+24×80 under `--mock` (`ctx 2% · 2 files · 8 steps`), so the TUI's width gate is not the cause — whether the engine's live
+`status.context` is populated on the `llm-jev` path is being measured with a `--json=verbose` probe and is recorded below when
+it lands; until then the cell is **not claimed** for live runs.
+
+No pre-existing gate regressed. The `perf` command stays in the shipped surface for 0.6.0 (the harness's fail-fast guard is the
+installed-package answer); the finishing audit's test-hygiene items (#9, #13–#18) were deferred by the user's direction to finish.

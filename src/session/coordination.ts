@@ -63,6 +63,9 @@ export const COORDINATION_OFF_CLAUSE: Readonly<Record<CoordinationOffReason, str
  * §12.1: `<base> — <clause>`. `reason === null` answers the base sentence unchanged, which is what a build
  * with no coordination wiring at all (and every landed test that pins the bare string) still gets.
  */
+/** The clause for a ledger that has no reason to be closed: an idle session opens it with its first run (gap-wave residual — an idle TUI has no row to publish), and the CLI reads the shared folder now. */
+export const COORDINATION_IDLE_CLAUSE = 'it opens with your first run; `jevcode sessions who` lists the other sessions now';
+
 export function coordinationOffText(base: string, reason: CoordinationOffReason | null): string {
   return reason === null ? base : `${base} — ${COORDINATION_OFF_CLAUSE[reason]}`;
 }

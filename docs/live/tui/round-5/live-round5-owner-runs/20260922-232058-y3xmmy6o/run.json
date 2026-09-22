@@ -1,0 +1,417 @@
+{
+  "runId": "20260922-232058-y3xmmy6o",
+  "task": "Fix the failing tests in tests/test_core.py without changing the tests.",
+  "workspace": "/private/tmp/jevcode-r5-ws-8mEKic",
+  "mode": "llm-jev",
+  "config": {
+    "mode": {
+      "value": "llm-jev",
+      "source": "default"
+    },
+    "generator.provider": {
+      "value": "openrouter",
+      "source": "default"
+    },
+    "decider.provider": {
+      "value": "typesafe",
+      "source": "derived"
+    },
+    "generator.model": {
+      "value": "z-ai/glm-5.3-flash",
+      "source": "default"
+    },
+    "generator.apiKey": {
+      "value": {
+        "source": "env",
+        "fingerprint": "fbd87ce1"
+      },
+      "source": "env"
+    },
+    "generator.maxTokens": {
+      "value": "4096",
+      "source": "default"
+    },
+    "decider.baseUrl": {
+      "value": "https://api.typesafe.ai/v1/systemone",
+      "source": "default"
+    },
+    "decider.apiKey": {
+      "value": {
+        "source": "env",
+        "fingerprint": "9219b257"
+      },
+      "source": "env"
+    },
+    "decider.model": {
+      "value": "jev-1.13.0",
+      "source": "default"
+    },
+    "limits.spendCapUsd": {
+      "value": "0.30",
+      "source": "flag"
+    },
+    "limits.maxSteps": {
+      "value": "40",
+      "source": "default"
+    },
+    "limits.maxWall": {
+      "value": "30m",
+      "source": "default"
+    },
+    "limits.maxReplans": {
+      "value": "5",
+      "source": "default"
+    },
+    "limits.completeThreshold": {
+      "value": "0.85",
+      "source": "default"
+    },
+    "limits.impossibleThreshold": {
+      "value": "0.85",
+      "source": "default"
+    },
+    "workspace": {
+      "value": "/tmp/jevcode-r5-ws-8mEKic",
+      "source": "flag"
+    },
+    "runsDir": {
+      "value": "/tmp/jevcode-r5-home-mvq9bU/runs",
+      "source": "env"
+    },
+    "sandbox": {
+      "value": "auto",
+      "source": "default"
+    },
+    "noNetwork": {
+      "value": "false",
+      "source": "default"
+    },
+    "plain": {
+      "value": "false",
+      "source": "default"
+    },
+    "limits.allowUnpriced": {
+      "value": "false",
+      "source": "default"
+    },
+    "context.mode": {
+      "value": "relaxed",
+      "source": "default"
+    },
+    "context.compaction": {
+      "value": "code",
+      "source": "default"
+    },
+    "context.kept": {
+      "value": "code",
+      "source": "default"
+    },
+    "context.compactEvery": {
+      "value": "8",
+      "source": "default"
+    },
+    "ui.theme": {
+      "value": "dark",
+      "source": "default"
+    },
+    "seen.defaultMode": {
+      "value": "llm-jev",
+      "source": "file:/Users/prateekjannu/.config/jevcode/config.json"
+    },
+    "coordination.claims": {
+      "value": "advisory",
+      "source": "default"
+    },
+    "coordination.remoteControl": {
+      "value": "confirm",
+      "source": "default"
+    },
+    "coordination.sync": {
+      "value": "off",
+      "source": "default"
+    },
+    "coordination.syncRuns": {
+      "value": "projection",
+      "source": "default"
+    },
+    "coordination.notify": {
+      "value": "repo",
+      "source": "default"
+    },
+    "coordination.maxChildren": {
+      "value": "3",
+      "source": "default"
+    },
+    "orchestrate.split": {
+      "value": "off",
+      "source": "default"
+    },
+    "orchestrate.maxAgents": {
+      "value": "3",
+      "source": "default"
+    },
+    "orchestrate.maxSplits": {
+      "value": "2",
+      "source": "default"
+    },
+    "orchestrate.splitEvery": {
+      "value": "8",
+      "source": "default"
+    },
+    "orchestrate.preludeMaxFiles": {
+      "value": "8",
+      "source": "default"
+    },
+    "orchestrate.selfContainedFloor": {
+      "value": "0.5",
+      "source": "default"
+    },
+    "orchestrate.reserveFraction": {
+      "value": "0.5",
+      "source": "default"
+    },
+    "orchestrate.maxReserveUsd": {
+      "value": "2.00",
+      "source": "default"
+    },
+    "orchestrate.minAgentUsd": {
+      "value": "0.20",
+      "source": "default"
+    },
+    "orchestrate.agentMaxSteps": {
+      "value": "12",
+      "source": "default"
+    },
+    "orchestrate.agentMaxWall": {
+      "value": "15m",
+      "source": "default"
+    },
+    "orchestrate.agentStallMs": {
+      "value": "10m",
+      "source": "default"
+    },
+    "orchestrate.onStall": {
+      "value": "notify",
+      "source": "default"
+    },
+    "orchestrate.maxKicks": {
+      "value": "1",
+      "source": "default"
+    },
+    "orchestrate.critic": {
+      "value": "tests",
+      "source": "default"
+    },
+    "orchestrate.criticCapUsd": {
+      "value": "0.15",
+      "source": "default"
+    },
+    "orchestrate.criticMaxSteps": {
+      "value": "4",
+      "source": "default"
+    },
+    "orchestrate.criticWriteGlobs": {
+      "value": "test/**,tests/**,spec/**",
+      "source": "default"
+    },
+    "orchestrate.verifyRetries": {
+      "value": "0",
+      "source": "default"
+    },
+    "orchestrate.testGlobs": {
+      "value": "test/**,tests/**,spec/**,**/*_test.*,**/*.test.*,**/test_*.py,**/conftest.py",
+      "source": "default"
+    },
+    "orchestrate.land": {
+      "value": "step",
+      "source": "default"
+    },
+    "orchestrate.agentMode": {
+      "value": "worktree",
+      "source": "default"
+    },
+    "orchestrate.agentInclude": {
+      "value": ".env,.env.*",
+      "source": "default"
+    },
+    "orchestrate.commitIdentity": {
+      "value": "jevcode <jevcode@local>",
+      "source": "default"
+    },
+    "orchestrate.dockCleanExclude": {
+      "value": "node_modules/,.venv/,target/,.gradle/,.tox/,.mypy_cache/",
+      "source": "default"
+    },
+    "orchestrate.dockRetentionDays": {
+      "value": "30",
+      "source": "default"
+    },
+    "orchestrate.notify": {
+      "value": "attention",
+      "source": "default"
+    },
+    "orchestrate.agentWaitCeilingMs": {
+      "value": "30m",
+      "source": "default"
+    },
+    "orchestrate.agentJsonLineBytes": {
+      "value": "65536",
+      "source": "default"
+    },
+    "orchestrate.agentDeltaHz": {
+      "value": "4",
+      "source": "default"
+    },
+    "orchestrate.minFreeBytes": {
+      "value": "2147483648",
+      "source": "default"
+    },
+    "orchestrate.agentMemBytes": {
+      "value": "3221225472",
+      "source": "default"
+    },
+    "import.enabled": {
+      "value": "true",
+      "source": "default"
+    },
+    "import.scope": {
+      "value": "both",
+      "source": "default"
+    },
+    "memory.enabled": {
+      "value": "true",
+      "source": "default"
+    },
+    "ui.title": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.renderer": {
+      "value": "classic",
+      "source": "default"
+    },
+    "ui.fullscreenDump": {
+      "value": "true",
+      "source": "default"
+    },
+    "ui.osc52": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.history": {
+      "value": "true",
+      "source": "default"
+    },
+    "ui.noInput": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.trustWorkspace": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.budgetWarnings": {
+      "value": "true",
+      "source": "default"
+    },
+    "ui.allowSecretMention": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.exitCode": {
+      "value": "zero",
+      "source": "default"
+    },
+    "log.level": {
+      "value": "info",
+      "source": "default"
+    },
+    "update.notify": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.fps": {
+      "value": "30",
+      "source": "default"
+    },
+    "ui.renderMode": {
+      "value": "standard",
+      "source": "default"
+    },
+    "ui.screenReader": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.ascii": {
+      "value": "false",
+      "source": "default"
+    },
+    "ui.noColor": {
+      "value": "false",
+      "source": "default"
+    },
+    "configFile": {
+      "value": "/Users/prateekjannu/.config/jevcode/config.json",
+      "source": "default"
+    },
+    "extraEnvFile": {
+      "value": "/tmp/jevcode-r5-home-mvq9bU/no-extra-env",
+      "source": "env"
+    },
+    "session.spendCapUsd": {
+      "value": "1.5",
+      "source": "derived"
+    },
+    "decider.providerSource": {
+      "value": "auto:typesafe-key",
+      "source": "derived"
+    }
+  },
+  "versions": {
+    "jevcode": "0.6.0",
+    "node": "v22.23.2"
+  },
+  "createdAt": "2026-09-22T23:20:58.298Z",
+  "overrides": [],
+  "resumes": [],
+  "resolvedJevModel": "jev-1.13.0",
+  "jevModelDrift": null,
+  "sessionId": "20260922-232058-y3xmmy6o",
+  "parentRunId": null,
+  "source": "cli",
+  "git": {
+    "repo": true,
+    "head": {
+      "kind": "branch",
+      "name": "main",
+      "oid": "0d2a1f7d15a4706e61b4282e3d0ad12a79bf7580"
+    },
+    "upstream": null,
+    "linkedWorktree": false,
+    "prefix": "",
+    "ahead": null,
+    "behind": null,
+    "dirtyAtStart": {
+      "modified": 0,
+      "staged": 0,
+      "untracked": 1092,
+      "unmerged": 0
+    },
+    "end": {
+      "head": {
+        "kind": "branch",
+        "name": "main",
+        "oid": "0d2a1f7d15a4706e61b4282e3d0ad12a79bf7580"
+      },
+      "upstream": null,
+      "ahead": null,
+      "behind": null,
+      "dirty": {
+        "modified": 1,
+        "staged": 0,
+        "untracked": 1092
+      }
+    }
+  },
+  "instructions": []
+}

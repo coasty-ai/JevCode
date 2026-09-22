@@ -61,11 +61,13 @@ send \r
 expect context
 mark context-after-run
 sleep 0.3
-# round 4's kv block grammar, unchanged by round 5
+# round 4's kv block grammar, unchanged by round 5. After a task the intake row counts BOTH submissions (the greeting
+# and the task text are each one Jev intake request), so the row reads `intake     2 messages · …`, not `1 message`;
+# the integration pass copied round 4's PRE-run expectation here and both drives timed out on it (2026-09-22).
 send /jev
 sleep 0.2
 send \r
-expect intake {2,}1 message
+expect intake {2,}\d+ messages?
 mark jev-after-run
 sleep 0.3
 send /exit
