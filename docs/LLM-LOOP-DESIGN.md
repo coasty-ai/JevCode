@@ -372,7 +372,7 @@ default is already running — R9 is the only one in this wave.
 | id | ask today | becomes | code fallback (and its named test) | deadline | consumer | cost of a dropped or wrong answer |
 |---|---|---|---|---|---|---|
 | **RL1** | Q7 intent, `stages/intent.ts:195` | order route | `INTENT_FALLBACK = 'investigate'`, or `codeIntent(lastProposal.kind)` when a previous step exists — `test/unit/loop/router.test.ts` › *intent falls back to investigate when the decider throws* | 250 ms | the prompt's intent section only | one sentence of one prompt |
-| **RL2** | Q2–Q6 context, `stages/context.ts:94` | order route over the code pre-filter | today's pre-filter order; traceback frames and changed files are always members — › *context keeps the traceback frame when the decider throws* | 400 ms | `contextFiles`, the prompt's file section | a worse file order in one prompt |
+| **RL2** *(built in the finishing pass, §7.5b — not in slot B)* | Q2–Q6 context, `stages/context.ts` | order route over the code pre-filter | today's pre-filter order; traceback frames and changed files are always members — › *context keeps the traceback frame when the decider throws* | 400 ms | `contextFiles`, the prompt's file section | a worse file order in one prompt |
 | **RL3** | risk, `stages/risk.ts:688` / `:741` | **NOT a router — a code-first gate with Jev as a verifier** (§2.4) | `dangerousCommand()` (new, `src/jev/danger.ts`) decides `review`; `codeRiskReason()` (`risk.ts:364`) decides `allow`; Jev's Scores may only **escalate** — › *risk yields the code verdict with `jevUnavailable` when the decider throws* | — | execution | the code verdict stands, `riskSource: 'code'` recorded |
 | **RL4** | judge Q19/Q21, `stages/judge.ts:226`, `:261` | **recorded-only** (adopting `llm-jev`'s rule) | the code comparison of parsed failing counts — › *judge outcome is the parsed counts when the decider throws* | 400 ms | the plan note | none: a wrong Noul is data |
 | **RL5** | completion Q22, built `stages/complete.ts:16`, **decided `engine.ts:4514`** | **recorded-only on evidence-bearing steps** (§2.5) | `isCompleteByFact()` (`complete.ts:243`) over the harness's own current, passing run — › *completion is the engine's own run when the decider throws* | — | the stop rule | none |
@@ -383,6 +383,32 @@ default is already running — R9 is the only one in this wave.
 | **RS4** | `deps.rank`, `search/subgoal.ts:864` **and `:1617`** (C2: *not* `:848`/`:1575`) | order route | enumeration order (`llmJobPrior`) — › *rank falls to enumeration order when the decider throws* | 600 ms | top-k | **never fires inside a fast-path round** (SIEVE only) |
 | **RS5** | Q15/Q16 arbitration, `search/guard.ts:1039`, `:1078` | **NOT a router** — awaited | already escape-bearing; bounded by `FASTPATH_JEV_MAX` inside a round | — | which passer | quality only |
 | **R9** | *(new)* the bounded sieve round | **branch route, code-decided — no Jev question is added** | the LLM proposes through `proposeWithContext`, exactly as today | n/a (§4.3 budget) | the step's proposal | at worst one round's wall, charged to the step |
+
+**RL2's deadline is the one number in that column measured on a DIFFERENT batch** (finishing-pass review,
+defect A7). `ROUTER_DEADLINE_MS = 400` is justified by "Jev p50 237 ms / p95 547 ms" (§1.3), a figure for the
+loop's asks **in general** — and every one of those is a single Choice or a handful of Nouls. RL2 sends the
+largest batch on the loop: one Noul per candidate, up to `CONTEXT_MAX_CANDIDATES` = **300**
+(`buildContextQuestions`). Nothing in this document or in the diff measures a 300-Noul batch, and the site
+passes no `dispatch`, so clause 1's overlap does not apply either: the step simply waits up to 400 ms and then
+discards. If that batch is routinely slower than the deadline, `jev-on-next` does not gain a route at RL2 — it
+**loses Jev context selection** and runs `selectCandidatesCode` on every step, which is a worse arm, not a
+faster one.
+
+Sizing the constant needs a measurement against a real Jev, and it is **open**. What the finishing pass could
+do offline is remove the word "silently": `RouteResult.drop` now rides the ledger row and reaches
+`StepRecord.router.rows[].drop` (`'deadline' | 'error' | 'aborted' | 'committed' | 'empty' | 'work_settled'`).
+Before that every non-application was one undifferentiated `dropped: true`, and an arm that had quietly given
+up on Jev context selection looked exactly like an arm Jev was down for. **So the measurement §8 needs is now a
+read of the first `jev-on-next` run's own `steps.jsonl`, not a new experiment:**
+
+- `drop: 'deadline'` on most RL2 rows ⇒ the deadline is the binding constraint; resize
+  `RL2_CONTEXT_DEADLINE_MS` from the observed batch latency and record the new figure in this table;
+- `drop: 'error'` ⇒ Jev was unavailable, and I1 did its job;
+- no `drop` ⇒ the answer was applied and 400 ms is right.
+
+**Until that read, the arm's RL2 column is unvalidated and must be reported as such.** Passing `dispatch` is
+*not* the alternative it looks like: RL2's dispatched unit is the whole selection, so the local file reads would
+settle in milliseconds and `work_settled` would drop Jev's answer even more often than the deadline does.
 
 **Deferred, with reasons.** R3 `prewarm_first` (the warm plane is off, I8). R4 `same_situation` (the exact-digest
 cache in `src/jev/cache.ts` already landed). R5 compaction `keep_<i>` (compaction is code-only). R7 (needs the M8
@@ -682,7 +708,11 @@ Choosing `'jev-only'` is the design, not thrift (I6): on the ten OOS QuixBugs pr
 
 The call is `synthesizer.synthesize(sctx)` — the whole-step callable — **not** a re-entry at `searchSubGoal`
 (§1.5). The engine already builds the required `SynthesisContext` at `engine.ts:3078` (`synthesisContext(draft,
-contextFiles)`); `generate` and `reportVerify` are optional and omitted.
+contextFiles)`); `generate` is optional and omitted (the fast path's synthesizer is `jev-only` and has no LLM
+source). `reportVerify` is **installed in every mode** as of the finishing pass (F04): gating the recording
+channel together with the LLM channel made `JEVCODE_WARM=on --mode jev-only` a silent no-op, and it is also the
+hop §3.4's S2 figures take on the jev-on propose path. It costs nothing when nobody calls it — `StepRecord.verify`
+is written only when something was reported (or in llm-jev, where the synthesizer proposed).
 
 ### 4.3 The trigger predicate — two stages, structural, no task names
 
@@ -972,9 +1002,17 @@ export interface StepRouter {
   dropped: number;
   /** I3: MUST be 0 */
   waitMs: number;
-  rows: readonly { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean }[];
+  /** `drop` (the finishing pass, review defect A7) is WHY the route did not apply; ABSENT on an applied row */
+  rows: readonly { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean; drop?: RouteDrop }[];
 }
 ```
+
+`RouteDrop` is `'deadline' | 'error' | 'aborted' | 'committed' | 'empty' | 'work_settled' | 'off'` — the union
+`routeSpeculative` already returned and the ledger already threw away. Recording it is what makes §2.2's open
+RL2 question answerable from a run directory rather than from a new experiment: `dropped: true` alone cannot
+distinguish "this site's deadline is too short for this site's batch" (resize the constant) from "Jev was down"
+(I1 did its job), and the two call for opposite actions. It changes nothing with the routers off, where
+`record.router` is absent entirely.
 
 `FastPathReason` is a **string union**, not a free string, so the decline histogram of §8 is exhaustive:
 `'off' | 'not_jev_on' | 'no_synthesizer' | 'no_parsed_run' | 'scope_unusable' | 'all_passing' | 'workspace_changed' |
@@ -1279,6 +1317,40 @@ wiring: every path from the engine's `finally` to `settle`'s `clearHedgeTimer` i
 branch calls `st.served.add(k)` before any), and a `setTimeout` cannot interleave with a microtask chain. The
 guard is therefore a structural fix for a real engine-side hole rather than a fix for an observed run.
 
+#### 7.5b RL2, as built (the finishing pass, F27)
+
+Slot B's list above names `context.ts` among the six conversions, and its allow-list bullet names the
+`context.ts` row among the five to delete. **Neither happened**: the six conversions landed as five, the context
+stage kept its inline `await ctx.ask('context', …)` and its allow-list row, and so **I1 was not true end to
+end** — with `routers: 'on'` a Jev 503 at the context stage still rejected the stage and ended a
+`jev-on-next` run, which is precisely the failure the wave exists to remove (the head-to-head lost
+`sympy-17139`, `django-15128` and `django-15315` to exactly this shape).
+
+As built now:
+
+- the ask is a `routeSpeculative<CandidateView[]>` with `id: 'RL2'`, `RL2_CONTEXT_DEADLINE_MS` (400 ms), the
+  step signal, the §2.6 step token and the §7.5a per-call signal; its drop is folded into the step's ledger
+  through `noteStepRoute` → `commitStepRouters`, so a dropped context ask is a `StepRecord.router` row and not
+  an error;
+- **the code order is `selectCandidatesCode(views)`** — the pre-filter order with the files this run TOUCHED
+  first, under the same 12-file / 60 KB caps. It is *not* `selectCandidates(views, new Map())`: with no answers
+  every probability defaults to 0, below the 0.5 threshold, so the "code selection" would be the empty
+  selection — Jev withholding every candidate by being unreachable, the exact shape I1 forbids. Touched-first is
+  what makes §2.2's "traceback frames and changed files are always members" true when the 12-file cap bites;
+- **the ANSWERED path is unchanged**: when Jev answers inside the deadline the selection is still
+  `p >= 0.5` descending under the caps, byte for byte what the inline ask produced. RL2 changes what happens
+  when Jev does *not* answer, and nothing else;
+- with the routers **off** the stage is the pre-1.9 stage: one `if`, false — no token is minted, no key is
+  opened (I2's half of the switch, pinned in `test/unit/loop/router.test.ts`);
+- `scripts/jev-contract.mjs`'s `src/loop/stages/context.ts` row is **deleted** and the site carries the
+  four-clause block of §2.3 (the ratchet is two-sided, so the row could not merely be left behind).
+
+**Open against RL2 (review defect A7): its 400 ms deadline is measured on a different batch.** RL2 sends the
+loop's LARGEST ask — one Noul per candidate, up to 300 — against a figure derived from the loop's asks in
+general, so it may be an off switch rather than a deadline. The reason for each drop is now recorded on the
+row (`StepRecord.router.rows[].drop`), so the first `jev-on-next` run answers the question from its own
+`steps.jsonl`; see §2.2 for the reading rule and for why `dispatch` is not the alternative it looks like.
+
 ### 7.6 Slot A — the S2 generator path
 
 **Files (exclusive):** `src/provider/sse.ts`, `src/provider/types.ts`, `src/provider/http.ts`,
@@ -1291,6 +1363,105 @@ only), `src/core/limits.ts` (additive), `src/core/types.ts` (the `StepVerifySumm
 the change is stated and the golden re-captured with a reason** (§3.3); a budget-refusal test proving a hedge is
 declined when the budget cannot hold one more estimated-full-cost sample; cancelled-leg cost still reaching
 `generator.jsonl`.
+
+#### 7.6a S2 on the `jev-on` propose path, as built (the finishing pass, F25)
+
+Slot A built all four S2 mechanisms **inside `src/synth/llm/source.ts`**, which `jev-on` never enters. So the
+`jev-on-next` arm recorded `mechanisms.s2: true` while, on its own propose call: `PromptInput.prefixOrder` was
+never set (§3.3 off), `onFirstByte` was forwarded only on the synthesizer's sample path (§3.1 unmeasured — and
+therefore §3.2's threshold had no input), and the hedge and the provider-order rotation belonged to the round
+(§3.2 off). The §8.3 S2 row was structurally empty for every jev-on arm, not because nothing happened but
+because nothing was wired.
+
+As built now:
+
+- **the switch** is `s2Mode(mode, env)` in `src/synth/llm/hedge.ts` — `jev-on` only and **default off**
+  (§0.3's rule for a new mechanism), armed by `JEVCODE_S2=on`. `'partial'` is the honest middle: the §3.1 /
+  §3.3 / §3.4 measurement half on and the §3.2 hedge off because `JEVCODE_HEDGE=off` said so, so a hedge
+  counter of 0 in a record means "switched off" rather than "nothing was slow enough".
+  **Because the default is off, `router-golden.test.ts` was NOT re-captured** and every `view: 'legacy'` prompt
+  golden is untouched: an S2-off `jev-on` run is the pre-1.9 run, byte for byte.
+- **§3.3** `Engine.promptInput()` sets `prefixOrder: 'pinned'` under the switch. The head — task, then the repo
+  map — repeats verbatim across steps whose changed-file lists differ, which is the property the test asserts.
+- **§3.1** the propose call forwards `onFirstByte`; the readings feed `Engine.p50TtfbMs()` (with the
+  synthesizer's own `LLM_DEADLINE_ADAPT.minSamples` floor, review defect 8) and this step's
+  `StepRecord.verify.ttfbMs`. Bounded at `TTFB_READINGS_MAX`.
+- **§3.2** `hedgedCall` (`src/synth/llm/hedge.ts`) races the one call: the origin goes out at once, and if it
+  has produced no first byte for `hedgeAfterMs(p50)` one twin follows it on the **rotated** upstream order,
+  under the twin's own sample index (`HEDGE_TWIN_OFFSET`, which `hedgeOriginOf` reads back). The first result
+  wins, the loser is aborted and **booked** through the same estimator the synthesizer's loser uses
+  (`recordUnfinishedSample`), so both legs reach `generator.jsonl`: a hedge is faster, never free. A leg that
+  REJECTS while the other is live is not the call's answer, so a hedged call is never less reliable than an
+  unhedged one.
+- **§3.4** the provider's `cacheReadTokens` / `cacheWriteTokens` are summed per step onto
+  `StepRecord.verify.cacheRead` / `cacheWrite`. `src/bench/step-records.ts` already folds all five members off
+  `steps.jsonl` into `StepsSummary.s2`, so the §8.3 row needed no bench change.
+- **`EngineStatus.mechanisms: { s2, routers, fastPath }`** (optional, additive) is the engine's own answer about
+  what it resolved, as against `ConditionConfig.mechanisms`, which records what an arm intended.
+
+**What the shared helper is, exactly.** `src/synth/llm/hedge.ts` owns the DECISION half of §3.2 / §3.4 — the
+threshold, the twin index, the rotation, the reasoning-cap composition, the switch — and `source.ts` imports and
+re-exports every one of them unchanged (its behaviour is byte-identical; `test/unit/synth/llm/hedge.test.ts`,
+`source.test.ts`, `cache-and-reasoning-cap.test.ts` and `test/unit/provider/provider-order.test.ts` are the
+pin). What is **not** shared is the round's scheduling: the dollar hold, `samplesLeft`, the heartbeat row and
+the arrival ledger have no meaning for a single call, and moving them would have been a rewrite of the round
+rather than an extraction.
+
+#### 7.6b The finishing pass's own review (defects A1–A3, A5, A8–A10, and F25's first gap closed)
+
+Ten defects came back against 7.6a. Nine are fixed here; the tenth (A7) is §2.2's RL2 deadline, above.
+
+- **A1 — a hedged call was LESS reliable than an unhedged one, in the commonest drain order.** `hedgedCall`
+  filtered its live legs on "has this leg settled" rather than on "is this the leg whose event I just
+  consumed". `Promise.race` hands back one event per turn, so a twin that resolved in the same microtask drain
+  as the origin's rejection was settled and unobserved when the origin's rejection was taken: the filter
+  dropped it, `live` emptied, and the origin's error was thrown over a result already in hand. Two legs of one
+  request against one upstream settling together is not a corner case. Legs are now identified by `sample` and
+  leave the race only when observed. `test/unit/synth/llm/hedged-call.test.ts` drives the review's probe.
+- **A2 — a twin win leaked `hedgeAfterMs` (3–8 s) into `harnessMs`.** Only the winner's provider-reported
+  `latencyMs` reached `draft.timing.generatorMs`, and a twin's own latency starts at the hedge threshold, so
+  the origin's whole silent wait fell into no named bucket and the commit's residual formula charged it all to
+  harness overhead — the metric the 50 ms p95 budget is read against. `generateProposal` now books the RACE's
+  wall, exactly as `noteSampleEnd` books a round's batch wall.
+- **A3 — a WINNING twin wrote a row `hedgeOriginOf` could not read back, and the step reported itself
+  cancelled.** The success row's spread never consulted `leg.sample`, so only the LOSER carried an index and
+  only the loser was counted: a jev-on step that SUCCEEDED recorded `samples: 1, cancelled: 1`, and because
+  `src/bench/step-records.ts` sums those off any row with a `verify` object, a `jev-on-next` arm with S2 on
+  reported a 100 % cancellation rate on an arm with no synthesizer at all. The winner carries its index now,
+  and `pushGeneratorRecord` takes a `counts` argument: **the `verify.samples` / `timeouts` / `cancelled` /
+  `malformed` tallies are the SYNTHESIZER's round, and a one-shot §3.2 leg is not a member of one.** The legs
+  are recorded where they belong, in `hedges` / `hedgeWins`.
+- **A5 / F25's first gap, closed.** `EngineOptions.s2?: 'on' | 'off'` exists, `s2Enabled` reads it **before**
+  `JEVCODE_S2` (the polarity §7.5a inverted the other two to), `buildEngineOptions` writes it from
+  `armMechanisms(condition).s2`, and `MECHANISM_ENV_VARS` gains `JEVCODE_S2` **and** `JEVCODE_HEDGE`. Both
+  halves of the gap were live: the arm ran with S2 off while its row said `true`, and an exported
+  `JEVCODE_S2=on` armed the whole §3 path on the plain `jev-on` CONTROL arm (`engineModeOf('jev-on')` passes
+  `s2Mode`'s mode gate) while that row said `false`. `JEVCODE_HEDGE` rides along because it is the half-switch
+  that turns a pinned `'on'` into `'partial'`.
+- **A8 — `EngineStatus.mechanisms` was unconditional.** It contradicted its own type doc and added a member to
+  every `--json=verbose` status line in every mode, including every control arm. It is a conditional spread now,
+  in the same shape as the adjacent `coordination` triple: **absent means all three resolved off.**
+- **F25's `state` sub-part.** `CheckpointState.mechanisms` carries the same projection under the same rule, so
+  an ARCHIVED run directory can be checked against `summary.json.conditions[arm].mechanisms` without re-running
+  it. One `mechanismsMember()` feeds both.
+- **A9 — `addStepTimingToRun`'s contract was overclaimed.** `RunResult.timing` is the sum of the committed
+  `steps.jsonl` rows **plus the wall of any attempt §9.1 rule 1 discarded** — a discarded attempt writes no
+  `StepRecord`, so `absorbDiscardedTiming` adds its buckets to the run directly and the run is legitimately
+  larger. That was already true of `decomposeMs` / `generatorMs`; F13 made it true of four more. Comments only.
+- **A10 — the two timing builders named different optional sets.** `llmJevTiming` omitted `fastPathMs` /
+  `fastPathJevMs` while `absorbDiscardedTiming` reads them for both branches, so a discarded llm-jev attempt
+  could contribute fast-path wall a committed one could not (unreachable only because `resolveFastPathOption`
+  forces `'off'` outside `jev-on`). There is one builder now, `optionalStepTiming`, and `RUN_TIMING_BUCKETS` is
+  its pair; a test asserts they agree.
+
+**One gap remains, and it is a DECISION rather than an omission.** The §3.4 reasoning cap has no `jev-on`
+consumer: the loop's propose request carries no `reasoning` parameter, `EngineOptions.generation` is
+`{temperature, maxTokens}` and nothing composes a cap onto nothing. `reasoningCapTokens` never RAISES what was
+not asked for, so the composition rule is correct and inert here. Giving it a consumer means sending
+`reasoning: {maxTokens}` where none was sent — turning reasoning on with a budget for a model that may not have
+been reasoning at all. That is a new mechanism under §0.3 (default off, its own arm, its own measurement), not
+a wiring fix, and the finishing pass does not add one. `mechanisms.s2` does not lie about it: §3.4's other half
+(the `cacheRead` / `cacheWrite` accounting) is wired and measured.
 
 ### 7.7 The cross-cutting gate: Ring 1 under `--jev off`
 

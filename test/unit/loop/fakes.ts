@@ -734,7 +734,7 @@ export interface HarnessOptions {
    */
   probeGitState?: GitState | GitProbe;
   /** contract 1.1 wave 2 options spread over EngineOptions (seed, session, humanDirective, blocker, instructions, …) */
-  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'memory' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing' | 'orchestration' | 'splitPolicy' | 'coordination' | 'fastPath' | 'routers'>> & {
+  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'memory' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing' | 'orchestration' | 'splitPolicy' | 'coordination' | 'fastPath' | 'routers' | 's2'>> & {
     /** docs/COORDINATION-DESIGN.md §12.0.1 (`EngineOptionsWithContextPolicy` until core/types.ts gains the member) */
     contextPolicy?: ContextPolicyOptions;
   };

@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CONDITIONS } from '../../../src/cli/args.js';
 import { resolveFastPathOption } from '../../../src/loop/engine.js';
+import { s2Mode } from '../../../src/synth/llm/hedge.js';
 import { CONDITION_ORDER, MECHANISM_ENV_VARS, armMechanisms, buildEngineOptions, conditionConfig, engineModeOf, isNextArm, parseConditions, pinMechanismEnv, pinnedGeneration, requiresSerialBench, usesSynthesizer, usesTunedProvider } from '../../../src/bench/conditions.js';
 import { computeSuiteMetrics } from '../../../src/bench/metrics.js';
 import { evaluateAcceptRule, evaluatePredictions, FASTPATH_REASONS, FRESH_18, measurementRows, recorded, RECORDED_BUILD } from '../../../src/bench/next-arms.js';
@@ -71,9 +72,9 @@ describe('the jev-on-next arms (§8.1)', () => {
     process.env['JEVCODE_FASTPATH'] = 'auto';
     try {
       // the env says 'auto' for every arm; the arm's own row is what lands
-      expect(buildEngineOptions({ ...input, condition: 'jev-on' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'off', routers: 'off' });
-      expect(buildEngineOptions({ ...input, condition: 'jev-on-next' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'auto', routers: 'on' });
-      expect(buildEngineOptions({ ...input, condition: 'jev-on-next-nofast' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'off', routers: 'on' });
+      expect(buildEngineOptions({ ...input, condition: 'jev-on' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'off', routers: 'off', s2: 'off' });
+      expect(buildEngineOptions({ ...input, condition: 'jev-on-next' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'auto', routers: 'on', s2: 'on' });
+      expect(buildEngineOptions({ ...input, condition: 'jev-on-next-nofast' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'off', routers: 'on', s2: 'on' });
     } finally {
       if (prev === undefined) delete process.env['JEVCODE_FASTPATH'];
       else process.env['JEVCODE_FASTPATH'] = prev;
@@ -94,14 +95,18 @@ describe('the jev-on-next arms (§8.1)', () => {
    * resolver's new polarity.
    */
   it('clears the mechanism env switches, and the PINNED option beats an env that survives anyway', () => {
-    expect([...MECHANISM_ENV_VARS]).toEqual(['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS']);
-    const env: Record<string, string | undefined> = { JEVCODE_FASTPATH: 'auto', JEVCODE_ROUTERS: 'on', JEVCODE_WARM: 'off' };
+    expect([...MECHANISM_ENV_VARS]).toEqual(['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS', 'JEVCODE_S2', 'JEVCODE_HEDGE']);
+    const env: Record<string, string | undefined> = { JEVCODE_FASTPATH: 'auto', JEVCODE_ROUTERS: 'on', JEVCODE_S2: 'on', JEVCODE_HEDGE: 'off', JEVCODE_WARM: 'off' };
     expect(pinMechanismEnv(env)).toEqual([
       { name: 'JEVCODE_FASTPATH', was: 'auto' },
       { name: 'JEVCODE_ROUTERS', was: 'on' },
+      { name: 'JEVCODE_S2', was: 'on' },
+      { name: 'JEVCODE_HEDGE', was: 'off' },
     ]);
     expect('JEVCODE_FASTPATH' in env).toBe(false);
     expect('JEVCODE_ROUTERS' in env).toBe(false);
+    expect('JEVCODE_S2' in env).toBe(false);
+    expect('JEVCODE_HEDGE' in env).toBe(false);
     // only these two: JEVCODE_WARM is the documented escape every arm of the recorded runs was taken under
     expect(env['JEVCODE_WARM']).toBe('off');
     expect(pinMechanismEnv(env)).toEqual([]);
@@ -125,6 +130,38 @@ describe('the jev-on-next arms (§8.1)', () => {
     } finally {
       if (saved === undefined) delete process.env['JEVCODE_FASTPATH'];
       else process.env['JEVCODE_FASTPATH'] = saved;
+    }
+  });
+
+  /**
+   * F25's HEADLINE claim, and review defect **A5**. Every S2 mechanism was built and reachable, but behind
+   * `JEVCODE_S2=on`, which nothing in `src/bench` set: `armMechanisms('jev-on-next')` returned `s2: true` while
+   * `buildEngineOptions` wrote no `s2` option, so the arm ran with S2 OFF and its `summary.json` said `true`.
+   * The converse half was live contamination: `JEVCODE_S2` was in nobody's `MECHANISM_ENV_VARS`, so an exported
+   * `JEVCODE_S2=on` armed the whole generation path on the plain `jev-on` CONTROL arm and on
+   * `jev-on-next-nofast` while both rows recorded `s2: false`.
+   *
+   * The pin is end to end: the arm's row, the option it writes, and what the ENGINE's own resolver makes of that
+   * option against a hostile environment.
+   */
+  it("jev-on-next really runs S2 and jev-on really does not, whatever JEVCODE_S2 says (F25 headline / A5)", () => {
+    const opts = baseOptions('/r', '/o');
+    const input = { task: 't', workspace: '/w', provider: { model: 'm' }, decider: {}, meter: {} } as unknown as Parameters<typeof buildEngineOptions>[0];
+    const saved = process.env['JEVCODE_S2'];
+    try {
+      for (const hostile of ['on', 'off'] as const) {
+        process.env['JEVCODE_S2'] = hostile;
+        for (const arm of CONDITION_ORDER) {
+          const built = buildEngineOptions({ ...input, condition: arm }, opts);
+          const want = armMechanisms(arm).s2;
+          expect(built.s2).toBe(want ? 'on' : 'off');
+          // the engine's own resolver, with the hostile env still set: the arm's row is what runs
+          expect(s2Mode(engineModeOf(arm), built.s2) !== 'off').toBe(want && engineModeOf(arm) === 'jev-on');
+        }
+      }
+    } finally {
+      if (saved === undefined) delete process.env['JEVCODE_S2'];
+      else process.env['JEVCODE_S2'] = saved;
     }
   });
 
