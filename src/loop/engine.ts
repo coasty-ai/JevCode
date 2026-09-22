@@ -136,6 +136,7 @@ import { buildHistoryEntry, foldHistoryRecord, foldableCount, needsOutputFile, o
 import { AGENT_MEM_BYTES, MIN_FREE_BYTES, ORCHESTRATION_DEPTH_MAX } from '../core/limits.js';
 import { CONTEXT_BUDGET_MIN_CHARS, FILE_CACHE_MAX_ENTRIES, HISTORY_MID, HISTORY_SHARE, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, OUTPUT_READ_PREFIX, resolveContextPolicy, type ResolvedContextPolicy } from './context/limits.js';
 import { computeContextUsage, contextWarnCrossed, restoredContextUsage } from './context/meter.js';
+import { synthContextText } from './context/synth-view.js';
 import type { ContextReadHooks, ContextSummary } from './context/types.js';
 import { acquireRunLock, releaseRunLock } from '../session/lock.js';
 import { seedNoticeText } from '../session/seed.js';
@@ -150,7 +151,7 @@ import { runGit } from '../workspace/git.js';
 import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
-import { buildSplitMessage, buildSystemPrompt, memoryIndexChars, splitToolsFor, PROPOSE_SPLIT_TOOL_NAME, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput, type PromptMemoryBuild } from '../provider/prompts.js';
+import { buildPrompt, buildSplitMessage, buildSystemPrompt, memoryIndexChars, splitToolsFor, PROPOSE_SPLIT_TOOL_NAME, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput, type PromptMemoryBuild } from '../provider/prompts.js';
 // contract 1.6 (IMPORT-DESIGN §2.10.4, §7.5 row 42): the per-step rule/topic matcher
 import { selectMemory } from './context/memory.js';
 // contract 1.5 (§3.4 rule 9): a COUNT of secret hits, never a value
@@ -759,12 +760,16 @@ class EngineImpl implements Engine {
   private contextUsage: ContextUsage;
   private readonly contextPolicy: ResolvedContextPolicy;
   /**
-   * §8.8 / review D5: only the modes whose generator prompt CONSUMES the relaxed view pay for it. `jev-only` never builds
-   * a generator prompt; `llm-jev` needs §8.8's third column (`SynthesisContext.contextText`), which is a core-contract
-   * addition — until it exists the bookkeeping would be dead weight (outputs/, a summary, a compaction) with a meter
-   * stuck at 0 %.
-   * TODO(§8.8 column 3, contract 1.4): when `SynthesisContext.contextText?: string` lands, add 'llm-jev' here and feed
-   * `contextView()` into `synthesisContext()`; nothing else in this file changes.
+   * §8.8 / review D5: only the modes whose prompt CONSUMES the relaxed view pay for it. `jev-only` never prompts a
+   * generator at all, so it still builds nothing — no view, no `outputs/`, no summary, no `status.context`.
+   *
+   * `llm-jev` joins the generator modes here (TUI-DESIGN-5 §8.2 R13). §8.8's third column landed as
+   * `SynthesisContext.contextText`, so the view is no longer dead weight with a meter stuck at 0 %:
+   * `synthContextText()` assembles it once per step and the candidate source puts it in every `propose_fix` sample.
+   * D5's "until it exists" is the condition that changed; the accounting did not. The cost llm-jev now pays is the
+   * generator modes' cost — one `outputs/step-<n>.txt` per step with a non-empty output, under the per-run **64 MiB**
+   * output bound that evicts the oldest past it (§8.5 / review D12, `CheckpointStore.writeOutput`), a
+   * `context/summary.json` once a compaction runs, and the `history` / `fileCache` / `fileMemory` checkpoint additions.
    */
   private readonly contextEnabled: boolean;
   private readonly filesInView: FilesInView;
@@ -1176,7 +1181,7 @@ class EngineImpl implements Engine {
         ...(init.opts.generatorPricing?.inputPerM !== undefined ? { inputPerM: init.opts.generatorPricing.inputPerM } : {}),
       },
     );
-    this.contextEnabled = this.contextPolicy.view === 'relaxed' && (this.mode === 'jev-on' || this.mode === 'jev-off');
+    this.contextEnabled = this.contextPolicy.view === 'relaxed' && (this.mode === 'jev-on' || this.mode === 'jev-off' || this.mode === 'llm-jev');
     this.filesInView = new FilesInView(workspaceFilesInViewDeps(this.workspace), () => this.clock());
     // review finding 28 / D5: under `view: 'legacy'`, and in the modes that never read it, none of §8 exists
     if (this.contextEnabled) {
@@ -2103,7 +2108,7 @@ class EngineImpl implements Engine {
 
   /**
    * contract 1.4 (COORDINATION-DESIGN §8.5, §8.6): `/compact now` — fold the history into the rolling summary at once,
-   * outside the 85 % / every-8-steps triggers. A no-op when this run builds no relaxed context (`jev-only`, `llm-jev`,
+   * outside the 85 % / every-8-steps triggers. A no-op when this run builds no relaxed context (`jev-only`,
    * `view: 'legacy'`, `compaction: 'off'`), when there is nothing foldable, or once finish() began; `context:compacted`
    * reports what it did, exactly as an automatic compaction does.
    */
@@ -3196,7 +3201,7 @@ class EngineImpl implements Engine {
     return adapter;
   }
 
-  private synthesisContext(draft: StepDraft, contextFiles: readonly FileView[]): SynthesisContext {
+  private synthesisContext(draft: StepDraft, contextFiles: readonly FileView[], contextText?: string): SynthesisContext {
     const self = this;
     const decider: Decider = {
       model: this.opts.decider.model,
@@ -3211,6 +3216,10 @@ class EngineImpl implements Engine {
       window: this.window,
       intent: draft.intent?.intent ?? INTENT_FALLBACK,
       contextFiles,
+      // contract 1.4 (COORDINATION-DESIGN §8.8 column 3): the relaxed view for a synthesizer that prompts the
+      // generator itself. ABSENT — not empty — when this run builds none (`jev-only`, `view: 'legacy'`), so the
+      // synthesizer's own prompt is byte-identical to what it built before this landed.
+      ...(contextText === undefined || contextText.length === 0 ? {} : { contextText }),
       workspace: this.workspace,
       workspaceInfo: this.wsInfo,
       sandbox: this.sandbox,
@@ -4008,7 +4017,9 @@ class EngineImpl implements Engine {
             this.flushGeneratorRecords(draft);
           } else {
             if (llmJev) draft.proposer = 'synth';
-            const sctx = this.synthesisContext(draft, contextFiles);
+            // contract 1.4 (§8.8 column 3): llm-jev's synthesizer prompts the generator itself, so it gets the
+            // relaxed view as text; jev-only builds none (`contextEnabled` is false) and this is `undefined`.
+            const sctx = this.synthesisContext(draft, contextFiles, await this.synthContextText(draft, changedFiles));
             const s0 = this.clock();
             const jev0 = draft.timing.jevMs;
             const jevWall0 = draft.timing.jevWallMs;
@@ -4813,6 +4824,27 @@ class EngineImpl implements Engine {
     const t0 = this.clock();
     const prompt: PromptInput = { ...base, context: await this.contextView(draft.step) };
     return runProposeStage(ctx, this.systemPrompt, prompt, { onPrompt: (built) => this.notePromptBuilt(built, draft.step, t0) });
+  }
+
+  /**
+   * contract 1.4 (§8.8 column 3, §12.0.3) / TUI-DESIGN-5 §8.2 R13: `SynthesisContext.contextText` for the llm-jev
+   * synth propose stage — the same three beats as `proposeWithContext()` above, in the same order: build the view
+   * (`contextView(step)`, which is also where a pending resume compaction fires), build the message with the SAME
+   * `buildPrompt`, then `notePromptBuilt` — so `ContextUsage` is recomputed here exactly as it is on the jev-on path,
+   * a `context:warn` crossing is emitted from the one place that emits it, and the 85 % trigger the step's commit
+   * reads sees this step's real percentage. §12.0.3 names this cadence point: "in `jev-only` / `llm-jev` after
+   * `SynthesisContext.contextText` is assembled".
+   *
+   * Undefined — and NOTHING built, so not a byte of §8 weight — whenever this run has no relaxed view: `jev-only`
+   * (no generator) and `view: 'legacy'` both leave `contextEnabled` false and the synthesizer prompts as it did.
+   */
+  private async synthContextText(draft: StepDraft, changedFiles: string[]): Promise<string | undefined> {
+    if (!this.contextEnabled) return undefined;
+    const t0 = this.clock();
+    const base = this.promptInput(draft, changedFiles, [], null);
+    const built = buildPrompt({ ...base, context: await this.contextView(draft.step) });
+    this.notePromptBuilt(built, draft.step, t0);
+    return synthContextText(built.text);
   }
 
   /** The rolling summary, read from the run dir once per process (a resume starts with `summaryAt` but no text). */
