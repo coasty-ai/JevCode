@@ -3096,7 +3096,8 @@ export function App(p: AppProps): React.JSX.Element {
   const overlayTop = layout.rule + layout.live + layout.banner + layout.pane + layout.queue;
   const header = useMemo(() => (mode === 'session' ? sessionHeaderItem(p.cwd ?? process.cwd()) : headerItem(p.task, p.resumeId)), [mode, p.cwd, p.task, p.resumeId]);
   const spinner = useSpinner(spinnerActive(state), reducedMotion);
-  const statusOpts: StatusLineOptions = { ascii: glyphs.mode === 'ascii', reducedMotion, spinnerFrame: spinner, mode, flatBadge: !boxed };
+  // TUI-DESIGN-5 §3.1 / §2.2: the `ctx` and `peers` gates are TERMINAL columns; the boxed row is laid out at the inner width
+  const statusOpts: StatusLineOptions = { ascii: glyphs.mode === 'ascii', reducedMotion, spinnerFrame: spinner, mode, flatBadge: !boxed, terminalColumns: columns };
   // TUI-DESIGN-2 §3.1 (finding 1): an engine run — never a submission in flight — colours the border `borderFocus` and the prompt `steer`
   const runLive = runIsLive(state.run);
   // TUI-DESIGN-3 §5.2 A4: the streaming caret `▍` on the last live row, a 1 Hz blink riding the spinner tick (steady under reduced motion)

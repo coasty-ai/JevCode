@@ -165,6 +165,13 @@ export interface StatusLineOptions {
   mode?: 'session' | 'one-shot';
   /** TUI-DESIGN-2 §1.5 / §4.8: the flat tier — `state.modeBadge` leads the left zone as `<badge> · <word>` (dropped first when short) */
   flatBadge?: boolean;
+  /**
+   * The TERMINAL width, for the two round-5 gates that TUI-DESIGN-5 states in terminal columns (`ctx` §3.1: 80 / 100;
+   * `peers` §2.2: 80 / 100). The boxed console assembles this row at its INNER width (terminal − 4), so without this the
+   * cells could never appear at an 80- or 100-column terminal — the 0.6.0 live drive at 24×80 showed no `ctx` cell while
+   * the engine carried `status.context` on every status event. Absent (the flat tier, tests) → the row width is the terminal width.
+   */
+  terminalColumns?: number;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -670,7 +677,8 @@ export function rightZoneSegments(s: StatusLineState, columns: number, o: Status
   // §3.1's gate is the width, and it is TWO rungs: below `CONTEXT_MIN_COLUMNS` the cell is absent entirely (never
   // a placeholder, never `ctx —%`). R5-3 replaces the read with `ctxText(s.status.context, columns, g)` (§9.2) —
   // the position and both gates are landed here so the order cannot drift while the two PRs are in flight.
-  if (columns >= CONTEXT_MIN_COLUMNS) {
+  const gateColumns = o.terminalColumns ?? columns;
+  if (gateColumns >= CONTEXT_MIN_COLUMNS) {
     const ctx = s.ctx ?? '';
     if (ctx.length > 0) segments.push(seg('ctx', ctx));
   }
@@ -679,7 +687,7 @@ export function rightZoneSegments(s: StatusLineState, columns: number, o: Status
   // requiring it hid `✉` exactly when a peer's message matters most (an idle TUI). The default excludes nothing,
   // which is the honest answer when the caller has not said who it is.
   if (s.fold !== undefined && s.fold !== null) {
-    const peerZone = peerZoneText(s.fold, s.selfId ?? NO_SELF, glyphs(ascii), columns);
+    const peerZone = peerZoneText(s.fold, s.selfId ?? NO_SELF, glyphs(ascii), gateColumns);
     if (peerZone.length > 0) segments.push(seg('peers', peerZone));
   }
   if (columns >= GIT_ZONE_MIN_COLUMNS && s.git !== null) {

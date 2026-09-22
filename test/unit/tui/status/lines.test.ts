@@ -1279,3 +1279,13 @@ describe('the right zone push order and DROP_ORDER (TUI-DESIGN-5 §2.2, §9.2)',
     expect(cell('ctx 87% amber · /compact now', 80)).toBe('ctx 87% amber · /compact now');
   });
 });
+
+describe('the ctx / peers gates are TERMINAL columns while the boxed row is laid out at the inner width (0.6.0 live-drive defect)', () => {
+  it('at an 80-column terminal the console row (inner 76) still carries the short ctx cell when terminalColumns is given, and not without it', () => {
+    const s = live({ ctx: 'ctx 3%' });
+    expect(statusZones(s, 76, { terminalColumns: 80 }).right.join(' ')).toContain('ctx 3%');
+    expect(statusZones(s, 76).right.join(' ')).not.toContain('ctx 3%');
+    // and the terminal gate is the one the design states: 79 columns → absent even with the option
+    expect(statusZones(s, 75, { terminalColumns: 79 }).right.join(' ')).not.toContain('ctx 3%');
+  });
+});
