@@ -58,8 +58,8 @@
 import { isAbsolute, relative, resolve } from 'node:path';
 
 import { sha12 } from '../../core/hash.js';
-import type { Sandbox } from '../../core/types.js';
-import { caseProfile, DEFAULT_CASE_TIMEOUT_MS, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, LOAD_SAMPLE_MIN_RUNS, LOAD_SCALE_MIN_RATIO, loadRatio, parseQuixbugsCommand, PER_TEST_TIMEOUT_FACTOR, refineLanes, refineTRun, RETRY_CASE_TIMEOUT_MS, RETRY_TIMEOUTS_MAX_PER_BATCH, scaledCaseTimeout, shellWords } from '../search/budget.js';
+import type { Sandbox, StepWarmSummary } from '../../core/types.js';
+import { caseProfile, DEFAULT_CASE_TIMEOUT_MS, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, LOAD_SAMPLE_MIN_RUNS, LOAD_SCALE_MIN_RATIO, loadRatio, MIN_RUN_TIMEOUT_MS, parseQuixbugsCommand, PER_TEST_TIMEOUT_FACTOR, PROCESS_OVERHEAD_MS, refineLanes, refineTRun, RETRY_CASE_TIMEOUT_MS, RETRY_TIMEOUTS_MAX_PER_BATCH, RUN_TIMEOUT_FACTOR, scaledCaseTimeout, shellWords } from '../search/budget.js';
 import type { Goal, Lane, OracleModel, StepBudget, VerifyJob, VerifyOutcome, VerifyStatus } from '../search/types.js';
 import type { AppliedCandidate, Progress, TestRunSummary } from '../types.js';
 import { applyCandidate } from '../verify/apply.js';
@@ -68,7 +68,7 @@ import { progress } from '../verify/progress.js';
 import { CASE_TIMEOUT_ENV, hangsOnEveryFailure, isCaseNotRun, isCaseTimeout, MAX_CASE_TIMEOUTS_ENV, quixbugsTestCommand } from '../verify/quixbugs.js';
 import { RUN_FAILURE_ID, shellQuote } from '../verify/text.js';
 import { scopeUsable } from '../../workspace/tests.js';
-import { emptyWarmStats, interpreterFor, WarmPlane, warmDelta, warmModeFor, warmNote, type WarmScreen, type WarmStats } from '../warm/index.js';
+import { emptyWarmStats, interpreterFor, WARM_ENV_FLAG, WarmPlane, warmDelta, warmModeFor, warmNote, warmRequested, type WarmScreen, type WarmStats } from '../warm/index.js';
 import { createLanes, type LanePool } from './lanes.js';
 
 /** §4.3: full-suite regression runs per step, "stop after the fifth passer" (decide() arbitrates ≤ 5 plausible). */
@@ -195,6 +195,72 @@ export interface RunnerMemory {
    * committed. `regressed`, `plausible`, `partial` and hang verdicts stay tried.
    */
   unchangedTried?: Map<string, Set<string>>;
+  /**
+   * OOS iteration 2, defect 2 (experiments/results/llm-jev-iter2.md §10): the warm plane's
+   * counters for the step now running, summed over its sieve batches, so `StepRecord.verify.warm`
+   * can carry them into `steps.jsonl` (`search/index.ts` reads it at `reportVerify`). `WarmStats`
+   * itself is cumulative over the RUN and lives on `warm`; this is the per-STEP delta, reset by
+   * the first batch of each step — a per-step field summed over the steps must not be a running
+   * total. Absent when `JEVCODE_WARM` never asked for the plane, which is the default.
+   */
+  warmStep?: { step: number; warm: StepWarmSummary };
+}
+
+/** A `StepWarmSummary` with every counter at zero: the shape an unsupported runner records. */
+export function emptyStepWarm(mode: StepWarmSummary['mode']): StepWarmSummary {
+  return { mode, offered: 0, screened: 0, confirmed: 0, mismatches: 0, fallbacks: 0, restarts: 0, invalidations: 0, scopeUnusable: 0, deadlineRechecks: 0, screenMs: 0, confirmMs: 0 };
+}
+
+/** One batch's `WarmStats` delta as the step record's shape. */
+export function stepWarmFrom(mode: StepWarmSummary['mode'], s: WarmStats): StepWarmSummary {
+  return {
+    mode,
+    offered: s.offered,
+    screened: s.screened,
+    confirmed: s.confirmed,
+    mismatches: s.mismatches,
+    fallbacks: s.fallbacks,
+    restarts: s.restarts,
+    invalidations: s.invalidations,
+    scopeUnusable: s.scopeUnusable,
+    deadlineRechecks: s.deadlineRechecks,
+    screenMs: s.screenMs,
+    confirmMs: s.confirmMs,
+    ...(s.disabledReason === null ? {} : { disabledReason: s.disabledReason }),
+  };
+}
+
+/**
+ * Add one batch's warm counters to the step's record (`RunnerMemory.warmStep`), starting a fresh
+ * total when the step has moved on. `mode` wins for `on`: a step in which the plane served even
+ * one command is not an unsupported one, whatever a later call for a different oracle says.
+ */
+export function recordWarmStep(mem: Pick<RunnerMemory, 'warmStep'>, step: number, add: StepWarmSummary): void {
+  const cur = mem.warmStep?.step === step ? mem.warmStep.warm : null;
+  if (cur === null) {
+    mem.warmStep = { step, warm: add };
+    return;
+  }
+  // the plane's `disable()` is one-way, so the first reason recorded in the step is the reason
+  const reason = cur.disabledReason ?? add.disabledReason;
+  mem.warmStep = {
+    step,
+    warm: {
+      mode: cur.mode === 'on' || add.mode === 'on' ? 'on' : cur.mode,
+      offered: cur.offered + add.offered,
+      screened: cur.screened + add.screened,
+      confirmed: cur.confirmed + add.confirmed,
+      mismatches: cur.mismatches + add.mismatches,
+      fallbacks: cur.fallbacks + add.fallbacks,
+      restarts: cur.restarts + add.restarts,
+      invalidations: cur.invalidations + add.invalidations,
+      scopeUnusable: cur.scopeUnusable + add.scopeUnusable,
+      deadlineRechecks: cur.deadlineRechecks + add.deadlineRechecks,
+      screenMs: cur.screenMs + add.screenMs,
+      confirmMs: cur.confirmMs + add.confirmMs,
+      ...(reason === undefined ? {} : { disabledReason: reason }),
+    },
+  };
 }
 
 function recordUnchanged(mem: Pick<RunnerMemory, 'unchangedTried'>, goalId: string, diffHash: string): void {
@@ -539,7 +605,19 @@ type JobResult =
   | { kind: 'skip' };
 
 /** One lane run: the summary, whether the batch must treat it as not having happened, and whether a warm worker produced it. */
-type LaneRun = TestRunSummary & { aborted: boolean; warm: boolean };
+type LaneRun = TestRunSummary & {
+  aborted: boolean;
+  warm: boolean;
+  /**
+   * iteration-2 defect 1 (experiments/results/llm-jev-iter2.md §7.3): this COLD run only happened
+   * because a hot screen of the same command hit a deadline and was discarded. Its duration is a
+   * bound, not a measurement of the candidate, and it must never reach `subsetDurations` — with
+   * the plane on, deadline re-runs are the *only* cold runs a batch of non-passers makes, so
+   * teaching from them makes the oracle's t_run a sample of nothing but timeouts (185 candidates
+   * of `topological_ordering`: taught 11,655 ms against 510 ms cold on the identical batch).
+   */
+  recheck: boolean;
+};
 
 /**
  * The run's warm plane for this oracle, or null when the warm path is off: a non-Python runner,
@@ -551,7 +629,7 @@ type LaneRun = TestRunSummary & { aborted: boolean; warm: boolean };
  * construction site of `WarmPlane`, so the default-on decision, the interpreter it boots and the
  * disabled latch are all decided here and nowhere else.
  */
-export function warmPlaneFor(ctx: RunnerContext, mem: Pick<RunnerMemory, 'warm'>, oracle: OracleModel, spec: SuiteSpec): WarmScreen | null {
+export function warmPlaneFor(ctx: RunnerContext, mem: Pick<RunnerMemory, 'warm' | 'warmStep'>, oracle: OracleModel, spec: SuiteSpec): WarmScreen | null {
   const mode = warmModeFor(oracle);
   // The interpreter is the word the command names, never a guess: the plane boots that one and
   // `WarmPlane.serve` refuses any command naming another (site-packages are part of a verdict).
@@ -559,6 +637,19 @@ export function warmPlaneFor(ctx: RunnerContext, mem: Pick<RunnerMemory, 'warm'>
   if (mode === null || interpreter === null) {
     mem.warm?.dispose();
     delete mem.warm;
+    // OOS iteration 2, defect 4: `JEVCODE_WARM=on` here is a SILENT no-op — the flag asked for
+    // the plane and this oracle has no shape for it. Iteration 2's "18-task warm A/B" was
+    // really 14 for exactly this reason (SWE-bench's runner is `other`) and nothing said so, so
+    // it is recorded on the step and said once per step in the event stream.
+    if (warmRequested()) {
+      const why: StepWarmSummary['mode'] = mode === null ? 'unsupported-runner' : 'unsupported-command';
+      const first = mem.warmStep?.step !== ctx.step;
+      recordWarmStep(mem, ctx.step, emptyStepWarm(why));
+      if (first) {
+        const what = why === 'unsupported-runner' ? `the \`${oracle.runner}\` runner has no warm shape (only quixbugs and pytest do)` : `the suite command names no interpreter this plane could boot: ${spec.command}`;
+        ctx.emit({ type: 'synth', step: ctx.step, phase: 'verify', detail: `warm: ${WARM_ENV_FLAG}=on but ${what}; every run of this step is cold, and the step's record says warm.mode = ${why}`, candidates: 0, tested: 0 });
+      }
+    }
     return null;
   }
   const have = mem.warm;
@@ -653,6 +744,21 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   let laneFailure: unknown = null;
   const results: { order: number; outcome: VerifyOutcome }[] = [];
   const subsetDurations: number[] = [];
+  /**
+   * iteration-2 defect 1: the goal-subset runs a warm worker served, each as the COLD cost it
+   * bounds from below (its own duration + `PROCESS_OVERHEAD_MS`). Kept apart from the cold
+   * sample because it may only hold or raise `tRunMs`, never lower it — see `sampleRun`.
+   */
+  const warmSubsetDurations: number[] = [];
+  /**
+   * Every COLD goal-subset run of the batch, deadline re-runs included — which is exactly what
+   * `subsetDurations` held before iteration 2. Read only by the in-flight-timeout rule at the end
+   * of the batch, which asks a different question from t_run: not "what does a run of this scope
+   * cost?" (for which a run killed at its cap is no answer) but "were the lanes starved while
+   * this batch ran?" (for which it is the evidence, and the reason ladder `account` step 18's
+   * four killed candidates are re-queued rather than called hangs).
+   */
+  const coldRunDurations: number[] = [];
   const fullDurations: number[] = [];
   const provisional: { order: number; pending: PendingRetry }[] = [];
   const killed: { order: number; pending: PendingRetry; outcome: VerifyOutcome }[] = [];
@@ -688,12 +794,54 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const estimateMs = Math.max(1, oracle.tRunMs.goalSubset);
   let loadNow = 1;
   let caseTimeoutNow: number | null = oracle.perTestTimeoutMs;
+  /**
+   * The batch's measured run cost as a statement about a fresh process: the cold samples when it
+   * has any, else the hot ones' lower bounds. Read by the load scaling and the in-flight-timeout
+   * rule, both of which only ever act on a ratio ABOVE 1, so a cheap screen can tighten nothing.
+   */
+  const measuredMedian = (): number | null => median(subsetDurations.length > 0 ? subsetDurations : warmSubsetDurations);
+
   const observeLoad = (): void => {
-    if (oracle.perTestTimeoutMs === null || subsetDurations.length < LOAD_SAMPLE_MIN_RUNS) return;
-    const ratio = loadRatio(median(subsetDurations), estimateMs);
+    if (oracle.perTestTimeoutMs === null || subsetDurations.length + warmSubsetDurations.length < LOAD_SAMPLE_MIN_RUNS) return;
+    const ratio = loadRatio(measuredMedian(), estimateMs);
     if (ratio <= loadNow) return;
     loadNow = ratio;
     caseTimeoutNow = scaledCaseTimeout(oracle.perTestTimeoutMs, ratio);
+  };
+
+  /**
+   * iteration-2 defect 1 (experiments/results/llm-jev-iter2.md §7.3): where one run of the goal
+   * subset goes in the oracle's t_run sample — the COLD sample, the HOT one, or nowhere.
+   *
+   * Before iteration 2 the rule was "only cold runs teach", which is right when cold is the whole
+   * batch and catastrophic when it is not: with the warm plane on, the only candidates that reach
+   * the cold path are the ones whose hot screen hit a deadline and was discarded, so the sample
+   * became a sample of nothing but timeouts. On the recorded 185-candidate `topological_ordering`
+   * batch that taught `run median 11655 ms` where the identical batch measured `510 ms` cold; the
+   * estimate sized `laneTimeoutMs`, `minRunWallMs` and the run plan, `runs left` collapsed
+   * 1,315 → 16, and four batches later every batch reported `0 tested (nothing ran)`. The task was
+   * lost, twice independently, and that is why the plane's default is still off.
+   *
+   *   * a DEADLINE RE-RUN teaches nothing at all (`recheck`): a timeout is a bound, not a
+   *     measurement of the candidate, on either path. This alone is the pass loss.
+   *   * a COLD run that was nobody's re-run is the truth, exactly as before.
+   *   * a HOT screen is a real run of the same case set under the same per-case cap, so it is
+   *     kept — but only as a LOWER BOUND on what the cold run of it would cost (its duration plus
+   *     `PROCESS_OVERHEAD_MS`, the harness's own measurement of the process start a screen does
+   *     not pay). It may hold or RAISE the estimate, never lower it (see the refine below),
+   *     because the
+   *     screen skips more than process start: in pytest mode the warm parent has already imported
+   *     the suite, and pricing the step's run budget on a screen would send pools to SIEVE that
+   *     only the SCREEN can afford while every confirmation is still a cold run
+   *     (test/unit/synth/sieve/screen-confirm-budget.test.ts pins that, and it is why the old rule
+   *     excluded warm runs outright).
+   */
+  const sampleRun = (r: Pick<LaneRun, 'durationMs' | 'warm' | 'recheck'>): void => {
+    if (!r.warm) coldRunDurations.push(r.durationMs);
+    if (r.recheck) return;
+    if (r.warm) warmSubsetDurations.push(r.durationMs + PROCESS_OVERHEAD_MS);
+    else subsetDurations.push(r.durationMs);
+    observeLoad();
   };
 
   /**
@@ -724,6 +872,31 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const oracleFor = (s: RunSettings): OracleModel => (s.caseTimeoutMs === oracle.perTestTimeoutMs ? oracle : { ...oracle, perTestTimeoutMs: oracle.perTestTimeoutMs === null ? null : s.caseTimeoutMs });
 
   /**
+   * iteration-2 defect 1, the compounding half (§7.3): the wall ONE HOT SCREEN may spend, which
+   * is deliberately not the cold run's cap (`capMs()`, the lane run timeout).
+   *
+   * A screen that hits a deadline is discarded and the command is re-run cold, so every
+   * millisecond it spends past the point where it is still cheaper than the run it replaces is
+   * paid TWICE. `topological_ordering` measured this exactly: a candidate whose module import
+   * loops is bounded cold by the per-case cap inside each case's own subprocess (~0.5 s) but
+   * warm only by the whole-run deadline, so the screen burnt the full 14 s lane cap and the step
+   * then paid 14 s more to re-run it cold — 5 candidates a batch, and the step's test wall was
+   * gone. The bound here is the lane run timeout's own shape (`laneRunTimeout`) with the cold
+   * path's 10 s process-start slack replaced by one per-case cap, because a warm run pays no
+   * process start: three times what a run of this scope is estimated to cost, plus room for one
+   * slow case to finish under its alarm. Never below MIN_RUN_TIMEOUT_MS (an under-fitted t_run
+   * must not deadline every screen) and never above the cold cap the caller would have used.
+   *
+   * Cutting a screen short can only cost wall, never a verdict: `runTests` re-runs cold every
+   * hot run that timed out, whatever the baseline does (see there).
+   */
+  const screenDeadline = (s: RunSettings, capNow: number): number => {
+    const est = Math.max(1, oracle.tRunMs.goalSubset, oracle.tRunMs.fullSuite);
+    const byRun = RUN_TIMEOUT_FACTOR * est + (s.caseTimeoutMs ?? DEFAULT_CASE_TIMEOUT_MS);
+    return Math.max(1, Math.min(capNow, Math.max(MIN_RUN_TIMEOUT_MS, byRun)));
+  };
+
+  /**
    * One test run on a lane; a sandbox failure is a run failure, never a pass, and never aborts
    * the batch. `aborted` also covers a kill on a timeout the step's remaining wall cut below the
    * oracle's run timeout: that says nothing about the candidate (it is not a probable infinite
@@ -734,24 +907,33 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
     const runTimeoutMs = s.runTimeoutMs ?? (o === oracle ? laneTimeoutMs : laneRunTimeout(o, baseline));
     const capMs = (): number => Math.max(1, Math.min(runTimeoutMs, Math.max(1, wallLeft())));
     const env = laneRunEnv(o, { stopRule: s.stopRule });
+    // set when a hot screen of this command was discarded on a deadline: the cold run below is
+    // then a re-run, and a re-run's duration never teaches the oracle (see `LaneRun.recheck`)
+    let recheck = false;
     // §3 M6: the warm plane screens; it never decides. A null here (command not servable, plane
     // disabled, worker anomaly) is the cold path below, unchanged.
     if (how.cold !== true && warm !== null) {
       const warmStarted = now();
-      const hot = await warm.serve(lane, command, capMs(), env);
+      const cap = capMs();
+      const hot = await warm.serve(lane, command, screenDeadline(s, cap), env);
       if (hot !== null) {
         const sum = summarize(command, hot, hot.durationMs > 0 ? hot.durationMs : now() - warmStarted);
         // A deadline is the one thing the two paths cannot be made to mean exactly the same
         // (the cold cap includes process start; the worker subtracts a *measured* estimate of
-        // it, which is an estimate). So a warm run that hit a deadline the baseline does NOT
-        // already hit is not a verdict at all: it is discarded and the command runs cold, which
-        // is what decides. Without this the sieve would mark a candidate `tried` on a timeout
-        // the cold path never saw, and a non-passer is never cold-confirmed by screen/confirm.
-        if (!newDeadlineHit(sum, baseline)) {
-          const wallCut = capMs() < runTimeoutMs && hot.timedOut;
-          return { ...sum, aborted: wallCut || ctx.signal.aborted, warm: true };
-        }
+        // it, which is an estimate) — and since iteration 2 the screen's wall is deliberately
+        // TIGHTER than the cold run's (`screenDeadline`), so a hot run killed on that wall says
+        // nothing about the candidate at all. Either way a timed-out screen is not a verdict:
+        // it is discarded and the command runs cold, which is what decides. Without this the
+        // sieve would mark a candidate `tried` on a timeout the cold path never saw, and a
+        // non-passer is never cold-confirmed by screen/confirm. (Before iteration 2 the test
+        // was `newDeadlineHit` alone, which accepts a whole-run kill whenever the BASELINE is
+        // killed too — sound at the cold cap, wrong at a tightened screen bound.)
+        if (!sum.timedOut && !newDeadlineHit(sum, baseline)) return { ...sum, aborted: ctx.signal.aborted, warm: true, recheck: false };
+        // the step's own remaining wall cut the run short: a cold re-run has no room either, so
+        // the job is deferred exactly as a wall-cut cold run is (unchanged from iteration 1)
+        if (sum.timedOut && !newDeadlineHit(sum, baseline) && cap < runTimeoutMs) return { ...sum, aborted: true, warm: true, recheck: false };
         warm.deadlineRecheck();
+        recheck = true;
       }
     }
     const timeoutMs = capMs();
@@ -761,10 +943,10 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       const res = await ctx.sandbox.run(command, { timeoutMs, maxOutputBytes: RUN_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir, env });
       const sum = summarize(command, res, res.durationMs > 0 ? res.durationMs : now() - started);
       const wallCut = truncated && res.killedBy === 'timeout';
-      return { ...sum, aborted: res.killedBy === 'abort' || res.killedBy === 'wall_time' || wallCut || ctx.signal.aborted, warm: false };
+      return { ...sum, aborted: res.killedBy === 'abort' || res.killedBy === 'wall_time' || wallCut || ctx.signal.aborted, warm: false, recheck };
     } catch (e: unknown) {
       const sum = summarize(command, { stdout: '', stderr: e instanceof Error ? e.message : String(e), exitCode: null }, now() - started);
-      return { ...sum, aborted: ctx.signal.aborted, warm: false };
+      return { ...sum, aborted: ctx.signal.aborted, warm: false, recheck };
     }
   };
 
@@ -849,15 +1031,11 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
     // an unusable scope widened the run to the whole suite: compare it with the base's own summary
     const base = sub.fullScope && scope.kind === 'files' ? job.base.summary : subsetBase;
     const subsetIsFull = scope.kind === 'full' || sub.fullScope;
-    // Only COLD runs teach the oracle. `tRunMs` sizes lane timeouts, the SIEVE/RANK plan and the
-    // load scaling, all of which are statements about a fresh process; a warm run's 20 ms would
-    // make the estimate describe a path the cold confirmation does not take. The warm win is wall
-    // saved, not a recalibration — and keeping the estimate cold is also what reserves enough
-    // remaining wall (`minRunWallMs`) for the cold confirmation of a passer found late in a batch.
-    if (mode === 'first' && !sub.warm) {
-      subsetDurations.push(subsetRun.durationMs);
-      observeLoad();
-    }
+    // `tRunMs` sizes lane timeouts, `minRunWallMs`, the SIEVE/RANK plan and the load scaling, all
+    // of which are statements about a FRESH PROCESS: `sampleRun` decides what this run may say
+    // about one. Keeping the estimate cold is also what reserves enough remaining wall for the
+    // cold confirmation of a passer found late in a batch.
+    if (mode === 'first') sampleRun(sub);
     const subsetProgress = progress(base, subsetRun);
     const passesGoal = goalPasses(goal, subsetRun, subsetProgress);
 
@@ -878,7 +1056,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
           passers -= 1;
           return { kind: 'defer' };
         }
-        if (mode === 'first' && !f.warm) fullDurations.push(f.durationMs);
+        if (mode === 'first' && !f.warm && !f.recheck) fullDurations.push(f.durationMs);
         screened = screened || f.warm;
         full = f;
       }
@@ -1000,7 +1178,8 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   // are provisional and the candidates wait in mem.retryTimeouts for the next call for the goal
   // (not `tried`), to run once more with the lane timeout scaled by that load. Otherwise every
   // killed run is the candidate's own hang: classified, tried.
-  const loadAtEnd = loadRatio(median(subsetDurations), estimateMs);
+  // unchanged from iteration 1: the starvation question, asked of every cold run this batch made
+  const loadAtEnd = loadRatio(median(coldRunDurations), estimateMs);
   const inFlight = results.length === 0 && killed.length >= IN_FLIGHT_RETRY_MIN_RUNS && loadAtEnd >= LOAD_SCALE_MIN_RATIO;
   const inFlightTimeoutMs = Math.round(laneTimeoutMs * Math.min(Math.max(1, loadAtEnd), IN_FLIGHT_RETRY_TIMEOUT_FACTOR));
   // in dispatch order (the lanes complete in any order), so the retries keep the queue's ranking
@@ -1045,7 +1224,13 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   // the oracle learns the measured cost of this goal's subset and of the full suite (§4.1: t_run per
   // scope); the subset's, which §2.4 reads, keeps a sieve-eligible estimate through a load spike (`refineTRun`)
   const subsetMed = median(subsetDurations);
+  const warmMed = median(warmSubsetDurations);
   if (subsetMed !== null && subsetMed > 0) oracle.tRunMs.goalSubset = refineTRun(oracle.tRunMs.goalSubset, subsetMed);
+  // iteration-2 defect 1: with the plane on a whole batch can be hot. Its lower bounds may raise
+  // the estimate (the lanes really are slow) but never lower it, so a step's run budget is still
+  // priced on what a cold run costs — and, crucially, NOT on the deadline re-runs that used to be
+  // the only cold samples such a batch produced.
+  else if (warmMed !== null && warmMed > oracle.tRunMs.goalSubset) oracle.tRunMs.goalSubset = refineTRun(oracle.tRunMs.goalSubset, warmMed);
   const fullMed = median(fullDurations);
   if (fullMed !== null && fullMed > 0) oracle.tRunMs.fullSuite = Math.round(fullMed);
   // a fast suite gets the fast suite's lanes (§4.1); the pool is widened at the next call
@@ -1057,7 +1242,9 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const counts = new Map<VerifyStatus, number>();
   for (const o of outcomes) counts.set(o.status, (counts.get(o.status) ?? 0) + 1);
   const failureNote = laneFailure === null ? '' : `; lane failure: ${laneFailure instanceof Error ? laneFailure.message : String(laneFailure)}`;
-  const timing = subsetMed === null ? '' : `; run median ${Math.round(subsetMed)} ms, t_run ${oracle.tRunMs.goalSubset} ms${oracle.lanes === lanesBefore ? '' : `, lanes ${lanesBefore} → ${oracle.lanes}`}`;
+  // a hot-only batch says so: its median is a lower bound on a cold run, not a measurement of one
+  const medNote = subsetMed !== null ? `run median ${Math.round(subsetMed)} ms` : warmMed !== null ? `run median ≥ ${Math.round(warmMed)} ms hot` : null;
+  const timing = medNote === null ? '' : `; ${medNote}, t_run ${oracle.tRunMs.goalSubset} ms${oracle.lanes === lanesBefore ? '' : `, lanes ${lanesBefore} → ${oracle.lanes}`}`;
   const retriedCount = [...retried.values()].reduce((a, b) => a + b, 0);
   const retryNote =
     provisionalCount === 0
@@ -1067,6 +1254,10 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const inFlightNote = inFlight ? `; ${killed.length} in-flight timeout${killed.length === 1 ? '' : 's'} under load ×${loadAtEnd.toFixed(1)}: re-queued once, lane timeout ${laneTimeoutMs}→${inFlightTimeoutMs} ms` : '';
   const streamNote = passerStop ? '; streamed batch ended on its first passer' : '';
   const warmStats: WarmStats = { ...(warm === null ? emptyWarmStats() : warmDelta(warmBefore, warm.stats())), scopeUnusable };
+  // OOS iteration 2, defect 2: the counters go on the step's record, not only into the free text
+  // below — `--archive-runs` does not copy `transcript.log`, so until now no committed artefact
+  // carried them and the warm A/B could not be audited from the results directory at all.
+  if (warm !== null) recordWarmStep(mem, ctx.step, stepWarmFrom('on', warmStats));
   const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${loadNote}${inFlightNote}${retryNote}${streamNote}${warmNote(warmStats)}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
   ctx.emit({ type: 'synth', step: ctx.step, phase: 'verify', detail, candidates: dispatched, tested: outcomes.length });
   // a broken lane with nothing to show for the batch is an error the step must see; on abort the caller is stopping anyway

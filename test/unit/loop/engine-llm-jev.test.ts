@@ -658,6 +658,44 @@ describe('llm-jev: recording — step keying, cancellation facts, rate limits, v
     expect(contexts[0]!.reportVerify).toBeUndefined();
     expect('verify' in h3.store.steps[0]!).toBe(false);
   });
+
+  /**
+   * OOS iteration 2, defect 2 (experiments/results/llm-jev-iter2.md §10): the warm verification
+   * plane's counters reach `steps.jsonl` through the same channel. The sieve sums them per step on
+   * `RunnerMemory.warmStep` and `search/index.ts` reports them here; nothing else carried them,
+   * because `--archive-runs` does not copy the transcript the free-text clause was written to.
+   */
+  it('StepRecord.verify.warm: the warm plane counters a synthesizer reports land on the record, and are absent when it reports none', async () => {
+    const warm = { mode: 'on' as const, offered: 940, screened: 938, confirmed: 3, mismatches: 0, fallbacks: 2, restarts: 0, invalidations: 0, scopeUnusable: 0, deadlineRechecks: 4, screenMs: 52_000, confirmMs: 1_400 };
+    const withWarm: Synthesizer = {
+      name: 'warm-counts',
+      async synthesize(ctx) {
+        ctx.reportVerify?.({ warm });
+        const run: Proposal = { goal: 'verify', action: { kind: 'run', command: 'pytest -q' }, plan: { done: [], remaining: [LEDGER_ITEM], openProblems: [] }, rawText: '' };
+        run.evidence = evidence({ candidatesTested: 940 });
+        return run;
+      },
+    };
+    const h = await build({ mode: 'llm-jev', synthesizer: withWarm, provider: deferredProvider(), limits: { maxSteps: 1 } });
+    await h.engine.run();
+    expect(h.store.steps[0]!.verify?.warm).toEqual(warm);
+    // and the whole record still round-trips as JSON, which is what steps.jsonl is
+    expect((JSON.parse(JSON.stringify(h.store.steps[0])) as { verify?: { warm?: unknown } }).verify?.warm).toEqual(warm);
+
+    // the default: no plane, no field, so a warm-off record is exactly HEAD's
+    const quiet: Synthesizer = {
+      name: 'no-warm',
+      async synthesize(ctx) {
+        ctx.reportVerify?.({ passers: 0 });
+        const run: Proposal = { goal: 'verify', action: { kind: 'run', command: 'pytest -q' }, plan: { done: [], remaining: [LEDGER_ITEM], openProblems: [] }, rawText: '' };
+        run.evidence = evidence({ candidatesTested: 1 });
+        return run;
+      },
+    };
+    const h2 = await build({ mode: 'llm-jev', synthesizer: quiet, provider: deferredProvider(), limits: { maxSteps: 1 } });
+    await h2.engine.run();
+    expect(h2.store.steps[0]!.verify?.warm).toBeUndefined();
+  });
 });
 
 /**

@@ -14,7 +14,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isFiniteNumber, isJsonObject, parseJson } from '../core/json.js';
+import { isFiniteNumber, isJsonObject, isString, parseJson } from '../core/json.js';
 import type { JsonObject } from '../core/types.js';
 import type { FastPathSummary, StepsSummary } from './types.js';
 
@@ -112,6 +112,41 @@ function addWaveMembers(s: StepsSummary, row: JsonObject): void {
   }
 }
 
+/**
+ * OOS iteration 2, defect 2: the warm-plane counters of `StepRecord.verify.warm`
+ * (core/types.ts `StepWarmSummary`), summed the way the verify counts are. `mode` and
+ * `disabledReason` are not counts and are handled beside them.
+ */
+const WARM_COUNTS = ['offered', 'screened', 'confirmed', 'mismatches', 'fallbacks', 'restarts', 'invalidations', 'scopeUnusable', 'deadlineRechecks', 'screenMs', 'confirmMs'] as const;
+
+type WarmSummary = NonNullable<StepsSummary['warm']>;
+
+function emptyWarm(mode: WarmSummary['mode']): WarmSummary {
+  return { mode, offered: 0, screened: 0, confirmed: 0, mismatches: 0, fallbacks: 0, restarts: 0, invalidations: 0, scopeUnusable: 0, deadlineRechecks: 0, screenMs: 0, confirmMs: 0, disabled: 0 };
+}
+
+function warmModeOf(v: unknown): WarmSummary['mode'] | null {
+  return v === 'on' || v === 'unsupported-runner' || v === 'unsupported-command' || v === 'mixed' ? v : null;
+}
+
+/** The arm, not a count: unioned exactly as `deadlineGrowth` is. */
+function unionWarmMode(a: WarmSummary['mode'] | undefined, b: WarmSummary['mode']): WarmSummary['mode'] {
+  return a === undefined || a === b ? b : 'mixed';
+}
+
+/** One step's (or one part's) warm block folded into the run's. */
+function addWarm(s: StepsSummary, mode: WarmSummary['mode'], counts: Readonly<Record<string, unknown>>, disabled: number, reason: string | undefined): void {
+  const w = s.warm ?? emptyWarm(mode);
+  w.mode = unionWarmMode(s.warm?.mode, mode);
+  for (const k of WARM_COUNTS) {
+    const v = counts[k];
+    if (isFiniteNumber(v)) w[k] += v;
+  }
+  w.disabled += disabled;
+  if (w.disabledReason === undefined && reason !== undefined) w.disabledReason = reason;
+  s.warm = w;
+}
+
 /** One committed step's contribution (a non-object or field-less row counts as a step and nothing else). */
 export function addStepRow(s: StepsSummary, row: JsonObject): void {
   s.steps += 1;
@@ -139,6 +174,16 @@ export function addStepRow(s: StepsSummary, row: JsonObject): void {
   // OOS iteration 3, item 3: the arm, not a count — unioned so a run that somehow saw both says so
   const growth = verify['deadlineGrowth'];
   if (growth === 'served' || growth === 'always') s.deadlineGrowth = s.deadlineGrowth === undefined || s.deadlineGrowth === growth ? growth : 'mixed';
+  // OOS iteration 2, defect 2 / defect 4: the warm plane's per-step counters. Absent on every
+  // warm-off record (the default), so nothing is added for a run that never asked for the plane.
+  const warm = verify['warm'];
+  if (isJsonObject(warm)) {
+    const mode = warmModeOf(warm['mode']);
+    if (mode !== null) {
+      const reason = warm['disabledReason'];
+      addWarm(s, mode, warm, isString(reason) ? 1 : 0, isString(reason) ? reason : undefined);
+    }
+  }
 }
 
 /** Every well-formed line of a steps.jsonl (a torn last line is skipped). */
@@ -205,6 +250,20 @@ export function withWaveMembers(part: StepsSummary): StepsSummary {
   // `--resume` dropped the arm the run was taken under, which is exactly the fact the next A/B needs.
   const growth = part['deadlineGrowth'];
   if (growth === 'served' || growth === 'always' || growth === 'mixed') s.deadlineGrowth = growth;
+  // OOS iteration 2, defect 2 (merged after this normaliser too): the warm block is carried for the same reason — its
+  // mode is an arm and its counters are sums the merge path reads back off the normalised part; without this line
+  // `mergeStepsSummaries` and `--resume` reported every warm run as warm-off (records.test.ts 'sums the per-step warm
+  // counters…' was red on the merge commit).
+  const warm = obj(part['warm']);
+  const warmMode = warmModeOf(warm?.['mode']);
+  if (warm !== undefined && warmMode !== null) {
+    const w = emptyWarm(warmMode);
+    for (const k of WARM_COUNTS) w[k] = num(warm, k);
+    w.disabled = num(warm, 'disabled');
+    const reason = warm['disabledReason'];
+    if (isString(reason)) w.disabledReason = reason;
+    s.warm = w;
+  }
   return s;
 }
 
@@ -232,6 +291,7 @@ export function mergeStepsSummaries(parts: readonly StepsSummary[]): StepsSummar
     s.s2.ttfbMs.push(...p.s2.ttfbMs);
     for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite'] as const) s.s2[k] += p.s2[k];
     if (p.deadlineGrowth !== undefined) s.deadlineGrowth = s.deadlineGrowth === undefined || s.deadlineGrowth === p.deadlineGrowth ? p.deadlineGrowth : 'mixed';
+    if (p.warm !== undefined) addWarm(s, p.warm.mode, p.warm, p.warm.disabled, p.warm.disabledReason);
   }
   return s;
 }

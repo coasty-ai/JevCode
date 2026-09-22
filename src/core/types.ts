@@ -466,6 +466,15 @@ export interface StepTiming {
   fastPathMs?: number;
   /** contract 1.9 (Fastlane) §4.4: Jev latency spent INSIDE the fast-path round (localiser + arbitration), already inside `jevMs` */
   fastPathJevMs?: number;
+  /**
+   * OOS iteration 2, defect 3 (experiments/results/llm-jev-iter2.md §10, additive): the wall the engine actually
+   * measured inside `decider.ask`, as against `jevMs`, which is what the decider REPORTS (`AskResult.latencyMs`).
+   * HARNESS-NEXT-DESIGN §4.4 / §5 charge `harnessMs` the larger of the two, so a mock or the `--jev off` double
+   * (`latencyMs: 0`, work on this thread) cannot spend the 50 ms harness budget on itself — but until now only the
+   * reported number was persisted, so no record said which of the two the gate had charged. Absent when nothing was
+   * asked this step, and for a real HTTP decider it agrees with `jevMs` to within the await.
+   */
+  jevWallMs?: number;
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
@@ -716,6 +725,58 @@ export interface StepVerifySummary {
    * on a step written without an LLM source (jev-only) or by an engine before the flag existed.
    */
   deadlineGrowth?: 'served' | 'always';
+  /**
+   * OOS iteration 2, defect 2 / defect 4 (experiments/results/llm-jev-iter2.md §10, additive):
+   * what the S1 warm verification plane (docs/HARNESS-NEXT-DESIGN.md §9, §9.2.1) did during this
+   * step. Absent when `JEVCODE_WARM` did not ask for the plane at all — which is the default, so
+   * every record written by a warm-off run is byte-identical to one written before this field
+   * existed. Present with `mode: 'unsupported-runner'` when the flag WAS on and the oracle has no
+   * warm shape, so a report can count the tasks an A/B actually covered: iteration 2's
+   * "18-task warm A/B" was really 14, because SWE-bench's runner is `other` and the flag was a
+   * silent no-op on 4 of them.
+   */
+  warm?: StepWarmSummary;
+}
+
+/**
+ * docs/HARNESS-NEXT-DESIGN.md §9.2.1: one step's warm-plane counters, summed over every sieve
+ * batch of the step (`WarmStats`, `src/synth/warm/plane.ts`). Iteration 2 could not audit its own
+ * warm A/B from the committed artefacts because these numbers existed only as free text in the
+ * sieve's `synth · verify` event and `--archive-runs` does not copy `transcript.log`; they are
+ * recorded here so `steps.jsonl` carries them.
+ */
+export interface StepWarmSummary {
+  /**
+   * `on` — a plane existed for this step's oracle and served (or was offered) commands;
+   * `unsupported-runner` — `JEVCODE_WARM=on` but the oracle's runner has no warm shape
+   * (`warmModeFor` admits only `quixbugs` and `pytest`; SWE-bench is `other`);
+   * `unsupported-command` — the runner has a shape but the suite command's interpreter cannot be
+   * read off the command itself, so nothing could be screened.
+   */
+  mode: 'on' | 'unsupported-runner' | 'unsupported-command';
+  /** commands the plane was offered */
+  offered: number;
+  /** commands a warm worker actually served */
+  screened: number;
+  /** cold confirmation runs made for warm passers */
+  confirmed: number;
+  /** screen/confirm disagreements; the S1 acceptance criterion is 0 */
+  mismatches: number;
+  /** offers that fell back to the cold path after a warm attempt failed */
+  fallbacks: number;
+  restarts: number;
+  /** restarts caused by the warm parent's import set going stale */
+  invalidations: number;
+  /** scoped runs that collected nothing and were re-run at full scope */
+  scopeUnusable: number;
+  /** warm runs that hit a deadline and were therefore discarded and re-run cold */
+  deadlineRechecks: number;
+  /** wall spent inside warm runs (ms, as the worker measured it) */
+  screenMs: number;
+  /** wall spent in cold confirmations (ms) */
+  confirmMs: number;
+  /** the one-way reason the plane turned itself off, when it did; absent otherwise */
+  disabledReason?: string;
 }
 
 export interface RunCounters {

@@ -139,6 +139,32 @@ export interface StepsSummary {
    * p50 that was itself computed from p50s would be measuring the wrong thing.
    */
   s2: { ttfbMs: number[]; hedges: number; hedgeWins: number; cacheRead: number; cacheWrite: number };
+  /**
+   * OOS iteration 2, defect 2 / defect 4: the S1 warm verification plane's counters, summed over
+   * the run's steps (`StepRecord.verify.warm`, core/types.ts `StepWarmSummary`). Absent when no
+   * step recorded one — which is every run with `JEVCODE_WARM` unset, the default — so a warm-off
+   * record is unchanged. `mode` is the arm, not a count, so it is unioned rather than summed
+   * exactly as `deadlineGrowth` is: `unsupported-runner` on its own is how a report counts the
+   * tasks a warm A/B did not actually cover.
+   */
+  warm?: {
+    mode: 'on' | 'unsupported-runner' | 'unsupported-command' | 'mixed';
+    offered: number;
+    screened: number;
+    confirmed: number;
+    mismatches: number;
+    fallbacks: number;
+    restarts: number;
+    invalidations: number;
+    scopeUnusable: number;
+    deadlineRechecks: number;
+    screenMs: number;
+    confirmMs: number;
+    /** steps whose plane reported a one-way `disabledReason` */
+    disabled: number;
+    /** the first reason seen; absent when the plane never turned itself off */
+    disabledReason?: string;
+  };
 }
 
 /** contract 1.9 (Fastlane) §5.5 / §8.3: one run's route-R9 facts, summed over its steps. */
