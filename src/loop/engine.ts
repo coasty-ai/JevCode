@@ -127,7 +127,7 @@ import { FilesInView, boundMemory, dropFile, evictFiles, forgetFile, noteShown, 
 import { buildHistoryEntry, foldHistoryRecord, foldableCount, needsOutputFile, outputRefFor, outputView, parseOutputRef, planHistory, pushHistory, renderHistory, seedHistoryEntry, tierText, type HistoryPlan, type OutputView } from './context/history.js';
 import { AGENT_MEM_BYTES, MIN_FREE_BYTES, ORCHESTRATION_DEPTH_MAX } from '../core/limits.js';
 import { CONTEXT_BUDGET_MIN_CHARS, FILE_CACHE_MAX_ENTRIES, HISTORY_MID, HISTORY_SHARE, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, OUTPUT_READ_PREFIX, resolveContextPolicy, type ResolvedContextPolicy } from './context/limits.js';
-import { computeContextUsage, restoredContextUsage } from './context/meter.js';
+import { computeContextUsage, contextWarnCrossed, restoredContextUsage } from './context/meter.js';
 import type { ContextReadHooks, ContextSummary } from './context/types.js';
 import { acquireRunLock, releaseRunLock } from '../session/lock.js';
 import { seedNoticeText } from '../session/seed.js';
@@ -4111,7 +4111,7 @@ class EngineImpl implements Engine {
     if (!this.contextEnabled) return runProposeStage(ctx, this.systemPrompt, base, { onPrompt: (built) => this.notePromptChars(built) });
     const t0 = this.clock();
     const prompt: PromptInput = { ...base, context: await this.contextView(draft.step) };
-    return runProposeStage(ctx, this.systemPrompt, prompt, { onPrompt: (built) => this.notePromptBuilt(built, t0) });
+    return runProposeStage(ctx, this.systemPrompt, prompt, { onPrompt: (built) => this.notePromptBuilt(built, draft.step, t0) });
   }
 
   /** The rolling summary, read from the run dir once per process (a resume starts with `summaryAt` but no text). */
@@ -4193,13 +4193,18 @@ class EngineImpl implements Engine {
    * zero-cost read may only stand on the files this message really rendered whole. Review D15: the meter counts the
    * WHOLE prompt — the system prompt goes to the model on every call too.
    */
-  private notePromptBuilt(built: PromptBuild, startedAt?: number): void {
+  private notePromptBuilt(built: PromptBuild, step: number, startedAt?: number): void {
     this.filesInView.keepShown(built.shownFiles);
     if (startedAt !== undefined) this.lastPromptBuildMs = Math.max(0, this.clock() - startedAt);
     this.notePromptChars(built);
     // contract 1.6 (§2.10.3): what the two memory sections cost this build; null on a run with no memory
     this.lastMemoryBuild = built.memory ?? null;
+    const before = this.contextUsage.pct;
     this.contextUsage = this.usage(this.systemPrompt.length + built.chars);
+    // contract 1.4 (Q16): one `context:warn` per UPWARD crossing of the §8.6 line. Only this branch runs it, so `legacy`
+    // and the non-consuming modes never emit; the fold at the commit below lowers the meter and re-arms the next one.
+    const u = this.contextUsage;
+    if (contextWarnCrossed(before, u.pct)) this.emit({ type: 'context:warn', step, pct: u.pct, budgetTokens: u.budgetTokens, tokensInWindow: u.tokensInWindow });
   }
 
   /**
