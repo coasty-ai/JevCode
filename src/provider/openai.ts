@@ -327,7 +327,7 @@ async function consumeResponses(stream: ReadableStream<Uint8Array>, ctx: Consume
   const st = newRespState();
   let terminal = false;
   try {
-    for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs })) {
+    for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) })) {
       if (ctx.opts.signal.aborted) throw ctx.opts.signal.reason;
       const data = rec.data.trim();
       if (data.length === 0) continue;

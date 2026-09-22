@@ -127,8 +127,15 @@ function reasoningOf(r: NonNullable<GenerateRequest['reasoning']>): OpenRouterRe
   return { enabled: false };
 }
 
+/**
+ * contract 1.9 (Fastlane) §3.2: `order` is sent only when the caller gave a non-empty list, so a request that does not
+ * pin an upstream is byte-identical to the one this client sent before. `allow_fallbacks` is left at its documented
+ * default (true) and `only` is never emitted: a rotated hedge twin must degrade to the router's choice, not fail closed.
+ */
 function providerPrefsOf(p: GenerateRequest['providerPrefs']): OpenRouterProviderPrefs | null {
-  return p === undefined ? null : { require_parameters: p.requireParameters };
+  if (p === undefined) return null;
+  const order = p.order ?? [];
+  return order.length === 0 ? { require_parameters: p.requireParameters } : { require_parameters: p.requireParameters, order: [...order] };
 }
 
 function toolChoice(tc: NonNullable<GenerateRequest['toolChoice']>): OpenRouterToolChoice {
@@ -167,6 +174,8 @@ interface StreamContext {
   requestId: string | null;
   /** §4.8: filled in the abort branch with what the stream had produced; `generate` reads it after the retry loop rethrows the abort reason */
   held: { partial: StreamPartial | null };
+  /** contract 1.9 (Fastlane) §3.1: already measured from the request going out and already guarded; passed to `parseSse` unchanged */
+  onFirstByte?: (ms: number) => void;
 }
 
 /** A `data:` chunk with a top-level `error` after HTTP 200 (research 07 §2.3): map to its status. */
@@ -201,7 +210,7 @@ async function consumeStream(body: ReadableStream<Uint8Array>, ctx: StreamContex
   const order: number[] = [];
 
   try {
-    for await (const rec of parseSse(body, { signal: opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs })) {
+    for await (const rec of parseSse(body, { signal: opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) })) {
       // parseSse yields every record of a chunk before it reads again; a signal that fired mid-chunk stops here, not at the next read
       if (opts.signal.aborted) throw opts.signal.reason;
       const data = rec.data.trim();
@@ -381,8 +390,10 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       }
       if (!res.body) throw new TransportError('stream', 'openrouter: 200 without a body');
       const remaining = Math.max(1, FIRST_BYTE_TIMEOUT_MS - (d.now() - t0));
+        // contract 1.9 (Fastlane) §3.1: TTFB measured from the request going out (header phase included), reported once per attempt
+        const onFirstByte = opts.onFirstByte === undefined ? undefined : (): void => notify(opts.onFirstByte, Math.round(d.now() - t0));
       try {
-        return await consumeStream(res.body, { opts, redact: d.redact, firstByteTimeoutMs: remaining, requestId, held });
+        return await consumeStream(res.body, { opts, redact: d.redact, firstByteTimeoutMs: remaining, requestId, held, ...(onFirstByte === undefined ? {} : { onFirstByte }) });
       } catch (e) {
         if (opts.signal.aborted) throw opts.signal.reason;
         // Typed errors (HTTP/stream errors, renderer-callback bugs via notify) keep their class; anything

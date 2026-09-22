@@ -413,6 +413,15 @@ export interface TokenUsage {
   reasoningTokens?: number;
   /** docs/LLM-JEV-DESIGN.md §4.8: true for a cancelled/timed-out sample metered from an estimate (sibling prompt tokens, streamed chars / 4) */
   estimated?: boolean;
+  /**
+   * contract 1.9 (Fastlane) §3.4: the cached share of `inputTokens`, as the API itself reported it (OpenRouter
+   * `prompt_tokens_details.cached_tokens`, Anthropic `cache_read_input_tokens`). `inputTokens` already contains it —
+   * this member only says how much of it was a cache READ, so the prompt-prefix pinning of §3.3 can be measured.
+   * Absent when the call reported none, which keeps every uncached call's usage object byte-identical to before.
+   */
+  cacheReadTokens?: number;
+  /** contract 1.9 (Fastlane) §3.4: the written-to-cache share of `inputTokens` (`cache_write_tokens` / `cache_creation_input_tokens`); absent when zero. */
+  cacheWriteTokens?: number;
 }
 export interface StepUsage {
   generator: TokenUsage;
@@ -542,6 +551,18 @@ export interface StepVerifySummary {
   graceMs: number;
   /** true when the committed change lies outside every Jev-ranked listing (the localisation missed) */
   localisationMissed: boolean;
+  /** contract 1.9 (Fastlane) §3.1: time to first byte of each sample the provider opened a stream for, in settle order. Absent when no sample reported one. */
+  ttfbMs?: readonly number[];
+  /** contract 1.9 (Fastlane) §3.2: hedge twins fired this step (`LLM_HEDGES_PER_ROUND` per round); absent = hedging was off or none fired. */
+  hedges?: number;
+  /** contract 1.9 (Fastlane) §3.2: hedge twins whose result arrived before their original's — what the hedge actually bought. */
+  hedgeWins?: number;
+  /** contract 1.9 (Fastlane) §3.4: prompt tokens the provider served from ITS cache this step (`TokenUsage.cacheReadTokens` summed). */
+  cacheRead?: number;
+  /** contract 1.9 (Fastlane) §3.4: prompt tokens written to the provider's cache this step. */
+  cacheWrite?: number;
+  /** contract 1.9 (Fastlane) §3.4: `cacheRead / (input tokens of the step's priced samples)`, 0…1 — the §3.3 prefix-pinning measurement. */
+  cacheHitRate?: number;
 }
 
 export interface RunCounters {
@@ -640,6 +661,13 @@ export type GenerateReasoning = { enabled: false } | { effort: ReasoningEffort }
 /** docs/LLM-JEV-DESIGN.md §4.12 verbatim: OpenRouter routes only to endpoints that support every parameter sent (tools, seed, …). */
 export interface GenerateProviderPrefs {
   requireParameters: boolean;
+  /**
+   * contract 1.9 (Fastlane) §3.2: the upstream providers to try, in order (OpenRouter `provider.order`). The hedge
+   * twin of `src/synth/llm/source.ts` sends the same list ROTATED, so a 429 or a stall on the original's first
+   * upstream leaves the twin pointed at a different one. Absent = the parameter is not sent and the router picks,
+   * which is what every call does today.
+   */
+  order?: readonly string[];
 }
 export interface GenerateRequest {
   system: string;
@@ -740,6 +768,13 @@ export interface GenerateOptions {
    * the abort reason, exactly like a throwing `onDelta`.
    */
   onCancelled?: (partial: CancelledGeneration) => void;
+  /**
+   * contract 1.9 (Fastlane) §3.1: time to first byte. Called at most once per `generate()`, with the ms from the
+   * request going out to the first byte of the 200 body (the header phase included), and never for a call that
+   * never opened a stream. It is the input of the §3.2 hedge threshold and of `StepVerifySummary.ttfbMs`; a
+   * throwing callback is a harness bug and surfaces as a typed 'internal' error, exactly like a throwing `onDelta`.
+   */
+  onFirstByte?: (ms: number) => void;
 }
 export type ProviderName = 'anthropic' | 'openrouter' | 'mock';
 export interface Provider {

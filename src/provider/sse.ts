@@ -160,6 +160,7 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOpt
   const maxBytes = opts.maxEventBytes ?? MAX_EVENT_BYTES;
   const reader = stream.getReader();
   const decoder = new TextDecoder('utf-8');
+  const t0 = monotonicNow();
   let buffer = '';
   let sawByte = false;
   let event: string | undefined;
@@ -191,6 +192,9 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOpt
     for (;;) {
       const r = await readWithTimeout(reader, sawByte ? idle : firstByte, sawByte ? 'idle' : 'first_byte', opts.signal);
       if (r.done) break;
+      // contract 1.9 (Fastlane) §3.1: the first read that returned bytes is the TTFB, reported once and before the
+      // record it carries is parsed — the hedge threshold (§3.2) reads it while the rest of the stream is still open.
+      if (!sawByte) notify(opts.onFirstByte, Math.round(monotonicNow() - t0));
       sawByte = true;
       buffer += decoder.decode(r.value, { stream: true });
       if (buffer.length > maxBytes) {
@@ -237,12 +241,15 @@ export async function readStreamText(stream: ReadableStream<Uint8Array>, opts: S
   const maxBytes = opts.maxEventBytes ?? MAX_EVENT_BYTES;
   const reader = stream.getReader();
   const decoder = new TextDecoder('utf-8');
+  const t0 = monotonicNow();
   let out = '';
   let sawByte = false;
   try {
     for (;;) {
       const r = await readWithTimeout(reader, sawByte ? idle : firstByte, sawByte ? 'idle' : 'first_byte', opts.signal);
       if (r.done) break;
+      // contract 1.9 (Fastlane) §3.1: same TTFB report as `parseSse`, for the one client that reads JSON (meta.ai)
+      if (!sawByte) notify(opts.onFirstByte, Math.round(monotonicNow() - t0));
       sawByte = true;
       out += decoder.decode(r.value, { stream: true });
       if (out.length > maxBytes) throw new ProviderHttpError(`response body exceeds ${maxBytes} bytes`, { status: 0, retryable: false });
@@ -464,6 +471,11 @@ export function toTokenUsage(t: TokenBreakdown, costUsd: number, reasoningTokens
     calls: 1,
   };
   if (reasoningTokens !== null) usage.reasoningTokens = reasoningTokens;
+  // contract 1.9 (Fastlane) §3.4: the cached shares of `inputTokens` the API itself reported, surfaced so the §3.3
+  // prefix pinning can be measured (`StepVerifySummary.cacheRead` / `cacheWrite` / `cacheHitRate`). Set only when the
+  // call really read or wrote cache, so a provider that caches nothing produces exactly the object it produced before.
+  if (t.cacheRead > 0) usage.cacheReadTokens = t.cacheRead;
+  if (t.cacheWrite > 0) usage.cacheWriteTokens = t.cacheWrite;
   return usage;
 }
 

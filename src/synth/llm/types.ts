@@ -17,6 +17,12 @@ import type { Candidate, Site } from '../types.js';
  */
 export interface SampleGenerateOptions extends SampleOptions {
   onCancelled?: (partial: CancelledGeneration) => void;
+  /**
+   * contract 1.9 (Fastlane) §3.1: `GenerateOptions.onFirstByte` — the ms from the request going out to the first byte
+   * of the reply. Optional exactly like `onCancelled`, so an engine that does not forward it leaves the source with no
+   * TTFB samples, and the §3.2 hedge threshold then stays at its ceiling instead of guessing.
+   */
+  onFirstByte?: (ms: number) => void;
 }
 
 /** `SynthesisContext.generate` as the contract states it (per-sample signal; the engine meters and records), made required, with the cancellation facts. */

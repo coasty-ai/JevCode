@@ -46,6 +46,7 @@
  * sample is started and priced; repro.ts reuses them for L2.
  */
 import { sha12 } from '../../core/hash.js';
+import { LLM_HEDGES_PER_ROUND, LLM_HEDGE_AFTER } from '../../core/limits.js';
 import { ProviderHttpError } from '../../errors.js';
 import type { CancelledGeneration, GeneratePurpose, GenerateReasoning, GenerateRequest, GenerateResult, Json, SynthSubwork, SynthesizerGeneration, TokenUsage } from '../../core/types.js';
 import { monotonicNow, percentile } from '../../core/time.js';
@@ -126,6 +127,70 @@ export const LLM_DEADLINE_ADAPT = {
 
 /** The per-run cap the samples ask for once the serving provider is slow: `reasoning: {maxTokens}` (GLM bills its reasoning, §4.13). */
 export const LLM_REASONING_CAP_TOKENS = 512;
+
+/**
+ * contract 1.9 (Fastlane) §3.4 (docs/LLM-LOOP-DESIGN.md): the cap the CHEAP classes ask for from their first
+ * round, rather than only after the serving provider has already been measured slow.
+ *
+ * Why only the cheap classes, and why smaller than `LLM_REASONING_CAP_TOKENS`. A QuixBugs or ladder fix is a
+ * few lines inside one function that the prompt already names; the thinking budget buys nothing there, and GLM
+ * bills it (§4.13) and waits for it — which is exactly the tail the adaptive deadline keeps lifting. A
+ * repository fix is not that shape, so `deadline.repositoryMs` rounds are left alone and keep the reactive
+ * 512-token cap. Off by default (`LlmSourceDeps.reasoningCapCheap`): it changes what every cheap sample asks
+ * for, so it is a bench arm's choice, not a silent one.
+ */
+export const LLM_REASONING_CAP_CHEAP_TOKENS = 256;
+
+// ---------------------------------------------------------------------------------------
+// contract 1.9 (Fastlane) §3.2 — the hedge (docs/LLM-LOOP-DESIGN.md §3.2)
+// ---------------------------------------------------------------------------------------
+
+/** `JEVCODE_HEDGE=on` arms the §3.2 hedge where the caller pinned nothing; `off` disables it where the caller armed it. */
+export const HEDGE_ENV_FLAG = 'JEVCODE_HEDGE';
+
+/**
+ * The sample index a hedge twin takes: its origin's index plus this offset. A twin is a full sample in every
+ * ledger the round keeps — it takes its own hold, its own `samplesLeft`, its own heartbeat row and its own
+ * arrival — so it needs an index of its own, and one that can be read back as "the twin of k" without a second
+ * map in the accounting. `SAMPLES_PER_ROUND` is single digits, so nothing can collide with the offset.
+ */
+export const HEDGE_TWIN_OFFSET = 1000;
+
+/** Is this sample index a hedge twin, and of whom? */
+export function hedgeOriginOf(sample: number): number | null {
+  return sample >= HEDGE_TWIN_OFFSET ? sample - HEDGE_TWIN_OFFSET : null;
+}
+
+/**
+ * §3.2: how long a sample may produce NO FIRST BYTE before its twin is fired —
+ * `clamp(2 × the running TTFB p50, 3 s, 8 s)`.
+ *
+ * The input is time to first byte, not latency: a sample that has started streaming is being served and a
+ * second copy of it buys nothing, so the timer is cancelled the moment its first byte lands
+ * (`GenerateOptions.onFirstByte`, §3.1). Before a run has any TTFB at all the threshold is the CEILING, not
+ * the floor: the first round of a run is also the round whose provider connection is coldest, and hedging it
+ * at 3 s would double the spend of every run's first round on no evidence.
+ */
+export function hedgeAfterMs(ttfbP50Ms: number | null): number {
+  if (ttfbP50Ms === null) return LLM_HEDGE_AFTER.maxMs;
+  return Math.min(LLM_HEDGE_AFTER.maxMs, Math.max(LLM_HEDGE_AFTER.minMs, Math.round(LLM_HEDGE_AFTER.factor * ttfbP50Ms)));
+}
+
+/**
+ * §3.2: the provider order a hedge twin sends — the caller's order rotated by one, so the upstream that is
+ * currently silent (or rate-limiting) is the twin's LAST choice instead of its first. An order of fewer than
+ * two entries cannot rotate: the twin then sends the caller's order unchanged and is a pure latency race.
+ */
+export function rotatedProviderOrder(order: readonly string[]): readonly string[] {
+  if (order.length < 2) return order;
+  return [...order.slice(1), ...order.slice(0, 1)];
+}
+
+/** Is the §3.2 hedge armed? The caller's pin wins; `JEVCODE_HEDGE` decides when it pinned nothing; off is the default (§0.3's rule for a new mechanism). */
+export function hedgeEnabled(pinned: boolean | undefined, env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  if (pinned !== undefined) return pinned;
+  return (env[HEDGE_ENV_FLAG] ?? '').trim().toLowerCase() === 'on';
+}
 
 /**
  * §4.8 rev 4 (2026-09-22, ranked change 3 of docs/research/llm-jev/oos-analysis-2026-09-22.md):
@@ -263,7 +328,8 @@ export function llmCacheKey(goalId: string, listingHashValue: string, attemptHas
 // One sample with a deadline (§4.8)
 // ---------------------------------------------------------------------------------------
 
-export type CancelReason = 'commit' | 'budget' | 'abort';
+/** contract 1.9 (Fastlane) §3.2 adds `'hedge'`: the loser of a hedged pair, cancelled because its twin answered first. */
+export type CancelReason = 'commit' | 'budget' | 'abort' | 'hedge';
 
 /** The abort reason a deadline puts on a sample's controller. */
 export class LlmSampleTimeout extends Error {
@@ -304,6 +370,8 @@ export interface SampleRunOptions {
   now?: () => number;
   /** §4.8 facts of a stream the abort cut after its headers (forwarded to the generator; the estimate is `unfinishedSampleUsage`'s) */
   onCancelled?: (partial: CancelledGeneration) => void;
+  /** contract 1.9 (Fastlane) §3.1: time to first byte of this sample's stream, once; the §3.2 hedge timer is cancelled on it */
+  onFirstByte?: (ms: number) => void;
 }
 
 /** Start one sample: a linked AbortController, a deadline timer, and an outcome that never rejects. */
@@ -316,7 +384,7 @@ export function generateWithDeadline(generate: GenerateFn, req: GenerateRequest,
   // the call starts synchronously so a caller can observe it right after `fire()` (and so the accounting sees one call per fired sample)
   let started: Promise<GenerateResult>;
   try {
-    started = generate(req, { sample: o.sample, purpose: o.purpose, signal: controller.signal, ...(o.goalId === undefined ? {} : { goalId: o.goalId }), ...(o.goalRound === undefined ? {} : { goalRound: o.goalRound }), ...(o.onCancelled === undefined ? {} : { onCancelled: o.onCancelled }) });
+    started = generate(req, { sample: o.sample, purpose: o.purpose, signal: controller.signal, ...(o.goalId === undefined ? {} : { goalId: o.goalId }), ...(o.goalRound === undefined ? {} : { goalRound: o.goalRound }), ...(o.onCancelled === undefined ? {} : { onCancelled: o.onCancelled }), ...(o.onFirstByte === undefined ? {} : { onFirstByte: o.onFirstByte }) });
   } catch (e) {
     started = Promise.reject(e instanceof Error ? e : new Error(String(e)));
   }
@@ -485,6 +553,20 @@ export interface LlmRoundSummary {
   rateLimitedRound?: boolean;
   deadlineMs: number;
   closed: boolean;
+  /** contract 1.9 (Fastlane) §3.1: TTFB of every sample of this round that opened a stream, in arrival order. Optional: absent when the generator forwards no `onFirstByte`. */
+  ttfbMs?: readonly number[];
+  /** contract 1.9 (Fastlane) §3.2: hedge twins this round fired (≤ `LLM_HEDGES_PER_ROUND`); 0 when hedging is off. */
+  hedges?: number;
+  /** contract 1.9 (Fastlane) §3.2: twins whose result arrived before their origin's — the hedges that actually bought something. */
+  hedgeWins?: number;
+  /** contract 1.9 (Fastlane) §3.2: hedges the round wanted and refused, with why — the budget refusal of §3.2 is `no_usd`. */
+  hedgesRefused?: number;
+  /** contract 1.9 (Fastlane) §3.4: prompt tokens this round's samples were served from the provider's cache (`TokenUsage.cacheReadTokens`). */
+  cacheRead?: number;
+  /** contract 1.9 (Fastlane) §3.4: prompt tokens this round's samples wrote to the provider's cache. */
+  cacheWrite?: number;
+  /** contract 1.9 (Fastlane) §3.4: `cacheRead / input tokens` over the round's priced samples, 0…1; absent when the round priced no input at all. */
+  cacheHitRate?: number;
 }
 
 export interface LlmSource {
@@ -514,6 +596,10 @@ export interface LlmSource {
   timeoutBackoff(goalId: string): TimeoutBackoff;
   /** the per-run reasoning-token cap a slow serving provider earned, else null */
   reasoningCapTokens(): number | null;
+  /** contract 1.9 (Fastlane) §3.1: running p50 of this run's time-to-first-byte samples, null before the first */
+  p50TtfbMs(): number | null;
+  /** contract 1.9 (Fastlane) §3.2: what a sample of the NEXT round may stay silent before its twin fires — `hedgeAfterMs(p50TtfbMs())` */
+  hedgeAfterMs(): number;
   /** `{goalId: {round, sha12: [...]}}` ≤ 4 KB for `synthState` (§4.11) */
   exportCache(): Json;
 }
@@ -533,6 +619,25 @@ export interface LlmSourceDeps {
   probeP90Ms?: number | null;
   /** what every sample sends (§10.1: pinned per bench arm and recorded verbatim); default `LLM_DEFAULT_GENERATION` */
   generation?: SynthesizerGeneration;
+  /**
+   * contract 1.9 (Fastlane) §3.2: arm the hedge. Undefined leaves the decision to `JEVCODE_HEDGE` (default OFF, so a
+   * source built exactly as it is built today fires exactly the samples it fires today and takes no new timer).
+   */
+  hedge?: boolean;
+  /**
+   * contract 1.9 (Fastlane) §3.2: the upstream provider order every sample sends (`GenerateProviderPrefs.order`).
+   * A hedge twin sends it ROTATED. Absent or shorter than two entries: no order is sent and the twin is a pure
+   * latency race, which is today's request byte for byte.
+   */
+  providerOrder?: readonly string[];
+  /**
+   * contract 1.9 (Fastlane) §3.4: cap `reasoning: {maxTokens}` at `LLM_REASONING_CAP_CHEAP_TOKENS` on the CHEAP
+   * classes from the first round. Default false = today's behaviour (the cap only ever arrives reactively, once
+   * the serving provider's p90 has already passed the class deadline).
+   */
+  reasoningCapCheap?: boolean;
+  /** contract 1.9 (Fastlane): the env the `JEVCODE_HEDGE` override is read from; defaults to `process.env` (the `warmModeFor` pattern). */
+  env?: Readonly<Record<string, string | undefined>>;
   /**
    * contract 1.4 (W3) (COORDINATION-DESIGN §6, W3 item 28): the heartbeat's sub-work rows. One `sample` row per
    * sample in flight, id `goalId:round:sampleIx`, opened where the request goes out and closed where the sample
@@ -590,6 +695,17 @@ interface RoundState {
   reserved: Map<number, number>;
   /** sample → the `onCancelled` facts, when its stream was cut after the headers */
   partials: Map<number, CancelledGeneration>;
+  /** contract 1.9 (Fastlane) §3.2: hedge twin index → the origin it copies (prompt, temperature and seed come from the origin) */
+  hedgeOrigin: Map<number, number>;
+  /** §3.2: origin index → the timer that will fire its twin; cleared on its first byte, on its settle and at round close */
+  hedgeTimers: Map<number, ReturnType<typeof setTimeout>>;
+  /** §3.2: samples that settled WITH A RESULT — a hedged pair's loser is the one that is not in here when the other lands */
+  served: Set<number>;
+  hedges: number;
+  hedgeWins: number;
+  hedgesRefused: number;
+  /** contract 1.9 (Fastlane) §3.1: TTFB of this round's samples, in arrival order */
+  ttfb: number[];
 }
 
 /** The provider's cost when it gave one, else the served rate over the tokens; 0 without pricing. */
@@ -753,6 +869,12 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   const validMs: number[] = [];
   /** §4.8 rev 3: the latency of every sample the provider served this run (a result arrived), the input of the adaptive deadline */
   const servedMs: number[] = [];
+  /** contract 1.9 (Fastlane) §3.1: every TTFB this run observed — the input of the §3.2 hedge threshold */
+  const ttfbMsAll: number[] = [];
+  /** §3.2: is the hedge armed for this source? Decided once, at construction, from the pin then `JEVCODE_HEDGE` (default off). */
+  const hedging = hedgeEnabled(deps.hedge, deps.env ?? process.env);
+  /** §3.2: the upstream order every sample sends; the twin sends it rotated. Empty = no `order` parameter at all, which is today's request. */
+  const providerOrder: readonly string[] = deps.providerOrder ?? [];
   /** the per-run `reasoning: {maxTokens}` cap once the serving provider was seen to be slow; one-way */
   let reasoningCap: number | null = null;
   /** §4.8 rev 4: goal → its zero-token-timeout back-off, in memory and per goal */
@@ -765,6 +887,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   const maxTokensFor = (goalId: string, base = gen.maxTokens): number => (lengthGoals.has(goalId) ? base * 2 : base);
   const p50ValidMs = (): number | null => percentile(validMs, 50);
   const p90ServedMs = (): number | null => (servedMs.length >= LLM_DEADLINE_ADAPT.minSamples ? percentile(servedMs, 90) : null);
+  const p50TtfbMs = (): number | null => percentile(ttfbMsAll, 50);
   const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
   /** The latency view of the adaptive deadline (§4.8 rev 3): the run's served p90, the probe's p90 before it exists. */
@@ -824,10 +947,17 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       reasoningCap = LLM_REASONING_CAP_TOKENS;
       emit('llm:deadline', `the serving provider is slow (served p90 ${p90 ?? 0} ms > the ${klass} default deadline ${classDeadlineMs(klass, gen.sampleDeadline)} ms): every further sample of this run caps reasoning at ${reasoningCap} tokens to shorten it`);
     }
-    return reasoningCap === null ? gen.reasoning : { maxTokens: reasoningCap };
+    // contract 1.9 (Fastlane) §3.4: the cheap classes cap from the first round when the caller armed it. It composes with
+    // the reactive cap by taking the SMALLER of the two — the reactive one is evidence that the provider is slow, and the
+    // cheap-class one is a standing judgement about what the class needs; neither may raise what the other already lowered.
+    const cheap = deps.reasoningCapCheap === true && klass !== 'repository' ? LLM_REASONING_CAP_CHEAP_TOKENS : null;
+    const cap = reasoningCap === null ? cheap : cheap === null ? reasoningCap : Math.min(reasoningCap, cheap);
+    return cap === null ? gen.reasoning : { maxTokens: cap };
   }
 
-  const promptChars = (st: RoundState, k: number): number => st.input.system.length + st.input.userFor(k).length;
+  /** contract 1.9 (Fastlane) §3.2: a hedge twin sends its ORIGIN's message, so every per-sample size and price reads the origin's index. */
+  const originOf = (st: RoundState, k: number): number => st.hedgeOrigin.get(k) ?? k;
+  const promptChars = (st: RoundState, k: number): number => st.input.system.length + st.input.userFor(originOf(st, k)).length;
 
   /** The most sample k can cost: what `startSample` reserves. */
   function reservationUsage(st: RoundState, k: number): TokenUsage {
@@ -890,12 +1020,46 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       rateLimitedRound: st.closed && st.fired.size > 0 && settledFired.length === st.fired.size && rateLimited === st.fired.size,
       deadlineMs: st.deadlineMs,
       closed: st.closed,
+      // contract 1.9 (Fastlane) §3.1 / §3.2 / §3.4
+      ttfbMs: [...st.ttfb],
+      hedges: st.hedges,
+      hedgeWins: st.hedgeWins,
+      hedgesRefused: st.hedgesRefused,
+      ...cacheCountsOf(st),
     };
+  }
+
+  /**
+   * contract 1.9 (Fastlane) §3.4: what the provider's own prompt cache served this round. `cacheHitRate` is the read
+   * share of the INPUT tokens of the samples that reported usage at all — a round whose samples all timed out reports
+   * no rate rather than a 0 that would read as "the cache missed".
+   */
+  function cacheCountsOf(st: RoundState): { cacheRead?: number; cacheWrite?: number; cacheHitRate?: number } {
+    let read = 0;
+    let write = 0;
+    let input = 0;
+    for (const a of st.arrivals) {
+      if (a.usage === null) continue;
+      read += a.usage.cacheReadTokens ?? 0;
+      write += a.usage.cacheWriteTokens ?? 0;
+      input += a.usage.inputTokens;
+    }
+    if (read === 0 && write === 0) return {};
+    return { cacheRead: read, cacheWrite: write, ...(input > 0 ? { cacheHitRate: read / input } : {}) };
+  }
+
+  /** §3.2: drop the pending hedge timer(s). A timer that outlived its round would fire a twin into a closed round and, in a test, keep the process alive. */
+  function clearHedgeTimer(st: RoundState, k: number): void {
+    const t = st.hedgeTimers.get(k);
+    if (t === undefined) return;
+    clearTimeout(t);
+    st.hedgeTimers.delete(k);
   }
 
   function maybeClose(st: RoundState): void {
     if (st.closed || st.pending > 0 || !(st.released || st.noMore)) return;
     st.closed = true;
+    for (const k of [...st.hedgeTimers.keys()]) clearHedgeTimer(st, k);
     live.delete(st);
     st.wallMs = Math.round(now() - st.startedMs);
     // the cache keeps every distinct patch ever seen under this key (tried ones included, so they are answered at once next time)
@@ -913,6 +1077,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   /** Record one arrival. The queue push, the pending count and the close run in `finally`, so a throwing `emit`/`onSample` cannot leave the round open. */
   function settle(st: RoundState, a: SampleArrival): void {
     st.arrivals.push(a);
+    // §3.2: a settled sample is never hedged — it has already ended, however it ended
+    clearHedgeTimer(st, a.sample);
     // contract 1.4 (W3), §6 / W3 item 28: every started sample settles exactly once, so this closes every row it
     // opened — a cancelled, timed-out or errored sample included.
     deps.coordination?.subworkEnded(sampleSubworkId(st.input.goalId, st.input.round, a.sample));
@@ -974,6 +1140,10 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       return { ...emptyArrival(k, end.kind, end.ms, detail), usage, usd: usage.costUsd, estimated: usage.estimated === true };
     }
     const { result } = end;
+    // contract 1.9 (Fastlane) §3.2: this leg was served — mark it and cancel its hedge partner before anything is
+    // parsed or compiled, so the loser's stream stops at the earliest instant the result is known.
+    st.served.add(k);
+    cancelHedgeLoser(st, k);
     const usd = costOf(result.usage, pricing);
     chargeSettled(st, k, usd);
     if (st.siblingInput === null && result.usage.inputTokens > 0) st.siblingInput = result.usage.inputTokens;
@@ -1001,43 +1171,132 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     }
   }
 
+  /**
+   * Start sample `k`. contract 1.9 (Fastlane) §3.2: when `k` is a hedge twin (`hedgeOrigin` carries it) the request is
+   * its ORIGIN's byte for byte — same message, same temperature, same seed, so the provider's prompt cache is hit and
+   * the two differ only in the upstream order they ask for. Every ledger (`samplesLeft`, the dollar hold, the heartbeat
+   * row, the arrival) still counts the twin as its own sample, because that is what it costs.
+   */
   function startSample(st: RoundState, k: number): boolean {
     if (st.closed || st.noMore || st.fired.has(k)) return false;
     // the §4.2 skip conditions hold per sample, and the dollar counter must cover this sample's full estimate beyond what the
     // samples already in flight hold (§4.11): sample 0 may have taken the headroom, the step may have ended before release()
     const reservation = reservationUsage(st, k).costUsd;
     if (st.input.signal.aborted || st.input.budget.samplesLeft <= 0 || !coversSample(headroom(st.input.budget), reservation)) return false;
+    const origin = originOf(st, k);
+    const twin = origin !== k;
     st.input.budget.samplesLeft -= 1;
     st.reserved.set(k, reservation);
     st.fired.add(k);
     st.pending += 1;
     const req: GenerateRequest = {
       system: st.input.system,
-      messages: [{ role: 'user', content: st.input.userFor(k) }],
+      messages: [{ role: 'user', content: st.input.userFor(origin) }],
       maxTokens: st.maxTokens,
-      temperature: sampleTemperature(k, st.input.round, gen.sampleTemperature),
+      temperature: sampleTemperature(origin, st.input.round, gen.sampleTemperature),
       tools: [PROPOSE_FIX_TOOL],
       toolChoice: { name: PROPOSE_FIX_TOOL_NAME },
-      providerPrefs: { requireParameters: true },
+      // §3.2: the twin rotates the order, so a 429 or a stall on the original's upstream leaves it live. With no order
+      // configured this is the object every sample has always sent.
+      providerPrefs: { requireParameters: true, ...(providerOrder.length === 0 ? {} : { order: twin ? rotatedProviderOrder(providerOrder) : providerOrder }) },
     };
     // the round's reasoning verbatim (null = not sent): the fire input's override, the pinned setting, or the per-run cap
     if (st.reasoning !== null) req.reasoning = st.reasoning;
-    if (k > 0) req.seed = sampleSeed(st.input.step, k);
+    if (origin > 0) req.seed = sampleSeed(st.input.step, origin);
     const t0 = now();
     // §4.8 rev 4: this sample's own deadline — the round's base grown by whatever zero-token timeouts
     // the goal has collected BY NOW, so a staggered round's `release()` samples carry sample 0's back-off
     const deadlineMs = goalDeadlineMs(st.input.klass, st.baseDeadlineMs, backoffOf(st.input.goalId));
     st.deadlines.set(k, deadlineMs);
     // contract 1.4 (W3), §6 / W3 item 28: the sample becomes a heartbeat row here and stops being one in `settle`.
-    deps.coordination?.subworkStarted({ kind: 'sample', id: sampleSubworkId(st.input.goalId, st.input.round, k), stage: 'propose', detail: `${st.input.klass} sample ${k} of ${st.n}, ${deadlineMs} ms` });
-    const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, goalId: st.input.goalId, goalRound: st.input.round, deadlineMs, now, onCancelled: (partial) => st.partials.set(k, partial) });
+    deps.coordination?.subworkStarted({ kind: 'sample', id: sampleSubworkId(st.input.goalId, st.input.round, k), stage: 'propose', detail: `${st.input.klass} sample ${twin ? `${origin} hedge` : String(k)} of ${st.n}, ${deadlineMs} ms` });
+    const run = generateWithDeadline(deps.generate, req, {
+      sample: k,
+      purpose: 'propose_fix',
+      signal: st.input.signal,
+      goalId: st.input.goalId,
+      goalRound: st.input.round,
+      deadlineMs,
+      now,
+      onCancelled: (partial) => st.partials.set(k, partial),
+      onFirstByte: (ms) => noteFirstByte(st, k, ms),
+    });
     st.runs.set(k, run);
+    // §3.2: only an ORIGIN is hedged, and only while it has produced nothing; a twin of a twin is not a thing
+    if (hedging && !twin) armHedge(st, k);
     void run.promise
       .then((end) => handleEnd(st, k, end))
       .catch((e: unknown) => internalFailure(k, Math.round(now() - t0), e))
       .then((a) => settle(st, a))
       .catch(reportFailure);
     return true;
+  }
+
+  /**
+   * contract 1.9 (Fastlane) §3.1: one sample's time to first byte. It ends that sample's hedge candidacy — a stream
+   * that has started is being served, and a second copy of it buys nothing — and feeds the run's p50, which is what
+   * the next threshold is computed from.
+   */
+  function noteFirstByte(st: RoundState, k: number, ms: number): void {
+    if (!(Number.isFinite(ms) && ms >= 0)) return;
+    ttfbMsAll.push(ms);
+    st.ttfb.push(ms);
+    clearHedgeTimer(st, k);
+  }
+
+  /** §3.2: arm sample `k`'s hedge timer at `hedgeAfterMs(p50 TTFB)`. Cleared by its first byte, by its settle and at round close. */
+  function armHedge(st: RoundState, k: number): void {
+    if (st.hedges >= LLM_HEDGES_PER_ROUND || st.hedgeTimers.has(k)) return;
+    const timer = setTimeout(() => {
+      st.hedgeTimers.delete(k);
+      try {
+        fireHedge(st, k);
+      } catch (e) {
+        reportFailure(e);
+      }
+    }, Math.max(0, hedgeAfterMs(p50TtfbMs())));
+    // a hedge must never be the reason a process stays alive: the round owns the timer, the event loop does not
+    timer.unref?.();
+    st.hedgeTimers.set(k, timer);
+  }
+
+  /**
+   * §3.2: sample `k` has produced no first byte for `hedgeAfterMs`. Fire ONE twin of it, and only if the round's
+   * dollar counter can hold one more sample at its full estimate — cancels are booked at full cost, so a hedge that
+   * the counter cannot cover would take the goal's next round away from it. A refusal is recorded, never a throw.
+   */
+  function fireHedge(st: RoundState, k: number): void {
+    if (st.closed || st.noMore || st.hedges >= LLM_HEDGES_PER_ROUND) return;
+    // nothing to hedge: the sample settled (a result, a timeout, an error) between the timer and this tick
+    if (st.served.has(k) || st.arrivals.some((a) => a.sample === k)) return;
+    const twin = k + HEDGE_TWIN_OFFSET;
+    st.hedgeOrigin.set(twin, k);
+    // §3.2's refusal: `startSample` applies exactly the §4.11 test every other sample takes — the counter must cover
+    // this twin's FULL estimate beyond what the samples in flight already hold — so the budget rule is shared, not restated
+    if (!startSample(st, twin)) {
+      st.hedgeOrigin.delete(twin);
+      st.hedgesRefused += 1;
+      emit('llm:hedge', `goal ${st.input.goalId} round ${st.input.round}: sample ${k} produced no first byte in ${hedgeAfterMs(p50TtfbMs())} ms and its hedge was refused (the llm dollar counter cannot hold one more sample at its full estimate, the step aborted, or no samples are left)`);
+      return;
+    }
+    st.hedges += 1;
+    emit('llm:hedge', `goal ${st.input.goalId} round ${st.input.round}: sample ${k} produced no first byte in ${hedgeAfterMs(p50TtfbMs())} ms — twin ${twin} fired${providerOrder.length > 1 ? ` on the rotated provider order (${rotatedProviderOrder(providerOrder).join(', ')})` : ''}; the loser is cancelled at the first result`);
+  }
+
+  /**
+   * §3.2: one of a hedged pair was served — cancel the other with `CancelReason 'hedge'`. The loser is still
+   * metered from what its stream left (`unfinishedSampleUsage`), so both legs reach `generator.jsonl`: a hedge
+   * makes a round faster, never free.
+   */
+  function cancelHedgeLoser(st: RoundState, winner: number): void {
+    const origin = originOf(st, winner);
+    const partner = winner === origin ? origin + HEDGE_TWIN_OFFSET : origin;
+    if (!st.fired.has(partner) || st.served.has(partner) || st.arrivals.some((a) => a.sample === partner)) return;
+    const run = st.runs.get(partner);
+    if (run === undefined) return;
+    run.abort('hedge');
+    if (winner !== origin) st.hedgeWins += 1;
+    emit('llm:hedge', `goal ${st.input.goalId} round ${st.input.round}: sample ${winner} answered first; ${partner} cancelled (hedge), metered from what it streamed`);
   }
 
   function newRound(input: LlmFireInput, key: string, n: number): RoundState {
@@ -1073,6 +1332,13 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       patchOf: new Map(),
       reserved: new Map(),
       partials: new Map(),
+      hedgeOrigin: new Map(),
+      hedgeTimers: new Map(),
+      served: new Set(),
+      hedges: 0,
+      hedgeWins: 0,
+      hedgesRefused: 0,
+      ttfb: [],
     };
   }
 
@@ -1220,6 +1486,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     maxTokensFor,
     p50ValidMs,
     p90ServedMs,
+    p50TtfbMs,
+    hedgeAfterMs: () => hedgeAfterMs(p50TtfbMs()),
     timeoutBackoff: (goalId) => ({ ...backoffOf(goalId) }),
     reasoningCapTokens: () => reasoningCap,
     exportCache,

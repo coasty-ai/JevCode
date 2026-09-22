@@ -14,13 +14,45 @@ import { parseConditions, requiresGenerator } from './conditions.js';
 import type { BenchDepsWithSynth, BenchOptions } from './types.js';
 
 /**
- * `--archive-runs`. cli/args.ts owns the flag table (`BOOLEAN_FLAGS` + `FLAGS`) and is not this
+ * `--archive-runs` and `--quick`. cli/args.ts owns the flag table (`BOOLEAN_FLAGS` + `FLAGS`) and is not this
  * wave's to edit, so the parsed value is read through this widening: `ParsedFlags` is assignable to
- * it, and the key resolves once args.ts carries `'archiveRuns'` in `BOOLEAN_FLAGS`.
+ * it, and the key resolves once args.ts carries `'archiveRuns'` / `'quick'` in `BOOLEAN_FLAGS`.
  */
-type BenchFlags = ParsedFlags & { archiveRuns?: boolean };
+export type BenchFlags = ParsedFlags & { archiveRuns?: boolean; quick?: boolean };
 
-export async function runBenchFromFlags(flags: BenchFlags): Promise<number> {
+/**
+ * contract 1.9 (Fastlane) §3.5 / HARNESS-NEXT-DESIGN.md §3 M16 and §5 Ring 2: `--quick` is the Ring-2 preset —
+ * the five tasks JevCode already passes, at concurrency 3, replay by default, under a $0.05 global cap.
+ *
+ * The task list is §5's table rows 1–5 in its order: `gcd` (seeds win the race), `tagcloud` (the wall floor),
+ * `units` (the LLM-decides path), `kth` (the sieve/confirm detector) and `mergesort` (the RANK and Jev-request
+ * outlier). It is a MID-DIFFICULTY SUBSET, not a sample: every one of the five passes today, so a red row is
+ * unambiguous, and the five between them touch every commit path the loop has (`sieve`, `llm`, `rank`).
+ */
+export const QUICK_TASK_IDS: readonly string[] = ['gcd', 'tagcloud', 'units', 'kth', 'mergesort'];
+/** M16: the global cap `--quick` runs under when the caller named none — the whole preset is ≈ $0.01 live. */
+export const QUICK_SPEND_CAP_USD = 0.05;
+/** M16: `--quick` runs three tasks at a time (§5 Ring 2's own command line). */
+export const QUICK_CONCURRENCY = 3;
+
+/**
+ * The preset applied as DEFAULTS, never as overrides: an explicit `--task-id`, `--concurrency`, `--spend-cap`
+ * or `--suite` on the same command line wins, so `--quick --task-id mergesort` is one task and not five. It also
+ * does not turn `--live` on — M16's "replay by default" is exactly the existing `live: Boolean(flags.live)`.
+ */
+export function withQuickPreset(flags: BenchFlags): BenchFlags {
+  if (flags.quick !== true) return flags;
+  return {
+    ...flags,
+    ...(flags.taskId === undefined ? { taskId: QUICK_TASK_IDS.join(',') } : {}),
+    ...(flags.concurrency === undefined ? { concurrency: String(QUICK_CONCURRENCY) } : {}),
+    ...(flags.spendCap === undefined ? { spendCap: String(QUICK_SPEND_CAP_USD) } : {}),
+  };
+}
+
+export async function runBenchFromFlags(rawFlags: BenchFlags): Promise<number> {
+  // §3.5 / M16: the preset fills the flags the caller left out, before any of them is validated or read
+  const flags = withQuickPreset(rawFlags);
   const { resolveConfig } = await import('../config/resolve.js');
   const config = await resolveConfig(flags, process.env, process.cwd());
   const limits = config.limits();
