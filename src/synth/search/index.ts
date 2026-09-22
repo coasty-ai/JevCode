@@ -41,7 +41,7 @@ import { MAX_BUDGET_HIT_STEPS, MAX_CONSECUTIVE_BUDGET_HITS, MAX_PROGRESS_COMMITS
 import { LONE_PASSER_HOLD_MAX_NOUL, adviseLonePasser, commitSuspect } from './guard.js';
 import type { GoalPick } from './goals.js';
 import { attachPlanItems, diffHash, getMemory, planItemFor, rebuildFromPlan, recordClaims, recordCommit, repositoryFromPersisted, resolveClaims, restoreMemory, toPersisted } from './memory.js';
-import type { PersistedRepositoryState, RepositoryMode, RepositoryScope, SearchMemory } from './memory.js';
+import type { EngineRun, PersistedRepositoryState, RepositoryMode, RepositoryScope, SearchMemory } from './memory.js';
 import { BEST_GUESS_NOTE, bestGuessGoalText, commitEvidence, completionEvidence, goalTestsPassing, isFullSuiteRun, proposeDone, proposePatch, proposeRevert, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
 import { commitProgress, everySiteSeedsExhausted, isTestPath, newTrace, taskIdentifiers } from './subgoal.js';
 import type { ProgressOptions, RegressionRun, SubGoalMemory, SubGoalResult } from './subgoal.js';
@@ -225,6 +225,30 @@ export function observeWindow(mem: EngineObservations, window: readonly WindowEn
 export function engineNeedsRun(mem: EngineObservations): boolean {
   if (mem.lastChangeStep === null) return mem.lastEngineRun === null;
   return mem.lastEngineRun === null || mem.lastEngineRun.step < mem.lastChangeStep;
+}
+
+/** What `engineRunContradictsBaseline` reads from the run memory (the `isFullSuiteRun` slice plus the engine observations and the mode). */
+export type ContradictionMemory = Pick<RunMemory, 'baseline' | 'goals' | 'committed' | 'lastEngineRun' | 'lastChangeStep' | 'repository'>;
+
+/**
+ * llm-jev (docs/LLM-JEV-DESIGN.md §6.4–§6.6): the engine's last executed full-suite run measured the very workspace the
+ * ledger's baseline describes — no change was executed at or after the baseline's step nor after the run, and the run is at or
+ * after that step (the baseline is taken in a step's propose stage; the engine's run executes in that step's execute stage or
+ * later) — and it shows more failing or erroring tests than the baseline (its scoped part on a repository): the workspace
+ * disagreed with the lane whose green run was adopted, or with the synthesizer's own earlier run. Returns that run, else null.
+ * A goal-subset run is never a contradiction (it fails the goal's tests by construction). The engine's parsed run reaches the
+ * synthesizer as counts (memory.ts EngineRun), so WHICH tests fail is learnt from the synthesizer's own re-run of the same
+ * workspace (step() → rebaseline), whose ids re-open the goals the engine's run contradicts and feed the §6.5 second trigger.
+ */
+export function engineRunContradictsBaseline(ctx: SynthesisContext, mem: ContradictionMemory, scratch: Pick<RunScratch, 'baselineStep'>): EngineRun | null {
+  const run = mem.lastEngineRun;
+  const baseline = mem.baseline;
+  const at = scratch.baselineStep;
+  if (run === null || baseline === null || at === null || baseline.timedOut) return null;
+  if (mem.lastChangeStep !== null && (mem.lastChangeStep >= at || run.step <= mem.lastChangeStep)) return null;
+  if (run.step < at || !isFullSuiteRun(ctx, mem, run)) return null;
+  const known = mem.repository === undefined ? baseline : scopedPartOf(baseline);
+  return run.failed + run.errors > known.failed + known.errors ? run : null;
 }
 
 /** Step of the latest executed workspace-changing action in the window, or null. */
@@ -516,7 +540,7 @@ export interface RunScratch {
   reverted: Set<string>;
   /** llm-jev: the step whose executed patch was a revert (no claiming run follows a revert; the search resumes) */
   revertExecutedStep: number | null;
-  /** the baseline the last re-baseline replaced: `before` of the post-patch run's evidence (the fresh baseline is `after`) */
+  /** the baseline the last re-baseline of a CHANGED workspace replaced: `before` of the post-patch run's evidence and of the revert triggers (the fresh baseline is `after`); a re-run of the same workspace after the engine's run contradicted the baseline keeps it */
   previousBaseline: TestRunSummary | null;
   /** the checkpoint's synthState is consumed on the first baseline of the process */
   restored: boolean;
@@ -632,8 +656,20 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       }
     }
 
-    if (mem.baseline === null || scratch.baselineStep === null || workspaceChangedSince(scratch.baselineStep, ctx.window)) {
-      const exit = await this.rebaseline(ctx, mem, scratch);
+    // llm-jev (docs/LLM-JEV-DESIGN.md §6.4–§6.6): the engine's full-suite run of this very workspace shows failures the ledger's
+    // baseline does not — the workspace disagreed with the lane (an adopted lane run) or with the synthesizer's own earlier run.
+    // The §6.5 count trigger needs no re-run; otherwise the stale baseline is replaced by the synthesizer's own run of the
+    // workspace (never the lane's: adoptableLaneRun refuses), whose failing ids re-open the goals the engine's run contradicts
+    // (reconcile) and feed the second trigger below. Once per contradicting engine run: the fresh baseline's step is past it.
+    const contradicting = this.llmJev && !recursed ? engineRunContradictsBaseline(ctx, mem, scratch) : null;
+    if (contradicting !== null) {
+      const revert = this.revertDue(ctx, mem, scratch);
+      if (revert !== null) return revert;
+      const known = mem.baseline === null ? null : mem.repository === undefined ? mem.baseline : scopedPartOf(mem.baseline);
+      this.emit(ctx, 'baseline', `the engine's run at step ${contradicting.step} (${contradicting.passed} passed, ${contradicting.failed} failed, ${contradicting.errors} errors) disagrees with the baseline (${known?.passed ?? '?'}/${known?.total ?? '?'} pass, ${known?.failed ?? '?'} failed, ${known?.errors ?? '?'} errors); re-running the suite in the workspace`);
+    }
+    if (contradicting !== null || mem.baseline === null || scratch.baselineStep === null || workspaceChangedSince(scratch.baselineStep, ctx.window)) {
+      const exit = await this.rebaseline(ctx, mem, scratch, contradicting !== null);
       if (exit !== null) return exit;
     }
     const baseline = mem.baseline;
@@ -979,10 +1015,14 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   }
 
   /**
-   * docs/LLM-JEV-DESIGN.md §6.5: the revert trigger — the engine's claiming run passed fewer tests than the run before the patch
-   * (its parsed count against the pre-patch baseline; the scoped part on repositories), or the synthesizer's own fresh baseline
-   * after the commit did. Once per committed patch. The synthesizer holds the commit's before/after images, so the reverse diff
-   * is emitted as `revert_last_change` with no LLM and no Jev; the goal re-opens and is re-localised from the workspace's failure.
+   * docs/LLM-JEV-DESIGN.md §6.5: the revert triggers, once per committed patch. (1) The engine's claiming run passed fewer tests
+   * than the run before the patch (its parsed count against the pre-patch baseline; the scoped part on repositories), or the
+   * synthesizer's own fresh baseline after the commit did. (2) A goal test the commit's evidence showed newly passing fails in
+   * the workspace once the engine's claiming run contradicted the lane: the engine's parsed run reaches the synthesizer as
+   * counts (memory.ts EngineRun), so the failing ids are those of the synthesizer's own run of the same workspace, taken this
+   * step after that contradiction (step() → rebaseline, `engineRunContradictsBaseline`); a lane that is green where the
+   * workspace is not never keeps a goal `fixed`. The synthesizer holds the commit's before/after images, so the reverse diff is
+   * emitted as `revert_last_change` with no LLM and no Jev; the goal re-opens and is re-localised from the workspace's failure.
    */
   private revertDue(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch): Proposal | null {
     const commit = scratch.lastCommit;
@@ -991,15 +1031,29 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     if (commit === null || last === undefined || previous === null || scratch.revert !== null) return null;
     const hash = diffHash(last.diff);
     if (scratch.reverted.has(hash)) return null;
-    const before = mem.repository === undefined ? previous.passed : scopedPartOf(previous).passed;
-    const engineRun = mem.lastEngineRun;
-    // only the engine's suite run counts (a goal-subset `run` passes fewer tests by construction)
-    const engineDisagreed = engineRun !== null && engineRun.step > commit.step && isFullSuiteRun(ctx, mem, engineRun) && engineRun.passed < before;
+    const scoped = (s: TestRunSummary): TestRunSummary => (mem.repository === undefined ? s : scopedPartOf(s));
+    const before = scoped(previous).passed;
+    // only the engine's suite run after the commit counts (a goal-subset `run` passes fewer tests by construction)
+    const engineRun = mem.lastEngineRun !== null && mem.lastEngineRun.step > commit.step && isFullSuiteRun(ctx, mem, mem.lastEngineRun) ? mem.lastEngineRun : null;
+    const engineRegressed = engineRun !== null && engineRun.passed < before;
     const ownBaseline = mem.baseline;
-    const baselineRegressed = ownBaseline !== null && scratch.baselineStep === ctx.step && commit.step < ctx.step && (mem.repository === undefined ? ownBaseline.passed : scopedPartOf(ownBaseline).passed) < before;
-    if (!engineDisagreed && !baselineRegressed) return null;
-    const reason = engineDisagreed && engineRun !== null ? `workspace_disagreed: the engine's run passed ${engineRun.passed} tests, ${before} passed before the patch` : `workspace_disagreed: the suite passes ${ownBaseline === null ? '?' : (mem.repository === undefined ? ownBaseline.passed : scopedPartOf(ownBaseline).passed)} tests on the patched workspace, ${before} before the patch`;
+    // the synthesizer's own run of the patched workspace, taken this step (after the patch, or after the engine's run contradicted the baseline)
+    const fresh = ownBaseline !== null && scratch.baselineStep === ctx.step && commit.step < ctx.step ? ownBaseline : null;
+    const baselineRegressed = fresh !== null && scoped(fresh).passed < before;
     const goal = mem.goals.find((g) => g.id === commit.goalId) ?? null;
+    // (2): the goal tests the lane showed newly passing that fail in the workspace's fresh run, after the engine's run failed tests the lane did not
+    let failedGoalTests: string[] = [];
+    let contradiction = '';
+    if (engineRun !== null && (engineRun.failed + engineRun.errors > 0 || engineRun.passed === 0) && fresh !== null && goal !== null && commit.evidence !== null) {
+      const shown = new Set(commit.evidence.newlyPassing);
+      failedGoalTests = goal.tests.filter((t) => shown.has(t) && fresh.failing.includes(t));
+      contradiction = `the engine's run: ${engineRun.passed} passed, ${engineRun.failed} failed, ${engineRun.errors} errors`;
+    }
+    if (!engineRegressed && !baselineRegressed && failedGoalTests.length === 0) return null;
+    let reason: string;
+    if (engineRegressed && engineRun !== null) reason = `workspace_disagreed: the engine's run passed ${engineRun.passed} tests, ${before} passed before the patch`;
+    else if (baselineRegressed) reason = `workspace_disagreed: the suite passes ${fresh === null ? '?' : scoped(fresh).passed} tests on the patched workspace, ${before} before the patch`;
+    else reason = `workspace_disagreed: ${failedGoalTests.join(', ')} passed in the lane but fail${failedGoalTests.length === 1 ? 's' : ''} in the workspace (${contradiction}; ${before} passed before the patch)`;
     if (goal !== null) {
       // the goal re-opens and is re-localised from the workspace's failure text (the guard's `workspace_disagreed` note is this event)
       if (goal.status === 'fixed') goal.status = 'open';
@@ -1049,11 +1103,20 @@ export class LedgerSieveSynthesizer implements Synthesizer {
    * instead of adopting a stale green run. (Files outside `loadPythonFiles` — tests, configuration — are not in the lane image either:
    * a change there is caught by the engine's own claiming run.) Only a green lane run is adopted: a suite that still fails is re-run
    * so the ledger clusters the remaining failures from the full output (the lane keeps only a bounded tail).
+   *
+   * Content equality is not agreement on the tests (§6.4/§6.6): the engine's own claiming run in the workspace is the authority,
+   * and the lane may differ from it in environment, ordering or flakiness. The adopted run only ever supplies the claiming run's
+   * evidence — the engine ANDs it with its own parsed run before it completes — and once the engine has executed a full-suite run
+   * after the commit that is not green, that run contradicts the lane on this very tree, so the lane run is not adopted (again):
+   * the suite is re-run in the workspace and the ledger follows its failing ids (step(), `engineRunContradictsBaseline`).
    */
-  private adoptableLaneRun(scratch: RunScratch, files: ReadonlyMap<string, SourceFile>): TestRunSummary | null {
-    const outcome = scratch.lastCommit?.outcome ?? null;
+  private adoptableLaneRun(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch, files: ReadonlyMap<string, SourceFile>): TestRunSummary | null {
+    const commit = scratch.lastCommit;
+    const outcome = commit?.outcome ?? null;
     const full = outcome?.full ?? null;
-    if (outcome === null || full === null || full.timedOut || full.failed + full.errors > 0 || full.passed === 0) return null;
+    if (commit === null || outcome === null || full === null || full.timedOut || full.failed + full.errors > 0 || full.passed === 0) return null;
+    const engine = mem.lastEngineRun;
+    if (engine !== null && engine.step > commit.step && isFullSuiteRun(ctx, mem, engine) && !(engine.failed === 0 && engine.errors === 0 && engine.passed > 0)) return null;
     if (outcome.applied.files.length === 0) return null;
     const touched = new Map(outcome.applied.files.map((f) => [f.path, f.after]));
     const base = outcome.job.base.files;
@@ -1070,23 +1133,26 @@ export class LedgerSieveSynthesizer implements Synthesizer {
    * §2.2 lines 4–6: one full-suite run on the committed workspace, the oracle model from it, the
    * ledger reconciled with the fresh failure clusters (rebuilt from the checkpoint on the first
    * baseline of a resumed run). Returns a Proposal only for the §4.1 exit (timed-out baseline →
-   * every goal parked, propose the full command so the judge sees it).
+   * every goal parked, propose the full command so the judge sees it). `sameWorkspace` (llm-jev): the
+   * workspace did not change — the engine's run contradicted the baseline (step()) — so `before` of
+   * the evidence and of the revert triggers (`scratch.previousBaseline`) and the rejected-passer stash
+   * stay what they were; only the measurement is replaced.
    */
-  private async rebaseline(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch): Promise<Proposal | null> {
+  private async rebaseline(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch, sameWorkspace = false): Promise<Proposal | null> {
     const files = await this.deps.loadFiles(ctx);
     const paths = (await ctx.workspace.listCandidates()).map((c) => c.path);
     const layout = detectLayout([...files.keys(), ...paths]);
-    if (layout !== 'quixbugs' && (mem.repository !== undefined || isRepositoryWorkspace(ctx.workspaceInfo.testCommand, paths))) return this.rebaselineRepository(ctx, mem, scratch, files, paths);
+    if (layout !== 'quixbugs' && (mem.repository !== undefined || isRepositoryWorkspace(ctx.workspaceInfo.testCommand, paths))) return this.rebaselineRepository(ctx, mem, scratch, files, paths, sameWorkspace);
     const command = baselineCommand(ctx);
     const timeoutMs = Math.min(ctx.limits.commandTimeoutMs, ctx.limits.maxCommandTimeoutMs);
-    const adopted = this.llmJev ? this.adoptableLaneRun(scratch, files) : null;
+    const adopted = this.llmJev ? this.adoptableLaneRun(ctx, mem, scratch, files) : null;
     if (adopted !== null) this.emit(ctx, 'baseline', `lane run adopted as the baseline: every touched file reads as the lane's post-image (${adopted.passed}/${adopted.total} pass); no re-run`);
     const { summary: baseline, output } = adopted !== null ? { summary: { ...adopted, command }, output: adopted.outputTail } : await this.deps.runTests(ctx, command, timeoutMs);
     const sourcePaths = [...files.keys()];
     const clusterOpts = { output, sourcePaths, ...(layout === 'quixbugs' ? { defaultFiles: sourcePaths.filter((p) => p !== 'node.py') } : {}) };
 
-    // the run before this one is `before` of the post-patch run's evidence (see step())
-    scratch.previousBaseline = mem.baseline;
+    // the run before this one is `before` of the post-patch run's evidence (see step()); a re-run of the same workspace keeps it
+    if (!sameWorkspace) scratch.previousBaseline = mem.baseline;
     mem.baseline = baseline;
     scratch.baselineStep = ctx.step;
     mem.oracle = fitOracle(baseline, { commandTimeoutMs: ctx.limits.commandTimeoutMs, wallRemainingMs: this.wallRemaining(ctx, scratch), workspace: { git: ctx.workspaceInfo.git } });
@@ -1101,7 +1167,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     mem.subsetBaselines = new Map();
     mem.deferred = new Map();
     // a rejected candidate's diff was made against the previous workspace
-    scratch.rejected.clear();
+    if (!sameWorkspace) scratch.rejected.clear();
     this.emit(ctx, 'baseline', `${baseline.passed}/${baseline.total} pass, ${baseline.failed} failed, ${baseline.errors} errors in ${baseline.durationMs} ms (${layout}, ${mem.oracle.runner}, ${command})`);
     if (baseline.timedOut) {
       // §4.1: a timed-out baseline parks the run's goals. A timed-out summary names no test, so the
@@ -1149,7 +1215,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
    * run and the reproduction are measured again on the workspace: the goal is fixed iff the
    * reproduction passes; a regression is a newly failing scoped test.
    */
-  private async rebaselineRepository(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch, files: Map<string, SourceFile>, paths: string[]): Promise<Proposal | null> {
+  private async rebaselineRepository(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch, files: Map<string, SourceFile>, paths: string[], sameWorkspace = false): Promise<Proposal | null> {
     const persisted: (PersistedSearchState & Partial<PersistedRepositoryState>) | null = isPersistedSearchState(ctx.synthState) ? ctx.synthState : null;
     if (!scratch.restored) {
       // §2.1 durability: tried hashes, commit hashes, claims and the goal placeholders come from the checkpoint
@@ -1177,7 +1243,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     // of waiting for the search; the search takes the round from `llm.early` instead of firing its own
     if (first && this.llmJev) this.fireEarlyRound(ctx, mem, repo);
     let scoped: TestRunSummary;
-    const adoptedScoped = this.llmJev && repo.scope.command !== null ? this.adoptableLaneRun(scratch, files) : null;
+    const adoptedScoped = this.llmJev && repo.scope.command !== null ? this.adoptableLaneRun(ctx, mem, scratch, files) : null;
     if (repo.scope.command === null) {
       scoped = emptyScopedSummary(baselineCommand(ctx));
     } else if (adoptedScoped !== null) {
@@ -1202,7 +1268,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       scratch.freshRepro = null;
     }
     const baseline = mergeSummaries(scoped, repro?.summary ?? null);
-    scratch.previousBaseline = mem.baseline;
+    // `before` of the evidence and the revert triggers; a re-run of the same workspace keeps it (see rebaseline)
+    if (!sameWorkspace) scratch.previousBaseline = mem.baseline;
     mem.baseline = baseline;
     scratch.baselineStep = ctx.step;
     const wall = this.wallRemaining(ctx, scratch);
@@ -1216,7 +1283,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     if (!first) mem.localizeCache.clear();
     mem.subsetBaselines = new Map();
     mem.deferred = new Map();
-    scratch.rejected.clear();
+    if (!sameWorkspace) scratch.rejected.clear();
     repo.knownFailures = scoped.failed + scoped.errors;
     repo.lastRepro = repro;
     const goal = mem.goals.find((g) => g.id === repo?.goalId);

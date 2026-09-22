@@ -1,31 +1,36 @@
 /**
- * The controller's llm-jev switches (docs/LLM-JEV-DESIGN.md §3 row 4a, §6.5, §6.6, §9.4): no establishing
+ * The controller's llm-jev switches (docs/LLM-JEV-DESIGN.md §3 row 4a, §6.4–§6.6, §9.4): no establishing
  * run before the first patch, the completion facts on the claiming run, the lane run adopted as the
  * baseline when the workspace reads as the lane, the revert route when the engine's run disagrees with the
- * lane (executed → the commit leaves the ledger; blocked → re-proposed once, then abandoned), and
- * `synthesizerHandles`. The scripted deps mirror controller.test.ts; the LLM source is the fake (the
- * controller only meters, persists and cleans it up here).
+ * lane (executed → the commit leaves the ledger; blocked → re-proposed once, then abandoned) — on the count
+ * trigger, and on the second trigger when the engine's claiming run contradicts the adopted lane run
+ * without lowering the count (the lane run is not re-adopted, the workspace is re-run, its failing goal
+ * test re-opens the goal) — and `synthesizerHandles`. The scripted deps mirror controller.test.ts; the LLM
+ * source is the fake (the controller only meters, persists and cleans it up here).
  */
 import { describe, expect, it } from 'vitest';
 
 import type { Proposal, WindowEntry } from '../../../../src/core/types.js';
 import { synthesizerHandles } from '../../../../src/synth/index.js';
-import { ESTABLISH_GOAL, LedgerSieveSynthesizer, runMemory } from '../../../../src/synth/search/index.js';
+import { ESTABLISH_GOAL, LedgerSieveSynthesizer, engineRunContradictsBaseline, runMemory } from '../../../../src/synth/search/index.js';
 import { dropMemory } from '../../../../src/synth/search/memory.js';
+import type { EngineRun } from '../../../../src/synth/search/memory.js';
 import type { BaselineRun, RunMemory, SearchDeps } from '../../../../src/synth/search/index.js';
 import type { SubGoalResult } from '../../../../src/synth/search/subgoal.js';
 import type { Goal } from '../../../../src/synth/search/types.js';
-import type { SourceFile } from '../../../../src/synth/types.js';
+import type { SourceFile, TestRunSummary } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/index.js';
-import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, fakeLlm, jobOf, outcomeOf, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
+import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, fakeLlm, fakeMemory, jobOf, outcomeOf, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
 import { makeTrace } from './proposal-helpers.js';
 
 const FIX_TEXT = 'return gcd(b, a % b)';
 const DETECTED_COMMAND = 'pytest -q';
 const TEST_COMMAND = 'python3 -m pytest -q';
+/** a second failing test of the same module (a second ledger goal) */
+const TEST_Y = 'tests/test_gcd.py::test_y';
 
-function failingBaseline(): BaselineRun {
-  return { summary: summary({ command: TEST_COMMAND, failing: [GCD_TEST], passing: [GCD_OTHER_TEST] }), output: '' };
+function failingBaseline(failing: string[] = [GCD_TEST], passing: string[] = [GCD_OTHER_TEST]): BaselineRun {
+  return { summary: summary({ command: TEST_COMMAND, failing, passing }), output: '' };
 }
 function greenBaseline(): BaselineRun {
   return { summary: summary({ command: TEST_COMMAND, failing: [], passing: [GCD_OTHER_TEST, GCD_TEST] }), output: '' };
@@ -35,13 +40,13 @@ const buggy = sourceFile('gcd.py', GCD_BUGGY);
 const fixApplied = applyCandidate(cand(siteAt(buggy, 5), FIX_TEXT, { source: 'llm', op: 'sample_0_0' }));
 const patched = sourceFile('gcd.py', fixApplied.files[0]!.after);
 
-/** The search's commit of the LLM fix, with its shadow outcome (a green lane run) when `withOutcome`. */
-function fixFor(withOutcome: boolean): (goal: Goal, mem: RunMemory) => SubGoalResult {
+/** The search's commit of the LLM fix, with its shadow outcome (a green lane run over `lanePassing`) when `withOutcome`. */
+function fixFor(withOutcome: boolean, lanePassing: string[] = [GCD_OTHER_TEST, GCD_TEST]): (goal: Goal, mem: RunMemory) => SubGoalResult {
   return (goal, mem) => {
     const base = mem.bases.find((b) => b.origin === 'committed')!;
     const r: SubGoalResult = { kind: 'commit', applied: fixApplied, allGoalTestsPass: true, trace: makeTrace({ goalId: goal.id, outcome: 'fixed', winner: fixApplied }) };
     if (withOutcome) {
-      const green = summary({ command: TEST_COMMAND, failing: [], passing: [GCD_OTHER_TEST, GCD_TEST] });
+      const green = summary({ command: TEST_COMMAND, failing: [], passing: lanePassing });
       r.outcome = outcomeOf(jobOf(fixApplied.candidate, base), 'plausible', { subset: green, full: green });
     }
     return r;
@@ -251,6 +256,154 @@ describe('llm-jev: the revert route (§6.5)', () => {
     const abandoned = await h.synth.synthesize(ctxFor({ runId, step: 5, window: [blocked(executedPatch(3)), blocked(executedPatch(4))] }));
     expect(isRevert(abandoned)).toBe(false);
     expect(mem.committed).toHaveLength(1);
+  });
+});
+
+describe('llm-jev: the engine\'s claiming run contradicts the adopted lane run without lowering the count (§6.5 second trigger, §6.4/§6.6)', () => {
+  const baselineEvents = (ctx: ReturnType<typeof ctxFor>): string[] => ctx.events.flatMap((e) => (e.type === 'synth' && e.phase === 'baseline' ? [e.detail] : []));
+  const revertEvents = (ctx: ReturnType<typeof ctxFor>): number => ctx.events.filter((e) => e.type === 'synth' && e.phase === 'revert').length;
+
+  it('the goal test fails in the engine\'s run while another goal\'s test passes (passed = before + 1): the lane run is not re-adopted, the workspace is re-run, the goal re-opens, no completion is claimed and the revert is proposed once', async () => {
+    const pre = failingBaseline([GCD_TEST, TEST_Y], [GCD_OTHER_TEST]);
+    // the synthesizer's own run of the workspace after the engine's: the goal test still fails there, test_y passes
+    const post = failingBaseline([GCD_TEST], [GCD_OTHER_TEST, TEST_Y]);
+    const h = harness({ baselines: [pre, post, pre], results: [fixFor(true, [GCD_OTHER_TEST, GCD_TEST, TEST_Y]), parked], files: [[buggy], [patched]] });
+    const runId = 'llm-ctl-contradicted';
+    await h.synth.synthesize(ctxFor({ runId, step: 1 }));
+    const c2 = ctxFor({ runId, step: 2, window: [executedPatch(1)] });
+    const p2 = await h.synth.synthesize(c2);
+    const mem = runMemory(runId);
+    // the lane's green run was adopted: every goal reads fixed and the claiming run declares the ledger fixed
+    expect(baselineEvents(c2).some((d) => d.includes('adopted'))).toBe(true);
+    expect(mem.baseline?.passed).toBe(3);
+    expect(mem.goals.map((g) => g.status)).toEqual(['fixed', 'fixed']);
+    expect(p2.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
+    expect(p2.evidence?.completion?.ledgerFixed).toBe(true);
+    // the engine's claiming run on the same tree: the goal test fails, test_y passes → 2 passed against 1 before the patch
+    const c3 = ctxFor({ runId, step: 3, window: [executedPatch(1), executedRun(2, TEST_COMMAND, { passed: 2, failed: 1 })] });
+    const p3 = await h.synth.synthesize(c3);
+    expect(isRevert(p3)).toBe(true);
+    expect(p3.evidence).toBeUndefined();
+    expect(p3.plan.openProblems.some((n) => n.includes('workspace_disagreed') && n.includes(GCD_TEST) && n.includes('fails in the workspace'))).toBe(true);
+    expect(p3.plan.remaining).toContain(`fix ${GCD_TEST} in gcd.py`);
+    expect(mem.goals.find((g) => g.tests.includes(GCD_TEST))?.status).toBe('open');
+    expect(mem.goals.find((g) => g.tests.includes(TEST_Y))?.status).toBe('fixed');
+    // the baseline is the workspace's own run now, not the lane's: one re-run, no second adoption, `before` still the pre-patch run
+    expect(mem.baseline?.failing).toEqual([GCD_TEST]);
+    expect(h.calls.filter((c) => c.startsWith('runTests'))).toHaveLength(2);
+    expect(baselineEvents(c3).some((d) => d.includes('disagrees with the baseline'))).toBe(true);
+    expect(baselineEvents(c3).some((d) => d.includes('adopted'))).toBe(false);
+    expect(revertEvents(c3)).toBe(1);
+    expect(mem.committed).toHaveLength(1);
+    expect(h.calls.filter((c) => c.startsWith('searchSubGoal'))).toHaveLength(1);
+    // the revert executed: the commit leaves the ledger, the workspace is re-baselined and searched again
+    const c4 = ctxFor({ runId, step: 4, window: [executedRun(2, TEST_COMMAND, { passed: 2, failed: 1 }), executedPatch(3)] });
+    const p4 = await h.synth.synthesize(c4);
+    expect(mem.committed).toHaveLength(0);
+    expect(isRevert(p4)).toBe(false);
+    expect(revertEvents(c4)).toBe(1);
+    expect(h.calls.filter((c) => c.startsWith('runTests'))).toHaveLength(3);
+    // both goals fail again after the revert: g1 is searched (parked here), then the bounded second pass searches g2
+    expect(h.calls.filter((c) => c.startsWith('searchSubGoal'))).toEqual(['searchSubGoal:g1', 'searchSubGoal:g1', 'searchSubGoal:g2']);
+    expect(mem.goals.map((g) => g.status)).toEqual(['parked', 'parked']);
+  });
+
+  it('the goal test fails in the engine\'s run with the passed count unchanged (the patch did nothing in the engine\'s environment): the same route', async () => {
+    const h = harness({ baselines: [failingBaseline(), failingBaseline()], results: [fixFor(true)], files: [[buggy], [patched]] });
+    const runId = 'llm-ctl-contradicted-equal';
+    await h.synth.synthesize(ctxFor({ runId, step: 1 }));
+    await h.synth.synthesize(ctxFor({ runId, step: 2, window: [executedPatch(1)] }));
+    const mem = runMemory(runId);
+    expect(mem.baseline?.passed).toBe(2);
+    const c3 = ctxFor({ runId, step: 3, window: [executedPatch(1), executedRun(2, TEST_COMMAND, { passed: 1, failed: 1 })] });
+    const p3 = await h.synth.synthesize(c3);
+    expect(isRevert(p3)).toBe(true);
+    expect(mem.goals[0]?.status).toBe('open');
+    expect(mem.baseline?.passed).toBe(1);
+    expect(h.calls.filter((c) => c.startsWith('runTests'))).toHaveLength(2);
+    expect(revertEvents(c3)).toBe(1);
+  });
+
+  it('when the workspace re-run does not reproduce the engine\'s failure the goal stays fixed and nothing is reverted; the run is proposed again and the engine\'s green run then ends in `done`', async () => {
+    const h = harness({ baselines: [failingBaseline(), greenBaseline()], results: [fixFor(true)], files: [[buggy], [patched]] });
+    const runId = 'llm-ctl-contradicted-flaky';
+    await h.synth.synthesize(ctxFor({ runId, step: 1 }));
+    await h.synth.synthesize(ctxFor({ runId, step: 2, window: [executedPatch(1)] }));
+    const mem = runMemory(runId);
+    const c3 = ctxFor({ runId, step: 3, window: [executedPatch(1), executedRun(2, TEST_COMMAND, { passed: 1, failed: 1 })] });
+    const p3 = await h.synth.synthesize(c3);
+    expect(baselineEvents(c3).some((d) => d.includes('disagrees with the baseline'))).toBe(true);
+    expect(h.calls.filter((c) => c.startsWith('runTests'))).toHaveLength(2);
+    expect(isRevert(p3)).toBe(false);
+    expect(revertEvents(c3)).toBe(0);
+    expect(mem.goals[0]?.status).toBe('fixed');
+    expect(mem.committed).toHaveLength(1);
+    // the engine's failing run blocks `done`: the suite runs again in the engine
+    expect(p3.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
+    // the same contradicting run never re-runs the workspace twice; the engine's green run completes the task
+    const c4 = ctxFor({ runId, step: 4, window: [executedPatch(1), executedRun(2, TEST_COMMAND, { passed: 1, failed: 1 }), executedRun(3, TEST_COMMAND, { passed: 2, failed: 0 })] });
+    const p4 = await h.synth.synthesize(c4);
+    expect(p4.action.kind).toBe('done');
+    expect(h.calls.filter((c) => c.startsWith('runTests'))).toHaveLength(2);
+    expect(baselineEvents(c4)).toEqual([]);
+  });
+
+  it('the normal case is unchanged: the engine\'s claiming run agreeing with the adopted lane run re-runs nothing and `done` follows', async () => {
+    const h = harness({ baselines: [failingBaseline()], results: [fixFor(true)], files: [[buggy], [patched]] });
+    const runId = 'llm-ctl-agreed';
+    await h.synth.synthesize(ctxFor({ runId, step: 1 }));
+    await h.synth.synthesize(ctxFor({ runId, step: 2, window: [executedPatch(1)] }));
+    const c3 = ctxFor({ runId, step: 3, window: [executedPatch(1), executedRun(2, TEST_COMMAND, { passed: 2, failed: 0 })] });
+    const p3 = await h.synth.synthesize(c3);
+    expect(p3.action.kind).toBe('done');
+    expect(h.calls.filter((c) => c.startsWith('runTests'))).toHaveLength(1);
+    expect(baselineEvents(c3)).toEqual([]);
+    expect(runMemory(runId).goals[0]?.status).toBe('fixed');
+  });
+
+  it('jev-only is unchanged: an engine run that contradicts the synthesizer\'s baseline never re-runs the suite', async () => {
+    const j = harness({ llmJev: false, baselines: [failingBaseline()], results: [fixFor(false)] });
+    const runId = 'jev-only-contradicted';
+    const p1 = await j.synth.synthesize(ctxFor({ runId, step: 1 }));
+    expect(p1.goal).toContain(ESTABLISH_GOAL);
+    // the engine's establishing run shows one more failure than the synthesizer's baseline
+    const c2 = ctxFor({ runId, step: 2, window: [executedRun(1, TEST_COMMAND, { passed: 0, failed: 2 })] });
+    const p2 = await j.synth.synthesize(c2);
+    expect(p2.action.kind).toBe('patch');
+    expect(j.calls.filter((c) => c.startsWith('runTests'))).toHaveLength(1);
+    expect(baselineEvents(c2)).toEqual([]);
+  });
+});
+
+describe('engineRunContradictsBaseline', () => {
+  const green = summary({ command: TEST_COMMAND, failing: [], passing: [GCD_OTHER_TEST, GCD_TEST] });
+  const run = (step: number, passed: number, failed: number, action = `run ${TEST_COMMAND}`): EngineRun => ({ step, action, passed, failed, errors: 0 });
+  function memWith(o: { baseline?: TestRunSummary; run: EngineRun | null; change: number | null }): RunMemory {
+    const mem = fakeMemory([buggy], o.baseline ?? green);
+    mem.lastEngineRun = o.run;
+    mem.lastChangeStep = o.change;
+    return mem;
+  }
+  const ctx = ctxFor({ step: 3 });
+
+  it('names the engine\'s full-suite run of the baseline\'s workspace that fails tests the baseline does not', () => {
+    const contradicting = run(2, 1, 1);
+    expect(engineRunContradictsBaseline(ctx, memWith({ run: contradicting, change: 1 }), { baselineStep: 2 })).toBe(contradicting);
+    // a baseline taken in the same step as the run (propose stage before execute stage) is compared; one taken later is not
+    expect(engineRunContradictsBaseline(ctx, memWith({ run: contradicting, change: null }), { baselineStep: 2 })).toBe(contradicting);
+    expect(engineRunContradictsBaseline(ctx, memWith({ run: contradicting, change: null }), { baselineStep: 3 })).toBeNull();
+  });
+
+  it('is null without an engine run or a baseline, when a change was executed after the run or at/after the baseline, for a goal-subset run, for a run with no more failures than the baseline knows, and for a timed-out baseline', () => {
+    expect(engineRunContradictsBaseline(ctx, memWith({ run: null, change: null }), { baselineStep: 2 })).toBeNull();
+    expect(engineRunContradictsBaseline(ctx, memWith({ run: run(2, 1, 1), change: null }), { baselineStep: null })).toBeNull();
+    expect(engineRunContradictsBaseline(ctx, memWith({ run: run(2, 1, 1), change: 3 }), { baselineStep: 2 })).toBeNull();
+    expect(engineRunContradictsBaseline(ctx, memWith({ run: run(3, 1, 1), change: 2 }), { baselineStep: 2 })).toBeNull();
+    expect(engineRunContradictsBaseline(ctx, memWith({ run: run(2, 0, 1, `run ${TEST_COMMAND} ${GCD_TEST}`), change: 1 }), { baselineStep: 2 })).toBeNull();
+    const oneFailing = summary({ command: TEST_COMMAND, failing: [GCD_TEST], passing: [GCD_OTHER_TEST] });
+    expect(engineRunContradictsBaseline(ctx, memWith({ baseline: oneFailing, run: run(2, 1, 1), change: 1 }), { baselineStep: 2 })).toBeNull();
+    expect(engineRunContradictsBaseline(ctx, memWith({ baseline: oneFailing, run: run(2, 0, 2), change: 1 }), { baselineStep: 2 })).toEqual(run(2, 0, 2));
+    expect(engineRunContradictsBaseline(ctx, memWith({ baseline: { ...green, timedOut: true }, run: run(2, 1, 1), change: 1 }), { baselineStep: 2 })).toBeNull();
   });
 });
 
