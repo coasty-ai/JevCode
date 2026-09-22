@@ -104,7 +104,8 @@ describe('writeState / load', () => {
       const text = await readFile(path, 'utf8');
       await writeFile(path, text.replace('"version":1', '"version":2'));
       expect((await store.load()).recoveredFrom).toBe('prev');
-      expect(store.lastWarnings().join(' ')).toMatch(/unsupported version/);
+      // TUI-DESIGN-4 §7.9: a *newer* envelope is named as such so the caller can offer `jevcode upgrade`
+      expect(store.lastWarnings().join(' ')).toMatch(/written by a newer JevCode \(state\.json v2; this build reads v1\)/);
       await writeFile(path, text.slice(0, text.length >> 1));
       expect((await store.load()).recoveredFrom).toBe('prev');
       expect(store.lastWarnings().join(' ')).toMatch(/not JSON/);
@@ -462,7 +463,8 @@ describe('contract 1.1 additions (TUI-DESIGN §15 item 19, §13.3)', () => {
     expect(CHECKPOINT_FILES.post).toBe('post');
     expect(CHECKPOINT_FILES.tmp).toBe('tmp');
     expect(CHECKPOINT_FILES.drafts).toBe('drafts');
-    expect(DISK_ERROR_CODES).toEqual(['ENOSPC', 'EACCES', 'EROFS', 'EDQUOT', 'EIO', 'EMFILE']);
+    // TUI-DESIGN-4 §7.2 edge 2: ENOENT joins the set (the `rundir:rm` fault and the measured silent run)
+    expect(DISK_ERROR_CODES).toEqual(['ENOSPC', 'EACCES', 'EROFS', 'EDQUOT', 'EIO', 'EMFILE', 'ENOENT']);
   });
 
   it('writeUi writes ui.json atomically and redacted', () =>
@@ -502,20 +504,33 @@ describe('contract 1.1 additions (TUI-DESIGN §15 item 19, §13.3)', () => {
       expect((JSON.parse(text) as ReturnType<typeof makeMeta>).title).toBe('first title');
     }));
 
-  it('classifyDiskError: the six codes through a cause chain, file inferred from the message, null otherwise', async () => {
+  it('classifyDiskError: the seven codes through a cause chain, file inferred from the message, null otherwise', async () => {
     const { classifyDiskError } = await import('../../../src/checkpoint/store.js');
     const errno = (code: string): Error & { code: string } => Object.assign(new Error(`${code}: boom`), { code });
-    expect(classifyDiskError(errno('ENOSPC'), 'state.json')).toEqual({ code: 'ENOSPC', file: 'state.json', text: 'checkpoint degraded: ENOSPC on state.json', key: 'state.json:ENOSPC' });
+    expect(classifyDiskError(errno('ENOSPC'), 'state.json')).toEqual({
+      code: 'ENOSPC',
+      file: 'state.json',
+      text: 'checkpoint degraded: ENOSPC on state.json',
+      // TUI-DESIGN-4 §7.2 edge 6: the whole sentence, never the raw `open '<path>'` suffix
+      sentence: 'checkpoint degraded: ENOSPC on state.json — the disk is full; this run cannot be resumed',
+      key: 'state.json:ENOSPC',
+    });
     // wrapped by the store's fail(): the file is named in the message and the errno sits in `cause`
     const wrapped = new CheckpointError('cannot rotate state.json: ENOSPC: no space left on device (/tmp/run)', '/tmp/run', { cause: errno('ENOSPC') });
     expect(classifyDiskError(wrapped)).toMatchObject({ code: 'ENOSPC', file: 'state.json' });
     const append = new CheckpointError('append to steps.jsonl failed: EACCES (/tmp/run)', '/tmp/run', { cause: errno('EACCES') });
     expect(classifyDiskError(append)).toMatchObject({ code: 'EACCES', file: 'steps.jsonl', key: 'steps.jsonl:EACCES' });
-    for (const code of ['EROFS', 'EDQUOT', 'EIO', 'EMFILE']) expect(classifyDiskError(errno(code))?.code).toBe(code);
+    for (const code of ['EROFS', 'EDQUOT', 'EIO', 'EMFILE', 'ENOENT']) expect(classifyDiskError(errno(code))?.code).toBe(code);
     // unknown file → "run dir"
-    expect(classifyDiskError(errno('EROFS'))).toEqual({ code: 'EROFS', file: null, text: 'checkpoint degraded: EROFS on run dir', key: 'run dir:EROFS' });
-    // not a disk condition
-    expect(classifyDiskError(errno('ENOENT'))).toBeNull();
+    expect(classifyDiskError(errno('EROFS'))).toEqual({
+      code: 'EROFS',
+      file: null,
+      text: 'checkpoint degraded: EROFS on run dir',
+      sentence: 'checkpoint degraded: EROFS on run dir — the run directory is not writable; this run cannot be resumed',
+      key: 'run dir:EROFS',
+    });
+    // TUI-DESIGN-4 §7.2 edge 2: ENOENT now classifies (write paths only)
+    expect(classifyDiskError(errno('ENOENT'))?.sentence).toBe('checkpoint degraded: ENOENT on run dir — the run directory was removed during the run; this run cannot be resumed');
     expect(classifyDiskError(new Error('plain'))).toBeNull();
     expect(classifyDiskError(null)).toBeNull();
     expect(classifyDiskError('ENOSPC')).toBeNull();
@@ -533,7 +548,7 @@ describe('contract 1.1 additions (TUI-DESIGN §15 item 19, §13.3)', () => {
     const runDir = '/tmp/ui.json-runs/abc';
     // no artefact outside the run dir → run dir
     const listing = new CheckpointError(`cannot list post images: ENOSPC (${runDir})`, runDir, { cause: errno('ENOSPC') });
-    expect(classifyDiskError(listing)).toEqual({ code: 'ENOSPC', file: null, text: 'checkpoint degraded: ENOSPC on run dir', key: 'run dir:ENOSPC' });
+    expect(classifyDiskError(listing)).toMatchObject({ code: 'ENOSPC', file: null, text: 'checkpoint degraded: ENOSPC on run dir', key: 'run dir:ENOSPC' });
     // the errno text names the temp file under the run dir: the artefact is state.json, not ui.json
     const tmp = new CheckpointError(`cannot write state.json temp file: ENOSPC: write '${runDir}/state.json.tmp-1-abcd' (${runDir})`, runDir, { cause: errno('ENOSPC') });
     expect(classifyDiskError(tmp)).toMatchObject({ file: 'state.json', key: 'state.json:ENOSPC' });

@@ -106,8 +106,41 @@ export interface DiskError {
   file: string | null;
   /** `checkpoint degraded: <code> on <file>` (TUI-DESIGN §24); `<file>` falls back to `run dir` */
   text: string;
+  /**
+   * TUI-DESIGN-4 §7.2 edge 6 / §12: `text` plus the consequence —
+   * `checkpoint degraded: EACCES on state.json — the run directory is not writable; this run cannot be resumed`.
+   * The notice never prints the raw `open '<path>'` suffix an errno message carries. `text` is kept beside it so
+   * existing consumers and captures are unchanged; the engine's `checkpoint:degraded` emit uses `sentence`.
+   */
+  sentence: string;
   /** stable identity for the engine's once-per-(file, code) rule */
   key: string;
+}
+
+/**
+ * TUI-DESIGN-4 §7.2 edge 6: the clause after the em dash — what the errno means for this run, in the user's terms.
+ * Every branch ends with the same consequence, because every disk class has it: the checkpoint did not land.
+ */
+export function degradedConsequence(code: DiskErrorCode): string {
+  switch (code) {
+    case 'EACCES':
+    case 'EROFS':
+      return 'the run directory is not writable; this run cannot be resumed';
+    case 'ENOSPC':
+    case 'EDQUOT':
+      return 'the disk is full; this run cannot be resumed';
+    case 'ENOENT':
+      return 'the run directory was removed during the run; this run cannot be resumed';
+    case 'EMFILE':
+      return 'too many open files; this run cannot be resumed';
+    case 'EIO':
+      return 'the device reported an I/O error; this run cannot be resumed';
+  }
+}
+
+/** TUI-DESIGN-4 §7.2 edge 6 / §12: the whole sentence the `checkpoint:degraded` notice carries. */
+export function checkpointDegradedSentence(code: DiskErrorCode, file: string): string {
+  return `checkpoint degraded: ${code} on ${file} — ${degradedConsequence(code)}`;
 }
 
 function isDiskErrorCode(v: unknown): v is DiskErrorCode {
@@ -154,7 +187,7 @@ export function classifyDiskError(e: unknown, file?: string): DiskError | null {
   const runDir = e instanceof CheckpointError ? e.runDir : null;
   const named = file ?? fileNamedIn(message, runDir);
   const shown = named ?? 'run dir';
-  return { code, file: named, text: `checkpoint degraded: ${code} on ${shown}`, key: `${shown}:${code}` };
+  return { code, file: named, text: `checkpoint degraded: ${code} on ${shown}`, sentence: checkpointDegradedSentence(code, shown), key: `${shown}:${code}` };
 }
 
 /**
