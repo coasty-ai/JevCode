@@ -31,7 +31,12 @@
     "tui",
     "ink",
     "coding-agent",
-    "jev"
+    "jev",
+    "openrouter",
+    "llm",
+    "terminal",
+    "agentic-coding",
+    "program-repair"
   ],
   "scripts": {
     "build": "node scripts/build.mjs && node scripts/licenses.mjs",
@@ -46,7 +51,7 @@
     "test:pty": "vitest run --project pty",
     "perf": "npm run build && node bin/jevcode.js perf",
     "bench": "node bin/jevcode.js bench",
-    "dev": "tsx src/cli/main.ts",
+    "dev": "tsx src/cli/main.tsx",
     "jev-contract": "node scripts/jev-contract.mjs",
     "check": "npm run typecheck && npm run jev-contract && npm test"
   },
@@ -62,5 +67,14 @@
     "typescript": "7.0.2",
     "vite": "8.3.0",
     "vitest": "5.0.1"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/coasty-ai/JevCode.git"
+  },
+  "homepage": "https://github.com/coasty-ai/JevCode#readme",
+  "bugs": {
+    "url": "https://github.com/coasty-ai/JevCode/issues"
+  },
+  "author": "Prateek Jannu"
 }

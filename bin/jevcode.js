@@ -10,7 +10,7 @@
 // through fetch('data:...'), which is local decoding, not network.
 const [major = 0, minor = 0] = process.versions.node.split('.').map((s) => Number(s));
 if (major < 22 || (major === 22 && minor < 12)) {
-  process.stderr.write(`jevcode: Node 22.12 or newer is required (found ${process.versions.node}); see .nvmrc\n`);
+  process.stderr.write(`jevcode: Node >=22.12.0 is required (package.json "engines"); found ${process.versions.node}\n`);
   process.exit(2);
 }
 if (process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== '' && process.env.FORCE_COLOR === undefined) {
