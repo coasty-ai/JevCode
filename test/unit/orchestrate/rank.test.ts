@@ -10,6 +10,8 @@ import { DEFAULT_SPLIT_POLICY } from '../../../src/orchestrate/types.js';
 import { OPTION_KEY_OF, WHICH_SPLIT, selfContainedId } from '../../../src/orchestrate/split/questions.js';
 import { applyDropRule, rankLandingOrder, rankSplits, type RankInput } from '../../../src/orchestrate/split/rank.js';
 import { hasDependencyCycle } from '../../../src/orchestrate/split/normalize.js';
+import { disjoint, parseOwnGlob } from '../../../src/orchestrate/split/globs.js';
+import { OWN_GLOBS_MAX } from '../../../src/core/limits.js';
 import type { Answer, Decision, Question } from '../../../src/core/types.js';
 import type { AgentSpec, AskFn, NormalizedSplit, SplitKind } from '../../../src/orchestrate/types.js';
 
@@ -77,6 +79,8 @@ const BASE: Omit<RankInput, 'options' | 'auto'> = {
   verification: ['npm test'],
   rejected: [{ kind: 'by_layer', reason: 'no workspace manifest', probability: null }],
   policy: DEFAULT_SPLIT_POLICY,
+  deny: ['.git'],
+  fold: false,
 };
 
 const TWO = [split('by_directory', [agent('tui-rows'), agent('cli-args')]), split('by_plan_item', [agent('alpha-one'), agent('beta-two')])];
@@ -285,7 +289,7 @@ describe('the drop-rule merge promotes a research receiver (review finding 9)', 
       [selfContainedId('writer')]: noulA(0.1),
       [selfContainedId('keeper')]: noulA(0.9),
     };
-    const out = applyDropRule(before, answers, DEFAULT_SPLIT_POLICY);
+    const out = applyDropRule(before, answers, DEFAULT_SPLIT_POLICY, { deny: ['.git'], fold: false });
     expect(out.split).not.toBeNull();
     const receiver = out.split?.agents.find((a) => a.slug === 'reader');
     expect(receiver).toBeDefined();
@@ -304,10 +308,95 @@ describe('the drop-rule merge promotes a research receiver (review finding 9)', 
       [selfContainedId('scanner')]: noulA(0.1),
       [selfContainedId('keeper')]: noulA(0.9),
     };
-    const out = applyDropRule(split('by_plan_item', [one, two, keeper]), answers, DEFAULT_SPLIT_POLICY);
+    const out = applyDropRule(split('by_plan_item', [one, two, keeper]), answers, DEFAULT_SPLIT_POLICY, { deny: ['.git'], fold: false });
     const receiver = out.split?.agents.find((a) => a.slug === 'reader');
     expect(receiver?.role).toBe('research');
     expect(receiver?.branch).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Re-review 2026-09-22, R1: the drop-merge runs AFTER normalizeSplit and returns its split with
+// `manifestId: ''` and no re-validation, so it was the ONE path where a merge could widen an
+// `own` set with no downstream belt — re-opening finding 2 exactly where nothing would catch it.
+// ---------------------------------------------------------------------------------------
+
+/** 20 `src/aN/` + 20 `src/bN/`: the merge is 40 globs, which collapse to `src/**` under OWN_GLOBS_MAX. */
+function wideAgent(slug: string, letter: string): AgentSpec {
+  return agent(slug, { own: Array.from({ length: 20 }, (_, i) => `src/${letter}${i}/`) });
+}
+
+describe('the drop-merge is re-validated (re-review R1)', () => {
+  const doomedAnswers = (dropped: string, others: readonly string[]): Record<string, Answer> => {
+    const out: Record<string, Answer> = { [selfContainedId(dropped)]: noulA(0.1) };
+    for (const s of others) out[selfContainedId(s)] = noulA(0.9);
+    return out;
+  };
+
+  it('never collapses a merged own set past the deny list into src/**', () => {
+    const before = split('by_plan_item', [wideAgent('wide-a', 'a'), wideAgent('wide-b', 'b'), agent('keeper', { own: ['test/**'] })]);
+    const out = applyDropRule(before, doomedAnswers('wide-b', ['wide-a', 'keeper']), DEFAULT_SPLIT_POLICY, {
+      deny: ['src/secrets'],
+      fold: false,
+    });
+    for (const a of out.split?.agents ?? []) {
+      expect(a.own).not.toContain('src/**');
+      expect(a.own.length).toBeLessThanOrEqual(OWN_GLOBS_MAX);
+    }
+  });
+
+  it('falls back to no_split when the merged own set cannot be represented under the cap', () => {
+    const before = split('by_plan_item', [wideAgent('wide-a', 'a'), wideAgent('wide-b', 'b'), agent('keeper', { own: ['test/**'] })]);
+    const out = applyDropRule(before, doomedAnswers('wide-b', ['wide-a', 'keeper']), DEFAULT_SPLIT_POLICY, {
+      deny: ['src/secrets'],
+      fold: false,
+    });
+    expect(out.split).toBeNull();
+    expect(out.rejected.some((r) => /own|glob|collapse/i.test(r.reason))).toBe(true);
+  });
+
+  it('falls back to no_split when the widened receiver overlaps a third agent', () => {
+    // The reviewer's corollary. `near` (17 globs) absorbs `doomed` (16) — 33 globs, one over
+    // OWN_GLOBS_MAX, so the collapse folds them all into `src/x/**`, which then CONTAINS `third`'s
+    // `src/x/two/**`. Two agents owning one file is precisely what §3.4 rule 3 exists to prevent,
+    // and nothing downstream of the drop rule would have re-checked it.
+    const near = agent('near', { own: Array.from({ length: 17 }, (_, i) => `src/x/n${i}/`) });
+    const third = agent('third', { own: ['src/x/two/**'] });
+    const doomed = agent('doomed', { own: Array.from({ length: 16 }, (_, i) => `src/x/d${i}/`) });
+    const out = applyDropRule(split('by_plan_item', [near, third, doomed]), doomedAnswers('doomed', ['near', 'third']), DEFAULT_SPLIT_POLICY, {
+      deny: [],
+      fold: false,
+    });
+    expect(out.split).toBeNull();
+    expect(out.rejected.some((r) => /overlap|both own/i.test(r.reason))).toBe(true);
+  });
+
+  it('a surviving split is always pairwise disjoint after a drop-merge', () => {
+    const near = agent('near', { own: Array.from({ length: 17 }, (_, i) => `src/x/n${i}/`) });
+    const third = agent('third', { own: ['src/x/two/**'] });
+    const doomed = agent('doomed', { own: Array.from({ length: 16 }, (_, i) => `src/x/d${i}/`) });
+    const out = applyDropRule(split('by_plan_item', [near, third, doomed]), doomedAnswers('doomed', ['near', 'third']), DEFAULT_SPLIT_POLICY, {
+      deny: [],
+      fold: false,
+    });
+    const owns = (out.split?.agents ?? []).map((a) => a.own.flatMap((r) => {
+      const p = parseOwnGlob(r);
+      return p.ok ? [p.glob] : [];
+    }));
+    for (let i = 0; i < owns.length; i++) {
+      for (let j = i + 1; j < owns.length; j++) expect(disjoint(owns[i] ?? [], owns[j] ?? [], false).ok).toBe(true);
+    }
+  });
+
+  it('an ordinary merge that violates nothing still succeeds', () => {
+    const out = applyDropRule(
+      split('by_directory', [agent('tui-rows', { own: ['src/tui/rows/**'] }), agent('tui-pane', { own: ['src/tui/pane/**'] }), agent('cli-args', { own: ['src/cli/**'] })]),
+      doomedAnswers('tui-pane', ['tui-rows', 'cli-args']),
+      DEFAULT_SPLIT_POLICY,
+      { deny: ['src/secrets'], fold: false },
+    );
+    expect(out.split?.agents.map((a) => a.slug)).toEqual(['tui-rows', 'cli-args']);
+    expect(out.split?.agents[0]?.own).toEqual(['src/tui/rows/**', 'src/tui/pane/**']);
   });
 });
 
@@ -324,7 +413,7 @@ describe('the drop-rule repoint never closes a dependency loop', () => {
       [selfContainedId('keeper')]: noulA(0.9),
       [selfContainedId('doomed')]: noulA(0.1),
     };
-    const out = applyDropRule(split('by_plan_item', [reader, keeper, doomed]), answers, DEFAULT_SPLIT_POLICY);
+    const out = applyDropRule(split('by_plan_item', [reader, keeper, doomed]), answers, DEFAULT_SPLIT_POLICY, { deny: ['.git'], fold: false });
     const agents = out.split?.agents ?? [];
     expect(agents.length).toBe(2);
     expect(hasDependencyCycle(agents)).toBe(false);
@@ -340,6 +429,8 @@ describe('rankSplits returns on every path (review finding 11)', () => {
       return { answers: {}, rows: [] };
     };
     const input: RankInput = {
+      deny: ['.git'],
+      fold: false,
       task: 't',
       remaining: ['a', 'b', 'c'],
       unverified: [],

@@ -13,9 +13,9 @@
  * `jev-unreachable` pane (CD §11 row 33: coordination-class calls never open a pane).
  */
 import { clip } from '../../core/text.js';
-import { AGENT_TASK_CHARS } from '../../core/limits.js';
+import { AGENT_TASK_CHARS, OWN_GLOBS_MAX } from '../../core/limits.js';
 import { annotateChoiceRows, resolveChoice, type ChoiceResolution } from '../../loop/stages/choose.js';
-import { parseOwnGlob, type OwnGlob } from './globs.js';
+import { disjoint, parseOwnGlob, validateOwnList, type OwnGlob } from './globs.js';
 import { hasDependencyCycle, mergeAgentFields } from './normalize.js';
 import { SPLIT_ESCAPE, SPLIT_KIND_OF, WHICH_SPLIT, buildDecomposeState, optionKeyOf, planDecomposeQuestions, selfContainedId } from './questions.js';
 import type { Answer, Decision } from '../../core/types.js';
@@ -34,6 +34,20 @@ export interface RankInput {
   policy: SplitPolicy;
   /** §3.5's deterministic path: `split: 'auto'` takes the first option in enumerate order and asks nothing */
   auto: boolean;
+  /**
+   * §3.4 rule 2's deny list (`.git`, submodules, `secretPaths`) and the volume's case folding — the
+   * SAME values `normalizeSplit` was given. The drop rule merges `own` sets after normalisation has
+   * finished, so without them the merge is the one widening path with nothing downstream to catch it
+   * (re-review R1).
+   */
+  deny: readonly string[];
+  fold: boolean;
+}
+
+/** What `applyDropRule` needs from §3.4 to re-validate a merge it performed. */
+export interface DropContext {
+  deny: readonly string[];
+  fold: boolean;
 }
 
 /** §3.5: `no_split` is the fallback of every path, and it is what this builds. */
@@ -105,8 +119,8 @@ function nearestAgent(dropped: AgentSpec, survivors: readonly AgentSpec[]): numb
  * A full re-normalisation of the merged option (coverage, disjointness, the caps) belongs to the
  * decompose stage, which owns §3.4; that is why the merged split's `manifestId` is blanked below.
  */
-function mergeInto(receiver: AgentSpec, dropped: AgentSpec): AgentSpec {
-  const merged = mergeAgentFields(receiver, dropped, { fold: false });
+function mergeInto(receiver: AgentSpec, dropped: AgentSpec, ctx: DropContext): AgentSpec {
+  const merged = mergeAgentFields(receiver, dropped, { fold: ctx.fold, deny: ctx.deny });
   return {
     ...receiver,
     task: clip(`${receiver.task} Also, merged from the dropped agent \`${dropped.slug}\`: ${dropped.task}`, AGENT_TASK_CHARS),
@@ -116,6 +130,29 @@ function mergeInto(receiver: AgentSpec, dropped: AgentSpec): AgentSpec {
     branch: merged.branch,
     capUsd: merged.capUsd,
   };
+}
+
+/**
+ * Re-validate the merge at `at` against §3.4 rules 2 and 3 (re-review R1). Returns the reason the
+ * merge is not representable, or null.
+ *
+ * Rule 2 is re-run through `validateOwnList`, which is the same call the normaliser used: it parses,
+ * applies the deny list, prefix-collapses WITHOUT widening past a denied prefix, and enforces
+ * `OWN_GLOBS_MAX`. Rule 3 is re-run because a receiver widened by the collapse can reach into a THIRD
+ * agent's slice even though it was disjoint from the dropped agent's.
+ */
+function mergeFault(agents: readonly AgentSpec[], at: number, ctx: DropContext): string | null {
+  const receiver = agents[at];
+  if (receiver === undefined) return null;
+  const valid = validateOwnList(receiver.own, { max: OWN_GLOBS_MAX, deny: ctx.deny, fold: ctx.fold });
+  if (!valid.ok) return `leaves \`${receiver.slug}\` with an own set that is not legal: ${valid.reason}`;
+  for (const [i, other] of agents.entries()) {
+    if (i === at) continue;
+    const theirs = parseOwn(other.own);
+    const clash = disjoint(valid.globs, theirs, ctx.fold);
+    if (!clash.ok) return `makes \`${receiver.slug}\` and \`${other.slug}\` both own ${clash.left} / ${clash.right}`;
+  }
+  return null;
 }
 
 export interface DropResult {
@@ -129,7 +166,7 @@ export interface DropResult {
  * agents the result is `no_split`. An agent with NO Noul (the ≤ 13 bound dropped its question, or it is not
  * an agent of the leading option) is never dropped: absence is not "below the floor".
  */
-export function applyDropRule(split: NormalizedSplit, answers: Record<string, Answer>, policy: SplitPolicy): DropResult {
+export function applyDropRule(split: NormalizedSplit, answers: Record<string, Answer>, policy: SplitPolicy, ctx: DropContext): DropResult {
   const rejected: RejectedOption[] = [];
   let agents: AgentSpec[] = [...split.agents];
   const doomed = agents.filter((a) => {
@@ -144,7 +181,17 @@ export function applyDropRule(split: NormalizedSplit, answers: Record<string, An
     rejected.push({ kind: split.kind, reason: `agent \`${d.slug}\` dropped: is_self_contained ${v.toFixed(2)} is below the floor ${policy.selfContainedFloor}`, probability: v });
     if (survivors.length < 2) return { split: null, rejected };
     const at = nearestAgent(d, survivors);
-    const next = survivors.map((a, i) => (i === at ? mergeInto(a, d) : a));
+    const next = survivors.map((a, i) => (i === at ? mergeInto(a, d, ctx) : a));
+    // R1: this merge runs AFTER `normalizeSplit`, and the result is returned with `manifestId: ''`
+    // and no further checking, so it is the ONE place an `own` set can widen with no downstream
+    // belt. Re-run rule 2 (sub-language, deny list, cap after collapse) on the receiver and rule 3
+    // (pairwise disjointness) across the survivors; a merge that cannot satisfy both is not a
+    // split, so the option becomes `no_split` rather than something the queue would mis-own.
+    const fault = mergeFault(next, at, ctx);
+    if (fault !== null) {
+      rejected.push({ kind: split.kind, reason: `merging \`${d.slug}\` away ${fault}`, probability: null });
+      return { split: null, rejected };
+    }
     // Repoint, do not delete: the receiver now holds the dropped agent's work, so anything that waited
     // on `d` must wait on the receiver. Deleting the edge would let a dependant land FIRST and see none
     // of the work it declared a dependency on (the same class as review finding 3, one layer up).
@@ -249,7 +296,7 @@ export async function rankSplits(input: RankInput, deps: { ask: AskFn | null }):
   if (winner === undefined) return fellBack('the ranked option is not one of the surviving splits');
   annotateChoiceRows(rows, WHICH_SPLIT, resolved);
 
-  const dropped = applyDropRule(winner, answers, input.policy);
+  const dropped = applyDropRule(winner, answers, input.policy, { deny: input.deny, fold: input.fold });
   const losers = rankable.filter((o) => o !== winner).map((o) => loser(o, 'ranked below the chosen split', pOf(o)));
   const rejected = [...input.rejected, ...losers, ...dropped.rejected];
   if (dropped.split === null) {

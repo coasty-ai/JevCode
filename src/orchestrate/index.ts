@@ -98,7 +98,7 @@ export {
 export type { DecomposeQuestionPlan, DecomposeStateInput, RankAgentInput } from './split/questions.js';
 
 export { applyDropRule, rankLandingOrder, rankSplits } from './split/rank.js';
-export type { DropResult, LandingAgent, RankInput } from './split/rank.js';
+export type { DropContext, DropResult, LandingAgent, RankInput } from './split/rank.js';
 
 // §5.1: the verification set, resolved by code
 export { resolveVerification, verifyForOwn, NO_VERIFICATION_REASON, VERIFY_COMMAND_CHARS } from './verify.js';
