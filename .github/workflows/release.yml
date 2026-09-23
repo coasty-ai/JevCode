@@ -96,7 +96,7 @@ jobs:
         run: npm run jev-contract
 
       - name: Unit tests (a failing test is retried up to twice)
-        run: npm test -- --maxWorkers=3 --retry 2
+        run: npm test -- --maxWorkers=3 --retry 2 --reporter=default --reporter=./scripts/ci/retried-reporter.mjs
 
       - name: Build the bundle and the attribution file
         run: npm run build

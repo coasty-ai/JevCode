@@ -56,9 +56,10 @@ jobs:
 
       # About 40 unit files assert wall-clock budgets calibrated on a developer machine; on a shared 2-core runner
       # an unlucky neighbour can push one over (a best-of-7 at 7 ms against 5 ms). In CI a failing test is retried
-      # up to twice: a real regression still fails all three attempts, and local `npm test` is unchanged.
+      # up to twice: a real regression still fails all three attempts, and local `npm test` is unchanged. Every
+      # retried test is listed in the job summary and annotated on its file (scripts/ci/retried-reporter.mjs).
       - name: Unit tests (a failing test is retried up to twice)
-        run: npm test -- --maxWorkers=3 --retry 2
+        run: npm test -- --maxWorkers=3 --retry 2 --reporter=default --reporter=./scripts/ci/retried-reporter.mjs
 
       - name: Build the bundle and the attribution file
         run: npm run build
