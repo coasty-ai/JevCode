@@ -214,7 +214,8 @@ export class Transcript {
           const content: AgentAssistantBlock[] = [];
           if (r.text.length > 0) content.push({ type: 'text', text: r.text });
           for (const c of r.calls) content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.input });
-          if (content.length === 0) content.push({ type: 'text', text: '(no reply)' });
+          // an empty reply is never recorded (it is a stage failure); no harness text is ever put in the assistant's mouth
+          if (content.length === 0) break;
           const replay = o.replay && r.providerState !== undefined && r.providerState.provider === o.provider && r.providerState.model === o.model && r.sys === o.systemHash;
           const prev = out[out.length - 1];
           // two assistant turns in a row never reach the wire: the second one's blocks join the first
