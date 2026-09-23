@@ -70,9 +70,19 @@ function fenceAfter(lines: readonly string[], fence: boolean): boolean {
 }
 
 /**
+ * The text a line is drawn from, live and committed alike: control characters and a stray CR dropped, format-pattern
+ * keys redacted. ONE text, so the reply block's rows, the offsets of an overflow cut and the committed item's rows are
+ * in one coordinate space (a key on a line would otherwise shift every cut after it).
+ */
+function committedLine(line: string): string {
+  return patternRedact(sanitizeStream(line).replace(/\r/g, ''));
+}
+
+/**
  * The uncommitted lines of `live` under `reply` — every line after `done`, the first one from `offset`, the last one
  * partial. An EMPTY partial line (the buffer ends with its newline) is not drawn: the rows the block shows are then
- * exactly the rows the commit of those lines draws, and the caret sits at the end of the last written line.
+ * exactly the rows the commit of those lines draws, and the caret sits at the end of the last written line. `line` is
+ * the drawn text (`committedLine`); `at` / `length` index the raw buffer.
  */
 export function pendingLines(live: string, reply: ReplyState): PendingLine[] {
   if (reply.done >= live.length) return [];
@@ -83,12 +93,13 @@ export function pendingLines(live: string, reply: ReplyState): PendingLine[] {
   const out: PendingLine[] = [];
   let fence = reply.fence;
   let at = reply.done;
-  parts.forEach((line, i) => {
+  parts.forEach((raw, i) => {
     const partial = i === parts.length - 1 && !closed;
+    const line = committedLine(raw);
     const role: ProseRole = isFenceLine(line) ? 'fence' : fence ? 'code' : 'text';
     if (role === 'fence') fence = !fence;
-    out.push({ line, role, from: i === 0 ? reply.offset : 0, partial, at, length: line.length + (partial ? 0 : 1) });
-    at += line.length + 1;
+    out.push({ line, role, from: i === 0 ? reply.offset : 0, partial, at, length: raw.length + (partial ? 0 : 1) });
+    at += raw.length + 1;
   });
   return out;
 }
@@ -187,11 +198,6 @@ export interface ReplyCommit {
   readonly seq: number;
 }
 
-/** The text a committed line keeps: control characters and a stray CR dropped, format-pattern keys redacted (a key split across deltas). */
-function committedLine(line: string): string {
-  return patternRedact(sanitizeStream(line).replace(/\r/g, ''));
-}
-
 /**
  * A committed prose item. A whole line keeps its source text (what transcript.log prints for it); the two halves of a
  * line an overflow cut split keep the display text they draw, so a dump of the TUI's items reads them as two lines.
@@ -232,10 +238,30 @@ export function commitCut(live: string, final: boolean): number {
   return final ? live.length : live.lastIndexOf('\n') + 1;
 }
 
+/** A character a format-pattern key can contain (core/redact.ts FORMAT_PATTERNS; chat/stream-redact.ts's KEY_CHAR). */
+const KEY_CHAR_RE = /[A-Za-z0-9_-]/;
+/** core/redact.ts HEADER_PATTERN's anchors: the value after one spans whitespace. */
+const HEADER_ANCHOR_RE = /authorization:|x-api-key:/i;
+
+/**
+ * The display offset up to which a line still streaming is final under redaction: a key lives inside one run of key
+ * characters, so the trailing run may still grow into one (and turn into the marker), and a header anchor's value may
+ * still arrive. An overflow cut of a partial line never falls past it, so no later delta can rewrite a committed row —
+ * a key hard-split across rows would otherwise land half raw in the scrollback and shift the continuation.
+ */
+function stableEnd(display: string): number {
+  let end = display.length;
+  while (end > 0 && KEY_CHAR_RE.test(display[end - 1]!)) end--;
+  const h = display.search(HEADER_ANCHOR_RE);
+  return h >= 0 ? Math.min(end, h) : end;
+}
+
 /**
  * The overflow commit: when the uncommitted rows exceed `geom.rows`, commit the oldest rows until they fit — whole
- * complete lines first, then the finished rows of the next line (never its last row, which may still change). Returns
- * null when nothing needs to (or can) move.
+ * complete lines first, then the finished rows of the next line (never its last row, which may still change, and never
+ * past what redaction may still rewrite). A cut takes at least one body row with the item's spacer / label row: the
+ * block must never shed those alone (its tail cut would move every row up one, and the commit of the next row move them
+ * back). Returns null when nothing needs to (or can) move.
  */
 export function commitOverflow(live: string, reply: ReplyState, geom: ReplyGeometry, prev: TranscriptItem | null, step: number | null, seq: number, g: GlyphSet = GLYPHS.unicode): ReplyCommit | null {
   const cap = Math.max(1, Math.floor(geom.rows));
@@ -262,8 +288,9 @@ export function commitOverflow(live: string, reply: ReplyState, geom: ReplyGeome
     const pl = lines[i]!;
     const l = layouts[i]!;
     const n = proseLayoutRows(l);
-    const line = committedLine(pl.line);
-    if (!pl.partial && n <= excess) {
+    const line = pl.line;
+    // a complete line goes whole when it cannot be cut (one row) — one row more than needed moves nothing on screen
+    if (!pl.partial && (n <= excess || l.rows.length === 1)) {
       out.push(commitItem(step, s, pl.role, line, pl.from));
       s += 1;
       excess -= n;
@@ -272,9 +299,14 @@ export function commitOverflow(live: string, reply: ReplyState, geom: ReplyGeome
       if (pl.role === 'fence') fence = !fence;
       continue;
     }
-    // cut inside this line: the spacer and the label row go with the head; keep at least one body row back
+    // cut inside this line: the spacer and the label row go with the head, with at least one body row; keep at least
+    // one body row back; a partial line is cut only where redaction can no longer change the rows before the cut
     const fixed = (l.spacer ? 1 : 0) + (l.labelRow ? 1 : 0);
-    const k = Math.min(excess - fixed, l.rows.length - 1);
+    let k = Math.min(Math.max(1, excess - fixed), l.rows.length - 1);
+    if (pl.partial) {
+      const limit = stableEnd(parseProse(line, pl.role, g, true).display);
+      while (k > 0 && l.rows[k]!.start > limit) k--;
+    }
     if (k <= 0) break;
     const cutAt = l.rows[k]!.start;
     out.push(commitItem(step, s, pl.role, line, pl.from, cutAt));

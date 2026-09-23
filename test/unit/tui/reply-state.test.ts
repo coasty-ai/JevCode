@@ -119,6 +119,15 @@ describe('wrapProse: greedy, grapheme-aware, prefix-stable', () => {
     expect(wrapProse('日本語日本語', 4).rows).toEqual(['日本', '語日', '本語']);
     expect(wrapCells('  x = 1;   // a comment', 10).rows).toEqual(['  x = 1;  ', ' // a comm', 'ent']);
   });
+
+  it('an indentation wider than the row keeps only what fits: every row stays within the width', () => {
+    const w = wrapProse('          x y', 5);
+    for (const row of w.rows) expect(stringWidth(row)).toBeLessThanOrEqual(5);
+    expect(w.rows).toEqual(['    x', 'y']);
+    // prefix-stable: the indentation alone draws the same first row start
+    expect(wrapProse('          ', 5).starts[0]).toBe(w.starts[0]);
+    for (const width of [1, 2, 3, 8]) for (const row of wrapProse(`${' '.repeat(12)}alpha beta`, width).rows) expect(stringWidth(row)).toBeLessThanOrEqual(width);
+  });
 });
 
 describe('light markdown: the same rows live and committed', () => {
@@ -231,6 +240,55 @@ describe('the reply model: random texts, random chunks, random overflow — the 
     const key = `sk-or-v1-${'a'.repeat(64)}`;
     const c = commitThrough(`my key is ${key}\n`, EMPTY_REPLY, commitCut(`my key is ${key}\n`, false), 1, 0);
     expect(c.items[0]!.text).not.toContain(key);
+  });
+
+  it('a paragraph that first outgrows the block by its spacer alone commits the spacer WITH a body row (no tail-cut jump)', () => {
+    const you: TranscriptItem = { key: 'y', seq: 0, step: null, kind: 'chat', level: 'info', text: 'tell me', label: '[you]' };
+    const para = Array.from({ length: 60 }, (_, i) => `word${i}`).join(' ');
+    const items = pendingItems(para, EMPTY_REPLY, 1);
+    const l = proseLayout(items[0]!, you, 80);
+    expect(l.spacer).toBe(true);
+    // the cap is the body rows: the spacer alone is the excess
+    const c = commitOverflow(para, EMPTY_REPLY, { rows: l.rows.length, columns: 80 }, you, 1, 0);
+    expect(c).not.toBeNull();
+    expect(c!.items).toHaveLength(1);
+    expect(c!.items[0]!.prose?.to).toBe(l.rows[1]!.start);
+    expect(c!.reply.offset).toBe(l.rows[1]!.start);
+    // the rest fits the cap with a row to spare — nothing was tail-cut
+    expect(pendingRows(pendingItems(para, c!.reply, 1), c!.items[0]!, 80)).toBe(l.rows.length - 1);
+    // a complete one-row line that cannot be cut goes whole
+    const two = 'short line\nstill streaming';
+    const d = commitOverflow(two, EMPTY_REPLY, { rows: 2, columns: 80 }, you, 1, 0);
+    expect(d?.items.map((i) => i.text)).toEqual(['short line']);
+  });
+
+  it('a key on an overflowing line: live rows, cut offsets and committed rows are one (redacted) text — words are never split', () => {
+    const key = `ghp_${'A'.repeat(36)}`;
+    const line = `alpha beta gamma delta ${key} epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi psi omega`;
+    const drawn = pendingItems(line, EMPTY_REPLY, 1);
+    expect(drawn[0]!.prose?.line).not.toContain(key);
+    const c = commitOverflow(line, EMPTY_REPLY, { rows: 1, columns: 60 }, null, 1, 0);
+    expect(c).not.toBeNull();
+    const rest = pendingItems(line, c!.reply, 1)[0]!;
+    const tail = proseLayout(rest, c!.items.at(-1)!, 60).rows.map(proseRowText).join(' ');
+    // the continuation opens on a whole word (the cut is a row start of the drawn text)
+    expect(tail.trimStart()).toMatch(/^[a-z]+ /);
+    const head = c!.items.map((i) => i.text).join(' ');
+    expect(`${head} ${tail.trim()}`.replace(/\s+/g, ' ')).toBe(drawn[0]!.prose!.line.replace(/\s+/g, ' '));
+    expect(`${head}${tail}`).not.toContain(key);
+  });
+
+  it('a partial line is never cut inside its trailing key-character run (a key still streaming may turn into the marker)', () => {
+    // a long token hard-split across rows at the end of the partial line: its rows stay in the block
+    const line = `one two ghp_${'B'.repeat(30)}`;
+    const c = commitOverflow(line, EMPTY_REPLY, { rows: 1, columns: 30 }, null, 1, 0);
+    const cut = c?.reply.offset ?? 0;
+    expect(cut).toBeLessThanOrEqual(line.indexOf('ghp_'));
+    // once the key is complete (and redacted) and the line moved on, the cut may pass it
+    const done = `${line}BBBBBB and more words after it`;
+    const d = commitOverflow(done, EMPTY_REPLY, { rows: 1, columns: 30 }, null, 1, 0);
+    expect(d).not.toBeNull();
+    expect(d!.items.map((i) => i.text).join(' ')).not.toContain('ghp_B');
   });
 
   it('the layout: a spacer above the first prose row after another label, none inside the reply, none on a continuation', () => {

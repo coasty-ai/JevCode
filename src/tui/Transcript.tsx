@@ -354,9 +354,14 @@ export function proseItemRows(item: TranscriptItem, prev: TranscriptItem | null,
   if (l.spacer) out.push(<Text key={`${item.key}:sp`} wrap="truncate"> </Text>);
   if (l.labelRow) out.push(<Text key={`${item.key}:lr`} wrap="truncate" {...lProps}>{label}</Text>);
   const gutter = l.mode === 'gutter' ? l.indent - 1 : 0;
+  // a partial text line that ends in whitespace: the wrap drops the trailing gap, so the caret keeps it (one free cell)
+  // and stands where the next word will start, not hugging the last one
+  const trailingGap = item.prose?.partial === true && item.prose.role === 'text' && /\s$/u.test(item.prose.line);
   l.rows.forEach((row, i) => {
     // the caret only ever takes a FREE cell: on a full row it would push Ink's truncation ellipsis over the last glyph
-    const last = i === l.rows.length - 1 && stringWidth(row.parts.map((p) => p.text).join('')) < l.width;
+    const cells = i === l.rows.length - 1 ? stringWidth(row.parts.map((p) => p.text).join('')) : l.width;
+    const last = cells < l.width;
+    const gap = last && trailingGap && cells > 0 && cells + 1 < l.width ? ' ' : '';
     out.push(
       <Text key={`${item.key}:r${i}`} wrap="truncate">
         {l.mode === 'gutter' ? i === 0 && l.labelCell ? <Text {...lProps}>{gutterLabel(label)}</Text> : ' '.repeat(gutter) : null}
@@ -366,7 +371,7 @@ export function proseItemRows(item: TranscriptItem, prev: TranscriptItem | null,
             {p.text}
           </Text>
         ))}
-        {last && caret !== null && caret.text !== '' ? <Text {...textProps(theme, 'sweep', color)}>{caret.text}</Text> : null}
+        {last && caret !== null && caret.text !== '' ? <Text {...textProps(theme, 'sweep', color)}>{`${gap}${caret.text}`}</Text> : null}
       </Text>,
     );
   });

@@ -339,9 +339,14 @@ export function wrapProse(text: string, width: number, hang = 0, cont = false): 
     const at = m.index;
     if (/^\s/u.test(tok)) {
       if (at === 0 && !cont) {
-        // row 0's indentation is content (a nested bullet, an indented paragraph), never wider than the row allows
+        // row 0's indentation is content (a nested bullet, an indented paragraph), never wider than the row allows: an
+        // indentation wider than `room − 1` cells keeps only its last `room − 1` cells, so the row still fits `width`
+        const keep = Math.max(0, room() - 1);
+        let from = 0;
+        while (from < tok.length && stringWidth(tok.slice(from)) > keep) from++;
+        start = from;
         end = tok.length;
-        cells = Math.min(stringWidth(tok), Math.max(0, room() - 1));
+        cells = stringWidth(tok.slice(from));
         content = true;
       } else if (content) gap = stringWidth(tok);
       continue;
