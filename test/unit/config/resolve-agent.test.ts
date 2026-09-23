@@ -62,7 +62,7 @@ describe('resolveConfig in agent mode (§14.2)', () => {
     expect(settingIsExplicit(byDefault.record(), 'context.compaction')).toBe(false);
     const fromEnv = await resolve(run('--mode', 'agent'), { JEVCODE_CONTEXT_COMPACTION: 'code' });
     expect(settingIsExplicit(fromEnv.record(), 'context.compaction')).toBe(true);
-    expect(fromEnv.context().compaction).toBe('code');
+    expect(fromEnv.context?.().compaction).toBe('code');
   });
 
   it('settingIsExplicit: absent, default and derived rows are not the user’s; a discarded file value was never in force', () => {
