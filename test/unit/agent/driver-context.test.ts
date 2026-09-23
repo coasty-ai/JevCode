@@ -119,6 +119,56 @@ describe('compaction', () => {
     expect(results[0]!.startsWith('[elided:')).toBe(true);
   });
 
+  it('a steer sent with /compact survives the compaction: it reaches the first request after it, verbatim', async () => {
+    const ctx = createAgentContext({ testCommand: null, compaction: { mode: 'code', explicit: true }, turns: [{ toolCalls: [call('read_file', { path: 'src/a.py' })] }, { text: 'ok' }] });
+    const d = createAgentDriver();
+    await step(d, ctx);
+    ctx.steerQueue.push('ALSO RENAME f TO g PLEASE');
+    ctx.compactRequest = true;
+    await step(d, ctx);
+    expect(ctx.eventsOf('context:compacted')).toHaveLength(1);
+    const messages = agentRequests(ctx)[1]!.agent!.messages;
+    expect(messages).toHaveLength(1);
+    const blocks = messages[0]!.content.map((b) => (b.type === 'text' ? b.text : ''));
+    expect(blocks.at(-1)).toBe('[message from the user while you were working]\nALSO RENAME f TO g PLEASE');
+    expect(blocks[0]!.endsWith('Continue with the task.')).toBe(true);
+  });
+
+  it('a loop nudge due at the turn an automatic compaction runs is kept after it', async () => {
+    const ctx = createAgentContext({
+      testCommand: null,
+      windowTokens: 100_000,
+      compaction: { mode: 'code', explicit: true },
+      turns: [{ toolCalls: [call('read_file', { path: 'src/a.py' }), call('read_file', { path: 'src/a.py' }), call('read_file', { path: 'src/a.py' })], usage: { inputTokens: 90_000 } }, { text: 'ok' }],
+    });
+    const d = createAgentDriver();
+    const first = await step(d, ctx);
+    expect(first.next.kind === 'observe' && first.next.summary.loopTrip).toBeDefined();
+    await step(d, ctx);
+    expect(ctx.eventsOf('context:compacted')).toHaveLength(1);
+    const messages = agentRequests(ctx)[1]!.agent!.messages;
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.content.at(-1)).toEqual({ type: 'text', text: 'You have called read_file with the same arguments 3 times in a row and got the same result. Stop and try a different approach.' });
+  });
+
+  it("the harness's verify outcome is kept when the next turn build compacts", async () => {
+    const ctx = createAgentContext({
+      compaction: { mode: 'code', explicit: true },
+      sandbox: () => ({ exitCode: 1, stdout: '1 failed, 0 passed in 0.1s\n' }),
+      turns: [{ toolCalls: [call('edit_file', { path: 'src/a.py', old_string: 'return 1', new_string: 'return 3' })] }, { text: 'Fixed it.' }, { text: 'It still fails; I will say so.' }],
+    });
+    const d = createAgentDriver();
+    const kinds = [(await step(d, ctx)).next.kind, (await step(d, ctx)).next.kind];
+    expect(kinds).toEqual(['act', 'verify']);
+    ctx.compactRequest = true;
+    await step(d, ctx);
+    expect(ctx.eventsOf('context:compacted')).toHaveLength(1);
+    const messages = agentRequests(ctx)[2]!.agent!.messages;
+    expect(messages).toHaveLength(1);
+    const last = messages[0]!.content.at(-1)!;
+    expect(last.type === 'text' && last.text.startsWith('The harness ran `pytest -q` to verify your change: exit 1')).toBe(true);
+  });
+
   it('/compact forces a compaction at the next turn build', async () => {
     const ctx = createAgentContext({ testCommand: null, compaction: { mode: 'code', explicit: true }, turns: [{ toolCalls: [call('glob', { pattern: '*' })] }, { text: 'ok' }] });
     const d = createAgentDriver();

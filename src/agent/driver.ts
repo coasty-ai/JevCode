@@ -35,7 +35,7 @@ import { AGENT_TOOL_NAMES, RESEARCH_TOOL_NAMES, toolsFor } from './tools/specs.j
 import { planOf } from './tools/todo.js';
 import type { ToolResult } from './tools/result.js';
 import { sampleTurn, buildRequest, requestChars, type TurnSetup } from './turn.js';
-import { AgentTranscriptMissingError, Transcript, readTranscript, transcriptPath, type AssistantRecord, type NoteTag, type RecordedCall } from './transcript.js';
+import { AgentTranscriptMissingError, Transcript, readTranscript, transcriptPath, type AssistantRecord, type NoteRecord, type NoteTag, type RecordedCall } from './transcript.js';
 import { isTestCommand } from '../loop/stages/execute.js';
 
 type Pending =
@@ -245,7 +245,12 @@ class Driver implements AgentDriver {
     const by = summary === null ? 'code' : 'llm';
     summary ??= codeSummary(ctx, t, this.state);
     const text = ctx.redact(await compactionText(ctx, t, summary));
+    // the notes this turn was to carry (a steer, a loop or progress nudge, the verify outcome) are not history yet: they
+    // follow the compaction record verbatim, as text blocks of the same one user message
+    const since = t.latestAssistant()?.seq ?? 0;
+    const pending = t.live().filter((r): r is NoteRecord => r.kind === 'note' && r.seq > since);
     await t.append({ kind: 'compaction', text, fromSeq, toSeq, by });
+    for (const n of pending) await this.note(n.text, n.tag);
     this.state.compactions += 1;
     this.state.lastCompactionAt = new Date(ctx.now()).toISOString();
     this.state.lastCompactionStep = ctx.step;
