@@ -30,7 +30,7 @@ import type {
 } from '../core/types.js';
 import { AbortError } from '../errors.js';
 import type { AgentActivity } from './anim/Indicator.js';
-import { STREAM_LOCAL_MS, createStreamScheduler, paintsImmediately } from './stream-scheduler.js';
+import { STREAM_LOCAL_MS, createStreamScheduler } from './stream-scheduler.js';
 import { EMPTY_REPLY, commitCut, commitOverflow, commitThrough, lastVisibleItem, type ReplyGeometry, type ReplyState } from './reply-state.js';
 import type { OverlayKind } from './layout.js';
 import { emptyLoopFold, foldLoopPlan, foldLoopReplan, foldLoopSteer, foldLoopStep, loopView, type LoopBannerView, type LoopFold } from './pane/banner.js';
@@ -361,8 +361,14 @@ export interface UiState {
   /** this session's identity, so my own run is not counted as a peer; null excludes nothing (§2.2) */
   readonly selfId: PeerZoneSelf | null;
   // ----- the stream surface (TUI map top changes 4 and 6; AGENT-LOOP-DESIGN §9.4, slice S5a)
-  /** the stream scheduler's leading-edge counter: `<Transcript>` keys its `<Static>` style on it, so the first token paints at once */
+  /**
+   * the stream's paint counter: every flush that changed what streams bumps it, and `<Transcript>` keys its `<Static>`
+   * style on it, so the flush paints on Ink's immediate path (the scheduler's cadence is the one throttle; Ink's own would
+   * stack a second one on top of it)
+   */
   readonly paintSeq: number;
+  /** monotonic ms (`performance.now()`) of the last stream flush that changed the text — the spinner's "text is flowing" clock */
+  readonly liveAt: number;
   /** agent mode: the streamed reply's commit bookkeeping over `live` (the prose buffer) */
   readonly reply: ReplyState;
   /** agent mode: the reply block's row cap and width, from the App's layout (overflow commits keep the block within it) */
@@ -383,7 +389,7 @@ export type UiAction =
    * One stream-scheduler flush. `paint`: a leading edge (the stream was quiet) — bump `paintSeq` so the frame takes Ink's
    * immediate path. Agent mode also carries the command output tail and the tool call being written.
    */
-  | { type: 'live'; text: string; toolChars?: number; output?: string; writing?: AgentWriting | null; paint?: true }
+  | { type: 'live'; text: string; toolChars?: number; output?: string; writing?: AgentWriting | null; paint?: true; at?: number }
   /** agent mode: the reply block's geometry changed (the App's layout); overflow commits run against it */
   | { type: 'reply:geometry'; rows: number; columns: number }
   | { type: 'confirm:request'; request: ConfirmRequest; at?: number }
@@ -539,6 +545,7 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     scroll: { anchor: 'bottom' },
     queued: null,
     paintSeq: 0,
+    liveAt: Number.NEGATIVE_INFINITY,
     reply: EMPTY_REPLY,
     replyGeom: null,
     liveOutput: '',
@@ -569,11 +576,14 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
   switch (action.type) {
     case 'live': {
       const toolChars = action.toolChars ?? state.toolChars;
-      const paint = action.paint === true;
       const agent = state.agent;
+      // the stream's paint: a flush that changed the streamed text paints at once (and marks the text as flowing)
+      const moved = state.live !== action.text || (agent !== null && action.output !== undefined && action.output !== state.liveOutput);
+      const paint = action.paint === true || (moved && action.at !== undefined);
+      const stamp = moved && action.at !== undefined ? { liveAt: action.at } : {};
       if (agent === null) {
         if (state.live === action.text && state.toolChars === toolChars && !paint) return state;
-        return { ...state, live: action.text, toolChars, ...(paint ? { paintSeq: state.paintSeq + 1 } : {}) };
+        return { ...state, live: action.text, toolChars, ...stamp, ...(paint ? { paintSeq: state.paintSeq + 1 } : {}) };
       }
       // AGENT-LOOP-DESIGN §9.4: the prose buffer, the command output tail and the call being written, in one update
       const output = action.output ?? state.liveOutput;
@@ -581,7 +591,7 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       if (state.live === action.text && state.toolChars === toolChars && state.liveOutput === output && sameWriting(agent.writing, writing) && !paint) return state;
       const prose = agent.prose || action.text !== '';
       const nextAgent = sameWriting(agent.writing, writing) && prose === agent.prose ? agent : { ...agent, writing, prose };
-      const next: UiState = { ...state, live: action.text, toolChars, liveOutput: output, agent: nextAgent, ...(paint ? { paintSeq: state.paintSeq + 1 } : {}) };
+      const next: UiState = { ...state, live: action.text, toolChars, liveOutput: output, agent: nextAgent, ...stamp, ...(paint ? { paintSeq: state.paintSeq + 1 } : {}) };
       return overflowReply(next);
     }
     case 'reply:geometry': {
@@ -1474,10 +1484,8 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
     let toolChars = 0;
     let writing: AgentWriting | null = null;
     let agent = false;
-    const scheduler = createStreamScheduler(
-      (leading, quiet) => dispatch({ type: 'live', text: buffer, toolChars, ...(agent ? { output, writing } : {}), ...(paintsImmediately(leading, quiet) ? { paint: true as const } : {}) }),
-      opts.flushMs ?? STREAM_LOCAL_MS,
-    );
+    // every flush is stamped: a flush that moved the text paints on Ink's immediate path (the cadence is the one throttle)
+    const scheduler = createStreamScheduler(() => dispatch({ type: 'live', text: buffer, toolChars, ...(agent ? { output, writing } : {}), at: performance.now() }), opts.flushMs ?? STREAM_LOCAL_MS);
     const clearLive = (): void => {
       buffer = '';
       output = '';

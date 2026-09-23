@@ -58,7 +58,7 @@ import { wordmarkBoxRows, wordmarkFrame, wordmarkWanted, type WordmarkSetting } 
 import { MINI_NARROW_CELLS, MINI_WIDE_CELLS, agentIndicatorKind, indicatorKindFor, miniFrame, type IndicatorKind } from './anim/index.js';
 import { ReplyTail } from './ReplyTail.js';
 import { pendingItems, pendingRows } from './reply-state.js';
-import { STREAM_REDUCED_MS, createStreamScheduler, paintsImmediately, streamIntervalMs } from './stream-scheduler.js';
+import { STREAM_REDUCED_MS, createStreamScheduler, streamIntervalMs } from './stream-scheduler.js';
 import { nextPanel, parsePanelCommand } from './pane/commands.js';
 import { createBuffer, type Snapshot } from './composer/buffer.js';
 import { routeSend, routeSubmit, type SubmitDecision } from './composer/submit.js';
@@ -94,7 +94,7 @@ import { reviewRowForDigit, reviewWhyRefusal } from './review/lines.js';
 import { retryLiveLines } from './retry.js';
 import { gateLines, GATE_DISMISS_TIP } from './secrets/gate-lines.js';
 import { copyRedacted } from './secrets/clipboard.js';
-import { spinnerActive, useSpinner } from './spinner.js';
+import { SPINNER_INTERVAL_MS, spinnerActive, useSpinner } from './spinner.js';
 import { kShort, modeBadge, statusLineText, type StatusLineOptions, type StatusLineState } from './status/lines.js';
 import { StatusLine, statusView } from './StatusLine.js';
 import { installTerminalHygiene, markAlternateScreen, printToPrimaryScreen, processRestoreTerminal, rearmRestoreTerminal, restoreTerminal, suspendProcess, waitForAnyKey, writeCursorShape, type TerminalHygiene } from './terminal.js';
@@ -3196,7 +3196,9 @@ export function App(p: AppProps): React.JSX.Element {
   // §A5: an agent run spins from t = 0 of every step, whatever the engine's last `status` said
   const agentSpins = state.agent !== null && runLive && state.run !== 'aborting' && state.agent.activity !== null && state.pendingReview === null && state.blocking === null;
   const spinOn = spinnerActive(state) || agentSpins;
-  const spinner = useSpinner(spinOn, reducedMotion);
+  // TUI map top change 4: one clock while text flows — a tick within one interval of a stream paint renders nothing itself
+  const textFlowing = useCallback((): boolean => performance.now() - stateRef.current.liveAt < SPINNER_INTERVAL_MS, []);
+  const spinner = useSpinner(spinOn, reducedMotion, textFlowing);
   // AGENT-LOOP-DESIGN §A3: the mini indicator's frame of this tick, at its two widths (none under a screen reader)
   const miniOn = indicatorKind !== null && spinOn && !launch.screenReader;
   const indicatorWide = miniOn ? miniFrame(indicatorKind, spinner, MINI_WIDE_CELLS, { ascii: indicatorAscii, still: indicatorStill }) : undefined;
@@ -3716,7 +3718,7 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
    */
   let liveText = '';
   const liveScheduler = createStreamScheduler(
-    (leading, quiet) => bridge.command({ type: 'dispatch', action: { type: 'live', text: liveText, ...(paintsImmediately(leading, quiet) ? { paint: true as const } : {}) } }),
+    () => bridge.command({ type: 'dispatch', action: { type: 'live', text: liveText, at: performance.now() } }),
     launch.reducedMotion ? STREAM_REDUCED_MS : streamIntervalMs({ fps: launch.fps, ssh: launch.ssh === true }),
   );
   const trace = env['JEVCODE_TRACE'];

@@ -13,10 +13,11 @@
  *   so the idle-frames gate is untouched. The timer is a `setTimeout` (§14.2 reserves `setInterval` for `spinner.ts` /
  *   `retry.ts`), unref'd so it never keeps the process alive.
  *
- * `flush(leading, quietMs)` tells the caller whether this flush is a leading edge and how long the stream was quiet: after
- * `STREAM_PAINT_QUIET_MS` (a first token) the TUI bumps its paint sequence, which hands `<Static>` a fresh style so Ink
- * renders the frame on its immediate path instead of the trailing edge of its own render throttle (the same mechanism a
- * keystroke uses, TUI-DESIGN-2 D-F).
+ * `flush(leading, quietMs)` tells the caller whether this flush is a leading edge and how long the stream was quiet. The
+ * TUI stamps every flush: one that moved the streamed text bumps the paint sequence, which hands `<Static>` a fresh style
+ * so Ink renders the frame on its immediate path (the same mechanism a keystroke uses, TUI-DESIGN-2 D-F) — this cadence
+ * is then the stream's only throttle, never this one stacked on Ink's own 34 ms. While text flows the spinner's tick
+ * renders nothing of its own (`useSpinner`'s `flowing`), so the two never add up past `launch.fps`.
  */
 
 /** The cadence at the default 30 fps (`Math.round(1000 / 30)`). */
@@ -27,17 +28,6 @@ export const STREAM_SSH_MS = 67;
 export const STREAM_REDUCED_MS = 250;
 /** Never flush faster than this, whatever `--fps` says (60 fps). */
 export const STREAM_MIN_MS = 16;
-/**
- * A leading edge after at least this much quiet is a FIRST token (a reply starting, a command's first output after a
- * wait) and is worth Ink's immediate path; a leading edge between two bursts of one busy stream is not — forcing an
- * immediate full render there (a fast mock run streams every few milliseconds) only competes with the keys.
- */
-export const STREAM_PAINT_QUIET_MS = 200;
-
-/** True when a flush should take Ink's immediate path: a leading edge after `STREAM_PAINT_QUIET_MS` of quiet. */
-export function paintsImmediately(leading: boolean, quietMs: number): boolean {
-  return leading && quietMs >= STREAM_PAINT_QUIET_MS;
-}
 
 /** The launch facts the cadence is chosen from. */
 export interface StreamCadenceInput {

@@ -5,7 +5,7 @@
  * clock still moves); `still waiting` after 45 s in one stage. This module and `retry.ts` are the only two in
  * `src/tui/**` allowed to call `setInterval` (§14.2's grep test).
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ConfirmRequest, EngineStatus } from '../core/types.js';
 import type { OverlayKind } from './layout.js';
 import { GLYPHS, type GlyphSet } from './glyphs.js';
@@ -76,15 +76,27 @@ export function elapsedSeconds(stageStartedAt: number | null, nowMs: number): nu
  * The frame counter hook (§7.4, §14.2): 8 fps while `active` and motion is allowed, 1 Hz while `active` under
  * reduced motion (the tick is functional: the wall clock advances), no timer at all otherwise. `setInterval` is
  * allowed here and in `retry.ts` only.
+ *
+ * TUI map top change 4 — ONE clock while text flows: `flowing()` says a stream flush painted within the last tick. Then
+ * the tick advances the frame WITHOUT a render of its own — the stream's flush frames (≤ `launch.fps`) carry the spinner,
+ * the mini indicator and the caret forward — so a streaming frame and a tick frame never double the region's frame
+ * rate. When the stream goes quiet the next tick renders as before.
  */
-export function useSpinner(active: boolean, reducedMotion = false): number {
-  const [frame, setFrame] = useState(0);
+export function useSpinner(active: boolean, reducedMotion = false, flowing?: () => boolean): number {
+  const [, render] = useState(0);
+  const frame = useRef(0);
+  const flowingRef = useRef(flowing);
+  flowingRef.current = flowing;
   useEffect(() => {
     if (!active) return undefined;
     const ms = reducedMotion ? REDUCED_MOTION_TICK_MS : SPINNER_INTERVAL_MS;
-    const t = setInterval(() => setFrame((f) => (f + 1) % 100_000), ms);
+    const t = setInterval(() => {
+      frame.current = (frame.current + 1) % 100_000;
+      if (flowingRef.current?.() === true) return;
+      render((n) => (n + 1) % 100_000);
+    }, ms);
     t.unref();
     return () => clearInterval(t);
   }, [active, reducedMotion]);
-  return frame;
+  return frame.current;
 }
