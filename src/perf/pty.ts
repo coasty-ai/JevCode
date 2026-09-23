@@ -35,7 +35,7 @@ import { percentile } from '../core/time.js';
 // TUI-DESIGN-4 §3.7 (the R2 guard): the run-frame anchors come from the ONE formatter, glyph-agnostic by
 // construction. A hard-coded `·` silently stops matching in every `--ascii` capture and turns the render-lag
 // window into the whole capture — the exact failure mode A3 recorded as risk R2.
-import { RUN_END_PATTERN, RUN_STARTED_TAIL_PATTERN } from '../tui/plain.js';
+import { RUN_END_PATTERN } from '../tui/plain.js';
 
 export const BSU = '\x1b[?2026h';
 export const ESU = '\x1b[?2026l';
@@ -862,17 +862,25 @@ export const END_PATTERN = RUN_END_PATTERN;
 /** an SGR run between two visible spans — Tcl ARE (drive.exp) and Python bytes regex (the typist) read it alike */
 export const SGR_GAP = '(?:\\x1b\\[[0-9;]*m)*';
 /**
- * TUI-DESIGN-2 §4.5: every transcript label is its own dim span **and so is the text after it** —
- * `ESC[2m[run]ESC[22m ESC[…mstarted …` — so a sentinel spanning label and text carries **two** gaps, one on each
- * side of the space, exactly as `test/pty/helpers.ts`'s `labelStep` has always written it.
+ * The run is live: the **status row** reads `step <n>/<max>` — digits on both sides of the slash. The idle row reads
+ * `step 0/–` (`step 0/-` under `--ascii`, `status/lines.ts` `stepText`), so it never matches, and the segment is one
+ * plain-text span in either glyph set and in both tiers (`│ ⠋ intent    step 0/40 0m00s …` boxed, `| . intent    step
+ * 0/40 …` ascii, `⠋ intent    step 0/40 …` flat), so the pattern is ASCII only: it holds byte-wise (the typist), in
+ * Tcl ARE (drive.exp) and on a latin1-decoded capture alike. The row first reads it in the frame `run:ready` commits.
  *
- * MEASURED 2026-09-22 (integrator): with one gap this pattern matched nothing on a real capture, and because it
- * is the `RUN_STARTED` step of every perf scenario that needs a live run, `composer live`, `composer live-stress`,
- * `composer review` and the `states` scenarios `fault-pane`, `fault-live`, `resize`, `resize-live` and
- * `review 12x60` all timed out at exit 124 with `0/200 keys located` — the run they were measuring had started
- * fine, 20 s earlier. §3.7's G1 migration moved the constant and dropped the second gap with it.
+ * Why not the `[run] started · …` item any more: the chat rebuild (merge 946faa8, `isRunHeaderItem` in
+ * `src/tui/Transcript.tsx`) removed that row from the interactive transcript (`--plain`, `--json` and transcript.log
+ * keep it), so the old pattern matched nothing and every perf scenario that waits for a live run — render-lag at all
+ * four geometries, composer live / live-stress / review, the states run scenarios and scroll-latency — timed out at
+ * exit 124. The pty suite had already moved to this row (`test/pty/helpers.ts` `RUN_STARTED_STEP`, which now reads
+ * this constant), and `test/pty/chat.pty.test.ts` locates every `NAMED_ANCHORS` entry on a real capture, so a UI
+ * change that removes an anchor fails the pty suite instead of silently timing out a later perf run.
+ *
+ * The status row repeats in every frame, which also makes it immune to drive.exp's 64 KB `match_max`, which a
+ * one-shot scrollback row can fall outside of. It keeps the last step after the run ends; every consumer uses the
+ * first occurrence after the submit.
  */
-export const RUN_STARTED_PATTERN = `\\[run\\]${SGR_GAP} ${SGR_GAP}${RUN_STARTED_TAIL_PATTERN}`;
+export const RUN_STARTED_PATTERN = 'step \\d+/\\d+';
 
 // ---------------------------------------------------------------------------------------
 // Glyph-agnostic named anchors (TUI-DESIGN-4 §11, D-V ratification)
@@ -906,17 +914,25 @@ export const NAMED_ANCHORS: readonly NamedAnchor[] = [
   {
     name: 'run-started',
     pattern: RUN_STARTED_PATTERN,
-    // one sample per glyph set (TUI-DESIGN-4 §11: a two-glyph-set self-test, or `--ascii` measures a different
-    // window) PLUS the byte shape a real frame actually writes — the label is its own dim span and the text after
-    // it opens another, so the space sits BETWEEN two SGR runs. Neither sample below had that shape, which is how
-    // an anchor with one gap passed its own self-test and matched nothing on a capture (measured 2026-09-22).
+    // the status row's byte shapes cut from real frames (`chat --mode jev-on --mock`, 2026-09-23): boxed unicode at
+    // 24x80, boxed `--ascii` at 24x80, flat unicode at 12x60 — SGR runs, the border glyphs and the spinner included,
+    // so a registry sample and a capture cannot drift apart the way the hand-written `[run] started` samples did
     samples: [
-      '[run] started \u00b7 jev+llm \u00b7 fix the failing test',
-      '\x1b[2m[run]\x1b[22m started - jev+llm - fix the failing test',
-      '\x1b[2m[run]\x1b[22m \x1b[2mstarted \u00b7 jev+llm \u00b7 fix the failing test\x1b[22m',
-      '\x1b[2m[run]\x1b[22m \x1b[2mstarted - jev+llm - fix the failing test\x1b[22m',
+      '\x1b[38;5;169m│ \x1b[38;5;211m░\x1b[39m intent    step 0/40 0m00s  run $0.00/10.00 ok  sess $0.00/50.00 ok  ctx 0%\x1b[38;5;169m │\x1b[39m',
+      '\x1b[38;5;169m| \x1b[38;5;211m.\x1b[39m intent    step 0/40 0m00s  run $0.00/10.00 ok  sess $0.00/50.00 ok  ctx 0%\x1b[38;5;169m |\x1b[39m',
+      '\x1b[38;5;211m░\x1b[39m intent                 step 0/40 0m00s  run $0.00/10.00 ok',
+      '│ propose  step 12/3000 0m03s │',
     ],
-    negatives: ['[run] ready', '[step 1] started', '[run] start 20260922-000000-aaaaaaaa'],
+    // the idle status row in both glyph sets (the maximum is unknown before `run:ready`), the session header's
+    // sentinel, a step label, and the `[run] started` item row this anchor used to be — which the interactive
+    // transcript no longer prints (`isRunHeaderItem`)
+    negatives: [
+      '\x1b[2m│ \x1b[22midle                                                        step 0/–  ? help\x1b[2m │\x1b[22m',
+      '\x1b[2m| \x1b[22midle                                                        step 0/-  ? help\x1b[2m |\x1b[22m',
+      'jevcode session · ws | step 0/– starting',
+      '[step 1] started',
+      '\x1b[2m[run]\x1b[22m \x1b[2mstarted · jev+llm · fix the failing test\x1b[22m',
+    ],
   },
   {
     name: 'run-end',
@@ -946,9 +962,23 @@ export const NAMED_ANCHORS: readonly NamedAnchor[] = [
 export function anchorBytesOk(a: NamedAnchor): boolean {
   // the `latin1` round trip makes each UTF-8 byte one code unit, so a JS RegExp sees the subject byte-wise —
   // the same way `re.compile(pattern.encode()).search(bytes)` does in `perf/drivers/pty_type.py`
-  const bytes = (s: string): string => Buffer.from(s, 'utf8').toString('latin1');
-  const re = new RegExp(bytes(a.pattern), 's');
-  return a.samples.every((sample) => re.test(bytes(sample))) && (a.negatives ?? []).every((n) => !re.test(bytes(n)));
+  const re = new RegExp(latin1View(a.pattern), 's');
+  return a.samples.every((sample) => re.test(latin1View(sample))) && (a.negatives ?? []).every((n) => !re.test(latin1View(n)));
+}
+
+/** A string's UTF-8 bytes, one code unit each — the view a typist capture (`typist()`, decoded latin1) already is. */
+export function latin1View(s: string): string {
+  return Buffer.from(s, 'utf8').toString('latin1');
+}
+
+/**
+ * The offset of the first match of a shared source pattern in a capture, or -1. A typist capture is latin1-decoded
+ * (`latin1: true`), so the pattern is compiled byte-wise the way the typist's Python `re` compiles it: `(?:·|-)`
+ * searched unconverted over a latin1 capture looks for U+00B7 where the capture holds `Â·` (C2 B7) and never matches
+ * a unicode frame — which is how `render-lag`'s `END_PATTERN` search read -1 on every capture.
+ */
+export function searchPattern(capture: string, pattern: string, opts: { latin1?: boolean } = {}): number {
+  return capture.search(new RegExp(opts.latin1 === true ? latin1View(pattern) : pattern));
 }
 
 /** TUI-DESIGN-4 §11: the anchor with this name, or a throw naming the registry (a typo is never a silent skip). */
@@ -982,11 +1012,12 @@ export function anchorSelfTest(): { ok: boolean; failures: string[] } {
 
 /**
  * TUI-DESIGN-4 §11: the offset of a named anchor in a capture. **Zero matches is a hard failure** — the window
- * would otherwise silently become the whole capture (A3 risk R2). `occurrence` is 1-based.
+ * would otherwise silently become the whole capture (A3 risk R2). `occurrence` is 1-based. `latin1: true` for a
+ * typist capture (see `searchPattern`); a drive.exp capture read as UTF-8 takes the pattern as written.
  */
-export function locateAnchor(capture: string, name: string, occurrence = 1): number {
+export function locateAnchor(capture: string, name: string, occurrence = 1, opts: { latin1?: boolean } = {}): number {
   const a = namedAnchor(name);
-  const re = new RegExp(a.pattern, 'g');
+  const re = new RegExp(opts.latin1 === true ? latin1View(a.pattern) : a.pattern, 'g');
   let seen = 0;
   for (let m = re.exec(capture); m !== null; m = re.exec(capture)) {
     seen += 1;

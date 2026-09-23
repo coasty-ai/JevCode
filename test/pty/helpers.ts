@@ -18,6 +18,9 @@ import { DEFAULT_MODE, MODE_BADGE_WORD } from '../../src/config/defaults.js';
 // TUI-DESIGN-4 §3.7 (the R2 guard): the run-frame anchors are imported by name from the ONE formatter, never
 // hard-coded here — a literal `·` stops matching in every `--ascii` capture (`glyphs.ts` renders `dot: '-'`).
 import { GLYPH_DOT_CLASS, RUN_FINISHED_WORD, RUN_STARTED_WORD } from '../../src/tui/plain.js';
+// the status-row run anchor is ONE constant shared with the perf harness, so the pty suite and `jevcode perf` cannot
+// wait on different rows again (the perf copy was left on `[run] started` after the chat rebuild and timed out)
+import { RUN_STARTED_PATTERN } from '../../src/perf/pty.js';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const EXPECT_BIN = '/usr/bin/expect';
@@ -796,7 +799,7 @@ export const CHAT_OPEN_NARROW: readonly string[] = [FIRST_FRAME_STEP, `expect ${
  * (`MOCK_RUN_MODE`): the scripted `--mock` trajectory is a generator trajectory, and under the round-2 default
  * `jev-only` (§1.1) the real synthesizer would run instead of it.
  */
-export const RUN_STARTED_STEP = 'expect step \\d+/\\d+';
+export const RUN_STARTED_STEP = `expect ${RUN_STARTED_PATTERN}`;
 /**
  * TUI-DESIGN-4 §3.6 (G1) / §3.7: the run's last item, `finished · <reason> · <n> steps · …`. `reason` is a Tcl
  * alternation (`complete|max_steps`), written without a capture group so `drive.exp`'s `-re` keeps one match.

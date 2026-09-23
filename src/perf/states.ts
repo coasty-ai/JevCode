@@ -48,8 +48,8 @@
  * result as not driven: those fault hooks are not implemented in the tree (only `render:<pane>` is), see the report.
  *
  * Round 2 (TUI-DESIGN-2): every scenario that needs the scripted `--mock` run says `--mode jev-on` explicitly (the scripted
- * trajectory is a generator trajectory whatever `DEFAULT_MODE` is; under `jev-only` `--mock` would run the real synthesizer); a run is live at its `[run] start` item
- * (`[run] ready` is hidden by the compact transcript, §4.5); the placeholders are §4.4's.
+ * trajectory is a generator trajectory whatever `DEFAULT_MODE` is; under `jev-only` `--mock` would run the real synthesizer); a run is live once the status row reads
+ * `step <n>/<max>` (`pty.ts` `RUN_STARTED_PATTERN`; the TUI no longer prints the `[run] started` item); the placeholders are §4.4's.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

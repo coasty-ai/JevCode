@@ -12,15 +12,16 @@
  *           the reply are counted (the delayed series is where the bubble frame and the reply frame come apart; at 0 ms
  *           both usually land in one immediate `<Static>` render)
  *
- * Hygiene per series: no `[run] start` anywhere (a greeting never starts a run, §3.3), zero clears after the first
- * frame, the painted region within rows − 2, exit 0. The live gate of §9 (p95 < 1.5 s over a real provider) is the
+ * Hygiene per series: no run goes live — no frame's status row reads `step <n>/<max>` (`pty.ts` `RUN_STARTED_PATTERN`;
+ * a greeting never starts a run, §3.3; the `[run] started` item this used to look for is no longer printed in the TUI),
+ * zero clears after the first frame, the painted region within rows − 2, exit 0. The live gate of §9 (p95 < 1.5 s over a real provider) is the
  * S6 live scenario's, not this probe's: nothing here touches the network.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { percentile } from '../core/time.js';
-import { clearsAfter, firstDynamicFrameOffset, frameAt, frameTime, paintedMax, splitFrames, stripAnsi, summarise, typist, type Chunk, type Frame, type LatencySummary, type TimingStep, type TypistStep } from './pty.js';
+import { RUN_STARTED_PATTERN, clearsAfter, firstDynamicFrameOffset, frameAt, frameTime, paintedMax, searchPattern, splitFrames, stripAnsi, summarise, typist, type Chunk, type Frame, type LatencySummary, type TimingStep, type TypistStep } from './pty.js';
 
 export type IntakeSeriesName = 'mock0' | 'mock150';
 
@@ -57,7 +58,7 @@ export interface IntakeSeries {
   replyNet: LatencySummary;
   /** messages whose window showed at least one `thinking` frame */
   thinkingSeen: number;
-  /** `[run] start` items in the capture — must be 0 */
+  /** 1 when a frame's status row reads `step <n>/<max>` (a run went live), else 0 — must be 0 */
   runsStarted: number;
   clears: number;
   regionMax: number;
@@ -212,7 +213,7 @@ async function runSeries(root: string, bin: string, name: IntakeSeriesName, jevM
     const firstDyn = firstDynamicFrameOffset(r.capture);
     const firstIdx = Math.max(0, frameAt(frames, firstDyn));
     const pairs = pairIntake(r.timing, frames, r.chunks, measured, texts);
-    const runsStarted = (stripAnsi(r.capture).match(/\[run\] start /g) ?? []).length;
+    const runsStarted = searchPattern(r.capture, RUN_STARTED_PATTERN, { latin1: true }) >= 0 ? 1 : 0;
     const judged = judgeIntake(name, jevMs, pairs, { runsStarted, clears: clearsAfter(r.capture, firstDyn), regionMax: paintedMax(frames, firstIdx + 1), rows: ROWS, exitCode: r.code, timedOut: r.timedOut }, texts.length);
     return { ...judged, rows: ROWS, columns: COLUMNS };
   } finally {

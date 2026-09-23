@@ -12,6 +12,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { NAMED_ANCHORS, latin1View, locateAnchor } from '../../src/perf/pty.js';
 import {
   BADGE_DEFAULT,
   CHAT_OPEN,
@@ -42,6 +43,7 @@ import {
   stripAnsi,
   sttyAll,
   sttyFlag,
+  runFinishedStep,
   submitTask,
   timingOf,
   ttyOf,
@@ -451,4 +453,40 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     const lflags = (dump: string): string => dump.split('\n').find((l) => l.startsWith('lflags:')) ?? dump.trim().split('\n')[0] ?? '';
     console.log(`Ctrl-Z: ps states ${d.stopped.states.join(' → ')} → ${d.resumed.states.join(' → ')}; ${d.tty} while stopped: ${lflags(d.whileStopped!)}; after resume: ${lflags(d.afterResume.dump!)}`);
   });
+});
+
+/**
+ * Anchor liveness (the perf harness's named anchors, `src/perf/pty.ts` `NAMED_ANCHORS`). Every window `jevcode perf`
+ * measures is delimited by a named anchor, and until now the registry's self-test ran on hand-written samples only —
+ * so when the chat rebuild (merge 946faa8) stopped printing the `[run] started` item, the `run-started` anchor
+ * matched nothing on any real capture while its self-test stayed green, and every perf scenario that waits for a
+ * live run timed out at exit 124. Here each anchor must be FOUND in a real capture of a mocked run, in both glyph
+ * sets, both the way a drive.exp capture is read (UTF-8) and the way the typist reads one (latin1, compiled
+ * byte-wise), and in the order a run writes them. A UI change that removes or reshapes an anchored row fails here,
+ * at merge time.
+ */
+describe.skipIf(!hasExpect)('pty: perf anchor liveness (src/perf/pty.ts NAMED_ANCHORS on a real capture)', () => {
+  for (const glyphs of ['unicode', 'ascii'] as const) {
+    it(`${glyphs}: every named anchor is located in a real mocked-run capture, UTF-8 and latin1 alike, run-started before run-end`, async () => {
+      const r = await drive({
+        name: `chat-anchor-liveness-${glyphs}`,
+        args: ['chat', ...MOCK_RUN, ...(glyphs === 'ascii' ? ['--ascii'] : [])],
+        steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), runFinishedStep('[a-z_]+'), `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      });
+      expect(r.timeouts).toBe(0);
+      expect(r.code).toBe(0);
+      const latin1 = latin1View(r.text);
+      const at = new Map<string, number>();
+      for (const a of NAMED_ANCHORS) {
+        expect(() => locateAnchor(r.text, a.name), `${a.name} (UTF-8)`).not.toThrow();
+        expect(() => locateAnchor(latin1, a.name, 1, { latin1: true }), `${a.name} (latin1, byte-wise)`).not.toThrow();
+        at.set(a.name, locateAnchor(r.text, a.name));
+      }
+      // the run is live only after the submit: the anchor never matches the idle status row (`step 0/–` / `step 0/-`)
+      const bubble = stripAnsi(r.text).indexOf('[you] make the tests pass');
+      expect(bubble).toBeGreaterThan(0);
+      expect(stripAnsi(r.text.slice(0, at.get('run-started')!))).toContain('[you] make the tests pass');
+      expect(at.get('run-started')!).toBeLessThan(at.get('run-end')!);
+    });
+  }
 });

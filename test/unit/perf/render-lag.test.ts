@@ -104,20 +104,30 @@ describe('measureLagBaseline (the probe source runs in a bare node)', () => {
 
 describe('runStartBucket (TUI-DESIGN-3 §5.2 A5 / §9 "run-start bucket")', () => {
   const fr = (rows: readonly string[]): string => `${BSU}\x1b[?25l${rows.join('\r\n')}\r\n\x1b[?25h${ESU}`;
-  const idle = ['─── ◆ jevcode 0.3.0 ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ idle │', '╰──╯'];
-  // TUI-DESIGN-4 §3.6 (D-V, G1) / §3.7: the run's opening item, the fixture `RUN_STARTED_PATTERN` must keep matching
-  const start = ['    [run] started \u00b7 jev+llm \u00b7 t', '─── ◆ jevcode 0.3.0 ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ ▓ context  step 0/40 │', '╰──╯'];
+  // the idle status row reads `step 0/–` (the maximum is unknown before `run:ready`) and must never open the window
+  const idle = ['─── ◆ jevcode 0.3.0 ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ idle  step 0/– │', '╰──╯'];
+  // the `[you]` bubble commits first (a static frame whose status row is still idle), then the `run:ready` frame: the
+  // first status row reading `step <n>/<max>` (`RUN_STARTED_PATTERN`) — the interactive transcript no longer prints
+  // the `[run] started` item that used to open the window (merge 946faa8, `isRunHeaderItem`)
+  const bubble = ['    [you] start the perf run', ...idle];
+  const start = ['─── ◆ jevcode 0.3.0 ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ ▓ intent  step 0/40 │', '╰──╯'];
   const live = ['─── ▸ jev s1 · 2 decisions ──', '╭─ jev+llm ─╮', '│ › x │', '├──┤', '│ ▓ propose  step 1/40 │', '╰──╯'];
-  it('counts the `dynamic` frames within one second of the `[run] start` frame; static frames in the window are not counted; −1 without a run', () => {
-    const cap = fr(idle) + fr(idle) + fr(start) + fr(live) + fr(live) + fr(['[step 1] run $ pytest -q · risk 0.00 ok', ...live]) + fr(live) + fr(live);
+  it('counts the `dynamic` frames within one second of the first `step n/m` status-row frame; static frames in the window are not counted; −1 without a run', () => {
+    const cap = fr(idle) + fr(bubble) + fr(start) + fr(live) + fr(live) + fr(['[step 1] run $ pytest -q · risk 0.00 ok', ...live]) + fr(live) + fr(live);
     const { frames } = splitFrames(cap);
     const times = [100, 500, 1000, 1050, 1300, 1600, 1990, 2100];
     const chunks: Chunk[] = frames.map((f, i) => ({ t: times[i]!, off: f.start, n: f.end - f.start }));
     const classes = classifyFrames(frames, chunks, [], 34);
-    expect(classes).toEqual(['dynamic', 'dynamic', 'static', 'dynamic', 'dynamic', 'static', 'dynamic', 'dynamic']);
-    // the window [1000, 2000]: the start frame itself is static (it carries the item), three dynamic frames follow inside it, the 2100 frame is outside
-    expect(runStartBucket(frames, chunks, classes, cap)).toBe(3);
-    expect(runStartBucket(frames, chunks, classes, cap, 300)).toBe(1);
+    expect(classes).toEqual(['dynamic', 'static', 'dynamic', 'dynamic', 'dynamic', 'static', 'dynamic', 'dynamic']);
+    // the window [1000, 2000): the start frame itself (dynamic) and three more dynamic frames inside it; the static
+    // `[step 1]` frame is not counted, the 2100 frame is outside
+    expect(runStartBucket(frames, chunks, classes, cap)).toBe(4);
+    expect(runStartBucket(frames, chunks, classes, cap, 300)).toBe(2);
+    // the bucket reads a typist capture, which is latin1: the same capture's byte view opens the same window
+    const latin1 = Buffer.from(cap, 'utf8').toString('latin1');
+    const lf = splitFrames(latin1).frames;
+    const lchunks: Chunk[] = lf.map((f, i) => ({ t: times[i]!, off: f.start, n: f.end - f.start }));
+    expect(runStartBucket(lf, lchunks, classes, latin1)).toBe(4);
     expect(runStartBucket(splitFrames(fr(idle) + fr(idle)).frames, chunks, ['dynamic', 'dynamic'], fr(idle) + fr(idle))).toBe(-1);
     // a run that started but whose frame has no chunk time cannot be bucketed
     expect(runStartBucket(frames, [], classes, cap)).toBe(-1);

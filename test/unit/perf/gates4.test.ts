@@ -15,10 +15,12 @@ import {
   clearReSelfTest,
   count3J,
   framesTallerThan,
+  latin1View,
   locateAnchor,
   namedAnchor,
   no3JSelfTest,
   paintedRows,
+  searchPattern,
   splitFrames,
 } from '../../../src/perf/pty.js';
 
@@ -74,20 +76,50 @@ describe('glyph-agnostic named anchors (§11, D-V)', () => {
   });
 
   it('zero matches is a hard failure, not -1 (A3 risk R2)', () => {
-    const capture = '\x1b[2m[run]\x1b[22m started \u00b7 jev+llm \u00b7 t\r\n[run] finished \u00b7 complete \u00b7 3 steps \u00b7 1.2s\r\n';
-    expect(locateAnchor(capture, 'run-started')).toBe(capture.indexOf('[run]'));
+    const capture = '\u2502 \u2591 intent    step 0/40 0m00s \u2502\r\n[run] finished \u00b7 complete \u00b7 3 steps \u00b7 1.2s\r\n';
+    expect(locateAnchor(capture, 'run-started')).toBe(capture.indexOf('step 0/40'));
     expect(locateAnchor(capture, 'run-end')).toBeGreaterThan(0);
     expect(() => locateAnchor('nothing here', 'run-end')).toThrow(/matched 0 time\(s\).*the measured window would be wrong/);
     expect(() => locateAnchor(capture, 'run-end', 2)).toThrow(/matched 1 time\(s\) in the capture; occurrence 2 is required/);
   });
 
   it('the `--ascii` capture measures the same window as the unicode one', () => {
-    const unicode = '\x1b[2m[run]\x1b[22m started \u00b7 jev+llm \u00b7 t\r\n\x1b[2m[run]\x1b[22m finished \u00b7 complete \u00b7 3 steps\r\n';
-    const ascii = '[run] started - jev+llm - t\r\n[run] finished - complete - 3 steps\r\n';
+    const unicode = '\u2502 \u2591 intent    step 0/40 0m00s \u2502\r\n\x1b[2m[run]\x1b[22m finished \u00b7 complete \u00b7 3 steps\r\n';
+    const ascii = '| . intent    step 0/40 0m00s |\r\n[run] finished - complete - 3 steps\r\n';
     for (const name of ['run-started', 'run-end']) {
       expect(() => locateAnchor(unicode, name), `${name} unicode`).not.toThrow();
       expect(() => locateAnchor(ascii, name), `${name} ascii`).not.toThrow();
     }
+  });
+
+  /**
+   * The chat rebuild (merge 946faa8) stopped printing the `[run] started · …` item in the TUI, and the perf anchor
+   * still waited for it: every live-run scenario timed out at exit 124 while its self-test passed on hand-written
+   * samples. The anchor is now the status row, whose idle form (`step 0/–`, `step 0/-` under --ascii) must never match
+   * — the run is live only once the maximum is known — and the old item row is a registered negative.
+   */
+  it('the run-started anchor is the status row `step <n>/<max>`, never the idle `step 0/–` or the old `[run] started` item', () => {
+    expect(RUN_STARTED_PATTERN).toBe('step \\d+/\\d+');
+    const a = namedAnchor('run-started');
+    expect(a.negatives?.some((n) => n.includes('step 0/\u2013'))).toBe(true);
+    expect(a.negatives?.some((n) => n.includes('step 0/-'))).toBe(true);
+    expect(a.negatives?.some((n) => n.includes('started \u00b7 jev+llm'))).toBe(true);
+    // one sample per glyph set and tier, cut from real frames: boxed unicode, boxed --ascii, flat
+    expect(a.samples.some((x) => x.startsWith('\x1b[38;5;169m\u2502 '))).toBe(true);
+    expect(a.samples.some((x) => x.startsWith('\x1b[38;5;169m| '))).toBe(true);
+    expect(() => locateAnchor('\u2502 idle  step 0/\u2013  ? help \u2502\r\n| idle  step 0/-  ? help |', 'run-started')).toThrow(/matched 0 time/);
+  });
+
+  it('a typist capture is latin1: `latin1: true` compiles the pattern byte-wise, the way the Python typist does', () => {
+    const utf8 = '\u2502 \u2591 intent    step 0/40 \u2502\r\n\x1b[2m[run]\x1b[22m \x1b[2mfinished \u00b7 complete \u00b7 3 steps \u00b7 1.0s\x1b[22m\r\n';
+    const latin1 = latin1View(utf8);
+    // the unicode `·` alternative is two bytes in a latin1 view: searched as written it never matches a unicode frame
+    expect(searchPattern(latin1, END_PATTERN)).toBe(-1);
+    expect(searchPattern(latin1, END_PATTERN, { latin1: true })).toBe(latin1.indexOf('finished'));
+    expect(() => locateAnchor(latin1, 'run-end', 1, { latin1: true })).not.toThrow();
+    expect(locateAnchor(latin1, 'run-started', 1, { latin1: true })).toBe(latin1.indexOf('step 0/40'));
+    // the ascii run-started pattern reads the same either way
+    expect(searchPattern(latin1, RUN_STARTED_PATTERN)).toBe(searchPattern(latin1, RUN_STARTED_PATTERN, { latin1: true }));
   });
 
   /**
