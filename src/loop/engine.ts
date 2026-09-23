@@ -4540,6 +4540,13 @@ class EngineImpl implements Engine {
           draft.outcome = { status: 'blocked', reason: rk.risk.reason };
           this.counters.blocked += 1;
           this.emit({ type: 'outcome', step, outcome: draft.outcome });
+        } else if (rk.risk.verdict === 'review' && (this.opts.autonomy ?? 'full') === 'full' && this.opts.orchestration?.depth !== 1) {
+          // (a child agent — depth 1 — has no human and never auto-approves: ORCHESTRATION-DESIGN §2.5(c) row 29 parks it below)
+          // autonomy: full (the default) — a review verdict is approved without asking; the reason is kept where a reader
+          // and the next prompt see it, and `block` above is still the only verdict that stops an action
+          this.counters.reviews += 1;
+          draft.notes.push(`review auto-approved (autonomy: full): ${rk.risk.reason}`);
+          this.emit({ type: 'transcript', step, level: 'info', text: `review · auto-approved (autonomy: full) · ${rk.risk.reason}` });
         } else if (rk.risk.verdict === 'review') {
           const outcome = await this.confirm(draft, p.proposal, rk.risk);
           // Counted only once the review resolved: an abort while it is pending discards the step

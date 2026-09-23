@@ -46,7 +46,7 @@ import type { GenerationProvider, ModelInfo, ProviderConfig, ProviderDeps, Provi
 import { PROVIDER_BASE_URL } from './ids.js';
 export const OPENAI_BASE_URL = PROVIDER_BASE_URL.openai;
 /** developers.openai.com/api/docs/models — the mid-tier 2026-09 flagship: 1.05M context, 128K output, $2/$12 per 1M. */
-export const OPENAI_DEFAULT_MODEL = 'gpt-5.6-terra';
+export const OPENAI_DEFAULT_MODEL = 'gpt-5.6-luna';
 
 // ---------------------------------------------------------------------------------------
 // Reasoning effort and temperature per model family

@@ -1821,6 +1821,13 @@ export interface EngineOptions {
   provider: Provider;
   decider: Decider;
   confirmer: Confirmer;
+  /**
+   * How much the run asks before acting. `'full'` (the default): a `review` risk verdict is approved without asking —
+   * the reason stays in the step's notes and transcript — and only a `block` verdict stops the action; `'review'`: a
+   * `review` verdict is put to the `confirmer` (the interactive review card, or the bench's policy). The user asked for an
+   * agent that acts on its own by default; the bench pins `'review'` so its arms keep the policy they were measured with.
+   */
+  autonomy?: 'full' | 'review';
   meter: SpendMeter;
   limits: RunLimits;
   sandboxProfile: SandboxProfile;

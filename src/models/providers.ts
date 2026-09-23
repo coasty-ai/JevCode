@@ -169,7 +169,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
  * so the link is visible: when an adapter lands, core's union widens and this list is where the
  * catalogue learns about it.
  */
-export const GENERATOR_PROVIDERS: readonly GeneratorConfig['provider'][] = ['anthropic', 'openrouter'];
+export const GENERATOR_PROVIDERS: readonly GeneratorConfig['provider'][] = [...PROVIDER_IDS];
 
 export function isProviderId(v: string): v is ProviderId {
   return Object.prototype.hasOwnProperty.call(PROVIDERS, v);

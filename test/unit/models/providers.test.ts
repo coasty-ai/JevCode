@@ -36,9 +36,10 @@ describe('the table', () => {
   });
 
   it('knows which providers a run can generate with today', () => {
-    expect(GENERATOR_PROVIDERS).toEqual(['anthropic', 'openrouter']);
+    // every provider with an adapter is a generator a run can use (the seven of PROVIDER_IDS; 'mock' is a test double)
+    expect(GENERATOR_PROVIDERS).toEqual(['anthropic', 'openrouter', 'openai', 'gemini', 'xai', 'fireworks', 'meta']);
     expect(isGeneratorProvider('anthropic')).toBe(true);
-    expect(isGeneratorProvider('meta')).toBe(false);
+    expect(isGeneratorProvider('meta')).toBe(true);
   });
 
   it('isProviderId guards an untrusted string', () => {
