@@ -3037,7 +3037,9 @@ export function App(p: AppProps): React.JSX.Element {
   const indicatorKind = guard<IndicatorKind | null>('anim', () => indicatorKindFor({ thinking: state.thinking, run: state.run, stage: state.status?.stage ?? null, streaming: state.live !== '' }), null);
   const animBox = fullscreen || launch.screenReader ? null : animSize(columns, rows);
   const animWant = indicatorKind !== null && animBox !== null && overlayKind === 'none' && rows >= INDICATOR_MIN_ROWS ? animBox.h : 0;
-  const animTick = useIndicatorTick(animWant > 0, reducedMotion);
+  // over SSH the indicator is a still frame, like the wordmark's `static`: a 12 fps repaint of the dynamic region is ~30 KB/s of pty traffic, fine locally, unkind on a link
+  const animStill = reducedMotion || lx.ssh === true;
+  const animTick = useIndicatorTick(animWant > 0, animStill);
   // TUI-DESIGN-2 §4.2: in the boxed tier the secret gate is a console row, never the `secret` overlay
   const gateUp: 0 | 1 = boxed && overlayKind === 'secret' && gateRef.current !== null ? 1 : 0;
   const layoutInput: LayoutInput = {
@@ -3402,7 +3404,7 @@ export function App(p: AppProps): React.JSX.Element {
           )}
         >
           <Box flexDirection="column" height={layout.anim} overflow="hidden" alignItems="center">
-            <Indicator kind={indicatorKind} columns={columns} rows={rows} tick={animTick} theme={theme} reducedMotion={reducedMotion} ascii={glyphs.mode === 'ascii'} noColor={depth === 0} color={depth} />
+            <Indicator kind={indicatorKind} columns={columns} rows={rows} tick={animTick} theme={theme} reducedMotion={animStill} ascii={glyphs.mode === 'ascii'} noColor={depth === 0} color={depth} />
           </Box>
         </PaneBoundary>
       ) : null}
