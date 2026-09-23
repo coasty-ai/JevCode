@@ -65,8 +65,12 @@ export const ROUTER_DEADLINE_MS = 400;
  */
 export const ROUTER_SETTLE_SLACK_MS = 5;
 
-/** §2.2, the router table. `RL3` and `RS5` are deliberately absent: they are gates, not routers. */
-export type RouterId = 'RL1' | 'RL2' | 'RL4' | 'RL5' | 'RL6' | 'RS1' | 'RS2' | 'RS3' | 'RS4' | 'R9';
+/**
+ * §2.2, the router table. `RL3` and `RS5` are deliberately absent: they are gates, not routers. The agent loop adds its
+ * three quick placements (docs/AGENT-LOOP-DESIGN.md §13.2, §A4): `RA0` the first-turn effort hint, `RA1` the loop-nudge
+ * wording, `RA2` the progress check (src/agent/jev.ts).
+ */
+export type RouterId = 'RL1' | 'RL2' | 'RL4' | 'RL5' | 'RL6' | 'RS1' | 'RS2' | 'RS3' | 'RS4' | 'R9' | 'RA0' | 'RA1' | 'RA2';
 
 /** §2.6: minted per step by the engine, invalidated at step commit in the same `finally` that writes the `StepRecord`. */
 export interface StepToken {
