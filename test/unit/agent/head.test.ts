@@ -148,6 +148,22 @@ describe('the carry of an agent parent', () => {
     expect(head.records.some((r) => r.kind === 'assistant' && r.providerState !== undefined)).toBe(false);
   });
 
+  it('copies from the parent\'s latest compaction on, keeping its first user record as the head', async () => {
+    const records: TranscriptRecord[] = [
+      ...parentRecords.slice(0, 5),
+      { v: 1, seq: 6, at, kind: 'compaction', text: '# Task\nfirst task\n\n# Context summary\n…\n\nContinue with the task.', fromSeq: 1, toSeq: 5, by: 'code' },
+      { v: 1, seq: 7, at, kind: 'assistant', text: 'Continuing.', calls: [{ id: 'p4', name: 'glob', input: { pattern: '*' } }], stopReason: 'tool_calls', sys: 'H' },
+      { v: 1, seq: 8, at, kind: 'result', toolUseId: 'p4', name: 'glob', content: 'a.py', isError: false, summary: 'glob *' },
+      { v: 1, seq: 9, at, kind: 'assistant', text: 'Done.', calls: [], stopReason: 'stop', sys: 'H' },
+    ];
+    const dir = writeParent({ transcriptSeq: 9, systemHash: 'H', stopReason: 'generator_done', records });
+    const ctx = createAgentContext({ task: 'next', conversation: { chat: [], parent: { runId: 'parent-run', runDir: dir, mode: 'agent' } } });
+    const head = await buildHead(ctx, 'H');
+    expect(head.records.map((r) => r.kind)).toEqual(['carry', 'user', 'compaction', 'assistant', 'result', 'assistant', 'user']);
+    expect(head.records[1]!.kind === 'user' && head.records[1]!.text).toBe('# Task\nfirst task');
+    expect(head.records.map((r) => r.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
+  });
+
   it('falls back to the first user message when the parent cannot be read', async () => {
     const ctx = createAgentContext({ task: 'x', conversation: { chat: [{ role: 'you', text: 'hello' }], parent: { runId: 'gone', runDir: '/nonexistent/run', mode: 'agent' } } });
     const head = await buildHead(ctx, 'H');

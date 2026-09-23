@@ -41,6 +41,13 @@ describe('full autonomy never asks and never refuses (§A2)', () => {
     expect(clean.gate?.reason).toBe('ran git clean -fd (rule git_discard) — /undo may not restore this');
   });
 
+  it('the pre-image cover is judged on the dirty set the step copies now, not only the run-start one', async () => {
+    const late = await gateOf('git checkout -- src/a.py', { dirtyAtStart: ['src/a.py'], dirtySet: ['src/a.py', 'build/huge-output.bin'] });
+    expect(late.gate?.reason).toBe('ran git checkout -- src/a.py (rule git_discard) — /undo may not restore this');
+    const same = await gateOf('git checkout -- src/a.py', { dirtyAtStart: ['src/a.py'], dirtySet: ['src/a.py'] });
+    expect(same.gate?.reason).toBe('ran git checkout -- src/a.py (rule git_discard) — /undo restores the workspace');
+  });
+
   it('unknown and safe commands pass without a note', async () => {
     expect((await gateOf('npm install')).gate).toEqual({ verdict: 'ok', reason: '', rule: null });
     expect((await gateOf('npm test')).gate).toEqual({ verdict: 'ok', reason: '', rule: null });

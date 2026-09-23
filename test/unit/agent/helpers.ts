@@ -79,6 +79,10 @@ export interface FakeAgentOptions {
   sessionId?: string;
   maxTokens?: number;
   wallRemainingMs?: number;
+  /** the fake workspace's root (default `/ws`); a real directory when a test needs files on disk beside it */
+  root?: string;
+  /** the workspace's current dirty set (`Workspace.dirtySet()`); absent: the method is not offered */
+  dirtySet?: readonly string[];
 }
 
 export interface FakeAgentContext extends AgentContext {
@@ -124,7 +128,7 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 export function createAgentContext(o: FakeAgentOptions = {}): FakeAgentContext {
-  const fs = createFakeWorkspace({ files: o.files ?? { 'src/a.py': 'def f():\n    return 1\n', 'tests/test_a.py': 'from src.a import f\n\ndef test_f():\n    assert f() == 2\n' }, testCommand: o.testCommand === undefined ? { command: 'pytest -q', runner: 'pytest' } : o.testCommand, ...(o.gitState !== undefined ? { gitState: o.gitState } : {}) });
+  const fs = createFakeWorkspace({ ...(o.root !== undefined ? { root: o.root } : {}), ...(o.dirtySet !== undefined ? { dirtySet: new Set(o.dirtySet) } : {}), files: o.files ?? { 'src/a.py': 'def f():\n    return 1\n', 'tests/test_a.py': 'from src.a import f\n\ndef test_f():\n    assert f() == 2\n' }, testCommand: o.testCommand === undefined ? { command: 'pytest -q', runner: 'pytest' } : o.testCommand, ...(o.gitState !== undefined ? { gitState: o.gitState } : {}) });
   const sb = createFakeSandbox(o.sandbox ?? (() => ({ stdout: 'ok\n' })));
   const controller = new AbortController();
   const events: EngineEvent[] = [];

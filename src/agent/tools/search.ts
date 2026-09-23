@@ -131,10 +131,15 @@ export interface GrepArgs {
 export function createRgProbe(): (ctx: AgentContext) => Promise<boolean> {
   let probe: Promise<boolean> | null = null;
   return (ctx) => {
-    probe ??= ctx.sandbox
-      .run('rg --version', { timeoutMs: AGENT_RG_PROBE_TIMEOUT_MS, maxOutputBytes: 4096, signal: ctx.signal })
-      .then((r) => r.exitCode === 0 && r.killedBy === null)
-      .catch(() => false);
+    // a probe cut short by the run's own pause is no answer: the next grep after the resume asks again
+    const settle = (ok: boolean): boolean => {
+      if (ctx.signal.aborted) probe = null;
+      return ok;
+    };
+    probe ??= ctx.sandbox.run('rg --version', { timeoutMs: AGENT_RG_PROBE_TIMEOUT_MS, maxOutputBytes: 4096, signal: ctx.signal }).then(
+      (r) => settle(r.exitCode === 0 && r.killedBy === null),
+      () => settle(false),
+    );
     return probe;
   };
 }

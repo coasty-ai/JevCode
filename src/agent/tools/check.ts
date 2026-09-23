@@ -7,8 +7,8 @@
  * reported when it failed too — so valid JSX in an existing `.js` file is never flagged. A missing interpreter or a
  * timeout adds nothing; the check never reverts anything.
  */
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, extname, join } from 'node:path';
 import type { AgentContext } from '../../core/types.js';
 import { shellQuote } from '../../workspace/tests.js';
 import { AGENT_CHECK_MAX_LINES, AGENT_CHECK_TIMEOUT_MS } from '../limits.js';
@@ -42,7 +42,22 @@ function jsonProblem(text: string): string[] {
   }
 }
 
-/** Check the pre-edit content through a scratch copy under the run's tmp dir, with the same extension. */
+/**
+ * The extension a scratch copy of `path` needs to parse as the file does in place: a `.js` file takes its module type
+ * from the nearest package.json inside the workspace (`"type": "module"` → `.mjs`, `"commonjs"` → `.cjs`).
+ */
+async function scratchExt(root: string, path: string, ext: string): Promise<string> {
+  if (ext !== '.js') return ext;
+  for (let dir = dirname(join(root, path)); dir.startsWith(root); dir = dirname(dir)) {
+    // the nearest package.json decides, with or without a type (none: CommonJS with module detection, like `.js`)
+    const pkg = await readFile(join(dir, 'package.json'), 'utf8').then((t) => JSON.parse(t) as { type?: unknown }, () => null);
+    if (pkg !== null) return pkg.type === 'module' ? '.mjs' : pkg.type === 'commonjs' ? '.cjs' : ext;
+    if (dir === root || dirname(dir) === dir) break;
+  }
+  return ext;
+}
+
+/** Check the pre-edit content through a scratch copy under the run's tmp dir, with the extension it parses under. */
 async function checkScratch(ctx: AgentContext, content: string, ext: string, checker: Checker): Promise<string[] | null> {
   const dir = join(ctx.runDir, 'tmp');
   const file = join(dir, `agent-check-${process.pid}-${Date.now()}${ext}`);
@@ -73,7 +88,7 @@ export async function syntaxCheck(ctx: AgentContext, path: string, before: strin
     previous = async () => (before === null ? [] : checkScratch(ctx, before, ext, pythonCheck));
   } else if ((ext === '.js' || ext === '.mjs' || ext === '.cjs') && before !== null) {
     problems = await nodeCheck(ctx, path);
-    previous = async () => checkScratch(ctx, before, ext, nodeCheck);
+    previous = async () => checkScratch(ctx, before, await scratchExt(ctx.workspace.root, path, ext), nodeCheck);
   }
   if (problems === null || problems.length === 0) return [];
   const old = await previous();

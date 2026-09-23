@@ -138,6 +138,20 @@ describe('RA2 progressCheck', () => {
   });
 });
 
+describe('what the placements send', () => {
+  it('the task, the chat turns and the recent steps reach Jev redacted, as they reach the generator', async () => {
+    const key = 'sk-secret-abc123';
+    const withKey: RunFacts = { ...facts, recentSteps: [`act: bash curl -H "x: ${key}" (exit 0)`] };
+    const { ctx, state } = setup(async () => ({ conversational: noul(0.1), unproductive: noul(0.1), loop_nudge: choice('change_approach') }), { task: `use ${key} to call the api`, conversation: { chat: [{ role: 'you', text: `my key is ${key}` }], parent: null } });
+    await effortHint(ctx, state);
+    await chooseLoopNudge(ctx, state, trip, withKey);
+    await progressCheck(ctx, state, withKey);
+    expect(ctx.asks).toHaveLength(3);
+    for (const a of ctx.asks) expect(JSON.stringify(a.state)).not.toContain(key);
+    expect(ctx.asks[0]!.state['message']).toBe('use [REDACTED] to call the api');
+  });
+});
+
 describe('RA0 effortHint', () => {
   it('reads the message and the last two chat turns, and applies p ≥ 0.8', async () => {
     const { ctx, state } = setup(async (c: AskCall) => ({ conversational: noul(c.state['message'] === 'hi' ? 0.95 : 0.1) }), { task: 'hi', conversation: { chat: [{ role: 'you', text: 'a' }, { role: 'jevcode', text: 'b' }, { role: 'you', text: 'c' }], parent: null } });

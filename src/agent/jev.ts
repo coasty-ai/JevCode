@@ -87,8 +87,8 @@ export async function effortHint(ctx: AgentContext, state: AgentStateV1): Promis
   try {
     const questions = { conversational: conversationalQuestion() };
     const facts: JsonObject = {
-      message: clip(ctx.task, JEV_EFFORT_HINT_MESSAGE_CHARS),
-      recent_turns: (ctx.conversation?.chat ?? []).slice(-JEV_EFFORT_HINT_TURNS).map((t) => `${t.role}: ${clip(t.text.replace(/\s+/g, ' '), 200)}`),
+      message: clip(ctx.redact(ctx.task), JEV_EFFORT_HINT_MESSAGE_CHARS),
+      recent_turns: (ctx.conversation?.chat ?? []).slice(-JEV_EFFORT_HINT_TURNS).map((t) => `${t.role}: ${clip(ctx.redact(t.text).replace(/\s+/g, ' '), 200)}`),
     };
     const r = await routeSpeculative<'low' | 'default'>({
       id: 'RA0',
@@ -138,7 +138,7 @@ export async function chooseLoopNudge(ctx: AgentContext, state: AgentStateV1, tr
     };
     const snapshot: JsonObject = {
       trip: { rule: trip.rule, tool: trip.tool, count: trip.count },
-      recent_steps: facts.recentSteps.slice(-JEV_NUDGE_RECENT_STEPS).map((s) => clip(s, 200)),
+      recent_steps: facts.recentSteps.slice(-JEV_NUDGE_RECENT_STEPS).map((s) => clip(ctx.redact(s), 200)),
       last_tests: facts.lastTests,
       changed_files: facts.changedFiles,
     };
@@ -190,8 +190,8 @@ export async function progressCheck(ctx: AgentContext, state: AgentStateV1, fact
     const questions = { unproductive: unproductiveQuestion() };
     const todo = (s: string): number => state.todos.filter((t) => t.status === s).length;
     const snapshot: JsonObject = {
-      task: clip(ctx.task, JEV_PROGRESS_TASK_CHARS),
-      recent_steps: facts.recentSteps.slice(-JEV_PROGRESS_RECENT_STEPS).map((s) => clip(s, 200)),
+      task: clip(ctx.redact(ctx.task), JEV_PROGRESS_TASK_CHARS),
+      recent_steps: facts.recentSteps.slice(-JEV_PROGRESS_RECENT_STEPS).map((s) => clip(ctx.redact(s), 200)),
       files_read: facts.filesRead,
       files_edited: facts.filesEdited,
       test_trend: [...facts.testTrend],

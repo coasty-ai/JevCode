@@ -242,6 +242,13 @@ export async function carryHead(ctx: AgentContext, systemHash: string): Promise<
   if (parentRecords === null || parentRecords.length === 0) return null;
   let kept = parentRecords.filter((r) => r.seq <= parentState.transcriptSeq);
   if (kept.length === 0) return null;
+  // what a request replays starts at the latest compaction; the first user record stays as the head a later compaction
+  // carries forward. Copying the whole history would make every follow-up run's file grow with the session.
+  const compaction = kept.map((r) => r.kind).lastIndexOf('compaction');
+  if (compaction > 0) {
+    const head = kept.findIndex((r) => r.kind === 'user');
+    kept = [...(head >= 0 && head < compaction ? [kept[head]!] : []), ...kept.slice(compaction)];
+  }
   // §7.6 step 5: reasoning state survives only an unchanged prefix (system prompt, provider, model)
   const sameModel = kept.every((r) => r.kind !== 'assistant' || r.providerState === undefined || (r.providerState.provider === ctx.provider.name && r.providerState.model === ctx.provider.model));
   if (parentState.systemHash !== systemHash || !sameModel) kept = withoutProviderState(kept);

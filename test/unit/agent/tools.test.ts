@@ -1,5 +1,6 @@
 /** The read-only tools and their result formats (docs/AGENT-LOOP-DESIGN.md §4.3, §4.6-§4.8, §7.2). */
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { syntaxCheck } from '../../../src/agent/tools/check.js';
@@ -112,6 +113,21 @@ describe('grep', () => {
     expect(ctx.sb.commands.filter((c) => c === 'rg --version')).toHaveLength(1);
     const missing = createAgentContext({ sandbox: () => ({ exitCode: 127, stderr: 'rg: not found' }) });
     expect(await createRgProbe()(missing)).toBe(false);
+  });
+
+  it('a probe cut short by a pause is not remembered: the next grep asks again', async () => {
+    const ctx = createAgentContext({ sandbox: (cmd) => (cmd === 'rg --version' ? { exitCode: 0, stdout: 'ripgrep 14\n' } : {}) });
+    const probe = createRgProbe();
+    const paused = ctx.sb.run.bind(ctx.sb);
+    ctx.sb.run = async (command, o) => {
+      ctx.abort(new Error('human_pause'));
+      return { ...(await paused(command, o)), killedBy: 'abort' as const, exitCode: null, ok: false };
+    };
+    expect(await probe(ctx)).toBe(false);
+    ctx.sb.run = paused;
+    const resumed = createAgentContext({ sandbox: (cmd) => (cmd === 'rg --version' ? { exitCode: 0, stdout: 'ripgrep 14\n' } : {}) });
+    expect(await probe(resumed)).toBe(true);
+    expect(resumed.sb.commands).toEqual(['rg --version']);
   });
 });
 
@@ -227,5 +243,23 @@ describe('the post-write syntax check', () => {
     expect(await syntaxCheck(ctx, 'a.js', 'let a = 1;\n', 'let a = ;\n')).toEqual(['SyntaxError: Unexpected token']);
     expect(await syntaxCheck(ctx, 'new.js', null, 'let a = ;\n')).toEqual([]);
     expect(ctx.sb.commands.filter((c) => c.startsWith('node --check'))).toHaveLength(2);
+  });
+
+  it('JavaScript: the pre-edit copy parses under the module type of the nearest package.json', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'jevcode-check-'));
+    mkdirSync(join(root, 'esm', 'src'), { recursive: true });
+    mkdirSync(join(root, 'cjs'), { recursive: true });
+    mkdirSync(join(root, 'plain'), { recursive: true });
+    writeFileSync(join(root, 'esm', 'package.json'), '{"type": "module"}');
+    writeFileSync(join(root, 'cjs', 'package.json'), '{"type": "commonjs"}');
+    writeFileSync(join(root, 'plain', 'package.json'), '{"name": "plain"}');
+    // an ESM file whose old content parses only as a module: the scratch copy must not be read as CommonJS
+    const ctx = createAgentContext({ root, sandbox: (cmd) => (cmd.includes('agent-check-') && !cmd.includes('.mjs') ? { exitCode: 1, stderr: 'SyntaxError: Cannot use import statement outside a module' } : cmd.includes('agent-check-') ? { exitCode: 0 } : { exitCode: 1, stderr: 'SyntaxError: Unexpected token' }) });
+    expect(await syntaxCheck(ctx, 'esm/src/a.js', 'import x from "y";\n', 'import x from ;\n')).toEqual(['SyntaxError: Unexpected token']);
+    await syntaxCheck(ctx, 'cjs/b.js', 'module.exports = 1;\n', 'module.exports = ;\n');
+    await syntaxCheck(ctx, 'plain/c.js', 'x;\n', 'x(;\n');
+    await syntaxCheck(ctx, 'top.js', 'x;\n', 'x(;\n');
+    const scratch = ctx.sb.commands.filter((c) => c.includes('agent-check-')).map((c) => /agent-check-[^.]*(\.[a-z]+)/.exec(c)![1]);
+    expect(scratch).toEqual(['.mjs', '.cjs', '.js', '.js']);
   });
 });
