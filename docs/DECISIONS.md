@@ -10,10 +10,19 @@ document, not part of this repository — are also listed in `docs/DESIGN.md` un
 
 ## Contents
 
-91 entries, newest first.
+99 entries, newest first.
+
+**2026-09-23**
+
+- [A best guess with no reproduction oracle is verified by its scoped suite; an un-ignored virtualenv is never a candidate](#2026-09-23-a-best-guess-with-no-reproduction-oracle-is-verified-by-its-scoped-suite-an-un-ignored-virtualenv-is-never-a-candidate)
+- [A fix that passes every test is never refused on a score alone](#2026-09-23-a-fix-that-passes-every-test-is-never-refused-on-a-score-alone)
 
 **2026-09-22**
 
+- [The LLM-loop head-to-head is deferred; the default stays `llm-jev`; the repository moves to coasty-ai/JevCode](#2026-09-22-the-llm-loop-head-to-head-is-deferred-the-default-stays-llm-jev-the-repository-moves-to-coasty-aijevcode)
+- [Amendment (applied in place above): a perf-window sentinel with no readable header is HELD from its mtime, not stale](#2026-09-22-amendment-applied-in-place-above-a-perf-window-sentinel-with-no-readable-header-is-held-from-its-mtime-not-stale)
+- [The cross-session merge queue is a file in `docs/`, and every behaviour-changing env switch has one table](#2026-09-22-the-cross-session-merge-queue-is-a-file-in-docs-and-every-behaviour-changing-env-switch-has-one-table)
+- [The perf-window sentinel protocol, and the provenance of every Ring-1 `--jev off` number](#2026-09-22-the-perf-window-sentinel-protocol-and-the-provenance-of-every-ring-1---jev-off-number)
 - [Iteration 4 lands; the overfit-signal search stops here; what is open is named](#2026-09-22-iteration-4-lands-the-overfit-signal-search-stops-here-what-is-open-is-named)
 - [The LLM-loop wave lands with both switches off; the nine design defaults are ratified; the live head-to-head waits on two CLI rows and the router engine seam](#2026-09-22-the-llm-loop-wave-lands-with-both-switches-off-the-nine-design-defaults-are-ratified-the-live-head-to-head-waits-on-two-cli-rows-and-the-router-engine-seam)
 - [Iteration 3 lands unmeasured; a structural signal reaches the pool rule only with a gold sweep behind it, and Jev's state stays signal-free](#2026-09-22-iteration-3-lands-unmeasured-a-structural-signal-reaches-the-pool-rule-only-with-a-gold-sweep-behind-it-and-jevs-state-stays-signal-free)
@@ -21,6 +30,8 @@ document, not part of this repository — are also listed in `docs/DESIGN.md` un
 - [Only Jev's failures are the router's drop branch (contract 1.9 §2.1 clause 4, as built)](#2026-09-22-only-jevs-failures-are-the-routers-drop-branch-contract-19-21-clause-4-as-built)
 - [The risk verdict is code-first (contract 1.9 §2.4), and it is reversible on evidence](#2026-09-22-the-risk-verdict-is-code-first-contract-19-24-and-it-is-reversible-on-evidence)
 - [Iteration 2 measured: the first win outside QuixBugs; the warm plane stays OFF until its calibration defect is fixed and re-measured](#2026-09-22-iteration-2-measured-the-first-win-outside-quixbugs-the-warm-plane-stays-off-until-its-calibration-defect-is-fixed-and-re-measured)
+- [A command is registered from day one and answers out loud, or it is not in the registry at all](#2026-09-22-a-command-is-registered-from-day-one-and-answers-out-loud-or-it-is-not-in-the-registry-at-all)
+- [§12 names every user-visible string once, in its producer module, and §13 names every sink of it](#2026-09-22-12-names-every-user-visible-string-once-in-its-producer-module-and-13-names-every-sink-of-it)
 - [Iteration 1 measured: the default stands; iteration 2 targets the repository stop rule and the timeouts](#2026-09-22-iteration-1-measured-the-default-stands-iteration-2-targets-the-repository-stop-rule-and-the-timeouts)
 - [The warm verification plane is off by default until a real-lane test and Ring 1 pass with it on](#2026-09-22-the-warm-verification-plane-is-off-by-default-until-a-real-lane-test-and-ring-1-pass-with-it-on)
 - [`Ledger` and `LedgerHandle` are a real split, not an alias; consumers hold the handle](#2026-09-22-ledger-and-ledgerhandle-are-a-real-split-not-an-alias-consumers-hold-the-handle)

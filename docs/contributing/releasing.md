@@ -1,27 +1,26 @@
 # Releasing
 
-**Nothing here has shipped yet.** There is no published package, no tag, and no Homebrew tap. This page is
-the procedure and an honest account of what is still missing before the first release can happen.
+This page explains how a release works: what ships, which gates guard it, and how the pipeline carries one tagged
+version to every install channel. The step-by-step runbook, with every settings page, command and recovery, is
+[`docs/RELEASE.md`](../RELEASE.md).
 
-The full step-by-step checklist, with every command, is [`docs/RELEASE.md`](../RELEASE.md). This page is the
-orientation: what ships, what the gates are, what is set up, and what is not.
+**Nothing has been published yet.** The registry returns 404 for `jevcode`, no `v*` tag exists, and the
+Homebrew tap and the AUR package do not exist until their one-time setup steps are done
+([`docs/RELEASE.md`](../RELEASE.md), "One-time setup").
 
-## State of play
+## Channels
 
-| fact | state |
-| --- | --- |
-| package version | **0.5.0** (`package.json` is the single source of truth; the bundle reads it at build time) |
-| published to the registry | **no** — the registry returns 404 for the package name |
-| git tag | **none exists** |
-| git remote | present |
-| `repository`, `homepage`, `bugs` in `package.json` | **set**, all three at `github.com/coasty-ai/JevCode`. Provenance verification compares the repository field against the publishing workflow's repository, so they have to stay in step with it |
-| Homebrew formula | present. `homepage` is real; **`url` and `sha256` are placeholders** — the `url` names a tarball that is not on the registry, and the digest is deliberately invalid |
-| `CHANGELOG.md` header line | current — it names 0.5.0, and says nothing has been published |
+| Channel | Install command | How it is updated |
+| --- | --- | --- |
+| npm | `npm i -g jevcode`, `npx jevcode` | `release.yml` publishes with trusted publishing and provenance |
+| bun, pnpm, yarn | `bunx jevcode`, `pnpm dlx jevcode`, `yarn dlx jevcode` | nothing extra: they read the npm registry |
+| mise | `mise use -g npm:jevcode` | nothing extra: mise's npm backend |
+| Homebrew | `brew install coasty-ai/jevcode/jevcode` | `release.yml` pushes the rendered formula to `coasty-ai/homebrew-jevcode` |
+| AUR | `yay -S jevcode` or `paru -S jevcode` | `release.yml` pushes `PKGBUILD` and `.SRCINFO` to the AUR |
+| Nix | `nix run github:coasty-ai/JevCode` | nothing per release: `flake.nix` builds from source at any ref, and `flake-lock.yml` keeps `flake.lock` current |
 
-Until a release exists, **every install instruction that names the registry or the tap is unavailable**, and
-the README says so rather than printing a command that cannot work.
-
-The formula's `sha256` is deliberately invalid, so an unreleased copy can never install by accident.
+Pre-releases (versions with a hyphen, such as `0.7.0-rc.1`) go to npm under the `next` dist-tag and become a
+GitHub pre-release. They do not update Homebrew or the AUR.
 
 ## What ships
 
@@ -33,7 +32,7 @@ The `files` field in `package.json` is the allowlist:
 | path | produced by |
 | --- | --- |
 | `bin/jevcode.js` | the launcher: a Node-version guard, a no-colour shim, the compile cache, then the bundle |
-| `dist/jevcode.mjs` | `scripts/build.mjs` — one minified ESM bundle with names kept, so stack traces stay readable, and the version injected from `package.json` |
+| `dist/jevcode.mjs` | `scripts/build.mjs`: one minified ESM bundle with names kept, and the version injected from `package.json` |
 | `THIRD_PARTY_LICENSES.txt` | `scripts/licenses.mjs`, derived from the bundler's metafile because the bundle strips attribution comments |
 | `man/jevcode.1`, `completions/jevcode.{bash,zsh,fish}` | `scripts/gen-docs.mjs`, from the command tables |
 | `README.md`, `LICENSE`, `package.json` | always included by the packager |
@@ -42,120 +41,65 @@ Not shipped: the source map, the bundler metafile, `src/`, `docs/`, tests.
 
 ## The gates
 
-### `npm run build`
+`ci.yml` runs on every push to `main` and every pull request. `release.yml`'s `gates` job runs the same steps
+in the same order, so a green `ci.yml` predicts a green release gate:
 
-Two steps, in order:
+1. typecheck (strict `tsc`, then the no-`any` rule) and the Jev call-site contract;
+2. the unit suite, with the three wall-clock-sensitive files in their own step and up to two retries;
+3. `npm run build`: bundle, attribution file, and a smoke test of the built artefact. The smoke launches the real
+   binary with `JEVCODE_ASSERT_NO_NETWORK=1`, requires the first frame, then requires `--version` to print the
+   `package.json` version. Any HTTP fetch before the first frame fails the build;
+4. `npm run pack:check`: the package is publishable, `LICENSE` and `THIRD_PARTY_LICENSES.txt` exist,
+   `dependencies` is empty, the packed file list equals the allowlist, no forbidden path ships, the unpacked
+   size is under 3.6 MB and the tarball under 1.5 MB, and the packed binary prints the right version;
+5. the generated documents, the decisions table of contents and every relative doc link are current, and the
+   README carries no hard-coded version or placeholder.
 
-1. `node scripts/build.mjs` — bundles, then runs a **smoke test on the artefact it just built**:
-   - it launches the real binary in a temporary workspace with `JEVCODE_ASSERT_NO_NETWORK=1` and a flag that
-     exits after the first frame, and requires the first-frame marker to appear. With that variable set, any
-     HTTP fetch before the first frame throws, so a build that added a network call at startup fails here.
-   - it then runs `--version` under the same variable and requires the exact `package.json` version.
-2. `node scripts/licenses.mjs` — regenerates the attribution file.
+`packaging.yml` runs on pull requests that touch packaging, and on demand. It packs a tarball and then checks
+three things against that same local file: the Homebrew formula on macOS (install, test, audit, style), the
+PKGBUILD in an Arch container (makepkg, namcap, install) and the flake on Linux and macOS.
 
-The publishing workflow sets `JEVCODE_ASSERT_NO_NETWORK=1` for the whole job, so the smoke runs under it there
-too.
-
-### `npm run pack:check`
-
-Eight gates, every failure reported, exit 1 if any fails:
-
-1. the package is publishable (not marked private);
-2. `LICENSE` exists and is non-empty;
-3. `THIRD_PARTY_LICENSES.txt` exists and is non-empty;
-4. **`dependencies` is empty** — so a global install installs zero other packages;
-5. the packed file list equals the allowlist derived from `files`, expanded recursively, plus `package.json`;
-   extras and missing entries are both named;
-6. no forbidden path: source maps, the metafile, `src/`, `docs/`, test files, dotenv files, local tooling
-   state, or any non-shipping directory;
-7. unpacked size under 3.5 MB and the gzipped tarball under 1.5 MB;
-8. `node bin/jevcode.js --version` prints the `package.json` version.
-
-The size ceiling has its own history in a comment: it was 3.0 MB, and it was raised to 3.5 MB when one round
-of interface work plus several harness waves landing the same day put the unpacked package 0.12 % over.
-
-### The rest
-
-`npm run check` (typecheck, no-`any`, the decision-call lint, the documentation link check, the unit
-suite) and `npm run perf` both run
-before a release. The performance gate needs the machine quiet at both ends to produce a release number; see
+`npm run perf` is a separate gate that needs a quiet machine; see
 [the performance page](../measurements/performance.md).
-
-`node scripts/gen-docs.mjs --check` must print nothing stale. The manual page's date comes from the commit date
-of `package.json`, so the generated documents are regenerated **after** the version-bump commit.
 
 ## The publish path
 
-**There is exactly one**, and it is not a laptop.
+There is exactly one, and it runs in GitHub Actions, not on a laptop. A local `npm publish` is refused by a guard
+in `package.json` unless `CI` is set.
 
-`.github/workflows/release.yml` fires on a pushed tag matching `v*`. Running `npm publish` locally is refused
-by a guard in `package.json` unless the continuous-integration variable is set, which is a deliberate
-speed bump rather than a lock.
+1. **prepare-release** (Actions → prepare-release → Run workflow on `main`). It bumps the version, turns the
+   changelog heading into a dated one, regenerates the derived documents, commits as `github-actions[bot]`, tags,
+   pushes, and starts `release.yml` on the tag. A person pushing a `v*` tag starts the same workflow.
+2. **release.yml**:
+   - `validate`: the tag equals `package.json`, the changelog has a dated section, the commit is on `main`,
+     and it picks the dist-tag;
+   - `gates`: the ci.yml steps;
+   - `pack`: builds the published tarball on a fresh runner that runs only lockfile-pinned code;
+   - `publish-npm`: waits for **one human approval** on the `release` environment, then publishes with
+     trusted publishing (OIDC, no stored token) and provenance;
+   - `github-release`, `homebrew` and `aur` update their channels. The last two run for stable releases only;
+   - `verify`: runs the published package and prints a table of every channel.
 
-The job:
-
-- asserts Node ≥ 24.5.0 and the packaging client ≥ 11.5.1, which is what trusted publishing requires;
-- asserts the tag equals the `package.json` version, and fails otherwise;
-- routes a tag containing a hyphen to the pre-release channel and everything else to the default channel;
-- runs install, typecheck, tests, build, the pack gates and the generated-document check;
-- packs, then publishes with provenance under trusted publishing — **no long-lived token is used or wanted**;
-- creates the release with the exact tarball that was published plus its checksum file;
-- prints the two Homebrew lines, ready to paste, in the job summary.
-
-The whole job runs on a Node version used nowhere else in the project. Everything else runs on the version
-pinned in `.nvmrc`.
-
-## One-time setup, still outstanding
-
-Two things must happen before the first release, and neither has:
-
-1. **Create the package on the registry and configure trusted publishing** for this repository and this
-   workflow file. No token secret is needed.
-2. **Create the tap repository and copy the formula into it.** The formula's `url` and `sha256` stay
-   placeholders until the release job prints the real digest.
-
-`package.json` already carries `repository`, `homepage` and `bugs`, and `main` has to be pushed to that
-remote before the first publish: provenance verification compares `repository.url` with the workflow's
-repository. Three strings in the source still name an older owner in lower case and need the same update —
-`OPENROUTER_REFERER` in `src/provider/openrouter.ts`, `DEFAULT_REFERER` in `src/jev/types.ts` and
-`ISSUES_URL` in `src/cli/report.ts`.
-<!-- docs/RELEASE.md "One-time setup" items 1-3. -->
-
-## The release itself, in outline
-
-1. Gates on a clean tree: `npm run check`, then `npm run perf`.
-2. Bump the version without a tag.
-3. Add a changelog section at the top. The release notes are generated from titles; the changelog is the
-   curated record.
-4. Commit the bump, then regenerate the derived documents and commit again if anything changed.
-5. Build, regenerate the attribution file, run the pack gates, and eyeball the packed file list.
-6. Tag and push. The tag is what triggers the workflow.
-7. Verify: check the published version and its attestations, run the published package's `--version`, and
-   install it into an empty directory — exactly one package should appear.
-8. Bump the tap: take the tarball's digest, set `url` and `sha256`, build from source, test and audit the
-   formula. Confirm first that the formula's Node dependency still satisfies the package's engine range.
-9. Promote a pre-release to the default channel once its gates pass.
+Every job can be re-run. It skips work that is already done, fails loudly on a mismatch (for example different
+bytes already on the registry), and a channel whose credential is not configured yet is skipped with a
+one-line summary instead of failing.
 
 ## Rehearsing without publishing
 
-```sh
-npm run build && npm run pack:check && npm pack
-```
-
-Then, in a temporary directory, unpack the tarball, install it with development dependencies omitted, and run
-`--version`. That installs zero packages and leaves the dependency directory absent or empty. A dry-run
-publish shows exactly what would be uploaded without any network write.
+- Run prepare-release with **dry_run** ticked. It makes the commit and tag in the runner, runs the gates and
+  shows what it would push, and pushes nothing.
+- Run packaging.yml on your branch. It exercises all three package formats against a locally packed tarball.
+- Locally: `npm run build && npm run pack:check && npm pack --ignore-scripts`. Then unpack the tarball in a
+  temporary directory, install it with dev dependencies omitted, and run `--version`. Exactly one package
+  installs.
 
 ## If something goes wrong
 
-- **The job failed after the publish succeeded.** Fix forward with a patch version. Published versions are
-  immutable; unpublishing is only possible within a short window and only while nothing depends on the
-  package.
-- **A bad default channel.** Move the channel pointer back to the previous version. No unpublish is needed.
-- **A tag pushed before the bump commit.** Delete the remote tag before the job reaches the packing step.
+A published version is immutable, so fix forward with a patch version. `docs/RELEASE.md` has a recovery row for
+every job that can stop part-way, including re-running a single channel and moving a dist-tag back.
 
 ## Related
 
-- [`docs/RELEASE.md`](../RELEASE.md) — the checklist with every command.
-- [Contributing](README.md) — the gates in detail.
-- [Startup, render and harness overhead](../measurements/performance.md) — what the performance gate measures.
+- [`docs/RELEASE.md`](../RELEASE.md): the runbook, with one-time setup, the per-release flow and recovery.
+- [Install](../getting-started/install.md): every channel from the user's side.
+- [Contributing](README.md): the gates in detail.
