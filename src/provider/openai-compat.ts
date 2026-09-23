@@ -15,11 +15,11 @@
  * through the same accumulator. That is the only shape difference; everything else (retries, aborts, redaction) is shared.
  */
 import { ProviderHttpError } from '../errors.js';
-import { parseJson } from '../core/json.js';
-import type { GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, Json, JsonObject, ToolCall, ToolChoice, ToolSpec } from '../core/types.js';
+import { isJsonObject, parseJson } from '../core/json.js';
+import type { AgentMessage, AgentRequest, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, Json, JsonObject, ToolChoice, ToolSpec } from '../core/types.js';
 import { checkOpenAiStrict } from './schema.js';
-import { createCaller, joinUrl, runGeneration, validateGenerateRequest } from './http.js';
-import type { ConsumeContext, ErrorReader, HeldPartial } from './http.js';
+import { agentReasoning, chatAgentMessages, createCaller, joinUrl, replayData, runGeneration, toolStream, validateGenerateRequest } from './http.js';
+import type { ConsumeContext, ErrorReader, HeldPartial, ToolStream } from './http.js';
 import { openAiErrorFields } from './http.js';
 import {
   TransportError,
@@ -36,7 +36,7 @@ import {
   resolveDeps,
   sanitiseRequestId,
 } from './sse.js';
-import type { GenerationProvider, GenerationProviderName, ProviderConfig, ProviderDeps, ProviderOutcome, StreamPartial, TokenBreakdown } from './types.js';
+import type { ChatAgentMessage, GenerationProvider, GenerationProviderName, ProviderConfig, ProviderDeps, ProviderOutcome, StreamPartial, TokenBreakdown } from './types.js';
 
 // ---------------------------------------------------------------------------------------
 // Wire types (request side only; responses are read field by field through the sse.ts accessors)
@@ -46,13 +46,16 @@ export type ChatRole = 'system' | 'developer' | 'user' | 'assistant';
 export type ChatToolWire = { type: 'function'; function: { name: string; description: string; parameters: JsonObject; strict?: true } };
 export type ChatToolChoiceWire = 'auto' | 'required' | 'none' | { type: 'function'; function: { name: string } };
 
+/** A chat message: the legacy string turn, or an agent turn (AGENT-LOOP-DESIGN §6.2: an assistant with calls, a `tool` result). */
+export type ChatMessageWire = { role: ChatRole; content: string } | ChatAgentMessage;
+
 /**
  * Everything any of the four clients sends. Unused members are simply absent from the wire (`JSON.stringify` drops
  * `undefined`), and every optional member is set by exactly one quirk, so the key set of a body is auditable in a test.
  */
 export type ChatRequestBody = {
   model: string;
-  messages: { role: ChatRole; content: string }[];
+  messages: ChatMessageWire[];
   stream?: true;
   /** OpenAI: without `{include_usage: true}` a stream carries no usage at all; Fireworks always sends it, xAI too */
   stream_options?: { include_usage: true };
@@ -72,6 +75,8 @@ export type ChatRequestBody = {
   store?: false;
   /** Fireworks: fail instead of silently shrinking max_tokens when prompt + max_tokens exceeds the context window */
   context_length_exceeded_behavior?: 'error';
+  /** agent, OpenAI chat: `AgentRequest.cacheKey` (https://developers.openai.com/api/docs/guides/prompt-caching) */
+  prompt_cache_key?: string;
 };
 
 export type EffortWord = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
@@ -125,6 +130,15 @@ export interface ChatQuirks {
   extras?: Partial<ChatRequestBody>;
   /** non-200 body reader (all four use OpenAI's envelope) */
   readError?: ErrorReader;
+  /**
+   * AGENT-LOOP-DESIGN §6.2, agent requests only: the header that carries `AgentRequest.cacheKey` so the provider routes
+   * the session's turns to one cache (xAI `x-grok-conv-id`, Fireworks `x-session-affinity`).
+   */
+  sessionHeader?: string;
+  /** agent requests only: the cache key goes in the body as `prompt_cache_key` (OpenAI's chat surface) */
+  promptCacheKey?: boolean;
+  /** agent requests only: `delta.reasoning_content` is captured as the turn's `providerState` and replayed on the assistant message (Fireworks) */
+  replayReasoningContent?: boolean;
 }
 
 /** Preference chain per requested level: the level itself first, then the documented neighbours (a model that lacks `none` gets the lowest it has). */
@@ -167,9 +181,11 @@ export function effortOf(r: GenerateReasoning): EffortWord | null {
 
 /** Exported so every client's test can assert the exact wire body. */
 export function buildChatBody(q: ChatQuirks, cfg: ProviderConfig, req: GenerateRequest): ChatRequestBody {
+  const a = req.agent;
   const messages: ChatRequestBody['messages'] = [];
   if (req.system.length > 0) messages.push({ role: q.systemRole(cfg.model), content: req.system });
-  for (const m of req.messages) messages.push({ role: m.role, content: m.content });
+  if (a !== undefined) messages.push(...chatAgentMessages(a, (m) => replayedReasoning(q, cfg, a, m)));
+  else for (const m of req.messages) messages.push({ role: m.role, content: m.content });
   const body: ChatRequestBody = { model: cfg.model, messages };
   if (q.transport === 'sse') {
     body.stream = true;
@@ -181,14 +197,26 @@ export function buildChatBody(q: ChatQuirks, cfg: ProviderConfig, req: GenerateR
   if (hasTools) {
     body.tools = req.tools!.map((t) => toolWire(q, t));
     if (req.toolChoice !== undefined) body.tool_choice = toolChoiceWire(q, req.toolChoice);
-    if (q.parallelToolCalls) body.parallel_tool_calls = false;
+    // AGENT-LOOP-DESIGN §6.2: an agent turn takes the provider's default (parallel) unless it asked for one call per turn
+    if (q.parallelToolCalls && (a === undefined || !a.parallelToolCalls)) body.parallel_tool_calls = false;
   }
   // null means "do not send the parameter" (core/types.ts GenerateRequest); cfg.temperature is not a fallback.
   if (req.temperature !== null && q.temperature(cfg.model)) body.temperature = req.temperature;
   if (req.seed !== undefined && q.seed) body.seed = req.seed;
-  Object.assign(body, q.reasoning(req.reasoning, cfg.model, hasTools) ?? {});
+  Object.assign(body, q.reasoning(a === undefined ? req.reasoning : agentReasoning(req), cfg.model, hasTools) ?? {});
   if (q.extras) Object.assign(body, q.extras);
+  if (a !== undefined && q.promptCacheKey === true && a.cacheKey.length > 0) body.prompt_cache_key = a.cacheKey;
   return body;
+}
+
+/**
+ * AGENT-LOOP-DESIGN §6.2, OpenAI-compatible row: the transcript as native chat messages (http.ts `chatAgentMessages`); an
+ * assistant turn of a `replayReasoningContent` quirk also carries its `reasoning_content`, same configured model only.
+ */
+function replayedReasoning(q: ChatQuirks, cfg: ProviderConfig, a: AgentRequest, m: AgentMessage): { reasoning_content: string } | null {
+  const data = q.replayReasoningContent === true ? replayData(a, m, q.id, cfg.model) : null;
+  const text = isJsonObject(data) ? data['reasoning_content'] : undefined;
+  return typeof text === 'string' ? { reasoning_content: text } : null;
 }
 
 /** `strict: true` only for a schema OpenAI's strict mode actually accepts (provider/schema.ts); the harness's own `propose_action` does not qualify. */
@@ -213,13 +241,11 @@ function toolChoiceWire(q: ChatQuirks, tc: ToolChoice): ChatToolChoiceWire {
 // Stream / response accumulation
 // ---------------------------------------------------------------------------------------
 
-interface ToolAcc {
-  id: string;
-  name: string;
-  args: string;
-}
-
 interface ChatState {
+  /** AGENT-LOOP-DESIGN §6.1: the configured model when this is an agent request (ids kept, calls split, reasoning captured) */
+  agentModel: string | null;
+  /** the turn's `reasoning_content`, kept for replay (agent requests of a `replayReasoningContent` quirk only) */
+  reasoningText: string;
   text: string;
   reasoningChars: number;
   toolChars: number;
@@ -231,12 +257,13 @@ interface ChatState {
   cost: number | null;
   reasoningTokens: number | null;
   tokens: TokenBreakdown;
-  tools: Map<number, ToolAcc>;
-  order: number[];
+  tools: ToolStream;
 }
 
-function newState(): ChatState {
+function newState(opts: GenerateOptions, agentModel: string | null): ChatState {
   return {
+    agentModel,
+    reasoningText: '',
     text: '',
     reasoningChars: 0,
     toolChars: 0,
@@ -248,8 +275,7 @@ function newState(): ChatState {
     cost: null,
     reasoningTokens: null,
     tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
-    tools: new Map(),
-    order: [],
+    tools: toolStream(opts, agentModel !== null),
   };
 }
 
@@ -336,32 +362,24 @@ function applyChunk(q: ChatQuirks, chunk: JsonObject, st: ChatState, ctx: Consum
       st.text += content;
       notify(ctx.opts.onDelta, content);
     }
-    // thinking text (Fireworks / xAI `reasoning_content`, OpenRouter-style `reasoning`): never rendered, only measured (§4.8)
-    st.reasoningChars += (getStr(delta, 'reasoning_content') ?? '').length + (getStr(delta, 'reasoning') ?? '').length;
+    // thinking text (Fireworks / xAI `reasoning_content`, OpenRouter-style `reasoning`): never rendered, only measured (§4.8);
+    // AGENT-LOOP-DESIGN §6.2: it streams to `onReasoning`, and a replaying quirk keeps `reasoning_content` for the next turn
+    const rc = getStr(delta, 'reasoning_content') ?? '';
+    const rs = getStr(delta, 'reasoning') ?? '';
+    st.reasoningChars += rc.length + rs.length;
+    if (rc.length > 0) notify(ctx.opts.onReasoning, rc);
+    if (rs.length > 0) notify(ctx.opts.onReasoning, rs);
+    if (st.agentModel !== null && q.replayReasoningContent === true) st.reasoningText += rc;
     const refusal = getStr(delta, 'refusal');
     if (refusal !== null) st.refusal += refusal;
     const calls = getArr(delta, 'tool_calls');
     if (calls) {
       for (const [pos, c] of calls.entries()) {
         if (typeof c !== 'object' || c === null || Array.isArray(c)) continue;
-        const index = getNum(c, 'index') ?? pos;
-        let acc = st.tools.get(index);
-        if (!acc) {
-          acc = { id: '', name: '', args: '' };
-          st.tools.set(index, acc);
-          st.order.push(index);
-        }
-        const id = getStr(c, 'id');
-        if (id) acc.id = id;
         const fnObj = getObj(c, 'function');
-        const name = getStr(fnObj, 'name');
-        if (name) acc.name = name;
         const frag = getStr(fnObj, 'arguments') ?? '';
-        if (frag.length > 0) {
-          acc.args += frag;
-          st.toolChars += frag.length;
-          notify(ctx.opts.onToolDelta, frag);
-        }
+        st.tools.push(getNum(c, 'index') ?? pos, getStr(c, 'id'), getStr(fnObj, 'name'), frag);
+        st.toolChars += frag.length;
       }
     }
     // verbatim: `length` means the completion budget ran out (reasoning may have eaten it); the caller decides, this client never retries it
@@ -373,23 +391,14 @@ function applyChunk(q: ChatQuirks, chunk: JsonObject, st: ChatState, ctx: Consum
   if (usage) readUsage(q, usage, st);
 }
 
-function toolCallsOf(st: ChatState): ToolCall[] {
-  return st.order.map((i) => {
-    const acc = st.tools.get(i)!;
-    const args = acc.args.length > 0 ? acc.args : '{}';
-    const p = parseJson(args);
-    // Invalid or truncated arguments keep the raw text with input null; actions.ts rejects them as a malformed proposal.
-    return { name: acc.name, input: p.ok ? p.value : null, rawJson: args };
-  });
-}
-
-function outcomeOf(st: ChatState): ProviderOutcome {
+function outcomeOf(q: ChatQuirks, st: ChatState): ProviderOutcome {
   // A structured-output refusal arrives in its own field instead of the body: it is surfaced as text with a
   // `refusal` stop reason, so the step is recorded as a malformed reply rather than an empty success.
   const refused = st.refusal.length > 0 && st.text.length === 0;
   return {
     text: refused ? st.refusal : st.text,
-    toolCalls: toolCallsOf(st),
+    // Invalid or truncated arguments keep the raw text with input null; actions.ts rejects them as a malformed proposal.
+    toolCalls: st.tools.calls(st.agentModel !== null),
     tokens: st.tokens,
     cost: st.cost,
     reasoningTokens: st.reasoningTokens,
@@ -397,6 +406,7 @@ function outcomeOf(st: ChatState): ProviderOutcome {
     generationId: st.generationId,
     servedProvider: null,
     stopReason: refused ? 'refusal' : (st.finishReason ?? 'stop'),
+    ...(st.agentModel !== null && st.reasoningText.length > 0 ? { providerState: { provider: q.id, model: st.agentModel, data: { reasoning_content: st.reasoningText } } } : {}),
   };
 }
 
@@ -415,8 +425,8 @@ function heldOf(st: ChatState): StreamPartial {
 }
 
 /** The SSE path (OpenAI chat, Fireworks, xAI). */
-async function consumeChatSse(q: ChatQuirks, stream: ReadableStream<Uint8Array>, ctx: ConsumeContext): Promise<ProviderOutcome> {
-  const st = newState();
+async function consumeChatSse(q: ChatQuirks, stream: ReadableStream<Uint8Array>, ctx: ConsumeContext, agentModel: string | null): Promise<ProviderOutcome> {
+  const st = newState(ctx.opts, agentModel);
   let sawDone = false;
   try {
     for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) })) {
@@ -449,12 +459,12 @@ async function consumeChatSse(q: ChatQuirks, stream: ReadableStream<Uint8Array>,
     throw new TransportError('stream', `${q.label}: stream ended before [DONE] / usage frame`);
   }
   if (q.usageRequired && !st.sawUsage) throw new TransportError('stream', `${q.label}: stream completed without a usage frame`);
-  return outcomeOf(st);
+  return outcomeOf(q, st);
 }
 
 /** The non-streaming path (api.meta.ai): one `chat.completion` object, reshaped into a chunk and run through the same accumulator. */
-async function consumeChatJson(q: ChatQuirks, stream: ReadableStream<Uint8Array>, ctx: ConsumeContext): Promise<ProviderOutcome> {
-  const st = newState();
+async function consumeChatJson(q: ChatQuirks, stream: ReadableStream<Uint8Array>, ctx: ConsumeContext, agentModel: string | null): Promise<ProviderOutcome> {
+  const st = newState(ctx.opts, agentModel);
   let text: string;
   try {
     text = await readStreamText(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) });
@@ -473,7 +483,7 @@ async function consumeChatJson(q: ChatQuirks, stream: ReadableStream<Uint8Array>
   }
   applyChunk(q, completionAsChunk(parsed.value), st, ctx);
   if (q.usageRequired && !st.sawUsage) throw new TransportError('stream', `${q.label}: response carried no usage`);
-  return outcomeOf(st);
+  return outcomeOf(q, st);
 }
 
 /**
@@ -518,15 +528,19 @@ export function createChatProvider(q: ChatQuirks, cfg: ProviderConfig, deps: Pro
     async generate(req: GenerateRequest, opts: GenerateOptions): Promise<GenerateResult> {
       validateGenerateRequest(q.label, req);
       const body = JSON.stringify(buildChatBody(q, cfg, req));
+      const a = req.agent;
+      const agentModel = a === undefined ? null : cfg.model;
+      // AGENT-LOOP-DESIGN §6.2: the session header rides on agent requests only (legacy headers are unchanged)
+      const session = a !== undefined && q.sessionHeader !== undefined && a.cacheKey.length > 0 ? { [q.sessionHeader]: a.cacheKey } : {};
       const attempt = (held: HeldPartial): Promise<ProviderOutcome> =>
         caller.attempt(
           {
             label: q.label,
             url,
-            headers: { ...q.headers(cfg.apiKey), ...(q.transport === 'json' ? { accept: 'application/json' } : {}) },
+            headers: { ...q.headers(cfg.apiKey), ...(q.transport === 'json' ? { accept: 'application/json' } : {}), ...session },
             body,
             readError,
-            consume: (stream, ctx) => (q.transport === 'sse' ? consumeChatSse(q, stream, ctx) : consumeChatJson(q, stream, ctx)),
+            consume: (stream, ctx) => (q.transport === 'sse' ? consumeChatSse(q, stream, ctx, agentModel) : consumeChatJson(q, stream, ctx, agentModel)),
           },
           opts,
           held,
