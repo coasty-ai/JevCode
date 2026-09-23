@@ -4,7 +4,7 @@
  * them for control flow. Shapes are deliberately loose (`?` everywhere): both APIs document
  * that new fields and event types may appear and must be ignored.
  */
-import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, ReasoningEffort, ToolCall } from '../core/types.js';
+import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, ProviderReplayState, ReasoningEffort, ToolCall } from '../core/types.js';
 import type { ProviderId } from './ids.js';
 
 // ---------------------------------------------------------------------------------------
@@ -144,17 +144,38 @@ export type AnthropicStreamEvent =
   | AnthropicPing
   | AnthropicErrorBody;
 
-/** Request body we send (research 07 §1.1, §4). */
+/** Request body we send (research 07 §1.1, §4). The agent members (AGENT-LOOP-DESIGN §6.2, §6.5) are absent from every legacy body. */
 export interface AnthropicRequestBody {
   model: string;
   max_tokens: number;
   stream: true;
   system?: { type: 'text'; text: string; cache_control?: { type: 'ephemeral' } }[];
-  messages: { role: 'user' | 'assistant'; content: string }[];
+  messages: { role: 'user' | 'assistant'; content: string | AnthropicContentBlock[] }[];
   tools?: AnthropicToolDef[];
   tool_choice?: AnthropicToolChoice;
   temperature?: number;
+  /** agent: adaptive thinking, summarized, with the explicit prefix-binding behaviour (§6.5) */
+  thinking?: { type: 'adaptive'; display: 'summarized'; block_binding: { prefix_mismatch_behavior: 'error' | 'drop_block' } };
+  /** agent: `reasoning.effort` → effort (https://platform.claude.com/docs/en/build-with-claude/effort) */
+  output_config?: { effort: ReasoningEffort };
+  /** agent: server-side tool-result clearing (§7.3), from `AgentRequest.clearToolResults` */
+  context_management?: { edits: AnthropicClearToolUsesEdit[] };
+  /** agent: top-level automatic cache breakpoint on the last cacheable block (the system and tools breakpoints stay) */
+  cache_control?: { type: 'ephemeral' };
 }
+export interface AnthropicClearToolUsesEdit {
+  type: 'clear_tool_uses_20250919';
+  trigger: { type: 'input_tokens'; value: number };
+  keep: { type: 'tool_uses'; value: number };
+  clear_at_least: { type: 'input_tokens'; value: number };
+}
+/** One content block of an agent-mode message (legacy messages carry a plain string). */
+export type AnthropicContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: JsonObject }
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: true }
+  | { type: 'thinking'; thinking: string; signature: string }
+  | { type: 'redacted_thinking'; data: string };
 export interface AnthropicToolDef {
   name: string;
   description: string;
@@ -164,9 +185,9 @@ export interface AnthropicToolDef {
   cache_control?: { type: 'ephemeral' };
 }
 export type AnthropicToolChoice =
-  | { type: 'auto'; disable_parallel_tool_use: true }
-  | { type: 'any'; disable_parallel_tool_use: true }
-  | { type: 'tool'; name: string; disable_parallel_tool_use: true };
+  | { type: 'auto'; disable_parallel_tool_use?: true }
+  | { type: 'any'; disable_parallel_tool_use?: true }
+  | { type: 'tool'; name: string; disable_parallel_tool_use?: true };
 
 // ---------------------------------------------------------------------------------------
 // OpenRouter chat completions, streaming (research 07 §2.3)
@@ -181,8 +202,10 @@ export interface OpenRouterToolCallDelta {
 export interface OpenRouterChoiceDelta {
   role?: string;
   content?: string | null;
-  /** reasoning text when `reasoning.exclude` is false; not rendered, not accumulated */
+  /** reasoning text when `reasoning.exclude` is false; not rendered, not accumulated (agent: fed to `onReasoning`) */
   reasoning?: string | null;
+  /** agent (AGENT-LOOP-DESIGN §6.2): reasoning fragments merged by `index` into the turn's `providerState` */
+  reasoning_details?: JsonObject[];
   tool_calls?: OpenRouterToolCallDelta[];
 }
 export interface OpenRouterChoice {
@@ -215,9 +238,25 @@ export interface OpenRouterChunk {
   error?: OpenRouterError;
 }
 
+/** One native tool call of an assistant turn on a chat-completions wire (OpenRouter and openai-compat agent bodies). */
+export interface ChatToolCallWire {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+/**
+ * An agent turn on a chat-completions wire (AGENT-LOOP-DESIGN §6.2): a user text, an assistant turn with its calls (plus the
+ * adapter's replay field — OpenRouter `reasoning_details`, Fireworks `reasoning_content`), a `tool` result.
+ */
+export type ChatAgentMessage =
+  | { role: 'user'; content: string }
+  | { role: 'assistant'; content: string | null; tool_calls?: ChatToolCallWire[]; reasoning_details?: Json[]; reasoning_content?: string }
+  | { role: 'tool'; tool_call_id: string; content: string };
+/** A chat-completions message: the legacy string turn, or an agent turn. */
+export type OpenRouterMessage = { role: 'system' | 'user' | 'assistant'; content: string } | ChatAgentMessage;
 export interface OpenRouterRequestBody {
   model: string;
-  messages: { role: 'system' | 'user' | 'assistant'; content: string }[];
+  messages: OpenRouterMessage[];
   stream: true;
   max_tokens: number;
   tools?: OpenRouterToolDef[];
@@ -232,6 +271,8 @@ export interface OpenRouterRequestBody {
   reasoning?: OpenRouterReasoning;
   /** ProviderPreferences (research 07 §2.2) */
   provider?: OpenRouterProviderPrefs;
+  /** agent: `AgentRequest.cacheKey`, the sticky-routing / prompt-cache session (https://openrouter.ai/docs/guides/best-practices/prompt-caching) */
+  session_id?: string;
 }
 /**
  * The wire form of core `GenerateReasoning` (LLM-JEV-DESIGN §4.12), sent as given.
@@ -329,6 +370,10 @@ export interface ProviderOutcome {
   servedProvider: string | null;
   /** the wire's finish reason, normalised to the vocabulary synth/llm/schema.ts `isLengthStop` reads (`length` / `max_tokens`) */
   stopReason: string;
+  /** agent requests only (AGENT-LOOP-DESIGN §6.1): the turn's reasoning state, replayed to the same provider + configured model */
+  providerState?: ProviderReplayState;
+  /** agent requests only: provider notices for the transcript (`GenerateResult.warnings`) */
+  warnings?: string[];
 }
 
 /** One model as the provider's own catalogue endpoint reports it (registry.ts `ProviderSpec.listModels`). */
