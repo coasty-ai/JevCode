@@ -149,8 +149,12 @@ export function Console(p: ConsoleProps): React.JSX.Element {
   const parts = consoleTopEdgeParts(head, p.dir, columns, g);
   const gateRows = p.gate !== undefined && p.gate !== null ? 1 : 0;
   const bodyTop = p.top + 1 + gateRows;
+  // Every row box below wraps exactly one `wrap="truncate"` Text that Ink has already cut to the box's width, so the box
+  // clips vertically only (`overflowY`): Ink's horizontal clip (`Output.get`: getWidestLine + sliceAnsi on every line of
+  // every frame) could never remove a cell here, and it is most of Ink's per-frame cost with box glyphs (a 30×120 clip
+  // bench: 5.34 → 3.03 ms, byte-identical output). test/unit/tui/frame-identity.test.tsx pins the frames and the rule.
   const wrap = (body: React.ReactNode, key: string): React.JSX.Element => (
-    <Box key={key} height={1} overflow="hidden">
+    <Box key={key} height={1} overflowY="hidden">
       <Text wrap="truncate">
         <Text {...edges}>{`${g.boxVertical} `}</Text>
         {body}
@@ -214,7 +218,7 @@ export function Console(p: ConsoleProps): React.JSX.Element {
   const status = statusSpans(p.status, inner, p.statusOptions);
   return (
     <Box flexDirection="column" height={1 + gateRows + height + 3} overflow="hidden">
-      <Box height={1} overflow="hidden">
+      <Box height={1} overflowY="hidden">
         <Text wrap="truncate">
           <Text {...edges}>{parts.left}</Text>
           <Text {...(p.title ? textProps(theme, 'accent', color) : textProps(theme, 'badge', color))}>{parts.badge}</Text>
@@ -225,7 +229,7 @@ export function Console(p: ConsoleProps): React.JSX.Element {
       </Box>
       {gateRows === 1 ? wrap(<Text {...textProps(theme, 'secret', color)}>{fitCells(p.gate ?? '', inner, g)}</Text>, 'gate') : null}
       {bodyRows}
-      <Box height={1} overflow="hidden">
+      <Box height={1} overflowY="hidden">
         <Text wrap="truncate" {...edges}>
           {consoleDivider(columns, g)}
         </Text>
@@ -237,7 +241,7 @@ export function Console(p: ConsoleProps): React.JSX.Element {
         </Text>,
         'status',
       )}
-      <Box height={1} overflow="hidden">
+      <Box height={1} overflowY="hidden">
         <Text wrap="truncate" {...edges}>
           {consoleBottom(columns, g)}
         </Text>
