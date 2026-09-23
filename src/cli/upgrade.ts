@@ -2,21 +2,31 @@
  * `jevcode upgrade [<version>|latest|next] [--check] [--method <m>] [--write-cache]` (TUI-DESIGN §17 items 5–6, D14):
  * delegates to the package manager detected from the install path — npx → nothing to upgrade; Homebrew; bun; pnpm;
  * yarn; else `npm install -g jevcode@<v>` (never `npm update -g`) — after printing the exact command it is about to
- * run (the dry-run line). `--check` asks the registry (2 s timeout) whether a newer version exists and, with
+ * run (the dry-run line). An install that nix, pacman (AUR) or mise owns is never mutated: the command only prints the
+ * owner's upgrade command and exits 0. `--check` asks the registry (2 s timeout) whether a newer version exists and, with
  * `--write-cache`, records the answer in `${XDG_CACHE_HOME:-~/.cache}/jevcode/update-check.json` for the post-run
  * notifier. Exit 0 ok / up to date · 2 usage · 5 registry unreachable · 6 the manager failed. Pure over injected
- * `fetch`, `spawn` and file writes.
+ * `fetch`, `spawn`, file writes and the pacman database read.
  */
+import { readdirSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ParsedFlags } from './args.js';
 import { EXIT_CODES } from '../errors.js';
 import { VERSION } from '../version.js';
 
-export type PackageManager = 'npm' | 'brew' | 'bun' | 'pnpm' | 'yarn' | 'npx';
+export type PackageManager = 'npm' | 'brew' | 'bun' | 'pnpm' | 'yarn' | 'npx' | ManualKind;
+/** installs another package manager owns; `jevcode upgrade` prints that manager's command and never runs one */
+export type ManualKind = 'nix' | 'aur' | 'mise';
 export const PACKAGE_MANAGERS: readonly PackageManager[] = ['npm', 'brew', 'bun', 'pnpm', 'yarn'];
 export const PACKAGE_NAME = 'jevcode';
 export const REGISTRY_URL = 'https://registry.npmjs.org/jevcode';
+/** the flake: `nix run github:coasty-ai/JevCode` */
+export const FLAKE_REF = 'github:coasty-ai/JevCode';
+/** the `nix profile` element name nix derives from a github flake ref (the repository name) */
+export const NIX_PROFILE_NAME = 'JevCode';
+/** pacman's local package database: one `<name>-<pkgver>-<pkgrel>` directory per installed package */
+export const PACMAN_LOCAL_DB = '/var/lib/pacman/local';
 /** TUI-DESIGN §17 item 5: the registry timeout. */
 export const REGISTRY_TIMEOUT_MS = 2000;
 /** TUI-DESIGN §17 item 6: the notifier's cache is fresh for a day. */
@@ -24,10 +34,41 @@ export const CACHE_FRESH_MS = 24 * 60 * 60 * 1000;
 /** exit 6: the manager itself failed */
 export const EXIT_MANAGER_FAILED = 6;
 
-/** TUI-DESIGN §17 item 5: the manager from `realpath(process.argv[1])` (and the env for npx). */
-export function detectPackageManager(realArgv1: string, env: NodeJS.ProcessEnv): PackageManager {
+/** the entries of pacman's local database (injectable) */
+export type PacmanDb = () => readonly string[];
+
+const readPacmanDb: PacmanDb = () => {
+  try {
+    return readdirSync(PACMAN_LOCAL_DB);
+  } catch {
+    return [];
+  }
+};
+
+/** the installed pacman package `jevcode` (else `jevcode-<suffix>`, e.g. `jevcode-git`) from the db entries */
+export function pacmanPackage(entries: readonly string[]): string | null {
+  const names = entries.map((e) => /^(jevcode(?:-[a-z0-9]+)*)-[^-/]+-[^-/]+$/.exec(e)?.[1]).filter((n): n is string => n !== undefined);
+  return names.includes(PACKAGE_NAME) ? PACKAGE_NAME : (names[0] ?? null);
+}
+
+/** mise's npm backend installs `npm:jevcode` under `${MISE_DATA_DIR:-~/.local/share/mise}/installs/npm-jevcode/<version>/` */
+function isMiseInstall(p: string, env: NodeJS.ProcessEnv): boolean {
+  if (/\/mise\/installs\/npm-jevcode\//.test(p)) return true;
+  const data = env['MISE_DATA_DIR']?.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  return data !== undefined && data !== '' && p.startsWith(`${data}/installs/npm-jevcode/`);
+}
+
+/**
+ * TUI-DESIGN §17 item 5: the manager from `realpath(process.argv[1])` (and the env for npx and mise). D11: a nix store
+ * path, a mise install dir and a pacman-owned `/usr/lib/node_modules/jevcode` are their own kinds; pacman's database is
+ * read only for that last path.
+ */
+export function detectPackageManager(realArgv1: string, env: NodeJS.ProcessEnv, pacmanDb: PacmanDb = readPacmanDb): PackageManager {
   const p = realArgv1.replace(/\\/g, '/');
   if (/\/_npx\//.test(p) || env['npm_command'] === 'exec' || env['npm_config_user_agent']?.includes('npx') === true) return 'npx';
+  if (p.startsWith('/nix/store/')) return 'nix';
+  if (isMiseInstall(p, env)) return 'mise';
+  if (p.startsWith('/usr/lib/node_modules/jevcode/') && pacmanPackage(pacmanDb()) !== null) return 'aur';
   if (/\/(Cellar|homebrew|linuxbrew)\//.test(p)) return 'brew';
   if (/\/\.bun\//.test(p)) return 'bun';
   if (/\/pnpm\//.test(p) || env['npm_config_user_agent']?.startsWith('pnpm') === true) return 'pnpm';
@@ -35,7 +76,7 @@ export function detectPackageManager(realArgv1: string, env: NodeJS.ProcessEnv):
   return 'npm';
 }
 
-/** the argv the manager runs for `<target>` (`latest` by default); null for npx */
+/** the argv the manager runs for `<target>` (`latest` by default); null for npx and the print-only kinds */
 export function upgradeArgv(manager: PackageManager, target: string): string[] | null {
   const spec = `${PACKAGE_NAME}@${target}`;
   switch (manager) {
@@ -50,7 +91,54 @@ export function upgradeArgv(manager: PackageManager, target: string): string[] |
     case 'yarn':
       return ['yarn', 'global', 'add', spec];
     case 'npx':
+    case 'nix':
+    case 'aur':
+    case 'mise':
       return null;
+  }
+}
+
+export function isManualKind(m: PackageManager): m is ManualKind {
+  return m === 'nix' || m === 'aur' || m === 'mise';
+}
+
+/** D11: what to print for an install another manager owns — `[command, what it is for]` rows and notes */
+export function manualUpgrade(kind: ManualKind, target: string, pacmanPkg: string = PACKAGE_NAME): { owner: string; rows: [string, string][]; notes: string[] } {
+  const version = target !== 'latest' && parseVersion(target) !== null ? target.replace(/^v/, '') : null;
+  const distTag = target !== 'latest' && version === null;
+  const passVersion = `${target} is an npm dist-tag; pass a version instead (jevcode upgrade <x.y.z>)`;
+  switch (kind) {
+    case 'nix': {
+      const ref = version !== null ? `${FLAKE_REF}/v${version}` : FLAKE_REF;
+      const rows: [string, string][] =
+        version !== null
+          ? [
+              [`nix profile remove ${NIX_PROFILE_NAME} && nix profile install ${ref}`, `a nix profile install, moved to v${version}`],
+              [`nix run ${ref}`, 'run it without installing'],
+            ]
+          : [
+              [`nix profile upgrade ${NIX_PROFILE_NAME}`, 'a nix profile install'],
+              [`nix run ${ref}`, 'run the newest main without installing'],
+            ];
+      const notes = ['a NixOS, home-manager or nix-darwin install: update that flake input and rebuild'];
+      if (distTag) notes.push(passVersion);
+      return { owner: 'nix', rows, notes };
+    }
+    case 'aur':
+      return {
+        owner: `pacman (package ${pacmanPkg})`,
+        rows: [
+          [`yay -Syu ${pacmanPkg}`, 'with yay'],
+          [`paru -Syu ${pacmanPkg}`, 'with paru'],
+        ],
+        notes: target !== 'latest' ? [`the AUR package follows the latest stable release; ${target} is not published there`] : [],
+      };
+    case 'mise':
+      return {
+        owner: 'mise',
+        rows: [version !== null ? [`mise use -g npm:${PACKAGE_NAME}@${version}`, `pin v${version}`] : [`mise upgrade npm:${PACKAGE_NAME}`, 'within the version your mise config allows']],
+        notes: distTag ? [passVersion] : [],
+      };
   }
 }
 
@@ -129,6 +217,8 @@ export interface UpgradeIo {
   fetch?: typeof fetch;
   now?: () => Date;
   writeFile?: (path: string, text: string) => Promise<void>;
+  /** pacman's local database entries; default: a read of `/var/lib/pacman/local` */
+  pacmanDb?: PacmanDb;
   /** print the command only, never run it (tests, `JEVCODE_UPGRADE_DRY_RUN=1`) */
   dryRun?: boolean;
   current?: string;
@@ -187,7 +277,16 @@ export async function commandUpgrade(flags: ParsedFlags, io: UpgradeIo): Promise
       return EXIT_CODES.config;
     }
     manager = m;
-  } else manager = detectPackageManager(io.argv1, io.env);
+  } else manager = detectPackageManager(io.argv1, io.env, io.pacmanDb ?? readPacmanDb);
+  if (isManualKind(manager)) {
+    const pkg = manager === 'aur' ? (pacmanPackage((io.pacmanDb ?? readPacmanDb)()) ?? PACKAGE_NAME) : PACKAGE_NAME;
+    const m = manualUpgrade(manager, target, pkg);
+    const width = Math.max(...m.rows.map(([cmd]) => cmd.length));
+    io.stdout.write(`jevcode is installed through ${m.owner} (${io.argv1}); jevcode upgrade does not change it. Upgrade with:\n`);
+    for (const [cmd, why] of m.rows) io.stdout.write(`  ${cmd.padEnd(width)}  # ${why}\n`);
+    for (const n of m.notes) io.stdout.write(`${n}\n`);
+    return EXIT_CODES.ok;
+  }
   const argv = upgradeArgv(manager, target);
   if (argv === null) {
     io.stdout.write(`jevcode runs through npx here (${io.argv1}); there is nothing installed to upgrade — npx fetches the requested version each time\n`);

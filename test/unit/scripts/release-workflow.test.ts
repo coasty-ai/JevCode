@@ -5,7 +5,8 @@
  * four-clause Jev contract lint that every merge message in this wave cites as a gate (34 sites / 10 four-clause /
  * 24 allow-listed) was not enforced at tag time: a four-clause block deleted on the way to a release would have
  * shipped. package.json already defines `check` as the composite the sessions actually type
- * (`typecheck && jev-contract && test`), so the job runs that.
+ * (`typecheck && jev-contract && test`), so the job ran that. Since the release pipeline rewrite the `gates` job runs
+ * ci.yml's steps one by one (`npm run jev-contract` among them), and the pins below hold for either shape.
  *
  * Failing-first: red at d297b29, where the pair `npm run typecheck` / `npm test` names neither `check` nor
  * `jev-contract`.

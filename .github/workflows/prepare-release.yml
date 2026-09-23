@@ -1,0 +1,82 @@
+# Prepare a release from main: bump package.json, promote the CHANGELOG, regenerate the docs, run the
+# version-dependent gates, tag, push main and the tag atomically, then start release.yml on the tag.
+#
+# Run from Actions → prepare-release → Run workflow (branch main). `bump=current` releases package.json as is.
+# `dry_run` stops after tagging locally and shows the commits and the tag in the job summary. If main is
+# protected, the commits go to a release/v<V> PR instead: merge it with a merge commit, then run this again with
+# bump=current. The token is handed only to the last step, which runs no npm code.
+name: prepare-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        type: choice
+        default: current
+        options: [current, patch, minor, major, prepatch, preminor, premajor, prerelease]
+      version:
+        type: string
+        default: ''
+        description: 'explicit x.y.z[-pre]; overrides bump'
+      preid:
+        type: string
+        default: rc
+      dry_run:
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # push the release commit and the tag
+      actions: write # gh workflow run release.yml; gh run list
+      pull-requests: write # the release/v<V> PR when main is protected
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false # the push step passes the token to git itself; npm code never sees it
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Validate inputs and compute the version
+        id: v
+        env:
+          BUMP: ${{ inputs.bump }}
+          VERSION_IN: ${{ inputs.version }}
+          PREID: ${{ inputs.preid }}
+        run: node scripts/release/version.mjs next --bump "$BUMP" --version "$VERSION_IN" --preid "$PREID" >> "$GITHUB_OUTPUT"
+
+      - name: Require a green ci.yml run on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/release/require-green-ci.sh "$GITHUB_SHA"
+
+      - run: npm ci
+
+      - name: Bump, promote the CHANGELOG, commit, regenerate docs, gate, tag
+        env:
+          CI: 'true'
+          JEVCODE_ASSERT_NO_NETWORK: '1'
+          VERSION: ${{ steps.v.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: bash scripts/release/prepare.sh build
+
+      - name: Push main and the tag, start ci.yml and release.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: bash scripts/release/prepare.sh push
