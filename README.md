@@ -15,7 +15,7 @@
 <!-- after the first npm publish, swap the first badge for the live one:
      https://img.shields.io/npm/v/jevcode?style=flat-square&label=npm&color=f386a1&labelColor=1e1e1e -->
 <img alt="version 0.6.0" src="https://img.shields.io/badge/version-0.6.0-f386a1?style=flat-square&labelColor=1e1e1e">
-<img alt="node >=22.12" src="https://img.shields.io/badge/node-%E2%89%A5%2022.12-d45bb6?style=flat-square&labelColor=1e1e1e">
+<img alt="node 22.12 or newer" src="https://img.shields.io/badge/node-%E2%89%A5%2022.12-d45bb6?style=flat-square&labelColor=1e1e1e">
 <img alt="zero runtime dependencies" src="https://img.shields.io/badge/runtime%20deps-0-f386a1?style=flat-square&labelColor=1e1e1e">
 <img alt="macOS, Linux, WSL 2" src="https://img.shields.io/badge/macOS%20%C2%B7%20Linux%20%C2%B7%20WSL%202-d45bb6?style=flat-square&labelColor=1e1e1e">
 <img alt="MIT licence" src="https://img.shields.io/badge/licence-MIT-f386a1?style=flat-square&labelColor=1e1e1e">
