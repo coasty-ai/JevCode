@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EngineEvent, EngineOptions, SerializedError } from '../../../src/core/types.js';
 import { ABSENT_DECIDER_MODEL } from '../../../src/jev/absent.js';
-import { AGENT_CHAT_CARRY_CHARS, AGENT_CHAT_CARRY_TURNS, DO_IT_OFFER, ON_IT_LINE, REPLY_STOPPED_TOAST, chatCarry, isTransientProviderError, runCapClampedNote, sessionEndedText } from '../../../src/cli/session.js';
+import { AGENT_CHAT_CARRY_CHARS, AGENT_CHAT_CARRY_TURNS, DO_IT_OFFER, ONE_SHOT_REPLY_REFUSAL, ON_IT_LINE, REPLY_STOPPED_TOAST, chatCarry, isTransientProviderError, runCapClampedNote, sessionEndedText } from '../../../src/cli/session.js';
 import { AGENT_NO_DECISIONS_TEXT } from '../../../src/chat/facts.js';
 import { MOCK_CHAT_REPLY } from '../../../src/provider/mock.js';
 import { readIndex } from '../../../src/session/index.js';
@@ -406,6 +406,31 @@ describe('§A5: a reply is never resumed — -c, /continue, the picker and --res
     await byId.ready();
     await waitFor(() => notes(byId).some((t) => t.startsWith(`session ${sid} continues`)), 4000, 'the adoption note');
     expect(byId.factory.calls).toEqual([]);
+  });
+
+  it('one-shot: `run --resume <reply> "<task>"` sends the task as the follow-up; with no task it is a usage error, never a hang', async () => {
+    const first = await build({ ...AGENT, script: agentScript });
+    void first.controller.run();
+    await first.ready();
+    await first.submit('fix the failing test');
+    await first.submit('thanks');
+    const thanks = first.factory.engines[1]!.runId;
+    await tick(20);
+    // with no task: a usage error (exit 2) naming what to do, never a process waiting for a message it cannot get
+    for (const flags of [{ resume: thanks }, { continue: true }]) {
+      const bare = await build({ mode: 'one-shot', task: null, flags: { mode: 'agent', ...flags }, script: agentScript, home: first.home, workspace: first.workspace });
+      const code = await Promise.race([bare.controller.run(), tick(4000).then(() => 'hang')]);
+      expect(code).toBe(2);
+      expect(bare.factory.calls).toEqual([]);
+      expect(bare.stderr.join('')).toContain(ONE_SHOT_REPLY_REFUSAL);
+    }
+    // with a task: the next turn of the conversation, the reply as its parent
+    const withTask = await build({ mode: 'one-shot', task: 'now the docs', flags: { mode: 'agent', resume: thanks }, script: agentScript, home: first.home, workspace: first.workspace });
+    expect(await withTask.controller.run()).toBe(0);
+    expect(withTask.factory.calls).toHaveLength(1);
+    expect(withTask.factory.calls[0]!.resume).toBeUndefined();
+    expect(withTask.factory.calls[0]!.task).toBe('now the docs');
+    expect(withTask.factory.calls[0]!.conversation?.parent?.runId).toBe(thanks);
   });
 
   it('--force still resumes the reply run (the escape hatch)', async () => {

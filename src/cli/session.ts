@@ -234,6 +234,8 @@ export function pausedItemText(step: number): string {
 export function sessionEndedText(sessionId: string, runs: number, totalUsd: number, replies = 0): string {
   return `session ${sessionId} ended: ${runs} run${runs === 1 ? '' : 's'}${replies > 0 ? `, ${repliesText(replies)}` : ''}, ${usd2(totalUsd)} total`;
 }
+/** AGENT-LOOP-DESIGN §A5: `jevcode run -c` / `--resume` with no task on a session whose newest run was a reply (nothing to resume) */
+export const ONE_SHOT_REPLY_REFUSAL = 'the run to continue was a reply, so there is nothing to resume: pass the next message as the task, or --force to resume it anyway';
 /** AGENT-LOOP-DESIGN §A5: `1 reply` / `N replies` */
 export function repliesText(n: number): string {
   return `${n} repl${n === 1 ? 'y' : 'ies'}`;
@@ -3280,21 +3282,24 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
    * `--resume <id|title>` / `/resume <x>`: run id → resume; title → the session's newest run (§8.4). AGENT-LOOP-DESIGN §A5: a run
    * that was a reply is not resumed — its session is adopted (`resumeOrFollowUp`); legacy-mode runs never are replies.
    */
-  async function resumeTarget(value: string, force: boolean): Promise<void> {
-    const resumeOrAdopt = (runId: string): Promise<void> => (isReplyRunId(runId) ? resumeOrFollowUp(runId, force) : resumeRun(runId, force));
+  async function resumeTarget(value: string, force: boolean): Promise<FollowUpHow> {
+    const resumeOrAdopt = async (runId: string): Promise<FollowUpHow> => {
+      if (isReplyRunId(runId)) return resumeOrFollowUp(runId, force);
+      await resumeRun(runId, force);
+      return 'resumed';
+    };
     const c = classifyResumeValue(value);
-    if (c.kind === 'run') {
-      await resumeOrAdopt(c.runId);
-      return;
-    }
+    if (c.kind === 'run') return resumeOrAdopt(c.runId);
     const r = resolveResumeTarget(sessionRows(), c.title);
-    if (r.kind === 'run') await resumeOrAdopt(r.runId);
-    else if (r.kind === 'session') {
+    if (r.kind === 'run') return resumeOrAdopt(r.runId);
+    if (r.kind === 'session') {
       const id = newestRunId(r.session);
-      if (id) await resumeOrAdopt(id);
-      else uiError(`/resume — session "${c.title}" has no run — pick another with /resume, or type a task`);
-    } else if (r.kind === 'ambiguous') throw new ConfigError(ambiguousResumeMessage(value, r.candidates), { setting: 'resume' });
-    else throw new UsageError(`--resume: no run or session matches "${value}"`);
+      if (id) return resumeOrAdopt(id);
+      uiError(`/resume — session "${c.title}" has no run — pick another with /resume, or type a task`);
+      return 'resumed';
+    }
+    if (r.kind === 'ambiguous') throw new ConfigError(ambiguousResumeMessage(value, r.candidates), { setting: 'resume' });
+    throw new UsageError(`--resume: no run or session matches "${value}"`);
   }
 
   // --- git facts and sandboxes for the idle commands (§12.4–§12.6) ------------------------------
@@ -3860,7 +3865,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     return false;
   }
 
-  async function resumeOrFollowUp(runId: string, force: boolean): Promise<void> {
+  /**
+   * what `resumeOrFollowUp` did: adopted the session of a complete run or of a reply (the next message is a follow-up), or resumed
+   * the run (or tried to: `resumeRun` reports its own refusal)
+   */
+  type FollowUpHow = 'complete' | 'reply' | 'resumed';
+
+  async function resumeOrFollowUp(runId: string, force: boolean): Promise<FollowUpHow> {
     const row = index.find((s) => s.runs.some((r) => r.runId === runId));
     const run = row?.runs.find((r) => r.runId === runId) ?? null;
     const known = runs.find((r) => r.runId === runId) ?? null;
@@ -3879,9 +3890,23 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         seedMeterFromIndex(sid, '');
       }
       note(reply ? `session ${sid} continues: run ${runId} was a reply, so type a follow-up` : `session ${sid} continues: run ${runId} is complete, so type a follow-up (/resume ${runId} --force resumes it)`);
-      return;
+      return reply ? 'reply' : 'complete';
     }
     await resumeRun(runId, force);
+    return 'resumed';
+  }
+
+  /**
+   * `jevcode run -c` / `--resume` (one-shot) after the session was adopted: the task, when one was given, is its follow-up — in agent
+   * mode the next turn of the session's conversation (§7.6: it carries the adopted run as its parent). A reply adopted with no task
+   * leaves nothing to do, so it is a usage error, never a process that waits for a message it cannot get (AGENT-LOOP-DESIGN §A5; a
+   * complete run of a legacy mode keeps today's path).
+   */
+  async function oneShotFollowUp(how: FollowUpHow): Promise<void> {
+    const task = await readTaskOption();
+    if (exiting) return;
+    if (task !== null) await submitTask(task, (pending.mode ?? baseMode) === 'agent');
+    else if (how === 'reply') throw new UsageError(ONE_SHOT_REPLY_REFUSAL);
   }
 
   async function pickerCommand(sort: 'updated' | 'created', force: boolean): Promise<void> {
@@ -5329,15 +5354,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const s = mostRecentSession(index, workspaceRoot);
       const id = s ? newestRunId(s) : null;
       if (id === null) throw new UsageError(noSessionMessage(workspaceRoot));
-      await resumeOrFollowUp(id, flags.force === true);
-      if (o.mode === 'one-shot' && !live() && !exiting) {
-        const task = await readTaskOption();
-        if (task !== null && !exiting) await submitTask(task);
-      }
+      const how = await resumeOrFollowUp(id, flags.force === true);
+      if (o.mode === 'one-shot' && !live() && !exiting) await oneShotFollowUp(how);
       return;
     }
     if (flags.resume !== undefined) {
-      await resumeTarget(flags.resume, flags.force === true);
+      const how = await resumeTarget(flags.resume, flags.force === true);
+      // §A5: a reply is adopted, not resumed — in one-shot the task is its follow-up (legacy never adopts here: unchanged)
+      if (how === 'reply' && o.mode === 'one-shot' && !live() && !exiting) await oneShotFollowUp(how);
       return;
     }
     if (o.mode === 'session') {
@@ -5400,10 +5424,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     return typeof o.task === 'function' ? o.task() : o.task;
   }
 
-  async function submitTask(task: string): Promise<void> {
+  /** `agentTurn`: an agent-mode follow-up of an adopted session is the next turn of its conversation (AGENT-LOOP-DESIGN §7.6) */
+  async function submitTask(task: string, agentTurn = false): Promise<void> {
     const gated = await gateTask(task);
     if (gated === null || exiting) return;
-    await startRun(gated.task, { kind: ranBefore() ? 'follow-up' : 'prompt', pinnedFiles: [], secretsAcked: gated.acked });
+    await startRun(gated.task, { kind: ranBefore() ? 'follow-up' : 'prompt', pinnedFiles: [], secretsAcked: gated.acked, ...(agentTurn ? { agent: { attempt: 0 as const } } : {}) });
   }
 
   /** the mode the fix block is printed for: the resolved config's, else the flag, else `JEVCODE_MODE`, else DEFAULT_MODE */
