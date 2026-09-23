@@ -1805,3 +1805,83 @@ it lands; until then the cell is **not claimed** for live runs.
 
 No pre-existing gate regressed. The `perf` command stays in the shipped surface for 0.6.0 (the harness's fail-fast guard is the
 installed-package answer); the finishing audit's test-hygiene items (#9, #13–#18) were deferred by the user's direction to finish.
+
+## The agent loop — the default harness (2026-09-23)
+
+The default mode is `agent`: the code model drives with native tool calls, everything streams, the harness sandboxes,
+checkpoints and verifies with the workspace's own tests, and Jev keeps three quick hints at the edges. The specification is
+[`AGENT-LOOP-DESIGN.md`](AGENT-LOOP-DESIGN.md); the readable account is
+[`architecture/agent-loop.md`](architecture/agent-loop.md); the decision is the 2026-09-23 entry of
+[`DECISIONS.md`](DECISIONS.md). It implements the owner's directives of 2026-09-23 (design §A): the TUI streams everything,
+Jev only for trivial quick decisions, every message gets a model reply, the mini donut in the status row, and full autonomy
+that never asks.
+
+### What landed
+
+Built in slices on one integration tree (main `e4139e2` plus every slice), each merged with its own gates:
+
+| Slice | What it landed |
+| --- | --- |
+| S1 | the contract and the mode data: `EngineMode 'agent'`, the five new events, `AgentDriver` / `AgentContext`, `ConversationCarry`, the absent decider (`src/jev/absent.ts`), `ADVERTISED_MODES` / `LEGACY_MODES`, the 250-step agent default |
+| S1b | the `answered` stop and the one reply-only predicate, `isReplyOnlyRun` (`src/core/agent-run.ts`) |
+| S2 | all seven provider adapters behind the additive `GenerateRequest.agent`: tool results by id, parallel calls, cache keys, reasoning replay, the rejected-replay fallback; legacy wire bodies byte-identical |
+| S3 | the agent core, `src/agent/` (30 modules, about 5,500 lines): the driver, the seven tools, the edit matcher, tool-call repair, the prompts, the stream shaper, the context policy, the loop detector, the command classifier, RA0 / RA1 / RA2 |
+| S4 | the engine seam (`src/loop/stages/agent.ts`): dispatch, the per-step change set, `agentState` through checkpoint and resume, the stop rules (`complete`, `generator_done`, `answered`, `stuck`), the truthful destructive note |
+| S5a | the TUI stream surface: one leading-edge stream scheduler, the reply block above the rule with a zero-jump commit, tool rows, the chat look of a reply, status words, the braille mini indicator in the status row (the 12-row animation slot removed) |
+| S5b | the session and chat: every chat message is an agent run carrying the session, reply bookkeeping, abort = reply stopped, Jev optional at both engine sites, the copy |
+| S6 | the default flip with its tests and the bundle gate (S6a), this documentation (S6b), and the integration and live verification (S6c, recorded in its own section) |
+
+S7 (moving the Jev-driven stages, the synthesizer and the chat lookup under `src/jev-modes/`) follows S6.
+
+### Where Jev sits now
+
+- A normal run makes **at most one** Jev request — RA0, the first-turn effort hint, and only where it can change the request
+  (Anthropic, whose agent turns default to effort `high`). On the default provider, OpenRouter's `z-ai/glm-5.3-flash`, whose
+  turns are already at effort `low`, a normal run makes **none**. RA1 needs a loop trip; RA2 needs a run past 30 model turns.
+- The Jev key is optional in agent mode: `jevcode login --status` reads `needs: generator (Jev optional)`, and with no key
+  the absent decider sends every placement to its code fallback with no wait.
+- `npm run jev-contract` on this tree: `ok (37 Jev call site(s): 14 with a four-clause block, 23 allow-listed)` — RA0, RA1
+  and RA2 are three of the fourteen.
+- **src/jev importers outside src/jev and src/jev-modes: 47** — measured with
+  `grep -rlE "from '(\.\./)+jev/|from '\./jev/" src | grep -v -e ^src/jev/ -e ^src/jev-modes/ | wc -l` on this tree. It was
+  45 at main `e4139e2`; the agent loop added `src/agent/jev.ts` (the three placements) and `src/core/types.ts` (a type-only
+  import of `StepToken` for `AgentContext.routeToken`). S7's target is about 21, and later work should only lower it.
+
+### Live checks on the integrated tree
+
+Two live checks were taken on the integration tree with `--mode agent` before the default flip:
+
+- the `examples/demo-py` hero task (fix the failing tests without changing them) completed in about **9 s** for about
+  **$0.001**, with **zero Jev cost**;
+- `hi, who made you` was answered as JevCode by coasty-ai, and the run stopped `answered`.
+
+The full live plan of design §16, as amended by the directives, runs on the integrated tree after the flip; its results
+are recorded in their own dated section.
+
+### Gates on the documentation branch
+
+Measured on 2026-09-23 on the integration tree plus the documentation commits (no source change):
+
+| gate | result |
+| --- | --- |
+| `npm run -s typecheck` (`tsc --noEmit` + `no-any`) | clean |
+| `npm run -s jev-contract` | ok — 37 sites, 14 blocks, 23 allow-listed |
+| `npm run -s check:docs` | ok — every relative link and anchor in 149 Markdown files resolves |
+| `node scripts/gen-docs.mjs --check` | clean |
+| `node scripts/gen-decisions-toc.mjs --check` | clean (100 entries) |
+| `npx vitest run test/unit/hygiene` | 9 files, 72 tests passed |
+| `npx vitest run --maxWorkers=2 test/unit` | 658 files passed, 1 skipped; 11,350 tests passed, 13 skipped, 0 failed (198 s) |
+
+`npm run pack:check` on the integration tree fails only on the unpacked-size gate (3,741,637 bytes with the agent loop
+merged); the flip slice raises the gate in `scripts/check-pack.mjs` to the measured need with a dated justification.
+
+### Known gaps, stated plainly
+
+- **The taglines are unchanged until the owner decides.** The README keeps "Decisions, not strings" in the wordmark's alt text
+  and its footer (the splash draws it too), and the CLI usage line still reads "JevCode: Jev decides, the code model writes."
+  Design §14.5 proposes replacements; the peer review ties the five places together.
+- **Two strings outside the documentation still carry the old framing**, named here so they are not missed: the man page's
+  NAME line ("coding-agent harness where Jev decides and the code model writes the code", generated by
+  `scripts/gen-docs.mjs`), and the `--autonomy` flag's help text, which describes the legacy modes' review verdicts
+  ("full auto-approves and logs them … a blocked action always stops") rather than agent mode, where nothing is refused.
+- **The agent loop is not benchmarked**, by the owner's instruction. Every published measurement is of the Jev-driven modes.
