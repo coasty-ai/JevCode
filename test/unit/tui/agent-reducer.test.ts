@@ -103,6 +103,30 @@ describe('agent reducer: a reply is a reply (§A1, §A5)', () => {
     expect(agentReplyPhase(s)).toBe(false);
   });
 
+  it('the engine\'s real finish sequence (stage execute → `exec:start` of the `done`) keeps a reply a reply: the chat chrome until run:end, no step row', () => {
+    // the engine executes a reply's `done` too; `exec:start` of a done action is not a command starting, so it never turns the
+    // run chrome on (it used to: the console flipped to `Type to steer the next step…` / `step 1/250` between the prose and run:end)
+    let s = drive([...agentOpening('hi'), ...shapedTurn(1, 1, ['Hi!'])]);
+    s = drive([{ type: 'stage:start', step: 1, stage: 'execute' }, { type: 'exec:start', step: 1, action: { kind: 'done', summary: 'Hi!' } }, ...finish(1)], s);
+    expect(agentReplyPhase(s)).toBe(true);
+    expect(s.agent?.tools).toBe(false);
+    s = drive([{ type: 'run:end', result: agentRunResult('answered'), exitCode: 0 }], s);
+    expect(shown(s)).toEqual(['[jevcode] Hi!']);
+    // a command's `exec:start` still turns it on
+    const run = drive([...agentOpening('fix it'), { type: 'exec:start', step: 1, action: { kind: 'run', command: 'npm test' } }]);
+    expect(run.agent?.tools).toBe(true);
+  });
+
+  it('a `[ui]` notice while the reply is in flight (the human\'s `/status` through Engine.annotate) lands at once, before the reply — never held behind it', () => {
+    let s = drive(agentOpening('hi'));
+    s = drive([{ type: 'notice', step: 1, kind: 'ui', level: 'info', text: 'status', label: '[ui]' }], s);
+    expect(shown(s)).toEqual(['[ui] status']);
+    expect(agentReplyPhase(s)).toBe(true);
+    // the engine's own informational notices are still held (and dropped when the run ends as a reply)
+    s = drive([{ type: 'notice', step: null, kind: 'instructions', level: 'info', text: 'instructions: AGENTS.md (120 B)' }, ...shapedTurn(1, 1, ['Hi!']), ...finish(1), { type: 'run:end', result: agentRunResult('answered'), exitCode: 0 }], s);
+    expect(shown(s)).toEqual(['[ui] status', '[jevcode] Hi!']);
+  });
+
   it('an Esc on a reply (human_abort before any tool call) ends it the way a chat reply ends — the partial prose stays, no stop line', () => {
     const s = drive([...agentOpening('write me a poem'), { type: 'generator:delta', step: 1, text: 'Roses are' }, { type: 'run:end', result: agentRunResult('human_abort', 0), exitCode: 130 }]);
     expect(shown(s)).toEqual(['[jevcode] Roses are']);
