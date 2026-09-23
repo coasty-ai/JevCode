@@ -130,7 +130,7 @@ const COLUMNS = 80;
 const FIRST_FRAME: TypistStep = { op: 'expect', pattern: '\\x1b\\[\\?25l', timeoutMs: 20_000 };
 /** the round-2 `task` placeholder (TUI-DESIGN-2 §4.4 `Say hi, ask a question, or describe a task…`) */
 const PLACEHOLDER: TypistStep = { op: 'expect', pattern: 'Say hi', timeoutMs: 20_000 };
-/** the run is live at its `[run] start` item (`[run] ready` is hidden by the compact transcript, TUI-DESIGN-2 §4.5) */
+/** the run is live once the status row reads `step <n>/<max>` (`pty.ts` `RUN_STARTED_PATTERN`; the TUI no longer prints the `[run] started` item) */
 const RUN_STARTED: TypistStep = { op: 'expect', pattern: RUN_STARTED_PATTERN, timeoutMs: 20_000 };
 const FOLLOWUP: TypistStep = { op: 'expect', pattern: 'Follow-up, question', timeoutMs: 20_000 };
 /** every mocked run says `--mode jev-on` explicitly: the scripted `--mock` trajectory is a generator trajectory, whatever `DEFAULT_MODE` is (TUI-DESIGN-3 §1.1) */

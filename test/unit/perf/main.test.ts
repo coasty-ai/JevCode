@@ -33,12 +33,14 @@ import {
   PERF_WINDOW_TTL_FLOOR_MS,
   PERF_WINDOW_TTL_MAX_MS,
   driverLines,
+  isPartial,
   measureStaticAppendInChild,
   openPerfWindow,
   parsePerfWindowHeader,
   perfWindowState,
   perfWindowTtlMs,
   runPerf,
+  selectedProbes,
 } from '../../../src/perf/main.js';
 
 /** The protocol's line: `<iso-8601 created> <pid> <owner-label> <expected-minutes>`. */
@@ -92,6 +94,33 @@ async function attempt(cwd: string, windowPath: string, only: string = NO_PROBE)
 }
 
 const PERF_MAIN = join(dirname(fileURLToPath(import.meta.url)), '../../../src/perf/main.js');
+
+describe('selectedProbes: the release set and the opt-in probes', () => {
+  it('a bare run measures the nine release probes; stream-latency (like lane-run) runs only when named, which makes the run partial', () => {
+    const release = selectedProbes({});
+    expect(release).toEqual(['first-frame', 'step-overhead', 'static-append', 'render-lag', 'composer-latency', 'intake-latency', 'idle-frames', 'states', 'scroll-latency']);
+    expect(release).not.toContain('stream-latency');
+    expect(selectedProbes({ JEVCODE_PERF_ONLY: 'stream-latency' })).toEqual(['stream-latency']);
+    // named next to the whole release set it is still one more than the release set: `partial` (length ≠ release), never a release number
+    const all = selectedProbes({ JEVCODE_PERF_ONLY: [...release, 'stream-latency'].join(',') });
+    expect(all).toHaveLength(release.length + 1);
+    expect(isPartial(all)).toBe(true);
+    expect(() => selectedProbes({ JEVCODE_PERF_ONLY: 'stream-latancy' })).toThrow(/unknown probe\(s\) stream-latancy \(known: .*sandbox-spawn, stream-latency\)/);
+  });
+
+  it('partial means "not exactly the release set": an opt-in probe swapped in for a release probe keeps the count at nine and is still partial', () => {
+    const release = selectedProbes({});
+    expect(isPartial(release)).toBe(false);
+    expect(isPartial(selectedProbes({ JEVCODE_PERF_ONLY: release.join(',') }))).toBe(false);
+    expect(isPartial(selectedProbes({ JEVCODE_PERF_ONLY: 'states' }))).toBe(true);
+    const eight = release.filter((p) => p !== 'scroll-latency');
+    for (const optIn of ['stream-latency', 'lane-run', 'sandbox-spawn']) {
+      const swapped = selectedProbes({ JEVCODE_PERF_ONLY: [...eight, optIn].join(',') });
+      expect(swapped).toHaveLength(release.length);
+      expect(isPartial(swapped)).toBe(true);
+    }
+  });
+});
 
 describe('driverLines', () => {
   it('keeps expect … drive.exp and python3 … pty_type.py processes, drops shells and editors that only mention them, truncates long lines', () => {

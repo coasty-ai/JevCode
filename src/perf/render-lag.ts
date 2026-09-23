@@ -54,8 +54,9 @@
  * at exit; the painted dynamic region never above rows − 2 (`pty.ts` `paintedRows`, on every frame); the child exits 0.
  * The stress row applies the hygiene items only.
  *
- * Run-start bucket (TUI-DESIGN-3 §5.2 A5, §9): the `dynamic` frames within one second of the `[run] start` frame — the rule
- * sweep's ≤ 6 frames riding on the spinner's 8 and the live flush — gated at maxFps + 1 like every other second (`runStartBucket`).
+ * Run-start bucket (TUI-DESIGN-3 §5.2 A5, §9): the `dynamic` frames within one second of the first frame whose status row
+ * reads `step <n>/<max>` (the run is live; `pty.ts` `RUN_STARTED_PATTERN`) — the rule sweep's ≤ 6 frames riding on the
+ * spinner's 8 and the live flush — gated at maxFps + 1 like every other second (`runStartBucket`).
  *
  * Splash bucket (TUI-DESIGN-2 §5.3, §9 "dynamic fps": `framesPerSecondByClass(frames, …, 0, SPLASH_MS)`): the ≤ 700 ms
  * startup splash ticks through Ink's `useAnimation` at a 50 ms interval, so the `dynamic` frames (the class the fps gate
@@ -74,7 +75,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { END_PATTERN, NO_FPS, RUN_STARTED_PATTERN, classCounts, count3J, framesTallerThan, classifyFrames, clearReSelfTest, clearsAfter, cursorStats, firstDynamicFrameOffset, frameAt, frameTime, framesPerSecondByClass, keyLatencies, keystrokeSteps, maxStepSeen, paintedMax, safeKey, sendTimes, splitFrames, staticRows, summarise, throttleMs, typist, wordmarkCells, type Chunk, type Frame, type FrameClass, type FrameClassCounts, type LatencySummary, type TypistStep } from './pty.js';
+import { END_PATTERN, NO_FPS, RUN_STARTED_PATTERN, searchPattern, classCounts, count3J, framesTallerThan, classifyFrames, clearReSelfTest, clearsAfter, cursorStats, firstDynamicFrameOffset, frameAt, frameTime, framesPerSecondByClass, keyLatencies, keystrokeSteps, maxStepSeen, paintedMax, safeKey, sendTimes, splitFrames, staticRows, summarise, throttleMs, typist, wordmarkCells, type Chunk, type Frame, type FrameClass, type FrameClassCounts, type LatencySummary, type TypistStep } from './pty.js';
 
 export { CLEAR_RE, clearReSelfTest } from './pty.js';
 
@@ -129,7 +130,7 @@ export interface LagGeometry {
   splashGate: number;
   /** `splashFrames ≤ splashGate` (gated where `gated`) */
   splashOk: boolean;
-  /** TUI-DESIGN-3 §5.2 A5 / §9: `dynamic` frames in the first second after `[run] start` (the rule sweep's ≤ 6 + the spinner + the live flush) */
+  /** TUI-DESIGN-3 §5.2 A5 / §9: `dynamic` frames in the first second after the status row first reads `step <n>/<max>` (the rule sweep's ≤ 6 + the spinner + the live flush) */
   runStartFrames: number;
   /** the `run-start` bucket's gate: maxFps + 1 */
   runStartGate: number;
@@ -248,11 +249,13 @@ export function splashBucket(frames: readonly Frame[], chunks: readonly Chunk[],
 }
 
 /**
- * TUI-DESIGN-3 §5.2 A5 / §9 "run-start bucket": the `dynamic` frames that arrived within `windowMs` after the frame carrying
- * `[run] start` (the rule sweep's ≤ 6 frames ride on the spinner's 8 and the live flush); -1 when the run never started.
+ * TUI-DESIGN-3 §5.2 A5 / §9 "run-start bucket": the `dynamic` frames that arrived within `windowMs` after the first frame
+ * whose status row reads `step <n>/<max>` (`RUN_STARTED_PATTERN`: the `run:ready` frame — the `[run] started` item that
+ * used to open the window is no longer printed in the TUI) — the rule sweep's ≤ 6 frames ride on the spinner's 8 and the
+ * live flush; -1 when the run never started. `capture` is the typist's latin1 capture.
  */
 export function runStartBucket(frames: readonly Frame[], chunks: readonly Chunk[], classes: readonly FrameClass[], capture: string, windowMs = 1000): number {
-  const at = capture.search(new RegExp(RUN_STARTED_PATTERN));
+  const at = searchPattern(capture, RUN_STARTED_PATTERN, { latin1: true });
   if (at < 0) return -1;
   const idx = frames.findIndex((f) => f.end > at);
   if (idx < 0) return -1;
@@ -428,8 +431,9 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
     }
     const cursor = cursorStats(frames, r.capture);
     const clears = clearsAfter(r.capture, firstDyn);
-    // keys typed while the run was live: their frames precede the `end <reason>` item in the capture
-    const endAt = r.capture.search(new RegExp(END_PATTERN));
+    // keys typed while the run was live: their frames precede the `finished · <reason>` item in the capture (compiled
+    // byte-wise: the capture is latin1 and the pattern's `·` alternative is two bytes there)
+    const endAt = searchPattern(r.capture, END_PATTERN, { latin1: true });
     const keysWhileLive = endAt < 0 ? lat.length : lat.filter((l) => frames[l.frameIndex]!.start < endAt).length;
     const fpsGate = maxFps + 1;
     const fpsOk = fps.dynamic.max !== null && fps.dynamic.max <= fpsGate;

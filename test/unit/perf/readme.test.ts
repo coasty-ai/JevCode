@@ -21,6 +21,7 @@ import type { ComposerSeries } from '../../../src/perf/composer-latency.js';
 import type { IntakeSeries } from '../../../src/perf/intake-latency.js';
 import type { IdleGeometry } from '../../../src/perf/idle-frames.js';
 import { failures, performanceSection, replacePerformanceSection, resultRows } from '../../../src/perf/readme.js';
+import { STREAM_SERIES, judgeStreamSeries } from '../../../src/perf/stream-latency.js';
 
 function geometry(rows: number, over: Partial<LagGeometry> = {}): LagGeometry {
   return {
@@ -126,9 +127,11 @@ function intake(name: IntakeSeries['name'], over: Partial<IntakeSeries> = {}): I
     jevMs: 0,
     messages: 20,
     dropped: 0,
-    bubble: { samples: 20, p50: 4.1, p95: 7.2, max: 9.9, raw: [] },
-    reply: { samples: 20, p50: 4.1, p95: 7.2, max: 9.9, raw: [] },
-    replyNet: { samples: 20, p50: 4.1, p95: 7.2, max: 9.9, raw: [] },
+    bubble: { samples: 19, p50: 4.1, p95: 7.2, max: 9.9, raw: [] },
+    reply: { samples: 19, p50: 4.1, p95: 7.2, max: 9.9, raw: [] },
+    replyNet: { samples: 19, p50: 4.1, p95: 7.2, max: 9.9, raw: [] },
+    cold: { bubbleMs: 21.5, replyMs: 22.0, firstFrameMs: 12.3, bubbleInFirstFrame: false },
+    bubbleInFirstFrame: 0,
     thinkingSeen: 0,
     runsStarted: 0,
     clears: 0,
@@ -229,7 +232,7 @@ function result(): PerfResult {
     intakeLatency: {
       gateBubbleMs: 16,
       gateReplyMs: 40,
-      series: [intake('mock0'), intake('mock150', { jevMs: 150, reply: { samples: 20, p50: 158.2, p95: 163.4, max: 170.1, raw: [] }, replyNet: { samples: 20, p50: 8.2, p95: 13.4, max: 20.1, raw: [] }, thinkingSeen: 20 })],
+      series: [intake('mock0'), intake('mock150', { jevMs: 150, reply: { samples: 19, p50: 158.2, p95: 163.4, max: 170.1, raw: [] }, replyNet: { samples: 19, p50: 8.2, p95: 13.4, max: 20.1, raw: [] }, thinkingSeen: 20 })],
       deviations: ['the live gate is the S6 scenario'],
       pass: true,
     },
@@ -278,6 +281,7 @@ function result(): PerfResult {
     // §5 Ring 0 probes: opt-in, never in a release result (a named Ring-0 probe makes the run `partial`)
     laneRun: null,
     sandboxSpawn: null,
+    streamLatency: null,
     pass: false,
   };
 }
@@ -375,14 +379,33 @@ describe('resultRows()', () => {
     const rows2 = resultRows(clipped);
     expect(rows2.find((r) => r.measurement.includes('Splash bucket'))!.result).toBe('14 · 1 · 0 · 13 · true / 14 · 1 · 0 · 13 · true / 14 · 1 · 0 · 13 · true / 9 · 1 · 2 · 13 · true (window 420 ms)');
     expect(rows2.find((r) => r.measurement.includes('Splash frame 0 is the first frame'))!.status).toBe('FAIL');
-    expect(by('Intake reply latency, `mock0`')).toMatchObject({ measurement: expect.stringContaining('20 greetings and tool questions, 20 located, 24×80'), result: '4.1 ms / 7.2 ms / 9.9 ms · 4.1 ms / 7.2 ms / 9.9 ms', gate: expect.stringContaining('bubble p95 < 16 ms · reply p95 ≤ 40 ms'), status: 'pass' });
+    expect(by('Intake reply latency, `mock0`')).toMatchObject({ measurement: expect.stringContaining('20 greetings and tool questions, 19 warm located, 24×80'), result: '4.1 ms / 7.2 ms / 9.9 ms · 4.1 ms / 7.2 ms / 9.9 ms · cold 21.5 ms / 22.0 ms · 0/20', gate: expect.stringContaining('bubble p95 < 16 ms · reply p95 ≤ 40 ms'), status: 'pass' });
+    // the cold first message is reported apart; the gated figures are the warm messages 2…n
+    expect(by('Intake reply latency, `mock0`')!.measurement).toContain('warm messages 2–20');
+    expect(by('Intake reply latency, `mock0`')!.gate).toContain('first-frame bubble reported');
     const dropped = result();
-    dropped.intakeLatency!.series[0] = intake('mock0', { dropped: 1, reply: { samples: 19, p50: 4.1, p95: 7.2, max: 9.9, raw: [] }, bubble: { samples: 19, p50: 4.1, p95: 7.2, max: 9.9, raw: [] }, bubbleOk: false, replyOk: false, pass: false });
-    expect(resultRows(dropped).find((r) => r.measurement.includes('Intake reply latency, `mock0`'))).toMatchObject({ measurement: expect.stringContaining('19 located, 1 Enter not located'), status: 'FAIL' });
-    expect(by('Intake reply latency, `mock150`')).toMatchObject({ measurement: expect.stringContaining('`JEVCODE_MOCK_JEV_MS=150`'), result: '4.1 ms / 7.2 ms / 9.9 ms · 158.2 ms / 163.4 ms / 170.1 ms (net p95 13.4 ms)', gate: expect.stringContaining('net of the delay'), status: 'pass' });
+    dropped.intakeLatency!.series[0] = intake('mock0', { dropped: 1, reply: { samples: 18, p50: 4.1, p95: 7.2, max: 9.9, raw: [] }, bubble: { samples: 18, p50: 4.1, p95: 7.2, max: 9.9, raw: [] }, bubbleOk: false, replyOk: false, pass: false });
+    expect(resultRows(dropped).find((r) => r.measurement.includes('Intake reply latency, `mock0`'))).toMatchObject({ measurement: expect.stringContaining('18 warm located, 1 Enter not located'), status: 'FAIL' });
+    expect(by('Intake reply latency, `mock150`')).toMatchObject({ measurement: expect.stringContaining('`JEVCODE_MOCK_JEV_MS=150`'), result: '4.1 ms / 7.2 ms / 9.9 ms · 158.2 ms / 163.4 ms / 170.1 ms (net p95 13.4 ms) · cold 21.5 ms / 22.0 ms · 0/20', gate: expect.stringContaining('net of the delay'), status: 'pass' });
     expect(by('Intake hygiene')).toMatchObject({ result: '0 · 0 · 6 / 0 · 0 · 6', gate: '0 · 0 · ≤ 22', status: 'pass' });
     // no cell may break the Markdown table
     for (const r of rows) for (const v of [r.measurement, r.result, r.gate, r.status]) expect(v).not.toContain('|');
+  });
+
+  it('the opt-in stream probe: one row per series plus a hygiene row, a failing series named in failures(); absent when the probe did not run', () => {
+    expect(resultRows(result()).some((r) => r.measurement.startsWith('Streaming'))).toBe(false);
+    // a series that never streamed (no emission log, no clock): every verdict false
+    const dead = (name: string) => judgeStreamSeries({ spec: STREAM_SERIES.find((x) => x.name === name)!, capture: '', timing: [], chunks: [], clock: null, log: null, enters: [], keys: new Set(), exitCode: 0, timedOut: false, memory: null });
+    const r: PerfResult = { ...result(), streamLatency: { gates: { firstTextP95Ms: 20, coverage: 1, commitJump: 0, blankLinesDropped: 0, lastDeltaToCommitP95Ms: 50, clears: 0, dynamicFps: 31, dynamicFpsSsh: 16, keyP95Ms: 16 }, series: [dead('chat-30ms-24x80'), dead('long-2ms-24x80'), dead('type-while-streaming-30ms-24x80')], deviations: [], pass: false } };
+    const rows = resultRows(r).filter((x) => x.measurement.startsWith('Streaming'));
+    expect(rows.map((x) => x.status)).toEqual(['FAIL', 'FAIL', 'FAIL', 'FAIL']);
+    expect(rows[0]!.measurement).toContain('`chat-30ms-24x80` (mixed reply, 421 chars in 46 deltas 30 ms apart, 24×80, 30 fps');
+    expect(rows[0]!.gate).toBe('≤ 20 ms · report · 100% · 0 · 0 · ≤ 50 ms · ≤ 31 · report');
+    expect(rows[1]!.gate).toBe('report (hygiene gated)');
+    expect(rows[2]!.gate).toContain('· < 16 ms');
+    expect(rows[3]!.measurement).toMatch(/^Streaming hygiene/);
+    expect(failures(r)).toEqual(expect.arrayContaining(['stream latency (chat-30ms-24x80)', 'stream latency (long-2ms-24x80, hygiene)', 'stream latency (type-while-streaming-30ms-24x80)']));
+    for (const x of rows) for (const v of [x.measurement, x.result, x.gate, x.status]) expect(v).not.toContain('|');
   });
 });
 

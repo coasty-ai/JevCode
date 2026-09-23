@@ -18,6 +18,9 @@ import { DEFAULT_MODE, MODE_BADGE_WORD } from '../../src/config/defaults.js';
 // TUI-DESIGN-4 §3.7 (the R2 guard): the run-frame anchors are imported by name from the ONE formatter, never
 // hard-coded here — a literal `·` stops matching in every `--ascii` capture (`glyphs.ts` renders `dot: '-'`).
 import { GLYPH_DOT_CLASS, RUN_FINISHED_WORD, RUN_STARTED_WORD } from '../../src/tui/plain.js';
+// the status-row run anchor is ONE constant shared with the perf harness, so the pty suite and `jevcode perf` cannot
+// wait on different rows again (the perf copy was left on `[run] started` after the chat rebuild and timed out)
+import { RUN_STARTED_PATTERN } from '../../src/perf/pty.js';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const EXPECT_BIN = '/usr/bin/expect';
@@ -174,12 +177,13 @@ export function cleanupScratch(): void {
 }
 
 /**
- * The variables `childEnv` removes from the caller's environment: CI, colour, SSH and dev hooks, every key variable
+ * The variables `childEnv` removes from the caller's environment: CI, colour, SSH and dev hooks (the mock knobs included:
+ * `JEVCODE_MOCK_CHAT_STREAM` in a developer's shell would turn every `--mock` chat reply into a timed stream), every key variable
  * (TUI-DESIGN-2 §1.1 / §8.2: the zero-argument and mode-switch scenarios depend on which keys exist; a developer's shell
  * must not decide), `JEVCODE_CONFIG` (a configured credentials file would be read before the XDG/legacy candidates,
  * `src/config/resolve.ts`) and the terminal multiplexer markers.
  */
-export const CHILD_ENV_UNSET: readonly string[] = ['CI', 'CONTINUOUS_INTEGRATION', 'NO_COLOR', 'FORCE_COLOR', 'SSH_TTY', 'SSH_CONNECTION', 'JEVCODE_TRACE', 'JEVCODE_FAULT', 'JEVCODE_MOCK_REVIEW_AT', 'JEVCODE_AUTONOMY', 'JEVCODE_MOCK_INTAKE', 'JEVCODE_MOCK_JEV_MS', 'JEVCODE_HOME', 'JEVCODE_CONFIG', 'JEVCODE_ASSERT_NO_NETWORK', 'JEVCODE_MODE', 'JEV_PROVIDER', 'JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'JEVCODE_API_KEY', 'JEVCODE_EXTRA_ENV_FILE', 'PTY_TERM', 'PTY_KILL_ON_TIMEOUT', 'PTY_AUTO_REVIEW', 'TERM_PROGRAM', 'TMUX', 'STY'];
+export const CHILD_ENV_UNSET: readonly string[] = ['CI', 'CONTINUOUS_INTEGRATION', 'NO_COLOR', 'FORCE_COLOR', 'SSH_TTY', 'SSH_CONNECTION', 'JEVCODE_TRACE', 'JEVCODE_FAULT', 'JEVCODE_MOCK_REVIEW_AT', 'JEVCODE_AUTONOMY', 'JEVCODE_MOCK_INTAKE', 'JEVCODE_MOCK_JEV_MS', 'JEVCODE_MOCK_CHAT_STREAM', 'JEVCODE_MOCK_DELTA_MS', 'JEVCODE_PERF_STREAM_LOG', 'JEVCODE_HOME', 'JEVCODE_CONFIG', 'JEVCODE_ASSERT_NO_NETWORK', 'JEVCODE_MODE', 'JEV_PROVIDER', 'JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'JEVCODE_API_KEY', 'JEVCODE_EXTRA_ENV_FILE', 'PTY_TERM', 'PTY_KILL_ON_TIMEOUT', 'PTY_AUTO_REVIEW', 'TERM_PROGRAM', 'TMUX', 'STY'];
 
 /**
  * The child environment: the caller's env minus `CHILD_ENV_UNSET`, plus an isolated `HOME`, `JEVCODE_HOME` and XDG
@@ -365,16 +369,92 @@ export interface FrameUnit {
   erased: number;
   /** index of the last rule row, or -1 */
   ruleIndex: number;
-  /** rows of the dynamic region (rule row → last row), or null when the unit draws no frame */
+  /**
+   * rows of the dynamic region, or null when the unit draws no frame (no rule row): Ink's own accounting (`eraseRows`)
+   * where a later write tells, else the rule parse (`ruleRows`)
+   */
   rows: number | null;
+  /**
+   * the dynamic region by Ink's own accounting: `log-update` erases exactly the previous write's line count, so the next
+   * unit that erases anything erased this unit's last region + 1 (the trailing newline). Null for the last unit, one
+   * followed by a clear-terminal unit or by a write that erased nothing. It counts live rows above the rule (a streaming
+   * reply's tail) and blank rows at the bottom, which the rule parse cannot see.
+   */
+  eraseRows: number | null;
+  /** the rule parse: last rule row → last row, trailing blank rows kept; null without a rule row */
+  ruleRows: number | null;
   /** visible width of the rule row (the geometry the App rendered for), or null */
   ruleWidth: number | null;
   /**
-   * rows above the rule row: the `<Static>` items this unit committed (wrapped at the terminal width). In a
+   * rows above the dynamic region (`rows`; per write, in a unit that holds two): the `<Static>` items this unit committed (wrapped at the terminal width). In a
    * clear-terminal unit (`clears > 0`) Ink rewrites its whole `fullStaticOutput` first (ink.js: `clearTerminal +
    * fullStaticOutput + output`), so these rows then repeat every earlier item — `staticRows()` dedupes that.
    */
   staticRows: string[];
+}
+
+/**
+ * The dynamic region of `all[i]` by Ink's own accounting: the erase count at the head of the next unit that erased
+ * anything, minus the trailing newline of this unit's last write. Units with no visible rows and no erase (cursor-only
+ * writes) are skipped; a clear-terminal unit or a unit that prints without erasing leaves it unknown (null).
+ */
+function eraseRowsOf(all: readonly Omit<FrameUnit, 'rows' | 'eraseRows' | 'staticRows'>[], i: number, endsWithNewline: boolean): number | null {
+  for (let j = i + 1; j < all.length; j++) {
+    const u = all[j]!;
+    if (u.clears > 0) return null;
+    if (u.erased > 0) return u.erased - (endsWithNewline ? 1 : 0);
+    if (u.lines.some((l) => l !== '')) return null;
+  }
+  return null;
+}
+
+/** the run of escape sequences and control bytes before a write's first printable character: its erase prefix (hide · return-to-bottom · eraseLines) */
+const WRITE_HEAD_RE = /^(?:\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f])*/;
+
+/**
+ * A write's rows as the terminal lays them out, for the region measures: one per line break, a row's trailing `\r`s
+ * dropped (`\r\r\n` is ONE break — splitting on `\r` too reads it as two, a phantom blank row under the console's top
+ * edge), and trailing blank rows kept (only the text after the final line break, the cursor suffix, is dropped).
+ */
+function layoutRows(plain: string): { rows: string[]; endsWithNewline: boolean } {
+  const rows = plain.split('\n').map((r) => r.replace(/\r+$/, ''));
+  const endsWithNewline = rows.length > 1 && rows.at(-1) === '';
+  if (endsWithNewline) rows.pop();
+  return { rows, endsWithNewline };
+}
+
+/**
+ * The Ink writes inside one unit: almost always one. In a resize storm two writes can share one cursor-hide unit, the
+ * second opening with its own erase run after the first write's rows — the unit is cut before that run's first erase.
+ */
+function writesOf(raw: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  let at = raw.indexOf(ERASE_LINE, WRITE_HEAD_RE.exec(raw)?.[0].length ?? 0);
+  while (at >= 0) {
+    out.push(raw.slice(from, at));
+    from = at;
+    at = raw.indexOf(ERASE_LINE, at + (WRITE_HEAD_RE.exec(raw.slice(at))?.[0].length ?? 0));
+  }
+  out.push(raw.slice(from));
+  return out;
+}
+
+/**
+ * The rows a unit committed to the scrollback: each write's rows above its own dynamic region. An earlier write's
+ * region is told by the erase run that opens the next write in the same unit, the last write's by the unit's `rows` —
+ * so the live frame of the first of two writes sharing a unit never reads as scrollback.
+ */
+function committedRows(raw: string, rows: number): string[] {
+  const writes = writesOf(raw);
+  const out: string[] = [];
+  writes.forEach((w, k) => {
+    const laid = layoutRows(stripAnsi(w));
+    const next = writes[k + 1];
+    const region = next === undefined ? rows : (WRITE_HEAD_RE.exec(next)?.[0] ?? '').split(ERASE_LINE).length - 1 - (laid.endsWithNewline ? 1 : 0);
+    out.push(...laid.rows.slice(0, Math.max(0, laid.rows.length - region)));
+  });
+  return out;
 }
 
 /**
@@ -390,11 +470,11 @@ export function units(text: string, opts: { untilRestore?: boolean } = {}): Fram
     if (cut >= 0) t = t.slice(0, cut);
   }
   const parts = t.split(/(?=\x1b\[\?25l|\x1b\[2J)/);
-  const out: FrameUnit[] = [];
-  parts.forEach((raw, index) => {
-    const stripped = stripAnsi(raw).replace(/\r\n|\r/g, '\n');
-    const lines = stripped.split('\n');
+  const base = parts.map((raw, index) => {
+    const plain = stripAnsi(raw);
+    const lines = plain.replace(/\r\n|\r/g, '\n').split('\n');
     while (lines.length > 0 && lines.at(-1) === '') lines.pop();
+    const { rows: rawLines, endsWithNewline } = layoutRows(plain);
     let ruleIndex = -1;
     for (let i = lines.length - 1; i >= 0; i--) {
       if (RULE_RE.test(lines[i] ?? '')) {
@@ -402,24 +482,50 @@ export function units(text: string, opts: { untilRestore?: boolean } = {}): Fram
         break;
       }
     }
+    let rawRule = -1;
+    for (let i = rawLines.length - 1; i >= 0; i--) {
+      if (RULE_RE.test(rawLines[i] ?? '')) {
+        rawRule = i;
+        break;
+      }
+    }
     const rule = ruleIndex >= 0 ? lines[ruleIndex] ?? '' : null;
-    // the erase prefix (hide · return-to-bottom · eraseLines) is the run of escape sequences and control bytes
-    // before the unit's first printable character
-    const head = /^(?:\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f])*/.exec(raw)?.[0] ?? '';
+    const head = WRITE_HEAD_RE.exec(raw)?.[0] ?? '';
     const erased = head.split(ERASE_LINE).length - 1;
-    out.push({
-      index,
-      raw,
-      lines,
-      clears: countClears(raw),
-      erased,
-      ruleIndex,
-      rows: ruleIndex >= 0 ? lines.length - ruleIndex : null,
-      ruleWidth: rule === null ? null : [...rule].length,
-      staticRows: ruleIndex >= 0 ? lines.slice(0, ruleIndex) : index === 0 ? lines : [],
-    });
+    return {
+      unit: { index, raw, lines, clears: countClears(raw), erased, ruleIndex, ruleRows: ruleIndex >= 0 && rawRule >= 0 ? rawLines.length - rawRule : null, ruleWidth: rule === null ? null : [...rule].length },
+      endsWithNewline,
+    };
   });
-  return out;
+  const bare = base.map((b) => b.unit);
+  return base.map(({ unit, endsWithNewline }, index) => {
+    const eraseRows = unit.ruleIndex >= 0 ? eraseRowsOf(bare, index, endsWithNewline) : null;
+    const rows = unit.ruleIndex >= 0 ? (eraseRows ?? unit.ruleRows) : null;
+    return {
+      ...unit,
+      eraseRows,
+      rows,
+      staticRows: rows !== null ? committedRows(unit.raw, rows) : index === 0 ? unit.lines : [],
+    };
+  });
+}
+
+/**
+ * The cross-check of the two region measures over a capture's units: every unit that draws a rule row and has both
+ * `eraseRows` and `ruleRows`, and the ones that disagree. While no live row sits above the rule the two agree (the
+ * whole pty suite, 2026-09-23: ~1,390 units, one disagreement — a resize-storm unit where two writes share one
+ * cursor-hide unit and the rule parse spans both, 53 rows against Ink's 27); a streaming tail above the rule is exactly
+ * where they part, and `rows` follows Ink's accounting there.
+ */
+export function regionCrossCheck(all: readonly FrameUnit[]): { compared: number; mismatches: Array<{ index: number; eraseRows: number; ruleRows: number }> } {
+  const mismatches: Array<{ index: number; eraseRows: number; ruleRows: number }> = [];
+  let compared = 0;
+  for (const u of all) {
+    if (u.eraseRows === null || u.ruleRows === null) continue;
+    compared += 1;
+    if (u.eraseRows !== u.ruleRows) mismatches.push({ index: u.index, eraseRows: u.eraseRows, ruleRows: u.ruleRows });
+  }
+  return { compared, mismatches };
 }
 
 /** the units that draw a dynamic frame (a rule row), from the first frame on */
@@ -796,7 +902,7 @@ export const CHAT_OPEN_NARROW: readonly string[] = [FIRST_FRAME_STEP, `expect ${
  * (`MOCK_RUN_MODE`): the scripted `--mock` trajectory is a generator trajectory, and under the round-2 default
  * `jev-only` (§1.1) the real synthesizer would run instead of it.
  */
-export const RUN_STARTED_STEP = 'expect step \\d+/\\d+';
+export const RUN_STARTED_STEP = `expect ${RUN_STARTED_PATTERN}`;
 /**
  * TUI-DESIGN-4 §3.6 (G1) / §3.7: the run's last item, `finished · <reason> · <n> steps · …`. `reason` is a Tcl
  * alternation (`complete|max_steps`), written without a capture group so `drive.exp`'s `-re` keeps one match.

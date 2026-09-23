@@ -2,9 +2,11 @@
  * `src/perf/intake-latency.ts` pure parts (TUI-DESIGN-2 §3.12): the message plan cycles greetings and tool questions the
  * mock decider (§3.13) never reads as a task; `pairIntake` pairs every measured Enter with the first later frame carrying
  * its `[you]` bubble and the first later frame carrying a `[jevcode]` item, counting `thinking` frames in between and
- * never letting a frame answer two messages; `judgeIntake` gates the bubble p95 (< 16 ms), the reply p95 net of the
- * mock's delay (≤ 40 ms), the hygiene (no run, no clear, region in budget, exit 0) and completeness: every typed message
- * must have been located (a dropped `send` record is `dropped > 0`, never a shorter passing series).
+ * never letting a frame answer two messages, and records whether the FIRST frame after Enter already carries the bubble;
+ * `judgeIntake` reports the session's cold first message apart and gates the warm messages' bubble p95 (< 16 ms) and
+ * reply p95 net of the mock's delay (≤ 40 ms), the hygiene (no run, no clear, region in budget, exit 0) and
+ * completeness: every typed message must have been located (a dropped `send` record is `dropped > 0`, never a shorter
+ * passing series).
  */
 import { describe, expect, it } from 'vitest';
 import { BSU, ESU, splitFrames, type Chunk, type TimingStep } from '../../../src/perf/pty.js';
@@ -50,9 +52,19 @@ describe('pairIntake', () => {
     const pairs = pairIntake(timing, frames, chunks, [2, 4], ['hi', 'thanks']);
     expect(pairs).toHaveLength(2);
     // the bubble frame shows `⠹ thinking` too (§3.1 row 1), so two thinking frames precede the reply
-    expect(pairs[0]).toMatchObject({ step: 2, text: 'hi', sentAt: 1010, bubbleAt: 1040, replyAt: 1120, bubbleMs: 30, replyMs: 110, thinkingFrames: 2 });
+    expect(pairs[0]).toMatchObject({ step: 2, index: 0, text: 'hi', sentAt: 1010, bubbleAt: 1040, replyAt: 1120, bubbleMs: 30, replyMs: 110, thinkingFrames: 2, firstFrameMs: 30, bubbleInFirstFrame: true });
     // the second Enter's bubble and reply landed in one immediate Static render (the 0 ms mock): both figures coincide
-    expect(pairs[1]).toMatchObject({ step: 4, text: 'thanks', bubbleAt: 1160, replyAt: 1160, bubbleMs: 30, replyMs: 30, thinkingFrames: 0 });
+    expect(pairs[1]).toMatchObject({ step: 4, index: 1, text: 'thanks', bubbleAt: 1160, replyAt: 1160, bubbleMs: 30, replyMs: 30, thinkingFrames: 0, firstFrameMs: 30, bubbleInFirstFrame: true });
+  });
+  it('bubbleInFirstFrame is false when the first frame after Enter shows only the thinking state and the bubble comes one frame later', () => {
+    const idle = frame([], 'idle');
+    const think = frame([], '⠹ thinking');
+    const both = frame(['', '[you] hi', '', '[jevcode] Hi.'], 'idle');
+    const { frames } = splitFrames(idle + think + both);
+    const chunks: Chunk[] = frames.map((f, i) => ({ t: 1000 + i * 12, off: f.start, n: f.end - f.start }));
+    const [p] = pairIntake([{ t: 1005, step: 2, op: 'send', arg: '\r', off: idle.length }], frames, chunks, [2], ['hi']);
+    // measured 2026-09-23 on every intake message: the first frame (+10–25 ms) carries the thinking state, the bubble the second
+    expect(p).toMatchObject({ firstFrameMs: 7, bubbleInFirstFrame: false, bubbleMs: 19, replyMs: 19 });
   });
   it('leaves null figures when a frame never arrives and skips a measured step without an offset (judgeIntake then reports the drop)', () => {
     const idle = frame([], 'idle');
@@ -71,30 +83,43 @@ describe('pairIntake', () => {
 });
 
 describe('judgeIntake', () => {
-  const pair = (bubbleMs: number, replyMs: number, thinking = 0): ReturnType<typeof pairIntake>[number] => ({ step: 1, text: 'hi', sentAt: 0, bubbleAt: bubbleMs, replyAt: replyMs, bubbleMs, replyMs, thinkingFrames: thinking });
+  /** a located message; `index` 0 is the session's cold first message */
+  const pair = (bubbleMs: number, replyMs: number, thinking = 0, index = 1): ReturnType<typeof pairIntake>[number] => ({ step: 1 + index, index, text: 'hi', sentAt: 0, bubbleAt: bubbleMs, replyAt: replyMs, bubbleMs, replyMs, thinkingFrames: thinking, firstFrameMs: bubbleMs, bubbleInFirstFrame: false });
+  const cold = (bubbleMs: number, replyMs: number, thinking = 0): ReturnType<typeof pairIntake>[number] => pair(bubbleMs, replyMs, thinking, 0);
   const clean = { runsStarted: 0, clears: 0, regionMax: 6, rows: 24, exitCode: 0, timedOut: false };
-  it('passes a complete series inside both gates; gates the reply net of the mock delay; counts thinking messages', () => {
-    const s = judgeIntake('mock150', 150, [pair(4, 158, 2), pair(6, 161, 1), pair(5, 160, 1)], clean);
+  it('passes a complete series inside both gates; gates the reply net of the mock delay over the warm messages; counts thinking messages', () => {
+    const s = judgeIntake('mock150', 150, [cold(4, 158, 2), pair(6, 161, 1, 1), pair(5, 160, 1, 2)], clean);
     expect(s).toMatchObject({ messages: 3, thinkingSeen: 3, bubbleOk: true, replyOk: true, hygieneOk: true, pass: true });
     expect(s.reply.p95).toBe(161);
     expect(s.replyNet.p95).toBe(11);
+    expect(s.cold).toEqual({ bubbleMs: 4, replyMs: 158, firstFrameMs: 4, bubbleInFirstFrame: false });
     expect(INTAKE_BUBBLE_GATE_MS).toBe(16);
     expect(INTAKE_REPLY_GATE_MS).toBe(40);
   });
+  it('the cold first message is reported apart, never gated: a 35 ms first bubble does not fail warm messages inside the gate; first-frame bubbles are counted', () => {
+    const s = judgeIntake('mock0', 0, [cold(34.9, 34.9), pair(12, 12, 0, 1), { ...pair(11, 11, 0, 2), bubbleInFirstFrame: true }], clean);
+    expect(s).toMatchObject({ bubbleOk: true, replyOk: true, pass: true, bubbleInFirstFrame: 1 });
+    expect(s.cold?.bubbleMs).toBe(34.9);
+    expect(s.bubble).toMatchObject({ samples: 2, max: 12 });
+    // a series of one message has no warm message to judge
+    expect(judgeIntake('mock0', 0, [cold(4, 8)], clean)).toMatchObject({ bubbleOk: false, replyOk: false, pass: false });
+    // the cold message must still be located for the series to be complete
+    expect(judgeIntake('mock0', 0, [{ ...cold(4, 8), replyAt: null, replyMs: null }, pair(4, 8)], clean)).toMatchObject({ replyOk: false, pass: false });
+  });
   it('fails on a slow bubble, a slow reply, a missing frame, a started run or a clear', () => {
-    expect(judgeIntake('mock0', 0, [pair(4, 8), pair(17, 20)], clean)).toMatchObject({ bubbleOk: false, replyOk: true, pass: false });
-    expect(judgeIntake('mock0', 0, [pair(4, 45)], clean)).toMatchObject({ bubbleOk: true, replyOk: false, pass: false });
-    expect(judgeIntake('mock0', 0, [{ ...pair(4, 8), replyAt: null, replyMs: null }], clean)).toMatchObject({ replyOk: false, pass: false });
-    expect(judgeIntake('mock0', 0, [pair(4, 8)], { ...clean, runsStarted: 1 })).toMatchObject({ hygieneOk: false, pass: false });
-    expect(judgeIntake('mock0', 0, [pair(4, 8)], { ...clean, clears: 1 })).toMatchObject({ hygieneOk: false, pass: false });
+    expect(judgeIntake('mock0', 0, [cold(4, 8), pair(17, 20)], clean)).toMatchObject({ bubbleOk: false, replyOk: true, pass: false });
+    expect(judgeIntake('mock0', 0, [cold(4, 8), pair(4, 45)], clean)).toMatchObject({ bubbleOk: true, replyOk: false, pass: false });
+    expect(judgeIntake('mock0', 0, [cold(4, 8), { ...pair(4, 8), replyAt: null, replyMs: null }], clean)).toMatchObject({ replyOk: false, pass: false });
+    expect(judgeIntake('mock0', 0, [cold(4, 8), pair(4, 8)], { ...clean, runsStarted: 1 })).toMatchObject({ hygieneOk: false, pass: false });
+    expect(judgeIntake('mock0', 0, [cold(4, 8), pair(4, 8)], { ...clean, clears: 1 })).toMatchObject({ hygieneOk: false, pass: false });
     expect(judgeIntake('mock0', 0, [], clean)).toMatchObject({ bubbleOk: false, replyOk: false, pass: false });
   });
   it('fails when fewer pairs than messages were located: a dropped Enter never yields a complete (passing) series, and `messages` reports the plan, not the pairs', () => {
-    const three = [pair(4, 8), pair(5, 9), pair(6, 10)];
+    const three = [cold(4, 8), pair(5, 9, 0, 1), pair(6, 10, 0, 2)];
     expect(judgeIntake('mock0', 0, three, clean, 3)).toMatchObject({ messages: 3, dropped: 0, pass: true });
     const short = judgeIntake('mock0', 0, three, clean, 20);
     expect(short).toMatchObject({ messages: 20, dropped: 17, bubbleOk: false, replyOk: false, hygieneOk: true, pass: false });
-    expect(short.bubble.samples).toBe(3);
+    expect(short.bubble.samples).toBe(2);
     // the default expectation is the pair count (the pure callers of the tests above)
     expect(judgeIntake('mock0', 0, three, clean).dropped).toBe(0);
   });

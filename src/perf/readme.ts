@@ -63,6 +63,8 @@ export function failures(r: PerfResult): string[] {
     }
   }
   if (r.states) for (const s of r.states.scenarios) if (!s.pass) out.push(`state ${s.name} ${s.rows}×${s.columns}`);
+  // opt-in (`JEVCODE_PERF_ONLY=stream-latency`): a run naming it is partial, so these never reach the page
+  if (r.streamLatency) for (const s of r.streamLatency.series) if (!s.pass) out.push(`stream latency (${s.name}${s.gated ? '' : ', hygiene'})`);
   return out;
 }
 
@@ -125,7 +127,7 @@ export function resultRows(r: PerfResult): Row[] {
     // TUI-DESIGN-2 §5.3 / §9 "dynamic fps": the splash bucket — the `dynamic` frames within 700 ms of the first frame (the typist waits for the settle), the other classes and the wordmark frames beside them
     rows.push({ measurement: `Splash bucket — \`dynamic\` frames within ${SPLASH_MS} ms of the first frame (no key is sent before ${SPLASH_SETTLE_MS} ms, so the splash settles by itself) · \`static\` · \`key\` frames of the same window · frames of any class carrying the wordmark · first frame is splash frame 0 (${QUAD}; the splash ticks through Ink's \`useAnimation\` at 50 ms, ≤ 15 frames by construction; rows 12 is the flat tier and reduced motion mounts settled, so they draw no wordmark)`, result: lagQuad(r, (g) => `${g.splashFrames} · ${g.splashStaticFrames} · ${g.splashKeyFrames} · ${g.splashWordmarkFrames} · ${String(g.splashInFirstFrame)}${g.splashWindowMs !== SPLASH_MS ? ` (window ${g.splashWindowMs} ms)` : ''}`), gate: `\`dynamic\` ≤ ⌈(maxFps + 1) × ${SPLASH_MS / 1000}⌉ = ${lag.rows40.splashGate} (realistic geometries; stress reported)`, status: pf(geos.every((g) => g.splashOk)) });
     // TUI-DESIGN-3 §5.2 A5 / §9: the run-start bucket — the rule sweep's frames ride on the spinner and the live flush in the run's first second
-    rows.push({ measurement: `Run-start bucket — \`dynamic\` frames within 1 s of the \`[run] start\` frame (the rule sweep's ≤ 6 frames + the spinner + the live flush; ${QUAD})`, result: lagQuad(r, (g) => (g.runStartFrames < 0 ? '–' : String(g.runStartFrames))), gate: `≤ maxFps + 1 = ${lag.rows40.runStartGate} (realistic geometries; stress reported)`, status: pf(geos.every((g) => g.runStartOk)) });
+    rows.push({ measurement: `Run-start bucket — \`dynamic\` frames within 1 s of the first frame whose status row reads \`step n/m\` (the rule sweep's ≤ 6 frames + the spinner + the live flush; ${QUAD})`, result: lagQuad(r, (g) => (g.runStartFrames < 0 ? '–' : String(g.runStartFrames))), gate: `≤ maxFps + 1 = ${lag.rows40.runStartGate} (realistic geometries; stress reported)`, status: pf(geos.every((g) => g.runStartOk)) });
     rows.push({ measurement: `Terminal clears after the first frame during the live run (${QUAD})`, result: lagQuad(r, (g) => String(g.clears)), gate: '0', status: pf(all.every((g) => g.clears === 0)) });
     rows.push({ measurement: `Dynamic region, tallest painted (${QUAD})`, result: lagQuad(r, (g) => `${g.regionMax} rows`), gate: '≤ rows − 2', status: pf(all.every((g) => g.regionMax <= g.rows - 2)) });
     rows.push({ measurement: `Cursor hides per frame, max · frames not ending with \`ESC[?25h\` · cursor shown at exit (${QUAD})`, result: lagQuad(r, (g) => `${g.cursorHidesMaxPerFrame} · ${g.cursorFramesWithoutShow} · ${String(g.cursorShownAtEnd)}`), gate: '≤ 1 · 0 · true', status: pf(all.every((g) => g.cursorHidesMaxPerFrame <= 1 && g.cursorFramesWithoutShow === 0 && g.cursorShownAtEnd)) });
@@ -166,9 +168,24 @@ export function resultRows(r: PerfResult): Row[] {
   if (il) {
     for (const s of il.series) {
       const delay = s.jevMs > 0 ? ` (\`JEVCODE_MOCK_JEV_MS=${s.jevMs}\`; the reply figure is gated net of the delay)` : '';
-      rows.push({ measurement: `Intake reply latency, \`${s.name}\`: Enter → \`[you]\` bubble frame p50 / p95 / max · Enter → \`[jevcode]\` reply frame p50 / p95 / max (${s.messages} greetings and tool questions, ${s.reply.samples} located${s.dropped > 0 ? `, ${s.dropped} Enter${s.dropped === 1 ? '' : 's'} not located` : ''}, ${s.rows}×${s.columns}, mock decider at ${s.jevMs} ms${delay}; \`thinking\` seen for ${s.thinkingSeen}/${s.messages})`, result: `${ms(s.bubble.p50)} / ${ms(s.bubble.p95)} / ${ms(s.bubble.max)} · ${ms(s.reply.p50)} / ${ms(s.reply.p95)} / ${ms(s.reply.max)}${s.jevMs > 0 ? ` (net p95 ${ms(s.replyNet.p95)})` : ''}`, gate: `bubble p95 < ${il.gateBubbleMs} ms · reply p95 ≤ ${il.gateReplyMs} ms${s.jevMs > 0 ? ' net of the delay' : ''} (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's)`, status: pf(s.pass) });
+      rows.push({ measurement: `Intake reply latency, \`${s.name}\`: Enter → \`[you]\` bubble frame p50 / p95 / max · Enter → \`[jevcode]\` reply frame p50 / p95 / max over the warm messages 2–${s.messages} · the cold first message's bubble / reply · messages whose FIRST frame after Enter carries the bubble (${s.messages} greetings and tool questions, ${s.reply.samples} warm located${s.dropped > 0 ? `, ${s.dropped} Enter${s.dropped === 1 ? '' : 's'} not located` : ''}, ${s.rows}×${s.columns}, mock decider at ${s.jevMs} ms${delay}; \`thinking\` seen for ${s.thinkingSeen}/${s.messages})`, result: `${ms(s.bubble.p50)} / ${ms(s.bubble.p95)} / ${ms(s.bubble.max)} · ${ms(s.reply.p50)} / ${ms(s.reply.p95)} / ${ms(s.reply.max)}${s.jevMs > 0 ? ` (net p95 ${ms(s.replyNet.p95)})` : ''} · cold ${ms(s.cold?.bubbleMs)} / ${ms(s.cold?.replyMs)} · ${s.bubbleInFirstFrame}/${s.messages}`, gate: `bubble p95 < ${il.gateBubbleMs} ms · reply p95 ≤ ${il.gateReplyMs} ms${s.jevMs > 0 ? ' net of the delay' : ''} (warm messages; TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's) · cold and first-frame bubble reported`, status: pf(s.pass) });
     }
     rows.push({ measurement: `Intake hygiene: runs started by a greeting or a tool question · clears after the first frame · tallest painted region (${il.series.map((s) => `\`${s.name}\``).join(' · ')})`, result: il.series.map((s) => `${s.runsStarted} · ${s.clears} · ${s.regionMax}`).join(' / '), gate: `0 · 0 · ≤ ${il.series[0] ? il.series[0].rows - 2 : '–'}`, status: pf(il.series.every((s) => s.hygieneOk)) });
+  }
+  // opt-in stream probe (`stream-latency.ts`): one row per series; red on arrival by design
+  const sl = r.streamLatency;
+  if (sl) {
+    const pct = (v: number | null): string => (v === null ? '–' : `${Math.round(v * 100)}%`);
+    for (const s of sl.series) {
+      const cold = s.messages[0];
+      rows.push({
+        measurement: `Streaming \`${s.name}\` (${s.preset} reply, ${s.replyChars} chars in ${s.deltas} deltas ${s.gapMs} ms apart, ${s.rows}×${s.columns}, ${s.fps} fps${s.jevMs > 0 ? `, mock decider ${s.jevMs} ms` : ''}${s.typing ? `, ${s.keysSent} keys typed while it streams` : ''}; ${s.messages.length} messages): first text p95 (cold) · delta → paint p95 · coverage min · commit jump max · blank lines dropped · last delta → commit p95 · dynamic fps max · bytes per streamed char${s.typing ? ' · key p95' : ''}`,
+        result: `${ms(s.firstTextPaint.p95)} (${ms(cold?.firstTextPaintMs)}) · ${ms(s.deltaToPaint.p95)} · ${pct(s.coverageMin)} · ${s.commitJumpMax ?? '–'} · ${s.blankLinesDroppedMax ?? '–'} · ${ms(s.lastDeltaToCommit.p95)} · ${s.dynamicFpsMax ?? '–'} · ${n1(s.bytesPerStreamedCharMean)}${s.typing ? ` · ${ms(s.typing?.p95)}` : ''}`,
+        gate: s.gated ? `≤ ${sl.gates.firstTextP95Ms} ms · report · 100% · 0 · 0 · ≤ ${sl.gates.lastDeltaToCommitP95Ms} ms · ≤ ${s.fps + 1} · report${s.typing ? ` · < ${sl.gates.keyP95Ms} ms` : ''}` : 'report (hygiene gated)',
+        status: s.gated ? pf(s.pass) : s.pass ? 'report' : 'FAIL',
+      });
+    }
+    rows.push({ measurement: `Streaming hygiene: clears · \`ESC[3J\` · tallest region (Ink's erase accounting) · every message streamed, committed and lined up on the clock bridge (${sl.series.map((s) => `\`${s.name}\``).join(' · ')})`, result: sl.series.map((s) => `${s.clears} · ${s.esc3J} · ${s.regionMax} · ${String(s.hygieneOk)}`).join(' / '), gate: '0 · 0 · ≤ rows − 2 · true', status: pf(sl.series.every((s) => s.hygieneOk && s.clearsOk)) });
   }
   const idle = r.idleFrames;
   if (idle) {
@@ -382,7 +399,9 @@ export function performanceSection(r: PerfResult): string {
       `Intake reply latency (TUI-DESIGN-2 §3.12): ${m0?.messages ?? 20} greetings and questions about the tool typed into \`chat --mock\` at 24×80 through the`,
       'typist; every one passes the mock decider\'s intake (§3.13) and ends in a `[jevcode]` reply, none in a run. Enter → the frame carrying',
       `the \`[you]\` bubble read p95 ${ms(m0?.bubble.p95)} at 0 ms and ${ms(m1?.bubble.p95)} with the mock delayed ${m1?.jevMs ?? 150} ms (gate < ${il2.gateBubbleMs} ms, the composer gate); Enter → the`,
-      `\`[jevcode]\` reply frame read p95 ${ms(m0?.reply.p95)} at 0 ms and ${ms(m1?.replyNet.p95)} net of the delay (gate ≤ ${il2.gateReplyMs} ms). The live gate — p95 < 1.5 s over a real`,
+      `\`[jevcode]\` reply frame read p95 ${ms(m0?.reply.p95)} at 0 ms and ${ms(m1?.replyNet.p95)} net of the delay (gate ≤ ${il2.gateReplyMs} ms). Both gates read the warm messages: the`,
+      `session's cold first message is reported apart (bubble ${ms(m0?.cold?.bubbleMs)} / ${ms(m1?.cold?.bubbleMs)}), and so is the Enter feedback itself — the bubble was already in the first frame after`,
+      `Enter for ${m0?.bubbleInFirstFrame ?? 0}/${m0?.messages ?? 0} and ${m1?.bubbleInFirstFrame ?? 0}/${m1?.messages ?? 0} messages. The live gate — p95 < 1.5 s over a real`,
       'provider — is the S6 live scenario\'s (`docs/live/tui/round-2/`), not this probe\'s.',
     ]);
   }

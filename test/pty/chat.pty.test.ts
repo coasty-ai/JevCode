@@ -4,14 +4,18 @@
  * scripts/pty/drive.exp; sentinels are expected, never slept for, except where the design itself arms a key one frame
  * after a row is drawn (§6.3) or an external sampler needs the process alive for a moment — those waits are named inline.
  * Round 2 (TUI-DESIGN-2 §8.2): the placeholders are `Say hi, …` / `Follow-up, question, …`, the prompt is `› ` (matched
- * glyph-agnostically), a run is live at its `[run] start` item (`run:ready` is hidden by the compact transcript, §4.5),
+ * glyph-agnostically), a run is live at the status row's `step n/m` (RUN_STARTED_PATTERN; the `[run] start` item is gone),
  * mocked runs say `--mode jev-on` explicitly (the scripted trajectory is a generator trajectory whatever the default is; TUI-DESIGN-3 §1.10),
  * the first frame is splash frame 0 (§5) and still carries `step 0/–`, and the geometry settle patterns match any
  * full-width row (the brand row is no longer one dim run).
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { NAMED_ANCHORS, latin1View, locateAnchor } from '../../src/perf/pty.js';
+import { markerRe, streamPreset } from '../../src/perf/stream-fixture.js';
+import type { StreamLogFile } from '../../src/cli/mock-trajectory.js';
 import {
   BADGE_DEFAULT,
   CHAT_OPEN,
@@ -35,6 +39,9 @@ import {
   echoStep,
   frames,
   fullWidthRowStep,
+  labelStep,
+  regionCrossCheck,
+  registerScratch,
   hasExpect,
   jevcodeProcesses,
   markOf,
@@ -42,7 +49,10 @@ import {
   stripAnsi,
   sttyAll,
   sttyFlag,
+  runFinishedStep,
+  staticRows,
   submitTask,
+  syncFrames,
   timingOf,
   ttyOf,
   units,
@@ -450,5 +460,90 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     expect(r.runDirs()).toEqual([]);
     const lflags = (dump: string): string => dump.split('\n').find((l) => l.startsWith('lflags:')) ?? dump.trim().split('\n')[0] ?? '';
     console.log(`Ctrl-Z: ps states ${d.stopped.states.join(' → ')} → ${d.resumed.states.join(' → ')}; ${d.tty} while stopped: ${lflags(d.whileStopped!)}; after resume: ${lflags(d.afterResume.dump!)}`);
+  });
+});
+
+/**
+ * Anchor liveness (the perf harness's named anchors, `src/perf/pty.ts` `NAMED_ANCHORS`). Every window `jevcode perf`
+ * measures is delimited by a named anchor, and until now the registry's self-test ran on hand-written samples only —
+ * so when the chat rebuild (merge 946faa8) stopped printing the `[run] started` item, the `run-started` anchor
+ * matched nothing on any real capture while its self-test stayed green, and every perf scenario that waits for a
+ * live run timed out at exit 124. Here each anchor must be FOUND in a real capture of a mocked run, in both glyph
+ * sets, both the way a drive.exp capture is read (UTF-8) and the way the typist reads one (latin1, compiled
+ * byte-wise), and in the order a run writes them. A UI change that removes or reshapes an anchored row fails here,
+ * at merge time.
+ */
+describe.skipIf(!hasExpect)('pty: perf anchor liveness (src/perf/pty.ts NAMED_ANCHORS on a real capture)', () => {
+  for (const glyphs of ['unicode', 'ascii'] as const) {
+    it(`${glyphs}: every named anchor is located in a real mocked-run capture, UTF-8 and latin1 alike, run-started before run-end`, async () => {
+      const r = await drive({
+        name: `chat-anchor-liveness-${glyphs}`,
+        args: ['chat', ...MOCK_RUN, ...(glyphs === 'ascii' ? ['--ascii'] : [])],
+        steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), runFinishedStep('[a-z_]+'), `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      });
+      expect(r.timeouts).toBe(0);
+      expect(r.code).toBe(0);
+      const latin1 = latin1View(r.text);
+      const at = new Map<string, number>();
+      for (const a of NAMED_ANCHORS) {
+        expect(() => locateAnchor(r.text, a.name), `${a.name} (UTF-8)`).not.toThrow();
+        expect(() => locateAnchor(latin1, a.name, 1, { latin1: true }), `${a.name} (latin1, byte-wise)`).not.toThrow();
+        at.set(a.name, locateAnchor(r.text, a.name));
+      }
+      // the run is live only after the submit: the anchor never matches the idle status row (`step 0/–` / `step 0/-`)
+      const bubble = stripAnsi(r.text).indexOf('[you] make the tests pass');
+      expect(bubble).toBeGreaterThan(0);
+      expect(stripAnsi(r.text.slice(0, at.get('run-started')!))).toContain('[you] make the tests pass');
+      expect(at.get('run-started')!).toBeLessThan(at.get('run-end')!);
+      // the dynamic region by Ink's own accounting (the next write's erase count) agrees with the rule parse on every
+      // frame of a run: nothing live sits above the rule here, so the region gates read the same numbers either way
+      const region = regionCrossCheck(units(r.text));
+      expect(region.compared).toBeGreaterThan(10);
+      expect(region.mismatches).toEqual([]);
+    });
+  }
+});
+
+/**
+ * The streamed `--mock` chat reply (`JEVCODE_MOCK_CHAT_STREAM`, the stream probe's fixture — `src/perf/stream-latency.ts`):
+ * the mock emits the preset's 46 deltas at the requested gap through the real chat path, logs every emission for the
+ * probe's clock bridge, and the whole reply lands. What is asserted is the mock and the path, never today's rendering
+ * of a stream (that is the probe's red baseline): the text arrives progressively — some marker is on screen in a frame
+ * before the reply's LAST marker first appears — and every marker ends up in the scrollback.
+ */
+describe.skipIf(!hasExpect)('pty: streamed --mock chat reply (JEVCODE_MOCK_CHAT_STREAM, the stream probe fixture)', () => {
+  it('mixed at 20 ms: 46 emissions logged in order, text on screen before the last delta, every marker committed to the scrollback', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jevcode-pty-stream-'));
+    registerScratch(dir);
+    const log = join(dir, 'emissions.json');
+    const preset = streamPreset('mixed');
+    const r = await drive({
+      name: 'chat-streamed-reply',
+      args: ['chat', '--mock'],
+      env: { JEVCODE_MOCK_CHAT_STREAM: 'mixed', JEVCODE_MOCK_DELTA_MS: '20', JEVCODE_PERF_STREAM_LOG: log },
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Sure k01\\.'), 'expect Done k05', ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    // the emission log is written once, at exit: one stream, every delta in order
+    const file = JSON.parse(readFileSync(log, 'utf8')) as StreamLogFile;
+    expect(file).toMatchObject({ preset: 'mixed', gapMs: 20, deltas: preset.deltas.length });
+    expect(file.emissions.map((e) => [e.s, e.i])).toEqual(preset.deltas.map((_, i) => [0, i]));
+    const ns = file.emissions.map((e) => BigInt(e.ns));
+    // deadline pacing: 45 gaps of 20 ms span ~0.9 s. The bound is loose on purpose: the first emission lands in the busy
+    // Enter frame (late, often in the same tick as delta 1), and under suite load that alone can take 10–25 ms off the
+    // span; what this rules out is an unpaced burst, not a late first wake-up
+    expect(Number(ns.at(-1)! - ns[0]!) / 1e6).toBeGreaterThan(45 * 20 * 0.8);
+    // progressive: some marker is on screen before the frame where the reply's last marker first appears
+    const markers = preset.markers.filter((m): m is string => m !== null);
+    const last = markers.at(-1)!;
+    const all = syncFrames(r.text);
+    const lastAt = all.findIndex((f) => f.lines.some((l) => markerRe(last).test(l)));
+    expect(lastAt).toBeGreaterThan(0);
+    expect(all.slice(0, lastAt).some((f) => f.lines.some((l) => markers.slice(0, -1).some((m) => markerRe(m).test(l))))).toBe(true);
+    // the whole reply lands in the scrollback
+    const committed = staticRows(r.text).join('\n');
+    for (const m of markers) expect(committed, m).toMatch(markerRe(m));
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 });

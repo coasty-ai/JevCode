@@ -3148,13 +3148,19 @@ export interface MockTurn {
   stopReason?: string;
   /** surfaced as `GenerateResult.generationId`, like OpenRouter's chunk id */
   generationId?: string;
+  /** stream exactly these text deltas, in order (`text` and `deltaChunkSize` are then ignored; the result text is their concatenation) — the stream perf probe's fixture (`src/perf/stream-fixture.ts`) */
+  deltas?: readonly string[];
+  /** with `deltas`: the gap before each delta, paced against deadlines (`t0 + latencyMs + (i + 1) · gap`), not chained sleeps; 0 = back to back */
+  deltaGapMs?: number;
 }
 export interface MockProviderOptions {
   /** function form: `index` is the call counter, `opts` the caller's options (`opts.sample` keys the N samples of one llm-jev round) */
   turns: MockTurn[] | ((req: GenerateRequest, index: number, opts: GenerateOptions) => MockTurn);
-  /** deltas per second when latencyMs > 0 (default 0 = single delta) */
+  /** characters per text delta, and per tool-argument piece (unset or 0 = the whole text in one delta); `latencyMs` is spread evenly over the text pieces */
   deltaChunkSize?: number;
   model?: string;
+  /** once per delta of a timed turn (`MockTurn.deltas`; untimed turns never call it), just before `onDelta`: its index in the turn, its length and `process.hrtime.bigint()` at emission (the stream probe's emission log; the driver's clock bridge maps `ns` onto the pty timeline) */
+  onEmit?: (e: { i: number; chars: number; ns: bigint }) => void;
 }
 export interface MockDeciderContext {
   stage: StageName;

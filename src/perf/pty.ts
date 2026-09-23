@@ -23,9 +23,11 @@
  * previous key and is skipped.
  *
  * `splitFrames()` cuts a capture at Ink's synchronized-output brackets (`ESC[?2026h` … `ESC[?2026l`,
- * `ink/build/write-synchronized.js`); `paintedRows()` measures a frame's dynamic region directly (last rule row → last
- * row, as `test/pty/helpers.ts` does) instead of inferring it from the erase count, which reads 0 for a clear-terminal
- * frame; `CLEAR_RE` is the §18 clear-detection alternation with its self-test.
+ * `ink/build/write-synchronized.js`). A frame's dynamic region is read from Ink's own accounting — the NEXT write's erase
+ * count (`eraseHeights`, `regionRows`, `splitRegion`), which also sees live rows above the rule and blank rows at the
+ * bottom — and from the frame itself (`paintedRows`: last rule row → last row, as `test/pty/helpers.ts` does) where no
+ * later write tells: a clear-terminal frame erases nothing, and the last frame is erased by nobody. `CLEAR_RE` is the
+ * §18 clear-detection alternation with its self-test.
  */
 import { spawn } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -35,7 +37,7 @@ import { percentile } from '../core/time.js';
 // TUI-DESIGN-4 §3.7 (the R2 guard): the run-frame anchors come from the ONE formatter, glyph-agnostic by
 // construction. A hard-coded `·` silently stops matching in every `--ascii` capture and turns the render-lag
 // window into the whole capture — the exact failure mode A3 recorded as risk R2.
-import { RUN_END_PATTERN, RUN_STARTED_TAIL_PATTERN } from '../tui/plain.js';
+import { RUN_END_PATTERN } from '../tui/plain.js';
 
 export const BSU = '\x1b[?2026h';
 export const ESU = '\x1b[?2026l';
@@ -140,9 +142,29 @@ export interface Chunk {
   n: number;
 }
 
-export function parseTiming(text: string): { steps: TimingStep[]; chunks: Chunk[] } {
+/**
+ * The typist's clock bridge (`perf/drivers/pty_type.py`, its first timing line): the driver's `t` and the
+ * CLOCK_MONOTONIC_RAW nanoseconds read at one instant. On macOS that clock shares its base with Node's
+ * `process.hrtime.bigint()`, so a child's hrtime stamp maps onto the driver's timeline (`toDriverMs`).
+ */
+export interface ClockBridge {
+  /** driver ms since spawn */
+  t: number;
+  /** CLOCK_MONOTONIC_RAW at `t`, in ns (a decimal string in the file: exact past 2^53) */
+  rawNs: bigint;
+  /** the width of the two raw reads bracketing the driver's read, ns — the bridge's own uncertainty */
+  errNs: number;
+}
+
+/** A child's `process.hrtime.bigint()` stamp (ns, as a bigint or its decimal string) on the driver's timeline, in ms. */
+export function toDriverMs(clock: ClockBridge, ns: bigint | string): number {
+  return clock.t + Number((typeof ns === 'bigint' ? ns : BigInt(ns)) - clock.rawNs) / 1e6;
+}
+
+export function parseTiming(text: string): { steps: TimingStep[]; chunks: Chunk[]; clock: ClockBridge | null } {
   const steps: TimingStep[] = [];
   const chunks: Chunk[] = [];
+  let clock: ClockBridge | null = null;
   for (const line of text.split('\n')) {
     const s = line.trim();
     if (s === '') continue;
@@ -159,10 +181,16 @@ export function parseTiming(text: string): { steps: TimingStep[]; chunks: Chunk[
       if (typeof o['off'] === 'number' && typeof o['n'] === 'number') chunks.push({ t: o['t'], off: o['off'], n: o['n'] });
       continue;
     }
+    // the clock bridge is a record of its own, never a step (it carries `step: 0` like the exit records)
+    if (o['op'] === 'clock') {
+      const raw = o['raw_ns'];
+      if (clock === null && (typeof raw === 'string' || typeof raw === 'number') && /^\d+$/.test(String(raw))) clock = { t: o['t'], rawNs: BigInt(String(raw)), errNs: typeof o['raw_err_ns'] === 'number' ? o['raw_err_ns'] : 0 };
+      continue;
+    }
     if (typeof o['step'] !== 'number') continue;
     steps.push({ t: o['t'], step: o['step'], op: o['op'], arg: typeof o['arg'] === 'string' ? o['arg'] : '', ...(typeof o['off'] === 'number' ? { off: o['off'] } : {}) });
   }
-  return { steps, chunks };
+  return { steps, chunks, clock };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -196,6 +224,18 @@ function keepEvidence(label: string | undefined, capture: string, timing: string
     mkdirSync(dir, { recursive: true });
     copyFileSync(capture, join(dir, `${label}.cap`));
     copyFileSync(timing, join(dir, `${label}.jsonl`));
+  } catch {
+    /* evidence only */
+  }
+}
+
+/** `JEVCODE_PERF_KEEP=<dir>`: keep one more evidence file of a drive as `<dir>/<label>.<ext>` (the stream probe's emission log). */
+export function keepExtra(label: string | undefined, file: string, ext: string): void {
+  const dir = process.env['JEVCODE_PERF_KEEP'];
+  if (dir === undefined || dir === '' || label === undefined) return;
+  try {
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(file, join(dir, `${label}.${ext}`));
   } catch {
     /* evidence only */
   }
@@ -315,6 +355,8 @@ export interface TypistOptions {
 export interface TypistResult extends DriveResult {
   /** every read from the master with its arrival time and byte offset */
   chunks: Chunk[];
+  /** the driver's clock bridge (null when the platform had no CLOCK_MONOTONIC_RAW) */
+  clock: ClockBridge | null;
 }
 
 /** Run the Python typist once; the capture comes back latin1-decoded (string index = byte offset). */
@@ -327,9 +369,9 @@ export async function typist(opts: TypistOptions): Promise<TypistResult> {
   try {
     const r = await runDriver('/usr/bin/python3', [join(opts.root, 'perf/drivers/pty_type.py'), stepsFile, capture, timing, '--', ...opts.command], baseEnv(opts, dir), opts.wallMs ?? 240_000, dir);
     const cap = readOr(capture, 'latin1');
-    const { steps, chunks } = parseTiming(readOr(timing, 'utf8'));
+    const { steps, chunks, clock } = parseTiming(readOr(timing, 'utf8'));
     keepEvidence(opts.label, capture, timing);
-    return { code: r.code, capture: cap, timing: steps, chunks, timedOut: r.code === 124 || steps.some((s) => s.op === 'timeout'), stderr: r.stderr, wallMs: r.wallMs };
+    return { code: r.code, capture: cap, timing: steps, chunks, clock, timedOut: r.code === 124 || steps.some((s) => s.op === 'timeout'), stderr: r.stderr, wallMs: r.wallMs };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -495,24 +537,30 @@ export function paintedRows(body: string): number | null {
  * driver's two SIGWINCHes land between Ink's measure and its paint, so exactly one settling frame at the old
  * geometry is expected and is not a defect (§2.0 consequence (d)).
  *
+ * The region is Ink's own accounting (`eraseHeights`: the next write's erase count − 1), so rows that are live but sit
+ * above the rule (a streaming reply's tail) count, and so do blank rows at the bottom; where no later write tells, it
+ * falls back to the rule parse (`ruleRegionRows`). Only frames that draw a rule row are measured, as before.
+ *
  * `limit` is `rows` in the classic renderer; the fullscreen renderer's post-condition is equality, which the
  * caller checks with `paintedRows(frame) === rows` per frame.
  */
 export function framesTallerThan(frames: readonly Frame[], rows: number, opts: { from?: number; skip?: readonly number[] } = {}): { index: number; painted: number }[] {
   const skip = new Set(opts.skip ?? []);
+  const heights = eraseHeights(frames);
   const out: { index: number; painted: number }[] = [];
   for (let i = opts.from ?? 0; i < frames.length; i++) {
-    if (skip.has(i)) continue;
-    const painted = paintedRows(frames[i]!.body);
+    if (skip.has(i) || paintedRows(frames[i]!.body) === null) continue;
+    const painted = regionRows(frames, i, heights);
     if (painted !== null && painted > rows) out.push({ index: i, painted });
   }
   return out;
 }
 
-/** The tallest dynamic region painted by `frames[from..]` (0 when none paints a rule row). */
+/** The tallest dynamic region painted by `frames[from..]` (Ink's erase accounting, the rule parse where it is silent; frames without a rule row are not measured; 0 when none is). */
 export function paintedMax(frames: readonly Frame[], from = 0): number {
+  const heights = eraseHeights(frames);
   let max = 0;
-  for (let i = from; i < frames.length; i++) max = Math.max(max, paintedRows(frames[i]!.body) ?? 0);
+  for (let i = from; i < frames.length; i++) if (paintedRows(frames[i]!.body) !== null) max = Math.max(max, regionRows(frames, i, heights) ?? 0);
   return max;
 }
 
@@ -530,6 +578,89 @@ export function staticRows(body: string): number {
   const rule = /^(?:\x1b\[[0-9;]*m)*(?:─|\u00e2\u0094\u0080){3}/;
   for (let i = 0; i < rows.length; i++) if (rule.test(rows[i]!)) return i;
   return -1;
+}
+
+// ---------------------------------------------------------------------------------------
+// The dynamic region by Ink's own accounting: the next write's erase count
+// ---------------------------------------------------------------------------------------
+
+/** a clear-terminal frame (`clearTerminal + fullStaticOutput + output`, `ink.js` `renderInteractiveFrame`): it erases nothing */
+const CLEAR_FRAME_RE = /\x1b\[[0-9;]*2J/;
+
+/**
+ * The visible rows of a frame with its **trailing blank rows kept** — only the text after the final line break (the
+ * cursor suffix, empty once stripped) is dropped. `frameRows` drops trailing blank rows, which is right for reading
+ * the last visible row but under-counts a region that ends in blank rows (a failed composer pane paints three).
+ */
+export function frameRowsRaw(body: string): string[] {
+  const rows = stripAnsi(body)
+    .split('\n')
+    .map((r) => r.replace(/\r+$/, ''));
+  if (rows.length > 0 && rows[rows.length - 1] === '') rows.pop();
+  return rows;
+}
+
+/** the frame's text ends with a line break (only the cursor suffix after it): Ink's `output + '\n'`, not a viewport-filling frame */
+function endsWithNewline(body: string): boolean {
+  const rows = stripAnsi(body).split('\n');
+  return rows.length > 1 && rows[rows.length - 1]!.replace(/\r+$/, '') === '';
+}
+
+/** The rule parse with trailing blank rows kept: last rule row → last row of `frameRowsRaw`; null without a rule row. */
+export function ruleRegionRows(body: string): number | null {
+  const rows = frameRowsRaw(body);
+  for (let i = rows.length - 1; i >= 0; i--) if (RULE_ROW_RE.test(rows[i]!)) return rows.length - i;
+  return null;
+}
+
+/**
+ * Every frame's dynamic region, in rows, by Ink's own accounting. `log-update` (standard mode) writes
+ * `eraseLines(previousLineCount) + str` and then sets `previousLineCount` to `str`'s line count — the visible rows plus
+ * one for the trailing newline (none when a frame fills the viewport: Ink drops the newline there) — and a `<Static>`
+ * frame starts with `log.clear()`, which erases the same count. So the next frame that erases anything erased exactly
+ * this frame's region (+ 1 for the newline), whatever the region holds: a rule row or not, blank rows at the bottom,
+ * rows above the rule that are still live (a streaming reply tail). Cursor-only frames (no rows, no erase) are skipped;
+ * a clear-terminal frame, a frame that prints without erasing (after Ink's `log.clear()` / reset) and the last frame
+ * leave the height unknown (null) — `regionRows` then falls back to the rule parse.
+ *
+ * Cross-checked 2026-09-23 against the rule parse (`ruleRegionRows`): 76 perf captures, 13,401 frames with both
+ * measures, 0 disagreements; the pty suite's 109 captures read as typist frames, ~1,470 frames, 0 disagreements. The
+ * rule parse WITHOUT the trailing blank rows (`paintedRows`) disagreed only on the failed-composer frames of `states
+ * fault-composer`, whose region ends in three blank rows (16 → 19 rows; the region ≤ rows − 2 and taller-than verdicts
+ * are the same on every capture). `classifyFrames` differs from the rule-only `classifyFrame` only on `--ascii`
+ * captures, where `staticRows` (a `─` rule only) never sees a static frame.
+ */
+export function eraseHeights(frames: readonly Frame[]): (number | null)[] {
+  const out: (number | null)[] = new Array<number | null>(frames.length).fill(null);
+  for (let i = 0; i < frames.length; i++) {
+    for (let j = i + 1; j < frames.length; j++) {
+      const f = frames[j]!;
+      if (CLEAR_FRAME_RE.test(f.body)) break;
+      if (f.erased > 0) {
+        out[i] = f.erased - (endsWithNewline(frames[i]!.body) ? 1 : 0);
+        break;
+      }
+      if (frameRowsRaw(f.body).some((r) => r !== '')) break;
+    }
+  }
+  return out;
+}
+
+/** Frame `i`'s dynamic region: Ink's erase accounting (`heights[i]`) when the next write tells, else the rule parse. */
+export function regionRows(frames: readonly Frame[], i: number, heights: readonly (number | null)[]): number | null {
+  return heights[i] ?? ruleRegionRows(frames[i]!.body);
+}
+
+/**
+ * Frame `i` split at its dynamic region: `staticRows` are the rows written above it (new `<Static>` output — committed
+ * scrollback), `dynamicRows` the region Ink will erase and repaint. Null when neither measure knows the region.
+ */
+export function splitRegion(frames: readonly Frame[], i: number, heights: readonly (number | null)[]): { staticRows: string[]; dynamicRows: string[] } | null {
+  const h = regionRows(frames, i, heights);
+  if (h === null) return null;
+  const rows = frameRowsRaw(frames[i]!.body);
+  const cut = Math.max(0, rows.length - h);
+  return { staticRows: rows.slice(0, cut), dynamicRows: rows.slice(cut) };
 }
 
 export interface FrameMix {
@@ -778,7 +909,12 @@ export function lastSendAtOrBefore(sends: readonly number[], t: number): number 
  * else `dynamic`. Static wins over key: an immediate Static render is one by design whatever the typist was doing.
  */
 export function classifyFrame(frame: Frame, frameAtMs: number | null, sends: readonly number[], throttle: number): FrameClass {
-  if (staticRows(frame.body) > 0) return 'static';
+  return classifyWithStatic(staticRows(frame.body) > 0, frameAtMs, sends, throttle);
+}
+
+/** The class once it is known whether the frame committed `<Static>` rows. */
+function classifyWithStatic(hasStatic: boolean, frameAtMs: number | null, sends: readonly number[], throttle: number): FrameClass {
+  if (hasStatic) return 'static';
   if (frameAtMs !== null) {
     const s = lastSendAtOrBefore(sends, frameAtMs);
     if (s !== null && frameAtMs - s <= throttle) return 'key';
@@ -786,9 +922,19 @@ export function classifyFrame(frame: Frame, frameAtMs: number | null, sends: rea
   return 'dynamic';
 }
 
-/** One class per frame, aligned with `frames`. */
+/**
+ * One class per frame, aligned with `frames`. `static` is decided by Ink's erase accounting when the next write tells
+ * (`splitRegion`: rows written above the dynamic region), so a live tail above the rule is never mistaken for committed
+ * scrollback — which would take its frames out of the `dynamic` class the frame-rate gate counts; the rule parse
+ * (`classifyFrame`) decides where the accounting is silent.
+ */
 export function classifyFrames(frames: readonly Frame[], chunks: readonly Chunk[], sends: readonly number[], throttle: number): FrameClass[] {
-  return frames.map((f) => classifyFrame(f, frameTime(f, chunks), sends, throttle));
+  const heights = eraseHeights(frames);
+  return frames.map((f, i) => {
+    if (heights[i] === null || paintedRows(f.body) === null) return classifyFrame(f, frameTime(f, chunks), sends, throttle);
+    const split = splitRegion(frames, i, heights);
+    return classifyWithStatic(split !== null && split.staticRows.length > 0, frameTime(f, chunks), sends, throttle);
+  });
 }
 
 export function classCounts(classes: readonly FrameClass[]): FrameClassCounts {
@@ -862,17 +1008,25 @@ export const END_PATTERN = RUN_END_PATTERN;
 /** an SGR run between two visible spans — Tcl ARE (drive.exp) and Python bytes regex (the typist) read it alike */
 export const SGR_GAP = '(?:\\x1b\\[[0-9;]*m)*';
 /**
- * TUI-DESIGN-2 §4.5: every transcript label is its own dim span **and so is the text after it** —
- * `ESC[2m[run]ESC[22m ESC[…mstarted …` — so a sentinel spanning label and text carries **two** gaps, one on each
- * side of the space, exactly as `test/pty/helpers.ts`'s `labelStep` has always written it.
+ * The run is live: the **status row** reads `step <n>/<max>` — digits on both sides of the slash. The idle row reads
+ * `step 0/–` (`step 0/-` under `--ascii`, `status/lines.ts` `stepText`), so it never matches, and the segment is one
+ * plain-text span in either glyph set and in both tiers (`│ ⠋ intent    step 0/40 0m00s …` boxed, `| . intent    step
+ * 0/40 …` ascii, `⠋ intent    step 0/40 …` flat), so the pattern is ASCII only: it holds byte-wise (the typist), in
+ * Tcl ARE (drive.exp) and on a latin1-decoded capture alike. The row first reads it in the frame `run:ready` commits.
  *
- * MEASURED 2026-09-22 (integrator): with one gap this pattern matched nothing on a real capture, and because it
- * is the `RUN_STARTED` step of every perf scenario that needs a live run, `composer live`, `composer live-stress`,
- * `composer review` and the `states` scenarios `fault-pane`, `fault-live`, `resize`, `resize-live` and
- * `review 12x60` all timed out at exit 124 with `0/200 keys located` — the run they were measuring had started
- * fine, 20 s earlier. §3.7's G1 migration moved the constant and dropped the second gap with it.
+ * Why not the `[run] started · …` item any more: the chat rebuild (merge 946faa8, `isRunHeaderItem` in
+ * `src/tui/Transcript.tsx`) removed that row from the interactive transcript (`--plain`, `--json` and transcript.log
+ * keep it), so the old pattern matched nothing and every perf scenario that waits for a live run — render-lag at all
+ * four geometries, composer live / live-stress / review, the states run scenarios and scroll-latency — timed out at
+ * exit 124. The pty suite had already moved to this row (`test/pty/helpers.ts` `RUN_STARTED_STEP`, which now reads
+ * this constant), and `test/pty/chat.pty.test.ts` locates every `NAMED_ANCHORS` entry on a real capture, so a UI
+ * change that removes an anchor fails the pty suite instead of silently timing out a later perf run.
+ *
+ * The status row repeats in every frame, which also makes it immune to drive.exp's 64 KB `match_max`, which a
+ * one-shot scrollback row can fall outside of. It keeps the last step after the run ends; every consumer uses the
+ * first occurrence after the submit.
  */
-export const RUN_STARTED_PATTERN = `\\[run\\]${SGR_GAP} ${SGR_GAP}${RUN_STARTED_TAIL_PATTERN}`;
+export const RUN_STARTED_PATTERN = 'step \\d+/\\d+';
 
 // ---------------------------------------------------------------------------------------
 // Glyph-agnostic named anchors (TUI-DESIGN-4 §11, D-V ratification)
@@ -906,17 +1060,25 @@ export const NAMED_ANCHORS: readonly NamedAnchor[] = [
   {
     name: 'run-started',
     pattern: RUN_STARTED_PATTERN,
-    // one sample per glyph set (TUI-DESIGN-4 §11: a two-glyph-set self-test, or `--ascii` measures a different
-    // window) PLUS the byte shape a real frame actually writes — the label is its own dim span and the text after
-    // it opens another, so the space sits BETWEEN two SGR runs. Neither sample below had that shape, which is how
-    // an anchor with one gap passed its own self-test and matched nothing on a capture (measured 2026-09-22).
+    // the status row's byte shapes cut from real frames (`chat --mode jev-on --mock`, 2026-09-23): boxed unicode at
+    // 24x80, boxed `--ascii` at 24x80, flat unicode at 12x60 — SGR runs, the border glyphs and the spinner included,
+    // so a registry sample and a capture cannot drift apart the way the hand-written `[run] started` samples did
     samples: [
-      '[run] started \u00b7 jev+llm \u00b7 fix the failing test',
-      '\x1b[2m[run]\x1b[22m started - jev+llm - fix the failing test',
-      '\x1b[2m[run]\x1b[22m \x1b[2mstarted \u00b7 jev+llm \u00b7 fix the failing test\x1b[22m',
-      '\x1b[2m[run]\x1b[22m \x1b[2mstarted - jev+llm - fix the failing test\x1b[22m',
+      '\x1b[38;5;169m│ \x1b[38;5;211m░\x1b[39m intent    step 0/40 0m00s  run $0.00/10.00 ok  sess $0.00/50.00 ok  ctx 0%\x1b[38;5;169m │\x1b[39m',
+      '\x1b[38;5;169m| \x1b[38;5;211m.\x1b[39m intent    step 0/40 0m00s  run $0.00/10.00 ok  sess $0.00/50.00 ok  ctx 0%\x1b[38;5;169m |\x1b[39m',
+      '\x1b[38;5;211m░\x1b[39m intent                 step 0/40 0m00s  run $0.00/10.00 ok',
+      '│ propose  step 12/3000 0m03s │',
     ],
-    negatives: ['[run] ready', '[step 1] started', '[run] start 20260922-000000-aaaaaaaa'],
+    // the idle status row in both glyph sets (the maximum is unknown before `run:ready`), the session header's
+    // sentinel, a step label, and the `[run] started` item row this anchor used to be — which the interactive
+    // transcript no longer prints (`isRunHeaderItem`)
+    negatives: [
+      '\x1b[2m│ \x1b[22midle                                                        step 0/–  ? help\x1b[2m │\x1b[22m',
+      '\x1b[2m| \x1b[22midle                                                        step 0/-  ? help\x1b[2m |\x1b[22m',
+      'jevcode session · ws | step 0/– starting',
+      '[step 1] started',
+      '\x1b[2m[run]\x1b[22m \x1b[2mstarted · jev+llm · fix the failing test\x1b[22m',
+    ],
   },
   {
     name: 'run-end',
@@ -946,9 +1108,23 @@ export const NAMED_ANCHORS: readonly NamedAnchor[] = [
 export function anchorBytesOk(a: NamedAnchor): boolean {
   // the `latin1` round trip makes each UTF-8 byte one code unit, so a JS RegExp sees the subject byte-wise —
   // the same way `re.compile(pattern.encode()).search(bytes)` does in `perf/drivers/pty_type.py`
-  const bytes = (s: string): string => Buffer.from(s, 'utf8').toString('latin1');
-  const re = new RegExp(bytes(a.pattern), 's');
-  return a.samples.every((sample) => re.test(bytes(sample))) && (a.negatives ?? []).every((n) => !re.test(bytes(n)));
+  const re = new RegExp(latin1View(a.pattern), 's');
+  return a.samples.every((sample) => re.test(latin1View(sample))) && (a.negatives ?? []).every((n) => !re.test(latin1View(n)));
+}
+
+/** A string's UTF-8 bytes, one code unit each — the view a typist capture (`typist()`, decoded latin1) already is. */
+export function latin1View(s: string): string {
+  return Buffer.from(s, 'utf8').toString('latin1');
+}
+
+/**
+ * The offset of the first match of a shared source pattern in a capture, or -1. A typist capture is latin1-decoded
+ * (`latin1: true`), so the pattern is compiled byte-wise the way the typist's Python `re` compiles it: `(?:·|-)`
+ * searched unconverted over a latin1 capture looks for U+00B7 where the capture holds `Â·` (C2 B7) and never matches
+ * a unicode frame — which is how `render-lag`'s `END_PATTERN` search read -1 on every capture.
+ */
+export function searchPattern(capture: string, pattern: string, opts: { latin1?: boolean } = {}): number {
+  return capture.search(new RegExp(opts.latin1 === true ? latin1View(pattern) : pattern));
 }
 
 /** TUI-DESIGN-4 §11: the anchor with this name, or a throw naming the registry (a typo is never a silent skip). */
@@ -982,11 +1158,12 @@ export function anchorSelfTest(): { ok: boolean; failures: string[] } {
 
 /**
  * TUI-DESIGN-4 §11: the offset of a named anchor in a capture. **Zero matches is a hard failure** — the window
- * would otherwise silently become the whole capture (A3 risk R2). `occurrence` is 1-based.
+ * would otherwise silently become the whole capture (A3 risk R2). `occurrence` is 1-based. `latin1: true` for a
+ * typist capture (see `searchPattern`); a drive.exp capture read as UTF-8 takes the pattern as written.
  */
-export function locateAnchor(capture: string, name: string, occurrence = 1): number {
+export function locateAnchor(capture: string, name: string, occurrence = 1, opts: { latin1?: boolean } = {}): number {
   const a = namedAnchor(name);
-  const re = new RegExp(a.pattern, 'g');
+  const re = new RegExp(opts.latin1 === true ? latin1View(a.pattern) : a.pattern, 'g');
   let seen = 0;
   for (let m = re.exec(capture); m !== null; m = re.exec(capture)) {
     seen += 1;
