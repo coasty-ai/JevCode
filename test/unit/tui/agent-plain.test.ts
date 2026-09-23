@@ -69,7 +69,7 @@ describe('--plain in agent mode', () => {
       ...finish(1),
       { type: 'run:end', result: agentRunResult('answered'), exitCode: 0 },
     ]);
-    expect(lines).toEqual(['[you] hi there', '[jevcode] Half a sen', `[step 1] ${AGENT_REPLY_RESTARTED}`, '[jevcode] Hello again.']);
+    expect(lines).toEqual(['[you] hi there', '[jevcode] Half a sen', `[jevcode] ${AGENT_REPLY_RESTARTED}`, '[jevcode] Hello again.']);
   });
 
   it('a tool run: the held run rows land at the first tool call, then the step rows and [run] finished; a failed turn is never held back', async () => {
@@ -93,6 +93,9 @@ describe('--plain in agent mode', () => {
     expect(lines[5]).toMatch(/^\[step 1\] Read calc\/core\.py · 1\.2s · \$0\.001$/);
     expect(lines).toContain('[jevcode] Done.');
     expect(lines.at(-1)).toMatch(/^\[run\] finished · generator_done · 2 steps/);
+    // §14.3: an agent run that used no Jev names none (`jev $0.000` goes), the generator split stays
+    expect(lines.at(-1)).toMatch(/\(generator \$0\.00\d*\)/);
+    expect(lines.at(-1)).not.toContain('jev $');
     // the finish step keeps its row in the line sinks (the compact TUI hides it)
     expect(lines.some((l) => /^\[step 2\] done · /.test(l))).toBe(true);
   });

@@ -752,7 +752,10 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
       state.planKeys.delete(state.runId);
       // §3.6 (G1): ONE form everywhere. The `(generator … · jev …)` split is ALWAYS present — it is what a user
       // checks when a bill surprises them — and, being attached to the cost token, is what TD3 rule 3 wraps as a unit
-      const cost = `${usd(r.usage.generator.costUsd + r.usage.jev.costUsd)} (generator ${usd(r.usage.generator.costUsd)}${SEP}jev ${usd(r.usage.jev.costUsd)})`;
+      // AGENT-LOOP-DESIGN §14.3: an agent run names no Jev it did not use — `jev $0.000` goes; a Jev hint that cost
+      // something (RA0 / RA1 / RA2) still shows, so a surprising bill still splits
+      const jevPart = r.mode === 'agent' && r.usage.jev.costUsd === 0 ? '' : `${SEP}jev ${usd(r.usage.jev.costUsd)}`;
+      const cost = `${usd(r.usage.generator.costUsd + r.usage.jev.costUsd)} (generator ${usd(r.usage.generator.costUsd)}${jevPart})`;
       // §14.2 review item 5: the error clause is the LAST segment, after `exit <n>`. It used to sit between the
       // stop reason and the step count, where it broke the exported `RUN_END_PATTERN` — the anchor `src/perf`,
       // `test/pty` and `polish-check.mjs` grep for — for exactly the runs that end badly. `render-lag.ts:386` does
@@ -777,7 +780,8 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
         return { key: `${e.step}:chat:${s}`, seq: s, step: e.step, kind: 'chat' as const, level: 'info' as const, text: sanitizeStream(line).replace(/\r/g, ''), label: '[jevcode]' as const };
       });
     case 'assistant:reset':
-      return make(e.step, 'notice', AGENT_REPLY_RESTARTED, 'dim');
+      // the reply's own notice: it sits in the reply under its label (never `[step N]`, which a chat-looking turn has not)
+      return make(e.step, 'notice', AGENT_REPLY_RESTARTED, 'dim', { label: '[jevcode]' });
     case 'tool:result':
       // read-only results only: a mutating call's proposal / outcome / step rows already say what it did
       return e.readOnly ? make(e.step, 'tool', agentToolResultText(e), e.ok ? 'info' : 'warn') : [];
