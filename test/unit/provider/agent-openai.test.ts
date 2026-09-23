@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { GenerateRequest } from '../../../src/core/types.js';
-import { buildResponsesBody, createOpenAiProvider, OPENAI_CHAT_QUIRKS } from '../../../src/provider/openai.js';
+import { ProviderHttpError } from '../../../src/errors.js';
+import { buildResponsesBody, createOpenAiProvider, isReasoningSummaryRejection, OPENAI_CHAT_QUIRKS } from '../../../src/provider/openai.js';
 import { buildChatBody } from '../../../src/provider/openai-compat.js';
 import { NOTE, PROSE, READ_TOOL, RESULT_A, RESULT_B, TASK, agentReq, hooks, sseEvents, transcript } from './agent-helpers.js';
 import { genOpts, providerCfg, providerDeps, request, scriptedFetch, splitEvery } from './helpers.js';
@@ -54,6 +55,73 @@ describe('openai responses agent wire (AGENT-LOOP-DESIGN §6.2)', () => {
     expect(body.parallel_tool_calls).toBe(false);
     expect(body.reasoning).toEqual({ summary: 'auto' });
     expect(body.input.some((i) => i['type'] === 'reasoning')).toBe(false);
+  });
+
+  it('a non-reasoning model on Responses asks for no encrypted reasoning and sends no reasoning object', () => {
+    const body = buildResponsesBody(providerCfg({ model: 'gpt-4.1-mini', baseUrl: 'https://api.openai.com/v1' }), agentReq(transcript(STATE)));
+    expect('include' in body).toBe(false);
+    expect('reasoning' in body).toBe(false);
+    expect(body.input.some((i) => i['type'] === 'reasoning')).toBe(false);
+  });
+
+  it('reasoningSummary false drops only the summary; with no effort either, no reasoning object at all', () => {
+    expect(buildResponsesBody(cfg, agentReq(transcript(STATE)), { reasoningSummary: false }).reasoning).toEqual({ effort: 'low' });
+    expect('reasoning' in buildResponsesBody(cfg, agentReq(transcript(STATE), {}, { reasoning: { enabled: false } }), { reasoningSummary: false })).toBe(false);
+    expect(buildResponsesBody(cfg, agentReq(transcript(STATE)), { reasoningSummary: false }).include).toEqual(['reasoning.encrypted_content']);
+  });
+
+  it('an unverified organization: the summary 400 is retried once without summary, and later turns never send it', async () => {
+    const rejected = JSON.stringify({
+      error: {
+        message: 'Your organization must be verified to generate reasoning summaries. Please go to: https://platform.openai.com/settings/organization/general and click on Verify Organization.',
+        type: 'invalid_request_error',
+        param: 'reasoning.summary',
+        code: 'unsupported_value',
+      },
+    });
+    const ok = sseEvents([{ type: 'response.completed', response: { id: 'r', model: MODEL, status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: 'Hi.' }] }], usage: USAGE } }]);
+    const f = scriptedFetch([
+      { status: 400, body: rejected },
+      { status: 200, body: ok },
+      { status: 200, body: ok },
+    ]);
+    const p = createOpenAiProvider(cfg, providerDeps(f.fetch).deps);
+    const first = await p.generate(agentReq(), genOpts());
+    expect(first.stopReason).not.toBe('error');
+    expect(f.calls[0]!.body['reasoning']).toEqual({ effort: 'low', summary: 'auto' });
+    expect(f.calls[1]!.body['reasoning']).toEqual({ effort: 'low' });
+    await p.generate(agentReq(), genOpts());
+    expect(f.calls.length).toBe(3);
+    expect(f.calls[2]!.body['reasoning']).toEqual({ effort: 'low' });
+  });
+
+  it('any other 400 is not retried, and a legacy request is never retried', async () => {
+    const other = JSON.stringify({ error: { message: 'Your organization must be verified to stream this model.', type: 'invalid_request_error', param: 'stream', code: 'unsupported_value' } });
+    const f = scriptedFetch([
+      { status: 400, body: other },
+      { status: 400, body: JSON.stringify({ error: { message: 'reasoning summaries are unavailable', type: 'invalid_request_error' } }) },
+    ]);
+    const p = createOpenAiProvider(cfg, providerDeps(f.fetch).deps);
+    await expect(p.generate(agentReq(), genOpts())).rejects.toBeInstanceOf(ProviderHttpError);
+    expect(f.calls.length).toBe(1);
+    await expect(p.generate(request(), genOpts())).rejects.toBeInstanceOf(ProviderHttpError);
+    expect(f.calls.length).toBe(2);
+    expect(isReasoningSummaryRejection(new ProviderHttpError('openai HTTP 400 invalid_request_error: bad', { status: 400, retryable: false, body: '{"param":"reasoning.summary"}' }))).toBe(true);
+    expect(isReasoningSummaryRejection(new ProviderHttpError('openai HTTP 500: summary', { status: 500, retryable: true }))).toBe(false);
+  });
+
+  it('a call id renamed for uniqueness is renamed in its function_call marker too, which keeps its fc_ item id', async () => {
+    const item = { id: 'fc_9', type: 'function_call', call_id: 'call_a', name: 'read_file', arguments: '{"path":"c"}' };
+    const reasoning = { id: 'rs_2', type: 'reasoning', summary: [], encrypted_content: 'ENC2' };
+    const stream = sseEvents([
+      { type: 'response.output_item.added', output_index: 1, item },
+      { type: 'response.completed', response: { id: 'r', model: MODEL, status: 'completed', output: [reasoning, item], usage: USAGE } },
+    ]);
+    const f = scriptedFetch([{ status: 200, body: stream }]);
+    const res = await createOpenAiProvider(cfg, providerDeps(f.fetch).deps).generate(agentReq(transcript(STATE)), genOpts());
+    const id = res.toolCalls[0]!.id!;
+    expect(id).toMatch(/^jc_/);
+    expect(res.providerState!.data).toEqual({ output: [reasoning, { type: 'function_call', call_id: id, id: 'fc_9' }] });
   });
 
   it('(b) stream: summary deltas to onReasoning, calls named then streamed by output_index, call_ids kept, reasoning items captured with encrypted_content', async () => {

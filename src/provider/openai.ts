@@ -31,6 +31,13 @@
  *    request is refused here, before the fetch, rather than sent as a guaranteed 400.
  *  - `reasoning_effort: 'max'` is a 400 on `/chat/completions` for both gpt-5.6-terra and gpt-6-astra but a 200 on
  *    `/v1/responses` for both, so the chat surface has its own word list (`openAiChatEfforts`).
+ *  - AGENT-LOOP-DESIGN §6.2: an agent turn on a reasoning model asks for `reasoning.summary: 'auto'` (what streams the
+ *    summary deltas to `onReasoning`). OpenAI serves summaries only to a VERIFIED organization: an unverified one gets a
+ *    non-retryable `400 Your organization must be verified to generate reasoning summaries` (param `reasoning.summary`;
+ *    reported against gpt-5.x in litellm #16032 and OpenHands #11527 — this project's key is verified, so it was never
+ *    seen live). `createOpenAiProvider` therefore retries such a 400 once without `summary` and sends none for the rest
+ *    of the provider's life. Encrypted reasoning is likewise asked for (`include`) only on a reasoning model: a
+ *    non-reasoning id (gpt-4.1 / gpt-4o) rejects it with a 400.
  */
 import { ProviderHttpError } from '../errors.js';
 import { isJsonObject, parseJson } from '../core/json.js';
@@ -144,13 +151,18 @@ export type ResponsesRequestBody = {
   prompt_cache_key?: string;
 };
 
+/** Agent requests only: `reasoningSummary: false` leaves `reasoning.summary` out (the unverified-organization fallback in the module header). */
+export interface ResponsesAgentOptions {
+  reasoningSummary?: boolean;
+}
+
 /**
  * Exported so tests can assert the exact wire body. The harness's history is plain text, so the input is a flat list of
  * message items — `input_text` parts for the user turns and `output_text` parts for the assistant ones (the shape a
  * stored conversation replays; verified live with a three-message history).
  */
-export function buildResponsesBody(cfg: ProviderConfig, req: GenerateRequest): ResponsesRequestBody {
-  if (req.agent !== undefined) return buildResponsesAgentBody(cfg, req, req.agent);
+export function buildResponsesBody(cfg: ProviderConfig, req: GenerateRequest, agentOpts: ResponsesAgentOptions = {}): ResponsesRequestBody {
+  if (req.agent !== undefined) return buildResponsesAgentBody(cfg, req, req.agent, agentOpts.reasoningSummary !== false);
   const body: ResponsesRequestBody = {
     model: cfg.model,
     input: req.messages.map((m) => ({
@@ -181,9 +193,10 @@ export function buildResponsesBody(cfg: ProviderConfig, req: GenerateRequest): R
  * AGENT-LOOP-DESIGN §6.2, OpenAI Responses row: the transcript as input items — per assistant turn its replayed reasoning
  * items (same configured model only), an `output_text` message when it has prose, a `function_call` per call; per user
  * turn a `function_call_output` per result, then an `input_text` message for the texts. `include` asks for the encrypted
- * reasoning while replay is on; `prompt_cache_key` = the session; no `parallel_tool_calls` unless one call per turn.
+ * reasoning while replay is on (reasoning models only); `prompt_cache_key` = the session; no `parallel_tool_calls` unless
+ * one call per turn. `summary` asks a reasoning model for its summary deltas unless the organization refused them.
  */
-function buildResponsesAgentBody(cfg: ProviderConfig, req: GenerateRequest, a: AgentRequest): ResponsesRequestBody {
+function buildResponsesAgentBody(cfg: ProviderConfig, req: GenerateRequest, a: AgentRequest, summary: boolean): ResponsesRequestBody {
   const input: ResponsesInputItem[] = [];
   for (const m of a.messages) {
     if (m.role === 'user') {
@@ -226,8 +239,9 @@ function buildResponsesAgentBody(cfg: ProviderConfig, req: GenerateRequest, a: A
   if (req.temperature !== null && openAiAcceptsTemperature(cfg.model)) body.temperature = req.temperature;
   const reasoning = agentReasoning(req);
   const effort = reasoning === undefined ? null : openAiReasoningEffort(reasoning, cfg.model);
-  if (openAiEfforts(cfg.model) !== null) body.reasoning = { ...(effort !== null ? { effort } : {}), summary: 'auto' };
-  if (a.replayReasoning) body.include = ['reasoning.encrypted_content'];
+  const reasons = openAiEfforts(cfg.model) !== null;
+  if (reasons && (effort !== null || summary)) body.reasoning = { ...(effort !== null ? { effort } : {}), ...(summary ? { summary: 'auto' as const } : {}) };
+  if (reasons && a.replayReasoning) body.include = ['reasoning.encrypted_content'];
   if (a.cacheKey.length > 0) body.prompt_cache_key = a.cacheKey;
   return body;
 }
@@ -599,23 +613,49 @@ export interface OpenAiProviderOptions {
   api?: 'responses' | 'chat';
 }
 
+/**
+ * The unverified-organization 400 (module header): `Your organization must be verified to generate reasoning summaries`,
+ * param `reasoning.summary`. Matched on "summar" in the message or the body, so an unrelated verification 400 (streaming
+ * a model the organization is not verified for) is not mistaken for it and does not switch summaries off.
+ */
+export function isReasoningSummaryRejection(e: unknown): boolean {
+  return e instanceof ProviderHttpError && e.status === 400 && /summar/i.test(`${e.message}\n${e.body}`);
+}
+
+/** AGENT-LOOP-DESIGN §6.1: the Responses replay markers that carry a call id (`replayMarker`), renamed with the call. */
+const RESPONSES_CALL_MARKERS = { list: 'output', type: 'function_call', key: 'call_id' } as const;
+
 export function createOpenAiProvider(cfg: ProviderConfig, deps: ProviderDeps, opts: OpenAiProviderOptions = {}): GenerationProvider {
   if ((opts.api ?? 'responses') === 'chat') return createChatProvider(OPENAI_CHAT_QUIRKS, cfg, deps);
   const d = resolveDeps(deps);
   const caller = createCaller(d);
   const url = joinUrl(cfg.baseUrl, '/responses');
+  // set by the first unverified-organization 400: every later agent turn of this provider omits `reasoning.summary`
+  let summaryOff = false;
 
   return {
     name: 'openai',
     model: cfg.model,
     async generate(req: GenerateRequest, genOpts: GenerateOptions): Promise<GenerateResult> {
       validateGenerateRequest('openai', req);
-      const body = JSON.stringify(buildResponsesBody(cfg, req));
       const agentModel = req.agent === undefined ? null : cfg.model;
-      const attempt = (held: HeldPartial): Promise<ProviderOutcome> =>
-        caller.attempt({ label: 'openai', url, headers: { authorization: `Bearer ${cfg.apiKey}` }, body, readError: openAiErrorFields, consume: (stream, ctx) => consumeResponses(stream, ctx, agentModel) }, genOpts, held);
-      const res = await runGeneration(d, cfg, genOpts, attempt);
-      return req.agent === undefined ? res : withUniqueCallIds(res, req.agent);
+      const run = (wire: ResponsesRequestBody): Promise<GenerateResult> => {
+        const body = JSON.stringify(wire);
+        const attempt = (held: HeldPartial): Promise<ProviderOutcome> =>
+          caller.attempt({ label: 'openai', url, headers: { authorization: `Bearer ${cfg.apiKey}` }, body, readError: openAiErrorFields, consume: (stream, ctx) => consumeResponses(stream, ctx, agentModel) }, genOpts, held);
+        return runGeneration(d, cfg, genOpts, attempt);
+      };
+      if (req.agent === undefined) return run(buildResponsesBody(cfg, req));
+      const wire = buildResponsesBody(cfg, req, { reasoningSummary: !summaryOff });
+      let res: GenerateResult;
+      try {
+        res = await run(wire);
+      } catch (e) {
+        if (wire.reasoning?.summary === undefined || genOpts.signal.aborted || !isReasoningSummaryRejection(e)) throw e;
+        summaryOff = true;
+        res = await run(buildResponsesBody(cfg, req, { reasoningSummary: false }));
+      }
+      return withUniqueCallIds(res, req.agent, RESPONSES_CALL_MARKERS);
     },
   };
 }
