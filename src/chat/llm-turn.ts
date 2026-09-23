@@ -5,7 +5,7 @@
  * through `onDelta`; a returned tool call is dropped (the caller logs it). The spend checks run in the controller
  * before this module is called.
  */
-import type { ChatMessage, FileView, GenerateRequest, Plan, Provider, TokenUsage, WindowEntry } from '../core/types.js';
+import type { ChatMessage, FileView, GenerateProviderPrefs, GenerateReasoning, GenerateRequest, Plan, Provider, TokenUsage, WindowEntry } from '../core/types.js';
 import { headTail } from '../core/text.js';
 import type { Fact } from './facts.js';
 import type { ChatTurn } from './ledger.js';
@@ -142,7 +142,35 @@ export function chatMessages(conversation: readonly ChatTurn[], message: string)
   return out;
 }
 
-/** system = `buildChatSystem` + facts + optional instructions, plan, recent steps, files; no tools, no toolChoice */
+/**
+ * network map P2 (live 2026-09-23): a chat turn thinks at the lowest effort the adapters map. GLM 5.3's reasoning is
+ * mandatory (`{enabled: false}` is HTTP 400) and defaults to `max`; `low` took the median first content of a turn from
+ * 974 to 643 ms (n = 6 each, both routed to Together) and cut the hidden reasoning tokens. Every adapter maps it per
+ * model or leaves it off the wire (openai-compat `pickEffort`, gemini's thinking budget, anthropic ignores it). Never
+ * sent for a Claude model: through OpenRouter an effort would switch extended thinking ON.
+ */
+export const CHAT_REASONING: GenerateReasoning = { effort: 'low' };
+
+/**
+ * network map P1 (live 2026-09-23): OpenRouter's default routing is price-weighted and in one window sent 44 of 44 chat
+ * turns to slow upstreams (median first content 4,989 ms). `sort: 'latency'` keeps OpenRouter's own policy and fallbacks
+ * — no hard-coded upstream list, no data-retention question — and measured as fast as pinning the fast upstreams
+ * (median first content 466 ms for `latency`, 330 ms for `throughput`, 341 ms for order together/friendli/coreweave, all
+ * with effort low, n = 6 each over two windows), well inside the 1.5× that would have justified an ordered list. A chat
+ * turn sends nothing an endpoint could lack, so `requireParameters` stays false (OpenRouter's default).
+ */
+export const CHAT_PROVIDER_PREFS: GenerateProviderPrefs = { requireParameters: false, sort: 'latency' };
+
+/** the routing and reasoning members of a chat request for this provider (OpenRouter-only routing; no Claude thinking) */
+function chatRouting(provider: Provider): Pick<GenerateRequest, 'reasoning' | 'providerPrefs'> {
+  const claude = provider.name === 'anthropic' || provider.model.startsWith('anthropic/');
+  return {
+    ...(claude ? {} : { reasoning: CHAT_REASONING }),
+    ...(provider.name === 'openrouter' ? { providerPrefs: CHAT_PROVIDER_PREFS } : {}),
+  };
+}
+
+/** system = `buildChatSystem` + facts + optional instructions, plan, recent steps, files; no tools, no toolChoice; `chatRouting` */
 export function buildChatRequest(i: LlmTurnInput): GenerateRequest {
   const sections: string[] = [buildChatSystem(i.identity), `## Session facts\n${i.facts.map((f) => `- ${f.text}`).join('\n')}`];
   if (i.instructions !== null && i.instructions.trim() !== '') sections.push(`## Instructions (AGENTS.md)\n${i.instructions}`);
@@ -154,6 +182,7 @@ export function buildChatRequest(i: LlmTurnInput): GenerateRequest {
     messages: chatMessages(i.conversation, i.message),
     maxTokens: chatMaxTokens(i.generation.maxTokens),
     temperature: i.generation.temperature,
+    ...chatRouting(i.provider),
   };
 }
 

@@ -915,6 +915,12 @@ export interface GenerateProviderPrefs {
    * which is what every call does today.
    */
   order?: readonly string[];
+  /**
+   * OpenRouter `provider.sort` (network map P1, 2026-09-23): rank the endpoints by `latency` (time to first token),
+   * `throughput` or `price` instead of the default price-weighted load balancing, keeping OpenRouter's own fallbacks.
+   * The chat turn sends `latency` (chat/llm-turn.ts `CHAT_PROVIDER_PREFS`). Absent = not sent.
+   */
+  sort?: 'latency' | 'throughput' | 'price';
 }
 export interface GenerateRequest {
   system: string;
