@@ -48,16 +48,13 @@ export interface Redactor {
   /** number of exact secrets currently active */
   readonly size: number;
   /**
-   * The length of the longest exact secret right now (0 when none; `addSecret` / `dropSecret` move it): how far back a
-   * secret still arriving in a streamed text can start — chat/stream-redact.ts bounds the live region's hold-back by it.
+   * Where an exact secret that has not finished arriving could start in `s`: the smallest `i` such that `s.slice(i)` is a
+   * non-empty PROPER prefix of some exact secret, or `s.length` when there is none. chat/stream-redact.ts holds the live
+   * region back from there — any exact occurrence a later append can complete starts at such an `i` — so a stream waits
+   * only while its tail really could become a secret (a 1.7 KB PEM holds back a trailing `-`, not 1.7 KB). Like
+   * `exactSpans`, the answer is a position: no value ever leaves the redactor.
    */
-  readonly maxLength: number;
-  /**
-   * The same, over the exact secrets that CONTAIN whitespace only (0 when none). A secret without whitespace can never
-   * straddle a word boundary, so a stream only has to hold back its trailing word for those; this is how far a secret
-   * with whitespace (a passphrase, a PEM block acknowledged in the composer) can reach back across boundaries.
-   */
-  readonly maxSpacedLength: number;
+  pendingSecretStart(s: string): number;
 }
 
 /** Values shorter than this are ignored: redacting them would mangle ordinary output. */
@@ -169,6 +166,24 @@ export function createRedactor(secrets: SecretSet): Redactor {
     return out;
   }
 
+  // For each secret only the last `value.length - 1` positions can start a proper prefix, and only where the first
+  // character matches; positions at or past the best answer so far are never tried.
+  function pendingSecretStart(s: string): number {
+    const n = typeof s === 'string' ? s.length : 0;
+    let best = n;
+    for (const e of entries) {
+      const v = e.value;
+      const first = v.charCodeAt(0);
+      for (let i = Math.max(0, n - v.length + 1); i < best; i++) {
+        if (s.charCodeAt(i) === first && v.startsWith(s.slice(i))) {
+          best = i;
+          break;
+        }
+      }
+    }
+    return best;
+  }
+
   return {
     redact,
     redactJson,
@@ -178,13 +193,7 @@ export function createRedactor(secrets: SecretSet): Redactor {
     get size() {
       return entries.length;
     },
-    // `entries` is kept longest first
-    get maxLength() {
-      return entries[0]?.value.length ?? 0;
-    },
-    get maxSpacedLength() {
-      return entries.find((e) => /\s/.test(e.value))?.value.length ?? 0;
-    },
+    pendingSecretStart,
   };
 }
 

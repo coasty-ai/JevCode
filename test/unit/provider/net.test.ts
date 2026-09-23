@@ -6,7 +6,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EngineMode } from '../../../src/core/types.js';
-import { PREWARM_BODY_BYTES, PREWARM_PATH, prewarm, prewarmGenerator, prewarmSkip, prewarmUrl, type PrewarmConfig } from '../../../src/provider/net.js';
+import { PREWARM_BODY_BYTES, PREWARM_PATH, PREWARM_TIMEOUT_MS, prewarm, prewarmGenerator, prewarmSkip, prewarmUrl, type PrewarmConfig } from '../../../src/provider/net.js';
 import { PROVIDER_BASE_URL, type ProviderId } from '../../../src/provider/ids.js';
 import { createOpenRouterProvider } from '../../../src/provider/openrouter.js';
 import { openrouterCfg, request } from './helpers.js';
@@ -60,7 +60,7 @@ function config(over: Partial<PrewarmConfig> & { baseUrl?: string } = {}): Prewa
   };
 }
 
-const WHEN = { mode: 'llm-jev' as EngineMode, mock: false, offline: false };
+const WHEN = { interactive: true, mode: 'llm-jev' as EngineMode, mock: false, offline: false };
 
 describe('prewarmUrl', () => {
   it('lands on the generation origin of every provider (the base URL the adapter itself appends to)', () => {
@@ -116,7 +116,9 @@ describe('prewarm', () => {
 describe('prewarmSkip / prewarmGenerator', () => {
   const none: NodeJS.ProcessEnv = {};
 
-  it('skips under --mock, --no-network, the no-network assertion, a test, jev-only and without a generator key', () => {
+  it('skips outside an interactive session, under --mock, --no-network, the no-network assertion, a test, jev-only and without a generator key', () => {
+    // `--list-sessions`, a one-shot run, a pipe: nothing would use the socket, and the GET would hold the process's exit
+    expect(prewarmSkip(config(), { ...WHEN, interactive: false }, none)).toBe('not-interactive');
     expect(prewarmSkip(config(), { ...WHEN, mock: true }, none)).toBe('mock');
     expect(prewarmSkip(config({ noNetwork: true }), WHEN, none)).toBe('no-network');
     expect(prewarmSkip(config(), { ...WHEN, offline: true }, none)).toBe('no-network');
@@ -153,6 +155,21 @@ describe('prewarmSkip / prewarmGenerator', () => {
     });
     expect(await prewarmGenerator(broken, WHEN, { fetch: spy, processEnv: none })).toEqual({ kind: 'skipped', reason: 'no-target' });
     expect(await prewarmGenerator(config(), { ...WHEN, mock: true }, { fetch: spy, processEnv: none })).toEqual({ kind: 'skipped', reason: 'mock' });
+    expect(await prewarmGenerator(config(), { ...WHEN, interactive: false }, { fetch: spy, processEnv: none })).toEqual({ kind: 'skipped', reason: 'not-interactive' });
     expect(urls).toHaveLength(1);
+  });
+
+  it('the session end (deps.signal) drops a prewarm still in flight at once, well inside PREWARM_TIMEOUT_MS', async () => {
+    const hanging = ((_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      })) as typeof fetch;
+    const ac = new AbortController();
+    const t0 = performance.now();
+    const p = prewarmGenerator(config(), WHEN, { fetch: hanging, processEnv: none, signal: ac.signal });
+    setTimeout(() => ac.abort(new Error('session over')), 20);
+    expect(await p).toEqual({ kind: 'failed' });
+    expect(performance.now() - t0).toBeLessThan(PREWARM_TIMEOUT_MS);
+    expect(PREWARM_TIMEOUT_MS).toBeLessThanOrEqual(1_500);
   });
 });

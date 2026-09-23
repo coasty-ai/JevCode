@@ -4587,9 +4587,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     // the live region gets only the prefix no later delta can change under redaction (chat/stream-redact.ts): append-only,
     // control characters dropped, never the first characters of a secret; a provider retry restarts it
+    // (no config yet = `redact` has no exact layer either, so nothing can be pending)
     const { createStreamRedactor } = await import('../chat/stream-redact.js');
-    const reach = cfg?.redactReach?.() ?? { maxLength: 0, maxSpacedLength: 0 };
-    const shown = createStreamRedactor(redact, reach.maxLength, reach.maxSpacedLength);
+    const shown = createStreamRedactor(redact, (s) => (config ? config.pendingSecretStart(s) : s.length));
     return {
       provider,
       message: text,
@@ -4606,6 +4606,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       onRetry: () => {
         shown.reset();
         renderer.live?.('');
+      },
+      onEnd: () => {
+        if (shown.end() !== '') renderer.live?.(shown.text);
       },
       redact,
       warn: (m) => log.warn(m),
@@ -4917,9 +4920,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const cfg = config;
     candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
     // network map P5: ONE anonymous GET warms the generator's origin while the human reads the first frame — fire-and-forget,
-    // never awaited, never logged; provider/net.ts skips it under --mock, --no-network, the no-network assertion and tests
-    const prewarmWhen = { mode: pending.mode ?? baseMode, mock: flags.mock === true || flags.mockGenerator === true, offline: env['JEVCODE_ASSERT_NO_NETWORK'] === '1' };
-    void import('../provider/net.js').then((net) => net.prewarmGenerator(cfg, prewarmWhen)).catch(() => undefined);
+    // never awaited, never logged; provider/net.ts skips it outside an interactive session (`--list-sessions`, one-shot, a
+    // pipe), under --mock, --no-network, the no-network assertion and tests. The session's end aborts it: never outlives it.
+    const prewarmWhen = { interactive: o.interactive && o.mode === 'session' && flags.listSessions !== true, mode: pending.mode ?? baseMode, mock: flags.mock === true || flags.mockGenerator === true, offline: env['JEVCODE_ASSERT_NO_NETWORK'] === '1' };
+    const prewarmAbort = new AbortController();
+    void done.then(() => prewarmAbort.abort());
+    void import('../provider/net.js').then((net) => (exiting ? undefined : net.prewarmGenerator(cfg, prewarmWhen, { signal: prewarmAbort.signal }))).catch(() => undefined);
     await refold();
     if (exiting) return;
     newSessionMeter();

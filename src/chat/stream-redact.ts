@@ -10,15 +10,19 @@
  *    is held while it may still grow into one — and a finished run is final, since the `(?<![A-Za-z0-9])` lookbehind
  *    only reads inside the run;
  *  - a header value (HEADER_PATTERN: `authorization: bearer <value>`, `x-api-key: <value>`) spans whitespace, so an
- *    anchor whose value has not been terminated by whitespace yet is held from the anchor on;
- *  - an exact secret without whitespace is confined to one word, so while the redactor holds any exact secret the
- *    trailing word is held (no further back than `maxLength - 1` characters); an exact secret WITH whitespace can reach
- *    back across words, so the last `maxSpacedLength - 1` characters are held too.
+ *    anchor whose value has not been terminated by whitespace yet is held from the anchor on. Whitespace can be eaten,
+ *    though: an exact secret that begins with it or spans it becomes a marker glued onto the value, and the pattern's
+ *    `\S+` then runs on to the next whitespace. So the value's end is read the way the redactor reads it (a probe
+ *    character appended must not be swallowed), and while any exact secret is still pending the anchor holds too;
+ *  - an exact secret is held from the earliest point where the tail is a proper prefix of one
+ *    (`Redactor.pendingSecretStart`), since every occurrence a later append can complete starts at such a point. A tail
+ *    that cannot become a secret is not held at all, whatever the secrets' lengths: a PEM key in the workspace .env
+ *    holds back a trailing `-----BEGIN`, never the last 1.7 KB of every reply.
  *
  * Every cut is then checked against the redactor itself — `redact(head) + redact(tail) === redact(head + tail)` over the
  * text not yet emitted — and moved back to an earlier word boundary when a match would straddle it, so the emitted
  * chunks always concatenate to exactly `redact(sanitizeStream(all))`. The cost per delta is a few redactions of the
- * held-back text only, usually a word.
+ * held-back text only, usually a word (one more while a header anchor is in it).
  *
  * Control characters are dropped from every delta BEFORE redaction (`sanitizeStream`, the O10 rule the engine path
  * applies in useEngine's appendTail): a BEL or an ESC can never reach the terminal, and one inside a key can never split
@@ -40,13 +44,14 @@ export interface StreamRedactor {
 /** A character a format-pattern key can contain (every FORMAT_PATTERNS body and prefix is drawn from it). */
 const KEY_CHAR = /[A-Za-z0-9_-]/;
 const SPACE = /\s/;
-const NON_SPACE = /\S/;
 /** HEADER_PATTERN's anchors, case-insensitive as the pattern is. */
 const HEADER_ANCHOR = /authorization:|x-api-key:/gi;
 /** After `authorization:` — still open while `bearer` is being typed or its value has not been ended by whitespace. */
 const BEARER_OPEN = /^\s*(?:b(?:e(?:a(?:r(?:e(?:r\s*\S*)?)?)?)?)?)?$/i;
 /** After `x-api-key:` — still open until the value is followed by whitespace. */
 const VALUE_OPEN = /^\s*\S*$/;
+/** Not whitespace, not a key character, not `[`: appended, only an open header value can swallow it. */
+const PROBE = '~';
 /** How many earlier word boundaries a cut may fall back to before the delta simply waits for the next one. */
 const CUT_RETRIES = 3;
 
@@ -57,13 +62,20 @@ function runStart(s: string, re: RegExp): number {
   return i;
 }
 
-/** The start of the earliest header anchor whose value may still grow, or `s.length`. */
-function openHeaderStart(s: string): number {
-  HEADER_ANCHOR.lastIndex = 0;
-  for (let m = HEADER_ANCHOR.exec(s); m !== null; m = HEADER_ANCHOR.exec(s)) {
+/**
+ * The start of the earliest header anchor whose value may still grow, or `s.length`. With `pending` (the earliest start
+ * of an unfinished exact secret) inside the text, or a value that still runs to the end once the exact secrets are
+ * markers (`redact` swallows a probe character), the EARLIEST anchor holds — conservative, and rare: it takes a header
+ * line and a secret-shaped tail in the same held-back window.
+ */
+function openHeaderStart(s: string, pending: number, redact: (s: string) => string): number {
+  const anchors = [...s.matchAll(HEADER_ANCHOR)];
+  const first = anchors[0];
+  if (first === undefined) return s.length;
+  if (pending < s.length || redact(s + PROBE) !== redact(s) + PROBE) return first.index;
+  for (const m of anchors) {
     const rest = s.slice(m.index + m[0].length);
-    const open = m[0].toLowerCase() === 'authorization:' ? BEARER_OPEN.test(rest) : VALUE_OPEN.test(rest);
-    if (open) return m.index;
+    if (m[0].toLowerCase() === 'authorization:' ? BEARER_OPEN.test(rest) : VALUE_OPEN.test(rest)) return m.index;
   }
   return s.length;
 }
@@ -76,22 +88,18 @@ function boundaryBefore(s: string, cut: number): number {
 
 /**
  * @param redact the session's redactor (exact secrets, then the format and header patterns)
- * @param maxLength `Redactor.maxLength` — the longest exact secret (0 = none: only the patterns can hold text back)
- * @param maxSpacedLength `Redactor.maxSpacedLength` — the longest exact secret containing whitespace; defaults to
- *   `maxLength`, the safe reading for a caller that cannot tell (every secret might contain whitespace)
+ * @param pendingSecretStart the same redactor's `pendingSecretStart` — where an unfinished exact secret could start in the
+ *   held-back text (`s.length` = nowhere; a redactor without exact secrets always answers that)
  */
-export function createStreamRedactor(redact: (s: string) => string, maxLength: number, maxSpacedLength: number = maxLength): StreamRedactor {
+export function createStreamRedactor(redact: (s: string) => string, pendingSecretStart: (s: string) => number): StreamRedactor {
   /** the sanitized text not emitted yet — nothing before it can still change, so only this window is ever redacted again */
   let held = '';
   let out = '';
 
   /** how much of `held` no later append can change, by the rules in the header comment */
   function safeCut(): number {
-    const n = held.length;
-    let cut = runStart(held, KEY_CHAR);
-    if (maxLength > 0) cut = Math.min(cut, Math.max(runStart(held, NON_SPACE), n - maxLength + 1));
-    if (maxSpacedLength > 0) cut = Math.min(cut, n - maxSpacedLength + 1);
-    return Math.min(cut, openHeaderStart(held));
+    const pending = pendingSecretStart(held);
+    return Math.min(runStart(held, KEY_CHAR), pending, openHeaderStart(held, pending, redact));
   }
 
   function emit(cut: number, chunk: string): string {

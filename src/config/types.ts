@@ -264,11 +264,11 @@ export interface ResolvedConfigWithDiagnostics extends ResolvedConfig {
   /** every layer consulted for a setting, for error messages and `jevcode config` */
   sourcesConsulted(setting: SettingName): readonly string[];
   /**
-   * The redactor's `maxLength` / `maxSpacedLength` right now (core/redact.ts; `addSecret` moves them): how much of a
-   * streamed text's tail a later append can still turn into an exact-secret marker — chat/stream-redact.ts holds that
-   * back from the live region. Read once per stream. Optional so no fake of this interface outside `config/resolve.ts` breaks.
+   * The redactor's `pendingSecretStart` (core/redact.ts; `addSecret` / `dropSecret` move it): where in a streamed text's
+   * tail an exact secret that has not finished arriving could start — chat/stream-redact.ts holds the live region back
+   * from there. Required: a missing one could only be read as "hold nothing", which would show a secret in pieces.
    */
-  redactReach?(): { readonly maxLength: number; readonly maxSpacedLength: number };
+  pendingSecretStart(s: string): number;
 }
 
 export interface Pricing {

@@ -10,7 +10,7 @@ import { buildAnthropicBody } from '../../../src/provider/anthropic.js';
 import { buildChatBody } from '../../../src/provider/openai-compat.js';
 import { OPENAI_CHAT_QUIRKS, buildResponsesBody } from '../../../src/provider/openai.js';
 import { buildOpenRouterBody } from '../../../src/provider/openrouter.js';
-import { CHAT_CONVERSATION_TURNS, CHAT_IDENTITY, CHAT_PROVIDER_PREFS, CHAT_REASONING, chatIdentityHeader, CHAT_MAX_OUTPUT_TOKENS, buildChatRequest, buildChatSystem, chatMaxTokens, chatMessages, llmChatTurn, type LlmTurnInput } from '../../../src/chat/llm-turn.js';
+import { CHAT_CONVERSATION_TURNS, CHAT_IDENTITY, CHAT_PROVIDER_PREFS, CHAT_REASONING, CHAT_REASONING_OPENROUTER, chatIdentityHeader, CHAT_MAX_OUTPUT_TOKENS, buildChatRequest, buildChatSystem, chatMaxTokens, chatMessages, llmChatTurn, type LlmTurnInput } from '../../../src/chat/llm-turn.js';
 import { harnessFacts } from '../../../src/chat/facts.js';
 import type { ChatTurn } from '../../../src/chat/ledger.js';
 import { keyedFixture } from './facts.test.js';
@@ -164,16 +164,16 @@ describe('network map P1/P2: chat routing and reasoning', () => {
   const GLM = 'z-ai/glm-5.3-flash';
   const pricing = { inputPerM: 1, outputPerM: 1, cacheReadPerM: 0, cacheWritePerM: 0 };
 
-  it('OpenRouter: reasoning effort low and provider sort throughput — no order, no fallback switch, never {enabled: false}', () => {
+  it('OpenRouter: reasoning effort low and provider sort latency — no order, no fallback switch, never {enabled: false}', () => {
     const req = buildChatRequest(input({ provider: named('openrouter', GLM) }));
     expect(req.reasoning).toEqual({ effort: 'low' });
-    expect(req.providerPrefs).toEqual({ requireParameters: false, sort: 'throughput' });
+    expect(req.providerPrefs).toEqual({ requireParameters: false, sort: 'latency' });
     expect(CHAT_REASONING).toEqual({ effort: 'low' });
-    expect(CHAT_PROVIDER_PREFS).toEqual({ requireParameters: false, sort: 'throughput' });
+    expect(CHAT_PROVIDER_PREFS).toEqual({ requireParameters: false, sort: 'latency' });
     // the wire body OpenRouter receives
     const body = buildOpenRouterBody({ provider: 'openrouter', model: GLM, apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1', temperature: null, maxTokens: 4096, pricing }, req);
     expect(body.reasoning).toEqual({ effort: 'low' });
-    expect(body.provider).toEqual({ require_parameters: false, sort: 'throughput' });
+    expect(body.provider).toEqual({ require_parameters: false, sort: 'latency' });
     const wire = JSON.stringify(body);
     expect(wire).not.toContain('allow_fallbacks');
     expect(wire).not.toContain('"only"');
@@ -184,12 +184,25 @@ describe('network map P1/P2: chat routing and reasoning', () => {
   it('a Claude model never gets an effort (on OpenRouter it would switch extended thinking on); the Anthropic adapter sends no thinking field', () => {
     const viaRouter = buildChatRequest(input({ provider: named('openrouter', 'anthropic/claude-sonnet-5') }));
     expect(viaRouter.reasoning).toBeUndefined();
-    expect(viaRouter.providerPrefs).toEqual({ requireParameters: false, sort: 'throughput' });
+    expect(viaRouter.providerPrefs).toEqual({ requireParameters: false, sort: 'latency' });
     const direct = buildChatRequest(input({ provider: named('anthropic', 'claude-sonnet-5') }));
     expect(direct.reasoning).toBeUndefined();
     expect(direct.providerPrefs).toBeUndefined();
     const wire = buildAnthropicBody({ provider: 'anthropic', model: 'claude-sonnet-5', apiKey: 'k', baseUrl: 'https://api.anthropic.com', temperature: null, maxTokens: 4096, pricing }, direct);
     expect(Object.keys(wire).sort()).toEqual(['max_tokens', 'messages', 'model', 'stream', 'system']);
+  });
+
+  it('OpenRouter sends the effort only to models whose reasoning is mandatory or on by default (an effort alone would switch a hybrid ON)', () => {
+    expect(CHAT_REASONING_OPENROUTER.some((re) => re.test(GLM))).toBe(true);
+    for (const glm of ['z-ai/glm-5.3', 'z-ai/glm-5.3-flash', 'z-ai/glm-5']) expect(buildChatRequest(input({ provider: named('openrouter', glm) })).reasoning).toEqual({ effort: 'low' });
+    for (const hybrid of ['deepseek/deepseek-v3.2', 'qwen/qwen3-235b-a22b', 'z-ai/glm-4.6', 'openai/gpt-4.1']) {
+      const req = buildChatRequest(input({ provider: named('openrouter', hybrid) }));
+      expect(req.reasoning, hybrid).toBeUndefined();
+      // routing is unaffected: the sort still goes out
+      expect(req.providerPrefs, hybrid).toEqual({ requireParameters: false, sort: 'latency' });
+      const body = buildOpenRouterBody({ provider: 'openrouter', model: hybrid, apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1', temperature: null, maxTokens: 4096, pricing }, req);
+      expect(JSON.stringify(body), hybrid).not.toContain('"reasoning"');
+    }
   });
 
   it('other providers get the effort only where their adapter maps one: OpenAI reasoning models `low`, gpt-4.1 nothing; routing stays OpenRouter-only', () => {
@@ -213,5 +226,15 @@ describe('network map P1/P2: chat routing and reasoning', () => {
     const bare = named('openrouter', GLM);
     await llmChatTurn(input({ provider: bare }));
     expect('onRetry' in bare.opts[0]!).toBe(false);
+  });
+
+  it('llmChatTurn calls onEnd once the provider returned, after the last delta and never on a failure', async () => {
+    const events: string[] = [];
+    await llmChatTurn(input({ provider: named('openrouter', GLM), onDelta: (d) => events.push(`delta:${d}`), onEnd: () => events.push('end') }));
+    expect(events).toEqual(['delta:ok', 'end']);
+    const boom = new Error('boom');
+    const failed: string[] = [];
+    await expect(llmChatTurn(input({ provider: fakeProvider({ text: '', fail: boom }), onEnd: () => failed.push('end') }))).rejects.toBe(boom);
+    expect(failed).toEqual([]);
   });
 });

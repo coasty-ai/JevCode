@@ -20,8 +20,12 @@ import type { EngineMode } from '../core/types.js';
 import type { ProviderId } from './ids.js';
 import { socketReleased } from './sse.js';
 
-/** The whole prewarm, headers and body, gives up after this (it is fire-and-forget: nothing waits on it). */
-export const PREWARM_TIMEOUT_MS = 5_000;
+/**
+ * The whole prewarm, headers and body, gives up after this (it is fire-and-forget: nothing waits on it). A warm socket is
+ * only worth anything if it is ready before the first keystroke lands, and a warm handshake takes ~50 ms — past 1.5 s the
+ * network is slow enough that the first turn's own connect is no worse.
+ */
+export const PREWARM_TIMEOUT_MS = 1_500;
 /** The most body a prewarm reads; its answer is a small JSON error. Past this the body is cancelled (the socket is dropped, nothing else). */
 export const PREWARM_BODY_BYTES = 16 * 1024;
 
@@ -52,7 +56,7 @@ export function prewarmUrl(t: PrewarmTarget): string | null {
 }
 
 /** Why no prewarm went out. */
-export type PrewarmSkip = 'mock' | 'no-network' | 'test' | 'jev-only' | 'no-key' | 'no-target';
+export type PrewarmSkip = 'not-interactive' | 'mock' | 'no-network' | 'test' | 'jev-only' | 'no-key' | 'no-target';
 
 export type PrewarmOutcome = { kind: 'warmed'; status: number } | { kind: 'failed' } | { kind: 'skipped'; reason: PrewarmSkip };
 
@@ -103,6 +107,12 @@ export interface PrewarmConfig {
 }
 
 export interface PrewarmWhen {
+  /**
+   * A human is about to type: an interactive session (an Ink composer, session mode, not `--list-sessions`). A one-shot
+   * run, a pipe or a listing needs no warm socket, and an in-flight GET would hold its natural exit (main.tsx exits by
+   * draining the event loop): `--list-sessions` took 163–227 ms with a prewarm in flight, 72–77 ms without one.
+   */
+  interactive: boolean;
   mode: EngineMode;
   /** `--mock` / `--mock-generator`: the scripted provider talks to nobody */
   mock: boolean;
@@ -111,11 +121,13 @@ export interface PrewarmWhen {
 }
 
 /**
- * Why the session must not prewarm, or null when it may: never under `--mock`, `--no-network`, the no-network assertion
- * or a test (vitest sets `VITEST` in every worker, and a pty child inherits it through the harness's copy of the
- * environment), never in `jev-only` (no generator) and never without a generator key (nothing could use the socket).
+ * Why the session must not prewarm, or null when it may: never outside an interactive session, never under `--mock`,
+ * `--no-network`, the no-network assertion or a test (vitest sets `VITEST` in every worker, and a pty child inherits it
+ * through the harness's copy of the environment), never in `jev-only` (no generator) and never without a generator key
+ * (nothing could use the socket).
  */
 export function prewarmSkip(cfg: PrewarmConfig, when: PrewarmWhen, processEnv: NodeJS.ProcessEnv = process.env): PrewarmSkip | null {
+  if (!when.interactive) return 'not-interactive';
   if (when.mock) return 'mock';
   if (cfg.noNetwork || when.offline) return 'no-network';
   if (processEnv['VITEST'] !== undefined) return 'test';
@@ -127,6 +139,7 @@ export function prewarmSkip(cfg: PrewarmConfig, when: PrewarmWhen, processEnv: N
 /**
  * The session-start prewarm: `prewarmSkip`, then `prewarm` against the generator's own origin. Fire-and-forget — the
  * caller does not await it, and nothing it does can fail the session (an invalid generator section is simply "no target").
+ * `deps.signal` is the session's end: an abort drops the request, so it never outlives the session.
  */
 export async function prewarmGenerator(cfg: PrewarmConfig, when: PrewarmWhen, deps: PrewarmDeps & { processEnv?: NodeJS.ProcessEnv; signal?: AbortSignal } = {}): Promise<PrewarmOutcome> {
   const skip = prewarmSkip(cfg, when, deps.processEnv);
