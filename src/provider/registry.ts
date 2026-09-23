@@ -20,6 +20,7 @@
  */
 import { ConfigError } from '../errors.js';
 import { PROVIDER_BASE_URL, PROVIDER_DISPLAY_NAME, PROVIDER_KEY_ENV } from './ids.js';
+import { pricingFor } from './pricing.js';
 import { ANTHROPIC_VERSION, createAnthropicProvider } from './anthropic.js';
 import { createOpenRouterProvider, OPENROUTER_REFERER, OPENROUTER_TITLE } from './openrouter.js';
 import { createOpenAiProvider, listOpenAiModels, OPENAI_BASE_URL, OPENAI_DEFAULT_MODEL } from './openai.js';
@@ -294,7 +295,20 @@ export function keyEnvFor(id: string): string | null {
 
 /** Build a provider from its spec. Kept as a function so callers do not have to know that `spec.create` exists. */
 export function createProvider(spec: ProviderSpec, cfg: ProviderConfig, deps: ProviderDeps): GenerationProvider {
-  return spec.create(cfg, deps);
+  return spec.create(withTablePricing(spec.id, cfg), deps);
+}
+
+/**
+ * A config the caller did not price is priced from the catalogue's rate card when the table knows the model: OpenAI, Meta
+ * and Fireworks return no cost on the wire (xAI and OpenRouter do), and a run under a spend cap refuses an unpriced
+ * generator (`usage.cost missing … pass --allow-unpriced`) — which is what every one of those providers did on the first
+ * live smoke after they became selectable. A caller that priced the config itself is left alone; a model the table does
+ * not know stays unpriced, so the refusal (and `--allow-unpriced`) still mean what they say.
+ */
+export function withTablePricing(provider: ProviderId, cfg: ProviderConfig): ProviderConfig {
+  if (cfg.priced === true) return cfg;
+  const table = pricingFor(provider, cfg.model);
+  return table === null ? cfg : { ...cfg, pricing: table, priced: true };
 }
 
 /**
