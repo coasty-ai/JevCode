@@ -11,7 +11,6 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { stringWidth } from '../../../../src/tui/composer/width.js';
 import {
-  ANIM_CONVERSATION_FLOOR,
   BOXED_MIN_ROWS,
   CAP,
   MIN_COLUMNS,
@@ -78,10 +77,10 @@ function checkInvariants(i: LayoutInput, note: (msg: string) => void): void {
   const budget = Math.max(0, rows - 2);
   const tag = `rows ${rows} cols ${columns} ${overlay}/${overlayWant} c${i.composerWant} q${i.queueWant} l${i.liveWant} p${i.paneWant} v${i.previewWant} ch${i.chrome} g${i.gate} → ${cells2(l)}`;
   if (l.budget !== budget) note(`budget ${tag}`);
-  const sum = l.status + l.rule + l.live + l.banner + l.mark + l.pane + l.anim + l.queue + l.overlay + l.preview + l.composer + l.chrome;
+  const sum = l.status + l.rule + l.live + l.banner + l.mark + l.pane + l.reply + l.queue + l.overlay + l.preview + l.composer + l.chrome;
   if (sum !== l.total) note(`sum≠total ${tag}`);
   if (l.total > budget) note(`total>budget ${tag}`);
-  for (const k of ['status', 'rule', 'live', 'banner', 'mark', 'pane', 'anim', 'queue', 'overlay', 'preview', 'composer', 'chrome', 'gate'] as const) {
+  for (const k of ['status', 'rule', 'live', 'banner', 'mark', 'pane', 'reply', 'queue', 'overlay', 'preview', 'composer', 'chrome', 'gate'] as const) {
     if (l[k] < 0 || !Number.isInteger(l[k])) note(`negative/fractional ${k} ${tag}`);
   }
   // TUI-DESIGN-2 §4.2: chrome ∈ {0, 3}; chrome === 3 ⇒ rows ≥ 16 and the boxed tier was asked for; the gate row only inside the chrome
@@ -122,13 +121,13 @@ function checkInvariants(i: LayoutInput, note: (msg: string) => void): void {
     if (overlay === 'review' && l.live !== 0) note(`review live≠0 ${tag}`);
     if (overlay !== 'review' && l.preview !== 0) note(`preview outside review ${tag}`);
     if (i.expanded && l.pane !== 0) note(`expanded pane≠0 ${tag}`);
-    if (l.live > CAP.live || l.queue > CAP.queue || l.pane > CAP.pane || l.banner > CAP.banner || l.mark > CAP.mark || l.anim > CAP.anim) note(`cap ${tag}`);
+    if (l.live > CAP.live || l.queue > CAP.queue || l.pane > CAP.pane || l.banner > CAP.banner || l.mark > CAP.mark || l.reply > Math.max(0, i.replyWant ?? 0)) note(`cap ${tag}`);
     if (!i.expanded && l.preview > CAP.preview) note(`preview cap ${tag}`);
     const composerCap = isCollapsingOverlay(overlay) ? 1 : rows >= 40 ? CAP.composerTall : CAP.composer;
     if (overlay !== 'wizard' && l.composer > Math.max(1, Math.min(i.composerWant, composerCap)) + l.gate) note(`composer cap ${tag}`);
     // yield order: when a later-yielding field is short of its want, every earlier-yielding field is 0
     const wants: Record<(typeof YIELD_ORDER)[number], number> = {
-      anim: Math.min(i.animWant ?? 0, CAP.anim),
+      reply: Math.max(0, i.replyWant ?? 0),
       mark: Math.min(i.markWant ?? 0, CAP.mark),
       pane: i.expanded ? 0 : Math.min(i.paneWant, CAP.pane),
       banner: Math.min(i.bannerWant, CAP.banner),
@@ -162,7 +161,7 @@ function checkInvariants(i: LayoutInput, note: (msg: string) => void): void {
       }
     }
   } else if (l.degraded === 'minsize') {
-    if (l.rule !== 0 || l.live !== 0 || l.pane !== 0 || l.mark !== 0 || l.anim !== 0 || l.queue !== 0 || l.preview !== 0 || l.banner !== 0 || l.chrome !== 0 || l.gate !== 0) note(`minsize extra fields ${tag}`);
+    if (l.rule !== 0 || l.live !== 0 || l.pane !== 0 || l.mark !== 0 || l.reply !== 0 || l.queue !== 0 || l.preview !== 0 || l.banner !== 0 || l.chrome !== 0 || l.gate !== 0) note(`minsize extra fields ${tag}`);
     // TUI-DESIGN-4 §2.5 P-R5 (notice → composer → status) and P-R6 (wizard: notice(1) · wizard(1), no composer)
     const noticeWant = overlay === 'wizard' ? 2 : 1;
     if (l.overlay !== Math.min(noticeWant, budget)) note(`minsize notice ${tag}`);
@@ -439,32 +438,38 @@ describe('the §2.2 allocation table, recomputed from the function', () => {
     expect(boxed({ rows: 60, markWant: 40 }).mark).toBe(CAP.mark);
   });
 
-  it('owner directive: the `anim` slot is whole or absent, the LAST allocated and the FIRST to yield, and never breaks the four-row conversation floor', () => {
+  it('AGENT-LOOP-DESIGN §A3: the 12-row 3D indicator slot is gone — the layout has no `anim` field and the region no longer grows while something is in flight', () => {
+    const l = computeLayout(input({ rows: 24, columns: 80, chrome: 3, markWant: 5 }));
+    expect('anim' in l).toBe(false);
+    expect(Object.keys(CAP)).not.toContain('anim');
+    expect(YIELD_ORDER).not.toContain('anim' as keyof Layout);
+  });
+
+  it('AGENT-LOOP-DESIGN §9.4: the `reply` block takes what is left LAST and yields FIRST (partial grants — its oldest rows commit), and sits above the rule in `consoleTop`', () => {
     const boxed = (o: Partial<LayoutInput>): Layout => computeLayout(input({ columns: 80, chrome: 3, ...o }));
-    expect(ANIM_CONVERSATION_FLOOR).toBe(4);
-    expect(YIELD_ORDER[0]).toBe('anim');
-    // 24×80 idle + mark 5: rule 1 + mark 5 + console 5 = 11 of a 22-row budget → 8 more rows leave rem 3 ≥ 2
-    const fits = boxed({ rows: 24, markWant: 5, animWant: 8 });
-    expect(fits.anim).toBe(8);
-    expect(24 - fits.total).toBeGreaterThanOrEqual(ANIM_CONVERSATION_FLOOR);
-    // the same frame with two live rows no longer has room for it — whole or absent, never 6 of 8
-    const yields = boxed({ rows: 24, markWant: 5, animWant: 8, liveWant: 2 });
-    expect(yields.anim).toBe(0);
-    expect(yields.mark).toBe(5);
-    // it yields before the mark and before the pane at every height that cannot hold all three
+    expect(YIELD_ORDER[0]).toBe('reply');
+    // 24×80 + mark 5: rule 1 + mark 5 + console 5 = 11 of a 22-row budget → the reply block gets up to 11
+    expect(boxed({ rows: 24, markWant: 5, replyWant: 4 }).reply).toBe(4);
+    const full = boxed({ rows: 24, markWant: 5, replyWant: 40 });
+    expect(full.reply).toBe(11);
+    expect(full.total).toBe(22);
+    // the mark and the live rows keep their rows; the reply block takes the rest (a partial grant)
+    const withLive = boxed({ rows: 24, markWant: 5, liveWant: 2, replyWant: 40 });
+    expect(withLive.mark).toBe(5);
+    expect(withLive.live).toBe(2);
+    expect(withLive.reply).toBe(9);
+    // an open panel is granted before the reply block (the block's cap shrinks; the reducer commits its overflow)
+    const withPane = boxed({ rows: 40, markWant: 9, paneWant: CAP.panel, replyWant: 60 });
+    expect(withPane.pane).toBe(CAP.panel);
+    expect(withPane.reply).toBe(38 - (1 + 1 + 3 + 1 + 9 + CAP.panel));
     for (let rows = 8; rows <= 60; rows++) {
-      const l = computeLayout(input({ rows, columns: 120, chrome: chromeRows(rows, 120, false), markWant: 9, paneWant: CAP.pane, animWant: 12 }));
-      if (l.anim > 0) {
-        expect(l.anim, `rows ${rows}`).toBe(12);
-        expect(rows - l.total, `floor at rows ${rows}`).toBeGreaterThanOrEqual(ANIM_CONVERSATION_FLOOR);
-      }
+      const l = computeLayout(input({ rows, columns: 120, chrome: chromeRows(rows, 120, false), markWant: 9, paneWant: CAP.pane, replyWant: 80 }));
       expect(l.total, `budget at rows ${rows}`).toBeLessThanOrEqual(Math.max(0, rows - 2));
     }
-    // the anim slot sits between the preview and the console: `consoleTop` counts it
-    const l = boxed({ rows: 40, markWant: 9, animWant: 12 });
-    expect(consoleTop(l)).toBe(l.rule + l.mark + l.anim);
+    // the block is above the rule: `consoleTop` counts it, so the cursor formula holds with prose streaming
+    const l = boxed({ rows: 40, markWant: 9, replyWant: 6 });
+    expect(consoleTop(l)).toBe(l.reply + l.rule + l.mark);
     expect(composerTop(l)).toBe(consoleTop(l) + 1);
-    expect(boxed({ rows: 60, markWant: 5, animWant: 40 }).anim).toBe(CAP.anim);
   });
 
   it('TUI-DESIGN-3 §3.7 computeLayout 1.2: `paneWhole` grants the pane its whole want or nothing; the §3.7 table at 8/12/16/21/24/40 rows (totals)', () => {

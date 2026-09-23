@@ -58,7 +58,9 @@ beforeEach(() => {
   probes.transcriptRenders = 0;
 });
 
-const SPINNER = `[${GLYPHS.unicode.spinner.join('')}]`;
+// AGENT-LOOP-DESIGN §A3 (slice S5a): the status row's glyph slot holds the mini indicator now — a braille donut (1–3
+// cells) or, under NO_COLOR / --ascii, its one-cell ASCII twin (`- \ | /`); the shade pulse is the screen reader's
+const SPINNER = String.raw`(?:[⠀-⣿]{1,3}|[-\\|/])`;
 const BRAND_RE = /^─── ◆ jevcode \S+ ─+$/;
 /** TUI-DESIGN-3 §3.3: the plain rule while the resting mark has rows (before the first run:ready) */
 const PLAIN_RE = /^─+$/;

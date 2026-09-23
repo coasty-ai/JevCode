@@ -176,8 +176,9 @@ describe('statusMemoDeps: every value the status row reads, flattened', () => {
     selfId: null,
     ctx: null,
     agents: null,
+    agentWord: null,
   };
-  const options: Required<StatusLineOptions> = { ascii: false, reducedMotion: false, spinnerFrame: 0, mode: 'session', flatBadge: false, terminalColumns: 80 };
+  const options: Required<StatusLineOptions> = { ascii: false, reducedMotion: false, spinnerFrame: 0, mode: 'session', flatBadge: false, terminalColumns: 80, indicatorWide: '⢎⣉⡱', indicatorNarrow: '⣾' };
   const same = (a: readonly unknown[], b: readonly unknown[]): boolean => a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
   const deps = (s: StatusLineState, o: StatusLineOptions = options, inner = 76): unknown[] => statusMemoDeps(s, inner, o);
 
@@ -204,7 +205,7 @@ describe('statusMemoDeps: every value the status row reads, flattened', () => {
 
   it('moves with every option and the inner width, and keeps one length for every shape', () => {
     const d0 = deps(base);
-    const moved: StatusLineOptions[] = [{ ...options, ascii: true }, { ...options, reducedMotion: true }, { ...options, spinnerFrame: 1 }, { ...options, mode: 'one-shot' }, { ...options, flatBadge: true }, { ...options, terminalColumns: 120 }];
+    const moved: StatusLineOptions[] = [{ ...options, ascii: true }, { ...options, reducedMotion: true }, { ...options, spinnerFrame: 1 }, { ...options, mode: 'one-shot' }, { ...options, flatBadge: true }, { ...options, terminalColumns: 120 }, { ...options, indicatorWide: '⢎⣀⡱' }, { ...options, indicatorNarrow: '⣷' }];
     for (const o of moved) expect(same(deps(base, o), d0), JSON.stringify(o)).toBe(false);
     expect(same(deps(base, options, 77), d0)).toBe(false);
     expect(Object.keys(moved[0] ?? {})).toHaveLength(Object.keys(options).length);

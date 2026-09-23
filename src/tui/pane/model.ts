@@ -317,6 +317,8 @@ export interface PaneState {
   readonly agents?: readonly AgentRow[];
   /** TUI-DESIGN-5 §4.3: the agents tab holds focus (`Alt+A`); the rule row's tail says so (S86b) so it is never invisible. */
   readonly paneFocus?: boolean;
+  /** AGENT-LOOP-DESIGN §14.3 item 1: the agent run's tool calls so far — the agent strip's `<k> tool calls`; absent outside agent mode */
+  readonly toolCalls?: number;
   /**
    * TUI-DESIGN-5 §4.3 / §13.2 clause 6: the highlighted agent row, and therefore the row the tab's **viewport**
    * centres on. Without it `agentTabRows` always starts at 0 and the rows below `AGENTS_TAB_ROWS` are unreachable:
@@ -511,11 +513,15 @@ export function panelStrip(state: PaneState & { latencies: readonly (number | nu
   const rungs = opts.position ?? null;
   const tabs = g.rule.repeat(wide ? 5 : 2);
   const rows = [...(state.chatRows ?? []), ...state.rows];
-  const segments: string[] =
-    rows.length === 0
+  const agent = state.mode === 'agent';
+  // AGENT-LOOP-DESIGN §14.3 item 1: the agent strip — `▸ s<N> · plan d/t · <k> tool calls`, no Jev words (a normal agent
+  // run makes no Jev decisions; the rare RA1/RA2 rows stay on the decisions tab)
+  const segments: string[] = agent
+    ? agentStripSegments(state, g)
+    : rows.length === 0
       ? [`${g.chevronRight} jev ${g.dot} no decisions yet`]
       : [`${g.chevronRight} jev s${state.step}`, `${rows.length} decision${rows.length === 1 ? '' : 's'}`];
-  if (rows.length > 0) {
+  if (!agent && rows.length > 0) {
     const risk = state.lastRisk ?? null;
     if (risk !== null) segments.push(`risk ${p2(risk.risk)} ${risk.verdict === 'ok' ? 'ok' : `[${risk.verdict}]`}`);
     const plan = planProgress(state);
@@ -542,6 +548,22 @@ export function panelStrip(state: PaneState & { latencies: readonly (number | nu
 
 function p2(x: number): string {
   return Number.isFinite(x) ? x.toFixed(2) : 'nan';
+}
+
+/**
+ * AGENT-LOOP-DESIGN §13 / peer review G: what `/jev`, `/why`, `/decisions` and the decisions tab say in agent mode when
+ * the run made no Jev decision (the normal case — Jev only makes the rare RA0/RA1/RA2 routing calls there).
+ */
+export const AGENT_NO_DECISIONS = 'a normal agent run makes no Jev decisions';
+
+/** AGENT-LOOP-DESIGN §14.3 item 1: the agent strip's segments — `▸ s<N>`, `plan d/t` when a todo list exists, `<k> tool calls` once any. */
+export function agentStripSegments(state: PaneState, g: GlyphSet = GLYPHS.unicode): string[] {
+  const segs = [`${g.chevronRight} s${state.step}`];
+  const plan = planProgress(state);
+  if (plan !== null) segs.push(`plan ${plan.done}/${plan.total}`);
+  const k = state.toolCalls ?? 0;
+  if (k > 0) segs.push(`${k} tool call${k === 1 ? '' : 's'}`);
+  return segs;
 }
 
 /** the decisions tab's rows with the intakes' rows (TUI-DESIGN-2 §3.11) ahead of the run's */
@@ -583,6 +605,8 @@ export function panelLines(state: PaneState, rows: number, columns: number, over
 export function tabLines(state: PaneState, tab: PaneTab, rows: number, columns: number, g: GlyphSet = GLYPHS.unicode): string[] {
   switch (tab) {
     case 'd':
+      // AGENT-LOOP-DESIGN §13 / peer G: an agent run with no Jev decision says so instead of `(no decisions yet)`
+      if (state.mode === 'agent' && state.rows.length === 0 && (state.chatRows?.length ?? 0) === 0) return rows > 0 ? [AGENT_NO_DECISIONS] : [];
       return decisionRows(state, rows, columns, g);
     case 'p':
       return planRows(state, rows, columns, g);

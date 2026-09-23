@@ -55,7 +55,10 @@ import { selectRenderer } from './fullscreen/select.js';
 import { Viewport } from './fullscreen/ViewportBox.js';
 import { applyScrollAt, emptyIndex, positionRungs, rebuildFor, resolveTop, type ScrollKey, type ViewportIndex } from './fullscreen/viewport.js';
 import { wordmarkBoxRows, wordmarkFrame, wordmarkWanted, type WordmarkSetting } from './wordmark.js';
-import { INDICATOR_MIN_ROWS, Indicator, animSize, indicatorKindFor, useIndicatorTick, type IndicatorKind } from './anim/index.js';
+import { MINI_NARROW_CELLS, MINI_WIDE_CELLS, agentIndicatorKind, indicatorKindFor, miniFrame, type IndicatorKind } from './anim/index.js';
+import { ReplyTail } from './ReplyTail.js';
+import { pendingItems, pendingRows } from './reply-state.js';
+import { STREAM_REDUCED_MS, createStreamScheduler, streamIntervalMs } from './stream-scheduler.js';
 import { nextPanel, parsePanelCommand } from './pane/commands.js';
 import { createBuffer, type Snapshot } from './composer/buffer.js';
 import { routeSend, routeSubmit, type SubmitDecision } from './composer/submit.js';
@@ -99,7 +102,7 @@ import { themeFor, textProps, type ColorRole, type Theme } from './theme.js';
 import { TOAST_ERROR_MS, TOAST_INFO_MS } from './toasts.js';
 import { Transcript, isRunHeaderItem } from './Transcript.js';
 import { useGitHead } from './useGitHead.js';
-import { createEventBus, createTuiConfirmer, useEngine, useVisibleItems, type EventBus, type EventSource, type QueueEntry, type RunPhase, type TuiConfirmer, type UiAction, type UiState } from './useEngine.js';
+import { createEventBus, createTuiConfirmer, replyPrev, useEngine, useVisibleItems, type AgentUi, type EventBus, type EventSource, type QueueEntry, type RunPhase, type TuiConfirmer, type UiAction, type UiState } from './useEngine.js';
 import { useWizard, type WizardDetect, type WizardHost, type WizardReopenOptions } from './onboarding/Wizard.js';
 import { stepWhyBlocks, whyBlock, whyErrorText } from './why.js';
 
@@ -219,10 +222,10 @@ export function fullLayoutAsLayout(f: FullLayout, rows: number): Layout {
     live: 0,
     banner: 0,
     // the fullscreen header rides in `pane` and the viewport in `queue`, so `consoleTop` stays the one cursor
-    // arithmetic; the classic-only `mark` / `anim` slots are absent here
+    // arithmetic; the classic-only `mark` / `reply` slots are absent here
     mark: 0,
     pane: f.header,
-    anim: 0,
+    reply: 0,
     queue: f.viewport,
     overlay: f.overlay,
     preview: f.preview,
@@ -327,6 +330,44 @@ export function liveLines(live: string, rows: number, columns: number = DEFAULT_
   if (parts[parts.length - 1] === '') parts.pop();
   const max = Math.max(1, Math.floor(columns)) + 1;
   return parts.slice(-rows).map((l) => (l.length > max ? l.slice(0, max) : l));
+}
+
+/**
+ * AGENT-LOOP-DESIGN §A5: an agent run that has made no tool call yet is a REPLY — it keeps the chat's chrome (the
+ * `(thinking…)` placeholder, the `thinking` / `replying` status word, the idle border and prompt colour) and Esc /
+ * Ctrl-C stop it the way they stop a chat reply. From the first tool call the run chrome appears.
+ */
+export function agentReplyPhase(s: Pick<UiState, 'run' | 'agent'>): boolean {
+  return s.agent !== null && !s.agent.tools && s.run === 'live';
+}
+
+/**
+ * AGENT-LOOP-DESIGN §9.4 (slice S5a): the live region of an agent run — never a `streaming… N chars` counter. In order:
+ * the tool row executing now with the last lines of its output under it (a partial line is text, tail-aligned); the
+ * read-only calls in flight (`Read a.ts · Grep "x" in src…`); the call whose arguments stream (`writing edit_file src/a.ts…
+ * 1.2k chars`); reasoning progress while no prose has come (`thinking… 1.2k chars · <tail>`, drawn dim). The prose itself
+ * is the reply block above the rule, not this region. `dim` says the rows are the reasoning row.
+ */
+export function agentLiveLines(a: AgentUi, output: string, prose: boolean, rows: number, columns: number, g: GlyphSet = GLYPHS.unicode): { lines: string[]; dim: boolean } {
+  const n = Math.max(0, Math.floor(rows));
+  if (n === 0) return { lines: [], dim: false };
+  const max = Math.max(1, Math.floor(columns)) + 1;
+  const cut = (l: string): string => (l.length > max ? l.slice(0, max) : l);
+  if (a.running !== null) {
+    const parts = output === '' ? [] : output.split(/\r\n|\r|\n/);
+    if (parts.length > 0 && parts[parts.length - 1] === '') parts.pop();
+    return { lines: [cut(a.running), ...parts.slice(-(n - 1)).map(cut)].slice(0, n), dim: false };
+  }
+  if (a.calls.length > 0) return { lines: [cut(`${a.calls.map((c) => c.label).join(` ${g.dot} `)}${g.ellipsis}`)], dim: false };
+  if (a.writing !== null) {
+    const what = [a.writing.tool, a.writing.target].filter((x) => x !== '').join(' ');
+    return { lines: [cut(`writing ${what === '' ? 'a tool call' : what}${g.ellipsis} ${kShort(a.writing.chars)} chars`)], dim: false };
+  }
+  if (a.reasoning !== null && !prose) {
+    const tail = sanitizeStream(a.reasoning.tail).replace(/\s+/g, ' ').trim();
+    return { lines: [cut(`thinking${g.ellipsis} ${kShort(a.reasoning.chars)} chars${tail === '' ? '' : ` ${g.dot} ${tail}`}`)], dim: true };
+  }
+  return { lines: [], dim: false };
 }
 
 /**
@@ -775,6 +816,8 @@ export function splitInputChunk(input: string, key: Key): SplitChunk {
 }
 
 const EMPTY_BUFFER = createBuffer();
+/** The spans of an empty (note-mode) composer — one frozen array, so the console's span memo keeps its key. */
+const NO_DRAFT_SPANS: ReturnType<typeof hitSpans> = [];
 
 function useBridge(bridge: Bridge): number {
   const [tick, setTick] = useState(0);
@@ -894,7 +937,8 @@ export function App(p: AppProps): React.JSX.Element {
   const { state, dispatch } = useEngine(p.source, p.confirmer, p.task, p.resumeId, {
     mode,
     now,
-    flushMs: reducedMotion ? 250 : 50,
+    // TUI map top change 4: the stream scheduler's cadence — `launch.fps` (33 ms), 67 ms over SSH, 250 ms under reduced motion
+    flushMs: reducedMotion ? STREAM_REDUCED_MS : streamIntervalMs({ fps: launch.fps, ssh: lx.ssh === true }),
     ...(p.tickMs !== undefined ? { tickMs: p.tickMs } : {}),
     modeHint: lx.modeHint ?? DEFAULT_MODE,
     // TUI-DESIGN-2 §5.3: the first frame is splash frame 0 in the boxed tier; reduced motion / a screen reader mount `done`
@@ -1156,6 +1200,13 @@ export function App(p: AppProps): React.JSX.Element {
 
   // ----- the draft mirror (§15 item 20)
   const buffer = composer.buffer;
+  /**
+   * TUI map top change 11 (the App's half): the draft's secret hit spans, detected once per draft text instead of on
+   * every render by every consumer (the console, the flat composer and both fallbacks each called `composer.hits()`,
+   * which runs the detector over the whole draft).
+   */
+  const hostForHits = bridge.host;
+  const draftSpans = useMemo(() => hitSpans(composer.hits()), [buffer.text, hostForHits, composer]);
   // TUI-DESIGN-2 §4.3: the console lays the draft out at the inner width (`columns − 4`)
   const wrapInner = boxed ? consoleInnerWidth(columns) : columns;
   useEffect(() => {
@@ -1924,6 +1975,12 @@ export function App(p: AppProps): React.JSX.Element {
         }
         return;
       case 'PAUSE': {
+        // AGENT-LOOP-DESIGN §A5 (amendment): Esc on an agent run that has made no tool call yet stops the reply (ABORT,
+        // never pause — there is no step to pause after); from the first tool call Esc pauses and Esc Esc aborts as today
+        if (agentReplyPhase(stateRef.current)) {
+          abortRun();
+          return;
+        }
         if (bridge.host) bridge.host.pause();
         else bridge.engine?.pause();
         dispatch({ type: 'run:pausing' });
@@ -2732,6 +2789,12 @@ export function App(p: AppProps): React.JSX.Element {
       else p.onAbort('human_abort');
       return;
     }
+    // AGENT-LOOP-DESIGN §A5 (amendment): Ctrl-C while an agent run is still a reply stops the reply the way it stops a
+    // chat reply — ABORT (the controller treats it as "reply stopped"), no arm, so a second Ctrl-C does not exit
+    if (agentReplyPhase(cur) && cur.overlay === 'none' && ev.key.ctrl && ev.input === 'c' && ev.paste !== true) {
+      abortRun();
+      return;
+    }
     // TUI-DESIGN-2 §4.6: Esc on an empty idle draft collapses an open panel before arming Esc Esc (the buffered lone Esc)
     if (ev.escExpired === true && cur.overlay === 'none' && !runIsLive(cur.run) && cur.panel !== 'collapsed' && composer.buffer.text.length === 0 && pickerOpenRef.current === null && !cur.noteMode) {
       armedRef.current = { ...armedRef.current, escBufferAt: null };
@@ -2946,7 +3009,7 @@ export function App(p: AppProps): React.JSX.Element {
     if (!note) return null;
     if (note.gate) return { text: '', gate: gateLines(note.gate, columns)[0] ?? null };
     // §4.3 / §10.2: the note is typed live in the header row; its hit spans render as `•` cells like the composer's
-    return { text: composer.buffer.text, gate: null, spans: hitSpans(composer.hits()) };
+    return { text: composer.buffer.text, gate: null, spans: draftSpans };
   };
   const overlayData: OverlayData = guard<OverlayData>(
     'overlay',
@@ -2987,7 +3050,9 @@ export function App(p: AppProps): React.JSX.Element {
   const composerActive = !collapsing && !oneShotDone && (state.pendingReview === null || srReview) && overlayKind !== 'wizard' && overlayKind !== 'blocking';
   const composerWant = collapsing || state.noteMode ? 1 : guard('composer', () => draftRows(buffer.text, buffer.chips, wrapInner, pickerOpen ? `${promptFor(glyphs)}filter: ` : promptFor(glyphs)), 1);
   const banner = guard('banner', () => bannerRow(state.loop, columns, glyphs), null);
-  const liveRows = guard<string[]>('live', () => (state.retrying ? retryLiveLines(state.retrying, state.nowMs, CAP.live, columns, glyphs) : liveLines(state.live, CAP.live, columns, state.toolChars, state.synth, state.sampling)), []);
+  // AGENT-LOOP-DESIGN §9.4: an agent run's live region carries the tool rows (its prose is the reply block above the rule)
+  const agentLive = state.agent !== null && state.retrying === null ? guard('live', () => agentLiveLines(state.agent!, state.liveOutput, state.live !== '', CAP.live, columns, glyphs), { lines: [], dim: false }) : null;
+  const liveRows = guard<string[]>('live', () => (state.retrying ? retryLiveLines(state.retrying, state.nowMs, CAP.live, columns, glyphs) : agentLive !== null ? agentLive.lines : liveLines(state.live, CAP.live, columns, state.toolChars, state.synth, state.sampling)), []);
   // TUI-DESIGN-2 §5.4 (finding 2): the brand row is the idle rule row until the first `run:ready`; a submission in flight
   // (`starting`, the chat phase) never swaps it for the strip and back
   const ranBefore = state.ready !== null || state.done !== null || state.runsEnded > 0;
@@ -3028,18 +3093,24 @@ export function App(p: AppProps): React.JSX.Element {
   // TUI-DESIGN-2 §4.6: 0 (collapsed) · 6 (open) · 12 (full / picker) — the mark is no longer a tenant here
   const paneWant = pickerOpen ? PICKER_PANE_WANT : state.panel === 'open' ? CAP.panel : state.panel === 'full' ? CAP.pane : 0;
   /**
-   * The 3D indicator (owner directive): one whole-or-absent slot directly above the console and below the
-   * conversation. `indicatorKindFor` picks the geometry from the session state (thinking → the donut, `execute` →
-   * the cube, `judge` → the wave, every other stage → the globe); `animSize` decides the box, and the layout only
-   * grants it while four rows of conversation survive. Whenever it is absent the status row's glyph spinner and the
-   * `(thinking…)` placeholder carry the state exactly as they do today — they are the fallback, not a duplicate.
+   * AGENT-LOOP-DESIGN §A3 / §A5: the waiting state is the mini braille indicator in the status row's glyph cell (the
+   * 12-row slot is gone). The shape follows what runs now — in agent mode the activity (a model turn → donut, reading →
+   * globe, editing / running → cube, the harness's tests → wave), in the legacy modes the stage (`indicatorKindFor`). It
+   * animates on the spinner's own tick (no timer of its own), is a still frame over SSH and under reduced motion (a
+   * repaint of the region is ~30 KB/s of pty traffic on a link), the ASCII twin under `--ascii` / NO_COLOR, and absent
+   * under a screen reader, where the status word alone carries the state.
    */
-  const indicatorKind = guard<IndicatorKind | null>('anim', () => indicatorKindFor({ thinking: state.thinking, run: state.run, stage: state.status?.stage ?? null, streaming: state.live !== '' }), null);
-  const animBox = fullscreen || launch.screenReader ? null : animSize(columns, rows);
-  const animWant = indicatorKind !== null && animBox !== null && overlayKind === 'none' && rows >= INDICATOR_MIN_ROWS ? animBox.h : 0;
-  // over SSH the indicator is a still frame, like the wordmark's `static`: a 12 fps repaint of the dynamic region is ~30 KB/s of pty traffic, fine locally, unkind on a link
-  const animStill = reducedMotion || lx.ssh === true;
-  const animTick = useIndicatorTick(animWant > 0, animStill);
+  const indicatorKind = guard<IndicatorKind | null>('status', () => (state.agent !== null && runIsLive(state.run) ? (state.agent.activity !== null ? agentIndicatorKind(state.agent.activity) : null) : indicatorKindFor({ thinking: state.thinking, run: state.run, stage: state.status?.stage ?? null, streaming: state.live !== '' })), null);
+  const indicatorStill = reducedMotion || lx.ssh === true;
+  const indicatorAscii = glyphs.mode === 'ascii' || depth === 0;
+  /**
+   * AGENT-LOOP-DESIGN §9.4: the reply block — the agent's uncommitted prose above the rule. Its rows come from the same
+   * layout its committed rows are drawn with; its CAP is what the layout would grant it with an unbounded want, which the
+   * reducer's overflow commits keep it within (the effect below hands the cap over whenever it moves).
+   */
+  const replyItems = useMemo(() => (state.agent !== null && state.live !== '' ? pendingItems(state.live, state.reply, state.agent.turnStep) : []), [state.agent, state.live, state.reply]);
+  const replyPrevItem = replyItems.length > 0 ? replyPrev(state) : null;
+  const replyWant = replyItems.length > 0 && !fullscreen ? guard('reply', () => pendingRows(replyItems, replyPrevItem, columns, glyphs), 0) : 0;
   // TUI-DESIGN-2 §4.2: in the boxed tier the secret gate is a console row, never the `secret` overlay
   const gateUp: 0 | 1 = boxed && overlayKind === 'secret' && gateRef.current !== null ? 1 : 0;
   const layoutInput: LayoutInput = {
@@ -3056,10 +3127,18 @@ export function App(p: AppProps): React.JSX.Element {
     bannerWant: banner !== null ? 1 : 0,
     paneWant,
     markWant,
-    animWant,
+    replyWant,
     chrome,
     gate: gateUp,
   };
+  // the reply block's cap: the rows the layout would grant it with an unbounded want (agent runs only)
+  const replyCap = state.agent !== null && !fullscreen ? computeLayout({ ...layoutInput, replyWant: rows }).reply : 0;
+  const agentOn = state.agent !== null;
+  // AGENT-LOOP-DESIGN §9.4: "overflow commits when the tail budget shrinks" — a composer that grew, an overlay, a resize,
+  // live rows appearing: the reducer commits the block's oldest rows until it fits the new cap
+  useEffect(() => {
+    if (agentOn) dispatch({ type: 'reply:geometry', rows: Math.max(1, replyCap), columns });
+  }, [agentOn, replyCap, columns, dispatch]);
   // TUI-DESIGN-4 §1.3.2: the fullscreen renderer gets a SECOND allocator whose post-condition is `total === rows`
   // exactly (one row of error costs a full-screen clear per keystroke — A1 measured 37 clears for 36 frames). Its
   // slots are mapped onto the classic `Layout` so `consoleTop` / `composerTop` / `overlayTop` — which only ever sum
@@ -3100,7 +3179,7 @@ export function App(p: AppProps): React.JSX.Element {
   // TUI-DESIGN-2 §4.3: the wizard's rows live inside the console (its top edge sits above the overlay allocation)
   const wizardHosted = boxed && overlayKind === 'wizard' && layout.chrome > 0;
   const cTop = consoleTop(layout) - (wizardHosted ? layout.overlay : 0);
-  const overlayTop = layout.rule + layout.live + layout.banner + layout.mark + layout.pane + layout.queue;
+  const overlayTop = layout.reply + layout.rule + layout.live + layout.banner + layout.mark + layout.pane + layout.queue;
   /**
    * The quiet start (2026-09, owner's directive "clean"): a SESSION opens with the wordmark and the composer, so the
    * `[run] jevcode session · <dir> | step 0/– starting` header is not printed at all in the boxed renderer — `--plain`
@@ -3108,23 +3187,44 @@ export function App(p: AppProps): React.JSX.Element {
    * run instead: `<Static>` writes by index, so prepending a row after the first flush would reprint the tail.
    */
   const header = useMemo(() => (mode === 'session' ? null : headerItem(p.task, p.resumeId)), [mode, p.task, p.resumeId]);
-  const spinner = useSpinner(spinnerActive(state), reducedMotion);
-  // TUI-DESIGN-5 §3.1 / §2.2: the `ctx` and `peers` gates are TERMINAL columns; the boxed row is laid out at the inner width
-  const statusOpts: StatusLineOptions = { ascii: glyphs.mode === 'ascii', reducedMotion, spinnerFrame: spinner, mode, flatBadge: !boxed, terminalColumns: columns };
   // TUI-DESIGN-2 §3.1 (finding 1): an engine run — never a submission in flight — colours the border `borderFocus` and the prompt `steer`
   const runLive = runIsLive(state.run);
+  // AGENT-LOOP-DESIGN §A5: an agent run with no tool call yet is a reply and keeps the chat's chrome
+  const replyPhase = agentReplyPhase(state);
+  const runChrome = runLive && !replyPhase;
+  // §A5: an agent run spins from t = 0 of every step, whatever the engine's last `status` said
+  const agentSpins = state.agent !== null && runLive && state.run !== 'aborting' && state.agent.activity !== null && state.pendingReview === null && state.blocking === null;
+  const spinOn = spinnerActive(state) || agentSpins;
+  const spinner = useSpinner(spinOn, reducedMotion);
+  // AGENT-LOOP-DESIGN §A3: the mini indicator's frame of this tick, at its two widths (none under a screen reader)
+  const miniOn = indicatorKind !== null && spinOn && !launch.screenReader;
+  const indicatorWide = miniOn ? miniFrame(indicatorKind, spinner, MINI_WIDE_CELLS, { ascii: indicatorAscii, still: indicatorStill }) : undefined;
+  const indicatorNarrow = miniOn ? miniFrame(indicatorKind, spinner, MINI_NARROW_CELLS, { ascii: indicatorAscii, still: indicatorStill }) : undefined;
+  // TUI-DESIGN-5 §3.1 / §2.2: the `ctx` and `peers` gates are TERMINAL columns; the boxed row is laid out at the inner width.
+  // TUI map top change 11: memoised on its values, so every consumer sees one object per distinct row
+  const asciiGlyphs = glyphs.mode === 'ascii';
+  const statusOpts: StatusLineOptions = useMemo(
+    () => ({ ascii: asciiGlyphs, reducedMotion, spinnerFrame: spinner, mode, flatBadge: !boxed, terminalColumns: columns, ...(indicatorWide !== undefined ? { indicatorWide } : {}), ...(indicatorNarrow !== undefined ? { indicatorNarrow } : {}) }),
+    [asciiGlyphs, reducedMotion, spinner, mode, boxed, columns, indicatorWide, indicatorNarrow],
+  );
   // TUI-DESIGN-3 §5.2 A4: the streaming caret `▍` on the last live row, a 1 Hz blink riding the spinner tick (steady under reduced motion)
-  const streaming = runLive && state.live !== '' && state.retrying === null && liveRows.length > 0;
-  const caret = streaming && streamCaretOn(spinner, reducedMotion) ? (glyphs.mode === 'ascii' ? '|' : (glyphs.eighths[3] ?? '')) : '';
-  // TUI-DESIGN-3 §5.2 A5: the run-start sweep over the rule row's `─` cells (6 frames; none under reduced motion — the edges flip at once)
-  const startSweep = useMotion(runLive && !reducedMotion, RUN_START_SWEEP_MS);
-  const ruleBand = startSweep.settled || !runLive || reducedMotion ? null : runStartBand(startSweep.time, Math.min(columns, RULE_MAX_CELLS));
-  // TUI-DESIGN-3 §5.2 A6: the run-end edge fade — three 70 ms frames after `run:end` (instant under reduced motion); one fade per ended run
+  const caretGlyph = glyphs.mode === 'ascii' ? '|' : (glyphs.eighths[3] ?? '');
+  const streaming = state.agent === null && runLive && state.live !== '' && state.retrying === null && liveRows.length > 0;
+  const caret = streaming && streamCaretOn(spinner, reducedMotion) ? caretGlyph : '';
+  // AGENT-LOOP-DESIGN §9.4: the reply block's caret — only while prose streams
+  const replyCaret = replyItems.length > 0 && runLive && streamCaretOn(spinner, reducedMotion) ? caretGlyph : '';
+  // TUI-DESIGN-3 §5.2 A5: the run-start sweep over the rule row's `─` cells (6 frames; none under reduced motion — the edges flip at once);
+  // AGENT-LOOP-DESIGN §A5: an agent reply has no run chrome, so the sweep runs when its first tool call brings the chrome
+  const startSweep = useMotion(runChrome && !reducedMotion, RUN_START_SWEEP_MS);
+  const ruleBand = startSweep.settled || !runChrome || reducedMotion ? null : runStartBand(startSweep.time, Math.min(columns, RULE_MAX_CELLS));
+  // TUI-DESIGN-3 §5.2 A6: the run-end edge fade — three 70 ms frames after `run:end` (instant under reduced motion); one fade per ended run.
+  // An agent run that ended as a reply never lit the edges, so there is nothing to fade
   const fadedRuns = useRef(0);
-  const fadeActive = state.run === 'none' && state.runsEnded > 0 && fadedRuns.current !== state.runsEnded && !reducedMotion;
+  const endedAsReply = state.run === 'none' && state.agent !== null && !state.agent.tools;
+  const fadeActive = state.run === 'none' && state.runsEnded > 0 && fadedRuns.current !== state.runsEnded && !reducedMotion && !endedAsReply;
   const endFade = useMotion(fadeActive, RUN_END_FADE_MS, RUN_END_FADE_STEP_MS);
   if (fadeActive && endFade.settled) fadedRuns.current = state.runsEnded;
-  const edgeRole: ColorRole | null = runLive ? null : fadeActive && !endFade.settled ? runEndEdgeRole(endFade.time) : null;
+  const edgeRole: ColorRole | null = runChrome ? null : fadeActive && !endFade.settled ? runEndEdgeRole(endFade.time) : null;
   const consoleExtra: { edgeRole?: ColorRole } = edgeRole !== null ? { edgeRole } : {};
   const thinking = chatThinking(state);
   const composerMode: ComposerMode = pickerOpen
@@ -3143,14 +3243,15 @@ export function App(p: AppProps): React.JSX.Element {
             ? 'exitWait'
             : overlayKind === 'blocking'
               ? 'blocked'
-              : thinking
-                ? 'thinking' // §3.1 row 1 / §4.4: `(thinking…)` while the reply is in flight (the run is `starting`)
+              : thinking || replyPhase
+                ? 'thinking' // §3.1 row 1 / §4.4: `(thinking…)` while the reply is in flight (the run is `starting`; AGENT-LOOP-DESIGN §A5: or an agent run still replying)
                 : runLive
                   ? 'steer' // TUI-DESIGN-3 §5.2 P7: `starting` without a phase keeps the previous idle placeholder — never the steer one
                     : state.turns > 0 || state.runsEnded > 0 || state.done !== null
                       ? 'followup'
                       : 'task';
-  const paneState = guard('pane', () => paneStateOf(state), { tab: state.tab, step: state.step, rows: [], plan: null, timeline: [], synth: null, mode: state.mode });
+  // AGENT-LOOP-DESIGN §14.3 item 1: the agent strip counts tool calls (`▸ s<N> · plan d/t · <k> tool calls`)
+  const paneState = guard('pane', () => (state.agent !== null ? { ...paneStateOf(state), toolCalls: state.agent.toolCalls } : paneStateOf(state)), { tab: state.tab, step: state.step, rows: [], plan: null, timeline: [], synth: null, mode: state.mode });
   /**
    * §2.8: the card's rows, for the session the card was OPENED for.
    *
@@ -3244,7 +3345,10 @@ export function App(p: AppProps): React.JSX.Element {
             }),
           plainRule(columns, glyphs),
         );
-  const statusState = guard<StatusLineState | null>('status', () => statusView({ ...state, git: state.git === null ? null : { ...state.git, head: gitHead.head ?? state.git.head, frozen: gitHead.frozen } }, { picker: pickerOpen, columns, glyphs }), null);
+  // AGENT-LOOP-DESIGN §A5: a still-replying agent run reads like a chat reply — `thinking` until the first token, then
+  // `replying`; no `step 1/N` (the reply is not a run to the eye), exactly the chat phase's row
+  const statusSource: UiState = replyPhase ? { ...state, run: 'starting', thinking: state.agent?.prose === true ? 'replying' : 'intake', status: null, ready: null } : state;
+  const statusState = guard<StatusLineState | null>('status', () => statusView({ ...statusSource, git: state.git === null ? null : { ...state.git, head: gitHead.head ?? state.git.head, frozen: gitHead.frozen } }, { picker: pickerOpen, columns, glyphs }), null);
   const badge = modeBadge(state.modeBadge.mode, state.modeBadge.pending, glyphs);
   const consoleTitle = wizardHosted ? wizardConsoleTitle(wizard.state.step, glyphs) : pickerOpen && picker.kind ? pickerConsoleTitle(picker.kind, glyphs) : null;
   const gateRow = gateUp === 1 && gateRef.current ? (gateLines(gateRef.current.hits, consoleInnerWidth(columns))[0] ?? null) : null;
@@ -3270,7 +3374,15 @@ export function App(p: AppProps): React.JSX.Element {
       {full === null ? (
         /* §13.4: each <Static> item has its own boundary inside <Transcript>; this outer one is the last resort and retries with the next item */
         <PaneBoundary pane="transcript" onFail={onPaneFail} resetKey={visible.length}>
-          <Transcript items={visible} {...(header !== null ? { header } : {})} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} />
+          <Transcript items={visible} {...(header !== null ? { header } : {})} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} paintSeq={state.paintSeq} />
+        </PaneBoundary>
+      ) : null}
+      {full === null && !staticOnly && layout.reply > 0 ? (
+        // AGENT-LOOP-DESIGN §9.4 / §A1: the agent's prose streaming in place above the rule, in the rows it will keep in
+        // the scrollback (`proseItemRows`, the same builder `<Static>` draws a committed prose line with)
+        // (the boundary carries the `live` pane's name: it is the live stream's prose half, and `render:live` faults both)
+        <PaneBoundary pane="live" onFail={onPaneFail} fault={fault} log={logName} resetKey={state.runId ?? ''}>
+          <ReplyTail items={replyItems} prev={replyPrevItem} rows={layout.reply} columns={columns} theme={theme} color={depth} glyphs={glyphs} caret={replyCaret} />
         </PaneBoundary>
       ) : null}
       {full !== null && full.header > 0 ? (
@@ -3301,7 +3413,8 @@ export function App(p: AppProps): React.JSX.Element {
         </PaneBoundary>
       ) : null}
       {!staticOnly && layout.rule > 0 ? (
-        <Box height={layout.rule} overflow="hidden">
+        // TUI map top change 11: a box around one pre-fitted truncate Text clips vertically only (Ink's horizontal clip could never cut a cell here)
+        <Box height={layout.rule} overflowY="hidden">
           <RuleRow text={rule} theme={theme} color={depth} glyphs={glyphs} band={ruleBand} />
         </Box>
       ) : null}
@@ -3310,9 +3423,9 @@ export function App(p: AppProps): React.JSX.Element {
       ) : null}
       {full === null && !staticOnly && layout.live > 0 ? (
         <PaneBoundary pane="live" onFail={onPaneFail} fault={fault} log={logName}>
-          <Box flexDirection="column" height={layout.live} overflow="hidden">
+          <Box flexDirection="column" height={layout.live} overflowY="hidden">
             {liveRows.slice(0, layout.live).map((line, i, shown) => (
-              <Text key={`l${i}`} wrap="truncate" {...(state.retrying ? textProps(theme, 'warn', depth) : {})}>
+              <Text key={`l${i}`} wrap="truncate" {...(state.retrying ? textProps(theme, 'warn', depth) : agentLive !== null && agentLive.dim ? textProps(theme, 'dim', depth) : {})}>
                 {line}
                 {caret !== '' && i === shown.length - 1 ? <Text {...textProps(theme, 'sweep', depth)}>{caret}</Text> : null}
               </Text>
@@ -3321,7 +3434,7 @@ export function App(p: AppProps): React.JSX.Element {
         </PaneBoundary>
       ) : null}
       {full === null && !staticOnly && layout.banner > 0 && banner !== null ? (
-        <Box height={1} overflow="hidden">
+        <Box height={1} overflowY="hidden">
           <Text wrap="truncate" {...textProps(theme, 'warn', depth)}>
             {banner}
           </Text>
@@ -3384,30 +3497,6 @@ export function App(p: AppProps): React.JSX.Element {
           <Overlay kind={layout.degraded === 'minsize' ? 'none' : overlayKind} rows={layout.overlay} previewRows={layout.preview} columns={columns} terminalRows={rows} top={overlayTop} data={overlayData} degraded={layout.degraded} cursor={setCursorPosition} glyphs={glyphs} theme={theme} color={depth} screenReader={launch.screenReader} chrome={chrome} />
         </PaneBoundary>
       ) : null}
-      {full === null && !staticOnly && layout.anim > 0 && indicatorKind !== null ? (
-        // the 3D indicator: directly above the console box, whole or absent; the boundary's fallback is blank rows
-        // of the same height so a throw inside it can never shorten the frame
-        <PaneBoundary
-          pane="anim"
-          onFail={onPaneFail}
-          fault={fault}
-          log={logName}
-          resetKey={indicatorKind}
-          fallback={() => (
-            <Box flexDirection="column" height={layout.anim} overflow="hidden">
-              {Array.from({ length: layout.anim }, (_unused, i) => (
-                <Text key={`af${i}`} wrap="truncate">
-                  {' '}
-                </Text>
-              ))}
-            </Box>
-          )}
-        >
-          <Box flexDirection="column" height={layout.anim} overflow="hidden" alignItems="center">
-            <Indicator kind={indicatorKind} columns={columns} rows={rows} tick={animTick} theme={theme} reducedMotion={animStill} ascii={glyphs.mode === 'ascii'} noColor={depth === 0} color={depth} />
-          </Box>
-        </PaneBoundary>
-      ) : null}
       {!staticOnly && layout.chrome > 0 && (layout.composer > 0 || wizardHosted) ? (
         // TUI-DESIGN-2 §4.3: the boxed tier — one console around the composer (or the wizard's rows) and the status bar
         <PaneBoundary
@@ -3433,8 +3522,8 @@ export function App(p: AppProps): React.JSX.Element {
             mode={composerMode}
             recent={state.recent}
             rows={rows}
-            live={runLive}
-            spans={hitSpans(state.noteMode ? [] : composer.hits())}
+            live={runChrome}
+            spans={state.noteMode ? NO_DRAFT_SPANS : draftSpans}
             ghost={ghost}
             searchRow={composer.searchRow()}
             badge={badge}
@@ -3465,7 +3554,7 @@ export function App(p: AppProps): React.JSX.Element {
             </Box>
           )}
         >
-          <Composer buffer={state.noteMode || collapsing ? EMPTY_BUFFER : buffer} columns={columns} height={layout.composer} top={top} scrollTop={composer.scrollTop} cursor={setCursorPosition} active={composerActive && !state.noteMode} mode={composerMode} rows={rows} live={runLive} spans={hitSpans(state.noteMode ? [] : composer.hits())} ghost={ghost} searchRow={composer.searchRow()} glyphs={glyphs} theme={theme} color={depth} onScroll={(n) => composer.setScrollTop(n)} />
+          <Composer buffer={state.noteMode || collapsing ? EMPTY_BUFFER : buffer} columns={columns} height={layout.composer} top={top} scrollTop={composer.scrollTop} cursor={setCursorPosition} active={composerActive && !state.noteMode} mode={composerMode} rows={rows} live={runChrome} spans={state.noteMode ? NO_DRAFT_SPANS : draftSpans} ghost={ghost} searchRow={composer.searchRow()} glyphs={glyphs} theme={theme} color={depth} onScroll={(n) => composer.setScrollTop(n)} />
         </PaneBoundary>
       ) : null}
       {layout.status > 0 && layout.chrome === 0 ? (
@@ -3552,7 +3641,7 @@ function SplashRowImpl({ row, spans, theme, color }: { row: string; spans: reado
     at = end;
   }
   return (
-    <Box height={1} overflow="hidden">
+    <Box height={1} overflowY="hidden">
       <Text wrap="truncate">{parts}</Text>
     </Box>
   );
@@ -3618,6 +3707,17 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
   // With a piped stdin nobody can press y/n, so the box renders and then declines (§10).
   const confirmer = stdin.isTTY ? createTuiConfirmer() : createTuiConfirmer({ autoDeclineMs: opts.confirmTimeoutMs ?? 0, identity: IDENTITY_NO_TTY });
   const bridge = createBridge(opts.host ?? null, opts.wizardHost ?? null);
+  /**
+   * TUI map top change 4: the controller's `live(text)` (a chat reply's text so far, one call per provider read) goes
+   * through the same leading-edge scheduler as the engine's stream — the first token paints at once (its dispatch bumps
+   * the paint sequence, so Ink takes the immediate path), later tokens at most once per `launch.fps` interval. A clear
+   * (`live('')`) lands at once, cancelling a pending flush, so the committed bubble and the live text never share a frame.
+   */
+  let liveText = '';
+  const liveScheduler = createStreamScheduler(
+    (leading) => bridge.command({ type: 'dispatch', action: { type: 'live', text: liveText, ...(leading ? { paint: true as const } : {}) } }),
+    launch.reducedMotion ? STREAM_REDUCED_MS : streamIntervalMs({ fps: launch.fps, ssh: launch.ssh === true }),
+  );
   const trace = env['JEVCODE_TRACE'];
   const log = opts.log ?? (trace !== undefined && trace !== '' ? createLog({ file: trace, level: 'trace', exitHook: false }) : nullLog());
   let detach: (() => void) | null = null;
@@ -3700,6 +3800,7 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
       detach = null;
       offResize?.();
       offResize = null;
+      liveScheduler.cancel();
       hygiene?.uninstall();
       // finding 10: the controller unmounts right after `run:end`; let React commit that state and Ink flush the frame
       // (bounded), so the scrollback ends on `done <stop>` with the composer gone, not on a frozen spinner
@@ -3771,7 +3872,13 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
       bridge.command({ type: 'wizard:reopen', at, runLive, ...(opts ? { opts } : {}) });
     },
     live(text) {
-      bridge.command({ type: 'dispatch', action: { type: 'live', text } });
+      liveText = text;
+      if (text === '') {
+        liveScheduler.cancel();
+        bridge.command({ type: 'dispatch', action: { type: 'live', text } });
+        return;
+      }
+      liveScheduler.poke();
     },
     openPicker(open) {
       bridge.command({ type: 'picker', open });

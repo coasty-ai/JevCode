@@ -1,206 +1,96 @@
 /**
- * Pure frame renderers for the interactive session's 3D indicators — a rotating torus (the classic donut projection)
- * for thinking, a spinning wireframe cube while a command runs, a rotating wireframe globe while a model or Jev is
- * being called, and a travelling wave while tests verify. Each returns a fixed, deterministic set of frames for a cell
- * size, so a caller precomputes once per terminal size (a 24×12 torus is 48 frames in a few milliseconds) and cycles
- * through them on a timer; no dependency, no I/O, no randomness. The luminance ramp is donut.c's `.,-~:;=!*#$@`.
+ * The mini indicators (AGENT-LOOP-DESIGN §A3 / §A5; slice S5a): the waiting state lives in the console's status row, in
+ * the cell the spinner glyph used to take, as a tiny braille animation keyed on what is running —
+ *
+ * - `donut` — a model turn (and the chat's thinking): an oval ring with a dark arc travelling round it clockwise;
+ * - `globe` — read-only observing (reads, greps, globs; a Jev / model call in the legacy modes): a ring with a meridian
+ *   sweeping across its face;
+ * - `cube`  — an edit, a write or a mutating command: a box whose inner edge sweeps across as it turns;
+ * - `wave`  — the harness's test run: a sine travelling left to right.
+ *
+ * Each exists in two widths. The WIDE form is 3 cells (a 6 × 4 braille dot grid: wide enough for the ring to have a hole,
+ * which is what makes it read as a donut at one row); the NARROW form is the old glyph slot's 1 cell (a 2 × 4 grid: the
+ * classic rotating-gap ring, an orbiting dot, a bouncing block, a rising and falling dot). The status row draws the wide
+ * form only while the row has room for it — the two extra cells are the first thing the row gives up, before `? help` —
+ * so at 80 columns during a busy run it is exactly the old slot and nothing else is dropped for it.
+ *
+ * The frames were chosen by rendering candidates to text and looking at them (a physically projected torus at 4 dot rows
+ * is a blob with no hole; a crisp ring with a moving gap reads as a spinning donut). They are constants — nothing is
+ * computed at import or at runtime — and the frame is `frames[tick % n]` of the existing spinner tick (125 ms), so the
+ * indicator adds no timer and no frame of its own. `--ascii` / `NO_COLOR` draw a one-cell ASCII twin; reduced motion and
+ * SSH draw the still frame; a screen reader gets none (the caller keeps the plain status word).
  */
 
-export type Frames = readonly string[][];
+/** The four shapes. */
+export type IndicatorKind = 'donut' | 'globe' | 'cube' | 'wave';
 
-export const LUMINANCE = '.,-~:;=!*#$@';
+export const INDICATOR_KINDS: readonly IndicatorKind[] = ['donut', 'globe', 'cube', 'wave'];
 
-/** Frames per second the indicators are cycled at (the caller's timer; 12 keeps the event-loop-lag gate untouched). */
-export const ANIM_FPS = 12;
+/** The wide form's cells (6 × 4 braille dots). */
+export const MINI_WIDE_CELLS = 3;
+/** The narrow form's cells — the status row's original glyph slot. */
+export const MINI_NARROW_CELLS = 1;
 
-/**
- * The indicator box for a terminal: 24×12 at ≥ 100 columns and ≥ 24 rows, 16×8 at 80 columns, none below 60 columns
- * or 16 rows (the caller shows the glyph spinner instead).
- */
-export function animSize(columns: number, rows: number): { w: number; h: number } | null {
-  if (columns < 60 || rows < 16) return null;
-  if (columns >= 100 && rows >= 24) return { w: 24, h: 12 };
-  return { w: 16, h: 8 };
+const WIDE: Readonly<Record<IndicatorKind, readonly string[]>> = {
+  // the ring ⢎⣉⡱ with a two-dot dark arc travelling clockwise (12 positions: 1.5 s a turn at 8 fps)
+  donut: ['⢆⣈⡱', '⢎⣀⡱', '⢎⣁⡰', '⢎⣉⡠', '⢎⣉⡁', '⢎⣉⠑', '⢎⡉⠱', '⢎⠉⡱', '⠎⢉⡱', '⠊⣉⡱', '⢈⣉⡱', '⢄⣉⡱'],
+  // the ring with a meridian crossing its face left to right, then passing behind (each position held two ticks)
+  globe: ['⢾⣉⡱', '⢾⣉⡱', '⢎⣏⡱', '⢎⣏⡱', '⢎⣹⡱', '⢎⣹⡱', '⢎⣉⡷', '⢎⣉⡷', '⢎⣉⡱', '⢎⣉⡱'],
+  // the box with its inner vertical edge sweeping across as it turns (each position held two ticks)
+  cube: ['⣿⣉⣹', '⣿⣉⣹', '⣏⣏⣹', '⣏⣏⣹', '⣏⣹⣹', '⣏⣹⣹', '⣏⣉⣿', '⣏⣉⣿', '⣏⣉⣹', '⣏⣉⣹'],
+  // one period of a sine travelling right (12 phases)
+  wave: ['⠌⠑⣀', '⠔⠑⢄', '⡠⠉⢂', '⡠⠊⠢', '⣀⠌⠡', '⢄⠔⠑', '⢄⡠⠉', '⠢⡠⠊', '⠡⣀⠌', '⠑⢄⠔', '⠉⢂⡠', '⠊⠢⡠'],
+};
+
+const NARROW: Readonly<Record<IndicatorKind, readonly string[]>> = {
+  // the eight-dot ring with one dot dark, turning clockwise
+  donut: ['⣾', '⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽'],
+  // one dot orbiting the cell
+  globe: ['⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'],
+  // a block bouncing in the cell, squashed flat where it meets the floor and the ceiling
+  cube: ['⠛', '⠶', '⣤', '⣀', '⣤', '⠶', '⠛', '⠉'],
+  // a dot rising on the left and falling on the right
+  wave: ['⡀', '⠄', '⠂', '⠁', '⠈', '⠐', '⠠', '⢀'],
+};
+
+const ASCII: Readonly<Record<IndicatorKind, readonly string[]>> = {
+  donut: ['-', '\\', '|', '/'],
+  globe: ['.', 'o', 'O', 'o'],
+  cube: ['#', '+', '#', '+'],
+  wave: ['_', '-', '~', '-'],
+};
+
+/** The still frame of each shape (reduced motion, SSH): the full ring, a meridian on the face, a turned box, a crest. */
+const STILL_WIDE: Readonly<Record<IndicatorKind, string>> = { donut: '⢎⣉⡱', globe: '⢎⣏⡱', cube: '⣏⣏⣹', wave: '⠌⠑⣀' };
+const STILL_NARROW: Readonly<Record<IndicatorKind, string>> = { donut: '⣾', globe: '⠁', cube: '⠶', wave: '⠂' };
+
+/** The frames of a shape at a width (`MINI_WIDE_CELLS` or `MINI_NARROW_CELLS`), or its ASCII twin (always one cell). */
+export function miniFrames(kind: IndicatorKind, cells: number, ascii = false): readonly string[] {
+  if (ascii) return ASCII[kind];
+  return cells >= MINI_WIDE_CELLS ? WIDE[kind] : NARROW[kind];
 }
 
-function grid(width: number, height: number): string[][] {
-  return Array.from({ length: height }, () => Array.from({ length: width }, () => ' '));
+/** How a frame is picked. */
+export interface MiniFrameOptions {
+  /** `--ascii` / `NO_COLOR`: the one-cell ASCII twin */
+  readonly ascii?: boolean;
+  /** reduced motion or SSH: the still frame, whatever the tick */
+  readonly still?: boolean;
 }
 
-function clampSize(w0: number, h0: number, n0: number): { w: number; h: number; n: number } {
-  return { w: Math.max(8, Math.floor(w0)), h: Math.max(4, Math.floor(h0)), n: Math.max(2, Math.floor(n0)) };
-}
-
-/** The donut: a torus (R1 = 1 tube radius, R2 = 2 ring radius) spun about two axes, luminance from the surface normal. */
-export function torusFrames(w0: number, h0: number, n0: number): Frames {
-  const { w, h, n } = clampSize(w0, h0, n0);
-  const out: string[][] = [];
-  const R1 = 1, R2 = 2, K2 = 5;
-  // K1 scales the projection to the cell box; cells are ~2× taller than wide, so the horizontal factor doubles
-  const K1x = (w * K2 * 3) / (8 * (R1 + R2));
-  const K1y = (h * K2 * 3) / (8 * (R1 + R2)) * 1.05;
-  for (let f = 0; f < n; f++) {
-    // both angles complete a whole revolution per cycle, so `tick % n` is seamless (a half turn on B popped the tilt once per loop)
-    const A = (f / n) * Math.PI * 2 + 1.0;
-    const B = (f / n) * Math.PI * 2 + 0.5;
-    const cA = Math.cos(A), sA = Math.sin(A), cB = Math.cos(B), sB = Math.sin(B);
-    const cells = grid(w, h);
-    const z = Array.from({ length: h }, () => new Float64Array(w));
-    // sampling density follows the box: a 24×12 box needs far fewer surface points than a 60×30 one
-    const thetaStep = Math.max(0.05, 2.4 / w), phiStep = Math.max(0.015, 0.8 / w);
-    for (let theta = 0; theta < Math.PI * 2; theta += thetaStep) {
-      const ct = Math.cos(theta), st = Math.sin(theta);
-      for (let phi = 0; phi < Math.PI * 2; phi += phiStep) {
-        const cp = Math.cos(phi), sp = Math.sin(phi);
-        const cx = R2 + R1 * ct, cy = R1 * st;
-        const x = cx * (cB * cp + sA * sB * sp) - cy * cA * sB;
-        const y = cx * (sB * cp - sA * cB * sp) + cy * cA * cB;
-        const zz = K2 + cA * cx * sp + cy * sA;
-        const ooz = 1 / zz;
-        const xp = Math.floor(w / 2 + K1x * ooz * x);
-        const yp = Math.floor(h / 2 - K1y * ooz * y);
-        if (xp < 0 || xp >= w || yp < 0 || yp >= h) continue;
-        const L = cp * ct * sB - cA * ct * sp - sA * st + cB * (cA * st - ct * sA * sp);
-        if (L <= 0) continue;
-        if (ooz > z[yp]![xp]!) {
-          z[yp]![xp] = ooz;
-          const idx = Math.min(LUMINANCE.length - 1, Math.floor(L * 8));
-          cells[yp]![xp] = LUMINANCE[idx]!;
-        }
-      }
-    }
-    out.push(cells.map((r) => r.join('')));
+/** The frame of `kind` at `tick` (the spinner's frame counter) and width. */
+export function miniFrame(kind: IndicatorKind, tick: number, cells: number, o: MiniFrameOptions = {}): string {
+  if (o.ascii === true) {
+    const a = ASCII[kind];
+    return o.still === true ? a[0]! : a[mod(tick, a.length)]!;
   }
-  return out;
+  const wide = cells >= MINI_WIDE_CELLS;
+  if (o.still === true) return wide ? STILL_WIDE[kind] : STILL_NARROW[kind];
+  const f = wide ? WIDE[kind] : NARROW[kind];
+  return f[mod(tick, f.length)]!;
 }
 
-type V3 = readonly [number, number, number];
-
-function rotate(v: V3, ax: number, ay: number, az: number): V3 {
-  let [x, y, z] = v;
-  // X
-  let cy = Math.cos(ax), sy = Math.sin(ax);
-  [y, z] = [y * cy - z * sy, y * sy + z * cy];
-  // Y
-  cy = Math.cos(ay); sy = Math.sin(ay);
-  [x, z] = [x * cy + z * sy, -x * sy + z * cy];
-  // Z
-  cy = Math.cos(az); sy = Math.sin(az);
-  [x, y] = [x * cy - y * sy, x * sy + y * cy];
-  return [x, y, z];
-}
-
-function project(v: V3, w: number, h: number, scale: number, d = 4): readonly [number, number, number] {
-  const ooz = 1 / (v[2] + d);
-  return [w / 2 + v[0] * ooz * scale * 2, h / 2 - v[1] * ooz * scale, ooz];
-}
-
-function line(cells: string[][], x0: number, y0: number, x1: number, y1: number, ch: string): void {
-  const h = cells.length, w = cells[0]?.length ?? 0;
-  let ax = Math.round(x0), ay = Math.round(y0);
-  const bx = Math.round(x1), by = Math.round(y1);
-  const dx = Math.abs(bx - ax), dy = -Math.abs(by - ay);
-  const sx = ax < bx ? 1 : -1, sy = ay < by ? 1 : -1;
-  let err = dx + dy;
-  for (let guard = 0; guard < 4096; guard++) {
-    if (ax >= 0 && ax < w && ay >= 0 && ay < h) cells[ay]![ax] = ch;
-    if (ax === bx && ay === by) break;
-    const e2 = 2 * err;
-    if (e2 >= dy) { err += dy; ax += sx; }
-    if (e2 <= dx) { err += dx; ay += sy; }
-  }
-}
-
-/** A wireframe cube spun about all three axes; nearer edges brighter. */
-export function cubeFrames(w0: number, h0: number, n0: number): Frames {
-  const { w, h, n } = clampSize(w0, h0, n0);
-  const verts: V3[] = [];
-  for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) verts.push([x, y, z]);
-  const edges: [number, number][] = [];
-  for (let i = 0; i < 8; i++) for (let j = i + 1; j < 8; j++) {
-    const a = verts[i]!, b = verts[j]!;
-    if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) + Math.abs(a[2] - b[2]) === 2) edges.push([i, j]);
-  }
-  const scale = Math.min(w / 2.6, h * 1.05);
-  const out: string[][] = [];
-  for (let f = 0; f < n; f++) {
-    const t = (f / n) * Math.PI * 2;
-    const cells = grid(w, h);
-    const p = verts.map((v) => project(rotate(v, t * 0.7 + 0.4, t, t * 0.3), w, h, scale));
-    const sorted = [...edges].sort((e1, e2) => (p[e1[0]]![2] + p[e1[1]]![2]) - (p[e2[0]]![2] + p[e2[1]]![2]));
-    for (const [i, j] of sorted) {
-      const depth = (p[i]![2] + p[j]![2]) / 2;
-      const ch = depth > 0.3 ? '#' : depth > 0.24 ? '=' : '-';
-      line(cells, p[i]![0], p[i]![1], p[j]![0], p[j]![1], ch);
-    }
-    for (const v of p) { const x = Math.round(v[0]), y = Math.round(v[1]); if (x >= 0 && x < w && y >= 0 && y < h) cells[y]![x] = '@'; }
-    out.push(cells.map((r) => r.join('')));
-  }
-  return out;
-}
-
-/** A rotating wireframe globe: six meridians and three parallels, the lit hemisphere brighter. */
-export function globeFrames(w0: number, h0: number, n0: number): Frames {
-  const { w, h, n } = clampSize(w0, h0, n0);
-  // camera at 3 and a fuller scale: at 24×12 the sphere spans ~10 of the 12 rows, centred, like the torus and the cube
-  const scale = Math.min(w / 1.6, h * 1.35);
-  const out: string[][] = [];
-  for (let f = 0; f < n; f++) {
-    const spin = (f / n) * Math.PI * 2;
-    const cells = grid(w, h);
-    const z = Array.from({ length: h }, () => new Float64Array(w).fill(-1));
-    const plot = (v: V3): void => {
-      const r = rotate(v, 0.35, spin, 0);
-      const [x, y, ooz] = project(r, w, h, scale, 3);
-      const xp = Math.round(x), yp = Math.round(y);
-      if (xp < 0 || xp >= w || yp < 0 || yp >= h) return;
-      if (r[2] < -0.05) return; // back hemisphere hidden
-      if (ooz > z[yp]![xp]!) {
-        z[yp]![xp] = ooz;
-        const lit = (r[0] * -0.5 + r[1] * 0.4 + r[2] * 0.75);
-        cells[yp]![xp] = lit > 0.55 ? '@' : lit > 0.25 ? '*' : lit > 0 ? '=' : '-';
-      }
-    };
-    for (let m = 0; m < 6; m++) {
-      const lon = (m / 6) * Math.PI;
-      for (let t = -Math.PI / 2; t <= Math.PI / 2; t += 0.04) plot([Math.cos(t) * Math.cos(lon), Math.sin(t), Math.cos(t) * Math.sin(lon)]);
-    }
-    for (const lat of [-0.9, 0, 0.9]) {
-      const r = Math.cos(lat), y = Math.sin(lat);
-      for (let t = 0; t < Math.PI * 2; t += 0.03) plot([r * Math.cos(t), y, r * Math.sin(t)]);
-    }
-    out.push(cells.map((r) => r.join('')));
-  }
-  return out;
-}
-
-/** A travelling wave: two superposed sines, crests brighter, for the verify state. */
-export function waveFrames(w0: number, h0: number, n0: number): Frames {
-  const { w, h, n } = clampSize(w0, h0, n0);
-  const out: string[][] = [];
-  for (let f = 0; f < n; f++) {
-    const t = (f / n) * Math.PI * 2;
-    const cells = grid(w, h);
-    for (let x = 0; x < w; x++) {
-      const v = Math.sin(x / 3 + t) * 0.6 + Math.sin(x / 7 - t * 1.3) * 0.4; // -1..1
-      const y = Math.round((h - 1) / 2 - v * (h - 1) / 2.4);
-      if (y >= 0 && y < h) cells[y]![x] = v > 0.5 ? '@' : v > 0 ? '*' : v > -0.5 ? '=' : '-';
-      const y2 = Math.min(h - 1, y + 1);
-      if (y2 >= 0 && y2 !== y && cells[y2]![x] === ' ') cells[y2]![x] = '.';
-    }
-    out.push(cells.map((r) => r.join('')));
-  }
-  return out;
-}
-
-export type IndicatorKind = 'thinking' | 'running' | 'calling' | 'verifying';
-
-/** The renderer for each indicator state; a caller keys its frame cache on (kind, width, height). */
-export function indicatorFrames(kind: IndicatorKind, w: number, h: number, n: number): Frames {
-  switch (kind) {
-    case 'thinking': return torusFrames(w, h, n);
-    case 'running': return cubeFrames(w, h, n);
-    case 'calling': return globeFrames(w, h, n);
-    case 'verifying': return waveFrames(w, h, n);
-  }
+function mod(t: number, n: number): number {
+  const i = Number.isFinite(t) ? Math.floor(t) : 0;
+  return ((i % n) + n) % n;
 }

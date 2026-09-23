@@ -136,6 +136,13 @@ export interface StatusLineState {
   readonly ctx?: string | null;
   /** TUI-DESIGN-5 §4.4 (R5-4): the collapsed agents strip, same fixture-first rule as `ctx` — R5-4 replaces the read with `agentStripText(...)`. */
   readonly agents?: string | null;
+  /**
+   * AGENT-LOOP-DESIGN §A5 / peer review C: what a live agent run is doing now — `thinking` (a model turn), `reading` (a
+   * read-only batch), `editing` / `running` (the mutating call), `testing` (the harness's test run). It replaces the stage
+   * verb (the engine's stages are `propose` / `execute` for every one of those), named from t = 0 of the step. Absent or
+   * null in every other mode.
+   */
+  readonly agentWord?: string | null;
 }
 
 /** TUI-DESIGN-2 §4.8: the three phases between Enter and a reply. */
@@ -170,6 +177,14 @@ export interface StatusLineOptions {
    * the engine carried `status.context` on every status event. Absent (the flat tier, tests) → the row width is the terminal width.
    */
   terminalColumns?: number;
+  /**
+   * AGENT-LOOP-DESIGN §A3 / §A5: the mini indicator's frame for this tick at its two widths — the wide (3-cell) braille
+   * form and the narrow (1-cell) one. It REPLACES the spinner glyph in the left word; the row draws the wide form only
+   * while the row fits with it (the two extra cells are given up before anything else is dropped), so at 80 columns it
+   * costs nothing. Absent (a screen reader, the twins, tests) → the spinner glyph as before.
+   */
+  indicatorWide?: string;
+  indicatorNarrow?: string;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -369,12 +384,27 @@ function finishingWord(reason: StopReason): string {
 }
 
 /** TUI-DESIGN §7.4 / §24: the mode word or spinner + stage verb (no badges, no toast); glyph-folded under --ascii. */
-export function leftZoneWord(s: StatusLineState, o: StatusLineOptions = {}): string {
-  const word = leftWord(s, o);
+export function leftZoneWord(s: StatusLineState, o: StatusLineOptions = {}, narrow = false): string {
+  const word = leftWord(s, o, narrow);
   return o.ascii === true ? asciiFold(word) : word;
 }
 
-function leftWord(s: StatusLineState, o: StatusLineOptions): string {
+/**
+ * AGENT-LOOP-DESIGN §A3: the glyph in front of the left word — the mini indicator's frame (wide, or narrow when the row
+ * is short) when the caller supplies one, else the spinner glyph (a braille frame or the shade pulse; the static cell
+ * under reduced motion).
+ */
+function stateGlyph(o: StatusLineOptions, narrow: boolean): string {
+  const mini = narrow ? (o.indicatorNarrow ?? o.indicatorWide) : (o.indicatorWide ?? o.indicatorNarrow);
+  return mini !== undefined && mini !== '' ? mini : spinnerGlyph(o);
+}
+
+/** True when the options carry a wide indicator frame that a narrow one can replace (the row may give the two cells back). */
+function canNarrow(o: StatusLineOptions): boolean {
+  return o.indicatorWide !== undefined && o.indicatorNarrow !== undefined && o.indicatorWide !== o.indicatorNarrow;
+}
+
+function leftWord(s: StatusLineState, o: StatusLineOptions, narrow = false): string {
   if (s.overlay === 'wizard') return 'setup';
   if (s.overlay === 'palette') return 'palette';
   if (s.picker === true) return 'picker';
@@ -383,7 +413,7 @@ function leftWord(s: StatusLineState, o: StatusLineOptions): string {
   // TUI-DESIGN-2 §3.1 row 1 / §4.8: between Enter and the reply — `⠹ thinking` · `⠹ looking` · `⠹ replying` (`• thinking`
   // under reduced motion). The submission runs under `run: 'starting'` until the reply or `run:start` (§3.1 row 5), so the
   // chat phase wins over the bare `starting` word; a live run never carries a phase (the controller refuses `converse` then)
-  if (s.thinking !== undefined && s.thinking !== null && (s.run === 'none' || s.run === 'starting')) return `${spinnerGlyph(o)} ${THINKING_WORDS[s.thinking]}`;
+  if (s.thinking !== undefined && s.thinking !== null && (s.run === 'none' || s.run === 'starting')) return `${stateGlyph(o, narrow)} ${THINKING_WORDS[s.thinking]}`;
   // TUI-DESIGN-3 §5.2 P7: `starting` without a chat phase (the frame between Enter and the bubble, the one-shot argv path
   // before `run:start`) keeps the previous idle word — the row never reads `starting` beside a `Type to steer` placeholder
   if (s.run === 'none' || s.run === 'starting') {
@@ -402,12 +432,20 @@ function leftWord(s: StatusLineState, o: StatusLineOptions): string {
   if (s.overlay === 'review') return 'review';
   if (s.pendingReview !== null) return 'review pending…';
   if (s.status !== null && s.status.stopReason !== null) return finishingWord(s.status.stopReason);
+  // AGENT-LOOP-DESIGN §A5 / peer C: an agent run names what it is doing from t = 0 of the step, before any `status` event
+  if (s.agentWord !== undefined && s.agentWord !== null && s.agentWord !== '') {
+    if (s.stageStartedAt !== null && Number.isFinite(s.nowMs) && s.nowMs - s.stageStartedAt >= STILL_WAITING_MS) return `${stateGlyph(o, narrow)} ${s.agentWord} ${STILL_WAITING_SUFFIX}`;
+    return `${stateGlyph(o, narrow)} ${s.agentWord}`;
+  }
   const stage = s.status?.stage ?? 'idle';
   if (stage === 'idle') return 'starting';
   if (s.stageStartedAt !== null && Number.isFinite(s.nowMs) && s.nowMs - s.stageStartedAt >= STILL_WAITING_MS) return 'still waiting';
   const verb = stage === 'propose' && s.mode === 'jev-only' ? `propose ${SYNTH_MARKER}` : STEP_WORDS.includes(stage) ? stage : String(stage);
-  return `${spinnerGlyph(o)} ${verb}`;
+  return `${stateGlyph(o, narrow)} ${verb}`;
 }
+
+/** AGENT-LOOP-DESIGN §A5: an agent activity past `STILL_WAITING_MS` keeps its word and its animation, with this after it (a long model turn is not stuck). */
+export const STILL_WAITING_SUFFIX = '· still waiting';
 
 /** TUI-DESIGN §7.4 / §24 left-zone badges, in order: `!n` · `sandbox: none` · `no-net` (`⚠ secret?` sits at the end of the row: `secretBadge`). */
 export function badges(s: StatusLineState): string[] {
@@ -425,10 +463,10 @@ export function secretBadge(s: StatusLineState, ascii = false): string {
 }
 
 /** TUI-DESIGN §7.4 / §7.5: the whole left zone — the active toast, or the word followed by the badges (the flat-tier badge prefix is `statusZones`'s, so it can be dropped first). */
-export function leftZoneText(s: StatusLineState, o: StatusLineOptions = {}): string {
+export function leftZoneText(s: StatusLineState, o: StatusLineOptions = {}, narrow = false): string {
   const toast = activeToast(s.toasts, s.nowMs);
   if (toast !== null) return toastText(toast, o.ascii === true);
-  return [leftZoneWord(s, o), ...badges(s)].join(' ');
+  return [leftZoneWord(s, o, narrow), ...badges(s)].join(' ');
 }
 
 /** TUI-DESIGN-2 §1.5 / §4.8: the flat tier's `<badge> · ` prefix — only with `flatBadge`, a badge in the state and no toast on the zone; '' otherwise. */
@@ -640,6 +678,8 @@ export function tokensText(s: StatusLineState, snap: SpendSnapshot | null): stri
   const gen = snap.generator.inputTokens + snap.generator.outputTokens;
   const jev = snap.jev.inputTokens + snap.jev.outputTokens;
   if (s.mode === 'jev-only') return `jev ${kShort(jev)}`;
+  // AGENT-LOOP-DESIGN §14.3 item 2: no `jev …` token segment in agent mode (a normal agent run makes no Jev request)
+  if (s.mode === 'agent') return `gen ${kShort(gen)}`;
   return `gen ${kShort(gen)} jev ${kShort(jev)}`;
 }
 
@@ -690,7 +730,8 @@ export function rightZoneSegments(s: StatusLineState, columns: number, o: Status
     const g = gitZoneText(s.git, ascii);
     if (g.length > 0) segments.push(seg('git', g));
   }
-  if (columns >= SPARKLINE_MIN_COLUMNS && s.jevLatencies !== undefined && s.jevLatencies.length > 0) segments.push(seg('spark', sparklineText(s.jevLatencies, ascii)));
+  // AGENT-LOOP-DESIGN §14.3 item 2: the Jev sparkline is not drawn in agent mode
+  if (columns >= SPARKLINE_MIN_COLUMNS && s.mode !== 'agent' && s.jevLatencies !== undefined && s.jevLatencies.length > 0) segments.push(seg('spark', sparklineText(s.jevLatencies, ascii)));
   const help = shortHelp(s, ascii);
   if (help.length > 0) segments.push(seg('help', help));
   const secret = secretBadge(s, ascii);
@@ -731,7 +772,7 @@ function clampColumns(columns: number): number {
 export function statusZones(s: StatusLineState, columns: number, o: StatusLineOptions = {}): StatusZones {
   const cols = clampColumns(columns);
   const ascii = o.ascii === true;
-  const word = leftZoneText(s, o);
+  let word = leftZoneText(s, o);
   const prefix = flatBadgePrefix(s, o);
   let left = `${prefix}${word}`;
   let leftWidth = stringWidth(left);
@@ -749,6 +790,12 @@ export function statusZones(s: StatusLineState, columns: number, o: StatusLineOp
     segments.splice(i, 1);
     return true;
   };
+  // AGENT-LOOP-DESIGN §A5: the wide mini indicator gives its two extra cells back before anything else is dropped
+  if (canNarrow(o) && !fits()) {
+    word = leftZoneText(s, o, true);
+    left = `${prefix}${word}`;
+    leftWidth = stringWidth(left);
+  }
   // TUI-DESIGN-2 §1.5: the flat-tier badge yields before `help`
   if (prefix !== '' && !fits()) {
     left = word;
@@ -905,7 +952,9 @@ export function statusSpans(s: StatusLineState, columns: number, o: StatusLineOp
       const role: ColorRole = toastPhase(toast, s.nowMs) === 'fading' ? 'dim' : toastRole(toast.level);
       if (word.length > 0) spans.push({ from: wordAt, to: wordAt + word.length, role });
     } else {
-      const spinner = o.reducedMotion === true ? g.spinnerStatic : g.spinner.find((f) => word.startsWith(`${f} `)) ?? null;
+      // AGENT-LOOP-DESIGN §A3: the mini indicator sits where the spinner glyph sat and takes the same colour
+      const mini = [o.indicatorWide, o.indicatorNarrow].find((f) => f !== undefined && f !== '' && word.startsWith(`${f} `)) ?? null;
+      const spinner = mini ?? (o.reducedMotion === true ? g.spinnerStatic : (g.spinner.find((f) => word.startsWith(`${f} `)) ?? null));
       if (spinner !== null && word.startsWith(`${spinner} `)) spans.push({ from: wordAt, to: wordAt + spinner.length, role: 'accent' });
       else if (s.run === 'none' && s.done !== null && s.overlay === 'none' && s.picker !== true) {
         const idle = leftZoneWord(s, o);
