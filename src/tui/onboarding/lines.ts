@@ -10,7 +10,7 @@
 import { isFieldStep, reuseJevOffered, reuseOffered, skipOffered, targetMode, type FoundKey, type FoundSource, type ImportOption, type ImportProbeCounts, type OnboardingState, type WizardOption, type WizardProvider, type WizardStep } from './reducer.js';
 import type { EngineMode, JevProvider, SandboxLevel, SandboxProfile } from '../../core/types.js';
 import type { TrustInputs } from '../../config/trust.js';
-import { DEFAULT_MODE, MODE_BADGE_WORD, SESSION_CAP_MULTIPLIER } from '../../config/defaults.js';
+import { DEFAULT_MODE, LEGACY_MODES, MODE_BADGE_WORD, SESSION_CAP_MULTIPLIER } from '../../config/defaults.js';
 import { defaultRunSpendCapUsd } from '../../config/ui.js';
 import { ELLIPSIS, stringWidth, truncateCells } from '../composer/width.js';
 import { fitRung } from '../fit.js';
@@ -192,7 +192,8 @@ export function optionHint(n: WizardOption, runCapUsd: number = defaultRunSpendC
   const dflt = defaultOption(mode) === n ? ' (default)' : '';
   // AGENT-LOOP-DESIGN §14.5: in agent mode one key runs the code model (Jev optional), and option 3 is the jev-only mode
   if (mode === 'agent' && n === 1) return `1: one key runs the code model; Jev is optional${dflt} · Enter confirms`;
-  if (mode === 'agent' && n === 3) return `3: jev-only — no code model; code proposes, tests verify · caps ${usd2(runCapUsd)} / ${usd2(sessionCapUsd)}`;
+  // `no LLM` (not `no code model`): the hint is a console row and must fit consoleInnerWidth(80) = 76 cells with the default caps (70)
+  if (mode === 'agent' && n === 3) return `3: jev-only — no LLM; code proposes, tests verify · caps ${usd2(runCapUsd)} / ${usd2(sessionCapUsd)}`;
   switch (n) {
     case 1:
       return `1: one key runs Jev and the code model${dflt} · Enter confirms`;
@@ -620,8 +621,11 @@ export function wizardLines(state: OnboardingState, view: WizardView): string[] 
       // AGENT-LOOP-DESIGN §14.5: an agent-mode wizard's own wording; every other target keeps today's rows (and today's default marker)
       const agent = targetMode(state) === 'agent';
       if (sr) return [...(agent ? SR_OPTIONS_ROWS_AGENT : SR_OPTIONS_ROWS)].map(clip);
-      const hint = state.hint ?? (state.highlight === null ? WIZARD_OPTIONS_HINT : agent ? optionHint(state.highlight, undefined, undefined, 'agent') : optionHint(state.highlight));
-      return [optionsTitle(state.highlight), agent ? optionsRow(state.highlight, c, ascii, 'agent') : optionsRow(state.highlight, c, ascii), hint].map(clip);
+      // a legacy target names the legacy form explicitly (its wording and the marker on option 1): since the default flip the
+      // parameter default (DEFAULT_MODE) is agent, which would give a legacy-mode wizard the agent wording
+      const form: EngineMode = agent ? 'agent' : LEGACY_MODES[0];
+      const hint = state.hint ?? (state.highlight === null ? WIZARD_OPTIONS_HINT : optionHint(state.highlight, undefined, undefined, form));
+      return [optionsTitle(state.highlight), optionsRow(state.highlight, c, ascii, form), hint].map(clip);
     }
     case 'jevProvider': {
       // TUI-DESIGN-2 §1.4 / §12: `1 typesafe … 2 openrouter …`; Enter accepts a preselection. TUI-DESIGN-3 §4.4 F19: `/login` re-entry drops "No Jev key found."

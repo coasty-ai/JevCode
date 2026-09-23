@@ -54,7 +54,9 @@ describe('onboarding in agent mode (§14.5): one key runs the code model; option
     const rows = wizardLines(state({ step: 'options', mode: 'agent' }), { rows: 24, columns: 80 });
     expect(rows[1]).toContain('jev-only');
     expect(stringWidth(optionHint(1, 10, 50, 'agent'))).toBeLessThanOrEqual(76);
-    expect(optionHint(3, 1, 5, 'agent')).toBe('3: jev-only — no code model; code proposes, tests verify · caps $1.00 / $5.00');
+    expect(optionHint(3, 1, 5, 'agent')).toBe('3: jev-only — no LLM; code proposes, tests verify · caps $1.00 / $5.00');
+    // every agent-mode option hint is a console row: it fits consoleInnerWidth(80) = 76 cells (the jev-only hint was 77 before the flip)
+    for (const n of [1, 2, 3, 4] as const) expect(stringWidth(optionHint(n, 1, 5, 'agent')), `option ${n}`).toBeLessThanOrEqual(76);
   });
 
   it('`/mode agent` with no generator key names agent; the fix block and the one-key prompt name the code model with Jev optional', () => {
