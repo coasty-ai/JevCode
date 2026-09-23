@@ -23,7 +23,7 @@ endpoint and the code model through OpenRouter's completions endpoint.
 | `JEV_API_KEY` | Jev through OpenRouter | for when the Jev key is not the same OpenRouter key |
 | `ANTHROPIC_API_KEY` | the code model | with `--provider anthropic` |
 | `OPENAI_API_KEY` | the code model | with `--provider openai` |
-| `GEMINI_API_KEY` | the code model | `GOOGLE_API_KEY` is accepted as a second spelling |
+| `GEMINI_API_KEY` | the code model | `GOOGLE_API_KEY` is accepted as a second spelling. A key from Google AI Studio works as is; a Google Cloud API key needs the **Generative Language API** enabled in its project first, otherwise every call is refused with `403 PERMISSION_DENIED SERVICE_DISABLED` and JevCode stops before spending anything |
 | `XAI_API_KEY` | the code model | |
 | `FIREWORKS_API_KEY` | the code model | |
 | `META_API_KEY` | the code model | `MODEL_API_KEY` is accepted as a second spelling |
