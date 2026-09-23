@@ -9,10 +9,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EngineEvent, EngineOptions, SerializedError } from '../../../src/core/types.js';
 import { ABSENT_DECIDER_MODEL } from '../../../src/jev/absent.js';
-import { AGENT_CHAT_CARRY_CHARS, AGENT_CHAT_CARRY_TURNS, DO_IT_OFFER, ON_IT_LINE, REPLY_STOPPED_TOAST, chatCarry, runCapClampedNote } from '../../../src/cli/session.js';
+import { AGENT_CHAT_CARRY_CHARS, AGENT_CHAT_CARRY_TURNS, DO_IT_OFFER, ON_IT_LINE, REPLY_STOPPED_TOAST, chatCarry, isTransientProviderError, runCapClampedNote, sessionEndedText } from '../../../src/cli/session.js';
 import { AGENT_NO_DECISIONS_TEXT } from '../../../src/chat/facts.js';
 import { MOCK_CHAT_REPLY } from '../../../src/provider/mock.js';
 import { readIndex } from '../../../src/session/index.js';
+import { newestWorkRun } from '../../../src/session/picker-lines.js';
 import { harnessDecider, loadedRun, makeController, scriptedRunId, tick, waitFor, type Harness, type RunScript } from './helpers.js';
 
 /** the `<JEVCODE_EXTRA_ENV_FILE>` fallback must never find this machine's sibling checkout in a `mock: false` test */
@@ -335,5 +336,173 @@ describe('§A5: a reply never hides the task before it from /undo, /rewind and /
     expect(ctx.step).toBe(4);
     expect(ctx.changedSteps).toEqual([2]);
     expect(h.controller.view.runs.map((r) => r.stopReason)).toEqual(['complete', 'answered']);
+  });
+});
+
+describe('§A5: a reply is never resumed — -c, /continue, the picker and --resume <title> adopt its session', () => {
+  const notes = (h: Harness): string[] => h.renderer.notes.map((n) => n.text);
+
+  it('fix → thanks → /new → /continue: no resume; the next message carries the thanks run as its parent', async () => {
+    const h = await build({ ...AGENT, script: agentScript });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('fix the failing test');
+    await h.submit('thanks');
+    const [, thanks] = h.factory.engines;
+    const sid = h.factory.engines[0]!.runId;
+    await tick(20);
+    await h.command('/new');
+    await h.command('/continue');
+    expect(h.factory.calls.filter((c) => c.resume !== undefined)).toEqual([]);
+    expect(notes(h)).toContain(`session ${sid} continues: run ${thanks!.runId} was a reply, so type a follow-up`);
+    expect(epilogues(h)).toEqual(['stopped — complete (exit 0)']);
+    await h.submit('and the other test');
+    expect(h.factory.calls).toHaveLength(3);
+    expect(h.factory.calls[2]!.resume).toBeUndefined();
+    expect(h.factory.calls[2]!.conversation?.parent?.runId).toBe(thanks!.runId);
+    expect(h.factory.calls[2]!.session?.sessionId).toBe(sid);
+  });
+
+  it('-c at startup on a session whose newest run is a reply adopts it (no resume)', async () => {
+    const first = await build({ ...AGENT, script: agentScript });
+    void first.controller.run();
+    await first.ready();
+    await first.submit('fix the failing test');
+    await first.submit('thanks');
+    const sid = first.factory.engines[0]!.runId;
+    const thanks = first.factory.engines[1]!.runId;
+    await tick(20);
+    const h = await build({ flags: { mode: 'agent', continue: true }, script: agentScript, home: first.home, workspace: first.workspace });
+    void h.controller.run();
+    await h.ready();
+    await waitFor(() => notes(h).some((t) => t.startsWith(`session ${sid} continues`)), 4000, 'the adoption note');
+    expect(h.factory.calls).toEqual([]);
+    expect(notes(h)).toContain(`session ${sid} continues: run ${thanks} was a reply, so type a follow-up`);
+    await h.submit('now the docs');
+    expect(h.factory.calls).toHaveLength(1);
+    expect(h.factory.calls[0]!.resume).toBeUndefined();
+    expect(h.factory.calls[0]!.conversation?.parent?.runId).toBe(thanks);
+    expect(h.factory.calls[0]!.session?.sessionId).toBe(sid);
+  });
+
+  it('--resume <title>, or the reply run\'s id, on a session whose newest run is a reply adopts it', async () => {
+    const first = await build({ ...AGENT, script: agentScript });
+    void first.controller.run();
+    await first.ready();
+    await first.submit('fix the failing test');
+    await first.submit('thanks');
+    const sid = first.factory.engines[0]!.runId;
+    const thanks = first.factory.engines[1]!.runId;
+    await tick(20);
+    const h = await build({ flags: { mode: 'agent', resume: 'fix the failing test' }, script: agentScript, home: first.home, workspace: first.workspace });
+    void h.controller.run();
+    await h.ready();
+    await waitFor(() => notes(h).some((t) => t.startsWith(`session ${sid} continues`)), 4000, 'the adoption note');
+    expect(h.factory.calls).toEqual([]);
+    expect(notes(h)).toContain(`session ${sid} continues: run ${thanks} was a reply, so type a follow-up`);
+    // --resume <the reply's run id> adopts too
+    const byId = await build({ flags: { mode: 'agent', resume: thanks }, script: agentScript, home: first.home, workspace: first.workspace });
+    void byId.controller.run();
+    await byId.ready();
+    await waitFor(() => notes(byId).some((t) => t.startsWith(`session ${sid} continues`)), 4000, 'the adoption note');
+    expect(byId.factory.calls).toEqual([]);
+  });
+
+  it('--force still resumes the reply run (the escape hatch)', async () => {
+    const h = await build({ ...AGENT, script: agentScript });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('thanks');
+    const id = h.factory.engines[0]!.runId;
+    await h.command(`/resume ${id} --force`);
+    expect(h.factory.calls.at(-1)?.resume).toEqual({ runId: id, force: true });
+  });
+});
+
+describe('§A5: a tool-less turn that failed or was stopped is a reply too', () => {
+  it('hi → 503 → the retry answers: the session is untitled and the picker stop is `answered`', async () => {
+    const h = await build({ ...AGENT, script: (_o, n) => (n === 1 ? { stop: 'error', error: PROVIDER_503, steps: 0 } : { stop: 'answered', steps: 1 }) });
+    void h.controller.run();
+    await h.ready();
+    await h.host.submit('hi', submitOpts(h));
+    await waitFor(() => h.factory.calls.length === 2 && h.host.phase() === 'none', 4000, 'the retry');
+    await tick(0);
+    expect(h.controller.view.runs.map((r) => [r.stopReason, r.reply])).toEqual([['error', true], ['answered', true]]);
+    const s = (await readIndex(h.indexPath)).sessions[0]!;
+    expect(s.title).toBe('');
+    expect(newestWorkRun(s)?.stopReason).toBe('answered');
+  });
+
+  it('hi → Esc: the session is untitled', async () => {
+    // an aborted reply commits no step
+    const h = await build({ ...AGENT, script: () => ({ hold: true, stop: 'answered', steps: 0 }) });
+    void h.controller.run();
+    await h.ready();
+    const live = h.factory.nextLive();
+    await h.host.submit('hi', submitOpts(h));
+    await live;
+    h.host.pause();
+    await h.host.awaitRunEnd();
+    await tick(0);
+    expect(h.controller.view.runs[0]).toMatchObject({ stopReason: 'human_abort', reply: true });
+    expect((await readIndex(h.indexPath)).sessions[0]?.title).toBe('');
+  });
+
+  it('fix → thanks (503 → the retry answers): /undo and the step context still target the fix run', async () => {
+    const outcome: EngineEvent = { type: 'outcome', step: 2, outcome: { status: 'executed', summary: 'ok', changedFiles: ['a.py'] } };
+    let thanks = 0;
+    const h = await build({ ...AGENT, script: (o) => (o.task === 'thanks' ? (++thanks === 1 ? { stop: 'error', error: PROVIDER_503, steps: 0 } : { stop: 'answered', steps: 1 }) : { events: [toolCall('c1'), outcome], stop: 'complete', steps: 4 }) });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('fix the failing test');
+    await h.host.submit('thanks', submitOpts(h));
+    await waitFor(() => h.factory.calls.length === 3 && h.host.phase() === 'none', 4000, 'the retry');
+    await tick(0);
+    expect(h.controller.view.runs.map((r) => r.stopReason)).toEqual(['complete', 'error', 'answered']);
+    const ctx = h.controller.host.dispatchContext();
+    expect(ctx.step).toBe(4);
+    expect(ctx.changedSteps).toEqual([2]);
+    await h.command('/undo');
+    expect(h.renderer.notes.map((n) => n.text)).not.toContain('nothing to undo — the last run changed no files');
+  });
+});
+
+describe('§A5: /new and /status count replies as replies', () => {
+  it('hi, fix, thanks → `1 run, 2 replies`', async () => {
+    const h = await build({ ...AGENT, script: agentScript });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('hi');
+    await h.submit('fix the failing test');
+    await h.submit('thanks');
+    const sid = h.factory.engines[0]!.runId;
+    await h.command('/status');
+    expect(h.renderer.notes.at(-1)?.detail).toContain(`session    ${sid} · 1 run · 2 replies · $0.022`);
+    await h.command('/new');
+    expect(h.renderer.notes.at(-1)?.text).toBe(sessionEndedText(sid, 1, 0.022, 2));
+    expect(sessionEndedText(sid, 1, 0.022, 2)).toBe(`session ${sid} ended: 1 run, 2 replies, $0.02 total`);
+    expect(sessionEndedText(sid, 2, 1.5)).toBe(`session ${sid} ended: 2 runs, $1.50 total`);
+  });
+});
+
+describe('isTransientProviderError: one automatic retry for a rate limit, a timeout, a 5xx or a broken stream', () => {
+  const e = (message: string, extra: Partial<SerializedError> = {}): SerializedError => ({ name: 'ProviderHttpError', code: 'provider_http', message, exitCode: 5, ...extra });
+  it('reads the error\'s own retryable / status first, then the transport wording', () => {
+    expect(isTransientProviderError(e('openrouter HTTP 503: upstream overloaded'))).toBe(true);
+    expect(isTransientProviderError(e('openrouter HTTP 401: invalid key'))).toBe(false);
+    expect(isTransientProviderError(e('openrouter stream error 502'))).toBe(true);
+    // Anthropic's mid-stream wording: `anthropic stream error <type> (<status>)`
+    expect(isTransientProviderError(e('anthropic stream error overloaded_error (529): Overloaded'))).toBe(true);
+    expect(isTransientProviderError(e('anthropic stream error invalid_request_error (400): bad'))).toBe(false);
+    // the structured fields win over the text
+    expect(isTransientProviderError(e('something odd', { retryable: true }))).toBe(true);
+    expect(isTransientProviderError(e('openrouter HTTP 503', { retryable: false }))).toBe(false);
+    expect(isTransientProviderError(e('something odd', { status: 429 }))).toBe(true);
+    expect(isTransientProviderError(e('something odd', { status: 404 }))).toBe(false);
+    expect(isTransientProviderError(e('network error: ECONNRESET'))).toBe(true);
+    // never a key, credit or request problem, and never a non-provider error
+    expect(isTransientProviderError(e('openrouter HTTP 402: insufficient credit', { retryable: true }))).toBe(false);
+    expect(isTransientProviderError({ code: 'config', message: 'HTTP 503' })).toBe(false);
+    expect(isTransientProviderError(null)).toBe(false);
   });
 });

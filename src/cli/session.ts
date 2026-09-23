@@ -140,6 +140,7 @@ import { loadForResume as realLoadForResume } from '../checkpoint/resume.js';
 import { CHECKPOINT_FILES, createCheckpointStore, isRunMeta } from '../checkpoint/store.js';
 import { readPostImages, readPreImage } from '../checkpoint/images.js';
 import { INDEX_FILE, appendIndexLine as realAppendIndexLine, readIndex as realReadIndex, sessionFieldsOf, text60, type ChatSpendRow, type IndexLine } from '../session/index.js';
+import { isReplyRunRow } from '../session/reply.js';
 import { buildSeed, carriedSteers, seedSource, type SeedParent } from '../session/seed.js';
 import { defaultExportPath, exportSession as realExportSession, type ExportRun } from '../session/export.js';
 import { COORDINATION_IDLE_CLAUSE, COORDINATION_NOT_OPEN, COORDINATION_OFF_CLAUSE, coordinationAvailability, coordinationEnabledFrom, coordinationOffText, settingReader, type CoordinationOffReason } from '../session/coordination.js';
@@ -229,9 +230,13 @@ export const LOGIN_SAVED_TOAST = 'saved — applies to the next run (this run ke
 export function pausedItemText(step: number): string {
   return `paused after step ${step} — /resume continues, or type a follow-up`;
 }
-/** TUI-DESIGN §24: `session <id> ended: N runs, $x total` (`/new`). */
-export function sessionEndedText(sessionId: string, runs: number, totalUsd: number): string {
-  return `session ${sessionId} ended: ${runs} run${runs === 1 ? '' : 's'}, ${usd2(totalUsd)} total`;
+/** TUI-DESIGN §24: `session <id> ended: N runs, $x total` (`/new`); AGENT-LOOP-DESIGN §A5: `, M replies` when agent turns were replies. */
+export function sessionEndedText(sessionId: string, runs: number, totalUsd: number, replies = 0): string {
+  return `session ${sessionId} ended: ${runs} run${runs === 1 ? '' : 's'}${replies > 0 ? `, ${repliesText(replies)}` : ''}, ${usd2(totalUsd)} total`;
+}
+/** AGENT-LOOP-DESIGN §A5: `1 reply` / `N replies` */
+export function repliesText(n: number): string {
+  return `${n} repl${n === 1 ? 'y' : 'ies'}`;
 }
 /** decisions kept for `/decisions`, `/why` and `/calibration` of the current run */
 export const DECISIONS_KEPT_FOR_COMMANDS = 400;
@@ -395,18 +400,20 @@ export function runCapClampedNote(clampedUsd: number, sessionLeftUsd: number): s
 }
 /**
  * §A1 "works perfectly": a generator failure worth ONE automatic retry of a reply — a rate limit, a timeout, a 5xx or a broken
- * stream. The serialized error carries no status, so this reads the transport's own wording (`<provider> HTTP <status>`, `stream
- * error <status>`, `network error`, `stream failure`, `idle_timeout`); a key, credit, request or model problem is never retried.
+ * stream. The error's own `retryable` / `status` decide when present (the type carries them; `serializeError` drops them today);
+ * otherwise this reads the transport's wording (`<provider> HTTP <status>`, `stream error <status>`, Anthropic's mid-stream
+ * `anthropic stream error <type> (<status>)`, `network error`, `stream failure`, `idle_timeout`). A key, credit, request or model
+ * problem is never retried.
  */
-export function isTransientProviderError(e: Pick<SerializedError, 'code' | 'message'> | null | undefined): boolean {
+export function isTransientProviderError(e: Pick<SerializedError, 'code' | 'message' | 'status' | 'retryable'> | null | undefined): boolean {
   if (e === null || e === undefined || e.code !== 'provider_http') return false;
   const m = e.message;
   if (/spend|credit|billing|quota|insufficient|invalid GenerateRequest|no scripted turn/i.test(m)) return false;
-  const status = /\bHTTP (\d{3})\b/.exec(m) ?? /\bstream error (\d{3})\b/.exec(m);
-  if (status !== null) {
-    const s = Number(status[1]);
-    return s === 408 || s === 429 || s >= 500;
-  }
+  if (e.retryable !== undefined) return e.retryable;
+  const transientStatus = (s: number): boolean => s === 408 || s === 429 || s >= 500;
+  if (e.status !== undefined) return transientStatus(e.status);
+  const status = /\bHTTP (\d{3})\b/.exec(m) ?? /\bstream error (\d{3})\b/.exec(m) ?? /\bstream error \w+ \((\d{3})\)/.exec(m);
+  if (status !== null) return transientStatus(Number(status[1]));
   return /network error|stream failure|stream ended|idle_timeout|without a body|malformed sse/i.test(m);
 }
 /**
@@ -826,6 +833,12 @@ export interface RunRecord {
   degraded: boolean;
   /** the run's engine mode (AGENT-LOOP-DESIGN §7.6: the next agent run's `ConversationCarry.parent.mode`); absent on records built elsewhere */
   mode?: EngineMode;
+  /**
+   * AGENT-LOOP-DESIGN §A5: set when an agent chat turn ended with no tool call — `answered`, or failed / stopped before its first tool
+   * call (the first attempt of the automatic retry, a reply stopped with Esc / Ctrl-C). A reply never hides the task before it and is
+   * counted as a reply, not a run. Absent on every legacy-mode run.
+   */
+  reply?: true;
 }
 
 export interface SessionView {
@@ -2335,7 +2348,17 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
      * AGENT-LOOP-DESIGN §A1: this run is the next turn of the session's agent conversation (a chat message in agent mode). `attempt`
      * is 1 for the one automatic retry after a transient provider failure, which re-sends the failed attempt's own `carry`.
      */
-    agent?: { attempt: 0 | 1; carry?: ConversationCarry };
+    agent?: { attempt: 0 | 1; carry?: ConversationCarry; seedExtras?: SeedExtras };
+  }
+
+  /**
+   * what `startRun` consumes into a run's seed and then clears — the undo notes and log, and the rewind snapshot, since the previous
+   * run. An agent turn keeps its attempt-0 copy so the automatic retry seeds with them too (their "undone since" is not lost).
+   */
+  interface SeedExtras {
+    undoNotes: string[];
+    undoLog: UndoLogEntry[];
+    rewindSeed: { step: number; planAfter: PlanSnapshot | null } | null;
   }
 
   /** the agent turn a run carries through to its run:end (the automatic retry re-sends it) */
@@ -2345,6 +2368,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     secretsAcked: number;
     attempt: 0 | 1;
     carry: ConversationCarry;
+    seedExtras: SeedExtras;
   }
 
   /**
@@ -2524,6 +2548,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     trace('startRun: seeding');
     // §7.6: the conversation this turn continues (the retry re-sends its failed attempt's own carry)
     const carry: ConversationCarry | null = agentTurn !== null ? (agentTurn.carry ?? conversationCarry()) : null;
+    // the retry seeds with what its failed attempt consumed (anything undone since is kept beside it)
+    const extras = agentTurn?.seedExtras;
+    if (extras !== undefined) {
+      undoNotes = [...extras.undoNotes, ...undoNotes];
+      undoLog = [...extras.undoLog, ...undoLog];
+      rewindSeed = rewindSeed ?? extras.rewindSeed;
+    }
+    const seedExtras: SeedExtras = { undoNotes, undoLog, rewindSeed };
     const seeded = carry !== null ? await agentSeed(carry.parent, so.pinnedFiles) : await seedFor(so.pinnedFiles);
     let eng: Engine;
     const started = nowIso();
@@ -2614,7 +2646,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     clearPendingLimits();
     // §4.9 / §15 item 16: `submit()` resolves once the run started (the composer's `submitting` guard covers the start,
     // not the run); the run itself is driven by runEngine, which never rejects
-    const turnFacts: AgentTurnFacts | undefined = agentTurn !== null && carry !== null ? { text, pinnedFiles: so.pinnedFiles, secretsAcked: so.secretsAcked, attempt: agentTurn.attempt, carry } : undefined;
+    const turnFacts: AgentTurnFacts | undefined = agentTurn !== null && carry !== null ? { text, pinnedFiles: so.pinnedFiles, secretsAcked: so.secretsAcked, attempt: agentTurn.attempt, carry, seedExtras } : undefined;
     void runEngine(eng, { runId: eng.runId, runDir: join(cfg.runsDir, eng.runId), startedAt: started, task: text, resumed: false, parentRunId: seeded.parentRunId, mode, ...(turnFacts !== undefined ? { agentTurn: turnFacts } : {}) });
   }
 
@@ -2992,6 +3024,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     record.costUsd = { generator: result.usage.generator.costUsd, jev: result.usage.jev.costUsd };
     record.resumable = end?.resumable ?? existsSync(join(f.runDir, 'state.json'));
     record.degraded = degraded;
+    // §A5: an agent chat turn that made no tool call was a reply, however it ended (answered, failed, stopped)
+    if (f.agentTurn !== undefined && noToolCall) record.reply = true;
     engine = null;
     phase = 'none';
     current = null;
@@ -3030,7 +3064,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (cfg && (pending.mode ?? baseMode) === 'agent') parentPrefetch = { runId: f.runId, p: loadRunFn(cfg.runsDir, f.runId, cfg.redact).catch(() => null) };
     if (after === 'retry' && f.agentTurn !== undefined) {
       const t = f.agentTurn;
-      void startRun(t.text, { kind: 'follow-up', pinnedFiles: t.pinnedFiles, secretsAcked: t.secretsAcked, agent: { attempt: 1, carry: t.carry } });
+      void startRun(t.text, { kind: 'follow-up', pinnedFiles: t.pinnedFiles, secretsAcked: t.secretsAcked, agent: { attempt: 1, carry: t.carry, seedExtras: t.seedExtras } });
     }
   }
 
@@ -3242,18 +3276,22 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     );
   }
 
-  /** `--resume <id|title>` / `/resume <x>`: run id → resume; title → the session's newest run (§8.4) */
+  /**
+   * `--resume <id|title>` / `/resume <x>`: run id → resume; title → the session's newest run (§8.4). AGENT-LOOP-DESIGN §A5: a run
+   * that was a reply is not resumed — its session is adopted (`resumeOrFollowUp`); legacy-mode runs never are replies.
+   */
   async function resumeTarget(value: string, force: boolean): Promise<void> {
+    const resumeOrAdopt = (runId: string): Promise<void> => (isReplyRunId(runId) ? resumeOrFollowUp(runId, force) : resumeRun(runId, force));
     const c = classifyResumeValue(value);
     if (c.kind === 'run') {
-      await resumeRun(c.runId, force);
+      await resumeOrAdopt(c.runId);
       return;
     }
     const r = resolveResumeTarget(sessionRows(), c.title);
-    if (r.kind === 'run') await resumeRun(r.runId, force);
+    if (r.kind === 'run') await resumeOrAdopt(r.runId);
     else if (r.kind === 'session') {
       const id = newestRunId(r.session);
-      if (id) await resumeRun(id, force);
+      if (id) await resumeOrAdopt(id);
       else uiError(`/resume — session "${c.title}" has no run — pick another with /resume, or type a task`);
     } else if (r.kind === 'ambiguous') throw new ConfigError(ambiguousResumeMessage(value, r.candidates), { setting: 'resume' });
     else throw new UsageError(`--resume: no run or session matches "${value}"`);
@@ -3298,13 +3336,23 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   function lastFinishedRun(): RunRecord | null {
     return runs.filter((r) => r.endedAt !== null).at(-1) ?? null;
   }
+  /** AGENT-LOOP-DESIGN §A5: a run that was a reply — it stopped `answered`, or it was an agent chat turn that made no tool call */
+  function isReplyRecord(r: RunRecord): boolean {
+    return r.reply === true || r.stopReason === 'answered';
+  }
   /**
    * AGENT-LOOP-DESIGN §A5: the run `/undo`, `/rewind`, `/diff <step>` and their step completion act on — the newest finished run that
-   * was not a reply (a tool-less agent turn stops `answered` and changed nothing), so a `thanks` after a task never hides the task's
-   * steps; the newest finished run when every run was a reply. Legacy modes never stop `answered`: exactly `lastFinishedRun()`.
+   * was not a reply (a tool-less agent turn — answered, failed before its first tool call, or stopped — changed nothing), so a
+   * `thanks` after a task never hides the task's steps; the newest finished run when every run was a reply. Legacy-mode runs are
+   * never replies: exactly `lastFinishedRun()`.
    */
   function lastWorkRun(): RunRecord | null {
-    return runs.filter((r) => r.endedAt !== null && r.stopReason !== 'answered').at(-1) ?? lastFinishedRun();
+    return runs.filter((r) => r.endedAt !== null && !isReplyRecord(r)).at(-1) ?? lastFinishedRun();
+  }
+  /** AGENT-LOOP-DESIGN §A5: `N runs`, then `· M replies` when agent turns were replies (legacy: exactly `N runs`) */
+  function runTally(): { runs: number; replies: number } {
+    const replies = runs.filter(isReplyRecord).length;
+    return { runs: runs.length - replies, replies };
   }
 
   async function undoCommand(step: number | null): Promise<void> {
@@ -3690,10 +3738,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const exit = run?.exitCode !== null && run?.exitCode !== undefined ? ` (exit ${run.exitCode})` : '';
     // F-B1: `· no git repository` reads as a sentence where `· git none` read as a branch called `none`
     const gitSegment = g !== null && !g.repo ? 'no git repository' : `git ${gitText}`;
+    // AGENT-LOOP-DESIGN §A5: replies are counted as replies (`· 1 run · 2 replies`); legacy has none, so the row is unchanged
+    const tally = runTally();
     block('status', [
       // §3.1.5: `run` and `session` carry IDENTIFIERS — they are never elided, the row wraps instead
       { kind: 'kv', key: 'run', value: `${run?.runId ?? '—'}${stop === null ? '' : ` · ${stop}${exit}`}`, id: true },
-      { kind: 'kv', key: 'session', value: `${sessionId ?? '—'}${title !== null ? ` "${title}"` : ''} · ${runs.length} run${runs.length === 1 ? '' : 's'} · ${usd3(sessionTotal())}`, id: true },
+      { kind: 'kv', key: 'session', value: `${sessionId ?? '—'}${title !== null ? ` "${title}"` : ''} · ${tally.runs} run${tally.runs === 1 ? '' : 's'}${tally.replies > 0 ? ` · ${repliesText(tally.replies)}` : ''} · ${usd3(sessionTotal())}`, id: true },
       { kind: 'kv', key: 'step', value: `${currentStep()} of ${lastStatus?.maxSteps ?? config?.limits().maxSteps ?? '—'} · ${stage}` },
       { kind: 'kv', key: 'workspace', value: `${shortPath(workspaceRoot, { root: workspaceRoot, home, width: Math.max(1, bodyWidth() - 11), measure: cellWidth })} · ${gitSegment}` },
       { kind: 'kv', key: 'sandbox', value: `${config ? detectSandboxLevel(config.sandbox) : '—'} · lock ${live() ? 'held' : 'released'}` },
@@ -3799,12 +3849,26 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (code === EXIT_CODES.ok) await reresolve();
   }
 
+  /**
+   * AGENT-LOOP-DESIGN §A5: whether a run was a reply — a record of this session (`isReplyRecord`) or, for a run of another
+   * session, its folded index row (`isReplyRunRow`). Legacy-mode runs never are.
+   */
+  function isReplyRunId(runId: string): boolean {
+    const known = runs.find((r) => r.runId === runId);
+    if (known !== undefined) return isReplyRecord(known);
+    for (const s of index) for (const r of s.runs) if (r.runId === runId) return isReplyRunRow(r);
+    return false;
+  }
+
   async function resumeOrFollowUp(runId: string, force: boolean): Promise<void> {
     const row = index.find((s) => s.runs.some((r) => r.runId === runId));
     const run = row?.runs.find((r) => r.runId === runId) ?? null;
     const known = runs.find((r) => r.runId === runId) ?? null;
     const stop = known?.stopReason ?? run?.stopReason ?? null;
-    if (stop === 'complete' && !force) {
+    // AGENT-LOOP-DESIGN §A5: a reply (a tool-less agent turn — `answered`, or failed / stopped before its first tool call) has
+    // nothing to resume either: the session continues and the next message carries the reply as its parent (§7.6)
+    const reply = stop !== 'complete' && isReplyRunId(runId);
+    if ((stop === 'complete' || reply) && !force) {
       // §5.2: a complete run seeds a follow-up unless --force: adopt its session and let the next prompt seed from it
       const sid = row?.sessionId ?? known?.runId ?? runId;
       if (sessionId !== sid) {
@@ -3814,7 +3878,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         newSessionMeter();
         seedMeterFromIndex(sid, '');
       }
-      note(`session ${sid} continues: run ${runId} is complete, so type a follow-up (/resume ${runId} --force resumes it)`);
+      note(reply ? `session ${sid} continues: run ${runId} was a reply, so type a follow-up` : `session ${sid} continues: run ${runId} is complete, so type a follow-up (/resume ${runId} --force resumes it)`);
       return;
     }
     await resumeRun(runId, force);
@@ -3873,7 +3937,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           note(NO_SESSION_YET);
           return;
         }
-        note(sessionEndedText(old, runs.length, sessionTotal()));
+        const tally = runTally();
+        note(sessionEndedText(old, tally.runs, sessionTotal(), tally.replies));
         sessionId = null;
         sessionStartAnnounced = false;
         runs = [];

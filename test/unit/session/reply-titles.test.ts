@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { foldIndex, type IndexLine } from '../../../src/session/index.js';
 import { newestWorkRun, pickerRows } from '../../../src/session/picker-lines.js';
 import { mostRecentSession, recentHintSession } from '../../../src/cli/session.js';
-import type { StopReason } from '../../../src/core/types.js';
+import type { SessionRow, StopReason } from '../../../src/core/types.js';
 import { runId } from './helpers.js';
 
 const S1 = runId(1);
@@ -16,11 +16,11 @@ const S2 = runId(40);
 const WS = '/Users/me/proj';
 const T = (n: number): string => `2026-09-20T14:${String(n).padStart(2, '0')}:00.000Z`;
 
-function run(o: { sessionId?: string; runId: string; task: string; stop: StopReason | null; at: number; steps?: number; mode?: 'agent' | 'llm-jev' }): IndexLine[] {
+function run(o: { sessionId?: string; runId: string; task: string; stop: StopReason | null; at: number; steps?: number; mode?: 'agent' | 'llm-jev'; changed?: number }): IndexLine[] {
   const sessionId = o.sessionId ?? S1;
   const lines: IndexLine[] = [{ v: 1, t: T(o.at), kind: 'run:start', sessionId, runId: o.runId, parentRunId: null, workspace: WS, task60: o.task, mode: o.mode ?? 'agent', source: 'cli', branch: 'main', resumeOf: null }];
   if (o.stop !== null) {
-    lines.push({ v: 1, t: T(o.at + 1), kind: 'run:end', sessionId, runId: o.runId, stopReason: o.stop, steps: o.steps ?? 1, costUsd: { generator: 0.001, jev: 0 }, wallMs: 900, changedFiles: 0, exitCode: 0, resumable: false, degraded: false });
+    lines.push({ v: 1, t: T(o.at + 1), kind: 'run:end', sessionId, runId: o.runId, stopReason: o.stop, steps: o.steps ?? 1, costUsd: { generator: 0.001, jev: 0 }, wallMs: 900, changedFiles: o.changed ?? 0, exitCode: 0, resumable: false, degraded: false });
   }
   return lines;
 }
@@ -55,6 +55,50 @@ describe('foldIndex: replies never name a session (§A5)', () => {
     const { sessions } = foldIndex(J([...run({ runId: runId(2), task: 'first task', stop: 'human_abort', at: 1, mode: 'llm-jev' }), ...run({ runId: runId(3), task: 'second task', stop: 'complete', at: 3, mode: 'llm-jev' })]));
     expect(sessions.get(S1)!.title).toBe('first task');
     expect(sessions.get(S1)!.task60).toBe('first task');
+  });
+});
+
+describe('foldIndex: a tool-less agent turn that ended before its first step is a reply too (§A5)', () => {
+  const picker = (s: SessionRow): string => pickerRows([s], { workspace: WS, widened: false, nowMs: Date.parse(T(10)), columns: 200 })[0]!;
+
+  it('hi → 503 → the retry answers: untitled, the picker stop is `answered` (not `error`), both rows flagged `reply`', () => {
+    const { sessions } = foldIndex(J([...run({ runId: runId(2), task: 'hi', stop: 'error', at: 1, steps: 0 }), ...run({ runId: runId(3), task: 'hi', stop: 'answered', at: 3 })]));
+    const s = sessions.get(S1)!;
+    expect(s.title).toBe('');
+    expect(s.task60).toBe('');
+    expect(newestWorkRun(s)?.stopReason).toBe('answered');
+    expect(picker(s)).toContain('answered');
+    expect(picker(s)).not.toContain('error');
+    expect(s.runs.map((r) => ('reply' in r ? r.reply : undefined))).toEqual([true, true]);
+  });
+
+  it('hi → Esc (human_abort, 0 steps): untitled', () => {
+    const { sessions } = foldIndex(J(run({ runId: runId(2), task: 'hi', stop: 'human_abort', at: 1, steps: 0 })));
+    expect(sessions.get(S1)!.title).toBe('');
+  });
+
+  it('fix → thanks (503 → the retry answers): the title is the task and the picker still reads `complete`', () => {
+    const { sessions } = foldIndex(J([...run({ runId: runId(2), task: 'fix the failing tests', stop: 'complete', at: 1, steps: 7, changed: 2 }), ...run({ runId: runId(3), task: 'thanks', stop: 'error', at: 4, steps: 0 }), ...run({ runId: runId(4), task: 'thanks', stop: 'answered', at: 6 })]));
+    const s = sessions.get(S1)!;
+    expect(s.title).toBe('fix the failing tests');
+    expect(newestWorkRun(s)?.stopReason).toBe('complete');
+    expect(picker(s)).toContain('  7 │ complete');
+  });
+
+  it('an agent run that failed after doing work (a step, or a changed file) is not a reply', () => {
+    const { sessions } = foldIndex(J([...run({ runId: runId(2), task: 'fix the failing tests', stop: 'error', at: 1, steps: 2 }), ...run({ runId: runId(3), task: 'thanks', stop: 'answered', at: 4 })]));
+    const s = sessions.get(S1)!;
+    expect(s.title).toBe('fix the failing tests');
+    expect(newestWorkRun(s)?.stopReason).toBe('error');
+    expect('reply' in s.runs[0]!).toBe(false);
+  });
+
+  it('legacy runs are never flagged: a 0-step legacy failure still names the session and is the picker\'s stop', () => {
+    const { sessions } = foldIndex(J([...run({ runId: runId(2), task: 'first task', stop: 'error', at: 1, steps: 0, mode: 'llm-jev' }), ...run({ runId: runId(3), task: 'second task', stop: 'human_abort', at: 3, steps: 0, mode: 'llm-jev' })]));
+    const s = sessions.get(S1)!;
+    expect(s.title).toBe('first task');
+    expect(newestWorkRun(s)?.stopReason).toBe('human_abort');
+    for (const r of s.runs) expect('reply' in r).toBe(false);
   });
 });
 

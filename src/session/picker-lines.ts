@@ -7,6 +7,7 @@
 import type { SessionRow, StopReason } from '../core/types.js';
 import { formatDuration } from '../core/time.js';
 import { stringWidth } from '../tui/composer/width.js';
+import { isReplyRunRow } from './reply.js';
 
 export type PickerSort = 'updated' | 'created';
 
@@ -241,12 +242,13 @@ export function newestRun(s: SessionRow): SessionRow['runs'][number] | null {
 }
 
 /**
- * AGENT-LOOP-DESIGN §A5: the run whose steps / stop the row shows — the newest run that was not a reply (a tool-less agent turn
- * stops `answered`), so a `thanks` after a finished task still reads `complete`; the newest run when every run was a reply.
+ * AGENT-LOOP-DESIGN §A5: the run whose steps / stop the row shows — the newest run that was not a reply (`isReplyRunRow`: a tool-less
+ * agent turn stops `answered`, or ends before its first step when it failed or was stopped), so a `thanks` after a finished task still
+ * reads `complete`; the newest run when every run was a reply. Legacy-mode runs are never replies: exactly `newestRun` for them.
  */
 export function newestWorkRun(s: SessionRow): SessionRow['runs'][number] | null {
   let best: SessionRow['runs'][number] | null = null;
-  for (const r of s.runs) if (r.stopReason !== 'answered' && (best === null || r.startedAt >= best.startedAt)) best = r;
+  for (const r of s.runs) if (!isReplyRunRow(r) && (best === null || r.startedAt >= best.startedAt)) best = r;
   return best ?? newestRun(s);
 }
 
