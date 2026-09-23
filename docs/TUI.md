@@ -12,11 +12,80 @@ unit test fails when any of them drifts (`node scripts/gen-docs.mjs --check`). W
 disagree, the code wins and the disagreement is a bug; where the code deviates from `docs/TUI-DESIGN.md` or
 `docs/TUI-DESIGN-2.md`, the deviation is listed in `docs/STATUS.md` ("Interactive TUI", "Round 2").
 
+**2026-09-23: the default mode is `agent`.** The next section is how a session looks and behaves in it. The
+sections after it were written for the Jev-driven modes (`llm-jev`, `jev-on`, `jev-off`, `jev-only`), which keep
+every behaviour they describe; where agent mode differs, the next section says so and wins.
+
+## Agent mode, the default (2026-09-23)
+
+The as-built contract is `docs/TUI-DESIGN.md` §7.8; the loop behind it is
+[`docs/architecture/agent-loop.md`](architecture/agent-loop.md).
+
+**One conversation.** Every line you submit that is not a `/command` is a `[you]` item and then the next turn of
+one agent run that carries the whole session: earlier replies, earlier runs and their tool results. There is no
+intake reading, no `On it — starting the run.` line, no ``Say `do it` `` offer and no catalogue reply — every
+answer is the code model's own, streamed. A greeting or a question is answered in prose with no tool call: that
+run stops `answered` and looks exactly like a chat reply (no `[run]` rows, no step rows, no stop line, no
+`exit 0`), and it never becomes the session's title. A request for a change gets tool calls, and from the first
+one the reply becomes a run. A provider error is a `[ui]` error row, never text in the assistant's voice.
+
+**Reply rendering.** The prose streams in place above the console's rule under `[jevcode]`, from the first token:
+a line with no newline yet is drawn as text (wrapped, with a `▍` caret), never as a `streaming… N chars` counter.
+A completed line moves into the scrollback without the frame jumping — the committed rows are the rows the live
+block drew. All rows of one reply share the one `[jevcode]` label, so a reply is one contiguous block; blank rows
+separate turns and tool rows only. Blank lines inside the prose are kept, bold, inline code, bullets, headings and
+fenced code are rendered, and nothing is clipped at 600 characters or 24 rows. A dropped stream that the provider
+retries leaves the dim row `reply restarted after a dropped stream`. Until the first tool call the composer keeps
+its chat placeholder, the status row reads `thinking` then `replying`, and Esc or Ctrl-C stop the reply and keep
+the session.
+
+**Tool rows.** Each step leaves one `[step N]` row: `Read calc/core.py, tests/test_core.py · Grep "parse" in calc
+(3 matches)` for a batch of reads (they ran in parallel), `Edit calc/core.py (+2 −2)`, `Write notes.md (+12 −0)`,
+`Bash python -m pytest -q · 7 passed` (or `· exit 1`), `Verify npm test · 12 passed` when the harness ran your
+tests itself, then the wall time and the step's cost. There is no `risk … ok` and no `judge …` segment.
+Consecutive step rows form one block. The live region under the reply shows the command running now with the
+last lines of its output, the reads in flight (`Read a.ts · Grep "x" in src…`), the call being written
+(`writing edit_file src/a.ts… 1.2k chars`), or, while only reasoning has arrived, a dim
+`thinking… 1.2k chars · <last line>`. `/transcript full` adds one row per read-only tool result
+(`tool · read_file src/a.ts (lines 1-120) · 3 ms`).
+
+**The mini indicator.** The 12-row 3D animation is gone. The status row's first cell holds a small braille
+animation of what is running: a ring with a dark arc travelling round it (the donut) while the model thinks, a ring
+with a sweeping meridian (the globe) while it reads, a box turning (the cube) while it edits, writes or runs a
+command, a travelling sine (the wave) while your tests run. It is three cells wide when the row has room and the
+old one-cell slot otherwise — the extra two cells are the first thing the row gives up, so nothing else is dropped
+for it at 80 columns. It steps on the spinner's own 125 ms tick (no timer of its own), animates only while
+something runs, is a still frame over SSH and under `--no-animation`, a one-cell ASCII twin under `--ascii` or
+`NO_COLOR`, and absent under `--screen-reader`, which keeps the status word.
+
+**Status words.** `thinking` (a model turn), `reading` (a read-only batch), `editing` or `running` (the mutating
+call), `testing` (the harness's test run), named from the start of each step. The rule strip reads
+`▸ s<N> · plan d/t · <k> tool calls`; there is no Jev sparkline and no `jev …` token segment; the decisions tab of
+a run that asked Jev nothing reads `a normal agent run makes no Jev decisions`; `/jev` and `/panel` still work but
+left the Popular group. `[run] finished` of a run that used no Jev has no `jev $0.000` part.
+
+**Autonomy.** Under the default `--autonomy full` nothing asks and nothing is refused: there is no review card,
+and a command that matches a destructive rule runs like any other and leaves a warning row
+`destructive · ran <command> (rule <id>) — <what /undo can do>`, ending in `this left the machine; /undo cannot
+reverse it`, `/undo restores the workspace` or `/undo may not restore this`. Under `--autonomy review` the review
+card appears before every destructive or unrecognised command; the card of a destructive command is titled with
+its rule's sentence and has no dimension rows; `y` runs it once, `n` declines and the model reads the decline.
+
+**Modes and commands.** The badge reads `agent`. `/mode` lists `agent` and `jev-only` (the default marked);
+`/mode legacy` lists `llm-jev · jev-on · jev-off`, which stay accepted; `/llm on` is `/mode agent` and `/llm off`
+is `/mode jev-only`. `/undo`, `/rewind`, `/diff N`, `/steer`, pause (Esc) and abort (Esc Esc) work per step as
+in every mode; a steer reaches the model as a note before its next turn.
+
+**`--plain`** prints each prose line under `[jevcode] ` as it arrives (every line exactly once), holds the run rows
+until the first tool call and drops them for a reply, so a greeting prints only `[you] …` and `[jevcode] …`.
+`--json` writes every event, including `assistant:text`, `assistant:reset`, `generator:reasoning`, `tool:call`
+and `tool:result`.
+
 ## Modes
 
 | You type | What runs | Composer | Leaves with |
 | --- | --- | --- | --- |
-| `jevcode`, `jevcode chat`, or `jevcode run` with no task on a terminal | an interactive **session** in the default mode (`llm+jev · verified`, the badge in the console's top edge; `jev-only` with `--mode jev-only` or a `mode` row): the composer opens first under the resting wordmark; nothing runs (and no money is spent) until Jev has read a submission as a task — a greeting or a question gets a reply, not a run | Ink composer | `/exit`, Ctrl-D ×2, Ctrl-C ×2 while idle → exit 0 (`--exit-code last-run` returns the last run's code instead) |
+| `jevcode`, `jevcode chat`, or `jevcode run` with no task on a terminal | an interactive **session** in the default mode (`agent`, the badge in the console's top edge; `jev-only` with `--mode jev-only` or a `mode` row): the composer opens first under the resting wordmark; nothing runs (and no money is spent) until you send a message — then every message gets a streamed model reply, and a task becomes a run in the same conversation (in the legacy modes, a run starts only when Jev reads the message as a task) | Ink composer | `/exit`, Ctrl-D ×2, Ctrl-C ×2 while idle → exit 0 (`--exit-code last-run` returns the last run's code instead) |
 | `jevcode run "<task>"`, `--task-file <path>`, `--resume <id\|title>`, `-c` | **one-shot**: one run, started right after `run:ready`; the composer is mounted for steering only | Ink (Enter = steer while live) | the run's exit code (table at the end) |
 | `jevcode [chat] --plain` on a terminal | the same session over a plain `> ` readline prompt: no panes, no colours, the same slash commands | `node:readline` | as a session; Ctrl-C and EOF follow the same matrix (below) |
 | a pipe, `CI`, `TERM=dumb`, `--no-input` | one run with the plain line renderer, no composer; the task comes from argv, `--task-file` or stdin; every prompt takes its safe default (key wizard → the fix block and exit 2, trust → instruction files skipped, follow-up over the session cap → silent clamp, a secret in the task → refused with exit 2, a review → declined) | none | the run's exit code |
@@ -26,7 +95,10 @@ disagree, the code wins and the disagreement is a bug; where the code deviates f
 reads its task like `run` and exits at `run:end`. The interactive rule is `stdin.isTTY && stdout.isTTY && !CI &&
 TERM !== 'dumb' && !--plain && !--json && !--no-input` (`CI` / `CONTINUOUS_INTEGRATION` set and not `0`/`false`).
 
-**Engine modes and the badge.** `llm-jev` (the default since 2026-09-22, badge `llm+jev · verified`: the code model writes candidate patches inside the Jev-only search, tests verify, Jev arbitrates — docs/LLM-JEV-DESIGN.md), `jev-on` (badge `jev+llm`: the code model writes the code,
+**Engine modes and the badge.** `agent` (the default since 2026-09-23, badge `agent`: the code model works through
+tools, your tests verify, Jev makes a few quick routing calls — the section above). The rest of this paragraph
+describes the modes as they were before that flip; they stay accepted as legacy modes, and `/mode legacy` lists
+them. `llm-jev` (the default from 2026-09-22 to 2026-09-23, badge `llm+jev · verified`: the code model writes candidate patches inside the Jev-only search, tests verify, Jev arbitrates — docs/LLM-JEV-DESIGN.md), `jev-on` (badge `jev+llm`: the code model writes the code,
 Jev decides every step; one OpenRouter key serves both; run cap $10.00, session cap $50.00), `jev-only` (badge `jev-only`:
 no generating LLM — code proposes candidate fixes, Jev decides, tests verify; one Jev key; $1.00 / $5.00), `jev-off`
 (`llm-only`: the generator alone, a bench condition) and `llm-jev` (`llm+jev · verified`: the jev-only search with the
@@ -154,6 +226,8 @@ it. No one-letter alias exists for a command whose Enter destroys state without 
 
 ## The conversation
 
+*The Jev-driven modes. In agent mode there is no intake — see "Agent mode, the default" above.*
+
 Every line you submit that is not a `/command` becomes a `[you] <text>` item in the transcript (one item per line,
 your secrets masked), then **one Jev request** decides what it is — the intake: a Choice over five readings
 (`greeting_or_smalltalk`, `question_about_this_tool`, `question_about_the_code`, `coding_task`, `ambiguous`), each
@@ -262,6 +336,9 @@ In `--plain` on a terminal the tty stays in cooked mode, so Ctrl-C arrives as SI
 there (no Esc in cooked mode).
 
 ## Reviews
+
+*The Jev-driven modes under `--autonomy review`. In agent mode a card appears only under `--autonomy review`, for
+destructive and unrecognised commands, titled with the rule's sentence — see "Agent mode, the default" above.*
 
 When Jev's risk answer lands in the review band (0.3–0.7), the run pauses and, after about a second of composer
 idleness with the input queue drained, the review card appears above a collapsed, inactive composer (a rounded card in
@@ -757,8 +834,8 @@ registry absent this build says so in one row rather than pretending.
 
 | Situation | `jevcode run` | session |
 | --- | --- | --- |
-| `complete` / `generator_done` | 0 | item `exit 0`; the composer reopens |
-| a budget stop (`max_steps`, `wall_time`, `spend_cap`, `max_replans`, `token_cap`), `replan_stop`, `impossible`, a pause (`human_pause`) | 4 | item `exit 4`; the composer reopens |
+| `complete` / `generator_done` / `answered` | 0 | item `exit 0` (an `answered` reply shows only its prose); the composer reopens |
+| a budget stop (`max_steps`, `wall_time`, `spend_cap`, `max_replans`, `token_cap`), `replan_stop`, `impossible`, a pause (`human_pause`), `stuck` (the agent's loop detector tripped a sixth time) | 4 | item `exit 4`; the composer reopens |
 | configuration or usage error at launch (incl. an unreadable `--task-file`, a refused secret, an unpriced model) | 2 | 2 |
 | a rejected key or Jev model drift on the first call | 2 | pane `[q]` → item `exit 2` |
 | API failure after retries; a provider spend limit | 5 | item `exit 5` |
