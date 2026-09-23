@@ -307,7 +307,7 @@ export async function reportAct(ctx: AgentContext, act: PreparedAct, o: AgentObs
   if (act.tool === 'bash') {
     const exec = 'exec' in out && out.exec !== undefined ? out.exec : null;
     if (exec === null) {
-      const text = out.status === 'interrupted' ? 'interrupted' : `exit 0\n${o.output.length > 0 ? o.output : '(no output)'}`;
+      const text = out.status === 'interrupted' ? 'interrupted' : `ran (no exit status was reported)\n${o.output.length > 0 ? o.output : '(no output)'}`;
       return { ...base, text, ok: out.status !== 'interrupted', summary: `${act.goal} (${out.status})`, hashBasis: text };
     }
     const r = await renderBash(exec, o.output, { workdir: act.workdir, tests: o.tests?.parsed ?? null, interrupted: out.status === 'interrupted', spill: (text) => ctx.writeOutput(text) });
