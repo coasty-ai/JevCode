@@ -98,6 +98,8 @@ export interface FakeAgentContext extends AgentContext {
   outputs: Map<string, string>;
   /** the JSON-stable copy of each generate request, as it was when sent (the driver keeps appending to its transcript) */
   readonly sent: GenerateRequest[];
+  /** abort the run signal (a pause-now, `/stop`) */
+  abort(reason: unknown): void;
   eventsOf<T extends EngineEvent['type']>(type: T): Extract<EngineEvent, { type: T }>[];
 }
 
@@ -181,6 +183,9 @@ export function createAgentContext(o: FakeAgentOptions = {}): FakeAgentContext {
     steerQueue,
     compactRequest: false,
     outputs,
+    abort(reason) {
+      controller.abort(reason);
+    },
     setState(s) {
       ctx.state = s;
     },

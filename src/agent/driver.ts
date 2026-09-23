@@ -1,0 +1,442 @@
+/**
+ * The agent driver (docs/AGENT-LOOP-DESIGN.md §2.3, §3): one model-driven loop, mapped onto engine steps.
+ *
+ * `next()` restores (or builds) the transcript once, absorbs steers and a `/compact` request, then derives the queue —
+ * the calls of the latest assistant record that have no result — from the transcript, every time. A non-empty queue
+ * yields the next segment: a run of resolvable calls (an `observe` step, resolved here in parallel batches of 8) or one
+ * mutating call (an `act` step the engine executes). An empty queue samples a turn — after the pending loop nudge
+ * (RA1), the due progress check (RA2), and masking or compaction — and a turn without calls goes through the stop rules:
+ * continue, verify, or finish.
+ *
+ * `observe()` receives the engine's result of an act / verify / finish step before the checkpoint: the tool result goes
+ * into the transcript (memory first, then disk), the counters and the loop detector are updated, and the state is handed
+ * back for `state.json`. Deriving the queue from the transcript means a step the engine discards needs no hook: its call
+ * is simply issued again, and no request ever carries a `tool_use` without its `tool_result`.
+ */
+import type { AgentCallSummary, AgentContext, AgentDriver, AgentNext, AgentObservation, AgentObserveResult, LoopTrip, PlanDraft, Proposal, StepAgentSummary, ToolSpec } from '../core/types.js';
+import { sha12 } from '../core/hash.js';
+import { headTail } from '../core/text.js';
+import { AbortError } from '../errors.js';
+import { dispose, reportAct, changesWorkspace, type CallEnv, type PreparedAct } from './calls.js';
+import { ContextEstimate, budgetFor, codeSummary, compactionDue, compactionText, compactionWriter, contextUsage, llmSummary, maskCandidates, maskDue, type Budget } from './context.js';
+import { buildHead } from './head.js';
+import { chooseLoopNudge, effortHint, progressCheck, type RunFacts } from './jev.js';
+import { AGENT_FINISH_SUMMARY_CHARS, AGENT_MAX_CALLS_PER_TURN, AGENT_OBSERVE_OUTPUT_CHARS, AGENT_PARALLEL_READS, AGENT_RAW_TEXT_CHARS, AGENT_VERIFY_MAX, AGENT_VERIFY_TIMEOUT_MS } from './limits.js';
+import { callSignature, feedLoop, progressCheckDue, resultHash, type LoopTripWithTest } from './loop.js';
+import { NOT_EXECUTED_STEER, PROGRESS_NUDGE, buildAgentSystemPrompt, loopNudgeText, loopTripWhat, steerNote, verifyResult, verifyTimeout } from './prompt.js';
+import { lowEffortReasoning, agentReasoning, maskingModeFor, providerLabel, sameReasoning, type MaskingMode } from './providers.js';
+import { normaliseCall, resolveToolName, type NormalisedCall } from './repair.js';
+import { initialState, parseState, stateJson, type AgentStateV1 } from './state.js';
+import { decideStop, isUnscopedTestRun } from './stop.js';
+import { bashStatusLine, clipMiddle, oneLine } from './tools/format.js';
+import type { ReadHashes } from './tools/read.js';
+import { createRgProbe } from './tools/search.js';
+import { toolsFor } from './tools/specs.js';
+import { planOf } from './tools/todo.js';
+import type { ToolResult } from './tools/result.js';
+import { sampleTurn, buildRequest, requestChars, type TurnSetup } from './turn.js';
+import { AgentTranscriptMissingError, Transcript, readTranscript, transcriptPath, type AssistantRecord, type NoteTag, type RecordedCall } from './transcript.js';
+import { isTestCommand } from '../loop/stages/execute.js';
+
+type Pending =
+  | { kind: 'act'; call: NormalisedCall; act: PreparedAct; startedAt: number }
+  | { kind: 'verify'; command: string; timeoutMs: number }
+  | { kind: 'finish' };
+
+const RECENT_STEPS_KEPT = 12;
+
+/** One resolvable call of an observe segment, ready to run. */
+interface BatchItem {
+  call: NormalisedCall;
+  run: (part: number | undefined) => Promise<ToolResult>;
+  name: AgentCallSummary['name'];
+  callSummary: string;
+}
+
+/** A recorded call as the driver runs it: the parse-time verdict, or the call normalised again (deterministic). */
+export function deriveCall(rec: RecordedCall, root: string): NormalisedCall {
+  if (rec.error !== undefined) return { id: rec.id, name: resolveToolName(rec.name) ?? 'invalid', rawName: rec.name, replayInput: rec.input, args: {}, ignored: [], error: rec.error };
+  return { id: rec.id, ...normaliseCall({ name: rec.name, input: rec.input, rawJson: JSON.stringify(rec.input) }, { root, cutOff: false, maxTokens: 0 }) };
+}
+
+class Driver implements AgentDriver {
+  readonly name = 'agent';
+  private transcript: Transcript | null = null;
+  private state: AgentStateV1 = initialState('');
+  private system = '';
+  private tools: ToolSpec[] = [];
+  private systemHash = '';
+  private budget: Budget = budgetFor(null);
+  private maskingMode: MaskingMode = 'client';
+  private readonly estimate = new ContextEstimate();
+  private readonly readHashes: ReadHashes = new Map();
+  private readonly rg = createRgProbe();
+  private readonly warned = new Set<string>();
+  private pending: Pending | null = null;
+  private compactRequested = false;
+  private readonly recent: string[] = [];
+  private readonly testTrend: string[] = [];
+  private readonly filesRead = new Set<string>();
+  private readonly filesEdited = new Set<string>();
+
+  // ---------------------------------------------------------------------------------------
+  // Restore (§3.1 step 1)
+  // ---------------------------------------------------------------------------------------
+
+  private async restore(ctx: AgentContext): Promise<Transcript> {
+    if (this.transcript !== null) return this.transcript;
+    const role = ctx.orchestration?.role === 'research' ? 'research' : 'default';
+    this.tools = toolsFor(role);
+    this.system = buildAgentSystemPrompt({
+      model: ctx.provider.model,
+      providerLabel: providerLabel(ctx.provider.name),
+      sandboxLevel: ctx.sandbox.level,
+      testCommand: ctx.workspaceInfo.testCommand?.command ?? null,
+      autonomy: ctx.autonomy,
+      instructions: ctx.instructions,
+      memoryIndex: ctx.memoryIndex,
+    });
+    this.systemHash = sha12([this.system, this.tools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema }))]);
+    this.budget = budgetFor(ctx.windowTokens);
+    this.maskingMode = maskingModeFor(ctx.provider.name, ctx.provider.model);
+    const t = new Transcript(transcriptPath(ctx.runDir), () => ctx.now());
+    const saved = parseState(ctx.state);
+    if (ctx.resumed && saved !== null) {
+      const records = await readTranscript(t.file);
+      if (records === null) throw new AgentTranscriptMissingError(t.file);
+      // §10: records past the checkpoint belong to a step that never committed; their calls count as unresolved
+      await t.reset(records.filter((r) => r.seq <= saved.transcriptSeq));
+      this.state = { ...saved, systemHash: this.systemHash };
+    } else {
+      const head = await buildHead(ctx, this.systemHash);
+      await t.reset(head.records);
+      this.state = { ...initialState(this.systemHash), carriedFrom: head.carriedFrom };
+    }
+    this.transcript = t;
+    return t;
+  }
+
+  private env(ctx: AgentContext): CallEnv {
+    return { ctx, readHashes: this.readHashes, rg: this.rg, setTodos: (todos) => (this.state.todos = todos) };
+  }
+
+  private plan(): PlanDraft {
+    return planOf(this.state.todos);
+  }
+
+  private snapshot(ctx: AgentContext): number {
+    const t = this.transcript!;
+    this.state.transcriptSeq = t.lastSeq();
+    ctx.setState(stateJson(this.state));
+    return this.state.transcriptSeq;
+  }
+
+  private async note(text: string, tag: NoteTag): Promise<void> {
+    await this.transcript!.append({ kind: 'note', text, tag });
+  }
+
+  private remember(line: string): void {
+    this.recent.push(line);
+    while (this.recent.length > RECENT_STEPS_KEPT) this.recent.shift();
+  }
+
+  private facts(ctx: AgentContext): RunFacts {
+    const last = ctx.lastTestRun;
+    return {
+      recentSteps: this.recent,
+      lastTests: last === null ? null : { passed: last.passed, failed: last.failed, errors: last.errors },
+      testTrend: this.testTrend.slice(-6),
+      changedFiles: this.filesEdited.size,
+      filesRead: this.filesRead.size,
+      filesEdited: this.filesEdited.size,
+    };
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // next()
+  // ---------------------------------------------------------------------------------------
+
+  async next(ctx: AgentContext): Promise<AgentNext> {
+    const t = await this.restore(ctx);
+    await this.absorbSteers(ctx, t);
+    if (ctx.takeCompactRequest()) this.compactRequested = true;
+    let turn: number | null = null;
+    for (;;) {
+      const queue = t.unresolved();
+      if (queue.length > 0) return this.segment(ctx, queue, turn);
+      let reply: AssistantRecord | null = t.trailingReply();
+      if (reply === null) {
+        const sampled = await this.sample(ctx, t);
+        turn = sampled.turn;
+        if (sampled.calls.length > 0) continue;
+        reply = sampled.record;
+      }
+      const d = decideStop(reply, this.state, ctx.workspaceInfo.testCommand);
+      if (d.kind === 'continue') {
+        this.state.continueNudges += 1;
+        await this.note(d.note, 'continue');
+        continue;
+      }
+      if (d.kind === 'verify_nudge') {
+        this.state.verifyRuns += 1;
+        this.state.failedTest = null;
+        await this.note(d.note, 'verify');
+        continue;
+      }
+      if (d.kind === 'verify') return this.verifyStep(ctx, d.command, turn);
+      return this.finishStep(ctx, reply, turn);
+    }
+  }
+
+  /** §3.1 step 2 / §10: steers answer every unresolved call and reach the model as a note before the next turn. */
+  private async absorbSteers(ctx: AgentContext, t: Transcript): Promise<void> {
+    const steers = ctx.takeSteers();
+    if (steers.length === 0) return;
+    for (const c of t.unresolved()) await t.append({ kind: 'result', toolUseId: c.id, name: c.name, content: NOT_EXECUTED_STEER, isError: true, summary: `${c.name} (not executed)` });
+    for (const s of steers) await this.note(steerNote(ctx.redact(s)), 'steer');
+    this.pending = null;
+  }
+
+  /** §3.1 step 4: the notes and context policy of a turn build, then the turn itself. */
+  private async sample(ctx: AgentContext, t: Transcript): Promise<{ turn: number; record: AssistantRecord; calls: NormalisedCall[] }> {
+    const trip = this.state.pendingLoop;
+    if (trip !== null) {
+      const kind = await chooseLoopNudge(ctx, this.state, trip, this.facts(ctx));
+      await this.note(loopNudgeText(kind, loopTripWhat(trip)), 'loop');
+      this.state.pendingLoop = null;
+    }
+    if (progressCheckDue(this.state.turns, this.state.lastProgressTurn)) {
+      this.state.lastProgressTurn = this.state.turns;
+      if (await progressCheck(ctx, this.state, this.facts(ctx))) await this.note(PROGRESS_NUDGE, 'progress');
+    }
+    const t0 = ctx.now();
+    const setup = (lowEffort: boolean): TurnSetup => ({ ctx, state: this.state, transcript: t, system: this.system, systemHash: this.systemHash, tools: this.tools, budget: this.budget, maskingMode: this.maskingMode, estimate: this.estimate, lowEffort, warned: this.warned });
+    let chars = requestChars(buildRequest(setup(false), !this.state.replayDisabled));
+    let tokens = this.estimate.tokens(chars);
+    const writer = compactionWriter(ctx.compaction);
+    if ((this.compactRequested || (writer !== 'off' && compactionDue(tokens, this.budget))) && t.unresolved().length === 0) {
+      await this.compact(ctx, t, writer === 'llm' ? 'llm' : 'code', chars);
+      this.compactRequested = false;
+    } else if (this.maskingMode === 'client') {
+      const m = maskCandidates(t);
+      if (maskDue(this.maskingMode, tokens, this.budget, m.reclaim)) {
+        await t.append({ kind: 'mask', ids: m.ids });
+        this.estimate.reset();
+      }
+    }
+    chars = requestChars(buildRequest(setup(false), !this.state.replayDisabled));
+    tokens = this.estimate.tokens(chars);
+    ctx.reportContext(contextUsage({ tokens, budget: this.budget, promptChars: chars, turns: this.state.turns, state: this.state, writer: writer === 'off' ? 'off' : writer, buildMs: ctx.now() - t0 }));
+    // §A4 RA0: the first turn of a run may go at low effort — asked only when that could change the request
+    const low = lowEffortReasoning(ctx.provider.name);
+    const lowEffort = this.state.turns === 0 && low !== null && !sameReasoning(agentReasoning(ctx.provider.name), low) ? await effortHint(ctx, this.state) : false;
+    return sampleTurn(setup(lowEffort));
+  }
+
+  /** §7.4: replace the history with one user message (head, summary, last results, edited files). */
+  private async compact(ctx: AgentContext, t: Transcript, writer: 'llm' | 'code', before: number): Promise<void> {
+    const fromSeq = t.live()[0]?.seq ?? 1;
+    const toSeq = t.lastSeq();
+    let summary = writer === 'llm' ? await llmSummary(ctx, t, this.state, this.state.turns + 1) : null;
+    const by = summary === null ? 'code' : 'llm';
+    summary ??= codeSummary(ctx, t, this.state);
+    const text = ctx.redact(await compactionText(ctx, t, summary));
+    await t.append({ kind: 'compaction', text, fromSeq, toSeq, by });
+    this.state.compactions += 1;
+    this.state.lastCompactionAt = new Date(ctx.now()).toISOString();
+    this.state.lastCompactionStep = ctx.step;
+    this.estimate.reset();
+    const after = requestChars({ system: this.system, messages: [], maxTokens: 0, temperature: null, tools: this.tools, agent: { messages: t.messages({ provider: ctx.provider.name, model: ctx.provider.model, systemHash: this.systemHash, replay: false }), parallelToolCalls: true, cacheKey: '', replayReasoning: false } });
+    ctx.emit({ type: 'context:compacted', step: ctx.step, chars: { before, after }, by });
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Segments (§3.2)
+  // ---------------------------------------------------------------------------------------
+
+  private rawText(t: Transcript, calls: readonly NormalisedCall[]): string {
+    const a = t.latestAssistant();
+    const first = a !== null && calls.length > 0 && a.calls[0]?.id === calls[0]!.id;
+    const parts = [...(first && a.text.trim() !== '' ? [a.text] : []), ...calls.map((c) => `${c.rawName} ${JSON.stringify(c.replayInput)}`)];
+    return parts.join('\n').slice(0, AGENT_RAW_TEXT_CHARS);
+  }
+
+  private async segment(ctx: AgentContext, queue: readonly RecordedCall[], turn: number | null): Promise<AgentNext> {
+    const t = this.transcript!;
+    const env = this.env(ctx);
+    const batch: BatchItem[] = [];
+    for (const rec of queue) {
+      const call = deriveCall(rec, ctx.workspace.root);
+      const d = await dispose(env, call);
+      if (d.kind === 'act') {
+        if (batch.length === 0) return this.actStep(ctx, call, d.act, turn);
+        break;
+      }
+      batch.push({ call, run: d.run, name: d.name, callSummary: d.callSummary });
+    }
+    return this.observeStep(ctx, t, batch, turn);
+  }
+
+  /** Resolve a run of resolvable calls: batches of 8, `tool:call` for a whole batch before it starts, results in order. */
+  private async observeStep(ctx: AgentContext, t: Transcript, batch: readonly BatchItem[], turn: number | null): Promise<AgentNext> {
+    const started = ctx.now();
+    // the queue is always the latest assistant record's calls, so they belong to the latest turn
+    const eventTurn = this.state.turns;
+    const bashCount = batch.filter((b) => b.call.name === 'bash').length;
+    let bashIndex = 0;
+    const parts = batch.map((b) => (b.call.name === 'bash' && bashCount > 1 ? (bashIndex += 1) : undefined));
+    const results: { result: ToolResult; ms: number }[] = [];
+    for (let i = 0; i < batch.length; i += AGENT_PARALLEL_READS) {
+      const slice = batch.slice(i, i + AGENT_PARALLEL_READS);
+      for (const b of slice) ctx.emit({ type: 'tool:call', step: ctx.step, turn: eventTurn, id: b.call.id, name: b.name, summary: ctx.redact(b.callSummary), readOnly: true });
+      const done = await Promise.all(
+        slice.map(async (b, k) => {
+          const t0 = ctx.now();
+          const result = await b.run(parts[i + k]);
+          const ms = ctx.now() - t0;
+          ctx.emit({ type: 'tool:result', step: ctx.step, turn: eventTurn, id: b.call.id, name: b.name, ok: result.ok, summary: ctx.redact(result.summary), ms, chars: result.text.length, readOnly: true });
+          return { result, ms };
+        }),
+      );
+      results.push(...done);
+    }
+    // a pause-now aborted the step mid-batch: nothing is appended, and the calls are issued again after the resume
+    if (ctx.signal.aborted) throw ctx.signal.reason instanceof Error ? ctx.signal.reason : new AbortError('human_pause');
+    let trip: LoopTripWithTest | null = null;
+    const readPaths: string[] = [];
+    const calls: AgentCallSummary[] = [];
+    for (const [k, b] of batch.entries()) {
+      const { result, ms } = results[k]!;
+      await t.append({ kind: 'result', turn: eventTurn, toolUseId: b.call.id, name: b.call.name === 'invalid' ? b.call.rawName : b.call.name, content: ctx.redact(result.text), isError: !result.ok, summary: ctx.redact(result.summary) });
+      if (result.hashBasis !== null) trip = feedLoop(this.state.loopWindow, { name: b.name, signature: callSignature(b.name, b.call.args, resultHash({ kind: 'text', text: result.hashBasis })), testCommand: null }) ?? trip;
+      for (const p of result.readPaths ?? []) {
+        if (!readPaths.includes(p)) readPaths.push(p);
+        this.filesRead.add(p);
+      }
+      if (calls.length < AGENT_MAX_CALLS_PER_TURN) calls.push({ id: b.call.id, name: b.name, summary: ctx.redact(result.summary), ok: result.ok, ms });
+    }
+    if (trip !== null) this.state.pendingLoop = trip;
+    this.remember(`observe: ${calls.map((c) => c.summary).join('; ')}`);
+    const output = batch.map((b, k) => `## ${b.callSummary}\n${results[k]!.result.text}`).join('\n\n');
+    const proposal: Proposal = { goal: oneLine(batch.map((b) => b.callSummary).join(' · '), 200), action: { kind: 'read', paths: readPaths }, plan: this.plan(), rawText: ctx.redact(this.rawText(t, batch.map((b) => b.call))) };
+    const seqAfter = this.snapshot(ctx);
+    const summary: StepAgentSummary = { kind: 'observe', turn, calls, seqAfter, ...(trip !== null ? { loopTrip: stripTest(trip) } : {}) };
+    return {
+      kind: 'observe',
+      proposal,
+      outcome: { status: 'executed', summary: calls.map((c) => c.summary).join('\n'), changedFiles: [] },
+      output: headTail(output, AGENT_OBSERVE_OUTPUT_CHARS - 8_192, 8_000),
+      execMs: ctx.now() - started,
+      summary,
+    };
+  }
+
+  private actStep(ctx: AgentContext, call: NormalisedCall, act: PreparedAct, turn: number | null): AgentNext {
+    const t = this.transcript!;
+    this.pending = { kind: 'act', call, act, startedAt: ctx.now() };
+    const name = call.name === 'invalid' ? 'invalid' : call.name;
+    ctx.emit({ type: 'tool:call', step: ctx.step, turn: this.state.turns, id: call.id, name, summary: ctx.redact(act.goal), readOnly: false });
+    const proposal: Proposal = { goal: act.goal, action: act.action, plan: this.plan(), rawText: ctx.redact(this.rawText(t, [call])) };
+    const seqAfter = this.snapshot(ctx);
+    return { kind: 'act', proposal, callId: call.id, gate: act.gate, summary: { kind: 'act', turn, calls: [{ id: call.id, name, summary: ctx.redact(act.goal), ok: true, ms: 0 }], seqAfter } };
+  }
+
+  private verifyStep(ctx: AgentContext, command: string, turn: number | null): AgentNext {
+    const timeoutMs = Math.max(1, Math.floor(Math.min(AGENT_VERIFY_TIMEOUT_MS, ctx.wallRemainingMs())));
+    this.pending = { kind: 'verify', command, timeoutMs };
+    const proposal: Proposal = { goal: `verify: ${command}`, action: { kind: 'run', command, timeoutMs }, plan: this.plan(), rawText: '' };
+    const seqAfter = this.snapshot(ctx);
+    return { kind: 'verify', proposal, summary: { kind: 'verify', turn, calls: [], seqAfter } };
+  }
+
+  private finishStep(ctx: AgentContext, reply: AssistantRecord, turn: number | null): AgentNext {
+    this.pending = { kind: 'finish' };
+    const proposal: Proposal = { goal: 'finish', action: { kind: 'done', summary: reply.text.slice(0, AGENT_FINISH_SUMMARY_CHARS) }, plan: this.plan(), rawText: reply.text.slice(0, AGENT_RAW_TEXT_CHARS) };
+    const seqAfter = this.snapshot(ctx);
+    return { kind: 'finish', proposal, summary: { kind: 'finish', turn, calls: [], seqAfter } };
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // observe() (§3.4)
+  // ---------------------------------------------------------------------------------------
+
+  async observe(ctx: AgentContext, o: AgentObservation): Promise<AgentObserveResult> {
+    const t = await this.restore(ctx);
+    const p = this.pending;
+    this.pending = null;
+    let trip: LoopTripWithTest | null = null;
+    if (p?.kind === 'act') trip = await this.observeAct(ctx, t, p, o);
+    else if (p?.kind === 'verify') await this.observeVerify(ctx, p, o);
+    if (trip !== null) this.state.pendingLoop = trip;
+    const seqAfter = this.snapshot(ctx);
+    return { loopTrip: trip === null ? null : stripTest(trip), seqAfter };
+  }
+
+  private async observeAct(ctx: AgentContext, t: Transcript, p: Extract<Pending, { kind: 'act' }>, o: AgentObservation): Promise<LoopTripWithTest | null> {
+    const { act, call } = p;
+    const report = await reportAct(ctx, act, o);
+    const test = ctx.workspaceInfo.testCommand;
+    const testRun = act.tool === 'bash' && act.command !== null && isTestCommand(act.command, test);
+    const unscoped = act.tool === 'bash' && act.command !== null && isUnscopedTestRun(act.command, act.workdir, test);
+    // memory first (the call is resolved even if the disk append then fails), then the counters
+    const appending = t.append({ kind: 'result', turn: this.state.turns, toolUseId: call.id, name: call.name === 'invalid' ? call.rawName : call.name, content: ctx.redact(report.text), isError: !report.ok, summary: ctx.redact(report.summary) });
+    if (changesWorkspace(act, o, testRun)) {
+      this.state.changedSinceVerify = true;
+      this.state.failedTest = null;
+      if (act.path !== null) this.filesEdited.add(act.path);
+      for (const f of o.changedFiles) this.filesEdited.add(f);
+    }
+    if (unscoped && o.outcome.status === 'executed') {
+      const parsed = o.tests?.parsed ?? null;
+      const exitOk = o.outcome.exec?.ok ?? false;
+      if (exitOk && (parsed === null || o.tests?.allPassed !== false)) {
+        this.state.changedSinceVerify = false;
+        this.state.failedTest = null;
+      } else if (this.state.changedSinceVerify) this.state.failedTest = { passed: parsed?.passed ?? 0, failed: parsed?.failed ?? 0, errors: parsed?.errors ?? 0 };
+    }
+    if (testRun && o.tests?.parsed) this.testTrend.push(`${o.tests.parsed.passed}p/${o.tests.parsed.failed}f`);
+    if (report.refused) this.state.blocks += 1;
+    const hash = report.refused
+      ? resultHash({ kind: 'refused' })
+      : report.failingTest && o.outcome.status === 'executed' && o.outcome.exec !== undefined
+        ? resultHash({ kind: 'test', command: act.command ?? '', exec: o.outcome.exec, runner: test?.runner ?? null, fallback: report.hashBasis ?? report.text })
+        : resultHash({ kind: 'text', text: report.hashBasis ?? report.text });
+    const name = call.name === 'invalid' ? 'invalid' : call.name;
+    const trip = feedLoop(this.state.loopWindow, { name, signature: callSignature(name, call.args, hash), testCommand: report.failingTest && testRun ? act.command : null });
+    ctx.emit({ type: 'tool:result', step: ctx.step, turn: this.state.turns, id: call.id, name, ok: report.ok, summary: ctx.redact(report.summary), ms: ctx.now() - p.startedAt, chars: report.text.length, readOnly: false });
+    this.remember(`act: ${report.summary}`);
+    await appending;
+    return trip;
+  }
+
+  private async observeVerify(ctx: AgentContext, p: Extract<Pending, { kind: 'verify' }>, o: AgentObservation): Promise<void> {
+    this.state.verifyRuns += 1;
+    const exec = o.outcome.status === 'executed' || o.outcome.status === 'interrupted' ? o.outcome.exec : undefined;
+    let text: string;
+    if (exec !== undefined && (exec.killedBy === 'timeout' || exec.killedBy === 'wall_time')) {
+      text = verifyTimeout(p.command, Math.round(p.timeoutMs / 1000));
+      // "not verified" is the answer: the note asks for a summary, and a second verify would only time out again
+      this.state.verifyRuns = Math.max(this.state.verifyRuns, AGENT_VERIFY_MAX);
+    } else if (exec !== undefined) {
+      const clipped = clipMiddle(o.output, 6_000, 1_500, 4_500).text;
+      text = verifyResult(p.command, bashStatusLine(exec, null, o.tests?.parsed ?? null), clipped);
+      const parsed = o.tests?.parsed ?? null;
+      if (exec.ok && (parsed === null || o.tests?.allPassed !== false)) {
+        this.state.changedSinceVerify = false;
+        this.state.failedTest = null;
+      }
+      if (parsed !== null) this.testTrend.push(`${parsed.passed}p/${parsed.failed}f`);
+    } else text = verifyResult(p.command, o.outcome.status === 'failed' ? `could not run (${o.outcome.error})` : o.outcome.status, '');
+    this.remember(`verify: ${p.command} → ${exec !== undefined ? (exec.exitCode ?? 'killed') : o.outcome.status}`);
+    await this.note(ctx.redact(text), 'verify');
+  }
+}
+
+function stripTest(t: LoopTripWithTest): LoopTrip {
+  return { signature: t.signature, count: t.count, rule: t.rule, tool: t.tool };
+}
+
+/** A fresh driver per run (docs/AGENT-LOOP-DESIGN.md §2.2). */
+export function createDriver(): AgentDriver {
+  return new Driver();
+}
