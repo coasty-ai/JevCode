@@ -12,8 +12,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { readPostImages } from '../../../src/checkpoint/images.js';
 import { openLedger, type LedgerHandle } from '../../../src/coordination/index.js';
 import { sha256Hex } from '../../../src/core/hash.js';
-import type { AgentGate, GitState } from '../../../src/core/types.js';
-import { AGENT_MAX_BLOCKS, AGENT_MAX_BLOCKS_LINE, destructiveCoverage, destructiveNote, ruleRiskAssessment } from '../../../src/loop/stages/agent.js';
+import type { ActionOutcome, AgentGate, GitState } from '../../../src/core/types.js';
+import { AGENT_MAX_BLOCKS, AGENT_MAX_BLOCKS_LINE, destructiveCoverage, destructiveNote, isAgentRefusal, ruleRiskAssessment } from '../../../src/loop/stages/agent.js';
 import { DEV_B, makeHeartbeat, makeLease, putHeartbeat, putLease, runId as peerRunId, tempHome } from '../coordination/helpers.js';
 import type { AgentHarness, Harness, ScriptedCall, ToolTurn } from './fakes.js';
 import { FIXED_RUN_ID, alwaysApprove, alwaysDecline, createFakeSandbox, createFakeWorkspace, execResult, makeAgentEngine, repoState } from './fakes.js';
@@ -99,6 +99,46 @@ describe('block and review (§12)', () => {
     expect(h.of('transcript').some((t) => t.text === AGENT_MAX_BLOCKS_LINE)).toBe(true);
     expect(h.sandbox.commands).toEqual([]);
   });
+
+  it(`the classifier's own shape under --autonomy review: ${AGENT_MAX_BLOCKS} declined rule-matched reviews pause the run too`, async () => {
+    let n = 0;
+    const h = await agent(() => ({ toolCalls: [{ id: `push_${++n}`, name: 'bash', input: { command: 'git push --force origin main' } }] }), {
+      engine: { autonomy: 'review' },
+      confirmer: alwaysDecline,
+      driver: { gate: () => ({ verdict: 'review', reason: 'git push --force rewrites the remote branch', rule: 'force_push' }) },
+    });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('human_pause');
+    expect(r.steps).toBe(AGENT_MAX_BLOCKS);
+    expect(h.of('confirm:request')).toHaveLength(AGENT_MAX_BLOCKS);
+    expect(h.store.steps.every((s) => s.outcome?.status === 'declined')).toBe(true);
+    expect(h.of('transcript').some((t) => t.text === AGENT_MAX_BLOCKS_LINE)).toBe(true);
+    expect(h.sandbox.commands).toEqual([]);
+  });
+
+  it('a declined review of an UNKNOWN command (no rule) is not a destructive refusal: it never counts toward the pause', async () => {
+    let n = 0;
+    const h = await agent((_req, i) => (i < AGENT_MAX_BLOCKS + 1 ? { toolCalls: [{ id: `mk_${++n}`, name: 'bash', input: { command: 'make deploy' } }] } : { text: 'Stopped asking.' }), {
+      engine: { autonomy: 'review' },
+      confirmer: alwaysDecline,
+      driver: { gate: () => ({ verdict: 'review', reason: 'unknown command', rule: null }) },
+    });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('generator_done');
+    expect(r.steps).toBe(AGENT_MAX_BLOCKS + 2);
+  });
+
+  it('isAgentRefusal: block+blocked, or rule+review+declined; nothing else', () => {
+    const blocked: ActionOutcome = { status: 'blocked', reason: 'x' };
+    const declined: ActionOutcome = { status: 'declined', reason: 'x' };
+    const executed: ActionOutcome = { status: 'executed', summary: 'ok', changedFiles: [] };
+    expect(isAgentRefusal({ verdict: 'block', reason: 'r', rule: 'privilege' }, blocked)).toBe(true);
+    expect(isAgentRefusal({ verdict: 'review', reason: 'r', rule: 'force_push' }, declined)).toBe(true);
+    expect(isAgentRefusal({ verdict: 'review', reason: 'r', rule: null }, declined)).toBe(false);
+    expect(isAgentRefusal({ verdict: 'review', reason: 'r', rule: 'force_push' }, executed)).toBe(false);
+    expect(isAgentRefusal({ verdict: 'ok', reason: 'r', rule: 'force_push' }, executed)).toBe(false);
+    expect(isAgentRefusal(null, blocked)).toBe(false);
+  });
 });
 
 describe('§A2 full autonomy never refuses and never asks; §A5 the note tells the truth', () => {
@@ -113,6 +153,8 @@ describe('§A2 full autonomy never refuses and never asks; §A5 the note tells t
     expect(h.store.steps[0]!.risk).toMatchObject({ verdict: 'ok', rule: 'force_push' });
     expect(h.store.steps[0]!.outcome?.status).toBe('executed');
     expect(noteLines(h)).toEqual(['destructive · ran git push --force origin main (rule force_push) — this left the machine; /undo cannot reverse it']);
+    // the note written from what ran is the one reason the record keeps (the driver's pre-execution reason is replaced)
+    expect(h.store.steps[0]!.risk!.reason).toBe(noteLines(h)[0]);
   });
 
   it('git_discard of dirty files, every file captured and HEAD unmoved: "/undo restores the workspace" — and the post image carries the run-start dirty file', async () => {

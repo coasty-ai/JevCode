@@ -8,12 +8,14 @@
  * - steers are handed over once, `/compact` is a request taken once, spilled outputs get `jevcode:` pointers, and the driver's meter
  *   rides `EngineStatus.context`.
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { closeSync, existsSync, ftruncateSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AskOptions, ContextUsage } from '../../../src/core/types.js';
 import { JevModelDriftError } from '../../../src/errors.js';
 import { createAbsentDecider } from '../../../src/jev/absent.js';
+import { AGENT_OUTPUT_PARTS_MAX_BYTES, createOutputPartLedger, writeOutputPart } from '../../../src/loop/stages/agent.js';
 import type { AgentHarness, Harness } from './fakes.js';
 import { FIXED_RUN_ID, createFakeDecider, makeAgentEngine, makeEngine, repoState, turn } from './fakes.js';
 
@@ -223,6 +225,83 @@ describe('the rest of AgentContext (§15 S4 item 8)', () => {
     const part = join(h.runsDir, FIXED_RUN_ID, 'outputs', 'step-1-2.txt');
     expect(existsSync(part)).toBe(true);
     expect(readFileSync(part, 'utf8')).toBe('second of several');
+  });
+
+  it('spilled parts keep their own per-run byte bound: past it nothing is written, the pointer is null and one warning says so', async () => {
+    const pointers: (string | null)[] = [];
+    const h = await agent([{ text: 'ok' }], {
+      driver: {
+        onNext: async (ctx) => {
+          pointers.push(await ctx.writeOutput('part one', 1));
+          pointers.push(await ctx.writeOutput('part two', 2));
+          // the store's own step-N.txt is a different ledger and still writes
+          pointers.push(await ctx.writeOutput('whole output'));
+        },
+      },
+    });
+    // a resumed run's earlier parts count: one (sparse) part already fills the bound
+    const outputs = join(h.runsDir, FIXED_RUN_ID, 'outputs');
+    mkdirSync(outputs, { recursive: true });
+    const fd = openSync(join(outputs, 'step-9-1.txt'), 'w');
+    ftruncateSync(fd, AGENT_OUTPUT_PARTS_MAX_BYTES);
+    closeSync(fd);
+    await h.engine.run();
+    expect(pointers).toEqual([null, null, 'jevcode:outputs/step-1.txt']);
+    expect(existsSync(join(outputs, 'step-1-1.txt'))).toBe(false);
+    expect(h.of('transcript').filter((t) => t.text.startsWith('outputs: spilled parts reached the run'))).toHaveLength(1);
+  });
+
+  it('writeOutputPart: the ledger reads the parts on disk once (never step-N.txt), a rewrite replaces its own size, and a part past the bound writes nothing', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'jevcode-agent-parts-'));
+    try {
+      const outputs = join(runDir, 'outputs');
+      mkdirSync(outputs, { recursive: true });
+      const fd = openSync(join(outputs, 'step-3.txt'), 'w');
+      ftruncateSync(fd, AGENT_OUTPUT_PARTS_MAX_BYTES);
+      closeSync(fd);
+      const ledger = createOutputPartLedger();
+      const id = (s: string): string => s;
+      expect(await writeOutputPart(runDir, 3, 1, 'abc', id, ledger)).toBe('jevcode:outputs/step-3-1.txt');
+      const sizes = await ledger.sizes!;
+      expect([...sizes.entries()]).toEqual([['step-3-1.txt', 3]]);
+      sizes.set('step-3-1.txt', AGENT_OUTPUT_PARTS_MAX_BYTES - 4);
+      expect(await writeOutputPart(runDir, 3, 2, 'too long', id, ledger)).toBeNull();
+      expect(existsSync(join(outputs, 'step-3-2.txt'))).toBe(false);
+      expect(await writeOutputPart(runDir, 3, 2, 'fit', id, ledger)).toBe('jevcode:outputs/step-3-2.txt');
+      // rewriting the big part does not count its own old size against itself
+      expect(await writeOutputPart(runDir, 3, 1, 'small now', id, ledger)).toBe('jevcode:outputs/step-3-1.txt');
+      expect(sizes.get('step-3-1.txt')).toBe(9);
+      expect(readdirSync(outputs).sort()).toEqual(['step-3-1.txt', 'step-3-2.txt', 'step-3.txt']);
+    } finally {
+      rmSync(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('an agent turn the pause cut mid-stream is booked: a cancelled generator.jsonl row whose estimated input is the transcript size, and the meter', async () => {
+    const big = 'x'.repeat(40_000);
+    const h = await agent([{ toolCalls: [{ name: 'read_file', input: { path: 'src/big.py' } }] }, { text: 'never arrives', delayMs: 5_000 }], { driver: { resolve: () => big } });
+    h.engine.events.on('generator:start', (e) => {
+      if (e.step === 2) h.engine.pause({ at: 'now' });
+    });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('human_pause');
+    expect(r.steps).toBe(1);
+    const rows = h.store.generator.filter((g) => g.step === 2);
+    expect(rows).toHaveLength(1);
+    const row = rows[0]!;
+    expect(row).toMatchObject({ cancelled: true, stopReason: 'cancelled', discarded: true });
+    expect('sample' in row).toBe(false);
+    expect(row.usage.estimated).toBe(true);
+    // the prompt is `agent.messages` (the 40,000-char tool result and the rest), not the empty legacy `messages`
+    expect(row.usage.inputTokens).toBeGreaterThanOrEqual(10_000);
+    expect(row.usage.inputTokens).toBeLessThan(10_100);
+    expect(row.usage.costUsd).toBeGreaterThan(0);
+    const end = h.of('generator:end').filter((e) => e.step === 2);
+    expect(end.map((e) => e.finishReason)).toEqual(['cancelled']);
+    expect('sample' in end[0]!).toBe(false);
+    // the served turn of step 1 and the cut one of step 2 both reach the meter (the spend cap sees what was billed)
+    expect(h.meter.snapshot().generator.calls).toBe(2);
+    expect(h.meter.snapshot().generator.inputTokens).toBe(1000 + row.usage.inputTokens);
   });
 
   it('reportContext feeds EngineStatus.context in agent mode (absent until the first report, as in the modes without a meter)', async () => {

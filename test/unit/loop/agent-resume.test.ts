@@ -4,13 +4,16 @@
  * - the resume fold raises `agentState.transcriptSeq` to the folded rows' `agent.seqAfter` (src/checkpoint/resume.ts, and the engine
  *   for a loader that did not fold), so a step `steps.jsonl` counted is never re-issued;
  * - a resume resets `counters.loopNudges`;
- * - an act step discarded through a blocking pane, answered, is issued again — the next request pairs every tool_use with a result.
+ * - an act step discarded through a blocking pane, answered, is issued again — the next request pairs every tool_use with a result;
+ * - a pause-now mid-turn writes no replay cache (S4 item 10) and still leaves a `now` PausePoint; the resume re-derives the turn;
+ * - a harness-seeded step (`seedStep`, `/land`) is refused in agent mode rather than accepted and never run.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { foldStepsIntoState, raiseAgentTranscriptSeq } from '../../../src/checkpoint/resume.js';
 import { createLoopDetector } from '../../../src/loop/loopdetect.js';
 import type { CheckpointState, StepRecord } from '../../../src/core/types.js';
 import type { AgentHarness, ToolTurn } from './fakes.js';
+import { AGENT_SEEDED_STEP_REFUSED } from '../../../src/loop/stages/agent.js';
 import { FIXED_RUN_ID, createFakeSandbox, createFakeStore, everyToolUsePaired, execResult, makeAgentEngine, passingTests } from './fakes.js';
 
 const harnesses: AgentHarness[] = [];
@@ -155,5 +158,61 @@ describe('a discarded act step is issued again (§2.2 "discarded steps", §10)',
     expect(h.driver.observations.map((o) => o.step)).toEqual([2, 3]);
     expect(h.tools.requests).toHaveLength(2);
     for (const req of h.tools.requests) expect(everyToolUsePaired(req.agent!.messages)).toBe(true);
+  });
+});
+
+describe('pause now in agent mode (§10 Pause, S4 item 10)', () => {
+  it('mid-turn: human_pause, exit 4, resumable, no replay cache, a `now` point that is not replayable; the resume re-derives the turn, paired', async () => {
+    const turns: ToolTurn[] = [read('src/a.py'), { text: 'never arrives', delayMs: 5_000 }];
+    const first = await agent(turns, { limits: { maxSteps: 10 } });
+    first.engine.events.on('generator:start', (e) => {
+      if (e.step === 2) first.engine.pause({ at: 'now' });
+    });
+    const r1 = await first.engine.run();
+    expect(r1.stopReason).toBe('human_pause');
+    expect(r1.steps).toBe(1);
+    expect(first.of('run:end')[0]).toMatchObject({ exitCode: 4, resumable: true });
+    // no replay cache in agent mode: the transcript is the state, so nothing was snapshotted
+    expect(first.store.cache.size).toBe(0);
+    const saved = first.store.last()!;
+    expect(saved.pausePoint).toMatchObject({ step: 2, phase: 'propose', reason: 'now', resumableAt: 'boundary', replayable: false });
+    expect(saved.interruptedDetail).toBeUndefined();
+    expect(first.store.steps.map((s) => s.agent?.kind)).toEqual(['observe']);
+
+    const second = await agent([{ text: 'f() returns 1.' }], { runsDir: first.runsDir, store: first.store, resume: { runId: FIXED_RUN_ID, force: false }, limits: { maxSteps: 10 } });
+    const r2 = await second.engine.run();
+    expect(r2.stopReason).toBe('generator_done');
+    expect(second.store.steps.map((s) => s.step)).toEqual([1, 2]);
+    // the resumed turn carries the read and its result, and nothing unpaired
+    const req = second.tools.requests[0]!.agent!.messages;
+    expect(everyToolUsePaired(req)).toBe(true);
+    expect(req.filter((m) => m.role === 'assistant')).toHaveLength(1);
+    expect(second.store.cache.size).toBe(0);
+  });
+});
+
+describe('harness-seeded steps in agent mode (ORCHESTRATION-DESIGN §5.7)', () => {
+  it('seedStep is refused (false, one transcript line) and /land refuses before any git read; the run is unaffected', async () => {
+    const gitCalls: string[][] = [];
+    const h = await agent([{ text: 'Hi.' }], {
+      engine: {
+        orchestration: {
+          depth: 0,
+          runGit: async (_cwd, args) => {
+            gitCalls.push([...args]);
+            return execResult({ exitCode: 0 });
+          },
+        },
+      },
+    });
+    const merge = { goal: 'land', action: { kind: 'run' as const, command: 'git merge --no-ff --no-edit abc123' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: 'harness-seeded: land' };
+    expect(h.engine.seedStep!(merge)).toBe(false);
+    const landed = await h.engine.land!({ workspaceRoot: h.workspace.root, baseSha: 'a'.repeat(40), pinned: 'b'.repeat(40), agents: 2, dockBranch: 'jevcode/dock' });
+    expect(landed).toEqual({ seeded: null, overlap: [] });
+    expect(gitCalls).toEqual([]);
+    expect(h.of('transcript').filter((t) => t.text === AGENT_SEEDED_STEP_REFUSED)).toHaveLength(2);
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('answered');
+    expect(h.sandbox.commands).toEqual([]);
   });
 });

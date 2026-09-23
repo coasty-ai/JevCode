@@ -7,10 +7,10 @@
  * The driver itself lives in `src/agent/` and is reached only through the `AgentDriver` contract (`src/core/types.ts`); nothing
  * here imports it, so the engine compiles and tests against a fake driver.
  */
-import { lstat, readFile } from 'node:fs/promises';
+import { lstat, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { writeFileAtomic } from '../../core/atomic.js';
-import { OUTPUT_FILE_MAX_CHARS, OUTPUT_READ_PREFIX } from '../../core/limits.js';
+import { OUTPUTS_DIR_MAX_BYTES, OUTPUT_FILE_MAX_CHARS, OUTPUT_READ_PREFIX } from '../../core/limits.js';
 import { clip, headTail } from '../../core/text.js';
 import { CHECKPOINT_FILES } from '../../checkpoint/store.js';
 import { RISK_DIMENSIONS } from '../../core/types.js';
@@ -53,6 +53,8 @@ export const AGENT_REASONING_TAIL_CHARS = 120;
 export const AGENT_TOOL_TARGET_CHARS = 80;
 /** §8: the transcript line of the AGENT_MAX_BLOCKS stop. */
 export const AGENT_MAX_BLOCKS_LINE = `the agent hit the destructive-command rules ${AGENT_MAX_BLOCKS} times; review, then resume`;
+/** §2.2: a harness-seeded step (`seedStep`, `/land`'s merge and pre-flight) is refused in agent mode — the driver proposes every step. */
+export const AGENT_SEEDED_STEP_REFUSED = "harness-seeded steps (/land's merge and pre-flight) are not available in agent mode yet; nothing was merged, committed or stashed";
 
 // ---------------------------------------------------------------------------------------
 // The stage (§2.2)
@@ -85,6 +87,17 @@ export function ruleRiskAssessment(gate: AgentGate): RiskAssessment {
   for (const d of RISK_DIMENSIONS) dims[d] = { ...ZERO_DIMENSION };
   const risk = gate.verdict === 'ok' && gate.rule === null ? 0 : 1;
   return { dims, risk, verdict: gate.verdict, reason: gate.reason, ...(gate.rule !== null ? { rule: gate.rule } : {}) };
+}
+
+/**
+ * §8 / §A2: a destructive refusal AGENT_MAX_BLOCKS counts — a gate `block` the engine refused, or a rule-matched `review` the human
+ * declined (the classifier never blocks: under `--autonomy review` a destructive command is a y/n card, and a `n` is the refusal).
+ * A declined review of an `unknown` command (no rule) is not a destructive refusal.
+ */
+export function isAgentRefusal(gate: AgentGate | null, outcome: ActionOutcome | null): boolean {
+  if (gate === null || outcome === null) return false;
+  if (gate.verdict === 'block') return outcome.status === 'blocked';
+  return gate.verdict === 'review' && gate.rule !== null && outcome.status === 'declined';
 }
 
 /** Rules whose effect leaves the machine: neither the sandbox nor a pre-image can contain it (§A5). */
@@ -247,15 +260,65 @@ export function isOutputPart(part: number | undefined): part is number {
 }
 
 /**
+ * §7.2: the part files' own per-run byte bound. The store's OUTPUTS_DIR_MAX_BYTES ledger reads `step-<n>.txt` names only, so the
+ * parts keep a ledger of their own under the same bound; a part past it is not written (the result keeps its inline head and tail).
+ */
+export const AGENT_OUTPUT_PARTS_MAX_BYTES = OUTPUTS_DIR_MAX_BYTES;
+const OUTPUT_PART_RE = /^step-[1-9]\d{0,8}-[1-9]\d{0,8}\.txt$/;
+
+/** The part files of this run by name → bytes: read from disk once, on the run's first part write (a resumed run's parts count). */
+export interface OutputPartLedger {
+  sizes: Promise<Map<string, number>> | null;
+}
+
+export function createOutputPartLedger(): OutputPartLedger {
+  return { sizes: null };
+}
+
+async function scanOutputParts(dir: string): Promise<Map<string, number>> {
+  const sizes = new Map<string, number>();
+  let names: string[] = [];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return sizes;
+  }
+  for (const n of names) {
+    if (!OUTPUT_PART_RE.test(n)) continue;
+    try {
+      sizes.set(n, (await stat(join(dir, n))).size);
+    } catch {
+      /* gone between readdir and stat */
+    }
+  }
+  return sizes;
+}
+
+/**
  * §7.2: one more spilled result of an observe step that spills several — `outputs/step-<n>-<k>.txt` beside the store's
  * `step-<n>.txt`, clipped and redacted exactly as `CheckpointStore.writeOutput` clips and redacts. Returns the `jevcode:` pointer
- * the tool result names. The store's per-run byte bound ledgers `step-<n>.txt` names only, so part files sit outside it — each
- * is at most OUTPUT_FILE_MAX_CHARS, and a step writes at most one per call of its read-only segment.
+ * the tool result names, or null when the part would take the run's parts past AGENT_OUTPUT_PARTS_MAX_BYTES (nothing written).
  */
-export async function writeOutputPart(runDir: string, step: number, part: number, text: string, redact: (s: string) => string): Promise<string> {
+export async function writeOutputPart(runDir: string, step: number, part: number, text: string, redact: (s: string) => string, ledger: OutputPartLedger): Promise<string | null> {
   const name = `step-${step}-${part}.txt`;
   const body = redact(text.length > OUTPUT_FILE_MAX_CHARS ? headTail(text, OUTPUT_FILE_MAX_CHARS - 4_096, 4_000) : text);
-  await writeFileAtomic(join(runDir, CHECKPOINT_FILES.outputs, name), body, { mkdir: true });
+  const bytes = Buffer.byteLength(body, 'utf8');
+  const dir = join(runDir, CHECKPOINT_FILES.outputs);
+  ledger.sizes ??= scanOutputParts(dir);
+  const sizes = await ledger.sizes;
+  let others = 0;
+  for (const [n, b] of sizes) if (n !== name) others += b;
+  if (others + bytes > AGENT_OUTPUT_PARTS_MAX_BYTES) return null;
+  // booked before the write, so parts written concurrently by one segment see each other
+  const prev = sizes.get(name);
+  sizes.set(name, bytes);
+  try {
+    await writeFileAtomic(join(dir, name), body, { mkdir: true });
+  } catch (e) {
+    if (prev === undefined) sizes.delete(name);
+    else sizes.set(name, prev);
+    throw e;
+  }
   return `${OUTPUT_READ_PREFIX}${CHECKPOINT_FILES.outputs}/${name}`;
 }
 

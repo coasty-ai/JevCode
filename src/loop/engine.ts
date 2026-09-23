@@ -208,11 +208,15 @@ import {
   AGENT_MAX_BLOCKS,
   AGENT_MAX_BLOCKS_LINE,
   AGENT_MAX_LOOP_NUDGES,
+  AGENT_OUTPUT_PARTS_MAX_BYTES,
+  AGENT_SEEDED_STEP_REFUSED,
   AGENT_STATE_MAX_BYTES,
   changedSincePre,
   createAgentStreamTap,
+  createOutputPartLedger,
   destructiveCoverage,
   destructiveNote,
+  isAgentRefusal,
   isOutputPart,
   isUnscopedGreenRun,
   recordedTestCommand,
@@ -1301,6 +1305,9 @@ class EngineImpl implements Engine {
   private agentContextUsage: ContextUsage | null = null;
   /** §8: gate refusals in this process; AGENT_MAX_BLOCKS of them pause the run (a resume starts a fresh allowance) */
   private agentBlocks = 0;
+  /** §7.2: the spilled output parts' byte ledger (the store's bound covers `step-<n>.txt` only), and whether its bound was announced */
+  private readonly outputParts = createOutputPartLedger();
+  private outputPartsFullNoted = false;
   /** §A1: the agent summaries of the steps committed in this process — `isReplyOnlyRun` reads them (a resumed run starts with a non-reply marker) */
   private readonly agentSteps: Pick<StepRecord, 'agent'>[] = [];
 
@@ -3844,7 +3851,14 @@ class EngineImpl implements Engine {
    */
   private async writeAgentOutput(step: number, text: string, part?: number): Promise<string | null> {
     try {
-      if (isOutputPart(part)) return await writeOutputPart(this.runDir, step, part, text, this.redact);
+      if (isOutputPart(part)) {
+        const ref = await writeOutputPart(this.runDir, step, part, text, this.redact, this.outputParts);
+        if (ref === null && !this.outputPartsFullNoted) {
+          this.outputPartsFullNoted = true;
+          this.emit({ type: 'transcript', step, level: 'warn', text: `outputs: spilled parts reached the run's ${Math.round(AGENT_OUTPUT_PARTS_MAX_BYTES / (1024 * 1024))} MB bound; later results keep their inline head and tail only` });
+        }
+        return ref;
+      }
       if (!hasContextStore(this.store)) return null;
       await this.store.writeOutput(step, text);
       return `${OUTPUT_READ_PREFIX}${outputRefFor(step)}`;
@@ -3977,6 +3991,8 @@ class EngineImpl implements Engine {
     const coverage = destructiveCoverage({ rule, command, imagesComplete: preWhole && postWhole, headMoved: images === null || images.headBefore !== headAfter });
     const text = destructiveNote(command, rule, coverage);
     draft.notes.push(text);
+    // the note is written from what actually ran, so it is the one reason the record keeps (a driver's pre-execution reason may disagree)
+    if (draft.risk !== null) draft.risk = { ...draft.risk, reason: text };
     this.emit({ type: 'transcript', step: draft.step, level: 'warn', text });
   }
 
@@ -4214,7 +4230,14 @@ class EngineImpl implements Engine {
                 sample.onCancelled?.(partial);
               },
             }
-          : {}),
+          : hooks !== undefined
+            ? // docs/AGENT-LOOP-DESIGN.md §15 S4 item 7: an agent turn keeps the provider's facts of a cut stream for its row too
+              {
+                onCancelled: (partial: CancelledGeneration) => {
+                  held.partial = partial;
+                },
+              }
+            : {}),
         // contract 1.9 (Fastlane) §3.1: time to first byte, forwarded verbatim. It is the §3.2 hedge's only input, so the
         // channel must not swallow it; absent when the caller asked for none, which is a one-shot propose call and every
         // sample of a synthesizer that does not measure TTFB.
@@ -4241,6 +4264,13 @@ class EngineImpl implements Engine {
         const latencyMs = Math.max(0, this.clock() - t0);
         const stopReason = leg.signal.aborted ? 'cancelled' : 'error';
         this.recordUnfinishedSample(draft, req, attempt, { sample: leg.sample ?? 0, purpose: 'propose_fix' }, { latencyMs, streamedChars: toolChars + textChars, stopReason, partial: held.partial, oneShotLeg: true });
+      }
+      // docs/AGENT-LOOP-DESIGN.md §15 S4 item 7: an agent turn the abort cut (pause-now, Ctrl-C, wall time) or that failed after its
+      // retries was still served — booked through the same estimator (its prompt is `agent.messages`), a one-shot row with no index
+      if (sample === undefined && leg === undefined && hooks !== undefined) {
+        const latencyMs = Math.max(0, this.clock() - t0);
+        const stopReason = this.signal.aborted ? abortStopReason(this.signal.reason) : held.partial?.rateLimited === true ? 'rate_limited' : 'error';
+        this.recordUnfinishedSample(draft, req, attempt, null, { latencyMs, streamedChars: toolChars + textChars, stopReason, partial: held.partial, oneShotLeg: true });
       }
       throw e;
     } finally {
@@ -4420,8 +4450,9 @@ class EngineImpl implements Engine {
     draft: StepDraft,
     req: GenerateRequest,
     attempt: number,
-    // F25: only the index and the purpose are read, so a hedged one-shot leg books itself through the same estimator
-    sample: Pick<SampleOptions, 'sample' | 'purpose'>,
+    // F25: only the index and the purpose are read, so a hedged one-shot leg books itself through the same estimator;
+    // null = an agent turn (docs/AGENT-LOOP-DESIGN.md §15 S4 item 7), whose row and event carry no index, like its served row
+    sample: Pick<SampleOptions, 'sample' | 'purpose'> | null,
     o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' | 'rate_limited'; partial: CancelledGeneration | null; oneShotLeg?: boolean },
   ): void {
     const promptHash = promptHashOfRequest(req);
@@ -4457,8 +4488,7 @@ class EngineImpl implements Engine {
       latencyMs: o.latencyMs,
       stopReason: o.stopReason,
       malformed: false,
-      sample: sample.sample,
-      purpose: sample.purpose,
+      ...(sample !== null ? { sample: sample.sample, purpose: sample.purpose } : {}),
       cancelled: true,
       ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
       ...(p?.generationId !== undefined ? { generationId: p.generationId } : {}),
@@ -4467,7 +4497,7 @@ class EngineImpl implements Engine {
       // review defect A3: a losing §3.2 leg is booked exactly like a losing sample — metered, priced, one row —
       // but it is not a sample of a synthesizer round and does not join that round's tallies
     }, o.oneShotLeg === true ? 'one-shot-leg' : 'sample');
-    this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: o.latencyMs, finishReason: o.stopReason, sample: sample.sample });
+    this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: o.latencyMs, finishReason: o.stopReason, ...(sample !== null ? { sample: sample.sample } : {}) });
   }
 
   /**
@@ -5177,8 +5207,9 @@ class EngineImpl implements Engine {
       this.stateError = { stage: u.stage, code: 'config' };
       return { stop: 'error', detail: 'unpriced_usage' };
     }
-    // docs/AGENT-LOOP-DESIGN.md §8: AGENT_MAX_BLOCKS gate refusals pause the run for a human (resumable, no prompt)
-    if (this.mode === 'agent' && draft.agentGate?.verdict === 'block' && draft.outcome?.status === 'blocked' && ++this.agentBlocks >= AGENT_MAX_BLOCKS) {
+    // docs/AGENT-LOOP-DESIGN.md §8 / §A2: AGENT_MAX_BLOCKS destructive refusals pause the run for a human (resumable, no prompt) — a
+    // gate `block`, or (the real classifier's shape under `--autonomy review`) a rule-matched review the human declined
+    if (this.mode === 'agent' && isAgentRefusal(draft.agentGate, draft.outcome) && ++this.agentBlocks >= AGENT_MAX_BLOCKS) {
       this.emit({ type: 'transcript', step, level: 'warn', text: AGENT_MAX_BLOCKS_LINE });
       return { stop: 'human_pause', detail: 'max_blocks' };
     }
@@ -5506,6 +5537,11 @@ class EngineImpl implements Engine {
   /** §5.7: seed the NEXT step's proposal. False when the run has finished or a seed is already pending. */
   seedStep(proposal: Proposal, note?: string): boolean {
     if (this.finishing || this.isFinished() || this.seededStep !== null) return false;
+    // docs/AGENT-LOOP-DESIGN.md §2.2: the driver proposes every agent step, so a seeded proposal would never run — refused, said once
+    if (this.mode === 'agent') {
+      this.emit({ type: 'transcript', step: null, level: 'warn', text: AGENT_SEEDED_STEP_REFUSED });
+      return false;
+    }
     this.seededStep = { step: this.step + 1, proposal, note: note ?? `step ${this.step + 1}: proposal seeded by the harness (${summariseAction(proposal.action)})` };
     return true;
   }
@@ -5519,6 +5555,12 @@ class EngineImpl implements Engine {
     const o = this.opts.orchestration;
     const runGit = o?.runGit;
     if (runGit === undefined) return { seeded: null, overlap: [] };
+    // docs/AGENT-LOOP-DESIGN.md §2.2: /land's merge and pre-flight steps are seeded steps, which agent mode does not run — refuse
+    // before any git read, so nothing is committed or stashed for a merge that would never happen
+    if (this.mode === 'agent') {
+      this.emit({ type: 'transcript', step: null, level: 'warn', text: AGENT_SEEDED_STEP_REFUSED });
+      return { seeded: null, overlap: [] };
+    }
     const { overlap, ok } = await launchOverlap(runGit, input);
     const plan: PlanDraft = { done: this.plan.done.map((d) => d.text), remaining: [...this.plan.remaining], openProblems: [...this.plan.openProblems] };
     // review 2026-09-22 finding 1: `!ok` is its OWN case. `launchOverlap` reports `ok: false` when
