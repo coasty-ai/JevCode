@@ -39,7 +39,7 @@ import { DEFAULT_REFERER } from '../jev/types.js';
 import {
   LOGIN_JEV_PROVIDER_PROMPT,
   LOGIN_JEV_PROVIDER_REQUIRED,
-  LOGIN_ONE_KEY_PROMPT,
+  loginOneKeyPrompt,
   LOGIN_OTHER_WAYS_PROMPT,
   WIZARD_REUSE_HINT,
   fixBlockLines,
@@ -791,7 +791,7 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
   if (wantOneKey) {
     if (interactive) {
       // a terminal cannot deliver a "stdin line" without echoing it: the one key is asked for masked
-      const k = await promptKey(io, LOGIN_ONE_KEY_PROMPT, 'openrouter', false);
+      const k = await promptKey(io, loginOneKeyPrompt(mode), 'openrouter', false);
       if (k === CANCELLED || k === null) {
         printFix(io, fixMode, null);
         return EXIT_CODES.config;
@@ -905,7 +905,7 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
         }
       }
     } else {
-      const k = await promptKey(io, LOGIN_ONE_KEY_PROMPT, 'openrouter', false);
+      const k = await promptKey(io, loginOneKeyPrompt(mode), 'openrouter', false);
       if (k === CANCELLED || k === null) {
         printFix(io, fixMode, null);
         return EXIT_CODES.config;

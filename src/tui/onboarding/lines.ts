@@ -88,7 +88,8 @@ export const WIZARD_PROVIDER_HINT_MODE = providerHintMode('jev-only');
  * both keys); jev-only never needs a generator and keeps the jev+llm text. The word comes from `MODE_BADGE_WORD` (D-N).
  */
 export function providerTitleMode(mode: EngineMode): string {
-  return `${MODE_BADGE_WORD[mode === 'jev-off' || mode === 'llm-jev' ? mode : 'jev-on']} needs a generator. Pick the provider:`;
+  // AGENT-LOOP-DESIGN §14.1: `/mode agent` without a generator key names agent (the other rows are unchanged)
+  return `${MODE_BADGE_WORD[mode === 'jev-off' || mode === 'llm-jev' || mode === 'agent' ? mode : 'jev-on']} needs a generator. Pick the provider:`;
 }
 /** TUI-DESIGN-3 §4.4 F19: the `/login` re-entry title of the jevProvider step — no "No Jev key found." (a key may well resolve). */
 export const WIZARD_JEV_PROVIDER_TITLE_LOGIN = 'Where do you reach Jev?';
@@ -136,6 +137,23 @@ export const SR_OPTIONS_ROWS: readonly [string, string, string] = [WIZARD_OPTION
 export const LOGIN_OTHER_WAYS_PROMPT = 'other ways: [t] TypeSafe Jev · [j] Jev only · [a] Anthropic · Enter continues: ';
 /** the plain / `jevcode login` one-key prompt */
 export const LOGIN_ONE_KEY_PROMPT = 'OpenRouter API key (one key: Jev + the code model): ';
+
+// AGENT-LOOP-DESIGN §14.5 "Onboarding": the agent-mode wording — one key runs the code model, an OpenRouter key also enables Jev's quick
+// routing calls; the "Jev only" option is worded as the jev-only mode. Shown only when the wizard collects keys FOR agent mode
+// (`targetMode(state) === 'agent'`), so every legacy-mode wizard frame stays byte-identical until slice S6 flips the default.
+/** the agent `key` step title (72 cells) */
+export const WIZARD_KEY_TITLE_AGENT = "OpenRouter API key — runs the code model (and Jev's quick routing calls)";
+/** the agent options row (87 cells before ` (default)`, 97 after) and its narrow twin (52) */
+export const WIZARD_OPTIONS_AGENT = '  1 OpenRouter   2 TypeSafe for Jev   3 jev-only (no code model)   4 Anthropic for code';
+export const WIZARD_OPTIONS_AGENT_NARROW = '  1 OpenRouter   2 TypeSafe   3 jev-only   4 Anthropic';
+/** the agent screen-reader `options` rows (each ≤ 76) */
+export const SR_OPTIONS_ROWS_AGENT: readonly [string, string, string] = [WIZARD_OPTIONS_TITLE, '1. OpenRouter key  2. TypeSafe key for Jev  3. jev-only mode (no code model)', '4. Anthropic key for the code model · Enter selection (1-4):'];
+/** the agent plain / `jevcode login` one-key prompt */
+export const LOGIN_ONE_KEY_PROMPT_AGENT = 'OpenRouter API key (one key: the code model; Jev optional): ';
+/** the one-key prompt for the mode the keys are for */
+export function loginOneKeyPrompt(mode: EngineMode): string {
+  return mode === 'agent' ? LOGIN_ONE_KEY_PROMPT_AGENT : LOGIN_ONE_KEY_PROMPT;
+}
 /** TUI-DESIGN-3 §1.8 edge 30: `/login --verify` (or `y`) in a `--mock` session never reaches the network */
 export const MOCK_VERIFY_NOTE = '(mock session: verification uses the network)';
 /** TUI-DESIGN-3 §4.4 F3: `/panel` reaching the host while the wizard owns the input (the TUI keeps every spelling App-local) */
@@ -160,8 +178,10 @@ export function optionsTitle(highlight: WizardOption | null): string {
 export function optionsRow(highlight: WizardOption | null, columns: number, ascii = false, mode: EngineMode = DEFAULT_MODE): string {
   const inner = cols(columns);
   const d = defaultOption(mode);
-  const wide = WIZARD_OPTIONS.replace(new RegExp(`(${d} [^0-9]+?)(   |$)`), '$1 (default)$2');
-  const row = stringWidth(wide) <= inner ? wide : WIZARD_OPTIONS_NARROW;
+  // AGENT-LOOP-DESIGN §14.5: an agent-mode wizard names the options for agent mode (option 3 is the jev-only mode)
+  const agent = mode === 'agent';
+  const wide = (agent ? WIZARD_OPTIONS_AGENT : WIZARD_OPTIONS).replace(new RegExp(`(${d} [^0-9]+?)(   |$)`), '$1 (default)$2');
+  const row = stringWidth(wide) <= inner ? wide : agent ? WIZARD_OPTIONS_AGENT_NARROW : WIZARD_OPTIONS_NARROW;
   if (highlight === null) return row;
   const marker = ascii ? '>' : '▌';
   return row.replace(new RegExp(` (${highlight} )`), `${marker}$1`);
@@ -170,6 +190,9 @@ export function optionsRow(highlight: WizardOption | null, columns: number, asci
 /** TUI-DESIGN-3 §1.4.2: the highlighted option's one-line consequence (65 / 75 / 73 / 75); the amounts are never literal */
 export function optionHint(n: WizardOption, runCapUsd: number = defaultRunSpendCapUsd('jev-only'), sessionCapUsd: number = defaultRunSpendCapUsd('jev-only') * SESSION_CAP_MULTIPLIER, mode: EngineMode = DEFAULT_MODE): string {
   const dflt = defaultOption(mode) === n ? ' (default)' : '';
+  // AGENT-LOOP-DESIGN §14.5: in agent mode one key runs the code model (Jev optional), and option 3 is the jev-only mode
+  if (mode === 'agent' && n === 1) return `1: one key runs the code model; Jev is optional${dflt} · Enter confirms`;
+  if (mode === 'agent' && n === 3) return `3: jev-only — no code model; code proposes, tests verify · caps ${usd2(runCapUsd)} / ${usd2(sessionCapUsd)}`;
   switch (n) {
     case 1:
       return `1: one key runs Jev and the code model${dflt} · Enter confirms`;
@@ -553,8 +576,10 @@ export function wizardMinsizeRow(state: OnboardingState, columns: number, ascii 
 function choiceRow(state: OnboardingState, ascii: boolean): string | null {
   const squeeze = (s: string): string => s.trim().replace(/ {2,}/g, '  ');
   switch (state.step) {
-    case 'options':
-      return squeeze(ascii ? asciiRow(WIZARD_OPTIONS_NARROW) : WIZARD_OPTIONS_NARROW);
+    case 'options': {
+      const narrow = targetMode(state) === 'agent' ? WIZARD_OPTIONS_AGENT_NARROW : WIZARD_OPTIONS_NARROW;
+      return squeeze(ascii ? asciiRow(narrow) : narrow);
+    }
     case 'provider':
       return squeeze(WIZARD_PROVIDER_OPTIONS_NARROW);
     case 'jevProvider':
@@ -582,7 +607,7 @@ export function wizardLines(state: OnboardingState, view: WizardView): string[] 
   switch (state.step) {
     case 'key': {
       // TUI-DESIGN-3 §1.4.2: the one-paste field — the found-title when a key already resolves, else the OpenRouter title
-      const title = state.found === null ? WIZARD_KEY_TITLE : keyFoundTitle(state.found, state.foundSource);
+      const title = state.found === null ? (targetMode(state) === 'agent' ? WIZARD_KEY_TITLE_AGENT : WIZARD_KEY_TITLE) : keyFoundTitle(state.found, state.foundSource);
       const empty = state.length === 0;
       const reuse = reuseJevOffered(state);
       const emptyHint = reuse ? (state.foundSource === 'file' ? WIZARD_REUSE_JEV_FILE_HINT : WIZARD_REUSE_JEV_HINT) : state.found === 'typesafe' || state.found === 'jev' ? WIZARD_KEY_HINT_FOUND_TYPESAFE : state.found === 'anthropic' ? WIZARD_KEY_HINT_FOUND_ANTHROPIC : WIZARD_KEY_HINT_EMPTY;
@@ -592,9 +617,11 @@ export function wizardLines(state: OnboardingState, view: WizardView): string[] 
     }
     case 'options': {
       // TUI-DESIGN-3 §1.4.2: a digit highlights (`▌`, the title names it, the hint is its consequence); the same digit or Enter confirms
-      if (sr) return [...SR_OPTIONS_ROWS].map(clip);
-      const hint = state.hint ?? (state.highlight === null ? WIZARD_OPTIONS_HINT : optionHint(state.highlight));
-      return [optionsTitle(state.highlight), optionsRow(state.highlight, c, ascii), hint].map(clip);
+      // AGENT-LOOP-DESIGN §14.5: an agent-mode wizard's own wording; every other target keeps today's rows (and today's default marker)
+      const agent = targetMode(state) === 'agent';
+      if (sr) return [...(agent ? SR_OPTIONS_ROWS_AGENT : SR_OPTIONS_ROWS)].map(clip);
+      const hint = state.hint ?? (state.highlight === null ? WIZARD_OPTIONS_HINT : agent ? optionHint(state.highlight, undefined, undefined, 'agent') : optionHint(state.highlight));
+      return [optionsTitle(state.highlight), agent ? optionsRow(state.highlight, c, ascii, 'agent') : optionsRow(state.highlight, c, ascii), hint].map(clip);
     }
     case 'jevProvider': {
       // TUI-DESIGN-2 §1.4 / §12: `1 typesafe … 2 openrouter …`; Enter accepts a preselection. TUI-DESIGN-3 §4.4 F19: `/login` re-entry drops "No Jev key found."
@@ -735,6 +762,8 @@ export const FIX_BLOCK_ONE_KEY: readonly string[] = [
   '                              # Jev alone: jevcode config set mode jev-only',
 ];
 export const FIX_BLOCK_ANTHROPIC_LINE = 'export ANTHROPIC_API_KEY=…    # the code model under --provider anthropic';
+/** AGENT-LOOP-DESIGN §14.2: the agent fix block's first line (the rest is `FIX_BLOCK_ONE_KEY`'s) */
+export const FIX_BLOCK_ONE_KEY_AGENT_FIRST = 'export OPENROUTER_API_KEY=…   # one key: the code model (Jev optional)';
 /**
  * TUI-DESIGN-3 §1.6 / round-5 item 4: the pipe ConfigError text when only the generator key is missing under a
  * generator mode. It names the RESOLVED provider's own variable: the constant this replaced always said
@@ -755,7 +784,8 @@ export function missingGeneratorOnly(provider: ProviderId | null): string {
  */
 export function fixBlockLines(mode: EngineMode, provider: WizardProvider | null = null): string[] {
   if (mode === 'jev-only') return [...FIX_BLOCK_JEV_ONLY];
-  const lines = [...FIX_BLOCK_ONE_KEY];
+  // AGENT-LOOP-DESIGN §14.2: agent mode needs the generator key alone — the one key runs the code model, Jev is optional
+  const lines = mode === 'agent' ? [FIX_BLOCK_ONE_KEY_AGENT_FIRST, ...FIX_BLOCK_ONE_KEY.slice(1)] : [...FIX_BLOCK_ONE_KEY];
   if (provider === 'anthropic') lines.push(FIX_BLOCK_ANTHROPIC_LINE);
   lines.push(FIX_BLOCK_FOOTER);
   return lines;

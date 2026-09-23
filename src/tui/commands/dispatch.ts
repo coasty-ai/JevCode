@@ -13,7 +13,7 @@ import type { EndOptions, EngineMode, PauseOptions, StageName } from '../../core
 import type { KeyRunPhase } from '../keys/resolve.js';
 import { rank } from './fuzzy.js';
 import { commandName, parseCommand, restOf, takeLeadingToken, type ParseResult, type ParsedCommand } from './parse.js';
-import { BUDGET_SETTINGS, COMMANDS, LLM_STATE_MODE, LLM_STATES, PANEL_ARGS, THEMES, TRANSCRIPT_VIEWS, availabilityError, findCommand, restArgIndex, type ArgSpec, type CommandSpec } from './registry.js';
+import { BUDGET_SETTINGS, COMMANDS, LLM_STATE_MODE, LLM_STATES, MODE_LEGACY_ARG, PANEL_ARGS, THEMES, TRANSCRIPT_VIEWS, availabilityError, findCommand, restArgIndex, type ArgSpec, type CommandSpec } from './registry.js';
 
 /** TUI-DESIGN §5.1: what the resolver needs to know about the session to validate arguments. */
 export interface DispatchContext {
@@ -86,8 +86,9 @@ export type CommandAction =
   // TUI-DESIGN-3 §4.4 F15: `/model` and `/provider` alone show (null) the current and the pending value
   | { kind: 'model'; id: string | null }
   | { kind: 'provider'; provider: 'anthropic' | 'openrouter' | null }
-  // TUI-DESIGN-2 §1.3 / §6 item 17: `/mode` alone shows (null); `/llm on` → jev-on, `/llm off` → jev-only
-  | { kind: 'mode'; mode: EngineMode | null }
+  // TUI-DESIGN-2 §1.3 / §6 item 17: `/mode` alone shows (null); `/llm on` → jev-on, `/llm off` → jev-only; AGENT-LOOP-DESIGN §14.1:
+  // `/mode legacy` lists the modes kept for saved configs, resume and the bench (`/llm on` → agent once the default flips)
+  | { kind: 'mode'; mode: EngineMode | 'legacy' | null }
   // TUI-DESIGN-2 §4.6: `/panel` alone toggles; a tab letter opens it; `off` collapses; `full` expands. `/transcript` alone shows the view
   | { kind: 'panel'; panel: 'toggle' | (typeof PANEL_ARGS)[number] }
   | { kind: 'transcript'; view: (typeof TRANSCRIPT_VIEWS)[number] | null }
@@ -320,7 +321,8 @@ function stepReason(ctx: DispatchContext, got: string): string {
 
 function enumArg(spec: ArgSpec, v: string): string | null {
   const lower = v.trim().toLowerCase();
-  return (spec.values ?? []).find((x) => x === lower) ?? null;
+  // `accepts`: values taken but not listed (the legacy modes once `/mode` lists the advertised ones, AGENT-LOOP-DESIGN §14.1)
+  return (spec.values ?? []).find((x) => x === lower) ?? (spec.accepts ?? []).find((x) => x === lower) ?? null;
 }
 
 function enumReason(spec: ArgSpec, got: string): string {
@@ -757,12 +759,12 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
       if (a0 === undefined) return ok({ kind: 'mode', mode: null });
       const v = enumArg(spec.args[0] as ArgSpec, a0);
       if (v === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, a0));
-      return ok({ kind: 'mode', mode: v as EngineMode });
+      return ok({ kind: 'mode', mode: v === MODE_LEGACY_ARG ? 'legacy' : (v as EngineMode) });
     }
     case 'llm': {
       const t = tooMany(spec, p, 1);
       if (t) return t;
-      if (a0 === undefined) return cmdErr(spec.name, `expected <on|off>: on = /mode jev-on, off = /mode jev-only`);
+      if (a0 === undefined) return cmdErr(spec.name, `expected <on|off>: on = /mode ${LLM_STATE_MODE.on}, off = /mode jev-only`);
       const v = enumArg(spec.args[0] as ArgSpec, a0);
       if (v === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, a0));
       return ok({ kind: 'mode', mode: LLM_STATE_MODE[v as (typeof LLM_STATES)[number]] });

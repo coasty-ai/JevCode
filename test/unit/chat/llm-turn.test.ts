@@ -10,7 +10,7 @@ import { buildAnthropicBody } from '../../../src/provider/anthropic.js';
 import { buildChatBody } from '../../../src/provider/openai-compat.js';
 import { OPENAI_CHAT_QUIRKS, buildResponsesBody } from '../../../src/provider/openai.js';
 import { buildOpenRouterBody } from '../../../src/provider/openrouter.js';
-import { CHAT_CONVERSATION_TURNS, CHAT_IDENTITY, CHAT_PROVIDER_PREFS, CHAT_REASONING, CHAT_REASONING_OPENROUTER, chatIdentityHeader, CHAT_MAX_OUTPUT_TOKENS, buildChatRequest, buildChatSystem, chatMaxTokens, chatMessages, llmChatTurn, type LlmTurnInput } from '../../../src/chat/llm-turn.js';
+import { AGENT_VOICE, CHAT_CAPABILITIES, CHAT_CAPABILITIES_LEGACY, CHAT_CONVERSATION_TURNS, CHAT_IDENTITY, CHAT_IDENTITY_LEGACY, CHAT_PROVIDER_PREFS, CHAT_REASONING, CHAT_REASONING_OPENROUTER, chatIdentityHeader, CHAT_MAX_OUTPUT_TOKENS, buildChatRequest, buildChatSystem, chatMaxTokens, chatMessages, llmChatTurn, type LlmTurnInput } from '../../../src/chat/llm-turn.js';
 import { harnessFacts } from '../../../src/chat/facts.js';
 import type { ChatTurn } from '../../../src/chat/ledger.js';
 import { keyedFixture } from './facts.test.js';
@@ -58,10 +58,12 @@ describe('§3.6 buildChatRequest', () => {
     expect(req.system.startsWith('# Who you are\nYou are JevCode, a coding agent for the terminal, built by coasty-ai. You run on the code model z-ai/glm-5.3-flash through OpenRouter, but you are not that vendor\'s assistant.')).toBe(true);
     expect(header).toContain('answer as JevCode, built by coasty-ai, running on z-ai/glm-5.3-flash via OpenRouter — never introduce yourself as the underlying vendor\'s model or assistant');
     expect(header).toContain('overrides anything you were told about your identity');
-    expect(req.system.indexOf(header)).toBeLessThan(req.system.indexOf(CHAT_IDENTITY));
-    expect(CHAT_IDENTITY).toBe(
+    // the Jev-driven modes' chat (no `mode`, or a legacy one) keeps its paragraph byte for byte (AGENT-LOOP-DESIGN: legacy unchanged)
+    expect(req.system.indexOf(header)).toBeLessThan(req.system.indexOf(CHAT_IDENTITY_LEGACY));
+    expect(CHAT_IDENTITY_LEGACY).toBe(
       'Jev decides, the code model writes: Jev, a calibrated decision model, answers every control question (what step comes next, which files matter, whether an action is safe to run, whether the output succeeded, whether the task is done); the code model — you, in this reply — writes the code.',
     );
+    expect(buildChatRequest(input({ mode: 'llm-jev' })).system).toBe(buildChatRequest(input()).system);
     // the voice rules and the workspace section the controller fills
     expect(req.system).toContain('- Warm, concise, personal, plain prose.');
     expect(req.system).toContain('the harness decides whether a run starts and appends that itself');
@@ -236,5 +238,29 @@ describe('network map P1/P2: chat routing and reasoning', () => {
     const failed: string[] = [];
     await expect(llmChatTurn(input({ provider: fakeProvider({ text: '', fail: boom }), onEnd: () => failed.push('end') }))).rejects.toBe(boom);
     expect(failed).toEqual([]);
+  });
+});
+
+describe('AGENT-LOOP-DESIGN §14.5 / §A5: the agent-era copy', () => {
+  const identity = { model: 'z-ai/glm-5.3-flash', provider: 'OpenRouter', workspace: 'proj', git: null, recentSessions: [] };
+  it('the agent copy lacks "Jev decides": the code model works, Jev only routes; the verified identity header still leads', () => {
+    const system = buildChatSystem(identity, 'agent');
+    expect(system.startsWith(chatIdentityHeader('z-ai/glm-5.3-flash', 'OpenRouter'))).toBe(true);
+    expect(system).not.toMatch(/Jev decides/);
+    expect(system).toContain(CHAT_IDENTITY);
+    expect(CHAT_IDENTITY).toBe(
+      "The code model, you in this reply, does the work: in a run it reads, searches, edits and runs commands in this workspace through tools, and the workspace's tests verify the change. A small decision model (Jev) only makes a few quick routing calls, such as whether a message is a task.",
+    );
+    expect(CHAT_CAPABILITIES).not.toMatch(/Jev decides/);
+    expect(CHAT_CAPABILITIES).toContain('- Modes: agent (the code model works through tools)');
+    expect(CHAT_CAPABILITIES).toContain('jev-only (Jev without a code model)');
+    expect(CHAT_CAPABILITIES).toContain('llm-jev, jev-on, jev-off are kept for saved configs.');
+    // the agent voice answers a greeting without tools and has no chat-only "do not act" rule
+    expect(system).toContain(AGENT_VOICE);
+    expect(AGENT_VOICE).toContain('without tools');
+    expect(system).not.toContain('the harness decides whether a run starts');
+    // the legacy capabilities keep their text
+    expect(CHAT_CAPABILITIES_LEGACY).toContain('Jev decides each step');
+    expect(buildChatSystem(identity)).toContain(CHAT_CAPABILITIES_LEGACY);
   });
 });

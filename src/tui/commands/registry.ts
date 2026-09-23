@@ -5,7 +5,7 @@
  * composer supports the command. Aliases (§4.1): every alias is a `NAME_RE` token, unique across names + aliases, never another
  * command's name; no one-letter alias for a command whose Enter destroys state without a confirm (`/new`, `/exit`, `/abort`).
  */
-import { DEFAULT_MODE, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../config/defaults.js';
+import { ADVERTISED_MODES, DEFAULT_MODE, LEGACY_MODES, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../config/defaults.js';
 // TUI-DESIGN-5 §6.1 (D-AP) / §6.3: the seven provider ids, from the ZERO-IMPORT module (`src/provider/ids.ts`'s
 // own docblock) — never `models/providers.ts`, whose `providerSpec(id)` puts `provider/openrouter.js` on this path.
 import { PROVIDER_IDS } from '../../provider/ids.js';
@@ -20,6 +20,8 @@ export interface ArgSpec {
   readonly kind: ArgKind;
   /** `enum` / `setting` values, in palette order */
   readonly values?: readonly string[];
+  /** `enum` values the dispatcher also accepts but the palette, completion and usage do not list (`/mode llm-jev` once only the advertised modes are listed) */
+  readonly accepts?: readonly string[];
   /** palette sub-rows for `values` (`/budget spend-cap <usd>   run cap for the next /resume or run`) */
   readonly valueHints?: Readonly<Record<string, { readonly args?: string; readonly title: string }>>;
   readonly optional?: boolean;
@@ -92,17 +94,46 @@ export const MODE_VALUE_HINTS: Readonly<Record<EngineMode, { readonly title: str
   'jev-off': { title: 'the generator alone (bench condition)' },
   'agent': { title: `${MODE_BADGE_WORD['agent']}: the code model works through tools, tests verify` },
 };
-/** TUI-DESIGN-3 §4.1 rule 6: the Popular group of an empty palette query, in this fixed order (16 commands). */
-export const POPULAR: readonly string[] = ['help', 'mode', 'model', 'cost', 'status', 'resume', 'new', 'panel', 'plan', 'diff', 'undo', 'theme', 'login', 'budget', 'jev', 'exit'];
+/**
+ * AGENT-LOOP-DESIGN §14.1 / §14.3: the advertised mode surface — `/mode` lists agent · jev-only · legacy (`/mode legacy` names the rest),
+ * `/llm on` is agent, and `/jev` / `/panel` leave the Popular group — goes live with the default flip (slice S6 sets DEFAULT_MODE to
+ * agent). Until then a legacy-default session's palette, `/llm` and Popular stay byte-identical (this wave's binding legacy rule); the
+ * pure `(defaultMode)` forms below state the post-flip surface for the tests.
+ */
+export function advertisedSurface(defaultMode: EngineMode = DEFAULT_MODE): boolean {
+  return defaultMode === 'agent';
+}
+/** the `/mode legacy` argument: lists the modes kept for saved configs, resume and the bench */
+export const MODE_LEGACY_ARG = 'legacy';
+/** `/mode legacy`'s answer */
+export const MODE_LEGACY_TEXT = `legacy modes, accepted for saved configs, resume and the bench: ${LEGACY_MODES.join(' · ')} — /mode <name> switches to one`;
+/** `/mode`'s listed values: the advertised modes and `legacy` after the flip; every mode, in the round-2 table order, before it */
+export function modeArgValues(defaultMode: EngineMode = DEFAULT_MODE): readonly string[] {
+  return advertisedSurface(defaultMode) ? [...ADVERTISED_MODES, MODE_LEGACY_ARG] : ENGINE_MODES;
+}
+/** what `/mode` accepts without listing: every other engine mode (a persisted `mode llm-jev` keeps working) and `legacy` */
+export function modeArgAccepts(defaultMode: EngineMode = DEFAULT_MODE): readonly string[] {
+  const listed = modeArgValues(defaultMode);
+  return [...ENGINE_MODES, MODE_LEGACY_ARG].filter((v) => !listed.includes(v));
+}
+/** TUI-DESIGN-3 §4.1 rule 6: the Popular group of an empty palette query, in this fixed order (16 commands; 14 after the flip, §14.3 item 8). */
+export function popularFor(defaultMode: EngineMode = DEFAULT_MODE): readonly string[] {
+  const all = ['help', 'mode', 'model', 'cost', 'status', 'resume', 'new', 'panel', 'plan', 'diff', 'undo', 'theme', 'login', 'budget', 'jev', 'exit'];
+  return advertisedSurface(defaultMode) ? all.filter((n) => n !== 'jev' && n !== 'panel') : all;
+}
+export const POPULAR: readonly string[] = popularFor();
 /**
  * TUI-DESIGN-3 §4.1 (D-K): commands whose Enter destroys state without a confirm — never a one-letter alias (`a` for /abort and
  * `n` for /new are dropped; /new gets `nw`). `/exit` keeps `q` alone (the letter every pager teaches; `x` is dropped): `EXIT_ONE_LETTER`.
  */
 export const NO_ONE_LETTER_ALIAS: readonly string[] = ['new', 'abort'];
 export const EXIT_ONE_LETTER = 'q';
-/** TUI-DESIGN-2 §1.3: `/llm on|off` → `/mode jev-on` | `/mode jev-only`. */
+/** TUI-DESIGN-2 §1.3: `/llm on|off` → `/mode jev-on` | `/mode jev-only`; AGENT-LOOP-DESIGN §14.5: `/llm on` → `/mode agent` after the flip. */
 export const LLM_STATES = ['on', 'off'] as const;
-export const LLM_STATE_MODE: Readonly<Record<(typeof LLM_STATES)[number], 'jev-on' | 'jev-only'>> = { on: 'jev-on', off: 'jev-only' };
+export function llmStateMode(defaultMode: EngineMode = DEFAULT_MODE): Readonly<Record<(typeof LLM_STATES)[number], EngineMode>> {
+  return { on: advertisedSurface(defaultMode) ? 'agent' : 'jev-on', off: 'jev-only' };
+}
+export const LLM_STATE_MODE: Readonly<Record<(typeof LLM_STATES)[number], EngineMode>> = llmStateMode();
 /** TUI-DESIGN-2 §4.6 / TUI-DESIGN-5 §4.3: `/panel [d|p|t|s|a|off|full]` — `'a'` is R5-4's §9.2 request, landed in this file's one PR. */
 export const PANEL_ARGS = ['d', 'p', 't', 's', 'a', 'off', 'full'] as const;
 /** TUI-DESIGN-2 §4.5: `/transcript [compact|full]`. */
@@ -387,12 +418,25 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'mode',
     aliases: ['m'],
-    args: [{ name: 'm', kind: 'enum', values: ENGINE_MODES, optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]', valueHints: MODE_VALUE_HINTS, defaultValue: DEFAULT_MODE }],
+    args: [
+      {
+        name: 'm',
+        kind: 'enum',
+        values: modeArgValues(),
+        accepts: modeArgAccepts(),
+        optional: true,
+        hint: advertisedSurface() ? `[${modeArgValues().join('|')}]` : '[jev-only|jev-on|jev-off|llm-jev]',
+        valueHints: { ...MODE_VALUE_HINTS, [MODE_LEGACY_ARG]: { title: 'list the older modes (saved configs, resume, the bench)' } },
+        defaultValue: DEFAULT_MODE,
+      },
+    ],
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'engine mode: show, or set for the next run',
-    usage: '[jev-only|jev-on|jev-off|llm-jev]',
-    semantics: 'no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard\'s generator step in place; persist with `jevcode config set mode <m>`',
+    usage: advertisedSurface() ? `[${modeArgValues().join('|')}]` : '[jev-only|jev-on|jev-off|llm-jev]',
+    semantics: advertisedSurface()
+      ? 'no argument: current and next mode; with one: pending for the **next** run (memory); `legacy` lists the older modes (still accepted: saved configs, resume, the bench); a mode that needs a generator key opens the wizard\'s generator step in place; persist with `jevcode config set mode <m>`'
+      : 'no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard\'s generator step in place; persist with `jevcode config set mode <m>`',
     category: 'config',
   },
   {
@@ -401,9 +445,9 @@ export const COMMANDS: readonly CommandSpec[] = [
     args: [{ name: 'state', kind: 'enum', values: LLM_STATES, hint: '<on|off>' }],
     availableDuringTask: 'any',
     plain: 'yes',
-    title: 'Jev + LLM on (= /mode jev-on) or off (= /mode jev-only)',
+    title: advertisedSurface() ? 'the code model on (= /mode agent) or off (= /mode jev-only)' : 'Jev + LLM on (= /mode jev-on) or off (= /mode jev-only)',
     usage: '<on|off>',
-    semantics: '`/llm on` = `/mode jev-on`, `/llm off` = `/mode jev-only`',
+    semantics: `\`/llm on\` = \`/mode ${LLM_STATE_MODE.on}\`, \`/llm off\` = \`/mode jev-only\``,
     category: 'config',
   },
   {

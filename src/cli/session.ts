@@ -111,7 +111,7 @@ import { createTrustStore as realCreateTrustStore, decisionFromOption, probeTrus
 import { PROVIDER_ENV } from '../tui/onboarding/lines.js';
 import {
   INSTRUCTIONS_NOT_TRUSTED_LINE,
-  LOGIN_ONE_KEY_PROMPT,
+  loginOneKeyPrompt,
   LOGIN_OTHER_WAYS_PROMPT,
   missingGeneratorOnly,
   MOCK_VERIFY_NOTE,
@@ -157,6 +157,7 @@ import type { KeyRunPhase } from '../tui/keys/resolve.js';
 import type { UiAction } from '../tui/useEngine.js';
 import { createHistoryStore as realCreateHistoryStore, type FileHistoryStore } from '../tui/composer/history.js';
 import { dispatchCommand, type CommandAction, type DispatchContext } from '../tui/commands/dispatch.js';
+import { MODE_LEGACY_TEXT } from '../tui/commands/registry.js';
 import { helpLines as paletteHelpLines } from '../tui/commands/palette.js';
 import { actionLabel, formatTranscriptItem, itemsFromEvent, stepCostText, type LineSource } from '../tui/plain.js';
 import { plainSupports } from '../tui/plain-composer.js';
@@ -1226,7 +1227,7 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
           if (other === 'a') provider = 'anthropic';
         }
         if (provider !== 'anthropic') {
-          const k = await askMasked(oneKeyPath ? LOGIN_ONE_KEY_PROMPT : 'OpenRouter API key (OPENROUTER_API_KEY) — the code model: ');
+          const k = await askMasked(oneKeyPath ? loginOneKeyPrompt(mode) : 'OpenRouter API key (OPENROUTER_API_KEY) — the code model: ');
           if (k === null || k.length < 8) return { kind: 'cancelled' };
           patch.apiKey = k;
           patch.provider = 'openrouter';
@@ -3983,6 +3984,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         // (` (default)` after the word equal to MODE_BADGE_WORD[DEFAULT_MODE], D-N), else `mode <cur> — next run: <next>`; with one, pends it
         const cur = live() && current !== null ? currentRunMode : baseMode;
         const next = pending.mode ?? baseMode;
+        // AGENT-LOOP-DESIGN §14.1: `/mode legacy` names the modes kept for saved configs, resume and the bench
+        if (a.mode === 'legacy') {
+          note(MODE_LEGACY_TEXT);
+          return;
+        }
         if (a.mode === null) {
           const dflt = (m: EngineMode): string => (m === DEFAULT_MODE ? ' (default)' : '');
           note(cur === next ? `mode ${modeBadgeWord(cur)}${dflt(cur)}` : `mode ${modeBadgeWord(cur)} — next run: ${modeBadgeWord(next)}${dflt(next)}`);
@@ -4891,6 +4897,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       provider,
       message: text,
       identity: chatIdentity(gen.model, provider.name === 'mock' ? 'mock' : PROVIDER_DISPLAY_NAME[provider.name]),
+      // the chat turn runs in the Jev-driven modes only (agent mode sends every message to a run), so this keeps their prompt as it is
+      mode: pending.mode ?? baseMode,
       conversation: ledger.recent(),
       facts: harnessFacts(factsInput()),
       context: { plan: lastPlan ?? lastResult?.finalPlan ?? null, window, files },

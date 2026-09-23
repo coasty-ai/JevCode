@@ -5,7 +5,8 @@
  * through `onDelta`; a returned tool call is dropped (the caller logs it). The spend checks run in the controller
  * before this module is called.
  */
-import type { ChatMessage, FileView, GenerateProviderPrefs, GenerateReasoning, GenerateRequest, Plan, Provider, TokenUsage, WindowEntry } from '../core/types.js';
+import type { ChatMessage, EngineMode, FileView, GenerateProviderPrefs, GenerateReasoning, GenerateRequest, Plan, Provider, TokenUsage, WindowEntry } from '../core/types.js';
+import { ADVERTISED_MODES, DEFAULT_MODE, LEGACY_MODES } from '../config/defaults.js';
 import { headTail } from '../core/text.js';
 import type { Fact } from './facts.js';
 import type { ChatTurn } from './ledger.js';
@@ -32,6 +33,8 @@ export interface LlmTurnInput {
   redact: (s: string) => string;
   /** a dropped tool call is reported here (jevcode.log warning) */
   warn?: (message: string) => void;
+  /** the session's mode: `agent` takes the agent-era copy (AGENT-LOOP-DESIGN §14.5); absent or a legacy mode keeps today's prompt byte for byte */
+  mode?: EngineMode;
 }
 
 /** what the controller knows about this session that the reply may name */
@@ -60,12 +63,34 @@ export function chatIdentityHeader(model: string, provider: string): string {
   ].join('\n');
 }
 
-/** how the work is split — the second paragraph */
+/**
+ * How the work is split — the second paragraph (AGENT-LOOP-DESIGN §14.5, exact). The code model does the work; Jev only makes a few
+ * quick routing calls. The verified identity header above stays the FIRST block (§A5); slice S3 leads the agent system prompt with it.
+ */
 export const CHAT_IDENTITY =
+  'The code model, you in this reply, does the work: in a run it reads, searches, edits and runs commands in this workspace through tools, and the workspace\'s tests verify the change. A small decision model (Jev) only makes a few quick routing calls, such as whether a message is a task.';
+
+/** the paragraph of the Jev-driven modes (llm-jev, jev-on, jev-off chats): unchanged, because there Jev does decide every step */
+export const CHAT_IDENTITY_LEGACY =
   'Jev decides, the code model writes: Jev, a calibrated decision model, answers every control question (what step comes next, which files matter, whether an action is safe to run, whether the output succeeded, whether the task is done); the code model — you, in this reply — writes the code.';
 
-/** what the human can ask for */
+/** the modes line of `CHAT_CAPABILITIES` — the advertised modes, the default marked from `DEFAULT_MODE` (never a literal), the legacy ones named as kept */
+function modesLine(): string {
+  const describe = (m: (typeof ADVERTISED_MODES)[number]): string => (m === 'agent' ? 'agent (the code model works through tools)' : 'jev-only (Jev without a code model)');
+  const advertised = ADVERTISED_MODES.map((m) => `${describe(m)}${m === DEFAULT_MODE ? ' — the default' : ''}`);
+  return `- Modes: ${advertised.join(' and ')}; ${LEGACY_MODES.join(', ')} are kept for saved configs.`;
+}
+
+/** what the human can ask for (AGENT-LOOP-DESIGN §14.5) */
 export const CHAT_CAPABILITIES = [
+  '## What JevCode can do',
+  '- It runs coding tasks in this workspace when the human describes a change: the code model works through tools, shows what it is doing as it goes, and verifies with the tests.',
+  modesLine(),
+  '- Commands start with `/`: `/help` lists them; `/mode`, `/undo`, `/diff`, `/resume`, `/new`.',
+].join('\n');
+
+/** the capabilities of the Jev-driven modes' chat (unchanged) */
+export const CHAT_CAPABILITIES_LEGACY = [
   '## What JevCode can do',
   '- It runs coding tasks in this workspace when the human describes a change: Jev decides each step, the code model writes, the workspace\'s tests verify the patch.',
   '- Modes: llm-jev (the default, verified), jev-on, jev-only, jev-off.',
@@ -82,14 +107,29 @@ export const CHAT_VOICE = [
   '- Keep replies under eight lines unless the human asks for detail.',
 ].join('\n');
 
-/** identity + capabilities + voice + this workspace */
-export function buildChatSystem(identity: ChatIdentity): string {
+/**
+ * AGENT-LOOP-DESIGN §A1: the voice rules of an agent turn — CHAT_VOICE's warmth and brevity, without the chat-only rules (a chat
+ * reply may not act; an agent turn does, through tools). Conversational messages are answered directly and briefly WITHOUT tools;
+ * read-only tools may answer questions about the workspace. Exported for slice S3's agent system prompt.
+ */
+export const AGENT_VOICE = [
+  '## How to answer',
+  '- Warm, concise, personal, plain prose.',
+  '- A greeting or a question about JevCode gets one or two friendly sentences, answered directly, without tools.',
+  '- A question about this workspace may use the read-only tools (read_file, grep, glob) before you answer; never guess at code you have not read.',
+  '- A change request is work: do it with the tools, then say briefly what changed and how it was verified.',
+  '- Never invent facts about the workspace, and never claim to have run anything you did not run.',
+].join('\n');
+
+/** identity + capabilities + voice + this workspace; `mode` `agent` takes the agent-era copy, anything else today's prompt byte for byte */
+export function buildChatSystem(identity: ChatIdentity, mode?: EngineMode): string {
   const rows = [
     `- name: ${identity.workspace}`,
     `- git: ${identity.git ?? 'not a git repository'}`,
     `- recent sessions: ${identity.recentSessions.length > 0 ? identity.recentSessions.join(' · ') : 'none yet'}`,
   ];
-  return [chatIdentityHeader(identity.model, identity.provider), CHAT_IDENTITY, CHAT_CAPABILITIES, CHAT_VOICE, `## This workspace\n${rows.join('\n')}`].join('\n\n');
+  const agent = mode === 'agent';
+  return [chatIdentityHeader(identity.model, identity.provider), agent ? CHAT_IDENTITY : CHAT_IDENTITY_LEGACY, agent ? CHAT_CAPABILITIES : CHAT_CAPABILITIES_LEGACY, agent ? AGENT_VOICE : CHAT_VOICE, `## This workspace\n${rows.join('\n')}`].join('\n\n');
 }
 
 export const CHAT_MAX_OUTPUT_TOKENS = 800;
@@ -190,7 +230,7 @@ function chatRouting(provider: Provider): Pick<GenerateRequest, 'reasoning' | 'p
 
 /** system = `buildChatSystem` + facts + optional instructions, plan, recent steps, files; no tools, no toolChoice; `chatRouting` */
 export function buildChatRequest(i: LlmTurnInput): GenerateRequest {
-  const sections: string[] = [buildChatSystem(i.identity), `## Session facts\n${i.facts.map((f) => `- ${f.text}`).join('\n')}`];
+  const sections: string[] = [buildChatSystem(i.identity, i.mode), `## Session facts\n${i.facts.map((f) => `- ${f.text}`).join('\n')}`];
   if (i.instructions !== null && i.instructions.trim() !== '') sections.push(`## Instructions (AGENTS.md)\n${i.instructions}`);
   if (i.context.plan !== null) sections.push(`## Last run plan\n${planSection(i.context.plan)}`);
   if (i.context.window.length > 0) sections.push(`## Recent steps\n${windowSection(i.context.window)}`);
