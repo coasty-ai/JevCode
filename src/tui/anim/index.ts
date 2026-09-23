@@ -1,3 +1,3 @@
-/** The indicator: the pure frame renderers and the Ink block that mounts them. */
-export { ANIM_FPS, LUMINANCE, animSize, cubeFrames, globeFrames, indicatorFrames, torusFrames, waveFrames, type Frames, type IndicatorKind } from './frames.js';
-export { INDICATOR_LABEL, INDICATOR_MIN_ROWS, INDICATOR_TICK_MS, Indicator, clearFrameCache, frameCacheSize, frameSet, indicatorKindFor, useIndicatorTick, type IndicatorInput, type IndicatorProps } from './Indicator.js';
+/** The mini indicators: the frames (`frames.ts`) and the choice of shape (`Indicator.tsx`). AGENT-LOOP-DESIGN §A3 / §A5. */
+export { INDICATOR_KINDS, MINI_NARROW_CELLS, MINI_WIDE_CELLS, miniFrame, miniFrames, type IndicatorKind, type MiniFrameOptions } from './frames.js';
+export { agentIndicatorKind, indicatorKindFor, type AgentActivity, type IndicatorInput } from './Indicator.js';

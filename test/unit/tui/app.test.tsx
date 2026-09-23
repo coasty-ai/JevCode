@@ -721,7 +721,8 @@ describe('<App> a submission that never becomes a run (§4.9, finding 1)', { ret
       expect(t).not.toMatch(/│ starting\s/);
       expect(t).not.toContain(PLACEHOLDERS.steer);
     }
-    expect(m.lastFrame()).toMatch(/│ [░▒▓█] thinking\s/);
+    // AGENT-LOOP-DESIGN §A3: the glyph slot is the mini donut (its ASCII twin under this mount's NO_COLOR)
+    expect(m.lastFrame()).toMatch(/│ (?:[⠀-⣿]{1,3}|[-\\|/]) thinking\s/);
     expect(m.lastFrame()).toContain(`› ${PLACEHOLDERS.thinking}`);
     m.stdin.write(CTRL_C);
     await tick(20);

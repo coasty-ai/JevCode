@@ -80,6 +80,8 @@ export function statusView(s: UiState, o: { picker?: boolean; columns?: number; 
      */
     fold: s.fold,
     selfId: s.selfId,
+    // AGENT-LOOP-DESIGN §A5 / peer C: a live agent run names what it is doing (`thinking` · `reading` · `editing` · `running` · `testing`)
+    agentWord: s.agent !== null && (s.run === 'live' || s.run === 'pausing') ? s.agent.activity : null,
   };
 }
 

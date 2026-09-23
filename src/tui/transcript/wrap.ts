@@ -289,3 +289,142 @@ export function joinWrapped(rows: readonly string[], cuts: readonly number[] = [
   }
   return out.replace(/ {2,}/g, ' ').trim();
 }
+
+// ---------------------------------------------------------------------------------------
+// AGENT-LOOP-DESIGN §9.4 / §A1: the streamed prose wrap (the reply block above the rule and its committed rows)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * A wrapped prose line: the rows as drawn (a continuation row opens with the `hang` spaces), and for every row the
+ * half-open range `[starts[i], ends[i])` of the SOURCE text it shows (the space run a break falls on excluded). The
+ * ranges are what an overflow commit cuts at: a row start is a place where the text can be split into two items that
+ * draw exactly these rows again.
+ */
+export interface ProseWrap {
+  rows: string[];
+  starts: number[];
+  ends: number[];
+}
+
+/**
+ * Greedy, grapheme-aware, PREFIX-STABLE word wrap for streamed prose (the reply tail and the rows it commits). Rows are
+ * at most `width` cells; every row after the first — and the first too when `cont` (a line continued from an earlier
+ * item) — opens with `hang` spaces; the space run a break falls on is dropped; row 0's leading indentation is kept; a
+ * token wider than its row is cut by grapheme. Unlike `wrapBody` there is no no-orphan rule and no segment rule, so the
+ * decision for a row reads only the text from that row's start: wrapping any prefix of a text yields exactly the rows
+ * of the full text except the last one. That is what lets a growing line stream in place, and lets its finished rows be
+ * committed before the line ends, with zero jump. An empty text is one empty row.
+ */
+export function wrapProse(text: string, width: number, hang = 0, cont = false): ProseWrap {
+  const w = Math.max(1, Number.isFinite(width) ? Math.floor(width) : 1);
+  const h = Math.max(0, Math.min(Number.isFinite(hang) ? Math.floor(hang) : 0, w - 1));
+  const rows: string[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
+  const continued = (): boolean => rows.length > 0 || cont;
+  const room = (): number => (continued() ? w - h : w);
+  let start = 0;
+  let end = 0;
+  let cells = 0;
+  let gap = 0;
+  let content = false;
+  const emit = (): void => {
+    rows.push(`${continued() ? ' '.repeat(h) : ''}${text.slice(start, end)}`);
+    starts.push(start);
+    ends.push(end);
+  };
+  const re = /\S+|\s+/gu;
+  for (let m = re.exec(text); m !== null; m = re.exec(text)) {
+    const tok = m[0];
+    const at = m.index;
+    if (/^\s/u.test(tok)) {
+      if (at === 0 && !cont) {
+        // row 0's indentation is content (a nested bullet, an indented paragraph), never wider than the row allows: an
+        // indentation wider than `room − 1` cells keeps only its last `room − 1` cells, so the row still fits `width`
+        const keep = Math.max(0, room() - 1);
+        let from = 0;
+        while (from < tok.length && stringWidth(tok.slice(from)) > keep) from++;
+        start = from;
+        end = tok.length;
+        cells = stringWidth(tok.slice(from));
+        content = true;
+      } else if (content) gap = stringWidth(tok);
+      continue;
+    }
+    const tw = stringWidth(tok);
+    const need = content ? cells + gap + tw : tw;
+    if (need <= room()) {
+      if (!content) start = at;
+      end = at + tok.length;
+      cells = need;
+      gap = 0;
+      content = true;
+      continue;
+    }
+    if (content) emit();
+    start = at;
+    end = at;
+    cells = 0;
+    gap = 0;
+    content = false;
+    if (tw <= room()) {
+      end = at + tok.length;
+      cells = tw;
+      content = true;
+      continue;
+    }
+    // a token wider than a row: cut by grapheme, each full piece its own row
+    graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+    for (const { segment, index } of graphemes.segment(tok)) {
+      const sw = stringWidth(segment);
+      if (content && cells + sw > room()) {
+        emit();
+        start = at + index;
+        cells = 0;
+      }
+      end = at + index + segment.length;
+      cells += sw;
+      content = true;
+    }
+  }
+  if (content || rows.length === 0) {
+    if (!content) {
+      start = text.length === 0 ? 0 : start;
+      end = start;
+    }
+    emit();
+  }
+  return { rows, starts, ends };
+}
+
+/**
+ * Hard wrap by cells for code lines (no word rule: code keeps its spacing). Rows are at most `width` cells, with the
+ * same source ranges as `wrapProse`, so an overflow commit cuts a code line the way it cuts prose. Grapheme-aware; an
+ * empty line is one empty row.
+ */
+export function wrapCells(text: string, width: number): ProseWrap {
+  const w = Math.max(1, Number.isFinite(width) ? Math.floor(width) : 1);
+  const rows: string[] = [];
+  const starts: number[] = [];
+  const ends: number[] = [];
+  graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+  let start = 0;
+  let end = 0;
+  let cells = 0;
+  for (const { segment, index } of graphemes.segment(text)) {
+    const sw = stringWidth(segment);
+    if (cells > 0 && cells + sw > w) {
+      rows.push(text.slice(start, end));
+      starts.push(start);
+      ends.push(end);
+      start = index;
+      cells = 0;
+    }
+    end = index + segment.length;
+    cells += sw;
+  }
+  rows.push(text.slice(start, end));
+  starts.push(start);
+  ends.push(end);
+  return { rows, starts, ends };
+}

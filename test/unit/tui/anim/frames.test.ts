@@ -1,66 +1,108 @@
-/** The 3D indicator frames: deterministic, correctly sized, visibly drawn, cheap enough to precompute per size. */
+/**
+ * AGENT-LOOP-DESIGN §A3 / §A5 (slice S5a): the mini indicators — braille frames at one row, in the status row's glyph
+ * slot. Every frame is exactly its width in cells, braille only (the ASCII twin ASCII only), every shape moves, the four
+ * shapes are told apart, and the still frame is one of the shape's own drawings.
+ */
 import { describe, expect, it } from 'vitest';
-import { ANIM_FPS, LUMINANCE, animSize, cubeFrames, globeFrames, indicatorFrames, torusFrames, waveFrames } from '../../../../src/tui/anim/frames.js';
+import { stringWidth } from '../../../../src/tui/composer/width.js';
+import { INDICATOR_KINDS, MINI_NARROW_CELLS, MINI_WIDE_CELLS, miniFrame, miniFrames } from '../../../../src/tui/anim/frames.js';
 
-const KINDS = ['thinking', 'running', 'calling', 'verifying'] as const;
+const BRAILLE = /^[⠀-⣿]+$/u;
 
-describe('indicator frames', () => {
-  it('every renderer returns the requested frame count, each frame exactly height rows of width cells', () => {
-    for (const kind of KINDS) {
-      const frames = indicatorFrames(kind, 24, 12, 16);
-      expect(frames, kind).toHaveLength(16);
-      for (const f of frames) {
-        expect(f, kind).toHaveLength(12);
-        for (const row of f) expect(row.length, kind).toBe(24);
+/** The dot grid of a braille string (2 × 4 dots per cell), `#` lit — what the frames were chosen by looking at. */
+function dots(s: string): string[] {
+  const bits = [
+    [0x01, 0x02, 0x04, 0x40],
+    [0x08, 0x10, 0x20, 0x80],
+  ];
+  const rows = ['', '', '', ''];
+  for (const ch of s) {
+    const b = ch.codePointAt(0)! - 0x2800;
+    for (let y = 0; y < 4; y++) rows[y] += `${b & bits[0]![y]! ? '#' : '.'}${b & bits[1]![y]! ? '#' : '.'}`;
+  }
+  return rows;
+}
+
+describe('mini indicator frames', () => {
+  it('the wide form is 3 cells and the narrow form the old 1-cell slot, braille only, at every frame of every shape', () => {
+    expect(MINI_WIDE_CELLS).toBe(3);
+    expect(MINI_NARROW_CELLS).toBe(1);
+    for (const kind of INDICATOR_KINDS) {
+      for (const [cells, frames] of [
+        [MINI_WIDE_CELLS, miniFrames(kind, MINI_WIDE_CELLS)],
+        [MINI_NARROW_CELLS, miniFrames(kind, MINI_NARROW_CELLS)],
+      ] as const) {
+        expect(frames.length, kind).toBeGreaterThanOrEqual(4);
+        for (const f of frames) {
+          expect(f, `${kind}@${cells}`).toMatch(BRAILLE);
+          expect(stringWidth(f), `${kind}@${cells} ${f}`).toBe(cells);
+          expect([...f].length).toBe(cells);
+        }
       }
     }
   });
 
-  it('is deterministic: the same size gives byte-identical frames twice', () => {
-    for (const kind of KINDS) expect(indicatorFrames(kind, 30, 10, 8)).toEqual(indicatorFrames(kind, 30, 10, 8));
-  });
-
-  it('draws something in every frame, and consecutive frames differ (it moves)', () => {
-    for (const kind of KINDS) {
-      const frames = indicatorFrames(kind, 24, 12, 12);
-      for (const f of frames) expect(f.join('').replace(/ /g, '').length, kind).toBeGreaterThan(20);
-      const distinct = new Set(frames.map((f) => f.join('\n')));
-      expect(distinct.size, kind).toBeGreaterThan(6);
+  it('every shape moves: at least four distinct frames at both widths, and consecutive ticks differ somewhere in the cycle', () => {
+    for (const kind of INDICATOR_KINDS) {
+      for (const cells of [MINI_WIDE_CELLS, MINI_NARROW_CELLS]) {
+        const frames = miniFrames(kind, cells);
+        expect(new Set(frames).size, `${kind}@${cells}`).toBeGreaterThanOrEqual(4);
+      }
     }
   });
 
-  it('the torus uses only the donut luminance ramp and lights a solid ring', () => {
-    const frames = torusFrames(40, 20, 4);
-    for (const f of frames) for (const row of f) for (const ch of row) expect(ch === ' ' || LUMINANCE.includes(ch)).toBe(true);
-    expect(frames[0]!.join('').replace(/ /g, '').length).toBeGreaterThan(120);
-  });
-
-  it('clamps tiny sizes up to a drawable minimum instead of throwing', () => {
-    for (const fn of [torusFrames, cubeFrames, globeFrames, waveFrames]) {
-      const f = fn(1, 1, 1);
-      expect(f.length).toBe(2);
-      expect(f[0]![0]!.length).toBe(8);
-      expect(f[0]!.length).toBe(4);
+  it('the four shapes are told apart: no wide frame of one shape is a frame of another', () => {
+    const owner = new Map<string, string>();
+    for (const kind of INDICATOR_KINDS) {
+      for (const f of miniFrames(kind, MINI_WIDE_CELLS)) {
+        const prev = owner.get(f);
+        expect(prev === undefined || prev === kind, `${f} is both ${prev} and ${kind}`).toBe(true);
+        owner.set(f, kind);
+      }
     }
   });
 
-  it('every glyph of every renderer is ASCII from the donut ramp or a space (the TUI colours them; no ANSI in the strings)', () => {
-    for (const kind of KINDS) for (const f of indicatorFrames(kind, 24, 12, 8)) for (const row of f) for (const ch of row) expect(ch === ' ' || LUMINANCE.includes(ch), `${kind}: ${JSON.stringify(ch)}`).toBe(true);
+  it('the donut is a ring with a hole — the wide still frame lights the 12-dot oval and leaves its 4×2 centre dark', () => {
+    const still = miniFrame('donut', 0, MINI_WIDE_CELLS, { still: true });
+    expect(dots(still)).toEqual(['.####.', '#....#', '#....#', '.####.']);
+    // the moving frames are that ring with a two-dot dark arc: 10 of the 12 dots lit, never a centre dot
+    for (const f of miniFrames('donut', MINI_WIDE_CELLS)) {
+      const g = dots(f);
+      expect(g.join('').split('#').length - 1, f).toBe(10);
+      expect(g[1]!.slice(1, 5) + g[2]!.slice(1, 5), f).toBe('........');
+    }
   });
 
-  it('animSize: 24×12 on a roomy terminal, 16×8 at 80 columns, none below 60 columns or 16 rows; ANIM_FPS is 12', () => {
-    expect(animSize(120, 40)).toEqual({ w: 24, h: 12 });
-    expect(animSize(100, 24)).toEqual({ w: 24, h: 12 });
-    expect(animSize(80, 24)).toEqual({ w: 16, h: 8 });
-    expect(animSize(99, 30)).toEqual({ w: 16, h: 8 });
-    expect(animSize(59, 40)).toBeNull();
-    expect(animSize(120, 15)).toBeNull();
-    expect(ANIM_FPS).toBe(12);
+  it('the narrow stills are dense (≥ 4 dots lit, never a lone speck), and the narrow globe turns the donut\'s way (clockwise)', () => {
+    for (const kind of INDICATOR_KINDS) {
+      const still = miniFrame(kind, 0, MINI_NARROW_CELLS, { still: true });
+      expect(dots(still).join('').split('#').length - 1, `${kind} ${still}`).toBeGreaterThanOrEqual(4);
+    }
+    // the lit dot's path: top-left, top-right, down the right side, bottom-left, up the left side
+    const at = (f: string): string => dots(f).map((r, y) => `${r[0] === '#' ? `L${y}` : ''}${r[1] === '#' ? `R${y}` : ''}`).join('');
+    expect(miniFrames('globe', MINI_NARROW_CELLS).map(at)).toEqual(['L0', 'R0', 'R1', 'R2', 'R3', 'L3', 'L2', 'L1']);
   });
 
-  it('a 24×12 torus at 60 frames precomputes in tens of milliseconds (best of 3; the bound is loose for a loaded machine)', () => {
-    let best = Infinity;
-    for (let i = 0; i < 3; i++) { const t0 = performance.now(); torusFrames(24, 12, 60); best = Math.min(best, performance.now() - t0); }
-    expect(best).toBeLessThan(150);
+  it('frames cycle on the tick (negative and huge ticks included), and the still frame ignores the tick', () => {
+    const frames = miniFrames('wave', MINI_WIDE_CELLS);
+    expect(miniFrame('wave', 0, MINI_WIDE_CELLS)).toBe(frames[0]);
+    expect(miniFrame('wave', frames.length, MINI_WIDE_CELLS)).toBe(frames[0]);
+    expect(miniFrame('wave', -1, MINI_WIDE_CELLS)).toBe(frames[frames.length - 1]);
+    expect(miniFrame('wave', 1e9 + 3, MINI_WIDE_CELLS)).toBe(frames[(1e9 + 3) % frames.length]);
+    expect(miniFrame('wave', Number.NaN, MINI_WIDE_CELLS)).toBe(frames[0]);
+    for (const kind of INDICATOR_KINDS) {
+      const a = miniFrame(kind, 3, MINI_WIDE_CELLS, { still: true });
+      expect(miniFrame(kind, 7, MINI_WIDE_CELLS, { still: true })).toBe(a);
+      expect(a).toMatch(BRAILLE);
+    }
+  });
+
+  it('the ASCII twin (--ascii / NO_COLOR) is one printable ASCII cell per frame, still under reduced motion', () => {
+    for (const kind of INDICATOR_KINDS) {
+      const frames = miniFrames(kind, MINI_WIDE_CELLS, true);
+      for (const f of frames) expect(f).toMatch(/^[\x21-\x7e]$/);
+      expect(miniFrame(kind, 5, MINI_WIDE_CELLS, { ascii: true, still: true })).toBe(frames[0]);
+      expect(miniFrame(kind, 1, MINI_NARROW_CELLS, { ascii: true })).toBe(frames[1]);
+    }
   });
 });

@@ -1,10 +1,17 @@
 /**
  * The one height allocator of the interactive TUI (TUI-DESIGN §2.1, D1, F3; TUI-DESIGN-2 §4.1–4.2 `computeLayout`
- * 1.1; TUI-DESIGN-3 §3.7 `computeLayout` 1.2 — the whole-or-absent pane grant for the wordmark). Pure: no I/O, no clock, no Ink. Vertical order top to bottom is `<Static>` scrollback · rule · live ·
- * banner · mark · pane · queue · overlay · preview · anim · [console: top edge · gate · composer · divider · status · bottom edge]
+ * 1.1; TUI-DESIGN-3 §3.7 `computeLayout` 1.2 — the whole-or-absent pane grant for the wordmark). Pure: no I/O, no clock, no Ink. Vertical order top to bottom is `<Static>` scrollback · reply · rule · live ·
+ * banner · mark · pane · queue · overlay · preview · [console: top edge · gate · composer · divider · status · bottom edge]
  * (flat tier: composer · status). Allocation order is the priority (status → rule → composer floor → chrome →
- * overlay → composer growth → queue → preview → live → banner → pane) and F3's yield order is its reverse (pane →
- * banner → live → preview → queue → composer growth → overlay → composer-to-1); chrome, rule and status never yield.
+ * overlay → composer growth → queue → preview → live → banner → mark → pane → reply) and F3's yield order is its reverse
+ * (reply → pane → mark → banner → live → preview → queue → composer growth → overlay → composer-to-1); chrome, rule and
+ * status never yield.
+ *
+ * AGENT-LOOP-DESIGN §A3 (slice S5a): the 12-row 3D indicator slot is gone — the waiting state is a mini braille indicator
+ * in the status row's glyph cell (`anim/frames.ts` `miniFrames`), so the region's height no longer depends on whether
+ * something is in flight. §9.4: `reply` is the agent's streamed prose above the rule (`ReplyTail.tsx`); it takes what is
+ * left last and is the first to yield, because the reducer commits its oldest rows to `<Static>` whenever it outgrows
+ * the grant (an overflow commit moves rows, it never loses one).
  */
 
 /** TUI-DESIGN §2.1: below this many rows the region degrades to status · notice · composer (A100). */
@@ -51,15 +58,7 @@ export const CAP = {
   splash: 5,
   /** the pinned wordmark's own slot: the 5 glyph rows plus up to two blank padding rows above and below */
   mark: 9,
-  /** the 3D indicator's box (`animSize().h` is 8 or 12) */
-  anim: 12,
 } as const;
-
-/**
- * The conversation floor the indicator slot respects: the frame never leaves fewer than this many rows of terminal
- * above the dynamic region (`rows − total ≥ 4`), so a donut never buries the reply it belongs to.
- */
-export const ANIM_CONVERSATION_FLOOR = 4;
 
 /** TUI-DESIGN §2.1 / TUI-DESIGN-2 §3.7: the one modal slot directly above the composer holds at most one of these. */
 export type OverlayKind = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'import';
@@ -112,8 +111,8 @@ export interface LayoutInput {
    * of evicting it; it is granted whole or not at all (the mark is never cut to its top rows).
    */
   markWant?: number;
-  /** the 3D indicator's box height (`animSize(columns, rows)!.h`) or 0 — the last slot to be granted, the first to yield */
-  animWant?: number;
+  /** AGENT-LOOP-DESIGN §9.4: the reply block's rows (the agent's uncommitted prose) or 0 — the last slot granted, the first to yield */
+  replyWant?: number;
   /** TUI-DESIGN-2 §4.2: `chromeRows(rows, columns, screenReader)` — 3 in the boxed tier, 0 flat */
   chrome: 0 | 3;
   /** TUI-DESIGN-2 §4.2: the secret-gate row the console hosts (boxed tier only; the flat tier keeps the `secret` overlay) */
@@ -133,8 +132,8 @@ export interface Layout {
   /** the pinned wordmark, whole or absent */
   mark: number;
   pane: number;
-  /** the 3D indicator, directly above the console */
-  anim: number;
+  /** AGENT-LOOP-DESIGN §9.4: the reply block, directly above the rule */
+  reply: number;
   queue: number;
   overlay: number;
   preview: number;
@@ -148,7 +147,7 @@ export interface Layout {
 }
 
 /** TUI-DESIGN §2.1: F3's yield order — the first field here reaches 0 first under pressure. */
-export const YIELD_ORDER: readonly (keyof Layout)[] = ['anim', 'pane', 'mark', 'banner', 'live', 'preview', 'queue', 'composer', 'overlay'];
+export const YIELD_ORDER: readonly (keyof Layout)[] = ['reply', 'pane', 'mark', 'banner', 'live', 'preview', 'queue', 'composer', 'overlay'];
 
 /** a non-finite size is treated as absent (0 rows); the design's arithmetic then degrades to static-only */
 function size(n: number): number {
@@ -176,7 +175,7 @@ export function computeLayout(i: LayoutInput): Layout {
     rem -= got;
     return got;
   };
-  const z: Layout = { budget, degraded: 'none', status: 0, rule: 0, live: 0, banner: 0, mark: 0, pane: 0, anim: 0, queue: 0, overlay: 0, preview: 0, composer: 0, chrome: 0, gate: 0, total: 0 };
+  const z: Layout = { budget, degraded: 'none', status: 0, rule: 0, live: 0, banner: 0, mark: 0, pane: 0, reply: 0, queue: 0, overlay: 0, preview: 0, composer: 0, chrome: 0, gate: 0, total: 0 };
   if (rows < 3) {
     // budget 0 or 1: <Static> keeps flowing, nothing dynamic
     z.degraded = 'static-only';
@@ -225,10 +224,8 @@ export function computeLayout(i: LayoutInput): Layout {
   // 10 pane yields first; TUI-DESIGN-3 §3.7 (`computeLayout` 1.2): under `paneWhole` the want is granted whole or not at all
   const want = Math.min(i.paneWant, CAP.pane);
   z.pane = i.expanded ? 0 : i.paneWhole === true ? (Number.isFinite(want) && rem >= Math.floor(want) ? take(want) : 0) : take(want);
-  // 11 the 3D indicator: whole or absent, and only while ≥ ANIM_CONVERSATION_FLOOR rows of conversation survive
-  // (`rows − total = rem + 2`), so it yields before the mark, the pane and the conversation
-  const animWant = Math.min(size(i.animWant ?? 0), CAP.anim);
-  z.anim = animWant > 0 && rem - animWant >= ANIM_CONVERSATION_FLOOR - 2 ? take(animWant) : 0;
+  // 11 AGENT-LOOP-DESIGN §9.4: the reply block takes what is left (partial grants: its oldest rows commit to <Static>)
+  z.reply = take(size(i.replyWant ?? 0));
   z.total = budget - rem;
   return z;
 }
@@ -238,7 +235,7 @@ export function computeLayout(i: LayoutInput): Layout {
  * queue + overlay + preview`; identical to the flat tier's composer row.
  */
 export function consoleTop(l: Layout): number {
-  return l.rule + l.live + l.banner + l.mark + l.pane + l.queue + l.overlay + l.preview + l.anim;
+  return l.reply + l.rule + l.live + l.banner + l.mark + l.pane + l.queue + l.overlay + l.preview;
 }
 
 /**

@@ -182,10 +182,13 @@ const STATUS_KEY: { readonly [K in keyof StatusLineState]-?: (v: StatusLineState
   selfId: one,
   ctx: one,
   agents: one,
+  // AGENT-LOOP-DESIGN §A5: the agent run's activity word (a primitive the App derives)
+  agentWord: one,
 };
 const STATUS_KEYS = Object.keys(STATUS_KEY) as (keyof StatusLineState)[];
 /** The `StatusLineOptions` members, same rule: a new option is a type error until it is keyed. */
-const STATUS_OPTION_KEY: { readonly [K in keyof StatusLineOptions]-?: true } = { ascii: true, reducedMotion: true, spinnerFrame: true, mode: true, flatBadge: true, terminalColumns: true };
+// AGENT-LOOP-DESIGN §A3: the mini indicator's two frames are strings, so the status row re-renders exactly when a frame changes
+const STATUS_OPTION_KEY: { readonly [K in keyof StatusLineOptions]-?: true } = { ascii: true, reducedMotion: true, spinnerFrame: true, mode: true, flatBadge: true, terminalColumns: true, indicatorWide: true, indicatorNarrow: true };
 const STATUS_OPTION_KEYS = Object.keys(STATUS_OPTION_KEY) as (keyof StatusLineOptions)[];
 
 function statusKeyOf<K extends keyof StatusLineState>(s: StatusLineState, k: K): readonly unknown[] {

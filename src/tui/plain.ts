@@ -28,6 +28,7 @@ import type {
   UiLabel,
 } from '../core/types.js';
 import { DEFAULT_COMPLETE_THRESHOLD, MODE_BADGE_WORD } from '../config/defaults.js';
+import { isReplyOnlyRun } from '../core/agent-run.js';
 import { AbortError } from '../errors.js';
 import { clip, firstLine } from '../core/text.js';
 import { METER_RED_PCT } from '../core/limits.js';
@@ -85,7 +86,10 @@ export type TranscriptKind =
   | 'ui'
   // contract 1.2 (TUI-DESIGN-2 §6 item 17, §4.5): the one-line step summary (`step:end`) and the `[you]` / `[jevcode]` bubbles (§3.10)
   | 'step'
-  | 'chat';
+  | 'chat'
+  // AGENT-LOOP-DESIGN §9.4: one read-only agent tool result (`tool · read_file src/a.ts (lines 1-120) · 3 ms`) — the full view,
+  // transcript.log and `--plain`; the compact TUI hides it (the step row summarises the batch)
+  | 'tool';
 
 /**
  * TUI-DESIGN-5 D-AG — the `context:warn` row, word-for-word the `ctx` status cell at its amber/red form
@@ -99,7 +103,7 @@ export function contextWarnItemText(pct: number): string {
 }
 
 /** TUI-DESIGN-2 §4.5: the stage kinds the TUI's `compact` transcript hides (stamped `hidden: true` at append time); every sink still writes them */
-export const COMPACT_HIDDEN_KINDS: ReadonlySet<TranscriptKind> = new Set<TranscriptKind>(['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready']);
+export const COMPACT_HIDDEN_KINDS: ReadonlySet<TranscriptKind> = new Set<TranscriptKind>(['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready', 'tool']);
 
 /** `dim` is the quiet startup grade (the `[sandbox]` / `recent:` / `[setup] mode` one-liners): the TUI paints the body dim, every line sink prints it unchanged. */
 export type TranscriptLevel = 'info' | 'warn' | 'error' | 'dim';
@@ -130,6 +134,37 @@ export interface TranscriptItem {
   readonly detailRows?: readonly { readonly text: string; readonly role: ColorRole }[];
   /** contract 1.7 item 1 (§6.4): `'diff'` routes the detail through `diffRows`; absent means `'text'`. Never sniffed — only a declared kind routes. */
   readonly detailKind?: 'diff' | 'table' | 'text';
+  /**
+   * AGENT-LOOP-DESIGN §9.4 / §A1 (TUI only): a `[jevcode]` row of the agent's streamed prose. The TUI draws it with the
+   * reply block's own renderer (`proseRows`: light markdown, the prefix-stable wrap, no row cap, no 600-char clip), so the
+   * committed rows are the rows the live reply drew. Absent on every other item, and never read by `--plain` or
+   * transcript.log, which print `formatTranscriptItem(item)` as always.
+   */
+  readonly prose?: ProseInfo;
+}
+
+/**
+ * AGENT-LOOP-DESIGN §9.4: how the TUI draws one prose item. `line` is the WHOLE source line (the item's `text` is the part
+ * it shows); `[from, to)` is the display range of that line this item draws — absent for a whole line, set when an
+ * overflow commit split a line that outgrew the reply block into a head (`to`) and a continuation (`from`, drawn with no
+ * label and no spacer, hanging under the head). `partial` marks the reply block's still-streaming last line.
+ */
+export interface ProseInfo {
+  readonly role: 'text' | 'code' | 'fence';
+  readonly line: string;
+  readonly from?: number;
+  readonly to?: number;
+  readonly partial?: true;
+}
+
+/**
+ * OWNER ADDENDUM (2026-09): the two run-header items the INTERACTIVE transcript does not print — `[run] started · <badge> ·
+ * <task>` and `[run] git <branch> · <state>`; `--plain`, `--json` and transcript.log keep them. Here (not in Transcript.tsx,
+ * which re-exports it) so the reducer can find the last VISIBLE item the reply block's first row is spaced against.
+ */
+export function isRunHeaderItem(item: Pick<TranscriptItem, 'kind' | 'text'>): boolean {
+  if (item.kind === 'run:start') return true;
+  return item.kind === 'workspace' && /^git\b/.test(item.text);
 }
 
 /** TUI-DESIGN-2 §3.10: the two bubble labels; an item carrying one is of kind `chat` in every sink */
@@ -717,7 +752,10 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
       state.planKeys.delete(state.runId);
       // §3.6 (G1): ONE form everywhere. The `(generator … · jev …)` split is ALWAYS present — it is what a user
       // checks when a bill surprises them — and, being attached to the cost token, is what TD3 rule 3 wraps as a unit
-      const cost = `${usd(r.usage.generator.costUsd + r.usage.jev.costUsd)} (generator ${usd(r.usage.generator.costUsd)}${SEP}jev ${usd(r.usage.jev.costUsd)})`;
+      // AGENT-LOOP-DESIGN §14.3: an agent run names no Jev it did not use — `jev $0.000` goes; a Jev hint that cost
+      // something (RA0 / RA1 / RA2) still shows, so a surprising bill still splits
+      const jevPart = r.mode === 'agent' && r.usage.jev.costUsd === 0 ? '' : `${SEP}jev ${usd(r.usage.jev.costUsd)}`;
+      const cost = `${usd(r.usage.generator.costUsd + r.usage.jev.costUsd)} (generator ${usd(r.usage.generator.costUsd)}${jevPart})`;
       // §14.2 review item 5: the error clause is the LAST segment, after `exit <n>`. It used to sit between the
       // stop reason and the step count, where it broke the exported `RUN_END_PATTERN` — the anchor `src/perf`,
       // `test/pty` and `polish-check.mjs` grep for — for exactly the runs that end badly. `render-lag.ts:386` does
@@ -732,8 +770,161 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
         r.stopReason === 'complete' ? 'info' : r.stopReason === 'error' ? 'error' : 'warn',
       );
     }
+    // --- AGENT-LOOP-DESIGN §9.2 / §9.4: the agent-mode members ---------------------------------------------------------
+    case 'assistant:text':
+      // one `[jevcode]` row per committed line of the turn's prose — blank lines kept, never clipped (§A1); `--plain`
+      // skips these for a turn that streamed `generator:delta` (the raw deltas were printed), the TUI commits its own
+      return proseLinesOf(e.text).map((line) => {
+        const s = seq + n;
+        n += 1;
+        return { key: `${e.step}:chat:${s}`, seq: s, step: e.step, kind: 'chat' as const, level: 'info' as const, text: sanitizeStream(line).replace(/\r/g, ''), label: '[jevcode]' as const };
+      });
+    case 'assistant:reset':
+      // the reply's own notice: it sits in the reply under its label (never `[step N]`, which a chat-looking turn has not)
+      return make(e.step, 'notice', AGENT_REPLY_RESTARTED, 'dim', { label: '[jevcode]' });
+    case 'tool:result':
+      // read-only results only: a mutating call's proposal / outcome / step rows already say what it did
+      return e.readOnly ? make(e.step, 'tool', agentToolResultText(e), e.ok ? 'info' : 'warn') : [];
     default:
       return [];
+  }
+}
+
+/** AGENT-LOOP-DESIGN §9.4: the dim notice an `assistant:reset` (a provider retry after bytes streamed) leaves in every sink. */
+export const AGENT_REPLY_RESTARTED = 'reply restarted after a dropped stream';
+
+/** AGENT-LOOP-DESIGN §A1: the label every line of the agent's prose carries in `--plain` (the TUI's and transcript.log's too). */
+export const PROSE_PLAIN_LABEL = '[jevcode]';
+
+/**
+ * AGENT-LOOP-DESIGN §9.3: the lines an `assistant:text` commits. The shaper sends "everything up to the last newline"; a
+ * text that still carries that newline would otherwise read as one extra blank line, so exactly one trailing `\n` is
+ * dropped. Every other blank line is kept.
+ */
+export function proseLinesOf(text: string): string[] {
+  const body = text.endsWith('\n') ? text.slice(0, -1) : text;
+  return body.split('\n');
+}
+
+/** AGENT-LOOP-DESIGN §4.1 / §9.4 (slice S5a): the tool names as the transcript's verbs — `Read calc/core.py`, `Bash npm test`. */
+export const AGENT_TOOL_VERB: Readonly<Record<string, string>> = {
+  read_file: 'Read',
+  write_file: 'Write',
+  edit_file: 'Edit',
+  bash: 'Bash',
+  grep: 'Grep',
+  glob: 'Glob',
+  todo_write: 'Todo',
+  invalid: 'Invalid call',
+};
+
+/** The part of a call summary after the tool name (`read_file src/a.ts (lines 1-120)` → `src/a.ts (lines 1-120)`). */
+function callRest(name: string, summary: string): string {
+  const s = oneLine(summary).trim();
+  return s.startsWith(`${name} `) ? s.slice(name.length + 1).trim() : s === name ? '' : s;
+}
+
+/** AGENT-LOOP-DESIGN §9.4: one call as a row segment — `Read src/a.ts (lines 1-120)`, `Grep "x" in src (3 matches)`, `(failed)` when it failed. */
+export function agentCallText(c: { name: string; summary: string; ok: boolean }): string {
+  const verb = AGENT_TOOL_VERB[c.name] ?? c.name;
+  const rest = callRest(c.name, c.summary);
+  return `${verb}${rest === '' ? '' : ` ${rest}`}${c.ok ? '' : ' (failed)'}`;
+}
+
+/** AGENT-LOOP-DESIGN §9.4: the full-view row of a read-only tool result — `tool · read_file src/a.ts (lines 1-120) · 3 ms`. */
+export function agentToolResultText(e: { name: string; summary: string; ok: boolean; ms: number }): string {
+  const ms = Number.isFinite(e.ms) ? `${Math.max(0, Math.round(e.ms))} ms` : '? ms';
+  return `tool${SEP}${oneLine(e.summary).trim() || e.name}${e.ok ? '' : `${SEP}failed`}${SEP}${ms}`;
+}
+
+/** Most file names a compact read batch lists before `(+N)`. */
+export const AGENT_READ_BATCH_NAMES = 3;
+
+/**
+ * AGENT-LOOP-DESIGN §9.4 (slice S5a): an observe step's calls as ONE compact row — consecutive successful `read_file`
+ * calls fold into `Read a.ts, b.ts, c.ts (+2)`; every other call keeps its own segment (`Grep "x" in src (3 matches)`,
+ * `Bash git diff (exit 0)`, `Todo (1/3 done)`), joined with ` · `.
+ */
+export function agentBatchText(calls: readonly { name: string; summary: string; ok: boolean }[]): string {
+  const segs: string[] = [];
+  let reads: string[] = [];
+  const flushReads = (): void => {
+    if (reads.length === 0) return;
+    const shown = reads.slice(0, AGENT_READ_BATCH_NAMES).join(', ');
+    segs.push(`Read ${shown}${reads.length > AGENT_READ_BATCH_NAMES ? ` (+${reads.length - AGENT_READ_BATCH_NAMES})` : ''}`);
+    reads = [];
+  };
+  for (const c of calls) {
+    if (c.name === 'read_file' && c.ok) {
+      const rest = callRest(c.name, c.summary);
+      reads.push(rest.split(/\s+/)[0] || rest);
+      continue;
+    }
+    flushReads();
+    segs.push(agentCallText(c));
+  }
+  flushReads();
+  return segs.join(SEP);
+}
+
+/** `7 passed` · `5 passed, 2 failed` · `5 passed, 1 error` — the parsed test counts a run / verify row ends with. */
+export function testCountsText(t: { passed: number; failed: number; errors: number }): string {
+  const parts = [`${t.passed} passed`];
+  if (t.failed > 0) parts.push(`${t.failed} failed`);
+  if (t.errors > 0) parts.push(`${t.errors} error${t.errors === 1 ? '' : 's'}`);
+  return parts.join(', ');
+}
+
+/**
+ * AGENT-LOOP-DESIGN §A1: the rows a still-replying agent run holds back — its header and git rows, `instructions:`,
+ * informational notices and budget lines, step / stage rows. They are written when the run's first tool call turns the
+ * chrome on, and dropped when the run ends as a reply, so a reply shows only its prose in the TUI and in `--plain`.
+ * Warnings, errors, a blocking pane, a retry and the reply-restarted notice are never held.
+ */
+export function isHoldableAgentRow(item: Pick<TranscriptItem, 'kind' | 'level' | 'text'>): boolean {
+  if (item.level === 'warn' || item.level === 'error') return false;
+  switch (item.kind) {
+    case 'run:start':
+    case 'run:ready':
+    case 'workspace':
+    case 'step':
+    case 'plan':
+    case 'proposal':
+    case 'outcome':
+    case 'transcript':
+    case 'budget':
+    case 'tool':
+      return true;
+    case 'notice':
+      return item.level === 'info';
+    default:
+      return false;
+  }
+}
+
+/**
+ * AGENT-LOOP-DESIGN §A1 / §A5: does this `run:end` close a REPLY — the model answered in prose (`answered`, or the one
+ * predicate `isReplyOnlyRun` over the steps), or a reply was stopped before any tool call (Esc / Ctrl-C: "reply stopped")?
+ */
+export function agentRunEndedAsReply(stopReason: string, steps: readonly Pick<StepRecord, 'agent'>[], tools: boolean): boolean {
+  return stopReason === 'answered' || isReplyOnlyRun(steps) || (!tools && (stopReason === 'human_abort' || stopReason === 'signal'));
+}
+
+/**
+ * AGENT-LOOP-DESIGN §9.2: an event that turns the agent run's chrome on — the first tool call, or anything that means the
+ * model is working rather than replying (a proposal other than the final `done`, a command starting). Until one arrives
+ * a run is a reply (§A1, §A5): the TUI keeps the chat chrome and `--plain` holds the run's header rows back.
+ */
+export function isAgentToolActivity(e: EngineEvent): boolean {
+  switch (e.type) {
+    case 'tool:call':
+    case 'tool:result':
+    case 'exec:start':
+      return true;
+    case 'proposal':
+      return e.proposal.action.kind !== 'done';
+    default:
+      return false;
   }
 }
 
@@ -819,6 +1010,8 @@ export function diffHintText(step: number): string {
  */
 export function stepSummaryText(r: StepRecord, costUsd?: { generator: number; jev: number }, opts: { completeThreshold?: number } = {}): string {
   if (r.interruptedAt !== undefined) return `interrupted at ${r.interruptedAt.stage} (${r.interruptedAt.reason})`;
+  // AGENT-LOOP-DESIGN §9.4: an agent step (it carries `StepRecord.agent`) reads as the tool row it was — no `risk … ok`, no `judge …`
+  if (r.agent !== undefined) return agentStepText(r, costUsd);
   const parts: string[] = [stepActionText(r)];
   if (r.risk !== null) parts.push(`risk ${p2(r.risk.risk)} ${r.risk.verdict === 'ok' ? 'ok' : `[${r.risk.verdict}]`}`);
   const outcome = stepOutcomeText(r.outcome, r.proposal?.action ?? null);
@@ -840,6 +1033,73 @@ export function stepSummaryText(r: StepRecord, costUsd?: { generator: number; je
   // never a dead command and TD3 rule 3 drops it before it drops the cost
   if (r.outcome !== null && r.outcome.status === 'executed' && r.outcome.changedFiles.length > 0) parts.push(diffHintText(r.step));
   return parts.join(' · ');
+}
+
+/** The words after the count of plan items a `done` agent row names as still open (`done · 1 todo left`). */
+const AGENT_TODO_WORD = 'todo left';
+
+/**
+ * AGENT-LOOP-DESIGN §9.4 (slice S5a): the `[step N]` row of an agent step, in all three sinks —
+ *
+ * - observe: the batch, compactly (`Read calc/core.py, tests/test_core.py · Grep "parse" in calc (3 matches)`);
+ * - act: `Edit calc/core.py (+2 −2)` · `Write notes.md (+12 −0)` · `Bash python -m pytest -q · 7 passed` (or `· exit 1`);
+ * - verify (the harness's own test run): `Verify npm test · 12 passed`;
+ * - finish: `done` (`· 1 todo left` when the plan still has items);
+ *
+ * then `failed` / `declined` / `blocked` / `interrupted` when the action did not run, the step's wall time, and its cost
+ * when the step sampled a model turn (a queued call's step costs nothing and says so by saying nothing).
+ */
+export function agentStepText(r: StepRecord, costUsd?: { generator: number; jev: number }): string {
+  const a = r.agent!;
+  const action = r.proposal?.action ?? null;
+  const parts: string[] = [];
+  const tests = r.judge?.tests;
+  const counts = tests && tests.source === 'parsed' ? testCountsText(tests) : null;
+  const exitCode = r.outcome?.status === 'executed' ? (r.outcome.exec?.exitCode ?? null) : null;
+  const runTail = (): void => {
+    if (counts !== null) parts.push(counts);
+    else if (exitCode !== null) parts.push(`exit ${exitCode}`);
+  };
+  switch (a.kind) {
+    case 'observe':
+      parts.push(a.calls.length > 0 ? agentBatchText(a.calls) : action !== null ? describeAction(action).target : 'read');
+      break;
+    case 'act':
+      if (action === null) parts.push('(no action)');
+      else if (action.kind === 'run') {
+        parts.push(`Bash ${clip(oneLine(action.command), STEP_TARGET_CELLS)}`);
+        runTail();
+      } else if (action.kind === 'edit' || action.kind === 'write' || action.kind === 'patch') {
+        const verb = action.kind === 'write' ? 'Write' : 'Edit';
+        const s = editSummary(action);
+        const target = action.kind === 'patch' ? describeAction(action).target : action.path;
+        parts.push(`${verb} ${clip(oneLine(target), STEP_TARGET_CELLS)}${s !== null ? ` (+${s.added} −${s.deleted})` : ''}`);
+      } else parts.push(describeAction(action).target);
+      break;
+    case 'verify':
+      parts.push(`Verify ${action !== null && action.kind === 'run' ? clip(oneLine(action.command), STEP_TARGET_CELLS) : 'tests'}`);
+      runTail();
+      break;
+    case 'finish': {
+      const left = r.proposal?.plan.remaining.length ?? 0;
+      parts.push(left > 0 ? `done${SEP}${left} ${AGENT_TODO_WORD}` : 'done');
+      break;
+    }
+  }
+  const o = r.outcome;
+  if (o !== null && o.status !== 'executed' && o.status !== 'noop') parts.push(o.status);
+  parts.push(stepWallText(r.timing.totalMs));
+  const cost = costUsd !== undefined ? costUsd.generator + costUsd.jev : null;
+  if (cost !== null && (a.turn !== null || cost > 0)) parts.push(stepCostText(cost));
+  return parts.join(SEP);
+}
+
+/**
+ * AGENT-LOOP-DESIGN §9.4: the finish row of a step with no calls — the reply's prose already said it and `[run] finished`
+ * states the outcome, so the compact TUI hides it (the full view, `--plain` and transcript.log keep it).
+ */
+export function isQuietAgentFinish(r: Pick<StepRecord, 'agent'>): boolean {
+  return r.agent !== undefined && r.agent.kind === 'finish' && r.agent.calls.length === 0;
 }
 
 /** The one-line form written to transcript.log, by the plain renderer and by the TUI's <Static> rows. A `label` (TUI-DESIGN §15.1) replaces the step label. */
@@ -1352,9 +1612,104 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
       stdout.write('\n');
       streamOpen = false;
     }
+    lineStart = true;
+  }
+
+  // AGENT-LOOP-DESIGN §9.4 / §A1 (slice S5a): an agent run prints its prose AS IT ARRIVES, each line opened with the
+  // `[jevcode] ` label (written with the line's first character, so a blank line is `[jevcode]` exactly as its
+  // transcript.log row), skips the `assistant:text` rows of a turn that streamed, holds the run's own rows until its first
+  // tool call and drops them when it ends as a reply: a tool-less turn prints only `[you] …` / `[jevcode] …`.
+  let agentRun = false;
+  let agentTools = false;
+  let agentHeld: TranscriptItem[] = [];
+  let agentSteps: Pick<StepRecord, 'agent'>[] = [];
+  let turnStreamed = false;
+  let lineStart = true;
+
+  function writeItems(items: readonly TranscriptItem[]): void {
+    if (items.length === 0) return;
+    endStream();
+    for (const item of items) write(`${formatTranscriptItem(item)}\n`);
+  }
+
+  function writeProse(raw: string): void {
+    const text = sanitizeStream(raw).replace(/\r/g, '');
+    if (text.length === 0) return;
+    let out = '';
+    for (const part of text.split(/(\n)/)) {
+      if (part === '') continue;
+      if (part === '\n') {
+        out += lineStart ? `${PROSE_PLAIN_LABEL}\n` : '\n';
+        lineStart = true;
+        continue;
+      }
+      if (lineStart) out += `${PROSE_PLAIN_LABEL} `;
+      out += part;
+      lineStart = false;
+    }
+    write(out);
+    streamOpen = !lineStart;
+    turnStreamed = true;
+  }
+
+  function handleAgent(e: EngineEvent): void {
+    switch (e.type) {
+      case 'generator:start':
+        if ((e.sample ?? 0) === 0) turnStreamed = false;
+        return;
+      case 'generator:delta':
+        if (e.sample !== undefined && e.sample >= 1) return;
+        writeProse(e.text);
+        return;
+      case 'assistant:text':
+        // the raw deltas already printed this turn's prose; a turn with no deltas (a JSON transport) prints its lines here
+        if (turnStreamed) return;
+        break;
+      case 'step:end':
+        agentSteps.push(e.record.agent !== undefined ? { agent: e.record.agent } : {});
+        break;
+      default:
+        break;
+    }
+    const items = itemsFromEvent(e, seq);
+    seq += items.length;
+    if (!agentTools && isAgentToolActivity(e)) {
+      agentTools = true;
+      writeItems(agentHeld);
+      agentHeld = [];
+    }
+    if (e.type === 'run:end') {
+      const reply = agentRunEndedAsReply(e.result.stopReason, agentSteps, agentTools);
+      if (!reply) writeItems(agentHeld);
+      agentHeld = [];
+      if (!reply) writeItems(items);
+      else endStream();
+      agentRun = false;
+      return;
+    }
+    if (!agentTools && e.type !== 'assistant:reset') {
+      agentHeld.push(...items.filter(isHoldableAgentRow));
+      writeItems(items.filter((i) => !isHoldableAgentRow(i)));
+      return;
+    }
+    writeItems(items);
   }
 
   function handle(e: EngineEvent): void {
+    if (e.type === 'run:start' && e.mode === 'agent') {
+      agentRun = true;
+      agentTools = false;
+      agentSteps = [];
+      turnStreamed = false;
+      endStream();
+      agentHeld = itemsFromEvent(e, seq);
+      seq += agentHeld.length;
+      return;
+    }
+    if (agentRun) {
+      handleAgent(e);
+      return;
+    }
     if (e.type === 'generator:delta') {
       // llm-jev (docs/LLM-JEV-DESIGN.md §9.3): only the first candidate streams; later samples would interleave here
       if (e.sample !== undefined && e.sample >= 1) return;

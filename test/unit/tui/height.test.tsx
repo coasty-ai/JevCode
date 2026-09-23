@@ -13,7 +13,6 @@ import type { LaunchSettings } from '../../../src/core/types.js';
 import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
 import { WORDMARK_MIN_ROWS, wordmarkBoxRows } from '../../../src/tui/wordmark.js';
-import { INDICATOR_MIN_ROWS, animSize } from '../../../src/tui/anim/index.js';
 import type { Action } from '../../../src/core/types.js';
 import { mkConfirmRequest, mkDecision, mkStatus, tick } from '../../fixtures/tui/fixtures.js';
 import { StubStdin, StubStdout, dynamicRegion, stripSgr } from './stub-stdout.js';
@@ -77,15 +76,11 @@ const bigWrite: Action = { kind: 'write', path: 'big.txt', content: Array.from({
 const markFor = (rows: number, columns: number, claimed: boolean): number =>
   chromeRows(rows, columns, false) === 3 && rows >= WORDMARK_MIN_ROWS && columns >= 64 && (!claimed || rows >= 30) ? wordmarkBoxRows(rows) : 0;
 
-/**
- * The 3D indicator's slot, RESTATED: `animSize(columns, rows).h` rows while something is in flight, no overlay owns
- * the rows and the terminal is at least `INDICATOR_MIN_ROWS` tall — and the allocator drops it again whenever the
- * four-row conversation floor would be broken (which is why 24×80 keeps it off and 40×120 keeps it on).
+/*
+ * AGENT-LOOP-DESIGN §A3 (slice S5a): the 3D indicator's 12-row slot is GONE — the waiting state is the mini braille
+ * indicator in the status row's glyph cell — so a live frame is wave 2's shape again: rule · live · mark · console,
+ * with no rows that come and go while something is in flight.
  */
-const animFor = (rows: number, columns: number, active: boolean): number => {
-  const box = animSize(columns, rows);
-  return active && box !== null && rows >= INDICATOR_MIN_ROWS ? box.h : 0;
-};
 
 /** TUI-DESIGN-2 §4.2: the pending-review input — the boxed tier wants the 9-row card, the flat tier the 8-row header; the panel is collapsed unless opened. */
 const reviewInput = (rows: number, columns: number, panel: 'collapsed' | 'open' | 'full' = 'collapsed'): LayoutInput => {
@@ -144,7 +139,7 @@ describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
     const { frame } = await renderBusy(24, 80, undefined, { review: false });
     const dyn = dynamicRegion(frame, 80);
     expect(dyn.length).toBeLessThanOrEqual(22);
-    expect(dyn.length).toBe(computeLayout({ ...reviewInput(24, 80), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, markWant: markFor(24, 80, false), animWant: animFor(24, 80, true) }).total);
+    expect(dyn.length).toBe(computeLayout({ ...reviewInput(24, 80), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, markWant: markFor(24, 80, false) }).total);
     expect(dyn.join('\n')).toContain('streamed line 199');
     expect(dyn.join('\n')).toContain('streamed line 198');
     expect(dyn.join('\n')).toContain('Type to steer the next step…');
@@ -218,7 +213,7 @@ describe('height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × c
     // never read back from `wordmarkWanted`: deriving the expectation from the very predicate under test would move
     // the expected total in the same direction as a bug in it.
     const markWant = markFor(rows, columns, false);
-    expect(dyn.length).toBe(computeLayout({ ...reviewInput(rows, columns), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, markWant, animWant: animFor(rows, columns, true) }).total);
+    expect(dyn.length).toBe(computeLayout({ ...reviewInput(rows, columns), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, markWant }).total);
     // and the frame itself agrees with that condition — the mark is either drawn or it is not
     expect(dyn.some((l) => l.includes('██')), `${rows}x${columns}`).toBe(markWant > 0);
     for (const line of dyn) expect(stringWidth(line)).toBeLessThanOrEqual(columns);

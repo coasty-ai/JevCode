@@ -11,6 +11,7 @@
  */
 import { useEffect, useReducer, useRef } from 'react';
 import type {
+  Action,
   AgentRow,
   BlockingRequest,
   ConfirmOutcome,
@@ -25,13 +26,17 @@ import type {
   RunResult,
   SandboxLevel,
   SpendSnapshot,
+  StepRecord,
 } from '../core/types.js';
 import { AbortError } from '../errors.js';
+import type { AgentActivity } from './anim/Indicator.js';
+import { STREAM_LOCAL_MS, createStreamScheduler } from './stream-scheduler.js';
+import { EMPTY_REPLY, commitCut, commitOverflow, commitThrough, lastVisibleItem, type ReplyGeometry, type ReplyState } from './reply-state.js';
 import type { OverlayKind } from './layout.js';
 import { emptyLoopFold, foldLoopPlan, foldLoopReplan, foldLoopSteer, foldLoopStep, loopView, type LoopBannerView, type LoopFold } from './pane/banner.js';
 import { DEFAULT_COMPLETE_THRESHOLD, DEFAULT_IMPOSSIBLE_THRESHOLD, DEFAULT_MODE } from '../config/defaults.js';
 import { foldByStep, foldPlanRecord, foldStageEnd, foldStepEnd, toDecisionRow, type DecisionRow, type PaneTab, type PlanView, type SynthView, type TimelineStep } from './pane/model.js';
-import { IDENTITY_REVIEWER, itemsFromEvent, localItem, sanitizeStream, synthText, type TranscriptItem, type TranscriptLevel } from './plain.js';
+import { AGENT_TOOL_VERB, COMPACT_HIDDEN_KINDS, IDENTITY_REVIEWER, agentRunEndedAsReply, isAgentToolActivity, isHoldableAgentRow, isQuietAgentFinish, itemsFromEvent, localItem, oneLine, proseLinesOf, sanitizeStream, synthText, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { retryViewFrom, startTicker, type RetryView } from './retry.js';
 import type { GitZone, PeerZoneSelf, ThinkingPhase } from './status/lines.js';
 // TUI-DESIGN-5 §2.2 (R5-H4): TYPE-only — `src/coordination/**` must stay off the first-frame graph (§2.1 rule 3)
@@ -43,7 +48,12 @@ export type { GitZone } from './status/lines.js';
 export type { Toast } from './toasts.js';
 
 export const DECISIONS_KEPT = 12;
-/** 50 ms = 20 fps: the only coalescing the TUI does (generator deltas and exec output share the buffer); 250 under reduced motion (§14.2). */
+/**
+ * The longest a streamed append waits for its frame under the default cadence, rounded up — what a test waits out
+ * (`tick(LIVE_FLUSH_MS * 2)`). The coalescing itself is the stream scheduler's (`stream-scheduler.ts`, TUI map top change
+ * 4): the first append after a quiet interval flushes at once, then at most one flush per `launch.fps` interval (33 ms), 67
+ * ms over SSH, 250 ms under reduced motion (§14.2).
+ */
 export const LIVE_FLUSH_MS = 50;
 export const LIVE_FLUSH_REDUCED_MS = 250;
 /** The live buffer keeps a tail only; the full proposal text is committed to <Static> at `proposal`. */
@@ -75,15 +85,15 @@ export const TICK_MS = 1000;
 /** TUI-DESIGN-2 §3.11: the controller keeps the last three intakes' decision rows for the panel. */
 export const CHAT_ROWS_KEPT = 3;
 
-/** TUI-DESIGN-2 §4.5: the stage kinds the default `compact` transcript hides (they stay in transcript.log, `--plain` and the panel). */
-export const COMPACT_HIDDEN_KINDS: ReadonlySet<string> = new Set(['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready']);
+/** TUI-DESIGN-2 §4.5: the stage kinds the default `compact` transcript hides — plain.ts's one set (AGENT-LOOP-DESIGN §9.4 adds the read-only `tool` rows). */
+export { COMPACT_HIDDEN_KINDS };
 
 /** TUI-DESIGN-2 §4.5: a transcript item stamped with the default filter's verdict at append time (`hidden` never changes afterwards). */
 export type UiTranscriptItem = TranscriptItem & { readonly hidden?: boolean };
 
 /** TUI-DESIGN-2 §4.5: true when the `compact` view hides an item of this kind. */
 export function hiddenInCompact(kind: string): boolean {
-  return COMPACT_HIDDEN_KINDS.has(kind);
+  return (COMPACT_HIDDEN_KINDS as ReadonlySet<string>).has(kind);
 }
 
 /** TUI-DESIGN-2 §4.5: the items `<Static>` receives — the filtered array is append-only too (A25 holds). */
@@ -97,12 +107,15 @@ export function visibleItems(items: readonly UiTranscriptItem[]): readonly UiTra
  * dirtied. Appends keep the array append-only; a soft-cap remount (`epoch`) starts a fresh one.
  */
 export function useVisibleItems(items: readonly UiTranscriptItem[], epoch: number): readonly UiTranscriptItem[] {
-  const ref = useRef<{ visible: readonly UiTranscriptItem[]; epoch: number }>({ visible: [], epoch });
-  const filtered = visibleItems(items);
+  const ref = useRef<{ visible: readonly UiTranscriptItem[]; epoch: number; items: readonly UiTranscriptItem[] | null }>({ visible: [], epoch, items: null });
   const prev = ref.current;
+  // TUI map top change 11: the items array only changes identity when rows are appended, so every other render (a
+  // spinner tick, a stream flush, a key) reuses the last filter instead of walking up to 20,000 items again
+  if (prev.items === items && prev.epoch === epoch) return prev.visible;
+  const filtered = visibleItems(items);
   const same = prev.epoch === epoch && prev.visible.length === filtered.length && (filtered.length === 0 || prev.visible[filtered.length - 1]?.key === filtered[filtered.length - 1]?.key);
   const visible = same ? prev.visible : filtered;
-  ref.current = { visible, epoch };
+  ref.current = { visible, epoch, items };
   return visible;
 }
 
@@ -144,6 +157,62 @@ export interface Thresholds {
 }
 
 export const DEFAULT_THRESHOLDS: Thresholds = { complete: DEFAULT_COMPLETE_THRESHOLD, impossible: DEFAULT_IMPOSSIBLE_THRESHOLD };
+
+/** AGENT-LOOP-DESIGN §9.1: a tool call whose arguments are streaming (`generator:tool-delta` with `tool` / `target`). */
+export interface AgentWriting {
+  readonly tool: string;
+  readonly target: string;
+  readonly chars: number;
+}
+
+/**
+ * AGENT-LOOP-DESIGN §9.4, §A1, §A5 (slice S5a): the TUI's view of an agent run — null for every other mode, so no legacy
+ * frame reads any of it.
+ */
+export interface AgentUi {
+  /**
+   * The run chrome is on: a tool call (or anything past a prose answer — a proposal other than `done`, a command) has
+   * happened in this run. Until then the run looks like a chat reply (§A5): the chat placeholder, the `thinking` status
+   * word, Esc / Ctrl-C stop the reply, and the run's own rows are held back.
+   */
+  readonly tools: boolean;
+  /** what runs now — the status word and the mini indicator's shape (peer review C) */
+  readonly activity: AgentActivity | null;
+  /** a tool call whose arguments are streaming (the live row `writing edit_file src/a.ts… 1.2k chars`) */
+  readonly writing: AgentWriting | null;
+  /** reasoning progress of the current turn (the dim live row `thinking… 1.2k chars · <tail>`) */
+  readonly reasoning: { readonly chars: number; readonly tail: string } | null;
+  /** the tool row executing now — live row 1 above the output tail (`Bash python -m pytest -q`, `Edit src/a.ts`) */
+  readonly running: string | null;
+  /** read-only calls in flight (a batch's `tool:call`s before their `tool:result`s) */
+  readonly calls: readonly { readonly id: string; readonly label: string }[];
+  /** tool calls seen in this run (the strip's `<k> tool calls`) */
+  readonly toolCalls: number;
+  /** the committed steps' agent summaries — `isReplyOnlyRun`'s input */
+  readonly steps: readonly Pick<StepRecord, 'agent'>[];
+  /** engine rows held back while the run is still a reply (they land when the chrome turns on; a reply never shows them) */
+  readonly held: readonly TranscriptItem[];
+  /** the step of the current model turn (the prose items' step) */
+  readonly turnStep: number | null;
+  /** prose has streamed in this run (a still-replying run then reads `replying`, not `thinking`, like a chat reply) */
+  readonly prose: boolean;
+  /** prose deltas streamed in the CURRENT model turn (a turn with none — a JSON transport — commits `assistant:text`'s own lines) */
+  readonly turnStreamed: boolean;
+}
+
+/**
+ * The agent view of a run IN FLIGHT (`live` / `aborting` / `pausing`), else null. `UiState.agent` outlives its run (the
+ * rows after it read how it ended), but nothing streams through it once the run is over: a later chat reply of a legacy
+ * mode (`/mode llm-jev` in the same session) is the legacy live region again, never the reply block.
+ */
+export function agentInFlight(s: Pick<UiState, 'agent' | 'run'>): AgentUi | null {
+  return s.agent !== null && (s.run === 'live' || s.run === 'aborting' || s.run === 'pausing') ? s.agent : null;
+}
+
+/** A fresh agent run's view. */
+export function initialAgentUi(): AgentUi {
+  return { tools: false, activity: 'thinking', writing: null, reasoning: null, running: null, calls: [], toolCalls: 0, steps: [], held: [], turnStep: null, prose: false, turnStreamed: false };
+}
 
 /** TUI-DESIGN §15 item 20 `UiState` 1.1 — today's fields kept, the design's additions, and the additive pane inputs the tab builders read. */
 export interface UiState {
@@ -259,6 +328,8 @@ export interface UiState {
   readonly statusAt: number | null;
   /** runs ended in this session */
   readonly runsEnded: number;
+  /** AGENT-LOOP-DESIGN §A5: of those, agent runs that ended as a reply (not a run to the eye: the brand rule row stays) */
+  readonly repliesEnded: number;
   /** `<Static>` remount generation (A28) */
   readonly staticEpoch: number;
   /** renderer-local item counter (`local:[ui]:n` keys) */
@@ -302,14 +373,38 @@ export interface UiState {
   readonly fold: Fold | null;
   /** this session's identity, so my own run is not counted as a peer; null excludes nothing (§2.2) */
   readonly selfId: PeerZoneSelf | null;
+  // ----- the stream surface (TUI map top changes 4 and 6; AGENT-LOOP-DESIGN §9.4, slice S5a)
+  /**
+   * the stream's paint counter: every flush that changed what streams bumps it, and `<Transcript>` keys its `<Static>`
+   * style on it, so the flush paints on Ink's immediate path (the scheduler's cadence is the one throttle; Ink's own would
+   * stack a second one on top of it)
+   */
+  readonly paintSeq: number;
+  /** monotonic ms (`performance.now()`) of the last stream flush that changed the text — the spinner's "text is flowing" clock */
+  readonly liveAt: number;
+  /** agent mode: the streamed reply's commit bookkeeping over `live` (the prose buffer) */
+  readonly reply: ReplyState;
+  /** agent mode: the reply block's row cap and width, from the App's layout (overflow commits keep the block within it) */
+  readonly replyGeom: ReplyGeometry | null;
+  /** agent mode: the running command's output tail (the legacy modes keep command output in `live`) */
+  readonly liveOutput: string;
+  /** agent mode: the run's live view; null in every other mode */
+  readonly agent: AgentUi | null;
 }
 
 /** TUI-DESIGN §15 item 20 `UiAction` (today's four, the design's additions, and the additive `picker` / `title` / `spend:session` / `git:dirs`). */
 export type UiAction =
-  | { type: 'event'; event: EngineEvent; at?: number }
+  /** `live`: agent mode — the whole prose buffer at the event, which an `assistant:text` / new turn / run end commits from */
+  | { type: 'event'; event: EngineEvent; at?: number; live?: string }
   /** TUI-DESIGN-5 §2.2 (R5-H4): a fold whose peer COUNTS moved — the session controller drops a beat that moves nothing */
   | { type: 'peers:fold'; fold: Fold; selfId: PeerZoneSelf }
-  | { type: 'live'; text: string; toolChars?: number }
+  /**
+   * One stream-scheduler flush. `paint`: a leading edge (the stream was quiet) — bump `paintSeq` so the frame takes Ink's
+   * immediate path. Agent mode also carries the command output tail and the tool call being written.
+   */
+  | { type: 'live'; text: string; toolChars?: number; output?: string; writing?: AgentWriting | null; paint?: true; at?: number }
+  /** agent mode: the reply block's geometry changed (the App's layout); overflow commits run against it */
+  | { type: 'reply:geometry'; rows: number; columns: number }
   | { type: 'confirm:request'; request: ConfirmRequest; at?: number }
   | { type: 'confirm:settled'; id: string }
   | { type: 'key'; at: number }
@@ -445,6 +540,7 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     doneExitCode: null,
     statusAt: null,
     runsEnded: 0,
+    repliesEnded: 0,
     staticEpoch: 0,
     localSeq: 0,
     thresholds: DEFAULT_THRESHOLDS,
@@ -462,6 +558,12 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     // contract 1.6 (TUI-DESIGN-4 §8 item 11): sticky to the bottom, nothing queued
     scroll: { anchor: 'bottom' },
     queued: null,
+    paintSeq: 0,
+    liveAt: Number.NEGATIVE_INFINITY,
+    reply: EMPTY_REPLY,
+    replyGeom: null,
+    liveOutput: '',
+    agent: null,
   };
 }
 
@@ -488,7 +590,30 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
   switch (action.type) {
     case 'live': {
       const toolChars = action.toolChars ?? state.toolChars;
-      return state.live === action.text && state.toolChars === toolChars ? state : { ...state, live: action.text, toolChars };
+      const agent = agentInFlight(state);
+      // the stream's paint: a flush that changed the streamed text paints at once (and marks the text as flowing)
+      const moved = state.live !== action.text || (agent !== null && action.output !== undefined && action.output !== state.liveOutput);
+      const paint = action.paint === true || (moved && action.at !== undefined);
+      const stamp = moved && action.at !== undefined ? { liveAt: action.at } : {};
+      if (agent === null) {
+        if (state.live === action.text && state.toolChars === toolChars && !paint) return state;
+        return { ...state, live: action.text, toolChars, ...stamp, ...(paint ? { paintSeq: state.paintSeq + 1 } : {}) };
+      }
+      // AGENT-LOOP-DESIGN §9.4: the prose buffer, the command output tail and the call being written, in one update
+      const output = action.output ?? state.liveOutput;
+      const writing = action.writing === undefined ? agent.writing : action.writing;
+      if (state.live === action.text && state.toolChars === toolChars && state.liveOutput === output && sameWriting(agent.writing, writing) && !paint) return state;
+      const prose = agent.prose || action.text !== '';
+      const turnStreamed = agent.turnStreamed || action.text !== '';
+      const nextAgent = sameWriting(agent.writing, writing) && prose === agent.prose && turnStreamed === agent.turnStreamed ? agent : { ...agent, writing, prose, turnStreamed };
+      const next: UiState = { ...state, live: action.text, toolChars, liveOutput: output, agent: nextAgent, ...stamp, ...(paint ? { paintSeq: state.paintSeq + 1 } : {}) };
+      return overflowReply(next);
+    }
+    case 'reply:geometry': {
+      const rows = Math.max(1, Math.floor(Number.isFinite(action.rows) ? action.rows : 1));
+      const columns = Math.max(1, Math.floor(Number.isFinite(action.columns) ? action.columns : 80));
+      if (state.replyGeom !== null && state.replyGeom.rows === rows && state.replyGeom.columns === columns) return state;
+      return overflowReply({ ...state, replyGeom: { rows, columns } });
     }
     case 'confirm:request': {
       if (state.pendingConfirm?.id === action.request.id) return state;
@@ -508,7 +633,7 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       return { ...state, scroll: next };
     }
     case 'event':
-      return applyEvent(state, action.event, action.at ?? state.nowMs);
+      return applyEvent(state, action.event, action.at ?? state.nowMs, action.live);
     case 'key': {
       const s = endSplash(state);
       // always a new state: `keySeq` must advance for every key (two keys in one millisecond share `at`); TUI-DESIGN-3 §3.6 / §3.2:
@@ -757,12 +882,243 @@ function resetForRun(s: UiState, e: Extract<EngineEvent, { type: 'run:start' }>,
     // TUI-DESIGN-2 §3.1 row 5: the intake settled (`thinking(null)`) before `startRun`; a run never shows a chat phase
     thinking: null,
     lastRisk: null,
+    // AGENT-LOOP-DESIGN §9.4 (slice S5a): an agent run gets its live view; every other mode keeps `agent: null`
+    reply: EMPTY_REPLY,
+    liveOutput: '',
+    agent: e.mode === 'agent' ? initialAgentUi() : null,
   };
 }
 
-function applyEvent(state: UiState, e: EngineEvent, now: number): UiState {
+function sameWriting(a: AgentWriting | null, b: AgentWriting | null): boolean {
+  return a === b || (a !== null && b !== null && a.tool === b.tool && a.target === b.target && a.chars === b.chars);
+}
+
+/** The header row the one-shot `<Transcript>` prints first (the reply block's first row is spaced against it when nothing else is visible). */
+const ONE_SHOT_HEADER_PREV: TranscriptItem = { key: 'run:header', seq: -1, step: null, kind: 'run:start', level: 'info', text: '' };
+
+/** The item the reply block's first row follows — the last visible transcript item, or the one-shot header. */
+export function replyPrev(s: Pick<UiState, 'items' | 'sessionMode' | 'staticEpoch'>): TranscriptItem | null {
+  return lastVisibleItem(s.items) ?? (s.sessionMode === 'one-shot' && s.staticEpoch === 0 ? ONE_SHOT_HEADER_PREV : null);
+}
+
+/** Append items that carry their own seq numbers and move the counter past them. */
+function appendSeq(s: UiState, items: readonly TranscriptItem[], seq: number): UiState {
+  const next = appendItems(s, items);
+  return next.seq === seq ? next : { ...next, seq };
+}
+
+/** AGENT-LOOP-DESIGN §9.4: commit the reply block's oldest rows while it has more than its geometry grants. */
+function overflowReply(s: UiState): UiState {
+  const agent = agentInFlight(s);
+  if (agent === null || s.replyGeom === null || s.live === '') return s;
+  const c = commitOverflow(s.live, s.reply, s.replyGeom, replyPrev(s), agent.turnStep, s.seq);
+  if (c === null) return s;
+  return { ...appendSeq(s, c.items, c.seq), reply: c.reply };
+}
+
+/** The tool row of an action (live row 1 while it executes): `Bash <cmd>`, `Edit <path>`, `Write <path>`, `Verify <cmd>`. */
+export function agentActionRow(a: Action, verify = false): string {
+  switch (a.kind) {
+    case 'run':
+      return `${verify ? 'Verify' : AGENT_TOOL_VERB['bash']} ${oneLine(a.command)}`;
+    case 'edit':
+      return `${AGENT_TOOL_VERB['edit_file']} ${a.path}`;
+    case 'write':
+      return `${AGENT_TOOL_VERB['write_file']} ${a.path}`;
+    case 'patch':
+      return `${AGENT_TOOL_VERB['edit_file']} (patch)`;
+    case 'read':
+      return `${AGENT_TOOL_VERB['read_file']} ${a.paths.join(', ')}`;
+    case 'done':
+      return 'done';
+  }
+}
+
+/** The activity an action's execution is: a test run of the harness (`verify` goal) → testing, a command → running, an edit / write → editing. */
+function actionActivity(a: Action, verify: boolean): AgentActivity | null {
+  switch (a.kind) {
+    case 'run':
+      return verify ? 'testing' : 'running';
+    case 'edit':
+    case 'write':
+    case 'patch':
+      return 'editing';
+    case 'read':
+      return 'reading';
+    case 'done':
+      return null;
+  }
+}
+
+/** A proposal the harness made to run its own test command (AGENT-LOOP-DESIGN §3.3 rule 2): its goal names the verify step. */
+function isVerifyGoal(goal: string): boolean {
+  return /^verify\b/i.test(goal.trim());
+}
+
+function hide(item: TranscriptItem): UiTranscriptItem {
+  return { ...item, hidden: true };
+}
+
+/**
+ * AGENT-LOOP-DESIGN §9.4, §A1, §A5 (slice S5a): one engine event of an agent run — the prose commits, the rows (held
+ * while the run is still a reply, hidden when it ends as one), the run chrome, then the legacy fold (`foldEvent`: status,
+ * timeline, plan, reviews, budgets…) and the live view's fields.
+ */
+function applyAgentEvent(state: UiState, e: EngineEvent, now: number, live: string | undefined): UiState {
+  const buf = live ?? state.live;
+  let a = state.agent!;
+  let s: UiState = state;
+  let seq = state.seq;
+  let reply = state.reply;
+  let text = state.live;
+  const prose: TranscriptItem[] = [];
+  const step = 'step' in e && typeof e.step === 'number' ? e.step : a.turnStep;
+  // 1. the prose this event commits (a line commit, or what a finished turn / run left in the buffer)
+  if (e.type === 'assistant:text') {
+    // no deltas streamed for this turn: not "the buffer is used up" (overflow commits can use it up), but nothing arrived
+    const empty = buf === '' && !a.turnStreamed;
+    if (empty && e.text !== '') {
+      // no deltas streamed for this turn (a JSON transport): the committed lines are the event's own
+      const body = `${proseLinesOf(e.text).join('\n')}\n`;
+      const c = commitThrough(body, { done: 0, offset: 0, fence: reply.fence }, body.length, e.step, seq);
+      prose.push(...c.items);
+      seq = c.seq;
+      reply = { ...c.reply, done: 0, offset: 0 };
+      text = buf;
+    } else {
+      const c = commitThrough(buf, reply, commitCut(buf, e.final), e.step, seq);
+      prose.push(...c.items);
+      seq = c.seq;
+      reply = c.reply;
+      text = c.live;
+    }
+  } else if (e.type === 'generator:start' || e.type === 'run:end') {
+    if ((e.type === 'run:end' || (e.sample ?? 0) === 0) && buf.length > reply.done) {
+      const c = commitThrough(buf, reply, buf.length, step, seq);
+      prose.push(...c.items);
+      seq = c.seq;
+    }
+    if (e.type === 'run:end' || (e.sample ?? 0) === 0) {
+      reply = EMPTY_REPLY;
+      text = '';
+    }
+  } else if (e.type === 'assistant:reset') {
+    reply = EMPTY_REPLY;
+    text = '';
+  }
+  // 2. the engine's rows for this event (the TUI draws its own prose for `assistant:text`)
+  const engine = e.type === 'assistant:text' ? [] : itemsFromEvent(e, seq);
+  seq += engine.length;
+  // 3. the run chrome turns on at the first tool activity: the held rows land first, in their order
+  if (!a.tools && isAgentToolActivity(e)) {
+    s = appendItems(s, a.held);
+    a = { ...a, tools: true, held: [] };
+  }
+  // 4. hold, hide or show
+  let shown: TranscriptItem[] = engine;
+  let held: TranscriptItem[] = [];
+  if (e.type === 'step:end' && isQuietAgentFinish(e.record) && s.transcript === 'compact') shown = shown.map(hide);
+  if (e.type === 'run:end') {
+    // §A1 / §A5: a run that answered in prose is a reply — no header, no step rows, no stop line; an Esc on a reply
+    // stops it the way a chat reply stops (the controller says nothing either)
+    if (agentRunEndedAsReply(e.result.stopReason, a.steps, a.tools)) {
+      s = { ...appendItems(s, a.held.map(hide)), repliesEnded: s.repliesEnded + 1 };
+      shown = shown.map(hide);
+    } else if (a.held.length > 0) s = appendItems(s, a.held);
+    a = { ...a, held: [] };
+  } else if (!a.tools && e.type !== 'assistant:reset') {
+    held = shown.filter(isHoldableAgentRow);
+    shown = shown.filter((i) => !isHoldableAgentRow(i));
+  }
+  s = appendSeq({ ...s, reply, live: text }, [...prose, ...shown], seq);
+  if (held.length > 0) a = { ...a, held: [...a.held, ...held] };
+  // 5. the live view
+  switch (e.type) {
+    case 'step:start':
+      a = { ...a, activity: 'thinking', writing: null, running: null, calls: [] };
+      s = { ...s, stageStartedAt: now };
+      break;
+    case 'generator:start':
+      if ((e.sample ?? 0) === 0) a = { ...a, activity: 'thinking', writing: null, reasoning: null, turnStep: e.step, turnStreamed: false };
+      break;
+    case 'assistant:reset':
+      a = { ...a, turnStreamed: false };
+      break;
+    case 'generator:reasoning':
+      a = { ...a, reasoning: { chars: e.chars, tail: e.tail } };
+      break;
+    case 'generator:tool-delta':
+      if ((e.sample ?? 0) === 0) a = { ...a, writing: { tool: e.tool ?? '', target: e.target ?? '', chars: e.chars } };
+      break;
+    case 'generator:end':
+      if ((e.sample ?? 0) === 0) a = { ...a, reasoning: null };
+      break;
+    case 'tool:call':
+      a = { ...a, toolCalls: a.toolCalls + 1, writing: null, calls: [...a.calls.filter((c) => c.id !== e.id), { id: e.id, label: agentCallLabel(e.name, e.summary) }], activity: e.readOnly ? 'reading' : e.name === 'bash' ? 'running' : 'editing' };
+      s = { ...s, stageStartedAt: now };
+      break;
+    case 'tool:result':
+      a = { ...a, calls: a.calls.filter((c) => c.id !== e.id) };
+      break;
+    case 'proposal': {
+      const verify = isVerifyGoal(e.proposal.goal);
+      const act = e.proposal.action;
+      const activity = actionActivity(act, verify);
+      // an observe step's `read` proposal and the final `done` keep the activity they follow (reading / the model's turn)
+      a = { ...a, writing: null, running: act.kind === 'done' || act.kind === 'read' ? null : agentActionRow(act, verify), activity: act.kind === 'read' || act.kind === 'done' ? a.activity : activity, ...(act.kind === 'read' ? { calls: [] } : {}) };
+      s = { ...s, toolChars: 0 };
+      break;
+    }
+    case 'exec:start': {
+      const verify = a.activity === 'testing';
+      a = { ...a, running: a.running ?? agentActionRow(e.action, verify), activity: actionActivity(e.action, verify) ?? a.activity };
+      s = { ...s, liveOutput: '', stageStartedAt: now };
+      break;
+    }
+    case 'outcome':
+      a = { ...a, running: null, calls: [] };
+      s = { ...s, liveOutput: '' };
+      break;
+    case 'step:end':
+      a = { ...a, steps: [...a.steps, e.record.agent !== undefined ? { agent: e.record.agent } : {}], running: null, calls: [], writing: null };
+      break;
+    case 'run:end':
+      a = { ...a, activity: null, running: null, calls: [], writing: null, reasoning: null };
+      s = { ...s, liveOutput: '' };
+      break;
+    default:
+      break;
+  }
+  s = { ...s, agent: a };
+  return foldEvent(s, e, now);
+}
+
+/** A tool call as its in-flight live row names it: `Read src/a.ts`, `Grep "x" in src`. */
+function agentCallLabel(name: string, summary: string): string {
+  const verb = AGENT_TOOL_VERB[name] ?? name;
+  const s = oneLine(summary).trim();
+  const rest = s.startsWith(`${name} `) ? s.slice(name.length + 1).trim() : s === name ? '' : s;
+  return rest === '' ? verb : `${verb} ${rest}`;
+}
+
+function applyEvent(state: UiState, e: EngineEvent, now: number, live?: string): UiState {
+  if (agentInFlight(state) !== null && e.type !== 'run:start') return applyAgentEvent(state, e, now, live);
+  if (e.type === 'run:start' && e.mode === 'agent') {
+    // an agent run starts as a reply: its `[run] started` row is held with the rest of its chrome (§A1)
+    const items = itemsFromEvent(e, state.seq);
+    const next = resetForRun({ ...state, seq: state.seq + items.length }, e, now);
+    return { ...next, agent: { ...initialAgentUi(), held: items } };
+  }
   let next = appendItems(state, itemsFromEvent(e, state.seq));
   if (next !== state) next = { ...next, seq: state.seq + (next.items.length - (next.staticEpoch === state.staticEpoch ? state.items.length : 0)) };
+  return foldEvent(next, e, now);
+}
+
+/** The per-event state fold of the transition table (the rows `applyEvent` appends are already in `next`). */
+function foldEvent(next: UiState, e: EngineEvent, now: number): UiState {
+  // AGENT-LOOP-DESIGN §9.4: in an agent run `live` is the prose buffer, which only commits empty it — a proposal, a
+  // command or a new turn must not clear it the way they clear the legacy live region
+  const agentRun = agentInFlight(next) !== null;
   switch (e.type) {
     case 'run:start':
       return resetForRun(next, e, now);
@@ -829,14 +1185,17 @@ function applyEvent(state: UiState, e: EngineEvent, now: number): UiState {
     // llm-jev (docs/LLM-JEV-DESIGN.md §9.3): a `generator:start` with `sample ≥ 1` runs beside sample 0 — it moves the
     // `sample k/N` counter and leaves sample 0's live buffer alone; `samples > 1` sets the counter, `proposal` clears it.
     case 'generator:start': {
+      if (agentRun) return next.toolChars === 0 ? next : { ...next, toolChars: 0 };
       const sampling = e.samples === undefined ? next.sampling : e.samples > 1 ? { k: (e.sample ?? 0) + 1, n: e.samples } : null;
       const cleared = (e.sample ?? 0) >= 1 || (next.live === '' && next.toolChars === 0 && next.synth === null) ? next : { ...next, live: '', toolChars: 0, synth: null };
       return sampling === cleared.sampling || (sampling !== null && cleared.sampling !== null && sampling.k === cleared.sampling.k && sampling.n === cleared.sampling.n) ? cleared : { ...cleared, sampling };
     }
     case 'proposal':
+      if (agentRun) return next.toolChars === 0 ? next : { ...next, toolChars: 0 };
       return next.live !== '' || next.toolChars !== 0 || next.synth !== null || next.sampling !== null ? { ...next, live: '', toolChars: 0, synth: null, sampling: null } : next;
     case 'exec:start':
     case 'outcome':
+      if (agentRun) return next;
       return next.live !== '' || next.toolChars !== 0 || next.synth !== null ? { ...next, live: '', toolChars: 0, synth: null } : next;
     // Cumulative count from the engine; the live region shows `streaming action… N chars` while the text buffer is empty
     // (llm-jev: only sample 0's count reaches the live region).
@@ -1098,6 +1457,20 @@ function appendTail(buf: string, text: string): string {
   return joined.length > LIVE_BUFFER_MAX ? joined.slice(joined.length - LIVE_BUFFER_MAX) : joined;
 }
 
+/**
+ * AGENT-LOOP-DESIGN §9.4: the prose buffer is NOT cut from the front — the reply's commit offsets index it, and every
+ * newline (and every overflow of the block) commits and trims it, so it holds one line or one code block at a time. The
+ * hard bound is only for a runaway line with no newline and no geometry yet.
+ */
+export const PROSE_BUFFER_MAX = 1024 * 1024;
+
+function appendProse(buf: string, text: string): string {
+  // a CR (a CRLF stream) is dropped here, as the committed rows drop it, so the live rows and the rows they commit
+  // are one text (a caret after a bare CR would draw over the label column)
+  const joined = buf + sanitizeStream(text).replace(/\r/g, '');
+  return joined.length > PROSE_BUFFER_MAX ? joined.slice(0, PROSE_BUFFER_MAX) : joined;
+}
+
 export interface UseEngineOptions {
   mode?: 'session' | 'one-shot';
   /** injected clock (tests) */
@@ -1126,67 +1499,114 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
   nowRef.current = now;
 
   useEffect(() => {
+    // the legacy modes: generator deltas and command output share `buffer` (the live region). An agent run (§9.4):
+    // `buffer` is the prose (the reply block; commits trim it), `output` the running command's tail, `writing` the call
+    // whose arguments stream.
     let buffer = '';
+    let output = '';
     let toolChars = 0;
-    let timer: NodeJS.Timeout | null = null;
-    const flushMs = opts.flushMs ?? LIVE_FLUSH_MS;
-    const flush = (): void => {
-      timer = null;
-      dispatch({ type: 'live', text: buffer, toolChars });
-    };
-    const schedule = (): void => {
-      if (timer === null) timer = setTimeout(flush, flushMs);
-    };
+    let writing: AgentWriting | null = null;
+    let agent = false;
+    // every flush is stamped: a flush that moved the text paints on Ink's immediate path (the cadence is the one throttle)
+    const scheduler = createStreamScheduler(() => dispatch({ type: 'live', text: buffer, toolChars, ...(agent ? { output, writing } : {}), at: performance.now() }), opts.flushMs ?? STREAM_LOCAL_MS);
     const clearLive = (): void => {
       buffer = '';
+      output = '';
       toolChars = 0;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
+      writing = null;
+      scheduler.cancel();
     };
+    const event = (e: EngineEvent, live?: string): void => dispatch({ type: 'event', event: e, at: nowRef.current(), ...(live !== undefined ? { live } : {}) });
     const unsubscribe = source.subscribe((e) => {
       switch (e.type) {
+        case 'run:start':
+          clearLive();
+          agent = e.mode === 'agent';
+          event(e);
+          return;
         // llm-jev (docs/LLM-JEV-DESIGN.md §9.3): only sample 0 (or an unsampled call) streams into the live region;
         // samples ≥ 1 are counted by the reducer's `sampling` and never touch the buffer
         case 'generator:delta':
           if ((e.sample ?? 0) >= 1) return;
-          buffer = appendTail(buffer, e.text);
-          schedule();
+          buffer = agent ? appendProse(buffer, e.text) : appendTail(buffer, e.text);
+          scheduler.poke();
           return;
         case 'exec:output':
-          buffer = appendTail(buffer, e.chunk);
-          schedule();
+          if (agent) output = appendTail(output, e.chunk);
+          else buffer = appendTail(buffer, e.chunk);
+          scheduler.poke();
           return;
         case 'generator:tool-delta':
           if ((e.sample ?? 0) >= 1) return;
           toolChars = e.chars;
-          schedule();
+          if (agent) writing = { tool: e.tool ?? '', target: e.target ?? '', chars: e.chars };
+          scheduler.poke();
           return;
         case 'generator:start':
           if ((e.sample ?? 0) >= 1) {
-            dispatch({ type: 'event', event: e, at: nowRef.current() });
+            event(e);
+            return;
+          }
+          if (agent) {
+            // a new model turn: what the last one left commits (the reducer reads it from `live`)
+            event(e, buffer);
+            buffer = '';
+            toolChars = 0;
+            writing = null;
             return;
           }
           clearLive();
-          dispatch({ type: 'event', event: e, at: nowRef.current() });
+          event(e);
+          return;
+        case 'assistant:text':
+          if (!agent) {
+            event(e);
+            return;
+          }
+          // AGENT-LOOP-DESIGN §9.4: commit through the buffer's last newline (all of it for the final remainder) — the
+          // reducer does the same cut, so the buffer keeps exactly the partial line it keeps (not a clear)
+          event(e, buffer);
+          buffer = buffer.slice(commitCut(buffer, e.final));
+          return;
+        case 'assistant:reset':
+          if (agent) buffer = '';
+          event(e);
           return;
         case 'exec:start':
-        case 'proposal':
         case 'outcome':
-        case 'run:end':
+          if (agent) {
+            output = '';
+            event(e);
+            return;
+          }
           clearLive();
-          dispatch({ type: 'event', event: e, at: nowRef.current() });
+          event(e);
+          return;
+        case 'proposal':
+          if (agent) {
+            toolChars = 0;
+            writing = null;
+            event(e);
+            return;
+          }
+          clearLive();
+          event(e);
+          return;
+        case 'run:end':
+          if (agent) event(e, buffer);
+          else event(e);
+          clearLive();
+          agent = false;
           return;
         default:
-          dispatch({ type: 'event', event: e, at: nowRef.current() });
+          event(e);
       }
     });
     const unsubscribeConfirm = confirmer.onRequest((request) => dispatch({ type: 'confirm:request', request, at: nowRef.current() }));
     return () => {
       unsubscribe();
       unsubscribeConfirm();
-      if (timer !== null) clearTimeout(timer);
+      scheduler.cancel();
     };
   }, [source, confirmer, opts.flushMs]);
 

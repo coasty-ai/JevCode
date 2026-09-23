@@ -275,6 +275,12 @@ describe('§3.2 / §7 rows 35–37 — three distinct empty states, not one', ()
     expect(contextNoRelaxed('jev-only')).toBe('this run does not build a relaxed context (jev-only) — /mode jev-on builds one');
   });
 
+  it('AGENT-LOOP-DESIGN §7.5 (slice S5a): an agent run is never sent to /mode jev-on — its own meter fills in after the first turn', () => {
+    expect(contextNoRelaxed('agent')).toBe('the agent reports its context after its first model turn — /context shows the meter then');
+    expect(contextNoRelaxed('agent', GLYPHS.ascii)).toBe('the agent reports its context after its first model turn - /context shows the meter then');
+    expect(textsOf(contextBlock({ ...base, mode: 'agent', usage: null }, 120).rows)).toEqual([contextNoRelaxed('agent')]);
+  });
+
   it('before the first prompt (§7 row 37)', () => {
     const b = contextBlock({ ...base, usage: usage({ promptChars: 0, summaryAt: null, compactions: 0, lastCompactionAt: null }) }, 120);
     expect(textsOf(b.rows)).toEqual([CONTEXT_NO_PROMPT]);

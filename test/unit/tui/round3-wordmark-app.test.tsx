@@ -400,7 +400,8 @@ describe('the animation catalogue (TUI-DESIGN-3 §5.2 A4–A6, P7)', () => {
       expect(f).not.toMatch(/│ starting\s/);
       expect(f).not.toContain(PLACEHOLDERS.steer);
     }
-    expect(m.frame()).toMatch(/│ [░▒▓█◆] thinking/);
+    // AGENT-LOOP-DESIGN §A3: the glyph slot is the mini braille donut (1–3 cells), or its ASCII twin
+    expect(m.frame()).toMatch(/│ (?:[⠀-⣿]{1,3}|[-\\|/]) thinking/);
     expect(m.frame()).toContain(`› ${PLACEHOLDERS.thinking}`);
     expect(hasMark(m.dyn(), 80)).toBe(true); // §3.2: the mark stays while thinking
   });
