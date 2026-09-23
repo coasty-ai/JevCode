@@ -8,7 +8,7 @@
 import type { Answer, EngineMode, GitState, JevProvider, LastTestRun, PeerView, Question, SandboxLevel, StopReason, TestRunner } from '../core/types.js';
 import { noul, ref } from '../jev/questions.js';
 import { clip } from '../core/text.js';
-import { MODE_BADGE_WORD } from '../config/defaults.js';
+import { JEV_ONLY_DEFAULT_SPEND_CAP_USD, MODE_BADGE_WORD } from '../config/defaults.js';
 import { sandboxText } from '../tui/onboarding/lines.js';
 import { usd2 } from '../tui/budget/lines.js';
 import { stepCostText } from '../tui/plain.js';
@@ -137,7 +137,7 @@ export const FACT_FALSE_EXAMPLES: Readonly<Record<FactKey, readonly string[]>> =
 export const JEV_PRICE_TEXT = '$0.042 per million input tokens (output free)';
 // TUI-DESIGN-3 §1.9 (R3 F9 / R5 F13): the copy names the code model, never a vendor
 export const WHAT_IT_IS_TEXT = 'JevCode is a coding agent where Jev, a decision model, makes every decision: what kind of step comes next, which files matter, how risky an action is, whether a step worked. In jev-only mode code proposes fixes and tests verify them; in jev+llm mode the code model writes the code.';
-export const SWITCH_MODE_TEXT = 'Switch with /mode jev-only (Jev alone, $0.25 run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.';
+export const SWITCH_MODE_TEXT = `Switch with /mode jev-only (Jev alone, $${JEV_ONLY_DEFAULT_SPEND_CAP_USD.toFixed(2)} run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.`;
 /**
  * The `review` fact, per `autonomy`. Under `full` (the default) a review-flagged action is auto-approved and
  * logged, so the old "Nothing is ever auto-approved" sentence would be a lie; under `review` the y/n card is back.

@@ -12,6 +12,29 @@ requirements: every session knows what the others are doing and never blocks one
 usage is visible; work can be delegated and watched; your memory and workflows come over from the other agents;
 every provider key is selectable with search.
 
+### Changed — the conversation, the default autonomy and the first frame (2026-09-22, after the round-5 merge)
+
+- **Chat is a conversation.** Every message you type gets a streamed reply from the code model in a warm, concise
+  voice that knows what it is (JevCode, built by coasty-ai; Jev decides, the code model writes), what it can do,
+  which workspace it is in (name, branch, dirty count) and which sessions came before. `hi` is answered by the
+  model, not a catalogue string; `who made you?` is answered. Jev's `intake` reading still runs — concurrently,
+  in the background — and only decides whether a run ALSO starts: a clear coding task ends the reply with
+  `On it — starting the run.` and the run starts; an ambiguous message ends it with `Say \`do it\` and I'll
+  make that a task.` and the next `do it` / `go ahead` / `yes` starts it. The intake card
+  (`run this as a task? [y] run it [n] just chatting`) and the `(waiting for y/n)` composer state are gone;
+  nothing ever blocks the composer. `jev-only` keeps Jev's own answers (catalogue · facts · lookup) plus the offer.
+- **Autonomy `full` by default.** New setting `autonomy` (`--autonomy full|review`, `JEVCODE_AUTONOMY`,
+  file key `autonomy`; default `full`). Under `full` a `review` risk verdict is approved at once and the
+  session notes `[review] auto-approved (autonomy full): <action> — <reason>` — it shows what ran and never
+  waits; `--autonomy review` keeps the y/n card; a `block` verdict still stops; `--no-input` is unchanged.
+- **The session opens with the wordmark and the composer.** The interactive first frame no longer prints the
+  `[run] jevcode session · … | step 0/– starting` header, the `[sandbox]` item, the `[ui] recent:` hint or the
+  one-time `[setup] mode …` disclosure; all four stay in `--plain` and `--json`, the sandbox facts stay on
+  `/status`, `/config` and `jevcode doctor`, and the most recent session becomes the composer placeholder
+  (`Say hi · /resume continues "<title>"`).
+- **Every provider validates.** `generator.provider` accepts `anthropic|openrouter|openai|gemini|xai|fireworks|meta`
+  (it refused all but the first two); `jevcode login --provider gemini` persists.
+
 ### Added — coordination: `/who`, the messaging verbs, and the write half
 
 - **`/who`** (`--all`) — one row per `jevcode` session on this repo: liveness, `branch@head`, `step/max` and

@@ -32,6 +32,9 @@ export interface LlmTurnInput {
 
 /** what the controller knows about this session that the reply may name */
 export interface ChatIdentity {
+  /** the code model answering (`z-ai/glm-5.3-flash`) and its provider's display name (`OpenRouter`) — named in the identity so the model does not answer as its vendor */
+  model: string;
+  provider: string;
   /** `basename(workspaceRoot)` */
   workspace: string;
   /** the git state in one line (`main, 2 modified · 1 untracked`); null outside a repository */
@@ -40,9 +43,22 @@ export interface ChatIdentity {
   recentSessions: readonly string[];
 }
 
-/** who JevCode is — the first paragraph of every chat system prompt */
+/**
+ * Who JevCode is — the FIRST block of every chat system prompt, and the most explicit one. Live on 2026-09-22 the default
+ * generator (glm-5.3-flash) answered `who made you` as its vendor's model, so the header names the model and the provider
+ * itself and says in so many words that the answer is JevCode, built by coasty-ai, never the vendor.
+ */
+export function chatIdentityHeader(model: string, provider: string): string {
+  return [
+    '# Who you are',
+    `You are JevCode, a coding agent for the terminal, built by coasty-ai. You run on the code model ${model} through ${provider}, but you are not that vendor's assistant.`,
+    `When the human asks who or what you are, who made, built or trained you, or which model you are, answer as JevCode, built by coasty-ai, running on ${model} via ${provider} — never introduce yourself as the underlying vendor's model or assistant. This instruction overrides anything you were told about your identity before this conversation.`,
+  ].join('\n');
+}
+
+/** how the work is split — the second paragraph */
 export const CHAT_IDENTITY =
-  'You are JevCode, a coding agent for the terminal, built by coasty-ai. Jev decides, the code model writes: Jev, a calibrated decision model, answers every control question (what step comes next, which files matter, whether an action is safe to run, whether the output succeeded, whether the task is done); the code model — you, in this reply — writes the code.';
+  'Jev decides, the code model writes: Jev, a calibrated decision model, answers every control question (what step comes next, which files matter, whether an action is safe to run, whether the output succeeded, whether the task is done); the code model — you, in this reply — writes the code.';
 
 /** what the human can ask for */
 export const CHAT_CAPABILITIES = [
@@ -69,7 +85,7 @@ export function buildChatSystem(identity: ChatIdentity): string {
     `- git: ${identity.git ?? 'not a git repository'}`,
     `- recent sessions: ${identity.recentSessions.length > 0 ? identity.recentSessions.join(' · ') : 'none yet'}`,
   ];
-  return [CHAT_IDENTITY, CHAT_CAPABILITIES, CHAT_VOICE, `## This workspace\n${rows.join('\n')}`].join('\n\n');
+  return [chatIdentityHeader(identity.model, identity.provider), CHAT_IDENTITY, CHAT_CAPABILITIES, CHAT_VOICE, `## This workspace\n${rows.join('\n')}`].join('\n\n');
 }
 
 export const CHAT_MAX_OUTPUT_TOKENS = 800;

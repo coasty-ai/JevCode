@@ -40,8 +40,9 @@ export function torusFrames(w0: number, h0: number, n0: number): Frames {
   const K1x = (w * K2 * 3) / (8 * (R1 + R2));
   const K1y = (h * K2 * 3) / (8 * (R1 + R2)) * 1.05;
   for (let f = 0; f < n; f++) {
-    const A = (f / n) * Math.PI * 2 * 1.0 + 1.0;
-    const B = (f / n) * Math.PI * 2 * 0.5 + 0.5;
+    // both angles complete a whole revolution per cycle, so `tick % n` is seamless (a half turn on B popped the tilt once per loop)
+    const A = (f / n) * Math.PI * 2 + 1.0;
+    const B = (f / n) * Math.PI * 2 + 0.5;
     const cA = Math.cos(A), sA = Math.sin(A), cB = Math.cos(B), sB = Math.sin(B);
     const cells = grid(w, h);
     const z = Array.from({ length: h }, () => new Float64Array(w));
@@ -89,8 +90,7 @@ function rotate(v: V3, ax: number, ay: number, az: number): V3 {
   return [x, y, z];
 }
 
-function project(v: V3, w: number, h: number, scale: number): readonly [number, number, number] {
-  const d = 4;
+function project(v: V3, w: number, h: number, scale: number, d = 4): readonly [number, number, number] {
   const ooz = 1 / (v[2] + d);
   return [w / 2 + v[0] * ooz * scale * 2, h / 2 - v[1] * ooz * scale, ooz];
 }
@@ -142,7 +142,8 @@ export function cubeFrames(w0: number, h0: number, n0: number): Frames {
 /** A rotating wireframe globe: six meridians and three parallels, the lit hemisphere brighter. */
 export function globeFrames(w0: number, h0: number, n0: number): Frames {
   const { w, h, n } = clampSize(w0, h0, n0);
-  const scale = Math.min(w / 2.4, h * 1.1);
+  // camera at 3 and a fuller scale: at 24×12 the sphere spans ~10 of the 12 rows, centred, like the torus and the cube
+  const scale = Math.min(w / 1.6, h * 1.35);
   const out: string[][] = [];
   for (let f = 0; f < n; f++) {
     const spin = (f / n) * Math.PI * 2;
@@ -150,7 +151,7 @@ export function globeFrames(w0: number, h0: number, n0: number): Frames {
     const z = Array.from({ length: h }, () => new Float64Array(w).fill(-1));
     const plot = (v: V3): void => {
       const r = rotate(v, 0.35, spin, 0);
-      const [x, y, ooz] = project(r, w, h, scale);
+      const [x, y, ooz] = project(r, w, h, scale, 3);
       const xp = Math.round(x), yp = Math.round(y);
       if (xp < 0 || xp >= w || yp < 0 || yp >= h) return;
       if (r[2] < -0.05) return; // back hemisphere hidden

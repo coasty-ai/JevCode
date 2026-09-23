@@ -56,8 +56,8 @@ not set them. `jevcode config` prints the derivation next to the value.
 | `generator.priceCacheWritePerM` | 1.25 × `generator.priceInPerM` |
 
 One more default is keyed on another setting rather than derived from it: the run spend cap is
-$2.00 in every mode except the decider-only mode, where it is $0.25 — and the session cap then
-follows at 5 ×, which is $1.25.
+$10.00 in every mode except the decider-only mode, where it is $1.00 — and the session cap then
+follows at 5 ×, which is $5.00.
 
 The decider provider can also be derived. When `decider.provider` is `auto`, the source column
 says which rule fired: the base URL named a host, a decider key is set, a TypeSafe key is set,
@@ -126,6 +126,7 @@ means the setting is unset unless you set it.
 | Setting | Flag | Variable | File key | Default |
 | --- | --- | --- | --- | --- |
 | `mode` | `--mode` | `JEVCODE_MODE` | `mode` | `llm-jev` |
+| `autonomy` | `--autonomy` | `JEVCODE_AUTONOMY` | `autonomy` | `full` |
 | `limits.spendCapUsd` | `--spend-cap` | `JEVCODE_SPEND_CAP_USD` | `spendCapUsd` | `2` |
 | `session.spendCapUsd` | `--session-spend-cap` | `JEVCODE_SESSION_SPEND_CAP_USD` | `sessionSpendCapUsd` | derived |
 | `limits.maxSteps` | `--max-steps` | `JEVCODE_MAX_STEPS` | `maxSteps` | `40` |

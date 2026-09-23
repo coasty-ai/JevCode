@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { GenerateRequest, Provider } from '../../../src/core/types.js';
-import { CHAT_CONVERSATION_TURNS, CHAT_IDENTITY, CHAT_MAX_OUTPUT_TOKENS, buildChatRequest, buildChatSystem, chatMaxTokens, chatMessages, llmChatTurn, type LlmTurnInput } from '../../../src/chat/llm-turn.js';
+import { CHAT_CONVERSATION_TURNS, CHAT_IDENTITY, chatIdentityHeader, CHAT_MAX_OUTPUT_TOKENS, buildChatRequest, buildChatSystem, chatMaxTokens, chatMessages, llmChatTurn, type LlmTurnInput } from '../../../src/chat/llm-turn.js';
 import { harnessFacts } from '../../../src/chat/facts.js';
 import type { ChatTurn } from '../../../src/chat/ledger.js';
 import { keyedFixture } from './facts.test.js';
@@ -32,7 +32,7 @@ function input(over: Partial<LlmTurnInput> = {}): LlmTurnInput {
   return {
     provider: fakeProvider({ text: 'answer' }),
     message: 'why does test_parse_date fail?',
-    identity: { workspace: 'proj', git: 'main, 2 modified · 1 untracked', recentSessions: ['"fix the dates" · 3h ago'] },
+    identity: { model: 'z-ai/glm-5.3-flash', provider: 'OpenRouter', workspace: 'proj', git: 'main, 2 modified · 1 untracked', recentSessions: ['"fix the dates" · 3h ago'] },
     conversation: [],
     facts: harnessFacts(keyedFixture()),
     context: { plan: null, window: [], files: [] },
@@ -48,15 +48,21 @@ function input(over: Partial<LlmTurnInput> = {}): LlmTurnInput {
 describe('§3.6 buildChatRequest', () => {
   it('system = who JevCode is + what it can do + how to answer + this workspace + session facts; no tools, no toolChoice, temperature null, maxTokens ≤ 800', () => {
     const req = buildChatRequest(input({ generation: { maxTokens: 4096, temperature: null } }));
-    expect(req.system.startsWith(buildChatSystem({ workspace: 'proj', git: 'main, 2 modified · 1 untracked', recentSessions: ['"fix the dates" · 3h ago'] }))).toBe(true);
+    expect(req.system.startsWith(buildChatSystem({ model: 'z-ai/glm-5.3-flash', provider: 'OpenRouter', workspace: 'proj', git: 'main, 2 modified · 1 untracked', recentSessions: ['"fix the dates" · 3h ago'] }))).toBe(true);
+    // the identity header is the FIRST block and names the model, the provider and the rule (live 2026-09-22: glm answered as its vendor)
+    const header = chatIdentityHeader('z-ai/glm-5.3-flash', 'OpenRouter');
+    expect(req.system.startsWith('# Who you are\nYou are JevCode, a coding agent for the terminal, built by coasty-ai. You run on the code model z-ai/glm-5.3-flash through OpenRouter, but you are not that vendor\'s assistant.')).toBe(true);
+    expect(header).toContain('answer as JevCode, built by coasty-ai, running on z-ai/glm-5.3-flash via OpenRouter — never introduce yourself as the underlying vendor\'s model or assistant');
+    expect(header).toContain('overrides anything you were told about your identity');
+    expect(req.system.indexOf(header)).toBeLessThan(req.system.indexOf(CHAT_IDENTITY));
     expect(CHAT_IDENTITY).toBe(
-      'You are JevCode, a coding agent for the terminal, built by coasty-ai. Jev decides, the code model writes: Jev, a calibrated decision model, answers every control question (what step comes next, which files matter, whether an action is safe to run, whether the output succeeded, whether the task is done); the code model — you, in this reply — writes the code.',
+      'Jev decides, the code model writes: Jev, a calibrated decision model, answers every control question (what step comes next, which files matter, whether an action is safe to run, whether the output succeeded, whether the task is done); the code model — you, in this reply — writes the code.',
     );
     // the voice rules and the workspace section the controller fills
     expect(req.system).toContain('- Warm, concise, personal, plain prose.');
     expect(req.system).toContain('the harness decides whether a run starts and appends that itself');
     expect(req.system).toContain('## This workspace\n- name: proj\n- git: main, 2 modified · 1 untracked\n- recent sessions: "fix the dates" · 3h ago');
-    expect(buildChatSystem({ workspace: 'proj', git: null, recentSessions: [] })).toContain('- git: not a git repository\n- recent sessions: none yet');
+    expect(buildChatSystem({ model: 'z-ai/glm-5.3-flash', provider: 'OpenRouter', workspace: 'proj', git: null, recentSessions: [] })).toContain('- git: not a git repository\n- recent sessions: none yet');
     expect(req.system).toContain('## Session facts\n- JevCode is a coding agent');
     expect(req.system).not.toContain('## Instructions');
     expect(req.system).not.toContain('## Last run plan');

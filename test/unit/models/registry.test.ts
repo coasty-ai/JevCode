@@ -92,8 +92,8 @@ describe('PROVIDERS', () => {
       if (isKnownPrice(row!)) expect(pricingFor(spec.id, spec.defaultModel)!.inputPerM).toBeGreaterThan(0);
       else expect(pricingFor(spec.id, spec.defaultModel)).toBeNull();
     }
-    // exactly one default has no published price today
-    expect(PROVIDERS.filter((p) => pricingFor(p.id, p.defaultModel) === null).map((p) => p.id)).toEqual(['meta']);
+    // every default model is priced (Meta's catalogue publishes the muse-spark rates since 2026-09-23), so a run under a spend cap never refuses a default
+    expect(PROVIDERS.filter((p) => pricingFor(p.id, p.defaultModel) === null).map((p) => p.id)).toEqual([]);
   });
 });
 

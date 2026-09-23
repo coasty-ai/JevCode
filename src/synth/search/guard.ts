@@ -1589,10 +1589,10 @@ function describe(o: VerifyOutcome): string {
 
 /**
  * Rule (3) of the head-to-head fix: a held passer Jev confidently doubted (Q16 `general` below
- * LONE_PASSER_HOLD_MAX_NOUL) is never released — not by the budget reserve, not by `commitSuspect`
- * at step end. The step ends on its honest partial or parks; the passer stays in `tried`.
- * `shipping` (llm-jev-headtohead.md §5.2): `subtotal ** 2` was committed with 14 s of test wall
- * left, inside the reserve, with no advisory asked.
+ * LONE_PASSER_HOLD_MAX_NOUL) is not released by the budget reserve mid-step — the search keeps looking for something
+ * better while the step has budget (`shipping`, llm-jev-headtohead.md §5.2: `subtotal ** 2` was committed with 14 s of
+ * test wall left, inside the reserve, with no advisory asked). At step end `commitSuspect` commits it anyway, flagged,
+ * when it is still the only passing fix: a fix that passes every test is never refused on a score alone (2026-09-23).
  */
 export function unreleasable(h: Pick<HeldPasser, 'noul'>): boolean {
   return h.noul !== undefined && h.noul < LONE_PASSER_HOLD_MAX_NOUL;
@@ -1663,7 +1663,7 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
         note(`${goal.id}: releases the held suspect ${describe(only)} (budget reserve); committing as possible overfit`);
         return commit(mem, only, { ...base, note: 'possible overfit' });
       }
-      if (!budgetOk) note(`${goal.id}: the budget reserve is spent but the held suspect ${describe(only)} (general ${st.suspect.noul?.toFixed(2) ?? 'n/a'} < ${LONE_PASSER_HOLD_MAX_NOUL}) is not released; the step ends on its partial or parks`);
+      if (!budgetOk) note(`${goal.id}: the budget reserve is spent but the held suspect ${describe(only)} (general ${st.suspect.noul?.toFixed(2) ?? 'n/a'} < ${LONE_PASSER_HOLD_MAX_NOUL}) is not released mid-step; if it is still the only passing fix at step end it is committed, flagged`);
       return { kind: 'continue', ...base, held: 'suspect' };
     }
     if (st.pending !== null && st.pending.goalId === goal.id && st.pending.outcome === only) {
@@ -1694,7 +1694,7 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
       if (adv.p !== null && adv.p < LONE_PASSER_HOLD_MAX_NOUL) {
         const held: HeldPasser = { goalId: goal.id, outcome: only, phase: goal.phase, signals, noul: adv.p };
         st.suspect = held;
-        note(`${goal.id}: holds the lone passer ${describe(only)} as suspect (${signals.join(', ')}; general ${adv.p.toFixed(2)} < ${LONE_PASSER_HOLD_MAX_NOUL}): never released on the budget reserve — the step ends on its partial or parks unless a later passer wins`);
+        note(`${goal.id}: holds the lone passer ${describe(only)} as suspect (${signals.join(', ')}; general ${adv.p.toFixed(2)} < ${LONE_PASSER_HOLD_MAX_NOUL}): not released on the budget reserve — the step keeps searching; if it is still the only passing fix at step end it is committed, flagged unless a later passer wins`);
         return { kind: 'continue', ...base, requests, signals, held: 'suspect' };
       }
       if (adv.p !== null && adv.p < bound) {
@@ -1941,7 +1941,12 @@ export function commitSuspect(mem: GuardMemory, goal?: Pick<Goal, 'id'>): Decisi
   const s = st.suspect;
   if (s === null || (goal !== undefined && s.goalId !== goal.id)) return null;
   st.suspect = null;
-  if (unreleasable(s)) return null;
+  // Rule (3) ends here, not with a refusal: a passer Jev confidently doubted is held for the whole step — the search keeps
+  // looking for something better and the budget reserve never releases it — but at STEP END the only fix that passes every
+  // test is committed with the doubt on record rather than thrown away. The first release drive showed the alternative: the
+  // hero task's sole passer held at `general 0.25 < 0.3`, "the step ends on its partial", nine steps to replan_stop with the
+  // fix in hand the whole time. The note names the doubt so the review card and the record show it (`suspect` in the trace).
+  if (unreleasable(s)) return { kind: 'commit', applied: appliedOnCommitted(mem, s.outcome), allGoalTestsPass: true, note: 'possible overfit', ...(s.noul !== undefined ? { doubt: s.noul } : {}), outcome: s.outcome };
   return { kind: 'commit', applied: appliedOnCommitted(mem, s.outcome), allGoalTestsPass: true, note: 'possible overfit', outcome: s.outcome };
 }
 

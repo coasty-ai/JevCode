@@ -172,6 +172,7 @@ import { completionDecision, isComplete, isCompleteByFact, type CompletionFactIn
 // token and the ledger (§2.6, §5.2). `src/loop/routers.ts` owns all three; the engine calls them and nothing else.
 import { commitStepRouters, discardStepRouters, routersOn } from './routers.js';
 import { prefilterCandidates, runContextStage } from './stages/context.js';
+import type { ContextAskPolicy } from './stages/context.js';
 // contract 1.5 (ORCHESTRATION-DESIGN §3, §8.2 D1 item 15): the decompose stage
 import { checkpointOrchestration, decomposeShutByOptions, measureRepoFacts, parseSplitDraft, runDecomposeStage, splitPrefixTree, type DecomposeFacts, type DecomposeStageContext } from './stages/decompose.js';
 import { isTestCommand, runExecuteStage } from './stages/execute.js';
@@ -400,6 +401,8 @@ export interface StageContext {
    * `JEVCODE_ROUTERS` decides (`routersEnabled`); the `jev-on` gate is checked first and no switch passes it.
    */
   readonly routers?: 'on' | 'off';
+  /** how much of the candidate set the context stage asks Jev about; absent = `LEGACY_CONTEXT_ASK` (always ask); the product passes `PRODUCT_CONTEXT_ASK` */
+  readonly contextAsk?: ContextAskPolicy;
   now(): number;
   wallRemainingMs(): number;
   emit(e: EngineEvent): void;
@@ -3121,6 +3124,7 @@ class EngineImpl implements Engine {
       // contract 1.9 (Fastlane) §7.5 seam (b): spread in only when the caller pinned it, so a run that pins
       // nothing hands the stages exactly the object it handed them before the wave (I2)
       ...(this.opts.routers !== undefined ? { routers: this.opts.routers } : {}),
+      ...(this.opts.contextAsk !== undefined ? { contextAsk: this.opts.contextAsk } : {}),
       generate: (req, attempt) => self.generateProposal(draft, req, attempt),
       noteMalformed: (attempt) => {
         const rec = draft.generatorRecords.find((r) => r.attempt === attempt);

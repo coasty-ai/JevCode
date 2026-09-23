@@ -487,11 +487,11 @@ describe('item D: the lone bound counts every signal, and the records say that c
     if (released?.kind === 'commit') expect(released.outcome?.applied.candidate.id).toBe('composite/donor_body_unit:parse_size:3stmt');
   });
 
-  it('below 0.3 the hold is unreleasable — but the records hold no such lone passer at the 0.7 bound', async () => {
+  it('below 0.3 the hold outlasts the reserve and commits flagged at step end — and the records hold no such lone passer at the 0.7 bound', async () => {
     const mem = createGuardMemory(BASE);
     const g = goalOf(FAILURES, { suspectedFiles: ['src/units.py'] });
     const ask = scriptedAsk(() => ({ [`${GENERAL_PREFIX}cand_01`]: { type: 'noul' as const, noul: 0.12 } }));
     await decide([rewrite()], mem, g, ask, { oracle: oracle(), budget: ampleHold });
-    expect(commitSuspect(mem, g)).toBeNull();
+    expect(commitSuspect(mem, g)).toMatchObject({ kind: 'commit', note: 'possible overfit' });
   });
 });

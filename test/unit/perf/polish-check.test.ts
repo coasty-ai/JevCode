@@ -32,7 +32,7 @@ const idleDyn = (): string[] => [RULE, ...MARK, ...console_(PLACEHOLDER, IDLE_ST
 const splashDyn = (): string[] => [RULE, '                ██ ▓▒░', '                ██', '                ██', '            ██  ██', '             ████', ...console_(PLACEHOLDER, IDLE_STATUS)];
 const STEP = ` ${DIM}[step 1]${RESET} run $ python -m pytest -q tests/test_core.py · risk 0.00 ok\r\n          · tests 4p/3f/0e · judge 0.49 · 4.9s · $0.006`;
 const YOU = `${DIM}    ${RESET}${PINK2}\x1b[1m[you]${RESET}${OFF} Fix the failing tests in tests/test_core.py without changing the\r\n          tests.`;
-const BOT = `${PINK}\x1b[1m[jevcode]${RESET}${OFF} Hi — I'm JevCode (mock reply).`;
+const BOT = `${PINK}\x1b[1m[jevcode]${RESET}${OFF} Hi. I'm JevCode (mock reply).`;
 // TUI-DESIGN-4 §3.6 (D-V, G1): `started · <badge> · <task>` and `finished · <reason> · <n> steps · …` — the run id
 // left the frame for the epilogue, and no row carries a `k=v` pair any more (which is what un-defers V13, §11)
 const RUN_START = `${DIM}    [run]${RESET} started \u00b7 jev+llm \u00b7 Fix the failing tests in tests/test_core.py\r\n          without changing the tests.`;

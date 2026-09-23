@@ -184,6 +184,8 @@ export type Decision =
       applied: AppliedCandidate;
       allGoalTestsPass: boolean;
       note?: 'possible overfit' | 'partial';
+      /** the Q16 `general` Noul of a passer Jev doubted below the hold floor that was still the only fix at step end (2026-09-23): committed, flagged */
+      doubt?: number;
       /** the shadow test run the commit rests on (guard commits); search/proposal.ts turns it into `Proposal.evidence` */
       outcome?: VerifyOutcome;
       /** the held base's full-suite summary (bases.ts commitPartial, which has no outcome); `after` of the evidence */

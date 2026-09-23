@@ -14,7 +14,7 @@ import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
 export const MOCK_DEFAULT_USAGE: TokenUsage = { inputTokens: 1000, outputTokens: 200, costUsd: 0, calls: 1 };
 
 /** the deterministic answer a `--mock` chat turn gets (a chat request offers no tools, so it is never a step of the trajectory) */
-export const MOCK_CHAT_REPLY = "Hi — I'm JevCode (mock reply).";
+export const MOCK_CHAT_REPLY = "Hi. I'm JevCode (mock reply).";
 
 /**
  * `--mock` turns: the scripted trajectory for the run loop, `MOCK_CHAT_REPLY` for a chat request (no tools offered),

@@ -58,6 +58,7 @@ function p(r: Rates): Pricing {
 const OPENAI_SOURCE = 'developers.openai.com/api/docs/pricing (read 2026-09-21)';
 const GEMINI_SOURCE = 'ai.google.dev/gemini-api/docs/pricing (read 2026-09-21)';
 const FIREWORKS_SOURCE = 'docs.fireworks.ai/serverless/pricing (read 2026-09-21)';
+const META_SOURCE = 'GET https://api.meta.ai/v1/models (read 2026-09-23; the catalogue publishes per-million prices for the muse-spark tiers)';
 const XAI_SOURCE = 'GET https://api.x.ai/v1/models (read 2026-09-21; integer prices, 1e10 units = $1 ⇒ value/1e4 = USD per 1M)';
 const OPENROUTER_SOURCE = 'GET https://openrouter.ai/api/v1/models (read 2026-09-21; the lowest-provider rate — usage.cost is authoritative)';
 const ANTHROPIC_SOURCE = 'src/config/defaults.ts SONNET_5 (research 07 §1.2, 2026-09-19); cache write is the 5-minute rate';
@@ -134,6 +135,12 @@ export const MODEL_PRICES: readonly ModelPrice[] = [
   { provider: 'fireworks', model: 'accounts/fireworks/models/deepseek-v4-pro', match: 'prefix', source: FIREWORKS_SOURCE, pricing: p({ in: 1.74, out: 3.48, cached: 0.145 }) },
   { provider: 'fireworks', model: 'accounts/fireworks/models/qwen3p8-max', match: 'prefix', source: FIREWORKS_SOURCE, pricing: p({ in: 2, out: 6, cached: 0.25 }) },
   { provider: 'fireworks', model: 'accounts/fireworks/models/nemotron-lightning-3p5-30b', match: 'prefix', source: FIREWORKS_SOURCE, pricing: p({ in: 0.05, out: 0.2, cached: 0.01 }) },
+  // ---- Meta Model API (api.meta.ai/v1 catalogue, read live 2026-09-23: muse-spark-1.x $1.25/$4.25 cache $0.15; the contributor tier $0.10/$0.20 cache $0.002) ----
+  { provider: 'meta', model: 'muse-spark-1.3', match: 'exact', source: META_SOURCE, pricing: p({ in: 1.25, out: 4.25, cached: 0.15 }) },
+  { provider: 'meta', model: 'muse-spark-1.2', match: 'exact', source: META_SOURCE, pricing: p({ in: 1.25, out: 4.25, cached: 0.15 }) },
+  { provider: 'meta', model: 'muse-spark-1.1', match: 'exact', source: META_SOURCE, pricing: p({ in: 1.25, out: 4.25, cached: 0.15 }) },
+  { provider: 'meta', model: 'muse-spark-1.3-contributor', match: 'exact', source: META_SOURCE, pricing: p({ in: 0.1, out: 0.2, cached: 0.002 }) },
+  { provider: 'meta', model: 'muse-spark-1.2-contributor', match: 'exact', source: META_SOURCE, pricing: p({ in: 0.1, out: 0.2, cached: 0.002 }) },
   {
     provider: 'fireworks',
     model: 'accounts/fireworks/',
@@ -148,7 +155,7 @@ export const MODEL_PRICES: readonly ModelPrice[] = [
     provider: 'meta',
     model: 'muse-',
     match: 'prefix',
-    source: 'no published price list for the Meta Model API (dev.meta.ai, checked 2026-09-21)',
+    source: 'the Meta Model API catalogue prices the muse-spark tiers (exact rows above, read 2026-09-23); any other muse- id has no published price',
     unknown: true,
     notes: 'run with priced: false so the engine reports budget:unpriced instead of billing $0',
   },

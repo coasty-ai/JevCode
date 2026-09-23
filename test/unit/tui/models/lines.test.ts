@@ -34,6 +34,8 @@ import {
 } from '../../../../src/tui/models/lines.js';
 import type { ModelsError } from '../../../../src/models/types.js';
 import { API, err, model, result } from './helpers.js';
+/** every catalogue provider generates since main bbd3d0b (GENERATOR_PROVIDERS = all seven), so the browse-only rung is exercised with a text object whose adapter check says no */
+const NOGEN = { ...API, isGeneratorProvider: (p: string) => p !== 'gemini' };
 
 const GLM = model('z-ai/glm-5.3-flash', 'openrouter');
 const NOW = Date.parse('2026-09-22T13:00:00.000Z');
@@ -117,16 +119,16 @@ describe('the model row: composed, never truncated (§6.4, §6.8)', () => {
     expect(modelRow(GLM, 70, API, GLYPHS.unicode)).toContain('ctx');
   });
 
-  it('§7 row 77: a model whose provider has no generator adapter is MARKED on every rung', () => {
+  it('§7 row 77: a model whose provider has no generator adapter is MARKED on every rung (faked: all seven providers generate today)', () => {
     const gem = model('gemini-3-pro', 'gemini');
-    for (const r of modelRowRungs(gem, API)) expect(r).toContain(BROWSE_ONLY);
-    expect(modelRow(gem, 120, API)).toContain('browse only');
-    expect(modelRow(gem, 40, API)).toContain('browse only');
+    for (const r of modelRowRungs(gem, NOGEN)) expect(r).toContain(BROWSE_ONLY);
+    expect(modelRow(gem, 120, NOGEN)).toContain('browse only');
+    expect(modelRow(gem, 40, NOGEN)).toContain('browse only');
     // and the marker is the head of S107's sentence, so one grep finds both (§13.4)
     expect(browseOnlyText('gemini-3-pro')).toContain(BROWSE_ONLY);
     // a provider that CAN generate is unmarked — rung 1 stays `modelSummary` verbatim
-    expect(modelRowRungs(GLM, API)[0]).toBe(modelSummary(GLM));
-    expect(modelRow(GLM, 120, API)).not.toContain(BROWSE_ONLY);
+    expect(modelRowRungs(GLM, NOGEN)[0]).toBe(modelSummary(GLM));
+    expect(modelRow(GLM, 120, NOGEN)).not.toContain(BROWSE_ONLY);
   });
 
   it('§7 row 65: a row never renders ModelsError.message, only errorLabel', () => {
@@ -296,8 +298,8 @@ describe('the screen-reader line (§12.5 S99 SR, §7 row 82)', () => {
     expect(line).not.toMatch(/[·→]/);
     expect(modelsSrLine({ index: 0, count: 0, model: null, text: API, glyphs: GLYPHS.ascii })).not.toMatch(/·/);
   });
-  it('§7 row 77: the spoken row says a browse-only model is browse-only', () => {
-    expect(modelsSrLine({ index: 0, count: 1, model: model('gemini-3-pro', 'gemini'), text: API })).toContain(BROWSE_ONLY);
+  it('§7 row 77: the spoken row says a browse-only model is browse-only (faked adapter check)', () => {
+    expect(modelsSrLine({ index: 0, count: 1, model: model('gemini-3-pro', 'gemini'), text: NOGEN })).toContain(BROWSE_ONLY);
   });
   it('an empty list still speaks the keys, never a glyph-only row', () => {
     expect(modelsSrLine({ index: 0, count: 0, model: null, text: API })).toBe('models: 0 of 0 · Enter picks, Tab narrows, Esc closes');
@@ -356,14 +358,14 @@ describe('/model <id> is a check, not a gate (§6.4, §7 row 100)', () => {
     expect(modelCheck('grok-4.20', aliased, true, API).kind).toBe('ok');
   });
 
-  it('§7 row 77: a hit whose provider has no generator adapter is REFUSED as a pending value, with the reason', () => {
+  it('§7 row 77: a hit whose provider has no generator adapter is REFUSED as a pending value, with the reason (faked adapter check)', () => {
     const gem = model('gemini-3-pro', 'gemini');
     // it resolves — the id is real and the picker shows it — but it may not become `pending.model`
-    expect(API.findModel('gemini-3-pro', [gem])).not.toBeNull();
-    expect(modelCheck('gemini-3-pro', [gem], true, API)).toEqual({ kind: 'refuse', text: browseOnlyText('gemini-3-pro') });
+    expect(NOGEN.findModel('gemini-3-pro', [gem])).not.toBeNull();
+    expect(modelCheck('gemini-3-pro', [gem], true, NOGEN)).toEqual({ kind: 'refuse', text: browseOnlyText('gemini-3-pro') });
     // still refused before the catalogue settles: the reason is the adapter, not the load
-    expect(modelCheck('gemini-3-pro', [gem], false, API).kind).toBe('refuse');
+    expect(modelCheck('gemini-3-pro', [gem], false, NOGEN).kind).toBe('refuse');
     // and the two providers that CAN generate are untouched
-    expect(modelCheck('z-ai/glm-5.3-flash', [GLM], true, API).kind).toBe('ok');
+    expect(modelCheck('z-ai/glm-5.3-flash', [GLM], true, NOGEN).kind).toBe('ok');
   });
 });

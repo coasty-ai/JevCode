@@ -10,7 +10,7 @@
 import { whyErrorText } from '../../../src/tui/why.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { GenerateRequest, IntakeKind, Provider } from '../../../src/core/types.js';
-import { CREDITS_EXHAUSTED, DO_IT_OFFER, INTAKE_UNREACHABLE, JEV_KEY_REJECTED, LLM_KEY_REJECTED, LLM_UNPRICED_REFUSAL, LLM_UNREACHABLE, MISSING_GENERATOR_KEY, MISSING_JEV_KEY, MOCK_CHAT_GENERATOR, ON_IT_LINE, RUN_LIVE_ERROR, SESSION_CAP_CHAT_REFUSAL, STILL_THINKING_TOAST, STOPPED_THINKING_TOAST, chatEstimateUsd, mockIntakeOverride, mockIntakeRules, mockJevLatencyMs, type ChatUiAction, type WizardReason } from '../../../src/cli/session.js';
+import { CREDITS_EXHAUSTED, DO_IT_OFFER, offerWanted, INTAKE_UNREACHABLE, JEV_KEY_REJECTED, LLM_KEY_REJECTED, LLM_UNPRICED_REFUSAL, LLM_UNREACHABLE, MISSING_GENERATOR_KEY, MISSING_JEV_KEY, MOCK_CHAT_GENERATOR, ON_IT_LINE, RUN_LIVE_ERROR, SESSION_CAP_CHAT_REFUSAL, STILL_THINKING_TOAST, STOPPED_THINKING_TOAST, chatEstimateUsd, mockIntakeOverride, mockIntakeRules, mockJevLatencyMs, type ChatUiAction, type WizardReason } from '../../../src/cli/session.js';
 import { writeJsonStream } from '../../../src/cli/json-stream.js';
 import { readIndex } from '../../../src/session/index.js';
 import { LOOKUP_FOOTER, LOOKUP_HEADER, lookupMissText } from '../../../src/chat/lookup.js';
@@ -177,10 +177,15 @@ describe('ambiguous — the `do it` offer, never a card and never a silent run',
     expect(h.factory.calls[0]!.session?.intake?.kind).toBe('ambiguous');
     expect(bubbles(h, '[jevcode]').at(-1)).toBe(ON_IT_LINE);
     // a later reading replaces the offer: `do it` then runs THAT message, never the older one
-    await h.host.submit('tests?', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] });
+    await h.host.submit('the tests', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] });
     expect(await h.host.submit('do it', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'run' });
     await h.host.awaitRunEnd();
-    expect(h.factory.calls.map((c) => c.task)).toEqual(['the date parsing', 'tests?']);
+    expect(h.factory.calls.map((c) => c.task)).toEqual(['the date parsing', 'the tests']);
+    // an ambiguous QUESTION gets no offer (live 2026-09-22: `who made you?` read ambiguous), so a `do it` after it is just a message
+    await h.host.submit('tests?', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] });
+    expect(bubbles(h, '[jevcode]').at(-1)).not.toBe(DO_IT_OFFER);
+    expect(await h.host.submit('do it', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    expect(h.factory.calls).toHaveLength(2);
   });
 
   it('a message that is not an acceptance drops the offer: a later `do it` is just a message', async () => {
@@ -681,7 +686,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
     await h.ready();
     expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
     expect(bubbles(h, '[jevcode]')).toEqual([CREDITS_EXHAUSTED('jev', 402)]);
-    expect(CREDITS_EXHAUSTED('jev', 402)).toBe('OpenRouter says this key has no credits (HTTP 402). Add credits at openrouter.ai/credits, or /mode jev-only ($0.25 cap; Jev bills the same key).');
+    expect(CREDITS_EXHAUSTED('jev', 402)).toBe('OpenRouter says this key has no credits (HTTP 402). Add credits at openrouter.ai/credits, or /mode jev-only ($1.00 cap; Jev bills the same key).');
     expect(CREDITS_EXHAUSTED('jev', 402).length).toBeLessThanOrEqual(160);
     expect(reasons).toEqual([]);
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBe(0);
@@ -851,5 +856,21 @@ describe('TUI-DESIGN-2 §3.13: the mock decider bridge (`--mock`)', () => {
     await h.host.awaitRunEnd();
     expect(h.factory.calls).toHaveLength(2);
     await waitFor(() => h.controller.view.phase === 'none');
+  });
+});
+
+describe('the `do it` offer is never made on a question', () => {
+  const ambiguous = { intake: { kind: 'ambiguous' } } as Parameters<typeof offerWanted>[1];
+  const task = { intake: { kind: 'coding_task' } } as Parameters<typeof offerWanted>[1];
+  it('an ambiguous statement gets the offer; an ambiguous question does not (live 2026-09-22: `who made you?` read ambiguous); other readings never do', () => {
+    expect(offerWanted('the date parsing', ambiguous)).toBe(true);
+    expect(offerWanted('who made you?', ambiguous)).toBe(false);
+    // a question without its mark (live 2026-09-22: `who made you`) — interrogative openers count
+    expect(offerWanted('who made you', ambiguous)).toBe(false);
+    expect(offerWanted('How do I run the tests', ambiguous)).toBe(false);
+    expect(offerWanted('can this handle utf-8', ambiguous)).toBe(false);
+    expect(offerWanted('whoever wrote this, the date parsing', ambiguous)).toBe(true);
+    expect(offerWanted('  what does calc.sub do ?  ', ambiguous)).toBe(false);
+    expect(offerWanted('the date parsing', task)).toBe(false);
   });
 });

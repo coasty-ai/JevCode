@@ -143,26 +143,26 @@ describe('resolveUiConfig (TUI-DESIGN §16 session settings)', () => {
 });
 
 describe('sessionSpendCap derivation (TUI-DESIGN §9.1, §16)', () => {
-  it('llm-jev (docs/LLM-JEV-DESIGN.md) pays a generator: the $2.00 run default and the derived $10.00 session cap, like jev-on', () => {
-    expect(defaultRunSpendCapUsd('llm-jev')).toBe(2);
-    expect(runSpendCapUsd(reader({}), 'llm-jev')).toBe(2);
-    expect(resolveSessionSpendCap(reader({}), 'llm-jev')).toEqual({ value: 10, source: 'derived', derived: true });
+  it('llm-jev (docs/LLM-JEV-DESIGN.md) pays a generator: the $10.00 run default and the derived $50.00 session cap, like jev-on', () => {
+    expect(defaultRunSpendCapUsd('llm-jev')).toBe(10);
+    expect(runSpendCapUsd(reader({}), 'llm-jev')).toBe(10);
+    expect(resolveSessionSpendCap(reader({}), 'llm-jev')).toEqual({ value: 50, source: 'derived', derived: true });
   });
 
-  it('mode-keyed run default: $2.00, $0.25 under jev-only', () => {
-    expect(defaultRunSpendCapUsd('jev-on')).toBe(2);
-    expect(defaultRunSpendCapUsd('jev-off')).toBe(2);
-    expect(defaultRunSpendCapUsd('jev-only')).toBe(0.25);
-    expect(runSpendCapUsd(reader({}), 'jev-only')).toBe(0.25);
-    expect(runSpendCapUsd(reader({ 'limits.spendCapUsd': { value: '2', source: 'default' } }), 'jev-only')).toBe(0.25);
+  it('mode-keyed run default: $10.00, $1.00 under jev-only', () => {
+    expect(defaultRunSpendCapUsd('jev-on')).toBe(10);
+    expect(defaultRunSpendCapUsd('jev-off')).toBe(10);
+    expect(defaultRunSpendCapUsd('jev-only')).toBe(1);
+    expect(runSpendCapUsd(reader({}), 'jev-only')).toBe(1);
+    expect(runSpendCapUsd(reader({ 'limits.spendCapUsd': { value: '10', source: 'default' } }), 'jev-only')).toBe(1);
     expect(runSpendCapUsd(reader({ 'limits.spendCapUsd': { value: '4', source: 'flag' } }), 'jev-only')).toBe(4);
-    expect(runSpendCapUsd(reader({ 'limits.spendCapUsd': { value: 'abc', source: 'flag' } }), 'jev-on')).toBe(2);
-    expect(runSpendCapUsd(reader({ 'limits.spendCapUsd': { value: '-1', source: 'env' } }), 'jev-on')).toBe(2);
+    expect(runSpendCapUsd(reader({ 'limits.spendCapUsd': { value: 'abc', source: 'flag' } }), 'jev-on')).toBe(10);
+    expect(runSpendCapUsd(reader({ 'limits.spendCapUsd': { value: '-1', source: 'env' } }), 'jev-on')).toBe(10);
   });
 
   it('absent → 5 × the run cap with source derived; configured → its own source; none → +Infinity', () => {
-    expect(resolveSessionSpendCap(reader({}), 'jev-on')).toEqual({ value: 10, source: 'derived', derived: true });
-    expect(resolveSessionSpendCap(reader({}), 'jev-only')).toEqual({ value: 1.25, source: 'derived', derived: true });
+    expect(resolveSessionSpendCap(reader({}), 'jev-on')).toEqual({ value: 50, source: 'derived', derived: true });
+    expect(resolveSessionSpendCap(reader({}), 'jev-only')).toEqual({ value: 5, source: 'derived', derived: true });
     expect(resolveSessionSpendCap(reader({ 'limits.spendCapUsd': { value: '3', source: 'env' } }), 'jev-on')).toEqual({ value: 15, source: 'derived', derived: true });
     expect(resolveSessionSpendCap(reader({ 'session.spendCapUsd': { value: '15', source: 'flag' } }), 'jev-on')).toEqual({ value: 15, source: 'flag', derived: false });
     expect(resolveSessionSpendCap(reader({ 'session.spendCapUsd': { value: ' None ', source: 'file:/x' } }), 'jev-on')).toEqual({ value: Number.POSITIVE_INFINITY, source: 'file:/x', derived: false });

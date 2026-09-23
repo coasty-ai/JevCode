@@ -27,6 +27,7 @@
  * Every leave request (`/exit`, Ctrl-C ×2, Ctrl-D ×2, `[y]`) goes through `host.exit()`, where `--exit-code=last-run`
  * is applied (`leaveExitCode`). While a run is live the controller's own lines go to `<runDir>/jevcode.log` (§13.6).
  */
+import type { ProviderConfig } from '../provider/types.js';
 import { accessSync, appendFileSync, constants as fsConstants, existsSync, realpathSync, writeSync } from 'node:fs';
 import { open as openFile, readFile } from 'node:fs/promises';
 import { homedir, hostname, uptime, userInfo } from 'node:os';
@@ -100,7 +101,8 @@ import { createSpendMeter } from '../spend/meter.js';
 import { resolveConfig as realResolveConfig, isEngineMode, modeFromParsedFlags, reconcileResumeConfig, resumeIdentityFromRunMeta, resumeInputsFrom } from '../config/resolve.js';
 import type { ResolvedConfigWithDiagnostics } from '../config/types.js';
 import { credentialsPath, readCredentialsFile, shadowingLine, writeConfigValue as realWriteConfigValue, writeCredentials as realWriteCredentials, type CredentialsPatch } from '../config/credentials.js';
-import { DEFAULT_MODE, MODE_BADGE_WORD, SETTINGS } from '../config/defaults.js';
+import { DEFAULT_MODE, JEV_ONLY_DEFAULT_SPEND_CAP_USD, MODE_BADGE_WORD, SETTINGS } from '../config/defaults.js';
+import { PRODUCT_CONTEXT_ASK } from '../loop/stages/context.js';
 import { parseModeHint } from '../config/launch.js';
 import { loadInstructions as realLoadInstructions, projectInstructionFile } from '../config/instructions.js';
 import { createTrustStore as realCreateTrustStore, decisionFromOption, probeTrustInputs as realProbeTrustInputs, trustKey, trustWorkspaceFlag, type TrustDecision, type TrustInputs, type TrustOption } from '../config/trust.js';
@@ -130,7 +132,7 @@ import { keyEnteredText } from '../config/credentials.js';
 import { fingerprint } from '../core/hash.js';
 import { detectSandboxLevel } from '../sandbox/seatbelt.js';
 // TUI-DESIGN-5 §6.3 / round-5 item 4: the zero-import id module — never `provider/registry.js` or `models/**`.
-import { isProviderId, type ProviderId } from '../provider/ids.js';
+import { isProviderId, PROVIDER_DISPLAY_NAME, type ProviderId } from '../provider/ids.js';
 import { isMentionDenied } from '../sandbox/paths.js';
 import { loadForResume as realLoadForResume } from '../checkpoint/resume.js';
 import { CHECKPOINT_FILES, createCheckpointStore, isRunMeta } from '../checkpoint/store.js';
@@ -314,6 +316,16 @@ export const MISSING_GENERATOR_KEY = 'missing generator.apiKey: set ANTHROPIC_AP
 export const ON_IT_LINE = 'On it — starting the run.';
 /** the line appended when Jev was unsure — the human turns the message into a task with `do it` (no second reading) */
 export const DO_IT_OFFER = "Say `do it` and I'll make that a task.";
+/** the offer is made only for an `ambiguous` reading of a message that is not a question — `who made you?` read `ambiguous` live and got an offer it did not want (2026-09-22 drive) */
+export const QUESTION_OPENER_RE = /^\s*(?:who|whom|whose|what|which|why|how|when|where|can|could|is|are|am|was|were|do|does|did|should|would|will)\b/i;
+/** a question by punctuation or by its opener — `who made you` (no `?`) got the offer live on 2026-09-22 */
+export function looksLikeQuestion(text: string): boolean {
+  const t = text.trim();
+  return /\?\s*$/.test(t) || QUESTION_OPENER_RE.test(t);
+}
+export function offerWanted(text: string, res: Pick<IntakeResult, 'intake'>): boolean {
+  return res.intake.kind === 'ambiguous' && !looksLikeQuestion(text);
+}
 /** the answers that accept `DO_IT_OFFER`; any other message drops the offer */
 export const DO_IT_RE = /^\s*(do it|yes,? do it|go ahead|make it a task|run it|yes)\s*[.!]*\s*$/i;
 /** how long the landed reply waits for Jev's background reading before it lands without it (Jev is normally done long before) */
@@ -367,7 +379,7 @@ export const MODE_LLM_JEV_SET = MODE_SET_ITEM['llm-jev'];
 /** TUI-DESIGN-3 §1.7 / §10 "Chat" (R3 F5/F10): a 402 from OpenRouter on the intake or the LLM turn is "no credits", not "unreachable" (144 cells ≤ REPLY_TEXT_MAX) */
 export function CREDITS_EXHAUSTED(side: 'jev' | 'generator', status: number): string {
   void side; // both sides bill the same OpenRouter key; the text keys on the host, not the side
-  return `OpenRouter says this key has no credits (HTTP ${status}). Add credits at openrouter.ai/credits, or /mode jev-only ($0.25 cap; Jev bills the same key).`;
+  return `OpenRouter says this key has no credits (HTTP ${status}). Add credits at openrouter.ai/credits, or /mode jev-only ($${JEV_ONLY_DEFAULT_SPEND_CAP_USD.toFixed(2)} cap; Jev bills the same key).`;
 }
 /** TUI-DESIGN-3 §4.4 F12: `/new` before any session */
 export const NO_SESSION_YET = 'no session yet — the next prompt starts one';
@@ -800,12 +812,12 @@ export async function buildProvider(config: ResolvedConfigWithDiagnostics, flags
     return createMockProvider({ turns: withMockChat(mockTrajectory(Number(flags.mockSteps ?? 8))) });
   }
   const gen = config.generator();
-  if (gen.provider === 'openrouter') {
-    const { createOpenRouterProvider } = await import('../provider/openrouter.js');
-    return createOpenRouterProvider(gen, { redact: config.redact });
-  }
-  const { createAnthropicProvider } = await import('../provider/anthropic.js');
-  return createAnthropicProvider(gen, { redact: config.redact });
+  // every provider through the registry, so each uses ITS OWN adapter — the two-client switch that stood here sent
+  // openai / gemini / xai / fireworks / meta to the Anthropic client (live smoke on 4d49cca: `anthropic HTTP 404
+  // Path not found: /v1/v1/messages`). `gen.baseUrl` is the user's override or the provider's own table entry.
+  const { createProvider, requireProvider } = await import('../provider/registry.js');
+  const cfg: ProviderConfig = { model: gen.model, apiKey: gen.apiKey, baseUrl: gen.baseUrl, temperature: gen.temperature, maxTokens: gen.maxTokens, pricing: gen.pricing, ...(gen.priced !== undefined ? { priced: gen.priced } : {}) };
+  return createProvider(requireProvider(gen.provider), cfg, { redact: config.redact });
 }
 
 /**
@@ -2342,6 +2354,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         decider,
         // complete autonomy by default: under `full` a `review` verdict is approved at once and logged as one
         // informational `[review]` card; `--autonomy review` keeps the blocking y/n card. `block` stops either way.
+        contextAsk: PRODUCT_CONTEXT_ASK, // the product asks Jev little in the context stage (main 1d3648a); the bench keeps the legacy policy
         autonomy: cfg.autonomy, // the engine approves a `review` verdict itself under `full`; under `review` it asks the confirmer (the y/n card)
         confirmer: cfg.autonomy === 'review' ? renderer.confirmer : autonomousConfirmer(renderer.confirmer, (req) => note(autoApprovedNote(req, cfg.redact), { label: '[review]' })),
         meter,
@@ -2909,6 +2922,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         decider,
         // complete autonomy by default: under `full` a `review` verdict is approved at once and logged as one
         // informational `[review]` card; `--autonomy review` keeps the blocking y/n card. `block` stops either way.
+        contextAsk: PRODUCT_CONTEXT_ASK,
         autonomy: rcfg.autonomy,
         confirmer: rcfg.autonomy === 'review' ? renderer.confirmer : autonomousConfirmer(renderer.confirmer, (req) => note(autoApprovedNote(req, rcfg.redact), { label: '[review]' })),
         meter,
@@ -4228,14 +4242,15 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         return chatFailure(signal.reason, 'generator');
       }
       // one bubble: the model's answer, then the one line the reading adds
-      const closing = res === null ? null : res.intake.kind === 'coding_task' ? ON_IT_LINE : res.intake.kind === 'ambiguous' ? DO_IT_OFFER : null;
+      const offer = res !== null && offerWanted(text, res);
+      const closing = res === null ? null : res.intake.kind === 'coding_task' ? ON_IT_LINE : offer ? DO_IT_OFFER : null;
       const lines = closing === null ? reply.lines : [...reply.lines, closing];
       thinking(null);
       renderer.live?.('');
       say('jevcode', lines);
       ledger.push(youTurn(text, res));
       ledger.push({ role: 'jevcode', text: lines.join('\n'), at: nowIso(), costUsd: reply.usage?.costUsd ?? 0, provider: 'generator' });
-      if (res !== null && res.intake.kind === 'ambiguous') pendingOffer = { text, intake: res };
+      if (res !== null && offer) pendingOffer = { text, intake: res };
       if (res !== null && res.intake.kind === 'coding_task') return await startChatRun(text, so, res);
       return { became: 'chat' };
     } finally {
@@ -4342,7 +4357,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       thinking(null);
       return chatFailure(e, 'jev');
     }
-    if (ambiguous) {
+    if (ambiguous && offerWanted(text, res)) {
       lines.push(DO_IT_OFFER);
       pendingOffer = { text, intake: res };
     }
@@ -4566,7 +4581,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     return {
       provider,
       message: text,
-      identity: chatIdentity(),
+      identity: chatIdentity(gen.model, provider.name === 'mock' ? 'mock' : PROVIDER_DISPLAY_NAME[provider.name]),
       conversation: ledger.recent(),
       facts: harnessFacts(factsInput()),
       context: { plan: lastPlan ?? lastResult?.finalPlan ?? null, window, files },
@@ -4582,7 +4597,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     };
   }
   /** the system prompt's workspace section: the directory, its git state and what this workspace was doing lately */
-  function chatIdentity(): ChatIdentity {
+  function chatIdentity(model: string, providerName: string): ChatIdentity {
     const g = gitAtStart;
     const now = Date.parse(nowIso());
     const recentSessions = index
@@ -4592,6 +4607,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       .slice(0, CHAT_RECENT_SESSIONS)
       .map((r) => `"${r.title}" · ${timeAgo(r.lastUsed, now)}`);
     return {
+      model,
+      provider: providerName,
       workspace: basename(workspaceRoot),
       git: g !== null && g.repo ? `${branchOf(g)}, ${g.dirty.modified + g.dirty.staged} modified · ${g.dirty.untracked} untracked` : null,
       recentSessions,

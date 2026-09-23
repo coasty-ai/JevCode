@@ -1937,6 +1937,12 @@ export interface EngineOptions {
    */
   routers?: 'on' | 'off';
   /**
+   * How much of the candidate set the context stage asks Jev about (stages/context.ts `ContextAskPolicy`). Absent = the
+   * legacy always-ask (one Noul per candidate, up to 300), which the bench arms were measured with. The product passes
+   * `PRODUCT_CONTEXT_ASK`: no ask below 16 candidates or when the task names a file, at most 24 candidates asked otherwise.
+   */
+  contextAsk?: { codeOnlyMax: number; askMax: number; namedFileShortcut: boolean };
+  /**
    * contract 1.9 (Fastlane) §0.3 / §3: the S2 generation path on the `jev-on` propose call — the pinned prefix
    * order (§3.3), the TTFB callback (§3.1), the hedge (§3.2) and the cache accounting (§3.4). `jev-on` only, and
    * **default off** everywhere on `main` (§0.3's rule for a new mechanism), which is what keeps every

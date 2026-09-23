@@ -90,9 +90,10 @@ export async function runBenchFromFlags(rawFlags: BenchFlags): Promise<number> {
       const gen = config.generator();
       // the user's values, recorded as such; the arms' requests carry their pinned parameters (conditions.ts)
       generation = { temperature: gen.temperature, maxTokens: gen.maxTokens };
-      liveProvider = gen.provider === 'openrouter'
-        ? (await import('../provider/openrouter.js')).createOpenRouterProvider(gen, { redact: config.redact })
-        : (await import('../provider/anthropic.js')).createAnthropicProvider(gen, { redact: config.redact });
+      // every generator through the registry, so an arm on openai/gemini/xai/fireworks/meta gets its own adapter (the two-client
+      // switch that used to live here sent them all to the Anthropic client)
+      const { createProvider, requireProvider } = await import('../provider/registry.js');
+      liveProvider = createProvider(requireProvider(gen.provider), gen, { redact: config.redact });
     }
   }
 

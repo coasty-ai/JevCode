@@ -1831,3 +1831,16 @@ records carry every §8.3 row, the pre-registered predictions and the accept rul
 criterion is in experiments/results/llm-jev-iter2.tool.md §6.2. The repository's public home is https://github.com/coasty-ai/JevCode
 (package metadata, referers and the issues URL point there); `archive/measurements` preserves every measured artefact removed from
 the public tree.
+
+## 2026-09-23 A fix that passes every test is never refused on a score alone
+
+The first live drive of the conversational chat ended the hero task (`examples/demo-py`) at `replan_stop · 9 steps · 3m04s` with the
+fix in hand the whole time: step 1's only passer was held as suspect on Jev's Q16 `general` 0.25, below the 0.3 hold floor, and rule (3)
+of the head-to-head fix said such a hold is never released — "the step ends on its partial or parks". The rule was written against a
+real overfit (`shipping`'s `subtotal ** 2`, committed inside the budget reserve with 14 s left), and its mid-step half stands: while the
+step has budget the doubted passer is not released and the search keeps looking for something better. Its end changes: at step end
+`commitSuspect` commits the passer that is still the only fix passing every test, flagged `possible overfit` with the doubt on record
+(`Decision.doubt` = the Noul), instead of throwing it away. For the product the alternative was a failed run with a working fix
+discarded; for the bench it is a policy change on the `llm-jev` arm (a doubted sole passer now lands where it used to be dropped),
+recorded here so the next measurement reads it as such. The records to date held no such lone passer at the 0.7 bound and none below
+0.3 (iteration 4, item D) — the demo was the first.

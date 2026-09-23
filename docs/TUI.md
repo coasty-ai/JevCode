@@ -27,8 +27,8 @@ reads its task like `run` and exits at `run:end`. The interactive rule is `stdin
 TERM !== 'dumb' && !--plain && !--json && !--no-input` (`CI` / `CONTINUOUS_INTEGRATION` set and not `0`/`false`).
 
 **Engine modes and the badge.** `llm-jev` (the default since 2026-09-22, badge `llm+jev · verified`: the code model writes candidate patches inside the Jev-only search, tests verify, Jev arbitrates — docs/LLM-JEV-DESIGN.md), `jev-on` (badge `jev+llm`: the code model writes the code,
-Jev decides every step; one OpenRouter key serves both; run cap $2.00, session cap $10.00), `jev-only` (badge `jev-only`:
-no generating LLM — code proposes candidate fixes, Jev decides, tests verify; one Jev key; $0.25 / $1.25), `jev-off`
+Jev decides every step; one OpenRouter key serves both; run cap $10.00, session cap $50.00), `jev-only` (badge `jev-only`:
+no generating LLM — code proposes candidate fixes, Jev decides, tests verify; one Jev key; $1.00 / $5.00), `jev-off`
 (`llm-only`: the generator alone, a bench condition) and `llm-jev` (`llm+jev · verified`: the jev-only search with the
 generator writing candidate patches inside it — Jev localises, ranks and arbitrates, tests verify; the jev-on caps). The
 mode is a setting — `--mode`, `JEVCODE_MODE`, `./.env`, the config file's `mode`, then the default (`DEFAULT_MODE` in
@@ -43,8 +43,8 @@ reads `jev-only · next run` until the run starts and promotes it); `/mode jev-o
 generator key is configured, opens the wizard's key step inside the console — Ctrl-C there closes the wizard and keeps
 the mode (`mode stays jev-only — no generator key was saved`), it never exits. `jevcode config set mode <m>` persists a
 choice. A keyed start whose mode resolves from the default and whose config file has no `mode` row prints
-`[setup] mode jev+llm (default) — caps $2.00 per run · $10.00 per session; /mode jev-only runs on Jev alone at $0.25 /
-$1.25; jevcode config set mode <m> keeps a choice` once (it writes `seen.defaultMode`, so a later flip of the default
+`[setup] mode jev+llm (default) — caps $10.00 per run · $50.00 per session; /mode jev-only runs on Jev alone at $1.00 /
+$5.00; jevcode config set mode <m> keeps a choice` once (it writes `seen.defaultMode`, so a later flip of the default
 shows it once more).
 
 The first frame is drawn from the command line alone — before any configuration file, `.env`, the runs
@@ -170,7 +170,7 @@ answer:
 | Jev reads it as | You get | Money |
 | --- | --- | --- |
 | a greeting, thanks, goodbye, small talk | the code model's own reply, streamed (in `jev-only`: one `[jevcode]` reply from a 14-row catalogue — `hi` → `Hi. I'm ready when you are — describe a change you want in <dir>, or ask what I can do.`; `thanks` → `You're welcome. Anything else on <dir>?`; `bye` → `Bye for now. /exit closes the session; runs are saved under ~/.jevcode/runs.`; `ok` → `Okay. Whenever you're ready.` … | the intake only |
-| a question about JevCode itself (what it can do, its mode, keys, cost, commands, the last run, the tests, the sandbox, undo, the Jev provider) | one `[jevcode]` item per selected fact, most relevant first (≤ 4): `JevCode is a coding agent where Jev, a decision model, makes every decision: …`, `Mode: jev+llm — the code model writes the code, Jev decides every step.`, `Switch with /mode jev-only (Jev alone, $0.25 run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.`, `Keys: Jev through openrouter (OPENROUTER_API_KEY, never printed); generator: openrouter …`, `Session spend: $0.00 of $10.00 (0 runs, 3 chat messages). /cost has the breakdown.` … | the intake only |
+| a question about JevCode itself (what it can do, its mode, keys, cost, commands, the last run, the tests, the sandbox, undo, the Jev provider) | one `[jevcode]` item per selected fact, most relevant first (≤ 4): `JevCode is a coding agent where Jev, a decision model, makes every decision: …`, `Mode: jev+llm — the code model writes the code, Jev decides every step.`, `Switch with /mode jev-only (Jev alone, $1.00 run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.`, `Keys: Jev through openrouter (OPENROUTER_API_KEY, never printed); generator: openrouter …`, `Session spend: $0.00 of $50.00 (0 runs, 3 chat messages). /cost has the breakdown.` … | the intake only |
 | a question about the code in the workspace | in `jev-only`: `▓ looking`, one more Jev request over up to 60 candidate files, then `[jevcode] In jev-only mode I can point at code but not explain it — Jev decides, it doesn't write. Likely places:` with up to three `path:line  text` rows per file and `Switch with /mode jev-on to get an explanation from the LLM, or describe the change and I'll make it.` (or `I couldn't find a file in <dir> that clearly answers that (looked at <n> candidates). …`); in `jev+llm` (the default): `▓ replying`, one generator turn with no tools, streamed into the live region, then one `[jevcode]` item per line | the lookup ≈ $0.00005; the LLM turn at the generator's price, refused before sending when it would pass the session cap or the model is unpriced |
 | a task (`coding_task` at Jev's own p ≥ 0.6, paired Noul ≥ 0.5) | the reply, then `[jevcode] On it — starting the run.` and the run: `[run] start …`, one `[step N]` line per step | the reply + the run |
 | anything weaker or `ambiguous` (`the date parsing`, `tests?`) | the reply, then one more line: ``Say `do it` and I'll make that a task.`` Nothing blocks the composer; `do it` (or `yes`, `go ahead`, `run it`) on the next message starts that run from the reading already in hand, and any other message drops the offer | the reply |
@@ -532,9 +532,9 @@ argv validator alike.
 
 ## Money
 
-Two caps: the **run cap** (`--spend-cap`, `limits.spendCapUsd`, default $2.00 under the default `jev-on` and $0.25
+Two caps: the **run cap** (`--spend-cap`, `limits.spendCapUsd`, default $10.00 under the default `jev-on` and $1.00
 under `jev-only`) and the **session cap** (`--session-spend-cap <usd|none>`, `session.spendCapUsd`, default 5 × the run
-cap, so $10.00 or $1.25). The session meter exists from startup and every chat message's intake request is charged to
+cap, so $50.00 or $5.00). The session meter exists from startup and every chat message's intake request is charged to
 it (`sess $0.00/1.25 ok` moves by about $0.00007 per greeting; a jev-only lookup ≈ $0.00005; an LLM turn at the
 generator's price); every run's meter is a child of it with cap `min(runCap, remaining)`, and the accumulated chat
 spend carries into the first run's totals. The status line shows both (`run $1.60/2.00 high  sess $4.11/10.00 ok`);
@@ -561,7 +561,7 @@ session-spend-cap <usd>, or /new for a fresh session.`), and an LLM answer that 
   / `or start a follow-up run with a fresh $1.500 cap`.
 - **Unknown pricing fails closed.** An Anthropic model without a pricing entry refuses to start (exit 2) naming
   `JEVCODE_PRICE_IN_PER_M` / `JEVCODE_PRICE_OUT_PER_M` and `--allow-unpriced`; with `--allow-unpriced` the run
-  is bounded by a token cap instead (`--max-generator-tokens`, default `spendCap / 15 × 1e6` ≈ 133k for $2.00;
+  is bounded by a token cap instead (`--max-generator-tokens`, default `spendCap / 15 × 1e6` ≈ 667k for $10.00;
   stop reason `token_cap`, exit 4; money figures show `$?`). Table-priced figures carry `~`.
 
 ## Secrets

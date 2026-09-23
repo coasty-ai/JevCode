@@ -54,11 +54,13 @@ describe('priceRowFor', () => {
     expect(pricingFor('xai', 'grok-4.7')).toEqual({ inputPerM: 2, outputPerM: 6, cacheReadPerM: 0.5, cacheWritePerM: 2 });
   });
 
-  it('marks the Meta models unknown rather than pretending they are free', () => {
-    const row = priceRowFor('meta', 'muse-spark-1.3')!;
-    expect(isKnownPrice(row)).toBe(false);
-    expect(pricingFor('meta', 'muse-spark-1.3')).toBeNull();
-    expect(row.notes).toContain('priced: false');
+  it('prices the Meta muse-spark tiers from the live catalogue (read 2026-09-23) and keeps any other Meta id unknown', () => {
+    expect(pricingFor('meta', 'muse-spark-1.3')).toEqual({ inputPerM: 1.25, outputPerM: 4.25, cacheReadPerM: 0.15, cacheWritePerM: 1.25 });
+    expect(pricingFor('meta', 'muse-spark-1.3-contributor')).toEqual({ inputPerM: 0.1, outputPerM: 0.2, cacheReadPerM: 0.002, cacheWritePerM: 0.1 });
+    const other = priceRowFor('meta', 'muse-nowhere')!;
+    expect(isKnownPrice(other)).toBe(false);
+    expect(pricingFor('meta', 'muse-nowhere')).toBeNull();
+    expect(other.notes).toContain('priced: false');
   });
 
   it('marks unlisted Fireworks ids unknown while keeping the published ones', () => {
@@ -79,7 +81,8 @@ describe('effectivePricing', () => {
     // a row without a tier keeps one price, and an unknown row has none at all
     const flash = priceRowFor('gemini', 'gemini-3.8-flash')!;
     expect(effectivePricing(flash, 900_000)).toEqual(effectivePricing(flash, 1));
-    expect(effectivePricing(priceRowFor('meta', 'muse-spark-1.3')!, 1)).toBeNull();
+    expect(effectivePricing(priceRowFor('meta', 'muse-spark-1.3')!, 1)!.inputPerM).toBe(1.25);
+    expect(effectivePricing(priceRowFor('meta', 'muse-nowhere')!, 1)).toBeNull();
   });
 
   it('feeds costFromPricing directly, so a long prompt is billed at the tier that applies', () => {

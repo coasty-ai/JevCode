@@ -261,7 +261,7 @@ describe.skipIf(!hasExpect)('pty round 3: the hero-frame checklist (TUI-DESIGN-3
     for (const t of twins) {
       const rows = t.rows ?? 24;
       const cols = t.cols ?? 80;
-      const open = rows < 16 ? [FIRST_FRAME_STEP, `expect ${t.ascii ? 'Say hi' : PLACEHOLDER_TASK}`, RAW_MODE_STEP, 'expect \\[sandbox\\]'] : [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, IDLE_STEP];
+      const open = rows < 16 ? [FIRST_FRAME_STEP, `expect ${t.ascii ? 'Say hi' : PLACEHOLDER_TASK}`, RAW_MODE_STEP, 'expect sess \\$'] : [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, IDLE_STEP];
       const r = await drive({ name: `r3-polish-${t.name}`, args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3', ...t.args], rows, cols, ...(t.env ? { env: t.env } : {}), steps: [...open, 'sleep 0.3', 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.3', ...EXIT_IDLE] });
       expect(r.timeouts, t.name).toBe(0);
       expect(r.code, t.name).toBe(0);
@@ -306,7 +306,7 @@ describe.skipIf(!hasExpect)('pty round 3: the one-key wizard edges (TUI-DESIGN-3
     const plain = stripAnsi(r.text);
     // §5.1: the item wraps over three console rows (the gutter is written with cursor moves, not spaces), so it is
     // matched on the whitespace-flattened text — never row by row
-    expect(plain.replace(/\s+/g, ' ')).toContain('[setup] spend caps: $2.00 per run · $10.00 per session (llm+jev · verified) — /budget changes them; /mode jev-only runs on Jev alone at $0.25 / $1.25');
+    expect(plain.replace(/\s+/g, ' ')).toContain('[setup] spend caps: $10.00 per run · $50.00 per session (llm+jev · verified) — /budget changes them; /mode jev-only runs on Jev alone at $1.00 / $5.00');
     expect(r.text).not.toContain(key);
     expect(r.text).not.toContain('fakefakefake');
   });
@@ -320,7 +320,7 @@ describe.skipIf(!hasExpect)('pty round 3: the one-key wizard edges (TUI-DESIGN-3
     expect(cfg['apiKey']).toBeUndefined();
     expect(cfg['jevApiKey']).toBeUndefined();
     const plain = stripAnsi(r.text);
-    expect(plain).toContain('3: no LLM — code proposes, Jev decides, tests verify · caps $0.25 / $1.25');
+    expect(plain).toContain('3: no LLM — code proposes, Jev decides, tests verify · caps $1.00 / $5.00');
     expect(plain).not.toContain('· next run');
     assertNoKeyBytes(r, FAKE_KEY);
     // the restart: the same HOME, no wizard, the jev-only badge from the first frame

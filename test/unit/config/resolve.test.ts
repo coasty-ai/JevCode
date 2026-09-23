@@ -216,7 +216,7 @@ describe('resolveConfig keys and lazy validation', () => {
     expect((await resolve(run(), env, { mode: 'jev-on' })).mode).toBe('jev-on');
     // the run-cap default follows the same value (TUI-DESIGN §9.1, P45; TUI-DESIGN-3 §1.1: keyed on DEFAULT_MODE)
     expect((await resolve(run(), env)).limits().spendCapUsd).toBe(defaultRunSpendCapUsd(DEFAULT_MODE));
-    expect((await resolve(run('--mode', 'jev-on'), env)).limits().spendCapUsd).toBe(2);
+    expect((await resolve(run('--mode', 'jev-on'), env)).limits().spendCapUsd).toBe(10);
   });
 
   it('pricing: table for the default GLM 5.3 Flash and for Sonnet 5, env overrides, zeros plus a warning for unknown models', async () => {
@@ -405,25 +405,25 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
     expect((await resolve(run(), { XDG_CONFIG_HOME: '/tmp/x' })).configDirs).toEqual(['/tmp/x/jevcode', join(home, '.config', 'jevcode')]);
   });
 
-  it('the run cap default is mode-keyed after --mode (P45): $0.25 under jev-only, $2.00 otherwise, explicit values untouched', async () => {
+  it('the run cap default is mode-keyed after --mode (P45): $1.00 under jev-only, $10.00 otherwise, explicit values untouched', async () => {
     const jo = await resolve(run('--mode', 'jev-only'));
-    expect(jo.entries.get('limits.spendCapUsd')).toEqual({ value: '0.25', source: 'default' });
-    expect(jo.limits().spendCapUsd).toBe(0.25);
-    expect(jo.sessionSpendCap('jev-only')).toEqual({ value: 1.25, source: 'derived', derived: true });
-    expect((await resolve(run('--condition', 'jev-only'))).limits().spendCapUsd).toBe(0.25);
-    // TUI-DESIGN-2 §1.2 / TUI-DESIGN-3 §1.1: zero arguments = DEFAULT_MODE and its mode-keyed cap; jev-on / jev-off keep $2.00
+    expect(jo.entries.get('limits.spendCapUsd')).toEqual({ value: '1', source: 'default' });
+    expect(jo.limits().spendCapUsd).toBe(1);
+    expect(jo.sessionSpendCap('jev-only')).toEqual({ value: 5, source: 'derived', derived: true });
+    expect((await resolve(run('--condition', 'jev-only'))).limits().spendCapUsd).toBe(1);
+    // TUI-DESIGN-2 §1.2 / TUI-DESIGN-3 §1.1: zero arguments = DEFAULT_MODE and its mode-keyed cap; jev-on / jev-off keep $10.00
     expect((await resolve(run())).limits().spendCapUsd).toBe(defaultRunSpendCapUsd(DEFAULT_MODE));
-    expect((await resolve(run('--mode', 'jev-on'))).limits().spendCapUsd).toBe(2);
-    expect((await resolve(run('--mode', 'jev-off'))).limits().spendCapUsd).toBe(2);
-    expect((await resolve(run('--mode', 'jev-only', '--spend-cap', '1'))).limits().spendCapUsd).toBe(1);
+    expect((await resolve(run('--mode', 'jev-on'))).limits().spendCapUsd).toBe(10);
+    expect((await resolve(run('--mode', 'jev-off'))).limits().spendCapUsd).toBe(10);
+    expect((await resolve(run('--mode', 'jev-only', '--spend-cap', '3'))).limits().spendCapUsd).toBe(3);
     expect((await resolve(run('--mode', 'jev-only'), { JEVCODE_SPEND_CAP_USD: '0.5' })).entries.get('limits.spendCapUsd')).toEqual({ value: '0.5', source: 'env' });
   });
 
   it('sessionSpendCap(mode): derived 5 × run cap, configured through the chain, none = +Infinity; the record prints the derived row', async () => {
     const c = await resolve(run('--mode', 'jev-on'));
-    expect(c.sessionSpendCap('jev-on')).toEqual({ value: 10, source: 'derived', derived: true });
-    expect(c.sessionSpendCap('jev-only')).toEqual({ value: 1.25, source: 'derived', derived: true });
-    expect(c.record()['session.spendCapUsd']).toEqual({ value: '10', source: 'derived' });
+    expect(c.sessionSpendCap('jev-on')).toEqual({ value: 50, source: 'derived', derived: true });
+    expect(c.sessionSpendCap('jev-only')).toEqual({ value: 5, source: 'derived', derived: true });
+    expect(c.record()['session.spendCapUsd']).toEqual({ value: '50', source: 'derived' });
     const flagged = await resolve(run('--spend-cap', '3'));
     expect(flagged.sessionSpendCap('jev-on')).toEqual({ value: 15, source: 'derived', derived: true });
     const env = await resolve(run(), { JEVCODE_SESSION_SPEND_CAP_USD: '15' });
@@ -504,7 +504,7 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
     expect(() => bad.ui(LAUNCH)).toThrow(/ui\.theme: "neon" \(from env\)/);
   });
 
-  it('llm-jev (docs/LLM-JEV-DESIGN.md): missingSecrets needs BOTH keys like jev-on; the mode resolves through the chain and pays the $2.00 generator cap', async () => {
+  it('llm-jev (docs/LLM-JEV-DESIGN.md): missingSecrets needs BOTH keys like jev-on; the mode resolves through the chain and pays the $10.00 generator cap', async () => {
     const none = await resolve(run(), { JEVCODE_PROVIDER: 'openai' });
     expect(none.missingSecrets('llm-jev')).toEqual(['generator.apiKey', 'decider.apiKey']);
     expect((await resolve(run('--mock-generator'))).missingSecrets('llm-jev')).toEqual(['decider.apiKey']);
@@ -513,7 +513,7 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
     expect((await resolve(run(), { ANTHROPIC_API_KEY: 'anthropic-key-1234' })).missingSecrets('llm-jev')).toEqual(['generator.apiKey', 'decider.apiKey']);
     const viaEnv = await resolve(run(), { JEVCODE_MODE: 'llm-jev' });
     expect(viaEnv.mode).toBe('llm-jev');
-    expect(viaEnv.limits().spendCapUsd).toBe(2);
+    expect(viaEnv.limits().spendCapUsd).toBe(10);
     expect((await resolve(run('--mode', 'llm-jev'))).mode).toBe('llm-jev');
     expect(modeFromParsedFlags(run('--mode', 'llm-jev'))).toBe('llm-jev');
     expect(modeFromParsedFlags(run('--condition', 'llm-jev'))).toBe('llm-jev');
@@ -547,7 +547,7 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
   it('priced fail-closed through generator(): an unpriced Anthropic model is a ConfigError unless --allow-unpriced, which sets the token cap', async () => {
     const env = { ANTHROPIC_API_KEY: 'anthropic-key-1234' };
     const bad = await resolve(run('--mode', 'jev-on', '--provider', 'anthropic', '--model', 'claude-next'), env);
-    expect(() => bad.generator()).toThrow('generator.model "claude-next" has no pricing entry, so the $2.000 spend cap could not be enforced. Set JEVCODE_PRICE_IN_PER_M and JEVCODE_PRICE_OUT_PER_M (USD per million tokens), or pass --allow-unpriced to run under a token cap instead.');
+    expect(() => bad.generator()).toThrow('generator.model "claude-next" has no pricing entry, so the $10.000 spend cap could not be enforced. Set JEVCODE_PRICE_IN_PER_M and JEVCODE_PRICE_OUT_PER_M (USD per million tokens), or pass --allow-unpriced to run under a token cap instead.');
     expect('maxGeneratorTokens' in bad.limits()).toBe(false);
     const ok = await resolve(withFlags({ allowUnpriced: true }, '--provider', 'anthropic', '--model', 'claude-next', '--spend-cap', '1.5'), env);
     expect(ok.generator().priced).toBe(false);
@@ -730,14 +730,14 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
 
   it('ResolveOptions.mode keys the run-cap default when the flags carry no --mode (the --resume re-resolve)', async () => {
     const jo = await resolve(run(), {}, { mode: 'jev-only' });
-    expect(jo.entries.get('limits.spendCapUsd')).toEqual({ value: '0.25', source: 'default' });
-    expect(jo.limits().spendCapUsd).toBe(0.25);
-    expect(jo.sessionSpendCap('jev-only')).toEqual({ value: 1.25, source: 'derived', derived: true });
-    expect((await resolve(run(), {}, { mode: 'jev-on' })).limits().spendCapUsd).toBe(2);
+    expect(jo.entries.get('limits.spendCapUsd')).toEqual({ value: '1', source: 'default' });
+    expect(jo.limits().spendCapUsd).toBe(1);
+    expect(jo.sessionSpendCap('jev-only')).toEqual({ value: 5, source: 'derived', derived: true });
+    expect((await resolve(run(), {}, { mode: 'jev-on' })).limits().spendCapUsd).toBe(10);
     // an explicit --mode on the command line is the same signal
-    expect((await resolve(run('--mode', 'jev-only'), {}, {})).limits().spendCapUsd).toBe(0.25);
+    expect((await resolve(run('--mode', 'jev-only'), {}, {})).limits().spendCapUsd).toBe(1);
     // a configured cap is never touched by the mode
-    expect((await resolve(run('--spend-cap', '1'), {}, { mode: 'jev-only' })).limits().spendCapUsd).toBe(1);
+    expect((await resolve(run('--spend-cap', '3'), {}, { mode: 'jev-only' })).limits().spendCapUsd).toBe(3);
   });
 });
 
@@ -948,14 +948,14 @@ describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
     expect(dflt.record()['mode']).toEqual({ value: DEFAULT_MODE, source: 'default' });
     // §2.6 / §12: `mode  <DEFAULT_MODE>  default`
     expect(configTableRows(dflt.record()).find((r) => r.setting === 'mode')).toEqual({ setting: 'mode', value: DEFAULT_MODE, source: 'default', atDefault: true });
-    // file `mode: jev-on` → source file:<path>, cap default $2.00 (§8.1 S1 row)
+    // file `mode: jev-on` → source file:<path>, cap default $10.00 (§8.1 S1 row)
     await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ mode: 'jev-on' }));
     const file = await resolve(run());
     expect(file.mode).toBe('jev-on');
     expect(file.entries.get('mode')).toEqual({ value: 'jev-on', source: `file:${join(cwd, 'jevcode.json')}` });
-    expect(file.entries.get('limits.spendCapUsd')).toEqual({ value: '2', source: 'default' });
-    expect(file.limits().spendCapUsd).toBe(2);
-    expect(file.sessionSpendCap(file.mode)).toEqual({ value: 10, source: 'derived', derived: true });
+    expect(file.entries.get('limits.spendCapUsd')).toEqual({ value: '10', source: 'default' });
+    expect(file.limits().spendCapUsd).toBe(10);
+    expect(file.sessionSpendCap(file.mode)).toEqual({ value: 50, source: 'derived', derived: true });
     const modeRow = configTableRows(file.record()).find((r) => r.setting === 'mode');
     expect(modeRow).toEqual({ setting: 'mode', value: 'jev-on', source: `file:${join(cwd, 'jevcode.json')}`, atDefault: false });
     // TUI-DESIGN-4 §3.3 / F-B3: the rendered row carries the SHORT parenthetical; the path stays in the record and in --json
@@ -973,8 +973,8 @@ describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
     expect((await resolve(run('--condition', 'jev-on'), { JEVCODE_MODE: 'jev-only' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'flag' });
     expect((await resolve(run(), { JEVCODE_MODE: 'JEV-ON' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'env' });
     // the mode-keyed cap follows the resolved value from any layer
-    expect((await resolve(run(), { JEVCODE_MODE: 'jev-on' })).limits().spendCapUsd).toBe(2);
-    expect((await resolve(run(), { JEVCODE_MODE: 'jev-only' })).limits().spendCapUsd).toBe(0.25);
+    expect((await resolve(run(), { JEVCODE_MODE: 'jev-on' })).limits().spendCapUsd).toBe(10);
+    expect((await resolve(run(), { JEVCODE_MODE: 'jev-only' })).limits().spendCapUsd).toBe(1);
   });
 
   it('§12: `mode: "<v>" (from <source>) is not one of jev-only|jev-on|jev-off|llm-jev` — eager, exit 2, verbatim; opts.mode (a --resume re-resolve) skips the chain', async () => {
@@ -994,7 +994,7 @@ describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
     const resumed = await resolve(run(), {}, { mode: 'jev-on' });
     expect(resumed.mode).toBe('jev-on');
     expect(resumed.entries.get('mode')).toEqual({ value: 'jev-on', source: 'default' });
-    expect(resumed.limits().spendCapUsd).toBe(2);
+    expect(resumed.limits().spendCapUsd).toBe(10);
     await rm(join(cwd, 'jevcode.json'));
     // opts.mode agreeing with an explicit layer keeps that layer's source; disagreeing, the re-resolve's value stands as `default`
     expect((await resolve(run('--mode', 'jev-only'), {}, { mode: 'jev-only' })).entries.get('mode')).toEqual({ value: 'jev-only', source: 'flag' });

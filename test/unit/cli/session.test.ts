@@ -415,7 +415,7 @@ describe('host wiring (§15 item 16, §10.2)', () => {
 
 describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
   it('the second run is seeded from the first: sessionId shared, parentRunId = R1, plan.done and window carried, index run:start/run:end pairs', async () => {
-    // TUI-DESIGN-2 §1.1: the default mode is jev-only ($0.25 / $1.25); this row is about the jev-on money (5 × $2.00), so it says so
+    // TUI-DESIGN-2 §1.1: the default mode is jev-only ($1.00 / $5.00); this row is about the jev-on money (5 × $10.00), so it says so
     const h = await build({ flags: { mode: 'jev-on' } });
     void h.controller.run();
     await h.ready();
@@ -435,8 +435,8 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
     expect(idx.filter((l) => l.kind === 'run:end')).toHaveLength(2);
     expect(idx.filter((l) => l.kind === 'run:start').every((l) => l.sessionId === id1)).toBe(true);
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(0.23, 6);
-    // each run's child meter forwards to the session root (default session cap = 5 × the $2.00 jev-on run cap)
-    expect(r1.meter.snapshot().parent?.capUsd).toBe(10);
+    // each run's child meter forwards to the session root (default session cap = 5 × the $10.00 jev-on run cap)
+    expect(r1.meter.snapshot().parent?.capUsd).toBe(50);
   });
 
   it('follow-up gate: remaining ≥ runCap starts; 0 < remaining < runCap clamps (silently without a prompt channel); remaining ≤ 0 refuses with the §24 item', async () => {
@@ -470,7 +470,7 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
   });
 
   it('/budget session-spend-cap mutates the root meter now (setCap), writes the index budget line and the §24 item; spend-cap is pending for the next run', async () => {
-    // jev-on: the configured run cap is $2.00 (TUI-DESIGN-2 §1.2; the jev-only default would be $0.25)
+    // jev-on: the configured run cap is $10.00 (TUI-DESIGN-2 §1.2; the jev-only default would be $1.00)
     const h = await build({ flags: { sessionSpendCap: '10', mode: 'jev-on' } });
     void h.controller.run();
     await h.ready();
@@ -487,7 +487,7 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
     // §9.4 "whichever comes first": the pending value was consumed by the new run — the next run is back on the configured cap
     expect(h.controller.view.pending.spendCapUsd).toBeUndefined();
     await h.submit('three');
-    expect(h.factory.calls[2]!.limits.spendCapUsd).toBe(2);
+    expect(h.factory.calls[2]!.limits.spendCapUsd).toBe(10);
     await h.command('/budget spend-cap 0.01');
     expect(h.renderer.notes.at(-1)?.text).toMatch(/^error: \/budget spend-cap 0\.01 is not above this run's spend/);
     await h.command('/budget max-steps 14');
@@ -1221,7 +1221,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     expect(h.renderer.notes.at(-1)?.text).toBe(`mode jev-only${DEFAULT_MODE === 'jev-only' ? ' (default)' : ''}`);
   });
 
-  it('§1.2 (edge 27, R3 F1): a round-2 file `mode: "jev-only"` with TYPESAFE_API_KEY → no wizard, session jev-only, caps $0.25 / $1.25; a file `mode: "jev-on"` with only OPENROUTER_API_KEY → no wizard, badge jev+llm', async () => {
+  it('§1.2 (edge 27, R3 F1): a round-2 file `mode: "jev-only"` with TYPESAFE_API_KEY → no wizard, session jev-only, caps $1.00 / $5.00; a file `mode: "jev-on"` with only OPENROUTER_API_KEY → no wizard, badge jev+llm', async () => {
     const home = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
     writeConfig(home, { mode: 'jev-only' });
     let wizards = 0;
@@ -1230,8 +1230,8 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     await h.ready();
     expect(wizards).toBe(0);
     expect(h.controller.mode()).toBe('jev-only');
-    expect(h.controller.view.runCapUsd).toBe(0.25);
-    expect(h.controller.view.sessionMeter.snapshot().capUsd).toBe(1.25);
+    expect(h.controller.view.runCapUsd).toBe(1);
+    expect(h.controller.view.sessionMeter.snapshot().capUsd).toBe(5);
     expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-only', pending: null });
     // no default-mode item: the file has a `mode` row
     expect(h.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
@@ -1243,7 +1243,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     expect(wizards).toBe(0);
     expect(h2.controller.mode()).toBe('jev-on');
     expect(modeActions(h2).at(-1)).toEqual({ type: 'mode', mode: 'jev-on', pending: null });
-    expect(h2.controller.view.runCapUsd).toBe(2);
+    expect(h2.controller.view.runCapUsd).toBe(10);
     expect(h2.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
   });
 
@@ -1330,7 +1330,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     void h.controller.run();
     await h.ready();
     const item = defaultModeItem(DEFAULT_MODE, h.controller.view.runCapUsd, h.controller.view.sessionMeter.snapshot().capUsd);
-    expect(item).toBe(`mode ${MODE_BADGE_WORD[DEFAULT_MODE]} (default) — caps $2.00 per run · $10.00 per session; /mode jev-only runs on Jev alone at $0.25 / $1.25; jevcode config set mode <m> keeps a choice`);
+    expect(item).toBe(`mode ${MODE_BADGE_WORD[DEFAULT_MODE]} (default) — caps $10.00 per run · $50.00 per session; /mode jev-only runs on Jev alone at $1.00 / $5.00; jevcode config set mode <m> keeps a choice`);
     expect(h.renderer.notes.filter((n) => n.label === '[setup]' && n.text === item)).toHaveLength(1);
     expect(readConfig(home)['seenDefaultMode']).toBe(DEFAULT_MODE);
     // startup order: config → shadowing → the notice → trust; the quiet start prints it dim and it is the first item
@@ -1392,7 +1392,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     await waitFor(() => h.renderer.notes.some((n) => n.label === '[setup]' && n.text === caps), 4000, 'the caps item'); // the wizard save resolves after ready()
     expect(h.renderer.notes.filter((n) => n.label === '[setup]' && n.text === caps)).toHaveLength(1);
     expect(h.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
-    if (DEFAULT_MODE !== 'jev-only') expect(caps).toBe(`spend caps: $2.00 per run · $10.00 per session (${MODE_BADGE_WORD[DEFAULT_MODE]}) — /budget changes them; /mode jev-only runs on Jev alone at $0.25 / $1.25`);
+    if (DEFAULT_MODE !== 'jev-only') expect(caps).toBe(`spend caps: $10.00 per run · $50.00 per session (${MODE_BADGE_WORD[DEFAULT_MODE]}) — /budget changes them; /mode jev-only runs on Jev alone at $1.00 / $5.00`);
   });
 
   it('§1.5: verifyForWizard meters the priced calls on the session meter (never the chat ledger) and maps a rejected side to its field; --mock never reaches the network', async () => {
