@@ -385,13 +385,15 @@ describe('contract 1.5 (ORCHESTRATION-DESIGN §4.1)', () => {
    *   `CheckpointEnvelope`         src/core/types.ts    `export interface CheckpointEnvelope {` → the first column-0 `}`
    */
   it('byte identity: Action, STOP_REASON_SET, exitCodeFor, MODES and CheckpointEnvelope.version are untouched by 1.5', () => {
+    // the agent loop (docs/AGENT-LOOP-DESIGN.md §15 S1) appends on purpose, and nothing else: `cwd?` to the `run` action,
+    // `stuck` to STOP_REASON_SET (exitCodeFor's default branch already maps it to 4), `'agent'` to MODES
     expect(squash(captureBlock('src/core/types.ts', 'export type Action =', /;\s*(\/\/.*)?$/))).toBe(
       squash(`export type Action =
   | { kind: 'read'; paths: string[] } // show files, bounded
   | { kind: 'edit'; path: string; old: string; new: string } // exact, unique match
   | { kind: 'write'; path: string; content: string } // create or overwrite
   | { kind: 'patch'; diff: string } // unified diff, -p1, applied with git apply
-  | { kind: 'run'; command: string; timeoutMs?: number } // sh -c in sandbox
+  | { kind: 'run'; command: string; timeoutMs?: number; cwd?: string } // sh -c in sandbox; cwd: workspace-relative, agent mode only (docs/AGENT-LOOP-DESIGN.md §6.1)
   | { kind: 'done'; summary: string }; // proposal to finish`),
     );
 
@@ -410,6 +412,7 @@ describe('contract 1.5 (ORCHESTRATION-DESIGN §4.1)', () => {
   error: true,
   human_pause: true,
   token_cap: true,
+  stuck: true,
 };`),
     );
 
@@ -433,7 +436,7 @@ describe('contract 1.5 (ORCHESTRATION-DESIGN §4.1)', () => {
 }`),
     );
 
-    expect(squash(captureBlock('src/cli/args.ts', 'export const MODES =', /;\s*$/))).toBe(squash(`export const MODES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] as const;`));
+    expect(squash(captureBlock('src/cli/args.ts', 'export const MODES =', /;\s*$/))).toBe(squash(`export const MODES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent'] as const;`));
 
     expect(squash(captureBlock('src/core/types.ts', 'export interface CheckpointEnvelope {', /^}$/))).toBe(
       squash(`export interface CheckpointEnvelope {

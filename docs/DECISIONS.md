@@ -1179,7 +1179,8 @@ The partition below is complete: every top-level directory of `src/` appears in 
 **Harness-owned:** `src/bench/**`, `src/checkpoint/**`, `src/coordination/**`, `src/core/**` (additive optional members inside
 EXISTING contract blocks only — never a new header; the contract block itself is the peer's), `src/import/**`, `src/jev/**`,
 `src/loop/**` (`engine.ts` included), `src/models/**`, `src/orchestrate/**`, `src/perf/**`, `src/provider/**`, `src/sandbox/**`,
-`src/spend/**`, `src/synth/**`, `src/workspace/**`, and the single file `src/errors.ts`. Also `scripts/**`,
+`src/spend/**`, `src/synth/**`, `src/workspace/**`, `src/agent/**` (the agent loop, `docs/AGENT-LOOP-DESIGN.md` §2.1, from
+2026-09-23), and the single file `src/errors.ts`. Also `scripts/**`,
 `test/unit/**`, `experiments/**`, `docs/*-DESIGN.md`, `docs/LLM-JEV.md`, `docs/DECISIONS.md`, `docs/MERGE-QUEUE.md`
 and `docs/research/**`.
 

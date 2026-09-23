@@ -323,7 +323,7 @@ export function serialiseEnvelope(state: CheckpointState, redact: Redactor): str
   return `{"version":${CHECKPOINT_VERSION},"checksum":${JSON.stringify(checksum)},"state":${stateText}}`;
 }
 
-const ENGINE_MODES: readonly string[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev'];
+const ENGINE_MODES: readonly string[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'agent'];
 
 function isNonNegInt(v: unknown): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= 0;

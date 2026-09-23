@@ -4,7 +4,7 @@ import { buildRecord, notRunRecord } from '../../../src/bench/runner.js';
 import type { BenchTaskRecord, EngineMode } from '../../../src/core/types.js';
 import { fakeRunResult, syntheticSource } from './helpers.js';
 
-function rec(task: string, condition: EngineMode, over: Partial<BenchTaskRecord> = {}): BenchTaskRecord {
+function rec(task: string, condition: Exclude<EngineMode, 'agent'>, over: Partial<BenchTaskRecord> = {}): BenchTaskRecord {
   const base = buildRecord({
     source: syntheticSource({ id: task }),
     condition,

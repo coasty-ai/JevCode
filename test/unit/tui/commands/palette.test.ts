@@ -358,7 +358,7 @@ describe('paletteRows / paletteLines', () => {
   it('TUI-DESIGN-3 §4.1 rule 8: the `/mode` sub-rows read the badge table, the row equal to DEFAULT_MODE ends ` (default)` (D-N: computed, never a literal) and the suffix survives the cut; /theme, /panel, /transcript, /copy, /logout, /help and the /decisions stages carry hints', () => {
     const rows = paletteRows('/mode', fresh, 0, 8, 80);
     const values = rows.filter((r) => r.kind === 'value');
-    expect(values.map((r) => r.name)).toEqual(['/mode jev-only', '/mode jev-on', '/mode jev-off', '/mode llm-jev']);
+    expect(values.map((r) => r.name)).toEqual(['/mode jev-only', '/mode jev-on', '/mode jev-off', '/mode llm-jev', '/mode agent']);
     const def = values.find((r) => r.name === `/mode ${DEFAULT_MODE}`);
     expect(def?.text.trimEnd().endsWith(' (default)')).toBe(true);
     expect(values.filter((r) => r.text.includes('(default)'))).toHaveLength(1);
@@ -384,7 +384,7 @@ describe('paletteRows / paletteLines', () => {
     const exact = paletteRows('/budget spend-cap', fresh, 0, 8, 80).filter((r) => r.kind === 'value');
     expect(exact[0]).toMatchObject({ name: '/budget spend-cap', selected: true });
     expect(exact.slice(1).every((r) => !r.selected)).toBe(true);
-    expect(paletteRows('/mode', fresh, 0, 8, 80).filter((r) => r.kind === 'value')).toHaveLength(4);
+    expect(paletteRows('/mode', fresh, 0, 8, 80).filter((r) => r.kind === 'value')).toHaveLength(5);
   });
   it('TUI-DESIGN-3 §4.1 rule 3: ghost text — a prefix of the top match ghosts its rest with the count of other matches; an exact or prefix alias ghosts the arrow `→ /owner`; a Suggested top match that does not extend the query yields no ghost', () => {
     expect(paletteGhost('/bu', paletteMatches('/bu', afterSpendCap))).toEqual({ rest: 'dget', more: 0 });
@@ -592,11 +592,12 @@ describe('TUI-DESIGN-4 §4.4: the footer says what Enter does, in every state', 
         expect(rows.at(-1)?.text.trimStart().startsWith(`(${j + 1}/4)`), `i=${i} j=${j}`).toBe(true);
       }
     }
-    // §4.8 F-P2's frame: the sub-rows on screen and `(2/4)` with the cursor on the second value
-    expect(paletteRows('/mode ', fresh, 0, 7, 76, false, 1).at(-1)?.text.trimEnd()).toBe('  (2/4)  Enter next value · Tab picks · Esc closes');
+    // §4.8 F-P2's frame: the sub-rows on screen and `(2/5)` with the cursor on the second value (five modes since
+    // docs/AGENT-LOOP-DESIGN.md §14.1, so the frame is one row taller than F-P2's four-mode drawing)
+    expect(paletteRows('/mode ', fresh, 0, 8, 76, false, 1).at(-1)?.text.trimEnd()).toBe('  (2/5)  Enter next value · Tab picks · Esc closes');
     // and when the row budget cuts the list the footer says how many are off screen (§4.3 P-P4), never silently
-    expect(paletteRows('/mode ', fresh, 0, 6, 76, false, 1).at(-1)?.text.trimEnd()).toBe('  (2/4)  Enter next value · Tab picks · Esc closes · … +1 more');
-    expect(paletteRows('/mode ', fresh, 0, 6, 76, true, 1).at(-1)?.text.trimEnd()).toBe('  (2/4)  Enter next value - Tab picks - Esc closes - ... +1 more');
+    expect(paletteRows('/mode ', fresh, 0, 7, 76, false, 1).at(-1)?.text.trimEnd()).toBe('  (2/5)  Enter next value · Tab picks · Esc closes · … +1 more');
+    expect(paletteRows('/mode ', fresh, 0, 7, 76, true, 1).at(-1)?.text.trimEnd()).toBe('  (2/5)  Enter next value - Tab picks - Esc closes - ... +1 more');
     // and the ghost agrees with the cursor, at every j (P-P2 + P-P3 are one question)
     const m = paletteMatches('/mode j', fresh);
     for (const j of [0, 1, 2, 3]) {

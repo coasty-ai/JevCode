@@ -155,6 +155,7 @@ export const HOW_TO_TASK_SUFFIX: Readonly<Record<EngineMode, string>> = {
   'jev-on': ' The code model writes the code, Jev decides each step.',
   'jev-off': ' The generator alone runs it; reviews still ask.',
   'llm-jev': ' The code model writes candidate patches, tests verify them, Jev arbitrates.',
+  'agent': ' The code model works through tools and your tests verify it.',
 };
 /** TUI-DESIGN-3 §1.9: the `mode_now` sentence per mode — ONE table, the badge words from `MODE_BADGE_WORD` */
 export const MODE_SENTENCE: Readonly<Record<EngineMode, string>> = {
@@ -162,6 +163,7 @@ export const MODE_SENTENCE: Readonly<Record<EngineMode, string>> = {
   'jev-on': `Mode: ${MODE_BADGE_WORD['jev-on']} — the code model writes the code, Jev decides every step.`,
   'jev-off': `Mode: ${MODE_BADGE_WORD['jev-off']} — the generator alone, no Jev (bench condition; reviews still ask).`,
   'llm-jev': `Mode: ${MODE_BADGE_WORD['llm-jev']} — the code model writes candidate patches, tests verify them, Jev arbitrates.`,
+  'agent': `Mode: ${MODE_BADGE_WORD['agent']} — the code model works through tools, tests verify, Jev makes a few quick routing calls.`,
 };
 export const NOTHING_RAN_TEXT = 'Nothing has run yet in this session.';
 export const NO_TESTS_PARSED_TEXT = 'No test run has been parsed in this session yet.';

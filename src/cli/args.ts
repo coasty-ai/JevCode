@@ -384,7 +384,7 @@ export const SANDBOX_PROFILES = ['auto', 'seatbelt', 'none'] as const;
  */
 export const CONDITIONS = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned', 'jev-on-next', 'jev-on-next-nofast'] as const;
 /** TUI-DESIGN-2 §1.2: `--mode` / `--condition` values in the round-2 order; llm-jev last (docs/LLM-JEV-DESIGN.md); the default is `DEFAULT_MODE` (config/defaults.ts) */
-export const MODES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] as const;
+export const MODES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent'] as const;
 /** TUI-DESIGN-3 §1.9 (R3 F9): the usage tagline — generator-neutral, `package.json`'s description agrees */
 export const TAGLINE = 'JevCode: Jev decides, the code model writes.';
 /** TUI-DESIGN-3 §1.1 (D-N): the bare-`jevcode` usage sentence names the default through DEFAULT_MODE's badge word, never a literal */

@@ -977,7 +977,7 @@ describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
     expect((await resolve(run(), { JEVCODE_MODE: 'jev-only' })).limits().spendCapUsd).toBe(1);
   });
 
-  it('§12: `mode: "<v>" (from <source>) is not one of jev-only|jev-on|jev-off|llm-jev` — eager, exit 2, verbatim; opts.mode (a --resume re-resolve) skips the chain', async () => {
+  it('§12: `mode: "<v>" (from <source>) is not one of jev-only|jev-on|jev-off|llm-jev|agent` — eager, exit 2, verbatim; opts.mode (a --resume re-resolve) skips the chain', async () => {
     let err: unknown;
     try {
       await resolve(run(), { JEVCODE_MODE: 'turbo' });
@@ -985,7 +985,7 @@ describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
       err = e;
     }
     expect(err).toBeInstanceOf(ConfigError);
-    expect((err as ConfigError).message).toBe('mode: "turbo" (from env) is not one of jev-only|jev-on|jev-off|llm-jev');
+    expect((err as ConfigError).message).toBe('mode: "turbo" (from env) is not one of jev-only|jev-on|jev-off|llm-jev|agent');
     expect((err as ConfigError).exitCode).toBe(2);
     expect((err as ConfigError).setting).toBe('mode');
     await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ mode: 'fast' }));

@@ -194,7 +194,7 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     // TUI-DESIGN-2 §1.3: `/mode` alone shows (null); `/llm on|off` maps onto the mode action; `/panel` and `/transcript` (§4.6, §4.5)
     expect(ok('/mode')).toEqual({ kind: 'mode', mode: null });
     expect(ok('/mode JEV-ON', live)).toEqual({ kind: 'mode', mode: 'jev-on' });
-    expect(bad('/mode jev-maybe')).toBe('error: /mode: expected one of jev-only|jev-on|jev-off|llm-jev, got "jev-maybe"');
+    expect(bad('/mode jev-maybe')).toBe('error: /mode: expected one of jev-only|jev-on|jev-off|llm-jev|agent, got "jev-maybe"');
     expect(bad('/mode jev-on jev-off')).toBe('error: /mode: takes at most 1 argument, got 2');
     expect(ok('/llm on')).toEqual({ kind: 'mode', mode: 'jev-on' });
     expect(ok('/llm OFF', live)).toEqual({ kind: 'mode', mode: 'jev-only' });
@@ -320,7 +320,7 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     expect(COMMAND_TOKENS).toContain('/quit');
     expect(COMMAND_TOKENS).toContain('/sessions');
     expect(COMMAND_TOKENS).toContain('/llm');
-    expect(argumentCandidates(findCommand('mode') as CommandSpec, 0, idle)).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
+    expect(argumentCandidates(findCommand('mode') as CommandSpec, 0, idle)).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent']);
     expect(argumentCandidates(findCommand('panel') as CommandSpec, 0, idle)).toEqual(['d', 'p', 't', 's', 'a', 'off', 'full']);
   });
   it('TUI-DESIGN-4 §3.1.7 "Did you mean": `rank(token, command names)` at or above the word-prefix band (700), the best AVAILABLE match preferred, and no clause when nothing clears it', () => {

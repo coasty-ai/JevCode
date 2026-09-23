@@ -38,6 +38,13 @@ import type { Authority, SelfIdentity, SubworkEntry } from '../coordination/type
  */
 import type { ProviderId } from '../provider/ids.js';
 export type { Authority, LedgerHandle, ProviderId, SelfIdentity, SubworkEntry };
+/**
+ * AGENT-LOOP-DESIGN §13.1 rule 7: the FOURTH type-only import outside `core/`. `AgentContext.routeToken()`
+ * returns the router's own `StepToken`, so the token the agent's RA1/RA2 sites hand to `routeSpeculative` is the type that
+ * function checks rather than a structural twin that could drift. `verbatimModuleSyntax` erases it: no runtime edge, and
+ * the first-frame graph (test/unit/hygiene/first-frame-imports.test.ts) is untouched.
+ */
+import type { StepToken } from '../jev/router.js';
 
 export type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 export type JsonObject = { [k: string]: Json };
@@ -51,7 +58,7 @@ export type Action =
   | { kind: 'edit'; path: string; old: string; new: string } // exact, unique match
   | { kind: 'write'; path: string; content: string } // create or overwrite
   | { kind: 'patch'; diff: string } // unified diff, -p1, applied with git apply
-  | { kind: 'run'; command: string; timeoutMs?: number } // sh -c in sandbox
+  | { kind: 'run'; command: string; timeoutMs?: number; cwd?: string } // sh -c in sandbox; cwd: workspace-relative, agent mode only (docs/AGENT-LOOP-DESIGN.md §6.1)
   | { kind: 'done'; summary: string }; // proposal to finish
 
 export type ActionKind = Action['kind'];
@@ -278,7 +285,7 @@ export interface JevResponse {
  * latest before anything touches the workspace. It runs only for a change action (`edit | write | patch | run`) and
  * only while `EngineOptions.coordination.ledger` is a handle; `read` and `done` never coordinate.
  */
-export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | 'execute' | 'judge' | 'complete' | 'decompose' | 'coordinate';
+export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | 'execute' | 'judge' | 'complete' | 'decompose' | 'coordinate' | 'loop'; // AGENT-LOOP-DESIGN §9.2: `loop` = the stage of the agent's RA1/RA2 quick asks
 
 /**
  * contract 1.4 (W2b) (COORDINATION-DESIGN §7.1): the run's LIFECYCLE, as the heartbeat and the status line spell it.
@@ -365,7 +372,8 @@ export type StopReason =
   | 'generator_done' // Jev-off only
   | 'error'
   | 'human_pause' // TUI-DESIGN §15 item 1: Esc / pause at the loop top; exit-4 family, resumable without --force
-  | 'token_cap'; // TUI-DESIGN §15 item 1: RunLimits.maxGeneratorTokens reached (allowUnpriced); a plain budget stop
+  | 'token_cap' // TUI-DESIGN §15 item 1: RunLimits.maxGeneratorTokens reached (allowUnpriced); a plain budget stop
+  | 'stuck'; // AGENT-LOOP-DESIGN §8: the agent's loop detector tripped past AGENT_MAX_LOOP_NUDGES; exit-4 family, resumable
 /** TUI-DESIGN §15 item 1: the signal behind abort('signal'); exitCodeFor maps to 130 / 143 / 129 */
 export type SignalName = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
 
@@ -397,6 +405,8 @@ export interface RiskAssessment {
   risk: number;
   verdict: 'ok' | 'review' | 'block';
   reason: string;
+  /** AGENT-LOOP-DESIGN §9.4, §12: the agent classifier's rule id (`rm_outside`, `git_discard`, …) when a rule decided; its `dims` are zeroed and never drawn. Absent = a Jev/code risk verdict */
+  rule?: string;
 }
 
 export type JudgeTests =
@@ -599,6 +609,8 @@ export interface StepRecord {
    * `--fast-path off` run's `steps.jsonl` is unchanged.
    */
   scopeUsable?: boolean;
+  /** AGENT-LOOP-DESIGN §2.3, §10: what an agent-mode step was (observe / act / verify / finish), its calls and the transcript seq after it. Absent in every other mode */
+  agent?: StepAgentSummary;
 }
 
 /**
@@ -624,7 +636,7 @@ export interface StepRouter {
 }
 
 /** docs/LLM-JEV-DESIGN.md §9.4; contract 1.9 (Fastlane) §5.2 widens it with `fastpath` — the bounded sieve round proposed the step */
-export type StepProposer = 'synth' | 'generic' | 'fastpath';
+export type StepProposer = 'synth' | 'generic' | 'fastpath' | 'agent'; // AGENT-LOOP-DESIGN §2.2: `agent` = the AgentDriver proposed the step
 
 /**
  * contract 1.9 (Fastlane) §5.2: why the fast path did not fire, or how it failed. A closed union, not a free
@@ -820,6 +832,8 @@ export interface RunCounters {
   loops: number;
   replans: number;
   reads: number;
+  /** AGENT-LOOP-DESIGN §8, §10: agent loop trips answered with a nudge; the trip at AGENT_MAX_LOOP_NUDGES stops `stuck`, a resume resets it. Absent = 0 (every other mode) */
+  loopNudges?: number;
 }
 
 export interface SerializedError {
@@ -837,7 +851,7 @@ export interface SerializedError {
   requestId?: string | null;
 }
 
-export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only' | 'llm-jev'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md); llm-jev: the generator writes candidate patches inside the Jev-only synthesizer; Jev decides, tests verify (docs/LLM-JEV-DESIGN.md)
+export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only' | 'llm-jev' | 'agent'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md); llm-jev: the generator writes candidate patches inside the Jev-only synthesizer; Jev decides, tests verify (docs/LLM-JEV-DESIGN.md); agent: the code model drives with native tools, tests verify, Jev makes a few quick routing calls (docs/AGENT-LOOP-DESIGN.md)
 
 export interface RunResult {
   runId: string;
@@ -885,6 +899,8 @@ export interface ToolCall {
   name: string;
   input: Json;
   rawJson: string;
+  /** AGENT-LOOP-DESIGN §6.1: the provider's call id; set by adapters ONLY on results of agent requests (legacy results are unchanged) */
+  id?: string;
 }
 export type ToolChoice = 'auto' | 'required' | { name: string };
 
@@ -892,8 +908,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
-/** docs/LLM-JEV-DESIGN.md §4.12 verbatim. */
-export type ReasoningEffort = 'low' | 'medium';
+/** docs/LLM-JEV-DESIGN.md §4.12, widened additively by `high`: AGENT-LOOP-DESIGN §6.3's Anthropic agent request sends `output_config.effort: 'high'` (legacy callers never request it). */
+export type ReasoningEffort = 'low' | 'medium' | 'high';
 /**
  * docs/LLM-JEV-DESIGN.md §4.12 verbatim: `{enabled: false}` turns thinking off where the model allows it; `{effort}` asks
  * for it at a level (on OpenRouter `effort` alone implies enabled). Providers send it as given, never rewritten; absent =
@@ -936,6 +952,11 @@ export interface GenerateRequest {
   reasoning?: GenerateReasoning;
   /** docs/LLM-JEV-DESIGN.md §4.12: OpenRouter routing preferences (`provider.require_parameters`); providers without it ignore it */
   providerPrefs?: GenerateProviderPrefs;
+  /**
+   * AGENT-LOOP-DESIGN §6.1: an agent-mode turn. Present → `agent.messages` replaces `messages` on the wire
+   * (the caller sends `messages: []`) and the adapter maps the transcript per §6.2. Absent → exactly today's wire body.
+   */
+  agent?: AgentRequest;
 }
 export interface GenerateResult {
   /** concatenated text blocks (streamed via onDelta) */
@@ -955,6 +976,16 @@ export interface GenerateResult {
    * succeeded — never a reason to change the result. Absent (not false) otherwise.
    */
   rateLimited?: true;
+  /** AGENT-LOOP-DESIGN §6.1, §6.5: the opaque reasoning state of this turn, replayed verbatim to the same provider + configured model. Agent results only */
+  providerState?: ProviderReplayState;
+  /** AGENT-LOOP-DESIGN §6.1, §7.3: Anthropic server-side tool-result clearing applied to this request (`context_management.applied_edits`). Agent results only */
+  contextEdits?: { clearedToolUses: number; clearedInputTokens: number };
+  /**
+   * AGENT-LOOP-DESIGN §6.5 (slice S2's "result warning field"): provider notices about this request that the
+   * caller surfaces as one transcript warning per run — e.g. a non-empty Anthropic `input_transformations`, one line per
+   * `reason`. Redacted, never a body. Agent results only; absent = none.
+   */
+  warnings?: string[];
 }
 /** TUI-DESIGN §15 item 5: why a client is about to sleep before a retry; message = redacted <= 200-char hint, never a body */
 export interface RetryCause {
@@ -1028,6 +1059,10 @@ export interface GenerateOptions {
    * throwing callback is a harness bug and surfaces as a typed 'internal' error, exactly like a throwing `onDelta`.
    */
   onFirstByte?: (ms: number) => void;
+  /** AGENT-LOOP-DESIGN §6.1: each streamed tool-call fragment with its stream index and, once known, the call's id and name (`onToolDelta` keeps firing) */
+  onToolCall?: (d: ToolCallDelta) => void;
+  /** AGENT-LOOP-DESIGN §6.1: reasoning / summarized thinking text as it streams */
+  onReasoning?: (fragment: string) => void;
 }
 /**
  * contract 1.8 item 6 (TUI-DESIGN-5 §8.1 / §6.1, D-AP): widened from `'anthropic' | 'openrouter' | 'mock'` to every
@@ -1054,6 +1089,8 @@ export interface AskOptions {
   onRetry?: (info: RetryInfo) => void;
   /** TUI-DESIGN §15 item 5 */
   wake?: () => AbortSignal | undefined;
+  /** AGENT-LOOP-DESIGN §13.1: a quick ask — one attempt, no retry chain, and drift / unpriced usage are non-fatal in `askRecorded` */
+  quick?: true;
 }
 export interface AskResult {
   answers: Record<string, Answer>;
@@ -1475,6 +1512,8 @@ export interface CheckpointState {
   splits?: number;
   resumes: number;
   updatedAt: string;
+  /** AGENT-LOOP-DESIGN §10: the opaque agent driver state (`AgentStateV1`, ≤ 64 KiB); absent for other modes */
+  agentState?: Json;
 }
 
 /** TUI-DESIGN §15 item 9: a queued steer; raw in memory (§8.6), masked on disk by the store's write-time redaction (P56) */
@@ -1968,6 +2007,10 @@ export interface EngineOptions {
    */
   s2?: 'on' | 'off';
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
+  /** AGENT-LOOP-DESIGN §2.2: the agent-mode driver a test injects; absent → `createAgentDriver()` from `src/agent/index.ts` (a dynamic import) */
+  agent?: AgentDriver;
+  /** AGENT-LOOP-DESIGN §7.6: the session's chat turns since the previous run, and that run; absent for a one-shot `jevcode run` */
+  conversation?: ConversationCarry;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2264,7 +2307,7 @@ export type EngineEvent =
   // llm-jev (docs/LLM-JEV-DESIGN.md §9.3): `sample` = 0-based index of the candidate being generated, `samples` = how many the step will generate; absent in jev-on / jev-off
   | { type: 'generator:start'; step: number; attempt: number; sample?: number; samples?: number }
   | { type: 'generator:delta'; step: number; text: string; sample?: number }
-  | { type: 'generator:tool-delta'; step: number; chars: number; sample?: number } // cumulative streamed tool-argument chars ("streaming action… N chars")
+  | { type: 'generator:tool-delta'; step: number; chars: number; sample?: number; tool?: string; target?: string } // cumulative streamed tool-argument chars ("streaming action… N chars"); agent mode (AGENT-LOOP-DESIGN §9.1): the call being written and a path / command / pattern from its partial arguments
   | { type: 'generator:end'; step: number; usage: TokenUsage; latencyMs: number; finishReason: string; sample?: number }
   // contract 1.4 (§7.3 step 3): `verdict: 'replay'` marks a proposal restored from `cache/step-<n>.json` (plain / TUI print `(replayed)`); absent on every fresh proposal
   | { type: 'proposal'; step: number; proposal: Proposal; verdict?: 'replay' }
@@ -2344,7 +2387,14 @@ export type EngineEvent =
   | { type: 'land:attempt'; slug: string; dockHead: string; pinned: string } // [G3] `pinned` is a sha, never a ref
   | { type: 'land:result'; slug: string; outcome: 'landed' | 'conflicted' | 'failed-verify' | 'refused'; commit?: string; verify?: VerifyResult[]; rule?: string }
   | { type: 'orchestration:settled'; landed: string[]; parked: string[]; dropped: string[]; dockBranch: string; spendUsd: number }
-  | { type: 'agent:adopted'; count: number; parentRunId: string };
+  | { type: 'agent:adopted'; count: number; parentRunId: string }
+  // AGENT-LOOP-DESIGN §9.2: five additive agent-mode members; the json stream stays `v: 1`. `assistant:text` commits
+  // whole lines of a turn's prose (keep the latest `attempt` of each turn); `generator:delta` stays the complete raw chunk stream.
+  | { type: 'assistant:text'; step: number; turn: number; attempt: number; text: string; final: boolean }
+  | { type: 'assistant:reset'; step: number; turn: number; attempt: number }
+  | { type: 'generator:reasoning'; step: number; turn: number; chars: number; tail: string } // tail: last line, ≤ 120 chars, redacted
+  | { type: 'tool:call'; step: number; turn: number; id: string; name: AgentToolName | 'invalid'; summary: string; readOnly: boolean }
+  | { type: 'tool:result'; step: number; turn: number; id: string; name: AgentToolName | 'invalid'; ok: boolean; summary: string; ms: number; chars: number; readOnly: boolean };
 
 export type EngineEventType = EngineEvent['type'];
 
@@ -3098,7 +3148,7 @@ export type BenchStopReason = StopReason | 'not_run';
  * `armMechanisms` clamps a pinned `s2` to `'off'` outside `llm-jev` and records what the run reported instead;
  * wiring the mechanisms onto `jev-on` is F17 in docs/LLM-LOOP-DESIGN.md §9.1, not a claim this type may make.
  */
-export type BenchCondition = EngineMode | 'llm-sieve' | 'jev-off-tuned' | 'jev-on-next' | 'jev-on-next-nofast';
+export type BenchCondition = Exclude<EngineMode, 'agent'> | 'llm-sieve' | 'jev-off-tuned' | 'jev-on-next' | 'jev-on-next-nofast'; // AGENT-LOOP-DESIGN §14.1: the bench has no agent arm
 
 export interface BenchTaskRecord {
   suite: BenchSuite;
@@ -3146,6 +3196,12 @@ export interface MockTurn {
   text?: string;
   /** returned as a tool call (the engine prefers this over fenced JSON in `text`) */
   toolCall?: ToolCall;
+  /** AGENT-LOOP-DESIGN §6.2 Mock: the calls of an agent turn, streamed per index through `onToolDelta` and `onToolCall`; returned with their ids on agent requests */
+  toolCalls?: { id?: string; name: string; input: Json; rawJson?: string }[];
+  /** AGENT-LOOP-DESIGN §6.2 Mock: echoed as the result's `providerState` (with the mock's provider name and configured model) */
+  providerState?: Json;
+  /** AGENT-LOOP-DESIGN §6.2 Mock: streamed through `onReasoning` before the text */
+  reasoning?: string;
   usage?: Partial<TokenUsage>;
   latencyMs?: number;
   /** throw a ProviderHttpError with this status instead of answering */
@@ -3883,3 +3939,220 @@ export interface MemoryUsage {
   memoryMatched: number;
   memoryShown: number;
 }
+
+// ---------------------------------------------------------------------------------------
+// The agent loop (docs/AGENT-LOOP-DESIGN.md §6.1, §7.6, §9.2, §15 S1)
+//
+// The default-to-be `agent` mode: the code model drives with native tool calls; the engine executes one mutating call
+// per step through its shared tail; Jev makes only quick routing calls. Every shape below is new, so no legacy
+// request, result, event or checkpoint changes; the members the agent adds to existing types are tagged
+// `AGENT-LOOP-DESIGN §…` where they sit. No contract header records them: docs/DECISIONS.md (ownership) keeps the
+// header block the peer session's, and every addition is an optional member, a new union member or a new type.
+// ---------------------------------------------------------------------------------------
+
+/** AGENT-LOOP-DESIGN §6.1: one block of an agent user message — text, or the result of one tool call threaded by the call's id */
+export type AgentUserBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_result'; toolUseId: string; name: string; content: string; isError?: boolean };
+/** AGENT-LOOP-DESIGN §6.1: one block of an agent assistant turn — prose, or one native tool call under its (unique) id */
+export type AgentAssistantBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; input: Json };
+/** AGENT-LOOP-DESIGN §6.1: one message of the agent transcript as it goes on the wire (`AgentRequest.messages`) */
+export type AgentMessage =
+  | { role: 'user'; content: AgentUserBlock[] }
+  | { role: 'assistant'; content: AgentAssistantBlock[]; providerState?: ProviderReplayState };
+
+/**
+ * AGENT-LOOP-DESIGN §6.1, §6.5: opaque reasoning state returned by one provider + configured model; replayed verbatim to the
+ * same pair, dropped otherwise. Written to the transcript unredacted (a redaction could corrupt a signature) and never emitted.
+ */
+export interface ProviderReplayState {
+  provider: ProviderName;
+  model: string;
+  data: Json;
+}
+
+/** AGENT-LOOP-DESIGN §6.1: the agent half of a `GenerateRequest` (`GenerateRequest.agent`); absent on every legacy request */
+export interface AgentRequest {
+  /** replaces GenerateRequest.messages on the wire; the caller sends messages: [] */
+  messages: AgentMessage[];
+  /** true: do not send parallel_tool_calls:false / disable_parallel_tool_use (provider default = parallel) */
+  parallelToolCalls: boolean;
+  /** the session id: OpenRouter session_id, OpenAI prompt_cache_key, xAI x-grok-conv-id, Fireworks x-session-affinity */
+  cacheKey: string;
+  /** false after a rejected replay (§6.5): no providerState is sent; OpenAI Responses: include ['reasoning.encrypted_content'] when true */
+  replayReasoning: boolean;
+  /** Anthropic: prefix_mismatch_behavior 'error' instead of 'drop_block' (tests and the live check only) */
+  strictReplay?: boolean;
+  /** Anthropic only: server-side tool-result clearing (§7.3); constant for the session */
+  clearToolResults?: { triggerTokens: number; keep: number; clearAtLeastTokens: number };
+}
+
+/** AGENT-LOOP-DESIGN §6.1: one streamed tool-call fragment (`GenerateOptions.onToolCall`); `id` / `name` arrive when the provider sends them */
+export interface ToolCallDelta {
+  index: number;
+  id?: string;
+  name?: string;
+  fragment: string;
+}
+
+/**
+ * AGENT-LOOP-DESIGN §7.6: what a session hands a run so the agent continues the conversation (`EngineOptions.conversation`).
+ * `chat` = the ledger turns since the previous run of the session ended (all turns when there is none), newest
+ * AGENT_CHAT_CARRY_TURNS within AGENT_CHAT_CARRY_CHARS; `parent` = that previous run. A one-shot `jevcode run` has none.
+ */
+export interface ConversationCarry {
+  chat: readonly { role: 'you' | 'jevcode'; text: string }[];
+  parent: { runId: string; runDir: string; mode: EngineMode } | null;
+}
+
+/** AGENT-LOOP-DESIGN §4.1: the agent's seven tools */
+export type AgentToolName = 'read_file' | 'write_file' | 'edit_file' | 'bash' | 'grep' | 'glob' | 'todo_write';
+
+/** AGENT-LOOP-DESIGN §9.2: one resolved call of a step, as the step record keeps it; `invalid` = a call no tool matched */
+export interface AgentCallSummary {
+  id: string;
+  name: AgentToolName | 'invalid';
+  /** one redacted line: `read_file src/a.ts (lines 1-120)`, `bash git diff (exit 0)` */
+  summary: string;
+  ok: boolean;
+  ms: number;
+}
+
+/** AGENT-LOOP-DESIGN §3.6: an agent loop-detector trip — 3 consecutive identical call+result (`repeat`) or > 5 in the last 10 (`window`) */
+export interface LoopTrip {
+  signature: string;
+  count: number;
+  rule: 'repeat' | 'window';
+  tool: AgentToolName | 'invalid';
+}
+
+/** AGENT-LOOP-DESIGN §2.3, §10: `StepRecord.agent` — what an agent-mode step was */
+export interface StepAgentSummary {
+  kind: 'observe' | 'act' | 'verify' | 'finish';
+  /** the model turn sampled in this step; null when the step resolved calls of an earlier turn (or is a harness verify) */
+  turn: number | null;
+  /** ≤ 32 (AGENT_MAX_CALLS_PER_TURN) */
+  calls: AgentCallSummary[];
+  /** transcript seq after this step's records (§10) */
+  seqAfter: number;
+  loopTrip?: LoopTrip;
+}
+
+/** AGENT-LOOP-DESIGN §12: the rule classifier's gate on one mutating call — `review` is reachable only under `--autonomy review` */
+export interface AgentGate {
+  verdict: 'ok' | 'review' | 'block';
+  reason: string;
+  /** the rule id (`rm_outside`, `git_discard`, …); null when no rule matched */
+  rule: string | null;
+}
+
+/**
+ * AGENT-LOOP-DESIGN §2.3: what `AgentDriver.next` hands the engine for one step. `observe` is finished inside the driver (no
+ * execute); `act`, `verify` and `finish` run through the engine's shared tail, after which the engine calls `observe()`.
+ */
+export type AgentNext =
+  | { kind: 'observe'; proposal: Proposal; outcome: Extract<ActionOutcome, { status: 'executed' }>; output: string; execMs: number; summary: StepAgentSummary }
+  | { kind: 'act'; proposal: Proposal; callId: string; gate: AgentGate; summary: StepAgentSummary }
+  | { kind: 'verify'; proposal: Proposal; summary: StepAgentSummary }
+  | { kind: 'finish'; proposal: Proposal; summary: StepAgentSummary };
+
+/** AGENT-LOOP-DESIGN §3.4: what the engine tells the driver after an `act` / `verify` / `finish` step ran (before the checkpoint) */
+export interface AgentObservation {
+  step: number;
+  outcome: ActionOutcome;
+  output: string;
+  /** the files THIS step changed (3.4), not the run-cumulative set */
+  changedFiles: readonly string[];
+  tests: { command: string; parsed: TestCounts | null; allPassed: boolean | null } | null;
+  error: { code: string; message: string } | null;
+}
+
+/** AGENT-LOOP-DESIGN §3.4, §3.6: `AgentDriver.observe`'s answer — the loop trip to count at commit, and the transcript seq for `StepAgentSummary.seqAfter` */
+export interface AgentObserveResult {
+  loopTrip: LoopTrip | null;
+  seqAfter: number;
+}
+
+/** AGENT-LOOP-DESIGN §9.3: the agent's hooks on the engine's `generate()`; every legacy call site passes none and is unchanged */
+export interface AgentGenerateHooks {
+  turn: number;
+  onText?: (text: string) => void;
+  onToolCall?: (d: ToolCallDelta) => void;
+  onAttemptReset?: (attempt: number) => void;
+  /** no generator:delta (the compaction writer) */
+  silent?: true;
+}
+
+/**
+ * AGENT-LOOP-DESIGN §2.2, §15 S1: everything the engine lends the driver for one step (`Engine.agentContext`, the twin of
+ * `SynthesisContext`). The engine meters, records and redacts every generator and Jev call made through it.
+ */
+export interface AgentContext {
+  readonly runId: string;
+  readonly runDir: string;
+  readonly sessionId: string;
+  readonly step: number;
+  readonly task: string;
+  readonly resumed: boolean;
+  readonly workspace: Workspace;
+  readonly workspaceInfo: WorkspaceInfo;
+  readonly sandbox: Sandbox;
+  readonly limits: RunLimits;
+  readonly signal: AbortSignal;
+  readonly redact: (s: string) => string;
+  readonly autonomy: 'full' | 'review';
+  /** the CONFIGURED provider and model (§6.5: the replay rule compares against these, never the served id) */
+  readonly provider: { name: ProviderName; model: string };
+  readonly generation: { temperature: number | null; maxTokens: number };
+  /** the model's context window in tokens when the pricing table knows it */
+  readonly windowTokens: number | null;
+  /** `context.compaction` and whether the user set it explicitly (§7.4: `llm` is the agent's default only when not explicit) */
+  readonly compaction: { mode: CompactionMode; explicit: boolean };
+  /** AGENTS.md / project instructions text for the system prompt */
+  readonly instructions: string | null;
+  /** the imported memory index for the system prompt */
+  readonly memoryIndex: string | null;
+  readonly seed: EngineSeed | null;
+  readonly conversation: ConversationCarry | null;
+  readonly orchestration?: OrchestrationOptions;
+  readonly plan: Plan;
+  readonly lastTestRun: LastTestRun | null;
+  /** the last test run is current: no workspace change since it (§8) */
+  readonly testsCurrent: boolean;
+  readonly createdThisRun: ReadonlySet<string>;
+  /** the dirty set at run start — the user's uncommitted work (§12 `git_discard`) */
+  readonly dirtyAtStart: ReadonlySet<string>;
+  /** false when the decider is the absent decider (`src/jev/absent.ts`): no Jev placement asks */
+  readonly jevAvailable: boolean;
+  /** the opaque driver state restored from `CheckpointState.agentState`; null on a fresh run */
+  readonly state: Json | null;
+  /** persist the driver state with the next checkpoint (≤ AGENT_STATE_MAX_BYTES) */
+  setState(state: Json): void;
+  emit(e: EngineEvent): void;
+  /** the one metered, recorded path to the generator for an agent turn */
+  generate(req: GenerateRequest, hooks: AgentGenerateHooks): Promise<GenerateResult>;
+  /** a quick Jev ask through `askRecorded`, fixed to stage 'loop' (§13.1) */
+  ask(state: JsonObject, questions: Record<string, Question>, signal: AbortSignal): Promise<{ answers: Record<string, Answer>; rows: Decision[]; latencyMs: number }>;
+  /** the step-scoped route token (`stepTokenFor(runId, step)`) for `routeSpeculative` */
+  routeToken(): StepToken;
+  /** writes `outputs/step-<step>[-<part>].txt` and returns its `jevcode:outputs/…` pointer, or null when the write failed */
+  writeOutput(text: string, part?: number): Promise<string | null>;
+  /** this step's steers, handed over once */
+  takeSteers(): readonly string[];
+  /** true once after `/compact` asked for a compaction */
+  takeCompactRequest(): boolean;
+  /** feeds `EngineStatus.context` (the meter) in agent mode */
+  reportContext(u: ContextUsage): void;
+  now(): number;
+  wallRemainingMs(): number;
+}
+
+/** AGENT-LOOP-DESIGN §2.2, §3: the agent-mode proposer — one fresh instance per run (`createAgentDriver()`, or `EngineOptions.agent` in tests) */
+export interface AgentDriver {
+  readonly name: string;
+  next(ctx: AgentContext): Promise<AgentNext>;
+  observe(ctx: AgentContext, o: AgentObservation): Promise<AgentObserveResult>;
+}
+export type AgentDriverFactory = () => AgentDriver;

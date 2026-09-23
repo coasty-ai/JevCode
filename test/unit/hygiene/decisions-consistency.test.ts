@@ -218,7 +218,10 @@ describe('docs/DECISIONS.md consistency', () => {
     // `core` counts as covered: the peer's enumeration names "every non-TUI block of `src/core/types.ts`".
     const peer = ['loop', 'synth', 'coordination', 'orchestrate', 'import', 'models', 'provider', 'spend', 'checkpoint', 'core'];
     const tui = ['tui', 'cli', 'config', 'session', 'chat'];
-    const unlisted = dirs.filter((d) => !peer.includes(d) && !tui.includes(d)).sort();
+    // directories created after this dated entry are placed by the ownership paragraph (the case above), never counted here:
+    // `src/agent` (docs/AGENT-LOOP-DESIGN.md §2.1, 2026-09-23)
+    const later = ['agent'];
+    const unlisted = dirs.filter((d) => !peer.includes(d) && !tui.includes(d) && !later.includes(d)).sort();
     expect(unlisted).toEqual(['bench', 'jev', 'perf', 'sandbox', 'undo', 'workspace']);
 
     // The log is hard-wrapped and uses bold, so compare against the unwrapped, emphasis-stripped text.

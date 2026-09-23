@@ -97,11 +97,11 @@ export function jevModelMatches(configured: string, served: string, provider: Je
 
 /**
  * TUI-DESIGN-2 §1.2 / §12: the `mode` setting's value, or the ConfigError `mode: "<v>" (from <source>) is not one of
- * jev-only|jev-on|jev-off|llm-jev` (exit 2; the §12 text verbatim, so no consulted-sources suffix).
+ * jev-only|jev-on|jev-off|llm-jev|agent` (exit 2; the §12 text verbatim, so no consulted-sources suffix).
  */
 export function parseModeSetting(r: Resolved<string>): EngineMode {
   const v = r.value.trim().toLowerCase();
-  if (v === 'jev-only' || v === 'jev-on' || v === 'jev-off' || v === 'llm-jev') return v;
+  if (v === 'jev-only' || v === 'jev-on' || v === 'jev-off' || v === 'llm-jev' || v === 'agent') return v;
   throw new ConfigError(`mode: "${r.value}" (from ${r.source}) is not one of ${MODE_SETTING_VALUES.join('|')}`, { setting: 'mode' });
 }
 
