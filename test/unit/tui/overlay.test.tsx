@@ -7,8 +7,7 @@
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BlockingRequest } from '../../../src/core/types.js';
-import { EXIT_CONFIRM_ROW, EXIT_CONFIRM_ROW_COMPACT, EXIT_CONFIRM_RUNGS, Overlay, exitConfirmRow, intakeCardLines, minsizeNotice, minsizeRungs, overlayPreviewWant, overlayWant, type OverlayData } from '../../../src/tui/Overlay.js';
-import { INTAKE_CARD_BODY, intakeCardTitle, intakeRowLines } from '../../../src/chat/lines.js';
+import { EXIT_CONFIRM_ROW, EXIT_CONFIRM_ROW_COMPACT, EXIT_CONFIRM_RUNGS, Overlay, exitConfirmRow, minsizeNotice, minsizeRungs, overlayPreviewWant, overlayWant, type OverlayData } from '../../../src/tui/Overlay.js';
 import { cardBottom, cardLines } from '../../../src/tui/card.js';
 import { followupLines, reviewCardLines } from '../../../src/tui/review/lines.js';
 import { blockingLines } from '../../../src/tui/blocking/lines.js';
@@ -405,16 +404,4 @@ describe('the narrow ladder: no overlay row is wider than the terminal (§2.1 st
     }
   });
 
-  it('§2.1 state 5: the intake card at 120 → 40 keeps every box row whole (8 rows ended in `…` before)', () => {
-    for (const columns of [120, 80, 60, 44, 40]) {
-      for (const g of [GLYPHS.unicode, GLYPHS.ascii]) {
-        const inner = Math.max(1, columns - 4);
-        const intake = { title: intakeCardTitle('ship the parser refactor across every package in the workspace', inner), body: [INTAKE_CARD_BODY], flat: intakeRowLines(columns) };
-        for (const r of [...intakeCardLines(intake, columns, g), ...intake.flat]) {
-          expect(cellWidth(r), `${columns}: ${JSON.stringify(r)}`).toBeLessThanOrEqual(columns);
-          expect(r.endsWith(g.ellipsis), `${columns}: ${JSON.stringify(r)}`).toBe(false);
-        }
-      }
-    }
-  });
 });

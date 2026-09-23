@@ -1,4 +1,4 @@
-# the hero-frame checklist input (TUI-DESIGN-3 §9 V1–V21): chat-task's path — settle, a greeting (an intake reply), a task (a mock run with
+# the hero-frame checklist input (TUI-DESIGN-3 §9 V1–V21): chat-task's path — settle, a greeting (the model's reply), a task (a mock run with
 # one `[step N]` row per step), the epilogue, the mark back under the strip — then scripts/pty/polish-check.mjs runs over the .cap/.txt pair
 expect \x1b\[\?25l
 expect step 0/
@@ -10,7 +10,7 @@ sleep 0.2
 send \r
 mark hi-sent
 expect \[you\](?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*hi
-expect \[jevcode\](?:\x1b\[[0-9;]*m)* Hi\.
+expect \[jevcode\](?:\x1b\[[0-9;]*m)* Hi
 mark hi-reply
 sleep 0.3
 send fix the failing test

@@ -89,6 +89,8 @@ export interface ConsoleProps {
   cursor: (pos: CursorPosition | undefined) => void;
   active: boolean;
   mode: ComposerMode;
+  /** the quiet start: the workspace's most recent session title — the `task` placeholder becomes the resume offer */
+  recent?: string | null;
   /** the terminal height (placeholder form) */
   rows: number;
   live?: boolean;
@@ -175,7 +177,7 @@ export function Console(p: ConsoleProps): React.JSX.Element {
     const view = composerView({ text: p.buffer.text, cursor: p.buffer.cursor, chips: p.buffer.chips, columns: inner, height, scrollTop: p.scrollTop, spans: p.spans ?? [], prompt, glyphs: g, maskGlyph: maskGlyphFor(g) });
     if (view.scrollTop !== p.scrollTop) p.onScroll?.(view.scrollTop);
     const empty = p.buffer.text.length === 0;
-    const placeholder = placeholderRow(p.mode, p.rows, inner, stringWidth(prompt), g);
+    const placeholder = placeholderRow(p.mode, p.rows, inner, stringWidth(prompt), g, p.recent ?? null);
     // TUI-DESIGN-3 §2.6 (D-O): the prompt is pink at rest and amber while a run is live (steering must not look like idle)
     const promptProps = p.live === true && p.active ? textProps(theme, 'steer', color) : p.active ? textProps(theme, 'accent', color) : {};
     if (p.active && view.cursor !== null && p.searchRow == null) p.cursor({ x: 2 + view.cursor.x, y: bodyTop + view.cursor.row });

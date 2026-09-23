@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BlockingRequest, Engine, EngineMode, EngineOptions } from '../../../src/core/types.js';
-import { COMMAND_ERRORS, EXIT_CONFIRM_ROW, GENERATOR_IGNORED_NOTE, STEER_ERRORS, INTAKE_KEPT, LOGIN_SAVED_TOAST, MODE_JEV_OFF_SET, MODE_JEV_ONLY_SET, MODE_JEV_ON_SET, MODE_LLM_JEV_SET, MODE_SET_ITEM, NO_SESSION_YET, RENAME_CUT_NOTE, SESSION_CAP_CHAT_REFUSAL, STARTING_STEER_CAP, applyRawEdits, exportFilePath, isInCi, isInteractive, jevcodeDir, mockReviewStep, modeSetItem, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps, type WizardReason, jevCacheHitsOf, jevCostValue } from '../../../src/cli/session.js';
+import { COMMAND_ERRORS, DO_IT_OFFER, EXIT_CONFIRM_ROW, GENERATOR_IGNORED_NOTE, STEER_ERRORS, LOGIN_SAVED_TOAST, MODE_JEV_OFF_SET, MODE_JEV_ONLY_SET, MODE_JEV_ON_SET, MODE_LLM_JEV_SET, MODE_SET_ITEM, NO_SESSION_YET, RENAME_CUT_NOTE, SESSION_CAP_CHAT_REFUSAL, STARTING_STEER_CAP, applyRawEdits, exportFilePath, isInCi, isInteractive, jevcodeDir, mockReviewStep, modeSetItem, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps, type WizardReason, jevCacheHitsOf, jevCostValue } from '../../../src/cli/session.js';
 import { helpLines } from '../../../src/tui/commands/palette.js';
 import { modeBadgeWord } from '../../../src/tui/status/lines.js';
 import { MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
@@ -32,6 +32,9 @@ import { cellWidth } from '../../../src/tui/glyphs.js';
 import { DEFAULT_MODE } from '../../../src/config/defaults.js';
 import { defaultRunSpendCapUsd } from '../../../src/config/ui.js';
 import { finishedRunLines, harnessDecider, loadedRun, makeController, scriptedRunId, tick, waitFor, type Harness } from './helpers.js';
+import { AUTO_APPROVED_NOTE_MAX, IDENTITY_AUTONOMY_FULL, autoApprovedNote, autonomousConfirmer } from '../../../src/cli/session.js';
+import { mkConfirmRequest, mkProposal, mkRisk } from '../../fixtures/tui/fixtures.js';
+import { AbortError } from '../../../src/errors.js';
 
 const SECRET = 'sk-ant-api03-SECRETSECRETSECRETSECRETSECRET1234';
 const AWS = 'AKIAIOSFODNN7EXAMPLE';
@@ -105,16 +108,16 @@ describe('TUI-DESIGN-2 §3 conversational intake (the submit path, summary rows;
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(0.0002, 9);
   });
 
-  it('an ambiguous reading asks through Prompter.intake (the §3.7 row / card) and never runs on its own', async () => {
-    const asked: string[] = [];
-    const h = await build({ decider: harnessDecider({ classify: () => 'ambiguous' }), prompts: { intake: async (m) => { asked.push(m); return 'keep'; } } });
+  it('an ambiguous reading never runs on its own: the reply ends with the `do it` offer, which the next message may accept', async () => {
+    const h = await build({ decider: harnessDecider({ classify: () => 'ambiguous' }) });
     void h.controller.run();
     await h.ready();
-    expect(await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'nothing' });
-    expect(asked).toEqual(['the date parsing']);
+    expect(await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
     expect(h.factory.calls).toHaveLength(0);
-    expect(h.renderer.notes.at(-1)).toMatchObject({ label: '[jevcode]', text: INTAKE_KEPT });
-    expect(h.renderer.restored).toEqual(['the date parsing']);
+    expect(h.renderer.notes.at(-1)).toMatchObject({ label: '[jevcode]', text: DO_IT_OFFER });
+    expect(await h.host.submit('do it', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'run' });
+    await h.host.awaitRunEnd();
+    expect(h.factory.calls.map((c) => c.task)).toEqual(['the date parsing']);
   });
 
   it('a task reading starts the run as before (kind prompt, then follow-up), recording the intake on EngineOptions.session', async () => {
@@ -229,7 +232,7 @@ describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, lan
 });
 
 describe('startup (§1 session loop)', () => {
-  it('runs firstFrame → setHost → setUi → sandbox line → recent hint, in that order, and the first frame precedes every file read', async () => {
+  it('runs firstFrame → setHost → setUi, and the first frame precedes every file read; the TUI start prints NO startup items (the quiet start)', async () => {
     const ws = '/tmp/x';
     const h = await build({ indexLines: finishedRunLines({ sessionId: 'S1', runId: scriptedRunId(900), workspace: ws, task: 'older task', cost: { generator: 0.2, jev: 0.02 }, title: 'fix parse_date tz' }) });
     void h.controller.run();
@@ -237,21 +240,42 @@ describe('startup (§1 session loop)', () => {
     expect(h.renderer.firstFrameResolved).toBe(true);
     expect(h.renderer.hosts).toHaveLength(1);
     expect(h.renderer.uis).toHaveLength(1);
-    const sandbox = h.renderer.notes.find((n) => n.label === '[sandbox]');
-    expect(sandbox?.text).toBe(sandboxText(detectSandboxLevel('auto')));
-    // the index row is of another workspace → no recent hint
+    // the quiet start (2026-09, owner's directive "clean"): the boxed console opens with the wordmark and the composer —
+    // no `[sandbox]` item, no `recent:` hint (the index row here is of another workspace anyway)
+    expect(h.renderer.notes.some((n) => n.label === '[sandbox]')).toBe(false);
     expect(h.renderer.notes.some((n) => n.text.startsWith('recent:'))).toBe(false);
     expect(h.controller.view.firstFrameMs).not.toBeNull();
     expect(h.controller.view.phase).toBe('none');
   });
 
-  it('the recent-session hint names the workspace\'s most recent session (§24 string)', async () => {
-    const pre = await build();
-    const h = await build({ indexLines: finishedRunLines({ sessionId: 'S1', runId: scriptedRunId(901), workspace: pre.workspace, task: 'older task', cost: { generator: 0.2, jev: 0.02 }, title: 'fix parse_date tz' }), options: { cwd: pre.workspace }, flags: { workspace: pre.workspace } });
+  it('the line renderers keep the `[sandbox]` item — one dim line, no detail (the TUI has /status, /config and doctor)', async () => {
+    const h = await build({ rendererKind: 'plain', indexLines: [] });
     void h.controller.run();
     await h.ready();
+    const sandbox = h.renderer.notes.find((n) => n.label === '[sandbox]');
+    expect(sandbox?.text).toBe(sandboxText(detectSandboxLevel('auto')));
+    expect(sandbox?.level).toBe('dim');
+    expect(sandbox?.detail).toBeUndefined();
+  });
+
+  it('the recent-session hint names the workspace\'s most recent session (§24 string) in the line renderers; the TUI gets the offer as a composer placeholder instead', async () => {
+    const pre = await build();
+    const opts = { indexLines: finishedRunLines({ sessionId: 'S1', runId: scriptedRunId(901), workspace: pre.workspace, task: 'older task', cost: { generator: 0.2, jev: 0.02 }, title: 'fix parse_date tz' }), options: { cwd: pre.workspace }, flags: { workspace: pre.workspace } };
+    const h = await build({ ...opts, rendererKind: 'plain' });
+    void h.controller.run();
+    await h.ready();
+    // the hint is the LAST thing startup does (after the candidates listing `ready()` waits for)
+    await waitFor(() => h.renderer.notes.some((n) => n.text.startsWith('recent:')), 8000, 'recent hint');
     const hint = h.renderer.notes.find((n) => n.text.startsWith('recent:'));
-    expect(hint?.text).toMatch(/^recent: "fix parse_date tz" · .+  \(Enter continues, \/resume browses\)$/);
+    expect(hint?.text).toMatch(/^recent: "fix parse_date tz" · .+ — Enter continues, \/resume browses$/);
+    expect(hint?.level).toBe('dim');
+    // the TUI: no item at all, one `recent` dispatch the composer's `task` placeholder reads
+    const t = await build(opts);
+    void t.controller.run();
+    await t.ready();
+    await waitFor(() => t.renderer.dispatched.some((a) => a.type === 'recent'), 8000, 'recent dispatch');
+    expect(t.renderer.notes.some((n) => n.text.startsWith('recent:'))).toBe(false);
+    expect(t.renderer.dispatched.filter((a) => a.type === 'recent')).toEqual([{ type: 'recent', title: 'fix parse_date tz' }]);
   });
 
   it('one-shot: the argv task starts a run right after startup; the process exits with run:end\'s exit code', async () => {
@@ -1299,58 +1323,65 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     expect(h.renderer.notes.some((n) => n.text === modeSavedItem('jev-only', configPath(home).replace(home, '~')))).toBe(true);
   });
 
-  it('§1.7 (D-Q, edge 36): a keyed start whose mode resolves from `default` prints ONE [setup] default-mode item and writes seen.defaultMode; a second start is silent; a file `mode` row, --mock or a jev-only default suppress it; a different seen value prints again; a read-only config dir prints and warns once in the log', async () => {
+  it('§1.7 (D-Q, edge 36): a keyed start whose mode resolves from `default` prints ONE [setup] default-mode item on a line renderer (never in the TUI) and writes seen.defaultMode; a second start is silent; a file `mode` row, --mock or a jev-only default suppress it; a different seen value prints again; a read-only config dir prints and warns once in the log', async () => {
     if (DEFAULT_MODE === 'jev-only') return; // the item exists for defaults that bill a generator
     const home = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
-    const h = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    const h = await build({ home, rendererKind: 'plain', flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
     void h.controller.run();
     await h.ready();
     const item = defaultModeItem(DEFAULT_MODE, h.controller.view.runCapUsd, h.controller.view.sessionMeter.snapshot().capUsd);
     expect(item).toBe(`mode ${MODE_BADGE_WORD[DEFAULT_MODE]} (default) — caps $2.00 per run · $10.00 per session; /mode jev-only runs on Jev alone at $0.25 / $1.25; jevcode config set mode <m> keeps a choice`);
     expect(h.renderer.notes.filter((n) => n.label === '[setup]' && n.text === item)).toHaveLength(1);
     expect(readConfig(home)['seenDefaultMode']).toBe(DEFAULT_MODE);
-    // the item precedes the [sandbox] line (startup order: config → shadowing → the notice → trust → sandbox)
-    const idx = h.renderer.notes.findIndex((n) => n.text === item);
-    expect(idx).toBeLessThan(h.renderer.notes.findIndex((n) => n.label === '[sandbox]'));
+    // startup order: config → shadowing → the notice → trust; the quiet start prints it dim and it is the first item
+    expect(h.renderer.notes.findIndex((n) => n.text === item)).toBe(0);
+    expect(h.renderer.notes.find((n) => n.text === item)?.level).toBe('dim');
     // second start: silent
-    const h2 = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    const h2 = await build({ home, rendererKind: 'plain', flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
     void h2.controller.run();
     await h2.ready();
     expect(h2.renderer.notes.some((n) => n.text === item)).toBe(false);
     // a different seen value (an earlier default) prints again and updates the row
     writeConfig(home, { seenDefaultMode: 'jev-only' });
-    const h3 = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    const h3 = await build({ home, rendererKind: 'plain', flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
     void h3.controller.run();
     await h3.ready();
     expect(h3.renderer.notes.filter((n) => n.text === item)).toHaveLength(1);
     expect(readConfig(home)['seenDefaultMode']).toBe(DEFAULT_MODE);
     // a `mode` row in the file suppresses it entirely
     writeConfig(home, { mode: DEFAULT_MODE });
-    const h4 = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    const h4 = await build({ home, rendererKind: 'plain', flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
     void h4.controller.run();
     await h4.ready();
     expect(h4.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
     expect(readConfig(home)['seenDefaultMode']).toBeUndefined();
     // --mock: absent (and nothing written)
-    const h5 = await build();
+    const h5 = await build({ rendererKind: 'plain' });
     void h5.controller.run();
     await h5.ready();
     expect(h5.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
     expect(existsSync(configPath(h5.home))).toBe(false);
     // JEVCODE_MODE (a non-default source) suppresses it too
-    const h6 = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY, JEVCODE_MODE: DEFAULT_MODE } });
+    const h6 = await build({ rendererKind: 'plain', flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY, JEVCODE_MODE: DEFAULT_MODE } });
     void h6.controller.run();
     await h6.ready();
     expect(h6.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
     // a read-only config directory: the item prints (at every start), the log warns once, the process goes on
     const roHome = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
     const lines: string[] = [];
-    const h7 = await build({ home: roHome, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { log: capturingLog(lines), writeConfigValue: async () => { throw new Error('EACCES: read-only'); } } });
+    const h7 = await build({ home: roHome, rendererKind: 'plain', flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { log: capturingLog(lines), writeConfigValue: async () => { throw new Error('EACCES: read-only'); } } });
     void h7.controller.run();
     await h7.ready();
     expect(h7.renderer.notes.filter((n) => n.text === item)).toHaveLength(1);
     expect(lines.filter((l) => l.includes('could not record seen.defaultMode'))).toHaveLength(1);
     expect(h7.renderer.notes.some((n) => n.level === 'error')).toBe(false);
+    // the TUI opens with the wordmark and the composer only (2026-09-22 directive): the item is a line-renderer disclosure — nothing printed, nothing written
+    const tuiHome = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
+    const h8 = await build({ home: tuiHome, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    void h8.controller.run();
+    await h8.ready();
+    expect(h8.renderer.notes.some((n) => n.text === item)).toBe(false);
+    expect(readConfig(tuiHome)['seenDefaultMode']).toBeUndefined();
   });
 
   it('§1.7: a wizard save on a first run prints the caps item for the mode it saved for (a keyed start prints the default-mode item instead)', async () => {
@@ -1870,4 +1901,96 @@ describe('R4a / R4b: the `--plain` twins of /import and /model print the numbere
     expect(text).toContain('model some/thing pending (next run)');
     expect(text).not.toContain('pick 1-');
   }, 40_000);
+});
+
+describe('complete autonomy by default: the confirmer the engine gets', () => {
+  const settled = <T,>(p: Promise<T>): Promise<T | 'waited'> => Promise.race([p, new Promise<'waited'>((r) => setTimeout(() => r('waited'), 0))]);
+
+  it('the default (`autonomy full`) approves a review verdict immediately and notes ONE `[review] auto-approved …` line', async () => {
+    const h = await build({ script: () => ({ hold: true }) });
+    void h.controller.run();
+    await h.ready();
+    const p = h.submit('go');
+    const eng = await h.factory.nextLive();
+    const confirmer = eng.opts.confirmer;
+    expect(confirmer).not.toBe(h.renderer.confirmer);
+    expect(confirmer.identity).toBe('autonomy full (auto-approved)');
+    expect(confirmer.identity).toBe(IDENTITY_AUTONOMY_FULL);
+
+    const req = mkConfirmRequest();
+    const ac = new AbortController();
+    // IMMEDIATELY: it wins a race against a zero-delay timer, so nothing ever waits for a human
+    await expect(settled(confirmer.confirm(req, { signal: ac.signal }))).resolves.toBe(true);
+    await expect(settled(confirmer.confirmDetailed!(req, { signal: ac.signal }))).resolves.toEqual({ approved: true });
+
+    // one informational card per request, through `annotate` because the run is live (§15.1)
+    expect(eng.annotated).toHaveLength(2);
+    const line = eng.annotated[0]!;
+    expect(line).toBe(autoApprovedNote(req, (x) => x));
+    expect(line.startsWith('auto-approved (autonomy full): ')).toBe(true);
+    expect(line).toContain('src/a.py');
+    expect(line).toContain('destructive: level 2');
+    expect(line).not.toMatch(/\n/);
+    expect(line.length).toBeLessThanOrEqual(AUTO_APPROVED_NOTE_MAX);
+    expect(h.renderer.events.filter((e) => e.type === 'notice' && e.kind === 'ui' && e.label === '[review]')).toHaveLength(2);
+    expect(h.renderer.events.some((e) => e.type === 'notice' && e.label === '[review]' && e.level === 'info' && e.text === line)).toBe(true);
+    eng.release();
+    await p;
+  });
+
+  it('`--autonomy review` hands the engine the renderer\'s blocking confirmer unchanged, and notes nothing', async () => {
+    const h = await build({ flags: { autonomy: 'review' }, script: () => ({ hold: true }) });
+    void h.controller.run();
+    await h.ready();
+    const p = h.submit('go');
+    const eng = await h.factory.nextLive();
+    expect(eng.opts.confirmer).toBe(h.renderer.confirmer);
+    expect(eng.opts.confirmer.identity).toBe('test decliner');
+    await expect(eng.opts.confirmer.confirm(mkConfirmRequest(), { signal: new AbortController().signal })).resolves.toBe(false);
+    expect(eng.annotated).toEqual([]);
+    expect(h.renderer.events.some((e) => e.type === 'notice' && e.label === '[review]')).toBe(false);
+    eng.release();
+    await p;
+  });
+
+  it('JEVCODE_AUTONOMY=review reaches the same place as the flag', async () => {
+    const h = await build({ env: { JEVCODE_AUTONOMY: 'review' }, script: () => ({ hold: true }) });
+    void h.controller.run();
+    await h.ready();
+    const p = h.submit('go');
+    const eng = await h.factory.nextLive();
+    expect(eng.opts.confirmer).toBe(h.renderer.confirmer);
+    eng.release();
+    await p;
+  });
+
+  it('autonomousConfirmer: never touches the inner confirmer, respects an already-aborted signal, and survives a throwing note', async () => {
+    let innerCalls = 0;
+    const inner = { identity: 'reviewer', confirm: () => { innerCalls += 1; return new Promise<boolean>(() => undefined); } };
+    const seen: string[] = [];
+    const c = autonomousConfirmer(inner, (r) => seen.push(r.id));
+    await expect(settled(c.confirm(mkConfirmRequest('c7'), { signal: new AbortController().signal }))).resolves.toBe(true);
+    expect(seen).toEqual(['c7']);
+    expect(innerCalls).toBe(0);
+
+    const ac = new AbortController();
+    ac.abort(new AbortError('signal', 'SIGINT'));
+    await expect(c.confirm(mkConfirmRequest('c8'), { signal: ac.signal })).rejects.toBeInstanceOf(AbortError);
+    await expect(c.confirmDetailed!(mkConfirmRequest('c8'), { signal: ac.signal })).rejects.toBeInstanceOf(AbortError);
+    expect(seen).toEqual(['c7']); // an aborted request is not auto-approved and writes no card
+    // a renderer that throws must not turn an approval into a hang
+    const boom = autonomousConfirmer(inner, () => { throw new Error('renderer gone'); });
+    await expect(settled(boom.confirm(mkConfirmRequest('c9'), { signal: new AbortController().signal }))).resolves.toBe(true);
+  });
+
+  it('autoApprovedNote: one redacted line, the risk reason, clipped at 160', () => {
+    const plainReq = mkConfirmRequest();
+    expect(autoApprovedNote(plainReq, (x) => x.replace('src/a.py', '‹path›'))).toContain('‹path›');
+    const long = { ...mkConfirmRequest(), proposal: mkProposal({ kind: 'run', command: `echo ${'x'.repeat(400)}` }) };
+    const line = autoApprovedNote(long, (x) => x);
+    expect(line.length).toBe(AUTO_APPROVED_NOTE_MAX);
+    expect(line.endsWith('…')).toBe(true);
+    const noReason = { ...mkConfirmRequest(), risk: { ...mkRisk('review'), reason: '   ' } };
+    expect(autoApprovedNote(noReason, (x) => x)).toContain('risk review');
+  });
 });

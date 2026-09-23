@@ -10,8 +10,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BlockingRequest, SessionRow } from '../../../src/core/types.js';
 import type { OverlayKind, PickerOpen, TuiRenderer, UiState, WizardDetect } from '../../../src/tui/index.js';
-import type { IntakeOverlay } from '../../../src/tui/Overlay.js';
-import { INTAKE_CARD_BODY, INTAKE_ROW_MEDIUM } from '../../../src/chat/lines.js';
 import { createTuiPrompter, hasSecretGate, oneKeyReopen, patchFromWizard, undoKeyOf, type SecretGateRenderer, type TuiPrompterControls } from '../../../src/cli/tui-prompter.js';
 import { DEFAULT_MODE } from '../../../src/config/defaults.js';
 import type { WizardSaveInput } from '../../../src/tui/onboarding/Wizard.js';
@@ -28,9 +26,6 @@ interface Fake {
   undoAnswer: 'yes' | 'no' | 'all' | 'skipRest' | 'abort';
   /** what `state().overlay` reports (null = no state yet) */
   overlay: OverlayKind | null;
-  /** TUI-DESIGN-2 §3.7: the last intake card the App was asked to show, and the answer it gives */
-  lastIntake: IntakeOverlay | null;
-  intakeAnswer: 'run' | 'chat' | 'keep';
   /** renderer promises that never settle (the App unmounted) */
   hang: boolean;
   gateAnswer: boolean;
@@ -49,8 +44,6 @@ function fakeTui(): Fake {
     followUpAnswer: 'start',
     undoAnswer: 'yes',
     overlay: null,
-    lastIntake: null,
-    intakeAnswer: 'chat',
     hang: false,
     gateAnswer: true,
     renderer: {
@@ -70,12 +63,6 @@ function fakeTui(): Fake {
       reopenWizard: (at, runLive, opts) => {
         f.calls.push(`reopenWizard:${at}:${runLive ? 'live' : 'idle'}${opts ? `:${opts.reason ?? '-'}:${opts.mode ?? '-'}` : ''}`);
       },
-      promptIntake: (card) => {
-        f.calls.push('promptIntake');
-        f.lastIntake = card;
-        return f.hang ? never() : Promise.resolve(f.intakeAnswer);
-      },
-      restoreDraft: () => undefined,
       live: () => undefined,
       openPicker: (o) => {
         f.calls.push(`openPicker:${o.kind}`);
@@ -302,25 +289,6 @@ describe('createTuiPrompter', () => {
     b.control(controls({ runLive: () => true }));
     void b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'mode', mode: 'jev-only' });
     expect(f.calls.at(-1)).toBe('reopenWizard:decider.apiKey:live:login:jev-only');
-  });
-
-  it('TUI-DESIGN-2 §3.7: intake() shows the card (title, body, flat rows at the prompter\'s width) and forwards the App\'s answer; no renderer or cancelAll → keep', async () => {
-    const b0 = createTuiPrompter();
-    expect(await b0.prompter.intake!('the date parsing')).toBe('keep');
-    const f = fakeTui();
-    const b = createTuiPrompter();
-    b.attach(f.renderer);
-    f.intakeAnswer = 'run';
-    expect(await b.prompter.intake!('the date parsing')).toBe('run');
-    expect(f.calls.at(-1)).toBe('promptIntake');
-    const columns = b.prompter.columns!();
-    expect(f.lastIntake).toEqual({ title: columns - 4 >= 100 ? '"the date parsing" — run this as a task?' : 'run this as a task?', body: [INTAKE_CARD_BODY], flat: columns >= 100 ? [expect.stringContaining('run this as a task?')] : columns >= 72 ? [INTAKE_ROW_MEDIUM] : [expect.stringContaining('run this as a task?')] });
-    f.intakeAnswer = 'chat';
-    expect(await b.prompter.intake!('tests?')).toBe('chat');
-    f.hang = true;
-    const pending = b.prompter.intake!('parse_date');
-    b.prompter.cancelAll!();
-    expect(await pending).toBe('keep');
   });
 
   it('secretGate: refuses without a renderer (the controller falls back to the pipe rule) and forwards the App\'s promptSecretGate answer (§10.2, §4.10)', async () => {

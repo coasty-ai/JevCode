@@ -79,12 +79,12 @@ describe('P7 — no wrong chrome between Enter and the bubble (TUI-DESIGN-3 §5.
 });
 
 describe('the label gutter and the §5.3 identity in a mounted App (TUI-DESIGN-3 §5.1, D-L)', () => {
-  it('the header and the `[you]` bubble start at column 10; the `[jevcode]` label sits flush', async () => {
+  it('the `[you]` bubble starts at column 10; the `[jevcode]` label sits flush (the quiet start leaves the scrollback empty until then)', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
     await settleSplash(m);
-    const rows = scrollback(m.lastFrame());
-    expect(rows[0]).toMatch(/^    \[run\] jevcode session · \S+ \| step 0\/– starting$/);
+    // the quiet start (2026-09): a session's scrollback is EMPTY until the first item — no `[run] jevcode session …` header
+    expect(scrollback(m.lastFrame()).filter(Boolean)).toEqual([]);
     // the bubbles are the controller's items (TUI-DESIGN-2 §3.10): the App renders what the host appends — here through the bridge
     m.dispatch({ type: 'local', text: 'hi', label: '[you]' });
     m.dispatch({ type: 'local', text: 'Hi. I am ready when you are — describe a change you want in proj, or ask what I can do.', label: '[jevcode]' });

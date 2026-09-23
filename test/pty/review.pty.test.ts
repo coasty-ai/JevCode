@@ -12,7 +12,7 @@ import { CHAT_OPEN, EXIT_IDLE, MOCK_RUN_MODE, PLACEHOLDER_FOLLOWUP, PROMPT, SGR_
 
 afterEach(cleanupScratch);
 
-const REVIEW = { args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '5'] as const, env: { JEVCODE_MOCK_REVIEW_AT: '2' } };
+const REVIEW = { args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '5'] as const, env: { JEVCODE_MOCK_REVIEW_AT: '2', JEVCODE_AUTONOMY: 'review' } };
 /** the keys row of the review card (TUI-DESIGN-2 §4.7: inside `╭─ review · step N …╮` in the boxed tier; the same row flat) */
 const BOX = 'expect \\[y\\] approve \\[n\\] decline \\[d\\] decline\\+note';
 /** the boxed review card's title edge (TUI-DESIGN-2 §8.2 `review-y.steps` (ext.): `expect ╭─ review` at 24×80) */

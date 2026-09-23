@@ -862,7 +862,7 @@ describe('(6) itemRole / labelRole (§5.1 rule 2, D-O)', () => {
     expect(labelRole({ label: '[config]' })).toBe('dim');
   });
   it('labelRole over the whole UiLabel union: exactly two labels are pink; a new label member fails to compile until classified here', () => {
-    const EXPECTED: Readonly<Record<UiLabel, 'assistant' | 'you' | 'dim'>> = { '[jevcode]': 'assistant', '[you]': 'you', '[ui]': 'dim', '[setup]': 'dim', '[config]': 'dim', '[sandbox]': 'dim', '[session]': 'dim' };
+    const EXPECTED: Readonly<Record<UiLabel, 'assistant' | 'you' | 'dim'>> = { '[jevcode]': 'assistant', '[you]': 'you', '[ui]': 'dim', '[setup]': 'dim', '[config]': 'dim', '[sandbox]': 'dim', '[session]': 'dim', '[review]': 'dim' };
     for (const label of Object.keys(EXPECTED) as UiLabel[]) expect(labelRole({ label }), label).toBe(EXPECTED[label]);
     expect(Object.values(EXPECTED).filter((r) => r !== 'dim')).toEqual(['assistant', 'you']);
     // the two label roles are bold pinks in every coloured theme; `dim` has no colour

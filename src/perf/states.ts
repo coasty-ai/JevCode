@@ -12,8 +12,8 @@
  *             boxed tier), Ctrl-C exits 2
  *   secret    a draft holding an `sk-ant-api03-…` canary + Enter: the §4.10 gate row (a console-hosted row in the boxed
  *             tier, TUI-DESIGN-2 §4.2), Esc dismisses
- *   intake    `JEVCODE_MOCK_INTAKE=ambiguous`: `the date parsing` opens the intake card `run this as a task?`
- *             (TUI-DESIGN-2 §3.7; a card in the boxed tier, one row flat), `n` takes the chat reading — no run
+ *   intake    `JEVCODE_MOCK_INTAKE=ambiguous`: `the date parsing` gets the model's reply and the `do it` offer —
+ *             no card, no run, the composer never blocked
  *   fault     `JEVCODE_FAULT=render:composer` and `render:pane`: the §13.4 fallback row, the run continues
  *   resize    after a mocked run (pane open, idle) with a draft: 40×120 → 12×120 → 40×120; segments are delimited by
  *             marker keys typed before and after each resize (`A` | shrink | `B` | grow | `C`): the pre-shrink and the
@@ -180,7 +180,7 @@ function specs(): Spec[] {
       rows,
       columns,
       args: [...MOCK_RUN, '--mock-steps', '5'],
-      env: { JEVCODE_MOCK_REVIEW_AT: '2' },
+      env: { JEVCODE_MOCK_REVIEW_AT: '2', JEVCODE_AUTONOMY: 'review' },
       steps: [...PROLOGUE, 'send start the perf run', sleepStep(200), 'send \\r', ...(card ? [`expect ${topEdgePattern('review · step 2')}`] : []), 'expect \\[y\\] approve', sleepStep(400), 'send y', 'expect review approved', `expect ${END_PATTERN}`, 'expect Follow-up, question', ...EXIT_IDLE],
       expectedExit: 0,
     });
@@ -219,9 +219,8 @@ function specs(): Spec[] {
       columns,
       args: ['--mock'],
       env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
-      // the card's title (boxed) or the one-row twin (flat), then its `[y]` key — the title occurs once per frame, so it is expected once;
-      // the flat row's width ladder (TUI-DESIGN-2 §3.7) drops `run it` below 72 columns, so only the `[y]` is expected
-      steps: [...PROLOGUE_IDLE, 'send the date parsing', sleepStep(200), 'send \\r', card ? `expect ${topEdgePattern('run this as a task\\?')}` : 'expect run this as a task\\?', 'expect \\[y\\]', sleepStep(400), 'send n', `expect \\[jevcode\\]${SGR_GAP} `, sleepStep(300), ...EXIT_IDLE],
+      // no card any more: the reply lands and Jev's unsure reading only adds the `do it` offer to it, so the composer stays free
+      steps: [...PROLOGUE_IDLE, 'send the date parsing', sleepStep(200), 'send \\r', `expect \\[jevcode\\]${SGR_GAP} `, "expect make that a task", sleepStep(300), ...EXIT_IDLE],
       expectedExit: 0,
     });
   }
@@ -258,7 +257,7 @@ function specs(): Spec[] {
     rows: 24,
     columns: 80,
     args: [...MOCK_RUN, '--mock-steps', '30', '--max-steps', '30'],
-    env: { JEVCODE_FAULT: 'render:pane', JEVCODE_MOCK_REVIEW_AT: '2' },
+    env: { JEVCODE_FAULT: 'render:pane', JEVCODE_MOCK_REVIEW_AT: '2', JEVCODE_AUTONOMY: 'review' },
     steps: [
       ...PROLOGUE,
       'send start the perf run',

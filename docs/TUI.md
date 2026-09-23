@@ -95,8 +95,7 @@ first turn (a run or a chat reply; a command alone is not a turn), `Follow-up, q
 while Jev reads your message (the draft stays editable; a second Enter is answered `one moment — still thinking`; the
 first frame after Enter, which commits the `[you]` bubble, still shows the steer placeholder and `starting` — deviation
 4 in `docs/STATUS.md`, "Round 2"),
-`(waiting for y/n)` under the `run this as a task?` card and `(review pending — keys in the card; d opens a note)`
-under a review; at ≥ 100 inner columns the first two append `/ commands · @ files` and `↑ history · Esc Esc menu`.
+`(review pending — keys in the card; d opens a note)` under a review; at ≥ 100 inner columns the first two append `/ commands · @ files` and `↑ history · Esc Esc menu`.
 Enter submits; Ctrl+J, Alt+Enter,
 or a trailing `\` before Enter insert a newline (`Shift+Enter` is bound to `composer:newline` in
 [`docs/KEYS.md`](KEYS.md), but its byte sequence only reaches the composer under a keyboard protocol JevCode never
@@ -170,13 +169,15 @@ answer:
 
 | Jev reads it as | You get | Money |
 | --- | --- | --- |
-| a greeting, thanks, goodbye, small talk | one `[jevcode]` reply from a 14-row catalogue — `hi` → `Hi. I'm ready when you are — describe a change you want in <dir>, or ask what I can do.`; `thanks` → `You're welcome. Anything else on <dir>?`; `bye` → `Bye for now. /exit closes the session; runs are saved under ~/.jevcode/runs.`; `ok` → `Okay. Whenever you're ready.` … | the intake only |
+| a greeting, thanks, goodbye, small talk | the code model's own reply, streamed (in `jev-only`: one `[jevcode]` reply from a 14-row catalogue — `hi` → `Hi. I'm ready when you are — describe a change you want in <dir>, or ask what I can do.`; `thanks` → `You're welcome. Anything else on <dir>?`; `bye` → `Bye for now. /exit closes the session; runs are saved under ~/.jevcode/runs.`; `ok` → `Okay. Whenever you're ready.` … | the intake only |
 | a question about JevCode itself (what it can do, its mode, keys, cost, commands, the last run, the tests, the sandbox, undo, the Jev provider) | one `[jevcode]` item per selected fact, most relevant first (≤ 4): `JevCode is a coding agent where Jev, a decision model, makes every decision: …`, `Mode: jev+llm — the code model writes the code, Jev decides every step.`, `Switch with /mode jev-only (Jev alone, $0.25 run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.`, `Keys: Jev through openrouter (OPENROUTER_API_KEY, never printed); generator: openrouter …`, `Session spend: $0.00 of $10.00 (0 runs, 3 chat messages). /cost has the breakdown.` … | the intake only |
 | a question about the code in the workspace | in `jev-only`: `▓ looking`, one more Jev request over up to 60 candidate files, then `[jevcode] In jev-only mode I can point at code but not explain it — Jev decides, it doesn't write. Likely places:` with up to three `path:line  text` rows per file and `Switch with /mode jev-on to get an explanation from the LLM, or describe the change and I'll make it.` (or `I couldn't find a file in <dir> that clearly answers that (looked at <n> candidates). …`); in `jev+llm` (the default): `▓ replying`, one generator turn with no tools, streamed into the live region, then one `[jevcode]` item per line | the lookup ≈ $0.00005; the LLM turn at the generator's price, refused before sending when it would pass the session cap or the model is unpriced |
-| a task (`coding_task` at Jev's own p ≥ 0.6, paired Noul ≥ 0.5) | today's run: `[run] start …`, one `[step N]` line per step | the run |
-| anything weaker or `ambiguous` (`the date parsing`, `tests?`) | the card `╭─ run this as a task? ─╮` / `[y] run it   [n] just chatting   (Esc keeps the text; Enter does nothing)` (one row in the flat tier; `run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text >` in `--plain`); status word `asking`. `y` runs it, `n` takes the best chat reading from the same answers (no new request), Esc or Ctrl-C puts the text back into the composer with `[jevcode] Okay — edit it and press Enter, or ask me something.`; on a pipe the answer is always keep | nothing until you answer |
+| a task (`coding_task` at Jev's own p ≥ 0.6, paired Noul ≥ 0.5) | the reply, then `[jevcode] On it — starting the run.` and the run: `[run] start …`, one `[step N]` line per step | the reply + the run |
+| anything weaker or `ambiguous` (`the date parsing`, `tests?`) | the reply, then one more line: ``Say `do it` and I'll make that a task.`` Nothing blocks the composer; `do it` (or `yes`, `go ahead`, `run it`) on the next message starts that run from the reading already in hand, and any other message drops the offer | the reply |
 
-No keyword list ever starts a run: only Jev's `coding_task` at its own probability floor, or your `y` on the card. A
+Every message is answered by the code model in JevCode's own voice; Jev reads it in the BACKGROUND (never a card, never
+a blocked composer) and only decides whether a run also starts. No keyword list ever starts a run: only Jev's
+`coding_task` at its own probability floor, or your `do it` on the offer. A
 one-shot `jevcode run "<task>"` never passes the intake (`jevcode run "hi"` runs a task named `hi`); a follow-up after a
 run does (`did it pass?` is answered from the last test run). Ctrl-C once while `⠹ thinking` aborts the request (toast
 `stopped thinking`, no bubble, the draft is not restored; a second Ctrl-C within 1.5 s exits as always). When Jev cannot

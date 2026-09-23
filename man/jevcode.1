@@ -310,6 +310,10 @@ engine mode (default llm\-jev): jev\-only (Jev alone, no generating LLM),
 jev\-on (Jev + the code model), jev\-off (generator only), llm\-jev (candidate
 patches, tests verify, Jev arbitrates)
 .TP
+.BI \-\-autonomy " full|review"
+who approves review\-flagged actions (default full): full auto\-approves and
+logs them, review stops for y/n; a blocked action always stops
+.TP
 .BI \-\-force\-takeback
 with \-\-resume: re\-take a run a peer claimed (bumps the claim epoch); an
 ordinary resume never does
@@ -433,6 +437,10 @@ engine mode (default llm\-jev): jev\-only (Jev alone, no generating LLM),
 jev\-on (Jev + the code model), jev\-off (generator only), llm\-jev (candidate
 patches, tests verify, Jev arbitrates)
 .TP
+.BI \-\-autonomy " full|review"
+who approves review\-flagged actions (default full): full auto\-approves and
+logs them, review stops for y/n; a blocked action always stops
+.TP
 .BI \-\-force\-takeback
 with \-\-resume: re\-take a run a peer claimed (bumps the claim epoch); an
 ordinary resume never does
@@ -537,6 +545,10 @@ generator token cap under \-\-allow\-unpriced (default spend cap / 15 ×
 .TP
 .BI \-\-update\-notify
 post\-run update check through a detached jevcode upgrade \-\-check
+.TP
+.BI \-\-autonomy " full|review"
+who approves review\-flagged actions (default full): full auto\-approves and
+logs them, review stops for y/n; a blocked action always stops
 .TP
 .BI \-\-all
 config: include the hidden bookkeeping rows (seen.*); sessions who: include

@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Answer, GitState } from '../../../src/core/types.js';
-import { FACT_FALSE_EXAMPLES, FACT_KEYS, FACT_MAX_LINES, HOW_TO_TASK_SUFFIX, HOW_TO_TASK_TEXT, MODE_SENTENCE, NOTHING_RAN_TEXT, NO_TESTS_PARSED_TEXT, SWITCH_MODE_TEXT, WHAT_IT_IS_TEXT, buildFactQuestions, harnessFacts, selectFacts, type FactsInput } from '../../../src/chat/facts.js';
+import { FACT_FALSE_EXAMPLES, FACT_KEYS, FACT_MAX_LINES, HOW_TO_TASK_SUFFIX, HOW_TO_TASK_TEXT, MODE_SENTENCE, NOTHING_RAN_TEXT, NO_TESTS_PARSED_TEXT, REVIEW_TEXT, REVIEW_TEXT_FULL, SWITCH_MODE_TEXT, WHAT_IT_IS_TEXT, buildFactQuestions, harnessFacts, reviewText, selectFacts, type FactsInput } from '../../../src/chat/facts.js';
 import { MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
 import { notRepoState } from '../../../src/workspace/gitstate.js';
 import { sandboxText } from '../../../src/tui/onboarding/lines.js';
@@ -67,7 +67,14 @@ describe('§3.5 the harness facts', () => {
     expect(t['switch_mode']).toBe('Switch with /mode jev-only (Jev alone, $0.25 run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.');
     expect(t['switch_mode']).toBe(SWITCH_MODE_TEXT);
     expect(WHAT_IT_IS_TEXT.endsWith('in jev+llm mode the code model writes the code.')).toBe(true);
-    expect(t['review']).toBe('Risky actions stop for review: y approves once, n declines, d declines with a note. Nothing is ever auto-approved; Enter does nothing there.');
+    // complete autonomy by default: the fact follows `autonomy`, and the `full` sentence never claims nothing is auto-approved
+    expect(t['review']).toBe(REVIEW_TEXT_FULL);
+    expect(t['review']).toBe(reviewText('full'));
+    expect(t['review']).toContain('auto-approved and logged');
+    expect(t['review']).not.toContain('Nothing is ever auto-approved');
+    const asked = Object.fromEntries(harnessFacts(keyedFixture({ autonomy: 'review' })).map((f) => [f.key, f.text]));
+    expect(asked['review']).toBe('Risky actions stop for review: y approves once, n declines, d declines with a note. Nothing is auto-approved under --autonomy review; Enter does nothing there.');
+    expect(asked['review']).toBe(REVIEW_TEXT);
     expect(t['undo']).toBe("/undo reverts the last step's file changes, /rewind picks a step, /diff shows what changed.");
     expect(t['commands']).toBe('Commands start with /; type / to list them, /help for keys.');
     expect(t['sandbox']).toBe(sandboxText('seatbelt'));

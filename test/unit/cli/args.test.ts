@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { COMMANDS, MODELS_OPS, parseCliArgs, usageText, type Command } from '../../../src/cli/args.js';
+import { AUTONOMY_SETTING_VALUES, DEFAULT_AUTONOMY } from '../../../src/config/defaults.js';
 import { PROVIDER_IDS } from '../../../src/provider/ids.js';
 import { UsageError } from '../../../src/errors.js';
 
@@ -114,5 +115,26 @@ describe('--provider is the seven ids everywhere it is accepted (§6.1 D-AP, §6
     // and the per-command flag table, which reads the same one table
     expect(usageText('login')).toContain(`--provider ${PROVIDER_IDS.join('|')}`);
     expect(usageText('login')).not.toMatch(/--provider anthropic\|openrouter\s/);
+  });
+});
+
+describe('complete autonomy by default: `--autonomy full|review`', () => {
+  it('parses on chat / run / config, is refused where no config is resolved, and its value is kept verbatim for config/validate.ts', () => {
+    expect(parse(['run', 'task', '--autonomy', 'review']).autonomy).toBe('review');
+    expect(parse(['run', 'task', '--autonomy', 'full']).autonomy).toBe('full');
+    expect(parse(['chat', '--autonomy', 'review']).autonomy).toBe('review');
+    expect(parse(['config', '--autonomy', 'review']).autonomy).toBe('review');
+    expect(parse(['run', 'task']).autonomy).toBeUndefined();
+    // an unknown value is the config layer's ConfigError, not a UsageError: `--mode` works the same way
+    expect(parse(['run', 'task', '--autonomy', 'yolo']).autonomy).toBe('yolo');
+    expect(() => parse(['models', 'list', '--autonomy', 'review'])).toThrow(UsageError);
+  });
+
+  it('the help text names the enum and the default, and says what each side does', () => {
+    expect(usageText('run')).toContain('--autonomy full|review');
+    expect(usageText('run')).toContain(`who approves review-flagged actions (default ${DEFAULT_AUTONOMY})`);
+    expect(usageText('run')).toContain('full auto-approves and logs them, review stops for y/n');
+    expect(usageText('config')).toContain('--autonomy full|review');
+    expect(AUTONOMY_SETTING_VALUES.join('|')).toBe('full|review');
   });
 });

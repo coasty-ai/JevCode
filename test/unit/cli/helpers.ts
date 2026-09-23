@@ -156,8 +156,6 @@ export interface FakeRenderer extends Renderer {
   events: EngineEvent[];
   /** every reducer action the controller dispatched (`thresholds`, §15 item 20; TUI-DESIGN-2 §6 item 15 `thinking` / `chat-decisions` / `mode` / `toast`) */
   dispatched: (UiAction | ChatUiAction)[];
-  /** TUI-DESIGN-2 §3.7: every `restoreDraft(text)` (Esc on the intake card) */
-  restored: string[];
   /** TUI-DESIGN-2 §3.6: every `live(text)` of a streamed LLM turn ('' empties) */
   liveTexts: string[];
   prompts?: Prompter;
@@ -174,7 +172,6 @@ export interface FakeRenderer extends Renderer {
     },
   ): void;
   dispatch(action: UiAction | ChatUiAction): void;
-  restoreDraft(text: string): void;
   live(text: string): void;
 }
 
@@ -190,7 +187,6 @@ export function fakeRenderer(o: { prompts?: Prompter; firstFrameDelayMs?: number
     attached: [],
     events: [],
     dispatched: [],
-    restored: [],
     liveTexts: [],
     unmounted: 0,
     firstFrameResolved: false,
@@ -231,9 +227,6 @@ export function fakeRenderer(o: { prompts?: Prompter; firstFrameDelayMs?: number
     },
     dispatch(action) {
       r.dispatched.push(action);
-    },
-    restoreDraft(text) {
-      r.restored.push(text);
     },
     live(text) {
       r.liveTexts.push(text);
@@ -419,7 +412,7 @@ export function scriptedEngineFactory(script: (opts: EngineOptions, n: number) =
       annotate(text, o = {}) {
         if (!started || finished) return false;
         annotated.push(text);
-        emit({ type: 'notice', step: null, kind: 'ui', level: o.level ?? 'info', text, ...(o.detail ? { detail: o.detail } : {}), label: o.label ?? '[ui]' });
+        emit({ type: 'notice', step: null, kind: 'ui', level: o.level === 'dim' ? 'info' : (o.level ?? 'info'), text, ...(o.detail ? { detail: o.detail } : {}), label: o.label ?? '[ui]' });
         return true;
       },
     };
@@ -505,6 +498,8 @@ export async function makeController(o: HarnessOptions = {}): Promise<Harness> {
   const flags: ParsedFlags = { command: o.mode === 'one-shot' ? 'run' : 'chat', mock: true, mockSteps: '3', workspace, ...(o.flags ?? {}) };
   const stderr: string[] = [];
   const stdout: string[] = [];
+  /** `ready()`'s marker: startup lists the workspace once, where the (now renderer-dependent) `[sandbox]` item used to be */
+  let listed = false;
   const exits: number[] = [];
   let restores = 0;
   const controller = createSessionController({
@@ -531,7 +526,6 @@ export async function makeController(o: HarnessOptions = {}): Promise<Harness> {
     deps: {
       createEngine: factory.factory,
       ...(o.decider === 'controller' ? {} : { buildDecider: async () => decider }),
-      listCandidates: async () => [],
       probeGitState: async () => notRepoState('not-a-repo', { probedAt: '2026-09-20T15:00:00.000Z', probeMs: 1 }),
       loadRun: async (_runsDir, runId) => factory.loaded.get(runId) ?? null,
       loadForResume: async (_runsDir, runId) => {
@@ -545,6 +539,16 @@ export async function makeController(o: HarnessOptions = {}): Promise<Harness> {
         stderr.push(t);
       },
       ...(o.deps ?? {}),
+      // the wrapper wins over a caller's own listing (it delegates to it)
+      ...(() => {
+        const list = o.deps?.listCandidates ?? (async (): Promise<never[]> => []);
+        return {
+          listCandidates: async (...args: Parameters<NonNullable<SessionDeps['listCandidates']>>) => {
+            listed = true;
+            return list(...args);
+          },
+        };
+      })(),
     },
     ...(o.options ?? {}),
   });
@@ -564,7 +568,7 @@ export async function makeController(o: HarnessOptions = {}): Promise<Harness> {
     get restores() {
       return restores;
     },
-    ready: () => waitFor(() => renderer.notes.some((n) => n.label === '[sandbox]') || stderr.length > 0, 8000, 'startup'),
+    ready: () => waitFor(() => listed || renderer.notes.some((n) => n.label === '[sandbox]') || stderr.length > 0, 8000, 'startup'),
     // `submit()` resolves once the run started (§4.9); the harness waits for its run:end so a test reads the finished record
     submit: async (text, so = {}) => {
       await host.submit(text, { kind: host.ranBefore() ? 'follow-up' : 'prompt', secretSpans: so.secretSpans ?? [], pinnedFiles: so.pinnedFiles ?? [] });

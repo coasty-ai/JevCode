@@ -2358,7 +2358,7 @@ class EngineImpl implements Engine {
    * emit and transcriptSeq, so transcript.log, --plain and the TUI stay line-identical. False once the run
    * finished (or before it started): the renderer then keeps the item local.
    */
-  annotate(text: string, opts: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' } = {}): boolean {
+  annotate(text: string, opts: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' | 'dim' } = {}): boolean {
     if (!this.started || this.isFinished()) return false;
     // TUI-DESIGN §8.6: text ≤ 600 and the TUI-only body ≤ 12,000, both through sanitizeStream — the raw event reaches --json and
     // every listener, so the bound lives here, not only in itemsFromEvent. The step label names the in-flight step (draft), like
@@ -2369,7 +2369,8 @@ class EngineImpl implements Engine {
       type: 'notice',
       step: this.draft?.step ?? null,
       kind: 'ui',
-      level: opts.level ?? 'info',
+      // `dim` is the renderer's quiet grade; `notice.level` has three, so the transcript records it as `info`
+      level: opts.level === undefined || opts.level === 'dim' ? 'info' : opts.level,
       text: clipText(sanitizeStream(text), ANNOTATE_TEXT_MAX_CHARS),
       label: opts.label ?? '[ui]',
       ...(detail.length > 0 ? { detail } : {}),
@@ -2387,10 +2388,10 @@ class EngineImpl implements Engine {
    * listener that pauses (or a run that ends) between two rows can never truncate a block into half a card.
    * Edge 2: at most `BLOCK_LOG_MAX` body rows, then one `… +N more rows`.
    */
-  annotateBlock(head: string, rows: readonly string[], opts: { level?: 'info' | 'warn' | 'error'; label?: UiLabel } = {}): boolean {
+  annotateBlock(head: string, rows: readonly string[], opts: { level?: 'info' | 'warn' | 'error' | 'dim'; label?: UiLabel } = {}): boolean {
     if (!this.started || this.isFinished()) return false;
     const step = this.draft?.step ?? null;
-    const level = opts.level ?? 'info';
+    const level = opts.level === undefined || opts.level === 'dim' ? 'info' : opts.level;
     const label = opts.label ?? '[ui]';
     const shown = rows.length > BLOCK_LOG_MAX ? rows.slice(0, BLOCK_LOG_MAX) : rows;
     const overflow = rows.length - shown.length;

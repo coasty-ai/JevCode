@@ -22,9 +22,6 @@ import type { FoundKey, FoundSource, WizardProvider } from '../tui/onboarding/re
 import { childCapUsd } from '../tui/budget/lines.js';
 import type { UndoAskKey } from '../undo/plan.js';
 import type { Prompter, WizardOutcome, WizardReason } from './session.js';
-// TUI-DESIGN-2 §3.7: the ambiguity card's rows come from the one string source shared with `--plain` and the screen reader
-import { intakeCardBody, intakeCardTitle, intakeRowLines } from '../chat/lines.js';
-import type { IntakeOverlay } from '../tui/Overlay.js';
 
 /** the controller hooks the wizard host bridge calls back into */
 export interface TuiPrompterControls {
@@ -260,17 +257,6 @@ export function createTuiPrompter(): TuiPrompterBundle {
         // §11.1: Ctrl-C in a reopened wizard closes it when a run is live (`/login` mid-run, the 401 pane's `[l]`) and exits 2 otherwise
         else r.reopenWizard(missing.includes('generator.apiKey') ? 'generator.apiKey' : 'decider.apiKey', controls?.runLive() ?? false, { reason: o.reason === 'rejected' ? 'rejected' : 'login', currentMode: current, ...found });
       });
-    },
-    // TUI-DESIGN-2 §3.7: the ambiguity card — the App answers `run` (y) · `chat` (n) · `keep` (Esc / Ctrl-C); no renderer or the unmount → keep (C46, never a run)
-    intake(message) {
-      const r = renderer;
-      if (!r) return Promise.resolve('keep');
-      const columns = prompter.columns?.() ?? 80;
-      // MINIMAL, MARKED EDIT BY SLOT S5 (TUI-DESIGN-4 §5.6 P-C17 b): the boxed body is a `fitRung` ladder over the
-      // card's INNER width, so `Ctrl-C cancels` is dropped before `Enter does nothing` instead of the whole clause
-      // being truncated away. `intakeCardLines` applies `glyphTwin`, so the rungs are built in the unicode set.
-      const card: IntakeOverlay = { title: intakeCardTitle(message, columns - 4), body: [intakeCardBody(columns - 4)], flat: intakeRowLines(columns) };
-      return cancellable(r.promptIntake(card), 'keep');
     },
     trust(inputs: TrustInputs, o?: { reopen?: boolean }) {
       return new Promise<TrustOption | null>((resolve) => {

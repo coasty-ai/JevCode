@@ -243,8 +243,6 @@ export type KeyAction =
   | { type: 'followup'; op: 'start' | 'raise' | 'cancel' }
   | { type: 'undoPrompt'; op: 'yes' | 'no' | 'all' | 'skipRest' | 'abort' }
   | { type: 'exitConfirm'; op: 'abortExit' | 'stay' }
-  /** TUI-DESIGN-2 §3.7: the intake card — `y` runs (armed), `n` replies from the answers in hand, Esc / Ctrl-C keep the text */
-  | { type: 'intake'; op: 'run' | 'chat' | 'keep' }
   /**
    * TUI-DESIGN-5 §5.2 / §7 row 59: the import overlay. The ops are `ImportAction`'s own names
    * (`src/tui/import/reducer.ts`), so the App's arm is one `importDispatch({ type: action.op })` and the reducer
@@ -259,8 +257,6 @@ export type KeyAction =
 
 /** TUI-DESIGN §24: the toast for a non-key printable while the review box owns the input. */
 export const REVIEW_PENDING_TOAST = 'review pending: y n d e w · Esc declines';
-/** TUI-DESIGN-2 §3.7 / §12 "Status": the toast for a printable while the intake card owns the input. */
-export const INTAKE_PENDING_TOAST = 'intake pending: y n · Esc keeps the text';
 /** TUI-DESIGN-5 §5.2 / §12.4 S91: the toast for a non-key printable while the import overlay owns the input. */
 export const IMPORT_PENDING_TOAST = 'import open: y r Space Enter · Esc closes (the plan is kept)';
 
@@ -723,14 +719,6 @@ function resolveYGated(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step
       if (y) return s.overlayArmed ? one({ type: 'exitConfirm', op: 'abortExit' }) : none;
       if (n) return one({ type: 'exitConfirm', op: 'stay' });
       return none;
-    case 'intake':
-      // TUI-DESIGN-2 §3.7: Esc / Ctrl-C keep the text; Enter inert; a paste never matches; `y` only once armed (committed frame + 150 ms)
-      if (isCtrl(k, 'c') || k.key.escape) return one({ type: 'intake', op: 'keep' });
-      if (isEnter(k) || isCtrl(k, 'd') || k.paste) return none;
-      if (y) return s.overlayArmed ? one({ type: 'intake', op: 'run' }) : none;
-      if (n) return one({ type: 'intake', op: 'chat' });
-      if (isPrintable(k)) return one({ type: 'toast', text: INTAKE_PENDING_TOAST });
-      return none;
     default:
       return none;
   }
@@ -1039,7 +1027,6 @@ function resolveOne(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step {
     case 'followup':
     case 'undo':
     case 'exitConfirm':
-    case 'intake':
       return resolveYGated(s, k, now, b);
     case 'import':
       return resolveImport(s, k);

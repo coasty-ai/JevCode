@@ -333,10 +333,15 @@ export function ambiguousResumeMessage(value: string, candidates: readonly Sessi
   return `--resume: "${value}" matches ${candidates.length} sessions: ${candidates.map((s) => `${s.sessionId} "${s.title}"`).join(', ')}`;
 }
 
-/** TUI-DESIGN §24: `[ui] recent: "<title>" · <ago>  (Enter continues, /resume browses)` — the hint row after the first frame. */
+/**
+ * TUI-DESIGN §24: `[ui] recent: "<title>" · <ago> — Enter continues, /resume browses` — the dim hint the LINE
+ * renderers print after the first frame. The quiet start (2026-09) drops the parenthesis (one thought, one row) and
+ * takes the item out of the TUI entirely: there the offer is the composer's own placeholder (`recentTaskPlaceholder`).
+ */
 export function recentSessionHint(s: SessionRow, nowMs: number, ascii = false): string {
   const dot = ascii ? '-' : '·';
-  return `recent: "${s.title}" ${dot} ${timeAgo(s.lastUsed, nowMs)}  (Enter continues, /resume browses)`;
+  const dash = ascii ? '-' : '—';
+  return `recent: "${s.title}" ${dot} ${timeAgo(s.lastUsed, nowMs)} ${dash} Enter continues, /resume browses`;
 }
 
 /** TUI-DESIGN §24: `no session in <path> yet`. */

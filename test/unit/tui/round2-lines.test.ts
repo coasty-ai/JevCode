@@ -11,7 +11,7 @@ import { MODE_BADGE_WORD } from '../../../src/config/defaults.js';
 import { GLYPHS, cellWidth, glyphTwin } from '../../../src/tui/glyphs.js';
 import { PANEL_WIDE_COLUMNS, panelLines, panelMoreRow, panelStrip, paneRuleRow, toDecisionRow, type PaneState } from '../../../src/tui/pane/model.js';
 import { NOTE_LABEL_TEXT, REVIEW_KEYS_80, reviewCardLines, reviewCardTitle, reviewHeaderLines, reviewKeys } from '../../../src/tui/review/lines.js';
-import { ASKING_WORD, THINKING_WORDS, flatBadgePrefix, leftZoneWord, modeBadge, modeBadgeWord, shortHelp, statusLineText, statusZones, type StatusLineState } from '../../../src/tui/status/lines.js';
+import { THINKING_WORDS, flatBadgePrefix, leftZoneWord, modeBadge, modeBadgeWord, shortHelp, statusLineText, statusZones, type StatusLineState } from '../../../src/tui/status/lines.js';
 import { mkDecision } from '../../fixtures/tui/fixtures.js';
 import { workedRequest } from './pane/helpers.js';
 import { ruleRowText, type RuleRowInput } from '../../../src/tui/Pane.js';
@@ -47,7 +47,6 @@ describe('the mode badge (TUI-DESIGN-2 §1.5, §12 "Console")', () => {
     expect(flatBadgePrefix(s, {})).toBe('');
     expect(flatBadgePrefix(base(), { flatBadge: true })).toBe('');
     expect(statusLineText(s, 80, { flatBadge: true })).toBe('jev-only · idle                             step 0/–  sess $0.00/1.25 ok  ? help');
-    expect(statusLineText(base({ modeBadge: { mode: 'jev-only', pending: null }, overlay: 'intake' }), 80, { flatBadge: true })).toBe('jev-only · asking                                   step 0/–  sess $0.00/1.25 ok');
     const short = statusZones(s, 44, { flatBadge: true });
     expect(short.dropped[0]).toBe('badge');
     expect(short.left).toBe('idle');
@@ -61,21 +60,16 @@ describe('the mode badge (TUI-DESIGN-2 §1.5, §12 "Console")', () => {
 });
 
 describe('the conversational left words (TUI-DESIGN-2 §4.8, §12 "Status")', () => {
-  it('⠹ thinking · ⠹ looking · ⠹ replying while idle; • thinking under reduced motion; asking under the intake card; shortHelp is empty for intake', () => {
+  it('⠹ thinking · ⠹ looking · ⠹ replying while idle; • thinking under reduced motion', () => {
     expect(THINKING_WORDS).toEqual({ intake: 'thinking', lookup: 'looking', replying: 'replying' });
     expect(leftZoneWord(base({ thinking: 'intake' }), { spinnerFrame: 2 })).toBe(`${SPIN2} thinking`);
     expect(leftZoneWord(base({ thinking: 'lookup' }), { spinnerFrame: 2 })).toBe(`${SPIN2} looking`);
     expect(leftZoneWord(base({ thinking: 'replying' }), { spinnerFrame: 2 })).toBe(`${SPIN2} replying`);
     expect(leftZoneWord(base({ thinking: 'intake' }), { reducedMotion: true })).toBe(`${STATIC} thinking`);
     expect(leftZoneWord(base({ thinking: 'intake' }), { ascii: true, spinnerFrame: 1 })).toBe(`${GLYPHS.ascii.spinner[1]} thinking`);
-    expect(leftZoneWord(base({ overlay: 'intake' }))).toBe(ASKING_WORD);
-    expect(leftZoneWord(base({ overlay: 'intake', thinking: 'intake' }))).toBe('asking');
-    expect(shortHelp(base({ overlay: 'intake' }))).toBe('');
     expect(shortHelp(base())).toBe('? help');
     expect(shortHelp(base({ overlay: 'review' }))).toBe('? help');
     expect(shortHelp(base({ overlay: 'exitConfirm' }))).toBe('? help');
-    // H-I1: the intake card's status row at the console width
-    expect(statusLineText(base({ overlay: 'intake' }), 76)).toBe('asking                                          step 0/–  sess $0.00/1.25 ok');
     // §3.1 rows 1 and 5 (finding 1): the submission runs under `starting` — the phase wins the word; TUI-DESIGN-3 §5.2 P7:
     // once the intake settled (`thinking(null)`) and before `run:start` the row keeps the previous idle word, never `starting`
     expect(leftZoneWord(base({ run: 'starting', thinking: 'intake' }), { spinnerFrame: 2 })).toBe(`${SPIN2} thinking`);

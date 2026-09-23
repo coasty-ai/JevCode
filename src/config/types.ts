@@ -16,6 +16,8 @@ export type SettingName =
   | 'generator.priceCacheWritePerM'
   | 'decider.provider'
   | 'mode'
+  // who approves a `review` risk verdict — `full` (the default) auto-approves and logs it, `review` stops for y/n
+  | 'autonomy'
   | 'decider.baseUrl'
   | 'decider.apiKey'
   | 'decider.model'

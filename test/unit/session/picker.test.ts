@@ -244,8 +244,9 @@ describe('--resume <id|title> resolution (§8.4)', () => {
   });
   it('messages', () => {
     expect(ambiguousResumeMessage('TZ', [a, b])).toBe(`--resume: "TZ" matches 2 sessions: ${a.sessionId} "tz fixes", ${b.sessionId} "TZ fixes round two"`);
-    expect(recentSessionHint(a, Date.parse(a.lastUsed) + 3 * 60_000)).toBe('recent: "tz fixes" · 3m ago  (Enter continues, /resume browses)');
-    expect(recentSessionHint(a, Date.parse(a.lastUsed) + 3 * 60_000, true)).toBe('recent: "tz fixes" - 3m ago  (Enter continues, /resume browses)');
+    // the quiet start (2026-09): the line renderers' one-row hint (the TUI offers it in the composer placeholder instead)
+    expect(recentSessionHint(a, Date.parse(a.lastUsed) + 3 * 60_000)).toBe('recent: "tz fixes" · 3m ago — Enter continues, /resume browses');
+    expect(recentSessionHint(a, Date.parse(a.lastUsed) + 3 * 60_000, true)).toBe('recent: "tz fixes" - 3m ago - Enter continues, /resume browses');
     expect(noSessionMessage(WS)).toBe(`no session in ${WS} yet`);
   });
 });

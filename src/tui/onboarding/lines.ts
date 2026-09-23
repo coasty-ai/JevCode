@@ -702,15 +702,20 @@ function sandboxNoneReason(profile: SandboxProfile, platform: string): string {
   return `sandbox-exec is not available on ${platform}`;
 }
 
+/** the one-line item's tail: the whole list stays in `sandboxDetail` and in `/config`'s sandbox footer */
+const SANDBOX_NONE_TAIL_SHORT = 'cwd confinement only';
+
 /**
  * TUI-DESIGN §24 sandbox line (`[sandbox]` label). TUI-DESIGN-3 §5.1 rule 13: one thought per row, ` · ` separators (the renderer
- * breaks it at ` · `); the old sentence is the TUI-only `detail` (`sandboxDetail`). A renderer-local item, never in `transcript.log`.
+ * breaks it at ` · `). The quiet start (2026-09) makes it ONE row at 80 columns — the 70-cell body of the `[sandbox]` gutter —
+ * so a session the user did not ask about opens with one dim line; the full sentences live in `sandboxDetail` (the wizard's
+ * sandbox card) and in `/config`'s sandbox footer. A renderer-local item, never in `transcript.log`.
  *
  * `profile` is what the user ASKED for and `level` is what was detected, so the `none` row states which of the three
  * true things happened: chosen, unavailable, or requested-and-unavailable.
  */
 export function sandboxText(level: SandboxLevel, profile: SandboxProfile = 'auto', platform: string = process.platform): string {
-  return level === 'seatbelt' ? 'seatbelt · writes only in the workspace and run dirs · secrets, ~/.ssh, ~/.aws unreadable · network on (--no-network)' : `none · ${sandboxNoneReason(profile, platform)} · ${SANDBOX_NONE_TAIL}`;
+  return level === 'seatbelt' ? 'seatbelt · workspace writes only · secrets unreadable · network on' : `none · ${sandboxNoneReason(profile, platform)} · ${SANDBOX_NONE_TAIL_SHORT}`;
 }
 /** TUI-DESIGN-3 §5.1 rule 13: the `[sandbox]` item's TUI-only detail body — the same three reasons, in the detail's `—`/`:` shape */
 export function sandboxDetail(level: SandboxLevel, profile: SandboxProfile = 'auto', platform: string = process.platform): string {

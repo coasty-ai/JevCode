@@ -34,8 +34,6 @@ export const CAP = {
   palette: 8,
   undo: 1,
   exitConfirm: 1,
-  /** TUI-DESIGN-2 §3.7: the flat intake row; boxed = 1 + card */
-  intake: 1,
   /**
    * TUI-DESIGN-5 §5.2: the import overlay — the head, up to six group rows and the keys row. It is a COLLAPSING
    * overlay (it needs an answer), so the composer is one inactive row while it is up and the pane yields first.
@@ -54,13 +52,13 @@ export const CAP = {
 } as const;
 
 /** TUI-DESIGN §2.1 / TUI-DESIGN-2 §3.7: the one modal slot directly above the composer holds at most one of these. */
-export type OverlayKind = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'intake' | 'import';
+export type OverlayKind = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'import';
 
 /** TUI-DESIGN §2.1: every overlay kind, in declaration order (tests iterate it). */
-export const OVERLAY_KINDS: readonly OverlayKind[] = ['none', 'review', 'wizard', 'followup', 'secret', 'blocking', 'palette', 'undo', 'exitConfirm', 'intake', 'import'];
+export const OVERLAY_KINDS: readonly OverlayKind[] = ['none', 'review', 'wizard', 'followup', 'secret', 'blocking', 'palette', 'undo', 'exitConfirm', 'import'];
 
-/** overlays that collapse the composer to one inactive row (F3; TUI-DESIGN-2 §3.7 adds `intake`, TUI-DESIGN-5 §5.2 `import`) */
-const COLLAPSING: ReadonlySet<OverlayKind> = new Set<OverlayKind>(['review', 'followup', 'blocking', 'exitConfirm', 'intake', 'import']);
+/** overlays that collapse the composer to one inactive row (F3; TUI-DESIGN-5 §5.2 adds `import`) */
+const COLLAPSING: ReadonlySet<OverlayKind> = new Set<OverlayKind>(['review', 'followup', 'blocking', 'exitConfirm', 'import']);
 
 /** TUI-DESIGN §2.1: true for the overlays that collapse the composer to one inactive row (F3, §6.2). */
 export function isCollapsingOverlay(overlay: OverlayKind): boolean {
@@ -82,7 +80,7 @@ export interface LayoutInput {
   rows: number;
   columns: number;
   overlay: OverlayKind;
-  /** review 8 (boxed 9) · wizard 2–4 · followup 5 · secret 1 (boxed 0) · blocking 2–4 (boxed ≤ 6) · palette 2–8 · undo 1 (boxed 3) · exitConfirm 1 (boxed 3) · intake 1 (boxed 3) */
+  /** review 8 (boxed 9) · wizard 2–4 · followup 5 · secret 1 (boxed 0) · blocking 2–4 (boxed ≤ 6) · palette 2–8 · undo 1 (boxed 3) · exitConfirm 1 (boxed 3) */
   overlayWant: number;
   /** review only: confirmPreviewLines(req).length */
   previewWant: number;

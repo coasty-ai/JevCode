@@ -37,8 +37,10 @@ describe('§8.1 item 10 / §9.2: `import` joins the one modal slot', () => {
   it('`OverlayKind` gains exactly `import`, and `OVERLAY_KINDS` carries it last', () => {
     expect(OVERLAY_KINDS).toContain('import');
     expect(OVERLAY_KINDS[OVERLAY_KINDS.length - 1]).toBe('import');
-    expect(OVERLAY_KINDS).toHaveLength(11);
-    expect(new Set(OVERLAY_KINDS).size).toBe(11);
+    // the ambiguity card is gone with the conversational chat: one member fewer
+    expect(OVERLAY_KINDS).toHaveLength(10);
+    expect(new Set(OVERLAY_KINDS).size).toBe(10);
+    expect(OVERLAY_KINDS).not.toContain('intake');
     // §14.2 #13: the model picker is a PANE-SLOT picker, so no `models` member joins here
     expect(OVERLAY_KINDS).not.toContain('models');
   });

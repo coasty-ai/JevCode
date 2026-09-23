@@ -69,6 +69,11 @@ export interface FactsInput {
    * sinks the brief names cannot disagree. Ignored unless `peers` is `undefined`.
    */
   peersOffClause?: string;
+  /**
+   * `ResolvedConfig.autonomy` — who approves a review-flagged action. OPTIONAL so no existing fixture breaks;
+   * absent reads as the default `full`, which is what a caller without a resolved config would run under.
+   */
+  autonomy?: 'full' | 'review';
 }
 
 /** the `topic` column of §3.5 */
@@ -133,7 +138,15 @@ export const JEV_PRICE_TEXT = '$0.042 per million input tokens (output free)';
 // TUI-DESIGN-3 §1.9 (R3 F9 / R5 F13): the copy names the code model, never a vendor
 export const WHAT_IT_IS_TEXT = 'JevCode is a coding agent where Jev, a decision model, makes every decision: what kind of step comes next, which files matter, how risky an action is, whether a step worked. In jev-only mode code proposes fixes and tests verify them; in jev+llm mode the code model writes the code.';
 export const SWITCH_MODE_TEXT = 'Switch with /mode jev-only (Jev alone, $0.25 run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.';
-export const REVIEW_TEXT = 'Risky actions stop for review: y approves once, n declines, d declines with a note. Nothing is ever auto-approved; Enter does nothing there.';
+/**
+ * The `review` fact, per `autonomy`. Under `full` (the default) a review-flagged action is auto-approved and
+ * logged, so the old "Nothing is ever auto-approved" sentence would be a lie; under `review` the y/n card is back.
+ */
+export const REVIEW_TEXT = 'Risky actions stop for review: y approves once, n declines, d declines with a note. Nothing is auto-approved under --autonomy review; Enter does nothing there.';
+export const REVIEW_TEXT_FULL = 'Autonomy is full: a review-flagged action is auto-approved and logged as a [review] line, and a blocked action still stops the run. Pass --autonomy review (or jevcode config set autonomy review) to be asked instead: y approves once, n declines, d declines with a note.';
+export function reviewText(autonomy: 'full' | 'review' = 'full'): string {
+  return autonomy === 'review' ? REVIEW_TEXT : REVIEW_TEXT_FULL;
+}
 export const UNDO_TEXT = '/undo reverts the last step\'s file changes, /rewind picks a step, /diff shows what changed.';
 export const COMMANDS_TEXT = 'Commands start with /; type / to list them, /help for keys.';
 export const HOW_TO_TASK_TEXT = 'Describe the change in plain words and press Enter; a run starts, shows every decision, and stops to ask before anything risky.';
@@ -158,7 +171,8 @@ function modeNowText(mode: EngineMode, nextMode: EngineMode): string {
   return nextMode !== mode ? `${base} Next run: ${modeWord(nextMode)}.` : base;
 }
 
-function branchOf(g: GitState): string {
+/** the branch (or detached head) of a probed repository — the `workspace` fact and the chat system prompt's git line */
+export function branchOf(g: GitState): string {
   if (g.head === null) return 'no HEAD';
   if (g.head.kind === 'branch') return g.head.name;
   if (g.head.kind === 'detached') return `detached ${g.head.oid.slice(0, 8)}`;
@@ -252,7 +266,7 @@ export function harnessFacts(i: FactsInput): readonly Fact[] {
     cost_so_far: costText(i.spend),
     sandbox: sandboxText(i.sandbox),
     how_to_task: HOW_TO_TASK_TEXT + HOW_TO_TASK_SUFFIX[i.nextMode],
-    review: REVIEW_TEXT,
+    review: reviewText(i.autonomy),
     undo: UNDO_TEXT,
     commands: COMMANDS_TEXT,
     provider: providerText(i.provider),

@@ -1,6 +1,6 @@
-# chat: a question about the tool answers from the harness facts — `what can you do?` → the `what_it_is` fact; `which mode
-# is this?` → the `mode_now` fact — no run (TUI-DESIGN-2 §3.1 row 7, §3.5, §8.2 chat-facts; the mock decider of §3.13
-# selects `about_what_it_is` on /what can you do/ and `about_mode_now` on /mode/)
+# chat under --mode jev-only (no code model, so Jev answers alone): a question about the tool answers from the harness
+# facts — `what can you do?` → the `what_it_is` fact; `which mode is this?` → the `mode_now` fact — no card and no run
+# (§3.5, §8.2 chat-facts; the mock decider of §3.13 selects `about_what_it_is` on /what can you do/ and `about_mode_now` on /mode/)
 expect \x1b\[\?25l
 expect Say hi
 expect sess \$
@@ -12,7 +12,7 @@ expect \[jevcode\](?:\x1b\[[0-9;]*m)* JevCode is a coding agent
 send which mode is this?
 sleep 0.2
 send \r
-expect \[jevcode\](?:\x1b\[[0-9;]*m)* Mode: llm\+jev
+expect \[jevcode\](?:\x1b\[[0-9;]*m)* Mode: jev-only
 send /exit
 sleep 0.2
 send \r

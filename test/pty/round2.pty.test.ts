@@ -26,7 +26,6 @@ import { MODE_SET_ITEM } from '../../src/cli/session.js';
 import {
   BADGE_DEFAULT,
   BADGE_DEFAULT_TEXT,
-  BADGE_DEFAULT_HEAD,
   BADGE_JEV_LLM,
   BADGE_JEV_ONLY,
   CHAT_OPEN,
@@ -44,7 +43,6 @@ import {
   SGR_GAP,
   afterFirstFrame,
   cleanupScratch,
-  contiguous,
   countClears,
   drive,
   echoStep,
@@ -113,18 +111,21 @@ function filesContaining(r: Drive, needle: string): string[] {
 }
 
 describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
-  it('chat-hi: `hi` → [you] bubble, [jevcode] catalogue reply, no run, the default badge; Enter → reply wall time recorded', async () => {
+  it('chat-hi: `hi` → [you] bubble, the code model\'s reply, no card, no run, the default badge; Enter → reply wall time recorded', async () => {
     const r = await drive({
       name: 'r2-chat-hi',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', 'mark hi-sent', labelStep('you', 'hi'), labelStep('jevcode', 'Hi\\.'), 'mark hi-reply', topEdgeStep(BADGE_DEFAULT), `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', 'mark hi-sent', labelStep('you', 'hi'), labelStep('jevcode', 'Hi'), 'mark hi-reply', topEdgeStep(BADGE_DEFAULT), `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
-    // §3.10: one item per line, the bubble labels verbatim; §3.4 `hello_first` (the reply word-wraps at 80 columns with a hanging indent under the text column, §4.5)
+    // §3.10: one item per line, the bubble labels verbatim; the `--mock` generator answers a chat request with one deterministic line
     expect(plain).toContain('[you] hi');
-    expect(plain).toMatch(/\[jevcode\] Hi\. I'm ready when you are — describe a change you want in\s+\S+, or ask what I can do\./);
+    expect(plain).toMatch(/\[jevcode\] Hi — I'm JevCode \(mock reply\)\./);
+    // never a card and never a blocked composer
+    expect(plain).not.toContain('run this as a task?');
+    expect(plain).not.toContain('(waiting for y/n)');
     // §3.1 row 6: no run — no `[run] start`, no run directory
     expect(plain).not.toMatch(/\[run\] started [·-] /);
     expect(r.runDirs()).toEqual([]);
@@ -140,11 +141,11 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     console.log(`chat-hi: Enter → [jevcode] reply ${wall} ms (mock decider; gate ${INTAKE_WALL_MS} ms); status words seen between Enter and the reply: ${[...new Set(between.flatMap((f) => f.dynamic.filter((l) => /^│ (?:starting|⠹ thinking|• thinking)/.test(l)).map((l) => l.slice(2, 14).trim())))].join(', ') || 'none'}`);
   });
 
-  it('chat-facts: `what can you do?` → the what_it_is fact; `which mode is this?` → `Mode: <default badge>`; no run', async () => {
+  it('chat-facts (jev-only, where Jev answers alone): `what can you do?` → the what_it_is fact; `which mode is this?` → `Mode: jev-only`; no run', async () => {
     const r = await drive({
       name: 'r2-chat-facts',
-      args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, 'send what can you do?', echoStep('what can you do?'), 'send \\r', labelStep('jevcode', 'JevCode is a coding agent'), 'send which mode is this?', echoStep('which mode is this?'), 'send \\r', labelStep('jevcode', `Mode: ${BADGE_DEFAULT_HEAD}`), ...EXIT_IDLE],
+      args: ['chat', '--mock', '--mode', 'jev-only'],
+      steps: [...CHAT_OPEN, 'send what can you do?', echoStep('what can you do?'), 'send \\r', labelStep('jevcode', 'JevCode is a coding agent'), 'send which mode is this?', echoStep('which mode is this?'), 'send \\r', labelStep('jevcode', 'Mode: jev-only'), ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -157,8 +158,9 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
      * the step nor this regex could ever see the whole badge on one line. Both halves are asserted instead
      * (pre-existing red, fixed by the integrator 2026-09-22).
      */
-    expect(plain).toMatch(new RegExp(`\\[jevcode\\] Mode: ${BADGE_DEFAULT_HEAD}`));
-    expect(plain).toContain('· verified — the code model writes candidate patches');
+    expect(plain).toMatch(/\[jevcode\] Mode: jev-only/);
+    expect(plain).toContain('no generating LLM');
+    expect(plain).toContain('tests verify');
     expect(plain).not.toContain('Claude writes');
     expect(plain).not.toMatch(/\[run\] started [·-] /);
     expect(r.runDirs()).toEqual([]);
@@ -187,80 +189,52 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 
-  /**
-   * §3.7 "Enter inert": the frames carrying the card form one contiguous run from the card's first frame to the frame
-   * before the reply — an Enter that answered `y` would start a run, one that closed the card like Esc would draw the
-   * `Okay — edit it …` bubble and a card-less frame before `n` was sent; neither may appear
-   */
-  function expectCardOpenUntilAnswer(r: Drive, title: string): void {
-    const all = syncFrames(r.text);
-    const card = syncFramesWith(all, title);
-    expect(card.length).toBeGreaterThan(0);
-    expect(contiguous(card)).toBe(true);
-    const reply = syncFramesWith(all, '[jevcode] ').filter((i) => i > card[0]!);
-    expect(reply.length).toBeGreaterThan(0);
-    expect(reply[0]!).toBeGreaterThanOrEqual(card.at(-1)!);
-    const plain = stripAnsi(r.text);
-    expect(plain).not.toContain('Okay — edit it and press Enter');
-    expect(plain).not.toMatch(/\[run\] started [·-] /);
-    expect(r.runDirs()).toEqual([]);
-  }
-
-  it('chat-ambiguous: the card `run this as a task?` — Enter before the arm never answers (the card stays open), `n` replies without a run', async () => {
+  it('chat-ambiguous: an unsure reading adds the `do it` offer to the reply — no card, no blocked composer, no run', async () => {
     const r = await drive({
       name: 'r2-chat-ambiguous',
       args: ['chat', '--mock'],
       env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
-      steps: [...CHAT_OPEN, 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect run this as a task\\?', 'send \\r', 'sleep 0.25', 'mark before-n', 'send n', labelStep('jevcode', ''), ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send the date parsing', echoStep('the date parsing'), 'send \\r', labelStep('jevcode', ''), 'expect make that a task', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
-    // §3.7: the card's title and body, the collapsed composer, the status word
-    expect(plain).toMatch(/^╭─ run this as a task\? ─/m);
-    expect(plain).toContain('[y] run it   [n] just chatting   (Esc keeps the text; Enter does nothing)');
-    expect(plain).toContain('(waiting for y/n)');
-    expect(plain).toMatch(/^│ asking /m);
-    expectCardOpenUntilAnswer(r, '╭─ run this as a task?');
-    // exactly one card was opened (one contiguous run) and the reply is a fact / catalogue text, never the kept-text echo
-    expect(syncFramesWith(syncFrames(r.text), '╭─ run this as a task?').length).toBeGreaterThan(0);
+    expect(plain).toContain("Say `do it` and I'll make that a task.");
+    expect(plain).not.toContain('run this as a task?');
+    expect(plain).not.toContain('(waiting for y/n)');
+    expect(plain).not.toMatch(/^│ asking /m);
+    expect(plain).not.toMatch(/\[run\] started [·-] /);
+    expect(r.runDirs()).toEqual([]);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 
-  it('chat-ambiguous at 12x60 (flat tier): the 39-cell ladder row `run this as a task?  [y] [n]  Esc keeps`, ≤ 10 dynamic rows, Enter inert, `n` replies, 0 clears', async () => {
+  it('chat-ambiguous at 12x60 (flat tier): the same offer, ≤ 10 dynamic rows, no card edge, 0 clears', async () => {
     const r = await drive({
       name: 'r2-chat-ambiguous-flat',
       args: ['chat', '--mock'],
       rows: 12,
       cols: 60,
       env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
-      steps: [...CHAT_OPEN_NARROW, 'sleep 0.3', 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect run this as a task\\?  \\[y\\] \\[n\\]  Esc keeps', 'send \\r', 'sleep 0.25', 'send n', labelStep('jevcode', ''), ...EXIT_IDLE],
+      steps: [...CHAT_OPEN_NARROW, 'sleep 0.3', 'send the date parsing', echoStep('the date parsing'), 'send \\r', labelStep('jevcode', ''), 'expect make that a task', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
-    // §3.7 flat, < 72 columns: the narrow form; never a card edge in the flat tier (§4.1)
-    expect(plain).toContain('run this as a task?  [y] [n]  Esc keeps');
-    expect(plain).not.toContain('╭─ run this as a task');
-    expect(plain).toContain('(waiting for y/n)');
-    expect(plain).toMatch(new RegExp(`^${BADGE_DEFAULT} · asking`, 'm'));
-    expectCardOpenUntilAnswer(r, 'run this as a task?  [y] [n]  Esc keeps');
-    // rows − 2 at 12 rows: the intake frame is rule + row + composer + status = 4 dynamic rows
+    expect(plain).toContain('make that a task');
+    expect(plain).not.toContain('run this as a task?');
+    expect(plain).not.toContain('(waiting for y/n)');
     const all = syncFrames(r.text);
-    const intake = all.filter((f) => f.dynamic.some((l) => l.startsWith('run this as a task?')));
-    expect(intake.length).toBeGreaterThan(0);
-    for (const f of intake) expect(f.dynamic.length).toBeLessThanOrEqual(10);
+    for (const f of all) expect(f.dynamic.length).toBeLessThanOrEqual(10);
     for (const f of all) expect(f.dynamic.some(isBoxEdge)).toBe(false);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
-    console.log(`chat-ambiguous flat: intake frame ${intake[0]!.dynamic.length} dynamic rows at 12×60`);
   });
 
-  it('chat-ambiguous: `y` after the arm runs the task', async () => {
+  it('chat-ambiguous: `do it` accepts the offer and runs the task', async () => {
     const r = await drive({
       name: 'r2-chat-ambiguous-y',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'],
       env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
-      steps: [...CHAT_OPEN, 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect run this as a task\\?', 'sleep 0.25', 'send y', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect make that a task', 'sleep 0.25', 'send do it', 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -268,18 +242,17 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     expect(r.runDirs()).toHaveLength(1);
   });
 
-  it('--plain intake readline: `run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text > `, `n` replies, no run (§3.7 twin)', async () => {
+  it('--plain: the same conversation with no readline prompt anywhere — the reply, the offer, `do it` runs it', async () => {
     const r = await drive({
-      name: 'r2-plain-intake',
+      name: 'r2-plain-chat',
       args: ['chat', '--plain', '--mock'],
       env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
-      steps: ['expect \\[sandbox\\]', 'sleep 0.3', 'send the date parsing\\r', 'expect \\[you\\] the date parsing', 'expect keep the text > ', 'send n\\r', 'expect \\[jevcode\\] ', 'sleep 0.2', 'send /exit\\r', 'eof'],
+      steps: ['expect \\[sandbox\\]', 'sleep 0.3', 'send the date parsing\\r', 'expect \\[you\\] the date parsing', 'expect \\[jevcode\\] ', 'expect make that a task', 'sleep 0.2', 'send /exit\\r', 'eof'],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text).replace(/\r\n/g, '\n');
-    // §3.7 `--plain` readline twin, verbatim (`src/chat/lines.ts` INTAKE_READLINE_PROMPT), the answer echoed by the kernel
-    expect(plain).toContain('run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text > n');
+    expect(plain).not.toContain('run this as a task?');
     expect(plain).toMatch(/^ *\[you\] the date parsing$/m);
     expect(plain).toMatch(/^ *\[jevcode\] /m);
     expect(plain).not.toMatch(/\[run\] started [·-] /);
@@ -339,7 +312,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     const r = await drive({
       name: 'r2-jev-cost',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi\\.'), 'send /jev', echoStep('/jev'), 'send \\r', 'expect intake {2,}1 message', 'send /cost', echoStep('/cost'), 'send \\r', 'expect chat {2,}\\$', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi'), 'send /jev', echoStep('/jev'), 'send \\r', 'expect intake {2,}1 message', 'send /cost', echoStep('/cost'), 'send \\r', 'expect chat {2,}\\$', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -526,12 +499,12 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     console.log(`splash cancelled by run:start ${startAt} ms after the first frame; ${before} wordmark frames before it`);
   });
 
-  it('--ascii twins (TD §14.1): `#` letters and the `#+.` sweep head, `+-|` console and card edges, `* jevcode` brand row; no Unicode box or block cell anywhere', async () => {
+  it('--ascii twins (TD §14.1): `#` letters and the `#+.` sweep head, `+-|` console edges, `* jevcode` brand row; no Unicode box or block cell anywhere', async () => {
     const r = await drive({
       name: 'r2-ascii',
       args: ['chat', '--mock', '--ascii'],
       env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
-      steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, IDLE_STEP, 'sleep 0.8', 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect run this as a task\\?', 'sleep 0.3', 'send n', labelStep('jevcode', ''), ...EXIT_IDLE],
+      steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, IDLE_STEP, 'sleep 0.8', 'send the date parsing', echoStep('the date parsing'), 'send \\r', labelStep('jevcode', ''), 'expect make that a task', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -545,8 +518,8 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     expect(body.some((l) => l.startsWith(`+- ${BADGE_DEFAULT_TEXT.replaceAll('·', '-')} -`)), JSON.stringify(body.slice(0, 12))).toBe(true);
     expect(body.some((l) => /^\| > Say hi, ask a question, or describe a task\.\.\./.test(l))).toBe(true);
     expect(plain).toMatch(/\* \d+\.\d+\.\d+/); // the resting mark's ascii caption `* <version>` (TUI-DESIGN-3 §3.5) replaces the brand row at ≥ 21 rows
-    expect(plain).toMatch(/^\+- run this as a task\? -+\+$/m);
-    expect(plain).toMatch(/^\| \[y\] run it {3}\[n\] just chatting {3}\(Esc keeps the text; Enter does nothing\) +\|$/m);
+    // the conversation is the only thing above the console now: the reply and the `do it` offer, in the ascii twin
+    expect(plain).toContain("Say `do it` and I'll make that a task.");
     expect(plain).not.toMatch(/[╭╮╰╯│├┤─█▓▒░◆›…]/);
     expect(r.runDirs()).toEqual([]);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
@@ -684,7 +657,7 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
     const r = await drive({
       name: 'r2-panel-intake',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi\\.'), 'send /panel full', echoStep('/panel full'), 'send \\r', `expect ▾${PROMPT_GAP} decisions s0`, 'expect s0 ', 'sleep 0.3', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi'), 'send /panel full', echoStep('/panel full'), 'send \\r', `expect ▾${PROMPT_GAP} decisions s0`, 'expect s0 ', 'sleep 0.3', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -702,7 +675,7 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
     const r = await drive({
       name: 'r2-why-intake',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi\\.'), 'send /why intake', echoStep('/why intake'), 'send \\r', 'expect (?:intake|error)', 'sleep 0.3', 'send \\x03', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi'), 'send /why intake', echoStep('/why intake'), 'send \\r', 'expect (?:intake|error)', 'sleep 0.3', 'send \\x03', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -787,7 +760,10 @@ describe.skipIf(!hasExpect)('pty round 2: zero-argument starts and the keyless w
       const [frame] = frames(r.text);
       expect(frame!.lines.slice(frame!.ruleIndex).some((l) => l.startsWith(`╭─ ${BADGE_DEFAULT_TEXT} `))).toBe(true);
       const plain = stripAnsi(r.text);
-      expect(plain).toMatch(/\[run\] jevcode session · \S+ \| step 0\/– starting/);
+      // the session opens with the wordmark and the composer only (2026-09-22 directive): no header, no [sandbox], no recent hint
+      expect(plain).not.toMatch(/\[run\] jevcode session/);
+      expect(plain).not.toContain('[sandbox]');
+      expect(plain).not.toMatch(/\[ui\] recent:/);
       expect(plain).not.toContain('Where do you reach Jev');
       expect(plain).not.toContain('Pick the generator provider');
       expect(plain).not.toContain('OpenRouter API key —');

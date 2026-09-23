@@ -534,7 +534,7 @@ async function measureAll(flags: ParsedFlags, ctx: { root: string; env: NodeJS.P
     idle = await measureIdleFrames({ root, bin, onProgress: progress });
   }
   if (probes.includes('states')) {
-    log('perf: zero clears per state and geometry segment (review, palette, picker, wizard, secret row, intake card, render faults, resize idle/live 40→12→40, Ctrl+L)…\n');
+    log('perf: zero clears per state and geometry segment (review, palette, picker, wizard, secret row, an unsure reading, render faults, resize idle/live 40→12→40, Ctrl+L)…\n');
     states = await measureStates({ root, bin, onProgress: progress });
   }
   if (probes.includes('scroll-latency')) {

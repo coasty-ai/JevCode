@@ -59,7 +59,7 @@ import { HINT_TOO_SHORT, hintPrefix, looksLikeKey, sanitizeKeyInput, type Wizard
 // read (this file is on it — `src/cli/session.ts:194` imports it statically). The catalogue itself
 // (`src/models/**`) arrives only through the `await import()` in `verifyProviderKey`.
 import { PROVIDER_DISPLAY_NAME, PROVIDER_IDS, isProviderId, keyEnvNames } from '../provider/ids.js';
-import { browseOnlyText, keyRateLimitedText, keyRejectedText, keyVerifiedText } from '../tui/models/lines.js';
+import { keyRateLimitedText, keyRejectedText, keyVerifiedText } from '../tui/models/lines.js';
 import type { ProviderId } from '../provider/ids.js';
 
 /** TUI-DESIGN §24 (CLI): the refusal for `jevcode config set generator.apiKey …` and friends. */
@@ -80,33 +80,6 @@ export function generatorProviderText(provider: ProviderId, why: GeneratorProvid
 export const JEV_KEY_PROMPT = 'Jev API key (JEV_API_KEY; falls back to OPENROUTER_API_KEY): ';
 /** TUI-DESIGN-2 §12 "Wizard": the provider question as a readline prompt (a plain line; nothing secret is typed there). */
 export const JEV_PROVIDER_PROMPT = `${LOGIN_JEV_PROVIDER_PROMPT}: `;
-/**
- * TUI-DESIGN-5 §6.1 / D-AP, the runtime half: the providers `jevcode login` may write into `generator.provider`.
- *
- * D-AP's **type** half has landed (`ProviderName` and `GeneratorConfig.provider` are `ProviderId`,
- * `src/core/types.ts:758`, `:2590`) but its **runtime** half has not: `src/config/validate.ts:161` still throws
- * `one of anthropic|openrouter`, and `config.generator()` is on the ordinary startup path
- * (`src/cli/session.ts:719`, `:2229`). Writing `provider: gemini` would therefore leave a profile in which every
- * later `jevcode chat/run/config` exits 2 at startup and only a hand edit repairs it — the writer half of D-AP
- * without the reader half. So the write is refused with a reason instead (§7 row 77's rule for exactly this
- * pre-D-AP window: shown, marked, and refused as a pending value).
- *
- * **This constant and `providerNotPersistableText` are deleted together with the guard in `commandLogin` the
- * moment R5-3 lands the `isProviderId(provider)` hunk in `validate.ts`** — `test/unit/cli/login.test.ts` reads
- * that file and fails as soon as the two disagree, so the guard cannot outlive its reason.
- */
-export const PERSISTABLE_PROVIDERS: readonly ProviderId[] = ['anthropic', 'openrouter'];
-
-/** Can `generator.provider: <id>` be read back by `src/config/validate.ts` as it stands on this tree? */
-export function isPersistableProvider(id: ProviderId): boolean {
-  return PERSISTABLE_PROVIDERS.some((p) => p === id);
-}
-
-/** The refusal, headed by §12.5 S107's own words so there is one vocabulary for "this cannot generate yet". */
-export function providerNotPersistableText(id: ProviderId): string {
-  return `${browseOnlyText(id)}; --provider ${PERSISTABLE_PROVIDERS.join('|')} sets a key a run can use today, and 'jevcode models' browses the rest`;
-}
-
 /** TUI-DESIGN §11.1: verification timeout. */
 export const VERIFY_TIMEOUT_MS = 5000;
 /** masked prompt attempts before giving up */
@@ -782,15 +755,6 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
   const wantGenerator = flags.generatorKeyStdin === true;
   const wantJev = flags.jevKeyStdin === true;
   const wantOneKey = flags.keyStdin === true;
-  /**
-   * The D-AP guard (see `PERSISTABLE_PROVIDERS`): refuse **before** a key is typed, never after. `--key-stdin` is
-   * the one-OpenRouter-key form and is checked above; every other shape that reaches a generator key writes
-   * `patch.provider = provider`, which is what `src/config/validate.ts` has to be able to read back.
-   */
-  if (!wantOneKey && (generatorStep || wantGenerator) && !isPersistableProvider(provider)) {
-    io.stderr.write(`jevcode: ${providerNotPersistableText(provider)}\n`);
-    return EXIT_CODES.config;
-  }
   const interactive = io.stdin.isTTY === true || io.readMasked !== undefined;
   // §2.3: the Jev provider — the flag, the session's own resolution, else the local rules; the generator provider is never one of them
   const inferred = inferJevProvider({ flag: flags.jevProvider, resolved: await resolvedJevProvider(io, file), lookup, file });

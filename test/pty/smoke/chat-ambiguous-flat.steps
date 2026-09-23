@@ -1,19 +1,17 @@
-# chat at 12x60 (the flat tier, TUI-DESIGN-2 §4.1): JEVCODE_MOCK_INTAKE=ambiguous — `the date parsing` draws the intake's
-# one-row twin in its 39-cell ladder form `run this as a task?  [y] [n]  Esc keeps` (§3.7 `intakeRowLines` below 72
-# columns), never a card; Enter before the arm is inert, `n` after the arm takes the chat reading and a [jevcode] reply
-# follows; no run. The narrow status row may drop the `sess` badge, so the `[sandbox]` item stands in for the attached host.
+# chat at 12x60 (the flat tier, TUI-DESIGN-2 §4.1): JEVCODE_MOCK_INTAKE=ambiguous — the narrow terminal gets the same
+# conversational answer as the wide one: the reply, then the `do it` offer, no card and no blocked composer. The quiet
+# start (2026-09) prints no `[sandbox]` item in the TUI, so the attached host is read from the status row's `sess $…`
+# badge — the controller pushes the session meter in the same breath (`pushSessionSpend`).
 expect \x1b\[\?25l
 expect Say hi
-expect \[sandbox\]
+expect sess \$
 sleep 0.3
 send the date parsing
 sleep 0.2
 send \r
-expect run this as a task\?  \[y\] \[n\]  Esc keeps
-send \r
-sleep 0.25
-send n
 expect \[jevcode\](?:\x1b\[[0-9;]*m)* 
+expect make that a task
+sleep 0.3
 send /exit
 sleep 0.2
 send \r

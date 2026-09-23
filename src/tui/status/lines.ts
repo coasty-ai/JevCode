@@ -140,10 +140,8 @@ export interface StatusLineState {
 
 /** TUI-DESIGN-2 §4.8: the three phases between Enter and a reply. */
 export type ThinkingPhase = 'intake' | 'lookup' | 'replying';
-/** TUI-DESIGN-2 §4.8 / §12 "Status": the left words per phase (`asking` is the `intake` overlay's word). */
+/** TUI-DESIGN-2 §4.8 / §12 "Status": the left word per chat phase. */
 export const THINKING_WORDS: Readonly<Record<ThinkingPhase, string>> = { intake: 'thinking', lookup: 'looking', replying: 'replying' };
-/** TUI-DESIGN-2 §3.7 / §12: the left word while the intake card asks `run this as a task?`. */
-export const ASKING_WORD = 'asking';
 
 /** TUI-DESIGN-3 §1.1 (D-N): the badge word is whatever `MODE_BADGE_WORD` says — a string, never an enumeration of modes here. */
 export type ModeBadge = string;
@@ -379,8 +377,6 @@ export function leftZoneWord(s: StatusLineState, o: StatusLineOptions = {}): str
 function leftWord(s: StatusLineState, o: StatusLineOptions): string {
   if (s.overlay === 'wizard') return 'setup';
   if (s.overlay === 'palette') return 'palette';
-  // TUI-DESIGN-2 §3.7 / §4.8: the intake card owns the left word
-  if (s.overlay === 'intake') return ASKING_WORD;
   if (s.picker === true) return 'picker';
   if (s.run === 'aborting') return 'aborting';
   if (s.run === 'pausing') return `pausing after step ${stepOf(s)}`;
