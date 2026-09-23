@@ -3,7 +3,7 @@
  * §24 "Overlays"; TUI-DESIGN-2 §3.7, §4.7): review, wizard, follow-up confirm, secret gate row, blocking pane,
  * palette, undo prompt, exit confirm and the minimum-size notice all render here, directly above
  * the composer, so at most one exists at a time and `computeLayout` has a single allocation order to prove. Every
- * kind is a fixed-height overflow-hidden box of `wrap="truncate"` rows built by the shared `lines()` functions (TUI-DESIGN-3 §5.2
+ * kind is a fixed-height clipped box of `wrap="truncate"` rows built by the shared `lines()` functions (TUI-DESIGN-3 §5.2
  * A8–A9: the review card's `armed` flag rides through to `Review`; the palette's selected `▌` takes `accent2`) —
  * the `--plain`, `--screen-reader` and `--ascii` twins read the same functions. In the boxed tier (`chrome === 3`)
  * every kind but the wizard (hosted by the console) and the secret gate (a console row) is a rounded card from
@@ -201,8 +201,10 @@ export interface OverlayProps {
 
 function Rows({ lines, rows, columns, glyphs, role, theme, color }: { lines: readonly string[]; rows: number; columns: number; glyphs: GlyphSet; role?: ColorRole | null; theme: Theme; color: ColorOn }): React.JSX.Element {
   const shown = lines.slice(0, rows).map((l) => truncateCells(l, columns, glyphs));
+  // one `wrap="truncate"` row per child, already cut to the width: the box clips vertically only (Ink's horizontal clip
+  // could never remove a cell; `overflowY` skips its per-line getWidestLine + sliceAnsi with byte-identical output)
   return (
-    <Box flexDirection="column" height={rows} overflow="hidden">
+    <Box flexDirection="column" height={rows} overflowY="hidden">
       {shown.map((l, i) => (
         <Text key={`o${i}`} wrap="truncate" {...(role ? textProps(theme, role, color) : {})}>
           {l}
@@ -218,8 +220,9 @@ function Card({ title, body, rows, columns, glyphs, edgeRole, bodyRole, theme, c
   const lines = cardLines(title, body.slice(0, inner), columns, glyphs);
   const edges = textProps(theme, edgeRole, color);
   const bodyProps = bodyRole === undefined ? edges : bodyRole === null ? {} : textProps(theme, bodyRole, color);
+  // every child is one `wrap="truncate"` card row: vertical clip only, as in `Rows`
   return (
-    <Box flexDirection="column" height={rows} overflow="hidden">
+    <Box flexDirection="column" height={rows} overflowY="hidden">
       {lines.slice(0, rows).map((l, i) => {
         if (i === 0 || i === lines.length - 1) {
           return (
@@ -298,7 +301,8 @@ function PaletteCard({ title, list, rows, columns, glyphs, theme, color }: { tit
       {list.slice(0, inner).map((row, i) => (
         <Box key={`p${i}`} height={1} overflow="hidden" flexDirection="row">
           <Text {...edges}>{`${glyphs.boxVertical} `}</Text>
-          <Box width={w} height={1} overflow="hidden">
+          {/* one truncate Text cut to `w`: vertical clip only (the row keeps `overflow`: it has three flex children) */}
+          <Box width={w} height={1} overflowY="hidden">
             <PaletteRowText row={row} theme={theme} color={color} />
           </Box>
           <Text {...edges}>{` ${glyphs.boxVertical}`}</Text>
@@ -397,8 +401,9 @@ export function Overlay(p: OverlayProps): React.JSX.Element | null {
         return <PaletteCard title={CARD_TITLE_COMMANDS} list={list} rows={rows} columns={p.columns} glyphs={g} theme={theme} color={color} />;
       }
       const list = paletteRows(d.query, d.state, d.selected, rows, p.columns, g.mode === 'ascii');
+      // one `wrap="truncate"` palette row per child: vertical clip only, as in `Rows`
       return (
-        <Box flexDirection="column" height={rows} overflow="hidden">
+        <Box flexDirection="column" height={rows} overflowY="hidden">
           {list.map((row, i) => (
             <PaletteRowText key={`p${i}`} row={row} theme={theme} color={color} />
           ))}

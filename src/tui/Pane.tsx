@@ -3,7 +3,7 @@
  * builders of `src/tui/pane/*` (`paneLines(state, rows, columns, overlay)`), `[`/`]` cycle (resolved in `<App>`),
  * the tab header on the rule row (`paneRuleRow`), side by side only under §7.2's rule, and the session / rewind
  * picker rendered in this slot (`lines` override). Every row is `<Text wrap="truncate">` inside a fixed-height
- * overflow-hidden box, so the §2 budget holds whatever the builders return.
+ * box that clips vertically (`overflowY`; truncation already fits the width), so the §2 budget holds whatever the builders return.
  */
 import { Box, Text } from 'ink';
 import type { OverlayKind } from './layout.js';
@@ -142,8 +142,10 @@ export function Pane(p: PaneProps): React.JSX.Element | null {
   const color = p.color ?? true;
   const built = p.size === undefined ? paneLines(p.state, rows, p.columns, p.overlay, { terminalRows: p.terminalRows, glyphs: g }) : panelLines(p.state, rows, p.columns, p.overlay, { terminalRows: p.terminalRows, glyphs: g, size: p.size });
   const lines = (p.lines ?? built).slice(0, rows);
+  // every child is one `wrap="truncate"` row that Ink cuts to the box's width, so only the vertical clip can remove
+  // anything: `overflowY` skips Ink's per-line horizontal clip (getWidestLine + sliceAnsi) with byte-identical output
   return (
-    <Box flexDirection="column" height={rows} overflow="hidden">
+    <Box flexDirection="column" height={rows} overflowY="hidden">
       {lines.map((line, i) => {
         const role = p.lines ? (p.selected === i ? 'accent' : null) : paneRowRole(line);
         return (

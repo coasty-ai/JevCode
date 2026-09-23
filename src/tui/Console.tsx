@@ -22,6 +22,7 @@
  */
 import { Box, Text } from 'ink';
 import type { CursorPosition } from 'ink';
+import { useMemo } from 'react';
 import type { TrustInputs } from '../config/trust.js';
 import { FILTER_LABEL, composerView, placeholderRow, promptFor, type ComposerMode } from './composer/Composer.js';
 import type { TextBuffer } from './composer/buffer.js';
@@ -127,6 +128,88 @@ export interface ConsoleRows {
   bottom: string;
 }
 
+/**
+ * The memo keys of the Console's pure builders. A CPU profile of a streamed chat reply at 40×120 put the Console at 108
+ * of the 202 ms React render phase — statusSpans 45, stringWidth 28.7, composerView 16.5, consoleTopEdgeParts 7.5 — all
+ * rebuilt on every delta, spinner and indicator tick although none of their inputs had moved. The App hands the Console
+ * fresh objects every render (`statusView(...)`, `statusOpts`, `hitSpans(...)`), so the memos are keyed on the VALUES
+ * inside them, never on the objects. The Console itself is deliberately not `React.memo`: the App resets the cursor
+ * before its children render (`setCursorPosition(undefined)`) and the Console places it again during every render, so a
+ * skipped Console would hide it (`console-memo.test.tsx` in the tui unit tests pins both halves).
+ */
+const one = (v: unknown): readonly unknown[] => [v];
+const NO_GIT: readonly unknown[] = [false, null, null, null, null, null, null];
+
+/**
+ * Everything `statusSpans` reads from `StatusLineState`, flattened to values `useMemo` compares with `Object.is`. The
+ * mapped type lists every member, optional ones included, so a member added to `StatusLineState` is a type error here
+ * until it is keyed — the memo cannot go stale by omission. `git` and `draft` are rebuilt by the App on every render
+ * (`{ ...state.git, head, frozen }`, `{ secretHits }`), so they are flattened to their fields; every other member is a
+ * reducer value (or a primitive the App derives, `wallMs` / `ctx` / `agents`) whose identity moves exactly when its
+ * content does. `nowMs` is the reducer's 1 Hz clock, so the row is rebuilt once a second, not on every render. Each
+ * entry returns a fixed number of values, so the deps array never changes length.
+ */
+const STATUS_KEY: { readonly [K in keyof StatusLineState]-?: (v: StatusLineState[K]) => readonly unknown[] } = {
+  run: one,
+  mode: one,
+  status: one,
+  ready: one,
+  done: one,
+  runId: one,
+  overlay: one,
+  pendingReview: one,
+  retrying: one,
+  blocking: one,
+  errors: one,
+  stageStartedAt: one,
+  toasts: one,
+  git: (z) => (z === null ? NO_GIT : [true, z.head, z.ahead, z.behind, z.dirty, z.linkedWorktree, z.frozen]),
+  spend: one,
+  draft: (d) => [d.secretHits],
+  nowMs: one,
+  title: one,
+  sandbox: one,
+  noNetwork: one,
+  diskErrors: one,
+  jevLatencies: one,
+  picker: one,
+  wallMs: one,
+  doneExitCode: one,
+  modeBadge: one,
+  thinking: one,
+  peers: one,
+  fold: one,
+  selfId: one,
+  ctx: one,
+  agents: one,
+};
+const STATUS_KEYS = Object.keys(STATUS_KEY) as (keyof StatusLineState)[];
+/** The `StatusLineOptions` members, same rule: a new option is a type error until it is keyed. */
+const STATUS_OPTION_KEY: { readonly [K in keyof StatusLineOptions]-?: true } = { ascii: true, reducedMotion: true, spinnerFrame: true, mode: true, flatBadge: true, terminalColumns: true };
+const STATUS_OPTION_KEYS = Object.keys(STATUS_OPTION_KEY) as (keyof StatusLineOptions)[];
+
+function statusKeyOf<K extends keyof StatusLineState>(s: StatusLineState, k: K): readonly unknown[] {
+  // `STATUS_KEY[k]` IS the entry for `k`; the checker only cannot narrow the table's union by a generic key
+  return (STATUS_KEY[k] as (v: StatusLineState[K]) => readonly unknown[])(s[k]);
+}
+
+/** The status row's memo deps: the inner width, every `StatusLineState` value and every option (fixed length). */
+export function statusMemoDeps(s: StatusLineState, inner: number, o: StatusLineOptions): unknown[] {
+  const deps: unknown[] = [inner];
+  for (const k of STATUS_KEYS) deps.push(...statusKeyOf(s, k));
+  for (const k of STATUS_OPTION_KEYS) deps.push(o[k]);
+  return deps;
+}
+
+/** The hit spans as one primitive (`start:end,…`): the App builds a new array every render, `composerView` reads only the offsets. */
+function spansKey(spans: readonly Span[]): string {
+  let key = '';
+  for (const s of spans) key += `${s.start}:${s.end},`;
+  return key;
+}
+
+const NO_SPANS: readonly Span[] = [];
+
 /** TUI-DESIGN-2 §4.3: the wizard's body rows at the inner width — the masked field row as `› ` + mask cells (`maskedFieldRow` with `glyphs.prompt`). */
 export function wizardBodyRows(state: OnboardingState, rows: number, innerColumns: number, g: GlyphSet, trust: TrustInputs | null, screenReader: boolean): string[] {
   const view: WizardView = { rows, columns: innerColumns, ascii: g.mode === 'ascii', screenReader, prompt: promptFor(g), ...(trust ? { trust } : {}) };
@@ -146,11 +229,17 @@ export function Console(p: ConsoleProps): React.JSX.Element {
   const height = Math.max(1, Math.floor(p.height));
   const edges = textProps(theme, p.edgeRole ?? (p.live === true ? 'borderFocus' : 'border'), color);
   const head = p.title !== undefined && p.title !== null && p.title !== '' ? p.title : p.badge;
-  const parts = consoleTopEdgeParts(head, p.dir, columns, g);
+  // the three edge strings depend on the geometry and the two words only
+  const frame = useMemo(() => ({ parts: consoleTopEdgeParts(head, p.dir, columns, g), divider: consoleDivider(columns, g), bottom: consoleBottom(columns, g) }), [head, p.dir, columns, g]);
+  const parts = frame.parts;
   const gateRows = p.gate !== undefined && p.gate !== null ? 1 : 0;
   const bodyTop = p.top + 1 + gateRows;
+  // Every row box below wraps exactly one `wrap="truncate"` Text that Ink has already cut to the box's width, so the box
+  // clips vertically only (`overflowY`): Ink's horizontal clip (`Output.get`: getWidestLine + sliceAnsi on every line of
+  // every frame) could never remove a cell here, and it is most of Ink's per-frame cost with box glyphs (a 30×120 clip
+  // bench: 5.34 → 3.03 ms, byte-identical output). `frame-identity.test.tsx` (tui unit tests) pins frames and rule.
   const wrap = (body: React.ReactNode, key: string): React.JSX.Element => (
-    <Box key={key} height={1} overflow="hidden">
+    <Box key={key} height={1} overflowY="hidden">
       <Text wrap="truncate">
         <Text {...edges}>{`${g.boxVertical} `}</Text>
         {body}
@@ -158,6 +247,20 @@ export function Console(p: ConsoleProps): React.JSX.Element {
       </Text>
     </Box>
   );
+  const base = promptFor(g);
+  const prompt = p.mode === 'filter' ? `${base}${FILTER_LABEL}` : base;
+  const wizardOn = Boolean(p.wizard);
+  const spans = p.spans ?? NO_SPANS;
+  const spanKey = spansKey(spans);
+  const maskGlyph = maskGlyphFor(g);
+  // the composer's rows and cursor: a pure function of the draft and the geometry (the wizard draws its own rows)
+  const composed = useMemo(
+    () => (wizardOn ? null : composerView({ text: p.buffer.text, cursor: p.buffer.cursor, chips: p.buffer.chips, columns: inner, height, scrollTop: p.scrollTop, spans, prompt, glyphs: g, maskGlyph })),
+    // `spans` is read through its offsets (`spanKey`), the only part `composerView` uses
+    [wizardOn, p.buffer.text, p.buffer.cursor, p.buffer.chips, inner, height, p.scrollTop, spanKey, prompt, g, maskGlyph],
+  );
+  const recent = p.recent ?? null;
+  const placeholder = useMemo(() => (wizardOn ? '' : placeholderRow(p.mode, p.rows, inner, stringWidth(prompt), g, recent)), [wizardOn, p.mode, p.rows, inner, prompt, g, recent]);
   const bodyRows: React.JSX.Element[] = [];
   if (p.wizard) {
     const sr = p.wizard.screenReader === true;
@@ -171,13 +274,11 @@ export function Console(p: ConsoleProps): React.JSX.Element {
       bodyRows.push(wrap(<Text {...(i === 0 ? { bold: true } : i === lines.length - 1 && p.wizard.state.hint !== null ? textProps(theme, 'warn', color) : textProps(theme, 'dim', color))}>{line}</Text>, `w${i}`));
     }
     if (fieldRow === -1 || !p.active) p.cursor(undefined);
-  } else {
-    const base = promptFor(g);
-    const prompt = p.mode === 'filter' ? `${base}${FILTER_LABEL}` : base;
-    const view = composerView({ text: p.buffer.text, cursor: p.buffer.cursor, chips: p.buffer.chips, columns: inner, height, scrollTop: p.scrollTop, spans: p.spans ?? [], prompt, glyphs: g, maskGlyph: maskGlyphFor(g) });
+  } else if (composed !== null) {
+    // (`composed` is null exactly when the wizard owns the rows, the branch above)
+    const view = composed;
     if (view.scrollTop !== p.scrollTop) p.onScroll?.(view.scrollTop);
     const empty = p.buffer.text.length === 0;
-    const placeholder = placeholderRow(p.mode, p.rows, inner, stringWidth(prompt), g, p.recent ?? null);
     // TUI-DESIGN-3 §2.6 (D-O): the prompt is pink at rest and amber while a run is live (steering must not look like idle)
     const promptProps = p.live === true && p.active ? textProps(theme, 'steer', color) : p.active ? textProps(theme, 'accent', color) : {};
     if (p.active && view.cursor !== null && p.searchRow == null) p.cursor({ x: 2 + view.cursor.x, y: bodyTop + view.cursor.row });
@@ -211,10 +312,14 @@ export function Console(p: ConsoleProps): React.JSX.Element {
       );
     }
   }
-  const status = statusSpans(p.status, inner, p.statusOptions);
+  // the status row's text, colour spans and right padding; keyed on every value the row reads (`statusMemoDeps`)
+  const status = useMemo(() => {
+    const s = statusSpans(p.status, inner, p.statusOptions);
+    return { ...s, pad: padEndCells('', Math.max(0, inner - stringWidth(s.text))) };
+  }, statusMemoDeps(p.status, inner, p.statusOptions));
   return (
     <Box flexDirection="column" height={1 + gateRows + height + 3} overflow="hidden">
-      <Box height={1} overflow="hidden">
+      <Box height={1} overflowY="hidden">
         <Text wrap="truncate">
           <Text {...edges}>{parts.left}</Text>
           <Text {...(p.title ? textProps(theme, 'accent', color) : textProps(theme, 'badge', color))}>{parts.badge}</Text>
@@ -225,21 +330,21 @@ export function Console(p: ConsoleProps): React.JSX.Element {
       </Box>
       {gateRows === 1 ? wrap(<Text {...textProps(theme, 'secret', color)}>{fitCells(p.gate ?? '', inner, g)}</Text>, 'gate') : null}
       {bodyRows}
-      <Box height={1} overflow="hidden">
+      <Box height={1} overflowY="hidden">
         <Text wrap="truncate" {...edges}>
-          {consoleDivider(columns, g)}
+          {frame.divider}
         </Text>
       </Box>
       {wrap(
         <Text>
           {spanPieces(status.text, status.spans, theme, color)}
-          <Text>{padEndCells('', Math.max(0, inner - stringWidth(status.text)))}</Text>
+          <Text>{status.pad}</Text>
         </Text>,
         'status',
       )}
-      <Box height={1} overflow="hidden">
+      <Box height={1} overflowY="hidden">
         <Text wrap="truncate" {...edges}>
-          {consoleBottom(columns, g)}
+          {frame.bottom}
         </Text>
       </Box>
     </Box>
