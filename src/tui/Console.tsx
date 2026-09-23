@@ -135,7 +135,7 @@ export interface ConsoleRows {
  * fresh objects every render (`statusView(...)`, `statusOpts`, `hitSpans(...)`), so the memos are keyed on the VALUES
  * inside them, never on the objects. The Console itself is deliberately not `React.memo`: the App resets the cursor
  * before its children render (`setCursorPosition(undefined)`) and the Console places it again during every render, so a
- * skipped Console would hide it (test/unit/tui/console-memo.test.tsx pins both halves).
+ * skipped Console would hide it (`console-memo.test.tsx` in the tui unit tests pins both halves).
  */
 const one = (v: unknown): readonly unknown[] => [v];
 const NO_GIT: readonly unknown[] = [false, null, null, null, null, null, null];
@@ -237,7 +237,7 @@ export function Console(p: ConsoleProps): React.JSX.Element {
   // Every row box below wraps exactly one `wrap="truncate"` Text that Ink has already cut to the box's width, so the box
   // clips vertically only (`overflowY`): Ink's horizontal clip (`Output.get`: getWidestLine + sliceAnsi on every line of
   // every frame) could never remove a cell here, and it is most of Ink's per-frame cost with box glyphs (a 30×120 clip
-  // bench: 5.34 → 3.03 ms, byte-identical output). test/unit/tui/frame-identity.test.tsx pins the frames and the rule.
+  // bench: 5.34 → 3.03 ms, byte-identical output). `frame-identity.test.tsx` (tui unit tests) pins frames and rule.
   const wrap = (body: React.ReactNode, key: string): React.JSX.Element => (
     <Box key={key} height={1} overflowY="hidden">
       <Text wrap="truncate">
