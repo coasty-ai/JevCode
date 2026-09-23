@@ -809,11 +809,14 @@ export async function buildProvider(config: ResolvedConfigWithDiagnostics, flags
   }
   if (flags.mock || flags.mockGenerator) {
     const { createMockProvider, withMockChat } = await import('../provider/mock.js');
-    const { mockChatReplyFromEnv, mockTrajectory } = await import('./mock-trajectory.js');
+    const { mockAgentTurns, mockChatReplyFromEnv, mockTrajectory } = await import('./mock-trajectory.js');
     // `withMockChat`: a chat turn (no tools) gets the deterministic reply and leaves the trajectory for the run loop;
     // `mockChatReplyFromEnv`: the stream probe's knobs (JEVCODE_MOCK_CHAT_STREAM …) — `{}`, today's reply, when unset
     const chat = mockChatReplyFromEnv(process.env);
-    return createMockProvider({ turns: withMockChat(mockTrajectory(Number(flags.mockSteps ?? 8)), chat.reply), ...(chat.onEmit !== undefined ? { onEmit: chat.onEmit } : {}) });
+    // AGENT-LOOP-DESIGN §14.4: agent mode gets the native multi-call trajectory, picked per run from the message (a greeting or a
+    // question → one prose turn, else the five task turns); the stream preset, when set, is that run's first prose turn
+    const turns = mode === 'agent' ? mockAgentTurns(chat.reply) : withMockChat(mockTrajectory(Number(flags.mockSteps ?? 8)), chat.reply);
+    return createMockProvider({ turns, ...(chat.onEmit !== undefined ? { onEmit: chat.onEmit } : {}) });
   }
   const gen = config.generator();
   // every provider through the registry, so each uses ITS OWN adapter — the two-client switch that stood here sent

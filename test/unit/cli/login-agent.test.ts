@@ -44,20 +44,20 @@ function io(mode: string, secrets: Map<string, Resolved<string>>): CommandIo & {
 
 describe('jevcode login --status under agent mode (§14.2)', () => {
   it('the generator key alone is ok: `needs: generator (Jev optional)`, `decider.apiKey: not set`, exit 0', async () => {
-    const t = io('agent', new Map([['generator.apiKey', { value: GEN_KEY, source: 'env' }]]));
+    const t = io('agent', new Map<string, Resolved<string>>([['generator.apiKey', { value: GEN_KEY, source: 'env' }]]));
     expect(await commandLogin({ status: true }, t)).toBe(0);
     expect(t.text()).toContain('decider.apiKey: not set');
     expect(t.text()).toContain('mode: agent (env) — needs: generator (Jev optional)');
   });
 
   it('no generator key is still a failure in agent mode (exit 1)', async () => {
-    const t = io('agent', new Map([['decider.apiKey', { value: GEN_KEY, source: 'env' }]]));
+    const t = io('agent', new Map<string, Resolved<string>>([['decider.apiKey', { value: GEN_KEY, source: 'env' }]]));
     expect(await commandLogin({ status: true }, t)).toBe(1);
     expect(t.text()).toContain('generator.apiKey: not set');
   });
 
   it('legacy modes are unchanged: a missing Jev key fails jev-on; jev-only needs Jev alone', async () => {
-    const genOnly = new Map([['generator.apiKey', { value: GEN_KEY, source: 'env' }]]);
+    const genOnly = new Map<string, Resolved<string>>([['generator.apiKey', { value: GEN_KEY, source: 'env' }]]);
     const t = io('jev-on', genOnly);
     expect(await commandLogin({ status: true }, t)).toBe(1);
     expect(t.text()).toContain('needs: generator, jev');

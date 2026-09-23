@@ -17,11 +17,18 @@
  * no file write ever sits between an emission and its paint. They are read here, in the one seam of the mock
  * provider, so they are honoured only under `--mock`; unset (or an unknown preset), the chat reply is the one-delta
  * `MOCK_CHAT_REPLY` and every existing smoke and pty test is byte-unchanged.
+ *
+ * Agent mode (AGENT-LOOP-DESIGN §14.4, §15 S5, §A1): `mockAgentTurns` scripts NATIVE multi-call turns (`MockTurn.toolCalls`, streamed
+ * and returned with ids by the mock provider, slice S2) and picks them per run from the message itself, the way every chat message
+ * becomes an agent run: a greeting or a question gets one prose-only turn (the run ends `answered`), anything else the five-turn
+ * task — prose + two parallel `read_file` + `todo_write`; `write_file`; a read-only `bash` (`ls`) + a mutating `bash` that exits 0;
+ * `edit_file`; prose. With `JEVCODE_MOCK_CHAT_STREAM` set, the run's FIRST prose turn streams the preset at the configured gaps, so
+ * the stream-latency probe measures the agent-mode reply. The `propose_action` trajectory above stays for the legacy modes.
  */
 import { writeFileSync } from 'node:fs';
-import type { Action, MockTurn, PlanDraft } from '../core/types.js';
+import type { Action, GenerateRequest, Json, MockTurn, PlanDraft } from '../core/types.js';
 import { streamPreset, streamPresetName, type StreamPresetName } from '../perf/stream-fixture.js';
-import type { MockEmit } from '../provider/mock.js';
+import { MOCK_CHAT_REPLY, type MockEmit } from '../provider/mock.js';
 
 /** `JEVCODE_MOCK_STEP_MS` as a non-negative whole number of milliseconds; 0 when unset or malformed. */
 export function mockStepMs(env: NodeJS.ProcessEnv): number {
@@ -171,4 +178,126 @@ export function mockChatReplyFromEnv(env: NodeJS.ProcessEnv): MockChatSetup {
   const reply: MockTurn = { deltas, deltaGapMs: gapMs };
   const path = env['JEVCODE_PERF_STREAM_LOG']?.trim();
   return path === undefined || path === '' ? { reply } : { reply, onEmit: streamLogHook(path, preset, gapMs, deltas.length) };
+}
+
+// ---------------------------------------------------------------------------------------
+// Agent mode (AGENT-LOOP-DESIGN §14.4, §15 S5): native tool calls, one trajectory per run
+// ---------------------------------------------------------------------------------------
+
+/** the one file the agent task trajectory creates, edits and leaves behind (it touches nothing it did not create) */
+export const MOCK_AGENT_FILE = 'scratch_agent.py';
+/** the file the trajectory's mutating `bash` writes */
+export const MOCK_AGENT_LOG = 'scratch_agent.log';
+/** the task trajectory's opening prose (turn 1, before its calls) */
+export const MOCK_AGENT_OPENING = "I'll read the workspace first, then make the change.";
+/** the task trajectory's closing prose (turn 5, no calls): the run's answer */
+export const MOCK_AGENT_CLOSING = `Done: created ${MOCK_AGENT_FILE}, checked the shell and set VALUE to 2.`;
+
+const MOCK_TURN_USAGE = { inputTokens: 1200, outputTokens: 150, costUsd: 0, calls: 1 } as const;
+
+/** a greeting, thanks or small talk, alone or with a word or two — answered in prose, no tools (the mock's heuristic only; the real model decides for itself) */
+const MOCK_AGENT_GREETING_RE = /^\s*(hi|hello|hey|yo|thanks?|thank you|bye|ok(ay)?|cool|nice|great|perfect|awesome|lol|good (morning|evening|afternoon))\b[\s!.,]*(\w+[\s!.,]*){0,2}$/i;
+/** a question by its opener (`who made you` has no `?`) */
+const MOCK_AGENT_QUESTION_RE = /^\s*(?:who|whom|whose|what|which|why|how|when|where|can|could|is|are|am|was|were|do|does|did|should|would|will)\b/i;
+
+/** true when the mock answers `text` with one prose-only turn (a reply); false when it runs the task trajectory */
+export function isMockConversational(text: string): boolean {
+  const t = text.trim();
+  return t === '' || MOCK_AGENT_GREETING_RE.test(t) || /\?\s*$/.test(t) || MOCK_AGENT_QUESTION_RE.test(t);
+}
+
+/**
+ * The task text of an agent request: the last `# New task` / `# Task` section of the last user message (AGENT-LOOP-DESIGN §5.3,
+ * §7.6), else that message's whole text; a legacy request's last user message; '' when there is none.
+ */
+export function mockTaskText(req: Pick<GenerateRequest, 'messages' | 'agent'>): string {
+  let text = '';
+  if (req.agent !== undefined) {
+    for (let i = req.agent.messages.length - 1; i >= 0; i--) {
+      const m = req.agent.messages[i]!;
+      if (m.role !== 'user') continue;
+      const parts = m.content.flatMap((b) => (b.type === 'text' ? [b.text] : []));
+      if (parts.length === 0) continue;
+      text = parts.join('\n');
+      break;
+    }
+  } else {
+    for (let i = req.messages.length - 1; i >= 0; i--) {
+      const m = req.messages[i]!;
+      if (m.role === 'user') {
+        text = m.content;
+        break;
+      }
+    }
+  }
+  const sections = [...text.matchAll(/^# (?:New task|Task)[ \t]*\n([\s\S]*?)(?=\n# |$(?![\s\S]))/gm)];
+  const last = sections.at(-1);
+  return (last?.[1] ?? text).trim();
+}
+
+function call(turn: number, k: number, name: string, input: Json): { id: string; name: string; input: Json; rawJson: string } {
+  return { id: `mock-t${turn}-${k}`, name, input, rawJson: JSON.stringify(input) };
+}
+
+/** a turn's prose: the stream preset's timed deltas when the probe set one (the run's first prose turn), else `text` */
+function prose(text: string, latencyMs: number, stream: MockTurn | undefined): Pick<MockTurn, 'text' | 'deltas' | 'deltaGapMs' | 'latencyMs'> {
+  if (stream?.deltas !== undefined) return { deltas: stream.deltas, ...(stream.deltaGapMs !== undefined ? { deltaGapMs: stream.deltaGapMs } : {}), ...(latencyMs > 0 ? { latencyMs } : {}) };
+  return { text, ...(latencyMs > 0 ? { latencyMs } : {}) };
+}
+
+/**
+ * The five-turn agent task of the design (§15 S5): (1) prose + two parallel `read_file` + a `todo_write`; (2) `write_file`;
+ * (3) a read-only `bash` (`ls`) + a mutating `bash` that exits 0; (4) `edit_file`; (5) prose only. `stream` (the stream probe's
+ * preset turn) replaces the opening prose.
+ */
+export function mockAgentTaskTurns(latencyMs: number = mockStepMs(process.env), stream?: MockTurn): MockTurn[] {
+  const lat = latencyMs > 0 ? { latencyMs } : {};
+  const todos: Json = {
+    todos: [
+      { content: `create ${MOCK_AGENT_FILE}`, status: 'in_progress' },
+      { content: 'check the shell works', status: 'pending' },
+      { content: `edit ${MOCK_AGENT_FILE}`, status: 'pending' },
+    ],
+  };
+  return [
+    {
+      ...prose(`${MOCK_AGENT_OPENING}\n`, latencyMs, stream),
+      toolCalls: [call(1, 0, 'read_file', { path: 'README.md' }), call(1, 1, 'read_file', { path: 'package.json' }), call(1, 2, 'todo_write', todos)],
+      usage: MOCK_TURN_USAGE,
+      stopReason: 'tool_use',
+    },
+    { toolCalls: [call(2, 0, 'write_file', { path: MOCK_AGENT_FILE, content: 'VALUE = 1\n' })], usage: MOCK_TURN_USAGE, stopReason: 'tool_use', ...lat },
+    {
+      toolCalls: [call(3, 0, 'bash', { command: 'ls', description: 'list the workspace' }), call(3, 1, 'bash', { command: `printf 'ok\\n' > ${MOCK_AGENT_LOG}`, description: 'check the shell works' })],
+      usage: MOCK_TURN_USAGE,
+      stopReason: 'tool_use',
+      ...lat,
+    },
+    { toolCalls: [call(4, 0, 'edit_file', { path: MOCK_AGENT_FILE, old_string: 'VALUE = 1', new_string: 'VALUE = 2' })], usage: MOCK_TURN_USAGE, stopReason: 'tool_use', ...lat },
+    { text: `${MOCK_AGENT_CLOSING}\n`, usage: MOCK_TURN_USAGE, stopReason: 'end_turn', ...lat },
+  ];
+}
+
+/** The prose-only reply turn (a greeting or a question): the stream probe's preset when set, else `MOCK_CHAT_REPLY`. */
+export function mockAgentReplyTurn(latencyMs: number = mockStepMs(process.env), stream?: MockTurn): MockTurn {
+  return { ...prose(MOCK_CHAT_REPLY, latencyMs, stream), usage: MOCK_TURN_USAGE, stopReason: 'end_turn' };
+}
+
+/**
+ * The `--mock` provider's turns under `--mode agent` (function form, `MockProviderOptions.turns`). One provider is built per run
+ * (`buildProvider`), so the closure's cursor is the run's: the first tool-offering request picks the trajectory from the task
+ * text — a reply turn for a greeting or a question, the five task turns otherwise — and later requests walk it; past its end the
+ * closing prose repeats (a continuation never fails the run). A request with no tools (a compaction writer) gets prose and
+ * leaves the cursor where it was.
+ */
+export function mockAgentTurns(stream?: MockTurn, latencyMs: number = mockStepMs(process.env)): (req: GenerateRequest) => MockTurn {
+  let plan: MockTurn[] | null = null;
+  let i = 0;
+  return (req: GenerateRequest): MockTurn => {
+    if (req.tools === undefined || req.tools.length === 0) return { text: MOCK_CHAT_REPLY, usage: MOCK_TURN_USAGE, stopReason: 'end_turn' };
+    plan ??= isMockConversational(mockTaskText(req)) ? [mockAgentReplyTurn(latencyMs, stream)] : mockAgentTaskTurns(latencyMs, stream);
+    const turn = plan[i] ?? plan[plan.length - 1]!;
+    i += 1;
+    return turn;
+  };
 }
