@@ -12,7 +12,8 @@
  * `store.updateMeta({ resumes })` and `store.writeState(state)`.
  */
 import { clip, headTail } from '../core/text.js';
-import type { Action, CheckpointState, RunMeta, StepRecord, StopReason, WindowEntry } from '../core/types.js';
+import { isJsonObject } from '../core/json.js';
+import type { Action, CheckpointState, Json, RunMeta, StepRecord, StopReason, WindowEntry } from '../core/types.js';
 import { ConfigError } from '../errors.js';
 import { createCheckpointStore, refuseNewerRunMeta, type DiskCheckpointStore, type Redactor } from './store.js';
 import { resolveRunDir } from './run-id.js';
@@ -168,6 +169,8 @@ export function foldStepsIntoState(state: CheckpointState, steps: readonly StepR
 
   // A rule-1 diagnostic is stale once a committed row exists at or past its step number.
   const interrupted = state.interrupted && step >= state.interrupted.step ? null : state.interrupted;
+  // docs/AGENT-LOOP-DESIGN.md §10: the agent driver keeps its transcript up to the seq a counted step reached
+  const agentState = state.agentState === undefined ? undefined : raiseAgentTranscriptSeq(state.agentState, folded);
 
   // contract 1.4 (COORDINATION-DESIGN §7.3 step 4): the replay detail drops together with `interrupted` (same condition), and
   // a `pausePoint` whose step a committed row reached is stale too — a boundary point (step = committed + 1) survives, so the
@@ -182,10 +185,31 @@ export function foldStepsIntoState(state: CheckpointState, steps: readonly StepR
     interrupted,
     ...(interrupted !== null && interruptedDetail !== undefined ? { interruptedDetail } : {}),
     ...(pausePoint !== undefined && pausePoint.step > step ? { pausePoint } : {}),
+    ...(agentState !== undefined ? { agentState } : {}),
     stopReason: null,
     resumes: state.resumes + 1,
     updatedAt,
   };
+}
+
+/**
+ * docs/AGENT-LOOP-DESIGN.md §10 "Resume reconcile": `agentState.transcriptSeq` = max(the checkpointed value, the `agent.seqAfter`
+ * of every folded row). A step `steps.jsonl` counts but whose `state.json` never landed still wrote its transcript records, and
+ * the driver truncates the transcript after this seq on restore — so without the raise it would cut the records of a counted
+ * step and issue its call again. Idempotent (a max), so the engine applies it again for a loader that did not fold (the injected
+ * store path). The opaque state is touched only when it is an object; anything else, and a state with nothing to raise, is
+ * returned as is.
+ */
+export function raiseAgentTranscriptSeq(agentState: Json, steps: readonly Pick<StepRecord, 'agent'>[]): Json {
+  if (!isJsonObject(agentState)) return agentState;
+  const held = agentState['transcriptSeq'];
+  const current = typeof held === 'number' && Number.isFinite(held) ? held : 0;
+  let max = current;
+  for (const r of steps) {
+    const seq = r.agent?.seqAfter;
+    if (typeof seq === 'number' && Number.isSafeInteger(seq) && seq > max) max = seq;
+  }
+  return max === current ? agentState : { ...agentState, transcriptSeq: max };
 }
 
 /** The `runId` a raw `run.json` claims, when it claims one as a string — the id the refusal sentence names. */

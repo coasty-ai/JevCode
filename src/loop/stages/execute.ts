@@ -149,6 +149,9 @@ export async function runExecuteStage(ctx: StageContext, proposal: Proposal): Pr
         maxOutputBytes: ctx.limits.maxOutputBytes,
         signal: ctx.signal,
         onOutput: (stream, chunk) => ctx.emit({ type: 'exec:output', step: ctx.step, stream, chunk: ctx.redact(chunk) }),
+        // docs/AGENT-LOOP-DESIGN.md §3.2: an agent `bash` call's validated `workdir` (workspace-relative; the sandbox resolves and
+        // contains it). Absent for the root and on every legacy action, so their sandbox options are unchanged.
+        ...(a.cwd !== undefined ? { cwd: a.cwd } : {}),
       });
       // The sandbox cannot know which abort fired; a wall-time abort is recorded as such (§6).
       const killedBy: KilledBy = exec.killedBy === 'abort' && isBudgetError(ctx.signal.reason) ? 'wall_time' : exec.killedBy;
