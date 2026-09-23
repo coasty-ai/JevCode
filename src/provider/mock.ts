@@ -10,7 +10,8 @@
  * A turn with `deltas` streams exactly those pieces, one per `deltaGapMs`, paced against deadlines (`t0 + latencyMs +
  * (i + 1) · gap`): a late wake-up (macOS timer coalescing, a busy loop) shortens the next wait instead of pushing every
  * later delta back, and nothing spins — this runs inside the TUI process whose paint latency the stream probe measures
- * (`src/perf/stream-latency.ts`). `onEmit` sees each delta's `process.hrtime.bigint()` just before `onDelta`.
+ * (`src/perf/stream-latency.ts`). `onEmit` sees each timed delta's `process.hrtime.bigint()` just before `onDelta`; an
+ * untimed turn (the run trajectory, the default chat reply) never reaches it, so one `i === 0` is one timed stream.
  */
 import { ProviderHttpError } from '../errors.js';
 import type { CancelledGeneration, GenerateOptions, GenerateRequest, GenerateResult, MockProviderOptions, MockTurn, Provider, TokenUsage } from '../core/types.js';
@@ -104,7 +105,7 @@ export function createMockProvider(opts: MockProviderOptions, deps: MockProvider
           } else if (perPiece > 0) await sleep(perPiece, genOpts.signal);
           if (genOpts.signal.aborted) throw genOpts.signal.reason;
           streamedText += piece;
-          opts.onEmit?.({ i, chars: piece.length, ns: hrtimeNs() });
+          if (timed) opts.onEmit?.({ i, chars: piece.length, ns: hrtimeNs() });
           genOpts.onDelta?.(piece);
         }
         for (const piece of chunks(rawJson, opts.deltaChunkSize)) {

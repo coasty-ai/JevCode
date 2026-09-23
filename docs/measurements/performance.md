@@ -188,7 +188,8 @@ is the problem:
   until the first line break the live view shows only `streaming… N chars`, and after it only the last two rows, cut at
   the terminal width rather than wrapped. Fewer than half of the deltas are ever on screen before the reply commits.
   At 5 ms the first two deltas arrive together, the line break comes with them, and the first text is quick — the
-  rest is still mostly hidden.
+  rest is still mostly hidden. That quick first text comes from the mock's timing, not the renderer, and the result
+  marks those messages with `firstTextBurst`.
 - **The commit jumps.** The two live rows become fifteen committed rows, every one of them moved ten columns right by
   the `[jevcode]` label and gutter, and the reply's three blank lines are dropped.
 - **The commit waits for Jev.** With the decider delayed 150 ms and a stream that ends first, the last delta reaches

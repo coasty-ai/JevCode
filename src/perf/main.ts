@@ -354,6 +354,14 @@ export function selectedProbes(env: NodeJS.ProcessEnv): ProbeName[] {
   return KNOWN_PROBES.filter((p) => wanted.has(p));
 }
 
+/**
+ * A run is `partial` unless it measured exactly the release set: fewer probes, or any opt-in probe (Ring 0 or
+ * OPT_IN_PROBES) named next to them — eight release probes plus `stream-latency` is nine, but it is not the release run.
+ */
+export function isPartial(probes: readonly ProbeName[]): boolean {
+  return probes.length !== ALL_PROBES.length || probes.some((p) => !ALL_PROBES.includes(p));
+}
+
 /** Wait for a quiet machine: 1-minute load ≤ LOAD_MAX, re-read up to LOAD_RETRIES times LOAD_WAIT_MS apart. */
 async function awaitQuietMachine(log: (s: string) => void): Promise<{ load: number; waitedMs: number }> {
   let waited = 0;
@@ -488,7 +496,7 @@ async function measureAll(flags: ParsedFlags, ctx: { root: string; env: NodeJS.P
   const out = flags.out ?? 'perf/results/latest.json';
   const progress = (line: string): void => log(`  ${line}\n`);
   const probes = selectedProbes(env);
-  const partial = probes.length !== ALL_PROBES.length;
+  const partial = isPartial(probes);
   // the parent already waited for a quiet machine; a child measures right away
   const quiet = child ? { load: loadavg()[0] ?? 0, waitedMs: 0 } : await awaitQuietMachine(log);
   log(`perf: load average ${quiet.load.toFixed(2)} at start (limit ${LOAD_MAX}, release ≤ ${LOAD_QUIET}); probes: ${probes.join(', ')}${partial ? ' (PARTIAL)' : ''}\n`);

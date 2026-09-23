@@ -49,6 +49,16 @@ describe('units() (pty helpers): rows by the next write’s erase count, cross-c
     expect(all.map((u) => u.eraseRows)).toEqual([3, null, 3, null]);
     expect(all.map((u) => u.rows)).toEqual([3, 3, 3, 3]);
   });
+
+  it('two writes sharing one cursor-hide unit (a resize storm): the first write\'s live frame is never committed scrollback', () => {
+    // unit 1 holds a commit + frame, then a second write (no hide of its own) that erases that frame and draws the next
+    const two = BSU + write(['[you] hi', RULE, '› a', 'idle'], 3, { sync: false }) + write([RULE, '› ab', 'idle'], 3, { sync: false }).replace('\x1b[?25l', '') + ESU;
+    const cap = write([RULE, '› ', 'idle'], 0) + two + write([RULE, '› ab', 'idle'], 3);
+    const all = units(cap).filter((u) => u.ruleIndex >= 0);
+    expect(all).toHaveLength(3);
+    // the region is the LAST write's (Ink's count), and only the commit above the first write's region is scrollback
+    expect(all[1]).toMatchObject({ eraseRows: 3, rows: 3, staticRows: ['[you] hi'] });
+  });
 });
 
 describe('src/perf/pty.ts: eraseHeights / splitRegion and the gates on them', () => {

@@ -3159,7 +3159,7 @@ export interface MockProviderOptions {
   /** characters per text delta, and per tool-argument piece (unset or 0 = the whole text in one delta); `latencyMs` is spread evenly over the text pieces */
   deltaChunkSize?: number;
   model?: string;
-  /** once per streamed text delta, just before `onDelta`: its index in the turn, its length and `process.hrtime.bigint()` at emission (the stream probe's emission log; the driver's clock bridge maps `ns` onto the pty timeline) */
+  /** once per delta of a timed turn (`MockTurn.deltas`; untimed turns never call it), just before `onDelta`: its index in the turn, its length and `process.hrtime.bigint()` at emission (the stream probe's emission log; the driver's clock bridge maps `ns` onto the pty timeline) */
   onEmit?: (e: { i: number; chars: number; ns: bigint }) => void;
 }
 export interface MockDeciderContext {

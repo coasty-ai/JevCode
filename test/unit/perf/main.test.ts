@@ -33,6 +33,7 @@ import {
   PERF_WINDOW_TTL_FLOOR_MS,
   PERF_WINDOW_TTL_MAX_MS,
   driverLines,
+  isPartial,
   measureStaticAppendInChild,
   openPerfWindow,
   parsePerfWindowHeader,
@@ -103,7 +104,21 @@ describe('selectedProbes: the release set and the opt-in probes', () => {
     // named next to the whole release set it is still one more than the release set: `partial` (length ≠ release), never a release number
     const all = selectedProbes({ JEVCODE_PERF_ONLY: [...release, 'stream-latency'].join(',') });
     expect(all).toHaveLength(release.length + 1);
+    expect(isPartial(all)).toBe(true);
     expect(() => selectedProbes({ JEVCODE_PERF_ONLY: 'stream-latancy' })).toThrow(/unknown probe\(s\) stream-latancy \(known: .*sandbox-spawn, stream-latency\)/);
+  });
+
+  it('partial means "not exactly the release set": an opt-in probe swapped in for a release probe keeps the count at nine and is still partial', () => {
+    const release = selectedProbes({});
+    expect(isPartial(release)).toBe(false);
+    expect(isPartial(selectedProbes({ JEVCODE_PERF_ONLY: release.join(',') }))).toBe(false);
+    expect(isPartial(selectedProbes({ JEVCODE_PERF_ONLY: 'states' }))).toBe(true);
+    const eight = release.filter((p) => p !== 'scroll-latency');
+    for (const optIn of ['stream-latency', 'lane-run', 'sandbox-spawn']) {
+      const swapped = selectedProbes({ JEVCODE_PERF_ONLY: [...eight, optIn].join(',') });
+      expect(swapped).toHaveLength(release.length);
+      expect(isPartial(swapped)).toBe(true);
+    }
   });
 });
 

@@ -189,8 +189,11 @@ will make JevCode behave incorrectly on purpose.
 
 | Variable | What it does | Read by |
 | --- | --- | --- |
-| `JEVCODE_MOCK_STEP_MS` | paces each turn of the mock trajectory | `src/cli/mock-trajectory.ts:15` |
-| `JEVCODE_MOCK_PATCH` | extends the mock trajectory with two patch turns | `src/cli/mock-trajectory.ts:39` |
+| `JEVCODE_MOCK_STEP_MS` | paces each turn of the mock trajectory | `src/cli/mock-trajectory.ts:28` |
+| `JEVCODE_MOCK_PATCH` | extends the mock trajectory with two patch turns | `src/cli/mock-trajectory.ts:50` |
+| `JEVCODE_MOCK_CHAT_STREAM` | streams the mock chat reply as a preset's timed deltas (`mixed` or `long`), for the stream probe | `src/cli/mock-trajectory.ts:166` |
+| `JEVCODE_MOCK_DELTA_MS` | the gap between those deltas (default 30 ms) | `src/cli/mock-trajectory.ts:168` |
+| `JEVCODE_PERF_STREAM_LOG` | writes each delta's emission time to this file when the process exits | `src/cli/mock-trajectory.ts:172` |
 | `JEVCODE_MOCK_JEV_MS` | delays the mock decider, for the latency probe | `src/cli/session.ts:737` |
 | `JEVCODE_MOCK_INTAKE` | forces the mock decider's reading of what you typed | `src/cli/session.ts:732` |
 | `JEVCODE_MOCK_REVIEW_AT` | makes the mock decider raise a review at one step | `src/cli/session.ts:722-727` |

@@ -112,7 +112,7 @@ describe('emissions on the clock bridge', () => {
 });
 
 describe('analyseMessage (one message of a synthetic capture)', () => {
-  const build = (commit: FrameSpec): ReturnType<typeof analyseMessage> => {
+  const build = (commit: FrameSpec, gapMs = 30): ReturnType<typeof analyseMessage> => {
     const specs: FrameSpec[] = [
       { t: 100, dyn: [RULE, STATUS] },
       { t: 210, static: ['[you] hi'], dyn: [RULE, STATUS] },
@@ -138,6 +138,7 @@ describe('analyseMessage (one message of a synthetic capture)', () => {
         { i: 3, t: 320 },
       ],
       preset: tiny,
+      gapMs,
       throttle: 34,
       index: 0,
       text: 'hi',
@@ -151,6 +152,7 @@ describe('analyseMessage (one message of a synthetic capture)', () => {
     expect(m.enterToFirstEmissionMs).toBe(50);
     expect(m.firstFeedbackMs).toBe(5);
     expect(m.firstTextPaintMs).toBe(40);
+    expect(m).toMatchObject({ firstGapMs: 30, firstTextBurst: false });
     expect(m.deltas).toEqual([
       { i: 0, marker: 'a01', at: 250, ms: 40, live: true },
       { i: 1, marker: 'a02', at: 280, ms: 10, live: true },
@@ -163,6 +165,14 @@ describe('analyseMessage (one message of a synthetic capture)', () => {
     expect(m.commit).toEqual({ liveRows: 2, committedRows: 3, rowDelta: 1, colShift: 10, commitJump: 2, blankLinesDropped: 1 });
     expect(m.clockOk).toBe(true);
     expect(m.bytesPerStreamedChar).toBeGreaterThan(0);
+  });
+
+  it('deltas 0 and 1 less than half a gap apart flag the first text as a burst (the mock held back by the Enter frame, not the renderer)', () => {
+    const commit: FrameSpec = { t: 330, static: ['[jevcode] Hello a01.', '[jevcode] World a02.', '[jevcode] End a03.'], dyn: [RULE, STATUS] };
+    // the same 30 ms apart: a burst against a 100 ms gap, not against 30 ms (above) or 60 ms (exactly half)
+    expect(build(commit, 100)).toMatchObject({ firstGapMs: 30, firstTextBurst: true, firstTextPaintMs: 40 });
+    expect(build(commit, 60).firstTextBurst).toBe(false);
+    expect(build(commit, 0).firstTextBurst).toBe(false);
   });
 
   it('a zero-jump commit: the rows the user saw are committed verbatim with the blank line kept', () => {
@@ -226,6 +236,7 @@ describe('judgeStreamSeries (gate arithmetic over a whole series)', () => {
     expect(s.messages).toHaveLength(3);
     expect(s.messages.map((m) => m.emissions)).toEqual([46, 46, 46]);
     expect(s.firstTextPaint.p95).toBe(5);
+    expect(s.firstTextBursts).toBe(0);
     expect(s.coverageMin).toBe(1);
     expect(s.commitJumpMax).toBe(0);
     expect(s.blankLinesDroppedMax).toBe(0);

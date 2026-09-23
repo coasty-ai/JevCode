@@ -20,7 +20,10 @@
  * Per message:
  *   deltaToPaint     emission → the first pty write carrying the delta's marker, for the writes before the commit
  *   firstFeedback    first emission → the first frame after it (anything at all changes on screen)
- *   firstTextPaint   first emission → the first frame showing any of the reply's text
+ *   firstTextPaint   first emission → the first frame showing any of the reply's text; `firstTextBurst` flags a
+ *                    message whose deltas 0 and 1 left less than half a gap apart (the Enter frame held the first
+ *                    emission back, so the first line break came with the first text and the figure measures the mock's
+ *                    timing, not the renderer — the 5 ms and 2 ms series today; recorded, not gated)
  *   coverage         markers on screen before the commit ÷ markers emitted, leaving out the deltas emitted within one
  *                    throttle period of the commit (those may land first in the commit frame by design)
  *   dynamicFps       `dynamic` frames per second while the reply streams (busiest 1 s window; the frame spacing for
@@ -254,6 +257,10 @@ export interface StreamMessage {
   streamMs: number | null;
   firstFeedbackMs: number | null;
   firstTextPaintMs: number | null;
+  /** emission of delta 0 → delta 1 (null with fewer than two emissions) */
+  firstGapMs: number | null;
+  /** deltas 0 and 1 left less than half the series' gap apart: `firstTextPaintMs` is not comparable (see the header) */
+  firstTextBurst: boolean;
   /** live paints only (before the commit frame) */
   deltaToPaint: LatencySummary;
   /** marked deltas emitted more than one throttle period before the commit */
@@ -289,6 +296,8 @@ export interface MessageInput {
   endOff: number;
   emissions: readonly Emission[];
   preset: StreamPreset;
+  /** the series' gap between deltas (`JEVCODE_MOCK_DELTA_MS`), for `firstTextBurst` */
+  gapMs: number;
   throttle: number;
   index: number;
   text: string;
@@ -367,6 +376,7 @@ export function analyseMessage(m: MessageInput): StreamMessage {
   const firstFrameAfter = tFirst === null ? undefined : idxs.find((i) => (times.get(i) ?? -Infinity) >= tFirst);
   const paints = deltas.filter((d) => d.ms !== null).map((d) => d.at + d.ms!);
   const firstText = paints.length === 0 || tFirst === null ? null : Math.min(...paints) - tFirst;
+  const firstGap = tFirst === null || emissions[1] === undefined ? null : Math.round((emissions[1].t - tFirst) * 10) / 10;
   const liveTimes = live.map((i) => times.get(i)).filter((t): t is number => t !== null && t !== undefined);
   const spacing = liveTimes.slice(1).map((t, k) => t - liveTimes[k]!);
   const dynTimes = live.filter((i) => classes[i] === 'dynamic').map((i) => times.get(i)).filter((t): t is number => t !== null && t !== undefined);
@@ -397,6 +407,8 @@ export function analyseMessage(m: MessageInput): StreamMessage {
     streamMs: tFirst === null || tLast === null ? null : tLast - tFirst,
     firstFeedbackMs: firstFrameAfter === undefined || tFirst === null ? null : (times.get(firstFrameAfter) ?? tFirst) - tFirst,
     firstTextPaintMs: firstText,
+    firstGapMs: firstGap,
+    firstTextBurst: m.gapMs > 0 && firstGap !== null && firstGap < m.gapMs / 2,
     deltaToPaint: summarise(liveMs),
     eligible: eligibleDeltas.length,
     paintedLive,
@@ -438,6 +450,8 @@ export interface StreamSeries {
   messages: StreamMessage[];
   /** over every message (cold included) */
   firstTextPaint: LatencySummary;
+  /** messages whose first text is a burst (`StreamMessage.firstTextBurst`): the figure is recorded but not comparable */
+  firstTextBursts: number;
   deltaToPaint: LatencySummary;
   lastDeltaToCommit: LatencySummary;
   /** the lowest coverage of any message */
@@ -507,7 +521,7 @@ export function judgeStreamSeries(x: StreamSeriesInput): StreamSeries {
   const messages: StreamMessage[] = enters.map((e, k) => {
     const next = enters[k + 1];
     const emissions = streamIn(streams, e.t, next?.t ?? Infinity) ?? [];
-    return analyseMessage({ frames, heights, classes, chunks: x.chunks, enter: { t: e.t, off: e.off }, endOff: next?.off ?? x.capture.length, emissions, preset, throttle, index: k, text: STREAM_MESSAGES[k] ?? '' });
+    return analyseMessage({ frames, heights, classes, chunks: x.chunks, enter: { t: e.t, off: e.off }, endOff: next?.off ?? x.capture.length, emissions, preset, gapMs: spec.gapMs, throttle, index: k, text: STREAM_MESSAGES[k] ?? '' });
   });
   const firstDyn = firstDynamicFrameOffset(x.capture);
   const firstIdx = Math.max(0, frames.findIndex((f) => f.start >= firstDyn));
@@ -552,6 +566,7 @@ export function judgeStreamSeries(x: StreamSeriesInput): StreamSeries {
     deltas: preset.deltas.length,
     messages,
     firstTextPaint,
+    firstTextBursts: messages.filter((m) => m.firstTextBurst).length,
     deltaToPaint,
     lastDeltaToCommit,
     coverageMin: coverages.length ? Math.min(...coverages) : null,
@@ -718,7 +733,7 @@ export function describeStreamSeries(s: StreamSeries): string {
   const pct = (v: number | null): string => (v === null ? '–' : `${Math.round(v * 100)}%`);
   const f1 = (v: number | null | undefined): string => (v == null ? '–' : v.toFixed(1));
   const cold = s.messages[0];
-  return `stream ${s.name} (${s.preset} ${s.replyChars} chars / ${s.deltas} deltas at ${s.gapMs} ms, ${s.fps} fps${s.jevMs > 0 ? `, mock decider ${s.jevMs} ms` : ''}${s.gated ? '' : ', reported'}): first text p50 ${f1(s.firstTextPaint.p50)} p95 ${f1(s.firstTextPaint.p95)} ms (cold ${f1(cold?.firstTextPaintMs)}; gate ≤ ${STREAM_FIRST_TEXT_GATE_MS}${s.firstTextOk ? '' : ' FAIL'}), delta→paint live p50 ${f1(s.deltaToPaint.p50)} p95 ${f1(s.deltaToPaint.p95)} ms, coverage min ${pct(s.coverageMin)} (${s.messages.map((m) => `${m.paintedLive}/${m.eligible}`).join(' · ')}${s.coverageOk ? '' : ' FAIL'}), commit jump max ${s.commitJumpMax ?? '–'} (rows ${s.messages.map((m) => (m.commit ? `${m.commit.liveRows}→${m.commit.committedRows}, col +${m.commit.colShift}` : '–')).join(' · ')}${s.commitJumpOk ? '' : ' FAIL'}), blank lines dropped ${s.blankLinesDroppedMax ?? '–'}${s.blankLinesOk ? '' : ' FAIL'}, last delta→commit p95 ${f1(s.lastDeltaToCommit.p95)} ms${s.lastDeltaOk ? '' : ' FAIL'}, dynamic fps max ${s.dynamicFpsMax ?? '–'} (gate ≤ ${s.fps + 1}${s.fpsOk ? '' : ' FAIL'}), ${f1(s.bytesPerStreamedCharMean)} B/char, clears ${s.clears}, ESC[3J ${s.esc3J}, region max ${s.regionMax}${s.typing ? `, keys p95 ${f1(s.typing.p95)} ms over ${s.typing.samples}/${s.keysSent}${s.typingOk ? '' : ' FAIL'}` : ''}${s.lag ? `, lag p95 ${f1(s.lag.p95)} max ${f1(s.lag.max)} ms` : ''}${s.memory ? `, rss ${s.memory.startMiB}→${s.memory.maxMiB} MiB` : ''}, exit ${s.exitCode}${s.timedOut ? ' TIMEOUT' : ''}${s.instrumented ? '' : ' (NO EMISSION LOG OR CLOCK)'} → ${s.pass ? 'pass' : 'FAIL'}`;
+  return `stream ${s.name} (${s.preset} ${s.replyChars} chars / ${s.deltas} deltas at ${s.gapMs} ms, ${s.fps} fps${s.jevMs > 0 ? `, mock decider ${s.jevMs} ms` : ''}${s.gated ? '' : ', reported'}): first text p50 ${f1(s.firstTextPaint.p50)} p95 ${f1(s.firstTextPaint.p95)} ms (cold ${f1(cold?.firstTextPaintMs)}; gate ≤ ${STREAM_FIRST_TEXT_GATE_MS}${s.firstTextOk ? '' : ' FAIL'}${s.firstTextBursts > 0 ? `; ${s.firstTextBursts}/${s.messages.length} burst, not comparable` : ''}), delta→paint live p50 ${f1(s.deltaToPaint.p50)} p95 ${f1(s.deltaToPaint.p95)} ms, coverage min ${pct(s.coverageMin)} (${s.messages.map((m) => `${m.paintedLive}/${m.eligible}`).join(' · ')}${s.coverageOk ? '' : ' FAIL'}), commit jump max ${s.commitJumpMax ?? '–'} (rows ${s.messages.map((m) => (m.commit ? `${m.commit.liveRows}→${m.commit.committedRows}, col +${m.commit.colShift}` : '–')).join(' · ')}${s.commitJumpOk ? '' : ' FAIL'}), blank lines dropped ${s.blankLinesDroppedMax ?? '–'}${s.blankLinesOk ? '' : ' FAIL'}, last delta→commit p95 ${f1(s.lastDeltaToCommit.p95)} ms${s.lastDeltaOk ? '' : ' FAIL'}, dynamic fps max ${s.dynamicFpsMax ?? '–'} (gate ≤ ${s.fps + 1}${s.fpsOk ? '' : ' FAIL'}), ${f1(s.bytesPerStreamedCharMean)} B/char, clears ${s.clears}, ESC[3J ${s.esc3J}, region max ${s.regionMax}${s.typing ? `, keys p95 ${f1(s.typing.p95)} ms over ${s.typing.samples}/${s.keysSent}${s.typingOk ? '' : ' FAIL'}` : ''}${s.lag ? `, lag p95 ${f1(s.lag.p95)} max ${f1(s.lag.max)} ms` : ''}${s.memory ? `, rss ${s.memory.startMiB}→${s.memory.maxMiB} MiB` : ''}, exit ${s.exitCode}${s.timedOut ? ' TIMEOUT' : ''}${s.instrumented ? '' : ' (NO EMISSION LOG OR CLOCK)'} → ${s.pass ? 'pass' : 'FAIL'}`;
 }
 
 export async function measureStreamLatency(opts: { root: string; bin: string; series?: readonly StreamSeriesSpec[]; onProgress?: (line: string) => void }): Promise<StreamLatencyResult> {

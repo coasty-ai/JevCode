@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AbortError, ProviderHttpError } from '../../../src/errors.js';
 import { MOCK_CHAT_REPLY, MOCK_DEFAULT_USAGE, createMockProvider, withMockChat, type MockEmit } from '../../../src/provider/mock.js';
 import { MOCK_DELTA_MS_DEFAULT, mockChatReplyFromEnv, mockTrajectory, streamLogSnapshot } from '../../../src/cli/mock-trajectory.js';
@@ -215,13 +215,22 @@ describe('createMockProvider: timed deltas (the stream probe, src/perf/stream-la
     expect(cancelled).toEqual([{ text: 'one two ', toolChars: 0, reasoningChars: 0, model: 'mock', generationId: 'gen-t' }]);
   });
 
-  it('onEmit fires for untimed turns too (one record for the whole text by default); without onEmit nothing else changes', async () => {
+  it('onEmit sees timed turns only: an untimed turn (a run step, the default chat reply) never calls it nor reads the clock', async () => {
     const emits: MockEmit[] = [];
-    const p = createMockProvider({ turns: [{ text: 'abcdefg' }, { text: 'abcdefg' }], onEmit: (e) => emits.push(e) }, { hrtimeNs: () => 7n });
-    await p.generate(request(), genOpts());
-    expect(emits).toEqual([{ i: 0, chars: 7, ns: 7n }]);
-    const plain = createMockProvider({ turns: [{ text: 'abcdefg' }] }, { hrtimeNs: () => { throw new Error('the clock is read only for onEmit'); } });
-    expect((await plain.generate(request(), genOpts())).text).toBe('abcdefg');
+    const noClock = (): bigint => {
+      throw new Error('the clock is read only for a timed delta');
+    };
+    const untimed = createMockProvider({ turns: [{ text: 'abcdefg' }, { text: 'abcdefg' }], deltaChunkSize: 2, onEmit: (e) => emits.push(e) }, { hrtimeNs: noClock });
+    expect((await untimed.generate(request(), genOpts())).text).toBe('abcdefg');
+    expect(emits).toEqual([]);
+    // a timed chat reply between run steps: its deltas are the only emissions, so each `i === 0` opens one timed stream
+    const tools = [{ name: 'propose_action', description: 'd', inputSchema: { type: 'object' } }];
+    let ns = 0n;
+    const mixed = createMockProvider({ turns: withMockChat([{ text: 'step one' }, { text: 'step two' }], { deltas: ['a', 'b'] }), onEmit: (e) => emits.push(e) }, { hrtimeNs: () => (ns += 1n) });
+    await mixed.generate({ ...request(), tools }, genOpts());
+    await mixed.generate(request(), genOpts());
+    await mixed.generate({ ...request(), tools }, genOpts());
+    expect(emits).toEqual([{ i: 0, chars: 1, ns: 1n }, { i: 1, chars: 1, ns: 2n }]);
   });
 });
 
@@ -251,8 +260,22 @@ describe('mockChatReplyFromEnv (src/cli/mock-trajectory.ts: the --mock seam of t
     expect(mockChatReplyFromEnv({})).toEqual({});
     expect(mockChatReplyFromEnv({ JEVCODE_MOCK_CHAT_STREAM: '' })).toEqual({});
     expect(mockChatReplyFromEnv({ JEVCODE_MOCK_CHAT_STREAM: 'fast', JEVCODE_MOCK_DELTA_MS: '5', JEVCODE_PERF_STREAM_LOG: '/tmp/x.json' })).toEqual({});
-    // the knobs never touch the run trajectory
-    expect(mockTrajectory(3, 0, false)).toEqual(mockTrajectory(3, 0, false));
+  });
+
+  it('the knobs never touch the run trajectory: mockTrajectory reads the same with all three set in process.env as with none', () => {
+    const knobs = ['JEVCODE_MOCK_CHAT_STREAM', 'JEVCODE_MOCK_DELTA_MS', 'JEVCODE_PERF_STREAM_LOG'] as const;
+    try {
+      for (const k of knobs) vi.stubEnv(k, undefined);
+      const without = mockTrajectory(3);
+      vi.stubEnv('JEVCODE_MOCK_CHAT_STREAM', 'mixed');
+      vi.stubEnv('JEVCODE_MOCK_DELTA_MS', '5');
+      vi.stubEnv('JEVCODE_PERF_STREAM_LOG', join(tmpdir(), 'jevcode-never-written.json'));
+      const withKnobs = mockTrajectory(3);
+      expect(withKnobs).toEqual(without);
+      expect(withKnobs.some((t) => t.deltas !== undefined || t.deltaGapMs !== undefined)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('a preset streams its deltas at JEVCODE_MOCK_DELTA_MS (default 30); no log hook without JEVCODE_PERF_STREAM_LOG', () => {

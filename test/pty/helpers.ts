@@ -386,7 +386,7 @@ export interface FrameUnit {
   /** visible width of the rule row (the geometry the App rendered for), or null */
   ruleWidth: number | null;
   /**
-   * rows above the dynamic region (`rows`): the `<Static>` items this unit committed (wrapped at the terminal width). In a
+   * rows above the dynamic region (`rows`; per write, in a unit that holds two): the `<Static>` items this unit committed (wrapped at the terminal width). In a
    * clear-terminal unit (`clears > 0`) Ink rewrites its whole `fullStaticOutput` first (ink.js: `clearTerminal +
    * fullStaticOutput + output`), so these rows then repeat every earlier item — `staticRows()` dedupes that.
    */
@@ -408,6 +408,55 @@ function eraseRowsOf(all: readonly Omit<FrameUnit, 'rows' | 'eraseRows' | 'stati
   return null;
 }
 
+/** the run of escape sequences and control bytes before a write's first printable character: its erase prefix (hide · return-to-bottom · eraseLines) */
+const WRITE_HEAD_RE = /^(?:\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f])*/;
+
+/**
+ * A write's rows as the terminal lays them out, for the region measures: one per line break, a row's trailing `\r`s
+ * dropped (`\r\r\n` is ONE break — splitting on `\r` too reads it as two, a phantom blank row under the console's top
+ * edge), and trailing blank rows kept (only the text after the final line break, the cursor suffix, is dropped).
+ */
+function layoutRows(plain: string): { rows: string[]; endsWithNewline: boolean } {
+  const rows = plain.split('\n').map((r) => r.replace(/\r+$/, ''));
+  const endsWithNewline = rows.length > 1 && rows.at(-1) === '';
+  if (endsWithNewline) rows.pop();
+  return { rows, endsWithNewline };
+}
+
+/**
+ * The Ink writes inside one unit: almost always one. In a resize storm two writes can share one cursor-hide unit, the
+ * second opening with its own erase run after the first write's rows — the unit is cut before that run's first erase.
+ */
+function writesOf(raw: string): string[] {
+  const out: string[] = [];
+  let from = 0;
+  let at = raw.indexOf(ERASE_LINE, WRITE_HEAD_RE.exec(raw)?.[0].length ?? 0);
+  while (at >= 0) {
+    out.push(raw.slice(from, at));
+    from = at;
+    at = raw.indexOf(ERASE_LINE, at + (WRITE_HEAD_RE.exec(raw.slice(at))?.[0].length ?? 0));
+  }
+  out.push(raw.slice(from));
+  return out;
+}
+
+/**
+ * The rows a unit committed to the scrollback: each write's rows above its own dynamic region. An earlier write's
+ * region is told by the erase run that opens the next write in the same unit, the last write's by the unit's `rows` —
+ * so the live frame of the first of two writes sharing a unit never reads as scrollback.
+ */
+function committedRows(raw: string, rows: number): string[] {
+  const writes = writesOf(raw);
+  const out: string[] = [];
+  writes.forEach((w, k) => {
+    const laid = layoutRows(stripAnsi(w));
+    const next = writes[k + 1];
+    const region = next === undefined ? rows : (WRITE_HEAD_RE.exec(next)?.[0] ?? '').split(ERASE_LINE).length - 1 - (laid.endsWithNewline ? 1 : 0);
+    out.push(...laid.rows.slice(0, Math.max(0, laid.rows.length - region)));
+  });
+  return out;
+}
+
 /**
  * Split a capture into Ink write units. A unit opens with the cursor hide (every frame, every cursor-only update)
  * or with `ESC[2J` (a clear-terminal frame, which Ink writes without a preceding hide). Text after the exit
@@ -425,12 +474,7 @@ export function units(text: string, opts: { untilRestore?: boolean } = {}): Fram
     const plain = stripAnsi(raw);
     const lines = plain.replace(/\r\n|\r/g, '\n').split('\n');
     while (lines.length > 0 && lines.at(-1) === '') lines.pop();
-    // the rows as the terminal lays them out, for the region measures: one per line break, a row's trailing `\r`s dropped
-    // (`\r\r\n` is ONE break — `lines` above reads it as two, a phantom blank row under the console's top edge), and
-    // trailing blank rows kept (only the text after the final line break, the cursor suffix, is dropped)
-    const rawLines = plain.split('\n').map((r) => r.replace(/\r+$/, ''));
-    const endsWithNewline = rawLines.length > 1 && rawLines.at(-1) === '';
-    if (endsWithNewline) rawLines.pop();
+    const { rows: rawLines, endsWithNewline } = layoutRows(plain);
     let ruleIndex = -1;
     for (let i = lines.length - 1; i >= 0; i--) {
       if (RULE_RE.test(lines[i] ?? '')) {
@@ -446,25 +490,22 @@ export function units(text: string, opts: { untilRestore?: boolean } = {}): Fram
       }
     }
     const rule = ruleIndex >= 0 ? lines[ruleIndex] ?? '' : null;
-    // the erase prefix (hide · return-to-bottom · eraseLines) is the run of escape sequences and control bytes
-    // before the unit's first printable character
-    const head = /^(?:\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f])*/.exec(raw)?.[0] ?? '';
+    const head = WRITE_HEAD_RE.exec(raw)?.[0] ?? '';
     const erased = head.split(ERASE_LINE).length - 1;
     return {
       unit: { index, raw, lines, clears: countClears(raw), erased, ruleIndex, ruleRows: ruleIndex >= 0 && rawRule >= 0 ? rawLines.length - rawRule : null, ruleWidth: rule === null ? null : [...rule].length },
-      rawLines,
       endsWithNewline,
     };
   });
   const bare = base.map((b) => b.unit);
-  return base.map(({ unit, rawLines, endsWithNewline }, index) => {
+  return base.map(({ unit, endsWithNewline }, index) => {
     const eraseRows = unit.ruleIndex >= 0 ? eraseRowsOf(bare, index, endsWithNewline) : null;
     const rows = unit.ruleIndex >= 0 ? (eraseRows ?? unit.ruleRows) : null;
     return {
       ...unit,
       eraseRows,
       rows,
-      staticRows: rows !== null ? rawLines.slice(0, Math.max(0, rawLines.length - rows)) : index === 0 ? unit.lines : [],
+      staticRows: rows !== null ? committedRows(unit.raw, rows) : index === 0 ? unit.lines : [],
     };
   });
 }

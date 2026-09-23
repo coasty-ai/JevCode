@@ -4,7 +4,7 @@
  * scripts/pty/drive.exp; sentinels are expected, never slept for, except where the design itself arms a key one frame
  * after a row is drawn (§6.3) or an external sampler needs the process alive for a moment — those waits are named inline.
  * Round 2 (TUI-DESIGN-2 §8.2): the placeholders are `Say hi, …` / `Follow-up, question, …`, the prompt is `› ` (matched
- * glyph-agnostically), a run is live at its `[run] start` item (`run:ready` is hidden by the compact transcript, §4.5),
+ * glyph-agnostically), a run is live at the status row's `step n/m` (RUN_STARTED_PATTERN; the `[run] start` item is gone),
  * mocked runs say `--mode jev-on` explicitly (the scripted trajectory is a generator trajectory whatever the default is; TUI-DESIGN-3 §1.10),
  * the first frame is splash frame 0 (§5) and still carries `step 0/–`, and the geometry settle patterns match any
  * full-width row (the brand row is no longer one dim run).
@@ -530,8 +530,10 @@ describe.skipIf(!hasExpect)('pty: streamed --mock chat reply (JEVCODE_MOCK_CHAT_
     expect(file).toMatchObject({ preset: 'mixed', gapMs: 20, deltas: preset.deltas.length });
     expect(file.emissions.map((e) => [e.s, e.i])).toEqual(preset.deltas.map((_, i) => [0, i]));
     const ns = file.emissions.map((e) => BigInt(e.ns));
-    // deadline pacing: 45 gaps of 20 ms span at least ~0.9 s (a late wake-up shortens the next wait, never stretches the total by much)
-    expect(Number(ns.at(-1)! - ns[0]!) / 1e6).toBeGreaterThan(45 * 20 - 5);
+    // deadline pacing: 45 gaps of 20 ms span ~0.9 s. The bound is loose on purpose: the first emission lands in the busy
+    // Enter frame (late, often in the same tick as delta 1), and under suite load that alone can take 10–25 ms off the
+    // span; what this rules out is an unpaced burst, not a late first wake-up
+    expect(Number(ns.at(-1)! - ns[0]!) / 1e6).toBeGreaterThan(45 * 20 * 0.8);
     // progressive: some marker is on screen before the frame where the reply's last marker first appears
     const markers = preset.markers.filter((m): m is string => m !== null);
     const last = markers.at(-1)!;
