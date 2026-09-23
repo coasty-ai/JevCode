@@ -1368,6 +1368,11 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     // a rejected candidate's diff was made against the previous workspace
     if (!sameWorkspace) scratch.rejected.clear();
     this.emit(ctx, 'baseline', `${baseline.passed}/${baseline.total} pass, ${baseline.failed} failed, ${baseline.errors} errors in ${baseline.durationMs} ms (${layout}, ${mem.oracle.runner}, ${command})`);
+    if (baseline.passed === 0 && baseline.failed === 0 && baseline.errors > 0) {
+      // errors and no result means the runner never ran a test: the suite did not import or collect inside the sandbox.
+      // Said plainly, because the ledger then has no goal and the run would otherwise re-run the suite until its budget ends.
+      this.emit(ctx, 'baseline', `no test ran: ${baseline.errors} error(s) and no pass or fail — the test runner could not import or collect the suite inside the sandbox (a pytest installed with pip --user is reached through PYTHONUSERBASE, which the sandbox passes through; otherwise add a .venv with pytest to the workspace, or run the suite by hand to see the error)`);
+    }
     if (baseline.timedOut) {
       // §4.1: a timed-out baseline parks the run's goals. A timed-out summary names no test, so the
       // ledger is not reconciled from it (that would mark every persisted goal fixed): the goals

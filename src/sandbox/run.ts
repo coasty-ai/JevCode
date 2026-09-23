@@ -8,7 +8,7 @@
  * summaries) survive a flood. Kills always go through the three-pass tree kill.
  */
 import { createHash } from 'node:crypto';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -29,6 +29,36 @@ const PIPE_DRAIN_GRACE_MS = 1_000;
 /** After SIGKILL, how long to wait for the root's exit before giving up on it. */
 const EXIT_AFTER_KILL_GRACE_MS = 5_000;
 const ENV_ALLOWLIST = ['PATH', 'LANG', 'LC_ALL', 'TERM'] as const;
+
+/**
+ * Python derives its user site-packages (`pip install --user pytest`) from HOME, and the sandbox remaps HOME, so a
+ * pytest that lives there reads as `No module named pytest` inside the sandbox — the first live run on such a machine
+ * then sees a baseline of errors and no failing test, and has nothing to fix. The real user base is passed through as
+ * `PYTHONUSERBASE` (readable under the seatbelt, which allows reads by default; writes still land in the run's HOME).
+ * The caller's own `PYTHONUSERBASE` wins; otherwise `python3 -c 'import site; print(site.USER_BASE)'` is asked once
+ * per process and the answer is used only when it names an existing directory.
+ */
+export function resolvePythonUserBase(opts: { env?: NodeJS.ProcessEnv; probe?: () => string | null; exists?: (p: string) => boolean } = {}): string | null {
+  const env = opts.env ?? process.env;
+  const own = env['PYTHONUSERBASE'];
+  if (typeof own === 'string' && own !== '') return own;
+  const probe = opts.probe ?? defaultPythonUserBaseProbe;
+  const exists = opts.exists ?? ((p: string) => { try { return statSync(p).isDirectory(); } catch { return false; } });
+  const base = probe();
+  return base !== null && base !== '' && exists(base) ? base : null;
+}
+
+let probedPythonUserBase: string | null | undefined;
+function defaultPythonUserBaseProbe(): string | null {
+  if (probedPythonUserBase !== undefined) return probedPythonUserBase;
+  try {
+    const r = spawnSync('python3', ['-c', 'import site; print(site.USER_BASE)'], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+    probedPythonUserBase = r.status === 0 && typeof r.stdout === 'string' && r.stdout.trim() !== '' ? r.stdout.trim() : null;
+  } catch {
+    probedPythonUserBase = null;
+  }
+  return probedPythonUserBase;
+}
 const DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin';
 const SANDBOX_EXEC_DENIED = /sandbox-exec: .*execvp/;
 /** setTimeout silently falls back to 1 ms above this; a larger timeout must not become an instant kill. */
@@ -123,6 +153,9 @@ function buildEnv(runTmp: string, runHome: string, extra: Record<string, string>
   }
   env['TMPDIR'] = runTmp;
   env['HOME'] = runHome;
+  // a user-site pytest stays importable although HOME is remapped (see resolvePythonUserBase)
+  const userBase = resolvePythonUserBase();
+  if (userBase !== null) env['PYTHONUSERBASE'] = userBase;
   if (extra) for (const [k, v] of Object.entries(extra)) if (typeof v === 'string' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) env[k] = v;
   return env;
 }
