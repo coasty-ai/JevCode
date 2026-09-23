@@ -778,7 +778,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     const d2 = await decide([plausibleOutcome(candidate(siteAt(grades, 2), '    if score >= minimum:', { id: 'ge' }), gBase)], createGuardMemory(gBase), goal([failure('tests/test_grades.py::test_boundary')]), throwingAsk, { oracle: oracle({ runner: 'pytest', tRunMs: { goalSubset: 5000, fullSuite: 5000 } }), budget: ample });
     expect(d2).toMatchObject({ kind: 'commit', requests: 0, signals: [] });
   });
-  it('inside the budget reserve the advisory is still asked (shipping was committed unasked with 14 s left): doubted → possible overfit, confidently doubted → held and never released; no request left → committed', async () => {
+  it('inside the budget reserve the advisory is still asked (shipping was committed unasked with 14 s left): doubted → possible overfit, confidently doubted → held for the step and committed flagged at its end; no request left → committed', async () => {
     const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
     const doubted = await decide([dcOverfit()], createGuardMemory(DC_BASE), goal(DETECT_CYCLE_FAILURES), scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.5 } })), { oracle: oracle(), budget: thin });
     expect(doubted).toMatchObject({ kind: 'commit', note: 'possible overfit', held: null, requests: 1, signals });
@@ -786,7 +786,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     const g = goal(DETECT_CYCLE_FAILURES);
     const confident = await decide([dcOverfit()], mem, g, scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.1 } })), { oracle: oracle(), budget: thin });
     expect(confident).toMatchObject({ kind: 'continue', held: 'suspect', requests: 1, signals });
-    expect(commitSuspect(mem, g)).toBeNull();
+    expect(commitSuspect(mem, g)).toMatchObject({ kind: 'commit', note: 'possible overfit' });
     expect(guardState(mem).suspect).toBeNull();
     const noRequest = await decide([dcOverfit()], createGuardMemory(DC_BASE), goal(DETECT_CYCLE_FAILURES), throwingAsk, { oracle: oracle(), budget: { ...thin, jevRequestsLeft: 0 } });
     expect(noRequest).toMatchObject({ kind: 'commit', held: null, requests: 0, signals });
@@ -797,7 +797,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     expect(budgetAllowsHold({ ...ample, jevRequestsLeft: 0 })).toBe(false);
     expect(budgetAllowsHold({ ...ample, exhausted: () => true })).toBe(false);
   });
-  it('a vouch-bound hold (p 0.5, ≥ 2 signals) survives every later phase and is released as `possible overfit` by the reserve or the step end; a confidently doubted hold (p 0.1) is never released — commitSuspect drops it', async () => {
+  it('a vouch-bound hold (p 0.5, ≥ 2 signals) survives every later phase and is released as `possible overfit` by the reserve or the step end; a confidently doubted hold (p 0.1) is not released mid-step — commitSuspect commits it flagged at step end', async () => {
     const hold = async (p: number): Promise<{ mem: ReturnType<typeof createGuardMemory>; g: Goal; over: VerifyOutcome }> => {
       const mem = createGuardMemory(DC_BASE);
       const g = goal(DETECT_CYCLE_FAILURES);
@@ -834,7 +834,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     expect(await decide([dcUnchanged(9, '        hare = hare.successor')], d.mem, d.g, throwingAsk, { oracle: oracle(), budget: thin })).toMatchObject({ kind: 'continue', held: 'suspect' });
     expect(commitSuspect(d.mem, { id: 'g2' })).toBeNull();
     expect(guardState(d.mem).suspect).not.toBeNull();
-    expect(commitSuspect(d.mem, d.g)).toBeNull();
+    expect(commitSuspect(d.mem, d.g)).toMatchObject({ kind: 'commit', note: 'possible overfit' });
     expect(guardState(d.mem).suspect).toBeNull();
     expect(commitSuspect(d.mem, d.g)).toBeNull();
   });
@@ -1225,7 +1225,7 @@ describe('head-to-head fix (b): wrap — generality by code before Jev; Q15 only
 });
 
 describe('head-to-head fix (c) and (d): shipping `** 2` and the grades/mergesort-class lone passers', () => {
-  it('shipping: the lone `** 2` seed inside the budget reserve is asked about, held on 0.1, kept by every later thin decision, and dropped at step end (commitSuspect null → the step ends on its partial or parks)', async () => {
+  it('shipping: the lone `** 2` seed inside the budget reserve is asked about, held on 0.1, kept by every later thin decision, and committed flagged at step end (a passing fix is never refused on a score alone)', async () => {
     const mem = createGuardMemory(SHIPPING_BASE);
     const g = goal(SHIPPING_FAILURES);
     const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [SHIPPING_SQUARED.trim()]: 0.1 } }));
@@ -1234,10 +1234,10 @@ describe('head-to-head fix (c) and (d): shipping `** 2` and the grades/mergesort
     const d1 = await decide([shippingSquared()], mem, g, ask, { oracle: oracle({ runner: 'pytest' }), budget: reserve, note: (n) => notes.push(n) });
     expect(d1).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['adds_special_case'], requests: 1, plausible: 1 });
     expect(guardState(mem).suspect).toMatchObject({ goalId: 'g1', noul: 0.1 });
-    expect(notes.some((n) => n.includes('never released on the budget reserve'))).toBe(true);
+    expect(notes.some((n) => n.includes('not released on the budget reserve'))).toBe(true);
     const d2 = await decide([], mem, g, throwingAsk, { oracle: oracle({ runner: 'pytest' }), budget: { ...reserve, testWallLeftMs: 1000 } });
     expect(d2).toMatchObject({ kind: 'continue', held: 'suspect' });
-    expect(commitSuspect(mem, g)).toBeNull();
+    expect(commitSuspect(mem, g)).toMatchObject({ kind: 'commit', note: 'possible overfit' });
     expect(guardState(mem).suspect).toBeNull();
     expect(ask.calls).toHaveLength(1);
   });
@@ -1255,7 +1255,7 @@ describe('head-to-head fix (c) and (d): shipping `** 2` and the grades/mergesort
     expect(d.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['ship_sq']);
     expect(guardState(mem).suspect).toBeNull();
   });
-  it('grades/mergesort-class: a lone `return 0` insert doubted at 0.2 parks; `>=` for `>` and `<= 1` for `== 0` commit at once with no request (the design\'s overfit-free path)', async () => {
+  it('grades/mergesort-class: a lone `return 0` insert doubted at 0.2 is held for the step and committed flagged at its end; `>=` for `>` and `<= 1` for `== 0` commit at once with no request (the design\'s overfit-free path)', async () => {
     const grades = sourceFile('src/grades.py', ['def average(total, weights):', '    if not weights:', '        raise ValueError("no weights")', '    return total / len(weights)', ''].join('\n'));
     const test = 'tests/test_grades.py::test_weighted_average';
     const gBase = committedBase(grades, summary({ passed: 3, failing: [test], failures: [failure(test)], total: 4 }));
@@ -1265,7 +1265,7 @@ describe('head-to-head fix (c) and (d): shipping `** 2` and the grades/mergesort
     const zero = plausibleOutcome(candidate(siteAt(grades, 4, 'insert'), '    return 0', { id: 'ret0', source: 'template', op: 'return_constant' }), gBase);
     const held = await decide([zero], memHold, g, scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { 'return 0': 0.2 } })), { oracle: oracle({ runner: 'pytest' }), budget: ample });
     expect(held).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['adds_special_case'], requests: 1 });
-    expect(commitSuspect(memHold, g)).toBeNull();
+    expect(commitSuspect(memHold, g)).toMatchObject({ kind: 'commit', note: 'possible overfit' });
     // the general-looking change: `sum` for `len` — no signal, committed at once, Jev never asked
     const memClean = createGuardMemory(gBase);
     const clean = plausibleOutcome(candidate(siteAt(grades, 4), '    return total / sum(weights)', { id: 'sum', source: 'mutation', op: 'call_swap' }), gBase);
