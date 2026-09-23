@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import { createPlainPrompter, type WizardOutcome } from '../../../src/cli/session.js';
 import { type LineSource } from '../../../src/tui/plain.js';
-import { LOGIN_ONE_KEY_PROMPT, LOGIN_OTHER_WAYS_PROMPT } from '../../../src/tui/onboarding/lines.js';
+import { LOGIN_ONE_KEY_PROMPT, LOGIN_ONE_KEY_PROMPT_AGENT, LOGIN_OTHER_WAYS_PROMPT } from '../../../src/tui/onboarding/lines.js';
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
 
@@ -50,7 +50,7 @@ describe('TUI-DESIGN-3 §1.4.3 / §1.3.3: the --plain wizard twin (R3 F4)', () =
     const lines = fakeLines();
     const out: string[] = [];
     const prompter = createPlainPrompter({ lines, stdout: { write: (s: string) => out.push(s), columns: 80 }, stdin: { isTTY: false } });
-    const drive = async (missing: readonly ('generator.apiKey' | 'decider.apiKey')[], o: { provider?: 'anthropic' | 'openrouter' | null; found?: 'typesafe' | 'jev' | 'anthropic' | null; mode?: 'jev-on' | 'jev-only'; reason?: 'missing' | 'login' }, ...answers: string[]): Promise<WizardOutcome> => {
+    const drive = async (missing: readonly ('generator.apiKey' | 'decider.apiKey')[], o: { provider?: 'anthropic' | 'openrouter' | null; found?: 'typesafe' | 'jev' | 'anthropic' | null; mode?: 'jev-on' | 'jev-only' | 'agent'; reason?: 'missing' | 'login' }, ...answers: string[]): Promise<WizardOutcome> => {
       const pending = prompter.wizard!(missing, { provider: o.provider ?? null, reason: o.reason ?? 'missing', mode: o.mode ?? 'jev-on', found: o.found ?? null });
       for (const a of answers) {
         await tick();
@@ -70,6 +70,24 @@ describe('TUI-DESIGN-3 §1.4.3 / §1.3.3: the --plain wizard twin (R3 F4)', () =
     expect(s.out.join('')).not.toContain(OR);
     // a short key cancels
     expect(await s.drive(['generator.apiKey', 'decider.apiKey'], {}, '', 'short')).toEqual({ kind: 'cancelled' });
+  });
+
+  it('AGENT-LOOP-DESIGN §14.2: an agent first run misses the generator alone and still takes the one-key path (the agent prompt; the key serves Jev too); /login keeps the round-2 question', async () => {
+    const s = wizardSetup();
+    const outcome = await s.drive(['generator.apiKey'], { mode: 'agent' }, '', OR);
+    expect(outcome).toEqual({ kind: 'saved', patch: { apiKey: OR, provider: 'openrouter', jevApiKey: OR, jevProvider: 'openrouter' } });
+    expect(s.out.some((l) => l === LOGIN_OTHER_WAYS_PROMPT)).toBe(true);
+    expect(s.out.some((l) => l.includes(LOGIN_ONE_KEY_PROMPT_AGENT.trim()))).toBe(true);
+    expect(s.out.join('')).not.toContain('Pick the generator provider');
+    // a legacy generator-only miss and an agent /login keep the round-2 provider question
+    const legacy = wizardSetup();
+    void legacy.drive(['generator.apiKey'], { mode: 'jev-on' });
+    await tick();
+    expect(legacy.out.join('')).toContain('Pick the generator provider');
+    const login = wizardSetup();
+    void login.drive(['generator.apiKey'], { mode: 'agent', reason: 'login' });
+    await tick();
+    expect(login.out.join('')).toContain('Pick the generator provider');
   });
 
   it('[t] TypeSafe Jev: the TypeSafe key, then the optional OpenRouter generator key (Enter = skip pends / persists jev-only; a key saves both with jevProvider typesafe)', async () => {

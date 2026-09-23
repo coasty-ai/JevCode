@@ -26,7 +26,7 @@ _jevcode() {
     --renderer) COMPREPLY=( $(compgen -W 'classic fullscreen' -- "$cur") ); return 0 ;;
     --exit-code) COMPREPLY=( $(compgen -W 'zero last-run' -- "$cur") ); return 0 ;;
     --log-level) COMPREPLY=( $(compgen -W 'error warn info debug trace' -- "$cur") ); return 0 ;;
-    --mode) COMPREPLY=( $(compgen -W 'jev-only jev-on jev-off llm-jev' -- "$cur") ); return 0 ;;
+    --mode) COMPREPLY=( $(compgen -W 'agent jev-only' -- "$cur") ); return 0 ;;
     --autonomy) COMPREPLY=( $(compgen -W 'full review' -- "$cur") ); return 0 ;;
     --suite) COMPREPLY=( $(compgen -W 'swebench terminal-bench quixbugs ladder all' -- "$cur") ); return 0 ;;
     --split) COMPREPLY=( $(compgen -W 'off auto ask' -- "$cur") ); return 0 ;;

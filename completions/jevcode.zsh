@@ -90,7 +90,7 @@ _jevcode() {
             '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>; import: continue a partly-applied import by its id]:run id:_jevcode_runs' \
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
-            '--mode[engine mode (default llm-jev): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
+            '--mode[engine mode (default agent): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off]:mode:(agent jev-only)' \
             '--autonomy[who approves review-flagged actions (default full): full auto-approves and logs them, review stops for y/n; a blocked action always stops]:autonomy:(full review)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--force-takeback[with --resume: re-take a run a peer claimed (bumps the claim epoch); an ordinary resume never does]' \
@@ -159,7 +159,7 @@ _jevcode() {
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
             '--task-file[read the task text from a file]:<path>:_files' \
-            '--mode[engine mode (default llm-jev): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
+            '--mode[engine mode (default agent): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off]:mode:(agent jev-only)' \
             '--autonomy[who approves review-flagged actions (default full): full auto-approves and logs them, review stops for y/n; a blocked action always stops]:autonomy:(full review)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--force-takeback[with --resume: re-take a run a peer claimed (bumps the claim epoch); an ordinary resume never does]' \

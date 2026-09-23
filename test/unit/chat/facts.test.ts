@@ -64,7 +64,8 @@ describe('§3.5 the harness facts', () => {
     const t = Object.fromEntries(harnessFacts(keyedFixture()).map((f) => [f.key, f.text]));
     expect(t['what_it_is']).toBe(WHAT_IT_IS_TEXT);
     // TUI-DESIGN-3 §1.7 / §1.9: the switch sentence names the jev-only cap; the copy names the code model, never a vendor
-    expect(t['switch_mode']).toBe('Switch with /mode jev-only (Jev alone, $1.00 run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.');
+    // AGENT-LOOP-DESIGN §14.5: `/llm on` is `/mode agent` since the default flip
+    expect(t['switch_mode']).toBe('Switch with /mode jev-only (Jev alone, $1.00 run cap) or /mode agent (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.');
     expect(t['switch_mode']).toBe(SWITCH_MODE_TEXT);
     expect(WHAT_IT_IS_TEXT.endsWith('in jev+llm mode the code model writes the code.')).toBe(true);
     // complete autonomy by default: the fact follows `autonomy`, and the `full` sentence never claims nothing is auto-approved

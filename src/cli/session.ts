@@ -1205,8 +1205,10 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
       const needJev = missing.includes('decider.apiKey');
       const found = w.found ?? null;
       const mode = w.mode ?? DEFAULT_MODE;
-      // the one-key path: both missing (nothing resolves) under provider null / openrouter, or the found-title path (Jev resolves, the generator is missing)
-      const oneKeyPath = needGen && needJev && found === null && (provider === null || provider === 'openrouter');
+      // the one-key path: both missing (nothing resolves) under provider null / openrouter, or the found-title path (Jev resolves, the generator is missing).
+      // AGENT-LOOP-DESIGN §14.2: an agent first run misses the generator alone (Jev is optional) and takes the one-key path too (the TUI reducer's twin)
+      const agentFirstRun = mode === 'agent' && w.reason === 'missing';
+      const oneKeyPath = needGen && (needJev || agentFirstRun) && found === null && (provider === null || provider === 'openrouter');
       const foundPath = needGen && !needJev && (found === 'typesafe' || found === 'jev') && (provider === null || provider === 'openrouter');
       if (oneKeyPath || foundPath) {
         if (oneKeyPath) {
@@ -5176,8 +5178,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       if (engine !== null && live()) {
         // §3.3 / §13.5: leaving while live aborts first and exits after run:end (Ctrl-D [y], /exit [y]); the policy is applied then
         exitAfterRunEnd = code;
-        engine.abort('human_abort');
-        phase = 'aborting';
+        // one abort per leave: a run already winding down (Esc, Ctrl-C) is not aborted again — a second abort() is the engine's
+        // second-press path, a forced exit 130 with a `stopped — error` epilogue. AGENT-LOOP-DESIGN §A5: leaving in the reply
+        // phase stops the reply the way Esc does (no epilogue)
+        if (phase !== 'aborting') {
+          if (replyPhase) replyStopped = true;
+          engine.abort('human_abort');
+          phase = 'aborting';
+        }
         return;
       }
       // TUI-DESIGN-2 §1.4 / §12 "Wizard": Ctrl-C at the startup wizard (exit 2 with a key still missing) prints the fix block —

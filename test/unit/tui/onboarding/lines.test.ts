@@ -650,7 +650,10 @@ describe('TUI-DESIGN-3 §1.4.2 / §10: the `key` and `options` steps, their twin
     for (const text of [...measured.map(([t]) => t), HINT_PASTED_TWICE, WIZARD_OPTIONS_HINT, keyFoundTitle('jev', 'file'), keyFoundTitle('jev', 'dotenv'), ...SR_OPTIONS_ROWS, ...([1, 2, 3, 4] as WizardOption[]).map((n) => optionHint(n))]) {
       expect(cells(text), text).toBeLessThanOrEqual(INNER80);
     }
-    expect(cells(optionHint(1))).toBe(DEFAULT_MODE === 'jev-only' ? 55 : 65);
+    // AGENT-LOOP-DESIGN §14.5: the default (agent) form of option 1 names the code model with Jev optional; a legacy form keeps 65
+    expect(cells(optionHint(1))).toBe(DEFAULT_MODE === 'jev-only' ? 55 : DEFAULT_MODE === 'agent' ? 74 : 65);
+    expect(cells(optionHint(1, undefined, undefined, 'llm-jev'))).toBe(65);
+    for (const n of [1, 2, 3, 4] as WizardOption[]) expect(cells(optionHint(n, undefined, undefined, 'agent')), `agent ${n}`).toBeLessThanOrEqual(INNER80);
     expect(cells(optionHint(2))).toBe(75);
     expect(cells(optionHint(4))).toBe(74);
     expect(cells(LOGIN_OTHER_WAYS_PROMPT)).toBe(79); // a prompt line, not a console row
@@ -662,17 +665,24 @@ describe('TUI-DESIGN-3 §1.4.2 / §10: the `key` and `options` steps, their twin
     expect(defaultOption('jev-only')).toBe(3);
     expect(defaultOption('jev-on')).toBe(1);
     expect(defaultOption('llm-jev')).toBe(1);
+    expect(defaultOption('agent')).toBe(1);
+    // AGENT-LOOP-DESIGN §14.5: the default (agent) form names option 3 as the jev-only mode
     const wide120 = optionsRow(null, consoleInnerWidth(120));
     expect(wide120).toContain(' (default)');
-    expect(wide120).toBe(d === 1 ? '  1 OpenRouter for both (default)   2 TypeSafe for Jev   3 Jev only, no LLM   4 Anthropic for code' : '  1 OpenRouter for both   2 TypeSafe for Jev   3 Jev only, no LLM (default)   4 Anthropic for code');
+    expect(wide120).toBe('  1 OpenRouter (default)   2 TypeSafe for Jev   3 jev-only (no code model)   4 Anthropic for code');
     expect(cells(wide120)).toBeLessThanOrEqual(consoleInnerWidth(120));
-    expect(optionsRow(null, consoleInnerWidth(100))).toBe(WIZARD_OPTIONS_NARROW);
-    expect(optionsRow(null, INNER80)).toBe(WIZARD_OPTIONS_NARROW);
-    expect(optionsRow(2, INNER80)).toBe('  1 OpenRouter  ▌2 TypeSafe   3 Jev only   4 Anthropic');
-    expect(optionsRow(1, INNER80)).toBe(' ▌1 OpenRouter   2 TypeSafe   3 Jev only   4 Anthropic');
-    expect(optionsRow(4, INNER80, true)).toBe('  1 OpenRouter   2 TypeSafe   3 Jev only  >4 Anthropic');
-    expect(optionsRow(3, consoleInnerWidth(120))).toContain('▌3 Jev only');
-    expect(cells(optionsRow(1, INNER80))).toBe(cells(WIZARD_OPTIONS_NARROW));
+    expect(optionsRow(null, INNER80)).toBe('  1 OpenRouter   2 TypeSafe   3 jev-only   4 Anthropic');
+    // the legacy form (a legacy-mode wizard names it explicitly) keeps the round-3 rows byte for byte
+    const legacy120 = optionsRow(null, consoleInnerWidth(120), false, 'llm-jev');
+    expect(legacy120).toBe('  1 OpenRouter for both (default)   2 TypeSafe for Jev   3 Jev only, no LLM   4 Anthropic for code');
+    expect(cells(legacy120)).toBeLessThanOrEqual(consoleInnerWidth(120));
+    expect(optionsRow(null, consoleInnerWidth(100), false, 'llm-jev')).toBe(WIZARD_OPTIONS_NARROW);
+    expect(optionsRow(null, INNER80, false, 'llm-jev')).toBe(WIZARD_OPTIONS_NARROW);
+    expect(optionsRow(2, INNER80, false, 'llm-jev')).toBe('  1 OpenRouter  ▌2 TypeSafe   3 Jev only   4 Anthropic');
+    expect(optionsRow(1, INNER80, false, 'llm-jev')).toBe(' ▌1 OpenRouter   2 TypeSafe   3 Jev only   4 Anthropic');
+    expect(optionsRow(4, INNER80, true, 'llm-jev')).toBe('  1 OpenRouter   2 TypeSafe   3 Jev only  >4 Anthropic');
+    expect(optionsRow(3, consoleInnerWidth(120), false, 'llm-jev')).toContain('▌3 Jev only');
+    expect(cells(optionsRow(1, INNER80, false, 'llm-jev'))).toBe(cells(WIZARD_OPTIONS_NARROW));
     // the ` (default)` follows a different mode's route when asked
     expect(optionsRow(null, consoleInnerWidth(120), false, 'jev-only')).toContain('3 Jev only, no LLM (default)');
     expect(optionHint(3, 0.25, 1.25, 'jev-only')).toBe('3: no LLM — code proposes, Jev decides, tests verify · caps $0.25 / $1.25 (default)');
@@ -715,13 +725,14 @@ describe('TUI-DESIGN-3 §1.4.2 / §10: the `key` and `options` steps, their twin
     const options = reduce(reduce(INITIAL_ONBOARDING, detectKey), { type: 'escape' });
     expect(wizardLines(options, { rows: 24, columns: INNER80 })).toEqual([WIZARD_OPTIONS_TITLE, WIZARD_OPTIONS_NARROW, WIZARD_OPTIONS_HINT]);
     const two = reduce(options, { type: 'choose', option: 2 });
-    expect(wizardLines(two, { rows: 24, columns: INNER80 })).toEqual([optionsTitle(2), optionsRow(2, INNER80), optionHint(2)]);
+    // detectKey's target is jev-on (a legacy mode): the wizard names the legacy form explicitly
+    expect(wizardLines(two, { rows: 24, columns: INNER80 })).toEqual([optionsTitle(2), optionsRow(2, INNER80, false, 'jev-on'), optionHint(2)]);
     expect(wizardLines(reduce(options, { type: 'choose', option: 'enter' }), { rows: 24, columns: INNER80 })[2]).toBe('pick 1–4');
     const wide = wizardLines(two, { rows: 24, columns: consoleInnerWidth(120) });
     expect(wide[1]).toContain('▌2 TypeSafe for Jev');
     expect(wide[1]).toContain(' (default)');
     for (const l of wide) expect(cells(l), l).toBeLessThanOrEqual(consoleInnerWidth(120));
-    expect(wizardLines(two, { rows: 24, columns: consoleInnerWidth(100) })[1]).toBe(optionsRow(2, consoleInnerWidth(100)));
+    expect(wizardLines(two, { rows: 24, columns: consoleInnerWidth(100) })[1]).toBe(optionsRow(2, consoleInnerWidth(100), false, 'jev-on'));
     expect(wizardLines(two, { rows: 24, columns: consoleInnerWidth(100) })[1]).toContain('▌2 TypeSafe   3');
     const sr = wizardLines(two, { rows: 24, columns: INNER80, screenReader: true });
     expect(sr).toEqual([...SR_OPTIONS_ROWS]);

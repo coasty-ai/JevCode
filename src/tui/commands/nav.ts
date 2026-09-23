@@ -145,7 +145,9 @@ export function paletteNavState(draft: string, matches: readonly PaletteMatch[],
   const vals = values0(spec);
   if (vals === undefined) return 'free';
   const lower = a0.toLowerCase();
-  if (vals.some((v) => v.toLowerCase() === lower)) return 'argdone';
+  // AGENT-LOOP-DESIGN §14.1: a value the dispatcher accepts without listing it (`/mode jev-on` once `/mode` lists agent · jev-only ·
+  // legacy) is as exact as a listed one — Enter runs it; without this `jev-on`, a prefix of the listed `jev-only`, walked the list
+  if (vals.some((v) => v.toLowerCase() === lower) || (spec.args[0]?.accepts ?? []).some((v) => v.toLowerCase() === lower)) return 'argdone';
   if (a0 === '' || vals.some((v) => v.toLowerCase().startsWith(lower))) return 'arg';
   return 'argbad';
 }

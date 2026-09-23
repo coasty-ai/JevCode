@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCliArgs, type ParsedFlags } from '../../../src/cli/args.js';
 import { detectPackageRoot, isEngineMode, modeFromParsedFlags, negateBooleanText, reconcileResumeConfig, resolveConfig, resumeIdentityFromRunMeta, type ResolveOptions } from '../../../src/config/resolve.js';
-import { BASE_URLS, DEFAULT_MODE } from '../../../src/config/defaults.js';
+import { AGENT_DEFAULT_MAX_STEPS, BASE_URLS, DEFAULT_MODE } from '../../../src/config/defaults.js';
 import { defaultRunSpendCapUsd } from '../../../src/config/ui.js';
 import type { RunMeta } from '../../../src/core/types.js';
 import { fingerprint } from '../../../src/config/mask.js';
@@ -53,7 +53,8 @@ describe('resolveConfig precedence', () => {
     expect(c.plain).toBe(false);
     expect(c.warnings).toEqual([]);
     expect(c.limits()).toEqual({
-      maxSteps: 40,
+      // AGENT-LOOP-DESIGN §14.2: the agent default's step cap is AGENT_DEFAULT_MAX_STEPS when unset (a legacy mode keeps 40)
+      maxSteps: AGENT_DEFAULT_MAX_STEPS,
       maxWallMs: 30 * 60_000,
       maxReplans: 5,
       completeThreshold: 0.85,
@@ -156,7 +157,7 @@ describe('resolveConfig keys and lazy validation', () => {
     expect(ce.message).toContain('no default');
     expect(() => c.decider()).toThrow(/decider\.apiKey/);
     expect(() => c.decider()).toThrow(/JEV_API_KEY \/ OPENROUTER_API_KEY/);
-    expect(c.limits().maxSteps).toBe(40);
+    expect(c.limits().maxSteps).toBe(AGENT_DEFAULT_MAX_STEPS);
     // --provider anthropic names its own variable
     const anthropic = await resolve(run('--provider', 'anthropic'));
     expect(() => anthropic.generator()).toThrow(/generator\.apiKey: the anthropic API key is not set.*ANTHROPIC_API_KEY \/ JEVCODE_API_KEY \(env\)/);

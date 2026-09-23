@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_MODE, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../../src/config/defaults.js';
+import { ADVERTISED_MODES, DEFAULT_MODE, LEGACY_MODES, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../../src/config/defaults.js';
 import { COMMAND_ACTION_KINDS, dispatchCommand, type CommandAction } from '../../../../src/tui/commands/dispatch.js';
 import { paletteGhost, paletteMatches, type PaletteState } from '../../../../src/tui/commands/palette.js';
 import { BUDGET_SETTINGS, COMMANDS, ENGINE_MODES, EXIT_ONE_LETTER, LLM_STATES, LLM_STATE_MODE, MODE_VALUE_HINTS, NO_ONE_LETTER_ALIAS, PANEL_ARGS, POPULAR, THEMES, TRANSCRIPT_VIEWS, availabilityError, commandNames, findCommand, isExactCommand, restArgIndex, shortestAlias, takesRest, type CommandSpec } from '../../../../src/tui/commands/registry.js';
@@ -180,21 +180,22 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
       ['memory', 1],
     ]);
   });
-  it('TUI-DESIGN-2 §1.3 / §4.6: /mode takes an optional jev-only|jev-on|jev-off|llm-jev; /llm <on|off>; /panel [d|p|t|s|a|off|full]; /transcript [compact|full] — strings verbatim', () => {
+  it('TUI-DESIGN-2 §1.3 / §4.6: /mode takes an optional agent|jev-only|legacy (AGENT-LOOP-DESIGN §14.1); /llm <on|off>; /panel [d|p|t|s|a|off|full]; /transcript [compact|full] — strings verbatim', () => {
     const mode = findCommand('mode') as CommandSpec;
-    // AGENT-LOOP-DESIGN §14.1: `legacy` is always accepted (it lists the older modes); it is LISTED only once the default flips to agent
-    expect(mode.args[0]).toEqual({ name: 'm', kind: 'enum', values: ['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent'], accepts: ['legacy'], optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]', valueHints: { ...MODE_VALUE_HINTS, legacy: { title: 'list the older modes (saved configs, resume, the bench)' } }, defaultValue: DEFAULT_MODE });
+    // AGENT-LOOP-DESIGN §14.1: with the default flipped to agent, `/mode` LISTS the advertised modes and `legacy`; the legacy modes stay
+    // accepted without being listed (a persisted `mode llm-jev` keeps working)
+    expect(mode.args[0]).toEqual({ name: 'm', kind: 'enum', values: ['agent', 'jev-only', 'legacy'], accepts: ['jev-on', 'jev-off', 'llm-jev'], optional: true, hint: '[agent|jev-only|legacy]', valueHints: { ...MODE_VALUE_HINTS, legacy: { title: 'list the older modes (saved configs, resume, the bench)' } }, defaultValue: DEFAULT_MODE });
     expect(mode.title).toBe('engine mode: show, or set for the next run');
-    expect(mode.usage).toBe('[jev-only|jev-on|jev-off|llm-jev]');
-    expect(mode.semantics).toBe('no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard\'s generator step in place; persist with `jevcode config set mode <m>`');
+    expect(mode.usage).toBe('[agent|jev-only|legacy]');
+    expect(mode.semantics).toBe('no argument: current and next mode; with one: pending for the **next** run (memory); `legacy` lists the older modes (still accepted: saved configs, resume, the bench); a mode that needs a generator key opens the wizard\'s generator step in place; persist with `jevcode config set mode <m>`');
     expect(ENGINE_MODES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent']);
     const llm = findCommand('llm') as CommandSpec;
     expect(llm.args[0]).toEqual({ name: 'state', kind: 'enum', values: ['on', 'off'], hint: '<on|off>' });
-    expect(llm.title).toBe('Jev + LLM on (= /mode jev-on) or off (= /mode jev-only)');
+    expect(llm.title).toBe('the code model on (= /mode agent) or off (= /mode jev-only)');
     expect(llm.usage).toBe('<on|off>');
-    expect(llm.semantics).toBe('`/llm on` = `/mode jev-on`, `/llm off` = `/mode jev-only`');
+    expect(llm.semantics).toBe('`/llm on` = `/mode agent`, `/llm off` = `/mode jev-only`');
     expect(llm.category).toBe('config');
-    expect(LLM_STATE_MODE).toEqual({ on: 'jev-on', off: 'jev-only' });
+    expect(LLM_STATE_MODE).toEqual({ on: 'agent', off: 'jev-only' });
     const panel = findCommand('panel') as CommandSpec;
     // TUI-DESIGN-5 §4.3 (R5-4's §9.2 request): `'a'` joins `PANEL_ARGS` in this file's one PR — the ARGUMENT
     // exists always, the TAB only while something delegates (`paneTabsFor`, R5-4's `src/tui/pane/model.ts`)
@@ -244,7 +245,10 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
     expect(findCommand('a')).toBeNull();
     expect(findCommand('x')).toBeNull();
     expect(findCommand('n')).toBeNull();
-    expect(POPULAR).toHaveLength(16);
+    // AGENT-LOOP-DESIGN §14.3 item 8: /jev and /panel leave Popular under the agent default (both commands still work)
+    expect(POPULAR).toHaveLength(14);
+    expect(POPULAR).not.toContain('jev');
+    expect(POPULAR).not.toContain('panel');
     for (const name of POPULAR) expect(findCommand(name), name).not.toBeNull();
   });
   it('TUI-DESIGN-3 §4.1 rules 1–3 / F22–F23: every alias runs its owner on Enter (`isExactCommand`, `routeSubmit` in the palette), pins it to the top of the palette against the real scorer, and ghosts the arrow `→ /owner`', () => {
@@ -462,7 +466,11 @@ describe('generated documentation is in sync (TUI-DESIGN §21)', () => {
     for (const c of COMMANDS) expect(man, c.name).toContain(`/${c.name}`);
     for (const c of COMMANDS) for (const a of c.aliases) expect(man, `${c.name} alias ${a}`).toContain(`/${c.name}, /${a}`.replace(/-/g, '\\-').slice(0, `/${c.name}, /${a}`.length + 2).split(', /')[0] as string);
     const roffMode = (m: string): string => m.replace(/-/g, '\\-');
-    expect(man.replace(/\n/g, ' ')).toContain(`engine mode (${MODE_SETTING_VALUES.map(roffMode).join(' | ')}; default ${roffMode(DEFAULT_MODE)})`);
+    // AGENT-LOOP-DESIGN §14.1: the advertised modes, then the legacy ones as legacy — together every MODE_SETTING_VALUES member
+    expect(man.replace(/\n/g, ' ')).toContain(`engine mode (${ADVERTISED_MODES.map(roffMode).join(' | ')}; legacy ${LEGACY_MODES.map(roffMode).join(' | ')}; default ${roffMode(DEFAULT_MODE)})`);
+    expect([...ADVERTISED_MODES, ...LEGACY_MODES].sort()).toEqual([...MODE_SETTING_VALUES].sort());
+    // the NAME and DESCRIPTION no longer say Jev decides every step (AGENT-LOOP-DESIGN §14.5)
+    expect(man).not.toMatch(/Jev decides|Jev decision pane/);
     expect(man).not.toMatch(/the default \||is the default/);
     expect(man).not.toContain('Claude');
     expect(man).toContain('/status, /s');

@@ -14,10 +14,10 @@
 #
 # Round 2 (TUI-DESIGN-2) / round 3 (TUI-DESIGN-3 §1.10): every scenario that needs the scripted `--mock` trajectory says
 # `--mode jev-on` explicitly (the trajectory is a generator trajectory whatever the default is; under jev-only `--mock` would run
-# the real synthesizer); the zero-argument scenarios start without a mode and expect the DEFAULT badge (`jev+llm` since round 3,
+# the real synthesizer); the zero-argument scenarios start without a mode and expect the DEFAULT badge (`agent` since AGENT-LOOP-DESIGN §14.1,
 # read from src/config/defaults.ts by `default_badge`). Round 3 adds: wordmark-* (the persistent mark, TUI-DESIGN-3 §3), theme-*
 # (the TypeSafe pink, §2), polish (the §9 hero-frame checklist through scripts/pty/polish-check.mjs), r3-* / ts-only-* (the one-key
-# wizard, §1), commands-* / trust-esc / keybindings (the §4 audit). Round-2 scenarios: chat-hi (a greeting → a [jevcode] reply, no run,
+# wizard, §1), commands-* / trust-esc / keybindings (the §4 audit). Round-2 scenarios: chat-hi (a greeting → a [jevcode] reply that stops `answered`, no run chrome,
 # wall time recorded), chat-facts (jev-only: Jev's own facts), chat-task (today's chat-run-exit; compact transcript),
 # chat-ambiguous(-y) (the `do it` offer, no card; -flat at 12x60), mode-switch(-keyed) (/mode jev-on without / with a generator key), splash, splash-wide,
 # wordmark-reduced (was splash-reduced), splash-settle (no key: the splash settles by itself), panel, chrome-tiers, zero-arg-chat, zero-arg-run,
@@ -97,6 +97,70 @@ for f in frames:
     if len(ls) - i > rows: bad += 1
 print(bad)
 PYT
+}
+# AGENT-LOOP-DESIGN §A1 / §A5: under the agent default a greeting is an agent run that stops `answered` and renders as a reply
+# only — no `[run]` started/finished row, no `[step N]` row, no `finished ·` row in the TUI, and ONE run directory whose
+# state.json records the `answered` stop. `answered_reply <home> <txt>` prints "ok" or the failing rule
+answered_reply() {
+  python3 - "$1" "$2" <<'PYA'
+import json, os, re, sys
+home, txt = sys.argv[1], sys.argv[2]
+t = open(txt, encoding='utf-8', errors='replace').read()
+runs = os.path.join(home, 'runs')
+dirs = sorted(os.listdir(runs)) if os.path.isdir(runs) else []
+if re.search(r'\[run\] (?:started|finished) (?:·|-) ', t): print('RUN-ROW')
+elif re.search(r'(?m)^ *\[step \d+\] ', t): print('STEP-ROW')
+elif re.search(r'finished (?:·|-) ', t): print('FINISHED-ROW')
+elif len(dirs) != 1: print('RUN-DIRS=%d' % len(dirs))
+else:
+    try: st = json.load(open(os.path.join(runs, dirs[0], 'state.json')))
+    except Exception: st = {}
+    st = st.get('state', st)  # the checkpoint envelope `{ version, checksum, state }`
+    print('ok' if st.get('stopReason') == 'answered' else 'STOP=%s' % st.get('stopReason'))
+PYA
+}
+# AGENT-LOOP-DESIGN §15 S6 agent-stream: `agent_stream <cap> <home>` prints "ok <frames> <working> <idle>" or the failing rule —
+# a frame shows the paragraph's early words (p05) before the delta that ends its line (p30) and `k01` before `k02`; every
+# marker of the `mixed` preset is on exactly one `[jevcode]` line of transcript.log; the status row (the row after the last
+# `├`) carries a braille indicator beside its status word while the run works and none at idle; no frame has a row of the
+# removed 12-row animation's luminance ramp, and braille never shows outside the status row
+agent_stream() {
+  python3 - "$1" "$2" <<'PYS'
+import os, re, sys
+cap, home = sys.argv[1], sys.argv[2]
+b = open(cap, 'rb').read().decode('utf8', 'replace')
+strip = lambda s: re.sub(r'\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', s).replace('\r', '')
+frames = [strip(f).split('\n') for f in b.split('\x1b[?2026h')[1:]]
+mk = lambda m: re.compile(r'(?<![A-Za-z0-9])%s(?![0-9])' % m)
+has = lambda f, m: any(mk(m).search(l) for l in f)
+braille = re.compile('[⠀-⣿]')
+anim = lambda l: re.fullmatch(r'[\s.,\-~:;=!*#$@]+', l) is not None and len(re.findall(r'[~:;=!*#$@]', l)) >= 4
+def status_row(f):
+    for i in range(len(f) - 1, -1, -1):
+        if f[i].startswith('├'): return f[i + 1] if i + 1 < len(f) else None
+    return None
+working_re = re.compile(r'^│ [⠀-⣿]{1,3} (?:thinking|replying|reading|editing|running|testing)\b')
+if not any(has(f, 'p05') and not has(f, 'p30') for f in frames): print('NO-PARTIAL-PARAGRAPH'); sys.exit()
+if not any(has(f, 'k01') and not has(f, 'k02') for f in frames): print('NO-PARTIAL-FIRST-LINE'); sys.exit()
+working = [f for f in frames if working_re.search(status_row(f) or '')]
+idle = [f for f in frames if re.search(r'^│ idle\b', status_row(f) or '')]
+if not working: print('NO-INDICATOR-WHILE-WORKING'); sys.exit()
+if not idle or any(braille.search(status_row(f) or '') for f in idle): print('INDICATOR-AT-IDLE'); sys.exit()
+for f in frames:
+    if any(anim(l) for l in f): print('ANIMATION-ROWS'); sys.exit()
+    rows = [l for l in f if braille.search(l)]
+    if len(rows) > 1 or (rows and rows[0] != status_row(f)): print('BRAILLE-OUTSIDE-STATUS-ROW'); sys.exit()
+runs = os.path.join(home, 'runs')
+dirs = sorted(os.listdir(runs)) if os.path.isdir(runs) else []
+if len(dirs) != 1: print('RUN-DIRS=%d' % len(dirs)); sys.exit()
+try: lines = open(os.path.join(runs, dirs[0], 'transcript.log'), encoding='utf-8').read().split('\n')
+except Exception: print('NO-TRANSCRIPT'); sys.exit()
+prose = [l for l in lines if l.startswith('[jevcode]')]
+markers = ['k0%d' % i for i in range(1, 6)] + ['p%02d' % i for i in range(1, 31)] + ['b01', 'b02', 'b03', 'c01', 'c02']
+bad = [m for m in markers if sum(1 for l in prose if mk(m).search(l)) != 1]
+if bad: print('LINE-NOT-ONCE=%s' % ','.join(bad)); sys.exit()
+print('ok %d %d %d' % (len(frames), len(working), len(idle)))
+PYS
 }
 fail=0
 clears() {
@@ -253,10 +317,10 @@ elif which=='palette21':
     pal=[f for f in frames if b'Tab' in f and b'commands' in f]
     print('ok' if pal and all(mark(f) for f in pal) else 'palette-handoff')
 elif which=='flat-no-mark':
-    # TUI-DESIGN-2 §1.5: the flat tier's badge prefix is the FIRST thing dropped when the row runs short, and the
-    # `llm-jev` default badge is 18 cells — a 60-column flat status row cannot carry it. A flat frame is one with
-    # a status row at column 0 and no rounded box edge.
-    flat=[f for f in frames if re.search(rb'\r\nidle {2,}step 0/', f) and b'\xe2\x95\xad' not in f]
+    # TUI-DESIGN-2 §1.5: the flat tier's badge prefix is the FIRST thing dropped when the row runs short (round 3's 18-cell
+    # `llm-jev` badge could not fit 60 columns; the agent default's `agent ·` does). A flat frame is one with a status row at
+    # column 0 — the badge prefix optional — and no rounded box edge.
+    flat=[f for f in frames if re.search(rb'\r\n(?:[^\r\n]{1,24} \xc2\xb7 )?idle {2,}step 0/', f) and b'\xe2\x95\xad' not in f]
     print('ok' if flat and not any(b'\xe2\x96\x88\xe2\x96\x88' in f for f in flat) else 'mark-in-flat-tier')
 elif which=='head-after-echo':
     echo=next((i for i,f in enumerate(frames) if re.search(rb'(?:\xe2\x80\xba|>) h', f)), None)
@@ -388,7 +452,10 @@ run() {
     # the restart reuses ts-only-start's HOME (its config.json carries `mode: jev-only`)
     ts-only-restart) if [ -n "$TS_HOME" ]; then rm -rf "$home"; home="$TS_HOME"; extra_env="$(hermetic_env "$home") TYPESAFE_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1"; fi;;
     r3-env-jev-only) extra_env="$extra_env OPENROUTER_API_KEY=$FAKE_KEY JEVCODE_MODE=jev-only JEVCODE_ASSERT_NO_NETWORK=1";;
-    commands-thinking) extra_env="$extra_env JEVCODE_MOCK_JEV_MS=1500";;
+    # AGENT-LOOP-DESIGN §A1: every message is an agent run under the default, so `thinking` is the model turn — the mock's turn
+    # latency holds it open (JEVCODE_MOCK_JEV_MS paced the legacy intake's Jev reading, which the agent default no longer waits on)
+    commands-thinking) extra_env="$extra_env JEVCODE_MOCK_STEP_MS=1500";;
+    agent-stream) extra_env="$extra_env JEVCODE_MOCK_CHAT_STREAM=mixed JEVCODE_MOCK_DELTA_MS=40";;
     trust-esc) printf '# instructions\nBe careful.\n' > "$ws/AGENTS.md";;
     keybindings) printf '{ "global:help": "none" }\n' > "$ws/kb.json"; set -- chat --mock --keybindings "$ws/kb.json";;
     taskfile-header) printf 'create one scratch file and stop\n' > "$ws/todo.md"; set -- run --task-file "$ws/todo.md" --mode jev-on --mock --mock-steps 3;;
@@ -486,9 +553,13 @@ run() {
       grep -qE '^ *\[step [0-9]+\] (intent (·|-)|context (·|-)|proposal (·|-)|risk [0-9]|done (·|-)|judge [0-9]|plan (·|-))' "$txt" && { ok=0; checks="$checks STAGE-LINES-VISIBLE"; } || checks="$checks compact:no-stage-lines"
       grep -qE '^ *\[run\] ready' "$txt" && { ok=0; checks="$checks RUN-READY-VISIBLE"; } || checks="$checks compact:no-run-ready";;
     # TUI-DESIGN-2 §3.1 rows 6–7, §8.2: a reply and no run; the wall time Enter → [jevcode] from the mark pair (gate 1.5 s, the live round-2 gate of §9; the mock answers at once)
-    chat-hi|chat-facts|chat-ambiguous|chat-ambiguous-flat|mode-switch|mode-switch-keyed|zero-arg-chat|zero-arg-run|splash|splash-wide|wordmark-reduced|splash-settle|chrome-tiers|wordmark-idle|wordmark-idle-wide|wordmark-key-during-pass|wordmark-21|wordmark-20|wordmark-nocolor|theme-light|theme-ansi|r3-env-jev-only|ts-only-restart|commands-idle|commands-thinking|keybindings)
+    chat-facts|chat-ambiguous|chat-ambiguous-flat|mode-switch|mode-switch-keyed|zero-arg-chat|zero-arg-run|splash|splash-wide|wordmark-reduced|splash-settle|chrome-tiers|wordmark-idle|wordmark-idle-wide|wordmark-key-during-pass|wordmark-21|wordmark-20|wordmark-nocolor|theme-light|theme-ansi|r3-env-jev-only|ts-only-restart|commands-idle|keybindings)
       grep -qE '^ *\[run\] started (·|-) ' "$txt" && { ok=0; checks="$checks RUN-STARTED"; } || checks="$checks no-run"
       [ -d "$home/runs" ] && [ -n "$(ls "$home/runs" 2>/dev/null)" ] && { ok=0; checks="$checks RUN-DIR"; };;
+    # AGENT-LOOP-DESIGN §A1 / §A5 (the flip of `no-run`): under the agent default the greeting IS an agent run — it stops
+    # `answered` and renders as a reply only (no run chrome), with its one run directory
+    chat-hi|commands-thinking) a=$(answered_reply "$home" "$txt"); [ "$a" = "ok" ] && checks="$checks answered-reply" || { ok=0; checks="$checks $a"; };;
+    agent-stream) a=$(agent_stream "$cap" "$home"); case "$a" in ok*) checks="$checks agent-stream(frames/working/idle=${a#ok })";; *) ok=0; checks="$checks $a";; esac;;
   esac
   case "$name" in
     chat-hi) w=$(wall "$tim" hi-sent hi-reply); checks="$checks wall_enter_to_reply=${w}ms"; [ "$w" -ge 0 ] && [ "$w" -le 1500 ] || ok=0;;
@@ -561,8 +632,9 @@ run() {
     # TUI-DESIGN-3 §3.2: no wordmark at 12×60 (the flat frame carries no `██` row), the mark back at 24×80
     # the flat tier's anchor is its SHAPE (a status row at column 0), not the badge prefix: TUI-DESIGN-2 §1.5
     # drops that prefix first when short, and the `llm-jev` default badge (18 cells) cannot fit 60 columns
-    chrome-tiers) grep -q "╭─ $BADGE" "$txt" && grep -qE '^idle {2,}step 0/' "$txt" && checks="$checks boxed+flat" || { ok=0; checks="$checks MISSING:tier-rows"; }
-      flat_rows=$(wm_rows_at "$cap" "\r\nidle {2,}step 0/"); [ "$flat_rows" -ge 1 ] && [ "$flat_rows" -le 10 ] && checks="$checks flat-rows=$flat_rows" || { ok=0; checks="$checks FLAT-ROWS=$flat_rows"; }
+    # the flat status row keeps the `<badge> · ` prefix when it fits (the agent default's 5-cell badge does at 60 columns)
+    chrome-tiers) grep -q "╭─ $BADGE" "$txt" && grep -qE "^($BADGE_RE · )?idle {2,}step 0/" "$txt" && checks="$checks boxed+flat" || { ok=0; checks="$checks MISSING:tier-rows"; }
+      flat_rows=$(wm_rows_at "$cap" "\r\n(?:$BADGE_RE · )?idle {2,}step 0/"); [ "$flat_rows" -ge 1 ] && [ "$flat_rows" -le 10 ] && checks="$checks flat-rows=$flat_rows" || { ok=0; checks="$checks FLAT-ROWS=$flat_rows"; }
       w=$(wm_handoff "$cap" flat-no-mark); [ "$w" = "ok" ] && checks="$checks no-mark-in-flat" || { ok=0; checks="$checks $w"; }
       m=$(wm_mark_after "$cap" "(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*Z"); [ "$m" = "1" ] && checks="$checks mark-back-at-24x80" || { ok=0; checks="$checks MARK-NOT-BACK"; };;
     zero-arg-chat|zero-arg-run) grep -q "╭─ $BADGE" "$txt" && checks="$checks badge:default($BADGE)" || { ok=0; checks="$checks MISSING:badge"; }
@@ -693,10 +765,13 @@ sel hermetic && hermetic_check
 sel firstframe && run firstframe 0 24 80 chat --mock --perf-exit-after-first-frame
 sel chat-task && run chat-task 0 24 80 chat $MOCK_RUN --mock-steps 4
 sel chat-hi && run chat-hi 0 24 80 chat --mock
+# AGENT-LOOP-DESIGN §15 S6: the default agent mode's streamed prose, line commits and mini indicator
+sel agent-stream && run agent-stream 0 24 80 chat --mock
 sel chat-facts && run chat-facts 0 24 80 chat --mock --mode jev-only
-sel chat-ambiguous && run chat-ambiguous 0 24 80 chat --mock
+# AGENT-LOOP-DESIGN §A1: the `do it` offer is the legacy intake's, so the ambiguity scenarios name the legacy mode
+sel chat-ambiguous && run chat-ambiguous 0 24 80 chat --mock --mode llm-jev
 sel chat-ambiguous-y && run chat-ambiguous-y 0 24 80 chat $MOCK_RUN --mock-steps 3
-sel chat-ambiguous-flat && run chat-ambiguous-flat 0 12 60 chat --mock
+sel chat-ambiguous-flat && run chat-ambiguous-flat 0 12 60 chat --mock --mode llm-jev
 # TUI-DESIGN-3 §1.10: jev+llm is the default, so the switch scenarios start in jev-only explicitly
 sel mode-switch && run mode-switch 0 24 80 chat --mode jev-only
 sel mode-switch-keyed && run mode-switch-keyed 0 24 80 chat --mode jev-only

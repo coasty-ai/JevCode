@@ -23,7 +23,9 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MODE_SET_ITEM } from '../../src/cli/session.js';
+import { WIZARD_KEY_TITLE_AGENT } from '../../src/tui/onboarding/lines.js';
 import {
+  BADGE_AGENT,
   BADGE_DEFAULT,
   BADGE_DEFAULT_TEXT,
   BADGE_JEV_LLM,
@@ -34,6 +36,7 @@ import {
   FIRST_FRAME_STEP,
   HIDDEN_STAGE_RE,
   IDLE_STEP,
+  LEGACY_INTAKE_MODE,
   MOCK_RUN_MODE,
   PLACEHOLDER_FOLLOWUP,
   PLACEHOLDER_TASK,
@@ -42,6 +45,7 @@ import {
   RUN_STARTED_STEP,
   SGR_GAP,
   afterFirstFrame,
+  answeredReplyProblems,
   cleanupScratch,
   countClears,
   drive,
@@ -111,7 +115,7 @@ function filesContaining(r: Drive, needle: string): string[] {
 }
 
 describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
-  it('chat-hi: `hi` → [you] bubble, the code model\'s reply, no card, no run, the default badge; Enter → reply wall time recorded', async () => {
+  it('chat-hi: `hi` → [you] bubble, the code model\'s reply, no card, no run chrome (an agent run that stops `answered`, AGENT-LOOP-DESIGN §A1), the default badge; Enter → reply wall time recorded', async () => {
     const r = await drive({
       name: 'r2-chat-hi',
       args: ['chat', '--mock'],
@@ -126,9 +130,9 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     // never a card and never a blocked composer
     expect(plain).not.toContain('run this as a task?');
     expect(plain).not.toContain('(waiting for y/n)');
-    // §3.1 row 6: no run — no `[run] start`, no run directory
-    expect(plain).not.toMatch(/\[run\] started [·-] /);
-    expect(r.runDirs()).toEqual([]);
+    // AGENT-LOOP-DESIGN §A1 (the flip of §3.1 row 6): the greeting IS an agent run — it stops `answered` and renders as a reply
+    // only: no run chrome, one run directory recording the `answered` stop
+    expect(answeredReplyProblems(r)).toEqual([]);
     // §4.4: a chat reply is a turn, so the placeholder flips to `followup`
     expect(plain).toContain('Follow-up, question, or /command…');
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
@@ -192,7 +196,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
   it('chat-ambiguous: an unsure reading adds the `do it` offer to the reply — no card, no blocked composer, no run', async () => {
     const r = await drive({
       name: 'r2-chat-ambiguous',
-      args: ['chat', '--mock'],
+      args: ['chat', '--mock', ...LEGACY_INTAKE_MODE],
       env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
       steps: [...CHAT_OPEN, 'send the date parsing', echoStep('the date parsing'), 'send \\r', labelStep('jevcode', ''), 'expect make that a task', ...EXIT_IDLE],
     });
@@ -211,7 +215,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
   it('chat-ambiguous at 12x60 (flat tier): the same offer, ≤ 10 dynamic rows, no card edge, 0 clears', async () => {
     const r = await drive({
       name: 'r2-chat-ambiguous-flat',
-      args: ['chat', '--mock'],
+      args: ['chat', '--mock', ...LEGACY_INTAKE_MODE],
       rows: 12,
       cols: 60,
       env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
@@ -247,7 +251,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
   it('--plain: the same conversation with no readline prompt anywhere — the reply, the offer, `do it` runs it', async () => {
     const r = await drive({
       name: 'r2-plain-chat',
-      args: ['chat', '--plain', '--mock'],
+      args: ['chat', '--plain', '--mock', ...LEGACY_INTAKE_MODE],
       env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
       steps: ['expect \\[sandbox\\]', 'sleep 0.3', 'send the date parsing\\r', 'expect \\[you\\] the date parsing', 'expect \\[jevcode\\] ', 'expect make that a task', 'sleep 0.2', 'send /exit\\r', 'eof'],
     });
@@ -266,7 +270,8 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     const r = await drive({
       name: 'r2-redact-tui',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, `send ${question}`, 'sleep 0.3', 'send \\r', 'expect Looks like this contains', 'sleep 0.4', 'send y', labelStep('you', 'what can you do with \\[REDACTED'), labelStep('jevcode', ''), ...EXIT_IDLE],
+      // the reply is an agent run under the default: wait for it to end (the follow-up placeholder) before /exit, or /exit stops it
+      steps: [...CHAT_OPEN, `send ${question}`, 'sleep 0.3', 'send \\r', 'expect Looks like this contains', 'sleep 0.4', 'send y', labelStep('you', 'what can you do with \\[REDACTED'), labelStep('jevcode', ''), `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -281,7 +286,8 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     const history = join(r.home, 'history.jsonl');
     expect(existsSync(history)).toBe(true);
     expect(readFileSync(history, 'utf8')).toContain('[REDACTED:');
-    expect(r.runDirs()).toEqual([]);
+    // AGENT-LOOP-DESIGN §A1: the question is an agent run that answered (its run directory holds no key byte either: above)
+    expect(answeredReplyProblems(r)).toEqual([]);
   });
 
   it('[you] bubbles are redacted at emission (§3.10) in --plain too: the readline gate answered `y`, the masked bubble on its own line', async () => {
@@ -313,7 +319,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
   it('/jev and /cost after a greeting: the §3.1 kv blocks — `intake  1 message · p50 <ms> ms · $<usd> · last …` and `chat  $<usd> for 1 message …` (§2.6, §3.9, §12)', async () => {
     const r = await drive({
       name: 'r2-jev-cost',
-      args: ['chat', '--mock'],
+      args: ['chat', '--mock', ...LEGACY_INTAKE_MODE],
       steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi'), 'send /jev', echoStep('/jev'), 'send \\r', 'expect intake {2,}1 message', 'send /cost', echoStep('/cost'), 'send \\r', 'expect chat {2,}\\$', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
@@ -370,27 +376,27 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
     expect(plain).not.toContain(FAKE_KEY);
   });
 
-  it('mode-switch with ANTHROPIC_API_KEY (started in jev-only): `/llm on` is `/mode jev-on`, the no-argument `/mode` item names the next run, and `run:start` promotes `jev+llm · next run` → `jev+llm`', async () => {
+  it('mode-switch with ANTHROPIC_API_KEY (started in jev-only): `/llm on` is `/mode agent` (AGENT-LOOP-DESIGN §14.5), the no-argument `/mode` item names the next run, and `run:start` promotes `agent · next run` → `agent`', async () => {
     const r = await drive({
       name: 'r2-mode-switch-anthropic',
-      args: ['chat', '--mock', '--mock-steps', '3', '--mode', 'jev-only'],
+      args: ['chat', '--mock', '--mode', 'jev-only'],
       env: { ...NO_NETWORK, ANTHROPIC_API_KEY: FAKE_KEY, TYPESAFE_API_KEY: FAKE_KEY },
-      steps: [...CHAT_OPEN, 'send /llm on', echoStep('/llm on'), 'send \\r', `expect ${BADGE_JEV_LLM} from the next run`, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} · next run`), 'send /mode', echoStep('/mode'), 'send \\r', `expect next run: ${BADGE_JEV_LLM}`, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} ─`), 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send /llm on', echoStep('/llm on'), 'send \\r', `expect ${BADGE_AGENT} from the next run`, topEdgeStep(`${BADGE_AGENT}${PROMPT_GAP} · next run`), 'send /mode', echoStep('/mode'), 'send \\r', `expect next run: ${BADGE_AGENT}`, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, topEdgeStep(`${BADGE_AGENT}${PROMPT_GAP} ─`), 'expect finished [·-] (complete|generator_done|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     // §1.3: the alias and the mode item (§12 "Mode items")
-    expect(flatten(plain)).toContain(`[ui] ${MODE_SET_ITEM['jev-on']}`);
+    expect(flatten(plain)).toContain(`[ui] ${MODE_SET_ITEM['agent']}`);
     // TUI-DESIGN-3 §4.4 F1: `mode <cur badge> — next run: <next badge>[ (default)]`; ` (default)` follows the word equal to the default's
-    const modeItem = /^ *\[ui\] mode (jev-only|jev\+llm|llm-only) — next run: jev\+llm(?: \(default\))?$/m.exec(plain);
+    const modeItem = /^ *\[ui\] mode (jev-only|agent) — next run: agent(?: \(default\))?$/m.exec(plain);
     expect(modeItem).not.toBeNull();
-    // §1.5: pending badge before the run, promoted at `run:start` (the run's `mode=jev-on`), no ` · next run` afterwards
-    expect(plain).toMatch(/^╭─ jev\+llm · next run ─/m);
+    // §1.5: pending badge before the run, promoted at `run:start` (the run's `mode=agent`), no ` · next run` afterwards
+    expect(plain).toMatch(/^╭─ agent · next run ─/m);
     // owner addendum: the `[run] started` row is transcript.log-only now; the run's first FRAME is the one whose
     // status row carries a numeric `step <n>/<max>`
     expect(plain).not.toMatch(/\[run\] started [·-] /);
-    expect(r.transcript()!.filter((l) => /^\[run\] started [·-] jev\+llm [·-] fix the failing test/.test(l))).toHaveLength(1);
+    expect(r.transcript()!.filter((l) => /^\[run\] started [·-] agent [·-] fix the failing test/.test(l))).toHaveLength(1);
     const all = syncFrames(r.text);
     const started = [all.findIndex((f) => f.dynamic.some((l) => /step \d+\/\d+/.test(l)))].filter((i) => i >= 0);
     expect(started.length).toBe(1);
@@ -398,7 +404,7 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
     expect(afterStart.length).toBeGreaterThan(0);
     // the CONSOLE's top edge is the LAST `╭─ ` row of a frame: an open palette (`╭─ commands ─`) draws its own box
     // above it, and `EXIT_IDLE`'s `/exit` opens exactly that (§4.2) — `find` picked the palette's and failed
-    for (const f of afterStart) expect(f.dynamic.filter((l) => l.startsWith('╭─ ')).at(-1)).toMatch(/^╭─ jev\+llm ─/);
+    for (const f of afterStart) expect(f.dynamic.filter((l) => l.startsWith('╭─ ')).at(-1)).toMatch(/^╭─ agent ─/);
     expect(plain).not.toContain(FAKE_KEY);
     // design §12: `mode <badge> (next run: <badge>)` — the tree's first word idle is the pending mode (docs/STATUS.md "Round 2", deviation)
     console.log(`mode item idle after /llm on: "${modeItem![0]}"`);
@@ -511,11 +517,11 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
   });
 
   it('--ascii twins (TD §14.1): `#` letters and the `#+.` sweep head, `+-|` console edges, `* jevcode` brand row; no Unicode box or block cell anywhere', async () => {
+    // AGENT-LOOP-DESIGN §A1 / §A3: a greeting under the agent default — the reply and the ascii twin of the mini indicator
     const r = await drive({
       name: 'r2-ascii',
       args: ['chat', '--mock', '--ascii'],
-      env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
-      steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, IDLE_STEP, 'sleep 0.8', 'send the date parsing', echoStep('the date parsing'), 'send \\r', labelStep('jevcode', ''), 'expect make that a task', ...EXIT_IDLE],
+      steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, IDLE_STEP, 'sleep 0.8', 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi'), 'expect Follow-up', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -529,10 +535,10 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     expect(body.some((l) => l.startsWith(`+- ${BADGE_DEFAULT_TEXT.replaceAll('·', '-')} -`)), JSON.stringify(body.slice(0, 12))).toBe(true);
     expect(body.some((l) => /^\| > Say hi, ask a question, or describe a task\.\.\./.test(l))).toBe(true);
     expect(plain).toMatch(/\* \d+\.\d+\.\d+/); // the resting mark's ascii caption `* <version>` (TUI-DESIGN-3 §3.5) replaces the brand row at ≥ 21 rows
-    // the conversation is the only thing above the console now: the reply and the `do it` offer, in the ascii twin
-    expect(plain).toContain("Say `do it` and I'll make that a task.");
-    expect(plain).not.toMatch(/[╭╮╰╯│├┤─█▓▒░◆›…]/);
-    expect(r.runDirs()).toEqual([]);
+    // the conversation is the only thing above the console now: the reply, in the ascii twin (no braille indicator cell either)
+    expect(plain).toMatch(/\[jevcode\] Hi\. I'm JevCode \(mock reply\)\./);
+    expect(plain).not.toMatch(/[╭╮╰╯│├┤─█▓▒░◆›…\u2800-\u28ff]/);
+    expect(answeredReplyProblems(r)).toEqual([]);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 });
@@ -669,7 +675,7 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
   it('the Jev panel after a greeting (§3.11): `/panel` shows the intake\'s `s0` Noul rows (`about_*`), none written to decisions.jsonl', async () => {
     const r = await drive({
       name: 'r2-panel-intake',
-      args: ['chat', '--mock'],
+      args: ['chat', '--mock', ...LEGACY_INTAKE_MODE],
       steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi'), 'send /panel full', echoStep('/panel full'), 'send \\r', `expect ▾${PROMPT_GAP} decisions s0`, 'expect s0 ', 'sleep 0.3', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
@@ -687,7 +693,7 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
   it('/why intake after a greeting prints the standard block (§3.11)', async () => {
     const r = await drive({
       name: 'r2-why-intake',
-      args: ['chat', '--mock'],
+      args: ['chat', '--mock', ...LEGACY_INTAKE_MODE],
       steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi'), 'send /why intake', echoStep('/why intake'), 'send \\r', 'expect (?:intake|error)', 'sleep 0.3', 'send \\x03', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
@@ -735,7 +741,7 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
       name: 'r2-chrome-tiers',
       args: ['chat', '--mock'],
       // an expect right after each resize (the driver's `sleep` drains and consumes the pty, so a frame that arrived during a sleep is gone for a later expect), then a settle
-      steps: [...CHAT_OPEN, 'send A', echoStep('A'), 'resize 12 60', 'expect \\nidle {2,}step 0/', 'sleep 0.5', 'send B', echoStep('AB'), 'resize 24 80', topEdgeStep(BADGE_DEFAULT), 'sleep 0.5', 'send C', echoStep('ABC'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send A', echoStep('A'), 'resize 12 60', `expect \\n(?:${SGR_GAP}${BADGE_DEFAULT}${SGR_GAP} · )?${SGR_GAP}idle {2,}step 0/`, 'sleep 0.5', 'send B', echoStep('AB'), 'resize 24 80', topEdgeStep(BADGE_DEFAULT), 'sleep 0.5', 'send C', echoStep('ABC'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -793,7 +799,8 @@ describe.skipIf(!hasExpect)('pty round 2: zero-argument starts and the keyless w
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(2);
     const plain = stripAnsi(r.text);
-    expect(plain).toContain('OpenRouter API key — one key runs Jev and the code model');
+    // AGENT-LOOP-DESIGN §14.5: the agent default's one-key title (one key runs the code model; Jev is optional)
+    expect(plain).toContain(WIZARD_KEY_TITLE_AGENT);
     expect(plain).toMatch(/^╭─ setup · key ─/m);
     expect(plain).toContain('Paste, then Enter · Esc: other ways to start · Ctrl-C quits (shows setup)');
     expect(plain).not.toContain('Where do you reach Jev');
@@ -806,13 +813,14 @@ describe.skipIf(!hasExpect)('pty round 2: zero-argument starts and the keyless w
     expect(r.runDirs()).toEqual([]);
   });
 
-  it('Ctrl-C at the startup wizard prints the jev-on fix block (`export OPENROUTER_API_KEY=…   # one key: Jev + the code model`, `printenv OPENROUTER_API_KEY | jevcode login --key-stdin`; TUI-DESIGN-3 §1.6)', async () => {
+  it('Ctrl-C at the startup wizard prints the default mode\'s fix block (`export OPENROUTER_API_KEY=…   # one key: the code model (Jev optional)`, `printenv OPENROUTER_API_KEY | jevcode login --key-stdin`; TUI-DESIGN-3 §1.6)', async () => {
     const r = await drive({ name: 'r3-zero-arg-wizard-fix', args: [], env: NO_NETWORK, steps: [...WIZARD_OPEN, 'sleep 0.4', 'send \\x03', 'eof'] });
     expect(r.code).toBe(2);
     const plain = stripAnsi(r.text);
     const joined = plain.split(/\r?\n/).map((l) => l.trim()).join(' ');
     expect(joined).toContain('export OPENROUTER_API_KEY=');
     expect(joined).toContain('jevcode login --key-stdin');
+    expect(joined).toContain('# one key: the code model (Jev optional)');
     expect(plain).toContain('export TYPESAFE_API_KEY=');
   });
 

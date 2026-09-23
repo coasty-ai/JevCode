@@ -90,6 +90,23 @@ describe('onboardingReducer: detect', () => {
     expect(none.found).toBeNull();
   });
 
+  it('AGENT-LOOP-DESIGN §14.2 / §14.5: an agent first run misses the generator key alone (Jev optional) and still opens the one-paste `key` field (keyAs both), never the round-2 provider question', () => {
+    const agent: OnboardingAction = { type: 'detect', missing: ['generator.apiKey'], mode: 'agent', provider: null, trustNeeded: false };
+    const s = reduce(INITIAL_ONBOARDING, agent);
+    expect(s.step).toBe('key');
+    expect(s.field).toBe('key');
+    expect(expectedKeyProvider(s)).toBe('openrouter');
+    const saved = reduce(s, { type: 'enter', length: 40, prefixOk: true });
+    expect(saved.save).toMatchObject({ fields: ['key'], oneKey: true, keyAs: 'both' });
+    expect(reduce(INITIAL_ONBOARDING, { ...agent, provider: 'openrouter' }).step).toBe('key');
+    // `ANTHROPIC_API_KEY` only: the same field as the legacy first run (the provider becomes anthropic on the save)
+    expect(reduce(INITIAL_ONBOARDING, { ...agent, found: 'anthropic', foundSource: 'env' })).toMatchObject({ step: 'key', provider: 'anthropic' });
+    // a preselected non-openrouter provider, a /login re-entry and a legacy generator-only miss keep the round-2 branches
+    expect(reduce(INITIAL_ONBOARDING, { ...agent, provider: 'anthropic' }).step).toBe('provider');
+    expect(reduce(INITIAL_ONBOARDING, { ...agent, reason: 'login' }).step).toBe('provider');
+    expect(reduce(INITIAL_ONBOARDING, { ...agent, mode: 'jev-on' }).step).toBe('provider');
+  });
+
   it('TUI-DESIGN-2 §1.4: a jev-only first run asks the Jev provider when nothing inferred it, else goes straight to the Jev key; the generator key is never asked', () => {
     const ask = reduce(INITIAL_ONBOARDING, detectJevOnly);
     expect(ask.step).toBe('jevProvider');

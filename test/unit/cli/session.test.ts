@@ -30,11 +30,20 @@ import { DEFAULT_THRESHOLDS } from '../../../src/tui/useEngine.js';
 import { PENDING_DIRECTIVES_MAX } from '../../../src/core/types.js';
 import { cellWidth } from '../../../src/tui/glyphs.js';
 import { DEFAULT_MODE } from '../../../src/config/defaults.js';
+import { LLM_STATE_MODE } from '../../../src/tui/commands/registry.js';
+import { AGENT_NO_DECISIONS_TEXT } from '../../../src/chat/facts.js';
 import { defaultRunSpendCapUsd } from '../../../src/config/ui.js';
 import { finishedRunLines, harnessDecider, loadedRun, makeController, scriptedRunId, tick, waitFor, type Harness } from './helpers.js';
 import { AUTO_APPROVED_NOTE_MAX, IDENTITY_AUTONOMY_FULL, autoApprovedNote, autonomousConfirmer } from '../../../src/cli/session.js';
 import { mkConfirmRequest, mkProposal, mkRisk } from '../../fixtures/tui/fixtures.js';
 import { AbortError } from '../../../src/errors.js';
+/**
+ * AGENT-LOOP-DESIGN §14.1 / §A1: the rows that exercise a Jev-driven mode's own behaviour (the intake, the follow-up confirm, a run
+ * the scripted engine reports without tool calls, `/why` and `/jev` over Jev decisions) name the legacy mode they were written for;
+ * under the agent default a scripted run with no tool call is a reply (test/unit/cli/session-agent.test.ts covers that side).
+ */
+const LEGACY = 'llm-jev' as const;
+const AGENT_NO_JEV = AGENT_NO_DECISIONS_TEXT;
 
 const SECRET = 'sk-ant-api03-SECRETSECRETSECRETSECRETSECRET1234';
 const AWS = 'AKIAIOSFODNN7EXAMPLE';
@@ -98,7 +107,7 @@ describe('pure helpers (§1)', () => {
 
 describe('TUI-DESIGN-2 §3 conversational intake (the submit path, summary rows; the matrix is session-chat.test.ts)', () => {
   it('"hi" never starts a run: one [you] item, one [jevcode] reply, no createEngine call', async () => {
-    const h = await build({ decider: harnessDecider({ usage: { costUsd: 0.0002, inputTokens: 1500, outputTokens: 40, calls: 1 } }) });
+    const h = await build({ flags: { mode: LEGACY }, decider: harnessDecider({ usage: { costUsd: 0.0002, inputTokens: 1500, outputTokens: 40, calls: 1 } }) });
     void h.controller.run();
     await h.ready();
     expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
@@ -109,7 +118,7 @@ describe('TUI-DESIGN-2 §3 conversational intake (the submit path, summary rows;
   });
 
   it('an ambiguous reading never runs on its own: the reply ends with the `do it` offer, which the next message may accept', async () => {
-    const h = await build({ decider: harnessDecider({ classify: () => 'ambiguous' }) });
+    const h = await build({ flags: { mode: LEGACY }, decider: harnessDecider({ classify: () => 'ambiguous' }) });
     void h.controller.run();
     await h.ready();
     expect(await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
@@ -121,7 +130,7 @@ describe('TUI-DESIGN-2 §3 conversational intake (the submit path, summary rows;
   });
 
   it('a task reading starts the run as before (kind prompt, then follow-up), recording the intake on EngineOptions.session', async () => {
-    const h = await build();
+    const h = await build({ flags: { mode: LEGACY } });
     void h.controller.run();
     await h.ready();
     await h.submit('fix parse_date tz handling');
@@ -161,11 +170,16 @@ describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, lan
     expect(h.controller.view.pending.mode).toBe(DEFAULT_MODE);
     await h.command('/mode');
     expect(h.renderer.notes.at(-1)?.text).toBe(`mode ${dflt} (default)`);
-    // /llm on|off are /mode jev-on|jev-only
+    // /llm on|off are /mode agent|jev-only under the agent default (AGENT-LOOP-DESIGN §14.5; jev-on|jev-only before the flip)
     await h.command('/llm off');
     expect(h.controller.view.pending.mode).toBe('jev-only');
     expect(h.renderer.notes.at(-1)?.text).toBe(MODE_JEV_ONLY_SET);
     await h.command('/llm on');
+    expect(LLM_STATE_MODE.on).toBe(DEFAULT_MODE === 'agent' ? 'agent' : 'jev-on');
+    expect(h.controller.view.pending.mode).toBe(LLM_STATE_MODE.on);
+    expect(h.renderer.notes.at(-1)?.text).toBe(modeSetItem(LLM_STATE_MODE.on));
+    // a legacy mode stays reachable by name
+    await h.command('/mode jev-on');
     expect(h.controller.view.pending.mode).toBe('jev-on');
     expect(h.renderer.notes.at(-1)?.text).toBe(MODE_JEV_ON_SET);
     await h.command('/mode jev-off');
@@ -183,7 +197,7 @@ describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, lan
   });
 
   it('llm-jev (docs/LLM-JEV-DESIGN.md): /mode llm-jev pends the fourth mode with MODE_LLM_JEV_SET and a `mode` dispatch; the badge word is `llm+jev · verified` (D-N)', async () => {
-    // llm-jev is the default since 2026-09-22: start the session in jev-on so the switch pends instead of answering `already`
+    // start the session in jev-on so the switch pends (llm-jev was the default 2026-09-22 → 2026-09-23; agent since slice S6)
     const h = await build({ flags: { mode: 'jev-on' } });
     void h.controller.run();
     await h.ready();
@@ -191,11 +205,12 @@ describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, lan
     expect(h.controller.view.pending.mode).toBe('llm-jev');
     expect(h.renderer.notes.at(-1)?.text).toBe(MODE_LLM_JEV_SET);
     expect(MODE_LLM_JEV_SET).toBe('mode llm+jev · verified from the next run — the code model writes candidate patches, tests verify them, Jev arbitrates (persist: jevcode config set mode llm-jev)');
-    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-on', pending: 'llm-jev' }); // the base is the explicit jev-on start (llm-jev is the default now)
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-on', pending: 'llm-jev' }); // the base is the explicit jev-on start
     await h.command('/mode llm-jev');
     expect(h.renderer.notes.at(-1)?.text).toBe('mode llm+jev · verified already');
     await h.command('/mode');
-    expect(h.renderer.notes.at(-1)?.text).toBe('mode jev+llm — next run: llm+jev · verified (default)'); // base jev-on (explicit), next run = the default → ` (default)`
+    // base jev-on (explicit), next run llm-jev — ` (default)` only after the word of DEFAULT_MODE (agent since slice S6)
+    expect(h.renderer.notes.at(-1)?.text).toBe(`mode jev+llm — next run: llm+jev · verified${DEFAULT_MODE === 'llm-jev' ? ' (default)' : ''}`);
   });
 
   it('/mode jev-on without a generator key opens the wizard with reason mode for jev-on: cancelled → `mode stays jev-only — no generator key was saved` (warn, nothing pends); saved → pends, MODE_JEV_ON_SET, no login toast', async () => {
@@ -391,7 +406,8 @@ describe('host wiring (§15 item 16, §10.2)', () => {
   });
 
   it('pause and abort reach the engine; a human_pause reopens the composer with the paused item (§8.7, §24)', async () => {
-    const h = await build({ script: () => ({ hold: true, steps: 5 }) });
+    // a legacy run: under the agent default a scripted run with no tool call is a reply, and a paused reply is a stopped reply (§A5)
+    const h = await build({ flags: { mode: LEGACY }, script: () => ({ hold: true, steps: 5 }) });
     void h.controller.run();
     await h.ready();
     const p = h.submit('pause me');
@@ -440,7 +456,8 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
   });
 
   it('follow-up gate: remaining ≥ runCap starts; 0 < remaining < runCap clamps (silently without a prompt channel); remaining ≤ 0 refuses with the §24 item', async () => {
-    const h = await build({ flags: { sessionSpendCap: '0.5', spendCap: '0.3' }, script: () => ({ cost: { generator: 0.2, jev: 0.05 } }) });
+    // the legacy follow-up gate (the agent default clamps silently, test/unit/cli/session-agent.test.ts)
+    const h = await build({ flags: { sessionSpendCap: '0.5', spendCap: '0.3', mode: LEGACY }, script: () => ({ cost: { generator: 0.2, jev: 0.05 } }) });
     void h.controller.run();
     await h.ready();
     await h.submit('one');
@@ -457,7 +474,7 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
 
   it('follow-up confirm through the prompter: n cancels, y clamps (§9.3)', async () => {
     let answer: 'y' | 'r' | 'n' = 'n';
-    const h = await build({ flags: { sessionSpendCap: '0.5', spendCap: '0.3' }, script: () => ({ cost: { generator: 0.2, jev: 0.05 } }), prompts: { followUp: async () => answer } });
+    const h = await build({ flags: { sessionSpendCap: '0.5', spendCap: '0.3', mode: LEGACY }, script: () => ({ cost: { generator: 0.2, jev: 0.05 } }), prompts: { followUp: async () => answer } });
     void h.controller.run();
     await h.ready();
     await h.submit('one');
@@ -556,7 +573,8 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
   });
 
   it('/new ends the session: the §24 item, a fresh sessionId and root meter for the next run', async () => {
-    const h = await build();
+    // a legacy run (under the agent default the scripted tool-less run counts as a reply: `0 runs, 1 reply`)
+    const h = await build({ flags: { mode: LEGACY } });
     void h.controller.run();
     await h.ready();
     await h.submit('one');
@@ -1302,7 +1320,8 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     const h5 = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { ANTHROPIC_API_KEY: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123' }, prompts: { wizard: async (missing, o) => { anth.push({ missing, found: o.found, provider: o.provider }); return { kind: 'cancelled' }; } } });
     void h5.controller.run();
     await h5.ready();
-    expect(anth).toEqual([{ missing: ['generator.apiKey', 'decider.apiKey'], found: 'anthropic', provider: 'openrouter' }]);
+    // AGENT-LOOP-DESIGN §14.2: the agent default needs the generator key alone (Jev optional)
+    expect(anth).toEqual([{ missing: DEFAULT_MODE === 'agent' ? ['generator.apiKey'] : ['generator.apiKey', 'decider.apiKey'], found: 'anthropic', provider: 'openrouter' }]);
   });
 
   it('§1.4.3: a `/login` wizard\'s `{ kind: mode }` PENDS (no file write): pending.mode, the badge dispatch, modeSetItem; a saved patch carrying a mode choice (the plain twin\'s [j]) applies it after the save', async () => {
@@ -1442,8 +1461,9 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     const code = await h.controller.run();
     expect(code).toBe(2);
     const err = h.stderr.join('');
-    const names = DEFAULT_MODE === 'jev-only' ? 'decider.apiKey' : 'generator.apiKey, decider.apiKey';
-    expect(err).toContain(`jevcode: missing ${names}: set the environment variable or run jevcode login`);
+    // AGENT-LOOP-DESIGN §14.2: the agent default misses the generator key alone, so the sentence is the generator-only one
+    if (DEFAULT_MODE === 'agent') expect(err).toContain(`jevcode: ${missingGeneratorOnly('openrouter')}`);
+    else expect(err).toContain(`jevcode: missing ${DEFAULT_MODE === 'jev-only' ? 'decider.apiKey' : 'generator.apiKey, decider.apiKey'}: set the environment variable or run jevcode login`);
     for (const l of fixBlockLines(DEFAULT_MODE, null)) expect(err).toContain(l);
     expect(h.factory.calls).toHaveLength(0);
     expect(existsSync(join(h.home, 'runs'))).toBe(false);
@@ -1488,7 +1508,8 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     const block = missing.renderer.notes.find((n) => n.text.startsWith('no key found — set them'));
     // the fix block is a pre-built line list: `textRows` never re-wraps it, it only elides at the body width
     expect(block?.detail?.split('\n').length).toBe(fixBlockLines(DEFAULT_MODE, 'openrouter').length);
-    expect(block?.detail).toContain('export OPENROUTER_API_KEY=…   # one key: Jev + the code model');
+    expect(block?.detail).toContain(fixBlockLines(DEFAULT_MODE, 'openrouter')[0]);
+    expect(block?.detail).toContain(DEFAULT_MODE === 'agent' ? 'export OPENROUTER_API_KEY=…   # one key: the code model (Jev optional)' : 'export OPENROUTER_API_KEY=…   # one key: Jev + the code model');
   });
 });
 
@@ -1561,7 +1582,8 @@ describe('TUI-DESIGN-3 §4.4: the audit rows the controller lands (S3)', () => {
       io.stdout.write('removed jev key (sha256:abcd) from ~/x\n');
       return 0;
     };
-    const h = await build({ deps: { commandLogout: logout } });
+    // /why over Jev decisions is a legacy-mode row (an agent run makes none: test below)
+    const h = await build({ flags: { mode: LEGACY }, deps: { commandLogout: logout } });
     void h.controller.run();
     await h.ready();
     await h.command('/why nope');
@@ -1590,7 +1612,8 @@ describe('TUI-DESIGN-3 §4.4: the audit rows the controller lands (S3)', () => {
 
   it('F7 /copy diff with no run answers `nothing to copy for diff`; the S5 rows: the /cost head is `cost` and the /jev block carries `last: <kind in words> (p)`', async () => {
     const copies: string[] = [];
-    const h = await build({ deps: { copy: async (text) => { copies.push(text); return { ok: true, method: 'osc52', bytes: text.length, masked: 0, truncated: false, toast: 'copied' }; } } });
+    // the intake's `last:` row is the legacy intake's (agent mode has no intake, §A1)
+    const h = await build({ flags: { mode: LEGACY }, deps: { copy: async (text) => { copies.push(text); return { ok: true, method: 'osc52', bytes: text.length, masked: 0, truncated: false, toast: 'copied' }; } } });
     void h.controller.run();
     await h.ready();
     await h.command('/copy diff');
@@ -1618,9 +1641,10 @@ describe('TUI-DESIGN-4 §3.1.7 / §3.3: every empty state is a sentence, and an 
     expect(last().text).toBe('cost');
     expect(last().detail?.split('\n')[0]).toMatch(/^no runs yet — the session has spent \$0\.00 of \$\d+\.\d\d$/);
 
+    // AGENT-LOOP-DESIGN §14.3 / peer G: under the agent default `/jev`, `/decisions` and `/why` say an agent run makes no Jev decisions
     await h.command('/jev');
     expect(last().text).toBe('jev');
-    expect(last().detail?.split('\n')[0]).toBe('decider not resolved yet — the first question resolves it');
+    expect(last().detail?.split('\n')[0]).toBe(DEFAULT_MODE === 'agent' ? AGENT_NO_JEV : 'decider not resolved yet — the first question resolves it');
 
     await h.command('/budget');
     expect(last().text).toBe('budget');
@@ -1629,11 +1653,13 @@ describe('TUI-DESIGN-4 §3.1.7 / §3.3: every empty state is a sentence, and an 
     expect(last().detail).not.toContain('pending: none');
 
     await h.command('/plan');
-    expect(last().detail).toBe('no plan yet — Jev writes one at the first step');
+    expect(last().detail).toMatch(DEFAULT_MODE === 'agent' ? /^no plan yet — the code model writes one \(todo_write\)/ : /^no plan yet — Jev writes one at the first step$/);
 
     await h.command('/decisions');
     expect(last().text).toBe('decisions');
-    expect(last().detail).toBe('no decisions yet — they appear from the first step');
+    expect(last().detail).toBe(DEFAULT_MODE === 'agent' ? AGENT_NO_JEV : 'no decisions yet — they appear from the first step');
+    await h.command('/why s7.risk.plan_mismatch');
+    if (DEFAULT_MODE === 'agent') expect(last().text).toBe(AGENT_NO_JEV);
 
     await h.command('/errors');
     expect(last().detail).toBe('nothing to report — no warnings or errors this session');
@@ -1805,7 +1831,8 @@ describe('TUI-DESIGN-4 §3.3 / §7.2 item 4: the in-session epilogue is built at
 
 describe('TUI-DESIGN-4 §3.2: the F-B frames are built by the REAL `session.ts` builders, not by hand', () => {
   it('F-B1 `/status`: `no git repository` (never a branch called `none`) and the session cost segment', async () => {
-    const h = await build();
+    // F-B1 counts a run: a legacy run (under the agent default the scripted tool-less run is `0 runs · 1 reply`)
+    const h = await build({ flags: { mode: LEGACY } });
     void h.controller.run();
     await h.ready();
     await h.submit('one');
@@ -1838,7 +1865,13 @@ describe('TUI-DESIGN-4 §3.2: the F-B frames are built by the REAL `session.ts` 
     await h.ready();
     await h.command('/jev');
     const rows = (h.renderer.notes.at(-1)?.detail ?? '').split('\n');
-    expect(rows).toEqual(['decider not resolved yet — the first question resolves it']);
+    // the agent default's empty state is the agent sentence (peer G); a legacy mode's is the decider sentence
+    expect(rows).toEqual([DEFAULT_MODE === 'agent' ? AGENT_NO_JEV : 'decider not resolved yet — the first question resolves it']);
+    const legacy = await build({ flags: { mode: LEGACY } });
+    void legacy.controller.run();
+    await legacy.ready();
+    await legacy.command('/jev');
+    expect((legacy.renderer.notes.at(-1)?.detail ?? '').split('\n')).toEqual(['decider not resolved yet — the first question resolves it']);
   });
 });
 

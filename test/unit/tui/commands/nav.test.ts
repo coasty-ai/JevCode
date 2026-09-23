@@ -48,6 +48,10 @@ describe('paletteNavState — the ordered chain (TUI-DESIGN-4 §4.2)', () => {
     expect(state('/mode jev-on', rowOf('/mode jev-on', 'mode'))).toBe('argdone'); // 7
     expect(state('/mode ', rowOf('/mode ', 'mode'))).toBe('arg'); // 8
     expect(state('/mode jev-onx', rowOf('/mode jev-onx', 'mode'))).toBe('argbad'); // 9
+    // AGENT-LOOP-DESIGN §14.1: a legacy mode `/mode` accepts without listing is exact too — `jev-on` (a prefix of the listed
+    // `jev-only`) runs on Enter instead of walking the list; `jev-o` is still a prefix
+    expect(state('/mode llm-jev', rowOf('/mode llm-jev', 'mode'))).toBe('argdone');
+    expect(state('/mode jev-o', rowOf('/mode jev-o', 'mode'))).toBe('arg');
   });
 
   it('arg0 / restTail: the FIRST token after the command, `null` with no whitespace and `\'\'` with trailing whitespace; restTail is never a predicate', () => {

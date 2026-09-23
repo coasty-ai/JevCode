@@ -220,6 +220,22 @@ describe('§A1: every chat message becomes one agent run', () => {
     expect(h.exits).toEqual([]);
   });
 
+  it('/exit mid-reply (host.exit) aborts the run ONCE and leaves 0 at its run:end, no epilogue; a repeat while it winds down never aborts again', async () => {
+    // a second engine.abort() is the engine's second-press path (a forced exit 130 with a `stopped — error` epilogue): the App's
+    // `/exit` on a reply used to abort AND call host.exit, which aborted again (the pty redaction scenario exited 130)
+    const h = await build({ ...AGENT, script: (o) => (o.task === 'hi' ? { hold: true, stop: 'answered' } : { stop: 'answered' }) });
+    const done = h.controller.run();
+    await h.ready();
+    const live = h.factory.nextLive();
+    await h.host.submit('hi', submitOpts(h));
+    const eng = await live;
+    h.host.exit(0);
+    h.host.exit(0);
+    expect(await done).toBe(0);
+    expect(eng.aborts).toEqual([{ reason: 'human_abort' }]);
+    expect(epilogues(h)).toEqual([]);
+  });
+
   it('after the first tool call the run is a run: Ctrl-C aborts with today\'s epilogue item', async () => {
     const h = await build({ ...AGENT, script: () => ({ hold: true, events: [toolCall('c1')], stop: 'complete' }) });
     void h.controller.run();
@@ -253,10 +269,10 @@ describe('§7.6: the conversation carry', () => {
   });
 
   it('chat turns before a switch to agent mode reach the first agent run once; the run after it carries none', async () => {
-    const h = await build({ decider: harnessDecider({ classify: () => 'greeting_or_smalltalk' }), script: agentScript });
+    // a legacy mode (the default before slice S6's flip): a chat reply lands in the ledger as a [you] + [jevcode] pair
+    const h = await build({ flags: { mode: 'llm-jev' }, decider: harnessDecider({ classify: () => 'greeting_or_smalltalk' }), script: agentScript });
     void h.controller.run();
     await h.ready();
-    // legacy mode (the default): a chat reply lands in the ledger as a [you] + [jevcode] pair
     expect(await h.host.submit('hello there', submitOpts(h))).toEqual({ became: 'chat' });
     await h.command('/mode agent');
     await h.submit('fix the failing test');

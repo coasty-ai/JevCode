@@ -25,7 +25,9 @@ describe('the ten-run session (§19.7, controller rows)', () => {
     const scripts: RunScript[] = [];
     let saved: CredentialsPatch | null = null;
     const h = await makeController({
-      flags: { sessionSpendCap: '10', spendCap: '2' },
+      // the ten-run session is the legacy run flow (pause → resume, Ctrl-C during a step): its scripted engines report no tool
+      // calls, which under the agent default makes each a reply whose pause is a stopped reply (AGENT-LOOP-DESIGN §A5)
+      flags: { sessionSpendCap: '10', spendCap: '2', mode: 'llm-jev' },
       script: (_opts, n) => scripts[n - 1] ?? {},
       prompts: {
         wizard: async () => ({ kind: 'saved', patch: { provider: 'anthropic', apiKey: NEW_KEY, jevApiKey: NEW_KEY } }),

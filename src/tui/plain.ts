@@ -881,7 +881,7 @@ export function testCountsText(t: { passed: number; failed: number; errors: numb
  * chrome on, and dropped when the run ends as a reply, so a reply shows only its prose in the TUI and in `--plain`.
  * Warnings, errors, a blocking pane, a retry and the reply-restarted notice are never held.
  */
-export function isHoldableAgentRow(item: Pick<TranscriptItem, 'kind' | 'level' | 'text'>): boolean {
+export function isHoldableAgentRow(item: Pick<TranscriptItem, 'kind' | 'level' | 'text' | 'label'>): boolean {
   if (item.level === 'warn' || item.level === 'error') return false;
   switch (item.kind) {
     case 'run:start':
@@ -896,7 +896,9 @@ export function isHoldableAgentRow(item: Pick<TranscriptItem, 'kind' | 'level' |
     case 'tool':
       return true;
     case 'notice':
-      return item.level === 'info';
+      // a `[ui]` notice is the human's own command answering while the reply is in flight (`/status` through Engine.annotate):
+      // never held — it lands at once, in the order transcript.log records it, not after the reply
+      return item.level === 'info' && item.label !== '[ui]';
     default:
       return false;
   }
@@ -919,8 +921,10 @@ export function isAgentToolActivity(e: EngineEvent): boolean {
   switch (e.type) {
     case 'tool:call':
     case 'tool:result':
-    case 'exec:start':
       return true;
+    // the finish step of a reply executes its `done` too (stage execute → `exec:start` with a done action): not a command
+    case 'exec:start':
+      return e.action.kind !== 'done';
     case 'proposal':
       return e.proposal.action.kind !== 'done';
     default:

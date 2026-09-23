@@ -14,6 +14,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { checkPolish } from '../../scripts/pty/polish-check.mjs';
+import { DEFAULT_MODE } from '../../src/config/defaults.js';
+import { SR_OPTIONS_ROWS_AGENT, missingGeneratorOnly, optionHint } from '../../src/tui/onboarding/lines.js';
 import { BADGE_DEFAULT, BADGE_DEFAULT_TEXT, BADGE_JEV_ONLY, CHAT_OPEN, EXIT_IDLE, FIRST_FRAME_STEP, IDLE_STEP, MOCK_RUN_MODE, PLACEHOLDER_FOLLOWUP, PLACEHOLDER_TASK, RAW_MODE_STEP, RUN_STARTED_STEP, SGR_GAP, afterFirstFrame, binPath, childEnv, cleanupScratch, countClears, drive, echoStep, hasExpect, labelStep, registerScratch, stripAnsi, syncFrames, timingOf, topEdgeStep, type Drive, type SyncFrame } from './helpers.js';
 
 afterEach(cleanupScratch);
@@ -306,7 +308,7 @@ describe.skipIf(!hasExpect)('pty round 3: the one-key wizard edges (TUI-DESIGN-3
     const plain = stripAnsi(r.text);
     // §5.1: the item wraps over three console rows (the gutter is written with cursor moves, not spaces), so it is
     // matched on the whitespace-flattened text — never row by row
-    expect(plain.replace(/\s+/g, ' ')).toContain('[setup] spend caps: $10.00 per run · $50.00 per session (llm+jev · verified) — /budget changes them; /mode jev-only runs on Jev alone at $1.00 / $5.00');
+    expect(plain.replace(/\s+/g, ' ')).toContain(`[setup] spend caps: $10.00 per run · $50.00 per session (${BADGE_DEFAULT_TEXT}) — /budget changes them; /mode jev-only runs on Jev alone at $1.00 / $5.00`);
     expect(r.text).not.toContain(key);
     expect(r.text).not.toContain('fakefakefake');
   });
@@ -320,7 +322,8 @@ describe.skipIf(!hasExpect)('pty round 3: the one-key wizard edges (TUI-DESIGN-3
     expect(cfg['apiKey']).toBeUndefined();
     expect(cfg['jevApiKey']).toBeUndefined();
     const plain = stripAnsi(r.text);
-    expect(plain).toContain('3: no LLM — code proposes, Jev decides, tests verify · caps $1.00 / $5.00');
+    // the options step names the default mode's form (AGENT-LOOP-DESIGN §14.5: option 3 is the jev-only mode)
+    expect(plain).toContain(optionHint(3, 1, 5, DEFAULT_MODE));
     expect(plain).not.toContain('· next run');
     assertNoKeyBytes(r, FAKE_KEY);
     // the restart: the same HOME, no wizard, the jev-only badge from the first frame
@@ -356,13 +359,14 @@ describe.skipIf(!hasExpect)('pty round 3: the one-key wizard edges (TUI-DESIGN-3
     const sr = await drive({ name: 'r3-wizard-sr', args: ['--screen-reader'], env: NO_NETWORK, steps: ['expect OpenRouter API key', 'expect API key field, 0 characters entered, hidden', 'sleep 0.3', 'send \\x1b', 'expect Other ways to start', 'expect Enter selection \\(1-4\\)', 'sleep 0.3', 'send \\x03', 'eof'] });
     expect(sr.timeouts).toBe(0);
     expect(sr.code).toBe(2);
-    expect(stripAnsi(sr.text)).toContain('1. OpenRouter key for both  2. TypeSafe key for Jev  3. Jev only, no LLM');
+    // AGENT-LOOP-DESIGN §14.5: the agent default's screen-reader options (option 3 is the jev-only mode)
+    expect(stripAnsi(sr.text)).toContain(SR_OPTIONS_ROWS_AGENT[1]);
     const plain = await drive({ name: 'r3-plain-wizard', args: ['chat', '--plain'], env: NO_NETWORK, steps: ['expect other ways:', 'sleep 0.3', 'send \\r', 'expect OpenRouter API key \\(one key', 'sleep 0.3', 'send \\x03', 'eof'] });
     expect(plain.timeouts).toBe(0);
     expect(plain.code).toBe(2);
     expect(stripAnsi(plain.text)).toContain('export OPENROUTER_API_KEY=');
   });
-  it('edge 20: `jevcode run "task"` in a pipe with no keys → ConfigError with both names, the jev-on fix block, exit 2, no run dir', () => {
+  it('edge 20: `jevcode run "task"` in a pipe with no keys → ConfigError naming what the default mode needs (agent: the generator alone), the fix block, exit 2, no run dir', () => {
     const home = mkdtempSync(join(tmpdir(), 'jevcode-pty-home-'));
     const ws = mkdtempSync(join(tmpdir(), 'jevcode-pty-ws-'));
     registerScratch(home, ws);
@@ -370,7 +374,9 @@ describe.skipIf(!hasExpect)('pty round 3: the one-key wizard edges (TUI-DESIGN-3
     const r = spawnSync(process.execPath, [binPath(), 'run', 'probe task', '--workspace', ws], { cwd: ws, env: { ...childEnv(home, 24, 80), CI: '1', JEVCODE_ASSERT_NO_NETWORK: '1' }, encoding: 'utf8', timeout: 60_000 });
     expect(r.status).toBe(2);
     const out = `${r.stdout}\n${r.stderr}`;
-    expect(out).toMatch(/missing generator\.apiKey, decider\.apiKey/);
+    // AGENT-LOOP-DESIGN §14.2: the agent default misses the generator key alone (Jev optional)
+    expect(out).toContain(missingGeneratorOnly('openrouter'));
+    expect(out).not.toContain('decider.apiKey');
     expect(out).toContain('export OPENROUTER_API_KEY=');
     expect(existsSync(join(home, 'runs'))).toBe(false);
   });
@@ -421,8 +427,10 @@ describe.skipIf(!hasExpect)('pty round 3: commands, trust and keybindings (TUI-D
     expect(after).toBeDefined();
     expect(after!.dynamic.some((l) => /› \/undo/.test(l))).toBe(false);
   });
-  it('commands-thinking: a `/status` line while the intake is thinking (JEVCODE_MOCK_JEV_MS=1500) answers at once; the reply lands afterwards', async () => {
-    const r = await drive({ name: 'r3-commands-thinking', args: ['chat', '--mock'], env: { JEVCODE_MOCK_JEV_MS: '1500' }, steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', 'expect thinking', 'send /status', 'sleep 0.15', 'send \\r', labelStep('ui', 'status'), labelStep('jevcode', 'Hi\\.'), ...EXIT_IDLE] });
+  it('commands-thinking: a `/status` line while the model is thinking (the agent default; JEVCODE_MOCK_STEP_MS=1500 holds the mock turn) answers at once; the reply lands afterwards', async () => {
+    // AGENT-LOOP-DESIGN §A1: every message is an agent run, so `thinking` is the model turn — the mock's turn latency holds it open
+    // (the legacy intake's JEVCODE_MOCK_JEV_MS paced a Jev reading the agent default no longer waits on)
+    const r = await drive({ name: 'r3-commands-thinking', args: ['chat', '--mock'], env: { JEVCODE_MOCK_STEP_MS: '1500' }, steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', 'expect thinking', 'send /status', 'sleep 0.15', 'send \\r', labelStep('ui', 'status'), labelStep('jevcode', 'Hi\\.'), ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);

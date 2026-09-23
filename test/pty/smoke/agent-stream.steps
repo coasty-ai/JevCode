@@ -1,0 +1,21 @@
+# AGENT-LOOP-DESIGN §15 S6 agent-stream (§9.4, §A1, §A3): a task on the default agent mode's `--mock` trajectory whose first prose
+# turn streams the `mixed` preset (JEVCODE_MOCK_CHAT_STREAM=mixed, JEVCODE_MOCK_DELTA_MS=40, set by run-smoke.sh): the partial line
+# is on screen before its newline, each prose line is in transcript.log once, the mini indicator sits in the status row's glyph
+# slot while the run works and is gone at idle, and no frame carries the removed 12-row animation (run-smoke.sh `agent_stream`).
+# The vitest twin is test/pty/agent.pty.test.ts.
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.2
+send fix the failing test
+sleep 0.2
+send \r
+expect \[jevcode\](?:\x1b\[[0-9;]*m)* Sure k01\.
+expect Done k05
+expect set VALUE to 2
+expect Follow-up
+sleep 0.3
+send /exit
+sleep 0.2
+send \r
+eof

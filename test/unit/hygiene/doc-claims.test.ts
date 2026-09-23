@@ -56,7 +56,7 @@ const CLOSED: readonly { id: string; file: string; symbol: string; definedIn: st
   {
     id: 'DESIGN §22.10 — jev-only is no longer the default',
     file: 'docs/DESIGN.md',
-    symbol: "DEFAULT_MODE: EngineMode = 'llm-jev'",
+    symbol: "DEFAULT_MODE: EngineMode = 'agent'",
     definedIn: 'src/config/defaults.ts',
     staleTexts: ['`jev-only` remains the default'],
   },

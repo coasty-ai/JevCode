@@ -446,8 +446,12 @@ function nextAfterJevTypesafe(s: OnboardingState): OnboardingState {
 /** TUI-DESIGN-3 §1.4.1 / §1.4: which flow detect opens (the one-paste `key` before the round-2 branches). */
 function startFromDetect(s: OnboardingState): OnboardingState {
   if (s.missing.length === 0) return afterKeys(s);
-  // both missing, nothing inferred a Jev provider, provider null or openrouter → the one-paste field (keyAs both)
-  if (needsGenerator(s) && needsJev(s) && s.jevProvider === null && (s.provider === null || s.provider === 'openrouter')) {
+  // AGENT-LOOP-DESIGN §14.2 / §14.5: under agent the Jev key is optional, so a first run with no key misses the generator alone —
+  // it opens the same one-paste field (one OpenRouter key runs the code model and serves Jev's quick routing calls), never the
+  // round-2 provider question
+  const agentFirstRun = targetMode(s) === 'agent' && s.reason === 'missing' && (s.found === null || s.found === 'anthropic');
+  // both missing (or the agent first run), nothing inferred a Jev provider, provider null or openrouter → the one-paste field (keyAs both)
+  if (needsGenerator(s) && (needsJev(s) || agentFirstRun) && s.jevProvider === null && (s.provider === null || s.provider === 'openrouter')) {
     // TUI-DESIGN-3 §1.3.1 (`ANTHROPIC_API_KEY` only): the field is the Jev key; the generator provider becomes anthropic on the save (keyAs jev)
     if (s.found === 'anthropic') return field({ ...s, provider: 'anthropic' }, 'key');
     return field(s, 'key');

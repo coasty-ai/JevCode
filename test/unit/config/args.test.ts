@@ -448,7 +448,8 @@ describe('usageText', () => {
     expect(usageText('run')).toContain('--task-file <path>');
     expect(usageText('why')).toContain('Usage: jevcode why <id> <step> <ref>');
     expect(usageText('completion')).toContain('bash|zsh|fish');
-    expect(usageText('run')).toMatch(/--mode jev-only\|jev-on\|jev-off/);
+    // AGENT-LOOP-DESIGN §14.1: --mode advertises agent and jev-only once the default is agent (the legacy values stay accepted)
+    expect(usageText('run')).toMatch(/--mode agent\|jev-only /);
     expect(usageText()).toContain('jev-only');
     // TUI-DESIGN-2 §1.4: `jevcode login --jev-provider typesafe|openrouter`
     // TUI-DESIGN-3 §1.6: `--key-stdin` leads the login synopsis
@@ -484,21 +485,22 @@ describe('usageText', () => {
 });
 
 describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)', () => {
-  it('--mode help names the default through DEFAULT_MODE (TUI-DESIGN-3 §1.1, D-N) and orders the enum jev-only|jev-on|jev-off|llm-jev; the flag itself stays optional (the default lives in the config layer)', () => {
+  it('--mode help names the default through DEFAULT_MODE (TUI-DESIGN-3 §1.1, D-N) and lists the advertised modes agent|jev-only plus one legacy clause (AGENT-LOOP-DESIGN §14.1); the flag itself stays optional (the default lives in the config layer)', () => {
     const mode = FLAGS.find((f) => f.key === 'mode');
-    expect(mode?.arg).toBe('jev-only|jev-on|jev-off|llm-jev');
-    expect(mode?.help).toBe(`engine mode (default ${DEFAULT_MODE}): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)`);
+    expect(mode?.arg).toBe('agent|jev-only');
+    expect(mode?.help).toBe(`engine mode (default ${DEFAULT_MODE}): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off`);
     expect(mode?.help).not.toMatch(/jev-only \(default|Claude|GLM/);
     expect(FLAGS.find((f) => f.key === 'condition')?.arg).toBe('jev-only|jev-on|jev-off|llm-jev');
     expect(MODES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent']);
     expect(parseCliArgs([]).mode).toBeUndefined();
     expect(parseCliArgs(['chat']).mode).toBeUndefined();
     expect(usage(['run', 'x', '--mode', 'jev-maybe']).message).toMatch(/--mode: expected one of jev-only\|jev-on\|jev-off\|llm-jev/);
-    expect(usageText()).toContain('[--mode jev-only|jev-on|jev-off|llm-jev]');
+    expect(usageText()).toContain('[--mode agent|jev-only]');
     expect(usageText()).not.toContain('[--mode jev-on|jev-off|jev-only]');
     // TUI-DESIGN-3 §1.1 / §1.9: the bare-`jevcode` sentence names DEFAULT_MODE's badge word; the tagline is generator-neutral
+    // AGENT-LOOP-DESIGN §14.5 "CLI help footnote": `/mode` switches to jev-only and `/mode legacy` lists the older modes
     expect(usageText()).toContain(BARE_JEVCODE_SENTENCE);
-    expect(BARE_JEVCODE_SENTENCE).toBe(`A bare \`jevcode\` opens the interactive session in ${MODE_BADGE_WORD[DEFAULT_MODE]} mode (one OpenRouter key serves Jev and the code model; /mode jev-only runs on Jev alone); \`/\` lists commands, \`?\` shows the keys.`);
+    expect(BARE_JEVCODE_SENTENCE).toBe(`A bare \`jevcode\` opens the interactive session in ${MODE_BADGE_WORD[DEFAULT_MODE]} mode (one OpenRouter key serves the code model and Jev); \`/mode\` switches to jev-only, and \`/mode legacy\` lists the older modes; \`/\` lists commands, \`?\` shows the keys.`);
     expect(usageText().split('\n')[0]).toBe(TAGLINE);
     expect(TAGLINE).toBe('JevCode: Jev decides, the code model writes.');
     expect(usageText()).not.toContain('Claude');
@@ -516,9 +518,9 @@ describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)',
     expect([...CONDITIONS]).toEqual([...CONDITION_ORDER]);
     expect(FLAGS.find((f) => f.key === 'conditions')?.arg).toBe('jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned,jev-on-next,jev-on-next-nofast]');
     expect(FLAGS.find((f) => f.key === 'conditions')?.help).toBe('conditions to run (when omitted: the jev-on and jev-off arms)');
-    expect(usageText('run')).toContain('--mode jev-only|jev-on|jev-off|llm-jev ');
+    expect(usageText('run')).toContain('--mode agent|jev-only ');
     expect(usageText('bench')).toContain('--conditions jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned,jev-on-next,jev-on-next-nofast] ');
-    expect(usageText()).toContain('[--mode jev-only|jev-on|jev-off|llm-jev]');
+    expect(usageText()).toContain('[--mode agent|jev-only]');
     expect(usageText()).toContain('[--conditions jev-on,jev-off,jev-only,llm-jev,llm-sieve,jev-off-tuned,jev-on-next,jev-on-next-nofast]');
   });
 
@@ -545,7 +547,7 @@ describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)',
     expect(parseCliArgs(['bench', '--conditions', 'jev-on,jev-off,jev-only']).conditions).toBe('jev-on,jev-off,jev-only');
     expect(usage(['bench', '--conditions', 'jev-on,nope']).message).toMatch(/--conditions/);
     expect(usageText()).toContain('jev-only');
-    expect(usageText('run')).toMatch(/--mode jev-only\|jev-on\|jev-off/);
+    expect(usageText('run')).toMatch(/--mode agent\|jev-only /);
     expect(FLAGS.find((f) => f.key === 'conditions')?.help).toBe('conditions to run (when omitted: the jev-on and jev-off arms)');
   });
 });

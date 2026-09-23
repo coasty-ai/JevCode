@@ -42,7 +42,7 @@ import {
 import { fingerprint } from '../../../src/core/hash.js';
 import type { Resolved } from '../../../src/core/types.js';
 import { DEFAULT_MODE, DEFAULT_MODEL } from '../../../src/config/defaults.js';
-import { FIX_BLOCK_FOOTER, LOGIN_JEV_PROVIDER_REQUIRED, LOGIN_ONE_KEY_PROMPT, LOGIN_OTHER_WAYS_PROMPT, fixBlockLines, modeSavedItem, verificationCreditsText, verificationModelText, verificationRateLimitedText, verifiedGeneratorText, verifiedJevText } from '../../../src/tui/onboarding/lines.js';
+import { FIX_BLOCK_FOOTER, FIX_BLOCK_ONE_KEY_AGENT_FIRST, LOGIN_JEV_PROVIDER_REQUIRED, LOGIN_ONE_KEY_PROMPT, LOGIN_OTHER_WAYS_PROMPT, fixBlockLines, loginOneKeyPrompt, modeSavedItem, verificationCreditsText, verificationModelText, verificationRateLimitedText, verifiedGeneratorText, verifiedJevText } from '../../../src/tui/onboarding/lines.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
 
 let dir: string;
@@ -73,8 +73,12 @@ const FIX_ONE_KEY = [
   '                              # Jev alone: jevcode config set mode jev-only',
   FIX_BLOCK_FOOTER,
 ];
-/** the same when `--provider anthropic` asked for a generator: the Anthropic line joins before the footer */
-const FIX_ANTHROPIC = [...FIX_ONE_KEY.slice(0, 5), 'export ANTHROPIC_API_KEY=…    # the code model under --provider anthropic', FIX_BLOCK_FOOTER];
+/** AGENT-LOOP-DESIGN §14.5 (onboarding): under agent mode the first line names the code model with Jev optional; the rest is the same block */
+const FIX_ONE_KEY_AGENT = [FIX_BLOCK_ONE_KEY_AGENT_FIRST, ...FIX_ONE_KEY.slice(1)];
+/** the fix block of a session in DEFAULT_MODE (a generator mode) */
+const FIX_DEFAULT = DEFAULT_MODE === 'agent' ? FIX_ONE_KEY_AGENT : FIX_ONE_KEY;
+/** the same when `--provider anthropic` asked for a generator under the default mode: the Anthropic line joins before the footer */
+const FIX_ANTHROPIC = [...FIX_DEFAULT.slice(0, 5), 'export ANTHROPIC_API_KEY=…    # the code model under --provider anthropic', FIX_BLOCK_FOOTER];
 /** TUI-DESIGN-3 §1.10: the fixtures that test the jev-only login pass the mode explicitly (the default is DEFAULT_MODE) */
 const JEV_ONLY_ENV = { JEVCODE_MODE: 'jev-only' } as const;
 
@@ -404,7 +408,7 @@ describe('commandLogin', () => {
     const lines = t.err.text.split('\n').filter(Boolean);
     expect(lines[0]).toBe(LOGIN_NEEDS_TTY_OR_STDIN);
     expect(LOGIN_NEEDS_TTY_OR_STDIN.indexOf('--key-stdin')).toBeLessThan(LOGIN_NEEDS_TTY_OR_STDIN.indexOf('--generator-key-stdin'));
-    expect(lines.slice(1)).toEqual(DEFAULT_MODE === 'jev-only' ? FIX_JEV_ONLY : FIX_ONE_KEY);
+    expect(lines.slice(1)).toEqual(DEFAULT_MODE === 'jev-only' ? FIX_JEV_ONLY : FIX_DEFAULT);
     expect(lines.slice(1)).toEqual(fixBlockLines(DEFAULT_MODE, null));
     await expect(stat(configPath())).rejects.toThrow();
     // with --provider anthropic the Anthropic line joins
@@ -415,8 +419,8 @@ describe('commandLogin', () => {
     const t3 = io(`${KEY}\n`, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV } });
     expect(await commandLogin({}, t3)).toBe(2);
     expect(t3.err.text.split('\n').filter(Boolean).slice(1)).toEqual(FIX_JEV_ONLY);
-    for (const l of FIX_ONE_KEY) expect(stringWidth(l)).toBeLessThanOrEqual(76);
-    for (const l of FIX_ONE_KEY.slice(0, 5)) if (l.includes('#')) expect(l.indexOf('#')).toBe(30);
+    for (const l of [...FIX_ONE_KEY, ...FIX_ONE_KEY_AGENT]) expect(stringWidth(l)).toBeLessThanOrEqual(76);
+    for (const l of [...FIX_ONE_KEY.slice(0, 5), ...FIX_ONE_KEY_AGENT.slice(0, 5)]) if (l.includes('#')) expect(l.indexOf('#')).toBe(30);
   });
 
   it('TUI-DESIGN-2 §1.4: interactive jev-only (no --provider) asks where Jev is reached, then the provider-named Jev key only; the file gets jevApiKey + jevProvider and no generator provider', async () => {
@@ -520,7 +524,7 @@ describe('commandLogin', () => {
     await rm(configPath());
     const cancelled = io(null, { readLine: async () => null, readMasked: async () => OR_KEY });
     expect(await commandLogin({}, cancelled)).toBe(2);
-    expect(cancelled.err.text.split('\n').filter(Boolean)).toEqual(FIX_ONE_KEY);
+    expect(cancelled.err.text.split('\n').filter(Boolean)).toEqual(FIX_DEFAULT);
     await expect(stat(configPath())).rejects.toThrow();
   });
 
@@ -545,7 +549,7 @@ describe('commandLogin', () => {
     const prompts: string[] = [];
     const tty = io(null, { readMasked: async (p) => (prompts.push(p), OR_KEY) });
     expect(await commandLogin({ keyStdin: true }, tty)).toBe(0);
-    expect(prompts).toEqual([LOGIN_ONE_KEY_PROMPT]);
+    expect(prompts).toEqual([loginOneKeyPrompt(DEFAULT_MODE)]);
     expect(await readConfig()).toEqual({ provider: 'openrouter', apiKey: OR_KEY, jevApiKey: OR_KEY, jevProvider: 'openrouter' });
     // the two-line form is unchanged
     await rm(configPath());
@@ -834,11 +838,13 @@ describe('commandLogin', () => {
     const t = io(null, { resolveSecrets: async () => entries });
     expect(await commandLogin({ status: true }, t)).toBe(0);
     // TUI-DESIGN-3 §1.6: the third line names the mode, its source and what it needs
-    const needs = DEFAULT_MODE === 'jev-only' ? 'jev' : 'generator, jev';
+    // AGENT-LOOP-DESIGN §14.2: agent needs the generator alone (Jev optional)
+    const needs = DEFAULT_MODE === 'jev-only' ? 'jev' : DEFAULT_MODE === 'agent' ? 'generator (Jev optional)' : 'generator, jev';
     expect(t.out.text).toBe(`generator.apiKey: file:/x/config.json (sha256:${fingerprint(KEY)})\ndecider.apiKey: env (sha256:${fingerprint(OR_KEY)})\nmode: ${DEFAULT_MODE} (default) — needs: ${needs}\n`);
     entries.delete('decider.apiKey');
     const t2 = io(null, { resolveSecrets: async () => entries });
-    expect(await commandLogin({ status: true }, t2)).toBe(1);
+    // agent is `ok` with the generator key alone (§14.2); a legacy generator mode needs both
+    expect(await commandLogin({ status: true }, t2)).toBe(DEFAULT_MODE === 'agent' ? 0 : 1);
     expect(t2.out.text).toContain('decider.apiKey: not set');
     const t3 = io(null);
     expect(await commandLogin({ status: true }, t3)).toBe(1);
