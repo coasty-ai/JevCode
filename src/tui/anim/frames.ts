@@ -45,8 +45,8 @@ const WIDE: Readonly<Record<IndicatorKind, readonly string[]>> = {
 const NARROW: Readonly<Record<IndicatorKind, readonly string[]>> = {
   // the eight-dot ring with one dot dark, turning clockwise
   donut: ['⣾', '⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽'],
-  // one dot orbiting the cell
-  globe: ['⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'],
+  // one dot orbiting the cell, clockwise like the donut
+  globe: ['⠁', '⠈', '⠐', '⠠', '⢀', '⡀', '⠄', '⠂'],
   // a block bouncing in the cell, squashed flat where it meets the floor and the ceiling
   cube: ['⠛', '⠶', '⣤', '⣀', '⣤', '⠶', '⠛', '⠉'],
   // a dot rising on the left and falling on the right
@@ -60,9 +60,12 @@ const ASCII: Readonly<Record<IndicatorKind, readonly string[]>> = {
   wave: ['_', '-', '~', '-'],
 };
 
-/** The still frame of each shape (reduced motion, SSH): the full ring, a meridian on the face, a turned box, a crest. */
+/**
+ * The still frame of each shape (reduced motion, SSH): the full ring, a meridian on the face, a turned box, a crest. The
+ * narrow stills are dense glyphs (a lit limb, a zigzag), never a lone dot — a still frame has no motion to be seen by.
+ */
 const STILL_WIDE: Readonly<Record<IndicatorKind, string>> = { donut: '⢎⣉⡱', globe: '⢎⣏⡱', cube: '⣏⣏⣹', wave: '⠌⠑⣀' };
-const STILL_NARROW: Readonly<Record<IndicatorKind, string>> = { donut: '⣾', globe: '⠁', cube: '⠶', wave: '⠂' };
+const STILL_NARROW: Readonly<Record<IndicatorKind, string>> = { donut: '⣾', globe: '⢾', cube: '⠶', wave: '⡪' };
 
 /** The frames of a shape at a width (`MINI_WIDE_CELLS` or `MINI_NARROW_CELLS`), or its ASCII twin (always one cell). */
 export function miniFrames(kind: IndicatorKind, cells: number, ascii = false): readonly string[] {

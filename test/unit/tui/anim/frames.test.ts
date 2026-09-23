@@ -73,6 +73,16 @@ describe('mini indicator frames', () => {
     }
   });
 
+  it('the narrow stills are dense (≥ 4 dots lit, never a lone speck), and the narrow globe turns the donut\'s way (clockwise)', () => {
+    for (const kind of INDICATOR_KINDS) {
+      const still = miniFrame(kind, 0, MINI_NARROW_CELLS, { still: true });
+      expect(dots(still).join('').split('#').length - 1, `${kind} ${still}`).toBeGreaterThanOrEqual(4);
+    }
+    // the lit dot's path: top-left, top-right, down the right side, bottom-left, up the left side
+    const at = (f: string): string => dots(f).map((r, y) => `${r[0] === '#' ? `L${y}` : ''}${r[1] === '#' ? `R${y}` : ''}`).join('');
+    expect(miniFrames('globe', MINI_NARROW_CELLS).map(at)).toEqual(['L0', 'R0', 'R1', 'R2', 'R3', 'L3', 'L2', 'L1']);
+  });
+
   it('frames cycle on the tick (negative and huge ticks included), and the still frame ignores the tick', () => {
     const frames = miniFrames('wave', MINI_WIDE_CELLS);
     expect(miniFrame('wave', 0, MINI_WIDE_CELLS)).toBe(frames[0]);
