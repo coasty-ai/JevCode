@@ -10,12 +10,12 @@ export const DEFAULT_MAX_TOKENS = 4096;
 export const DEFAULT_JEV_BASE_URL = 'https://openrouter.ai/api/alpha/decisions';
 /** Dated id (REPORT §16): reproducible thresholds. Aliases are accepted and resolved on the first call (§5.4 rule 7). */
 export const DEFAULT_JEV_MODEL = 'typesafe/jev-1.13-20260917';
-export const DEFAULT_SPEND_CAP_USD = 2;
+export const DEFAULT_SPEND_CAP_USD = 10;
 /** TUI-DESIGN §9.1 / §16 (P45): the run spend cap default under `--mode jev-only`, applied in resolveConfig once the mode is known. */
-export const JEV_ONLY_DEFAULT_SPEND_CAP_USD = 0.25;
-/** TUI-DESIGN §9.1: default session cap = 5 × the run cap ($10.00 for $2.00, $1.25 for jev-only's $0.25). */
+export const JEV_ONLY_DEFAULT_SPEND_CAP_USD = 1;
+/** TUI-DESIGN §9.1: default session cap = 5 × the run cap ($50.00 for $10.00, $5.00 for jev-only's $1.00). */
 export const SESSION_CAP_MULTIPLIER = 5;
-/** TUI-DESIGN §9.5 (Q40): the token cap under --allow-unpriced = spendCapUsd / 15 × 1e6 generator tokens (≈ 133k for $2.00). */
+/** TUI-DESIGN §9.5 (Q40): the token cap under --allow-unpriced = spendCapUsd / 15 × 1e6 generator tokens (≈ 667k for $10.00). */
 export const UNPRICED_TOKENS_PER_USD = 1e6 / 15;
 /** TUI-DESIGN §9.5: cache read / write rates derived from the input rate when the table has no entry. */
 export const CACHE_READ_FACTOR = 0.1;

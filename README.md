@@ -181,7 +181,7 @@ jevcode run "Fix the failing tests in tests/test_core.py without changing the te
 | `--theme <dark\|light\|daltonized\|ansi>` | colour theme; no auto-detect |
 | `--sandbox <auto\|seatbelt\|none>` | macOS seatbelt, or nothing |
 | `--plain` · `--json` · `--no-input` | readline instead of the TUI · machine-readable · never prompt |
-| `--spend-cap <usd>` | hard stop on spend (default `$2`, or `$0.25` under `jev-only`) |
+| `--spend-cap <usd>` | hard stop on spend (default `$10`, or `$1` under `jev-only`) |
 
 Full tables: [docs/COMMANDS.md](docs/COMMANDS.md) (41 slash commands) ·
 [docs/KEYS.md](docs/KEYS.md) (key bindings) · `man jevcode`.

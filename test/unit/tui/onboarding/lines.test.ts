@@ -769,12 +769,12 @@ describe('TUI-DESIGN-3 §1.4.2 / §10: the `key` and `options` steps, their twin
   });
 
   it('the setup and verification items (§10): caps, the default-mode item, mode saved, key reused, verified / verification texts, the TypeSafe-wins line; amounts never scientific', () => {
-    expect(capsItem('jev-on', 2, 10)).toBe('spend caps: $2.00 per run · $10.00 per session (jev+llm) — /budget changes them; /mode jev-only runs on Jev alone at $0.25 / $1.25');
-    expect(capsItem('jev-only', 0.25, 1.25)).toBe('spend caps: $0.25 per run · $1.25 per session (jev-only) — /budget changes them; /mode jev-only runs on Jev alone at $0.25 / $1.25');
-    expect(capsItem('llm-jev', 2, 10)).toContain('(llm+jev · verified)');
-    expect(capsItem('jev-on', 2, Number.POSITIVE_INFINITY)).toBe('spend caps: $2.00 per run · none (uncapped) per session (jev+llm) — /budget changes them; /mode jev-only runs on Jev alone at $0.25 / $1.25');
-    expect(defaultModeItem('jev-on', 2, 10)).toBe('mode jev+llm (default) — caps $2.00 per run · $10.00 per session; /mode jev-only runs on Jev alone at $0.25 / $1.25; jevcode config set mode <m> keeps a choice');
-    expect(cells(defaultModeItem('jev-on', 2, 10))).toBe(159);
+    expect(capsItem('jev-on', 10, 50)).toBe('spend caps: $10.00 per run · $50.00 per session (jev+llm) — /budget changes them; /mode jev-only runs on Jev alone at $1.00 / $5.00');
+    expect(capsItem('jev-only', 1, 5)).toBe('spend caps: $1.00 per run · $5.00 per session (jev-only) — /budget changes them; /mode jev-only runs on Jev alone at $1.00 / $5.00');
+    expect(capsItem('llm-jev', 10, 50)).toContain('(llm+jev · verified)');
+    expect(capsItem('jev-on', 10, Number.POSITIVE_INFINITY)).toBe('spend caps: $10.00 per run · none (uncapped) per session (jev+llm) — /budget changes them; /mode jev-only runs on Jev alone at $1.00 / $5.00');
+    expect(defaultModeItem('jev-on', 10, 50)).toBe('mode jev+llm (default) — caps $10.00 per run · $50.00 per session; /mode jev-only runs on Jev alone at $1.00 / $5.00; jevcode config set mode <m> keeps a choice');
+    expect(cells(defaultModeItem('jev-on', 10, 50))).toBe(160);
     expect(defaultModeItem(DEFAULT_MODE, defaultRunSpendCapUsd(DEFAULT_MODE), defaultRunSpendCapUsd(DEFAULT_MODE) * SESSION_CAP_MULTIPLIER)).toContain(`mode ${MODE_BADGE_WORD[DEFAULT_MODE]} (default)`);
     expect(modeSavedItem('jev-only', '~/.config/jevcode/config.json')).toBe('mode jev-only saved to ~/.config/jevcode/config.json — jevcode config set mode <m> changes it');
     expect(keyReusedText('env', 'e31150e9abcdef')).toBe('generator key: reused from JEV_API_KEY (sha256:e31150e9) source=env→file');

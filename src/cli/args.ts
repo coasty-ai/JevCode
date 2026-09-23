@@ -13,7 +13,7 @@ import { parseDuration } from '../core/time.js';
 import { RUN_ID_RE } from '../checkpoint/run-id.js';
 import { RENDER_MODES, parseFps } from '../config/launch.js';
 import { RENDERERS } from '../config/ui.js';
-import { AUTONOMY_SETTING_VALUES, DEFAULT_AUTONOMY, DEFAULT_MODE, MAX_FPS, MIN_FPS, MODE_BADGE_WORD } from '../config/defaults.js';
+import { AUTONOMY_SETTING_VALUES, DEFAULT_AUTONOMY, DEFAULT_MODE, DEFAULT_SPEND_CAP_USD, MAX_FPS, MIN_FPS, MODE_BADGE_WORD } from '../config/defaults.js';
 import { THEMES } from '../tui/commands/registry.js';
 // TUI-DESIGN-5 §6.3 row 6 / §6.1 (D-AP): the seven ids, from the ZERO-IMPORT module the argv path is allowed to
 // read (`src/provider/ids.ts`'s own docblock). Never `models/providers.ts`, which would pull the whole catalogue
@@ -324,7 +324,7 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'conditions', name: 'conditions', type: 'string', commands: BENCH, arg: 'jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned,jev-on-next,jev-on-next-nofast]', help: 'conditions to run (when omitted: the jev-on and jev-off arms)' },
   { key: 'concurrency', name: 'concurrency', type: 'string', commands: BENCH, arg: '<n>', help: 'parallel runs' },
   { key: 'live', name: 'live', type: 'boolean', commands: ['bench', 'perf'], help: 'use the real generator and Jev (requires --spend-cap)' },
-  { key: 'taskSpendCap', name: 'task-spend-cap', type: 'string', commands: BENCH, arg: '<usd>', help: 'per-run spend cap (default 2.00)' },
+  { key: 'taskSpendCap', name: 'task-spend-cap', type: 'string', commands: BENCH, arg: '<usd>', help: `per-run spend cap (default ${DEFAULT_SPEND_CAP_USD.toFixed(2)})` },
   { key: 'allowModelAlias', name: 'allow-model-alias', type: 'boolean', commands: BENCH, help: 'allow an undated --jev-model' },
   { key: 'archiveRuns', name: 'archive-runs', type: 'boolean', commands: BENCH, help: 'copy each run\'s records (steps/decisions/jev/generator.jsonl, run.json, state.json, patch) gzipped into <results>/runs/<runId>/' },
   { key: 'quick', name: 'quick', type: 'boolean', commands: BENCH, help: 'the M16 quick preset (docs/LLM-LOOP-DESIGN.md §3.5): the five Ring-2 tasks, --concurrency 3, replay by default and --spend-cap 0.05 as DEFAULTS that never override an explicit flag' },

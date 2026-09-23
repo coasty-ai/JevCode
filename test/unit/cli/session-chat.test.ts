@@ -686,7 +686,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
     await h.ready();
     expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
     expect(bubbles(h, '[jevcode]')).toEqual([CREDITS_EXHAUSTED('jev', 402)]);
-    expect(CREDITS_EXHAUSTED('jev', 402)).toBe('OpenRouter says this key has no credits (HTTP 402). Add credits at openrouter.ai/credits, or /mode jev-only ($0.25 cap; Jev bills the same key).');
+    expect(CREDITS_EXHAUSTED('jev', 402)).toBe('OpenRouter says this key has no credits (HTTP 402). Add credits at openrouter.ai/credits, or /mode jev-only ($1.00 cap; Jev bills the same key).');
     expect(CREDITS_EXHAUSTED('jev', 402).length).toBeLessThanOrEqual(160);
     expect(reasons).toEqual([]);
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBe(0);
@@ -865,6 +865,11 @@ describe('the `do it` offer is never made on a question', () => {
   it('an ambiguous statement gets the offer; an ambiguous question does not (live 2026-09-22: `who made you?` read ambiguous); other readings never do', () => {
     expect(offerWanted('the date parsing', ambiguous)).toBe(true);
     expect(offerWanted('who made you?', ambiguous)).toBe(false);
+    // a question without its mark (live 2026-09-22: `who made you`) — interrogative openers count
+    expect(offerWanted('who made you', ambiguous)).toBe(false);
+    expect(offerWanted('How do I run the tests', ambiguous)).toBe(false);
+    expect(offerWanted('can this handle utf-8', ambiguous)).toBe(false);
+    expect(offerWanted('whoever wrote this, the date parsing', ambiguous)).toBe(true);
     expect(offerWanted('  what does calc.sub do ?  ', ambiguous)).toBe(false);
     expect(offerWanted('the date parsing', task)).toBe(false);
   });

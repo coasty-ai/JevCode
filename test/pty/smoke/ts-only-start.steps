@@ -1,6 +1,6 @@
 # TUI-DESIGN-3 §1.8 edge 15 (replaces mode-switch's implicit start): a fake TYPESAFE_API_KEY alone under the jev+llm default — the found-title
 # `key` wizard (`TypeSafe key found — Jev runs there. Code model: paste an OpenRouter key`); Esc → `options`; `3` highlights (`3: no LLM …
-# caps $0.25 / $1.25`), `3` again confirms: `mode: jev-only` is written to the config file (`mode jev-only saved to <path>`), the badge reads
+# caps $1.00 / $5.00`), `3` again confirms: `mode: jev-only` is written to the config file (`mode jev-only saved to <path>`), the badge reads
 # `jev-only` with nothing pending, no key is saved; run-smoke.sh restarts with the same HOME and expects no wizard
 expect \x1b\[\?25l
 expect TypeSafe key found

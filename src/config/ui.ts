@@ -93,7 +93,7 @@ export function resolveUiConfig(reader: SettingReader, launch: LaunchSettings, c
   };
 }
 
-/** TUI-DESIGN §16 (P45): the run spend cap default is mode-keyed — $0.25 under jev-only, $2.00 otherwise (jev-on, jev-off and llm-jev all pay a generator). */
+/** TUI-DESIGN §16 (P45): the run spend cap default is mode-keyed — $1.00 under jev-only, $10.00 otherwise (jev-on, jev-off and llm-jev all pay a generator). */
 export function defaultRunSpendCapUsd(mode: EngineMode): number {
   return mode === 'jev-only' ? JEV_ONLY_DEFAULT_SPEND_CAP_USD : DEFAULT_SPEND_CAP_USD;
 }
