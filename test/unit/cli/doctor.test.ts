@@ -221,3 +221,21 @@ describe('jevcode doctor — the machine rows', () => {
     expect(find(await doctorRows(io().io), 'version').detail).toBe(`jevcode ${VERSION}`);
   });
 });
+
+describe("the pytest row (0.6.0 joint drive: a --user pytest vanished under the sandbox's remapped HOME)", () => {
+  it('pass with the version when the probe imports it; warn naming the fix when python3 is missing or pytest is not importable; warn when the build has no probe', async () => {
+    const ok = io({ pytestProbe: async () => ({ ok: true, version: '8.3.4' }) });
+    expect((await doctorRows(ok.io)).find((r) => r.id === 'pytest')).toMatchObject({ status: 'pass' });
+    const missing = io({ pytestProbe: async () => ({ ok: false, reason: 'no-python3', detail: 'python3 was not found on PATH' }) });
+    const m = (await doctorRows(missing.io)).find((r) => r.id === 'pytest');
+    expect(m?.status).toBe('warn');
+    expect(m?.fix).toContain('install Python 3');
+    const notImportable = io({ pytestProbe: async () => ({ ok: false, reason: 'not-importable', detail: "No module named 'pytest'" }) });
+    const n = (await doctorRows(notImportable.io)).find((r) => r.id === 'pytest');
+    expect(n?.status).toBe('warn');
+    expect(n?.fix).toContain('pip install --user pytest');
+    expect(n?.detail).not.toContain('/Users/');
+    const none = (await doctorRows(io().io)).find((r) => r.id === 'pytest');
+    expect(none?.status).toBe('warn');
+  });
+});

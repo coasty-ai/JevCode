@@ -77,6 +77,22 @@ export interface DoctorIo {
   sandboxLevel(): 'seatbelt' | 'none';
   /** one free GET; resolves to the HTTP status, or a one-line cause when it never completed */
   probe(url: string, headers: Record<string, string>, timeoutMs: number): Promise<{ status: number } | { error: string }>;
+  /**
+   * Is `pytest` importable for the python3 the SANDBOX will run — HOME remapped to a scratch directory, `PYTHONUSERBASE`
+   * passed through the way src/sandbox/run.ts does it? The joint drive of 0.6.0 found a machine whose `pip install --user`
+   * pytest vanished under the remapped HOME: the baseline read `No module named pytest`, the ledger had no goal and the
+   * default mode re-ran a failing suite for eight steps. Optional so every existing fake still satisfies the seam.
+   */
+  pytestProbe?(): Promise<{ ok: true; version: string } | { ok: false; reason: 'no-python3' | 'not-importable'; detail: string }>;
+}
+
+/** The sandbox's view of pytest: pass with the version, warn when python3 or pytest is missing — the default mode's synthesizer needs both for a Python workspace; any other workspace takes the generic step loop, so this is never a fail. */
+async function pytestRow(io: DoctorIo): Promise<DoctorRow> {
+  if (io.pytestProbe === undefined) return row('pytest', 'warn', `pytest not probed in this build`, `run python3 -c 'import pytest' yourself; the sandbox runs python3 with HOME remapped`);
+  const r = await io.pytestProbe();
+  if (r.ok) return row('pytest', 'pass', `pytest ${r.version} importable for the sandboxed python3 (HOME remapped, PYTHONUSERBASE passed through)`, `nothing to do`);
+  if (r.reason === 'no-python3') return row('pytest', 'warn', `no python3 on PATH — ${r.detail}`, `install Python 3 if you want the default mode's synthesizer on Python workspaces; other workspaces take the generic step loop`);
+  return row('pytest', 'warn', `pytest is not importable for the sandboxed python3 — ${r.detail}`, `install it in the workspace venv (.venv/bin/pip install pytest) or with pip install --user pytest; the sandbox passes PYTHONUSERBASE through`);
 }
 
 function row(id: string, status: DoctorStatus, detail: string, fix: string): DoctorRow {
@@ -205,6 +221,7 @@ export async function doctorRows(io: DoctorIo): Promise<DoctorRow[]> {
 
   rows.push(...configModeRows(io));
 
+  rows.push(await pytestRow(io));
   if (io.writable(io.runsDir)) rows.push(row('runs', 'pass', `${io.runsDir} is writable`, `nothing to do`));
   else rows.push(row('runs', 'fail', `${io.runsDir} is not writable — no run can be recorded or resumed`, `fix the directory's permissions, or set JEVCODE_HOME / --runs-dir somewhere you can write`));
 
@@ -274,6 +291,28 @@ export async function defaultDoctorIo(flags: ParsedFlags): Promise<DoctorIo> {
       return false;
     },
     sandboxLevel: () => detectSandboxLevel(config.sandbox === 'none' ? 'auto' : config.sandbox, process.platform),
+    pytestProbe: async () => {
+      const { execFile } = await import('node:child_process');
+      const { mkdtemp, rm } = await import('node:fs/promises');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const { resolvePythonUserBase } = await import('../sandbox/run.js');
+      const home = await mkdtemp(join(tmpdir(), 'jevcode-doctor-'));
+      try {
+        const env: NodeJS.ProcessEnv = { ...process.env, HOME: home };
+        const userBase = resolvePythonUserBase({ env: process.env });
+        if (userBase !== null) env['PYTHONUSERBASE'] = userBase;
+        return await new Promise((resolveP) => {
+          execFile('python3', ['-c', 'import pytest; print(pytest.__version__)'], { env, timeout: 5000 }, (err, stdout, stderr) => {
+            if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') return resolveP({ ok: false, reason: 'no-python3', detail: 'python3 was not found on PATH' });
+            if (err) return resolveP({ ok: false, reason: 'not-importable', detail: (stderr || err.message).trim().split('\n').at(-1) ?? 'import failed' });
+            return resolveP({ ok: true, version: stdout.trim() });
+          });
+        });
+      } finally {
+        await rm(home, { recursive: true, force: true });
+      }
+    },
     probe: async (url, headers, timeoutMs) => {
       try {
         const res = await fetch(url, { method: 'GET', headers, signal: AbortSignal.timeout(timeoutMs) });
