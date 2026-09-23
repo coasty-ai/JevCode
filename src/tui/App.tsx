@@ -87,7 +87,7 @@ import { gitRootFrom } from './import/git-root.js';
 import { IMPORT_DRY_RUN_REFUSAL, IMPORT_NOTHING_FOUND, importApplyNotWired, importClosedRow, importScreenReaderLines, importSrFocusLine } from './import/lines.js';
 import { blockWidth } from './block/lines.js';
 import type { PlanSummary } from '../import/index.js';
-import { IDENTITY_NO_TTY, formatTranscriptItem, headerItem, sanitizeStream, transcriptDumpChunks, type TranscriptItem, type TranscriptLevel } from './plain.js';
+import { IDENTITY_NO_TTY, agentRunEndedAsReply, formatTranscriptItem, headerItem, sanitizeStream, transcriptDumpChunks, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { maskGlyphFor, maskHits, type ReviewNote } from './Review.js';
 import type { FollowupInput } from './review/lines.js';
 import { reviewRowForDigit, reviewWhyRefusal } from './review/lines.js';
@@ -102,7 +102,7 @@ import { themeFor, textProps, type ColorRole, type Theme } from './theme.js';
 import { TOAST_ERROR_MS, TOAST_INFO_MS } from './toasts.js';
 import { Transcript, isRunHeaderItem } from './Transcript.js';
 import { useGitHead } from './useGitHead.js';
-import { createEventBus, createTuiConfirmer, replyPrev, useEngine, useVisibleItems, type AgentUi, type EventBus, type EventSource, type QueueEntry, type RunPhase, type TuiConfirmer, type UiAction, type UiState } from './useEngine.js';
+import { agentInFlight, createEventBus, createTuiConfirmer, replyPrev, useEngine, useVisibleItems, type AgentUi, type EventBus, type EventSource, type QueueEntry, type RunPhase, type TuiConfirmer, type UiAction, type UiState } from './useEngine.js';
 import { useWizard, type WizardDetect, type WizardHost, type WizardReopenOptions } from './onboarding/Wizard.js';
 import { stepWhyBlocks, whyBlock, whyErrorText } from './why.js';
 
@@ -338,7 +338,16 @@ export function liveLines(live: string, rows: number, columns: number = DEFAULT_
  * Ctrl-C stop it the way they stop a chat reply. From the first tool call the run chrome appears.
  */
 export function agentReplyPhase(s: Pick<UiState, 'run' | 'agent'>): boolean {
-  return s.agent !== null && !s.agent.tools && s.run === 'live';
+  // `aborting` too: a reply stopped by Esc / Ctrl-C winds down with the chat's chrome (a repeat ABORT is harmless)
+  return s.agent !== null && !s.agent.tools && (s.run === 'live' || s.run === 'aborting');
+}
+
+/**
+ * AGENT-LOOP-DESIGN §A1 / §A5: the last run was an agent run that ended as a REPLY (`answered`, reply-only, or a reply
+ * stopped before any tool call) and nothing is in flight — the idle rows read like the chat's: no `exit 0`, no `step 1/N`.
+ */
+export function agentLastRunWasReply(s: Pick<UiState, 'run' | 'agent' | 'done'>): boolean {
+  return s.agent !== null && !runIsLive(s.run) && s.done !== null && agentRunEndedAsReply(s.done.stopReason, s.agent.steps, s.agent.tools);
 }
 
 /**
@@ -3051,12 +3060,17 @@ export function App(p: AppProps): React.JSX.Element {
   const composerActive = !collapsing && !oneShotDone && (state.pendingReview === null || srReview) && overlayKind !== 'wizard' && overlayKind !== 'blocking';
   const composerWant = collapsing || state.noteMode ? 1 : guard('composer', () => draftRows(buffer.text, buffer.chips, wrapInner, pickerOpen ? `${promptFor(glyphs)}filter: ` : promptFor(glyphs)), 1);
   const banner = guard('banner', () => bannerRow(state.loop, columns, glyphs), null);
-  // AGENT-LOOP-DESIGN §9.4: an agent run's live region carries the tool rows (its prose is the reply block above the rule)
-  const agentLive = state.agent !== null && state.retrying === null ? guard('live', () => agentLiveLines(state.agent!, state.liveOutput, state.live !== '', CAP.live, columns, glyphs), { lines: [], dim: false }) : null;
+  // AGENT-LOOP-DESIGN §9.4: an agent run's live region carries the tool rows (its prose is the reply block above the rule).
+  // Only while the run is in flight: after it, a legacy-mode chat reply in the same session is the legacy live region.
+  const agentView = agentInFlight(state);
+  // the reasoning row goes for good once the turn's prose started — not only while a partial line is in the buffer
+  const agentLive = agentView !== null && state.retrying === null ? guard('live', () => agentLiveLines(agentView, state.liveOutput, state.live !== '' || agentView.turnStreamed, CAP.live, columns, glyphs), { lines: [], dim: false }) : null;
   const liveRows = guard<string[]>('live', () => (state.retrying ? retryLiveLines(state.retrying, state.nowMs, CAP.live, columns, glyphs) : agentLive !== null ? agentLive.lines : liveLines(state.live, CAP.live, columns, state.toolChars, state.synth, state.sampling)), []);
   // TUI-DESIGN-2 §5.4 (finding 2): the brand row is the idle rule row until the first `run:ready`; a submission in flight
-  // (`starting`, the chat phase) never swaps it for the strip and back
-  const ranBefore = state.ready !== null || state.done !== null || state.runsEnded > 0;
+  // (`starting`, the chat phase) never swaps it for the strip and back. AGENT-LOOP-DESIGN §A5: a reply is not a run to
+  // the eye — while an agent run is still a reply, or after one ended as a reply, only an earlier run that was not decides
+  const replyLike = agentReplyPhase(state) || agentLastRunWasReply(state);
+  const ranBefore = replyLike ? state.runsEnded > state.repliesEnded : state.ready !== null || state.done !== null || state.runsEnded > 0;
   // TUI-DESIGN-3 §3 (D-I): the wordmark is the pane slot's idle tenant. The reveal runs in every boxed frame ≥ 64 columns while the
   // splash is `running` (16–20 rows included); afterwards `wordmarkWanted` (§3.1) decides the WANT and the layout's whole-or-absent
   // grant (§3.7) the SHOW. `ui.wordmark` defaults to `static` under the SSH launch source (§3.2 twins).
@@ -3109,7 +3123,7 @@ export function App(p: AppProps): React.JSX.Element {
    * layout its committed rows are drawn with; its CAP is what the layout would grant it with an unbounded want, which the
    * reducer's overflow commits keep it within (the effect below hands the cap over whenever it moves).
    */
-  const replyItems = useMemo(() => (state.agent !== null && state.live !== '' ? pendingItems(state.live, state.reply, state.agent.turnStep) : []), [state.agent, state.live, state.reply]);
+  const replyItems = useMemo(() => (agentView !== null && state.live !== '' ? pendingItems(state.live, state.reply, agentView.turnStep) : []), [agentView, state.live, state.reply]);
   const replyPrevItem = replyItems.length > 0 ? replyPrev(state) : null;
   const replyWant = replyItems.length > 0 && !fullscreen ? guard('reply', () => pendingRows(replyItems, replyPrevItem, columns, glyphs), 0) : 0;
   // TUI-DESIGN-2 §4.2: in the boxed tier the secret gate is a console row, never the `secret` overlay
@@ -3133,8 +3147,9 @@ export function App(p: AppProps): React.JSX.Element {
     gate: gateUp,
   };
   // the reply block's cap: the rows the layout would grant it with an unbounded want (agent runs only)
-  const replyCap = state.agent !== null && !fullscreen ? computeLayout({ ...layoutInput, replyWant: rows }).reply : 0;
-  const agentOn = state.agent !== null;
+  const replyCap = agentView !== null && !fullscreen ? computeLayout({ ...layoutInput, replyWant: rows }).reply : 0;
+  // the fullscreen viewport draws no reply block (its prose commits at the line), so it hands the reducer no geometry
+  const agentOn = agentView !== null && !fullscreen;
   // AGENT-LOOP-DESIGN §9.4: "overflow commits when the tail budget shrinks" — a composer that grew, an overlay, a resize,
   // live rows appearing: the reducer commits the block's oldest rows until it fits the new cap
   useEffect(() => {
@@ -3212,7 +3227,7 @@ export function App(p: AppProps): React.JSX.Element {
   );
   // TUI-DESIGN-3 §5.2 A4: the streaming caret `▍` on the last live row, a 1 Hz blink riding the spinner tick (steady under reduced motion)
   const caretGlyph = glyphs.mode === 'ascii' ? '|' : (glyphs.eighths[3] ?? '');
-  const streaming = state.agent === null && runLive && state.live !== '' && state.retrying === null && liveRows.length > 0;
+  const streaming = agentView === null && runLive && state.live !== '' && state.retrying === null && liveRows.length > 0;
   const caret = streaming && streamCaretOn(spinner, reducedMotion) ? caretGlyph : '';
   // AGENT-LOOP-DESIGN §9.4: the reply block's caret — only while prose streams
   const replyCaret = replyItems.length > 0 && runLive && streamCaretOn(spinner, reducedMotion) ? caretGlyph : '';
@@ -3349,8 +3364,13 @@ export function App(p: AppProps): React.JSX.Element {
           plainRule(columns, glyphs),
         );
   // AGENT-LOOP-DESIGN §A5: a still-replying agent run reads like a chat reply — `thinking` until the first token, then
-  // `replying`; no `step 1/N` (the reply is not a run to the eye), exactly the chat phase's row
-  const statusSource: UiState = replyPhase ? { ...state, run: 'starting', thinking: state.agent?.prose === true ? 'replying' : 'intake', status: null, ready: null } : state;
+  // `replying`; no `step 1/N` (the reply is not a run to the eye), exactly the chat phase's row. After it ended as a reply
+  // the row is the chat's idle row (`idle · step 0/–`), not a run's `idle exit 0 … step 1/N`
+  const statusSource: UiState = replyPhase
+    ? { ...state, run: 'starting', thinking: state.agent?.prose === true ? 'replying' : 'intake', status: null, ready: null }
+    : agentLastRunWasReply(state)
+      ? { ...state, done: null, doneExitCode: null, status: null, ready: null }
+      : state;
   const statusState = guard<StatusLineState | null>('status', () => statusView({ ...statusSource, git: state.git === null ? null : { ...state.git, head: gitHead.head ?? state.git.head, frozen: gitHead.frozen } }, { picker: pickerOpen, columns, glyphs }), null);
   const badge = modeBadge(state.modeBadge.mode, state.modeBadge.pending, glyphs);
   const consoleTitle = wizardHosted ? wizardConsoleTitle(wizard.state.step, glyphs) : pickerOpen && picker.kind ? pickerConsoleTitle(picker.kind, glyphs) : null;

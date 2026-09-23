@@ -200,6 +200,15 @@ export interface AgentUi {
   readonly turnStreamed: boolean;
 }
 
+/**
+ * The agent view of a run IN FLIGHT (`live` / `aborting` / `pausing`), else null. `UiState.agent` outlives its run (the
+ * rows after it read how it ended), but nothing streams through it once the run is over: a later chat reply of a legacy
+ * mode (`/mode llm-jev` in the same session) is the legacy live region again, never the reply block.
+ */
+export function agentInFlight(s: Pick<UiState, 'agent' | 'run'>): AgentUi | null {
+  return s.agent !== null && (s.run === 'live' || s.run === 'aborting' || s.run === 'pausing') ? s.agent : null;
+}
+
 /** A fresh agent run's view. */
 export function initialAgentUi(): AgentUi {
   return { tools: false, activity: 'thinking', writing: null, reasoning: null, running: null, calls: [], toolCalls: 0, steps: [], held: [], turnStep: null, prose: false, turnStreamed: false };
@@ -319,6 +328,8 @@ export interface UiState {
   readonly statusAt: number | null;
   /** runs ended in this session */
   readonly runsEnded: number;
+  /** AGENT-LOOP-DESIGN §A5: of those, agent runs that ended as a reply (not a run to the eye: the brand rule row stays) */
+  readonly repliesEnded: number;
   /** `<Static>` remount generation (A28) */
   readonly staticEpoch: number;
   /** renderer-local item counter (`local:[ui]:n` keys) */
@@ -529,6 +540,7 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     doneExitCode: null,
     statusAt: null,
     runsEnded: 0,
+    repliesEnded: 0,
     staticEpoch: 0,
     localSeq: 0,
     thresholds: DEFAULT_THRESHOLDS,
@@ -578,7 +590,7 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
   switch (action.type) {
     case 'live': {
       const toolChars = action.toolChars ?? state.toolChars;
-      const agent = state.agent;
+      const agent = agentInFlight(state);
       // the stream's paint: a flush that changed the streamed text paints at once (and marks the text as flowing)
       const moved = state.live !== action.text || (agent !== null && action.output !== undefined && action.output !== state.liveOutput);
       const paint = action.paint === true || (moved && action.at !== undefined);
@@ -897,8 +909,9 @@ function appendSeq(s: UiState, items: readonly TranscriptItem[], seq: number): U
 
 /** AGENT-LOOP-DESIGN §9.4: commit the reply block's oldest rows while it has more than its geometry grants. */
 function overflowReply(s: UiState): UiState {
-  if (s.agent === null || s.replyGeom === null || s.live === '') return s;
-  const c = commitOverflow(s.live, s.reply, s.replyGeom, replyPrev(s), s.agent.turnStep, s.seq);
+  const agent = agentInFlight(s);
+  if (agent === null || s.replyGeom === null || s.live === '') return s;
+  const c = commitOverflow(s.live, s.reply, s.replyGeom, replyPrev(s), agent.turnStep, s.seq);
   if (c === null) return s;
   return { ...appendSeq(s, c.items, c.seq), reply: c.reply };
 }
@@ -1009,7 +1022,7 @@ function applyAgentEvent(state: UiState, e: EngineEvent, now: number, live: stri
     // §A1 / §A5: a run that answered in prose is a reply — no header, no step rows, no stop line; an Esc on a reply
     // stops it the way a chat reply stops (the controller says nothing either)
     if (agentRunEndedAsReply(e.result.stopReason, a.steps, a.tools)) {
-      s = appendItems(s, a.held.map(hide));
+      s = { ...appendItems(s, a.held.map(hide)), repliesEnded: s.repliesEnded + 1 };
       shown = shown.map(hide);
     } else if (a.held.length > 0) s = appendItems(s, a.held);
     a = { ...a, held: [] };
@@ -1089,7 +1102,7 @@ function agentCallLabel(name: string, summary: string): string {
 }
 
 function applyEvent(state: UiState, e: EngineEvent, now: number, live?: string): UiState {
-  if (state.agent !== null && e.type !== 'run:start') return applyAgentEvent(state, e, now, live);
+  if (agentInFlight(state) !== null && e.type !== 'run:start') return applyAgentEvent(state, e, now, live);
   if (e.type === 'run:start' && e.mode === 'agent') {
     // an agent run starts as a reply: its `[run] started` row is held with the rest of its chrome (§A1)
     const items = itemsFromEvent(e, state.seq);
@@ -1105,7 +1118,7 @@ function applyEvent(state: UiState, e: EngineEvent, now: number, live?: string):
 function foldEvent(next: UiState, e: EngineEvent, now: number): UiState {
   // AGENT-LOOP-DESIGN §9.4: in an agent run `live` is the prose buffer, which only commits empty it — a proposal, a
   // command or a new turn must not clear it the way they clear the legacy live region
-  const agentRun = next.agent !== null;
+  const agentRun = agentInFlight(next) !== null;
   switch (e.type) {
     case 'run:start':
       return resetForRun(next, e, now);
@@ -1452,7 +1465,9 @@ function appendTail(buf: string, text: string): string {
 export const PROSE_BUFFER_MAX = 1024 * 1024;
 
 function appendProse(buf: string, text: string): string {
-  const joined = buf + sanitizeStream(text);
+  // a CR (a CRLF stream) is dropped here, as the committed rows drop it, so the live rows and the rows they commit
+  // are one text (a caret after a bare CR would draw over the label column)
+  const joined = buf + sanitizeStream(text).replace(/\r/g, '');
   return joined.length > PROSE_BUFFER_MAX ? joined.slice(0, PROSE_BUFFER_MAX) : joined;
 }
 

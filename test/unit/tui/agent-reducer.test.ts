@@ -10,7 +10,7 @@ import { AGENT_REPLY_RESTARTED, formatTranscriptItem, isRunHeaderItem } from '..
 import { initialUiState, uiReducer, visibleItems, type UiAction, type UiState } from '../../../src/tui/useEngine.js';
 import { statusView } from '../../../src/tui/StatusLine.js';
 import { statusLineText } from '../../../src/tui/status/lines.js';
-import { agentLiveLines, agentReplyPhase } from '../../../src/tui/App.js';
+import { agentLastRunWasReply, agentLiveLines, agentReplyPhase, liveLines } from '../../../src/tui/App.js';
 import { mkStatus } from '../../fixtures/tui/fixtures.js';
 import { agentOpening, agentRunResult, agentStep, shapedTurn } from './agent-fixtures.js';
 
@@ -198,5 +198,64 @@ describe('legacy runs are untouched', () => {
     expect(s.agent).toBeNull();
     expect(s.live).toBe('{"x":1}');
     expect(s.items.some((i) => i.prose !== undefined)).toBe(false);
+  });
+});
+
+describe('the agent view is the view of a run in flight (review: stale `state.agent`)', () => {
+  const ended = (): UiState => drive([...agentOpening('hi'), ...shapedTurn(1, 1, ['Hi!']), ...finish(1), { type: 'run:end', result: agentRunResult('answered'), exitCode: 0 }]);
+
+  it('a later legacy chat reply (`/mode llm-jev`, then a long reply) is the legacy live region: no prose items, no reply bookkeeping', () => {
+    let s = uiReducer(ended(), { type: 'reply:geometry', rows: 4, columns: 80 });
+    const before = s.items.length;
+    s = uiReducer(s, { type: 'run:starting' });
+    const text = Array.from({ length: 8 }, (_, i) => `chat line ${i}`).join('\n');
+    s = uiReducer(s, { type: 'live', text, at: 1 });
+    expect(s.items.length).toBe(before);
+    expect(s.items.some((i) => i.text.startsWith('chat line'))).toBe(false);
+    expect(s.live).toBe(text);
+    // a geometry change between runs commits nothing either
+    s = uiReducer(s, { type: 'reply:geometry', rows: 2, columns: 60 });
+    expect(s.items.length).toBe(before);
+    // the App draws it with the legacy live rows (the agent view is null once the run is over)
+    expect(liveLines(s.live, 4, 80)).toEqual(['chat line 4', 'chat line 5', 'chat line 6', 'chat line 7']);
+    s = uiReducer(s, { type: 'live', text: '', at: 2 });
+    expect(s.live).toBe('');
+  });
+
+  it('after a run that ended as a reply the idle rows read like chat; a Esc-stopped reply winds down with the chat chrome', () => {
+    const s = ended();
+    expect(agentLastRunWasReply(s)).toBe(true);
+    expect(s.repliesEnded).toBe(1);
+    expect(s.runsEnded).toBe(1);
+    const live = drive([...agentOpening('write a poem'), { type: 'generator:delta', step: 1, text: 'Roses' }]);
+    const aborting = uiReducer(live, { type: 'run:aborting' });
+    expect(agentReplyPhase(aborting)).toBe(true);
+    // a run that used a tool is not a reply, live or ended
+    const tool = drive([...agentOpening('fix'), { type: 'tool:call', step: 1, turn: 1, id: 'c', name: 'read_file', summary: 'read_file a.ts', readOnly: true }]);
+    expect(agentReplyPhase(uiReducer(tool, { type: 'run:aborting' }))).toBe(false);
+    const toolEnded = drive([{ type: 'run:end', result: agentRunResult('human_abort', 1), exitCode: 130 }], tool);
+    expect(agentLastRunWasReply(toolEnded)).toBe(false);
+    expect(toolEnded.repliesEnded).toBe(0);
+  });
+});
+
+describe('overflow commits: no jump when a paragraph first outgrows the block (review: commitOverflow k = 0)', () => {
+  it('the spacer never goes alone: every overflow commit that takes the spacer takes a body row with it', () => {
+    let s = drive(agentOpening('tell me'));
+    s = uiReducer(s, { type: 'local', text: 'tell me', label: '[you]' });
+    s = uiReducer(s, { type: 'reply:geometry', rows: 4, columns: 80 });
+    const words = Array.from({ length: 200 }, (_, i) => `word${i}`).join(' ');
+    let buffer = '';
+    for (let i = 0; i < words.length; i += 7) {
+      buffer += words.slice(i, i + 7);
+      s = uiReducer(s, { type: 'live', text: buffer, toolChars: 0 });
+      // what the block would draw never exceeds its cap by the spacer alone
+      const prose = s.items.filter((it) => it.prose !== undefined);
+      if (prose.length > 0) expect(prose[0]!.prose!.to ?? 1).toBeGreaterThan(0);
+    }
+    const prose = s.items.filter((it) => it.prose !== undefined);
+    expect(prose.length).toBeGreaterThan(0);
+    // the head item (spacer + label) always carries at least one body row
+    expect(prose[0]!.text.length).toBeGreaterThan(0);
   });
 });

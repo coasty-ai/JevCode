@@ -260,3 +260,191 @@ describe('the agent reply block: prose streams in place and commits with zero ju
     expect(m.state()?.items.filter((i) => i.kind === 'run:end').every((i) => (i as { hidden?: boolean }).hidden === true)).toBe(true);
   });
 });
+
+describe('review follow-ups: the reply block and the reply chrome in the real App', () => {
+  it('reasoning, then three newline-terminated lines: the reasoning row never comes back after the first prose token, and the rule never moves up', async () => {
+    const m = mount(30, 100);
+    await tick(60);
+    youBubble(m, 'explain');
+    await feed(m, agentOpening('explain'));
+    await feed(m, [{ type: 'generator:reasoning', step: 1, turn: 1, chars: 900, tail: 'the parser folds' }]);
+    expect(rowsOf(m.stdout.lastFrame()).join('\n')).toMatch(/thinking… 900 chars/);
+    const from = m.stdout.frames.length;
+    for (const line of ['First line of the answer.', 'Second line of the answer.', 'Third line of the answer.']) {
+      m.bus.emit({ type: 'generator:delta', step: 1, text: `${line}\n` });
+      await tick(60);
+      m.bus.emit({ type: 'assistant:text', step: 1, turn: 1, attempt: 1, text: line, final: false });
+      await tick(60);
+    }
+    await tick(300);
+    let lastRule = -1;
+    let seen = 0;
+    for (const f of m.stdout.frames.slice(from).map(rowsOf)) {
+      const r = ruleIndex(f, 100);
+      if (r < 0) continue;
+      seen += 1;
+      expect(f.join('\n')).not.toMatch(/thinking… \d/);
+      expect(r).toBeGreaterThanOrEqual(lastRule);
+      lastRule = r;
+    }
+    expect(seen).toBeGreaterThan(0);
+    expect(rowsOf(m.stdout.lastFrame()).join('\n')).toContain('[jevcode] Third line of the answer.');
+  });
+
+  it('24×80: a paragraph streamed in small chunks — the spacer under `[you]` survives every frame, and no row above the partial row ever moves', async () => {
+    const m = mount(24, 80);
+    await tick(60);
+    youBubble(m, 'tell me everything');
+    await feed(m, agentOpening('tell me everything'));
+    const para = Array.from({ length: 150 }, (_, i) => `word${i}`).join(' ');
+    const from = m.stdout.frames.length;
+    for (let i = 0; i < para.length; i += 9) {
+      m.bus.emit({ type: 'generator:delta', step: 1, text: para.slice(i, i + 9) });
+      await tick(20);
+    }
+    await tick(300);
+    const frames = m.stdout.frames
+      .slice(from)
+      .map(rowsOf)
+      .filter((f) => ruleIndex(f, 80) >= 0 && f.some((l) => l.includes('[jevcode] word0')));
+    expect(frames.length).toBeGreaterThan(3);
+    let prev: string[] | null = null;
+    for (const f of frames) {
+      const you = f.findIndex((l) => l.includes('[you] tell me everything'));
+      expect(f[you + 1]).toBe('');
+      expect(f[you + 2]).toMatch(/^\[jevcode\] word0 /);
+      if (prev !== null) {
+        // every row above the previous frame's partial row (the last row before its rule) is where it was
+        const stable = ruleIndex(prev, 80) - 1;
+        expect(f.slice(0, stable)).toEqual(prev.slice(0, stable));
+      }
+      prev = f;
+    }
+    // it did overflow: rows committed before the line ended
+    expect(m.state()?.items.some((i) => i.prose !== undefined && i.prose.to !== undefined)).toBe(true);
+  });
+
+  it('§A1/§A5: after a reply ends (`answered`) the status row is the chat idle row — no `exit 0`, no `step 1/`, and the rule row stays the brand row', async () => {
+    const m = mount(30, 100);
+    await tick(60);
+    const idleRule = rowsOf(m.stdout.lastFrame()).find((l) => isRuleRow(l, 100));
+    youBubble(m, 'hi');
+    await feed(m, agentOpening('hi'));
+    await feed(m, shapedTurn(1, 1, ['Hi! ', 'What should we work on?']));
+    let text = rowsOf(m.stdout.lastFrame());
+    expect(text.find((l) => isRuleRow(l, 100))).toBe(idleRule);
+    await feed(m, [
+      { type: 'proposal', step: 1, proposal: { goal: 'finish', action: { kind: 'done', summary: 'Hi!' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' } },
+      { type: 'outcome', step: 1, outcome: { status: 'noop', summary: 'done' } },
+      { type: 'step:end', record: agentStep(1, { kind: 'finish', action: { kind: 'done', summary: 'Hi!' }, outcome: { status: 'noop', summary: 'done' } }), costUsd: { generator: 0.0001, jev: 0 } },
+      { type: 'run:end', result: agentRunResult('answered'), exitCode: 0 },
+    ]);
+    text = rowsOf(m.stdout.lastFrame());
+    const all = text.join('\n');
+    expect(all).not.toContain('exit 0');
+    expect(all).not.toMatch(/step 1\//);
+    expect(all).toMatch(/│ idle\s+step 0\/–/);
+    expect(text.find((l) => isRuleRow(l, 100))).toBe(idleRule);
+  });
+
+  it('§A5: Esc on a reply stops it with the chat chrome — no `Type to steer`, no `aborting`, no steer border while it winds down', async () => {
+    const stdout = new StubStdout(30, 100);
+    const stdin = new StubStdin();
+    const bus = createEventBus();
+    const bridge = createBridge(null, null);
+    const aborts: string[] = [];
+    const instance = render(<App task="" resumeId={null} source={bus} confirmer={createTuiConfirmer()} onAbort={(r) => aborts.push(r)} mode="session" cwd="/tmp/proj" tickMs={0} now={() => 1_000_000} bridge={bridge} launch={STILL} env={{}} />, {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      debug: true,
+      exitOnCtrlC: false,
+      patchConsole: false,
+    });
+    unmounts.push(() => instance.unmount());
+    await tick(60);
+    for (const e of agentOpening('write a haiku')) bus.emit(e);
+    bus.emit({ type: 'generator:delta', step: 1, text: 'Autumn moon' });
+    await tick(300);
+    stdin.write('\x1b');
+    await tick(300);
+    expect(aborts).toEqual(['human_abort']);
+    expect(bridge.stateReader?.()?.run).toBe('aborting');
+    const text = rowsOf(stdout.lastFrame()).join('\n');
+    expect(text).not.toContain('Type to steer');
+    expect(text).not.toContain('aborting');
+    expect(text).toContain('› (thinking…)');
+    // a second Esc while it winds down is the same stop again (idempotent), never a pause
+    stdin.write('\x1b');
+    await tick(300);
+    expect(aborts.every((a) => a === 'human_abort')).toBe(true);
+    // the run ends as a reply: the chat idle row
+    bus.emit({ type: 'run:end', result: agentRunResult('human_abort', 0), exitCode: 130 });
+    await tick(100);
+    const after = rowsOf(stdout.lastFrame()).join('\n');
+    expect(after).not.toContain('exit 130');
+    expect(after).toContain('[jevcode] Autumn moon');
+  });
+
+  it('after an agent reply, a legacy-mode chat reply (`/mode llm-jev`) is the legacy live region: drawn once, never committed as `[jevcode]` prose', async () => {
+    const m = mount(30, 100);
+    await tick(60);
+    youBubble(m, 'hi');
+    await feed(m, agentOpening('hi'));
+    await feed(m, [...shapedTurn(1, 1, ['Hi!']), { type: 'run:end', result: agentRunResult('answered'), exitCode: 0 }]);
+    const before = m.state()!.items.length;
+    m.bridge.command({ type: 'dispatch', action: { type: 'run:starting' } });
+    const text = Array.from({ length: 8 }, (_, i) => `chat line ${i}`).join('\n');
+    m.bridge.command({ type: 'dispatch', action: { type: 'live', text, at: 1 } });
+    await tick(100);
+    expect(m.state()!.items.length).toBe(before);
+    const rows = rowsOf(m.stdout.lastFrame());
+    // below the rule, as the legacy live rows (the last CAP.live lines), and not as a reply block above it
+    const r = ruleIndex(rows, 100);
+    expect(rows.findIndex((l) => l.includes('chat line 7'))).toBeGreaterThan(r);
+    expect(rows.some((l) => l.startsWith('[jevcode] chat line'))).toBe(false);
+  });
+});
+
+describe('the mini indicator in the App: none under a screen reader, still under SSH', () => {
+  const BRAILLE_RE = /[⠁-⣿]/u;
+
+  async function statusRows(launch: LaunchSettings, ticks: number): Promise<string[]> {
+    const stdout = new StubStdout(30, 100);
+    const stdin = new StubStdin();
+    const bus = createEventBus();
+    const bridge = createBridge(null, null);
+    const instance = render(<App task="" resumeId={null} source={bus} confirmer={createTuiConfirmer()} onAbort={() => undefined} mode="session" cwd="/tmp/proj" tickMs={0} now={() => 1_000_000} bridge={bridge} launch={launch} env={{ FORCE_COLOR: '3' }} />, {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      debug: true,
+      exitOnCtrlC: false,
+      patchConsole: false,
+    });
+    unmounts.push(() => instance.unmount());
+    await tick(120);
+    for (const e of agentOpening('fix it')) bus.emit(e);
+    bus.emit({ type: 'tool:call', step: 1, turn: 1, id: 'c1', name: 'read_file', summary: 'read_file a.ts', readOnly: true });
+    await tick(100);
+    const out: string[] = [];
+    for (let i = 0; i < ticks; i++) {
+      await tick(130);
+      const row = rowsOf(stdout.lastFrame()).find((l) => /\breading\b/.test(l));
+      out.push(row ?? '');
+    }
+    return out;
+  }
+
+  it('a screen reader: the status word alone — no braille indicator frame in the row', async () => {
+    const rows = await statusRows({ ...STILL, noColor: false, reducedMotion: false, screenReader: true }, 3);
+    for (const r of rows) {
+      expect(r).toMatch(/reading/);
+      expect(r).not.toMatch(BRAILLE_RE);
+    }
+  });
+
+  it('SSH: the still frame, the same across several spinner ticks', async () => {
+    const rows = await statusRows({ ...STILL, noColor: false, reducedMotion: false, ssh: true }, 4);
+    for (const r of rows) expect(r).toMatch(/[⠁-⣿]{1,3} reading/u);
+    expect(new Set(rows).size).toBe(1);
+  });
+});
