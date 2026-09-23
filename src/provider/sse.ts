@@ -194,7 +194,7 @@ async function drainToEof(reader: ReadableStreamDefaultReader<Uint8Array>, signa
  * issued in the same turn opens a second connection, one issued after a `setImmediate` reuses the first), so a
  * back-to-back `generate()` would miss the socket this read just freed.
  */
-function socketReleased(): Promise<void> {
+export function socketReleased(): Promise<void> {
   return new Promise<void>((resolve) => realSetImmediate(resolve));
 }
 

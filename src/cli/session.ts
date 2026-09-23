@@ -4901,6 +4901,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (o.rendererKind !== 'tui') note(sandboxText(detectSandboxLevel(config.sandbox), config.sandbox), { label: '[sandbox]', level: 'dim' });
     const cfg = config;
     candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
+    // network map P5: ONE anonymous GET warms the generator's origin while the human reads the first frame — fire-and-forget,
+    // never awaited, never logged; provider/net.ts skips it under --mock, --no-network, the no-network assertion and tests
+    const prewarmWhen = { mode: pending.mode ?? baseMode, mock: flags.mock === true || flags.mockGenerator === true, offline: env['JEVCODE_ASSERT_NO_NETWORK'] === '1' };
+    void import('../provider/net.js').then((net) => net.prewarmGenerator(cfg, prewarmWhen)).catch(() => undefined);
     await refold();
     if (exiting) return;
     newSessionMeter();
