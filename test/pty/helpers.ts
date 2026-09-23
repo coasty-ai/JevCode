@@ -91,6 +91,8 @@ export const PLACEHOLDER_STEER = 'Type to steer the next step';
 /** the mode badge words of TUI-DESIGN-2 §1.5 as they appear in the console's top edge (boxed) or the status left zone (flat) */
 export const BADGE_JEV_ONLY = 'jev-only';
 export const BADGE_JEV_LLM = 'jev\\+llm';
+/** AGENT-LOOP-DESIGN §14.1: the agent mode's badge word (the default's since slice S6; `BADGE_DEFAULT` reads the table) */
+export const BADGE_AGENT = 'agent';
 /** TUI-DESIGN-3 §1.10: the default mode's badge word as a Tcl regex fragment — read from the one table, so a later flip moves nothing here */
 export const BADGE_DEFAULT = MODE_BADGE_WORD[DEFAULT_MODE].replace(/[\\^$.|?*+()[\]{}]/g, '\\$&');
 /** the default mode's badge word as plain text (for `toContain` / `startsWith` checks on stripped captures) */
@@ -915,6 +917,32 @@ export const RUN_FINISHED_ROW_RE = new RegExp(`^ {0,9}\\[run\\] ${RUN_FINISHED_W
 /** the glyph-agnostic `[run] started · …` anchor over a **stripped** capture row */
 export const RUN_STARTED_ROW_RE = new RegExp(`^ {0,9}\\[run\\] ${RUN_STARTED_WORD} ${GLYPH_DOT_CLASS} `);
 export const MOCK_RUN_MODE: readonly string[] = ['--mode', 'jev-on'];
+/**
+ * AGENT-LOOP-DESIGN §A1: the conversational intake — Jev's background reading, the `do it` offer, the intake's `s0` rows, `/why
+ * intake`, the `intake` row of `/jev` — exists only in the Jev-driven modes (the agent default sends every message to the loop), so a
+ * scenario about it names the legacy mode it was written for.
+ */
+export const LEGACY_INTAKE_MODE: readonly string[] = ['--mode', 'llm-jev'];
+/**
+ * AGENT-LOOP-DESIGN §A1 / §A5: under the agent default a greeting or a question is an agent run that stops `answered` and renders as
+ * a reply only — no run chrome in the TUI (no `[run]` row, no `[step N]` row, no `finished ·` row, no `not verified`), one run
+ * directory whose state records the `answered` stop. Returns the reasons it is not (empty when it is).
+ */
+export function answeredReplyProblems(r: Drive): string[] {
+  const out: string[] = [];
+  const plain = stripAnsi(r.text);
+  if (/\[run\] (?:started|finished) [·-] /.test(plain)) out.push('a [run] started/finished row');
+  if (/^ *\[step \d+\] /m.test(plain)) out.push('a [step N] row');
+  if (/finished [·-] /.test(plain)) out.push('a finished row');
+  if (plain.includes('not verified')) out.push('a not-verified row');
+  const dirs = r.runDirs();
+  if (dirs.length !== 1) out.push(`${dirs.length} run dirs`);
+  // state.json is the checkpoint envelope `{ version, checksum, state }`
+  const st = r.state();
+  const stop = ((st?.['state'] ?? st) as Record<string, unknown> | null)?.['stopReason'];
+  if (stop !== 'answered') out.push(`stopReason ${String(stop)}`);
+  return out;
+}
 /** the opening of a one-shot `run` scenario: the first frame, raw mode (the steering composer), then the run's start item */
 export const RUN_OPEN: readonly string[] = [FIRST_FRAME_STEP, RAW_MODE_STEP, RUN_STARTED_STEP];
 /** type a task and submit it; the run is live once the status row reads `step 1/…` (the mock intake reads a ≥ 3-word imperative without `?` as `coding_task`, TUI-DESIGN-2 §3.13) */
