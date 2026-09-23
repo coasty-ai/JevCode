@@ -256,7 +256,7 @@ describe.skipIf(!hasExpect)('pty round 3: the hero-frame checklist (TUI-DESIGN-3
     for (const t of twins) {
       const rows = t.rows ?? 24;
       const cols = t.cols ?? 80;
-      const open = rows < 16 ? [FIRST_FRAME_STEP, `expect ${t.ascii ? 'Say hi' : PLACEHOLDER_TASK}`, RAW_MODE_STEP, 'expect \\[sandbox\\]'] : [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, IDLE_STEP];
+      const open = rows < 16 ? [FIRST_FRAME_STEP, `expect ${t.ascii ? 'Say hi' : PLACEHOLDER_TASK}`, RAW_MODE_STEP, 'expect sess \\$'] : [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, IDLE_STEP];
       const r = await drive({ name: `r3-polish-${t.name}`, args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3', ...t.args], rows, cols, ...(t.env ? { env: t.env } : {}), steps: [...open, 'sleep 0.3', 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.3', ...EXIT_IDLE] });
       expect(r.timeouts, t.name).toBe(0);
       expect(r.code, t.name).toBe(0);
