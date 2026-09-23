@@ -86,6 +86,24 @@ describe('segmenting', () => {
     expect(results[2]).toMatch(/^ERROR: old_string not found in src\/a\.py\./);
   });
 
+  it('a tool that throws unexpectedly (while preparing or running) is an error result, not a failed step', async () => {
+    const ctx = createAgentContext({ turns: [{ toolCalls: [call('read_file', { path: 'locked.txt' }), call('edit_file', { path: 'locked.txt', old_string: 'a', new_string: 'b' })] }, { text: 'ok' }], testCommand: null });
+    const read = ctx.fs.read.bind(ctx.fs);
+    ctx.fs.read = async (path, max) => {
+      if (path === 'locked.txt') throw new Error('EACCES: permission denied, open locked.txt');
+      return read(path, max);
+    };
+    const d = createAgentDriver();
+    const s = await step(d, ctx);
+    expect(s.next.kind === 'observe' && s.next.summary.calls.map((c) => [c.name, c.ok])).toEqual([
+      ['read_file', false],
+      ['edit_file', false],
+    ]);
+    await step(d, ctx);
+    const results = messagesOf(ctx, 1).at(-1)!.content.map((b) => (b.type === 'tool_result' ? b.content : ''));
+    expect(results).toEqual(['ERROR: EACCES: permission denied, open locked.txt', 'ERROR: EACCES: permission denied, open locked.txt']);
+  });
+
   it('keeps 32 calls of a reply and answers the rest NOT_EXECUTED_TOO_MANY', async () => {
     const ctx = createAgentContext({ turns: [{ toolCalls: Array.from({ length: 34 }, (_v, i) => call('glob', { pattern: `*.x${i}` })) }, { text: 'ok' }], testCommand: null });
     const d = createAgentDriver();

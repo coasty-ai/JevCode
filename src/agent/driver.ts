@@ -17,7 +17,7 @@ import type { AgentCallSummary, AgentContext, AgentDriver, AgentNext, AgentObser
 import { sha12 } from '../core/hash.js';
 import { headTail } from '../core/text.js';
 import { AbortError } from '../errors.js';
-import { dispose, reportAct, changesWorkspace, type CallEnv, type PreparedAct } from './calls.js';
+import { changesWorkspace, dispose, failedDisposition, failedResult, reportAct, type CallEnv, type PreparedAct } from './calls.js';
 import { ContextEstimate, budgetFor, codeSummary, compactionDue, compactionText, compactionWriter, contextUsage, llmSummary, maskCandidates, maskDue, type Budget } from './context.js';
 import { buildHead } from './head.js';
 import { chooseLoopNudge, effortHint, progressCheck, type RunFacts } from './jev.js';
@@ -267,7 +267,7 @@ class Driver implements AgentDriver {
     const batch: BatchItem[] = [];
     for (const rec of queue) {
       const call = deriveCall(rec, ctx.workspace.root);
-      const d = await dispose(env, call);
+      const d = await dispose(env, call).catch((e: unknown) => failedDisposition(ctx, call, e));
       if (d.kind === 'act') {
         if (batch.length === 0) return this.actStep(ctx, call, d.act, turn);
         break;
@@ -292,7 +292,7 @@ class Driver implements AgentDriver {
       const done = await Promise.all(
         slice.map(async (b, k) => {
           const t0 = ctx.now();
-          const result = await b.run(parts[i + k]);
+          const result = await b.run(parts[i + k]).catch((e: unknown) => failedResult(ctx, b.callSummary, e));
           const ms = ctx.now() - t0;
           ctx.emit({ type: 'tool:result', step: ctx.step, turn: eventTurn, id: b.call.id, name: b.name, ok: result.ok, summary: ctx.redact(result.summary), ms, chars: result.text.length, readOnly: true });
           return { result, ms };
@@ -305,9 +305,11 @@ class Driver implements AgentDriver {
     let trip: LoopTripWithTest | null = null;
     const readPaths: string[] = [];
     const calls: AgentCallSummary[] = [];
+    // every result is in memory before the first disk write is awaited: a failed append un-resolves nothing
+    const writes: Promise<unknown>[] = [];
     for (const [k, b] of batch.entries()) {
       const { result, ms } = results[k]!;
-      await t.append({ kind: 'result', turn: eventTurn, toolUseId: b.call.id, name: b.call.name === 'invalid' ? b.call.rawName : b.call.name, content: ctx.redact(result.text), isError: !result.ok, summary: ctx.redact(result.summary) });
+      writes.push(t.append({ kind: 'result', turn: eventTurn, toolUseId: b.call.id, name: b.call.name === 'invalid' ? b.call.rawName : b.call.name, content: ctx.redact(result.text), isError: !result.ok, summary: ctx.redact(result.summary) }));
       if (result.hashBasis !== null) trip = feedLoop(this.state.loopWindow, { name: b.name, signature: callSignature(b.name, b.call.args, resultHash({ kind: 'text', text: result.hashBasis })), testCommand: null }) ?? trip;
       for (const p of result.readPaths ?? []) {
         if (!readPaths.includes(p)) readPaths.push(p);
@@ -316,6 +318,7 @@ class Driver implements AgentDriver {
       if (calls.length < AGENT_MAX_CALLS_PER_TURN) calls.push({ id: b.call.id, name: b.name, summary: ctx.redact(result.summary), ok: result.ok, ms });
     }
     if (trip !== null) this.state.pendingLoop = trip;
+    await Promise.all(writes);
     this.remember(`observe: ${calls.map((c) => c.summary).join('; ')}`);
     const output = batch.map((b, k) => `## ${b.callSummary}\n${results[k]!.result.text}`).join('\n\n');
     const proposal: Proposal = { goal: oneLine(batch.map((b) => b.callSummary).join(' · '), 200), action: { kind: 'read', paths: readPaths }, plan: this.plan(), rawText: ctx.redact(this.rawText(t, batch.map((b) => b.call))) };

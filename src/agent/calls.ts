@@ -15,7 +15,7 @@
  */
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { Action, AgentContext, AgentGate, AgentObservation, AgentToolName, JsonObject } from '../core/types.js';
+import type { Action, AgentContext, AgentGate, AgentObservation, AgentToolName } from '../core/types.js';
 import { sha12 } from '../core/hash.js';
 import { PRE_IMAGE_MAX_FILES, PRE_IMAGE_MAX_TOTAL_BYTES } from '../checkpoint/images.js';
 import { AGENT_FILE_MAX_BYTES, DEFAULT_COMMAND_TIMEOUT_MS } from './limits.js';
@@ -25,12 +25,12 @@ import { classifyCommand, commandGate, destructiveNote, type CommandVerdict, typ
 import { syntaxCheck, syntaxCheckBlock } from './tools/check.js';
 import { editResultLine, matchEdit, placeholderLine } from './tools/edit-match.js';
 import { oneLine, renderBash } from './tools/format.js';
-import { runReadFile, type ReadHashes } from './tools/read.js';
+import { runReadFile, type ReadArgs, type ReadHashes } from './tools/read.js';
 import { accessError, errorResult, isBinary, type ToolResult } from './tools/result.js';
-import { runGlob, runGrep } from './tools/search.js';
+import { runGlob, runGrep, type GlobArgs, type GrepArgs } from './tools/search.js';
 import { bashHashBasis, runReadonlyBash } from './tools/shell.js';
 import { todoWrite, type Todo } from './tools/todo.js';
-import { FileNotFoundError } from '../errors.js';
+import { FileNotFoundError, isAbortError, isBudgetError } from '../errors.js';
 
 export interface CallEnv {
   ctx: AgentContext;
@@ -90,11 +90,32 @@ function withIgnored(r: ToolResult, ignored: readonly string[]): ToolResult {
 }
 
 function resolved(c: NormalisedCall, run: (part: number | undefined) => Promise<ToolResult>): Disposition {
-  return { kind: 'resolve', name: c.error !== null && c.name === 'invalid' ? 'invalid' : c.name, callSummary: callSummary(c), run: async (part) => withIgnored(await run(part), c.ignored) };
+  return { kind: 'resolve', name: c.name, callSummary: callSummary(c), run: async (part) => withIgnored(await run(part), c.ignored) };
 }
 
 function rejected(c: NormalisedCall, text: string): Disposition {
   return resolved(c, async () => errorResult(text, `${callSummary(c)} (rejected)`));
+}
+
+/** The run's own stop (a pause, `/stop`, a budget) travels up; anything else a tool throws is the tool's failure. */
+function rethrowRunStop(ctx: AgentContext, e: unknown): void {
+  if (isAbortError(e) || isBudgetError(e) || ctx.signal.aborted) throw e;
+}
+
+function failureText(ctx: AgentContext, e: unknown): string {
+  return `ERROR: ${ctx.redact(e instanceof Error ? e.message : String(e))}`;
+}
+
+/** §3.5: a call whose preparation threw (an unreadable file, a sandbox failure) is an error result, never a failed step. */
+export function failedDisposition(ctx: AgentContext, c: NormalisedCall, e: unknown): Disposition {
+  rethrowRunStop(ctx, e);
+  return rejected(c, failureText(ctx, e));
+}
+
+/** §3.5: a resolvable call that threw while running is an error result, never a failed step. */
+export function failedResult(ctx: AgentContext, summary: string, e: unknown): ToolResult {
+  rethrowRunStop(ctx, e);
+  return errorResult(failureText(ctx, e), `${summary} (error)`);
 }
 
 const inGit = (path: string): boolean => /^(\.\/)*\.git(\/|$)/.test(path);
@@ -211,34 +232,28 @@ async function editDisposition(env: CallEnv, c: NormalisedCall): Promise<Disposi
   };
 }
 
+/**
+ * A validated call's arguments in the executor's shape. `validateArgs` (tools/specs.ts) already proved every member
+ * against the tool's exact schema — types, bounds, no unknown keys — so this is a view, not a conversion.
+ */
+function argsOf<T>(c: NormalisedCall): T {
+  return c.args as unknown as T;
+}
+
 /** §3.2: the disposition of one call, computed when the call is reached (a preceding edit may have changed its file). */
 export async function dispose(env: CallEnv, c: NormalisedCall): Promise<Disposition> {
   const { ctx } = env;
   if (c.error !== null) return rejected(c, c.error);
-  const a = c.args as JsonObject;
   switch (c.name) {
     case 'read_file':
-      return resolved(c, () => runReadFile(ctx, { path: String(a['path']), ...(typeof a['offset'] === 'number' ? { offset: a['offset'] } : {}), ...(typeof a['limit'] === 'number' ? { limit: a['limit'] } : {}) }, c.paths, env.readHashes));
+      return resolved(c, () => runReadFile(ctx, argsOf<ReadArgs>(c), c.paths, env.readHashes));
     case 'grep':
-      return resolved(c, () =>
-        runGrep(
-          ctx,
-          {
-            pattern: String(a['pattern']),
-            ...(typeof a['path'] === 'string' ? { path: a['path'] } : {}),
-            ...(typeof a['glob'] === 'string' ? { glob: a['glob'] } : {}),
-            ...(typeof a['case_insensitive'] === 'boolean' ? { case_insensitive: a['case_insensitive'] } : {}),
-            ...(typeof a['context'] === 'number' ? { context: a['context'] } : {}),
-            ...(typeof a['max_results'] === 'number' ? { max_results: a['max_results'] } : {}),
-          },
-          env.rg,
-        ),
-      );
+      return resolved(c, () => runGrep(ctx, argsOf<GrepArgs>(c), env.rg));
     case 'glob':
-      return resolved(c, () => runGlob(ctx, { pattern: String(a['pattern']), ...(typeof a['path'] === 'string' ? { path: a['path'] } : {}) }));
+      return resolved(c, () => runGlob(ctx, argsOf<GlobArgs>(c)));
     case 'todo_write':
       return resolved(c, async () => {
-        const r = todoWrite(a['todos'] ?? null);
+        const r = todoWrite(c.args['todos'] ?? null);
         if (r.ok) env.setTodos(r.todos);
         return { text: r.text, ok: r.ok, summary: r.summary, hashBasis: null };
       });
