@@ -792,6 +792,8 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     // TUI-DESIGN §15 item 19 / §10.2: in-place mutation of the one redactor every holder shares
     addSecret: (name: string, value: string) => redactor.addSecret(name, value),
     dropSecret: (name: string) => redactor.dropSecret(name),
+    // chat/stream-redact.ts: where the live region's hold-back starts (addSecret / dropSecret move it)
+    pendingSecretStart: (s: string) => redactor.pendingSecretStart(s),
     configDirs,
   };
 }

@@ -5,8 +5,12 @@
  * redact; `chatMaxTokens` = min(800, cfg).
  */
 import { describe, expect, it } from 'vitest';
-import type { GenerateRequest, Provider } from '../../../src/core/types.js';
-import { CHAT_CONVERSATION_TURNS, CHAT_IDENTITY, chatIdentityHeader, CHAT_MAX_OUTPUT_TOKENS, buildChatRequest, buildChatSystem, chatMaxTokens, chatMessages, llmChatTurn, type LlmTurnInput } from '../../../src/chat/llm-turn.js';
+import type { GenerateOptions, GenerateRequest, Provider } from '../../../src/core/types.js';
+import { buildAnthropicBody } from '../../../src/provider/anthropic.js';
+import { buildChatBody } from '../../../src/provider/openai-compat.js';
+import { OPENAI_CHAT_QUIRKS, buildResponsesBody } from '../../../src/provider/openai.js';
+import { buildOpenRouterBody } from '../../../src/provider/openrouter.js';
+import { CHAT_CONVERSATION_TURNS, CHAT_IDENTITY, CHAT_PROVIDER_PREFS, CHAT_REASONING, CHAT_REASONING_OPENROUTER, chatIdentityHeader, CHAT_MAX_OUTPUT_TOKENS, buildChatRequest, buildChatSystem, chatMaxTokens, chatMessages, llmChatTurn, type LlmTurnInput } from '../../../src/chat/llm-turn.js';
 import { harnessFacts } from '../../../src/chat/facts.js';
 import type { ChatTurn } from '../../../src/chat/ledger.js';
 import { keyedFixture } from './facts.test.js';
@@ -139,5 +143,98 @@ describe('§3.6 llmChatTurn', () => {
   it('a provider failure propagates (the controller\'s chatFailure turns it into the LLM_UNREACHABLE bubble)', async () => {
     const boom = new Error('HTTP 500');
     await expect(llmChatTurn(input({ provider: fakeProvider({ text: '', fail: boom }) }))).rejects.toBe(boom);
+  });
+});
+
+describe('network map P1/P2: chat routing and reasoning', () => {
+  function named(name: Provider['name'], model: string): Provider & { opts: GenerateOptions[] } {
+    const opts: GenerateOptions[] = [];
+    return {
+      name,
+      model,
+      opts,
+      async generate(_req, o) {
+        opts.push(o);
+        o.onRetry?.({ attempt: 1, maxAttempts: 3, waitMs: 500, retryAfter: false, cause: { kind: 'http', status: 503, code: null, message: 'HTTP 503' } });
+        o.onDelta?.('ok');
+        return { text: 'ok', toolCalls: [], usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, calls: 1 }, model, stopReason: 'stop', latencyMs: 1 };
+      },
+    };
+  }
+  const GLM = 'z-ai/glm-5.3-flash';
+  const pricing = { inputPerM: 1, outputPerM: 1, cacheReadPerM: 0, cacheWritePerM: 0 };
+
+  it('OpenRouter: reasoning effort low and provider sort latency — no order, no fallback switch, never {enabled: false}', () => {
+    const req = buildChatRequest(input({ provider: named('openrouter', GLM) }));
+    expect(req.reasoning).toEqual({ effort: 'low' });
+    expect(req.providerPrefs).toEqual({ requireParameters: false, sort: 'latency' });
+    expect(CHAT_REASONING).toEqual({ effort: 'low' });
+    expect(CHAT_PROVIDER_PREFS).toEqual({ requireParameters: false, sort: 'latency' });
+    // the wire body OpenRouter receives
+    const body = buildOpenRouterBody({ provider: 'openrouter', model: GLM, apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1', temperature: null, maxTokens: 4096, pricing }, req);
+    expect(body.reasoning).toEqual({ effort: 'low' });
+    expect(body.provider).toEqual({ require_parameters: false, sort: 'latency' });
+    const wire = JSON.stringify(body);
+    expect(wire).not.toContain('allow_fallbacks');
+    expect(wire).not.toContain('"only"');
+    expect(wire).not.toContain('"enabled"');
+    expect(body.tools).toBeUndefined();
+  });
+
+  it('a Claude model never gets an effort (on OpenRouter it would switch extended thinking on); the Anthropic adapter sends no thinking field', () => {
+    const viaRouter = buildChatRequest(input({ provider: named('openrouter', 'anthropic/claude-sonnet-5') }));
+    expect(viaRouter.reasoning).toBeUndefined();
+    expect(viaRouter.providerPrefs).toEqual({ requireParameters: false, sort: 'latency' });
+    const direct = buildChatRequest(input({ provider: named('anthropic', 'claude-sonnet-5') }));
+    expect(direct.reasoning).toBeUndefined();
+    expect(direct.providerPrefs).toBeUndefined();
+    const wire = buildAnthropicBody({ provider: 'anthropic', model: 'claude-sonnet-5', apiKey: 'k', baseUrl: 'https://api.anthropic.com', temperature: null, maxTokens: 4096, pricing }, direct);
+    expect(Object.keys(wire).sort()).toEqual(['max_tokens', 'messages', 'model', 'stream', 'system']);
+  });
+
+  it('OpenRouter sends the effort only to models whose reasoning is mandatory or on by default (an effort alone would switch a hybrid ON)', () => {
+    expect(CHAT_REASONING_OPENROUTER.some((re) => re.test(GLM))).toBe(true);
+    for (const glm of ['z-ai/glm-5.3', 'z-ai/glm-5.3-flash', 'z-ai/glm-5']) expect(buildChatRequest(input({ provider: named('openrouter', glm) })).reasoning).toEqual({ effort: 'low' });
+    for (const hybrid of ['deepseek/deepseek-v3.2', 'qwen/qwen3-235b-a22b', 'z-ai/glm-4.6', 'openai/gpt-4.1']) {
+      const req = buildChatRequest(input({ provider: named('openrouter', hybrid) }));
+      expect(req.reasoning, hybrid).toBeUndefined();
+      // routing is unaffected: the sort still goes out
+      expect(req.providerPrefs, hybrid).toEqual({ requireParameters: false, sort: 'latency' });
+      const body = buildOpenRouterBody({ provider: 'openrouter', model: hybrid, apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1', temperature: null, maxTokens: 4096, pricing }, req);
+      expect(JSON.stringify(body), hybrid).not.toContain('"reasoning"');
+    }
+  });
+
+  it('other providers get the effort only where their adapter maps one: OpenAI reasoning models `low`, gpt-4.1 nothing; routing stays OpenRouter-only', () => {
+    const cfg = (model: string): { model: string; apiKey: string; baseUrl: string; temperature: null; maxTokens: number; pricing: typeof pricing } => ({ model, apiKey: 'k', baseUrl: 'https://api.openai.com/v1', temperature: null, maxTokens: 800, pricing });
+    const terra = buildChatRequest(input({ provider: named('openai', 'gpt-5.6-terra') }));
+    expect(terra.providerPrefs).toBeUndefined();
+    expect(buildResponsesBody(cfg('gpt-5.6-terra'), terra).reasoning).toEqual({ effort: 'low' });
+    expect(buildChatBody(OPENAI_CHAT_QUIRKS, cfg('gpt-5.6-terra'), terra).reasoning_effort).toBe('low');
+    const legacy = buildChatRequest(input({ provider: named('openai', 'gpt-4.1') }));
+    expect(buildChatBody(OPENAI_CHAT_QUIRKS, cfg('gpt-4.1'), legacy).reasoning_effort).toBeUndefined();
+    // the scripted provider ignores both; routing is never sent to it
+    expect(buildChatRequest(input()).providerPrefs).toBeUndefined();
+  });
+
+  it('llmChatTurn hands the provider an onRetry that reaches the input (the live text restarts on a retry)', async () => {
+    const provider = named('openrouter', GLM);
+    const events: string[] = [];
+    await llmChatTurn(input({ provider, onRetry: () => events.push('retry'), onDelta: (d) => events.push(`delta:${d}`) }));
+    expect(events).toEqual(['retry', 'delta:ok']);
+    // without an onRetry the option is absent, not a no-op
+    const bare = named('openrouter', GLM);
+    await llmChatTurn(input({ provider: bare }));
+    expect('onRetry' in bare.opts[0]!).toBe(false);
+  });
+
+  it('llmChatTurn calls onEnd once the provider returned, after the last delta and never on a failure', async () => {
+    const events: string[] = [];
+    await llmChatTurn(input({ provider: named('openrouter', GLM), onDelta: (d) => events.push(`delta:${d}`), onEnd: () => events.push('end') }));
+    expect(events).toEqual(['delta:ok', 'end']);
+    const boom = new Error('boom');
+    const failed: string[] = [];
+    await expect(llmChatTurn(input({ provider: fakeProvider({ text: '', fail: boom }), onEnd: () => failed.push('end') }))).rejects.toBe(boom);
+    expect(failed).toEqual([]);
   });
 });

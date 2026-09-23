@@ -4310,12 +4310,20 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
   }
 
+  /**
+   * network map P8b: the chat provider is built once per resolved config and mode, not on every turn — `reresolve()` and a
+   * login replace the config object, which rebuilds it. The sockets are undici's global pool either way; what this saves
+   * per turn is the rebuild (the generator section's validation, the registry lookup, the client's setup).
+   */
+  let chatProvider: { cfg: ResolvedConfigWithDiagnostics; mode: EngineMode; provider: Provider } | null = null;
   /** §3.6: the reply itself — one streamed generator turn, no tools; the price checks happen before anything is sent */
   async function generatorTurn(cfg: ResolvedConfigWithDiagnostics, text: string, so: { pinnedFiles: readonly string[] }, mode: EngineMode, signal: AbortSignal): Promise<ChatReply> {
     const gen: ChatGenerator = flags.mock || flags.mockGenerator ? MOCK_CHAT_GENERATOR : cfg.generator(); // ConfigError (invalid generator section) → chatFailure → [ui] error
     if (gen.priced !== true && flags.allowUnpriced !== true) return { lines: [LLM_UNPRICED_REFUSAL(gen.model)], usage: null, latencyMs: 0 };
     if (sessionMeter.exceeded() || sessionTotal() + chatEstimateUsd(gen, text, pinnedBytes(so.pinnedFiles)) > sessionCapOf()) return { lines: [SESSION_CAP_CHAT_REFUSAL(sessionCapOf())], usage: null, latencyMs: 0 };
-    const provider = await providerOf(cfg, flags, mode);
+    const cached = chatProvider;
+    const provider = cached !== null && cached.cfg === cfg && cached.mode === mode ? cached.provider : await providerOf(cfg, flags, mode);
+    chatProvider = { cfg, mode, provider };
     throwIfAborted(signal);
     const input = await llmInput(text, so.pinnedFiles, gen, provider, signal);
     throwIfAborted(signal);
@@ -4579,7 +4587,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const loaded = await loadRunFn(cfg.runsDir, last.runId, cfg.redact).catch(() => null);
       window = loaded?.state?.window ?? [];
     }
-    let streamed = '';
+    // the live region gets only the prefix no later delta can change under redaction (chat/stream-redact.ts): append-only,
+    // control characters dropped, never the first characters of a secret; a provider retry restarts it
+    // (no config yet = `redact` has no exact layer either, so nothing can be pending)
+    const { createStreamRedactor } = await import('../chat/stream-redact.js');
+    const shown = createStreamRedactor(redact, (s) => (config ? config.pendingSecretStart(s) : s.length));
     return {
       provider,
       message: text,
@@ -4591,8 +4603,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       generation: { maxTokens: chatMaxTokens(gen.maxTokens), temperature: null },
       signal,
       onDelta: (d) => {
-        streamed += d;
-        renderer.live?.(redact(streamed));
+        if (shown.push(d) !== '') renderer.live?.(shown.text);
+      },
+      onRetry: () => {
+        shown.reset();
+        renderer.live?.('');
+      },
+      onEnd: () => {
+        if (shown.end() !== '') renderer.live?.(shown.text);
       },
       redact,
       warn: (m) => log.warn(m),
@@ -4903,6 +4921,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (o.rendererKind !== 'tui') note(sandboxText(detectSandboxLevel(config.sandbox), config.sandbox), { label: '[sandbox]', level: 'dim' });
     const cfg = config;
     candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
+    // network map P5: ONE anonymous GET warms the generator's origin while the human reads the first frame — fire-and-forget,
+    // never awaited, never logged; provider/net.ts skips it outside an interactive session (`--list-sessions`, one-shot, a
+    // pipe), under --mock, --no-network, the no-network assertion and tests. The session's end aborts it: never outlives it.
+    const prewarmWhen = { interactive: o.interactive && o.mode === 'session' && flags.listSessions !== true, mode: pending.mode ?? baseMode, mock: flags.mock === true || flags.mockGenerator === true, offline: env['JEVCODE_ASSERT_NO_NETWORK'] === '1' };
+    const prewarmAbort = new AbortController();
+    void done.then(() => prewarmAbort.abort());
+    void import('../provider/net.js').then((net) => (exiting ? undefined : net.prewarmGenerator(cfg, prewarmWhen, { signal: prewarmAbort.signal }))).catch(() => undefined);
     await refold();
     if (exiting) return;
     newSessionMeter();

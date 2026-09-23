@@ -47,6 +47,14 @@ export interface Redactor {
   exactSpans(s: string): readonly ExactSpan[];
   /** number of exact secrets currently active */
   readonly size: number;
+  /**
+   * Where an exact secret that has not finished arriving could start in `s`: the smallest `i` such that `s.slice(i)` is a
+   * non-empty PROPER prefix of some exact secret, or `s.length` when there is none. chat/stream-redact.ts holds the live
+   * region back from there — any exact occurrence a later append can complete starts at such an `i` — so a stream waits
+   * only while its tail really could become a secret (a 1.7 KB PEM holds back a trailing `-`, not 1.7 KB). Like
+   * `exactSpans`, the answer is a position: no value ever leaves the redactor.
+   */
+  pendingSecretStart(s: string): number;
 }
 
 /** Values shorter than this are ignored: redacting them would mangle ordinary output. */
@@ -158,6 +166,24 @@ export function createRedactor(secrets: SecretSet): Redactor {
     return out;
   }
 
+  // For each secret only the last `value.length - 1` positions can start a proper prefix, and only where the first
+  // character matches; positions at or past the best answer so far are never tried.
+  function pendingSecretStart(s: string): number {
+    const n = typeof s === 'string' ? s.length : 0;
+    let best = n;
+    for (const e of entries) {
+      const v = e.value;
+      const first = v.charCodeAt(0);
+      for (let i = Math.max(0, n - v.length + 1); i < best; i++) {
+        if (s.charCodeAt(i) === first && v.startsWith(s.slice(i))) {
+          best = i;
+          break;
+        }
+      }
+    }
+    return best;
+  }
+
   return {
     redact,
     redactJson,
@@ -167,6 +193,7 @@ export function createRedactor(secrets: SecretSet): Redactor {
     get size() {
       return entries.length;
     },
+    pendingSecretStart,
   };
 }
 

@@ -257,6 +257,8 @@ export interface OpenRouterProviderPrefs {
    * so a rotated hedge twin degrades to the router's own choice instead of failing closed.
    */
   order?: readonly string[];
+  /** core `GenerateProviderPrefs.sort`, verbatim; omitted when the caller gave none (network map P1) */
+  sort?: 'latency' | 'throughput' | 'price';
 }
 export interface OpenRouterToolDef {
   type: 'function';

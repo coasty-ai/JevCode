@@ -263,6 +263,12 @@ export interface ResolvedConfigWithDiagnostics extends ResolvedConfig {
   readonly unknownFileKeys?: readonly string[];
   /** every layer consulted for a setting, for error messages and `jevcode config` */
   sourcesConsulted(setting: SettingName): readonly string[];
+  /**
+   * The redactor's `pendingSecretStart` (core/redact.ts; `addSecret` / `dropSecret` move it): where in a streamed text's
+   * tail an exact secret that has not finished arriving could start — chat/stream-redact.ts holds the live region back
+   * from there. Required: a missing one could only be read as "hold nothing", which would show a secret in pieces.
+   */
+  pendingSecretStart(s: string): number;
 }
 
 export interface Pricing {

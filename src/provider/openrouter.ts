@@ -132,11 +132,14 @@ function reasoningOf(r: NonNullable<GenerateRequest['reasoning']>): OpenRouterRe
  * contract 1.9 (Fastlane) §3.2: `order` is sent only when the caller gave a non-empty list, so a request that does not
  * pin an upstream is byte-identical to the one this client sent before. `allow_fallbacks` is left at its documented
  * default (true) and `only` is never emitted: a rotated hedge twin must degrade to the router's choice, not fail closed.
+ * `sort` (network map P1) likewise only when asked for — it re-ranks the endpoints and keeps OpenRouter's fallbacks.
  */
 function providerPrefsOf(p: GenerateRequest['providerPrefs']): OpenRouterProviderPrefs | null {
   if (p === undefined) return null;
   const order = p.order ?? [];
-  return order.length === 0 ? { require_parameters: p.requireParameters } : { require_parameters: p.requireParameters, order: [...order] };
+  const out: OpenRouterProviderPrefs = order.length === 0 ? { require_parameters: p.requireParameters } : { require_parameters: p.requireParameters, order: [...order] };
+  if (p.sort !== undefined) out.sort = p.sort;
+  return out;
 }
 
 function toolChoice(tc: NonNullable<GenerateRequest['toolChoice']>): OpenRouterToolChoice {
@@ -404,6 +407,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
         if (e instanceof JevCodeError) throw e;
         throw new TransportError('stream', d.redact(`openrouter: stream failure: ${e instanceof Error ? e.message : String(e)}`), { cause: e });
       } finally {
+        // a no-op for the connection once parseSse has drained the body to EOF: the socket is already back in the pool (keepalive.test.ts)
         controller.abort();
       }
     } finally {

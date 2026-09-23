@@ -215,6 +215,7 @@ export function createCaller(d: Required<ProviderDeps>): ProviderCaller {
           if (e instanceof JevCodeError) throw e;
           throw new TransportError('stream', d.redact(`${call.label}: stream failure: ${e instanceof Error ? e.message : String(e)}`), { cause: e });
         } finally {
+          // a no-op for the connection once parseSse has drained the body to EOF: the socket is already back in the pool (keepalive.test.ts)
           controller.abort();
         }
       } finally {

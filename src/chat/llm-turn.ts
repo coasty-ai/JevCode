@@ -5,7 +5,7 @@
  * through `onDelta`; a returned tool call is dropped (the caller logs it). The spend checks run in the controller
  * before this module is called.
  */
-import type { ChatMessage, FileView, GenerateRequest, Plan, Provider, TokenUsage, WindowEntry } from '../core/types.js';
+import type { ChatMessage, FileView, GenerateProviderPrefs, GenerateReasoning, GenerateRequest, Plan, Provider, TokenUsage, WindowEntry } from '../core/types.js';
 import { headTail } from '../core/text.js';
 import type { Fact } from './facts.js';
 import type { ChatTurn } from './ledger.js';
@@ -25,6 +25,10 @@ export interface LlmTurnInput {
   generation: { maxTokens: number; temperature: number | null };
   signal: AbortSignal;
   onDelta: (text: string) => void;
+  /** the provider is about to retry (its next attempt streams the reply again from the start): the live text restarts */
+  onRetry?: () => void;
+  /** the provider returned (the stream is over): whatever the live region still held back is final now */
+  onEnd?: () => void;
   redact: (s: string) => string;
   /** a dropped tool call is reported here (jevcode.log warning) */
   warn?: (message: string) => void;
@@ -142,7 +146,49 @@ export function chatMessages(conversation: readonly ChatTurn[], message: string)
   return out;
 }
 
-/** system = `buildChatSystem` + facts + optional instructions, plan, recent steps, files; no tools, no toolChoice */
+/**
+ * network map P2 (live 2026-09-23): a chat turn thinks at the lowest effort the adapters map. GLM 5.3's reasoning is
+ * mandatory (`{enabled: false}` is HTTP 400) and defaults to `max`; `low` took the median first content of a turn from
+ * 956 to 485 ms (n = 9 each over three windows, all but one routed to Together) and cut the hidden reasoning tokens.
+ * Every direct adapter maps it per model or leaves it off the wire (openai-compat `pickEffort`, gemini's thinking budget,
+ * anthropic ignores it). OpenRouter does not: there an effort alone implies `enabled`, so a model whose reasoning is
+ * optional and off by default (Claude, DeepSeek V3.x, the Qwen3 hybrids) would START thinking on every turn and answer
+ * later, not sooner — through OpenRouter it goes only to `CHAT_REASONING_OPENROUTER` models.
+ */
+export const CHAT_REASONING: GenerateReasoning = { effort: 'low' };
+
+/**
+ * The OpenRouter models whose reasoning is known to be mandatory or on by default, so `CHAT_REASONING` can only lower it:
+ * GLM 5.x (models API: `reasoning.mandatory: true`, default effort `max`; the 956 → 485 ms above). An allow-list, not a
+ * deny-list — an unlisted model is sent no `reasoning` and keeps its own default.
+ */
+export const CHAT_REASONING_OPENROUTER: readonly RegExp[] = [/^z-ai\/glm-5/];
+
+/**
+ * network map P1 (live 2026-09-23): OpenRouter's default routing is price-weighted and in one window sent 44 of 44 chat
+ * turns to slow upstreams (median first content 4,989 ms). A `sort` keeps OpenRouter's own policy and fallbacks — no
+ * hard-coded upstream list, no data-retention question. `latency` ranks by time to first token, which is what a chat
+ * turn waits on (`throughput` ranks by tokens/s). UNPROVEN in the slow regime, stated rather than hidden: in the fast
+ * windows every request went to Together whatever the sort (327 ms `throughput` / 494 ms `latency`, n = 9 each — the
+ * spread is reasoning-token variance, not routing), and in the one slow window neither sort moved the upstream (5,173 /
+ * 6,289 ms against 518–1,228 ms pinned). Pinning (order together/friendli/coreweave, fallbacks on) needs the owner's
+ * data-retention sign-off and is not sent. A chat turn sends nothing an endpoint could lack, so `requireParameters`
+ * stays false (OpenRouter's default).
+ */
+export const CHAT_PROVIDER_PREFS: GenerateProviderPrefs = { requireParameters: false, sort: 'latency' };
+
+/** the routing and reasoning members of a chat request for this provider (OpenRouter-only routing; no Claude thinking) */
+function chatRouting(provider: Provider): Pick<GenerateRequest, 'reasoning' | 'providerPrefs'> {
+  const router = provider.name === 'openrouter';
+  const claude = provider.name === 'anthropic' || provider.model.startsWith('anthropic/');
+  const think = !claude && (!router || CHAT_REASONING_OPENROUTER.some((re) => re.test(provider.model)));
+  return {
+    ...(think ? { reasoning: CHAT_REASONING } : {}),
+    ...(router ? { providerPrefs: CHAT_PROVIDER_PREFS } : {}),
+  };
+}
+
+/** system = `buildChatSystem` + facts + optional instructions, plan, recent steps, files; no tools, no toolChoice; `chatRouting` */
 export function buildChatRequest(i: LlmTurnInput): GenerateRequest {
   const sections: string[] = [buildChatSystem(i.identity), `## Session facts\n${i.facts.map((f) => `- ${f.text}`).join('\n')}`];
   if (i.instructions !== null && i.instructions.trim() !== '') sections.push(`## Instructions (AGENTS.md)\n${i.instructions}`);
@@ -154,6 +200,7 @@ export function buildChatRequest(i: LlmTurnInput): GenerateRequest {
     messages: chatMessages(i.conversation, i.message),
     maxTokens: chatMaxTokens(i.generation.maxTokens),
     temperature: i.generation.temperature,
+    ...chatRouting(i.provider),
   };
 }
 
@@ -166,7 +213,9 @@ export interface LlmTurnResult {
 
 export async function llmChatTurn(i: LlmTurnInput): Promise<LlmTurnResult> {
   const req = buildChatRequest(i);
-  const r = await i.provider.generate(req, { signal: i.signal, onDelta: (d) => i.onDelta(d) });
+  const onRetry = i.onRetry;
+  const r = await i.provider.generate(req, { signal: i.signal, onDelta: (d) => i.onDelta(d), ...(onRetry === undefined ? {} : { onRetry: () => onRetry() }) });
+  i.onEnd?.();
   if (r.toolCalls.length > 0) i.warn?.(`chat turn: ${r.toolCalls.length} tool call(s) dropped (no tools were offered)`);
   return { text: i.redact(r.text), usage: r.usage, latencyMs: r.latencyMs, model: r.model };
 }

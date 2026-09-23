@@ -6,6 +6,8 @@
  *  - the pricing arithmetic used when the API returns no cost.
  * Everything here is provider-agnostic; the two clients only add their wire shapes.
  */
+// the drain below runs on the real clock even under a test's fake timers: it must never hold a finished result hostage
+import { clearTimeout as realClearTimeout, setImmediate as realSetImmediate, setTimeout as realSetTimeout } from 'node:timers';
 import { JevCodeError, ProviderHttpError, REQUEST_ID_MAX_CHARS, toJevCodeError } from '../errors.js';
 import { isFiniteNumber, isJsonObject, parseJson } from '../core/json.js';
 import { clip } from '../core/text.js';
@@ -150,9 +152,57 @@ function readWithTimeout(
 }
 
 /**
+ * Keep-alive (network map, 2026-09-23). A consumer stops at its protocol's terminal record — `data: [DONE]`,
+ * Anthropic's `message_stop`, the Responses API's `response.completed` — before the chunked terminator has been read,
+ * and cancelling the body then makes undici DESTROY the socket instead of pooling it: measured, the socket closed 2 ms
+ * after `[DONE]`, only 8 of 66 chat requests reused one, and every fresh DNS + TCP + TLS connect costs a median 47 ms
+ * (n = 63). So the rest of the body is read and discarded first. The drain is bounded — `DRAIN_MS` of wall time and
+ * `DRAIN_BYTES` of body, so a server that holds the stream open after its terminal record costs at most that — and
+ * abort-aware, so a Ctrl-C never waits on it. Past either bound the body is cancelled exactly as before.
+ */
+export const DRAIN_MS = 250;
+export const DRAIN_BYTES = 8 * 1024;
+
+/** Read `reader` to EOF within `DRAIN_MS` and `DRAIN_BYTES`: true when the body ended (the socket can be pooled). Never throws. */
+async function drainToEof(reader: ReadableStreamDefaultReader<Uint8Array>, signal: AbortSignal | undefined): Promise<boolean> {
+  if (signal?.aborted === true) return false;
+  let stop: () => void = () => undefined;
+  const stopped = new Promise<null>((resolve) => {
+    stop = () => resolve(null);
+  });
+  const timer = realSetTimeout(stop, DRAIN_MS);
+  signal?.addEventListener('abort', stop, { once: true });
+  try {
+    let bytes = 0;
+    for (;;) {
+      const r = await Promise.race([reader.read(), stopped]);
+      if (r === null) return false; // out of time, or aborted: the caller cancels the body
+      if (r.done) return true;
+      bytes += r.value.byteLength;
+      if (bytes > DRAIN_BYTES) return false;
+    }
+  } catch {
+    return false; // the body errored (a reset): there is no socket left to pool
+  } finally {
+    realClearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
+  }
+}
+
+/**
+ * undici hands a finished socket back to its pool one macrotask AFTER the body reports `done` (measured: a request
+ * issued in the same turn opens a second connection, one issued after a `setImmediate` reuses the first), so a
+ * back-to-back `generate()` would miss the socket this read just freed.
+ */
+export function socketReleased(): Promise<void> {
+  return new Promise<void>((resolve) => realSetImmediate(resolve));
+}
+
+/**
  * Parse an SSE byte stream into records. Handles multi-line `data:`, comment lines (`: OPENROUTER
  * PROCESSING`), CRLF / CR / LF line endings and events split across arbitrary chunk boundaries.
  * `id:` and `retry:` fields are ignored. A trailing event without a blank line is flushed at EOF.
+ * A consumer that stops early on a record (its terminal event) gets the rest of the body drained first (`DRAIN_MS`).
  */
 export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOptions = {}): AsyncGenerator<SseRecord, void, undefined> {
   const firstByte = opts.firstByteTimeoutMs ?? FIRST_BYTE_TIMEOUT_MS;
@@ -165,6 +215,9 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOpt
   let sawByte = false;
   let event: string | undefined;
   let data: string[] = [];
+  let eof = false;
+  /** a record is out with the consumer: a return() that lands there is the consumer stopping early, not a failure in here */
+  let atYield = false;
 
   const takeRecord = (): SseRecord | null => {
     if (data.length === 0) {
@@ -191,7 +244,10 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOpt
   try {
     for (;;) {
       const r = await readWithTimeout(reader, sawByte ? idle : firstByte, sawByte ? 'idle' : 'first_byte', opts.signal);
-      if (r.done) break;
+      if (r.done) {
+        eof = true;
+        break;
+      }
       // contract 1.9 (Fastlane) §3.1: the first read that returned bytes is the TTFB, reported once and before the
       // record it carries is parsed — the hedge threshold (§3.2) reads it while the rest of the stream is still open.
       if (!sawByte) notify(opts.onFirstByte, Math.round(monotonicNow() - t0));
@@ -210,7 +266,11 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOpt
         const line = buffer.slice(start, hit.index);
         start = hit.index + hit[0].length;
         const rec = feedLine(line);
-        if (rec) yield rec;
+        if (rec) {
+          atYield = true;
+          yield rec;
+          atYield = false;
+        }
       }
       buffer = buffer.slice(start);
     }
@@ -224,8 +284,12 @@ export async function* parseSse(stream: ReadableStream<Uint8Array>, opts: SseOpt
     const last = takeRecord();
     if (last) yield last;
   } finally {
-    // Consumer may have stopped early (return/throw); release the connection either way.
-    await reader.cancel().catch(() => undefined);
+    // The consumer stopped on a record with the body still open and nobody aborting (its terminal event — or an error it
+    // raised on one): drain the rest so the connection is pooled. A timeout or a size cap thrown in here, an abort, or a
+    // drain that ran out of budget all cancel the body instead, which closes the connection as it always did.
+    if (!eof && atYield && opts.signal?.aborted !== true) eof = await drainToEof(reader, opts.signal);
+    if (eof) await socketReleased();
+    else await reader.cancel().catch(() => undefined);
   }
 }
 
@@ -244,10 +308,14 @@ export async function readStreamText(stream: ReadableStream<Uint8Array>, opts: S
   const t0 = monotonicNow();
   let out = '';
   let sawByte = false;
+  let eof = false;
   try {
     for (;;) {
       const r = await readWithTimeout(reader, sawByte ? idle : firstByte, sawByte ? 'idle' : 'first_byte', opts.signal);
-      if (r.done) break;
+      if (r.done) {
+        eof = true;
+        break;
+      }
       // contract 1.9 (Fastlane) §3.1: same TTFB report as `parseSse`, for the one client that reads JSON (meta.ai)
       if (!sawByte) notify(opts.onFirstByte, Math.round(monotonicNow() - t0));
       sawByte = true;
@@ -257,7 +325,9 @@ export async function readStreamText(stream: ReadableStream<Uint8Array>, opts: S
     out += decoder.decode();
     return out;
   } finally {
-    await reader.cancel().catch(() => undefined);
+    // a body read to its end leaves the socket poolable (see `socketReleased`); anything else closes it
+    if (eof) await socketReleased();
+    else await reader.cancel().catch(() => undefined);
   }
 }
 

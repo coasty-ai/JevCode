@@ -30,6 +30,13 @@ describe('§3.2 openrouter `provider.order`', () => {
     expect(wire).not.toContain('allow_fallbacks');
   });
 
+  it('network map P1: `sort` is mapped verbatim beside require_parameters (and beside an order), absent unless asked for', () => {
+    const cfg = openrouterCfg({ model: 'z-ai/glm-5.3-flash' });
+    expect(buildOpenRouterBody(cfg, request({ providerPrefs: { requireParameters: false, sort: 'latency' } })).provider).toEqual({ require_parameters: false, sort: 'latency' });
+    expect(buildOpenRouterBody(cfg, request({ providerPrefs: { requireParameters: true, order: ['Together'], sort: 'throughput' } })).provider).toEqual({ require_parameters: true, order: ['Together'], sort: 'throughput' });
+    expect(Object.keys(buildOpenRouterBody(cfg, request({ providerPrefs: { requireParameters: true } })).provider ?? {})).toEqual(['require_parameters']);
+  });
+
   it('rotates by one for the twin, and leaves a list it cannot rotate alone', () => {
     expect(rotatedProviderOrder(['Z.AI', 'Inceptron', 'Fireworks'])).toEqual(['Inceptron', 'Fireworks', 'Z.AI']);
     // a single upstream cannot be rotated away from: the twin is then a pure latency race on the same one
