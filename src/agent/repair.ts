@@ -10,8 +10,9 @@
  */
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { AgentToolName, Json, JsonObject } from '../core/types.js';
-import { AGENT_READ_MAX_PATHS, AGENT_SYNTHETIC_ID_PREFIX } from './limits.js';
-import { invalidArguments, truncatedCall, unknownTool } from './prompt.js';
+import { AGENT_READ_MAX_PATHS, AGENT_SYNTHETIC_ID_PREFIX, AGENT_TODO_ITEM_CHARS, AGENT_TODO_MAX_ITEMS } from './limits.js';
+import { NOT_EXECUTED_REDACTED, invalidArguments, truncatedCall, unknownTool } from './prompt.js';
+import { hasRedactionMarker } from './tools/result.js';
 import { argNames, argSchema, isAgentToolName, signatureOf, validateArgs } from './tools/specs.js';
 import { repairJson } from './json-repair.js';
 
@@ -120,6 +121,18 @@ function inputObject(raw: RawCall): JsonObject | null {
   return isObject(repaired ?? undefined) ? (repaired as JsonObject) : null;
 }
 
+/** The adapter parsed the arguments (or a JSON-string input parses as it is), with no repair. */
+function parsesStrictly(raw: RawCall): boolean {
+  if (raw.input === null) return false;
+  if (typeof raw.input !== 'string') return true;
+  try {
+    JSON.parse(raw.input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** §4.4 step 3: aliases apply only when the tool knows the canonical name and the model did not also send it. */
 function applyAliases(tool: AgentToolName, input: JsonObject): JsonObject {
   const known = new Set(argNames(tool));
@@ -152,6 +165,20 @@ function coerce(tool: AgentToolName, input: JsonObject): JsonObject {
   return out;
 }
 
+/**
+ * Bounds that only cap a display string or a read are fitted rather than failing the call (strict mode does not reliably
+ * enforce them upstream): a `description` is clipped, an integer above its maximum (`limit`, `max_results`, `context`,
+ * `timeout_ms`) is clamped. A value below its minimum is still an error.
+ */
+function fitBound(schema: JsonObject | null, v: Json): Json {
+  if (schema === null) return v;
+  const max = schema['maximum'];
+  if (typeof v === 'number' && typeof max === 'number' && v > max) return max;
+  const len = schema['maxLength'];
+  if (typeof v === 'string' && typeof len === 'number' && schema['enum'] === undefined) return v.slice(0, len);
+  return v;
+}
+
 /** A workspace-relative directory, or an error. `.` and '' mean the root and are dropped. */
 export function normaliseWorkdir(root: string, dir: string): { ok: true; value: string | null } | { ok: false; error: string } {
   const text = dir.trim();
@@ -181,14 +208,15 @@ export interface NormaliseOptions {
 export function normaliseCall(raw: RawCall, o: NormaliseOptions): Omit<NormalisedCall, 'id'> {
   const rawName = raw.name;
   const tool = resolveToolName(rawName);
-  const original = inputObject(raw);
+  // §6.4 item 6: the last call of a reply cut at the output limit whose JSON did not parse was cut off mid-arguments.
+  // It is never repaired — closing its open string would run a write or a command with truncated arguments.
+  const cut = o.cutOff && !parsesStrictly(raw);
+  const original = cut ? null : inputObject(raw);
   const replayInput = original ?? {};
   const fail = (name: AgentToolName | 'invalid', error: string): Omit<NormalisedCall, 'id'> => ({ name, rawName, replayInput, args: {}, ignored: [], error });
   if (tool === null) return fail('invalid', unknownTool(rawName));
-  if (original === null) {
-    if (o.cutOff) return fail(tool, truncatedCall(o.maxTokens));
-    return fail(tool, invalidArguments(tool, 'the arguments are not valid JSON', signatureOf(tool)));
-  }
+  if (cut) return fail(tool, truncatedCall(o.maxTokens));
+  if (original === null) return fail(tool, invalidArguments(tool, 'the arguments are not valid JSON', signatureOf(tool)));
   let input = coerce(tool, applyAliases(tool, original));
   // `read_file` with `paths: [...]` reads each path in one call, so the call keeps its one id and one result (§4.4 step 3)
   let paths: string[] | undefined;
@@ -203,7 +231,11 @@ export function normaliseCall(raw: RawCall, o: NormaliseOptions): Omit<Normalise
   const known = new Set(argNames(tool));
   const ignored = Object.keys(input).filter((k) => !known.has(k));
   const args: JsonObject = {};
-  for (const [k, v] of Object.entries(input)) if (known.has(k)) args[k] = v;
+  for (const [k, v] of Object.entries(input)) if (known.has(k)) args[k] = fitBound(argSchema(tool, k), v);
+  if (tool === 'todo_write' && Array.isArray(args['todos'])) {
+    // the list is clipped as todo_write clips it (30 items, 200 characters each), before validation can reject it
+    args['todos'] = args['todos'].slice(0, AGENT_TODO_MAX_ITEMS).map((x) => (isObject(x) && typeof x['content'] === 'string' ? { ...x, content: x['content'].slice(0, AGENT_TODO_ITEM_CHARS) } : x));
+  }
   const problem = validateArgs(tool, args);
   if (problem !== null) return { ...fail(tool, invalidArguments(tool, problem, signatureOf(tool))), ignored };
   for (const key of ['path'] as const) {
@@ -275,7 +307,9 @@ function extractQwen(text: string): RawCall[] {
 
 function jsonCall(v: Json): RawCall | null {
   if (!isObject(v) || typeof v['name'] !== 'string' || resolveToolName(v['name']) === null) return null;
-  const args = v['arguments'] ?? v['parameters'] ?? v['input'] ?? {};
+  // a manifest in a final answer (`{"name": "search", …}`) is not a call: a call carries its arguments
+  const args = v['arguments'] ?? v['parameters'] ?? v['input'];
+  if (args === undefined) return null;
   const input = typeof args === 'string' ? repairJson(args) : args;
   return { name: v['name'], input: input ?? null, rawJson: typeof args === 'string' ? args : JSON.stringify(args) };
 }
@@ -326,8 +360,13 @@ export function ignoredLine(ignored: readonly string[]): string | null {
   return ignored.length === 0 ? null : `(ignored unknown arguments: ${ignored.join(', ')})`;
 }
 
-/** A recorded call as the driver runs it: its parse-time verdict, or the call normalised again (deterministic). */
+/**
+ * A recorded call as the driver runs it when the model's own copy is gone (a resumed run): its parse-time verdict, or the
+ * call normalised again (deterministic). The record is redacted, so a call whose arguments hold a redaction marker is
+ * never run with the markers in place of the real text: it is answered NOT_EXECUTED_REDACTED and the model sends it again.
+ */
 export function deriveCall(rec: { id: string; name: string; input: JsonObject; error?: string }, root: string): NormalisedCall {
-  if (rec.error !== undefined) return { id: rec.id, name: resolveToolName(rec.name) ?? 'invalid', rawName: rec.name, replayInput: rec.input, args: {}, ignored: [], error: rec.error };
+  const error = rec.error ?? (hasRedactionMarker(JSON.stringify(rec.input)) ? NOT_EXECUTED_REDACTED : undefined);
+  if (error !== undefined) return { id: rec.id, name: resolveToolName(rec.name) ?? 'invalid', rawName: rec.name, replayInput: rec.input, args: {}, ignored: [], error };
   return { id: rec.id, ...normaliseCall({ name: rec.name, input: rec.input, rawJson: JSON.stringify(rec.input) }, { root, cutOff: false, maxTokens: 0 }) };
 }

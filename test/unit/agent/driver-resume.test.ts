@@ -58,6 +58,35 @@ describe('resume', () => {
     expect(resumed.sent).toHaveLength(0);
   });
 
+  it('a pending call whose recorded arguments were redacted is not run with the markers after a resume: the model sends it again', async () => {
+    const runDir = tempRunDir();
+    const write = call('write_file', { path: 'fixture.txt', content: 'token=sk-secret-abc123\n' });
+    const first = createAgentContext({ runDir, testCommand: null, turns: [{ toolCalls: [write] }] });
+    const paused = await createAgentDriver().next(first);
+    expect(paused.kind).toBe('act');
+    // Esc during the act step: the checkpoint holds the call, the process goes away with the model's own copy
+    const resumed = createAgentContext({ runDir, resumed: true, state: first.state, testCommand: null, turns: [{ toolCalls: [write] }, { text: 'ok' }] });
+    const d = createAgentDriver();
+    const s1 = await step(d, resumed);
+    expect(s1.next.kind).toBe('observe');
+    expect(resumed.fs.files.has('fixture.txt')).toBe(false);
+    const s2 = await step(d, resumed);
+    expect(s2.next.kind === 'act' && s2.next.proposal.action).toEqual({ kind: 'write', path: 'fixture.txt', content: 'token=sk-secret-abc123\n' });
+    expect(resumed.fs.files.get('fixture.txt')).toBe('token=sk-secret-abc123\n');
+    const result = messagesOf(resumed, 0).at(-1)!.content[0]!;
+    expect(result.type === 'tool_result' && result.content).toBe("NOT EXECUTED: this call's arguments were redacted when the run was checkpointed; send it again with the full text.");
+  });
+
+  it('a pending call with nothing redacted in its record runs as recorded after a resume', async () => {
+    const runDir = tempRunDir();
+    const first = createAgentContext({ runDir, testCommand: null, turns: [{ toolCalls: [call('write_file', { path: 'plain.txt', content: 'hello\n' })] }] });
+    await createAgentDriver().next(first);
+    const resumed = createAgentContext({ runDir, resumed: true, state: first.state, testCommand: null, turns: [{ text: 'ok' }] });
+    const s = await step(createAgentDriver(), resumed);
+    expect(s.next.kind === 'act' && s.next.proposal.action).toEqual({ kind: 'write', path: 'plain.txt', content: 'hello\n' });
+    expect(resumed.sent).toHaveLength(0);
+  });
+
   it('a resumed run whose transcript is gone is refused, never restarted silently', async () => {
     const runDir = tempRunDir();
     const first = createAgentContext({ runDir, turns: [{ toolCalls: [call('glob', { pattern: '*' })] }] });

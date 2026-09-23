@@ -260,6 +260,59 @@ describe('act mappings', () => {
     expect(use.type === 'tool_use' && use.input).toEqual({ path: 'fixture.txt', content: 'token=[REDACTED]\n' });
   });
 
+  it('a write or a command cut off at the output limit is TRUNCATED_CALL, never run with the repaired prefix', async () => {
+    const cut = [
+      { name: 'write_file', input: null, rawJson: '{"path":"big.py","content":"def f():\\n    return 1\\n\\ndef g():\\n    ret' },
+      { name: 'bash', input: null, rawJson: '{"command": "rm -rf build/tmp/cache && echo do' },
+    ];
+    for (const [i, c] of cut.entries()) {
+      const ctx = createAgentContext({ turns: [{ text: 'Writing it.', toolCalls: [c], stopReason: i === 0 ? 'length' : 'max_tokens' }, { text: 'ok' }], testCommand: null, maxTokens: 16384 });
+      const d = createAgentDriver();
+      const s = await step(d, ctx);
+      expect(s.next.kind).toBe('observe');
+      expect(s.next.proposal.action.kind).toBe('read');
+      await step(d, ctx);
+      const results = messagesOf(ctx, 1).at(-1)!.content.map((b) => (b.type === 'tool_result' ? b.content : ''));
+      expect(results).toEqual(['Your reply was cut off at the output limit (16384 tokens) while writing this call. Split large changes into several smaller edit_file calls, or write a large file in parts.']);
+      expect(ctx.fs.files.has('big.py')).toBe(false);
+      expect(ctx.sb.commands.some((x) => x.includes('rm -rf'))).toBe(false);
+      // the replayed tool_use carries no truncated arguments
+      const use = messagesOf(ctx, 1)[1]!.content.find((b) => b.type === 'tool_use')!;
+      expect(use.type === 'tool_use' && use.input).toEqual({});
+    }
+  });
+
+  it('edit_file never rewrites a whole file from its redacted view; a single exact edit still applies to the real file', async () => {
+    const secret = 'KEY = "sk-secret-abc123"\n';
+    const ctx = createAgentContext({
+      files: { 'cfg.py': `${secret}name = "foo"\nother = "foo"\n`, 'm.py': `${secret}foo()\nxfoo()\n` },
+      turns: [
+        { toolCalls: [call('edit_file', { path: 'cfg.py', old_string: 'foo', new_string: 'bar', replace_all: true }), call('edit_file', { path: 'm.py', old_string: '  foo()', new_string: 'bar()' })] },
+        { toolCalls: [call('edit_file', { path: 'cfg.py', old_string: 'name = "foo"', new_string: 'name = "bar"' })] },
+        { text: 'ok' },
+      ],
+      testCommand: null,
+    });
+    // the real Workspace.read redacts what it returns (src/workspace/files.ts)
+    const read = ctx.fs.read.bind(ctx.fs);
+    ctx.fs.read = async (path, max) => {
+      const v = await read(path, max);
+      return { ...v, content: ctx.redact(v.content) };
+    };
+    const d = createAgentDriver();
+    const steps = [await step(d, ctx), await step(d, ctx), await step(d, ctx)];
+    expect(steps.map((x) => x.next.kind)).toEqual(['observe', 'act', 'finish']);
+    const rejected = messagesOf(ctx, 1).at(-1)!.content.map((b) => (b.type === 'tool_result' ? b.content : ''));
+    expect(rejected).toEqual([
+      'ERROR: cfg.py contains text the harness redacts, so edit_file cannot rewrite the whole file safely; edit each occurrence with its own edit_file call and a unique old_string',
+      'ERROR: m.py contains text the harness redacts, so edit_file cannot rewrite the whole file safely; edit each occurrence with its own edit_file call and a unique old_string',
+    ]);
+    for (const x of steps) expect(JSON.stringify(x.next.proposal.action)).not.toContain('[REDACTED');
+    expect(steps[1]!.next.proposal.action).toEqual({ kind: 'edit', path: 'cfg.py', old: 'name = "foo"', new: 'name = "bar"' });
+    expect(ctx.fs.files.get('cfg.py')).toBe(`${secret}name = "bar"\nother = "foo"\n`);
+    expect(ctx.fs.files.get('m.py')).toBe(`${secret}foo()\nxfoo()\n`);
+  });
+
   it('proposals carry the todo list as the plan', async () => {
     const ctx = createAgentContext({ turns: [{ toolCalls: [call('todo_write', { todos: [{ content: 'read', status: 'completed' }, { content: 'fix', status: 'in_progress' }] }), call('bash', { command: 'npm install' })] }, { text: 'ok' }], testCommand: null });
     const d = createAgentDriver();

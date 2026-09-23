@@ -143,6 +143,7 @@ export function buildAgentSystemPrompt(f: SystemPromptFacts): string {
 export const CONTINUE_NUDGE = 'Continue: carry out the step you just described, using the tools.';
 export const CONTINUE_CUT_NUDGE = 'Your reply was cut off at the output limit. Continue from where it stopped.';
 export const NOT_EXECUTED_STEER = 'NOT EXECUTED: the user sent new instructions before this call ran.';
+export const NOT_EXECUTED_REDACTED = "NOT EXECUTED: this call's arguments were redacted when the run was checkpointed; send it again with the full text.";
 export const NOT_EXECUTED_TOO_MANY = `NOT EXECUTED: more than ${AGENT_MAX_CALLS_PER_TURN} tool calls in one reply; send the rest in your next reply.`;
 export const PROGRESS_NUDGE =
   'Step back: your recent steps do not seem to move the task forward. Re-read the task, say what is still missing, and change your approach if needed.';

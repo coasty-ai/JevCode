@@ -34,3 +34,8 @@ export function errorResult(text: string, summary: string, hashBasis: string | n
 export function isBinary(content: string): boolean {
   return content.includes('\u0000');
 }
+
+/** Text that went through the redactor holds `[REDACTED:<kind>]` (src/core/redact.ts) — or a bare `[REDACTED]`. */
+export function hasRedactionMarker(text: string): boolean {
+  return /\[REDACTED[:\]]/.test(text);
+}

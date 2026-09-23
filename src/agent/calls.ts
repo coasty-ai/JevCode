@@ -26,7 +26,7 @@ import { syntaxCheck, syntaxCheckBlock } from './tools/check.js';
 import { editResultLine, matchEdit, placeholderLine } from './tools/edit-match.js';
 import { oneLine, renderBash } from './tools/format.js';
 import { runReadFile, type ReadArgs, type ReadHashes } from './tools/read.js';
-import { accessError, errorResult, isBinary, type ToolResult } from './tools/result.js';
+import { accessError, errorResult, hasRedactionMarker, isBinary, type ToolResult } from './tools/result.js';
 import { runGlob, runGrep, type GlobArgs, type GrepArgs } from './tools/search.js';
 import { bashHashBasis, runReadonlyBash } from './tools/shell.js';
 import { todoWrite, type Todo } from './tools/todo.js';
@@ -119,6 +119,9 @@ export function failedResult(ctx: AgentContext, summary: string, e: unknown): To
   rethrowRunStop(ctx, e);
   return errorResult(failureText(ctx, e), `${summary} (error)`);
 }
+
+const redactedRewrite = (path: string): string =>
+  `ERROR: ${path} contains text the harness redacts, so edit_file cannot rewrite the whole file safely; edit each occurrence with its own edit_file call and a unique old_string`;
 
 const inGit = (path: string): boolean => /^(\.\/)*\.git(\/|$)/.test(path);
 const GIT_INTERNALS = (path: string): string => `ERROR: ${path} is inside .git; the harness never writes there (rule git_internals)`;
@@ -213,6 +216,9 @@ async function editDisposition(env: CallEnv, c: NormalisedCall): Promise<Disposi
   if (target.truncated) return rejected(c, `ERROR: ${path} is larger than 1 MiB; edit_file cannot edit it safely (use a narrower tool through bash)`);
   const m = matchEdit(target.content, { path, oldString: String(c.args['old_string']), newString: String(c.args['new_string']), replaceAll: c.args['replace_all'] === true });
   if (!m.ok) return rejected(c, m.error);
+  // the view is redacted (Workspace.read): a whole-file write built from it would put the markers on disk in place of the
+  // user's values. A single exact edit is safe — the engine matches it against the real file and fails on a marker.
+  if (m.action.kind === 'write' && hasRedactionMarker(target.content)) return rejected(c, redactedRewrite(path));
   const lastRead = env.readHashes.get(path);
   return {
     kind: 'act',

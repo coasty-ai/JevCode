@@ -82,6 +82,25 @@ describe('JSON repair', () => {
     const n = normaliseCall({ name: 'write_file', input: null, rawJson: 'garbage' }, { ...opts, cutOff: true });
     expect(n.error).toBe('Your reply was cut off at the output limit (16384 tokens) while writing this call. Split large changes into several smaller edit_file calls, or write a large file in parts.');
   });
+
+  it.each([
+    ['a write cut mid-content', 'write_file', '{"path":"big.py","content":"def f():\n    return 1\n\ndef g():\n    ret'],
+    ['a command cut mid-string', 'bash', '{"command": "rm -rf build/tmp/cache && echo do'],
+    ['an edit cut after its old_string', 'edit_file', '{"path": "a.py", "old_string": "x = 1", "new_string": "x = 2\ny ='],
+  ])('a cut-off call whose prefix JSON repair could close is still TRUNCATED_CALL, never run: %s', (_why, name, rawJson) => {
+    const n = normaliseCall({ name, input: null, rawJson }, { ...opts, cutOff: true });
+    expect(n.error).toMatch(/^Your reply was cut off at the output limit \(16384 tokens\)/);
+    expect(n.args).toEqual({});
+    expect(n.replayInput).toEqual({});
+    // the same prefix in a reply that was not cut is repaired as usual
+    expect(normaliseCall({ name, input: null, rawJson }, opts).error).toBeNull();
+  });
+
+  it('a cut-off reply whose last call parsed completely runs as usual', () => {
+    const n = normaliseCall({ name: 'read_file', input: { path: 'a.py' }, rawJson: '{"path": "a.py"}' }, { ...opts, cutOff: true });
+    expect(n.error).toBeNull();
+    expect(n.args).toEqual({ path: 'a.py' });
+  });
 });
 
 describe('argument aliases, coercion and unknown keys', () => {
@@ -113,6 +132,20 @@ describe('argument aliases, coercion and unknown keys', () => {
   it('coerces stringly numbers and booleans (Gemini sends them quoted)', () => {
     const n = normaliseCall({ name: 'grep', input: { pattern: 'x', context: '2', case_insensitive: 'true' }, rawJson: '' }, opts);
     expect(n.args).toEqual({ pattern: 'x', context: 2, case_insensitive: true });
+  });
+
+  it('fits display-only and bounded fields instead of rejecting the call', () => {
+    const long = 'Run the whole unit test suite for the parser package and report which tests fail and why';
+    const bash = normaliseCall({ name: 'bash', input: { command: 'npm test', description: long, timeout_ms: 900000 }, rawJson: '' }, opts);
+    expect(bash.error).toBeNull();
+    expect(bash.args).toEqual({ command: 'npm test', description: long.slice(0, 80), timeout_ms: 600000 });
+    const read = normaliseCall({ name: 'read_file', input: { path: 'a.py', limit: 5000 }, rawJson: '' }, opts);
+    expect(read.args).toEqual({ path: 'a.py', limit: 2000 });
+    const todo = normaliseCall({ name: 'todo_write', input: { todos: [{ content: 'x'.repeat(250), status: 'pending' }] }, rawJson: '' }, opts);
+    expect(todo.error).toBeNull();
+    expect(todo.args).toEqual({ todos: [{ content: 'x'.repeat(200), status: 'pending' }] });
+    // a value below its minimum is still an error
+    expect(normaliseCall({ name: 'read_file', input: { path: 'a.py', limit: 0 }, rawJson: '' }, opts).error).toMatch(/limit must be at least 1/);
   });
 
   it('drops unknown keys and reports them', () => {
@@ -176,6 +209,9 @@ describe('calls written into the prose', () => {
       ['read_file', { path: 'a' }],
       ['glob', { pattern: '*.md' }],
     ]);
+    // a manifest whose name happens to be a tool alias is not a call: a call carries its arguments
+    const manifest = extractTextToolCalls('Here is the manifest:\n```json\n{"name": "search", "version": "2.1.0"}\n```');
+    expect(manifest.calls).toEqual([]);
     const data = extractTextToolCalls('The config is:\n```json\n{"name": "my-package", "version": "1.0.0"}\n```');
     expect(data.calls).toEqual([]);
     expect(data.prose).toBe('The config is:\n```json\n{"name": "my-package", "version": "1.0.0"}\n```');
