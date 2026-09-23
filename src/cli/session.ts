@@ -42,6 +42,7 @@ import type {
   ConfirmOutcome,
   ConfirmRequest,
   Confirmer,
+  ConversationCarry,
   Decider,
   Decision,
   Engine,
@@ -71,6 +72,7 @@ import type {
   RunResult,
   SecretHit,
   SecretSettingName,
+  SerializedError,
   PeerView,
   SessionActivityView,
   SessionHost,
@@ -200,7 +202,7 @@ import { budgetItems, BUDGET_THRESHOLDS, type BudgetPct } from '../tui/budget/li
 // TUI-DESIGN-2 §3 (D-C): the conversational intake — pure builders in src/chat/**, the state machine of §3.1 lives here (§3.8)
 import { buildIntakeState, filesBucket, routeOf, runIntake, testsFromCandidates, type ChatRoute, type IntakeResult } from '../chat/intake.js';
 import { REPLY_FALLBACK_KEY, fillReply, pickReply, replyByKey, type ReplyFacts } from '../chat/replies.js';
-import { branchOf, harnessFacts, peersNotOpenText, PEERS_UNAVAILABLE_TEXT, selectFacts, type FactsInput } from '../chat/facts.js';
+import { AGENT_NO_DECISIONS_TEXT, branchOf, harnessFacts, peersNotOpenText, PEERS_UNAVAILABLE_TEXT, selectFacts, type FactsInput } from '../chat/facts.js';
 import { LOOKUP_READ_BYTES, lookupCode, lookupLines, type LookupInput } from '../chat/lookup.js';
 import { CHAT_FILES_MAX, CHAT_FILE_BYTES, CHAT_FIXED_INPUT_TOKENS, chatMaxTokens, llmChatTurn, type ChatIdentity, type LlmTurnInput } from '../chat/llm-turn.js';
 import { CHAT_LABELS, bubbleLines, type ChatRole } from '../chat/bubbles.js';
@@ -360,6 +362,52 @@ export function SESSION_CAP_CHAT_REFUSAL(capUsd: number): string {
 /** §12 "Status" toasts */
 export const STOPPED_THINKING_TOAST = 'stopped thinking';
 export const STILL_THINKING_TOAST = 'one moment — still thinking';
+
+// --- AGENT-LOOP-DESIGN §A1 / §A5 / §7.6: every chat message is the next turn of ONE agent conversation ------------------------
+/** §A5: Esc / Ctrl-C before the run's first tool call stopped the reply — the toast is the whole trace (no epilogue, the session stays open) */
+export const REPLY_STOPPED_TOAST = 'reply stopped';
+/** §7.6: the chat turns a run carries — the newest `AGENT_CHAT_CARRY_TURNS` within `AGENT_CHAT_CARRY_CHARS` (about 4k tokens) */
+export const AGENT_CHAT_CARRY_TURNS = 20;
+export const AGENT_CHAT_CARRY_CHARS = 14_000;
+/**
+ * §7.6 `ConversationCarry.chat` (pure): the newest turns, oldest first, at most `AGENT_CHAT_CARRY_TURNS` and within
+ * `AGENT_CHAT_CARRY_CHARS`; the walk stops at the first turn that no longer fits (a gap would misquote the conversation), except that
+ * a newest turn longer than the whole budget is carried cut to its first `AGENT_CHAT_CARRY_CHARS` characters.
+ */
+export function chatCarry(turns: readonly Pick<ChatTurn, 'role' | 'text'>[]): { role: 'you' | 'jevcode'; text: string }[] {
+  const out: { role: 'you' | 'jevcode'; text: string }[] = [];
+  let chars = 0;
+  for (let i = turns.length - 1; i >= 0 && out.length < AGENT_CHAT_CARRY_TURNS; i--) {
+    const t = turns[i]!;
+    if (chars + t.text.length > AGENT_CHAT_CARRY_CHARS) {
+      if (out.length === 0) out.push({ role: t.role, text: `${t.text.slice(0, AGENT_CHAT_CARRY_CHARS - 1)}…` });
+      break;
+    }
+    chars += t.text.length;
+    out.push({ role: t.role, text: t.text });
+  }
+  return out.reverse();
+}
+/** §A1 follow-up spend gate (lead amendment): the one line a silently clamped agent run prints — never a y/n box */
+export function runCapClampedNote(clampedUsd: number, sessionLeftUsd: number): string {
+  return `run cap clamped to ${usd2(clampedUsd)} (session has ${usd2(sessionLeftUsd)} left)`;
+}
+/**
+ * §A1 "works perfectly": a generator failure worth ONE automatic retry of a reply — a rate limit, a timeout, a 5xx or a broken
+ * stream. The serialized error carries no status, so this reads the transport's own wording (`<provider> HTTP <status>`, `stream
+ * error <status>`, `network error`, `stream failure`, `idle_timeout`); a key, credit, request or model problem is never retried.
+ */
+export function isTransientProviderError(e: Pick<SerializedError, 'code' | 'message'> | null | undefined): boolean {
+  if (e === null || e === undefined || e.code !== 'provider_http') return false;
+  const m = e.message;
+  if (/spend|credit|billing|quota|insufficient|invalid GenerateRequest|no scripted turn/i.test(m)) return false;
+  const status = /\bHTTP (\d{3})\b/.exec(m) ?? /\bstream error (\d{3})\b/.exec(m);
+  if (status !== null) {
+    const s = Number(status[1]);
+    return s === 408 || s === 429 || s >= 500;
+  }
+  return /network error|stream failure|stream ended|idle_timeout|without a body|malformed sse/i.test(m);
+}
 /**
  * §12 "Mode items" / TUI-DESIGN-3 §1.1, §1.9, §10 "Mode items": ONE table per mode (generator-neutral copy — "the code model", never a
  * vendor; R3 F9), read by `case 'mode'` through `modeSetItem`. The four round-2 names stay as aliases of its rows.
@@ -775,6 +823,8 @@ export interface RunRecord {
   records: StepRecord[];
   resumable: boolean;
   degraded: boolean;
+  /** the run's engine mode (AGENT-LOOP-DESIGN §7.6: the next agent run's `ConversationCarry.parent.mode`); absent on records built elsewhere */
+  mode?: EngineMode;
 }
 
 export interface SessionView {
@@ -1495,6 +1545,21 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   let deferredChatLines: { t: string; intake: IntakeKind; route: ChatRoute; costUsd: number; provider: JevProvider | 'generator' }[] = [];
   /** §3.9: the per-session chat spend folded from the index (`seedMeterFromIndex` restores it on /resume, -c, --resume <title>) */
   let indexChat: Map<string, ChatSpendRow> = new Map();
+  // --- AGENT-LOOP-DESIGN §A1 / §A5 / §7.6: the agent conversation, session side -----------------------------------------------
+  /** §7.6: the newest ledger turn when the previous run of this session ended (or at /new); a run carries the turns after it (null = all) */
+  let carryMark: ChatTurn | null = null;
+  /** §A5: the live agent run has made no tool call yet — Esc / Ctrl-C then stop the REPLY (an abort, never a pause) and keep the session */
+  let replyPhase = false;
+  /** §A5: the live run was stopped during its reply phase — its run:end is "reply stopped": a toast, no epilogue item */
+  let replyStopped = false;
+  /** §A1 latency: the previous run's run.json + state.json, loaded in the background when an agent run ends, so the next seed has it at Enter */
+  let parentPrefetch: { runId: string; p: Promise<LoadedRun | null> } | null = null;
+  /** §A1 follow-up spend gate: the whole-dollar floor and the session cap of the last `run cap clamped …` note; null = none yet this session */
+  let clampNote: { floor: number; capUsd: number } | null = null;
+  /** startup settled: an agent-mode submission reaches converse's synchronous prefix with no await (the `[you]` bubble in the Enter frame) */
+  let startupIsSettled = false;
+  /** the pending `/model` `/provider` `/mode` overrides the config was last resolved for (an agent run re-resolves only when they moved) */
+  let resolvedPendingKey: string | null = null;
   const trackCandidates = (p: Promise<readonly Candidate[]>): Promise<readonly Candidate[]> => {
     void p.then(
       (l) => {
@@ -1894,6 +1959,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       case 'run:end':
         endEvent = e;
         break;
+      // AGENT-LOOP-DESIGN §A5: from the first tool call on, the run is a run (Esc pauses, Esc Esc aborts; the epilogue applies)
+      case 'tool:call':
+        replyPhase = false;
+        break;
       default:
         break;
     }
@@ -1954,7 +2023,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   /** resolveConfig again after a save (§11.1 "→ resolveConfig again") */
   async function reresolve(): Promise<void> {
     try {
+      const key = JSON.stringify(pendingFlagOverrides());
       config = await resolveConfig({ ...flags, ...pendingFlagOverrides() }, env, cwd, { homedir: home });
+      resolvedPendingKey = key;
       applyConfig();
     } catch (e) {
       uiError(`config: ${describe(e)}`);
@@ -2229,6 +2300,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     sessionCapExplicit = false;
     deferredBudgetLines = [];
     deferredChatLines = [];
+    // AGENT-LOOP-DESIGN §A1: the clamp note is printed once per SESSION (a new root meter is a new session)
+    clampNote = null;
   }
 
   /**
@@ -2257,6 +2330,88 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     secretsAcked: number;
     /** TUI-DESIGN-2 §6 item 13: why the run started (the intake's reading); absent for argv tasks */
     intake?: { kind: IntakeKind; probability: number; requestHash: string };
+    /**
+     * AGENT-LOOP-DESIGN §A1: this run is the next turn of the session's agent conversation (a chat message in agent mode). `attempt`
+     * is 1 for the one automatic retry after a transient provider failure, which re-sends the failed attempt's own `carry`.
+     */
+    agent?: { attempt: 0 | 1; carry?: ConversationCarry };
+  }
+
+  /** the agent turn a run carries through to its run:end (the automatic retry re-sends it) */
+  interface AgentTurnFacts {
+    text: string;
+    pinnedFiles: readonly string[];
+    secretsAcked: number;
+    attempt: 0 | 1;
+    carry: ConversationCarry;
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §7.6 `ConversationCarry` for the session's next run: `chat` = the ledger turns since the previous run of this
+   * session ended (all of them when there is none), within the caps; `parent` = that previous run — the newest run record, or, for a
+   * session continued with `-c` / `--resume <title>` / an adopted complete run, its newest run in the index.
+   */
+  function conversationCarry(): ConversationCarry {
+    const turns = ledger.turns;
+    const at = carryMark === null ? -1 : turns.indexOf(carryMark);
+    // a mark the ledger has trimmed away (> LEDGER_MAX_TURNS turns since) leaves every kept turn newer than it
+    const since = carryMark === null || at < 0 ? turns : turns.slice(at + 1);
+    return { chat: chatCarry(since), parent: carryParent() };
+  }
+  function carryParent(): ConversationCarry['parent'] {
+    const last = runs.at(-1);
+    if (last !== undefined) return { runId: last.runId, runDir: last.runDir, mode: last.mode ?? currentRunMode };
+    const cfg = config;
+    if (sessionId === null || cfg === null) return null;
+    const row = index.find((x) => x.sessionId === sessionId);
+    const id = row ? newestRunId(row) : null;
+    return row && id !== null ? { runId: id, runDir: join(cfg.runsDir, id), mode: row.mode } : null;
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §7.6 / §A1 latency: an agent run's seed comes from its carry parent ONLY — one run.json + state.json, usually
+   * already in memory (`parentPrefetch`, loaded when that run ended) — never the whole session's runs (`seedFor` loads every one:
+   * O(runs) disk reads before each message, and in agent mode every message is a run). The seed still carries the undo log, the
+   * human notes, the pinned files and the rewind snapshot; with a legacy-mode parent it is also the agent's "Previous run" block.
+   */
+  async function agentSeed(parent: ConversationCarry['parent'], pinnedFiles: readonly string[]): Promise<{ seed: EngineSeed | null; parentRunId: string | null }> {
+    const cfg = config;
+    if (cfg === null || parent === null) return { seed: null, parentRunId: null };
+    const pre = parentPrefetch;
+    const loaded = pre !== null && pre.runId === parent.runId ? await pre.p : await loadRunFn(cfg.runsDir, parent.runId, cfg.redact).catch(() => null);
+    if (loaded === null) return { seed: null, parentRunId: parent.runId };
+    const src: SeedParent = { meta: loaded.meta, state: loaded.state };
+    const seed = buildSeed(src, { humanNotes: undoNotes, pinnedFiles, ...(rewindSeed ? { rewind: rewindSeed } : {}) });
+    const carried = carriedSteers(src);
+    return { seed: { ...seed, undoLog: [...(seed.undoLog ?? []), ...undoLog].slice(-20), ...(carried > 0 ? { carriedDirectives: carried } : {}) }, parentRunId: loaded.meta.runId };
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §A1 (lead amendment, follow-up spend gate): in agent mode every message is a run, so today's y/r/n box would
+   * prompt on greetings. Instead the run cap is clamped SILENTLY to what the session has left (the child meter's cap), with one
+   * `[ui] run cap clamped to $X.XX (session has $Y.YY left)` line — printed when the clamp first applies in the session, and again
+   * only when the clamped amount drops below the next whole dollar ($9.40 printed, $9.10 silent, $8.95 printed); a new session cap
+   * starts over. Only a reached session cap refuses: one line, no box.
+   */
+  function agentSpendGate(runCap: number): boolean {
+    const spent = sessionTotal();
+    const cap = sessionCapOf();
+    const held = sessionMeter.heldUsd?.() ?? sessionMeter.snapshot().heldUsd ?? 0;
+    const decision = followUpDecision(runCap, cap, spent, held);
+    if (decision === 'refuse') {
+      note(sessionCapReachedItem(spent, cap), { level: 'error' });
+      json?.sessionRefused({ reason: 'session-cap', spentUsd: spent, capUsd: cap, exitCode: EXIT_CODES.budget }, { runId: null, sessionId });
+      return false;
+    }
+    if (decision === 'confirm') {
+      const clamped = childCapUsd(runCap, cap, spent, held);
+      const floor = Math.floor(clamped);
+      if (clampNote === null || clampNote.capUsd !== cap || floor < clampNote.floor) {
+        clampNote = { floor, capUsd: cap };
+        note(runCapClampedNote(clamped, sessionRemainingUsd(cap, spent, held)));
+      }
+    }
+    return true;
   }
 
   /** §9.3: start | confirm (y/r/n) | refuse; the `clamp` for EngineOptions.session */
@@ -2327,8 +2482,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       uiError('configuration not ready yet');
       return;
     }
-    if (pending.model !== undefined || pending.provider !== undefined || pending.mode !== undefined) await reresolve();
+    // AGENT-LOOP-DESIGN §A1 latency: an agent run re-resolves only when a pending override moved since the last resolution (a
+    // pending `/mode agent` stays pending for the session, and every message is a run); every other mode keeps today's re-read
+    if (pending.model !== undefined || pending.provider !== undefined || pending.mode !== undefined) {
+      if ((pending.mode ?? baseMode) !== 'agent' || JSON.stringify(pendingFlagOverrides()) !== resolvedPendingKey) await reresolve();
+    }
     const mode = pending.mode ?? baseMode;
+    const agentTurn = mode === 'agent' && so.agent !== undefined ? so.agent : null;
     if (missingFor(config, mode).length > 0) {
       const saved = await runLogin('missing', mode);
       if (!saved && missingFor(config, mode).length > 0) {
@@ -2355,16 +2515,19 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         sessionCapUsd = cap;
       } else newSessionMeter();
     }
-    const gate = await followUpGate(limits.spendCapUsd);
+    // AGENT-LOOP-DESIGN §A1: an agent turn clamps silently (a note, never the y/n box); every other run keeps the follow-up gate
+    const gate: { ok: true; clamp: number | null } | { ok: false } = agentTurn !== null ? (agentSpendGate(limits.spendCapUsd) ? { ok: true, clamp: null } : { ok: false }) : await followUpGate(limits.spendCapUsd);
     if (!gate.ok) return;
     phase = 'starting';
     startingSteers = [];
     trace('startRun: seeding');
-    const seeded = await seedFor(so.pinnedFiles);
+    // §7.6: the conversation this turn continues (the retry re-sends its failed attempt's own carry)
+    const carry: ConversationCarry | null = agentTurn !== null ? (agentTurn.carry ?? conversationCarry()) : null;
+    const seeded = carry !== null ? await agentSeed(carry.parent, so.pinnedFiles) : await seedFor(so.pinnedFiles);
     let eng: Engine;
     const started = nowIso();
     try {
-      const provider = await providerOf(cfg, flags, mode);
+      const provider = agentTurn !== null ? await agentProvider(cfg, mode) : await providerOf(cfg, flags, mode);
       // AGENT-LOOP-DESIGN §14.2: an agent run with no Jev key gets the absent decider — it sends nothing, and the engine reads
       // `jevAvailable = false` from its model, so no quick routing call is ever asked (nor waited for)
       const absentJev = mode === 'agent' && !jevKeyResolves(cfg);
@@ -2423,6 +2586,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           ...(gate.clamp !== null ? { clamp: { runCapUsd: limits.spendCapUsd, clampedToUsd: gate.clamp, sessionSpentUsd: sessionTotal(), sessionCapUsd: sessionCapOf() } } : {}),
         },
         ...(seeded.seed ? { seed: seeded.seed } : {}),
+        // AGENT-LOOP-DESIGN §7.6: the chat turns since the previous run and that run — the agent continues its transcript
+        ...(carry !== null ? { conversation: carry } : {}),
         ...(instructions ? { instructions } : {}),
         ...(so.secretsAcked > 0 ? { secretsAcked: so.secretsAcked } : {}),
         ...(flags.allowUnpriced ? { allowUnpriced: true } : {}),
@@ -2448,7 +2613,21 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     clearPendingLimits();
     // §4.9 / §15 item 16: `submit()` resolves once the run started (the composer's `submitting` guard covers the start,
     // not the run); the run itself is driven by runEngine, which never rejects
-    void runEngine(eng, { runId: eng.runId, runDir: join(cfg.runsDir, eng.runId), startedAt: started, task: text, resumed: false, parentRunId: seeded.parentRunId, mode });
+    const turnFacts: AgentTurnFacts | undefined = agentTurn !== null && carry !== null ? { text, pinnedFiles: so.pinnedFiles, secretsAcked: so.secretsAcked, attempt: agentTurn.attempt, carry } : undefined;
+    void runEngine(eng, { runId: eng.runId, runDir: join(cfg.runsDir, eng.runId), startedAt: started, task: text, resumed: false, parentRunId: seeded.parentRunId, mode, ...(turnFacts !== undefined ? { agentTurn: turnFacts } : {}) });
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §A1 latency: an agent run reuses the session's cached provider (network map P8b: one per resolved config and
+   * mode) — the `--mock` provider excepted, whose trajectory cursor belongs to one run.
+   */
+  async function agentProvider(cfg: ResolvedConfigWithDiagnostics, mode: EngineMode): Promise<Provider> {
+    if (flags.mock === true || flags.mockGenerator === true) return providerOf(cfg, flags, mode);
+    const cached = chatProvider;
+    if (cached !== null && cached.cfg === cfg && cached.mode === mode) return cached.provider;
+    const provider = await providerOf(cfg, flags, mode);
+    chatProvider = { cfg, mode, provider };
+    return provider;
   }
 
   interface RunFacts {
@@ -2459,6 +2638,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     resumed: boolean;
     parentRunId: string | null;
     mode: EngineMode;
+    /** AGENT-LOOP-DESIGN §A1: set when the run is an agent-mode chat turn (its run:end is reply bookkeeping, its retry re-sends it) */
+    agentTurn?: AgentTurnFacts;
   }
 
   async function runEngine(eng: Engine, f: RunFacts): Promise<void> {
@@ -2741,10 +2922,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     lastResult = null;
     decisions = [];
     lastPlan = null;
-    const record: RunRecord = { runId: f.runId, runDir: f.runDir, startedAt: f.startedAt, endedAt: null, task: f.task, stopReason: null, exitCode: null, steps: 0, costUsd: { generator: 0, jev: 0 }, changedFiles: [], changedSteps: [], records: [], resumable: false, degraded: false };
+    const record: RunRecord = { runId: f.runId, runDir: f.runDir, startedAt: f.startedAt, endedAt: null, task: f.task, stopReason: null, exitCode: null, steps: 0, costUsd: { generator: 0, jev: 0 }, changedFiles: [], changedSteps: [], records: [], resumable: false, degraded: false, mode: f.mode };
     current = record;
     currentRunMode = f.mode;
     runs.push(record);
+    // AGENT-LOOP-DESIGN §A5: an agent chat turn is a reply until its first tool call (onEvent `tool:call` ends the phase)
+    replyPhase = f.agentTurn !== undefined;
+    replyStopped = false;
     if (sessionId === null) sessionId = f.runId;
     const sid = sessionId;
     retargetLogToRun(f.runDir);
@@ -2780,6 +2964,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       engine = null;
       phase = 'none';
       current = null;
+      replyPhase = false;
+      replyStopped = false;
       record.endedAt = nowIso();
       record.stopReason = 'error';
       record.exitCode = EXIT_CODES.unexpected;
@@ -2790,6 +2976,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     detach();
     lastResult = result;
+    // AGENT-LOOP-DESIGN §A5: whether the run ended inside its reply phase (no tool call), and whether Esc / Ctrl-C stopped it there
+    const noToolCall = replyPhase;
+    const stoppedInReply = replyStopped && result.stopReason === 'human_abort';
+    replyPhase = false;
+    replyStopped = false;
     const end = readEndEvent();
     const degraded = end?.exitCode === EXIT_CODES.checkpoint && result.stopReason !== 'error';
     const exitCode = end?.exitCode ?? exitCodeFor(result.stopReason, result.error, degraded, signalExit ?? undefined);
@@ -2818,15 +3009,50 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       finishSession(exitCodeFor('signal', undefined, false, signalExit ?? undefined), 'run-end');
       return;
     }
-    // §13.5 / §24: the epilogue item (session mode) — human_pause and spend_cap have their own wording
-    postRunItems(record, result);
+    // AGENT-LOOP-DESIGN §7.6: the next run carries only the chat turns after this point
+    carryMark = ledger.turns.at(-1) ?? null;
+    // §13.5 / §24: the epilogue item (session mode) — human_pause and spend_cap have their own wording; an agent chat turn's
+    // reply bookkeeping first (AGENT-LOOP-DESIGN §A1, §A5): a reply or a stopped reply prints nothing, a transient failure retries once
+    const after = f.agentTurn !== undefined ? agentTurnEnded(f.agentTurn, result, noToolCall, stoppedInReply) : 'epilogue';
+    if (after === 'epilogue') postRunItems(record, result);
     if (exitAfterRunEnd !== null) {
       finishSession(leaveExitCode(exitAfterRunEnd), 'exit');
       return;
     }
     void refold();
-    void reprobeGit(cfg, record);
-    if (cfg) candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
+    // §A1 latency: a reply changed nothing and ran nothing, so neither the git state nor the file listing can have moved
+    if (!(f.mode === 'agent' && result.stopReason === 'answered')) {
+      void reprobeGit(cfg, record);
+      if (cfg) candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
+    }
+    // §A1 latency: the next agent turn's seed parent is this run — load it now, while the human reads the reply
+    if (cfg && (pending.mode ?? baseMode) === 'agent') parentPrefetch = { runId: f.runId, p: loadRunFn(cfg.runsDir, f.runId, cfg.redact).catch(() => null) };
+    if (after === 'retry' && f.agentTurn !== undefined) {
+      const t = f.agentTurn;
+      void startRun(t.text, { kind: 'follow-up', pinnedFiles: t.pinnedFiles, secretsAcked: t.secretsAcked, agent: { attempt: 1, carry: t.carry } });
+    }
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §A1 / §A5 (lead amendments): what an agent chat turn's run:end adds in the session.
+   * - Stopped by Esc / Ctrl-C before its first tool call: "reply stopped" — one toast, no `[ui] stopped — human_abort` epilogue,
+   *   no follow-up box; the session stays open and the next message continues the conversation.
+   * - `answered` (a reply: prose, no tool call, `isReplyOnlyRun`): nothing — the streamed prose was the whole answer.
+   * - A transient provider failure before any tool call, on the first attempt: one `[ui]` error row and ONE automatic retry
+   *   (never a fake assistant line); a second failure, or any other stop, gets today's epilogue item.
+   */
+  function agentTurnEnded(t: AgentTurnFacts, result: RunResult, noToolCall: boolean, stoppedInReply: boolean): 'quiet' | 'epilogue' | 'retry' {
+    if (stoppedInReply) {
+      uiToast(REPLY_STOPPED_TOAST);
+      return 'quiet';
+    }
+    if (result.stopReason === 'answered') return 'quiet';
+    if (result.stopReason === 'error' && noToolCall && t.attempt === 0 && exitAfterRunEnd === null && !exiting && isTransientProviderError(result.error)) {
+      const err = result.error!;
+      uiError(`${err.code}: ${redact(err.message)} — retrying once`);
+      return 'retry';
+    }
+    return 'epilogue';
   }
 
   /** the run:end event `onEvent` captured (read through a call so the closure assignment is visible to the type checker) */
@@ -3427,8 +3653,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const jevRows: BlockRow[] = [];
     if (questions === 0 && decisions.length === 0 && chat.messages === 0) {
       // §3.1.7: an empty state REPLACES the data rows — printing `decider not resolved yet` above a resolved
-      // `decider` row and a `p50 — · p95 —` latency row said both things at once
-      block('jev', [{ kind: 'note', flush: true, text: 'decider not resolved yet — the first question resolves it' }]);
+      // `decider` row and a `p50 — · p95 —` latency row said both things at once; AGENT-LOOP-DESIGN §13 (peer review G): in agent
+      // mode the empty state is the normal one, and says so
+      block('jev', [{ kind: 'note', flush: true, text: inspectMode() === 'agent' ? AGENT_NO_DECISIONS_TEXT : 'decider not resolved yet — the first question resolves it' }]);
       return;
     }
     jevRows.push({ kind: 'kv', key: 'decider', value: `${head}${resolved ? ` ${glyphs().arrow} resolved ${resolved}` : ''}${drift ? ` · drift@step ${drift.step} ${glyphs().arrow} ${drift.served}` : ''}` });
@@ -3472,13 +3699,21 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       .slice(-n)
       .map((d) => toDecisionRow(d, config?.limits().completeThreshold, config?.limits().impossibleThreshold));
     const lines = decisionRows({ tab: 'd', step: currentStep(), rows, plan: null, timeline: [], synth: null, mode: pending.mode ?? baseMode }, Math.max(1, rows.length), bodyWidth(), glyphs());
-    textBlock(rows.length === 0 ? 'decisions' : `decisions · last ${rows.length}`, rows.length === 0 ? ['no decisions yet — they appear from the first step'] : lines);
+    const empty = inspectMode() === 'agent' ? AGENT_NO_DECISIONS_TEXT : 'no decisions yet — they appear from the first step';
+    textBlock(rows.length === 0 ? 'decisions' : `decisions · last ${rows.length}`, rows.length === 0 ? [empty] : lines);
+  }
+
+  /** the mode the inspect commands describe: the live (or last) run's, or the next run's before any run */
+  function inspectMode(): EngineMode {
+    return runs.length > 0 ? currentRunMode : (pending.mode ?? baseMode);
   }
 
   function planCommand(): void {
     const plan = lastPlan ?? lastResult?.finalPlan ?? null;
     const lines = planRows({ tab: 'p', step: currentStep(), rows: [], plan: plan ? { step: currentStep(), plan } : null, timeline: [], synth: null }, BLOCK_CAPS.plan, bodyWidth(), glyphs());
-    textBlock('plan', plan === null ? ['no plan yet — Jev writes one at the first step'] : lines, { max: BLOCK_CAPS.plan });
+    // AGENT-LOOP-DESIGN §4.7: in agent mode the plan is the code model's todo list, not Jev's
+    const empty = inspectMode() === 'agent' ? 'no plan yet — the code model writes one (todo_write) when a task has several steps' : 'no plan yet — Jev writes one at the first step';
+    textBlock('plan', plan === null ? [empty] : lines, { max: BLOCK_CAPS.plan });
   }
 
   function whyCommand(ref: string): void {
@@ -3492,7 +3727,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const pool: readonly Decision[] = parsed.kind === 'intake' ? (chatIntakes.at(-1) ?? []) : decisions;
     const d = findDecision(pool, parsed, currentStep() > 0 ? currentStep() : null);
     if (d === null) {
-      uiError(whyErrorText(ref, 'missing'));
+      // AGENT-LOOP-DESIGN §13 (peer review G): an agent run with no Jev decision at all has nothing to explain — say why, not "missing"
+      if (pool.length === 0 && inspectMode() === 'agent') note(AGENT_NO_DECISIONS_TEXT);
+      else uiError(whyErrorText(ref, 'missing'));
       return;
     }
     const model = parsed.kind === 'intake' ? (lastDecider?.model ?? null) : (lastResult?.resolvedJevModel ?? null);
@@ -3632,6 +3869,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         sessionStartAnnounced = false;
         runs = [];
         title = null;
+        // AGENT-LOOP-DESIGN §7.6: the next session's first run carries no turn of this one, and no parent
+        carryMark = ledger.turns.at(-1) ?? null;
+        parentPrefetch = null;
         undoNotes = [];
         undoLog = [];
         rewindSeed = null;
@@ -4211,6 +4451,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       uiError(CONFIG_NOT_READY);
       return { became: 'nothing' };
     }
+    // AGENT-LOOP-DESIGN §A1: in agent mode every message is the next turn of the session's agent conversation — no intake, no Jev
+    // call, no canned line; the reply IS the run's streamed prose
+    if ((pending.mode ?? baseMode) === 'agent') return agentTurn(text, so);
     // the [you] bubble, always first: redacted at emission, one item per line (§3.10)
     say('you', bubbleLines(text, redact));
     // the offer left by the last `ambiguous` reading: `do it` starts that run with the reading already in hand — no request
@@ -4296,6 +4539,20 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     } finally {
       if (chatAbort === ac) chatAbort = null;
     }
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §A1: an agent-mode chat message. The `[you]` bubble first (synchronously — with `submit`'s no-await path it is
+   * in the Enter frame), then one agent run that carries the session conversation (§7.6). There is no intake routing, no Jev intake
+   * call, no `ON_IT_LINE` / `DO_IT_OFFER` / catalogue text: the model answers a greeting in prose (the run stops `answered`) and acts
+   * with tools when asked to. Provider errors surface as `[ui]` rows at run:end (`agentTurnEnded`), never as an assistant line.
+   */
+  async function agentTurn(text: string, so: { kind: 'prompt' | 'follow-up'; pinnedFiles: readonly string[]; secretSpans: readonly string[] }): Promise<SubmitOutcome> {
+    say('you', bubbleLines(text, redact));
+    pendingOffer = null;
+    const before = runs.length;
+    await startRun(text, { kind: so.kind, pinnedFiles: so.pinnedFiles, secretsAcked: so.secretSpans.length, agent: { attempt: 0 } });
+    return { became: live() || runs.length > before ? 'run' : 'nothing' };
   }
 
   /** §3.8: the run a reading (or an accepted offer) starts; the run owns the abort path from here (Esc Esc / Ctrl-C while live) */
@@ -4740,7 +4997,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   const host: ControllerHost = {
     // TUI-DESIGN-2 §3.8: every composer submission passes intake (`converse`); the one-shot argv task (`submitTask`) goes straight to startRun
     async submit(text, so): Promise<SubmitOutcome> {
-      await startupDone;
+      // AGENT-LOOP-DESIGN §A1 latency (TUI map top change 7): once startup has settled, an agent-mode submission reaches converse's
+      // synchronous prefix with no await, so the `[you]` bubble lands in the frame of the Enter itself; legacy modes keep today's order
+      if (!startupIsSettled || (pending.mode ?? baseMode) !== 'agent') await startupDone;
       // §10.2: addSecret('composer#n', span) per span BEFORE createEngine
       for (const span of so.secretSpans) config?.addSecret(`composer#${++secretSeq}`, span);
       return converse(text, so);
@@ -4774,6 +5033,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
      */
     who: (): readonly SessionActivityView[] | null => (sessionLedger === null ? null : sessionLedger.list({ all: false }).map(activityView)),
     pause() {
+      // AGENT-LOOP-DESIGN §A5: before the first tool call Esc stops the reply — an abort, never a pause (nothing to resume)
+      if (replyPhase && engine !== null && live()) {
+        host.abort('human_abort');
+        return;
+      }
       engine?.pause();
     },
     abort() {
@@ -4790,6 +5054,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         return;
       }
       if (engine !== null && live()) {
+        // AGENT-LOOP-DESIGN §A5: an abort inside the reply phase is "reply stopped" at run:end (no epilogue, the session stays open)
+        if (replyPhase) replyStopped = true;
         engine.abort('human_abort');
         phase = 'aborting';
       }
@@ -4893,6 +5159,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     trace('startup: keybindings + history read');
     config = await resolveConfig({ ...flags, ...pendingFlagOverrides() }, env, cwd, { homedir: home });
+    resolvedPendingKey = JSON.stringify(pendingFlagOverrides());
     if (exiting) return;
     trace('startup: config resolved');
     if (!deps.log) {
@@ -5092,9 +5359,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       // F3: a signal or exit request during startup ends the process even while startup awaits a prompt or a probe
       const started = startup().then(
         () => {
+          startupIsSettled = true;
           startupSettled?.();
         },
         (e: unknown) => {
+          startupIsSettled = true;
           startupSettled?.();
           throw e;
         },

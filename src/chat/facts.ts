@@ -165,6 +165,11 @@ export const MODE_SENTENCE: Readonly<Record<EngineMode, string>> = {
   'llm-jev': `Mode: ${MODE_BADGE_WORD['llm-jev']} — the code model writes candidate patches, tests verify them, Jev arbitrates.`,
   'agent': `Mode: ${MODE_BADGE_WORD['agent']} — the code model works through tools, tests verify, Jev makes a few quick routing calls.`,
 };
+/**
+ * AGENT-LOOP-DESIGN §13 / peer review G: what `/jev`, `/why` and `/decisions` answer in agent mode when there is nothing to show — a
+ * normal agent run asks Jev nothing but a few optional quick routing calls, so an empty table would read as a fault.
+ */
+export const AGENT_NO_DECISIONS_TEXT = 'a normal agent run makes no Jev decisions';
 export const NOTHING_RAN_TEXT = 'Nothing has run yet in this session.';
 export const NO_TESTS_PARSED_TEXT = 'No test run has been parsed in this session yet.';
 
