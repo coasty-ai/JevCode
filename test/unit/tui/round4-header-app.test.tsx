@@ -494,16 +494,16 @@ describe('§2.2 P-R1: the synchronous commit on a shrinking dimension and on eve
     expect(shouldSyncCommit(g(24, 60), g(40, 120), LATE, 0), '↑rows ↑cols').toBe(true);
   });
 
-  it('SYNC_COMMIT_MIN_MS is the storm guard: inside 8 ms of the last commit, nothing commits', () => {
+  it('SYNC_COMMIT_MIN_MS is the storm guard: inside 8 ms of the last commit, no width change commits', () => {
     expect(SYNC_COMMIT_MIN_MS).toBe(8);
-    for (let dt = 0; dt < 8; dt++) expect(shouldSyncCommit(g(40, 120), g(30, 100), 1_000 + dt, 1_000), `${dt} ms`).toBe(false);
-    expect(shouldSyncCommit(g(40, 120), g(30, 100), 1_008, 1_000), '8 ms').toBe(true);
+    for (let dt = 0; dt < 8; dt++) expect(shouldSyncCommit(g(40, 120), g(40, 100), 1_000 + dt, 1_000), `${dt} ms`).toBe(false);
+    expect(shouldSyncCommit(g(40, 120), g(40, 100), 1_008, 1_000), '8 ms').toBe(true);
     // 20 driver resizes inside one 8 ms window are ~40 events and exactly ONE commit
     let lastSyncAt = -SYNC_COMMIT_MIN_MS;
     let prev = g(40, 120);
     let commits = 0;
     for (let n = 0; n < 40; n++) {
-      const next = g(40 - (n % 3), 120 - n);
+      const next = g(40 + n, 120 - n); // rows only grow: a row shrink is exempt (below)
       const now = 1_000 + n * 0.2; // ~8 ms for the whole storm
       if (shouldSyncCommit(prev, next, now, lastSyncAt)) {
         commits += 1;
@@ -512,6 +512,14 @@ describe('§2.2 P-R1: the synchronous commit on a shrinking dimension and on eve
       prev = next;
     }
     expect(commits).toBe(1);
+  });
+
+  it('a ROW shrink commits even inside the guard: the stale, taller tree is never painted at the smaller viewport', () => {
+    // `stty rows 12 cols 60` is two ioctls: 12×100, then 12×60 — both inside 8 ms of a grow's commit
+    expect(shouldSyncCommit(g(40, 100), g(12, 100), 1_003, 1_000), '↓rows inside the guard').toBe(true);
+    expect(shouldSyncCommit(g(12, 100), g(12, 60), 1_005, 1_003), '↓cols inside the guard').toBe(false);
+    expect(shouldSyncCommit(g(40, 120), g(30, 100), 1_000, 1_000), '↓rows ↓cols at dt 0').toBe(true);
+    expect(shouldSyncCommit(g(12, 60), g(40, 60), 1_001, 1_000), '↑rows').toBe(false);
   });
 
   it('through the real renderer: a shrink writes a frame SYNCHRONOUSLY, inside the `resize()` call', async () => {

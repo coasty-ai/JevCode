@@ -134,10 +134,19 @@ export const SYNC_COMMIT_MIN_MS = 8;
  * Rate-limited by `SYNC_COMMIT_MIN_MS`: `instance.rerender` is a synchronous `updateContainerSync` +
  * `flushSyncWork`, and §2.0 measured ~2 SIGWINCH events per driver resize, so a 20-resize drag is ~40 events.
  *
+ * A ROW shrink is exempt from the guard: skipping its commit lets Ink's own `resized()` paint the stale, taller tree
+ * at the new viewport, and every over-tall frame costs a clear-terminal fallback for itself AND the frame after it.
+ * `stty rows R cols C` is two ioctls (rows first), so a shrink that lands within 8 ms of the previous commit (a
+ * driver that resizes the moment the last frame is on screen) had BOTH its events swallowed — the old tree was painted
+ * at 12×100 and again clipped at 12×60, and the settled frame cleared a third time (measured on the pty suite's
+ * `chat-resize-storm-live`, first slow shrink: 3 clears where the bound is 2). A row-shrink commit is one frame's work;
+ * a clear rewrites the whole scrollback. Width-only changes and grows keep the guard.
+ *
  * Exported because it IS the decision: the listener around it is three lines of plumbing.
  */
 export function shouldSyncCommit(prev: { rows: number; columns: number }, next: { rows: number; columns: number }, now: number, lastSyncAt: number): boolean {
-  const shrank = next.rows < prev.rows || next.columns < prev.columns;
+  if (next.rows < prev.rows) return true;
+  const shrank = next.columns < prev.columns;
   const widthChanged = next.columns !== prev.columns;
   return (shrank || widthChanged) && now - lastSyncAt >= SYNC_COMMIT_MIN_MS;
 }
