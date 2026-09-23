@@ -195,6 +195,7 @@ import { TOAST_INFO_MS } from '../tui/toasts.js';
 import { modeBadgeWord } from '../tui/status/lines.js';
 import { JEV_PROVIDERS } from '../jev/providers.js';
 import { createCachingDecider } from '../jev/cache.js';
+import { ABSENT_DECIDER_MODEL, createAbsentDecider } from '../jev/absent.js';
 import { budgetItems, BUDGET_THRESHOLDS, type BudgetPct } from '../tui/budget/lines.js';
 // TUI-DESIGN-2 §3 (D-C): the conversational intake — pure builders in src/chat/**, the state machine of §3.1 lives here (§3.8)
 import { buildIntakeState, filesBucket, routeOf, runIntake, testsFromCandidates, type ChatRoute, type IntakeResult } from '../chat/intake.js';
@@ -1985,13 +1986,28 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   }
 
   /**
+   * AGENT-LOOP-DESIGN §14.2: the keys `mode` needs from `cfg`. `agent` runs without a Jev key (both engine sites then pass the absent
+   * decider), so `decider.apiKey` is never missing there; every legacy mode is exactly `missingSecrets`. slice S4 makes
+   * `missingSecrets('agent')` itself drop the decider key — this keeps the session right on either side of that merge.
+   */
+  function missingFor(cfg: ResolvedConfigWithDiagnostics, mode: EngineMode): readonly SecretSettingName[] {
+    const m = cfg.missingSecrets(mode);
+    return mode === 'agent' ? m.filter((n) => n !== 'decider.apiKey') : m;
+  }
+
+  /** AGENT-LOOP-DESIGN §14.2: a Jev key resolves (or `--mock` stands in for Jev) — else an agent run gets `createAbsentDecider()` */
+  function jevKeyResolves(cfg: ResolvedConfigWithDiagnostics): boolean {
+    return cfg.missingSecrets('jev-only').length === 0;
+  }
+
+  /**
    * the wizard (start, `/login`, a rejected key, or TUI-DESIGN-2 §1.3 `/mode <m>` without the keys `m` needs); true when a key was
    * saved. `target` is the mode the keys are for (§1.4: `missing = config.missingSecrets(mode)` for THAT mode; default: the next run's).
    */
   async function runLogin(reason: WizardReason, target?: EngineMode): Promise<boolean> {
     if (!config) return false;
     const mode = target ?? pending.mode ?? baseMode;
-    const missing = reason === 'missing' || reason === 'mode' ? config.missingSecrets(mode) : (['generator.apiKey', 'decider.apiKey'] as const).filter((n) => mode !== 'jev-only' || n !== 'generator.apiKey');
+    const missing = reason === 'missing' || reason === 'mode' ? missingFor(config, mode) : (['generator.apiKey', 'decider.apiKey'] as const).filter((n) => mode !== 'jev-only' || n !== 'generator.apiKey');
     if (missing.length === 0) {
       note('every key resolves already; use /logout to remove one', { label: '[setup]' });
       return false;
@@ -2310,10 +2326,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     if (pending.model !== undefined || pending.provider !== undefined || pending.mode !== undefined) await reresolve();
     const mode = pending.mode ?? baseMode;
-    if (config.missingSecrets(mode).length > 0) {
+    if (missingFor(config, mode).length > 0) {
       const saved = await runLogin('missing', mode);
-      if (!saved && config.missingSecrets(mode).length > 0) {
-        uiError(`missing ${config.missingSecrets(mode).join(', ')}: run jevcode login or set the environment variable`);
+      if (!saved && missingFor(config, mode).length > 0) {
+        uiError(`missing ${missingFor(config, mode).join(', ')}: run jevcode login or set the environment variable`);
         return;
       }
     }
@@ -2346,9 +2362,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const started = nowIso();
     try {
       const provider = await providerOf(cfg, flags, mode);
+      // AGENT-LOOP-DESIGN §14.2: an agent run with no Jev key gets the absent decider — it sends nothing, and the engine reads
+      // `jevAvailable = false` from its model, so no quick routing call is ever asked (nor waited for)
+      const absentJev = mode === 'agent' && !jevKeyResolves(cfg);
       // llm-jev iteration 1 (168a599): a per-RUN request-hash cache — hits bill nothing (usage zeroed, calls 0); a fresh
       // wrapper per run IS the `clear()` at run start; the engine records StepRecord.jevCacheHits from the zero-call rows
-      const decider = createCachingDecider(await deciderOf(cfg, flags));
+      const decider = absentJev ? createAbsentDecider() : createCachingDecider(await deciderOf(cfg, flags));
       // ORCHESTRATION-DESIGN [D6]: money reserved for live agents gates a new run like spend (SpendMeter.heldUsd?() is OPTIONAL by design [G6] so every fake still satisfies the interface; the snapshot field is its twin)
       const remaining = sessionRemainingUsd(sessionCapOf(), sessionTotal(), (sessionMeter.heldUsd?.() ?? sessionMeter.snapshot().heldUsd ?? 0));
       const childCap = Math.max(0, Math.min(limits.spendCapUsd, remaining));
@@ -2356,7 +2375,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       // jev-only never validates the generator section (§15.3); llm-jev validates it like jev-on AND takes the synthesizer (docs/LLM-JEV-DESIGN.md)
       const genCfg: GeneratorConfig | null = mode === 'jev-only' || flags.mock || flags.mockGenerator ? null : cfg.generator();
       const gen = genCfg ?? { temperature: null, maxTokens: 4096 };
-      const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : cfg.decider();
+      const dec = absentJev ? { model: ABSENT_DECIDER_MODEL, pinned: false } : flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : cfg.decider();
       deciderModelConfigured = dec.model;
       const synthesizer = mode === 'jev-only' || mode === 'llm-jev' ? await synthesizerOf(cfg, decider, mode) : null;
       const source = flags.source === 'perf' ? 'perf' : 'cli';
@@ -2920,10 +2939,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       if (!known) sessionMeter.add('generator', { inputTokens: 0, outputTokens: 0, costUsd: loaded.state.spend.generator.costUsd, calls: 0 });
       if (!known) sessionMeter.add('jev', { inputTokens: 0, outputTokens: 0, costUsd: loaded.state.spend.jev.costUsd, calls: 0 });
       const provider = await providerOf(rcfg, augmented, identity.mode);
-      const decider = createCachingDecider(await deciderOf(rcfg, augmented)); // per-run cache; a resumed run starts empty
+      // AGENT-LOOP-DESIGN §14.2: the resume site builds the absent decider too — otherwise an agent run of a user with no Jev key could not be resumed
+      const absentJev = identity.mode === 'agent' && !jevKeyResolves(rcfg);
+      const decider = absentJev ? createAbsentDecider() : createCachingDecider(await deciderOf(rcfg, augmented)); // per-run cache; a resumed run starts empty
       const genCfg: GeneratorConfig | null = identity.mode === 'jev-only' || flags.mock || flags.mockGenerator ? null : rcfg.generator();
       const gen = genCfg ?? { temperature: null, maxTokens: 4096 };
-      const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : rcfg.decider();
+      const dec = absentJev ? { model: ABSENT_DECIDER_MODEL, pinned: false } : flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : rcfg.decider();
       deciderModelConfigured = dec.model;
       const synthesizer = identity.mode === 'jev-only' || identity.mode === 'llm-jev' ? await synthesizerOf(rcfg, decider, identity.mode) : null;
       const undoNote = undoNotes.length > 0 ? undoNotes.join('\n') : null;
@@ -3728,7 +3749,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           note(`mode ${modeBadgeWord(a.mode)} already`);
           return;
         }
-        if (config && config.missingSecrets(a.mode).length > 0) {
+        if (config && missingFor(config, a.mode).length > 0) {
           const saved = await runLogin('mode', a.mode);
           if (!saved) {
             note(`mode stays ${modeBadgeWord(next)} — no generator key was saved`, { level: 'warn' });
@@ -4790,7 +4811,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       if (code === WIZARD_EXIT_CODE && config !== null) {
         const mode = pending.mode ?? baseMode;
         // TUI-DESIGN-3 §1.8 edge 6: nothing missing (Ctrl-C at trust / sandbox) → no fix block
-        if (config.missingSecrets(mode).length > 0) textBlock('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode, providerOfConfig(config)), { label: '[setup]', level: 'warn' });
+        if (missingFor(config, mode).length > 0) textBlock('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode, providerOfConfig(config)), { label: '[setup]', level: 'warn' });
       }
       // §1: `/exit`, Ctrl-C ×2 idle and Ctrl-D ×2 → 0, or the last run's code under `--exit-code=last-run`
       finishSession(leaveExitCode(code), 'exit');
@@ -4892,13 +4913,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     await shadowingLines();
     if (exiting) return;
     const mode = pending.mode ?? baseMode;
-    if (config.missingSecrets(mode).length > 0) {
+    if (missingFor(config, mode).length > 0) {
       const saved = prompter?.wizard ? await runLogin('missing') : false;
       if (exiting) return;
       // the wizard's `3 Jev only` may have moved the mode (persisted, reresolved): re-read it before judging what is still missing
       const after = pending.mode ?? baseMode;
-      if (!saved && config.missingSecrets(after).length > 0) {
-        const names = config.missingSecrets(after);
+      if (!saved && missingFor(config, after).length > 0) {
+        const names = missingFor(config, after);
         if (!prompter?.wizard && (o.mode === 'one-shot' || !o.interactive)) {
           // TUI-DESIGN-3 §1.6: a pipe with a Jev key but no generator names the three ways out
           const text = names.length === 1 && names[0] === 'generator.apiKey' ? missingGeneratorOnly(providerIdOfConfig(config)) : `missing ${names.join(', ')}: set the environment variable or run jevcode login`;
