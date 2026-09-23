@@ -193,13 +193,51 @@ function multiCodePointWidth(cluster: string): number {
   return eastAsianWidth(cp) + trailingWidth(visible, r);
 }
 
+/**
+ * Whole non-ASCII strings repeat frame after frame — the console's status row and edges, the rule, card edges, the
+ * placeholder — and each one paid a fresh `Intl.Segmenter` pass per render (28.7 ms of the Console's 108 ms in a CPU
+ * profile of a streamed chat reply). Their widths are memoised in a bounded map: at most `WIDTH_CACHE_MAX` entries,
+ * each key at most `WIDTH_CACHE_MAX_LENGTH` UTF-16 units (a longer string is measured every time, so the keys hold
+ * ≲ 4 MiB at worst), the oldest insertion evicted first (a `Map` iterates in insertion order). A width is a pure
+ * function of the string, so a hit is the same number the segmenter pass returns. Keys are stored as copies
+ * (`detached`): a row cut from a large string (a streamed reply, a file in a diff preview) is a V8 slice that would
+ * otherwise keep the whole parent alive for as long as the entry lives.
+ */
+export const WIDTH_CACHE_MAX = 4096;
+export const WIDTH_CACHE_MAX_LENGTH = 512;
+const widthCache = new Map<string, number>();
+
 /** Σ `cellWidth` over the grapheme clusters of `s` (TUI-DESIGN §4.2); printable ASCII short-circuits to `s.length`. */
 export function stringWidth(s: string): number {
   if (s.length === 0) return 0;
   if (PRINTABLE_ASCII_RE.test(s)) return s.length;
+  if (s.length > WIDTH_CACHE_MAX_LENGTH) return segmentedWidth(s);
+  const hit = widthCache.get(s);
+  if (hit !== undefined) return hit;
+  const width = segmentedWidth(s);
+  if (widthCache.size >= WIDTH_CACHE_MAX) {
+    const oldest = widthCache.keys().next();
+    if (oldest.done !== true) widthCache.delete(oldest.value);
+  }
+  widthCache.set(detached(s), width);
+  return width;
+}
+
+/** A copy of `s` that shares no storage with a string it may have been sliced from (V8 flattens the concatenation, then slices the copy). */
+function detached(s: string): string {
+  return ` ${s}`.slice(1);
+}
+
+/** The uncached measure behind `stringWidth`'s non-ASCII path. */
+function segmentedWidth(s: string): number {
   let width = 0;
   for (const { segment } of segmenter().segment(s)) width += cellWidth(segment);
   return width;
+}
+
+/** The width cache's current entry count (the bound is `WIDTH_CACHE_MAX`; tests assert it). */
+export function stringWidthCacheSize(): number {
+  return widthCache.size;
 }
 
 /** Ellipsis appended by `truncateCells` (TUI-DESIGN §4.2); one cell wide (U+2026 is East Asian Ambiguous = narrow). */
