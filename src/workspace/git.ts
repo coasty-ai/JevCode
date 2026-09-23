@@ -14,6 +14,7 @@
 import { dirname } from 'node:path';
 
 import type { ExecResult, GitHead, GitState, Sandbox, StatusEntryV2 } from '../core/types.js';
+import { underSkippedDir } from './candidates.js';
 
 export interface GitRunOptions {
   timeoutMs?: number;
@@ -126,7 +127,10 @@ function splitNul(stdout: string): string[] {
 /**
  * Tracked plus untracked-not-ignored paths (so files the generator created remain
  * candidates); entries with mode 120000 (symlinks) are dropped here because git reports
- * them as regular listing entries.
+ * them as regular listing entries. An UNTRACKED entry under a `WALK_SKIP_DIRS` directory
+ * (`.venv/…`, `node_modules/…`, `__pycache__/…`) is dropped too — the same rule the readdir
+ * walk applies — so an un-ignored virtualenv does not flood the candidate list (candidates.ts
+ * `underSkippedDir`); tracked entries are listed whatever directory they are in.
  */
 export async function lsFiles(sandbox: Sandbox, ws: string, opts: GitRunOptions = {}): Promise<{ paths: string[]; truncated: boolean }> {
   const r = await runGit(sandbox, ws, ['ls-files', '-s', '-co', '--exclude-standard', '-z'], opts);
@@ -138,8 +142,8 @@ export async function lsFiles(sandbox: Sandbox, ws: string, opts: GitRunOptions 
   for (const entry of splitNul(r.stdout)) {
     const tab = entry.indexOf('\t');
     if (tab === -1) {
-      // untracked: bare path
-      paths.push(entry);
+      // untracked: bare path; a virtualenv / node_modules the workspace forgot to ignore stays out
+      if (!underSkippedDir(entry)) paths.push(entry);
       continue;
     }
     const meta = entry.slice(0, tab);

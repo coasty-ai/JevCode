@@ -126,6 +126,12 @@ export interface RepositoryMode {
   bestGuessCommitted: boolean;
   /** scoped tests failing at the base commit: known failures, never goals */
   knownFailures: number;
+  /**
+   * A best-guess goal (no reproduction oracle) verified by its scoped regression suite: `failingAtBase` scoped
+   * tests failed at the base commit and every one of the `total` passes on the committed workspace
+   * (search/index.ts rebaselineRepository). Null until then, and again if a later scoped run fails.
+   */
+  scopedVerified: { failingAtBase: number; total: number } | null;
   /** the last reproduction run on the committed workspace (not persisted; re-run on resume) */
   lastRepro: VerifyReproResult | null;
 }
@@ -423,6 +429,7 @@ export interface PersistedRepository {
   traceback: string | null;
   bestGuessCommitted: boolean;
   knownFailures: number;
+  scopedVerified?: { failingAtBase: number; total: number } | null;
 }
 
 export interface PersistedRepositoryState {
@@ -432,7 +439,7 @@ export interface PersistedRepositoryState {
 export type PersistedMemoryState = PersistedSearchState & PersistedClaims & PersistedRepositoryState;
 
 export function repositoryToPersisted(repo: RepositoryMode): PersistedRepository {
-  return { goalId: repo.goalId, moduleFiles: [...repo.moduleFiles], scope: { ...repo.scope, testFiles: [...repo.scope.testFiles] }, repro: repo.repro === null ? null : { spec: repo.repro.spec, strength: repo.repro.strength }, oracleOutcome: repo.oracleOutcome, oracleNote: repo.oracleNote, traceback: repo.traceback, bestGuessCommitted: repo.bestGuessCommitted, knownFailures: repo.knownFailures };
+  return { goalId: repo.goalId, moduleFiles: [...repo.moduleFiles], scope: { ...repo.scope, testFiles: [...repo.scope.testFiles] }, repro: repo.repro === null ? null : { spec: repo.repro.spec, strength: repo.repro.strength }, oracleOutcome: repo.oracleOutcome, oracleNote: repo.oracleNote, traceback: repo.traceback, bestGuessCommitted: repo.bestGuessCommitted, knownFailures: repo.knownFailures, scopedVerified: repo.scopedVerified };
 }
 
 function isStringArray(v: unknown): v is string[] {
@@ -470,8 +477,19 @@ export function repositoryFromPersisted(persisted: (PersistedSearchState & Parti
     traceback: typeof r['traceback'] === 'string' ? r['traceback'] : null,
     bestGuessCommitted: r['bestGuessCommitted'] === true,
     knownFailures: typeof r['knownFailures'] === 'number' && Number.isFinite(r['knownFailures']) ? r['knownFailures'] : 0,
+    scopedVerified: scopedVerifiedFromPersisted(r['scopedVerified']),
     lastRepro: null,
   };
+}
+
+function scopedVerifiedFromPersisted(raw: unknown): RepositoryMode['scopedVerified'] {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const v = raw as Record<string, unknown>;
+  const failingAtBase = v['failingAtBase'];
+  const total = v['total'];
+  if (typeof failingAtBase !== 'number' || !Number.isFinite(failingAtBase) || failingAtBase <= 0) return null;
+  if (typeof total !== 'number' || !Number.isFinite(total) || total <= 0) return null;
+  return { failingAtBase, total };
 }
 
 /** The claim records of a checkpoint (an older one, or one written by hand, carries none). */

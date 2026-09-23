@@ -2,7 +2,7 @@ import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { MAX_LIST_ENTRIES, createCandidateCache, sniffBinary, walkTree } from '../../../src/workspace/candidates.js';
+import { MAX_LIST_ENTRIES, createCandidateCache, sniffBinary, underSkippedDir, walkTree } from '../../../src/workspace/candidates.js';
 import { git, initRepo, makeWorkspace, tempWs, write } from './helpers.js';
 import type { TempWs } from './helpers.js';
 
@@ -44,6 +44,24 @@ describe('candidates in a git repo', () => {
     expect(paths).not.toContain('big.txt');
     expect(paths).not.toContain('ignored.log');
     expect((await w.listCandidates()).find((c) => c.path === 'src/a.py')?.bytes).toBe(2);
+  });
+
+  it('an untracked, un-ignored virtualenv, node_modules or __pycache__ never becomes candidates; tracked files under those names stay', async () => {
+    const t = ws();
+    initRepo(t.ws, { 'src/a.py': 'a\n', 'build/keep.txt': 'kept\n' });
+    // the demo workspace of 20260923-065340-jk2tqc7w: a `.venv` nobody gitignored — 1,092 untracked files, enough `.py` to read as a repository-class checkout
+    write(t.ws, '.venv/lib/python3.9/site-packages/pip/_internal/utils/wheel.py', 'x = 1\n');
+    write(t.ws, '.venv/bin/activate', 'export VIRTUAL_ENV=1\n');
+    write(t.ws, 'node_modules/pkg/index.js', 'module.exports = 1;\n');
+    write(t.ws, 'src/__pycache__/a.cpython-39.pyc', 'text, so the binary sniff is not what drops it\n');
+    write(t.ws, 'untracked.py', 'u\n');
+    const w = await makeWorkspace(t);
+    const paths = (await w.listCandidates()).map((c) => c.path);
+    expect(paths).toEqual(['build/keep.txt', 'src/a.py', 'untracked.py']);
+    expect(underSkippedDir('.venv/lib/python3.9/site-packages/x.py')).toBe(true);
+    expect(underSkippedDir('src/__pycache__/a.pyc')).toBe(true);
+    expect(underSkippedDir('build')).toBe(false); // a file named like a skipped directory is a file
+    expect(underSkippedDir('src/build.py')).toBe(false);
   });
 
   it('invalidation picks up a file created by a command; noteChanged updates bytes and removes deleted files', async () => {

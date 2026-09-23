@@ -20,6 +20,7 @@ import {
   independentWitnessSelections,
   isCompleteByFact,
   isRepositoryClass,
+  scopedSuiteVerified,
   secondWitnessHolds,
   type ClaimingCompletionEvidence,
   type CompletionFactInput,
@@ -46,6 +47,35 @@ describe('change 6(b): completeQuestionDue', () => {
     // the 87.7 %: a step that closed nothing with work still listed
     expect(completeQuestionDue({ goalJustClosed: false, planRemaining: 1 })).toBe(false);
     expect(completeQuestionDue({ goalJustClosed: false, planRemaining: 7 })).toBe(false);
+  });
+});
+
+describe('a best-guess goal verified by its scoped suite (no reproduction oracle) completes on the scoped-suite fact', () => {
+  /** the claiming run of a no-oracle repository run (the demo-py hero task): nothing verifies it until the scope flips */
+  const NO_ORACLE: ClaimingCompletionEvidence = { ledgerFixed: true, testsChanged: [], guardPending: false, repro: 'none', oracle: 'no_blocks', command: SCOPED };
+  const SCOPED_VERIFIED: ClaimingCompletionEvidence = { ...NO_ORACLE, scopedSuite: { failingAtBase: 3, total: 7 } };
+
+  it('the repository class with nothing verifying it never completes; with the scoped suite flipped it holds, as a claiming run and as a `done`', () => {
+    expect(isRepositoryClass(NO_ORACLE)).toBe(true);
+    expect(scopedSuiteVerified(NO_ORACLE)).toBe(false);
+    expect(completionFactsHold(NO_ORACLE)).toBe(false);
+    expect(scopedSuiteVerified(SCOPED_VERIFIED)).toBe(true);
+    expect(completionFactsHold(SCOPED_VERIFIED)).toBe(true);
+    expect(completionEvidenceHolds(SCOPED_VERIFIED, SCOPED)).toBe(true);
+    expect(completionEvidenceHolds(SCOPED_VERIFIED, 'pytest -q')).toBe(false);
+    expect(secondWitnessHolds(SCOPED_VERIFIED)).toBe(true);
+    expect(doneCompletionAllowed(SCOPED_VERIFIED)).toBe(true);
+    expect(isCompleteByFact(doneFact(SCOPED_VERIFIED))).toBe(true);
+    expect(isCompleteByFact(doneFact(NO_ORACLE))).toBe(false);
+  });
+
+  it('the fact needs a scope that failed at the base commit and no reproduction: a green-at-base scope, an impossible count or a reproduction alongside never qualifies', () => {
+    expect(scopedSuiteVerified({ ...NO_ORACLE, scopedSuite: { failingAtBase: 0, total: 7 } })).toBe(false);
+    expect(scopedSuiteVerified({ ...NO_ORACLE, scopedSuite: { failingAtBase: 8, total: 7 } })).toBe(false);
+    expect(scopedSuiteVerified({ ...SCOPED_VERIFIED, repro: 'fail' })).toBe(false);
+    expect(completionFactsHold({ ...SCOPED_VERIFIED, repro: 'fail' })).toBe(false);
+    expect(completionFactsHold({ ...SCOPED_VERIFIED, ledgerFixed: false })).toBe(false);
+    expect(completionFactsHold({ ...SCOPED_VERIFIED, testsChanged: ['tests/test_core.py'] })).toBe(false);
   });
 });
 

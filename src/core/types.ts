@@ -146,6 +146,13 @@ export interface CompletionEvidence {
   repro: 'pass' | 'fail' | 'none';
   /** how the issue oracle was established; null when none was sought */
   oracle: OracleOutcome | null;
+  /**
+   * The verification of a repository-class run whose oracle search found nothing (`repro: 'none'`, the one
+   * best-guess commit): `failingAtBase` scoped regression tests failed at the base commit and all `total` pass
+   * on the committed workspace. It stands in for the passing reproduction in `completionFactsHold`: the failing
+   * scoped tests were the task, as on the pytest class. Absent when a reproduction exists or nothing flipped.
+   */
+  scopedSuite?: { failingAtBase: number; total: number };
   command?: string;
 }
 

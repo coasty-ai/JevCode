@@ -204,13 +204,19 @@ export function patchGoalText(applied: AppliedCandidate, goal: Goal, evidence?: 
  * The goal text of a best-guess `patch` (no reproduction oracle, docs brief item 3): it states
  * the one thing that was measured — the scoped regression run kept passing — and that the fix
  * itself is unverified, so the risk stage reads an honest claim rather than a verified one.
+ * When the scoped run itself flipped (tests that failed at the base commit pass on the candidate,
+ * none regressed) the text says that instead of "still pass as before": those tests are the
+ * verification the next re-baseline confirms (index.ts rebaselineRepository, `scopedVerified`).
  */
 export function bestGuessGoalText(applied: AppliedCandidate, evidence?: ProposalEvidence): string {
   const c = applied.candidate;
   const where = `${c.site.file.path}:${c.site.line}`;
   if (evidence === undefined) return `apply best-guess fix (no reproduction oracle; unverified): ${c.source}/${c.op} at ${where}`;
   const n = evidence.newlyFailing.length;
-  const regressions = n === 0 ? `the ${evidence.after.total} scoped tests still pass as before (${evidence.before.passed}→${evidence.after.passed} of ${evidence.after.total}), no regressions` : `${n} regression${n === 1 ? '' : 's'} in the scoped run`;
+  const k = evidence.newlyPassing.length;
+  const counts = `(${evidence.before.passed}→${evidence.after.passed} of ${evidence.after.total})`;
+  if (n === 0 && k > 0) return `apply best-guess fix (no reproduction oracle): ${c.source}/${c.op} at ${where}; ${k} scoped test${k === 1 ? '' : 's'} that failed at the base commit now pass${k === 1 ? 'es' : ''} ${counts}, no regressions — the scoped suite verifies it on the next run`;
+  const regressions = n === 0 ? `the ${evidence.after.total} scoped tests still pass as before ${counts}, no regressions` : `${n} regression${n === 1 ? '' : 's'} in the scoped run`;
   return `apply best-guess fix (no reproduction oracle; unverified): ${c.source}/${c.op} at ${where}; ${regressions}`;
 }
 
@@ -655,6 +661,8 @@ export function doneReadiness(ctx: SynthesisContext, mem: ProposalMemory): DoneR
 export interface CompletionRepository {
   oracleOutcome: string;
   lastRepro: { verdict: { pass: boolean } } | null;
+  /** the scoped-suite verification of a best-guess goal (memory.ts RepositoryMode.scopedVerified); absent or null otherwise */
+  scopedVerified?: { failingAtBase: number; total: number } | null;
 }
 
 /**
@@ -673,6 +681,8 @@ export function completionEvidence(ctx: SynthesisContext, mem: ProposalMemory, c
     guardPending: ready.guardPending,
     repro: repo === null || repo.lastRepro === null ? 'none' : repo.lastRepro.verdict.pass ? 'pass' : 'fail',
     oracle,
+    // a best-guess goal verified by its scoped suite (no reproduction): the fact the engine reads instead of the reproduction
+    ...(repo?.scopedVerified != null && repo.lastRepro === null ? { scopedSuite: { failingAtBase: repo.scopedVerified.failingAtBase, total: repo.scopedVerified.total } } : {}),
     command,
   };
 }

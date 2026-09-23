@@ -157,6 +157,21 @@ every provider key is selectable with search.
 - `jevcode import`'s source is a **positional**, not `--source <id>`: `--source` is already a hidden flag whose
   values are `cli|perf`, and one name cannot mean two things.
 
+### Fixed — the engine's issue path (2026-09-23)
+
+- **An un-ignored virtualenv no longer turns a small workspace into a repository-class run.** The git listing of
+  candidates (`git ls-files -co --exclude-standard`) applies the walk's skip list to its untracked entries: `.venv/`,
+  `venv/`, `node_modules/`, `__pycache__/`, `dist/`, `build/` and the rest never become candidates unless they are
+  tracked. The first live drive of the demo carried a `.venv` (1,092 untracked files) that made three source files
+  read as a package of hundreds, with `site-packages/pip/.../wheel.py` localised as a module file.
+- **A best-guess fix is verified by its scoped suite.** On the repository class with no reproduction oracle the goal
+  used to park as `best-guess fix committed, unverified` for good and the run ended `done partial` on a green suite
+  (`replan_stop · 14 steps` on the drive). When scoped tests that failed at the base commit all pass after the commit
+  and none regressed, the goal is fixed, the fact travels on the claiming run and the `done` as
+  `evidence.completion.scopedSuite`, and the engine completes on its own all-pass run (`docs/LLM-JEV-DESIGN.md` §6.6
+  rev 4). The patch text says which it is: `3 scoped tests that failed at the base commit now pass (4→7 of 7)` rather
+  than `still pass as before (4→7 of 7)`.
+
 ### Closed after the integration pass (the gap-closure and lean finishing passes, 2026-09-22)
 
 - **The session ledger is live in production.** `openCoordination()` (one function, the shape of `openSessionLedger`) opens the

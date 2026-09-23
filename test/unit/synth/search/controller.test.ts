@@ -15,7 +15,7 @@ import type { HistoryFacts } from '../../../../src/synth/history/index.js';
 import { fakeWorkspace } from './proposal-helpers.js';
 import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, NETWORK_ORACLE_OPEN_PROBLEM, bestGuessTestId, mergeSummaries } from '../../../../src/synth/oracle/index.js';
 import type { OracleSearch, ReproGoal, ReproSpec, VerifyReproResult } from '../../../../src/synth/oracle/index.js';
-import { dropMemory } from '../../../../src/synth/search/memory.js';
+import { dropMemory, repositoryFromPersisted, repositoryToPersisted } from '../../../../src/synth/search/memory.js';
 import type { PersistedMemoryState as PersistedWithRepository } from '../../../../src/synth/search/memory.js';
 import { BEST_GUESS_NOTE, runActionLabel } from '../../../../src/synth/search/proposal.js';
 import type { VerifyOutcome } from '../../../../src/synth/search/types.js';
@@ -974,6 +974,51 @@ describe('repository mode (Django/sympy-shaped workspace): oracle goal, best gue
     expect(h.calls.filter((c) => c.startsWith('search'))).toEqual(['searchBestGuess:g1']); // one guess per run
   });
 
+  it('no oracle, scoped tests failing at the base commit: the best guess is verified by the scope going green — the goal is fixed, the claiming run and the `done` carry the scoped-suite fact (the demo-py hero task, 20260923-065340-jk2tqc7w)', async () => {
+    const file = moduleFile();
+    const FAILING_AT_BASE = ['test_c (model_fields.tests.BasicFieldTests)', 'test_d (model_fields.tests.BasicFieldTests)', 'test_e (model_fields.tests.BasicFieldTests)'];
+    const scopedFailing = (): BaselineRun => ({ summary: summary({ command: SCOPED, passing: SCOPED_PASSING, failing: FAILING_AT_BASE, durationMs: 400 }), output: '' });
+    const allFive = (): BaselineRun => ({ summary: summary({ command: SCOPED, passing: [...SCOPED_PASSING, ...FAILING_AT_BASE], failing: [], durationMs: 400 }), output: '' });
+    const bestGuessCommit = (goal: Goal, mem: RunMemory): SubGoalResult => {
+      const base = mem.bases[0]!;
+      const applied = applyForOutcome(cand(siteAt(file, 3), '        return hash(self.creation_counter)'), base.files);
+      const scoped = allFive().summary;
+      const outcome: VerifyOutcome = { job: { candidate: applied.candidate, base, p: 0.7, sourcePrior: 1, key: [2, 0.7, 1] }, applied, subset: scoped, full: scoped, progress: progressOf(base.summary, scoped), status: 'plausible' };
+      return { kind: 'commit', applied, allGoalTestsPass: false, outcome, trace: makeTrace({ goalId: goal.id, outcome: 'partial', runMode: 'RANK', candidatesTested: 3, plausible: 1 }) };
+    };
+    const h = harness({ llmJev: true, files: [file], baselines: [scopedFailing(), allFive()], locate: locateModule(file), regressionScope: scopeFor(), bestGuess: [bestGuessCommit] });
+    const runId = 'repo-best-guess-scoped';
+    const issueId = bestGuessTestId(TASK);
+    // step 1 (llm-jev: no establishing run): 3 of 5 scoped tests fail at the base commit — known failures, never goals; the best guess commits and the patch says what flipped
+    const p1 = await h.synth.synthesize(repoCtx({ runId, step: 1 }));
+    const mem = runMemory(runId);
+    expect(mem.repository).toMatchObject({ repro: null, oracleOutcome: 'no_blocks', knownFailures: 3, scopedVerified: null, bestGuessCommitted: true });
+    expect(p1.action.kind).toBe('patch');
+    expect(p1.goal).toBe(`apply best-guess fix (no reproduction oracle): mutation/relational_swap at ${MODULE}:3; 3 scoped tests that failed at the base commit now pass (2→5 of 5), no regressions — the scoped suite verifies it on the next run`);
+    expect(p1.evidence).toMatchObject({ selection: 'rank', goalTests: [], newlyPassing: FAILING_AT_BASE, newlyFailing: [] });
+    expect(mem.goals[0]).toMatchObject({ status: 'parked', parkedReason: BEST_GUESS_PARK_REASON });
+    // step 2: the patch executed → the scoped run is green on the committed workspace → the goal is fixed by the scoped suite; the claiming run carries the fact
+    const p2 = await h.synth.synthesize(repoCtx({ runId, step: 2, window: [executedPatch(1, [MODULE])], plan: { remaining: [`fix ${issueId} in ${MODULE}`, VERIFY_ITEM] } }));
+    expect(mem.goals[0]).toMatchObject({ status: 'fixed' });
+    expect(mem.repository).toMatchObject({ knownFailures: 0, scopedVerified: { failingAtBase: 3, total: 5 } });
+    expect(p2.action).toMatchObject({ kind: 'run', command: SCOPED });
+    expect(p2.evidence?.completion).toEqual({ ledgerFixed: true, testsChanged: [], guardPending: false, repro: 'none', oracle: 'no_blocks', scopedSuite: { failingAtBase: 3, total: 5 }, command: SCOPED });
+    // the engine's own all-pass run of that command completes the run on the fact (no reproduction, no code oracle: the scoped suite stands in) — a run that still fails does not
+    expect(isCompleteByFact({ action: 'run', outcome: 'executed', tests: { command: SCOPED, parsed: { passed: 5, failed: 0, errors: 0, skipped: 0 }, allPassed: true }, testsCurrent: true, completion: p2.evidence?.completion, testsPassUnparsed: null, verifiedDone: false })).toBe(true);
+    expect(isCompleteByFact({ action: 'run', outcome: 'executed', tests: { command: SCOPED, parsed: { passed: 4, failed: 1, errors: 0, skipped: 0 }, allPassed: false }, testsCurrent: true, completion: p2.evidence?.completion, testsPassUnparsed: null, verifiedDone: false })).toBe(false);
+    // step 3: the engine ran it green → the green `done` (not the partial one of an unverified guess) with the same fact, and the `done` fact holds without a second witness
+    const p3 = await h.synth.synthesize(repoCtx({ runId, step: 3, window: [executedPatch(1, [MODULE]), scopedRun(2, SCOPED, { passed: 5, failed: 0 })], plan: { remaining: [VERIFY_ITEM] } }));
+    expect(p3.action.kind).toBe('done');
+    if (p3.action.kind === 'done') expect(p3.action.summary).toMatch(/^all 5 tests pass; 1 fix committed/);
+    expect(p3.evidence?.completion).toMatchObject({ ledgerFixed: true, repro: 'none', oracle: 'no_blocks', scopedSuite: { failingAtBase: 3, total: 5 } });
+    expect(isCompleteByFact({ action: 'done', outcome: 'noop', tests: null, testsCurrent: true, completion: p3.evidence?.completion, testsPassUnparsed: null, verifiedDone: true })).toBe(true);
+    expect(h.calls.filter((c) => c.startsWith('search'))).toEqual(['searchBestGuess:g1']);
+    // the persisted mode carries the verification, so a resumed run keeps the fact
+    const persisted = repositoryToPersisted(mem.repository!);
+    expect(persisted.scopedVerified).toEqual({ failingAtBase: 3, total: 5 });
+    expect(repositoryFromPersisted({ ...(toJson(persisted) as object), repository: toJson(persisted) } as unknown as PersistedWithRepository)?.scopedVerified).toEqual({ failingAtBase: 3, total: 5 });
+  });
+
   it('a blocked best-guess patch is re-proposed once from the stash, then the goal parks as rejected: no second guess, partial done', async () => {
     const file = moduleFile();
     const commit = (goal: Goal, mem: RunMemory): SubGoalResult => {
@@ -1178,7 +1223,7 @@ describe('repository mode (Django/sympy-shaped workspace): oracle goal, best gue
       expect(repositoryPatchNotes({ oracleOutcome: 'weak_network', repro, scope })).toEqual([network]);
       expect(repositoryPatchNotes({ oracleOutcome: 'valid_weak', repro, scope })).toEqual([`weak reproduction oracle ${REPRO_ID}: the criterion only says the observed wrong value changed; the regression scope (1 files) is the other check`]);
       expect(repositoryPatchNotes({ oracleOutcome: 'valid', repro: { spec, strength: 'strong' }, scope })).toEqual([]);
-      const repo = { goalId: 'g1', moduleFiles: [MODULE], scope, repro, oracleOutcome: 'weak_network', oracleNote: 'n', traceback: null, bestGuessCommitted: false, knownFailures: 0, lastRepro: null };
+      const repo = { goalId: 'g1', moduleFiles: [MODULE], scope, repro, oracleOutcome: 'weak_network', oracleNote: 'n', traceback: null, bestGuessCommitted: false, knownFailures: 0, scopedVerified: null, lastRepro: null };
       expect(repositoryNotes(repo).at(-1)).toBe(network);
       expect(repositoryNotes({ ...repo, oracleOutcome: 'valid_weak' }).some((n) => n.startsWith(NETWORK_ORACLE_OPEN_PROBLEM))).toBe(false);
     });

@@ -310,6 +310,8 @@ One `Proposal` per `synthesize()`. The step after an executed `patch` proposes t
 
 ---
 
+*(rev 4, 2026-09-23: the scoped suite verifies a best guess.)* On the repository class with **no reproduction oracle** (`no_blocks` and an L2 writer that produced nothing: the issue text carried nothing runnable), the one best-guess commit used to park its goal for good (`BEST_GUESS_PARK_REASON`) and the run ended `done partial` however green the workspace was — the demo-py hero task (`20260923-065340-jk2tqc7w`) went `replan_stop · 14 steps` with 7/7 passing from step 2. Now the re-baseline after the commit reads the scoped regression run itself: when scoped tests that **failed at the base commit** (the known failures, which on this class are never goals) all pass on the committed workspace and none regressed, the goal is `fixed` and `RepositoryMode.scopedVerified = { failingAtBase, total }` (persisted with the mode). The fact travels as `CompletionEvidence.scopedSuite`; `completionFactsHold` accepts it in place of the passing reproduction under a code oracle, and `secondWitnessHolds` takes the flipped scope as the witness — the engine's own all-pass run of the same command is what completes the run (`isCompleteByFact`), exactly the pytest class's position: the failing tests were the task. A scope that was green at the base has nothing to flip and the guess stays a guess (`bestGuessGoalText` says which of the two it is). A later scoped run that fails again withdraws the verification and re-opens the goal (`search/index.ts rebaselineRepository`, `loop/stages/complete.ts scopedSuiteVerified`).
+
 ## 7. Speed plan *(rev 2: overlaps corrected; figures conditional on the probe)*
 
 ### 7.1 What overlaps (new work; the inner loop is strictly sequential today)

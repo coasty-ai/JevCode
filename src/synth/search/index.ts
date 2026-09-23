@@ -1496,6 +1496,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     // the count — a commit that fixed one of them — never raise it, so a regression this run caused can
     // never travel as a pre-existing failure. A resumed run keeps the persisted count for the same reason.
     const scopedFailing = scoped.failed + scoped.errors;
+    const knownBefore = repo.knownFailures;
     repo.knownFailures = atBaseCommit ? scopedFailing : Math.min(repo.knownFailures, scopedFailing);
     repo.lastRepro = repro;
     const goal = mem.goals.find((g) => g.id === repo?.goalId);
@@ -1504,6 +1505,23 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       if (repro.verdict.pass) {
         if (goal.status !== 'fixed') noteCommit(goal, true);
       } else if (goal.status === 'fixed') goal.status = 'open';
+    } else if (goal !== undefined && repro === null && repo.bestGuessCommitted && !atBaseCommit && scoped.total > 0) {
+      // No reproduction oracle: the best guess is verified by the scoped suite itself — scoped tests that FAILED at
+      // the base commit (the known failures, which on this class were never goals) all pass on the committed
+      // workspace, none regressed. Those tests were the task, as on the pytest class; a run whose scope was green
+      // at the base has nothing to flip and stays a best guess (`bestGuessGoalText` says which). The fact travels
+      // on the claiming run and the `done` as `CompletionEvidence.scopedSuite` (complete.ts `scopedSuiteVerified`).
+      const failingAtBase = repo.scopedVerified?.failingAtBase ?? knownBefore;
+      if (scopedFailing === 0 && failingAtBase > 0 && goal.status !== 'fixed') {
+        repo.scopedVerified = { failingAtBase, total: scoped.total };
+        noteCommit(goal, true);
+        this.emit(ctx, 'verify', `${goal.id}: verified by the scoped suite — ${failingAtBase} of ${scoped.total} scoped test${scoped.total === 1 ? '' : 's'} failed at the base commit, all ${scoped.total} pass on the committed workspace (no reproduction oracle; the best-guess fix is verified)`);
+      } else if (scopedFailing > 0 && repo.scopedVerified !== null && goal.status === 'fixed') {
+        // the scope fails again after a later change: the verification is withdrawn with the goal
+        repo.scopedVerified = null;
+        goal.status = 'open';
+        this.emit(ctx, 'verify', `${goal.id}: ${scopedFailing} scoped test${scopedFailing === 1 ? '' : 's'} fail again on the committed workspace; the scoped-suite verification is withdrawn`);
+      }
     }
     attachPlanItems(mem.goals, ctx.plan.remaining);
     const reproText = repro === null ? 'no reproduction oracle' : `reproduction ${repo.repro?.spec.testId ?? ''} ${repro.verdict.pass ? 'PASSES' : 'fails'} (${repro.verdict.actual.slice(0, 80)}) in ${repro.result.durationMs} ms`;
@@ -1567,6 +1585,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       traceback: found.traceback,
       bestGuessCommitted: false,
       knownFailures: 0,
+      scopedVerified: null,
       lastRepro: null,
     };
     mem.repository = repo;

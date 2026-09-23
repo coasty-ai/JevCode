@@ -169,9 +169,25 @@ export function isRepositoryClass(c: CompletionEvidence): boolean {
   return c.oracle !== null || c.repro !== 'none';
 }
 
-/** Change 8: on the repository class, `complete` needs two witnesses derived from different selections. */
+/**
+ * A repository-class run with no reproduction (`repro: 'none'`) whose best-guess commit turned the scoped
+ * regression suite from failing at the base commit to all-pass (`CompletionEvidence.scopedSuite`). The scoped
+ * tests that failed were the task — exactly the pytest class's position — so this stands in for the passing
+ * reproduction under a code oracle, and the engine's own all-pass run of the same command is the witness.
+ */
+export function scopedSuiteVerified(c: CompletionEvidence): boolean {
+  if (c.repro !== 'none' || c.scopedSuite === undefined) return false;
+  const { failingAtBase, total } = c.scopedSuite;
+  return Number.isFinite(failingAtBase) && failingAtBase > 0 && Number.isFinite(total) && total >= failingAtBase;
+}
+
+/**
+ * Change 8: on the repository class, `complete` needs two witnesses derived from different selections. The
+ * scoped-suite verification (`scopedSuiteVerified`) is its own witness: the run that flipped is the regression
+ * scope, and the engine's all-pass run of that command repeats it.
+ */
 export function secondWitnessHolds(c: ClaimingCompletionEvidence): boolean {
-  if (!isRepositoryClass(c)) return true;
+  if (!isRepositoryClass(c) || scopedSuiteVerified(c)) return true;
   return independentWitnessSelections(c).length >= INDEPENDENT_WITNESSES_REQUIRED;
 }
 
@@ -244,7 +260,8 @@ export function completionEvidenceHolds(c: ClaimingCompletionEvidence, executedC
  */
 export function completionFactsHold(c: CompletionEvidence): boolean {
   if (!c.ledgerFixed || c.testsChanged.length > 0 || c.guardPending) return false;
-  return !isRepositoryClass(c) || (c.repro === 'pass' && c.oracle !== null && COMPLETING_ORACLE_OUTCOMES.includes(c.oracle));
+  if (!isRepositoryClass(c) || scopedSuiteVerified(c)) return true;
+  return c.repro === 'pass' && c.oracle !== null && COMPLETING_ORACLE_OUTCOMES.includes(c.oracle);
 }
 
 /**

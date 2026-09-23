@@ -1844,3 +1844,23 @@ step has budget the doubted passer is not released and the search keeps looking 
 discarded; for the bench it is a policy change on the `llm-jev` arm (a doubted sole passer now lands where it used to be dropped),
 recorded here so the next measurement reads it as such. The records to date held no such lone passer at the 0.7 bound and none below
 0.3 (iteration 4, item D) — the demo was the first.
+
+## 2026-09-23 A best guess with no reproduction oracle is verified by its scoped suite; an un-ignored virtualenv is never a candidate
+
+The first live drive of the pinned-wordmark TUI ran the hero task (`examples/demo-py`, three source files) as a repository-class
+checkout: the demo template carried a `.venv` nobody had gitignored, `git ls-files -co --exclude-standard` listed its 1,092 files,
+`isRepositoryWorkspace` counted the site-packages `.py` files past the 40-source-file line, and the localiser named
+`.venv/lib/python3.9/site-packages/pip/_internal/utils/wheel.py` as a module file. The readdir walk never enters `WALK_SKIP_DIRS`;
+the git listing now applies the same rule to its untracked entries (`workspace/git.ts lsFiles`, `candidates.ts underSkippedDir`).
+Tracked files are never dropped: a checkout that commits `dist/` or `build/` means it.
+
+On that path the engine then did what the class prescribes when the issue text yields no oracle: one best guess, its goal parked as
+`best-guess fix committed, unverified (no reproduction oracle)`, and `done partial` on every later step until `replan_stop · 14 steps`
+— with the scoped suite at 7/7 from step 2. The rule was written for Django/sympy issues whose failing tests are not in the workspace,
+where a green scope proves nothing about the issue. When the scope itself FAILED at the base commit and the guess turns it green with
+no regression, those failing tests were the task — the pytest class's own position — so the re-baseline marks the goal fixed
+(`RepositoryMode.scopedVerified`, persisted), the fact travels as `CompletionEvidence.scopedSuite`, and the engine completes on its
+own all-pass run of the same command (`complete.ts scopedSuiteVerified`; `docs/LLM-JEV-DESIGN.md` §6.6 rev 4). A scope that was green
+at the base still leaves the guess a guess, and the patch text says which of the two it is. Either change alone would have ended
+the drive's run at step 2; with the listing fix it does not enter the class at all (three files, the pytest path, goals from the
+failing tests, `complete` in three steps).

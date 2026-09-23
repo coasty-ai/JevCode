@@ -25,7 +25,7 @@ import { searchBestGuess } from '../../../../src/synth/search/subgoal.js';
 import { GCD_OTHER_TEST, GCD_TEST, cand, fakeBudget, fakeCtx, fakeGoal, fakeMemory, fakeSubGoalDeps, gcdFixture, slowOracle, summary } from './controller-fakes.js';
 
 function repositoryOf(goalId: string): RepositoryMode {
-  return { goalId, moduleFiles: ['gcd.py'], scope: { testFiles: [], command: null, tier: 'none', note: 'no scope' }, repro: null, oracleOutcome: 'no_blocks', oracleNote: 'no code block', traceback: null, bestGuessCommitted: false, knownFailures: 0, lastRepro: null };
+  return { goalId, moduleFiles: ['gcd.py'], scope: { testFiles: [], command: null, tier: 'none', note: 'no scope' }, repro: null, oracleOutcome: 'no_blocks', oracleNote: 'no code block', traceback: null, bestGuessCommitted: false, knownFailures: 0, scopedVerified: null, lastRepro: null };
 }
 
 describe('question 1(b): the best-guess repository search prices only what the step can run', () => {

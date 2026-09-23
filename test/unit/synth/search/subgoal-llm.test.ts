@@ -41,7 +41,7 @@ function llmBudget(over: { llmRounds?: number; jev?: number; wallMs?: number } =
 }
 
 function repositoryOf(goalId: string): RepositoryMode {
-  return { goalId, moduleFiles: ['gcd.py'], scope: { testFiles: [], command: null, tier: 'none', note: 'no scope' }, repro: null, oracleOutcome: 'no_blocks', oracleNote: 'no code block', traceback: null, bestGuessCommitted: false, knownFailures: 0, lastRepro: null };
+  return { goalId, moduleFiles: ['gcd.py'], scope: { testFiles: [], command: null, tier: 'none', note: 'no scope' }, repro: null, oracleOutcome: 'no_blocks', oracleNote: 'no code block', traceback: null, bestGuessCommitted: false, knownFailures: 0, scopedVerified: null, lastRepro: null };
 }
 
 describe('pure rules', () => {
