@@ -107,7 +107,7 @@ describe('createStreamScheduler', () => {
     expect(c.timers).toBe(0);
   });
 
-  it('flushNow flushes at once and cancels the pending one; cancel drops it; neither leaves a timer', () => {
+  it('cancel drops a pending flush and leaves no timer', () => {
     const c = fakeClock();
     const flushes: boolean[] = [];
     const s = createStreamScheduler((leading) => flushes.push(leading), 33, c);
@@ -115,15 +115,9 @@ describe('createStreamScheduler', () => {
     c.advance(5);
     s.poke();
     expect(s.pending).toBe(true);
-    s.flushNow();
-    expect(flushes).toEqual([true, false]);
-    expect(c.timers).toBe(0);
-    c.advance(5);
-    s.poke();
-    expect(s.pending).toBe(true);
     s.cancel();
     c.advance(200);
-    expect(flushes).toEqual([true, false]);
+    expect(flushes).toEqual([true]);
     expect(c.timers).toBe(0);
   });
 

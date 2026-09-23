@@ -36,7 +36,7 @@ import type { OverlayKind } from './layout.js';
 import { emptyLoopFold, foldLoopPlan, foldLoopReplan, foldLoopSteer, foldLoopStep, loopView, type LoopBannerView, type LoopFold } from './pane/banner.js';
 import { DEFAULT_COMPLETE_THRESHOLD, DEFAULT_IMPOSSIBLE_THRESHOLD, DEFAULT_MODE } from '../config/defaults.js';
 import { foldByStep, foldPlanRecord, foldStageEnd, foldStepEnd, toDecisionRow, type DecisionRow, type PaneTab, type PlanView, type SynthView, type TimelineStep } from './pane/model.js';
-import { AGENT_TOOL_VERB, IDENTITY_REVIEWER, agentRunEndedAsReply, isAgentToolActivity, isHoldableAgentRow, isQuietAgentFinish, itemsFromEvent, localItem, oneLine, proseLinesOf, sanitizeStream, synthText, type TranscriptItem, type TranscriptLevel } from './plain.js';
+import { AGENT_TOOL_VERB, COMPACT_HIDDEN_KINDS, IDENTITY_REVIEWER, agentRunEndedAsReply, isAgentToolActivity, isHoldableAgentRow, isQuietAgentFinish, itemsFromEvent, localItem, oneLine, proseLinesOf, sanitizeStream, synthText, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { retryViewFrom, startTicker, type RetryView } from './retry.js';
 import type { GitZone, PeerZoneSelf, ThinkingPhase } from './status/lines.js';
 // TUI-DESIGN-5 §2.2 (R5-H4): TYPE-only — `src/coordination/**` must stay off the first-frame graph (§2.1 rule 3)
@@ -85,15 +85,15 @@ export const TICK_MS = 1000;
 /** TUI-DESIGN-2 §3.11: the controller keeps the last three intakes' decision rows for the panel. */
 export const CHAT_ROWS_KEPT = 3;
 
-/** TUI-DESIGN-2 §4.5: the stage kinds the default `compact` transcript hides (they stay in transcript.log, `--plain` and the panel); AGENT-LOOP-DESIGN §9.4 adds the read-only `tool` rows. */
-export const COMPACT_HIDDEN_KINDS: ReadonlySet<string> = new Set(['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready', 'tool']);
+/** TUI-DESIGN-2 §4.5: the stage kinds the default `compact` transcript hides — plain.ts's one set (AGENT-LOOP-DESIGN §9.4 adds the read-only `tool` rows). */
+export { COMPACT_HIDDEN_KINDS };
 
 /** TUI-DESIGN-2 §4.5: a transcript item stamped with the default filter's verdict at append time (`hidden` never changes afterwards). */
 export type UiTranscriptItem = TranscriptItem & { readonly hidden?: boolean };
 
 /** TUI-DESIGN-2 §4.5: true when the `compact` view hides an item of this kind. */
 export function hiddenInCompact(kind: string): boolean {
-  return COMPACT_HIDDEN_KINDS.has(kind);
+  return (COMPACT_HIDDEN_KINDS as ReadonlySet<string>).has(kind);
 }
 
 /** TUI-DESIGN-2 §4.5: the items `<Static>` receives — the filtered array is append-only too (A25 holds). */

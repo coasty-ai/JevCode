@@ -62,13 +62,6 @@ export interface PendingLine {
   readonly length: number;
 }
 
-/** The fence state after a run of lines. */
-function fenceAfter(lines: readonly string[], fence: boolean): boolean {
-  let f = fence;
-  for (const l of lines) if (isFenceLine(l)) f = !f;
-  return f;
-}
-
 /**
  * The text a line is drawn from, live and committed alike: control characters and a stray CR dropped, format-pattern
  * keys redacted. ONE text, so the reply block's rows, the offsets of an overflow cut and the committed item's rows are
@@ -318,14 +311,4 @@ export function commitOverflow(live: string, reply: ReplyState, geom: ReplyGeome
   }
   if (out.length === 0) return null;
   return { items: out, reply: { done, offset, fence }, live, seq: s };
-}
-
-/** A new reply after a provider retry: nothing uncommitted survives, and the restarted stream opens outside any fence. */
-export function resetReply(): ReplyState {
-  return EMPTY_REPLY;
-}
-
-/** The fence state after committing `lines` (exported for the tests' model). */
-export function fenceStateAfter(lines: readonly string[], fence = false): boolean {
-  return fenceAfter(lines, fence);
 }

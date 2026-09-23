@@ -65,8 +65,6 @@ export const REAL_STREAM_CLOCK: StreamClock = {
 export interface StreamScheduler {
   /** Something was appended: flush now when the stream was quiet for an interval, else once the interval since the last flush has passed. */
   poke(): void;
-  /** Flush now (a commit, a clear), cancelling a pending flush; counts as the last flush for the cadence. */
-  flushNow(): void;
   /** Drop a pending flush without running it (unmount, a clear that dispatched its own state). */
   cancel(): void;
   /** A flush is waiting for its interval. */
@@ -77,7 +75,7 @@ export interface StreamScheduler {
 
 /**
  * A leading-edge, fixed-cadence scheduler over `flush`. `flush(true, quietMs)` is a leading edge (the stream was quiet for
- * `quietMs`; `Infinity` for the very first flush), `flush(false, 0)` a cadence flush or a `flushNow`.
+ * `quietMs`; `Infinity` for the very first flush), `flush(false, 0)` a cadence flush.
  */
 export function createStreamScheduler(flush: (leading: boolean, quietMs: number) => void, intervalMs: number, clock: StreamClock = REAL_STREAM_CLOCK): StreamScheduler {
   const interval = Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : STREAM_LOCAL_MS;
@@ -107,10 +105,6 @@ export function createStreamScheduler(flush: (leading: boolean, quietMs: number)
         timer = null;
         run(false);
       }, Math.max(0, interval - since));
-    },
-    flushNow() {
-      cancel();
-      run(false);
     },
     cancel,
     get pending() {
