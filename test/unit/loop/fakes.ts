@@ -716,6 +716,8 @@ export interface HarnessOptions {
   store?: FakeStore;
   meter?: SpendMeter;
   confirmer?: Confirmer;
+  /** leave `EngineOptions.autonomy` ABSENT (the product default, 'full') instead of the fakes' pinned 'review' */
+  autonomyDefault?: boolean;
   limits?: Partial<RunLimits>;
   mode?: EngineMode;
   /** jev-only: the propose stage */
@@ -734,7 +736,7 @@ export interface HarnessOptions {
    */
   probeGitState?: GitState | GitProbe;
   /** contract 1.1 wave 2 options spread over EngineOptions (seed, session, humanDirective, blocker, instructions, …) */
-  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'memory' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing' | 'orchestration' | 'splitPolicy' | 'coordination' | 'fastPath' | 'routers' | 's2'>> & {
+  engine?: Partial<Pick<EngineOptions, 'autonomy' | 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'memory' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing' | 'orchestration' | 'splitPolicy' | 'coordination' | 'fastPath' | 'routers' | 's2'>> & {
     /** docs/COORDINATION-DESIGN.md §12.0.1 (`EngineOptionsWithContextPolicy` until core/types.ts gains the member) */
     contextPolicy?: ContextPolicyOptions;
   };
@@ -816,6 +818,9 @@ export async function makeEngine(h: HarnessOptions = {}): Promise<Harness> {
     provider,
     decider,
     confirmer: h.confirmer ?? alwaysDecline,
+    // the product's default is 'full' (a review verdict is approved without asking); the fakes keep the asking policy so
+    // every test written against the confirmer still exercises it — a test opts into 'full' through `engine.autonomy`
+    ...(h.autonomyDefault ? {} : { autonomy: 'review' as const }),
     meter,
     limits,
     sandboxProfile: 'none',

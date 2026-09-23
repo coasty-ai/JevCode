@@ -8,6 +8,7 @@
 import { JevCodeError, ProviderHttpError } from '../errors.js';
 import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, Provider, ToolCall } from '../core/types.js';
 import { parseJson } from '../core/json.js';
+import { anthropicInputSchema } from './anthropic-schema.js';
 import { clip } from '../core/text.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
@@ -90,7 +91,8 @@ export function buildAnthropicBody(cfg: GeneratorConfig, req: GenerateRequest): 
     const tools: AnthropicToolDef[] = req.tools.map((t) => ({
       name: t.name,
       description: t.description,
-      input_schema: t.inputSchema,
+      // Anthropic rejects oneOf/const in tool schemas: the action union is flattened (anthropic-schema.ts)
+      input_schema: anthropicInputSchema(t.inputSchema),
       strict: true,
       // fragments reach onToolDelta as they are generated instead of in one burst at the end
       eager_input_streaming: true,

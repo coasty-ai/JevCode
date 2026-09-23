@@ -18,8 +18,12 @@ describe('recommend over the bundled snapshot', () => {
 
   it("puts the project's default generator first for both tasks", () => {
     expect(recommend({ task: 'generator' })[0]?.model.id).toBe(DEFAULT_MODEL);
-    expect(recommend({ task: 'decider' })[0]?.model.id).toBe(DEFAULT_MODEL);
     expect(recommendOne({ task: 'generator' })?.model.id).toBe(DEFAULT_MODEL);
+    // the nudge is generator-only: for the decider task the shortlist leads with a fully capable model from a provider
+    // a run can use — with seven generator providers that is no longer necessarily the shipped generator
+    const decider = recommend({ task: 'decider' })[0];
+    expect(decider?.model.supports).toMatchObject({ tools: true, structuredOutput: true, reasoning: true });
+    expect(decider?.reasons.some((r) => r.includes('adapter ships today'))).toBe(true);
   });
 
   it('explains itself in the reasons', () => {

@@ -380,6 +380,8 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
     provider: input.provider,
     decider: input.decider,
     confirmer: alwaysDecline,
+    // the arms were measured with a declining confirmer; the product's autonomy default must not change what a bench row means
+    autonomy: 'review',
     meter: input.meter,
     limits: { ...opts.limits, spendCapUsd: opts.taskSpendCapUsd },
     sandboxProfile: opts.sandboxProfile,

@@ -85,6 +85,17 @@ export const VARIANT_PENALTY = 25;
  */
 export const DEFAULT_MODEL_BONUS = 8;
 
+/** How many of the capability flags a model declares; the tie-break between a cheaper model and the project default. */
+function capabilityCount(model: ModelInfo): number {
+  // the three capabilities the generator score weighs; vision is not one a coding generator is chosen for
+  return [model.supports.tools, model.supports.structuredOutput, model.supports.reasoning].filter((v) => v === true).length;
+}
+
+/** Meta's `*-contributor` ids and the like: a programme tier priced for its participants, not the general model. */
+function isContributorTier(id: string): boolean {
+  return /-contributor(?:[:@-]|$)/i.test(id);
+}
+
 function isProjectDefault(model: ModelInfo): boolean {
   return model.provider === DEFAULT_PROVIDER && model.id === DEFAULT_MODEL;
 }
@@ -133,6 +144,12 @@ function scoreModel(model: ModelInfo, task: ModelTask, reference: number): { sco
     score -= VARIANT_PENALTY;
     reasons.push('routing variant, not a distinct model');
   }
+  if (isContributorTier(model.id)) {
+    // a provider's contributor-programme tier (Meta's `-contributor` ids): priced for its participants, not a general
+    // offer, so it must not outrank the general model it is a tier of — seven providers are generators now
+    score -= VARIANT_PENALTY;
+    reasons.push('contributor-programme tier, not the general offer');
+  }
 
   if (model.deprecated === true) {
     score -= DEPRECATED_PENALTY;
@@ -165,6 +182,13 @@ export function recommend(opts: RecommendOptions): Recommendation[] {
     return { model, score, reasons };
   });
   scored.sort((a, b) => (b.score !== a.score ? b.score - a.score : compareModels(a.model, b.model)));
+  // the project's default generator leads unless something MORE CAPABLE is eligible (generator-only, like the nudge): with seven generator providers a
+  // cheaper model of equal capability would otherwise displace the model the product ships with and was measured with,
+  // on price alone — the nudge (DEFAULT_MODEL_BONUS) still loses to a model that can do more
+  if (opts.task === 'generator') {
+    const i = scored.findIndex((r) => isProjectDefault(r.model));
+    if (i > 0 && capabilityCount(scored[0]!.model) <= capabilityCount(scored[i]!.model)) scored.unshift(...scored.splice(i, 1));
+  }
   const limit = opts.limit ?? RECOMMEND_LIMIT;
   return scored.slice(0, Math.max(0, limit));
 }
