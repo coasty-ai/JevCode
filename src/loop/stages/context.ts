@@ -18,6 +18,32 @@ import type { StageContext } from '../engine.js';
 import { buildContextState } from '../state.js';
 
 export const CONTEXT_MAX_CANDIDATES = 300;
+
+/**
+ * How much of the candidate set Jev is asked about (2026-09-23, "the Jev part should be minimal and seamless"): a
+ * workspace of `codeOnlyMax` candidates or fewer — or any task that names one of its files — takes the code order with
+ * no ask at all, and a larger one asks about the first `askMax` of the pre-filter's order, the rest trailing in code
+ * order. Before this the stage asked one Noul per candidate, up to 300, before the first step of every run: the user
+ * saw "78 decisions" for a one-file task. The PRODUCT (src/cli, at its createEngine sites) passes `PRODUCT_CONTEXT_ASK`;
+ * an engine built without a policy keeps the legacy always-ask (`LEGACY_CONTEXT_ASK`), which is what the bench arms were
+ * measured with and what every engine test written around the ask expects.
+ */
+export interface ContextAskPolicy {
+  codeOnlyMax: number;
+  askMax: number;
+  /** a task that names one of the workspace's files (its path or its basename with extension) takes the code order with no ask */
+  namedFileShortcut: boolean;
+}
+export const CONTEXT_CODE_ONLY_MAX = 16;
+export const CONTEXT_ASK_MAX = 24;
+export const PRODUCT_CONTEXT_ASK: ContextAskPolicy = { codeOnlyMax: CONTEXT_CODE_ONLY_MAX, askMax: CONTEXT_ASK_MAX, namedFileShortcut: true };
+export const LEGACY_CONTEXT_ASK: ContextAskPolicy = { codeOnlyMax: 0, askMax: CONTEXT_MAX_CANDIDATES, namedFileShortcut: false };
+
+/** Does the task text name this file — its workspace path, or its basename with the extension (`temp.py`)? Not a loose word. */
+export function taskNamesFile(task: string, path: string): boolean {
+  const base = path.slice(path.lastIndexOf('/') + 1);
+  return task.includes(path) || (base.includes('.') && task.includes(base));
+}
 export const CONTEXT_MAX_FILES = 12;
 export const CONTEXT_MAX_TOTAL_BYTES = 61_440;
 export const CONTEXT_MAX_FILE_BYTES = 16_384;
@@ -107,18 +133,32 @@ export interface ContextStageResult {
   files: FileView[];
   candidates: number;
   bytes: number;
+  /** how the files were chosen: the code order alone, or Jev's ranking over the asked candidates */
+  selection: 'code' | 'jev';
+  /** candidates Jev was asked about (0 under the code order) */
+  asked: number;
 }
 
 export async function runContextStage(ctx: StageContext, common: JsonObject, intent: { intent: Intent; answer: Intent | 'none_of_these'; probability: number }): Promise<ContextStageResult> {
   const listing = await ctx.workspace.listCandidates();
   const touched = new Set<string>([...ctx.changedFiles, ...ctx.createdThisRun]);
   const views = prefilterCandidates(ctx.task, listing, touched);
+  const policy = ctx.contextAsk ?? LEGACY_CONTEXT_ASK;
+  const mentioned = policy.namedFileShortcut && views.some((v) => taskNamesFile(ctx.task, v.path));
   let selected: CandidateView[] = [];
-  if (views.length > 0) {
+  let selection: ContextStageResult['selection'] = 'code';
+  let askedCount = 0;
+  if (views.length > 0 && (views.length <= policy.codeOnlyMax || mentioned)) {
+    // small workspace, or the task names its files: the code order is the selection and Jev is not asked
+    selected = selectCandidatesCode(views);
+  } else if (views.length > 0) {
+    const askViews = views.slice(0, Math.max(1, policy.askMax));
+    askedCount = askViews.length;
+    selection = 'jev';
     // The effective intent (§6 per-outcome table): a fallback resolves to `investigate`, and the
     // question text names that step kind, so `intent.choice` must agree with it.
-    const state = buildContextState(common, { choice: intent.intent, probability: intent.probability }, views);
-    const questions = buildContextQuestions(views, intent.intent);
+    const state = buildContextState(common, { choice: intent.intent, probability: intent.probability }, askViews);
+    const questions = buildContextQuestions(askViews, intent.intent);
     const probabilities = new Map<string, number>();
     // I4 at the WRITE site (§2.6): the step's own token, held from before the ask so a late answer can see that
     // its step has committed. Null on the routers-off path, where this callback is the pre-1.9 one, byte for byte.
@@ -147,7 +187,7 @@ export async function runContextStage(ctx: StageContext, common: JsonObject, int
           // nothing. Both belts stay: the signal cannot see an answer that arrives after commit under a
           // controller nobody aborted, and the token cannot see a cancellation that never reaches this callback.
           if (signal?.aborted === true || routed?.valid === false) return;
-          for (const v of views) {
+          for (const v of askViews) {
             const a = answers[contextQuestionId(v.path)];
             if (a && a.type === 'noul') probabilities.set(v.path, a.noul);
           }
@@ -157,7 +197,9 @@ export async function runContextStage(ctx: StageContext, common: JsonObject, int
         // path, where the call is the pre-1.9 one.
         signal,
       );
-      return selectCandidates(views, probabilities);
+      // Jev rated nothing worth showing (or was not heard): the code order stands rather than an empty file section
+      const byJev = selectCandidates(askViews, probabilities);
+      return byJev.length > 0 ? byJev : selectCandidatesCode(views);
     };
     if (!routersOn(ctx.mode, ctx.routers)) {
       selected = await asked();
@@ -193,5 +235,5 @@ export async function runContextStage(ctx: StageContext, common: JsonObject, int
     }
   }
   ctx.emit({ type: 'context', step: ctx.step, files: files.map((f) => f.path), bytes, candidates: views.length });
-  return { files, candidates: views.length, bytes };
+  return { files, candidates: views.length, bytes, selection, asked: askedCount };
 }
