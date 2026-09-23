@@ -122,6 +122,17 @@ import type { AskResult,
   FileMemory,
   HistoryEntry,
   RecentStepsUsage,
+  // docs/AGENT-LOOP-DESIGN.md §2.2, §15 S1: the agent seam's contract — the driver is reached only through these
+  AgentContext,
+  AgentDriver,
+  AgentDriverFactory,
+  AgentGate,
+  AgentGenerateHooks,
+  AgentNext,
+  AgentObservation,
+  LoopTrip,
+  StepAgentSummary,
+  ToolCallDelta,
 } from '../core/types.js';
 import { AbortError, CheckpointError, ConfigError, GeneratorResponseError, JevCodeError, JevHttpError, JevModelDriftError, JevResponseError, ProviderHttpError, isAbortError, isBudgetError, isJevCodeError, toJevCodeError, type BudgetKind } from '../errors.js';
 import type { DiskError } from '../checkpoint/store.js';
@@ -158,19 +169,19 @@ import { selectMemory } from './context/memory.js';
 // contract 1.5 (§3.4 rule 9): a COUNT of secret hits, never a value
 import { detectSecrets } from '../core/redact.js';
 import { linkedAbort } from '../core/abort.js';
-import { lookupPricing } from '../config/defaults.js';
+import { DEFAULT_CONTEXT_COMPACTION, lookupPricing } from '../config/defaults.js';
 import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
 import { stepTimeline, writeTimelineFile } from '../perf/timeline.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
 import { PLAN_MAX_HARNESS_PROBLEMS, applyPlanDraft, boundHarnessProblems, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
 import { buildCommonState, isChangeAction, testsCurrent, type Redact } from './state.js';
-import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTranscriptLine, tokenSeriesOrZeros } from './stop.js';
+import { assembleRunResult, classifyAbort, exitCodeFor, isFinishedStop, serializeError, stopTranscriptLine, tokenSeriesOrZeros } from './stop.js';
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
 import { completionDecision, isComplete, isCompleteByFact, type CompletionFactInput } from './stages/complete.js';
 // contract 1.9 (Fastlane) §7.5 — the engine seam of the router table: the switch (§0.3), the per-step commit of the
 // token and the ledger (§2.6, §5.2). `src/loop/routers.ts` owns all three; the engine calls them and nothing else.
-import { commitStepRouters, discardStepRouters, routersOn } from './routers.js';
+import { commitStepRouters, discardStepRouters, routersOn, stepTokenFor } from './routers.js';
 import { prefilterCandidates, runContextStage } from './stages/context.js';
 import type { ContextAskPolicy } from './stages/context.js';
 // contract 1.5 (ORCHESTRATION-DESIGN §3, §8.2 D1 item 15): the decompose stage
@@ -191,7 +202,28 @@ import { hedgedCall, providerOrderFor, s2Mode } from '../synth/llm/hedge.js';
 import { warmPlaneEnabled } from '../synth/warm/index.js';
 import { scopeUsable } from '../workspace/tests.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
-import { runJudgeStage } from './stages/judge.js';
+import { codeJudge, ledgerGoalsOf, runJudgeStage } from './stages/judge.js';
+// docs/AGENT-LOOP-DESIGN.md §2.1, §2.2 (slice S4): the agent-mode propose stage and the engine seam's pure helpers
+import {
+  AGENT_MAX_BLOCKS,
+  AGENT_MAX_BLOCKS_LINE,
+  AGENT_MAX_LOOP_NUDGES,
+  AGENT_STATE_MAX_BYTES,
+  changedSincePre,
+  createAgentStreamTap,
+  destructiveCoverage,
+  destructiveNote,
+  isOutputPart,
+  isUnscopedGreenRun,
+  recordedTestCommand,
+  ruleRiskAssessment,
+  runAgentStage,
+  stepChangeSet,
+  writeOutputPart,
+} from './stages/agent.js';
+import { isReplyOnlyRun } from '../core/agent-run.js';
+import { ABSENT_DECIDER_MODEL } from '../jev/absent.js';
+import { settingIsExplicit } from '../config/resolve.js';
 import { runProposeStage, type ProposeStageResult } from './stages/propose.js';
 import { runReplanStage } from './stages/replan.js';
 import { createCachingDecider, type CachingDecider } from '../jev/cache.js';
@@ -280,7 +312,7 @@ interface ResolvedDeps {
 // Real sibling modules (static imports: esbuild bundles them; tests still inject fakes via EngineDeps).
 import { createCheckpointStore as realCreateCheckpointStore } from '../checkpoint/store.js';
 import { newRunId as realNewRunId } from '../checkpoint/run-id.js';
-import { loadForResume as realLoadForResume } from '../checkpoint/resume.js';
+import { loadForResume as realLoadForResume, raiseAgentTranscriptSeq } from '../checkpoint/resume.js';
 import { createSandbox as realCreateSandbox } from '../sandbox/run.js';
 import { createWorkspace as realCreateWorkspace } from '../workspace/files.js';
 
@@ -588,6 +620,23 @@ interface StepDraft {
   replayed: boolean;
   /** absorbDiscardedTiming ran: this attempt's sample rows carry `discarded: true` (§11 row 41) */
   discarded: boolean;
+  /** docs/AGENT-LOOP-DESIGN.md §2.3 / §10: what the driver made of this step (`StepRecord.agent`); null outside agent mode */
+  agent: StepAgentSummary | null;
+  /** §12: the classifier's gate on this step's mutating call; null unless the step is an agent `act` */
+  agentGate: AgentGate | null;
+  /** §2.2: a command other than the detected test command changed a workspace file this step — `lastChangeStep` at commit */
+  agentChanged: boolean;
+}
+
+/** docs/AGENT-LOOP-DESIGN.md §3.4 / §A5: what an agent `act` / `verify` step's images said, for the change set and the note. */
+interface AgentImages {
+  pre: PreImageResult | null;
+  /** the dirty set's size before the command (0 → a null `pre` is "nothing to copy", not a failed copy) */
+  dirty: number;
+  /** HEAD before the command (null: unborn or no repository) */
+  headBefore: string | null;
+  /** `changedSincePre` as computed before the post images; null until then */
+  preChanged: string[] | null;
 }
 
 /** contract 1.4 (§12.0.2): the pause point as decided where the run stopped; finish() completes `resumableAt` / `replayable` / `by` / `end` */
@@ -660,6 +709,25 @@ function twinRequest(req: GenerateRequest): GenerateRequest {
   const order = req.providerPrefs?.order ?? [];
   if (order.length < 2) return req;
   return { ...req, providerPrefs: { requireParameters: req.providerPrefs?.requireParameters ?? true, order: [...providerOrderFor(order, true)] } };
+}
+
+/**
+ * The `generator.jsonl` prompt hash. An agent turn sends `messages: []` and its transcript in `agent.messages`
+ * (docs/AGENT-LOOP-DESIGN.md §6.1), so the transcript joins the hash — otherwise every turn of a run would share one. A legacy
+ * request has no `agent` member and hashes exactly as it always did.
+ */
+function promptHashOfRequest(req: GenerateRequest): string {
+  return sha12(toJson(req.agent === undefined ? { system: req.system, messages: req.messages } : { system: req.system, messages: req.messages, agent: req.agent.messages }));
+}
+
+/** docs/AGENT-LOOP-DESIGN.md §15 S4 item 7: an agent transcript's characters, for the unfinished-call estimate; 0 for a legacy request. */
+function agentMessageChars(req: GenerateRequest): number {
+  if (req.agent === undefined) return 0;
+  let n = 0;
+  for (const m of req.agent.messages) {
+    for (const b of m.content) n += b.type === 'text' ? b.text.length : b.type === 'tool_result' ? b.content.length : b.name.length + JSON.stringify(b.input).length;
+  }
+  return n;
 }
 
 /** §3.1–§3.4: did the engine measure anything about this step's own propose call? Only then is `verify` written. */
@@ -778,9 +846,10 @@ function redactDeep(v: unknown, redact: Redact): unknown {
  * jev-on and jev-only consume Jev answers (intent, context, risk, judge, replan); jev-off is the generator alone (§13).
  * llm-jev is true here too (docs/LLM-JEV-DESIGN.md §6.3) while every intent/context/judge branch it guards is edited to
  * skip or compute in that mode: replan on a trip, harm-only risk, code judge, code completion.
+ * `agent` is false (docs/AGENT-LOOP-DESIGN.md §2.2): the driver proposes and no intent, context, risk, judge or replan stage runs.
  */
 export function usesJev(mode: EngineMode): boolean {
-  return mode !== 'jev-off';
+  return mode !== 'jev-off' && mode !== 'agent';
 }
 
 /**
@@ -850,6 +919,12 @@ function clipText(s: string, max: number): string {
   const body = c.slice(0, -1);
   const last = body.charCodeAt(body.length - 1);
   return last >= 0xd800 && last <= 0xdbff ? `${body.slice(0, -1)}…` : c;
+}
+
+/** docs/AGENT-LOOP-DESIGN.md §5.1: an optional prompt section's text, or null when it is absent or blank. */
+function nonEmptyText(s: string | undefined): string | null {
+  const t = s?.trim() ?? '';
+  return t.length > 0 ? t : null;
 }
 
 /** TUI-DESIGN §12.3: the HEAD oid a post image records (null: unborn or no repository). */
@@ -1211,6 +1286,24 @@ class EngineImpl implements Engine {
   /** §5.7 tail: `RunMeta.landed`, newest last */
   private landedMerges: readonly { step: number; branch: string; commit: string }[] = [];
 
+  // docs/AGENT-LOOP-DESIGN.md §2.2, §7.5, §8, §10 (slice S4): the agent seam. Every member is inert outside `agent` mode — the
+  // driver is never loaded, the state stays null (so `state.json` carries no `agentState`) and nothing below is read.
+  /** the run's driver: `EngineOptions.agent` (tests), else `createAgentDriver()` from `src/agent/index.ts`, loaded once in main() */
+  private agentDriverInstance: AgentDriver | null = null;
+  /** §10: the driver's opaque `AgentStateV1`, persisted as `CheckpointState.agentState` (≤ AGENT_STATE_MAX_BYTES) */
+  private agentState: Json | null = null;
+  private agentStateOversizeWarned = false;
+  /** §7.4 / §9: `/compact` asked for a compaction before the next turn (`AgentContext.takeCompactRequest`) */
+  private agentCompactRequested = false;
+  /** §10 Steer: the `activeHuman` object the driver already took — a steer is handed over once, never once per attempt */
+  private agentSteersTaken: { texts: string[]; step: number } | null = null;
+  /** §7.5: the driver's meter, on `EngineStatus.context` in agent mode */
+  private agentContextUsage: ContextUsage | null = null;
+  /** §8: gate refusals in this process; AGENT_MAX_BLOCKS of them pause the run (a resume starts a fresh allowance) */
+  private agentBlocks = 0;
+  /** §A1: the agent summaries of the steps committed in this process — `isReplyOnlyRun` reads them (a resumed run starts with a non-reply marker) */
+  private readonly agentSteps: Pick<StepRecord, 'agent'>[] = [];
+
   constructor(init: {
     runId: string;
     opts: EngineOptions;
@@ -1329,6 +1422,14 @@ class EngineImpl implements Engine {
       this.splits = s.splits ?? 0;
       this.lastSplitStep = s.orchestration?.step ?? null;
       this.synthState = s.synthState ?? null;
+      if (this.mode === 'agent') {
+        // docs/AGENT-LOOP-DESIGN.md §10: the driver's state, its transcript seq raised to the folded rows' `agent.seqAfter` (a prepared
+        // loader already did — the raise is a max, so doing it again for the injected-store path is harmless); §3.6 / §8: a resume
+        // resets the nudge count, because the human has looked at the run; §A1: the steps before this process are not replies
+        this.agentState = s.agentState === undefined ? null : raiseAgentTranscriptSeq(s.agentState, init.resume.foldedSteps.filter((r) => r.step > s.step));
+        if (this.counters.loopNudges !== undefined) this.counters.loopNudges = 0;
+        if (s.step > 0 || init.resume.foldedSteps.length > 0) this.agentSteps.push({});
+      }
       this.resumes = s.resumes;
       this.lastPromptChars = s.lastPromptChars ?? null;
       this.jevCalls = s.jevLatencyMs.length;
@@ -1778,7 +1879,8 @@ class EngineImpl implements Engine {
     // Review D5/D18: it is ABSENT — not `0 %` — in the modes and under the pin where no relaxed prompt is built, so
     // `--json=verbose` under `view: 'legacy'` is byte-identical to HEAD and a jev-only run shows no meter that cannot move.
     const status: EngineStatus = {
-      ...(this.contextEnabled ? { context: this.contextUsage } : {}),
+      // docs/AGENT-LOOP-DESIGN.md §7.5: in agent mode the driver's meter (`AgentContext.reportContext`), absent until its first report
+      ...(this.contextEnabled ? { context: this.contextUsage } : this.agentContextUsage !== null ? { context: this.agentContextUsage } : {}),
       step: this.step,
       maxSteps: this.opts.limits.maxSteps,
       wallMs: this.wallMsUsed(),
@@ -1980,7 +2082,8 @@ class EngineImpl implements Engine {
     // (1) a stage is in flight (the draft is open) and nothing ran yet: the snapshot is what /resume --replay restores; once
     // execute started the step commits whole instead; a discarded draft awaiting a pane is closed — nothing is in flight (P6)
     const inFlight = draft !== null && !draft.closed && this.started;
-    if (inFlight && !draft.executeStarted) this.snapshotDraft(draft);
+    // docs/AGENT-LOOP-DESIGN.md §10 Pause: agent mode writes no step replay cache — the driver re-derives the turn from its transcript
+    if (inFlight && !draft.executeStarted && this.mode !== 'agent') this.snapshotDraft(draft);
     // (2) the request line once; an upgrade shows in the status (pauseNow) only
     if (first) this.announce([{ type: 'pause:requested', step: this.step + 1 }]);
     else if (this.started) this.emitStatus();
@@ -2171,6 +2274,11 @@ class EngineImpl implements Engine {
    */
   private noteDiscardDetail(draft: StepDraft, stage: StageName, stop: StopReason): void {
     const cache = this.pauseCache;
+    // docs/AGENT-LOOP-DESIGN.md §10 Pause: no cache in agent mode, but a pause-now is still a pause-now — the point says so
+    if (this.mode === 'agent' && cache === null && stop === 'human_pause' && this.pauseNow) {
+      this.pauseAt = { step: draft.step, phase: stage, reason: 'now', round: null, cache: null };
+      return;
+    }
     if (cache === null || cache.step !== draft.step) return;
     // §12.0.2 (one definition of `replayable`): what the snapshot WROTE — a proposal in the file, or arrived samples in it —
     // and nothing executed. A sample that resolved in the same tick as the pause is not in the file and does not count.
@@ -2238,6 +2346,11 @@ class EngineImpl implements Engine {
    */
   private async loadReplay(): Promise<void> {
     const step = this.step + 1;
+    // docs/AGENT-LOOP-DESIGN.md §10: agent mode has no replay cache — the driver's transcript IS the paused turn
+    if (this.mode === 'agent') {
+      this.emit({ type: 'transcript', step: null, level: 'info', text: `replay unavailable in agent mode: the agent re-derives step ${step} from its transcript` });
+      return;
+    }
     const interrupted = this.interrupted;
     const detail = this.interruptedDetail;
     if (interrupted === null || detail === null || interrupted.step !== step) {
@@ -2292,6 +2405,8 @@ class EngineImpl implements Engine {
 
   /** the cache for exactly this step, or null; a cached proposal is consumed here, a samples-only cache stays for generate() until the step ends */
   private takeReplay(step: number): StepCache | null {
+    // docs/AGENT-LOOP-DESIGN.md §10: no replay cache in agent mode (the agent branch of runStep reads none either)
+    if (this.mode === 'agent') return null;
     // ORCHESTRATION-DESIGN §5.7: a harness-seeded proposal (the launch merge, or the [c] / [s] pre-flight step) enters
     // the loop through the SAME door as a replayed one — "do not build a parallel path".
     const seeded = this.takeSeeded(step);
@@ -2350,6 +2465,12 @@ class EngineImpl implements Engine {
    * reports what it did, exactly as an automatic compaction does.
    */
   compact(): void {
+    // docs/AGENT-LOOP-DESIGN.md §7.4: in agent mode `/compact` is a request the driver takes before its next turn
+    // (`AgentContext.takeCompactRequest`); the driver's policy decides what `compaction: 'off'` means there
+    if (this.mode === 'agent') {
+      if (!this.isFinished()) this.agentCompactRequested = true;
+      return;
+    }
     if (!this.contextEnabled || this.isFinished() || this.contextPolicy.compaction === 'off') return;
     if (foldableCount(this.history) === 0) return;
     this.compactContext(this.step, 'manual');
@@ -2533,6 +2654,9 @@ class EngineImpl implements Engine {
       // contract 1.4 (§7.3 step 3): the replay cache is read and gated once, before the first step
       if (this.replayRequested) await this.loadReplay();
     }
+    // docs/AGENT-LOOP-DESIGN.md §2.2: the agent driver, once per run — the injected one, else `createAgentDriver()` (a dynamic import,
+    // so the other modes never load `src/agent/`). A factory that throws (a ConfigError) ends the run here as a fatal error.
+    if (this.mode === 'agent') this.agentDriverInstance = this.opts.agent ?? (await this.loadAgentFactory())();
     for (;;) {
       trace(`loop top step=${this.step} aborted=${this.signal.aborted}`);
       if (this.signal.aborted) {
@@ -2779,6 +2903,9 @@ class EngineImpl implements Engine {
     // pure: no counter moves and no id is allocated until installBlock() — handleStepError may discard the result
     const http = e instanceof JevHttpError ? { side: 'jev' as const, err: e } : e instanceof ProviderHttpError ? { side: 'generator' as const, err: e } : null;
     if (http === null) return null;
+    // docs/AGENT-LOOP-DESIGN.md §13.1 rule 3 / §14.3 item 7: Jev only routes in agent mode, so no Jev failure opens a pane there
+    // (the placements fall back in code; one that escaped anyway is an ordinary stage failure)
+    if (http.side === 'jev' && this.mode === 'agent') return null;
     const { side, err } = http;
     const message = this.redact(err.message);
     if (err.status === 401 || err.status === 403) {
@@ -2987,6 +3114,8 @@ class EngineImpl implements Engine {
       consecutiveStageFailures: this.consecutiveStageFailures,
       jevQuestions: this.jevQuestions,
       ...(this.synthState !== null ? { synthState: this.synthState } : {}),
+      // docs/AGENT-LOOP-DESIGN.md §10: the driver's state beside the synthesizer's; absent in every other mode
+      ...(this.agentState !== null ? { agentState: this.agentState } : {}),
       // contract 1.1 (TUI-DESIGN §15 item 9): conditional spread, so an empty queue reads as absent (older readers unchanged)
       ...(this.pendingDirectives.length > 0 ? { pendingDirectives: this.pendingDirectives.map((d) => ({ ...d })) } : {}),
       ...(this.undoLog.length > 0 ? { undoLog: this.undoLog.map((u) => ({ ...u, restored: [...u.restored], skipped: u.skipped.map((k) => ({ ...k })) })) } : {}),
@@ -3072,6 +3201,9 @@ class EngineImpl implements Engine {
       arrivedSamples: [],
       replayed: false,
       discarded: false,
+      agent: null,
+      agentGate: null,
+      agentChanged: false,
     };
   }
 
@@ -3081,6 +3213,8 @@ class EngineImpl implements Engine {
     stepTimeline.stage(name);
     const t0 = this.clock();
     this.emit({ type: 'stage:start', step, stage: name });
+    // docs/AGENT-LOOP-DESIGN.md §9.1 (the TUI map): in agent mode the status names the stage that runs NOW, not the one that ended
+    if (this.mode === 'agent') this.emitStatus();
     try {
       return await fn();
     } catch (e) {
@@ -3161,8 +3295,12 @@ class EngineImpl implements Engine {
    * **abandoned**: the call rejects at the guard below and nothing past `jevCache.ask` runs. Nothing is charged or
    * recorded for it beyond the router's own `dropped` row. `signal` is absent on every non-routed site, where
    * `this.signal` is the only signal and every line below is the pre-1.9 one.
+   *
+   * `quick` (docs/AGENT-LOOP-DESIGN.md §13.1 rules 3 and 6): the agent's routing asks — one attempt (`AskOptions.quick`), a
+   * served-model mismatch that writes the warning and the `jevModelDrift` meta and then throws to the caller (never `fatalError`,
+   * never a drift pane), and unpriced usage that is announced but never stops the run. Absent everywhere else.
    */
-  private async askRecorded(draft: StepDraft, stage: StageName, state: Json, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void, signal?: AbortSignal): Promise<{ outcome: AskOutcome; res: AskResult }> {
+  private async askRecorded(draft: StepDraft, stage: StageName, state: Json, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void, signal?: AbortSignal, quick = false): Promise<{ outcome: AskOutcome; res: AskResult }> {
     assertQuestionBatch(questions);
     trace(`engine.ask ${stage} step=${draft.step} start`);
     let res: AskResult;
@@ -3184,7 +3322,7 @@ class EngineImpl implements Engine {
     // reports `latencyMs: 0` cannot charge its own CPU to the gated harness budget (see StepDraft.timing)
     const askT0 = this.clock();
     try {
-      res = await this.jevCache.ask(state, questions, { signal: link?.controller.signal ?? this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
+      res = await this.jevCache.ask(state, questions, { signal: link?.controller.signal ?? this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake, ...(quick ? { quick: true as const } : {}) });
       retry.settled(true);
     } catch (e) {
       retry.settled(false);
@@ -3208,7 +3346,7 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §13.2: a reachable Jev restarts the unreachable backoff (30 s again on the next pause)
     this.unreachablePauses = 0;
     this.opts.meter.add('jev', res.usage);
-    this.noteUsage('jev', res.model, draft.step, stage, res.usage);
+    this.noteUsage('jev', res.model, draft.step, stage, res.usage, quick);
     // TUI-DESIGN §9.5: noteUsage read the raw (possibly NaN) cost; the record, the step draft and the sum take the clamped copy
     const usage = pricedUsage(res.usage);
     addUsage(draft.usage.jev, usage);
@@ -3226,7 +3364,7 @@ class EngineImpl implements Engine {
     this.persist(this.store.appendJevRequest(record), 'jev.jsonl');
     const firstCall = this.jevCalls === 0;
     this.jevCalls += 1;
-    const served = this.checkModelDrift(res.model, firstCall, draft.step);
+    const served = this.checkModelDrift(res.model, firstCall, draft.step, quick);
     const rows: Decision[] = [];
     for (const id of ids) {
       const q = questions[id]!;
@@ -3315,7 +3453,7 @@ class EngineImpl implements Engine {
    * After every meter.add (TUI-DESIGN §9.2, §9.5): the 50/80/95 % warnings for the run (own snapshot) and the session
    * (`snapshot.parent`), and the unpriced-usage notice when the provider reported no finite cost.
    */
-  private noteUsage(side: SpendSource, model: string, step: number, stage: StageName, usage: TokenUsage): void {
+  private noteUsage(side: SpendSource, model: string, step: number, stage: StageName, usage: TokenUsage, quick = false): void {
     if (!Number.isFinite(usage.costUsd)) {
       // TUI-DESIGN §9.5 (A135–A137): unknown pricing fails closed — the step commits, then the run stops with error unless
       // --allow-unpriced; the item is announced once per (side, model) per run, not once per metered call
@@ -3324,7 +3462,8 @@ class EngineImpl implements Engine {
         this.unpricedAnnounced.add(key);
         this.emit({ type: 'budget:unpriced', side, model, step, tokens: { input: Number.isFinite(usage.inputTokens) ? usage.inputTokens : 0, output: Number.isFinite(usage.outputTokens) ? usage.outputTokens : 0 } });
       }
-      if (this.opts.allowUnpriced !== true && this.unpriced === null) this.unpriced = { side, model, stage };
+      // docs/AGENT-LOOP-DESIGN.md §13.1 rule 3: an agent routing ask's unpriced usage is the announcement above, never the stop
+      if (this.opts.allowUnpriced !== true && this.unpriced === null && !quick) this.unpriced = { side, model, stage };
     }
     this.emitBudgetWarn(step);
   }
@@ -3611,13 +3750,251 @@ class EngineImpl implements Engine {
     };
   }
 
+  // -------------------------------------------------------------------------------------
+  // docs/AGENT-LOOP-DESIGN.md §2.2 (slice S4): the agent seam — what the driver sees and what it may write
+  // -------------------------------------------------------------------------------------
+
+  /**
+   * §2.2, §15 S4 item 8: what the driver sees for one step — the twin of `synthesisContext`. Every generator and Jev call goes
+   * through the engine's metered, recorded paths (`generate` with the agent hooks, `askRecorded` quick at stage `loop`); the driver's
+   * state rides the checkpoint; steers and a `/compact` are handed over once.
+   */
+  private agentContext(draft: StepDraft): AgentContext {
+    const self = this;
+    const orchestration = this.opts.orchestration;
+    return {
+      runId: this.runId,
+      runDir: this.runDir,
+      sessionId: this.opts.session?.sessionId ?? this.runId,
+      step: draft.step,
+      task: this.opts.task,
+      resumed: this.resumed,
+      workspace: this.workspace,
+      workspaceInfo: this.wsInfo,
+      sandbox: this.sandbox,
+      limits: this.opts.limits,
+      signal: this.signal,
+      redact: this.redact,
+      autonomy: this.opts.autonomy ?? 'full',
+      provider: { name: this.opts.provider.name, model: this.opts.provider.model },
+      generation: this.opts.generation,
+      // §7.1: the window the engine's own policy resolves (an explicit `contextPolicy.windowTokens`, else the pricing table's)
+      windowTokens: this.opts.contextPolicy?.windowTokens ?? this.opts.generatorPricing?.contextTokens ?? null,
+      // §7.4: the `llm` writer is the agent's default only while `context.compaction` is the default layer's
+      compaction: { mode: this.opts.contextPolicy?.compaction ?? DEFAULT_CONTEXT_COMPACTION, explicit: settingIsExplicit(this.opts.configRecord, 'context.compaction') },
+      instructions: nonEmptyText(this.opts.instructions?.text),
+      memoryIndex: nonEmptyText(this.opts.memory?.index),
+      seed: this.opts.seed ?? null,
+      conversation: this.opts.conversation ?? null,
+      ...(orchestration !== undefined ? { orchestration } : {}),
+      plan: this.plan,
+      lastTestRun: this.lastTestRun,
+      testsCurrent: testsCurrent(this.lastTestRun, this.lastChangeStep),
+      createdThisRun: this.createdThisRun,
+      dirtyAtStart: this.dirtyAtStart,
+      // §14.2: the session's decider is the absent one when no Jev key resolved — no placement asks, no wait is spent
+      jevAvailable: this.opts.decider.model !== ABSENT_DECIDER_MODEL,
+      state: this.agentState,
+      setState: (state) => self.setAgentState(state, draft.step),
+      emit: (e) => self.emit(e),
+      // the step a turn belongs to is the step it is issued in (the engine's current draft), like the synthesizer's samples
+      generate: (req, hooks) => self.generate(self.draft ?? draft, req, hooks.turn, undefined, undefined, hooks),
+      ask: async (state, questions, signal) => (await self.askRecorded(self.draft ?? draft, 'loop', state, questions, undefined, signal, true)).outcome,
+      routeToken: () => stepTokenFor(self.runId, draft.step),
+      writeOutput: (text, part) => self.writeAgentOutput(draft.step, text, part),
+      takeSteers: () => self.takeAgentSteers(draft.step),
+      takeCompactRequest: () => {
+        const asked = self.agentCompactRequested;
+        self.agentCompactRequested = false;
+        return asked;
+      },
+      reportContext: (usage) => {
+        self.agentContextUsage = usage;
+      },
+      now: () => self.clock(),
+      wallRemainingMs: () => self.wallRemainingMs(),
+    };
+  }
+
+  /** §2.2: the driver's factory, by a dynamic import — so `src/agent/` is loaded only by an agent run without an injected driver. */
+  private async loadAgentFactory(): Promise<AgentDriverFactory> {
+    const mod: { createAgentDriver: AgentDriverFactory } = await import('../agent/index.js');
+    return mod.createAgentDriver;
+  }
+
+  /** §10: bounded and redacted before it can reach a checkpoint, like the synthesizer's; an oversize state keeps the last good one. */
+  private setAgentState(state: Json, step: number): void {
+    const text = JSON.stringify(redactDeep(state, this.redact));
+    const bytes = text === undefined ? 0 : Buffer.byteLength(text, 'utf8');
+    if (text === undefined || bytes > AGENT_STATE_MAX_BYTES) {
+      if (!this.agentStateOversizeWarned) {
+        this.agentStateOversizeWarned = true;
+        this.emit({ type: 'transcript', step, level: 'warn', text: `agent state not checkpointed: ${bytes} bytes exceeds ${AGENT_STATE_MAX_BYTES}; the checkpoint keeps the previous state` });
+      }
+      return;
+    }
+    this.agentState = JSON.parse(text) as Json;
+  }
+
+  /**
+   * §7.2: a spilled tool output — `outputs/step-<n>.txt` through the store (its redaction and per-run bound), or one of several
+   * parts `step-<n>-<k>.txt` of an observe step. The `jevcode:` pointer the result names, or null when the write failed.
+   */
+  private async writeAgentOutput(step: number, text: string, part?: number): Promise<string | null> {
+    try {
+      if (isOutputPart(part)) return await writeOutputPart(this.runDir, step, part, text, this.redact);
+      if (!hasContextStore(this.store)) return null;
+      await this.store.writeOutput(step, text);
+      return `${OUTPUT_READ_PREFIX}${outputRefFor(step)}`;
+    } catch (e) {
+      this.emit({ type: 'transcript', step, level: 'warn', text: `agent output write failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+      this.noteDiskError(e, CHECKPOINT_FILES.outputs, step);
+      return null;
+    }
+  }
+
+  /** §10 Steer: this step's applied steers, handed to the driver once — a discarded attempt of the same step gets none again. */
+  private takeAgentSteers(step: number): readonly string[] {
+    const active = this.activeHuman;
+    if (active === null || active.step !== step || active === this.agentSteersTaken) return [];
+    this.agentSteersTaken = active;
+    return [...active.texts];
+  }
+
+  /**
+   * §12 / §A2: the classifier's gate on an `act` step's call. `block` refuses (the rule `RiskAssessment`, a `risk` event, outcome
+   * `blocked`); `review` asks through the existing confirm path — reachable only under `--autonomy review` or in a depth-1 child,
+   * which answers from its parent (a review under full autonomy elsewhere is approved and logged, as today); `ok` runs, and a
+   * rule-matched `ok` (a destructive command under full autonomy) keeps its rule on the step and is noted after it ran.
+   */
+  private async applyAgentGate(draft: StepDraft, proposal: Proposal, gate: AgentGate): Promise<void> {
+    const step = draft.step;
+    draft.agentGate = gate;
+    if (gate.verdict === 'ok' && gate.rule === null) return;
+    const risk = ruleRiskAssessment(gate);
+    draft.risk = risk;
+    if (gate.verdict === 'ok') return;
+    if (gate.verdict === 'block') {
+      this.emit({ type: 'risk', step, risk });
+      draft.outcome = { status: 'blocked', reason: gate.reason };
+      this.counters.blocked += 1;
+      this.emit({ type: 'outcome', step, outcome: draft.outcome });
+      return;
+    }
+    if ((this.opts.autonomy ?? 'full') === 'full' && this.opts.orchestration?.depth !== 1) {
+      this.counters.reviews += 1;
+      draft.notes.push(`review auto-approved (autonomy: full): ${gate.reason}`);
+      this.emit({ type: 'transcript', step, level: 'info', text: `review · auto-approved (autonomy: full) · ${gate.reason}` });
+      return;
+    }
+    this.emit({ type: 'risk', step, risk });
+    const outcome = await this.confirm(draft, proposal, risk);
+    // counted once the review resolved, like the legacy review (an abort while it is pending discards the step)
+    this.counters.reviews += 1;
+    if (outcome.note !== undefined) draft.notes.push(`reviewer note: ${outcome.note}`);
+    if (!outcome.approved) {
+      const identity = this.opts.confirmer.identity;
+      const base = identity === 'reviewer' ? `declined by reviewer: ${gate.reason}` : `not approved (${identity}): ${gate.reason}`;
+      draft.outcome = { status: 'declined', reason: outcome.note !== undefined ? `${base} — reviewer note: ${outcome.note}` : base };
+      this.counters.declined += 1;
+      this.emit({ type: 'outcome', step, outcome: draft.outcome });
+    }
+  }
+
+  /**
+   * §3.4 / §A5: a command's post image also covers the dirty-set files it changed — the run-start dirty files `changedFiles()`
+   * never reports — so `/undo` restores them and the per-step change set sees them. Computed once, before the post images.
+   */
+  private async agentPostFiles(draft: StepDraft, images: AgentImages, changed: readonly string[]): Promise<readonly string[]> {
+    try {
+      images.preChanged = await changedSincePre({ root: this.workspace.root, runDir: this.runDir, step: draft.step, pre: images.pre });
+    } catch (e) {
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `pre-image comparison failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+      images.preChanged = null;
+      return changed;
+    }
+    const extra = images.preChanged.filter((p) => !changed.includes(p));
+    return extra.length === 0 ? changed : [...changed, ...extra];
+  }
+
+  /**
+   * §2.2 / §3.4: after the step's execute tail and BEFORE the checkpoint — the destructive note of a rule-matched command that ran,
+   * the per-step change set, the driver's `observe()` (wrapped: a throw is a transcript warning and a stage failure, and the step
+   * still commits), the code judge of a test run, the step's agent summary, and the change fact `lastChangeStep` reads at commit.
+   */
+  private async observeAgentStep(draft: StepDraft, next: AgentNext, actx: AgentContext, before: readonly string[], images: AgentImages | null): Promise<void> {
+    const step = draft.step;
+    const action = next.proposal.action;
+    const post = this.lastPostImage !== null && this.lastPostImage.step === step ? this.lastPostImage : null;
+    let changed: string[];
+    try {
+      changed = await stepChangeSet({ action, outcome: draft.outcome, before, after: draft.changedFiles, pre: images?.pre ?? null, preChanged: images?.preChanged ?? null, post, root: this.workspace.root, runDir: this.runDir, step });
+    } catch (e) {
+      // unknown counts as changed: the run-cumulative set is the conservative answer (it can only make a test run stale)
+      changed = action.kind === 'run' ? [...draft.changedFiles] : [];
+      this.emit({ type: 'transcript', step, level: 'warn', text: `per-step change set unavailable: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+    }
+    const gate = draft.agentGate;
+    if (draft.executeStarted && gate !== null && gate.rule !== null && action.kind === 'run') this.noteDestructive(draft, action.command, gate.rule, images, post, changed);
+    const outcome: ActionOutcome = draft.outcome ?? { status: 'failed', error: draft.error !== null ? `${draft.error.stage}: ${draft.error.code}` : 'no outcome' };
+    const observation: AgentObservation = { step, outcome, output: draft.output, changedFiles: changed, tests: draft.tests, error: draft.error !== null ? { code: draft.error.code, message: draft.error.message } : null };
+    const { loopTrip: plannedTrip, ...summary } = next.summary;
+    let seqAfter = summary.seqAfter;
+    let loopTrip: LoopTrip | null = plannedTrip ?? null;
+    try {
+      const r = await this.agentDriverOrThrow().observe(actx, observation);
+      seqAfter = r.seqAfter;
+      loopTrip = r.loopTrip;
+    } catch (e) {
+      const err = toJevCodeError(e);
+      this.emit({ type: 'transcript', step, level: 'warn', text: `agent observe failed: ${this.redact(err.message)} — the step commits without a confirmed tool result` });
+      this.emit({ type: 'error', step, error: serializeError(e, this.redact), fatal: false });
+      this.lastStageError = e;
+      this.lastErrorStage = 'propose';
+      // §8: a stage failure (three in a row stop the run with `error`); one that already failed at a stage counts once
+      if (draft.error === null) {
+        draft.error = { stage: 'propose', code: err.code, message: this.redact(err.message) };
+        this.consecutiveStageFailures += 1;
+      }
+    }
+    if (draft.tests !== null) {
+      const exec = draft.outcome?.status === 'executed' || draft.outcome?.status === 'interrupted' ? draft.outcome.exec : undefined;
+      draft.judge = codeJudge({ tests: draft.tests, exitCode: exec?.exitCode ?? null, evidence: null, testsPassUnparsed: null }, draft.claims, ledgerGoalsOf(draft.claims));
+    }
+    draft.agent = { ...summary, seqAfter, ...(loopTrip !== null ? { loopTrip } : {}) };
+    // §2.2: a command other than the detected test command that changed a workspace file makes every earlier test run stale
+    if (action.kind === 'run' && draft.tests === null && changed.length > 0) draft.agentChanged = true;
+  }
+
+  /** §A2 / §A5: one truthful line for a destructive command that ran — what left the machine, and what `/undo` can restore. */
+  private noteDestructive(draft: StepDraft, command: string, rule: string, images: AgentImages | null, post: PostImage | null, changed: readonly string[]): void {
+    const nothingDirty = images !== null && images.pre === null && images.dirty === 0;
+    const preWhole = nothingDirty || (images !== null && images.pre !== null && images.pre.skipped.length === 0);
+    const postWhole = post === null ? nothingDirty && changed.length === 0 : !post.hashSkipped && post.skipped.length === 0;
+    const headAfter = post?.headOid ?? headOidOf(this.workspace.gitState?.() ?? this.gitState);
+    const coverage = destructiveCoverage({ rule, command, imagesComplete: preWhole && postWhole, headMoved: images === null || images.headBefore !== headAfter });
+    const text = destructiveNote(command, rule, coverage);
+    draft.notes.push(text);
+    this.emit({ type: 'transcript', step: draft.step, level: 'warn', text });
+  }
+
+  private agentDriverOrThrow(): AgentDriver {
+    if (this.agentDriverInstance === null) throw new JevCodeError('internal', 'agent mode: the driver was not loaded');
+    return this.agentDriverInstance;
+  }
+
+  /** §3.3 / §8: the agent `complete` — a current, green run of the unscoped detected test command (the plan is not consulted). */
+  private agentVerifiedCompletion(): boolean {
+    return isUnscopedGreenRun(this.lastTestRun, this.wsInfo.testCommand) && testsCurrent(this.lastTestRun, this.lastChangeStep);
+  }
+
   /**
    * §5.4 rule 7. Returns the served id when it must be recorded on the rows, else null. TUI-DESIGN-2 §2.5 / §6 item 8: the
    * first call matches under the provider's naming through `jevModelMatches` (`jev-latest` → `jev-1.13.0` on TypeSafe,
    * `jev-1.13` → `jev-1.13-20260917` on OpenRouter; a bare prefix no longer lets `jev-1.1` accept `jev-1.13-…`); `provider`
    * defaults to openrouter so bench/cli.ts and perf/step-overhead.ts build the options untouched.
    */
-  private checkModelDrift(servedRaw: string, firstCall: boolean, step: number): string | null {
+  private checkModelDrift(servedRaw: string, firstCall: boolean, step: number, quick = false): string | null {
     const { configured, pinned } = this.opts.deciderModel;
     const provider = this.opts.deciderModel.provider ?? 'openrouter';
     const cfg = normaliseModelId(configured);
@@ -3650,6 +4027,20 @@ class EngineImpl implements Engine {
       return null;
     }
     const err = new JevModelDriftError(this.opts.deciderModel.configured, servedRaw, { firstCall });
+    if (quick) {
+      // docs/AGENT-LOOP-DESIGN.md §13.1 rule 3: an agent routing ask is never fatal — the warning and the `jevModelDrift` meta as
+      // for a later call, then the error goes to the caller (the placement's wrapper records it and stops asking Jev for the run).
+      // No `fatalError`, no `stageBlock`, first call or not: a one-shot run keeps going and a session opens no drift pane.
+      if (this.jevModelDrift === null) {
+        this.jevModelDrift = { step, served: servedRaw };
+        this.persist(this.store.updateMeta({ jevModelDrift: this.jevModelDrift }), 'run.json');
+      }
+      if (!this.driftWarned) {
+        this.driftWarned = true;
+        this.emit({ type: 'transcript', step, level: 'warn', text: this.redact(err.message) });
+      }
+      throw err;
+    }
     if (firstCall) {
       if (this.opts.blocker) {
         // TUI-DESIGN §13.3: in session mode the first-call drift is a blocking pane (`[p] pin … for the next run  [q] stop (exit 2)`), not an abort
@@ -3741,8 +4132,13 @@ class EngineImpl implements Engine {
    * sample index, a sample aborted (or failed after streaming) before its result is metered from an estimate
    * (`recordUnfinishedSample`) and rejects with the signal's reason, a sample already cancelled when it arrives is never
    * dispatched (no event, no row, no metering), and `timing.generatorMs` takes the wall of the round, not the sum of the samples.
+   *
+   * `hooks` (docs/AGENT-LOOP-DESIGN.md §9.3): an agent turn. `generator:delta` is emitted exactly as always (unless `silent`, the
+   * compaction writer) and each chunk also goes to `onText`; a retry of the chain calls `onAttemptReset` with the attempt that
+   * starts; reasoning becomes throttled `generator:reasoning`; `generator:tool-delta` names the call being written. `attempt` is
+   * the turn number. Every legacy call site passes none, and its options, events and rows are the pre-agent ones byte for byte.
    */
-  private async generate(draft: StepDraft, req: GenerateRequest, attempt: number, sample?: SampleOptions, leg?: OneShotLeg): Promise<GenerateResult> {
+  private async generate(draft: StepDraft, req: GenerateRequest, attempt: number, sample?: SampleOptions, leg?: OneShotLeg, hooks?: AgentGenerateHooks): Promise<GenerateResult> {
     // Defence in depth for docs/JEV-ONLY.md: even with a real provider in the slot, jev-only never reaches it.
     if (this.mode === 'jev-only') throw new ConfigError('jev-only mode: the generating LLM must not be called', { setting: 'mode' });
     // §4.8: a sample cancelled before it reached the channel (a loser cancellation racing a stagger fire, or the engine
@@ -3774,6 +4170,8 @@ class EngineImpl implements Engine {
     let textChars = 0;
     const retry = this.retryHooks('generator', draft.step, 'propose', sample?.sample);
     const link = sample === undefined ? null : this.linkSample(sample);
+    // docs/AGENT-LOOP-DESIGN.md §9.3: the per-turn state of the agent's tool-call and reasoning callbacks (null on legacy calls)
+    const tap = hooks === undefined ? null : createAgentStreamTap({ step: draft.step, turn: hooks.turn, now: () => this.clock(), emit: (e) => this.emit(e), ...(hooks.onToolCall !== undefined ? { onToolCall: hooks.onToolCall } : {}) });
     const t0 = this.clock();
     if (sample !== undefined) this.noteSampleStart(draft, sample.sample);
     // §4.8: the provider's facts on a sample that yields no result — the ids and streamed sizes of an aborted stream, its usage
@@ -3790,15 +4188,21 @@ class EngineImpl implements Engine {
         onDelta: (text) => {
           textChars += text.length;
           this.notePartial(draft, text, sample === undefined);
-          this.emit({ type: 'generator:delta', step: draft.step, text, ...at });
+          if (hooks?.silent !== true) this.emit({ type: 'generator:delta', step: draft.step, text, ...at });
+          hooks?.onText?.(text);
         },
         onToolDelta: (fragment) => {
           toolChars += fragment.length;
           this.notePartial(draft, fragment, sample === undefined);
-          this.emit({ type: 'generator:tool-delta', step: draft.step, chars: toolChars, ...at });
+          this.emit({ type: 'generator:tool-delta', step: draft.step, chars: toolChars, ...at, ...(tap?.toolFields() ?? {}) });
         },
-        onRetry: retry.onRetry,
+        onRetry: hooks?.onAttemptReset === undefined ? retry.onRetry : (info: RetryInfo) => {
+          retry.onRetry(info);
+          // §9.3: bytes of the failed attempt may have streamed — the shaper drops its pending text and says the reply restarted
+          hooks.onAttemptReset?.(info.attempt + 1);
+        },
         wake: retry.wake,
+        ...(tap !== null ? { onToolCall: (d: ToolCallDelta) => tap.toolCall(d), onReasoning: (fragment: string) => tap.reasoning(fragment) } : {}),
         ...(sample !== undefined
           ? {
               // contract 1.9 (Fastlane) §3.1: the engine keeps the facts for the row AND hands them to the synthesizer's
@@ -3815,6 +4219,7 @@ class EngineImpl implements Engine {
         ...(sample?.onFirstByte === undefined ? (leg?.onFirstByte === undefined ? {} : { onFirstByte: leg.onFirstByte }) : { onFirstByte: sample.onFirstByte }),
       });
       retry.settled(true);
+      tap?.flush();
     } catch (e) {
       retry.settled(false);
       if (sample !== undefined && link !== null) {
@@ -3857,7 +4262,7 @@ class EngineImpl implements Engine {
       draft.verify.s2.cacheRead += Number.isFinite(res.usage.cacheReadTokens) ? (res.usage.cacheReadTokens ?? 0) : 0;
       draft.verify.s2.cacheWrite += Number.isFinite(res.usage.cacheWriteTokens) ? (res.usage.cacheWriteTokens ?? 0) : 0;
     }
-    const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
+    const promptHash = promptHashOfRequest(req);
     if (sample !== undefined && draft.arrivedSamples.length < CACHED_SAMPLES_MAX) {
       // contract 1.4 (§6.4): the arrived sample joins the step's round cache (bounded), so a pause-now keeps what was bought
       const body = JSON.stringify(res);
@@ -4017,7 +4422,7 @@ class EngineImpl implements Engine {
     sample: Pick<SampleOptions, 'sample' | 'purpose'>,
     o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' | 'rate_limited'; partial: CancelledGeneration | null; oneShotLeg?: boolean },
   ): void {
-    const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
+    const promptHash = promptHashOfRequest(req);
     const p = o.partial;
     const unserved = p !== null ? p.rateLimited === true : o.stopReason === 'error' && o.streamedChars === 0;
     let raw: TokenUsage;
@@ -4027,7 +4432,7 @@ class EngineImpl implements Engine {
       raw = { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 1 };
     } else {
       const sibling = draft.generatorRecords.find((r) => r.cancelled !== true && r.promptHash === promptHash);
-      const promptChars = req.system.length + req.messages.reduce((n, m) => n + m.content.length, 0);
+      const promptChars = req.system.length + req.messages.reduce((n, m) => n + m.content.length, 0) + agentMessageChars(req);
       const inputTokens = sibling !== undefined ? sibling.usage.inputTokens : Math.ceil(promptChars / 4);
       const streamedChars = p !== null ? p.toolChars + p.reasoningChars + p.text.length : o.streamedChars;
       const outputTokens = Math.ceil(streamedChars / 4);
@@ -4406,6 +4811,10 @@ class EngineImpl implements Engine {
     let changedFiles: string[] = [];
     let stopAfterCommit: StopReason | null = null;
     let commonState: JsonObject | null = null;
+    // docs/AGENT-LOOP-DESIGN.md §2.2: what the agent branch hands the post-step observe (all null in every other mode)
+    let agentNext: AgentNext | null = null;
+    let agentCtx: AgentContext | null = null;
+    let agentImages: AgentImages | null = null;
     const claimsOf = (proposal: Proposal): void => {
       const c = newClaims(this.plan, proposal.plan);
       draft.claims = c.claims;
@@ -4568,6 +4977,38 @@ class EngineImpl implements Engine {
             this.emit({ type: 'outcome', step, outcome: draft.outcome });
           }
         }
+      } else if (this.mode === 'agent') {
+        // docs/AGENT-LOOP-DESIGN.md §2.2 / §2.3: the driver proposes — the twin of the synth branch. No intent, context, risk,
+        // judge or replan stage runs: an `observe` step is finished inside the driver, and `act` / `verify` / `finish` run through
+        // the shared tail below, after which the driver observes the result before the checkpoint.
+        stage = 'propose';
+        draft.proposer = 'agent';
+        const driver = this.agentDriverOrThrow();
+        const actx = this.agentContext(draft);
+        agentCtx = actx;
+        const next = await this.stage('propose', () => runAgentStage(ctx, driver, actx));
+        agentNext = next;
+        draft.proposal = next.proposal;
+        draft.proposeCompleted = true;
+        draft.agent = next.summary;
+        claimsOf(next.proposal);
+        if (next.kind === 'observe') {
+          // §2.3: a read-only segment the driver already resolved — the outcome is final, nothing executes, no images
+          draft.outcome = next.outcome;
+          draft.output = next.output;
+          draft.timing.execMs += next.execMs;
+          this.emit({ type: 'outcome', step, outcome: next.outcome });
+        } else if (next.kind === 'act') {
+          stage = 'execute';
+          draft.patchTargets = await computeTargets(ctx, next.proposal);
+          // ORCHESTRATION-DESIGN §2.4 belt 2: a property of the agent, not of the mode — applied here as in jev-off
+          const refusal = ownershipRefusal(next.proposal.action, this.opts.orchestration);
+          if (refusal !== null) {
+            draft.outcome = refusal;
+            this.counters.blocked += 1;
+            this.emit({ type: 'outcome', step, outcome: refusal });
+          } else await this.applyAgentGate(draft, next.proposal, next.gate);
+        }
       } else {
         stage = 'propose';
         let p: { proposal: Proposal };
@@ -4630,7 +5071,11 @@ class EngineImpl implements Engine {
         stage = 'execute';
         // TUI-DESIGN §12.3: pre-images of the targets (edit|write|patch) or the dirty set (run) before anything touches the workspace
         const imageSource = imageSourceOf(draft.proposal.action);
+        // docs/AGENT-LOOP-DESIGN.md §A5: the dirty set's size and HEAD the command starts from, for the destructive note
+        const agentDirty = this.mode === 'agent' ? (this.workspace.dirtySet?.().size ?? changedFiles.length) : 0;
+        const agentHead = this.mode === 'agent' ? headOidOf(this.workspace.gitState?.() ?? this.gitState) : null;
         const pre = imageSource !== null ? await this.takePreImages(draft, imageSource, changedFiles) : null;
+        if (this.mode === 'agent') agentImages = { pre, dirty: agentDirty, headBefore: agentHead, preChanged: null };
         // contract 1.4 (§7.2): a pause-now (or an abort) that landed while the pre-images were taken discards under rule 1 — execute never starts on an aborted signal
         if (this.signal.aborted) throw this.signal.reason;
         draft.executeStarted = true;
@@ -4643,7 +5088,9 @@ class EngineImpl implements Engine {
         draft.timing.execMs += ex.execMs;
         draft.executeFinished = true;
         // TUI-DESIGN §12.3: post-images right after execute, still inside runStep() so harnessMs sees them
-        if (imageSource !== null) await this.takePostImages(draft, imageSource, ex.changedFiles, pre);
+        // (docs/AGENT-LOOP-DESIGN.md §3.4 / §A5: an agent command's image also covers the dirty-set files it changed)
+        const postFiles = agentImages !== null && imageSource === 'run' ? await this.agentPostFiles(draft, agentImages, ex.changedFiles) : ex.changedFiles;
+        if (imageSource !== null) await this.takePostImages(draft, imageSource, postFiles, pre);
         // ORCHESTRATION-DESIGN §2.4 [G8]: belt 2 does not cover `run`, so the post-images are diffed against `own` here.
         // Reported, never blocked — "blocking after the command ran would be theatre".
         await this.noteEscaped(draft, ex.changedFiles);
@@ -4696,6 +5143,9 @@ class EngineImpl implements Engine {
       await this.candidateRefresh;
       this.candidateRefresh = null;
     }
+    // docs/AGENT-LOOP-DESIGN.md §2.2 / §10 commit order: the tool result of an `act` / `verify` / `finish` step reaches the driver's
+    // transcript BEFORE the checkpoint — after the try/catch, so a `failed` outcome from handleStepError is observed too
+    if (agentNext !== null && agentNext.kind !== 'observe' && agentCtx !== null) await this.observeAgentStep(draft, agentNext, agentCtx, changedFiles, agentImages);
     // ORCHESTRATION-DESIGN §2.6 [G1] [D2] [D10]: the harness commits, in the agent worktree, through the injected
     // `runGit` seam — after every committed step of a child whose outcome is `executed` with changed files. No seam
     // (every run that is not an agent) = no git mutation at all, which is why nothing below changes an ordinary run.
@@ -4713,7 +5163,15 @@ class EngineImpl implements Engine {
       this.stateError = { stage: u.stage, code: 'config' };
       return { stop: 'error', detail: 'unpriced_usage' };
     }
+    // docs/AGENT-LOOP-DESIGN.md §8: AGENT_MAX_BLOCKS gate refusals pause the run for a human (resumable, no prompt)
+    if (this.mode === 'agent' && draft.agentGate?.verdict === 'block' && draft.outcome?.status === 'blocked' && ++this.agentBlocks >= AGENT_MAX_BLOCKS) {
+      this.emit({ type: 'transcript', step, level: 'warn', text: AGENT_MAX_BLOCKS_LINE });
+      return { stop: 'human_pause', detail: 'max_blocks' };
+    }
     if (this.completeAfter(draft)) return { stop: 'complete' };
+    // docs/AGENT-LOOP-DESIGN.md §A1 / §8: the agent's final answer — `answered` when the whole run was a reply (no tool call, no
+    // change, no command: the one predicate `isReplyOnlyRun`), `generator_done` otherwise; both exit 0
+    if (this.mode === 'agent' && draft.outcome?.status === 'noop') return { stop: isReplyOnlyRun(this.agentSteps) ? 'answered' : 'generator_done' };
     // docs/LLM-JEV-DESIGN.md §9.4: the generic fallback's `done` (draft.proposer 'generic', stage 4) stops as the generator's, like jev-off
     if ((this.mode === 'jev-off' || draft.proposer === 'generic') && draft.outcome?.status === 'noop') return { stop: 'generator_done' };
     if (this.consecutiveStageFailures >= CONSECUTIVE_STAGE_FAILURE_LIMIT) {
@@ -5153,6 +5611,8 @@ class EngineImpl implements Engine {
 
   /** The stop rule after a step: llm-jev → the code fact of docs/LLM-JEV-DESIGN.md §6.6; jev-on / jev-only → `task_complete >= completeThreshold`. */
   private completeAfter(draft: StepDraft): boolean {
+    // docs/AGENT-LOOP-DESIGN.md §3.3 / §8: the final answer on a current, green run of the unscoped detected test command
+    if (this.mode === 'agent') return draft.proposal?.action.kind === 'done' && draft.outcome?.status === 'noop' && this.agentVerifiedCompletion();
     if (this.mode === 'llm-jev') return isCompleteByFact(this.completionFact(draft));
     if (!usesJev(this.mode)) return false;
     // contract 1.9 (Fastlane) §2.5 RL5 / §7.5 seam (d): with the routers ON, completion is demoted to
@@ -5843,8 +6303,9 @@ class EngineImpl implements Engine {
     const status = outcome?.status ?? null;
     const evidence: ClaimEvidence = (() => {
       if (proposal === null) return { kind: 'none', because: 'no proposal' };
-      // jev-off, and the llm-jev generic fallback (docs/LLM-JEV-DESIGN.md §9.4: keyed on draft.proposer, not the mode): claims verbatim
-      if (this.mode === 'jev-off' || draft.proposer === 'generic') return status === 'executed' || status === 'noop' ? { kind: 'verbatim' } : { kind: 'none', because: `outcome ${status ?? 'none'}` };
+      // jev-off, and the llm-jev generic fallback (docs/LLM-JEV-DESIGN.md §9.4: keyed on draft.proposer, not the mode): claims verbatim;
+      // agent mode too (docs/AGENT-LOOP-DESIGN.md §15 S4 item 5: no judge is asked, the todo list is the model's own bookkeeping)
+      if (this.mode === 'jev-off' || draft.proposer === 'generic' || this.mode === 'agent') return status === 'executed' || status === 'noop' ? { kind: 'verbatim' } : { kind: 'none', because: `outcome ${status ?? 'none'}` };
       if (draft.claimProbabilities !== null && draft.judge !== null) return { kind: 'judged', probabilities: draft.claimProbabilities };
       // llm-jev (docs/LLM-JEV-DESIGN.md §3 row 7): the code verdicts are the claim evidence even without a JudgeResult (a verified `done`); a step without them claims nothing
       if (this.mode === 'llm-jev' && draft.claimProbabilities !== null && !draft.interruptedAt) return { kind: 'judged', probabilities: draft.claimProbabilities };
@@ -5894,9 +6355,13 @@ class EngineImpl implements Engine {
 
     // Code-computed workspace facts (§5.5), persisted for --resume.
     if (status === 'executed' && draft.changedFiles.length > 0 && proposal && proposal.action.kind !== 'run' && proposal.action.kind !== 'read') this.lastChangeStep = step;
+    // docs/AGENT-LOOP-DESIGN.md §2.2: in agent mode a command other than the test command that changed a file (its per-step set)
+    if (this.mode === 'agent' && draft.agentChanged) this.lastChangeStep = step;
     if (draft.tests?.parsed) {
+      // docs/AGENT-LOOP-DESIGN.md §3.3: an agent test run in a subdirectory is recorded as `cd <dir> && <command>` — where it ran
+      const testCommand = this.mode === 'agent' && proposal?.action.kind === 'run' ? recordedTestCommand(draft.tests.command, proposal.action.cwd) : draft.tests.command;
       // contract 1.9 (Fastlane) §4.3 T5: `durationMs` is the member that lets the fast-path predicate survive a resume
-      this.lastTestRun = { step, command: draft.tests.command, passed: draft.tests.parsed.passed, failed: draft.tests.parsed.failed, errors: draft.tests.parsed.errors, allPassed: draft.tests.allPassed === true, durationMs: Math.round(Math.max(0, draft.timing.execMs)) };
+      this.lastTestRun = { step, command: testCommand, passed: draft.tests.parsed.passed, failed: draft.tests.parsed.failed, errors: draft.tests.parsed.errors, allPassed: draft.tests.allPassed === true, durationMs: Math.round(Math.max(0, draft.timing.execMs)) };
       // the run's output tail for the `done` state's `lastRun.output` (loop/synth team request; state.ts ExecutedInfo.lastRunOutput)
       this.lastTestRunOutput = draft.output;
       // contract 1.9 (Fastlane) §4.3 T3 / §6 row 14: the scope-usability verdict on the loop's OWN run
@@ -5940,7 +6405,8 @@ class EngineImpl implements Engine {
       this.directive = draft.directive;
       this.counters.replans += 1;
     }
-    const signatures = computeSignatures({
+    // docs/AGENT-LOOP-DESIGN.md §2.2 / §3.6: agent mode runs its own detector in the driver; the legacy one neither signs nor observes
+    const signatures: string[] = this.mode === 'agent' ? [] : computeSignatures({
       proposal,
       outcome,
       output: draft.output.length > 0 ? draft.output : null,
@@ -5954,7 +6420,7 @@ class EngineImpl implements Engine {
       // the workspace test command's runner, so the fail: signature uses its parser (loop/synth team request; loopdetect.ts SignatureInput.testRunner)
       testRunner: draft.tests ? (this.wsInfo.testCommand?.runner ?? null) : null,
     });
-    const trip = this.detector.observe(step, signatures);
+    const trip = this.mode === 'agent' ? null : this.detector.observe(step, signatures);
     if (trip) {
       this.counters.loops += 1;
       this.emit({ type: 'loop:tripped', step, signature: trip.signature, occurrences: trip.occurrences });
@@ -5967,6 +6433,19 @@ class EngineImpl implements Engine {
       }
     }
     if (signatures.includes(INTENT_UNRESOLVED_SIGNATURE)) notes.push('intent unresolved: fallback to investigate');
+    // docs/AGENT-LOOP-DESIGN.md §3.6 / §8: a trip the driver's detector reported — a nudge (the driver words it), counted; the trip
+    // after AGENT_MAX_LOOP_NUDGES stops the run `stuck` once this step is committed (exit 4, resumable)
+    let agentStop: StopReason | null = null;
+    const agentTrip = draft.agent?.loopTrip;
+    if (agentTrip !== undefined) {
+      this.counters.loops += 1;
+      this.emit({ type: 'loop:tripped', step, signature: agentTrip.signature, occurrences: agentTrip.count });
+      const nudges = this.counters.loopNudges ?? 0;
+      if (nudges >= AGENT_MAX_LOOP_NUDGES) {
+        agentStop = 'stuck';
+        this.emit({ type: 'transcript', step, level: 'warn', text: `stuck: the agent repeated itself after ${nudges} loop nudges (${agentTrip.tool}, rule ${agentTrip.rule}, ${agentTrip.count}×); resume to continue` });
+      } else this.counters.loopNudges = nudges + 1;
+    }
 
     // Hints for the next prompt.
     if (draft.matchesIntent !== null && draft.matchesIntent < MATCHES_INTENT_THRESHOLD && draft.intent) this.nextHints.intentMismatch = { intent: draft.intent.intent, probability: draft.matchesIntent, step };
@@ -6012,6 +6491,9 @@ class EngineImpl implements Engine {
     this.escapedThisStep = [];
     this.commitThisStep = null;
     if (draft.proposer !== null) record.proposer = draft.proposer;
+    // docs/AGENT-LOOP-DESIGN.md §2.3 / §10: absent in every other mode
+    if (draft.agent !== null) record.agent = draft.agent;
+    if (this.mode === 'agent') this.agentSteps.push(draft.agent !== null ? { agent: draft.agent } : {});
     // contract 1.9 (Fastlane) §2 / §5.2 / §7.5 seam (c): the step's router rows, and the three members that had no
     // writer until this seam. `routerWaitMs` is I3 IN THE RECORD — the sum of the per-route measured waits, which
     // is 0 on every step that is not a bug (the ask's own latency stays in `jevMs`). All four absent with the
@@ -6098,7 +6580,7 @@ class EngineImpl implements Engine {
     this.currentStage = 'idle';
     stepTimeline.stage('');
     stepTimeline.endStep();
-    return { stop: null };
+    return { stop: agentStop };
   }
 
   // -------------------------------------------------------------------------------------
@@ -6142,7 +6624,8 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §13.5 / §15 item 14: exit code, resumability and the artefact paths ride run:end; built when the final write has settled.
     // Pre-redacted so the line written before flush is the very event the renderers receive last.
     const buildEnd = (): EngineEvent => {
-      const resumable = stateWritten && !this.checkpointDegraded && reason !== 'complete' && reason !== 'generator_done';
+      // docs/AGENT-LOOP-DESIGN.md §A1: `answered` finishes a run like `complete` and `generator_done` (the one list, stop.ts)
+      const resumable = stateWritten && !this.checkpointDegraded && !isFinishedStop(reason);
       const paths = { runDir: this.runDir, transcript: join(this.runDir, CHECKPOINT_FILES.transcript), log: join(this.runDir, CHECKPOINT_FILES.log) };
       return redactDeep({ type: 'run:end', result, exitCode: this.exitCodeOf(reason, error), resumable, paths } satisfies EngineEvent, this.redact) as EngineEvent;
     };

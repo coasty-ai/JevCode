@@ -56,6 +56,26 @@ import { createEngine, type EngineDeps, type GitProbe } from '../../../src/loop/
 import type { PreflightProbe } from '../../../src/orchestrate/index.js';
 
 import { notRepoState } from '../../../src/workspace/gitstate.js';
+// docs/AGENT-LOOP-DESIGN.md §15 S4: the agent seam's fakes (a tool-calling provider and a scripted driver), below the engine harness
+import type {
+  AgentCallSummary,
+  AgentContext,
+  AgentDriver,
+  AgentGate,
+  AgentMessage,
+  AgentNext,
+  AgentObservation,
+  AgentObserveResult,
+  AgentToolName,
+  AgentUserBlock,
+  ConversationCarry,
+  JsonObject,
+  LoopTrip,
+  Proposal,
+  ToolCallDelta,
+} from '../../../src/core/types.js';
+import { isJsonObject, toJson } from '../../../src/core/json.js';
+import { noul } from '../../../src/jev/questions.js';
 
 // ---------------------------------------------------------------------------------------
 // Retry chains (TUI-DESIGN §13.2): a fake that fails `count` attempts, calling onRetry and sleeping wakeably before each retry
@@ -746,6 +766,12 @@ export interface HarnessOptions {
    * `RLIMIT_NOFILE`, so P9 and the §8.3 row-12 gate could only be asserted on a machine-shaped guess.
    */
   preflightProbe?: PreflightProbe;
+  /** docs/AGENT-LOOP-DESIGN.md §2.2: the agent-mode driver (`EngineOptions.agent`), e.g. `createScriptedAgentDriver()` */
+  agent?: AgentDriver;
+  /** docs/AGENT-LOOP-DESIGN.md §7.6: `EngineOptions.conversation` */
+  conversation?: ConversationCarry;
+  /** `EngineOptions.configRecord` (default `{}`): the settings with their sources, as run.json records them */
+  configRecord?: EngineOptions['configRecord'];
 }
 
 export interface Harness {
@@ -835,6 +861,9 @@ export async function makeEngine(h: HarnessOptions = {}): Promise<Harness> {
   if (h.now) opts.now = h.now;
   if (h.exit) opts.exit = h.exit;
   if (h.synthesizer) opts.synthesizer = h.synthesizer;
+  if (h.agent) opts.agent = h.agent;
+  if (h.conversation) opts.conversation = h.conversation;
+  if (h.configRecord) opts.configRecord = h.configRecord;
   if (h.engine) Object.assign(opts, h.engine);
   const calls: Harness['calls'] = { order: [], sandboxOptions: null, workspaceDeps: null };
   const given = h.probeGitState;
@@ -902,3 +931,373 @@ export function intentIs(option: string, step?: number, p = 0.9): DeciderRule {
 
 export const passingTests = execResult({ exitCode: 0, stdout: '..\n2 passed in 0.10s\n' });
 export const failingTests = execResult({ exitCode: 1, stdout: 'F.\nFAILED tests/test_a.py::test_f - assert 1 == 2\n1 failed, 1 passed in 0.10s\n', stderr: '' });
+
+// ---------------------------------------------------------------------------------------
+// docs/AGENT-LOOP-DESIGN.md §15 S4: the agent seam — a tool-calling provider and a scripted AgentDriver
+// ---------------------------------------------------------------------------------------
+
+/** One model turn of the fake tool provider: prose, native tool calls, reasoning, and the stream's failure modes. */
+export interface ToolTurn {
+  text?: string;
+  /** streamed in exactly these chunks (default: the text cut after every newline) */
+  chunks?: string[];
+  toolCalls?: { id?: string; name: string; input: Json }[];
+  /** streamed through `onReasoning` before the text, in chunks of `reasoningChunk` chars (default 16) */
+  reasoning?: string;
+  reasoningChunk?: number;
+  /** a retry chain before the final attempt (§9.3 onAttemptReset); `preRetryText` streams before the first failure */
+  retries?: RetryScript;
+  preRetryText?: string;
+  usage?: Partial<TokenUsage>;
+  stopReason?: string;
+  /** throw ProviderHttpError(status) instead of answering */
+  httpError?: number;
+  /** real delay before answering; rejects with signal.reason on abort */
+  delayMs?: number;
+}
+
+export interface FakeToolProvider extends Provider {
+  /** every request, deep-copied when it was sent (the transcript a request carried never changes afterwards) */
+  requests: GenerateRequest[];
+  /** `now()` when the first request arrived (the §A1 latency probe) */
+  firstRequestAt: number | null;
+}
+
+/** Split text after each newline, keeping the newlines: `a\nb` → [`a\n`, `b`]. */
+function chunksOf(text: string): string[] {
+  const out: string[] = [];
+  let rest = text;
+  while (rest.length > 0) {
+    const i = rest.indexOf('\n');
+    if (i < 0) {
+      out.push(rest);
+      break;
+    }
+    out.push(rest.slice(0, i + 1));
+    rest = rest.slice(i + 1);
+  }
+  return out;
+}
+
+/**
+ * A provider that answers agent requests (`GenerateRequest.agent`) the way the S2 adapters do: prose through `onDelta`, reasoning
+ * through `onReasoning`, and each tool call's arguments in two fragments through `onToolCall` (its index, plus its id and name on
+ * the first fragment) followed by `onToolDelta`. The result carries the calls with their ids.
+ */
+export function createFakeToolProvider(turns: ToolTurn[] | ((req: GenerateRequest, index: number) => ToolTurn), opts: { model?: string; now?: () => number } = {}): FakeToolProvider {
+  const requests: GenerateRequest[] = [];
+  const model = opts.model ?? 'z-ai/glm-5.3-flash';
+  const now = opts.now ?? (() => performance.now());
+  const p: FakeToolProvider = {
+    name: 'mock',
+    model,
+    requests,
+    firstRequestAt: null,
+    async generate(req, o) {
+      const index = requests.length;
+      requests.push(structuredClone(req));
+      if (p.firstRequestAt === null) p.firstRequestAt = now();
+      if (o.signal.aborted) throw o.signal.reason;
+      const t = typeof turns === 'function' ? turns(req, index) : (turns[index] ?? turns[turns.length - 1]);
+      if (!t) throw new Error('fake tool provider: no turn scripted');
+      if (t.httpError !== undefined) throw new ProviderHttpError(`HTTP ${t.httpError}`, { status: t.httpError, retryable: false });
+      if (t.preRetryText !== undefined) o.onDelta?.(t.preRetryText);
+      if (t.retries) {
+        await driveRetries(t.retries, o);
+        if (t.retries.exhausted) throw new ProviderHttpError(`HTTP ${t.retries.status}`, { status: t.retries.status, retryable: true });
+      }
+      if (t.delayMs) await sleepAbortable(t.delayMs, o.signal);
+      if (t.reasoning !== undefined) {
+        const n = t.reasoningChunk ?? 16;
+        for (let i = 0; i < t.reasoning.length; i += n) o.onReasoning?.(t.reasoning.slice(i, i + n));
+      }
+      const text = t.text ?? '';
+      for (const c of t.chunks ?? chunksOf(text)) o.onDelta?.(c);
+      const calls = (t.toolCalls ?? []).map((c, i) => ({ name: c.name, input: c.input, rawJson: JSON.stringify(c.input), id: c.id ?? `call_${index + 1}_${i}` }));
+      calls.forEach((c, i) => {
+        const half = Math.ceil(c.rawJson.length / 2);
+        [c.rawJson.slice(0, half), c.rawJson.slice(half)].forEach((fragment, k) => {
+          o.onToolCall?.({ index: i, ...(k === 0 ? { id: c.id, name: c.name } : {}), fragment });
+          o.onToolDelta?.(fragment);
+        });
+      });
+      const usage: TokenUsage = { inputTokens: 1000, outputTokens: 200, costUsd: 0.004, calls: 1, ...t.usage };
+      return { text, toolCalls: calls, usage, model, stopReason: t.stopReason ?? (calls.length > 0 ? 'tool_use' : 'end_turn'), latencyMs: 0 };
+    },
+  };
+  return p;
+}
+
+/** One native call the scripted driver holds (the transcript's `tool_use` block). */
+export interface ScriptedCall {
+  id: string;
+  name: string;
+  input: Json;
+}
+
+export interface ScriptedDriverOptions {
+  /** a read-only call's result text (default `ok <name>`); a read-only `bash` runs through `ctx.sandbox.run` instead */
+  resolve?: (call: ScriptedCall) => string;
+  /** the gate of a mutating call (default ok, no rule) */
+  gate?: (call: ScriptedCall) => AgentGate;
+  /** the loop trip `observe()` reports at a step (default none) */
+  loopTripAt?: (step: number) => LoopTrip | null;
+  /** `observe()` updates its transcript and then throws at these steps (the persist-failure shape of §3.4) */
+  failObserveAt?: (step: number) => boolean;
+  /** the §3.3 verification rule: with files changed since the last green unscoped run and a test command, verify before finishing */
+  verify?: boolean;
+  /** ask Jev one quick Noul before every turn when `ctx.jevAvailable` (the drift / unpriced tests); errors are collected, never thrown */
+  askJev?: boolean;
+  /** mark every turn `silent` (the compaction-writer shape: no `generator:delta`) */
+  silent?: boolean;
+  /** the plan (`todo_write`'s mapping) every proposal carries */
+  plan?: { done?: string[]; remaining?: string[] };
+  /** called at the top of every `next()` */
+  onNext?: (ctx: AgentContext) => void | Promise<void>;
+  /** called at the top of every `observe()` */
+  onObserve?: (ctx: AgentContext, o: AgentObservation) => void;
+}
+
+export interface ScriptedDriver extends AgentDriver {
+  /** the transcript, as the next request would carry it */
+  readonly messages: AgentMessage[];
+  readonly observations: AgentObservation[];
+  readonly contexts: AgentContext[];
+  /** `ctx.state` the first `next()` restored from, when the run was resumed */
+  restoredFrom: Json | null;
+  readonly askErrors: unknown[];
+  readonly texts: string[];
+  readonly resets: number[];
+  readonly toolDeltas: ToolCallDelta[];
+  readonly steers: string[];
+}
+
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(['read_file', 'grep', 'glob', 'todo_write']);
+const READ_ONLY_BASH = /^\s*(?:git (?:diff|status|log)|ls|cat|head|wc)\b/;
+
+function inputOf(call: ScriptedCall): JsonObject {
+  return isJsonObject(call.input) ? call.input : {};
+}
+function strOf(o: JsonObject, k: string): string {
+  const v = o[k];
+  return typeof v === 'string' ? v : '';
+}
+function toolNameOf(name: string): AgentToolName | 'invalid' {
+  return name === 'read_file' || name === 'write_file' || name === 'edit_file' || name === 'bash' || name === 'grep' || name === 'glob' || name === 'todo_write' ? name : 'invalid';
+}
+
+/**
+ * A small AgentDriver that keeps the §2.2 / §3.1 contract the engine relies on, over a scripted provider:
+ * - the queue is re-derived from the transcript on every `next()` (the `tool_use` ids of the latest assistant message with no
+ *   result), so a step the engine discards is issued again and no request carries an unpaired `tool_use`;
+ * - a maximal run of read-only calls is one `observe` step (a read-only `bash` runs through `ctx.sandbox.run`), a mutating call is
+ *   one `act` step (`edit_file` → edit, `write_file` → write, `bash` → run with `workdir` as `cwd`), a turn with no calls is the
+ *   `finish` (or a `verify` under `verify`);
+ * - `observe()` appends the tool result (memory first), tracks `changedSinceVerify` from the per-step change set, and returns the
+ *   transcript seq; the state (`transcriptSeq`, the messages) rides `ctx.setState` so a resume restores it.
+ */
+export function createScriptedAgentDriver(opts: ScriptedDriverOptions = {}): ScriptedDriver {
+  let messages: AgentMessage[] = [];
+  let seq = 0;
+  let turn = 0;
+  let started = false;
+  let changedSinceVerify = false;
+  let verifyRuns = 0;
+  let pending: { kind: 'act' | 'verify' | 'finish'; call: ScriptedCall | null; action: Action | null } | null = null;
+  const plan = { done: [...(opts.plan?.done ?? [])], remaining: [...(opts.plan?.remaining ?? [])] };
+  const append = (m: AgentMessage): void => {
+    messages.push(m);
+    seq += 1;
+  };
+  const proposalOf = (goal: string, action: Action, rawText = ''): Proposal => ({ goal, action, plan: { done: [...plan.done], remaining: [...plan.remaining], openProblems: [] }, rawText });
+  const unresolved = (): ScriptedCall[] => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      if (m.role !== 'assistant') continue;
+      const answered = new Set<string>();
+      for (const u of messages.slice(i + 1)) if (u.role === 'user') for (const b of u.content) if (b.type === 'tool_result') answered.add(b.toolUseId);
+      const out: ScriptedCall[] = [];
+      for (const b of m.content) if (b.type === 'tool_use' && !answered.has(b.id)) out.push({ id: b.id, name: b.name, input: b.input });
+      return out;
+    }
+    return [];
+  };
+  const readOnly = (c: ScriptedCall): boolean => READ_ONLY_TOOLS.has(c.name) || (c.name === 'bash' && READ_ONLY_BASH.test(strOf(inputOf(c), 'command')));
+  const saveState = (ctx: AgentContext): void => ctx.setState({ v: 1, transcriptSeq: seq, turns: turn, changedSinceVerify, verifyRuns, messages: toJson(messages) });
+  const callSummary = (c: ScriptedCall): AgentCallSummary => ({ id: c.id, name: toolNameOf(c.name), summary: `${c.name} ${strOf(inputOf(c), 'path') || strOf(inputOf(c), 'command')}`.trim(), ok: true, ms: 0 });
+  const actionOf = (c: ScriptedCall): Action => {
+    const i = inputOf(c);
+    if (c.name === 'edit_file') return { kind: 'edit', path: strOf(i, 'path'), old: strOf(i, 'old_string'), new: strOf(i, 'new_string') };
+    if (c.name === 'write_file') return { kind: 'write', path: strOf(i, 'path'), content: strOf(i, 'content') };
+    const workdir = strOf(i, 'workdir');
+    return { kind: 'run', command: strOf(i, 'command'), ...(workdir !== '' ? { cwd: workdir } : {}) };
+  };
+  const d: ScriptedDriver = {
+    name: 'scripted',
+    get messages() {
+      return messages;
+    },
+    observations: [],
+    contexts: [],
+    restoredFrom: null,
+    askErrors: [],
+    texts: [],
+    resets: [],
+    toolDeltas: [],
+    steers: [],
+    async next(ctx): Promise<AgentNext> {
+      d.contexts.push(ctx);
+      await opts.onNext?.(ctx);
+      if (!started) {
+        started = true;
+        const s = ctx.state;
+        if (ctx.resumed && isJsonObject(s) && Array.isArray(s['messages'])) {
+          d.restoredFrom = s;
+          const kept = structuredClone(s['messages']) as unknown as AgentMessage[];
+          const upTo = typeof s['transcriptSeq'] === 'number' ? s['transcriptSeq'] : kept.length;
+          messages = kept.slice(0, upTo);
+          seq = messages.length;
+          turn = typeof s['turns'] === 'number' ? s['turns'] : 0;
+          changedSinceVerify = s['changedSinceVerify'] === true;
+          verifyRuns = typeof s['verifyRuns'] === 'number' ? s['verifyRuns'] : 0;
+        } else append({ role: 'user', content: [{ type: 'text', text: ctx.task }] });
+      }
+      const steers = ctx.takeSteers();
+      if (steers.length > 0) {
+        d.steers.push(...steers);
+        const cancelled: AgentUserBlock[] = unresolved().map((c) => ({ type: 'tool_result', toolUseId: c.id, name: c.name, content: 'NOT EXECUTED: the user sent new instructions before this call ran.', isError: true }));
+        append({ role: 'user', content: [...cancelled, ...steers.map((t): AgentUserBlock => ({ type: 'text', text: `[message from the user while you were working]\n${t}` }))] });
+      }
+      for (;;) {
+        const queue = unresolved();
+        if (queue.length > 0) {
+          const first = queue[0]!;
+          if (readOnly(first)) {
+            const run: ScriptedCall[] = [];
+            for (const c of queue) {
+              if (!readOnly(c)) break;
+              run.push(c);
+            }
+            const results: { call: ScriptedCall; text: string }[] = [];
+            for (const c of run) {
+              if (c.name === 'bash') {
+                const r = await ctx.sandbox.run(strOf(inputOf(c), 'command'), { timeoutMs: 120_000, maxOutputBytes: 200_000, signal: ctx.signal });
+                results.push({ call: c, text: r.stdout });
+              } else results.push({ call: c, text: opts.resolve?.(c) ?? `ok ${c.name}` });
+            }
+            append({ role: 'user', content: results.map((r): AgentUserBlock => ({ type: 'tool_result', toolUseId: r.call.id, name: r.call.name, content: r.text })) });
+            saveState(ctx);
+            const paths = run.filter((c) => c.name === 'read_file').map((c) => strOf(inputOf(c), 'path'));
+            return {
+              kind: 'observe',
+              proposal: proposalOf(`read ${paths.join(', ')}`.trim(), { kind: 'read', paths }),
+              outcome: { status: 'executed', summary: run.map((c) => c.name).join('; '), changedFiles: [] },
+              output: results.map((r) => r.text).join('\n'),
+              execMs: 0,
+              summary: { kind: 'observe', turn, calls: run.map((c) => callSummary(c)), seqAfter: seq },
+            };
+          }
+          const action = actionOf(first);
+          pending = { kind: 'act', call: first, action };
+          return { kind: 'act', proposal: proposalOf(first.name, action, JSON.stringify(first.input)), callId: first.id, gate: opts.gate?.(first) ?? { verdict: 'ok', reason: 'ok', rule: null }, summary: { kind: 'act', turn, calls: [callSummary(first)], seqAfter: seq } };
+        }
+        if (opts.askJev === true && ctx.jevAvailable) {
+          const q = noul('Is the agent repeating actions or making no progress toward the task?', {
+            true: { definition: 'the recent steps repeat without progress', examples: ['the same read three times', 'the same failing test twice'] },
+            false: { definition: 'the recent steps move the task forward', examples: ['a new file read', 'a test that now passes'] },
+          });
+          try {
+            await ctx.ask({ task: ctx.task }, { unproductive: q }, ctx.signal);
+          } catch (e) {
+            d.askErrors.push(e);
+          }
+        }
+        turn += 1;
+        const req: GenerateRequest = {
+          system: 'You are a scripted agent.',
+          messages: [],
+          maxTokens: Math.max(ctx.generation.maxTokens, 16_384),
+          temperature: ctx.generation.temperature,
+          tools: [],
+          toolChoice: 'auto',
+          agent: { messages: structuredClone(messages), parallelToolCalls: true, cacheKey: ctx.sessionId, replayReasoning: true },
+        };
+        const res = await ctx.generate(req, {
+          turn,
+          onText: (t) => d.texts.push(t),
+          onToolCall: (td) => d.toolDeltas.push(td),
+          onAttemptReset: (a) => d.resets.push(a),
+          ...(opts.silent === true ? { silent: true as const } : {}),
+        });
+        const calls: ScriptedCall[] = res.toolCalls.map((c, i) => ({ id: c.id ?? `call_${turn}_${i}`, name: c.name, input: c.input }));
+        append({ role: 'assistant', content: [...(res.text.length > 0 ? [{ type: 'text' as const, text: res.text }] : []), ...calls.map((c) => ({ type: 'tool_use' as const, id: c.id, name: c.name, input: c.input }))] });
+        if (calls.length > 0) continue;
+        saveState(ctx);
+        const tc = ctx.workspaceInfo.testCommand;
+        if (opts.verify === true && changedSinceVerify && tc !== null && verifyRuns < 2) {
+          const action: Action = { kind: 'run', command: tc.command };
+          pending = { kind: 'verify', call: null, action };
+          return { kind: 'verify', proposal: proposalOf(`verify ${tc.command}`, action), summary: { kind: 'verify', turn: null, calls: [], seqAfter: seq } };
+        }
+        const action: Action = { kind: 'done', summary: res.text };
+        pending = { kind: 'finish', call: null, action };
+        return { kind: 'finish', proposal: proposalOf('finish', action, res.text), summary: { kind: 'finish', turn, calls: [], seqAfter: seq } };
+      }
+    },
+    async observe(ctx, o): Promise<AgentObserveResult> {
+      d.observations.push(o);
+      opts.onObserve?.(ctx, o);
+      const p = pending;
+      pending = null;
+      const tc = ctx.workspaceInfo.testCommand;
+      if (p !== null && p.kind === 'act' && p.call !== null) {
+        const ok = o.outcome.status === 'executed';
+        const body = o.outcome.status === 'executed' ? `${o.outcome.summary}\n${o.output}` : o.outcome.status === 'blocked' || o.outcome.status === 'declined' ? `${o.outcome.status.toUpperCase()}: ${o.outcome.reason}` : o.outcome.status === 'failed' ? `FAILED: ${o.outcome.error}` : o.outcome.status;
+        append({ role: 'user', content: [{ type: 'tool_result', toolUseId: p.call.id, name: p.call.name, content: body, ...(ok ? {} : { isError: true }) }] });
+        if (ok && p.action !== null) {
+          const a = p.action;
+          const unscoped = a.kind === 'run' && tc !== null && a.cwd === undefined && a.command.replace(/\s+/g, ' ').trim() === tc.command;
+          if (a.kind === 'edit' || a.kind === 'write') changedSinceVerify = true;
+          else if (o.tests !== null && o.tests.allPassed === true && unscoped) changedSinceVerify = false;
+          else if (o.tests === null && o.changedFiles.length > 0) changedSinceVerify = true;
+        }
+      } else if (p !== null && p.kind === 'verify') {
+        verifyRuns += 1;
+        if (o.tests?.allPassed === true) changedSinceVerify = false;
+        append({ role: 'user', content: [{ type: 'text', text: `The harness ran the tests: ${o.tests?.allPassed === true ? 'passed' : 'failed'}` }] });
+      }
+      saveState(ctx);
+      if (opts.failObserveAt?.(o.step) === true) throw new Error('transcript append failed: disk full');
+      return { loopTrip: opts.loopTripAt?.(o.step) ?? null, seqAfter: seq };
+    },
+  };
+  return d;
+}
+
+export interface AgentHarness extends Harness {
+  driver: ScriptedDriver;
+  tools: FakeToolProvider;
+}
+
+/**
+ * The engine harness in `agent` mode: the scripted driver over the fake tool provider, the product's `autonomy: 'full'` unless a
+ * test pins `engine.autonomy` (or passes `autonomyDefault: false` for the fakes' asking policy).
+ */
+export async function makeAgentEngine(turns: ToolTurn[] | ((req: GenerateRequest, index: number) => ToolTurn), o: HarnessOptions & { driver?: ScriptedDriverOptions; toolsNow?: () => number } = {}): Promise<AgentHarness> {
+  const tools = createFakeToolProvider(turns, o.toolsNow !== undefined ? { now: o.toolsNow } : {});
+  const driver = createScriptedAgentDriver(o.driver ?? {});
+  const h = await makeEngine({ ...o, mode: 'agent', provider: tools, agent: driver, autonomyDefault: o.autonomyDefault ?? true });
+  return { ...h, driver, tools };
+}
+
+/** Every `tool_use` of `messages` has a `tool_result` later in the list (the pairing every wire needs). */
+export function everyToolUsePaired(messages: readonly AgentMessage[]): boolean {
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]!;
+    if (m.role !== 'assistant') continue;
+    const later = new Set<string>();
+    for (const u of messages.slice(i + 1)) if (u.role === 'user') for (const b of u.content) if (b.type === 'tool_result') later.add(b.toolUseId);
+    for (const b of m.content) if (b.type === 'tool_use' && !later.has(b.id)) return false;
+  }
+  return true;
+}
