@@ -90,6 +90,7 @@ export const MODE_VALUE_HINTS: Readonly<Record<EngineMode, { readonly title: str
   'llm-jev': { title: `${MODE_BADGE_WORD['llm-jev']}: candidate patches, tests verify, Jev arbitrates` },
   'jev-only': { title: 'no generating LLM; code proposes, Jev decides, tests verify' },
   'jev-off': { title: 'the generator alone (bench condition)' },
+  'agent': { title: `${MODE_BADGE_WORD['agent']}: the code model works through tools, tests verify` },
 };
 /** TUI-DESIGN-3 §4.1 rule 6: the Popular group of an empty palette query, in this fixed order (16 commands). */
 export const POPULAR: readonly string[] = ['help', 'mode', 'model', 'cost', 'status', 'resume', 'new', 'panel', 'plan', 'diff', 'undo', 'theme', 'login', 'budget', 'jev', 'exit'];

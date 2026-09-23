@@ -490,7 +490,7 @@ describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)',
     expect(mode?.help).toBe(`engine mode (default ${DEFAULT_MODE}): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)`);
     expect(mode?.help).not.toMatch(/jev-only \(default|Claude|GLM/);
     expect(FLAGS.find((f) => f.key === 'condition')?.arg).toBe('jev-only|jev-on|jev-off|llm-jev');
-    expect(MODES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
+    expect(MODES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent']);
     expect(parseCliArgs([]).mode).toBeUndefined();
     expect(parseCliArgs(['chat']).mode).toBeUndefined();
     expect(usage(['run', 'x', '--mode', 'jev-maybe']).message).toMatch(/--mode: expected one of jev-only\|jev-on\|jev-off\|llm-jev/);

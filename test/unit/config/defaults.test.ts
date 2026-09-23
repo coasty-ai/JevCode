@@ -195,10 +195,10 @@ describe('TUI-DESIGN-2 §1.2: the `mode` row', () => {
     const names = SETTINGS.map((s) => s.name);
     expect(names.indexOf('mode')).toBe(names.indexOf('decider.model') + 1);
     expect(settingSpec('mode')).toMatchObject({ flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: DEFAULT_MODE, secret: false });
-    expect(settingSpec('mode').description).toBe('engine mode (jev-only | jev-on | jev-off | llm-jev); jev-only needs no generator key');
+    expect(settingSpec('mode').description).toBe('engine mode (jev-only | jev-on | jev-off | llm-jev | agent); jev-only needs no generator key');
     expect(settingSpec('mode').launch).toBeUndefined();
     expect(settingSpec('mode').boolFlag).toBeUndefined();
-    expect(MODE_SETTING_VALUES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
+    expect(MODE_SETTING_VALUES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent']);
     expect(settingSpec('mode').defaultValue).toBe(DEFAULT_MODE);
   });
 });

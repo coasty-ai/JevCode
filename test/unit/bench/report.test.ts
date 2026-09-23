@@ -8,7 +8,7 @@ import type { BenchRecord, ConditionConfig, StepsSummary, Summary } from '../../
 import type { BenchTaskRecord, EngineMode } from '../../../src/core/types.js';
 import { fakeRunResult, syntheticSource } from './helpers.js';
 
-function cfg(mode: EngineMode): ConditionConfig {
+function cfg(mode: Exclude<EngineMode, 'agent'>): ConditionConfig {
   return {
     condition: mode,
     mode,
@@ -32,7 +32,7 @@ function cfg(mode: EngineMode): ConditionConfig {
   };
 }
 
-function rec(task: string, condition: EngineMode, gen: number[], jev: number[]): BenchTaskRecord {
+function rec(task: string, condition: Exclude<EngineMode, 'agent'>, gen: number[], jev: number[]): BenchTaskRecord {
   return buildRecord({
     source: syntheticSource({ id: task }),
     condition,
@@ -43,7 +43,7 @@ function rec(task: string, condition: EngineMode, gen: number[], jev: number[]):
   });
 }
 
-const conditions: EngineMode[] = ['jev-on', 'jev-off'];
+const conditions: Exclude<EngineMode, 'agent'>[] = ['jev-on', 'jev-off'];
 const records: BenchTaskRecord[] = [
   rec('a', 'jev-on', [1000, 1000], [5000, 7000]),
   rec('b', 'jev-on', [1200, 800, 1000], [6000, 6000, 6000]),
@@ -126,7 +126,7 @@ describe('comparison.md tokens per step by source', () => {
  * drops out of the table looks like a warm arm that measured nothing, and `off` / `n/a` is the difference.
  */
 describe('comparison.md carries the two arm markers', () => {
-  function withSynth(task: string, condition: EngineMode, synth: StepsSummary): BenchRecord {
+  function withSynth(task: string, condition: Exclude<EngineMode, 'agent'>, synth: StepsSummary): BenchRecord {
     return { ...rec(task, condition, [1000], [5000]), synth };
   }
 

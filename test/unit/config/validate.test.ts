@@ -309,6 +309,8 @@ describe('parseModeSetting (TUI-DESIGN-2 §1.2 / §12)', () => {
     expect(parseModeSetting({ value: 'jev-only', source: 'default' })).toBe('jev-only');
     expect(parseModeSetting({ value: ' JEV-ON ', source: 'env' })).toBe('jev-on');
     expect(parseModeSetting({ value: 'jev-off', source: 'flag' })).toBe('jev-off');
+    // docs/AGENT-LOOP-DESIGN.md §14.1: agent is accepted too, and the enumeration names it last
+    expect(parseModeSetting({ value: 'Agent', source: 'file:/x/jevcode.json' })).toBe('agent');
     let err: unknown;
     try {
       parseModeSetting({ value: 'turbo', source: 'file:/x/jevcode.json' });
@@ -316,7 +318,7 @@ describe('parseModeSetting (TUI-DESIGN-2 §1.2 / §12)', () => {
       err = e;
     }
     expect(err).toBeInstanceOf(ConfigError);
-    expect((err as ConfigError).message).toBe('mode: "turbo" (from file:/x/jevcode.json) is not one of jev-only|jev-on|jev-off|llm-jev');
+    expect((err as ConfigError).message).toBe('mode: "turbo" (from file:/x/jevcode.json) is not one of jev-only|jev-on|jev-off|llm-jev|agent');
     expect((err as ConfigError).exitCode).toBe(2);
     expect((err as ConfigError).setting).toBe('mode');
     expect(() => parseModeSetting({ value: '', source: 'env' })).toThrow('mode: "" (from env) is not one of jev-only|jev-on|jev-off|llm-jev');

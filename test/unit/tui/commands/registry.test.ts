@@ -182,11 +182,11 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
   });
   it('TUI-DESIGN-2 §1.3 / §4.6: /mode takes an optional jev-only|jev-on|jev-off|llm-jev; /llm <on|off>; /panel [d|p|t|s|a|off|full]; /transcript [compact|full] — strings verbatim', () => {
     const mode = findCommand('mode') as CommandSpec;
-    expect(mode.args[0]).toEqual({ name: 'm', kind: 'enum', values: ['jev-only', 'jev-on', 'jev-off', 'llm-jev'], optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]', valueHints: MODE_VALUE_HINTS, defaultValue: DEFAULT_MODE });
+    expect(mode.args[0]).toEqual({ name: 'm', kind: 'enum', values: ['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent'], optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]', valueHints: MODE_VALUE_HINTS, defaultValue: DEFAULT_MODE });
     expect(mode.title).toBe('engine mode: show, or set for the next run');
     expect(mode.usage).toBe('[jev-only|jev-on|jev-off|llm-jev]');
     expect(mode.semantics).toBe('no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard\'s generator step in place; persist with `jevcode config set mode <m>`');
-    expect(ENGINE_MODES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
+    expect(ENGINE_MODES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent']);
     const llm = findCommand('llm') as CommandSpec;
     expect(llm.args[0]).toEqual({ name: 'state', kind: 'enum', values: ['on', 'off'], hint: '<on|off>' });
     expect(llm.title).toBe('Jev + LLM on (= /mode jev-on) or off (= /mode jev-only)');
@@ -461,7 +461,7 @@ describe('generated documentation is in sync (TUI-DESIGN §21)', () => {
     for (const c of COMMANDS) expect(man, c.name).toContain(`/${c.name}`);
     for (const c of COMMANDS) for (const a of c.aliases) expect(man, `${c.name} alias ${a}`).toContain(`/${c.name}, /${a}`.replace(/-/g, '\\-').slice(0, `/${c.name}, /${a}`.length + 2).split(', /')[0] as string);
     const roffMode = (m: string): string => m.replace(/-/g, '\\-');
-    expect(man).toContain(`engine mode (${MODE_SETTING_VALUES.map(roffMode).join(' | ')}; default ${roffMode(DEFAULT_MODE)})`);
+    expect(man.replace(/\n/g, ' ')).toContain(`engine mode (${MODE_SETTING_VALUES.map(roffMode).join(' | ')}; default ${roffMode(DEFAULT_MODE)})`);
     expect(man).not.toMatch(/the default \||is the default/);
     expect(man).not.toContain('Claude');
     expect(man).toContain('/status, /s');

@@ -368,6 +368,7 @@ export const MODE_SET_ITEM: Readonly<Record<EngineMode, string>> = {
   'jev-only': `mode ${MODE_BADGE_WORD['jev-only']} from the next run — no generating LLM; code proposes, Jev decides, tests verify (persist: jevcode config set mode jev-only)`,
   'jev-off': `mode ${MODE_BADGE_WORD['jev-off']} from the next run — the generator alone, no Jev (bench condition; reviews still ask)`,
   'llm-jev': `mode ${MODE_BADGE_WORD['llm-jev']} from the next run — the code model writes candidate patches, tests verify them, Jev arbitrates (persist: jevcode config set mode llm-jev)`,
+  'agent': `mode ${MODE_BADGE_WORD['agent']} from the next run — the code model works through tools, tests verify (persist: jevcode config set mode agent)`,
 };
 export function modeSetItem(mode: EngineMode): string {
   return MODE_SET_ITEM[mode];

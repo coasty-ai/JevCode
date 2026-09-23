@@ -31,6 +31,12 @@ export const DEFAULT_LOG_LEVEL = 'info';
 export const TRACE_ENV = 'JEVCODE_TRACE';
 export const TRACE_LOG_LEVEL = 'trace';
 export const DEFAULT_MAX_STEPS = 40;
+/**
+ * docs/AGENT-LOOP-DESIGN.md §11 / §14.2: the `limits.maxSteps` default under `--mode agent` when the user set none, applied in
+ * resolveConfig once the mode is known (as JEV_ONLY_DEFAULT_SPEND_CAP_USD is). An agent step is one read-only segment, one
+ * edit or command, one verify or the final answer, so 250 covers roughly 80-100 model turns; the spend and wall caps bound it.
+ */
+export const AGENT_DEFAULT_MAX_STEPS = 250;
 export const DEFAULT_MAX_WALL = '30m';
 export const DEFAULT_MAX_REPLANS = 5;
 export const DEFAULT_COMPLETE_THRESHOLD = 0.85;
@@ -56,8 +62,15 @@ export const DEFAULT_CONTEXT_KEPT = 'code';
 /** TUI-DESIGN-2 §2.3: the `decider.provider` row's accepted values (`auto` resolves through rules 2a–2e). */
 export const JEV_PROVIDER_SETTING_VALUES = ['auto', 'typesafe', 'openrouter'] as const;
 
-/** TUI-DESIGN-2 §1.2: the `mode` setting's values in the round-2 order; the §12 error text joins them with `|`. */
-export const MODE_SETTING_VALUES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] as const;
+/** TUI-DESIGN-2 §1.2: the `mode` setting's values in the round-2 order, `agent` appended (docs/AGENT-LOOP-DESIGN.md §14.1); the §12 error text joins them with `|`. */
+export const MODE_SETTING_VALUES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent'] as const;
+/**
+ * docs/AGENT-LOOP-DESIGN.md §14.1: the modes `/mode`, `--help`, onboarding and the generated docs list, and the ones they list
+ * only as legacy ("accepted for saved configs, resume and the bench"). Together they are exactly MODE_SETTING_VALUES: every
+ * legacy value stays accepted by `--mode`, `config set mode`, resume and the bench, so a persisted `mode llm-jev` keeps working.
+ */
+export const ADVERTISED_MODES = ['agent', 'jev-only'] as const satisfies readonly EngineMode[];
+export const LEGACY_MODES = ['llm-jev', 'jev-on', 'jev-off'] as const satisfies readonly EngineMode[];
 /**
  * TUI-DESIGN-3 §1.1 (D-G): the ONE constant every fallback that names the default mode reads — `jev-on` (badge `jev+llm`: the code model
  * writes, Jev decides every step) since round 3; later: `llm-jev` (the peer's flip) — nothing else moves. No string outside this file
@@ -73,7 +86,7 @@ export type Autonomy = (typeof AUTONOMY_SETTING_VALUES)[number];
 export const DEFAULT_AUTONOMY: Autonomy = 'full';
 export const AUTONOMY_DESCRIPTION = 'who approves review-flagged actions: full auto-approves and logs them (default); review stops for y/n';
 /** D-N: the badge word per mode — the ONLY table that maps a mode to a word; `·` is folded to the glyph set's dot by `modeBadgeWord(mode, g)` */
-export const MODE_BADGE_WORD: Readonly<Record<EngineMode, string>> = { 'jev-only': 'jev-only', 'jev-on': 'jev+llm', 'jev-off': 'llm-only', 'llm-jev': 'llm+jev · verified' };
+export const MODE_BADGE_WORD: Readonly<Record<EngineMode, string>> = { 'jev-only': 'jev-only', 'jev-on': 'jev+llm', 'jev-off': 'llm-only', 'llm-jev': 'llm+jev · verified', 'agent': 'agent' };
 /** the badge is capped so `<badge> · next run` fits the 60-column top edge (`consoleTopEdgeParts`, console-lines.ts:14 `TOP_EDGE_FIXED = 8`) */
 export const MODE_BADGE_MAX_CELLS = 20;
 
@@ -181,7 +194,7 @@ export const SETTINGS: readonly SettingSpec[] = [
   { name: 'decider.apiKey', flag: 'jevApiKey', env: ['JEV_API_KEY', 'OPENROUTER_API_KEY'], fileKey: 'jevApiKey', defaultValue: null, secret: true, description: 'decider API key' },
   { name: 'decider.model', flag: 'jevModel', env: ['JEV_MODEL'], fileKey: 'jevModel', defaultValue: DEFAULT_JEV_MODEL, secret: false, description: 'decider model' },
   // TUI-DESIGN-2 §1.2 (D-A): the engine mode is a setting — flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE; resolve.ts reads it before the mode-keyed cap default
-  { name: 'mode', flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: DEFAULT_MODE, secret: false, description: 'engine mode (jev-only | jev-on | jev-off | llm-jev); jev-only needs no generator key', shape: { kind: 'enum', values: MODE_SETTING_VALUES } },
+  { name: 'mode', flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: DEFAULT_MODE, secret: false, description: 'engine mode (jev-only | jev-on | jev-off | llm-jev | agent); jev-only needs no generator key', shape: { kind: 'enum', values: MODE_SETTING_VALUES } },
   // Complete autonomy by default: a `review` risk verdict is auto-approved and logged (`[review] auto-approved …`); `--autonomy review` restores the y/n card. A `block` verdict stops under both.
   { name: 'autonomy', flag: 'autonomy', env: ['JEVCODE_AUTONOMY'], fileKey: 'autonomy', defaultValue: DEFAULT_AUTONOMY, secret: false, description: AUTONOMY_DESCRIPTION, shape: { kind: 'enum', values: AUTONOMY_SETTING_VALUES } },
   { name: 'limits.spendCapUsd', flag: 'spendCap', env: ['JEVCODE_SPEND_CAP_USD'], fileKey: 'spendCapUsd', defaultValue: String(DEFAULT_SPEND_CAP_USD), secret: false, description: 'spend cap (USD)', shape: { kind: 'usd' } },

@@ -51,7 +51,7 @@ const REASON_CHARS = 500;
 
 const SPLIT_KINDS: readonly SplitKind[] = ['by_plan_item', 'by_directory', 'by_failing_test', 'by_layer', 'as_written', 'no_split'];
 const ROLES: readonly AgentRole[] = ['code', 'research', 'critic'];
-const MODES: readonly EngineMode[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev'];
+const MODES: readonly EngineMode[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'agent'];
 const VERDICTS: readonly ChoiceVerdict[] = ['chosen', 'overridden', 'fallback', 'code'];
 const DEMANDS: readonly DemandReason[] = ['disjoint_directories', 'failing_tests', 'human'];
 

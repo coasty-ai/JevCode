@@ -189,7 +189,7 @@ function num(v: unknown, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
-const MODES: readonly string[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev'];
+const MODES: readonly string[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'agent'];
 const SOURCES: readonly string[] = ['cli', 'bench', 'perf'];
 /** Every `StopReason` (a compile error here when core/types.ts gains or loses one), so an unknown `stopReason` never folds into a typed row. */
 const STOP_REASON_SET: Readonly<Record<StopReason, true>> = {
@@ -206,6 +206,7 @@ const STOP_REASON_SET: Readonly<Record<StopReason, true>> = {
   error: true,
   human_pause: true,
   token_cap: true,
+  stuck: true,
 };
 export const STOP_REASONS: readonly StopReason[] = Object.keys(STOP_REASON_SET) as StopReason[];
 
