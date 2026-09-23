@@ -3685,8 +3685,9 @@ describe the code as it now stands.
   arriving candidates would need a runner that accepts a base without its baseline.
 - **Typed revert marker**: `recoverableRevertOk` and `proposeRevert` agree on the goal prefix
   `revert`; a marker on `Proposal` would replace it.
-- **Reasoning contract**: `ReasoningEffort` lacks `high` (a GLM effort) and includes `medium`
-  (not one); `provider.order` pinning is not reachable; `config/defaults.ts` lists GLM flash at
+- **Reasoning contract**: `ReasoningEffort` ~~lacks `high` (a GLM effort) and~~ includes `medium`
+  (not one; `high` was added for AGENT-LOOP-DESIGN §6.3's Anthropic agent request);
+  `provider.order` pinning is not reachable; `config/defaults.ts` lists GLM flash at
   the table rate while the served rate is 5/3× (harmless while `usage.cost` is present).
 - **Unmeasured Jev behaviour**: Q15/Q16 on (seed line, LLM hunk) pairs across distinct clusters
   (probe 3, design §10.2 item 3b; if < 8/10 the design says distinct-cluster ties fall back to

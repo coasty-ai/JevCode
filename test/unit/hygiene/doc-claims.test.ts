@@ -118,19 +118,20 @@ const CLOSED: readonly { id: string; file: string; symbol: string; definedIn: st
       'are empty in the product\'s default mode',
     ],
   },
+  {
+    // AGENT-LOOP-DESIGN §6.3 / §15 S1: the Anthropic agent request's `output_config.effort: 'high'` needs the word in the contract.
+    id: "DESIGN open items — ReasoningEffort gained 'high'",
+    file: 'docs/DESIGN.md',
+    symbol: "export type ReasoningEffort = 'low' | 'medium' | 'high';",
+    definedIn: 'src/core/types.ts',
+    staleTexts: ['`ReasoningEffort` lacks `high`', 'lacks `high` (a GLM effort)'],
+  },
 ];
 
 /** Claims this pass verified still OPEN. The symbol must stay absent (or the shape must stay as described). */
 const OPEN: readonly { id: string; absent?: string; check?: () => void }[] = [
   { id: 'runFactsRef really is gone from src/**', absent: 'runFactsRef' },
   { id: 'src/loop/replay.ts (M15) still does not exist', absent: 'replay.ts does not exist' },
-  {
-    id: "ReasoningEffort still lacks 'high'",
-    check: () => {
-      const t = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8');
-      expect(t).toContain("export type ReasoningEffort = 'low' | 'medium';");
-    },
-  },
   {
     id: 'llm-sieve is still not wired in createSynthesizer (DESIGN keeps the bullet, owner F06)',
     check: () => {

@@ -908,8 +908,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
-/** docs/LLM-JEV-DESIGN.md §4.12 verbatim. */
-export type ReasoningEffort = 'low' | 'medium';
+/** docs/LLM-JEV-DESIGN.md §4.12, widened additively by `high`: AGENT-LOOP-DESIGN §6.3's Anthropic agent request sends `output_config.effort: 'high'` (legacy callers never request it). */
+export type ReasoningEffort = 'low' | 'medium' | 'high';
 /**
  * docs/LLM-JEV-DESIGN.md §4.12 verbatim: `{enabled: false}` turns thinking off where the model allows it; `{effort}` asks
  * for it at a level (on OpenRouter `effort` alone implies enabled). Providers send it as given, never rewritten; absent =

@@ -57,6 +57,7 @@ import type {
   EngineMode,
   EngineOptions,
   GenerateOptions,
+  GenerateReasoning,
   GenerateRequest,
   GenerateResult,
   LoopTrip,
@@ -79,6 +80,8 @@ import { ConfigError, EXIT_CODES, JevError, JevHttpError } from '../../../src/er
 import { ABSENT_DECIDER_MODEL, JevUnavailableError, createAbsentDecider } from '../../../src/jev/absent.js';
 import { createStepToken, isRouterFatal, routeSpeculative } from '../../../src/jev/router.js';
 import { exitCodeFor } from '../../../src/loop/stop.js';
+import { effortOf } from '../../../src/provider/openai-compat.js';
+import { openAiReasoningEffort } from '../../../src/provider/openai.js';
 import { buildManifest, manifestPath, readManifest, writeManifest, type ManifestIo } from '../../../src/orchestrate/manifest.js';
 import type { AgentSpec } from '../../../src/orchestrate/types.js';
 import { STOP_REASONS, foldIndex, isStopReason, parseIndexLine, readIndex, reindex, type IndexLine } from '../../../src/session/index.js';
@@ -403,6 +406,17 @@ describe('§6.1: the provider contract additions', () => {
     expect(quick.quick).toBe(true);
     const turn: MockTurn = { text: 'Reading.', reasoning: 'plan', providerState: { sig: 'abc' }, toolCalls: [{ id: 'call_1', name: 'read_file', input: { path: 'a.ts' } }, { name: 'glob', input: { pattern: '**/*.ts' }, rawJson: '{"pattern":"**/*.ts"}' }] };
     expect(turn.toolCalls).toHaveLength(2);
+  });
+
+  it("ReasoningEffort spells §6.3's Anthropic effort 'high'; the adapters pass it through unrewritten", () => {
+    // §6.3: the Anthropic agent constant is {effort:'high'} → output_config.effort; every other provider row is {effort:'low'}.
+    const anthropic: GenerateReasoning = { effort: 'high' };
+    const others: GenerateReasoning = { effort: 'low' };
+    expect(effortOf(anthropic)).toBe('high');
+    expect(effortOf(others)).toBe('low');
+    expect(openAiReasoningEffort(anthropic, 'gpt-5.6-terra')).toBe('high');
+    const req: GenerateRequest = { system: 's', messages: [], maxTokens: 16_384, temperature: null, reasoning: anthropic };
+    expect(req.reasoning).toEqual({ effort: 'high' });
   });
 
   it("Action 'run' gains cwd (workspace-relative); the legacy run action is unchanged", () => {
