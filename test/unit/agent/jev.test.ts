@@ -161,4 +161,13 @@ describe('RA0 effortHint', () => {
     expect(await effortHint(absent.ctx, absent.state)).toBe(false);
     expect(absent.ctx.asks).toHaveLength(0);
   });
+
+  it('a drift falls back to the default effort and disables Jev for the run', async () => {
+    const { ctx, state } = setup(async () => {
+      throw new JevModelDriftError('a', 'b', { firstCall: true });
+    });
+    expect(await effortHint(ctx, state)).toBe(false);
+    expect(state.jevDisabled).toBe(true);
+    expect(ctx.eventsOf('transcript')[0]!.text).toContain('(RA0) are off for the rest of this run');
+  });
 });

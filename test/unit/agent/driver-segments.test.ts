@@ -59,6 +59,19 @@ describe('segmenting', () => {
     expect(s.next.kind === 'observe' && s.next.summary.calls).toHaveLength(10);
   });
 
+  it('ten read_file calls resolve in one observe step, announced 8 then 2, results in call order', async () => {
+    const files = Object.fromEntries(Array.from({ length: 10 }, (_v, i) => [`f${i}.txt`, `content ${i}\n`]));
+    const ctx = createAgentContext({ files, turns: [{ toolCalls: Array.from({ length: 10 }, (_v, i) => call('read_file', { path: `f${i}.txt` })) }, { text: 'ok' }], testCommand: null });
+    const d = createAgentDriver();
+    const s = await step(d, ctx);
+    expect(s.next.kind === 'observe' && s.next.proposal.action).toEqual({ kind: 'read', paths: Array.from({ length: 10 }, (_v, i) => `f${i}.txt`) });
+    const order = ctx.events.filter((e) => e.type === 'tool:call' || e.type === 'tool:result').map((e) => (e.type === 'tool:call' ? 'C' : 'R')).join('');
+    expect(order).toBe('CCCCCCCCRRRRRRRRCCRR');
+    await step(d, ctx);
+    const results = messagesOf(ctx, 1).at(-1)!.content.map((b) => (b.type === 'tool_result' ? b.content.split('\n')[1] : ''));
+    expect(results).toEqual(Array.from({ length: 10 }, (_v, i) => `     1\tcontent ${i}`));
+  });
+
   it('`git diff` and `ls` join the observe batch; `npm install` is an act step', async () => {
     const ctx = createAgentContext({ turns: [{ toolCalls: [call('bash', { command: 'git diff' }), call('bash', { command: 'ls -la' }), call('bash', { command: 'npm install' })] }, { text: 'ok' }], testCommand: null });
     const d = createAgentDriver();

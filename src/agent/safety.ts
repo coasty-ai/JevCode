@@ -15,7 +15,7 @@
  * it, or that /undo may not. Only `--autonomy review` asks, for destructive and unknown commands alike.
  */
 import { resolve } from 'node:path';
-import type { AgentGate, TestCommand } from '../core/types.js';
+import { RISK_DIMENSIONS, type AgentGate, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TestCommand } from '../core/types.js';
 import { isTestCommand } from '../loop/stages/execute.js';
 import { allCommands, parseShell, type ParsedShell, type Redirect, type SimpleCommand, type Word } from './shlex.js';
 import { gitVerdict } from './safety-git.js';
@@ -314,4 +314,15 @@ export function commandGate(v: CommandVerdict, autonomy: 'full' | 'review', note
   }
   if (v.class === 'destructive' && v.rule !== null) return { verdict: 'ok', reason: note ?? destructiveNote('', v.rule, false), rule: v.rule };
   return { verdict: 'ok', reason: '', rule: null };
+}
+
+/**
+ * §9.4, §12: the step's `RiskAssessment` when a rule decided — the rule id in `rule`, its sentence (or the full-autonomy
+ * note) as `reason`, risk 1, and zeroed dimensions that are never drawn. Null when no rule matched (nothing to record).
+ */
+export function ruleRiskAssessment(gate: AgentGate): RiskAssessment | null {
+  if (gate.rule === null) return null;
+  const zero: RiskDimensionResult = { risk: 0, probability: 0, expected: 0, tailMass: 0, bound: 'expected', confidence: 0, level: 0 };
+  const dims = Object.fromEntries(RISK_DIMENSIONS.map((d) => [d, { ...zero }])) as Record<RiskDimension, RiskDimensionResult>;
+  return { dims, risk: 1, verdict: gate.verdict, reason: gate.reason, rule: gate.rule };
 }

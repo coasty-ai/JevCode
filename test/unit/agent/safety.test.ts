@@ -3,7 +3,7 @@
  * allow-list, the gates of both autonomies, and the truthful notes.
  */
 import { describe, expect, it } from 'vitest';
-import { classifyCommand, commandGate, destructiveNote, type ClassifyContext, type CommandVerdict } from '../../../src/agent/safety.js';
+import { classifyCommand, commandGate, destructiveNote, ruleRiskAssessment, type ClassifyContext, type CommandVerdict } from '../../../src/agent/safety.js';
 import { parseShell } from '../../../src/agent/shlex.js';
 
 const ROOT = '/work/proj';
@@ -266,6 +266,15 @@ describe('gates and notes', () => {
     expect(destructiveNote('git checkout .', 'git_discard', true)).toBe('ran git checkout . (rule git_discard) — /undo restores the workspace');
     expect(destructiveNote('git clean -fdx', 'git_discard', false)).toBe('ran git clean -fdx (rule git_discard) — /undo may not restore this');
     expect(destructiveNote(`echo ${'x'.repeat(100)} > /etc/y`, 'outside_write', false)).toMatch(/^ran echo x{74}… \(rule outside_write\)/);
+  });
+
+  it('a rule verdict becomes the step RiskAssessment: rule, sentence or note, risk 1, zeroed dimensions', () => {
+    const r = ruleRiskAssessment(commandGate(destructiveRm, 'review', null))!;
+    expect(r).toMatchObject({ risk: 1, verdict: 'review', rule: 'rm_outside', reason: 'recursively deletes outside the workspace, the workspace itself, the home directory or .git' });
+    expect(Object.keys(r.dims)).toEqual(['destructive', 'out_of_scope', 'plan_mismatch', 'irreversible']);
+    expect(Object.values(r.dims).every((d) => d.risk === 0 && d.level === 0)).toBe(true);
+    expect(ruleRiskAssessment(commandGate(destructiveRm, 'full', 'ran rm -rf /tmp/scratch (rule rm_outside) — /undo may not restore this'))).toMatchObject({ verdict: 'ok', rule: 'rm_outside', reason: 'ran rm -rf /tmp/scratch (rule rm_outside) — /undo may not restore this' });
+    expect(ruleRiskAssessment(commandGate(unknown, 'review', null))).toBeNull();
   });
 
   it('marks which git_discard forms pre-images can cover', () => {

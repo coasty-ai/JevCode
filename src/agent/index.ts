@@ -10,7 +10,7 @@ import { createDriver } from './driver.js';
 export const createAgentDriver: AgentDriverFactory = () => createDriver();
 
 export { AgentTranscriptMissingError, transcriptPath } from './transcript.js';
-export { classifyCommand, commandGate, destructiveNote, RULE_SENTENCES, type CommandClass, type CommandVerdict, type DestructiveRule } from './safety.js';
+export { classifyCommand, commandGate, destructiveNote, ruleRiskAssessment, RULE_SENTENCES, type CommandClass, type CommandVerdict, type DestructiveRule } from './safety.js';
 export { buildAgentSystemPrompt } from './prompt.js';
 export { TOOL_SPECS, toolsFor } from './tools/specs.js';
 export { AGENT_MAX_BLOCKS, AGENT_MAX_LOOP_NUDGES } from './limits.js';
