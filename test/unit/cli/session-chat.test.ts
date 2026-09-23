@@ -865,6 +865,11 @@ describe('the `do it` offer is never made on a question', () => {
   it('an ambiguous statement gets the offer; an ambiguous question does not (live 2026-09-22: `who made you?` read ambiguous); other readings never do', () => {
     expect(offerWanted('the date parsing', ambiguous)).toBe(true);
     expect(offerWanted('who made you?', ambiguous)).toBe(false);
+    // a question without its mark (live 2026-09-22: `who made you`) — interrogative openers count
+    expect(offerWanted('who made you', ambiguous)).toBe(false);
+    expect(offerWanted('How do I run the tests', ambiguous)).toBe(false);
+    expect(offerWanted('can this handle utf-8', ambiguous)).toBe(false);
+    expect(offerWanted('whoever wrote this, the date parsing', ambiguous)).toBe(true);
     expect(offerWanted('  what does calc.sub do ?  ', ambiguous)).toBe(false);
     expect(offerWanted('the date parsing', task)).toBe(false);
   });

@@ -131,7 +131,7 @@ import { keyEnteredText } from '../config/credentials.js';
 import { fingerprint } from '../core/hash.js';
 import { detectSandboxLevel } from '../sandbox/seatbelt.js';
 // TUI-DESIGN-5 §6.3 / round-5 item 4: the zero-import id module — never `provider/registry.js` or `models/**`.
-import { isProviderId, type ProviderId } from '../provider/ids.js';
+import { isProviderId, PROVIDER_DISPLAY_NAME, type ProviderId } from '../provider/ids.js';
 import { isMentionDenied } from '../sandbox/paths.js';
 import { loadForResume as realLoadForResume } from '../checkpoint/resume.js';
 import { CHECKPOINT_FILES, createCheckpointStore, isRunMeta } from '../checkpoint/store.js';
@@ -316,8 +316,14 @@ export const ON_IT_LINE = 'On it — starting the run.';
 /** the line appended when Jev was unsure — the human turns the message into a task with `do it` (no second reading) */
 export const DO_IT_OFFER = "Say `do it` and I'll make that a task.";
 /** the offer is made only for an `ambiguous` reading of a message that is not a question — `who made you?` read `ambiguous` live and got an offer it did not want (2026-09-22 drive) */
+export const QUESTION_OPENER_RE = /^\s*(?:who|whom|whose|what|which|why|how|when|where|can|could|is|are|am|was|were|do|does|did|should|would|will)\b/i;
+/** a question by punctuation or by its opener — `who made you` (no `?`) got the offer live on 2026-09-22 */
+export function looksLikeQuestion(text: string): boolean {
+  const t = text.trim();
+  return /\?\s*$/.test(t) || QUESTION_OPENER_RE.test(t);
+}
 export function offerWanted(text: string, res: Pick<IntakeResult, 'intake'>): boolean {
-  return res.intake.kind === 'ambiguous' && !/\?\s*$/.test(text.trim());
+  return res.intake.kind === 'ambiguous' && !looksLikeQuestion(text);
 }
 /** the answers that accept `DO_IT_OFFER`; any other message drops the offer */
 export const DO_IT_RE = /^\s*(do it|yes,? do it|go ahead|make it a task|run it|yes)\s*[.!]*\s*$/i;
@@ -4572,7 +4578,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     return {
       provider,
       message: text,
-      identity: chatIdentity(),
+      identity: chatIdentity(gen.model, provider.name === 'mock' ? 'mock' : PROVIDER_DISPLAY_NAME[provider.name]),
       conversation: ledger.recent(),
       facts: harnessFacts(factsInput()),
       context: { plan: lastPlan ?? lastResult?.finalPlan ?? null, window, files },
@@ -4588,7 +4594,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     };
   }
   /** the system prompt's workspace section: the directory, its git state and what this workspace was doing lately */
-  function chatIdentity(): ChatIdentity {
+  function chatIdentity(model: string, providerName: string): ChatIdentity {
     const g = gitAtStart;
     const now = Date.parse(nowIso());
     const recentSessions = index
@@ -4598,6 +4604,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       .slice(0, CHAT_RECENT_SESSIONS)
       .map((r) => `"${r.title}" · ${timeAgo(r.lastUsed, now)}`);
     return {
+      model,
+      provider: providerName,
       workspace: basename(workspaceRoot),
       git: g !== null && g.repo ? `${branchOf(g)}, ${g.dirty.modified + g.dirty.staged} modified · ${g.dirty.untracked} untracked` : null,
       recentSessions,
