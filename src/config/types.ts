@@ -263,6 +263,12 @@ export interface ResolvedConfigWithDiagnostics extends ResolvedConfig {
   readonly unknownFileKeys?: readonly string[];
   /** every layer consulted for a setting, for error messages and `jevcode config` */
   sourcesConsulted(setting: SettingName): readonly string[];
+  /**
+   * The redactor's `maxLength` / `maxSpacedLength` right now (core/redact.ts; `addSecret` moves them): how much of a
+   * streamed text's tail a later append can still turn into an exact-secret marker — chat/stream-redact.ts holds that
+   * back from the live region. Read once per stream. Optional so no fake of this interface outside `config/resolve.ts` breaks.
+   */
+  redactReach?(): { readonly maxLength: number; readonly maxSpacedLength: number };
 }
 
 export interface Pricing {

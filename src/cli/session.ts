@@ -4585,7 +4585,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const loaded = await loadRunFn(cfg.runsDir, last.runId, cfg.redact).catch(() => null);
       window = loaded?.state?.window ?? [];
     }
-    let streamed = '';
+    // the live region gets only the prefix no later delta can change under redaction (chat/stream-redact.ts): append-only,
+    // control characters dropped, never the first characters of a secret; a provider retry restarts it
+    const { createStreamRedactor } = await import('../chat/stream-redact.js');
+    const reach = cfg?.redactReach?.() ?? { maxLength: 0, maxSpacedLength: 0 };
+    const shown = createStreamRedactor(redact, reach.maxLength, reach.maxSpacedLength);
     return {
       provider,
       message: text,
@@ -4597,8 +4601,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       generation: { maxTokens: chatMaxTokens(gen.maxTokens), temperature: null },
       signal,
       onDelta: (d) => {
-        streamed += d;
-        renderer.live?.(redact(streamed));
+        if (shown.push(d) !== '') renderer.live?.(shown.text);
+      },
+      onRetry: () => {
+        shown.reset();
+        renderer.live?.('');
       },
       redact,
       warn: (m) => log.warn(m),

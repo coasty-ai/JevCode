@@ -203,4 +203,15 @@ describe('network map P1/P2: chat routing and reasoning', () => {
     // the scripted provider ignores both; routing is never sent to it
     expect(buildChatRequest(input()).providerPrefs).toBeUndefined();
   });
+
+  it('llmChatTurn hands the provider an onRetry that reaches the input (the live text restarts on a retry)', async () => {
+    const provider = named('openrouter', GLM);
+    const events: string[] = [];
+    await llmChatTurn(input({ provider, onRetry: () => events.push('retry'), onDelta: (d) => events.push(`delta:${d}`) }));
+    expect(events).toEqual(['retry', 'delta:ok']);
+    // without an onRetry the option is absent, not a no-op
+    const bare = named('openrouter', GLM);
+    await llmChatTurn(input({ provider: bare }));
+    expect('onRetry' in bare.opts[0]!).toBe(false);
+  });
 });

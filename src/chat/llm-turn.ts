@@ -25,6 +25,8 @@ export interface LlmTurnInput {
   generation: { maxTokens: number; temperature: number | null };
   signal: AbortSignal;
   onDelta: (text: string) => void;
+  /** the provider is about to retry (its next attempt streams the reply again from the start): the live text restarts */
+  onRetry?: () => void;
   redact: (s: string) => string;
   /** a dropped tool call is reported here (jevcode.log warning) */
   warn?: (message: string) => void;
@@ -195,7 +197,8 @@ export interface LlmTurnResult {
 
 export async function llmChatTurn(i: LlmTurnInput): Promise<LlmTurnResult> {
   const req = buildChatRequest(i);
-  const r = await i.provider.generate(req, { signal: i.signal, onDelta: (d) => i.onDelta(d) });
+  const onRetry = i.onRetry;
+  const r = await i.provider.generate(req, { signal: i.signal, onDelta: (d) => i.onDelta(d), ...(onRetry === undefined ? {} : { onRetry: () => onRetry() }) });
   if (r.toolCalls.length > 0) i.warn?.(`chat turn: ${r.toolCalls.length} tool call(s) dropped (no tools were offered)`);
   return { text: i.redact(r.text), usage: r.usage, latencyMs: r.latencyMs, model: r.model };
 }

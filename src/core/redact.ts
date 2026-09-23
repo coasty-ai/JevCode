@@ -47,6 +47,17 @@ export interface Redactor {
   exactSpans(s: string): readonly ExactSpan[];
   /** number of exact secrets currently active */
   readonly size: number;
+  /**
+   * The length of the longest exact secret right now (0 when none; `addSecret` / `dropSecret` move it): how far back a
+   * secret still arriving in a streamed text can start — chat/stream-redact.ts bounds the live region's hold-back by it.
+   */
+  readonly maxLength: number;
+  /**
+   * The same, over the exact secrets that CONTAIN whitespace only (0 when none). A secret without whitespace can never
+   * straddle a word boundary, so a stream only has to hold back its trailing word for those; this is how far a secret
+   * with whitespace (a passphrase, a PEM block acknowledged in the composer) can reach back across boundaries.
+   */
+  readonly maxSpacedLength: number;
 }
 
 /** Values shorter than this are ignored: redacting them would mangle ordinary output. */
@@ -166,6 +177,13 @@ export function createRedactor(secrets: SecretSet): Redactor {
     exactSpans,
     get size() {
       return entries.length;
+    },
+    // `entries` is kept longest first
+    get maxLength() {
+      return entries[0]?.value.length ?? 0;
+    },
+    get maxSpacedLength() {
+      return entries.find((e) => /\s/.test(e.value))?.value.length ?? 0;
     },
   };
 }
