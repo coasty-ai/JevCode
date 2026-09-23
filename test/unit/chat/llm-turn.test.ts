@@ -164,16 +164,16 @@ describe('network map P1/P2: chat routing and reasoning', () => {
   const GLM = 'z-ai/glm-5.3-flash';
   const pricing = { inputPerM: 1, outputPerM: 1, cacheReadPerM: 0, cacheWritePerM: 0 };
 
-  it('OpenRouter: reasoning effort low and provider sort latency — no order, no fallback switch, never {enabled: false}', () => {
+  it('OpenRouter: reasoning effort low and provider sort throughput — no order, no fallback switch, never {enabled: false}', () => {
     const req = buildChatRequest(input({ provider: named('openrouter', GLM) }));
     expect(req.reasoning).toEqual({ effort: 'low' });
-    expect(req.providerPrefs).toEqual({ requireParameters: false, sort: 'latency' });
+    expect(req.providerPrefs).toEqual({ requireParameters: false, sort: 'throughput' });
     expect(CHAT_REASONING).toEqual({ effort: 'low' });
-    expect(CHAT_PROVIDER_PREFS).toEqual({ requireParameters: false, sort: 'latency' });
+    expect(CHAT_PROVIDER_PREFS).toEqual({ requireParameters: false, sort: 'throughput' });
     // the wire body OpenRouter receives
     const body = buildOpenRouterBody({ provider: 'openrouter', model: GLM, apiKey: 'k', baseUrl: 'https://openrouter.ai/api/v1', temperature: null, maxTokens: 4096, pricing }, req);
     expect(body.reasoning).toEqual({ effort: 'low' });
-    expect(body.provider).toEqual({ require_parameters: false, sort: 'latency' });
+    expect(body.provider).toEqual({ require_parameters: false, sort: 'throughput' });
     const wire = JSON.stringify(body);
     expect(wire).not.toContain('allow_fallbacks');
     expect(wire).not.toContain('"only"');
@@ -184,7 +184,7 @@ describe('network map P1/P2: chat routing and reasoning', () => {
   it('a Claude model never gets an effort (on OpenRouter it would switch extended thinking on); the Anthropic adapter sends no thinking field', () => {
     const viaRouter = buildChatRequest(input({ provider: named('openrouter', 'anthropic/claude-sonnet-5') }));
     expect(viaRouter.reasoning).toBeUndefined();
-    expect(viaRouter.providerPrefs).toEqual({ requireParameters: false, sort: 'latency' });
+    expect(viaRouter.providerPrefs).toEqual({ requireParameters: false, sort: 'throughput' });
     const direct = buildChatRequest(input({ provider: named('anthropic', 'claude-sonnet-5') }));
     expect(direct.reasoning).toBeUndefined();
     expect(direct.providerPrefs).toBeUndefined();

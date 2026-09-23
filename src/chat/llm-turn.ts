@@ -147,21 +147,22 @@ export function chatMessages(conversation: readonly ChatTurn[], message: string)
 /**
  * network map P2 (live 2026-09-23): a chat turn thinks at the lowest effort the adapters map. GLM 5.3's reasoning is
  * mandatory (`{enabled: false}` is HTTP 400) and defaults to `max`; `low` took the median first content of a turn from
- * 974 to 643 ms (n = 6 each, both routed to Together) and cut the hidden reasoning tokens. Every adapter maps it per
- * model or leaves it off the wire (openai-compat `pickEffort`, gemini's thinking budget, anthropic ignores it). Never
- * sent for a Claude model: through OpenRouter an effort would switch extended thinking ON.
+ * 956 to 485 ms (n = 9 each over three windows, all but one routed to Together) and cut the hidden reasoning tokens.
+ * Every adapter maps it per model or leaves it off the wire (openai-compat `pickEffort`, gemini's thinking budget,
+ * anthropic ignores it). Never sent for a Claude model: through OpenRouter an effort would switch extended thinking ON.
  */
 export const CHAT_REASONING: GenerateReasoning = { effort: 'low' };
 
 /**
  * network map P1 (live 2026-09-23): OpenRouter's default routing is price-weighted and in one window sent 44 of 44 chat
- * turns to slow upstreams (median first content 4,989 ms). `sort: 'latency'` keeps OpenRouter's own policy and fallbacks
- * — no hard-coded upstream list, no data-retention question — and measured as fast as pinning the fast upstreams
- * (median first content 466 ms for `latency`, 330 ms for `throughput`, 341 ms for order together/friendli/coreweave, all
- * with effort low, n = 6 each over two windows), well inside the 1.5× that would have justified an ordered list. A chat
- * turn sends nothing an endpoint could lack, so `requireParameters` stays false (OpenRouter's default).
+ * turns to slow upstreams (median first content 4,989 ms). A `sort` keeps OpenRouter's own policy and fallbacks — no
+ * hard-coded upstream list, no data-retention question. Measured with effort low, n = 9 each over three windows (every
+ * request served by Together, so the spread is reasoning-token variance, not routing): median first content 327 ms for
+ * `throughput`, 494 ms for `latency`, 316 ms for order together/friendli/coreweave with fallbacks on. `throughput` is
+ * within 1.03× of pinning, well inside the 1.5× that would have justified an ordered list. A chat turn sends nothing an
+ * endpoint could lack, so `requireParameters` stays false (OpenRouter's default).
  */
-export const CHAT_PROVIDER_PREFS: GenerateProviderPrefs = { requireParameters: false, sort: 'latency' };
+export const CHAT_PROVIDER_PREFS: GenerateProviderPrefs = { requireParameters: false, sort: 'throughput' };
 
 /** the routing and reasoning members of a chat request for this provider (OpenRouter-only routing; no Claude thinking) */
 function chatRouting(provider: Provider): Pick<GenerateRequest, 'reasoning' | 'providerPrefs'> {
