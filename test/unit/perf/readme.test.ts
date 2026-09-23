@@ -21,6 +21,7 @@ import type { ComposerSeries } from '../../../src/perf/composer-latency.js';
 import type { IntakeSeries } from '../../../src/perf/intake-latency.js';
 import type { IdleGeometry } from '../../../src/perf/idle-frames.js';
 import { failures, performanceSection, replacePerformanceSection, resultRows } from '../../../src/perf/readme.js';
+import { STREAM_SERIES, judgeStreamSeries } from '../../../src/perf/stream-latency.js';
 
 function geometry(rows: number, over: Partial<LagGeometry> = {}): LagGeometry {
   return {
@@ -278,6 +279,7 @@ function result(): PerfResult {
     // §5 Ring 0 probes: opt-in, never in a release result (a named Ring-0 probe makes the run `partial`)
     laneRun: null,
     sandboxSpawn: null,
+    streamLatency: null,
     pass: false,
   };
 }
@@ -383,6 +385,22 @@ describe('resultRows()', () => {
     expect(by('Intake hygiene')).toMatchObject({ result: '0 · 0 · 6 / 0 · 0 · 6', gate: '0 · 0 · ≤ 22', status: 'pass' });
     // no cell may break the Markdown table
     for (const r of rows) for (const v of [r.measurement, r.result, r.gate, r.status]) expect(v).not.toContain('|');
+  });
+
+  it('the opt-in stream probe: one row per series plus a hygiene row, a failing series named in failures(); absent when the probe did not run', () => {
+    expect(resultRows(result()).some((r) => r.measurement.startsWith('Streaming'))).toBe(false);
+    // a series that never streamed (no emission log, no clock): every verdict false
+    const dead = (name: string) => judgeStreamSeries({ spec: STREAM_SERIES.find((x) => x.name === name)!, capture: '', timing: [], chunks: [], clock: null, log: null, enters: [], keys: new Set(), exitCode: 0, timedOut: false, memory: null });
+    const r: PerfResult = { ...result(), streamLatency: { gates: { firstTextP95Ms: 20, coverage: 1, commitJump: 0, blankLinesDropped: 0, lastDeltaToCommitP95Ms: 50, clears: 0, dynamicFps: 31, dynamicFpsSsh: 16, keyP95Ms: 16 }, series: [dead('chat-30ms-24x80'), dead('long-2ms-24x80'), dead('type-while-streaming-30ms-24x80')], deviations: [], pass: false } };
+    const rows = resultRows(r).filter((x) => x.measurement.startsWith('Streaming'));
+    expect(rows.map((x) => x.status)).toEqual(['FAIL', 'FAIL', 'FAIL', 'FAIL']);
+    expect(rows[0]!.measurement).toContain('`chat-30ms-24x80` (mixed reply, 421 chars in 46 deltas 30 ms apart, 24×80, 30 fps');
+    expect(rows[0]!.gate).toBe('≤ 20 ms · report · 100% · 0 · 0 · ≤ 50 ms · ≤ 31 · report');
+    expect(rows[1]!.gate).toBe('report (hygiene gated)');
+    expect(rows[2]!.gate).toContain('· < 16 ms');
+    expect(rows[3]!.measurement).toMatch(/^Streaming hygiene/);
+    expect(failures(r)).toEqual(expect.arrayContaining(['stream latency (chat-30ms-24x80)', 'stream latency (long-2ms-24x80, hygiene)', 'stream latency (type-while-streaming-30ms-24x80)']));
+    for (const x of rows) for (const v of [x.measurement, x.result, x.gate, x.status]) expect(v).not.toContain('|');
   });
 });
 

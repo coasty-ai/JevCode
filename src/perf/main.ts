@@ -6,8 +6,12 @@
  * series), the intake reply latency (Enter → `[you]` bubble, Enter → `[jevcode]` reply, mock at 0 ms and delayed
  * 150 ms), the idle wordmark loop's frame and byte budget over 31 s (TUI-DESIGN-3 §3.9), zero clears per state, and (with
  * --live) Jev latency. Writes perf/results/latest.json, prints a table,
- * rewrites the README's Performance section from the result (`readme.ts`; complete runs, and only in a checkout whose
- * `package.json` is ours — `rewriteReadmePerformance`) and exits 1 when a gate fails.
+ * rewrites the Performance section of docs/measurements/performance.md from the result (`readme.ts`; complete runs, and
+ * only in a checkout whose `package.json` is ours — `rewriteReadmePerformance`) and exits 1 when a gate fails.
+ *
+ * Opt-in probes (named in `JEVCODE_PERF_ONLY`, never in a bare run): `lane-run` and `sandbox-spawn` (Ring 0), and
+ * `stream-latency` — a streamed `--mock` chat reply timed per delta from emission to paint through the typist's clock
+ * bridge (`stream-latency.ts`), red on arrival by design and outside the release set until the streaming work lands.
  *
  * It runs from a source checkout only. Every probe resolves `bin/jevcode.js`, `scripts/pty/drive.exp` and
  * `perf/drivers/pty_type.py` out of the CWD, and the last two are not in the shipped package at all, so a CWD with no
@@ -47,6 +51,7 @@ import { measureIntakeLatency, type IntakeLatencyResult } from './intake-latency
 import { measureIdleFrames, type IdleFramesResult } from './idle-frames.js';
 import { measureStates, type StatesResult } from './states.js';
 import { measureScrollLatency, type ScrollLatencyResult } from './scroll-latency.js';
+import type { StreamLatencyResult } from './stream-latency.js';
 import type { StaticAppendResult } from './static-append.js';
 import type { JevLatencyResult } from './jev-latency.js';
 import type { LaneRunResult } from './lane-run.js';
@@ -286,7 +291,7 @@ export const LOAD_WAIT_MS = 30_000;
 export const LOAD_RETRIES = 3;
 
 /** TUI-DESIGN-4 contract 1.7 item 11 / §11: `scroll-latency` is round 4's new probe (fullscreen only, D-S). */
-export type ProbeName = 'first-frame' | 'step-overhead' | 'static-append' | 'render-lag' | 'composer-latency' | 'intake-latency' | 'idle-frames' | 'states' | 'scroll-latency' | 'lane-run' | 'sandbox-spawn';
+export type ProbeName = 'first-frame' | 'step-overhead' | 'static-append' | 'render-lag' | 'composer-latency' | 'intake-latency' | 'idle-frames' | 'states' | 'scroll-latency' | 'lane-run' | 'sandbox-spawn' | 'stream-latency';
 /** the release set: what a bare `jevcode perf` runs, what the README is rewritten from, what the gate is. */
 const ALL_PROBES: readonly ProbeName[] = ['first-frame', 'step-overhead', 'static-append', 'render-lag', 'composer-latency', 'intake-latency', 'idle-frames', 'states', 'scroll-latency'];
 /**
@@ -299,7 +304,13 @@ const ALL_PROBES: readonly ProbeName[] = ['first-frame', 'step-overhead', 'stati
  * the README — so the release gate, its wall and its dependencies are byte-for-byte what they were before S0.
  */
 const RING0_PROBES: readonly ProbeName[] = ['lane-run', 'sandbox-spawn'];
-const KNOWN_PROBES: readonly ProbeName[] = [...ALL_PROBES, ...RING0_PROBES];
+/**
+ * Opt-in probes that are red on arrival by design: `stream-latency` measures the streaming work before it lands
+ * (`JEVCODE_PERF_ONLY=stream-latency jevcode perf`). Like the Ring 0 probes, naming one makes the run `partial`, so the
+ * release set, its gate and the performance page are unchanged; a probe moves into `ALL_PROBES` once it is green.
+ */
+const OPT_IN_PROBES: readonly ProbeName[] = ['stream-latency'];
+const KNOWN_PROBES: readonly ProbeName[] = [...ALL_PROBES, ...RING0_PROBES, ...OPT_IN_PROBES];
 
 export interface PerfResult {
   measuredAt: string;
@@ -326,12 +337,15 @@ export interface PerfResult {
   /** HARNESS-NEXT-DESIGN §5 Ring 0, opt-in (see RING0_PROBES): null unless JEVCODE_PERF_ONLY named them */
   laneRun: LaneRunResult | null;
   sandboxSpawn: SandboxSpawnResult | null;
+  /** opt-in (see OPT_IN_PROBES): the streamed chat reply, per delta; null unless JEVCODE_PERF_ONLY named it */
+  streamLatency: StreamLatencyResult | null;
   pass: boolean;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-function selectedProbes(env: NodeJS.ProcessEnv): ProbeName[] {
+/** The probes a run measures: the release set when `JEVCODE_PERF_ONLY` is unset or empty, else exactly the named ones (known order). */
+export function selectedProbes(env: NodeJS.ProcessEnv): ProbeName[] {
   const only = env['JEVCODE_PERF_ONLY'];
   if (only === undefined || only.trim() === '') return [...ALL_PROBES];
   const wanted = new Set(only.split(',').map((s) => s.trim()).filter(Boolean));
@@ -493,6 +507,7 @@ async function measureAll(flags: ParsedFlags, ctx: { root: string; env: NodeJS.P
   let jev: JevLatencyResult | null = null;
   let laneRun: LaneRunResult | null = null;
   let sandboxSpawn: SandboxSpawnResult | null = null;
+  let stream: StreamLatencyResult | null = null;
 
   if (probes.includes('first-frame')) {
     log('perf: first frame (run + chat × 40x120 / 24x80 / 8x40; 10 cold + 10 warm runs each under a pseudo-TTY, zero network asserted)…\n');
@@ -529,6 +544,12 @@ async function measureAll(flags: ParsedFlags, ctx: { root: string; env: NodeJS.P
     log('perf: intake reply latency (real pty 24x80, chat --mock: 20 greetings and tool questions, Enter → [you] bubble frame and Enter → [jevcode] reply frame; mock decider at 0 ms, then delayed 150 ms through JEVCODE_MOCK_JEV_MS)…\n');
     intake = await measureIntakeLatency({ root, bin, onProgress: progress });
   }
+  // opt-in, imported lazily so a release run never loads it
+  if (probes.includes('stream-latency')) {
+    log('perf: streaming latency (real pty, chat --mock streaming a known reply — 30 / 5 ms gaps at 24x80 and 40x120, SSH, the mock decider at 150 ms, an 8 KB reply, typing while it streams; emission → paint per delta through the typist clock bridge; opt-in, red on arrival)…\n');
+    const { measureStreamLatency } = await import('./stream-latency.js');
+    stream = await measureStreamLatency({ root, bin, onProgress: progress });
+  }
   if (probes.includes('idle-frames')) {
     log('perf: idle animation frames (real pty, chat --mock at 24x80 and 40x120 left alone for 31 s after the settle: dynamic frames ≤ 4 per second and ≤ 2/s mean, bytes ≤ 12 KB/s peak and ≤ 5 KB/s mean, 0 clears, region ≤ rows − 2; child CPU reported)…\n');
     idle = await measureIdleFrames({ root, bin, onProgress: progress });
@@ -562,7 +583,7 @@ async function measureAll(flags: ParsedFlags, ctx: { root: string; env: NodeJS.P
   const staticPass = probes.includes('static-append') ? (staticAppend?.pass ?? false) : undefined;
   // laneRun fails the run only when a warm arm was actually measured and missed the >= 2x gate; a pending arm
   // (no src/sandbox/pool.ts yet) and sandbox-spawn are report-only, per §5's probe table
-  const gates: boolean[] = [firstFrame?.pass, overhead?.pass, staticPass, lag?.pass, composer?.pass, intake?.pass, idle?.pass, states?.pass, scroll?.pass, laneRun?.pass].filter((v): v is boolean => v !== undefined);
+  const gates: boolean[] = [firstFrame?.pass, overhead?.pass, staticPass, lag?.pass, composer?.pass, intake?.pass, idle?.pass, states?.pass, scroll?.pass, laneRun?.pass, stream?.pass].filter((v): v is boolean => v !== undefined);
   const pass = gates.length > 0 && gates.every(Boolean);
   const cpu = cpus();
   const result: PerfResult = {
@@ -585,6 +606,7 @@ async function measureAll(flags: ParsedFlags, ctx: { root: string; env: NodeJS.P
     jevLatency: jev,
     laneRun,
     sandboxSpawn,
+    streamLatency: stream,
     pass,
   };
   mkdirSync(resolve(out, '..'), { recursive: true });

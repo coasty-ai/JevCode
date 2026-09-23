@@ -63,6 +63,8 @@ export function failures(r: PerfResult): string[] {
     }
   }
   if (r.states) for (const s of r.states.scenarios) if (!s.pass) out.push(`state ${s.name} ${s.rows}×${s.columns}`);
+  // opt-in (`JEVCODE_PERF_ONLY=stream-latency`): a run naming it is partial, so these never reach the page
+  if (r.streamLatency) for (const s of r.streamLatency.series) if (!s.pass) out.push(`stream latency (${s.name}${s.gated ? '' : ', hygiene'})`);
   return out;
 }
 
@@ -169,6 +171,21 @@ export function resultRows(r: PerfResult): Row[] {
       rows.push({ measurement: `Intake reply latency, \`${s.name}\`: Enter → \`[you]\` bubble frame p50 / p95 / max · Enter → \`[jevcode]\` reply frame p50 / p95 / max (${s.messages} greetings and tool questions, ${s.reply.samples} located${s.dropped > 0 ? `, ${s.dropped} Enter${s.dropped === 1 ? '' : 's'} not located` : ''}, ${s.rows}×${s.columns}, mock decider at ${s.jevMs} ms${delay}; \`thinking\` seen for ${s.thinkingSeen}/${s.messages})`, result: `${ms(s.bubble.p50)} / ${ms(s.bubble.p95)} / ${ms(s.bubble.max)} · ${ms(s.reply.p50)} / ${ms(s.reply.p95)} / ${ms(s.reply.max)}${s.jevMs > 0 ? ` (net p95 ${ms(s.replyNet.p95)})` : ''}`, gate: `bubble p95 < ${il.gateBubbleMs} ms · reply p95 ≤ ${il.gateReplyMs} ms${s.jevMs > 0 ? ' net of the delay' : ''} (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's)`, status: pf(s.pass) });
     }
     rows.push({ measurement: `Intake hygiene: runs started by a greeting or a tool question · clears after the first frame · tallest painted region (${il.series.map((s) => `\`${s.name}\``).join(' · ')})`, result: il.series.map((s) => `${s.runsStarted} · ${s.clears} · ${s.regionMax}`).join(' / '), gate: `0 · 0 · ≤ ${il.series[0] ? il.series[0].rows - 2 : '–'}`, status: pf(il.series.every((s) => s.hygieneOk)) });
+  }
+  // opt-in stream probe (`stream-latency.ts`): one row per series; red on arrival by design
+  const sl = r.streamLatency;
+  if (sl) {
+    const pct = (v: number | null): string => (v === null ? '–' : `${Math.round(v * 100)}%`);
+    for (const s of sl.series) {
+      const cold = s.messages[0];
+      rows.push({
+        measurement: `Streaming \`${s.name}\` (${s.preset} reply, ${s.replyChars} chars in ${s.deltas} deltas ${s.gapMs} ms apart, ${s.rows}×${s.columns}, ${s.fps} fps${s.jevMs > 0 ? `, mock decider ${s.jevMs} ms` : ''}${s.typing ? `, ${s.keysSent} keys typed while it streams` : ''}; ${s.messages.length} messages): first text p95 (cold) · delta → paint p95 · coverage min · commit jump max · blank lines dropped · last delta → commit p95 · dynamic fps max · bytes per streamed char${s.typing ? ' · key p95' : ''}`,
+        result: `${ms(s.firstTextPaint.p95)} (${ms(cold?.firstTextPaintMs)}) · ${ms(s.deltaToPaint.p95)} · ${pct(s.coverageMin)} · ${s.commitJumpMax ?? '–'} · ${s.blankLinesDroppedMax ?? '–'} · ${ms(s.lastDeltaToCommit.p95)} · ${s.dynamicFpsMax ?? '–'} · ${n1(s.bytesPerStreamedCharMean)}${s.typing ? ` · ${ms(s.typing?.p95)}` : ''}`,
+        gate: s.gated ? `≤ ${sl.gates.firstTextP95Ms} ms · report · 100% · 0 · 0 · ≤ ${sl.gates.lastDeltaToCommitP95Ms} ms · ≤ ${s.fps + 1} · report${s.typing ? ` · < ${sl.gates.keyP95Ms} ms` : ''}` : 'report (hygiene gated)',
+        status: s.gated ? pf(s.pass) : s.pass ? 'report' : 'FAIL',
+      });
+    }
+    rows.push({ measurement: `Streaming hygiene: clears · \`ESC[3J\` · tallest region (Ink's erase accounting) · every message streamed, committed and lined up on the clock bridge (${sl.series.map((s) => `\`${s.name}\``).join(' · ')})`, result: sl.series.map((s) => `${s.clears} · ${s.esc3J} · ${s.regionMax} · ${String(s.hygieneOk)}`).join(' / '), gate: '0 · 0 · ≤ rows − 2 · true', status: pf(sl.series.every((s) => s.hygieneOk && s.clearsOk)) });
   }
   const idle = r.idleFrames;
   if (idle) {

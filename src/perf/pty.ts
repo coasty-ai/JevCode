@@ -227,6 +227,18 @@ function keepEvidence(label: string | undefined, capture: string, timing: string
   }
 }
 
+/** `JEVCODE_PERF_KEEP=<dir>`: keep one more evidence file of a drive as `<dir>/<label>.<ext>` (the stream probe's emission log). */
+export function keepExtra(label: string | undefined, file: string, ext: string): void {
+  const dir = process.env['JEVCODE_PERF_KEEP'];
+  if (dir === undefined || dir === '' || label === undefined) return;
+  try {
+    mkdirSync(dir, { recursive: true });
+    copyFileSync(file, join(dir, `${label}.${ext}`));
+  } catch {
+    /* evidence only */
+  }
+}
+
 export interface DriveResult {
   /** the child's exit code as propagated by the driver (124 = an expect step timed out; 128+n = signal) */
   code: number | null;
@@ -558,6 +570,79 @@ export function staticRows(body: string): number {
   const rule = /^(?:\x1b\[[0-9;]*m)*(?:─|\u00e2\u0094\u0080){3}/;
   for (let i = 0; i < rows.length; i++) if (rule.test(rows[i]!)) return i;
   return -1;
+}
+
+// ---------------------------------------------------------------------------------------
+// The dynamic region by Ink's own accounting: the next write's erase count
+// ---------------------------------------------------------------------------------------
+
+/** a clear-terminal frame (`clearTerminal + fullStaticOutput + output`, `ink.js` `renderInteractiveFrame`): it erases nothing */
+const CLEAR_FRAME_RE = /\x1b\[[0-9;]*2J/;
+
+/**
+ * The visible rows of a frame with its **trailing blank rows kept** — only the text after the final line break (the
+ * cursor suffix, empty once stripped) is dropped. `frameRows` drops trailing blank rows, which is right for reading
+ * the last visible row but under-counts a region that ends in blank rows (a failed composer pane paints three).
+ */
+export function frameRowsRaw(body: string): string[] {
+  const rows = stripAnsi(body)
+    .split('\n')
+    .map((r) => r.replace(/\r+$/, ''));
+  if (rows.length > 0 && rows[rows.length - 1] === '') rows.pop();
+  return rows;
+}
+
+/** The rule parse with trailing blank rows kept: last rule row → last row of `frameRowsRaw`; null without a rule row. */
+export function ruleRegionRows(body: string): number | null {
+  const rows = frameRowsRaw(body);
+  for (let i = rows.length - 1; i >= 0; i--) if (RULE_ROW_RE.test(rows[i]!)) return rows.length - i;
+  return null;
+}
+
+/**
+ * Every frame's dynamic region, in rows, by Ink's own accounting. `log-update` (standard mode) writes
+ * `eraseLines(previousLineCount) + str` and then sets `previousLineCount` to `str`'s line count — the visible rows plus
+ * one for the trailing newline — and a `<Static>` frame starts with `log.clear()`, which erases the same count. So the
+ * next frame that erases anything erased exactly this frame's region + 1, whatever the region holds: a rule row or not,
+ * blank rows at the bottom, rows above the rule that are still live (a streaming reply tail). Cursor-only frames (no
+ * rows, no erase) are skipped; a clear-terminal frame, a frame that prints without erasing (after Ink's `log.clear()` /
+ * reset) and the last frame leave the height unknown (null) — `regionRows` then falls back to the rule parse.
+ *
+ * Cross-checked 2026-09-23 against the rule parse (`ruleRegionRows`) on 60 perf captures: 12,254 frames with both
+ * measures, 0 disagreements (the rule parse WITHOUT the trailing blank rows, `paintedRows`, disagreed on 23 frames —
+ * all of them the failed-composer frames of `states fault-composer`, whose region ends in three blank rows).
+ */
+export function eraseHeights(frames: readonly Frame[]): (number | null)[] {
+  const out: (number | null)[] = new Array<number | null>(frames.length).fill(null);
+  for (let i = 0; i < frames.length; i++) {
+    for (let j = i + 1; j < frames.length; j++) {
+      const f = frames[j]!;
+      if (CLEAR_FRAME_RE.test(f.body)) break;
+      if (f.erased > 0) {
+        out[i] = f.erased - 1;
+        break;
+      }
+      if (frameRowsRaw(f.body).some((r) => r !== '')) break;
+    }
+  }
+  return out;
+}
+
+/** Frame `i`'s dynamic region: Ink's erase accounting (`heights[i]`) when the next write tells, else the rule parse. */
+export function regionRows(frames: readonly Frame[], i: number, heights: readonly (number | null)[]): number | null {
+  return heights[i] ?? ruleRegionRows(frames[i]!.body);
+}
+
+/**
+ * Frame `i` split at its dynamic region: `staticRows` are the rows written above it (new `<Static>` output — committed
+ * scrollback), `dynamicRows` the region Ink will erase and repaint. Null when neither measure knows the region.
+ */
+export function splitRegion(frames: readonly Frame[], i: number, heights: readonly (number | null)[]): { staticRows: string[]; dynamicRows: string[] } | null {
+  const h = regionRows(frames, i, heights);
+  if (h === null) return null;
+  const rows = frameRowsRaw(frames[i]!.body);
+  const cut = Math.max(0, rows.length - h);
+  return { staticRows: rows.slice(0, cut), dynamicRows: rows.slice(cut) };
 }
 
 export interface FrameMix {

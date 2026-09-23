@@ -39,6 +39,7 @@ import {
   perfWindowState,
   perfWindowTtlMs,
   runPerf,
+  selectedProbes,
 } from '../../../src/perf/main.js';
 
 /** The protocol's line: `<iso-8601 created> <pid> <owner-label> <expected-minutes>`. */
@@ -92,6 +93,19 @@ async function attempt(cwd: string, windowPath: string, only: string = NO_PROBE)
 }
 
 const PERF_MAIN = join(dirname(fileURLToPath(import.meta.url)), '../../../src/perf/main.js');
+
+describe('selectedProbes: the release set and the opt-in probes', () => {
+  it('a bare run measures the nine release probes; stream-latency (like lane-run) runs only when named, which makes the run partial', () => {
+    const release = selectedProbes({});
+    expect(release).toEqual(['first-frame', 'step-overhead', 'static-append', 'render-lag', 'composer-latency', 'intake-latency', 'idle-frames', 'states', 'scroll-latency']);
+    expect(release).not.toContain('stream-latency');
+    expect(selectedProbes({ JEVCODE_PERF_ONLY: 'stream-latency' })).toEqual(['stream-latency']);
+    // named next to the whole release set it is still one more than the release set: `partial` (length ≠ release), never a release number
+    const all = selectedProbes({ JEVCODE_PERF_ONLY: [...release, 'stream-latency'].join(',') });
+    expect(all).toHaveLength(release.length + 1);
+    expect(() => selectedProbes({ JEVCODE_PERF_ONLY: 'stream-latancy' })).toThrow(/unknown probe\(s\) stream-latancy \(known: .*sandbox-spawn, stream-latency\)/);
+  });
+});
 
 describe('driverLines', () => {
   it('keeps expect … drive.exp and python3 … pty_type.py processes, drops shells and editors that only mention them, truncates long lines', () => {
