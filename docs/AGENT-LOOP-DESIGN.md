@@ -1976,7 +1976,7 @@ does not affect the default flip.
 
 Plan:
 - **Per-slice budgets** (minified): S2 ≤ 30 KB, S3 ≤ 90 KB, S4 ≤ 20 KB, S5 ≤ 20 KB. Each slice runs `npm run build && npm run pack:check` and reports the bundle delta in its merge note.
-- **S6 decision.** S6 measures after the merge. It raises `UNPACKED_MAX` with the measured number and a dated comment, as every earlier raise did (`scripts/check-pack.mjs:30-40`). Removing `bench`/`perf` from the published package would be a product change nobody asked for, and the check-pack comment assigns bundle splitting to the peer session. The tarball cap (1,500,000) is expected to hold (inferred from the 1,039,272 tarball at a 2,854,378-byte bundle).
+- **S6 decision.** S6 measures after the merge. It raises the unpacked-size gate with the measured number and a dated comment, as every earlier raise did (`scripts/check-pack.mjs:30-40`). Removing `bench`/`perf` from the published package would be a product change nobody asked for, and the check-pack comment assigns bundle splitting to the peer session. The tarball cap (1,500,000) is expected to hold (inferred from the 1,039,272 tarball at a 2,854,378-byte bundle).
 
 ---
 
@@ -2021,7 +2021,7 @@ Seven slices:
 | S3 agent core | `src/agent/**` (replaces the stub); `src/jev/client.ts` (quick asks); `src/jev/router.ts` (`RouterId` += `RA1`, `RA2`); `test/unit/agent/**` | S1 |
 | S4 engine seam | `src/loop/engine.ts`; new `src/loop/stages/agent.ts`; `src/loop/stages/execute.ts` (`run.cwd`); `src/checkpoint/resume.ts` (the `seqAfter` fold); `src/config/resolve.ts`; `src/workspace/tests.ts` (one parser); `test/unit/loop/fakes.ts` (additions only); `test/unit/loop/agent-*.test.ts`; `test/unit/config/resolve-agent.test.ts` | S1 |
 | S5 TUI, chat, session | `src/cli/session.ts` (except S1's row); `src/cli/{args.ts (help text and TAGLINE), login.ts, epilogue.ts, mock-trajectory.ts}`; `src/chat/{intake,llm-turn}.ts`; `src/chat/facts.ts` (non-agent rows and `HOW_TO_TASK_TEXT`); `src/tui/{useEngine.tsx,plain.ts,App.tsx,Transcript.tsx,theme.ts}`; `src/tui/pane/model.ts`; `src/tui/status/lines.ts`; `src/tui/review/lines.ts`; `src/tui/context/lines.ts`; `src/tui/commands/registry.ts` (except S1's row); `src/tui/onboarding/lines.ts`; `src/tui/keys/bindings.ts`; `src/tui/anim/Indicator.tsx`; `test/unit/config/args.test.ts` (the tagline pin); tests under `test/unit/{tui,chat,cli}/`; regenerated docs | S1 |
-| S6 flip, docs, live | `src/config/defaults.ts` (the `DEFAULT_MODE` line); `test/pty/**`; `test/unit/loop/agent-e2e.test.ts`; unit tests that pin the default mode or badge; `test/unit/config/no-default-literal.test.ts`; `README.md`; `docs/**`; `package.json` (description, keywords); `scripts/gen-docs.mjs` (the exit-code row, advertised modes); `scripts/check-pack.mjs` (`UNPACKED_MAX`); `scripts/jev-contract.mjs` (rows only if counts moved); generated docs | S1-S5 |
+| S6 flip, docs, live | `src/config/defaults.ts` (the `DEFAULT_MODE` line); `test/pty/**`; `test/unit/loop/agent-e2e.test.ts`; unit tests that pin the default mode or badge; `test/unit/config/no-default-literal.test.ts`; `README.md`; `docs/**`; `package.json` (description, keywords); `scripts/gen-docs.mjs` (the exit-code row, advertised modes); `scripts/check-pack.mjs` (the unpacked-size gate); `scripts/jev-contract.mjs` (rows only if counts moved); generated docs | S1-S5 |
 | S7 jev-modes layout | `src/jev-modes/**` (new, by `git mv`); the moved sources and tests; import lines in every importer; `src/loop/judge-code.ts` (new); `src/workspace/tests.ts` (`isVerificationRun`); `scripts/jev-contract.mjs` (`ALLOW` paths); doc path references | S6 |
 
 Interfaces between slices are exactly the S1 types:
@@ -2330,7 +2330,7 @@ file list.
   - Add `agent-stream.steps`: a multi-paragraph mock reply shows its partial line in the live region before the newline arrives, and each line lands once in scrollback.
 - **Docs and README** per 14.5 (package.json, README sections, STATUS importer count, DECISIONS entry). This document is committed as
   `docs/AGENT-LOOP-DESIGN.md`. `scripts/gen-docs.mjs` gets the `stuck` exit row and advertised modes, and the docs are regenerated. `jev-contract` rows change only if counts moved.
-- **Bundle:** measure, and raise `UNPACKED_MAX` with the measured figure (14.7).
+- **Bundle:** measure, and raise the unpacked-size gate with the measured figure (14.7).
 - **Live verification:** run section 16 and record the results in `docs/STATUS.md`.
 
 Acceptance: `npm run check`, `npm run test:pty`, `test/pty/run-smoke.sh`, `npm run build`,
