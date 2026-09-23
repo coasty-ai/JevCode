@@ -145,10 +145,38 @@ function bandRowCount(rows: number, columns: number, g: GlyphSet, matchesIntent:
 
 function headlineBand(req: ConfirmRequest, n: number, columns: number, g: GlyphSet): string[] {
   const want = Math.max(0, Math.floor(n));
-  const src = req.headline ?? [];
+  const src = isRuleConfirm(req) ? ruleHeadline(req, columns, g) : (req.headline ?? []);
   const out: string[] = [];
   for (let i = 0; i < want; i++) out.push(truncateCells(oneLineCells(src[i] ?? ''), columns, g));
   return out;
+}
+
+/**
+ * AGENT-LOOP-DESIGN §9.4 / §12 (slice S5a): a confirm raised by the agent's rule classifier under `--autonomy review` —
+ * `RiskAssessment.rule` is set and its `dims` are zeroed, so nothing about the four dimensions is true and none of them
+ * is drawn: the rule sentence is the card's title and the band shows the rule and the action instead of the gauges (the
+ * same row-substituting rule as a manifest confirm, so every rung keeps its row count).
+ */
+export function isRuleConfirm(req: ConfirmRequest): boolean {
+  return typeof req.risk.rule === 'string' && req.risk.rule !== '' && !isProposalConfirm(req);
+}
+
+/** The rule sentence a rule verdict carries in `reason` (`git reset --hard discards uncommitted changes`), one line. */
+export function ruleSentence(req: ConfirmRequest): string {
+  const reason = oneLine(req.risk.reason).trim();
+  return reason === '' ? `rule ${req.risk.rule ?? ''}`.trim() : reason;
+}
+
+/** The band of a rule verdict: `rule <id>`, then the action it would run (`$ git reset --hard`, `edit src/a.ts`). */
+function ruleHeadline(req: ConfirmRequest, columns: number, g: GlyphSet): string[] {
+  const a = req.proposal.action;
+  const what = a.kind === 'run' ? `$ ${oneLine(a.command)}` : `${describeAction(a).kind} ${titleTarget(req, Math.max(8, columns - 8), g)}`;
+  return [`rule ${req.risk.rule ?? ''}`, what];
+}
+
+/** The title of a rule verdict: `review · step N · <rule sentence>`. */
+function ruleTitle(req: ConfirmRequest, g: GlyphSet): string {
+  return `review ${g.dot} step ${req.step} ${g.dot} ${ruleSentence(req)}`;
 }
 
 /** §4.6 / §7 row 51: `badge` (`agent tui-rows`) is rendered in the header **before** the title, so nobody approves the wrong child. */
@@ -202,6 +230,8 @@ export function reviewTitle(req: ConfirmRequest, columns: number, g: GlyphSet = 
   // `columns`), and `dominantDimension` / `dimOf` are never called — a manifest confirm carries a synthetic
   // `risk` whose numbers would be a lie on the row (§4.6's property).
   if (req.title !== undefined && req.title !== '') return truncateCells(withBadge(req, oneLineCells(req.title), columns, g), columns, g);
+  // AGENT-LOOP-DESIGN §9.4: a rule verdict's title is its rule sentence (its zeroed dims would be a lie on the row)
+  if (isRuleConfirm(req)) return truncateCells(withBadge(req, ruleTitle(req, g), columns, g), columns, g);
   const wide = columns >= 120;
   const dom = dominantDimension(req);
   const bound = wide ? `${bnd(dimOf(req, dom))} on ${dom}` : bnd(dimOf(req, dom));
@@ -227,6 +257,7 @@ export function reviewTitle(req: ConfirmRequest, columns: number, g: GlyphSet = 
 export function reviewCardTitle(req: ConfirmRequest, columns: number, g: GlyphSet = GLYPHS.unicode): string {
   // TUI-DESIGN-5 §4.6 / contract 1.5 [D5]: the same substitution as `reviewTitle` (the card cuts it to `columns − 6`)
   if (req.title !== undefined && req.title !== '') return withBadge(req, oneLineCells(req.title), columns, g);
+  if (isRuleConfirm(req)) return withBadge(req, ruleTitle(req, g), columns, g);
   const wide = columns >= 120;
   const dom = dominantDimension(req);
   const bound = wide ? `${bnd(dimOf(req, dom))} on ${dom}` : bnd(dimOf(req, dom));
@@ -414,7 +445,8 @@ export function reviewCardLines(req: ConfirmRequest, n: number, previewRows: num
   let body: string[];
   // TUI-DESIGN-5 §4.6 (D-AM): the same substitution inside the card — the headline fills the band, the row count
   // of every rung (n ≥ 9 full · 8 no ruler · 7 no matches_intent · 6..4 compact · 3 keys only) is unchanged.
-  if (isProposalConfirm(req)) body = [keys, ...headlineBand(req, bandRowCount(rows, inner, g, req.matchesIntent !== undefined && req.matchesIntent !== null && Number.isFinite(req.matchesIntent), true), inner, g)];
+  // AGENT-LOOP-DESIGN §9.4: a rule verdict substitutes the band the same way (the rule and the action, no gauges)
+  if (isProposalConfirm(req) || isRuleConfirm(req)) body = [keys, ...headlineBand(req, bandRowCount(rows, inner, g, req.matchesIntent !== undefined && req.matchesIntent !== null && Number.isFinite(req.matchesIntent), true), inner, g)];
   else if (rows === 3) body = [keys];
   else if (rows <= 6) body = [keys, ...compactRows(req, rows - 3, inner, g)];
   else {
@@ -549,7 +581,7 @@ export function reviewHeaderLines(req: ConfirmRequest, n: number, columns: numbe
   // TUI-DESIGN-5 §4.6 (D-AM): the manifest branch SUBSTITUTES the band — the headline fills exactly the rows the
   // ruler + four gauges + matches_intent would have taken, so every rung from n = 8 down to n = 2 keeps its row
   // count and `CONFIRM_HEADER_ROWS` never moves. Nothing derived from `proposal` or `risk` is drawn.
-  if (isProposalConfirm(req)) return [title, keys, ...headlineBand(req, bandRowCount(rows, w, g, req.matchesIntent !== undefined && req.matchesIntent !== null && Number.isFinite(req.matchesIntent), false), w, g)];
+  if (isProposalConfirm(req) || isRuleConfirm(req)) return [title, keys, ...headlineBand(req, bandRowCount(rows, w, g, req.matchesIntent !== undefined && req.matchesIntent !== null && Number.isFinite(req.matchesIntent), false), w, g)];
   if (rows <= 5) return [title, keys, ...compactRows(req, rows - 2, w, g)];
   const gauges = RISK_DIMENSIONS.map((dim) => gaugeRow(req, dim, w, g));
   if (rows === 6) return [title, keys, ...gauges];
@@ -569,9 +601,15 @@ export function reviewHeaderLines(req: ConfirmRequest, n: number, columns: numbe
  */
 export const REVIEW_WHY_REFUSAL = 'no risk dimensions on this card — this is a proposal, not an action; [y] approves, [d] declines';
 
-/** §4.6: the refusal for this request, or null when `review:why` may run (every non-manifest confirm). */
+/** AGENT-LOOP-DESIGN §9.4: `review:why` on a rule verdict — there are no dimensions to explain, the rule decided. */
+export function reviewWhyRuleRefusal(req: ConfirmRequest): string {
+  return `no risk dimensions on this card — rule ${req.risk.rule ?? ''} decided it: ${ruleSentence(req)}; [y] approves, [n] declines`;
+}
+
+/** §4.6: the refusal for this request, or null when `review:why` may run (every non-manifest, non-rule confirm). */
 export function reviewWhyRefusal(req: ConfirmRequest): string | null {
-  return isProposalConfirm(req) ? REVIEW_WHY_REFUSAL : null;
+  if (isProposalConfirm(req)) return REVIEW_WHY_REFUSAL;
+  return isRuleConfirm(req) ? reviewWhyRuleRefusal(req) : null;
 }
 
 /** TUI-DESIGN §6.5 SR twin: the aria label replacing a gauge bar — `plan_mismatch level 2, risk 0.44 tail, confidence 0.61, skips a planned verification step`. */
@@ -667,6 +705,8 @@ export function reviewScreenReaderLines(req: ConfirmRequest, columns = 80): stri
   if (isProposalConfirm(req)) {
     return [reviewTitle(req, w, g), ...(req.headline ?? []).map((l) => oneLineCells(l)), ...confirmPreviewLines(req).map((l) => oneLineCells(l)), SR_REVIEW_CHOICES, SR_REVIEW_PROMPT].map((l) => oneLineCells(l));
   }
+  // AGENT-LOOP-DESIGN §9.4: a rule verdict speaks its rule and action, never the zeroed dimensions
+  if (isRuleConfirm(req)) return [reviewTitle(req, w, g), ...ruleHeadline(req, w, g), ...reviewDiffScreenReaderLines(req), SR_REVIEW_CHOICES, SR_REVIEW_PROMPT].map((l) => oneLineCells(l));
   return [
     reviewTitle(req, w, g),
     ...RISK_DIMENSIONS.map((dim) => `${reviewDigit(dim)} ${reviewAriaLabel(req, dim)}`),

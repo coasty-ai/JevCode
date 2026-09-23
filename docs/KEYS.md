@@ -12,7 +12,7 @@ Reserved and never rebindable (A24): `Ctrl+C`, `Ctrl+D`, `Ctrl+M`, `Ctrl+[`, `Ct
 | --- | --- | --- | --- | --- |
 | `global:exit` | `Ctrl+C` | idle: press twice within 1.5 s to exit; live: abort the run (with a draft: clear it) |  | reserved — never rebindable; F5 matrix (§3.3) |
 | `global:exitOrDelete` | `Ctrl+D` | empty draft: press twice within 800 ms to exit (live: choose abort-and-exit or stay); with text: delete forward |  | reserved — never rebindable; F5 matrix (§3.3) |
-| `global:escape` | `Esc` | idle: Esc Esc opens the rewind/steer menu; text: Esc Esc clears the draft; live: pause, Esc Esc aborts; review: decline |  | reserved — never rebindable; F5 matrix (§3.3); 30 ms re-buffer for Alt chords |
+| `global:escape` | `Esc` | idle: Esc Esc opens the rewind/steer menu; text: Esc Esc clears the draft; live: pause, Esc Esc aborts (a reply with no tool call yet: stop it); review: decline |  | reserved — never rebindable; F5 matrix (§3.3); 30 ms re-buffer for Alt chords; AGENT-LOOP-DESIGN §A5 |
 | `global:help` | `?`, `F1` | append the help block to the transcript | `?` on an empty draft |  |
 | `global:detail` | `Ctrl+O` | append the last step's decision details and recent warnings; acknowledges !n |  |  |
 | `global:repaint` | `Ctrl+L` | repaint the dynamic region (erase-lines + rewrite, never a clear) |  |  |

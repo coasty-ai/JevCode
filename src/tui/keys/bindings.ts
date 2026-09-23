@@ -88,7 +88,7 @@ export const KEY_ACTIONS: readonly KeyActionSpec[] = [
   // global
   { id: 'global:exit', short: 'exit (×2) / abort', context: 'global', keys: ['ctrl+c'], title: 'idle: press twice within 1.5 s to exit; live: abort the run (with a draft: clear it)', reserved: true, note: 'F5 matrix (§3.3)' },
   { id: 'global:exitOrDelete', short: 'exit (×2) / delete', context: 'global', keys: ['ctrl+d'], title: 'empty draft: press twice within 800 ms to exit (live: choose abort-and-exit or stay); with text: delete forward', reserved: true, note: 'F5 matrix (§3.3)' },
-  { id: 'global:escape', short: 'pause · Esc Esc menu / clear / abort', context: 'global', keys: ['escape'], title: 'idle: Esc Esc opens the rewind/steer menu; text: Esc Esc clears the draft; live: pause, Esc Esc aborts; review: decline', reserved: true, note: 'F5 matrix (§3.3); 30 ms re-buffer for Alt chords' },
+  { id: 'global:escape', short: 'pause · Esc Esc menu / clear / abort', context: 'global', keys: ['escape'], title: 'idle: Esc Esc opens the rewind/steer menu; text: Esc Esc clears the draft; live: pause, Esc Esc aborts (a reply with no tool call yet: stop it); review: decline', reserved: true, note: 'F5 matrix (§3.3); 30 ms re-buffer for Alt chords; AGENT-LOOP-DESIGN §A5' },
   { id: 'global:help', short: 'help', context: 'global', keys: ['?', 'f1'], title: 'append the help block to the transcript', when: '`?` on an empty draft' },
   { id: 'global:detail', short: 'details', context: 'global', keys: ['ctrl+o'], title: 'append the last step\'s decision details and recent warnings; acknowledges !n' },
   { id: 'global:repaint', short: 'repaint', context: 'global', keys: ['ctrl+l'], title: 'repaint the dynamic region (erase-lines + rewrite, never a clear)' },

@@ -143,8 +143,14 @@ export const CONTEXT_NO_PROMPT = 'no prompt built yet — /context fills in at t
  * `contextEnabled` excludes it, so this is the state a fresh install lands in until §8.2 R13 ships.
  */
 export function contextNoRelaxed(mode: EngineMode, g: GlyphSet = GLYPHS.unicode): string {
+  // AGENT-LOOP-DESIGN §7.5 (slice S5a): an agent run keeps its own transcript and reports its meter itself — pointing it
+  // at /mode jev-on would send the user to a legacy mode for a meter the agent is about to show
+  if (mode === 'agent') return fold(AGENT_CONTEXT_PENDING, g);
   return fold(`this run does not build a relaxed context (${mode}) — /mode jev-on builds one`, g);
 }
+
+/** AGENT-LOOP-DESIGN §7.5: `/context` before an agent run's first model turn has reported its usage. */
+export const AGENT_CONTEXT_PENDING = 'the agent reports its context after its first model turn — /context shows the meter then';
 
 /** §12 S53 — the section head; the count comes from `ContextUsage.files`, never from the cache array's length. */
 export function filesInViewText(files: number, g: GlyphSet = GLYPHS.unicode): string {
