@@ -18,7 +18,7 @@ const USAGE = { promptTokenCount: 300, candidatesTokenCount: 20, thoughtsTokenCo
 const modelTurn = (req: GenerateRequest): object => buildGeminiBody(cfg, req).contents[1]!;
 
 describe('gemini agent wire (AGENT-LOOP-DESIGN §6.2)', () => {
-  it('(a) golden body: functionCall {id, name, args} with its thoughtSignature, functionResponse by id with output / error, thinkingLevel per turn', () => {
+  it('(a) golden body: functionCall {id, name, args} with its thoughtSignature, functionResponse by id with output / error, thinkingLevel per turn, includeThoughts', () => {
     const body = buildGeminiBody(cfg, agentReq(transcript(STATE)));
     const golden = {
       contents: [
@@ -40,12 +40,19 @@ describe('gemini agent wire (AGENT-LOOP-DESIGN §6.2)', () => {
           ],
         },
       ],
-      generationConfig: { maxOutputTokens: 16384, thinkingConfig: { thinkingLevel: 'low' } },
+      generationConfig: { maxOutputTokens: 16384, thinkingConfig: { thinkingLevel: 'low', includeThoughts: true } },
       systemInstruction: { parts: [{ text: 'You are JevCode.' }] },
       tools: [{ functionDeclarations: [{ name: 'read_file', description: READ_TOOL.description, parametersJsonSchema: geminiToolSchema(READ_TOOL.inputSchema) }] }],
       toolConfig: { functionCallingConfig: { mode: 'AUTO' } },
     };
     expect(JSON.stringify(body)).toBe(JSON.stringify(golden));
+  });
+
+  it('includeThoughts on every agent request of a thinking family (2.5 with its budget, 3.x with no effort); never on a legacy request', () => {
+    const flash25 = providerCfg({ model: 'gemini-2.5-flash', baseUrl: cfg.baseUrl });
+    expect(buildGeminiBody(flash25, agentReq()).generationConfig.thinkingConfig).toEqual({ thinkingBudget: 1024, includeThoughts: true });
+    expect(buildGeminiBody(cfg, agentReq(transcript(), {}, { reasoning: { enabled: false } })).generationConfig.thinkingConfig).toEqual({ includeThoughts: true });
+    expect(buildGeminiBody(cfg, request({ reasoning: { effort: 'low' } })).generationConfig.thinkingConfig).toEqual({ thinkingLevel: 'low' });
   });
 
   it('(b) stream: thought summaries to onReasoning, ids and thoughtSignature kept per call', async () => {
@@ -102,11 +109,34 @@ describe('gemini agent wire (AGENT-LOOP-DESIGN §6.2)', () => {
   });
 
   it('(c) signatures from another provider, another configured model, or with replay off are not sent', () => {
-    const signed = (req: GenerateRequest): boolean => JSON.stringify(modelTurn(req)).includes('thoughtSignature');
+    const signed = (req: GenerateRequest): boolean => JSON.stringify(modelTurn(req)).includes('SIG-A');
     expect(signed(agentReq(transcript(STATE)))).toBe(true);
     expect(signed(agentReq(transcript({ ...STATE, model: 'gemini-3.1-pro' })))).toBe(false);
     expect(signed(agentReq(transcript({ ...STATE, provider: 'openai' })))).toBe(false);
     expect(signed(agentReq(transcript(STATE), { replayReasoning: false }))).toBe(false);
+  });
+
+  it('a Gemini 3 turn replayed without its signatures carries the documented stand-in on its first call only; a 2.5 model gets none', () => {
+    const skip = { thoughtSignature: 'skip_thought_signature_validator' };
+    expect(modelTurn(agentReq(transcript(STATE), { replayReasoning: false }))).toEqual({
+      role: 'model',
+      parts: [
+        { text: PROSE },
+        { functionCall: { id: 'call_a', name: 'read_file', args: { path: 'src/a.ts' } }, ...skip },
+        { functionCall: { id: 'call_b', name: 'read_file', args: { path: 'test/a.test.ts' } } },
+      ],
+    });
+    const flash25 = providerCfg({ model: 'gemini-2.5-flash', baseUrl: cfg.baseUrl });
+    expect(JSON.stringify(buildGeminiBody(flash25, agentReq(transcript())).contents)).not.toContain('thoughtSignature');
+  });
+
+  it('an empty model turn goes out as a placeholder text, never as empty parts', () => {
+    const t: AgentMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: TASK }] },
+      { role: 'assistant', content: [{ type: 'text', text: '' }] },
+      { role: 'user', content: [{ type: 'text', text: NOTE }] },
+    ];
+    expect(modelTurn(agentReq(t))).toEqual({ role: 'model', parts: [{ text: '(no content)' }] });
   });
 
   it('(d) calls arrive whole, one per part: two unnamed-id calls are two calls, and a made-up id never goes back on the wire', async () => {

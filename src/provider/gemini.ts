@@ -27,7 +27,7 @@ import { ProviderHttpError } from '../errors.js';
 import { isJsonObject } from '../core/json.js';
 import type { AgentRequest, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, JsonObject, ToolCall, ToolChoice } from '../core/types.js';
 import { geminiToolSchema } from './schema.js';
-import { SYNTH_CALL_PREFIX, agentCallId, agentReasoning, assistantParts, createCaller, emitToolCall, getJson, googleErrorFields, joinUrl, objectInput, replayData, runGeneration, userParts, validateGenerateRequest, withUniqueCallIds } from './http.js';
+import { EMPTY_TURN_TEXT, SYNTH_CALL_PREFIX, agentCallId, agentReasoning, assistantParts, createCaller, emitToolCall, getJson, googleErrorFields, joinUrl, objectInput, replayData, runGeneration, userParts, validateGenerateRequest, withUniqueCallIds } from './http.js';
 import type { ConsumeContext, HeldPartial } from './http.js';
 import type { EffortWord } from './openai-compat.js';
 import { effortOf, pickEffort } from './openai-compat.js';
@@ -58,7 +58,8 @@ export type GeminiGenerationConfig = {
   maxOutputTokens: number;
   temperature?: number;
   seed?: number;
-  thinkingConfig?: GeminiThinkingConfig;
+  /** agent requests on a thinking family add `includeThoughts: true`: the `thought: true` summary parts `onReasoning` streams */
+  thinkingConfig?: GeminiThinkingConfig | (Partial<GeminiThinkingConfig> & { includeThoughts: true });
 };
 export type GeminiRequestBody = {
   contents: GeminiContent[];
@@ -128,12 +129,25 @@ export function buildGeminiBody(cfg: ProviderConfig, req: GenerateRequest): Gemi
   if (req.temperature !== null) body.generationConfig.temperature = req.temperature;
   if (req.seed !== undefined) body.generationConfig.seed = req.seed;
   const reasoning = a !== undefined ? agentReasoning(req) : req.reasoning;
-  if (reasoning !== undefined) {
-    const thinking = geminiThinkingConfig(reasoning, cfg.model);
-    if (thinking !== null) body.generationConfig.thinkingConfig = thinking;
-  }
+  const thinking = reasoning === undefined ? null : geminiThinkingConfig(reasoning, cfg.model);
+  // AGENT-LOOP-DESIGN §6.2: without `includeThoughts` the API sends no thought summaries, and `onReasoning` would never fire
+  if (a !== undefined && geminiThinks(cfg.model)) body.generationConfig.thinkingConfig = { ...thinking, includeThoughts: true };
+  else if (thinking !== null) body.generationConfig.thinkingConfig = thinking;
   return body;
 }
+
+/** The families with thinking (2.5 and 3.x), which accept `thinkingConfig.includeThoughts`. */
+export function geminiThinks(model: string): boolean {
+  return /^gemini-(2\.5|[3-9])/.test(model);
+}
+
+/**
+ * Google's documented stand-in for a missing `thoughtSignature` (ai.google.dev/gemini-api/docs/thought-signatures, "if you
+ * inject function calls … use the dummy signature"). Gemini 3 validates the first `functionCall` of every model turn of the
+ * current turn, and a replay without the model's own signature — replay off after §6.5's fallback, a resume on another
+ * model — is otherwise a 400.
+ */
+export const GEMINI_SKIP_SIGNATURE = 'skip_thought_signature_validator';
 
 /** A call id as the wire knows it: none for an id this harness made up (the model sent none), else the model's own. */
 function wireId(id: string): { id?: string } {
@@ -143,11 +157,13 @@ function wireId(id: string): { id?: string } {
 /**
  * AGENT-LOOP-DESIGN §6.2, Gemini row: a model turn is its text and a `functionCall {id, name, args}` per call, each with the
  * `thoughtSignature` it came with (replay state of the same configured model: `data.calls[i]` for the i-th call,
- * `data.text` for the prose) — Gemini 3 answers a function-calling turn replayed without them with a 400. A user turn is
+ * `data.text` for the prose) — Gemini 3 answers a function-calling turn replayed without them with a 400, so a turn with
+ * none gets `GEMINI_SKIP_SIGNATURE` on its first call there; an empty turn is `EMPTY_TURN_TEXT`. A user turn is
  * a `functionResponse {id, name, response}` per result, then its texts; `response` is `{output}` or, for a failed call,
  * `{error}` (the API reference's convention: "if the function call failed … the response can have an error key").
  */
 function agentContents(cfg: ProviderConfig, a: AgentRequest): GeminiContent[] {
+  const validated = geminiThinkingLevels(cfg.model) !== null;
   return a.messages.map((m): GeminiContent => {
     if (m.role === 'user') {
       const { results, texts } = userParts(m.content);
@@ -165,10 +181,14 @@ function agentContents(cfg: ProviderConfig, a: AgentRequest): GeminiContent[] {
     const textSig = isJsonObject(data) ? getStr(data, 'text') : null;
     const parts: GeminiContent['parts'] = [];
     if (text.length > 0) parts.push({ text, ...(textSig !== null ? { thoughtSignature: textSig } : {}) });
+    // parallel calls: only the first carries a signature, so the stand-in goes there, and only when no call has its own
+    const signed = calls.some((_, i) => typeof sigs[i] === 'string');
     for (const [i, c] of calls.entries()) {
-      const sig = sigs[i];
-      parts.push({ functionCall: { ...wireId(c.id), name: c.name, args: objectInput(c.input) }, ...(typeof sig === 'string' ? { thoughtSignature: sig } : {}) });
+      const stored = sigs[i];
+      const sig = typeof stored === 'string' ? stored : validated && !signed && i === 0 ? GEMINI_SKIP_SIGNATURE : null;
+      parts.push({ functionCall: { ...wireId(c.id), name: c.name, args: objectInput(c.input) }, ...(sig !== null ? { thoughtSignature: sig } : {}) });
     }
+    if (parts.length === 0) parts.push({ text: EMPTY_TURN_TEXT });
     return { role: 'model', parts };
   });
 }
