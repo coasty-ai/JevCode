@@ -45,6 +45,11 @@ export interface MockProviderDeps {
   now?: () => number;
   /** the emission clock handed to `onEmit` (default `process.hrtime.bigint`, which shares a base with the typist's CLOCK_MONOTONIC_RAW record) */
   hrtimeNs?: () => bigint;
+  /**
+   * AGENT-LOOP-DESIGN §6.2 Mock: keep a copy of every request in `requests` (tests). Off by default, so a long `--mock`
+   * session, the bench and the perf harness hold no transcripts and pay no copy.
+   */
+  recordRequests?: boolean;
 }
 
 function nextTurn(opts: MockProviderOptions, req: GenerateRequest, index: number, genOpts: GenerateOptions): MockTurn {
@@ -64,7 +69,11 @@ function chunks(text: string, size: number | undefined): string[] {
   return out;
 }
 
-/** The mock with its request log (AGENT-LOOP-DESIGN §6.2 Mock: every request it was sent, in order, for assertions). */
+/**
+ * The mock with its request log (AGENT-LOOP-DESIGN §6.2 Mock: every request it was sent, in order, for assertions) — filled
+ * only under `MockProviderDeps.recordRequests`, with a deep copy taken at the call, so a caller that keeps appending to
+ * one `agent.messages` array cannot rewrite what an earlier call was sent.
+ */
 export type MockProvider = Provider & { readonly requests: readonly GenerateRequest[] };
 
 export function createMockProvider(opts: MockProviderOptions, deps: MockProviderDeps = {}): MockProvider {
@@ -74,13 +83,14 @@ export function createMockProvider(opts: MockProviderOptions, deps: MockProvider
   const model = opts.model ?? 'mock';
   let calls = 0;
   const requests: GenerateRequest[] = [];
+  const record = deps.recordRequests === true;
 
   return {
     name: 'mock',
     model,
     requests,
     async generate(req: GenerateRequest, genOpts: GenerateOptions): Promise<GenerateResult> {
-      requests.push(req);
+      if (record) requests.push(structuredClone(req));
       if (genOpts.signal.aborted) throw genOpts.signal.reason;
       const index = calls++;
       const turn = nextTurn(opts, req, index, genOpts);

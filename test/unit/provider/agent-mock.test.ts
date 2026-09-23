@@ -21,7 +21,7 @@ const TURN = {
 
 describe('mock agent turns (AGENT-LOOP-DESIGN §6.2)', () => {
   it('streams reasoning, then text, then each call per index; returns ids and echoes providerState; records the request', async () => {
-    const p = createMockProvider({ turns: [TURN], model: 'mock-agent', deltaChunkSize: 6 });
+    const p = createMockProvider({ turns: [TURN], model: 'mock-agent', deltaChunkSize: 6 }, { recordRequests: true });
     const h = hooks();
     const req = agentReq();
     const res = await p.generate(req, genOpts({ onToolCall: (d) => h.calls.push(d), onReasoning: (r) => h.reasoning.push(r), onToolDelta: (d) => h.toolDeltas.push(d), onDelta: (d) => h.deltas.push(d) }));
@@ -45,11 +45,26 @@ describe('mock agent turns (AGENT-LOOP-DESIGN §6.2)', () => {
   });
 
   it('a legacy request against the same turn gets the calls without ids and no providerState', async () => {
-    const p = createMockProvider({ turns: [TURN] });
+    const p = createMockProvider({ turns: [TURN] }, { recordRequests: true });
     const res = await p.generate(request(), genOpts());
     expect(res.toolCalls.every((c) => !('id' in c))).toBe(true);
     expect('providerState' in res).toBe(false);
     expect(p.requests.length).toBe(1);
+  });
+
+  it('records nothing unless asked (a --mock session, the bench and perf keep no transcripts), and a recorded request is a copy', async () => {
+    const quiet = createMockProvider({ turns: [TURN, TURN] });
+    await quiet.generate(agentReq(), genOpts());
+    expect(quiet.requests).toEqual([]);
+    const p = createMockProvider({ turns: [TURN, TURN] }, { recordRequests: true });
+    const req = agentReq();
+    await p.generate(req, genOpts());
+    const sent = req.agent!.messages.length;
+    // a driver that appends to one transcript array does not rewrite what the first call was sent
+    (req.agent!.messages as unknown[]).push({ role: 'assistant', content: [{ type: 'text', text: 'later' }] });
+    await p.generate(req, genOpts());
+    expect(p.requests[0]!.agent!.messages.length).toBe(sent);
+    expect(p.requests[1]!.agent!.messages.length).toBe(sent + 1);
   });
 
   it('an abort inside the calls reports the streamed tool characters once', async () => {
