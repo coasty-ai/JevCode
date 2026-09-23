@@ -1,0 +1,44 @@
+# BEGIN-REPO-ONLY
+# Canonical PKGBUILD for the AUR package jevcode. scripts/release/render-packaging.mjs sets _npmver, pkgver,
+# pkgrel and sha256sums and removes this block; the release workflow pushes the rendered file with .SRCINFO.
+# PLACEHOLDER: version 0.0.0 and the all-zero digest never match a real tarball.
+# The Maintainer line is replaced from the repository variable AUR_MAINTAINER when it is set.
+# END-REPO-ONLY
+# Maintainer: coasty-ai <https://github.com/coasty-ai/JevCode>
+pkgname=jevcode
+_npmver=0.0.0
+pkgver=0.0.0
+pkgrel=1
+pkgdesc="Terminal coding agent that edits your code and verifies it with your tests"
+arch=('any')
+url="https://github.com/coasty-ai/JevCode"
+license=('MIT')
+depends=('nodejs>=22.12.0')
+makedepends=('npm')
+source=("$pkgname-$_npmver.tgz::https://registry.npmjs.org/$pkgname/-/$pkgname-$_npmver.tgz")
+noextract=("$pkgname-$_npmver.tgz")
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+
+package() {
+  npm install -g --prefix "$pkgdir/usr" --cache "$srcdir/npm-cache" --no-audit --no-fund --no-update-notifier \
+    "$srcdir/$pkgname-$_npmver.tgz"
+  local lib="$pkgdir/usr/lib/node_modules/$pkgname"
+
+  # npm links the man page; install a real file in its place
+  rm -f "$pkgdir/usr/share/man/man1/jevcode.1"
+  install -Dm644 "$lib/man/jevcode.1" "$pkgdir/usr/share/man/man1/jevcode.1"
+  install -Dm644 "$lib/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$lib/completions/jevcode.bash" "$pkgdir/usr/share/bash-completion/completions/jevcode"
+  install -Dm644 "$lib/completions/jevcode.zsh" "$pkgdir/usr/share/zsh/site-functions/_jevcode"
+  install -Dm644 "$lib/completions/jevcode.fish" "$pkgdir/usr/share/fish/vendor_completions.d/jevcode.fish"
+
+  # https://github.com/npm/cli/issues/1103 (777 directories) and npm leaving files owned by the build user
+  find "$pkgdir/usr" -type d -exec chmod 755 {} +
+  chown -R root:root "$pkgdir"
+
+  # nothing in the package may point back into the build directories
+  if grep -rIlF -e "$pkgdir" -e "$srcdir" "$pkgdir" >&2; then
+    echo "package(): the files above reference \$pkgdir or \$srcdir" >&2
+    return 1
+  fi
+}

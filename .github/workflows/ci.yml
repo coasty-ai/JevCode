@@ -1,11 +1,11 @@
-# CI: the gates that must be green before a tag is pushed.
+# CI: the gates that must be green before a release.
 #
-# Deliberately the same commands, in the same order, as the publish job in release.yml — so a green
-# run here means the release job will not fail on anything but the publish itself. Node 22 is the
-# supported floor (package.json `engines` is >=22.12.0; .nvmrc pins 22.23.2); release.yml runs on
-# Node 24 because npm trusted publishing needs 11.5.1+. Nothing here touches the network after
-# `npm ci` (and the pytest install before it): the package has zero runtime dependencies and the build
-# smoke asserts it.
+# The `gates` job of release.yml runs the same commands in the same order (test/unit/scripts/workflow-hygiene.test.ts
+# pins that the two run-step lists are equal), so a green run here predicts a green gates job. Node 22 is the
+# supported floor (package.json `engines` is >=22.12.0; .nvmrc pins 22.23.2); only release.yml's publish-npm job
+# runs Node 24, for npm trusted publishing. Nothing here touches the network after `npm ci` (and the pytest install
+# before it): the package has zero runtime dependencies and the build smoke asserts it. Actions are pinned by SHA;
+# .github/dependabot.yml keeps the pins current.
 name: ci
 
 on:
@@ -30,11 +30,11 @@ jobs:
       CI: 'true'
       JEVCODE_ASSERT_NO_NETWORK: '1' # the build smoke renders the first frame with no HTTP
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # scripts/gen-docs.mjs --check dates the man page from package.json's commit
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
           cache: npm
