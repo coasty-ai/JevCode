@@ -41,7 +41,7 @@
   "scripts": {
     "build": "node scripts/build.mjs && node scripts/licenses.mjs",
     "licenses": "node scripts/licenses.mjs",
-    "wordmark": "node scripts/gen-wordmark.mjs",
+    "brand": "node scripts/gen-brand.mjs",
     "pack:check": "node scripts/check-pack.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "node -e \"if (process.env.CI !== 'true' && process.env.CI !== '1') { console.error('jevcode: publish only from .github/workflows/release.yml (trusted publishing); set CI=true to override locally'); process.exit(1); }\"",
