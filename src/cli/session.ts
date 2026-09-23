@@ -27,6 +27,7 @@
  * Every leave request (`/exit`, Ctrl-C ×2, Ctrl-D ×2, `[y]`) goes through `host.exit()`, where `--exit-code=last-run`
  * is applied (`leaveExitCode`). While a run is live the controller's own lines go to `<runDir>/jevcode.log` (§13.6).
  */
+import type { ProviderConfig } from '../provider/types.js';
 import { accessSync, appendFileSync, constants as fsConstants, existsSync, realpathSync, writeSync } from 'node:fs';
 import { open as openFile, readFile } from 'node:fs/promises';
 import { homedir, hostname, uptime, userInfo } from 'node:os';
@@ -804,12 +805,12 @@ export async function buildProvider(config: ResolvedConfigWithDiagnostics, flags
     return createMockProvider({ turns: withMockChat(mockTrajectory(Number(flags.mockSteps ?? 8))) });
   }
   const gen = config.generator();
-  if (gen.provider === 'openrouter') {
-    const { createOpenRouterProvider } = await import('../provider/openrouter.js');
-    return createOpenRouterProvider(gen, { redact: config.redact });
-  }
-  const { createAnthropicProvider } = await import('../provider/anthropic.js');
-  return createAnthropicProvider(gen, { redact: config.redact });
+  // every provider through the registry, so each uses ITS OWN adapter — the two-client switch that stood here sent
+  // openai / gemini / xai / fireworks / meta to the Anthropic client (live smoke on 4d49cca: `anthropic HTTP 404
+  // Path not found: /v1/v1/messages`). `gen.baseUrl` is the user's override or the provider's own table entry.
+  const { createProvider, requireProvider } = await import('../provider/registry.js');
+  const cfg: ProviderConfig = { model: gen.model, apiKey: gen.apiKey, baseUrl: gen.baseUrl, temperature: gen.temperature, maxTokens: gen.maxTokens, pricing: gen.pricing, ...(gen.priced !== undefined ? { priced: gen.priced } : {}) };
+  return createProvider(requireProvider(gen.provider), cfg, { redact: config.redact });
 }
 
 /**
