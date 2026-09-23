@@ -64,11 +64,12 @@ export function chatIdentityHeader(model: string, provider: string): string {
 }
 
 /**
- * How the work is split — the second paragraph (AGENT-LOOP-DESIGN §14.5, exact). The code model does the work; Jev only makes a few
+ * How the work is split — the second paragraph (AGENT-LOOP-DESIGN §14.5; its example per §A1/§A4: no intake routing in agent mode, Jev's
+ * only first-turn call is RA0's speed hint). The code model does the work; Jev only makes a few
  * quick routing calls. The verified identity header above stays the FIRST block (§A5); slice S3 leads the agent system prompt with it.
  */
 export const CHAT_IDENTITY =
-  'The code model, you in this reply, does the work: in a run it reads, searches, edits and runs commands in this workspace through tools, and the workspace\'s tests verify the change. A small decision model (Jev) only makes a few quick routing calls, such as whether a message is a task.';
+  'The code model, you in this reply, does the work: in a run it reads, searches, edits and runs commands in this workspace through tools, and the workspace\'s tests verify the change. A small decision model (Jev) only makes a few quick routing calls, such as a speed hint for a conversational message.';
 
 /** the paragraph of the Jev-driven modes (llm-jev, jev-on, jev-off chats): unchanged, because there Jev does decide every step */
 export const CHAT_IDENTITY_LEGACY =

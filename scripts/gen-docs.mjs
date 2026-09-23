@@ -160,7 +160,7 @@ const EXIT_CODES = [
   ['1', 'uncaught error or an escalated render fault'],
   ['2', 'configuration or usage error at launch; first\\-call 401/403; unpriced model without \\-\\-allow\\-unpriced'],
   ['3', 'checkpoint degraded and stopped (state.json not resumable)'],
-  ['4', 'a budget stop (max_steps, wall_time, spend_cap, max_replans, token_cap), replan_stop, impossible, human_pause'],
+  ['4', 'a budget stop (max_steps, wall_time, spend_cap, max_replans, token_cap), replan_stop, impossible, human_pause, stuck (the agent loop detector)'],
   ['5', 'API failure after retries; provider spend limit'],
   ['6', 'sandbox or path abort'],
   ['129', 'SIGHUP / EIO'],

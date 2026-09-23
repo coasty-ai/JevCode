@@ -249,7 +249,7 @@ describe('AGENT-LOOP-DESIGN §14.5 / §A5: the agent-era copy', () => {
     expect(system).not.toMatch(/Jev decides/);
     expect(system).toContain(CHAT_IDENTITY);
     expect(CHAT_IDENTITY).toBe(
-      "The code model, you in this reply, does the work: in a run it reads, searches, edits and runs commands in this workspace through tools, and the workspace's tests verify the change. A small decision model (Jev) only makes a few quick routing calls, such as whether a message is a task.",
+      "The code model, you in this reply, does the work: in a run it reads, searches, edits and runs commands in this workspace through tools, and the workspace's tests verify the change. A small decision model (Jev) only makes a few quick routing calls, such as a speed hint for a conversational message.",
     );
     expect(CHAT_CAPABILITIES).not.toMatch(/Jev decides/);
     expect(CHAT_CAPABILITIES).toContain('- Modes: agent (the code model works through tools)');
