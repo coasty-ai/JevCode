@@ -30,8 +30,16 @@ const harnesses: Harness[] = [];
 afterEach(() => {
   for (const h of harnesses.splice(0)) h.cleanup();
 });
+/**
+ * AGENT-LOOP-DESIGN §14.1 / §A1: this file is the LEGACY intake's matrix (Jev's background reading, the `do it` offer, `On it`), which
+ * only the Jev-driven modes keep — so a harness that names no mode runs `llm-jev` (the default before slice S6's flip) rather than
+ * DEFAULT_MODE, and every row below is byte-for-byte what it was. The agent default's chat (every message an agent run, no intake)
+ * is test/unit/cli/session-agent.test.ts.
+ */
+const LEGACY_INTAKE_MODE = 'llm-jev';
 async function build(...args: Parameters<typeof makeController>): Promise<Harness> {
-  const h = await makeController(...args);
+  const [o = {}] = args;
+  const h = await makeController({ ...o, flags: { mode: LEGACY_INTAKE_MODE, ...(o.flags ?? {}) } });
   harnesses.push(h);
   return h;
 }

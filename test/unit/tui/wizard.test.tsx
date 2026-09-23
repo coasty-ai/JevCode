@@ -191,7 +191,8 @@ describe('useWizard + <Wizard> (§11.1)', { retry: 1 }, () => {
     await tick();
     expect(h.frame()).toContain(optionsTitle(3));
     expect(h.frame()).toContain('▌3 Jev only');
-    expect(h.frame()).toContain(optionHint(3));
+    // the wizard's target is jev-on (a legacy mode), so the hint is the legacy form's (the default's is the agent form)
+    expect(h.frame()).toContain(optionHint(3, undefined, undefined, 'jev-on'));
     expect(h.host.modes).toEqual([]);
     h.ctl().apply({ type: 'wizard', op: 'input', text: '3' });
     await until(() => h.done === 1);

@@ -76,7 +76,7 @@ export const LEGACY_MODES = ['llm-jev', 'jev-on', 'jev-off'] as const satisfies 
  * writes, Jev decides every step) since round 3; later: `llm-jev` (the peer's flip) — nothing else moves. No string outside this file
  * names which mode is the default (D-N; `/mode` computes ` (default)` from it).
  */
-export const DEFAULT_MODE: EngineMode = 'llm-jev'; // flipped 2026-09-22 on the peer's verified head-to-head (docs/LLM-JEV.md; experiments/results/llm-jev-headtohead-v2.md)
+export const DEFAULT_MODE: EngineMode = 'agent'; // flipped 2026-09-23 to the model-driven tool loop (docs/AGENT-LOOP-DESIGN.md §14.1; llm-jev stays accepted as a legacy mode)
 /**
  * Who approves a `review` risk verdict: `full` auto-approves it and logs the `[review] auto-approved …` card,
  * `review` stops for y/n. A `block` verdict still stops the run under both. Complete autonomy is the default.

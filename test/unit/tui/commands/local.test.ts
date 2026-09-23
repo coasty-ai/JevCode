@@ -50,7 +50,8 @@ describe('completeDraft (TUI-DESIGN-3 §4.3; fixes R4 F4)', () => {
     expect(back).toMatchObject({ selected: n - 1, text: `/budget ${first.candidates[n - 1] as string}` });
     // an empty partial lists every value in registry order
     expect(tab('/budget ')).toMatchObject({ kind: 'argument', text: '/budget spend-cap', candidates: ['spend-cap', 'session-spend-cap', 'max-steps', 'max-wall', 'max-replans', 'max-generator-tokens'], accepted: false });
-    expect(tab('/mode ', 6, 2)).toMatchObject({ kind: 'argument', text: '/mode jev-off', selected: 2 });
+    // AGENT-LOOP-DESIGN §14.1: `/mode` lists agent · jev-only · legacy
+    expect(tab('/mode ', 6, 2)).toMatchObject({ kind: 'argument', text: '/mode legacy', selected: 2 });
   });
   it('`/decisions 5 ri` Tab → the stage candidates at index 1 (`risk `); `--flags` are skipped when counting positionals', () => {
     expect(tab('/decisions 5 ri')).toEqual({ kind: 'argument', text: '/decisions 5 risk ', cursor: 18, candidates: ['risk'], selected: 0, stem: 'ri', arg: 'stage', accepted: true });

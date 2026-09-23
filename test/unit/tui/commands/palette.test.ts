@@ -74,13 +74,14 @@ function cardRows(body: string[]): string[] {
 }
 
 describe('paletteMatches (TUI-DESIGN §5.3; TUI-DESIGN-3 §4.1 rule 6)', () => {
-  it('empty query: Suggested → Recent → Popular (16, fixed order, no tag) → the rest in table order; aliases never appear as rows', () => {
+  it('empty query: Suggested → Recent → Popular (14 under the agent default, fixed order, no tag) → the rest in table order; aliases never appear as rows', () => {
     const all = paletteMatches('', fresh);
     const rest = COMMANDS.map((c) => c.name).filter((n) => !POPULAR.includes(n));
     expect(all.map((m) => m.spec.name)).toEqual([...POPULAR, ...rest]);
     expect(all.some((m) => m.spec.name === 'quit')).toBe(false);
     expect(all.every((m) => !m.recent)).toBe(true);
-    expect(POPULAR).toEqual(['help', 'mode', 'model', 'cost', 'status', 'resume', 'new', 'panel', 'plan', 'diff', 'undo', 'theme', 'login', 'budget', 'jev', 'exit']);
+    // AGENT-LOOP-DESIGN §14.3 item 8: /panel and /jev leave Popular under the agent default (both commands still work)
+    expect(POPULAR).toEqual(['help', 'mode', 'model', 'cost', 'status', 'resume', 'new', 'plan', 'diff', 'undo', 'theme', 'login', 'budget', 'exit']);
     const after = paletteMatches('', idleAfterStop);
     expect(after.slice(0, 2).map((m) => m.spec.name)).toEqual(['resume', 'undo']);
     expect(after[0]?.suggested).toBe(true);
@@ -232,10 +233,12 @@ describe('paletteRows / paletteLines', () => {
     expect(mine[1]).toBe('  /model      ml generator model for the next run only                      ');
     const rows = paletteRows('/m', fresh, 0, 6, 76);
     expect(rows.map((r) => r.kind)).toEqual(['command', 'command', 'value', 'value', 'value', 'footer']);
-    // the sub-rows in `values` order (registry / TUI-DESIGN-2 §1.2 table order) with the badge-table hints; the frame's own order is jev-on, llm-jev, jev-only
-    expect(rows.slice(2, 5).map((r) => r.name)).toEqual(['/mode jev-only', '/mode jev-on', '/mode jev-off']);
-    expect(mine[2]).toContain('no generating LLM; code proposes, Jev');
-    expect(mine[3]).toContain(`${MODE_BADGE_WORD['jev-on']}: the code model`);
+    // the sub-rows in `values` order with the badge-table hints — AGENT-LOOP-DESIGN §14.1: the advertised modes and `legacy` (the
+    // frame's own order, drawn before the agent default, is jev-on, llm-jev, jev-only)
+    expect(rows.slice(2, 5).map((r) => r.name)).toEqual(['/mode agent', '/mode jev-only', '/mode legacy']);
+    expect(mine[2]).toContain(`${MODE_BADGE_WORD['agent']}: the code model`);
+    expect(mine[3]).toContain('no generating LLM; code proposes, Jev');
+    expect(mine[4]).toContain('list the older modes');
     /**
      * TUI-DESIGN-3's frame says `(1/6)`: mode, model, llm, theme, resume, rename. TUI-DESIGN-5 §5.5 adds
      * `/memory`/`/mem` and §3.3 adds `/compact`, so `/m` now scores NINE. The frame's row order and its ghost
@@ -358,15 +361,16 @@ describe('paletteRows / paletteLines', () => {
   it('TUI-DESIGN-3 §4.1 rule 8: the `/mode` sub-rows read the badge table, the row equal to DEFAULT_MODE ends ` (default)` (D-N: computed, never a literal) and the suffix survives the cut; /theme, /panel, /transcript, /copy, /logout, /help and the /decisions stages carry hints', () => {
     const rows = paletteRows('/mode', fresh, 0, 8, 80);
     const values = rows.filter((r) => r.kind === 'value');
-    expect(values.map((r) => r.name)).toEqual(['/mode jev-only', '/mode jev-on', '/mode jev-off', '/mode llm-jev', '/mode agent']);
+    // AGENT-LOOP-DESIGN §14.1: the advertised modes and `legacy` (the legacy modes are accepted, not listed)
+    expect(values.map((r) => r.name)).toEqual(['/mode agent', '/mode jev-only', '/mode legacy']);
     const def = values.find((r) => r.name === `/mode ${DEFAULT_MODE}`);
     expect(def?.text.trimEnd().endsWith(' (default)')).toBe(true);
     expect(values.filter((r) => r.text.includes('(default)'))).toHaveLength(1);
-    // the llm-jev row is the default row since 6aed085: its title is cut to make room for ` (default)` at 80 columns, so only the
-    // badge word (the title's head) is asserted here; the full hint is checked on a non-default row below
-    expect(values.find((r) => r.name === '/mode llm-jev')?.text).toContain(MODE_BADGE_WORD['llm-jev']);
-    expect(values.find((r) => r.name === '/mode jev-on')?.text).toContain(`${MODE_BADGE_WORD['jev-on']}: `);
+    // the agent row is the default row: its title is cut to make room for ` (default)` at 80 columns, so only the badge word (the
+    // title's head) is asserted here; the full hint is checked on a non-default row below
+    expect(values.find((r) => r.name === '/mode agent')?.text).toContain(`${MODE_BADGE_WORD['agent']}: `);
     expect(values.find((r) => r.name === '/mode jev-only')?.text).toContain('no generating LLM; code proposes, Jev deci');
+    expect(values.find((r) => r.name === '/mode legacy')?.text).toContain('list the older modes (saved configs');
     for (const name of ['theme', 'panel', 'transcript', 'copy', 'logout', 'help']) {
       const spec = findCommand(name) as CommandSpec;
       for (const v of spec.args[0]?.values ?? []) expect(spec.args[0]?.valueHints?.[v]?.title, `${name} ${v}`).toBeTruthy();
@@ -384,7 +388,7 @@ describe('paletteRows / paletteLines', () => {
     const exact = paletteRows('/budget spend-cap', fresh, 0, 8, 80).filter((r) => r.kind === 'value');
     expect(exact[0]).toMatchObject({ name: '/budget spend-cap', selected: true });
     expect(exact.slice(1).every((r) => !r.selected)).toBe(true);
-    expect(paletteRows('/mode', fresh, 0, 8, 80).filter((r) => r.kind === 'value')).toHaveLength(5);
+    expect(paletteRows('/mode', fresh, 0, 8, 80).filter((r) => r.kind === 'value')).toHaveLength(3);
   });
   it('TUI-DESIGN-3 §4.1 rule 3: ghost text — a prefix of the top match ghosts its rest with the count of other matches; an exact or prefix alias ghosts the arrow `→ /owner`; a Suggested top match that does not extend the query yields no ghost', () => {
     expect(paletteGhost('/bu', paletteMatches('/bu', afterSpendCap))).toEqual({ rest: 'dget', more: 0 });
@@ -474,12 +478,13 @@ describe('TUI-DESIGN-4 §4.3 P-P2 `paletteGhostFor`: the ghost IS the highlight'
     expect(paletteGhostFor('/m', m, 0)).toEqual({ kind: 'arrow', target: '/mode', more: m.length - 1 });
     expect(paletteGhostFor('/q', paletteMatches('/q', fresh), 0)).toEqual({ kind: 'arrow', target: '/exit', more: paletteMatches('/q', fresh).length - 1 });
     // `value` — an argument value of the marked sub-row
-    // `/mode j` ranks jev-on · jev-off · jev-only · llm-jev (`rank` is a subsequence scorer, so `llm-jev` matches `j`)
-    expect(paletteGhostFor('/mode j', paletteMatches('/mode j', fresh), 0)).toEqual({ kind: 'value', rest: 'ev-on', more: 3 });
-    expect(paletteGhostFor('/mode j', paletteMatches('/mode j', fresh), 2)).toEqual({ kind: 'value', rest: 'ev-only', more: 3 });
-    // and the one marked row that does NOT extend the token ghosts the arrow, so the ghost never vanishes under the
-    // cursor Tab is about to accept
-    expect(paletteGhostFor('/mode j', paletteMatches('/mode j', fresh), 3)).toEqual({ kind: 'arrow', target: '/mode llm-jev', more: 3 });
+    // `/budget m` ranks max-wall · max-steps · max-replans · max-generator-tokens
+    expect(paletteGhostFor('/budget m', paletteMatches('/budget m', fresh), 0)).toEqual({ kind: 'value', rest: 'ax-wall', more: 3 });
+    expect(paletteGhostFor('/budget m', paletteMatches('/budget m', fresh), 2)).toEqual({ kind: 'value', rest: 'ax-replans', more: 3 });
+    // and the one marked row that does NOT extend the token ghosts the arrow, so the ghost never vanishes under the cursor Tab is
+    // about to accept: `/mode a` ranks agent · legacy (`rank` is a subsequence scorer, so `legacy` matches `a`)
+    expect(paletteGhostFor('/mode a', paletteMatches('/mode a', fresh), 0)).toEqual({ kind: 'value', rest: 'gent', more: 1 });
+    expect(paletteGhostFor('/mode a', paletteMatches('/mode a', fresh), 1)).toEqual({ kind: 'arrow', target: '/mode legacy', more: 1 });
     // A4 p5's defect: the marker on one command and the ghost on another can no longer happen
     for (let i = 0; i < m.length; i++) {
       const g = paletteGhostFor('/m', m, i);
@@ -566,45 +571,49 @@ describe('TUI-DESIGN-4 §4.4: the footer says what Enter does, in every state', 
   it('§4.3 P-P4: the value cursor is `▹` (`-` in ascii), never the command marker, and the footer counts the list the keys are walking', () => {
     expect(VALUE_MARKER).toBe('▹ ');
     expect(VALUE_MARKER_ASCII).toBe('- ');
-    const rows = paletteRows('/mode j', fresh, 0, 8, 80, false, 1);
+    const rows = paletteRows('/budget m', fresh, 0, 8, 80, false, 1);
     const values = rows.filter((r) => r.kind === 'value');
-    expect(values.map((r) => r.name)).toEqual(['/mode jev-on', '/mode jev-off', '/mode jev-only', '/mode llm-jev']);
+    expect(values.map((r) => r.name)).toEqual(['/budget max-wall', '/budget max-steps', '/budget max-replans', '/budget max-generator-tokens']);
     expect(values.map((r) => r.selected)).toEqual([false, true, false, false]);
     expect(values[1]?.text.startsWith('▹ ')).toBe(true);
     expect(values[0]?.text.startsWith('  ')).toBe(true);
     // the `(i/N)` prefix counts the VALUES in the argument states
     expect(rows.at(-1)?.text.trimStart().startsWith('(2/4)')).toBe(true);
-    expect(paletteRows('/mode j', fresh, 0, 8, 80, true, 1).filter((r) => r.kind === 'value')[1]?.text.startsWith('- ')).toBe(true);
+    expect(paletteRows('/budget m', fresh, 0, 8, 80, true, 1).filter((r) => r.kind === 'value')[1]?.text.startsWith('- ')).toBe(true);
   });
   it('§4.3 P-P3: the value cursor `j` and the match index `i` are two cursors — `selected` never moves the value list', () => {
     // the regression this pins: `vsel` used to be `wrapIndex(valueIndex ?? selected, …)` while `selSpec` was
-    // `matches[selected]`, so ONE number stood for both cursors. `/mode j` with `selected = 1` picked /model (no
+    // `matches[selected]`, so ONE number stood for both cursors. `/mode a` with `selected = 1` picked /model (no
     // `args[0].values`), which dropped every sub-row and printed `(0/0)` while `paletteGhostFor` still previewed a
     // /mode value — the marker/ghost disagreement §4.3 exists to close, reintroduced in the argument states.
-    for (let i = 0; i < paletteMatches('/mode j', fresh).length; i++) {
-      for (const j of [0, 1, 2, 3]) {
-        const rows = paletteRows('/mode j', fresh, i, 8, 80, false, j);
+    expect(paletteMatches('/mode a', fresh).map((m) => m.spec.name)).toEqual(['mode', 'model']);
+    for (let i = 0; i < paletteMatches('/mode a', fresh).length; i++) {
+      for (const j of [0, 1]) {
+        const rows = paletteRows('/mode a', fresh, i, 8, 80, false, j);
         const values = rows.filter((r) => r.kind === 'value');
-        expect(values, `i=${i} j=${j}`).toHaveLength(4);
+        expect(values, `i=${i} j=${j}`).toHaveLength(2);
         // the command marker stays on the draft's own row, whatever `i` was before the argument was typed
         expect(rows.find((r) => r.kind === 'command' && r.selected)?.name, `i=${i} j=${j}`).toBe('/mode');
         expect(values.findIndex((r) => r.selected), `i=${i} j=${j}`).toBe(j);
-        expect(rows.at(-1)?.text.trimStart().startsWith(`(${j + 1}/4)`), `i=${i} j=${j}`).toBe(true);
+        expect(rows.at(-1)?.text.trimStart().startsWith(`(${j + 1}/2)`), `i=${i} j=${j}`).toBe(true);
       }
     }
-    // §4.8 F-P2's frame: the sub-rows on screen and `(2/5)` with the cursor on the second value (five modes since
-    // docs/AGENT-LOOP-DESIGN.md §14.1, so the frame is one row taller than F-P2's four-mode drawing)
-    expect(paletteRows('/mode ', fresh, 0, 8, 76, false, 1).at(-1)?.text.trimEnd()).toBe('  (2/5)  Enter next value · Tab picks · Esc closes');
+    // §4.8 F-P2's frame: the sub-rows on screen and `(2/3)` with the cursor on the second value (AGENT-LOOP-DESIGN §14.1: agent ·
+    // jev-only · legacy under the agent default)
+    expect(paletteRows('/mode ', fresh, 0, 8, 76, false, 1).at(-1)?.text.trimEnd()).toBe('  (2/3)  Enter next value · Tab picks · Esc closes');
     // and when the row budget cuts the list the footer says how many are off screen (§4.3 P-P4), never silently
-    expect(paletteRows('/mode ', fresh, 0, 7, 76, false, 1).at(-1)?.text.trimEnd()).toBe('  (2/5)  Enter next value · Tab picks · Esc closes · … +1 more');
-    expect(paletteRows('/mode ', fresh, 0, 7, 76, true, 1).at(-1)?.text.trimEnd()).toBe('  (2/5)  Enter next value - Tab picks - Esc closes - ... +1 more');
+    expect(paletteRows('/mode ', fresh, 0, 5, 76, false, 1).at(-1)?.text.trimEnd()).toBe('  (2/3)  Enter next value · Tab picks · Esc closes · … +1 more');
+    expect(paletteRows('/mode ', fresh, 0, 5, 76, true, 1).at(-1)?.text.trimEnd()).toBe('  (2/3)  Enter next value - Tab picks - Esc closes - ... +1 more');
     // and the ghost agrees with the cursor, at every j (P-P2 + P-P3 are one question)
-    const m = paletteMatches('/mode j', fresh);
-    for (const j of [0, 1, 2, 3]) {
-      const g = paletteGhostFor('/mode j', m, j);
-      const row = paletteRows('/mode j', fresh, 0, 8, 80, false, j).filter((r) => r.kind === 'value')[j];
-      const target = g === null ? null : g.kind === 'arrow' ? g.target : `/mode j${g.rest}`;
-      expect(target, `j=${j}`).toBe(row?.name);
+    for (const draft of ['/mode a', '/budget m']) {
+      const m = paletteMatches(draft, fresh);
+      for (const j of [0, 1, 2, 3]) {
+        const g = paletteGhostFor(draft, m, j);
+        const vals = paletteRows(draft, fresh, 0, 8, 80, false, j).filter((r) => r.kind === 'value');
+        const row = vals[j % vals.length];
+        const target = g === null ? null : g.kind === 'arrow' ? g.target : `${draft}${g.rest}`;
+        expect(target, `${draft} j=${j}`).toBe(row?.name);
+      }
     }
   });
   it('§4.3 P-P4 invariant: in every argument state the footer counts the list the keys walk, and it is never `(0/0)`', () => {

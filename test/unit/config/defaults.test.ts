@@ -204,10 +204,10 @@ describe('TUI-DESIGN-2 §1.2: the `mode` row', () => {
 });
 
 describe('TUI-DESIGN-3 §1.1 (D-G, D-N): DEFAULT_MODE, MODE_BADGE_WORD, MODE_BADGE_MAX_CELLS', () => {
-  it('the default engine mode is llm-jev (badge llm+jev · verified; flipped 2026-09-22 on the verified head-to-head) — the one intentional pin of the value; every other expectation reads DEFAULT_MODE', () => {
-    expect(DEFAULT_MODE).toBe('llm-jev'); // the one intentional value pin
+  it('the default engine mode is agent (badge agent; flipped 2026-09-23 to the model-driven tool loop, AGENT-LOOP-DESIGN §14.1) — the one intentional pin of the value; every other expectation reads DEFAULT_MODE', () => {
+    expect(DEFAULT_MODE).toBe('agent'); // the one intentional value pin
     expect(MODE_SETTING_VALUES).toContain(DEFAULT_MODE);
-    expect(MODE_BADGE_WORD[DEFAULT_MODE]).toBe('llm+jev · verified');
+    expect(MODE_BADGE_WORD[DEFAULT_MODE]).toBe('agent');
   });
 
   it('MODE_BADGE_WORD has a row for every MODE_SETTING_VALUES member, every word ≤ MODE_BADGE_MAX_CELLS cells, llm-jev reads llm+jev · verified', () => {

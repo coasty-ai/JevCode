@@ -2,8 +2,8 @@
  * AGENT-LOOP-DESIGN §14.1 / §14.5 (copy and the mode surface), slice S5b. The agent-mode copy never says "Jev decides": the chat
  * identity and capabilities, the how-to-task fact, the onboarding wording (when the wizard collects keys FOR agent mode), the fix
  * block. The advertised mode surface — `/mode` lists agent · jev-only · legacy, `/llm on` is agent, jev / panel leave Popular — is
- * stated by the pure `(defaultMode)` forms and goes live with slice S6's default flip; until then a legacy-default session's palette,
- * `/llm` and Popular are byte-identical (asserted), and `/mode legacy` already answers.
+ * stated by the pure `(defaultMode)` forms and is LIVE since slice S6's default flip (DEFAULT_MODE is agent); a legacy default would
+ * keep the old surface byte for byte (the `(defaultMode)` forms still assert it), and `/mode legacy` answers in both.
  */
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_MODE } from '../../../src/config/defaults.js';
@@ -70,7 +70,7 @@ describe('onboarding in agent mode (§14.5): one key runs the code model; option
   });
 });
 
-describe('the advertised mode surface (§14.1): live with the default flip, byte-identical before it', () => {
+describe('the advertised mode surface (§14.1): live with the default flip; a legacy default keeps the old surface', () => {
   it('after the flip: /mode lists agent · jev-only · legacy and accepts the legacy modes; /llm on is agent; jev and panel leave Popular', () => {
     expect(advertisedSurface('agent')).toBe(true);
     expect(modeArgValues('agent')).toEqual(['agent', 'jev-only', 'legacy']);
@@ -81,13 +81,23 @@ describe('the advertised mode surface (§14.1): live with the default flip, byte
     expect(popularFor('agent')).toHaveLength(14);
   });
 
-  it('before the flip (this base: the default stays llm-jev until S6) nothing a legacy session shows moves', () => {
-    expect(DEFAULT_MODE).not.toBe('agent');
-    expect(advertisedSurface()).toBe(false);
-    expect(LLM_STATE_MODE).toEqual({ on: 'jev-on', off: 'jev-only' });
-    expect(POPULAR).toHaveLength(16);
-    expect(SWITCH_MODE_TEXT).toContain('/mode jev-on (alias /llm on)');
-    expect(modeArgValues()).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent']);
+  it('the flip is live (slice S6: DEFAULT_MODE is agent) — the session\'s palette, /llm, Popular and the switch fact are the advertised surface', () => {
+    expect(DEFAULT_MODE).toBe('agent');
+    expect(advertisedSurface()).toBe(true);
+    expect(LLM_STATE_MODE).toEqual({ on: 'agent', off: 'jev-only' });
+    expect(POPULAR).toEqual(popularFor('agent'));
+    expect(POPULAR).toHaveLength(14);
+    expect(SWITCH_MODE_TEXT).toContain('/mode agent (alias /llm on)');
+    expect(modeArgValues()).toEqual(['agent', 'jev-only', 'legacy']);
+    expect(modeArgAccepts()).toEqual(['jev-on', 'jev-off', 'llm-jev']);
+  });
+
+  it('a legacy default (the pure forms) keeps the old surface byte for byte', () => {
+    expect(advertisedSurface('llm-jev')).toBe(false);
+    expect(llmStateMode('llm-jev')).toEqual({ on: 'jev-on', off: 'jev-only' });
+    expect(popularFor('llm-jev')).toHaveLength(16);
+    expect(modeArgValues('llm-jev')).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent']);
+    expect(modeArgAccepts('llm-jev')).toEqual(['legacy']);
   });
 
   it('/mode legacy is accepted in both states and lists the modes kept for saved configs, resume and the bench', () => {
@@ -110,14 +120,17 @@ describe('the advertised mode surface (§14.1): live with the default flip, byte
   });
 });
 
-describe('the CLI help (§14.5 "CLI help footnote"): advertised after the flip, byte-identical before it', () => {
+describe('the CLI help (§14.5 "CLI help footnote"): advertised after the flip; a legacy default keeps the old help', () => {
   it('--mode lists agent|jev-only plus one legacy clause, and the footnote names /mode and /mode legacy, once the default is agent', () => {
     expect(modeFlagArg('agent')).toBe('agent|jev-only');
     expect(modeFlagHelp('agent')).toBe('engine mode (default agent): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off');
     expect(bareJevcodeSentence('agent')).toBe('A bare `jevcode` opens the interactive session in agent mode (one OpenRouter key serves the code model and Jev); `/mode` switches to jev-only, and `/mode legacy` lists the older modes; `/` lists commands, `?` shows the keys.');
     for (const t of [modeFlagHelp('agent'), bareJevcodeSentence('agent')]) expect(t).not.toMatch(JEV_DECIDES);
-    // today (default llm-jev) the help is unchanged
-    expect(MODE_FLAG_ARG).toBe('jev-only|jev-on|jev-off|llm-jev');
+    // the flip is live: the shipped help is the agent form; a legacy default would keep today's text
+    expect(MODE_FLAG_ARG).toBe('agent|jev-only');
+    expect(MODE_FLAG_ARG).toBe(modeFlagArg(DEFAULT_MODE));
     expect(BARE_JEVCODE_SENTENCE).toBe(bareJevcodeSentence(DEFAULT_MODE));
+    expect(BARE_JEVCODE_SENTENCE).toBe(bareJevcodeSentence('agent'));
+    expect(modeFlagArg('llm-jev')).toBe('jev-only|jev-on|jev-off|llm-jev');
   });
 });

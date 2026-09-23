@@ -253,10 +253,10 @@ describe('§7.6: the conversation carry', () => {
   });
 
   it('chat turns before a switch to agent mode reach the first agent run once; the run after it carries none', async () => {
-    const h = await build({ decider: harnessDecider({ classify: () => 'greeting_or_smalltalk' }), script: agentScript });
+    // a legacy mode (the default before slice S6's flip): a chat reply lands in the ledger as a [you] + [jevcode] pair
+    const h = await build({ flags: { mode: 'llm-jev' }, decider: harnessDecider({ classify: () => 'greeting_or_smalltalk' }), script: agentScript });
     void h.controller.run();
     await h.ready();
-    // legacy mode (the default): a chat reply lands in the ledger as a [you] + [jevcode] pair
     expect(await h.host.submit('hello there', submitOpts(h))).toEqual({ became: 'chat' });
     await h.command('/mode agent');
     await h.submit('fix the failing test');
