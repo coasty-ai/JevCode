@@ -42,7 +42,8 @@ function writeTarget(w: Word, p: PathContext, redirect: boolean): WriteVerdict {
   return { kind: 'rule', rule: 'outside_write' };
 }
 
-const OUTPUT_OPS = new Set(['>', '>>', '>|', '&>', '&>>', '<>']);
+/** output redirects; `>&` counts only with a file target (`>&2` is an fd duplication and has none) */
+const OUTPUT_OPS = new Set(['>', '>>', '>|', '&>', '&>>', '<>', '>&']);
 
 /**
  * The redirects of one command: a rule, whether any output goes anywhere but /dev/null (`writes`, which a read-only
@@ -129,10 +130,12 @@ function rmVerdict(ws: readonly Word[], p: PathContext): CommandVerdict | null {
 const SED_ADDR = String.raw`(?:\d+|\$|\d+~\d+|/(?:[^/\\]|\\.)*/I?)`;
 const SED_PRINT_PART = new RegExp(String.raw`^\s*(?:${SED_ADDR}(?:\s*,\s*${SED_ADDR})?)?\s*!?\s*[pq=l]?\s*$`);
 
-/** `sed -n` with print-only scripts (`1,20p`, `/re/p`): no `-i`, no `w`/`W`, nothing that could write. */
+/** `sed -n` with print-only scripts (`1,20p`, `/re/p`): no `-i`, no `w`/`W`, no script file, nothing that could write. */
 function sedReadonly(a: readonly string[]): boolean {
   if (!(hasShort(a, 'n') || hasFlag(a, '--quiet', '--silent'))) return false;
   if (hasShort(a, 'i') || a.some((x) => x.startsWith('--in-place') || x.startsWith('-i'))) return false;
+  // a script read from a file cannot be checked here
+  if (hasShort(a, 'f') || a.some((x) => x.startsWith('--file'))) return false;
   const scripts: string[] = [];
   for (let i = 0; i < a.length; i += 1) {
     if (a[i] === '-e' || a[i] === '--expression') scripts.push(a[i + 1] ?? '');
@@ -146,12 +149,14 @@ function sedReadonly(a: readonly string[]): boolean {
   return scripts.every((s) => s.split(/[;\n]/).every((part) => SED_PRINT_PART.test(part)));
 }
 
-const PLAIN_READONLY = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'pwd', 'echo', 'printf', 'which', 'file', 'stat', 'diff', 'du', 'basename', 'dirname', 'realpath', 'jq']);
+const PLAIN_READONLY = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'pwd', 'echo', 'printf', 'which', 'stat', 'diff', 'du', 'basename', 'dirname', 'realpath', 'jq']);
 const FIND_WRITERS = /^-(delete|exec|execdir|ok|okdir|fprint.*|fls)$/;
 
 function readonlyProgram(program: string, a: readonly string[]): boolean {
   if (PLAIN_READONLY.has(program)) return true;
-  if (program === 'tree') return !hasFlag(a, '-o');
+  // `tree -o FILE` (also inside a flag group, `-ao`) writes its listing; `file -C` compiles a magic file into the cwd
+  if (program === 'tree') return !hasShort(a, 'o') && !a.some((x) => x.startsWith('--output'));
+  if (program === 'file') return !hasShort(a, 'C') && !hasFlag(a, '--compile');
   if (program === 'grep' || program === 'rg' || program === 'ag' || program === 'egrep' || program === 'fgrep') return !a.some((x) => x === '--pre' || x.startsWith('--pre='));
   if (program === 'find') return !a.some((x) => FIND_WRITERS.test(x));
   if (program === 'sed') return sedReadonly(a);

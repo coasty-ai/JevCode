@@ -12,13 +12,17 @@ import { relative, resolve, sep } from 'node:path';
 import { READONLY, UNKNOWN, destructive, isWithin, resolveWordPath, type CommandVerdict, type PathContext } from './safety-rules.js';
 
 const READONLY_SUBCOMMANDS = new Set(['status', 'diff', 'log', 'show', 'blame', 'ls-files', 'rev-parse', 'grep']);
-const OUTPUT_FLAGS = /^(--output(=.*)?|-o|--ext-diff)$/;
+/** options that write a file or run a program: `--output`, `-o`, `--ext-diff`, and `git grep -O<cmd>` / `--open-files-in-pager` */
+const WRITING_FLAGS = /^(--output(=.*)?|-o|--ext-diff|-O.*|--open-files-in-pager(=.*)?)$/;
 
 /** a short flag letter inside combined flags (`-fdx` has `x`) */
 const hasShort = (a: readonly string[], letter: string): boolean => a.some((x) => /^-[A-Za-z]+$/.test(x) && x.includes(letter));
 const has = (a: readonly string[], ...flags: string[]): boolean => a.some((x) => flags.includes(x));
 
-/** Global options before the subcommand: `-C <dir>` moves the cwd, `-c <k=v>` can run commands (never read-only). */
+/**
+ * Global options before the subcommand: `-C <dir>` moves the cwd; `-c <k=v>` can point a pager or diff driver at any
+ * program, and `-p` / `--paginate` forces the configured pager — none of them is ever read-only.
+ */
 function splitGlobal(a: readonly string[], p: PathContext): { sub: string; rest: string[]; cwd: string; config: boolean } {
   let cwd = p.cwd;
   let config = false;
@@ -32,7 +36,7 @@ function splitGlobal(a: readonly string[], p: PathContext): { sub: string; rest:
       config = true;
       i += 2;
     } else {
-      if (x.startsWith('-c') || x.startsWith('--config-env')) config = true;
+      if (x.startsWith('-c') || x.startsWith('--config-env') || x === '-p' || x === '--paginate') config = true;
       i += 1;
     }
   }
@@ -110,7 +114,7 @@ export function gitVerdict(a: readonly string[], p: PathContext, dirty: Readonly
   if (sub === 'filter-branch' || sub === 'filter-repo') return destructive('history_rewrite');
   if (sub === 'reflog' && rest[0] === 'expire') return destructive('history_rewrite');
   if (sub === 'update-ref' && has(rest, '-d')) return destructive('history_rewrite');
-  if (config || writes || rest.some((x) => OUTPUT_FLAGS.test(x))) return UNKNOWN;
+  if (config || writes || rest.some((x) => WRITING_FLAGS.test(x))) return UNKNOWN;
   if (READONLY_SUBCOMMANDS.has(sub)) return READONLY;
   if (sub === 'branch' && has(rest, '--list')) return READONLY;
   return UNKNOWN;

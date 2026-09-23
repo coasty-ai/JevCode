@@ -168,8 +168,8 @@ export function steerNote(text: string): string {
   return `[message from the user while you were working]\n${text}`;
 }
 
-export function unknownTool(name: string): string {
-  return `UNKNOWN TOOL ${name}. Available: ${AGENT_TOOL_NAMES.join(', ')}.`;
+export function unknownTool(name: string, available: readonly string[] = AGENT_TOOL_NAMES): string {
+  return `UNKNOWN TOOL ${name}. Available: ${available.join(', ')}.`;
 }
 
 export function invalidArguments(tool: AgentToolName, problem: string, signature: string): string {

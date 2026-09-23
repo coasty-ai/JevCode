@@ -19,7 +19,7 @@ import type { Action, AgentContext, AgentGate, AgentObservation, AgentToolName }
 import { sha12 } from '../core/hash.js';
 import { PRE_IMAGE_MAX_FILES, PRE_IMAGE_MAX_TOTAL_BYTES } from '../checkpoint/images.js';
 import { AGENT_FILE_MAX_BYTES, DEFAULT_COMMAND_TIMEOUT_MS } from './limits.js';
-import { blockedResult, declinedResult } from './prompt.js';
+import { blockedResult, declinedResult, unknownTool } from './prompt.js';
 import { ignoredLine, type NormalisedCall } from './repair.js';
 import { classifyCommand, commandGate, destructiveNote, type CommandVerdict, type DestructiveRule } from './safety.js';
 import { syntaxCheck, syntaxCheckBlock } from './tools/check.js';
@@ -34,6 +34,8 @@ import { FileNotFoundError, isAbortError, isBudgetError } from '../errors.js';
 
 export interface CallEnv {
   ctx: AgentContext;
+  /** the tools this run offered (a research child gets no write_file / edit_file, §4.1) */
+  tools: readonly AgentToolName[];
   readHashes: ReadHashes;
   rg: (ctx: AgentContext) => Promise<boolean>;
   setTodos: (todos: Todo[]) => void;
@@ -243,6 +245,9 @@ function argsOf<T>(c: NormalisedCall): T {
 /** §3.2: the disposition of one call, computed when the call is reached (a preceding edit may have changed its file). */
 export async function dispose(env: CallEnv, c: NormalisedCall): Promise<Disposition> {
   const { ctx } = env;
+  // a tool the run did not offer (a research child's write_file, even under an alias or as leaked XML) does not exist here
+  const offered = c.name !== 'invalid' && env.tools.includes(c.name);
+  if (!offered) return rejected(c, unknownTool(c.rawName, env.tools));
   if (c.error !== null) return rejected(c, c.error);
   switch (c.name) {
     case 'read_file':

@@ -148,14 +148,6 @@ export class Transcript {
     return null;
   }
 
-  resultFor(id: string): ResultRecord | null {
-    for (let i = this.records.length - 1; i >= 0; i -= 1) {
-      const r = this.records[i]!;
-      if (r.kind === 'result' && r.toolUseId === id) return r;
-    }
-    return null;
-  }
-
   /** §3.1 step 3: the calls of the latest assistant record that have no result record — the queue. */
   unresolved(): RecordedCall[] {
     const a = this.latestAssistant();
@@ -239,11 +231,6 @@ export class Transcript {
     // the wire starts with the user
     if (out[0]?.role === 'assistant') out.unshift({ role: 'user', content: [{ type: 'text', text: 'Continue.' }] });
     return out;
-  }
-
-  /** Characters of the projected request messages (the §7.1 estimate's numerator). */
-  chars(o: ProjectOptions): number {
-    return messageChars(this.messages(o));
   }
 }
 

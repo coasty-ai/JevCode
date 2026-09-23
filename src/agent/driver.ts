@@ -13,7 +13,7 @@
  * back for `state.json`. Deriving the queue from the transcript means a step the engine discards needs no hook: its call
  * is simply issued again, and no request ever carries a `tool_use` without its `tool_result`.
  */
-import type { AgentCallSummary, AgentContext, AgentDriver, AgentNext, AgentObservation, AgentObserveResult, LoopTrip, PlanDraft, Proposal, StepAgentSummary, ToolSpec } from '../core/types.js';
+import type { AgentCallSummary, AgentContext, AgentDriver, AgentNext, AgentObservation, AgentObserveResult, AgentToolName, LoopTrip, PlanDraft, Proposal, StepAgentSummary, ToolSpec } from '../core/types.js';
 import { sha12 } from '../core/hash.js';
 import { headTail } from '../core/text.js';
 import { AbortError } from '../errors.js';
@@ -31,7 +31,7 @@ import { decideStop, isUnscopedTestRun } from './stop.js';
 import { bashStatusLine, clipMiddle, oneLine } from './tools/format.js';
 import type { ReadHashes } from './tools/read.js';
 import { createRgProbe } from './tools/search.js';
-import { toolsFor } from './tools/specs.js';
+import { AGENT_TOOL_NAMES, RESEARCH_TOOL_NAMES, toolsFor } from './tools/specs.js';
 import { planOf } from './tools/todo.js';
 import type { ToolResult } from './tools/result.js';
 import { sampleTurn, buildRequest, requestChars, type TurnSetup } from './turn.js';
@@ -65,7 +65,14 @@ class Driver implements AgentDriver {
   private state: AgentStateV1 = initialState('');
   private system = '';
   private tools: ToolSpec[] = [];
+  private toolNames: readonly AgentToolName[] = AGENT_TOOL_NAMES;
   private systemHash = '';
+  /**
+   * The latest turn's calls as the model sent them, before the transcript's redaction: a write_file whose content holds
+   * a secret-shaped fixture runs with the real text, as a legacy action does. After a resume only the redacted record
+   * is left, and the call is derived from it.
+   */
+  private live = new Map<string, NormalisedCall>();
   private budget: Budget = budgetFor(null);
   private maskingMode: MaskingMode = 'client';
   private readonly estimate = new ContextEstimate();
@@ -87,6 +94,7 @@ class Driver implements AgentDriver {
     if (this.transcript !== null) return this.transcript;
     const role = ctx.orchestration?.role === 'research' ? 'research' : 'default';
     this.tools = toolsFor(role);
+    this.toolNames = role === 'research' ? RESEARCH_TOOL_NAMES : AGENT_TOOL_NAMES;
     this.system = buildAgentSystemPrompt({
       model: ctx.provider.model,
       providerLabel: providerLabel(ctx.provider.name),
@@ -117,7 +125,7 @@ class Driver implements AgentDriver {
   }
 
   private env(ctx: AgentContext): CallEnv {
-    return { ctx, readHashes: this.readHashes, rg: this.rg, setTodos: (todos) => (this.state.todos = todos) };
+    return { ctx, tools: this.toolNames, readHashes: this.readHashes, rg: this.rg, setTodos: (todos) => (this.state.todos = todos) };
   }
 
   private plan(): PlanDraft {
@@ -211,30 +219,32 @@ class Driver implements AgentDriver {
     }
     const t0 = ctx.now();
     const setup = (lowEffort: boolean): TurnSetup => ({ ctx, state: this.state, transcript: t, system: this.system, systemHash: this.systemHash, tools: this.tools, budget: this.budget, maskingMode: this.maskingMode, estimate: this.estimate, lowEffort, warned: this.warned });
-    let chars = requestChars(buildRequest(setup(false), !this.state.replayDisabled));
-    let tokens = this.estimate.tokens(chars);
+    const measure = (): number => requestChars(buildRequest(setup(false), !this.state.replayDisabled));
+    let chars = measure();
     const writer = compactionWriter(ctx.compaction);
-    if ((this.compactRequested || (writer !== 'off' && compactionDue(tokens, this.budget))) && t.unresolved().length === 0) {
-      await this.compact(ctx, t, writer === 'llm' ? 'llm' : 'code', chars);
+    const tokensBefore = this.estimate.tokens(chars);
+    if ((this.compactRequested || (writer !== 'off' && compactionDue(tokensBefore, this.budget))) && t.unresolved().length === 0) {
+      chars = await this.compact(ctx, t, writer === 'llm' ? 'llm' : 'code', chars, measure);
       this.compactRequested = false;
     } else if (this.maskingMode === 'client') {
       const m = maskCandidates(t);
-      if (maskDue(this.maskingMode, tokens, this.budget, m.reclaim)) {
+      if (maskDue(this.maskingMode, tokensBefore, this.budget, m.reclaim)) {
         await t.append({ kind: 'mask', ids: m.ids });
         this.estimate.reset();
+        chars = measure();
       }
     }
-    chars = requestChars(buildRequest(setup(false), !this.state.replayDisabled));
-    tokens = this.estimate.tokens(chars);
-    ctx.reportContext(contextUsage({ tokens, budget: this.budget, promptChars: chars, turns: this.state.turns, state: this.state, writer: writer === 'off' ? 'off' : writer, buildMs: ctx.now() - t0 }));
+    ctx.reportContext(contextUsage({ tokens: this.estimate.tokens(chars), budget: this.budget, promptChars: chars, turns: this.state.turns, state: this.state, writer, buildMs: ctx.now() - t0 }));
     // §A4 RA0: the first turn of a run may go at low effort — asked only when that could change the request
     const low = lowEffortReasoning(ctx.provider.name);
     const lowEffort = this.state.turns === 0 && low !== null && !sameReasoning(agentReasoning(ctx.provider.name), low) ? await effortHint(ctx, this.state) : false;
-    return sampleTurn(setup(lowEffort));
+    const sampled = await sampleTurn(setup(lowEffort));
+    this.live = new Map(sampled.calls.map((c) => [c.id, c]));
+    return sampled;
   }
 
-  /** §7.4: replace the history with one user message (head, summary, last results, edited files). */
-  private async compact(ctx: AgentContext, t: Transcript, writer: 'llm' | 'code', before: number): Promise<void> {
+  /** §7.4: replace the history with one user message (head, summary, last results, edited files). Returns the new size. */
+  private async compact(ctx: AgentContext, t: Transcript, writer: 'llm' | 'code', before: number, measure: () => number): Promise<number> {
     const fromSeq = t.live()[0]?.seq ?? 1;
     const toSeq = t.lastSeq();
     let summary = writer === 'llm' ? await llmSummary(ctx, t, this.state, this.state.turns + 1) : null;
@@ -246,8 +256,9 @@ class Driver implements AgentDriver {
     this.state.lastCompactionAt = new Date(ctx.now()).toISOString();
     this.state.lastCompactionStep = ctx.step;
     this.estimate.reset();
-    const after = requestChars({ system: this.system, messages: [], maxTokens: 0, temperature: null, tools: this.tools, agent: { messages: t.messages({ provider: ctx.provider.name, model: ctx.provider.model, systemHash: this.systemHash, replay: false }), parallelToolCalls: true, cacheKey: '', replayReasoning: false } });
+    const after = measure();
     ctx.emit({ type: 'context:compacted', step: ctx.step, chars: { before, after }, by });
+    return after;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -266,7 +277,7 @@ class Driver implements AgentDriver {
     const env = this.env(ctx);
     const batch: BatchItem[] = [];
     for (const rec of queue) {
-      const call = deriveCall(rec, ctx.workspace.root);
+      const call = this.live.get(rec.id) ?? deriveCall(rec, ctx.workspace.root);
       const d = await dispose(env, call).catch((e: unknown) => failedDisposition(ctx, call, e));
       if (d.kind === 'act') {
         if (batch.length === 0) return this.actStep(ctx, call, d.act, turn);
@@ -388,6 +399,8 @@ class Driver implements AgentDriver {
       this.state.failedTest = null;
       if (act.path !== null) this.filesEdited.add(act.path);
       for (const f of o.changedFiles) this.filesEdited.add(f);
+      // the agent's own edit is not an outside change: the next edit of this file must not report a stale read
+      if (act.path !== null && act.after !== null && act.tool !== 'bash') this.readHashes.set(act.path, sha12(act.after));
     }
     if (unscoped && o.outcome.status === 'executed') {
       const parsed = o.tests?.parsed ?? null;
@@ -427,6 +440,9 @@ class Driver implements AgentDriver {
       if (exec.ok && (parsed === null || o.tests?.allPassed !== false)) {
         this.state.changedSinceVerify = false;
         this.state.failedTest = null;
+      } else {
+        // a reply with no new change gets the counts once (the failed-test nudge), not the same suite run again
+        this.state.failedTest = { passed: parsed?.passed ?? 0, failed: parsed?.failed ?? 0, errors: parsed?.errors ?? 0 };
       }
       if (parsed !== null) this.testTrend.push(`${parsed.passed}p/${parsed.failed}f`);
     } else text = verifyResult(p.command, o.outcome.status === 'failed' ? `could not run (${o.outcome.error})` : o.outcome.status, '');

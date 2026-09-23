@@ -84,4 +84,19 @@ describe('a research child', () => {
     await step(createAgentDriver(), research);
     expect(ctx.sent[0]!.tools!.map((t) => t.name)).toEqual(['read_file', 'grep', 'glob', 'bash', 'todo_write']);
   });
+
+  it('cannot write through an alias or leaked XML either: the call is an unknown tool, nothing is written', async () => {
+    const ctx = createAgentContext({
+      testCommand: null,
+      turns: [{ text: '<tool_call>write_file<arg_key>path</arg_key><arg_value>x.txt</arg_value><arg_key>content</arg_key><arg_value>hi</arg_value></tool_call>' }, { toolCalls: [call('Edit', { path: 'src/a.py', old_string: 'return 1', new_string: 'return 2' })] }, { text: 'ok' }],
+    });
+    const research = { ...ctx, orchestration: { role: 'research' } } as unknown as typeof ctx;
+    const d = createAgentDriver();
+    const kinds = [(await step(d, research)).next.kind, (await step(d, research)).next.kind, (await step(d, research)).next.kind];
+    expect(kinds).toEqual(['observe', 'observe', 'finish']);
+    expect(ctx.fs.files.has('x.txt')).toBe(false);
+    expect(ctx.fs.files.get('src/a.py')).toContain('return 1');
+    const rejected = ctx.sent[1]!.agent!.messages.at(-1)!.content[0]!;
+    expect(rejected.type === 'tool_result' && rejected.content).toBe('UNKNOWN TOOL write_file. Available: read_file, grep, glob, bash, todo_write.');
+  });
 });

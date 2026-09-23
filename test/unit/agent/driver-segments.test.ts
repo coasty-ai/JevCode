@@ -232,6 +232,34 @@ describe('act mappings', () => {
     expect(result.type === 'tool_result' && result.content).toContain('\nsyntax check:\n');
   });
 
+  it("the agent's own edit is not a stale read: a second edit of the same file carries no note", async () => {
+    const ctx = createAgentContext({
+      files: { 'a.txt': 'one\ntwo\n' },
+      turns: [
+        { toolCalls: [call('read_file', { path: 'a.txt' })] },
+        { toolCalls: [call('edit_file', { path: 'a.txt', old_string: 'one', new_string: 'ONE' })] },
+        { toolCalls: [call('edit_file', { path: 'a.txt', old_string: 'two', new_string: 'TWO' })] },
+        { text: 'ok' },
+      ],
+      testCommand: null,
+    });
+    const d = createAgentDriver();
+    for (let i = 0; i < 4; i += 1) await step(d, ctx);
+    expect(userText(ctx, 3)).not.toContain('changed since you last read it');
+    expect(ctx.fs.files.get('a.txt')).toBe('ONE\nTWO\n');
+  });
+
+  it('a call runs with the text the model sent, while the transcript records it redacted', async () => {
+    const ctx = createAgentContext({ turns: [{ toolCalls: [call('write_file', { path: 'fixture.txt', content: 'token=sk-secret-abc123\n' })] }, { text: 'ok' }], testCommand: null });
+    const d = createAgentDriver();
+    await step(d, ctx);
+    await step(d, ctx);
+    expect(ctx.fs.files.get('fixture.txt')).toBe('token=sk-secret-abc123\n');
+    const assistant = messagesOf(ctx, 1)[1]!;
+    const use = assistant.content.find((b) => b.type === 'tool_use')!;
+    expect(use.type === 'tool_use' && use.input).toEqual({ path: 'fixture.txt', content: 'token=[REDACTED]\n' });
+  });
+
   it('proposals carry the todo list as the plan', async () => {
     const ctx = createAgentContext({ turns: [{ toolCalls: [call('todo_write', { todos: [{ content: 'read', status: 'completed' }, { content: 'fix', status: 'in_progress' }] }), call('bash', { command: 'npm install' })] }, { text: 'ok' }], testCommand: null });
     const d = createAgentDriver();
