@@ -217,8 +217,8 @@ export interface DriveResult {
  * The hermetic environment of every perf drive: a minimal env (never the parent's — no key variable, no `JEVCODE_CONFIG`,
  * no `CI`), `HOME` and `XDG_CONFIG_HOME` inside the scenario's temp dir so neither the XDG file nor the legacy
  * `$HOME/.config/jevcode/config.json` of the developer's saved login can reach the child (`src/config/resolve.ts`
- * candidates `[cwd/jevcode.json, xdgFile, legacyFile]`), and the extra-`.env` setting at a directory that does not
- * exist (it defaults to a sibling directory of the package root, which may hold keys). A scenario's
+ * candidates `[cwd/jevcode.json, xdgFile, legacyFile]`), and `JEVCODE_EXTRA_ENV_FILE` at a path that does not exist
+ * (the row has no default, so an unset one reads no second dotenv at all). A scenario's
  * own `env` is layered on top (`JEVCODE_HOME`, the mock knobs; `XDG_CONFIG_HOME` when it wants its own).
  * `test/unit/perf/hermetic.test.ts` spawns `jevcode config` under this env with a legacy credentials file in the
  * parent's HOME and asserts that no `file:` source appears.
@@ -229,7 +229,7 @@ export function baseEnv(opts: { env?: Readonly<Record<string, string>>; rows: nu
     HOME: dir,
     XDG_CONFIG_HOME: join(dir, 'xdg'),
     TERM: 'xterm-256color',
-    OPEN_ASSIST_PATH: join(dir, 'no-extra-env'),
+    JEVCODE_EXTRA_ENV_FILE: join(dir, 'no-extra-env'),
     ...opts.env,
     PTY_ROWS: String(opts.rows),
     PTY_COLS: String(opts.columns),

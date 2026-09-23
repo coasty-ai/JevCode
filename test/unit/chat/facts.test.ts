@@ -38,7 +38,7 @@ const paused = (): FactsInput => keyedFixture({ lastRun: { runId: 'r2', task: 'x
 const noul = (p: number): Answer => ({ type: 'noul', noul: p });
 
 describe('§3.5 the harness facts', () => {
-  it('builds 14 facts in the table\'s order for every fixture, and every fact Noul builds without throwing (definition + ≥ 2 examples both sides)', () => {
+  it('builds 15 facts in the table\'s order for every fixture, and every fact Noul builds without throwing (definition + ≥ 2 examples both sides)', () => {
     for (const [name, fixture] of [['keyed', keyedFixture()], ['keyless', keyless()], ['no run', noRun()], ['paused', paused()]] as const) {
       const facts = harnessFacts(fixture);
       expect(facts.map((f) => f.key), name).toEqual(FACT_KEYS);

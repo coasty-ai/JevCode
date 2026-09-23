@@ -273,6 +273,12 @@ export function itemRole(item: Pick<TranscriptItem, 'level' | 'verdict' | 'kind'
 /**
  * TUI-DESIGN-3 §2.1 / §5.1 rule 2 (D-O): the role of a transcript item's **label** — `[jevcode]` takes `assistant` (the primary pink,
  * bold), `[you]` takes `you` (the secondary pink, bold), every other label is the dim marker beside a coloured or plain body.
+ *
+ * TUI-DESIGN-5 §8.1 item 2 (contract 1.8): `'[session]'` — the label every APPLIED remote verb writes (§2.9) — takes this
+ * function's `'dim'` fall-through, and that is a **decision, not an accident**: a session-provenance marker is chrome, not
+ * speech, so it reads at the same grade as `[ui]` / `[config]` beside a body that carries its own colour. No code changes
+ * here; the two total `Readonly<Record<UiLabel, …>>` literals in `test/unit/tui/theme.test.ts` and
+ * `test/unit/tui/theme-palette.test.ts` pin it, and `LABEL_GUTTER` is 10 cells while `'[session]'` is 9.
  */
 export function labelRole(item: Pick<TranscriptItem, 'label'>): 'assistant' | 'you' | 'dim' {
   if (item.label === '[jevcode]') return 'assistant';

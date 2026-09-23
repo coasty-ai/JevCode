@@ -12,7 +12,7 @@ Type `/` at the start of an empty composer to open the palette; Enter runs a com
 | `/rename` | <title> | any | yes | session title ≤ 60 (through the secret gate and `redact`); index `rename` line; status centre |
 | `/steer` | <text> | live | yes | = Enter with text while live (needed by `--plain`) |
 | `/unsteer` | — | live | yes | = Up on the first row: `engine.unsteer()` |
-| `/pause` | — | live | yes | `engine.pause()` (= Esc) |
+| `/pause` | [now] [<target>] | any | yes | `engine.pause({ at, by: 'self' })` (= Esc); `now` discards the stage in flight and keeps the proposal; `<target>` sends a `pause` message to a peer's inbox, `all` pauses this run and every live peer on this repo (§2.6) |
 | `/abort` | — | live | yes | `engine.abort('human_abort')` (= Esc Esc) |
 | `/undo`, alias `/u` | [n] | idle | yes (readline `y/N`) | §12.4 |
 | `/rewind`, alias `/rw` | [step] | idle | yes | picker of steps with changed files → undo last…n → `files / plan+window / both` (§12.5) |
@@ -25,7 +25,7 @@ Type `/` at the start of an empty composer to open the palette; Enter runs a com
 | `/cost`, alias `/c` | — | any | yes | 12-row block (§9.6) |
 | `/budget`, alias `/b` | [spend-cap\|session-spend-cap\|max-steps\|max-wall\|max-replans <v>] | any | yes | show or set (§9.4); `session-spend-cap none` lifts the session cap; `max-generator-tokens <n>` is the --allow-unpriced token cap (§9.5) |
 | `/model`, alias `/ml` | [id] | any | yes | no argument shows `model <current> (next run: <pending>)`; with one: pending for the **next** run only (memory); a differing `--model` on `/resume` stays `ConfigError` |
-| `/provider` | [anthropic\|openrouter] | any | yes | no argument shows `provider <current> (next run: <pending>)`; with one: pending for the **next** run only (memory) |
+| `/provider` | [anthropic\|openrouter\|openai\|gemini\|xai\|fireworks\|meta] | any | yes | no argument shows `provider <current> (next run: <pending>)`; with one: pending for the **next** run only (memory) |
 | `/mode`, alias `/m` | [jev-only\|jev-on\|jev-off\|llm-jev] | any | yes | no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard's generator step in place; persist with `jevcode config set mode <m>` (default llm-jev) |
 | `/llm` | <on\|off> | any | yes | `/llm on` = `/mode jev-on`, `/llm off` = `/mode jev-only` |
 | `/config`, alias `/cf` | — | any | yes | masked table with `source` column, effective session cap, sandbox footer. Flags: `--all` show every setting, including the rows folded at their defaults |
@@ -33,7 +33,7 @@ Type `/` at the start of an empty composer to open the palette; Enter runs a com
 | `/logout` | [generator\|jev] | any | yes | rewrites the credentials file atomically and reports env-sourced keys without touching them (§11.2) |
 | `/trust` | — | idle | yes | reopen the trust gate |
 | `/theme`, alias `/t` | <dark\|light\|daltonized\|ansi> | any | n/a | new items and the dynamic region only |
-| `/panel`, alias `/p` | [d\|p\|t\|s\|off\|full] | any | yes | no argument toggles collapsed ↔ open (≤ 6 rows); `d\|p\|t\|s` opens that tab (the same tab again collapses); `off` collapses to the one-row strip; `full` expands to the 12-row pane (§4.6); `--plain` prints the rows |
+| `/panel`, alias `/p` | [d\|p\|t\|s\|a\|off\|full] | any | yes | no argument toggles collapsed ↔ open (≤ 6 rows); `d\|p\|t\|s` opens that tab (the same tab again collapses) and `a` the agents tab while something delegates (§4.3); `off` collapses to the one-row strip; `full` expands to the 12-row pane (§4.6); `--plain` prints the rows |
 | `/transcript`, alias `/tr` | [compact\|full] | any | always full | no argument shows the current view; `compact` (default) hides the stage kinds and shows one `[step N]` line per step; `full` shows every item (new items only, §4.5); `--plain` is always `full` |
 | `/copy`, alias `/cp` | [last\|proposal\|diff\|draft\|conversation] | any | n/a | §10.5 |
 | `/export` | [file] | idle | yes | §8.7 |
@@ -45,7 +45,22 @@ Type `/` at the start of an empty composer to open the palette; Enter runs a com
 | `/exit`, alias `/q`, alias `/quit` | — | any | yes | exit 0 (`exitConfirm` first while live; `--exit-code=last-run` opt-in) |
 | `/fullscreen` | — | any | yes | persist `ui.renderer: fullscreen` and offer a relaunch — the renderer is fixed at `render()` (§1.3.1), so it never switches in place; under `fullscreen` already, it persists `classic` back |
 | `/scrollback` | — | any | yes | fullscreen only: suspend, print the whole transcript through `createPlainRenderer`, wait for a key, resume (§1.3.4); under `classic` it answers that the terminal's own scrollback already has it |
-| `/peers` | — | any | yes | a block `peers · <n> here, <m> stale` with one kv row per peer — workspace, started <t> ago, state — never a pid and never a path (§7.10) |
+| `/peers` | — | any | yes | counts only, from `SessionHost.peers()`: `peers · <n> here, <m> stale`, else `no other jevcode is working in this workspace`, else `the peer registry is not available in this build`; a peer holding the exclusive lease raises the blocking row `[w] wait for it   [r] read-only session   [q] quit`. Never a pid, never a path, never a label — `/who` is the detailed view (§2.4) |
 | `/ui` | reset | any | yes | clears every `guard()` pane latch (§7.1) and answers `ui reset — <n> panes unlatched` or `nothing was latched` |
+| `/who` | [--all] | any | yes | a block of one row per session — liveness, branch@head, step/stage, mode, context, spend, files being edited, sub-work and beat age (§2.3, §12 S1–S5); `jevcode sessions who [--all] --json` is the machine twin. Flags: `--all` include sessions gone more than 10 minutes |
+| `/inbox` | [--all] | any | yes | reads `fold.inbox` / `fold.acks` and writes nothing; a block of unread rows, newest first (§2.9). Flags: `--all` include messages already acked |
+| `/tell` | <target> <text> | any | yes | a directed message; the far end shows `[session] <label>: <text>` and `transcript.log` records it (§2.9). A body that looks like a key is gated first and is redacted either way (§12 S34a) |
+| `/headsup` | <text> | any | yes | a broadcast to every live row on this repo; a toast at the far end, never a persistent row (§2.9) |
+| `/request` | <target> pause\|end\|steer [<text>] | any | yes | a gated verb request; the far end shows a **persistent** row (never a toast, because it needs an answer) with `[y]`/`[Y]`/`[n]` (§2.9, §12 S32) |
+| `/end` | [now] [<target>] | any | yes | `engine.end({ at, by: 'human' })`; writes `RunMeta.ended` and one `session:end` index line, so a later `/resume <id>` needs `--force`. Takes the confirm ladder and its Enter is inert (§2.7, §12 S27–S29) |
+| `/context` | — | any | yes | one block: the budget and window, the recent-step split, prompt-build and file-refresh milliseconds, the rolling summary and its age, and the files in view with why each is there (§3.2, §12 S48–S53). Three distinct empty states — no live run, a mode that builds no relaxed context, and no prompt built yet. No `--json` of its own (§13.3) |
+| `/compact` | — | live | yes | `engine.compact()`; the engine's own compaction notice reports what happened in all three sinks (§3.4), so the command says nothing when the count rose and otherwise answers one of three sentences — compaction is off for this run, only the newest step is in history, or the run is no longer live (§3.3, §12 S57–S58a) |
+| `/split` | [auto\|ask\|off] | any | yes | pends `orchestrate.split` for the next step; no argument shows the current policy (§4.9) |
+| `/agents` | — | any | yes | opens the `a` pane tab and focuses it so its eight letters resolve (`Alt+A` is the key twin); in `--plain` it prints the tree as a block. With nothing delegating it answers `/agents is not available in this build — no agent is running` (§4.3, §4.9, §12 S85) |
+| `/agent` | <slug> pause\|resume\|steer\|budget\|land\|kick\|drop\|diff [args] | any | yes | the typed twin of the `a` tab's eight letters (§4.3); until the supervisor's store exists it answers `/agent is not available in this build — no agent is running` (§4.9, §12 S85) |
+| `/land` | [<slug>] | idle | yes | merges the agent's branch into the dock behind the land preflight (§4.6); runs one at a time (`EXCLUSIVE_COMMANDS`) and takes the confirm ladder, whose Enter is inert. With nothing delegating it answers `/land is not available in this build — no agent is running` (§4.9, §12 S85) |
+| `/spawn` | <role> <glob> [task] | live | yes | adds one agent to the manifest of the live run; until the supervisor's store exists it answers `/spawn is not available in this build — no agent is running` (§4.9, §12 S85) |
+| `/import`, alias `/imp` | [--dry-run] [<source>] | idle | yes | scans the known sources, shows one review overlay of what would be written, and applies only what you accept; a credential row always needs a terminal and is never applied by `--yes` (§5.2, §5.3). `jevcode import` is the CLI twin. Flags: `--dry-run` plan only — nothing is written |
+| `/memory`, alias `/mem` | [list\|show\|add\|forget\|reload] [<text>] | any | yes | reads and edits the memory files `memory.path` names; one switch (`memory.enabled`, D-AP) turns the whole feature off (§5.5) |
 
 Deferred (TUI-DESIGN §22): `/doctor` (CLI `jevcode doctor` first), `/cd`, project commands (A63), `/redo`.

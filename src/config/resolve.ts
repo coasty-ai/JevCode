@@ -1,9 +1,9 @@
 /**
  * Configuration resolution (DESIGN.md §3, TUI-DESIGN §16) and the pure --resume reconciliation (§9).
  *
- * Precedence, highest first: flag > process env > ./.env > <OPEN_ASSIST_PATH>/.env > config
+ * Precedence, highest first: flag > process env > ./.env > <JEVCODE_EXTRA_ENV_FILE> > config
  * file > default. Every entry records its source. Nothing is validated here except what is
- * needed to find the other sources (config file, Open Assist path) and the eager, cheap
+ * needed to find the other sources (config file, the extra .env file) and the eager, cheap
  * settings (sandbox, booleans, paths); generator(), decider(), limits() and ui() validate lazily
  * so `jevcode run` / `jevcode chat` can render the first frame before any key is checked.
  *
@@ -82,13 +82,15 @@ import {
   type SettingReader,
 } from './validate.js';
 import type { LoadedConfigFile, LoadedDotenv, ResolveOptions, ResolvedConfigWithDiagnostics, ResumeCurrentInputs, ResumeIdentity, ResumeReconciliation, SettingName, SettingSpec } from './types.js';
+// TUI-DESIGN-5 §6.3 row 1: zero-import pure data (the module states the rule and a test enforces it), so this
+// import never puts `provider/registry.js` or `models/**` on the argv path.
+import { isProviderId, keyEnvNames } from '../provider/ids.js';
 
 export type { ResolveOptions, ResolvedConfigWithDiagnostics, ResumeCurrentInputs, ResumeIdentity, ResumeLimitSources, ResumeReconciliation, ResumeStateSummary, ResumeOverride } from './types.js';
 
 /** A config file larger than this is not ours to parse. */
 export const MAX_CONFIG_FILE_BYTES = 1024 * 1024;
 
-const PROVIDER_KEY_ENV: Readonly<Record<string, string>> = { anthropic: 'ANTHROPIC_API_KEY', openrouter: 'OPENROUTER_API_KEY' };
 
 /** Walk up from this module until a package.json named jevcode is found (src/config/ in dev, dist/ when bundled). */
 export function detectPackageRoot(fromDir: string = dirname(fileURLToPath(import.meta.url))): string | null {
@@ -108,14 +110,6 @@ export function detectPackageRoot(fromDir: string = dirname(fileURLToPath(import
     dir = parent;
   }
   return null;
-}
-
-function isDirectory(p: string): boolean {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 function isFile(p: string): boolean {
@@ -357,7 +351,7 @@ function layerReader(layers: Layers, name: SettingName, row: Resolved<string> | 
  */
 function resolveJevProvider(layers: Layers): JevProviderResolution {
   const row = lookup(layers, settingSpec('decider.provider')) ?? { value: 'auto', source: 'default' };
-  // rule 1: flag > JEV_PROVIDER > ./.env > <OPEN_ASSIST_PATH>/.env > file jevProvider; any other value is a ConfigError naming the source
+  // rule 1: flag > JEV_PROVIDER > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file jevProvider; any other value is a ConfigError naming the source
   const v = parseJevProviderSetting(layerReader(layers, 'decider.provider', row), row);
   if (v === 'typesafe' || v === 'openrouter') return { provider: v, providerSource: isExplicitProviderSource(row.source) ? row.source : 'default', entry: { value: v, source: row.source } };
   // rule 2a: a configured base URL whose host the table knows
@@ -386,7 +380,7 @@ export function isEngineMode(v: unknown): v is EngineMode {
 }
 
 // ---------------------------------------------------------------------------------------
-// TUI-DESIGN-2 §1.2 (D-A): the `mode` setting — flag > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > DEFAULT_MODE
+// TUI-DESIGN-2 §1.2 (D-A): the `mode` setting — flag > JEVCODE_MODE > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file `mode` > DEFAULT_MODE
 // ---------------------------------------------------------------------------------------
 
 /** The `mode` row through the chain; `--condition` (args.ts's hidden alias, not the row's flag key) counts as the flag layer. */
@@ -431,12 +425,56 @@ function launchRows(flags: ParsedFlags, env: NodeJS.ProcessEnv): Map<SettingName
 }
 
 /**
+ * TUI-DESIGN-5 §3.6 (D-AI) — `context.*` → `EngineOptions.contextPolicy`, the layer without which the six schema rows
+ * are dead code exactly like the hook round 4 left behind. `ResolvedConfig.context()` is this function, and
+ * `src/cli/session.ts` passes its result at both engine-construction sites.
+ *
+ * WHICH members are present, exactly: the rows with a `defaultValue` — `context.mode` (relaxed),
+ * `context.compaction` (code) and `context.compactEvery` (8) — ALWAYS resolve, so the returned object always carries
+ * them and JevCode's config layer is what pins those three. The other three (`historySteps`, `fileCacheBytes`,
+ * `budgetChars`) have no default here, so they are absent unless the user set one and `src/core/limits.ts`'s own
+ * defaults stay in force. That is why the result is a sparse `ContextPolicyOptions` and not a total record.
+ *
+ * NON-THROWING, deliberately (this is the one place the design's "mirror `config/ui.ts`'s `enumSetting`" would have
+ * been wrong): a malformed value is reported by `jevcode config` from the row's `shape` (§7.5) and skipped here, so a
+ * stray `JEVCODE_CONTEXT_COMPACT_EVERY=-1` cannot turn into a `createEngine` crash now that the result reaches a
+ * real call site. `ui()` may throw because nothing downstream of it has a working default; every member here does.
+ *
+ * `context.kept` IS mapped (round-5 item 19): `ContextPolicyOptions.kept` (`'code' | 'jev'`, src/core/types.ts) and
+ * `rankKept` landed with peer-hunks-r5, so the row reaches the engine like every other one and the parked warning
+ * that stood in for it is gone.
+ */
+export function resolveContextConfig(reader: SettingReader): ContextPolicyOptions {
+  const out: { -readonly [K in keyof ContextPolicyOptions]: ContextPolicyOptions[K] } = {};
+  const view = reader.get('context.mode')?.value.trim().toLowerCase();
+  if (view === 'relaxed' || view === 'legacy') out.view = view;
+  const compaction = reader.get('context.compaction')?.value.trim().toLowerCase();
+  if (compaction === 'code' || compaction === 'llm' || compaction === 'off') out.compaction = compaction;
+  const kept = reader.get('context.kept')?.value.trim().toLowerCase();
+  if (kept === 'code' || kept === 'jev') out.kept = kept;
+  const int = (name: SettingName, min: number): number | null => {
+    const raw = reader.get(name)?.value.trim();
+    if (raw === undefined || raw === '') return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= min ? n : null;
+  };
+  const every = int('context.compactEvery', 0);
+  if (every !== null) out.compactEvery = every;
+  const steps = int('context.historySteps', 1);
+  if (steps !== null) out.historySteps = steps;
+  const cache = int('context.fileCacheBytes', 0);
+  if (cache !== null) out.fileCacheBytes = cache;
+  const budget = int('context.budgetChars', 1);
+  if (budget !== null) out.budgetChars = budget;
+  return out;
+}
+
+/**
  * DESIGN §3 / TUI-DESIGN §16: resolve every setting with its source. Throws ConfigError only for what the first frame
  * needs (config file location and syntax, sandbox profile, the two eager booleans); every section validates lazily.
  */
 export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, cwd: string, opts: ResolveOptions = {}): Promise<ResolvedConfigWithDiagnostics> {
   const home = opts.homedir ?? osHomedir();
-  const packageRoot = opts.packageRoot ?? detectPackageRoot();
   const warnings: string[] = [];
   const consultedPaths: string[] = [];
   const layers: Layers = { flags, env, dotenvs: [], file: null, extraEnv: {} };
@@ -448,7 +486,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   if (localEnv) layers.dotenvs.push(localEnv);
 
   // 2. config file: flag > env > ./.env, then ./jevcode.json, the XDG file, the legacy file (TUI-DESIGN §16, P30: XDG
-  //    preferred, legacy checked with a one-time warning). It cannot come from the Open Assist .env or from itself.
+  //    preferred, legacy checked with a one-time warning). It cannot come from the extra .env file or from itself.
   let configFile: LoadedConfigFile | null = null;
   let configFileEntry: Resolved<string> | null = null;
   const cfgSpec = settingSpec('configFile');
@@ -484,22 +522,17 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     warnings.push(`configFile: ${configFile.path} sets launch settings that a file cannot change (${keys.join(', ')}); use the flag or the environment variable (ignored:launch)`);
   }
 
-  // 3. Open Assist path: flag > env > ./.env > file > sibling default; then its .env joins the chain.
-  const oaSpec = settingSpec('openAssistPath');
-  let oaEntry: Resolved<string> | null = null;
-  const oaR = lookup(layers, oaSpec);
-  if (oaR) oaEntry = { value: resolvePath(cwd, oaR.value), source: oaR.source };
-  else if (packageRoot) {
-    const sibling = join(dirname(packageRoot), 'open-assist');
-    if (isDirectory(sibling)) oaEntry = { value: sibling, source: 'default' };
-  }
-  if (oaEntry) {
-    const oaDotenv = join(oaEntry.value, '.env');
-    if (oaDotenv !== cwdDotenv) {
-      consultedPaths.push(oaDotenv);
-      const loaded = await readDotenv(oaDotenv);
-      if (loaded) layers.dotenvs.push(loaded);
-    }
+  // 3. The extra .env file (`--extra-env-file` / JEVCODE_EXTRA_ENV_FILE / `extraEnvFile`): flag > env > ./.env >
+  //    file. There is NO default — an unset row reads no second dotenv, so nothing outside the workspace is
+  //    consulted unless the user named it. The file's keys join the chain BELOW `./.env`, as a fallback.
+  const extraSpec = settingSpec('extraEnvFile');
+  let extraEntry: Resolved<string> | null = null;
+  const extraR = lookup(layers, extraSpec);
+  if (extraR) extraEntry = { value: resolvePath(cwd, extraR.value), source: extraR.source };
+  if (extraEntry && extraEntry.value !== cwdDotenv) {
+    consultedPaths.push(extraEntry.value);
+    const loaded = await readDotenv(extraEntry.value);
+    if (loaded) layers.dotenvs.push(loaded);
   }
 
   // 3b. TUI-DESIGN-2 §1.2: the `mode` setting, resolved once every layer is loaded and before the mode-keyed cap default below.
@@ -513,8 +546,14 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   const providerR = lookup(layers, settingSpec('generator.provider'));
   if (providerR) {
     entries.set('generator.provider', providerR);
-    const keyEnv = PROVIDER_KEY_ENV[providerR.value.trim().toLowerCase()];
-    if (keyEnv) layers.extraEnv['generator.apiKey'] = [keyEnv];
+    // TUI-DESIGN-5 §6.3 row 1 (R5-6's hunk, landed by R5-3 in the W4 config PR): the private two-entry
+    // `PROVIDER_KEY_ENV` this file used to declare was a LIVE BUG — `gemini`'s `GOOGLE_API_KEY` and `meta`'s
+    // `MODEL_API_KEY` fallbacks were unreachable, and the five 2026-09 providers had no key variable at all.
+    // `src/provider/ids.ts` is the single source of truth and has ZERO imports by contract, so reading it here
+    // keeps the argv / first-frame path free of the provider HTTP stack (gate G-R5-1). Behaviour-neutral for the
+    // two providers that were in the old table: their lists are one name long and the same name.
+    const providerId = providerR.value.trim().toLowerCase();
+    if (isProviderId(providerId)) layers.extraEnv['generator.apiKey'] = [...keyEnvNames(providerId)];
   }
   // 4b. TUI-DESIGN-2 §2.3: the Jev provider likewise — step 3 prepends its variable (TYPESAFE_API_KEY) to the decider key
   //     lookup when the provider was explicit, host- or TypeSafe-key-inferred; under `auto:openrouter-key` / `default` today's
@@ -532,7 +571,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   let logFileHit: Hit | null = null;
   let deciderKeyHit: Hit | null = null;
   for (const spec of SETTINGS) {
-    if (spec.name === 'generator.provider' || spec.name === 'decider.provider' || spec.name === 'mode' || spec.name === 'configFile' || spec.name === 'openAssistPath') continue;
+    if (spec.name === 'generator.provider' || spec.name === 'decider.provider' || spec.name === 'mode' || spec.name === 'configFile' || spec.name === 'extraEnvFile') continue;
     if (spec.launch) continue; // TUI-DESIGN §16: launch rows never read the file (added below from resolveLaunchSettings)
     const hit = lookupDetailed(layers, spec);
     if (!hit) continue;
@@ -559,7 +598,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   if (!capR || capR.source === 'default') entries.set('limits.spendCapUsd', { value: String(defaultRunSpendCapUsd(mode)), source: 'default' });
   for (const [name, r] of launchRows(flags, env)) entries.set(name, r);
   if (configFileEntry) entries.set('configFile', configFileEntry);
-  if (oaEntry) entries.set('openAssistPath', oaEntry);
+  if (extraEntry) entries.set('extraEnvFile', extraEntry);
 
   // Paths: workspace defaults to cwd; JEVCODE_HOME is the home whose runs/ is the runs dir.
   const wsR = entries.get('workspace');
@@ -588,7 +627,6 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   const plainR = entries.get('plain');
   const noNetwork = noNetworkR ? parseBooleanSetting(reader, 'noNetwork', noNetworkR) : false;
   const plain = plainR ? parseBooleanSetting(reader, 'plain', plainR) : false;
-
   // SecretSet (§8.4): resolved secret settings, then every secret-looking variable in every loaded .env and the config file.
   const secrets: SecretEntry[] = [];
   const secretNames = new Set<string>(SECRET_SETTINGS);
@@ -697,7 +735,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     },
     workspace: workspace.value,
     runsDir: runsDir.value,
-    openAssistPath: oaEntry ? oaEntry.value : null,
+    extraEnvFile: extraEntry ? extraEntry.value : null,
     configFile: configFileEntry ? configFileEntry.value : null,
     dotenvFiles,
     sandbox,
@@ -721,27 +759,12 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     //
     // A malformed value is reported by `jevcode config` (§7.5) and skipped here rather than thrown, because the
     // record must never throw.
+    //
+    // TUI-DESIGN-5 §3.6 (D-AI): the body moved to the exported `resolveContextConfig` below, so the resolver can be
+    // table-tested on its own and so `EngineOptions.contextPolicy` has ONE producer. The member stays — and stays
+    // always-set, which is what makes this interface's own doc comment true.
     context(): ContextPolicyOptions {
-      const out: { -readonly [K in keyof ContextPolicyOptions]: ContextPolicyOptions[K] } = {};
-      const view = entries.get('context.mode')?.value.trim().toLowerCase();
-      if (view === 'relaxed' || view === 'legacy') out.view = view;
-      const compaction = entries.get('context.compaction')?.value.trim().toLowerCase();
-      if (compaction === 'code' || compaction === 'llm' || compaction === 'off') out.compaction = compaction;
-      const int = (name: SettingName, min: number): number | null => {
-        const raw = entries.get(name)?.value.trim();
-        if (raw === undefined || raw === '') return null;
-        const n = Number(raw);
-        return Number.isInteger(n) && n >= min ? n : null;
-      };
-      const every = int('context.compactEvery', 0);
-      if (every !== null) out.compactEvery = every;
-      const steps = int('context.historySteps', 1);
-      if (steps !== null) out.historySteps = steps;
-      const cache = int('context.fileCacheBytes', 0);
-      if (cache !== null) out.fileCacheBytes = cache;
-      const budget = int('context.budgetChars', 1);
-      if (budget !== null) out.budgetChars = budget;
-      return out;
+      return resolveContextConfig(reader);
     },
     sourcesConsulted: (name) => reader.sources(name),
     // TUI-DESIGN §15 item 17 / §11.1 (D5): non-throwing; the generator key is skipped for jev-only and --mock*, the Jev key for --mock

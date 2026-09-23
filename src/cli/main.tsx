@@ -13,11 +13,11 @@
  * process-wide `restoreTerminal()` — it imports no Ink at runtime, only `node:fs` and a type).
  */
 import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname, userInfo } from 'node:os';
 import { basename, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NO_INPUT_NEEDS_TASK, parseCliArgs, usageText } from './args.js';
-import type { ParsedFlags } from './args.js';
+import type { Command, ParsedFlags } from './args.js';
 import { EXIT_CODES, UsageError } from '../errors.js';
 import type { Engine, Renderer, RendererOptions, SignalName } from '../core/types.js';
 import { patternRedact } from '../core/redact.js';
@@ -29,6 +29,17 @@ import { epilogueLines, type EpilogueContext } from './epilogue.js';
 import { wireFatalHandlers, type FatalWiring } from './fatal.js';
 import { INK_VERSION, REACT_VERSION } from './report.js';
 import { restoreTerminal } from '../tui/terminal.js';
+// TUI-DESIGN-5 §5.5 (R2): ONE `gitRootOf` for both import sinks — `/import` (src/tui/App.tsx) binds this module
+// too, so the session and the CLI can never plan different project scopes. Pure, `existsSync` only, no spawn, so
+// it stays legal on the argv path (gate G-R5-1).
+import { gitRootOf } from '../tui/import/git-root.js';
+/**
+ * TUI-DESIGN-5 §2.1 rule 6 / gate G-R5-1: `src/session/coordination.ts` has **zero value imports** of its own
+ * (`test/unit/cli/sessions.test.ts` pins that), so naming it here is a static edge to a leaf of pure strings and
+ * predicates — it reaches nothing under `src/coordination/**`, which stays behind the one `await import()` in
+ * `openCoordination()`.
+ */
+import { settingReader } from '../session/coordination.js';
 import { createSessionController, isInCi, isInteractive, jevcodeDir, sessionsIndexPath, type Prompter, type PromptingRenderer, type RendererKind, type SessionController } from './session.js';
 import type { JsonStream } from './json-stream.js';
 import type { ReadlineComposer } from '../tui/plain-composer.js';
@@ -71,7 +82,7 @@ export interface RendererSelection {
  * says "fullscreen is set for the next launch" — promised something the relaunch did not deliver.
  *
  * §1's "the first frame comes from argv, env, isTTY and cwd only" forbids `resolveConfig` here (network-free but
- * async, dotenv chains, Open Assist). This is **one guarded synchronous read of one key** from the same candidate
+ * async, dotenv chains, the extra .env file). This is **one guarded synchronous read of one key** from the same candidate
  * files `resolveConfig` consults, in the same order, and it is skipped entirely when a flag or the environment
  * already named the renderer. Any error — missing file, bad JSON, wrong type, unreadable directory — is
  * `undefined`, i.e. classic: a broken config file must never stop the session from starting.
@@ -450,7 +461,7 @@ async function commandPerf(flags: ParsedFlags): Promise<number> {
 }
 
 /** the resolved-config facts the maintenance commands need (runs dir, redactor, workspace); a broken config is exit 2 */
-async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: (s: string) => string; workspace: string; record: () => unknown; sandbox: string; secrets: () => Promise<ReadonlyMap<string, import('../core/types.js').Resolved<string>>> }> {
+async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: (s: string) => string; workspace: string; record: () => unknown; sandbox: string; setting: (name: string) => string | undefined; secrets: () => Promise<ReadonlyMap<string, import('../core/types.js').Resolved<string>>> }> {
   const { resolveConfig } = await import('../config/resolve.js');
   const config = await resolveConfig(flags, process.env, process.cwd());
   let workspace = config.workspace;
@@ -465,8 +476,16 @@ async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: 
     workspace,
     record: () => config.record(),
     sandbox: config.sandbox,
+    /**
+     * TUI-DESIGN-5 §2.10 / §12.1: one non-secret setting through the whole config chain. `openCoordination` reads
+     * `coordination.claims` (and `coordination.enabled`, the row a later build may add) through it to answer the
+     * "off in this configuration" refusal by name. `settingReader` is that one reader (fix pass, finding 18): it
+     * was exported and documented as this call site's, and both this file and `src/cli/session.ts` inlined the
+     * lookup instead, so the `undefined`-is-on rule lived in three places and was pinned in none.
+     */
+    setting: settingReader(config.entries),
     // the two secrets, plus `decider.provider` (TUI-DESIGN-2 §2.3): `jevcode login` infers the Jev provider from the session's own
-    // resolution (flag > JEV_PROVIDER > ./.env > <OPEN_ASSIST_PATH>/.env > file > auto rules) so login and the session never disagree
+    // resolution (flag > JEV_PROVIDER > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file > auto rules) so login and the session never disagree
     secrets: async () => {
       const m = new Map<string, import('../core/types.js').Resolved<string>>();
       for (const name of ['generator.apiKey', 'decider.apiKey', 'decider.provider'] as const) {
@@ -512,6 +531,39 @@ async function loginIo(flags: ParsedFlags): Promise<import('./login.js').Command
   };
 }
 
+/**
+ * TUI-DESIGN-5 / round-5 item 8: `JEVCODE_JEV` is a BENCH AND PERF fault switch, not a product setting. Its one
+ * production reader is the bench runner's Jev-off wrapper (`src/jev/off.ts`), wired at `src/bench/runner.ts` only, so setting it in a
+ * shell and then running a product command changed nothing while reading as if it had — a keyed `jevcode run`
+ * would make real Jev calls and spend real money under a variable the user believed had disabled them.
+ *
+ * The CLI therefore REFUSES to start, before any command runs and before any network, for every product command.
+ * `bench` and `perf` are exempt: `npm run bench` / `npm run perf` set the variable themselves, which is the whole
+ * supported way to use it.
+ *
+ * The value is echoed so the user can see WHICH stale export they are carrying, redacted to its first 16 code
+ * points (`[...value]`, not `slice`, so an astral character is never cut in half). `--plain` and `--json` print
+ * the identical two lines on stderr: a fatal that only the TUI renderer could show would be invisible in exactly
+ * the pipes this switch gets set in.
+ */
+export const JEVCODE_JEV_ENV = 'JEVCODE_JEV';
+export const JEVCODE_JEV_FIX = 'unset JEVCODE_JEV';
+export function jevcodeJevRefusal(value: string): string {
+  const shown = [...value].slice(0, 16).join('');
+  return `JEVCODE_JEV is set ("${shown}") — it is a bench/perf fault switch, not a product setting; unset it, or run the bench and perf suites through npm run bench / npm run perf, which set it themselves`;
+}
+/** the two `[setup]` rows, in order, for the refusal block (one producer for the CLI and its tests). */
+export function jevcodeJevRefusalRows(value: string): string[] {
+  return [`[setup] ${jevcodeJevRefusal(value)}`, JEVCODE_JEV_FIX];
+}
+/** `null` when the command may run; the rows to print (exit 2) when it may not. */
+export function jevcodeJevRefusalFor(command: Command, env: NodeJS.ProcessEnv): string[] | null {
+  if (command === 'bench' || command === 'perf') return null;
+  const value = env[JEVCODE_JEV_ENV];
+  if (value === undefined) return null;
+  return jevcodeJevRefusalRows(value);
+}
+
 export async function main(argv: string[]): Promise<number> {
   let flags: ParsedFlags;
   try {
@@ -528,6 +580,12 @@ export async function main(argv: string[]): Promise<number> {
   if (flags.version) {
     process.stdout.write(flags.json ? `${JSON.stringify(versionJson())}\n` : `jevcode ${VERSION}\n`);
     return 0;
+  }
+  // round-5 item 8: before any command runs and before any network (see `jevcodeJevRefusalFor`)
+  const jevRefusal = jevcodeJevRefusalFor(flags.command, process.env);
+  if (jevRefusal !== null) {
+    process.stderr.write(`${jevRefusal.join('\n')}\n`);
+    return EXIT_CODES.config;
   }
   switch (flags.command) {
     case 'chat':
@@ -554,9 +612,125 @@ export async function main(argv: string[]): Promise<number> {
       return commandLogout({ ...(flags.generator ? { generator: true } : {}), ...(flags.jev ? { jev: true } : {}), ...(flags.config !== undefined ? { config: flags.config } : {}) }, await loginIo(flags));
     }
     case 'sessions': {
-      const { commandSessions } = await import('./sessions.js');
+      const { commandSessions, openCoordination, sessionsVerbNeedsCoordination, sessionsVerbOf } = await import('./sessions.js');
       const p = await pathsFor(flags);
-      return commandSessions(flags, { stdout: process.stdout, stderr: process.stderr, runsDir: p.runsDir, indexPath: sessionsIndexPath(jevcodeDir(process.env, homedir(), process.cwd())), workspace: p.workspace, redact: p.redact, ascii: resolveLaunchSettings(flags, process.env).ascii });
+      const launch = resolveLaunchSettings(flags, process.env);
+      const home = jevcodeDir(process.env, homedir(), process.cwd());
+      /**
+       * TUI-DESIGN-5 §2.10, gap 1 (`docs/STATUS.md` "Not driven by a store in this build" item 1): the thirteen
+       * coordination verbs get a **real** `SessionsCoordination` over the ledger under `JEVCODE_HOME`.
+       *
+       * Three properties of this call site, each load-bearing:
+       *
+       *  - `openCoordination` is reached through the SAME `await import('./sessions.js')` as `commandSessions`, and
+       *    it loads `src/coordination/**` through one `await import()` of its own, so `main.tsx`'s static import
+       *    list gains nothing and gate G-R5-1 holds (asserted by `test/unit/cli/sessions.test.ts`).
+       *  - the four index verbs (`list`, `reindex`, `prune`, `unlock`) never open a ledger: they do not need one,
+       *    and opening one would write this device's record for a verb that only reads `sessions/index.jsonl`.
+       *  - a refusal is a **value**, never a throw: `off` carries the §12.1 sentence with the clause that names
+       *    the cause, and `needCoord` prints it.
+       */
+      /**
+       * Fix pass, finding 17: the gate and `commandSessions`' dispatch compute the verb with the SAME helper.
+       * They used to disagree by an `?? io.verb` term — harmless today because nothing here sets `io.verb`, but
+       * the seam is documented as the way the thirteen verbs are reached, and the first caller to use it would
+       * have got a coordination verb with no ledger AND no reason string.
+       */
+      const verb = sessionsVerbOf(flags);
+      const opened = sessionsVerbNeedsCoordination(verb) ? await openCoordination({ home, workspace: p.workspace, hostname: hostname(), username: userInfo().username, jevcode: VERSION, pid: process.pid, redact: p.redact, read: p.setting }) : null;
+      return commandSessions(flags, {
+        stdout: process.stdout,
+        stderr: process.stderr,
+        runsDir: p.runsDir,
+        indexPath: sessionsIndexPath(home),
+        workspace: p.workspace,
+        redact: p.redact,
+        ascii: launch.ascii,
+        // §12.1's SR column: `sessions who` renders `whoSentence` per row in the screen-reader set
+        screenReader: launch.screenReader,
+        ...(opened?.kind === 'open' ? { coordination: opened.coordination } : {}),
+        // §13.3 (fix pass, finding 14): the sentence AND its machine-readable reason, so `--json` can carry it
+        ...(opened?.kind === 'off' ? { coordinationOff: opened.message, coordinationOffReason: opened.reason } : {}),
+        // TUI-DESIGN-5 §2.10: the words after the verb (a target, a message, `now`, `status|disable`)
+        ...(flags.sessionsArgs !== undefined ? { args: flags.sessionsArgs } : {}),
+      });
+    }
+    /**
+     * TUI-DESIGN-5 §6.6 / §9.2 `cli/main.tsx`: one `await import()` of `src/cli/models.ts`, which is the only way
+     * `src/models/**` is ever reached — the static import list at the top of this file gains **nothing** (§2.1
+     * rule 3a, gate G-R5-1). `case 'import':` (R5-5) and `case 'agents':` (R5-4) join it in the same shape.
+     */
+    case 'models': {
+      const { commandModels } = await import('./models.js');
+      return commandModels(flags, { stdout: process.stdout, stderr: process.stderr, env: process.env, ascii: resolveLaunchSettings(flags, process.env).ascii });
+    }
+    /**
+     * TUI-DESIGN-5 §5.5 (R5-5) and §4.2 (R5-4): the two remaining `switch` arms of §9.2's `cli/main.tsx` row,
+     * each an `await import()` of its own `src/cli/<verb>.ts` — the static import list at the top of this file
+     * gains nothing, which is what keeps `src/import/**` and `src/orchestrate/**` off the argv path (G-R5-1).
+     */
+    case 'import': {
+      const { commandImport } = await import('./import.js');
+      const p = await pathsFor(flags);
+      const launch = resolveLaunchSettings(flags, process.env);
+      return commandImport(
+        {
+          ...(flags.dryRun === true ? { dryRun: true } : {}),
+          ...(flags.yes === true ? { yes: true } : {}),
+          ...(flags.scope !== undefined ? { scope: flags.scope } : {}),
+          ...(flags.source !== undefined ? { source: flags.source } : {}),
+          ...(flags.resume !== undefined ? { resume: flags.resume } : {}),
+          ...(flags.undo !== undefined ? { undo: flags.undo } : {}),
+          ...(flags.json === true ? { json: true } : {}),
+          ...(flags.plain === true ? { plain: true } : {}),
+          ...(launch.screenReader ? { screenReader: true } : {}),
+          ...(launch.ascii ? { ascii: true } : {}),
+          ...(flags.noInput === true ? { noInput: true } : {}),
+        },
+        {
+          stdout: process.stdout,
+          stderr: process.stderr,
+          isTTY: process.stdout.isTTY === true,
+          ...(typeof process.stdout.columns === 'number' ? { columns: process.stdout.columns } : {}),
+          ascii: launch.ascii,
+          screenReader: launch.screenReader,
+          jevcodeDir: jevcodeDir(process.env, homedir(), process.cwd()),
+          workspaceKey: p.workspace,
+          /**
+           * TUI-DESIGN-5 §5.5: what `planImport` needs beyond the flags, and the CALLER owns every one — the
+           * engine reads no ambient state. `trust: 'none'` is the CLI's honest default (a run's trust decision
+           * is the session's, not this verb's), `decider: null` disables the Jev grouping pass so
+           * `jevcode import` is **free and offline**, and the code fallbacks still produce a complete plan
+           * (§4.9). Without this the engine dereferences `opts.env.workspace` and the verb dies on its first
+           * line, which is how the integration pass found it.
+           */
+          planOptions: {
+            env: { home: homedir(), env: process.env, platform: process.platform, workspace: p.workspace, gitRoot: gitRootOf(p.workspace), extraRoots: [] },
+            jevcodeVersion: VERSION,
+            trust: 'none',
+            decider: null,
+            // TUI-DESIGN-5 §5.4 item 1 (R1): the CONFIGURED-secret layer. `planImport`'s default redactor is
+            // `redactSecrets(s, undefined)` — the 15 pattern families only — so a `config.addSecret` value that
+            // matches no family survives into `PlanRow.why`, the warnings and the report. `pathsFor` already
+            // returns the session's redactor; the TUI twin passes exactly the same thing.
+            redact: p.redact,
+          },
+        },
+      );
+    }
+    case 'agents': {
+      const { runAgents } = await import('./agents.js');
+      const p = await pathsFor(flags);
+      return runAgents(flags.sessionsArgs ?? [], {
+        stdout: process.stdout,
+        stderr: process.stderr,
+        runsDir: p.runsDir,
+        ascii: resolveLaunchSettings(flags, process.env).ascii,
+      }, { ...(flags.json === true ? { json: true } : {}) });
+    }
+    case 'doctor': {
+      const { commandDoctor, defaultDoctorIo } = await import('./doctor.js');
+      return commandDoctor(flags, await defaultDoctorIo(flags));
     }
     case 'report': {
       const { commandReport, newestSessionLog } = await import('./report.js');

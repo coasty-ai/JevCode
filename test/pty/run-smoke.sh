@@ -1,8 +1,8 @@
 #!/bin/sh
 # TUI-DESIGN §19.5 / TUI-DESIGN-2 §8.2 real-pty smoke over the built bundle (bin/jevcode.js): every scenario runs
 # scripts/pty/drive.exp with a fresh JEVCODE_HOME and workspace (the child's cwd is the workspace, so the repository's
-# ./.env is never read, the extra-`.env` setting points at a directory that does not exist — its default is a sibling
-# directory of the package root, whose .env would otherwise supply keys — and every key variable is unset; a scenario that
+# ./.env is never read, JEVCODE_EXTRA_ENV_FILE points at a path that does not exist so no second dotenv can supply
+# keys even if the variable is already set in the developer's shell — and every key variable is unset; a scenario that
 # needs a key sets a fake one), then reports the
 # exit code, the clear count after the first dynamic frame (§18 CLEAR_RE, with one Ink clearTerminal `ESC[2J ESC[3J
 # ESC[H` counted once: must be 0 in every scenario without a shrink in rows; research 20 item 1 allows one per shrink —
@@ -25,7 +25,7 @@
 # Hermetic child environment (§8.2; docs/STATUS.md "Round 2" finding 2): HOME, XDG_CONFIG_HOME and JEVCODE_HOME inside
 # the scenario's temp home — `resolveConfig` falls back to the legacy $HOME/.config/jevcode/config.json when the XDG
 # file is absent (src/config/resolve.ts), so a developer's saved login must never be a candidate — JEVCODE_CONFIG and
-# every key variable unset, the extra-`.env` setting at a directory that does not exist. `run-smoke.sh --hermetic` proves it:
+# every key variable unset, JEVCODE_EXTRA_ENV_FILE at a path that does not exist. `run-smoke.sh --hermetic` proves it:
 # a fake HOME holding a legacy credentials file, the same env construction, `jevcode config` must show no `file:` source
 # (and the control without the isolation must).
 # Usage: test/pty/run-smoke.sh [scenario...]   (default: all). Output dir: .scratch/pty-smoke/.
@@ -54,7 +54,7 @@ BADGE_RE=$(printf '%s' "$BADGE" | sed 's/[+.]/\\&/g')
 # the variables every child loses (see the header); `env -u` takes them one by one
 UNSET="-u CI -u CONTINUOUS_INTEGRATION -u JEV_API_KEY -u TYPESAFE_API_KEY -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY -u JEVCODE_API_KEY -u JEVCODE_MODE -u JEV_PROVIDER -u JEVCODE_CONFIG -u JEVCODE_MOCK_INTAKE -u JEVCODE_MOCK_REVIEW_AT -u JEVCODE_MOCK_JEV_MS -u JEVCODE_ASSERT_NO_NETWORK -u JEVCODE_TRACE -u JEVCODE_FAULT -u JEVCODE_SUBMIT_WATCHDOG_MS -u JEVCODE_ASSERT_HEIGHT"
 # the isolated home of one child: `hermetic_env <home>` prints the VAR=value words every scenario gets
-hermetic_env() { echo "HOME=$1 XDG_CONFIG_HOME=$1/xdg JEVCODE_HOME=$1 OPEN_ASSIST_PATH=$1/no-extra-env"; }
+hermetic_env() { echo "HOME=$1 XDG_CONFIG_HOME=$1/xdg JEVCODE_HOME=$1 JEVCODE_EXTRA_ENV_FILE=$1/no-extra-env"; }
 # TUI-DESIGN-4 §7.1 / §11: the frame count of a capture (every Ink frame of the App opens with ESC[?2026h).
 # A latched pane must not raise it: an unlatched persistent throw was one UNTHROTTLED frame per iteration.
 frames_in() {
@@ -333,7 +333,7 @@ hermetic_check() {
   out=$(cd "$ws" && HOME="$fake_home" env $UNSET $(hermetic_env "$home") node "$BIN" config --workspace "$ws" 2>&1); code=$?
   # the control: the same fake HOME without the smoke's isolation reads the legacy file (so this check is live, not vacuous)
   # shellcheck disable=SC2086
-  ctrl=$(cd "$ws" && HOME="$fake_home" env $UNSET -u XDG_CONFIG_HOME JEVCODE_HOME="$home" OPEN_ASSIST_PATH="$home/no-extra-env" node "$BIN" config --workspace "$ws" 2>&1)
+  ctrl=$(cd "$ws" && HOME="$fake_home" env $UNSET -u XDG_CONFIG_HOME JEVCODE_HOME="$home" JEVCODE_EXTRA_ENV_FILE="$home/no-extra-env" node "$BIN" config --workspace "$ws" 2>&1)
   ok=1; checks=""
   # TUI-DESIGN-4 §3.3: `config-table.ts` renders the source as a `(file)` note row now, not a `file:<path>` column
   echo "$out" | grep -qE '\(file\)|file:' && { ok=0; checks="$checks LEAK:file-source"; } || checks="$checks no-file-source"
@@ -378,6 +378,11 @@ run() {
     fault-persistent-flat) steps_name=fault-persistent;;
     fault-wordmark-flat) steps_name=fault-wordmark;;
     fault-status-flat) steps_name=fault-status;;
+    # TUI-DESIGN-5 §10: the two `--ascii` twins share their sibling's .steps file — the glyph set is chosen at
+    # LAUNCH, so the twin cannot be a resize and has to be a second scenario (§12's twin rule).
+    r5-who-ascii) steps_name=r5-who;;
+    r5-model-picker-ascii) steps_name=r5-model-picker;;
+    r5-import-overlay-ascii) steps_name=r5-import-overlay;;
   esac
   home=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-home-XXXXXX"); ws=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-ws-XXXXXX")
   extra_env=$(hermetic_env "$home")
@@ -415,6 +420,22 @@ run() {
     rundir-vanishes) extra_env="$extra_env JEVCODE_FAULT=rundir:rm:after=3";;
     stuck-submit) extra_env="$extra_env JEVCODE_FAULT=submit:hang JEVCODE_SUBMIT_WATCHDOG_MS=1500";;
     peers) extra_env="$extra_env JEVCODE_FAULT=peer:2";;
+    # --- TUI-DESIGN-5 §10: the five round-5 scenarios (verbatim from each .steps header) -------------------------
+    # fix pass, finding 19: `JEVCODE_FAULT=peer:5` is parsed and validated by src/tui/faults.ts and read by
+    # NOTHING (`grep -rn "kind === 'peer'" src/` is empty), so it was a dead pointer that made a reader believe
+    # the rows in this capture came from an injected fault. The rows are real: step 0 runs a `--mock` task, which
+    # opens the ledger and starts the heartbeat writer, and step 1 renders this session's own row off the fold.
+    r5-who|r5-who-ascii) extra_env="$extra_env JEVCODE_ASSERT_NO_NETWORK=1";;
+    r5-message) extra_env="$extra_env JEVCODE_FAULT=peer:3";;
+    r5-context) extra_env="$extra_env JEVCODE_CONTEXT_COMPACTION=code";;
+    r5-model-picker|r5-model-picker-ascii) extra_env="$extra_env OPENROUTER_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1";;
+    # §5.2: the hermetic $HOME has nothing to import, so the overlay would be §12.4 S92's one row. One memory file
+    # is seeded so the five-group view is the thing under test; the key is exported so gate G-R5-9 has a target.
+    r5-import-overlay|r5-import-overlay-ascii)
+      extra_env="$extra_env OPENROUTER_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1"
+      mkdir -p "$home/.claude"
+      printf '# notes\n\nAlways run the tests before proposing a patch.\n' > "$home/.claude/CLAUDE.md"
+      ;;
     # §7.4: a read-only $HOME is the measured launch failure — chmod AFTER the hermetic dirs exist
     readonly-home) mkdir -p "$home/xdg"; chmod 500 "$home";;
   esac
@@ -440,10 +461,18 @@ run() {
   fi
   [ "$code" = "$expected" ] || ok=0
   [ "$t" = "0" ] || ok=0
-  # §14.2: the exit string exactly once per exit in every scenario (the process-wide restoreTerminal is shared by unmount, fatalExit, the engine's exit hook, finishSession and process 'exit')
-  [ "$r" = "1" ] || ok=0
+  # §14.2: the exit string exactly once per exit in every scenario (the process-wide restoreTerminal is shared by
+  # unmount, fatalExit, the engine's exit hook, finishSession and process 'exit'). A scenario that never enters
+  # the alternate screen has nothing to restore and must NOT emit it: `doctor` prints rows and exits, it takes no
+  # raw mode, no bracketed paste and no cursor hiding, so writing RESTORE would be a stray escape in a pipe.
   case "$name" in
-    resize|chrome-tiers|r3-wizard-resize) [ "$c" -le 1 ] || ok=0; checks="$checks clears<=1(one shrink segment)";;
+    doctor) [ "$r" = "0" ] || { ok=0; checks="$checks UNEXPECTED-RESTORE=$r"; };;
+    *) [ "$r" = "1" ] || ok=0;;
+  esac
+  case "$name" in
+    # TUI-DESIGN-5 §5.8 / §7 row 85: `r5-import-overlay` drives 24x80 -> 12x60 -> 40x120 with the overlay up, so
+    # it has exactly ONE shrink segment and research 20 item 1's one-clear-per-shrink allowance applies to it.
+    resize|chrome-tiers|r3-wizard-resize|r5-import-overlay|r5-import-overlay-ascii) [ "$c" -le 1 ] || ok=0; checks="$checks clears<=1(one shrink segment)";;
     resize-live) [ "$c" -le 2 ] || ok=0; checks="$checks clears<=2(two shrink segments)"
       grep -qE 'finished (·|-) human_abort' "$txt" && checks="$checks run:human_abort" || { ok=0; checks="$checks MISSING:human_abort"; };;
     plainwarn|taskfile-missing|firstframe) ;;
@@ -619,6 +648,43 @@ run() {
     peers) grep -q 'another jevcode is working in this workspace' "$txt" && checks="$checks peers:open-item" || { ok=0; checks="$checks MISSING:peers-item"; }
       grep -qE 'pid [0-9]+' "$txt" && { ok=0; checks="$checks PID-LEAK"; } || checks="$checks no-pid";;
     ui-reset) grep -q 'nothing was latched' "$txt" && checks="$checks ui-reset:empty-state" || { ok=0; checks="$checks MISSING:ui-reset"; };;
+    # --- TUI-DESIGN-5 §10 / gate G-R5-9: each scenario's own check, then the key-byte scan every one of them runs
+    r5-who|r5-who-ascii) grep -q 'who [·-] ' "$txt" && checks="$checks r5-who:block" || { ok=0; checks="$checks MISSING:r5-who-block"; }
+      # §2.14 consequence 3: `assertNoKeyBytes` over the BEAT FILE this session wrote, not only over the frames
+      if [ -d "$home/coordination" ]; then
+        grep -rqI "$FAKE_KEY" "$home/coordination" && { ok=0; checks="$checks LEAK:beat-key-bytes"; } || checks="$checks beat-no-key-bytes"
+        grep -rqIE '"hostKey"[^,}]*[0-9a-f]{32}' "$home/coordination" && { ok=0; checks="$checks LEAK:beat-hostkey"; } || checks="$checks beat-no-long-hostkey"
+      else checks="$checks beat-absent"; fi;;
+    r5-message) grep -q 'looks like it contains a key' "$txt" && checks="$checks r5-message:s34a" || { ok=0; checks="$checks MISSING:r5-message-s34a"; };;
+    # round-5 finishing wave: the scenario runs under the SHIPPED DEFAULT (no --mode), and R13 put `llm-jev`
+    # inside `contextEnabled`, so BOTH the block and the §3.1 `ctx` status cell must appear for an ordinary user
+    r5-context) grep -q 'context [·-] ' "$txt" && checks="$checks r5-context:block" || { ok=0; checks="$checks MISSING:r5-context-block"; }
+      grep -qE 'ctx [0-9]+%' "$txt" && checks="$checks r5-context:ctx-cell" || { ok=0; checks="$checks MISSING:r5-context-ctx-cell"; }
+      grep -q 'ctx —%' "$txt" && { ok=0; checks="$checks r5-context:PLACEHOLDER"; } || checks="$checks r5-context:no-placeholder";;
+    # round-5 finishing wave: `jevcode doctor` with NO key — every provider row is a warn that NAMES the
+    # variable to export, and the board's own key-byte scan below is the point of the row
+    doctor) grep -q 'export OPENROUTER_API_KEY' "$txt" && checks="$checks doctor:names-var" || { ok=0; checks="$checks MISSING:doctor-names-var"; }
+      grep -qE '^(pass|warn|fail)  node' "$txt" && checks="$checks doctor:node-row" || { ok=0; checks="$checks MISSING:doctor-node-row"; }
+      grep -q 'checks:' "$txt" && checks="$checks doctor:summary" || { ok=0; checks="$checks MISSING:doctor-summary"; };;
+    r5-pause-end) grep -q 'needs a live run' "$txt" && checks="$checks r5-pause-end:s45a" || { ok=0; checks="$checks MISSING:r5-pause-end-s45a"; };;
+    r5-model-picker) grep -qE 'models [·-] [0-9]+ of [0-9]+ providers' "$txt" && checks="$checks r5-model-picker:rule" || { ok=0; checks="$checks MISSING:r5-model-picker-rule"; };;
+    r5-model-picker-ascii) grep -qE '[·→▌↑↓─]' "$txt" && { ok=0; checks="$checks ASCII-GLYPH-LEAK"; } || checks="$checks r5-model-picker:ascii";;
+    # §5.2 / §5.8: a POSITIVE probe. `$home/.claude/CLAUDE.md` is seeded above precisely so the overlay has rows,
+    # so `nothing to import` is no longer an acceptable outcome here — accepting it made the resize matrix and the
+    # `clears<=1` gate pass vacuously on a run where the overlay never mounted. The keys row is the anchor
+    # (`importRendered`'s `protectTail: 1` keeps it at every width) and a group row proves the body is there.
+    r5-import-overlay)
+      grep -qE '\[y\] import all [0-9]+|y all [0-9]+' "$txt" && checks="$checks r5-import-overlay:keys" || { ok=0; checks="$checks MISSING:r5-import-keys"; }
+      grep -qE '(memory|rules|commands|mcp|config|review) +[0-9]+' "$txt" && checks="$checks r5-import-overlay:rows" || { ok=0; checks="$checks MISSING:r5-import-rows"; }
+      grep -qE 'Import [-·—]' "$txt" && checks="$checks r5-import-overlay:head" || { ok=0; checks="$checks MISSING:r5-import-head"; };;
+    r5-import-overlay-ascii)
+      grep -qE '[·→▌↑↓─]' "$txt" && { ok=0; checks="$checks ASCII-GLYPH-LEAK"; } || checks="$checks r5-import-overlay:ascii"
+      grep -qE '\[y\] import all [0-9]+|y all [0-9]+' "$txt" && checks="$checks r5-import-overlay-ascii:keys" || { ok=0; checks="$checks MISSING:r5-import-ascii-keys"; };;
+  esac
+  # TUI-DESIGN-5 gate G-R5-9: EVERY round-5 scenario scans its capture for key bytes — the frames as well as the
+  # files. `$FAKE_KEY` is only exported for two of them; the scan is unconditional so a leak from any source fails.
+  case "$name" in
+    r5-*) grep -qI "$FAKE_KEY" "$cap" && { ok=0; checks="$checks LEAK:key-bytes"; } || checks="$checks no-key-bytes";;
   esac
   [ "$ok" = "1" ] && verdict=PASS || { verdict=FAIL; fail=1; }
   echo "$name: $verdict exit=$code (expected $expected) clears_after_first_frame=$c restores=$r timeouts=$t$checks"
@@ -719,6 +785,20 @@ sel_named stuck-submit && run stuck-submit 130 24 80 chat --mock
 sel_named readonly-home && run readonly-home 2 24 80 chat --mock
 sel_named peers && run peers 0 24 80 chat --mock
 sel_named ui-reset && run ui-reset 0 24 80 chat --mock
+# --- TUI-DESIGN-5 §10: round 5's five surfaces, one scenario each plus the two `--ascii` twins. BY NAME only ----
+# Several of them assert rows that need a store this build does not have (the mailbox write, `AgentSupervisor`,
+# the models arm of `Picker.tsx`) — each .steps header says exactly which, so the default board stays green and
+# the scenario is in hand the day the dependency lands: `sh test/pty/run-smoke.sh r5-who r5-context …`
+sel_named r5-who && run r5-who 0 24 80 chat --mock
+sel_named r5-who-ascii && run r5-who-ascii 0 24 80 chat --mock --ascii
+sel_named r5-message && run r5-message 0 24 80 chat --mock --mode jev-on
+sel_named r5-context && run r5-context 0 40 120 chat --mock
+sel_named r5-pause-end && run r5-pause-end 0 24 80 chat --mock --mode jev-on
+sel_named r5-model-picker && run r5-model-picker 0 40 120 chat --mock
+sel_named r5-model-picker-ascii && run r5-model-picker-ascii 0 40 120 chat --mock --ascii
+sel_named r5-import-overlay && run r5-import-overlay 0 24 80 chat --mock
+sel_named r5-import-overlay-ascii && run r5-import-overlay-ascii 0 24 80 chat --mock --ascii
+sel_named doctor && run doctor 0 24 80 doctor
 sel review-y && run review-y 0 24 80 chat $MOCK_RUN --mock-steps 5
 sel review-d && run review-d 0 24 80 chat $MOCK_RUN --mock-steps 5
 sel resize && run resize 0 24 80 chat --mock

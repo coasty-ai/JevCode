@@ -86,8 +86,6 @@ export { buildIndex, appendItems, rebuildFor, emptyIndex, rowsFor, cutsFor, reso
 export type { Scroll, ScrollKey, ViewportIndex, ViewportRow } from './fullscreen/viewport.js';
 export { Viewport, VIEWPORT_PANE } from './fullscreen/ViewportBox.js';
 export type { ViewportProps } from './fullscreen/ViewportBox.js';
-export { FullApp } from './fullscreen/FullApp.js';
-export type { FullAppProps } from './fullscreen/FullApp.js';
 export { selectRenderer } from './fullscreen/select.js';
 export type { RendererSelection, RendererSelectionInput } from './fullscreen/select.js';
 export { fullLayoutAsLayout } from './App.js';

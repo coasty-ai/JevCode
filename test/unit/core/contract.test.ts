@@ -15,6 +15,7 @@ import type {
   AgentState,
   AskResult,
   BlockingAnswer,
+  BlockingKind,
   ChatLabel,
   CheckpointState,
   CheckpointStore,
@@ -29,6 +30,7 @@ import type {
   EngineSeed,
   EngineStatus,
   GateReason,
+  GeneratorConfig,
   HarnessProblemKind,
   HistoryStore,
   ImportAction,
@@ -57,14 +59,18 @@ import type {
   PausePointReason,
   PlanRow,
   ProjectCommand,
+  ProviderName,
   RejectedOption,
   Renderer,
   ResolvedConfig,
   RiskDimension,
   RiskDimensionResult,
   RunMeta,
+  SelfIdentityView,
+  SessionActivityView,
   SessionHost,
   SessionRef,
+  SessionRow,
   SpendMeter,
   SpendSnapshot,
   SplitKind,
@@ -86,7 +92,10 @@ import { AbortError } from '../../../src/errors.js';
 import { createMockDecider } from '../../../src/jev/mock.js';
 import { JEV_PROVIDERS } from '../../../src/jev/providers.js';
 import { HEADLINE_ROWS_MAX } from '../../../src/core/limits.js';
+// gate G-R5-8 (§11): the settings-collision lint reads the one table every layer resolves through
+import { SETTINGS } from '../../../src/config/defaults.js';
 import { DEFAULT_SPLIT_POLICY } from '../../../src/orchestrate/index.js';
+import { PROVIDER_IDS, isProviderId } from '../../../src/provider/ids.js';
 
 const ROOT = join(import.meta.dirname, '../../..');
 
@@ -103,10 +112,11 @@ describe('contract 1.2 (TUI-DESIGN-2 §6 items 1–13)', () => {
   });
 
   it('items 1–2: chat labels and the five intake kinds (compile-time; the arrays are the runtime twins)', () => {
-    const labels: UiLabel[] = ['[ui]', '[setup]', '[config]', '[sandbox]', '[you]', '[jevcode]'];
+    // contract 1.8 item 2 (TUI-DESIGN-5 §8.1): '[session]' is the seventh label — every applied remote verb writes it
+    const labels: UiLabel[] = ['[ui]', '[setup]', '[config]', '[sandbox]', '[you]', '[jevcode]', '[session]'];
     const chat: ChatLabel[] = ['[you]', '[jevcode]'];
     const kinds: IntakeKind[] = ['greeting_or_smalltalk', 'question_about_this_tool', 'question_about_the_code', 'coding_task', 'ambiguous'];
-    expect(labels).toHaveLength(6);
+    expect(labels).toHaveLength(7);
     expect(chat.every((c) => labels.includes(c))).toBe(true);
     expect(kinds).toHaveLength(5);
   });
@@ -857,5 +867,157 @@ describe('contract 1.6 (IMPORT-DESIGN §7.1 row 1)', () => {
     const withMemory: Pick<ContextUsage, 'memory'> = { memory: usage };
     expect(withMemory.memory?.rulesShown).toBe(3);
     expect(({} as Pick<ContextUsage, 'memory'>).memory).toBeUndefined();
+  });
+});
+
+describe('contract 1.8 (TUI-DESIGN-5 §8.1 items 1–6, W0)', () => {
+  /**
+   * §9.3 W5's shared row, and the gate the five per-round header cases above cannot give on their own: the
+   * WHOLE header block, in order, in one assertion. Each round's own case checks its neighbour; only this one
+   * catches a line inserted out of order two rounds later, or a round whose header was never written at all.
+   * The expected sequence is `1.1, 1.2, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9` — **1.2 twice**, because round 2 and
+   * the llm-jev generator channel both landed under that number and the duplicate is deliberate (the file says
+   * so at `:11`). `CheckpointEnvelope.version` stays 1 through all of it, which is the point of "additive".
+   */
+  it('the contract header block is contiguous and ascending: 1.1, 1.2, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9', () => {
+    const lines = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8').split('\n');
+    const heads = lines.map((l, i) => [i, /^\/\/ contract (\d+\.\d+) \(/.exec(l)?.[1] ?? null] as const).filter((e): e is readonly [number, string] => e[1] !== null);
+    expect(heads.map((e) => e[1])).toEqual(['1.1', '1.2', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '1.8', '1.9']);
+    // contiguous: no line between the first and the last that is not itself a contract header
+    const first = heads[0]?.[0] ?? -1;
+    const last = heads[heads.length - 1]?.[0] ?? -1;
+    expect(last - first).toBe(heads.length - 1);
+    // every one names its design document and says the envelope version is unchanged
+    for (const [i, v] of heads) expect(lines[i], v).toMatch(/docs\/[A-Z0-9-]+\.md/);
+    expect(lines.filter((l) => /^\/\/ contract \d+\.\d+ \(/.test(l)).filter((l) => /CheckpointEnvelope\.version/.test(l)).length).toBeGreaterThanOrEqual(6);
+  });
+
+  it('header: the 1.8 line sits directly under 1.7 and keeps CheckpointEnvelope.version at 1', () => {
+    const lines = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8').split('\n');
+    const i17 = lines.findIndex((l) => l.startsWith('// contract 1.7 (2026-09-22): TUI round 4'));
+    const i18 = lines.findIndex((l) => l.startsWith('// contract 1.8 (2026-09-22): TUI round 5'));
+    expect(i17).toBeGreaterThan(0);
+    expect(i18).toBe(i17 + 1);
+    expect(lines[i18]).toContain('docs/TUI-DESIGN-5.md §8');
+    expect(lines[i18]).toContain('CheckpointEnvelope.version stays 1');
+  });
+
+  it('item 10 renumbering: no `contract 1.6 item` comment in core/types.ts cites a TUI-DESIGN-4 section (1.6 is import)', () => {
+    const text = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8');
+    const stale = text.split('\n').filter((l) => /contract 1\.6 item/.test(l) && /TUI-DESIGN-4/.test(l));
+    expect(stale).toEqual([]);
+    // the eight round-4 items are numbered 1.7, which is what the header at the top of the file calls that round
+    expect(text.split('\n').filter((l) => /contract 1\.7 item/.test(l)).length).toBeGreaterThanOrEqual(8);
+  });
+
+  it('items 1 and 5 arrived from the harness: BlockingKind carries both panes and ConfirmRequest carries the four manifest fields', () => {
+    // item 1 (REQUEST R1, landed at c7087e2 with its four placeholder case lines)
+    const kinds: BlockingKind[] = ['lease-conflict', 'land-preflight'];
+    expect(kinds).toHaveLength(2);
+    const answers: BlockingAnswer[] = ['wait', 'worktree'];
+    expect(answers).toHaveLength(2);
+    // item 5 (REQUEST R5, landed with contract 1.5) — all four OPTIONAL, so every existing constructor compiles
+    const bare = {} as ConfirmRequest;
+    expect(bare.title).toBeUndefined();
+    expect(bare.headline).toBeUndefined();
+    expect(bare.body).toBeUndefined();
+    expect(bare.badge).toBeUndefined();
+  });
+
+  it('item 2: UiLabel gains the seventh member and ChatLabel is unaffected', () => {
+    const label: UiLabel = '[session]';
+    expect(label).toBe('[session]');
+    // ChatLabel is Extract<UiLabel, '[you]' | '[jevcode]'> — widening UiLabel must not widen it
+    const chat: ChatLabel[] = ['[you]', '[jevcode]'];
+    expect(chat).toHaveLength(2);
+  });
+
+  it('item 3: SessionRow gains three OPTIONAL members, so every pre-round-5 row still satisfies the type', () => {
+    const old: SessionRow = { sessionId: 's1', workspace: '/w', title: 't', task60: 't', runs: [], lastUsed: '', createdAt: '', totalUsd: 0, mode: 'llm-jev', branch: null };
+    expect(old.ended).toBeUndefined();
+    expect(old.parentSessionId).toBeUndefined();
+    expect(old.workspaces).toBeUndefined();
+    const full: SessionRow = { ...old, ended: { at: '2026-09-22T00:00:00.000Z', by: 'remote' }, parentSessionId: 's0', workspaces: ['/w', '/w2'] };
+    expect(full.ended?.by).toBe('remote');
+    expect(full.workspaces).toHaveLength(2);
+  });
+
+  it('item 4: SessionHost.who?() is optional and its two views carry no coordination secret', () => {
+    const host = {} as SessionHost;
+    expect(host.who).toBeUndefined();
+    const self: SelfIdentityView = { deviceId8: 'a1b2c3d4', label: 'mbp', sameDeviceCount: 2 };
+    // §7 row 61: no hostKey, no full deviceId, no lease paths anywhere in the view
+    expect(Object.keys(self)).toEqual(['deviceId8', 'label', 'sameDeviceCount']);
+    const view: SessionActivityView = {
+      runId: 'r1', sessionId: 's1', label: 'mbp', parentSessionId: null, deviceId8: 'a1b2c3d4', sameDevice: false, kind: 'run',
+      liveness: 'stale-reused-pid', authority: 'trusted',
+      flags: { hung: false, skewed: false, forked: false, takenOver: false, noLock: false, ignoredDevice: false, unverified: false, cloned: false },
+      beatAgeMs: 1_200, arrivalAgeMs: 1_100, skewMs: null, syncLagMs: null, sameRepo: true, sameBranch: true, leaseCount: 2,
+      step: 3, maxSteps: 20, stage: 'execute', mode: 'llm-jev', branch: 'main', head: '3f9a2c1', ctxPct: 41,
+      spend: { totalUsd: 0.12, capUsd: 5 }, editing: ['src/a.ts'], subwork: null, bench: null,
+    };
+    expect(view.liveness).toBe('stale-reused-pid');
+    expect(view.leaseCount).toBe(2);
+    expect(Object.keys(view)).not.toContain('leases');
+  });
+
+  /**
+   * Gate G-R5-8 (§11): the settings-collision lint. **The authority is an EXTERNAL table**, not "every name this
+   * document mentions" — `docs/ORCHESTRATION-DESIGN.md` §6.4 (`:1427–1461`) for the 34 `orchestrate.*` keys, and
+   * TUI-DESIGN-5 §8.1 item 7 for the `context.*` / `coordination.*` / `import.*` / `memory.*` / `seen.*` names.
+   * The draft's wording was vacuous for 32 of the 34 (§14.2 #19): a count cannot catch a misspelling.
+   *
+   * The `orchestrate.*` list is PARSED OUT OF THE DESIGN FILE rather than copied here, so a row added to OR §6.4
+   * and not to `SETTINGS` fails this test with no second edit. `depth` is a constant and `--yes-split` a flag —
+   * OR's own table says so in the same rows, and neither is a `Setting` name.
+   */
+  it('gate G-R5-8: every key of ORCHESTRATION-DESIGN §6.4 and of §8.1 item 7 has a SETTINGS row, claimed once', () => {
+    const or = readFileSync(join(ROOT, 'docs/ORCHESTRATION-DESIGN.md'), 'utf8');
+    // one row per key: `| `orchestrate.<name>` | …`, skipping the struck-through `~~orchestrate.commitNoVerify~~`
+    const fromDesign = [...or.matchAll(/^\|\s*`(orchestrate\.[A-Za-z]+)`\s*\|/gm)].map((m) => m[1] as string);
+    expect(new Set(fromDesign).size, 'OR §6.4 lists each orchestrate key once').toBe(fromDesign.length);
+    expect(fromDesign).toHaveLength(34);
+    const names = new Set(SETTINGS.map((sp) => sp.name as string));
+    for (const key of fromDesign) expect(names.has(key), `${key} has no SETTINGS row`).toBe(true);
+    // §8.1 item 7's own five groups, verbatim
+    const item7 = [
+      'context.mode', 'context.compaction', 'context.kept', 'context.compactEvery', 'context.budgetChars',
+      'import.enabled', 'import.scope', 'import.sources', 'memory.enabled', 'memory.path', 'seen.import',
+      'coordination.claims', 'coordination.remoteControl', 'coordination.sync', 'coordination.syncRuns', 'coordination.notify', 'coordination.maxChildren',
+    ];
+    for (const key of item7) expect(names.has(key), `${key} has no SETTINGS row`).toBe(true);
+    // the collision half: no two slots claimed one name, and no two rows share an env variable or a file key
+    expect(names.size).toBe(SETTINGS.length);
+    const envs = SETTINGS.flatMap((sp) => [...sp.env, ...(sp.negateEnv ?? [])]);
+    expect(new Set(envs).size, 'two settings share an env variable').toBe(envs.length);
+    const fileKeys = SETTINGS.map((sp) => sp.fileKey).filter((k): k is string => k !== undefined);
+    expect(new Set(fileKeys).size, 'two settings share a config-file key').toBe(fileKeys.length);
+    // every round-5 row is printable, non-secret, and not a launch setting (§8.3)
+    const round5 = SETTINGS.filter((sp) => /^(orchestrate|coordination|import|memory)\./.test(sp.name) || sp.name === 'context.kept' || sp.name === 'seen.import');
+    expect(round5).toHaveLength(34 + 6 + 5 + 2);
+    for (const sp of round5) {
+      expect(sp.secret, sp.name).toBe(false);
+      expect(sp.launch, sp.name).toBeUndefined();
+      expect(sp.description.length, sp.name).toBeGreaterThan(0);
+    }
+    // §4.8: `depth` is a CONSTANT and `--yes-split` a FLAG — neither may appear as a setting
+    expect(names.has('orchestrate.depth')).toBe(false);
+    expect(names.has('orchestrate.yesSplit')).toBe(false);
+    // the every-env-name rule of §4.8: `JEVCODE_ORCHESTRATE_<SCREAMING_SNAKE>`
+    for (const sp of SETTINGS.filter((x) => x.name.startsWith('orchestrate.'))) {
+      const screaming = sp.name.slice('orchestrate.'.length).replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
+      expect(sp.env, sp.name).toEqual([`JEVCODE_ORCHESTRATE_${screaming}`]);
+    }
+  });
+
+  it('item 6: ProviderName and GeneratorConfig.provider are every ProviderId, and the old two stay valid', () => {
+    const names: ProviderName[] = [...PROVIDER_IDS, 'mock'];
+    expect(names).toHaveLength(8);
+    expect(names).toContain('anthropic');
+    expect(names).toContain('openrouter');
+    for (const id of PROVIDER_IDS) {
+      const cfg: Pick<GeneratorConfig, 'provider'> = { provider: id };
+      expect(isProviderId(cfg.provider)).toBe(true);
+    }
   });
 });

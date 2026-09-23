@@ -8,11 +8,12 @@
  */
 import { isValidRunId } from '../../checkpoint/run-id.js';
 import { parseDuration } from '../../core/time.js';
-import type { EngineMode, StageName } from '../../core/types.js';
+import { detectSecrets } from '../../core/redact.js';
+import type { EndOptions, EngineMode, PauseOptions, StageName } from '../../core/types.js';
 import type { KeyRunPhase } from '../keys/resolve.js';
 import { rank } from './fuzzy.js';
-import { commandName, parseCommand, restOf, type ParseResult, type ParsedCommand } from './parse.js';
-import { BUDGET_SETTINGS, COMMANDS, LLM_STATE_MODE, LLM_STATES, PANEL_ARGS, THEMES, TRANSCRIPT_VIEWS, availabilityError, findCommand, takesRest, type ArgSpec, type CommandSpec } from './registry.js';
+import { commandName, parseCommand, restOf, takeLeadingToken, type ParseResult, type ParsedCommand } from './parse.js';
+import { BUDGET_SETTINGS, COMMANDS, LLM_STATE_MODE, LLM_STATES, PANEL_ARGS, THEMES, TRANSCRIPT_VIEWS, availabilityError, findCommand, restArgIndex, type ArgSpec, type CommandSpec } from './registry.js';
 
 /** TUI-DESIGN §5.1: what the resolver needs to know about the session to validate arguments. */
 export interface DispatchContext {
@@ -26,6 +27,20 @@ export interface DispatchContext {
   readonly sessions?: readonly { readonly id: string; readonly title: string }[];
   /** the `@` denylist for `path` arguments */
   readonly isDeniedPath?: (rel: string) => boolean;
+  /**
+   * TUI-DESIGN-5 §2.7 (§14.2 #39): does **this session** have a run at all — live, paused, or finished?
+   *
+   * `/end` with no target and no LIVE run does not refuse: §2.7 says it ends the **session**, writing
+   * `RunMeta.ended` against the session's most recent run and one `session:end` index line, and S28's
+   * `after step 7` is that run's last committed step. Only a session with **no run at all** answers S45b. Gating
+   * on `run !== 'none'` made the ordinary flow — pause, then `/end` — unreachable, because `KeyRunPhase` has no
+   * `paused` member and a paused session reports `run: 'none'`.
+   *
+   * Absent defaults to `run !== 'none' || step > 0`: a host that has not been updated still answers correctly for
+   * every session that committed a step, and the only case it gets wrong is a run that ended before its first
+   * commit — where S45b is a harmless answer.
+   */
+  readonly hasRun?: boolean;
   /**
    * TUI-DESIGN-4 §4.5 (D-X): the line came from a **selection** surface — the palette's accept or cycle
    * (`acceptedRef`, set only by an accept or a `move` effect and cleared by any composer edit) or the `--plain`
@@ -50,7 +65,13 @@ export type CommandAction =
   | { kind: 'rename'; title: string }
   | { kind: 'steer'; text: string }
   | { kind: 'unsteer' }
-  | { kind: 'pause' }
+  /**
+   * TUI-DESIGN-5 §2.6: `/pause [now] [<target>]`. `opts` is the landed `PauseOptions` verbatim, so the host calls
+   * `engine.pause(action.opts)` with no translation; `target` is the **unresolved** token, because `resolveTarget`
+   * (§2.5) needs a `Fold` and this module is pure — the host resolves it and, for a foreign target, rewrites
+   * `by` to `device:<id8>` at the far end (§2.6's table).
+   */
+  | { kind: 'pause'; opts: PauseOptions; target: string | null }
   | { kind: 'abort' }
   | { kind: 'undo'; step: number | null }
   | { kind: 'rewind'; step: number | null }
@@ -87,7 +108,45 @@ export type CommandAction =
   | { kind: 'fullscreen' }
   | { kind: 'scrollback' }
   | { kind: 'peers' }
-  | { kind: 'uiReset' };
+  | { kind: 'uiReset' }
+  // TUI-DESIGN-5 §2.3, §2.7, §2.9: round 5's six coordination actions
+  | { kind: 'who'; all: boolean }
+  | { kind: 'inbox'; all: boolean }
+  /** §2.9 / §7 row 92: `secretHits` is `detectSecrets(text).length` — a non-zero count holds the write behind §12 S34a's `[y]` ladder, and the body goes through the run's redactor either way (rule 2). */
+  | { kind: 'tell'; target: string; text: string; secretHits: number }
+  | { kind: 'headsup'; text: string; secretHits: number }
+  | { kind: 'request'; target: string; verb: RequestVerb; text: string; secretHits: number }
+  /** §2.7 (D-AL): `/end [now] [<target>]` on the landed `Engine.end?(opts)`; irreversible for the session, so `destructive` and the confirm ladder. */
+  | { kind: 'end'; opts: EndOptions; target: string | null }
+  // TUI-DESIGN-5 §3.2 / §3.3: the context pair. Neither carries data — both are reads of state the host already
+  // holds (`status().context`, `snapshotState()`, the checkpoint store), so the action is the verb alone.
+  | { kind: 'context' }
+  | { kind: 'compact' }
+  /**
+   * TUI-DESIGN-5 §4.9 (D-AN): the agent tree's five verbs, registered from day one and answering
+   * `<verb> is not available in this build — no agent is running` until the supervisor's store exists. The
+   * arguments are validated HERE so the honest refusal is the only thing the host has left to say — a malformed
+   * `/agent` is a dispatch error, never a refusal that hides a typo.
+   */
+  | { kind: 'split'; policy: SplitPolicy | null }
+  | { kind: 'agents' }
+  | { kind: 'agent'; slug: string; verb: AgentVerb; args: string }
+  /** §4.9: the only one of the seven that mutates files — `destructive`, and it joins `EXCLUSIVE_COMMANDS`. */
+  | { kind: 'land'; slug: string | null }
+  | { kind: 'spawn'; role: string; glob: string; task: string | null }
+  // TUI-DESIGN-5 §5.5: the import pair, both `category: 'config'`
+  | { kind: 'import'; dryRun: boolean; source: string | null }
+  | { kind: 'memory'; op: MemoryOp | null; text: string | null };
+
+/** TUI-DESIGN-5 §4.9: `/split [auto|ask|off]` — the split policy for the next step. */
+export type SplitPolicy = 'auto' | 'ask' | 'off';
+/** TUI-DESIGN-5 §4.3 / §4.9: the eight verbs `/agent <slug> <verb>` takes, the typed twin of the tab's letters. */
+export type AgentVerb = 'pause' | 'resume' | 'steer' | 'budget' | 'land' | 'kick' | 'drop' | 'diff';
+/** TUI-DESIGN-5 §5.5: `/memory [list|show|add|forget|reload] [<text>]`. */
+export type MemoryOp = 'list' | 'show' | 'add' | 'forget' | 'reload';
+
+/** TUI-DESIGN-5 §2.9: the three gated verbs `/request` can ask for. */
+export type RequestVerb = 'pause' | 'end' | 'steer';
 
 /**
  * TUI-DESIGN §4.9 / TUI-DESIGN-3 §4.4 F21: the resolution — an action, or the item text (`error: …`, printed under the `[ui]`
@@ -111,7 +170,7 @@ export type DispatchResult =
  * makes `confirmRow` total, so neither can happen; `/history` keeps `destructive: true` for the inventory test and
  * `confirmFor` answers `null` for its action.
  */
-export type ConfirmKind = 'new' | 'abort' | 'exit';
+export type ConfirmKind = 'new' | 'abort' | 'exit' | 'end';
 
 /**
  * TUI-DESIGN-3 §8 S4 (G5): every `CommandAction['kind']`, once — the exhaustiveness check of the dispatch-loop test (a `case`
@@ -121,6 +180,10 @@ export const COMMAND_ACTION_KINDS = [
   'help', 'new', 'resume', 'rename', 'steer', 'unsteer', 'pause', 'abort', 'undo', 'rewind', 'diff', 'plan', 'decisions', 'why', 'calibration', 'jev', 'cost',
   'budget', 'model', 'provider', 'mode', 'panel', 'transcript', 'config', 'login', 'logout', 'trust', 'theme', 'copy', 'export', 'status', 'errors', 'report',
   'historyClear', 'editor', 'exit', 'fullscreen', 'scrollback', 'peers', 'uiReset',
+  // TUI-DESIGN-5 §2.3, §2.7, §2.9
+  'who', 'inbox', 'tell', 'headsup', 'request', 'end',
+  // TUI-DESIGN-5 §3.2, §3.3, §4.9, §5.5
+  'context', 'compact', 'split', 'agents', 'agent', 'land', 'spawn', 'import', 'memory',
 ] as const satisfies readonly CommandAction['kind'][];
 /** the type-level twin: a kind missing from `COMMAND_ACTION_KINDS` fails here */
 type MissingKind = Exclude<CommandAction['kind'], (typeof COMMAND_ACTION_KINDS)[number]>;
@@ -281,6 +344,35 @@ function checkFlags(spec: CommandSpec, p: ParsedCommand): DispatchResult | null 
   return null;
 }
 
+/**
+ * TUI-DESIGN-5 §12 S45a (§2.6, §14.2 #16/#39): hand-written, because `availabilityError` is generated from
+ * `availableDuringTask` and cannot express a **per-form** rule — `/pause mbp` from an idle TUI is the ordinary case.
+ */
+export const PAUSE_NEEDS_RUN = 'error: /pause with no target needs a live run — /pause <target> asks a peer, any time';
+/** TUI-DESIGN-5 §12 S45b (§2.7): the same shape for `/end`; with no run at all in the session nothing is written. */
+export const END_NEEDS_RUN = 'error: nothing is running to end — /end <target> ends a peer\'s run, jevcode sessions end <id> ends one from the shell';
+/** TUI-DESIGN-5 §12 S34a (§2.9, §7 rows 92–94): the gate a flagged message body is held behind; `[y]` sends the REDACTED text, never the raw key. */
+export const MESSAGE_SECRET_GATE = 'that message looks like it contains a key — [y] send anyway  [n] edit  [Esc] cancel';
+
+/**
+ * TUI-DESIGN-5 §2.6 / §2.7: `[now] [<target>]`, the one grammar `/pause` and `/end` share. `null` when a second
+ * `now` appears (`/pause now now`), which is a typo rather than a target.
+ */
+export function pauseForm(args: readonly string[]): { at: 'step' | 'now'; target: string | null } | null {
+  const rest = [...args];
+  const at: 'step' | 'now' = rest[0]?.toLowerCase() === 'now' ? 'now' : 'step';
+  if (at === 'now') rest.shift();
+  if (rest.length > 1) return null;
+  const target = rest[0];
+  if (target !== undefined && target.toLowerCase() === 'now') return null;
+  return { at, target: target === undefined || target === '' ? null : target };
+}
+
+/** TUI-DESIGN-5 §2.7: `DispatchContext.hasRun`, with its documented default. */
+function hasRun(ctx: DispatchContext): boolean {
+  return ctx.hasRun ?? (ctx.run !== 'none' || ctx.step > 0);
+}
+
 function tooMany(spec: CommandSpec, p: ParsedCommand, max: number): DispatchResult | null {
   if (p.args.length > max) return cmdErr(spec.name, max === 0 ? 'takes no arguments' : `takes at most ${max} argument${max === 1 ? '' : 's'}, got ${p.args.length}`);
   return null;
@@ -326,10 +418,23 @@ export function parseCommandLine(line: string): ParseResult {
   const name = commandName(line);
   if (name !== null) {
     const spec = findCommand(name);
-    if (spec !== null && takesRest(spec)) {
+    const at = spec === null ? -1 : restArgIndex(spec);
+    if (at >= 0) {
       const raw = line.trim();
-      const rest = restOf(raw);
-      return { ok: true, command: { name, args: rest === '' ? [] : [rest], options: {}, raw } };
+      let rest = restOf(raw);
+      const args: string[] = [];
+      // TUI-DESIGN-5 §2.9 / §2.5: the positionals BEFORE the rest argument are single tokens, quote-aware so a
+      // multi-word title is addressable (`/tell "fix store rotation" ping` → target `fix store rotation`), with an
+      // unterminated quote falling back to the bare run (`/tell mbp don't touch the tests` → body `don't touch the
+      // tests`, never `unterminated quote`). `at === 0` is round 1's `takesRest` case unchanged.
+      for (let i = 0; i < at && rest !== ''; i++) {
+        const tok = takeLeadingToken(rest);
+        if (tok === null) break;
+        args.push(tok.value);
+        rest = tok.rest;
+      }
+      if (rest !== '') args.push(rest);
+      return { ok: true, command: { name, args, options: {}, raw } };
     }
   }
   return parseCommand(line);
@@ -350,8 +455,23 @@ export function confirmFor(spec: CommandSpec, action: CommandAction, fromPalette
       return 'abort';
     case 'exit':
       return 'exit';
+    // TUI-DESIGN-5 §2.7: ending a session is irreversible (`/resume` afterwards needs `--force`), so it takes the
+    // ladder — and its Enter is inert, exactly like `new` / `abort` / `exit` (TD4 D-X §4.5's invariant)
+    case 'end':
+      return 'end';
     // `historyClear` is destructive and deliberately has no rung ladder — its own y/N prompt is the gate (§4.5)
     case 'historyClear':
+      return null;
+    /**
+     * TUI-DESIGN-5 §4.9: `/land` is `destructive: true` — it is the only one of the seven agent rows that mutates
+     * files, which is also why it joins `EXCLUSIVE_COMMANDS`. It has **no rung ladder in this build**, the same
+     * explicit `null` `historyClear` takes and for a stronger reason: `ConfirmKind` is a closed four-member union
+     * on purpose (a fifth member would be a kind `confirmRow` must answer `null` for — a modal with no visible
+     * way out, see this type's own docblock), and until `AgentSupervisor` exists `/land` answers
+     * `not available in this build` and there is nothing to confirm. The gate it WILL take is §4.6's manifest
+     * confirm (D-AM), which is `ConfirmRequest`'s four fields and the review surface, not this rung ladder.
+     */
+    case 'land':
       return null;
     default:
       return null;
@@ -403,7 +523,6 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
     }
     case 'new':
     case 'unsteer':
-    case 'pause':
     case 'abort':
     case 'plan':
     case 'calibration':
@@ -430,6 +549,115 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
       if (t) return t;
       if (a0 === undefined || enumArg(spec.args[0] as ArgSpec, a0) === null) return cmdErr(spec.name, `expected reset${a0 === undefined ? '' : `, got "${a0}"`}`);
       return ok({ kind: 'uiReset' });
+    }
+    // ----- TUI-DESIGN-5 §2.6, §2.7: `/pause [now] [<target>]` and `/end [now] [<target>]`
+    case 'pause':
+    case 'end': {
+      const t = tooMany(spec, p, 2);
+      if (t) return t;
+      const form = pauseForm(p.args);
+      if (form === null) return cmdErr(spec.name, `expected [now] [<target>], got "${p.args.join(' ')}"`);
+      // §2.6 / §14.2 #16, #39: `availableDuringTask` is `'any'` because a targeted verb touches no local engine;
+      // the LOCAL form still needs something to act on, and the generated sentence cannot express a per-form rule.
+      // The two verbs need DIFFERENT things: `/pause` needs a live run (there is nothing to pause otherwise),
+      // `/end` needs only a run in the session (§2.7 — with no live run it ends the session).
+      if (form.target === null) {
+        if (spec.name === 'pause' && !live) return availErr(PAUSE_NEEDS_RUN);
+        if (spec.name === 'end' && !hasRun(ctx)) return availErr(END_NEEDS_RUN);
+      }
+      if (spec.name === 'pause') return ok({ kind: 'pause', opts: { at: form.at, by: 'self' }, target: form.target });
+      return ok({ kind: 'end', opts: { at: form.at, by: 'human' }, target: form.target });
+    }
+    // ----- TUI-DESIGN-5 §3.2 / §3.3, §4.9, §5.5: the nine round-5 rows whose action is the verb and its arguments.
+    // `availabilityError` has already refused `/compact` with no live run and `/land`/`/import` during a task
+    // (`spec.availableDuringTask`), so nothing here re-states a gate the generated sentence owns.
+    case 'context':
+    case 'compact':
+    case 'agents': {
+      const t = tooMany(spec, p, 0);
+      if (t) return t;
+      return ok({ kind: spec.name } as CommandAction);
+    }
+    case 'split': {
+      const t = tooMany(spec, p, 1);
+      if (t) return t;
+      if (a0 === undefined) return ok({ kind: 'split', policy: null });
+      const v = enumArg(spec.args[0] as ArgSpec, a0);
+      if (v === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, a0));
+      return ok({ kind: 'split', policy: v as SplitPolicy });
+    }
+    case 'agent': {
+      const slug = p.args[0];
+      const verbArg = p.args[1];
+      if (slug === undefined || slug === '') return cmdErr(spec.name, 'expected <slug> pause|resume|steer|budget|land|kick|drop|diff [args]');
+      if (verbArg === undefined) return cmdErr(spec.name, 'expected a verb after the slug');
+      const verb = enumArg(spec.args[1] as ArgSpec, verbArg);
+      if (verb === null) return cmdErr(spec.name, enumReason(spec.args[1] as ArgSpec, verbArg));
+      // §4.3: `steer` is the only verb whose body is the point; the rest take none and ignore a stray tail
+      const args = p.args[2] ?? '';
+      if (verb === 'steer' && args === '') return cmdErr(spec.name, 'expected <text> after steer');
+      return ok({ kind: 'agent', slug, verb: verb as AgentVerb, args });
+    }
+    case 'land': {
+      const t = tooMany(spec, p, 1);
+      if (t) return t;
+      return ok({ kind: 'land', slug: a0 === undefined || a0 === '' ? null : a0 });
+    }
+    case 'spawn': {
+      const role = p.args[0];
+      const glob = p.args[1];
+      if (role === undefined || role === '') return cmdErr(spec.name, 'expected <role> <glob> [task]');
+      if (glob === undefined || glob === '') return cmdErr(spec.name, 'expected <glob> after the role');
+      const task = p.args[2] ?? '';
+      return ok({ kind: 'spawn', role, glob, task: task === '' ? null : task });
+    }
+    case 'import': {
+      const t = tooMany(spec, p, 1);
+      if (t) return t;
+      return ok({ kind: 'import', dryRun: p.options['dry-run'] === true, source: a0 === undefined || a0 === '' ? null : a0 });
+    }
+    case 'memory': {
+      const opArg = p.args[0];
+      if (opArg === undefined || opArg === '') return ok({ kind: 'memory', op: null, text: null });
+      const op = enumArg(spec.args[0] as ArgSpec, opArg);
+      if (op === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, opArg));
+      const text = p.args[1] ?? '';
+      // §5.5: `add` and `forget` are the two that need a body; `list`/`show`/`reload` take none
+      if ((op === 'add' || op === 'forget') && text === '') return cmdErr(spec.name, `expected <text> after ${op}`);
+      return ok({ kind: 'memory', op: op as MemoryOp, text: text === '' ? null : text });
+    }
+    // ----- TUI-DESIGN-5 §2.3, §2.9: the read verbs
+    case 'who':
+    case 'inbox': {
+      const t = tooMany(spec, p, 0);
+      if (t) return t;
+      return ok({ kind: spec.name, all: p.options['all'] === true });
+    }
+    // ----- TUI-DESIGN-5 §2.9: the three write verbs. Every body is measured by `detectSecrets` here, so the host
+    // cannot forget the §12 S34a gate — the composer's own gate sees submissions, never slash-command arguments.
+    case 'tell': {
+      const target = p.args[0];
+      const text = p.args[1] ?? '';
+      if (target === undefined || target === '') return cmdErr(spec.name, 'expected <target> <text>');
+      if (text === '') return cmdErr(spec.name, 'expected <text> after the target');
+      return ok({ kind: 'tell', target, text, secretHits: detectSecrets(text).length });
+    }
+    case 'headsup': {
+      const text = p.args[0] ?? '';
+      if (text === '') return cmdErr(spec.name, 'expected <text>');
+      return ok({ kind: 'headsup', text, secretHits: detectSecrets(text).length });
+    }
+    case 'request': {
+      const target = p.args[0];
+      const verbArg = p.args[1];
+      if (target === undefined || target === '') return cmdErr(spec.name, 'expected <target> pause|end|steer [<text>]');
+      if (verbArg === undefined) return cmdErr(spec.name, 'expected pause, end or steer after the target');
+      const verb = enumArg(spec.args[1] as ArgSpec, verbArg);
+      if (verb === null) return cmdErr(spec.name, enumReason(spec.args[1] as ArgSpec, verbArg));
+      const text = p.args[2] ?? '';
+      // a `steer` with no body has nothing to say; `pause` / `end` need none
+      if (verb === 'steer' && text === '') return cmdErr(spec.name, 'expected <text> after steer');
+      return ok({ kind: 'request', target, verb: verb as RequestVerb, text, secretHits: detectSecrets(text).length });
     }
     case 'resume': {
       const t = tooMany(spec, p, 1);

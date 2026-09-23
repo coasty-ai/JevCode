@@ -1,5 +1,7 @@
 /** tui/onboarding/lines.ts (TUI-DESIGN §11.1–§11.3, §24 "Wizard"; §19.0 row O7; TUI-DESIGN-2 §1.4, §2.7, §4.3, §12 "Wizard"): ≤ 4 rows; masked field twins; verbatim strings. */
 import { describe, expect, it } from 'vitest';
+import { joinWrapped, wrapBody } from '../../../../src/tui/transcript/wrap.js';
+import { cellWidth } from '../../../../src/tui/glyphs.js';
 import {
   DEFAULT_WIZARD_PROVIDER,
   FIX_BLOCK_FOOTER,
@@ -51,7 +53,7 @@ import {
   HINT_PREFIX_KEY,
   LOGIN_ONE_KEY_PROMPT,
   LOGIN_OTHER_WAYS_PROMPT,
-  MISSING_GENERATOR_ONLY,
+  missingGeneratorOnly,
   MOCK_VERIFY_NOTE,
   SR_KEY_HINT,
   SR_OPTIONS_ROWS,
@@ -141,11 +143,46 @@ describe('§24 wizard strings are verbatim', () => {
     expect(dotenvSourceText('./.env')).toBe('dotenv: ./.env');
     // TUI-DESIGN-3 §5.1 rule 13: one thought per row with ` · ` separators; today's sentence is the TUI-only detail
     expect(sandboxText('seatbelt')).toBe('seatbelt · writes only in the workspace and run dirs · secrets, ~/.ssh, ~/.aws unreadable · network on (--no-network)');
-    expect(sandboxText('none', 'linux')).toBe('none · sandbox-exec is not available on linux · cwd confinement, env scrubbing, timeout, output cap and tree kill only');
+    expect(sandboxText('none', 'auto', 'linux')).toBe('none · sandbox-exec is not available on linux · cwd confinement, env scrubbing, timeout, output cap and tree kill only');
     expect(sandboxDetail('seatbelt')).toBe('seatbelt — writes confined to the workspace and run dirs; harness secret files, ~/.ssh, ~/.aws unreadable; reads elsewhere and network allowed unless --no-network');
-    expect(sandboxDetail('none', 'linux')).toBe('none — sandbox-exec is not available on linux: cwd confinement, env scrubbing, timeout, output cap and tree kill only');
+    expect(sandboxDetail('none', 'auto', 'linux')).toBe('none — sandbox-exec is not available on linux: cwd confinement, env scrubbing, timeout, output cap and tree kill only');
     expect(agentsChangedLine('1a2b3c4d5e6f7890', '9f8e7d6c5b4a3210')).toBe('AGENTS.md changed since you trusted it (sha256 1a2b3c4d → 9f8e7d6c)');
     expect(agentsChangedLine('1a2b3c4d', '9f8e7d6c', true)).toBe('AGENTS.md changed since you trusted it (sha256 1a2b3c4d -> 9f8e7d6c)');
+  });
+
+  /**
+   * Finishing audit #5 — the `[sandbox]` row says WHICH of three things happened. `detectSandboxLevel` returns
+   * `none` for `profile === 'none'` before it probes anything (`src/sandbox/seatbelt.ts`), so the level alone
+   * cannot tell a chosen `none` from a missing `sandbox-exec`, and `--sandbox none` on macOS used to print
+   * "sandbox-exec is not available on darwin", which is false. The row and its `--plain`/SR twin are one string
+   * (the item is built once in `src/cli/session.ts` and printed by every renderer), so the three sentences are
+   * asserted once here and checked to WRAP, never cut, at the three rungs.
+   */
+  it('TUI-DESIGN §24 / audit #5: `[sandbox]` states chosen-none, unavailable and requested-but-unavailable as three distinct true sentences, wrapping at 40/80/120', () => {
+    const chosen = sandboxText('none', 'none', 'darwin');
+    const unavailable = sandboxText('none', 'auto', 'linux');
+    const requested = sandboxText('none', 'seatbelt', 'linux');
+    expect(chosen).toBe('none · off by request (--sandbox none) · cwd confinement, env scrubbing, timeout, output cap and tree kill only');
+    expect(unavailable).toBe('none · sandbox-exec is not available on linux · cwd confinement, env scrubbing, timeout, output cap and tree kill only');
+    expect(requested).toBe('none · seatbelt requested, but sandbox-exec is not available on linux · cwd confinement, env scrubbing, timeout, output cap and tree kill only');
+    // the three are distinct, and the chosen-none row never claims a platform lacks the sandbox
+    expect(new Set([chosen, unavailable, requested]).size).toBe(3);
+    expect(chosen).not.toContain('not available');
+    expect(chosen).not.toContain('darwin');
+    // the detail twin carries the SAME reason clause in its own `—`/`:` shape
+    expect(sandboxDetail('none', 'none', 'darwin')).toBe('none — off by request (--sandbox none): cwd confinement, env scrubbing, timeout, output cap and tree kill only');
+    expect(sandboxDetail('none', 'seatbelt', 'linux')).toBe('none — seatbelt requested, but sandbox-exec is not available on linux: cwd confinement, env scrubbing, timeout, output cap and tree kill only');
+    // an unspecified profile keeps the shipped sentence, so a caller that has not been threaded yet cannot regress
+    expect(sandboxText('none', undefined, 'linux')).toBe(unavailable);
+    expect(sandboxText('seatbelt', 'seatbelt')).toBe(sandboxText('seatbelt'));
+    // §2.13's rungs: every row wraps (never cuts) and no wrapped row is wider than the terminal
+    for (const width of [40, 80, 120]) {
+      for (const row of [chosen, unavailable, requested, sandboxDetail('none', 'none', 'darwin'), sandboxDetail('none', 'seatbelt', 'linux')]) {
+        const rows = wrapBody(row, width);
+        expect(joinWrapped(rows), `${width}: ${row}`).toBe(row);
+        for (const r of rows) expect(cellWidth(r), `${width}: ${r}`).toBeLessThanOrEqual(width);
+      }
+    }
   });
 
   it('TUI-DESIGN-2 §12 / TUI-DESIGN-3 §1.6: jev-only keeps the five round-2 lines verbatim; every generator mode leads with the one OpenRouter key, the piped --key-stdin, the TypeSafe route and the jev-only escape (`#` at cell 30, ≤ 76 cells); the Anthropic line joins under --provider anthropic only', () => {
@@ -178,7 +215,12 @@ describe('§24 wizard strings are verbatim', () => {
     expect(cells(fixBlockLines('jev-on')[3]!)).toBe(75);
     expect(cells(fixBlockLines('jev-on')[4]!)).toBe(75);
     expect(cells(fixBlockLines('jev-on', 'anthropic')[5]!)).toBe(73);
-    expect(MISSING_GENERATOR_ONLY).toBe('missing generator.apiKey: set OPENROUTER_API_KEY (the code model), run with --mode jev-only, or run jevcode login');
+    // round-5 item 4: the sentence names the RESOLVED provider's own key variable (PROVIDER_KEY_ENV)
+    expect(missingGeneratorOnly('openrouter')).toBe('missing generator.apiKey: set OPENROUTER_API_KEY (the code model), run with --mode jev-only, or run jevcode login');
+    expect(missingGeneratorOnly('anthropic')).toBe('missing generator.apiKey: set ANTHROPIC_API_KEY (the code model), run with --mode jev-only, or run jevcode login');
+    expect(missingGeneratorOnly('gemini')).toContain('set GEMINI_API_KEY (the code model)');
+    // an unresolved provider keeps the historical default rather than printing an empty variable name
+    expect(missingGeneratorOnly(null)).toContain('set OPENROUTER_API_KEY (the code model)');
   });
 
   it('TUI-DESIGN-2 §12 "Wizard": the round-2 strings are verbatim', () => {

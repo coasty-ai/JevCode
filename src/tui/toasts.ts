@@ -270,3 +270,121 @@ export function nextToastExpiry(toasts: readonly Toast[], nowMs: number): number
   for (const t of toasts) if (t.untilMs > now && (next === null || t.untilMs < next)) next = t.untilMs;
   return next;
 }
+
+// ---------------------------------------------------------------------------------------
+// Cross-session messages (TUI-DESIGN-5 §2.9, §12 S6, S31–S34) — which surface each verb takes
+// ---------------------------------------------------------------------------------------
+
+/** TUI-DESIGN-5 §2.9: the three verbs that write into another session's mailbox. */
+export type MessageVerb = 'tell' | 'headsup' | 'request';
+
+/**
+ * TUI-DESIGN-5 §2.9: the three gated verbs a `request` can ask for. Structurally `RequestVerb`
+ * (`src/tui/commands/dispatch.ts`), spelled again here so this module stays import-free of the dispatcher — the
+ * dependency runs the other way (`dispatch.ts` is the command layer, `toasts.ts` the render layer).
+ */
+export type MessageRequestVerb = 'pause' | 'end' | 'steer';
+
+/**
+ * TUI-DESIGN-5 §2.9's toast rules, as data so the App cannot re-derive them differently from the CLI:
+ *
+ * - `headsup` is a **toast** and nothing else — it is informational and nobody is waiting on an answer.
+ * - `tell` is a **toast plus the `✉` count** in the peer zone, so a message read past its 2 s is still findable.
+ * - `request` is **never a toast** — it is a persistent row, because it needs an answer (§12 S32).
+ *
+ * Every applied remote verb also writes a `[session]` transcript item (§2.9, §13.1): "a toast is never the only
+ * record", which is why `transcriptItem` is true for all three.
+ */
+export interface MessageSurface {
+  readonly toast: boolean;
+  readonly persistentRow: boolean;
+  readonly mailCount: boolean;
+  readonly transcriptItem: true;
+}
+export const MESSAGE_SURFACES: Readonly<Record<MessageVerb, MessageSurface>> = {
+  tell: { toast: true, persistentRow: false, mailCount: true, transcriptItem: true },
+  headsup: { toast: true, persistentRow: false, mailCount: false, transcriptItem: true },
+  request: { toast: false, persistentRow: true, mailCount: false, transcriptItem: true },
+};
+
+/** TUI-DESIGN-5 §2.9: the surface set for a verb. */
+export function messageSurface(verb: MessageVerb): MessageSurface {
+  return MESSAGE_SURFACES[verb];
+}
+
+/**
+ * TUI-DESIGN-5 §2.9 / §7 row 18: a message from a device this one has not paired with is rendered with
+ * `(unverified)` and **never auto-applies**. The suffix is the whole rendering difference — the row is still shown,
+ * because hiding it would make an unpaired peer invisible rather than untrusted.
+ */
+export const UNVERIFIED_SUFFIX = ' (unverified)';
+
+function withAuthority(text: string, verified: boolean): string {
+  return verified ? text : `${text}${UNVERIFIED_SUFFIX}`;
+}
+
+/**
+ * TUI-DESIGN-5 §12 S31: the body of the `[session]` transcript item — `mbp: committed 3f9a2c1 on main — engine.ts,
+ * store.ts`. The label itself is `UiLabel '[session]'` (contract 1.8 item 2) and is the renderer's, not this
+ * string's; `labelRole` gives it `'dim'` (§8.1 item 2's decision, recorded in `theme.ts`).
+ */
+export function sessionMessageText(from: string, text: string, verified = true): string {
+  return withAuthority(`${oneLineSafe(from)}: ${oneLineSafe(text)}`, verified);
+}
+
+/**
+ * TUI-DESIGN-5 §12 S32 (`pause`) and its two siblings, one per `RequestVerb`: the persistent `request` row —
+ * never a toast, because it needs an answer.
+ *
+ * **Only the `pause` arm is a landed §12 string.** The `end` and `steer` bodies are new this round and are filed
+ * for §12.1 as **S32a** and **S32b** in the W5 docs PR, the same way S43a/S43b/S43c were — §13.4 requires every
+ * §12 string to be an anchor, and an invented string that no table carries is exactly what that rule forbids.
+ * `end` says **session**, not run: §2.7 makes `/end` a session verb (it writes `RunMeta.ended` and one
+ * `session:end` line), so a row that said "end this run" would name an object the verb does not act on.
+ *
+ * All three offer the same answers the local ladder does, so `[Y]` means the same thing at both ends.
+ */
+export function requestRowText(from: string, verb: MessageRequestVerb, verified = true): string {
+  const body =
+    verb === 'pause'
+      ? 'pause this run — [y] pause at step end  [Y] pause now  [n] ignore'
+      : verb === 'end'
+        ? 'end this session — [y] end at step end  [Y] end now  [n] ignore'
+        : 'take a steer — [y] take it  [n] ignore';
+  return withAuthority(`${oneLineSafe(from)} asks to ${body}`, verified);
+}
+
+/** TUI-DESIGN-5 §12 S32 / S32a / S32b, as data — the row per verb, so a caller cannot spell one of them itself. */
+export const REQUEST_ROW_ANCHORS: Readonly<Record<MessageRequestVerb, string>> = {
+  pause: '<from> asks to pause this run — [y] pause at step end  [Y] pause now  [n] ignore',
+  end: '<from> asks to end this session — [y] end at step end  [Y] end now  [n] ignore',
+  steer: '<from> asks to take a steer — [y] take it  [n] ignore',
+};
+
+/** TUI-DESIGN-5 §12 S33: the `headsup` broadcast body — `heads-up: editing src/loop/engine.ts (+1) for: <task60>`. */
+export function headsUpText(files: readonly string[], task60: string): string {
+  const first = oneLineSafe(files[0] ?? '');
+  const more = files.length > 1 ? ` (+${files.length - 1})` : '';
+  const head = first === '' ? 'heads-up' : `heads-up: editing ${first}${more}`;
+  const task = oneLineSafe(task60).trim();
+  return task === '' ? head : `${head} for: ${task}`;
+}
+
+/** TUI-DESIGN-5 §12 S34: the `request-release` body — `mbp is waiting for src/x.ts — commit and move on when you can`. */
+export function waitingForText(from: string, path: string): string {
+  return `${oneLineSafe(from)} is waiting for ${oneLineSafe(path)} — commit and move on when you can`;
+}
+
+/**
+ * TUI-DESIGN-5 §2.2 / §12 S6: the **one** screen-reader announcement the peer zone makes. The status line is never
+ * read live (TD4 §5.8's rule); only a 0 → ≥ 1 change in unread directed messages announces, once —
+ * `1 message from mbp — /inbox reads it`. `null` when the count did not cross zero, so a re-render never repeats it.
+ *
+ * §12 S6's SR cell gives the singular only; the plural (`3 messages from mbp — /inbox reads it`), which a crossing
+ * from 0 to 3 in one fold produces, is filed for §12.1 as **S6a** in the W5 docs PR.
+ */
+export function unreadAnnounce(before: number, after: number, from: string): string | null {
+  if (before > 0 || after < 1) return null;
+  const n = Math.max(1, Math.floor(after));
+  return `${n} message${n === 1 ? '' : 's'} from ${oneLineSafe(from)} — /inbox reads it`;
+}

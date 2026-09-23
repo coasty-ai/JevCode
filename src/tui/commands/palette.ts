@@ -622,6 +622,10 @@ function contextTitle(c: KeyContext): string {
       return 'review box';
     case 'picker':
       return 'session picker';
+    // TUI-DESIGN-5 §4.3: `KeyContext` gained `'agents'` with the `'a'` pane tab; this switch is exhaustive, so the
+    // arm is a compile requirement of that member, not a choice.
+    case 'agents':
+      return 'agents tab';
     case 'palette':
       return 'palette';
   }

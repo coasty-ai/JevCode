@@ -197,7 +197,7 @@ describe('TUI-DESIGN-4 §3.3: `/why` takes the block body width and hangs its co
 describe('TUI-DESIGN-2 §3.11: /why intake — the last intake\'s step-0 rows and their consumers', () => {
   it('findDecision resolves intake refs against step-0 intent rows only; an unknown id is null', () => {
     const rows = intakeRows('coding_task', 0.78, 0.9);
-    expect(rows.length).toBe(1 + 5 + 1 + 14);
+    expect(rows.length).toBe(1 + 5 + 1 + 15 /* TUI-DESIGN-5 §8.1 item 10: FactKey gains 'peers' */);
     expect(findDecision(rows, parseWhyRef('intake')!, null)?.id).toBe('intake');
     expect(findDecision(rows, parseWhyRef('intake.reply')!, 7)?.id).toBe('reply');
     expect(findIntakeDecision(rows, { kind: 'intake', id: 'about_mode_now' })?.id).toBe('about_mode_now');

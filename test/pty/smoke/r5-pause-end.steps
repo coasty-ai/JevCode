@@ -1,0 +1,88 @@
+# TUI-DESIGN-5 §2.6 / §2.7 / §10 (slot R5-2): `/pause`, `/pause now` and `/end` with its confirm ladder under a
+# real pty, at 80x24 AND 40x24. Hermetic: `--mock` only — no ledger, no second process, no network, no key.
+#
+# STATUS — this file does not assert its §2.6/§2.7 ANSWERS yet, and that is a dependency, not a skip.
+#   The registry rows, the `[now] [<target>]` grammar, §12 S45a/S45b and the four-rung `/end` ladder are landed
+#   (R5-2, `src/tui/commands/{registry,dispatch,confirm}.ts`), but the HANDLERS that call `engine.pause(opts)` /
+#   `engine.end(opts)` and write the `session:end` index line are R5-1's `src/cli/session.ts` arms (D-AS's one
+#   `INDEX_KINDS` commit is W4). Until they land, `send /end` resolves and refuses at the host rather than ending,
+#   so the marks below capture the ROWS and the ladder, which is what §2.13's 40- and 80-column cells pin.
+#   Committed now, with its rows, so the integrator has the scenario the day the handlers resolve.
+#
+# run-smoke.sh needs three rows for this scenario; R5-2 owns `test/pty/**` and lands them in W5:
+#   env    : r5-pause-end) ;;
+#   check  : r5-pause-end) grep -q 'needs a live run' "$txt" && checks="$checks r5-pause-end:s45a" || { ok=0; checks="$checks MISSING:r5-pause-end-s45a"; }
+#   select : sel_named r5-pause-end && run r5-pause-end 0 24 80 chat --mock --mode jev-on
+#
+# What it proves, beyond "it renders":
+#   - §12 S45a: `/pause` with no target and no live run is the HAND-WRITTEN sentence, never the generated
+#     `error: /pause needs a live run` the `'live'` availability row used to produce (§14.2 #16, #39);
+#   - §2.7 / §14.2 #39: `/end` from an IDLE session with a committed step does NOT refuse — it ends the session;
+#     only a session with no run at all answers S45b;
+#   - §2.6: `/pause now` is the soft interrupt on a live run and the status word is CO §7.6's `pausing · …`;
+#   - §2.13's two cells at 40 columns: the `/end` ladder falls to `y end · Y now · n stay` and stays readable;
+#   - TD4 D-X §4.5: Enter on the confirm row is inert — the run is still live after it;
+#   - G-R5-9 / §7 row 61: `assertNoKeyBytes` over every frame.
+
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.4
+
+# 1 — §12 S45a at 80x24: `/pause` with nothing running. The sentence names the targeted form, so the refusal is
+#     also the documentation of the verb that WOULD have worked.
+send /pause
+sleep 0.2
+send \r
+expect needs a live run
+sleep 0.3
+mark pause-no-run-80
+
+# 2 — §2.13 at 40 columns: the same refusal, cut to the width, never wrapped by Ink (§2.1)
+resize 24 40
+sleep 0.8
+send /pause
+sleep 0.2
+send \r
+sleep 0.4
+mark pause-no-run-40
+
+# 3 — a live run, so the local form has something to pause
+resize 24 80
+sleep 0.6
+send do a thing
+sleep 0.2
+send \r
+sleep 1.2
+mark run-live
+
+# 4 — §2.6 / CO §7.6: `/pause` at the step boundary. The status word says what is being waited for and how to
+#     escalate, so the wait is never one the user cannot get out of.
+send /pause
+sleep 0.2
+send \r
+sleep 0.6
+mark pausing
+
+# 5 — the run settles paused; §12 S19's `paused after step <n>` names the way forward
+sleep 1.2
+mark paused
+
+# 6 — §2.7 / §14.2 #39: `/end` from a session whose run is no longer LIVE. This is the case the first
+#     implementation refused (`KeyRunPhase` has no `paused` member, so a paused session reports `run: 'none'`),
+#     which made the ordinary pause-then-end flow unreachable.
+send /end
+sleep 0.2
+send \r
+sleep 0.5
+mark end-after-pause
+
+# 7 — §2.13 at 40 columns: the ladder's narrowest rung. `y end · Y now · n stay` is 22 cells, so all three
+#     answers survive a 40-column card — a modal must never lose its way out.
+resize 24 40
+sleep 0.8
+mark end-40
+
+send /exit
+sleep 0.2
+send \r
+eof

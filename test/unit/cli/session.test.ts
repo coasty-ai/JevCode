@@ -16,7 +16,7 @@ import { COMMAND_ERRORS, EXIT_CONFIRM_ROW, GENERATOR_IGNORED_NOTE, STEER_ERRORS,
 import { helpLines } from '../../../src/tui/commands/palette.js';
 import { modeBadgeWord } from '../../../src/tui/status/lines.js';
 import { MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
-import { MISSING_GENERATOR_ONLY, MOCK_VERIFY_NOTE, PANEL_HANDLED_BY_TUI, TRANSCRIPT_ALWAYS_FULL, capsItem, defaultModeItem, fixBlockLines, modeSavedItem } from '../../../src/tui/onboarding/lines.js';
+import { missingGeneratorOnly, MOCK_VERIFY_NOTE, PANEL_HANDLED_BY_TUI, TRANSCRIPT_ALWAYS_FULL, capsItem, defaultModeItem, fixBlockLines, modeSavedItem } from '../../../src/tui/onboarding/lines.js';
 import { whyErrorText } from '../../../src/tui/why.js';
 import { mkdirSync as mkdirp } from 'node:fs';
 import { sessionCapChangedLine } from '../../../src/tui/budget/lines.js';
@@ -130,7 +130,7 @@ describe('TUI-DESIGN-2 §3 conversational intake (the submit path, summary rows;
 });
 
 describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, landed in the controller)', () => {
-  const NO_OPEN_ASSIST = '/nonexistent/no-extra-env';
+  const NO_EXTRA_ENV = '/nonexistent/extra.env';
   const modeActions = (h: Harness): unknown[] => h.renderer.dispatched.filter((a) => a.type === 'mode');
 
   it('/mode alone shows the mode in two forms (F1): one word plus ` (default)` when nothing differs, `mode <cur> — next run: <next>` otherwise; /llm on|off and /mode <m> pend with modeSetItem and a `mode` dispatch; the same mode twice says already', async () => {
@@ -199,7 +199,7 @@ describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, lan
     const calls: { missing: readonly string[]; reason: WizardReason; mode: string | undefined }[] = [];
     let answer: 'cancelled' | 'saved' = 'cancelled';
     const h = await build({
-      flags: { mock: false, mode: 'jev-only', openAssistPath: NO_OPEN_ASSIST },
+      flags: { mock: false, mode: 'jev-only', extraEnvFile: NO_EXTRA_ENV },
       env: { TYPESAFE_API_KEY: `ts-${'0123456789abcdef'.repeat(3)}` },
       prompts: {
         wizard: async (missing, o) => {
@@ -552,7 +552,10 @@ describe('commands (§5.2)', () => {
     void h.controller.run();
     await h.ready();
     await h.command('/pause');
-    expect(h.renderer.notes.at(-1)).toMatchObject({ text: 'error: /pause needs a live run', label: '[ui]', level: 'error' });
+    // TUI-DESIGN-5 §2.6 / §12 S45a (§14.2 #16, #39): `/pause` is `availableDuringTask: 'any'` now, because
+    // `/pause <target>` touches no local engine; the LOCAL form's refusal is hand-written and names the form that
+    // would have worked, which the generated `availabilityError` cannot express
+    expect(h.renderer.notes.at(-1)).toMatchObject({ text: 'error: /pause with no target needs a live run — /pause <target> asks a peer, any time', label: '[ui]', level: 'error' });
     await h.command('/foo');
     // TUI-DESIGN-4 §3.1.7: the one error shape — `error: /<command> — <what went wrong> · <what to do instead>`
     expect(h.renderer.notes.at(-1)?.text).toMatch(/^error: \/foo — not a command\b/);
@@ -1171,7 +1174,7 @@ describe('wave-4 polish: thresholds, the engine log handle, the live session cap
 });
 
 describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config.mode, the wizard\'s found state and mode outcome, the one-time default-mode item', () => {
-  const NO_OPEN_ASSIST = '/nonexistent/no-extra-env';
+  const NO_EXTRA_ENV = '/nonexistent/extra.env';
   const OR_KEY = 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
   const TS_KEY = `ts-${'0123456789abcdef'.repeat(3)}`;
   const modeActions = (h: Harness): unknown[] => h.renderer.dispatched.filter((a) => a.type === 'mode');
@@ -1184,7 +1187,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
 
   it('§1.2 (edge 26): JEVCODE_MODE=jev-only with no --mode → the session runs jev-only (controller.mode, the badge dispatch), the startup wizard lists the Jev key only', async () => {
     const calls: { missing: readonly string[]; found: unknown }[] = [];
-    const h = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { JEVCODE_MODE: 'jev-only' }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found }); return { kind: 'cancelled' }; } } });
+    const h = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { JEVCODE_MODE: 'jev-only' }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found }); return { kind: 'cancelled' }; } } });
     void h.controller.run();
     await h.ready();
     expect(h.controller.mode()).toBe('jev-only');
@@ -1198,7 +1201,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     const home = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
     writeConfig(home, { mode: 'jev-only' });
     let wizards = 0;
-    const h = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { TYPESAFE_API_KEY: TS_KEY }, prompts: { wizard: async () => { wizards += 1; return { kind: 'cancelled' }; } } });
+    const h = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { TYPESAFE_API_KEY: TS_KEY }, prompts: { wizard: async () => { wizards += 1; return { kind: 'cancelled' }; } } });
     void h.controller.run();
     await h.ready();
     expect(wizards).toBe(0);
@@ -1210,7 +1213,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     expect(h.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
     const home2 = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
     writeConfig(home2, { mode: 'jev-on' });
-    const h2 = await build({ home: home2, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY }, prompts: { wizard: async () => { wizards += 1; return { kind: 'cancelled' }; } } });
+    const h2 = await build({ home: home2, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY }, prompts: { wizard: async () => { wizards += 1; return { kind: 'cancelled' }; } } });
     void h2.controller.run();
     await h2.ready();
     expect(wizards).toBe(0);
@@ -1240,7 +1243,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     if (DEFAULT_MODE === 'jev-only') return; // the generator default is what makes the generator key missing
     const calls: { missing: readonly string[]; found: unknown; foundSource: unknown; mode: unknown }[] = [];
     const home = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
-    const h = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { TYPESAFE_API_KEY: TS_KEY }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found, foundSource: o.foundSource, mode: o.mode }); return { kind: 'mode', mode: 'jev-only', persist: true }; } } });
+    const h = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { TYPESAFE_API_KEY: TS_KEY }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found, foundSource: o.foundSource, mode: o.mode }); return { kind: 'mode', mode: 'jev-only', persist: true }; } } });
     void h.controller.run();
     await h.ready();
     expect(calls).toEqual([{ missing: ['generator.apiKey'], found: 'typesafe', foundSource: 'env', mode: DEFAULT_MODE }]);
@@ -1252,7 +1255,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     // no "no key found" block: after the mode moved nothing is missing
     expect(h.renderer.notes.some((n) => n.text.startsWith('no key found'))).toBe(false);
     // the restart: the file's `mode` row drives the session — no wizard, jev-only
-    const h2 = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { TYPESAFE_API_KEY: TS_KEY }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found, foundSource: o.foundSource, mode: o.mode }); return { kind: 'cancelled' }; } } });
+    const h2 = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { TYPESAFE_API_KEY: TS_KEY }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found, foundSource: o.foundSource, mode: o.mode }); return { kind: 'cancelled' }; } } });
     void h2.controller.run();
     await h2.ready();
     expect(calls).toHaveLength(1);
@@ -1260,19 +1263,19 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     // edge 35: a round-2 file Jev key (jevApiKey + jevProvider typesafe, no file mode) → found typesafe from the file layer, never the `provider` step
     const home3 = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
     writeConfig(home3, { jevApiKey: TS_KEY, jevProvider: 'typesafe' });
-    const h3 = await build({ home: home3, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found, foundSource: o.foundSource, mode: o.mode }); return { kind: 'cancelled' }; } } });
+    const h3 = await build({ home: home3, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, prompts: { wizard: async (missing, o) => { calls.push({ missing, found: o.found, foundSource: o.foundSource, mode: o.mode }); return { kind: 'cancelled' }; } } });
     void h3.controller.run();
     await h3.ready();
     expect(calls.at(-1)).toEqual({ missing: ['generator.apiKey'], found: 'typesafe', foundSource: 'file', mode: DEFAULT_MODE });
     // edge 17: JEV_API_KEY only (an OpenRouter key) → found jev, reusable
     const seen: unknown[] = [];
-    const h4 = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { JEV_API_KEY: OR_KEY }, prompts: { wizard: async (missing, o) => { seen.push({ missing, found: o.found, foundSource: o.foundSource, foundReusable: o.foundReusable, jevProvider: o.jevProvider }); return { kind: 'cancelled' }; } } });
+    const h4 = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { JEV_API_KEY: OR_KEY }, prompts: { wizard: async (missing, o) => { seen.push({ missing, found: o.found, foundSource: o.foundSource, foundReusable: o.foundReusable, jevProvider: o.jevProvider }); return { kind: 'cancelled' }; } } });
     void h4.controller.run();
     await h4.ready();
     expect(seen).toEqual([{ missing: ['generator.apiKey'], found: 'jev', foundSource: 'env', foundReusable: true, jevProvider: 'openrouter' }]);
     // edge 16: ANTHROPIC_API_KEY only → both missing, found anthropic
     const anth: unknown[] = [];
-    const h5 = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { ANTHROPIC_API_KEY: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123' }, prompts: { wizard: async (missing, o) => { anth.push({ missing, found: o.found, provider: o.provider }); return { kind: 'cancelled' }; } } });
+    const h5 = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { ANTHROPIC_API_KEY: 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123' }, prompts: { wizard: async (missing, o) => { anth.push({ missing, found: o.found, provider: o.provider }); return { kind: 'cancelled' }; } } });
     void h5.controller.run();
     await h5.ready();
     expect(anth).toEqual([{ missing: ['generator.apiKey', 'decider.apiKey'], found: 'anthropic', provider: 'openrouter' }]);
@@ -1299,7 +1302,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
   it('§1.7 (D-Q, edge 36): a keyed start whose mode resolves from `default` prints ONE [setup] default-mode item and writes seen.defaultMode; a second start is silent; a file `mode` row, --mock or a jev-only default suppress it; a different seen value prints again; a read-only config dir prints and warns once in the log', async () => {
     if (DEFAULT_MODE === 'jev-only') return; // the item exists for defaults that bill a generator
     const home = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
-    const h = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    const h = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
     void h.controller.run();
     await h.ready();
     const item = defaultModeItem(DEFAULT_MODE, h.controller.view.runCapUsd, h.controller.view.sessionMeter.snapshot().capUsd);
@@ -1310,20 +1313,20 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     const idx = h.renderer.notes.findIndex((n) => n.text === item);
     expect(idx).toBeLessThan(h.renderer.notes.findIndex((n) => n.label === '[sandbox]'));
     // second start: silent
-    const h2 = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    const h2 = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
     void h2.controller.run();
     await h2.ready();
     expect(h2.renderer.notes.some((n) => n.text === item)).toBe(false);
     // a different seen value (an earlier default) prints again and updates the row
     writeConfig(home, { seenDefaultMode: 'jev-only' });
-    const h3 = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    const h3 = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
     void h3.controller.run();
     await h3.ready();
     expect(h3.renderer.notes.filter((n) => n.text === item)).toHaveLength(1);
     expect(readConfig(home)['seenDefaultMode']).toBe(DEFAULT_MODE);
     // a `mode` row in the file suppresses it entirely
     writeConfig(home, { mode: DEFAULT_MODE });
-    const h4 = await build({ home, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    const h4 = await build({ home, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
     void h4.controller.run();
     await h4.ready();
     expect(h4.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
@@ -1335,14 +1338,14 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     expect(h5.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
     expect(existsSync(configPath(h5.home))).toBe(false);
     // JEVCODE_MODE (a non-default source) suppresses it too
-    const h6 = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY, JEVCODE_MODE: DEFAULT_MODE } });
+    const h6 = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY, JEVCODE_MODE: DEFAULT_MODE } });
     void h6.controller.run();
     await h6.ready();
     expect(h6.renderer.notes.some((n) => n.text.includes('(default) — caps'))).toBe(false);
     // a read-only config directory: the item prints (at every start), the log warns once, the process goes on
     const roHome = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
     const lines: string[] = [];
-    const h7 = await build({ home: roHome, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { log: capturingLog(lines), writeConfigValue: async () => { throw new Error('EACCES: read-only'); } } });
+    const h7 = await build({ home: roHome, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { log: capturingLog(lines), writeConfigValue: async () => { throw new Error('EACCES: read-only'); } } });
     void h7.controller.run();
     await h7.ready();
     expect(h7.renderer.notes.filter((n) => n.text === item)).toHaveLength(1);
@@ -1351,7 +1354,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
   });
 
   it('§1.7: a wizard save on a first run prints the caps item for the mode it saved for (a keyed start prints the default-mode item instead)', async () => {
-    const h = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, prompts: { wizard: async () => ({ kind: 'saved', patch: { apiKey: OR_KEY, jevApiKey: OR_KEY, provider: 'openrouter', jevProvider: 'openrouter' } }) } });
+    const h = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, prompts: { wizard: async () => ({ kind: 'saved', patch: { apiKey: OR_KEY, jevApiKey: OR_KEY, provider: 'openrouter', jevProvider: 'openrouter' } }) } });
     void h.controller.run();
     await h.ready();
     const caps = capsItem(DEFAULT_MODE, h.controller.view.runCapUsd, h.controller.view.sessionMeter.snapshot().capUsd);
@@ -1364,7 +1367,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
   it('§1.5: verifyForWizard meters the priced calls on the session meter (never the chat ledger) and maps a rejected side to its field; --mock never reaches the network', async () => {
     const seen: unknown[] = [];
     const h = await build({
-      flags: { mock: false, openAssistPath: NO_OPEN_ASSIST },
+      flags: { mock: false, extraEnvFile: NO_EXTRA_ENV },
       env: { OPENROUTER_API_KEY: OR_KEY },
       deps: {
         verifyKeys: async (input) => {
@@ -1387,12 +1390,12 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     await h.command('/cost');
     expect(h.renderer.notes.at(-1)?.detail ?? '').not.toContain('chat $');
     // a rejected Jev side names the Jev field
-    const rejecting = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { verifyKeys: async () => [{ which: 'jev', ok: false, text: 'verification failed: openrouter HTTP 401 — the key was kept; fix it with /login', reason: 'rejected' }] } });
+    const rejecting = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { verifyKeys: async () => [{ which: 'jev', ok: false, text: 'verification failed: openrouter HTTP 401 — the key was kept; fix it with /login', reason: 'rejected' }] } });
     void rejecting.controller.run();
     await rejecting.ready();
     expect(await rejecting.controller.verifyForWizard({ provider: null, jevProvider: null, fields: ['key'], mode: DEFAULT_MODE })).toEqual({ ok: false, rejected: 'decider.apiKey', items: ['verification failed: openrouter HTTP 401 — the key was kept; fix it with /login'] });
     // a credits / unreachable failure keeps the key (rejected null)
-    const credits = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { verifyKeys: async () => [{ which: 'jev', ok: false, text: 'x', reason: 'credits' }] } });
+    const credits = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY }, deps: { verifyKeys: async () => [{ which: 'jev', ok: false, text: 'x', reason: 'credits' }] } });
     void credits.controller.run();
     await credits.ready();
     expect((await credits.controller.verifyForWizard({ provider: null, jevProvider: null, fields: ['key'], mode: DEFAULT_MODE })).rejected).toBeNull();
@@ -1404,7 +1407,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
   });
 
   it('§1.3.3 / §1.6 (edges 20, 21): a pipe with no keys → ConfigError + the mode\'s fix block, exit 2, no run dir; with TYPESAFE_API_KEY only under a generator default → the three-way generator text', async () => {
-    const h = await build({ mode: 'one-shot', rendererKind: 'plain', interactive: false, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, task: 'fix it' });
+    const h = await build({ mode: 'one-shot', rendererKind: 'plain', interactive: false, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, task: 'fix it' });
     const code = await h.controller.run();
     expect(code).toBe(2);
     const err = h.stderr.join('');
@@ -1414,19 +1417,27 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
     expect(h.factory.calls).toHaveLength(0);
     expect(existsSync(join(h.home, 'runs'))).toBe(false);
     if (DEFAULT_MODE !== 'jev-only') {
-      const ts = await build({ mode: 'one-shot', rendererKind: 'plain', interactive: false, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { TYPESAFE_API_KEY: TS_KEY }, task: 'fix it' });
+      const ts = await build({ mode: 'one-shot', rendererKind: 'plain', interactive: false, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { TYPESAFE_API_KEY: TS_KEY }, task: 'fix it' });
       expect(await ts.controller.run()).toBe(2);
-      expect(ts.stderr.join('')).toContain(`jevcode: ${MISSING_GENERATOR_ONLY}`);
+      // round-5 item 4: the default provider is openrouter, so the sentence names OPENROUTER_API_KEY
+      expect(ts.stderr.join('')).toContain(`jevcode: ${missingGeneratorOnly('openrouter')}`);
+      expect(ts.stderr.join('')).toContain('set OPENROUTER_API_KEY (the code model)');
       for (const l of fixBlockLines(DEFAULT_MODE, null)) expect(ts.stderr.join('')).toContain(l);
+
+      // round-5 item 4: under `--provider anthropic` it names ANTHROPIC_API_KEY, not the OpenRouter variable
+      const anth = await build({ mode: 'one-shot', rendererKind: 'plain', interactive: false, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV, provider: 'anthropic' }, env: { TYPESAFE_API_KEY: TS_KEY }, task: 'fix it' });
+      expect(await anth.controller.run()).toBe(2);
+      expect(anth.stderr.join('')).toContain('missing generator.apiKey: set ANTHROPIC_API_KEY (the code model)');
+      expect(anth.stderr.join('')).not.toContain('set OPENROUTER_API_KEY (the code model)');
     }
     // JEVCODE_MODE=jev-only in the pipe's env: the jev-only block
-    const jo = await build({ mode: 'one-shot', rendererKind: 'plain', interactive: false, flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { JEVCODE_MODE: 'jev-only' }, task: 'fix it' });
+    const jo = await build({ mode: 'one-shot', rendererKind: 'plain', interactive: false, flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { JEVCODE_MODE: 'jev-only' }, task: 'fix it' });
     expect(await jo.controller.run()).toBe(2);
     for (const l of fixBlockLines('jev-only', null)) expect(jo.stderr.join('')).toContain(l);
   });
 
   it('§1.8 edge 6: Ctrl-C at the trust card (host.exit(2) with nothing missing) prints no fix block; a startup wizard Ctrl-C with a key still missing prints the mode\'s block', async () => {
-    const h = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, env: { OPENROUTER_API_KEY: OR_KEY } });
+    const h = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, env: { OPENROUTER_API_KEY: OR_KEY } });
     void h.controller.run();
     await h.ready();
     try {
@@ -1435,7 +1446,7 @@ describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config
       /* process.exit */
     }
     expect(h.renderer.notes.some((n) => n.text.startsWith('no key found'))).toBe(false);
-    const missing = await build({ flags: { mock: false, openAssistPath: NO_OPEN_ASSIST }, prompts: { wizard: async () => ({ kind: 'cancelled' }) } });
+    const missing = await build({ flags: { mock: false, extraEnvFile: NO_EXTRA_ENV }, prompts: { wizard: async () => ({ kind: 'cancelled' }) } });
     void missing.controller.run();
     await missing.ready();
     try {
@@ -1471,7 +1482,9 @@ describe('TUI-DESIGN-3 §4.4: the audit rows the controller lands (S3)', () => {
     void h.controller.run();
     await h.ready();
     await h.command('/model');
-    expect(h.renderer.notes.at(-1)?.text).toMatch(/^model /);
+    // R4b: `/model` with no id now prints the show form AND the `--plain` twin of the picker, so the show form
+    // is the FIRST of the arm's notes rather than the last (the numbered list and its prompt follow it)
+    expect(h.renderer.notes.filter((n) => /^model /.test(n.text)).at(-1)?.text).toMatch(/^model /);
     await h.command('/provider');
     expect(h.renderer.notes.at(-1)?.text).toBe('provider openrouter');
     await h.command('/mode jev-only');
@@ -1487,7 +1500,7 @@ describe('TUI-DESIGN-3 §4.4: the audit rows the controller lands (S3)', () => {
     await h.command('/model glm-no-vendor');
     expect(h.renderer.notes.at(-1)?.text).toBe('model glm-no-vendor pending (next run) — OpenRouter ids read <vendor>/<model>');
     await h.command('/model');
-    expect(h.renderer.notes.at(-1)?.text).toMatch(/\(next run: glm-no-vendor\)$/);
+    expect(h.renderer.notes.filter((n) => /^model /.test(n.text)).at(-1)?.text).toMatch(/\(next run: glm-no-vendor\)$/);
   });
 
   it('F3 /panel and /transcript: --plain prints the panel rows (`(no decisions yet)` when empty) and `transcript full (--plain is always full)`; the TUI answers the warn note (only a wizard-owned line reaches the host)', async () => {
@@ -1808,4 +1821,53 @@ describe('/jev cost row: Jev cache hits (llm-jev iteration 1, src/jev/cache.ts)'
     expect(jevCostValue('$0.007', 1, 1)).toBe('$0.007 · 1 question · 1 cache hit');
     expect(jevCostValue('$0.007', 1787, 12)).toBe('$0.007 · 1787 questions · 12 cache hits');
   });
+});
+
+/**
+ * The gap-closure wave's hand-offs R4a / R4b (TUI-DESIGN-5 §13.1 / §5.7 / §6.4 D-AQ): ONE producer, two sinks.
+ * `App.tsx` intercepts `/import` and `/model` and opens an overlay / the pane-slot picker; a `--plain` session has
+ * no overlay, and until these arms landed it printed the round-4 refusal (`/import is not available in this
+ * build`) and a bare `model <current>` — two sentences for one feature, which §13.1's one-producer rule forbids.
+ */
+describe('R4a / R4b: the `--plain` twins of /import and /model print the numbered one-shot rows', () => {
+  const plain = async (): Promise<Harness> => {
+    const h = await makeController({ rendererKind: 'plain', flags: { mock: true, mockSteps: '3', plain: true } });
+    void h.controller.run();
+    await h.ready();
+    return h;
+  };
+  const shown = (h: Harness): string => h.renderer.notes.map((n) => [n.text, ...(Array.isArray(n.detail) ? n.detail : typeof n.detail === 'string' ? [n.detail] : [])].join('\n')).join('\n');
+
+  it('/import prints the SAME rows the overlay renders, from one `initImportUi`, and never the round-4 refusal', async () => {
+    const h = await plain();
+    await h.command('/import');
+    const text = shown(h);
+    expect(text).not.toContain('/import is not available in this build');
+    // either a plan (the numbered rows plus the apply pointer) or the ONE honest empty sentence — never a refusal
+    const planned = text.includes('jevcode import --yes applies this plan');
+    const nothing = text.includes('nothing to import');
+    expect(planned || nothing).toBe(true);
+    if (planned) expect(text).toMatch(/(^|\n)\s*1[.)]?\s/);
+  }, 40_000);
+
+  it('/model with no id prints the current model AND the numbered picker rows, offline, from the bundled snapshot', async () => {
+    const h = await plain();
+    await h.command('/model');
+    const text = shown(h);
+    // round 4's one line survives — it is the answer to "what am I using?"
+    expect(text).toMatch(/model \S/);
+    // §6.4 D-AQ: and the numbered list the picker shows, with its prompt
+    expect(text).toMatch(/(^|\n)\s*1[.)]?\s/);
+    const { MODELS_PLAIN_CAP, modelsPickPrompt } = await import('../../../src/tui/models/lines.js');
+    const { instantCatalogue } = await import('../../../src/models/index.js');
+    expect(text).toContain(modelsPickPrompt(Math.min(instantCatalogue().length, MODELS_PLAIN_CAP)));
+  }, 40_000);
+
+  it('/model WITH an id still pends it and opens no list (the picker and this twin cannot both answer)', async () => {
+    const h = await plain();
+    await h.command('/model some/thing');
+    const text = shown(h);
+    expect(text).toContain('model some/thing pending (next run)');
+    expect(text).not.toContain('pick 1-');
+  }, 40_000);
 });

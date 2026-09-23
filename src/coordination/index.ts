@@ -2,7 +2,9 @@
  * The coordination facade (§12.0.4): the import path for every consumer of the coordination plane.
  *
  * WHO IMPORTS IT TODAY, as built rather than as planned: the engine imports it through `src/loop/coordination.ts`;
- * `src/session/**`, `src/cli/**` and `src/tui/**` have no importer yet. The header used to call this "the ONLY
+ * Since round 5 (0.6.0) every consumer directory imports it: `src/session/**` (`publish.ts`, `peers.ts` — the write
+ * half and the fold reader behind `openCoordination()`), `src/cli/**` (`sessions.ts`) and `src/tui/**` (`useEngine.tsx`,
+ * `status/lines.ts`, `commands/target.ts` — the fold, the peers zone and target resolution). No directory is importer-free. The header used to call this "the ONLY
  * import path for `src/session/**`, `src/cli/**`, `src/tui/**` and the engine", which read as a description of the
  * tree and was a plan: none of those three directories imports this file at all, so `/peers` still answers `the peer
  * registry is not available in this build` and nothing sets `EngineOptions.coordination`.

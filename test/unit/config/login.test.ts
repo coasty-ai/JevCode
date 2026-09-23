@@ -221,7 +221,7 @@ describe('the pure helpers (TUI-DESIGN-2 §1.2, §1.4, §2.3)', () => {
     const none = { jevProvider: null, jevApiKey: null };
     expect(inferJevProvider({ flag: 'typesafe', lookup: lookupOf({ JEV_API_KEY: 'x' }), file: none })).toBe('typesafe');
     expect(inferJevProvider({ flag: 'auto', lookup: lookupOf({ JEV_PROVIDER: 'typesafe', JEV_API_KEY: 'x' }), file: none })).toBe('typesafe');
-    // the resolved provider (main.tsx's resolveConfig: env, ./.env, <OPEN_ASSIST_PATH>/.env, the file, the auto rules) outranks the local rules
+    // the resolved provider (main.tsx's resolveConfig: env, ./.env, <JEVCODE_EXTRA_ENV_FILE>, the file, the auto rules) outranks the local rules
     expect(inferJevProvider({ flag: undefined, resolved: 'typesafe', lookup: lookupOf({ JEV_PROVIDER: 'openrouter', JEV_API_KEY: 'x' }), file: none })).toBe('typesafe');
     expect(inferJevProvider({ flag: 'openrouter', resolved: 'typesafe', lookup: lookupOf({}), file: none })).toBe('openrouter');
     expect(inferJevProvider({ flag: undefined, resolved: null, lookup: lookupOf({ JEV_PROVIDER: 'typesafe' }), file: none })).toBe('typesafe');
@@ -641,7 +641,7 @@ describe('commandLogin', () => {
     expect(file.asked).toEqual([]);
     expect(prompts).toEqual(['Jev API key (TYPESAFE_API_KEY): ']);
     expect(await readConfig()).toEqual({ jevApiKey: TS_KEY, jevProvider: 'typesafe' });
-    // the session's resolution (an OPENROUTER_API_KEY in <OPEN_ASSIST_PATH>/.env the local rules never see) decides the provider
+    // the session's resolution (an OPENROUTER_API_KEY in <JEVCODE_EXTRA_ENV_FILE> the local rules never see) decides the provider
     await rm(configPath());
     prompts.length = 0;
     const resolved = io(null, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV }, readMasked: async (p) => (prompts.push(p), OR_KEY), resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.provider', { value: 'openrouter', source: 'derived' }]]) });
@@ -804,10 +804,21 @@ describe('commandLogin', () => {
     expect(t4.err.text.split('\n').filter(Boolean)).toEqual(fixBlockLines(DEFAULT_MODE, null));
   });
 
-  it('--provider is validated; JEVCODE_PROVIDER preselects; without --provider and a generator key the default is openrouter (commit 2a92d0b)', async () => {
+  it('--provider is validated over the SEVEN ids (TUI-DESIGN-5 §6.1/§6.5, D-AP); JEVCODE_PROVIDER preselects; without --provider and a generator key the default is openrouter (commit 2a92d0b)', async () => {
     const t = io(`${KEY}\n`);
-    expect(await commandLogin({ provider: 'gemini', generatorKeyStdin: true }, t)).toBe(2);
-    expect(t.err.text).toContain('--provider: expected anthropic|openrouter');
+    // round 5 widens the accepted set from two to seven: `gemini` is now a provider, `notaprovider` still is not
+    expect(await commandLogin({ provider: 'notaprovider', generatorKeyStdin: true }, t)).toBe(2);
+    expect(t.err.text).toContain('--provider: expected anthropic|openrouter|openai|gemini|xai|fireworks|meta');
+    /**
+     * TUI-DESIGN-5 §6.1 / D-AP: `gemini` PARSES (the flag accepts seven ids) but is not PERSISTED while
+     * `src/config/validate.ts:161` still throws `one of anthropic|openrouter` — writing it would leave a profile
+     * every later `jevcode chat/run/config` exits 2 on. `src/cli/login.ts`'s guard refuses it with §12.5 S107's
+     * sentence, and `test/unit/cli/login.test.ts` flips to the accepting form the moment the validate hunk lands.
+     */
+    const tg = io(`${KEY}\n`, { env: { XDG_CONFIG_HOME: join(home, 'xdg-gemini') } });
+    expect(await commandLogin({ provider: 'gemini', generatorKeyStdin: true }, tg)).toBe(2);
+    expect(tg.err.text).toContain('gemini — browse only, generation not yet available');
+    expect(tg.out.text).toBe('');
     const t2 = io(`${OR_KEY}\n`, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), JEVCODE_PROVIDER: 'openrouter' } });
     expect(await commandLogin({ generatorKeyStdin: true }, t2)).toBe(0);
     expect((await readConfig())['provider']).toBe('openrouter');

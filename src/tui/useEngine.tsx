@@ -11,6 +11,7 @@
  */
 import { useEffect, useReducer, useRef } from 'react';
 import type {
+  AgentRow,
   BlockingRequest,
   ConfirmOutcome,
   ConfirmRequest,
@@ -32,7 +33,9 @@ import { DEFAULT_COMPLETE_THRESHOLD, DEFAULT_IMPOSSIBLE_THRESHOLD, DEFAULT_MODE 
 import { foldByStep, foldPlanRecord, foldStageEnd, foldStepEnd, toDecisionRow, type DecisionRow, type PaneTab, type PlanView, type SynthView, type TimelineStep } from './pane/model.js';
 import { IDENTITY_REVIEWER, itemsFromEvent, localItem, sanitizeStream, synthText, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { retryViewFrom, startTicker, type RetryView } from './retry.js';
-import type { GitZone, ThinkingPhase } from './status/lines.js';
+import type { GitZone, PeerZoneSelf, ThinkingPhase } from './status/lines.js';
+// TUI-DESIGN-5 §2.2 (R5-H4): TYPE-only — `src/coordination/**` must stay off the first-frame graph (§2.1 rule 3)
+import type { Fold } from '../coordination/index.js';
 import { toastReducer, type Toast } from './toasts.js';
 
 export type { RetryView } from './retry.js';
@@ -195,6 +198,25 @@ export interface UiState {
   /** ≤ 4; an error toast pre-empts an info toast */
   readonly toasts: readonly Toast[];
   readonly tab: PaneTab;
+  /**
+   * TUI-DESIGN-5 §4.3 (R5-4's §9.2 hunk): the agent tree's rows, the **one** source of "something delegates".
+   * Empty is the production state until `AgentSupervisor` exists (§4.0, §4.7), so `paneTabsFor(agents.length > 0)`
+   * keeps the `'a'` tab, its `]`/`[` stop and its eight keys invisible — no second flag can disagree with the rows.
+   */
+  readonly agents: readonly AgentRow[];
+  /**
+   * TUI-DESIGN-5 §4.3 / §14.2 #41: the pane holds focus, so the agents tab's eight single letters resolve instead
+   * of typing into the composer. Granted by `Alt+A` / `/agents` on an **empty draft** only (S86a, §7 row 99) and
+   * dropped automatically the moment `paneTabsFor(...)` stops containing `'a'`.
+   */
+  readonly paneFocus: boolean;
+  /**
+   * TUI-DESIGN-5 §4.3 / §13.2 clause 6: the highlighted agent row, moved by `↑` / `↓` while the tab is focused.
+   * It is what makes the tab **scroll**: `agentTabRows` centres its viewport on it, so rows 13 and beyond of a
+   * 30-row tree are reachable. Held here rather than in the pane so the reducer can clamp it against `agents`
+   * in the one place the rows change — a cursor can never point past the last agent.
+   */
+  readonly agentCursor: number;
   readonly git: GitZone | null;
   readonly paths: { runDir: string; transcript: string; log: string } | null;
   readonly blocking: BlockingRequest | null;
@@ -269,11 +291,18 @@ export interface UiState {
   readonly scroll: { readonly anchor: 'bottom' } | { readonly anchor: 'row'; readonly top: number };
   /** TUI-DESIGN-4 §5.3 P-C7: the one-slot submission queue — Enter while thinking remembers the text instead of dropping it; null when empty */
   readonly queued: string | null;
+  // ----- TUI-DESIGN-5 §2.2 (R5-H4): the `peers` status zone
+  /** the coordination fold, the peer zone's only source; null until the ledger opens (never before the first frame, §2.1 rule 3) */
+  readonly fold: Fold | null;
+  /** this session's identity, so my own run is not counted as a peer; null excludes nothing (§2.2) */
+  readonly selfId: PeerZoneSelf | null;
 }
 
 /** TUI-DESIGN §15 item 20 `UiAction` (today's four, the design's additions, and the additive `picker` / `title` / `spend:session` / `git:dirs`). */
 export type UiAction =
   | { type: 'event'; event: EngineEvent; at?: number }
+  /** TUI-DESIGN-5 §2.2 (R5-H4): a fold whose peer COUNTS moved — the session controller drops a beat that moves nothing */
+  | { type: 'peers:fold'; fold: Fold; selfId: PeerZoneSelf }
   | { type: 'live'; text: string; toolChars?: number }
   | { type: 'confirm:request'; request: ConfirmRequest; at?: number }
   | { type: 'confirm:settled'; id: string }
@@ -293,6 +322,12 @@ export type UiAction =
   | { type: 'toast'; text: string; level: Toast['level']; ms: number }
   | { type: 'ack-errors' }
   | { type: 'tab'; tab: PaneTab }
+  /** TUI-DESIGN-5 §4.3: focus the pane so the agents tab's keys resolve (`Alt+A`); Esc and a vanished tab drop it. */
+  | { type: 'paneFocus'; on: boolean }
+  /** TUI-DESIGN-5 §4.3 / §4.7: the agent rows, folded from `agent:*` events or injected by a fixture in tests. */
+  | { type: 'agents'; rows: readonly AgentRow[] }
+  /** TUI-DESIGN-5 §4.3: `↑` / `↓` on the focused agents tab — `by` steps the cursor, `to` sets it; both clamped. */
+  | { type: 'agentCursor'; by?: -1 | 1; to?: number }
   | { type: 'git'; zone: GitZone | null }
   | { type: 'local-item'; item: TranscriptItem }
   | { type: 'local'; text: string; label?: TranscriptItem['label']; level?: TranscriptLevel; detail?: string }
@@ -340,6 +375,9 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
   return {
     items: [],
     seq: 0,
+    // TUI-DESIGN-5 §2.2 (R5-H4): no ledger before the first frame, so the peer zone starts absent, never a placeholder
+    fold: null,
+    selfId: null,
     live: '',
     toolChars: 0,
     synth: null,
@@ -372,6 +410,9 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     loop: null,
     toasts: [],
     tab: 'd',
+    agents: [],
+    paneFocus: false,
+    agentCursor: 0,
     git: null,
     paths: null,
     blocking: null,
@@ -501,7 +542,26 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
     case 'ack-errors':
       return state.errors === 0 ? state : { ...state, errors: 0 };
     case 'tab':
-      return state.tab === action.tab ? state : { ...state, tab: action.tab };
+      return state.tab === action.tab ? state : { ...state, tab: action.tab, ...(action.tab === 'a' ? {} : { paneFocus: false }) };
+    case 'paneFocus': {
+      // §4.3: focus only ever sits on the agents tab, and only while the tab exists — the invariant is held HERE so
+      // no caller can leave `paneFocus` true after the last agent ends (the eight letters would eat the composer).
+      const on = action.on && state.agents.length > 0;
+      return state.paneFocus === on ? state : { ...state, paneFocus: on, ...(on ? { tab: 'a' as PaneTab } : {}) };
+    }
+    case 'agents': {
+      if (state.agents === action.rows) return state;
+      const gone = action.rows.length === 0;
+      // §4.3: the tab vanishes with its rows; focus and the active tab follow it rather than dangling
+      const cursor = clampCursor(state.agentCursor, action.rows.length);
+      return { ...state, agents: action.rows, ...(cursor === state.agentCursor ? {} : { agentCursor: cursor }), ...(gone && state.paneFocus ? { paneFocus: false } : {}), ...(gone && state.tab === 'a' ? { tab: 'd' as PaneTab } : {}) };
+    }
+    case 'agentCursor': {
+      // §4.3: the cursor is clamped against the CURRENT rows here, so no caller can point it past the last agent
+      const want = action.to ?? state.agentCursor + (action.by ?? 0);
+      const cursor = clampCursor(want, state.agents.length);
+      return cursor === state.agentCursor ? state : { ...state, agentCursor: cursor };
+    }
     case 'git':
       return { ...state, git: action.zone };
     case 'local-item':
@@ -520,6 +580,10 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       return state.title === action.title ? state : { ...state, title: action.title };
     case 'spend:session':
       return { ...state, spend: { ...state.spend, session: action.session } };
+    case 'peers:fold':
+      // TUI-DESIGN-5 §2.2: `statusView` already reads `s.fold` / `s.selfId` (`src/tui/status/lines.ts`), so the
+      // zone lights from this arm alone — the App spreads the state into it and needs no edit of its own.
+      return { ...state, fold: action.fold, selfId: action.selfId };
     case 'thresholds': {
       const complete = Number.isFinite(action.complete) ? action.complete : state.thresholds.complete;
       const impossible = Number.isFinite(action.impossible) ? action.impossible : state.thresholds.impossible;
@@ -559,6 +623,12 @@ function sameDraft(a: DraftMirror, b: DraftMirror): boolean {
  * below discards the array at the soft cap and starts a new epoch, which is the whole point of the cap. `/export`
  * reads `transcript.log`, not this array — the array is what the renderer holds, and it is bounded.
  */
+/** TUI-DESIGN-5 §4.3: the agent cursor, clamped into `[0, n − 1]` (0 with no rows) — total over NaN and ±Infinity. */
+function clampCursor(want: number, n: number): number {
+  if (n <= 0) return 0;
+  return Math.max(0, Math.min(n - 1, Number.isFinite(want) ? Math.floor(want) : 0));
+}
+
 function appendItems(state: UiState, items: readonly TranscriptItem[]): UiState {
   if (items.length === 0) return state;
   const stamped: UiTranscriptItem[] = state.transcript === 'compact' ? items.map((i) => (hiddenInCompact(i.kind) ? { ...i, hidden: true } : i)) : [...items];

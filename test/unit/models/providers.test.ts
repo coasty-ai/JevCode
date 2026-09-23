@@ -93,7 +93,7 @@ describe('auth headers', () => {
   it('identifies the app to OpenRouter', () => {
     const h = authHeaders('openrouter', 'k');
     expect(h['authorization']).toBe('Bearer k');
-    expect(h['http-referer']).toContain('jevcode');
+    expect(h['http-referer']).toMatch(/coasty-ai\/JevCode|jevcode/i);
     expect(h['x-title']).toBe('jevcode');
   });
 

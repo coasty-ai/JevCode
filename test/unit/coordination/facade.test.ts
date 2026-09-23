@@ -427,7 +427,9 @@ describe('the facade header', () => {
   it('D4: says what is true about the header, not what is absent from its prose', async () => {
     const flat = flatHeader(await readFile('src/coordination/index.ts', 'utf8'));
     expect(flat).toContain('the engine imports it through `src/loop/coordination.ts`');
-    expect(flat).toContain('`src/session/**`, `src/cli/**` and `src/tui/**` have no importer yet');
+    // round 5 (0.6.0): every consumer directory imports the facade, and the header says so instead of claiming an importer-free set
+    expect(flat).toContain('Since round 5 (0.6.0) every consumer directory imports it');
+    expect(flat).toContain('No directory is importer-free');
     // the discarded claim survives ONCE, in the past tense and in quotes; re-asserting it as fact fails here
     expect(flat.split('the ONLY import path').length - 1).toBe(1);
     expect(flat).toContain('The header used to call this "the ONLY import path for');
@@ -437,8 +439,12 @@ describe('the facade header', () => {
     const flat = flatHeader(await readFile('src/coordination/index.ts', 'utf8'));
     const claimed = dirsClaimedImporterFree(flat);
     // the parse itself is an assertion: a rewritten sentence this cannot read would silently check nothing
-    expect(claimed).toEqual(['src/session', 'src/cli', 'src/tui']);
-    for (const dir of claimed) expect([dir, await facadeImportersIn(dir)]).toEqual([dir, []]);
+    // the header claims no importer-free directory any more (round 5 wired every consumer), so the parse yields nothing …
+    expect(claimed).toEqual([]);
+    // … and the POSITIVE claims are checked the same way: the importers the header names really import the facade
+    expect(await facadeImportersIn('src/session')).toEqual(expect.arrayContaining(['src/session/publish.ts', 'src/session/peers.ts']));
+    expect(await facadeImportersIn('src/cli')).toContain('src/cli/sessions.ts');
+    expect(await facadeImportersIn('src/tui')).toEqual(expect.arrayContaining(['src/tui/useEngine.tsx', 'src/tui/status/lines.ts', 'src/tui/commands/target.ts']));
 
     // and the walk really does find an importer: the one the header DOES claim is checked the same way
     expect(await facadeImportersIn('src/loop')).toContain('src/loop/coordination.ts');

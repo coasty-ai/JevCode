@@ -776,3 +776,139 @@ describe('purity and bookkeeping', () => {
     expect(acts(idle, k('ctrl+c'), Number.NaN)).toEqual([{ type: 'interrupt', action: 'HINT_CTRL_C' }]);
   });
 });
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-5 §4.3 / §7 rows 91, 99: the one new rung and the picker's card sub-state (R5-4's §10 `keys.test.ts`)
+// ---------------------------------------------------------------------------------------
+
+describe("the `agents` rung (TUI-DESIGN-5 §4.3, §14.2 #41)", () => {
+  const focused = st({ paneFocus: true, tab: 'a' });
+
+  it("resolves p / t / d / k / l / + ONLY when paneFocus && tab === 'a'", () => {
+    expect(acts(focused, text('p'))).toEqual([{ type: 'agents', op: 'pause' }]);
+    expect(acts(focused, text('t'))).toEqual([{ type: 'agents', op: 'steer' }]);
+    expect(acts(focused, text('d'))).toEqual([{ type: 'agents', op: 'diff' }]);
+    expect(acts(focused, text('k'))).toEqual([{ type: 'agents', op: 'kick' }]);
+    expect(acts(focused, text('l'))).toEqual([{ type: 'agents', op: 'land' }]);
+    expect(acts(focused, text('+'))).toEqual([{ type: 'agents', op: 'budget' }]);
+    expect(acts(focused, k('return'))).toEqual([{ type: 'agents', op: 'attach' }]);
+  });
+
+  it('without focus, and on any other tab, the same letters are composer text (the §14.2 #41 defect)', () => {
+    for (const s of [st({ paneFocus: false, tab: 'a' }), st({ paneFocus: true, tab: 'd' }), st()]) {
+      for (const letter of ['p', 't', 'd', 'k', 'l', '+']) expect(acts(s, text(letter)), letter).toEqual([{ type: 'insert', text: letter }]);
+    }
+  });
+
+  it('it sits BELOW Picker and ABOVE Composer', () => {
+    // below Picker: with the picker open the same letters are the picker's filter text, focus or no focus
+    const picker = st({ picker: true, paneFocus: true, tab: 'a' });
+    expect(acts(picker, text('p'))).toEqual([{ type: 'insert', text: 'p' }]);
+    // above Composer: the letters never reach the draft while focused
+    expect(acts(focused, text('p'))).not.toEqual([{ type: 'insert', text: 'p' }]);
+    // and an overlay still outranks it
+    expect(acts(st({ paneFocus: true, tab: 'a', overlay: 'review', reviewArmed: true }), text('p'))).not.toEqual([{ type: 'agents', op: 'pause' }]);
+  });
+
+  it('x twice drops, one x only arms (an agent drop loses its uncommitted diff, §4.3)', () => {
+    expect(acts(focused, text('x'))).toEqual([{ type: 'agents', op: 'dropArm' }]);
+    const armed = after(focused, text('x'), 1_000);
+    expect(acts(armed, text('x'), 1_000 + CHORD_WINDOW_MS - 1)).toEqual([{ type: 'agents', op: 'dropConfirm' }]);
+    // a different key inside the window is swallowed, never a drop
+    expect(acts(armed, text('z'), 1_000 + 10)).toEqual([]);
+    // and the arm expires
+    expect(acts(armed, text('x'), 1_000 + CHORD_WINDOW_MS + 1)).toEqual([{ type: 'agents', op: 'dropArm' }]);
+  });
+
+  it('Esc unfocuses (the tab is a focus state, not an overlay); ↑ / ↓ move the cursor', () => {
+    expect(acts(after(focused, k('escape'), 0), ESC_EXPIRED, 31)).toEqual([{ type: 'paneFocus', on: false }]);
+    expect(acts(focused, k('up'))).toEqual([{ type: 'agents', op: 'move', by: -1 }]);
+    expect(acts(focused, k('down'))).toEqual([{ type: 'agents', op: 'move', by: 1 }]);
+  });
+
+  it('anything the rung does not claim falls through to the composer (a focused tab is not a modal)', () => {
+    expect(acts(focused, text('q'))).toEqual([{ type: 'insert', text: 'q' }]);
+    expect(acts(focused, text('/'))).toEqual([{ type: 'insert', text: '/' }, { type: 'openPalette' }]);
+    expect(acts(focused, k('ctrl+l'))).toEqual([{ type: 'repaint' }]);
+    expect(acts(focused, paste('hello world'))).toEqual([{ type: 'paste', text: 'hello world' }]);
+  });
+
+  it('§7 row 99: Alt+A focuses on an empty draft and is REFUSED with a non-empty one (S86a)', () => {
+    expect(acts(st(), k('meta+a'))).toEqual([{ type: 'paneFocus', on: true }]);
+    expect(acts(st({ draftEmpty: false }), k('meta+a'))).toEqual([{ type: 'toast', text: 'finish or clear the line first — Alt+A then focuses the agents tab' }]);
+  });
+
+  it('§7 row 99 holds for the whole focused lifetime: a PASTE, then `l`, is text — not `agents:land`', () => {
+    /**
+     * The rung deliberately lets a paste through to the composer, so the draft can become non-empty while focus
+     * is still on. Gating the rung only at focus-GRANT time left the eight letters live over that draft: typing
+     * `land it` fired `agents:land` on the `l` and `agents:attach` on the Enter — the half-typed line row 99
+     * exists to protect. `draftEmpty` is therefore part of the rung's own gate.
+     */
+    expect(acts(focused, paste('land'))).toEqual([{ type: 'paste', text: 'land' }]);
+    const typing = st({ paneFocus: true, tab: 'a', draftEmpty: false });
+    for (const key of ['l', 'p', 't', 'd', 'k', 'x', '+']) expect(acts(typing, text(key)), key).toEqual([{ type: 'insert', text: key }]);
+    expect(acts(typing, k('return'))).toEqual([{ type: 'submit' }]);
+    // clear the draft and the tab's keys are live again — the focus state itself never moved
+    expect(acts(st({ paneFocus: true, tab: 'a', draftEmpty: true }), text('l'))).toEqual([{ type: 'agents', op: 'land' }]);
+  });
+});
+
+describe("the resume card's sub-state (TUI-DESIGN-5 §2.8, §7 row 91)", () => {
+  it("`'off'` is round 3 byte for byte: Enter resumes, Esc closes, r/f/d/w are filter text", () => {
+    const p = st({ picker: true });
+    expect(acts(p, k('return'))).toEqual([{ type: 'picker', op: 'open' }]);
+    expect(acts(p, k('ctrl+c'))).toEqual([{ type: 'picker', op: 'close' }]);
+    for (const letter of ['r', 'f', 'd', 'w']) expect(acts(p, text(letter)), letter).toEqual([{ type: 'insert', text: letter }]);
+  });
+
+  it("`'closed'`: Enter OPENS the card; the four letters are still filter text", () => {
+    const p = st({ picker: true, pickerCard: 'closed' });
+    expect(acts(p, k('return'))).toEqual([{ type: 'picker', op: 'cardOpen' }]);
+    for (const letter of ['r', 'f', 'd', 'w']) expect(acts(p, text(letter)), letter).toEqual([{ type: 'insert', text: letter }]);
+  });
+
+  it("`'open'`: the four letters resolve, Esc returns to the LIST and Enter resumes", () => {
+    const p = st({ picker: true, pickerCard: 'open' });
+    expect(acts(p, text('r'))).toEqual([{ type: 'picker', op: 'cardReplay' }]);
+    expect(acts(p, text('f'))).toEqual([{ type: 'picker', op: 'cardFresh' }]);
+    expect(acts(p, text('d'))).toEqual([{ type: 'picker', op: 'cardDiff' }]);
+    expect(acts(p, text('w'))).toEqual([{ type: 'picker', op: 'cardWho' }]);
+    expect(acts(p, k('return'))).toEqual([{ type: 'picker', op: 'open' }]);
+    expect(acts(after(p, k('escape'), 0), ESC_EXPIRED, 31)).toEqual([{ type: 'picker', op: 'cardClose' }]);
+  });
+
+  /**
+   * §7 row 91's NEGATIVE half, which the first cut of this file got backwards: the card is a **focused**
+   * sub-state, so the list's own keys are inert while it is open — including the two that do something
+   * irreversible.
+   *
+   * The measured defect: `x` armed the delete chord behind the card (`pickerLines`' card branch returns before
+   * `PICKER_DELETE_HINT` is ever built, so nothing on screen said so) and the following `y` reached
+   * `deleteConfirm`, which the App turns into `moveRunsToTrash`. A run directory in the trash with no visible
+   * arm is exactly what the two-key chord exists to prevent, and "the card never steals a landed key" was the
+   * wrong reading of row 91 — the row says only r/f/d/w and Esc route.
+   */
+  it('everything else is INERT while the card is open: no filter text, no preview, no rename, and `x` then `y` can never trash a run', () => {
+    const p = st({ picker: true, pickerCard: 'open' });
+    // the filter is inert: a printable that is not one of the four letters produces nothing at all
+    for (const key of ['q', 'z', '1', 'g', 'e']) expect(acts(p, text(key)), key).toEqual([]);
+    // Space is `picker:preview` in the list and nothing here
+    expect(acts(p, text(' '))).toEqual([]);
+    // Ctrl-R cannot start a rename the card's own keys row does not advertise
+    expect(acts(p, k('ctrl+r'))).toEqual([]);
+    // Ctrl-A cannot widen the list that is not on screen
+    expect(acts(p, k('ctrl+a'))).toEqual([]);
+    // and the chord: `x` does not arm …
+    const armed = after(p, text('x'), 0);
+    expect(acts(p, text('x'))).toEqual([]);
+    // … so a `y` inside the window is not a confirmation of anything
+    expect(acts(armed, text('y'), 10)).toEqual([]);
+    // the same `x` `y` pair in the LIST is round 3's arm-then-confirm, unchanged
+    const list = st({ picker: true });
+    expect(acts(list, text('x')).at(-1)).toEqual({ type: 'picker', op: 'deleteArm' });
+    expect(acts(after(list, text('x'), 0), text('y'), 10)).toEqual([{ type: 'picker', op: 'deleteConfirm' }]);
+    // a paste is filter text too, and filter text is inert
+    expect(acts(p, paste('anything'))).toEqual([]);
+  });
+});

@@ -17,8 +17,9 @@ Reserved and never rebindable (A24): `Ctrl+C`, `Ctrl+D`, `Ctrl+M`, `Ctrl+[`, `Ct
 | `global:detail` | `Ctrl+O` | append the last step's decision details and recent warnings; acknowledges !n |  |  |
 | `global:repaint` | `Ctrl+L` | repaint the dynamic region (erase-lines + rewrite, never a clear) |  |  |
 | `global:suspend` | `Ctrl+Z` | suspend to the shell (fg resumes and repaints) |  |  |
-| `global:paneNext` | `]` | next pane tab (d → p → t → s); opens a collapsed panel | empty draft | TUI-DESIGN-2 §4.6 |
-| `global:panePrev` | `[` | previous pane tab; opens a collapsed panel | empty draft | TUI-DESIGN-2 §4.6 |
+| `global:paneNext` | `]` | next pane tab (d → p → t → s, + a while delegating); opens a collapsed panel | empty draft | TUI-DESIGN-2 §4.6; TUI-DESIGN-5 §4.3 (the title is computed from the tab list) |
+| `global:panePrev` | `[` | previous pane tab; opens a collapsed panel | empty draft | TUI-DESIGN-2 §4.6; TUI-DESIGN-5 §4.3 |
+| `global:paneFocus` | `Alt+A` | focus the agents tab so its keys resolve (Esc unfocuses); refused with a non-empty draft | empty draft, while something delegates | TUI-DESIGN-5 §4.3 |
 | `global:panelToggle` | `Alt+J` | toggle the Jev panel between the collapsed strip and the open 6-row form (= /panel, /panel off) |  | TUI-DESIGN-2 §4.6 |
 | `global:panelFull` | `Alt+Shift+J` | open the Jev panel in its full 12-row form (= /panel full) |  | TUI-DESIGN-2 §4.6 |
 | `global:panelDecisions` | `Alt+D` | open the panel on the decisions tab; a second press on the same tab collapses it (= /panel d) |  | TUI-DESIGN-2 §4.6; Alt+D leaves kill-word-forward (Alt+Del / Ctrl+Del keep it) |
@@ -93,6 +94,25 @@ Reserved and never rebindable (A24): `Ctrl+C`, `Ctrl+D`, `Ctrl+M`, `Ctrl+[`, `Ct
 | `picker:rename` | `Ctrl+R` | rename the highlighted session inline |  |  |
 | `picker:delete` | `X` | then y: move the run directory to ~/.jevcode/trash/ (never rm -rf) |  |  |
 | `picker:close` | `Esc` | close the picker |  | reserved — never rebindable |
+| `picker:cardOpen` | _unbound_ | Enter on a row opens its expanded card (the four card letters resolve only there) | no card open | TUI-DESIGN-5 §2.8; the key is `picker:open`'s Enter |
+| `picker:cardClose` | _unbound_ | Esc returns to the list | the card is open | TUI-DESIGN-5 §2.8; the key is `picker:close`'s Esc |
+| `picker:cardReplay` | `R` | resume by replaying the paused proposal (only when it is still replayable) | the card is open | TUI-DESIGN-5 §2.8 |
+| `picker:cardFresh` | `F` | resume with a fresh step instead of the paused proposal | the card is open | TUI-DESIGN-5 §2.8 |
+| `picker:cardDiff` | `D` | diff the workspace since the pause | the card is open | TUI-DESIGN-5 §2.8 |
+| `picker:cardWho` | `W` | who else is live on this repo right now | the card is open | TUI-DESIGN-5 §2.8 |
+
+## Agents tab
+
+| Action id | Default keys | Does | When | Notes |
+| --- | --- | --- | --- | --- |
+| `agents:attach` | `Enter` | attach to the highlighted agent read-only (its transcript tails into the pane) |  | reserved — never rebindable; TUI-DESIGN-5 §4.3 |
+| `agents:pause` | `P` | pause the highlighted agent at its next step (= /agent <slug> pause) |  | TUI-DESIGN-5 §4.3 |
+| `agents:steer` | `T` | steer the highlighted agent (the composer row becomes the steer field) |  | TUI-DESIGN-5 §4.3 |
+| `agents:budget` | `+` | raise the highlighted agent's cap (= /agent <slug> budget) |  | TUI-DESIGN-5 §4.3 |
+| `agents:diff` | `D` | the highlighted agent's diff against the base (= /agent <slug> diff) |  | TUI-DESIGN-5 §4.3 |
+| `agents:kick` | `K` | kick the highlighted agent once (= /agent <slug> kick) |  | TUI-DESIGN-5 §4.3 |
+| `agents:drop` | `X X` | then x again: drop the agent — its uncommitted diff is lost, which is why it takes two keys |  | TUI-DESIGN-5 §4.3 (tmux choose-tree kills a pane with one x; a pane kill loses no committed work) |
+| `agents:land` | `L` | land the highlighted agent into the dock (= /agent <slug> land) |  | TUI-DESIGN-5 §4.3 |
 
 ## Palette
 

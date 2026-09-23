@@ -1,8 +1,10 @@
 /**
  * Blocking panes and the severity → surface map (TUI-DESIGN §13.1, §13.3, §24) — pure.
  *
- * `blockingLines(req, rows, columns)` renders every `BlockingRequest` kind into ≤ 4 rows for the overlay slot,
- * shared by the Ink overlay, `--plain` and the screen-reader twin. The `*Detail` builders fix how the engine
+ * `blockingLines(req, rows, columns, g)` renders every `BlockingRequest` kind into ≤ 4 rows for the overlay slot,
+ * shared by the Ink overlay, `--plain` and the screen-reader twin. The width reaches the kind (so a keys rung
+ * ladder picks its rung rather than being truncated) and so does the glyph set (so the `--ascii` twin of a row's
+ * em dash is produced here, not left to the caller). The `*Detail` builders fix how the engine
  * encodes each kind's facts into `BlockingRequest.detail` so the rows can be rendered from the contract alone.
  * Rows are measured and cut in cells (O2's `width.ts`, §4.2), never by Ink wrapping (§2.1).
  */
@@ -11,6 +13,9 @@ import { type DiskErrorCode, DISK_ERROR_CODES, degradedConsequence } from '../..
 import { explainFsError } from '../../errors.js';
 import { JEV_RETRY } from '../../jev/types.js';
 import { stringWidth, truncateCells } from '../composer/width.js';
+import { fitRung } from '../fit.js';
+import { GLYPHS } from '../glyphs.js';
+import type { GlyphSet } from '../glyphs.js';
 import { sanitizeStream } from '../plain.js';
 
 export const BLOCKING_MAX_ROWS = 4;
@@ -111,6 +116,19 @@ export interface BlockingRows {
   middle: string[];
   keys: string;
   inline: boolean;
+  /**
+   * TUI-DESIGN-5 §12 S39c: the separator an `inline` kind joins its title segments and keys with. Optional and
+   * defaulting to ` · `, so every landed kind is unchanged; `land-preflight` pins ` — ` because §12 writes it
+   * that way (`7 uncommitted files, … — [c] commit them …`).
+   */
+  joiner?: string;
+}
+
+/** TUI-DESIGN-5 §12: the default `inline` separator, unchanged from round 1. */
+export const INLINE_JOINER = ' · ';
+
+function joinerOf(s: BlockingRows): string {
+  return s.joiner ?? INLINE_JOINER;
 }
 
 function sideWord(req: BlockingRequest): 'jev' | 'generator' {
@@ -199,8 +217,194 @@ export function peerAgoText(ms: number): string {
   return `${Math.floor(m / 60)}h`;
 }
 
-/** TUI-DESIGN §24 blocking panes as structure: title, middle rows, keys, per kind. Pure. */
-export function blockingRowsStructured(req: BlockingRequest): BlockingRows {
+// ---------------------------------------------------------------------------------------
+// The lease-conflict and land-pre-flight panes (TUI-DESIGN-5 §2.11, §12 S39–S39c; D-AF)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * TUI-DESIGN-5 §12 S39 / S3: the coarse age words the coordination rows use — `41 s` · `3 m` · `2 h`, **with** the
+ * space, which is how §12 writes every one of them (`last beat 4 m ago`, `(mbp, step 12, 3 m)`). Deliberately not
+ * `peerAgoText` (`4m`, round 4's compact form) and not `formatRetryIn` (`3 min`): three forms, three §12 strings.
+ */
+export function beatAgoText(ms: number): string {
+  const total = Number.isFinite(ms) ? Math.max(0, Math.round(ms / 1000)) : 0;
+  if (total < 60) return `${total} s`;
+  const m = Math.floor(total / 60);
+  if (m < 60) return `${m} m`;
+  return `${Math.floor(m / 60)} h`;
+}
+
+/** TUI-DESIGN-5 §12 S39a / §7 row 96: the armed wait's elapsed counter — `41s` · `2m14s` · `1h02m`, compact because it ticks. */
+export function waitElapsedText(ms: number): string {
+  const total = Number.isFinite(ms) ? Math.max(0, Math.round(ms / 1000)) : 0;
+  if (total < 60) return `${total}s`;
+  const m = Math.floor(total / 60);
+  if (m < 60) return `${m}m${String(total % 60).padStart(2, '0')}s`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
+}
+
+/**
+ * TUI-DESIGN-5 §2.11 / §7 rows 95–97: what the lease-conflict pane renders. `holderLiveness` is
+ * `Liveness` (`src/coordination/types.ts:403`) — all five members, because a `'stale-reused-pid'` holder is a
+ * different card from a `'stale'` one is a different card from `'gone'`, and narrowing loses a real state.
+ */
+export interface LeaseConflictState {
+  /** the toplevel-relative path the holder leases (never an absolute path, §2.9's rule) */
+  readonly path: string;
+  /** the holder's device label */
+  readonly holder: string;
+  /** the holder's step, or null when the beat did not carry one */
+  readonly step: number | null;
+  /** how long the lease has been held, ms; null = unknown */
+  readonly heldMs: number | null;
+  /** the holder's liveness right now — the card and `[w]`'s meaning change with it (§7 row 95) */
+  readonly holderLiveness: 'live' | 'stale' | 'stale-reused-pid' | 'gone' | 'unknown';
+  /** how long `[w]` has been armed, ms; null = it is not (§7 row 96) */
+  readonly waitingMs?: number | null;
+  /** the holder's last beat, ms ago — the stale card's number (§12 S39a) */
+  readonly beatAgeMs?: number | null;
+}
+
+/** TUI-DESIGN-5 §12 S39, rung 1: the live-holder keys, four rungs through `fitRung` (TD4 §2.6). */
+export const LEASE_CONFLICT_KEY_RUNGS: readonly string[] = [
+  '[w] wait for it   [r] read-only session   [t] relocate to a worktree   [q] quit',
+  '[w] wait   [r] read-only   [t] worktree   [q] quit',
+  'w wait · r read-only · t worktree · q quit',
+  'w · r · t · q',
+];
+/** TUI-DESIGN-5 §12 S39a: the stale-holder keys — `[w]` means **take it** on this card, and the card says so. */
+export const LEASE_STALE_KEY_RUNGS: readonly string[] = [
+  '[w] take it  [r] read-only  [q] quit',
+  'w take · r read-only · q quit',
+  'w · r · q',
+];
+/** TUI-DESIGN-5 §12 S39c: the land pre-flight keys (`Engine.land(input, ask?)`'s `[c]/[s]/[x]`; `ask` absent ⇒ `[x]`, CD §F). */
+export const LAND_PREFLIGHT_KEY_RUNGS: readonly string[] = [
+  '[c] commit them  [s] stash them  [x] cancel the land',
+  '[c] commit  [s] stash  [x] cancel',
+  'c commit · s stash · x cancel',
+  'c · s · x',
+];
+
+/** TUI-DESIGN-5 §12 S39a / §7 row 96: `[w] waiting 2m14s — Esc gives up` — the armed clause, a named anchor so §13.4's pin test can grep it. */
+export function waitArmedKey(waitingMs: number, g: GlyphSet = GLYPHS.unicode): string {
+  return `[w] waiting ${waitElapsedText(waitingMs)} ${g.dash} Esc gives up`;
+}
+
+/**
+ * TUI-DESIGN-5 §7 row 97 / §12 S39b: a lease whose holder is `gone` is **not a conflict** — the pane never opens.
+ * `false` here is the whole of §1.4 promise 3 for this surface: never block on a dead peer.
+ */
+export function leaseConflictOpens(holderLiveness: LeaseConflictState['holderLiveness']): boolean {
+  return holderLiveness !== 'gone';
+}
+
+/** TUI-DESIGN-5 §12 S39b: the one `[ui]` line a `gone` holder's lease produces instead of a pane. */
+export function leaseGoneNotice(holder: string, atHHMM: string): string {
+  return `took a lease left by a session that is gone (${terminalSafeLine(holder)}, ${terminalSafeLine(atHHMM)})`;
+}
+
+/**
+ * TUI-DESIGN-5 §2.11 / §12 S39, S39a: the lease-conflict card, at the widest keys rung that fits `columns`.
+ *
+ * Three cards, one builder (§7 rows 95–97): a **live** holder gets S39 and `[w] wait for it`; a holder that turned
+ * `stale` / `stale-reused-pid` while `[w]` was armed gets S39a and `[w] take it` — it never silently proceeds; a
+ * `gone` holder never reaches here (`leaseConflictOpens` is false and §12 S39b's `[ui]` line records it), and if a
+ * caller renders one anyway it is shown as stale rather than waited on.
+ */
+export function leaseConflictRows(st: LeaseConflictState, columns = Number.POSITIVE_INFINITY, g: GlyphSet = GLYPHS.unicode): BlockingRows {
+  const holder = terminalSafeLine(st.holder);
+  const beating = st.holderLiveness === 'live' || st.holderLiveness === 'unknown';
+  const rungs = beating ? LEASE_CONFLICT_KEY_RUNGS : LEASE_STALE_KEY_RUNGS;
+  let keys = fitRung(rungs, columns);
+  if (beating && st.waitingMs !== undefined && st.waitingMs !== null) {
+    // §7 row 96: an armed `[w]` shows its elapsed counter and its escape, so the wait is never one that cannot be woken
+    keys = fitRung([`${waitArmedKey(st.waitingMs, g)}   ${LEASE_CONFLICT_KEY_RUNGS[1] ?? ''}`, waitArmedKey(st.waitingMs, g), ...rungs], columns);
+  }
+  if (!beating) {
+    // §12 S39a / §7 row 95 / §2.13's 80-column cell: ONE row, joined by an em dash —
+    // `the holder stopped beating 2 m ago — [w] take it  [r] read-only  [q] quit` (72 cells, so it fits at 80).
+    // `blockingLines` splits it at narrower widths exactly as it splits every other `inline` kind.
+    const age = beatAgoText(st.beatAgeMs ?? st.heldMs ?? 0);
+    return { title: [`the holder stopped beating ${age} ago`], middle: [], keys, inline: true, joiner: ` ${g.dash} ` };
+  }
+  const facts = [holder, st.step === null ? null : `step ${Math.max(0, Math.floor(st.step))}`, st.heldMs === null ? null : beatAgoText(st.heldMs)].filter((x): x is string => x !== null);
+  return { title: [`another session holds ${terminalSafeLine(st.path)} (${facts.join(', ')})`], middle: [], keys, inline: false };
+}
+
+/**
+ * TUI-DESIGN-5 §2.11 / §12 S39c: the land pre-flight card. One row —
+ * `7 uncommitted files, 2 inside an agent's slice — [c] commit them  [s] stash them  [x] cancel the land` — so it
+ * is `inline` with the ` — ` joiner §12 writes, not the ` · ` every other inline kind uses.
+ */
+export function landPreflightRows(dirty: number, inSlice: number, columns = Number.POSITIVE_INFINITY, g: GlyphSet = GLYPHS.unicode): BlockingRows {
+  const files = Math.max(0, Math.floor(Number.isFinite(dirty) ? dirty : 0));
+  const inside = Math.max(0, Math.floor(Number.isFinite(inSlice) ? inSlice : 0));
+  return {
+    title: [`${files} uncommitted file${files === 1 ? '' : 's'}, ${inside} inside an agent's slice`],
+    middle: [],
+    keys: fitRung(LAND_PREFLIGHT_KEY_RUNGS, columns),
+    inline: true,
+    joiner: ` ${g.dash} `,
+  };
+}
+
+/**
+ * TUI-DESIGN-5 §2.11: `<path>|<holder>|<step>|<heldMs>|<liveness>` — how the engine encodes the lease-conflict
+ * facts into `BlockingRequest.detail`, kept beside its parser exactly like the other kinds' `*Detail` pairs.
+ */
+export function leaseConflictDetail(st: Pick<LeaseConflictState, 'path' | 'holder' | 'step' | 'heldMs' | 'holderLiveness'>): string {
+  return [st.path, st.holder, st.step ?? '', st.heldMs ?? '', st.holderLiveness].join('|');
+}
+
+const LIVENESS_WORDS: readonly LeaseConflictState['holderLiveness'][] = ['live', 'stale', 'stale-reused-pid', 'gone', 'unknown'];
+
+/** TUI-DESIGN-5 §2.11: inverse of `leaseConflictDetail`; a detail in any other shape reads as the path alone with an unknown holder, so the card never shows an empty name. */
+export function parseLeaseConflictDetail(detail: string): LeaseConflictState {
+  const parts = terminalSafeLine(detail).split('|');
+  const num = (v: string | undefined): number | null => {
+    if (v === undefined || v.trim() === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const word = parts[4];
+  const liveness = word !== undefined && (LIVENESS_WORDS as readonly string[]).includes(word) ? (word as LeaseConflictState['holderLiveness']) : 'unknown';
+  return {
+    path: parts[0] ?? '',
+    holder: parts[1] !== undefined && parts[1] !== '' ? parts[1] : 'another session',
+    step: num(parts[2]),
+    heldMs: num(parts[3]),
+    holderLiveness: parts.length >= 5 ? liveness : 'live',
+  };
+}
+
+/** TUI-DESIGN-5 §2.11: `<dirty>|<inSlice>` — the land pre-flight's detail encoding. */
+export function landPreflightDetail(dirty: number, inSlice: number): string {
+  return `${Math.max(0, Math.floor(dirty))}|${Math.max(0, Math.floor(inSlice))}`;
+}
+
+/** TUI-DESIGN-5 §2.11: inverse of `landPreflightDetail`; an unparseable detail reads as `0|0` rather than `NaN`. */
+export function parseLandPreflightDetail(detail: string): { dirty: number; inSlice: number } {
+  const [a, b] = terminalSafeLine(detail).split('|');
+  const n = (v: string | undefined): number => {
+    const x = Number(v);
+    return Number.isFinite(x) ? Math.max(0, Math.floor(x)) : 0;
+  };
+  return { dirty: n(a), inSlice: n(b) };
+}
+
+/**
+ * TUI-DESIGN §24 blocking panes as structure: title, middle rows, keys, per kind. Pure.
+ *
+ * **`columns` and `g` are threaded, not defaulted away (the fix pass).** The two round-5 kinds pick their keys row
+ * with `fitRung`, and a `blockingRowsStructured(req)` that always answered rung 0 made all four rungs dead on the
+ * only path the Ink overlay and `--plain` use: `blockingLines` then hard-truncated the row, so at 40–60 columns the
+ * lease-conflict pane lost `[t]` and `[q]` — a modal with no visible way out (§2.13 pins all four keys at 40).
+ * `g` is threaded for the same reason: `land-preflight`'s ` — ` joiner and the stale card's are the first non-ASCII
+ * characters on this path and had no `--ascii` twin through it. Both default to the round-1 behaviour (no width
+ * limit, unicode), so every landed caller is byte-identical.
+ */
+export function blockingRowsStructured(req: BlockingRequest, columns: number = Number.POSITIVE_INFINITY, g: GlyphSet = GLYPHS.unicode): BlockingRows {
   const exit = `(exit ${req.exitCode})`;
   switch (req.kind) {
     case 'key-rejected': {
@@ -256,18 +460,27 @@ export function blockingRowsStructured(req: BlockingRequest): BlockingRows {
     }
     case 'sandbox-unavailable':
       return { title: ['sandbox: seatbelt requested but sandbox-exec is unavailable'], middle: [], keys: `[q] stop ${exit}`, inline: false };
-    // contract 1.4 (W2b) / 1.5 placeholder rows — the TUI session's round 5 replaces the prose (ORCHESTRATION-DESIGN §5.7 [D1], COORDINATION-DESIGN §4.3 step 4)
-    case 'land-preflight':
-      return { title: ['land pre-flight'], middle: [clipCodePoints(terminalSafeLine(req.detail), BLOCKING_MESSAGE_MAX)], keys: `[c] commit first   [s] stash   [x] cancel ${exit}`, inline: false };
+    // TUI-DESIGN-5 §2.11 / §12 S39, S39c (D-AF): contract 1.4/1.5's two placeholder rows, restyled on the real
+    // members. Neither keys row carries `(exit <n>)`: §12 writes them verbatim without it, and `[q]`/`[x]` here are
+    // a CHOICE between resumable outcomes (`wait` · `worktree` · `stop`), not the "this run is over" marker the
+    // other kinds append.
+    case 'land-preflight': {
+      const { dirty, inSlice } = parseLandPreflightDetail(req.detail);
+      return landPreflightRows(dirty, inSlice, columns, g);
+    }
     case 'lease-conflict':
-      return { title: ['lease conflict'], middle: [clipCodePoints(terminalSafeLine(req.detail), BLOCKING_MESSAGE_MAX)], keys: `[w] wait   [c] continue   [t] worktree   [q] stop ${exit}`, inline: false };
+      return leaseConflictRows(parseLeaseConflictDetail(req.detail), columns, g);
   }
 }
 
-/** TUI-DESIGN §24 blocking panes: every row at full height and width — the §24 text verbatim, first = reason, keys last or inline. */
-export function blockingRowsFull(req: BlockingRequest): string[] {
-  const s = blockingRowsStructured(req);
-  return s.inline ? [[...s.title, s.keys].join(' · '), ...s.middle] : [s.title.join(' · '), ...s.middle, s.keys];
+/**
+ * TUI-DESIGN §24 blocking panes: every row at full height and width — the §24 text verbatim, first = reason, keys
+ * last or inline. `g` folds the glyphs an `--ascii` `--plain` session must not print (`src/cli/session.ts`'s
+ * `createPlainPrompter` passes `glyphSet({ ascii: o.ascii })`).
+ */
+export function blockingRowsFull(req: BlockingRequest, g: GlyphSet = GLYPHS.unicode): string[] {
+  const s = blockingRowsStructured(req, Number.POSITIVE_INFINITY, g);
+  return s.inline ? [[...s.title, s.keys].join(joinerOf(s)), ...s.middle] : [s.title.join(INLINE_JOINER), ...s.middle, s.keys];
 }
 
 /** Middle rows are dropped last-first so the title and the keys survive; at one row title and keys share it. */
@@ -305,22 +518,24 @@ function packSegments(segments: readonly string[], columns: number): string[] {
  * last title row when nothing else is shown and it fits), and the informative middle rows are dropped first when
  * the slot is short. Pure; the same rows feed the Ink overlay, `--plain` and the screen reader.
  */
-export function blockingLines(req: BlockingRequest, rows: number, columns: number): string[] {
+export function blockingLines(req: BlockingRequest, rows: number, columns: number, g: GlyphSet = GLYPHS.unicode): string[] {
   const budget = Math.min(BLOCKING_MAX_ROWS, Number.isFinite(rows) ? Math.floor(rows) : 0);
   const cols = Number.isFinite(columns) ? Math.max(1, Math.floor(columns)) : 80;
   if (budget <= 0) return [];
-  const s = blockingRowsStructured(req);
+  // the width reaches the kind, so a rung ladder picks its rung here rather than being truncated below
+  const s = blockingRowsStructured(req, cols, g);
+  const joiner = joinerOf(s);
   let out: string[];
   if (!s.inline) {
-    out = [s.title.join(' · '), ...s.middle, s.keys];
+    out = [s.title.join(INLINE_JOINER), ...s.middle, s.keys];
   } else {
-    const one = [...s.title, s.keys].join(' · ');
+    const one = [...s.title, s.keys].join(joiner);
     if (budget === 1 || stringWidth(one) <= cols) {
       out = [one, ...s.middle];
     } else {
       const head = packSegments(s.title, cols);
       const lastHead = head[head.length - 1] ?? '';
-      const joined = `${lastHead} · ${s.keys}`;
+      const joined = `${lastHead}${joiner}${s.keys}`;
       if (s.middle.length === 0 && head.length > 0 && stringWidth(joined) <= cols) out = [...head.slice(0, -1), joined];
       else out = [...head, ...s.middle, s.keys];
     }
@@ -351,9 +566,9 @@ export function blockingStatusWord(kind: BlockingKind): string {
 }
 
 /** Screen-reader twin: reason and middle rows as a numbered list, the keys row last unnumbered (TUI-DESIGN §14.2 "reviews, wizard and pickers as numbered lists"). */
-export function blockingLinesScreenReader(req: BlockingRequest): string[] {
-  const s = blockingRowsStructured(req);
-  const numbered = [s.title.join(' · '), ...s.middle].map((r, i) => `${i + 1} ${r}`);
+export function blockingLinesScreenReader(req: BlockingRequest, g: GlyphSet = GLYPHS.unicode): string[] {
+  const s = blockingRowsStructured(req, Number.POSITIVE_INFINITY, g);
+  const numbered = [s.title.join(INLINE_JOINER), ...s.middle].map((r, i) => `${i + 1} ${r}`);
   return [...numbered, s.keys];
 }
 

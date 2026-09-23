@@ -17,9 +17,9 @@ import type { KeyAction } from '../keys/resolve.js';
 import { textProps, themeFor, type Theme } from '../theme.js';
 import { MaskedField, useMaskedBytes } from './MaskedField.js';
 import { wizardLines, type WizardView } from './lines.js';
-import { HINT_PASTED_TWICE, INITIAL_ONBOARDING, expectedKeyProvider, isFieldStep, looksLikeKey, looksPastedTwice, onboardingReducer, wizardActive, wizardRows, type FoundKey, type FoundSource, type OnboardingAction, type OnboardingState, type SaveRequest, type TrustOption, type WizardField, type WizardOption, type WizardProvider, type WizardReason } from './reducer.js';
+import { HINT_PASTED_TWICE, IMPORT_PROBE_DEADLINE_MS, INITIAL_ONBOARDING, expectedKeyProvider, isFieldStep, looksLikeKey, looksPastedTwice, onboardingReducer, wizardActive, wizardRows, type FoundKey, type FoundSource, type ImportOption, type ImportProbeCounts, type OnboardingAction, type OnboardingState, type SaveRequest, type TrustOption, type WizardField, type WizardOption, type WizardProvider, type WizardReason } from './reducer.js';
 
-export type { FoundKey, FoundSource, OnboardingState, SaveRequest, TrustOption, WizardField, WizardProvider, WizardReason };
+export type { FoundKey, FoundSource, ImportOption, ImportProbeCounts, OnboardingState, SaveRequest, TrustOption, WizardField, WizardProvider, WizardReason };
 
 /**
  * TUI-DESIGN-3 §1.8 edge 1: the newline a pasted key ends with (`\r`, `\n` or `\r\n`) is the Enter that saves it.
@@ -81,6 +81,17 @@ export interface WizardHost {
   cancel?(): void;
   /** TUI-DESIGN-3 §1.4.3: the wizard reached `done` (after every save / mode choice); the host settles whatever prompt is still pending */
   done?(): void;
+  /**
+   * TUI-DESIGN-5 §5.1 / IMPORT-DESIGN §5.1: the ≤ 50 ms `probe()`, reached by the host through
+   * `await import('../../import/index.js')` — NEVER a static import (§2.1 rule 3a, gate G-R5-1). Optional, so a
+   * host without it simply never shows the step. It is called once, after the first frame and after the sandbox
+   * step; a rejection or a deadline is the same as "nothing found".
+   */
+  importProbe?(): Promise<ImportProbeCounts | null>;
+  /** §5.1: `1 import now` — the host closes the wizard and opens the import overlay. */
+  openImport?(): void;
+  /** §5.1: `2 later` / `3 never` / Esc — the host persists `seen.import` through `writeConfigValue`. */
+  seenImport?(answer: 'later' | 'never'): void;
 }
 
 export interface WizardDetect {
@@ -97,6 +108,8 @@ export interface WizardDetect {
   found?: FoundKey;
   foundSource?: FoundSource;
   foundReusable?: boolean;
+  /** TUI-DESIGN-5 §5.1: `seen.import` is already set (`never`, or this version already asked) — the step never renders */
+  importSeen?: boolean;
 }
 
 export interface WizardDeps {
@@ -139,6 +152,25 @@ export function useWizard(deps: WizardDeps): WizardController {
   const modeSent = useRef(false);
   /** TUI-DESIGN-3 §1.8 edge 5: the verify in flight — Ctrl-C aborts it (the key is kept, the wizard continues) */
   const verifyAbort = useRef<AbortController | null>(null);
+  /** TUI-DESIGN-5 §5.1: the import probe is asked for at most once per wizard (reset by start / reopen) */
+  const probed = useRef(false);
+  /** §5.1: the probe is in flight — the `sandbox` step waits for it, bounded by `IMPORT_PROBE_DEADLINE_MS` */
+  const probePending = useRef(false);
+  /** §7 row 53: the deadline timer; firing it moves on WITHOUT the probe, and the step is skipped for this start */
+  const probeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** the `[sandbox]` item is printed exactly once per wizard even when the step waits for the probe */
+  const sandboxShown = useRef(false);
+  /** §5.1: the import answer reached the host once (`openImport` / `seenImport`), never twice */
+  const importAnswered = useRef(false);
+
+  /** §5.1 / §7 row 53: clear a probe deadline that is still pending (unmount, start, reopen). */
+  const clearProbeTimer = useCallback((): void => {
+    if (probeTimer.current !== null) {
+      clearTimeout(probeTimer.current);
+      probeTimer.current = null;
+    }
+  }, []);
+  useEffect(() => clearProbeTimer, [clearProbeTimer]);
 
   // the transient steps: save → host.save; verifying → host.verify; sandbox → item + sandbox-shown; done/exit → callbacks
   useEffect(() => {
@@ -202,15 +234,60 @@ export function useWizard(deps: WizardDeps): WizardController {
       });
       return;
     }
-    if (s.step === 'sandbox') {
-      const line = host?.sandboxLine?.() ?? null;
-      if (line !== null) {
-        const detail = host?.sandboxDetail?.() ?? null;
-        if (detail !== null) depsRef.current.onItem(line, '[sandbox]', detail);
-        else depsRef.current.onItem(line, '[sandbox]');
+    // TUI-DESIGN-5 §5.1: the probe runs **after the first frame**, not on the import step — the step is entered
+    // from `sandbox-shown`, which needs an answer that has ALREADY arrived (`importStepWanted`). Asking on the
+    // step itself was unreachable by construction: nothing else dispatches `import-probe`, so the step was never
+    // entered and `host.importProbe` was dead code. It is asked for once per wizard, only for the startup wizard
+    // (`/login`, `/mode`, `/trust` never reach `sandbox`), and never when `seen.import` is already set.
+    if (!probed.current && !s.importSeen && s.reason === 'missing' && s.step !== 'detect' && s.step !== 'done' && s.step !== 'exit') {
+      const probeFn = host?.importProbe;
+      probed.current = true;
+      if (probeFn !== undefined) {
+        probePending.current = true;
+        const settle = (found: ImportProbeCounts | null): void => {
+          probePending.current = false;
+          clearProbeTimer();
+          dispatch({ type: 'import-probe', found });
+          // the `sandbox` step parked waiting for exactly this: release it in the same batch, so the reducer
+          // sees the probe result and THEN the transition (§7 row 52's "only when the probe found something")
+          if (sandboxShown.current && stateRef.current.step === 'sandbox') dispatch({ type: 'sandbox-shown' });
+        };
+        void probeFn
+          .call(host)
+          .then(settle)
+          .catch(() => settle(null));
       }
-      dispatch({ type: 'sandbox-shown' });
+    }
+    if (s.step === 'sandbox') {
+      if (!sandboxShown.current) {
+        sandboxShown.current = true;
+        const line = host?.sandboxLine?.() ?? null;
+        if (line !== null) {
+          const detail = host?.sandboxDetail?.() ?? null;
+          if (detail !== null) depsRef.current.onItem(line, '[sandbox]', detail);
+          else depsRef.current.onItem(line, '[sandbox]');
+        }
+        if (probePending.current) {
+          // §7 row 53: the wizard waits for the ≤ 50 ms probe and NO LONGER. When the deadline wins, the step is
+          // skipped for this start (`importProbe` is still null, so `importStepWanted` is false) and a probe that
+          // resolves afterwards is dropped by the reducer rather than appearing under whatever is on screen.
+          probeTimer.current = setTimeout(() => {
+            probeTimer.current = null;
+            probePending.current = false;
+            dispatch({ type: 'sandbox-shown' });
+          }, IMPORT_PROBE_DEADLINE_MS);
+          return;
+        }
+        dispatch({ type: 'sandbox-shown' });
+      }
       return;
+    }
+    if (s.step === 'done' && s.importChoice !== null && !importAnswered.current) {
+      // §5.1: `1` opens the overlay; `2` / `3` / Esc persist `seen.import` through the host's `writeConfigValue`.
+      importAnswered.current = true;
+      if (s.importChoice === 1) host?.openImport?.();
+      else host?.seenImport?.(s.importChoice === 3 ? 'never' : 'later');
+      answered.current = true;
     }
     if (s.step === 'done') {
       bytes.wipe();
@@ -271,6 +348,7 @@ export function useWizard(deps: WizardDeps): WizardController {
           else if ((s.step === 'provider' || s.step === 'jevProvider') && (ch === '1' || ch === '2')) dispatch({ type: 'choose', option: ch === '1' ? 1 : 2 });
           else if (s.step === 'verify' && (ch === 'y' || ch === 'Y')) dispatch({ type: 'verify-answer', yes: true });
           else if (s.step === 'verify' && (ch === 'n' || ch === 'N')) dispatch({ type: 'verify-answer', yes: false });
+          else if (s.step === 'import' && (ch === '1' || ch === '2' || ch === '3')) dispatch({ type: 'import-choose', option: Number(ch) as ImportOption });
           else if (s.step === 'trust' && (ch === '1' || ch === '2' || ch === '3')) {
             const option = Number(ch) as TrustOption;
             answered.current = true;
@@ -299,6 +377,8 @@ export function useWizard(deps: WizardDeps): WizardController {
             return;
           }
           if (s.step === 'provider' || s.step === 'jevProvider' || s.step === 'options') dispatch({ type: 'choose', option: 'enter' });
+          // TUI-DESIGN-5 §5.1: Enter on the import step confirms the highlighted digit, or `2 later` with none
+          else if (s.step === 'import') dispatch({ type: 'import-choose', option: 'enter' });
           // TUI-DESIGN-3 §1.4.1: Enter at `verify` = `n` (Esc too, through `back` → the reducer's `escape`)
           else if (s.step === 'verify' && !s.verifying) dispatch({ type: 'verify-answer', yes: false });
           return;
@@ -321,6 +401,11 @@ export function useWizard(deps: WizardDeps): WizardController {
       start: (d) => {
         answered.current = false;
         modeSent.current = false;
+        probed.current = false;
+        probePending.current = false;
+        sandboxShown.current = false;
+        clearProbeTimer();
+        importAnswered.current = false;
         dispatch({
           type: 'detect',
           missing: d.missing,
@@ -333,11 +418,17 @@ export function useWizard(deps: WizardDeps): WizardController {
           ...(d.found !== undefined ? { found: d.found } : {}),
           ...(d.foundSource !== undefined ? { foundSource: d.foundSource } : {}),
           ...(d.foundReusable !== undefined ? { foundReusable: d.foundReusable } : {}),
+          ...(d.importSeen !== undefined ? { importSeen: d.importSeen } : {}),
         });
       },
       reopen: (at, runLive, opts) => {
         answered.current = false;
         modeSent.current = false;
+        probed.current = false;
+        probePending.current = false;
+        sandboxShown.current = false;
+        clearProbeTimer();
+        importAnswered.current = false;
         dispatch({
           type: 'reopen',
           at,

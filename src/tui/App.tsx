@@ -23,7 +23,7 @@ import { basename, join } from 'node:path';
 import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Box, Text, render, useApp, useCursor, useInput, usePaste, useStdin, useStdout, useWindowSize } from 'ink';
 import type { Instance, Key } from 'ink';
-import type { BlockingAnswer, BlockingRequest, Engine, EngineMode, LaunchSettings, Renderer, RendererOptions, SecretHit, SessionHost, SessionRow, UiConfig, UiLabel } from '../core/types.js';
+import type { BlockingAnswer, BlockingRequest, Engine, EngineMode, ImportPlan, LaunchSettings, Renderer, RendererOptions, SecretHit, SessionHost, SessionRow, UiConfig, UiLabel } from '../core/types.js';
 import { VERSION } from '../version.js';
 import { detectSecrets, patternRedact } from '../core/redact.js';
 import { createLog, nullLog, type KeyClass, type Log } from '../core/log.js';
@@ -32,7 +32,8 @@ import { DEFAULT_MODE } from '../config/defaults.js';
 import type { TrustInputs } from '../config/trust.js';
 import { REWIND_CHOICE, type RewindStep } from '../undo/plan.js';
 import { bannerRow } from './pane/banner.js';
-import { defaultTab, cycleTab } from './pane/model.js';
+import { AGENTS_VERB_WORD, notAvailableText } from './agents/lines.js';
+import { defaultTab, cycleTab, paneTabsFor } from './pane/model.js';
 import { argTokenOf, argValues, helpLines, paletteGhostFor, paletteMatches, type PaletteState } from './commands/palette.js';
 import type { CommandAction, DispatchContext } from './commands/dispatch.js';
 import { completeDraft, dispatchCtxOf, recentCommands } from './commands/local.js';
@@ -68,11 +69,24 @@ import { createNotifier, createNotifyTimers } from './notify.js';
 import { Overlay, overlayPreviewWant, overlayWant, type IntakeOverlay, type OverlayData } from './Overlay.js';
 import { Pane, RULE_MAX_CELLS, paneStateOf, plainRule, ruleRowText } from './Pane.js';
 import { PaneBoundary, RENDER_FAULTS_FIRED, renderFaultFor, type PaneFailure } from './PaneBoundary.js';
-import { INITIAL_PICKER, PICKER_PANE_WANT, moveRunsToTrash, pickerLines, pickerReducer, pickerRule, readPickerPreview, selectedRewindStep, selectedSession, visibleRewindSteps, visibleSessions } from './Picker.js';
+import { INITIAL_PICKER, PICKER_PANE_WANT, moveRunsToTrash, pickerLines, pickerReducer, pickerRule, readPickerPreview, selectedModelRow, selectedRewindStep, selectedSession, sessionOfRun, visibleModelHits, visibleRewindSteps, visibleSessions, type PickerKind } from './Picker.js';
+// TUI-DESIGN-5 §6.4 / §5.2 (R5-4's §9.2 shared-shell row): the two mounted surfaces. Both modules are pure and
+// reach `src/models/**` / `src/import/**` by `import type` only — the values arrive through `await import()` in
+// `openModelsPicker` / `openImportOverlay`, exactly as `openSessionLedger` does (§2.14, gate G-R5-1).
+import type { ModelsApi } from './models/lines.js';
+import { SR_COALESCE_MS, modelsSrLine, srDue } from './models/lines.js';
+import { snapshotResults } from './models/state.js';
+import type { ListResult, ModelInfo, ProviderId } from '../models/types.js';
+import { importReducer, initImportUi, scanningImportUi, selectedRowIds, type ImportUiInput, type ImportUiState } from './import/reducer.js';
+// §5.5: the ONE `gitRootOf` — a pure `existsSync` walk with no `src/import/**` value import behind it
+import { gitRootFrom } from './import/git-root.js';
+import { IMPORT_DRY_RUN_REFUSAL, IMPORT_NOTHING_FOUND, importApplyNotWired, importClosedRow, importScreenReaderLines, importSrFocusLine } from './import/lines.js';
+import { blockWidth } from './block/lines.js';
+import type { PlanSummary } from '../import/index.js';
 import { IDENTITY_NO_TTY, formatTranscriptItem, headerItem, sanitizeStream, sessionHeaderItem, transcriptDumpChunks, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { maskGlyphFor, maskHits, type ReviewNote } from './Review.js';
 import type { FollowupInput } from './review/lines.js';
-import { reviewRowForDigit } from './review/lines.js';
+import { reviewRowForDigit, reviewWhyRefusal } from './review/lines.js';
 import { retryLiveLines } from './retry.js';
 import { gateLines, GATE_DISMISS_TIP } from './secrets/gate-lines.js';
 import { copyRedacted } from './secrets/clipboard.js';
@@ -261,6 +275,21 @@ export function draftsDirFor(s: Pick<UiState, 'run' | 'paths' | 'runId'>, o: { h
   return join(o.home, '.jevcode', 'drafts');
 }
 
+/**
+ * TUI-DESIGN-5 §5.2 / §5.5: the workspace's git root for `ImportEnvironment.gitRoot`, from the **one** module
+ * both sinks use (`./import/git-root.ts`; `jevcode import` takes the same function through R5-5's request).
+ *
+ * This used to be a second implementation here — strip a trailing `/.git` off `bridge.gitDirs` — and it
+ * disagreed with the CLI's for the case this repository itself is: in a LINKED WORKTREE `gitDir` is
+ * `<main>/.git/worktrees/<name>`, so the App answered `null` (no project scope, `<root>/CLAUDE.md` and
+ * `<root>/.mcp.json` invisible) where `jevcode import` answered the worktree root. Two answers for one
+ * workspace is the §13.1 failure with a plan attached, so the derivation moved out and this is the App's
+ * binding of it: `GitState.topLevel` when the session probed it, the bounded `.git` walk otherwise.
+ */
+export function gitRootOf(workspace: string, dirs?: { topLevel?: string | null }): string | null {
+  return gitRootFrom(workspace, dirs?.topLevel ?? null);
+}
+
 /** §6.5: the answer a screen-reader line gives, or null when the line is text / a steer (re-announce). */
 export function srReviewAnswer(line: string): 'approve' | 'decline' | 'note' | null {
   const t = line.trim();
@@ -322,7 +351,7 @@ export function queueRows(queue: readonly Pick<QueueEntry, 'text' | 'step'>[], s
 // ---------------------------------------------------------------------------------------
 
 export interface PickerOpen {
-  kind: 'sessions' | 'rewind';
+  kind: PickerKind;
   sessions?: readonly SessionRow[];
   rewindSteps?: readonly RewindStep[];
   workspace: string;
@@ -336,6 +365,32 @@ export interface PickerOpen {
   onClose?: () => void;
   runsDir?: string;
   trashDir?: string;
+  /**
+   * TUI-DESIGN-5 §6.4 (D-AQ), `kind: 'models'`: Enter's answer. The App never sets a pending model itself — it
+   * forwards `/model <id>` to the host, whose `case 'model'` owns `pending.model` and §12.5's sentence, so the
+   * picker and a typed `/model <id>` set the value in exactly one place (§13.1). Supplied here so a test (and, in
+   * time, a caller with no host) can observe the pick.
+   */
+  onModel?: (model: ModelInfo) => void;
+  /** §6.2, `kind: 'models'`: the snapshot rows the first paint shows (`instantCatalogue()`), never fetched here. */
+  models?: readonly ModelInfo[];
+  /** §12.5 S99/S101, `kind: 'models'`: the provenance the caller already holds (`snapshotResults(...)`). */
+  results?: readonly ListResult[];
+  /** §6.2, `kind: 'models'`: providers whose `listModels` a caller started and has not seen settle. */
+  providers?: readonly ProviderId[];
+  /**
+   * TUI-DESIGN-5 §2.8, `kind: 'sessions'`: does this row have an expanded **resume card**? Returning true puts the
+   * picker in `pickerCard: 'closed'`, in which Enter OPENS the card (`cardOpen`) instead of resuming at once and
+   * the four card letters `r`/`f`/`d`/`w` become reachable; returning false keeps round 3's Enter byte for byte.
+   *
+   * It is a **seam, not a guess**: the predicate is "this run has a pause point", which lives in
+   * `src/session/picker-lines.ts` (R5-1) and in the caller that threads the fold in — `SessionRow` carries no
+   * `PausePoint`. With no predicate supplied every row answers `'off'`, which is this build's production state
+   * and why the card never changes `/resume` for a user until its rows exist.
+   */
+  hasCard?: (session: SessionRow) => boolean;
+  /** §2.8: the card's own rows for the selected run (the four keys row included). Absent = the one honest row. */
+  cardLines?: (session: SessionRow, runId: string, columns: number) => readonly string[];
 }
 
 type BridgeCommand =
@@ -362,7 +417,13 @@ export interface Bridge {
   host: SessionHost | null;
   ui: UiConfig | null;
   wizardHost: WizardHost | null;
-  gitDirs: { gitDir: string | null; commonDir: string | null };
+  /**
+   * §12.2's HEAD reader plus — TUI-DESIGN-5 §5.2 — the two facts `/import` needs and cannot derive: `topLevel`
+   * (`GitState.topLevel`, which `probeGit` computed for the session's own workspace) and `workspace` (the
+   * RESOLVED workspace root, which is not `process.cwd()` when `--workspace` moved it). Both optional: the
+   * renderer mounts from argv, long before the config resolves, and the bounded walk answers meanwhile.
+   */
+  gitDirs: { gitDir: string | null; commonDir: string | null; topLevel?: string | null; workspace?: string | null };
   engine: Engine | null;
   listeners: Set<() => void>;
   queue: BridgeCommand[];
@@ -446,7 +507,7 @@ export interface TuiRenderer extends Renderer {
   /** §13.3: the blocking pane's answer (the controller's `EngineOptions.blocker`) */
   blocking(request: BlockingRequest): Promise<BlockingAnswer>;
   setSessionSpend(session: { totalUsd: number; capUsd: number } | null): void;
-  setGitDirs(dirs: { gitDir: string | null; commonDir: string | null }): void;
+  setGitDirs(dirs: { gitDir: string | null; commonDir: string | null; topLevel?: string | null; workspace?: string | null }): void;
   setTitle(title: string | null): void;
   /**
    * §4.10 / §10.2 / §19.5: the gate row for a task gated before `run:ready` (argv, `--task-file`; the controller's
@@ -488,6 +549,107 @@ export interface AppProps {
    * Ink fixes `alternateScreen` in its constructor, so this prop is fixed for the life of the mount.
    */
   renderer?: 'classic' | 'fullscreen';
+  /**
+   * TUI-DESIGN-5 §6.4: the catalogue seam. Absent in production — `openModelsPicker` reaches
+   * `src/models/index.js` through one `await import()` so the module never joins the first-frame graph
+   * (§6.2, gate G-R5-1).
+   *
+   * **Supplied, nothing is imported at all** — and that is now true on its own: `ModelsApi` carries the two
+   * catalogue halves (`instantCatalogue`, `SNAPSHOT_AT`), which the production binding gets for free from the
+   * same module object, so the offline guarantee no longer depends on `instantModels` being passed beside it.
+   */
+  models?: ModelsApi;
+  /** §6.2: the bundled snapshot rows for the picker's first paint. Absent = `models.instantCatalogue()`. */
+  instantModels?: () => readonly ModelInfo[];
+  /** §5.2: the import facade's three READ verbs. Absent = `await import('../import/index.js')`. */
+  importEngine?: ImportEngineSeam;
+  /**
+   * §5.3: the apply half. **Absent in production** — `applyPlan` takes an `ApplyOptions` this build cannot
+   * construct (the same gap `src/cli/import.ts`'s header records), so `y` names what it would write and refuses
+   * (`importApplyNotWired`) rather than half-writing into a human's `.jevcode/`.
+   *
+   * §7 row 59 behaviour 2 is **in the signature**, not in the caller's hope: Ctrl-C during an apply stops at a
+   * ROW BOUNDARY, which an implementation can only honour if it is told to stop, so the seam takes an
+   * `AbortSignal`. `onRow` reports rows already written, so an interrupted apply can name its real count
+   * instead of the whole selection. A seam that resolves after the abort has its answer DROPPED (the App
+   * refuses to overwrite the interrupted state with a completion it did not observe).
+   */
+  applyImport?: (rows: readonly string[], input: ImportUiInput, opts: ImportApplyOptions) => Promise<{ ok: number; failed: number }>;
+}
+
+/** §7 row 59 behaviour 2: what the apply seam is told, so an interrupt can stop it at a row boundary. */
+export interface ImportApplyOptions {
+  signal: AbortSignal;
+  onRow?: (done: number) => void;
+}
+
+/**
+ * TUI-DESIGN-5 §5.2: the half of `src/import/index.ts` the overlay calls, as a seam — the same three READ verbs
+ * `src/cli/import.ts`'s `ImportEngine` wires, named exactly as the facade names them so the production binding is
+ * the module itself with no adapter.
+ */
+export interface ImportEngineSeam {
+  planImport(opts: PlanImportSeamOptions): Promise<ImportPlan>;
+  summarisePlan(plan: ImportPlan): PlanSummary;
+  applicableRows(plan: ImportPlan, opts?: { scope?: 'user' | 'project' | 'both' }): readonly string[];
+}
+
+/** What the overlay hands `planImport`; the App owns every member of it (no flags, no CLI). */
+export interface PlanImportSeamOptions {
+  env: { home: string; env: NodeJS.ProcessEnv; platform: NodeJS.Platform; workspace: string; gitRoot: string | null; extraRoots: readonly string[] };
+  jevcodeVersion: string;
+  trust: 'trust' | 'session' | 'none';
+  decider: null;
+  optIn?: readonly string[];
+  /**
+   * §5.4 item 1: the session's redactor — **both** layers. `planImport`'s own default is
+   * `(s) => redactSecrets(s, undefined)`, which runs the 15 pattern families and nothing else, so a value the
+   * human registered with `config.addSecret` that matches no family survives into `PlanRow.why`, the plan's
+   * warnings and the notices, and from there into a rendered overlay row and `transcript.log`. Gate G-R5-9 /
+   * `assertNoKeyBytes` cannot see that leak — it greps for a pattern-shaped key. Passing the session redactor
+   * is useless-not-harmful for the pattern half and is the only way the exact layer ever arrives.
+   */
+  redact?: (s: string) => string;
+}
+
+/** §5.2: the overlay's `input` before `planImport` answers — the `scanning` frame reads counts, never rows. */
+const EMPTY_IMPORT_PLAN: ImportPlan = {
+  v: 1,
+  importId: '',
+  at: '',
+  jevcodeVersion: VERSION,
+  workspace: '',
+  workspaceKey: '',
+  gitRoot: null,
+  trust: 'session',
+  roots: [],
+  rows: [],
+  budget: { memoryBytes: 0, memoryMax: 0, indexLines: 0, indexMax: 0 },
+  jev: { requests: 0, questions: 0, usd: 0, fallbacks: 0 },
+  cannotRead: [],
+  notices: [],
+};
+/**
+ * §12.5 S101: what a `source: 'static'` row's `fetchedAt` reads when the caller injected the snapshot instead of
+ * importing it. `sourceLabel` answers `bundled snapshot` for `'static'` whatever the date is, so this value is
+ * never rendered — it exists so the shape is complete and `relativeAge` can never see `undefined`.
+ */
+const SNAPSHOT_AT_FALLBACK = '1970-01-01T00:00:00.000Z';
+
+const EMPTY_IMPORT_INPUT: ImportUiInput = { plan: EMPTY_IMPORT_PLAN, summary: { groups: [], toImport: 0, toReview: 0, skipped: 0, bytes: 0, credentialsFound: 0 }, applicable: [] };
+
+/** §5.2: everything the App holds for one OPEN of the overlay. The reducer owns `state`; these five are the shell's. */
+interface ImportSession {
+  readonly state: ImportUiState;
+  readonly input: ImportUiInput;
+  /** the open generation this record belongs to (a `planImport` that resolves into a closed overlay is dropped) */
+  readonly token: number;
+  /** `/import --dry-run`: `y` refuses with a named sentence rather than arming a write (§7 row 54) */
+  readonly dryRun: boolean;
+  /** §5.3: the rows `y` WOULD have written when no apply seam is bound — re-laddered at the render width */
+  readonly notWired: number | null;
+  /** §7 row 59 behaviour 2: the in-flight apply's controller, aborted by Esc / Ctrl-C */
+  readonly abort: AbortController | null;
 }
 
 interface PaletteUi {
@@ -632,6 +794,63 @@ function useBridge(bridge: Bridge): number {
   return tick;
 }
 
+/**
+ * TUI-DESIGN-5 §12.5 S99 SR / §12.4 SR: **a trailing-edge coalescer**, one per spoken surface.
+ *
+ * §12.5's rule is "at most one spoken line per `SR_COALESCE_MS`", and the first implementation read it as a
+ * rate limiter: not due, return. That DROPS the announcement instead of deferring it — a reader arrowing three
+ * rows in 400 ms heard row 1 and then silence, and because the effect's dependency is the rendered line it
+ * never ran again for the row they stopped on. A coalescer's whole job is the trailing edge: when a change
+ * arrives too soon, schedule the remainder of the window and speak **whatever is current when it fires**, which
+ * is why `lines` is a getter and not a value.
+ *
+ * `key` is the change signature (null = the surface is closed, which clears the timer and the clock, so a
+ * re-open speaks at once). Nothing here is on a render path: the timer is created in an effect and cleared on
+ * unmount, and the clock is the App's `now`.
+ */
+function useSpokenCoalesced(key: string | null, lines: () => readonly string[], speak: React.RefObject<(line: string) => void>, now: () => number): void {
+  const atRef = useRef<number | null>(null);
+  const timer = useRef<NodeJS.Timeout | null>(null);
+  const linesRef = useRef(lines);
+  linesRef.current = lines;
+  useEffect(() => {
+    const clear = (): void => {
+      if (timer.current !== null) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
+    };
+    if (key === null) {
+      atRef.current = null;
+      clear();
+      return;
+    }
+    const say = (): void => {
+      atRef.current = now();
+      for (const l of linesRef.current()) speak.current?.(l);
+    };
+    const t = now();
+    if (srDue(atRef.current, t)) {
+      clear();
+      say();
+      return;
+    }
+    // one trailing announcement is enough: it re-reads `lines()` when it fires, so it speaks the LAST change
+    if (timer.current !== null) return;
+    timer.current = setTimeout(() => {
+      timer.current = null;
+      say();
+    }, Math.max(0, SR_COALESCE_MS - (t - (atRef.current ?? t))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  useEffect(
+    () => () => {
+      if (timer.current !== null) clearTimeout(timer.current);
+    },
+    [],
+  );
+}
+
 export function App(p: AppProps): React.JSX.Element {
   const mode = p.mode ?? 'one-shot';
   const env = p.env ?? process.env;
@@ -705,6 +924,28 @@ export function App(p: AppProps): React.JSX.Element {
   const composer = useComposer({ history: () => bridge.host?.history() ?? null, detect, now });
   const [picker, pickerDispatch] = useReducer(pickerReducer, INITIAL_PICKER);
   const pickerOpenRef = useRef<PickerOpen | null>(null);
+  /**
+   * TUI-DESIGN-5 §6.2 / §6.4: the catalogue seam, bound once per mount by `openModelsPicker` from its single
+   * `await import('../models/index.js')`. It is a ref rather than state because it is a **module**, not a view:
+   * nothing re-renders when it arrives, and the picker is only opened after it has.
+   */
+  const modelsApiRef = useRef<ModelsApi | null>(p.models ?? null);
+  /**
+   * TUI-DESIGN-5 §5.2: the import overlay's state and the plan it reads. One ref (the plan never changes while
+   * the overlay is open, so the reducer takes it per action) plus a counter that forces the commit — the same
+   * shape `pendingIntake` / `gateRef` use for an overlay whose data is not in `UiState`.
+   */
+  const importRef = useRef<ImportSession | null>(null);
+  const [importView, setImportView] = useState<ImportSession | null>(null);
+  /**
+   * §5.2: the open GENERATION. `openImportOverlay` awaits `planImport`; Esc during the `scanning` frame closes
+   * the overlay, and without a token the resolution then re-populated `importRef` for an overlay that is gone —
+   * which re-armed the screen-reader effect and spoke a whole block with nothing on screen. Captured before the
+   * await, compared after it: a stale answer (a close, or a second `/import`) is dropped whole.
+   */
+  const importTokenRef = useRef(0);
+  /** §7 row 59 behaviour 2: rows the in-flight apply reported written, so an interrupt names the REAL count. */
+  const importDoneRef = useRef(0);
   const [palette, setPalette] = useState<PaletteUi | null>(null);
   const paletteRef = useRef(palette);
   paletteRef.current = palette;
@@ -741,6 +982,12 @@ export function App(p: AppProps): React.JSX.Element {
     },
     [bridge, dispatch],
   );
+  /**
+   * §12.4 / §12.5 SR: the one sink the coalesced screen-reader twins speak into, as a ref so a timer that fires
+   * between commits still reaches the CURRENT `noteLine` (and never a stale host).
+   */
+  const speakRef = useRef<(line: string) => void>(() => undefined);
+  speakRef.current = (line: string): void => noteLine(line, { label: '[ui]' });
   const toastItem = useCallback(
     (text: string, level: 'info' | 'error' | 'ok' = 'info'): void => {
       toast(text, level);
@@ -1007,6 +1254,19 @@ export function App(p: AppProps): React.JSX.Element {
       dispatch({ type: 'transcript', view: c.view });
       return;
     }
+    if (c.kind === 'agents') {
+      // TUI-DESIGN-5 §4.3 / §4.9 (S66 advertises `/agents (Alt+A)`): open the panel on the tab AND focus it, so
+      // the eight letters resolve. With nothing delegating the answer is D-AN's honest one, never a blank tab.
+      if (s.agents.length === 0) {
+        noteLine(notAvailableText('/agents'), { label: '[ui]' });
+        return;
+      }
+      if (s.panel === 'collapsed') dispatch({ type: 'panel', panel: 'open' });
+      tabTouched.current = true;
+      dispatch({ type: 'tab', tab: 'a' });
+      dispatch({ type: 'paneFocus', on: true });
+      return;
+    }
     const next = nextPanel({ panel: s.panel, tab: s.tab }, c.arg);
     if (next.tab !== s.tab) {
       tabTouched.current = true;
@@ -1196,6 +1456,29 @@ export function App(p: AppProps): React.JSX.Element {
         void doScrollback().catch((e: unknown) => noteLine(`error: /scrollback: ${e instanceof Error ? e.message : String(e)}`, { label: '[ui]', level: 'error' }));
         return;
       }
+      /**
+       * TUI-DESIGN-5 §6.4 (D-AQ): `/model` with **no argument** opens the pane-slot picker; `/model <id>` falls
+       * through to the host, whose `case 'model'` owns `pending.model` and §12.5's sentence. One value, one home.
+       */
+      case 'model': {
+        if (action.id !== null && action.id.trim() !== '') break;
+        composer.clear();
+        remember();
+        void openModelsPicker();
+        return;
+      }
+      /**
+       * TUI-DESIGN-5 §5.2: `/import` opens the review overlay. The registry already refuses it while a run is
+       * live (`availableDuringTask: 'idle'`, §5.3), so the overlay can never race a live prompt build.
+       */
+      case 'import': {
+        composer.clear();
+        remember();
+        // §7 row 54: `--dry-run` travels WITH the open — `y` refuses while it is set, so the flag's own title
+        // ("plan only — nothing is written") stays true the day the apply seam lands
+        void openImportOverlay(action.source, action.dryRun);
+        return;
+      }
       case 'copy': {
         // TUI-DESIGN-3 §4.4 F7: `/copy diff` asks the host (it builds the diff exactly as `/diff` does, then `copyFn` + the toast)
         if (action.what === 'diff') {
@@ -1381,9 +1664,225 @@ export function App(p: AppProps): React.JSX.Element {
   const closePicker = (): void => {
     const o = pickerOpenRef.current;
     pickerOpenRef.current = null;
+    if (o?.kind === 'models') pickerDispatch({ type: 'models', action: { type: 'close' } });
     dispatch({ type: 'picker', open: false });
     composer.clear();
     o?.onClose?.();
+  };
+
+  // ---------------------------------------------------------------------------------------
+  // TUI-DESIGN-5 §6.4 (D-AQ) — `/model` with no argument opens the PANE-SLOT picker
+  // ---------------------------------------------------------------------------------------
+
+  /**
+   * §6.2's first-frame rule, as code: the only reach into `src/models/**` is this `await import()`, inside a
+   * function body, and it happens when the human types `/model` — never on the argv path. It is the same shape
+   * `openSessionLedger` (`src/session/publish.ts`) and `src/cli/models.ts` already use (gate G-R5-1).
+   *
+   * `p.models` is the test seam: supplied, nothing is imported at all.
+   */
+  const loadModelsApi = async (): Promise<ModelsApi | null> => {
+    if (modelsApiRef.current !== null) return modelsApiRef.current;
+    if (p.models !== undefined) {
+      modelsApiRef.current = p.models;
+      return p.models;
+    }
+    try {
+      const m = await import('../models/index.js');
+      const api: ModelsApi = { ...m, rank: m.rankModels };
+      modelsApiRef.current = api;
+      return api;
+    } catch (e) {
+      noteLine(`error: /model — the model catalogue could not be loaded: ${e instanceof Error ? e.message : String(e)}`, { label: '[ui]', level: 'error' });
+      return null;
+    }
+  };
+
+  /**
+   * §6.2 / F-58: the first paint is the bundled snapshot with **zero awaits after the import resolves** —
+   * `instantCatalogue()` costs no I/O, and `snapshotResults` turns it into one `source: 'static'` row per
+   * provider so the rule row reads `models · N of 7 providers` and the provenance row says `bundled snapshot`
+   * rather than claiming a load that was never started (§12.5 S99, S101).
+   *
+   * **No background refresh runs here.** §15 Q13's rule — a fetch is something the user asked for — is already
+   * how `jevcode models` behaves (`list`/`search` pass `offline: true`; only `refresh` goes out), and a picker
+   * that fired seven provider requests on `/model` would be the unattended fetch that rule forbids. `/model`
+   * therefore browses the snapshot and the disk cache's successor lands with `models refresh`'s seam; the
+   * provenance row says which it is, on every row, so nothing is hidden.
+   */
+  const openModelsPicker = async (): Promise<void> => {
+    const api = await loadModelsApi();
+    if (api === null) return;
+    // §6.2: the snapshot comes off the seam that is already bound — `ModelsApi` carries `instantCatalogue` and
+    // `SNAPSHOT_AT`, so a caller that injected `models` alone really does cause NO import (the second
+    // `await import()` here used to run whenever `instantModels` was absent, an undocumented coupling).
+    const snapshot = p.instantModels ?? (api.instantCatalogue !== undefined ? api.instantCatalogue.bind(api) : null);
+    const m = snapshot === null ? await import('../models/index.js') : null;
+    const rows = snapshot === null ? (m as { instantCatalogue: () => readonly ModelInfo[] }).instantCatalogue() : snapshot();
+    const snapshotAt = m !== null ? m.SNAPSHOT_AT : (api.SNAPSHOT_AT ?? SNAPSHOT_AT_FALLBACK);
+    // §12.5 S99 SR: the spoken clock belongs to `useSpokenCoalesced`, and it resets itself when the surface
+    // closes (the key goes null), so a re-opened picker speaks its first row at once.
+    bridge.command({
+      type: 'picker',
+      open: {
+        kind: 'models',
+        workspace: p.cwd ?? process.cwd(),
+        models: rows,
+        results: snapshotResults(rows, snapshotAt),
+      },
+    });
+  };
+
+  // ---------------------------------------------------------------------------------------
+  // TUI-DESIGN-5 §5.2 — `/import` opens the review overlay
+  // ---------------------------------------------------------------------------------------
+
+  /**
+   * The ref is what the **async** halves read (`planImport`'s resolution, an apply's `.then`), because they run
+   * after the commit that would have captured a stale `importView`; the state is what the **render** reads, so a
+   * reducer step re-measures the slot (`overlayWant('import', …)` reads `importLines`, whose row count changes
+   * with the step) as well as re-drawing it. Both are written here and nowhere else.
+   */
+  const setImport = (next: ImportSession | null): void => {
+    importRef.current = next;
+    if (next === null) importSpokenStepRef.current = null;
+    setImportView(next);
+  };
+
+  /** §5.2: a new state on the CURRENT open, keeping the five shell members (token, dry run, abort …). */
+  const patchImport = (cur: ImportSession, state: ImportUiState, over: Partial<ImportSession> = {}): void => {
+    setImport({ ...cur, ...over, state });
+  };
+
+  /** §7 row 59, behaviour 3: the overlay closes and the PLAN is kept — nothing written, nothing deleted. */
+  const closeImport = (): void => {
+    const cur = importRef.current;
+    // an apply still in flight is told to stop; the token change drops whatever it resolves with (§7 row 59)
+    cur?.abort?.abort();
+    importTokenRef.current += 1;
+    setImport(null);
+    closeOverlay('import');
+    if (cur !== null && cur.state.step !== 'scanning' && cur.state.importId !== '') noteLine(importClosedRow(cur.state.importId, glyphs), { label: '[ui]' });
+  };
+
+  /**
+   * §5.2: the overlay opens on the `scanning` row **first** (one committed frame), then `planImport` runs behind
+   * the same `await import()` shape and the five-group default view replaces it. The plan is read-only work: the
+   * apply half needs an `ApplyOptions` adapter this build does not have, which `applyImport` (absent in
+   * production) is the seam for — `y` says so out loud rather than half-writing into a human's `.jevcode/`.
+   */
+  const openImportOverlay = async (source: string | null, dryRun: boolean): Promise<void> => {
+    const token = (importTokenRef.current += 1);
+    setImport({ state: scanningImportUi(), input: EMPTY_IMPORT_INPUT, token, dryRun, notWired: null, abort: null });
+    dispatch({ type: 'overlay', overlay: 'import' });
+    /**
+     * §5.2: is the overlay this call opened still the one on screen? Esc during the `scanning` frame closes it
+     * and a second `/import` replaces it; either way this call's answer — the plan, the S92 note, the error row
+     * — belongs to nobody and is dropped. Read AFTER every await, never before.
+     */
+    const live = (): boolean => importTokenRef.current === token && importRef.current?.token === token;
+    try {
+      const m = p.importEngine ?? (await import('../import/index.js'));
+      if (!live()) return;
+      const home = p.home ?? homedir();
+      // §5.4: the session's RESOLVED workspace when it has been probed (`--workspace` moves it), else the cwd
+      // the renderer mounted from; the git root comes from the one `gitRootOf` both sinks share.
+      const workspace = bridge.gitDirs.workspace ?? p.cwd ?? process.cwd();
+      const plan = await m.planImport({
+        env: { home, env, platform: process.platform, workspace, gitRoot: gitRootOf(workspace, bridge.gitDirs), extraRoots: [] },
+        jevcodeVersion: VERSION,
+        trust: bridge.ui?.trustWorkspace === true ? 'trust' : 'session',
+        decider: null,
+        // §5.4 item 1: the session's redactor, so a `config.addSecret` value that matches no pattern family is
+        // still not rendered into a `why`, a warning or `transcript.log`
+        redact,
+        ...(source !== null ? { optIn: [source] } : {}),
+      });
+      if (!live()) return;
+      const summary = m.summarisePlan(plan);
+      const input: ImportUiInput = { plan, summary, applicable: m.applicableRows(plan, { scope: 'both' }) };
+      // §12.4 S92: an empty probe is one sentence, not an overlay with five zero rows
+      if (plan.rows.length === 0) {
+        setImport(null);
+        closeOverlay('import');
+        noteLine(IMPORT_NOTHING_FOUND, { label: '[ui]', level: 'warn' });
+        return;
+      }
+      setImport({ state: initImportUi(input), input, token, dryRun, notWired: null, abort: null });
+    } catch (e) {
+      if (!live()) return;
+      setImport(null);
+      closeOverlay('import');
+      noteLine(`error: /import — ${redact(e instanceof Error ? e.message : String(e))}`, { label: '[ui]', level: 'error' });
+    }
+  };
+
+  const importDispatch = (action: Parameters<typeof importReducer>[1]): void => {
+    const cur = importRef.current;
+    if (cur === null) return;
+    /**
+     * §7 row 59 behaviour 2: Esc / Ctrl-C **during an apply** stops it at a row boundary. The seam is told first
+     * (`abort`), and the interrupt carries the count the seam actually reported — `importDoneRef` — so the
+     * overlay names the rows that really landed rather than the whole selection.
+     */
+    if (action.type === 'escape' && cur.state.step === 'applying') {
+      cur.abort?.abort();
+      const stopped = importReducer(cur.state, { type: 'interrupt', ok: importDoneRef.current }, cur.input);
+      patchImport(cur, stopped);
+      return;
+    }
+    // §7 row 54: `/import --dry-run` said "plan only — nothing is written". `y` answers with that, in one
+    // sentence, instead of arming an apply the flag forbade (silently dropping the flag is D-AN's failure).
+    if (action.type === 'apply' && cur.dryRun && cur.state.step !== 'applying' && cur.state.step !== 'done') {
+      patchImport(cur, { ...cur.state, hint: IMPORT_DRY_RUN_REFUSAL }, { notWired: null });
+      return;
+    }
+    const next = importReducer(cur.state, action, cur.input);
+    if (next.closed) {
+      closeImport();
+      return;
+    }
+    const started = next.step === 'applying' && cur.state.step !== 'applying';
+    // §5.3: the apply seam is absent in this build (`ApplyOptions`), so `y` names exactly what it WOULD write and
+    // refuses in one sentence rather than reporting a write that never happened (D-AN's rule, applied to a key).
+    // The refusal replaces the `applying` state **before** it is committed: one keystroke is one frame, so the
+    // overlay slot never measures a two-row `applying` block it is about to abandon (the §5.8 row-count rule).
+    // `notWired` (not the rendered string) is what is stored, so the rung is re-picked on every resize.
+    if (started && p.applyImport === undefined) {
+      patchImport(cur, { ...next, step: cur.state.step, hint: null }, { notWired: selectedRowIds(next, cur.input).length });
+      return;
+    }
+    if (!started) {
+      patchImport(cur, next, { notWired: null });
+      return;
+    }
+    const apply = p.applyImport;
+    if (apply === undefined) return;
+    const ids = selectedRowIds(next, cur.input);
+    const abort = new AbortController();
+    const token = cur.token;
+    importDoneRef.current = 0;
+    patchImport(cur, next, { notWired: null, abort });
+    /** the apply's answer is only the CURRENT open's, and only while that open never interrupted it. */
+    const settle = (): ImportSession | null => {
+      const live = importRef.current;
+      if (live === null || live.token !== token) return null;
+      // §7 row 59 behaviour 2: the user stopped it. A late `applied` would replace `interrupted` with the FULL
+      // counts and claim a complete write for a run the human ended — the one report worse than no report.
+      if (live.state.interrupted || abort.signal.aborted) return null;
+      return live;
+    };
+    void apply(ids, cur.input, { signal: abort.signal, onRow: (done) => (importDoneRef.current = done) })
+      .then((r) => {
+        const live = settle();
+        if (live === null) return;
+        patchImport(live, importReducer(live.state, { type: 'applied', ok: r.ok, failed: r.failed, total: ids.length }, live.input), { abort: null });
+      })
+      .catch((e: unknown) => {
+        const live = settle();
+        if (live === null) return;
+        patchImport(live, { ...live.state, step: 'groups', hint: redact(e instanceof Error ? e.message : String(e)) }, { abort: null });
+      });
   };
 
   const interrupt = (action: InterruptAction, ks: KeyState): void => {
@@ -1484,6 +1983,13 @@ export function App(p: AppProps): React.JSX.Element {
         }
         if (k === 'wizard') wizard.cancel();
         if (k === 'secret') toast(GATE_DISMISS_TIP);
+        // §5.2: the import overlay owns state outside `UiState`, so it closes through its own door — a bare
+        // `closeOverlay('import')` would leave `importRef` populated (and its open token live) behind a hidden
+        // overlay. `resolveImport` answers Esc / Ctrl-C itself, so this is the belt on an unusual route.
+        if (k === 'import') {
+          closeImport();
+          return;
+        }
         closeOverlay(k);
         return;
       }
@@ -1561,7 +2067,40 @@ export function App(p: AppProps): React.JSX.Element {
           return;
         }
         tabTouched.current = true;
-        dispatch({ type: 'tab', tab: cycleTab(s.tab, action.dir) });
+        // TUI-DESIGN-5 §4.3: `]` / `[` skip `'a'` unless something delegates — one predicate, read off the rows
+        dispatch({ type: 'tab', tab: cycleTab(s.tab, action.dir, paneTabsFor(s.agents.length > 0)) });
+        return;
+      case 'paneFocus':
+        // TUI-DESIGN-5 §4.3 / §7 row 99: Alt+A focuses the agents tab (opening a collapsed panel first, the same
+        // way `]` does) and Esc unfocuses. The refusal on a non-empty draft is the resolver's (S86a).
+        if (action.on) {
+          if (s.agents.length === 0) {
+            toast(notAvailableText('/agents'));
+            return;
+          }
+          if (s.panel === 'collapsed') dispatch({ type: 'panel', panel: 'open' });
+          tabTouched.current = true;
+        }
+        dispatch({ type: 'paneFocus', on: action.on });
+        return;
+      case 'agents':
+        /**
+         * TUI-DESIGN-5 §4.3 / §13.2 clause 6: `↑` / `↓` are the tab's own **navigation**, not a supervisor verb —
+         * they move the highlighted row, the viewport follows (`PaneState.agentCursor`), and without them the
+         * rows below `AGENTS_TAB_ROWS` are unreachable however loudly the marker says `↓18 below`.
+         */
+        if (action.op === 'move') {
+          dispatch({ type: 'agentCursor', by: action.by ?? 1 });
+          return;
+        }
+        if (action.op === 'unfocus') {
+          dispatch({ type: 'paneFocus', on: false });
+          return;
+        }
+        // §4.3 / §4.7: the supervisor VERBS need a store this build does not have (§4.0). D-AN's rule — every
+        // surface answers honestly rather than doing nothing — applies to the keys too. The refusal names the
+        // key's user-facing word (`drop`, never the internal `dropArm`).
+        toast(notAvailableText(`agents ${AGENTS_VERB_WORD[action.op]}`));
         return;
       case 'panel': {
         // TUI-DESIGN-2 §4.6: Alt+J toggles, Alt+Shift+J opens full, Alt+D/P/T/S open a tab (a second press on the same tab collapses)
@@ -1718,6 +2257,50 @@ export function App(p: AppProps): React.JSX.Element {
         const o = pickerOpenRef.current;
         if (o === null) return;
         const filter = composer.buffer.text;
+        // TUI-DESIGN-5 §6.4: the models arm has its own selectors and its own five ops; everything else below is
+        // round 3's, unchanged. Handled first so no session-shaped code ever runs against a catalogue row.
+        if (picker.kind === 'models') {
+          const api = modelsApiRef.current;
+          if (api === null) return;
+          const hits = visibleModelHits(picker, api, filter).hits;
+          switch (action.op) {
+            case 'move':
+              pickerDispatch({ type: 'move', by: action.by ?? 1, count: hits.length });
+              return;
+            case 'page':
+              pickerDispatch({ type: 'page', by: action.by ?? 1, size: 6, count: hits.length });
+              return;
+            case 'accept': {
+              // §12.5 S99 SR: "Tab narrows" — the id becomes the query, so the next keystroke refines it
+              const m = selectedModelRow(picker, api, filter);
+              if (m !== null) composer.set(m.id);
+              return;
+            }
+            case 'open': {
+              // D-AQ / §15 Q18: Enter pends for the NEXT RUN ONLY. The value is set in exactly one place — the
+              // host's `case 'model'` — so the picker and a typed `/model <id>` can never print two sentences.
+              const m = selectedModelRow(picker, api, filter);
+              closePicker();
+              if (m === null) return;
+              o.onModel?.(m);
+              if (bridge.host) {
+                const line = `/model ${m.id}`;
+                void bridge.host
+                  .command(line)
+                  .catch((e: unknown) => noteLine(`error: /model: ${e instanceof Error ? e.message : String(e)}`, { label: '[ui]', level: 'error' }));
+              }
+              return;
+            }
+            case 'close':
+              closePicker();
+              return;
+            default:
+              // §6.4: `preview`, `allWorkspaces`, `rename`, `delete*` and the card ops belong to a SESSION row.
+              // `KeyState.pickerFilter` already routes their keys to the filter, so this is unreachable from a
+              // keystroke; it stays exhaustive rather than silently doing something session-shaped.
+              return;
+          }
+        }
         const count = picker.kind === 'rewind' ? visibleRewindSteps(picker).length : visibleSessions(picker, filter).length;
         switch (action.op) {
           case 'move':
@@ -1740,7 +2323,13 @@ export function App(p: AppProps): React.JSX.Element {
               closePicker();
               return;
             }
-            const sess = selectedSession(picker, filter);
+            /**
+             * §2.8: inside the OPEN card, `[Enter] resume` — the key the card's own keys row advertises —
+             * resumes the run the card belongs to. `selectedSession` answers the composer text, and the text
+             * can have moved under the card (a restored draft, a `sessions` refresh); resuming a different
+             * session than the one on screen is the same identity defect as painting one.
+             */
+            const sess = picker.card !== null ? sessionOfRun(picker, picker.card.runId) : selectedSession(picker, filter);
             if (sess) o.onOpen?.(sess);
             closePicker();
             return;
@@ -1790,12 +2379,44 @@ export function App(p: AppProps): React.JSX.Element {
           case 'close':
             closePicker();
             return;
+          // TUI-DESIGN-5 §2.8: the sub-state. `PickerOpen.hasCard` is the predicate that produces `'closed'`
+          // (R5-1's `/resume` supplies it with the fold threaded in); with no predicate every row stays `'off'`
+          // and Enter resumes exactly as it did in round 3 — the resolver's three-state gate, not a boolean.
+          case 'cardOpen': {
+            const sess = selectedSession(picker, filter);
+            const run = sess?.runs.at(-1);
+            if (!run) return;
+            pickerDispatch({ type: 'card', runId: run.runId });
+            return;
+          }
+          case 'cardClose':
+            pickerDispatch({ type: 'card', runId: null });
+            return;
+          case 'cardReplay':
+          case 'cardFresh':
+          case 'cardDiff':
+          case 'cardWho':
+            // §2.8's four branches need `PausePoint.replayable` / the fold, which `src/session/picker-lines.ts`
+            // threads in (R5-1). D-AN: answer honestly rather than doing nothing.
+            toast(notAvailableText(`/resume ${action.op.slice(4).toLowerCase()}`));
+            return;
         }
+        return;
+      }
+      /**
+       * TUI-DESIGN-5 §5.2 / §7 row 59: the import overlay's keys. The resolver's op names ARE `ImportAction`'s,
+       * so this arm is one dispatch and the reducer stays the single owner of what each key means.
+       */
+      case 'import': {
+        if (importRef.current === null) return;
+        importDispatch(action.op === 'move' ? { type: 'move', by: action.by ?? 1 } : { type: action.op });
         return;
       }
       case 'review': {
         const req = s.pendingReview;
         if (!req) return;
+        // TUI-DESIGN-5 §4.6: null for every ordinary confirm, so nothing below changes for them
+        const whyRefusal = reviewWhyRefusal(req);
         switch (action.op) {
           case 'approve':
             p.confirmer.resolve(req.id, true);
@@ -1814,8 +2435,16 @@ export function App(p: AppProps): React.JSX.Element {
             dispatch({ type: 'review:expand', expanded: !s.expanded });
             return;
           case 'whyArm':
+            // TUI-DESIGN-5 §4.6 (`CD §F` to-do 2): a manifest confirm has no risk dimensions, so `w` answers at once
+            // instead of arming a chord that could only index into an empty array (§12.3 S65 extended).
+            if (whyRefusal !== null) toast(whyRefusal);
             return;
           case 'why': {
+            // §4.6: the same refusal for the completed chord, so `w 1` … `w 5` all answer (review.test.tsx)
+            if (whyRefusal !== null) {
+              toast(whyRefusal);
+              return;
+            }
             const key = action.dim !== undefined ? reviewRowForDigit(action.dim) : null;
             const all = [...s.decisionsByStep.values()].flat();
             const d = key === null ? null : (all.find((x) => x.step === req.step && x.stage === 'risk' && x.id === key) ?? null);
@@ -1962,6 +2591,57 @@ export function App(p: AppProps): React.JSX.Element {
     dispatch({ type: 'note', on: false });
   };
 
+  /**
+   * TUI-DESIGN-5 §12.5 S99 SR / §6.8: the models picker speaks ONE sentence per selection —
+   * `models: 3 of 40 · <id> · <provider> · $x/M in · Enter picks, Tab narrows, Esc closes` — coalesced to at most
+   * one per `SR_COALESCE_MS` (`srDue`, pure; the clock is the App's). A glyph-only marker row says nothing to a
+   * screen reader, which is why the row is a sentence and not the painted row (§7 row 82).
+   */
+  const modelsSrText = ((): string | null => {
+    if (!sr || !pickerOpenRef.current || picker.kind !== 'models') return null;
+    const api = modelsApiRef.current;
+    if (api === null) return null;
+    const hits = visibleModelHits(picker, api, composer.buffer.text).hits;
+    // §12.5 S99: the spoken POSITION is the one the marker sits on. `picker.models.selected` is unclamped —
+    // after a filter narrows 69 rows to 4 it can still say 10, and `selectedModel` (which clamps) would name
+    // row 4 in the same sentence. One index, the renderer's.
+    const index = hits.length === 0 ? 0 : Math.min(Math.max(0, Math.floor(picker.models.selected)), hits.length - 1);
+    return modelsSrLine({ index, count: hits.length, model: selectedModelRow(picker, api, composer.buffer.text), text: api, glyphs });
+  })();
+  const modelsSrTextRef = useRef<string | null>(modelsSrText);
+  modelsSrTextRef.current = modelsSrText;
+  useSpokenCoalesced(modelsSrText, () => (modelsSrTextRef.current === null ? [] : [modelsSrTextRef.current]), speakRef, now);
+
+  /**
+   * §5.7 twin 2 / §12.4 S89–S95 SR: the import overlay's spoken form. A STEP change speaks the block for that
+   * step (`importScreenReaderLines` is step-aware — a row list is not a group list); every other change — a
+   * cursor move, a Space toggle, a review advance — speaks the one focus sentence. Both go through the same
+   * trailing-edge coalescer the models line uses, so arrowing fast is one announcement, not five and not none.
+   */
+  const importSpokenStepRef = useRef<ImportUiState['step'] | null>(null);
+  const importSrKey = !sr || importView === null ? null : [importView.token, importView.state.step, importView.state.cursor, importView.state.rowCursor, importView.state.reviewAt, importView.state.off.size, importView.state.applied?.ok ?? -1, importView.state.interrupted ? 'i' : '-', importView.state.hint ?? '', importView.notWired ?? -1].join('\u0001');
+  useSpokenCoalesced(
+    importSrKey,
+    () => {
+      const cur = importRef.current;
+      if (cur === null) return [];
+      // the state the SCREEN shows: the apply refusal lives as a count on the record, and a reader must hear
+      // the same answer a sighted user reads in place of the keys row (§13.1 — one producer, two sinks)
+      const st = cur.notWired === null ? cur.state : { ...cur.state, hint: importApplyNotWired(cur.notWired) };
+      // a STEP change is a new block (a row list is not a group list); anything else is one focus sentence
+      const stepChanged = importSpokenStepRef.current !== st.step;
+      importSpokenStepRef.current = st.step;
+      const out = stepChanged ? [...importScreenReaderLines(st, { prompt: false, input: cur.input })] : [];
+      // a HINT is the answer to a key, and coalescing must never swallow it: when one window holds both a step
+      // change and a hint (press `y` inside 400 ms of the plan landing), the reader hears the block AND the
+      // answer, in that order — dropping the second was the same defect as dropping the row you arrowed to.
+      if (!stepChanged || (st.hint !== null && st.hint !== '')) out.push(importSrFocusLine(st, cur.input));
+      return out;
+    },
+    speakRef,
+    now,
+  );
+
   const layoutRef = useRef<Layout | null>(null);
   // TUI-DESIGN-4 §1.3.3: what the scroll keys need from the last frame (null under the classic renderer)
   const scrollRef = useRef<{ rows: number; height: number } | null>(null);
@@ -1983,6 +2663,19 @@ export function App(p: AppProps): React.JSX.Element {
     if (k.shift && k.downArrow) return 'lineDown';
     return null;
   };
+  /**
+   * TUI-DESIGN-5 §2.8's three-state gate, as one named function so the App test can read it and the resolver's
+   * two Enter meanings are decided in exactly one place.
+   */
+  const pickerCardState = (): 'off' | 'closed' | 'open' => {
+    const o = pickerOpenRef.current;
+    if (o === null || picker.kind !== 'sessions') return 'off';
+    if (picker.card !== null) return 'open';
+    if (o.hasCard === undefined) return 'off';
+    const sess = selectedSession(picker, picker.renaming ? '' : composer.buffer.text);
+    return sess !== null && o.hasCard(sess) ? 'closed' : 'off';
+  };
+
   const keyState = (): KeyState => {
     const s = stateRef.current;
     const b = composer.buffer;
@@ -2005,6 +2698,18 @@ export function App(p: AppProps): React.JSX.Element {
       noteMode: s.noteMode,
       armed: armedRef.current,
       picker: pickerOpenRef.current !== null,
+      /**
+       * TUI-DESIGN-5 §2.8: three states, not a boolean. `'closed'` — the state in which Enter *opens* the card
+       * instead of resuming — needs a predicate that knows whether the selected row HAS a card, and `SessionRow`
+       * carries no `PausePoint`: `PickerOpen.hasCard` is that seam (R5-1's `/resume` supplies it with the fold
+       * threaded in). **With no predicate every row is `'off'`**, which is this build's production state and
+       * why mounting the sub-state changes `/resume` for nobody: round 3's Enter and Esc are byte for byte
+       * unchanged, and `r`/`f`/`d`/`w` stay filter text (§7 row 91).
+       */
+      pickerCard: pickerCardState(),
+      // §6.4: the models picker's composer is a free-text query — `space`, `x`, `ctrl+a` and `ctrl+r` are filter
+      // characters there, never a preview, a delete arm, a widening or a rename (D-AQ; `s` was never bound).
+      pickerFilter: picker.kind === 'models',
       overlayArmed: s.overlayArmed,
       minsize: layoutRef.current?.degraded === 'minsize',
       retrying: s.retrying !== null,
@@ -2020,6 +2725,11 @@ export function App(p: AppProps): React.JSX.Element {
         return text.length > 0 && text === commandToken(text);
       })(),
       cursorAtEnd: b.cursor >= b.text.length,
+      // TUI-DESIGN-5 §4.3 (§9.2's `App.tsx` / `keys/resolve.ts` rows): the one pane rung's gate. Both are inert
+      // until they are supplied, and `paneFocus` can only be true while the `'a'` tab exists (the reducer holds
+      // that invariant), so the tab's eight single letters are unreachable in a build with no agents.
+      paneFocus: s.paneFocus,
+      tab: s.tab,
     };
   };
 
@@ -2140,7 +2850,26 @@ export function App(p: AppProps): React.JSX.Element {
           return;
         case 'picker':
           pickerOpenRef.current = c.open;
-          pickerDispatch({ type: 'open', kind: c.open.kind, workspace: c.open.workspace, ...(c.open.sessions ? { sessions: c.open.sessions } : {}), ...(c.open.rewindSteps ? { rewindSteps: c.open.rewindSteps } : {}), ...(c.open.sort ? { sort: c.open.sort } : {}) });
+          pickerDispatch({
+            type: 'open',
+            kind: c.open.kind,
+            workspace: c.open.workspace,
+            ...(c.open.sessions ? { sessions: c.open.sessions } : {}),
+            ...(c.open.rewindSteps ? { rewindSteps: c.open.rewindSteps } : {}),
+            ...(c.open.sort ? { sort: c.open.sort } : {}),
+            // TUI-DESIGN-5 §6.2: the snapshot rows and their provenance travel WITH the open, so the picker's
+            // first committed frame already has both — never an empty pane that fills in one frame later
+            ...(c.open.kind === 'models' ? { models: { type: 'open' as const, models: c.open.models ?? [], pending: c.open.providers ?? [], results: c.open.results ?? [] } } : {}),
+          });
+          // §6.4: a caller that opened the models arm WITHOUT going through `openModelsPicker` (an external
+          // `Renderer.openPicker`) still needs the seam. Loading it here and re-seeding through the reducer is
+          // what makes the pane's rows appear — a bare ref assignment would not re-render.
+          if (c.open.kind === 'models' && modelsApiRef.current === null) {
+            const seed = { type: 'open' as const, models: c.open.models ?? [], pending: c.open.providers ?? [], results: c.open.results ?? [] };
+            void loadModelsApi().then((api) => {
+              if (api !== null && pickerOpenRef.current?.kind === 'models') pickerDispatch({ type: 'models', action: seed });
+            });
+          }
           composer.clear();
           dispatch({ type: 'picker', open: true });
           return;
@@ -2260,6 +2989,12 @@ export function App(p: AppProps): React.JSX.Element {
       palette: palette && palette.mode !== 'mention' ? { query: composer.buffer.text.trim(), state: paletteState(), selected: palette.selected } : null,
       mention: palette && palette.mode === 'mention' ? { rows: rank(/@([^\s@]*)$/.exec(composer.buffer.text)?.[1] ?? '', palette.candidates, 8).map((x) => x.candidate), selected: palette.selected } : null,
       undo: pendingUndo.current ? { row: pendingUndo.current.row } : null,
+      // TUI-DESIGN-5 §5.2: the import overlay. `importSeq` is read here so a `setImport` commit re-measures the
+      // slot as well as re-drawing it — `overlayWant('import', …)` reads `importLines`, whose row count changes
+      // with the step (five groups → one applying row → the done row).
+      // §5.3 / §5.8: the "no apply seam" refusal is stored as a COUNT and rendered as the widest rung that fits
+      // the body right now, so a resize re-picks it instead of eliding the half that names the twin that works
+      import: state.overlay === 'import' && importView !== null ? { state: importView.notWired === null ? importView.state : { ...importView.state, hint: importApplyNotWired(importView.notWired, blockWidth(columns), glyphs) }, input: importView.input } : null,
     }),
     {},
   );
@@ -2361,7 +3096,8 @@ export function App(p: AppProps): React.JSX.Element {
   const overlayTop = layout.rule + layout.live + layout.banner + layout.pane + layout.queue;
   const header = useMemo(() => (mode === 'session' ? sessionHeaderItem(p.cwd ?? process.cwd()) : headerItem(p.task, p.resumeId)), [mode, p.cwd, p.task, p.resumeId]);
   const spinner = useSpinner(spinnerActive(state), reducedMotion);
-  const statusOpts: StatusLineOptions = { ascii: glyphs.mode === 'ascii', reducedMotion, spinnerFrame: spinner, mode, flatBadge: !boxed };
+  // TUI-DESIGN-5 §3.1 / §2.2: the `ctx` and `peers` gates are TERMINAL columns; the boxed row is laid out at the inner width
+  const statusOpts: StatusLineOptions = { ascii: glyphs.mode === 'ascii', reducedMotion, spinnerFrame: spinner, mode, flatBadge: !boxed, terminalColumns: columns };
   // TUI-DESIGN-2 §3.1 (finding 1): an engine run — never a submission in flight — colours the border `borderFocus` and the prompt `steer`
   const runLive = runIsLive(state.run);
   // TUI-DESIGN-3 §5.2 A4: the streaming caret `▍` on the last live row, a 1 Hz blink riding the spinner tick (steady under reduced motion)
@@ -2404,7 +3140,33 @@ export function App(p: AppProps): React.JSX.Element {
                       ? 'followup'
                       : 'task';
   const paneState = guard('pane', () => paneStateOf(state), { tab: state.tab, step: state.step, rows: [], plan: null, timeline: [], synth: null, mode: state.mode });
-  const pickerView = pickerOpen ? guard('pane', () => pickerLines(picker, { filter: picker.renaming ? '' : buffer.text, rows: layout.pane, columns, nowMs: state.nowMs, glyphs }), null) : null;
+  /**
+   * §2.8: the card's rows, for the session the card was OPENED for.
+   *
+   * Resolved by run id (`sessionOfRun`), never by the live filter: the filter can select a different row — or
+   * none — under an open card, and this used to hand `cardLines` a fabricated `({ runs: [] } as SessionRow)`
+   * whose `sessionId` and `title` are `undefined`. A caller's real binding (`resumeCardLines(s, runId, …)`)
+   * reads both. No session, no `cardLines` call: `pickerLines` then draws the one honest row it owns.
+   */
+  const cardSession = pickerOpen && picker.card !== null ? sessionOfRun(picker, picker.card.runId) : null;
+  const pickerCardRows = picker.card !== null && cardSession !== null ? (pickerOpenRef.current?.cardLines?.(cardSession, picker.card.runId, columns) ?? null) : null;
+  const pickerView = pickerOpen
+    ? guard(
+        'pane',
+        () =>
+          pickerLines(picker, {
+            filter: picker.renaming ? '' : buffer.text,
+            rows: layout.pane,
+            columns,
+            nowMs: state.nowMs,
+            glyphs,
+            // §6.4: the catalogue seam, bound by `openModelsPicker`; absent for the sessions and rewind arms
+            ...(picker.kind === 'models' && modelsApiRef.current !== null ? { models: { text: modelsApiRef.current, search: modelsApiRef.current } } : {}),
+            ...(pickerCardRows !== null ? { cardRows: pickerCardRows } : {}),
+          }),
+        null,
+      )
+    : null;
   // TUI-DESIGN-4 §1.3.3: the wrapped-row index. `rebuildFor` appends incrementally, rebuilds on a width or glyph
   // change and returns the SAME object when neither moved (edge 7: a `/theme` never rebuilds it), so the ref keeps
   // one index for the life of the mount and the classic renderer never builds one at all.
@@ -2471,7 +3233,7 @@ export function App(p: AppProps): React.JSX.Element {
             }),
           plainRule(columns, glyphs),
         );
-  const statusState = guard<StatusLineState | null>('status', () => statusView({ ...state, git: state.git === null ? null : { ...state.git, head: gitHead.head ?? state.git.head, frozen: gitHead.frozen } }, { picker: pickerOpen }), null);
+  const statusState = guard<StatusLineState | null>('status', () => statusView({ ...state, git: state.git === null ? null : { ...state.git, head: gitHead.head ?? state.git.head, frozen: gitHead.frozen } }, { picker: pickerOpen, columns, glyphs }), null);
   const badge = modeBadge(state.modeBadge.mode, state.modeBadge.pending, glyphs);
   const consoleTitle = wizardHosted ? wizardConsoleTitle(wizard.state.step, glyphs) : pickerOpen && picker.kind ? pickerConsoleTitle(picker.kind, glyphs) : null;
   const gateRow = gateUp === 1 && gateRef.current ? (gateLines(gateRef.current.hits, consoleInnerWidth(columns))[0] ?? null) : null;
@@ -2632,7 +3394,7 @@ export function App(p: AppProps): React.JSX.Element {
             dir={sessionDirName(p.cwd ?? process.cwd())}
             title={consoleTitle}
             gate={gateRow}
-            status={statusState ?? statusView(state, { picker: pickerOpen })}
+            status={statusState ?? statusView(state, { picker: pickerOpen, columns, glyphs })}
             statusOptions={statusOpts}
             wizard={wizardHosted ? { state: wizard.state, trust: (bridge.wizardHost?.trustInputs?.() ?? null) as TrustInputs | null, screenReader: launch.screenReader } : null}
             glyphs={glyphs}

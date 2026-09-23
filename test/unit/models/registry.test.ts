@@ -165,7 +165,7 @@ describe('the catalogues that live in the registry', () => {
     expect(glm.pricing!.cacheReadPerM).toBeCloseTo(0.05, 12);
     // OpenRouter lists no cache-write rate for this model: the 1.25x convention fills it in
     expect(glm.pricing!.cacheWritePerM).toBeCloseTo(0.15 * 1.25, 12);
-    expect(f.calls[0]!.headers['http-referer']).toContain('jevcode');
+    expect(f.calls[0]!.headers['http-referer']).toMatch(/coasty-ai\/JevCode|jevcode/i);
     // a model that cannot emit text is not a generator
     expect(openRouterModelInfo({ id: 'x/image', architecture: { output_modalities: ['image'] } })).toBeNull();
   });

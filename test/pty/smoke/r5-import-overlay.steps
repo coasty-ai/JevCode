@@ -1,0 +1,70 @@
+# TUI-DESIGN-5 §5.2 / §5.7 / §5.8 / §7 rows 58–59 / §10 (slot R5-5, mounted by R5-4's shared shell): the `/import`
+# review overlay under a real pty — open at 24x80, expand a group, collapse, resize 24x80 -> 12x60 -> 40x120 with
+# the overlay on screen, then Esc. Hermetic: `chat --mock` starts no engine on the argv path, and the whole import
+# facade arrives through one `await import('../import/index.js')` inside `openImportOverlay` (gate G-R5-1), so
+# nothing here is on the first-frame graph. `JEVCODE_ASSERT_NO_NETWORK=1` makes a fetch a failure rather than a
+# hope: `planImport` is a disk read, it must never reach the network.
+#
+# What it proves, beyond "it renders":
+#   - §5.2 / F-56: the default view is the head, the group rows and ONE keys row — at every width, in every glyph
+#     set (`importRendered`'s `protectTail: 1` keeps the keys row when the body does not fit);
+#   - §5.2: Enter expands the group under the cursor and Enter again collapses it back (`rows` <-> `groups`);
+#   - §7 row 85 + §5.8: the three-geometry resize re-picks the head and keys rungs and never truncates a row;
+#     the capture is scanned for `ESC[3J` and for a clear outside a shrink by run-smoke.sh's shared checks;
+#   - §7 row 59, behaviour 3: Esc closes the overlay and the PLAN IS KEPT — the `[ui]` row names
+#     `jevcode import --resume <id>`, so nothing a human reviewed is silently thrown away;
+#   - §7 row 58: `y` is NOT pressed here. What `y` applies is the `applicableRows` intersection and it is asserted
+#     where it can be asserted exactly — `test/unit/tui/import/reducer.test.ts` and `round5-shell-app.test.tsx`;
+#     a pty scenario must never be the thing that proves a credential is not written.
+#   - gate G-R5-9 / §7 rows 61–66: `assertNoKeyBytes` over every frame. The overlay names source PATHS and this
+#     scenario exports a key (`OPENROUTER_API_KEY=$FAKE_KEY`) precisely so the assertion has something to look for.
+#
+# HOME is hermetic, and run-smoke.sh seeds ONE memory file into it (`$home/.claude/CLAUDE.md`) so the plan has
+# rows and the five-group view is what the resize matrix drives. Without that seed the honest answer would be
+# §12.4 S92's `nothing to import - no claude-code, codex or cursor configuration found` — one row, no overlay,
+# and nothing for the geometry checks to measure.
+#
+# run-smoke.sh's four rows for this scenario and its ascii twin are LANDED (steps alias, env + the seeded
+# `$home/.claude/CLAUDE.md`, the checks and the two selectors), and its checks are POSITIVE: the keys row
+# (`[y] import all N` / `y all N`), a group row and the head. An `Import …|nothing to import` alternation
+# passed even when the overlay never mounted, which made the resize matrix and the `clears<=1` gate below
+# vacuous — the seeded memory file is there precisely so the five-group view is what runs.
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.4
+
+# 1 - `/import` opens the review overlay (the `scanning` row first, then the five-group default view)
+send /import
+sleep 0.2
+send \r
+sleep 1.2
+mark import-open-80
+
+# 2 - Enter expands the group under the cursor; Enter again collapses it back to the groups view
+send \r
+sleep 0.5
+mark import-rows
+send \r
+sleep 0.5
+mark import-groups
+
+# 3 - the narrow rung: the head drops its words and the keys row collapses to `y all · Enter open · Esc`,
+#     re-measured after glyph substitution, never cut (§5.8)
+resize 12 60
+sleep 0.8
+mark import-60
+
+# 4 - and the wide one: the full head with its byte total and the full source list per group row
+resize 40 120
+sleep 0.8
+mark import-120
+
+# 5 - §7 row 59 behaviour 3: Esc closes and the plan is KEPT (the `[ui]` row names `--resume`)
+send \x1b
+sleep 0.6
+mark import-closed
+
+send /exit
+sleep 0.2
+send \r
+eof

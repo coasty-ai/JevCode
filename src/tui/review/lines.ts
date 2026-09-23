@@ -114,6 +114,50 @@ export function dominantDimension(req: ConfirmRequest): RiskDimension {
   return best;
 }
 
+/**
+ * TUI-DESIGN-5 §4.6 (D-AM) / contract 1.5 §3.7 [D4]: the confirm is a **manifest proposal**, not an action.
+ * `headline` is the discriminant — not `badge`, not `title` — because it is the field OR §3.7 defines as present
+ * on exactly the manifest shape, and it is the one whose presence must also refuse `review:why`.
+ */
+export function isProposalConfirm(req: ConfirmRequest): boolean {
+  return req.headline !== undefined && req.headline.length > 0;
+}
+
+/**
+ * §4.6: the five render branches **substitute** rows, they never add any — so `CONFIRM_HEADER_ROWS = 8`
+ * (`src/tui/plain.ts`) is unchanged and every rung of both ladders keeps its exact row count at n = 8 … 2.
+ * `band(req, n)` is the headline cut/padded to exactly `n` rows: `''` pads, so a one-row headline in an
+ * eight-row rung still produces eight rows and the gauge band is simply blank below it.
+ */
+function bandRowCount(rows: number, columns: number, g: GlyphSet, matchesIntent: boolean, card: boolean): number {
+  const fixed = card ? 3 : 2;
+  const body = Math.max(0, rows - fixed);
+  if (card ? rows === 3 : rows <= 2) return 0;
+  if (card ? rows <= 6 : rows <= 5) {
+    // `compactRows` packs two dimensions per row at 80 columns, three at ≥ 120, and stops when it runs out
+    const entries = RISK_DIMENSIONS.length + (matchesIntent ? 1 : 0);
+    return Math.min(body, Math.ceil(entries / (columns >= 120 ? 3 : 2)));
+  }
+  if (card ? rows === 7 : rows === 6) return RISK_DIMENSIONS.length;
+  if ((card ? rows === 8 : rows === 7) || g.mode === 'sr') return RISK_DIMENSIONS.length + 1;
+  return RISK_DIMENSIONS.length + (card ? 2 : 2);
+}
+
+function headlineBand(req: ConfirmRequest, n: number, columns: number, g: GlyphSet): string[] {
+  const want = Math.max(0, Math.floor(n));
+  const src = req.headline ?? [];
+  const out: string[] = [];
+  for (let i = 0; i < want; i++) out.push(truncateCells(oneLineCells(src[i] ?? ''), columns, g));
+  return out;
+}
+
+/** §4.6 / §7 row 51: `badge` (`agent tui-rows`) is rendered in the header **before** the title, so nobody approves the wrong child. */
+function withBadge(req: ConfirmRequest, title: string, columns: number, g: GlyphSet): string {
+  const badge = req.badge;
+  if (badge === undefined || badge === '') return title;
+  return truncateCells(`${oneLineCells(badge)} ${g.dot} ${title}`, columns, g);
+}
+
 let matchesIntentDefinition: string | null = null;
 /** The `matches_intent` Noul's `criteria.true.definition` (built once from the risk stage's question builder, so the row quotes what Jev was asked). */
 export function matchesIntentText(): string {
@@ -154,6 +198,10 @@ export function titleTarget(req: ConfirmRequest, cells: number, g: GlyphSet): st
 
 /** TUI-DESIGN §6.1 row 1: `review  step N  risk R (bound)  <kind> <target> "<goal ≤ 40>"`; at ≥ 120 `(bound on <dim>)`, the full goal and a right-aligned `jev <ms>ms`. */
 export function reviewTitle(req: ConfirmRequest, columns: number, g: GlyphSet = GLYPHS.unicode): string {
+  // TUI-DESIGN-5 §4.6 / contract 1.5 [D5]: a supplied `title` replaces the computed one VERBATIM (cut to
+  // `columns`), and `dominantDimension` / `dimOf` are never called — a manifest confirm carries a synthetic
+  // `risk` whose numbers would be a lie on the row (§4.6's property).
+  if (req.title !== undefined && req.title !== '') return truncateCells(withBadge(req, oneLineCells(req.title), columns, g), columns, g);
   const wide = columns >= 120;
   const dom = dominantDimension(req);
   const bound = wide ? `${bnd(dimOf(req, dom))} on ${dom}` : bnd(dimOf(req, dom));
@@ -177,6 +225,8 @@ export function reviewTitle(req: ConfirmRequest, columns: number, g: GlyphSet = 
  * "<goal ≤ 40>"`; at ≥ 120 `(tail on <dim>)`, the full goal and ` · jev <ms>ms`. The card's top edge cuts it to `columns − 6`.
  */
 export function reviewCardTitle(req: ConfirmRequest, columns: number, g: GlyphSet = GLYPHS.unicode): string {
+  // TUI-DESIGN-5 §4.6 / contract 1.5 [D5]: the same substitution as `reviewTitle` (the card cuts it to `columns − 6`)
+  if (req.title !== undefined && req.title !== '') return withBadge(req, oneLineCells(req.title), columns, g);
   const wide = columns >= 120;
   const dom = dominantDimension(req);
   const bound = wide ? `${bnd(dimOf(req, dom))} on ${dom}` : bnd(dimOf(req, dom));
@@ -252,6 +302,12 @@ export function withheldPath(path: string): boolean {
 }
 
 function previewBody(req: ConfirmRequest, columns: number, g: GlyphSet): PreviewBody {
+  // TUI-DESIGN-5 §4.6 [G2]: a manifest confirm's body is PRE-RENDERED — `req.body`, not a diff of a synthetic
+  // action — so the memo, `editSummary` and `diffRows` are all bypassed and no row can derive from `proposal`.
+  if (isProposalConfirm(req)) {
+    const body = (req.body ?? []).map((l) => ({ text: `  ${truncateCells(oneLineCells(l), Math.max(1, columns - 2), g)}`, role: null }));
+    return { rows: body, total: body.length };
+  }
   const action = req.proposal.action;
   const key = `${columns}:${g.mode}`;
   let per = previewMemo.get(action);
@@ -356,7 +412,10 @@ export function reviewCardLines(req: ConfirmRequest, n: number, previewRows: num
   const inner = Math.max(1, w - 4);
   const keys = note !== undefined && note !== null ? (note.gate !== null ? note.gate : `${NOTE_LABEL_TEXT}${note.text}`) : reviewKeys(inner, g);
   let body: string[];
-  if (rows === 3) body = [keys];
+  // TUI-DESIGN-5 §4.6 (D-AM): the same substitution inside the card — the headline fills the band, the row count
+  // of every rung (n ≥ 9 full · 8 no ruler · 7 no matches_intent · 6..4 compact · 3 keys only) is unchanged.
+  if (isProposalConfirm(req)) body = [keys, ...headlineBand(req, bandRowCount(rows, inner, g, req.matchesIntent !== undefined && req.matchesIntent !== null && Number.isFinite(req.matchesIntent), true), inner, g)];
+  else if (rows === 3) body = [keys];
   else if (rows <= 6) body = [keys, ...compactRows(req, rows - 3, inner, g)];
   else {
     const gauges = RISK_DIMENSIONS.map((dim) => gaugeRow(req, dim, inner, g));
@@ -364,8 +423,10 @@ export function reviewCardLines(req: ConfirmRequest, n: number, previewRows: num
     else if (rows === 8 || g.mode === 'sr') body = [keys, ...gauges, matchesIntentRow(req, inner, g)];
     else body = [keys, reviewRuler(inner, g), ...gauges, matchesIntentRow(req, inner, g)];
   }
-  // §6.3: the preview is built by `diffRows` from the Action, so `clipDetail`'s 60-line clip is bypassed and the tail tells the truth
-  const preview = reviewDiffLines(req, previewRows, inner, g);
+  // §6.3: the preview is built by `diffRows` from the Action, so `clipDetail`'s 60-line clip is bypassed and the tail
+  // tells the truth. TUI-DESIGN-5 §4.6 [G2]: a manifest confirm has no Action worth diffing — `describeAction('read')
+  // .preview` is the empty string, which is the blank body the four fields exist to fix — so `body` replaces it.
+  const preview = isProposalConfirm(req) ? reviewPreviewLines(confirmPreviewLines(req), previewRows, inner, g) : reviewDiffLines(req, previewRows, inner, g);
   const title = closeTitleQuote(reviewCardTitle(req, w, g), Math.max(0, w - CARD_TITLE_MARGIN), g);
   return [cardTop(title, w, g), ...body.map((b) => cardRow(b, w, g)), ...preview.map((l) => cardRow(l, w, g)), cardBottom(w, g)];
 }
@@ -485,11 +546,32 @@ export function reviewHeaderLines(req: ConfirmRequest, n: number, columns: numbe
   if (rows === 1) return [title];
   const keys = reviewKeys(w, g);
   if (rows === 2) return [title, keys];
+  // TUI-DESIGN-5 §4.6 (D-AM): the manifest branch SUBSTITUTES the band — the headline fills exactly the rows the
+  // ruler + four gauges + matches_intent would have taken, so every rung from n = 8 down to n = 2 keeps its row
+  // count and `CONFIRM_HEADER_ROWS` never moves. Nothing derived from `proposal` or `risk` is drawn.
+  if (isProposalConfirm(req)) return [title, keys, ...headlineBand(req, bandRowCount(rows, w, g, req.matchesIntent !== undefined && req.matchesIntent !== null && Number.isFinite(req.matchesIntent), false), w, g)];
   if (rows <= 5) return [title, keys, ...compactRows(req, rows - 2, w, g)];
   const gauges = RISK_DIMENSIONS.map((dim) => gaugeRow(req, dim, w, g));
   if (rows === 6) return [title, keys, ...gauges];
   if (rows === 7 || g.mode === 'sr') return [title, keys, ...gauges, matchesIntentRow(req, w, g)];
   return [title, keys, reviewRuler(w, g), ...gauges, matchesIntentRow(req, w, g)];
+}
+
+/**
+ * TUI-DESIGN-5 §4.6 (`CD §F` to-do 2) / §12.3 S65 extended: `review:why` is the `w`-then-`1–5` chord that explains
+ * ONE risk dimension. A manifest confirm has **no** risk dimensions — that is the whole point of §4.6's property —
+ * so the chord must refuse rather than index into an empty array. `headline` is the discriminant (`isProposalConfirm`).
+ *
+ * **Deviation from §4.6's literal string, recorded in the round-5 report.** The design writes
+ * `…; [Enter] approves, [d] declines`, but TD §6.2's ratified review invariant — re-run as a gate every round, and
+ * §11 keeps it — is *only `y` approves, Enter is inert, there is no default*. Telling a reviewer that Enter approves
+ * is false in this build and is exactly the trap the invariant exists to prevent, so the row names `y`.
+ */
+export const REVIEW_WHY_REFUSAL = 'no risk dimensions on this card — this is a proposal, not an action; [y] approves, [d] declines';
+
+/** §4.6: the refusal for this request, or null when `review:why` may run (every non-manifest confirm). */
+export function reviewWhyRefusal(req: ConfirmRequest): string | null {
+  return isProposalConfirm(req) ? REVIEW_WHY_REFUSAL : null;
 }
 
 /** TUI-DESIGN §6.5 SR twin: the aria label replacing a gauge bar — `plan_mismatch level 2, risk 0.44 tail, confidence 0.61, skips a planned verification step`. */
@@ -580,6 +662,11 @@ export function reviewDiffScreenReaderLines(req: ConfirmRequest): string[] {
 export function reviewScreenReaderLines(req: ConfirmRequest, columns = 80): string[] {
   const g = GLYPHS.sr;
   const w = Math.max(1, Math.floor(Number.isFinite(columns) ? columns : 80));
+  // TUI-DESIGN-5 §4.6 (D-AM): the SR twin substitutes the same way — the five dimension rows become the headline
+  // rows (there are no dimensions to speak) and the spoken change becomes the pre-rendered body.
+  if (isProposalConfirm(req)) {
+    return [reviewTitle(req, w, g), ...(req.headline ?? []).map((l) => oneLineCells(l)), ...confirmPreviewLines(req).map((l) => oneLineCells(l)), SR_REVIEW_CHOICES, SR_REVIEW_PROMPT].map((l) => oneLineCells(l));
+  }
   return [
     reviewTitle(req, w, g),
     ...RISK_DIMENSIONS.map((dim) => `${reviewDigit(dim)} ${reviewAriaLabel(req, dim)}`),

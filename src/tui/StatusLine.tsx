@@ -10,7 +10,10 @@
  * role; the rest of the row is the terminal's default foreground, never a whole-row colour or bold.
  */
 import { Box, Text } from 'ink';
-import { SYNTH_MARKER, statusSpans, stepText, type StatusLineOptions, type StatusLineState, type StatusSpan } from './status/lines.js';
+import { AGENTS_MIN_COLUMNS, SYNTH_MARKER, statusSpans, stepText, type StatusLineOptions, type StatusLineState, type StatusSpan } from './status/lines.js';
+import { agentStripText } from './agents/lines.js';
+import { ctxText } from './context/lines.js';
+import { GLYPHS, type GlyphSet } from './glyphs.js';
 import type { UiState } from './useEngine.js';
 import { textProps, themeFor, type ColorOn, type Theme } from './theme.js';
 
@@ -22,7 +25,7 @@ export function statusSentinel(step: number, maxSteps: number | null): string {
 }
 
 /** TUI-DESIGN §7.4: `UiState` 1.1 → the view `statusLineText` reads (the optional inputs come from the additive fields). */
-export function statusView(s: UiState, o: { picker?: boolean } = {}): StatusLineState {
+export function statusView(s: UiState, o: { picker?: boolean; columns?: number; glyphs?: GlyphSet } = {}): StatusLineState {
   const wall = s.status !== null && s.statusAt !== null && s.run !== 'none' && Number.isFinite(s.nowMs) ? s.status.wallMs + Math.max(0, s.nowMs - s.statusAt) : s.status?.wallMs ?? null;
   return {
     run: s.run,
@@ -53,6 +56,30 @@ export function statusView(s: UiState, o: { picker?: boolean } = {}): StatusLine
     // TUI-DESIGN-2 §1.5 / §4.8
     modeBadge: s.modeBadge,
     thinking: s.thinking,
+    /**
+     * TUI-DESIGN-5 §4.4 (R5-4's half of §9.2's `status/lines.ts` row): R5-2 landed the segment's POSITION and its
+     * `DROP_ORDER` rank reading `StatusLineState.agents` as a supplied string; this is the supply, and it is the
+     * same `agentStripText` the `'a'` tab's summary row and `jevcode agents list` use, so the strip and the tab
+     * can never disagree (§13.1). Empty rows give `''`, which `rightZoneSegments` treats as absent — the segment
+     * is **omitted, never `agents 0`** (§13.2 clause 5's rule), which is what keeps it invisible in production.
+     */
+    agents: s.agents.length === 0 ? null : agentStripText(s.agents, { width: o.columns ?? AGENTS_MIN_COLUMNS, ...(o.glyphs ? { g: o.glyphs } : {}) }),
+    /**
+     * TUI-DESIGN-5 §3.1 / §9.2's `status/lines.ts` row (R5-3's half, landed in the shared React shell because the
+     * supply — not the position — is what was left open): R5-2 landed the `ctx` segment's POSITION and its
+     * `DROP_ORDER` rank reading `StatusLineState.ctx` as a supplied string, and this is the supply. `ctxText`
+     * owns BOTH width rungs (`''` below `CONTEXT_MIN_COLUMNS`, `ctx 41%` to `CONTEXT_FULL_COLUMNS`, the full cell
+     * above it) and the amber/red word, so the cell is omitted rather than shown empty — never `ctx —%` (§7 row 35).
+     * `status.context` is absent whenever the run builds no relaxed context, which is the same omission.
+     */
+    ctx: s.status?.context === undefined ? null : ctxText(s.status.context, o.columns ?? 0, o.glyphs ?? GLYPHS.unicode),
+    /**
+     * TUI-DESIGN-5 §2.2 (R5-H4): the `peers` zone's ONLY source. `statusZones` (`src/tui/status/lines.ts`) already
+     * reads both, and the reducer's `peers:fold` arm is the supply — this pass-through is what connects them, so a
+     * fold that moved a count lights the zone and a session that never opened a ledger shows nothing at all.
+     */
+    fold: s.fold,
+    selfId: s.selfId,
   };
 }
 

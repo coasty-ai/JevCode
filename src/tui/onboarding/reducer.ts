@@ -4,7 +4,7 @@
  * the component derives) reaches the reducer, so a state dump, a test snapshot or a devtools tree can never contain a
  * credential.
  *
- *   detect → key → save → verify? → [caps item] → trust → sandbox → done             both keys missing, nothing inferred (one OpenRouter paste)
+ *   detect → key → save → verify? → [caps item] → trust → sandbox → [import] → done    both keys missing, nothing inferred (one OpenRouter paste)
  *            key ──Esc (empty)──▶ options: 1 key (back) · 2 jevKey(typesafe) → generatorKey(Enter = skip) · 3 Jev only (mode) · 4 generatorKey(anthropic)
  *   detect → key (found-title; the generator key ONLY) → save → …                  Jev resolves (TYPESAFE_API_KEY / JEV_API_KEY / a saved key), generator missing
  *   detect → [jevProvider] → jevKey → save → verify? → trust → sandbox → done          generator resolves, Jev missing (the round-2 flow, untouched)
@@ -23,9 +23,21 @@ export type WizardProvider = 'anthropic' | 'openrouter';
 /** TUI-DESIGN §11.1 / TUI-DESIGN-3 §1.4.1: the masked fields — the two secrets and `key`, the one-paste OpenRouter field. */
 export type WizardField = SecretSettingName | 'key';
 /** TUI-DESIGN §11.1 / TUI-DESIGN-2 §1.4 / TUI-DESIGN-3 §1.4.1: the wizard steps (`key` / `options` new; `exit` = Ctrl-C with no run at startup). */
-export type WizardStep = 'detect' | 'key' | 'options' | 'jevProvider' | 'provider' | 'generatorKey' | 'jevKey' | 'save' | 'verify' | 'trust' | 'sandbox' | 'done' | 'exit';
+export type WizardStep = 'detect' | 'key' | 'options' | 'jevProvider' | 'provider' | 'generatorKey' | 'jevKey' | 'save' | 'verify' | 'trust' | 'sandbox' | 'import' | 'done' | 'exit';
 /** TUI-DESIGN §11.3: `1 trust · 2 this session only · 3 don't trust`. */
 export type TrustOption = 1 | 2 | 3;
+/**
+ * TUI-DESIGN-5 §5.1 / IMPORT-DESIGN §5.1 (F-O): what the ≤ 50 ms `probe()` told the wizard — **tool names and
+ * counts only**, never a path, never a value, never a body. A structural subset of `ImportProbe`
+ * (`src/core/types.ts`), restated so the reducer imports nothing from `src/import/**` (gate G-R5-1).
+ */
+export interface ImportProbeCounts {
+  readonly tools: readonly { readonly display: string; readonly items: number }[];
+  /** sum of `tools[].items` */
+  readonly total: number;
+}
+/** TUI-DESIGN-5 §5.1: `1 import now · 2 later · 3 never` — the step's three answers. */
+export type ImportOption = 1 | 2 | 3;
 /**
  * TUI-DESIGN-2 §1.4: why the wizard is open — `missing` (a key at startup), `login` (`/login`), `rejected` (a 401 pane's
  * `[l]`), `mode` (`/mode jev-on` with no generator key: the generator step in place, Ctrl-C keeps the current mode);
@@ -113,6 +125,17 @@ export interface OnboardingState {
   optionsChoice: WizardOption | null;
   /** TUI-DESIGN-3 §1.4.1: option `3` (or `2` + skip) pends / persists this mode without saving a key */
   pendMode: EngineMode | null;
+  /**
+   * TUI-DESIGN-5 §5.1: what `probe()` found, or null while it is still running / after it missed its deadline.
+   * `null` and `total === 0` both mean "the step does not render at all" (§7 rows 52, 53).
+   */
+  importProbe: ImportProbeCounts | null;
+  /** the config's `seen.import` is set (`never`, or this version already asked): the step is skipped */
+  importSeen: boolean;
+  /** the answer the human gave on the import step; the HOST acts on it (open the overlay, write `seen.import`) */
+  importChoice: ImportOption | null;
+  /** the highlighted option on the import step (a digit highlights, the same digit or Enter confirms) */
+  importHighlight: ImportOption | null;
 }
 
 /** TUI-DESIGN §11.1: semantic actions the Ink wizard / readline twin dispatch; no member carries a key value. */
@@ -134,6 +157,8 @@ export type OnboardingAction =
       foundSource?: FoundSource;
       /** TUI-DESIGN-3 §1.4.1: the found Jev value starts `sk-or-` (the host's boolean, never the value) */
       foundReusable?: boolean;
+      /** TUI-DESIGN-5 §5.1: `seen.import` is already set (`never`, or this version asked) — the step never renders */
+      importSeen?: boolean;
     }
   /** `1`–`4` / Enter on the options step; `1` / `2` on the provider or jevProvider step (Enter accepts the preselection) */
   | { type: 'choose'; option: WizardOption | 'enter' }
@@ -158,6 +183,14 @@ export type OnboardingAction =
   | { type: 'keep' }
   | { type: 'trust'; option: TrustOption }
   | { type: 'sandbox-shown' }
+  /**
+   * TUI-DESIGN-5 §5.1 / §7 rows 52–53: the post-first-frame `probe()` resolved. `found: null` is BOTH "nothing
+   * installed" and "the 50 ms deadline passed" — the step is skipped for this start either way, and the reducer
+   * does not distinguish them because the user-visible behaviour is identical.
+   */
+  | { type: 'import-probe'; found: ImportProbeCounts | null }
+  /** TUI-DESIGN-5 §5.1: `1` / `2` / `3` on the import step; a digit highlights, the same digit or Enter confirms */
+  | { type: 'import-choose'; option: ImportOption | 'enter' }
   /** TUI-DESIGN-3 §1.8 edge 2: the component saw `sk-or-` twice in the buffer (pure: no bytes reach the reducer) */
   | { type: 'pasted-twice' }
   /**
@@ -272,7 +305,27 @@ export const INITIAL_ONBOARDING: OnboardingState = {
   highlight: null,
   optionsChoice: null,
   pendMode: null,
+  importProbe: null,
+  importSeen: false,
+  importChoice: null,
+  importHighlight: null,
 };
+
+/**
+ * TUI-DESIGN-5 §5.1 / §7 row 53 / IMPORT-DESIGN §5.1: `probe()`'s own deadline (`src/import/index.ts:595`),
+ * restated here because the WIZARD enforces it too — the `sandbox` step waits this long for an answer and no
+ * longer, and a probe that misses it skips the step for this start rather than blocking setup.
+ */
+/**
+ * TUI-DESIGN-5 §5.1 / §7 rows 52–53: does the import step render at all? Only when the probe already came back
+ * with at least one item and `seen.import` is unset. A pending probe (`importProbe === null`) reads as "no" — the
+ * wizard never waits on it, which is §1.4 promise 1 applied to onboarding.
+ */
+export const IMPORT_PROBE_DEADLINE_MS = 50;
+
+export function importStepWanted(s: Pick<OnboardingState, 'importProbe' | 'importSeen'>): boolean {
+  return !s.importSeen && s.importProbe !== null && s.importProbe.total > 0 && s.importProbe.tools.length > 0;
+}
 
 /** TUI-DESIGN-3 §1.4.1: the mode the wizard is collecting keys for — option `3` (or `2` + skip) pends jev-only over the detect's mode. */
 export function targetMode(s: Pick<OnboardingState, 'mode' | 'pendMode'>): EngineMode {
@@ -448,6 +501,7 @@ export function onboardingReducer(state: OnboardingState, action: OnboardingActi
         found: action.found ?? null,
         foundSource: action.foundSource ?? null,
         foundReusable: action.foundReusable ?? false,
+        importSeen: action.importSeen ?? false,
       };
       return startFromDetect(s);
     }
@@ -564,10 +618,16 @@ export function onboardingReducer(state: OnboardingState, action: OnboardingActi
         return { ...state, hint: firstStepHint(state) };
       }
       if (state.step === 'provider') return { ...state, hint: firstStepHint(state) };
+      // TUI-DESIGN-5 §5.1: `(Esc = later)` — the same answer as `2`, so the offer returns next version, never never.
+      if (state.step === 'import') return { ...state, step: 'done', importChoice: 2, importHighlight: null, hint: null };
       return state;
     }
     case 'cancel': {
       if (state.step === 'done' || state.step === 'exit') return state;
+      // TUI-DESIGN-5 §5.1 / IMPORT-DESIGN §5.1: Ctrl-C on the IMPORT step closes the wizard and writes nothing — it
+      // never exits 2. Every key is already saved by the time this step renders, so `exit 2 (prints the fix block)`
+      // would tell a user who just finished setup that setup failed.
+      if (state.step === 'import') return { ...state, step: 'done', importChoice: 2, importHighlight: null, hint: null };
       // TUI-DESIGN-2 §1.4: a wizard opened by a command (/login, /mode, /trust) or while a run is live closes; one opened by a missing key at startup exits 2
       if (cancelCloses(state)) return { ...state, step: 'done', field: null, length: 0, hint: null, verifying: false, save: null };
       return { ...state, step: 'exit', field: null, length: 0, hint: null, verifying: false, save: null, exitCode: WIZARD_EXIT_CODE };
@@ -611,14 +671,34 @@ export function onboardingReducer(state: OnboardingState, action: OnboardingActi
     }
     case 'sandbox-shown': {
       if (state.step !== 'sandbox') return state;
-      return { ...state, step: 'done' };
+      // TUI-DESIGN-5 §5.1: the import step sits between `sandbox` and `done`, and renders ONLY when the ≤ 50 ms
+      // probe already came back with something (§7 row 52) and `seen.import` is unset (`3 never` / `2 later`).
+      return { ...state, step: importStepWanted(state) ? 'import' : 'done' };
+    }
+    case 'import-probe': {
+      // §7 row 53: a probe that resolves after the wizard has moved on is dropped — the step is skipped for this
+      // start rather than appearing under whatever is on screen now.
+      if (state.step === 'done' || state.step === 'exit') return state;
+      const s = { ...state, importProbe: action.found };
+      if (state.step === 'import' && !importStepWanted(s)) return { ...s, step: 'done', importHighlight: null };
+      return s;
+    }
+    case 'import-choose': {
+      if (state.step !== 'import') return state;
+      // TUI-DESIGN-3 §1.4.2's ratified idiom, reused: a digit highlights, the SAME digit or Enter confirms.
+      if (action.option === 'enter') {
+        const pick = state.importHighlight ?? 2;
+        return { ...state, step: 'done', importChoice: pick, importHighlight: null, hint: null };
+      }
+      if (state.importHighlight !== action.option) return { ...state, importHighlight: action.option, hint: null };
+      return { ...state, step: 'done', importChoice: action.option, importHighlight: null, hint: null };
     }
     default:
       return state;
   }
 }
 
-/** TUI-DESIGN §11.1 / D1: rows the wizard takes in the overlay slot — key 3, options 3, jevProvider 3, provider 3, key fields 3, verify 2, trust 4 (2 below rows 12), save/sandbox/done 0; never more than 4. */
+/** TUI-DESIGN §11.1 / D1: rows the wizard takes in the overlay slot — key 3, options 3, jevProvider 3, provider 3, key fields 3, import 3 (TUI-DESIGN-5 §5.1), verify 2, trust 4 (2 below rows 12), save/sandbox/done 0; never more than 4. */
 export function wizardRows(state: OnboardingState, rows: number): number {
   switch (state.step) {
     case 'key':
@@ -627,6 +707,8 @@ export function wizardRows(state: OnboardingState, rows: number): number {
     case 'provider':
     case 'generatorKey':
     case 'jevKey':
+      return 3;
+    case 'import':
       return 3;
     case 'verify':
       return 2;

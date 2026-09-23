@@ -1,0 +1,93 @@
+# TUI-DESIGN-5 §2.9 / §10 (slot R5-2): the messaging verbs under a real pty — a `request` row that PERSISTS and a
+# `headsup` toast that does NOT, plus §7 row 92's secret gate on a message body. Hermetic: the peer stub
+# (`JEVCODE_FAULT=peer:3`) and `--mock`; no ledger, no second process, no network, no real key.
+#
+# STATUS — this file does not assert the far-END rows yet, and that is a dependency, not a skip.
+#   `/tell`, `/headsup`, `/request` and `/inbox` are landed registry rows with validated actions (R5-2,
+#   `src/tui/commands/{registry,dispatch}.ts`) and their bodies are landed §12 strings (`src/tui/toasts.ts`), but
+#   the mailbox WRITE and `Engine.deliver` are R5-1's `src/cli/session.ts` arms (§2.14) — the peer stub publishes
+#   no inbox. So the marks below capture the near end: the verbs resolve, the secret gate fires before the write,
+#   and the surface RULES (`MESSAGE_SURFACES`) are what the unit test pins. Committed now, with its rows.
+#
+# run-smoke.sh needs three rows for this scenario; R5-2 owns `test/pty/**` and lands them in W5:
+#   env    : r5-message) extra_env="$extra_env JEVCODE_FAULT=peer:3";;
+#   check  : r5-message) grep -q 'looks like it contains a key' "$txt" && checks="$checks r5-message:s34a" || { ok=0; checks="$checks MISSING:r5-message-s34a"; }
+#   select : sel_named r5-message && run r5-message 0 24 80 chat --mock --mode jev-on
+#
+# What it proves, beyond "it renders":
+#   - §2.9's toast rules as BEHAVIOUR: a `request` is a persistent row (it needs an answer) and a `headsup` is a
+#     toast that expires — the difference is visible across two marks separated by more than TOAST_INFO_MS;
+#   - §7 row 92 / §12 S34a: a secret-shaped token in a `/tell` body is gated BEFORE the write — the composer's own
+#     gate sees submissions, not slash-command arguments, which is the hole this row exists to close;
+#   - §2.5: a multi-word title target survives the tokeniser (`/tell "fix parse_date" …`), because the positional
+#     before a `rest` argument is quote-aware;
+#   - §2.2 / §12 S6: the `⇄` peer cell is in the status right zone at 80 columns and absent at 79;
+#   - G-R5-9 / §7 row 61: `assertNoKeyBytes` over every frame — the gate PRINTS that a key was seen, never the key.
+
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.4
+
+# 1 — §2.2 / §12 S6: the peer cell at 80 columns, from the three stub peers
+mark peers-80
+
+# 2 — §7 row 92 / §12 S34a: a `/tell` body that looks like a key is held behind the `[y]` ladder. The gate is the
+#     dispatcher's `detectSecrets` over the BODY, not the composer's over a submission.
+send /tell mbp the key is sk-abcdefghijklmnopqrstuvwxyz0123456789abcd
+sleep 0.3
+send \r
+expect looks like it contains a key
+sleep 0.3
+mark tell-secret-gate
+
+# 3 — `[n] edit` keeps the draft: nothing was written, and the text is still there to fix
+send n
+sleep 0.4
+mark tell-secret-declined
+
+# 4 — §2.5: a quoted multi-word TITLE target. The positional before the rest argument is quote-aware, so the
+#     body is `ping`, not `parse_date" ping`.
+send /tell "fix parse_date" ping
+sleep 0.3
+send \r
+sleep 0.4
+mark tell-quoted-title
+
+# 5 — §2.9: a `headsup` is a TOAST. Captured immediately …
+send /headsup editing src/loop/engine.ts for: make the pause exact
+sleep 0.3
+send \r
+sleep 0.3
+mark headsup-toast
+
+# 6 — … and gone after the toast duration: a broadcast nobody must answer leaves no row behind
+sleep 2.6
+mark headsup-expired
+
+# 7 — §2.9 / §12 S32: a `request` is NEVER a toast. It is a persistent row, because it needs an answer.
+send /request mbp pause
+sleep 0.3
+send \r
+sleep 0.4
+mark request-row
+
+# 8 — still there well past any toast duration: that is the whole difference between the two surfaces
+sleep 2.6
+mark request-row-persists
+
+# 9 — §2.9: `/inbox` reads and writes nothing; with no mailbox it is the empty state, never a spinner (§7 row 2)
+send /inbox
+sleep 0.2
+send \r
+sleep 0.4
+mark inbox
+
+# 10 — §2.2 / §2.13: below PEERS_MIN_COLUMNS the whole peer segment is absent, never a truncated `⇄`
+resize 24 79
+sleep 0.8
+mark peers-79
+
+send /exit
+sleep 0.2
+send \r
+eof

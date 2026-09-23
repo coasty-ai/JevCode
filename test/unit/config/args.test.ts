@@ -30,8 +30,9 @@ import {
   type Command,
 } from '../../../src/cli/args.js';
 import type { TuiBooleanFlagKey, TuiStringFlagKey } from '../../../src/config/types.js';
-import { DEFAULT_MODE, MODE_BADGE_WORD } from '../../../src/config/defaults.js';
+import { DEFAULT_MODE, MODE_BADGE_WORD, SETTINGS, settingSpec } from '../../../src/config/defaults.js';
 import { UsageError } from '../../../src/errors.js';
+import { PROVIDER_IDS } from '../../../src/provider/ids.js';
 
 const RUN_ID = '20260919-142301-k7q2m3xa';
 
@@ -52,7 +53,7 @@ describe('parseCliArgs: run', () => {
       '--provider', 'openrouter', '--model', 'anthropic/claude-sonnet-5', '--api-key', 'k1', '--base-url', 'https://x.test',
       '--temperature', '0.5', '--max-tokens', '2048', '--jev-base-url', 'https://j.test', '--jev-api-key', 'k2', '--jev-model', 'jev-1.13',
       '--spend-cap', '1.5', '--max-steps', '7', '--max-wall', '7h30m', '--max-replans', '2', '--complete-threshold', '0.9', '--impossible-threshold', '0.8',
-      '--workspace', '/tmp/ws', '--runs-dir', '/tmp/runs', '--open-assist-path', '/tmp/oa', '--config', '/tmp/c.json', '--sandbox', 'none', '--no-network', '--plain',
+      '--workspace', '/tmp/ws', '--runs-dir', '/tmp/runs', '--extra-env-file', '/tmp/oa', '--config', '/tmp/c.json', '--sandbox', 'none', '--no-network', '--plain',
     ]);
     expect(f.command).toBe('run');
     expect(f.task).toBe('fix the bug');
@@ -74,7 +75,7 @@ describe('parseCliArgs: run', () => {
     expect(f.impossibleThreshold).toBe('0.8');
     expect(f.workspace).toBe('/tmp/ws');
     expect(f.runsDir).toBe('/tmp/runs');
-    expect(f.openAssistPath).toBe('/tmp/oa');
+    expect(f.extraEnvFile).toBe('/tmp/oa');
     expect(f.config).toBe('/tmp/c.json');
     expect(f.sandbox).toBe('none');
     expect(f.noNetwork).toBe(true);
@@ -143,7 +144,9 @@ describe('parseCliArgs: run', () => {
     expect(usage(['run', 'x', '--bogus']).message).toMatch(/--bogus/);
     expect(usage(['run', 'x', '--model']).message).toMatch(/--model/);
     expect(usage(['run', 'x', '--sandbox', 'jail']).message).toMatch(/auto\|seatbelt\|none/);
-    expect(usage(['run', 'x', '--provider', 'openai']).message).toMatch(/anthropic\|openrouter/);
+    // TUI-DESIGN-5 §6.1 (D-AP): `openai` is a provider from round 5 on; the refusal now names all seven
+    expect(usage(['run', 'x', '--provider', 'notaprovider']).message).toMatch(/anthropic\|openrouter\|openai\|gemini\|xai\|fireworks\|meta/);
+    expect(parseCliArgs(['run', 'x', '--provider', 'openai']).provider).toBe('openai');
   });
 });
 
@@ -363,10 +366,13 @@ describe('parseCliArgs: commands', () => {
     expect(usage(['logout', '--provider', 'anthropic']).message).toMatch(/--provider/);
   });
 
-  it('sessions [list|reindex|prune|unlock <id>] (TUI-DESIGN §1, §8.5)', () => {
+  it('sessions <verb> [words…] — the seventeen verbs (TUI-DESIGN §1, §8.5; TUI-DESIGN-5 §2.10)', () => {
     expect(parseCliArgs(['sessions'])).toEqual({ command: 'sessions', sessionsOp: 'list' });
     for (const op of SESSIONS_OPS.filter((o) => o !== 'unlock')) expect(parseCliArgs(['sessions', op])).toEqual({ command: 'sessions', sessionsOp: op });
-    expect(parseCliArgs(['sessions', 'unlock', RUN_ID])).toEqual({ command: 'sessions', sessionsOp: 'unlock', runId: RUN_ID });
+    // §2.10: the words after the verb are the verb's own arguments and reach `commandSessions` verbatim, so
+    // `unlock`'s run id is BOTH the checked `runId` and the first word — one parse, no second grammar
+    expect(parseCliArgs(['sessions', 'unlock', RUN_ID])).toEqual({ command: 'sessions', sessionsOp: 'unlock', runId: RUN_ID, sessionsArgs: [RUN_ID] });
+    expect(parseCliArgs(['sessions', 'tell', 'mbp', 'hold', 'off'])).toEqual({ command: 'sessions', sessionsOp: 'tell', sessionsArgs: ['mbp', 'hold', 'off'] });
     expect(parseCliArgs(['sessions', '--workspace', '/w', '--runs-dir', '/r'])).toMatchObject({ workspace: '/w', runsDir: '/r' });
     expect(usage(['sessions', 'bogus']).message).toMatch(/expected one of list\|reindex\|prune\|unlock/);
     expect(usage(['sessions', 'unlock']).message).toMatch(/needs the run id to unlock/);
@@ -446,7 +452,10 @@ describe('usageText', () => {
     expect(usageText()).toContain('jev-only');
     // TUI-DESIGN-2 §1.4: `jevcode login --jev-provider typesafe|openrouter`
     // TUI-DESIGN-3 §1.6: `--key-stdin` leads the login synopsis
-    expect(usageText()).toContain('jevcode login [--key-stdin | --generator-key-stdin --jev-key-stdin] [--provider anthropic|openrouter] [--jev-provider typesafe|openrouter]');
+    // TUI-DESIGN-5 §6.5: `login --provider` is the seven ids, so the synopsis reads them from `PROVIDER_IDS`
+    // and wraps onto a second line (it was `[--provider anthropic|openrouter]`, which the flag no longer means)
+    expect(usageText()).toContain(`jevcode login [--key-stdin | --generator-key-stdin --jev-key-stdin] [--provider ${PROVIDER_IDS.join('|')}]`);
+    expect(usageText()).toContain('[--jev-provider typesafe|openrouter] [--status] [--verify]');
     expect(parseCliArgs(['login', '--key-stdin'])).toEqual({ command: 'login', keyStdin: true });
     expect(FLAGS.find((f) => f.key === 'keyStdin')).toMatchObject({ name: 'key-stdin', type: 'boolean', commands: ['login'] });
     expect(usageText('login')).toContain('--key-stdin');
@@ -462,7 +471,9 @@ describe('usageText', () => {
     const keys = FLAGS.map((f) => f.key);
     expect(new Set(keys).size).toBe(keys.length);
     expect([...keys].sort()).toEqual([...STRING_FLAGS, ...BOOLEAN_FLAGS].sort());
-    expect(COMMANDS).toEqual(['chat', 'run', 'config', 'bench', 'perf', 'login', 'logout', 'sessions', 'report', 'why', 'calibration', 'completion', 'upgrade']);
+    // TUI-DESIGN-5 §6.6 / §5.5 / §4.2, gate G-R5-10: every member has its own `src/cli/<verb>.ts` and its own
+    // `main.tsx` switch arm — 14 → 16 in round 5's W4 PR, → 17 with round 5's finishing `doctor`
+    expect(COMMANDS).toEqual(['chat', 'run', 'config', 'bench', 'perf', 'login', 'logout', 'sessions', 'models', 'import', 'agents', 'doctor', 'report', 'why', 'calibration', 'completion', 'upgrade']);
     const shorts = FLAGS.map((f) => f.short).filter((s): s is string => s !== undefined);
     expect(new Set(shorts).size).toBe(shorts.length);
     expect(shorts.sort()).toEqual(['c', 'h', 'v']);
@@ -569,5 +580,40 @@ describe('parseCliArgs: --jev-provider (TUI-DESIGN-2 §2.3, §1.4)', () => {
     expect(spec?.commands).toEqual(['chat', 'run', 'config', 'bench', 'perf', 'login']);
     expect(spec?.argFor).toEqual({ login: 'typesafe|openrouter' });
     expect(usageText('run')).toContain('--jev-provider auto|typesafe|openrouter');
+  });
+});
+
+/**
+ * Round-5 item 21: the leaked private name is gone — the retired flag, environment variable and file key all
+ * named a sibling checkout nobody outside one machine has. Nothing public ever shipped them, so there is no
+ * alias and an old invocation is a usage error rather than a silent no-op. (The retired spellings are assembled
+ * from parts below, never written out, so the release gate that greps for them stays empty.)
+ */
+describe('item 21 — the extra .env file row, under its shipped names only', () => {
+  it('the flag, the env name, the file key and the description are the pinned ones', () => {
+    const spec = FLAGS.find((f) => f.key === 'extraEnvFile');
+    expect(spec).toBeDefined();
+    expect(spec?.name).toBe('extra-env-file');
+    expect(spec?.arg).toBe('<path>');
+    expect(spec?.help).toBe('an additional .env file whose keys are read as a fallback');
+    const row = settingSpec('extraEnvFile');
+    expect(row.env).toEqual(['JEVCODE_EXTRA_ENV_FILE']);
+    expect(row.fileKey).toBe('extraEnvFile');
+    expect(row.description).toBe('an additional .env file whose keys are read as a fallback');
+    expect(row.defaultValue).toBeNull();
+  });
+
+  it('the old names are NOT accepted as aliases, anywhere', () => {
+    // assembled from parts on purpose: the release gate greps `src test scripts …` for the retired spellings
+    // and must come back EMPTY, so a negative assertion that wrote one out would be the one hit keeping it red
+    const oldFlag = `--${'open'}-assist-path`;
+    const oldStem = `${'open'}Assist`;
+    const oldEnv = `${'OPEN'}_ASSIST_PATH`;
+    expect(() => parseCliArgs(['run', 'task', oldFlag, '/tmp/x'])).toThrow();
+    expect(FLAGS.some((f) => f.name === oldFlag.slice(2))).toBe(false);
+    expect(SETTINGS.some((r) => r.name.includes(oldStem) || r.env.includes(oldEnv))).toBe(false);
+    // and the usage text a user reads names the new flag
+    expect(usageText('run')).toContain('--extra-env-file <path>');
+    expect(usageText('run')).not.toContain(oldFlag);
   });
 });

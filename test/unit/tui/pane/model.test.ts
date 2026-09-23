@@ -13,15 +13,24 @@ import {
   foldPlanRecord,
   foldStageEnd,
   foldStepEnd,
+  hasDelegation,
   nearThreshold,
+  PANE_TABS,
+  PANE_TABS_WITH_AGENTS,
   paneLines,
   paneRuleRow,
+  paneTabsFor,
+  panelStrip,
   sideBySide,
+  TAB_TITLE,
+  tabLines,
+  tabStrip,
   toDecisionRow,
   type PaneOverlay,
   type PaneTab,
   type PlanView,
 } from '../../../../src/tui/pane/model.js';
+import { mkAgentRow } from '../agents/fixtures.js';
 import { mkDecision } from '../../../fixtures/tui/fixtures.js';
 import { frameDDecisions, frameDPlanView, paneState, planFixture, stepSevenDecisions } from './helpers.js';
 
@@ -318,5 +327,132 @@ describe('paneLines (§7.2 lines(state, rows, columns, overlay))', () => {
     const ms = performance.now() - t0;
     console.log(`[measured] paneLines 12 rows × 120 columns: ${(ms / 1000).toFixed(3)} ms per call (bound 1.5 ms)`);
     expect(ms).toBeLessThan(1500);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-5 §4.3: the `'a'` tab, the two constants and the two computed tab strips (R5-4's §10)
+// ---------------------------------------------------------------------------------------
+
+describe("the `'a'` pane tab (TUI-DESIGN-5 §4.3, §14.2 #1 / #31)", () => {
+  /**
+   * The regression guard the design names: the two-argument `cycleTab` cases at `:165–167` above are green **and
+   * unedited**, which is true only because the default binds to the FOUR-member `PANE_TABS`. This case states the
+   * reason so a future widening of `PANE_TABS` itself fails here with the explanation attached.
+   */
+  it('the default is the four production tabs; the five-tab list is a separate constant', () => {
+    expect(PANE_TABS).toEqual(['d', 'p', 't', 's']);
+    expect(PANE_TABS_WITH_AGENTS).toEqual(['d', 'p', 't', 's', 'a']);
+    expect(cycleTab('s', 1)).toBe('d');
+    expect(cycleTab('d', -1)).toBe('s');
+  });
+
+  it("cycleTab('s', 1, PANE_TABS_WITH_AGENTS) === 'a', and the wrap comes back to 'd'", () => {
+    expect(cycleTab('s', 1, PANE_TABS_WITH_AGENTS)).toBe('a');
+    expect(cycleTab('a', 1, PANE_TABS_WITH_AGENTS)).toBe('d');
+    expect(cycleTab('d', -1, PANE_TABS_WITH_AGENTS)).toBe('a');
+  });
+
+  it("paneTabsFor(false) excludes 'a', so ] and [ skip it", () => {
+    expect(paneTabsFor(false)).toEqual(PANE_TABS);
+    expect(paneTabsFor(true)).toEqual(PANE_TABS_WITH_AGENTS);
+    expect(paneTabsFor(false)).not.toContain('a');
+    for (const t of PANE_TABS) {
+      expect(cycleTab(t, 1, paneTabsFor(false))).not.toBe('a');
+      expect(cycleTab(t, -1, paneTabsFor(false))).not.toBe('a');
+    }
+  });
+
+  it("a tab outside the list (the focused 'a' tab the instant the last agent ends) restarts at an end, never undefined", () => {
+    expect(cycleTab('a', 1, PANE_TABS)).toBe('d');
+    expect(cycleTab('a', -1, PANE_TABS)).toBe('s');
+    expect(cycleTab('d', 1, [])).toBe('p');
+  });
+
+  it('TAB_TITLE is total over PaneTab (TypeScript finds a new tab here for free)', () => {
+    const titles: Readonly<Record<PaneTab, string>> = TAB_TITLE;
+    expect(Object.keys(titles).sort()).toEqual(['a', 'd', 'p', 's', 't']);
+    expect(titles.a).toBe('agents');
+    for (const t of PANE_TABS_WITH_AGENTS) expect(titles[t], t).not.toBe('');
+  });
+
+  it('hasDelegation reads the ROWS, so no second flag can disagree with them', () => {
+    expect(hasDelegation({})).toBe(false);
+    expect(hasDelegation({ agents: [] })).toBe(false);
+    expect(hasDelegation({ agents: [mkAgentRow()] })).toBe(true);
+  });
+
+  it('tabStrip is the ONE builder both literals became (§12.3 S86, not F-54’s `d p t s [a]` form)', () => {
+    expect(tabStrip(PANE_TABS, 'long', true)).toBe('[d]ecisions [p]lan [t]imeline [s]ynth');
+    expect(tabStrip(PANE_TABS, 'long', false)).toBe('[d]ecisions [p]lan [t]ime [s]ynth');
+    expect(tabStrip(PANE_TABS_WITH_AGENTS, 'long', false)).toBe('[d]ecisions [p]lan [t]ime [s]ynth [a]gents');
+    expect(tabStrip(PANE_TABS_WITH_AGENTS, 'short', false)).toBe('[d] [p] [t] [s] [a]');
+    expect(tabStrip(PANE_TABS, 'short', false)).toBe('[d] [p] [t] [s]');
+  });
+
+  it('the rule-row strip (`:355`) is computed: the `[a]gents` segment appears only while delegating, at wide AND narrow', () => {
+    const base = paneState({ tab: 'd' });
+    const wide = paneRuleRow(base, 12, 130, 'none');
+    const narrow = paneRuleRow(base, 12, 80, 'none');
+    expect(wide).toContain('[d]ecisions [p]lan [t]imeline [s]ynth');
+    expect(wide).not.toContain('[a]gents');
+    expect(narrow).toContain('[t]ime ');
+    expect(narrow).not.toContain('[a]gents');
+
+    const delegating = { ...base, agents: [mkAgentRow()] };
+    expect(paneRuleRow(delegating, 12, 130, 'none')).toContain('[d]ecisions [p]lan [t]imeline [s]ynth [a]gents');
+    // §4.12: the strip's TEXT shortens before the strip is dropped — at 80 the long five-segment form does not fit
+    // beside the label, so the short one is drawn rather than `ruleRow` dropping the whole tab list (which would
+    // take away the one row that tells the user the `'a'` tab exists)
+    expect(paneRuleRow(delegating, 12, 80, 'none')).toContain('[d] [p] [t] [s] [a]');
+    for (const w of [40, 80, 120, 130]) expect(cellWidth(paneRuleRow(delegating, 12, w, 'none')), `w=${w}`).toBe(w);
+  });
+
+  it('with NOTHING delegating the narrow rule row is byte-for-byte round 4\'s, at every width the fallback could reach', () => {
+    /**
+     * The long → short fallback exists for the fifth `[a]gents` segment. Applied unconditionally it also rewrote
+     * round 4's landed row at every width below ~54 columns, where `ruleRow` used to drop the right segment whole
+     * (`─── decisions s7 ────` at 40, not `─── decisions s7 ── [d] [p] [t] [s] ──`). These are the bytes at HEAD,
+     * captured against the round-4 implementation, so the gate catches a re-widening of the fallback.
+     */
+    const s = paneState({ tab: 'd' });
+    expect(paneRuleRow(s, 12, 40, 'none')).toBe('─── decisions s7 ───────────────────────');
+    expect(paneRuleRow(s, 12, 50, 'none')).toBe('─── decisions s7 ─────────────────────────────────');
+    expect(paneRuleRow(s, 12, 54, 'none')).toBe('─── decisions s7  [d]ecisions [p]lan [t]ime [s]ynth ──');
+    expect(paneRuleRow(s, 12, 59, 'none')).toBe('─── decisions s7 ───── [d]ecisions [p]lan [t]ime [s]ynth ──');
+    // the short form is never drawn while the four-tab list is the list — even at one cell
+    for (let w = 1; w <= 53; w++) expect(paneRuleRow(s, 12, w, 'none'), `w=${w}`).not.toContain('[d] [p]');
+    // and the collapsed strip's own row is untouched at the same widths (it has always shortened by dropping
+    // segments from the right, which is round 2's loop and not this fallback)
+    const strip = { ...s, latencies: [] as readonly (number | null)[] };
+    expect(panelStrip(strip, 40)).toBe('─── ▸ jev s7 ──────── [d] [p] [t] [s] ──');
+    expect(panelStrip(strip, 50)).toBe('─── ▸ jev s7 · 7 decisions ──── [d] [p] [t] [s] ──');
+  });
+
+  it('the collapsed strip (`:377`) is computed the same way, at wide and narrow', () => {
+    const base = { ...paneState({ tab: 'd' }), latencies: [] as readonly (number | null)[] };
+    expect(panelStrip(base, 130)).toContain('[d]ecisions [p]lan [t]imeline [s]ynth');
+    expect(panelStrip(base, 130)).not.toContain('[a]gents');
+    expect(panelStrip(base, 80)).toContain('[d] [p] [t] [s]');
+    expect(panelStrip(base, 80)).not.toContain('[a]');
+
+    const delegating = { ...base, agents: [mkAgentRow()] };
+    expect(panelStrip(delegating, 130)).toContain('[d]ecisions [p]lan [t]imeline [s]ynth [a]gents');
+    expect(panelStrip(delegating, 80)).toContain('[d] [p] [t] [s] [a]');
+    for (const w of [40, 80, 120, 130]) expect(cellWidth(panelStrip(delegating, w)), `w=${w}`).toBe(w);
+  });
+
+  it('S86b: the focused rule row says so, so the focus state is never invisible', () => {
+    const focused = { ...paneState({ tab: 'a' }), agents: [mkAgentRow()], paneFocus: true };
+    expect(paneRuleRow(focused, 12, 130, 'none')).toContain('[a]gents · Esc unfocuses');
+    const unfocused = { ...focused, paneFocus: false };
+    expect(paneRuleRow(unfocused, 12, 130, 'none')).not.toContain('Esc unfocuses');
+  });
+
+  it("the `'a'` arm of tabLines mounts the agents tab, and the rule label carries the tally", () => {
+    const s = { ...paneState({ tab: 'a' }), agents: [mkAgentRow(), mkAgentRow({ slug: 'b' })] };
+    const lines = tabLines(s, 'a', 12, 120);
+    expect(lines.some((l) => l.includes('tui-rows'))).toBe(true);
+    expect(paneRuleRow(s, 12, 130, 'none')).toContain('agents s7 · 2 agents');
   });
 });

@@ -15,6 +15,7 @@ import { Box, Text } from 'ink';
 import type { CursorPosition } from 'ink';
 import type { BlockingRequest, ConfirmRequest, SecretHit } from '../core/types.js';
 import { blockingLines } from './blocking/lines.js';
+import { importLines } from './import/lines.js';
 import { cardBottom, cardLines, cardRow, cardTop } from './card.js';
 import { paletteRows, type PaletteRow, type PaletteState } from './commands/palette.js';
 import { CAP, MIN_COLUMNS, MIN_ROWS, type OverlayKind } from './layout.js';
@@ -26,6 +27,8 @@ import { followupLines, type FollowupInput } from './review/lines.js';
 import { gateLines } from './secrets/gate-lines.js';
 import { textProps, themeFor, type ColorOn, type ColorRole, type Theme } from './theme.js';
 import { Wizard, type OnboardingState } from './onboarding/Wizard.js';
+import { ImportReport } from './import/Report.js';
+import type { ImportUiInput, ImportUiState } from './import/reducer.js';
 import { wizardRows } from './onboarding/reducer.js';
 import type { TrustInputs } from '../config/trust.js';
 
@@ -117,6 +120,11 @@ export interface OverlayData {
   mention?: { rows: readonly string[]; selected: number } | null;
   /** TUI-DESIGN-2 §3.7: the intake confirmation */
   intake?: IntakeOverlay | null;
+  /**
+   * TUI-DESIGN-5 §5.2 (R5-5): the import overlay. `input` is the plan and the engine's own `applicableRows`
+   * output — the reducer never re-derives "what `y` applies" from `PlanGroup.applicable` (§7 row 58).
+   */
+  import?: { state: ImportUiState; input: ImportUiInput } | null;
 }
 
 /**
@@ -125,7 +133,7 @@ export interface OverlayData {
  * undo 3, exitConfirm 3, intake 3, palette ≤ 8 (its two edges replace the footer row and one list row), secret 0 (the
  * gate is a console row, `LayoutInput.gate`) and wizard `wizardRows` (inside the console).
  */
-export function overlayWant(kind: OverlayKind, data: OverlayData, terminalRows: number, columns: number, chrome: 0 | 3 = 0): number {
+export function overlayWant(kind: OverlayKind, data: OverlayData, terminalRows: number, columns: number, chrome: 0 | 3 = 0, glyphs: GlyphSet = GLYPHS.unicode): number {
   const boxed = chrome === CAP.chrome;
   switch (kind) {
     case 'none':
@@ -162,6 +170,19 @@ export function overlayWant(kind: OverlayKind, data: OverlayData, terminalRows: 
       return boxed ? CAP.exitConfirm + CAP.card : CAP.exitConfirm;
     case 'intake':
       return boxed ? CAP.intake + CAP.card : CAP.intake;
+    case 'import': {
+      // TUI-DESIGN-5 §5.2: the rows the block actually produced, capped at `CAP.import`; boxed adds the two edges.
+      // The GLYPH SET is part of the measurement: `ImportReport` draws with the caller's set, and an ascii row
+      // one cell wider than its unicode twin used to be measured in one set and painted in the other. The block
+      // protects its keys row either way (`importRendered`'s `protectTail`), so a mismatch can no longer eat a
+      // row — this keeps the slot the right HEIGHT as well.
+      const d = data.import;
+      if (!d) return 0;
+      const inner = boxed ? columns - 4 : columns;
+      const body = boxed ? CAP.import - CAP.card : CAP.import;
+      const rows = Math.min(CAP.import, Math.max(2, importLines(d.state, d.input, inner, glyphs, Math.max(1, body)).length));
+      return boxed ? Math.min(CAP.import + CAP.card, rows + CAP.card) : rows;
+    }
   }
 }
 
@@ -409,6 +430,11 @@ export function Overlay(p: OverlayProps): React.JSX.Element | null {
       // §2.6 edge 2: the rung is measured in the glyph set it will be drawn in, so `g` goes to the builder too
       if (boxed && rows >= 3) return <Card title={CARD_TITLE_EXIT} body={[exitConfirmRow(Math.max(0, Math.floor(p.columns) - 4), g)]} rows={rows} columns={p.columns} glyphs={g} edgeRole="warn" theme={theme} color={color} />;
       return <Rows lines={[EXIT_CONFIRM_ROW]} rows={rows} columns={p.columns} glyphs={g} role="warn" theme={theme} color={color} />;
+    case 'import': {
+      const d = p.data.import;
+      if (!d) return null;
+      return <ImportReport state={d.state} input={d.input} rows={rows} columns={p.columns} glyphs={g} theme={theme} color={color} boxed={boxed} />;
+    }
     case 'intake': {
       const d = p.data.intake;
       if (!d) return null;

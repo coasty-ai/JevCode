@@ -33,7 +33,7 @@ afterEach(async () => {
 });
 
 const run = (...argv: string[]): ParsedFlags => parseCliArgs(['run', 'task', ...argv]);
-const resolve = (flags: ParsedFlags, env: NodeJS.ProcessEnv = {}, opts: ResolveOptions = {}) => resolveConfig(flags, env, cwd, { packageRoot: pkg, homedir: home, ...opts });
+const resolve = (flags: ParsedFlags, env: NodeJS.ProcessEnv = {}, opts: ResolveOptions = {}) => resolveConfig(flags, env, cwd, { homedir: home, ...opts });
 
 describe('resolveConfig precedence', () => {
   it('uses defaults with their source when nothing is set, and never throws for a missing key', async () => {
@@ -45,7 +45,7 @@ describe('resolveConfig precedence', () => {
     expect(c.entries.has('generator.apiKey')).toBe(false);
     expect(c.workspace).toBe(cwd);
     expect(c.runsDir).toBe(join(home, '.jevcode', 'runs'));
-    expect(c.openAssistPath).toBeNull();
+    expect(c.extraEnvFile).toBeNull();
     expect(c.configFile).toBeNull();
     expect(c.dotenvFiles).toEqual([]);
     expect(c.sandbox).toBe('auto');
@@ -68,13 +68,13 @@ describe('resolveConfig precedence', () => {
     expect(c.entries.get('mode')).toEqual({ value: DEFAULT_MODE, source: 'default' });
   });
 
-  it('flag > env > ./.env > <OPEN_ASSIST_PATH>/.env > config file > default, one layer at a time', async () => {
-    const oa = join(root, 'extra-env');
+  it('flag > env > ./.env > <JEVCODE_EXTRA_ENV_FILE> > config file > default, one layer at a time', async () => {
+    const oa = join(root, 'extra');
     await mkdir(oa);
     await writeFile(join(oa, '.env'), 'JEVCODE_MODEL=from-oa\nJEVCODE_MAX_STEPS=4\nJEV_MODEL=jev-1.13\nJEVCODE_SPEND_CAP_USD=1\n');
     await writeFile(join(cwd, '.env'), 'JEVCODE_MODEL=from-dotenv\nJEVCODE_MAX_STEPS=3\nJEV_MODEL=typesafe/jev-1.13\n');
     await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ model: 'from-file', maxSteps: 5, jevModel: 'jev-1.13-20260101', spendCapUsd: 0.25, maxReplans: 1 }));
-    const env = { JEVCODE_MODEL: 'from-env', JEVCODE_MAX_STEPS: '2', OPEN_ASSIST_PATH: oa };
+    const env = { JEVCODE_MODEL: 'from-env', JEVCODE_MAX_STEPS: '2', JEVCODE_EXTRA_ENV_FILE: join(oa, '.env') };
 
     const c = await resolve(run('--model', 'from-flag'), env);
     expect(c.entries.get('generator.model')).toEqual({ value: 'from-flag', source: 'flag' });
@@ -83,14 +83,14 @@ describe('resolveConfig precedence', () => {
     expect(c.entries.get('limits.spendCapUsd')).toEqual({ value: '1', source: `dotenv:${join(oa, '.env')}` });
     expect(c.entries.get('limits.maxReplans')).toEqual({ value: '1', source: `file:${join(cwd, 'jevcode.json')}` });
     expect(c.entries.get('limits.completeThreshold')).toEqual({ value: '0.85', source: 'default' });
-    expect(c.entries.get('openAssistPath')).toEqual({ value: oa, source: 'env' });
+    expect(c.entries.get('extraEnvFile')).toEqual({ value: join(oa, '.env'), source: 'env' });
     expect(c.configFile).toBe(join(cwd, 'jevcode.json'));
     expect(c.dotenvFiles).toEqual([join(cwd, '.env'), join(oa, '.env')]);
 
     const c2 = await resolve(run(), { ...env, JEVCODE_MODEL: '' });
     expect(c2.entries.get('generator.model')).toEqual({ value: 'from-dotenv', source: `dotenv:${join(cwd, '.env')}` });
     await writeFile(join(cwd, '.env'), 'JEVCODE_MODEL=\n');
-    const c3 = await resolve(run(), { OPEN_ASSIST_PATH: oa });
+    const c3 = await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env') });
     expect(c3.entries.get('generator.model')).toEqual({ value: 'from-oa', source: `dotenv:${join(oa, '.env')}` });
     const c4 = await resolve(run());
     expect(c4.entries.get('generator.model')).toEqual({ value: 'from-file', source: `file:${join(cwd, 'jevcode.json')}` });
@@ -307,20 +307,26 @@ describe('resolveConfig files, paths and secrets', () => {
     await expect(resolve(run('--config', join(root, 'obj.json')))).rejects.toThrow(/must be a string, number or boolean/);
   });
 
-  it('the extra .env file: a sibling of the package root by default, its .env joins the chain, and both dotenvs are secretPaths', async () => {
-    const sibling = join(root, 'pkg', 'open-assist');
-    await mkdir(sibling);
-    await writeFile(join(sibling, '.env'), `JEV_API_KEY=${OR_KEY}\nUNUSED_TOKEN=unused-token-value-1234\n`);
-    const c = await resolve(run());
-    expect(c.openAssistPath).toBe(sibling);
-    expect(c.entries.get('openAssistPath')).toEqual({ value: sibling, source: 'default' });
-    expect(c.entries.get('decider.apiKey')).toEqual({ value: OR_KEY, source: `dotenv:${join(sibling, '.env')}` });
-    expect(c.secretPaths).toEqual(expect.arrayContaining([join(cwd, '.env'), join(sibling, '.env')]));
-    expect(c.dotenvFiles).toEqual([join(sibling, '.env')]);
+  it('--extra-env-file names a .env FILE whose keys are a fallback, is a secretPath, and has NO default (§21 rename)', async () => {
+    const extra = join(root, 'elsewhere', 'creds.env');
+    await mkdir(join(root, 'elsewhere'));
+    await writeFile(extra, `JEV_API_KEY=${OR_KEY}\nUNUSED_TOKEN=unused-token-value-1234\n`);
+    const c = await resolve(run('--extra-env-file', extra));
+    expect(c.extraEnvFile).toBe(extra);
+    expect(c.entries.get('extraEnvFile')).toEqual({ value: extra, source: 'flag' });
+    expect(c.entries.get('decider.apiKey')).toEqual({ value: OR_KEY, source: `dotenv:${extra}` });
+    expect(c.secretPaths).toEqual(expect.arrayContaining([join(cwd, '.env'), extra]));
+    expect(c.dotenvFiles).toEqual([extra]);
     expect(c.redact(`x ${OR_KEY} y unused-token-value-1234`)).toBe('x [REDACTED:decider.apiKey] y [REDACTED:UNUSED_TOKEN]');
-    const explicit = await resolve(run('--open-assist-path', 'nowhere'));
-    expect(explicit.openAssistPath).toBe(join(cwd, 'nowhere'));
-    expect(explicit.dotenvFiles).toEqual([]);
+    // no row set: nothing outside the workspace is consulted, and there is no built-in default path
+    const bare = await resolve(run());
+    expect(bare.extraEnvFile).toBeNull();
+    expect(bare.entries.has('extraEnvFile')).toBe(false);
+    expect(bare.dotenvFiles).toEqual([]);
+    // a relative value resolves against cwd; a path that does not exist is simply not read
+    const missing = await resolve(run('--extra-env-file', 'nowhere.env'));
+    expect(missing.extraEnvFile).toBe(join(cwd, 'nowhere.env'));
+    expect(missing.dotenvFiles).toEqual([]);
   });
 
   it('workspace resolves relative to cwd; JEVCODE_HOME is the home whose runs/ is the runs dir; --runs-dir is direct', async () => {
@@ -891,7 +897,7 @@ describe('TUI-DESIGN-2 §2.3: decider.provider — auto-detection, precedence, k
 });
 
 describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
-  it('chain: --mode > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > DEFAULT_MODE; each layer records its source; the run-cap default follows', async () => {
+  it('chain: --mode > JEVCODE_MODE > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file `mode` > DEFAULT_MODE; each layer records its source; the run-cap default follows', async () => {
     const dflt = await resolve(run());
     expect(dflt.mode).toBe(DEFAULT_MODE);
     expect(dflt.entries.get('mode')).toEqual({ value: DEFAULT_MODE, source: 'default' });
@@ -910,15 +916,15 @@ describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
     expect(modeRow).toEqual({ setting: 'mode', value: 'jev-on', source: `file:${join(cwd, 'jevcode.json')}`, atDefault: false });
     // TUI-DESIGN-4 §3.3 / F-B3: the rendered row carries the SHORT parenthetical; the path stays in the record and in --json
     expect(configTableLines(file.record(), { sandboxLevel: 'none', width: 110 }).find((l) => l.startsWith('mode '))).toMatch(/^mode\s+jev-on\s+\(file\)$/);
-    // the extra dotenv beats the file, ./.env beats it, the process env beats both, a flag beats everything
-    const oa = join(root, 'extra-env');
+    // the extra .env file beats the config file, ./.env beats it, the process env beats both, a flag beats everything
+    const oa = join(root, 'extra-mode');
     await mkdir(oa);
     await writeFile(join(oa, '.env'), 'JEVCODE_MODE=jev-off\n');
-    expect((await resolve(run(), { OPEN_ASSIST_PATH: oa })).entries.get('mode')).toEqual({ value: 'jev-off', source: `dotenv:${join(oa, '.env')}` });
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env') })).entries.get('mode')).toEqual({ value: 'jev-off', source: `dotenv:${join(oa, '.env')}` });
     await writeFile(join(cwd, '.env'), 'JEVCODE_MODE=jev-only\n');
-    expect((await resolve(run(), { OPEN_ASSIST_PATH: oa })).entries.get('mode')).toEqual({ value: 'jev-only', source: `dotenv:${join(cwd, '.env')}` });
-    expect((await resolve(run(), { OPEN_ASSIST_PATH: oa, JEVCODE_MODE: 'jev-on' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'env' });
-    expect((await resolve(run('--mode', 'jev-off'), { OPEN_ASSIST_PATH: oa, JEVCODE_MODE: 'jev-on' })).entries.get('mode')).toEqual({ value: 'jev-off', source: 'flag' });
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env') })).entries.get('mode')).toEqual({ value: 'jev-only', source: `dotenv:${join(cwd, '.env')}` });
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env'), JEVCODE_MODE: 'jev-on' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'env' });
+    expect((await resolve(run('--mode', 'jev-off'), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env'), JEVCODE_MODE: 'jev-on' })).entries.get('mode')).toEqual({ value: 'jev-off', source: 'flag' });
     // --condition (args.ts's hidden alias) is the flag layer too; values are case-insensitive and stored normalised
     expect((await resolve(run('--condition', 'jev-on'), { JEVCODE_MODE: 'jev-only' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'flag' });
     expect((await resolve(run(), { JEVCODE_MODE: 'JEV-ON' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'env' });
@@ -1029,10 +1035,11 @@ describe('TUI-DESIGN-4 §7.5 (P-D5): resolveConfig records the problems `jevcode
 describe('TUI-DESIGN-4 §8 (the round-4 config rows): ResolvedConfig.context()', () => {
   it('always carries the three rows §8 gives a default, and NOTHING else until the user sets it', async () => {
     const c = await resolve(run());
-    // `context.mode` / `context.compaction` / `context.compactEvery` have a `defaultValue` in §8, so they always
-    // resolve and JevCode's config layer pins them; the other three are absent, so `src/core/limits.ts` keeps them
-    expect(c.context?.()).toEqual({ view: 'relaxed', compaction: 'code', compactEvery: 8 });
-    expect(Object.keys(c.context?.() ?? {}).sort()).toEqual(['compactEvery', 'compaction', 'view']);
+    // `context.mode` / `context.compaction` / `context.kept` / `context.compactEvery` have a `defaultValue`, so
+    // they always resolve and JevCode's config layer pins them; the other three are absent, so
+    // `src/core/limits.ts` keeps them. (`kept` joined the four when round-5 item 19 unparked it.)
+    expect(c.context?.()).toEqual({ view: 'relaxed', compaction: 'code', kept: 'code', compactEvery: 8 });
+    expect(Object.keys(c.context?.() ?? {}).sort()).toEqual(['compactEvery', 'compaction', 'kept', 'view']);
     for (const name of ['context.mode', 'context.compaction', 'context.compactEvery']) {
       expect(c.record()[name]?.source, name).toBe('default');
     }
@@ -1041,7 +1048,7 @@ describe('TUI-DESIGN-4 §8 (the round-4 config rows): ResolvedConfig.context()',
   it('reads the env and the config file, and skips a malformed value rather than throwing', async () => {
     await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ contextHistorySteps: 20, contextBudgetChars: 'lots' }));
     const c = await resolve(run(), { JEVCODE_CONTEXT_COMPACTION: 'off', JEVCODE_CONTEXT_MODE: 'legacy', JEVCODE_CONTEXT_FILE_CACHE_BYTES: '65536' });
-    expect(c.context?.()).toEqual({ view: 'legacy', compaction: 'off', compactEvery: 8, historySteps: 20, fileCacheBytes: 65536 });
+    expect(c.context?.()).toEqual({ view: 'legacy', compaction: 'off', kept: 'code', compactEvery: 8, historySteps: 20, fileCacheBytes: 65536 });
     expect(c.record()['context.budgetChars']?.problem).toEqual({ kind: 'wrong-type', expected: 'an integer ≥ 1' });
   });
 });

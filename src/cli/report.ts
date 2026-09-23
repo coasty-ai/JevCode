@@ -29,7 +29,7 @@ export const REPORT_READ_TIMEOUT_MS = 10_000;
 export const INK_VERSION = '7.1.1';
 /** the pinned React version esbuild inlines beside Ink (`--version --json`, §17 item 3; `versions.txt`) */
 export const REACT_VERSION = '19.3.0';
-export const ISSUES_URL = 'https://github.com/prateekjannu/jevcode/issues';
+export const ISSUES_URL = 'https://github.com/coasty-ai/JevCode/issues';
 /**
  * Files copied (head + tail capped, line by line through `redact`).
  *
@@ -542,11 +542,10 @@ export async function commandReport(flags: ParsedFlags, io: ReportIo): Promise<n
        * artefacts are incomplete and no flag fixes that), 2 for a permission or configuration problem on `--out`.
        * Returning 3 for every classified errno told an EACCES the wrong story.
        *
-       * §7.7's edge names 3 for ENOSPC, but `explainFsError` (`src/errors.ts`) answers 2 for it — that file is the
-       * harness session's under the 2026-09-22 ownership rule, so the one-expression hunk that resolves §7.4 row 2
-       * against §7.7 is OWED TO THE HARNESS SESSION (see docs/STATUS.md 'Round 4'). Until it lands the split is
-       * made here, where §7.7's edge is the only reader: a disk-full bundle is exit 3, everything else keeps the
-       * explanation's own code. The hunk is a no-op for this call site once applied.
+       * §7.7's edge names 3 for ENOSPC, but `explainFsError` (`src/errors.ts`) answers 2 for it, because it
+       * classifies an errno without knowing which write failed. The split is made here, where §7.7's edge is the
+       * only reader: a disk-full bundle is exit 3, everything else keeps the explanation's own code. It becomes a
+       * no-op for this call site the day `explainFsError` takes the context.
        */
       return DISK_FULL_CODES.has(x.code) ? EXIT_CODES.checkpoint : x.exitCode;
     }

@@ -119,6 +119,18 @@ describe('KEY_ACTIONS registry (TUI-DESIGN §3.2, §3.4)', () => {
     expect(displayKey('?')).toBe('?');
     expect(displayKey('f1')).toBe('F1');
   });
+
+  it("a `+` base is the key `+`, not the modifier `Shift+` (TUI-DESIGN-5 §4.3: `agents:budget` is bound to it)", () => {
+    // `'+'.split('+')` is `['', '']`: the base is popped as `''` and the remaining `''` maps to the modifier
+    // `Shift`, so `docs/KEYS.md` and `/help` published `Shift+` as the way to raise an agent's cap — with
+    // `gen-docs --check` green, because the generator calls this very function
+    expect(displayKey('+')).toBe('+');
+    expect(displayKey('ctrl++')).toBe('Ctrl++');
+    expect(displayKey('meta++')).toBe('Alt++');
+    expect(DEFAULT_BINDINGS.keysOf.get('agents:budget')?.map((k) => displayKey(k))).toEqual(['+']);
+    // and the generated table says so
+    expect(readFileSync(KEYS_MD, 'utf8')).toContain('| `agents:budget` | `+` |');
+  });
 });
 
 describe('key strings (TUI-DESIGN §3.4)', () => {

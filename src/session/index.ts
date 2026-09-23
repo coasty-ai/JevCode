@@ -10,7 +10,7 @@ import { mkdir, open, readFile, readdir, rename, stat, writeFile } from 'node:fs
 import { dirname, join } from 'node:path';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { clip } from '../core/text.js';
-import type { EngineMode, IntakeKind, JevProvider, RunMeta, RunRow, RunSource, SessionRow, StopReason } from '../core/types.js';
+import type { EngineMode, IntakeKind, JevProvider, RunEnded, RunMeta, RunRow, RunSource, SessionRow, StopReason } from '../core/types.js';
 import type { ChatRoute } from '../chat/intake.js';
 import { isRunMeta, parseEnvelope, refuseNewerRunMeta } from '../checkpoint/store.js';
 import { exitCodeFor } from '../loop/stop.js';
@@ -21,19 +21,85 @@ export const INDEX_LINE_MAX_BYTES = 512;
 export const INDEX_VERSION = 1 as const;
 export const INDEX_FILE = 'index.jsonl';
 
+/**
+ * contract 1.8 item 9 (TUI-DESIGN-5 §8.1, D-AS): **ONE commit, seven kinds, one owner (slot R5-1, on behalf of all
+ * six slots)** — `'session:end'`, `'relocate'`, `'handoff'` (§2.7, §2.10, R5-2), `'agent:start'`, `'agent:end'`,
+ * `'land'` (§4, R5-4) and `'import'` (§5, R5-5). The names are final (`CD §E` item 7); no renames.
+ *
+ * Two EXISTING arms widen, both with an **optional** field and a stated reader default (§8.1 item 9, review #17):
+ * every `pause` line already on disk lacks `by` and every `run:start` lacks `parentSessionId`, so a REQUIRED field
+ * would fail the arm's shape for every historical session. `parseIndexBody` applies the defaults — `by ?? 'self'`,
+ * `parentSessionId ?? null` — so a pre-round-5 line folds and READS BACK with them (§2.6, §14.2 #17).
+ */
 export type IndexLine =
-  | { v: 1; t: string; kind: 'run:start'; sessionId: string; runId: string; parentRunId: string | null; workspace: string; task60: string; mode: EngineMode; source: RunSource; branch: string | null; resumeOf: string | null }
+  | { v: 1; t: string; kind: 'run:start'; sessionId: string; runId: string; parentRunId: string | null; workspace: string; task60: string; mode: EngineMode; source: RunSource; branch: string | null; resumeOf: string | null; parentSessionId?: string | null }
   | { v: 1; t: string; kind: 'run:end'; sessionId: string; runId: string; stopReason: StopReason; steps: number; costUsd: { generator: number; jev: number }; wallMs: number; changedFiles: number; exitCode: number; resumable: boolean; degraded: boolean }
   | { v: 1; t: string; kind: 'rename'; sessionId: string; title60: string }
   | { v: 1; t: string; kind: 'steer'; sessionId: string; runId: string; step: number; text60: string }
   | { v: 1; t: string; kind: 'undo'; sessionId: string; runId: string; step: number; by: 'undo' | 'rewind'; files: number; skipped: number }
-  | { v: 1; t: string; kind: 'pause'; sessionId: string; runId: string; step: number }
+  | { v: 1; t: string; kind: 'pause'; sessionId: string; runId: string; step: number; by?: IndexActor }
   | { v: 1; t: string; kind: 'budget'; sessionId: string; runId: string | null; setting: string; from: string; to: string }
   // TUI-DESIGN-2 §3.9 / §6 item 17: one chat request (intake, lookup or LLM turn) and what it cost, so `seedMeterFromIndex` restores chat spend on /resume
-  | { v: 1; t: string; kind: 'chat'; sessionId: string; intake: IntakeKind; route: ChatRoute; costUsd: number; provider: JevProvider | 'generator' };
+  | { v: 1; t: string; kind: 'chat'; sessionId: string; intake: IntakeKind; route: ChatRoute; costUsd: number; provider: JevProvider | 'generator' }
+  // contract 1.8 item 9 / §2.7: `/end` and `jevcode sessions end` — the session is over; `/resume <id> --force` reopens it
+  | { v: 1; t: string; kind: 'session:end'; sessionId: string; runId: string | null; by: IndexActor; at: 'step' | 'now'; step: number | null }
+  // contract 1.8 item 9 / §12.1 S30: the session moved to another checkout (a session worktree, a second clone)
+  | { v: 1; t: string; kind: 'relocate'; sessionId: string; runId: string | null; workspace: string; slug: string | null; branch: string | null }
+  // contract 1.8 item 9 / §2.9: the session was handed to another device; `to` is a DEVICE LABEL, never a path or a key
+  | { v: 1; t: string; kind: 'handoff'; sessionId: string; runId: string | null; to: string; workspace: string }
+  // contract 1.8 item 9 / §4 (ORCHESTRATION-DESIGN §4.6): one delegated agent started
+  | { v: 1; t: string; kind: 'agent:start'; sessionId: string; runId: string; manifestId: string; slug: string; role: string; baseSha: string | null }
+  // contract 1.8 item 9 / §4: one delegated agent finished; `state` is the `AgentState` word it ended in
+  | { v: 1; t: string; kind: 'agent:end'; sessionId: string; runId: string; manifestId: string; slug: string; state: string; costUsd: number }
+  // contract 1.8 item 9 / §4.5: a land attempt and what it did to the base
+  | { v: 1; t: string; kind: 'land'; sessionId: string; runId: string; manifestId: string; slug: string; outcome: string; head: string | null }
+  // contract 1.8 item 9 / §5.3: one import apply; `sources` / `applied` / `skipped` are COUNTS — never a path, never a secret
+  | { v: 1; t: string; kind: 'import'; sessionId: string; importId: string; sources: number; applied: number; skipped: number; undoable: boolean };
+
+/**
+ * contract 1.8 item 9 (§2.6, §2.7): who asked for a `pause` / `session:end`. The same three-arm shape
+ * `PauseOptions.by` carries (`src/core/types.ts`, via `PausePoint['by']`), so a remote verb that reaches the engine
+ * and the index line it writes cannot spell the actor two ways. Reader default: `'self'`.
+ */
+export type IndexActor = 'self' | `peer:${string}` | `device:${string}`;
 
 export type IndexKind = IndexLine['kind'];
-const INDEX_KINDS: readonly string[] = ['run:start', 'run:end', 'rename', 'steer', 'undo', 'pause', 'budget', 'chat'];
+
+
+/**
+ * contract 1.8 item 9 / D-AS / gate G-R5-10 (review #18, #55): **exported** and typed `readonly IndexKind[]`, which
+ * it can be now that `IndexKind = IndexLine['kind']` exists one line above. Before round 5 this was a module-private
+ * `readonly string[]`, so nothing type-checked a bad kind and §10's membership test had nothing to import; a kind
+ * absent from the union is now a compile error. Appending is safe — the array is read by MEMBERSHIP, never by
+ * position (`parseIndexRecord`, `indexSkipReason`).
+ */
+export const INDEX_KINDS: readonly IndexKind[] = [
+  'run:start',
+  'run:end',
+  'rename',
+  'steer',
+  'undo',
+  'pause',
+  'budget',
+  'chat',
+  'session:end',
+  'relocate',
+  'handoff',
+  'agent:start',
+  'agent:end',
+  'land',
+  'import',
+];
+
+/**
+ * contract 1.8 item 9: membership over the exported array — the one narrowing every reader uses. A **Set**, not
+ * `Array.includes`: the fold runs it once per physical line (§18's 200,000-line gate), and the array went 8 → 15
+ * members, so a linear scan per line is a measurable regression on exactly the path the gate measures.
+ */
+const INDEX_KIND_SET: ReadonlySet<string> = new Set<string>(INDEX_KINDS);
+export function isIndexKind(v: unknown): v is IndexKind {
+  return typeof v === 'string' && INDEX_KIND_SET.has(v);
+}
 
 /** TUI-DESIGN-2 §3.9: the chat spend of one session folded from its `chat` lines (the meter's `jev` / `generator` sources) */
 export interface ChatSpendRow {
@@ -196,7 +262,7 @@ export function indexSkipReason(line: string): IndexSkipReason {
   const parsed = parseJson(line);
   if (!parsed.ok || !isJsonObject(parsed.value)) return 'not-json';
   const kind = parsed.value['kind'];
-  if (typeof kind !== 'string' || !INDEX_KINDS.includes(kind)) return 'unknown-kind';
+  if (!isIndexKind(kind)) return 'unknown-kind';
   return 'bad-shape';
 }
 
@@ -206,7 +272,7 @@ function parseIndexRecord(line: string): IndexRecord | { reason: IndexSkipReason
   if (!parsed.ok || !isJsonObject(parsed.value)) return { reason: 'not-json' };
   const o = parsed.value;
   const t = o['t'];
-  if (typeof o['kind'] !== 'string' || !INDEX_KINDS.includes(o['kind'])) return { reason: 'unknown-kind' };
+  if (!isIndexKind(o['kind'])) return { reason: 'unknown-kind' };
   if (o['v'] !== INDEX_VERSION || typeof t !== 'string' || !hasCanonicalIsoShape(t)) return { reason: 'bad-shape' };
   const stamp = Date.parse(t);
   if (!Number.isFinite(stamp)) return { reason: 'bad-shape' };
@@ -237,6 +303,8 @@ function parseIndexBody(o: Readonly<Record<string, unknown>>, kind: string, t: s
         source: source !== null && SOURCES.includes(source) ? (source as RunSource) : 'cli',
         branch: str('branch'),
         resumeOf: str('resumeOf'),
+        // contract 1.8 item 9: the stated reader default — a pre-round-5 `run:start` has no `parentSessionId`
+        parentSessionId: str('parentSessionId'),
       };
     }
     case 'run:end': {
@@ -275,7 +343,9 @@ function parseIndexBody(o: Readonly<Record<string, unknown>>, kind: string, t: s
     case 'pause': {
       const runId = str('runId');
       if (runId === null) return null;
-      return { v: 1, t, kind: 'pause', sessionId, runId, step: num(o['step'], 0) };
+      // contract 1.8 item 9: the stated reader default — a pre-round-5 `pause` line has no `by`, and an unparseable
+      // one is `'self'` too (a malformed actor must not make a whole historical line unreadable).
+      return { v: 1, t, kind: 'pause', sessionId, runId, step: num(o['step'], 0), by: indexActorOf(o['by']) };
     }
     case 'budget':
       return { v: 1, t, kind: 'budget', sessionId, runId: str('runId'), setting: str('setting') ?? '', from: str('from') ?? '', to: str('to') ?? '' };
@@ -287,9 +357,58 @@ function parseIndexBody(o: Readonly<Record<string, unknown>>, kind: string, t: s
       if (!isIntakeKind(intake) || !isChatRoute(route) || !isChatProvider(provider)) return null;
       return { v: 1, t, kind: 'chat', sessionId, intake, route, costUsd: Math.max(0, num(o['costUsd'], 0)), provider };
     }
+    // ── contract 1.8 item 9 (D-AS): the seven round-5 kinds ──────────────────────────────────────────────────────
+    case 'session:end': {
+      const at = o['at'];
+      const step = o['step'];
+      return { v: 1, t, kind: 'session:end', sessionId, runId: str('runId'), by: indexActorOf(o['by']), at: at === 'now' ? 'now' : 'step', step: typeof step === 'number' && Number.isFinite(step) ? step : null };
+    }
+    case 'relocate':
+      return { v: 1, t, kind: 'relocate', sessionId, runId: str('runId'), workspace: str('workspace') ?? '', slug: str('slug'), branch: str('branch') };
+    case 'handoff': {
+      const to = str('to');
+      if (to === null) return null;
+      return { v: 1, t, kind: 'handoff', sessionId, runId: str('runId'), to, workspace: str('workspace') ?? '' };
+    }
+    case 'agent:start': {
+      const runId = str('runId');
+      const slug = str('slug');
+      if (runId === null || slug === null) return null;
+      return { v: 1, t, kind: 'agent:start', sessionId, runId, manifestId: str('manifestId') ?? '', slug, role: str('role') ?? '', baseSha: str('baseSha') };
+    }
+    case 'agent:end': {
+      const runId = str('runId');
+      const slug = str('slug');
+      if (runId === null || slug === null) return null;
+      return { v: 1, t, kind: 'agent:end', sessionId, runId, manifestId: str('manifestId') ?? '', slug, state: str('state') ?? '', costUsd: Math.max(0, num(o['costUsd'], 0)) };
+    }
+    case 'land': {
+      const runId = str('runId');
+      const slug = str('slug');
+      if (runId === null || slug === null) return null;
+      return { v: 1, t, kind: 'land', sessionId, runId, manifestId: str('manifestId') ?? '', slug, outcome: str('outcome') ?? '', head: str('head') };
+    }
+    case 'import': {
+      const importId = str('importId');
+      if (importId === null) return null;
+      return { v: 1, t, kind: 'import', sessionId, importId, sources: num(o['sources'], 0), applied: num(o['applied'], 0), skipped: num(o['skipped'], 0), undoable: o['undoable'] === true };
+    }
     default:
       return null;
   }
+}
+
+/**
+ * contract 1.8 item 9: `'self'` · `peer:<sessionId>` · `device:<label>`, with the stated reader default `'self'`
+ * for an absent or malformed value. The two prefixed forms must carry a non-empty tail: a bare `"peer:"` names
+ * nobody and would render as `paused by peer:` in the picker.
+ */
+function indexActorOf(v: unknown): IndexActor {
+  if (typeof v !== 'string') return 'self';
+  if (v === 'self') return 'self';
+  if (v.startsWith('peer:') && v.length > 5) return v as `peer:${string}`;
+  if (v.startsWith('device:') && v.length > 7) return v as `device:${string}`;
+  return 'self';
 }
 
 function newRun(runId: string, parentRunId: string | null, startedAt: string): RunRow {
@@ -303,6 +422,12 @@ interface SessionFold {
   lastUsedMs: number;
   createdAtMs: number;
   renamed: boolean;
+  /** contract 1.8 item 3 (§2.7): the last `session:end`, or null */
+  ended: RunEnded | null;
+  /** contract 1.8 item 3 (§2.8): the session that delegated this one — the FIRST non-null `run:start` wins */
+  parentSessionId: string | null;
+  /** contract 1.8 item 3 (§2.8): every checkout this session was seen in, in first-seen order */
+  workspaces: string[];
   /** TUI-DESIGN-2 §3.9: Σ `chat` lines by meter source */
   chat: ChatSpendRow;
 }
@@ -336,6 +461,9 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
         lastUsedMs: at,
         createdAtMs: at,
         renamed: false,
+        ended: null,
+        parentSessionId: null,
+        workspaces: [],
         chat: { jev: 0, generator: 0, messages: 0 },
       };
       folds.set(line.sessionId, f);
@@ -366,6 +494,9 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
           if (line.resumeOf !== null) r.resumes = 1;
           f.runs.set(line.runId, { row: r, startedMs: at });
         }
+        // contract 1.8 item 3 (§2.8): the first non-null wins — a session is delegated once, and a later
+        // `run:start` of the same session (a resume, a follow-up) must not unset it
+        if (f.parentSessionId === null && (line.parentSessionId ?? null) !== null) f.parentSessionId = line.parentSessionId ?? null;
         if (s.workspace === '') s.workspace = line.workspace;
         if (s.task60 === '') s.task60 = line.task60;
         if (!f.renamed && s.title === '') s.title = line.task60;
@@ -397,10 +528,24 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
         else f.chat.jev += line.costUsd;
         if (line.route !== 'run') f.chat.messages += 1;
         break;
+      // contract 1.8 item 3 / item 9 (§2.7, §2.8): `/end` is a SESSION fact the picker shows and `/resume` demands
+      // `--force` past, so it folds onto `SessionRow.ended`; the last one wins, exactly like `rename`.
+      case 'session:end':
+        f.ended = { at: line.t, by: line.by === 'self' ? 'human' : 'remote' };
+        break;
+      // contract 1.8 item 3 (§2.8): one session, several checkouts — relocate and handoff both append a workspace
+      case 'relocate':
+      case 'handoff':
+        if (line.workspace !== '' && !f.workspaces.includes(line.workspace)) f.workspaces.push(line.workspace);
+        break;
       case 'steer':
       case 'undo':
       case 'pause':
       case 'budget':
+      case 'agent:start':
+      case 'agent:end':
+      case 'land':
+      case 'import':
         break;
       default:
         break;
@@ -414,8 +559,24 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
     // TUI-DESIGN-2 §3.9: the session total is the runs plus every chat request (the picker's `$` agrees with the meter)
     f.row.totalUsd = runs.reduce((acc, r) => acc + (r.costUsd ? r.costUsd.generator + r.costUsd.jev : 0), 0) + f.chat.jev + f.chat.generator;
     if (f.row.title === '') f.row.title = f.row.task60;
-    sessions.set(f.row.sessionId, f.row);
-    if (f.chat.jev > 0 || f.chat.generator > 0 || f.chat.messages > 0) chat.set(f.row.sessionId, { ...f.chat });
+    /**
+     * contract 1.8 item 3: `ended` / `workspaces` are READONLY on `SessionRow` and OPTIONAL — "absent" is the
+     * honest state for every session written before round 5, so neither is spread in when nothing was seen
+     * (a `workspaces: [ws]` on a session that never relocated would be a fact the index never recorded).
+     */
+    // the common case — no `session:end`, no relocate, no parent — allocates nothing (§18's fold gate runs this per session)
+    const extras = f.workspaces.length === 0 ? f.workspaces : f.workspaces.filter((w) => w !== f.row.workspace);
+    const row: SessionRow =
+      f.ended === null && extras.length === 0 && f.parentSessionId === null
+        ? f.row
+        : {
+            ...f.row,
+            ...(f.ended === null ? {} : { ended: f.ended }),
+            ...(f.parentSessionId === null ? {} : { parentSessionId: f.parentSessionId }),
+            ...(extras.length === 0 ? {} : { workspaces: [f.row.workspace, ...extras].filter((w) => w !== '') }),
+          };
+    sessions.set(row.sessionId, row);
+    if (f.chat.jev > 0 || f.chat.generator > 0 || f.chat.messages > 0) chat.set(row.sessionId, { ...f.chat });
   }
   return { sessions, skipped, skips, chat };
 }

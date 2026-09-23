@@ -67,7 +67,16 @@ export interface GlyphSet {
   readonly times: string;
   /** `⚠` → `!` */
   readonly warn: string;
-  /** em dash used for "not judged" cells `—` → `-` */
+  /**
+   * em dash used for "not judged" cells `—` → `-`
+   *
+   * **TUI-DESIGN-5 §12's ascii column writes `--` for the em dash** (S18, S39a, S39c, S45a, S45b and ~20 other
+   * rows), which contradicts this landed round-2 value. The **code is the decision** and §12's cells are amended
+   * to `-` in the W5 docs PR (recorded in R5-2's report under requests), because: the value is pinned by every
+   * round-2/3/4 twin test that has shipped; `-` is one cell where `--` is two, and the twin must not be WIDER
+   * than the glyph it replaces on a row that was fitted in cells (`fitRung`, `truncateCells`); and `--` next to a
+   * `·`→`-` twin reads as a range, not a dash. One value, written down once, either way.
+   */
   readonly dash: string;
   /** `Σ` → `sum` */
   readonly sigma: string;
@@ -107,6 +116,27 @@ export interface GlyphSet {
   readonly shade1: string;
   /** brand rule row `◆` → `*` (TUI-DESIGN-2 §5.4) */
   readonly brand: string;
+  // ----- TUI-DESIGN-5 §8.1 item 10 / §7 row 81: the nine glyphs round 5's coordination and orchestration rows draw.
+  // `asciiTwins()` is keyed by the UNICODE glyph and the first entry for a glyph wins, so no two members may share a
+  // unicode cell; the nine keys below are pairwise distinct and so are their twins (§14.2 #43).
+  /** `/who` row, a session that is beating (§12 S1): `●` → `*` */
+  readonly live: string;
+  /** `/who` row, a session that stopped beating long enough to be gone (§12 S3b): `○` → `o` */
+  readonly gone: string;
+  /** `/who` row, a session whose last beat is outside the window (§12 S3, S3a): `◌` → `.` — **not** `o`, which `gone` takes (§14.2 #43) */
+  readonly stale: string;
+  /** the status line's peers segment (§12 S6, §2.2): `⇄` → `<>` */
+  readonly peers: string;
+  /** unread directed messages in the peers segment and the inbox block (§12 S6, §2.9): `✉` → `mail` */
+  readonly mail: string;
+  /** a paused run or agent (§2.6, §4.2): `⏸` → `=` */
+  readonly paused: string;
+  /** an agent landing its slice (§4.2): `⟳` → `~` */
+  readonly landing: string;
+  /** an agent that was kicked and restarted (§4.2): `↻` → `@` */
+  readonly kicked: string;
+  /** an adopted agent — re-held after a restore (§4.2): `↪` → `>>` */
+  readonly adopted: string;
 }
 
 const UNICODE: GlyphSet = {
@@ -160,6 +190,15 @@ const UNICODE: GlyphSet = {
   shade2: '▒',
   shade1: '░',
   brand: '◆',
+  live: '●',
+  gone: '○',
+  stale: '◌',
+  peers: '⇄',
+  mail: '✉',
+  paused: '⏸',
+  landing: '⟳',
+  kicked: '↻',
+  adopted: '↪',
 };
 
 const ASCII: GlyphSet = {
@@ -213,6 +252,15 @@ const ASCII: GlyphSet = {
   shade2: '+',
   shade1: '.',
   brand: '*',
+  live: '*',
+  gone: 'o',
+  stale: '.',
+  peers: '<>',
+  mail: 'mail',
+  paused: '=',
+  landing: '~',
+  kicked: '@',
+  adopted: '>>',
 };
 
 /** Screen-reader twin: the unicode glyphs (bars are replaced by aria text in bars.ts, §7.2). */
@@ -228,8 +276,16 @@ export function glyphSet(opts: { ascii?: boolean; screenReader?: boolean } = {})
 }
 
 let asciiTwinMap: Map<string, string> | null = null;
-/** unicode glyph → ASCII twin for every single-glyph entry of the table (arrays pairwise; the first entry for a glyph wins, so `█` is `full`'s `#`, not `spark[8]`); built once. */
-function asciiTwins(): Map<string, string> {
+/**
+ * unicode glyph → ASCII twin for every single-glyph entry of the table (arrays pairwise; the first entry for a
+ * glyph wins, so `█` is `full`'s `#`, not `spark[8]`); built once.
+ *
+ * TUI-DESIGN-5 §8.1 item 10 / §14.2 #43: **exported** in round 5 so `glyphs.test.ts` can assert the map is
+ * one-to-one over the nine new members. It is keyed by the unicode glyph and first-wins, so two members sharing a
+ * unicode cell would silently give one of them the other's twin — the defect that let S3 write `◌` → `o` while
+ * S60 wrote `◌` → `.`. `○` takes `o`; `◌` takes `.`; the test is the thing that keeps them apart.
+ */
+export function asciiTwins(): Map<string, string> {
   if (asciiTwinMap) return asciiTwinMap;
   const m = new Map<string, string>();
   for (const key of Object.keys(UNICODE) as (keyof GlyphSet)[]) {

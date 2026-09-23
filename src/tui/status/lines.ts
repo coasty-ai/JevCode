@@ -20,6 +20,9 @@
  * centre shows `/rename` titles only, never the run id.
  */
 import type { BlockingKind, BlockingRequest, ConfirmRequest, EngineMode, EngineStatus, GitHead, PeerView, RetryCause, RunResult, SandboxLevel, SpendSnapshot, StopReason } from '../../core/types.js';
+// TUI-DESIGN-5 §2.1 rule 1 / rule 3a: the coordination FACADE, `import type` only — the type erases under
+// `verbatimModuleSyntax`, so `src/coordination/**` never reaches the argv path (gate G-R5-1).
+import type { Fold } from '../../coordination/index.js';
 import { MODE_BADGE_WORD } from '../../config/defaults.js';
 import { exitCodeFor } from '../../loop/stop.js';
 import { SPARKLINE_CELLS, eighthBar, sparkline } from '../bars.js';
@@ -101,8 +104,38 @@ export interface StatusLineState {
   /**
    * TUI-DESIGN-4 §7.10 (P-D10) item 1: the peer snapshot the controller supplies (`SessionHost.peers()`, contract
    * 1.7 item 9); null until the registry lands. The segment shows the **count only** — never a pid, never a path.
+   *
+   * TUI-DESIGN-5 §12 supersedes this as a **status segment** (`fold` below feeds `peerZoneText`); the field and
+   * `peersText` stay because D-AC (b) keeps `/peers` exactly as TD4 §7.10 specifies it — `/peers` reads this
+   * `PeerView`, it does not read the fold.
    */
   readonly peers?: PeerView | null;
+  /**
+   * TUI-DESIGN-5 §2.2: the coordination fold, the peer zone's only source. Absent or null until
+   * `LedgerHandle.open()` resolves **after** `renderer.firstFrame()` (§2.1 rule 3), and then the segment is simply
+   * absent — never a spinner, never a placeholder (§7 row 2).
+   */
+  readonly fold?: Fold | null;
+  /**
+   * TUI-DESIGN-5 §2.2: this session's identity, so my own run is not counted as a peer. Never `hostKey`
+   * (§7 row 61). **Optional in the guard as well as the type**: absent or null excludes nothing and the zone
+   * still renders off `fold` alone, because `⇄`/`✉` is the only signal that a peer is waiting on this session and
+   * an idle TUI — which has no `runId` to identify itself with — is exactly when that matters (§2.2).
+   */
+  readonly selfId?: PeerZoneSelf | null;
+  /**
+   * TUI-DESIGN-5 §3.1 (R5-3) — the `ctx` cell text, already at the right rung for `columns`
+   * (`ctx 41%` at 80–99, `ctx 41% · 6 files · 12 steps` at ≥ 100, the amber/red word **replacing** the cell).
+   * The two width gates are `CONTEXT_MIN_COLUMNS` / `CONTEXT_FULL_COLUMNS` below; the cell is absent under 80.
+   *
+   * §8.4's fixture-first rule: R5-2 lands the segment's **position** (F-51/F-55's one push order) and its drop
+   * rank in the same edit as `peers` and `agents` (§9.2, §14.2 #45); R5-3 lands the text. Until R5-3's
+   * `ctxText(status.context, columns, g)` is in this file the caller supplies the string, so the order cannot
+   * drift while the two PRs are in flight. The swap is one line in `rightZoneSegments`.
+   */
+  readonly ctx?: string | null;
+  /** TUI-DESIGN-5 §4.4 (R5-4): the collapsed agents strip, same fixture-first rule as `ctx` — R5-4 replaces the read with `agentStripText(...)`. */
+  readonly agents?: string | null;
 }
 
 /** TUI-DESIGN-2 §4.8: the three phases between Enter and a reply. */
@@ -132,6 +165,13 @@ export interface StatusLineOptions {
   mode?: 'session' | 'one-shot';
   /** TUI-DESIGN-2 §1.5 / §4.8: the flat tier — `state.modeBadge` leads the left zone as `<badge> · <word>` (dropped first when short) */
   flatBadge?: boolean;
+  /**
+   * The TERMINAL width, for the two round-5 gates that TUI-DESIGN-5 states in terminal columns (`ctx` §3.1: 80 / 100;
+   * `peers` §2.2: 80 / 100). The boxed console assembles this row at its INNER width (terminal − 4), so without this the
+   * cells could never appear at an 80- or 100-column terminal — the 0.6.0 live drive at 24×80 showed no `ctx` cell while
+   * the engine carried `status.context` on every status event. Absent (the flat tier, tests) → the row width is the terminal width.
+   */
+  terminalColumns?: number;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -407,7 +447,11 @@ export function flatBadgePrefix(s: StatusLineState, o: StatusLineOptions = {}): 
 // Right zone and assembly (§7.4)
 // ---------------------------------------------------------------------------------------
 
-type SegmentId = 'step' | 'run' | 'sess' | 'tokens' | 'git' | 'spark' | 'help' | 'secret' | 'peers';
+/**
+ * TUI-DESIGN-5 §8.1 item 10 / §9.2 (§14.2 #45): eleven segments — round 4's nine plus `'ctx'` (§3.1, R5-3) and
+ * `'agents'` (§4.4, R5-4). Exported so gate G-R5-10's shared-array identity test can import it.
+ */
+export type SegmentId = 'step' | 'run' | 'agents' | 'sess' | 'tokens' | 'ctx' | 'peers' | 'git' | 'spark' | 'help' | 'secret';
 interface Segment {
   id: SegmentId;
   text: string;
@@ -419,13 +463,135 @@ function seg(id: SegmentId, text: string): Segment {
 }
 
 /**
- * TUI-DESIGN §7.4 drop order when short: the peer count → ShortHelp → sparkline → git → session meter → wall (→
- * centre, which needs ≥ 24 free cells anyway); the flat-tier badge prefix goes before all of them (TUI-DESIGN-2
- * §1.5). TUI-DESIGN-4 §7.10 edge 2 puts `peers` **first**: it is informational, and the run's own numbers are not.
+ * TUI-DESIGN §7.4 drop order when short: ShortHelp → sparkline → git → the context cell → the peer zone → session
+ * meter → wall (→ centre, which needs ≥ 24 free cells anyway); the flat-tier badge prefix goes before all of them
+ * (TUI-DESIGN-2 §1.5).
+ *
+ * **TUI-DESIGN-5 §2.2 amends TUI-DESIGN-4 §7.10 edge 2**, which put `'peers'` **first**. TD4's segment was a bare
+ * `<n> here` count; round 5's carries **unread-message counts** (`⇄ 2 live · 1 heads-up · ✉ 1`, §12 S6), and an
+ * unread directed message outranks git state — a user who loses `⇄`/`✉` at 100 columns loses the only signal that
+ * someone is waiting on them. So `'peers'` sits **fifth**: session money outranks it, git state and the sparkline
+ * do not. `'agents'` is deliberately **absent** from this list (like `'run'` and `'step'`): the agents strip is the
+ * run's own money and is never dropped (§4.4, §9.2, §14.2 #45). Seven entries.
  */
-export const DROP_ORDER: readonly ('peers' | 'help' | 'spark' | 'git' | 'sess' | 'wall')[] = ['peers', 'help', 'spark', 'git', 'sess', 'wall'];
+export const DROP_ORDER: readonly ('help' | 'spark' | 'git' | 'ctx' | 'peers' | 'sess' | 'wall')[] = ['help', 'spark', 'git', 'ctx', 'peers', 'sess', 'wall'];
+
+// ---------------------------------------------------------------------------------------
+// The peer zone (TUI-DESIGN-5 §2.2, §12 S6) — `⇄ 2 live · 1 heads-up · ✉ 1`
+// ---------------------------------------------------------------------------------------
+
+/** TUI-DESIGN-5 §2.2: below this the whole peer segment is absent. */
+export const PEERS_MIN_COLUMNS = 80;
+/** TUI-DESIGN-5 §2.2: the heads-up clause is the first thing the segment drops, right to left, exactly as `gitZoneText` drops. */
+export const HEADSUP_MIN_COLUMNS = 100;
+/** TUI-DESIGN-5 §4.4 (R5-4's `agentStripText` gate, landed here with the one push-order edit, §9.2). */
+export const AGENTS_MIN_COLUMNS = 40;
 
 /**
+ * TUI-DESIGN-5 §3.1 / §14.2 #38: the `ctx` cell's two rungs are **two gates, not one** — `CONTEXT_MIN_COLUMNS`
+ * admits the short form `ctx 41%` (7 cells, which fits beside `run $0.12/2.00` at 80) and `CONTEXT_FULL_COLUMNS`
+ * admits `formatMeter`'s whole `ctx 41% · 6 files · 12 steps` (28 cells). **At 40 columns the cell is absent.**
+ *
+ * §9.2 attributes these two constants to R5-3 along with `ctxText`; they are declared **here** because the segment
+ * they gate is R5-2's (§9.1: "the `peers`, `ctx` and `agents` segments"), because `rightZoneSegments` cannot honour
+ * "absent at 40" without them, and because §10 lists the rung test under R5-2 while nothing in the tree pinned the
+ * rungs. **R5-3 imports them; it must not re-declare them** (recorded as a request in R5-2's report).
+ */
+export const CONTEXT_MIN_COLUMNS = 80;
+/** TUI-DESIGN-5 §3.1: at or above this the `ctx` cell carries `formatMeter`'s whole row; below it, `ctx 41%` alone. */
+export const CONTEXT_FULL_COLUMNS = 100;
+
+/**
+ * TUI-DESIGN-5 §2.2: what the peer zone reads about **this** session. Coordination's `SelfIdentity`
+ * (`src/coordination/types.ts:369`) satisfies it structurally, so `src/cli/session.ts` passes the one the ledger
+ * already built — and the zone never sees `hostKey`, a device-secret derivative (§7 row 61). It is deliberately
+ * **not** `SelfIdentityView` (§8.1 item 4), which carries no `runId`/`sessionId` and so cannot exclude my own row.
+ */
+export interface PeerZoneSelf {
+  readonly deviceId: string;
+  readonly runId: string | null;
+  readonly sessionId: string | null;
+}
+
+/**
+ * TUI-DESIGN-5 §2.2: what the zone excludes when the host has not said who it is — nothing. A `deviceId` no
+ * record can carry, and no run or session of my own, so every live row and every message is counted. It is the
+ * conservative direction: over-counting shows a peer that is me, under-counting hides one that is not.
+ */
+const NO_SELF: PeerZoneSelf = { deviceId: '', runId: null, sessionId: null };
+
+/** TUI-DESIGN-5 §2.2: the three numbers the segment renders, so the counting rule is testable without a glyph set. */
+export interface PeerZoneCounts {
+  readonly live: number;
+  readonly headsUp: number;
+  readonly mail: number;
+}
+
+/**
+ * TUI-DESIGN-5 §2.2: `fold.liveness`, `fold.inbox` and `fold.acks`, counted. Pure, no clock — the fold's watcher
+ * already maintains it (§7 rows 1, 2: before `open()` every map is empty and every count is 0).
+ *
+ * - **live**: every `Fold.live` row that is not my own run and whose `Fold.liveness` verdict is `'live'`. A row with
+ *   no verdict is counted (unknown stays permissive, the rule `hostKey`/`bootId` follow); a `stale`, `gone`,
+ *   `stale-reused-pid` or `unknown` verdict is not (§12 S3, S3a, S3b are `/who` rows, not this cell).
+ * - **unread**: a message with no ack from **this device** in `fold.acks` — never a content comparison (§2.1 rule 4).
+ *   My own messages, which come back through `@all`, are excluded by `from.deviceId` + `from.sessionId`.
+ * - **headsUp** counts `type === 'heads-up'`; **mail** counts **everything else unread**. The split is `if/else`, so
+ *   the two clauses never double-count one message AND — the fix pass — never drop one either: `MessageType` has
+ *   fifteen members, and an earlier rule that counted only `heads-up` and only DIRECTED messages made an unread
+ *   `note` / `request-release` / `who` broadcast to `@repoKey` invisible in both clauses. `✉` means "messages
+ *   waiting for you, `/inbox` reads them", which a repo-wide `note` is.
+ */
+export function peerZoneCounts(fold: Fold, self: PeerZoneSelf): PeerZoneCounts {
+  let live = 0;
+  for (const hb of fold.live.values()) {
+    if (self.runId !== null && hb.runId === self.runId) continue;
+    const verdict = fold.liveness.get(`${hb.deviceId}/${hb.runId}/${hb.pid}`);
+    if (verdict !== undefined && verdict !== 'live') continue;
+    live++;
+  }
+  let headsUp = 0;
+  let mail = 0;
+  for (const msg of fold.inbox) {
+    if (msg.from.deviceId === self.deviceId && msg.from.sessionId === self.sessionId) continue;
+    const acks = fold.acks.get(msg.id) ?? [];
+    if (acks.some((a) => a.deviceId === self.deviceId)) continue;
+    if (msg.type === 'heads-up') headsUp++;
+    else mail++;
+  }
+  return { live, headsUp, mail };
+}
+
+/**
+ * TUI-DESIGN-5 §2.2 / §12 S6: `⇄ 2 live · 1 heads-up · ✉ 1`, three rungs and not one gate.
+ *
+ * `columns < PEERS_MIN_COLUMNS` → '' (the segment as a whole); `< HEADSUP_MIN_COLUMNS` → the heads-up clause drops
+ * (`⇄ 2 live · ✉ 1`); at or above it the whole row. A clause whose count is 0 is **absent**, never `⇄ 0 live`, and
+ * all three at 0 is ''. Every glyph comes from the set (`⇄` → `<>`, `✉` → `mail`, `·` → `-` under `--ascii`) —
+ * never a literal here (§7 row 40 is the same defect for `·`).
+ */
+export function peerZoneText(fold: Fold, self: PeerZoneSelf, g: GlyphSet, columns: number): string {
+  const cols = Number.isFinite(columns) ? Math.floor(columns) : 0;
+  if (cols < PEERS_MIN_COLUMNS) return '';
+  const { live, headsUp, mail } = peerZoneCounts(fold, self);
+  const parts: string[] = [];
+  if (live > 0) parts.push(`${g.peers} ${live} live`);
+  if (headsUp > 0 && cols >= HEADSUP_MIN_COLUMNS) parts.push(`${headsUp} heads-up`);
+  if (mail > 0) parts.push(`${g.mail} ${mail}`);
+  return parts.join(` ${g.dot} `);
+}
+
+/**
+ * **TUI-DESIGN-5 §12 "superseded, not kept" (§14.2 #10): this is no longer a status segment.** The right zone's
+ * peer cell is `peerZoneText` (`⇄ 2 live · 1 heads-up · ✉ 1`, §12 S6), because the round-5 cell carries unread
+ * message counts that TD4's bare count cannot express, and nothing pushes this into `rightZoneSegments` any more.
+ *
+ * **It has no caller in `src/` (stated, not implied).** `/peers` builds its own block in `src/cli/session.ts`
+ * (`block('peers', …)`), which is R5-1's file; this function is retained as the one home of TD4 §7.10's `<n> here
+ * · <m> stale` string for the `--plain` twin and its tests, and R5-1 may route `/peers`' head through it so the
+ * string stays in one place (recorded as a request in R5-2's report). An earlier version of this comment claimed
+ * `/peers` already called it, which is the kind of stale claim §13.4's anchor discipline exists to prevent.
+ *
  * TUI-DESIGN-4 §7.10 item 1 / §12: the peer segment — `<n> here` when another instance holds this workspace, plus
  * `· <m> stale` when the registry still lists entries from killed instances. Empty when this is the only instance
  * (`live <= 1`) and nothing is stale, or when the registry is absent. Counts only: a pid or a path would identify
@@ -492,6 +658,12 @@ export function rightZoneSegments(s: StatusLineState, columns: number, o: Status
   const snap = runSnapshot(s);
   const bars = columns >= METER_BAR_MIN_COLUMNS;
   if (snap !== null) segments.push(seg('run', meterText('run', snap.totalUsd, snap.capUsd, { exceeded: snap.exceeded, bar: bars, ascii })));
+  // TUI-DESIGN-5 §2.2 / §4.4 (§14.2 #45): agents sit beside `run` because they spend the run's money, and the strip
+  // is NOT in `DROP_ORDER` — it is never dropped. R5-4 replaces the read with `agentStripText(...)` (§9.2).
+  if (columns >= AGENTS_MIN_COLUMNS) {
+    const agents = s.agents ?? '';
+    if (agents.length > 0) segments.push(seg('agents', agents));
+  }
   if (s.spend.session !== null) {
     const sess = s.spend.session;
     const exceeded = snap?.parentExceeded === true;
@@ -501,14 +673,28 @@ export function rightZoneSegments(s: StatusLineState, columns: number, o: Status
     const t = tokensText(s, snap);
     if (t.length > 0) segments.push(seg('tokens', t));
   }
+  // TUI-DESIGN-5 §2.2: `ctx` and `peers` sit after `tokens` because they are run facts, not workspace facts.
+  // §3.1's gate is the width, and it is TWO rungs: below `CONTEXT_MIN_COLUMNS` the cell is absent entirely (never
+  // a placeholder, never `ctx —%`). R5-3 replaces the read with `ctxText(s.status.context, columns, g)` (§9.2) —
+  // the position and both gates are landed here so the order cannot drift while the two PRs are in flight.
+  const gateColumns = o.terminalColumns ?? columns;
+  if (gateColumns >= CONTEXT_MIN_COLUMNS) {
+    const ctx = s.ctx ?? '';
+    if (ctx.length > 0) segments.push(seg('ctx', ctx));
+  }
+  // TUI-DESIGN-5 §2.2: the FOLD alone is enough. `selfId` only EXCLUDES my own row and my own messages, and
+  // `PeerZoneSelf.runId`/`sessionId` are already nullable, so a session with no run has a perfectly good value —
+  // requiring it hid `✉` exactly when a peer's message matters most (an idle TUI). The default excludes nothing,
+  // which is the honest answer when the caller has not said who it is.
+  if (s.fold !== undefined && s.fold !== null) {
+    const peerZone = peerZoneText(s.fold, s.selfId ?? NO_SELF, glyphs(ascii), gateColumns);
+    if (peerZone.length > 0) segments.push(seg('peers', peerZone));
+  }
   if (columns >= GIT_ZONE_MIN_COLUMNS && s.git !== null) {
     const g = gitZoneText(s.git, ascii);
     if (g.length > 0) segments.push(seg('git', g));
   }
   if (columns >= SPARKLINE_MIN_COLUMNS && s.jevLatencies !== undefined && s.jevLatencies.length > 0) segments.push(seg('spark', sparklineText(s.jevLatencies, ascii)));
-  // TUI-DESIGN-4 §7.10 item 1: the peer count sits before ShortHelp and is the first segment dropped (edge 2)
-  const peers = peersText(s.peers);
-  if (peers.length > 0) segments.push(seg('peers', peers));
   const help = shortHelp(s, ascii);
   if (help.length > 0) segments.push(seg('help', help));
   const secret = secretBadge(s, ascii);
@@ -531,8 +717,12 @@ export interface StatusZones {
   left: string;
   centre: string;
   right: string[];
-  /** which drops were needed to fit */
-  dropped: ('badge' | 'peers' | 'help' | 'spark' | 'git' | 'sess' | 'wall' | 'centre')[];
+  /**
+   * which drops were needed to fit. TUI-DESIGN-5 §8.1 item 10: a **separately spelled** union that `dropped.push(d)`
+   * writes `DROP_ORDER`'s members into, so it gains `'ctx'` with the context cell or the push does not compile.
+   * `'agents'` is never here — the strip is not in `DROP_ORDER`.
+   */
+  dropped: ('badge' | 'ctx' | 'peers' | 'help' | 'spark' | 'git' | 'sess' | 'wall' | 'centre')[];
 }
 
 /** The usable width: NaN and negatives → 0, +Infinity and anything absurd → `MAX_COLUMNS`, fractions floored. */

@@ -94,15 +94,46 @@ const ONE_LINE_COMMANDS: readonly string[] = [
   'fullscreen',
   'scrollback',
   'ui',
+  // TUI-DESIGN-5 §2.7, §2.9: each answers with ONE item — the pause/end status sentence (§12 S17–S21, S28) or the
+  // send confirmation; the `[session]` item the far end writes is the receiving session's row, not this one's
+  'end',
+  'tell',
+  'headsup',
+  'request',
+  /**
+   * TUI-DESIGN-5 §3.3, §4.9 (D-AN) and §5.5: seven of the nine rows the integration pass landed answer with ONE
+   * item — `/compact`'s before/after sentence (§12 S57–S58a, and NOTHING at all when the engine's own compaction
+   * notice already said what happened) and the six honest `<verb> is not available in this build` refusals. Each
+   * moves into `BLOCK_COMMANDS` when its store exists and it starts answering with rows.
+   */
+  'compact',
+  'split',
+  'agents',
+  'agent',
+  'land',
+  'spawn',
+  'import',
+  'memory',
 ];
+
+/**
+ * TUI-DESIGN-5 §2.3, §2.9 and §3.2: the three round-5 commands that DO answer with a block. `/who` and `/context`
+ * have their builders and their `case` arms (`src/session/peers.ts`'s `whoRows`, `src/tui/context/lines.ts`'s
+ * `contextBlock`); `/inbox` is still the honest D-AN refusal. All three need a LIVE fold or a live run to produce
+ * rows at all, which this file's fixture harness does not stand up — `r5-identity.test.ts` (§10 "Shared") is
+ * where every round-5 surface's three sinks are asserted with its §13.2 truncation clause.
+ */
+const PENDING_ROUND5_BLOCKS: readonly string[] = ['who', 'inbox', 'context'];
 
 describe('TUI-DESIGN-4 §3.5 (D-W): the TUI rows and the `--plain` rows of a block are the same rows', () => {
   it('covers every command of the registry — a 42nd command without a twin fails here (§10 S3)', () => {
-    const named = new Set([...BLOCK_COMMANDS.map((c) => c.name), ...ONE_LINE_COMMANDS, ...DECLARED_RENDERER_DIFFERENCES]);
+    const named = new Set([...BLOCK_COMMANDS.map((c) => c.name), ...ONE_LINE_COMMANDS, ...DECLARED_RENDERER_DIFFERENCES, ...PENDING_ROUND5_BLOCKS]);
     const registry = COMMANDS.map((c) => c.name);
     expect([...named].filter((n) => !registry.includes(n)), 'listed here but not a command').toEqual([]);
     expect(registry.filter((n) => !named.has(n)), 'a command with no row in this file').toEqual([]);
-    expect(registry.length).toBe(41);
+    // 37 (round 3) → 41 (round 4) → 47 with R5-2's six §2.3/§2.7/§2.9 rows → 56 with every round-5 slot's rows
+    // landed in the one §9.2 registry PR (gate G-R5-10's number)
+    expect(registry.length).toBe(56);
   });
 
   for (const { name, line } of BLOCK_COMMANDS) {

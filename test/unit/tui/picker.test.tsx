@@ -10,7 +10,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SessionRow } from '../../../src/core/types.js';
 import { INITIAL_PICKER, PICKER_HINT, moveRunsToTrash, pickerLines, pickerReducer, pickerRule, readPickerPreview, selectedSession, visibleSessions, type PickerState } from '../../../src/tui/Picker.js';
+import { GLYPHS, glyphTwin } from '../../../src/tui/glyphs.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
+import { initialKeyState, resolveKey, type KeyEvent, type KeyFlags } from '../../../src/tui/keys/resolve.js';
 
 const NOW = Date.parse('2026-09-20T12:00:00Z');
 function session(id: string, title: string, task60: string, hoursAgo: number, workspace = '/Users/me/proj'): SessionRow {
@@ -75,6 +77,35 @@ describe('pickerLines / pickerRule (§24, F-L)', () => {
     for (const l of lines) expect(stringWidth(l)).toBeLessThanOrEqual(80);
   });
 
+  /**
+   * §7 row 81: the session picker's own tails are unicode ANCHORS with an `--ascii` twin, and they were the
+   * one set of rows in this file pushed raw — `PICKER_HINT`, `PICKER_DELETE_HINT` and `PICKER_EMPTY` all carry
+   * a `·`, so `/resume --ascii` put a unicode cell in a frame. The models tail and the card rows were already
+   * substituted, which is why only the older strings leaked.
+   */
+  it('every tail row is glyph-substituted: under `--ascii` no `·` reaches a frame, in any of the three tail states', () => {
+    const states = [
+      { name: 'hint', s: open(), filter: '' },
+      { name: 'armed', s: pickerReducer(open(), { type: 'deleteArm', on: true }), filter: '' },
+      { name: 'renaming', s: pickerReducer(open(), { type: 'rename', on: true }), filter: '' },
+      { name: 'empty', s: open(), filter: 'zzzz' },
+    ];
+    for (const { name, s, filter } of states) {
+      const uni = pickerLines(s, { filter, rows: 8, columns: 80, nowMs: NOW, glyphs: GLYPHS.unicode });
+      const ascii = pickerLines(s, { filter, rows: 8, columns: 80, nowMs: NOW, glyphs: GLYPHS.ascii });
+      for (const l of ascii.lines) expect(l, `${name}: ${l}`).not.toMatch(/[·→▌↑↓─—…]/);
+      // the same row count, and every tail row is the unicode row's TWIN — `glyphTwin`, not different text
+      expect(ascii.lines, name).toHaveLength(uni.lines.length);
+      for (const [i, l] of uni.lines.entries()) {
+        // a row the width cut ends in the glyph set's own ellipsis, and `…` (1 cell) and `...` (3) cut at
+        // different points by construction — §2.6 edge 2. Rows that FIT must be twins, byte for byte.
+        if (!l.includes('·') || l.endsWith('…')) continue;
+        expect(ascii.lines[i], `${name} row ${i}`).toBe(glyphTwin(l, GLYPHS.ascii));
+      }
+    }
+    expect(pickerLines(open(), { filter: '', rows: 8, columns: 80, nowMs: NOW, glyphs: GLYPHS.ascii }).lines.some((l) => l.includes(glyphTwin(PICKER_HINT, GLYPHS.ascii)))).toBe(true);
+  });
+
   it('an empty filter result shows `no session in <path> yet`; the delete arm replaces the hint; rewind kind uses its rule', () => {
     const { lines } = pickerLines(open(), { filter: 'zzzz', rows: 3, columns: 80, nowMs: NOW });
     expect(lines[0]).toBe('  no session in /Users/me/proj yet');
@@ -114,5 +145,64 @@ describe('readPickerPreview / moveRunsToTrash (§8.4)', () => {
     expect(r.failed).toEqual([{ runId: 'missing', code: 'ENOENT' }, { runId: '../evil', code: 'EINVAL' }]);
     expect(existsSync(join(root, 'trash', 'r1', 'run.json'))).toBe(true);
     expect(existsSync(join(runs, 'r1'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-5 §2.8 / §7 row 91: the resume card's focused sub-state (R5-4's §10 `picker.test.tsx`)
+// ---------------------------------------------------------------------------------------
+
+describe("the resume card's sub-state (TUI-DESIGN-5 §2.8, §14.2 #40)", () => {
+  it('a fresh picker has no card — the whole sub-state is inert until one is opened', () => {
+    expect(INITIAL_PICKER.card).toBeNull();
+    expect(open().card).toBeNull();
+  });
+
+  it('`card` opens on one runId and Esc closes it back to the list', () => {
+    const s = pickerReducer(open(), { type: 'card', runId: '20260920-100000-aaaaaaaa' });
+    expect(s.card).toEqual({ runId: '20260920-100000-aaaaaaaa' });
+    expect(pickerReducer(s, { type: 'card', runId: null }).card).toBeNull();
+  });
+
+  it('the card belongs to ONE row, so any movement of the selection closes it (never a card about another run)', () => {
+    const s = pickerReducer(open(), { type: 'card', runId: '20260920-100000-aaaaaaaa' });
+    expect(pickerReducer(s, { type: 'move', by: 1, count: 3 }).card).toBeNull();
+    expect(pickerReducer(s, { type: 'page', by: 1, size: 6, count: 3 }).card).toBeNull();
+    expect(pickerReducer(s, { type: 'widen' }).card).toBeNull();
+  });
+
+  it('opening a card disarms a pending delete — `x` then Enter can never delete the row it just expanded', () => {
+    const armed = pickerReducer(open(), { type: 'deleteArm', on: true });
+    expect(armed.deleteArmed).toBe(true);
+    expect(pickerReducer(armed, { type: 'card', runId: 'r1' }).deleteArmed).toBe(false);
+  });
+
+  it('a re-open resets the card with the rest of the state', () => {
+    const s = pickerReducer(open(), { type: 'card', runId: 'r1' });
+    expect(pickerReducer(s, { type: 'open', kind: 'rewind', workspace: '/w' }).card).toBeNull();
+  });
+
+  const NO_FLAGS: KeyFlags = { upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, pageDown: false, pageUp: false, home: false, end: false, return: false, escape: false, ctrl: false, shift: false, tab: false, backspace: false, delete: false, meta: false, super: false, hyper: false };
+  const ENTER: KeyEvent = { input: '\r', key: { ...NO_FLAGS, return: true } };
+
+  it("the three-state gate: `'closed'` needs the caller's `hasCard` predicate, and without one the sub-state stays dark", () => {
+    /**
+     * §2.8's gate is `'off' | 'closed' | 'open'`, and `picker:cardOpen` fires **only** on `'closed'` — the state
+     * in which a row is known to have a pause point. `App.tsx`'s `pickerCardState()` produces it from
+     * `PickerOpen.hasCard`, the seam a caller with a `PausePoint` and a fold supplies (`SessionRow` carries
+     * neither); with no predicate every row is `'off'` and round 3's Enter/Esc are byte for byte unchanged.
+     *
+     * This asserts the SHAPE of that expression; the mounted behaviour — Enter opens the card, Esc returns to
+     * the list, `r`/`f`/`d`/`w` route only there — is `test/unit/tui/round5-shell-app.test.tsx`'s.
+     */
+    const appPickerCard = (pickerOpen: boolean, card: { runId: string } | null, hasCard?: boolean): 'off' | 'closed' | 'open' =>
+      !pickerOpen ? 'off' : card !== null ? 'open' : hasCard === true ? 'closed' : 'off';
+    expect(appPickerCard(false, null)).toBe('off');
+    expect(appPickerCard(true, null)).toBe('off'); // ← no predicate: `cardOpen` is unreachable, as in production
+    expect(appPickerCard(true, null, true)).toBe('closed');
+    expect(appPickerCard(true, { runId: 'r1' })).toBe('open');
+    // the resolver's own gate, for the record: `'off'` is round 3's Enter, `'closed'` is the one that opens
+    expect(resolveKey({ ...initialKeyState(), picker: true, pickerCard: 'off' }, ENTER, 0)).toEqual([{ type: 'picker', op: 'open' }]);
+    expect(resolveKey({ ...initialKeyState(), picker: true, pickerCard: 'closed' }, ENTER, 0)).toEqual([{ type: 'picker', op: 'cardOpen' }]);
   });
 });

@@ -36,6 +36,11 @@ export const CAP = {
   exitConfirm: 1,
   /** TUI-DESIGN-2 §3.7: the flat intake row; boxed = 1 + card */
   intake: 1,
+  /**
+   * TUI-DESIGN-5 §5.2: the import overlay — the head, up to six group rows and the keys row. It is a COLLAPSING
+   * overlay (it needs an answer), so the composer is one inactive row while it is up and the pane yields first.
+   */
+  import: 10,
   minsize: 1,
   /** TUI-DESIGN-2 §4.7: the two edges a card adds */
   card: 2,
@@ -49,13 +54,13 @@ export const CAP = {
 } as const;
 
 /** TUI-DESIGN §2.1 / TUI-DESIGN-2 §3.7: the one modal slot directly above the composer holds at most one of these. */
-export type OverlayKind = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'intake';
+export type OverlayKind = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'intake' | 'import';
 
 /** TUI-DESIGN §2.1: every overlay kind, in declaration order (tests iterate it). */
-export const OVERLAY_KINDS: readonly OverlayKind[] = ['none', 'review', 'wizard', 'followup', 'secret', 'blocking', 'palette', 'undo', 'exitConfirm', 'intake'];
+export const OVERLAY_KINDS: readonly OverlayKind[] = ['none', 'review', 'wizard', 'followup', 'secret', 'blocking', 'palette', 'undo', 'exitConfirm', 'intake', 'import'];
 
-/** overlays that collapse the composer to one inactive row (F3; TUI-DESIGN-2 §3.7 adds `intake`) */
-const COLLAPSING: ReadonlySet<OverlayKind> = new Set<OverlayKind>(['review', 'followup', 'blocking', 'exitConfirm', 'intake']);
+/** overlays that collapse the composer to one inactive row (F3; TUI-DESIGN-2 §3.7 adds `intake`, TUI-DESIGN-5 §5.2 `import`) */
+const COLLAPSING: ReadonlySet<OverlayKind> = new Set<OverlayKind>(['review', 'followup', 'blocking', 'exitConfirm', 'intake', 'import']);
 
 /** TUI-DESIGN §2.1: true for the overlays that collapse the composer to one inactive row (F3, §6.2). */
 export function isCollapsingOverlay(overlay: OverlayKind): boolean {

@@ -5,7 +5,7 @@
  * `jevApiKey?` for keys), `writeFileAtomic(…, { mode: 0o600, mkdir: true })`, then `chmod` the
  * file 0600 — and the directory 0700 only when it is the jevcode config dir (never a workspace or
  * `$HOME` a `--config` path points into); Windows prints the ACL note instead (P41). Never `./.env`,
- * `./jevcode.json` or the Open Assist `.env` (A118). Keys only ever leave this module as
+ * `./jevcode.json` or the extra `.env` file (A118). Keys only ever leave this module as
  * fingerprints. The `[setup]`/`[config]` string builders live here so `src/tui` depends on
  * `src/config`, never the reverse.
  */
@@ -16,6 +16,7 @@ import { fingerprint } from '../core/hash.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { MIN_SECRET_LENGTH } from '../core/redact.js';
 import type { Json, JsonObject, Resolved } from '../core/types.js';
+import type { ProviderId } from '../provider/ids.js';
 import { ConfigError } from '../errors.js';
 
 /** TUI-DESIGN §11.2: the file name under the jevcode config dir. */
@@ -230,9 +231,22 @@ export function jevcodeJsonWarning(savedTo: string): string {
   return `./jevcode.json takes precedence for non-secret keys; keys were saved to ${savedTo} — remove any apiKey there`;
 }
 
-/** TUI-DESIGN §11.2: the only keys the wizard/login ever write. */
+/**
+ * TUI-DESIGN §11.2: the only keys the wizard/login ever write.
+ *
+ * TUI-DESIGN-5 §6.3 row 3: `provider` is `ProviderId` (seven), not the two-member literal it re-declared. The
+ * import is `provider/ids.ts`, which has **zero imports** and is the one provider module the argv path may read
+ * (`ids.ts`'s own docblock; §6.2) — never `models/providers.ts`, which would pull `provider/openrouter.js` onto
+ * this path through `config/**`.
+ *
+ * The **slot count is unchanged** (D-AR as §6.5 states it): one `apiKey` + one `provider`. A user who wants several
+ * providers live at once exports several env vars, which `PROVIDER_KEY_ENV`'s per-provider lookup already serves.
+ * §0.1's D-AR row asks for a per-provider *map* instead; §6.5 and §15 Q12 defer that migration (it touches
+ * `jevcode logout`, `--config`, `resolve.ts` and every existing file), so this widening is written to be a strict
+ * subset of that shape rather than an obstacle to it.
+ */
 export interface CredentialsPatch {
-  provider?: 'anthropic' | 'openrouter';
+  provider?: ProviderId;
   apiKey?: string;
   jevApiKey?: string;
   /** TUI-DESIGN-2 §2.3 / §1.4: written as the `jevProvider` file key beside `jevApiKey` so resolve.ts reads it as the `file:` layer of decider.provider */

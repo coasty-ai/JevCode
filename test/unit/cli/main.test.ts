@@ -12,7 +12,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import type { ResolvedConfigWithDiagnostics } from '../../../src/config/types.js';
 import { parseCliArgs } from '../../../src/cli/args.js';
-import { ensureWiring, firstFrameTask, loginFlagsFrom, readTask, rendererRefusal, rendererRefusalLine, rendererRefusalRows, selectRenderer, versionJson } from '../../../src/cli/main.js';
+import { JEVCODE_JEV_FIX, ensureWiring, main as cliMain, firstFrameTask, jevcodeJevRefusal, jevcodeJevRefusalFor, jevcodeJevRefusalRows, loginFlagsFrom, readTask, rendererRefusal, rendererRefusalLine, rendererRefusalRows, selectRenderer, versionJson } from '../../../src/cli/main.js';
 import { RESTORE, createRestoreTerminal, processRestoreTerminal, restoreTerminal, setProcessRestore } from '../../../src/tui/terminal.js';
 import { UsageError } from '../../../src/errors.js';
 import { makeController } from './helpers.js';
@@ -286,4 +286,71 @@ describe('signals before and during the first frames (§14.2, research 20 item 2
       rmSync(ws, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+/**
+ * Round-5 item 8: `JEVCODE_JEV` is a bench/perf fault switch, and a product command REFUSES to start when it is
+ * set. The one production reader (`withJevOff`) is wired at `src/bench/runner.ts` only, so before this refusal a
+ * user who exported it and then ran `jevcode run` made real Jev calls and spent real money under a variable they
+ * believed had disabled them. `bench` and `perf` are exempt: `npm run bench` / `npm run perf` set it themselves.
+ */
+describe('round-5 item 8: the JEVCODE_JEV refusal', () => {
+  it('the sentence is the pinned one, the fix line is `unset JEVCODE_JEV`, and the value is redacted to 16 code points', () => {
+    expect(jevcodeJevRefusal('unreachable')).toBe(
+      'JEVCODE_JEV is set ("unreachable") — it is a bench/perf fault switch, not a product setting; unset it, or run the bench and perf suites through npm run bench / npm run perf, which set it themselves',
+    );
+    // 16 CODE POINTS, so an astral character is never cut in half (`slice` would have split the surrogate pair)
+    expect(jevcodeJevRefusal('abcdefghijklmnopqrstuvwxyz')).toContain('("abcdefghijklmnop")');
+    expect(jevcodeJevRefusal('🙂'.repeat(20))).toContain(`("${'🙂'.repeat(16)}")`);
+    expect(jevcodeJevRefusalRows('x')).toEqual([`[setup] ${jevcodeJevRefusal('x')}`, 'unset JEVCODE_JEV']);
+    expect(JEVCODE_JEV_FIX).toBe('unset JEVCODE_JEV');
+  });
+
+  it('every product command refuses and bench/perf do not, whatever the value — including the empty string', () => {
+    const product = ['chat', 'run', 'config', 'sessions', 'import', 'models', 'report', 'login', 'logout', 'agents', 'doctor', 'why', 'calibration', 'completion', 'upgrade'] as const;
+    for (const c of product) expect(jevcodeJevRefusalFor(c, { JEVCODE_JEV: 'unreachable' }), c).not.toBeNull();
+    // `set to anything` includes an empty export — `JEVCODE_JEV=` is still a stale export the user must clear
+    for (const c of product) expect(jevcodeJevRefusalFor(c, { JEVCODE_JEV: '' }), c).not.toBeNull();
+    for (const c of ['bench', 'perf'] as const) expect(jevcodeJevRefusalFor(c, { JEVCODE_JEV: 'unreachable' }), c).toBeNull();
+    for (const c of product) expect(jevcodeJevRefusalFor(c, {}), c).toBeNull();
+  });
+
+  it('`main()` refuses before any command runs: exit 2, the two rows on stderr, identical text under --plain and --json', async () => {
+    const drive = async (argv: string[]): Promise<{ code: number; err: string; out: string }> => {
+      const before = process.env['JEVCODE_JEV'];
+      process.env['JEVCODE_JEV'] = 'unreachable';
+      const err: string[] = [];
+      const out: string[] = [];
+      const realErr = process.stderr.write.bind(process.stderr);
+      const realOut = process.stdout.write.bind(process.stdout);
+      process.stderr.write = ((c: string) => {
+        err.push(String(c));
+        return true;
+      }) as typeof process.stderr.write;
+      process.stdout.write = ((c: string) => {
+        out.push(String(c));
+        return true;
+      }) as typeof process.stdout.write;
+      try {
+        const code = await cliMain(argv);
+        return { code, err: err.join(''), out: out.join('') };
+      } finally {
+        process.stderr.write = realErr;
+        process.stdout.write = realOut;
+        if (before === undefined) delete process.env['JEVCODE_JEV'];
+        else process.env['JEVCODE_JEV'] = before;
+      }
+    };
+    const plain = await drive(['config', '--plain']);
+    const json = await drive(['config', '--json']);
+    for (const r of [plain, json]) {
+      expect(r.code).toBe(2);
+      // the block is on STDERR — a fatal only the TUI could show would be invisible in exactly the pipes this
+      // switch gets set in — and `--json` does not turn it into a JSON object, because it is not a result
+      expect(r.err).toBe(`${jevcodeJevRefusalRows('unreachable').join('\n')}\n`);
+      // nothing ran: `config` never printed its table
+      expect(r.out).toBe('');
+    }
+    expect(plain.err).toBe(json.err);
+  });
 });

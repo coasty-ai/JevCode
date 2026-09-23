@@ -11,6 +11,7 @@ import { createInterface } from 'node:readline';
 import type {
   Action,
   ActionOutcome,
+  AgentRow,
   ConfirmOutcome,
   Confirmer,
   ConfirmRequest,
@@ -29,6 +30,7 @@ import type {
 import { DEFAULT_COMPLETE_THRESHOLD, MODE_BADGE_WORD } from '../config/defaults.js';
 import { AbortError } from '../errors.js';
 import { clip, firstLine } from '../core/text.js';
+import { METER_RED_PCT } from '../core/limits.js';
 import { formatDuration } from '../core/time.js';
 import { MIN_SECRET_LENGTH, detectSecrets as detectSecretsByPattern, patternRedact } from '../core/redact.js';
 import { gitBannerLine, headDriftWarning, headMoved } from '../workspace/gitstate.js';
@@ -40,10 +42,13 @@ import { editSummary, editTargetText, type EditSummary } from './diff/summary.js
 import type { ColorRole } from './theme.js';
 import { budgetItems } from './budget/lines.js';
 // TUI-DESIGN §14.1 / §24: `--ascii` substitutes the glyph table on stdout only (glyphs.ts imports plain.ts's hoisted `sanitizeStream`; the cycle is safe: both use the other inside functions)
-import { glyphSet, glyphTwin, type GlyphSet } from './glyphs.js';
+import { GLYPHS, glyphSet, glyphTwin, type GlyphSet } from './glyphs.js';
 import { RETRY_SLOW_MS, blockingRowsStructured } from './blocking/lines.js';
-import { REVIEW_KEYS_80, reviewDiffLines, reviewHeaderLines } from './review/lines.js';
+import { REVIEW_KEYS_80, isProposalConfirm, reviewDiffLines, reviewHeaderLines } from './review/lines.js';
 import { gatePlainPrompt, secretAckText } from './secrets/gate-lines.js';
+// TUI-DESIGN-5 §13.1: the agent tree's single row producer (pure, `import type` only from the contract shapes)
+import { AGENTS_WIDE_COLUMNS, agentRowText, agentRows } from './agents/lines.js';
+import { blockTexts, blockWidth } from './block/lines.js';
 
 // ---------------------------------------------------------------------------------------
 // Transcript items
@@ -81,6 +86,17 @@ export type TranscriptKind =
   // contract 1.2 (TUI-DESIGN-2 §6 item 17, §4.5): the one-line step summary (`step:end`) and the `[you]` / `[jevcode]` bubbles (§3.10)
   | 'step'
   | 'chat';
+
+/**
+ * TUI-DESIGN-5 D-AG — the `context:warn` row, word-for-word the `ctx` status cell at its amber/red form
+ * (`src/tui/context/lines.ts` `ctxText`): the WORD beside the percent, then the action, so `NO_COLOR`, `--ascii`
+ * and a screen reader read the same crossing a colour would have shown. Built here from `METER_RED_PCT` rather
+ * than by importing `context/lines.ts`, which would drag `src/loop/context/**` into the item formatter's static
+ * import graph (the §14.2 item 13 gate); `plain.test.ts` pins this string equal to `ctxText`'s at every percent.
+ */
+export function contextWarnItemText(pct: number): string {
+  return `ctx ${pct}% ${pct >= METER_RED_PCT ? 'red' : 'amber'}${SEP}/compact now`;
+}
 
 /** TUI-DESIGN-2 §4.5: the stage kinds the TUI's `compact` transcript hides (stamped `hidden: true` at append time); every sink still writes them */
 export const COMPACT_HIDDEN_KINDS: ReadonlySet<TranscriptKind> = new Set<TranscriptKind>(['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready']);
@@ -171,7 +187,7 @@ export function kTokens(n: number): string {
  * which matches the raw pty capture). `·` is U+00B7 = two UTF-8 bytes, so `[·-]` in a bytes regex is the one-byte
  * class `{0xC2, 0xB7, 0x2D}` and can never match the two-byte `·` followed by a space.
  *
- * MEASURED 2026-09-22 (integrator): with the bracket form, every perf scenario that waits for `[run] started`
+ * MEASURED 2026-09-22: with the bracket form, every perf scenario that waits for `[run] started`
  * matched nothing on a **unicode** capture and everything on an `--ascii` one — `composer live`,
  * `composer live-stress`, `composer review` and five `states` scenarios reported `0/200 keys` and exit 124 after
  * a 20 s wait for a row that had been on screen for 20 s. `(?:·|-)` is one character in all three engines.
@@ -629,8 +645,8 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
     case 'transcript':
       // §3.6 / §3.7 G1 (D-V): the `stop:` line is DELETED as an item — `[run] finished · <reason> · …` already says
       // it, and the same stop used to be stated three times in three consecutive rows (A3 §2.9). The design put the
-      // deletion at `src/loop/stop.ts:56`; that file is the harness session's under the 2026-09-22 ownership rule,
-      // so the deletion lands here instead, in the ONE formatter §3.6 names first. Every sink §3.7 lists reads this
+      // deletion at `src/loop/stop.ts:56`, but the engine keeps emitting the line, so the drop lands here instead,
+      // in the ONE formatter §3.6 names first — one place, not four. Every sink §3.7 lists reads this
       // function — transcript.log (`src/loop/engine.ts:1981`), `--plain`, the TUI and the session controller — so
       // the four stay identical, and `--json` consumers, which read EVENTS and never item text, are untouched.
       // The hunk owed to `stop.ts` is a cosmetic follow-up (the event would then carry ''), not a behaviour change.
@@ -658,6 +674,16 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
     case 'budget:warn':
       // TUI-DESIGN §9.2 / §24: `[run] budget: …` through the shared money lines; 80 % and 95 % are warnings, 50 % is information
       return budgetItems(e).map((text) => one(null, 'budget', text, e.pct >= 80 ? 'warn' : 'info'));
+    case 'context:warn':
+      // TUI-DESIGN-5 D-AG (deviation 16): the engine's one-per-upward-crossing event, as a row in all three sinks.
+      // Before this arm `--json` carried the crossing and every interactive and `--plain` user saw nothing at 85 %.
+      return make(e.step, 'notice', contextWarnItemText(e.pct), 'warn');
+    case 'context:compacted':
+      // TUI-DESIGN-5 D-AJ (b) / deviation 3: the typed event yields NO row of its own. The engine emits a
+      // `notice{kind:'ui', label:'[ui]'}` beside it whose text already states `<before> → <after> prompt chars`,
+      // the fold count, the step and the TRIGGER (`src/loop/engine.ts`), and that notice goes through the `notice`
+      // arm below into all three sinks. A row here would print the same compaction twice, with strictly less in it.
+      return [];
     case 'budget:stop':
     case 'budget:unpriced':
       return budgetItems(e).map((text) => one(null, 'budget', text, 'warn'));
@@ -920,6 +946,20 @@ export function confirmHeaderLines(req: ConfirmRequest): string[] {
 
 /** Preview body lines (old/new, content, diff, command); '' preview yields []. */
 export function confirmPreviewLines(req: ConfirmRequest): string[] {
+  /**
+   * TUI-DESIGN-5 §4.6 [G2] / contract 1.5 §3.7: `body` is a PRE-RENDERED preview and replaces
+   * `describeAction(proposal.action).preview` outright. It exists because `describeAction('read').preview` is the
+   * empty string, so a manifest confirm faked as a synthetic `read` action rendered a blank body — the defect the
+   * four fields close. The clip is still applied, so the row cap cannot be bypassed by a long body.
+   *
+   * **`isProposalConfirm` is the discriminant here too, not `body !== undefined`** (§4.6: "`headline` — not
+   * `badge`, not `title` — is the discriminant"). `body` and `headline` are independently optional, so keying the
+   * `--plain` twin off one field and every Ink / card / SR branch off the other makes a request with a `body` and
+   * no `headline` render the body under `--plain` and the `describeAction` diff in the TUI — the twin divergence
+   * §13's identity rule forbids. One predicate now decides the shape in all four sinks.
+   */
+  const body = isProposalConfirm(req) ? req.body : undefined;
+  if (body !== undefined) return body.length === 0 ? [] : clipDetail(body.join('\n')).split('\n');
   const d = describeAction(req.proposal.action);
   if (d.preview === '') return [];
   return clipDetail(d.preview).split('\n');
@@ -1394,4 +1434,37 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
       });
     },
   };
+}
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-5 §4.2 / §13.1: the agent tree's `--plain` and `transcript.log` twin
+// ---------------------------------------------------------------------------------------
+
+/**
+ * §13.1 / §9.2 (`src/tui/plain.ts`'s row): the agent rows route through **this one formatter**, so the Ink tab, the
+ * `--plain` block and the `transcript.log` rows `Engine.annotateBlock` writes are the same rows by construction.
+ * The row strings themselves are `src/tui/agents/lines.ts`'s — nothing is re-declared here (the §13.4 rule).
+ *
+ * §13.2 clause 6 is the one declared difference and it is asserted, not assumed: the Ink tab's visible subset is a
+ * **viewport** (`src/tui/pane/agents.ts`), while this twin's row count equals `rows.length` — `agentRows` never
+ * filters and never caps, so a `--plain` user sees every agent whatever the terminal is doing.
+ *
+ * §13.2 clause 1's width rule applies to the default: *`--plain` without a TTY renders the 120-column form*, so a
+ * piped `jevcode agents list` keeps the branch / verify column rather than silently dropping it at
+ * `CONFIRM_HEADER_COLUMNS`'s 80 — the twin must not be narrower than the tab a TTY would have drawn.
+ */
+export function agentBlockLines(rows: readonly AgentRow[], columns = AGENTS_WIDE_COLUMNS, g: GlyphSet = GLYPHS.unicode): string[] {
+  const width = blockWidth(columns);
+  return blockTexts(agentRows(rows, { width, g }), width, g);
+}
+
+/** §4.9 / §12.3 S85 (D-AN): `/agents`'s head row for the `--plain` block and `annotateBlock`'s head argument. */
+export function agentBlockHead(rows: readonly AgentRow[]): string {
+  return rows.length === 0 ? 'agents' : `agents (${rows.length})`;
+}
+
+/** §12 SR twin: the same rows with the glyph column dropped — the state word already carries the fact it encodes. */
+export function agentScreenReaderLines(rows: readonly AgentRow[], columns = AGENTS_WIDE_COLUMNS): string[] {
+  const width = blockWidth(columns);
+  return rows.map((r) => agentRowText(r, { width, g: GLYPHS.sr, sr: true }));
 }

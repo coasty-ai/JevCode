@@ -14,7 +14,7 @@ import { CREDITS_EXHAUSTED, INTAKE_KEPT, INTAKE_UNREACHABLE, JEV_KEY_REJECTED, L
 import { writeJsonStream } from '../../../src/cli/json-stream.js';
 import { readIndex } from '../../../src/session/index.js';
 import { LOOKUP_FOOTER, LOOKUP_HEADER, lookupMissText } from '../../../src/chat/lookup.js';
-import { WHAT_IT_IS_TEXT } from '../../../src/chat/facts.js';
+import { PEERS_UNAVAILABLE_TEXT, WHAT_IT_IS_TEXT, peersFactText } from '../../../src/chat/facts.js';
 import { fillReply, replyByKey } from '../../../src/chat/replies.js';
 import { ConfigError, ProviderHttpError } from '../../../src/errors.js';
 import { createMockDecider } from '../../../src/jev/mock.js';
@@ -23,8 +23,8 @@ import { harnessDecider, makeController, tick, waitFor, type Harness } from './h
 import type { UiAction } from '../../../src/tui/useEngine.js';
 
 const SECRET = 'sk-ant-api03-SECRETSECRETSECRETSECRETSECRET1234';
-/** the extra-`.env` fallback must never find a real sibling checkout in a `mock: false` test */
-const NO_OPEN_ASSIST = '/nonexistent/no-extra-env';
+/** the `<JEVCODE_EXTRA_ENV_FILE>` fallback must never find this machine's sibling checkout in a `mock: false` test */
+const NO_EXTRA_ENV = '/nonexistent/extra.env';
 const harnesses: Harness[] = [];
 afterEach(() => {
   for (const h of harnesses.splice(0)) h.cleanup();
@@ -68,13 +68,32 @@ describe('TUI-DESIGN-2 §3.8: the submit path — greetings, tool questions, tas
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(0.0002, 9);
     expect(dispatchedOf(h, 'thinking').map((a) => (a as { phase: string | null }).phase)).toEqual(['intake', null]);
     const rows = dispatchedOf(h, 'chat-decisions').at(-1) as { rows: { step: number; stage: string; id: string }[] } | undefined;
-    expect(rows?.rows.length).toBe(1 + 5 + 1 + 14);
+    // TUI-DESIGN-5 §8.1 item 10 / §2.3: `FactKey` gains `'peers'` (group C 14 -> 15), so the intake asks one more Noul
+    expect(rows?.rows.length).toBe(1 + 5 + 1 + 15);
     expect(rows?.rows.every((r) => r.step === 0 && r.stage === 'intent')).toBe(true);
     expect(rows?.rows.map((r) => r.id)).toContain('intake');
     // the meter push carries the new total to the status row
     const pushed = dispatchedOf(h, 'spend:session');
     expect(pushed.length).toBeGreaterThanOrEqual(0);
     expect(h.decider).toHaveProperty('calls');
+  });
+
+  /**
+   * TUI-DESIGN-5 §8.1 item 10 / §2.4 (round-5 fix pass, finding 9). The 15th fact costs ~140 intake tokens on a
+   * budget measured at 4,366/4,500; the controller has to SET `FactsInput.peers` or every answer is the
+   * permanently false `the peer registry is not available in this build`. `undefined` (no wiring) and `null`
+   * (ledger not open) are deliberately different states, and this is the one that proves the wiring exists.
+   */
+  it('the `peers` fact is WIRED: the controller sets it, so the answer is the ledger state, not "not available in this build"', async () => {
+    const h = await build({ decider: harnessDecider({ usage: USAGE, facts: ['peers'] }), flags: { mode: 'jev-only' } });
+    void h.controller.run();
+    await h.ready();
+    expect(await h.host.submit('what can you do?', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    const reply = bubbles(h, '[jevcode]').at(-1);
+    // the ledger is not open in a chat-only harness, which is `null` — the honest state, and NOT `undefined`
+    expect(reply).toBe(peersFactText(null));
+    expect(reply).not.toContain(PEERS_UNAVAILABLE_TEXT);
+    expect(reply).toContain('/who lists every jevcode on this workspace once it is');
   });
 
   it('`what can you do?` → one [jevcode] item per selected fact, in probability order (what_it_is, mode_now)', async () => {
@@ -259,8 +278,8 @@ describe('TUI-DESIGN-2 §3.1 rows 10, 12, 12′, 13: failures', () => {
   });
 
   it('a ConfigError from config.generator() under jev+llm (no generator key, mock off) → `[ui] error: config:` only, no bubble', async () => {
-    // the extra-`.env` setting off any real sibling checkout, so no real key resolves (and a fake provider, never reached: `generator()` throws first)
-    const h = await build({ decider: harnessDecider({ usage: USAGE }), flags: { mock: false, mode: 'jev-on', openAssistPath: NO_OPEN_ASSIST }, env: { JEV_API_KEY: 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' }, deps: { buildProvider: async () => fakeProvider({ text: 'never' }) } });
+    // `extraEnvFile` off the machine's sibling checkout, so no real key resolves (and a fake provider, never reached: `generator()` throws first)
+    const h = await build({ decider: harnessDecider({ usage: USAGE }), flags: { mock: false, mode: 'jev-on', extraEnvFile: NO_EXTRA_ENV }, env: { JEV_API_KEY: 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' }, deps: { buildProvider: async () => fakeProvider({ text: 'never' }) } });
     void h.controller.run();
     await h.ready();
     expect(await h.host.submit('where is the date parsing?', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'nothing' });
@@ -361,7 +380,7 @@ describe('TUI-DESIGN-2 §3.8: keys, the wizard re-read and the one-shot path', (
     let wizardCalls = 0;
     const h = await build({
       decider: harnessDecider({ usage: USAGE }),
-      flags: { mock: false, mode: 'jev-only', openAssistPath: NO_OPEN_ASSIST },
+      flags: { mock: false, mode: 'jev-only', extraEnvFile: NO_EXTRA_ENV },
       prompts: {
         wizard: async () => {
           wizardCalls += 1;
@@ -686,7 +705,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
 
   it('§3.6: an unpriced generator refuses before sending (LLM_UNPRICED_REFUSAL) unless --allow-unpriced, under which the turn runs', async () => {
     const provider = fakeProvider({ text: 'answer' });
-    const flags = { mock: false, mode: 'jev-on' as const, provider: 'openrouter', model: 'some/unknown-model', openAssistPath: NO_OPEN_ASSIST };
+    const flags = { mock: false, mode: 'jev-on' as const, provider: 'openrouter', model: 'some/unknown-model', extraEnvFile: NO_EXTRA_ENV };
     const h = await build({ decider: harnessDecider({ usage: USAGE }), flags, env: { OPENROUTER_API_KEY: NO_KEY_OPENROUTER }, deps: { buildProvider: async () => provider } });
     void h.controller.run();
     await h.ready();
@@ -706,7 +725,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
   it('§3.6: the estimate `sessionTotal + chatEstimateUsd > cap` refuses the LLM turn before the request (SESSION_CAP_CHAT_REFUSAL, zero generator calls), the intake itself having passed', async () => {
     const provider = fakeProvider({ text: 'never' });
     // the default generator is the cheap glm-5.3-flash (commit 2a92d0b): a $0.00025 cap lets the $0.0002 intake through and makes any priced turn's estimate (≥ 1,200 input + 800 output tokens) overshoot
-    const h = await build({ decider: harnessDecider({ usage: USAGE }), flags: { mock: false, mode: 'jev-on', openAssistPath: NO_OPEN_ASSIST, sessionSpendCap: '0.00025' }, env: { ANTHROPIC_API_KEY: NO_KEY_ANTHROPIC, OPENROUTER_API_KEY: NO_KEY_OPENROUTER }, deps: { buildProvider: async () => provider } });
+    const h = await build({ decider: harnessDecider({ usage: USAGE }), flags: { mock: false, mode: 'jev-on', extraEnvFile: NO_EXTRA_ENV, sessionSpendCap: '0.00025' }, env: { ANTHROPIC_API_KEY: NO_KEY_ANTHROPIC, OPENROUTER_API_KEY: NO_KEY_OPENROUTER }, deps: { buildProvider: async () => provider } });
     void h.controller.run();
     await h.ready();
     expect(await h.host.submit('why does test_parse_date fail?', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
@@ -721,7 +740,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
 describe('TUI-DESIGN-2 §3.5 through the controller: the keys and workspace facts (findings 7, 9) and §3.11 /why intake (finding 13)', () => {
   it('the keys fact names the environment variable the key came from (env TYPESAFE_API_KEY) and never its value', async () => {
     const key = `ts-${'0123456789abcdef'.repeat(3)}`;
-    const h = await build({ decider: harnessDecider({ usage: USAGE, facts: ['keys'] }), flags: { mock: false, mode: 'jev-only', openAssistPath: NO_OPEN_ASSIST }, env: { TYPESAFE_API_KEY: key } });
+    const h = await build({ decider: harnessDecider({ usage: USAGE, facts: ['keys'] }), flags: { mock: false, mode: 'jev-only', extraEnvFile: NO_EXTRA_ENV }, env: { TYPESAFE_API_KEY: key } });
     void h.controller.run();
     await h.ready();
     expect(await h.host.submit('which keys are you using?', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });

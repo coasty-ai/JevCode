@@ -8,11 +8,35 @@
  * …). A chord is two key strings separated by one space (`ctrl+x ctrl+s`, §3.4), completed within 3 s.
  */
 
-/** TUI-DESIGN §3.4: the contexts a binding can live in (precedence order is §3.1's). */
-export type KeyContext = 'global' | 'composer' | 'review' | 'picker' | 'palette';
+/**
+ * TUI-DESIGN §3.4: the contexts a binding can live in (precedence order is §3.1's).
+ * TUI-DESIGN-5 §4.3 adds `'agents'` — the `'a'` pane tab's own keys, which resolve **only** while
+ * `ui.paneFocus && ui.tab === 'a'` (`src/tui/keys/resolve.ts`'s one new rung, between Picker and Composer).
+ * Without a focus model those eight single letters would type into the composer (§14.2 #41).
+ */
+export type KeyContext = 'global' | 'composer' | 'review' | 'picker' | 'agents' | 'palette';
 
 /** TUI-DESIGN §3.4: contexts in the order help and docs list them. */
-export const KEY_CONTEXTS: readonly KeyContext[] = ['global', 'composer', 'review', 'picker', 'palette'];
+export const KEY_CONTEXTS: readonly KeyContext[] = ['global', 'composer', 'review', 'picker', 'agents', 'palette'];
+
+/**
+ * TUI-DESIGN-5 §4.3 / §12.3 S86: the pane-tab letters the two `global:paneNext` / `global:panePrev` titles are
+ * **computed** from, instead of the two static strings round 2 spelled out at `:72–73`.
+ *
+ * The list is repeated here rather than imported from `src/tui/pane/model.ts`: that module reaches
+ * `config/defaults.js`, `jev/confidence.js` and `loop/plan.js`, and this one has **zero** imports today — a
+ * property gate G-R5-1 depends on. `test/unit/tui/keys/bindings.test.ts` pins `PANE_TAB_KEYS` against `PANE_TABS` and
+ * `[...PANE_TAB_KEYS, AGENTS_TAB_KEY]` against `PANE_TABS_WITH_AGENTS`, so the two can never drift.
+ */
+export const PANE_TAB_KEYS: readonly string[] = ['d', 'p', 't', 's'];
+/** TUI-DESIGN-5 §4.3: the fifth tab, present only while something delegates. */
+export const AGENTS_TAB_KEY = 'a';
+
+/** TUI-DESIGN-5 §12.3 S86: `next pane tab (d → p → t → s, + a while delegating)` / `previous pane tab; opens a collapsed panel`. */
+export function paneTabTitle(dir: 1 | -1): string {
+  const cycle = PANE_TAB_KEYS.join(' → ');
+  return dir === 1 ? `next pane tab (${cycle}, + ${AGENTS_TAB_KEY} while delegating); opens a collapsed panel` : 'previous pane tab; opens a collapsed panel';
+}
 
 /** TUI-DESIGN §3.2/§3.4: one bindable action of the registry. */
 export interface KeyActionSpec {
@@ -69,8 +93,12 @@ export const KEY_ACTIONS: readonly KeyActionSpec[] = [
   { id: 'global:detail', short: 'details', context: 'global', keys: ['ctrl+o'], title: 'append the last step\'s decision details and recent warnings; acknowledges !n' },
   { id: 'global:repaint', short: 'repaint', context: 'global', keys: ['ctrl+l'], title: 'repaint the dynamic region (erase-lines + rewrite, never a clear)' },
   { id: 'global:suspend', short: 'suspend', context: 'global', keys: ['ctrl+z'], title: 'suspend to the shell (fg resumes and repaints)' },
-  { id: 'global:paneNext', short: 'next tab', context: 'global', keys: [']'], title: 'next pane tab (d → p → t → s); opens a collapsed panel', when: 'empty draft', note: 'TUI-DESIGN-2 §4.6' },
-  { id: 'global:panePrev', short: 'previous tab', context: 'global', keys: ['['], title: 'previous pane tab; opens a collapsed panel', when: 'empty draft', note: 'TUI-DESIGN-2 §4.6' },
+  { id: 'global:paneNext', short: 'next tab', context: 'global', keys: [']'], title: paneTabTitle(1), when: 'empty draft', note: 'TUI-DESIGN-2 §4.6; TUI-DESIGN-5 §4.3 (the title is computed from the tab list)' },
+  { id: 'global:panePrev', short: 'previous tab', context: 'global', keys: ['['], title: paneTabTitle(-1), when: 'empty draft', note: 'TUI-DESIGN-2 §4.6; TUI-DESIGN-5 §4.3' },
+  // TUI-DESIGN-5 §4.3 / §7 row 99: Alt+A focuses the agents tab (and `/agents` opens *and* focuses it); Esc
+  // unfocuses. Focus is REFUSED while the draft is non-empty — the same `when: 'empty draft'` guard
+  // `global:paneNext` carries — and answers S86a, so eight single letters can never eat a half-typed line.
+  { id: 'global:paneFocus', short: 'focus agents', context: 'global', keys: ['meta+a'], title: 'focus the agents tab so its keys resolve (Esc unfocuses); refused with a non-empty draft', when: 'empty draft, while something delegates', note: 'TUI-DESIGN-5 §4.3' },
   // TUI-DESIGN-2 §4.6 / §12 "Keys and commands": the Jev panel — collapsed strip · open (≤ 6 rows) · full (12 rows)
   { id: 'global:panelToggle', short: 'panel', context: 'global', keys: ['meta+j'], title: 'toggle the Jev panel between the collapsed strip and the open 6-row form (= /panel, /panel off)', note: 'TUI-DESIGN-2 §4.6' },
   { id: 'global:panelFull', short: 'panel full', context: 'global', keys: ['meta+shift+j'], title: 'open the Jev panel in its full 12-row form (= /panel full)', note: 'TUI-DESIGN-2 §4.6' },
@@ -135,6 +163,27 @@ export const KEY_ACTIONS: readonly KeyActionSpec[] = [
   { id: 'picker:rename', short: 'rename', context: 'picker', keys: ['ctrl+r'], title: 'rename the highlighted session inline' },
   { id: 'picker:delete', short: 'then y: delete', context: 'picker', keys: ['x'], title: 'then y: move the run directory to ~/.jevcode/trash/ (never rm -rf)' },
   { id: 'picker:close', short: 'close', context: 'picker', keys: ['escape'], title: 'close the picker', reserved: true },
+  // TUI-DESIGN-5 §2.8 / §7 row 91 (R5-1's rows, landed here by R5-4 with `keys/resolve.ts`): the resume card is a
+  // focused SUB-STATE of the picker, not four more picker keys — the picker's composer IS its filter
+  // (`src/session/picker-lines.ts:1–33`) and `picker:delete` already owns a bare `x`, so binding r/f/d/w at picker
+  // scope would take four more letters away from filter typing. These four resolve **only while `card !== null`**.
+  // `cardOpen` / `cardClose` carry no keys of their own: Enter and Esc are `picker:open` / `picker:close`, which the
+  // resolver re-reads in the sub-state (Enter on a row opens the card; Esc closes it back to the list).
+  { id: 'picker:cardOpen', short: 'open card', context: 'picker', keys: [], title: 'Enter on a row opens its expanded card (the four card letters resolve only there)', when: 'no card open', note: 'TUI-DESIGN-5 §2.8; the key is `picker:open`\'s Enter' },
+  { id: 'picker:cardClose', short: 'close card', context: 'picker', keys: [], title: 'Esc returns to the list', when: 'the card is open', note: 'TUI-DESIGN-5 §2.8; the key is `picker:close`\'s Esc' },
+  { id: 'picker:cardReplay', short: 'replay', context: 'picker', keys: ['r'], title: 'resume by replaying the paused proposal (only when it is still replayable)', when: 'the card is open', note: 'TUI-DESIGN-5 §2.8' },
+  { id: 'picker:cardFresh', short: 'fresh', context: 'picker', keys: ['f'], title: 'resume with a fresh step instead of the paused proposal', when: 'the card is open', note: 'TUI-DESIGN-5 §2.8' },
+  { id: 'picker:cardDiff', short: 'diff', context: 'picker', keys: ['d'], title: 'diff the workspace since the pause', when: 'the card is open', note: 'TUI-DESIGN-5 §2.8' },
+  { id: 'picker:cardWho', short: 'who', context: 'picker', keys: ['w'], title: 'who else is live on this repo right now', when: 'the card is open', note: 'TUI-DESIGN-5 §2.8' },
+  // agents (TUI-DESIGN-5 §4.3, F-54's keys row) — resolve only while `ui.paneFocus && ui.tab === 'a'`
+  { id: 'agents:attach', short: 'attach', context: 'agents', keys: ['return'], title: 'attach to the highlighted agent read-only (its transcript tails into the pane)', reserved: true, note: 'TUI-DESIGN-5 §4.3' },
+  { id: 'agents:pause', short: 'pause', context: 'agents', keys: ['p'], title: 'pause the highlighted agent at its next step (= /agent <slug> pause)', note: 'TUI-DESIGN-5 §4.3' },
+  { id: 'agents:steer', short: 'steer', context: 'agents', keys: ['t'], title: 'steer the highlighted agent (the composer row becomes the steer field)', note: 'TUI-DESIGN-5 §4.3' },
+  { id: 'agents:budget', short: 'budget', context: 'agents', keys: ['+'], title: 'raise the highlighted agent\'s cap (= /agent <slug> budget)', note: 'TUI-DESIGN-5 §4.3' },
+  { id: 'agents:diff', short: 'diff', context: 'agents', keys: ['d'], title: 'the highlighted agent\'s diff against the base (= /agent <slug> diff)', note: 'TUI-DESIGN-5 §4.3' },
+  { id: 'agents:kick', short: 'kick', context: 'agents', keys: ['k'], title: 'kick the highlighted agent once (= /agent <slug> kick)', note: 'TUI-DESIGN-5 §4.3' },
+  { id: 'agents:drop', short: 'then x: drop', context: 'agents', keys: ['x x'], title: 'then x again: drop the agent — its uncommitted diff is lost, which is why it takes two keys', note: 'TUI-DESIGN-5 §4.3 (tmux choose-tree kills a pane with one x; a pane kill loses no committed work)' },
+  { id: 'agents:land', short: 'land', context: 'agents', keys: ['l'], title: 'land the highlighted agent into the dock (= /agent <slug> land)', note: 'TUI-DESIGN-5 §4.3' },
   // palette
   { id: 'palette:up', short: 'up', context: 'palette', keys: ['up', 'ctrl+p'], title: 'previous row' },
   { id: 'palette:down', short: 'down', context: 'palette', keys: ['down', 'ctrl+n'], title: 'next row' },
@@ -361,11 +410,31 @@ export function displayKey(canonical: string, ascii = false): string {
   return canonical
     .split(' ')
     .map((k) => {
-      const parts = k.split('+');
-      const base = parts.pop() as string;
-      const mods = parts.map((m) => (m === 'ctrl' ? 'Ctrl' : m === 'meta' ? 'Alt' : 'Shift'));
-      const b = names[base] ?? (base.length === 1 ? base.toUpperCase() : base.toUpperCase());
+      const { mods: raw, base } = splitCanonical(k);
+      const mods = raw.map((m) => (m === 'ctrl' ? 'Ctrl' : m === 'meta' ? 'Alt' : 'Shift'));
+      const b = names[base] ?? base.toUpperCase();
       return [...mods, b].join('+');
     })
     .join(' ');
+}
+
+/**
+ * TUI-DESIGN §3.4: split one canonical key into its modifiers and its base, **the same way `normalizeKeyToken`
+ * builds it** — a trailing `+` is the base key, not an empty separator. A bare `k.split('+')` reads `'+'` as
+ * `['', '']` and renders it `Shift+`, which is what `docs/KEYS.md` and `/help` published for `agents:budget`
+ * (`keys: ['+']`) until this existed — a wrong key in the two places a user looks a key up, with
+ * `gen-docs --check` green because the generator calls this very function.
+ */
+function splitCanonical(k: string): { mods: string[]; base: string } {
+  const parts: string[] = [];
+  let buf = '';
+  for (let n = 0; n < k.length; n++) {
+    const ch = k[n] as string;
+    if (ch === '+' && buf !== '' && n < k.length - 1) {
+      parts.push(buf);
+      buf = '';
+    } else buf += ch;
+  }
+  parts.push(buf);
+  return { mods: parts.slice(0, -1), base: parts[parts.length - 1] ?? '' };
 }

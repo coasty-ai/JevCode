@@ -130,7 +130,7 @@ would get the caps of one mode and a session in the other, and the wizard at eve
 function applyConfig(): void {
   if (!config) return;
   workspaceRoot = config.workspace;
-  // flag > JEVCODE_MODE > ./.env > <extra .env file> > file `mode` > DEFAULT_MODE (resolve.ts:384–391). A pending `/mode` re-enters the
+  // flag > JEVCODE_MODE > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file `mode` > DEFAULT_MODE (resolve.ts:384–391). A pending `/mode` re-enters the
   // flag layer through pendingFlagOverrides() (:1491–1497), so after a reresolve() config.mode equals the PENDING mode: the base moves only
   // while nothing is pending, and the badge action carries the pending mode separately (` · next run` survives a wizard save)
   if (pending.mode === undefined) baseMode = config.mode;

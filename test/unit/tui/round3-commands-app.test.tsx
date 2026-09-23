@@ -16,8 +16,8 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 import { App, createBridge } from '../../../src/tui/App.js';
 import { STILL_THINKING_TOAST } from '../../../src/tui/composer/submit.js';
-import { POPULAR, findCommand } from '../../../src/tui/commands/registry.js';
-import { PALETTE_FOOTER } from '../../../src/tui/commands/palette.js';
+import { COMMANDS, POPULAR, findCommand } from '../../../src/tui/commands/registry.js';
+import { PALETTE_FOOTER, paletteMatches } from '../../../src/tui/commands/palette.js';
 import { loadKeybindings } from '../../../src/tui/keys/keybindings-file.js';
 import { createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { tick } from '../../fixtures/tui/fixtures.js';
@@ -97,7 +97,11 @@ describe('the popular set through the mounted App (TUI-DESIGN-3 §4.1, §8 S4)',
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
     await settle(m);
-    const hostLines = POPULAR.filter((n) => !['help', 'panel', 'theme', 'exit', 'plan'].includes(n)).map((n) => `/${n}`);
+    // TUI-DESIGN-5 §6.4 (D-AQ): `/model` joined the App-local set when R5-4 mounted the pane-slot picker — with
+    // NO argument it opens the picker and never reaches the host (`/model <id>` still forwards verbatim, which
+    // `test/unit/tui/round5-shell-app.test.tsx` asserts along with the picker itself; App-level round-5 cases
+    // belong in that file, not this one).
+    const hostLines = POPULAR.filter((n) => !['help', 'panel', 'theme', 'exit', 'plan', 'model'].includes(n)).map((n) => `/${n}`);
     for (const line of hostLines) {
       await enter(m, line);
       await waitFor(() => host.commands.includes(line));
@@ -160,17 +164,21 @@ describe('the popular set through the mounted App (TUI-DESIGN-3 §4.1, §8 S4)',
     expect(frame).toContain('  /mode       m  engine mode: show, or set for the next run');
     expect(frame).toContain('  /model      ml generator model for the next run only');
     expect(frame).toContain('  /cost       c  run and session spend, per-step cost, pending caps');
-    // MINIMAL, MARKED pin move (S4, TUI-DESIGN-4 §4.6): the command set is 41 after this round, so the ghost's
-    // "other matches" count is +40 (`/fullscreen`, `/scrollback`, `/peers`, `/ui`)
-    expect(frame).toContain('› /help +40');
+    // MINIMAL, MARKED pin move (S4, TUI-DESIGN-4 §4.6; TUI-DESIGN-5 §2.3/§2.7/§2.9): the command set is 41 after
+    // round 4, 47 after R5-2's six coordination rows and 56 with every round-5 row, so the ghost's count is the table size
+    // less the top row — derived, so the next slot's rows move it without another pin edit
+    expect(frame).toContain(`› /help +${COMMANDS.length - 1}`);
     m.stdin.write('m');
     await waitFor(() => m.lastFrame().includes('▌ /mode       m  '));
     const fm = m.lastFrame();
     expect(fm).toContain('  /model      ml generator model for the next run only');
     expect(fm.indexOf('▌ /mode')).toBeLessThan(fm.indexOf('  /model'));
-    // S5's Console draws ` → /mode` from `ghost.arrow` (F-P2 adds the `+5` count beside it); a pre-round-3 renderer shows the count alone
-    expect(fm).toMatch(/› \/m( → \/mode| \+5)/);
-    expect(fm).toContain('(1/6)');
+    // S5's Console draws ` → /mode` from `ghost.arrow` (F-P2 adds the count beside it); a pre-round-3 renderer
+    // shows the count alone. TUI-DESIGN-5 §3.3 / §5.5: `/compact`, `/memory` and `/mem` join the `/m` matches,
+    // so the count is derived from the live matcher — 6 in TD3's frame, 9 here — never a literal
+    const mMatches = paletteMatches('/m', { lastStop: null, unauthorized: false, changedFiles: false, rewindMenu: false, live: false });
+    expect(fm).toMatch(new RegExp(`› /m( → /mode| \\+${mMatches.length - 1})`));
+    expect(fm).toContain(`(1/${mMatches.length})`);
     m.stdin.write('\r');
     await waitFor(() => host.commands.includes('/m'));
   });
