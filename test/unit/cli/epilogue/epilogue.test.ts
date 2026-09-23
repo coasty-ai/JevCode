@@ -208,7 +208,8 @@ describe('exit-code table (§13.5) as data', () => {
   });
 
   it('every StopReason is covered: one row each, `signal` one row per SignalName', () => {
-    const all: StopReason[] = ['complete', 'max_steps', 'spend_cap', 'wall_time', 'max_replans', 'human_abort', 'signal', 'replan_stop', 'impossible', 'generator_done', 'error', 'human_pause', 'token_cap'];
+    // AGENT-LOOP-DESIGN §8 / §A1: `stuck` joins the exit-4 row, `answered` the exit-0 row
+    const all: StopReason[] = ['complete', 'max_steps', 'spend_cap', 'wall_time', 'max_replans', 'human_abort', 'signal', 'replan_stop', 'impossible', 'generator_done', 'error', 'human_pause', 'token_cap', 'stuck', 'answered'];
     for (const r of all) {
       expect(exitCodeRowFor(r), r).not.toBeNull();
       if (r !== 'signal') expect(EXIT_CODE_TABLE.filter((row) => row.stopReasons.includes(r)), r).toHaveLength(1);
@@ -221,6 +222,9 @@ describe('exit-code table (§13.5) as data', () => {
     expect(exitCodeRowFor('complete')?.oneShot).toBe(EXIT_CODES.ok);
     expect(exitCodeRowFor('token_cap')?.oneShot).toBe(EXIT_CODES.budget);
     expect(exitCodeRowFor('human_pause')?.session).toBe(4);
+    expect(exitCodeRowFor('stuck')).toMatchObject({ oneShot: EXIT_CODES.budget, session: 4, sessionExits: false });
+    expect(exitCodeRowFor('stuck')?.situation).toContain('stuck');
+    expect(exitCodeRowFor('answered')).toMatchObject({ oneShot: EXIT_CODES.ok, session: 0, sessionExits: false });
   });
 
   it('human_abort stays in the session (composer reopens); an external SIGINT / SIGTERM / SIGHUP exits it', () => {

@@ -413,6 +413,16 @@ function indexActorOf(v: unknown): IndexActor {
   return 'self';
 }
 
+/**
+ * AGENT-LOOP-DESIGN §A5: the text that names a session — the first non-empty `run:start` task60, in index order, of a run that did
+ * not stop `answered` (a tool-less agent turn, `isReplyOnlyRun`); `''` when every run was a reply. A live run (no `run:end` yet) is
+ * not known to be a reply and counts. Legacy modes never stop `answered`, so their sessions keep the first task, as before.
+ */
+function sessionTask60(runs: Iterable<{ row: RunRow; task60: string | null }>): string {
+  for (const r of runs) if (r.task60 !== null && r.task60 !== '' && r.row.stopReason !== 'answered') return r.task60;
+  return '';
+}
+
 function newRun(runId: string, parentRunId: string | null, startedAt: string): RunRow {
   return { runId, parentRunId, startedAt, endedAt: null, stopReason: null, steps: null, costUsd: null, exitCode: null, resumable: null, resumes: 0, live: false };
 }
@@ -420,7 +430,8 @@ function newRun(runId: string, parentRunId: string | null, startedAt: string): R
 /** Fold bookkeeping per session: the row plus the numeric stamps the ordering rules compare (parsed once per line). */
 interface SessionFold {
   row: SessionRow;
-  runs: Map<string, { row: RunRow; startedMs: number }>;
+  /** `task60` = the run's own `run:start` text, null until one is seen (a torn index can fold a `run:end` first) */
+  runs: Map<string, { row: RunRow; startedMs: number; task60: string | null }>;
   lastUsedMs: number;
   createdAtMs: number;
   renamed: boolean;
@@ -436,7 +447,9 @@ interface SessionFold {
 
 /**
  * TUI-DESIGN §8.2 fold (pure): group by sessionId; per runId the last `run:start` / `run:end` win (a resume's
- * `run:start` with `resumeOf` counts as a resume, not a new run); title = last rename else the first task60;
+ * `run:start` with `resumeOf` counts as a resume, not a new run); title = last rename else the first task60 of a run that
+ * was not a reply (AGENT-LOOP-DESIGN §A5: a run that stopped `answered` — `isReplyOnlyRun` on the engine side — never
+ * names the session, and neither is it the row's `task60`; a session of replies only has an empty title and task60);
  * lastUsed = max t over all kinds; `live` = started and not ended in the index (the picker ANDs it with `run.lock`);
  * torn, non-`v:1` and unknown lines are skipped and counted. TUI-DESIGN-2 §3.9: `chat` lines add their cost to the
  * session's `totalUsd` and are summed per source in `chat` (what `seedMeterFromIndex` restores on /resume).
@@ -490,18 +503,18 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
             existing.startedMs = at;
           }
           existing.row.live = true;
+          if (existing.task60 === null) existing.task60 = line.task60;
         } else {
           const r = newRun(line.runId, line.parentRunId, line.t);
           r.live = true;
           if (line.resumeOf !== null) r.resumes = 1;
-          f.runs.set(line.runId, { row: r, startedMs: at });
+          f.runs.set(line.runId, { row: r, startedMs: at, task60: line.task60 });
         }
         // contract 1.8 item 3 (§2.8): the first non-null wins — a session is delegated once, and a later
         // `run:start` of the same session (a resume, a follow-up) must not unset it
         if (f.parentSessionId === null && (line.parentSessionId ?? null) !== null) f.parentSessionId = line.parentSessionId ?? null;
         if (s.workspace === '') s.workspace = line.workspace;
-        if (s.task60 === '') s.task60 = line.task60;
-        if (!f.renamed && s.title === '') s.title = line.task60;
+        // task60 and the unrenamed title are decided after the loop, once every run's stop is known (§A5: replies never name it)
         s.mode = line.mode;
         s.branch = line.branch ?? s.branch;
         break;
@@ -509,7 +522,7 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
       case 'run:end': {
         let r = f.runs.get(line.runId);
         if (!r) {
-          r = { row: newRun(line.runId, null, line.t), startedMs: at };
+          r = { row: newRun(line.runId, null, line.t), startedMs: at, task60: null };
           f.runs.set(line.runId, r);
         }
         r.row.endedAt = line.t;
@@ -558,6 +571,9 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
   for (const f of folds.values()) {
     const runs = [...f.runs.values()].sort((a, b) => a.startedMs - b.startedMs).map((x) => x.row);
     f.row.runs = runs;
+    // the first non-empty task60 in index order among the runs that were not replies (AGENT-LOOP-DESIGN §A5); a rename wins the title
+    f.row.task60 = sessionTask60(f.runs.values());
+    if (!f.renamed) f.row.title = f.row.task60;
     // TUI-DESIGN-2 §3.9: the session total is the runs plus every chat request (the picker's `$` agrees with the meter)
     f.row.totalUsd = runs.reduce((acc, r) => acc + (r.costUsd ? r.costUsd.generator + r.costUsd.jev : 0), 0) + f.chat.jev + f.chat.generator;
     if (f.row.title === '') f.row.title = f.row.task60;

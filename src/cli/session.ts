@@ -96,7 +96,7 @@ import { formatDuration, nowIso as defaultNowIso } from '../core/time.js';
 import { createLog, fallbackLogPath, logSettingsFromEnv, nullLog, type Log } from '../core/log.js';
 import { detectSecrets as detectSecretsByPattern, patternRedact, secretSpans as spansOf } from '../core/redact.js';
 import { parseJson } from '../core/json.js';
-import { exitCodeFor } from '../loop/stop.js';
+import { exitCodeFor, isFinishedStop } from '../loop/stop.js';
 import { createSpendMeter } from '../spend/meter.js';
 import { resolveConfig as realResolveConfig, isEngineMode, modeFromParsedFlags, reconcileResumeConfig, resumeIdentityFromRunMeta, resumeInputsFrom } from '../config/resolve.js';
 import type { ResolvedConfigWithDiagnostics } from '../config/types.js';
@@ -1269,6 +1269,18 @@ export function mostRecentSession(sessions: readonly SessionRow[], workspace: st
     if (best === null || Date.parse(s.lastUsed) > Date.parse(best.lastUsed)) best = s;
   }
   return best;
+}
+
+/**
+ * AGENT-LOOP-DESIGN §A5: the session the recent-session placeholder names (`Say hi · /resume continues "…"`, the `--plain` `recent:`
+ * line) — the most recent one of this workspace that has a title. The fold leaves a session of replies only (every run stopped
+ * `answered`) untitled, so a greeting never becomes the offer; `-c` / `/continue` still take `mostRecentSession`.
+ */
+export function recentHintSession(sessions: readonly SessionRow[], workspace: string): SessionRow | null {
+  return mostRecentSession(
+    sessions.filter((s) => s.title !== ''),
+    workspace,
+  );
 }
 
 /** the newest run of a session row (the fold keeps runs in start order) */
@@ -2803,13 +2815,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   /**
    * TUI-DESIGN §13.5 `resume` row: `jevcode run --resume <id>` whenever state.json is loadable; the alternative
    * `state.json missing — not resumable` is for a missing or degraded checkpoint (the `[c]` case of §13.3). The engine's
-   * `run:end.resumable` (kept as is on the index line, §8.2) also excludes `complete`/`generator_done` stops, whose
-   * state.json seeds a follow-up through `--resume <id>` (`resumeOrFollowUp`, §5.2), so those consult the file.
+   * `run:end.resumable` (kept as is on the index line, §8.2) also excludes the finished stops (`isFinishedStop`: `complete`,
+   * `generator_done`, AGENT-LOOP-DESIGN §A1's `answered`), whose state.json seeds a follow-up through `--resume <id>`
+   * (`resumeOrFollowUp`, §5.2), so those consult the file.
    */
   function epilogueResumable(record: RunRecord): boolean {
     if (record.resumable) return true;
     if (record.degraded) return false;
-    return (record.stopReason === 'complete' || record.stopReason === 'generator_done') && existsSync(join(record.runDir, 'state.json'));
+    return record.stopReason !== null && isFinishedStop(record.stopReason) && existsSync(join(record.runDir, 'state.json'));
   }
 
   function postRunItems(record: RunRecord, result: RunResult): void {
@@ -4622,7 +4635,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const g = gitAtStart;
     const now = Date.parse(nowIso());
     const recentSessions = index
-      .filter((r) => r.workspace === workspaceRoot)
+      .filter((r) => r.workspace === workspaceRoot && r.title !== '')
       .slice()
       .sort((a, b) => (a.lastUsed < b.lastUsed ? 1 : a.lastUsed > b.lastUsed ? -1 : 0))
       .slice(0, CHAT_RECENT_SESSIONS)
@@ -4956,7 +4969,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       return;
     }
     if (o.mode === 'session') {
-      const recent = mostRecentSession(index, workspaceRoot);
+      const recent = recentHintSession(index, workspaceRoot);
       // the quiet start: in the TUI the offer is the composer's own placeholder (`Say hi · /resume continues "<title>"`),
       // not an item above it; `--plain` / `--json` keep the line, dim
       if (recent && o.rendererKind !== 'tui') note(recentSessionHint(recent, now(), o.launch.ascii), { level: 'dim' });
