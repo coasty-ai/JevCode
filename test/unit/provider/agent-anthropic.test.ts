@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { AgentMessage, GenerateRequest } from '../../../src/core/types.js';
-import { ANTHROPIC_AGENT_BETA, buildAnthropicBody, createAnthropicProvider } from '../../../src/provider/anthropic.js';
+import { ANTHROPIC_AGENT_BETA, anthropicAdaptiveThinking, buildAnthropicBody, createAnthropicProvider } from '../../../src/provider/anthropic.js';
 import { anthropicInputSchema } from '../../../src/provider/anthropic-schema.js';
 import type { AnthropicContentBlock } from '../../../src/provider/types.js';
 import { NOTE, PROSE, READ_TOOL, RESULT_A, RESULT_B, TASK, agentReq, hooks, sseEvents, transcript } from './agent-helpers.js';
@@ -68,6 +68,62 @@ describe('anthropic agent wire (AGENT-LOOP-DESIGN §6.2, §6.5)', () => {
     expect('context_management' in strict).toBe(false);
     expect('output_config' in strict).toBe(false);
     expect(buildAnthropicBody(cfg, agentReq(transcript(), { parallelToolCalls: false })).tool_choice).toEqual({ type: 'auto', disable_parallel_tool_use: true });
+  });
+
+  it('tool_choice: one call per turn disables parallel use even without a toolChoice; a forced choice goes out as auto (thinking is on)', () => {
+    const withoutChoice = ({ toolChoice, ...rest }: GenerateRequest): GenerateRequest => (void toolChoice, rest);
+    expect(buildAnthropicBody(cfg, withoutChoice(agentReq(transcript(), { parallelToolCalls: false }))).tool_choice).toEqual({ type: 'auto', disable_parallel_tool_use: true });
+    expect('tool_choice' in buildAnthropicBody(cfg, withoutChoice(agentReq(transcript())))).toBe(false);
+    expect(buildAnthropicBody(cfg, agentReq(transcript(), {}, { toolChoice: 'required' })).tool_choice).toEqual({ type: 'auto' });
+    expect(buildAnthropicBody(cfg, agentReq(transcript(), { parallelToolCalls: false }, { toolChoice: { name: 'read_file' } })).tool_choice).toEqual({ type: 'auto', disable_parallel_tool_use: true });
+  });
+
+  it('a pre-4.6 model (no adaptive thinking) gets no thinking, no output_config and only the context-editing beta; its forced choice is kept', async () => {
+    for (const m of ['claude-haiku-4-5', 'claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929', 'claude-opus-4-5', 'claude-opus-4-1-20250805', 'claude-sonnet-4-20250514', 'claude-3-7-sonnet-20250219']) {
+      expect(anthropicAdaptiveThinking(m)).toBe(false);
+    }
+    for (const m of ['claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5-1', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-8', 'claude-haiku-5']) expect(anthropicAdaptiveThinking(m)).toBe(true);
+    const old = anthropicCfg({ model: 'claude-haiku-4-5' });
+    const body = buildAnthropicBody(old, agentReq(transcript(), { parallelToolCalls: false }, { toolChoice: 'required', reasoning: { effort: 'high' } }));
+    expect('thinking' in body).toBe(false);
+    expect('output_config' in body).toBe(false);
+    expect(body.tool_choice).toEqual({ type: 'any', disable_parallel_tool_use: true });
+    const stream = sseEvents([
+      { type: 'message_start', message: { id: 'msg_h', model: 'claude-haiku-4-5', usage: { input_tokens: 10, output_tokens: 1 } } },
+      { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } },
+      { type: 'message_stop' },
+    ]);
+    const f = scriptedFetch([{ status: 200, body: stream }]);
+    await createAnthropicProvider(old, providerDeps(f.fetch).deps).generate(agentReq(), genOpts());
+    expect(f.calls[0]!.headers['anthropic-beta']).toBe('context-management-2025-06-27');
+  });
+
+  it('an assistant turn with nothing to send (an empty reply) goes out as a placeholder text, never as empty content', () => {
+    const t: AgentMessage[] = [
+      { role: 'user', content: [{ type: 'text', text: TASK }] },
+      { role: 'assistant', content: [{ type: 'text', text: '' }] },
+      { role: 'user', content: [{ type: 'text', text: NOTE }] },
+    ];
+    expect(buildAnthropicBody(cfg, agentReq(t)).messages[1]!.content).toEqual([{ type: 'text', text: '(no content)' }]);
+  });
+
+  it('a call id renamed for uniqueness is renamed in its tool_use replay marker too', async () => {
+    const stream = sseEvents([
+      { type: 'message_start', message: { id: 'msg_r', model: 'claude-sonnet-5', usage: { input_tokens: 5, output_tokens: 1 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-r' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'call_a', name: 'read_file', input: {} } },
+      { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"path":"c"}' } },
+      { type: 'content_block_stop', index: 1 },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 3 } },
+      { type: 'message_stop' },
+    ]);
+    const f = scriptedFetch([{ status: 200, body: stream }]);
+    const res = await createAnthropicProvider(cfg, providerDeps(f.fetch).deps).generate(agentReq(transcript(STATE)), genOpts());
+    const id = res.toolCalls[0]!.id!;
+    expect(id).toMatch(/^jc_/);
+    expect(res.providerState!.data).toEqual({ blocks: [{ type: 'thinking', thinking: '', signature: 'sig-r' }, { type: 'tool_use', id }] });
   });
 
   it('(g) the agent request carries the beta header; a legacy request does not', async () => {

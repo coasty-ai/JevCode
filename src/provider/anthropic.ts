@@ -10,7 +10,7 @@ import { JevCodeError, ProviderHttpError } from '../errors.js';
 import type { AgentMessage, AgentRequest, GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, Provider, ProviderReplayState, ToolCall } from '../core/types.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { anthropicInputSchema } from './anthropic-schema.js';
-import { agentCallId, emitToolCall, messagesError, objectInput, replayData, warningLines, withUniqueCallIds } from './http.js';
+import { EMPTY_TURN_TEXT, agentCallId, emitToolCall, messagesError, objectInput, replayData, warningLines, withUniqueCallIds } from './http.js';
 import { clip } from '../core/text.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
@@ -129,35 +129,61 @@ function toolChoice(tc: NonNullable<GenerateRequest['toolChoice']>): AnthropicTo
 export const ANTHROPIC_AGENT_BETA = 'context-management-2025-06-27,thinking-binding-controls-2026-08-01';
 
 /**
+ * Whether a model takes `thinking: {type: 'adaptive'}` (the 4.6 generation onward). Haiku 4.5, Sonnet 4.5, Opus 4.5 and
+ * everything older answer it with a 400 — they only know `budget_tokens` thinking, and `output_config.effort` is a 400
+ * on Sonnet 4.5 / Haiku 4.5 as well — so an agent turn on one of them sends neither, and only the context-editing beta.
+ * A negative list: an id this table does not know (a newer model) keeps the full §6.3 request.
+ */
+export function anthropicAdaptiveThinking(model: string): boolean {
+  return !/^claude-(3|2|instant|haiku-4-5|sonnet-4-5|opus-4-5|opus-4-1|(opus|sonnet)-4(-0)?(-\d{8})?$)/.test(model);
+}
+
+/** The `anthropic-beta` header of an agent turn on `model` (a legacy request sends none). */
+export function anthropicAgentBeta(model: string): string {
+  return anthropicAdaptiveThinking(model) ? ANTHROPIC_AGENT_BETA : 'context-management-2025-06-27';
+}
+
+/** §6.1: the replay markers that carry a call id (`data.blocks[]` tool_use), renamed with the call. */
+const ANTHROPIC_CALL_MARKERS = { list: 'blocks', type: 'tool_use', key: 'id' } as const;
+
+/**
  * AGENT-LOOP-DESIGN §6.2 (Anthropic row), §6.3, §6.5: the agent turn. Adaptive thinking, `display: 'summarized'` (Sonnet 5
  * defaults to `omitted`, a long silent pause) and an EXPLICIT `prefix_mismatch_behavior` — `drop_block` in production,
  * `error` with `strictReplay` so any prefix edit fails the check; thinking is never disabled (Opus 5.5 / Fable 5.1 answer
  * `disabled` with a 400). `reasoning.effort` → `output_config.effort`; `{enabled: false}` / `{maxTokens}` map to nothing.
  * `temperature` is never sent: with thinking on, a non-default value is a 400 (and Sonnet 5 rejects sampling parameters
- * outright). Parallel tool use stays on unless the caller asked for one call per turn. Caching: the system and last-tool
- * breakpoints of the legacy body plus the top-level automatic one (3 of the 4 allowed). `clearToolResults` → one
- * `clear_tool_uses_20250919` edit, server-side clearing that does not count as a prefix edit.
+ * outright). Parallel tool use stays on unless the caller asked for one call per turn (then `disable_parallel_tool_use`,
+ * with or without a `toolChoice`). A forced choice (`required`, a named tool) goes out as `auto`: with thinking on, `any`
+ * and `tool` are a 400. Caching: the system and last-tool breakpoints of the legacy body plus the top-level automatic one
+ * (3 of the 4 allowed). `clearToolResults` → one `clear_tool_uses_20250919` edit, server-side clearing that does not
+ * count as a prefix edit. A pre-4.6 model (`anthropicAdaptiveThinking`) gets no `thinking` and no `output_config`, and
+ * its forced choice is kept. An assistant turn with nothing to send (an empty reply) goes out as `EMPTY_TURN_TEXT`:
+ * the API rejects an empty `content`.
  */
 function buildAgentBody(cfg: GeneratorConfig, req: GenerateRequest, a: AgentRequest): AnthropicRequestBody {
   const body: AnthropicRequestBody = {
     model: cfg.model,
     max_tokens: req.maxTokens,
     stream: true,
-    messages: a.messages.map((m) => ({ role: m.role, content: m.role === 'user' ? userContent(m) : assistantContent(m, replayData(a, m, 'anthropic', cfg.model)) })),
+    messages: a.messages.map((m) => ({ role: m.role, content: m.role === 'user' ? userContent(m) : nonEmpty(assistantContent(m, replayData(a, m, 'anthropic', cfg.model))) })),
   };
+  const thinking = anthropicAdaptiveThinking(cfg.model);
   if (req.system.length > 0) body.system = [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }];
   if (req.tools && req.tools.length > 0) {
     const tools: AnthropicToolDef[] = req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: anthropicInputSchema(t.inputSchema), strict: true, eager_input_streaming: true }));
     tools[tools.length - 1]!.cache_control = { type: 'ephemeral' };
     body.tools = tools;
-    if (req.toolChoice !== undefined) {
-      const tc = toolChoice(req.toolChoice);
+    if (req.toolChoice !== undefined || !a.parallelToolCalls) {
+      const tc: AnthropicToolChoice = thinking || req.toolChoice === undefined ? { type: 'auto' } : toolChoice(req.toolChoice);
       if (a.parallelToolCalls) delete tc.disable_parallel_tool_use;
+      else tc.disable_parallel_tool_use = true;
       body.tool_choice = tc;
     }
   }
-  body.thinking = { type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: a.strictReplay === true ? 'error' : 'drop_block' } };
-  if (req.reasoning !== undefined && 'effort' in req.reasoning) body.output_config = { effort: req.reasoning.effort };
+  if (thinking) {
+    body.thinking = { type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: a.strictReplay === true ? 'error' : 'drop_block' } };
+    if (req.reasoning !== undefined && 'effort' in req.reasoning) body.output_config = { effort: req.reasoning.effort };
+  }
   const c = a.clearToolResults;
   if (c !== undefined) {
     body.context_management = {
@@ -166,6 +192,10 @@ function buildAgentBody(cfg: GeneratorConfig, req: GenerateRequest, a: AgentRequ
   }
   body.cache_control = { type: 'ephemeral' };
   return body;
+}
+
+function nonEmpty(blocks: AnthropicContentBlock[]): AnthropicContentBlock[] {
+  return blocks.length > 0 ? blocks : [{ type: 'text', text: EMPTY_TURN_TEXT }];
 }
 
 /** One user message: every `tool_result` first, then the texts (parallel-tool-use docs: results first, in one message). */
@@ -538,7 +568,7 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
         res = await Promise.race([
           d.fetch(url, {
             method: 'POST',
-            headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json', accept: 'text/event-stream', ...(agentModel !== null ? { 'anthropic-beta': ANTHROPIC_AGENT_BETA } : {}) },
+            headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json', accept: 'text/event-stream', ...(agentModel !== null ? { 'anthropic-beta': anthropicAgentBeta(agentModel) } : {}) },
             body,
             signal: controller.signal,
           }),
@@ -627,7 +657,7 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
         ...(out.contextEdits !== undefined ? { contextEdits: out.contextEdits } : {}),
         ...(out.warnings !== undefined ? { warnings: out.warnings } : {}),
       };
-      return req.agent === undefined ? res : withUniqueCallIds(res, req.agent);
+      return req.agent === undefined ? res : withUniqueCallIds(res, req.agent, ANTHROPIC_CALL_MARKERS);
     },
   };
 }
