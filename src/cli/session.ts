@@ -4308,12 +4308,20 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
   }
 
+  /**
+   * network map P8b: the chat provider is built once per resolved config and mode, not on every turn — `reresolve()` and a
+   * login replace the config object, which rebuilds it. The sockets are undici's global pool either way; what this saves
+   * per turn is the rebuild (the generator section's validation, the registry lookup, the client's setup).
+   */
+  let chatProvider: { cfg: ResolvedConfigWithDiagnostics; mode: EngineMode; provider: Provider } | null = null;
   /** §3.6: the reply itself — one streamed generator turn, no tools; the price checks happen before anything is sent */
   async function generatorTurn(cfg: ResolvedConfigWithDiagnostics, text: string, so: { pinnedFiles: readonly string[] }, mode: EngineMode, signal: AbortSignal): Promise<ChatReply> {
     const gen: ChatGenerator = flags.mock || flags.mockGenerator ? MOCK_CHAT_GENERATOR : cfg.generator(); // ConfigError (invalid generator section) → chatFailure → [ui] error
     if (gen.priced !== true && flags.allowUnpriced !== true) return { lines: [LLM_UNPRICED_REFUSAL(gen.model)], usage: null, latencyMs: 0 };
     if (sessionMeter.exceeded() || sessionTotal() + chatEstimateUsd(gen, text, pinnedBytes(so.pinnedFiles)) > sessionCapOf()) return { lines: [SESSION_CAP_CHAT_REFUSAL(sessionCapOf())], usage: null, latencyMs: 0 };
-    const provider = await providerOf(cfg, flags, mode);
+    const cached = chatProvider;
+    const provider = cached !== null && cached.cfg === cfg && cached.mode === mode ? cached.provider : await providerOf(cfg, flags, mode);
+    chatProvider = { cfg, mode, provider };
     throwIfAborted(signal);
     const input = await llmInput(text, so.pinnedFiles, gen, provider, signal);
     throwIfAborted(signal);
