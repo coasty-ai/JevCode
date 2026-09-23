@@ -177,14 +177,13 @@ describe('the agent seam through the real engine tail (§2.2, §15 S4)', () => {
     expect(h.of('run:end')[0]!.exitCode).toBe(0);
   });
 
-  it('without an injected driver the run loads src/agent/index.ts; the S1 stub ends it as a ConfigError (exit 2)', async () => {
+  it('without an injected driver the run loads the real driver from src/agent/index.ts (the S1 stub is gone)', async () => {
     const h = await makeEngine({ mode: 'agent', autonomyDefault: true });
     harnesses.push(h);
     const r = await h.engine.run();
-    expect(r.stopReason).toBe('error');
-    const end = h.of('run:end')[0]!;
-    expect(end.exitCode).toBe(2);
-    expect(h.of('error').some((e) => e.fatal && e.error.message.includes('agent mode is not built yet'))).toBe(true);
+    // the default fake provider repeats one legacy reply; the real driver's loop detector ends it as `stuck` (§3.6) — never the stub's ConfigError
+    expect(r.stopReason).not.toBe('error');
+    expect(h.of('error').some((e) => e.error.message.includes('agent mode is not built yet'))).toBe(false);
   });
 
   it('§A1: the first provider request goes out before any sandbox command, workspace listing or extra git read; harness time p95 ≤ 50 ms', async () => {
