@@ -29,7 +29,7 @@ import { buildCommonState, type ExecutedInfo } from '../../../src/loop/state.js'
 import { RL2_CONTEXT_DEADLINE_MS, commitStepRouters, noteStepRoute, resetStepRouters, routersOn, stepTokenFor } from '../../../src/loop/routers.js';
 import type { RouteResult } from '../../../src/jev/router.js';
 import { INTENT_FALLBACK, codeIntentOrder, runIntentStage } from '../../../src/loop/stages/intent.js';
-import { CONTEXT_MAX_CANDIDATES, buildContextQuestions, runContextStage, selectCandidatesCode } from '../../../src/loop/stages/context.js';
+import { CONTEXT_MAX_CANDIDATES, PRODUCT_CONTEXT_ASK, buildContextQuestions, runContextStage, selectCandidatesCode } from '../../../src/loop/stages/context.js';
 import { runJudgeStage } from '../../../src/loop/stages/judge.js';
 import { completionDecision, type CompletionFactInput } from '../../../src/loop/stages/complete.js';
 import { REPLAN_FALLBACK, runReplanStage } from '../../../src/loop/stages/replan.js';
@@ -52,6 +52,10 @@ interface CtxOptions {
   /** RL2: the files this run has already touched — they are members of the code order whatever Jev answers */
   changedFiles?: readonly string[];
   workspace?: FakeWorkspace;
+  /** the task text (default 'fix the failing test') */
+  task?: string;
+  /** pass the PRODUCT context-ask policy (the CLI does); absent = the legacy always-ask */
+  productDefaultAsk?: boolean;
 }
 
 function stageCtx(o: CtxOptions): StageContext {
@@ -61,7 +65,7 @@ function stageCtx(o: CtxOptions): StageContext {
     runId: 'r-router',
     step,
     mode: o.mode ?? 'jev-on',
-    task: 'fix the failing test',
+    task: o.task ?? 'fix the failing test',
     limits: DEFAULT_LIMITS,
     signal: new AbortController().signal,
     redact: (s) => s,
@@ -72,6 +76,8 @@ function stageCtx(o: CtxOptions): StageContext {
     changedFiles: o.changedFiles ?? [],
     createdThisRun: new Set<string>(),
     patchTargets: [],
+    // an engine without a policy keeps the legacy always-ask; the product-default tests below pass PRODUCT_CONTEXT_ASK
+    ...(o.productDefaultAsk ? { contextAsk: PRODUCT_CONTEXT_ASK } : {}),
     now: () => 0,
     wallRemainingMs: () => 1_000_000,
     emit: (e) => events.push(e),
@@ -740,5 +746,67 @@ describe('F27 end to end — a Jev outage at the context stage does not end the 
     expect(r.steps).toBeGreaterThanOrEqual(1);
     expect(h.store.steps.some((rec) => rec.error !== undefined)).toBe(true);
     expect(h.store.steps.every((rec) => rec.router === undefined)).toBe(true);
+  });
+});
+
+/**
+ * The context stage's ask POLICY (2026-09-23, "the Jev part should be minimal and seamless"): the product default asks Jev
+ * nothing for a small workspace or a task that names its files, and asks about at most 24 candidates otherwise — before
+ * this it asked one Noul per candidate, up to 300, before the first step of every run ("78 decisions" on a one-file task).
+ */
+describe('context ask policy — the product default', () => {
+  const many = (n: number): Record<string, string> => Object.fromEntries(Array.from({ length: n }, (_, i) => [`src/m${String(i).padStart(2, '0')}.py`, `def f${i}():\n    return ${i}\n`]));
+  const intent = { intent: 'investigate' as const, answer: 'investigate' as const, probability: 0.9 };
+
+  it('a two-file workspace: no ask at all, the code order is the selection', async () => {
+    const asked: StageName[] = [];
+    const ctx = stageCtx({ productDefaultAsk: true, asked, ask: async () => { throw new Error('must not be asked'); } });
+    const r = await runContextStage(ctx, common(), intent);
+    expect(asked).not.toContain('context');
+    expect(r).toMatchObject({ selection: 'code', asked: 0, candidates: 2 });
+    expect(r.files.map((f) => f.path)).toEqual(['src/a.py', 'tests/test_a.py']);
+  });
+
+  it('forty files: Jev is asked about the first 24 of the pre-filter order only, and its answer selects', async () => {
+    let questionsAsked = 0;
+    const ctx = stageCtx({
+      productDefaultAsk: true,
+      workspace: createFakeWorkspace({ files: many(40) }),
+      ask: async (_stage, questions) => {
+        questionsAsked = Object.keys(questions).length;
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(id === 'show:src/m05.py' ? 0.95 : 0.05);
+        return out;
+      },
+    });
+    const r = await runContextStage(ctx, common(), intent);
+    expect(questionsAsked).toBe(24);
+    expect(r).toMatchObject({ selection: 'jev', asked: 24, candidates: 40 });
+    expect(r.files.map((f) => f.path)).toEqual(['src/m05.py']);
+  });
+
+  it('a task that names one of the files: no ask, and the named file leads the code order', async () => {
+    const asked: StageName[] = [];
+    const ctx = stageCtx({ productDefaultAsk: true, asked, task: 'update src/m30.py to return 31', workspace: createFakeWorkspace({ files: many(40) }), ask: async () => { throw new Error('must not be asked'); } });
+    const r = await runContextStage(ctx, common(), intent);
+    expect(asked).not.toContain('context');
+    expect(r.selection).toBe('code');
+    expect(r.files[0]?.path).toBe('src/m30.py');
+  });
+
+  it('Jev rates every asked candidate low: the code order stands instead of an empty file section', async () => {
+    const ctx = stageCtx({
+      productDefaultAsk: true,
+      workspace: createFakeWorkspace({ files: many(40) }),
+      ask: async (_stage, questions) => {
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(0.02);
+        return out;
+      },
+    });
+    const r = await runContextStage(ctx, common(), intent);
+    expect(r.selection).toBe('jev');
+    expect(r.files.length).toBeGreaterThan(0);
+    expect(r.files[0]?.path).toBe('src/m00.py');
   });
 });
