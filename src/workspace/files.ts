@@ -16,7 +16,7 @@ import { writeFileAtomic } from '../core/atomic.js';
 import type { Action, Candidate, FileView, GitState, Sandbox, TargetInfo, TestCounts, TestRunner, Workspace, WorkspaceInfo } from '../core/types.js';
 import { ConfigError, FileNotFoundError, JevCodeError } from '../errors.js';
 import { assertNotSecret, canonicalPath, isMentionDenied, isSecretPath, resolveInside } from '../sandbox/paths.js';
-import { MAX_LIST_ENTRIES, createCandidateCache, walkTree } from './candidates.js';
+import { MAX_LIST_ENTRIES, createCandidateCache, underSkippedDir, walkTree } from './candidates.js';
 import { applyEditFile } from './edit.js';
 import { gitDir, isRepo, lsFiles, lsFilesTracked, showPrefix, statusPorcelain, statusV1ToDirty } from './git.js';
 import type { StatusEntry } from './git.js';
@@ -200,6 +200,14 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
   let statusDirty = probe === null;
   let statusCache: string[] = [];
   let statusEntries: StatusEntry[] = [];
+  /**
+   * An UNTRACKED status entry under a walk-skipped directory (an un-ignored `.venv/`, `node_modules/`,
+   * `__pycache__/`): never a candidate and never a change of the run's making, the same rule the listing
+   * applies (git.ts `lsFiles`, candidates.ts `underSkippedDir`). Without it the per-command status refresh
+   * fed 1,092 virtualenv files into the candidate cache at the first `run` outcome and a three-file demo
+   * flipped to the repository class mid-run (20260923-072804-qnhwfzxq, step 4).
+   */
+  const skippedUntracked = (e: Pick<StatusEntry, 'code'>, p: string): boolean => e.code === '??' && underSkippedDir(p);
   let statusInflight: Promise<void> | null = null;
   const refreshStatus = (): Promise<void> => {
     if (!git) {
@@ -232,7 +240,7 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
     for (const e of s.entries) {
       for (const raw of [e.path, e.from]) {
         const p = raw === undefined ? null : fromRepoPath(raw);
-        if (p !== null && p.length > 0 && !snapshotDirty.has(p) && !inGitDir(p)) out.push(p);
+        if (p !== null && p.length > 0 && !snapshotDirty.has(p) && !inGitDir(p) && !skippedUntracked(e, p)) out.push(p);
       }
     }
     statusCache = out;
@@ -251,7 +259,7 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
     for (const e of statusEntries) {
       for (const raw of [e.path, e.from]) {
         const p = raw === undefined ? null : fromRepoPath(raw);
-        if (p !== null && p.length > 0 && !inGitDir(p)) out.push(p);
+        if (p !== null && p.length > 0 && !inGitDir(p) && !skippedUntracked(e, p)) out.push(p);
       }
     }
     return out;

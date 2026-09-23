@@ -1851,7 +1851,10 @@ The first live drive of the pinned-wordmark TUI ran the hero task (`examples/dem
 checkout: the demo template carried a `.venv` nobody had gitignored, `git ls-files -co --exclude-standard` listed its 1,092 files,
 `isRepositoryWorkspace` counted the site-packages `.py` files past the 40-source-file line, and the localiser named
 `.venv/lib/python3.9/site-packages/pip/_internal/utils/wheel.py` as a module file. The readdir walk never enters `WALK_SKIP_DIRS`;
-the git listing now applies the same rule to its untracked entries (`workspace/git.ts lsFiles`, `candidates.ts underSkippedDir`).
+the git listing now applies the same rule to its untracked entries (`workspace/git.ts lsFiles`, `candidates.ts underSkippedDir`),
+and so does the per-command status refresh that feeds a `run` outcome's new files into the cache (`files.ts skippedUntracked`) — with
+the listing alone fixed, the first live re-run stayed on the pytest path for three steps and flipped to the repository class at the
+first `run` outcome, when `git status --untracked-files=all` handed the cache the same 1,092 files (`20260923-072804-qnhwfzxq`).
 Tracked files are never dropped: a checkout that commits `dist/` or `build/` means it.
 
 On that path the engine then did what the class prescribes when the issue text yields no oracle: one best guess, its goal parked as

@@ -58,6 +58,14 @@ describe('candidates in a git repo', () => {
     const w = await makeWorkspace(t);
     const paths = (await w.listCandidates()).map((c) => c.path);
     expect(paths).toEqual(['build/keep.txt', 'src/a.py', 'untracked.py']);
+    // the per-command status refresh (a `run` outcome) feeds every reported path into the cache: the same rule holds there
+    // (20260923-072804-qnhwfzxq flipped to the repository class at step 4 when 1,092 venv files arrived this way)
+    write(t.ws, '.venv/lib/python3.9/site-packages/pip/__init__.py', '\n');
+    write(t.ws, 'src/__pycache__/b.cpython-39.pyc', 'x\n');
+    write(t.ws, 'created-by-command.py', 'c\n');
+    await w.invalidateCandidates();
+    expect((await w.listCandidates()).map((c) => c.path)).toEqual(['build/keep.txt', 'created-by-command.py', 'src/a.py', 'untracked.py']);
+    expect([...(await w.changedFiles())].filter((p) => p.includes('.venv') || p.includes('__pycache__'))).toEqual([]);
     expect(underSkippedDir('.venv/lib/python3.9/site-packages/x.py')).toBe(true);
     expect(underSkippedDir('src/__pycache__/a.pyc')).toBe(true);
     expect(underSkippedDir('build')).toBe(false); // a file named like a skipped directory is a file

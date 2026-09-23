@@ -162,8 +162,10 @@ every provider key is selectable with search.
 - **An un-ignored virtualenv no longer turns a small workspace into a repository-class run.** The git listing of
   candidates (`git ls-files -co --exclude-standard`) applies the walk's skip list to its untracked entries: `.venv/`,
   `venv/`, `node_modules/`, `__pycache__/`, `dist/`, `build/` and the rest never become candidates unless they are
-  tracked. The first live drive of the demo carried a `.venv` (1,092 untracked files) that made three source files
-  read as a package of hundreds, with `site-packages/pip/.../wheel.py` localised as a module file.
+  tracked, and the per-command `git status` refresh that feeds new files into the candidate cache after a `run`
+  applies the same rule to its untracked entries. The first live drive of the demo carried a `.venv` (1,092 untracked
+  files) that made three source files read as a package of hundreds, with `site-packages/pip/.../wheel.py` localised
+  as a module file; the first fix alone left the status refresh to re-admit them at the first test run.
 - **A best-guess fix is verified by its scoped suite.** On the repository class with no reproduction oracle the goal
   used to park as `best-guess fix committed, unverified` for good and the run ended `done partial` on a green suite
   (`replan_stop · 14 steps` on the drive). When scoped tests that failed at the base commit all pass after the commit
