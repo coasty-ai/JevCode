@@ -823,7 +823,29 @@ export function parseGo(text: string): TestCounts | null {
   return seen ? counts : null;
 }
 
-const ALL_PARSERS: readonly ((t: string) => TestCounts | null)[] = [parsePytest, parseJest, parseVitest, parseCargo, parseGo, parseUnittest, parseSympyBinTest];
+/** One summary row of `node --test`: the TAP reporter's `# pass 3` or the spec reporter's `ℹ pass 3`. */
+const NODE_TEST_SUMMARY = /^(?:#|ℹ) (tests|suites|pass|fail|cancelled|skipped|todo|duration_ms) (\d+(?:\.\d+)?)\s*$/gm;
+
+/**
+ * docs/AGENT-LOOP-DESIGN.md §15 S4: `node --test` — the TAP summary (`# pass 1`, `# fail 1`, … piped, the Node 22 default
+ * when stdout is not a TTY) and the spec summary (`ℹ pass 1`, `ℹ fail 1`, … `--test-reporter=spec` or a TTY). A
+ * `"test": "node --test"` script is detected as `npm test` with runner `npm`, so without this its output parsed to nothing and
+ * no run of such a workspace could ever be `complete`. Both `pass` and `fail` rows are required (a stray `# pass` line in
+ * other output is not a summary); the last value of each row wins. `cancelled` tests count as errors (a timeout or a
+ * cancelled parent), `skipped` and `todo` as skipped.
+ */
+export function parseNodeTest(text: string): TestCounts | null {
+  const rows = new Map<string, number>();
+  for (const m of text.replace(ANSI, '').matchAll(NODE_TEST_SUMMARY)) rows.set(m[1]!, num(m[2]));
+  const pass = rows.get('pass');
+  const fail = rows.get('fail');
+  if (pass === undefined || fail === undefined) return null;
+  return { passed: pass, failed: fail, errors: rows.get('cancelled') ?? 0, skipped: (rows.get('skipped') ?? 0) + (rows.get('todo') ?? 0) };
+}
+
+// parseNodeTest is LAST: the list is tried in order and the first reader wins, so appending it only adds counts where no
+// other format matched — the legacy modes gain facts, never different ones (docs/AGENT-LOOP-DESIGN.md §15 S4).
+const ALL_PARSERS: readonly ((t: string) => TestCounts | null)[] = [parsePytest, parseJest, parseVitest, parseCargo, parseGo, parseUnittest, parseSympyBinTest, parseNodeTest];
 
 /** Pure. Parses from the tail; `npm`/`unknown` try every format. */
 export function parseTestOutput(runner: TestRunner, output: string): TestCounts | null {
