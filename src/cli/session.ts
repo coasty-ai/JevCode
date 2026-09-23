@@ -42,6 +42,7 @@ import type {
   ConfirmOutcome,
   ConfirmRequest,
   Confirmer,
+  ConversationCarry,
   Decider,
   Decision,
   Engine,
@@ -71,6 +72,7 @@ import type {
   RunResult,
   SecretHit,
   SecretSettingName,
+  SerializedError,
   PeerView,
   SessionActivityView,
   SessionHost,
@@ -96,7 +98,7 @@ import { formatDuration, nowIso as defaultNowIso } from '../core/time.js';
 import { createLog, fallbackLogPath, logSettingsFromEnv, nullLog, type Log } from '../core/log.js';
 import { detectSecrets as detectSecretsByPattern, patternRedact, secretSpans as spansOf } from '../core/redact.js';
 import { parseJson } from '../core/json.js';
-import { exitCodeFor } from '../loop/stop.js';
+import { exitCodeFor, isFinishedStop } from '../loop/stop.js';
 import { createSpendMeter } from '../spend/meter.js';
 import { resolveConfig as realResolveConfig, isEngineMode, modeFromParsedFlags, reconcileResumeConfig, resumeIdentityFromRunMeta, resumeInputsFrom } from '../config/resolve.js';
 import type { ResolvedConfigWithDiagnostics } from '../config/types.js';
@@ -109,7 +111,7 @@ import { createTrustStore as realCreateTrustStore, decisionFromOption, probeTrus
 import { PROVIDER_ENV } from '../tui/onboarding/lines.js';
 import {
   INSTRUCTIONS_NOT_TRUSTED_LINE,
-  LOGIN_ONE_KEY_PROMPT,
+  loginOneKeyPrompt,
   LOGIN_OTHER_WAYS_PROMPT,
   missingGeneratorOnly,
   MOCK_VERIFY_NOTE,
@@ -138,6 +140,7 @@ import { loadForResume as realLoadForResume } from '../checkpoint/resume.js';
 import { CHECKPOINT_FILES, createCheckpointStore, isRunMeta } from '../checkpoint/store.js';
 import { readPostImages, readPreImage } from '../checkpoint/images.js';
 import { INDEX_FILE, appendIndexLine as realAppendIndexLine, readIndex as realReadIndex, sessionFieldsOf, text60, type ChatSpendRow, type IndexLine } from '../session/index.js';
+import { isReplyRunRow } from '../session/reply.js';
 import { buildSeed, carriedSteers, seedSource, type SeedParent } from '../session/seed.js';
 import { defaultExportPath, exportSession as realExportSession, type ExportRun } from '../session/export.js';
 import { COORDINATION_IDLE_CLAUSE, COORDINATION_NOT_OPEN, COORDINATION_OFF_CLAUSE, coordinationAvailability, coordinationEnabledFrom, coordinationOffText, settingReader, type CoordinationOffReason } from '../session/coordination.js';
@@ -155,6 +158,7 @@ import type { KeyRunPhase } from '../tui/keys/resolve.js';
 import type { UiAction } from '../tui/useEngine.js';
 import { createHistoryStore as realCreateHistoryStore, type FileHistoryStore } from '../tui/composer/history.js';
 import { dispatchCommand, type CommandAction, type DispatchContext } from '../tui/commands/dispatch.js';
+import { MODE_LEGACY_TEXT } from '../tui/commands/registry.js';
 import { helpLines as paletteHelpLines } from '../tui/commands/palette.js';
 import { actionLabel, formatTranscriptItem, itemsFromEvent, stepCostText, type LineSource } from '../tui/plain.js';
 import { plainSupports } from '../tui/plain-composer.js';
@@ -195,11 +199,12 @@ import { TOAST_INFO_MS } from '../tui/toasts.js';
 import { modeBadgeWord } from '../tui/status/lines.js';
 import { JEV_PROVIDERS } from '../jev/providers.js';
 import { createCachingDecider } from '../jev/cache.js';
+import { ABSENT_DECIDER_MODEL, createAbsentDecider } from '../jev/absent.js';
 import { budgetItems, BUDGET_THRESHOLDS, type BudgetPct } from '../tui/budget/lines.js';
 // TUI-DESIGN-2 §3 (D-C): the conversational intake — pure builders in src/chat/**, the state machine of §3.1 lives here (§3.8)
 import { buildIntakeState, filesBucket, routeOf, runIntake, testsFromCandidates, type ChatRoute, type IntakeResult } from '../chat/intake.js';
 import { REPLY_FALLBACK_KEY, fillReply, pickReply, replyByKey, type ReplyFacts } from '../chat/replies.js';
-import { branchOf, harnessFacts, peersNotOpenText, PEERS_UNAVAILABLE_TEXT, selectFacts, type FactsInput } from '../chat/facts.js';
+import { AGENT_NO_DECISIONS_TEXT, branchOf, harnessFacts, peersNotOpenText, PEERS_UNAVAILABLE_TEXT, selectFacts, type FactsInput } from '../chat/facts.js';
 import { LOOKUP_READ_BYTES, lookupCode, lookupLines, type LookupInput } from '../chat/lookup.js';
 import { CHAT_FILES_MAX, CHAT_FILE_BYTES, CHAT_FIXED_INPUT_TOKENS, chatMaxTokens, llmChatTurn, type ChatIdentity, type LlmTurnInput } from '../chat/llm-turn.js';
 import { CHAT_LABELS, bubbleLines, type ChatRole } from '../chat/bubbles.js';
@@ -225,9 +230,15 @@ export const LOGIN_SAVED_TOAST = 'saved — applies to the next run (this run ke
 export function pausedItemText(step: number): string {
   return `paused after step ${step} — /resume continues, or type a follow-up`;
 }
-/** TUI-DESIGN §24: `session <id> ended: N runs, $x total` (`/new`). */
-export function sessionEndedText(sessionId: string, runs: number, totalUsd: number): string {
-  return `session ${sessionId} ended: ${runs} run${runs === 1 ? '' : 's'}, ${usd2(totalUsd)} total`;
+/** TUI-DESIGN §24: `session <id> ended: N runs, $x total` (`/new`); AGENT-LOOP-DESIGN §A5: `, M replies` when agent turns were replies. */
+export function sessionEndedText(sessionId: string, runs: number, totalUsd: number, replies = 0): string {
+  return `session ${sessionId} ended: ${runs} run${runs === 1 ? '' : 's'}${replies > 0 ? `, ${repliesText(replies)}` : ''}, ${usd2(totalUsd)} total`;
+}
+/** AGENT-LOOP-DESIGN §A5: `jevcode run -c` / `--resume` with no task on a session whose newest run was a reply (nothing to resume) */
+export const ONE_SHOT_REPLY_REFUSAL = 'the run to continue was a reply, so there is nothing to resume: pass the next message as the task, or --force to resume it anyway';
+/** AGENT-LOOP-DESIGN §A5: `1 reply` / `N replies` */
+export function repliesText(n: number): string {
+  return `${n} repl${n === 1 ? 'y' : 'ies'}`;
 }
 /** decisions kept for `/decisions`, `/why` and `/calibration` of the current run */
 export const DECISIONS_KEPT_FOR_COMMANDS = 400;
@@ -359,6 +370,54 @@ export function SESSION_CAP_CHAT_REFUSAL(capUsd: number): string {
 /** §12 "Status" toasts */
 export const STOPPED_THINKING_TOAST = 'stopped thinking';
 export const STILL_THINKING_TOAST = 'one moment — still thinking';
+
+// --- AGENT-LOOP-DESIGN §A1 / §A5 / §7.6: every chat message is the next turn of ONE agent conversation ------------------------
+/** §A5: Esc / Ctrl-C before the run's first tool call stopped the reply — the toast is the whole trace (no epilogue, the session stays open) */
+export const REPLY_STOPPED_TOAST = 'reply stopped';
+/** §7.6: the chat turns a run carries — the newest `AGENT_CHAT_CARRY_TURNS` within `AGENT_CHAT_CARRY_CHARS` (about 4k tokens) */
+export const AGENT_CHAT_CARRY_TURNS = 20;
+export const AGENT_CHAT_CARRY_CHARS = 14_000;
+/**
+ * §7.6 `ConversationCarry.chat` (pure): the newest turns, oldest first, at most `AGENT_CHAT_CARRY_TURNS` and within
+ * `AGENT_CHAT_CARRY_CHARS`; the walk stops at the first turn that no longer fits (a gap would misquote the conversation), except that
+ * a newest turn longer than the whole budget is carried cut to its first `AGENT_CHAT_CARRY_CHARS` characters.
+ */
+export function chatCarry(turns: readonly Pick<ChatTurn, 'role' | 'text'>[]): { role: 'you' | 'jevcode'; text: string }[] {
+  const out: { role: 'you' | 'jevcode'; text: string }[] = [];
+  let chars = 0;
+  for (let i = turns.length - 1; i >= 0 && out.length < AGENT_CHAT_CARRY_TURNS; i--) {
+    const t = turns[i]!;
+    if (chars + t.text.length > AGENT_CHAT_CARRY_CHARS) {
+      if (out.length === 0) out.push({ role: t.role, text: `${t.text.slice(0, AGENT_CHAT_CARRY_CHARS - 1)}…` });
+      break;
+    }
+    chars += t.text.length;
+    out.push({ role: t.role, text: t.text });
+  }
+  return out.reverse();
+}
+/** §A1 follow-up spend gate (lead amendment): the one line a silently clamped agent run prints — never a y/n box */
+export function runCapClampedNote(clampedUsd: number, sessionLeftUsd: number): string {
+  return `run cap clamped to ${usd2(clampedUsd)} (session has ${usd2(sessionLeftUsd)} left)`;
+}
+/**
+ * §A1 "works perfectly": a generator failure worth ONE automatic retry of a reply — a rate limit, a timeout, a 5xx or a broken
+ * stream. The error's own `retryable` / `status` decide when present (the type carries them; `serializeError` drops them today);
+ * otherwise this reads the transport's wording (`<provider> HTTP <status>`, `stream error <status>`, Anthropic's mid-stream
+ * `anthropic stream error <type> (<status>)`, `network error`, `stream failure`, `idle_timeout`). A key, credit, request or model
+ * problem is never retried.
+ */
+export function isTransientProviderError(e: Pick<SerializedError, 'code' | 'message' | 'status' | 'retryable'> | null | undefined): boolean {
+  if (e === null || e === undefined || e.code !== 'provider_http') return false;
+  const m = e.message;
+  if (/spend|credit|billing|quota|insufficient|invalid GenerateRequest|no scripted turn/i.test(m)) return false;
+  if (e.retryable !== undefined) return e.retryable;
+  const transientStatus = (s: number): boolean => s === 408 || s === 429 || s >= 500;
+  if (e.status !== undefined) return transientStatus(e.status);
+  const status = /\bHTTP (\d{3})\b/.exec(m) ?? /\bstream error (\d{3})\b/.exec(m) ?? /\bstream error \w+ \((\d{3})\)/.exec(m);
+  if (status !== null) return transientStatus(Number(status[1]));
+  return /network error|stream failure|stream ended|idle_timeout|without a body|malformed sse/i.test(m);
+}
 /**
  * §12 "Mode items" / TUI-DESIGN-3 §1.1, §1.9, §10 "Mode items": ONE table per mode (generator-neutral copy — "the code model", never a
  * vendor; R3 F9), read by `case 'mode'` through `modeSetItem`. The four round-2 names stay as aliases of its rows.
@@ -774,6 +833,14 @@ export interface RunRecord {
   records: StepRecord[];
   resumable: boolean;
   degraded: boolean;
+  /** the run's engine mode (AGENT-LOOP-DESIGN §7.6: the next agent run's `ConversationCarry.parent.mode`); absent on records built elsewhere */
+  mode?: EngineMode;
+  /**
+   * AGENT-LOOP-DESIGN §A5: set when an agent chat turn ended with no tool call — `answered`, or failed / stopped before its first tool
+   * call (the first attempt of the automatic retry, a reply stopped with Esc / Ctrl-C). A reply never hides the task before it and is
+   * counted as a reply, not a run. Absent on every legacy-mode run.
+   */
+  reply?: true;
 }
 
 export interface SessionView {
@@ -808,11 +875,14 @@ export async function buildProvider(config: ResolvedConfigWithDiagnostics, flags
   }
   if (flags.mock || flags.mockGenerator) {
     const { createMockProvider, withMockChat } = await import('../provider/mock.js');
-    const { mockChatReplyFromEnv, mockTrajectory } = await import('./mock-trajectory.js');
+    const { mockAgentTurns, mockChatReplyFromEnv, mockTrajectory } = await import('./mock-trajectory.js');
     // `withMockChat`: a chat turn (no tools) gets the deterministic reply and leaves the trajectory for the run loop;
     // `mockChatReplyFromEnv`: the stream probe's knobs (JEVCODE_MOCK_CHAT_STREAM …) — `{}`, today's reply, when unset
     const chat = mockChatReplyFromEnv(process.env);
-    return createMockProvider({ turns: withMockChat(mockTrajectory(Number(flags.mockSteps ?? 8)), chat.reply), ...(chat.onEmit !== undefined ? { onEmit: chat.onEmit } : {}) });
+    // AGENT-LOOP-DESIGN §14.4: agent mode gets the native multi-call trajectory, picked per run from the message (a greeting or a
+    // question → one prose turn, else the five task turns); the stream preset, when set, is that run's first prose turn
+    const turns = mode === 'agent' ? mockAgentTurns(chat.reply) : withMockChat(mockTrajectory(Number(flags.mockSteps ?? 8)), chat.reply);
+    return createMockProvider({ turns, ...(chat.onEmit !== undefined ? { onEmit: chat.onEmit } : {}) });
   }
   const gen = config.generator();
   // every provider through the registry, so each uses ITS OWN adapter — the two-client switch that stood here sent
@@ -1172,7 +1242,7 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
           if (other === 'a') provider = 'anthropic';
         }
         if (provider !== 'anthropic') {
-          const k = await askMasked(oneKeyPath ? LOGIN_ONE_KEY_PROMPT : 'OpenRouter API key (OPENROUTER_API_KEY) — the code model: ');
+          const k = await askMasked(oneKeyPath ? loginOneKeyPrompt(mode) : 'OpenRouter API key (OPENROUTER_API_KEY) — the code model: ');
           if (k === null || k.length < 8) return { kind: 'cancelled' };
           patch.apiKey = k;
           patch.provider = 'openrouter';
@@ -1269,6 +1339,18 @@ export function mostRecentSession(sessions: readonly SessionRow[], workspace: st
     if (best === null || Date.parse(s.lastUsed) > Date.parse(best.lastUsed)) best = s;
   }
   return best;
+}
+
+/**
+ * AGENT-LOOP-DESIGN §A5: the session the recent-session placeholder names (`Say hi · /resume continues "…"`, the `--plain` `recent:`
+ * line) — the most recent one of this workspace that has a title. The fold leaves a session of replies only (every run stopped
+ * `answered`) untitled, so a greeting never becomes the offer; `-c` / `/continue` still take `mostRecentSession`.
+ */
+export function recentHintSession(sessions: readonly SessionRow[], workspace: string): SessionRow | null {
+  return mostRecentSession(
+    sessions.filter((s) => s.title !== ''),
+    workspace,
+  );
 }
 
 /** the newest run of a session row (the fold keeps runs in start order) */
@@ -1479,6 +1561,21 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   let deferredChatLines: { t: string; intake: IntakeKind; route: ChatRoute; costUsd: number; provider: JevProvider | 'generator' }[] = [];
   /** §3.9: the per-session chat spend folded from the index (`seedMeterFromIndex` restores it on /resume, -c, --resume <title>) */
   let indexChat: Map<string, ChatSpendRow> = new Map();
+  // --- AGENT-LOOP-DESIGN §A1 / §A5 / §7.6: the agent conversation, session side -----------------------------------------------
+  /** §7.6: the newest ledger turn when the previous run of this session ended (or at /new); a run carries the turns after it (null = all) */
+  let carryMark: ChatTurn | null = null;
+  /** §A5: the live agent run has made no tool call yet — Esc / Ctrl-C then stop the REPLY (an abort, never a pause) and keep the session */
+  let replyPhase = false;
+  /** §A5: the live run was stopped during its reply phase — its run:end is "reply stopped": a toast, no epilogue item */
+  let replyStopped = false;
+  /** §A1 latency: the previous run's run.json + state.json, loaded in the background when an agent run ends, so the next seed has it at Enter */
+  let parentPrefetch: { runId: string; p: Promise<LoadedRun | null> } | null = null;
+  /** §A1 follow-up spend gate: the whole-dollar floor and the session cap of the last `run cap clamped …` note; null = none yet this session */
+  let clampNote: { floor: number; capUsd: number } | null = null;
+  /** startup settled: an agent-mode submission reaches converse's synchronous prefix with no await (the `[you]` bubble in the Enter frame) */
+  let startupIsSettled = false;
+  /** the pending `/model` `/provider` `/mode` overrides the config was last resolved for (an agent run re-resolves only when they moved) */
+  let resolvedPendingKey: string | null = null;
   const trackCandidates = (p: Promise<readonly Candidate[]>): Promise<readonly Candidate[]> => {
     void p.then(
       (l) => {
@@ -1878,6 +1975,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       case 'run:end':
         endEvent = e;
         break;
+      // AGENT-LOOP-DESIGN §A5: from the first tool call on, the run is a run (Esc pauses, Esc Esc aborts; the epilogue applies)
+      case 'tool:call':
+        replyPhase = false;
+        break;
       default:
         break;
     }
@@ -1938,7 +2039,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   /** resolveConfig again after a save (§11.1 "→ resolveConfig again") */
   async function reresolve(): Promise<void> {
     try {
+      const key = JSON.stringify(pendingFlagOverrides());
       config = await resolveConfig({ ...flags, ...pendingFlagOverrides() }, env, cwd, { homedir: home });
+      resolvedPendingKey = key;
       applyConfig();
     } catch (e) {
       uiError(`config: ${describe(e)}`);
@@ -1973,13 +2076,28 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   }
 
   /**
+   * AGENT-LOOP-DESIGN §14.2: the keys `mode` needs from `cfg`. `agent` runs without a Jev key (both engine sites then pass the absent
+   * decider), so `decider.apiKey` is never missing there; every legacy mode is exactly `missingSecrets`. slice S4 makes
+   * `missingSecrets('agent')` itself drop the decider key — this keeps the session right on either side of that merge.
+   */
+  function missingFor(cfg: ResolvedConfigWithDiagnostics, mode: EngineMode): readonly SecretSettingName[] {
+    const m = cfg.missingSecrets(mode);
+    return mode === 'agent' ? m.filter((n) => n !== 'decider.apiKey') : m;
+  }
+
+  /** AGENT-LOOP-DESIGN §14.2: a Jev key resolves (or `--mock` stands in for Jev) — else an agent run gets `createAbsentDecider()` */
+  function jevKeyResolves(cfg: ResolvedConfigWithDiagnostics): boolean {
+    return cfg.missingSecrets('jev-only').length === 0;
+  }
+
+  /**
    * the wizard (start, `/login`, a rejected key, or TUI-DESIGN-2 §1.3 `/mode <m>` without the keys `m` needs); true when a key was
    * saved. `target` is the mode the keys are for (§1.4: `missing = config.missingSecrets(mode)` for THAT mode; default: the next run's).
    */
   async function runLogin(reason: WizardReason, target?: EngineMode): Promise<boolean> {
     if (!config) return false;
     const mode = target ?? pending.mode ?? baseMode;
-    const missing = reason === 'missing' || reason === 'mode' ? config.missingSecrets(mode) : (['generator.apiKey', 'decider.apiKey'] as const).filter((n) => mode !== 'jev-only' || n !== 'generator.apiKey');
+    const missing = reason === 'missing' || reason === 'mode' ? missingFor(config, mode) : (['generator.apiKey', 'decider.apiKey'] as const).filter((n) => mode !== 'jev-only' || n !== 'generator.apiKey');
     if (missing.length === 0) {
       note('every key resolves already; use /logout to remove one', { label: '[setup]' });
       return false;
@@ -2198,6 +2316,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     sessionCapExplicit = false;
     deferredBudgetLines = [];
     deferredChatLines = [];
+    // AGENT-LOOP-DESIGN §A1: the clamp note is printed once per SESSION (a new root meter is a new session)
+    clampNote = null;
   }
 
   /**
@@ -2226,6 +2346,99 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     secretsAcked: number;
     /** TUI-DESIGN-2 §6 item 13: why the run started (the intake's reading); absent for argv tasks */
     intake?: { kind: IntakeKind; probability: number; requestHash: string };
+    /**
+     * AGENT-LOOP-DESIGN §A1: this run is the next turn of the session's agent conversation (a chat message in agent mode). `attempt`
+     * is 1 for the one automatic retry after a transient provider failure, which re-sends the failed attempt's own `carry`.
+     */
+    agent?: { attempt: 0 | 1; carry?: ConversationCarry; seedExtras?: SeedExtras };
+  }
+
+  /**
+   * what `startRun` consumes into a run's seed and then clears — the undo notes and log, and the rewind snapshot, since the previous
+   * run. An agent turn keeps its attempt-0 copy so the automatic retry seeds with them too (their "undone since" is not lost).
+   */
+  interface SeedExtras {
+    undoNotes: string[];
+    undoLog: UndoLogEntry[];
+    rewindSeed: { step: number; planAfter: PlanSnapshot | null } | null;
+  }
+
+  /** the agent turn a run carries through to its run:end (the automatic retry re-sends it) */
+  interface AgentTurnFacts {
+    text: string;
+    pinnedFiles: readonly string[];
+    secretsAcked: number;
+    attempt: 0 | 1;
+    carry: ConversationCarry;
+    seedExtras: SeedExtras;
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §7.6 `ConversationCarry` for the session's next run: `chat` = the ledger turns since the previous run of this
+   * session ended (all of them when there is none), within the caps; `parent` = that previous run — the newest run record, or, for a
+   * session continued with `-c` / `--resume <title>` / an adopted complete run, its newest run in the index.
+   */
+  function conversationCarry(): ConversationCarry {
+    const turns = ledger.turns;
+    const at = carryMark === null ? -1 : turns.indexOf(carryMark);
+    // a mark the ledger has trimmed away (> LEDGER_MAX_TURNS turns since) leaves every kept turn newer than it
+    const since = carryMark === null || at < 0 ? turns : turns.slice(at + 1);
+    return { chat: chatCarry(since), parent: carryParent() };
+  }
+  function carryParent(): ConversationCarry['parent'] {
+    const last = runs.at(-1);
+    if (last !== undefined) return { runId: last.runId, runDir: last.runDir, mode: last.mode ?? currentRunMode };
+    const cfg = config;
+    if (sessionId === null || cfg === null) return null;
+    const row = index.find((x) => x.sessionId === sessionId);
+    const id = row ? newestRunId(row) : null;
+    return row && id !== null ? { runId: id, runDir: join(cfg.runsDir, id), mode: row.mode } : null;
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §7.6 / §A1 latency: an agent run's seed comes from its carry parent ONLY — one run.json + state.json, usually
+   * already in memory (`parentPrefetch`, loaded when that run ended) — never the whole session's runs (`seedFor` loads every one:
+   * O(runs) disk reads before each message, and in agent mode every message is a run). The seed still carries the undo log, the
+   * human notes, the pinned files and the rewind snapshot; with a legacy-mode parent it is also the agent's "Previous run" block.
+   */
+  async function agentSeed(parent: ConversationCarry['parent'], pinnedFiles: readonly string[]): Promise<{ seed: EngineSeed | null; parentRunId: string | null }> {
+    const cfg = config;
+    if (cfg === null || parent === null) return { seed: null, parentRunId: null };
+    const pre = parentPrefetch;
+    const loaded = pre !== null && pre.runId === parent.runId ? await pre.p : await loadRunFn(cfg.runsDir, parent.runId, cfg.redact).catch(() => null);
+    if (loaded === null) return { seed: null, parentRunId: parent.runId };
+    const src: SeedParent = { meta: loaded.meta, state: loaded.state };
+    const seed = buildSeed(src, { humanNotes: undoNotes, pinnedFiles, ...(rewindSeed ? { rewind: rewindSeed } : {}) });
+    const carried = carriedSteers(src);
+    return { seed: { ...seed, undoLog: [...(seed.undoLog ?? []), ...undoLog].slice(-20), ...(carried > 0 ? { carriedDirectives: carried } : {}) }, parentRunId: loaded.meta.runId };
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §A1 (lead amendment, follow-up spend gate): in agent mode every message is a run, so today's y/r/n box would
+   * prompt on greetings. Instead the run cap is clamped SILENTLY to what the session has left (the child meter's cap), with one
+   * `[ui] run cap clamped to $X.XX (session has $Y.YY left)` line — printed when the clamp first applies in the session, and again
+   * only when the clamped amount drops below the next whole dollar ($9.40 printed, $9.10 silent, $8.95 printed); a new session cap
+   * starts over. Only a reached session cap refuses: one line, no box.
+   */
+  function agentSpendGate(runCap: number): boolean {
+    const spent = sessionTotal();
+    const cap = sessionCapOf();
+    const held = sessionMeter.heldUsd?.() ?? sessionMeter.snapshot().heldUsd ?? 0;
+    const decision = followUpDecision(runCap, cap, spent, held);
+    if (decision === 'refuse') {
+      note(sessionCapReachedItem(spent, cap), { level: 'error' });
+      json?.sessionRefused({ reason: 'session-cap', spentUsd: spent, capUsd: cap, exitCode: EXIT_CODES.budget }, { runId: null, sessionId });
+      return false;
+    }
+    if (decision === 'confirm') {
+      const clamped = childCapUsd(runCap, cap, spent, held);
+      const floor = Math.floor(clamped);
+      if (clampNote === null || clampNote.capUsd !== cap || floor < clampNote.floor) {
+        clampNote = { floor, capUsd: cap };
+        note(runCapClampedNote(clamped, sessionRemainingUsd(cap, spent, held)));
+      }
+    }
+    return true;
   }
 
   /** §9.3: start | confirm (y/r/n) | refuse; the `clamp` for EngineOptions.session */
@@ -2296,12 +2509,17 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       uiError('configuration not ready yet');
       return;
     }
-    if (pending.model !== undefined || pending.provider !== undefined || pending.mode !== undefined) await reresolve();
+    // AGENT-LOOP-DESIGN §A1 latency: an agent run re-resolves only when a pending override moved since the last resolution (a
+    // pending `/mode agent` stays pending for the session, and every message is a run); every other mode keeps today's re-read
+    if (pending.model !== undefined || pending.provider !== undefined || pending.mode !== undefined) {
+      if ((pending.mode ?? baseMode) !== 'agent' || JSON.stringify(pendingFlagOverrides()) !== resolvedPendingKey) await reresolve();
+    }
     const mode = pending.mode ?? baseMode;
-    if (config.missingSecrets(mode).length > 0) {
+    const agentTurn = mode === 'agent' && so.agent !== undefined ? so.agent : null;
+    if (missingFor(config, mode).length > 0) {
       const saved = await runLogin('missing', mode);
-      if (!saved && config.missingSecrets(mode).length > 0) {
-        uiError(`missing ${config.missingSecrets(mode).join(', ')}: run jevcode login or set the environment variable`);
+      if (!saved && missingFor(config, mode).length > 0) {
+        uiError(`missing ${missingFor(config, mode).join(', ')}: run jevcode login or set the environment variable`);
         return;
       }
     }
@@ -2324,19 +2542,33 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         sessionCapUsd = cap;
       } else newSessionMeter();
     }
-    const gate = await followUpGate(limits.spendCapUsd);
+    // AGENT-LOOP-DESIGN §A1: an agent turn clamps silently (a note, never the y/n box); every other run keeps the follow-up gate
+    const gate: { ok: true; clamp: number | null } | { ok: false } = agentTurn !== null ? (agentSpendGate(limits.spendCapUsd) ? { ok: true, clamp: null } : { ok: false }) : await followUpGate(limits.spendCapUsd);
     if (!gate.ok) return;
     phase = 'starting';
     startingSteers = [];
     trace('startRun: seeding');
-    const seeded = await seedFor(so.pinnedFiles);
+    // §7.6: the conversation this turn continues (the retry re-sends its failed attempt's own carry)
+    const carry: ConversationCarry | null = agentTurn !== null ? (agentTurn.carry ?? conversationCarry()) : null;
+    // the retry seeds with what its failed attempt consumed (anything undone since is kept beside it)
+    const extras = agentTurn?.seedExtras;
+    if (extras !== undefined) {
+      undoNotes = [...extras.undoNotes, ...undoNotes];
+      undoLog = [...extras.undoLog, ...undoLog];
+      rewindSeed = rewindSeed ?? extras.rewindSeed;
+    }
+    const seedExtras: SeedExtras = { undoNotes, undoLog, rewindSeed };
+    const seeded = carry !== null ? await agentSeed(carry.parent, so.pinnedFiles) : await seedFor(so.pinnedFiles);
     let eng: Engine;
     const started = nowIso();
     try {
-      const provider = await providerOf(cfg, flags, mode);
+      const provider = agentTurn !== null ? await agentProvider(cfg, mode) : await providerOf(cfg, flags, mode);
+      // AGENT-LOOP-DESIGN §14.2: an agent run with no Jev key gets the absent decider — it sends nothing, and the engine reads
+      // `jevAvailable = false` from its model, so no quick routing call is ever asked (nor waited for)
+      const absentJev = mode === 'agent' && !jevKeyResolves(cfg);
       // llm-jev iteration 1 (168a599): a per-RUN request-hash cache — hits bill nothing (usage zeroed, calls 0); a fresh
       // wrapper per run IS the `clear()` at run start; the engine records StepRecord.jevCacheHits from the zero-call rows
-      const decider = createCachingDecider(await deciderOf(cfg, flags));
+      const decider = absentJev ? createAbsentDecider() : createCachingDecider(await deciderOf(cfg, flags));
       // ORCHESTRATION-DESIGN [D6]: money reserved for live agents gates a new run like spend (SpendMeter.heldUsd?() is OPTIONAL by design [G6] so every fake still satisfies the interface; the snapshot field is its twin)
       const remaining = sessionRemainingUsd(sessionCapOf(), sessionTotal(), (sessionMeter.heldUsd?.() ?? sessionMeter.snapshot().heldUsd ?? 0));
       const childCap = Math.max(0, Math.min(limits.spendCapUsd, remaining));
@@ -2344,7 +2576,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       // jev-only never validates the generator section (§15.3); llm-jev validates it like jev-on AND takes the synthesizer (docs/LLM-JEV-DESIGN.md)
       const genCfg: GeneratorConfig | null = mode === 'jev-only' || flags.mock || flags.mockGenerator ? null : cfg.generator();
       const gen = genCfg ?? { temperature: null, maxTokens: 4096 };
-      const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : cfg.decider();
+      const dec = absentJev ? { model: ABSENT_DECIDER_MODEL, pinned: false } : flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : cfg.decider();
       deciderModelConfigured = dec.model;
       const synthesizer = mode === 'jev-only' || mode === 'llm-jev' ? await synthesizerOf(cfg, decider, mode) : null;
       const source = flags.source === 'perf' ? 'perf' : 'cli';
@@ -2389,6 +2621,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           ...(gate.clamp !== null ? { clamp: { runCapUsd: limits.spendCapUsd, clampedToUsd: gate.clamp, sessionSpentUsd: sessionTotal(), sessionCapUsd: sessionCapOf() } } : {}),
         },
         ...(seeded.seed ? { seed: seeded.seed } : {}),
+        // AGENT-LOOP-DESIGN §7.6: the chat turns since the previous run and that run — the agent continues its transcript
+        ...(carry !== null ? { conversation: carry } : {}),
         ...(instructions ? { instructions } : {}),
         ...(so.secretsAcked > 0 ? { secretsAcked: so.secretsAcked } : {}),
         ...(flags.allowUnpriced ? { allowUnpriced: true } : {}),
@@ -2414,7 +2648,21 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     clearPendingLimits();
     // §4.9 / §15 item 16: `submit()` resolves once the run started (the composer's `submitting` guard covers the start,
     // not the run); the run itself is driven by runEngine, which never rejects
-    void runEngine(eng, { runId: eng.runId, runDir: join(cfg.runsDir, eng.runId), startedAt: started, task: text, resumed: false, parentRunId: seeded.parentRunId, mode });
+    const turnFacts: AgentTurnFacts | undefined = agentTurn !== null && carry !== null ? { text, pinnedFiles: so.pinnedFiles, secretsAcked: so.secretsAcked, attempt: agentTurn.attempt, carry, seedExtras } : undefined;
+    void runEngine(eng, { runId: eng.runId, runDir: join(cfg.runsDir, eng.runId), startedAt: started, task: text, resumed: false, parentRunId: seeded.parentRunId, mode, ...(turnFacts !== undefined ? { agentTurn: turnFacts } : {}) });
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §A1 latency: an agent run reuses the session's cached provider (network map P8b: one per resolved config and
+   * mode) — the `--mock` provider excepted, whose trajectory cursor belongs to one run.
+   */
+  async function agentProvider(cfg: ResolvedConfigWithDiagnostics, mode: EngineMode): Promise<Provider> {
+    if (flags.mock === true || flags.mockGenerator === true) return providerOf(cfg, flags, mode);
+    const cached = chatProvider;
+    if (cached !== null && cached.cfg === cfg && cached.mode === mode) return cached.provider;
+    const provider = await providerOf(cfg, flags, mode);
+    chatProvider = { cfg, mode, provider };
+    return provider;
   }
 
   interface RunFacts {
@@ -2425,6 +2673,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     resumed: boolean;
     parentRunId: string | null;
     mode: EngineMode;
+    /** AGENT-LOOP-DESIGN §A1: set when the run is an agent-mode chat turn (its run:end is reply bookkeeping, its retry re-sends it) */
+    agentTurn?: AgentTurnFacts;
   }
 
   async function runEngine(eng: Engine, f: RunFacts): Promise<void> {
@@ -2707,10 +2957,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     lastResult = null;
     decisions = [];
     lastPlan = null;
-    const record: RunRecord = { runId: f.runId, runDir: f.runDir, startedAt: f.startedAt, endedAt: null, task: f.task, stopReason: null, exitCode: null, steps: 0, costUsd: { generator: 0, jev: 0 }, changedFiles: [], changedSteps: [], records: [], resumable: false, degraded: false };
+    const record: RunRecord = { runId: f.runId, runDir: f.runDir, startedAt: f.startedAt, endedAt: null, task: f.task, stopReason: null, exitCode: null, steps: 0, costUsd: { generator: 0, jev: 0 }, changedFiles: [], changedSteps: [], records: [], resumable: false, degraded: false, mode: f.mode };
     current = record;
     currentRunMode = f.mode;
     runs.push(record);
+    // AGENT-LOOP-DESIGN §A5: an agent chat turn is a reply until its first tool call (onEvent `tool:call` ends the phase)
+    replyPhase = f.agentTurn !== undefined;
+    replyStopped = false;
     if (sessionId === null) sessionId = f.runId;
     const sid = sessionId;
     retargetLogToRun(f.runDir);
@@ -2746,6 +2999,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       engine = null;
       phase = 'none';
       current = null;
+      replyPhase = false;
+      replyStopped = false;
       record.endedAt = nowIso();
       record.stopReason = 'error';
       record.exitCode = EXIT_CODES.unexpected;
@@ -2756,6 +3011,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     detach();
     lastResult = result;
+    // AGENT-LOOP-DESIGN §A5: whether the run ended inside its reply phase (no tool call), and whether Esc / Ctrl-C stopped it there
+    const noToolCall = replyPhase;
+    const stoppedInReply = replyStopped && result.stopReason === 'human_abort';
+    replyPhase = false;
+    replyStopped = false;
     const end = readEndEvent();
     const degraded = end?.exitCode === EXIT_CODES.checkpoint && result.stopReason !== 'error';
     const exitCode = end?.exitCode ?? exitCodeFor(result.stopReason, result.error, degraded, signalExit ?? undefined);
@@ -2766,6 +3026,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     record.costUsd = { generator: result.usage.generator.costUsd, jev: result.usage.jev.costUsd };
     record.resumable = end?.resumable ?? existsSync(join(f.runDir, 'state.json'));
     record.degraded = degraded;
+    // §A5: an agent chat turn that made no tool call was a reply, however it ended (answered, failed, stopped)
+    if (f.agentTurn !== undefined && noToolCall) record.reply = true;
     engine = null;
     phase = 'none';
     current = null;
@@ -2784,15 +3046,50 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       finishSession(exitCodeFor('signal', undefined, false, signalExit ?? undefined), 'run-end');
       return;
     }
-    // §13.5 / §24: the epilogue item (session mode) — human_pause and spend_cap have their own wording
-    postRunItems(record, result);
+    // AGENT-LOOP-DESIGN §7.6: the next run carries only the chat turns after this point
+    carryMark = ledger.turns.at(-1) ?? null;
+    // §13.5 / §24: the epilogue item (session mode) — human_pause and spend_cap have their own wording; an agent chat turn's
+    // reply bookkeeping first (AGENT-LOOP-DESIGN §A1, §A5): a reply or a stopped reply prints nothing, a transient failure retries once
+    const after = f.agentTurn !== undefined ? agentTurnEnded(f.agentTurn, result, noToolCall, stoppedInReply) : 'epilogue';
+    if (after === 'epilogue') postRunItems(record, result);
     if (exitAfterRunEnd !== null) {
       finishSession(leaveExitCode(exitAfterRunEnd), 'exit');
       return;
     }
     void refold();
-    void reprobeGit(cfg, record);
-    if (cfg) candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
+    // §A1 latency: a reply changed nothing and ran nothing, so neither the git state nor the file listing can have moved
+    if (!(f.mode === 'agent' && result.stopReason === 'answered')) {
+      void reprobeGit(cfg, record);
+      if (cfg) candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
+    }
+    // §A1 latency: the next agent turn's seed parent is this run — load it now, while the human reads the reply
+    if (cfg && (pending.mode ?? baseMode) === 'agent') parentPrefetch = { runId: f.runId, p: loadRunFn(cfg.runsDir, f.runId, cfg.redact).catch(() => null) };
+    if (after === 'retry' && f.agentTurn !== undefined) {
+      const t = f.agentTurn;
+      void startRun(t.text, { kind: 'follow-up', pinnedFiles: t.pinnedFiles, secretsAcked: t.secretsAcked, agent: { attempt: 1, carry: t.carry, seedExtras: t.seedExtras } });
+    }
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §A1 / §A5 (lead amendments): what an agent chat turn's run:end adds in the session.
+   * - Stopped by Esc / Ctrl-C before its first tool call: "reply stopped" — one toast, no `[ui] stopped — human_abort` epilogue,
+   *   no follow-up box; the session stays open and the next message continues the conversation.
+   * - `answered` (a reply: prose, no tool call, `isReplyOnlyRun`): nothing — the streamed prose was the whole answer.
+   * - A transient provider failure before any tool call, on the first attempt: one `[ui]` error row and ONE automatic retry
+   *   (never a fake assistant line); a second failure, or any other stop, gets today's epilogue item.
+   */
+  function agentTurnEnded(t: AgentTurnFacts, result: RunResult, noToolCall: boolean, stoppedInReply: boolean): 'quiet' | 'epilogue' | 'retry' {
+    if (stoppedInReply) {
+      uiToast(REPLY_STOPPED_TOAST);
+      return 'quiet';
+    }
+    if (result.stopReason === 'answered') return 'quiet';
+    if (result.stopReason === 'error' && noToolCall && t.attempt === 0 && exitAfterRunEnd === null && !exiting && isTransientProviderError(result.error)) {
+      const err = result.error!;
+      uiError(`${err.code}: ${redact(err.message)} — retrying once`);
+      return 'retry';
+    }
+    return 'epilogue';
   }
 
   /** the run:end event `onEvent` captured (read through a call so the closure assignment is visible to the type checker) */
@@ -2803,13 +3100,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   /**
    * TUI-DESIGN §13.5 `resume` row: `jevcode run --resume <id>` whenever state.json is loadable; the alternative
    * `state.json missing — not resumable` is for a missing or degraded checkpoint (the `[c]` case of §13.3). The engine's
-   * `run:end.resumable` (kept as is on the index line, §8.2) also excludes `complete`/`generator_done` stops, whose
-   * state.json seeds a follow-up through `--resume <id>` (`resumeOrFollowUp`, §5.2), so those consult the file.
+   * `run:end.resumable` (kept as is on the index line, §8.2) also excludes the finished stops (`isFinishedStop`: `complete`,
+   * `generator_done`, AGENT-LOOP-DESIGN §A1's `answered`), whose state.json seeds a follow-up through `--resume <id>`
+   * (`resumeOrFollowUp`, §5.2), so those consult the file.
    */
   function epilogueResumable(record: RunRecord): boolean {
     if (record.resumable) return true;
     if (record.degraded) return false;
-    return (record.stopReason === 'complete' || record.stopReason === 'generator_done') && existsSync(join(record.runDir, 'state.json'));
+    return record.stopReason !== null && isFinishedStop(record.stopReason) && existsSync(join(record.runDir, 'state.json'));
   }
 
   function postRunItems(record: RunRecord, result: RunResult): void {
@@ -2907,10 +3205,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       if (!known) sessionMeter.add('generator', { inputTokens: 0, outputTokens: 0, costUsd: loaded.state.spend.generator.costUsd, calls: 0 });
       if (!known) sessionMeter.add('jev', { inputTokens: 0, outputTokens: 0, costUsd: loaded.state.spend.jev.costUsd, calls: 0 });
       const provider = await providerOf(rcfg, augmented, identity.mode);
-      const decider = createCachingDecider(await deciderOf(rcfg, augmented)); // per-run cache; a resumed run starts empty
+      // AGENT-LOOP-DESIGN §14.2: the resume site builds the absent decider too — otherwise an agent run of a user with no Jev key could not be resumed
+      const absentJev = identity.mode === 'agent' && !jevKeyResolves(rcfg);
+      const decider = absentJev ? createAbsentDecider() : createCachingDecider(await deciderOf(rcfg, augmented)); // per-run cache; a resumed run starts empty
       const genCfg: GeneratorConfig | null = identity.mode === 'jev-only' || flags.mock || flags.mockGenerator ? null : rcfg.generator();
       const gen = genCfg ?? { temperature: null, maxTokens: 4096 };
-      const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : rcfg.decider();
+      const dec = absentJev ? { model: ABSENT_DECIDER_MODEL, pinned: false } : flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : rcfg.decider();
       deciderModelConfigured = dec.model;
       const synthesizer = identity.mode === 'jev-only' || identity.mode === 'llm-jev' ? await synthesizerOf(rcfg, decider, identity.mode) : null;
       const undoNote = undoNotes.length > 0 ? undoNotes.join('\n') : null;
@@ -2978,21 +3278,28 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     );
   }
 
-  /** `--resume <id|title>` / `/resume <x>`: run id → resume; title → the session's newest run (§8.4) */
-  async function resumeTarget(value: string, force: boolean): Promise<void> {
+  /**
+   * `--resume <id|title>` / `/resume <x>`: run id → resume; title → the session's newest run (§8.4). AGENT-LOOP-DESIGN §A5: a run
+   * that was a reply is not resumed — its session is adopted (`resumeOrFollowUp`); legacy-mode runs never are replies.
+   */
+  async function resumeTarget(value: string, force: boolean): Promise<FollowUpHow> {
+    const resumeOrAdopt = async (runId: string): Promise<FollowUpHow> => {
+      if (isReplyRunId(runId)) return resumeOrFollowUp(runId, force);
+      await resumeRun(runId, force);
+      return 'resumed';
+    };
     const c = classifyResumeValue(value);
-    if (c.kind === 'run') {
-      await resumeRun(c.runId, force);
-      return;
-    }
+    if (c.kind === 'run') return resumeOrAdopt(c.runId);
     const r = resolveResumeTarget(sessionRows(), c.title);
-    if (r.kind === 'run') await resumeRun(r.runId, force);
-    else if (r.kind === 'session') {
+    if (r.kind === 'run') return resumeOrAdopt(r.runId);
+    if (r.kind === 'session') {
       const id = newestRunId(r.session);
-      if (id) await resumeRun(id, force);
-      else uiError(`/resume — session "${c.title}" has no run — pick another with /resume, or type a task`);
-    } else if (r.kind === 'ambiguous') throw new ConfigError(ambiguousResumeMessage(value, r.candidates), { setting: 'resume' });
-    else throw new UsageError(`--resume: no run or session matches "${value}"`);
+      if (id) return resumeOrAdopt(id);
+      uiError(`/resume — session "${c.title}" has no run — pick another with /resume, or type a task`);
+      return 'resumed';
+    }
+    if (r.kind === 'ambiguous') throw new ConfigError(ambiguousResumeMessage(value, r.candidates), { setting: 'resume' });
+    throw new UsageError(`--resume: no run or session matches "${value}"`);
   }
 
   // --- git facts and sandboxes for the idle commands (§12.4–§12.6) ------------------------------
@@ -3034,10 +3341,28 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   function lastFinishedRun(): RunRecord | null {
     return runs.filter((r) => r.endedAt !== null).at(-1) ?? null;
   }
+  /** AGENT-LOOP-DESIGN §A5: a run that was a reply — it stopped `answered`, or it was an agent chat turn that made no tool call */
+  function isReplyRecord(r: RunRecord): boolean {
+    return r.reply === true || r.stopReason === 'answered';
+  }
+  /**
+   * AGENT-LOOP-DESIGN §A5: the run `/undo`, `/rewind`, `/diff <step>` and their step completion act on — the newest finished run that
+   * was not a reply (a tool-less agent turn — answered, failed before its first tool call, or stopped — changed nothing), so a
+   * `thanks` after a task never hides the task's steps; the newest finished run when every run was a reply. Legacy-mode runs are
+   * never replies: exactly `lastFinishedRun()`.
+   */
+  function lastWorkRun(): RunRecord | null {
+    return runs.filter((r) => r.endedAt !== null && !isReplyRecord(r)).at(-1) ?? lastFinishedRun();
+  }
+  /** AGENT-LOOP-DESIGN §A5: `N runs`, then `· M replies` when agent turns were replies (legacy: exactly `N runs`) */
+  function runTally(): { runs: number; replies: number } {
+    const replies = runs.filter(isReplyRecord).length;
+    return { runs: runs.length - replies, replies };
+  }
 
   async function undoCommand(step: number | null): Promise<void> {
     const cfg = config;
-    const last = lastFinishedRun();
+    const last = lastWorkRun();
     if (!cfg || !last) {
       // TUI-DESIGN-4 §3.1.7: an empty state is never an error. Only a REFUSED or malformed request is, so these
       // two are plain `[ui]` info items — nothing was refused, there is simply nothing to undo yet.
@@ -3077,7 +3402,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
 
   async function rewindCommand(step: number | null): Promise<void> {
     const cfg = config;
-    const last = lastFinishedRun();
+    const last = lastWorkRun();
     if (!cfg || !last) {
       // §3.1.7: `/rewind`'s two states are the SAME empty states `/undo`'s were — an info sentence, not an error
       note('nothing to rewind — no run has finished in this session');
@@ -3125,7 +3450,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
 
   async function diffCommand(a: Extract<CommandAction, { kind: 'diff' }>): Promise<void> {
     const cfg = config;
-    const run = current ?? lastFinishedRun();
+    const run = current ?? lastWorkRun();
     if (!cfg || !run) {
       // §3.1.7: an empty state is a sentence, not an error
       note('nothing to diff — no run in this session yet');
@@ -3390,8 +3715,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const jevRows: BlockRow[] = [];
     if (questions === 0 && decisions.length === 0 && chat.messages === 0) {
       // §3.1.7: an empty state REPLACES the data rows — printing `decider not resolved yet` above a resolved
-      // `decider` row and a `p50 — · p95 —` latency row said both things at once
-      block('jev', [{ kind: 'note', flush: true, text: 'decider not resolved yet — the first question resolves it' }]);
+      // `decider` row and a `p50 — · p95 —` latency row said both things at once; AGENT-LOOP-DESIGN §13 (peer review G): in agent
+      // mode the empty state is the normal one, and says so
+      block('jev', [{ kind: 'note', flush: true, text: inspectMode() === 'agent' ? AGENT_NO_DECISIONS_TEXT : 'decider not resolved yet — the first question resolves it' }]);
       return;
     }
     jevRows.push({ kind: 'kv', key: 'decider', value: `${head}${resolved ? ` ${glyphs().arrow} resolved ${resolved}` : ''}${drift ? ` · drift@step ${drift.step} ${glyphs().arrow} ${drift.served}` : ''}` });
@@ -3417,10 +3743,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const exit = run?.exitCode !== null && run?.exitCode !== undefined ? ` (exit ${run.exitCode})` : '';
     // F-B1: `· no git repository` reads as a sentence where `· git none` read as a branch called `none`
     const gitSegment = g !== null && !g.repo ? 'no git repository' : `git ${gitText}`;
+    // AGENT-LOOP-DESIGN §A5: replies are counted as replies (`· 1 run · 2 replies`); legacy has none, so the row is unchanged
+    const tally = runTally();
     block('status', [
       // §3.1.5: `run` and `session` carry IDENTIFIERS — they are never elided, the row wraps instead
       { kind: 'kv', key: 'run', value: `${run?.runId ?? '—'}${stop === null ? '' : ` · ${stop}${exit}`}`, id: true },
-      { kind: 'kv', key: 'session', value: `${sessionId ?? '—'}${title !== null ? ` "${title}"` : ''} · ${runs.length} run${runs.length === 1 ? '' : 's'} · ${usd3(sessionTotal())}`, id: true },
+      { kind: 'kv', key: 'session', value: `${sessionId ?? '—'}${title !== null ? ` "${title}"` : ''} · ${tally.runs} run${tally.runs === 1 ? '' : 's'}${tally.replies > 0 ? ` · ${repliesText(tally.replies)}` : ''} · ${usd3(sessionTotal())}`, id: true },
       { kind: 'kv', key: 'step', value: `${currentStep()} of ${lastStatus?.maxSteps ?? config?.limits().maxSteps ?? '—'} · ${stage}` },
       { kind: 'kv', key: 'workspace', value: `${shortPath(workspaceRoot, { root: workspaceRoot, home, width: Math.max(1, bodyWidth() - 11), measure: cellWidth })} · ${gitSegment}` },
       { kind: 'kv', key: 'sandbox', value: `${config ? detectSandboxLevel(config.sandbox) : '—'} · lock ${live() ? 'held' : 'released'}` },
@@ -3435,13 +3763,21 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       .slice(-n)
       .map((d) => toDecisionRow(d, config?.limits().completeThreshold, config?.limits().impossibleThreshold));
     const lines = decisionRows({ tab: 'd', step: currentStep(), rows, plan: null, timeline: [], synth: null, mode: pending.mode ?? baseMode }, Math.max(1, rows.length), bodyWidth(), glyphs());
-    textBlock(rows.length === 0 ? 'decisions' : `decisions · last ${rows.length}`, rows.length === 0 ? ['no decisions yet — they appear from the first step'] : lines);
+    const empty = inspectMode() === 'agent' ? AGENT_NO_DECISIONS_TEXT : 'no decisions yet — they appear from the first step';
+    textBlock(rows.length === 0 ? 'decisions' : `decisions · last ${rows.length}`, rows.length === 0 ? [empty] : lines);
+  }
+
+  /** the mode the inspect commands describe: the live (or last) run's, or the next run's before any run */
+  function inspectMode(): EngineMode {
+    return runs.length > 0 ? currentRunMode : (pending.mode ?? baseMode);
   }
 
   function planCommand(): void {
     const plan = lastPlan ?? lastResult?.finalPlan ?? null;
     const lines = planRows({ tab: 'p', step: currentStep(), rows: [], plan: plan ? { step: currentStep(), plan } : null, timeline: [], synth: null }, BLOCK_CAPS.plan, bodyWidth(), glyphs());
-    textBlock('plan', plan === null ? ['no plan yet — Jev writes one at the first step'] : lines, { max: BLOCK_CAPS.plan });
+    // AGENT-LOOP-DESIGN §4.7: in agent mode the plan is the code model's todo list, not Jev's
+    const empty = inspectMode() === 'agent' ? 'no plan yet — the code model writes one (todo_write) when a task has several steps' : 'no plan yet — Jev writes one at the first step';
+    textBlock('plan', plan === null ? [empty] : lines, { max: BLOCK_CAPS.plan });
   }
 
   function whyCommand(ref: string): void {
@@ -3455,7 +3791,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const pool: readonly Decision[] = parsed.kind === 'intake' ? (chatIntakes.at(-1) ?? []) : decisions;
     const d = findDecision(pool, parsed, currentStep() > 0 ? currentStep() : null);
     if (d === null) {
-      uiError(whyErrorText(ref, 'missing'));
+      // AGENT-LOOP-DESIGN §13 (peer review G): an agent run with no Jev decision at all has nothing to explain — say why, not "missing"
+      if (pool.length === 0 && inspectMode() === 'agent') note(AGENT_NO_DECISIONS_TEXT);
+      else uiError(whyErrorText(ref, 'missing'));
       return;
     }
     const model = parsed.kind === 'intake' ? (lastDecider?.model ?? null) : (lastResult?.resolvedJevModel ?? null);
@@ -3516,12 +3854,32 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (code === EXIT_CODES.ok) await reresolve();
   }
 
-  async function resumeOrFollowUp(runId: string, force: boolean): Promise<void> {
+  /**
+   * AGENT-LOOP-DESIGN §A5: whether a run was a reply — a record of this session (`isReplyRecord`) or, for a run of another
+   * session, its folded index row (`isReplyRunRow`). Legacy-mode runs never are.
+   */
+  function isReplyRunId(runId: string): boolean {
+    const known = runs.find((r) => r.runId === runId);
+    if (known !== undefined) return isReplyRecord(known);
+    for (const s of index) for (const r of s.runs) if (r.runId === runId) return isReplyRunRow(r);
+    return false;
+  }
+
+  /**
+   * what `resumeOrFollowUp` did: adopted the session of a complete run or of a reply (the next message is a follow-up), or resumed
+   * the run (or tried to: `resumeRun` reports its own refusal)
+   */
+  type FollowUpHow = 'complete' | 'reply' | 'resumed';
+
+  async function resumeOrFollowUp(runId: string, force: boolean): Promise<FollowUpHow> {
     const row = index.find((s) => s.runs.some((r) => r.runId === runId));
     const run = row?.runs.find((r) => r.runId === runId) ?? null;
     const known = runs.find((r) => r.runId === runId) ?? null;
     const stop = known?.stopReason ?? run?.stopReason ?? null;
-    if (stop === 'complete' && !force) {
+    // AGENT-LOOP-DESIGN §A5: a reply (a tool-less agent turn — `answered`, or failed / stopped before its first tool call) has
+    // nothing to resume either: the session continues and the next message carries the reply as its parent (§7.6)
+    const reply = stop !== 'complete' && isReplyRunId(runId);
+    if ((stop === 'complete' || reply) && !force) {
       // §5.2: a complete run seeds a follow-up unless --force: adopt its session and let the next prompt seed from it
       const sid = row?.sessionId ?? known?.runId ?? runId;
       if (sessionId !== sid) {
@@ -3531,10 +3889,24 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         newSessionMeter();
         seedMeterFromIndex(sid, '');
       }
-      note(`session ${sid} continues: run ${runId} is complete, so type a follow-up (/resume ${runId} --force resumes it)`);
-      return;
+      note(reply ? `session ${sid} continues: run ${runId} was a reply, so type a follow-up` : `session ${sid} continues: run ${runId} is complete, so type a follow-up (/resume ${runId} --force resumes it)`);
+      return reply ? 'reply' : 'complete';
     }
     await resumeRun(runId, force);
+    return 'resumed';
+  }
+
+  /**
+   * `jevcode run -c` / `--resume` (one-shot) after the session was adopted: the task, when one was given, is its follow-up — in agent
+   * mode the next turn of the session's conversation (§7.6: it carries the adopted run as its parent). A reply adopted with no task
+   * leaves nothing to do, so it is a usage error, never a process that waits for a message it cannot get (AGENT-LOOP-DESIGN §A5; a
+   * complete run of a legacy mode keeps today's path).
+   */
+  async function oneShotFollowUp(how: FollowUpHow): Promise<void> {
+    const task = await readTaskOption();
+    if (exiting) return;
+    if (task !== null) await submitTask(task, (pending.mode ?? baseMode) === 'agent');
+    else if (how === 'reply') throw new UsageError(ONE_SHOT_REPLY_REFUSAL);
   }
 
   async function pickerCommand(sort: 'updated' | 'created', force: boolean): Promise<void> {
@@ -3590,11 +3962,15 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           note(NO_SESSION_YET);
           return;
         }
-        note(sessionEndedText(old, runs.length, sessionTotal()));
+        const tally = runTally();
+        note(sessionEndedText(old, tally.runs, sessionTotal(), tally.replies));
         sessionId = null;
         sessionStartAnnounced = false;
         runs = [];
         title = null;
+        // AGENT-LOOP-DESIGN §7.6: the next session's first run carries no turn of this one, and no parent
+        carryMark = ledger.turns.at(-1) ?? null;
+        parentPrefetch = null;
         undoNotes = [];
         undoLog = [];
         rewindSeed = null;
@@ -3706,6 +4082,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         // (` (default)` after the word equal to MODE_BADGE_WORD[DEFAULT_MODE], D-N), else `mode <cur> — next run: <next>`; with one, pends it
         const cur = live() && current !== null ? currentRunMode : baseMode;
         const next = pending.mode ?? baseMode;
+        // AGENT-LOOP-DESIGN §14.1: `/mode legacy` names the modes kept for saved configs, resume and the bench
+        if (a.mode === 'legacy') {
+          note(MODE_LEGACY_TEXT);
+          return;
+        }
         if (a.mode === null) {
           const dflt = (m: EngineMode): string => (m === DEFAULT_MODE ? ' (default)' : '');
           note(cur === next ? `mode ${modeBadgeWord(cur)}${dflt(cur)}` : `mode ${modeBadgeWord(cur)} — next run: ${modeBadgeWord(next)}${dflt(next)}`);
@@ -3715,7 +4096,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           note(`mode ${modeBadgeWord(a.mode)} already`);
           return;
         }
-        if (config && config.missingSecrets(a.mode).length > 0) {
+        if (config && missingFor(config, a.mode).length > 0) {
           const saved = await runLogin('mode', a.mode);
           if (!saved) {
             note(`mode stays ${modeBadgeWord(next)} — no generator key was saved`, { level: 'warn' });
@@ -4174,6 +4555,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       uiError(CONFIG_NOT_READY);
       return { became: 'nothing' };
     }
+    // AGENT-LOOP-DESIGN §A1: in agent mode every message is the next turn of the session's agent conversation — no intake, no Jev
+    // call, no canned line; the reply IS the run's streamed prose
+    if ((pending.mode ?? baseMode) === 'agent') return agentTurn(text, so);
     // the [you] bubble, always first: redacted at emission, one item per line (§3.10)
     say('you', bubbleLines(text, redact));
     // the offer left by the last `ambiguous` reading: `do it` starts that run with the reading already in hand — no request
@@ -4259,6 +4643,20 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     } finally {
       if (chatAbort === ac) chatAbort = null;
     }
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §A1: an agent-mode chat message. The `[you]` bubble first (synchronously — with `submit`'s no-await path it is
+   * in the Enter frame), then one agent run that carries the session conversation (§7.6). There is no intake routing, no Jev intake
+   * call, no `ON_IT_LINE` / `DO_IT_OFFER` / catalogue text: the model answers a greeting in prose (the run stops `answered`) and acts
+   * with tools when asked to. Provider errors surface as `[ui]` rows at run:end (`agentTurnEnded`), never as an assistant line.
+   */
+  async function agentTurn(text: string, so: { kind: 'prompt' | 'follow-up'; pinnedFiles: readonly string[]; secretSpans: readonly string[] }): Promise<SubmitOutcome> {
+    say('you', bubbleLines(text, redact));
+    pendingOffer = null;
+    const before = runs.length;
+    await startRun(text, { kind: so.kind, pinnedFiles: so.pinnedFiles, secretsAcked: so.secretSpans.length, agent: { attempt: 0 } });
+    return { became: live() || runs.length > before ? 'run' : 'nothing' };
   }
 
   /** §3.8: the run a reading (or an accepted offer) starts; the run owns the abort path from here (Esc Esc / Ctrl-C while live) */
@@ -4597,6 +4995,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       provider,
       message: text,
       identity: chatIdentity(gen.model, provider.name === 'mock' ? 'mock' : PROVIDER_DISPLAY_NAME[provider.name]),
+      // the chat turn runs in the Jev-driven modes only (agent mode sends every message to a run), so this keeps their prompt as it is
+      mode: pending.mode ?? baseMode,
       conversation: ledger.recent(),
       facts: harnessFacts(factsInput()),
       context: { plan: lastPlan ?? lastResult?.finalPlan ?? null, window, files },
@@ -4622,7 +5022,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const g = gitAtStart;
     const now = Date.parse(nowIso());
     const recentSessions = index
-      .filter((r) => r.workspace === workspaceRoot)
+      .filter((r) => r.workspace === workspaceRoot && r.title !== '')
       .slice()
       .sort((a, b) => (a.lastUsed < b.lastUsed ? 1 : a.lastUsed > b.lastUsed ? -1 : 0))
       .slice(0, CHAT_RECENT_SESSIONS)
@@ -4703,7 +5103,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   const host: ControllerHost = {
     // TUI-DESIGN-2 §3.8: every composer submission passes intake (`converse`); the one-shot argv task (`submitTask`) goes straight to startRun
     async submit(text, so): Promise<SubmitOutcome> {
-      await startupDone;
+      // AGENT-LOOP-DESIGN §A1 latency (TUI map top change 7): once startup has settled, an agent-mode submission reaches converse's
+      // synchronous prefix with no await, so the `[you]` bubble lands in the frame of the Enter itself; legacy modes keep today's order
+      if (!startupIsSettled || (pending.mode ?? baseMode) !== 'agent') await startupDone;
       // §10.2: addSecret('composer#n', span) per span BEFORE createEngine
       for (const span of so.secretSpans) config?.addSecret(`composer#${++secretSeq}`, span);
       return converse(text, so);
@@ -4737,6 +5139,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
      */
     who: (): readonly SessionActivityView[] | null => (sessionLedger === null ? null : sessionLedger.list({ all: false }).map(activityView)),
     pause() {
+      // AGENT-LOOP-DESIGN §A5: before the first tool call Esc stops the reply — an abort, never a pause (nothing to resume)
+      if (replyPhase && engine !== null && live()) {
+        host.abort('human_abort');
+        return;
+      }
       engine?.pause();
     },
     abort() {
@@ -4753,6 +5160,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         return;
       }
       if (engine !== null && live()) {
+        // AGENT-LOOP-DESIGN §A5: an abort inside the reply phase is "reply stopped" at run:end (no epilogue, the session stays open)
+        if (replyPhase) replyStopped = true;
         engine.abort('human_abort');
         phase = 'aborting';
       }
@@ -4777,7 +5186,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       if (code === WIZARD_EXIT_CODE && config !== null) {
         const mode = pending.mode ?? baseMode;
         // TUI-DESIGN-3 §1.8 edge 6: nothing missing (Ctrl-C at trust / sandbox) → no fix block
-        if (config.missingSecrets(mode).length > 0) textBlock('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode, providerOfConfig(config)), { label: '[setup]', level: 'warn' });
+        if (missingFor(config, mode).length > 0) textBlock('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode, providerOfConfig(config)), { label: '[setup]', level: 'warn' });
       }
       // §1: `/exit`, Ctrl-C ×2 idle and Ctrl-D ×2 → 0, or the last run's code under `--exit-code=last-run`
       finishSession(leaveExitCode(code), 'exit');
@@ -4796,7 +5205,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     phase: () => phase,
     ranBefore,
     dispatchContext() {
-      const run = current ?? lastFinishedRun();
+      const run = current ?? lastWorkRun();
       const cfg = config;
       return {
         step: run?.steps ?? 0,
@@ -4856,6 +5265,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     trace('startup: keybindings + history read');
     config = await resolveConfig({ ...flags, ...pendingFlagOverrides() }, env, cwd, { homedir: home });
+    resolvedPendingKey = JSON.stringify(pendingFlagOverrides());
     if (exiting) return;
     trace('startup: config resolved');
     if (!deps.log) {
@@ -4879,13 +5289,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     await shadowingLines();
     if (exiting) return;
     const mode = pending.mode ?? baseMode;
-    if (config.missingSecrets(mode).length > 0) {
+    if (missingFor(config, mode).length > 0) {
       const saved = prompter?.wizard ? await runLogin('missing') : false;
       if (exiting) return;
       // the wizard's `3 Jev only` may have moved the mode (persisted, reresolved): re-read it before judging what is still missing
       const after = pending.mode ?? baseMode;
-      if (!saved && config.missingSecrets(after).length > 0) {
-        const names = config.missingSecrets(after);
+      if (!saved && missingFor(config, after).length > 0) {
+        const names = missingFor(config, after);
         if (!prompter?.wizard && (o.mode === 'one-shot' || !o.interactive)) {
           // TUI-DESIGN-3 §1.6: a pipe with a Jev key but no generator names the three ways out
           const text = names.length === 1 && names[0] === 'generator.apiKey' ? missingGeneratorOnly(providerIdOfConfig(config)) : `missing ${names.join(', ')}: set the environment variable or run jevcode login`;
@@ -4944,19 +5354,18 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const s = mostRecentSession(index, workspaceRoot);
       const id = s ? newestRunId(s) : null;
       if (id === null) throw new UsageError(noSessionMessage(workspaceRoot));
-      await resumeOrFollowUp(id, flags.force === true);
-      if (o.mode === 'one-shot' && !live() && !exiting) {
-        const task = await readTaskOption();
-        if (task !== null && !exiting) await submitTask(task);
-      }
+      const how = await resumeOrFollowUp(id, flags.force === true);
+      if (o.mode === 'one-shot' && !live() && !exiting) await oneShotFollowUp(how);
       return;
     }
     if (flags.resume !== undefined) {
-      await resumeTarget(flags.resume, flags.force === true);
+      const how = await resumeTarget(flags.resume, flags.force === true);
+      // §A5: a reply is adopted, not resumed — in one-shot the task is its follow-up (legacy never adopts here: unchanged)
+      if (how === 'reply' && o.mode === 'one-shot' && !live() && !exiting) await oneShotFollowUp(how);
       return;
     }
     if (o.mode === 'session') {
-      const recent = mostRecentSession(index, workspaceRoot);
+      const recent = recentHintSession(index, workspaceRoot);
       // the quiet start: in the TUI the offer is the composer's own placeholder (`Say hi · /resume continues "<title>"`),
       // not an item above it; `--plain` / `--json` keep the line, dim
       if (recent && o.rendererKind !== 'tui') note(recentSessionHint(recent, now(), o.launch.ascii), { level: 'dim' });
@@ -5015,10 +5424,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     return typeof o.task === 'function' ? o.task() : o.task;
   }
 
-  async function submitTask(task: string): Promise<void> {
+  /** `agentTurn`: an agent-mode follow-up of an adopted session is the next turn of its conversation (AGENT-LOOP-DESIGN §7.6) */
+  async function submitTask(task: string, agentTurn = false): Promise<void> {
     const gated = await gateTask(task);
     if (gated === null || exiting) return;
-    await startRun(gated.task, { kind: ranBefore() ? 'follow-up' : 'prompt', pinnedFiles: [], secretsAcked: gated.acked });
+    await startRun(gated.task, { kind: ranBefore() ? 'follow-up' : 'prompt', pinnedFiles: [], secretsAcked: gated.acked, ...(agentTurn ? { agent: { attempt: 0 as const } } : {}) });
   }
 
   /** the mode the fix block is printed for: the resolved config's, else the flag, else `JEVCODE_MODE`, else DEFAULT_MODE */
@@ -5055,9 +5465,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       // F3: a signal or exit request during startup ends the process even while startup awaits a prompt or a probe
       const started = startup().then(
         () => {
+          startupIsSettled = true;
           startupSettled?.();
         },
         (e: unknown) => {
+          startupIsSettled = true;
           startupSettled?.();
           throw e;
         },

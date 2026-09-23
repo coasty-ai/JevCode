@@ -39,7 +39,7 @@ import { DEFAULT_REFERER } from '../jev/types.js';
 import {
   LOGIN_JEV_PROVIDER_PROMPT,
   LOGIN_JEV_PROVIDER_REQUIRED,
-  LOGIN_ONE_KEY_PROMPT,
+  loginOneKeyPrompt,
   LOGIN_OTHER_WAYS_PROMPT,
   WIZARD_REUSE_HINT,
   fixBlockLines,
@@ -447,9 +447,15 @@ function generatorPrompt(provider: ProviderId): string {
   return `${PROVIDER_DISPLAY_NAME[provider]} API key (${keyEnvNames(provider)[0] ?? 'the provider key'}): `;
 }
 
+/** `jevcode login --status`'s `needs:` clause: jev-only needs Jev alone, agent the generator alone (AGENT-LOOP-DESIGN §14.2), every other mode both */
+export function modeNeeds(mode: EngineMode): string {
+  return mode === 'jev-only' ? 'jev' : mode === 'agent' ? 'generator (Jev optional)' : 'generator, jev';
+}
+
 async function statusLines(io: CommandIo, mode: EngineMode, modeSource: string): Promise<{ lines: string[]; ok: boolean }> {
-  // TUI-DESIGN-3 §1.6: the third line names the mode, its source and what it needs — a jev-only session is `ok` with the Jev key alone
-  const modeLine = `mode: ${mode} (${modeSource}) — needs: ${mode === 'jev-only' ? 'jev' : 'generator, jev'}`;
+  // TUI-DESIGN-3 §1.6: the third line names the mode, its source and what it needs — a jev-only session is `ok` with the Jev key alone;
+  // AGENT-LOOP-DESIGN §14.2: an agent session is `ok` with the generator key alone (Jev only makes optional quick routing calls)
+  const modeLine = `mode: ${mode} (${modeSource}) — needs: ${modeNeeds(mode)}`;
   if (!io.resolveSecrets) return { lines: ['generator.apiKey: unknown (no resolver)', 'decider.apiKey: unknown (no resolver)', modeLine], ok: false };
   const entries = await io.resolveSecrets();
   const lines: string[] = [];
@@ -459,7 +465,7 @@ async function statusLines(io: CommandIo, mode: EngineMode, modeSource: string):
     if (r && r.value.trim() !== '') lines.push(`${name}: ${r.source} (sha256:${fingerprint(r.value.trim())})`);
     else {
       lines.push(`${name}: not set`);
-      if (name === 'decider.apiKey' || mode !== 'jev-only') ok = false;
+      if (name === 'decider.apiKey' ? mode !== 'agent' : mode !== 'jev-only') ok = false;
     }
   }
   lines.push(modeLine);
@@ -785,7 +791,7 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
   if (wantOneKey) {
     if (interactive) {
       // a terminal cannot deliver a "stdin line" without echoing it: the one key is asked for masked
-      const k = await promptKey(io, LOGIN_ONE_KEY_PROMPT, 'openrouter', false);
+      const k = await promptKey(io, loginOneKeyPrompt(mode), 'openrouter', false);
       if (k === CANCELLED || k === null) {
         printFix(io, fixMode, null);
         return EXIT_CODES.config;
@@ -899,7 +905,7 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
         }
       }
     } else {
-      const k = await promptKey(io, LOGIN_ONE_KEY_PROMPT, 'openrouter', false);
+      const k = await promptKey(io, loginOneKeyPrompt(mode), 'openrouter', false);
       if (k === CANCELLED || k === null) {
         printFix(io, fixMode, null);
         return EXIT_CODES.config;

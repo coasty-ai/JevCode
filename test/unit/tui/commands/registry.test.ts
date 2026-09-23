@@ -182,7 +182,8 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
   });
   it('TUI-DESIGN-2 §1.3 / §4.6: /mode takes an optional jev-only|jev-on|jev-off|llm-jev; /llm <on|off>; /panel [d|p|t|s|a|off|full]; /transcript [compact|full] — strings verbatim', () => {
     const mode = findCommand('mode') as CommandSpec;
-    expect(mode.args[0]).toEqual({ name: 'm', kind: 'enum', values: ['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent'], optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]', valueHints: MODE_VALUE_HINTS, defaultValue: DEFAULT_MODE });
+    // AGENT-LOOP-DESIGN §14.1: `legacy` is always accepted (it lists the older modes); it is LISTED only once the default flips to agent
+    expect(mode.args[0]).toEqual({ name: 'm', kind: 'enum', values: ['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent'], accepts: ['legacy'], optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]', valueHints: { ...MODE_VALUE_HINTS, legacy: { title: 'list the older modes (saved configs, resume, the bench)' } }, defaultValue: DEFAULT_MODE });
     expect(mode.title).toBe('engine mode: show, or set for the next run');
     expect(mode.usage).toBe('[jev-only|jev-on|jev-off|llm-jev]');
     expect(mode.semantics).toBe('no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard\'s generator step in place; persist with `jevcode config set mode <m>`');

@@ -7,6 +7,7 @@
 import type { SessionRow, StopReason } from '../core/types.js';
 import { formatDuration } from '../core/time.js';
 import { stringWidth } from '../tui/composer/width.js';
+import { isReplyRunRow } from './reply.js';
 
 export type PickerSort = 'updated' | 'created';
 
@@ -240,6 +241,17 @@ export function newestRun(s: SessionRow): SessionRow['runs'][number] | null {
   return best;
 }
 
+/**
+ * AGENT-LOOP-DESIGN §A5: the run whose steps / stop the row shows — the newest run that was not a reply (`isReplyRunRow`: a tool-less
+ * agent turn stops `answered`, or ends before its first step when it failed or was stopped), so a `thanks` after a finished task still
+ * reads `complete`; the newest run when every run was a reply. Legacy-mode runs are never replies: exactly `newestRun` for them.
+ */
+export function newestWorkRun(s: SessionRow): SessionRow['runs'][number] | null {
+  let best: SessionRow['runs'][number] | null = null;
+  for (const r of s.runs) if (!isReplyRunRow(r) && (best === null || r.startedAt >= best.startedAt)) best = r;
+  return best ?? newestRun(s);
+}
+
 /** TUI-DESIGN §8.4 stop column: the verdict word; `live` while a run is open; `—` before any run. */
 export function stopWord(stop: StopReason | null, live: boolean): string {
   if (live) return 'live';
@@ -293,9 +305,11 @@ export function pickerRows(sessions: readonly SessionRow[], o: PickerOptions): s
   for (const s of pickerSessions(sessions, o)) {
     const run = newestRun(s);
     const live = run !== null && run.live && (o.live ? o.live(run.runId) : true);
+    // §A5: a reply is counted as a reply, never as the session's result — the stats come from the newest run that did work
+    const shown = live ? run : newestWorkRun(s);
     const ago = timeAgo(s.lastUsed, o.nowMs).padEnd(8);
-    const steps = String(run?.steps ?? (live ? '…' : '–')).padStart(3);
-    const stop = stopWord(run?.stopReason ?? null, live).padEnd(12);
+    const steps = String(shown?.steps ?? (live ? '…' : '–')).padStart(3);
+    const stop = stopWord(shown?.stopReason ?? null, live).padEnd(12);
     const cost = (Number.isFinite(s.totalUsd) ? `$${s.totalUsd.toFixed(3)}` : '$?').padStart(8);
     const title = s.title !== '' ? s.title : s.task60 !== '' ? s.task60 : s.sessionId;
     const parts = [ago, steps, stop, cost, title];

@@ -13,6 +13,7 @@ import { sandboxText } from '../tui/onboarding/lines.js';
 import { usd2 } from '../tui/budget/lines.js';
 import { stepCostText } from '../tui/plain.js';
 import { modeWord } from './replies.js';
+import { LLM_STATE_MODE } from '../tui/commands/registry.js';
 import { formatDuration } from '../core/time.js';
 
 /** contract 1.8 item 10 (TUI-DESIGN-5 §2.3, §8.1): `'peers'` — "who else is working here", the fifteenth fact. */
@@ -137,7 +138,8 @@ export const FACT_FALSE_EXAMPLES: Readonly<Record<FactKey, readonly string[]>> =
 export const JEV_PRICE_TEXT = '$0.042 per million input tokens (output free)';
 // TUI-DESIGN-3 §1.9 (R3 F9 / R5 F13): the copy names the code model, never a vendor
 export const WHAT_IT_IS_TEXT = 'JevCode is a coding agent where Jev, a decision model, makes every decision: what kind of step comes next, which files matter, how risky an action is, whether a step worked. In jev-only mode code proposes fixes and tests verify them; in jev+llm mode the code model writes the code.';
-export const SWITCH_MODE_TEXT = `Switch with /mode jev-only (Jev alone, $${JEV_ONLY_DEFAULT_SPEND_CAP_USD.toFixed(2)} run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.`;
+// `/llm on`'s target from the registry: jev-on today, agent once slice S6 flips the default (AGENT-LOOP-DESIGN §14.5)
+export const SWITCH_MODE_TEXT = `Switch with /mode jev-only (Jev alone, $${JEV_ONLY_DEFAULT_SPEND_CAP_USD.toFixed(2)} run cap) or /mode ${LLM_STATE_MODE.on} (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.`;
 /**
  * The `review` fact, per `autonomy`. Under `full` (the default) a review-flagged action is auto-approved and
  * logged, so the old "Nothing is ever auto-approved" sentence would be a lie; under `review` the y/n card is back.
@@ -150,6 +152,11 @@ export function reviewText(autonomy: 'full' | 'review' = 'full'): string {
 export const UNDO_TEXT = '/undo reverts the last step\'s file changes, /rewind picks a step, /diff shows what changed.';
 export const COMMANDS_TEXT = 'Commands start with /; type / to list them, /help for keys.';
 export const HOW_TO_TASK_TEXT = 'Describe the change in plain words and press Enter; a run starts, shows every decision, and stops to ask before anything risky.';
+/**
+ * AGENT-LOOP-DESIGN §14.5, amended by §A2: the agent-mode sentence. §14.5 ends with "Destructive commands are refused", which §A2 makes
+ * false under the default full autonomy (they run inside the sandbox, with pre-images and a note), so the sentence keeps what holds.
+ */
+export const HOW_TO_TASK_TEXT_AGENT = 'Describe the change in plain words and press Enter; a run starts, streams what it does and verifies with your tests, and /undo reverts any step.';
 export const HOW_TO_TASK_SUFFIX: Readonly<Record<EngineMode, string>> = {
   'jev-only': ' In jev-only I fix what tests can verify; for open-ended changes switch with /mode jev-on.',
   'jev-on': ' The code model writes the code, Jev decides each step.',
@@ -165,6 +172,11 @@ export const MODE_SENTENCE: Readonly<Record<EngineMode, string>> = {
   'llm-jev': `Mode: ${MODE_BADGE_WORD['llm-jev']} — the code model writes candidate patches, tests verify them, Jev arbitrates.`,
   'agent': `Mode: ${MODE_BADGE_WORD['agent']} — the code model works through tools, tests verify, Jev makes a few quick routing calls.`,
 };
+/**
+ * AGENT-LOOP-DESIGN §13 / peer review G: what `/jev`, `/why` and `/decisions` answer in agent mode when there is nothing to show — a
+ * normal agent run asks Jev nothing but a few optional quick routing calls, so an empty table would read as a fault.
+ */
+export const AGENT_NO_DECISIONS_TEXT = 'a normal agent run makes no Jev decisions';
 export const NOTHING_RAN_TEXT = 'Nothing has run yet in this session.';
 export const NO_TESTS_PARSED_TEXT = 'No test run has been parsed in this session yet.';
 
@@ -267,7 +279,7 @@ export function harnessFacts(i: FactsInput): readonly Fact[] {
     keys: keysText(i.keys),
     cost_so_far: costText(i.spend),
     sandbox: sandboxText(i.sandbox),
-    how_to_task: HOW_TO_TASK_TEXT + HOW_TO_TASK_SUFFIX[i.nextMode],
+    how_to_task: (i.nextMode === 'agent' ? HOW_TO_TASK_TEXT_AGENT : HOW_TO_TASK_TEXT) + HOW_TO_TASK_SUFFIX[i.nextMode],
     review: reviewText(i.autonomy),
     undo: UNDO_TEXT,
     commands: COMMANDS_TEXT,

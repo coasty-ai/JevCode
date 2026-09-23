@@ -159,11 +159,11 @@ export interface ExitCodeRow {
 export const EXIT_CODE_TABLE: readonly ExitCodeRow[] = [
   { situation: 'complete / generator_done / answered', oneShot: 0, session: 0, sessionExits: false, stopReasons: ['complete', 'generator_done', 'answered'] },
   {
-    situation: 'budget (max_steps, wall_time, spend_cap, max_replans, token_cap), replan_stop, impossible, human_pause',
+    situation: 'budget (max_steps, wall_time, spend_cap, max_replans, token_cap), replan_stop, impossible, human_pause, stuck',
     oneShot: 4,
     session: 4,
     sessionExits: false,
-    stopReasons: ['max_steps', 'wall_time', 'spend_cap', 'max_replans', 'token_cap', 'replan_stop', 'impossible', 'human_pause'],
+    stopReasons: ['max_steps', 'wall_time', 'spend_cap', 'max_replans', 'token_cap', 'replan_stop', 'impossible', 'human_pause', 'stuck'],
   },
   { situation: 'ConfigError / usage at launch; unpriced refusal', oneShot: 2, session: 2, sessionExits: true, stopReasons: [] },
   { situation: 'first-call 401/403, first-call drift', oneShot: 2, session: 2, sessionExits: false, stopReasons: [] },

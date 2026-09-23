@@ -19,6 +19,7 @@ import { THEMES } from '../tui/commands/registry.js';
 // read (`src/provider/ids.ts`'s own docblock). Never `models/providers.ts`, which would pull the whole catalogue
 // and `provider/openrouter.js` onto this path and fail gate G-R5-1.
 import { PROVIDER_IDS } from '../provider/ids.js';
+import type { EngineMode } from '../core/types.js';
 
 // TUI-DESIGN §15.2 `cli/args.ts`: `COMMANDS += chat | login | logout | sessions | report | why | calibration | completion | upgrade`
 // TUI-DESIGN-5 §6.6 / §9.2 `cli/args.ts`: `Command += 'models'` (R5-6). `'import'` (R5-5) and `'agents'` (R5-4)
@@ -243,6 +244,21 @@ export const EXIT_CODE_POLICIES = ['zero', 'last-run'] as const;
 export const CLI_SOURCES = ['cli', 'perf'] as const;
 
 /** Common flags are accepted by every run-like command: `config` needs them to print what a run would resolve to. */
+/**
+ * AGENT-LOOP-DESIGN §14.1: the `--mode` flag's value list and help. The advertised modes (agent, jev-only) and one legacy clause
+ * ("accepted for saved configs, resume and the bench") once the default is agent (slice S6's flip); until then today's text, so
+ * `jevcode --help` and the generated docs stay byte-identical. Every value stays accepted either way (`MODES`).
+ */
+export function modeFlagArg(defaultMode: EngineMode = DEFAULT_MODE): string {
+  return defaultMode === 'agent' ? 'agent|jev-only' : 'jev-only|jev-on|jev-off|llm-jev';
+}
+export function modeFlagHelp(defaultMode: EngineMode = DEFAULT_MODE): string {
+  return defaultMode === 'agent'
+    ? `engine mode (default ${defaultMode}): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off`
+    : `engine mode (default ${defaultMode}): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)`;
+}
+export const MODE_FLAG_ARG = modeFlagArg();
+export const MODE_FLAG_HELP = modeFlagHelp();
 export const FLAGS: readonly FlagSpec[] = [
   // TUI-DESIGN-5 §6.1 (D-AP) / §6.3: seven ids, named from PROVIDER_IDS rather than re-declared here
   { key: 'provider', name: 'provider', type: 'string', commands: [...COMMON, 'login', ...MODELS], arg: PROVIDER_IDS.join('|'), help: 'generator provider (models: filter the catalogue to one provider)' },
@@ -304,8 +320,9 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'listSessions', name: 'list-sessions', type: 'boolean', commands: SESSION, help: 'print the sessions of this workspace and exit' },
   { key: 'taskFile', name: 'task-file', type: 'string', commands: RUN, arg: '<path>', help: 'read the task text from a file' },
   { key: 'perfExitAfterFirstFrame', name: 'perf-exit-after-first-frame', type: 'boolean', commands: SESSION, help: 'exit after the first frame (perf)', hidden: true },
-  // TUI-DESIGN-2 §1.2 / TUI-DESIGN-3 §1.1 (D-N): the enum reads jev-only|jev-on|jev-off|llm-jev; the default is named through DEFAULT_MODE, never a literal
-  { key: 'mode', name: 'mode', type: 'string', commands: SESSION, arg: 'jev-only|jev-on|jev-off|llm-jev', help: `engine mode (default ${DEFAULT_MODE}): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)` },
+  // TUI-DESIGN-2 §1.2 / TUI-DESIGN-3 §1.1 (D-N): the enum reads jev-only|jev-on|jev-off|llm-jev; the default is named through DEFAULT_MODE, never a literal.
+  // AGENT-LOOP-DESIGN §14.1 / §14.5: once slice S6 flips the default to agent, the help lists the advertised modes and one legacy clause
+  { key: 'mode', name: 'mode', type: 'string', commands: SESSION, arg: MODE_FLAG_ARG, help: MODE_FLAG_HELP },
   { key: 'condition', name: 'condition', type: 'string', commands: SESSION, arg: 'jev-only|jev-on|jev-off|llm-jev', help: 'alias of --mode (Harbor adapter)', hidden: true },
   // complete autonomy by default (`config` prints the row, so it takes the flag too); the default is named through DEFAULT_AUTONOMY, never a literal
   { key: 'autonomy', name: 'autonomy', type: 'string', commands: UI, arg: AUTONOMY_SETTING_VALUES.join('|'), help: `who approves review-flagged actions (default ${DEFAULT_AUTONOMY}): full auto-approves and logs them, review stops for y/n; a blocked action always stops` },
@@ -387,8 +404,17 @@ export const CONDITIONS = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-siev
 export const MODES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent'] as const;
 /** TUI-DESIGN-3 §1.9 (R3 F9): the usage tagline — generator-neutral, `package.json`'s description agrees */
 export const TAGLINE = 'JevCode: Jev decides, the code model writes.';
-/** TUI-DESIGN-3 §1.1 (D-N): the bare-`jevcode` usage sentence names the default through DEFAULT_MODE's badge word, never a literal */
-export const BARE_JEVCODE_SENTENCE = `A bare \`jevcode\` opens the interactive session in ${MODE_BADGE_WORD[DEFAULT_MODE]} mode (one OpenRouter key serves Jev and the code model; /mode jev-only runs on Jev alone); \`/\` lists commands, \`?\` shows the keys.`;
+/**
+ * TUI-DESIGN-3 §1.1 (D-N): the bare-`jevcode` usage sentence names the default through DEFAULT_MODE's badge word, never a literal.
+ * AGENT-LOOP-DESIGN §14.5 "CLI help footnote": after the default flip (slice S6) it names the advertised surface — `/mode` switches to
+ * jev-only and `/mode legacy` lists the older modes; until then a legacy default keeps today's sentence byte for byte.
+ */
+export function bareJevcodeSentence(defaultMode: EngineMode = DEFAULT_MODE): string {
+  return defaultMode === 'agent'
+    ? `A bare \`jevcode\` opens the interactive session in ${MODE_BADGE_WORD[defaultMode]} mode (one OpenRouter key serves the code model and Jev); \`/mode\` switches to jev-only, and \`/mode legacy\` lists the older modes; \`/\` lists commands, \`?\` shows the keys.`
+    : `A bare \`jevcode\` opens the interactive session in ${MODE_BADGE_WORD[defaultMode]} mode (one OpenRouter key serves Jev and the code model; /mode jev-only runs on Jev alone); \`/\` lists commands, \`?\` shows the keys.`;
+}
+export const BARE_JEVCODE_SENTENCE = bareJevcodeSentence();
 /** TUI-DESIGN-2 §2.3: `--jev-provider` values (`auto` = rules 2a–2e in config/resolve.ts; login infers instead) */
 export const JEV_PROVIDERS = ['auto', 'typesafe', 'openrouter'] as const;
 /** TUI-DESIGN-2 §1.4: `jevcode login --jev-provider typesafe|openrouter` — `auto` is what an absent flag means there, so it is refused as a value */
@@ -851,11 +877,11 @@ function isCommon(f: FlagSpec): boolean {
 /** TUI-DESIGN §1: one usage line per command, in COMMANDS order. */
 const USAGE_LINES: Readonly<Record<Command, readonly string[]>> = {
   chat: [
-    '  jevcode chat [-c | --resume <id|title> | --list-sessions] [--plain] [--theme dark|light|daltonized|ansi] [--mode jev-only|jev-on|jev-off|llm-jev]',
+    `  jevcode chat [-c | --resume <id|title> | --list-sessions] [--plain] [--theme dark|light|daltonized|ansi] [--mode ${MODE_FLAG_ARG}]`,
     '               (a bare `jevcode`, or a leading flag, is `jevcode chat`)',
   ],
   run: [
-    '  jevcode run  <task text> | --task-file <path> | (stdin when not a TTY)  [--mode jev-only|jev-on|jev-off|llm-jev] [--plain | --json[=verbose] | --no-input]',
+    `  jevcode run  <task text> | --task-file <path> | (stdin when not a TTY)  [--mode ${MODE_FLAG_ARG}] [--plain | --json[=verbose] | --no-input]`,
     '  jevcode run  --resume <id|title> [--force] | -c [--force]',
   ],
   config: ['  jevcode config [--json] [--all]', '  jevcode config set <setting> <value>'],

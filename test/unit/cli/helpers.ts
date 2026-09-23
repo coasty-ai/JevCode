@@ -21,6 +21,7 @@ import type {
   LaunchSettings,
   PendingDirective,
   Renderer,
+  SerializedError,
   RunMeta,
   RunResult,
   SessionHost,
@@ -249,6 +250,12 @@ export interface RunScript {
   resumable?: boolean;
   /** what `loadRun` returns for this run afterwards (default: derived from the script) */
   loaded?: Partial<LoadedRun>;
+  /** the result's error for a `stop: 'error'` run (default: the Jev 401 below) */
+  error?: SerializedError;
+  /** called as run() starts (the session-side latency probe of AGENT-LOOP-DESIGN §A1 reads the clock here) */
+  onRun?: () => void;
+  /** result fields over the fixture's (`jevQuestions: 0` — an agent run that asked Jev nothing) */
+  result?: Partial<Pick<RunResult, 'jevQuestions'>>;
 }
 
 export interface ScriptedEngine extends Engine {
@@ -327,6 +334,7 @@ export function scriptedEngineFactory(script: (opts: EngineOptions, n: number) =
       },
       live: () => liveP,
       async run() {
+        sc.onRun?.();
         started = true;
         const sessionId = opts.session?.sessionId ?? runId;
         const parentRunId = opts.session?.parentRunId ?? null;
@@ -349,12 +357,12 @@ export function scriptedEngineFactory(script: (opts: EngineOptions, n: number) =
         const stop: StopReason = stopOverride ?? sc.stop ?? 'complete';
         const steps = sc.steps ?? 3;
         const cost = sc.cost ?? { generator: 0.1, jev: 0.015 };
-        const result: RunResult = { ...mkRunResult(stop), runId, mode: opts.mode, steps, usage: { generator: { inputTokens: 1000, outputTokens: 100, costUsd: cost.generator, calls: steps }, jev: { inputTokens: 500, outputTokens: 50, costUsd: cost.jev, calls: steps * 3 } } };
-        if (stop === 'error') result.error = { name: 'JevHttpError', code: 'jev_http', message: 'Jev HTTP 401: User not found.', exitCode: 2 };
+        const result: RunResult = { ...mkRunResult(stop), ...(sc.result ?? {}), runId, mode: opts.mode, steps, usage: { generator: { inputTokens: 1000, outputTokens: 100, costUsd: cost.generator, calls: steps }, jev: { inputTokens: 500, outputTokens: 50, costUsd: cost.jev, calls: steps * 3 } } };
+        if (stop === 'error') result.error = sc.error ?? { name: 'JevHttpError', code: 'jev_http', message: 'Jev HTTP 401: User not found.', exitCode: 2 };
         // the session meter learns the cost through the child meter, like the real engine
         opts.meter.add('generator', result.usage.generator);
         opts.meter.add('jev', result.usage.jev);
-        const exitCode = sc.exitCode ?? (stop === 'error' ? 2 : exitCodeFor(stop, result.error, false, signalName));
+        const exitCode = sc.exitCode ?? (stop === 'error' ? (sc.error?.exitCode ?? 2) : exitCodeFor(stop, result.error, false, signalName));
         const resumable = sc.resumable ?? (stop !== 'complete');
         const runDir = join(opts.runsDir, runId);
         loaded.set(runId, {
