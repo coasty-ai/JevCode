@@ -11,8 +11,8 @@
 //   5. `npm pack --dry-run --json` lists exactly the allowlist derived from package.json `files`
 //      (directories expanded recursively) plus package.json; extras and missing entries are named
 //   6. no forbidden path: *.map, meta.json, src/, docs/, test files, .env*
-//   7. unpacked size < 3.5 MB and the gzipped tarball < 1.5 MB. Re-measured 2026-09-22 (finishing pass F24d,
-//      the head-to-head freeze) at 0.5.0: unpacked 3,072,489 bytes (87.8 % of the cap, 427,511 to spare),
+//   7. unpacked size < UNPACKED_MAX (3,855,000 since 2026-09-23, see below) and the gzipped tarball < 1.5 MB.
+//      Re-measured 2026-09-22 (finishing pass F24d, the head-to-head freeze) at 0.5.0: unpacked 3,072,489 bytes (87.8 % of the cap, 427,511 to spare),
 //      tarball 1,039,272, dist/jevcode.mjs 2,854,378 minified from 5,064,620 unminified.
 //   8. `node bin/jevcode.js --version` prints the package.json version
 //   9. dist/jevcode.mjs carries no `sourceMappingURL` directive: the map is excluded from the tarball and rejected
@@ -37,7 +37,16 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 //   tarball   1,039,272 bytes  (69.3 % of TARBALL_MAX)
 //   bundle    2,854,378 bytes minified from 5,064,620 unminified (43.6 % smaller, keepNames)
 // So the +306 KB of source cost +68,862 unpacked bytes and neither cap moves. Re-measure at the next raise, not before.
-const UNPACKED_MAX = 3_600_000; // raised from 3,500,000 on 2026-09-22 (evening): the conversational-chat day — the 3D indicator module (src/tui/anim, ~60 KB of frame renderers + the Ink component), the identity prompt and the autonomy row put the unpacked package at 3,514,690 (dist/jevcode.mjs 3,353,506); the peer owns the next bundle-splitting pass, re-measure at the next raise // bytes
+// Raised from 3,600,000 on 2026-09-23 (docs/AGENT-LOOP-DESIGN.md §14.7, slice S6): the agent loop became the default harness —
+// src/agent (the driver, transcript, context policy, prompts, stream shaper, tool-call repair, loop detector, safety classifier
+// and the seven tools), the native-tool-call wire of the seven provider adapters, the engine seam and the TUI stream surface.
+// `npm run build && npm run pack:check` at the agent-int merge + S6a, node 22, 0.6.0:
+//   unpacked  3,741,936 bytes  (was 3,514,690 at the last raise: +227,246)
+//   tarball   1,258,248 bytes  (83.9 % of TARBALL_MAX)
+//   bundle    3,580,579 bytes minified (was 3,353,506: +227,073)
+// The cap is the measured need plus ~3 % (113,064 bytes) for the docs and README of the same flip. `bench` and `perf` cannot
+// leave the one-file bundle without dropping their subcommands (§14.7), so splitting stays the peer's pass; re-measure then.
+const UNPACKED_MAX = 3_855_000; // bytes
 const TARBALL_MAX = 1_500_000; // bytes
 const FORBIDDEN = [
   [/\.map$/, 'source map'],
