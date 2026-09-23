@@ -386,7 +386,8 @@ describe('contract 1.5 (ORCHESTRATION-DESIGN §4.1)', () => {
    */
   it('byte identity: Action, STOP_REASON_SET, exitCodeFor, MODES and CheckpointEnvelope.version are untouched by 1.5', () => {
     // the agent loop (docs/AGENT-LOOP-DESIGN.md §15 S1) appends on purpose, and nothing else: `cwd?` to the `run` action,
-    // `stuck` to STOP_REASON_SET (exitCodeFor's default branch already maps it to 4), `'agent'` to MODES
+    // `stuck` to STOP_REASON_SET (exitCodeFor's default branch already maps it to 4), `'agent'` to MODES; §A1 appends `answered`
+    // (a reply-only agent run) to STOP_REASON_SET and to exitCodeFor's exit-0 cases
     expect(squash(captureBlock('src/core/types.ts', 'export type Action =', /;\s*(\/\/.*)?$/))).toBe(
       squash(`export type Action =
   | { kind: 'read'; paths: string[] } // show files, bounded
@@ -413,6 +414,7 @@ describe('contract 1.5 (ORCHESTRATION-DESIGN §4.1)', () => {
   human_pause: true,
   token_cap: true,
   stuck: true,
+  answered: true,
 };`),
     );
 
@@ -422,6 +424,7 @@ describe('contract 1.5 (ORCHESTRATION-DESIGN §4.1)', () => {
   switch (reason) {
     case 'complete':
     case 'generator_done':
+    case 'answered':
       return EXIT_CODES.ok;
     case 'human_abort':
       return EXIT_CODES.sigint;
