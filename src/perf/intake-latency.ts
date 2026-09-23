@@ -12,10 +12,15 @@
  *           the reply are counted (the delayed series is where the bubble frame and the reply frame come apart; at 0 ms
  *           both usually land in one immediate `<Static>` render)
  *
+ * The first message of a session is the cold one (first-use imports, the first Jev request built): it is reported apart
+ * (`cold`) and the two p95 gates apply to the warm messages 2…n. `bubbleInFirstFrame` counts the messages whose FIRST
+ * frame after Enter already carries the bubble — the Enter feedback users see — reported, not gated (measured
+ * 2026-09-23: 0/20, the bubble lands one frame late, together with the reply at 0 ms).
+ *
  * Hygiene per series: no run goes live — no frame's status row reads `step <n>/<max>` (`pty.ts` `RUN_STARTED_PATTERN`;
  * a greeting never starts a run, §3.3; the `[run] started` item this used to look for is no longer printed in the TUI),
- * zero clears after the first frame, the painted region within rows − 2, exit 0. The live gate of §9 (p95 < 1.5 s over a real provider) is the
- * S6 live scenario's, not this probe's: nothing here touches the network.
+ * zero clears after the first frame, the painted region within rows − 2, exit 0. The live gate of §9 (p95 < 1.5 s over
+ * a real provider) is the S6 live scenario's, not this probe's: nothing here touches the network.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -28,6 +33,8 @@ export type IntakeSeriesName = 'mock0' | 'mock150';
 export interface IntakePair {
   /** the typist step number of the Enter */
   step: number;
+  /** the message's place in the plan: 0 is the session's cold first message */
+  index: number;
   text: string;
   sentAt: number;
   /** arrival of the frame carrying `[you] <text>` (null when never seen) */
@@ -38,6 +45,10 @@ export interface IntakePair {
   replyMs: number | null;
   /** frames between the Enter and the reply frame whose rows show the `thinking` status word (§4.8) */
   thinkingFrames: number;
+  /** Enter → the first frame written after it (null when none arrived) */
+  firstFrameMs: number | null;
+  /** that first frame already carries the `[you] <text>` bubble */
+  bubbleInFirstFrame: boolean;
 }
 
 export interface IntakeSeries {
@@ -50,12 +61,16 @@ export interface IntakeSeries {
   messages: number;
   /** measured Enters whose `send` record could not be located (no timing record or no capture offset): must be 0 for `pass` */
   dropped: number;
-  /** Enter → `[you]` bubble frame */
+  /** Enter → `[you]` bubble frame, over the warm messages (2…n) — the gated figure */
   bubble: LatencySummary;
-  /** Enter → `[jevcode]` reply frame, raw */
+  /** Enter → `[jevcode]` reply frame, raw, over the warm messages */
   reply: LatencySummary;
-  /** the reply figure minus the mock's delay (equals `reply` at 0 ms) — the harness's own share, the gated figure */
+  /** the reply figure minus the mock's delay (equals `reply` at 0 ms), over the warm messages — the harness's own share, the gated figure */
   replyNet: LatencySummary;
+  /** the session's first message, reported apart (null when its Enter was not located) */
+  cold: { bubbleMs: number | null; replyMs: number | null; firstFrameMs: number | null; bubbleInFirstFrame: boolean } | null;
+  /** messages (cold included) whose first frame after Enter carries the bubble — reported */
+  bubbleInFirstFrame: number;
   /** messages whose window showed at least one `thinking` frame */
   thinkingSeen: number;
   /** 1 when a frame's status row reads `step <n>/<max>` (a run went live), else 0 — must be 0 */
@@ -122,6 +137,10 @@ export function pairIntake(timing: readonly TimingStep[], frames: readonly Frame
     let replyAt: number | null = null;
     let thinking = 0;
     let replyIdx = -1;
+    // the first frame written after the Enter (a frame that began before the write cannot show it)
+    const off = s.off;
+    const first = frames.find((f) => f.start >= off);
+    const firstAt = first === undefined ? null : frameTime(first, chunks);
     for (let k = cursor; k < frames.length; k++) {
       const f = frames[k]!;
       if (f.end <= s.off) continue;
@@ -135,7 +154,19 @@ export function pairIntake(timing: readonly TimingStep[], frames: readonly Frame
       if (showsThinking(f)) thinking += 1;
     }
     if (replyIdx >= 0) cursor = replyIdx + 1;
-    out.push({ step, text, sentAt: s.t, bubbleAt, replyAt, bubbleMs: bubbleAt === null ? null : Math.max(0, bubbleAt - s.t), replyMs: replyAt === null ? null : Math.max(0, replyAt - s.t), thinkingFrames: thinking });
+    out.push({
+      step,
+      index: i,
+      text,
+      sentAt: s.t,
+      bubbleAt,
+      replyAt,
+      bubbleMs: bubbleAt === null ? null : Math.max(0, bubbleAt - s.t),
+      replyMs: replyAt === null ? null : Math.max(0, replyAt - s.t),
+      thinkingFrames: thinking,
+      firstFrameMs: firstAt === null ? null : Math.max(0, firstAt - s.t),
+      bubbleInFirstFrame: first !== undefined && hasBubble(first, text),
+    });
   }
   return out;
 }
@@ -148,14 +179,18 @@ function summary(values: readonly (number | null)[]): LatencySummary {
 /**
  * The series verdicts from its pairs — pure, so the gate logic is unit-tested without a pty. `expected` is the number of
  * messages typed: a measured Enter that `pairIntake` could not locate (a lost timing record) shrinks `pairs`, and the
- * series is then incomplete (`dropped > 0`) rather than a shorter passing series.
+ * series is then incomplete (`dropped > 0`) rather than a shorter passing series. The cold first message (`index` 0) is
+ * reported apart and every gate applies to the warm ones; a series needs at least one warm message to be judged.
  */
 export function judgeIntake(name: IntakeSeriesName, jevMs: number, pairs: readonly IntakePair[], hygiene: { runsStarted: number; clears: number; regionMax: number; rows: number; exitCode: number | null; timedOut: boolean }, expected: number = pairs.length): Omit<IntakeSeries, 'rows' | 'columns'> {
-  const bubble = summary(pairs.map((p) => p.bubbleMs));
-  const reply = summary(pairs.map((p) => p.replyMs));
-  const replyNet = summary(pairs.map((p) => (p.replyMs === null ? null : Math.max(0, p.replyMs - jevMs))));
+  const coldPair = pairs.find((p) => p.index === 0);
+  const warm = pairs.filter((p) => p.index !== 0);
+  const bubble = summary(warm.map((p) => p.bubbleMs));
+  const reply = summary(warm.map((p) => p.replyMs));
+  const replyNet = summary(warm.map((p) => (p.replyMs === null ? null : Math.max(0, p.replyMs - jevMs))));
   const dropped = Math.max(0, expected - pairs.length);
-  const complete = dropped === 0 && pairs.length === expected && bubble.samples === pairs.length && reply.samples === pairs.length && pairs.length > 0;
+  const located = pairs.every((p) => p.bubbleMs !== null && p.replyMs !== null);
+  const complete = dropped === 0 && pairs.length === expected && located && warm.length > 0 && bubble.samples === warm.length && reply.samples === warm.length;
   const bubbleOk = complete && bubble.p95 !== null && bubble.p95 < INTAKE_BUBBLE_GATE_MS;
   const replyOk = complete && replyNet.p95 !== null && replyNet.p95 <= INTAKE_REPLY_GATE_MS;
   const hygieneOk = hygiene.runsStarted === 0 && hygiene.clears === 0 && hygiene.regionMax <= hygiene.rows - 2 && hygiene.exitCode === 0 && !hygiene.timedOut;
@@ -167,6 +202,8 @@ export function judgeIntake(name: IntakeSeriesName, jevMs: number, pairs: readon
     bubble,
     reply,
     replyNet,
+    cold: coldPair === undefined ? null : { bubbleMs: coldPair.bubbleMs, replyMs: coldPair.replyMs, firstFrameMs: coldPair.firstFrameMs, bubbleInFirstFrame: coldPair.bubbleInFirstFrame },
+    bubbleInFirstFrame: pairs.filter((p) => p.bubbleInFirstFrame).length,
     thinkingSeen: pairs.filter((p) => p.thinkingFrames > 0).length,
     runsStarted: hygiene.runsStarted,
     clears: hygiene.clears,
@@ -225,6 +262,7 @@ async function runSeries(root: string, bin: string, name: IntakeSeriesName, jevM
 export const INTAKE_DEVIATIONS: readonly string[] = [
   'the live gate of TUI-DESIGN-2 §9 (intake reply wall time p95 < 1.5 s over a real provider) is measured by the S6 live scenario and test/live/intake.live.test.ts, not here: this probe never touches the network and gates the harness share against the mock decider (≤ 40 ms p95 at 0 ms, and net of the delay at JEVCODE_MOCK_JEV_MS=150)',
   'the bubble figure is the frame carrying the `[you]` item, not the composer echo of Enter: at 0 ms the bubble and the reply usually land in one immediate <Static> render, so the two figures coincide there and come apart only in the delayed series',
+  "the p95 gates apply to the warm messages 2…n: the session's cold first message (first-use imports, the first Jev request) is reported apart; bubbleInFirstFrame (the bubble already in the first frame after Enter) is reported, not gated",
 ];
 
 export async function measureIntakeLatency(opts: { root: string; bin: string; messages?: number; onProgress?: (line: string) => void }): Promise<IntakeLatencyResult> {
@@ -232,7 +270,7 @@ export async function measureIntakeLatency(opts: { root: string; bin: string; me
   const series: IntakeSeries[] = [];
   const report = (s: IntakeSeries): void => {
     series.push(s);
-    opts.onProgress?.(`intake ${s.name} (mock ${s.jevMs} ms): ${s.bubble.samples}/${s.messages} bubbles, p50 ${s.bubble.p50?.toFixed(1)} p95 ${s.bubble.p95?.toFixed(1)} max ${s.bubble.max?.toFixed(1)} ms (gate < ${INTAKE_BUBBLE_GATE_MS}${s.bubbleOk ? '' : ' EXCEEDED'}); ${s.reply.samples}/${s.messages} replies, p50 ${s.reply.p50?.toFixed(1)} p95 ${s.reply.p95?.toFixed(1)} max ${s.reply.max?.toFixed(1)} ms raw, p95 ${s.replyNet.p95?.toFixed(1)} ms net of the delay (gate ≤ ${INTAKE_REPLY_GATE_MS}${s.replyOk ? '' : ' EXCEEDED'}); thinking seen in ${s.thinkingSeen}/${s.messages}; ${s.dropped} Enter${s.dropped === 1 ? '' : 's'} not located; runs started ${s.runsStarted}, clears ${s.clears}, region max ${s.regionMax}, exit ${s.exitCode}${s.timedOut ? ' TIMEOUT' : ''} → ${s.pass ? 'pass' : 'FAIL'}`);
+    opts.onProgress?.(`intake ${s.name} (mock ${s.jevMs} ms): cold message bubble ${s.cold?.bubbleMs?.toFixed(1) ?? '–'} ms / reply ${s.cold?.replyMs?.toFixed(1) ?? '–'} ms (first frame after Enter ${s.cold?.firstFrameMs?.toFixed(1) ?? '–'} ms); bubble in the first frame after Enter ${s.bubbleInFirstFrame}/${s.messages}; warm: ${s.bubble.samples}/${s.messages - 1} bubbles, p50 ${s.bubble.p50?.toFixed(1)} p95 ${s.bubble.p95?.toFixed(1)} max ${s.bubble.max?.toFixed(1)} ms (gate < ${INTAKE_BUBBLE_GATE_MS}${s.bubbleOk ? '' : ' EXCEEDED'}); ${s.reply.samples}/${s.messages - 1} replies, p50 ${s.reply.p50?.toFixed(1)} p95 ${s.reply.p95?.toFixed(1)} max ${s.reply.max?.toFixed(1)} ms raw, p95 ${s.replyNet.p95?.toFixed(1)} ms net of the delay (gate ≤ ${INTAKE_REPLY_GATE_MS}${s.replyOk ? '' : ' EXCEEDED'}); thinking seen in ${s.thinkingSeen}/${s.messages}; ${s.dropped} Enter${s.dropped === 1 ? '' : 's'} not located; runs started ${s.runsStarted}, clears ${s.clears}, region max ${s.regionMax}, exit ${s.exitCode}${s.timedOut ? ' TIMEOUT' : ''} → ${s.pass ? 'pass' : 'FAIL'}`);
   };
   report(await runSeries(opts.root, opts.bin, 'mock0', 0, n));
   report(await runSeries(opts.root, opts.bin, 'mock150', INTAKE_DELAY_MS, n));

@@ -541,7 +541,7 @@ async function measureAll(flags: ParsedFlags, ctx: { root: string; env: NodeJS.P
     composer = await measureComposerLatency({ root, bin, onProgress: progress });
   }
   if (probes.includes('intake-latency')) {
-    log('perf: intake reply latency (real pty 24x80, chat --mock: 20 greetings and tool questions, Enter → [you] bubble frame and Enter → [jevcode] reply frame; mock decider at 0 ms, then delayed 150 ms through JEVCODE_MOCK_JEV_MS)…\n');
+    log('perf: intake reply latency (real pty 24x80, chat --mock: 20 greetings and tool questions, Enter → [you] bubble frame and Enter → [jevcode] reply frame, gated over the warm messages, the cold first one and the first-frame bubble reported; mock decider at 0 ms, then delayed 150 ms through JEVCODE_MOCK_JEV_MS)…\n');
     intake = await measureIntakeLatency({ root, bin, onProgress: progress });
   }
   // opt-in, imported lazily so a release run never loads it
