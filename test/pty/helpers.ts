@@ -177,12 +177,13 @@ export function cleanupScratch(): void {
 }
 
 /**
- * The variables `childEnv` removes from the caller's environment: CI, colour, SSH and dev hooks, every key variable
+ * The variables `childEnv` removes from the caller's environment: CI, colour, SSH and dev hooks (the mock knobs included:
+ * `JEVCODE_MOCK_CHAT_STREAM` in a developer's shell would turn every `--mock` chat reply into a timed stream), every key variable
  * (TUI-DESIGN-2 §1.1 / §8.2: the zero-argument and mode-switch scenarios depend on which keys exist; a developer's shell
  * must not decide), `JEVCODE_CONFIG` (a configured credentials file would be read before the XDG/legacy candidates,
  * `src/config/resolve.ts`) and the terminal multiplexer markers.
  */
-export const CHILD_ENV_UNSET: readonly string[] = ['CI', 'CONTINUOUS_INTEGRATION', 'NO_COLOR', 'FORCE_COLOR', 'SSH_TTY', 'SSH_CONNECTION', 'JEVCODE_TRACE', 'JEVCODE_FAULT', 'JEVCODE_MOCK_REVIEW_AT', 'JEVCODE_AUTONOMY', 'JEVCODE_MOCK_INTAKE', 'JEVCODE_MOCK_JEV_MS', 'JEVCODE_HOME', 'JEVCODE_CONFIG', 'JEVCODE_ASSERT_NO_NETWORK', 'JEVCODE_MODE', 'JEV_PROVIDER', 'JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'JEVCODE_API_KEY', 'JEVCODE_EXTRA_ENV_FILE', 'PTY_TERM', 'PTY_KILL_ON_TIMEOUT', 'PTY_AUTO_REVIEW', 'TERM_PROGRAM', 'TMUX', 'STY'];
+export const CHILD_ENV_UNSET: readonly string[] = ['CI', 'CONTINUOUS_INTEGRATION', 'NO_COLOR', 'FORCE_COLOR', 'SSH_TTY', 'SSH_CONNECTION', 'JEVCODE_TRACE', 'JEVCODE_FAULT', 'JEVCODE_MOCK_REVIEW_AT', 'JEVCODE_AUTONOMY', 'JEVCODE_MOCK_INTAKE', 'JEVCODE_MOCK_JEV_MS', 'JEVCODE_MOCK_CHAT_STREAM', 'JEVCODE_MOCK_DELTA_MS', 'JEVCODE_PERF_STREAM_LOG', 'JEVCODE_HOME', 'JEVCODE_CONFIG', 'JEVCODE_ASSERT_NO_NETWORK', 'JEVCODE_MODE', 'JEV_PROVIDER', 'JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'JEVCODE_API_KEY', 'JEVCODE_EXTRA_ENV_FILE', 'PTY_TERM', 'PTY_KILL_ON_TIMEOUT', 'PTY_AUTO_REVIEW', 'TERM_PROGRAM', 'TMUX', 'STY'];
 
 /**
  * The child environment: the caller's env minus `CHILD_ENV_UNSET`, plus an isolated `HOME`, `JEVCODE_HOME` and XDG

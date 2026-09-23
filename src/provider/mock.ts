@@ -6,6 +6,11 @@
  * (`length`), reasoning tokens and a generation id. Text and then the tool-argument JSON stream in
  * `deltaChunkSize` pieces, so a signal can land mid-arguments and `onCancelled` reports the streamed
  * facts exactly as the HTTP providers do (§4.8; the estimate itself is the engine's).
+ *
+ * A turn with `deltas` streams exactly those pieces, one per `deltaGapMs`, paced against deadlines (`t0 + latencyMs +
+ * (i + 1) · gap`): a late wake-up (macOS timer coalescing, a busy loop) shortens the next wait instead of pushing every
+ * later delta back, and nothing spins — this runs inside the TUI process whose paint latency the stream probe measures
+ * (`src/perf/stream-latency.ts`). `onEmit` sees each delta's `process.hrtime.bigint()` just before `onDelta`.
  */
 import { ProviderHttpError } from '../errors.js';
 import type { CancelledGeneration, GenerateOptions, GenerateRequest, GenerateResult, MockProviderOptions, MockTurn, Provider, TokenUsage } from '../core/types.js';
@@ -16,14 +21,18 @@ export const MOCK_DEFAULT_USAGE: TokenUsage = { inputTokens: 1000, outputTokens:
 /** the deterministic answer a `--mock` chat turn gets (a chat request offers no tools, so it is never a step of the trajectory) */
 export const MOCK_CHAT_REPLY = "Hi. I'm JevCode (mock reply).";
 
+/** one `MockProviderOptions.onEmit` record: the delta's index in its turn, its length, `process.hrtime.bigint()` at emission */
+export type MockEmit = Parameters<NonNullable<MockProviderOptions['onEmit']>>[0];
+
 /**
  * `--mock` turns: the scripted trajectory for the run loop, `MOCK_CHAT_REPLY` for a chat request (no tools offered),
  * which consumes no scripted turn — so a conversation before or between runs leaves the trajectory where it was.
+ * `reply` may be a whole turn (the stream probe's timed `deltas`, `src/cli/mock-trajectory.ts` `mockChatReplyFromEnv`).
  */
-export function withMockChat(turns: readonly MockTurn[], reply: string = MOCK_CHAT_REPLY): (req: GenerateRequest) => MockTurn {
+export function withMockChat(turns: readonly MockTurn[], reply: string | MockTurn = MOCK_CHAT_REPLY): (req: GenerateRequest) => MockTurn {
   let i = 0;
   return (req: GenerateRequest): MockTurn => {
-    if (req.tools === undefined || req.tools.length === 0) return { text: reply };
+    if (req.tools === undefined || req.tools.length === 0) return typeof reply === 'string' ? { text: reply } : reply;
     const turn = turns[i++];
     if (turn === undefined) throw new ProviderHttpError(`mock provider: no scripted turn for call ${i} (have ${turns.length})`, { status: 0, retryable: false });
     return turn;
@@ -33,6 +42,8 @@ export function withMockChat(turns: readonly MockTurn[], reply: string = MOCK_CH
 export interface MockProviderDeps {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   now?: () => number;
+  /** the emission clock handed to `onEmit` (default `process.hrtime.bigint`, which shares a base with the typist's CLOCK_MONOTONIC_RAW record) */
+  hrtimeNs?: () => bigint;
 }
 
 function nextTurn(opts: MockProviderOptions, req: GenerateRequest, index: number, genOpts: GenerateOptions): MockTurn {
@@ -55,6 +66,7 @@ function chunks(text: string, size: number | undefined): string[] {
 export function createMockProvider(opts: MockProviderOptions, deps: MockProviderDeps = {}): Provider {
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? monotonicNow;
+  const hrtimeNs = deps.hrtimeNs ?? ((): bigint => process.hrtime.bigint());
   const model = opts.model ?? 'mock';
   let calls = 0;
 
@@ -69,21 +81,30 @@ export function createMockProvider(opts: MockProviderOptions, deps: MockProvider
       if (turn.error) {
         throw new ProviderHttpError(`mock provider: scripted HTTP ${turn.error.status}`, { status: turn.error.status, retryable: turn.error.retryable });
       }
-      const text = turn.text ?? '';
+      const timed = turn.deltas !== undefined;
+      const text = timed ? (turn.deltas ?? []).join('') : (turn.text ?? '');
       const rawJson = turn.toolCall ? turn.toolCall.rawJson || JSON.stringify(turn.toolCall.input) : '';
-      const textPieces = chunks(text, opts.deltaChunkSize);
+      const textPieces = timed ? [...(turn.deltas ?? [])] : chunks(text, opts.deltaChunkSize);
       const latency = turn.latencyMs ?? 0;
       // Spread the scripted latency evenly over the text deltas so the TUI sees a stream, not a burst after a pause; the
       // tool-argument pieces follow the text without delay (the wire order), chunked so a signal can land inside them.
-      const perPiece = textPieces.length > 0 ? latency / textPieces.length : latency;
+      // A timed turn (`deltas`) instead waits for each delta's deadline, `latencyMs` being its time to first byte.
+      const perPiece = timed ? 0 : textPieces.length > 0 ? latency / textPieces.length : latency;
+      const gap = timed ? Math.max(0, turn.deltaGapMs ?? 0) : 0;
+      let deadline = t0 + latency;
       let streamedText = '';
       let toolChars = 0;
       try {
         if (textPieces.length === 0 && latency > 0) await sleep(latency, genOpts.signal);
-        for (const piece of textPieces) {
-          if (perPiece > 0) await sleep(perPiece, genOpts.signal);
+        for (const [i, piece] of textPieces.entries()) {
+          if (timed) {
+            deadline += gap;
+            const wait = deadline - now();
+            if (wait > 0) await sleep(wait, genOpts.signal);
+          } else if (perPiece > 0) await sleep(perPiece, genOpts.signal);
           if (genOpts.signal.aborted) throw genOpts.signal.reason;
           streamedText += piece;
+          opts.onEmit?.({ i, chars: piece.length, ns: hrtimeNs() });
           genOpts.onDelta?.(piece);
         }
         for (const piece of chunks(rawJson, opts.deltaChunkSize)) {

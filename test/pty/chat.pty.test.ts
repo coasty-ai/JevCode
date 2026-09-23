@@ -9,10 +9,13 @@
  * the first frame is splash frame 0 (§5) and still carries `step 0/–`, and the geometry settle patterns match any
  * full-width row (the brand row is no longer one dim run).
  */
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { NAMED_ANCHORS, latin1View, locateAnchor } from '../../src/perf/pty.js';
+import { markerRe, streamPreset } from '../../src/perf/stream-fixture.js';
+import type { StreamLogFile } from '../../src/cli/mock-trajectory.js';
 import {
   BADGE_DEFAULT,
   CHAT_OPEN,
@@ -36,6 +39,8 @@ import {
   echoStep,
   frames,
   fullWidthRowStep,
+  labelStep,
+  registerScratch,
   hasExpect,
   jevcodeProcesses,
   markOf,
@@ -44,7 +49,9 @@ import {
   sttyAll,
   sttyFlag,
   runFinishedStep,
+  staticRows,
   submitTask,
+  syncFrames,
   timingOf,
   ttyOf,
   units,
@@ -489,4 +496,46 @@ describe.skipIf(!hasExpect)('pty: perf anchor liveness (src/perf/pty.ts NAMED_AN
       expect(at.get('run-started')!).toBeLessThan(at.get('run-end')!);
     });
   }
+});
+
+/**
+ * The streamed `--mock` chat reply (`JEVCODE_MOCK_CHAT_STREAM`, the stream probe's fixture — `src/perf/stream-latency.ts`):
+ * the mock emits the preset's 46 deltas at the requested gap through the real chat path, logs every emission for the
+ * probe's clock bridge, and the whole reply lands. What is asserted is the mock and the path, never today's rendering
+ * of a stream (that is the probe's red baseline): the text arrives progressively — some marker is on screen in a frame
+ * before the reply's LAST marker first appears — and every marker ends up in the scrollback.
+ */
+describe.skipIf(!hasExpect)('pty: streamed --mock chat reply (JEVCODE_MOCK_CHAT_STREAM, the stream probe fixture)', () => {
+  it('mixed at 20 ms: 46 emissions logged in order, text on screen before the last delta, every marker committed to the scrollback', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'jevcode-pty-stream-'));
+    registerScratch(dir);
+    const log = join(dir, 'emissions.json');
+    const preset = streamPreset('mixed');
+    const r = await drive({
+      name: 'chat-streamed-reply',
+      args: ['chat', '--mock'],
+      env: { JEVCODE_MOCK_CHAT_STREAM: 'mixed', JEVCODE_MOCK_DELTA_MS: '20', JEVCODE_PERF_STREAM_LOG: log },
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Sure k01\\.'), 'expect Done k05', ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    // the emission log is written once, at exit: one stream, every delta in order
+    const file = JSON.parse(readFileSync(log, 'utf8')) as StreamLogFile;
+    expect(file).toMatchObject({ preset: 'mixed', gapMs: 20, deltas: preset.deltas.length });
+    expect(file.emissions.map((e) => [e.s, e.i])).toEqual(preset.deltas.map((_, i) => [0, i]));
+    const ns = file.emissions.map((e) => BigInt(e.ns));
+    // deadline pacing: 45 gaps of 20 ms span at least ~0.9 s (a late wake-up shortens the next wait, never stretches the total by much)
+    expect(Number(ns.at(-1)! - ns[0]!) / 1e6).toBeGreaterThan(45 * 20 - 5);
+    // progressive: some marker is on screen before the frame where the reply's last marker first appears
+    const markers = preset.markers.filter((m): m is string => m !== null);
+    const last = markers.at(-1)!;
+    const all = syncFrames(r.text);
+    const lastAt = all.findIndex((f) => f.lines.some((l) => markerRe(last).test(l)));
+    expect(lastAt).toBeGreaterThan(0);
+    expect(all.slice(0, lastAt).some((f) => f.lines.some((l) => markers.slice(0, -1).some((m) => markerRe(m).test(l))))).toBe(true);
+    // the whole reply lands in the scrollback
+    const committed = staticRows(r.text).join('\n');
+    for (const m of markers) expect(committed, m).toMatch(markerRe(m));
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+  });
 });

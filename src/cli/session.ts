@@ -807,9 +807,11 @@ export async function buildProvider(config: ResolvedConfigWithDiagnostics, flags
   }
   if (flags.mock || flags.mockGenerator) {
     const { createMockProvider, withMockChat } = await import('../provider/mock.js');
-    const { mockTrajectory } = await import('./mock-trajectory.js');
-    // `withMockChat`: a chat turn (no tools) gets the deterministic reply and leaves the trajectory for the run loop
-    return createMockProvider({ turns: withMockChat(mockTrajectory(Number(flags.mockSteps ?? 8))) });
+    const { mockChatReplyFromEnv, mockTrajectory } = await import('./mock-trajectory.js');
+    // `withMockChat`: a chat turn (no tools) gets the deterministic reply and leaves the trajectory for the run loop;
+    // `mockChatReplyFromEnv`: the stream probe's knobs (JEVCODE_MOCK_CHAT_STREAM …) — `{}`, today's reply, when unset
+    const chat = mockChatReplyFromEnv(process.env);
+    return createMockProvider({ turns: withMockChat(mockTrajectory(Number(flags.mockSteps ?? 8)), chat.reply), ...(chat.onEmit !== undefined ? { onEmit: chat.onEmit } : {}) });
   }
   const gen = config.generator();
   // every provider through the registry, so each uses ITS OWN adapter — the two-client switch that stood here sent
