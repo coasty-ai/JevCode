@@ -37,7 +37,9 @@ import { memo, useMemo, type ComponentProps } from 'react';
 import { Box, Static, Text } from 'ink';
 import { PaneBoundary, paneFailedLine, type PaneFailure } from './PaneBoundary.js';
 import { stringWidth } from './composer/width.js';
-import { formatTranscriptItem, isChatLabel, stepLabel, type TranscriptItem } from './plain.js';
+import { formatTranscriptItem, isChatLabel, isRunHeaderItem, stepLabel, type TranscriptItem } from './plain.js';
+import { PROSE_LABEL, proseLayout, type ProseLayout } from './reply-state.js';
+import type { ProseStyle } from './transcript/markdown.js';
 import { itemRole, labelRole, textProps, themeFor, type ColorOn, type ColorRole, type Theme } from './theme.js';
 import { GLYPHS, glyphTwin, type GlyphSet } from './glyphs.js';
 import { FLUSH_MIN_COLUMNS, LABEL_GUTTER, STACKED_MIN_COLUMNS, STATIC_ITEM_MAX_ROWS, cappedTailRow, cappedTailRowAscii, cappedTailRungs, capItemRows, gutterBodyWidth, gutterIndent, gutterMode, isCappedTailRow, rungBodyWidth, type GutterMode } from './gutter.js';
@@ -94,6 +96,12 @@ export interface TranscriptProps {
    * (`isStaticDirty` → `onImmediateRender`) instead of the 34 ms throttle's trailing edge. Nothing else re-renders it.
    */
   keySeq?: number;
+  /**
+   * The stream scheduler's leading-edge counter (`UiState.paintSeq`, TUI map top change 4): the first streamed append after
+   * a quiet interval bumps it, which hands `<Static>` a fresh `style` exactly as a key does, so the first token of a reply
+   * paints on Ink's immediate path instead of waiting out the trailing edge of the render throttle.
+   */
+  paintSeq?: number;
 }
 
 /** `<Static>`'s `style` prop type (a fresh object per key; the content never changes). */
@@ -117,12 +125,10 @@ export function itemFailedRow(errorName: string, log?: string): string {
  * and `[run] git <branch> · <state>` (`/status` has git, and the status row's git zone repeats it every second).
  * They are dropped at the TUI's item filter only: `--plain`, `--json` and `transcript.log` keep every one of them,
  * exactly like the quiet start's `[sandbox]` rows. `[run] finished · …` stays — it is the one row the run's outcome
- * lives on. The `workspace` kind also carries `instructions: …` and the HEAD-drift warning, which are kept.
+ * lives on. The `workspace` kind also carries `instructions: …` and the HEAD-drift warning, which are kept. The
+ * predicate lives in `plain.ts` (the reducer reads it too, AGENT-LOOP-DESIGN §9.4) and is re-exported here.
  */
-export function isRunHeaderItem(item: TranscriptItem): boolean {
-  if (item.kind === 'run:start') return true;
-  return item.kind === 'workspace' && /^git\b/.test(item.text);
-}
+export { isRunHeaderItem };
 
 /** TUI-DESIGN-2 §4.5: the label of a row — `item.label` (`[ui]`, `[you]`, `[jevcode]`, …) or `stepLabel(step)`. */
 export function itemLabel(item: TranscriptItem): string {
@@ -314,14 +320,76 @@ export function itemRenderRows(item: TranscriptItem, columns: number | undefined
   return { body: all.slice(0, Math.min(body.length, all.length)), detail: all.slice(Math.min(body.length, all.length)), mode, indent, width, fence: f.fence, capped: true };
 }
 
+/** AGENT-LOOP-DESIGN §9.4: the Ink props of a prose style (bold · the code role · the bullet in the accent · a bold heading). */
+function proseStyleProps(style: ProseStyle, theme: Theme, color: ColorOn): { color?: string; dimColor?: boolean; bold?: boolean } {
+  switch (style) {
+    case 'bold':
+    case 'heading':
+      return { bold: true };
+    case 'code':
+      return textProps(theme, 'code', color);
+    case 'bullet':
+      return textProps(theme, 'accent', color);
+    case 'plain':
+      return {};
+  }
+}
+
+/** The props of the reply block's streaming caret (`▍`, the legacy live region's `sweep`). */
+export interface ProseCaret {
+  readonly text: string;
+}
+
+/**
+ * AGENT-LOOP-DESIGN §9.4 / §A1: every terminal row one prose item draws, as a flat list of one-row `<Text>`s — the blank
+ * spacer row, the label row (stacked / flush rungs), then the body rows with the label (or its blank cell) in the gutter.
+ * `<Static>` renders the whole list; the reply block renders the tail of the same list, so a committed line draws the
+ * rows it streamed in, byte for byte. `caret` is appended to the last body row (never wider: the row truncates).
+ */
+export function proseItemRows(item: TranscriptItem, prev: TranscriptItem | null, columns: number | undefined, theme: Theme, color: ColorOn, glyphs: GlyphSet, caret: ProseCaret | null = null, layout?: ProseLayout): React.JSX.Element[] {
+  const l = layout ?? proseLayout(item, prev, columns, glyphs);
+  const label = glyphTwin(PROSE_LABEL, glyphs);
+  const lProps = labelProps(item, theme, color, isTurnContinuation(item, prev));
+  const out: React.JSX.Element[] = [];
+  if (l.spacer) out.push(<Text key={`${item.key}:sp`} wrap="truncate"> </Text>);
+  if (l.labelRow) out.push(<Text key={`${item.key}:lr`} wrap="truncate" {...lProps}>{label}</Text>);
+  const gutter = l.mode === 'gutter' ? l.indent - 1 : 0;
+  l.rows.forEach((row, i) => {
+    // the caret only ever takes a FREE cell: on a full row it would push Ink's truncation ellipsis over the last glyph
+    const last = i === l.rows.length - 1 && stringWidth(row.parts.map((p) => p.text).join('')) < l.width;
+    out.push(
+      <Text key={`${item.key}:r${i}`} wrap="truncate">
+        {l.mode === 'gutter' ? i === 0 && l.labelCell ? <Text {...lProps}>{gutterLabel(label)}</Text> : ' '.repeat(gutter) : null}
+        {l.mode === 'gutter' ? ' ' : l.mode === 'stacked' ? '  ' : ''}
+        {row.parts.map((p, k) => (
+          <Text key={`p${k}`} {...proseStyleProps(p.style, theme, color)}>
+            {p.text}
+          </Text>
+        ))}
+        {last && caret !== null && caret.text !== '' ? <Text {...textProps(theme, 'sweep', color)}>{caret.text}</Text> : null}
+      </Text>,
+    );
+  });
+  return out;
+}
+
 /**
  * TUI-DESIGN-4 §2.3 (D-AB) / §5.1 P-C3: one rendered item at its rung. `gutter` is round 3's shape unchanged. In
  * `stacked` the label takes its own row and the body hangs at 2 cells, so a 24–33-column terminal keeps every
  * character instead of wrapping a 1-cell body. In `flush` the label box is dropped entirely and the label is
  * prefixed into the body's text — `columns ≤ 10` degrades to plain wrapped text rather than a zero-width body
  * (`flexShrink={0}` on a 9-cell box would otherwise eat the whole row). The cap is applied to engine items only.
+ * AGENT-LOOP-DESIGN §9.4: a prose item draws `proseItemRows` instead — the rows the reply block streamed it in.
  */
-function TranscriptRow({ item, prev, theme, color, glyphs, columns }: { item: TranscriptItem; prev: TranscriptItem | null; theme: Theme; color: ColorOn; glyphs: GlyphSet; columns: number | undefined }): React.JSX.Element {
+export function TranscriptRow({ item, prev, theme, color, glyphs, columns }: { item: TranscriptItem; prev: TranscriptItem | null; theme: Theme; color: ColorOn; glyphs: GlyphSet; columns: number | undefined }): React.JSX.Element {
+  if (item.prose !== undefined) {
+    const hasWidth = columns !== undefined && Number.isFinite(columns) && columns > 0;
+    return (
+      <Box flexDirection="column" {...(hasWidth ? { width: columns } : {})}>
+        {proseItemRows(item, prev, columns, theme, color, glyphs)}
+      </Box>
+    );
+  }
   const label = glyphTwin(itemLabel(item), glyphs);
   const role = bodyRole(item);
   const r = itemRenderRows(item, columns, glyphs);
@@ -362,9 +430,10 @@ function TranscriptRow({ item, prev, theme, color, glyphs, columns }: { item: Tr
   );
 }
 
-function TranscriptImpl({ items, header, theme = themeFor('dark'), color = true, glyphs = GLYPHS.unicode, epoch = 0, onFail, fault, log, columns, keySeq = 0 }: TranscriptProps): React.JSX.Element {
-  // a new (empty) style object per key → Ink's reconciler runs `commitUpdate` on the <Static> box → immediate render
-  const staticStyle = useMemo<StaticStyle>(() => ({}), [keySeq]);
+function TranscriptImpl({ items, header, theme = themeFor('dark'), color = true, glyphs = GLYPHS.unicode, epoch = 0, onFail, fault, log, columns, keySeq = 0, paintSeq = 0 }: TranscriptProps): React.JSX.Element {
+  // a new (empty) style object per key (and per leading-edge stream flush) → Ink's reconciler runs `commitUpdate` on the
+  // <Static> box → immediate render
+  const staticStyle = useMemo<StaticStyle>(() => ({}), [keySeq, paintSeq]);
   // Prepending keeps the array append-only from <Static>'s point of view: index 0 never changes. After a soft-cap
   // remount (epoch > 0) the header is already in the scrollback and is never printed again.
   const all = useMemo(() => (header && epoch === 0 ? [header, ...items] : [...items]), [header, items, epoch]);
