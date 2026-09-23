@@ -11,29 +11,15 @@ import { join, posix, relative, sep } from 'node:path';
 
 import type { Candidate } from '../core/types.js';
 import { stepTimeline } from '../perf/timeline.js';
+import { WALK_SKIP_DIRS } from './skip-dirs.js';
 
 export const MAX_CANDIDATE_BYTES = 1024 * 1024;
 export const MAX_LIST_ENTRIES = 20_000;
 export const SNIFF_BYTES = 8 * 1024;
 const STAT_CONCURRENCY = 32;
 
-export const WALK_SKIP_DIRS: ReadonlySet<string> = new Set([
-  '.git', 'node_modules', '.venv', 'venv', 'dist', 'build', '__pycache__', 'target', '.tox', '.mypy_cache', '.pytest_cache',
-]);
-
-/**
- * True when a directory segment of the workspace-relative path is a `WALK_SKIP_DIRS` name (the file's own name
- * never counts). The readdir walk never enters those directories; the git listing applies the same rule to its
- * UNTRACKED entries (git.ts `lsFiles`), so a virtualenv or `node_modules` the workspace forgot to gitignore does
- * not become thousands of candidates — which is what made a three-file demo read as a repository-class checkout
- * (`isRepositoryWorkspace` counts `.py` candidates) and had the localiser name `site-packages/pip/.../wheel.py`
- * as a module file. Tracked files are never dropped: a checkout that commits `dist/` or `build/` means it.
- */
-export function underSkippedDir(relPath: string): boolean {
-  const segs = relPath.split('/');
-  for (let i = 0; i < segs.length - 1; i++) if (WALK_SKIP_DIRS.has(segs[i]!)) return true;
-  return false;
-}
+// the skip list and its predicate live in the zero-import skip-dirs.ts so git.ts can share them; re-exported for the existing importers
+export { WALK_SKIP_DIRS, underSkippedDir } from './skip-dirs.js';
 
 export interface CandidateEntry {
   bytes: number;

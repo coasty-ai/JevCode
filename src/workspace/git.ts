@@ -14,7 +14,7 @@
 import { dirname } from 'node:path';
 
 import type { ExecResult, GitHead, GitState, Sandbox, StatusEntryV2 } from '../core/types.js';
-import { underSkippedDir } from './candidates.js';
+import { underSkippedDir } from './skip-dirs.js';
 
 export interface GitRunOptions {
   timeoutMs?: number;
