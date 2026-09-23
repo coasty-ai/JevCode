@@ -1205,8 +1205,10 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
       const needJev = missing.includes('decider.apiKey');
       const found = w.found ?? null;
       const mode = w.mode ?? DEFAULT_MODE;
-      // the one-key path: both missing (nothing resolves) under provider null / openrouter, or the found-title path (Jev resolves, the generator is missing)
-      const oneKeyPath = needGen && needJev && found === null && (provider === null || provider === 'openrouter');
+      // the one-key path: both missing (nothing resolves) under provider null / openrouter, or the found-title path (Jev resolves, the generator is missing).
+      // AGENT-LOOP-DESIGN §14.2: an agent first run misses the generator alone (Jev is optional) and takes the one-key path too (the TUI reducer's twin)
+      const agentFirstRun = mode === 'agent' && w.reason === 'missing';
+      const oneKeyPath = needGen && (needJev || agentFirstRun) && found === null && (provider === null || provider === 'openrouter');
       const foundPath = needGen && !needJev && (found === 'typesafe' || found === 'jev') && (provider === null || provider === 'openrouter');
       if (oneKeyPath || foundPath) {
         if (oneKeyPath) {
