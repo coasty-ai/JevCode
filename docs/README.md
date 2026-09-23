@@ -204,7 +204,7 @@ has been verified live but not benchmarked.
 | [Jev-only](measurements/jev-only.md) | A coding agent with no generating model at all: the candidate sources, the evaluation ladder, the results and the audit verdicts. |
 | [The warm plane A/B](measurements/warm-plane.md) | Why a mechanism that is measurably faster ships switched off. |
 | [Startup, render and harness overhead](measurements/performance.md) | The program rather than the models: first frame, per-step overhead, render blocking — including the rows that are currently failing. |
-| [The side-by-side recording](media/side-by-side.md) | The recording on the front page: the task, the method, the load, the full numbers, and how to record it again. |
+| [The side-by-side recording](media/side-by-side.md) | The `llm-jev` against `jev-off` recording that was on the front page until 2026-09-23: the task, the method, the load, the full numbers, and how to record it again. |
 | [`LLM-JEV.md`](LLM-JEV.md) | The running measurement log for the `llm-jev` mode, dated entry by dated entry. The measurement pages above are the readable summary of it. |
 | [`JEV-ONLY.md`](JEV-ONLY.md) | The running log for the mode with no generating model, from first hypothesis onwards. |
 

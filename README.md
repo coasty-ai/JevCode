@@ -8,7 +8,7 @@
 
 <br>
 
-**A terminal coding agent where a decision model picks every step — and your tests decide what lands.**
+**A fast, streaming terminal coding agent: the code model does the work, and your tests decide what lands.**
 
 <br>
 
@@ -28,30 +28,6 @@
   <img alt="" src="docs/media/rule-light.svg" width="100%">
 </picture>
 
-</div>
-
-## Watch it work
-
-<div align="center">
-
-![Two terminals fixing the same bug, one in each mode](docs/media/side-by-side.gif)
-
-</div>
-
-Two terminals, one bug, the same code model in both — not a mock-up, two live runs rendered from
-the bytes the terminal actually received. On the left JevCode in its default mode. On the right the
-same binary with `--mode jev-off`, where the model drives every step on its own and nothing
-arbitrates. Both panes start at zero and replay at the same speed. **The left one stops after 40
-seconds. The right one keeps going for another two minutes.**
-
-The task, the exact commands, the machine and the one-line fix both runs landed on:
-[docs/media/side-by-side.md](docs/media/side-by-side.md).
-
-<div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/rule-dark.svg">
-  <img alt="" src="docs/media/rule-light.svg" width="100%">
-</picture>
 </div>
 
 ## Install
@@ -102,26 +78,24 @@ tests both depend on POSIX features.
 
 ### First run
 
-One key is enough. `OPENROUTER_API_KEY` serves both the decision model and the code model:
+One key is enough. `OPENROUTER_API_KEY` runs the code model (and the few quick routing calls Jev
+makes); any of the seven providers' keys works with `--provider`:
 
 ```sh
 export OPENROUTER_API_KEY=…    # or a .env file in the directory you run jevcode from
 jevcode
 ```
 
-With **no key at all**, just run `jevcode`. The wordmark appears first, then a two-step wizard asks
-which provider writes the code, takes the key at a masked prompt — never echoed, never accepted as a
-command-line argument — and offers to reuse it for Jev. It tells you the price of verifying the keys
-before it does so: one real Jev decision at about $0.00002, one 1-token completion at about
-$0.000002, and a free key-info call. Keys land in `~/.config/jevcode/config.json`, written `0600` in
-a `0700` directory.
+With **no key at all**, just run `jevcode`. The wordmark appears, then a one-field wizard takes the
+key at a masked prompt — never echoed, never accepted as a command-line argument. Keys land in
+`~/.config/jevcode/config.json`, written `0600` in a `0700` directory.
 
-Then just talk. Every message gets a reply from the code model — say hi, ask what it can do, ask who
-made it — and when a message is a coding task the reply ends with *On it — starting the run* and the
-run starts; when it is not sure, it offers *say `do it`* instead of asking you to classify your own
-sentence. The agent acts on its own by default (`autonomy: full`): an action the risk stage would
-have sent to review proceeds and is logged as `[review] auto-approved`; only a hard block stops it.
-`jevcode --autonomy review` brings the approval card back.
+Then just talk. It is one conversation: every message gets a reply from the code model, streamed as
+it is written — say hi, ask what it can do, ask who made it. Describe a change and the same reply
+turns into work: you watch it read, edit and run your tests, with a small spinning donut in the
+status bar while it thinks. It acts on its own (`autonomy: full`): nothing asks, every command runs
+in the sandbox, and `/undo` reverts any step. `jevcode --autonomy review` asks before destructive
+or unrecognised commands instead.
 
 Without a terminal — `--no-input`, `--json`, or a pipe — JevCode never prompts. It exits `2` and
 prints the exact environment variable or `jevcode login` command that would fix it.
@@ -144,6 +118,31 @@ jevcode run "Fix the failing tests in tests/test_core.py without changing the te
 </picture>
 </div>
 
+## How it works
+
+**The model drives.** The code model — `z-ai/glm-5.3-flash` through OpenRouter by default, or any
+of seven providers — reads, searches, edits and runs commands through native tool calls, several
+per reply. Reads run in parallel; edits and commands run one at a time.
+
+**Everything streams.** Prose appears as it is written, a line before it is finished; each step
+leaves one row (`Read …`, `Edit calc/core.py (+1 −1)`, `Bash python -m pytest -q · 7 passed`).
+
+**The harness keeps it honest.** Every command runs in a sandbox with a pre-image of what it may
+change, so `/undo` works per step. The run is `complete` only when the harness has seen your own
+test command pass after the last change; if the model stops without running it, the harness runs
+it.
+
+**Jev makes a few quick routing calls.** Jev, a calibrated decision model, is asked at most one
+quick question in a normal run, never decides what runs or whether you are done, and is optional.
+
+Depth: [The agent loop](docs/architecture/agent-loop.md) ·
+[the design](docs/AGENT-LOOP-DESIGN.md).
+
+<!-- default model: src/config/defaults.ts (DEFAULT_MODEL). default mode: src/config/defaults.ts (DEFAULT_MODE).
+     the loop: src/agent/driver.ts; the engine seam: src/loop/stages/agent.ts; Jev placements: src/agent/jev.ts.
+     launcher guard: bin/jevcode.js:11-15. sandbox is macOS-only seatbelt or nothing:
+     src/sandbox/seatbelt.ts (detectSandboxLevel). badges: src/config/defaults.ts (MODE_BADGE_WORD). -->
+
 ## Options
 
 ### Modes
@@ -152,10 +151,11 @@ jevcode run "Fix the failing tests in tests/test_core.py without changing the te
 
 | Mode | Badge | What runs | Keys it needs |
 | --- | --- | --- | --- |
-| `llm-jev` *(default)* | `llm+jev · verified` | The code model writes candidate patches, tests verify them, Jev arbitrates. | code model + Jev |
-| `jev-on` | `jev+llm` | The code model writes the code and Jev decides every step. | code model + Jev |
+| `agent` *(default)* | `agent` | The code model works through tools, tests verify, Jev makes a few quick routing calls. | code model (+ Jev optional) |
 | `jev-only` | `jev-only` | No generating LLM at all: the synthesizer proposes, Jev decides, tests verify. | Jev only |
-| `jev-off` | `llm-only` | The generator alone, no Jev. This is the baseline the numbers below are measured against. | code model |
+
+`llm-jev`, `jev-on` and `jev-off` are [legacy modes](#legacy-modes), still accepted for saved
+configs, resume and the bench (`/mode legacy` lists them).
 
 ### Commands
 
@@ -178,12 +178,13 @@ jevcode run "Fix the failing tests in tests/test_core.py without changing the te
 | --- | --- |
 | `--mode <name>` | the table above |
 | `--model <id>` · `--provider <name>` | the code model and who serves it (default `z-ai/glm-5.3-flash` on OpenRouter) |
+| `--autonomy <full\|review>` | `full` (default): nothing asks; `review`: a y/n card before destructive or unrecognised commands |
 | `--theme <dark\|light\|daltonized\|ansi>` | colour theme; no auto-detect |
 | `--sandbox <auto\|seatbelt\|none>` | macOS seatbelt, or nothing |
 | `--plain` · `--json` · `--no-input` | readline instead of the TUI · machine-readable · never prompt |
 | `--spend-cap <usd>` | hard stop on spend (default `$10`, or `$1` under `jev-only`) |
 
-Full tables: [docs/COMMANDS.md](docs/COMMANDS.md) (41 slash commands) ·
+Full tables: [docs/COMMANDS.md](docs/COMMANDS.md) (slash commands) ·
 [docs/KEYS.md](docs/KEYS.md) (key bindings) · `man jevcode`.
 
 ### Colour
@@ -201,10 +202,10 @@ but the hue. Pink is brand, never meaning: `[block]` is red *and* says `[block]`
 | block / error | ![#f87171](docs/media/swatch-f87171.svg) | ![#b91c1c](docs/media/swatch-b91c1c.svg) | `[block]` |
 
 `daltonized` moves the block/error family off red onto blue; `ansi` is the ANSI-16 twin for
-terminals without 256 colours. `/theme` swaps live. The wordmark at the top of this page is not a
-drawing of the program — it is generated from these same tables and from the splash grid, by
-[`scripts/gen-brand.mjs`](scripts/gen-brand.mjs); `npm run brand -- --check` fails if the
-two have drifted apart.
+terminals without 256 colours. `/theme` swaps live. The wordmark at the top of this page is
+generated from these same tables and from the splash grid by
+[`scripts/gen-brand.mjs`](scripts/gen-brand.mjs); `npm run brand -- --check` fails if the two
+have drifted apart.
 
 <div align="center">
 <picture>
@@ -213,70 +214,34 @@ two have drifted apart.
 </picture>
 </div>
 
-## Measured
+## Legacy modes
 
-Three claims, each with the run behind it. The caveats are part of the claim, not a disclaimer
-under it.
+Before 2026-09-23 the default let Jev decide every step. Those modes stay one `--mode` away.
 
-- **Solves more, faster, cheaper than a plain LLM loop.** On a 28-task development set, same build
-  and same code model, one run per arm: 28/28 solved against a plain generator-only loop's 21/28
-  (one-sided sign test, p = 0.0078); 0.225× the wall clock on the 21 tasks both arms finished; and
-  0.245× the dollars — where 78 % of JevCode's cost figure is estimated or rate-card against 0 % of
-  the baseline's, because the Jev endpoint returns no cost. Passing the tests and being the right
-  fix are scored separately: 26/28 behaviourally correct against the baseline's 20/28, with two
-  tasks where the baseline was right and JevCode was not. The guard thresholds were tuned on some
-  of those very programs, which is exactly why the next row exists.
-  [Measurements](docs/measurements/README.md)
-- **It holds up out of sample.** On a fresh 18-task slice that nothing was fitted against, and
-  against a *tuned* generator-only loop rather than a naive one: 14/18 against 9/18, p = 0.031, at
-  flat cost. On easy single-file bugs a tuned loop is slightly faster than JevCode, so "faster" is
-  a claim about the plain loop only, never a general one. On a wider out-of-sample slice that adds
-  multi-hunk and repository tasks the advantage disappears — 13/22 against 12/22, not significant —
-  and the pages below say so before they say anything else.
-  [Iterations 1–4](docs/measurements/iterations.md) ·
-  [Out of sample](docs/measurements/out-of-sample.md)
-- **It installs as one bundled JavaScript file plus a two-line launcher and starts instantly.** Zero
-  runtime dependencies — Ink and React are compiled in, and `npm install jevcode` adds exactly one
-  package — a tarball of about 1 MB, and a first frame in about 130 ms in a real terminal with the
-  network untouched, against a design budget of 300 ms.
-  [Install](docs/getting-started/install.md) ·
-  [Startup and overhead](docs/measurements/performance.md)
+| Mode | Badge | What runs |
+| --- | --- | --- |
+| `llm-jev` | `llm+jev · verified` | The code model writes candidate patches inside a search, tests verify them, Jev arbitrates. |
+| `jev-on` | `jev+llm` | The code model writes one action per step and Jev decides every step. |
+| `jev-off` | `llm-only` | The code model alone in the step loop: the control arm of the bench. |
 
-<div align="center">
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/rule-dark.svg">
-  <img alt="" src="docs/media/rule-light.svg" width="100%">
-</picture>
-</div>
+### Jev-driven modes (2026-09)
 
-## How it works
+Measured on `llm-jev` while it was the default; the agent loop has been verified live, not
+benchmarked.
 
-JevCode splits the work between two models.
+- On a 28-task development set, same build, one run per arm: 28/28 solved against a plain
+  generator-only loop's 21/28 (p = 0.0078), at 0.225× the wall clock on the tasks both finished —
+  in sample, on tasks some thresholds were tuned on.
+- Out of sample: 14/18 against a tuned loop's 9/18 (p = 0.031) on single-file bugs; on a wider
+  slice with multi-hunk and repository tasks, 13/22 against 12/22, not significant.
 
-**Jev is a calibrated decision model.** It answers every control question — what this step is for,
-which files matter, whether an action is safe to run, whether the output succeeded, whether the task
-is done. It does not write code.
-
-**A code model writes the code.** The default is `z-ai/glm-5.3-flash` through OpenRouter; Anthropic
-models are an option, not a requirement.
-
-In the default mode the patch you get is picked by a **synthesizer** that runs inside JevCode: it
-builds candidate fixes, runs your test suite against each one, and calls the code model only when the
-search needs the help. Your tests decide what landed, not a model's confidence. The synthesizer
-covers Python workspaces with a test runner JevCode can detect — anywhere else the agent falls back
-to a plain write-it-and-check-it step loop, still with Jev deciding each step.
-
-<!-- default model: src/config/defaults.ts:8 (DEFAULT_MODEL). default mode: src/config/defaults.ts:60.
-     synthesizer applicability: src/synth/index.ts:299 (synthesizerHandles).
-     launcher guard: bin/jevcode.js:11-15. sandbox is macOS-only seatbelt or nothing:
-     src/sandbox/seatbelt.ts:275 (detectSandboxLevel). modes: src/core/types.ts:808.
-     badges: src/config/defaults.ts:62 (MODE_BADGE_WORD). palette: src/tui/theme.ts. -->
+Every number, with its caveats: [Measurements](docs/measurements/README.md).
 
 ## Documentation
 
 - [Documentation index](docs/README.md) — everything below, plus the full research record
 - [Install and first run](docs/getting-started/install.md)
-- [How it works](docs/architecture/overview.md) — the step loop, the synthesizer, the sandbox
+- [How it works](docs/architecture/agent-loop.md) — the loop, the tools, streaming, safety, where Jev sits
 - [Measurements](docs/measurements/README.md) — every number on this page, with its run
 - [Decisions](docs/DECISIONS.md) — what was chosen, and what was given up for it
 - [Releasing](docs/RELEASE.md) — how a version gets to npm and the Homebrew tap
