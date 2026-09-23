@@ -13,7 +13,7 @@
  * back for `state.json`. Deriving the queue from the transcript means a step the engine discards needs no hook: its call
  * is simply issued again, and no request ever carries a `tool_use` without its `tool_result`.
  */
-import type { AgentCallSummary, AgentContext, AgentDriver, AgentNext, AgentObservation, AgentObserveResult, AgentToolName, LoopTrip, PlanDraft, Proposal, StepAgentSummary, ToolSpec } from '../core/types.js';
+import type { AgentCallSummary, AgentContext, AgentDriver, AgentNext, AgentObservation, AgentObserveResult, AgentToolName, PlanDraft, Proposal, StepAgentSummary, ToolSpec } from '../core/types.js';
 import { sha12 } from '../core/hash.js';
 import { headTail } from '../core/text.js';
 import { AbortError } from '../errors.js';
@@ -22,10 +22,10 @@ import { ContextEstimate, budgetFor, codeSummary, compactionDue, compactionText,
 import { buildHead } from './head.js';
 import { chooseLoopNudge, effortHint, progressCheck, type RunFacts } from './jev.js';
 import { AGENT_FINISH_SUMMARY_CHARS, AGENT_MAX_CALLS_PER_TURN, AGENT_OBSERVE_OUTPUT_CHARS, AGENT_PARALLEL_READS, AGENT_RAW_TEXT_CHARS, AGENT_VERIFY_MAX, AGENT_VERIFY_TIMEOUT_MS } from './limits.js';
-import { callSignature, feedLoop, progressCheckDue, resultHash, type LoopTripWithTest } from './loop.js';
+import { callSignature, feedLoop, progressCheckDue, resultHash, toLoopTrip, type LoopTripWithTest } from './loop.js';
 import { NOT_EXECUTED_STEER, PROGRESS_NUDGE, buildAgentSystemPrompt, loopNudgeText, loopTripWhat, steerNote, verifyResult, verifyTimeout } from './prompt.js';
 import { lowEffortReasoning, agentReasoning, maskingModeFor, providerLabel, sameReasoning, type MaskingMode } from './providers.js';
-import { normaliseCall, resolveToolName, type NormalisedCall } from './repair.js';
+import { deriveCall, type NormalisedCall } from './repair.js';
 import { initialState, parseState, stateJson, type AgentStateV1 } from './state.js';
 import { decideStop, isUnscopedTestRun } from './stop.js';
 import { bashStatusLine, clipMiddle, oneLine } from './tools/format.js';
@@ -51,12 +51,6 @@ interface BatchItem {
   run: (part: number | undefined) => Promise<ToolResult>;
   name: AgentCallSummary['name'];
   callSummary: string;
-}
-
-/** A recorded call as the driver runs it: the parse-time verdict, or the call normalised again (deterministic). */
-export function deriveCall(rec: RecordedCall, root: string): NormalisedCall {
-  if (rec.error !== undefined) return { id: rec.id, name: resolveToolName(rec.name) ?? 'invalid', rawName: rec.name, replayInput: rec.input, args: {}, ignored: [], error: rec.error };
-  return { id: rec.id, ...normaliseCall({ name: rec.name, input: rec.input, rawJson: JSON.stringify(rec.input) }, { root, cutOff: false, maxTokens: 0 }) };
 }
 
 class Driver implements AgentDriver {
@@ -334,7 +328,7 @@ class Driver implements AgentDriver {
     const output = batch.map((b, k) => `## ${b.callSummary}\n${results[k]!.result.text}`).join('\n\n');
     const proposal: Proposal = { goal: oneLine(batch.map((b) => b.callSummary).join(' · '), 200), action: { kind: 'read', paths: readPaths }, plan: this.plan(), rawText: ctx.redact(this.rawText(t, batch.map((b) => b.call))) };
     const seqAfter = this.snapshot(ctx);
-    const summary: StepAgentSummary = { kind: 'observe', turn, calls, seqAfter, ...(trip !== null ? { loopTrip: stripTest(trip) } : {}) };
+    const summary: StepAgentSummary = { kind: 'observe', turn, calls, seqAfter, ...(trip !== null ? { loopTrip: toLoopTrip(trip) } : {}) };
     return {
       kind: 'observe',
       proposal,
@@ -383,7 +377,7 @@ class Driver implements AgentDriver {
     else if (p?.kind === 'verify') await this.observeVerify(ctx, p, o);
     if (trip !== null) this.state.pendingLoop = trip;
     const seqAfter = this.snapshot(ctx);
-    return { loopTrip: trip === null ? null : stripTest(trip), seqAfter };
+    return { loopTrip: trip === null ? null : toLoopTrip(trip), seqAfter };
   }
 
   private async observeAct(ctx: AgentContext, t: Transcript, p: Extract<Pending, { kind: 'act' }>, o: AgentObservation): Promise<LoopTripWithTest | null> {
@@ -449,10 +443,6 @@ class Driver implements AgentDriver {
     this.remember(`verify: ${p.command} → ${exec !== undefined ? (exec.exitCode ?? 'killed') : o.outcome.status}`);
     await this.note(ctx.redact(text), 'verify');
   }
-}
-
-function stripTest(t: LoopTripWithTest): LoopTrip {
-  return { signature: t.signature, count: t.count, rule: t.rule, tool: t.tool };
 }
 
 /** A fresh driver per run (docs/AGENT-LOOP-DESIGN.md §2.2). */

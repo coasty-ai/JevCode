@@ -325,3 +325,9 @@ export function extractTextToolCalls(text: string): { calls: RawCall[]; prose: s
 export function ignoredLine(ignored: readonly string[]): string | null {
   return ignored.length === 0 ? null : `(ignored unknown arguments: ${ignored.join(', ')})`;
 }
+
+/** A recorded call as the driver runs it: its parse-time verdict, or the call normalised again (deterministic). */
+export function deriveCall(rec: { id: string; name: string; input: JsonObject; error?: string }, root: string): NormalisedCall {
+  if (rec.error !== undefined) return { id: rec.id, name: resolveToolName(rec.name) ?? 'invalid', rawName: rec.name, replayInput: rec.input, args: {}, ignored: [], error: rec.error };
+  return { id: rec.id, ...normaliseCall({ name: rec.name, input: rec.input, rawJson: JSON.stringify(rec.input) }, { root, cutOff: false, maxTokens: 0 }) };
+}

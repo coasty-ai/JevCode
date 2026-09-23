@@ -75,3 +75,8 @@ export function progressCheckDue(turns: number, lastProgressTurn: number | null)
   if (turns < AGENT_PROGRESS_FIRST_TURN) return false;
   return lastProgressTurn === null || turns - lastProgressTurn >= AGENT_PROGRESS_EVERY;
 }
+
+/** The trip as the step record and `loop:tripped` carry it (the test command only words the nudge). */
+export function toLoopTrip(t: LoopTripWithTest): LoopTrip {
+  return { signature: t.signature, count: t.count, rule: t.rule, tool: t.tool };
+}
