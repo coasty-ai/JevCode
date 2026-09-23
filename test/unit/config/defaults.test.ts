@@ -124,11 +124,11 @@ describe('the §16 SETTINGS table', () => {
     expect(() => settingSpec('nope' as SettingName)).toThrow(/unknown setting/);
   });
 
-  it('constants: run cap $2 / $0.25 (jev-only), session ×5, token cap 1e6/15 per USD, cache 0.1× / 1.25×, fps 30 / 15 / 5..30', () => {
-    expect(DEFAULT_SPEND_CAP_USD).toBe(2);
-    expect(JEV_ONLY_DEFAULT_SPEND_CAP_USD).toBe(0.25);
+  it('constants: run cap $10 / $1.00 (jev-only), session ×5, token cap 1e6/15 per USD, cache 0.1× / 1.25×, fps 30 / 15 / 5..30', () => {
+    expect(DEFAULT_SPEND_CAP_USD).toBe(10);
+    expect(JEV_ONLY_DEFAULT_SPEND_CAP_USD).toBe(1);
     expect(SESSION_CAP_MULTIPLIER).toBe(5);
-    expect(Math.floor(2 * UNPRICED_TOKENS_PER_USD)).toBe(133_333);
+    expect(Math.floor(10 * UNPRICED_TOKENS_PER_USD)).toBe(666_666);
     expect(CACHE_READ_FACTOR).toBe(0.1);
     expect(CACHE_WRITE_FACTOR).toBe(1.25);
     expect([DEFAULT_FPS, SSH_FPS, MIN_FPS, MAX_FPS]).toEqual([30, 15, 5, 30]);

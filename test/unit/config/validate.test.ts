@@ -83,22 +83,22 @@ describe('defaults and pricing', () => {
     expect(lookupPricing('z-ai/glm-5.3').pricing.cacheWritePerM).toBeCloseTo(1.05, 12);
   });
 
-  it('the $2.00 default spend cap buys 13,333,333 uncached input tokens or 4,000,000 output tokens of the default generator (Sonnet 5: 1,000,000 / 200,000)', () => {
+  it('the $10.00 default spend cap buys 66,666,666 uncached input tokens or 20,000,000 output tokens of the default generator (Sonnet 5: 5,000,000 / 1,000,000)', () => {
     const glm = lookupPricing(DEFAULT_MODEL).pricing;
     const cap = DEFAULT_SPEND_CAP_USD;
-    expect(cap).toBe(2);
+    expect(cap).toBe(10);
     const inputTokens = Math.floor((cap / glm.inputPerM) * 1e6);
     const outputTokens = Math.floor((cap / glm.outputPerM) * 1e6);
-    expect(inputTokens).toBe(13_333_333);
-    expect(outputTokens).toBe(4_000_000);
+    expect(inputTokens).toBe(66_666_666);
+    expect(outputTokens).toBe(20_000_000);
     // the cost formula the providers fall back to agrees with the conversion (within one token's price)
     expect(costFromPricing(glm, { input: inputTokens, cacheRead: 0, cacheWrite: 0, output: 0 })).toBeCloseTo(cap, 6);
     expect(costFromPricing(glm, { input: 0, cacheRead: 0, cacheWrite: 0, output: outputTokens })).toBeCloseTo(cap, 6);
     // a typical step (10k prompt of which 8k cached, 1k completion) costs well under a cent
     expect(costFromPricing(glm, { input: 2000, cacheRead: 8000, cacheWrite: 0, output: 1000 })).toBeCloseTo((2000 * 0.15 + 8000 * 0.05 + 1000 * 0.5) / 1e6, 12);
     const sonnet = lookupPricing('claude-sonnet-5').pricing;
-    expect(Math.floor((cap / sonnet.inputPerM) * 1e6)).toBe(1_000_000);
-    expect(Math.floor((cap / sonnet.outputPerM) * 1e6)).toBe(200_000);
+    expect(Math.floor((cap / sonnet.inputPerM) * 1e6)).toBe(5_000_000);
+    expect(Math.floor((cap / sonnet.outputPerM) * 1e6)).toBe(1_000_000);
     // ~13× cheaper on input, 20× on output (re-fetched 2026-09-21)
     expect(sonnet.inputPerM / glm.inputPerM).toBeCloseTo(13.3, 1);
     expect(sonnet.outputPerM / glm.outputPerM).toBeCloseTo(20, 1);
@@ -111,7 +111,7 @@ describe('defaults and pricing', () => {
     const byName = new Map(SETTINGS.map((s) => [s.name, s]));
     expect(byName.get('generator.provider')?.defaultValue).toBe('openrouter');
     expect(byName.get('generator.model')?.defaultValue).toBe('z-ai/glm-5.3-flash');
-    expect(byName.get('limits.spendCapUsd')?.defaultValue).toBe('2');
+    expect(byName.get('limits.spendCapUsd')?.defaultValue).toBe('10');
     expect(byName.get('limits.maxSteps')?.defaultValue).toBe('40');
     expect(byName.get('limits.maxWall')?.defaultValue).toBe('30m');
     expect(byName.get('limits.maxReplans')?.defaultValue).toBe('5');
@@ -157,11 +157,11 @@ describe('priced / fail-closed / cache derivation / token cap (TUI-DESIGN §9.5,
   });
   const base: Partial<Record<Name, string>> = { 'generator.provider': 'anthropic', 'generator.model': 'claude-sonnet-5', 'generator.apiKey': 'anthropic-key-1234', 'generator.maxTokens': '4096', 'limits.spendCapUsd': '2' };
 
-  it('deriveMaxGeneratorTokens = floor(spendCapUsd / 15 × 1e6); malformed caps use the $2.00 default', () => {
-    expect(deriveMaxGeneratorTokens(2)).toBe(133_333);
-    expect(deriveMaxGeneratorTokens(0.25)).toBe(16_666);
-    expect(deriveMaxGeneratorTokens(Number.NaN)).toBe(133_333);
-    expect(deriveMaxGeneratorTokens(-1)).toBe(133_333);
+  it('deriveMaxGeneratorTokens = floor(spendCapUsd / 15 × 1e6); malformed caps use the $10.00 default', () => {
+    expect(deriveMaxGeneratorTokens(10)).toBe(666_666);
+    expect(deriveMaxGeneratorTokens(1)).toBe(66_666);
+    expect(deriveMaxGeneratorTokens(Number.NaN)).toBe(666_666);
+    expect(deriveMaxGeneratorTokens(-1)).toBe(666_666);
     expect(deriveMaxGeneratorTokens(1e-9)).toBe(1);
   });
 
@@ -169,7 +169,7 @@ describe('priced / fail-closed / cache derivation / token cap (TUI-DESIGN §9.5,
     expect(unpricedModelMessage('claude-x', 2)).toBe(
       'generator.model "claude-x" has no pricing entry, so the $2.000 spend cap could not be enforced. Set JEVCODE_PRICE_IN_PER_M and JEVCODE_PRICE_OUT_PER_M (USD per million tokens), or pass --allow-unpriced to run under a token cap instead.',
     );
-    expect(unpricedModelMessage('m', Number.NaN)).toContain('$2.000');
+    expect(unpricedModelMessage('m', Number.NaN)).toContain('$10.000');
   });
 
   it('a known model is priced with the table cache rates; both overrides make an unknown model priced', () => {

@@ -132,7 +132,7 @@ export function foreignJevModelProvider(model: string, provider: JevProvider): J
   return TYPESAFE_PINNED_RE.test(n) ? 'typesafe' : null;
 }
 
-/** TUI-DESIGN §9.5 (Q40): the generator token cap under --allow-unpriced, `spendCapUsd / 15 × 1e6` (≈ 133k for $2.00). */
+/** TUI-DESIGN §9.5 (Q40): the generator token cap under --allow-unpriced, `spendCapUsd / 15 × 1e6` (≈ 667k for $10.00). */
 export function deriveMaxGeneratorTokens(spendCapUsd: number): number {
   const cap = Number.isFinite(spendCapUsd) && spendCapUsd > 0 ? spendCapUsd : DEFAULT_SPEND_CAP_USD;
   return Math.max(1, Math.floor(cap * UNPRICED_TOKENS_PER_USD));

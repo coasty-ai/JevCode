@@ -10,7 +10,7 @@
  * TUI-DESIGN §16 adds two resolution classes: launch settings (fps, renderMode, ascii, screenReader, noColor) come
  * from `resolveLaunchSettings(flags, env)` — flag > env > default, never the file (a file value is recorded as
  * `ignored:launch`) — and session settings follow the full chain through `ui(launch)`. The run spend cap default is
- * mode-keyed (P45: $0.25 under jev-only) and the session cap derives from it (5 ×, source `derived`).
+ * mode-keyed (P45: $1.00 under jev-only) and the session cap derives from it (5 ×, source `derived`).
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -595,7 +595,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     const level = entries.get('log.level');
     if (!level || layerRank(level.source) > layerRank(logFileHit.source)) entries.set('log.level', { value: TRACE_LOG_LEVEL, source: logFileHit.source });
   }
-  // TUI-DESIGN §9.1 / §16 (P45) / TUI-DESIGN-2 §1.2: the run cap default is mode-keyed on the `mode` setting ($0.25 under jev-only).
+  // TUI-DESIGN §9.1 / §16 (P45) / TUI-DESIGN-2 §1.2: the run cap default is mode-keyed on the `mode` setting ($1.00 under jev-only).
   const capR = entries.get('limits.spendCapUsd');
   if (!capR || capR.source === 'default') entries.set('limits.spendCapUsd', { value: String(defaultRunSpendCapUsd(mode)), source: 'default' });
   for (const [name, r] of launchRows(flags, env)) entries.set(name, r);
@@ -917,7 +917,7 @@ export function reconcileResumeConfig(current: ResumeCurrentInputs, runMeta: Run
 
   const c = runMeta.config;
   // TUI-DESIGN §9.1 (P45): a default meets a default — the run keeps its own mode-keyed default (a jev-only run resumed
-  // without `--mode jev-only` stays at $0.25); only a configured value (flag / env / dotenv / file) overrides the stored cap.
+  // without `--mode jev-only` stays at $1.00); only a configured value (flag / env / dotenv / file) overrides the stored cap.
   let spendCapUsd = current.limits.spendCapUsd;
   let maxGeneratorTokens = current.limits.maxGeneratorTokens;
   const storedCap = c['limits.spendCapUsd'];

@@ -776,7 +776,7 @@ export async function waitForStty(tty: string, accept: (dump: string) => boolean
  */
 export const RAW_MODE_STEP = 'expect \\x1b\\[\\?2004h';
 /**
- * The controller attaches the host and hands the renderer the session meter (`sess $0.00/10.00 ok` in the status
+ * The controller attaches the host and hands the renderer the session meter (`sess $0.00/50.00 ok` in the status
  * right zone) right before its loop awaits the first submission (§1 session loop). A key that needs the controller —
  * `/exit`, the second Ctrl-C or Ctrl-D — sent before that point is dropped (measured: `/exit` + Enter at t≈100 ms
  * clears the draft and the process stays), so every idle scenario waits for the badge first. Prompts typed earlier are

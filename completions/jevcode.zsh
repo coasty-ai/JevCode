@@ -264,7 +264,7 @@ _jevcode() {
             '--conditions[conditions to run (when omitted: the jev-on and jev-off arms)]:jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned,jev-on-next,jev-on-next-nofast]:' \
             '--concurrency[parallel runs]:n:' \
             '--live[use the real generator and Jev (requires --spend-cap)]' \
-            '--task-spend-cap[per-run spend cap (default 2.00)]:usd:' \
+            '--task-spend-cap[per-run spend cap (default 10.00)]:usd:' \
             '--allow-model-alias[allow an undated --jev-model]' \
             '--archive-runs[copy each run'\''s records (steps/decisions/jev/generator.jsonl, run.json, state.json, patch) gzipped into <results>/runs/<runId>/]' \
             '--quick[the M16 quick preset (docs/LLM-LOOP-DESIGN.md §3.5): the five Ring-2 tasks, --concurrency 3, replay by default and --spend-cap 0.05 as DEFAULTS that never override an explicit flag]' \

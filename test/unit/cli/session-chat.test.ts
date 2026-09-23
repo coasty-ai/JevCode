@@ -686,7 +686,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
     await h.ready();
     expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
     expect(bubbles(h, '[jevcode]')).toEqual([CREDITS_EXHAUSTED('jev', 402)]);
-    expect(CREDITS_EXHAUSTED('jev', 402)).toBe('OpenRouter says this key has no credits (HTTP 402). Add credits at openrouter.ai/credits, or /mode jev-only ($0.25 cap; Jev bills the same key).');
+    expect(CREDITS_EXHAUSTED('jev', 402)).toBe('OpenRouter says this key has no credits (HTTP 402). Add credits at openrouter.ai/credits, or /mode jev-only ($1.00 cap; Jev bills the same key).');
     expect(CREDITS_EXHAUSTED('jev', 402).length).toBeLessThanOrEqual(160);
     expect(reasons).toEqual([]);
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBe(0);

@@ -101,7 +101,8 @@ import { createSpendMeter } from '../spend/meter.js';
 import { resolveConfig as realResolveConfig, isEngineMode, modeFromParsedFlags, reconcileResumeConfig, resumeIdentityFromRunMeta, resumeInputsFrom } from '../config/resolve.js';
 import type { ResolvedConfigWithDiagnostics } from '../config/types.js';
 import { credentialsPath, readCredentialsFile, shadowingLine, writeConfigValue as realWriteConfigValue, writeCredentials as realWriteCredentials, type CredentialsPatch } from '../config/credentials.js';
-import { DEFAULT_MODE, MODE_BADGE_WORD, SETTINGS } from '../config/defaults.js';
+import { DEFAULT_MODE, JEV_ONLY_DEFAULT_SPEND_CAP_USD, MODE_BADGE_WORD, SETTINGS } from '../config/defaults.js';
+import { PRODUCT_CONTEXT_ASK } from '../loop/stages/context.js';
 import { parseModeHint } from '../config/launch.js';
 import { loadInstructions as realLoadInstructions, projectInstructionFile } from '../config/instructions.js';
 import { createTrustStore as realCreateTrustStore, decisionFromOption, probeTrustInputs as realProbeTrustInputs, trustKey, trustWorkspaceFlag, type TrustDecision, type TrustInputs, type TrustOption } from '../config/trust.js';
@@ -378,7 +379,7 @@ export const MODE_LLM_JEV_SET = MODE_SET_ITEM['llm-jev'];
 /** TUI-DESIGN-3 §1.7 / §10 "Chat" (R3 F5/F10): a 402 from OpenRouter on the intake or the LLM turn is "no credits", not "unreachable" (144 cells ≤ REPLY_TEXT_MAX) */
 export function CREDITS_EXHAUSTED(side: 'jev' | 'generator', status: number): string {
   void side; // both sides bill the same OpenRouter key; the text keys on the host, not the side
-  return `OpenRouter says this key has no credits (HTTP ${status}). Add credits at openrouter.ai/credits, or /mode jev-only ($0.25 cap; Jev bills the same key).`;
+  return `OpenRouter says this key has no credits (HTTP ${status}). Add credits at openrouter.ai/credits, or /mode jev-only ($${JEV_ONLY_DEFAULT_SPEND_CAP_USD.toFixed(2)} cap; Jev bills the same key).`;
 }
 /** TUI-DESIGN-3 §4.4 F12: `/new` before any session */
 export const NO_SESSION_YET = 'no session yet — the next prompt starts one';
@@ -2353,6 +2354,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         decider,
         // complete autonomy by default: under `full` a `review` verdict is approved at once and logged as one
         // informational `[review]` card; `--autonomy review` keeps the blocking y/n card. `block` stops either way.
+        contextAsk: PRODUCT_CONTEXT_ASK, // the product asks Jev little in the context stage (main 1d3648a); the bench keeps the legacy policy
         autonomy: cfg.autonomy, // the engine approves a `review` verdict itself under `full`; under `review` it asks the confirmer (the y/n card)
         confirmer: cfg.autonomy === 'review' ? renderer.confirmer : autonomousConfirmer(renderer.confirmer, (req) => note(autoApprovedNote(req, cfg.redact), { label: '[review]' })),
         meter,
@@ -2920,6 +2922,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         decider,
         // complete autonomy by default: under `full` a `review` verdict is approved at once and logged as one
         // informational `[review]` card; `--autonomy review` keeps the blocking y/n card. `block` stops either way.
+        contextAsk: PRODUCT_CONTEXT_ASK,
         autonomy: rcfg.autonomy,
         confirmer: rcfg.autonomy === 'review' ? renderer.confirmer : autonomousConfirmer(renderer.confirmer, (req) => note(autoApprovedNote(req, rcfg.redact), { label: '[review]' })),
         meter,

@@ -87,7 +87,7 @@ complete -c jevcode -n '__fish_seen_subcommand_from bench' -l task-id -x -d 'spe
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l conditions -x -d 'conditions to run (when omitted: the jev-on and jev-off arms)'
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l concurrency -x -d 'parallel runs'
 complete -c jevcode -n '__fish_seen_subcommand_from bench perf' -l live -d 'use the real generator and Jev (requires --spend-cap)'
-complete -c jevcode -n '__fish_seen_subcommand_from bench' -l task-spend-cap -x -d 'per-run spend cap (default 2.00)'
+complete -c jevcode -n '__fish_seen_subcommand_from bench' -l task-spend-cap -x -d 'per-run spend cap (default 10.00)'
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l allow-model-alias -d 'allow an undated --jev-model'
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l archive-runs -d 'copy each run'\''s records (steps/decisions/jev/generator.jsonl, run.json, state.json, patch) gzipped into <results>/runs/<runId>/'
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l quick -d 'the M16 quick preset (docs/LLM-LOOP-DESIGN.md §3.5): the five Ring-2 tasks, --concurrency 3, replay by default and --spend-cap 0.05 as DEFAULTS that never override an explicit flag'

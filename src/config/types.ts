@@ -244,7 +244,7 @@ export interface ResolveOptions {
   /**
    * TUI-DESIGN §9.1 / §16 (P45) / TUI-DESIGN-2 §1.2: the engine mode the run-cap default is keyed on, when it is known from
    * somewhere other than the `mode` setting — a `--resume` re-resolve passes `identity.mode` from run.json so a jev-only run
-   * keeps its $0.25 default. Absent: `resolveMode(layers)` (flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE).
+   * keeps its $1.00 default. Absent: `resolveMode(layers)` (flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE).
    */
   mode?: EngineMode;
   /** TUI-DESIGN §16 (P30): skip the legacy-config-path warning for this call (it is already once per process and path) */

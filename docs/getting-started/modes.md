@@ -8,13 +8,13 @@ result from another.
 
 | Mode | Badge | Who writes the code | Who decides | Default run cap |
 | --- | --- | --- | --- | --- |
-| `llm-jev` | `llm+jev · verified` | the code model, inside the search | tests verify, Jev arbitrates | $2.00 |
-| `jev-on` | `jev+llm` | the code model, one action per step | Jev, at every stage | $2.00 |
-| `jev-only` | `jev-only` | nobody — code enumerates candidates | tests verify, Jev ranks | $0.25 |
-| `jev-off` | `llm-only` | the code model alone | nobody | $2.00 |
+| `llm-jev` | `llm+jev · verified` | the code model, inside the search | tests verify, Jev arbitrates | $10.00 |
+| `jev-on` | `jev+llm` | the code model, one action per step | Jev, at every stage | $10.00 |
+| `jev-only` | `jev-only` | nobody — code enumerates candidates | tests verify, Jev ranks | $1.00 |
+| `jev-off` | `llm-only` | the code model alone | nobody | $10.00 |
 
-`llm-jev` is the default. The session cap is five times the run cap in every mode, so $10.00
-for three of them and $1.25 for `jev-only`.
+`llm-jev` is the default. The session cap is five times the run cap in every mode, so $50.00
+for three of them and $5.00 for `jev-only`.
 
 ## How to switch
 
@@ -61,7 +61,7 @@ The claim that this makes **zero** generating-model calls is a property of every
 slogan. In one recorded 40-program run, all 40 records carry `generatorCalls: 0`, all of
 `generatorTokensPerStep` zero, and `cost.generator` exactly 0.
 
-Its run cap defaults to $0.25 rather than $2.00 because there is no code model to pay for.
+Its run cap defaults to $1.00 rather than $10.00 because there is no code model to pay for.
 
 ### `jev-off` — the control arm
 
