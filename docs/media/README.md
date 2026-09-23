@@ -8,10 +8,22 @@ came from.
 | `side-by-side.gif` | Two live runs of the same bug fix, one in each mode, replayed at one sixth of real speed |
 | `side-by-side.png` | The final frame of that recording, as a still |
 | `side-by-side.md` | How the recording was made, the exact commands, and the numbers behind it |
+| `wordmark-{dark,light}.svg` | The README's wordmark — **generated**, not drawn (see below) |
+| `rule-{dark,light}.svg` | The README's section rule, in the same two pinks — generated with the wordmark |
 
 ## Rules for anything added here
 
-Every picture of the program is a recording of the program. No mock-ups, no retouched
+Two kinds of file live here, and they are held to different rules.
+
+**Generated brand assets** (`wordmark-*.svg`, `rule-*.svg`) are not pictures of the program running,
+so the recording rule below does not apply to them — but they may not be drawn by hand either. They
+are emitted by `scripts/gen-wordmark.mjs`, which reads the five wordmark rows, the `JEV`/`CODE` cell
+split, the caption grid and the tagline from `src/tui/splash.ts`, and every colour from
+`src/tui/theme.ts`. The one number that is a rendering choice rather than a reading is the alpha
+that stands in for a terminal's `dim`, and it is named and explained at the top of that script.
+Regenerate with `npm run wordmark`; `npm run wordmark -- --check` exits 1 when they are stale.
+
+**Recordings.** Every picture of the program is a recording of the program. No mock-ups, no retouched
 terminals, no numbers typed in by hand. Each one gets a page next to it that names the task,
 the model, the flags and the machine, and that page carries the numbers the run itself
 recorded.
