@@ -132,11 +132,15 @@ describe('keep-alive: a finished stream leaves its socket in the pool', () => {
   it('an abort during the drain ends it at once; the finished result still stands', async () => {
     const local = await sseServer(OPENROUTER_FRAMES, { kind: 'hold' });
     const ac = new AbortController();
-    const t0 = performance.now();
+    let abortedAt = 0;
+    const abort = (): void => {
+      abortedAt = performance.now();
+      ac.abort(new Error('stop'));
+    };
     // the text is complete before the abort lands: [DONE] arrived, only the drain is left
-    const p = openrouter(local).generate(request(), { signal: ac.signal, onDelta: () => setTimeout(() => ac.abort(new Error('stop')), 30) });
-    const r = await p;
+    const r = await openrouter(local).generate(request(), { signal: ac.signal, onDelta: () => setTimeout(abort, 30) });
     expect(r.text).toBe('hi');
-    expect(performance.now() - t0).toBeLessThan(DRAIN_MS);
+    expect(abortedAt).toBeGreaterThan(0);
+    expect(performance.now() - abortedAt).toBeLessThan(DRAIN_MS / 2);
   });
 });
