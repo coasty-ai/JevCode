@@ -45,6 +45,7 @@ The decider's four variables do not carry the `JEVCODE_` prefix: `JEV_PROVIDER`,
 | Variable | Setting | Default | Effect |
 | --- | --- | --- | --- |
 | `JEVCODE_MODE` | `mode` | `llm-jev` | which engine mode a run uses |
+| `JEVCODE_AUTONOMY` | `autonomy` | `full` | `full`: a review-level risk verdict proceeds and is logged; `review`: it waits for the approval card. A block stops the action under both |
 | `JEVCODE_SPEND_CAP_USD` | `limits.spendCapUsd` | `2`, or `0.25` in the decider-only mode | the hard cap for one run |
 | `JEVCODE_SESSION_SPEND_CAP_USD` | `session.spendCapUsd` | 5 × the run cap | the cap across a whole session; `none` removes it |
 | `JEVCODE_MAX_STEPS` | `limits.maxSteps` | `40` | steps before the run stops |

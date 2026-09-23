@@ -126,6 +126,7 @@ means the setting is unset unless you set it.
 | Setting | Flag | Variable | File key | Default |
 | --- | --- | --- | --- | --- |
 | `mode` | `--mode` | `JEVCODE_MODE` | `mode` | `llm-jev` |
+| `autonomy` | `--autonomy` | `JEVCODE_AUTONOMY` | `autonomy` | `full` |
 | `limits.spendCapUsd` | `--spend-cap` | `JEVCODE_SPEND_CAP_USD` | `spendCapUsd` | `2` |
 | `session.spendCapUsd` | `--session-spend-cap` | `JEVCODE_SESSION_SPEND_CAP_USD` | `sessionSpendCapUsd` | derived |
 | `limits.maxSteps` | `--max-steps` | `JEVCODE_MAX_STEPS` | `maxSteps` | `40` |

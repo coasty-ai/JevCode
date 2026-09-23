@@ -20,13 +20,16 @@ The first frame is drawn from the command line, the environment, whether the str
 terminal, and the current directory — **and nothing else**. No configuration file, no `.env`
 file, no runs directory and no git command has been touched when it appears.
 
-It contains:
+It contains exactly two things:
 
-- the header row and the rule;
-- the wordmark, revealed left to right, with the version caption beside it;
+- the wordmark, revealed left to right, with the version caption beside it, pinned at the top for
+  the whole session;
 - the rounded console: a top edge carrying the **mode badge** and the workspace name, the
-  composer row with its placeholder, a divider, and the status row;
-- a `step 0/–` sentinel in the status row, because no run exists yet.
+  composer row with its placeholder — `Say hi`, or `Say hi · /resume continues "<title>"` when a
+  recent session exists — a divider, and the status row.
+
+The run header, the sandbox summary and the recent-session hint are not drawn in the interactive
+session; `--plain` and `--json` still print them, and `jevcode doctor` and `/status` carry the facts.
 
 The splash settles after about 0.7 s. Pressing a key completes it immediately rather than
 waiting.
@@ -37,8 +40,24 @@ zone. Under `--no-animation`, `--screen-reader` or `--plain` there is no splash 
 The order in which the rest of the session wakes up is fixed: keybindings and prompt history,
 then the configuration, then any configuration warnings, then the key wizard if a key is
 missing, then the workspace trust question if the directory carries instruction files, a
-`./.env` or a `jevcode.json`, then the sandbox line, then the file-mention candidate list, then
-the session index.
+`./.env` or a `jevcode.json`, then the sandbox facts (kept off the interactive screen), then the
+file-mention candidate list, then the session index.
+
+## Just talk
+
+Every message you type gets a streamed reply from the code model. It knows it is JevCode, what it
+can do, which workspace it is in and how the git tree stands, so `hi`, `what can you do?` and
+`who made you?` get real answers. While the reply streams, Jev reads the message once, in the
+background, to decide whether it is also a task: a coding task makes the reply end with
+*On it — starting the run.* and the run starts; a message Jev finds ambiguous ends with
+*Say `do it` and I'll make that a task.*, and the next `do it`, `go ahead` or `yes` starts it;
+small talk and questions get the reply alone. Nothing ever asks you to classify your own sentence.
+
+The agent acts on its own by default. The `autonomy` setting (`--autonomy full|review`,
+`JEVCODE_AUTONOMY`, default `full`) decides what happens when the risk stage rates an action
+*review*: under `full` the action proceeds and the transcript notes
+`[review] auto-approved (autonomy full): <action> — <reason>`; under `review` the approval card
+appears and waits. A *block* verdict stops the action under both.
 
 ## The one-field key wizard
 
@@ -96,8 +115,8 @@ stateDiagram-v2
     Propose --> Risk
     Risk: score the action for harm and for fit with the plan
     Risk --> Commit: blocked
-    Risk --> Stopped: declined at review
-    Risk --> Execute: allowed
+    Risk --> Stopped: declined at review (autonomy review only)
+    Risk --> Execute: allowed, or review auto-approved (autonomy full)
     Execute: run it, sandboxed, with before and after images of every target
     Execute --> Judge
     Judge: read the outcome — parsed test counts where they exist
@@ -169,7 +188,9 @@ review; at or above 0.7 it is blocked outright. This one landed at 0.38, so:
 [step 1] outcome executed: edit applied to calc/core.py (1 match) changed=1: calc/core.py
 ```
 
-A review card appeared with the unified diff; it was approved; the edit was applied.
+A review card appeared with the unified diff; it was approved; the edit was applied. This
+transcript was recorded under `--autonomy review`; with the default `autonomy: full` the same step
+proceeds without a card and the line reads `[review] auto-approved (autonomy full): edit calc/core.py — risk 0.38`.
 
 ```
 [step 1] judge succeeded=0.68 error_present=0.04 new_info=0.05 tests=none claims=0/0 completion=0.03

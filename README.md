@@ -116,6 +116,13 @@ before it does so: one real Jev decision at about $0.00002, one 1-token completi
 $0.000002, and a free key-info call. Keys land in `~/.config/jevcode/config.json`, written `0600` in
 a `0700` directory.
 
+Then just talk. Every message gets a reply from the code model — say hi, ask what it can do, ask who
+made it — and when a message is a coding task the reply ends with *On it — starting the run* and the
+run starts; when it is not sure, it offers *say `do it`* instead of asking you to classify your own
+sentence. The agent acts on its own by default (`autonomy: full`): an action the risk stage would
+have sent to review proceeds and is logged as `[review] auto-approved`; only a hard block stops it.
+`jevcode --autonomy review` brings the approval card back.
+
 Without a terminal — `--no-input`, `--json`, or a pipe — JevCode never prompts. It exits `2` and
 prints the exact environment variable or `jevcode login` command that would fix it.
 
