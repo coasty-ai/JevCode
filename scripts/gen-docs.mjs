@@ -156,7 +156,7 @@ function body(text) {
 }
 
 const EXIT_CODES = [
-  ['0', 'complete / generator_done; /exit, Ctrl\\-D \\(mu)2, Ctrl\\-C \\(mu)2 idle (leaving is not a failure)'],
+  ['0', 'complete / generator_done / answered (a reply-only agent run); /exit, Ctrl\\-D \\(mu)2, Ctrl\\-C \\(mu)2 idle (leaving is not a failure)'],
   ['1', 'uncaught error or an escalated render fault'],
   ['2', 'configuration or usage error at launch; first\\-call 401/403; unpriced model without \\-\\-allow\\-unpriced'],
   ['3', 'checkpoint degraded and stopped (state.json not resumable)'],

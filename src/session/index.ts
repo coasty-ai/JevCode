@@ -207,6 +207,7 @@ const STOP_REASON_SET: Readonly<Record<StopReason, true>> = {
   human_pause: true,
   token_cap: true,
   stuck: true,
+  answered: true,
 };
 export const STOP_REASONS: readonly StopReason[] = Object.keys(STOP_REASON_SET) as StopReason[];
 
