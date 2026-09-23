@@ -425,20 +425,22 @@ describe("the `'a'` pane tab (TUI-DESIGN-5 §4.3, §14.2 #1 / #31)", () => {
     // and the collapsed strip's own row is untouched at the same widths (it has always shortened by dropping
     // segments from the right, which is round 2's loop and not this fallback)
     const strip = { ...s, latencies: [] as readonly (number | null)[] };
-    expect(panelStrip(strip, 40)).toBe('─── ▸ jev s7 ──────── [d] [p] [t] [s] ──');
-    expect(panelStrip(strip, 50)).toBe('─── ▸ jev s7 · 7 decisions ──── [d] [p] [t] [s] ──');
+    // OWNER ADDENDUM: the strip is quiet — no hotkey legend, so the freed width carries the pane segments instead
+    expect(panelStrip(strip, 40)).toBe('─── ▸ jev s7 · 7 decisions ─────────────');
+    expect(panelStrip(strip, 50)).toBe('─── ▸ jev s7 · 7 decisions · plan 2/5 ────────────');
   });
 
   it('the collapsed strip (`:377`) is computed the same way, at wide and narrow', () => {
+    // OWNER ADDENDUM: the COLLAPSED strip carries no hotkey legend at all any more — delegating or not, at every
+    // width; the `[a]gents` tab is still named on the OPEN / FULL panel's own header (`paneRuleRow`, above)
     const base = { ...paneState({ tab: 'd' }), latencies: [] as readonly (number | null)[] };
-    expect(panelStrip(base, 130)).toContain('[d]ecisions [p]lan [t]imeline [s]ynth');
-    expect(panelStrip(base, 130)).not.toContain('[a]gents');
-    expect(panelStrip(base, 80)).toContain('[d] [p] [t] [s]');
-    expect(panelStrip(base, 80)).not.toContain('[a]');
-
+    for (const w of [40, 80, 130]) {
+      expect(panelStrip(base, w), `w=${w}`).not.toContain('[d]');
+      expect(panelStrip(base, w), `w=${w}`).not.toContain('[a]');
+    }
     const delegating = { ...base, agents: [mkAgentRow()] };
-    expect(panelStrip(delegating, 130)).toContain('[d]ecisions [p]lan [t]imeline [s]ynth [a]gents');
-    expect(panelStrip(delegating, 80)).toContain('[d] [p] [t] [s] [a]');
+    expect(panelStrip(delegating, 130)).not.toContain('[a]gents');
+    expect(panelStrip(delegating, 130)).toBe(panelStrip(base, 130));
     for (const w of [40, 80, 120, 130]) expect(cellWidth(panelStrip(delegating, w)), `w=${w}`).toBe(w);
   });
 

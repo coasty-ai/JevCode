@@ -11,7 +11,7 @@
  *
  * | tier | rows | header | rule | viewport | console |
  * | --- | ---: | ---: | ---: | --- | ---: |
- * | **tall** | ≥ 24 (and ≥ 64 columns) | 5 (the mark) | 1 | `rows − 11` | 5 |
+ * | **tall** | ≥ 24 (and ≥ 64 columns) | `wordmarkBoxRows(rows)` = 5 / 7 / 9 (the padded mark) | 1 | the remainder | 5 |
  * | **compact** | 18–23 | 1 (the brand strip) | 1 | `rows − 7` | 5 |
  * | **narrow** | < 64 columns, rows ≥ 18 | 1 (the brand strip) | 1 | `rows − 7` | 5 |
  * | below | — | refuse → classic (§1.3.1) |
@@ -20,6 +20,7 @@
  * right-aligned position ladder) — there is no second string to specify. Pure: no I/O, no clock, no Ink.
  */
 import { CAP, MIN_COLUMNS, MIN_ROWS, WORDMARK_MIN_COLUMNS, chromeRows, isCollapsingOverlay, type OverlayKind } from '../layout.js';
+import { wordmarkBoxRows } from '../wordmark.js';
 
 /** §1.3.1: below this many rows `fullscreen` refuses and falls back to `classic`. */
 export const FULL_MIN_ROWS = 18;
@@ -51,7 +52,7 @@ export interface FullLayoutInput {
 
 /** §1.3.2: rows granted to every fullscreen slot. `total === rows` exactly, always. */
 export interface FullLayout {
-  /** 5 (the mark) · 1 (the brand strip) · 0 */
+  /** `wordmarkBoxRows(rows)` — 5 / 7 / 9 (the padded mark) · 1 (the brand strip) · 0 */
   header: number;
   /** the rule row with the brand prefix and the right-aligned position segment */
   rule: number;
@@ -119,13 +120,16 @@ export function computeFullLayout(i: FullLayoutInput): FullLayout {
   z.overlay = take(i.overlay === 'none' ? 0 : i.overlayWant); // 6 the modal slot; edge 3: the overlay is capped, never the total
   z.preview = i.overlay === 'review' ? take(Math.min(i.previewWant, i.expanded ? rem : CAP.preview)) : 0;
   // 7 the header yields 5 → 1 → 0 before the viewport drops below three rows
+  // owner directive 2 + 3: in the tall tier the header IS the padded branding box, for the WHOLE session
   const hero = rows >= FULL_HERO_MIN_ROWS && columns >= WORDMARK_MIN_COLUMNS;
-  if (hero && rem >= CAP.splash + FULL_MIN_VIEWPORT_ROWS) z.header = take(CAP.splash);
+  const box = wordmarkBoxRows(rows);
+  if (hero && rem >= box + FULL_MIN_VIEWPORT_ROWS) z.header = take(box);
+  else if (hero && rem >= CAP.splash + FULL_MIN_VIEWPORT_ROWS) z.header = take(CAP.splash);
   else if (rem >= 1 + FULL_MIN_VIEWPORT_ROWS) z.header = take(1);
   z.viewport = take(rem); // 8 the viewport takes the remainder, so the total is exact
   z.console = z.chrome + z.composer + z.status;
   z.total = rows - rem;
-  z.degraded = rows < FULL_MIN_ROWS || columns < FULL_MIN_COLUMNS || rows < MIN_ROWS || columns < MIN_COLUMNS ? 'minsize' : z.header === CAP.splash ? 'none' : 'compact';
+  z.degraded = rows < FULL_MIN_ROWS || columns < FULL_MIN_COLUMNS || rows < MIN_ROWS || columns < MIN_COLUMNS ? 'minsize' : z.header >= CAP.splash ? 'none' : 'compact';
   return z;
 }
 

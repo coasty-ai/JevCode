@@ -73,7 +73,7 @@ export { RESTORE, DECSCUSR_BAR, restoreTerminal, processRestoreTerminal, rearmRe
 export { createNotifier, createNotifyTimers, notifySequence, notifyPayload, detectNotifyMethod, REVIEW_NOTIFY_MS, RUN_END_NOTIFY_MS } from './notify.js';
 // TUI-DESIGN-4 round 4 (S1): the header, the scrollback guard, P-R1's clock and the opt-in fullscreen renderer
 export { nowMs, SYNC_COMMIT_MIN_MS, shouldSyncCommit } from './App.js';
-export { wordmarkFrame, wordmarkWanted, WORDMARK_MIN_ROWS, WORDMARK_POST_RUN_MIN_ROWS, WORDMARK_LIVE_MIN_ROWS } from './wordmark.js';
+export { wordmarkBoxRows, wordmarkFrame, wordmarkPad, wordmarkWanted, WORDMARK_MIN_ROWS, WORDMARK_PAD_MIN_ROWS, WORDMARK_PAD2_MIN_ROWS, WORDMARK_SHARE_MIN_ROWS } from './wordmark.js';
 export type { WordmarkInput, WordmarkSetting } from './wordmark.js';
 export { brandSegment } from './pane/model.js';
 export type { StripOptions } from './pane/model.js';

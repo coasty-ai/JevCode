@@ -113,7 +113,9 @@ describe.skipIf(!hasExpect)('pty: --plain, --json and the three-way identity (§
     expect(sub.missing).toBeNull();
     expect(tuiItems.length).toBeGreaterThan(3);
     expect(tuiItems.filter((r) => HIDDEN_STAGE_RE.test(r))).toEqual([]);
-    expect(tuiItems.some((r) => /^\[run\] started [·-] /.test(r))).toBe(true);
+    // owner addendum: `[run] started` / `[run] git` are transcript.log- and `--plain`-only now
+    expect(tuiItems.some((r) => /^\[run\] started [·-] /.test(r))).toBe(false);
+    expect(tuiTranscript!.some((r) => /^\[run\] started [·-] /.test(r))).toBe(true);
     expect(tuiItems.some((r) => /^\[run\] finished [·-] complete /.test(r))).toBe(true);
     expect(tuiItems.filter((r) => /^\[step \d+\] /.test(r)).length).toBeGreaterThanOrEqual(5); // one summary line per mocked step
     expect(tuiTranscript!.some((r) => HIDDEN_STAGE_RE.test(r))).toBe(true); // transcript.log keeps every stage line
@@ -133,7 +135,8 @@ describe.skipIf(!hasExpect)('pty: --plain, --json and the three-way identity (§
     // every static row fits the terminal: a wider row means the body of a labelled item was wrapped at the full width instead of the width minus its hanging indent (TUI-DESIGN-2 §3.10 / §4.5)
     for (const row of narrowRows) expect([...row].length, `static row wider than 80 columns: ${JSON.stringify(row)}`).toBeLessThanOrEqual(80);
     // the compact subsequence of this run's transcript (the same kinds the 640-column leg showed, by shape)
-    const shown = narrowTranscript!.filter((l) => !HIDDEN_STAGE_RE.test(l));
+    // owner addendum: `[run] started` / `[run] git` are transcript.log-only, so they are not among the TUI's rows
+    const shown = narrowTranscript!.filter((l) => !HIDDEN_STAGE_RE.test(l) && !/^\[run\] started [·-] /.test(l) && !/^\[run\] git /.test(l));
     // TUI-DESIGN-2 §3.10 / §9 (a): every continuation row hangs under the text column (`label.length + 1` cells) in compact and full alike
     const reflow = reflowAgainst(narrowRows, shown, { hangingIndent: true });
     expect(reflow.mismatches).toEqual([]);

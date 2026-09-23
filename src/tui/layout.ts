@@ -1,7 +1,7 @@
 /**
  * The one height allocator of the interactive TUI (TUI-DESIGN §2.1, D1, F3; TUI-DESIGN-2 §4.1–4.2 `computeLayout`
  * 1.1; TUI-DESIGN-3 §3.7 `computeLayout` 1.2 — the whole-or-absent pane grant for the wordmark). Pure: no I/O, no clock, no Ink. Vertical order top to bottom is `<Static>` scrollback · rule · live ·
- * banner · pane · queue · overlay · preview · [console: top edge · gate · composer · divider · status · bottom edge]
+ * banner · mark · pane · queue · overlay · preview · anim · [console: top edge · gate · composer · divider · status · bottom edge]
  * (flat tier: composer · status). Allocation order is the priority (status → rule → composer floor → chrome →
  * overlay → composer growth → queue → preview → live → banner → pane) and F3's yield order is its reverse (pane →
  * banner → live → preview → queue → composer growth → overlay → composer-to-1); chrome, rule and status never yield.
@@ -47,9 +47,19 @@ export const CAP = {
   banner: 1,
   /** TUI-DESIGN-2 §4.3: the console's top edge, divider and bottom edge */
   chrome: 3,
-  /** TUI-DESIGN-2 §5.1 / TUI-DESIGN-3 §3: the wordmark rows in the pane slot (the splash, then the idle tenant) */
+  /** TUI-DESIGN-2 §5.1 / TUI-DESIGN-3 §3: the wordmark's glyph rows (the splash, then the pinned mark) */
   splash: 5,
+  /** the pinned wordmark's own slot: the 5 glyph rows plus up to two blank padding rows above and below */
+  mark: 9,
+  /** the 3D indicator's box (`animSize().h` is 8 or 12) */
+  anim: 12,
 } as const;
+
+/**
+ * The conversation floor the indicator slot respects: the frame never leaves fewer than this many rows of terminal
+ * above the dynamic region (`rows − total ≥ 4`), so a donut never buries the reply it belongs to.
+ */
+export const ANIM_CONVERSATION_FLOOR = 4;
 
 /** TUI-DESIGN §2.1 / TUI-DESIGN-2 §3.7: the one modal slot directly above the composer holds at most one of these. */
 export type OverlayKind = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'import';
@@ -94,8 +104,16 @@ export interface LayoutInput {
   liveWant: number;
   /** loop signature at x2/3 or a replan directive active (A45) */
   bannerWant: 0 | 1;
-  /** 0 (collapsed) · 6 (open) · 12 (full / picker) · 5 (splash); rows the active tab can fill */
+  /** 0 (collapsed) · 6 (open) · 12 (full / picker); rows the active tab can fill */
   paneWant: number;
+  /**
+   * The pinned wordmark's own slot (owner directive 2): `wordmarkBoxRows(rows)` when the mark is wanted, else 0. It
+   * is allocated ABOVE the pane, so an open panel / the picker / a pending review are drawn under the mark instead
+   * of evicting it; it is granted whole or not at all (the mark is never cut to its top rows).
+   */
+  markWant?: number;
+  /** the 3D indicator's box height (`animSize(columns, rows)!.h`) or 0 — the last slot to be granted, the first to yield */
+  animWant?: number;
   /** TUI-DESIGN-2 §4.2: `chromeRows(rows, columns, screenReader)` — 3 in the boxed tier, 0 flat */
   chrome: 0 | 3;
   /** TUI-DESIGN-2 §4.2: the secret-gate row the console hosts (boxed tier only; the flat tier keeps the `secret` overlay) */
@@ -112,7 +130,11 @@ export interface Layout {
   rule: number;
   live: number;
   banner: number;
+  /** the pinned wordmark, whole or absent */
+  mark: number;
   pane: number;
+  /** the 3D indicator, directly above the console */
+  anim: number;
   queue: number;
   overlay: number;
   preview: number;
@@ -126,7 +148,7 @@ export interface Layout {
 }
 
 /** TUI-DESIGN §2.1: F3's yield order — the first field here reaches 0 first under pressure. */
-export const YIELD_ORDER: readonly (keyof Layout)[] = ['pane', 'banner', 'live', 'preview', 'queue', 'composer', 'overlay'];
+export const YIELD_ORDER: readonly (keyof Layout)[] = ['anim', 'pane', 'mark', 'banner', 'live', 'preview', 'queue', 'composer', 'overlay'];
 
 /** a non-finite size is treated as absent (0 rows); the design's arithmetic then degrades to static-only */
 function size(n: number): number {
@@ -154,7 +176,7 @@ export function computeLayout(i: LayoutInput): Layout {
     rem -= got;
     return got;
   };
-  const z: Layout = { budget, degraded: 'none', status: 0, rule: 0, live: 0, banner: 0, pane: 0, queue: 0, overlay: 0, preview: 0, composer: 0, chrome: 0, gate: 0, total: 0 };
+  const z: Layout = { budget, degraded: 'none', status: 0, rule: 0, live: 0, banner: 0, mark: 0, pane: 0, anim: 0, queue: 0, overlay: 0, preview: 0, composer: 0, chrome: 0, gate: 0, total: 0 };
   if (rows < 3) {
     // budget 0 or 1: <Static> keeps flowing, nothing dynamic
     z.degraded = 'static-only';
@@ -193,12 +215,20 @@ export function computeLayout(i: LayoutInput): Layout {
   const cap = COLLAPSING.has(i.overlay) ? 1 : rows >= 40 ? CAP.composerTall : CAP.composer;
   if (i.overlay !== 'wizard') z.composer += take(Math.min(i.composerWant, cap) - 1); // 5 composer growth
   z.queue = take(Math.min(i.queueWant, CAP.queue)); // 6 queue ≤ 2
-  z.preview = i.overlay === 'review' ? take(Math.min(i.previewWant, i.expanded ? rem : CAP.preview)) : 0; // 7
+  // the pinned mark's rows are reserved from an EXPANDED preview too, so `e` no longer evicts the branding
+  const markWant = Math.min(size(i.markWant ?? 0), CAP.mark);
+  z.preview = i.overlay === 'review' ? take(Math.min(i.previewWant, i.expanded ? Math.max(0, rem - markWant) : CAP.preview)) : 0; // 7
   z.live = i.overlay === 'review' ? 0 : take(Math.min(i.liveWant, CAP.live)); // 8 live rows are reclaimed by a pending review (A42)
   z.banner = take(Math.min(i.bannerWant, CAP.banner)); // 9 the loop banner is one row (A45)
+  // 9b the pinned wordmark (owner directive 2): its own slot above the pane, whole or absent
+  z.mark = markWant > 0 && rem >= markWant ? take(markWant) : 0;
   // 10 pane yields first; TUI-DESIGN-3 §3.7 (`computeLayout` 1.2): under `paneWhole` the want is granted whole or not at all
   const want = Math.min(i.paneWant, CAP.pane);
   z.pane = i.expanded ? 0 : i.paneWhole === true ? (Number.isFinite(want) && rem >= Math.floor(want) ? take(want) : 0) : take(want);
+  // 11 the 3D indicator: whole or absent, and only while ≥ ANIM_CONVERSATION_FLOOR rows of conversation survive
+  // (`rows − total = rem + 2`), so it yields before the mark, the pane and the conversation
+  const animWant = Math.min(size(i.animWant ?? 0), CAP.anim);
+  z.anim = animWant > 0 && rem - animWant >= ANIM_CONVERSATION_FLOOR - 2 ? take(animWant) : 0;
   z.total = budget - rem;
   return z;
 }
@@ -208,7 +238,7 @@ export function computeLayout(i: LayoutInput): Layout {
  * queue + overlay + preview`; identical to the flat tier's composer row.
  */
 export function consoleTop(l: Layout): number {
-  return l.rule + l.live + l.banner + l.pane + l.queue + l.overlay + l.preview;
+  return l.rule + l.live + l.banner + l.mark + l.pane + l.queue + l.overlay + l.preview + l.anim;
 }
 
 /**

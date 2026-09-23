@@ -788,14 +788,15 @@ export const CHAT_OPEN: readonly string[] = [FIRST_FRAME_STEP, `expect ${PLACEHO
 /** the narrow-terminal opening: the quiet start prints no `[sandbox]` item in the TUI, so the attached host is the status row's `sess $…` badge */
 export const CHAT_OPEN_NARROW: readonly string[] = [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, 'expect sess \\$'];
 /**
- * The run is live: the `[run] started · <badge> · <task>` item (TUI-DESIGN-4 §3.6 G1 deleted `[run] ready` as an
- * item and rewrote `[run] start <id> mode=… task: …`; TUI-DESIGN-2 §4.5 shows `run:start` in the compact transcript).
- * Written **glyph-agnostic** (`[·-]`, §3.7): `glyphs.ts` renders `dot: '·'` and `dot: '-'`, so a hard-coded `·`
- * would silently stop matching in every `--ascii` scenario — including round 3's V21 twin sweep. Every mocked run of the pty project says `--mode jev-on` explicitly (`MOCK_RUN_MODE`): the scripted
- * `--mock` trajectory is a generator trajectory, and under the round-2 default `jev-only` (§1.1) the real synthesizer
- * would run instead of it.
+ * The run is live. **OWNER ADDENDUM (2026-09):** the `[run] started · <badge> · <task>` item is no longer printed in
+ * the interactive transcript (`isRunHeaderItem`; `--plain` and `--json` keep it), so a scenario can no longer wait on
+ * it — it waits on the **status row** instead, which is exactly the row the addendum says already carries the run
+ * state: `step <n>/<max>` (never the idle `step 0/–`) appears in the frame `run:ready` commits. `RUN_STARTED_ROW_RE` below is still the
+ * anchor over a `--plain` transcript. Every mocked run of the pty project says `--mode jev-on` explicitly
+ * (`MOCK_RUN_MODE`): the scripted `--mock` trajectory is a generator trajectory, and under the round-2 default
+ * `jev-only` (§1.1) the real synthesizer would run instead of it.
  */
-export const RUN_STARTED_STEP = labelStep('run', `${RUN_STARTED_WORD} ${GLYPH_DOT_CLASS} `);
+export const RUN_STARTED_STEP = 'expect step \\d+/\\d+';
 /**
  * TUI-DESIGN-4 §3.6 (G1) / §3.7: the run's last item, `finished · <reason> · <n> steps · …`. `reason` is a Tcl
  * alternation (`complete|max_steps`), written without a capture group so `drive.exp`'s `-re` keeps one match.
@@ -810,7 +811,7 @@ export const RUN_STARTED_ROW_RE = new RegExp(`^ {0,9}\\[run\\] ${RUN_STARTED_WOR
 export const MOCK_RUN_MODE: readonly string[] = ['--mode', 'jev-on'];
 /** the opening of a one-shot `run` scenario: the first frame, raw mode (the steering composer), then the run's start item */
 export const RUN_OPEN: readonly string[] = [FIRST_FRAME_STEP, RAW_MODE_STEP, RUN_STARTED_STEP];
-/** type a task and submit it; the run is live once its `[run] started` item appears (the mock intake reads a ≥ 3-word imperative without `?` as `coding_task`, TUI-DESIGN-2 §3.13) */
+/** type a task and submit it; the run is live once the status row reads `step 1/…` (the mock intake reads a ≥ 3-word imperative without `?` as `coding_task`, TUI-DESIGN-2 §3.13) */
 export function submitTask(text: string): string[] {
   return [`send ${text}`, echoStep(text), 'send \\r', RUN_STARTED_STEP];
 }

@@ -8,7 +8,7 @@ sleep 0.3
 send fix the failing test
 sleep 0.2
 send \r
-expect \[run\](?:\x1b\[[0-9;]*m)* started [·-] 
+expect step \d+/\d+
 expect checkpoint degraded
 expect not resumable
 sleep 0.4

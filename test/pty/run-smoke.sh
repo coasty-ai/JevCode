@@ -185,6 +185,9 @@ print(head, mark, none, len(frames))
 PY
 }
 # the dynamic-region row count of the frame that first matches <re> (rule row → last row), or -1
+# owner directive 3: the padded branding box makes the idle dynamic region `rule 1 + (5 + 2p) + console 5` rows —
+# 11 below 26 rows, 13 at 26–33, 15 from 34 up
+idle_rows_for() { r=$1; if [ "$r" -ge 34 ]; then echo 15; elif [ "$r" -ge 26 ]; then echo 13; else echo 11; fi; }
 wm_rows_at() {
   python3 - "$1" "$2" <<'PY'
 import re,sys
@@ -223,15 +226,18 @@ frames=[re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f) for f in b.split(b'\x1b[?2
 mark=lambda f: sum(1 for l in f.split(b'\r\n') if b'\xe2\x96\x88\xe2\x96\x88' in l)>=5
 which=sys.argv[2]
 if which=='handoff':
-    start=next((i for i,f in enumerate(frames) if re.search(rb'\[run\] started (?:\xc2\xb7|-) ', f)), None)
+    # OWNER ADDENDUM: the `[run] started` item is no longer printed in the TUI — the run's first frame is the one
+    # whose status row carries a numeric `step <n>/<max>`
+    start=next((i for i,f in enumerate(frames) if re.search(rb'step \d+/\d+', f)), None)
     end=next((i for i,f in enumerate(frames) if re.search(rb'\] finished (?:\xc2\xb7|-) (complete|max_steps|generator_done)', f)), None)
     if start is None or end is None: print('no-run'); sys.exit()
-    # the mark is hidden for the whole run; the frame that commits `[run] end` also commits the state change, so it may already
-    # carry the mark back (TUI-DESIGN-3 §3.2 "run:end -> idle": one frame earlier than the prose's "the frame after end")
-    if any(mark(f) for f in frames[start:end]): print('mark-while-live'); sys.exit()
+    # owner directive 2: the mark is PINNED — it is up in EVERY frame of the run, not hidden for it
+    bare=[i for i,f in enumerate(frames[start:end+1], start) if not mark(f)]
+    if bare: print('mark-lost-while-live'); sys.exit()
     after=frames[end:]
     back=next((i for i,f in enumerate(after) if mark(f) and b'\xe2\x96\xb8 jev' in f), None)
     if back is None: print('no-return-under-strip'); sys.exit()
+    # at 24 rows (< WORDMARK_SHARE_MIN_ROWS) the panel still takes the slot, and `/panel off` gives it back
     panel=next((i for i,f in enumerate(after) if b'\xe2\x96\xbe decisions' in f), None)
     if panel is None or mark(after[panel]): print('panel-did-not-hide'); sys.exit()
     off=next((i for i in range(panel+1,len(after)) if b'\xe2\x96\xb8 jev' in after[i] and mark(after[i])), None)
@@ -240,7 +246,8 @@ elif which=='postrun22':
     end=next((i for i,f in enumerate(frames) if re.search(rb'\] finished (?:\xc2\xb7|-) (complete|max_steps|generator_done)', f)), None)
     echo=next((i for i,f in enumerate(frames) if re.search(rb'(?:\xe2\x80\xba|>) h', f)), None)
     if end is None or echo is None: print('no-run-or-echo'); sys.exit()
-    if any(mark(f) for f in frames[end:echo]): print('mark-before-first-key'); sys.exit()
+    # owner directive 2: no post-run hand-off left to wait for — the mark is up before AND after the first key
+    if not any(mark(f) for f in frames[end:echo]): print('no-mark-before-first-key'); sys.exit()
     print('ok' if mark(frames[echo]) else 'no-mark-on-first-key')
 elif which=='palette21':
     pal=[f for f in frames if b'Tab' in f and b'commands' in f]
@@ -498,11 +505,11 @@ run() {
     # TUI-DESIGN-3 §3.3: a key completes the reveal — wordmark cells before AND after the echo frame; no `▓▒░` head after the echo frame; the idle frame is 11 rows
     splash|splash-wide) set -- $(wordmark "$cap"); checks="$checks wordmark_before_key=$1 after_key=$2"; [ "$1" -gt 0 ] && [ "$2" -gt 0 ] || ok=0
       h=$(wm_handoff "$cap" head-after-echo); [ "$h" = "ok" ] && checks="$checks no-head-after-echo" || { ok=0; checks="$checks $h"; }
-      rows=$(wm_rows_at "$cap" 'Say hi'); [ "$rows" = "11" ] && checks="$checks idle-rows=11" || { ok=0; checks="$checks IDLE-ROWS=$rows"; }
+      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'Say hi'); [ "$rows" = "$idlewant" ] && checks="$checks idle-rows=$rows" || { ok=0; checks="$checks IDLE-ROWS=$rows(want $idlewant)"; }
       ff=$(expect_t "$tim" 'step 0/'); checks="$checks first_frame_t=${ff}ms";;
     # TUI-DESIGN-3 §3.2 twins: the static resting mark from frame 0, never the head, 11 rows
     wordmark-reduced) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1 mark_frames=$2 frames=$4"; [ "$1" = "0" ] && [ "$2" -ge 1 ] && [ "$2" = "$4" ] || ok=0
-      rows=$(wm_rows_at "$cap" 'step 0/'); [ "$rows" = "11" ] && checks="$checks rows=11" || { ok=0; checks="$checks ROWS=$rows"; };;
+      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'step 0/'); [ "$rows" = "$idlewant" ] && checks="$checks rows=$rows" || { ok=0; checks="$checks ROWS=$rows(want $idlewant)"; };;
     # TUI-DESIGN-3 §3.4 / §3.5: no key — ≤ 15 reveal frames before the caption frame, every frame after it carries the mark, 0 frames in the 5 s after the settle
     splash-settle) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1 mark_frames=$2 markless_frames=$3"; [ "$1" -ge 1 ] && [ "$1" -le 15 ] && [ "$3" = "0" ] || ok=0
       set -- $(wm_frames_between "$cap" '\xe2\x97\x86(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*[0-9]+\.[0-9]+\.[0-9]+' '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h'); checks="$checks frames_after_settle_before_key=$1"; [ "$1" = "0" ] || ok=0
@@ -510,12 +517,12 @@ run() {
     # TUI-DESIGN-3 §3.4 / §3.9: 12 s alone = one pass — 14–18 frames between the settle and the marker key, each ≤ 3 KB, band cells in the sweep SGR, letters unchanged, 11 rows
     wordmark-idle|wordmark-idle-wide) set -- $(wm_frames_between "$cap" '\xe2\x97\x86(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*[0-9]+\.[0-9]+\.[0-9]+' '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h'); checks="$checks pass_frames=$1 max_bytes=$2 band_frames=$3 letters_ok=$4"
       [ "$1" -ge 14 ] && [ "$1" -le 18 ] && [ "$2" -le 3072 ] && [ "$3" -ge 14 ] && [ "$4" = "1" ] || ok=0
-      rows=$(wm_rows_at "$cap" 'Say hi'); [ "$rows" = "11" ] && checks="$checks rows=11" || { ok=0; checks="$checks ROWS=$rows"; };;
+      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'Say hi'); [ "$rows" = "$idlewant" ] && checks="$checks rows=$rows" || { ok=0; checks="$checks ROWS=$rows(want $idlewant)"; };;
     # TUI-DESIGN-3 §3.6: the key lands mid-pass — the echo within 50 ms of the send, band frames continue after it
     wordmark-key-during-pass) k=$(echo_wait "$tim"); checks="$checks echo_wait=${k}ms"; [ "$k" -ge 0 ] && [ "$k" -le 50 ] || ok=0
       set -- $(wm_frames_between "$cap" '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h' 'Say hi'); checks="$checks band_frames_after_echo=$3"; [ "$3" -ge 1 ] || ok=0;;
     # TUI-DESIGN-3 §3.2: hidden for the whole run, back under the strip after `end` (24 rows), gone with the panel, back with /panel off
-    wordmark-handoff) h=$(wm_handoff "$cap" handoff); [ "$h" = "ok" ] && checks="$checks handoff:run-hidden,strip+mark,panel-hides,off-restores" || { ok=0; checks="$checks HANDOFF:$h"; };;
+    wordmark-handoff) h=$(wm_handoff "$cap" handoff); [ "$h" = "ok" ] && checks="$checks handoff:mark-pinned,strip+mark,panel-hides,off-restores" || { ok=0; checks="$checks HANDOFF:$h"; };;
     # TUI-DESIGN-3 §3.1: the mark shows at 21 rows and the palette never hands it off; the brand row at 20 rows; the post-run return on the first key at 22 rows
     wordmark-21) set -- $(wm_shape "$cap"); [ "$2" -ge 1 ] && checks="$checks mark_frames=$2" || { ok=0; checks="$checks NO-MARK"; }
       h=$(wm_handoff "$cap" palette21); [ "$h" = "ok" ] && checks="$checks palette-keeps-mark" || { ok=0; checks="$checks $h"; };;
@@ -524,7 +531,7 @@ run() {
     wordmark-20) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1 reveal_mark_frames=$2"; { [ "$1" -ge 1 ] && grep -q '◆ jevcode' "$txt"; } || { ok=0; checks="$checks MISSING:reveal-or-brand-row"; }
       m=$(wm_mark_after "$cap" '\xe2\x97\x86 jevcode'); [ "$m" = "0" ] && checks="$checks no-mark-after-brand-row" || { ok=0; checks="$checks MARK-AFTER-BRAND-ROW:$m"; }
       rows=$(wm_rows_at "$cap" '\xe2\x97\x86 jevcode'); [ "$rows" = "6" ] && checks="$checks rows=6" || { ok=0; checks="$checks ROWS=$rows"; };;  # measured at the brand-row frame, after the reveal
-    wordmark-22-postrun) h=$(wm_handoff "$cap" postrun22); [ "$h" = "ok" ] && checks="$checks post-run:mark-on-first-key" || { ok=0; checks="$checks POST-RUN:$h"; };;
+    wordmark-22-postrun) h=$(wm_handoff "$cap" postrun22); [ "$h" = "ok" ] && checks="$checks post-run:mark-never-left" || { ok=0; checks="$checks POST-RUN:$h"; };;
     wordmark-nocolor) set -- $(wm_frames_between "$cap" '\xe2\x97\x86(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*[0-9]+\.[0-9]+\.[0-9]+' '(?:\xe2\x80\xba|>) h'); checks="$checks idle_frames=$1"; [ "$1" = "0" ] || ok=0
       set -- $(wm_shape "$cap"); [ "$1" -ge 1 ] && checks="$checks reveal-ran" || { ok=0; checks="$checks NO-REVEAL"; }
       grep -q $'\x1b\[38;' "$cap" && { ok=0; checks="$checks SGR-COLOUR"; } || checks="$checks no-colour-sgr";;
@@ -547,7 +554,7 @@ run() {
       grep -q '\[ui\] status' "$txt" && checks="$checks alias-ran" || { ok=0; checks="$checks MISSING:status-block"; }
       grep -q '▾ decisions' "$txt" && checks="$checks /p-d-opened" || { ok=0; checks="$checks MISSING:panel"; };;
     commands-live) grep -q '/undo/pause' "$txt" && { ok=0; checks="$checks DRAFT-KEPT"; } || checks="$checks draft-cleared";;
-    commands-thinking) grep -q '\[ui\] status' "$txt" && grep -q '\[jevcode\] Hi\.' "$txt" && checks="$checks status-while-thinking+reply" || { ok=0; checks="$checks MISSING:status-or-reply"; };;
+    commands-thinking) grep -q '\[ui\] status' "$txt" && grep -q '\[jevcode\] Hi' "$txt" && checks="$checks status-while-thinking+reply" || { ok=0; checks="$checks MISSING:status-or-reply"; };;
     trust-esc) grep -q 'trust unchanged' "$txt" && checks="$checks trust-unchanged" || { ok=0; checks="$checks MISSING:trust-unchanged"; };;
     keybindings) grep -q '› ?' "$txt" && checks="$checks ?-inserted" || { ok=0; checks="$checks MISSING:?-as-text"; }
       grep -q 'Tab picks' "$txt" && { ok=0; checks="$checks HELP-OPENED"; } || checks="$checks no-help";;

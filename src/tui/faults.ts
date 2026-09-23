@@ -28,6 +28,8 @@ export const FAULT_PANES: readonly string[] = [
   'static',
   'transcript',
   'wordmark',
+  // the 3D indicator slot above the console
+  'anim',
   'rule',
   'banner',
   'queue',

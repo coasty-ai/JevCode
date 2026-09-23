@@ -501,10 +501,15 @@ export interface StripOptions {
  */
 export function panelStrip(state: PaneState & { latencies: readonly (number | null)[] }, columns: number, g: GlyphSet = GLYPHS.unicode, opts: StripOptions = {}): string {
   const wide = columns >= PANEL_WIDE_COLUMNS;
-  // TUI-DESIGN-5 §4.3 / §12.3 S86: the second literal becomes the same builder — `[d] [p] [t] [s] [a]` narrow.
-  const list = paneTabsFor(hasDelegation(state));
-  const tabs = wide ? ` ${tabStrip(list, 'long', true)} ${g.rule.repeat(5)}` : ` ${tabStrip(list, 'short', false)} ${g.rule.repeat(2)}`;
+  /**
+   * OWNER ADDENDUM (2026-09): the collapsed strip is a QUIET status row. The hotkey legend
+   * `[d]ecisions [p]lan [t]imeline [s]ynth` is gone from it — the keys still work and the legend lives in `?` help and
+   * in the palette; a row the user reads once a second must not shout four shortcuts at them. The legend stays on the
+   * OPEN / FULL panel's own tab header (`paneRuleRow`), where it names what the visible tabs are. The fullscreen
+   * renderer's position ladder still replaces the right segment when it is given one.
+   */
   const rungs = opts.position ?? null;
+  const tabs = g.rule.repeat(wide ? 5 : 2);
   const rows = [...(state.chatRows ?? []), ...state.rows];
   const segments: string[] =
     rows.length === 0

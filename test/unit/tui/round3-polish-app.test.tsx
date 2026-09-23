@@ -11,7 +11,7 @@ import { createBridge } from '../../../src/tui/App.js';
 import { LIVE_FLUSH_MS } from '../../../src/tui/useEngine.js';
 import { formatTranscriptItem, itemsFromEvent } from '../../../src/tui/plain.js';
 import { PLACEHOLDERS } from '../../../src/tui/composer/Composer.js';
-import { LABEL_GUTTER, bodyRows, gutterLabel, normaliseRows } from '../../../src/tui/Transcript.js';
+import { LABEL_GUTTER, bodyRows, gutterLabel, isRunHeaderItem, normaliseRows } from '../../../src/tui/Transcript.js';
 import { ORPHAN_MIN_CELLS } from '../../../src/tui/transcript/wrap.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
 import { loadRunEvents, mkRisk, tick } from '../../fixtures/tui/fixtures.js';
@@ -125,6 +125,8 @@ describe('the label gutter and the §5.3 identity in a mounted App (TUI-DESIGN-3
     for (const e of events) {
       for (const item of itemsFromEvent(e, seq)) {
         seq += 1;
+        // owner addendum: the two run-header items are not in the interactive transcript at all
+        if (isRunHeaderItem(item)) continue;
         const label = item.label ?? (item.step === null ? '[run]' : `[step ${item.step}]`);
         const expected = bodyRows(item.text, 80, label).map((b, i) => (i === 0 ? `${gutterLabel(label)} ${b}` : `${' '.repeat(Math.max(LABEL_GUTTER - 1, stringWidth(label)) + 1)}${b}`));
         // the item's rows appear consecutively in the scrollback

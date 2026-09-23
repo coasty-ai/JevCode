@@ -3,14 +3,15 @@
  * pass frame changes ≤ 8 cells per row and ≤ 40 in total (colour only — the letters never change); `wordmarkFrame` rows are
  * exactly 5, each ≤ columns cells, identical between frames; the caption `◆ <version>` iff `captionFits` at grid span
  * `[58, 58 + cellWidth(caption))` (73 columns for `◆ 0.3.0`, 85 for `◆ 0.10.0-rc.1`), never inside a band span, `◆` `accent2`;
- * the tagline iff ≥ 104 columns; the `--ascii` twin is pure ASCII (`* 0.3.0`); `wordmarkWanted` is the §3.1 predicate over
- * 1,000 random inputs; the constants table.
+ * the tagline iff ≥ 104 columns; the `--ascii` twin is pure ASCII (`* 0.3.0`); `wordmarkWanted` is the PINNED predicate
+ * (owner directive 2) over 1,000 random inputs; `wordmarkPad` / `wordmarkBoxRows` are directive 3's padding ladder;
+ * the constants table.
  */
 import { describe, expect, it } from 'vitest';
 import { GLYPHS, cellWidth } from '../../../src/tui/glyphs.js';
 import { OVERLAY_KINDS, type OverlayKind } from '../../../src/tui/layout.js';
 import { SPLASH_HELD_MS, SWEEP_CELLS, WORDMARK, WORDMARK_CELLS, splashFrame, wordmarkOffset } from '../../../src/tui/splash.js';
-import type { PanelState, RunPhase } from '../../../src/tui/useEngine.js';
+import type { PanelState } from '../../../src/tui/useEngine.js';
 import {
   CAPTION_GRID_CELL,
   LOOP_ATTENTIVE_MS,
@@ -25,13 +26,16 @@ import {
   TAGLINE,
   TAGLINE_MIN_COLUMNS,
   WORDMARK_MIN_COLUMNS,
-  WORDMARK_LIVE_MIN_ROWS,
   WORDMARK_MIN_ROWS,
-  WORDMARK_POST_RUN_MIN_ROWS,
+  WORDMARK_PAD_MIN_ROWS,
+  WORDMARK_PAD2_MIN_ROWS,
+  WORDMARK_SHARE_MIN_ROWS,
   captionFits,
   captionText,
   loopBand,
+  wordmarkBoxRows,
   wordmarkFrame,
+  wordmarkPad,
   wordmarkWanted,
   type WordmarkInput,
   type WordmarkSetting,
@@ -90,7 +94,9 @@ describe('the constants table (TUI-DESIGN-3 §3.4)', () => {
     expect(LOOP_SLEEP_MS).toBe(600_000);
     expect(LOOP_QUIET_AFTER_KEY_MS).toBe(3_000);
     expect(WORDMARK_MIN_ROWS).toBe(21);
-    expect(WORDMARK_POST_RUN_MIN_ROWS).toBe(24);
+    expect(WORDMARK_SHARE_MIN_ROWS).toBe(30);
+    expect(WORDMARK_PAD_MIN_ROWS).toBe(26);
+    expect(WORDMARK_PAD2_MIN_ROWS).toBe(34);
     expect(WORDMARK_MIN_COLUMNS).toBe(64);
     expect(CAPTION_GRID_CELL).toBe(58);
     expect(TAGLINE_MIN_COLUMNS).toBe(104);
@@ -234,91 +240,93 @@ describe('wordmarkFrame (TUI-DESIGN-3 §3.4–3.5)', () => {
   });
 });
 
-describe('wordmarkWanted (TUI-DESIGN-3 §3.1)', () => {
-  const base: WordmarkInput = { boxed: true, rows: 24, postRun: false, columns: 80, screenReader: false, run: 'none', panel: 'collapsed', pickerOpen: false, overlay: 'none', expanded: false, setting: 'sweep' };
-  const RUNS: readonly RunPhase[] = ['none', 'starting', 'live', 'aborting', 'pausing'];
+describe('wordmarkWanted — the PINNED mark (owner directive 2)', () => {
+  const base: WordmarkInput = { boxed: true, rows: 24, columns: 80, screenReader: false, panel: 'collapsed', pickerOpen: false, overlay: 'none', setting: 'sweep' };
   const PANELS: readonly PanelState[] = ['collapsed', 'open', 'full'];
   const SETTINGS: readonly WordmarkSetting[] = ['sweep', 'static', 'off'];
-  const predicate = (i: WordmarkInput): boolean =>
-    i.boxed &&
-    i.rows >= 21 &&
-    i.columns >= 64 &&
-    !i.screenReader &&
-    // TUI-DESIGN-4 §1.2 P-H2 (D-T b): the mark stays up during a live run once `rows >= WORDMARK_LIVE_MIN_ROWS`
-    (!(i.run === 'live' || i.run === 'aborting' || i.run === 'pausing') || i.rows >= WORDMARK_LIVE_MIN_ROWS) &&
-    i.panel === 'collapsed' &&
-    !i.pickerOpen &&
-    i.overlay !== 'review' &&
-    !i.expanded &&
-    i.setting !== 'off' &&
-    (i.rows >= 24 || !i.postRun);
-  it('the hero cases: idle, thinking, every non-review overlay at ≥ 21 rows; hidden while live / panel / picker / review / expanded / off / flat / SR / < 64 columns / < 21 rows', () => {
+  /** the rule, restated: geometry ∧ ¬SR ∧ setting ≠ off, and a slot claimant only wins below `WORDMARK_SHARE_MIN_ROWS` */
+  const predicate = (i: WordmarkInput): boolean => {
+    if (!i.boxed || i.rows < 21 || i.columns < 64 || i.screenReader || i.setting === 'off') return false;
+    const claims = i.panel !== 'collapsed' || i.pickerOpen || i.overlay === 'review';
+    return !claims || i.rows >= 30;
+  };
+
+  it('the geometry gates are the only unconditional ones', () => {
     expect(wordmarkWanted(base)).toBe(true);
-    expect(wordmarkWanted({ ...base, run: 'starting' })).toBe(true);
     expect(wordmarkWanted({ ...base, rows: 21 })).toBe(true);
     expect(wordmarkWanted({ ...base, rows: 20 })).toBe(false);
     expect(wordmarkWanted({ ...base, columns: 64 })).toBe(true);
     expect(wordmarkWanted({ ...base, columns: 63 })).toBe(false);
-    for (const overlay of OVERLAY_KINDS) expect(wordmarkWanted({ ...base, overlay }), overlay).toBe(overlay !== 'review');
-    for (const run of RUNS) expect(wordmarkWanted({ ...base, run }), run).toBe(run === 'none' || run === 'starting');
-    for (const panel of PANELS) expect(wordmarkWanted({ ...base, panel }), panel).toBe(panel === 'collapsed');
-    for (const setting of SETTINGS) expect(wordmarkWanted({ ...base, setting }), setting).toBe(setting !== 'off');
-    expect(wordmarkWanted({ ...base, pickerOpen: true })).toBe(false);
-    expect(wordmarkWanted({ ...base, expanded: true })).toBe(false);
     expect(wordmarkWanted({ ...base, boxed: false })).toBe(false);
     expect(wordmarkWanted({ ...base, screenReader: true })).toBe(false);
-    // §3.2: after run:end the mark returns at once at ≥ 24 rows, on the first key at 21–23
-    expect(wordmarkWanted({ ...base, postRun: true, rows: 24 })).toBe(true);
-    expect(wordmarkWanted({ ...base, postRun: true, rows: 23 })).toBe(false);
-    expect(wordmarkWanted({ ...base, postRun: true, rows: 21 })).toBe(false);
-    expect(wordmarkWanted({ ...base, postRun: false, rows: 21 })).toBe(true);
+    for (const setting of SETTINGS) expect(wordmarkWanted({ ...base, setting }), setting).toBe(setting !== 'off');
     expect(wordmarkWanted({ ...base, rows: Number.NaN })).toBe(false);
+    expect(wordmarkWanted({ ...base, columns: Number.NaN })).toBe(false);
   });
-  it('TUI-DESIGN-4 §1.2 P-H2 (D-T b): the mark stays up during a live run at >= 32 rows, and yields at 31', () => {
-    expect(WORDMARK_LIVE_MIN_ROWS).toBe(32);
-    for (const run of RUNS) {
-      expect(wordmarkWanted({ ...base, run, rows: 32 }), `${run} @32`).toBe(true);
-      expect(wordmarkWanted({ ...base, run, rows: 31 }), `${run} @31`).toBe(run === 'none' || run === 'starting');
+
+  it('the run phase, the stream and every non-review overlay leave the mark alone (the pin)', () => {
+    // there is no `run` / `postRun` input at all any more: the mark is up for the whole session
+    for (const overlay of OVERLAY_KINDS) expect(wordmarkWanted({ ...base, overlay }), overlay).toBe(overlay !== 'review');
+    for (const overlay of OVERLAY_KINDS) expect(wordmarkWanted({ ...base, overlay, rows: 30 }), `${overlay}@30`).toBe(true);
+    expect(Object.keys(base).sort()).toEqual(['boxed', 'columns', 'overlay', 'panel', 'pickerOpen', 'rows', 'screenReader', 'setting']);
+  });
+
+  it('a panel / picker / pending review yields the mark only below WORDMARK_SHARE_MIN_ROWS', () => {
+    expect(WORDMARK_SHARE_MIN_ROWS).toBe(30);
+    for (const claim of [{ panel: 'open' } as const, { panel: 'full' } as const, { pickerOpen: true }, { overlay: 'review' as const }]) {
+      expect(wordmarkWanted({ ...base, ...claim, rows: 29 }), `${JSON.stringify(claim)}@29`).toBe(false);
+      expect(wordmarkWanted({ ...base, ...claim, rows: 30 }), `${JSON.stringify(claim)}@30`).toBe(true);
+      expect(wordmarkWanted({ ...base, ...claim, rows: 60 }), `${JSON.stringify(claim)}@60`).toBe(true);
+      // the geometry gates still win over the sharing rule
+      expect(wordmarkWanted({ ...base, ...claim, rows: 60, columns: 63 })).toBe(false);
+      expect(wordmarkWanted({ ...base, ...claim, rows: 60, screenReader: true })).toBe(false);
+      expect(wordmarkWanted({ ...base, ...claim, rows: 60, setting: 'off' })).toBe(false);
     }
-    // the arithmetic behind 32: rule 1 + live 2 + banner 1 + queue 2 + mark 5 + chrome 3 + composer 1 + status 1 = 16,
-    // so 32 rows still leave 16 rows of conversation — the floor
-    expect(WORDMARK_LIVE_MIN_ROWS - 16).toBe(16);
-    // edge 1: a panel opening mid-run still wins the slot, at any height
-    for (const panel of ['open', 'full'] as const) expect(wordmarkWanted({ ...base, run: 'live', rows: 60, panel })).toBe(false);
-    // edge 2: a review arming mid-run still hides the mark
-    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, overlay: 'review' })).toBe(false);
-    // edge 4: at >= 32 rows `WORDMARK_POST_RUN_MIN_ROWS` is a no-op (the mark was already up) — asserted, not deleted,
-    // because 21..31 rows still need it
-    expect(WORDMARK_POST_RUN_MIN_ROWS).toBe(24);
-    expect(wordmarkWanted({ ...base, postRun: true, rows: 32, run: 'live' })).toBe(true);
-    expect(wordmarkWanted({ ...base, postRun: true, rows: 24 })).toBe(true);
-    expect(wordmarkWanted({ ...base, postRun: true, rows: 23 })).toBe(false);
-    // the screen reader, the flat tier and `off` still win over the new clause
-    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, screenReader: true })).toBe(false);
-    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, boxed: false })).toBe(false);
-    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, setting: 'off' })).toBe(false);
-    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, columns: 63 })).toBe(false);
-    // `static` (SSH / reduced motion) shows the mark during a run too — zero frames either way (edge 5)
-    expect(wordmarkWanted({ ...base, run: 'live', rows: 60, setting: 'static' })).toBe(true);
+    for (const panel of PANELS) expect(wordmarkWanted({ ...base, panel }), panel).toBe(panel === 'collapsed');
+    // at 30 rows `mark 7 + panel 6 + rule 1 + chrome 3 + composer 1 + status 1 = 19` — 11 rows of conversation
+    expect(wordmarkBoxRows(30) + 6 + 1 + 3 + 1 + 1).toBe(19);
   });
-  it('equals the §3.1 predicate over 1,000 random inputs', () => {
+
+  it('equals the restated predicate over 1,000 random inputs', () => {
     const rnd = mulberry32(0x0d1);
-    const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)] as T;
+    const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)] as T;
     for (let n = 0; n < 1000; n++) {
       const i: WordmarkInput = {
         boxed: rnd() < 0.8,
         rows: 8 + Math.floor(rnd() * 40),
-        postRun: rnd() < 0.3,
         columns: 40 + Math.floor(rnd() * 100),
         screenReader: rnd() < 0.1,
-        run: pick(RUNS),
         panel: pick(PANELS),
         pickerOpen: rnd() < 0.1,
         overlay: pick(OVERLAY_KINDS) as OverlayKind,
-        expanded: rnd() < 0.1,
         setting: pick(SETTINGS),
       };
       expect(wordmarkWanted(i), JSON.stringify(i)).toBe(predicate(i));
     }
+  });
+});
+
+describe('the padded branding box (owner directive 3)', () => {
+  it('wordmarkPad is 0 · 1 · 2 and the box is 5 · 7 · 9 rows', () => {
+    for (const rows of [0, 8, 21, 24, 25]) expect(wordmarkPad(rows), `${rows}`).toBe(0);
+    for (const rows of [26, 30, 33]) expect(wordmarkPad(rows), `${rows}`).toBe(1);
+    for (const rows of [34, 40, 120]) expect(wordmarkPad(rows), `${rows}`).toBe(2);
+    expect(wordmarkPad(Number.NaN)).toBe(0);
+    expect(wordmarkBoxRows(24)).toBe(5);
+    expect(wordmarkBoxRows(26)).toBe(7);
+    expect(wordmarkBoxRows(34)).toBe(9);
+    // the box is always the glyph rows plus an EQUAL number of blank rows above and below
+    for (let rows = 0; rows <= 60; rows++) expect(wordmarkBoxRows(rows) - 2 * wordmarkPad(rows)).toBe(5);
+  });
+  it('the glyph rows keep at least 4 cells of side margin from 64 columns up', () => {
+    for (const columns of [64, 72, 80, 100, 120]) {
+      const f = wordmarkFrame({ columns, version: '0.3.0' });
+      const left = f.rows[4]!.length - f.rows[4]!.trimStart().length;
+      expect(left, `${columns} left`).toBeGreaterThanOrEqual(4);
+      for (const row of f.rows) expect(columns - cellWidth(row), `${columns} right`).toBeGreaterThanOrEqual(0);
+    }
+    // 64 columns is the tightest: (64 − 56) / 2 = 4 cells each side
+    expect(wordmarkOffset(64)).toBe(4);
+    expect(wordmarkOffset(80)).toBe(12);
   });
 });

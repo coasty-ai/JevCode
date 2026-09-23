@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { CAP, MIN_COLUMNS, MIN_ROWS, OVERLAY_KINDS, WORDMARK_MIN_COLUMNS, type OverlayKind } from '../../../../src/tui/layout.js';
+import { wordmarkBoxRows } from '../../../../src/tui/wordmark.js';
 import { FULL_HERO_MIN_ROWS, FULL_MIN_COLUMNS, FULL_MIN_ROWS, FULL_MIN_VIEWPORT_ROWS, computeFullLayout, fullscreenRefusal, type FullLayout, type FullLayoutInput } from '../../../../src/tui/fullscreen/layout.js';
 
 const base = (over: Partial<FullLayoutInput> = {}): FullLayoutInput => ({ rows: 24, columns: 80, overlay: 'none', overlayWant: 0, previewWant: 0, expanded: false, composerWant: 1, gate: 0, ...over });
@@ -74,8 +75,10 @@ describe('computeFullLayout (TUI-DESIGN-4 §1.3.2): total === rows, exactly, for
     const tall = computeFullLayout(base({ rows: 24, columns: 80 }));
     expect([tall.header, tall.rule, tall.viewport, tall.console]).toEqual([CAP.splash, 1, 24 - 11, 5]);
     expect(tall.degraded).toBe('none');
+    // owner directive 3: the hero header IS the padded box — 9 rows at 40 rows, 5 at 24
     const wide = computeFullLayout(base({ rows: 40, columns: 120 }));
-    expect([wide.header, wide.rule, wide.viewport, wide.console]).toEqual([CAP.splash, 1, 40 - 11, 5]);
+    expect([wide.header, wide.rule, wide.viewport, wide.console]).toEqual([wordmarkBoxRows(40), 1, 40 - 6 - wordmarkBoxRows(40), 5]);
+    expect(wordmarkBoxRows(40)).toBe(9);
     for (const rows of [18, 20, 23]) {
       const l = computeFullLayout(base({ rows, columns: 80 }));
       expect([l.header, l.rule, l.viewport, l.console], `compact ${rows}`).toEqual([1, 1, rows - 7, 5]);
@@ -120,11 +123,14 @@ describe('computeFullLayout (TUI-DESIGN-4 §1.3.2): total === rows, exactly, for
     // as the rows run out the header is the LAST thing above the viewport to go
     const seen = new Set<number>();
     for (let rows = 3; rows <= 40; rows++) seen.add(computeFullLayout(base({ rows, columns: 80 })).header);
-    expect([...seen].sort((a, b) => a - b)).toEqual([0, 1, 5]);
-    // whenever the header has its 5 rows, the viewport still has its floor
+    expect([...seen].sort((a, b) => a - b)).toEqual([0, 1, 5, 7, 9]);
+    // whenever the header carries the mark, the viewport still has its floor and the header is the padded box
     for (let rows = 0; rows <= 120; rows++) {
       const f = computeFullLayout(base({ rows, columns: 80 }));
-      if (f.header === CAP.splash) expect(f.viewport, `rows=${rows}`).toBeGreaterThanOrEqual(FULL_MIN_VIEWPORT_ROWS);
+      if (f.header >= CAP.splash) {
+        expect(f.viewport, `rows=${rows}`).toBeGreaterThanOrEqual(FULL_MIN_VIEWPORT_ROWS);
+        expect(f.header, `rows=${rows}`).toBe(wordmarkBoxRows(rows));
+      }
     }
   });
 

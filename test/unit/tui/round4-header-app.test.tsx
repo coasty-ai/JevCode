@@ -20,7 +20,7 @@ import type { LaunchSettings } from '../../../src/core/types.js';
 import { App, SYNC_COMMIT_MIN_MS, createBridge, createTuiRenderer, shouldSyncCommit, type Bridge } from '../../../src/tui/App.js';
 import { WORDMARK } from '../../../src/tui/splash.js';
 import { alternateScreenEntered, markAlternateScreen } from '../../../src/tui/terminal.js';
-import { WORDMARK_LIVE_MIN_ROWS } from '../../../src/tui/wordmark.js';
+import { WORDMARK_MIN_ROWS } from '../../../src/tui/wordmark.js';
 import { createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { mkRunResult, mkStatus, tick } from '../../fixtures/tui/fixtures.js';
 import { StubStdin, StubStdout, dynamicRegion, stripSgr } from './stub-stdout.js';
@@ -131,7 +131,7 @@ describe('P-H1 (D-T a): the brand never leaves the rule row once a run has been 
   });
 });
 
-describe('P-H2 (D-T b): the mark stays up during a live run at >= 32 rows, with the sweep frozen', () => {
+describe('the PINNED mark (owner directive 2, superseding P-H2 / D-T b): the mark stays up during a live run at every height that fits it, with the sweep frozen', () => {
   it('F-H2: at 34×80 the mark is present in a frame captured WHILE the run is live, under the branded strip', async () => {
     const m = mount(34, 80);
     await settle(m);
@@ -143,20 +143,22 @@ describe('P-H2 (D-T b): the mark stays up during a live run at >= 32 rows, with 
     expect(m.dyn()[0]).toMatch(/^─── ◆ jevcode ─ ▸ jev /);
   });
 
-  it('at 31 rows the run needs the rows: the mark yields (the boundary is exactly WORDMARK_LIVE_MIN_ROWS)', async () => {
-    expect(WORDMARK_LIVE_MIN_ROWS).toBe(32);
-    const m = mount(31, 80);
+  it('the boundary is now the geometry alone: 20 rows yields, 21 keeps the mark up mid-run (P-H2\'s 32 is gone)', async () => {
+    expect(WORDMARK_MIN_ROWS).toBe(21);
+    const m = mount(20, 80);
     await settle(m);
     startRun(m);
     readyRun(m);
     await waitFor(() => ruleRow(m).includes('▸ jev'));
     expect(hasMark(m.dyn(), 80)).toBe(false);
-    const at32 = mount(32, 80);
-    await settle(at32);
-    startRun(at32);
-    readyRun(at32);
-    await waitFor(() => ruleRow(at32).includes('▸ jev'));
-    expect(hasMark(at32.dyn(), 80)).toBe(true);
+    for (const rows of [21, 24, 31, 32]) {
+      const up = mount(rows, 80);
+      await settle(up);
+      startRun(up);
+      readyRun(up);
+      await waitFor(() => ruleRow(up).includes('▸ jev'));
+      expect(hasMark(up.dyn(), 80), `rows ${rows}`).toBe(true);
+    }
   });
 
   it('the idle sweep is FROZEN while live: a quiet second with the mark up writes no decoration frame', async () => {
@@ -166,14 +168,15 @@ describe('P-H2 (D-T b): the mark stays up during a live run at >= 32 rows, with 
     readyRun(m);
     await waitFor(() => hasMark(m.dyn(), 80));
     // §11's `idle-animation` live row: the run's busiest second must be UNCHANGED by the mark. The run's own spinner
-    // keeps writing either way, so the measurement is the 34-row frame count (mark up) against the 31-row one
-    // (mark down) over the same window — the sweep would show up as the difference.
-    const down = mount(31, 80);
+    // and the indicator keep writing either way, so the measurement is the 80-column frame count (mark up) against
+    // the 63-column one at the SAME height (mark down — below `WORDMARK_MIN_COLUMNS`) over the same window; the
+    // sweep would show up as the difference.
+    const down = mount(34, 63);
     await settle(down);
     startRun(down);
     readyRun(down);
     await waitFor(() => ruleRow(down).includes('▸ jev'));
-    expect(hasMark(down.dyn(), 80)).toBe(false);
+    expect(hasMark(down.dyn(), 63)).toBe(false);
     const a0 = m.stdout.frames.length;
     const b0 = down.stdout.frames.length;
     await tick(700);
@@ -244,19 +247,21 @@ describe('P-H3: the wordmark renders inside a boundary and its spans are guarded
   });
 
   it('an injected RENDER fault degrades the mark to BLANK rows of the same height, appends one `[ui]` item, and the rest of the frame survives', async () => {
+    // the mark is PINNED, so the fault fires in the very first frame that draws it rather than after the run
     const m = mount(24, 80, { fault: 'render:wordmark' });
     await settle(m);
+    await waitFor(() => m.frame().includes('ui: wordmark pane failed to render'));
+    // the pinned box disappears silently — BLANK rows of the same height, not a crashed frame
+    const blank = m.frames().find((d) => d.length === 11 && !hasMark(d, 80));
+    expect(blank).toBeDefined();
+    expect(blank!.slice(1, 6)).toEqual(['', '', '', '', '']);
+    // the rule row, the console and the composer are all still there, and the fault is one-shot
     startRun(m);
     readyRun(m);
     await waitFor(() => ruleRow(m).includes('▸ jev'));
-    endRun(m);
-    await waitFor(() => m.frame().includes('wordmark'));
-    // the idle tenant disappears silently — blank rows, not a crashed frame
-    expect(hasMark(m.dyn(), 80)).toBe(false);
-    expect(m.frame()).toContain('ui: wordmark pane failed to render');
-    // the rule row, the console and the composer are all still there
     expect(ruleRow(m)).toMatch(/^─── ◆ jevcode ─ ▸ jev /);
     expect(m.frame()).toContain('? help');
+    expect(hasMark(m.dyn(), 80)).toBe(true);
   });
 });
 

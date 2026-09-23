@@ -350,8 +350,12 @@ export function checkPolish(capture, opts = {}) {
     if (f.dynamic.filter((r) => /██|##/.test(r)).length < 5) problems.push('fewer than 5 wordmark rows');
     if (captionFits && !new RegExp(`[◆*] ${version ? version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '\\d+\\.\\d+\\.\\d+'}`).test(dyn)) problems.push('no caption `◆ <version>`');
     if (!/[›>] Say hi, ask a question, or describe a task/.test(dyn)) problems.push('no `› Say hi, ask a question, or describe a task…` prompt');
-    if (f.dynamic.length !== 11) problems.push(`${f.dynamic.length} dynamic rows (want 11)`);
-    add('V1', problems.length === 0, problems.length === 0 ? `frame ${f.index}: 5 wordmark rows, caption, prompt, 11 dynamic rows` : `frame ${f.index}: ${problems.join('; ')}`);
+    // owner directive 3: the branding box is padded with `markPad(rows)` blank rows above AND below the glyphs, so
+    // the idle frame is `rule 1 + (5 + 2p) + console 5` — 11 below 26 rows, 13 at 26–33, 15 from 34 up
+    const pad = rows >= 34 ? 2 : rows >= 26 ? 1 : 0;
+    const wantRows = 1 + (5 + 2 * pad) + 5;
+    if (f.dynamic.length !== wantRows) problems.push(`${f.dynamic.length} dynamic rows (want ${wantRows})`);
+    add('V1', problems.length === 0, problems.length === 0 ? `frame ${f.index}: 5 wordmark rows, ${pad} padding row(s) each side, caption, prompt, ${wantRows} dynamic rows` : `frame ${f.index}: ${problems.join('; ')}`);
   }
   // V2 — wordmark cells in the settled frame and every idle frame until the first [run] start
   if (settledIdx >= 0) {
