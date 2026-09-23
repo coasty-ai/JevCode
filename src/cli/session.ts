@@ -3298,10 +3298,18 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   function lastFinishedRun(): RunRecord | null {
     return runs.filter((r) => r.endedAt !== null).at(-1) ?? null;
   }
+  /**
+   * AGENT-LOOP-DESIGN §A5: the run `/undo`, `/rewind`, `/diff <step>` and their step completion act on — the newest finished run that
+   * was not a reply (a tool-less agent turn stops `answered` and changed nothing), so a `thanks` after a task never hides the task's
+   * steps; the newest finished run when every run was a reply. Legacy modes never stop `answered`: exactly `lastFinishedRun()`.
+   */
+  function lastWorkRun(): RunRecord | null {
+    return runs.filter((r) => r.endedAt !== null && r.stopReason !== 'answered').at(-1) ?? lastFinishedRun();
+  }
 
   async function undoCommand(step: number | null): Promise<void> {
     const cfg = config;
-    const last = lastFinishedRun();
+    const last = lastWorkRun();
     if (!cfg || !last) {
       // TUI-DESIGN-4 §3.1.7: an empty state is never an error. Only a REFUSED or malformed request is, so these
       // two are plain `[ui]` info items — nothing was refused, there is simply nothing to undo yet.
@@ -3341,7 +3349,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
 
   async function rewindCommand(step: number | null): Promise<void> {
     const cfg = config;
-    const last = lastFinishedRun();
+    const last = lastWorkRun();
     if (!cfg || !last) {
       // §3.1.7: `/rewind`'s two states are the SAME empty states `/undo`'s were — an info sentence, not an error
       note('nothing to rewind — no run has finished in this session');
@@ -3389,7 +3397,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
 
   async function diffCommand(a: Extract<CommandAction, { kind: 'diff' }>): Promise<void> {
     const cfg = config;
-    const run = current ?? lastFinishedRun();
+    const run = current ?? lastWorkRun();
     if (!cfg || !run) {
       // §3.1.7: an empty state is a sentence, not an error
       note('nothing to diff — no run in this session yet');
@@ -5107,7 +5115,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     phase: () => phase,
     ranBefore,
     dispatchContext() {
-      const run = current ?? lastFinishedRun();
+      const run = current ?? lastWorkRun();
       const cfg = config;
       return {
         step: run?.steps ?? 0,

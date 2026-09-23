@@ -322,3 +322,18 @@ describe('/jev, /why, /decisions in agent mode (peer review G)', () => {
     expect(h.renderer.notes.at(-1)?.text).toBe(AGENT_NO_DECISIONS_TEXT);
   });
 });
+
+describe('§A5: a reply never hides the task before it from /undo, /rewind and /diff <step>', () => {
+  it('fix → thanks: the step context (and /undo\'s target) is still the task run\'s changed steps', async () => {
+    const outcome: EngineEvent = { type: 'outcome', step: 2, outcome: { status: 'executed', summary: 'ok', changedFiles: ['a.py'] } };
+    const h = await build({ ...AGENT, script: (o) => (o.task === 'thanks' ? { stop: 'answered', steps: 1 } : { events: [toolCall('c1'), outcome], stop: 'complete', steps: 4 }) });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('fix the failing test');
+    await h.submit('thanks');
+    const ctx = h.controller.host.dispatchContext();
+    expect(ctx.step).toBe(4);
+    expect(ctx.changedSteps).toEqual([2]);
+    expect(h.controller.view.runs.map((r) => r.stopReason)).toEqual(['complete', 'answered']);
+  });
+});
