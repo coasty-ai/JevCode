@@ -125,8 +125,8 @@ describe('openai responses agent wire (AGENT-LOOP-DESIGN §6.2)', () => {
   });
 
   it('(d) a second function_call item with a different call_id at one output_index is a second call', async () => {
-    const a = { id: 'fc_a', type: 'function_call', call_id: 'call_a', name: 'read_file', arguments: '' };
-    const b = { id: 'fc_b', type: 'function_call', call_id: 'call_b', name: 'read_file', arguments: '' };
+    const a = { id: 'fc_a', type: 'function_call', call_id: 'call_x', name: 'read_file', arguments: '' };
+    const b = { id: 'fc_b', type: 'function_call', call_id: 'call_y', name: 'read_file', arguments: '' };
     const stream = sseEvents([
       { type: 'response.output_item.added', output_index: 0, item: a },
       { type: 'response.function_call_arguments.delta', output_index: 0, delta: '{"path":"a"}' },
@@ -137,8 +137,8 @@ describe('openai responses agent wire (AGENT-LOOP-DESIGN §6.2)', () => {
     const f = scriptedFetch([{ status: 200, body: stream }]);
     const res = await createOpenAiProvider(cfg, providerDeps(f.fetch).deps).generate(agentReq(), genOpts());
     expect(res.toolCalls.map((c) => [c.id, c.input])).toEqual([
-      ['call_a', { path: 'a' }],
-      ['call_b', { path: 'b' }],
+      ['call_x', { path: 'a' }],
+      ['call_y', { path: 'b' }],
     ]);
   });
 });

@@ -27,7 +27,7 @@ import { ProviderHttpError } from '../errors.js';
 import { isJsonObject } from '../core/json.js';
 import type { AgentRequest, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, JsonObject, ToolCall, ToolChoice } from '../core/types.js';
 import { geminiToolSchema } from './schema.js';
-import { SYNTH_CALL_PREFIX, agentCallId, agentReasoning, assistantParts, createCaller, emitToolCall, getJson, googleErrorFields, joinUrl, objectInput, replayData, runGeneration, userParts, validateGenerateRequest } from './http.js';
+import { SYNTH_CALL_PREFIX, agentCallId, agentReasoning, assistantParts, createCaller, emitToolCall, getJson, googleErrorFields, joinUrl, objectInput, replayData, runGeneration, userParts, validateGenerateRequest, withUniqueCallIds } from './http.js';
 import type { ConsumeContext, HeldPartial } from './http.js';
 import type { EffortWord } from './openai-compat.js';
 import { effortOf, pickEffort } from './openai-compat.js';
@@ -370,7 +370,8 @@ export function createGeminiProvider(cfg: ProviderConfig, deps: ProviderDeps): G
       const agentModel = req.agent === undefined ? null : cfg.model;
       const attempt = (held: HeldPartial): Promise<ProviderOutcome> =>
         caller.attempt({ label: 'gemini', url, headers: { 'x-goog-api-key': cfg.apiKey }, body, readError: googleErrorFields, consume: (stream, ctx) => consumeGemini(stream, ctx, agentModel) }, opts, held);
-      return runGeneration(d, cfg, opts, attempt);
+      const res = await runGeneration(d, cfg, opts, attempt);
+      return req.agent === undefined ? res : withUniqueCallIds(res, req.agent);
     },
   };
 }

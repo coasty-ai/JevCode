@@ -68,8 +68,8 @@ describe('openrouter agent wire (AGENT-LOOP-DESIGN §6.2)', () => {
       chunk({ reasoning: ' more', reasoning_details: [{ type: 'reasoning.text', text: ' more', index: 0 }, { type: 'reasoning.encrypted', data: 'abc', index: 1 }] }),
       chunk({ reasoning_details: [{ type: 'reasoning.text', signature: 'sig-1', index: 0 }, { type: 'reasoning.encrypted', data: 'def', index: 1 }] }),
       chunk({ content: 'Reading.' }),
-      chunk({ tool_calls: [{ index: 0, id: 'call_a', type: 'function', function: { name: 'read_file', arguments: '' } }] }),
-      chunk({ tool_calls: [{ index: 1, id: 'call_b', type: 'function', function: { name: 'read_file', arguments: '{"pa' } }] }),
+      chunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '' } }] }),
+      chunk({ tool_calls: [{ index: 1, id: 'call_2', type: 'function', function: { name: 'read_file', arguments: '{"pa' } }] }),
       chunk({ tool_calls: [{ index: 0, function: { arguments: '{"path":"src/a.ts"}' } }] }),
       chunk({ tool_calls: [{ index: 1, function: { arguments: 'th":"b.ts"}' } }] }),
       { id: 'gen-agent-1', model: GLM, provider: 'Together', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] },
@@ -82,17 +82,17 @@ describe('openrouter agent wire (AGENT-LOOP-DESIGN §6.2)', () => {
       genOpts({ onToolCall: (d) => h.calls.push(d), onReasoning: (r) => h.reasoning.push(r), onToolDelta: (d) => h.toolDeltas.push(d), onDelta: (d) => h.deltas.push(d) }),
     );
     expect(h.calls).toEqual([
-      { index: 0, id: 'call_a', name: 'read_file', fragment: '' },
-      { index: 1, id: 'call_b', name: 'read_file', fragment: '{"pa' },
-      { index: 0, id: 'call_a', name: 'read_file', fragment: '{"path":"src/a.ts"}' },
-      { index: 1, id: 'call_b', name: 'read_file', fragment: 'th":"b.ts"}' },
+      { index: 0, id: 'call_1', name: 'read_file', fragment: '' },
+      { index: 1, id: 'call_2', name: 'read_file', fragment: '{"pa' },
+      { index: 0, id: 'call_1', name: 'read_file', fragment: '{"path":"src/a.ts"}' },
+      { index: 1, id: 'call_2', name: 'read_file', fragment: 'th":"b.ts"}' },
     ]);
     expect(h.toolDeltas).toEqual(['{"pa', '{"path":"src/a.ts"}', 'th":"b.ts"}']);
     expect(h.reasoning).toEqual(['Think', ' more']);
     expect(h.deltas).toEqual(['Reading.']);
     expect(res.toolCalls).toEqual([
-      { name: 'read_file', input: { path: 'src/a.ts' }, rawJson: '{"path":"src/a.ts"}', id: 'call_a' },
-      { name: 'read_file', input: { path: 'b.ts' }, rawJson: '{"path":"b.ts"}', id: 'call_b' },
+      { name: 'read_file', input: { path: 'src/a.ts' }, rawJson: '{"path":"src/a.ts"}', id: 'call_1' },
+      { name: 'read_file', input: { path: 'b.ts' }, rawJson: '{"path":"b.ts"}', id: 'call_2' },
     ]);
     expect(res.providerState).toEqual({
       provider: 'openrouter',
@@ -132,17 +132,17 @@ describe('openrouter agent wire (AGENT-LOOP-DESIGN §6.2)', () => {
 
   it('(d) two chunks at one index with different ids are two calls (agent); a legacy request keeps concatenating', async () => {
     const stream = sseData([
-      chunk({ tool_calls: [{ index: 0, id: 'call_a', type: 'function', function: { name: 'read_file', arguments: '{"path":"a"}' } }] }),
-      chunk({ tool_calls: [{ index: 0, id: 'call_b', type: 'function', function: { name: 'read_file', arguments: '{"path":"b"}' } }] }),
-      chunk({ tool_calls: [{ index: 0, id: 'call_b', function: { arguments: '' } }] }),
+      chunk({ tool_calls: [{ index: 0, id: 'call_x', type: 'function', function: { name: 'read_file', arguments: '{"path":"a"}' } }] }),
+      chunk({ tool_calls: [{ index: 0, id: 'call_y', type: 'function', function: { name: 'read_file', arguments: '{"path":"b"}' } }] }),
+      chunk({ tool_calls: [{ index: 0, id: 'call_y', function: { arguments: '' } }] }),
       USAGE,
     ]);
     const h = hooks();
     const f = scriptedFetch([{ status: 200, body: stream }]);
     const res = await createOpenRouterProvider(cfg, providerDeps(f.fetch).deps).generate(agentReq(), genOpts({ onToolCall: (d) => h.calls.push(d) }));
     expect(res.toolCalls.map((c) => [c.id, c.input])).toEqual([
-      ['call_a', { path: 'a' }],
-      ['call_b', { path: 'b' }],
+      ['call_x', { path: 'a' }],
+      ['call_y', { path: 'b' }],
     ]);
     expect(h.calls.map((c) => c.index)).toEqual([0, 1]);
     const g = scriptedFetch([{ status: 200, body: stream }]);

@@ -36,7 +36,7 @@ import { ProviderHttpError } from '../errors.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import type { AgentRequest, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, JsonObject, ToolCall, ToolChoice, ToolSpec } from '../core/types.js';
 import { checkOpenAiStrict } from './schema.js';
-import { agentCallId, agentReasoning, assistantParts, createCaller, emitToolCall, getJson, joinUrl, objectInput, openAiErrorFields, replayData, runGeneration, sortModels, userParts, validateGenerateRequest } from './http.js';
+import { agentCallId, agentReasoning, assistantParts, createCaller, emitToolCall, getJson, joinUrl, objectInput, openAiErrorFields, replayData, runGeneration, sortModels, userParts, validateGenerateRequest, withUniqueCallIds } from './http.js';
 import type { ConsumeContext, HeldPartial } from './http.js';
 import { createChatProvider, effortOf, pickEffort } from './openai-compat.js';
 import type { ChatQuirks, ChatRequestBody, EffortWord } from './openai-compat.js';
@@ -614,7 +614,8 @@ export function createOpenAiProvider(cfg: ProviderConfig, deps: ProviderDeps, op
       const agentModel = req.agent === undefined ? null : cfg.model;
       const attempt = (held: HeldPartial): Promise<ProviderOutcome> =>
         caller.attempt({ label: 'openai', url, headers: { authorization: `Bearer ${cfg.apiKey}` }, body, readError: openAiErrorFields, consume: (stream, ctx) => consumeResponses(stream, ctx, agentModel) }, genOpts, held);
-      return runGeneration(d, cfg, genOpts, attempt);
+      const res = await runGeneration(d, cfg, genOpts, attempt);
+      return req.agent === undefined ? res : withUniqueCallIds(res, req.agent);
     },
   };
 }

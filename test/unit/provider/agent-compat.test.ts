@@ -202,6 +202,23 @@ describe('openai-compat agent wire: replay filtering and id splits (S2 tests c, 
     expect(sent(agentReq(transcript(FW_STATE), { replayReasoning: false }))).toBe(false);
   });
 
+  it('an upstream that renumbers its calls every turn never reuses a transcript id or repeats one within a turn', async () => {
+    // the transcript already holds call_a / call_b; this upstream answers with call_a again, twice
+    const stream = sseData([
+      chunk('grok-4.7', { tool_calls: [{ index: 0, id: 'call_a', type: 'function', function: { name: 'read_file', arguments: '{"path":"x"}' } }] }),
+      chunk('grok-4.7', { tool_calls: [{ index: 1, id: 'call_a', type: 'function', function: { name: 'read_file', arguments: '{"path":"y"}' } }] }),
+      chunk('grok-4.7', { tool_calls: [{ index: 2, id: 'call_c', type: 'function', function: { name: 'read_file', arguments: '{"path":"z"}' } }] }),
+      usage('grok-4.7'),
+    ]);
+    const f = scriptedFetch([{ status: 200, body: stream }]);
+    const res = await createXaiProvider(xaiCfg, providerDeps(f.fetch).deps).generate(agentReq(), genOpts());
+    const ids = res.toolCalls.map((c) => c.id!);
+    expect(ids[0]).toMatch(/^jc_[a-z0-9]+_0$/);
+    expect(ids[1]).toMatch(/^jc_[a-z0-9]+_1$/);
+    expect(ids[2]).toBe('call_c');
+    expect(new Set(ids).size).toBe(3);
+  });
+
   it('(d) two chunks at one index with different ids are two calls', async () => {
     const stream = sseData([
       chunk('grok-4.7', { tool_calls: [{ index: 0, id: 'call_x', type: 'function', function: { name: 'read_file', arguments: '{"path":"x"}' } }] }),

@@ -424,6 +424,22 @@ export function agentCallId(id: string, ordinal: number): string {
   return id.length > 0 ? id : `${SYNTH_CALL_PREFIX}${Math.random().toString(36).slice(2, 10)}_${ordinal}`;
 }
 
+/**
+ * §6.1's "(unique)" id, made to hold by construction on an agent result: a call whose id is empty, repeats an earlier call
+ * of the same turn, or repeats any `tool_use` id already in the transcript gets a made-up one (some OpenAI-compatible
+ * upstreams number their calls `call_0`, `call_1` afresh every turn, which would otherwise make the NEXT request fail
+ * `messagesError`). The streamed `onToolCall` fragments carried the wire id; the result is what the transcript keeps.
+ */
+export function withUniqueCallIds(res: GenerateResult, a: AgentRequest): GenerateResult {
+  const seen = new Set<string>();
+  for (const m of a.messages) if (m.role === 'assistant') for (const b of m.content) if (b.type === 'tool_use') seen.add(b.id);
+  for (const [i, c] of res.toolCalls.entries()) {
+    if (c.id === undefined || c.id.length === 0 || seen.has(c.id)) c.id = agentCallId('', i);
+    seen.add(c.id);
+  }
+  return res;
+}
+
 /** One `onToolCall` fragment (§6.1). `index` is the call's ORDINAL — its position in `GenerateResult.toolCalls` — not a wire index. */
 export function emitToolCall(opts: GenerateOptions, index: number, id: string, name: string, fragment: string): void {
   notify(opts.onToolCall, { index, ...(id.length > 0 ? { id } : {}), ...(name.length > 0 ? { name } : {}), fragment });

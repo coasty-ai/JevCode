@@ -10,7 +10,7 @@
 import { JevCodeError, ProviderHttpError } from '../errors.js';
 import type { AgentRequest, GenerateOptions, GenerateProviderPrefs, GenerateRequest, GenerateResult, GeneratorConfig, JsonObject, Provider, ProviderReplayState, ToolCall } from '../core/types.js';
 import { isJsonObject, parseJson } from '../core/json.js';
-import { agentReasoning, chatAgentMessages, messagesError, replayData, toolStream } from './http.js';
+import { agentReasoning, chatAgentMessages, messagesError, replayData, toolStream, withUniqueCallIds } from './http.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
   IdleTimeoutError,
@@ -505,7 +505,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       // (cfg.priced, set by validateGenerator; absent = false) falls back to the table; an unpriced one
       // surfaces NaN so the engine can emit budget:unpriced (TUI-DESIGN §9.5 — the meter clamps NaN to 0
       // and figures render `$?`) instead of silently billing $0.
-      return {
+      const res: GenerateResult = {
         text: out.text,
         toolCalls: out.toolCalls,
         usage: toTokenUsage(out.tokens, out.cost ?? tablePrice(out.tokens), out.reasoningTokens),
@@ -518,6 +518,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
         ...(limited.attempts > 0 ? { rateLimited: true } : {}),
         ...(out.providerState !== undefined ? { providerState: out.providerState } : {}),
       };
+      return req.agent === undefined ? res : withUniqueCallIds(res, req.agent);
     },
   };
 }

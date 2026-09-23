@@ -9,7 +9,7 @@ import { JevCodeError, ProviderHttpError } from '../errors.js';
 import type { AgentMessage, AgentRequest, GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, Provider, ProviderReplayState, ToolCall } from '../core/types.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { anthropicInputSchema } from './anthropic-schema.js';
-import { agentCallId, emitToolCall, messagesError, objectInput, replayData, warningLines } from './http.js';
+import { agentCallId, emitToolCall, messagesError, objectInput, replayData, warningLines, withUniqueCallIds } from './http.js';
 import { clip } from '../core/text.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
@@ -614,7 +614,7 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
         if (held.partial !== null) notify(opts.onCancelled, toCancelledGeneration(held.partial, tablePrice));
         throw e;
       }
-      return {
+      const res: GenerateResult = {
         text: out.text,
         toolCalls: out.toolCalls,
         usage: toTokenUsage(out.tokens, tablePrice(out.tokens)),
@@ -626,6 +626,7 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
         ...(out.contextEdits !== undefined ? { contextEdits: out.contextEdits } : {}),
         ...(out.warnings !== undefined ? { warnings: out.warnings } : {}),
       };
+      return req.agent === undefined ? res : withUniqueCallIds(res, req.agent);
     },
   };
 }

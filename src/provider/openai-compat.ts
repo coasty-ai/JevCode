@@ -18,7 +18,7 @@ import { ProviderHttpError } from '../errors.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import type { AgentMessage, AgentRequest, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, Json, JsonObject, ToolChoice, ToolSpec } from '../core/types.js';
 import { checkOpenAiStrict } from './schema.js';
-import { agentReasoning, chatAgentMessages, createCaller, joinUrl, replayData, runGeneration, toolStream, validateGenerateRequest } from './http.js';
+import { agentReasoning, chatAgentMessages, createCaller, joinUrl, replayData, runGeneration, toolStream, validateGenerateRequest, withUniqueCallIds } from './http.js';
 import type { ConsumeContext, ErrorReader, HeldPartial, ToolStream } from './http.js';
 import { openAiErrorFields } from './http.js';
 import {
@@ -545,7 +545,8 @@ export function createChatProvider(q: ChatQuirks, cfg: ProviderConfig, deps: Pro
           opts,
           held,
         );
-      return runGeneration(d, cfg, opts, attempt);
+      const res = await runGeneration(d, cfg, opts, attempt);
+      return a === undefined ? res : withUniqueCallIds(res, a);
     },
   };
 }
