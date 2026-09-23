@@ -49,6 +49,7 @@ import {
   CACHE_READ_FACTOR,
   CACHE_WRITE_FACTOR,
   DEFAULT_MODE,
+  type Autonomy,
   KNOWN_KEY_ENV,
   MODE_SETTING_VALUES,
   SESSION_CAP_MULTIPLIER,
@@ -73,6 +74,7 @@ import {
   normaliseJevModelId,
   parseBooleanSetting,
   parseJevProviderSetting,
+  parseAutonomySetting,
   parseModeSetting,
   readAllowUnpriced,
   validateDecider,
@@ -627,6 +629,9 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   const plainR = entries.get('plain');
   const noNetwork = noNetworkR ? parseBooleanSetting(reader, 'noNetwork', noNetworkR) : false;
   const plain = plainR ? parseBooleanSetting(reader, 'plain', plainR) : false;
+  // Complete autonomy by default: eager like `mode` / `sandbox`, so a malformed value is a ConfigError naming its source
+  // rather than a surprise at the first review. The row itself came through the SETTINGS loop above (default `full`).
+  const autonomy: Autonomy = parseAutonomySetting(reader);
   // SecretSet (§8.4): resolved secret settings, then every secret-looking variable in every loaded .env and the config file.
   const secrets: SecretEntry[] = [];
   const secretNames = new Set<string>(SECRET_SETTINGS);
@@ -720,6 +725,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     // contract 1.2 (TUI-DESIGN-2 §6 item 9 / §1.2): the `mode` setting the caps above were keyed on — opts.mode (a --resume
     // re-resolve) or the chain (flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE)
     mode,
+    autonomy,
     generator() {
       if (!generatorMemo) generatorMemo = validateGenerator(reader, warn, { allowUnpriced: readAllowUnpriced(reader) });
       return generatorMemo;

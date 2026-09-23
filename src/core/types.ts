@@ -1099,7 +1099,7 @@ export interface ConfirmOutcome {
   note?: string;
 }
 export interface Confirmer {
-  /** Resolves true (approve) or false (decline). Rejects with AbortError when `signal` aborts. Never auto-approves. */
+  /** Resolves true (approve) or false (decline). Rejects with AbortError when `signal` aborts. Only the `autonomy full` confirmer auto-approves (and logs each one); every human-facing one asks. */
   confirm(req: ConfirmRequest, opts: { signal: AbortSignal }): Promise<boolean>;
   /** TUI-DESIGN §15 item 6: preferred by the engine when present; the TUI implements it for the `d` note */
   confirmDetailed?(req: ConfirmRequest, opts: { signal: AbortSignal }): Promise<ConfirmOutcome>;
@@ -2213,7 +2213,12 @@ export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpo
  * round-3 gutter is unchanged. NOT additive in `test/`: the two total `Readonly<Record<UiLabel, …>>` literals in
  * `test/unit/tui/theme.test.ts` and `test/unit/tui/theme-palette.test.ts` take a one-line edit in this same commit.
  */
-export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]' | '[you]' | '[jevcode]' | '[session]';
+/**
+ * `'[review]'` is the informational card `autonomy full` writes when a `review` risk verdict is auto-approved
+ * (`src/cli/session.ts` `autonomousConfirmer`). It takes `labelRole`'s `'dim'` fall-through like `[session]` —
+ * it is chrome beside a body that carries its own colour — and is 8 cells inside the 10-cell `LABEL_GUTTER`.
+ */
+export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]' | '[you]' | '[jevcode]' | '[session]' | '[review]';
 export type ChatLabel = Extract<UiLabel, '[you]' | '[jevcode]'>;
 /** TUI-DESIGN-2 §6 item 2 / §3.3: Jev's reading of a submission (the `intake` Choice; `ambiguous` is also the fallback and the weak-`coding_task` verdict) */
 export type IntakeKind = 'greeting_or_smalltalk' | 'question_about_this_tool' | 'question_about_the_code' | 'coding_task' | 'ambiguous';
@@ -2613,13 +2618,13 @@ export interface Engine {
   /** TUI-DESIGN §15 item 15: end the current retry sleep early (F12 `[r]`); false when no retry sleep is active */
   retryNow(): boolean;
   /** TUI-DESIGN §15 item 15: a renderer-originated transcript line while the run is live (§15.1); false once finished, then the renderer keeps it local */
-  annotate(text: string, opts?: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' }): boolean;
+  annotate(text: string, opts?: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' | 'dim' }): boolean;
   /**
    * contract 1.7 item 2 (TUI-DESIGN-4 §3.5, D-W): one `notice ui` per row, head first, so a command block issued while a run is
    * live writes the same rows to `transcript.log` from the TUI as from `--plain`. `rows` are the ALREADY-RENDERED row texts.
    * Returns false when no run is live, exactly like `annotate`. (`level` is `TranscriptLevel`, spelt out here like `annotate`'s.)
    */
-  annotateBlock?(head: string, rows: readonly string[], opts?: { level?: 'info' | 'warn' | 'error'; label?: UiLabel }): boolean;
+  annotateBlock?(head: string, rows: readonly string[], opts?: { level?: 'info' | 'warn' | 'error' | 'dim'; label?: UiLabel }): boolean;
   /**
    * contract 1.5 (ORCHESTRATION-DESIGN §5.7): seed the NEXT step's proposal. It then goes through `risk`, the review
    * confirm, `takePreImages`, `execute`, `takePostImages` and `judge` like any other step — the launch is an ORDINARY
@@ -2735,8 +2740,8 @@ export interface SessionHost {
   pause(opts?: PauseOptions & { scope?: 'run' | 'tree' | 'agents' | 'all' | `agent:${string}` }): void;
   abort(reason: 'human_abort'): void;
   retryNow(): boolean;
-  /** a renderer-originated line: engine.annotate() while a run is live, else a local `[ui]` item + `--json` `ui` line (§15.1) */
-  note(text: string, opts?: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' }): void;
+  /** a renderer-originated line: engine.annotate() while a run is live, else a local `[ui]` item + `--json` `ui` line (§15.1). `dim` is the quiet grade (renderer only). */
+  note(text: string, opts?: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' | 'dim' }): void;
   redact(s: string): string;
   addSecret(name: string, value: string): boolean;
   /** §10.2; before setHost the composer detects with patternRedact only and holds Enter (§4.9) */
@@ -2918,15 +2923,14 @@ export interface Renderer {
   notify?(
     text: string,
     opts?: {
-      level?: 'info' | 'warn' | 'error';
+      /** `dim` is the quiet startup grade (the TUI paints the body dim; every line sink prints it unchanged) */
+      level?: 'info' | 'warn' | 'error' | 'dim';
       detail?: string;
       label?: UiLabel;
       detailRows?: readonly { readonly text: string; readonly role: string | null }[];
       detailKind?: 'diff' | 'table' | 'text';
     },
   ): void;
-  /** TUI-DESIGN-2 §6 item 11 / §3.7: Esc on the intake card puts the submitted text back into the composer */
-  restoreDraft?(text: string): void;
   /** TUI-DESIGN-2 §6 item 11 / §3.6: the LLM turn's streamed text for the live region ('' empties it) */
   live?(text: string): void;
   /**
@@ -2940,7 +2944,7 @@ export interface Renderer {
    * texts that `renderBlock` produced (not `BlockRow[]`), so the parameter type matches §3.5's call. The DEFAULT
    * implementation is today's per-line `note`, so no renderer breaks. (`level` is `TranscriptLevel`, spelt out like `notify`'s.)
    */
-  blockLines?(lines: readonly string[], opts?: { label?: UiLabel; level?: 'info' | 'warn' | 'error' }): void;
+  blockLines?(lines: readonly string[], opts?: { label?: UiLabel; level?: 'info' | 'warn' | 'error' | 'dim' }): void;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -3003,6 +3007,12 @@ export interface ResolvedConfig {
   readonly entries: ReadonlyMap<string, Resolved<string>>;
   /** TUI-DESIGN-2 §6 item 9 / §1.2: the `mode` setting (flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE); the mode-keyed spend caps read it */
   readonly mode: EngineMode;
+  /**
+   * The `autonomy` setting (flag > JEVCODE_AUTONOMY > dotenv > file > `full`): who approves a `review` risk
+   * verdict. `full` auto-approves it and logs the informational `[review] auto-approved …` card; `review` shows
+   * the blocking y/n card. A `block` verdict stops the run under both.
+   */
+  readonly autonomy: 'full' | 'review';
   /** validates the generator section on first call; ConfigError names setting and sources */
   generator(): GeneratorConfig;
   /** validates the decider section on first call */

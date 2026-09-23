@@ -100,8 +100,9 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     expect(body).not.toMatch(/sess \$/);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
     expect(countForbidden(r.text)).toBe(0);
-    // the header is written before the first dynamic frame (research 20 §3)
-    expect(stripAnsi(r.text.slice(0, r.text.indexOf(CURSOR_HIDE)))).toMatch(/\[run\] jevcode session · \S+ \| step 0\/– starting/);
+    // the quiet start (2026-09): a session writes NOTHING above the first dynamic frame — no `[run] jevcode session …`
+    // header (the `--plain` twin keeps it; see twins.pty.test.ts)
+    expect(stripAnsi(r.text.slice(0, r.text.indexOf(CURSOR_HIDE)))).not.toMatch(/jevcode session/);
     console.log(`first frame (pty, warm): ${first!.t} ms`);
   });
 

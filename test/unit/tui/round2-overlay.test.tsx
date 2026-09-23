@@ -1,7 +1,7 @@
 /**
  * TUI-DESIGN-2 §4.7 / §4.2 / §8.1 S4 (`overlay.test.tsx` ext.): the boxed wants (review 9, followup 5, blocking ≤ 6, undo 3,
- * exitConfirm 3, intake 3, palette ≤ 8, secret 0, wizard `wizardRows`); the cards `exit?`, `undo`, `commands`, `files`, the
- * blocking card, the intake card (`run this as a task?`, H-I1) and their flat twins (today's rows); the review invariants in
+ * exitConfirm 3, palette ≤ 8, secret 0, wizard `wizardRows`); the cards `exit?`, `undo`, `commands`, `files`, the
+ * blocking card and their flat twins (today's rows); the review invariants in
  * the boxed tier (only `y` approves, Enter inert, no default) through the mounted App.
  */
 import { cleanup, render } from 'ink-testing-library';
@@ -9,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BlockingRequest } from '../../../src/core/types.js';
 import { CAP } from '../../../src/tui/layout.js';
 import { render as inkRender } from 'ink';
-import { EXIT_CONFIRM_ROW, EXIT_CONFIRM_ROW_COMPACT, Overlay, exitConfirmRow, intakeCardLines, overlayWant, type IntakeOverlay, type OverlayData } from '../../../src/tui/Overlay.js';
+import { EXIT_CONFIRM_ROW, EXIT_CONFIRM_ROW_COMPACT, Overlay, exitConfirmRow, overlayWant, type OverlayData } from '../../../src/tui/Overlay.js';
 import { cardRow, cardTop } from '../../../src/tui/card.js';
 import { StubStdin, StubStdout, stripSgr } from './stub-stdout.js';
 
@@ -49,18 +49,16 @@ const strip = (s: string | undefined): string[] => (s ?? '').replace(/\x1b\[[0-9
 const blocking: BlockingRequest = { id: 'b1', step: 0, kind: 'key-rejected', side: 'jev', detail: 'HTTP 401 — "User not found."', sources: ['env JEV_API_KEY', 'OPENROUTER_API_KEY'], stop: 'error', exitCode: 2 };
 const followup = { runCapUsd: 2, clampedToUsd: 0.42, sessionSpentUsd: 9.58, sessionCapUsd: 10, runs: 5, lastRunUsd: 0.71 };
 const paletteState = { lastStop: null, unauthorized: false, changedFiles: false, rewindMenu: false, live: false };
-const intake: IntakeOverlay = { title: 'run this as a task?', body: ['[y] run it   [n] just chatting   (Esc keeps the text; Enter does nothing)'], flat: ['run this as a task?  [y] run it  [n] just chatting  Esc keeps the text'] };
 
 describe('overlayWant in the boxed tier (TUI-DESIGN-2 §4.2)', () => {
-  it('review 9 · followup 5 · blocking ≤ 6 · undo 3 · exitConfirm 3 · intake 3 · palette ≤ 8 · secret 0 · wizard rows; the flat wants are unchanged', () => {
+  it('review 9 · followup 5 · blocking ≤ 6 · undo 3 · exitConfirm 3 · palette ≤ 8 · secret 0 · wizard rows; the flat wants are unchanged', () => {
     const wizard = onboardingReducer(INITIAL_ONBOARDING, { type: 'detect', missing: ['generator.apiKey', 'decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: false, jevProvider: null, reason: 'missing' } as never);
-    const data: OverlayData = { review: { req: mkConfirmRequest(), note: null }, wizard: { state: wizard, trust: null }, followup, secret: { hits: detectSecrets(`sk-ant-api03-${'A'.repeat(40)}`) }, blocking, palette: { query: '/b', state: paletteState, selected: 0 }, undo: { row: 'x' }, intake };
+    const data: OverlayData = { review: { req: mkConfirmRequest(), note: null }, wizard: { state: wizard, trust: null }, followup, secret: { hits: detectSecrets(`sk-ant-api03-${'A'.repeat(40)}`) }, blocking, palette: { query: '/b', state: paletteState, selected: 0 }, undo: { row: 'x' } };
     expect(overlayWant('review', data, 24, 80, 3)).toBe(CAP.reviewCard);
     expect(overlayWant('followup', data, 24, 80, 3)).toBe(5);
     expect(overlayWant('blocking', data, 24, 80, 3)).toBe(5); // four rows, the first as the title edge, plus the bottom edge
     expect(overlayWant('undo', data, 24, 80, 3)).toBe(3);
     expect(overlayWant('exitConfirm', data, 24, 80, 3)).toBe(3);
-    expect(overlayWant('intake', data, 24, 80, 3)).toBe(3);
     expect(overlayWant('palette', data, 24, 80, 3)).toBeGreaterThanOrEqual(4);
     expect(overlayWant('palette', data, 24, 80, 3)).toBeLessThanOrEqual(CAP.palette);
     expect(overlayWant('palette', { mention: { rows: ['a', 'b'], selected: 0 } }, 24, 80, 3)).toBe(5);
@@ -71,7 +69,6 @@ describe('overlayWant in the boxed tier (TUI-DESIGN-2 §4.2)', () => {
     expect(overlayWant('secret', data, 24, 80)).toBe(1);
     expect(overlayWant('undo', data, 24, 80)).toBe(1);
     expect(overlayWant('exitConfirm', data, 24, 80)).toBe(1);
-    expect(overlayWant('intake', data, 24, 80)).toBe(1);
     expect(overlayWant('blocking', data, 24, 80)).toBe(4);
   });
 });
@@ -151,16 +148,6 @@ describe('cards (TUI-DESIGN-2 §4.7, §12 "Cards")', () => {
     expect(m[0]?.startsWith('╭─ files ─')).toBe(true);
     expect(m[2]).toMatch(/^│ ▌ src\/b\.py/);
     expect(m[3]).toMatch(/Enter inserts @path/);
-  });
-  it('H-I1: the intake card; the flat tier draws the one-row twin; `intakeCardLines` is the string twin', () => {
-    const card = strip(render(<Overlay kind="intake" rows={3} previewRows={0} columns={80} terminalRows={24} top={0} data={{ intake }} chrome={3} />).lastFrame());
-    expect(card).toEqual(intakeCardLines(intake, 80));
-    expect(card).toEqual(['╭─ run this as a task? ────────────────────────────────────────────────────────╮', '│ [y] run it   [n] just chatting   (Esc keeps the text; Enter does nothing)    │', '╰──────────────────────────────────────────────────────────────────────────────╯']);
-    cleanup();
-    expect(strip(render(<Overlay kind="intake" rows={1} previewRows={0} columns={80} terminalRows={12} top={0} data={{ intake }} chrome={0} />).lastFrame())).toEqual(['run this as a task?  [y] run it  [n] just chatting  Esc keeps the text']);
-    cleanup();
-    const wide = wideRows(<Overlay kind="intake" rows={3} previewRows={0} columns={120} terminalRows={40} top={0} data={{ intake: { ...intake, title: '"the date parsing" — run this as a task?' } }} chrome={3} />);
-    expect(wide[0]).toBe(`╭─ "the date parsing" — run this as a task? ${'─'.repeat(120 - 45)}╮`);
   });
   it('the review card through <Overlay>: edges, keys row, preview rows inside the box; every row exactly columns', () => {
     const req = mkConfirmRequest('c1', 7);

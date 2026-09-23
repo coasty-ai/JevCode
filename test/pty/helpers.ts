@@ -179,7 +179,7 @@ export function cleanupScratch(): void {
  * must not decide), `JEVCODE_CONFIG` (a configured credentials file would be read before the XDG/legacy candidates,
  * `src/config/resolve.ts`) and the terminal multiplexer markers.
  */
-export const CHILD_ENV_UNSET: readonly string[] = ['CI', 'CONTINUOUS_INTEGRATION', 'NO_COLOR', 'FORCE_COLOR', 'SSH_TTY', 'SSH_CONNECTION', 'JEVCODE_TRACE', 'JEVCODE_FAULT', 'JEVCODE_MOCK_REVIEW_AT', 'JEVCODE_MOCK_INTAKE', 'JEVCODE_MOCK_JEV_MS', 'JEVCODE_HOME', 'JEVCODE_CONFIG', 'JEVCODE_ASSERT_NO_NETWORK', 'JEVCODE_MODE', 'JEV_PROVIDER', 'JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'JEVCODE_API_KEY', 'JEVCODE_EXTRA_ENV_FILE', 'PTY_TERM', 'PTY_KILL_ON_TIMEOUT', 'PTY_AUTO_REVIEW', 'TERM_PROGRAM', 'TMUX', 'STY'];
+export const CHILD_ENV_UNSET: readonly string[] = ['CI', 'CONTINUOUS_INTEGRATION', 'NO_COLOR', 'FORCE_COLOR', 'SSH_TTY', 'SSH_CONNECTION', 'JEVCODE_TRACE', 'JEVCODE_FAULT', 'JEVCODE_MOCK_REVIEW_AT', 'JEVCODE_AUTONOMY', 'JEVCODE_MOCK_INTAKE', 'JEVCODE_MOCK_JEV_MS', 'JEVCODE_HOME', 'JEVCODE_CONFIG', 'JEVCODE_ASSERT_NO_NETWORK', 'JEVCODE_MODE', 'JEV_PROVIDER', 'JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'JEVCODE_API_KEY', 'JEVCODE_EXTRA_ENV_FILE', 'PTY_TERM', 'PTY_KILL_ON_TIMEOUT', 'PTY_AUTO_REVIEW', 'TERM_PROGRAM', 'TMUX', 'STY'];
 
 /**
  * The child environment: the caller's env minus `CHILD_ENV_UNSET`, plus an isolated `HOME`, `JEVCODE_HOME` and XDG
@@ -785,8 +785,8 @@ export const RAW_MODE_STEP = 'expect \\x1b\\[\\?2004h';
 export const IDLE_STEP = 'expect sess \\$';
 /** the standard opening of every chat scenario at ≥ 80 columns: first frame, placeholder, raw mode, host attached */
 export const CHAT_OPEN: readonly string[] = [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, IDLE_STEP];
-/** the narrow-terminal opening: the status line may drop the `sess` badge, so the sandbox item stands in for the host */
-export const CHAT_OPEN_NARROW: readonly string[] = [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, 'expect \\[sandbox\\]'];
+/** the narrow-terminal opening: the quiet start prints no `[sandbox]` item in the TUI, so the attached host is the status row's `sess $…` badge */
+export const CHAT_OPEN_NARROW: readonly string[] = [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, 'expect sess \\$'];
 /**
  * The run is live: the `[run] started · <badge> · <task>` item (TUI-DESIGN-4 §3.6 G1 deleted `[run] ready` as an
  * item and rewrote `[run] start <id> mode=… task: …`; TUI-DESIGN-2 §4.5 shows `run:start` in the compact transcript).

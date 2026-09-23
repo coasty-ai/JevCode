@@ -1,6 +1,6 @@
 /**
  * Rounded cards (TUI-DESIGN-2 §4.7, §10.3): the text rows every boxed-tier modal draws with — the review card,
- * follow-up, undo, exit confirm, blocking, palette / mention popup and the intake card. Rows are strings first
+ * follow-up, undo, exit confirm, blocking and the palette / mention popup. Rows are strings first
  * (the `--ascii`, `--plain`, frame-test and `PaneBoundary` twins read the same functions); Ink only colours them.
  * The glyphs are the cli-boxes `round` set copied into `glyphs.ts` (`╭ ╮ ╰ ╯ │ ─`; `+ - |` under `--ascii`), so no
  * dependency is added. Every row is exactly `columns` cells. Pure.

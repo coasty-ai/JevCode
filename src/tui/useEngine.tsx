@@ -239,6 +239,12 @@ export interface UiState {
   readonly diskErrors: number;
   /** `/rename` title (status centre) */
   readonly title: string | null;
+  /**
+   * The quiet start (2026-09): the most recent session of THIS workspace, or null. The controller dispatches it
+   * after the index read instead of printing a `recent: …` item, and the composer's `task` placeholder carries the
+   * offer (`Say hi · /resume continues "<title>"`) — a hint in the one row the user is already looking at.
+   */
+  readonly recent: string | null;
   /** the session / rewind picker is open in the pane slot */
   readonly picker: boolean;
   /** steps of the current or last run with `changedFiles` (from `step:end` records) */
@@ -340,6 +346,8 @@ export type UiAction =
   | { type: 'scroll'; scroll: UiState['scroll'] }
   | { type: 'picker'; open: boolean }
   | { type: 'title'; title: string | null }
+  /** the quiet start: the workspace's most recent session title, for the composer placeholder's resume offer */
+  | { type: 'recent'; title: string | null }
   | { type: 'spend:session'; session: { totalUsd: number; capUsd: number } | null }
   /** the controller's resolved `--complete-threshold` / `--impossible-threshold` (after resolveConfig; §7.1 rows) */
   | { type: 'thresholds'; complete: number; impossible: number }
@@ -429,6 +437,7 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     noNetwork: false,
     diskErrors: 0,
     title: null,
+    recent: null,
     picker: false,
     changedSteps: [],
     step: 0,
@@ -578,6 +587,8 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       return state.picker === action.open ? state : { ...state, picker: action.open };
     case 'title':
       return state.title === action.title ? state : { ...state, title: action.title };
+    case 'recent':
+      return state.recent === action.title ? state : { ...state, recent: action.title };
     case 'spend:session':
       return { ...state, spend: { ...state.spend, session: action.session } };
     case 'peers:fold':

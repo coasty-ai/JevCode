@@ -18,8 +18,8 @@
 # read from src/config/defaults.ts by `default_badge`). Round 3 adds: wordmark-* (the persistent mark, TUI-DESIGN-3 §3), theme-*
 # (the TypeSafe pink, §2), polish (the §9 hero-frame checklist through scripts/pty/polish-check.mjs), r3-* / ts-only-* (the one-key
 # wizard, §1), commands-* / trust-esc / keybindings (the §4 audit). Round-2 scenarios: chat-hi (a greeting → a [jevcode] reply, no run,
-# wall time recorded), chat-facts, chat-task (today's chat-run-exit; compact transcript), chat-ambiguous(-y) (the intake
-# card; -flat at 12x60), mode-switch(-keyed) (/mode jev-on without / with a generator key), splash, splash-wide,
+# wall time recorded), chat-facts (jev-only: Jev's own facts), chat-task (today's chat-run-exit; compact transcript),
+# chat-ambiguous(-y) (the `do it` offer, no card; -flat at 12x60), mode-switch(-keyed) (/mode jev-on without / with a generator key), splash, splash-wide,
 # wordmark-reduced (was splash-reduced), splash-settle (no key: the splash settles by itself), panel, chrome-tiers, zero-arg-chat, zero-arg-run,
 # zero-arg-wizard.
 # Hermetic child environment (§8.2; docs/STATUS.md "Round 2" finding 2): HOME, XDG_CONFIG_HOME and JEVCODE_HOME inside
@@ -52,7 +52,7 @@ PY
 BADGE=$(default_badge)
 BADGE_RE=$(printf '%s' "$BADGE" | sed 's/[+.]/\\&/g')
 # the variables every child loses (see the header); `env -u` takes them one by one
-UNSET="-u CI -u CONTINUOUS_INTEGRATION -u JEV_API_KEY -u TYPESAFE_API_KEY -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY -u JEVCODE_API_KEY -u JEVCODE_MODE -u JEV_PROVIDER -u JEVCODE_CONFIG -u JEVCODE_MOCK_INTAKE -u JEVCODE_MOCK_REVIEW_AT -u JEVCODE_MOCK_JEV_MS -u JEVCODE_ASSERT_NO_NETWORK -u JEVCODE_TRACE -u JEVCODE_FAULT -u JEVCODE_SUBMIT_WATCHDOG_MS -u JEVCODE_ASSERT_HEIGHT"
+UNSET="-u CI -u CONTINUOUS_INTEGRATION -u JEV_API_KEY -u TYPESAFE_API_KEY -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY -u JEVCODE_API_KEY -u JEVCODE_MODE -u JEV_PROVIDER -u JEVCODE_CONFIG -u JEVCODE_MOCK_INTAKE -u JEVCODE_MOCK_REVIEW_AT -u JEVCODE_AUTONOMY -u JEVCODE_MOCK_JEV_MS -u JEVCODE_ASSERT_NO_NETWORK -u JEVCODE_TRACE -u JEVCODE_FAULT -u JEVCODE_SUBMIT_WATCHDOG_MS -u JEVCODE_ASSERT_HEIGHT"
 # the isolated home of one child: `hermetic_env <home>` prints the VAR=value words every scenario gets
 hermetic_env() { echo "HOME=$1 XDG_CONFIG_HOME=$1/xdg JEVCODE_HOME=$1 JEVCODE_EXTRA_ENV_FILE=$1/no-extra-env"; }
 # TUI-DESIGN-4 §7.1 / §11: the frame count of a capture (every Ink frame of the App opens with ESC[?2026h).
@@ -288,24 +288,6 @@ after=sum(1 for i in wm if i>=first_brand)
 print(len(wm), after, first_brand)
 PY
 }
-# the intake card must stay open until `n` (chat-ambiguous: Enter before the arm is inert, TUI-DESIGN-2 §3.7): the frames
-# carrying the card title form one contiguous run, the first `[jevcode]` reply frame comes after it, and the kept-text
-# reply (`Okay — edit it`, the Esc/Ctrl-C outcome) never appears; prints "ok" or the reason
-intake_card_check() {
-  python3 - "$1" <<'PY'
-import re,sys
-b=open(sys.argv[1],'rb').read()
-frames=[re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f) for f in b.split(b'\x1b[?2026h')[1:]]
-card=[i for i,f in enumerate(frames) if b'run this as a task?' in f]
-if not card: print('no-card'); sys.exit()
-if card != list(range(card[0], card[-1]+1)): print('card-closed-and-reopened:%s' % card); sys.exit()
-reply=[i for i,f in enumerate(frames) if b'[jevcode] ' in f and i > card[0]]
-if not reply: print('no-reply'); sys.exit()
-if reply[0] < card[-1]: print('reply-before-card-closed:%d<%d' % (reply[0], card[-1])); sys.exit()
-if any('Okay — edit it'.encode() in f for f in frames): print('kept-text-reply'); sys.exit()
-print('ok')
-PY
-}
 # an SGR-stripped, CR-free copy of a capture for the text checks (every transcript label is its own dim span, so a
 # `grep` on the raw bytes would miss `[step 1] …` and `╭─ jev-only`)
 strip_cap() {
@@ -389,7 +371,7 @@ run() {
   case "$name" in
     sigmid-trust) printf '# instructions\nBe careful.\n' > "$ws/AGENTS.md";;
     plainwarn) mkdir -p "$home/xdg/jevcode"; printf '{"notASetting": 1}\n' > "$home/xdg/jevcode/config.json";;
-    review-y|review-d) extra_env="$extra_env JEVCODE_MOCK_REVIEW_AT=2";;
+    review-y|review-d) extra_env="$extra_env JEVCODE_MOCK_REVIEW_AT=2 JEVCODE_AUTONOMY=review";;
     chat-ambiguous|chat-ambiguous-y|chat-ambiguous-flat) extra_env="$extra_env JEVCODE_MOCK_INTAKE=ambiguous";;
     mode-switch) extra_env="$extra_env TYPESAFE_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1";;
     mode-switch-keyed) extra_env="$extra_env OPENROUTER_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1";;
@@ -413,7 +395,7 @@ run() {
     fault-status|fault-status-flat) extra_env="$extra_env JEVCODE_FAULT=render:status";;
     fault-live) extra_env="$extra_env JEVCODE_FAULT=render:live";;
     fault-pane) extra_env="$extra_env JEVCODE_FAULT=render:pane";;
-    fault-overlay) extra_env="$extra_env JEVCODE_FAULT=render:overlay JEVCODE_MOCK_REVIEW_AT=2";;
+    fault-overlay) extra_env="$extra_env JEVCODE_FAULT=render:overlay JEVCODE_MOCK_REVIEW_AT=2 JEVCODE_AUTONOMY=review";;
     fault-composer) extra_env="$extra_env JEVCODE_FAULT=render:composer";;
     fault-static) extra_env="$extra_env JEVCODE_FAULT=render:static";;
     fault-transcript) extra_env="$extra_env JEVCODE_FAULT=render:transcript";;
@@ -503,13 +485,10 @@ run() {
   esac
   case "$name" in
     chat-hi) w=$(wall "$tim" hi-sent hi-reply); checks="$checks wall_enter_to_reply=${w}ms"; [ "$w" -ge 0 ] && [ "$w" -le 1500 ] || ok=0;;
-    # §3.7: the card stays open through the pre-arm Enter until `n`; the Esc/Ctrl-C outcome (`Okay — edit it`) never appears
-    chat-ambiguous) grep -q 'run this as a task?' "$txt" && checks="$checks intake-card" || { ok=0; checks="$checks MISSING:intake-card"; }
-      ic=$(intake_card_check "$cap"); [ "$ic" = "ok" ] && checks="$checks enter-inert:card-open-until-n" || { ok=0; checks="$checks ENTER-NOT-INERT:$ic"; };;
-    # §3.7 flat tier at 12x60: the 39-cell ladder form, `n` replies, no card edges
-    chat-ambiguous-flat) grep -q 'run this as a task?  \[y\] \[n\]  Esc keeps' "$txt" && checks="$checks intake-row:narrow" || { ok=0; checks="$checks MISSING:intake-row"; }
-      grep -q '╭─ run this as a task' "$txt" && { ok=0; checks="$checks CARD-IN-FLAT-TIER"; }
-      ic=$(intake_card_check "$cap"); [ "$ic" = "ok" ] && checks="$checks enter-inert" || { ok=0; checks="$checks ENTER-NOT-INERT:$ic"; };;
+    # the conversational chat: an unsure reading adds the `do it` offer to the reply — never a card, never a blocked composer
+    chat-ambiguous|chat-ambiguous-flat) grep -q 'make that a task' "$txt" && checks="$checks do-it-offer" || { ok=0; checks="$checks MISSING:do-it-offer"; }
+      grep -q 'run this as a task' "$txt" && { ok=0; checks="$checks INTAKE-CARD"; } || checks="$checks no-card"
+      grep -q 'waiting for y/n' "$txt" && { ok=0; checks="$checks COMPOSER-BLOCKED"; } || checks="$checks composer-free";;
     # §9 review invariants: Enter on the armed card is inert and only `y` approves — exactly one `review approved`
     # row in transcript.log (TUI-DESIGN-4 §3.6 G5 renamed `confirm c-2 approved`), the typed `y` never an echo
     review-y) n_ok=$(grep -c 'review approved' "$home/runs/$(ls "$home/runs" 2>/dev/null | head -1)/transcript.log" 2>/dev/null); [ "$n_ok" = "1" ] && checks="$checks one-approval" || { ok=0; checks="$checks APPROVALS=$n_ok"; }
@@ -707,7 +686,7 @@ sel hermetic && hermetic_check
 sel firstframe && run firstframe 0 24 80 chat --mock --perf-exit-after-first-frame
 sel chat-task && run chat-task 0 24 80 chat $MOCK_RUN --mock-steps 4
 sel chat-hi && run chat-hi 0 24 80 chat --mock
-sel chat-facts && run chat-facts 0 24 80 chat --mock
+sel chat-facts && run chat-facts 0 24 80 chat --mock --mode jev-only
 sel chat-ambiguous && run chat-ambiguous 0 24 80 chat --mock
 sel chat-ambiguous-y && run chat-ambiguous-y 0 24 80 chat $MOCK_RUN --mock-steps 3
 sel chat-ambiguous-flat && run chat-ambiguous-flat 0 12 60 chat --mock

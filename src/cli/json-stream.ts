@@ -186,7 +186,7 @@ export interface JsonRendererOptions extends RendererOptions {
 export interface JsonRenderer extends Renderer {
   setHost(host: SessionHost): void;
   setUi(ui: UiConfig): void;
-  notify(text: string, opts?: { level?: 'info' | 'warn' | 'error'; detail?: string; label?: UiLabel }): void;
+  notify(text: string, opts?: { level?: 'info' | 'warn' | 'error' | 'dim'; detail?: string; label?: UiLabel }): void;
   /** the current line identity (tests) */
   readonly context: JsonStreamContext;
 }
@@ -225,7 +225,9 @@ export function createJsonRenderer(opts: JsonRendererOptions): JsonRenderer {
       ui = u;
     },
     notify(text, o = {}) {
-      stream.ui(text, { ...(o.label ? { label: o.label } : {}), ...(o.level ? { level: o.level } : {}) }, ctx);
+      // `dim` is a TUI grade only: the NDJSON `ui` line keeps its three levels, so a quiet startup item is `info`
+      const level = o.level === 'dim' ? 'info' : o.level;
+      stream.ui(text, { ...(o.label ? { label: o.label } : {}), ...(level ? { level } : {}) }, ctx);
     },
     async unmount() {
       detach?.();

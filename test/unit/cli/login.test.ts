@@ -6,27 +6,23 @@
  * the five providers the hardened wizard does not know, verified with **one free catalogue GET** rather than the
  * priced decider probe.
  */
-import { mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
-import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
-  PERSISTABLE_PROVIDERS,
   VERIFY_TIMEOUT_MS,
   commandLogin,
-  isPersistableProvider,
   parseAnyProvider,
   providerCheckResult,
-  providerNotPersistableText,
   verifyExitCode,
   verifyProviderKey,
   verifyProviderKeys,
   type CommandIo,
   type ProviderKeyCheck,
 } from '../../../src/cli/login.js';
-import { browseOnlyText, keyRateLimitedText, keyRejectedText, keyVerifiedText } from '../../../src/tui/models/lines.js';
+import { keyRateLimitedText, keyRejectedText, keyVerifiedText } from '../../../src/tui/models/lines.js';
 import { PROVIDER_IDS, type ProviderId } from '../../../src/provider/ids.js';
 import { parseCliArgs } from '../../../src/cli/args.js';
 import { resolveConfig } from '../../../src/config/resolve.js';
@@ -250,43 +246,7 @@ function loginIo(stdinText: string | null, extra: Partial<CommandIo> = {}): Comm
 }
 const configPath = (): string => join(home, 'xdg', 'jevcode', 'config.json');
 
-describe('the write half of D-AP is gated on its read half (§6.1, §8.1 item 6)', () => {
-  /**
-   * The guard's reason, read from the file that owns it. `src/config/validate.ts:161` is R5-3's (§9.2), and the
-   * `isProviderId(provider)` hunk is in R5-6's report as a request. When it lands, the `else` branch below fails
-   * — which is the signal to delete `PERSISTABLE_PROVIDERS`, `providerNotPersistableText`, the guard in
-   * `commandLogin` and this test, in one commit.
-   */
-  const twoNameCheckStillThere = readFileSync('src/config/validate.ts', 'utf8').includes("provider !== 'anthropic' && provider !== 'openrouter'");
-
-  it('the guard says exactly what validate.ts will accept back — no more, no less', () => {
-    if (twoNameCheckStillThere) expect([...PERSISTABLE_PROVIDERS]).toEqual(['anthropic', 'openrouter']);
-    else expect([...PERSISTABLE_PROVIDERS]).toEqual([...PROVIDER_IDS]);
-    for (const id of PROVIDER_IDS) expect(isPersistableProvider(id)).toBe(PERSISTABLE_PROVIDERS.includes(id));
-  });
-
-  it('`login --provider gemini --generator-key-stdin` refuses BEFORE any key is read, and writes nothing', async () => {
-    if (!twoNameCheckStillThere) return;
-    const t = loginIo('gm-live-0123456789abcdefghij\n');
-    expect(await commandLogin({ provider: 'gemini', generatorKeyStdin: true }, t)).toBe(EXIT_CODES.config);
-    // nothing on disk: the profile is not bricked, and there is nothing to hand-edit back
-    await expect(stat(configPath())).rejects.toThrow();
-    expect(t.out.text).toBe('');
-    // the reason is §12.5 S107's own sentence, plus the two providers that can run today
-    expect(t.err.text.trim()).toBe(`jevcode: ${providerNotPersistableText('gemini')}`);
-    expect(t.err.text).toContain(browseOnlyText('gemini'));
-    expect(t.err.text).toContain('--provider anthropic|openrouter');
-  });
-
-  it('all five new ids are refused the same way; the two that can generate are untouched', async () => {
-    if (!twoNameCheckStillThere) return;
-    for (const id of PROVIDER_IDS.filter((p) => !isPersistableProvider(p))) {
-      const t = loginIo('sk-test-0123456789abcdefghijkl\n');
-      expect(await commandLogin({ provider: id, generatorKeyStdin: true }, t)).toBe(EXIT_CODES.config);
-      expect(t.err.text).toContain(id);
-    }
-  });
-
+describe('D-AP, both halves: `jevcode login` writes any of the seven ids and the config reads it back (§6.1, §8.1 item 6)', () => {
   it('END TO END: a config `jevcode login` wrote still resolves — `resolveConfig(...).generator()` does not throw', async () => {
     const t = loginIo('sk-or-v1-abcdefghijklmnopqrstuvwxyz0123\n');
     expect(await commandLogin({ provider: 'openrouter', generatorKeyStdin: true }, t)).toBe(EXIT_CODES.ok);
@@ -301,8 +261,8 @@ describe('the write half of D-AP is gated on its read half (§6.1, §8.1 item 6)
     expect(resolved.generator().provider).toBe('openrouter');
   });
 
-  it('END TO END: whatever the guard DOES let through resolves, for every id it allows', async () => {
-    for (const id of PERSISTABLE_PROVIDERS) {
+  it('END TO END: every one of the seven ids is saved and resolves (the D-AP guard is gone with `validate.ts`’s two-name check)', async () => {
+    for (const id of PROVIDER_IDS) {
       const xdg = join(home, `xdg-${id}`);
       const t = loginIo('sk-test-0123456789abcdefghijklmn\n', { env: { XDG_CONFIG_HOME: xdg } });
       expect(await commandLogin({ provider: id, generatorKeyStdin: true }, t)).toBe(EXIT_CODES.ok);

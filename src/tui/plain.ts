@@ -101,7 +101,8 @@ export function contextWarnItemText(pct: number): string {
 /** TUI-DESIGN-2 §4.5: the stage kinds the TUI's `compact` transcript hides (stamped `hidden: true` at append time); every sink still writes them */
 export const COMPACT_HIDDEN_KINDS: ReadonlySet<TranscriptKind> = new Set<TranscriptKind>(['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready']);
 
-export type TranscriptLevel = 'info' | 'warn' | 'error';
+/** `dim` is the quiet startup grade (the `[sandbox]` / `recent:` / `[setup] mode` one-liners): the TUI paints the body dim, every line sink prints it unchanged. */
+export type TranscriptLevel = 'info' | 'warn' | 'error' | 'dim';
 
 /** One immutable transcript row. `text` is one logical line; `detail` is a TUI-only body (scrollback). */
 export interface TranscriptItem {
@@ -1289,21 +1290,10 @@ export interface PlainRendererOptions extends RendererOptions {
 }
 
 /** The plain renderer: `Renderer` plus the contract-1.1 hooks it implements (TUI-DESIGN §15 item 16). */
-/**
- * TUI-DESIGN-2 §3.7 / §6 item 11, the `--plain` twin of `Renderer.restoreDraft`: cooked-mode readline has no composer buffer
- * to refill, so the kept text is echoed as a bare `(kept: …)` line (TD §15.1's toast form — never an item), redacted like
- * the `[you]` bubble and flattened to one line.
- */
-export function intakeKeptEcho(text: string): string {
-  return `(kept: ${oneLine(text)})`;
-}
-
 export interface PlainRenderer extends Renderer {
   setHost(host: SessionHost): void;
   setUi(ui: UiConfig): void;
   notify(text: string, opts?: { level?: TranscriptLevel; detail?: string; label?: UiLabel }): void;
-  /** TUI-DESIGN-2 §3.7: Esc / empty on the readline intake twin — the kept draft is echoed (`intakeKeptEcho`), through the host's redactor */
-  restoreDraft(text: string): void;
   /**
    * TUI-DESIGN §1 / §6.5: hand the readline composer's `lines` to the confirmer so both share the one stdin
    * interface; must run before the first review (before the first run starts) on a `--plain` TTY.
@@ -1418,12 +1408,6 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
      */
     blockLines(rows, o = {}) {
       for (const row of rows) this.notify(row, o);
-    },
-    // TUI-DESIGN-2 §3.7 / §6 item 11: the readline composer cannot be refilled, so the kept text is echoed (redacted) as a bare line
-    restoreDraft(text) {
-      endStream();
-      const redacted = host ? host.redact(text) : text;
-      write(`${intakeKeptEcho(redacted)}\n`);
     },
     async unmount() {
       detach?.();

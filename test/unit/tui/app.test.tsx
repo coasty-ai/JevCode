@@ -47,10 +47,12 @@ describe('<App> first frame (§1)', { retry: 1 }, () => {
     expect(m.lastFrame()).toContain('─'.repeat(10));
   });
 
-  it('session: header `jevcode session · <dir> | step 0/– starting`, splash frame 0 (the `J` column), the console with the placeholder and the idle status row — from argv only (H-A1); `splash:done` keeps the resting mark under the plain rule with its `◆ <version>` caption (TUI-DESIGN-3 §3.2 H-A3 → F-W1: 11 dynamic rows)', async () => {
+  it('session: NO header row (the quiet start), splash frame 0 (the `J` column), the console with the placeholder and the idle status row — from argv only (H-A1); `splash:done` keeps the resting mark under the plain rule with its `◆ <version>` caption (TUI-DESIGN-3 §3.2 H-A3 → F-W1: 11 dynamic rows)', async () => {
     const m = mountApp({ mode: 'session' });
     const f = m.lastFrame();
-    expect(f).toContain('[run] jevcode session · proj | step 0/– starting');
+    // the quiet start (2026-09, owner's directive "clean"): a session opens with the mark and the composer — the
+    // `[run] jevcode session · <dir> | step 0/– starting` row is a LINE-renderer header now (`createPlainRenderer`)
+    expect(f).not.toContain('jevcode session · proj');
     expect(f).toContain(`› ${PLACEHOLDERS.task}`);
     expect(f).toContain('step 0/–');
     // TUI-DESIGN-2 §5.2 row 0: the `J` (wordmark cells 0–6) and the sweep head are in the very first frame
@@ -467,7 +469,8 @@ describe('<App> composer, steer, paste, gate, palette (§4, §5, §8.6, §10)', 
     m.stdin.write('\r');
     await tick(20);
     expect(host.submitted).toEqual([{ text: 'fix parse_date tz handling', kind: 'prompt', secretSpans: [], pinnedFiles: [] }]);
-    expect(m.lastFrame()).toContain('starting');
+    // the quiet start removed the session header row, so the frame's sentinel is the status row's step counter
+    expect(m.lastFrame()).toContain('step 0/–');
   });
 
   it('a `/` at column 0 opens the palette; Enter on a typo keeps the draft with the [ui] error; an exact match runs (host.command)', async () => {
@@ -1000,6 +1003,8 @@ describe('<App> App-level fault injection (§13.4, finding 5)', { retry: 1 }, ()
 
   it('render:static: one throwing item costs one fallback row; every later item keeps flowing into the scrollback', async () => {
     const m = mountApp({ mode: 'session', host: fakeHost(), fault: renderFaultFor('static') });
+    // the quiet start: a session frame has no header item, so the first ITEM is the one that throws
+    m.dispatch({ type: 'local', text: 'the throwing item', label: '[ui]' });
     await tick(20);
     expect(m.lastFrame()).toContain('ui: static pane failed to render (InjectedRenderFault)');
     m.dispatch({ type: 'local', text: 'after the fault', label: '[ui]' });

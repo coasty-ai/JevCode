@@ -47,7 +47,7 @@ const STILL: LaunchSettings & { reducedMotion: boolean } = { fps: 30, renderMode
 /** the wizard state `bridge.command({ type: 'wizard', detect })` produces below (the provider step). */
 const WIZARD_AT_PROVIDER = onboardingReducer(INITIAL_ONBOARDING, { type: 'detect', missing: ['generator.apiKey'], mode: 'jev-on', provider: 'anthropic', trustNeeded: false });
 
-const KINDS: readonly OverlayKind[] = ['none', 'review', 'wizard', 'followup', 'secret', 'blocking', 'palette', 'undo', 'exitConfirm', 'intake'];
+const KINDS: readonly OverlayKind[] = ['none', 'review', 'wizard', 'followup', 'secret', 'blocking', 'palette', 'undo', 'exitConfirm'];
 
 function layoutInput(o: Partial<LayoutInput> & { rows: number; columns: number }): LayoutInput {
   return {

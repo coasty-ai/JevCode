@@ -1,21 +1,22 @@
 /**
- * TUI-DESIGN-2 §3.8–3.10 (S3, §8.1 row `test/unit/cli/session-chat.test.ts`): the controller's submit path over a scripted
- * fake decider — `hi` → one `[you]` + one `[jevcode]`, no `run:start`, meter +cost; `fix the test` → `run:start` with
- * `session.intake`; ambiguous → `Prompter.intake` (keep restores the draft, run runs, chat answers from the answers in hand);
- * cap reached → refusal with zero requests; unreachable → the retry bubble, zero runs, meter unchanged; `hi`, `hi`, then a
- * task → both intakes in the session total and the same meter object across `run:start` (§3.9); abort → toast only; the
- * jev+llm paths (LLM turn, provider 500, weak reading → lookup + hint, `ConfigError` → `[ui] error: config:`); the wizard
- * re-read (§3.8, finding 26); the one-shot argv task skips intake; `/jev` line 3 and `/cost`'s chat line.
+ * The controller's submit path, conversational (§3.8–3.10 rewritten): EVERY submission gets a streamed reply from the
+ * code model and Jev's reading runs beside it, in the background, with no card anywhere — `hi` → one `[you]` + the
+ * model's reply; `fix the test` → the reply, `On it — starting the run.` and `run:start` with `session.intake`;
+ * `ambiguous` → the reply plus the `do it` offer, which the next message accepts; a reading that fails or never lands
+ * is a log line, never a bubble (the reply already answered). `jev-only` keeps Jev's own answers (catalogue · facts ·
+ * lookup) and the offer. Plus: the money of §3.9, the abort paths, the `--json` chat lines, the wizard re-read
+ * (finding 26), the one-shot argv task, `/jev` line 3 and `/cost`'s chat line.
  */
 import { whyErrorText } from '../../../src/tui/why.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Answer, GenerateRequest, IntakeKind, Provider } from '../../../src/core/types.js';
-import { CREDITS_EXHAUSTED, INTAKE_KEPT, INTAKE_UNREACHABLE, JEV_KEY_REJECTED, LLM_FLOORED_HINT, LLM_KEY_REJECTED, LLM_UNPRICED_REFUSAL, LLM_UNREACHABLE, MISSING_JEV_KEY, MOCK_CHAT_GENERATOR, RUN_LIVE_ERROR, SESSION_CAP_CHAT_REFUSAL, STILL_THINKING_TOAST, STOPPED_THINKING_TOAST, chatEstimateUsd, mockIntakeOverride, mockIntakeRules, mockJevLatencyMs, type ChatUiAction, type WizardReason } from '../../../src/cli/session.js';
+import type { GenerateRequest, IntakeKind, Provider } from '../../../src/core/types.js';
+import { CREDITS_EXHAUSTED, DO_IT_OFFER, offerWanted, INTAKE_UNREACHABLE, JEV_KEY_REJECTED, LLM_KEY_REJECTED, LLM_UNPRICED_REFUSAL, LLM_UNREACHABLE, MISSING_GENERATOR_KEY, MISSING_JEV_KEY, MOCK_CHAT_GENERATOR, ON_IT_LINE, RUN_LIVE_ERROR, SESSION_CAP_CHAT_REFUSAL, STILL_THINKING_TOAST, STOPPED_THINKING_TOAST, chatEstimateUsd, mockIntakeOverride, mockIntakeRules, mockJevLatencyMs, type ChatUiAction, type WizardReason } from '../../../src/cli/session.js';
 import { writeJsonStream } from '../../../src/cli/json-stream.js';
 import { readIndex } from '../../../src/session/index.js';
 import { LOOKUP_FOOTER, LOOKUP_HEADER, lookupMissText } from '../../../src/chat/lookup.js';
 import { PEERS_UNAVAILABLE_TEXT, WHAT_IT_IS_TEXT, peersFactText } from '../../../src/chat/facts.js';
-import { fillReply, replyByKey } from '../../../src/chat/replies.js';
+import { REPLY_FALLBACK_KEY, fillReply, replyByKey } from '../../../src/chat/replies.js';
+import { MOCK_CHAT_REPLY } from '../../../src/provider/mock.js';
 import { ConfigError, ProviderHttpError } from '../../../src/errors.js';
 import { createMockDecider } from '../../../src/jev/mock.js';
 import { buildAllIntakeQuestions } from '../../../src/chat/intake.js';
@@ -55,18 +56,19 @@ function fakeProvider(o: { text?: string; fail?: Error; deltas?: string[] }): Pr
 }
 
 describe('TUI-DESIGN-2 §3.8: the submit path — greetings, tool questions, tasks', () => {
-  it('`hi` → one [you] and one [jevcode] bubble (hello_first with the workspace dir), no run:start, the meter charged, `thinking` intake → null, s0 decision rows', async () => {
+  it('`hi` → one [you] and the code model\'s streamed reply, no card, no run:start, the meter charged, `thinking` replying → null, s0 decision rows', async () => {
     const h = await build({ decider: harnessDecider({ usage: USAGE }) });
     void h.controller.run();
     await h.ready();
     const outcome = await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
     expect(outcome).toEqual({ became: 'chat' });
     expect(bubbles(h, '[you]')).toEqual(['hi']);
-    expect(bubbles(h, '[jevcode]')).toEqual([fillReply(replyByKey('hello_first'), { dir: h.workspace.slice(h.workspace.lastIndexOf('/') + 1), lastRun: null, mode: 'jev-only', runsDir: '' })]);
+    // the `--mock` generator answers a no-tools chat request with one deterministic line — never a catalogue string
+    expect(bubbles(h, '[jevcode]')).toEqual([MOCK_CHAT_REPLY]);
     expect(h.factory.calls).toHaveLength(0);
     expect(h.renderer.events.some((e) => e.type === 'run:start')).toBe(false);
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(0.0002, 9);
-    expect(dispatchedOf(h, 'thinking').map((a) => (a as { phase: string | null }).phase)).toEqual(['intake', null]);
+    expect(dispatchedOf(h, 'thinking').map((a) => (a as { phase: string | null }).phase)).toEqual(['replying', null]);
     const rows = dispatchedOf(h, 'chat-decisions').at(-1) as { rows: { step: number; stage: string; id: string }[] } | undefined;
     // TUI-DESIGN-5 §8.1 item 10 / §2.3: `FactKey` gains `'peers'` (group C 14 -> 15), so the intake asks one more Noul
     expect(rows?.rows.length).toBe(1 + 5 + 1 + 15);
@@ -119,7 +121,9 @@ describe('TUI-DESIGN-2 §3.8: the submit path — greetings, tool questions, tas
     expect(h.factory.calls[0]!.task).toBe('fix the failing test');
     expect(h.factory.calls[0]!.session?.intake).toEqual({ kind: 'coding_task', probability: 0.9, requestHash: 'h1' });
     expect(bubbles(h, '[you]')).toEqual(['fix the failing test']);
-    expect(bubbles(h, '[jevcode]')).toEqual([]);
+    // the reply still answers first; the reading appends the one line that says the run is starting
+    expect(bubbles(h, '[jevcode]')).toEqual([MOCK_CHAT_REPLY, ON_IT_LINE]);
+    expect(ON_IT_LINE).toBe('On it — starting the run.');
   });
 
   it('the [you] bubble is redacted at emission and split per line; the message never reaches the log', async () => {
@@ -144,41 +148,67 @@ describe('TUI-DESIGN-2 §3.8: the submit path — greetings, tool questions, tas
   });
 });
 
-describe('TUI-DESIGN-2 §3.7: ambiguous — the confirmation, never a silent run', () => {
+describe('ambiguous — the `do it` offer, never a card and never a silent run', () => {
   const ambiguousDecider = () => harnessDecider({ usage: USAGE, classify: () => 'ambiguous' as IntakeKind });
 
-  it('without a prompt channel the C46 default keeps the text: INTAKE_KEPT bubble, restoreDraft, became nothing, no run', async () => {
+  it('the reply lands and the offer line closes the bubble; the composer is free (became chat), no run, no prompt channel involved', async () => {
+    const asked: string[] = [];
+    const h = await build({ decider: ambiguousDecider(), prompts: { wizard: async () => { asked.push('wizard'); return { kind: 'cancelled' }; } } });
+    void h.controller.run();
+    await h.ready();
+    expect(await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    expect(bubbles(h, '[jevcode]')).toEqual([MOCK_CHAT_REPLY, DO_IT_OFFER]);
+    expect(DO_IT_OFFER).toBe("Say `do it` and I'll make that a task.");
+    expect(h.factory.calls).toHaveLength(0);
+    expect(asked).toEqual([]);
+  });
+
+  it('`do it` accepts the offer with NO new request — the run starts on the reading already in hand; any other message drops it', async () => {
     const h = await build({ decider: ambiguousDecider() });
     void h.controller.run();
     await h.ready();
-    expect(await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'nothing' });
-    expect(bubbles(h, '[jevcode]')).toEqual([INTAKE_KEPT]);
-    expect(h.renderer.restored).toEqual(['the date parsing']);
+    await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
+    const calls = h.decider.calls.length;
+    expect(await h.host.submit('do it', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'run' });
+    await h.host.awaitRunEnd();
+    expect(h.decider.calls.length).toBe(calls); // the offer carries the reading: nothing is asked again
+    expect(h.factory.calls).toHaveLength(1);
+    expect(h.factory.calls[0]!.task).toBe('the date parsing');
+    expect(h.factory.calls[0]!.session?.intake?.kind).toBe('ambiguous');
+    expect(bubbles(h, '[jevcode]').at(-1)).toBe(ON_IT_LINE);
+    // a later reading replaces the offer: `do it` then runs THAT message, never the older one
+    await h.host.submit('the tests', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] });
+    expect(await h.host.submit('do it', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'run' });
+    await h.host.awaitRunEnd();
+    expect(h.factory.calls.map((c) => c.task)).toEqual(['the date parsing', 'the tests']);
+    // an ambiguous QUESTION gets no offer (live 2026-09-22: `who made you?` read ambiguous), so a `do it` after it is just a message
+    await h.host.submit('tests?', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] });
+    expect(bubbles(h, '[jevcode]').at(-1)).not.toBe(DO_IT_OFFER);
+    expect(await h.host.submit('do it', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    expect(h.factory.calls).toHaveLength(2);
+  });
+
+  it('a message that is not an acceptance drops the offer: a later `do it` is just a message', async () => {
+    const h = await build({ decider: harnessDecider({ usage: USAGE, classify: (m) => (m === 'the date parsing' ? 'ambiguous' : 'greeting_or_smalltalk') }) });
+    void h.controller.run();
+    await h.ready();
+    await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
+    expect(bubbles(h, '[jevcode]').at(-1)).toBe(DO_IT_OFFER);
+    await h.host.submit('hi', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] });
+    expect(await h.host.submit('do it', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
     expect(h.factory.calls).toHaveLength(0);
   });
 
-  it('Prompter.intake receives the message; `run` starts the run, `chat` answers from the answers in hand with no second request, `keep` restores the draft', async () => {
-    let answer: 'run' | 'chat' | 'keep' = 'run';
-    const asked: string[] = [];
-    const h = await build({ decider: ambiguousDecider(), prompts: { intake: async (m) => { asked.push(m); return answer; } } });
+  it('jev-only: no generator, so Jev answers — the catalogue fallback plus the offer, and `do it` still runs it', async () => {
+    const h = await build({ decider: ambiguousDecider(), flags: { mode: 'jev-only' } });
     void h.controller.run();
     await h.ready();
-    expect(await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'run' });
+    expect(await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    const dir = h.workspace.slice(h.workspace.lastIndexOf('/') + 1);
+    expect(bubbles(h, '[jevcode]')).toEqual([fillReply(replyByKey(REPLY_FALLBACK_KEY), { dir, lastRun: null, mode: 'jev-only', runsDir: '' }), DO_IT_OFFER]);
+    expect(await h.host.submit('do it', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'run' });
     await h.host.awaitRunEnd();
-    expect(asked).toEqual(['the date parsing']);
-    expect(h.factory.calls).toHaveLength(1);
-    expect(h.factory.calls[0]!.session?.intake?.kind).toBe('ambiguous');
-    answer = 'chat';
-    const before = h.decider.calls.length;
-    expect(await h.host.submit('tests?', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
-    // chatKindAfterNo over the harness answers → question_about_this_tool → facts
-    expect(h.decider.calls.length).toBe(before + 1);
-    expect(bubbles(h, '[jevcode]').length).toBeGreaterThan(0);
-    expect(h.factory.calls).toHaveLength(1);
-    answer = 'keep';
-    expect(await h.host.submit('hm', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'nothing' });
-    expect(h.renderer.restored).toEqual(['hm']);
-    expect(bubbles(h, '[jevcode]').at(-1)).toBe(INTAKE_KEPT);
+    expect(h.factory.calls[0]!.task).toBe('the date parsing');
   });
 });
 
@@ -248,8 +278,8 @@ describe('TUI-DESIGN-2 §3.9: money', () => {
 });
 
 describe('TUI-DESIGN-2 §3.1 rows 10, 12, 12′, 13: failures', () => {
-  it('Jev unreachable after the client\'s retries → the retry bubble, zero runs, meter unchanged', async () => {
-    const h = await build({ decider: harnessDecider({ usage: USAGE, failAt: [{ stage: 'intent', status: 503 }] }) });
+  it('jev-only: Jev unreachable after the client\'s retries → the retry bubble, zero runs, meter unchanged', async () => {
+    const h = await build({ decider: harnessDecider({ usage: USAGE, failAt: [{ stage: 'intent', status: 503 }] }), flags: { mode: 'jev-only' } });
     void h.controller.run();
     await h.ready();
     expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
@@ -260,8 +290,19 @@ describe('TUI-DESIGN-2 §3.1 rows 10, 12, 12′, 13: failures', () => {
     expect(dispatchedOf(h, 'thinking').map((a) => (a as { phase: string | null }).phase)).toEqual(['intake', null]);
   });
 
-  it('Ctrl-C ×1 while thinking (host.abort) aborts the request: toast `stopped thinking`, no bubble, draft not restored, became nothing', async () => {
-    const h = await build({ decider: harnessDecider({ usage: USAGE, delayMs: () => 500 }) });
+  it('with a generator the same failure is invisible: the reply IS the answer, so a failed reading is a log line — no bubble, no run', async () => {
+    const h = await build({ decider: harnessDecider({ usage: USAGE, failAt: [{ stage: 'intent', status: 503 }] }) });
+    void h.controller.run();
+    await h.ready();
+    expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    expect(bubbles(h, '[jevcode]')).toEqual([MOCK_CHAT_REPLY]);
+    expect(uiErrors(h)).toEqual([]);
+    expect(h.factory.calls).toHaveLength(0);
+    expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBe(0);
+  });
+
+  it('Ctrl-C ×1 while thinking (host.abort) aborts the request: toast `stopped thinking`, no bubble, became nothing', async () => {
+    const h = await build({ decider: harnessDecider({ usage: USAGE, delayMs: () => 500 }), flags: { mode: 'jev-only' } });
     void h.controller.run();
     await h.ready();
     const p = h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
@@ -269,7 +310,6 @@ describe('TUI-DESIGN-2 §3.1 rows 10, 12, 12′, 13: failures', () => {
     h.host.abort('human_abort');
     expect(await p).toEqual({ became: 'nothing' });
     expect(bubbles(h, '[jevcode]')).toEqual([]);
-    expect(h.renderer.restored).toEqual([]);
     expect(dispatchedOf(h, 'toast').map((a) => (a as { text: string }).text)).toEqual([STOPPED_THINKING_TOAST]);
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBe(0);
     // idle and not thinking: Ctrl-C is a no-op
@@ -277,14 +317,18 @@ describe('TUI-DESIGN-2 §3.1 rows 10, 12, 12′, 13: failures', () => {
     expect(h.controller.view.phase).toBe('none');
   });
 
-  it('a ConfigError from config.generator() under jev+llm (no generator key, mock off) → `[ui] error: config:` only, no bubble', async () => {
-    // `extraEnvFile` off the machine's sibling checkout, so no real key resolves (and a fake provider, never reached: `generator()` throws first)
-    const h = await build({ decider: harnessDecider({ usage: USAGE }), flags: { mock: false, mode: 'jev-on', extraEnvFile: NO_EXTRA_ENV }, env: { JEV_API_KEY: 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' }, deps: { buildProvider: async () => fakeProvider({ text: 'never' }) } });
+  it('no generator key under jev+llm (mock off): the reply cannot go out — the wizard, then `[ui] error: missing generator.apiKey`, no bubble, no request', async () => {
+    // `extraEnvFile` off the machine's sibling checkout, so no real generator key resolves (the Jev key does)
+    const provider = fakeProvider({ text: 'never' });
+    const h = await build({ decider: harnessDecider({ usage: USAGE }), flags: { mock: false, mode: 'jev-on', extraEnvFile: NO_EXTRA_ENV }, env: { JEV_API_KEY: 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' }, deps: { buildProvider: async () => provider } });
     void h.controller.run();
     await h.ready();
     expect(await h.host.submit('where is the date parsing?', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'nothing' });
     expect(bubbles(h, '[jevcode]')).toEqual([]);
-    expect(uiErrors(h).some((t) => t.startsWith('error: config: '))).toBe(true);
+    expect(uiErrors(h).at(-1)).toBe(`error: ${MISSING_GENERATOR_KEY}`);
+    expect(MISSING_GENERATOR_KEY).toBe('missing generator.apiKey: set ANTHROPIC_API_KEY or OPENROUTER_API_KEY, or run jevcode login');
+    expect(provider.requests).toHaveLength(0);
+    expect(h.decider.calls).toHaveLength(0);
     expect(JSON.stringify(h.renderer.notes)).not.toContain('sk-or-v1-0123456789abcdef');
   });
 });
@@ -328,7 +372,10 @@ describe('TUI-DESIGN-2 §3.6: question_about_the_code', () => {
     expect(provider.requests[0]!.maxTokens).toBe(800);
     expect(bubbles(h, '[jevcode]')).toEqual(['It fails because tz is None.', 'See utils/dates.py:12.']);
     expect(h.renderer.liveTexts).toEqual(['It fails because tz is None.\n', 'It fails because tz is None.\nSee utils/dates.py:12.', '']);
-    expect(dispatchedOf(h, 'thinking').map((a) => (a as { phase: string | null }).phase)).toEqual(['intake', null, 'replying', null]);
+    expect(dispatchedOf(h, 'thinking').map((a) => (a as { phase: string | null }).phase)).toEqual(['replying', null]);
+    // the request carries JevCode's own voice and this workspace
+    expect(provider.requests[0]!.system).toContain('You are JevCode, a coding agent for the terminal, built by coasty-ai.');
+    expect(provider.requests[0]!.system).toContain(`- name: ${h.workspace.slice(h.workspace.lastIndexOf('/') + 1)}`);
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(0.0002 + 0.0031, 9);
     expect(h.decider.calls.map((c) => c.stage)).toEqual(['intent']);
   });
@@ -343,29 +390,6 @@ describe('TUI-DESIGN-2 §3.6: question_about_the_code', () => {
     expect(LLM_UNREACHABLE('m', 'x')).toBe("I couldn't get an answer from m (x). Ask again, or /mode jev-only for the lookup.");
     expect(h.renderer.liveTexts.at(-1)).toBe('');
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(0.0002, 9);
-  });
-
-  it('jev+llm: a weak code reading (the `n` of the card with p 0.3 / paired 0.4) takes the lookup and appends LLM_FLOORED_HINT; the generator is never called', async () => {
-    const provider = fakeProvider({ text: 'never' });
-    const rule = (ctx: { questions: Record<string, unknown> }): Partial<Record<string, Answer>> | undefined => {
-      const q = ctx.questions['intake'];
-      if (!q) return undefined;
-      return {
-        intake: { type: 'choice', choice: 'ambiguous', probabilities: { ambiguous: 0.5, question_about_the_code: 0.3, coding_task: 0.1, greeting_or_smalltalk: 0.05, question_about_this_tool: 0.05, none_of_these: 0 }, confidence: 0.5 },
-        can_ambiguous: { type: 'noul', noul: 0.9 },
-        can_question_about_the_code: { type: 'noul', noul: 0.4 },
-      };
-    };
-    const h = await build({ decider: harnessDecider({ usage: USAGE, rules: [rule] }), flags: { mode: 'jev-on' }, deps: { buildProvider: async () => provider }, prompts: { intake: async () => 'chat' } });
-    void h.controller.run();
-    await h.ready();
-    expect(await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
-    expect(provider.requests).toHaveLength(0);
-    const replies = bubbles(h, '[jevcode]');
-    expect(replies.at(-1)).toBe(LLM_FLOORED_HINT);
-    expect(LLM_FLOORED_HINT).toBe('Ask again more specifically for an LLM answer.');
-    expect(h.decider.calls.map((c) => c.stage)).toEqual(['intent']);
-    expect(h.factory.calls).toHaveLength(0);
   });
 
   it('chatEstimateUsd follows §3.6: (1,200 + chars × 0.25 + file bytes × 0.25) × in-price + min(800, maxTokens) × out-price', () => {
@@ -419,7 +443,7 @@ describe('TUI-DESIGN-2 §3.8: keys, the wizard re-read and the one-shot path', (
     await h.ready();
     await h.submit('fix the failing test');
     await h.host.submit('thanks', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] });
-    expect(bubbles(h, '[jevcode]').at(-1)).toBe(fillReply(replyByKey('hello_first'), { dir: 'x', lastRun: null, mode: 'jev-only', runsDir: '' }).replace('x', h.workspace.slice(h.workspace.lastIndexOf('/') + 1)));
+    expect(bubbles(h, '[jevcode]').at(-1)).toBe(MOCK_CHAT_REPLY);
     expect(h.factory.calls).toHaveLength(1);
     await h.host.submit('now update the docs', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] });
     await h.host.awaitRunEnd();
@@ -446,16 +470,17 @@ describe('TUI-DESIGN-2 §3.8 / §6 item 17: the `--json` `chat` line (finding 1)
     return { h, chat: () => sink.lines.filter((l) => l['type'] === 'chat') };
   };
 
-  it('`hi` → one chat line (route reply, the intake reading, probability, provider, cost, latency, request hash, no session yet); a task → route run with the run\'s session id after it', async () => {
+  it('`hi` → two chat lines: the background reading (route reply, its cost and hash) and the reply itself (route llm, provider generator, no hash); a task reads `run`', async () => {
     const { h, chat } = await jsonHarness({ decider: harnessDecider({ usage: USAGE, latencyMs: 118 }) });
     void h.controller.run();
     await h.ready();
     await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
-    expect(chat()).toEqual([{ v: 1, t: '2026-09-21T10:00:00.000Z', runId: null, sessionId: null, type: 'chat', intake: 'greeting_or_smalltalk', probability: 0.9, route: 'reply', provider: 'openrouter', costUsd: 0.0002, latencyMs: 118, requestHash: 'h1' }]);
+    expect(chat()[0]).toEqual({ v: 1, t: '2026-09-21T10:00:00.000Z', runId: null, sessionId: null, type: 'chat', intake: 'greeting_or_smalltalk', probability: 0.9, route: 'reply', provider: 'openrouter', costUsd: 0.0002, latencyMs: 118, requestHash: 'h1' });
+    expect(chat()[1]).toMatchObject({ type: 'chat', intake: 'greeting_or_smalltalk', route: 'llm', provider: 'generator', costUsd: 0, requestHash: '' });
     await h.host.submit('fix the failing test', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
     await h.host.awaitRunEnd();
-    expect(chat()).toHaveLength(2);
-    expect(chat()[1]).toMatchObject({ type: 'chat', intake: 'coding_task', route: 'run', provider: 'openrouter', requestHash: 'h2' });
+    expect(chat()).toHaveLength(4);
+    expect(chat()[2]).toMatchObject({ type: 'chat', intake: 'coding_task', route: 'run', provider: 'openrouter', requestHash: 'h2' });
     // the message never rides the stream
     expect(JSON.stringify(chat())).not.toContain('failing test');
   });
@@ -479,16 +504,17 @@ describe('TUI-DESIGN-2 §3.8 / §6 item 17: the `--json` `chat` line (finding 1)
       ['llm', 'openrouter', 'h1', 0.0002],
       ['llm', 'generator', '', 0.0031],
     ]);
+    expect(provider.requests).toHaveLength(1);
   });
 
-  it('an ambiguous reading is route asked; a refused (cap) or failed request writes no chat line (nothing was charged)', async () => {
-    const { h, chat } = await jsonHarness({ decider: harnessDecider({ usage: USAGE, classify: () => 'ambiguous' as IntakeKind, failAt: [{ stage: 'intent', step: 99, status: 503 }] }), prompts: { intake: async () => 'keep' } });
+  it('an ambiguous reading is route asked; a failed reading writes no chat line of its own (nothing was charged), only the reply\'s', async () => {
+    const { h, chat } = await jsonHarness({ decider: harnessDecider({ usage: USAGE, classify: () => 'ambiguous' as IntakeKind }), flags: { mode: 'jev-only' } });
     void h.controller.run();
     await h.ready();
     await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
     expect(chat()).toHaveLength(1);
     expect(chat()[0]).toMatchObject({ route: 'asked', intake: 'ambiguous' });
-    const failing = await jsonHarness({ decider: harnessDecider({ usage: USAGE, failAt: [{ stage: 'intent', status: 503 }] }) });
+    const failing = await jsonHarness({ decider: harnessDecider({ usage: USAGE, failAt: [{ stage: 'intent', status: 503 }] }), flags: { mode: 'jev-only' } });
     void failing.h.controller.run();
     await failing.h.ready();
     await failing.h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
@@ -497,8 +523,8 @@ describe('TUI-DESIGN-2 §3.8 / §6 item 17: the `--json` `chat` line (finding 1)
 });
 
 describe('TUI-DESIGN-2 §3.9: the `chat` index line and /resume (finding 2)', () => {
-  it('`hi` (buffered), a task (flushes with the run\'s session id), `hi` (direct): three chat lines all under the first run\'s session id; the fold sums them; `-c` in a new controller restores runs + chat spend into the meter', async () => {
-    const h = await build({ decider: harnessDecider({ usage: USAGE }), script: () => ({ cost: { generator: 0.1, jev: 0.015 } }) });
+  it('`hi` (buffered), a task (flushes with the run\'s session id), `hi` (direct): every chat line lands under the first run\'s session id; the fold sums them; `-c` in a new controller restores runs + chat spend into the meter', async () => {
+    const h = await build({ decider: harnessDecider({ usage: USAGE }), flags: { mode: 'jev-only' }, script: () => ({ cost: { generator: 0.1, jev: 0.015 } }) });
     void h.controller.run();
     await h.ready();
     await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
@@ -522,7 +548,7 @@ describe('TUI-DESIGN-2 §3.9: the `chat` index line and /resume (finding 2)', ()
     expect(folded.sessions.find((s) => s.sessionId === sid)?.totalUsd).toBeCloseTo(0.115 + 0.0006, 9);
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(0.115 + 0.0006, 9);
     // a second controller over the same home and workspace continues the session: the meter is seeded from runs AND chat lines
-    const h2 = await build({ home: h.home, workspace: h.workspace, flags: { continue: true }, decider: harnessDecider({ usage: USAGE }) });
+    const h2 = await build({ home: h.home, workspace: h.workspace, flags: { continue: true, mode: 'jev-only' }, decider: harnessDecider({ usage: USAGE }) });
     void h2.controller.run();
     await h2.ready();
     await waitFor(() => h2.renderer.notes.some((n) => n.text.startsWith(`session ${sid} continues`)), 4000, 'the continue item');
@@ -610,6 +636,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
     let calls = 0;
     const h = await build({
       decider: slow,
+      flags: { mode: 'jev-only' },
       deps: {
         buildDecider: async () => {
           calls += 1;
@@ -632,7 +659,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
 
   it('finding 12: a 401 from Jev on the intake → `Jev rejected the key (HTTP 401). /login saves a new one.` and the TUI opens the wizard (reason rejected); Enter would not loop; the meter is unchanged', async () => {
     const reasons: WizardReason[] = [];
-    const h = await build({ decider: harnessDecider({ usage: USAGE, failAt: [{ stage: 'intent', status: 401 }] }), prompts: { wizard: async (_m, o) => { reasons.push(o.reason); return { kind: 'cancelled' }; } } });
+    const h = await build({ decider: harnessDecider({ usage: USAGE, failAt: [{ stage: 'intent', status: 401 }] }), flags: { mode: 'jev-only' }, prompts: { wizard: async (_m, o) => { reasons.push(o.reason); return { kind: 'cancelled' }; } } });
     void h.controller.run();
     await h.ready();
     expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
@@ -654,7 +681,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
 
   it('TUI-DESIGN-3 §1.7 (R3 F5/F10): a 402 from Jev on the intake → the CREDITS_EXHAUSTED bubble (never "unreachable"), no wizard, the meter unchanged; a 402 from the generator during the LLM turn the same', async () => {
     const reasons: WizardReason[] = [];
-    const h = await build({ decider: harnessDecider({ usage: USAGE, failAt: [{ stage: 'intent', status: 402 }] }), prompts: { wizard: async (_m, o) => { reasons.push(o.reason); return { kind: 'cancelled' }; } } });
+    const h = await build({ decider: harnessDecider({ usage: USAGE, failAt: [{ stage: 'intent', status: 402 }] }), flags: { mode: 'jev-only' }, prompts: { wizard: async (_m, o) => { reasons.push(o.reason); return { kind: 'cancelled' }; } } });
     void h.controller.run();
     await h.ready();
     expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
@@ -733,7 +760,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
     expect(bubbles(h, '[jevcode]')).toEqual([SESSION_CAP_CHAT_REFUSAL(0.00025)]);
     expect(provider.requests).toHaveLength(0);
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(0.0002, 9);
-    expect(dispatchedOf(h, 'thinking').map((a) => (a as { phase: string | null }).phase)).toEqual(['intake', null]);
+    expect(dispatchedOf(h, 'thinking').map((a) => (a as { phase: string | null }).phase)).toEqual(['replying', null]);
   });
 });
 
@@ -812,18 +839,33 @@ describe('TUI-DESIGN-2 §3.13: the mock decider bridge (`--mock`)', () => {
     expect(mockJevLatencyMs({})).toBe(0);
   });
 
-  it('a `--mock` session (the pty scenarios) still starts a run for a task, replies to `hi` and asks for an ambiguous message', async () => {
-    // the controller's own `buildDecider` (the mock with the §3.13 rules), as the pty scenarios exercise it
-    const h = await build({ decider: 'controller', prompts: { intake: async () => 'keep' } });
+  it('a `--mock` session (the pty scenarios): `hi` gets the mock reply, a task runs after `On it`, an ambiguous message offers `do it` — and the trajectory is untouched by the chat turns', async () => {
+    // the controller's own `buildDecider` AND `buildProvider` (the mock bridge of §3.13), as the pty scenarios exercise them
+    const h = await build({ decider: 'controller' });
     void h.controller.run();
     await h.ready();
     expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
-    expect(bubbles(h, '[jevcode]')).toHaveLength(1);
+    expect(bubbles(h, '[jevcode]')).toEqual([MOCK_CHAT_REPLY]);
     expect(await h.host.submit('fix the failing test', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'run' });
     await h.host.awaitRunEnd();
     expect(h.factory.calls).toHaveLength(1);
-    expect(await h.host.submit('parse_date', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'nothing' });
-    expect(bubbles(h, '[jevcode]').at(-1)).toBe(INTAKE_KEPT);
+    expect(bubbles(h, '[jevcode]').at(-1)).toBe(ON_IT_LINE);
+    expect(await h.host.submit('parse_date', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    expect(bubbles(h, '[jevcode]').at(-1)).toBe(DO_IT_OFFER);
+    expect(await h.host.submit('do it', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'run' });
+    await h.host.awaitRunEnd();
+    expect(h.factory.calls).toHaveLength(2);
     await waitFor(() => h.controller.view.phase === 'none');
+  });
+});
+
+describe('the `do it` offer is never made on a question', () => {
+  const ambiguous = { intake: { kind: 'ambiguous' } } as Parameters<typeof offerWanted>[1];
+  const task = { intake: { kind: 'coding_task' } } as Parameters<typeof offerWanted>[1];
+  it('an ambiguous statement gets the offer; an ambiguous question does not (live 2026-09-22: `who made you?` read ambiguous); other readings never do', () => {
+    expect(offerWanted('the date parsing', ambiguous)).toBe(true);
+    expect(offerWanted('who made you?', ambiguous)).toBe(false);
+    expect(offerWanted('  what does calc.sub do ?  ', ambiguous)).toBe(false);
+    expect(offerWanted('the date parsing', task)).toBe(false);
   });
 });

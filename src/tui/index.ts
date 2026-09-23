@@ -24,17 +24,15 @@ export { ruleRowText } from './Pane.js';
 export type { RuleRowInput } from './Pane.js';
 export { reviewCardLines, reviewCardTitle } from './review/lines.js';
 export { reviewCardRows } from './Review.js';
-export { modeBadge, modeBadgeWord, THINKING_WORDS, ASKING_WORD, flatBadgePrefix } from './status/lines.js';
+export { modeBadge, modeBadgeWord, THINKING_WORDS, flatBadgePrefix } from './status/lines.js';
 export type { ModeBadge, ThinkingPhase } from './status/lines.js';
 export { colorDepth } from './color-shim.js';
 export type { ColorDepth } from './color-shim.js';
 export { visibleItems, useVisibleItems, hiddenInCompact, COMPACT_HIDDEN_KINDS, CHAT_ROWS_KEPT } from './useEngine.js';
 export type { PanelState, TranscriptView, SplashState, UiTranscriptItem } from './useEngine.js';
 export { fenceRow, spacerAbove, itemLabel, FENCE_RE } from './Transcript.js';
-export { intakeCardLines, CARD_TITLE_EXIT, CARD_TITLE_UNDO, CARD_TITLE_COMMANDS, CARD_TITLE_FILES } from './Overlay.js';
-export type { IntakeOverlay } from './Overlay.js';
+export { CARD_TITLE_EXIT, CARD_TITLE_UNDO, CARD_TITLE_COMMANDS, CARD_TITLE_FILES } from './Overlay.js';
 export { STILL_THINKING_TOAST, RuleRow, runIsLive, chatThinking } from './App.js';
-export type { IntakeAnswer } from './App.js';
 export {
   createPlainRenderer,
   createReadlineConfirmer,

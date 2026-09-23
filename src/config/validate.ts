@@ -6,8 +6,9 @@ import { ConfigError } from '../errors.js';
 import { parseDuration } from '../core/time.js';
 import type { DeciderConfig, EngineMode, GeneratorConfig, JevProvider, JevProviderSource, Resolved, RunLimits } from '../core/types.js';
 import { JEV_PROVIDERS, isPinnedJevModel, jevModelMatches as providerJevModelMatches, normaliseModelId, providerForHost } from '../jev/providers.js';
+import { PROVIDER_IDS, isProviderId } from '../provider/ids.js';
 import type { SettingName } from './types.js';
-import { BASE_URLS, CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_SPEND_CAP_USD, JEV_PROVIDER_SETTING_VALUES, MAX_COMMAND_TIMEOUT_MS, MODE_SETTING_VALUES, UNPRICED_TOKENS_PER_USD, lookupPricing } from './defaults.js';
+import { AUTONOMY_SETTING_VALUES, BASE_URLS, CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, DEFAULT_AUTONOMY, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_SPEND_CAP_USD, JEV_PROVIDER_SETTING_VALUES, MAX_COMMAND_TIMEOUT_MS, MODE_SETTING_VALUES, UNPRICED_TOKENS_PER_USD, lookupPricing, type Autonomy } from './defaults.js';
 
 /** How a validator reads settings: value + source, and the human list of places that were checked. */
 export interface SettingReader {
@@ -104,6 +105,18 @@ export function parseModeSetting(r: Resolved<string>): EngineMode {
   throw new ConfigError(`mode: "${r.value}" (from ${r.source}) is not one of ${MODE_SETTING_VALUES.join('|')}`, { setting: 'mode' });
 }
 
+/**
+ * The `autonomy` setting's value, or a ConfigError naming the source. Absent = `full` (complete autonomy by
+ * default): a `review` risk verdict is auto-approved and logged, `block` still stops.
+ */
+export function parseAutonomySetting(reader: SettingReader): Autonomy {
+  const r = reader.get('autonomy');
+  if (!r || r.value.trim() === '') return DEFAULT_AUTONOMY;
+  const v = r.value.trim().toLowerCase();
+  if (v === 'full' || v === 'review') return v;
+  throw invalid(reader, 'autonomy', r, `one of ${AUTONOMY_SETTING_VALUES.join('|')}`);
+}
+
 /** TUI-DESIGN-2 §2.3 rule 1: the `decider.provider` row's value, or a ConfigError naming the source. */
 export function parseJevProviderSetting(reader: SettingReader, r: Resolved<string>): 'auto' | JevProvider {
   const v = r.value.trim().toLowerCase();
@@ -158,7 +171,9 @@ export function validateGenerator(reader: SettingReader, warn: (msg: string) => 
   const providerR = reader.get('generator.provider');
   if (!providerR) throw missing(reader, 'generator.provider', 'the provider');
   const provider = providerR.value.trim().toLowerCase();
-  if (provider !== 'anthropic' && provider !== 'openrouter') throw invalid(reader, 'generator.provider', providerR, 'one of anthropic|openrouter');
+  // TUI-DESIGN-5 §6.1 (D-AP), the reader half: all SEVEN ids resolve. `BASE_URLS` is `PROVIDER_BASE_URL` (seven entries),
+  // so the default base URL below is the provider's own, and `jevcode login --provider gemini` may now persist.
+  if (!isProviderId(provider)) throw invalid(reader, 'generator.provider', providerR, `one of ${PROVIDER_IDS.join('|')}`);
 
   const modelR = reader.get('generator.model');
   if (!modelR || modelR.value.trim().length === 0) throw missing(reader, 'generator.model', 'the model id');

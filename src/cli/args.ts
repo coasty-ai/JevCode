@@ -13,7 +13,7 @@ import { parseDuration } from '../core/time.js';
 import { RUN_ID_RE } from '../checkpoint/run-id.js';
 import { RENDER_MODES, parseFps } from '../config/launch.js';
 import { RENDERERS } from '../config/ui.js';
-import { DEFAULT_MODE, MAX_FPS, MIN_FPS, MODE_BADGE_WORD } from '../config/defaults.js';
+import { AUTONOMY_SETTING_VALUES, DEFAULT_AUTONOMY, DEFAULT_MODE, MAX_FPS, MIN_FPS, MODE_BADGE_WORD } from '../config/defaults.js';
 import { THEMES } from '../tui/commands/registry.js';
 // TUI-DESIGN-5 §6.3 row 6 / §6.1 (D-AP): the seven ids, from the ZERO-IMPORT module the argv path is allowed to
 // read (`src/provider/ids.ts`'s own docblock). Never `models/providers.ts`, which would pull the whole catalogue
@@ -55,6 +55,8 @@ export const STRING_FLAGS = [
   'resume',
   'mode',
   'condition',
+  // complete autonomy by default: `--autonomy full|review` — who approves a `review` risk verdict
+  'autonomy',
   'suite',
   'tasks',
   'taskId',
@@ -305,6 +307,8 @@ export const FLAGS: readonly FlagSpec[] = [
   // TUI-DESIGN-2 §1.2 / TUI-DESIGN-3 §1.1 (D-N): the enum reads jev-only|jev-on|jev-off|llm-jev; the default is named through DEFAULT_MODE, never a literal
   { key: 'mode', name: 'mode', type: 'string', commands: SESSION, arg: 'jev-only|jev-on|jev-off|llm-jev', help: `engine mode (default ${DEFAULT_MODE}): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)` },
   { key: 'condition', name: 'condition', type: 'string', commands: SESSION, arg: 'jev-only|jev-on|jev-off|llm-jev', help: 'alias of --mode (Harbor adapter)', hidden: true },
+  // complete autonomy by default (`config` prints the row, so it takes the flag too); the default is named through DEFAULT_AUTONOMY, never a literal
+  { key: 'autonomy', name: 'autonomy', type: 'string', commands: UI, arg: AUTONOMY_SETTING_VALUES.join('|'), help: `who approves review-flagged actions (default ${DEFAULT_AUTONOMY}): full auto-approves and logs them, review stops for y/n; a blocked action always stops` },
   { key: 'source', name: 'source', type: 'string', commands: SESSION, arg: CLI_SOURCES.join('|'), help: 'RunMeta.source for the perf drivers (perf never writes the session index or history)', hidden: true },
   // Hidden run flags used by the wiring code and perf/*: mocked provider+decider, no network.
   { key: 'mock', name: 'mock', type: 'boolean', commands: SESSION, help: 'mocked generator and decider (perf, smoke)', hidden: true },

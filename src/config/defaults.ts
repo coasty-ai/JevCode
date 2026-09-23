@@ -64,6 +64,14 @@ export const MODE_SETTING_VALUES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] 
  * names which mode is the default (D-N; `/mode` computes ` (default)` from it).
  */
 export const DEFAULT_MODE: EngineMode = 'llm-jev'; // flipped 2026-09-22 on the peer's verified head-to-head (docs/LLM-JEV.md; experiments/results/llm-jev-headtohead-v2.md)
+/**
+ * Who approves a `review` risk verdict: `full` auto-approves it and logs the `[review] auto-approved …` card,
+ * `review` stops for y/n. A `block` verdict still stops the run under both. Complete autonomy is the default.
+ */
+export const AUTONOMY_SETTING_VALUES = ['full', 'review'] as const;
+export type Autonomy = (typeof AUTONOMY_SETTING_VALUES)[number];
+export const DEFAULT_AUTONOMY: Autonomy = 'full';
+export const AUTONOMY_DESCRIPTION = 'who approves review-flagged actions: full auto-approves and logs them (default); review stops for y/n';
 /** D-N: the badge word per mode — the ONLY table that maps a mode to a word; `·` is folded to the glyph set's dot by `modeBadgeWord(mode, g)` */
 export const MODE_BADGE_WORD: Readonly<Record<EngineMode, string>> = { 'jev-only': 'jev-only', 'jev-on': 'jev+llm', 'jev-off': 'llm-only', 'llm-jev': 'llm+jev · verified' };
 /** the badge is capped so `<badge> · next run` fits the 60-column top edge (`consoleTopEdgeParts`, console-lines.ts:14 `TOP_EDGE_FIXED = 8`) */
@@ -174,6 +182,8 @@ export const SETTINGS: readonly SettingSpec[] = [
   { name: 'decider.model', flag: 'jevModel', env: ['JEV_MODEL'], fileKey: 'jevModel', defaultValue: DEFAULT_JEV_MODEL, secret: false, description: 'decider model' },
   // TUI-DESIGN-2 §1.2 (D-A): the engine mode is a setting — flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE; resolve.ts reads it before the mode-keyed cap default
   { name: 'mode', flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: DEFAULT_MODE, secret: false, description: 'engine mode (jev-only | jev-on | jev-off | llm-jev); jev-only needs no generator key', shape: { kind: 'enum', values: MODE_SETTING_VALUES } },
+  // Complete autonomy by default: a `review` risk verdict is auto-approved and logged (`[review] auto-approved …`); `--autonomy review` restores the y/n card. A `block` verdict stops under both.
+  { name: 'autonomy', flag: 'autonomy', env: ['JEVCODE_AUTONOMY'], fileKey: 'autonomy', defaultValue: DEFAULT_AUTONOMY, secret: false, description: AUTONOMY_DESCRIPTION, shape: { kind: 'enum', values: AUTONOMY_SETTING_VALUES } },
   { name: 'limits.spendCapUsd', flag: 'spendCap', env: ['JEVCODE_SPEND_CAP_USD'], fileKey: 'spendCapUsd', defaultValue: String(DEFAULT_SPEND_CAP_USD), secret: false, description: 'spend cap (USD)', shape: { kind: 'usd' } },
   { name: 'limits.maxSteps', flag: 'maxSteps', env: ['JEVCODE_MAX_STEPS'], fileKey: 'maxSteps', defaultValue: String(DEFAULT_MAX_STEPS), secret: false, description: 'max steps', shape: { kind: 'int', min: 1 } },
   { name: 'limits.maxWall', flag: 'maxWall', env: ['JEVCODE_MAX_WALL'], fileKey: 'maxWall', defaultValue: DEFAULT_MAX_WALL, secret: false, description: 'max wall time', shape: { kind: 'duration' } },

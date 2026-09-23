@@ -376,7 +376,7 @@ describe('the §2.2 allocation table, recomputed from the function', () => {
     expect(l.total).toBeLessThanOrEqual(27 + (i.expanded ? l.preview : 0));
   });
 
-  it('TUI-DESIGN-2 §4.2: the boxed allocation at 80×24 — splash 11 · idle 6 · live jev-only 7 · panel open 12 · full 18 · review card + 4 preview = 19 · review + panel open = 22 · wizard 8 · exit/undo/intake card 9 · blocking 12 · palette 14', () => {
+  it('TUI-DESIGN-2 §4.2: the boxed allocation at 80×24 — splash 11 · idle 6 · live jev-only 7 · panel open 12 · full 18 · review card + 4 preview = 19 · review + panel open = 22 · wizard 8 · exit/undo card 9 · blocking 12 · palette 14', () => {
     const boxed = (o: Partial<LayoutInput>): Layout => computeLayout(input({ rows: 24, columns: 80, chrome: 3, ...o }));
     expect(cells2(boxed({ paneWant: CAP.splash }))).toBe('1·0·0·5·0·0·0·1·3·1 = 11');
     expect(boxed({}).total).toBe(6);
@@ -386,7 +386,7 @@ describe('the §2.2 allocation table, recomputed from the function', () => {
     expect(cells2(boxed({ overlay: 'review', overlayWant: CAP.reviewCard, previewWant: 4 }))).toBe('1·0·0·0·0·9·4·1·3·1 = 19');
     expect(boxed({ overlay: 'review', overlayWant: CAP.reviewCard, previewWant: 4, paneWant: CAP.panel }).total).toBe(22);
     expect(cells2(boxed({ overlay: 'wizard', overlayWant: 3 }))).toBe('1·0·0·0·0·3·0·0·3·1 = 8');
-    for (const overlay of ['exitConfirm', 'undo', 'intake'] as const) expect(boxed({ overlay, overlayWant: 1 + CAP.card }).total).toBe(9);
+    for (const overlay of ['exitConfirm', 'undo'] as const) expect(boxed({ overlay, overlayWant: 1 + CAP.card }).total).toBe(9);
     expect(boxed({ overlay: 'blocking', overlayWant: 6 }).total).toBe(12);
     expect(boxed({ overlay: 'palette', overlayWant: CAP.palette }).total).toBe(14);
     // the hosted gate row: composer floor 1 + gate, the `›` row one below it
@@ -417,8 +417,8 @@ describe('the §2.2 allocation table, recomputed from the function', () => {
     expect(cells2(boxed({ rows: 21, paneWant: CAP.splash, overlay: 'palette', overlayWant: CAP.palette }))).toBe('1·0·0·5·0·8·0·1·3·1 = 19');
     expect(boxed({ rows: 21, paneWant: CAP.splash, overlay: 'palette', overlayWant: CAP.palette }).budget).toBe(19);
     expect(cells2(boxed({ rows: 24, paneWant: CAP.splash, overlay: 'wizard', overlayWant: 3 }))).toBe('1·0·0·5·0·3·0·0·3·1 = 13');
-    // the boxed intake card (3) at 24 → 14; a 6-row draft at 24 → 16
-    expect(boxed({ rows: 24, paneWant: CAP.splash, overlay: 'intake', overlayWant: 1 + CAP.card }).total).toBe(14);
+    // a boxed one-row card (3) at 24 → 14; a 6-row draft at 24 → 16
+    expect(boxed({ rows: 24, paneWant: CAP.splash, overlay: 'exitConfirm', overlayWant: 1 + CAP.card }).total).toBe(14);
     expect(boxed({ rows: 24, paneWant: CAP.splash, composerWant: 6 }).total).toBe(16);
     // whole or absent: rem = 3, want = 5 → pane 0 (never 3); without paneWhole the same input grants 3
     const tight = boxed({ rows: 16, paneWant: CAP.splash, overlay: 'palette', overlayWant: 5 });

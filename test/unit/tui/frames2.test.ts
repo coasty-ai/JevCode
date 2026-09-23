@@ -149,14 +149,15 @@ const STATES: Readonly<Record<string, (wide: boolean) => FrameState>> = {
   }),
   'H-G1': (wide) => ({ status: base({ spend: { run: null, session: sess125 }, git: wide ? git({ modified: 0, untracked: 0 }) : null }), rule: (c) => brandRow(VERSION, c), badge: 'jev+llm · next run' }),
   'H-H2': (wide) => ({ status: base({ overlay: 'wizard', spend: { run: null, session: sess125 }, git: wide ? git({ modified: 0, untracked: 0 }) : null }), rule: (c) => brandRow(VERSION, c), badge: 'setup · generator key' }),
-  'H-I1': (wide) => ({ status: base({ overlay: 'intake', spend: { run: null, session: sess125 }, git: wide ? git({ modified: 3, untracked: 1 }) : null }), rule: (c) => brandRow(VERSION, c), badge: 'jev-only', card: wide ? '"the date parsing" — run this as a task?' : 'run this as a task?' }),
-  'H-J1': () => ({ status: base({ overlay: 'intake', spend: { run: null, session: sess125 }, modeBadge: jevOnly }), options: { flatBadge: true }, rule: (c) => brandRow(VERSION, c), badge: null }),
   'H-J2': () => ({ status: base({ spend: { run: null, session: sess125 }, modeBadge: jevOnly }), options: { flatBadge: true }, rule: (c) => brandRow(VERSION, c), badge: null }),
 };
 void jevLlm;
 
+/** the intake card is gone (every submission is answered conversationally now): its recorded frames have no state to rebuild */
+const RETIRED = new Set(['H-I1', 'H-J1']);
+
 describe('TUI-DESIGN-2 §4.10 frames rebuilt from the twins (§8.1 S4, §13 finding 2)', () => {
-  const frames = readFrames();
+  const frames = readFrames().filter((f) => !RETIRED.has(f.id.replace(/w$/, '')));
   it('every frame has a state', () => {
     for (const f of frames) expect(STATES[f.id.replace(/w$/, '')], f.id).toBeDefined();
   });

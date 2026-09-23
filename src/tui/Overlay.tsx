@@ -1,14 +1,14 @@
 /**
  * The one modal slot (TUI-DESIGN §0 thesis, §2.1 D1, §3.3 S5 rows, §4.10, §5.3, §6, §9.3, §11.1, §12.4, §13.3,
  * §24 "Overlays"; TUI-DESIGN-2 §3.7, §4.7): review, wizard, follow-up confirm, secret gate row, blocking pane,
- * palette, undo prompt, exit confirm, the intake card and the minimum-size notice all render here, directly above
+ * palette, undo prompt, exit confirm and the minimum-size notice all render here, directly above
  * the composer, so at most one exists at a time and `computeLayout` has a single allocation order to prove. Every
  * kind is a fixed-height overflow-hidden box of `wrap="truncate"` rows built by the shared `lines()` functions (TUI-DESIGN-3 §5.2
  * A8–A9: the review card's `armed` flag rides through to `Review`; the palette's selected `▌` takes `accent2`) —
  * the `--plain`, `--screen-reader` and `--ascii` twins read the same functions. In the boxed tier (`chrome === 3`)
  * every kind but the wizard (hosted by the console) and the secret gate (a console row) is a rounded card from
  * `cardLines` — edge colours follow the card's meaning (review `review`/`block`, follow-up · undo · exit confirm ·
- * intake `warn`, blocking `error`, palette `border`); the flat tier draws today's rows. `overlayWant()` is the rows
+ * blocking `error`, palette `border`); the flat tier draws today's rows. `overlayWant()` is the rows
  * the kind asks the layout for; the y-gated kinds are armed one frame after they are drawn (`overlayArmed`, §6.3).
  */
 import { Box, Text } from 'ink';
@@ -96,16 +96,6 @@ export function minsizeNotice(columns: number, rows: number, g: GlyphSet = GLYPH
   return truncateCells(fitRung(minsizeRungs(c, rows, g), c), c, g);
 }
 
-/** TUI-DESIGN-2 §3.7: the intake card's rows as `src/chat/lines.ts` builds them — the boxed title + body and the flat one-row form. */
-export interface IntakeOverlay {
-  /** the card title (`run this as a task?` / `"<message ≤ 40>" — run this as a task?`) */
-  title: string;
-  /** the card's body rows (`[y] run it   [n] just chatting   (Esc keeps the text; Enter does nothing)`) */
-  body: readonly string[];
-  /** the flat tier's rows (`intakeRowLines` at the terminal width) */
-  flat: readonly string[];
-}
-
 /** The per-kind data the overlay draws from (everything optional: the App passes what the kind needs). */
 export interface OverlayData {
   /** TUI-DESIGN-3 §5.2 A8: `armed` — the card was drawn on a committed frame and `y` is live (the keys row wakes up); `Review` draws it (S5) */
@@ -118,8 +108,6 @@ export interface OverlayData {
   undo?: { row: string } | null;
   /** the `mention` popup reuses the palette slot: rows are already built */
   mention?: { rows: readonly string[]; selected: number } | null;
-  /** TUI-DESIGN-2 §3.7: the intake confirmation */
-  intake?: IntakeOverlay | null;
   /**
    * TUI-DESIGN-5 §5.2 (R5-5): the import overlay. `input` is the plan and the engine's own `applicableRows`
    * output — the reducer never re-derives "what `y` applies" from `PlanGroup.applicable` (§7 row 58).
@@ -129,8 +117,8 @@ export interface OverlayData {
 
 /**
  * §2.1 `LayoutInput.overlayWant`: review 8 · wizard 2–4 · followup 5 · secret 1 · blocking 2–4 · palette 2–8 · undo 1 ·
- * exitConfirm 1 · intake 1. TUI-DESIGN-2 §4.2 boxed (`chrome === 3`): review 9, followup 5, blocking `min(6, rows + 2)`,
- * undo 3, exitConfirm 3, intake 3, palette ≤ 8 (its two edges replace the footer row and one list row), secret 0 (the
+ * exitConfirm 1. TUI-DESIGN-2 §4.2 boxed (`chrome === 3`): review 9, followup 5, blocking `min(6, rows + 2)`,
+ * undo 3, exitConfirm 3, palette ≤ 8 (its two edges replace the footer row and one list row), secret 0 (the
  * gate is a console row, `LayoutInput.gate`) and wizard `wizardRows` (inside the console).
  */
 export function overlayWant(kind: OverlayKind, data: OverlayData, terminalRows: number, columns: number, chrome: 0 | 3 = 0, glyphs: GlyphSet = GLYPHS.unicode): number {
@@ -168,8 +156,6 @@ export function overlayWant(kind: OverlayKind, data: OverlayData, terminalRows: 
       return boxed ? CAP.undo + CAP.card : CAP.undo;
     case 'exitConfirm':
       return boxed ? CAP.exitConfirm + CAP.card : CAP.exitConfirm;
-    case 'intake':
-      return boxed ? CAP.intake + CAP.card : CAP.intake;
     case 'import': {
       // TUI-DESIGN-5 §5.2: the rows the block actually produced, capped at `CAP.import`; boxed adds the two edges.
       // The GLYPH SET is part of the measurement: `ImportReport` draws with the caller's set, and an ascii row
@@ -435,18 +421,7 @@ export function Overlay(p: OverlayProps): React.JSX.Element | null {
       if (!d) return null;
       return <ImportReport state={d.state} input={d.input} rows={rows} columns={p.columns} glyphs={g} theme={theme} color={color} boxed={boxed} />;
     }
-    case 'intake': {
-      const d = p.data.intake;
-      if (!d) return null;
-      if (boxed && rows >= 3) return <Card title={d.title} body={d.body} rows={rows} columns={p.columns} glyphs={g} edgeRole="warn" bodyRole={null} theme={theme} color={color} />;
-      return <Rows lines={d.flat.length > 0 ? d.flat : d.body} rows={rows} columns={p.columns} glyphs={g} role="warn" theme={theme} color={color} />;
-    }
   }
-}
-
-/** TUI-DESIGN-2 §4.7: the intake card's rows as strings (for the frame tests and `--ascii`). */
-export function intakeCardLines(intake: IntakeOverlay, columns: number, g: GlyphSet = GLYPHS.unicode): string[] {
-  return cardLines(intake.title, intake.body, columns, g);
 }
 
 export { cardRow };

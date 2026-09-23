@@ -91,6 +91,7 @@ _jevcode() {
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
             '--mode[engine mode (default llm-jev): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
+            '--autonomy[who approves review-flagged actions (default full): full auto-approves and logs them, review stops for y/n; a blocked action always stops]:autonomy:(full review)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--force-takeback[with --resume: re-take a run a peer claimed (bumps the claim epoch); an ordinary resume never does]' \
             '--split[split the task across agents (default off; orchestrate.split)]:split:(off auto ask)' \
@@ -159,6 +160,7 @@ _jevcode() {
             '--list-sessions[print the sessions of this workspace and exit]' \
             '--task-file[read the task text from a file]:<path>:_files' \
             '--mode[engine mode (default llm-jev): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
+            '--autonomy[who approves review-flagged actions (default full): full auto-approves and logs them, review stops for y/n; a blocked action always stops]:autonomy:(full review)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--force-takeback[with --resume: re-take a run a peer claimed (bumps the claim epoch); an ordinary resume never does]' \
             '--split[split the task across agents (default off; orchestrate.split)]:split:(off auto ask)' \
@@ -222,6 +224,7 @@ _jevcode() {
             '--allow-unpriced[run an unpriced generator model under a token cap instead of refusing]' \
             '--max-generator-tokens[generator token cap under --allow-unpriced (default spend cap / 15 × 1e6)]:n:' \
             '--update-notify[post-run update check through a detached jevcode upgrade --check]' \
+            '--autonomy[who approves review-flagged actions (default full): full auto-approves and logs them, review stops for y/n; a blocked action always stops]:autonomy:(full review)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--all[config: include the hidden bookkeeping rows (seen.*); sessions who: include sessions gone more than 10 minutes and ignored devices]' \
             '--no-memory[do not read the project and user memory files into the run]' \

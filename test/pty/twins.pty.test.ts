@@ -105,7 +105,8 @@ describe.skipIf(!hasExpect)('pty: --plain, --json and the three-way identity (§
     const tuiItems = itemRows(rows).filter((r) => !isLocalItem(r));
     const tuiLocal = itemRows(rows).filter(isLocalItem);
     expect(tuiLocal.some((r) => r.startsWith(`[run] jevcode task: ${TASK}`))).toBe(true);
-    expect(tuiLocal.some((r) => r.startsWith('[sandbox] '))).toBe(true);
+    // the quiet start (2026-09): the `[sandbox]` item is a LINE-renderer item now (leg 2 below still has it)
+    expect(tuiLocal.some((r) => r.startsWith('[sandbox] '))).toBe(false);
     // predicate (b): every TUI item row is a transcript.log line, in order — the declared `compact` subsequence (§4.5):
     // the stage kinds and `run:ready` are hidden, `[run] start`, one `[step N]` summary per step and `[run] end` are shown
     const sub = subsequenceOf(tuiItems, tuiTranscript!);
@@ -141,7 +142,6 @@ describe.skipIf(!hasExpect)('pty: --plain, --json and the three-way identity (§
     expect(narrowRows.length).toBeGreaterThan(rows.length); // the same items took more rows at 80 columns
     expect(reflow.leftovers.filter((r) => isItemRow(r) && !isLocalItem(r))).toEqual([]);
     expect(reflow.leftovers.some((r) => r.startsWith(`[run] jevcode task: ${TASK}`))).toBe(true);
-    expect(reflow.leftovers.some((r) => r.startsWith('[sandbox] '))).toBe(true);
 
     // leg 2 — the plain renderer on a pipe, the same task
     const plain = pipeRun(['run', TASK, ...MOCK_5, '--plain']);

@@ -348,7 +348,7 @@ describe('themes (§14.1, TUI-DESIGN-2 §4.9)', () => {
     expect(labelRole({ label: '[sandbox]' })).toBe('dim');
     expect(labelRole({})).toBe('dim');
     // the whole label union (a new UiLabel member fails to compile here until it is classified — a label never goes pink silently)
-    const EXPECTED: Readonly<Record<UiLabel, 'assistant' | 'you' | 'dim'>> = { '[jevcode]': 'assistant', '[you]': 'you', '[ui]': 'dim', '[setup]': 'dim', '[config]': 'dim', '[sandbox]': 'dim', '[session]': 'dim' };
+    const EXPECTED: Readonly<Record<UiLabel, 'assistant' | 'you' | 'dim'>> = { '[jevcode]': 'assistant', '[you]': 'you', '[ui]': 'dim', '[setup]': 'dim', '[config]': 'dim', '[sandbox]': 'dim', '[session]': 'dim', '[review]': 'dim' };
     for (const label of Object.keys(EXPECTED) as UiLabel[]) {
       expect(labelRole({ label })).toBe(EXPECTED[label]);
       // `--ascii` changes glyphs, not labels: every label is printable ASCII, so its twin is itself and the role cannot drift

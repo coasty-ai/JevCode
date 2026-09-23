@@ -183,11 +183,19 @@ describe('the tiers (TUI-DESIGN-3 §3.1–3.2)', () => {
     expect(f0).not.toContain('▓▒░');
     const n = m.stdout.frames.length;
     await tick(SPLASH_MS + 300);
-    expect(m.stdout.frames.length).toBe(n);
+    // the quiet start (2026-09) leaves a session's `<Static>` empty, and Ink flushes that empty region once more when
+    // the splash settles: at most ONE further write, byte-identical to frame 0. What reduced motion promises is that
+    // no REVEAL frame is ever written — every frame that carries the mark is the same resting mark.
+    expect(m.stdout.frames.length).toBeLessThanOrEqual(n + 1);
+    expect(m.stdout.frames.filter((f) => stripSgr(f).includes('▓▒░'))).toEqual([]);
+    expect(new Set(m.stdout.frames.filter((f) => stripSgr(f).includes('██'))).size).toBe(1);
     expect(dynamicRegion(f0, 80)).toHaveLength(11);
     const narrow = mount(24, 60, { launch: STILL });
-    expect(narrow.dyn()[0]).toMatch(BRAND_RE);
-    expect(narrow.frame()).not.toContain('██');
+    // the quiet start: with no `<Static>` header the LAST write of a fresh mount can be Ink's `ESC[?2004h`, so the
+    // frame under test is the last write that actually painted rows
+    const painted = [...narrow.stdout.frames].reverse().map((f) => stripSgr(f)).find((f) => dynamicRegion(f, 60).length > 0) ?? '';
+    expect(dynamicRegion(painted, 60)[0]).toMatch(BRAND_RE);
+    expect(painted).not.toContain('██');
   });
   it('`ui.wordmark: off` keeps today\'s frames after the reveal (the brand row, 6 rows); `static` and the SSH default keep the mark', async () => {
     const off = mount(24, 80, { ui: { wordmark: 'off' } });

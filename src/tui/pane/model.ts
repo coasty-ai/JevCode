@@ -263,7 +263,7 @@ export function paneTabsFor(hasDelegation: boolean): readonly PaneTab[] {
 }
 
 /** The modal slot above the composer (`OverlayKind` in `src/tui/layout.ts`, O3); the pane only asks whether it is `'none'` (§7.2). */
-export type PaneOverlay = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'intake' | 'import';
+export type PaneOverlay = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'import';
 
 /** The last `plan` event plus what the plan tab's `done_<j>` and 120-column evidence column need (§7.2 `p` row). */
 export interface PlanView {

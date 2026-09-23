@@ -1,8 +1,9 @@
 /**
- * `question_about_the_code` in jev+llm — one generator chat turn, no tools (TUI-DESIGN-2 §3.6). The request carries
- * the system prompt, the session facts, the last run's plan and window, ≤ 3 @-mentioned files and ≤ 6 conversation
- * turns; deltas stream to the live region through `onDelta`; a returned tool call is dropped (the caller logs it).
- * The floor (`llmAnswerAllowed`) and the spend checks run in the controller before this module is called.
+ * Every chat submission — one generator turn, no tools. The request carries the JevCode-aware system prompt
+ * (`buildChatSystem`: who JevCode is, what it can do, how to answer, and this workspace), the session facts, the
+ * last run's plan and window, ≤ 3 @-mentioned files and ≤ 6 conversation turns; deltas stream to the live region
+ * through `onDelta`; a returned tool call is dropped (the caller logs it). The spend checks run in the controller
+ * before this module is called.
  */
 import type { ChatMessage, FileView, GenerateRequest, Plan, Provider, TokenUsage, WindowEntry } from '../core/types.js';
 import { headTail } from '../core/text.js';
@@ -12,6 +13,8 @@ import type { ChatTurn } from './ledger.js';
 export interface LlmTurnInput {
   provider: Provider;
   message: string;
+  /** who is answering and where — the system prompt's workspace section */
+  identity: ChatIdentity;
   conversation: readonly ChatTurn[];
   facts: readonly Fact[];
   /** the last run's plan, window ≤ 4, @-mentioned files ≤ 3 × 8 KiB after the denylist */
@@ -27,11 +30,47 @@ export interface LlmTurnInput {
   warn?: (message: string) => void;
 }
 
-export const CHAT_SYSTEM_PROMPT = [
-  'You are the assistant of JevCode, a coding agent in which Jev (a decision model) makes every decision. You are in a conversation about the code in the workspace named below.',
-  'Answer the question. Do not propose file edits, patches or commands to run: the human starts a run for that by describing a task, and Jev then decides each step.',
-  'Be concrete, cite paths and line numbers you were shown, and keep the answer under twelve lines. If the shown files do not contain the answer, say what to open next.',
+/** what the controller knows about this session that the reply may name */
+export interface ChatIdentity {
+  /** `basename(workspaceRoot)` */
+  workspace: string;
+  /** the git state in one line (`main, 2 modified · 1 untracked`); null outside a repository */
+  git: string | null;
+  /** ≤ 3 recent sessions of this workspace, newest first (`"title" · 3h ago`) */
+  recentSessions: readonly string[];
+}
+
+/** who JevCode is — the first paragraph of every chat system prompt */
+export const CHAT_IDENTITY =
+  'You are JevCode, a coding agent for the terminal, built by coasty-ai. Jev decides, the code model writes: Jev, a calibrated decision model, answers every control question (what step comes next, which files matter, whether an action is safe to run, whether the output succeeded, whether the task is done); the code model — you, in this reply — writes the code.';
+
+/** what the human can ask for */
+export const CHAT_CAPABILITIES = [
+  '## What JevCode can do',
+  '- It runs coding tasks in this workspace when the human describes a change: Jev decides each step, the code model writes, the workspace\'s tests verify the patch.',
+  '- Modes: llm-jev (the default, verified), jev-on, jev-only, jev-off.',
+  '- Commands start with `/`: `/help` lists them; `/mode`, `/undo`, `/diff`, `/resume`, `/new`.',
 ].join('\n');
+
+/** how it should sound */
+export const CHAT_VOICE = [
+  '## How to answer',
+  '- Warm, concise, personal, plain prose.',
+  '- A greeting gets one or two friendly sentences; a question gets a direct answer.',
+  '- Never invent facts about the workspace, and never claim to have run anything.',
+  '- Do not write patches or commands to run. If the message is a change request, acknowledge it in one sentence; the harness decides whether a run starts and appends that itself.',
+  '- Keep replies under eight lines unless the human asks for detail.',
+].join('\n');
+
+/** identity + capabilities + voice + this workspace */
+export function buildChatSystem(identity: ChatIdentity): string {
+  const rows = [
+    `- name: ${identity.workspace}`,
+    `- git: ${identity.git ?? 'not a git repository'}`,
+    `- recent sessions: ${identity.recentSessions.length > 0 ? identity.recentSessions.join(' · ') : 'none yet'}`,
+  ];
+  return [CHAT_IDENTITY, CHAT_CAPABILITIES, CHAT_VOICE, `## This workspace\n${rows.join('\n')}`].join('\n\n');
+}
 
 export const CHAT_MAX_OUTPUT_TOKENS = 800;
 export const CHAT_CONVERSATION_TURNS = 6;
@@ -87,9 +126,9 @@ export function chatMessages(conversation: readonly ChatTurn[], message: string)
   return out;
 }
 
-/** system = CHAT_SYSTEM_PROMPT + facts + optional instructions, plan, recent steps, files; no tools, no toolChoice */
+/** system = `buildChatSystem` + facts + optional instructions, plan, recent steps, files; no tools, no toolChoice */
 export function buildChatRequest(i: LlmTurnInput): GenerateRequest {
-  const sections: string[] = [CHAT_SYSTEM_PROMPT, `## Session facts\n${i.facts.map((f) => `- ${f.text}`).join('\n')}`];
+  const sections: string[] = [buildChatSystem(i.identity), `## Session facts\n${i.facts.map((f) => `- ${f.text}`).join('\n')}`];
   if (i.instructions !== null && i.instructions.trim() !== '') sections.push(`## Instructions (AGENTS.md)\n${i.instructions}`);
   if (i.context.plan !== null) sections.push(`## Last run plan\n${planSection(i.context.plan)}`);
   if (i.context.window.length > 0) sections.push(`## Recent steps\n${windowSection(i.context.window)}`);

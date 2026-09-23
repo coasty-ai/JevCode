@@ -1,5 +1,6 @@
-# chat: JEVCODE_MOCK_INTAKE=ambiguous — the same card answered `y` after the arm starts the run (--mode jev-on --mock so the
-# scripted trajectory runs); the run ends and /exit leaves 0 (TUI-DESIGN-2 §3.7, §8.2 chat-ambiguous second scenario)
+# chat: JEVCODE_MOCK_INTAKE=ambiguous — the offer accepted. `the date parsing` gets the reply plus `do it and I'll make
+# that a task.`; typing `do it` starts the run on the reading already in hand (--mode jev-on --mock so the scripted
+# trajectory runs), the run ends and /exit leaves 0 (§8.2 chat-ambiguous second scenario)
 expect \x1b\[\?25l
 expect Say hi
 expect sess \$
@@ -7,9 +8,11 @@ sleep 0.2
 send the date parsing
 sleep 0.2
 send \r
-expect run this as a task\?
-sleep 0.25
-send y
+expect make that a task
+sleep 0.2
+send do it
+sleep 0.2
+send \r
 expect \[run\](?:\x1b\[[0-9;]*m)* start 
 expect finished [·-] (complete|max_steps|generator_done)
 expect Follow-up, question

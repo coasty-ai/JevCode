@@ -66,7 +66,7 @@ import { interruptHint, type InterruptAction } from './keys/interrupts.js';
 import { initialKeyState, resolveKey, type Armed, type KeyAction, type KeyEvent, type KeyState } from './keys/resolve.js';
 import { CAP, chromeRows, computeLayout, composerTop, consoleTop, isCollapsingOverlay, type Layout, type LayoutInput, type OverlayKind } from './layout.js';
 import { createNotifier, createNotifyTimers } from './notify.js';
-import { Overlay, overlayPreviewWant, overlayWant, type IntakeOverlay, type OverlayData } from './Overlay.js';
+import { Overlay, overlayPreviewWant, overlayWant, type OverlayData } from './Overlay.js';
 import { Pane, RULE_MAX_CELLS, paneStateOf, plainRule, ruleRowText } from './Pane.js';
 import { PaneBoundary, RENDER_FAULTS_FIRED, renderFaultFor, type PaneFailure } from './PaneBoundary.js';
 import { INITIAL_PICKER, PICKER_PANE_WANT, moveRunsToTrash, pickerLines, pickerReducer, pickerRule, readPickerPreview, selectedModelRow, selectedRewindStep, selectedSession, sessionOfRun, visibleModelHits, visibleRewindSteps, visibleSessions, type PickerKind } from './Picker.js';
@@ -83,7 +83,7 @@ import { gitRootFrom } from './import/git-root.js';
 import { IMPORT_DRY_RUN_REFUSAL, IMPORT_NOTHING_FOUND, importApplyNotWired, importClosedRow, importScreenReaderLines, importSrFocusLine } from './import/lines.js';
 import { blockWidth } from './block/lines.js';
 import type { PlanSummary } from '../import/index.js';
-import { IDENTITY_NO_TTY, formatTranscriptItem, headerItem, sanitizeStream, sessionHeaderItem, transcriptDumpChunks, type TranscriptItem, type TranscriptLevel } from './plain.js';
+import { IDENTITY_NO_TTY, formatTranscriptItem, headerItem, sanitizeStream, transcriptDumpChunks, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { maskGlyphFor, maskHits, type ReviewNote } from './Review.js';
 import type { FollowupInput } from './review/lines.js';
 import { reviewRowForDigit, reviewWhyRefusal } from './review/lines.js';
@@ -232,9 +232,6 @@ export function fullLayoutAsLayout(f: FullLayout, rows: number): Layout {
 export function chatThinking(s: Pick<UiState, 'run' | 'thinking'>): boolean {
   return s.thinking !== null && !runIsLive(s.run);
 }
-/** TUI-DESIGN-2 §3.7 / §12 "Transcript": the bubble after Esc on the intake card is the controller's; the App only restores the draft. */
-export type IntakeAnswer = 'run' | 'chat' | 'keep';
-
 /**
  * TUI-DESIGN-2 §1.5 / §5.3; TUI-DESIGN-3 §3.8: the launch members `launch.ts` adds (`modeHint`, `reducedMotion`, `ssh`); read
  * structurally so the first frame follows argv + env as soon as they land and falls back to `DEFAULT_MODE` / `screenReader` until then.
@@ -396,10 +393,6 @@ export interface PickerOpen {
 type BridgeCommand =
   | { type: 'wizard'; detect: WizardDetect }
   | { type: 'wizard:reopen'; at: 'provider' | 'generator.apiKey' | 'decider.apiKey'; runLive: boolean; opts?: WizardReopenOptions }
-  /** TUI-DESIGN-2 §3.7: the intake card; resolves with the key pressed (`keep` on Esc / Ctrl-C) */
-  | { type: 'intake'; card: IntakeOverlay; resolve: (a: IntakeAnswer) => void }
-  /** TUI-DESIGN-2 §6 item 11: `Renderer.restoreDraft` — Esc on the intake card puts the text back */
-  | { type: 'restoreDraft'; text: string }
   | { type: 'picker'; open: PickerOpen }
   | { type: 'followup'; input: FollowupInput; resolve: (a: 'start' | 'raise' | 'cancel') => void }
   | { type: 'undo'; row: string; resolve: (a: 'yes' | 'no' | 'all' | 'skipRest' | 'abort') => void }
@@ -492,10 +485,6 @@ export interface TuiRenderer extends Renderer {
   openWizard(detect: WizardDetect): void;
   reopenWizard(at: 'provider' | 'generator.apiKey' | 'decider.apiKey', runLive: boolean, opts?: WizardReopenOptions): void;
   openPicker(open: PickerOpen): void;
-  /** TUI-DESIGN-2 §3.7: the intake card `run this as a task?`; `y` → run, `n` → chat, Esc / Ctrl-C → keep */
-  promptIntake(card: IntakeOverlay): Promise<IntakeAnswer>;
-  /** TUI-DESIGN-2 §6 item 11: put a submission's text back into the composer */
-  restoreDraft(text: string): void;
   /** TUI-DESIGN-2 §6 item 11: the LLM turn's streamed text for the live region */
   live(text: string): void;
   /** §9.3: the follow-up box; resolves with the key pressed */
@@ -964,7 +953,6 @@ export function App(p: AppProps): React.JSX.Element {
   const pendingUndo = useRef<{ row: string; resolve: (a: 'yes' | 'no' | 'all' | 'skipRest' | 'abort') => void } | null>(null);
   const pendingExit = useRef<((a: boolean) => void) | null>(null);
   const pendingBlocking = useRef<((a: BlockingAnswer) => void) | null>(null);
-  const pendingIntake = useRef<{ card: IntakeOverlay; resolve: (a: IntakeAnswer) => void } | null>(null);
   const gitHead = useGitHead(bridge.gitDirs.gitDir, bridge.gitDirs.commonDir, state.git?.head ?? null);
 
   // ----- toasts, items, exits
@@ -1091,7 +1079,7 @@ export function App(p: AppProps): React.JSX.Element {
         traceLine(`tui.arm effect cleanup armed=${armed}`);
       };
     }
-    if (overlay === 'secret' || overlay === 'followup' || overlay === 'undo' || overlay === 'exitConfirm' || overlay === 'intake') {
+    if (overlay === 'secret' || overlay === 'followup' || overlay === 'undo' || overlay === 'exitConfirm') {
       // never within GATE_ARM_MS of the Enter that opened the row (§4.10, §6.3), measured from the commit
       let alive = true;
       const t = setTimeout(() => {
@@ -1309,8 +1297,8 @@ export function App(p: AppProps): React.JSX.Element {
         composer.clear();
         submittingRef.current = true;
         dispatch({ type: 'run:starting' });
-        // TUI-DESIGN-3 §5.2 P7: a session submission enters the intake at once — the very first frame after Enter reads
-        // `▓ thinking` / `(thinking…)`, never `starting` + the steer placeholder (the controller's own `thinking('intake')` is idempotent;
+        // TUI-DESIGN-3 §5.2 P7: a session submission is answered at once — the very first frame after Enter reads
+        // `▓ thinking` / `(thinking…)`, never `starting` + the steer placeholder (the controller's own `thinking(…)` is idempotent;
         // `run:start` and `run:idle` clear it). The one-shot argv path has no chat phase.
         if (mode === 'session') dispatch({ type: 'thinking', phase: 'intake' });
         void h
@@ -1977,10 +1965,6 @@ export function App(p: AppProps): React.JSX.Element {
           pendingExit.current?.(false);
           pendingExit.current = null;
         }
-        if (k === 'intake') {
-          pendingIntake.current?.resolve('keep');
-          pendingIntake.current = null;
-        }
         if (k === 'wizard') wizard.cancel();
         if (k === 'secret') toast(GATE_DISMISS_TIP);
         // §5.2: the import overlay owns state outside `UiState`, so it closes through its own door — a bare
@@ -2110,14 +2094,6 @@ export function App(p: AppProps): React.JSX.Element {
           dispatch({ type: 'tab', tab: next.tab });
         }
         if (next.panel !== s.panel) dispatch({ type: 'panel', panel: next.panel });
-        return;
-      }
-      case 'intake': {
-        // TUI-DESIGN-2 §3.7: y → run · n → chat (a reply from the answers in hand) · Esc / Ctrl-C → keep (the controller restores the draft)
-        const i = pendingIntake.current;
-        pendingIntake.current = null;
-        closeOverlay('intake');
-        i?.resolve(action.op);
         return;
       }
       case 'export':
@@ -2833,16 +2809,6 @@ export function App(p: AppProps): React.JSX.Element {
         case 'wizard:reopen':
           wizard.reopen(c.at, c.runLive, c.opts);
           return;
-        case 'intake': {
-          // TUI-DESIGN-2 §3.7: one card at a time — a previous card resolves `keep`
-          pendingIntake.current?.resolve('keep');
-          pendingIntake.current = { card: c.card, resolve: c.resolve };
-          dispatch({ type: 'overlay', overlay: 'intake' });
-          return;
-        }
-        case 'restoreDraft':
-          composer.set(c.text);
-          return;
         case 'bindings':
           // TUI-DESIGN-3 §4.4 F10: the table swaps live; a chord in flight resets (its first key belonged to the old table)
           setBindingsState(c.bindings);
@@ -2980,7 +2946,6 @@ export function App(p: AppProps): React.JSX.Element {
   const overlayData: OverlayData = guard<OverlayData>(
     'overlay',
     () => ({
-      intake: pendingIntake.current?.card ?? null,
       review: state.pendingReview && state.overlay === 'review' ? { req: state.pendingReview, note: noteView() } : null,
       wizard: state.overlay === 'wizard' ? { state: wizard.state, trust: (bridge.wizardHost?.trustInputs?.() ?? null) as TrustInputs | null } : null,
       followup: pendingFollowup.current?.input ?? null,
@@ -3094,7 +3059,13 @@ export function App(p: AppProps): React.JSX.Element {
   const wizardHosted = boxed && overlayKind === 'wizard' && layout.chrome > 0;
   const cTop = consoleTop(layout) - (wizardHosted ? layout.overlay : 0);
   const overlayTop = layout.rule + layout.live + layout.banner + layout.pane + layout.queue;
-  const header = useMemo(() => (mode === 'session' ? sessionHeaderItem(p.cwd ?? process.cwd()) : headerItem(p.task, p.resumeId)), [mode, p.cwd, p.task, p.resumeId]);
+  /**
+   * The quiet start (2026-09, owner's directive "clean"): a SESSION opens with the wordmark and the composer, so the
+   * `[run] jevcode session · <dir> | step 0/– starting` header is not printed at all in the boxed renderer — `--plain`
+   * keeps it (`createPlainRenderer`), and `jevcode run`'s task header is untouched. It cannot be deferred to the first
+   * run instead: `<Static>` writes by index, so prepending a row after the first flush would reprint the tail.
+   */
+  const header = useMemo(() => (mode === 'session' ? null : headerItem(p.task, p.resumeId)), [mode, p.task, p.resumeId]);
   const spinner = useSpinner(spinnerActive(state), reducedMotion);
   // TUI-DESIGN-5 §3.1 / §2.2: the `ctx` and `peers` gates are TERMINAL columns; the boxed row is laid out at the inner width
   const statusOpts: StatusLineOptions = { ascii: glyphs.mode === 'ascii', reducedMotion, spinnerFrame: spinner, mode, flatBadge: !boxed, terminalColumns: columns };
@@ -3118,24 +3089,22 @@ export function App(p: AppProps): React.JSX.Element {
     ? 'filter'
     : oneShotDone
       ? 'done'
-      : overlayKind === 'intake'
-        ? 'intakeWait'
-        : overlayKind === 'review' || (state.pendingReview !== null && state.run !== 'none' && overlayKind === 'none')
-          ? state.pendingReview !== null && overlayKind === 'review'
-            ? 'review'
-            : state.run !== 'none'
-              ? 'steer'
-              : 'task'
-          : overlayKind === 'followup'
-            ? 'followupWait'
-            : overlayKind === 'exitConfirm'
-              ? 'exitWait'
-              : overlayKind === 'blocking'
-                ? 'blocked'
-                : thinking
-                  ? 'thinking' // §3.1 row 1 / §4.4: `(thinking…)` while the intake, lookup or reply is in flight (the run is `starting`)
-                  : runLive
-                    ? 'steer' // TUI-DESIGN-3 §5.2 P7: `starting` without a phase keeps the previous idle placeholder — never the steer one
+      : overlayKind === 'review' || (state.pendingReview !== null && state.run !== 'none' && overlayKind === 'none')
+        ? state.pendingReview !== null && overlayKind === 'review'
+          ? 'review'
+          : state.run !== 'none'
+            ? 'steer'
+            : 'task'
+        : overlayKind === 'followup'
+          ? 'followupWait'
+          : overlayKind === 'exitConfirm'
+            ? 'exitWait'
+            : overlayKind === 'blocking'
+              ? 'blocked'
+              : thinking
+                ? 'thinking' // §3.1 row 1 / §4.4: `(thinking…)` while the reply is in flight (the run is `starting`)
+                : runLive
+                  ? 'steer' // TUI-DESIGN-3 §5.2 P7: `starting` without a phase keeps the previous idle placeholder — never the steer one
                     : state.turns > 0 || state.runsEnded > 0 || state.done !== null
                       ? 'followup'
                       : 'task';
@@ -3259,7 +3228,7 @@ export function App(p: AppProps): React.JSX.Element {
       {full === null ? (
         /* §13.4: each <Static> item has its own boundary inside <Transcript>; this outer one is the last resort and retries with the next item */
         <PaneBoundary pane="transcript" onFail={onPaneFail} resetKey={visible.length}>
-          <Transcript items={visible} header={header} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} />
+          <Transcript items={visible} {...(header !== null ? { header } : {})} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} />
         </PaneBoundary>
       ) : null}
       {full !== null && full.header > 0 ? (
@@ -3385,6 +3354,7 @@ export function App(p: AppProps): React.JSX.Element {
             cursor={setCursorPosition}
             active={wizardHosted ? true : composerActive && !state.noteMode}
             mode={composerMode}
+            recent={state.recent}
             rows={rows}
             live={runLive}
             spans={hitSpans(state.noteMode ? [] : composer.hits())}
@@ -3722,10 +3692,6 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
     },
     reopenWizard(at, runLive, opts) {
       bridge.command({ type: 'wizard:reopen', at, runLive, ...(opts ? { opts } : {}) });
-    },
-    promptIntake: (card) => new Promise((resolve) => bridge.command({ type: 'intake', card, resolve })),
-    restoreDraft(text) {
-      bridge.command({ type: 'restoreDraft', text });
     },
     live(text) {
       bridge.command({ type: 'dispatch', action: { type: 'live', text } });

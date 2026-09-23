@@ -225,9 +225,12 @@ export function spacerAbove(item: TranscriptItem, prev: TranscriptItem | null): 
 
 /**
  * TUI-DESIGN-3 §5.1 rule 2 (D-O): the body's role — the meaning, never the speaker. `warn` / `error` by level or verdict (the
- * theme's `itemRole`), `dim` only for the `[run] git …` workspace rows; chat bodies, steps, `[ui]` notes and proposals stay default.
+ * theme's `itemRole`), `dim` for `level: 'dim'` (the quiet startup items) and for the `[run] git …` workspace rows; chat bodies,
+ * steps, `[ui]` notes and proposals stay default.
  */
 export function bodyRole(item: TranscriptItem): ColorRole | null {
+  // the quiet startup grade: a `dim` item IS its dim body (the `[sandbox]` / `recent:` one-liners)
+  if (item.level === 'dim') return 'dim';
   const role = itemRole(item);
   if (role === 'you' || role === 'assistant') return null;
   if (role === 'dim') return item.kind === 'workspace' ? 'dim' : null;

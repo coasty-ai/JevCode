@@ -1,8 +1,6 @@
-# chat: JEVCODE_MOCK_INTAKE=ambiguous — `the date parsing` opens the intake card `run this as a task?`; Enter is inert
-# on the card (sent before the arm, it must never answer), `n` after the arm takes the best non-run reading and a
-# [jevcode] reply follows; no run (TUI-DESIGN-2 §3.7, §8.2 chat-ambiguous). The smoke checks that the card frames form
-# one contiguous run up to the reply (Enter neither answered nor closed the card) and that the Esc/Ctrl-C reply
-# `Okay — edit it …` never appears (`intake_card_check`).
+# chat: JEVCODE_MOCK_INTAKE=ambiguous — `the date parsing` is answered like any other message and Jev's unsure reading
+# only adds the `do it` offer to the reply. No card is drawn, the composer is never blocked ("waiting for y/n" must
+# never appear) and no run starts: the next message decides that (chat-ambiguous-y sends `do it`).
 expect \x1b\[\?25l
 expect Say hi
 expect sess \$
@@ -10,11 +8,9 @@ sleep 0.2
 send the date parsing
 sleep 0.2
 send \r
-expect run this as a task\?
-send \r
-sleep 0.25
-send n
 expect \[jevcode\](?:\x1b\[[0-9;]*m)* 
+expect make that a task
+sleep 0.3
 send /exit
 sleep 0.2
 send \r

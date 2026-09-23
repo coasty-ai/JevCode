@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCliArgs, type ParsedFlags } from '../../../src/cli/args.js';
 import { detectPackageRoot, isEngineMode, modeFromParsedFlags, negateBooleanText, reconcileResumeConfig, resolveConfig, resumeIdentityFromRunMeta, type ResolveOptions } from '../../../src/config/resolve.js';
-import { DEFAULT_MODE } from '../../../src/config/defaults.js';
+import { BASE_URLS, DEFAULT_MODE } from '../../../src/config/defaults.js';
 import { defaultRunSpendCapUsd } from '../../../src/config/ui.js';
 import type { RunMeta } from '../../../src/core/types.js';
 import { fingerprint } from '../../../src/config/mask.js';
@@ -241,9 +241,13 @@ describe('resolveConfig keys and lazy validation', () => {
     expect(c.warnings).toEqual([]);
   });
 
-  it('rejects an invalid provider or sandbox from the env with the setting name', async () => {
-    const c = await resolve(run(), { JEVCODE_PROVIDER: 'openai' });
-    expect(() => c.generator()).toThrow(/generator\.provider: "openai" \(from env\) is not one of anthropic\|openrouter/);
+  it('rejects an invalid provider or sandbox from the env with the setting name; the SEVEN ids resolve (D-AP)', async () => {
+    // D-AP, the reader half: `openai` is a provider now — it resolves, with the provider's own base URL from `BASE_URLS`
+    const ok = await resolve(run('--model', 'gpt-5.6-luna'), { JEVCODE_PROVIDER: 'openai', OPENAI_API_KEY: 'sk-openai-0123456789abcdef' });
+    expect(ok.generator().provider).toBe('openai');
+    expect(ok.generator().baseUrl).toBe(BASE_URLS.openai);
+    const c = await resolve(run(), { JEVCODE_PROVIDER: 'notaprovider' });
+    expect(() => c.generator()).toThrow(/generator\.provider: "notaprovider" \(from env\) is not one of anthropic\|openrouter\|openai\|gemini\|xai\|fireworks\|meta/);
     await expect(resolve(run(), { JEVCODE_SANDBOX: 'jail' })).rejects.toThrow(/sandbox: "jail" \(from env\)/);
   });
 
@@ -893,6 +897,46 @@ describe('TUI-DESIGN-2 §2.3: decider.provider — auto-detection, precedence, k
     expect(configTableRows(or).find((r) => r.setting === 'decider.model')?.source).toBe('default (openrouter)');
     const meta: RunMeta = { runId: 'r', task: 't', workspace: cwd, mode: 'jev-only', config: rec, versions: { jevcode: '0', node: '0' }, createdAt: '2026-09-21T00:00:00.000Z', overrides: [], resumes: [], resolvedJevModel: null, jevModelDrift: null };
     expect(resumeIdentityFromRunMeta(meta)).toMatchObject({ jevProvider: 'typesafe', jevModel: 'jev-1.13.0', jevBaseUrl: 'https://api.typesafe.ai/v1/systemone' });
+  });
+});
+
+describe('complete autonomy by default: the `autonomy` setting', () => {
+  it('chain: --autonomy > JEVCODE_AUTONOMY > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file `autonomy` > full; each layer records its source', async () => {
+    const dflt = await resolve(run());
+    expect(dflt.autonomy).toBe('full');
+    expect(dflt.entries.get('autonomy')).toEqual({ value: 'full', source: 'default' });
+    expect(dflt.record()['autonomy']).toEqual({ value: 'full', source: 'default' });
+    expect(configTableRows(dflt.record()).find((r) => r.setting === 'autonomy')).toEqual({ setting: 'autonomy', value: 'full', source: 'default', atDefault: true });
+    // `jevcode config --all` prints the row at its default
+    expect(configTableLines(dflt.record(), { sandboxLevel: 'none', width: 110, all: true }).find((l) => l.startsWith('autonomy '))).toMatch(/^autonomy\s+full$/);
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ autonomy: 'review' }));
+    const file = await resolve(run());
+    expect(file.autonomy).toBe('review');
+    expect(file.entries.get('autonomy')).toEqual({ value: 'review', source: `file:${join(cwd, 'jevcode.json')}` });
+    const oa = join(root, 'extra-autonomy');
+    await mkdir(oa);
+    await writeFile(join(oa, '.env'), 'JEVCODE_AUTONOMY=full\n');
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env') })).autonomy).toBe('full');
+    await writeFile(join(cwd, '.env'), 'JEVCODE_AUTONOMY=review\n');
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env') })).entries.get('autonomy')).toEqual({ value: 'review', source: `dotenv:${join(cwd, '.env')}` });
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env'), JEVCODE_AUTONOMY: 'full' })).entries.get('autonomy')).toEqual({ value: 'full', source: 'env' });
+    const flagged = await resolve(run('--autonomy', 'review'), { JEVCODE_AUTONOMY: 'full' });
+    expect(flagged.entries.get('autonomy')).toEqual({ value: 'review', source: 'flag' });
+    expect(flagged.autonomy).toBe('review');
+    // case-insensitive, like every other enum row
+    expect((await resolve(run(), { JEVCODE_AUTONOMY: 'REVIEW' })).autonomy).toBe('review');
+  });
+
+  it('a value that is not full|review is an eager ConfigError naming the setting and the source (exit 2)', async () => {
+    let err: unknown;
+    try {
+      await resolve(run(), { JEVCODE_AUTONOMY: 'yolo' });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).message).toContain('autonomy: "yolo" (from env) is not one of full|review');
+    expect((err as ConfigError).exitCode).toBe(2);
   });
 });
 

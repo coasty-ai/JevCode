@@ -132,8 +132,8 @@ describe('contract 1.2 (TUI-DESIGN-2 §6 items 1–13)', () => {
     expect(results).toHaveLength(3);
     const models: EngineOptions['deciderModel'][] = [{ configured: 'm', pinned: true }, { configured: 'jev-1.13.0', pinned: true, provider: 'typesafe' }];
     expect(models[0]?.provider).toBeUndefined();
-    const hooks: Pick<Renderer, 'restoreDraft' | 'live'> = {};
-    expect(hooks.restoreDraft).toBeUndefined();
+    const hooks: Pick<Renderer, 'live'> = {};
+    expect(hooks.live).toBeUndefined();
     const appended: string[] = [];
     const history: HistoryStore = { entries: () => [], append: (kind, text) => appended.push(`${kind}:${text}`), clear: () => undefined };
     history.append('chat', 'hi');

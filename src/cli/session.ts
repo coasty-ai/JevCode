@@ -38,6 +38,9 @@ import type {
   BlockingRequest,
   Candidate,
   CheckpointState,
+  ConfirmOutcome,
+  ConfirmRequest,
+  Confirmer,
   Decider,
   Decision,
   Engine,
@@ -137,7 +140,7 @@ import { buildSeed, carriedSteers, seedSource, type SeedParent } from '../sessio
 import { defaultExportPath, exportSession as realExportSession, type ExportRun } from '../session/export.js';
 import { COORDINATION_IDLE_CLAUSE, COORDINATION_NOT_OPEN, COORDINATION_OFF_CLAUSE, coordinationAvailability, coordinationEnabledFrom, coordinationOffText, settingReader, type CoordinationOffReason } from '../session/coordination.js';
 import { activityView, peerViewOf, selfView, WHO_EMPTY, whoHeader, whoRows } from '../session/peers.js';
-import { ambiguousResumeMessage, noSessionMessage, pickerHeader, pickerRows, recentSessionHint, resolveResumeTarget } from '../session/picker-lines.js';
+import { ambiguousResumeMessage, noSessionMessage, pickerHeader, pickerRows, recentSessionHint, resolveResumeTarget, timeAgo } from '../session/picker-lines.js';
 // TUI-DESIGN-5 §2.14 (R5-1): the WRITE half. `openSessionLedger` is the only place `src/coordination/**` is loaded,
 // and it is behind an `await import()` INSIDE that function, so §2.1 rule 3a holds and gate G-R5-1 stays green.
 import { createPublisher, forceTakebackOf, gitInputOf, openSessionLedger as realOpenSessionLedger, probeRepoFacts, type Publisher, type SessionLedger, type SessionLedgerInput } from '../session/publish.js';
@@ -151,7 +154,7 @@ import type { UiAction } from '../tui/useEngine.js';
 import { createHistoryStore as realCreateHistoryStore, type FileHistoryStore } from '../tui/composer/history.js';
 import { dispatchCommand, type CommandAction, type DispatchContext } from '../tui/commands/dispatch.js';
 import { helpLines as paletteHelpLines } from '../tui/commands/palette.js';
-import { READLINE_MAX_PROMPTS, formatTranscriptItem, itemsFromEvent, stepCostText, type LineSource } from '../tui/plain.js';
+import { actionLabel, formatTranscriptItem, itemsFromEvent, stepCostText, type LineSource } from '../tui/plain.js';
 import { plainSupports } from '../tui/plain-composer.js';
 import { blockingRowsFull, peerOpenNotice } from '../tui/blocking/lines.js';
 // TUI-DESIGN-5 §3.2 / §3.3 (R5-3): the ONE `/context` block builder and `/compact`'s four answers — the same
@@ -192,12 +195,11 @@ import { JEV_PROVIDERS } from '../jev/providers.js';
 import { createCachingDecider } from '../jev/cache.js';
 import { budgetItems, BUDGET_THRESHOLDS, type BudgetPct } from '../tui/budget/lines.js';
 // TUI-DESIGN-2 §3 (D-C): the conversational intake — pure builders in src/chat/**, the state machine of §3.1 lives here (§3.8)
-import { buildIntakeState, chatKindAfterNo, filesBucket, routeOf, routeOfKind, runIntake, testsFromCandidates, type ChatKind, type ChatRoute, type IntakeResult } from '../chat/intake.js';
-import { INTAKE_READLINE_PROMPT, INTAKE_SR_LINES, parseIntakeAnswer } from '../chat/lines.js';
-import { fillReply, pickReply, replyByKey, type ReplyFacts } from '../chat/replies.js';
-import { harnessFacts, peersNotOpenText, PEERS_UNAVAILABLE_TEXT, selectFacts, type FactsInput } from '../chat/facts.js';
+import { buildIntakeState, filesBucket, routeOf, runIntake, testsFromCandidates, type ChatRoute, type IntakeResult } from '../chat/intake.js';
+import { REPLY_FALLBACK_KEY, fillReply, pickReply, replyByKey, type ReplyFacts } from '../chat/replies.js';
+import { branchOf, harnessFacts, peersNotOpenText, PEERS_UNAVAILABLE_TEXT, selectFacts, type FactsInput } from '../chat/facts.js';
 import { LOOKUP_READ_BYTES, lookupCode, lookupLines, type LookupInput } from '../chat/lookup.js';
-import { CHAT_FILES_MAX, CHAT_FILE_BYTES, CHAT_FIXED_INPUT_TOKENS, chatMaxTokens, llmChatTurn, type LlmTurnInput } from '../chat/llm-turn.js';
+import { CHAT_FILES_MAX, CHAT_FILE_BYTES, CHAT_FIXED_INPUT_TOKENS, chatMaxTokens, llmChatTurn, type ChatIdentity, type LlmTurnInput } from '../chat/llm-turn.js';
 import { CHAT_LABELS, bubbleLines, type ChatRole } from '../chat/bubbles.js';
 import { createChatLedger, type ChatTurn } from '../chat/ledger.js';
 import { decisionRows } from '../tui/pane/decisions.js';
@@ -257,7 +259,8 @@ export const EPILOGUE_ARTEFACTS = ['transcript.log', 'state.json', 'jevcode.log'
 export interface NoteOptions {
   detail?: string;
   label?: UiLabel;
-  level?: 'info' | 'warn' | 'error';
+  /** `dim` is the quiet startup grade: the TUI paints the body dim, `--plain` prints it unchanged, `--json` records it as `info` */
+  level?: 'info' | 'warn' | 'error' | 'dim';
   detailRows?: readonly RenderedRow[];
   detailKind?: 'diff' | 'table' | 'text';
 }
@@ -305,10 +308,22 @@ export const COMMAND_ERRORS = {
   editor: '/editor — the external editor is Ctrl+G in the TUI composer — press Ctrl+G instead',
 } as const;
 
-/** §3.7 Esc / Ctrl-C on the intake card, or no composer to answer it */
-export const INTAKE_KEPT = 'Okay — edit it and press Enter, or ask me something.';
-/** §3.6: a weak `question_about_the_code` under jev+llm took the lookup */
-export const LLM_FLOORED_HINT = 'Ask again more specifically for an LLM answer.';
+/** the `[ui] error:` text when no generator key resolves for a chat submission in a generator mode */
+export const MISSING_GENERATOR_KEY = 'missing generator.apiKey: set ANTHROPIC_API_KEY or OPENROUTER_API_KEY, or run jevcode login';
+/** the line appended to the reply when Jev read the submission as a task: the run starts right after it */
+export const ON_IT_LINE = 'On it — starting the run.';
+/** the line appended when Jev was unsure — the human turns the message into a task with `do it` (no second reading) */
+export const DO_IT_OFFER = "Say `do it` and I'll make that a task.";
+/** the offer is made only for an `ambiguous` reading of a message that is not a question — `who made you?` read `ambiguous` live and got an offer it did not want (2026-09-22 drive) */
+export function offerWanted(text: string, res: Pick<IntakeResult, 'intake'>): boolean {
+  return res.intake.kind === 'ambiguous' && !/\?\s*$/.test(text.trim());
+}
+/** the answers that accept `DO_IT_OFFER`; any other message drops the offer */
+export const DO_IT_RE = /^\s*(do it|yes,? do it|go ahead|make it a task|run it|yes)\s*[.!]*\s*$/i;
+/** how long the landed reply waits for Jev's background reading before it lands without it (Jev is normally done long before) */
+export const INTAKE_GRACE_MS = 1500;
+/** recent sessions of this workspace the chat system prompt names */
+export const CHAT_RECENT_SESSIONS = 3;
 /** §3.1 row 12: Jev unreachable / `JevHttpError` after the client's retries; `<short>` is the redacted message ≤ 80 chars */
 export function INTAKE_UNREACHABLE(short: string): string {
   return `I couldn't reach Jev to read that (${short}). Press Enter to send it again.`;
@@ -386,6 +401,61 @@ export type WizardReason = 'missing' | 'login' | 'rejected' | 'mode';
 /** what the LLM chat turn reads of the generator section; `--mock` / `--mock-generator` never validate it (like startRun, §15.3) */
 export type ChatGenerator = Pick<GeneratorConfig, 'model' | 'priced' | 'pricing' | 'maxTokens'>;
 export const MOCK_CHAT_GENERATOR: ChatGenerator = { model: 'mock', priced: true, pricing: { inputPerM: 0, outputPerM: 0, cacheReadPerM: 0, cacheWritePerM: 0 }, maxTokens: 4096 };
+
+/** what a chat reply said and cost; `usage === null` = nothing went out (a refusal) */
+export interface ChatReply {
+  lines: string[];
+  usage: TokenUsage | null;
+  latencyMs: number;
+}
+/** Jev's background reading of a submission: `res` is null when it was skipped, failed or aborted, and `error` says which */
+export interface BackgroundIntake {
+  res: IntakeResult | null;
+  error: unknown;
+}
+
+// ---------------------------------------------------------------------------------------
+// `autonomy full` — complete autonomy by default
+// ---------------------------------------------------------------------------------------
+
+/** the one-line `[review]` card is informational, so it is clipped hard — it never becomes a paragraph in the transcript */
+export const AUTO_APPROVED_NOTE_MAX = 160;
+/** the identity the engine records in a declined/approved reason when `autonomy full` answered instead of a human */
+export const IDENTITY_AUTONOMY_FULL = 'autonomy full (auto-approved)';
+
+/**
+ * The INFORMATIONAL review card of `autonomy full`: what ran and why it was flagged, on one redacted line
+ * (`[review] auto-approved (autonomy full): <action> — <risk reason>`). It never waits for anything.
+ */
+export function autoApprovedNote(req: ConfirmRequest, redact: (s: string) => string): string {
+  const reason = req.risk.reason.trim() === '' ? `risk ${req.risk.verdict}` : req.risk.reason.trim();
+  const line = redact(`auto-approved (autonomy full): ${actionLabel(req.proposal.action)} — ${reason}`).replace(/\s*\n\s*/g, ' ').trim();
+  return line.length > AUTO_APPROVED_NOTE_MAX ? `${line.slice(0, AUTO_APPROVED_NOTE_MAX - 1)}…` : line;
+}
+
+/**
+ * `autonomy full`: a `review` risk verdict is approved IMMEDIATELY and logged through `onAuto` — the inner
+ * (human) confirmer is never consulted and nothing ever waits. An already-aborted signal still rejects with the
+ * AbortError, exactly as `createTuiConfirmer` does, so a Ctrl-C mid-step is not turned into an approval.
+ * `block` never reaches a confirmer: the engine stops on it under both autonomies.
+ */
+export function autonomousConfirmer(inner: Confirmer, onAuto: (req: ConfirmRequest) => void): Confirmer {
+  const auto = (req: ConfirmRequest, { signal }: { signal: AbortSignal }): Promise<ConfirmOutcome> => {
+    if (signal.aborted) return Promise.reject(signal.reason instanceof AbortError ? signal.reason : new AbortError('signal'));
+    try {
+      onAuto(req);
+    } catch {
+      // the card is a courtesy; a renderer that throws must never turn an approval into a hang
+    }
+    return Promise.resolve({ approved: true });
+  };
+  void inner; // deliberately unconsulted: the human confirmer is what `--autonomy review` selects instead of this one
+  return {
+    identity: IDENTITY_AUTONOMY_FULL,
+    confirm: (req, o) => auto(req, o).then((r) => r.approved),
+    confirmDetailed: auto,
+  };
+}
 
 /** §3.6: the cost bound checked before an LLM chat turn — (1,200 + chars × 0.25 + file bytes × 0.25) × in-price + min(800, maxTokens) × out-price */
 export function chatEstimateUsd(gen: Pick<GeneratorConfig, 'pricing' | 'maxTokens'>, text: string, fileBytes: number): number {
@@ -484,8 +554,6 @@ export interface Prompter {
       jevProvider?: JevProvider | null;
     },
   ): Promise<WizardOutcome>;
-  /** TUI-DESIGN-2 §3.7: the ambiguity card — `run` (y) · `chat` (n) · `keep` (Esc / Ctrl-C); absent (a pipe, --no-input) → `keep`, never a run */
-  intake?(message: string): Promise<'run' | 'chat' | 'keep'>;
   /** §11.3 trust gate: 1 trust · 2 this session only · 3 don't trust; null = cancelled (= 3). TUI-DESIGN-3 §4.4 F17: `reopen` marks the `/trust` card (Esc / Ctrl-C close it) */
   trust?(inputs: TrustInputs, o?: { reopen?: boolean }): Promise<TrustOption | null>;
   /** §9.3 follow-up box */
@@ -730,9 +798,10 @@ export async function buildProvider(config: ResolvedConfigWithDiagnostics, flags
     return createNullProvider();
   }
   if (flags.mock || flags.mockGenerator) {
-    const { createMockProvider } = await import('../provider/mock.js');
+    const { createMockProvider, withMockChat } = await import('../provider/mock.js');
     const { mockTrajectory } = await import('./mock-trajectory.js');
-    return createMockProvider({ turns: mockTrajectory(Number(flags.mockSteps ?? 8)) });
+    // `withMockChat`: a chat turn (no tools) gets the deterministic reply and leaves the trajectory for the run loop
+    return createMockProvider({ turns: withMockChat(mockTrajectory(Number(flags.mockSteps ?? 8))) });
   }
   const gen = config.generator();
   if (gen.provider === 'openrouter') {
@@ -908,8 +977,6 @@ export interface PlainPrompterOptions {
   /** raw-mode capable stdin: the masked `/login` fields set raw mode so nothing echoes (§11.2 "raw-mode prompt") */
   stdin?: { isTTY?: boolean | undefined; setRawMode?: ((mode: boolean) => unknown) | undefined; isRaw?: boolean | undefined } | undefined;
   ascii?: boolean;
-  /** TUI-DESIGN-2 §3.7: a screen reader gets the `1 run it  2 just chatting  3 keep the text` / `Enter selection (1-3):` form (TD §6.5) — `launch.screenReader` */
-  screenReader?: boolean;
 }
 
 /**
@@ -1047,20 +1114,6 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
     async secretGate(hits) {
       const a = lower(await ask(`${gatePlainPrompt(hits)} `));
       return a === 'y' || a === 'yes';
-    },
-    // TUI-DESIGN-2 §3.7: the readline twin of the ambiguity card — `y`/`yes` runs, `n`/`no` chats, empty keeps the text; an invalid
-    // answer asks again, five of them keep (READLINE_MAX_PROMPTS); EOF keeps. The [you] bubble already shows the message, so the row never repeats it.
-    async intake(message) {
-      void message;
-      const sr = o.screenReader === true;
-      if (sr) write(`${INTAKE_SR_LINES[0]}\n`);
-      for (let asked = 0; asked < READLINE_MAX_PROMPTS; asked++) {
-        const line = await ask(sr ? `${INTAKE_SR_LINES[1]} ` : INTAKE_READLINE_PROMPT);
-        if (line === null) return 'keep';
-        const a = parseIntakeAnswer(line);
-        if (a !== null) return a;
-      }
-      return 'keep';
     },
     // TUI-DESIGN-3 §1.4.3 / §1.3.3: the `--plain` twin of the wizard over the same strings — the other-ways line only when both keys are
     // missing, then the one masked OpenRouter key (`jevProvider` written on the one-key path ONLY — R3 F4 — never beside a resolving Jev key)
@@ -1399,6 +1452,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   let thinkingPhase: ThinkingPhase | null = null;
   /** §3.11: the decision rows of the last ≤ 3 intakes (`s0 intake` rows of the panel) */
   let chatIntakes: readonly (readonly Decision[])[] = [];
+  /** the last `ambiguous` reading, offered as `do it` — the next message either accepts it or drops it */
+  let pendingOffer: { text: string; intake: IntakeResult } | null = null;
   /** §3.9: the session-cap thresholds chat spend already announced (once each, like the engine's) */
   const chatThresholdsSeen = new Set<BudgetPct>();
   /** §3.5 `last_tests`: the newest parsed test run of this session's runs */
@@ -2289,7 +2344,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         runsDir: cfg.runsDir,
         provider,
         decider,
-        confirmer: renderer.confirmer,
+        // complete autonomy by default: under `full` a `review` verdict is approved at once and logged as one
+        // informational `[review]` card; `--autonomy review` keeps the blocking y/n card. `block` stops either way.
+        autonomy: cfg.autonomy, // the engine approves a `review` verdict itself under `full`; under `review` it asks the confirmer (the y/n card)
+        confirmer: cfg.autonomy === 'review' ? renderer.confirmer : autonomousConfirmer(renderer.confirmer, (req) => note(autoApprovedNote(req, cfg.redact), { label: '[review]' })),
         meter,
         limits,
         sandboxProfile: cfg.sandbox,
@@ -2853,7 +2911,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         resume: { runId, force },
         provider,
         decider,
-        confirmer: renderer.confirmer,
+        // complete autonomy by default: under `full` a `review` verdict is approved at once and logged as one
+        // informational `[review]` card; `--autonomy review` keeps the blocking y/n card. `block` stops either way.
+        autonomy: rcfg.autonomy,
+        confirmer: rcfg.autonomy === 'review' ? renderer.confirmer : autonomousConfirmer(renderer.confirmer, (req) => note(autoApprovedNote(req, rcfg.redact), { label: '[review]' })),
         meter,
         limits: rec.limits,
         sandboxProfile: identity.sandbox ?? rcfg.sandbox,
@@ -4077,6 +4138,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   }
   const jsonCtx = (): JsonStreamContext => ({ runId: current?.runId ?? null, sessionId });
 
+  /**
+   * TUI-DESIGN-2 §3.8, conversational: every submission gets a STREAMED reply from the code model in JevCode's own
+   * voice (`buildChatSystem`), and Jev's reading runs BESIDE it — in the background, never a card, never a block on
+   * the composer. The reading only decides whether a run ALSO starts (`coding_task` → `ON_IT_LINE` + `startRun`),
+   * whether the reply ends with the `do it` offer (`ambiguous`) or whether the reply is the whole answer. A reading
+   * that fails or is still out after `INTAKE_GRACE_MS` is a log line: the reply already answered. `jev-only` has no
+   * generator, so Jev's own answers (catalogue · facts · lookup) stand there — still without a card.
+   */
   async function converse(text: string, so: { kind: 'prompt' | 'follow-up'; pinnedFiles: readonly string[]; secretSpans: readonly string[] }): Promise<SubmitOutcome> {
     if (exiting) return { became: 'nothing' };
     // §3.1 row 11: Enter while thinking is ignored with a toast; the draft keeps accepting text
@@ -4094,15 +4163,31 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     // the [you] bubble, always first: redacted at emission, one item per line (§3.10)
     say('you', bubbleLines(text, redact));
-    // §3.1 row 2: no Jev key → the wizard once, then `[ui] error: missing decider.apiKey: …`
-    if (config.missingSecrets('jev-only').length > 0 && !(await runLogin('missing', pending.mode ?? baseMode))) {
-      uiError(MISSING_JEV_KEY);
-      return { became: 'nothing' };
+    // the offer left by the last `ambiguous` reading: `do it` starts that run with the reading already in hand — no request
+    const offer = pendingOffer;
+    pendingOffer = null;
+    if (offer !== null && DO_IT_RE.test(text)) {
+      say('jevcode', [ON_IT_LINE]);
+      ledger.push({ role: 'jevcode', text: ON_IT_LINE, at: nowIso(), costUsd: 0 });
+      thinking(null);
+      return await startChatRun(offer.text, so, offer.intake);
     }
-    // read AFTER the wizard: persistCredentials → reresolve() replaced the object (finding 26)
+    const mode = pending.mode ?? baseMode;
+    // the reply is the code model's in every mode but jev-only, where Jev answers alone
+    const viaLlm = mode !== 'jev-only';
+    // §3.1 row 2: the key the ANSWER needs (the generator's, or Jev's in jev-only) → the wizard once, then the error
+    const needed: SecretSettingName = viaLlm ? 'generator.apiKey' : 'decider.apiKey';
+    if (config.missingSecrets(mode).includes(needed)) {
+      await runLogin('missing', mode);
+      // read AFTER the wizard: persistCredentials → reresolve() replaced the object (finding 26)
+      if (!config || config.missingSecrets(mode).includes(needed)) {
+        uiError(viaLlm ? MISSING_GENERATOR_KEY : MISSING_JEV_KEY);
+        return { became: 'nothing' };
+      }
+    }
     const cfg = config;
-    if (!cfg || cfg.missingSecrets('jev-only').length > 0) {
-      uiError(MISSING_JEV_KEY);
+    if (!cfg) {
+      uiError(CONFIG_NOT_READY);
       return { became: 'nothing' };
     }
     // §3.1 row 3 / §3.9: the root meter exists since startup; at or over the cap nothing is sent
@@ -4110,75 +4195,141 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       say('jevcode', [SESSION_CAP_CHAT_REFUSAL(sessionCapOf())]);
       return { became: 'chat' };
     }
-    const mode = pending.mode ?? baseMode;
-    // §3.8 `chatSignal()`: ONE AbortController per submission — the intake, the lookup or LLM request it leads to and every awaited
-    // step between them share it, so a Ctrl-C that lands while `buildProvider` or a file read is pending still stops the paid request
+    // §3.8 `chatSignal()`: ONE AbortController per submission — the reply, the background reading and every awaited
+    // step between them share it, so a Ctrl-C that lands while `buildProvider` or a file read is pending stops both
     const ac = new AbortController();
     chatAbort = ac;
     const signal = ac.signal;
     try {
-      thinking('intake');
-      let res: IntakeResult;
+      // the reading needs Jev's key; without one the reply still goes out and nothing is said about it in the bubble
+      const jevReady = cfg.missingSecrets('jev-only').length === 0;
+      if (!jevReady) log.warn('chat: no Jev key resolves — the reply goes out, the reading is skipped');
+      const intakeP: Promise<BackgroundIntake> = jevReady ? backgroundIntake(cfg, text, so.pinnedFiles, mode, signal) : Promise.resolve({ res: null, error: undefined });
+      if (!viaLlm) return await jevOnlyTurn(text, so, intakeP, signal);
+      thinking('replying');
+      let reply: ChatReply;
       try {
-        const decider = await deciderOf(cfg, flags);
-        lastDecider = decider;
-        throwIfAborted(signal);
-        const list = await candidates;
-        throwIfAborted(signal);
-        res = await runIntake({ decider, state: intakeState(text, so.pinnedFiles, list), facts: harnessFacts(factsInput()), signal, redact });
+        reply = await generatorTurn(cfg, text, so, mode, signal);
       } catch (e) {
         thinking(null);
-        return chatFailure(e, 'jev');
+        renderer.live?.('');
+        await withinGrace(intakeP, INTAKE_GRACE_MS); // whatever Jev spent is still metered where it lands
+        return chatFailure(e, 'generator');
       }
+      // the reply is in; Jev is normally long done — give the reading the rest of its grace, then act on it
+      const { res, error } = await withinGrace(intakeP, INTAKE_GRACE_MS);
+      if (error !== undefined) log.warn(`chat: the background reading failed (${redact(describe(error))}) — the reply answered`);
+      const kind: IntakeKind = res?.intake.kind ?? 'ambiguous';
+      if (reply.usage !== null) {
+        meterChat('generator', reply.usage, 'generator', 'llm', kind);
+        // the code model's turn is no Jev request: no request hash
+        json?.chat({ intake: kind, probability: res?.intake.probability ?? 0, route: 'llm', provider: 'generator', costUsd: reply.usage.costUsd, latencyMs: reply.latencyMs, requestHash: '' }, jsonCtx());
+      }
+      // Ctrl-C while the reading was still out: what was spent is metered above, but nothing lands (§3.1 row 10)
+      if (signal.aborted) {
+        thinking(null);
+        renderer.live?.('');
+        return chatFailure(signal.reason, 'generator');
+      }
+      // one bubble: the model's answer, then the one line the reading adds
+      const offer = res !== null && offerWanted(text, res);
+      const closing = res === null ? null : res.intake.kind === 'coding_task' ? ON_IT_LINE : offer ? DO_IT_OFFER : null;
+      const lines = closing === null ? reply.lines : [...reply.lines, closing];
       thinking(null);
-      const route = routeOf(res.intake, mode);
-      meterChat('jev', res.usage, res.provider, route, res.intake.kind);
-      chatDecisions(res.rows);
+      renderer.live?.('');
+      say('jevcode', lines);
       ledger.push(youTurn(text, res));
-      // §3.8 / §6 item 17: the `chat` --json line of the intake — what the reading decided and what it cost; never the message
-      json?.chat(chatLine(res, route), jsonCtx());
-      // never the message (§3.9 "Redaction", §9 "keys never in logs")
-      log.info(`intake ${res.intake.kind} p=${res.intake.probability.toFixed(2)} ${Math.round(res.latencyMs)}ms ${res.requestHash} → ${route}`);
-      const run = async (): Promise<SubmitOutcome> => {
-        chatAbort = null; // the run has its own abort path (Esc Esc / Ctrl-C while live)
-        const before = runs.length;
-        await startRun(text, { kind: so.kind, pinnedFiles: so.pinnedFiles, secretsAcked: so.secretSpans.length, intake: { kind: res.intake.kind, probability: res.intake.probability, requestHash: res.requestHash } });
-        // a run started when the record exists (a fast run may already have ended by the time startRun's caller resumes)
-        return { became: live() || runs.length > before ? 'run' : 'nothing' };
-      };
-      switch (res.intake.kind) {
-        case 'coding_task':
-          return await run();
-        case 'ambiguous': {
-          // §3.7: never a silent run — `y` runs, `n` answers from the same answers (no new request), Esc / no composer keeps the text (C46)
-          const a = prompter?.intake ? await prompter.intake(text) : 'keep';
-          if (exiting) return { became: 'nothing' };
-          if (a === 'run') return await run();
-          if (a === 'keep') {
-            say('jevcode', [INTAKE_KEPT]);
-            renderer.restoreDraft?.(text);
-            return { became: 'nothing' };
-          }
-          return await reply(text, res, chatKindAfterNo(res), so, signal);
-        }
-        default:
-          return await reply(text, res, res.intake.kind, so, signal);
-      }
+      ledger.push({ role: 'jevcode', text: lines.join('\n'), at: nowIso(), costUsd: reply.usage?.costUsd ?? 0, provider: 'generator' });
+      if (res !== null && offer) pendingOffer = { text, intake: res };
+      if (res !== null && res.intake.kind === 'coding_task') return await startChatRun(text, so, res);
+      return { became: 'chat' };
     } finally {
       if (chatAbort === ac) chatAbort = null;
     }
   }
 
-  async function reply(text: string, res: IntakeResult, kind: ChatKind, so: { pinnedFiles: readonly string[] }, signal: AbortSignal): Promise<SubmitOutcome> {
-    const mode = pending.mode ?? baseMode;
-    // §3.3 / §3.6 floor; false in jev-only and for weak readings (the `n` of the card passes the same check)
-    const viaLlm = routeOfKind(kind, res, mode) === 'llm';
+  /** §3.8: the run a reading (or an accepted offer) starts; the run owns the abort path from here (Esc Esc / Ctrl-C while live) */
+  async function startChatRun(task: string, so: { kind: 'prompt' | 'follow-up'; pinnedFiles: readonly string[]; secretSpans: readonly string[] }, res: IntakeResult): Promise<SubmitOutcome> {
+    chatAbort = null;
+    const before = runs.length;
+    await startRun(task, { kind: so.kind, pinnedFiles: so.pinnedFiles, secretsAcked: so.secretSpans.length, intake: { kind: res.intake.kind, probability: res.intake.probability, requestHash: res.requestHash } });
+    // a run started when the record exists (a fast run may already have ended by the time startRun's caller resumes)
+    return { became: live() || runs.length > before ? 'run' : 'nothing' };
+  }
+
+  /**
+   * §3.3: Jev's ONE request per submission (groups A, B, C), running beside the reply. It is metered, written to the
+   * `--json` stream and kept for the panel where it LANDS, so a slow reading still pays for itself; the controller
+   * only waits `INTAKE_GRACE_MS` for the decision it carries.
+   */
+  async function backgroundIntake(cfg: ResolvedConfigWithDiagnostics, text: string, pinnedFiles: readonly string[], mode: EngineMode, signal: AbortSignal): Promise<BackgroundIntake> {
+    let res: IntakeResult;
+    try {
+      const decider = await deciderOf(cfg, flags);
+      lastDecider = decider;
+      throwIfAborted(signal);
+      const list = await candidates;
+      throwIfAborted(signal);
+      res = await runIntake({ decider, state: intakeState(text, pinnedFiles, list), facts: harnessFacts(factsInput()), signal, redact });
+    } catch (e) {
+      return { res: null, error: e };
+    }
+    const route = routeOf(res.intake, mode);
+    meterChat('jev', res.usage, res.provider, route, res.intake.kind);
+    chatDecisions(res.rows);
+    // §3.8 / §6 item 17: the `chat` --json line of the reading — what it decided and what it cost; never the message
+    json?.chat(chatLine(res, route), jsonCtx());
+    // never the message (§3.9 "Redaction", §9 "keys never in logs")
+    log.info(`intake ${res.intake.kind} p=${res.intake.probability.toFixed(2)} ${Math.round(res.latencyMs)}ms ${res.requestHash} → ${route}`);
+    return { res, error: undefined };
+  }
+
+  /** the reading if it lands within `ms`, else nothing — the composer never waits on Jev */
+  async function withinGrace(p: Promise<BackgroundIntake>, ms: number): Promise<BackgroundIntake> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const late = new Promise<BackgroundIntake>((r) => {
+      timer = setTimeout(() => r({ res: null, error: undefined }), ms);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([p, late]);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  }
+
+  /** §3.6: the reply itself — one streamed generator turn, no tools; the price checks happen before anything is sent */
+  async function generatorTurn(cfg: ResolvedConfigWithDiagnostics, text: string, so: { pinnedFiles: readonly string[] }, mode: EngineMode, signal: AbortSignal): Promise<ChatReply> {
+    const gen: ChatGenerator = flags.mock || flags.mockGenerator ? MOCK_CHAT_GENERATOR : cfg.generator(); // ConfigError (invalid generator section) → chatFailure → [ui] error
+    if (gen.priced !== true && flags.allowUnpriced !== true) return { lines: [LLM_UNPRICED_REFUSAL(gen.model)], usage: null, latencyMs: 0 };
+    if (sessionMeter.exceeded() || sessionTotal() + chatEstimateUsd(gen, text, pinnedBytes(so.pinnedFiles)) > sessionCapOf()) return { lines: [SESSION_CAP_CHAT_REFUSAL(sessionCapOf())], usage: null, latencyMs: 0 };
+    const provider = await providerOf(cfg, flags, mode);
+    throwIfAborted(signal);
+    const input = await llmInput(text, so.pinnedFiles, gen, provider, signal);
+    throwIfAborted(signal);
+    const r = await llmChatTurn(input);
+    return { lines: r.text.split('\n').filter((l) => l.trim() !== ''), usage: r.usage, latencyMs: r.latencyMs };
+  }
+
+  /**
+   * §3.4–§3.6 under `jev-only`, where there is no code model to answer: the catalogue reply, the session's own facts
+   * or the lookup — and, for an `ambiguous` reading, the catalogue's fallback plus the `do it` offer instead of a card.
+   */
+  async function jevOnlyTurn(text: string, so: { kind: 'prompt' | 'follow-up'; pinnedFiles: readonly string[]; secretSpans: readonly string[] }, p: Promise<BackgroundIntake>, signal: AbortSignal): Promise<SubmitOutcome> {
+    thinking('intake');
+    const { res, error } = await p;
+    thinking(null);
+    if (res === null) return chatFailure(error, 'jev');
+    ledger.push(youTurn(text, res));
+    if (res.intake.kind === 'coding_task') return await startChatRun(text, so, res);
+    const ambiguous = res.intake.kind === 'ambiguous';
     let lines: string[];
     let costUsd = 0;
     try {
-      if (kind === 'greeting_or_smalltalk') lines = [fillReply(replyByKey(pickReply(res.answers).key), replyFacts())];
-      else if (kind === 'question_about_this_tool') lines = selectFacts(harnessFacts(factsInput()), res.answers).map((f) => f.text);
-      else if (!viaLlm) {
+      if (ambiguous) lines = [fillReply(replyByKey(REPLY_FALLBACK_KEY), replyFacts())];
+      else if (res.intake.kind === 'greeting_or_smalltalk') lines = [fillReply(replyByKey(pickReply(res.answers).key), replyFacts())];
+      else if (res.intake.kind === 'question_about_this_tool') lines = selectFacts(harnessFacts(factsInput()), res.answers).map((f) => f.text);
+      else {
         thinking('lookup');
         const cfg = config;
         if (!cfg) throw new ConfigError(CONFIG_NOT_READY);
@@ -4191,39 +4342,20 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         json?.chat({ intake: res.intake.kind, probability: res.intake.probability, route: 'lookup', provider: r.provider, costUsd: r.usage.costUsd, latencyMs: r.latencyMs, requestHash: r.requestHash }, jsonCtx());
         costUsd = r.usage.costUsd;
         lines = lookupLines(r, basename(workspaceRoot));
-        if (mode !== 'jev-only') lines.push(LLM_FLOORED_HINT);
-      } else {
-        const cfg = config;
-        if (!cfg) throw new ConfigError(CONFIG_NOT_READY);
-        const gen: ChatGenerator = flags.mock || flags.mockGenerator ? MOCK_CHAT_GENERATOR : cfg.generator(); // ConfigError (invalid generator section) → chatFailure → [ui] error
-        if (gen.priced !== true && flags.allowUnpriced !== true) lines = [LLM_UNPRICED_REFUSAL(gen.model)];
-        else if (sessionMeter.exceeded() || sessionTotal() + chatEstimateUsd(gen, text, pinnedBytes(so.pinnedFiles)) > sessionCapOf()) lines = [SESSION_CAP_CHAT_REFUSAL(sessionCapOf())];
-        else {
-          thinking('replying');
-          const provider = await providerOf(cfg, flags, mode);
-          throwIfAborted(signal);
-          const input = await llmInput(text, so.pinnedFiles, gen, provider, signal);
-          throwIfAborted(signal);
-          const r = await llmChatTurn(input);
-          meterChat('generator', r.usage, 'generator', 'llm', res.intake.kind);
-          // the LLM turn is no Jev request: no request hash
-          json?.chat({ intake: res.intake.kind, probability: res.intake.probability, route: 'llm', provider: 'generator', costUsd: r.usage.costUsd, latencyMs: r.latencyMs, requestHash: '' }, jsonCtx());
-          costUsd = r.usage.costUsd;
-          lines = r.text.split('\n').filter((l) => l.trim() !== '');
-          renderer.live?.('');
-        }
       }
     } catch (e) {
       thinking(null);
-      renderer.live?.('');
-      return chatFailure(e, viaLlm ? 'generator' : 'jev');
+      return chatFailure(e, 'jev');
+    }
+    if (ambiguous && offerWanted(text, res)) {
+      lines.push(DO_IT_OFFER);
+      pendingOffer = { text, intake: res };
     }
     thinking(null);
     say('jevcode', lines);
-    ledger.push({ role: 'jevcode', text: lines.join('\n'), at: nowIso(), costUsd, provider: viaLlm ? 'generator' : (lastDecider?.provider ?? 'openrouter') });
+    ledger.push({ role: 'jevcode', text: lines.join('\n'), at: nowIso(), costUsd, provider: lastDecider?.provider ?? 'openrouter' });
     return { became: 'chat' };
   }
-
   /** every failure of a chat request lands here (§3.1 rows 10, 12, 12′, 13); the meter is never touched (a failed request carries no usage) */
   function chatFailure(e: unknown, side: 'jev' | 'generator'): SubmitOutcome {
     // the client rethrows `signal.reason` (an AbortError), so the error itself says whether Ctrl-C landed — no stale-signal test (finding 5)
@@ -4363,6 +4495,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       },
       spend: { sessionUsd: sessionTotal(), sessionCapUsd: sessionCapOf(), runs: finishedRuns(), chats: ledger.messages },
       sandbox: cfg ? detectSandboxLevel(cfg.sandbox) : 'none',
+      // the `review` fact tells the truth about who approves: `full` (the default) auto-approves and logs
+      autonomy: cfg?.autonomy ?? 'full',
       runsDir: cfg?.runsDir ?? join(jdir, 'runs'),
       provider: providerInfo,
       /**
@@ -4437,6 +4571,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     return {
       provider,
       message: text,
+      identity: chatIdentity(),
       conversation: ledger.recent(),
       facts: harnessFacts(factsInput()),
       context: { plan: lastPlan ?? lastResult?.finalPlan ?? null, window, files },
@@ -4449,6 +4584,22 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       },
       redact,
       warn: (m) => log.warn(m),
+    };
+  }
+  /** the system prompt's workspace section: the directory, its git state and what this workspace was doing lately */
+  function chatIdentity(): ChatIdentity {
+    const g = gitAtStart;
+    const now = Date.parse(nowIso());
+    const recentSessions = index
+      .filter((r) => r.workspace === workspaceRoot)
+      .slice()
+      .sort((a, b) => (a.lastUsed < b.lastUsed ? 1 : a.lastUsed > b.lastUsed ? -1 : 0))
+      .slice(0, CHAT_RECENT_SESSIONS)
+      .map((r) => `"${r.title}" · ${timeAgo(r.lastUsed, now)}`);
+    return {
+      workspace: basename(workspaceRoot),
+      git: g !== null && g.repo ? `${branchOf(g)}, ${g.dirty.modified + g.dirty.staged} modified · ${g.dirty.untracked} untracked` : null,
+      recentSessions,
     };
   }
   /** Σ bytes of the @-mentioned files (from the listing; nothing is read) */
@@ -4500,8 +4651,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       /* the renderer is gone */
     }
   }
-  function youTurn(text: string, res: IntakeResult): ChatTurn {
-    return { role: 'you', text: redact(text), at: nowIso(), kind: res.intake.kind, probability: res.intake.probability, requestHash: res.requestHash, latencyMs: res.latencyMs, costUsd: res.usage.costUsd, provider: res.provider };
+  /** the `[you]` turn of the ledger; a reading that never landed leaves the reading fields off (§3.9 stats skip them) */
+  function youTurn(text: string, res: IntakeResult | null): ChatTurn {
+    const base = { role: 'you' as const, text: redact(text), at: nowIso() };
+    return res === null ? base : { ...base, kind: res.intake.kind, probability: res.intake.probability, requestHash: res.requestHash, latencyMs: res.latencyMs, costUsd: res.usage.costUsd, provider: res.provider };
   }
   /** `config.generator().model`, or `the LLM` — never throws (used inside chatFailure) */
   function generatorModelLabel(): string {
@@ -4727,8 +4880,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     await trustGate();
     if (exiting) return;
     trace('startup: trust gate done');
-    // TUI-DESIGN-3 §5.1 rule 13: the one-thought `[sandbox]` item; today's sentence is its TUI-only detail
-    note(sandboxText(detectSandboxLevel(config.sandbox), config.sandbox), { label: '[sandbox]', detail: sandboxDetail(detectSandboxLevel(config.sandbox), config.sandbox) });
+    /**
+     * TUI-DESIGN-3 §5.1 rule 13 + the QUIET START (2026-09, owner's directive "clean"): the boxed console opens with the
+     * wordmark and the composer and nothing else, so the `[sandbox]` item is a LINE-RENDERER item now — `--plain` and
+     * `--json` still carry it (one dim line, no detail). Interactively the same facts are one keystroke away: `/status`
+     * (the `sandbox` row), `/config` (the sandbox footer, the full sentence) and `jevcode doctor`.
+     */
+    if (o.rendererKind !== 'tui') note(sandboxText(detectSandboxLevel(config.sandbox), config.sandbox), { label: '[sandbox]', level: 'dim' });
     const cfg = config;
     candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
     await refold();
@@ -4759,7 +4917,16 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     if (o.mode === 'session') {
       const recent = mostRecentSession(index, workspaceRoot);
-      if (recent) note(recentSessionHint(recent, now(), o.launch.ascii));
+      // the quiet start: in the TUI the offer is the composer's own placeholder (`Say hi · /resume continues "<title>"`),
+      // not an item above it; `--plain` / `--json` keep the line, dim
+      if (recent && o.rendererKind !== 'tui') note(recentSessionHint(recent, now(), o.launch.ascii), { level: 'dim' });
+      else if (recent) {
+        try {
+          extras.dispatch?.({ type: 'recent', title: recent.title });
+        } catch {
+          /* the renderer is gone */
+        }
+      }
       return;
     }
     const task = await readTaskOption();
@@ -4786,13 +4953,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
    */
   async function defaultModeNotice(): Promise<void> {
     const cfg = config;
-    if (!cfg || flags.mock || flags.json || o.rendererKind === 'json') return;
+    if (!cfg || flags.mock || flags.json || o.rendererKind === 'json' || o.rendererKind === 'tui') return; // the TUI opens with the wordmark and the composer only; --plain / --json keep the one-time disclosure
     const modeR = cfg.entries.get('mode');
     if (!modeR || modeR.source !== 'default') return;
     const mode = cfg.mode;
     if (mode === 'jev-only') return; // a default that bills no generator changes nothing a round-2 user pays
     if (cfg.entries.get('seen.defaultMode')?.value === DEFAULT_MODE) return;
-    note(defaultModeItem(mode, cfg.limits().spendCapUsd, cfg.sessionSpendCap(mode).value), { label: '[setup]' });
+    note(defaultModeItem(mode, cfg.limits().spendCapUsd, cfg.sessionSpendCap(mode).value), { label: '[setup]', level: 'dim' });
     try {
       await writeConfigValueFn('seenDefaultMode', DEFAULT_MODE, { env, home, cwd, configFlag: flags.config ?? null });
     } catch (e) {

@@ -810,15 +810,13 @@ describe('commandLogin', () => {
     expect(await commandLogin({ provider: 'notaprovider', generatorKeyStdin: true }, t)).toBe(2);
     expect(t.err.text).toContain('--provider: expected anthropic|openrouter|openai|gemini|xai|fireworks|meta');
     /**
-     * TUI-DESIGN-5 §6.1 / D-AP: `gemini` PARSES (the flag accepts seven ids) but is not PERSISTED while
-     * `src/config/validate.ts:161` still throws `one of anthropic|openrouter` — writing it would leave a profile
-     * every later `jevcode chat/run/config` exits 2 on. `src/cli/login.ts`'s guard refuses it with §12.5 S107's
-     * sentence, and `test/unit/cli/login.test.ts` flips to the accepting form the moment the validate hunk lands.
+     * D-AP, both halves: `src/config/validate.ts` accepts all seven ids now (`isProviderId`), so `gemini` PARSES and
+     * is PERSISTED — the "browse only, generation not yet available" guard in `src/cli/login.ts` is gone with it.
      */
     const tg = io(`${KEY}\n`, { env: { XDG_CONFIG_HOME: join(home, 'xdg-gemini') } });
-    expect(await commandLogin({ provider: 'gemini', generatorKeyStdin: true }, tg)).toBe(2);
-    expect(tg.err.text).toContain('gemini — browse only, generation not yet available');
-    expect(tg.out.text).toBe('');
+    expect(await commandLogin({ provider: 'gemini', generatorKeyStdin: true }, tg)).toBe(0);
+    expect(JSON.parse(await readFile(join(home, 'xdg-gemini', 'jevcode', 'config.json'), 'utf8'))).toEqual({ provider: 'gemini', apiKey: KEY });
+    expect(tg.err.text).toBe('');
     const t2 = io(`${OR_KEY}\n`, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), JEVCODE_PROVIDER: 'openrouter' } });
     expect(await commandLogin({ generatorKeyStdin: true }, t2)).toBe(0);
     expect((await readConfig())['provider']).toBe('openrouter');

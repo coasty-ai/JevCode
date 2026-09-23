@@ -107,7 +107,6 @@ describe('placeholders (TUI-DESIGN-2 §4.4, verbatim)', () => {
     expect(placeholderFor('review', 24)).toBe('(review pending — keys in the card; d opens a note)');
     expect(placeholderFor('review', 12)).toBe('(review pending)');
     expect(placeholderFor('thinking', 24)).toBe('(thinking…)');
-    expect(placeholderFor('intakeWait', 24)).toBe('(waiting for y/n)');
     // the console right-aligns the task / follow-up hint (H-A1w, H-B2w) and appends the steer hint (H-D1w)
     expect(placeholderParts('task', 24, 116).align).toBe('right');
     expect(placeholderParts('steer', 24, 116).align).toBe('inline');

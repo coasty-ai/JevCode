@@ -141,9 +141,10 @@ describe('§24 wizard strings are verbatim', () => {
     expect(emptyEnvText('ANTHROPIC_API_KEY', './.env')).toBe('ANTHROPIC_API_KEY in ./.env set but empty — treated as unset');
     expect(emptyEnvText('ANTHROPIC_API_KEY')).toContain('set but empty — treated as unset');
     expect(dotenvSourceText('./.env')).toBe('dotenv: ./.env');
-    // TUI-DESIGN-3 §5.1 rule 13: one thought per row with ` · ` separators; today's sentence is the TUI-only detail
-    expect(sandboxText('seatbelt')).toBe('seatbelt · writes only in the workspace and run dirs · secrets, ~/.ssh, ~/.aws unreadable · network on (--no-network)');
-    expect(sandboxText('none', 'auto', 'linux')).toBe('none · sandbox-exec is not available on linux · cwd confinement, env scrubbing, timeout, output cap and tree kill only');
+    // TUI-DESIGN-3 §5.1 rule 13 + the quiet start: one thought per row with ` · ` separators, ONE row at 80 columns;
+    // the full sentences are the detail (`sandboxDetail`, the wizard's card) and `/config`'s sandbox footer
+    expect(sandboxText('seatbelt')).toBe('seatbelt · workspace writes only · secrets unreadable · network on');
+    expect(sandboxText('none', 'auto', 'linux')).toBe('none · sandbox-exec is not available on linux · cwd confinement only');
     expect(sandboxDetail('seatbelt')).toBe('seatbelt — writes confined to the workspace and run dirs; harness secret files, ~/.ssh, ~/.aws unreadable; reads elsewhere and network allowed unless --no-network');
     expect(sandboxDetail('none', 'auto', 'linux')).toBe('none — sandbox-exec is not available on linux: cwd confinement, env scrubbing, timeout, output cap and tree kill only');
     expect(agentsChangedLine('1a2b3c4d5e6f7890', '9f8e7d6c5b4a3210')).toBe('AGENTS.md changed since you trusted it (sha256 1a2b3c4d → 9f8e7d6c)');
@@ -162,9 +163,9 @@ describe('§24 wizard strings are verbatim', () => {
     const chosen = sandboxText('none', 'none', 'darwin');
     const unavailable = sandboxText('none', 'auto', 'linux');
     const requested = sandboxText('none', 'seatbelt', 'linux');
-    expect(chosen).toBe('none · off by request (--sandbox none) · cwd confinement, env scrubbing, timeout, output cap and tree kill only');
-    expect(unavailable).toBe('none · sandbox-exec is not available on linux · cwd confinement, env scrubbing, timeout, output cap and tree kill only');
-    expect(requested).toBe('none · seatbelt requested, but sandbox-exec is not available on linux · cwd confinement, env scrubbing, timeout, output cap and tree kill only');
+    expect(chosen).toBe('none · off by request (--sandbox none) · cwd confinement only');
+    expect(unavailable).toBe('none · sandbox-exec is not available on linux · cwd confinement only');
+    expect(requested).toBe('none · seatbelt requested, but sandbox-exec is not available on linux · cwd confinement only');
     // the three are distinct, and the chosen-none row never claims a platform lacks the sandbox
     expect(new Set([chosen, unavailable, requested]).size).toBe(3);
     expect(chosen).not.toContain('not available');
@@ -175,6 +176,11 @@ describe('§24 wizard strings are verbatim', () => {
     // an unspecified profile keeps the shipped sentence, so a caller that has not been threaded yet cannot regress
     expect(sandboxText('none', undefined, 'linux')).toBe(unavailable);
     expect(sandboxText('seatbelt', 'seatbelt')).toBe(sandboxText('seatbelt'));
+    // the quiet start: the item is ONE row in the 70-cell `[sandbox]` gutter body at 80 columns (the `none` twin that
+    // names both a requested profile and a platform is the one long branch, and it is a misconfiguration)
+    expect(cellWidth(sandboxText('seatbelt'))).toBeLessThanOrEqual(70);
+    expect(cellWidth(chosen)).toBeLessThanOrEqual(70);
+    expect(cellWidth(unavailable)).toBeLessThanOrEqual(70);
     // §2.13's rungs: every row wraps (never cuts) and no wrapped row is wider than the terminal
     for (const width of [40, 80, 120]) {
       for (const row of [chosen, unavailable, requested, sandboxDetail('none', 'none', 'darwin'), sandboxDetail('none', 'seatbelt', 'linux')]) {

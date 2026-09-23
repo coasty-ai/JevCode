@@ -9,6 +9,5 @@ export * from './replies.js';
 export * from './facts.js';
 export * from './lookup.js';
 export * from './llm-turn.js';
-export * from './lines.js';
 export * from './bubbles.js';
 export * from './ledger.js';

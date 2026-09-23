@@ -374,7 +374,7 @@ export async function measureComposerLatency(opts: { root: string; bin: string; 
   // TUI-DESIGN-4 §11: the two Enter-cycle series — the 41-row path (gated) and the S-ARG sub-row path (reported)
   report(await runSeries(opts.root, opts.bin, { name: 'palette-cycle', plan: planPaletteCycle(n, 100), spacingMs: 100, args: [], env: {}, stepMs: null, stress: false, gated: true }, gate));
   report(await runSeries(opts.root, opts.bin, { name: 'palette-arg', plan: planPaletteArg(n, 100), spacingMs: 100, args: [], env: {}, stepMs: null, stress: false, gated: false }, gate));
-  report(await runSeries(opts.root, opts.bin, { name: 'review', plan: planReview(n, 100), spacingMs: 100, args: ['--mock-steps', '5'], env: { JEVCODE_MOCK_REVIEW_AT: '2' }, stepMs: null, stress: false, gated: true }, gate));
+  report(await runSeries(opts.root, opts.bin, { name: 'review', plan: planReview(n, 100), spacingMs: 100, args: ['--mock-steps', '5'], env: { JEVCODE_MOCK_REVIEW_AT: '2', JEVCODE_AUTONOMY: 'review' }, stepMs: null, stress: false, gated: true }, gate));
   report(await runSeries(opts.root, opts.bin, { name: 'burst30', plan: planIdle(n, 30), spacingMs: 30, args: [], env: {}, stepMs: null, stress: false, gated: false }, gate));
   return { gateP95Ms: gate.p95, gateMaxMs: gate.max, maxFps: MAX_FPS, throttleMs: throttleMs(MAX_FPS), series, deviations: [...COMPOSER_DEVIATIONS], pass: series.every((s) => s.pass) };
 }

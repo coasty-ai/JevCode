@@ -21,7 +21,7 @@ import { CONTEXT_COMPACTIONS, CONTEXT_VIEWS, DEFAULT_CONTEXT_COMPACTION, DEFAULT
   xdgConfigDir,
 } from '../../../src/config/defaults.js';
 import type { SettingName } from '../../../src/config/types.js';
-import { DEFAULT_MODE, JEV_PROVIDER_SETTING_VALUES, KNOWN_KEY_ENV, MODE_BADGE_MAX_CELLS, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
+import { AUTONOMY_DESCRIPTION, AUTONOMY_SETTING_VALUES, DEFAULT_AUTONOMY, DEFAULT_MODE, JEV_PROVIDER_SETTING_VALUES, KNOWN_KEY_ENV, MODE_BADGE_MAX_CELLS, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
 import type { EngineMode } from '../../../src/core/types.js';
 import { cellWidth } from '../../../src/tui/glyphs.js';
 
@@ -64,6 +64,7 @@ describe('the §16 SETTINGS table', () => {
       'configFile',
       'decider.provider', // TUI-DESIGN-2 §2.3
       'mode', // TUI-DESIGN-2 §1.2
+      'autonomy', // complete autonomy by default
       'seen.defaultMode', // TUI-DESIGN-3 §0.1 (D-Q)
       'context.mode', // TUI-DESIGN-4 §8 (the round-4 config rows) over COORDINATION-DESIGN §8
       'context.compaction',
@@ -163,6 +164,29 @@ describe('TUI-DESIGN-2 §2.3: the decider.provider row and the known key variabl
     // the key row is unchanged: TYPESAFE_API_KEY arrives through resolve.ts's extraEnv (§2.3 step 3)
     expect(settingSpec('decider.apiKey').env).toEqual(['JEV_API_KEY', 'OPENROUTER_API_KEY']);
     expect(KNOWN_KEY_ENV).toEqual(['JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY']);
+  });
+});
+
+describe('complete autonomy by default: the `autonomy` row', () => {
+  it('sits directly after `mode`: --autonomy / JEVCODE_AUTONOMY / `autonomy`, default full, not secret, not a launch row, an enum of full|review', () => {
+    const names = SETTINGS.map((s) => s.name);
+    expect(names.indexOf('autonomy')).toBe(names.indexOf('mode') + 1);
+    expect(settingSpec('autonomy')).toMatchObject({ flag: 'autonomy', env: ['JEVCODE_AUTONOMY'], fileKey: 'autonomy', defaultValue: 'full', secret: false });
+    expect(settingSpec('autonomy').description).toBe('who approves review-flagged actions: full auto-approves and logs them (default); review stops for y/n');
+    expect(settingSpec('autonomy').description).toBe(AUTONOMY_DESCRIPTION);
+    expect(settingSpec('autonomy').launch).toBeUndefined();
+    expect(settingSpec('autonomy').boolFlag).toBeUndefined();
+    expect(settingSpec('autonomy').hidden).toBeUndefined();
+    expect(settingSpec('autonomy').shape).toEqual({ kind: 'enum', values: AUTONOMY_SETTING_VALUES });
+    expect(AUTONOMY_SETTING_VALUES).toEqual(['full', 'review']);
+    expect(DEFAULT_AUTONOMY).toBe('full');
+    expect(settingSpec('autonomy').defaultValue).toBe(DEFAULT_AUTONOMY);
+  });
+
+  it('`jevcode config` reports a value that is not full|review (§7.5)', () => {
+    expect(settingProblem(settingSpec('autonomy'), 'review')).toBeNull();
+    expect(settingProblem(settingSpec('autonomy'), 'FULL')).toBeNull();
+    expect(settingProblem(settingSpec('autonomy'), 'yolo')).toEqual({ kind: 'wrong-type', expected: 'one of full|review' });
   });
 });
 

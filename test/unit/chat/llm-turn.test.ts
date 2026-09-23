@@ -1,11 +1,12 @@
 /**
- * TUI-DESIGN-2 §3.6 jev+llm turn (S3, §8.1 row `llm-turn.test.ts`): `buildChatRequest` has no tools, temperature null,
- * ≤ 6 turns, the system prompt literal and the optional sections; messages alternate and start with the human; a returned
- * tool call is dropped with a warning; deltas stream; the answer passes through redact; `chatMaxTokens` = min(800, cfg).
+ * The chat turn every submission gets: `buildChatRequest` has no tools, temperature null, ≤ 6 turns, the JevCode
+ * system prompt (identity · capabilities · voice · this workspace) and the optional sections; messages alternate and
+ * start with the human; a returned tool call is dropped with a warning; deltas stream; the answer passes through
+ * redact; `chatMaxTokens` = min(800, cfg).
  */
 import { describe, expect, it } from 'vitest';
 import type { GenerateRequest, Provider } from '../../../src/core/types.js';
-import { CHAT_CONVERSATION_TURNS, CHAT_MAX_OUTPUT_TOKENS, CHAT_SYSTEM_PROMPT, buildChatRequest, chatMaxTokens, chatMessages, llmChatTurn, type LlmTurnInput } from '../../../src/chat/llm-turn.js';
+import { CHAT_CONVERSATION_TURNS, CHAT_IDENTITY, CHAT_MAX_OUTPUT_TOKENS, buildChatRequest, buildChatSystem, chatMaxTokens, chatMessages, llmChatTurn, type LlmTurnInput } from '../../../src/chat/llm-turn.js';
 import { harnessFacts } from '../../../src/chat/facts.js';
 import type { ChatTurn } from '../../../src/chat/ledger.js';
 import { keyedFixture } from './facts.test.js';
@@ -31,6 +32,7 @@ function input(over: Partial<LlmTurnInput> = {}): LlmTurnInput {
   return {
     provider: fakeProvider({ text: 'answer' }),
     message: 'why does test_parse_date fail?',
+    identity: { workspace: 'proj', git: 'main, 2 modified · 1 untracked', recentSessions: ['"fix the dates" · 3h ago'] },
     conversation: [],
     facts: harnessFacts(keyedFixture()),
     context: { plan: null, window: [], files: [] },
@@ -44,10 +46,17 @@ function input(over: Partial<LlmTurnInput> = {}): LlmTurnInput {
 }
 
 describe('§3.6 buildChatRequest', () => {
-  it('system = the literal prompt + session facts (+ instructions, plan, recent steps, files); no tools, no toolChoice, temperature null, maxTokens ≤ 800', () => {
+  it('system = who JevCode is + what it can do + how to answer + this workspace + session facts; no tools, no toolChoice, temperature null, maxTokens ≤ 800', () => {
     const req = buildChatRequest(input({ generation: { maxTokens: 4096, temperature: null } }));
-    expect(req.system.startsWith(CHAT_SYSTEM_PROMPT)).toBe(true);
-    expect(CHAT_SYSTEM_PROMPT).toBe(['You are the assistant of JevCode, a coding agent in which Jev (a decision model) makes every decision. You are in a conversation about the code in the workspace named below.', 'Answer the question. Do not propose file edits, patches or commands to run: the human starts a run for that by describing a task, and Jev then decides each step.', 'Be concrete, cite paths and line numbers you were shown, and keep the answer under twelve lines. If the shown files do not contain the answer, say what to open next.'].join('\n'));
+    expect(req.system.startsWith(buildChatSystem({ workspace: 'proj', git: 'main, 2 modified · 1 untracked', recentSessions: ['"fix the dates" · 3h ago'] }))).toBe(true);
+    expect(CHAT_IDENTITY).toBe(
+      'You are JevCode, a coding agent for the terminal, built by coasty-ai. Jev decides, the code model writes: Jev, a calibrated decision model, answers every control question (what step comes next, which files matter, whether an action is safe to run, whether the output succeeded, whether the task is done); the code model — you, in this reply — writes the code.',
+    );
+    // the voice rules and the workspace section the controller fills
+    expect(req.system).toContain('- Warm, concise, personal, plain prose.');
+    expect(req.system).toContain('the harness decides whether a run starts and appends that itself');
+    expect(req.system).toContain('## This workspace\n- name: proj\n- git: main, 2 modified · 1 untracked\n- recent sessions: "fix the dates" · 3h ago');
+    expect(buildChatSystem({ workspace: 'proj', git: null, recentSessions: [] })).toContain('- git: not a git repository\n- recent sessions: none yet');
     expect(req.system).toContain('## Session facts\n- JevCode is a coding agent');
     expect(req.system).not.toContain('## Instructions');
     expect(req.system).not.toContain('## Last run plan');

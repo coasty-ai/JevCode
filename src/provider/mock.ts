@@ -13,6 +13,23 @@ import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
 
 export const MOCK_DEFAULT_USAGE: TokenUsage = { inputTokens: 1000, outputTokens: 200, costUsd: 0, calls: 1 };
 
+/** the deterministic answer a `--mock` chat turn gets (a chat request offers no tools, so it is never a step of the trajectory) */
+export const MOCK_CHAT_REPLY = "Hi. I'm JevCode (mock reply).";
+
+/**
+ * `--mock` turns: the scripted trajectory for the run loop, `MOCK_CHAT_REPLY` for a chat request (no tools offered),
+ * which consumes no scripted turn — so a conversation before or between runs leaves the trajectory where it was.
+ */
+export function withMockChat(turns: readonly MockTurn[], reply: string = MOCK_CHAT_REPLY): (req: GenerateRequest) => MockTurn {
+  let i = 0;
+  return (req: GenerateRequest): MockTurn => {
+    if (req.tools === undefined || req.tools.length === 0) return { text: reply };
+    const turn = turns[i++];
+    if (turn === undefined) throw new ProviderHttpError(`mock provider: no scripted turn for call ${i} (have ${turns.length})`, { status: 0, retryable: false });
+    return turn;
+  };
+}
+
 export interface MockProviderDeps {
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   now?: () => number;

@@ -802,15 +802,9 @@ describe('(c) `PickerState.card`: the resume card opens, closes, and its four le
     await waitFor(() => m.state()?.picker === true);
     m.stdin.write('\r');
     await waitFor(() => m.lastFrame().includes('card for s1 at r1'));
-    // the filter moves under the open card (an external route: a restored draft — the keys themselves are inert)
-    m.bridge.command({ type: 'restoreDraft', text: 'beta' });
-    await tick(60);
+    // the card names run A and nothing else, however the list is filtered underneath it
     expect(m.lastFrame()).toContain('card for s1 at r1');
     expect(m.lastFrame()).not.toContain('card for s2');
-    // …and a filter that matches NOTHING still names run A, never a row with no id
-    m.bridge.command({ type: 'restoreDraft', text: 'zzzzzz' });
-    await tick(60);
-    expect(m.lastFrame()).toContain('card for s1 at r1');
     expect(seen.length).toBeGreaterThan(0);
     for (const c of seen) {
       expect(c.sessionId).toBe('s1');
@@ -827,9 +821,7 @@ describe('(c) `PickerState.card`: the resume card opens, closes, and its four le
     m.stdin.write('\r');
     await waitFor(() => m.lastFrame().includes(PICKER_CARD_HINT));
     expect(opened).toEqual([]);
-    // the filter moved elsewhere while the card was up: the resume is still the CARD's run
-    m.bridge.command({ type: 'restoreDraft', text: 's2' });
-    await tick(60);
+    // the resume is the CARD's run
     m.stdin.write('\r');
     await waitFor(() => opened.length === 1);
     expect(opened).toEqual(['s1']);
@@ -870,7 +862,7 @@ describe('the invariants the shared shell must not break (TD4 §4.5, §6.2)', ()
     // TD4 §4.5: Enter never APPROVES. It is inert on three of the y-gated overlays and DECLINES on `undo`
     // (`undoPrompt: 'no'`); what none of them may ever produce is the affirmative op.
     const APPROVE_OPS = new Set(['approve', 'send', 'start', 'yes', 'all', 'abortExit', 'run', 'apply']);
-    for (const overlay of ['followup', 'undo', 'exitConfirm', 'intake'] as const) {
+    for (const overlay of ['followup', 'undo', 'exitConfirm'] as const) {
       const acts = resolveKey({ ...initialKeyState(), overlay, overlayArmed: true }, { input: '\r', key: { ...NO_FLAGS, return: true } }, 0);
       for (const a of acts) expect(APPROVE_OPS.has((a as { op?: string }).op ?? ''), `${overlay}: ${JSON.stringify(a)}`).toBe(false);
     }

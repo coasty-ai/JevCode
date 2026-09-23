@@ -61,7 +61,6 @@ export const PLACEHOLDERS = {
   reviewLong: '(review pending — keys in the card; d opens a note)',
   reviewShort: '(review pending)',
   thinking: '(thinking…)',
-  intakeWait: '(waiting for y/n)',
   followupWait: '(waiting for y/r/n)',
   exitWait: '(waiting for y/n)',
   blocked: '(paused — answer the pane above)',
@@ -71,9 +70,9 @@ export const PLACEHOLDERS = {
 /**
  * `done`: one-shot mode after `run:end` — the composer was mounted for steering only (§1) and the process is exiting (§3.3), so
  * no placeholder invites input. TUI-DESIGN-2 §4.4: `thinking` (a submission between Enter and its reply; the draft stays editable,
- * Enter is queued) and `intakeWait` (the intake card owns `y`/`n`).
+ * Enter is queued).
  */
-export type ComposerMode = 'task' | 'followup' | 'steer' | 'review' | 'thinking' | 'intakeWait' | 'followupWait' | 'exitWait' | 'blocked' | 'filter' | 'done';
+export type ComposerMode = 'task' | 'followup' | 'steer' | 'review' | 'thinking' | 'followupWait' | 'exitWait' | 'blocked' | 'filter' | 'done';
 
 /** Below this many rows the review placeholder takes its short form (F-H, F-I, F-X vs F-G, F-J). */
 export const SHORT_PLACEHOLDER_ROWS = 16;
@@ -134,12 +133,25 @@ export interface PlaceholderParts {
   align: 'right' | 'inline';
 }
 
+/**
+ * The quiet start (2026-09): the workspace's most recent session is offered HERE — in the row the user is already
+ * looking at — instead of a `recent: "<title>" …` item above the box. The title is clipped to the inner width so the
+ * placeholder is always one row; Enter stays inert (it submits the draft), `/resume` is the verb.
+ */
+export function recentTaskPlaceholder(title: string, innerColumns: number = 0): string {
+  const head = 'Say hi · /resume continues "';
+  const width = Number.isFinite(innerColumns) && innerColumns > 0 ? innerColumns : 80;
+  const room = width - stringWidth(head) - 3; // the prompt (2 cells) and the closing quote
+  const t = room > 1 && stringWidth(title) > room ? `${title.slice(0, Math.max(1, room - 1))}…` : title;
+  return `${head}${t}"`;
+}
+
 /** TUI-DESIGN-2 §4.4: the placeholder parts for a state (the short review form below 16 rows; the hint only at ≥ 100 inner cells). */
-export function placeholderParts(mode: ComposerMode, rows: number, innerColumns: number = 0): PlaceholderParts {
+export function placeholderParts(mode: ComposerMode, rows: number, innerColumns: number = 0, recent: string | null = null): PlaceholderParts {
   const wide = Number.isFinite(innerColumns) && innerColumns >= PLACEHOLDER_HINT_MIN_COLUMNS;
   switch (mode) {
     case 'task':
-      return { text: PLACEHOLDERS.task, hint: wide ? PLACEHOLDERS.taskHint : '', align: 'right' };
+      return { text: recent !== null && recent !== '' ? recentTaskPlaceholder(recent, innerColumns) : PLACEHOLDERS.task, hint: wide ? PLACEHOLDERS.taskHint : '', align: 'right' };
     case 'followup':
       return { text: PLACEHOLDERS.followup, hint: wide ? PLACEHOLDERS.followupHint : '', align: 'right' };
     case 'steer':
@@ -148,8 +160,6 @@ export function placeholderParts(mode: ComposerMode, rows: number, innerColumns:
       return { text: rows < SHORT_PLACEHOLDER_ROWS ? PLACEHOLDERS.reviewShort : PLACEHOLDERS.reviewLong, hint: '', align: 'inline' };
     case 'thinking':
       return { text: PLACEHOLDERS.thinking, hint: '', align: 'inline' };
-    case 'intakeWait':
-      return { text: PLACEHOLDERS.intakeWait, hint: '', align: 'inline' };
     case 'followupWait':
       return { text: PLACEHOLDERS.followupWait, hint: '', align: 'inline' };
     case 'exitWait':
@@ -641,8 +651,8 @@ export interface ComposerProps {
 }
 
 /** TUI-DESIGN-2 §4.4 / TD §14.1: the placeholder row text after the prompt — text, then the hint right-aligned (`right`) or after three spaces (`inline`), never wider than `width`; `--ascii` draws the glyph twins (`...`, `-`, `^`). */
-export function placeholderRow(mode: ComposerMode, rows: number, width: number, promptWidth: number, g: GlyphSet = GLYPHS.unicode): string {
-  const raw = placeholderParts(mode, rows, width);
+export function placeholderRow(mode: ComposerMode, rows: number, width: number, promptWidth: number, g: GlyphSet = GLYPHS.unicode, recent: string | null = null): string {
+  const raw = placeholderParts(mode, rows, width, recent);
   const parts = { text: glyphTwin(raw.text, g), hint: glyphTwin(raw.hint, g), align: raw.align };
   if (parts.hint === '') return parts.text;
   const room = width - promptWidth;

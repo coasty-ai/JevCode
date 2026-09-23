@@ -59,8 +59,6 @@ import { AbortError } from '../../../src/errors.js';
 import type { ContextUsage, EngineEvent, JudgeResult, LaunchSettings, NoticeKind, RunGitMeta, SecretHit, SessionHost } from '../../../src/core/types.js';
 import { makeProposal, makeStepRecord } from '../../fixtures/checkpoint/make.js';
 import { fakeEngine, loadRunEvents, mkConfirmRequest, tick } from '../../fixtures/tui/fixtures.js';
-// TUI-DESIGN-2 §3.7 / §6 item 11: the --plain twin of Renderer.restoreDraft
-import { intakeKeptEcho } from '../../../src/tui/plain.js';
 import { stopTranscriptLine } from '../../../src/loop/stop.js';
 import { MODE_BADGE_WORD } from '../../../src/config/defaults.js';
 
@@ -812,23 +810,6 @@ describe('createPlainRenderer: local items, labels, session mode, host hand-over
     index: () => [],
     history: () => null,
     workspaceCandidates: async () => [],
-  });
-
-  it('TUI-DESIGN-2 §3.7 / §6 item 11: restoreDraft echoes the kept draft as one bare `(kept: …)` line through the host redactor (never an item), after ending an open stream', async () => {
-    const out = new Sink();
-    const r = createPlainRenderer({ task: 't', resumeId: null, onAbort: () => undefined, stdout: out as unknown as NodeJS.WriteStream, stdin: new PassThrough() as unknown as NodeJS.ReadStream });
-    await r.firstFrame();
-    r.setHost(noHost());
-    const fe = fakeEngine();
-    r.attach(fe.engine);
-    fe.emit({ type: 'generator:delta', step: 1, text: 'partial' });
-    r.restoreDraft('the date parsing\nkey SECRETVALUE');
-    await r.unmount();
-    const lines = out.text.split('\n');
-    expect(lines).toContain('partial');
-    expect(lines).toContain('(kept: the date parsing ⏎ key [REDACTED:h])');
-    expect(intakeKeptEcho('x')).toBe('(kept: x)');
-    expect(lines.some((l) => l.startsWith('[ui]') && l.includes('kept'))).toBe(false);
   });
 
   it('notify prints idle-time items with their label, terminating an open stream first; the TUI would print the same line', async () => {
