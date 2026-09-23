@@ -24,6 +24,7 @@ export function exitCodeFor(reason: StopReason, error?: SerializedError, degrade
   switch (reason) {
     case 'complete':
     case 'generator_done':
+    case 'answered':
       return EXIT_CODES.ok;
     case 'human_abort':
       return EXIT_CODES.sigint;
@@ -35,6 +36,16 @@ export function exitCodeFor(reason: StopReason, error?: SerializedError, degrade
       // max_steps, spend_cap, wall_time, max_replans, replan_stop, impossible, human_pause, token_cap
       return EXIT_CODES.budget;
   }
+}
+
+/**
+ * A stop that FINISHED the run (exit 0, nothing to resume): `complete`, `generator_done`, and `answered` — AGENT-LOOP-DESIGN §A1's
+ * reply-only agent run. The resumable checks (engine run:end, session.ts resumeCandidate) and the epilogue's exit-0 row key off this.
+ */
+export const FINISHED_STOP_REASONS: readonly StopReason[] = ['complete', 'generator_done', 'answered'];
+
+export function isFinishedStop(reason: StopReason): boolean {
+  return FINISHED_STOP_REASONS.includes(reason);
 }
 
 /** Interrupt reason and StopReason derived from an aborted signal's reason. */

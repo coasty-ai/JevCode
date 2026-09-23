@@ -157,7 +157,7 @@ export interface ExitCodeRow {
  * reopens; an external SIGINT is `signal` and exits the session process.
  */
 export const EXIT_CODE_TABLE: readonly ExitCodeRow[] = [
-  { situation: 'complete / generator_done', oneShot: 0, session: 0, sessionExits: false, stopReasons: ['complete', 'generator_done'] },
+  { situation: 'complete / generator_done / answered', oneShot: 0, session: 0, sessionExits: false, stopReasons: ['complete', 'generator_done', 'answered'] },
   {
     situation: 'budget (max_steps, wall_time, spend_cap, max_replans, token_cap), replan_stop, impossible, human_pause',
     oneShot: 4,

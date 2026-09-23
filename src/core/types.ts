@@ -373,7 +373,8 @@ export type StopReason =
   | 'error'
   | 'human_pause' // TUI-DESIGN §15 item 1: Esc / pause at the loop top; exit-4 family, resumable without --force
   | 'token_cap' // TUI-DESIGN §15 item 1: RunLimits.maxGeneratorTokens reached (allowUnpriced); a plain budget stop
-  | 'stuck'; // AGENT-LOOP-DESIGN §8: the agent's loop detector tripped past AGENT_MAX_LOOP_NUDGES; exit-4 family, resumable
+  | 'stuck' // AGENT-LOOP-DESIGN §8: the agent's loop detector tripped past AGENT_MAX_LOOP_NUDGES; exit-4 family, resumable
+  | 'answered'; // AGENT-LOOP-DESIGN §A1: the model answered in prose — no tool call, no change, no command (`isReplyOnlyRun`); exit 0, not resumable
 /** TUI-DESIGN §15 item 1: the signal behind abort('signal'); exitCodeFor maps to 130 / 143 / 129 */
 export type SignalName = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
 
