@@ -319,7 +319,7 @@ class Driver implements AgentDriver {
     const writes: Promise<unknown>[] = [];
     for (const [k, b] of batch.entries()) {
       const { result, ms } = results[k]!;
-      writes.push(t.append({ kind: 'result', turn: eventTurn, toolUseId: b.call.id, name: b.call.name === 'invalid' ? b.call.rawName : b.call.name, content: ctx.redact(result.text), isError: !result.ok, summary: ctx.redact(result.summary) }));
+      writes.push(t.append({ kind: 'result', turn: eventTurn, toolUseId: b.call.id, name: b.call.name === 'invalid' ? b.call.rawName : b.call.name, content: ctx.redact(result.text), isError: !result.ok, summary: ctx.redact(result.summary), ...(result.pointer !== undefined ? { pointer: result.pointer } : {}) }));
       if (result.hashBasis !== null) trip = feedLoop(this.state.loopWindow, { name: b.name, signature: callSignature(b.name, b.call.args, resultHash({ kind: 'text', text: result.hashBasis })), testCommand: null }) ?? trip;
       for (const p of result.readPaths ?? []) {
         if (!readPaths.includes(p)) readPaths.push(p);
@@ -392,7 +392,7 @@ class Driver implements AgentDriver {
     const testRun = act.tool === 'bash' && act.command !== null && isTestCommand(act.command, test);
     const unscoped = act.tool === 'bash' && act.command !== null && isUnscopedTestRun(act.command, act.workdir, test);
     // memory first (the call is resolved even if the disk append then fails), then the counters
-    const appending = t.append({ kind: 'result', turn: this.state.turns, toolUseId: call.id, name: call.name === 'invalid' ? call.rawName : call.name, content: ctx.redact(report.text), isError: !report.ok, summary: ctx.redact(report.summary) });
+    const appending = t.append({ kind: 'result', turn: this.state.turns, toolUseId: call.id, name: call.name === 'invalid' ? call.rawName : call.name, content: ctx.redact(report.text), isError: !report.ok, summary: ctx.redact(report.summary), ...(report.pointer !== undefined ? { pointer: report.pointer } : {}) });
     if (changesWorkspace(act, o, testRun)) {
       this.state.changedSinceVerify = true;
       this.state.failedTest = null;

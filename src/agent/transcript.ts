@@ -235,9 +235,10 @@ export class Transcript {
   }
 }
 
-/** §7.3: the elision marker of a masked tool result. */
+/** §7.3: the elision marker of a masked tool result (`{tool} {summary}`, the tool named once). */
 export function elided(r: ResultRecord): string {
-  return `[elided: ${r.name} ${r.summary} — ${r.content.length} chars; ${r.pointer ?? 'call it again if you need it'}]`;
+  const what = r.summary.startsWith(`${r.name} `) ? r.summary : `${r.name} ${r.summary}`;
+  return `[elided: ${what} — ${r.content.length} chars; ${r.pointer !== undefined ? `full output: ${r.pointer}` : 'call it again if you need it'}]`;
 }
 
 export function messageChars(messages: readonly AgentMessage[]): number {

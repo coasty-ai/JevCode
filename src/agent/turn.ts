@@ -124,13 +124,11 @@ export async function sampleTurn(s: TurnSetup): Promise<SampledTurn> {
 
   let raw: RawCall[] = result.toolCalls.map((c) => ({ ...(c.id !== undefined ? { id: c.id } : {}), name: c.name, input: c.input, rawJson: c.rawJson }));
   let prose = result.text;
-  let extracted = false;
   if (raw.length === 0) {
     const x = extractTextToolCalls(result.text);
     if (x.calls.length > 0) {
       raw = x.calls;
       prose = x.prose;
-      extracted = true;
     }
   }
   // §3.1 step 7: nothing to say and nothing to do is a malformed reply (a stage failure; three in a row stop the run)
@@ -143,8 +141,9 @@ export async function sampleTurn(s: TurnSetup): Promise<SampledTurn> {
   raw.forEach((r, i) => {
     const n = normaliseCall(r, { root: ctx.workspace.root, cutOff: cut && i === raw.length - 1, maxTokens: req.maxTokens });
     const id = ids[i]!;
-    // extracted calls are recorded under the tool's own name, so the next request shows the model the native form
-    const name = extracted ? (resolveToolName(r.name) ?? r.name) : r.name;
+    // calls are recorded under the tool's own name (an alias like `Read` → read_file, a call extracted from the prose), so
+    // the next request shows the model the native form and the tool_result carries the same name as its tool_use
+    const name = resolveToolName(r.name) ?? r.name;
     recorded.push({ id, name, input: n.replayInput, ...(n.error !== null ? { error: n.error } : {}) });
     if (i < AGENT_MAX_CALLS_PER_TURN) calls.push({ id, ...n });
   });

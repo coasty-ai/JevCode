@@ -136,6 +136,18 @@ describe('segmenting', () => {
     const assistant = messagesOf(ctx, 1)[1]!;
     expect(assistant).toMatchObject({ role: 'assistant', content: [{ type: 'text', text: 'Checking.' }, { type: 'tool_use', id: 'call_1_0', name: 'read_file', input: { path: 'src/a.py' } }] });
   });
+
+  it('a native call under an alias is replayed under the tool name its tool_result carries', async () => {
+    const ctx = createAgentContext({ turns: [{ toolCalls: [call('Read', { file_path: 'src/a.py' }, 'toolu_1')] }, { text: 'ok' }], testCommand: null });
+    const d = createAgentDriver();
+    await step(d, ctx);
+    await step(d, ctx);
+    const [, assistant, results] = messagesOf(ctx, 1);
+    const use = assistant!.content.find((b) => b.type === 'tool_use')!;
+    const result = results!.content[0]!;
+    expect(use.type === 'tool_use' && [use.name, use.input]).toEqual(['read_file', { file_path: 'src/a.py' }]);
+    expect(result.type === 'tool_result' && [result.toolUseId, result.name]).toEqual(['toolu_1', 'read_file']);
+  });
 });
 
 describe('discards and steers', () => {
@@ -311,6 +323,17 @@ describe('act mappings', () => {
     expect(steps[1]!.next.proposal.action).toEqual({ kind: 'edit', path: 'cfg.py', old: 'name = "foo"', new: 'name = "bar"' });
     expect(ctx.fs.files.get('cfg.py')).toBe(`${secret}name = "bar"\nother = "foo"\n`);
     expect(ctx.fs.files.get('m.py')).toBe(`${secret}foo()\nxfoo()\n`);
+  });
+
+  it('an executed edit, write or command names the arguments it ignored, like a resolved call', async () => {
+    const ctx = createAgentContext({
+      turns: [{ toolCalls: [call('write_file', { path: 'n.txt', content: 'x\n', mode: '0644' }), call('bash', { command: 'npm install', shell: 'zsh' })] }, { text: 'ok' }],
+      testCommand: null,
+    });
+    const d = createAgentDriver();
+    for (let i = 0; i < 3; i += 1) await step(d, ctx);
+    const results = messagesOf(ctx, 1).at(-1)!.content.map((b) => (b.type === 'tool_result' ? b.content.split('\n').at(-1) : ''));
+    expect(results).toEqual(['(ignored unknown arguments: mode)', '(ignored unknown arguments: shell)']);
   });
 
   it('proposals carry the todo list as the plan', async () => {

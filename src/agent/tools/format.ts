@@ -52,6 +52,8 @@ export interface BashRender {
   status: string;
   /** the whole output, for the loop signature */
   output: string;
+  /** where the whole output was spilled (`jevcode:outputs/step-N.txt`), when it was clipped and saved */
+  pointer: string | null;
 }
 
 /**
@@ -69,12 +71,10 @@ export async function renderBash(
   const [inline, head, tail] = ok ? [AGENT_BASH_OK_INLINE, AGENT_BASH_OK_HEAD, AGENT_BASH_OK_TAIL] : [AGENT_BASH_FAIL_INLINE, AGENT_BASH_FAIL_HEAD, AGENT_BASH_FAIL_TAIL];
   const clipped = clipMiddle(output, inline, head, tail);
   const lines = [status, clipped.text.length === 0 ? '(no output)' : clipped.text];
-  if (clipped.clipped) {
-    const pointer = await o.spill(output);
-    lines.push(pointer !== null ? spillPointer(pointer, Buffer.byteLength(output, 'utf8')) : '(the full output could not be saved)');
-  }
+  const pointer = clipped.clipped ? await o.spill(output) : null;
+  if (clipped.clipped) lines.push(pointer !== null ? spillPointer(pointer, Buffer.byteLength(output, 'utf8')) : '(the full output could not be saved)');
   if (exec.truncated) lines.push('[output capped by the sandbox; the middle of the stream was dropped]');
-  return { text: lines.join('\n'), ok, status, output };
+  return { text: lines.join('\n'), ok, status, output, pointer };
 }
 
 /** One redacted-by-the-caller line, whitespace collapsed and clipped: the shape of every summary. */

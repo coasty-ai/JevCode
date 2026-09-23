@@ -12,6 +12,8 @@ export interface ToolResult {
   hashBasis: string | null;
   /** workspace files this call read (the observe step's `read` action paths) */
   readPaths?: string[];
+  /** the spill file of a clipped output (`jevcode:outputs/step-N.txt`): a masked result names it (§7.3) */
+  pointer?: string;
 }
 
 /** The `ERROR: …` line for a failed workspace access (§4.3 read_file failures). */

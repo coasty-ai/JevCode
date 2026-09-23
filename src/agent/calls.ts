@@ -86,9 +86,13 @@ export function callSummary(c: NormalisedCall): string {
   }
 }
 
+/** `text` with one more line, when there is one (the `(ignored unknown arguments: …)` line, §4.4 step 4). */
+function withLine(text: string, line: string | null): string {
+  return line === null ? text : `${text}\n${line}`;
+}
+
 function withIgnored(r: ToolResult, ignored: readonly string[]): ToolResult {
-  const line = ignoredLine(ignored);
-  return line === null ? r : { ...r, text: `${r.text}\n${line}` };
+  return { ...r, text: withLine(r.text, ignoredLine(ignored)) };
 }
 
 function resolved(c: NormalisedCall, run: (part: number | undefined) => Promise<ToolResult>): Disposition {
@@ -133,11 +137,12 @@ function classifyContext(ctx: AgentContext, workdir: string | null): Parameters<
 
 /**
  * §A5: a `git_discard` of tracked files is covered by the dirty-set pre-images when every dirty file is listed and the set
- * is within the copy caps (200 files, 16 MiB). Everything else is not provably covered.
+ * is within the copy caps (200 files, 16 MiB). The set the step copies is the dirty set now — the run's own changes
+ * included — not only the run-start one. Everything else is not provably covered.
  */
 async function preImagesCover(ctx: AgentContext, v: CommandVerdict): Promise<boolean> {
   if (v.rule !== 'git_discard' || v.discard !== 'tracked') return false;
-  const dirty = ctx.dirtyAtStart;
+  const dirty = ctx.workspace.dirtySet?.() ?? ctx.dirtyAtStart;
   if (dirty.size > PRE_IMAGE_MAX_FILES) return false;
   const sizes = new Map((await ctx.workspace.listCandidates()).map((c) => [c.path, c.bytes]));
   let bytes = 0;
@@ -295,8 +300,13 @@ function lineCount(s: string): number {
   return s.split('\n').length - (s.endsWith('\n') ? 1 : 0);
 }
 
-/** Render the result of an executed `act` step for the model. */
+/** Render the result of an executed `act` step for the model, with the call's `(ignored unknown arguments: …)` line. */
 export async function reportAct(ctx: AgentContext, act: PreparedAct, o: AgentObservation): Promise<ActReport> {
+  const r = await renderAct(ctx, act, o);
+  return { ...r, text: withLine(r.text, ignoredLine(act.call.ignored)) };
+}
+
+async function renderAct(ctx: AgentContext, act: PreparedAct, o: AgentObservation): Promise<ActReport> {
   const base = { refused: false, failingTest: false };
   const out = o.outcome;
   if (out.status === 'blocked') {
@@ -319,7 +329,7 @@ export async function reportAct(ctx: AgentContext, act: PreparedAct, o: AgentObs
     const r = await renderBash(exec, o.output, { workdir: act.workdir, tests: o.tests?.parsed ?? null, interrupted: out.status === 'interrupted', spill: (text) => ctx.writeOutput(text) });
     const tail = exec.killedBy === 'timeout' ? 'timed out' : exec.killedBy !== null ? 'killed' : `exit ${exec.exitCode ?? 'null'}`;
     const failingTest = o.tests !== null && !r.ok;
-    return { ...base, text: r.text, ok: r.ok, summary: `${act.goal} (${tail})`, hashBasis: bashHashBasis(exec.exitCode, o.output, ctx.workspace.root), failingTest };
+    return { ...base, text: r.text, ok: r.ok, summary: `${act.goal} (${tail})`, hashBasis: bashHashBasis(exec.exitCode, o.output, ctx.workspace.root), failingTest, ...(r.pointer !== null ? { pointer: r.pointer } : {}) };
   }
   if (out.status === 'interrupted') return { ...base, text: 'interrupted', ok: false, summary: `${act.goal} (interrupted)`, hashBasis: 'interrupted' };
   const path = act.path ?? '';

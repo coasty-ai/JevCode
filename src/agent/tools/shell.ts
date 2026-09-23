@@ -54,5 +54,5 @@ export async function runReadonlyBash(ctx: AgentContext, a: BashArgs, part: numb
   const output = joinStreams(stdout, stderr);
   const r = await renderBash({ ...exec, stdout, stderr }, output, { workdir: a.workdir ?? null, tests: null, spill: (text) => ctx.writeOutput(text, part) });
   const tail = exec.killedBy === 'timeout' ? 'timed out' : exec.killedBy !== null ? 'killed' : `exit ${exec.exitCode ?? 'null'}`;
-  return { text: r.text, ok: r.ok, summary: `${label} (${tail})`, hashBasis: bashHashBasis(exec.exitCode, output, ctx.workspace.root) };
+  return { text: r.text, ok: r.ok, summary: `${label} (${tail})`, hashBasis: bashHashBasis(exec.exitCode, output, ctx.workspace.root), ...(r.pointer !== null ? { pointer: r.pointer } : {}) };
 }

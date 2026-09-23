@@ -41,10 +41,19 @@ describe('masking', () => {
     await twoSteps(ctx);
     const second = agentRequests(ctx)[1]!;
     const results = second.agent!.messages.at(-1)!.content.flatMap((b) => (b.type === 'tool_result' ? [b.content] : []));
-    expect(results.slice(0, 4).every((r) => r.startsWith('[elided: bash bash cat big') && r.endsWith('call it again if you need it]'))).toBe(true);
+    expect(results.slice(0, 4).every((r) => r.startsWith('[elided: bash cat big') && r.endsWith('call it again if you need it]'))).toBe(true);
     expect(results.slice(4).every((r) => r.includes(BIG))).toBe(true);
     expect(second.agent!.messages[1]!.content.filter((b) => b.type === 'tool_use')).toHaveLength(10);
     expect(ctx.eventsOf('context:compacted')).toEqual([]);
+  });
+
+  it('a masked command whose output was spilled points at its outputs/ file', async () => {
+    const HUGE = 'y'.repeat(40_000);
+    const ctx = bigRun(70_000, { windowTokens: 1_000_000, sandbox: () => ({ exitCode: 0, stdout: HUGE }) });
+    await twoSteps(ctx);
+    const results = agentRequests(ctx)[1]!.agent!.messages.at(-1)!.content.flatMap((b) => (b.type === 'tool_result' ? [b.content] : []));
+    expect(results[0]).toMatch(/^\[elided: bash cat big0\.log \(exit 0\) — \d+ chars; full output: jevcode:outputs\/step-1-1\.txt\]$/);
+    expect(ctx.outputs.get('outputs/step-1-1.txt')).toBe(HUGE);
   });
 
   it('no masking below 50 %', async () => {

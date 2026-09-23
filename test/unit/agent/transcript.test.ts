@@ -2,7 +2,7 @@
 import { appendFileSync, readFileSync, statSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { ConfigError } from '../../../src/errors.js';
-import { AgentTranscriptMissingError, Transcript, readTranscript, transcriptPath, withoutProviderState, type TranscriptRecord } from '../../../src/agent/transcript.js';
+import { AgentTranscriptMissingError, Transcript, elided, readTranscript, transcriptPath, withoutProviderState, type TranscriptRecord } from '../../../src/agent/transcript.js';
 import { tempRunDir } from './helpers.js';
 
 const project = { provider: 'openrouter' as const, model: 'z-ai/glm-5.3-flash', systemHash: 'sys1', replay: true };
@@ -113,7 +113,13 @@ describe('the projection into request messages', () => {
     const t = await conversation();
     await t.append({ kind: 'mask', ids: ['r2'] });
     const r2 = t.messages(project)[2]!.content.find((b) => b.type === 'tool_result' && b.toolUseId === 'r2')!;
-    expect(r2.type === 'tool_result' && r2.content).toBe('[elided: read_file read_file b (lines 1-1) — 900 chars; call it again if you need it]');
+    expect(r2.type === 'tool_result' && r2.content).toBe('[elided: read_file b (lines 1-1) — 900 chars; call it again if you need it]');
+  });
+
+  it('a masked result whose output was spilled names its file', () => {
+    const r: Parameters<typeof elided>[0] = { v: 1, seq: 3, at: 'x', kind: 'result', toolUseId: 'b1', name: 'bash', content: 'x'.repeat(900), isError: false, summary: 'bash cat big.log (exit 0)', pointer: 'jevcode:outputs/step-2.txt' };
+    expect(elided(r)).toBe('[elided: bash cat big.log (exit 0) — 900 chars; full output: jevcode:outputs/step-2.txt]');
+    expect(elided({ ...r, summary: 'invalid (rejected)', name: 'Frobnicate' })).toBe('[elided: Frobnicate invalid (rejected) — 900 chars; full output: jevcode:outputs/step-2.txt]');
   });
 
   it('a compaction replaces everything before it with one user message', async () => {
