@@ -23,6 +23,16 @@ a shape was chosen before it was replaced.
 
 The research each round did first is in the [research archive](../research/README.md).
 
+## The harness eras
+
+The engine has had three defaults. Each change is a dated entry in the [decision log](../DECISIONS.md).
+
+| From | Default mode | In one line |
+| --- | --- | --- |
+| 2026-09-21 | `jev-only`, then `jev-on` | Jev decides every step; first no generating model at all, then a code model writing one action per step |
+| 2026-09-22 | `llm-jev` | the code model writes candidate patches inside a search, tests verify, Jev arbitrates — the mode the published measurements are of |
+| 2026-09-23 | `agent` | the code model drives with native tool calls and everything streams; Jev keeps three quick hints at the edges — **current**, see [The agent loop](../architecture/agent-loop.md) |
+
 ## The status report, round by round
 
 [`docs/STATUS.md`](../STATUS.md) is one long document with a section per round. It carries what was built, what
@@ -67,12 +77,12 @@ The first attempt at the first scenario was kept too, under a name that says wha
 the review prompt deliberately unanswered, which waited for a keypress — the intended behaviour of the middle
 confidence band, and the reason there is no auto-approve.
 
-No artefact in that set contained a key. Each was checked for the key formats after the run. An excerpt from
-the first one, annotated line by line, is on [Your first run](../getting-started/first-run.md).
+No artefact in that set contained a key. Each was checked for the key formats after the run. They were all
+taken in the Jev-driven `jev-on` mode, the default at the time.
 
 ## The decision log
 
-[`docs/DECISIONS.md`](../DECISIONS.md) is the one historical document that is still live. It has 91 dated
+[`docs/DECISIONS.md`](../DECISIONS.md) is the one historical document that is still live. It has 100 dated
 entries, oldest first, each giving the decision, why it was taken and what it affects — including the entries
 that reversed an earlier one. A generated table of contents sits at the top, newest first.
 

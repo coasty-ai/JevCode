@@ -11,8 +11,9 @@ You need an installed `jevcode` ([Install](install.md)) and one API key
 A bare `jevcode` is `jevcode chat`: an interactive session in the current directory. So is a
 `jevcode` with only flags, and so is `jevcode run` with no task on a terminal.
 
-Nothing runs and no money is spent until you submit something the harness reads as a task. A
-greeting gets a reply, not a run.
+Nothing runs and no money is spent until you send a message. Then every message gets a streamed
+reply from the code model: a greeting costs one short model turn, and a task becomes a run in
+the same conversation.
 
 ## The first frame
 
@@ -32,7 +33,7 @@ The run header, the sandbox summary and the recent-session hint are not drawn in
 session; `--plain` and `--json` still print them, and `jevcode doctor` and `/status` carry the facts.
 
 The splash settles after about 0.7 s. Pressing a key completes it immediately rather than
-waiting.
+waiting. After that the wordmark stays pinned at the top and the conversation grows below it.
 
 The configuration arrives a few frames later, and with it the session spend meter and the git
 zone. Under `--no-animation`, `--screen-reader` or `--plain` there is no splash at all.
@@ -45,34 +46,53 @@ file-mention candidate list, then the session index.
 
 ## Just talk
 
-Every message you type gets a streamed reply from the code model. It knows it is JevCode, what it
-can do, which workspace it is in and how the git tree stands, so `hi`, `what can you do?` and
-`who made you?` get real answers. While the reply streams, Jev reads the message once, in the
-background, to decide whether it is also a task: a coding task makes the reply end with
-*On it — starting the run.* and the run starts; a message Jev finds ambiguous ends with
-*Say `do it` and I'll make that a task.*, and the next `do it`, `go ahead` or `yes` starts it;
-small talk and questions get the reply alone. Nothing ever asks you to classify your own sentence.
+The session is one conversation with the code model. Every message you type is sent to it as the
+next turn, and its reply streams in as it is written — a line appears before it is finished,
+under the `[jevcode]` label. It knows it is JevCode, built by coasty-ai, which model it runs on,
+which workspace it is in and how the git tree stands, so `hi`, `what can you do?` and
+`who made you` get real answers, never canned text.
 
-The agent acts on its own by default. The `autonomy` setting (`--autonomy full|review`,
-`JEVCODE_AUTONOMY`, default `full`) decides what happens when the risk stage rates an action
-*review*: under `full` the action proceeds and the transcript notes
-`[review] auto-approved (autonomy full): <action> — <reason>`; under `review` the approval card
-appears and waits. A *block* verdict stops the action under both.
+There is no "is this a task?" step. The model decides by what it does: a greeting or a question
+is answered in prose, and a request for a change is answered with tool calls — reads, edits,
+commands — which turn the reply into a run. From the first tool call you see the run: tool rows
+such as `Read calc/core.py`, `Edit calc/core.py (+1 −1)` and `Bash python -m pytest -q · 7 passed`,
+and the status row's words `thinking`, `reading`, `editing`, `running` and `testing`. Beside
+them, in the status row's first cell, a small animation shows what is happening: a spinning donut
+while the model thinks, a globe while it reads, a turning cube while it edits or runs a command,
+a wave while your tests run. It stops when nothing is running.
+
+Follow-ups see everything before them. After a run, `did it pass?` or `now do the same for
+parse_date` continue the same conversation, with the earlier tool results in view.
+
+**The agent acts on its own.** Under the default `autonomy: full`, nothing asks and nothing is
+refused: every command runs inside the sandbox with a pre-image of what it may change, so
+`/undo` can put it back. A command that matches a destructive rule (deleting outside the
+workspace, discarding uncommitted work, a force push, publishing, …) still runs, and its step
+carries one line saying what happened and whether `/undo` can restore it — for example
+`this left the machine; /undo cannot reverse it` for a push. To be asked first, start with
+`jevcode --autonomy review` (or `JEVCODE_AUTONOMY=review`, or `jevcode config set autonomy
+review`): destructive and unrecognised commands then wait for a y/n card, and a declined one
+goes back to the model.
+
+Esc or Ctrl-C while a reply is still only prose stops the reply and keeps the session. Once the
+run has started, Esc pauses it and Esc Esc aborts it.
 
 ## The one-field key wizard
 
 If no key resolves, the session opens a wizard with exactly one field: a masked **OpenRouter API
-key**. One key is enough — it runs both the decision model and the code model.
+key**. One key is enough — it runs the code model, and an OpenRouter key also serves Jev's few
+quick routing calls. In the default mode Jev is optional: a code-model key from any of the seven
+providers is all a run needs.
 
 Press <kbd>Esc</kbd> on the empty field and it lists the other ways to start:
 
 ```
-  1 OpenRouter for both   2 TypeSafe for Jev   3 Jev only, no LLM   4 Anthropic for code
+  1 OpenRouter   2 TypeSafe for Jev   3 jev-only (no code model)   4 Anthropic for code
 ```
 
-Option 3 also persists `mode: jev-only`, which is the mode that needs no generating model at
-all. If a TypeSafe or Anthropic key is already resolvable, the field says so and asks only for
-the half that is missing.
+Option 3 also persists `mode: jev-only`, the mode that needs no generating model at all. If a
+TypeSafe or Anthropic key is already resolvable, the field says so and asks only for what is
+missing.
 
 What the wizard writes goes to `${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json` with file
 mode `0600`. **Keys are never accepted as command-line arguments in this flow**, and
@@ -88,154 +108,105 @@ flowchart TD
   RUN["jevcode"] --> FF["FIRST FRAME, from argv, env, isTTY and cwd alone"]
   FF --> FFD["wordmark, rounded console, mode badge, step 0/– sentinel<br/>no config file, no .env, no runs dir, no git touched yet"]
   FFD --> KEYQ{"is a key resolvable?"}
-  KEYQ -->|"no"| WIZ["the one-field wizard: one masked OpenRouter key<br/>Esc lists 1 OpenRouter, 2 TypeSafe, 3 Jev only, 4 Anthropic"]
+  KEYQ -->|"no"| WIZ["the one-field wizard: one masked OpenRouter key<br/>Esc lists 1 OpenRouter, 2 TypeSafe, 3 jev-only, 4 Anthropic"]
   WIZ --> SAVE["writes the file keys to the config file at mode 0600<br/>keys are never command-line arguments"]
   SAVE --> VERQ{"verify?"}
   VERQ -->|"yes"| VER["one priced decision, one 1-token completion, one key-info call<br/>names ok, rejected, no credits, unreachable or unknown model"]
   VERQ -->|"no"| READY
   VER --> READY
-  KEYQ -->|"yes"| READY(["ready — type a task"])
+  KEYQ -->|"yes"| READY(["ready — say hi, or describe a change"])
 ```
 
 ## One task, end to end
 
-Type a task and press <kbd>Enter</kbd>. The loop then repeats one **step** until it stops.
+Describe a change and press <kbd>Enter</kbd>. The model reads, edits and runs commands through
+tools until it answers without one; the harness checkpoints every step and verifies with your
+tests.
 
 ```mermaid
 stateDiagram-v2
     direction TB
-    [*] --> Budgets
-    Budgets: check the caps — spend, wall time, steps, replans
-    Budgets --> Stopped: a cap fired
-    Budgets --> Replan: the loop detector tripped
-    Budgets --> Propose: otherwise
-    Replan: pick a recovery move for this step
-    Replan --> Propose
-    Propose: write one action — an edit, a patch, a command, a read, or done
-    Propose --> Risk
-    Risk: score the action for harm and for fit with the plan
-    Risk --> Commit: blocked
-    Risk --> Stopped: declined at review (autonomy review only)
-    Risk --> Execute: allowed, or review auto-approved (autonomy full)
-    Execute: run it, sandboxed, with before and after images of every target
-    Execute --> Judge
-    Judge: read the outcome — parsed test counts where they exist
-    Judge --> Complete
-    Complete: is the task finished?
-    Complete --> Commit
-    Commit: the plan, the recent window and the loop detector all change here
-    Commit --> Checkpoint
-    Checkpoint: state.json rotated, steps.jsonl appended, decisions written
-    Checkpoint --> Stopped: complete
-    Checkpoint --> Budgets: next step
-    Stopped --> [*]
+    [*] --> Turn
+    Turn: the model's turn — prose, reasoning and tool arguments stream as they arrive
+    Turn --> Reads: reads, searches, read-only commands
+    Turn --> Act: an edit, a write or another command
+    Turn --> Stop: no tool call
+    Reads: observe step — up to 8 at once, no pre-images
+    Act: act step — pre-images, the sandbox, post-images
+    Reads --> Checkpoint
+    Act --> Checkpoint
+    Checkpoint: tool results into the conversation · step record · state.json
+    Checkpoint --> Turn: budgets permitting
+    Stop: stop rules
+    Stop --> Verify: files changed and the tests were not run since
+    Verify: the harness runs your test command
+    Verify --> Turn
+    Stop --> Answered: no tool was ever called
+    Stop --> Finished: otherwise
+    Answered: answered — a reply
+    Finished: complete when the last full test run is green and current; else not verified
+    Answered --> [*]
+    Finished --> [*]
 ```
 
-The exact stages differ by mode — see [The four modes](modes.md) — and the normative account is
-[`../DESIGN.md`](../DESIGN.md) §6.
+The whole loop is on [The agent loop](../architecture/agent-loop.md), and its specification is
+[`../AGENT-LOOP-DESIGN.md`](../AGENT-LOOP-DESIGN.md).
 
-## A recorded transcript, annotated
+## What a task looks like
 
-Below is a real recorded run, trimmed. It is a `jev-on` run on a small Python workspace: the
-task was *"Fix the failing tests in tests/test_core.py without changing the tests."* Your own
-default mode is `llm-jev`, which prints fewer decision lines, but the shape is the same.
-
-The whole run directory it comes from is not part of the published repository — see
-[History](../history/README.md) for what those early captures showed. The capture that does ship is
-the [side-by-side recording](../media/side-by-side.md).
+This is the shape of the demo task from the README (`examples/demo-py`, two planted bugs) in
+the transcript. The prose is the model's own and will read differently on your machine; the
+rows are the harness's.
 
 ```
-[run] start 20260920-052929-tjopfdiw mode=jev-on task: Fix the failing tests ...
-[run] ready 20260920-052929-tjopfdiw step 0/15
+[you]      Fix the failing tests in tests/test_core.py without changing the tests.
+[jevcode]  I'll read the tests and the module they exercise.
+[step 1]   Read tests/test_core.py, calc/core.py · 1.9s · $0.0003
+[jevcode]  mean() divides by len(items) + 1, and parse_expression() rejects spaces
+           around the operator. Fixing both.
+[step 2]   Edit calc/core.py (+1 −1) · 1.2s · $0.0002
+[step 3]   Edit calc/core.py (+2 −1) · 1.4s · $0.0002
+[step 4]   Bash python -m pytest -q · 7 passed · 2.3s · $0.0002
+[jevcode]  Both bugs are fixed and all 7 tests pass.
 ```
 
-The run has an id. Everything below is written under `~/.jevcode/runs/<that id>/`, so the run
-survives the process.
+- **`[jevcode]`** rows are the model's prose. They stream in as they are written, and each line
+  is committed to the scrollback once, when it is complete.
+- **`[step 1]`** is an observe step: both files were read at once, in parallel, with no
+  pre-images, because reading changes nothing.
+- **`[step 2]`** and **`[step 3]`** are act steps: one edit each, with a pre-image of
+  `calc/core.py` taken first. `/undo` reverts the last one, `/rewind` picks a step, `/diff 2`
+  shows one.
+- **`[step 4]`** is the model running your tests. `7 passed` is the harness's own parse of the
+  output, not the model's claim. Had the model stopped without running them, the harness would
+  have run `python -m pytest` itself and handed the result back.
+- The run ends `complete` because the last run of the whole detected test command was green and
+  came after the last edit. On the live check of 2026-09-23 this task took about 9 seconds and a
+  tenth of a cent, with no Jev spend at all.
 
-```
-[step 1] intent=verify p=0.91 c=0.89
-```
-
-The **intent** stage. The harness enumerated the intents; the decision model picked `verify`
-with probability 0.91. `c` is the confidence the harness derived from the probabilities — it is
-computed locally, not returned on the wire.
-
-```
-[step 1] context 2 files 1.5kB of 6 candidates: tests/test_core.py, calc/core.py
-```
-
-The **context** stage. Code pre-filtered the workspace down to 6 candidate files; 2 of them
-were put in the prompt, 1.5 kB in total. The model never names a file that code did not offer.
-
-```
-[step 1] proposal edit calc/core.py: Fix mean() division bug ... | plan done=0 remaining=1 open=0
-```
-
-The **propose** stage. One action per step. The trailing counts are the plan as it stands.
-
-```
-[step 1] risk=0.38 review: risk 0.38 (review) from plan_mismatch: expected level 1.52 of 4;
-         dominant level 2 "skips a planned verification step"; ... (matches_intent=0.08)
-```
-
-The **risk** stage. Four risk dimensions are scored — `destructive`, `irreversible`,
-`out_of_scope`, `plan_mismatch` — plus a `matches_intent` question. The overall risk is the
-maximum over the dimensions that gate this step. At or above 0.3 the action goes to human
-review; at or above 0.7 it is blocked outright. This one landed at 0.38, so:
-
-```
-[step 1] confirm 20260920-052929-tjopfdiw:1 approved
-[step 1] outcome executed: edit applied to calc/core.py (1 match) changed=1: calc/core.py
-```
-
-A review card appeared with the unified diff; it was approved; the edit was applied. This
-transcript was recorded under `--autonomy review`; with the default `autonomy: full` the same step
-proceeds without a card and the line reads `[review] auto-approved (autonomy full): edit calc/core.py — risk 0.38`.
-
-```
-[step 1] judge succeeded=0.68 error_present=0.04 new_info=0.05 tests=none claims=0/0 completion=0.03
-```
-
-The **judge** and **complete** stages. `tests=none` because this step ran no tests, so
-completion stays near zero.
-
-```
-[step 7] loop tripped: run:86461310da68:48e78467afad x3
-[step 8] replan change_approach p=0.66 c=0.59 impossible=0.08: ...
-```
-
-The **loop detector** is code, not a model: it noticed the same command producing the same
-result three times. That forces a **replan** stage on the next step, which picks a recovery
-move from a code-enumerated list.
-
-```
-[step 9] judge succeeded=0.91 ... tests=7p/0f/0e pass claims=2/2 completion=0.86
-[run] stop: complete at step 9
-[run] end complete steps=9 wall=54s cost=$0.115 (gen $0.110, jev $0.005)
-```
-
-`tests=7p/0f/0e` is the harness's own parse of the test output: 7 passed, 0 failed, 0 errors.
-Completion reached 0.86, above the default threshold of 0.85, so the run stopped. The whole run
-cost $0.115 — $0.110 of it the code model, $0.005 the decision model.
+`--plain` prints the same rows as they happen, and `--json` writes every underlying event as
+one JSON object per line.
 
 ## What is on disk afterwards
 
 Every run leaves a directory under `~/.jevcode/runs/<run-id>/` containing `run.json`,
-`state.json`, `steps.jsonl`, `decisions.jsonl`, `jev.jsonl`, `transcript.log` and the before and
-after images of every file the run touched.
+`state.json`, `steps.jsonl`, `transcript.log`, `agent/transcript.jsonl` (the conversation the
+model read, tool results included) and the before and after images of every file the run
+touched. The decision logs (`decisions.jsonl`, `jev.jsonl`) are written when Jev was asked
+anything.
 
 Three commands read it back:
 
 ```sh
-jevcode why <run-id> <step> <ref>   # explain one decision of a stored run
-jevcode calibration                 # how well the probabilities matched reality, over this workspace
 jevcode report <run-id>             # a redacted support bundle; nothing is sent anywhere
+jevcode run --resume <run-id>       # continue a stopped run from its last step
+jevcode why <run-id> <step> <ref>   # explain one Jev decision of a stored run
 ```
 
 ## Next
 
-- [The four modes](modes.md) — which of the stages above actually run, and what each mode costs.
-- [What Jev is](../concepts/what-is-jev.md) — the decision model, and the three question shapes.
-- [Jev routes, never gates](../concepts/jev-routes-never-gates.md) — why a wrong answer costs
-  time and not correctness.
+- [The agent loop](../architecture/agent-loop.md) — the loop, the tools, the stop rules and
+  the safety model in full.
+- [Modes](modes.md) — `agent`, `jev-only` and the legacy modes, and what each costs.
+- [What Jev is](../concepts/what-is-jev.md) — the decision model, and where it is still asked.
 - [CLI reference](../reference/cli.md) — every command and flag.

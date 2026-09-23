@@ -1,7 +1,7 @@
 {
   "name": "jevcode",
   "version": "0.6.0",
-  "description": "Coding-agent harness where Jev (typesafe/jev-1.13) makes every decision and the code model writes the code. One Ink TUI, sandboxed subprocesses, checkpoints, bench.",
+  "description": "A fast, streaming terminal coding agent: native tool calling, parallel reads, sandboxed commands, checkpoints and undo, on seven model providers.",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -31,6 +31,8 @@
     "tui",
     "ink",
     "coding-agent",
+    "tool-calling",
+    "streaming",
     "jev",
     "openrouter",
     "llm",

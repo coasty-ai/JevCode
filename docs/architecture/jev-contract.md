@@ -288,6 +288,24 @@ RL2 being unconverted has a consequence worth stating plainly: a Jev outage duri
 stage of a `jev-on` run can still end that run. The "an outage costs ordering quality and
 nothing else" property is true of the converted sites and is not yet true end to end.
 
+## The agent's three placements
+
+The default mode, `agent`, asks Jev nothing on its step path. Its three placements live in
+`src/agent/jev.ts`, each routed through `routeSpeculative` with the step's route token, each
+carrying a four-clause block, and each driven to its fallback by `test/unit/agent/jev.test.ts`:
+
+| id | site | what it decides | deadline | fallback |
+|---|---|---|---:|---|
+| **RA0** | `effortHint`, the first turn of a run, only where it can change the request | whether that one turn goes at the provider's low reasoning effort | 300 ms | the default effort |
+| **RA1** | `chooseLoopNudge`, after a loop trip | the wording of the nudge, among four code-written texts | 400 ms | `change_approach` |
+| **RA2** | `progressCheck`, after 30 turns, every 10 | whether to add one "step back" hint | 400 ms | no hint |
+
+They ask with `quick: true`: one attempt, no retry chain, and a served-model drift or an
+unpriced answer is a warning rather than a stop or a pane. A drift or a malformed question batch
+turns Jev off for the rest of the run with one transcript line. With no Jev key the absent
+decider (`src/jev/absent.ts`) makes each placement take its fallback with no ask and no wait.
+The specification is [`docs/AGENT-LOOP-DESIGN.md` §13](../AGENT-LOOP-DESIGN.md).
+
 ## The lint: `scripts/jev-contract.mjs`
 
 The contract is checked where the calls are, not in a document. The lint scans `src` for `.ask(`
@@ -330,9 +348,10 @@ Running it on this tree prints:
 
 ```
 $ node scripts/jev-contract.mjs
-jev-contract: ok (34 Jev call site(s): 10 with a four-clause block, 24 allow-listed)
+jev-contract: ok (37 Jev call site(s): 14 with a four-clause block, 23 allow-listed)
 ```
 
-Read those three numbers exactly: **34** call sites found in `src`, **10** carrying a
-four-clause block, **24** still covered by a grandfathered allow-list row. The second number
+Read those three numbers exactly: **37** call sites found in `src`, **14** carrying a
+four-clause block (the agent's RA0, RA1 and RA2 among them), **23** still covered by a
+grandfathered allow-list row. The second number
 only goes up and the third only goes down.

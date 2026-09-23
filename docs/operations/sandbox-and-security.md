@@ -183,6 +183,41 @@ Four consequences follow that you can check yourself:
 <!-- src/core/types.ts:1472-1473; src/cli/report.ts:1-7; src/cli/json-stream.ts:10-13;
      src/import/secrets.ts:1-13 -->
 
+## Who approves a command: autonomy
+
+The sandbox above applies to every command in every mode. Whether a human is asked first is the
+`autonomy` setting (`--autonomy full|review`, `JEVCODE_AUTONOMY`, `autonomy` in the config file).
+
+**In the default mode, `agent`,** a pure-code classifier (`src/agent/safety.ts`, no model involved)
+sorts each command the model sends into `readonly`, `safe`, `destructive` or `unknown`. A
+`readonly` command (`ls`, `cat`, `rg`, `git diff`, …, with no output redirect but `/dev/null`)
+joins the parallel read batch and takes no pre-images; everything else takes pre-images of what it
+may change before it runs.
+
+- **`full` (the default) never asks and never refuses.** Every command runs. A command that
+  matches one of the 13 destructive rules — `privilege`, `rm_outside`, `git_discard`,
+  `force_push`, `history_rewrite`, `disk`, `fork_bomb`, `remote_exec`, `system_power`,
+  `publish`, `exfiltrate`, `outside_write`, `git_internals` — runs too, and its step carries one
+  truthful line, `destructive · ran <command> (rule <id>) — …`, ending in one of:
+  - `this left the machine; /undo cannot reverse it` — a push, a publish, an upload, a download
+    piped into a shell;
+  - `/undo restores the workspace` — only for discarding workspace files when every dirty file
+    was captured, both images are whole and `HEAD` did not move;
+  - `/undo may not restore this` — everything else, because the sandbox and the pre-images
+    contain only local workspace effects. On Linux there is no OS profile at all.
+- **`review`** shows a y/n card before every destructive or unrecognised command. The card of a
+  destructive command is titled with its rule's sentence. A declined command goes back to the
+  model as a tool result; five declined destructive cards in one run pause it. Without a
+  terminal the card is declined.
+
+Validation that is not an approval holds under both: a path outside the workspace, a secret path
+and an edit into `.git/` are errors returned to the model, and nothing runs. The model's system
+prompt also asks it not to run destructive commands the task does not need.
+
+**In the legacy modes** the risk stage decides instead: under `full` a review-level verdict is
+approved and logged as `[review] auto-approved`, and a block verdict stops the action; under
+`review` the card appears. See [Jev routes, never gates](../concepts/jev-routes-never-gates.md).
+
 ## What is still on you
 
 - **Reads outside the workspace are allowed.** A command can read files you can read, minus the

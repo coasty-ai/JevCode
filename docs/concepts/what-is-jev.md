@@ -4,9 +4,33 @@ Jev is a **calibrated decision model**, not a chat model. You do not send it a p
 a sentence back. You send it a state and a set of questions with a fixed shape, and it returns
 a probability for every one of them.
 
-That difference is the whole reason this harness exists. A model that answers "which of these
-seven files matters" with a number you can threshold is a different engineering object from a
-model that answers it with a paragraph.
+A model that answers "which of these seven files matters" with a number you can threshold is a
+different engineering object from a model that answers it with a paragraph. That is what made
+it useful for quick, bounded decisions.
+
+## Where JevCode asks Jev today
+
+**In the default mode, `agent`, hardly at all.** The code model drives the run with its own tool
+calls, and the harness verifies with your tests ([The agent loop](../architecture/agent-loop.md)).
+Jev is kept for three quick routing hints at the edges of a run:
+
+| Id | When | Question | Deadline | Without an answer |
+| --- | --- | --- | --- | --- |
+| RA0 | the first turn of a run, only where the answer can change the request | is this message conversational? If so, that one turn goes at the provider's low reasoning effort | 300 ms | the default effort |
+| RA1 | after the loop detector trips | which of four nudge wordings is most likely to get the agent unstuck? | 400 ms | "try a different approach" |
+| RA2 | after 30 model turns, every 10 turns | are the recent steps unproductive? If so, add one "step back" hint | 400 ms | no hint |
+
+None of them can allow or block a command, end or extend a run, or declare a task done. A
+normal run makes at most one Jev request, and on the default provider none: every provider but
+Anthropic already sends each turn at low effort, so RA0 is not asked there. The Jev key is
+optional in agent mode; without one, each placement takes its fallback at once.
+
+**In the Jev-driven modes** — `jev-only`, and the legacy `llm-jev` and `jev-on` kept for saved
+configs, resume and the bench — Jev still answers the control questions of every step: what the
+step is for, which files matter, whether an action is safe to run, whether the output succeeded,
+whether the task is done ([The step loop](../architecture/step-loop.md)). The legacy control arm
+`jev-off` runs without Jev at all. The rest of this page describes the decision model itself,
+which is the same wherever it is asked.
 
 ## The request
 
@@ -124,7 +148,9 @@ alias is accepted and resolved on the first call.
 
 ## What Jev is measurably good at
 
-Three abilities are measured, and every place the harness uses Jev is one of the three:
+Three abilities are measured, and every place the harness uses Jev is one of the three (the
+agent's RA0 and RA2 are yes/no questions on literal facts in the state; RA1 is a choice among
+four code-enumerated options):
 
 | Ability | Measurement |
 | --- | --- |
@@ -142,12 +168,14 @@ The reasons those three shapes and not others are the digest in
 ## What Jev is not used for
 
 Arithmetic, budget ceilings, the destructive gate, completion, and plan judgment are all
-structurally excluded — each for a measured reason. That is the subject of the next page.
+structurally excluded — each for a measured reason. In the default mode the list is simply
+everything except the three hints above. That is the subject of the next page.
 
 ## Next
 
 - [Jev routes, never gates](jev-routes-never-gates.md) — the safety principle, and what is
   excluded from Jev and why
-- [The synthesizer](the-synthesizer.md) — how a fix gets proposed with no generating model
+- [The agent loop](../architecture/agent-loop.md) — the default mode, where Jev sits at the edges
+- [The synthesizer](the-synthesizer.md) — how the `jev-only` and `llm-jev` modes propose a fix
 - [Verification and the oracle](verification.md) — what counts as evidence
 - [`../DESIGN.md`](../DESIGN.md) §5 — the normative account of the Jev integration

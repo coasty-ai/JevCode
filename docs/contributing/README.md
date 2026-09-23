@@ -99,7 +99,7 @@ approves an action or declares a task done.
 Current state of the gate:
 
 ```
-jev-contract: ok (34 Jev call site(s): 10 with a four-clause block, 24 allow-listed)
+jev-contract: ok (37 Jev call site(s): 14 with a four-clause block, 23 allow-listed)
 ```
 
 ## Where a change may live

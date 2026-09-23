@@ -14,7 +14,9 @@ jevcode bench --resume <bench-id>
 ## Conditions
 
 A condition is an arm: a named engine configuration whose parameters are pinned in code, so the
-same arm means the same thing in two runs a week apart. Eight exist.
+same arm means the same thing in two runs a week apart. Eight exist, all of them the Jev-driven
+modes and their controls. The default `agent` mode has no bench arm: by the owner's instruction it
+was verified live rather than benchmarked ([The agent loop](../architecture/agent-loop.md)).
 
 | Condition | What it is |
 | --- | --- |

@@ -1,8 +1,13 @@
 # The side-by-side recording
 
+> **History.** This recording compares the Jev-driven `llm-jev` mode, the default on 2026-09-22,
+> with `jev-off`. The default since 2026-09-23 is the `agent` mode
+> ([The agent loop](../architecture/agent-loop.md)), which it does not show; it left the README then
+> and is kept here as the record of that measurement.
+
 ![Two terminals fixing the same bug, one in each mode](side-by-side.gif)
 
-Two terminals, one bug, the same model in both. On the left JevCode runs in its default mode.
+Two terminals, one bug, the same model in both. On the left JevCode runs in what was then its default mode.
 On the right the same binary runs with `--mode jev-off`, where the model drives every step on
 its own and nothing arbitrates. Both panes start at zero. Both replay at the same speed. The
 left one stops after 40 seconds; the right one keeps going for another two minutes.

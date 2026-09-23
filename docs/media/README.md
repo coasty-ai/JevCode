@@ -5,7 +5,7 @@ came from.
 
 | File | What it is |
 |---|---|
-| `side-by-side.gif` | Two live runs of the same bug fix, one in each mode, replayed at one sixth of real speed |
+| `side-by-side.gif` | Two live runs of the same bug fix, one in each mode, replayed at one sixth of real speed. History: it compares the `llm-jev` default of 2026-09-22 with `jev-off`, and left the README when the `agent` mode became the default on 2026-09-23 |
 | `side-by-side.png` | The final frame of that recording, as a still |
 | `side-by-side.md` | How the recording was made, the exact commands, and the numbers behind it |
 | `wordmark-{dark,light}.svg` | The README's wordmark — **generated**, not drawn (see below) |

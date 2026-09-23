@@ -1,11 +1,14 @@
 # The synthesizer: Ledger, Sieve, and the fast path
 
+> **The engine of `jev-only` and the legacy `llm-jev` mode.** The default mode, `agent`, does not
+> use it; see [The agent loop](agent-loop.md).
+
 Most coding agents ask a language model for a patch and then check it. The synthesizer inverts
 that. Code enumerates thousands of small, concrete edits at the places the failing tests point
 at, and the **tests** rank them by running them. A model is consulted only where running
 everything would cost more than asking.
 
-At 45,121 lines `src/synth` is the largest module in the tree. This page is the implementation
+At about 45,000 lines `src/synth` is the largest module in the tree. This page is the implementation
 map: what the controller does per step, where the candidates come from, how the search decides
 between running everything and ranking first, how it refuses a patch that passes the tests for
 the wrong reason, and what the bounded fast path is.

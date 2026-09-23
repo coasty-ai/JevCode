@@ -10,10 +10,20 @@ document, not part of this repository — are also listed in `docs/DESIGN.md` un
 
 ## Contents
 
-91 entries, newest first.
+100 entries, newest first.
+
+**2026-09-23**
+
+- [The default mode is `agent`: the code model drives with native tool calls, and Jev keeps three quick hints](#2026-09-23-the-default-mode-is-agent-the-code-model-drives-with-native-tool-calls-and-jev-keeps-three-quick-hints)
+- [A best guess with no reproduction oracle is verified by its scoped suite; an un-ignored virtualenv is never a candidate](#2026-09-23-a-best-guess-with-no-reproduction-oracle-is-verified-by-its-scoped-suite-an-un-ignored-virtualenv-is-never-a-candidate)
+- [A fix that passes every test is never refused on a score alone](#2026-09-23-a-fix-that-passes-every-test-is-never-refused-on-a-score-alone)
 
 **2026-09-22**
 
+- [The LLM-loop head-to-head is deferred; the default stays `llm-jev`; the repository moves to coasty-ai/JevCode](#2026-09-22-the-llm-loop-head-to-head-is-deferred-the-default-stays-llm-jev-the-repository-moves-to-coasty-aijevcode)
+- [Amendment (applied in place above): a perf-window sentinel with no readable header is HELD from its mtime, not stale](#2026-09-22-amendment-applied-in-place-above-a-perf-window-sentinel-with-no-readable-header-is-held-from-its-mtime-not-stale)
+- [The cross-session merge queue is a file in `docs/`, and every behaviour-changing env switch has one table](#2026-09-22-the-cross-session-merge-queue-is-a-file-in-docs-and-every-behaviour-changing-env-switch-has-one-table)
+- [The perf-window sentinel protocol, and the provenance of every Ring-1 `--jev off` number](#2026-09-22-the-perf-window-sentinel-protocol-and-the-provenance-of-every-ring-1---jev-off-number)
 - [Iteration 4 lands; the overfit-signal search stops here; what is open is named](#2026-09-22-iteration-4-lands-the-overfit-signal-search-stops-here-what-is-open-is-named)
 - [The LLM-loop wave lands with both switches off; the nine design defaults are ratified; the live head-to-head waits on two CLI rows and the router engine seam](#2026-09-22-the-llm-loop-wave-lands-with-both-switches-off-the-nine-design-defaults-are-ratified-the-live-head-to-head-waits-on-two-cli-rows-and-the-router-engine-seam)
 - [Iteration 3 lands unmeasured; a structural signal reaches the pool rule only with a gold sweep behind it, and Jev's state stays signal-free](#2026-09-22-iteration-3-lands-unmeasured-a-structural-signal-reaches-the-pool-rule-only-with-a-gold-sweep-behind-it-and-jevs-state-stays-signal-free)
@@ -21,6 +31,8 @@ document, not part of this repository — are also listed in `docs/DESIGN.md` un
 - [Only Jev's failures are the router's drop branch (contract 1.9 §2.1 clause 4, as built)](#2026-09-22-only-jevs-failures-are-the-routers-drop-branch-contract-19-21-clause-4-as-built)
 - [The risk verdict is code-first (contract 1.9 §2.4), and it is reversible on evidence](#2026-09-22-the-risk-verdict-is-code-first-contract-19-24-and-it-is-reversible-on-evidence)
 - [Iteration 2 measured: the first win outside QuixBugs; the warm plane stays OFF until its calibration defect is fixed and re-measured](#2026-09-22-iteration-2-measured-the-first-win-outside-quixbugs-the-warm-plane-stays-off-until-its-calibration-defect-is-fixed-and-re-measured)
+- [A command is registered from day one and answers out loud, or it is not in the registry at all](#2026-09-22-a-command-is-registered-from-day-one-and-answers-out-loud-or-it-is-not-in-the-registry-at-all)
+- [§12 names every user-visible string once, in its producer module, and §13 names every sink of it](#2026-09-22-12-names-every-user-visible-string-once-in-its-producer-module-and-13-names-every-sink-of-it)
 - [Iteration 1 measured: the default stands; iteration 2 targets the repository stop rule and the timeouts](#2026-09-22-iteration-1-measured-the-default-stands-iteration-2-targets-the-repository-stop-rule-and-the-timeouts)
 - [The warm verification plane is off by default until a real-lane test and Ring 1 pass with it on](#2026-09-22-the-warm-verification-plane-is-off-by-default-until-a-real-lane-test-and-ring-1-pass-with-it-on)
 - [`Ledger` and `LedgerHandle` are a real split, not an alias; consumers hold the handle](#2026-09-22-ledger-and-ledgerhandle-are-a-real-split-not-an-alias-consumers-hold-the-handle)
@@ -1868,3 +1880,47 @@ own all-pass run of the same command (`complete.ts scopedSuiteVerified`; `docs/L
 at the base still leaves the guess a guess, and the patch text says which of the two it is. Either change alone would have ended
 the drive's run at step 2; with the listing fix it does not enter the class at all (three files, the pytest path, goals from the
 failing tests, `complete` in three steps).
+
+## 2026-09-23 The default mode is `agent`: the code model drives with native tool calls, and Jev keeps three quick hints
+
+**Decision.** `DEFAULT_MODE` is `agent`, a model-driven tool loop specified in `docs/AGENT-LOOP-DESIGN.md` and explained in
+`docs/architecture/agent-loop.md`. The code model streams its prose and calls seven native tools (`read_file`, `grep`, `glob`,
+`edit_file`, `write_file`, `bash`, `todo_write`), several per reply, reads in parallel; the harness runs each call sandboxed,
+checkpoints every step so `/undo` stays exact, and verifies with the workspace's own detected test command — `complete` needs a
+green, current run of the whole command. Every chat message is the next turn of one conversation that carries the session; a
+message answered with no tool call is a reply and stops `answered`. `jev-only` stays an advertised mode. `llm-jev`, `jev-on` and
+`jev-off` stay accepted for saved configs, resume and the bench, with their behaviour and wire bodies unchanged, but are no longer
+offered (`/mode legacy` lists them). The Jev-driven stage modules, the synthesizer and the chat lookup move under
+`src/jev-modes/` in a separate mechanical slice.
+
+**What Jev keeps.** Three quick hints at the edges of a run, each routed through `routeSpeculative` with a named code fallback,
+a four-clause `jev-contract` block and a short deadline, none able to allow or block a command, stop or extend a run, or decide
+completion: RA0, a first-turn effort hint (300 ms; asked only where it can change the request, which today is Anthropic alone);
+RA1, the wording of a loop nudge (400 ms); RA2, a late progress check that may add one hint (400 ms, after 30 turns, every 10). A
+normal run makes at most one Jev request, and on the default provider none. The Jev key is optional in agent mode; without one
+the absent decider makes every placement take its fallback with no wait.
+
+**The owner's directives it implements** (2026-09-23, quoted in the design's §A): the TUI streams everything and is fast ("the
+fastest TUI experience and streams as we go"); Jev only for trivial quick decisions ("the jev part is way too much … reduce
+where we use and only for trivial quick decisions … make sure the harness is state of the art open source … no need to
+benchmark but make sure it works"); every message gets a model reply, never an automated one ("it should always be llm reply
+and make sure it works perfectly"); the waiting animation becomes a mini donut in the status bar ("Move the donut spiralling
+inside the chat status bar mini bar super nice and clean"); and full autonomy never asks ("For full auto mode never need to ask
+at all even if it is"). Under `--autonomy full` nothing is refused either: a destructive command runs sandboxed and pre-imaged,
+and its step carries one truthful line on whether `/undo` can restore its effect. `--autonomy review` shows a card for
+destructive and unknown commands.
+
+**Why.** Every open-source harness studied for the redesign (Codex, Gemini CLI, OpenCode, Crush, mini-swe-agent, the Claude
+Agent SDK and more) runs one model-driven loop with deterministic guards, one conversation per session, parallel reads and
+native tool results; none runs a side model on every step. The previous default made up to a dozen Jev requests per step (482
+decision requests over 28 tasks in the head-to-head, $0.0986 of its $0.1441), forced one action per model call, which left the
+terminal showing a character counter instead of prose, and let a Jev outage pause a run.
+
+**What it gives up.** The measured advantage of `llm-jev` on Python bug-fix suites (28/28 against 21/28 in sample; 14/18 against
+9/18 out of sample on single-file bugs) leaves the default, and the agent loop is not benchmarked in its place — by the owner's
+instruction it is verified live instead (the results are in `docs/STATUS.md`). `llm-jev` stays one `/mode llm-jev` away. The
+tagline "Decisions, not strings" and the CLI usage line are unchanged until the owner decides on them.
+
+**Affects.** `src/agent/**` (new), the engine seam in `src/loop/stages/agent.ts`, every provider adapter (the additive
+`GenerateRequest.agent`), the session and chat (no intake in agent mode), the TUI (the streaming reply block, tool rows, status
+words, the braille mini indicator in the status row replacing the 12-row animation slot), `DEFAULT_MODE`, and the documentation.

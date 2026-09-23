@@ -1,6 +1,6 @@
 # Normative design documents
 
-These nine files are the specification. They are **not** tutorials and they are not written for a first
+These ten files are the specification. They are **not** tutorials and they are not written for a first
 reader. They are long, they carry `file:line` citations into the source, and they are numbered by section
 because the code cites them that way — a docblock in the tree says "§4.2 of this document" and means it.
 
@@ -10,6 +10,7 @@ specification, start at [the measurements](../measurements/README.md) or at the
 
 | Document | What it specifies | Size |
 | --- | --- | --- |
+| [`AGENT-LOOP-DESIGN.md`](../AGENT-LOOP-DESIGN.md) | The default harness since 2026-09-23: one model-driven tool loop — the seven tools and their schemas, the step model, streaming, context, the stop and verification rules, the command classifier and autonomy, Jev's three quick placements, the provider wire mappings — and the owner's directives it implements. | 2,484 lines |
 | [`DESIGN.md`](../DESIGN.md) | The whole harness: what JevCode is, the module map, the step loop, the edit formats, the sandbox, the checkpoint, exit codes, the bench and its evaluators. Everything else on this list is a wave layered onto it. | 3,682 lines |
 | [`JEV-ONLY-DESIGN.md`](../JEV-ONLY-DESIGN.md) | The "Ledger + Sieve" search engine: goals, the sieve-or-rank rule, candidate sources, localisation, the guard, the issue oracle, budgets, and the evaluation ladder with its thresholds. This is the engine the mode with no generating model runs. | 889 lines |
 | [`LLM-JEV-DESIGN.md`](../LLM-JEV-DESIGN.md) | The `llm-jev` mode: the generating model as a candidate source **inside** that search, the seeds-versus-model race with cancellation, the site-local edit contract, harm-only risk scoring, and completion as a code fact. | 569 lines |
@@ -36,10 +37,16 @@ would settle each prediction, and the as-built sections say which waves have not
 
 ## How they relate to each other
 
-They are not nine parallel specifications. They stack.
+They are not ten parallel specifications. They stack.
 
 `DESIGN.md` is the base: one step loop, six actions, a sandbox, a checkpoint, a bench. Everything else
 either replaces a stage of that loop or adds a subsystem beside it.
+
+`AGENT-LOOP-DESIGN.md` is the default mode, and the largest replacement: at the propose stage the engine
+hands each step to a model-driven tool loop and keeps only the shared tail — budgets, pre-images, the
+sandbox, the commit and the checkpoint. It reads on its own; `DESIGN.md` §2 and §9 give the substrate it
+reuses. The next four documents describe the Jev-driven modes, which stay accepted for saved configs,
+resume and the bench.
 
 `JEV-ONLY-DESIGN.md` replaces one stage — the one that asks a model for a patch — with a search.
 `LLM-JEV-DESIGN.md` then puts a generating model back **inside** that search as one candidate source among
@@ -57,8 +64,9 @@ import the surface at all. Those constraints are listed in
 
 `TUI-DESIGN-5.md` is the surface all of the above eventually has to be visible through.
 
-A reasonable reading order for someone new: `DESIGN.md` §1 and §2, then `JEV-ONLY-DESIGN.md` §1 and §2, then
-whichever subsystem you are touching.
+A reasonable reading order for someone new: [The agent loop](../architecture/agent-loop.md), then
+`AGENT-LOOP-DESIGN.md` §0 and §2, then `DESIGN.md` §2 for the substrate, then whichever subsystem you are
+touching. For the Jev-driven modes: `DESIGN.md` §1 and §2, then `JEV-ONLY-DESIGN.md` §1 and §2.
 
 ## The earlier interface rounds
 

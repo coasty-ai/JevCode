@@ -4,6 +4,12 @@ Everything JevCode claims about itself was measured on a named build, against a 
 recorded with its caveats. This page is the index. It leads with the two results that matter most and with
 the sentence that has to travel beside each of them.
 
+**Which mode these numbers are about.** Every result on this page was measured on the Jev-driven modes —
+`llm-jev`, the default from 2026-09-22 until 2026-09-23, and its controls. The default since then is the
+`agent` mode ([The agent loop](../architecture/agent-loop.md)); by the owner's instruction it was verified
+live rather than benchmarked, so no number here describes it. The Jev-driven modes remain one
+`/mode llm-jev` away.
+
 Read the caveats. They are not boilerplate: one of the two headline results does **not** generalise, and the
 report that produced it says so in its own words.
 

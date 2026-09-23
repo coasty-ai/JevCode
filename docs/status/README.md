@@ -1,4 +1,4 @@
-# Status — 0.5.0 (2026-09-22)
+# Status — 0.6.0 and the agent loop (2026-09-23)
 
 What ships, what sits behind a switch that is off, what has been measured, and what has not.
 Short on purpose. The long record is [`STATUS.md`](../STATUS.md) and the dated measurement logs it
@@ -6,7 +6,7 @@ names.
 
 ## Release state
 
-The version is **0.5.0** and it is **not published**. Nothing is on the npm registry, and the
+The version is **0.6.0** and it is **not published**. Nothing is on the npm registry, and the
 Homebrew formula still carries a placeholder URL and a deliberately invalid checksum. Install
 from source — see [Install](../getting-started/install.md).
 
@@ -16,13 +16,16 @@ Platform support is macOS and Linux. Windows is not supported; use WSL2.
 
 | Area | State |
 | --- | --- |
-| Four engine modes | `llm-jev` (default), `jev-on`, `jev-only`, `jev-off` — [modes](../getting-started/modes.md) |
-| Interactive session | Ink terminal UI, a plain readline renderer, and an NDJSON event stream |
+| The agent loop — the default mode | the code model drives with native tool calls; seven tools, parallel reads, streamed prose, reasoning and tool rows, verification by your test command, a loop detector, masking and compaction, one conversation per session — [the agent loop](../architecture/agent-loop.md) |
+| Modes | `agent` (default) and `jev-only`; `llm-jev`, `jev-on` and `jev-off` stay accepted as legacy modes — [modes](../getting-started/modes.md) |
+| Jev | optional in the default mode: three quick placements (RA0, RA1, RA2), at most one request in a normal run and none on the default provider; every step in the Jev-driven modes |
+| Providers | seven generator adapters, each with the agent's native tool protocol and reasoning replay |
+| Interactive session | Ink terminal UI with a streaming reply block and a mini indicator in the status row, a plain readline renderer, and an NDJSON event stream |
 | Checkpoints and resume | every step written to the run directory; `--resume <id\|title>`, `-c` |
-| Sandbox | every proposed command runs confined; `--sandbox auto\|seatbelt\|none` |
+| Sandbox | every command runs confined; `--sandbox auto\|seatbelt\|none` |
 | Budgets | run and session spend caps, wall time, step and replan caps, all enforced in code |
-| Human review | a diff-bearing review card at risk 0.3 and above; blocked at 0.7 and above |
-| The synthesizer | Ledger + Sieve, shadow lanes, the guard — [the synthesizer](../concepts/the-synthesizer.md) |
+| Autonomy | `full` by default: in agent mode nothing asks or is refused, and a destructive command carries a note on what `/undo` can restore; `--autonomy review` shows a card for destructive and unknown commands |
+| The synthesizer | Ledger + Sieve, shadow lanes, the guard, for `jev-only` and `llm-jev` — [the synthesizer](../concepts/the-synthesizer.md) |
 | The issue oracle | builds a failing reproduction for repositories that have none |
 | Inspection | `jevcode why`, `jevcode calibration`, `jevcode report` |
 | Benchmarks | `jevcode bench` over the bundled suites, with per-arm records |
@@ -38,13 +41,17 @@ you report from a run that used it.
 | Router table | `off` **in every mode**, and gated to `jev-on` before the switch is even read | `JEVCODE_ROUTERS=on` | it carries three polarity changes — the risk verdict, the replan stop, and completion — and none may reach a user run before the head-to-head decides |
 | Warm verification plane | off | `JEVCODE_WARM=on` | a recorded run never completed a synthesis step with it on: lanes ran nothing and the process sat at 0 % CPU for 59 minutes. It stays off until a real-lane test and a full smoke pass with it on |
 | Delegating a step to sub-agents | `split: 'off'` | the `orchestrate.split` setting | the gate short-circuits before it gathers a single fact, so a shut gate makes zero Jev requests |
-| Synth fast path | `auto` under `jev-on`, `off` in every other mode — so off in the default mode | `JEVCODE_FASTPATH=off\|auto` | purely additive where it is on: it can only propose, and it degrades to "the code model proposes as usual" |
+| Synth fast path | `auto` under `jev-on`, `off` in every other mode | `JEVCODE_FASTPATH=off\|auto` | purely additive where it is on: it can only propose, and it degrades to "the code model proposes as usual" |
 | Coordination claims | `advisory` | the `coordination.claims` setting | under `advisory` a conflict is a recorded fact and nothing a peer writes delays a step |
 
 Where a switch and an environment variable disagree, **the explicit option wins** and the
 environment variable fills only an absent option.
 
 ## What is measured
+
+**The agent loop is verified live, not benchmarked**, by the owner's instruction: its live runs are
+recorded in [`STATUS.md`](../STATUS.md) under the 2026-09-23 agent-loop sections. Every number
+below is about the Jev-driven modes.
 
 Two head-to-heads, both from one frozen build, both recorded in [`LLM-JEV.md`](../LLM-JEV.md)
 under its 2026-09-22 entries.
@@ -79,17 +86,21 @@ Other measured things:
   `jev-only` record is `experiments/results/jev-only-audit.md` §2.2.
 - **The issue oracle**: valid on 9 of 30 SWE-bench Verified instances — 7 strong, 2 weak — at
   $0.0096.
-- **The contract lint**: 34 Jev call sites, 10 carrying a four-clause block, 24 allow-listed.
-  Reproduce with `npm run jev-contract`.
-- **Build and package**, from `npm run build` and `node scripts/check-pack.mjs` on this tree:
-  bundle 2,854,413 B; unpacked 2,991,973 B; tarball 1,009,511 B; 10 files; 0 runtime
-  dependencies. Byte counts move with the bundler's version and with the size of `README.md`,
-  which is in the tarball.
+- **The contract lint**: 37 Jev call sites, 14 carrying a four-clause block (the agent's three
+  among them), 23 allow-listed. Reproduce with `npm run jev-contract`.
+- **Build and package**, from `npm run build` and `node scripts/check-pack.mjs`: before the
+  agent loop, bundle 2,854,413 B, unpacked 2,991,973 B, tarball 1,009,511 B, 10 files and 0
+  runtime dependencies. With the agent loop merged the unpacked package measured 3,741,637 B,
+  and the unpacked-size gate in `scripts/check-pack.mjs` is raised to the measured need with a
+  dated justification; there are still 0 runtime dependencies. Byte counts move with the
+  bundler's version and with the size of `README.md`, which is in the tarball.
 
 ## What is not measured
 
 Stated as such rather than left to inference:
 
+- the agent loop on any benchmark suite: it has been verified live, not measured against a
+  control;
 - the router table end to end — no live run has been taken with it on;
 - a bench-wide report of the wall a router adds to a step;
 - the warm plane on real lanes;
@@ -130,7 +141,7 @@ frame p95 133 ms against a 300 ms budget, harness overhead per step p95 42.6 ms 
 ## Where the history lives
 
 The design documents are normative and stay where they are:
-[`DESIGN.md`](../DESIGN.md), [`JEV-ONLY-DESIGN.md`](../JEV-ONLY-DESIGN.md),
+[`AGENT-LOOP-DESIGN.md`](../AGENT-LOOP-DESIGN.md), [`DESIGN.md`](../DESIGN.md), [`JEV-ONLY-DESIGN.md`](../JEV-ONLY-DESIGN.md),
 [`LLM-JEV-DESIGN.md`](../LLM-JEV-DESIGN.md), [`LLM-LOOP-DESIGN.md`](../LLM-LOOP-DESIGN.md),
 [`HARNESS-NEXT-DESIGN.md`](../HARNESS-NEXT-DESIGN.md),
 [`COORDINATION-DESIGN.md`](../COORDINATION-DESIGN.md),

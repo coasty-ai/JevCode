@@ -3,7 +3,27 @@
 Everything the harness believes about a patch comes from running something. This page says
 exactly what gets run, where, and what the result is allowed to decide.
 
-Three rules hold throughout:
+## In the default mode: your test command, run by the harness
+
+In `agent` mode there are no candidates and no shadow lanes: the code model edits your
+workspace through tools, with a pre-image of every file it may change, so `/undo` can restore
+it. Verification is your own test command:
+
+- The harness detects the test command from the workspace (`detectTestCommand()`); a model never
+  chooses it. The model is told which command was detected and asked to run it after a change.
+- If the model stops after changing files without running it, the harness runs it itself (a
+  `verify` step, at most twice per run) and hands the result back for the model to act on.
+- A run stops `complete` only when the last run of the **whole, unscoped** test command parsed,
+  passed, and came after the last change. Anything else that finishes is `generator_done`, and
+  the stop line says the change is not verified. A reply that never called a tool stops
+  `answered`.
+
+See [The agent loop](../architecture/agent-loop.md) for the stop rules in full.
+
+## In the synthesizer's modes
+
+The rest of this page describes the synthesizer, the engine of `jev-only` and the legacy
+`llm-jev` mode ([The synthesizer](the-synthesizer.md)). Three rules hold throughout:
 
 1. **Candidates never touch your workspace.** They run in shadow lanes.
 2. **A screened result is never a verdict.** Anything fast is a filter; the answer comes from a
@@ -109,7 +129,7 @@ passes with the reference patch. Recorded in
 The most tempting thing to ask a model is "are we done?". The harness does not let the answer
 matter.
 
-In the default mode, the stop rule is `isCompleteByFact()`, and every clause of it is something
+In `llm-jev`, the stop rule is `isCompleteByFact()`, and every clause of it is something
 code checked:
 
 - the claiming step ran the workspace's **own** test command and it executed;

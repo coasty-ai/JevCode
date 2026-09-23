@@ -227,16 +227,16 @@ forbidden outright.
 node scripts/jev-contract.mjs
 ```
 
-## Built, and not yet reached from a command
+## Built ahead of their callers
 
-Three modules exist, are tested, and have no path to them from the command line yet. Knowing which is which
-saves a confusing afternoon.
+Three modules were built and tested before any command reached them. All three are reached now, each through a
+dynamic import so that none of them sits on the first-frame path.
 
-| module | state |
+| module | reached from |
 | --- | --- |
-| `src/models/**` | the live model catalogue — an instant bundled snapshot, a background refresh per provider, and a synchronous ranking for each keystroke. Nothing in `src/` imports it yet. |
-| `src/provider/registry.ts` | one row per generator surface, with the key's environment variable, base URL, factory, catalogue endpoint, default model and capability flags. Providers are still constructed directly from `src/provider/{anthropic,openrouter,null}.ts`, so the registry has no caller yet. Its own docblock says what widening two core unions would take. |
-| `src/import/index.ts` | the import engine's entry point has no caller outside its own directory. Parts of the directory *are* live: the loop's memory selection uses its rule matcher. |
+| `src/models/**` | the live model catalogue — an instant bundled snapshot, a background refresh per provider, and a synchronous ranking for each keystroke. The model picker (`src/tui/App.tsx`) loads it. |
+| `src/provider/registry.ts` | one row per generator surface, with the key's environment variable, base URL, factory, catalogue endpoint, default model and capability flags. The session (`src/cli/session.ts`) and the bench build every generator through it. |
+| `src/import/index.ts` | the import engine's entry point: `jevcode import` (`src/cli/main.tsx`) and the session's import at onboarding (`src/cli/session.ts`). |
 
 ## Default-off switches
 

@@ -1,55 +1,57 @@
-# The four modes
+# Modes
 
-A mode decides **who proposes the code** and **who decides what happens to it**. There are
-four. They share one engine and one set of records, so a result from one is comparable with a
-result from another.
+A mode decides **who proposes the code** and **who decides what happens to it**. `agent` is the
+default. `jev-only` is the other mode on offer, and three older modes stay accepted for saved
+configurations, resuming old runs and the bench. All five share one engine and one set of
+records.
 
 ## At a glance
+
+| Mode | Badge | Who writes the code | Who decides | Keys | Default run cap |
+| --- | --- | --- | --- | --- | --- |
+| `agent` *(default)* | `agent` | the code model, through tools | the code model; your tests verify; Jev makes a few quick routing calls | a code-model key (Jev optional) | $10.00 |
+| `jev-only` | `jev-only` | nobody — code enumerates candidates | tests verify, Jev ranks | a Jev key | $1.00 |
+
+**Legacy modes** — accepted by `--mode`, `config set mode`, resume and the bench, listed by
+`/mode legacy`, no longer offered anywhere else:
 
 | Mode | Badge | Who writes the code | Who decides | Default run cap |
 | --- | --- | --- | --- | --- |
 | `llm-jev` | `llm+jev · verified` | the code model, inside the search | tests verify, Jev arbitrates | $10.00 |
 | `jev-on` | `jev+llm` | the code model, one action per step | Jev, at every stage | $10.00 |
-| `jev-only` | `jev-only` | nobody — code enumerates candidates | tests verify, Jev ranks | $1.00 |
 | `jev-off` | `llm-only` | the code model alone | nobody | $10.00 |
 
-`llm-jev` is the default. The session cap is five times the run cap in every mode, so $50.00
-for three of them and $5.00 for `jev-only`.
+The session cap is five times the run cap in every mode, so $50.00 by default and $5.00 under
+`jev-only`.
 
 ## How to switch
 
 | Where | How |
 | --- | --- |
 | launch | `jevcode --mode jev-only` |
-| inside a session | `/mode jev-only` — takes effect on the **next** run; the badge reads `jev-only · next run` until it does |
+| inside a session | `/mode jev-only` — takes effect on the **next** run; the badge reads `jev-only · next run` until it does. `/llm on` is `/mode agent`, `/llm off` is `/mode jev-only` |
 | environment | `JEVCODE_MODE=jev-only` |
 | persistently | `jevcode config set mode jev-only` |
 
 The precedence is the usual one: flag, then the environment, then `./.env`, then the config
 file, then the default. One constant in `src/config/defaults.ts` names the default, and every
-message that mentions it reads that constant, so the two can never disagree.
+message that mentions it reads that constant, so the two can never disagree. A saved
+`mode llm-jev` keeps working.
 
 ## What each mode is for
 
-### `llm-jev` — the default
+### `agent` — the default
 
-The code model writes candidate patches **inside** the search. Tests verify them, and Jev only
-arbitrates between candidates that already pass.
+The code model drives. It streams its prose, calls tools natively — `read_file`, `grep`, `glob`,
+`edit_file`, `write_file`, `bash`, `todo_write`, several per reply, reads in parallel — and the
+harness runs each call in the sandbox, checkpoints every step for `/undo`, and verifies the change
+by running your test command. Every chat message is a turn of one conversation: a greeting gets
+a streamed reply, a task gets tool calls, and a follow-up sees everything that came before.
 
-There is no intent stage and no context stage: the step starts at propose. Risk asks only the
-harm dimensions — `destructive` and `irreversible` — and records the two alignment dimensions
-at level 0 without letting them gate. Judge is code: the parsed failing counts decide, and
-Jev's judge answers are recorded rather than consulted. Completion is a code fact about the
-harness's own green run, not a probability.
-
-If the search does not cover a workspace — not Python, no tests, feature work rather than a
-bug — that step falls back to the ordinary "the code model writes one action" path.
-
-### `jev-on` — Jev decides every step
-
-The full pipeline: replan, intent, context, propose, risk, judge, complete. The code model
-writes one action per step and Jev is asked at every stage. This is the mode the recorded
-transcript in [Your first run](first-run.md) shows.
+Jev is asked at most one quick question in a normal run, and none on the default provider. A Jev
+key is therefore optional: one code-model key is enough. The step cap defaults to 250 in this
+mode, because a step is one read-only batch, one edit or command, one test run or the final
+answer. See [The agent loop](../architecture/agent-loop.md).
 
 ### `jev-only` — no generating model at all
 
@@ -63,37 +65,48 @@ slogan. In one recorded 40-program run, all 40 records carry `generatorCalls: 0`
 
 Its run cap defaults to $1.00 rather than $10.00 because there is no code model to pay for.
 
-### `jev-off` — the control arm
+### `llm-jev` — legacy, the default until 2026-09-23
 
-The code model alone. No decision, no intent, no context, no risk, no judge and no replan event
-ever fires. It exists so that every claim about the other three has something to be measured
-against. `src/loop/generator-only.ts` is a thin factory that pins the mode; the engine is the
-same one, taking the branch where the decision model is absent.
+The code model writes candidate patches **inside** the search. Tests verify them, and Jev only
+arbitrates between candidates that already pass.
+
+There is no intent stage and no context stage: the step starts at propose. Risk asks only the
+harm dimensions — `destructive` and `irreversible` — and records the two alignment dimensions
+at level 0 without letting them gate. Judge is code: the parsed failing counts decide, and
+Jev's judge answers are recorded rather than consulted. Completion is a code fact about the
+harness's own green run, not a probability.
+
+If the search does not cover a workspace — not Python, no tests, feature work rather than a
+bug — that step falls back to the ordinary "the code model writes one action" path.
+
+### `jev-on` — legacy, Jev decides every step
+
+The full pipeline: replan, intent, context, propose, risk, judge, complete. The code model
+writes one action per step and Jev is asked at every stage.
+
+### `jev-off` — legacy, the control arm
+
+The code model alone, in the step loop. No decision, no intent, no context, no risk, no judge
+and no replan event ever fires. It exists so that every claim about the Jev-driven modes has
+something to be measured against. `src/loop/generator-only.ts` is a thin factory that pins the
+mode; the engine is the same one, taking the branch where the decision model is absent.
 
 ## The dispatch, as a picture
 
 ```mermaid
 flowchart TD
   MODE{"EngineMode"}
-  MODE -->|"jev-on"| ON1
-  MODE -->|"llm-jev — the default"| LJ1
+  MODE -->|"agent — the default"| AG1
   MODE -->|"jev-only"| JO1
-  MODE -->|"jev-off"| OF1
+  MODE -->|"llm-jev — legacy"| LJ1
+  MODE -->|"jev-on — legacy"| ON1
+  MODE -->|"jev-off — legacy"| OF1
 
-  subgraph sg_on["jev-on"]
-    ON1["replan, intent and context all ask Jev"]
-    ON2["propose — proposeWithContext: the code model writes one action"]
-    ON3["risk — runRiskStage: four Scores plus matches_intent"]
-    ON4["judge and complete — runJudgeStage"]
-    ON1 --> ON2 --> ON3 --> ON4
-  end
-  subgraph sg_lj["llm-jev"]
-    LJ1["no intent and no context stage — the step starts at propose"]
-    LJ2["propose — runSynthStage: the code model writes candidates inside the search"]
-    LJ3["risk — runHarmOnlyRiskStage: harm dimensions only"]
-    LJ4["judge — runCodeJudgeStage: the parsed failing counts decide"]
-    LJ5["complete — isCompleteByFact, a code fact"]
-    LJ1 --> LJ2 --> LJ3 --> LJ4 --> LJ5
+  subgraph sg_ag["agent"]
+    AG1["the agent driver samples the code model"]
+    AG2["read-only calls in parallel · one edit or command per step"]
+    AG3["the harness runs the test command; complete needs a green, current run"]
+    AG1 --> AG2 --> AG3
   end
   subgraph sg_jo["jev-only"]
     JO1["the jev-on pipeline, with propose swapped for the synthesizer"]
@@ -101,21 +114,34 @@ flowchart TD
     JO3["tests are the oracle; Jev ranks and arbitrates"]
     JO1 --> JO2 --> JO3
   end
+  subgraph sg_lj["llm-jev"]
+    LJ1["no intent and no context stage — the step starts at propose"]
+    LJ2["propose — runSynthStage: the code model writes candidates inside the search"]
+    LJ3["risk — harm dimensions only; judge — the parsed failing counts decide"]
+    LJ1 --> LJ2 --> LJ3
+  end
+  subgraph sg_on["jev-on"]
+    ON1["replan, intent and context all ask Jev"]
+    ON2["propose — the code model writes one action"]
+    ON3["risk, judge and complete — Jev at every stage"]
+    ON1 --> ON2 --> ON3
+  end
   subgraph sg_of["jev-off"]
     OF1["the same engine, with every Jev consumer skipped"]
-    OF2["no decision, intent, context, risk, judge or replan event fires"]
-    OF1 --> OF2
   end
 
-  ON4 --> COMMIT["commit, checkpoint, steps.jsonl"]
-  LJ5 --> COMMIT
+  AG3 --> COMMIT["commit, checkpoint, steps.jsonl"]
   JO3 --> COMMIT
-  OF2 --> COMMIT
+  LJ3 --> COMMIT
+  ON3 --> COMMIT
+  OF1 --> COMMIT
 ```
 
 ## What is measured
 
-Two head-to-heads, both from the same frozen build, both recorded in
+The agent loop has been verified live but not benchmarked. The measurements below are of the
+legacy `llm-jev` mode, taken while it was the default. Two head-to-heads, both from the same
+frozen build, both recorded in
 [`../LLM-JEV.md`](../LLM-JEV.md) under the dated 2026-09-22 entries. Read them with their
 caveats, which are given below the table.
 
@@ -147,6 +173,7 @@ the rows in [`../STATUS.md`](../STATUS.md).
 
 ## Depth
 
+- [`../AGENT-LOOP-DESIGN.md`](../AGENT-LOOP-DESIGN.md) — `agent`, normative
 - [`../DESIGN.md`](../DESIGN.md) §21 — `jev-only`, normative
 - [`../DESIGN.md`](../DESIGN.md) §22 — `llm-jev`, normative
 - [`../JEV-ONLY.md`](../JEV-ONLY.md) — the dated measurement log for `jev-only`
@@ -154,6 +181,7 @@ the rows in [`../STATUS.md`](../STATUS.md).
 
 ## Next
 
+- [The agent loop](../architecture/agent-loop.md)
 - [What Jev is](../concepts/what-is-jev.md)
 - [The synthesizer](../concepts/the-synthesizer.md)
 - [Verification and the oracle](../concepts/verification.md)

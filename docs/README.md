@@ -1,9 +1,11 @@
 # JevCode documentation
 
-JevCode is a coding agent for the terminal. It splits the work between two models: a
-**generator** writes code, and a **decider** called Jev answers small questions that code
-enumerates — what this step is for, which files matter, whether an action is safe to run,
-whether the task is done. Your tests decide whether the code is right. Nothing else does.
+JevCode is a streaming coding agent for the terminal. In the default mode, `agent`, the code
+model drives: it reads, searches, edits and runs commands through native tool calls, and
+everything it does streams to your terminal as it happens. The harness runs each call in a
+sandbox, checkpoints every step so `/undo` works, and verifies the change with your own tests.
+A small decision model, Jev, makes at most a few quick routing calls at the edges of a run.
+Your tests decide whether the code is right. Nothing else does.
 
 This page indexes every document in the repository.
 
@@ -11,17 +13,18 @@ This page indexes every document in the repository.
 
 **If you want to use it.** [Install](getting-started/install.md) →
 [Your first run](getting-started/first-run.md) → [Keys](getting-started/keys-and-providers.md)
-→ [The four modes](getting-started/modes.md). Then keep
+→ [Modes](getting-started/modes.md). Then keep
 [the CLI reference](reference/cli.md) open.
 
-**If you want to judge it.** [What Jev is](concepts/what-is-jev.md) →
+**If you want to judge it.** [The agent loop](architecture/agent-loop.md) →
+[What Jev is](concepts/what-is-jev.md) →
 [Jev routes, never gates](concepts/jev-routes-never-gates.md) →
-[Measurements](measurements/README.md), which leads with the two results that matter and the
-caveat each one has to carry → [Status](status/README.md) for what ships and what sits behind
-a switch that is off.
+[Status](status/README.md) for what ships and what sits behind a switch that is off. The
+[Measurements](measurements/README.md) are of the Jev-driven modes that were the default
+before 2026-09-23; the agent loop has not been benchmarked.
 
 **If you want to change it.** [System overview](architecture/overview.md) →
-[The step loop](architecture/step-loop.md) →
+[The agent loop](architecture/agent-loop.md) →
 [Module ownership and import rules](contributing/architecture-rules.md) →
 [Contributing](contributing/README.md). The normative specifications are under
 [design](design/README.md); the code cites them by section number.
@@ -42,9 +45,14 @@ flowchart LR
     CREDS["credentials.ts"]
     LAUNCH["launch.ts"]
   end
-  subgraph sg_loop["step loop — src/loop"]
+  subgraph sg_agent["agent loop — src/agent, the default mode"]
+    DRIVER["driver.ts — the turn loop"]
+    ATOOLS["tools/ — read, grep, glob, edit, write, bash, todo"]
+    ASAFE["safety.ts — the command classifier"]
+  end
+  subgraph sg_loop["engine and step loop — src/loop"]
     ENGINE["engine.ts"]
-    STAGES["stages/ — replan, intent, context, propose, risk, execute, judge, complete"]
+    STAGES["stages/ — agent; and for the legacy modes replan, intent, context, propose, risk, execute, judge, complete"]
     ROUTERS["routers.ts — routersOn"]
     BUDGET["budget.ts and src/spend/meter.ts"]
     STOPM["stop.ts — exitCodeFor"]
@@ -88,6 +96,11 @@ flowchart LR
   MAIN --> IMPORTM
   BENCH --> ENGINE
   ENGINE --> STAGES
+  STAGES --> DRIVER
+  DRIVER --> ATOOLS
+  DRIVER --> ASAFE
+  DRIVER --> PROVIDER
+  ATOOLS --> SANDBOX
   ENGINE --> ROUTERS
   ENGINE --> BUDGET
   ENGINE --> STOPM
@@ -113,8 +126,11 @@ flowchart LR
   ENGINE --> ORCH
 ```
 
-Two edges are worth reading twice. Every Jev question goes through the engine, not around it:
-a stage builds a batch of questions and hands it to the engine's one recorded, metered ask.
+In the default mode the engine hands each step to the agent driver, which samples the code
+model and resolves its tool calls; the Jev stages run only in the legacy modes. Two edges are
+worth reading twice. Every Jev question goes through the engine, not around it:
+a stage (or one of the agent's three quick placements) builds a batch of questions and hands
+it to the engine's one recorded, metered ask.
 And `routeSpeculative` never talks to the decider on its own — it is handed the calling
 stage's own ask as a function argument. The same picture with the module table and the import
 rules is on [System overview](architecture/overview.md).
@@ -126,7 +142,7 @@ rules is on [System overview](architecture/overview.md).
 | [Install](getting-started/install.md) | Every install path in order of how well it works today, with the command that proves each one, and the measured size of a build. |
 | [Your first run](getting-started/first-run.md) | A bare `jevcode` from an empty configuration: the first frame, the key wizard, where the configuration lands, and one whole task with its transcript annotated line by line. |
 | [Keys](getting-started/keys-and-providers.md) | Every key variable, which model each one serves, the order they are resolved in, the four ways to save one, and the rules kept about secrets. |
-| [The four modes](getting-started/modes.md) | Who proposes the code and who decides what happens to it, in each mode; the spend caps; the four ways to switch. |
+| [Modes](getting-started/modes.md) | `agent` (the default) and `jev-only`, plus the three legacy modes kept for saved configs, resume and the bench; the spend caps; the four ways to switch. |
 | [Status](status/README.md) | What ships, what is built but switched off, what has been measured and what has not. Start here if you are deciding whether to use it. |
 
 ## Concepts
@@ -135,10 +151,10 @@ The ideas the rest of the documentation assumes. No code required.
 
 | Page | What it covers |
 | --- | --- |
-| [What Jev is](concepts/what-is-jev.md) | A calibrated decision model rather than a chat model: the question shapes, the wire format, the confidence rules, and the three abilities that have been measured. |
-| [Jev routes, never gates](concepts/jev-routes-never-gates.md) | The one safety principle the whole system is built around, the four clauses that enforce it, and the lint that checks every call site. |
-| [The synthesizer](concepts/the-synthesizer.md) | How a patch gets proposed without a model that writes code: enumerate candidates, run them, keep what passes. |
-| [Verification and the oracle](concepts/verification.md) | What actually gets run, where, and what a result is allowed to decide. |
+| [What Jev is](concepts/what-is-jev.md) | A calibrated decision model rather than a chat model: the question shapes, the wire format, the confidence rules, and where JevCode still asks it. |
+| [Jev routes, never gates](concepts/jev-routes-never-gates.md) | The safety principle every Jev call site keeps, the four clauses that enforce it, and the lint that checks every call site. |
+| [The synthesizer](concepts/the-synthesizer.md) | The engine of the legacy `llm-jev` and `jev-only` modes: how a patch gets proposed by enumerating candidates, running them and keeping what passes. |
+| [Verification and the oracle](concepts/verification.md) | What actually gets run, where, and what a result is allowed to decide — in the agent loop and in the legacy modes. |
 
 ## Architecture
 
@@ -146,8 +162,9 @@ How the code is arranged, module by module. Each page cites the file and line it
 
 | Page | What it covers |
 | --- | --- |
-| [System overview](architecture/overview.md) | The twenty-one top-level modules, who owns what, the import rules that keep the layers apart, and the run directory. |
-| [The step loop](architecture/step-loop.md) | One step stage by stage: replan, intent, context, propose, risk, execute, judge, complete — and the commit rule that makes a step durable. |
+| [System overview](architecture/overview.md) | The twenty-two top-level modules, who owns what, the import rules that keep the layers apart, and the run directory. |
+| [The agent loop](architecture/agent-loop.md) | The default mode: the loop, the seven tools, the streaming event flow, the context policy, stop and verification, safety and autonomy, where Jev sits, and the providers. |
+| [The step loop](architecture/step-loop.md) | The engine of the legacy, Jev-driven modes: one step stage by stage, and the commit rule every mode shares. |
 | [The synthesizer](architecture/synthesizer.md) | The ledger, the localiser, the candidate sources, the sieve-or-rank decision, the shadow lanes, the overfit guard and the fast path. |
 | [The Jev contract and its lint](architecture/jev-contract.md) | What the question builders enforce, the speculative router and its properties, the step token, and what the contract lint actually checks. |
 | [The warm verification plane](architecture/warm-verification-plane.md) | A warm interpreter per verification lane: what it buys, how it stays a screen rather than an authority, and the two reasons it ships off. |
@@ -174,7 +191,9 @@ Running it, configuring it and reading what it wrote.
 ## Measurements
 
 Every claim made about this project, with the build it was measured on, the control it was
-measured against, and the caveat it has to travel with.
+measured against, and the caveat it has to travel with. Every number below was measured on the
+Jev-driven modes, which were the default until 2026-09-23. The agent loop, the default since,
+has been verified live but not benchmarked.
 
 | Page | What it covers |
 | --- | --- |
@@ -185,7 +204,7 @@ measured against, and the caveat it has to travel with.
 | [Jev-only](measurements/jev-only.md) | A coding agent with no generating model at all: the candidate sources, the evaluation ladder, the results and the audit verdicts. |
 | [The warm plane A/B](measurements/warm-plane.md) | Why a mechanism that is measurably faster ships switched off. |
 | [Startup, render and harness overhead](measurements/performance.md) | The program rather than the models: first frame, per-step overhead, render blocking — including the rows that are currently failing. |
-| [The side-by-side recording](media/side-by-side.md) | The recording on the front page: the task, the method, the load, the full numbers, and how to record it again. |
+| [The side-by-side recording](media/side-by-side.md) | The `llm-jev` against `jev-off` recording that was on the front page until 2026-09-23: the task, the method, the load, the full numbers, and how to record it again. |
 | [`LLM-JEV.md`](LLM-JEV.md) | The running measurement log for the `llm-jev` mode, dated entry by dated entry. The measurement pages above are the readable summary of it. |
 | [`JEV-ONLY.md`](JEV-ONLY.md) | The running log for the mode with no generating model, from first hypothesis onwards. |
 
@@ -193,22 +212,23 @@ measured against, and the caveat it has to travel with.
 
 | Page | What it covers |
 | --- | --- |
-| [`DECISIONS.md`](DECISIONS.md) | Ninety-one dated entries, each with the decision, why it was taken and what it affects — including the ones that reversed an earlier entry. A generated table of contents sits at the top, newest first. |
+| [`DECISIONS.md`](DECISIONS.md) | One hundred dated entries, each with the decision, why it was taken and what it affects — including the ones that reversed an earlier entry. A generated table of contents sits at the top, newest first. |
 
 ## Design specifications
 
-Nine normative documents. They are long, they carry `file:line` citations, and the code cites
+Ten normative documents. They are long, they carry `file:line` citations, and the code cites
 them back by section number, so **their paths and section numbers never change**. They are
 specifications, not tutorials.
 
 | Page | What it specifies |
 | --- | --- |
-| [Design index](design/README.md) | What each of the nine specifies, how they stack, and the three conventions they are written under. Read this before opening one. |
+| [Design index](design/README.md) | What each of the ten specifies, how they stack, and the three conventions they are written under. Read this before opening one. |
+| [`AGENT-LOOP-DESIGN.md`](AGENT-LOOP-DESIGN.md) | The default harness: the model-driven tool loop, the tools and their schemas, streaming, context, stop rules, safety and autonomy, Jev's three quick placements, the providers, and the owner's directives it implements. |
 | [`DESIGN.md`](DESIGN.md) | The base: what JevCode is, the module map, the step loop, the edit formats, the sandbox, the checkpoint, exit codes and the bench. |
 | [`JEV-ONLY-DESIGN.md`](JEV-ONLY-DESIGN.md) | The Ledger + Sieve search: candidate sources, localisation, the sieve-or-rank rule, the guard, budgets and the evaluation ladder. |
 | [`LLM-JEV-DESIGN.md`](LLM-JEV-DESIGN.md) | The generating model as one candidate source inside that search, the seeds-versus-model race, and completion as a code fact. |
 | [`HARNESS-NEXT-DESIGN.md`](HARNESS-NEXT-DESIGN.md) | Nineteen speed mechanisms and the principle that bounds them, plus the warm verification plane. |
-| [`LLM-LOOP-DESIGN.md`](LLM-LOOP-DESIGN.md) | The speculative router table and the bounded fast path, with the arms and predictions registered before anything ran. The routers ship off in every mode; the fast path is `auto` under `jev-on` only, so it is off in the default mode. |
+| [`LLM-LOOP-DESIGN.md`](LLM-LOOP-DESIGN.md) | The speculative router table and the bounded fast path, with the arms and predictions registered before anything ran. The routers ship off in every mode; the fast path is `auto` under `jev-on` only. |
 | [`COORDINATION-DESIGN.md`](COORDINATION-DESIGN.md) | How concurrent sessions see each other: the ledger, leases, a mailbox, heartbeats, and pause and resume from anywhere. |
 | [`ORCHESTRATION-DESIGN.md`](ORCHESTRATION-DESIGN.md) | Children in worktrees, a critic made of code, and a landing queue. Ships with the split gate shut. |
 | [`IMPORT-DESIGN.md`](IMPORT-DESIGN.md) | Discover, classify, plan, apply — with the first three phases writing nothing at all. |

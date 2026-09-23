@@ -1,11 +1,18 @@
 # The step loop
 
+> **This is the engine of the legacy, Jev-driven modes** — `llm-jev`, `jev-on`, `jev-off` — and of
+> `jev-only`. The default mode, `agent`, does not run these stages: it hands each step to the
+> agent driver and reuses only the shared tail described below (budgets, pre- and post-images,
+> execution, the commit rule and the checkpoint). Start at [The agent loop](agent-loop.md) for
+> the default mode.
+
 A run is a sequence of steps. A step proposes one action, checks it, runs it, judges the
-result, and writes it down. `src/loop/engine.ts` is 6,105 lines and holds the whole of it; the
-stages themselves live in `src/loop/stages/`, one file each.
+result, and writes it down. `src/loop/engine.ts` holds the whole of it; the stages themselves
+live in `src/loop/stages/`, one file each. The agent mode's branch is one more stage file,
+`src/loop/stages/agent.ts`.
 
 This page walks one step from budget check to checkpoint, names every function, and says which
-stages run in which of the four modes.
+stages run in which of the four Jev-driven modes.
 
 - The interfaces every stage speaks through are in `src/core/types.ts`.
 - The normative text is [`docs/DESIGN.md` §6](../DESIGN.md) (the loop) and §9.1 (the commit
@@ -86,13 +93,16 @@ There is one more stage, `decompose`, which runs before `replan` and `intent` an
 task splitting is possible at all. It short-circuits on `split: 'off'` — the default — before
 it gathers a single fact.
 
-## The four modes
+## The four Jev-driven modes
+
+The fifth mode, `agent` (the default), takes its own branch at propose and is described in
+[The agent loop](agent-loop.md).
 
 ```mermaid
 flowchart TD
   MODE{"EngineMode — src/core/types.ts"}
   MODE -->|"jev-on"| ON1
-  MODE -->|"llm-jev — the default"| LJ1
+  MODE -->|"llm-jev — the default until 2026-09-23"| LJ1
   MODE -->|"jev-only"| JO1
   MODE -->|"jev-off — the control arm"| OF1
 
