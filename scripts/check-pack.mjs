@@ -37,7 +37,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 //   tarball   1,039,272 bytes  (69.3 % of TARBALL_MAX)
 //   bundle    2,854,378 bytes minified from 5,064,620 unminified (43.6 % smaller, keepNames)
 // So the +306 KB of source cost +68,862 unpacked bytes and neither cap moves. Re-measure at the next raise, not before.
-const UNPACKED_MAX = 3_500_000; // bytes
+const UNPACKED_MAX = 3_600_000; // raised from 3,500,000 on 2026-09-22 (evening): the conversational-chat day — the 3D indicator module (src/tui/anim, ~60 KB of frame renderers + the Ink component), the identity prompt and the autonomy row put the unpacked package at 3,514,690 (dist/jevcode.mjs 3,353,506); the peer owns the next bundle-splitting pass, re-measure at the next raise // bytes
 const TARBALL_MAX = 1_500_000; // bytes
 const FORBIDDEN = [
   [/\.map$/, 'source map'],

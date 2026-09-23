@@ -122,7 +122,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     const plain = stripAnsi(r.text);
     // §3.10: one item per line, the bubble labels verbatim; the `--mock` generator answers a chat request with one deterministic line
     expect(plain).toContain('[you] hi');
-    expect(plain).toMatch(/\[jevcode\] Hi — I'm JevCode \(mock reply\)\./);
+    expect(plain).toMatch(/\[jevcode\] Hi\. I'm JevCode \(mock reply\)\./);
     // never a card and never a blocked composer
     expect(plain).not.toContain('run this as a task?');
     expect(plain).not.toContain('(waiting for y/n)');
