@@ -1465,8 +1465,12 @@ export function App(p: AppProps): React.JSX.Element {
         // TUI-DESIGN-3 §4.4 F14: `/exit` while a chat request is thinking cancels the request and exits (no confirm: nothing is live)
         // AGENT-LOOP-DESIGN §A5: likewise while an agent run is still a reply — nothing was changed or run, so no confirm
         if (chatThinking(s) || agentReplyPhase(s)) {
-          if (h) h.abort('human_abort');
-          else p.onAbort('human_abort');
+          // an agent reply is an engine run: `host.exit` aborts it once and leaves at its run:end, so the App must not abort it
+          // first — the second abort() was the engine's second-press path (a forced exit 130 and a `stopped — error` epilogue)
+          if (!(agentReplyPhase(s) && h)) {
+            if (h) h.abort('human_abort');
+            else p.onAbort('human_abort');
+          }
           exit(0);
           return;
         }
