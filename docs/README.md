@@ -212,7 +212,7 @@ has been verified live but not benchmarked.
 
 | Page | What it covers |
 | --- | --- |
-| [`DECISIONS.md`](DECISIONS.md) | Ninety-two dated entries, each with the decision, why it was taken and what it affects — including the ones that reversed an earlier entry. A generated table of contents sits at the top, newest first. |
+| [`DECISIONS.md`](DECISIONS.md) | One hundred dated entries, each with the decision, why it was taken and what it affects — including the ones that reversed an earlier entry. A generated table of contents sits at the top, newest first. |
 
 ## Design specifications
 

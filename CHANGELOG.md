@@ -4,6 +4,63 @@ All notable changes to `jevcode`. The format follows [Keep a Changelog](https://
 the project uses semantic versioning. `package.json` is the single source of truth for the version and is bumped
 by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-22 (`package.json` reads 0.6.0); nothing has been pushed to the npm registry or the Homebrew tap.
 
+## [Unreleased]
+
+### Changed — the agent loop is the default (2026-09-23)
+
+The default mode is now `agent`: a streaming, model-driven tool loop in the shape of the leading open-source coding
+agents. The specification is `docs/AGENT-LOOP-DESIGN.md`; the readable account is `docs/architecture/agent-loop.md`; the
+decision is in `docs/DECISIONS.md` (2026-09-23).
+
+- **The code model drives.** It calls seven native tools — `read_file`, `grep`, `glob`, `edit_file`, `write_file`, `bash`,
+  `todo_write` — several per reply. Reads, searches and commands the classifier proves read-only run in parallel (up to 8);
+  edits and other commands run one at a time with pre-images, so `/undo`, `/rewind` and `/diff N` stay exact per step. A
+  tolerant edit matcher, tool-call repair (JSON repair, name and argument aliases, calls leaked as XML) and errors returned
+  as tool results keep mid-tier models on track. Long output is clipped inline and spilled whole to `outputs/`.
+- **Verification by your tests.** The harness detects the test command; if the model stops after changing files without
+  running it, the harness runs it and hands the result back. A run is `complete` only after a green, current run of the
+  whole command; otherwise it ends `generator_done` and says the change is not verified. A loop detector nudges a model that
+  repeats itself and stops it `stuck` (exit 4, resumable) on the sixth trip.
+- **One conversation, every reply from the model.** Every chat message is the next turn of an agent run that carries the
+  whole session. A greeting or a question is answered in prose with no tool call and stops `answered` (exit 0): it looks
+  like a chat reply and never names the session. There is no intake reading, no `On it — starting the run.` line, no
+  `do it` offer and no canned reply in agent mode. The system prompt leads with JevCode's identity.
+- **Everything streams.** Prose streams in place above the console from the first token — a partial line is text, never a
+  character counter — and each completed line moves into the scrollback without the frame jumping. Each step leaves one
+  tool row (`Read …`, `Edit calc/core.py (+1 −1)`, `Bash python -m pytest -q · 7 passed`); the live region shows the
+  running command's output tail, the reads in flight or the call being written; reasoning shows as a dim
+  `thinking… 1.2k chars`. New `--json` events: `assistant:text`, `assistant:reset`, `generator:reasoning`, `tool:call`,
+  `tool:result` (the stream stays `v: 1`).
+- **The mini indicator.** The 12-row 3D waiting animation is gone. The status row's glyph slot holds a small braille
+  animation of what is running — a donut while the model thinks, a globe while it reads, a cube while it edits or runs a
+  command, a wave while the tests run — on the spinner's existing tick, still over SSH and under reduced motion, absent at
+  idle. Status words: `thinking`, `reading`, `editing`, `running`, `testing`.
+- **Full autonomy never asks and never refuses.** Under the default `--autonomy full` every command runs in the sandbox with
+  pre-images; a command that matches a destructive rule runs too, and its step carries one truthful line —
+  `this left the machine; /undo cannot reverse it`, `/undo restores the workspace`, or `/undo may not restore this`.
+  `--autonomy review` shows a y/n card before destructive and unknown commands.
+- **Jev at the edges only, and optional.** Jev keeps three quick hints — a first-turn effort hint (RA0), the wording of a
+  loop nudge (RA1), a late progress check (RA2) — none of which can gate anything. A normal run makes at most one Jev
+  request, and on the default provider none. A code-model key alone is enough; `jevcode login --status` reads
+  `needs: generator (Jev optional)`.
+- **Providers.** All seven adapters speak the native agent protocol behind the additive `GenerateRequest.agent`: tool results
+  paired by id, parallel calls, the session as the prompt-cache key, and each provider's reasoning state replayed (OpenRouter
+  `reasoning_details`, Anthropic signed thinking, OpenAI encrypted reasoning, Fireworks `reasoning_content`, Gemini thought
+  signatures), with one retry without replay if a provider rejects it. Legacy wire bodies are unchanged.
+- **Context.** Stale tool results are masked at 50 % of the budget (server-side context editing on Anthropic) and a summary
+  compaction runs at 85 %; `/compact` forces it. The conversation is `agent/transcript.jsonl` in each run directory.
+- **Modes.** `agent` (default) and `jev-only` are the modes on offer. `llm-jev`, `jev-on` and `jev-off` stay accepted for
+  saved configs, resume and the bench, unchanged; `/mode legacy` lists them. `/llm on` is now `/mode agent`. The default
+  step cap is 250 in agent mode.
+
+### Documentation
+
+- New `docs/architecture/agent-loop.md` and `docs/AGENT-LOOP-DESIGN.md`. The README's "How it works" is rewritten around the
+  loop, its mode table lists `agent` and `jev-only`, and the measured numbers move under "Legacy modes" as a dated
+  subsection; the side-by-side recording, which compared the previous default with `jev-off`, leaves the front page. The
+  concept pages describe Jev's reduced role, and the step loop, the synthesizer and the relaxed context are marked as the
+  Jev-driven modes' engine. The tagline "Decisions, not strings" is unchanged.
+
 ## [0.6.0] — 2026-09-22 (not yet published)
 
 Round 5 of the interactive TUI (`docs/TUI-DESIGN-5.md`, six concurrent slots and one integration pass; the record
