@@ -2342,6 +2342,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         decider,
         // complete autonomy by default: under `full` a `review` verdict is approved at once and logged as one
         // informational `[review]` card; `--autonomy review` keeps the blocking y/n card. `block` stops either way.
+        autonomy: cfg.autonomy, // the engine approves a `review` verdict itself under `full`; under `review` it asks the confirmer (the y/n card)
         confirmer: cfg.autonomy === 'review' ? renderer.confirmer : autonomousConfirmer(renderer.confirmer, (req) => note(autoApprovedNote(req, cfg.redact), { label: '[review]' })),
         meter,
         limits,
@@ -2908,6 +2909,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         decider,
         // complete autonomy by default: under `full` a `review` verdict is approved at once and logged as one
         // informational `[review]` card; `--autonomy review` keeps the blocking y/n card. `block` stops either way.
+        autonomy: rcfg.autonomy,
         confirmer: rcfg.autonomy === 'review' ? renderer.confirmer : autonomousConfirmer(renderer.confirmer, (req) => note(autoApprovedNote(req, rcfg.redact), { label: '[review]' })),
         meter,
         limits: rec.limits,
