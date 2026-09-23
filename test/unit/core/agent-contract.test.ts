@@ -76,7 +76,7 @@ import type {
   ToolCall,
   ToolCallDelta,
 } from '../../../src/core/types.js';
-import { ConfigError, EXIT_CODES, JevError, JevHttpError } from '../../../src/errors.js';
+import { EXIT_CODES, JevError, JevHttpError } from '../../../src/errors.js';
 import { ABSENT_DECIDER_MODEL, JevUnavailableError, createAbsentDecider } from '../../../src/jev/absent.js';
 import { createStepToken, isRouterFatal, routeSpeculative } from '../../../src/jev/router.js';
 import { exitCodeFor } from '../../../src/loop/stop.js';
@@ -339,16 +339,15 @@ describe('§14.2: the absent decider', () => {
   });
 });
 
-describe('§15 S1: the agent entry point is a stub until slice S3', () => {
-  it('createAgentDriver is an AgentDriverFactory that throws ConfigError("agent mode is not built yet") — exit 2', () => {
+describe('§15 S1: the agent entry point (the stub replaced by slice S3)', () => {
+  it('createAgentDriver is an AgentDriverFactory that returns a fresh driver per run', () => {
     const factory: AgentDriverFactory = createAgentDriver;
-    expect(() => factory()).toThrow(ConfigError);
-    expect(() => factory()).toThrow('agent mode is not built yet');
-    try {
-      factory();
-    } catch (e) {
-      expect(e instanceof ConfigError ? e.exitCode : null).toBe(2);
-    }
+    const a = factory();
+    const b = factory();
+    expect(a).not.toBe(b);
+    expect(a.name).toBe('agent');
+    expect(typeof a.next).toBe('function');
+    expect(typeof a.observe).toBe('function');
   });
 });
 

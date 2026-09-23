@@ -487,14 +487,17 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
       if (outcome.kind === 'invalid') {
         // A bad body is not a network failure: one extra try for transient shapes, none for
         // deterministic mismatches, which would only bill the same failure twice (§5.2).
-        if (!outcome.error.transient || validationRetries >= JEV_RETRY.validationRetries) throw outcome.error;
+        // AGENT-LOOP-DESIGN §13.1 rule 6: a quick ask makes exactly one attempt.
+        if (opts.quick === true || !outcome.error.transient || validationRetries >= JEV_RETRY.validationRetries) throw outcome.error;
         validationRetries += 1;
         httpAttempts -= 1;
         continue;
       }
 
       const err = outcome.error;
-      if (!err.retryable || httpAttempts >= JEV_RETRY.attempts) throw err;
+      // AGENT-LOOP-DESIGN §13.1 rule 6: a quick ask has no retry chain — one attempt (the per-attempt timeout unchanged),
+      // no backoff and no `retry` event, so a Jev outage costs the caller's deadline and never a 30 s failure
+      if (opts.quick === true || !err.retryable || httpAttempts >= JEV_RETRY.attempts) throw err;
       const waitMs = err.retryAfterMs ?? backoffMs(httpAttempts, random);
       // TUI-DESIGN §13.2 / §15.2 `jev/client.ts` row: RetryInfo before the sleep; the waker getter is read per sleep
       const wake = notifyRetry(opts, { attempt: httpAttempts, maxAttempts: JEV_RETRY.attempts, waitMs, retryAfter: err.retryAfterMs !== null, cause: retryCauseOf(err) });
