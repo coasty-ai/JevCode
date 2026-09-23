@@ -58,7 +58,7 @@ Every setting resolves through the same chain, highest first:
 1. the command-line flag
 2. the process environment
 3. `./.env` in the workspace
-4. the `.env` of the checkout named by `--open-assist-path <dir>` / `OPEN_ASSIST_PATH`, if you named one
+4. the extra `.env` file named by `--extra-env-file <path>` / `JEVCODE_EXTRA_ENV_FILE`, if you named one
 5. the config file
 6. the built-in default
 

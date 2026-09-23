@@ -61,7 +61,7 @@ The decider's four variables do not carry the `JEVCODE_` prefix: `JEV_PROVIDER`,
 | --- | --- | --- | --- |
 | `JEVCODE_WORKSPACE` | `workspace` | the working directory | the directory a run may change |
 | `JEVCODE_HOME` | `runsDir` | `~/.jevcode` | the JevCode home; the runs directory is `runs` inside it, and the coordination ledger and the model cache live beside it |
-| `OPEN_ASSIST_PATH` | `openAssistPath` | — | a checkout whose `.env` is read as an additional fallback layer, below `./.env` and above the configuration file. `docs/DESIGN.md` §3 still spells this row `--extra-env-file` / `JEVCODE_EXTRA_ENV_FILE`; the built name is the one above |
+| `JEVCODE_EXTRA_ENV_FILE` | `extraEnvFile` | — | a checkout whose `.env` is read as an additional fallback layer, below `./.env` and above the configuration file. `docs/DESIGN.md` §3 still spells this row `--extra-env-file` / `JEVCODE_EXTRA_ENV_FILE`; the built name is the one above |
 | `JEVCODE_CONFIG` | `configFile` | the search order | the configuration file to read |
 | `JEVCODE_SANDBOX` | `sandbox` | `auto` | the sandbox profile; `none` disables the system profile |
 
@@ -142,7 +142,7 @@ key in a loaded `.env` file or in the configuration file whose **name** contains
 ## A `.env` file is not the environment
 
 This distinction matters for the two groups below. A `.env` file — the one in the working
-directory, or the one under the path `openAssistPath` names — is read as a **configuration layer**. Its values
+directory, or the one under the path `extraEnvFile` names — is read as a **configuration layer**. Its values
 never enter the process environment.
 
 So a name from Group 1 works in a `.env` file, because the settings resolver reads that layer.

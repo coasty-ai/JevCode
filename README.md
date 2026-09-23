@@ -69,7 +69,7 @@ Without a terminal — `--no-input`, `--json`, or a pipe — JevCode does not pr
 code 2 and prints the exact environment variable or `jevcode login` command that would fix it.
 
 `jevcode login` re-runs the wizard. `jevcode config` prints every setting with the source it came
-from. A second `.env` file can be read as a fallback with `--open-assist-path <dir>` (or `OPEN_ASSIST_PATH`),
+from. A second `.env` file can be read as a fallback with `--extra-env-file <path>` (or `JEVCODE_EXTRA_ENV_FILE`),
 which names a checkout whose `.env` fills in what your own environment did not.
 There is no `jevcode doctor`: it is deferred (`docs/TUI-DESIGN.md` §22, A75), and `jevcode
 config` plus `jevcode login --status` are the read-only view today.
