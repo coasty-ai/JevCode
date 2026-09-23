@@ -68,6 +68,14 @@ describe('agent reducer: the prose buffer and its commits', () => {
     expect(t.items.filter((i) => i.prose !== undefined).map((i) => i.text)).toEqual(['no deltas here', '', 'at all']);
   });
 
+  it('lines an overflow commit already moved are never committed twice — not even when the overflow used the whole buffer up', () => {
+    let s = drive(agentOpening('x'));
+    s = uiReducer(s, { type: 'reply:geometry', rows: 1, columns: 80 });
+    s = drive([{ type: 'generator:delta', step: 1, text: 'line one\nline two\nline three\n' }, { type: 'assistant:text', step: 1, turn: 1, attempt: 1, text: 'line one\nline two\nline three', final: false }], s);
+    expect(s.items.filter((i) => i.prose !== undefined).map((i) => i.text)).toEqual(['line one', 'line two', 'line three']);
+    expect(s.live).toBe('');
+  });
+
   it('`assistant:reset` drops the uncommitted text and leaves the dim notice `reply restarted after a dropped stream`', () => {
     const s = drive([...agentOpening('x'), { type: 'generator:delta', step: 1, text: 'half a sent' }, { type: 'assistant:reset', step: 1, turn: 1, attempt: 2 }]);
     expect(s.live).toBe('');

@@ -196,11 +196,13 @@ export interface AgentUi {
   readonly turnStep: number | null;
   /** prose has streamed in this run (a still-replying run then reads `replying`, not `thinking`, like a chat reply) */
   readonly prose: boolean;
+  /** prose deltas streamed in the CURRENT model turn (a turn with none — a JSON transport — commits `assistant:text`'s own lines) */
+  readonly turnStreamed: boolean;
 }
 
 /** A fresh agent run's view. */
 export function initialAgentUi(): AgentUi {
-  return { tools: false, activity: 'thinking', writing: null, reasoning: null, running: null, calls: [], toolCalls: 0, steps: [], held: [], turnStep: null, prose: false };
+  return { tools: false, activity: 'thinking', writing: null, reasoning: null, running: null, calls: [], toolCalls: 0, steps: [], held: [], turnStep: null, prose: false, turnStreamed: false };
 }
 
 /** TUI-DESIGN §15 item 20 `UiState` 1.1 — today's fields kept, the design's additions, and the additive pane inputs the tab builders read. */
@@ -590,7 +592,8 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       const writing = action.writing === undefined ? agent.writing : action.writing;
       if (state.live === action.text && state.toolChars === toolChars && state.liveOutput === output && sameWriting(agent.writing, writing) && !paint) return state;
       const prose = agent.prose || action.text !== '';
-      const nextAgent = sameWriting(agent.writing, writing) && prose === agent.prose ? agent : { ...agent, writing, prose };
+      const turnStreamed = agent.turnStreamed || action.text !== '';
+      const nextAgent = sameWriting(agent.writing, writing) && prose === agent.prose && turnStreamed === agent.turnStreamed ? agent : { ...agent, writing, prose, turnStreamed };
       const next: UiState = { ...state, live: action.text, toolChars, liveOutput: output, agent: nextAgent, ...stamp, ...(paint ? { paintSeq: state.paintSeq + 1 } : {}) };
       return overflowReply(next);
     }
@@ -959,7 +962,8 @@ function applyAgentEvent(state: UiState, e: EngineEvent, now: number, live: stri
   const step = 'step' in e && typeof e.step === 'number' ? e.step : a.turnStep;
   // 1. the prose this event commits (a line commit, or what a finished turn / run left in the buffer)
   if (e.type === 'assistant:text') {
-    const empty = buf.length <= reply.done && reply.offset === 0;
+    // no deltas streamed for this turn: not "the buffer is used up" (overflow commits can use it up), but nothing arrived
+    const empty = buf === '' && !a.turnStreamed;
     if (empty && e.text !== '') {
       // no deltas streamed for this turn (a JSON transport): the committed lines are the event's own
       const body = `${proseLinesOf(e.text).join('\n')}\n`;
@@ -1022,7 +1026,10 @@ function applyAgentEvent(state: UiState, e: EngineEvent, now: number, live: stri
       s = { ...s, stageStartedAt: now };
       break;
     case 'generator:start':
-      if ((e.sample ?? 0) === 0) a = { ...a, activity: 'thinking', writing: null, reasoning: null, turnStep: e.step };
+      if ((e.sample ?? 0) === 0) a = { ...a, activity: 'thinking', writing: null, reasoning: null, turnStep: e.step, turnStreamed: false };
+      break;
+    case 'assistant:reset':
+      a = { ...a, turnStreamed: false };
       break;
     case 'generator:reasoning':
       a = { ...a, reasoning: { chars: e.chars, tail: e.tail } };
