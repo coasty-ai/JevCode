@@ -1,6 +1,6 @@
 # Adversarial review — `oos-iter-4` @ 822be5b, re-checked against the fix pass b3c28a0
 
-Reviewer: an Opus subagent of the harness session, 2026-09-22, read-only in detached probe worktrees (822be5b, b3c28a0, main 5ac0042). Branch NOT merged on this report: fix pass 2 ordered on the branch (rulings in the merge record).
+Reviewer: an independent read-only review, 2026-09-22, read-only in detached probe worktrees (822be5b, b3c28a0, main 5ac0042). Branch NOT merged on this report: fix pass 2 ordered on the branch (rulings in the merge record).
 
 Read-only. Probe worktrees `/tmp/review-iter4` (822be5b), `/tmp/review-iter4b` (b3c28a0),
 `/tmp/review-main` (5ac0042); all three removed after the run, no branch touched.

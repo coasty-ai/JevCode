@@ -2,7 +2,7 @@
 
 Research date: 2026-09-19. All fetches below were made on 2026-09-19 unless stated. Scope: what JevCode's generator client must send/parse when calling both APIs directly with `fetch` (no SDKs). Live probes were run with `node --env-file=.env` scripts that print only redacted output; total live spend was well under $0.01 (three Sonnet 5 calls capped at 8-60 output tokens, one Jev decision, one free Models GET).
 
-Local-notes caveat: `/Users/prateekjannu/Documents/jev-research/or-decisions.html` (99,144 bytes) is a saved Next.js 404 shell (`<html id="__next_error__">`, `noindex`), byte-for-byte the same size as the live 404 at `https://openrouter.ai/docs/api-reference/decisions` fetched 2026-09-19. It contains no API content. The substantive local notes are `jev-research/REPORT.md` and `jev-research/clean/api.md`; the comparison in section 3 is against those.
+Local-notes caveat: `<research-notes>/or-decisions.html` (99,144 bytes) is a saved Next.js 404 shell (`<html id="__next_error__">`, `noindex`), byte-for-byte the same size as the live 404 at `https://openrouter.ai/docs/api-reference/decisions` fetched 2026-09-19. It contains no API content. The substantive local notes are `jev-research/REPORT.md` and `jev-research/clean/api.md`; the comparison in section 3 is against those.
 
 ---
 

@@ -1,22 +1,23 @@
 # Homebrew tap formula for jevcode (TUI-DESIGN §17.7, D14; docs/research/tui/09 §11.3).
 #
-# This file is the canonical text for the tap repository <owner>/homebrew-jevcode, where it lives as
-# Formula/jevcode.rb and installs with `brew install <owner>/jevcode/jevcode`. It follows the
+# This file is the canonical text for the tap repository coasty-ai/homebrew-jevcode, where it lives as
+# Formula/jevcode.rb and installs with `brew install coasty-ai/jevcode/jevcode`. It follows the
 # Node-formula shape (gemini-cli.rb): `std_npm_args` installs the npm tarball into libexec with
 # --ignore-scripts, the launcher is symlinked into bin, and the man page and the static completion
 # scripts shipped in the tarball are installed from the package (no process is spawned at install time).
 #
-# PLACEHOLDERS: `url` and `sha256` below are rewritten for every release (docs/RELEASE.md step 8; the
-# release workflow prints the exact lines in its job summary). The sha256 is intentionally invalid so an
-# unreleased copy can never install by accident. `homepage` needs the real GitHub URL once a remote exists.
+# PLACEHOLDER: `sha256` below is rewritten for every release (docs/RELEASE.md step 8; the release
+# workflow prints the exact `url` and `sha256` lines in its job summary). The digest is intentionally
+# invalid so an unreleased copy can never install by accident, and `url` points at a version that is
+# not on the registry yet — this formula cannot install until the first release is published.
 #
-# Node: `depends_on "node"` follows homebrew-core's current node (26.x today). package.json `engines`
-# is `>=22.12.0 <27`; the release checklist asserts `brew info --json=v2 node` still satisfies it before
-# bumping the tap (switch to "node@22" if the range is ever narrowed).
+# Node: `depends_on "node"` follows homebrew-core's current node. package.json `engines` is
+# `>=22.12.0` with no upper bound, so any homebrew-core node satisfies it; there is nothing to assert
+# before bumping the tap. Switch the formula to "node@22" only if that range is ever narrowed.
 class Jevcode < Formula
-  desc "Coding-agent harness where Jev decides and Claude writes the code (Ink TUI)"
-  homepage "https://github.com/OWNER/JevCode" # PLACEHOLDER: set to the repository URL
-  url "https://registry.npmjs.org/jevcode/-/jevcode-0.1.0.tgz" # PLACEHOLDER: rewritten per release
+  desc "Terminal coding agent where a decision model picks each step and tests verify"
+  homepage "https://github.com/coasty-ai/JevCode"
+  url "https://registry.npmjs.org/jevcode/-/jevcode-0.5.0.tgz"
   sha256 "PLACEHOLDER_SHA256_OF_THE_NPM_TARBALL_REPLACED_BY_THE_RELEASE_JOB" # PLACEHOLDER
   license "MIT"
 

@@ -1581,7 +1581,7 @@ contrast against the arm that preceded it.
   same 18 + 28 first (as its own decision text commits it to), those fresh rows replace the `751e3bf` ones as
   this wave's baseline and the confound disappears. **Prefer that ordering.**
 - Every live command runs as
-  `env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env …`.
+  `env -u ANTHROPIC_API_KEY node --env-file=<repo>/.env …`.
 - If `/tmp/jevcode-perf-window-open` exists, nothing starts. **This is now enforced where the load is generated, not
   only here:** `runPerf` (`src/perf/main.ts`, `openPerfWindow` / `closePerfWindow`) refuses to start while a live
   window exists — exit 2, naming the file, when it was taken, by whom and when it goes stale — writes the protocol's

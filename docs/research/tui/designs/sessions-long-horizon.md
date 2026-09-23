@@ -1357,7 +1357,7 @@ is the only synth-facing change (a string concatenation); (6) `src/synth/**` unt
 `--plain` and the TUI transcript stay line-identical because every new line kind goes through `itemsFromEvent`;
 (8) jev-only run cap default $0.25 / session $1.25 resolved after `--mode` is known (P45: in `resolveConfig`).
 
-## 16. Config schema (F14; precedence flag > env > `./.env` > `<OPEN_ASSIST_PATH>/.env` > file > default)
+## 16. Config schema (F14; precedence flag > env > `./.env` > `<extra .env file>` > file > default)
 
 | Setting | Flag | Env | File key | Default | Notes |
 | --- | --- | --- | --- | --- | --- |

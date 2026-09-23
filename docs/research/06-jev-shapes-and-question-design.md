@@ -1,6 +1,6 @@
 # 06. Jev (typesafe/jev-1.13) wire shapes, verified live, and question design for JevCode
 
-Research date: 2026-09-19. Sources are cited inline as `path:line` (local, under `/Users/prateekjannu/Documents/jev-research/`, abbreviated `JR/`) or `URL, fetched 2026-09-19`. Live probe: 2 calls, total `usage.cost` $0.00007518.
+Research date: 2026-09-19. Sources are cited inline as `path:line` (local, under `<research-notes>/`, abbreviated `JR/`) or `URL, fetched 2026-09-19`. Live probe: 2 calls, total `usage.cost` $0.00007518.
 
 Source quality note: `JR/or-decisions.html` is a Next.js error shell (`<html id="__next_error__">`, no article text) and `https://openrouter.ai/docs/guides/decisions` and `/docs/api-reference/decisions` both returned HTTP 404 (fetched 2026-09-19). The OpenRouter-side protocol is therefore taken from the measured lab results (`JR/REPORT.md`, `JR/results/*.jsonl`), the live probe below, the OpenRouter model-endpoints JSON, and the OpenRouter Go SDK reference page. The TypeSafe-side shape is taken from `JR/clean/api.md` (docs.typesafe.ai/api.md) and the JS SDK fact sheet.
 
@@ -14,7 +14,7 @@ Source quality note: `JR/or-decisions.html` is a Next.js error shell (`<html id=
 | Method | `POST` (GET returns `404 Not Found`) | `JR/lab.mjs:47`; `JR/results/e2_meta.jsonl` "decisions GET" status 404 |
 | `Authorization` | `Bearer <OPENROUTER_API_KEY>` | `JR/lab.mjs:52` |
 | `Content-Type` | `application/json` | `JR/lab.mjs:53` |
-| `HTTP-Referer` | app URL (lab used `https://github.com/coasty-ai/open-assist`) | `JR/lab.mjs:54` |
+| `HTTP-Referer` | app URL (lab used `https://github.com/coasty-ai/extra-env`) | `JR/lab.mjs:54` |
 | `X-Title` | app name (lab used `jev-lab`) | `JR/lab.mjs:55` |
 | Body | `{ "model": string, "state": string|object|array, "questions": { "<id>": Question } }` | `JR/REPORT.md:29-39`; `JR/docs-facts/sdk-js.md:54` ("the wire body is exactly `{ model, state, questions, ...forwardedExtras }`") |
 | Native TypeSafe equivalent | `POST https://api.typesafe.ai/v1/systemone`, same body, `model: "jev-latest"` | https://docs.typesafe.ai/api.md, fetched 2026-09-19 |
@@ -101,7 +101,7 @@ OpenRouter's Go SDK reference for `Alpha.Decisions` lists mapped error statuses 
 
 ---
 
-## 4. Live probe (2026-09-19, script `/tmp/jevprobe.mjs`, run with `node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env /tmp/jevprobe.mjs`)
+## 4. Live probe (2026-09-19, script `/tmp/jevprobe.mjs`, run with `node --env-file=<repo>/.env /tmp/jevprobe.mjs`)
 
 Request body (identical for both calls except `model`); key names are the ones JevCode will use:
 

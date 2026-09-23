@@ -171,7 +171,7 @@ async function readSeen(h: LedgerHandle, consumerId: string): Promise<Set<string
 }
 
 /**
- * The consumer's dedupe set, loaded once per ledger (survives across the runs of one TUI session). A sessionless TUI keeps
+ * The consumer's dedupe set, loaded once per ledger (survives across the runs of one TUI process). A sessionless TUI keeps
  * its own `inbox/seen/tui-<actor8>.json`, so a restart does not re-toast every broadcast of the last 7 days (review #13).
  */
 export function loadSeen(ledger: Ledger): Promise<ReadonlySet<string>> {

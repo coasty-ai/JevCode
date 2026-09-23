@@ -11,10 +11,10 @@ first-pass import table) — this file goes one layer deeper and adds two things
 
 ## 1. What the designs and code say (verified, file:line)
 
-### 1.1 The facade — everything the TUI session is allowed to import
+### 1.1 The facade — everything the TUI maintainers is allowed to import
 
 `src/import/index.ts` is a 699-line module whose own header states the contract: "the only module the CLI
-and the TUI session import… it performs no writes" (`index.ts:1-9`). Every symbol the brief named is real and
+and the TUI maintainers import… it performs no writes" (`index.ts:1-9`). Every symbol the brief named is real and
 at the line claimed:
 
 | Symbol | Location | Shape (verified) |
@@ -205,7 +205,7 @@ not a reason to add scope.
 Ninety-seven rows are already enumerated in `IMPORT-DESIGN.md` §6 (Discovery 18, Reading 13, Imports/refs 6,
 Classification 16, Plan 11, Apply 17, Surfaces 11, Live-session 5); re-litigating all 97 here would not add
 information. What follows is what §1's code-reading adds or sharpens for the **[T]**-tagged rows specifically
-— the ones that land on the TUI session's own files.
+— the ones that land on the TUI maintainers' own files.
 
 1. **Row 70 (partially migrated, manifest `v: 0`) [T]** — the design says the reader "upgrades `v: 0` in
    memory… never rewrites it until the next successful apply." `src/config/imports.ts` does not exist yet
@@ -226,7 +226,7 @@ information. What follows is what §1's code-reading adds or sharpens for the **
    `lines.ts` accidentally duplicate a glyph/ASCII mapping instead of importing `glyphs.ts:223`'s
    `asciiTwins`" — worth a lint/test the same shape as the existing twin-parity tests for other overlays.
 5. **`report.ts`'s missing exact-redaction layer (new, not in IMPORT-DESIGN §6 at all)** — see §1.2. This is
-   a genuine gap in the *harness* file (`[H]`), not a TUI row, but the TUI session is the one that will notice
+   a genuine gap in the *harness* file (`[H]`), not a TUI row, but the TUI maintainers is the one that will notice
    it first: `jevcode import --json` and `--plain`'s full report both render through `report.ts`, and neither
    currently receives the configured-secret exact layer. Round 5 should either (a) treat this as accepted
    behaviour (the 15 pattern families are the report's redaction contract; the exact layer is Jev-request-only
@@ -343,7 +343,7 @@ flagging before they are pinned:
   change to `report.ts` (an `[H]`-owned file per §7's owner split) plus updating every call site
   (`index.ts` doesn't currently pass anything to `report.ts` at all — confirm whether `report.ts` is even
   invoked from `index.ts` or only from `cli/import.ts`, which does not exist yet, before committing to this).
-- **Recommendation: B, filed as a request to the harness slot, not built by the TUI session.** `report.ts` is
+- **Recommendation: B, filed as a request to the harness slot, not built by the TUI maintainers.** `report.ts` is
   `[H]`-owned (§1.5, `IMPORT-DESIGN.md §7` owner table). The asymmetry is real (§1.2) even if the practical
   exposure today is narrow (engine-derived strings, not raw source bytes), and "the report is what `--plain`
   prints and what a human reads to decide whether to `y`" makes it the wrong place to under-redact relative to

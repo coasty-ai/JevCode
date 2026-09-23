@@ -1,6 +1,6 @@
 # Adversarial review — `oos-iter-3` @ c469c9e (8 commits from main d86c385)
 
-Reviewer: an Opus subagent of the harness session, 2026-09-22, read-only in a detached probe worktree; 26 of the branch's assertions fail on main's src (failing-first re-checked). Branch NOT merged on this report: fix pass ordered on the same branch (owner decisions in the merge record).
+Reviewer: an independent read-only review, 2026-09-22, read-only in a detached probe worktree; 26 of the branch's assertions fail on main's src (failing-first re-checked). Branch NOT merged on this report: fix pass ordered on the same branch (owner decisions in the merge record).
 
 Read-only. Probes run in a throwaway detached worktree (`/tmp/review-iter3`, removed) with
 `--maxWorkers=2`, offline, no network. Branch gates re-verified on that tree: `tsc --noEmit` clean,

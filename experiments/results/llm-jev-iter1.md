@@ -35,7 +35,7 @@ Arms ran strictly one after another, suites sequentially inside an arm, each det
 ### 1.1 Exact commands
 
 ```
-cd /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter1-clean   # git worktree add --detach … 751e3bf; ln -s <main>/node_modules .; npm run build
+cd <repo>/.claude/worktrees/iter1-clean   # git worktree add --detach … 751e3bf; ln -s <main>/node_modules .; npm run build
 
 # <ARM> = llm-jev then jev-off-tuned; <OUT> = iter1-fresh-llm-jev-* then iter1-fresh-jev-off-tuned-*
 env -u ANTHROPIC_API_KEY JEVCODE_WARM=off node --env-file=<main>/.env bin/jevcode.js bench \

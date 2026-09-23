@@ -533,7 +533,7 @@ async function loginIo(flags: ParsedFlags): Promise<import('./login.js').Command
 
 /**
  * TUI-DESIGN-5 / round-5 item 8: `JEVCODE_JEV` is a BENCH AND PERF fault switch, not a product setting. Its one
- * production reader is `withJevOff` (`src/jev/off.ts`), wired at `src/bench/runner.ts` only, so setting it in a
+ * production reader is the bench runner's Jev-off wrapper (`src/jev/off.ts`), wired at `src/bench/runner.ts` only, so setting it in a
  * shell and then running a product command changed nothing while reading as if it had — a keyed `jevcode run`
  * would make real Jev calls and spend real money under a variable the user believed had disabled them.
  *

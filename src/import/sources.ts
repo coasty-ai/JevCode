@@ -211,7 +211,7 @@ function overrideName(entry: string): { name: string; file: boolean } {
 }
 
 /**
- * §3.1 / §6 rows 1–4: resolve one atlas row's roots on this machine. **Pure**, and the only place
+ * §3.1 / §6 rows 1–4: resolve one atlas row's roots on the local machine. **Pure**, and the only place
  * an environment override is read: the override is checked before the default, in the order
  * declared; `OPENCODE_DATA_DIR` is comma-split; a relative or empty value is ignored; a root whose
  * `platform` list excludes `platform` does not appear at all. `exists` is never probed here.
@@ -256,7 +256,7 @@ export function rootFor(
   return out;
 }
 
-/** §4.2.1: every root of every atlas row on this machine, deduped by tool + path. Existence is not probed. */
+/** §4.2.1: every root of every atlas row on the local machine, deduped by tool + path. Existence is not probed. */
 export function allRoots(e: Omit<ImportEnvironment, 'home'> & { home: string }): readonly ResolvedRoot[] {
   const out: ResolvedRoot[] = [];
   const seen = new Set<string>();

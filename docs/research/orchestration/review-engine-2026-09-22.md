@@ -1,6 +1,6 @@
 # Adversarial review — orchestration ENGINE wave (`orchestrate-engine` @ 72253a6, merged at 2400a0c)
 
-Reviewer: an Opus subagent of the harness session, 2026-09-22, in a detached worktree, probes executed (bounded vitest;
+Reviewer: an independent read-only review, 2026-09-22, in a detached worktree, probes executed (bounded vitest;
 real git and `sandbox-exec` in scratch repos). In-scope suites: `test/unit/{loop,orchestrate,spend,checkpoint,core,sandbox,provider}`
 — 101 files / 1,528 tests green. Scope: `docs/ORCHESTRATION-DESIGN.md` §2.5, §3.1, §3.6, §3.7, §5.7 [D1], §6 [D6], §8.2 D0–D3
 items 1–6, 15, 17–21, 25, plus the three TUI-DESIGN-4 engine hunks.

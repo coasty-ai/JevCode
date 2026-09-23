@@ -3,10 +3,10 @@
 Research note for the JevCode TUI programme. Date of every fetch and measurement: 2026-09-20. Machine for
 measurements: Apple Silicon, macOS 26 (Darwin 25.6.0), Node 22.23.2, ink 7.1.1, react 19.3.0,
 ink-testing-library 4.0.0, string-width 8.2.2 (versions read from
-`/Users/prateekjannu/Documents/vscode/JevCode/node_modules/*/package.json`, 2026-09-20). Scripts under
+`<repo>/node_modules/*/package.json`, 2026-09-20). Scripts under
 `/tmp/jev-cost/` (`measure.mjs`, `measure2.mjs`, `bench-status.mjs`, `bench-index.mjs`, `bench-render.tsx`).
 
-Line references are to the working tree at `/Users/prateekjannu/Documents/vscode/JevCode` on 2026-09-20.
+Line references are to the working tree at `<repo>` on 2026-09-20.
 
 ## 0. Why this file exists, and what could not be verified
 

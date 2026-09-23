@@ -1,5 +1,5 @@
 {
-  "deliverable": "/Users/prateekjannu/Documents/vscode/JevCode/docs/COORDINATION-DESIGN.md",
+  "deliverable": "<repo>/docs/COORDINATION-DESIGN.md",
   "reviewed_at_head": "9c3a7ac",
   "compliance": "read-only: no edits, no commits, no live API calls, no keys printed",
   "verdict": "REVISE BEFORE W0 — architecture sound (serverless single-writer ledger, advisory default, pause = stop + replay cache, two context windows, most anchors hold), but five load-bearing mechanisms do not work as written (D1–D5), three documented UX claims are false against HEAD (D6–D8), and two schema-level gaps (D9, D13/D18) change W0/W1 contracts. Fix D1–D9, D13, D18 in the text, then re-verify; W2+ can stand.",
@@ -139,7 +139,7 @@
 
 ```json
 {
-  "reviewed": "/Users/prateekjannu/Documents/vscode/JevCode/docs/COORDINATION-DESIGN.md (937 lines, untracked)",
+  "reviewed": "<repo>/docs/COORDINATION-DESIGN.md (937 lines, untracked)",
   "design_head": "9c3a7ac",
   "head_now": "40c376a (group D + group E merges landed during this review; src/loop/engine.ts 3116 -> 3232 lines, src/core/types.ts +51)",
   "read_only": "no edits, no commits, no live calls",

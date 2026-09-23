@@ -1,7 +1,8 @@
 /** Build experiments/results/probe-selection.md from probe-selection.raw.jsonl and /tmp/jevonly/pools.json. */
 import { readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
-const RESULTS = '/Users/prateekjannu/Documents/vscode/JevCode/experiments/results';
+const RESULTS = fileURLToPath(new URL('../results', import.meta.url));
 interface Rec { phase: string; program: string; mode: string; method: string; variant: string; order: string; size: number; options: number; withFix: boolean; fixKey: string | null; fixGenerated: string; top: [string, number][]; pTrue: number | null; pEscape: number | null; rankTrue: number | null; top1: string; top1IsFix: boolean; top1IsEscape: boolean; top1Text: string | null; top1Plausible: boolean | null; top3Plausible?: boolean; costUsd: number; latencyMs: number; inputTokens: number; sumP: number }
 const recs: Rec[] = readFileSync(`${RESULTS}/probe-selection.raw.jsonl`, 'utf8').trim().split('\n').map((l) => JSON.parse(l) as Rec).map((r) => (r.method === 'nouls' && r.variant === 'state' ? { ...r, variant: 'full' } : r)); // the first Noul run predates the full/compact label
 const pools = JSON.parse(readFileSync('/tmp/jevonly/pools.json', 'utf8')) as { program: { name: string; mode: string; buggyLine: string; fixLine: string; index: number; lines: string[] }; pool: { pool: { op: string }[]; firstOrder: number; neighbour: number; fixGenerated: string } }[];

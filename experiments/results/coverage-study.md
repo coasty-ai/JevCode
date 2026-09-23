@@ -9,10 +9,10 @@ per-line results: `experiments/results/coverage-study.json`.
 Reproduce:
 
 ```
-/Users/prateekjannu/Documents/vscode/JevCode/experiments/coverage-study/clone_repos.sh  # 30 blobless worktrees under /tmp/jevonly/repos/<instance_id>
-cd /Users/prateekjannu/Documents/vscode/JevCode/experiments/coverage-study
-python3 coverage_study.py > /Users/prateekjannu/Documents/vscode/JevCode/experiments/results/coverage-study.json   # ~10 min, QuixBugs at /tmp/quixbugs
-python3 make_report.py /Users/prateekjannu/Documents/vscode/JevCode/experiments/results/coverage-study.json > tables.md
+<repo>/experiments/coverage-study/clone_repos.sh  # 30 blobless worktrees under /tmp/jevonly/repos/<instance_id>
+cd <repo>/experiments/coverage-study
+python3 coverage_study.py > <repo>/experiments/results/coverage-study.json   # ~10 min, QuixBugs at /tmp/quixbugs
+python3 make_report.py <repo>/experiments/results/coverage-study.json > tables.md
 ```
 
 ## Question

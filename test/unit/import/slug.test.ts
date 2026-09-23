@@ -2,24 +2,25 @@
  * import/discover.ts slugToPath (IMPORT-DESIGN §3.2; §6 row 15).
  *
  * Claude's project slug is the absolute path with `/` → `-`, which is **not reversible** once the
- * path itself contains `-`. The three real slug shapes on the author's machine are the fixtures.
+ * path itself contains `-`. The fixtures are the three shapes that matter: a plain path, a path
+ * whose last segment already holds dashes, and a worktree path under `.claude/worktrees/`.
  */
 import { describe, expect, it } from 'vitest';
 import { mergeWorktreeRoot, slugOfPath, slugToPath } from '../../../src/import/discover.js';
 
 const PATHS = {
-  plain: '/Users/prateekjannu/Documents/vscode/CoArena',
-  dashed: '/Users/prateekjannu/Documents/vscode/coarena-rl-envs',
-  worktree: '/Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/llm-jev-int',
+  plain: '/home/dev/projects/Example',
+  dashed: '/home/dev/projects/example-rl-envs',
+  worktree: '/home/dev/projects/JevCode/.claude/worktrees/llm-jev-int',
 } as const;
 
 const SLUGS = {
-  plain: '-Users-prateekjannu-Documents-vscode-CoArena',
-  dashed: '-Users-prateekjannu-Documents-vscode-coarena-rl-envs',
-  worktree: '-Users-prateekjannu-Documents-vscode-JevCode--claude-worktrees-llm-jev-int',
+  plain: '-home-dev-projects-Example',
+  dashed: '-home-dev-projects-example-rl-envs',
+  worktree: '-home-dev-projects-JevCode--claude-worktrees-llm-jev-int',
 } as const;
 
-describe('slugOfPath — the three real shapes', () => {
+describe('slugOfPath — the three shapes', () => {
   it.each(Object.keys(PATHS) as (keyof typeof PATHS)[])('%s', (k) => {
     expect(slugOfPath(PATHS[k])).toBe(SLUGS[k]);
   });
@@ -54,10 +55,10 @@ describe('slugToPath — §6 row 15 resolution order', () => {
 });
 
 describe('mergeWorktreeRoot — auto memory is derived from the repository', () => {
-  it('the 25 worktree slugs merge into the repository root, with a notice saying so', () => {
+  it('a worktree slug merges into the repository root, with a notice saying so', () => {
     const m = mergeWorktreeRoot(PATHS.worktree);
     expect(m.merged).toBe(true);
-    expect(m.root).toBe('/Users/prateekjannu/Documents/vscode/JevCode');
+    expect(m.root).toBe('/home/dev/projects/JevCode');
     expect(m.notice).toContain('is a worktree of');
     expect(m.notice).toContain('auto memory is merged into the repository root');
   });

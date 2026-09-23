@@ -1,9 +1,9 @@
 /**
  * The import engine's single entry point (docs/IMPORT-DESIGN.md §4.1) — the only module the CLI
- * and the TUI session import. `src/import/**` is a pure-plus-read-only module that turns the
+ * and the interactive session import. `src/import/**` is a pure-plus-read-only module that turns the
  * filesystem into an `ImportPlan` and renders it; **it performs no writes**. Every write goes
  * through the seams the caller supplies (`ImportWriteFs`), so the whole engine lands without
- * touching a file the TUI session owns (§0, the one-sentence contract).
+ * writing to the filesystem itself (§0, the one-sentence contract).
  *
  * `planImport()` runs phases 1–3 — discover → classify → plan — and writes nothing at all.
  * `applyPlan()` / `resumeImport()` / `undoImport()` (re-exported from `apply.ts`) run phase 4

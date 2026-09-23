@@ -32,7 +32,7 @@ const TARGETS = {
 /**
  * The .TH date (YYYY-MM-DD): SOURCE_DATE_EPOCH > the commit that introduced the CURRENT package.json content > today.
  * Keyed off the blob (`--find-object`), not the path: `git log -1 -- package.json` depends on merge topology, so
- * `gen-docs --check` was red on a feature branch and green on the same tree merged into main (harness session, 2026-09-22).
+ * `gen-docs --check` was red on a feature branch and green on the same tree merged into main.
  */
 export function manDate(env = process.env) {
   const epoch = env.SOURCE_DATE_EPOCH;

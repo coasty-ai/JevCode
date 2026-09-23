@@ -1,5 +1,0 @@
-2026-09-22T23:21:16.625Z warn  generator retry chain failed after 3 attempts (1245 ms waited) step=1
-2026-09-22T23:21:16.709Z warn  generator retry chain failed after 3 attempts (1245 ms waited) step=1
-2026-09-22T23:21:19.305Z warn  generator retry chain failed after 3 attempts (1464 ms waited) step=1
-2026-09-22T23:21:29.025Z info  notice ui step=8: compaction: 5894 → 5894 prompt chars (code); 5 steps folded into the summary at step 8 (every 8 steps)
-2026-09-22T23:21:29.481Z info  run 20260922-232058-y3xmmy6o ended: replan_stop exit 4 steps 14

@@ -415,7 +415,7 @@ export interface LandCardInput {
 /** §12.3 S74 / §7 row 51: one child's review offer, badged so nobody approves the wrong thing. */
 export interface ReviewCardInput {
   slug: string;
-  /** `patch test/unit/store.test.ts` — the action and its target, already one-lined by the caller */
+  /** `patch tests/test_core.py` — the action and its target, already one-lined by the caller */
   action: string;
   risk: number;
 }

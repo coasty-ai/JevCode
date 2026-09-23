@@ -11,8 +11,9 @@ Usage: python3 swebench_donor_coverage.py [instance_id ...]  -> out/swebench_don
 import json, os, re, sys, io, tokenize, keyword, collections
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA = '/Users/prateekjannu/Documents/vscode/JevCode/bench/data/swebench-verified-30.json'
-GOLD = '/Users/prateekjannu/Documents/vscode/JevCode/bench/data/swebench-verified-30.gold.json'
+ROOT = os.path.dirname(os.path.dirname(HERE))
+DATA = os.path.join(ROOT, 'bench', 'data', 'swebench-verified-30.json')
+GOLD = os.path.join(ROOT, 'bench', 'data', 'swebench-verified-30.gold.json')
 REPOS = '/tmp/jevonly/repos'
 DEFAULT = ['sympy__sympy-12096', 'sympy__sympy-15345', 'sympy__sympy-19954', 'django__django-14787', 'django__django-15315',
            'django__django-16100', 'pytest-dev__pytest-10081', 'pytest-dev__pytest-7205', 'pylint-dev__pylint-4970', 'psf__requests-1142']

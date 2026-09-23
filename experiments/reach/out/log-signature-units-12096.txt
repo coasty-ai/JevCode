@@ -1,6 +1,0 @@
-== sympy__sympy-12096
-  sympy__sympy-12096 sympy/core/function.py:510 replace@510 engine cap=254 mutation: 237 cands 37 ms hunk=0 first=0
-  sympy__sympy-12096 sympy/core/function.py:510 replace@510 engine cap=254 template: 152 cands 64 ms hunk=0 first=0
-  sympy__sympy-12096 sympy/core/function.py:510 replace@510 engine cap=254 donor: 254 cands 6290 ms hunk=0 first=0
-exit=143 after 1647 s
-killed after 27 min without returning from enumerateSignatureUnits at sympy/core/function.py:510 (400-file corpus); exit=killed

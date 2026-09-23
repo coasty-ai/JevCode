@@ -1,6 +1,6 @@
 # Round-5 topic: the context meter and compaction UI
 
-Repo: `/Users/prateekjannu/Documents/vscode/JevCode`, worktree `r5-design`, branch `r5-design`. Read-only research;
+Repo: `<repo>`, worktree `r5-design`, branch `r5-design`. Read-only research;
 only this file was written. Every symbol below was read directly from the files in this worktree (not copied from
 the digest or the design docs) — line numbers are as-seen 2026-09-22. This topic sits in slot **R5-3** of
 `00-contract-digest.md` §C, sharing `src/tui/status/lines.ts` with R5-2 and `src/tui/commands/registry.ts` with R5-1.
@@ -391,7 +391,7 @@ string instead (a documentation fix, filed as an open question to the peer, §6)
    forever? A dedicated event would also make the crossing visible to `--json=verbose` consumers without polling
    `pct` themselves.
 4. `Engine.snapshotState()` + `CheckpointStore.readContextSummary()` (§5 D5) is proposed as the `/context` data
-   source with no contract change. Is there a reason the harness session would prefer a single new
+   source with no contract change. Is there a reason the harness maintainers would prefer a single new
    `Engine.contextDetail?()` accessor instead (e.g., to avoid the TUI depending on `buildCheckpointState()`'s
    incidental completeness, or to keep file-layout knowledge — `CHECKPOINT_FILES.context`/`CONTEXT_SUMMARY_FILE` —
    entirely inside `src/checkpoint/**`)?

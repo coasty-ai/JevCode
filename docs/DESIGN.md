@@ -2,8 +2,8 @@
 
 Status: draft v2, 2026-09-19 (v1 plus the design review of the same day, §18). Versions and
 adopt/reject items marked `[R]` are taken from `docs/RESEARCH.md`; everything else follows
-the build prompt and `~/Documents/jev-research/REPORT.md` (cited as REPORT §n). Deviations
-are listed in §16.
+the build prompt and the research report the project was specified against — a private
+document, not part of this repository, cited as REPORT §n. Deviations are listed in §16.
 
 ## 1. What JevCode is
 
@@ -1285,7 +1285,7 @@ silently denies everything under it); the real home comes from `os.homedir()`, n
 Later rules win in SBPL, so the read denials override `(allow default)` and the specific
 `.git` denials override the workspace allow (verified; equivalently wrap the allow in
 `(require-all (subpath "<ws>") (require-not (literal "<ws>/.git/config")) (require-not
-(subpath "<ws>/.git/hooks")))`). Verified on this machine: with the denials, `cat
+(subpath "<ws>/.git/hooks")))`). Verified on the reference machine: with the denials, `cat
 <pkg>/.env` and `ls ~/.ssh` fail with EPERM (also through a symlink created inside the
 workspace), while `python3`, `git commit`, `node`, and in-workspace writes succeed. Not
 denied on purpose: reads elsewhere (other repos, `~/Documents`) and outbound network unless
@@ -2226,7 +2226,7 @@ nothing else from a task record.
   no container isolation, agent and verifier share a user). The Harbor installed-agent adapter
   `bench/harbor/jevcode_agent.py` (installs Node via `nvm_node_install_snippet`, runs
   `jevcode run --plain "<instruction>"` in `/app`) is shipped for official runs elsewhere and
-  is untested here (Harbor needs Python >= 3.12; this machine has 3.9).
+  is untested here (Harbor needs Python >= 3.12; the reference machine has 3.9).
 
 ## 14. Testing
 
@@ -3460,9 +3460,8 @@ these rows" is exactly this: the `jev-on` bench row is not a measurement of the 
 
 ### 22.9 Deviations from `docs/LLM-JEV-DESIGN.md` recorded in the stage reports
 
-Each implementer's `deviations_from_design` (workflow journals `wf_7afb7438-077` for stages 1–3
-and `wf_c7cc2b8d-893` for stages 4–5), grouped by stage; the reviewer defects that forced them
-are in the same journals.
+Each implementer's `deviations_from_design`, grouped by stage; the review defects that forced
+them are recorded alongside.
 
 **Stage 1 — generator channel, mode plumbing, code-fact stages** (`a0f7fbc`, `64c8d3e`).
 - A verified `done` also completes by fact (`isCompleteByFact` returns true for a noop `done`

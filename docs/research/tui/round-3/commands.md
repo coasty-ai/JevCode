@@ -2,7 +2,7 @@
 
 Date 2026-09-21 · HEAD `626fc40` (0.3.0, round 2) · bundle `dist/jevcode.mjs` built 15:47 from that tree (no uncommitted `src/` edits) · macOS 26, Node 22.23.2, `/usr/bin/expect`.
 
-Everything below was either **read** (file:line given) or **measured** by driving `node bin/jevcode.js --mock` in a real pseudo-terminal through `scripts/pty/drive.exp` with the smoke's hermetic environment (`HOME`/`XDG_CONFIG_HOME`/`JEVCODE_HOME` inside a temp dir, every key variable unset, `OPEN_ASSIST_PATH` at a directory that does not exist). Probe runner, steps files, raw captures (`.cap`), SGR-stripped text (`.txt`) and timing files (`.jsonl`) are under `.scratch/r4-commands/` (`run.sh`, `steps/*.steps`, `out/*`). 14 scenarios were driven; §4 lists them.
+Everything below was either **read** (file:line given) or **measured** by driving `node bin/jevcode.js --mock` in a real pseudo-terminal through `scripts/pty/drive.exp` with the smoke's hermetic environment (`HOME`/`XDG_CONFIG_HOME`/`JEVCODE_HOME` inside a temp dir, every key variable unset, `JEVCODE_EXTRA_ENV_FILE` at a directory that does not exist). Probe runner, steps files, raw captures (`.cap`), SGR-stripped text (`.txt`) and timing files (`.jsonl`) are under `.scratch/r4-commands/` (`run.sh`, `steps/*.steps`, `out/*`). 14 scenarios were driven; §4 lists them.
 
 The task text says "all 39 commands"; the registry has **37 command names and 4 aliases** (`h`, `sessions`, `continue`, `quit`) = 41 tokens (`src/tui/commands/registry.ts:79–517`, `COMMAND_TOKENS` `dispatch.ts:471`).
 

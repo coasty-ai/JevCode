@@ -25,7 +25,7 @@ export const KEY_CONTEXTS: readonly KeyContext[] = ['global', 'composer', 'revie
  *
  * The list is repeated here rather than imported from `src/tui/pane/model.ts`: that module reaches
  * `config/defaults.js`, `jev/confidence.js` and `loop/plan.js`, and this one has **zero** imports today — a
- * property gate G-R5-1 depends on. `test/unit/tui/keys.test.ts` pins `PANE_TAB_KEYS` against `PANE_TABS` and
+ * property gate G-R5-1 depends on. `test/unit/tui/keys/bindings.test.ts` pins `PANE_TAB_KEYS` against `PANE_TABS` and
  * `[...PANE_TAB_KEYS, AGENTS_TAB_KEY]` against `PANE_TABS_WITH_AGENTS`, so the two can never drift.
  */
 export const PANE_TAB_KEYS: readonly string[] = ['d', 'p', 't', 's'];

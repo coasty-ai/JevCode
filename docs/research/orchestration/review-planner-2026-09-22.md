@@ -1,6 +1,6 @@
 # Adversarial review — `orchestrate-planner` @ 2be87e1 (read-only, traced)
 
-Reviewer: an Opus subagent of the harness session, 2026-09-22, in a detached worktree. A CPU hold was in force for the
+Reviewer: an independent read-only review, 2026-09-22, in a detached worktree. A CPU hold was in force for the
 whole review, so no probe was executed: every finding is TRACED through the source with an exact input and the derived
 wrong output, plus the one-line probe to run. Scope: the pure half of the `docs/ORCHESTRATION-DESIGN.md` harness slot —
 `src/orchestrate/**` (31 added files, 307 tests), `src/core/limits.ts`.

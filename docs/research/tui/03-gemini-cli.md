@@ -15,7 +15,7 @@ relevant open-source Ink-based agent TUI. All notes are from primary sources fet
 - Package version at that commit: `0.62.0-nightly.20260918.g9450ade79`
   (RAW/packages/cli/package.json, fetched 2026-09-20).
 - Ink facts about JevCode's own pinned Ink are from
-  `/Users/prateekjannu/Documents/vscode/JevCode/node_modules/ink/build/*` (ink 7.1.1, read 2026-09-20).
+  `<repo>/node_modules/ink/build/*` (ink 7.1.1, read 2026-09-20).
   These matter because Gemini CLI does **not** run upstream Ink: its dependency is
   `"ink": "npm:@jrichman/ink@6.6.9"` (RAW/packages/cli/package.json, fetched 2026-09-20), a fork
   that adds `ResizeObserver`, `terminalCursorFocus`, `alternateBuffer`, `terminalBuffer`, `renderProcess`

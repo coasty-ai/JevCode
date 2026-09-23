@@ -1,6 +1,6 @@
 # Adversarial re-check of `src/coordination/**` at 62f2064 (read-only)
 
-Reviewer: an Opus subagent of the harness session, 2026-09-22, in a detached worktree. Two probe suites, 17 assertions,
+Reviewer: an independent read-only review, 2026-09-22, in a detached worktree. Two probe suites, 17 assertions,
 8 defects reproduced. `file:line` are `src/coordination/…` at 62f2064. Previous review:
 `review-2026-09-21.md` (B1–B6, M7–M19, minors 20–26); design: `docs/COORDINATION-DESIGN.md` revision 5 (9d1dbae).
 Deliberately out of scope (a parallel branch implements them): the dual-directory lease write, `check()` holding-types

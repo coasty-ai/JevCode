@@ -184,7 +184,7 @@ import { detectLayout } from '../synth/search/index.js';
 import { isRepositoryWorkspace } from '../synth/oracle/index.js';
 import { synthesizerHandles } from '../synth/index.js';
 // contract 1.9 (Fastlane) §3.2: a hedge twin's sample index carries its origin — the one fact `noteSampleStart` needs
-// to tell "a second copy of a sample of the open round" from "a new round" (slot A's defect 11)
+// to tell "a second copy of a sample of the open round" from "a new round"
 import { LLM_DEADLINE_ADAPT, hedgeOriginOf } from '../synth/llm/source.js';
 import { hedgedCall, providerOrderFor, s2Mode } from '../synth/llm/hedge.js';
 import { warmPlaneEnabled } from '../synth/warm/index.js';
@@ -435,7 +435,7 @@ export interface StageContext {
  * worker process turn it off without rebuilding; it is read here for the same reason `JEVCODE_WARM` is read inside
  * `src/synth/warm/plane.ts`. Any other value is ignored rather than throwing: an env typo must not end a run.
  *
- * **The explicit option wins** (§7.5 seam (b), slot D's finding; changed here, it used to read the env FIRST in
+ * **The explicit option wins** (§7.5 seam (b); it used to read the env FIRST in
  * both directions). An exported `JEVCODE_FASTPATH=off` ran `jev-on-next` disarmed while `summary.json` recorded
  * `'auto'`, and `JEVCODE_FASTPATH=auto` armed the `jev-on-next-nofast` CONTROL while it recorded `'off'` — the
  * arm's own row was not the truth, and nothing in the output said so. `routersEnabled` (src/jev/router.ts) has the
@@ -1849,7 +1849,7 @@ class EngineImpl implements Engine {
       // Second press while shutting down: synchronous last-resort write, then exit (§11). finish() may not have run
       // yet (the first abort's tree kill or the rejected stage can still be settling), so the snapshot written here
       // records the stop and the §9.1 rule-1 discard itself; otherwise state.json would carry stopReason null and no
-      // `interrupted` for the discarded step (observed in the first live TUI session, docs/live/tui).
+      // `interrupted` for the discarded step (observed in a live interactive session).
       if (this.lastResult === null) {
         this.markLastResort(reason);
         this.forceExit(exitCodeFor('signal', undefined, false, this.signalName ?? undefined));
@@ -3961,7 +3961,7 @@ class EngineImpl implements Engine {
    * docs/LLM-JEV-DESIGN.md §4.8: `generatorMs` of an llm-jev step is the wall of the round (the union of the
    * samples' intervals), never the sum.
    *
-   * contract 1.9 (Fastlane) §3.2 / contract 1.4 §12.0.2 P3 — slot A's defect 11. "One round per sample batch" is
+   * contract 1.9 (Fastlane) §3.2 / contract 1.4 §12.0.2 P3. "One round per sample batch" is
    * kept by `inFlight === 0`, and `noteSampleEnd` drops `inFlight` to 0 in `generate`'s own `finally`, BEFORE the
    * source's `handleEnd` / `settle` has marked the origin served and cleared its hedge timer. A twin started in
    * that window found `inFlight === 0` and opened a SECOND round for one batch: `llmRounds` 2 where the round is
@@ -5904,7 +5904,7 @@ class EngineImpl implements Engine {
             execMs: draft.timing.execMs,
             harnessMs: Math.max(0, total - draft.timing.generatorMs - jevChargedMs(draft) - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs),
             totalMs: total,
-            // review defect A10: the ONE optional-bucket builder, shared with `llmJevTiming`
+            // the ONE optional-bucket builder, shared with `llmJevTiming`
             ...optionalStepTiming(optionalTimingInput(draft)),
           };
     // F13 (finishing pass): ONE fold over `RUN_TIMING_BUCKETS`, so `RunResult.timing` is by construction the sum
@@ -6011,7 +6011,7 @@ class EngineImpl implements Engine {
     if (draft.riskSource !== null) record.riskSource = draft.riskSource;
     // §5.2: "Absent = false" — only the outage is a row, and `riskSource: 'jev'` already says the other case
     if (draft.jevUnavailable === true) record.jevUnavailable = true;
-    // contract 1.9 (Fastlane) §5.2 (slot C): both absent unless the fast path armed this step, which is I2
+    // contract 1.9 (Fastlane) §5.2: both absent unless the fast path armed this step, which is I2
     if (draft.fastPath !== null) {
       record.fastPath = draft.fastPath;
       // §6 row 14: the verdict the TRIGGER read, not the verdict this step's own run left behind

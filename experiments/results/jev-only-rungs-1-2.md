@@ -224,7 +224,7 @@ confirmer in the bench) accepts the synthesizer's proposals; none of it touches 
 
 ## 7. Exact commands
 
-All from `/Users/prateekjannu/Documents/vscode/JevCode`, keys from `.env` (never printed), no generator key
+All from `<repo>`, keys from `.env` (never printed), no generator key
 in the environment:
 
 ```
@@ -2912,9 +2912,9 @@ uncommitted TUI/config work could not touch it), keys only via `--env-file`:
 
 ```
 cd .claude/worktrees/swe-clean
-NODE_OPTIONS=--max-old-space-size=8192 env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env \
+NODE_OPTIONS=--max-old-space-size=8192 env -u ANTHROPIC_API_KEY node --env-file=<repo>/.env \
   node_modules/.bin/tsx src/cli/main.tsx bench --suite swebench --conditions jev-only --live --spend-cap 4 --task-spend-cap 0.4 \
-  --concurrency 2 --max-steps 25 --max-wall 25m --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/jev-only-swebench-3
+  --concurrency 2 --max-steps 25 --max-wall 25m --out <repo>/bench/results/jev-only-swebench-3
 # log /tmp/jevonly/swebench-3.log (starts `start 2026-09-21T00:28:26Z head 5486f7a`, ends `exit 0` / `end 2026-09-21T01:23:05Z`)
 # RSS of the worker node process every 5 min: /tmp/jevonly/swebench-3.rss
 # the table: node node_modules/.bin/tsx experiments/inspect/swe-report.mts bench/results/jev-only-swebench-3 --mark=<the 9 oracle ids>
@@ -3836,16 +3836,16 @@ Single-hunk facts below come from applying each gold hunk alone to a copy of the
 
 ### 25.4 Commands, ids, spend
 
-From `/Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/final-clean` (HEAD 55404ba), logs under
+From `<repo>/.claude/worktrees/final-clean` (HEAD 55404ba), logs under
 `/tmp/jevonly/{quixbugs,ladder}-7-final.log`:
 
 ```
-env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env node_modules/.bin/tsx src/cli/main.tsx \
+env -u ANTHROPIC_API_KEY node --env-file=<repo>/.env node_modules/.bin/tsx src/cli/main.tsx \
   bench --suite quixbugs --conditions jev-only --live --spend-cap 0.6 --task-spend-cap 0.05 --concurrency 4 --max-steps 12 --max-wall 8m \
-  --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/jev-only-quixbugs-7-final
-env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env node_modules/.bin/tsx src/cli/main.tsx \
+  --out <repo>/bench/results/jev-only-quixbugs-7-final
+env -u ANTHROPIC_API_KEY node --env-file=<repo>/.env node_modules/.bin/tsx src/cli/main.tsx \
   bench --suite ladder --tasks 20 --conditions jev-only --live --spend-cap 0.6 --task-spend-cap 0.15 --concurrency 2 --max-steps 30 --max-wall 15m \
-  --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/jev-only-ladder-7-final
+  --out <repo>/bench/results/jev-only-ladder-7-final
 env -u ANTHROPIC_API_KEY node node_modules/.bin/tsx experiments/inspect/quixbugs-verdicts.mts bench/results/jev-only-quixbugs-7-final   # main checkout
 ```
 
@@ -4054,10 +4054,10 @@ frozen worktree with the machine otherwise idle; official-harness grading of `pr
 
 ```
 # from .claude/worktrees/final-clean (HEAD 55404ba); log /tmp/jevonly/swebench-4.log, RSS sampler /tmp/jevonly/swebench-4-rss.sh
-env -u ANTHROPIC_API_KEY NODE_OPTIONS=--max-old-space-size=8192 node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env \
+env -u ANTHROPIC_API_KEY NODE_OPTIONS=--max-old-space-size=8192 node --env-file=<repo>/.env \
   node_modules/.bin/tsx src/cli/main.tsx bench --suite swebench --conditions jev-only --live \
   --concurrency 2 --max-steps 25 --max-wall 25m --task-spend-cap 0.4 \
-  --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/jev-only-swebench-4-final
+  --out <repo>/bench/results/jev-only-swebench-4-final
 # main checkout: the per-instance table of §26.2
 env -u ANTHROPIC_API_KEY node node_modules/.bin/tsx experiments/inspect/swe-report.mts bench/results/jev-only-swebench-4-final \
   --mark=sympy__sympy-15345,sympy__sympy-17139,sympy__sympy-19954,sympy__sympy-11618,django__django-15315,django__django-15128,psf__requests-2931,sympy__sympy-12096,django__django-15563,sympy__sympy-16792

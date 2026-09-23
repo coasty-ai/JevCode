@@ -2,7 +2,7 @@
 
 Research note for the JevCode interactive TUI (gap-fill for 00-SUMMARY §8 item 9, 12 §10, 07 §3.4–3.5, 06 §11,
 10 §15.9, 02 §4, 03 §7). Written 2026-09-20. Every claim carries its source and fetch/read date; local reads
-are of the working tree at `/Users/prateekjannu/Documents/vscode/JevCode` on 2026-09-20 (Node v22.23.2, ink 7.1.1,
+are of the working tree at `<repo>` on 2026-09-20 (Node v22.23.2, ink 7.1.1,
 react 19.3.0, signal-exit 3.0.7 — `node --version`, `node_modules/*/package.json`, read 2026-09-20). Measurements
 were run in `/tmp/jev17` against the built bundle `dist/jevcode.mjs` (mtime 2026-09-20 08:04; note it predates
 the `--mode` flag committed 09:08 in `9c17159`, so runs below use `--mock-generator` = jev-on with a mocked

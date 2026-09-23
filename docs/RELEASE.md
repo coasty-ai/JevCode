@@ -5,6 +5,12 @@ evidence in `docs/research/tui/09-packaging-distribution.md` §11.7). Nothing he
 the only publish path is `.github/workflows/release.yml` on a `v*` tag, under npm trusted publishing.
 `npm publish` from a laptop is refused by the `prepublishOnly` guard unless `CI=true` is set.
 
+**Current state.** `package.json` reads 0.5.0. Nothing has been published: `registry.npmjs.org/jevcode`
+returns 404, the name is unclaimed, and the Homebrew tap repository does not exist. The offline install
+paths are proven — `npm pack` plus `npm install <tgz>` into a clean project adds exactly one package and
+the installed launcher prints its version — so the only untested leg is the registry round trip itself.
+`scripts/verify-install.sh` runs that whole offline chain from a clean clone and prints PASS/FAIL per step.
+
 ## What ships
 
 One zero-dependency package. `package.json` `files` is the allowlist:
@@ -18,8 +24,8 @@ One zero-dependency package. `package.json` `files` is the allowlist:
 | `README.md`, `LICENSE`, `package.json` | always included by npm |
 
 Not shipped: `dist/jevcode.mjs.map`, `dist/meta.json`, `src/`, `docs/`, tests. `scripts/check-pack.mjs`
-enforces this: allowlist equality, forbidden paths, an unpacked-size gate, a tarball-size gate, a `--version`
-smoke, and — since 2026-09-22 (finish-E) — gate 9, that `dist/jevcode.mjs` carries no `sourceMappingURL`
+enforces this in nine gates — `private` absent, LICENSE and `THIRD_PARTY_LICENSES.txt` present, `dependencies` empty, the tarball file list equal to the `files` allowlist, no forbidden path, the two size gates, a `--version` smoke — that is: allowlist equality, forbidden paths, an unpacked-size gate, a tarball-size gate, a `--version`
+smoke, and gate 9, that `dist/jevcode.mjs` carries no `sourceMappingURL`
 directive, since the map it would point at is one of the things not shipped (`scripts/build.mjs` writes the map
 with `sourcemap: 'external'`, which emits no directive).
 
@@ -28,19 +34,23 @@ them.** This paragraph carried a hand-copied 2 MB figure through two raises of t
 at `ca8e71c` — which is how a release note comes to promise a bound the build does not enforce. Read the two
 constants at the top of `scripts/check-pack.mjs`, or just run it: the pass line prints the measured size against
 the gate. `test/unit/hygiene/doc-claims.test.ts` fails if any byte figure printed here beside either constant's
-name stops matching the script. (finish-E re-measured the pack at 0.5.0 on 2026-09-22 and the figures are in that
-branch's report and in the `check-pack` pass line; they are deliberately not copied here, for the reason above.)
+name stops matching the script.
 
 ## One-time setup (before the first release)
 
-1. Push the repository to GitHub and set `repository`, `homepage` and `bugs` in `package.json`
-   (`npm pkg set repository.type=git repository.url=git+https://github.com/<owner>/JevCode.git homepage=https://github.com/<owner>/JevCode#readme bugs.url=https://github.com/<owner>/JevCode/issues`).
-   Provenance verification compares `repository.url` with the workflow's repository, so this must be right.
+1. Push `main` to the `origin` remote (`coasty-ai/JevCode`). `package.json` already carries
+   `repository`, `homepage` and `bugs` pointing there. Provenance verification compares
+   `repository.url` with the workflow's repository, so a mismatch fails the publish. Three strings
+   in the source still name an older owner in lower case and need the same update:
+   `OPENROUTER_REFERER` in `src/provider/openrouter.ts`, `DEFAULT_REFERER` in `src/jev/types.ts`
+   and `ISSUES_URL` in `src/cli/report.ts`.
 2. On npmjs.com: create the `jevcode` package (first publish can be done from CI directly) and configure
-   **Settings → Trusted publisher → GitHub Actions** with repository `<owner>/JevCode`, workflow
+   **Settings → Trusted publisher → GitHub Actions** with repository `coasty-ai/JevCode`, workflow
    `release.yml`. No `NPM_TOKEN` secret is needed or wanted.
-3. Create the tap repository `<owner>/homebrew-jevcode` and copy `Formula/jevcode.rb` into it; set
-   `homepage` in the formula.
+3. Create the tap repository `coasty-ai/homebrew-jevcode` and copy `Formula/jevcode.rb` into it. The
+   formula's `sha256` is a deliberate placeholder until the release job prints the real digest.
+4. Check that `.github/workflows/ci.yml` is green on `main`. It runs the same gates as the release job,
+   so a red CI means a tag push fails after the tag already exists.
 
 ## Checklist per release
 
@@ -115,14 +125,15 @@ pre-releases look like `0.2.0-rc.1` and land on the `next` dist-tag automaticall
    ```sh
    curl -sL "https://registry.npmjs.org/jevcode/-/jevcode-<v>.tgz" | shasum -a 256
    brew info --json=v2 node | node -e 'const d=JSON.parse(require("fs").readFileSync(0,"utf8")).formulae[0]; console.log("brew node", d.versions.stable)'
-   #   the node major must satisfy package.json engines (>=22.12.0 <27); otherwise switch the formula to node@22
+   #   package.json engines is ">=22.12.0" with no upper bound, so any homebrew-core node satisfies it;
+   #   switch the formula to node@22 only if that range is ever narrowed
    ```
 
-   In `<owner>/homebrew-jevcode`, set `url` to `https://registry.npmjs.org/jevcode/-/jevcode-<v>.tgz` and
+   In `coasty-ai/homebrew-jevcode`, set `url` to `https://registry.npmjs.org/jevcode/-/jevcode-<v>.tgz` and
    `sha256` to the digest (the workflow's job summary has both lines ready), then:
 
    ```sh
-   brew install --build-from-source <owner>/jevcode/jevcode
+   brew install --build-from-source coasty-ai/jevcode/jevcode
    brew test jevcode
    brew audit --strict --online jevcode
    git commit -am "jevcode <v>" && git push
@@ -136,8 +147,12 @@ pre-releases look like `0.2.0-rc.1` and land on the `next` dist-tag automaticall
 
 ## Dry runs
 
-- Full local rehearsal without publishing: `npm run build && npm run pack:check && npm pack` then, in a
-  temp dir, `tar xzf jevcode-<v>.tgz && cd package && npm install --omit=dev && node bin/jevcode.js --version`
+- `./scripts/verify-install.sh` is the whole offline chain in one command: build, pack, install the
+  tarball into a clean throwaway project, then `--version`, `--help` and a no-keys first run that must
+  exit 2 with the setup message. It prints PASS or FAIL per step, exits non-zero on any failure, and
+  cleans up after itself. Run it before every tag.
+- Full manual rehearsal: `npm run build && npm run pack:check && npm pack` then, in a temp dir,
+  `tar xzf jevcode-<v>.tgz && cd package && npm install --omit=dev && node bin/jevcode.js --version`
   (installs zero packages; `node_modules` is absent or empty).
 - `CI=true npm publish --dry-run` shows what npm would upload (no network write).
 

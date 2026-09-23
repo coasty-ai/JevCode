@@ -17,7 +17,7 @@ import type { Json, Question } from '../../src/core/types.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = '/tmp/jevonly/repos';
-const DATA = '/Users/prateekjannu/Documents/vscode/JevCode/bench/data';
+const DATA = fileURLToPath(new URL('../../bench/data', import.meta.url));
 const key = process.env['OPENROUTER_API_KEY'] ?? '';
 if (!key) throw new Error('OPENROUTER_API_KEY missing');
 const jev = createJevDecider({ baseUrl: 'https://openrouter.ai/api/alpha/decisions', apiKey: key, model: 'typesafe/jev-1.13-20260917', pinned: true }, { redact: (s) => s });

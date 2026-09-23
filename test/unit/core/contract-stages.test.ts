@@ -46,7 +46,7 @@ const STAGE_TWIN: Record<StageName, true> = {
 const ALL_STAGES: readonly StageName[] = ['decompose', 'replan', 'intent', 'context', 'propose', 'risk', 'coordinate', 'execute', 'judge', 'complete'];
 
 
-/** Every `StageName` a table is held to: the union minus the words the TUI session still owes, minus that table's explicit exclusion set. */
+/** Every `StageName` a table is held to: the union minus the words still owed, minus that table's explicit exclusion set. */
 const expectedStages = (excluded: readonly StageName[] = []): StageName[] => ALL_STAGES.filter((s) => !excluded.includes(s));
 
 /** Read one file of `src/tui/**` once; these are sources, not modules, because the three tables are not exported. */
