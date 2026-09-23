@@ -1,5 +1,11 @@
 # The relaxed context
 
+> **The context of the Jev-driven modes.** The default mode, `agent`, keeps one append-only
+> conversation per session instead, with tool output capped and spilled, stale results masked at
+> 50 % of the budget and a summary compaction at 85 %; see
+> [The agent loop](agent-loop.md#context). The `context.*` settings below apply to the legacy
+> modes, except `context.compaction`, whose effective default in agent mode is `llm`.
+
 There are two windows in a run, not one, and keeping them apart is the whole design.
 
 **Jev's window is fixed and small.** The decider sees the four most recent steps, with each

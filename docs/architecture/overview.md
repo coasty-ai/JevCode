@@ -1,17 +1,23 @@
 # System overview
 
-JevCode is one Node package. It is a coding agent with an unusual split: a **generator** (a
-large language model) writes code, and a **decider** called Jev answers small, code-enumerated
-questions about what to do next. The tests decide whether the code is right. Nothing else does.
+JevCode is one Node package: a streaming coding agent for the terminal. In the default mode,
+`agent`, the **code model** (a large language model) drives with native tool calls — it reads,
+searches, edits and runs commands — and the harness runs each call sandboxed, checkpoints every
+step and verifies the change with your tests. A **decider** called Jev, a calibrated decision
+model, is asked at most a few quick routing questions at the edges of a run. The older modes,
+kept for saved configs, resume and the bench, still let Jev decide every step. Either way the
+tests decide whether the code is right. Nothing else does.
 
-This page is the map. It shows the twenty-one top-level modules, who owns what, and the import
+This page is the map. It shows the twenty-two top-level modules, who owns what, and the import
 rules that keep the layers from collapsing into each other.
 
-- Depth on the step loop: [The step loop](step-loop.md).
-- Depth on the code search that can propose patches without a generator:
+- Depth on the default loop: [The agent loop](agent-loop.md).
+- Depth on the legacy modes' engine: [The step loop](step-loop.md).
+- Depth on the code search the `llm-jev` and `jev-only` modes propose patches with:
   [The synthesizer](synthesizer.md).
 - Depth on what Jev is allowed to decide: [The Jev contract](jev-contract.md).
-- The normative specification is [`docs/DESIGN.md`](../DESIGN.md); §2 of that file is the
+- The normative specifications are [`docs/AGENT-LOOP-DESIGN.md`](../AGENT-LOOP-DESIGN.md) for
+  the default mode and [`docs/DESIGN.md`](../DESIGN.md) for the rest; §2 of the latter is the
   package layout this page summarises.
 
 ## The picture
@@ -30,9 +36,14 @@ flowchart LR
     CREDS["credentials.ts"]
     LAUNCH["launch.ts"]
   end
-  subgraph sg_loop["step loop — src/loop"]
+  subgraph sg_agent["agent loop — src/agent, the default mode"]
+    DRIVER["driver.ts — the turn loop"]
+    ATOOLS["tools/ — read, grep, glob, edit, write, bash, todo"]
+    ASAFE["safety.ts — the command classifier"]
+  end
+  subgraph sg_loop["engine and step loop — src/loop"]
     ENGINE["engine.ts"]
-    STAGES["stages/ — replan, intent, context, propose, risk, execute, judge, complete"]
+    STAGES["stages/ — agent; and for the legacy modes replan, intent, context, propose, risk, execute, judge, complete"]
     ROUTERS["routers.ts — routersOn"]
     BUDGET["budget.ts and src/spend/meter.ts"]
     STOPM["stop.ts — exitCodeFor"]
@@ -76,6 +87,11 @@ flowchart LR
   MAIN --> IMPORTM
   BENCH --> ENGINE
   ENGINE --> STAGES
+  STAGES --> DRIVER
+  DRIVER --> ATOOLS
+  DRIVER --> ASAFE
+  DRIVER --> PROVIDER
+  ATOOLS --> SANDBOX
   ENGINE --> ROUTERS
   ENGINE --> BUDGET
   ENGINE --> STOPM
@@ -101,39 +117,44 @@ flowchart LR
   ENGINE --> ORCH
 ```
 
-Two edges are worth reading twice. **Every Jev question goes through the engine**, not around
-it: a stage builds a question batch and hands it to the engine's one recorded, metered ask,
-which wraps the client in a within-run answer cache. And `routeSpeculative` does not talk to
-the decider on its own — it is handed the stage's own ask as a function argument.
+In the default mode the engine hands each step to the agent driver (`src/loop/stages/agent.ts`
+→ `src/agent/driver.ts`), which samples the code model and resolves its tool calls; the
+engine keeps the shared tail — budgets, pre- and post-images, execution, the commit and the
+checkpoint. The Jev stages run only in the legacy modes. Two edges are worth reading twice.
+**Every Jev question goes through the engine**, not around it: a stage (or one of the agent's
+three quick placements) builds a question batch and hands it to the engine's one recorded,
+metered ask, which wraps the client in a within-run answer cache. And `routeSpeculative` does
+not talk to the decider on its own — it is handed the stage's own ask as a function argument.
 
 ## The modules
 
-Line counts are whole-file counts of `.ts` and `.tsx` under each directory, taken from the
-tree this page was written against: **454 files, 166,032 lines** across 21 top-level modules.
-Reproduce with `find src \( -name '*.ts' -o -name '*.tsx' \) | xargs wc -l | tail -1`.
+Line counts are whole-file counts of `.ts` and `.tsx` under each directory, taken on
+2026-09-23 from the tree with the agent loop merged: **520 files, 193,445 lines** across 22
+top-level modules. Reproduce with `find src \( -name '*.ts' -o -name '*.tsx' \) | xargs wc -l | tail -1`.
 
 | module | lines | what it owns |
 |---|---:|---|
-| `src/synth` | 45,121 | The Ledger + Sieve synthesizer: localisation, candidate generation, shadow-lane verification, the overfit guard. See [The synthesizer](synthesizer.md). |
-| `src/tui` | 28,656 | The interactive terminal interface: transcript, panes, composer, slash commands, review panels. |
-| `src/loop` | 14,074 | The step loop, its eight stages, budgets, loop detection, the context policy, the commit rule. |
-| `src/cli` | 9,722 | Argument parsing, the command dispatch, the session controller, login, the machine-readable stream. |
+| `src/synth` | 45,551 | The Ledger + Sieve synthesizer of the `llm-jev` and `jev-only` modes: localisation, candidate generation, shadow-lane verification, the overfit guard. See [The synthesizer](synthesizer.md). |
+| `src/tui` | 37,255 | The interactive terminal interface: transcript, the streaming reply block, panes, composer, slash commands, review panels, the mini indicator. |
+| `src/loop` | 15,781 | The engine every mode runs on, the agent seam, the legacy modes' stages, budgets, loop detection, the context policy, the commit rule. |
+| `src/cli` | 13,750 | Argument parsing, the command dispatch, the session controller, login, the machine-readable stream. |
+| `src/coordination` | 8,846 | The on-disk ledger several sessions on one machine use to see each other's claims and leases. |
 | `src/import` | 8,591 | Reads configuration and instruction files other agents left behind and plans an import. Writes nothing itself. |
-| `src/coordination` | 8,381 | The on-disk ledger several sessions on one machine use to see each other's claims and leases. |
-| `src/bench` | 8,047 | The benchmark runner, its conditions and its suite loaders. |
-| `src/provider` | 6,309 | Generator surfaces: Anthropic, OpenRouter, OpenAI-compatible endpoints, and the prompt and action schema. |
-| `src/perf` | 5,796 | Performance probes with recorded budgets: first frame, step overhead, render lag, decider latency. |
-| `src/core` | 5,224 | The shared contract. `types.ts` declares every interface the modules speak through; `limits.ts` holds the bounds. |
-| `src/orchestrate` | 5,202 | Splitting one task into child agents and landing their branches. Off by default. |
-| `src/config` | 3,188 | Setting resolution — flag, then environment, then file, then default — and credential storage. |
-| `src/models` | 2,939 | The model catalogue, its cache and its pricing table. |
-| `src/workspace` | 2,939 | File reads and writes, patches, test detection, git. `git.ts` is the only module that runs `git` through the sandbox. |
-| `src/checkpoint` | 2,678 | The run directory: atomic state snapshots, the append-only records, resume. |
-| `src/jev` | 2,237 | The decider: the question builders, the client, validation, confidence, the speculative router. |
-| `src/undo` | 2,162 | Restoring the workspace from the per-step images. |
-| `src/chat` | 1,611 | The conversational surface that decides when a message is a task. |
-| `src/session` | 1,439 | The long-lived session around one or more runs. |
-| `src/sandbox` | 1,051 | Running a command under a macOS seatbelt profile, and killing its process tree. |
+| `src/bench` | 8,289 | The benchmark runner, its conditions and its suite loaders. |
+| `src/provider` | 7,649 | The seven generator adapters, each speaking both the agent's native tool protocol and the legacy one-action schema. |
+| `src/perf` | 7,203 | Performance probes with recorded budgets: first frame, step overhead, render lag, stream latency, decider latency. |
+| `src/core` | 5,779 | The shared contract. `types.ts` declares every interface the modules speak through; `limits.ts` holds the bounds. |
+| `src/agent` | 5,530 | The default mode's loop: the driver, the seven tools, the prompts, the context policy, the command classifier, the loop detector and Jev's three quick placements. See [The agent loop](agent-loop.md). |
+| `src/orchestrate` | 5,203 | Splitting one task into child agents and landing their branches. Off by default. |
+| `src/config` | 3,908 | Setting resolution — flag, then environment, then file, then default — and credential storage. |
+| `src/session` | 3,252 | The long-lived session around one or more runs. |
+| `src/workspace` | 2,996 | File reads and writes, patches, test detection, git. `git.ts` is the only module that runs `git` through the sandbox. |
+| `src/models` | 2,963 | The model catalogue, its cache and its pricing table. |
+| `src/checkpoint` | 2,754 | The run directory: atomic state snapshots, the append-only records, resume. |
+| `src/jev` | 2,292 | The decider: the question builders, the client, validation, confidence, the speculative router, the absent decider. |
+| `src/undo` | 2,240 | Restoring the workspace from the per-step images. |
+| `src/chat` | 1,864 | The chat identity and voice every reply is written in, and the legacy modes' intake. |
+| `src/sandbox` | 1,084 | Running a command under a macOS seatbelt profile, and killing its process tree. |
 | `src/spend` | 169 | The spend meter. Generator and decider dollars are counted separately and the cap never throws. |
 
 Two single files sit at the root: `src/errors.ts` (the typed error hierarchy and the exit-code
@@ -184,21 +205,28 @@ It prints nothing on this tree.
 `npm run check` runs the type check, the Jev-contract lint, the documentation link check
 (`scripts/check-doc-links.mjs`) and the unit tests together.
 
-## The four modes
+## The modes
 
-One engine, four modes, selected by the `mode` setting. The default is **`llm-jev`**.
-<!-- src/core/types.ts:808 (EngineMode); src/config/defaults.ts:60 (DEFAULT_MODE) -->
+One engine, five modes, selected by the `mode` setting. The default is **`agent`**; `jev-only`
+is the other advertised mode, and the three legacy modes stay accepted for saved configs, resume
+and the bench (`/mode legacy` lists them).
+<!-- src/core/types.ts (EngineMode); src/config/defaults.ts (DEFAULT_MODE, ADVERTISED_MODES, LEGACY_MODES) -->
 
 | mode | who writes the change | who decides | badge |
 |---|---|---|---|
-| `llm-jev` | the generator, writing candidate patches **inside** the synthesizer | tests, then a harm-only risk check | `llm+jev · verified` |
-| `jev-on` | the generator, writing one action per step | Jev at every stage, tests at the judge | `jev+llm` |
+| `agent` (default) | the code model, through native tool calls | the code model; your tests verify; Jev only makes a few quick routing calls | `agent` |
 | `jev-only` | the synthesizer alone — no generator is called | tests; Jev ranks and arbitrates | `jev-only` |
-| `jev-off` | the generator alone | the generator | `llm-only` |
+| `llm-jev` (legacy) | the generator, writing candidate patches **inside** the synthesizer | tests, then a harm-only risk check | `llm+jev · verified` |
+| `jev-on` (legacy) | the generator, writing one action per step | Jev at every stage, tests at the judge | `jev+llm` |
+| `jev-off` (legacy) | the generator alone | the generator | `llm-only` |
 
 <!-- badge words: src/config/defaults.ts MODE_BADGE_WORD -->
 
-`jev-off` is the control arm. It is not a second engine:
+`agent` dispatches each step to `src/agent/` through one branch in the engine and reuses the
+whole execute-and-commit tail: budgets, pre-images, the sandbox, post-images, the checkpoint.
+No Jev stage runs in it. See [The agent loop](agent-loop.md).
+
+`jev-off` is the control arm of the legacy bench. It is not a second engine:
 `createGeneratorOnlyEngine` in `src/loop/generator-only.ts` is a thin factory that forces
 `mode: 'jev-off'` on the same `createEngine`, and the engine core branches on the mode. The run
 gets the same prompt layout minus the Jev sections, a candidate listing instead of selected
@@ -223,8 +251,9 @@ Every run owns a directory under `~/.jevcode/runs/<runId>`. The names are fixed 
 not know about: `run.json`, `state.json`, `state.prev.json`, `steps.jsonl`, `decisions.jsonl`,
 `jev.jsonl`, `generator.jsonl`, `transcript.log`, `ui.json`, `jevcode.log`, `run.lock`, and the
 directories `pre/`, `post/`, `tmp/`, `drafts/`, `cache/`, `orchestrate/`, `outputs/` and
-`context/`.
-<!-- src/checkpoint/store.ts:31-68 -->
+`context/`. An agent-mode run adds `agent/transcript.jsonl`, the append-only conversation the
+model reads, written before each step's checkpoint.
+<!-- src/checkpoint/store.ts:31-68; src/agent/transcript.ts (transcriptPath) -->
 
 `state.json` is rotated atomically through `state.prev.json`, and the checkpoint write for step
 N may overlap step N+1's early stages but is always awaited before step N+1 touches the

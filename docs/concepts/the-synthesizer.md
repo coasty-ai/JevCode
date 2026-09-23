@@ -1,5 +1,11 @@
 # The synthesizer: Ledger + Sieve
 
+> **The engine of the Jev-driven modes.** The synthesizer is what `jev-only` runs, and what the
+> legacy `llm-jev` mode (the default until 2026-09-23) runs with a code model inside it. The
+> default mode, `agent`, does not use it: there the code model edits through tools and your tests
+> verify ([The agent loop](../architecture/agent-loop.md)). The synthesizer is kept, unchanged,
+> for `jev-only`, saved configs, resume and the bench.
+
 How do you propose a code fix without a model that writes code?
 
 You enumerate. Code generates thousands of candidate edits from the failing test and the source
@@ -8,8 +14,8 @@ used only where running the tests cannot settle the question — which candidate
 and which of several passing candidates is the general fix rather than the lucky one.
 
 That is the synthesizer. It is what `jev-only` mode uses instead of a generating model, and
-what `llm-jev` — the default mode — uses **with** a generating model as one more candidate
-source among many.
+what the legacy `llm-jev` mode uses **with** a generating model as one more candidate source
+among many.
 
 ## The shape
 
@@ -242,4 +248,4 @@ the loop detector reads it, and the completion fact reads it. See
 
 - [Verification and the oracle](verification.md)
 - [Jev routes, never gates](jev-routes-never-gates.md)
-- [The four modes](../getting-started/modes.md)
+- [Modes](../getting-started/modes.md)
