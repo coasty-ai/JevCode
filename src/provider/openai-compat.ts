@@ -18,7 +18,7 @@ import { ProviderHttpError } from '../errors.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import type { AgentMessage, AgentRequest, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, Json, JsonObject, ToolChoice, ToolSpec } from '../core/types.js';
 import { checkOpenAiStrict } from './schema.js';
-import { agentReasoning, chatAgentMessages, createCaller, joinUrl, replayData, runGeneration, toolStream, validateGenerateRequest, withUniqueCallIds } from './http.js';
+import { agentReasoning, argumentsFragment, chatAgentMessages, createCaller, joinUrl, replayData, runGeneration, toolStream, validateGenerateRequest, withUniqueCallIds } from './http.js';
 import type { ConsumeContext, ErrorReader, HeldPartial, ToolStream } from './http.js';
 import { openAiErrorFields } from './http.js';
 import {
@@ -377,7 +377,7 @@ function applyChunk(q: ChatQuirks, chunk: JsonObject, st: ChatState, ctx: Consum
       for (const [pos, c] of calls.entries()) {
         if (typeof c !== 'object' || c === null || Array.isArray(c)) continue;
         const fnObj = getObj(c, 'function');
-        const frag = getStr(fnObj, 'arguments') ?? '';
+        const frag = argumentsFragment(fnObj?.['arguments'], st.agentModel !== null);
         st.tools.push(getNum(c, 'index') ?? pos, getStr(c, 'id'), getStr(fnObj, 'name'), frag);
         st.toolChars += frag.length;
       }

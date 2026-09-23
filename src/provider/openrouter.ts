@@ -10,7 +10,7 @@
 import { JevCodeError, ProviderHttpError } from '../errors.js';
 import type { AgentRequest, GenerateOptions, GenerateProviderPrefs, GenerateRequest, GenerateResult, GeneratorConfig, JsonObject, Provider, ProviderReplayState, ToolCall } from '../core/types.js';
 import { isJsonObject, parseJson } from '../core/json.js';
-import { agentReasoning, chatAgentMessages, messagesError, replayData, toolStream, withUniqueCallIds } from './http.js';
+import { agentReasoning, argumentsFragment, chatAgentMessages, messagesError, replayData, toolStream, withUniqueCallIds } from './http.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
   IdleTimeoutError,
@@ -328,7 +328,7 @@ async function consumeStream(body: ReadableStream<Uint8Array>, ctx: StreamContex
             if (typeof c !== 'object' || c === null || Array.isArray(c)) continue;
             // `index` keys the accumulator (live observation); a missing index falls back to position.
             const fn = getObj(c, 'function');
-            const frag = getStr(fn, 'arguments') ?? '';
+            const frag = argumentsFragment(fn?.['arguments'], agent);
             tools.push(getNum(c, 'index') ?? pos, getStr(c, 'id'), getStr(fn, 'name'), frag);
             toolChars += frag.length;
           }

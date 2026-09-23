@@ -150,6 +150,33 @@ describe('openrouter agent wire (AGENT-LOOP-DESIGN §6.2)', () => {
     expect(legacy.toolCalls).toEqual([{ name: 'read_file', input: null, rawJson: '{"path":"a"}{"path":"b"}' }]);
   });
 
+  it('an upstream that re-stamps a fresh id on every argument chunk of one call keeps it one call under its first id', async () => {
+    const stream = sseData([
+      chunk({ tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '' } }] }),
+      chunk({ tool_calls: [{ index: 0, id: 'call_2', function: { arguments: '{"path":' } }] }),
+      chunk({ tool_calls: [{ index: 0, id: 'call_3', function: { arguments: '"a"}' } }] }),
+      USAGE,
+    ]);
+    const h = hooks();
+    const f = scriptedFetch([{ status: 200, body: stream }]);
+    const res = await createOpenRouterProvider(cfg, providerDeps(f.fetch).deps).generate(agentReq(), genOpts({ onToolCall: (d) => h.calls.push(d) }));
+    expect(res.toolCalls).toEqual([{ name: 'read_file', input: { path: 'a' }, rawJson: '{"path":"a"}', id: 'call_1' }]);
+    expect(h.calls.every((c) => c.index === 0 && c.id === 'call_1')).toBe(true);
+  });
+
+  it('arguments sent as a JSON object are serialised on an agent request; a legacy request keeps reading them as no fragment', async () => {
+    const stream = sseData([chunk({ tool_calls: [{ index: 0, id: 'call_o', type: 'function', function: { name: 'read_file', arguments: { path: 'o.ts' } } }] }), USAGE]);
+    const f = scriptedFetch([
+      { status: 200, body: stream },
+      { status: 200, body: stream },
+    ]);
+    const p = createOpenRouterProvider(cfg, providerDeps(f.fetch).deps);
+    const agent = await p.generate(agentReq(), genOpts());
+    expect(agent.toolCalls).toEqual([{ name: 'read_file', input: { path: 'o.ts' }, rawJson: '{"path":"o.ts"}', id: 'call_o' }]);
+    const legacy = await p.generate(request(), genOpts());
+    expect(legacy.toolCalls).toEqual([{ name: 'read_file', input: {}, rawJson: '{}' }]);
+  });
+
   it('a call the upstream sent without an id gets a unique made-up one on an agent result', async () => {
     const stream = sseData([chunk({ tool_calls: [{ index: 0, type: 'function', function: { name: 'read_file', arguments: '{}' } }] }), USAGE]);
     const f = scriptedFetch([{ status: 200, body: stream }]);

@@ -219,6 +219,13 @@ describe('openai-compat agent wire: replay filtering and id splits (S2 tests c, 
     expect(new Set(ids).size).toBe(3);
   });
 
+  it('arguments sent as a JSON object are serialised on an agent request (a GLM / JSON-transport quirk), not lost as {}', async () => {
+    const stream = sseData([chunk('grok-4.7', { tool_calls: [{ index: 0, id: 'call_o', type: 'function', function: { name: 'read_file', arguments: { path: 'o.ts' } } }] }), usage('grok-4.7')]);
+    const f = scriptedFetch([{ status: 200, body: stream }]);
+    const res = await createXaiProvider(xaiCfg, providerDeps(f.fetch).deps).generate(agentReq(), genOpts());
+    expect(res.toolCalls).toEqual([{ name: 'read_file', input: { path: 'o.ts' }, rawJson: '{"path":"o.ts"}', id: 'call_o' }]);
+  });
+
   it('(d) two chunks at one index with different ids are two calls', async () => {
     const stream = sseData([
       chunk('grok-4.7', { tool_calls: [{ index: 0, id: 'call_x', type: 'function', function: { name: 'read_file', arguments: '{"path":"x"}' } }] }),

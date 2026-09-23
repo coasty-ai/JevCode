@@ -102,6 +102,12 @@ describe('messagesError: the agent transcript is checked against what every wire
 
   it('rejects empty content, an empty call id and a malformed providerState', () => {
     expect(bad([{ role: 'user', content: [] }])).toBe('agent.messages[0] has no content');
+    // every wire drops empty text: a user turn of nothing else would go out as content [] / parts [] (a 400) or vanish
+    expect(bad([{ role: 'user', content: [{ type: 'text', text: '' }] }])).toBe('agent.messages[0] has only empty text');
+    expect(bad([t[0]!, { role: 'assistant', content: [{ type: 'text', text: 'ok' }] }, { role: 'user', content: [{ type: 'text', text: '' }, { type: 'text', text: '' }] }])).toBe('agent.messages[2] has only empty text');
+    // a result with an empty note, and an empty assistant reply (sent as a placeholder where a wire needs one), are fine
+    expect(bad([t[0]!, t[1]!, { ...t[2]!, content: [...t[2]!.content.slice(0, 2), { type: 'text', text: '' }] } as AgentMessage])).toBeNull();
+    expect(bad([t[0]!, { role: 'assistant', content: [{ type: 'text', text: '' }] }, t[0]!])).toBeNull();
     const noId: AgentMessage = { role: 'assistant', content: [{ type: 'tool_use', id: '', name: 'read_file', input: {} }] };
     expect(bad([t[0]!, noId, t[0]!])).toBe('agent.messages[1]: a tool_use needs a non-empty id and name');
     const state = { role: 'assistant', content: [{ type: 'text', text: 'x' }], providerState: { data: 1 } } as unknown as AgentMessage;

@@ -17,8 +17,8 @@
  * Nothing here knows a wire shape: a client passes a `consume` that turns its own stream into a `ProviderOutcome`.
  */
 import { JevCodeError, ProviderHttpError } from '../errors.js';
-import { parseJson } from '../core/json.js';
-import type { AgentAssistantBlock, AgentMessage, AgentRequest, AgentUserBlock, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, Json, JsonObject, ToolCall } from '../core/types.js';
+import { isJsonObject, parseJson } from '../core/json.js';
+import type { AgentAssistantBlock, AgentMessage, AgentRequest, AgentUserBlock, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, Json, JsonObject, ProviderReplayState, ToolCall } from '../core/types.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
   IdleTimeoutError,
@@ -294,7 +294,9 @@ export async function runGeneration(
  * message instead of spending a round trip: the transcript starts and ends with a user message; every `tool_use` id is
  * unique and non-empty and is answered by a `tool_result` in the very next (user) message; every `tool_result` answers a
  * `tool_use` of the assistant message right before it (Anthropic: "tool_use ids were found without tool_result blocks
- * immediately after"; OpenAI: "an assistant message with 'tool_calls' must be followed by tool messages").
+ * immediately after"; OpenAI: "an assistant message with 'tool_calls' must be followed by tool messages"). A user message
+ * whose blocks are all empty text is refused too: every wire drops empty text, so it would go out as `content: []` /
+ * `parts: []` (a 400) or vanish from the chat transcript altogether.
  */
 export function messagesError(req: GenerateRequest): string | null {
   const a = req.agent;
@@ -320,6 +322,7 @@ export function messagesError(req: GenerateRequest): string | null {
         } else return `${at}: unknown user block`;
       }
       for (const id of open ?? []) if (!answered.has(id)) return `${at}: tool_use ${id} has no tool_result`;
+      if ((m.content as readonly AgentUserBlock[]).every((b) => b.type === 'text' && b.text === '')) return `${at} has only empty text`;
       open = null;
     } else if (m.role === 'assistant') {
       if (i === 0) return 'agent.messages must start with a user message';
@@ -418,6 +421,13 @@ export function chatAgentMessages(a: AgentRequest, replay: (m: Extract<AgentMess
   return out;
 }
 
+/**
+ * What an assistant turn with nothing to send (an empty reply: no text, no call) goes out as on the wires that reject an
+ * empty turn — Anthropic's `content: []` and Gemini's `parts: []` are a 400. The chat wires send `''` and Responses sends
+ * no item, so they need none.
+ */
+export const EMPTY_TURN_TEXT = '(no content)';
+
 /** The prefix of an id this harness made up for a call the provider sent without one (gemini.ts sends no id for these). */
 export const SYNTH_CALL_PREFIX = 'jc_';
 
@@ -427,19 +437,65 @@ export function agentCallId(id: string, ordinal: number): string {
 }
 
 /**
+ * Where an adapter's replay state names a call by id (`providerState.data[list][]` items of `type`, the id under `key`):
+ * Anthropic's `blocks` tool_use markers, the Responses `output` function_call markers. A renamed call is renamed there
+ * too, so the next turn's replay still finds it at its captured position.
+ */
+export interface CallIdMarkers {
+  list: string;
+  type: string;
+  key: string;
+}
+
+/**
  * §6.1's "(unique)" id, made to hold by construction on an agent result: a call whose id is empty, repeats an earlier call
  * of the same turn, or repeats any `tool_use` id already in the transcript gets a made-up one (some OpenAI-compatible
  * upstreams number their calls `call_0`, `call_1` afresh every turn, which would otherwise make the NEXT request fail
- * `messagesError`). The streamed `onToolCall` fragments carried the wire id; the result is what the transcript keeps.
+ * `messagesError`), and `markers` carry the rename into the replay state (the n-th marker of a wire id is the n-th call
+ * of it). The streamed `onToolCall` fragments carried the WIRE id: the transcript keys on `GenerateResult.toolCalls[].id`.
  */
-export function withUniqueCallIds(res: GenerateResult, a: AgentRequest): GenerateResult {
+export function withUniqueCallIds(res: GenerateResult, a: AgentRequest, markers?: CallIdMarkers): GenerateResult {
   const seen = new Set<string>();
   for (const m of a.messages) if (m.role === 'assistant') for (const b of m.content) if (b.type === 'tool_use') seen.add(b.id);
+  const nth = new Map<string, number>();
+  const renames = new Map<string, string>();
   for (const [i, c] of res.toolCalls.entries()) {
-    if (c.id === undefined || c.id.length === 0 || seen.has(c.id)) c.id = agentCallId('', i);
-    seen.add(c.id);
+    const wire = c.id ?? '';
+    const k = nth.get(wire) ?? 0;
+    nth.set(wire, k + 1);
+    const id = wire.length === 0 || seen.has(wire) ? agentCallId('', i) : wire;
+    if (id !== wire && wire.length > 0) renames.set(`${k}:${wire}`, id);
+    c.id = id;
+    seen.add(id);
   }
+  if (renames.size > 0 && markers !== undefined && res.providerState !== undefined) res.providerState = renamedMarkers(res.providerState, markers, renames);
   return res;
+}
+
+function renamedMarkers(state: ProviderReplayState, m: CallIdMarkers, renames: ReadonlyMap<string, string>): ProviderReplayState {
+  const data = state.data;
+  const list = isJsonObject(data) ? data[m.list] : undefined;
+  if (!isJsonObject(data) || !Array.isArray(list)) return state;
+  const nth = new Map<string, number>();
+  const next = list.map((item): Json => {
+    const id = isJsonObject(item) && item['type'] === m.type ? item[m.key] : undefined;
+    if (!isJsonObject(item) || typeof id !== 'string') return item;
+    const k = nth.get(id) ?? 0;
+    nth.set(id, k + 1);
+    const to = renames.get(`${k}:${id}`);
+    return to === undefined ? item : { ...item, [m.key]: to };
+  });
+  return { ...state, data: { ...data, [m.list]: next } };
+}
+
+/**
+ * A chat-completions `function.arguments` value as a fragment: the string the spec sends, or — agent requests only — an
+ * object some OpenAI-compatible upstreams send instead (GLM, non-streamed JSON transports), serialised rather than lost
+ * as `{}`. A legacy request keeps today's reading (a non-string is no fragment).
+ */
+export function argumentsFragment(raw: Json | undefined, agent: boolean): string {
+  if (typeof raw === 'string') return raw;
+  return agent && isJsonObject(raw) ? JSON.stringify(raw) : '';
 }
 
 /** One `onToolCall` fragment (§6.1). `index` is the call's ORDINAL — its position in `GenerateResult.toolCalls` — not a wire index. */
@@ -464,8 +520,10 @@ export interface ToolStream {
 /**
  * The chat-completions tool-call accumulator openrouter.ts and openai-compat.ts share: keyed by stream `index`, name and
  * id overwritten when non-empty, `onToolDelta` per non-empty fragment — exactly the legacy one. With `split` (agent
- * requests only) a chunk whose non-empty id differs from the id already stored at its index starts a NEW call instead of
- * concatenating (§6.2: some OpenAI-compatible upstreams stream parallel calls that share one index). `onToolCall` fires
+ * requests only) a chunk that NAMES a function under a non-empty id different from the id already stored at its index
+ * starts a NEW call instead of concatenating (§6.2: some OpenAI-compatible upstreams stream parallel calls that share one
+ * index). A new call always opens with its name (the OpenAI streaming shape), so an upstream that re-stamps a fresh id on
+ * every argument chunk of ONE call does not split it into fragments. `onToolCall` fires
  * next to `onToolDelta`, and also once when a chunk first names the call, so a renderer can say "writing edit_file…"
  * before any argument arrives.
  */
@@ -475,13 +533,15 @@ export function toolStream(opts: GenerateOptions, split: boolean): ToolStream {
   return {
     push(index, id, name, frag) {
       let acc = byIndex.get(index);
-      if (acc === undefined || (split && id !== null && id.length > 0 && acc.id.length > 0 && acc.id !== id)) {
+      if (acc === undefined || (split && id !== null && id.length > 0 && name !== null && name.length > 0 && acc.id.length > 0 && acc.id !== id)) {
         acc = { id: '', name: '', args: '', ordinal: list.length };
         byIndex.set(index, acc);
         list.push(acc);
       }
-      const learned = (id !== null && id.length > 0 && id !== acc.id) || (name !== null && name.length > 0 && name !== acc.name);
-      if (id) acc.id = id;
+      // with `split` the id a call opened under stays its id, so a re-stamped argument chunk neither renames nor splits it
+      const adoptId = id !== null && id.length > 0 && id !== acc.id && (!split || acc.id.length === 0);
+      const learned = adoptId || (name !== null && name.length > 0 && name !== acc.name);
+      if (adoptId) acc.id = id;
       if (name) acc.name = name;
       if (frag.length > 0) {
         acc.args += frag;
