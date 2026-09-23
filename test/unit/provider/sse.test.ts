@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AbortError, JevCodeError, ProviderHttpError } from '../../../src/errors.js';
-import { IdleTimeoutError, MAX_MESSAGE_CHARS, backoffMs, clipMessage, costFromPricing, httpError, isRateLimit, isRetryableStatus, notify, parseRetryAfter, parseSse, rateLimitLedger, rateLimitedCancellation, readBodyCapped, withRetry } from '../../../src/provider/sse.js';
+import { DRAIN_BYTES, DRAIN_MS, IdleTimeoutError, MAX_MESSAGE_CHARS, backoffMs, clipMessage, costFromPricing, httpError, isRateLimit, isRetryableStatus, notify, parseRetryAfter, parseSse, rateLimitLedger, rateLimitedCancellation, readBodyCapped, withRetry } from '../../../src/provider/sse.js';
 import type { SseRecord } from '../../../src/provider/types.js';
 import { PRICING, bodyStream, encode, fixture, splitEvery } from './helpers.js';
 
@@ -122,12 +122,74 @@ describe('parseSse', () => {
     await expect(collect(control.stream, { maxEventBytes: 100 })).rejects.toSatisfy((e: unknown) => e instanceof ProviderHttpError && !e.retryable);
   });
 
-  it('cancels the reader when the consumer stops early', async () => {
+  it('a consumer that stops early on a record gets the rest of the body DRAINED to EOF, not cancelled (the socket stays poolable)', async () => {
     const control = bodyStream(['data: a\n\ndata: b\n\n'], true);
+    setTimeout(() => {
+      control.push('\r\n'); // what a gateway may still send after its terminal record
+      control.close();
+    }, 10);
     for await (const r of parseSse(control.stream)) {
       expect(r.data).toBe('a');
       break;
     }
+    expect(control.cancelled()).toBe(false);
+  });
+
+  it('a body still open DRAIN_MS after the consumer stopped is cancelled, as before the drain existed', async () => {
+    const control = bodyStream(['data: a\n\ndata: b\n\n'], true);
+    const t0 = performance.now();
+    for await (const r of parseSse(control.stream)) {
+      expect(r.data).toBe('a');
+      break;
+    }
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(DRAIN_MS - 20);
+    expect(control.cancelled()).toBe(true);
+  });
+
+  it('more than DRAIN_BYTES after the consumer stopped: cancelled at once, without waiting out the clock', async () => {
+    const control = bodyStream(['data: a\n\n'], true);
+    const t0 = performance.now();
+    setTimeout(() => control.push('x'.repeat(DRAIN_BYTES + 1)), 5);
+    for await (const r of parseSse(control.stream)) {
+      expect(r.data).toBe('a');
+      break;
+    }
+    expect(performance.now() - t0).toBeLessThan(DRAIN_MS);
+    expect(control.cancelled()).toBe(true);
+  });
+
+  it('an abort during the drain cancels the body at once; a consumer that stopped BECAUSE of the signal is never drained', async () => {
+    const control = bodyStream(['data: a\n\n'], true);
+    const ac = new AbortController();
+    const t0 = performance.now();
+    setTimeout(() => ac.abort(new AbortError('human_abort')), 20);
+    for await (const r of parseSse(control.stream, { signal: ac.signal })) {
+      expect(r.data).toBe('a');
+      break;
+    }
+    expect(performance.now() - t0).toBeLessThan(DRAIN_MS);
+    expect(control.cancelled()).toBe(true);
+
+    const aborted = bodyStream(['data: a\n\n'], true);
+    const pre = new AbortController();
+    const t1 = performance.now();
+    await expect(
+      (async () => {
+        for await (const _r of parseSse(aborted.stream, { signal: pre.signal })) {
+          pre.abort(new AbortError('human_abort'));
+          throw pre.signal.reason;
+        }
+      })(),
+    ).rejects.toBeInstanceOf(AbortError);
+    expect(performance.now() - t1).toBeLessThan(DRAIN_MS / 2);
+    expect(aborted.cancelled()).toBe(true);
+  });
+
+  it('a failure raised inside the parser (idle timeout, size cap) cancels at once — the drain is only for a consumer that stopped', async () => {
+    const control = bodyStream([`data: ${'x'.repeat(200)}`], true);
+    const t0 = performance.now();
+    await expect(collect(control.stream, { maxEventBytes: 100 })).rejects.toBeInstanceOf(ProviderHttpError);
+    expect(performance.now() - t0).toBeLessThan(DRAIN_MS / 2);
     expect(control.cancelled()).toBe(true);
   });
 });
