@@ -140,9 +140,29 @@ export interface Chunk {
   n: number;
 }
 
-export function parseTiming(text: string): { steps: TimingStep[]; chunks: Chunk[] } {
+/**
+ * The typist's clock bridge (`perf/drivers/pty_type.py`, its first timing line): the driver's `t` and the
+ * CLOCK_MONOTONIC_RAW nanoseconds read at one instant. On macOS that clock shares its base with Node's
+ * `process.hrtime.bigint()`, so a child's hrtime stamp maps onto the driver's timeline (`toDriverMs`).
+ */
+export interface ClockBridge {
+  /** driver ms since spawn */
+  t: number;
+  /** CLOCK_MONOTONIC_RAW at `t`, in ns (a decimal string in the file: exact past 2^53) */
+  rawNs: bigint;
+  /** the width of the two raw reads bracketing the driver's read, ns — the bridge's own uncertainty */
+  errNs: number;
+}
+
+/** A child's `process.hrtime.bigint()` stamp (ns, as a bigint or its decimal string) on the driver's timeline, in ms. */
+export function toDriverMs(clock: ClockBridge, ns: bigint | string): number {
+  return clock.t + Number((typeof ns === 'bigint' ? ns : BigInt(ns)) - clock.rawNs) / 1e6;
+}
+
+export function parseTiming(text: string): { steps: TimingStep[]; chunks: Chunk[]; clock: ClockBridge | null } {
   const steps: TimingStep[] = [];
   const chunks: Chunk[] = [];
+  let clock: ClockBridge | null = null;
   for (const line of text.split('\n')) {
     const s = line.trim();
     if (s === '') continue;
@@ -159,10 +179,16 @@ export function parseTiming(text: string): { steps: TimingStep[]; chunks: Chunk[
       if (typeof o['off'] === 'number' && typeof o['n'] === 'number') chunks.push({ t: o['t'], off: o['off'], n: o['n'] });
       continue;
     }
+    // the clock bridge is a record of its own, never a step (it carries `step: 0` like the exit records)
+    if (o['op'] === 'clock') {
+      const raw = o['raw_ns'];
+      if (clock === null && (typeof raw === 'string' || typeof raw === 'number') && /^\d+$/.test(String(raw))) clock = { t: o['t'], rawNs: BigInt(String(raw)), errNs: typeof o['raw_err_ns'] === 'number' ? o['raw_err_ns'] : 0 };
+      continue;
+    }
     if (typeof o['step'] !== 'number') continue;
     steps.push({ t: o['t'], step: o['step'], op: o['op'], arg: typeof o['arg'] === 'string' ? o['arg'] : '', ...(typeof o['off'] === 'number' ? { off: o['off'] } : {}) });
   }
-  return { steps, chunks };
+  return { steps, chunks, clock };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -315,6 +341,8 @@ export interface TypistOptions {
 export interface TypistResult extends DriveResult {
   /** every read from the master with its arrival time and byte offset */
   chunks: Chunk[];
+  /** the driver's clock bridge (null when the platform had no CLOCK_MONOTONIC_RAW) */
+  clock: ClockBridge | null;
 }
 
 /** Run the Python typist once; the capture comes back latin1-decoded (string index = byte offset). */
@@ -327,9 +355,9 @@ export async function typist(opts: TypistOptions): Promise<TypistResult> {
   try {
     const r = await runDriver('/usr/bin/python3', [join(opts.root, 'perf/drivers/pty_type.py'), stepsFile, capture, timing, '--', ...opts.command], baseEnv(opts, dir), opts.wallMs ?? 240_000, dir);
     const cap = readOr(capture, 'latin1');
-    const { steps, chunks } = parseTiming(readOr(timing, 'utf8'));
+    const { steps, chunks, clock } = parseTiming(readOr(timing, 'utf8'));
     keepEvidence(opts.label, capture, timing);
-    return { code: r.code, capture: cap, timing: steps, chunks, timedOut: r.code === 124 || steps.some((s) => s.op === 'timeout'), stderr: r.stderr, wallMs: r.wallMs };
+    return { code: r.code, capture: cap, timing: steps, chunks, clock, timedOut: r.code === 124 || steps.some((s) => s.op === 'timeout'), stderr: r.stderr, wallMs: r.wallMs };
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

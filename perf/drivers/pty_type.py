@@ -29,6 +29,14 @@ completed it — no pattern-matching heuristics are needed to timestamp frames.
 ("expect" records the arrival time of the chunk that completed the match; "send" and "resize" carry "off", the capture
 byte offset at the moment of the write / the TIOCSWINSZ — every frame at or past that offset was written after it),
 plus one line per read {"t":ms,"op":"chunk","off":<byte offset>,"n":<bytes>}.
+The first line is the clock bridge {"t":ms,"op":"clock","step":0,"arg":"CLOCK_MONOTONIC_RAW","raw_ns":"N","raw_err_ns":E}:
+the driver's "t" and CLOCK_MONOTONIC_RAW nanoseconds read at one instant (the midpoint of two raw reads bracketing the
+monotonic read, as a decimal STRING: nanoseconds since boot pass 2^53 after ~104 days of uptime, beyond what a JSON
+number keeps exactly; "raw_err_ns" is the bracket's width). On macOS that clock shares its base with Node's
+`process.hrtime.bigint()` (measured 2026-09-23: three Python reads bracketed a Node read in every trial, while
+`time.monotonic_ns()` differs from it by ~1.8e9 s), so a timestamp the child takes with hrtime maps onto this timeline as
+t + (ns - raw_ns) / 1e6 — `src/perf/pty.ts` `toDriverMs`, used by the stream probe to line a streamed delta's emission
+up with the frames that paint it. Where the clock is missing, "arg" is "unavailable" and no raw fields are written.
 The child's exit code is the driver's exit code (128+n for a signal death); 124 = an expect step timed out.
 """
 import fcntl
@@ -72,6 +80,15 @@ def main() -> int:
     cap = open(capture_file, 'wb')
     tim = open(timing_file, 'w', encoding='utf-8')
     buf = bytearray()
+    raw_clock = getattr(time, 'CLOCK_MONOTONIC_RAW', None)
+    if raw_clock is not None:
+        raw_a = time.clock_gettime_ns(raw_clock)
+        mono = time.monotonic()
+        raw_b = time.clock_gettime_ns(raw_clock)
+        bridge = {'t': round((mono - t0) * 1000.0, 3), 'op': 'clock', 'step': 0, 'arg': 'CLOCK_MONOTONIC_RAW', 'raw_ns': str((raw_a + raw_b) // 2), 'raw_err_ns': raw_b - raw_a}
+    else:  # pragma: no cover - every supported platform has it
+        bridge = {'t': 0.0, 'op': 'clock', 'step': 0, 'arg': 'unavailable'}
+    tim.write(json.dumps(bridge) + '\n')
     state = {'consumed': 0, 'total': 0, 'eof': False, 'last_chunk_t': 0.0, 'timed_out': False}
 
     def now() -> float:

@@ -6,7 +6,7 @@
  * frame-rate gate.
  */
 import { describe, expect, it } from 'vitest';
-import { BSU, CLEAR_RE, ESU, chunkTimeAt, classCounts, classifyFrame, classifyFrames, clearReSelfTest, clearStats, composerEndsWithKey, composerRow, countClears, cursorStats, decodeSendText, frameContent, frameMix, frameRows, framesPerSecond, framesPerSecondByClass, isBoxedFrame, keyLatencies, lastSendAtOrBefore, paintedRows, paintedRowsChanged, parseTiming, safeKey, sendTimes, splitFrames, staticRows, stripAnsi, summarise, throttleMs, toTypistSteps, wordmarkCells, type Chunk } from '../../../src/perf/pty.js';
+import { BSU, CLEAR_RE, ESU, chunkTimeAt, classCounts, classifyFrame, classifyFrames, clearReSelfTest, clearStats, composerEndsWithKey, composerRow, countClears, cursorStats, decodeSendText, frameContent, frameMix, frameRows, framesPerSecond, framesPerSecondByClass, isBoxedFrame, keyLatencies, lastSendAtOrBefore, paintedRows, paintedRowsChanged, parseTiming, safeKey, sendTimes, splitFrames, staticRows, stripAnsi, summarise, throttleMs, toDriverMs, toTypistSteps, wordmarkCells, type Chunk } from '../../../src/perf/pty.js';
 
 const RULE = '\x1b[2m' + '─'.repeat(20) + '\x1b[22m';
 /** an Ink frame as the pty shows it: hide, return to bottom, erase `prev + 1` rows, rows, cursor suffix */
@@ -83,6 +83,27 @@ describe('timing records', () => {
       { t: 7.5, off: 0, n: 120 },
       { t: 10, off: 120, n: 30 },
     ]);
+  });
+  it('parseTiming returns the typist clock bridge as its own field, never as a step; toDriverMs maps a child hrtime stamp onto the driver timeline', () => {
+    const text = [
+      // the first line `perf/drivers/pty_type.py` writes: raw_ns is a decimal string (exact past 2^53)
+      '{"t": 0.042, "op": "clock", "step": 0, "arg": "CLOCK_MONOTONIC_RAW", "raw_ns": "1790848110773166000", "raw_err_ns": 1500}',
+      '{"t": 9.0, "step": 1, "op": "send", "arg": "\\r", "off": 0}',
+      '{"t": 7.5, "op": "chunk", "off": 0, "n": 120}',
+      '{"t": 99, "step": 0, "op": "exit", "arg": "0"}',
+    ].join('\n');
+    const { steps, chunks, clock } = parseTiming(text);
+    expect(clock).toEqual({ t: 0.042, rawNs: 1790848110773166000n, errNs: 1500 });
+    expect(steps.map((s) => s.op)).toEqual(['send', 'exit']);
+    expect(chunks).toHaveLength(1);
+    // 12.5 ms after the bridge instant, in either spelling of the stamp
+    expect(toDriverMs(clock!, 1790848110785666000n)).toBeCloseTo(12.542, 6);
+    expect(toDriverMs(clock!, '1790848110785666000')).toBeCloseTo(12.542, 6);
+    // a stamp taken before the bridge lands before it
+    expect(toDriverMs(clock!, 1790848110772166000n)).toBeCloseTo(-0.958, 6);
+    // a timing file from an older driver (or a platform without the clock) has none
+    expect(parseTiming('{"t": 0, "op": "clock", "step": 0, "arg": "unavailable"}').clock).toBeNull();
+    expect(parseTiming('{"t": 6.0, "step": 1, "op": "expect", "arg": "ready"}').clock).toBeNull();
   });
   it('chunkTimeAt finds the chunk holding a byte offset', () => {
     const chunks: Chunk[] = [
