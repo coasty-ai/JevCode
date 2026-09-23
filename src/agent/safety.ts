@@ -68,33 +68,44 @@ function redirectVerdict(redirects: readonly Redirect[], p: PathContext): { rule
 // ---------------------------------------------------------------------------------------
 
 const KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', 'fi', 'done', 'esac']);
-const WRAPPERS = new Set(['command', 'builtin', 'exec', 'nohup', 'time']);
-const XARGS_ARG_FLAGS = new Set(['-I', '-n', '-P', '-L', '-s', '-d', '-E', '-a']);
+/** wrappers that run the rest of the line, with the flags that take an argument (`timeout` also takes its duration) */
+const WRAPPERS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ['command', new Set<string>()],
+  ['builtin', new Set<string>()],
+  ['exec', new Set(['-a'])],
+  ['nohup', new Set<string>()],
+  ['time', new Set<string>()],
+  ['env', new Set(['-u', '-C', '-P'])],
+  ['xargs', new Set(['-I', '-n', '-P', '-L', '-s', '-d', '-E', '-a'])],
+  ['nice', new Set(['-n'])],
+  ['timeout', new Set(['-s', '-k'])],
+  ['stdbuf', new Set(['-i', '-o', '-e'])],
+  ['ionice', new Set(['-c', '-n'])],
+]);
+/** `env -S 'cmd args'` / `--split-string`: the program is inside one argument, which this reader does not split */
+const ENV_SPLIT = /^(-[A-Za-z]*S|--split-string(=|$))/;
+const OPAQUE: Word = { text: '?', subst: true, param: false, glob: false };
 
-/** Strip assignments, keywords and wrappers (`env`, `nohup`, `xargs …`) down to the program and its arguments. */
+/**
+ * Strip assignments, keywords and wrappers (`env`, `nohup`, `timeout 5`, `xargs …`) down to the program and its
+ * arguments. A wrapper whose program cannot be found (`env -S '…'`, flags and nothing after them) yields one opaque word.
+ */
 export function programWords(words: readonly Word[]): Word[] {
   let i = 0;
-  const skipFlags = (argFlags: ReadonlySet<string>): void => {
-    while (i < words.length && words[i]!.text.startsWith('-')) {
-      const flag = words[i]!.text;
-      i += argFlags.has(flag) ? 2 : 1;
-    }
-  };
   for (;;) {
     const w = words[i];
     if (w === undefined) return [];
     const t = w.text;
-    if (!w.subst && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) i += 1;
-    else if (!w.subst && KEYWORDS.has(t)) i += 1;
-    else if (!w.subst && WRAPPERS.has(t)) {
-      i += 1;
-      skipFlags(new Set());
-    } else if (!w.subst && t === 'env') {
-      i += 1;
-      skipFlags(new Set(['-u', '-C', '-S']));
-    } else if (!w.subst && t === 'xargs') {
-      i += 1;
-      skipFlags(XARGS_ARG_FLAGS);
+    const argFlags = w.subst ? undefined : WRAPPERS.get(t);
+    if (!w.subst && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t) || KEYWORDS.has(t))) i += 1;
+    else if (argFlags !== undefined) {
+      const start = (i += 1);
+      for (let f = words[i]; f !== undefined && f.text.startsWith('-'); f = words[i]) {
+        if (f.subst || (t === 'env' && ENV_SPLIT.test(f.text))) return [OPAQUE];
+        i += argFlags.has(f.text) ? 2 : 1;
+      }
+      if (t === 'timeout') i += 1;
+      if (i >= words.length && (i > start || t === 'timeout')) return [OPAQUE];
     } else return words.slice(i);
   }
 }
@@ -155,12 +166,14 @@ const FIND_WRITERS = /^-(delete|exec|execdir|ok|okdir|fprint.*|fls)$/;
 function readonlyProgram(program: string, a: readonly string[]): boolean {
   if (PLAIN_READONLY.has(program)) return true;
   // `tree -o FILE` (also inside a flag group, `-ao`) writes its listing; `file -C` compiles a magic file into the cwd
-  if (program === 'tree') return !hasShort(a, 'o') && !a.some((x) => x.startsWith('--output'));
+  // `tree -R` writes an HTML listing into every directory it visits
+  if (program === 'tree') return !hasShort(a, 'o') && !hasShort(a, 'R') && !a.some((x) => x.startsWith('--output'));
   if (program === 'file') return !hasShort(a, 'C') && !hasFlag(a, '--compile');
   if (program === 'grep' || program === 'rg' || program === 'ag' || program === 'egrep' || program === 'fgrep') return !a.some((x) => x === '--pre' || x.startsWith('--pre='));
   if (program === 'find') return !a.some((x) => FIND_WRITERS.test(x));
   if (program === 'sed') return sedReadonly(a);
-  if (program === 'sort') return !hasFlag(a, '-o') && !a.some((x) => x.startsWith('--output') || /^-[A-Za-z]*o/.test(x));
+  // `sort --compress-program=PROG` runs a program
+  if (program === 'sort') return !hasFlag(a, '-o') && !a.some((x) => x.startsWith('--output') || x.startsWith('--compress-program') || /^-[A-Za-z]*o/.test(x));
   return false;
 }
 
@@ -296,7 +309,9 @@ export function classifyCommand(command: string, c: ClassifyContext): CommandVer
   if (isVerificationRun(command.trim(), c.testCommand)) return SAFE;
   const parsed = parseShell(command);
   if (remoteExec(parsed)) return destructive('remote_exec');
-  return classifyParsed(parsed, c);
+  const v = classifyParsed(parsed, c);
+  // an open quote or substitution at the end: the reading above is a guess, and a guess is never read-only
+  return parsed.incomplete ? stricter(v, UNKNOWN) : v;
 }
 
 /** §A5: the one-line note of a destructive command that ran under full autonomy, truthful about what /undo can do. */

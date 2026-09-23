@@ -61,6 +61,14 @@ describe('readonly: the allow-list', () => {
     'cat a.txt 2>&1 | head',
     'FOO=1 ls',
     'echo $(git rev-parse HEAD)',
+    "cat <<'EOF'\n$(touch pwned)\nEOF",
+    'cat <<"EOF"\n`touch pwned`\nEOF',
+    'echo $((1+2))',
+    'echo ${HOME:-/tmp}',
+    "echo $'a\\tb\\n'",
+    'timeout 5 cat f',
+    'nice -n 10 ls',
+    'stdbuf -oL tail -n 5 x',
   ])('%s', (command) => {
     expect(kindOf(command)).toBe('readonly');
   });
@@ -92,6 +100,22 @@ describe('readonly: the allow-list', () => {
     ['git grep -O runs a pager program', 'git grep -O"sh -c x" foo'],
     ['git grep --open-files-in-pager', 'git grep --open-files-in-pager=vim foo'],
     ['git -p forces the pager', 'git -p log'],
+    ['an unquoted heredoc body is expanded', 'cat <<EOF\n$(touch pwned)\nEOF'],
+    ['a backtick in an unquoted heredoc body', 'cat <<EOF\nx `touch pwned` y\nEOF'],
+    ['a substitution inside arithmetic', 'echo $(( $(touch x) + 1 ))'],
+    ['$(( that is a subshell, not arithmetic', 'echo $((touch pwned) )'],
+    ['a substitution in a ${…} operand', 'echo ${x:-$(rm -rf src)}'],
+    ['a backtick in a ${…} operand', 'echo ${x:-`touch pwned`}'],
+    ['a ${…} operand inside double quotes', 'echo "${x:-$(touch pwned)}"'],
+    ['env -S splits its argument into a program', "env -S 'rm -rf src'"],
+    ['env --split-string=', 'env --split-string=rm'],
+    ['env with flags and no program', 'env -i'],
+    ['tree -R writes 00Tree.html into every directory', 'tree -R -H . -L 1'],
+    ['sort --compress-program runs a program', 'sort --compress-program=./x.sh -S 1 f'],
+    ["an ANSI-C $'…' quote does not end at \\'", "echo $'it\\'s'; touch pwned"],
+    ['an unterminated single quote', "echo 'unterminated"],
+    ['an unterminated double quote', 'echo "unterminated'],
+    ['an unterminated substitution', 'echo $(ls'],
   ])('not readonly: %s', (_why, command) => {
     expect(kindOf(command)).not.toBe('readonly');
   });
@@ -132,6 +156,10 @@ describe('destructive rules', () => {
     ['rm_outside', 'rm -rf ~/*'],
     ['rm_outside', 'rm -rf /work/proj'],
     ['rm_outside', 'cd src && rm -rf ../../other'],
+    ['rm_outside', "echo $'a\\'b' && rm -rf /"],
+    ['rm_outside', 'timeout 5 rm -rf /'],
+    ['rm_outside', 'nice -n 5 rm -rf ~'],
+    ['rm_outside', "rm -rf $'\\x2f'"],
     ['git_discard', 'git clean -fdx'],
     ['git_discard', 'git clean -X -f'],
     ['git_discard', 'git stash drop'],
@@ -306,5 +334,23 @@ describe('the shell reader', () => {
     const p = parseShell("cat > notes.md <<'EOF'\nrm -rf /\nEOF\necho done");
     expect(p.commands.map((c) => c.words.map((w) => w.text))).toEqual([['cat'], ['echo', 'done']]);
     expect(kindOf("cat > notes.md <<'EOF'\nrm -rf /\nEOF")).toBe('unknown');
+  });
+
+  it("reads the substitutions the shell expands: an unquoted heredoc body, a ${…} operand, arithmetic; not a quoted body", () => {
+    const subs = (command: string): string[][] => parseShell(command).substitutions.map((x) => x.commands[0]!.words.map((w) => w.text));
+    expect(subs('cat <<EOF\nhello $(touch a)\nEOF')).toEqual([['touch', 'a']]);
+    expect(subs("cat <<'EOF'\nhello $(touch a)\nEOF")).toEqual([]);
+    expect(subs('echo ${x:-$(touch b)} done')).toEqual([['touch', 'b']]);
+    expect(subs('echo $(( $(touch c) + 1 ))')).toEqual([['touch', 'c']]);
+    // a `}` inside a quoted part or a nested substitution does not end the operand
+    const p = parseShell('echo "${x:-"}"}" ${y:-$(echo })}; ls');
+    expect(p.commands.map((c) => c.words[0]!.text)).toEqual(['echo', 'ls']);
+  });
+
+  it("reads ANSI-C $'…' quoting with its escapes, and flags a line that ends inside a quote or substitution", () => {
+    const p = parseShell("echo $'it\\'s' $'\\x41\\n' && rm x");
+    expect(p.commands.map((c) => c.words.map((w) => w.text))).toEqual([['echo', "it's", 'A\n'], ['rm', 'x']]);
+    expect(p.incomplete).toBe(false);
+    for (const open of ["echo 'a", 'echo "a', 'echo $(ls', 'echo `ls', 'echo ${x', "echo $'a"]) expect(parseShell(open).incomplete).toBe(true);
   });
 });

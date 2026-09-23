@@ -4,10 +4,13 @@
  *
  *  - simple commands, split on `;`, `&&`, `||`, `|`, `|&`, `&`, newlines and `( )` / `{ }` grouping;
  *  - each word after quote removal, remembering whether part of it was a substitution, a parameter or a glob;
- *  - redirects with their fd, operator and target (`2>/dev/null`, `>&2`, `&>log`, heredocs skipped);
- *  - the commands inside `$(…)`, backticks and `<(…)` / `>(…)`, parsed recursively.
+ *  - redirects with their fd, operator and target (`2>/dev/null`, `>&2`, `&>log`);
+ *  - the commands inside `$(…)`, backticks and `<(…)` / `>(…)`, parsed recursively — and those nested in a `${…}` operand,
+ *    an arithmetic `$((…))` or an unquoted heredoc body, which the shell expands too;
+ *  - ANSI-C `$'…'` quoting, whose `\'` does not close the quote.
  *
- * Anything it cannot read makes the word opaque (`subst` / `param`), and the classifier treats opaque words as doubt.
+ * Anything it cannot read makes the word opaque (`subst` / `param`), and the classifier treats opaque words as doubt. A
+ * command that ends inside an open quote or substitution is `incomplete`, and the classifier does not call it read-only.
  */
 
 export interface Word {
@@ -40,17 +43,36 @@ export interface ParsedShell {
   commands: SimpleCommand[];
   /** every command list inside a substitution of any word or redirect, recursively */
   substitutions: ParsedShell[];
+  /** the text ended inside an unterminated quote or substitution (here or in a substitution): the reading is a guess */
+  incomplete: boolean;
 }
 
 const OPERATORS = ['&&', '||', '|&', ';;', ';', '|', '&', '\n', '(', ')'] as const;
 const REDIRECT_OPS = ['&>>', '&>', '<<<', '<<-', '<<', '<>', '>>', '>|', '>&', '<&', '>', '<'] as const;
 
-/** Read a balanced `(`…`)` region starting after the opening paren; returns the inner text and the index after `)`. */
-function readBalanced(s: string, from: number): { inner: string; end: number } {
+interface Region {
+  inner: string;
+  /** the index after the closing character */
+  end: number;
+  closed: boolean;
+}
+
+/** The index of the backtick closing the one before `from`, or `s.length`. */
+function backtickEnd(s: string, from: number): number {
+  let j = from;
+  while (j < s.length && s[j] !== '`') j += s[j] === '\\' ? 2 : 1;
+  return Math.min(j, s.length);
+}
+
+/**
+ * Read a balanced region starting after its opening character: `(`…`)` (quotes skipped), or with `open` = `{` a `${…}`
+ * operand, where nested `$(…)` and backticks are skipped whole as well — the shell ends the operand at the same brace.
+ */
+function readBalanced(s: string, from: number, open: '(' | '{' = '('): Region {
+  const close = open === '(' ? ')' : '}';
   let depth = 1;
-  let i = from;
   let quote: '"' | "'" | null = null;
-  for (; i < s.length; i += 1) {
+  for (let i = from; i < s.length; i += 1) {
     const ch = s[i]!;
     if (quote !== null) {
       if (ch === '\\' && quote === '"') i += 1;
@@ -59,21 +81,27 @@ function readBalanced(s: string, from: number): { inner: string; end: number } {
     }
     if (ch === '\\') i += 1;
     else if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === '(') depth += 1;
-    else if (ch === ')') {
+    else if (open === '{' && ch === '$' && s[i + 1] === '(') i = readBalanced(s, i + 2).end - 1;
+    else if (open === '{' && ch === '`') i = backtickEnd(s, i + 1);
+    else if (ch === open) depth += 1;
+    else if (ch === close) {
       depth -= 1;
-      if (depth === 0) return { inner: s.slice(from, i), end: i + 1 };
+      if (depth === 0) return { inner: s.slice(from, i), end: i + 1, closed: true };
     }
   }
-  return { inner: s.slice(from), end: s.length };
+  return { inner: s.slice(from), end: s.length, closed: false };
 }
+
+const ANSI_C: Readonly<Record<string, string>> = { n: '\n', t: '\t', r: '\r', a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', v: '\v', '\\': '\\', "'": "'", '"': '"', '?': '?' };
+const ANSI_C_CODE = /^(?:x([0-9A-Fa-f]{1,2})|u([0-9A-Fa-f]{1,4})|U([0-9A-Fa-f]{1,8})|([0-7]{1,3}))/;
 
 class Reader {
   readonly commands: SimpleCommand[] = [];
   readonly substitutions: ParsedShell[] = [];
   private words: Word[] = [];
   private redirects: Redirect[] = [];
-  private heredocs: { delim: string; strip: boolean }[] = [];
+  private heredocs: { delim: string; strip: boolean; quoted: boolean }[] = [];
+  private incomplete = false;
   private i = 0;
   private readonly s: string;
 
@@ -114,7 +142,7 @@ class Reader {
       else this.words.push(word);
     }
     this.endCommand('');
-    return { commands: this.commands, substitutions: this.substitutions };
+    return { commands: this.commands, substitutions: this.substitutions, incomplete: this.incomplete || this.substitutions.some((x) => x.incomplete) };
   }
 
   private endCommand(next: string): void {
@@ -135,8 +163,10 @@ class Reader {
     this.i += op.length;
     while (s[this.i] === ' ' || s[this.i] === '\t') this.i += 1;
     if (op === '<<' || op === '<<-') {
+      const start = this.i;
       const delimWord = this.readWord();
-      this.heredocs.push({ delim: delimWord.text, strip: op === '<<-' });
+      // any quoting of the delimiter word turns expansion of the body off
+      this.heredocs.push({ delim: delimWord.text, strip: op === '<<-', quoted: /['"\\]/.test(s.slice(start, this.i)) });
       this.redirects.push({ op: '<<', fd, target: null });
       return true;
     }
@@ -151,22 +181,52 @@ class Reader {
     return true;
   }
 
-  /** After a newline: skip the bodies of the heredocs opened on the line that just ended. */
+  /**
+   * After a newline: skip the bodies of the heredocs opened on the line that just ended. The shell expands an unquoted
+   * delimiter's body, so the command substitutions in it are read.
+   */
   private skipHeredocs(): void {
     const s = this.s;
     for (const h of this.heredocs) {
+      const body: string[] = [];
       while (this.i < s.length) {
         const nl = s.indexOf('\n', this.i);
         const line = s.slice(this.i, nl < 0 ? s.length : nl);
         this.i = nl < 0 ? s.length : nl + 1;
         if ((h.strip ? line.replace(/^\t+/, '') : line) === h.delim) break;
+        body.push(line);
       }
+      if (!h.quoted) this.nested(body.join('\n'));
     }
     this.heredocs = [];
   }
 
-  private substitution(inner: string): void {
+  private substitution(inner: string, closed = true): void {
+    if (!closed) this.incomplete = true;
     this.substitutions.push(parseShell(inner));
+  }
+
+  /**
+   * The command substitutions anywhere in text the shell expands without word splitting it here (a `${…}` operand, an
+   * arithmetic expression, a heredoc body), quotes ignored — a guess on the side of finding too many. True when any.
+   */
+  private nested(text: string): boolean {
+    let found = false;
+    for (let i = 0; i < text.length; i += 1) {
+      if (text[i] === '\\') i += 1;
+      else if (text[i] === '`') {
+        const j = backtickEnd(text, i + 1);
+        this.substitution(text.slice(i + 1, j), j < text.length);
+        found = true;
+        i = j;
+      } else if (text.startsWith('$(', i) && text[i + 2] !== '(') {
+        const r = readBalanced(text, i + 2);
+        this.substitution(r.inner, r.closed);
+        found = true;
+        i = r.end - 1;
+      }
+    }
+    return found;
   }
 
   private readWord(): Word {
@@ -191,6 +251,7 @@ class Reader {
         this.i += 2;
       } else if (ch === "'") {
         const end = s.indexOf("'", this.i + 1);
+        if (end < 0) this.incomplete = true;
         w.text += s.slice(this.i + 1, end < 0 ? s.length : end);
         this.i = end < 0 ? s.length : end + 1;
       } else if (ch === '"') {
@@ -200,14 +261,15 @@ class Reader {
           if (c === '\\' && '"\\$`\n'.includes(s[this.i + 1] ?? '')) {
             w.text += s[this.i + 1];
             this.i += 2;
-          } else if (c === '$' || c === '`') this.dollarOrBacktick(w);
+          } else if (c === '$' || c === '`') this.dollarOrBacktick(w, true);
           else {
             w.text += c;
             this.i += 1;
           }
         }
+        if (this.i >= s.length) this.incomplete = true;
         this.i += 1;
-      } else if (ch === '$' || ch === '`') this.dollarOrBacktick(w);
+      } else if (ch === '$' || ch === '`') this.dollarOrBacktick(w, false);
       else {
         if (ch === '*' || ch === '?' || ch === '[') w.glob = true;
         w.text += ch;
@@ -217,39 +279,78 @@ class Reader {
     return w;
   }
 
-  private dollarOrBacktick(w: Word): void {
+  /** `$'…'` outside double quotes: backslash escapes decoded; one the reader does not know makes the word opaque. */
+  private ansiC(w: Word): void {
+    const s = this.s;
+    let i = this.i + 2;
+    for (; i < s.length && s[i] !== "'"; i += 1) {
+      if (s[i] !== '\\') {
+        w.text += s[i];
+        continue;
+      }
+      i += 1;
+      const e = s[i] ?? '';
+      const code = ANSI_C_CODE.exec(s.slice(i, i + 9));
+      if (ANSI_C[e] !== undefined) w.text += ANSI_C[e];
+      else if (code !== null) {
+        w.text += String.fromCodePoint(Math.min(0x10ffff, parseInt(code[1] ?? code[2] ?? code[3] ?? code[4]!, code[4] !== undefined ? 8 : 16)));
+        i += code[0].length - 1;
+      } else {
+        w.text += `\\${e}`;
+        w.param = true;
+      }
+    }
+    if (i >= s.length) this.incomplete = true;
+    this.i = Math.min(s.length, i + 1);
+  }
+
+  private dollarOrBacktick(w: Word, quoted: boolean): void {
     const s = this.s;
     if (s[this.i] === '`') {
-      let j = this.i + 1;
-      while (j < s.length && s[j] !== '`') j += s[j] === '\\' ? 2 : 1;
+      const j = backtickEnd(s, this.i + 1);
       const inner = s.slice(this.i + 1, j);
-      this.substitution(inner);
+      this.substitution(inner, j < s.length);
       w.subst = true;
       w.text += `\`${inner}\``;
       this.i = Math.min(s.length, j + 1);
       return;
     }
+    if (!quoted && s[this.i + 1] === "'") {
+      this.ansiC(w);
+      return;
+    }
     if (s.startsWith('$((', this.i)) {
-      const { inner, end } = readBalanced(s, this.i + 2);
-      w.text += `$(${inner})`;
-      w.param = true;
-      this.i = end;
+      const r = readBalanced(s, this.i + 2);
+      // `$((…))` is arithmetic only when the inner `(` closes at the very end; `$((a) && (b))` is a command substitution
+      const arith = readBalanced(r.inner, 1);
+      if (r.closed && arith.closed && arith.end === r.inner.length) {
+        w.text += `$(${r.inner})`;
+        if (this.nested(r.inner)) w.subst = true;
+        else w.param = true;
+      } else {
+        this.substitution(r.inner, r.closed);
+        w.subst = true;
+        w.text += `$(${r.inner})`;
+      }
+      this.i = r.end;
       return;
     }
     if (s[this.i + 1] === '(') {
-      const { inner, end } = readBalanced(s, this.i + 2);
-      this.substitution(inner);
+      const r = readBalanced(s, this.i + 2);
+      this.substitution(r.inner, r.closed);
       w.subst = true;
-      w.text += `$(${inner})`;
-      this.i = end;
+      w.text += `$(${r.inner})`;
+      this.i = r.end;
       return;
     }
     if (s[this.i + 1] === '{') {
-      const end = s.indexOf('}', this.i + 2);
-      const stop = end < 0 ? s.length : end + 1;
-      w.text += s.slice(this.i, stop);
-      w.param = true;
-      this.i = stop;
+      const r = readBalanced(s, this.i + 2, '{');
+      if (!r.closed) this.incomplete = true;
+      w.text += s.slice(this.i, r.end);
+      // `${x:-$(cmd)}` runs cmd: an operand's substitutions are commands of this line
+      if (this.nested(r.inner)) w.subst = true;
+      else w.param = true;
+      this.i = r.end;
       return;
     }
     const m = /^\$([A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])/.exec(s.slice(this.i));
