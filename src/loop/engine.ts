@@ -1474,7 +1474,9 @@ class EngineImpl implements Engine {
         this.plan = { done: seed.plan.done.map((d) => ({ ...d, evidence: { ...d.evidence } })), remaining: [...seed.plan.remaining], unverified: seed.plan.unverified.map((u) => ({ ...u })), openProblems: [], harnessProblems: seed.plan.harnessProblems.map((h) => ({ ...h })) };
         this.window = seed.window.map((e) => ({ ...e, shownFiles: [...e.shownFiles], notes: [...e.notes] }));
         for (const p of seed.createdThisRun) this.createdThisRun.add(p);
-        this.lastTestRun = seed.lastTestRun ? { ...seed.lastTestRun } : null;
+        // docs/AGENT-LOOP-DESIGN.md §3.3: an agent run never adopts the parent's run — its step number belongs to the parent, so
+        // `testsCurrent` against this run's steps would call a follow-up verified (the driver reads it from `ctx.seed.lastTestRun`)
+        this.lastTestRun = this.mode !== 'agent' && seed.lastTestRun ? { ...seed.lastTestRun } : null;
         this.lastChangeStep = null;
         this.undoLog = [...(seed.undoLog ?? []), ...(init.opts.undoLog ?? [])].slice(-UNDO_LOG_MAX);
         this.seeded = true;
@@ -4986,7 +4988,19 @@ class EngineImpl implements Engine {
         const driver = this.agentDriverOrThrow();
         const actx = this.agentContext(draft);
         agentCtx = actx;
-        const next = await this.stage('propose', () => runAgentStage(ctx, driver, actx));
+        let next: AgentNext;
+        try {
+          next = await this.stage('propose', () => runAgentStage(ctx, driver, actx));
+        } catch (e) {
+          // §3.1 / §10: a ConfigError from the driver (AgentTranscriptMissingError on --resume) refuses the run — fatal, exit 2, and
+          // no step is committed, the way a throwing factory ends it; retrying such a resume must not append failed steps
+          if (!(e instanceof ConfigError) || this.signal.aborted) throw e;
+          this.fatalError = e;
+          this.lastErrorStage = 'propose';
+          this.emit({ type: 'error', step, error: serializeError(e, this.redact), fatal: true });
+          this.absorbDiscardedTiming(draft);
+          return { stop: 'error' };
+        }
         agentNext = next;
         draft.proposal = next.proposal;
         draft.proposeCompleted = true;
@@ -5612,7 +5626,8 @@ class EngineImpl implements Engine {
   /** The stop rule after a step: llm-jev → the code fact of docs/LLM-JEV-DESIGN.md §6.6; jev-on / jev-only → `task_complete >= completeThreshold`. */
   private completeAfter(draft: StepDraft): boolean {
     // docs/AGENT-LOOP-DESIGN.md §3.3 / §8: the final answer on a current, green run of the unscoped detected test command
-    if (this.mode === 'agent') return draft.proposal?.action.kind === 'done' && draft.outcome?.status === 'noop' && this.agentVerifiedCompletion();
+    // (never for a reply: a run with no tool call verified nothing, whatever `lastTestRun` says — §A1's `answered` wins)
+    if (this.mode === 'agent') return draft.proposal?.action.kind === 'done' && draft.outcome?.status === 'noop' && !isReplyOnlyRun(this.agentSteps) && this.agentVerifiedCompletion();
     if (this.mode === 'llm-jev') return isCompleteByFact(this.completionFact(draft));
     if (!usesJev(this.mode)) return false;
     // contract 1.9 (Fastlane) §2.5 RL5 / §7.5 seam (d): with the routers ON, completion is demoted to

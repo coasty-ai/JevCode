@@ -5,7 +5,8 @@
  * the run with `error`.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import type { LoopTrip, SandboxRunOptions } from '../../../src/core/types.js';
+import { ConfigError } from '../../../src/errors.js';
+import type { EngineSeed, LoopTrip, SandboxRunOptions } from '../../../src/core/types.js';
 import { AGENT_MAX_LOOP_NUDGES } from '../../../src/loop/stages/agent.js';
 import type { AgentHarness, ToolTurn } from './fakes.js';
 import { createFakeSandbox, execResult, failingTests, makeAgentEngine, passingTests } from './fakes.js';
@@ -23,6 +24,14 @@ async function agent(...args: Parameters<typeof makeAgentEngine>): Promise<Agent
 const edit: ToolTurn = { toolCalls: [{ name: 'edit_file', input: { path: 'src/a.py', old_string: 'return 1', new_string: 'return 2' } }] };
 const bash = (command: string, workdir?: string): ToolTurn => ({ toolCalls: [{ name: 'bash', input: workdir === undefined ? { command } : { command, workdir } }] });
 const tests = createFakeSandbox;
+/** a follow-up run's seed whose parent ended on a green unscoped run at ITS step 7 (agentSeed → buildSeed carries lastTestRun) */
+const greenParent: EngineSeed = {
+  parentRunId: '20260923-100000-aaaaaaaa',
+  plan: { done: [], remaining: [], unverified: [], openProblems: [], harnessProblems: [] },
+  window: [],
+  createdThisRun: [],
+  lastTestRun: { step: 7, command: 'pytest -q', passed: 2, failed: 0, errors: 0, allPassed: true },
+};
 
 describe('complete needs a current, green, unscoped run of the detected test command (§3.3)', () => {
   it('the unscoped run after the last change completes, with todo items still pending (they are a note, never a gate)', async () => {
@@ -141,5 +150,89 @@ describe('a throwing observe() (§2.2, §3.4)', () => {
     expect(r.stopReason).toBe('error');
     expect(r.steps).toBe(3);
     expect(h.store.steps.every((s) => s.error?.stage === 'propose')).toBe(true);
+  });
+});
+
+describe('a seeded follow-up never inherits the parent run\'s verification (§3.3, §A1)', () => {
+  it('a reply-only follow-up after a green parent stops `answered`, not `complete`, and runs nothing', async () => {
+    const h = await agent([{ text: 'You are welcome!' }], { sandbox: tests(() => passingTests), engine: { seed: greenParent } });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('answered');
+    expect(h.sandbox.commands).toEqual([]);
+    expect(h.store.steps[0]!.stoppedAt).toBeUndefined();
+    // the driver still reads the parent's run from the seed (the "Previous run" block); the run's own starts empty
+    expect(h.driver.contexts[0]!.seed?.lastTestRun).toMatchObject({ step: 7, allPassed: true });
+    expect(h.driver.contexts[0]!.lastTestRun).toBeNull();
+    expect(h.driver.contexts[0]!.testsCurrent).toBe(false);
+  });
+
+  it('an edit, then the final answer with no test run of its own: generator_done — never a `complete` with zero commands', async () => {
+    const h = await agent([edit, { text: 'Changed it.' }], { sandbox: tests(() => passingTests), engine: { seed: greenParent } });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('generator_done');
+    expect(h.sandbox.commands).toEqual([]);
+    expect(h.store.last()!.lastTestRun).toBeNull();
+  });
+
+  it('an edit, then its own unscoped green `pytest -q`, then the answer: complete', async () => {
+    const h = await agent([edit, bash('pytest -q'), { text: 'Fixed and verified.' }], { sandbox: tests(() => passingTests), engine: { seed: greenParent } });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('complete');
+    expect(h.sandbox.commands).toEqual(['pytest -q']);
+    expect(h.store.last()!.lastTestRun).toMatchObject({ step: 2, command: 'pytest -q', allPassed: true });
+  });
+
+  it('a legacy seeded run still adopts the parent\'s run (TUI-DESIGN §8.3, unchanged)', async () => {
+    const { makeEngine, turn } = await import('./fakes.js');
+    const h = await makeEngine({ mode: 'jev-off', turns: [turn({ kind: 'done', summary: 'x' })], engine: { seed: greenParent } });
+    try {
+      await h.engine.run();
+      expect(h.store.last()!.lastTestRun).toMatchObject({ step: 7, command: 'pytest -q' });
+    } finally {
+      h.cleanup();
+    }
+  });
+});
+
+describe('a ConfigError from driver.next() refuses the run (§3.1, §10)', () => {
+  it('fatal, exit 2, and no step is committed — a refused resume retried appends nothing', async () => {
+    const missing = () => {
+      throw new ConfigError('agent transcript missing: runs/x/agent/transcript.jsonl; the run cannot be resumed', { setting: 'resume' });
+    };
+    const h = await agent([{ text: 'never sent' }], { driver: { onNext: missing } });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('error');
+    expect(r.steps).toBe(0);
+    expect(h.store.steps).toEqual([]);
+    expect(h.tools.requests).toEqual([]);
+    expect(h.of('run:end')[0]!.exitCode).toBe(2);
+    expect(h.of('error').filter((e) => e.fatal).map((e) => e.error.message)).toEqual([expect.stringContaining('agent transcript missing')]);
+    expect(h.store.last()!.consecutiveStageFailures).toBe(0);
+
+    // the same refusal on a resume leaves the committed rows exactly as they were
+    const first = await agent([bash('make'), { text: 'x' }], { limits: { maxSteps: 1 }, sandbox: tests(() => execResult({ exitCode: 0 })) });
+    await first.engine.run();
+    expect(first.store.steps).toHaveLength(1);
+    const { FIXED_RUN_ID } = await import('./fakes.js');
+    const resumed = await agent([{ text: 'never sent' }], { runsDir: first.runsDir, store: first.store, resume: { runId: FIXED_RUN_ID, force: false }, limits: { maxSteps: 10 }, driver: { onNext: missing } });
+    const r2 = await resumed.engine.run();
+    expect(r2.stopReason).toBe('error');
+    expect(resumed.of('run:end')[0]!.exitCode).toBe(2);
+    expect(first.store.steps).toHaveLength(1);
+  });
+
+  it('any other driver error is still an ordinary stage failure (the step commits with `error`)', async () => {
+    const h = await agent([{ text: 'x' }], {
+      driver: {
+        onNext: (ctx) => {
+          if (ctx.step === 1) throw new Error('driver bug');
+        },
+      },
+    });
+    const r = await h.engine.run();
+    expect(h.store.steps[0]!.error).toMatchObject({ stage: 'propose' });
+    expect(h.store.steps[0]!.outcome).toEqual({ status: 'failed', error: 'propose: internal' });
+    expect(r.stopReason).toBe('generator_done');
+    expect(h.of('run:end')[0]!.exitCode).toBe(0);
   });
 });
