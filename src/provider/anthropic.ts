@@ -6,9 +6,10 @@
  * §4.8: a cancelled stream's facts (message id, streamed sizes) go to `onCancelled` like openrouter.ts (no `servedProvider`).
  */
 import { JevCodeError, ProviderHttpError } from '../errors.js';
-import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, Provider, ToolCall } from '../core/types.js';
-import { parseJson } from '../core/json.js';
+import type { AgentMessage, AgentRequest, GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, Provider, ProviderReplayState, ToolCall } from '../core/types.js';
+import { isJsonObject, parseJson } from '../core/json.js';
 import { anthropicInputSchema } from './anthropic-schema.js';
+import { agentCallId, emitToolCall, messagesError, objectInput, replayData, warningLines } from './http.js';
 import { clip } from '../core/text.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
@@ -16,6 +17,7 @@ import {
   TransportError,
   clipMessage,
   costFromPricing,
+  getArr,
   getNum,
   getObj,
   getStr,
@@ -35,6 +37,7 @@ import {
   withRetry,
 } from './sse.js';
 import type {
+  AnthropicContentBlock,
   AnthropicRequestBody,
   AnthropicToolChoice,
   AnthropicToolDef,
@@ -64,7 +67,8 @@ function validateRequest(req: GenerateRequest): void {
   if (!Number.isInteger(req.maxTokens) || req.maxTokens <= 0) {
     throw new ProviderHttpError(`invalid GenerateRequest: maxTokens must be a positive integer, got ${String(req.maxTokens)}`, { status: 0, retryable: false });
   }
-  if (req.messages.length === 0) throw new ProviderHttpError('invalid GenerateRequest: messages is empty', { status: 0, retryable: false });
+  const messages = messagesError(req);
+  if (messages !== null) throw new ProviderHttpError(`invalid GenerateRequest: ${messages}`, { status: 0, retryable: false });
   if (req.temperature !== null && !Number.isFinite(req.temperature)) {
     throw new ProviderHttpError('invalid GenerateRequest: temperature must be a finite number or null', { status: 0, retryable: false });
   }
@@ -79,6 +83,7 @@ function validateRequest(req: GenerateRequest): void {
  * can reach the wire.
  */
 export function buildAnthropicBody(cfg: GeneratorConfig, req: GenerateRequest): AnthropicRequestBody {
+  if (req.agent !== undefined) return buildAgentBody(cfg, req, req.agent);
   const body: AnthropicRequestBody = {
     model: cfg.model,
     max_tokens: req.maxTokens,
@@ -115,7 +120,133 @@ function toolChoice(tc: NonNullable<GenerateRequest['toolChoice']>): AnthropicTo
   return { type: 'tool', name: tc.name, disable_parallel_tool_use: true };
 }
 
-type Block = { kind: 'text' } | { kind: 'tool_use'; id: string; name: string; json: string; startInput: Json } | { kind: 'other' };
+/**
+ * AGENT-LOOP-DESIGN §6.5: every agent request is sent under both betas — context editing (the `context_management`
+ * field, §7.3) and the thinking-binding controls (`thinking.block_binding`, whose absence of the header is a 400
+ * `block_binding: Extra inputs are not permitted`). Legacy requests send neither.
+ */
+export const ANTHROPIC_AGENT_BETA = 'context-management-2025-06-27,thinking-binding-controls-2026-08-01';
+
+/**
+ * AGENT-LOOP-DESIGN §6.2 (Anthropic row), §6.3, §6.5: the agent turn. Adaptive thinking, `display: 'summarized'` (Sonnet 5
+ * defaults to `omitted`, a long silent pause) and an EXPLICIT `prefix_mismatch_behavior` — `drop_block` in production,
+ * `error` with `strictReplay` so any prefix edit fails the check; thinking is never disabled (Opus 5.5 / Fable 5.1 answer
+ * `disabled` with a 400). `reasoning.effort` → `output_config.effort`; `{enabled: false}` / `{maxTokens}` map to nothing.
+ * `temperature` is never sent: with thinking on, a non-default value is a 400 (and Sonnet 5 rejects sampling parameters
+ * outright). Parallel tool use stays on unless the caller asked for one call per turn. Caching: the system and last-tool
+ * breakpoints of the legacy body plus the top-level automatic one (3 of the 4 allowed). `clearToolResults` → one
+ * `clear_tool_uses_20250919` edit, server-side clearing that does not count as a prefix edit.
+ */
+function buildAgentBody(cfg: GeneratorConfig, req: GenerateRequest, a: AgentRequest): AnthropicRequestBody {
+  const body: AnthropicRequestBody = {
+    model: cfg.model,
+    max_tokens: req.maxTokens,
+    stream: true,
+    messages: a.messages.map((m) => ({ role: m.role, content: m.role === 'user' ? userContent(m) : assistantContent(m, replayData(a, m, 'anthropic', cfg.model)) })),
+  };
+  if (req.system.length > 0) body.system = [{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }];
+  if (req.tools && req.tools.length > 0) {
+    const tools: AnthropicToolDef[] = req.tools.map((t) => ({ name: t.name, description: t.description, input_schema: anthropicInputSchema(t.inputSchema), strict: true, eager_input_streaming: true }));
+    tools[tools.length - 1]!.cache_control = { type: 'ephemeral' };
+    body.tools = tools;
+    if (req.toolChoice !== undefined) {
+      const tc = toolChoice(req.toolChoice);
+      if (a.parallelToolCalls) delete tc.disable_parallel_tool_use;
+      body.tool_choice = tc;
+    }
+  }
+  body.thinking = { type: 'adaptive', display: 'summarized', block_binding: { prefix_mismatch_behavior: a.strictReplay === true ? 'error' : 'drop_block' } };
+  if (req.reasoning !== undefined && 'effort' in req.reasoning) body.output_config = { effort: req.reasoning.effort };
+  const c = a.clearToolResults;
+  if (c !== undefined) {
+    body.context_management = {
+      edits: [{ type: 'clear_tool_uses_20250919', trigger: { type: 'input_tokens', value: c.triggerTokens }, keep: { type: 'tool_uses', value: c.keep }, clear_at_least: { type: 'input_tokens', value: c.clearAtLeastTokens } }],
+    };
+  }
+  body.cache_control = { type: 'ephemeral' };
+  return body;
+}
+
+/** One user message: every `tool_result` first, then the texts (parallel-tool-use docs: results first, in one message). */
+function userContent(m: Extract<AgentMessage, { role: 'user' }>): AnthropicContentBlock[] {
+  const out: AnthropicContentBlock[] = [];
+  for (const b of m.content) if (b.type === 'tool_result') out.push({ type: 'tool_result', tool_use_id: b.toolUseId, content: b.content, ...(b.isError === true ? { is_error: true as const } : {}) });
+  for (const b of m.content) if (b.type === 'text' && b.text.length > 0) out.push({ type: 'text', text: b.text });
+  return out;
+}
+
+/**
+ * The replay state this adapter captures (`providerState.data.blocks`): the turn's content in wire order — thinking and
+ * redacted-thinking blocks verbatim, text blocks with their text, tool_use blocks by id — so a replay puts each thinking
+ * block back at its own position (a thinking block's signature binds everything before it).
+ */
+type ReplayBlock = { type: 'thinking'; thinking: string; signature: string } | { type: 'redacted_thinking'; data: string } | { type: 'text'; text: string } | { type: 'tool_use'; id: string };
+
+function replayBlocks(data: Json | null): ReplayBlock[] | null {
+  const raw = isJsonObject(data) ? data['blocks'] : undefined;
+  if (!Array.isArray(raw)) return null;
+  const out: ReplayBlock[] = [];
+  for (const b of raw) {
+    if (!isJsonObject(b)) continue;
+    const s = (k: string): string | null => (typeof b[k] === 'string' ? (b[k] as string) : null);
+    if (b['type'] === 'thinking' && s('thinking') !== null && s('signature') !== null) out.push({ type: 'thinking', thinking: s('thinking')!, signature: s('signature')! });
+    else if (b['type'] === 'redacted_thinking' && s('data') !== null) out.push({ type: 'redacted_thinking', data: s('data')! });
+    else if (b['type'] === 'text' && s('text') !== null) out.push({ type: 'text', text: s('text')! });
+    else if (b['type'] === 'tool_use' && s('id') !== null) out.push({ type: 'tool_use', id: s('id')! });
+  }
+  return out;
+}
+
+/**
+ * An assistant turn. Without replay state: its blocks in transcript order (empty text dropped — the API rejects it). With
+ * it: the captured wire order, thinking verbatim; the text keeps the wire's segmentation when the transcript's text is the
+ * same prose, else the transcript's text goes where the first text block was; calls are the transcript's (its input may
+ * be repaired), matched by id; anything the capture did not list is appended.
+ */
+function assistantContent(m: Extract<AgentMessage, { role: 'assistant' }>, data: Json | null): AnthropicContentBlock[] {
+  const texts: AnthropicContentBlock[] = [];
+  const uses = new Map<string, AnthropicContentBlock>();
+  const plain: AnthropicContentBlock[] = [];
+  for (const b of m.content) {
+    const block: AnthropicContentBlock | null = b.type === 'tool_use' ? { type: 'tool_use', id: b.id, name: b.name, input: objectInput(b.input) } : b.text.length > 0 ? { type: 'text', text: b.text } : null;
+    if (block === null) continue;
+    plain.push(block);
+    if (block.type === 'tool_use') uses.set(block.id, block);
+    else texts.push(block);
+  }
+  const stored = replayBlocks(data);
+  if (stored === null || !stored.some((b) => b.type === 'thinking' || b.type === 'redacted_thinking')) return plain;
+  const prose = (bs: readonly (ReplayBlock | AnthropicContentBlock)[]): string => bs.map((b) => (b.type === 'text' ? b.text : '')).join('');
+  const segmented = prose(stored) === prose(texts);
+  const out: AnthropicContentBlock[] = [];
+  let textPlaced = false;
+  for (const b of stored) {
+    if (b.type === 'thinking' || b.type === 'redacted_thinking') out.push(b);
+    else if (b.type === 'text') {
+      if (segmented) {
+        if (b.text.length > 0) out.push({ type: 'text', text: b.text });
+      } else if (!textPlaced) out.push(...texts);
+      textPlaced = true;
+    } else {
+      const u = uses.get(b.id);
+      if (u !== undefined) out.push(u);
+      uses.delete(b.id);
+    }
+  }
+  if (!textPlaced && !segmented) {
+    const firstUse = out.findIndex((b) => b.type === 'tool_use');
+    out.splice(firstUse === -1 ? out.length : firstUse, 0, ...texts);
+  }
+  out.push(...uses.values());
+  return out;
+}
+
+type Block =
+  | { kind: 'text'; text: string }
+  | { kind: 'tool_use'; id: string; name: string; json: string; startInput: Json; ordinal: number }
+  | { kind: 'thinking'; thinking: string; signature: string }
+  | { kind: 'redacted'; data: string }
+  | { kind: 'other' };
 
 interface StreamOutcome {
   text: string;
@@ -125,6 +256,37 @@ interface StreamOutcome {
   /** `message_start.message.id` (`msg_…`), redacted and clipped like a request id */
   generationId: string | null;
   stopReason: string;
+  /** agent requests only (AGENT-LOOP-DESIGN §6.1, §6.5, §7.3) */
+  providerState?: ProviderReplayState;
+  contextEdits?: { clearedToolUses: number; clearedInputTokens: number };
+  warnings?: string[];
+}
+
+/**
+ * §6.5: a non-empty `input_transformations` (on `message_start`, again on a final `message_delta` after a server-side
+ * fallback) → one line per entry naming its `reason`; an entry of an unknown shape still yields a line.
+ */
+function transformationLines(list: Json | undefined, into: string[]): void {
+  if (!Array.isArray(list)) return;
+  for (const t of list) {
+    if (!isJsonObject(t)) continue;
+    const path = getStr(t, 'path');
+    into.push(`anthropic ${getStr(t, 'type') ?? 'input transformation'}: ${getStr(t, 'reason') ?? 'unknown reason'}${path !== null ? ` at ${path}` : ''}`);
+  }
+}
+
+/** §7.3: `context_management.applied_edits` → the tool uses and input tokens the server cleared; null when none was applied. */
+function appliedEdits(cm: JsonObject | null): { clearedToolUses: number; clearedInputTokens: number } | null {
+  const edits = getArr(cm, 'applied_edits');
+  if (edits === null || edits.length === 0) return null;
+  let clearedToolUses = 0;
+  let clearedInputTokens = 0;
+  for (const e of edits) {
+    if (!isJsonObject(e)) continue;
+    clearedToolUses += Math.max(0, Math.round(getNum(e, 'cleared_tool_uses') ?? 0));
+    clearedInputTokens += Math.max(0, Math.round(getNum(e, 'cleared_input_tokens') ?? 0));
+  }
+  return { clearedToolUses, clearedInputTokens };
 }
 
 /** §4.8: set in the abort branch with what the stream had produced; `generate` reads it after the retry loop rethrows the abort reason. */
@@ -156,11 +318,26 @@ function streamError(data: JsonObject, redact: (s: string) => string, requestId:
   });
 }
 
-async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOptions, redact: (s: string) => string, firstByteTimeoutMs: number, requestId: string | null, held: Held, onFirstByte?: (ms: number) => void): Promise<StreamOutcome> {
+async function consumeStream(
+  body: ReadableStream<Uint8Array>,
+  opts: GenerateOptions,
+  redact: (s: string) => string,
+  firstByteTimeoutMs: number,
+  requestId: string | null,
+  held: Held,
+  agentModel: string | null,
+  onFirstByte?: (ms: number) => void,
+): Promise<StreamOutcome> {
   const blocks = new Map<number, Block>();
-  const order: number[] = [];
+  // blocks in stream order; `blocks` maps an index to its CURRENT block, so a second start at a used index is a new block, never a duplicate
+  const order: Block[] = [];
   let text = '';
   let toolChars = 0;
+  // AGENT-LOOP-DESIGN §6.1: agent-only facts (a legacy request records none of them, so its result is unchanged)
+  let reasoningChars = 0;
+  let toolOrdinal = 0;
+  const notices: string[] = [];
+  let edits: { clearedToolUses: number; clearedInputTokens: number } | null = null;
   let model: string | null = null;
   let generationId: string | null = null;
   let stopReason: string | null = null;
@@ -190,6 +367,10 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
           // wire text that reaches state.json and the transcript → redacted and clipped like a request id
           if (generationId === null) generationId = sanitiseRequestId(getStr(msg, 'id'), redact);
           readUsage(getObj(msg, 'usage'), tokens);
+          if (agentModel !== null) {
+            transformationLines(msg?.['input_transformations'], notices);
+            edits = appliedEdits(getObj(msg, 'context_management')) ?? edits;
+          }
           break;
         }
         case 'content_block_start': {
@@ -199,17 +380,24 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
           const cbType = getStr(cb, 'type');
           let block: Block;
           if (cbType === 'text') {
-            block = { kind: 'text' };
             const initial = getStr(cb, 'text') ?? '';
+            block = { kind: 'text', text: initial };
             if (initial.length > 0) {
               text += initial;
               notify(opts.onDelta, initial);
             }
           } else if (cbType === 'tool_use') {
-            block = { kind: 'tool_use', id: getStr(cb, 'id') ?? '', name: getStr(cb, 'name') ?? '', json: '', startInput: cb['input'] ?? null };
-          } else block = { kind: 'other' };
+            block = { kind: 'tool_use', id: getStr(cb, 'id') ?? '', name: getStr(cb, 'name') ?? '', json: '', startInput: cb['input'] ?? null, ordinal: toolOrdinal++ };
+            // §6.1: the call is named before its first argument fragment
+            emitToolCall(opts, block.ordinal, block.id, block.name, '');
+          } else if (cbType === 'thinking') {
+            const initial = getStr(cb, 'thinking') ?? '';
+            block = { kind: 'thinking', thinking: initial, signature: getStr(cb, 'signature') ?? '' };
+            if (initial.length > 0) notify(opts.onReasoning, initial);
+          } else if (cbType === 'redacted_thinking') block = { kind: 'redacted', data: getStr(cb, 'data') ?? '' };
+          else block = { kind: 'other' };
           blocks.set(index, block);
-          order.push(index);
+          order.push(block);
           break;
         }
         case 'content_block_delta': {
@@ -221,6 +409,7 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
             const t = getStr(delta, 'text') ?? '';
             if (t.length > 0) {
               text += t;
+              if (block?.kind === 'text') block.text += t;
               notify(opts.onDelta, t);
             }
           } else if (dType === 'input_json_delta' && block?.kind === 'tool_use') {
@@ -229,9 +418,18 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
               block.json += frag;
               toolChars += frag.length;
               notify(opts.onToolDelta, frag);
+              emitToolCall(opts, block.ordinal, block.id, block.name, frag);
             }
-          }
-          // thinking_delta / signature_delta / unknown deltas carry nothing the harness shows
+          } else if (dType === 'thinking_delta' && block?.kind === 'thinking') {
+            // §6.2: the summarized thinking streams to `onReasoning`; the text and signature are kept for replay
+            const t = getStr(delta, 'thinking') ?? '';
+            if (t.length > 0) {
+              block.thinking += t;
+              if (agentModel !== null) reasoningChars += t.length;
+              notify(opts.onReasoning, t);
+            }
+          } else if (dType === 'signature_delta' && block?.kind === 'thinking') block.signature += getStr(delta, 'signature') ?? '';
+          // unknown deltas carry nothing the harness shows
           break;
         }
         case 'content_block_stop':
@@ -241,6 +439,10 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
           stopReason = getStr(delta, 'stop_reason') ?? stopReason;
           readUsage(getObj(data, 'usage'), tokens);
           sawDelta = true;
+          if (agentModel !== null) {
+            transformationLines(data['input_transformations'] ?? delta?.['input_transformations'], notices);
+            edits = appliedEdits(getObj(data, 'context_management') ?? getObj(delta, 'context_management')) ?? edits;
+          }
           break;
         }
         case 'message_stop':
@@ -260,7 +462,7 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
     if (opts.signal.aborted) {
       // §4.8: the signal fired while the stream was open. Record the message id and the streamed sizes (and the usage when
       // message_delta had already delivered the output count), then rethrow the reason: the sample yields no GenerateResult.
-      held.partial = { text, toolChars, reasoningChars: 0, model, generationId, servedProvider: null, tokens: sawDelta ? tokens : null, cost: null, reasoningTokens: null };
+      held.partial = { text, toolChars, reasoningChars, model, generationId, servedProvider: null, tokens: sawDelta ? tokens : null, cost: null, reasoningTokens: null };
       throw opts.signal.reason;
     }
     throw e;
@@ -271,12 +473,31 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
   }
 
   const toolCalls: ToolCall[] = [];
-  for (const index of order) {
-    const b = blocks.get(index);
-    if (!b || b.kind !== 'tool_use') continue;
-    toolCalls.push(toToolCall(b));
+  const replay: JsonObject[] = [];
+  let thought = false;
+  for (const b of order) {
+    if (b.kind === 'tool_use') {
+      const call = toToolCall(b);
+      if (agentModel !== null) call.id = agentCallId(b.id, b.ordinal);
+      toolCalls.push(call);
+      replay.push({ type: 'tool_use', id: call.id ?? '' });
+    } else if (b.kind === 'text') replay.push({ type: 'text', text: b.text });
+    else if (b.kind === 'thinking') {
+      thought = true;
+      replay.push({ type: 'thinking', thinking: b.thinking, signature: b.signature });
+    } else if (b.kind === 'redacted') {
+      thought = true;
+      replay.push({ type: 'redacted_thinking', data: b.data });
+    }
   }
-  return { text, toolCalls, tokens, model, generationId, stopReason: stopReason ?? (sawStop ? 'end_turn' : 'unknown') };
+  const out: StreamOutcome = { text, toolCalls, tokens, model, generationId, stopReason: stopReason ?? (sawStop ? 'end_turn' : 'unknown') };
+  if (agentModel !== null) {
+    // §6.5: the turn's content in wire order, thinking verbatim and unredacted (a redaction could corrupt a signature)
+    if (thought) out.providerState = { provider: 'anthropic', model: agentModel, data: { blocks: replay } };
+    if (edits !== null) out.contextEdits = edits;
+    if (notices.length > 0) out.warnings = warningLines(notices, redact);
+  }
+  return out;
 }
 
 /**
@@ -299,7 +520,7 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
   // The Messages API reports tokens only, so the table prices every call (config fails closed on an unpriced model, §9.5).
   const tablePrice = (t: TokenBreakdown): number => costFromPricing(cfg.pricing, t);
 
-  async function attempt(body: string, opts: GenerateOptions, held: Held): Promise<StreamOutcome> {
+  async function attempt(body: string, opts: GenerateOptions, held: Held, agentModel: string | null): Promise<StreamOutcome> {
     const { controller, unlink } = linkedAbort(opts.signal);
     const t0 = d.now();
     let headersTimer: ReturnType<typeof setTimeout> | undefined;
@@ -316,7 +537,7 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
         res = await Promise.race([
           d.fetch(url, {
             method: 'POST',
-            headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json', accept: 'text/event-stream' },
+            headers: { 'x-api-key': cfg.apiKey, 'anthropic-version': ANTHROPIC_VERSION, 'content-type': 'application/json', accept: 'text/event-stream', ...(agentModel !== null ? { 'anthropic-beta': ANTHROPIC_AGENT_BETA } : {}) },
             body,
             signal: controller.signal,
           }),
@@ -359,7 +580,7 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
       // AFTER the stream opened, so a per-attempt report would enter two readings into the §3.2 threshold's p50.
       const onFirstByte = opts.onFirstByte === undefined ? undefined : (): void => reportFirstByte(opts, Math.round(d.now() - t0));
       try {
-        return await consumeStream(res.body, opts, d.redact, remaining, requestId, held, onFirstByte);
+        return await consumeStream(res.body, opts, d.redact, remaining, requestId, held, agentModel, onFirstByte);
       } catch (e) {
         if (opts.signal.aborted) throw opts.signal.reason;
         // Typed errors (HTTP/stream errors, renderer-callback bugs via notify) keep their class; anything
@@ -386,7 +607,7 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
       let out: StreamOutcome;
       try {
         // TUI-DESIGN §15.2 `provider/anthropic.ts`: GenerateOptions.onRetry / wake thread into withRetry (§13.2)
-        out = await withRetry(d, opts.signal, () => attempt(body, opts, held), opts);
+        out = await withRetry(d, opts.signal, () => attempt(body, opts, held, req.agent !== undefined ? cfg.model : null), opts);
       } catch (e) {
         // §4.8, as openrouter.ts: onCancelled runs outside the retry loop (whose catches rethrow signal.reason whenever the
         // signal is aborted), so a throwing callback surfaces as 'internal' like a throwing onDelta instead of vanishing.
@@ -401,6 +622,9 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
         stopReason: out.stopReason,
         latencyMs: Math.round(d.now() - t0),
         ...(out.generationId !== null ? { generationId: out.generationId } : {}),
+        ...(out.providerState !== undefined ? { providerState: out.providerState } : {}),
+        ...(out.contextEdits !== undefined ? { contextEdits: out.contextEdits } : {}),
+        ...(out.warnings !== undefined ? { warnings: out.warnings } : {}),
       };
     },
   };
