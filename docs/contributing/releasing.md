@@ -45,7 +45,8 @@ Not shipped: the source map, the bundler metafile, `src/`, `docs/`, tests.
 in the same order, so a green `ci.yml` predicts a green release gate:
 
 1. typecheck (strict `tsc`, then the no-`any` rule) and the Jev call-site contract;
-2. the unit suite, with the three wall-clock-sensitive files in their own step and up to two retries;
+2. the unit suite, where a failing test is retried up to twice (about 40 files assert wall-clock budgets that a
+   busy shared runner can miss; a real regression fails all three attempts);
 3. `npm run build`: bundle, attribution file, and a smoke test of the built artefact. The smoke launches the real
    binary with `JEVCODE_ASSERT_NO_NETWORK=1`, requires the first frame, then requires `--version` to print the
    `package.json` version. Any HTTP fetch before the first frame fails the build;

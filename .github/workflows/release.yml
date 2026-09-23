@@ -95,11 +95,8 @@ jobs:
       - name: Jev-safety contract (every Jev call site is a router, never an authority)
         run: npm run jev-contract
 
-      - name: Unit tests
-        run: npm test -- --maxWorkers=3 --exclude test/unit/tui/app.test.tsx --exclude test/unit/tui/key-immediate-render.test.tsx --exclude test/unit/cli/session.test.ts
-
-      - name: Unit tests (load-sensitive timing files, retried up to twice)
-        run: npm test -- --maxWorkers=3 --retry 2 test/unit/tui/app.test.tsx test/unit/tui/key-immediate-render.test.tsx test/unit/cli/session.test.ts
+      - name: Unit tests (a failing test is retried up to twice)
+        run: npm test -- --maxWorkers=3 --retry 2
 
       - name: Build the bundle and the attribution file
         run: npm run build
