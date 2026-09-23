@@ -170,7 +170,7 @@ describe.skipIf(!havePython || !haveRunner)('the warm worker on the QuixBugs run
     const f = fx;
     const laneWarmDir = join(f.runDir, 'tmp/synth/warm/lane0');
     const w = await quixbugsWorker(f);
-    const alive = (): number => (spawnSync('/bin/sh', ['-c', `pgrep -f 'warm_server.py --dir ${laneWarmDir} ' | wc -l`], { encoding: 'utf8' }).stdout ?? '0').trim().split('\n').map(Number)[0] ?? 0;
+    const alive = (): number => (spawnSync('/bin/sh', ['-c', `pgrep -f '[w]arm_server.py --dir ${laneWarmDir} ' | wc -l`], { encoding: 'utf8' }).stdout ?? '0').trim().split('\n').map(Number)[0] ?? 0;
     expect(alive()).toBeGreaterThan(0);
     w.dispose();
     const started = Date.now();

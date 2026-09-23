@@ -253,7 +253,8 @@ jobs:
           set -euo pipefail
           pacman -U --noconfirm "$pkg"
           jevcode --version | grep -Fx "jevcode $VERSION"
-          ls /usr/share/man/man1/jevcode.1*
+          # the archlinux image sets NoExtract for usr/share/man/*, so check the page in the package, not on disk
+          pacman -Qlpq "$pkg" | grep -E '^/usr/share/man/man1/jevcode\.1(\.gz)?$'
           test -f /usr/share/bash-completion/completions/jevcode
           test -f /usr/share/zsh/site-functions/_jevcode
           test -f /usr/share/fish/vendor_completions.d/jevcode.fish
