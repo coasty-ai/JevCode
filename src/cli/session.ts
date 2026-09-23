@@ -314,6 +314,10 @@ export const MISSING_GENERATOR_KEY = 'missing generator.apiKey: set ANTHROPIC_AP
 export const ON_IT_LINE = 'On it — starting the run.';
 /** the line appended when Jev was unsure — the human turns the message into a task with `do it` (no second reading) */
 export const DO_IT_OFFER = "Say `do it` and I'll make that a task.";
+/** the offer is made only for an `ambiguous` reading of a message that is not a question — `who made you?` read `ambiguous` live and got an offer it did not want (2026-09-22 drive) */
+export function offerWanted(text: string, res: Pick<IntakeResult, 'intake'>): boolean {
+  return res.intake.kind === 'ambiguous' && !/\?\s*$/.test(text.trim());
+}
 /** the answers that accept `DO_IT_OFFER`; any other message drops the offer */
 export const DO_IT_RE = /^\s*(do it|yes,? do it|go ahead|make it a task|run it|yes)\s*[.!]*\s*$/i;
 /** how long the landed reply waits for Jev's background reading before it lands without it (Jev is normally done long before) */
@@ -4228,14 +4232,15 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         return chatFailure(signal.reason, 'generator');
       }
       // one bubble: the model's answer, then the one line the reading adds
-      const closing = res === null ? null : res.intake.kind === 'coding_task' ? ON_IT_LINE : res.intake.kind === 'ambiguous' ? DO_IT_OFFER : null;
+      const offer = res !== null && offerWanted(text, res);
+      const closing = res === null ? null : res.intake.kind === 'coding_task' ? ON_IT_LINE : offer ? DO_IT_OFFER : null;
       const lines = closing === null ? reply.lines : [...reply.lines, closing];
       thinking(null);
       renderer.live?.('');
       say('jevcode', lines);
       ledger.push(youTurn(text, res));
       ledger.push({ role: 'jevcode', text: lines.join('\n'), at: nowIso(), costUsd: reply.usage?.costUsd ?? 0, provider: 'generator' });
-      if (res !== null && res.intake.kind === 'ambiguous') pendingOffer = { text, intake: res };
+      if (res !== null && offer) pendingOffer = { text, intake: res };
       if (res !== null && res.intake.kind === 'coding_task') return await startChatRun(text, so, res);
       return { became: 'chat' };
     } finally {
@@ -4342,7 +4347,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       thinking(null);
       return chatFailure(e, 'jev');
     }
-    if (ambiguous) {
+    if (ambiguous && offerWanted(text, res)) {
       lines.push(DO_IT_OFFER);
       pendingOffer = { text, intake: res };
     }
