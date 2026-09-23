@@ -1044,7 +1044,8 @@ function applyAgentEvent(state: UiState, e: EngineEvent, now: number, live: stri
       const verify = isVerifyGoal(e.proposal.goal);
       const act = e.proposal.action;
       const activity = actionActivity(act, verify);
-      a = { ...a, writing: null, running: act.kind === 'done' || act.kind === 'read' ? null : agentActionRow(act, verify), activity: act.kind === 'read' ? a.activity : activity, ...(act.kind === 'read' ? { calls: [] } : {}) };
+      // an observe step's `read` proposal and the final `done` keep the activity they follow (reading / the model's turn)
+      a = { ...a, writing: null, running: act.kind === 'done' || act.kind === 'read' ? null : agentActionRow(act, verify), activity: act.kind === 'read' || act.kind === 'done' ? a.activity : activity, ...(act.kind === 'read' ? { calls: [] } : {}) };
       s = { ...s, toolChars: 0 };
       break;
     }

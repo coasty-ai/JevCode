@@ -148,6 +148,12 @@ describe('agent reducer: the live view names what runs now (peer C)', () => {
     expect(at([verify]).agent?.running).toBe('Verify npm test');
   });
 
+  it('the final `done` proposal keeps the activity it follows (no stage verb leaks in while the run finishes)', () => {
+    const s = at([{ type: 'proposal', step: 1, proposal: { goal: 'finish', action: { kind: 'done', summary: 'ok' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' } }]);
+    expect(s.agent?.activity).toBe('thinking');
+    expect(s.agent?.running).toBeNull();
+  });
+
   it('the status row reads the activity word from t = 0 of the step — before any engine `status` event', () => {
     const s = at([{ type: 'tool:call', step: 1, turn: 1, id: 'a', name: 'read_file', summary: 'read_file a.ts', readOnly: true }]);
     const row = statusLineText(statusView(s), 76, { spinnerFrame: 0 });
