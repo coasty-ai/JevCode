@@ -46,6 +46,7 @@ import { ConfigError } from '../errors.js';
 import { MIN_SECRET_LENGTH, createRedactor, patternRedact, SECRET_NAME_RE, type SecretEntry } from '../core/redact.js';
 import { JEV_PROVIDERS, equivalentJevModel, jevModelMatches as providerJevModelMatches, providerForHost, sameJevWeights } from '../jev/providers.js';
 import {
+  AGENT_DEFAULT_MAX_STEPS,
   CACHE_READ_FACTOR,
   CACHE_WRITE_FACTOR,
   DEFAULT_MODE,
@@ -472,6 +473,19 @@ export function resolveContextConfig(reader: SettingReader): ContextPolicyOption
 }
 
 /**
+ * docs/AGENT-LOOP-DESIGN.md §7.4 / §14.2: a setting's SOURCE, as the question "did the user set this?". The agent's compaction
+ * writer is `llm` only while `context.compaction` comes from the default layer; a value set on any layer (flag, env, dotenv,
+ * file) is honoured as given. It reads the run's config record (`EngineOptions.configRecord`, the `record()` rows), which
+ * carries every setting's source, so a resumed run decides from what `run.json` recorded. A `derived` row is not the user's,
+ * and a file value the layer discarded (`problem`) was never in force.
+ */
+export function settingIsExplicit(record: Readonly<Record<string, ConfigRecordValue>>, name: SettingName): boolean {
+  const row = record[name];
+  if (row === undefined || row.source === 'default' || row.source === 'derived') return false;
+  return row.problem === undefined || row.problem === null;
+}
+
+/**
  * DESIGN §3 / TUI-DESIGN §16: resolve every setting with its source. Throws ConfigError only for what the first frame
  * needs (config file location and syntax, sandbox profile, the two eager booleans); every section validates lazily.
  */
@@ -598,6 +612,10 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   // TUI-DESIGN §9.1 / §16 (P45) / TUI-DESIGN-2 §1.2: the run cap default is mode-keyed on the `mode` setting ($1.00 under jev-only).
   const capR = entries.get('limits.spendCapUsd');
   if (!capR || capR.source === 'default') entries.set('limits.spendCapUsd', { value: String(defaultRunSpendCapUsd(mode)), source: 'default' });
+  // docs/AGENT-LOOP-DESIGN.md §11 / §14.2: an agent step is one read-only segment, one edit or command, one verify or the final
+  // answer, so the step default is AGENT_DEFAULT_MAX_STEPS in agent mode when the user set none — keyed on the mode like the cap above
+  const stepsR = entries.get('limits.maxSteps');
+  if (mode === 'agent' && (!stepsR || stepsR.source === 'default')) entries.set('limits.maxSteps', { value: String(AGENT_DEFAULT_MAX_STEPS), source: 'default' });
   for (const [name, r] of launchRows(flags, env)) entries.set(name, r);
   if (configFileEntry) entries.set('configFile', configFileEntry);
   if (extraEntry) entries.set('extraEnvFile', extraEntry);
@@ -774,11 +792,12 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     },
     sourcesConsulted: (name) => reader.sources(name),
     // TUI-DESIGN §15 item 17 / §11.1 (D5): non-throwing; the generator key is skipped for jev-only and --mock*, the Jev key for --mock
-    // (llm-jev needs both: the generator writes candidates inside the Jev-only search, docs/LLM-JEV-DESIGN.md)
+    // (llm-jev needs both: the generator writes candidates inside the Jev-only search, docs/LLM-JEV-DESIGN.md). Agent mode needs
+    // the generator key only: Jev makes quick routing calls with code fallbacks there (docs/AGENT-LOOP-DESIGN.md §14.2)
     missingSecrets(m: EngineMode): readonly SecretSettingName[] {
       const out: SecretSettingName[] = [];
       if (m !== 'jev-only' && !mockedGenerator && !hasSecret('generator.apiKey')) out.push('generator.apiKey');
-      if (!mocked && !hasSecret('decider.apiKey')) out.push('decider.apiKey');
+      if (m !== 'agent' && !mocked && !hasSecret('decider.apiKey')) out.push('decider.apiKey');
       return out;
     },
     // TUI-DESIGN §16: session settings through the full chain; launch members copied from the argument
