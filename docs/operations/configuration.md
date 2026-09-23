@@ -55,9 +55,11 @@ not set them. `jevcode config` prints the derivation next to the value.
 | `generator.priceCacheReadPerM` | 0.1 × `generator.priceInPerM` |
 | `generator.priceCacheWritePerM` | 1.25 × `generator.priceInPerM` |
 
-One more default is keyed on another setting rather than derived from it: the run spend cap is
-$10.00 in every mode except the decider-only mode, where it is $1.00 — and the session cap then
-follows at 5 ×, which is $5.00.
+Two more defaults are keyed on the mode rather than derived from another setting: the run spend
+cap is $10.00 in every mode except the decider-only mode, where it is $1.00 — and the session cap
+then follows at 5 ×, which is $5.00; and `limits.maxSteps` is 250 in agent mode, where a step is
+one read-only batch, one edit or command, one test run or the final answer, and 40 in the
+others. An explicit value wins in both cases.
 
 The decider provider can also be derived. When `decider.provider` is `auto`, the source column
 says which rule fired: the base URL named a host, a decider key is set, a TypeSafe key is set,
@@ -125,17 +127,38 @@ means the setting is unset unless you set it.
 
 | Setting | Flag | Variable | File key | Default |
 | --- | --- | --- | --- | --- |
-| `mode` | `--mode` | `JEVCODE_MODE` | `mode` | `llm-jev` |
+| `mode` | `--mode` | `JEVCODE_MODE` | `mode` | `agent` |
 | `autonomy` | `--autonomy` | `JEVCODE_AUTONOMY` | `autonomy` | `full` |
-| `limits.spendCapUsd` | `--spend-cap` | `JEVCODE_SPEND_CAP_USD` | `spendCapUsd` | `2` |
+| `limits.spendCapUsd` | `--spend-cap` | `JEVCODE_SPEND_CAP_USD` | `spendCapUsd` | `10` (`1` under `jev-only`) |
 | `session.spendCapUsd` | `--session-spend-cap` | `JEVCODE_SESSION_SPEND_CAP_USD` | `sessionSpendCapUsd` | derived |
-| `limits.maxSteps` | `--max-steps` | `JEVCODE_MAX_STEPS` | `maxSteps` | `40` |
+| `limits.maxSteps` | `--max-steps` | `JEVCODE_MAX_STEPS` | `maxSteps` | `250` in agent mode, `40` otherwise |
 | `limits.maxWall` | `--max-wall` | `JEVCODE_MAX_WALL` | `maxWall` | `30m` |
 | `limits.maxReplans` | `--max-replans` | `JEVCODE_MAX_REPLANS` | `maxReplans` | `5` |
 | `limits.completeThreshold` | `--complete-threshold` | `JEVCODE_COMPLETE_THRESHOLD` | `completeThreshold` | `0.85` |
 | `limits.impossibleThreshold` | `--impossible-threshold` | `JEVCODE_IMPOSSIBLE_THRESHOLD` | `impossibleThreshold` | `0.85` |
 | `limits.allowUnpriced` | `--allow-unpriced` | `JEVCODE_ALLOW_UNPRICED` | `allowUnpriced` | `false` |
 | `limits.maxGeneratorTokens` | `--max-generator-tokens` | `JEVCODE_MAX_GENERATOR_TOKENS` | `maxGeneratorTokens` | derived |
+
+**`mode`.** `agent` (the default) and `jev-only` are the modes on offer; `llm-jev`, `jev-on` and
+`jev-off` are legacy values, still accepted everywhere — a saved `mode llm-jev` keeps working —
+and listed by `/mode legacy`. [Modes](../getting-started/modes.md) says what each does.
+
+| mode | badge | what runs | keys |
+| --- | --- | --- | --- |
+| `agent` | `agent` | the code model works through tools, your tests verify, Jev makes a few quick routing calls | a code-model key; Jev optional |
+| `jev-only` | `jev-only` | no generating model: code enumerates fixes, tests verify, Jev ranks | a Jev key |
+| `llm-jev` (legacy) | `llm+jev · verified` | the code model writes candidate patches inside the search, tests verify, Jev arbitrates | both |
+| `jev-on` (legacy) | `jev+llm` | the code model writes one action per step, Jev decides every step | both |
+| `jev-off` (legacy) | `llm-only` | the code model alone, in the step loop | a code-model key |
+
+**`autonomy`.** Who approves an action.
+
+| value | agent mode | legacy modes |
+| --- | --- | --- |
+| `full` (default) | nothing asks and nothing is refused. Every command runs in the sandbox with pre-images; a command that matches a destructive rule runs too, and its step carries a one-line note saying whether `/undo` can restore its effect | a review-level risk verdict is approved and logged as `[review] auto-approved`; a block verdict still stops the action |
+| `review` | destructive and unrecognised commands wait for a y/n card; a declined command goes back to the model, and five declined destructive cards pause the run | review-level verdicts wait for the card |
+
+Without a terminal (`--no-input`, `--json`, a pipe) a card is declined.
 
 ### Paths and the sandbox
 
@@ -172,6 +195,11 @@ None of these has a flag.
 
 `context.mode: legacy` restores the older, narrower prompt exactly. Turning compaction off alone
 does not: the tiered history, the file cache and the whole-output files all stay on.
+
+These rows configure the Jev-driven modes' prompt. The agent loop keeps its own conversation and
+policy ([The agent loop](../architecture/agent-loop.md#context)) and reads one of them:
+`context.compaction`, whose effective default in agent mode is `llm` (a model-written summary with
+a code fallback) unless you set it explicitly; `code` and `off` are honoured.
 
 ### Interface
 

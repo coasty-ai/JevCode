@@ -57,7 +57,7 @@ print what a run *would* resolve to.
 
 | Flag | Argument | Meaning |
 | --- | --- | --- |
-| `--provider` | `anthropic\|openrouter` | generator provider (also accepted by `login`) |
+| `--provider` | `anthropic\|openrouter\|openai\|gemini\|xai\|fireworks\|meta` | generator provider (also accepted by `login`, and by `models` to filter the catalogue) |
 | `--model` | `<id>` | generator model id |
 | `--api-key` | `<key>` | generator API key — prefer the environment variable |
 | `--base-url` | `<url>` | generator base URL |
@@ -97,7 +97,7 @@ print what a run *would* resolve to.
 | `--force` | | with `--resume` or `--continue`: resume a run that already completed, instead of seeding a follow-up |
 | `--list-sessions` | | print this workspace's sessions and exit |
 | `--task-file` | `<path>` | `run` only: read the task text from a file |
-| `--mode` | `jev-only\|jev-on\|jev-off\|llm-jev` | engine mode; the default is `llm-jev` |
+| `--mode` | `agent\|jev-only` | engine mode, default `agent`; the legacy `llm-jev`, `jev-on` and `jev-off` stay accepted for saved configs, resume and the bench — see [Modes](../getting-started/modes.md) |
 | `--json` | | NDJSON event stream on stdout, non-interactive; `--json=verbose` adds status events |
 
 `--json` is also accepted by `config`, `sessions`, `why` and `calibration`, where it switches
@@ -122,6 +122,7 @@ the output to JSON.
 | `--osc52` | | allow clipboard writes through the terminal; write only |
 | `--no-history` | | do not persist composer history |
 | `--no-input` | | no interactive renderer; every prompt takes its safe default. `run` only, and it needs a task |
+| `--autonomy` | `full\|review` | who approves an action. `full`, the default: nothing asks — in agent mode nothing is refused either, and a destructive command runs with a note on its step. `review`: destructive and unknown commands (agent mode) or review-level risk verdicts (legacy modes) wait for a y/n card. See [Sandbox and security](../operations/sandbox-and-security.md#who-approves-a-command-autonomy) |
 | `--trust-workspace` | | trust the workspace's instruction files, `./.env` and `jevcode.json` without the prompt |
 | `--no-budget-warnings` | | mute budget toasts and the bell; items and JSON events stay |
 | `--allow-secret-mention` | | allow mentions of denylisted secret files after a per-mention confirmation |
@@ -187,11 +188,11 @@ from `--help` on purpose and are not part of the supported surface.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | complete, or the generator finished; also `/exit`, Ctrl-D twice, Ctrl-C twice while idle |
+| 0 | complete, the generator finished, or a reply that called no tool (`answered`); also `/exit`, Ctrl-D twice, Ctrl-C twice while idle |
 | 1 | an uncaught error, or an escalated render fault |
 | 2 | a configuration or usage error at launch; a 401 or 403 on the first call; an unpriced model without `--allow-unpriced` |
 | 3 | the checkpoint degraded and the run stopped — `state.json` is not resumable |
-| 4 | a budget stop: max steps, wall time, spend cap, max replans, token cap; also a replan stop, an impossible verdict, or a human pause |
+| 4 | a budget stop: max steps, wall time, spend cap, max replans, token cap; also a replan stop, an impossible verdict, a human pause, or `stuck` (the agent's loop detector tripped a sixth time) |
 | 5 | an API failure after retries, or a provider spend limit |
 | 6 | a sandbox or path abort |
 | 129 | `SIGHUP` |
@@ -248,5 +249,5 @@ Slash commands and keys are their own tables, generated from the registries in t
 
 - [Install](../getting-started/install.md)
 - [Keys](../getting-started/keys-and-providers.md)
-- [The four modes](../getting-started/modes.md)
+- [Modes](../getting-started/modes.md)
 - [Status](../status/README.md)

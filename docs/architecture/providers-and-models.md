@@ -2,9 +2,9 @@
 
 Two different services sit behind a JevCode run, and they are not interchangeable.
 
-The **generator** is an ordinary chat model that writes code. It speaks a messages-and-tools
-API, it streams, and it is billed per input and output token. Seven generator providers are in
-the registry.
+The **generator** is an ordinary chat model that writes code — in the default mode it drives
+the whole run through tool calls. It speaks a messages-and-tools API, it streams, and it is
+billed per input and output token. Seven generator providers are in the registry.
 
 The **decider** answers structured questions — a choice among named options, a calibrated
 probability, an ordinal score — and returns numbers rather than prose. It is reached at two
@@ -18,7 +18,7 @@ Keeping them apart is why the registry has seven rows and not eight.
 | --- | --- | --- | --- | --- |
 | `anthropic` | Anthropic | `ANTHROPIC_API_KEY` | `https://api.anthropic.com` | `claude-sonnet-5` |
 | `openrouter` | OpenRouter | `OPENROUTER_API_KEY` | `https://openrouter.ai/api/v1` | `z-ai/glm-5.3-flash` |
-| `openai` | OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1` | `gpt-5.6-terra` |
+| `openai` | OpenAI | `OPENAI_API_KEY` | `https://api.openai.com/v1` | `gpt-5.6-luna` |
 | `gemini` | Google Gemini | `GEMINI_API_KEY`, then `GOOGLE_API_KEY` | `https://generativelanguage.googleapis.com/v1beta` | `gemini-3.8-flash` |
 | `xai` | xAI | `XAI_API_KEY` | `https://api.x.ai/v1` | `grok-4.7` |
 | `fireworks` | Fireworks AI | `FIREWORKS_API_KEY` | `https://api.fireworks.ai/inference/v1` | `accounts/fireworks/models/glm-5p3-flash` |
@@ -37,6 +37,28 @@ downgraded to automatic, and the client uses the non-streaming surface because s
 drops tool calls and usage.
 
 <!-- src/provider/ids.ts:18-60; src/provider/registry.ts:174-256 -->
+
+## Two request shapes
+
+Every adapter speaks two request shapes, and a request picks one by whether it carries
+`GenerateRequest.agent`:
+
+- **The agent shape** (the default mode). The request carries the whole conversation as native
+  messages: the model's earlier turns with their tool calls, and each tool result paired to its
+  call by id. Parallel tool calls are allowed, the session id is the prompt-cache key where the
+  provider has one (OpenRouter `session_id`, OpenAI `prompt_cache_key`, an xAI or Fireworks
+  session header), and each provider's reasoning state is replayed verbatim to the same provider
+  and model — OpenRouter `reasoning_details`, Anthropic signed thinking blocks, OpenAI encrypted
+  reasoning items, Fireworks `reasoning_content`, Gemini thought signatures. A provider that rejects
+  the replay gets the turn once more without it. Reasoning streams to the terminal as it arrives,
+  and so do the arguments of each tool call.
+- **The legacy shape** (the Jev-driven modes). One forced `propose_action` call per step, built
+  from the plan and a short window. Its wire body is unchanged byte for byte; the golden tests
+  pin it.
+
+The per-provider settings of the agent shape — reasoning effort, thinking, temperature, the
+masking mode — are on [The agent loop](agent-loop.md#providers); the specification is
+[`docs/AGENT-LOOP-DESIGN.md` §6](../AGENT-LOOP-DESIGN.md).
 
 ## Why `typesafe` is deliberately not a row
 

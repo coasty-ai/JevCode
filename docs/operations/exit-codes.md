@@ -9,8 +9,8 @@ consistent when the process leaves.
 
 | Situation | `jevcode run` | in a session |
 | --- | --- | --- |
-| completed, or the generator declared itself done | 0 | the item reads `exit 0`; the composer reopens |
-| a budget stop — maximum steps, wall time, spend cap, maximum replans, token cap — or a replan stop, an impossible verdict, or a human pause | 4 | the item reads `exit 4`; the composer reopens |
+| completed (`complete`), the model finished without a verified test run (`generator_done`), or a reply that called no tool (`answered`) | 0 | the item reads `exit 0`; a reply shows only its prose; the composer reopens |
+| a budget stop — maximum steps, wall time, spend cap, maximum replans, token cap — or a replan stop, an impossible verdict, a human pause, or the agent's loop detector tripping a sixth time (`stuck`) | 4 | the item reads `exit 4`; the composer reopens |
 | a configuration or usage error at launch; an unpriced model without the opt-in; a refused secret | 2 | 2, and the process exits |
 | a rejected key, or decider model drift on the first call | 2 | a prompt, then the item reads `exit 2` |
 | an API failure after retries, or a provider spend limit | 5 | the item reads `exit 5` |
@@ -34,7 +34,10 @@ and saying it succeeded would be a lie you would discover later.
 and anything else gives 130.
 
 **A pause is a budget stop.** Both a human pause and a token cap fall in the exit-4 family, and
-a paused run resumes without needing to be forced. A run that was explicitly ended does need to
+a paused run resumes without needing to be forced. So does `stuck`: a resumed run starts its
+loop-nudge count again, because a human has looked at it. An `answered` run is a reply, not
+work in progress, and is never resumed: `-c` or `--resume` on one sends the new message as its
+follow-up. A run that was explicitly ended does need to
 be forced, and forcing it reopens the run rather than deleting anything.
 
 <!-- src/loop/stop.ts:8-13 BUDGET_STOP_REASONS, :17-20 the degraded and signal rules -->

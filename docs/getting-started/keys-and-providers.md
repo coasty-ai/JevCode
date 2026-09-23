@@ -1,8 +1,10 @@
 # Keys
 
-JevCode talks to two kinds of model: a **decision model** (Jev) and a **code model** (the
-generator). One OpenRouter key can serve both. This page lists every key variable, says where
-each is read, and states the rules the harness keeps about secrets.
+JevCode talks to two kinds of model: a **code model** (the generator), which does the work, and
+a **decision model** (Jev), which the default mode asks at most a few quick routing questions.
+In the default mode only the code model's key is required; one OpenRouter key serves both. This
+page lists every key variable, says where each is read, and states the rules the harness keeps
+about secrets.
 
 ## The short version
 
@@ -11,14 +13,22 @@ export OPENROUTER_API_KEY=sk-or-v1-...
 jevcode
 ```
 
-That is enough for the default mode. The same key reaches Jev through OpenRouter's decisions
-endpoint and the code model through OpenRouter's completions endpoint.
+That is enough for the default mode. The key reaches the code model through OpenRouter's
+completions endpoint, and the same key reaches Jev through OpenRouter's decisions endpoint for
+its few quick calls.
+
+**The Jev key is optional in the default mode.** With only a code-model key — say
+`ANTHROPIC_API_KEY` with `--provider anthropic` — every run works: Jev's three quick placements
+take their code fallbacks without waiting, and `jevcode login --status` reports
+`needs: generator (Jev optional)`. On the default provider a normal run asks Jev nothing anyway.
+The `jev-only` mode is the exception: it has no code model, so it needs a Jev key and nothing
+else.
 
 ## Every key variable
 
 | Variable | Serves | Notes |
 | --- | --- | --- |
-| `OPENROUTER_API_KEY` | Jev **and** the code model | the one-key path, and the default |
+| `OPENROUTER_API_KEY` | the code model **and** Jev | the one-key path, and the default |
 | `TYPESAFE_API_KEY` | Jev, natively | preferred for Jev whenever it is set; pair it with `OPENROUTER_API_KEY` for the code model |
 | `JEV_API_KEY` | Jev through OpenRouter | for when the Jev key is not the same OpenRouter key |
 | `ANTHROPIC_API_KEY` | the code model | with `--provider anthropic` |
@@ -132,14 +142,16 @@ rejected key or an unserved model exits 2; no credits or unreachable exits 5.
 | You want | Keys |
 | --- | --- |
 | the default mode, cheapest path | `OPENROUTER_API_KEY` alone |
+| the default mode on another provider | that provider's key alone, with `--provider <name>` (for example `ANTHROPIC_API_KEY` with `--provider anthropic`); add an OpenRouter or TypeSafe key if you want Jev's quick calls too |
 | Jev natively, code model via OpenRouter | `TYPESAFE_API_KEY` + `OPENROUTER_API_KEY` |
 | no generating model at all (`--mode jev-only`) | one Jev key: `TYPESAFE_API_KEY` or `OPENROUTER_API_KEY` |
-| the code model from Anthropic | `ANTHROPIC_API_KEY` + a Jev key, with `--provider anthropic` |
+| a legacy mode (`llm-jev`, `jev-on`) | a code-model key **and** a Jev key: those modes ask Jev on every step |
 
-See [The four modes](modes.md) for what each of those actually does, and what it costs.
+See [Modes](modes.md) for what each of those actually does, and what it costs.
 
 ## Next
 
-- [The four modes](modes.md)
+- [Modes](modes.md)
+- [The agent loop](../architecture/agent-loop.md) — the providers, and what each one's reasoning setting is
 - [What Jev is](../concepts/what-is-jev.md)
 - [CLI reference](../reference/cli.md)

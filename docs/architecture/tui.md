@@ -88,11 +88,16 @@ transcript, composer and status line remain; the five-row wordmark needs 64 colu
 One row, three zones, drawn by a pure function that the Ink row, its fallback, the plain
 renderer, the screen-reader output and the frame tests all call.
 
-- **Left**: the mode badge and either the idle word or a spinner with the current stage verb,
-  then badges for unacknowledged warnings, a weakened sandbox and a disabled network.
+- **Left**: the mode badge and either the idle word or the mini indicator with the current
+  status word, then badges for unacknowledged warnings, a weakened sandbox and a disabled
+  network. The mini indicator is a small braille animation in the glyph slot — a donut while
+  the model thinks, a globe while it reads, a cube while it edits or runs a command, a wave
+  while the tests run — three cells wide when the row has room and one otherwise, stepped by the
+  spinner's own tick, still over SSH and under reduced motion, and absent at idle. In agent mode
+  the status words are `thinking`, `reading`, `editing`, `running` and `testing`.
 - **Centre**: the session title, and only when at least 24 cells stay free. Never the run id.
 - **Right**, right-aligned: step and wall time, the run meter, the session meter, tokens, the
-  git zone, the decider latency sparkline, and a short help cell.
+  git zone, the decider latency sparkline (not drawn in agent mode), and a short help cell.
 
 When the row is too narrow, things are dropped in a fixed order: short help, sparkline, git
 zone, session meter, wall time, centre. Cell widths are measured with the same width function
@@ -102,10 +107,23 @@ textual marker so the row reads the same without colour.
 
 <!-- src/tui/status/lines.ts:1-22 -->
 
+## The streaming reply (agent mode)
+
+In the default mode the model's prose streams in place above the console's rule as `[jevcode]`
+rows from the first token: a line with no newline yet is drawn as text, and a completed line
+moves into the scrollback without the frame jumping, because the live rows and the committed rows
+are built by the same function. Below it, the live region shows the command running now with the
+tail of its output, the reads in flight, or the tool call being written. Each step leaves one tool
+row (`Read …`, `Edit … (+2 −2)`, `Bash … · 7 passed`). A reply that never called a tool keeps the
+chat's look throughout: no run header, no step rows, no stop line. The as-built contract is
+`docs/TUI-DESIGN.md` §7.8; the loop behind it is [The agent loop](agent-loop.md).
+
 ## The decider panel
 
 Under the transcript sits a one-row strip that opens to at most six rows, or to twelve in its
-full form. It shows the decider's answers rather than a log, across four tabs:
+full form. In agent mode the strip reads `▸ s<N> · plan d/t · <k> tool calls`, and a run that
+asked Jev nothing says so on the decisions tab. In the Jev-driven modes it shows the decider's
+answers rather than a log, across four tabs:
 
 - **decisions** — one row per answer: step, stage, question id, label, a probability bar,
   the probability, the confidence, and the verdict. A marker distinguishes a derived confidence

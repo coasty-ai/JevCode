@@ -39,6 +39,7 @@ flowchart LR
     CACHE["cache/ — the paused draft, so a resume replays instead of re-buying"]
     ORCHD["orchestrate/ — the delegation manifest, the land log, the land lock"]
     OUTS["outputs/step-N.txt — any command output past the short body cap"]
+    AGT["agent/transcript.jsonl — the agent mode's conversation, tool results included"]
     CTX["context/summary.json — the rolling summary"]
   end
 
@@ -102,7 +103,8 @@ flowchart LR
 | `tmp/`, `drafts/` | files | scratch files, and cleared composer drafts, redacted |
 | `cache/` | JSON files | `step-<n>.json`, the paused draft, so a resume replays what already arrived instead of buying it again |
 | `orchestrate/` | JSON and log files | the delegation manifest, the agent seeds, the review records, the land log and the land lock |
-| `outputs/` | text files | `step-<n>.txt`, the whole output of a command whose body was too long to inline |
+| `outputs/` | text files | `step-<n>.txt`, the whole output of a command whose body was too long to inline (in agent mode, `step-<n>-<k>.txt` for the k-th command of a read-only batch) |
+| `agent/transcript.jsonl` | one JSON object per line | agent mode only: the append-only conversation the model reads — user and harness notes, the model's replies with their tool calls, one record per tool result, masking and compaction marks, and a `carry` record when the run continues the previous run of the session. Mode `0600`; written before each step's checkpoint, and truncated back to the checkpoint on resume. The reasoning state some providers need replayed is kept here unredacted and never emitted anywhere else |
 | `context/summary.json` | JSON object | the rolling summary the compactor produced |
 
 Two caps are worth knowing. An output longer than the inline body — 600 characters — gets its own

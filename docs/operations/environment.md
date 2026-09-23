@@ -44,11 +44,11 @@ The decider's four variables do not carry the `JEVCODE_` prefix: `JEV_PROVIDER`,
 
 | Variable | Setting | Default | Effect |
 | --- | --- | --- | --- |
-| `JEVCODE_MODE` | `mode` | `llm-jev` | which engine mode a run uses |
-| `JEVCODE_AUTONOMY` | `autonomy` | `full` | `full`: a review-level risk verdict proceeds and is logged; `review`: it waits for the approval card. A block stops the action under both |
-| `JEVCODE_SPEND_CAP_USD` | `limits.spendCapUsd` | `2`, or `0.25` in the decider-only mode | the hard cap for one run |
+| `JEVCODE_MODE` | `mode` | `agent` | which engine mode a run uses: `agent` or `jev-only`; the legacy `llm-jev`, `jev-on` and `jev-off` are still accepted |
+| `JEVCODE_AUTONOMY` | `autonomy` | `full` | `full`: nothing asks and nothing is refused — in agent mode a destructive command runs sandboxed and pre-imaged with a note on its step; in the legacy modes a review-level risk verdict proceeds and is logged. `review`: destructive and unknown commands (agent mode) or review-level verdicts (legacy modes) wait for the approval card |
+| `JEVCODE_SPEND_CAP_USD` | `limits.spendCapUsd` | `10`, or `1` in the decider-only mode | the hard cap for one run |
 | `JEVCODE_SESSION_SPEND_CAP_USD` | `session.spendCapUsd` | 5 × the run cap | the cap across a whole session; `none` removes it |
-| `JEVCODE_MAX_STEPS` | `limits.maxSteps` | `40` | steps before the run stops |
+| `JEVCODE_MAX_STEPS` | `limits.maxSteps` | `250` in agent mode, `40` in the others | steps before the run stops |
 | `JEVCODE_MAX_WALL` | `limits.maxWall` | `30m` | wall-clock budget; accepts `90s`, `1h30m` |
 | `JEVCODE_MAX_REPLANS` | `limits.maxReplans` | `5` | replans before the run stops |
 | `JEVCODE_COMPLETE_THRESHOLD` | `limits.completeThreshold` | `0.85` | the probability at which the run is judged done |
