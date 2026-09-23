@@ -25,9 +25,9 @@
  */
 import { ProviderHttpError } from '../errors.js';
 import { isJsonObject } from '../core/json.js';
-import type { GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, JsonObject, ToolCall, ToolChoice } from '../core/types.js';
+import type { AgentRequest, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, JsonObject, ToolCall, ToolChoice } from '../core/types.js';
 import { geminiToolSchema } from './schema.js';
-import { createCaller, getJson, googleErrorFields, joinUrl, runGeneration, validateGenerateRequest } from './http.js';
+import { EMPTY_TURN_TEXT, SYNTH_CALL_PREFIX, agentCallId, agentReasoning, assistantParts, createCaller, emitToolCall, getJson, googleErrorFields, joinUrl, objectInput, replayData, runGeneration, userParts, validateGenerateRequest, withUniqueCallIds } from './http.js';
 import type { ConsumeContext, HeldPartial } from './http.js';
 import type { EffortWord } from './openai-compat.js';
 import { effortOf, pickEffort } from './openai-compat.js';
@@ -43,8 +43,11 @@ export const GEMINI_DEFAULT_MODEL = 'gemini-3.8-flash';
 // Wire types (request side)
 // ---------------------------------------------------------------------------------------
 
-export type GeminiTextPart = { text: string };
-export type GeminiContent = { role: 'user' | 'model'; parts: GeminiTextPart[] };
+export type GeminiTextPart = { text: string; thoughtSignature?: string };
+/** AGENT-LOOP-DESIGN §6.2: a model turn's call (id and `thoughtSignature` resent exactly) and a user turn's result by id */
+export type GeminiFunctionCallPart = { functionCall: { id?: string; name: string; args: JsonObject }; thoughtSignature?: string };
+export type GeminiFunctionResponsePart = { functionResponse: { id?: string; name: string; response: JsonObject } };
+export type GeminiContent = { role: 'user' | 'model'; parts: (GeminiTextPart | GeminiFunctionCallPart | GeminiFunctionResponsePart)[] };
 export type GeminiFunctionDeclaration = { name: string; description: string; parametersJsonSchema: JsonObject };
 export type GeminiToolWire = { functionDeclarations: GeminiFunctionDeclaration[] };
 export type GeminiFunctionCallingMode = 'AUTO' | 'ANY' | 'NONE';
@@ -55,7 +58,8 @@ export type GeminiGenerationConfig = {
   maxOutputTokens: number;
   temperature?: number;
   seed?: number;
-  thinkingConfig?: GeminiThinkingConfig;
+  /** agent requests on a thinking family add `includeThoughts: true`: the `thought: true` summary parts `onReasoning` streams */
+  thinkingConfig?: GeminiThinkingConfig | (Partial<GeminiThinkingConfig> & { includeThoughts: true });
 };
 export type GeminiRequestBody = {
   contents: GeminiContent[];
@@ -112,8 +116,9 @@ export function geminiThinkingConfig(r: GenerateReasoning, model: string): Gemin
 
 /** Exported so tests can assert the exact wire body. */
 export function buildGeminiBody(cfg: ProviderConfig, req: GenerateRequest): GeminiRequestBody {
+  const a = req.agent;
   const body: GeminiRequestBody = {
-    contents: req.messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
+    contents: a !== undefined ? agentContents(cfg, a) : req.messages.map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] })),
     generationConfig: { maxOutputTokens: req.maxTokens },
   };
   if (req.system.length > 0) body.systemInstruction = { parts: [{ text: req.system }] };
@@ -123,11 +128,69 @@ export function buildGeminiBody(cfg: ProviderConfig, req: GenerateRequest): Gemi
   }
   if (req.temperature !== null) body.generationConfig.temperature = req.temperature;
   if (req.seed !== undefined) body.generationConfig.seed = req.seed;
-  if (req.reasoning !== undefined) {
-    const thinking = geminiThinkingConfig(req.reasoning, cfg.model);
-    if (thinking !== null) body.generationConfig.thinkingConfig = thinking;
-  }
+  const reasoning = a !== undefined ? agentReasoning(req) : req.reasoning;
+  const thinking = reasoning === undefined ? null : geminiThinkingConfig(reasoning, cfg.model);
+  // AGENT-LOOP-DESIGN §6.2: without `includeThoughts` the API sends no thought summaries, and `onReasoning` would never fire
+  if (a !== undefined && geminiThinks(cfg.model)) body.generationConfig.thinkingConfig = { ...thinking, includeThoughts: true };
+  else if (thinking !== null) body.generationConfig.thinkingConfig = thinking;
   return body;
+}
+
+/** The families with thinking (2.5 and 3.x), which accept `thinkingConfig.includeThoughts`. */
+export function geminiThinks(model: string): boolean {
+  return /^gemini-(2\.5|[3-9])/.test(model);
+}
+
+/**
+ * Google's documented stand-in for a missing `thoughtSignature` (ai.google.dev/gemini-api/docs/thought-signatures, "if you
+ * inject function calls … use the dummy signature"). Gemini 3 validates the first `functionCall` of every model turn of the
+ * current turn, and a replay without the model's own signature — replay off after §6.5's fallback, a resume on another
+ * model — is otherwise a 400.
+ */
+export const GEMINI_SKIP_SIGNATURE = 'skip_thought_signature_validator';
+
+/** A call id as the wire knows it: none for an id this harness made up (the model sent none), else the model's own. */
+function wireId(id: string): { id?: string } {
+  return id.startsWith(SYNTH_CALL_PREFIX) ? {} : { id };
+}
+
+/**
+ * AGENT-LOOP-DESIGN §6.2, Gemini row: a model turn is its text and a `functionCall {id, name, args}` per call, each with the
+ * `thoughtSignature` it came with (replay state of the same configured model: `data.calls[i]` for the i-th call,
+ * `data.text` for the prose) — Gemini 3 answers a function-calling turn replayed without them with a 400, so a turn with
+ * none gets `GEMINI_SKIP_SIGNATURE` on its first call there; an empty turn is `EMPTY_TURN_TEXT`. A user turn is
+ * a `functionResponse {id, name, response}` per result, then its texts; `response` is `{output}` or, for a failed call,
+ * `{error}` (the API reference's convention: "if the function call failed … the response can have an error key").
+ */
+function agentContents(cfg: ProviderConfig, a: AgentRequest): GeminiContent[] {
+  const validated = geminiThinkingLevels(cfg.model) !== null;
+  return a.messages.map((m): GeminiContent => {
+    if (m.role === 'user') {
+      const { results, texts } = userParts(m.content);
+      return {
+        role: 'user',
+        parts: [
+          ...results.map((r) => ({ functionResponse: { ...wireId(r.toolUseId), name: r.name, response: r.isError === true ? { error: r.content } : { output: r.content } } })),
+          ...texts.map((text) => ({ text })),
+        ],
+      };
+    }
+    const { text, calls } = assistantParts(m.content);
+    const data = replayData(a, m, 'gemini', cfg.model);
+    const sigs = isJsonObject(data) && Array.isArray(data['calls']) ? data['calls'] : [];
+    const textSig = isJsonObject(data) ? getStr(data, 'text') : null;
+    const parts: GeminiContent['parts'] = [];
+    if (text.length > 0) parts.push({ text, ...(textSig !== null ? { thoughtSignature: textSig } : {}) });
+    // parallel calls: only the first carries a signature, so the stand-in goes there, and only when no call has its own
+    const signed = calls.some((_, i) => typeof sigs[i] === 'string');
+    for (const [i, c] of calls.entries()) {
+      const stored = sigs[i];
+      const sig = typeof stored === 'string' ? stored : validated && !signed && i === 0 ? GEMINI_SKIP_SIGNATURE : null;
+      parts.push({ functionCall: { ...wireId(c.id), name: c.name, args: objectInput(c.input) }, ...(sig !== null ? { thoughtSignature: sig } : {}) });
+    }
+    if (parts.length === 0) parts.push({ text: EMPTY_TURN_TEXT });
+    return { role: 'model', parts };
+  });
 }
 
 function geminiToolChoice(tc: ToolChoice): GeminiToolConfig['functionCallingConfig'] {
@@ -152,10 +215,18 @@ interface GeminiState {
   tokens: TokenBreakdown;
   reasoningTokens: number | null;
   sawUsage: boolean;
+  /** AGENT-LOOP-DESIGN §6.1: the configured model when this is an agent request (ids kept, signatures captured); null for legacy */
+  agentModel: string | null;
+  /** agent: each call's `thoughtSignature` by ordinal, and the prose's */
+  callSigs: (string | null)[];
+  textSig: string | null;
 }
 
-function newState(): GeminiState {
+function newState(agentModel: string | null): GeminiState {
   return {
+    agentModel,
+    callSigs: [],
+    textSig: null,
     text: '',
     reasoningChars: 0,
     toolChars: 0,
@@ -209,21 +280,28 @@ function applyChunk(chunk: JsonObject, st: GeminiState, ctx: ConsumeContext): vo
     for (const p of parts) {
       if (!isJsonObject(p)) continue;
       const call = getObj(p, 'functionCall');
+      const sig = st.agentModel !== null ? getStr(p, 'thoughtSignature') : null;
       if (call) {
         const name = getStr(call, 'name') ?? '';
         const args = getObj(call, 'args') ?? {};
         const rawJson = JSON.stringify(args);
         st.toolChars += rawJson.length;
         notify(ctx.opts.onToolDelta, rawJson);
-        // `functionCall.id` and the sibling `thoughtSignature` are not kept: the harness replays history as text, never
-        // as function_call items, so neither is ever echoed back (ai.google.dev/.../thought-signatures).
-        st.toolCalls.push({ name, input: args, rawJson });
+        // A legacy request keeps neither `functionCall.id` nor the sibling `thoughtSignature` (its history is replayed as
+        // text). AGENT-LOOP-DESIGN §6.2: an agent request keeps both and resends them exactly (ai.google.dev/.../thinking).
+        const ordinal = st.toolCalls.length;
+        const id = getStr(call, 'id') ?? '';
+        emitToolCall(ctx.opts, ordinal, id, name, rawJson);
+        st.toolCalls.push(st.agentModel !== null ? { name, input: args, rawJson, id: agentCallId(id, ordinal) } : { name, input: args, rawJson });
+        if (st.agentModel !== null) st.callSigs.push(sig);
         continue;
       }
+      if (sig !== null && p['thought'] !== true) st.textSig = sig;
       const text = getStr(p, 'text');
       if (text === null || text.length === 0) continue;
       if (p['thought'] === true) {
-        st.reasoningChars += text.length; // a thought summary: measured for §4.8, never rendered
+        st.reasoningChars += text.length; // a thought summary: measured for §4.8, never rendered (agent: streamed to `onReasoning`)
+        notify(ctx.opts.onReasoning, text);
         continue;
       }
       st.text += text;
@@ -254,8 +332,8 @@ function heldOf(st: GeminiState): StreamPartial {
   };
 }
 
-async function consumeGemini(stream: ReadableStream<Uint8Array>, ctx: ConsumeContext): Promise<ProviderOutcome> {
-  const st = newState();
+async function consumeGemini(stream: ReadableStream<Uint8Array>, ctx: ConsumeContext, agentModel: string | null): Promise<ProviderOutcome> {
+  const st = newState(agentModel);
   try {
     for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) })) {
       if (ctx.opts.signal.aborted) throw ctx.opts.signal.reason;
@@ -287,6 +365,9 @@ async function consumeGemini(stream: ReadableStream<Uint8Array>, ctx: ConsumeCon
     generationId: st.generationId,
     servedProvider: null,
     stopReason: stopReasonOf(st),
+    ...(st.agentModel !== null && (st.textSig !== null || st.callSigs.some((s) => s !== null))
+      ? { providerState: { provider: 'gemini', model: st.agentModel, data: { calls: st.callSigs, text: st.textSig } } }
+      : {}),
   };
 }
 
@@ -306,9 +387,11 @@ export function createGeminiProvider(cfg: ProviderConfig, deps: ProviderDeps): G
     async generate(req: GenerateRequest, opts: GenerateOptions): Promise<GenerateResult> {
       validateGenerateRequest('gemini', req);
       const body = JSON.stringify(buildGeminiBody(cfg, req));
+      const agentModel = req.agent === undefined ? null : cfg.model;
       const attempt = (held: HeldPartial): Promise<ProviderOutcome> =>
-        caller.attempt({ label: 'gemini', url, headers: { 'x-goog-api-key': cfg.apiKey }, body, readError: googleErrorFields, consume: consumeGemini }, opts, held);
-      return runGeneration(d, cfg, opts, attempt);
+        caller.attempt({ label: 'gemini', url, headers: { 'x-goog-api-key': cfg.apiKey }, body, readError: googleErrorFields, consume: (stream, ctx) => consumeGemini(stream, ctx, agentModel) }, opts, held);
+      const res = await runGeneration(d, cfg, opts, attempt);
+      return req.agent === undefined ? res : withUniqueCallIds(res, req.agent);
     },
   };
 }

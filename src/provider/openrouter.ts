@@ -8,8 +8,9 @@
  * a result the chain reached through a 429 retry carries `GenerateResult.rateLimited`.
  */
 import { JevCodeError, ProviderHttpError } from '../errors.js';
-import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, JsonObject, Provider, ToolCall } from '../core/types.js';
-import { parseJson } from '../core/json.js';
+import type { AgentRequest, GenerateOptions, GenerateProviderPrefs, GenerateRequest, GenerateResult, GeneratorConfig, JsonObject, Provider, ProviderReplayState, ToolCall } from '../core/types.js';
+import { isJsonObject, parseJson } from '../core/json.js';
+import { agentReasoning, argumentsFragment, chatAgentMessages, messagesError, replayData, toolStream, withUniqueCallIds } from './http.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
   IdleTimeoutError,
@@ -55,7 +56,8 @@ function validateRequest(req: GenerateRequest): void {
   if (!Number.isInteger(req.maxTokens) || req.maxTokens <= 0) {
     throw new ProviderHttpError(`invalid GenerateRequest: maxTokens must be a positive integer, got ${String(req.maxTokens)}`, { status: 0, retryable: false });
   }
-  if (req.messages.length === 0) throw new ProviderHttpError('invalid GenerateRequest: messages is empty', { status: 0, retryable: false });
+  const messages = messagesError(req);
+  if (messages !== null) throw new ProviderHttpError(`invalid GenerateRequest: ${messages}`, { status: 0, retryable: false });
   if (req.temperature !== null && !Number.isFinite(req.temperature)) {
     throw new ProviderHttpError('invalid GenerateRequest: temperature must be a finite number or null', { status: 0, retryable: false });
   }
@@ -93,6 +95,7 @@ function validateRequest(req: GenerateRequest): void {
  * field: the caller picks `{effort: 'low'}` for GLM (`GenerateReasoning` in core/types.ts).
  */
 export function buildOpenRouterBody(cfg: GeneratorConfig, req: GenerateRequest): OpenRouterRequestBody {
+  if (req.agent !== undefined) return buildAgentBody(cfg, req, req.agent);
   const messages: OpenRouterRequestBody['messages'] = [];
   if (req.system.length > 0) messages.push({ role: 'system', content: req.system });
   for (const m of req.messages) messages.push({ role: m.role, content: m.content });
@@ -147,10 +150,68 @@ function toolChoice(tc: NonNullable<GenerateRequest['toolChoice']>): OpenRouterT
   return { type: 'function', function: { name: tc.name } };
 }
 
-interface ToolAcc {
-  id: string;
-  name: string;
-  args: string;
+/**
+ * The S2 amendment to AGENT-LOOP-DESIGN §6.3: every chat message is an agent turn now (§A1) and first-token latency is
+ * the user-visible metric, so an agent request that names no routing gets the chat turn's measured preference
+ * (chat/llm-turn.ts `CHAT_PROVIDER_PREFS`, network map P1): `sort: 'latency'`, OpenRouter's fallbacks left on
+ * (`allow_fallbacks` at its default true, no `order`, no `only`), `require_parameters` false. This supersedes §6.3's
+ * "no providerPrefs" row; the price is that an explicit sort opts the request out of Auto Exacto's tool-quality
+ * reordering (§6.4 item 7). A caller that sends its own `providerPrefs` gets exactly those.
+ */
+export const OPENROUTER_AGENT_PREFS: GenerateProviderPrefs = { requireParameters: false, sort: 'latency' };
+
+/**
+ * AGENT-LOOP-DESIGN §6.2, OpenRouter row: the transcript as native chat-completions messages — an assistant turn with
+ * `tool_calls` (ids kept) and its `reasoning_details` replayed unmodified to the same configured model; one `tool`
+ * message per result, then one `user` message for the texts after them; no `parallel_tool_calls` (the default is
+ * parallel) unless the caller asked for one call per turn; `session_id` = the cache key. `{enabled: false}` is never
+ * sent on an agent turn (GLM answers it with HTTP 400, types.ts `OpenRouterReasoning`): it goes out as no `reasoning`.
+ */
+function buildAgentBody(cfg: GeneratorConfig, req: GenerateRequest, a: AgentRequest): OpenRouterRequestBody {
+  const messages: OpenRouterRequestBody['messages'] = [];
+  if (req.system.length > 0) messages.push({ role: 'system', content: req.system });
+  messages.push(
+    ...chatAgentMessages(a, (m) => {
+      const data = replayData(a, m, 'openrouter', cfg.model);
+      return isJsonObject(data) && Array.isArray(data['reasoning_details']) ? { reasoning_details: data['reasoning_details'] } : null;
+    }),
+  );
+  const body: OpenRouterRequestBody = { model: cfg.model, messages, stream: true, max_tokens: req.maxTokens, usage: { include: true } };
+  if (req.tools && req.tools.length > 0) {
+    body.tools = req.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema, strict: true } }));
+    if (req.toolChoice !== undefined) body.tool_choice = toolChoice(req.toolChoice);
+    if (!a.parallelToolCalls) body.parallel_tool_calls = false;
+  }
+  if (req.temperature !== null) body.temperature = req.temperature;
+  if (req.seed !== undefined) body.seed = req.seed;
+  const reasoning = agentReasoning(req);
+  if (reasoning !== undefined) body.reasoning = reasoningOf(reasoning);
+  body.provider = providerPrefsOf(req.providerPrefs ?? OPENROUTER_AGENT_PREFS)!;
+  if (a.cacheKey.length > 0) body.session_id = a.cacheKey;
+  return body;
+}
+
+/**
+ * §6.2: `delta.reasoning_details` fragments merged by `index` — `text` / `summary` / `data` concatenated, every other
+ * non-null field (type, format, id, the closing `signature`) taken as it arrives. A fragment without an index continues
+ * the previous index-less entry of the same type (else it opens one), so an upstream that omits the index still yields
+ * one entry per reasoning block rather than one per token.
+ */
+function mergeDetail(into: JsonObject[], byIndex: Map<number, JsonObject>, d: JsonObject): void {
+  const index = getNum(d, 'index');
+  const last = into[into.length - 1];
+  const prev = index !== null ? byIndex.get(index) : last !== undefined && getNum(last, 'index') === null && last['type'] === d['type'] ? last : undefined;
+  if (prev === undefined) {
+    const copy: JsonObject = { ...d };
+    into.push(copy);
+    if (index !== null) byIndex.set(index, copy);
+    return;
+  }
+  for (const [k, v] of Object.entries(d)) {
+    const was = prev[k];
+    if ((k === 'text' || k === 'summary' || k === 'data') && typeof v === 'string' && typeof was === 'string') prev[k] = was + v;
+    else if (v !== null) prev[k] = v;
+  }
 }
 
 interface StreamOutcome {
@@ -168,10 +229,14 @@ interface StreamOutcome {
   servedProvider: string | null;
   /** verbatim `finish_reason` — `stop` / `tool_calls` / `length` (truncated: the caller decides, never a blind retry) */
   finishReason: string;
+  /** agent requests only: the merged `reasoning_details` (AGENT-LOOP-DESIGN §6.2) */
+  providerState?: ProviderReplayState;
 }
 
 /** What `consumeStream` needs besides the body. */
 interface StreamContext {
+  /** AGENT-LOOP-DESIGN §6.1: the configured model when this is an agent request (ids kept, calls split, reasoning captured); null for legacy */
+  agentModel: string | null;
   opts: GenerateOptions;
   redact: (s: string) => string;
   firstByteTimeoutMs: number;
@@ -210,8 +275,10 @@ async function consumeStream(body: ReadableStream<Uint8Array>, ctx: StreamContex
   let cost: number | null = null;
   let reasoningTokens: number | null = null;
   const tokens: TokenBreakdown = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
-  const tools = new Map<number, ToolAcc>();
-  const order: number[] = [];
+  const agent = ctx.agentModel !== null;
+  const tools = toolStream(opts, agent);
+  const details: JsonObject[] = [];
+  const detailsByIndex = new Map<number, JsonObject>();
 
   try {
     for await (const rec of parseSse(body, { signal: opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) })) {
@@ -247,30 +314,23 @@ async function consumeStream(body: ReadableStream<Uint8Array>, ctx: StreamContex
           notify(opts.onDelta, content);
         }
         // `delta.reasoning` (thinking text, present unless `reasoning.exclude`) is not shown; its length is reported for a cancelled stream (§4.8)
-        reasoningChars += getStr(delta, 'reasoning')?.length ?? 0;
+        const reasoning = getStr(delta, 'reasoning');
+        reasoningChars += reasoning?.length ?? 0;
+        // AGENT-LOOP-DESIGN §6.2: the reasoning text feeds `onReasoning` (the details' own text only when `reasoning` is absent,
+        // so a fragment is never shown twice); the details are merged for replay on agent requests only
+        const rd = getArr(delta, 'reasoning_details') ?? [];
+        if (reasoning !== null && reasoning.length > 0) notify(opts.onReasoning, reasoning);
+        else for (const d of rd) if (isJsonObject(d)) notifyReasoning(opts, getStr(d, 'text') ?? getStr(d, 'summary'));
+        if (agent) for (const d of rd) if (isJsonObject(d)) mergeDetail(details, detailsByIndex, d);
         const calls = getArr(delta, 'tool_calls');
         if (calls) {
           for (const [pos, c] of calls.entries()) {
             if (typeof c !== 'object' || c === null || Array.isArray(c)) continue;
             // `index` keys the accumulator (live observation); a missing index falls back to position.
-            const index = getNum(c, 'index') ?? pos;
-            let acc = tools.get(index);
-            if (!acc) {
-              acc = { id: '', name: '', args: '' };
-              tools.set(index, acc);
-              order.push(index);
-            }
-            const id = getStr(c, 'id');
-            if (id) acc.id = id;
             const fn = getObj(c, 'function');
-            const name = getStr(fn, 'name');
-            if (name) acc.name = name;
-            const frag = getStr(fn, 'arguments') ?? '';
-            if (frag.length > 0) {
-              acc.args += frag;
-              toolChars += frag.length;
-              notify(opts.onToolDelta, frag);
-            }
+            const frag = argumentsFragment(fn?.['arguments'], agent);
+            tools.push(getNum(c, 'index') ?? pos, getStr(c, 'id'), getStr(fn, 'name'), frag);
+            toolChars += frag.length;
           }
         }
         // verbatim: `length` means the completion budget ran out (reasoning may have eaten it — research 07 §5); the caller
@@ -318,14 +378,15 @@ async function consumeStream(body: ReadableStream<Uint8Array>, ctx: StreamContex
     throw new TransportError('stream', 'openrouter: stream completed without a usage frame');
   }
 
-  const toolCalls: ToolCall[] = order.map((i) => {
-    const acc = tools.get(i)!;
-    const args = acc.args.length > 0 ? acc.args : '{}';
-    const p = parseJson(args);
-    // Invalid or truncated arguments keep the raw text with input null; actions.ts rejects them.
-    return { name: acc.name, input: p.ok ? p.value : null, rawJson: args };
-  });
-  return { text, toolCalls, tokens, cost, reasoningTokens, model, generationId, servedProvider, finishReason: finishReason ?? 'stop' };
+  // Invalid or truncated arguments keep the raw text with input null; actions.ts rejects them.
+  const toolCalls: ToolCall[] = tools.calls(agent);
+  const out: StreamOutcome = { text, toolCalls, tokens, cost, reasoningTokens, model, generationId, servedProvider, finishReason: finishReason ?? 'stop' };
+  if (ctx.agentModel !== null && details.length > 0) out.providerState = { provider: 'openrouter', model: ctx.agentModel, data: { reasoning_details: details } };
+  return out;
+}
+
+function notifyReasoning(opts: GenerateOptions, text: string | null): void {
+  if (text !== null && text.length > 0) notify(opts.onReasoning, text);
 }
 
 export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDeps): Provider {
@@ -335,7 +396,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
   // NaN for an unpriced model: the engine emits budget:unpriced instead of billing $0 (TUI-DESIGN §9.5)
   const tablePrice = (t: TokenBreakdown): number => (cfg.priced === true ? costFromPricing(cfg.pricing, t) : Number.NaN);
 
-  async function attempt(body: string, opts: GenerateOptions, held: StreamContext['held']): Promise<StreamOutcome> {
+  async function attempt(body: string, opts: GenerateOptions, held: StreamContext['held'], agentModel: string | null): Promise<StreamOutcome> {
     const { controller, unlink } = linkedAbort(opts.signal);
     const t0 = d.now();
     let headersTimer: ReturnType<typeof setTimeout> | undefined;
@@ -399,7 +460,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       // AFTER the stream opened, so a per-attempt report would enter two readings into the §3.2 threshold's p50.
       const onFirstByte = opts.onFirstByte === undefined ? undefined : (): void => reportFirstByte(opts, Math.round(d.now() - t0));
       try {
-        return await consumeStream(res.body, { opts, redact: d.redact, firstByteTimeoutMs: remaining, requestId, held, ...(onFirstByte === undefined ? {} : { onFirstByte }) });
+        return await consumeStream(res.body, { agentModel, opts, redact: d.redact, firstByteTimeoutMs: remaining, requestId, held, ...(onFirstByte === undefined ? {} : { onFirstByte }) });
       } catch (e) {
         if (opts.signal.aborted) throw opts.signal.reason;
         // Typed errors (HTTP/stream errors, renderer-callback bugs via notify) keep their class; anything
@@ -429,7 +490,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       let out: StreamOutcome;
       try {
         // TUI-DESIGN §15.2 `provider/openrouter.ts`: GenerateOptions.onRetry / wake thread into withRetry (§13.2)
-        out = await withRetry(d, opts.signal, () => limited.track(() => attempt(body, opts, held)), opts);
+        out = await withRetry(d, opts.signal, () => limited.track(() => attempt(body, opts, held, req.agent !== undefined ? cfg.model : null)), opts);
       } catch (e) {
         // §4.8: `held.partial` is set only by an abort that landed on an open stream (never before the headers), and only the
         // abort reason reaches here then. onCancelled runs outside withRetry and attempt, whose catches rethrow signal.reason
@@ -444,7 +505,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       // (cfg.priced, set by validateGenerator; absent = false) falls back to the table; an unpriced one
       // surfaces NaN so the engine can emit budget:unpriced (TUI-DESIGN §9.5 — the meter clamps NaN to 0
       // and figures render `$?`) instead of silently billing $0.
-      return {
+      const res: GenerateResult = {
         text: out.text,
         toolCalls: out.toolCalls,
         usage: toTokenUsage(out.tokens, out.cost ?? tablePrice(out.tokens), out.reasoningTokens),
@@ -455,7 +516,9 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
         ...(out.servedProvider !== null ? { servedProvider: out.servedProvider } : {}),
         // the chain hit the rate limiter and recovered: a fact for the round's classification, not a change to the result
         ...(limited.attempts > 0 ? { rateLimited: true } : {}),
+        ...(out.providerState !== undefined ? { providerState: out.providerState } : {}),
       };
+      return req.agent === undefined ? res : withUniqueCallIds(res, req.agent);
     },
   };
 }

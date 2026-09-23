@@ -65,6 +65,9 @@ export const XAI_QUIRKS: ChatQuirks = {
   seed: true,
   temperature: () => true,
   reasoning: (r) => (r === undefined ? null : xaiReasoning(r)),
+  // AGENT-LOOP-DESIGN §6.2 (agent requests only): the conversation id that keeps a session on one prompt cache
+  // (https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits); `reasoning_content` is counted, not replayed
+  sessionHeader: 'x-grok-conv-id',
 };
 
 export function createXaiProvider(cfg: ProviderConfig, deps: ProviderDeps): GenerationProvider {

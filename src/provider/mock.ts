@@ -14,7 +14,7 @@
  * untimed turn (the run trajectory, the default chat reply) never reaches it, so one `i === 0` is one timed stream.
  */
 import { ProviderHttpError } from '../errors.js';
-import type { CancelledGeneration, GenerateOptions, GenerateRequest, GenerateResult, MockProviderOptions, MockTurn, Provider, TokenUsage } from '../core/types.js';
+import type { CancelledGeneration, GenerateOptions, GenerateRequest, GenerateResult, MockProviderOptions, MockTurn, Provider, TokenUsage, ToolCall } from '../core/types.js';
 import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
 
 export const MOCK_DEFAULT_USAGE: TokenUsage = { inputTokens: 1000, outputTokens: 200, costUsd: 0, calls: 1 };
@@ -45,6 +45,11 @@ export interface MockProviderDeps {
   now?: () => number;
   /** the emission clock handed to `onEmit` (default `process.hrtime.bigint`, which shares a base with the typist's CLOCK_MONOTONIC_RAW record) */
   hrtimeNs?: () => bigint;
+  /**
+   * AGENT-LOOP-DESIGN §6.2 Mock: keep a copy of every request in `requests` (tests). Off by default, so a long `--mock`
+   * session, the bench and the perf harness hold no transcripts and pay no copy.
+   */
+  recordRequests?: boolean;
 }
 
 function nextTurn(opts: MockProviderOptions, req: GenerateRequest, index: number, genOpts: GenerateOptions): MockTurn {
@@ -64,17 +69,28 @@ function chunks(text: string, size: number | undefined): string[] {
   return out;
 }
 
-export function createMockProvider(opts: MockProviderOptions, deps: MockProviderDeps = {}): Provider {
+/**
+ * The mock with its request log (AGENT-LOOP-DESIGN §6.2 Mock: every request it was sent, in order, for assertions) — filled
+ * only under `MockProviderDeps.recordRequests`, with a deep copy taken at the call, so a caller that keeps appending to
+ * one `agent.messages` array cannot rewrite what an earlier call was sent.
+ */
+export type MockProvider = Provider & { readonly requests: readonly GenerateRequest[] };
+
+export function createMockProvider(opts: MockProviderOptions, deps: MockProviderDeps = {}): MockProvider {
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? monotonicNow;
   const hrtimeNs = deps.hrtimeNs ?? ((): bigint => process.hrtime.bigint());
   const model = opts.model ?? 'mock';
   let calls = 0;
+  const requests: GenerateRequest[] = [];
+  const record = deps.recordRequests === true;
 
   return {
     name: 'mock',
     model,
+    requests,
     async generate(req: GenerateRequest, genOpts: GenerateOptions): Promise<GenerateResult> {
+      if (record) requests.push(structuredClone(req));
       if (genOpts.signal.aborted) throw genOpts.signal.reason;
       const index = calls++;
       const turn = nextTurn(opts, req, index, genOpts);
@@ -85,6 +101,10 @@ export function createMockProvider(opts: MockProviderOptions, deps: MockProvider
       const timed = turn.deltas !== undefined;
       const text = timed ? (turn.deltas ?? []).join('') : (turn.text ?? '');
       const rawJson = turn.toolCall ? turn.toolCall.rawJson || JSON.stringify(turn.toolCall.input) : '';
+      // AGENT-LOOP-DESIGN §6.2 Mock: an agent turn's calls, each streamed per index after the legacy `toolCall`; ids kept on agent requests
+      const agent = req.agent !== undefined;
+      const many = (turn.toolCalls ?? []).map((c, i) => ({ ...c, rawJson: c.rawJson ?? JSON.stringify(c.input), id: c.id ?? `mock_call_${index + 1}_${i}` }));
+      const offset = turn.toolCall ? 1 : 0;
       const textPieces = timed ? [...(turn.deltas ?? [])] : chunks(text, opts.deltaChunkSize);
       const latency = turn.latencyMs ?? 0;
       // Spread the scripted latency evenly over the text deltas so the TUI sees a stream, not a burst after a pause; the
@@ -97,6 +117,11 @@ export function createMockProvider(opts: MockProviderOptions, deps: MockProvider
       let toolChars = 0;
       try {
         if (textPieces.length === 0 && latency > 0) await sleep(latency, genOpts.signal);
+        // §6.2 Mock: the scripted reasoning streams through `onReasoning` before the text
+        for (const piece of chunks(turn.reasoning ?? '', opts.deltaChunkSize)) {
+          if (genOpts.signal.aborted) throw genOpts.signal.reason;
+          genOpts.onReasoning?.(piece);
+        }
         for (const [i, piece] of textPieces.entries()) {
           if (timed) {
             deadline += gap;
@@ -113,6 +138,14 @@ export function createMockProvider(opts: MockProviderOptions, deps: MockProvider
           toolChars += piece.length;
           genOpts.onToolDelta?.(piece);
         }
+        for (const [i, c] of many.entries()) {
+          for (const piece of chunks(c.rawJson, opts.deltaChunkSize)) {
+            if (genOpts.signal.aborted) throw genOpts.signal.reason;
+            toolChars += piece.length;
+            genOpts.onToolDelta?.(piece);
+            genOpts.onToolCall?.({ index: offset + i, id: c.id, name: c.name, fragment: piece });
+          }
+        }
       } catch (e) {
         if (genOpts.signal.aborted) {
           // §4.8 like the HTTP providers: the facts streamed so far (no estimate — that is the engine's), then the reason. One
@@ -124,16 +157,19 @@ export function createMockProvider(opts: MockProviderOptions, deps: MockProvider
         }
         throw e;
       }
-      const toolCalls = turn.toolCall ? [{ name: turn.toolCall.name, input: turn.toolCall.input, rawJson }] : [];
+      const toolCalls: ToolCall[] = turn.toolCall ? [{ name: turn.toolCall.name, input: turn.toolCall.input, rawJson }] : [];
+      for (const c of many) toolCalls.push(agent ? { name: c.name, input: c.input, rawJson: c.rawJson, id: c.id } : { name: c.name, input: c.input, rawJson: c.rawJson });
       const usage: TokenUsage = { ...MOCK_DEFAULT_USAGE, ...turn.usage };
       return {
         text,
         toolCalls,
         usage,
         model,
-        stopReason: turn.stopReason ?? (turn.toolCall ? 'tool_use' : 'end_turn'),
+        stopReason: turn.stopReason ?? (toolCalls.length > 0 ? 'tool_use' : 'end_turn'),
         latencyMs: Math.max(latency, Math.round(now() - t0)),
         ...(turn.generationId !== undefined ? { generationId: turn.generationId } : {}),
+        // §6.2 Mock: the scripted reasoning state, echoed under the mock's name and configured model (agent requests only)
+        ...(agent && turn.providerState !== undefined ? { providerState: { provider: 'mock' as const, model, data: turn.providerState } } : {}),
       };
     },
   };

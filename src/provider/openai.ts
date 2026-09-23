@@ -31,12 +31,19 @@
  *    request is refused here, before the fetch, rather than sent as a guaranteed 400.
  *  - `reasoning_effort: 'max'` is a 400 on `/chat/completions` for both gpt-5.6-terra and gpt-6-astra but a 200 on
  *    `/v1/responses` for both, so the chat surface has its own word list (`openAiChatEfforts`).
+ *  - AGENT-LOOP-DESIGN §6.2: an agent turn on a reasoning model asks for `reasoning.summary: 'auto'` (what streams the
+ *    summary deltas to `onReasoning`). OpenAI serves summaries only to a VERIFIED organization: an unverified one gets a
+ *    non-retryable `400 Your organization must be verified to generate reasoning summaries` (param `reasoning.summary`;
+ *    reported against gpt-5.x in litellm #16032 and OpenHands #11527 — this project's key is verified, so it was never
+ *    seen live). `createOpenAiProvider` therefore retries such a 400 once without `summary` and sends none for the rest
+ *    of the provider's life. Encrypted reasoning is likewise asked for (`include`) only on a reasoning model: a
+ *    non-reasoning id (gpt-4.1 / gpt-4o) rejects it with a 400.
  */
 import { ProviderHttpError } from '../errors.js';
-import { parseJson } from '../core/json.js';
-import type { GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, JsonObject, ToolCall, ToolChoice, ToolSpec } from '../core/types.js';
+import { isJsonObject, parseJson } from '../core/json.js';
+import type { AgentRequest, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, JsonObject, ToolCall, ToolChoice, ToolSpec } from '../core/types.js';
 import { checkOpenAiStrict } from './schema.js';
-import { createCaller, getJson, joinUrl, openAiErrorFields, runGeneration, sortModels, validateGenerateRequest } from './http.js';
+import { agentCallId, agentReasoning, assistantParts, createCaller, emitToolCall, getJson, joinUrl, objectInput, openAiErrorFields, replayData, runGeneration, sortModels, userParts, validateGenerateRequest, withUniqueCallIds } from './http.js';
 import type { ConsumeContext, HeldPartial } from './http.js';
 import { createChatProvider, effortOf, pickEffort } from './openai-compat.js';
 import type { ChatQuirks, ChatRequestBody, EffortWord } from './openai-compat.js';
@@ -111,7 +118,15 @@ export function openAiReasoningEffort(r: GenerateReasoning, model: string): Effo
 // ---------------------------------------------------------------------------------------
 
 export type ResponsesContentPart = { type: 'input_text'; text: string } | { type: 'output_text'; text: string };
-export type ResponsesInputItem = { type: 'message'; role: 'user' | 'assistant'; content: ResponsesContentPart[] };
+/**
+ * An input item: the legacy text message, or an agent item (AGENT-LOOP-DESIGN §6.2) — a replayed `reasoning` output item
+ * (verbatim JSON, `encrypted_content` included), a `function_call` by `call_id`, a `function_call_output`.
+ */
+export type ResponsesInputItem =
+  | { type: 'message'; role: 'user' | 'assistant'; content: ResponsesContentPart[] }
+  | { type: 'function_call'; call_id: string; name: string; arguments: string; id?: string }
+  | { type: 'function_call_output'; call_id: string; output: string }
+  | JsonObject;
 export type ResponsesToolWire = { type: 'function'; name: string; description: string; parameters: JsonObject; strict?: true };
 export type ResponsesToolChoiceWire = 'auto' | 'required' | 'none' | { type: 'function'; name: string };
 export type ResponsesRequestBody = {
@@ -124,19 +139,30 @@ export type ResponsesRequestBody = {
   parallel_tool_calls?: false;
   /** includes hidden reasoning tokens: a small budget can be eaten by thinking (`incomplete_details.reason`) */
   max_output_tokens: number;
-  reasoning?: { effort: EffortWord };
+  /** agent requests add `summary: 'auto'`, which is what streams `response.reasoning_summary_text.delta` to `onReasoning` */
+  reasoning?: { effort?: EffortWord; summary?: 'auto' };
   /** false keeps the request out of the 30-day store (and disables `previous_response_id`, which the harness never uses) */
   store: false;
   stream: true;
   temperature?: number;
+  /** agent with replay on: the reasoning items come back with `encrypted_content`, the only way to replay them with `store: false` */
+  include?: ['reasoning.encrypted_content'];
+  /** agent: `AgentRequest.cacheKey` */
+  prompt_cache_key?: string;
 };
+
+/** Agent requests only: `reasoningSummary: false` leaves `reasoning.summary` out (the unverified-organization fallback in the module header). */
+export interface ResponsesAgentOptions {
+  reasoningSummary?: boolean;
+}
 
 /**
  * Exported so tests can assert the exact wire body. The harness's history is plain text, so the input is a flat list of
  * message items — `input_text` parts for the user turns and `output_text` parts for the assistant ones (the shape a
  * stored conversation replays; verified live with a three-message history).
  */
-export function buildResponsesBody(cfg: ProviderConfig, req: GenerateRequest): ResponsesRequestBody {
+export function buildResponsesBody(cfg: ProviderConfig, req: GenerateRequest, agentOpts: ResponsesAgentOptions = {}): ResponsesRequestBody {
+  if (req.agent !== undefined) return buildResponsesAgentBody(cfg, req, req.agent, agentOpts.reasoningSummary !== false);
   const body: ResponsesRequestBody = {
     model: cfg.model,
     input: req.messages.map((m) => ({
@@ -163,6 +189,63 @@ export function buildResponsesBody(cfg: ProviderConfig, req: GenerateRequest): R
   return body;
 }
 
+/**
+ * AGENT-LOOP-DESIGN §6.2, OpenAI Responses row: the transcript as input items — per assistant turn its replayed reasoning
+ * items (same configured model only), an `output_text` message when it has prose, a `function_call` per call; per user
+ * turn a `function_call_output` per result, then an `input_text` message for the texts. `include` asks for the encrypted
+ * reasoning while replay is on (reasoning models only); `prompt_cache_key` = the session; no `parallel_tool_calls` unless
+ * one call per turn. `summary` asks a reasoning model for its summary deltas unless the organization refused them.
+ */
+function buildResponsesAgentBody(cfg: ProviderConfig, req: GenerateRequest, a: AgentRequest, summary: boolean): ResponsesRequestBody {
+  const input: ResponsesInputItem[] = [];
+  for (const m of a.messages) {
+    if (m.role === 'user') {
+      const { results, texts } = userParts(m.content);
+      for (const r of results) input.push({ type: 'function_call_output', call_id: r.toolUseId, output: r.content });
+      if (texts.length > 0) input.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: texts.join('\n\n') }] });
+      continue;
+    }
+    const { text, calls } = assistantParts(m.content);
+    const msg: ResponsesInputItem | null = text.length > 0 ? { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] } : null;
+    const fcs = new Map(calls.map((c) => [c.id, { type: 'function_call' as const, call_id: c.id, name: c.name, arguments: JSON.stringify(objectInput(c.input)) }]));
+    const data = replayData(a, m, 'openai', cfg.model);
+    const stored = isJsonObject(data) && Array.isArray(data['output']) ? data['output'].filter(isJsonObject) : [];
+    // the captured output order: reasoning items verbatim where they were, the message and the calls at their markers
+    let msgPlaced = false;
+    for (const s of stored) {
+      if (s['type'] === 'reasoning') input.push(s);
+      else if (s['type'] === 'message' && msg !== null && !msgPlaced) {
+        input.push(msg);
+        msgPlaced = true;
+      } else if (s['type'] === 'function_call') {
+        const callId = getStr(s, 'call_id') ?? '';
+        const fc = fcs.get(callId);
+        if (fc === undefined) continue;
+        const itemId = getStr(s, 'id');
+        input.push(itemId !== null ? { ...fc, id: itemId } : fc);
+        fcs.delete(callId);
+      }
+    }
+    if (msg !== null && !msgPlaced) input.push(msg);
+    input.push(...fcs.values());
+  }
+  const body: ResponsesRequestBody = { model: cfg.model, input, max_output_tokens: req.maxTokens, store: false, stream: true };
+  if (req.system.length > 0) body.instructions = req.system;
+  if (req.tools && req.tools.length > 0) {
+    body.tools = req.tools.map(responsesTool);
+    if (req.toolChoice !== undefined) body.tool_choice = responsesToolChoice(req.toolChoice);
+    if (!a.parallelToolCalls) body.parallel_tool_calls = false;
+  }
+  if (req.temperature !== null && openAiAcceptsTemperature(cfg.model)) body.temperature = req.temperature;
+  const reasoning = agentReasoning(req);
+  const effort = reasoning === undefined ? null : openAiReasoningEffort(reasoning, cfg.model);
+  const reasons = openAiEfforts(cfg.model) !== null;
+  if (reasons && (effort !== null || summary)) body.reasoning = { ...(effort !== null ? { effort } : {}), ...(summary ? { summary: 'auto' as const } : {}) };
+  if (reasons && a.replayReasoning) body.include = ['reasoning.encrypted_content'];
+  if (a.cacheKey.length > 0) body.prompt_cache_key = a.cacheKey;
+  return body;
+}
+
 function responsesTool(t: ToolSpec): ResponsesToolWire {
   const tool: ResponsesToolWire = { type: 'function', name: t.name, description: t.description, parameters: t.inputSchema };
   if (checkOpenAiStrict(t.inputSchema).ok) tool.strict = true;
@@ -184,6 +267,11 @@ interface CallAcc {
   args: string;
   /** `response.function_call_arguments.done` / the finished item: authoritative over the deltas */
   finalArgs: string | null;
+  /** AGENT-LOOP-DESIGN §6.2: the item's `call_id` (what a `function_call_output` answers) and its `fc_…` item id */
+  callId: string;
+  itemId: string;
+  /** the call's position in `GenerateResult.toolCalls` (the `onToolCall` index) */
+  ordinal: number;
 }
 
 interface RespState {
@@ -194,15 +282,20 @@ interface RespState {
   model: string | null;
   generationId: string | null;
   calls: Map<number, CallAcc>;
-  order: number[];
+  list: CallAcc[];
   tokens: TokenBreakdown;
   reasoningTokens: number | null;
   sawUsage: boolean;
   status: string | null;
   incompleteReason: string | null;
+  /** AGENT-LOOP-DESIGN §6.1: the configured model when this is an agent request; null for legacy */
+  agentModel: string | null;
+  /** agent: the finished output items by `output_index`, and the terminal event's output array (the authority when present) */
+  items: Map<number, JsonObject>;
+  terminalOutput: JsonObject[] | null;
 }
 
-function newRespState(): RespState {
+function newRespState(agentModel: string | null): RespState {
   return {
     text: '',
     refusal: '',
@@ -211,23 +304,42 @@ function newRespState(): RespState {
     model: null,
     generationId: null,
     calls: new Map(),
-    order: [],
+    list: [],
     tokens: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 },
     reasoningTokens: null,
     sawUsage: false,
     status: null,
     incompleteReason: null,
+    agentModel,
+    items: new Map(),
+    terminalOutput: null,
   };
 }
 
-function accFor(st: RespState, index: number): CallAcc {
+/** The call at `output_index`; on an agent request an item with a different non-empty `call_id` at the same index starts a new call (§6.2). */
+function accFor(st: RespState, index: number, callId: string | null = null): CallAcc {
   let acc = st.calls.get(index);
-  if (!acc) {
-    acc = { name: '', args: '', finalArgs: null };
+  if (!acc || (st.agentModel !== null && callId !== null && callId.length > 0 && acc.callId.length > 0 && acc.callId !== callId)) {
+    acc = { name: '', args: '', finalArgs: null, callId: '', itemId: '', ordinal: st.list.length };
     st.calls.set(index, acc);
-    st.order.push(index);
+    st.list.push(acc);
   }
+  if (callId !== null && callId.length > 0) acc.callId = callId;
   return acc;
+}
+
+/**
+ * §6.2: an output item as the replay state keeps it — a reasoning item verbatim, and only with `encrypted_content` (the
+ * one form `store: false` can replay); position markers for the message and each call.
+ */
+function replayMarker(item: JsonObject): JsonObject | null {
+  const type = getStr(item, 'type');
+  if (type === 'reasoning') return typeof item['encrypted_content'] === 'string' ? item : null;
+  if (type === 'message') return { type: 'message' };
+  const callId = getStr(item, 'call_id');
+  if (type !== 'function_call' || callId === null) return null;
+  const id = getStr(item, 'id');
+  return id !== null ? { type: 'function_call', call_id: callId, id } : { type: 'function_call', call_id: callId };
 }
 
 /** `{"type": "error", ...}` after a 200, and `response.failed`'s `response.error`: both map to an HTTP-shaped failure. */
@@ -272,10 +384,11 @@ function readResponseObject(resp: JsonObject | null, st: RespState, ctx: Consume
   // Same rule as the `response.output_item.done` path below: non-empty wins, nothing else overwrites.
   const output = getArr(resp, 'output');
   if (output) {
+    if (st.agentModel !== null && output.length > 0) st.terminalOutput = output.filter(isJsonObject);
     for (const [i, item] of output.entries()) {
       if (typeof item !== 'object' || item === null || Array.isArray(item)) continue;
       if (getStr(item, 'type') !== 'function_call') continue;
-      const acc = accFor(st, i);
+      const acc = accFor(st, i, getStr(item, 'call_id'));
       acc.name = getStr(item, 'name') ?? acc.name;
       const args = getStr(item, 'arguments');
       if (args !== null && args.length > 0) acc.finalArgs = args;
@@ -283,14 +396,24 @@ function readResponseObject(resp: JsonObject | null, st: RespState, ctx: Consume
   }
 }
 
+/** Agent requests only: the turn's reasoning state — the output in order (reasoning items verbatim) — or undefined when it carried no replayable reasoning. */
+function respReplayState(st: RespState): ProviderOutcome['providerState'] {
+  if (st.agentModel === null) return undefined;
+  const items = st.terminalOutput ?? [...st.items.entries()].sort((x, y) => x[0] - y[0]).map(([, item]) => item);
+  const output = items.map(replayMarker).filter((m): m is JsonObject => m !== null);
+  return output.some((m) => m['type'] === 'reasoning') ? { provider: 'openai', model: st.agentModel, data: { output } } : undefined;
+}
+
 function respOutcome(st: RespState): ProviderOutcome {
-  const toolCalls: ToolCall[] = st.order.map((i) => {
-    const acc = st.calls.get(i)!;
+  const toolCalls: ToolCall[] = st.list.map((acc) => {
     const raw = acc.finalArgs ?? acc.args;
     const args = raw.length > 0 ? raw : '{}';
     const p = parseJson(args);
-    return { name: acc.name, input: p.ok ? p.value : null, rawJson: args };
+    const call: ToolCall = { name: acc.name, input: p.ok ? p.value : null, rawJson: args };
+    if (st.agentModel !== null) call.id = agentCallId(acc.callId, acc.ordinal);
+    return call;
   });
+  const providerState = respReplayState(st);
   const refused = st.refusal.length > 0 && st.text.length === 0;
   let stopReason: string;
   if (st.status === 'incomplete') stopReason = st.incompleteReason === 'max_output_tokens' ? 'length' : (st.incompleteReason ?? 'incomplete');
@@ -307,6 +430,7 @@ function respOutcome(st: RespState): ProviderOutcome {
     generationId: st.generationId,
     servedProvider: null,
     stopReason,
+    ...(providerState !== undefined ? { providerState } : {}),
   };
 }
 
@@ -324,8 +448,8 @@ function respHeld(st: RespState): StreamPartial {
   };
 }
 
-async function consumeResponses(stream: ReadableStream<Uint8Array>, ctx: ConsumeContext): Promise<ProviderOutcome> {
-  const st = newRespState();
+async function consumeResponses(stream: ReadableStream<Uint8Array>, ctx: ConsumeContext, agentModel: string | null): Promise<ProviderOutcome> {
+  const st = newRespState(agentModel);
   let terminal = false;
   try {
     for await (const rec of parseSse(stream, { signal: ctx.opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs, ...(ctx.onFirstByte === undefined ? {} : { onFirstByte: ctx.onFirstByte }) })) {
@@ -347,12 +471,18 @@ async function consumeResponses(stream: ReadableStream<Uint8Array>, ctx: Consume
         case 'response.output_item.added':
         case 'response.output_item.done': {
           const item = getObj(ev, 'item');
+          const outputIndex = getNum(ev, 'output_index');
           if (getStr(item, 'type') === 'function_call') {
-            const acc = accFor(st, getNum(ev, 'output_index') ?? st.order.length);
+            const acc = accFor(st, outputIndex ?? st.list.length, getStr(item, 'call_id'));
+            const named = acc.name.length === 0;
             acc.name = getStr(item, 'name') ?? acc.name;
+            acc.itemId = getStr(item, 'id') ?? acc.itemId;
             const args = getStr(item, 'arguments');
             if (type === 'response.output_item.done' && args !== null && args.length > 0) acc.finalArgs = args;
+            // §6.1: the call is named before its first argument fragment
+            if (named && acc.name.length > 0) emitToolCall(ctx.opts, acc.ordinal, acc.callId, acc.name, '');
           }
+          if (type === 'response.output_item.done' && st.agentModel !== null && item !== null && outputIndex !== null) st.items.set(outputIndex, item);
           break;
         }
         case 'response.output_text.delta': {
@@ -373,6 +503,7 @@ async function consumeResponses(stream: ReadableStream<Uint8Array>, ctx: Consume
             acc.args += d;
             st.toolChars += d.length;
             notify(ctx.opts.onToolDelta, d);
+            emitToolCall(ctx.opts, acc.ordinal, acc.callId, acc.name, d);
           }
           break;
         }
@@ -384,10 +515,13 @@ async function consumeResponses(stream: ReadableStream<Uint8Array>, ctx: Consume
           break;
         }
         case 'response.reasoning_text.delta':
-        case 'response.reasoning_summary_text.delta':
-          // thinking text: measured for §4.8, never rendered
-          st.reasoningChars += (getStr(ev, 'delta') ?? '').length;
+        case 'response.reasoning_summary_text.delta': {
+          // thinking text: measured for §4.8, never rendered; AGENT-LOOP-DESIGN §6.2: it streams to `onReasoning`
+          const d = getStr(ev, 'delta') ?? '';
+          st.reasoningChars += d.length;
+          if (d.length > 0) notify(ctx.opts.onReasoning, d);
           break;
+        }
         case 'response.completed':
         case 'response.incomplete':
           readResponseObject(getObj(ev, 'response'), st, ctx);
@@ -466,6 +600,8 @@ export const OPENAI_CHAT_QUIRKS: ChatQuirks = {
     return effort === null ? null : { reasoning_effort: effort };
   },
   extras: { store: false },
+  // AGENT-LOOP-DESIGN §6.2 (agent requests only): the session id as `prompt_cache_key`
+  promptCacheKey: true,
 };
 
 // ---------------------------------------------------------------------------------------
@@ -477,21 +613,49 @@ export interface OpenAiProviderOptions {
   api?: 'responses' | 'chat';
 }
 
+/**
+ * The unverified-organization 400 (module header): `Your organization must be verified to generate reasoning summaries`,
+ * param `reasoning.summary`. Matched on "summar" in the message or the body, so an unrelated verification 400 (streaming
+ * a model the organization is not verified for) is not mistaken for it and does not switch summaries off.
+ */
+export function isReasoningSummaryRejection(e: unknown): boolean {
+  return e instanceof ProviderHttpError && e.status === 400 && /summar/i.test(`${e.message}\n${e.body}`);
+}
+
+/** AGENT-LOOP-DESIGN §6.1: the Responses replay markers that carry a call id (`replayMarker`), renamed with the call. */
+const RESPONSES_CALL_MARKERS = { list: 'output', type: 'function_call', key: 'call_id' } as const;
+
 export function createOpenAiProvider(cfg: ProviderConfig, deps: ProviderDeps, opts: OpenAiProviderOptions = {}): GenerationProvider {
   if ((opts.api ?? 'responses') === 'chat') return createChatProvider(OPENAI_CHAT_QUIRKS, cfg, deps);
   const d = resolveDeps(deps);
   const caller = createCaller(d);
   const url = joinUrl(cfg.baseUrl, '/responses');
+  // set by the first unverified-organization 400: every later agent turn of this provider omits `reasoning.summary`
+  let summaryOff = false;
 
   return {
     name: 'openai',
     model: cfg.model,
     async generate(req: GenerateRequest, genOpts: GenerateOptions): Promise<GenerateResult> {
       validateGenerateRequest('openai', req);
-      const body = JSON.stringify(buildResponsesBody(cfg, req));
-      const attempt = (held: HeldPartial): Promise<ProviderOutcome> =>
-        caller.attempt({ label: 'openai', url, headers: { authorization: `Bearer ${cfg.apiKey}` }, body, readError: openAiErrorFields, consume: consumeResponses }, genOpts, held);
-      return runGeneration(d, cfg, genOpts, attempt);
+      const agentModel = req.agent === undefined ? null : cfg.model;
+      const run = (wire: ResponsesRequestBody): Promise<GenerateResult> => {
+        const body = JSON.stringify(wire);
+        const attempt = (held: HeldPartial): Promise<ProviderOutcome> =>
+          caller.attempt({ label: 'openai', url, headers: { authorization: `Bearer ${cfg.apiKey}` }, body, readError: openAiErrorFields, consume: (stream, ctx) => consumeResponses(stream, ctx, agentModel) }, genOpts, held);
+        return runGeneration(d, cfg, genOpts, attempt);
+      };
+      if (req.agent === undefined) return run(buildResponsesBody(cfg, req));
+      const wire = buildResponsesBody(cfg, req, { reasoningSummary: !summaryOff });
+      let res: GenerateResult;
+      try {
+        res = await run(wire);
+      } catch (e) {
+        if (wire.reasoning?.summary === undefined || genOpts.signal.aborted || !isReasoningSummaryRejection(e)) throw e;
+        summaryOff = true;
+        res = await run(buildResponsesBody(cfg, req, { reasoningSummary: false }));
+      }
+      return withUniqueCallIds(res, req.agent, RESPONSES_CALL_MARKERS);
     },
   };
 }

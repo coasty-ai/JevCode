@@ -65,6 +65,10 @@ export const FIREWORKS_QUIRKS: ChatQuirks = {
   temperature: () => true,
   reasoning: (r) => (r === undefined ? null : fireworksReasoning(r)),
   extras: { context_length_exceeded_behavior: 'error' },
+  // AGENT-LOOP-DESIGN §6.2 (agent requests only): session affinity for the prompt cache (https://docs.fireworks.ai/guides/prompt-caching),
+  // and `reasoning_content` captured and replayed on the assistant turn, which GLM's interleaved thinking needs (https://docs.fireworks.ai/guides/reasoning)
+  sessionHeader: 'x-session-affinity',
+  replayReasoningContent: true,
 };
 
 export function createFireworksProvider(cfg: ProviderConfig, deps: ProviderDeps): GenerationProvider {
