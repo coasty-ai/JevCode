@@ -30,7 +30,7 @@ import type {
 } from '../core/types.js';
 import { AbortError } from '../errors.js';
 import type { AgentActivity } from './anim/Indicator.js';
-import { STREAM_LOCAL_MS, createStreamScheduler } from './stream-scheduler.js';
+import { STREAM_LOCAL_MS, createStreamScheduler, paintsImmediately } from './stream-scheduler.js';
 import { EMPTY_REPLY, commitCut, commitOverflow, commitThrough, lastVisibleItem, type ReplyGeometry, type ReplyState } from './reply-state.js';
 import type { OverlayKind } from './layout.js';
 import { emptyLoopFold, foldLoopPlan, foldLoopReplan, foldLoopSteer, foldLoopStep, loopView, type LoopBannerView, type LoopFold } from './pane/banner.js';
@@ -107,12 +107,15 @@ export function visibleItems(items: readonly UiTranscriptItem[]): readonly UiTra
  * dirtied. Appends keep the array append-only; a soft-cap remount (`epoch`) starts a fresh one.
  */
 export function useVisibleItems(items: readonly UiTranscriptItem[], epoch: number): readonly UiTranscriptItem[] {
-  const ref = useRef<{ visible: readonly UiTranscriptItem[]; epoch: number }>({ visible: [], epoch });
-  const filtered = visibleItems(items);
+  const ref = useRef<{ visible: readonly UiTranscriptItem[]; epoch: number; items: readonly UiTranscriptItem[] | null }>({ visible: [], epoch, items: null });
   const prev = ref.current;
+  // TUI map top change 11: the items array only changes identity when rows are appended, so every other render (a
+  // spinner tick, a stream flush, a key) reuses the last filter instead of walking up to 20,000 items again
+  if (prev.items === items && prev.epoch === epoch) return prev.visible;
+  const filtered = visibleItems(items);
   const same = prev.epoch === epoch && prev.visible.length === filtered.length && (filtered.length === 0 || prev.visible[filtered.length - 1]?.key === filtered[filtered.length - 1]?.key);
   const visible = same ? prev.visible : filtered;
-  ref.current = { visible, epoch };
+  ref.current = { visible, epoch, items };
   return visible;
 }
 
@@ -1472,7 +1475,7 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
     let writing: AgentWriting | null = null;
     let agent = false;
     const scheduler = createStreamScheduler(
-      (leading) => dispatch({ type: 'live', text: buffer, toolChars, ...(agent ? { output, writing } : {}), ...(leading ? { paint: true as const } : {}) }),
+      (leading, quiet) => dispatch({ type: 'live', text: buffer, toolChars, ...(agent ? { output, writing } : {}), ...(paintsImmediately(leading, quiet) ? { paint: true as const } : {}) }),
       opts.flushMs ?? STREAM_LOCAL_MS,
     );
     const clearLive = (): void => {

@@ -144,6 +144,9 @@ export function glyphChars() {
     const end = src.indexOf('const ASCII: GlyphSet');
     if (start >= 0 && end > start) for (const m of src.slice(start, end).matchAll(/'([^'\\]*)'/g)) for (const ch of m[1]) if (ch.codePointAt(0) > 0x7e) set.add(ch);
   }
+  // AGENT-LOOP-DESIGN §A3: the status row's mini indicator draws the braille frames of `src/tui/anim/frames.ts`
+  const frames = join(ROOT, 'src', 'tui', 'anim', 'frames.ts');
+  if (existsSync(frames)) for (const m of readFileSync(frames, 'utf8').matchAll(/[⠀-⣿]/gu)) set.add(m[0]);
   return set;
 }
 

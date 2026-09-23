@@ -4,7 +4,7 @@
  * timer exists while nothing is waiting. A fake clock drives every case.
  */
 import { describe, expect, it } from 'vitest';
-import { STREAM_LOCAL_MS, STREAM_REDUCED_MS, STREAM_SSH_MS, createStreamScheduler, streamIntervalMs, type StreamClock } from '../../../src/tui/stream-scheduler.js';
+import { STREAM_LOCAL_MS, STREAM_PAINT_QUIET_MS, STREAM_REDUCED_MS, STREAM_SSH_MS, createStreamScheduler, paintsImmediately, streamIntervalMs, type StreamClock } from '../../../src/tui/stream-scheduler.js';
 
 function fakeClock(): StreamClock & { t: number; advance(ms: number): void; timers: number } {
   let t = 0;
@@ -125,6 +125,27 @@ describe('createStreamScheduler', () => {
     c.advance(200);
     expect(flushes).toEqual([true, false]);
     expect(c.timers).toBe(0);
+  });
+
+  it('a leading edge reports how long the stream was quiet; only a first token (≥ 200 ms of quiet) takes the immediate path', () => {
+    const c = fakeClock();
+    const seen: Array<[boolean, number]> = [];
+    const s = createStreamScheduler((leading, quiet) => seen.push([leading, quiet]), 33, c);
+    c.advance(1000);
+    s.poke();
+    expect(seen[0]![0]).toBe(true);
+    expect(seen[0]![1]).toBe(Number.POSITIVE_INFINITY);
+    c.advance(50);
+    s.poke();
+    expect(seen[1]).toEqual([true, 50]);
+    c.advance(10);
+    s.poke();
+    c.advance(40);
+    expect(seen[2]).toEqual([false, 0]);
+    expect(paintsImmediately(true, Number.POSITIVE_INFINITY)).toBe(true);
+    expect(paintsImmediately(true, STREAM_PAINT_QUIET_MS)).toBe(true);
+    expect(paintsImmediately(true, 50)).toBe(false);
+    expect(paintsImmediately(false, 10_000)).toBe(false);
   });
 
   it('a non-positive or non-finite interval falls back to the local cadence', () => {

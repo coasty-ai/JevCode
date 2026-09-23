@@ -168,6 +168,76 @@ describe('the agent reply block: prose streams in place and commits with zero ju
     expect(tail.match(/word1 /g)?.length).toBe(1);
   });
 
+  it('§A5: while the run is still a reply the console keeps the chat chrome (`(thinking…)`, `thinking` → `replying`, `step 0/–`); the first tool call brings the run chrome (steer placeholder, activity word, tool row)', async () => {
+    const m = mount(30, 100);
+    await tick(60);
+    youBubble(m, 'fix the test');
+    await feed(m, agentOpening('fix the test'));
+    let text = rowsOf(m.stdout.lastFrame()).join('\n');
+    expect(text).toContain('› (thinking…)');
+    expect(text).toMatch(/│ \S{1,3} thinking\s+step 0\/–/);
+    await feed(m, [{ type: 'generator:delta', step: 1, text: "I'll read the parser first." }]);
+    text = rowsOf(m.stdout.lastFrame()).join('\n');
+    expect(text).toMatch(/│ \S{1,3} replying\s+step 0\/–/);
+    expect(text).not.toContain('Type to steer the next step');
+    await feed(m, [
+      { type: 'assistant:text', step: 1, turn: 1, attempt: 1, text: "I'll read the parser first.", final: true },
+      { type: 'tool:call', step: 1, turn: 1, id: 'c1', name: 'read_file', summary: 'read_file calc/core.py', readOnly: true },
+    ]);
+    text = rowsOf(m.stdout.lastFrame()).join('\n');
+    expect(text).toContain('Type to steer the next step');
+    expect(text).toMatch(/│ \S{1,3} reading/);
+    // the live region names the call in flight — never a counter
+    expect(text).toContain('Read calc/core.py…');
+    expect(m.state()?.agent?.tools).toBe(true);
+  });
+
+  it('§A5 amendment: Esc and Ctrl-C on a still-replying run ABORT it (never pause); after the first tool call Esc pauses as today', async () => {
+    const aborts: string[] = [];
+    const pauses: number[] = [];
+    const stdout = new StubStdout(30, 100);
+    const stdin = new StubStdin();
+    const bus = createEventBus();
+    const bridge = createBridge(null, null);
+    // a clock the test moves: the Esc Esc window (2 s) must have passed before the last Esc, or it would read as Esc Esc
+    let clockMs = 1_000_000;
+    const instance = render(<App task="" resumeId={null} source={bus} confirmer={createTuiConfirmer()} onAbort={(r) => aborts.push(r)} mode="session" cwd="/tmp/proj" tickMs={0} now={() => clockMs} bridge={bridge} launch={STILL} env={{}} />, {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      debug: true,
+      exitOnCtrlC: false,
+      patchConsole: false,
+    });
+    unmounts.push(() => instance.unmount());
+    // a fake engine behind the bridge counts pause() calls
+    bridge.engine = { pause: () => pauses.push(1) } as unknown as NonNullable<Bridge['engine']>;
+    await tick(60);
+    for (const e of agentOpening('write a haiku')) bus.emit(e);
+    bus.emit({ type: 'generator:delta', step: 1, text: 'Autumn moon' });
+    await tick(300);
+    stdin.write('\x1b');
+    await tick(200);
+    expect(aborts).toEqual(['human_abort']);
+    expect(pauses).toEqual([]);
+    // a fresh run: Ctrl-C aborts once and does not arm an exit
+    bus.emit({ type: 'run:end', result: agentRunResult('human_abort', 0), exitCode: 130 });
+    for (const e of agentOpening('another')) bus.emit(e);
+    await tick(60);
+    stdin.write('\x03');
+    await tick(100);
+    expect(aborts).toEqual(['human_abort', 'human_abort']);
+    // a third run: after its first tool call Esc pauses (the run semantics)
+    bus.emit({ type: 'run:end', result: agentRunResult('human_abort', 0), exitCode: 130 });
+    for (const e of agentOpening('third')) bus.emit(e);
+    bus.emit({ type: 'tool:call', step: 1, turn: 1, id: 'c1', name: 'read_file', summary: 'read_file a.ts', readOnly: true });
+    await tick(100);
+    clockMs += 5_000;
+    stdin.write('\x1b');
+    await tick(200);
+    expect(pauses.length).toBe(1);
+    expect(aborts.length).toBe(2);
+  });
+
   it('a tool-less turn reads as chat: no step row, no `[run] finished`, the `[jevcode]` reply only (§A1)', async () => {
     const m = mount(30, 100);
     await tick(60);

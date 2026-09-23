@@ -58,7 +58,7 @@ import { wordmarkBoxRows, wordmarkFrame, wordmarkWanted, type WordmarkSetting } 
 import { MINI_NARROW_CELLS, MINI_WIDE_CELLS, agentIndicatorKind, indicatorKindFor, miniFrame, type IndicatorKind } from './anim/index.js';
 import { ReplyTail } from './ReplyTail.js';
 import { pendingItems, pendingRows } from './reply-state.js';
-import { STREAM_REDUCED_MS, createStreamScheduler, streamIntervalMs } from './stream-scheduler.js';
+import { STREAM_REDUCED_MS, createStreamScheduler, paintsImmediately, streamIntervalMs } from './stream-scheduler.js';
 import { nextPanel, parsePanelCommand } from './pane/commands.js';
 import { createBuffer, type Snapshot } from './composer/buffer.js';
 import { routeSend, routeSubmit, type SubmitDecision } from './composer/submit.js';
@@ -1445,7 +1445,8 @@ export function App(p: AppProps): React.JSX.Element {
       case 'exit':
         composer.clear();
         // TUI-DESIGN-3 §4.4 F14: `/exit` while a chat request is thinking cancels the request and exits (no confirm: nothing is live)
-        if (chatThinking(s)) {
+        // AGENT-LOOP-DESIGN §A5: likewise while an agent run is still a reply — nothing was changed or run, so no confirm
+        if (chatThinking(s) || agentReplyPhase(s)) {
           if (h) h.abort('human_abort');
           else p.onAbort('human_abort');
           exit(0);
@@ -3715,7 +3716,7 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
    */
   let liveText = '';
   const liveScheduler = createStreamScheduler(
-    (leading) => bridge.command({ type: 'dispatch', action: { type: 'live', text: liveText, ...(leading ? { paint: true as const } : {}) } }),
+    (leading, quiet) => bridge.command({ type: 'dispatch', action: { type: 'live', text: liveText, ...(paintsImmediately(leading, quiet) ? { paint: true as const } : {}) } }),
     launch.reducedMotion ? STREAM_REDUCED_MS : streamIntervalMs({ fps: launch.fps, ssh: launch.ssh === true }),
   );
   const trace = env['JEVCODE_TRACE'];
