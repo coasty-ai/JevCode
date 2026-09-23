@@ -4,6 +4,7 @@
  * summary and `seqAfter`; observe steps take no images while act steps take pre/post images; no Jev stage runs; the status names
  * the stage that runs NOW; a reply-only run stops `answered`; and the first provider request goes out before any sandbox command.
  */
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -215,15 +216,23 @@ describe('the agent seam through the real engine tail (§2.2, §15 S4)', () => {
     expect(p95).toBeLessThanOrEqual(50);
   });
 
-  it('§A1: the same path with the REAL checkpoint store, workspace and sandbox (a node workspace on disk): p95 ≤ 50 ms', async () => {
+  it('§A1: createEngine() → run() → first generate() with the REAL checkpoint store, workspace and sandbox (a git repo on disk): p95 ≤ 50 ms', async () => {
     const samples: number[] = [];
+    const runOnly: number[] = [];
     for (let i = 0; i < 8; i++) {
       const root = mkdtempSync(join(tmpdir(), 'jevcode-agent-real-'));
       const ws = join(root, 'ws');
       mkdirSync(join(ws, 'src'), { recursive: true });
       writeFileSync(join(ws, 'package.json'), '{"name":"x","type":"module","scripts":{"test":"node --test"}}\n');
       writeFileSync(join(ws, 'src', 'math.js'), 'export const sum = (xs) => xs.reduce((a, b) => a + b, 0);\n');
+      // a committed repository, as a real workspace is (the harness's git probe is part of what is timed)
+      const git = (...args: string[]): void => void execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd: ws, stdio: 'ignore' });
+      git('init', '-q');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'init');
       const tools = createFakeToolProvider([{ text: 'Hello!' }]);
+      // the clock starts BEFORE createEngine: the store, the workspace probe and the sandbox are the part of the harness that costs
+      const t0 = performance.now();
       const engine = await createEngine({
         task: 'hi',
         mode: 'agent',
@@ -243,16 +252,18 @@ describe('the agent seam through the real engine tail (§2.2, §15 S4)', () => {
         deciderModel: { configured: 'typesafe/jev-1.13-20260917', pinned: true },
         agent: createScriptedAgentDriver(),
       });
-      const t0 = performance.now();
+      const t1 = performance.now();
       const r = await engine.run();
       expect(r.stopReason).toBe('answered');
       samples.push(tools.firstRequestAt! - t0);
+      runOnly.push(tools.firstRequestAt! - t1);
       rmSync(root, { recursive: true, force: true });
     }
     const steady = samples.slice(2);
     const p95 = percentile(steady, 95) ?? Number.POSITIVE_INFINITY;
     const p50 = percentile(steady, 50) ?? Number.POSITIVE_INFINITY;
-    console.info(`agent seam (real store/workspace/sandbox): run() → first generate() p50 ${p50.toFixed(2)} ms, p95 ${p95.toFixed(2)} ms over ${steady.length} runs`);
+    const runP95 = percentile(runOnly.slice(2), 95) ?? Number.POSITIVE_INFINITY;
+    console.info(`agent seam (real store/workspace/sandbox, git repo): createEngine() → first generate() p50 ${p50.toFixed(2)} ms, p95 ${p95.toFixed(2)} ms over ${steady.length} runs (run() → first generate() p95 ${runP95.toFixed(2)} ms)`);
     expect(p95).toBeLessThanOrEqual(50);
   });
 });
