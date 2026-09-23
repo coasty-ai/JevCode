@@ -11,6 +11,8 @@
  *  - `runGeneration` — the retry chain (`withRetry`, 3 attempts, Retry-After or jittered backoff, every sleep ending on
  *    the sample's signal), the 429 ledger, LLM-JEV-DESIGN §4.8's `onCancelled` (streamed-so-far facts, or the
  *    rate-limited record when no stream ever opened) and the `GenerateResult` assembly (§4.12 fields included).
+ *  - the agent half (AGENT-LOOP-DESIGN §6.1-§6.2) that all seven adapters share, anthropic.ts and openrouter.ts included:
+ *    transcript validation, the replay rule, the chat-completions tool-call stream, unique call ids.
  *
  * Nothing here knows a wire shape: a client passes a `consume` that turns its own stream into a `ProviderOutcome`.
  */

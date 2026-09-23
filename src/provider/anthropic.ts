@@ -2,7 +2,8 @@
  * Anthropic Messages API client over raw fetch + SSE (DESIGN.md §7, research 07 §1, §4, §5).
  * No SDK: the project allows Node built-ins only. Streams text to `onDelta`, tool-input JSON
  * fragments to `onToolDelta`, parses tool inputs once at the end, prices from `cfg.pricing`.
- * LLM-JEV-DESIGN §4.12: ignores `seed` / `reasoning` / `providerPrefs`; surfaces `message.id` as `generationId`;
+ * LLM-JEV-DESIGN §4.12: ignores `seed` / `reasoning` / `providerPrefs` (an agent request, AGENT-LOOP-DESIGN §6.2, maps
+ * `reasoning.effort` to `output_config.effort` — `buildAgentBody`); surfaces `message.id` as `generationId`;
  * §4.8: a cancelled stream's facts (message id, streamed sizes) go to `onCancelled` like openrouter.ts (no `servedProvider`).
  */
 import { JevCodeError, ProviderHttpError } from '../errors.js';
