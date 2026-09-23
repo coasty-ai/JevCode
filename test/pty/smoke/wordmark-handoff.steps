@@ -1,5 +1,6 @@
-# the hand-off (TUI-DESIGN-3 §3.2, §3.3): a task hides the mark for the whole run (no wordmark frame between `[run] start` and `end`), at
-# 24 rows the frame after `end` carries the strip AND the mark (F-W5); `/panel` opens the panel and the mark goes; `/panel off` brings it back
+# the hand-off, as amended by owner directive 2: the mark is PINNED, so a task keeps it up for the WHOLE run (a wordmark frame between
+# `[run] start` and `end`, and after `end` the strip AND the mark); at 24 rows (< WORDMARK_SHARE_MIN_ROWS) `/panel` still takes the slot
+# and `/panel off` gives it back
 expect \x1b\[\?25l
 expect Say hi
 expect sess \$
@@ -7,7 +8,7 @@ sleep 0.3
 send fix the failing test
 sleep 0.2
 send \r
-expect \[run\](?:\x1b\[[0-9;]*m)* start 
+expect step \d+/\d+
 expect finished [·-] (complete|max_steps|generator_done)
 expect Follow-up, question
 sleep 0.4

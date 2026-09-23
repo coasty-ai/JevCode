@@ -5,7 +5,7 @@ sleep 0.3
 send /budget session-spend-cap 15
 sleep 0.2
 send \r
-expect session cap \$10.00 → \$15.00 \(applies now\)
+expect session cap \$50.00 → \$15.00 \(applies now\)
 send make the tests pass
 sleep 0.2
 send \r

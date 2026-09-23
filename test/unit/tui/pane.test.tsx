@@ -106,8 +106,9 @@ describe('the brand prefix on the strip (TUI-DESIGN-4 §1.2 P-H1, D-T a)', () =>
       expect(cellWidth(branded), `${c}`).toBe(Math.min(c, 400));
       expect(cellWidth(plainStrip), `${c}`).toBe(Math.min(c, 400));
     }
-    expect(panelStrip(s(), 80, GLYPHS.unicode, { brand: true })).toBe('─── ◆ jevcode ─ ▸ jev s4 · 7 decisions · plan 2/5 ─────────── [d] [p] [t] [s] ──');
-    expect(panelStrip(s(), 120, GLYPHS.unicode, { brand: true })).toBe('─── ◆ jevcode ─ ▸ jev s4 · 7 decisions · plan 2/5 ────────────────────────── [d]ecisions [p]lan [t]imeline [s]ynth ─────');
+    // OWNER ADDENDUM: the collapsed strip is quiet — the hotkey legend is gone from it (the keys still work)
+    expect(panelStrip(s(), 80, GLYPHS.unicode, { brand: true })).toBe('─── ◆ jevcode ─ ▸ jev s4 · 7 decisions · plan 2/5 ──────────────────────────────');
+    expect(panelStrip(s(), 120, GLYPHS.unicode, { brand: true })).toBe('─── ◆ jevcode ─ ▸ jev s4 · 7 decisions · plan 2/5 ──────────────────────────────────────────────────────────────────────');
     // a MINIMAL strip (the state F-H1 and the `brand-strip` gate draw) keeps the brand from 64 columns up
     const bare = { ...paneState({ step: 4, rows: [], lastRisk: null, plan: null }), latencies: [] as readonly (number | null)[] };
     for (const c of [64, 66, 72, 80, 120, 200]) expect(panelStrip(bare, c, GLYPHS.unicode, { brand: true }), `${c}`).toContain('◆ jevcode');
@@ -241,10 +242,11 @@ describe('P-H1 edge 5 and the §1.3.2 position ladder', () => {
       expect(level, `${c}`).toBeGreaterThanOrEqual(worst);
       worst = level;
     }
-    // absent `position` keeps round 2's `[d] [p] [t] [s]` tail and never draws a rung
+    // OWNER ADDENDUM: absent `position` the classic strip is QUIET — no rung and no hotkey legend at all
     for (const c of [40, 44, 80, 120, 400]) {
       const classic = panelStrip(st(), c, GLYPHS.unicode, { brand: true });
-      expect(classic, `${c}`).toContain('[d] [p] [t] [s]'.slice(0, c >= 120 ? 3 : 15));
+      expect(classic, `${c}`).not.toContain('[d]');
+      expect(classic, `${c}`).toContain('▸ jev');
       for (const r of POS) expect(classic, `${c} ${r}`).not.toContain(r);
     }
   });
@@ -255,6 +257,6 @@ describe('P-H1 edge 5 and the §1.3.2 position ladder', () => {
     expect(ruleRowText(input({ columns: 44, position: POS }))).toBe(panelStrip(st(), 44, GLYPHS.unicode, { brand: true, position: POS }));
     // absent / null `position` is the classic tail, byte for byte
     expect(ruleRowText(input({ position: null }))).toBe(ruleRowText(input()));
-    expect(ruleRowText(input())).toContain('[d] [p] [t] [s]');
+    expect(ruleRowText(input())).not.toContain('[d]');
   });
 });

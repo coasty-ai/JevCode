@@ -9,7 +9,7 @@ sleep 0.3
 send make the tests pass
 sleep 0.2
 send \r
-expect \[run\](?:\x1b\[[0-9;]*m)* start 
+expect step \d+/\d+
 expect jev s\d+ · \d+ decisions
 send steer draft
 expect (?:›|>) (?:\x1b\[[0-9;]*m)*steer draft

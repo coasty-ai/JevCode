@@ -1,6 +1,6 @@
 # one-shot --mock: Ctrl-C while live = abort → exit 130 with a run:end and the epilogue (§3.3, §13.5)
 expect \x1b\[\?25l
-expect \[run\](?:\x1b\[[0-9;]*m)* start 
+expect step \d+/\d+
 sleep 0.3
 send \x03
 expect finished [·-] human_abort

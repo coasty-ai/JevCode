@@ -183,7 +183,7 @@ describe('finding 1: the thinking phase under `run: starting` (TUI-DESIGN-2 §3.
 });
 
 describe('finding 2: the rule row between Enter and the reply (TUI-DESIGN-2 §5.4; TUI-DESIGN-3 §3.2–3.3)', () => {
-  it('stays the plain rule with the mark for the whole submission and after a chat reply; run:start hides the mark and shows the brand row; the strip first appears at run:ready, not run:start', async () => {
+  it('stays the plain rule with the mark for the whole submission and after a chat reply; the PINNED mark survives run:start (the rule row stays plain); the strip first appears at run:ready, not run:start', async () => {
     const { host, release } = pendingHost();
     const m = mountApp({ mode: 'session', host });
     await settleSplash(m);
@@ -212,18 +212,21 @@ describe('finding 2: the rule row between Enter and the reply (TUI-DESIGN-2 §5.
     await waitFor(() => m.state()?.run === 'none');
     expect(ruleRow(m)).toBe(plain);
     expect(markShown(m)).toBe(true);
-    // run:start alone: the mark hides (§3.2: zero animation frames during a run) and the brand row takes the rule row (§5.4: until the first run:ready)
+    // owner directive 2: the mark is PINNED, so `run:start` no longer hands the slot back — the rule row stays the
+    // plain rule (the brand rides in the mark below it) until the first `run:ready` brings the strip
     m.bus.emit({ type: 'run:start', runId: 'r1', task: 'Fix the failing test', mode: 'jev-on', resumedFromStep: null });
     await waitFor(() => m.state()?.run === 'live');
-    await waitFor(() => BRAND_RE.test(ruleRow(m)));
-    expect(markShown(m)).toBe(false);
-    expect(dynamicLines(m.lastFrame())).toHaveLength(6);
+    await tick(60);
+    expect(markShown(m)).toBe(true);
+    expect(ruleRow(m)).toBe(plain);
+    expect(dynamicLines(m.lastFrame())).toHaveLength(11);
     m.bus.emit({ type: 'run:ready', runId: 'r1', step: 0, maxSteps: 40, task: 'Fix the failing test', resumed: false });
     // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H1 / D-T a): at `run:ready` the strip appears WITH the permanent
     // `◆ jevcode` prefix. The pre-`run:ready` assertions above (the plain rule, then the brand row) are unchanged.
     await waitFor(() => m.lastFrame().includes('─── ◆ jevcode ─ ▸ jev · no decisions yet'));
-    expect(ruleRow(m)).toMatch(/^─── ◆ jevcode ─ ▸ jev · no decisions yet ─+ \[d\] \[p\] \[t\] \[s\] ──$/);
-    expect(markShown(m)).toBe(false);
+    // owner addendum: the strip is a QUIET status row — no hotkey legend (the keys still work)
+    expect(ruleRow(m)).toMatch(/^─── ◆ jevcode ─ ▸ jev · no decisions yet ─+$/);
+    expect(markShown(m)).toBe(true);
   });
 });
 

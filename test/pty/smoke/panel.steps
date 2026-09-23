@@ -6,7 +6,7 @@ sleep 0.3
 send make the tests pass
 sleep 0.2
 send \r
-expect \[run\](?:\x1b\[[0-9;]*m)* start 
+expect step \d+/\d+
 expect finished [·-] (complete|max_steps|generator_done)
 expect ▸(?:\x1b\[[0-9;]*m)* jev s\d+ · \d+ decisions
 expect Follow-up, question

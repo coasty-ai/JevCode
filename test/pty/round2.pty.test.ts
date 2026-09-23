@@ -122,7 +122,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     const plain = stripAnsi(r.text);
     // §3.10: one item per line, the bubble labels verbatim; the `--mock` generator answers a chat request with one deterministic line
     expect(plain).toContain('[you] hi');
-    expect(plain).toMatch(/\[jevcode\] Hi — I'm JevCode \(mock reply\)\./);
+    expect(plain).toMatch(/\[jevcode\] Hi\. I'm JevCode \(mock reply\)\./);
     // never a card and never a blocked composer
     expect(plain).not.toContain('run this as a task?');
     expect(plain).not.toContain('(waiting for y/n)');
@@ -238,7 +238,9 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
-    expect(stripAnsi(r.text)).toMatch(/\[run\] started [·-] jev\+llm [·-] the date parsing/);
+    // owner addendum: the TUI no longer prints the `[run] started` row; transcript.log still does
+    expect(stripAnsi(r.text)).not.toMatch(/\[run\] started [·-] /);
+    expect(r.transcript()!.filter((l) => /^\[run\] started [·-] jev\+llm [·-] the date parsing/.test(l))).toHaveLength(1);
     expect(r.runDirs()).toHaveLength(1);
   });
 
@@ -385,9 +387,12 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
     expect(modeItem).not.toBeNull();
     // §1.5: pending badge before the run, promoted at `run:start` (the run's `mode=jev-on`), no ` · next run` afterwards
     expect(plain).toMatch(/^╭─ jev\+llm · next run ─/m);
-    expect(plain).toMatch(/\[run\] started [·-] jev\+llm [·-] fix the failing test/);
+    // owner addendum: the `[run] started` row is transcript.log-only now; the run's first FRAME is the one whose
+    // status row carries a numeric `step <n>/<max>`
+    expect(plain).not.toMatch(/\[run\] started [·-] /);
+    expect(r.transcript()!.filter((l) => /^\[run\] started [·-] jev\+llm [·-] fix the failing test/.test(l))).toHaveLength(1);
     const all = syncFrames(r.text);
-    const started = syncFramesWith(all, /^ *\[run\] started [·-] /);
+    const started = [all.findIndex((f) => f.dynamic.some((l) => /step \d+\/\d+/.test(l)))].filter((i) => i >= 0);
     expect(started.length).toBe(1);
     const afterStart = all.slice(started[0]!).filter((f) => f.dynamic.some((l) => l.startsWith('╭─ ')));
     expect(afterStart.length).toBeGreaterThan(0);
@@ -400,12 +405,18 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
   });
 });
 
+/**
+ * Owner directive 3: the padded branding box makes an idle boxed frame `rule 1 + (5 + 2p) + console 5` rows —
+ * 11 below 26 rows, 13 at 26–33, 15 from 34 up.
+ */
+const idleRows = (rows: number): number => 1 + (5 + 2 * (rows >= 34 ? 2 : rows >= 26 ? 1 : 0)) + 5;
+
 describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
   for (const [rows, cols] of [
     [24, 80],
     [40, 120],
   ] as const) {
-    it(`splash ${rows}x${cols}: frame 0 is the first frame (< 300 ms warm), a key at ~100 ms completes the reveal — the echo frame and every later idle frame carry the resting mark, no sweep head after the echo, 11 dynamic rows, zero clears (TUI-DESIGN-3 §3.3)`, async () => {
+    it(`splash ${rows}x${cols}: frame 0 is the first frame (< 300 ms warm), a key at ~100 ms completes the reveal — the echo frame and every later idle frame carry the resting mark, no sweep head after the echo, ${idleRows(rows)} dynamic rows, zero clears (TUI-DESIGN-3 §3.3)`, async () => {
       const r = await drive({ name: `r2-splash-${rows}x${cols}`, args: ['chat', '--mock'], rows, cols, steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'sleep 0.1', 'send h', echoStep('h'), 'sleep 0.3', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, IDLE_STEP, ...EXIT_IDLE] });
       expect(r.timeouts).toBe(0);
       expect(r.code).toBe(0);
@@ -419,7 +430,7 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
       expect(body.some((l) => /▓▒░/.test(l))).toBe(true);
       expect(body.some((l) => l.startsWith(`╭─ ${BADGE_DEFAULT_TEXT} `))).toBe(true);
       expect(body.at(-2)).toMatch(/step 0\/–/);
-      expect(frame!.rows).toBe(11);
+      expect(frame!.rows).toBe(idleRows(rows));
       for (const l of body.filter(isBoxEdge)) expect([...l].length).toBe(cols);
       // TUI-DESIGN-3 §3.3: a key completes the reveal — the echo frame shows the character AND the complete resting mark; no frame from the echo on carries the sweep head
       const echo = fs.findIndex((u) => u.lines.some((l) => /[›>] h/.test(l)));
@@ -428,8 +439,8 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
         expect(hasMark(u.lines.slice(u.ruleIndex))).toBe(true);
         expect(u.lines.some((l) => /▓▒░/.test(l))).toBe(false);
       }
-      // the idle frame: plain rule + 5-row mark + 5-row console = 11 dynamic rows (F-W1); the caption `◆ <version>` closes the mark's last row at ≥ 73 columns
-      expect(fs.at(-1)!.rows).toBe(11);
+      // the idle frame: plain rule + the padded box + 5-row console (F-W1); the caption `◆ <version>` closes the mark's last row at ≥ 73 columns
+      expect(fs.at(-1)!.rows).toBe(idleRows(rows));
       expect(fs.at(-1)!.lines[fs.at(-1)!.ruleIndex]).toMatch(/^─{10}/);
       expect(fs.at(-1)!.lines.slice(fs.at(-1)!.ruleIndex).some((l) => /█ {2}◆ \d+\.\d+\.\d+$/.test(l))).toBe(true);
       if (cols >= 104) expect(fs.at(-1)!.lines.slice(fs.at(-1)!.ruleIndex).some((l) => l.includes('Decisions, not strings'))).toBe(true);
@@ -477,23 +488,23 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     console.log(`splash settle: ${head.length} reveal frames, caption at frame ${caption}, ${settled} ms after the first frame, ${between.length} frame(s) in the 5 s after it`);
   });
 
-  it('run:start cancels the splash: a one-shot `run` starting before 700 ms leaves no wordmark frame while the run is live; the mark returns with `[run] end` (TUI-DESIGN-3 §3.2)', async () => {
+  it('run:start no longer cancels the mark: a one-shot `run` starting before 700 ms keeps the PINNED mark for the whole run (owner directive 2)', async () => {
     const r = await drive({ name: 'r2-splash-run-cancel', args: ['run', 'fix the failing test', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], steps: [...RUN_OPEN, 'mark started', 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text);
-    const started = syncFramesWith(all, /^ *\[run\] started [·-] /);
+    // owner addendum: the run's first frame is the one whose status row carries a numeric `step <n>/<max>`
+    const started = [all.findIndex((f) => f.dynamic.some((l) => /step \d+\/\d+/.test(l)))].filter((i) => i >= 0);
     expect(started.length).toBe(1);
-    // §5.3: `run:start` is a cancel row — no frame from the start item on draws a wordmark while the run is live; the frames before it
-    // may, and TUI-DESIGN-3 §3.2 (`run:end → idle`) brings the mark back at ≥ 24 rows in the frame that commits `[run] end`
+    // owner directive 2: `run:start` is no longer a cancel row — the mark is up in every frame from the start on
     const ended = all.findIndex((f) => f.lines.some((l) => /^ *\[run\] finished [·-] /.test(l)));
     expect(ended).toBeGreaterThan(started[0]!);
     const before = all.slice(0, started[0]!).filter((f) => f.dynamic.some((l) => WORDMARK_RE.test(l))).length;
-    for (const f of all.slice(started[0]!, ended)) expect(f.dynamic.some((l) => WORDMARK_RE.test(l))).toBe(false);
+    for (const f of all.slice(started[0]!, ended)) expect(f.dynamic.filter((l) => WORDMARK_RE.test(l)).length).toBe(5);
     expect(before).toBeLessThanOrEqual(SPLASH_MAX_FRAMES);
     expect(all.slice(ended).some((f) => f.dynamic.filter((l) => WORDMARK_RE.test(l)).length >= 5)).toBe(true);
     const t0 = timingOf(r.timing, 'expect', '25l')!.t;
-    const startAt = timingOf(r.timing, 'expect', 'start')!.t - t0;
+    const startAt = timingOf(r.timing, 'expect', 'step ')!.t - t0;
     expect(startAt).toBeLessThan(700);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
     console.log(`splash cancelled by run:start ${startAt} ms after the first frame; ${before} wordmark frames before it`);
@@ -548,8 +559,10 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
     expect(consoleTop - 1).toBeLessThanOrEqual(6);
     expect(dyn.some((l) => /… \d+ more rows · \/panel full expands/.test(l))).toBe(true);
     // the strip before and after: `▸ jev s<N> · <n> decisions …`
+    // owner addendum: the quiet strip has room for the `◆ jevcode` prefix at 80 columns now that the legend is gone
     const strip = fs.at(-1)!.lines[fs.at(-1)!.ruleIndex]!;
-    expect(strip).toMatch(/^─── ▸ jev s\d+ · \d+ decisions · risk /);
+    expect(strip).toMatch(/^─── (?:◆ jevcode ─ )?▸ jev s\d+ · \d+ decisions · risk /);
+    expect(strip).not.toMatch(/\[d\] \[p\] \[t\] \[s\]/);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 
@@ -701,7 +714,8 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
     expect(rows.some((l) => /^ *\[run\] ready /.test(l))).toBe(false);
     // identity (a): after stripAnsi, the rows equal formatTranscriptItem(item) word-wrapped — rebuilt against transcript.log with the
     // continuation indent dropped (the design's hanging indent of `label.length + 1` cells; a full-width wrap rebuilds the same way)
-    const transcript = r.transcript()!;
+    // owner addendum: the two run-header items are transcript.log-only now, so they are not among the TUI's rows
+    const transcript = r.transcript()!.filter((l) => !/^\[run\] started [·-] /.test(l) && !/^\[run\] git /.test(l));
     const reflow = reflowAgainst(rows, transcript, { hangingIndent: true });
     expect(reflow.mismatches).toEqual([]);
     expect(reflow.lines).toEqual(transcript);

@@ -13,7 +13,7 @@ sleep 0.5
 send start the fault run
 sleep 0.2
 send \r
-expect \[run\](?:\x1b\[[0-9;]*m)* started [·-] 
+expect step \d+/\d+
 send /panel
 sleep 0.2
 send \r

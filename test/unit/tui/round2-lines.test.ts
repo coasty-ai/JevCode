@@ -90,10 +90,11 @@ describe('panelStrip and PANEL_WIDE_COLUMNS (TUI-DESIGN-2 §4.6, §12 "Rule row"
   it('H-F1 / H-F1w: the strip at 80 and 120; long labels, the jev segment and the 5-rule tail only from 120', () => {
     expect(PANEL_WIDE_COLUMNS).toBe(120);
     const s = { ...paneState(), latencies: [244] };
-    expect(panelStrip(s, 80)).toBe('─── ▸ jev s7 · 12 decisions · risk 0.44 [review] ──────────── [d] [p] [t] [s] ──');
-    expect(panelStrip(s, 120)).toBe('─── ▸ jev s7 · 12 decisions · risk 0.44 [review] · plan 2/5 · jev 244ms ──── [d]ecisions [p]lan [t]imeline [s]ynth ─────');
+    // OWNER ADDENDUM: the collapsed strip lost the hotkey legend, so the freed width keeps one more pane segment
+    expect(panelStrip(s, 80)).toBe('─── ▸ jev s7 · 12 decisions · risk 0.44 [review] · plan 2/5 ────────────────────');
+    expect(panelStrip(s, 120)).toBe('─── ▸ jev s7 · 12 decisions · risk 0.44 [review] · plan 2/5 · jev 244ms ────────────────────────────────────────────────');
     for (const c of [100, 119]) {
-      expect(panelStrip(s, c)).toContain(' [d] [p] [t] [s] ──');
+      expect(panelStrip(s, c)).not.toContain('[d]');
       expect(panelStrip(s, c)).not.toContain('jev 244ms');
       expect(paneRuleRow(paneState(), 6, c, 'none', { chevron: true })).toContain('[t]ime [s]ynth ──');
       expect(cellWidth(panelStrip(s, c))).toBe(c);
@@ -105,13 +106,13 @@ describe('panelStrip and PANEL_WIDE_COLUMNS (TUI-DESIGN-2 §4.6, §12 "Rule row"
   });
   it('H-D1: `plan` stays when ≥ 4 rule cells separate it from the labels; segments drop from the right; `no decisions yet` before the first decision; every width 40..400 is exact', () => {
     const d1 = { ...paneState({ step: 3, rows: Array.from({ length: 9 }, (_, i) => row(3, `d${i}`)), lastRisk: { risk: 0.1, verdict: 'ok' }, plan: { step: 3, plan: { done: [{ text: 'a', evidence: { step: 1, judged: 0.9 } }], remaining: ['b', 'c'], unverified: [], harnessProblems: [], openProblems: [] } } }), latencies: [110] };
-    expect(panelStrip(d1, 80)).toBe('─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 ──────── [d] [p] [t] [s] ──');
-    expect(panelStrip(d1, 120)).toBe('─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 · jev 110ms ─────────── [d]ecisions [p]lan [t]imeline [s]ynth ─────');
-    expect(panelStrip(d1, 66)).toBe('─── ▸ jev s3 · 9 decisions · risk 0.10 ok ───── [d] [p] [t] [s] ──');
-    expect(panelStrip(d1, 64)).toBe('─── ▸ jev s3 · 9 decisions ────────────────── [d] [p] [t] [s] ──'); // 3 rule cells would separate `risk` from the labels: dropped
-    expect(panelStrip(d1, 60)).toBe('─── ▸ jev s3 · 9 decisions ────────────── [d] [p] [t] [s] ──');
-    expect(panelStrip(d1, 50)).toBe('─── ▸ jev s3 · 9 decisions ──── [d] [p] [t] [s] ──');
-    expect(panelStrip({ ...paneState({ rows: [], lastRisk: null }), latencies: [] }, 80)).toBe('─── ▸ jev · no decisions yet ──────────────────────────────── [d] [p] [t] [s] ──');
+    expect(panelStrip(d1, 80)).toBe('─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 ───────────────────────────');
+    expect(panelStrip(d1, 120)).toBe('─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 · jev 110ms ───────────────────────────────────────────────────────');
+    expect(panelStrip(d1, 66)).toBe('─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 ─────────────');
+    expect(panelStrip(d1, 64)).toBe('─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 ───────────');
+    expect(panelStrip(d1, 60)).toBe('─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 ───────');
+    expect(panelStrip(d1, 50)).toBe('─── ▸ jev s3 · 9 decisions · risk 0.10 ok ────────'); // `plan` would leave 3 rule cells at the end: dropped
+    expect(panelStrip({ ...paneState({ rows: [], lastRisk: null }), latencies: [] }, 80)).toBe('─── ▸ jev · no decisions yet ───────────────────────────────────────────────────');
     for (let c = 40; c <= 400; c += 13) expect(cellWidth(panelStrip(d1, c))).toBe(Math.min(c, 400));
     expect(panelStrip(d1, 80, GLYPHS.ascii)).toMatch(/^[\x20-\x7e]*$/);
     expect(panelStrip(d1, 80, GLYPHS.ascii).startsWith('--- > jev s3 - 9 decisions')).toBe(true);
@@ -290,7 +291,7 @@ describe('ruleRowText (TUI-DESIGN-2 §4.6, §5.4; findings 2 and 4)', () => {
     expect(ruleRowText(ruleInput({ state: paneState({ rows: [], lastRisk: null, step: 0, chatRows: [row(0, 'intake', 'intent')] }) }))).toBe(brandRow('0.2.0', 80));
     // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H1 / edge 9, D-T a): after the first `run:ready` the strip carries the
     // permanent `◆ jevcode` prefix. `panelStrip` itself is unchanged without the option — only `ruleRowText` passes it.
-    expect(ruleRowText(ruleInput({ ranBefore: true }))).toBe('─── ◆ jevcode ─ ▸ jev · no decisions yet ──────────────────── [d] [p] [t] [s] ──');
+    expect(ruleRowText(ruleInput({ ranBefore: true }))).toBe('─── ◆ jevcode ─ ▸ jev · no decisions yet ───────────────────────────────────────');
     expect(ruleRowText(ruleInput({ ranBefore: true, state: paneState({ rows: [], lastRisk: null, step: 3 }) }))).toContain('▸ jev');
   });
   it('finding 4: an open or full panel draws the ▾ tab header before the first run too (never a headerless hole); no rows granted → the brand row', () => {

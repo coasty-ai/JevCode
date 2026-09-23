@@ -13,7 +13,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { LaunchSettings, UiConfig } from '../../../src/core/types.js';
 import { App, RUN_END_FADE_MS, RUN_START_SWEEP_MS, createBridge, runEndEdgeRole, runStartBand, streamCaretOn, type Bridge } from '../../../src/tui/App.js';
 import { PLACEHOLDERS } from '../../../src/tui/composer/Composer.js';
-import { LOOP_REST_MS, WORDMARK_MIN_ROWS, WORDMARK_POST_RUN_MIN_ROWS } from '../../../src/tui/wordmark.js';
+import { LOOP_REST_MS, WORDMARK_MIN_ROWS, wordmarkBoxRows, wordmarkPad } from '../../../src/tui/wordmark.js';
 import { SPLASH_MS, WORDMARK } from '../../../src/tui/splash.js';
 import { createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { VERSION } from '../../../src/version.js';
@@ -115,12 +115,17 @@ describe('the hero (TUI-DESIGN-3 §3.2 F-W1, §3.9 first frame)', () => {
     expect(m.frame()).not.toContain('▓▒░');
     expect(m.frame()).not.toMatch(BRAND_RE);
   });
-  it('40×120: the tagline on row 0 and the caption; 21×64: neither (no caption below 73 columns), still 11 rows', async () => {
+  it('40×120: two padding rows each side of the mark (owner directive 3), the tagline on row 0 and the caption; 21×64: neither (no caption below 73 columns), still 11 rows', async () => {
     const wide = mount(40, 120);
     await settle(wide);
-    expect(wide.dyn()).toHaveLength(11);
-    expect(wide.dyn()[1]).toBe(`${markRow(0, 120)}  Decisions, not strings`);
-    expect(wide.dyn()[5]).toBe(`${markRow(4, 120)}  ◆ ${VERSION}`);
+    // rule 1 + box 9 (2 blank · 5 glyphs · 2 blank) + console 5
+    expect(wordmarkPad(40)).toBe(2);
+    expect(wide.dyn()).toHaveLength(1 + wordmarkBoxRows(40) + 5);
+    expect(wide.dyn().slice(1, 3)).toEqual(['', '']);
+    expect(wide.dyn()[3]).toBe(`${markRow(0, 120)}  Decisions, not strings`);
+    expect(wide.dyn()[7]).toBe(`${markRow(4, 120)}  ◆ ${VERSION}`);
+    expect(wide.dyn().slice(8, 10)).toEqual(['', '']);
+    expect(wide.dyn()[10]).toMatch(/^╭─ /);
     const small = mount(WORDMARK_MIN_ROWS, 64);
     await settle(small);
     expect(small.dyn()).toHaveLength(11);
@@ -214,47 +219,60 @@ describe('the tiers (TUI-DESIGN-3 §3.1–3.2)', () => {
 });
 
 describe('the hand-offs (TUI-DESIGN-3 §3.2–3.3, D-I)', () => {
-  it('run:start hides the mark (brand row, 6 rows, zero wordmark frames while live); run:ready shows the strip; at 24 rows run:end brings the mark back at once under the strip (F-W5)', async () => {
-    const m = mount(WORDMARK_POST_RUN_MIN_ROWS, 80);
+  it('owner directive 2: the mark is PINNED across run:start → run:ready → run:end — only the rule row changes (plain → the strip)', async () => {
+    const m = mount(24, 80);
     await settle(m);
+    expect(hasMark(m.dyn(), 80)).toBe(true);
     startRun(m);
-    await waitFor(() => BRAND_RE.test(m.dyn()[0] ?? ''));
-    expect(m.dyn()).toHaveLength(6);
-    expect(hasMark(m.dyn(), 80)).toBe(false);
+    await tick(120);
+    // the mark never yields, so the brand row never takes the rule row back: the plain rule holds until run:ready
+    expect(hasMark(m.dyn(), 80)).toBe(true);
+    expect(m.dyn()[0]).toBe(PLAIN(80));
     const liveFrom = m.stdout.frames.length;
     readyRun(m);
-    // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H1 / D-T a): the post-`run:ready` strip leads with `◆ jevcode`
     await waitFor(() => (m.dyn()[0] ?? '').startsWith('─── ◆ jevcode ─ ▸ jev'));
-    expect(hasMark(m.dyn(), 80)).toBe(false);
+    expect(hasMark(m.dyn(), 80)).toBe(true);
     await tick(300);
-    for (const d of m.frames().slice(liveFrom)) expect(hasMark(d, 80)).toBe(false);
+    // …and EVERY frame of the run carries it
+    for (const d of m.frames().slice(liveFrom)) expect(hasMark(d, 80)).toBe(true);
     endRun(m);
-    await waitFor(() => hasMark(m.dyn(), 80));
+    await waitFor(() => (m.bridge.stateReader?.()?.run ?? 'live') === 'none');
+    await tick(120);
     const dyn = m.dyn();
+    expect(hasMark(dyn, 80)).toBe(true);
     expect(dyn).toHaveLength(11);
     expect(dyn[0]).toMatch(/^─── ◆ jevcode ─ ▸ jev /); // the strip keeps the rule row with its brand (F-W5, P-H1); the mark sits under it
     expect(dyn[0]).not.toMatch(BRAND_RE);
     expect(dyn[5]).toBe(`${markRow(4, 80)}  ◆ ${VERSION}`);
   });
-  it('at 22 rows the mark waits for the first key after run:end (the epilogue stays on screen), then returns under the strip', async () => {
+  it('at 22 rows the mark no longer waits for a key after run:end — it never left (owner directive 2)', async () => {
     const m = mount(22, 80);
     await settle(m);
     startRun(m);
     readyRun(m);
     await waitFor(() => (m.dyn()[0] ?? '').startsWith('─── ◆ jevcode ─ ▸ jev'));
+    expect(hasMark(m.dyn(), 80)).toBe(true);
     endRun(m);
     await waitFor(() => (m.bridge.stateReader?.()?.run ?? 'live') === 'none');
     await tick(120);
-    expect(hasMark(m.dyn(), 80)).toBe(false);
-    expect(m.dyn()).toHaveLength(6);
-    expect(m.bridge.stateReader?.()?.postRunKeySeen).toBe(false);
-    m.stdin.write('h');
-    await waitFor(() => hasMark(m.dyn(), 80));
+    expect(hasMark(m.dyn(), 80)).toBe(true);
     expect(m.dyn()).toHaveLength(11);
     expect(m.dyn()[0]).toMatch(/^─── ◆ jevcode ─ ▸ jev /);
-    expect(m.frame()).toContain('› h');
+    m.stdin.write('h');
+    await waitFor(() => m.frame().includes('› h'));
+    expect(hasMark(m.dyn(), 80)).toBe(true);
+    expect(m.dyn()).toHaveLength(11);
   });
-  it('`/panel` hands the slot to the panel and `/panel off` gives it back to the mark', async () => {
+  it('`/panel` at 30 rows draws the panel BELOW the pinned mark (owner directive 2)', async () => {
+    const tall = mount(30, 80);
+    await settle(tall);
+    expect(hasMark(tall.dyn(), 80)).toBe(true);
+    tall.stdin.write('/panel\r');
+    await waitFor(() => (tall.bridge.stateReader?.()?.panel ?? 'collapsed') === 'open');
+    await waitFor(() => (tall.dyn()[0] ?? '').includes('▾ decisions'));
+    expect(hasMark(tall.dyn(), 80)).toBe(true);
+  });
+  it('`/panel` below 30 rows hands the slot to the panel and `/panel off` gives it back to the mark', async () => {
     const m = mount(24, 80);
     await settle(m);
     m.stdin.write('/panel\r');
@@ -287,7 +305,9 @@ describe('the animation catalogue (TUI-DESIGN-3 §5.2 A4–A6, P7)', () => {
     expect(streamCaretOn(5, true)).toBe(true);
   });
   it('A5: run:start adds ≤ 6 sweep ticks in its first 450 ms, every render with the same 6 dynamic rows and the same text (colour only); none under reduced motion', async () => {
-    const m = mount(24, 80);
+    // 50 columns: boxed (≥ 40) but below the mark's 64 and the indicator's 60, so the run-start sweep is the only
+    // animation in the window and the measurement is of the sweep alone, exactly as round 3 specified it
+    const m = mount(24, 50);
     await settle(m);
     const before = m.stdout.frames.length;
     startRun(m);
@@ -302,7 +322,7 @@ describe('the animation catalogue (TUI-DESIGN-3 §5.2 A4–A6, P7)', () => {
     for (const d of frames) expect(d).toHaveLength(6);
     for (const d of frames.slice(1)) expect(d).toEqual(frames[0]);
     // reduced motion: no sweep — the run:start commit and its effect re-render only, identical text
-    const still = mount(24, 80, { launch: STILL });
+    const still = mount(24, 50, { launch: STILL });
     const b2 = still.stdout.frames.length;
     startRun(still);
     await tick(RUN_START_SWEEP_MS + 150);

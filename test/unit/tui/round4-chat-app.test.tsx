@@ -35,8 +35,10 @@ describe('§3.7 W0 carve-out: `run:ready` is no longer an item in any sink', () 
     // … and produces zero items, so no frame and no transcript.log line can carry it (§3.6, G1)
     for (const e of events.filter((x) => x.type === 'run:ready')) expect(itemsFromEvent(e, 0)).toEqual([]);
     expect(f).not.toContain('[run] ready');
-    // what replaces it: the one `[run] started · <badge> · <task>` row
-    expect(f).toContain('[run] started · jev+llm · Fix the failing test in src/a.py');
+    // OWNER ADDENDUM (2026-09): what replaced it, the `[run] started · <badge> · <task>` row, is itself no longer
+    // printed in the interactive transcript — the status row carries the run state. `--plain` / `--json` keep it.
+    expect(f).not.toContain('[run] started · jev+llm · Fix the failing test in src/a.py');
+    expect(f).toContain('[run] finished');
   });
 
   it('a piped (non-TTY) renderer writes the run frame and no `[run] ready r1 step 0/40` (was app.test.tsx:602)', async () => {

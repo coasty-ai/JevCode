@@ -12,7 +12,8 @@ import { CAP, chromeRows, computeLayout, type LayoutInput } from '../../../src/t
 import type { LaunchSettings } from '../../../src/core/types.js';
 import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
-import { WORDMARK_LIVE_MIN_ROWS } from '../../../src/tui/wordmark.js';
+import { WORDMARK_MIN_ROWS, wordmarkBoxRows } from '../../../src/tui/wordmark.js';
+import { INDICATOR_MIN_ROWS, animSize } from '../../../src/tui/anim/index.js';
 import type { Action } from '../../../src/core/types.js';
 import { mkConfirmRequest, mkDecision, mkStatus, tick } from '../../fixtures/tui/fixtures.js';
 import { StubStdin, StubStdout, dynamicRegion, stripSgr } from './stub-stdout.js';
@@ -68,10 +69,28 @@ async function renderBusy(rows: number, columns: number, action?: Action, opts: 
 
 const bigWrite: Action = { kind: 'write', path: 'big.txt', content: Array.from({ length: 40 }, (_, i) => `content line ${i}`).join('\n') };
 
+/**
+ * Owner directive 2 — the PINNED mark, RESTATED here and never read back from `wordmarkWanted`: the padded box is up
+ * in the boxed tier from 21 rows and 64 columns, whatever the run is doing; a panel / picker / pending review only
+ * takes its rows below 30 (`WORDMARK_SHARE_MIN_ROWS`).
+ */
+const markFor = (rows: number, columns: number, claimed: boolean): number =>
+  chromeRows(rows, columns, false) === 3 && rows >= WORDMARK_MIN_ROWS && columns >= 64 && (!claimed || rows >= 30) ? wordmarkBoxRows(rows) : 0;
+
+/**
+ * The 3D indicator's slot, RESTATED: `animSize(columns, rows).h` rows while something is in flight, no overlay owns
+ * the rows and the terminal is at least `INDICATOR_MIN_ROWS` tall — and the allocator drops it again whenever the
+ * four-row conversation floor would be broken (which is why 24×80 keeps it off and 40×120 keeps it on).
+ */
+const animFor = (rows: number, columns: number, active: boolean): number => {
+  const box = animSize(columns, rows);
+  return active && box !== null && rows >= INDICATOR_MIN_ROWS ? box.h : 0;
+};
+
 /** TUI-DESIGN-2 §4.2: the pending-review input — the boxed tier wants the 9-row card, the flat tier the 8-row header; the panel is collapsed unless opened. */
 const reviewInput = (rows: number, columns: number, panel: 'collapsed' | 'open' | 'full' = 'collapsed'): LayoutInput => {
   const chrome = chromeRows(rows, columns, false);
-  return { rows, columns, overlay: 'review', overlayWant: chrome === 3 ? CAP.reviewCard : CAP.reviewHeader, previewWant: 40, expanded: false, composerWant: 1, queueWant: 0, liveWant: 0, bannerWant: 0, paneWant: panel === 'open' ? CAP.panel : panel === 'full' ? CAP.pane : 0, chrome, gate: 0 };
+  return { rows, columns, overlay: 'review', overlayWant: chrome === 3 ? CAP.reviewCard : CAP.reviewHeader, previewWant: 40, expanded: false, composerWant: 1, queueWant: 0, liveWant: 0, bannerWant: 0, paneWant: panel === 'open' ? CAP.panel : panel === 'full' ? CAP.pane : 0, markWant: markFor(rows, columns, true), chrome, gate: 0 };
 };
 
 describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
@@ -87,13 +106,16 @@ describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
     // a pending review reclaims the live rows (A42) and collapses the composer to one inactive row
     expect(text).not.toContain('streamed line');
     expect(text).toContain('(review pending');
-    expect(staticRows).toBeGreaterThanOrEqual(2);
+    // the two run-header items are gone from the TUI (owner addendum), so the header row is the scrollback's floor
+    expect(staticRows).toBeGreaterThanOrEqual(1);
     if (rows === 24) {
       // H-F1: rule 1 + card 9 + preview 7 + console 5 = 22 (the panel is collapsed: its strip sits on the rule row)
       expect(text).toContain('╭─ review · step 1');
       expect(text).toContain('content line 0');
       // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H1 edge 9 / D-T a): the post-run strip leads with `◆ jevcode`
+      // owner addendum: the strip is quiet — no `[d] [p] [t] [s]` legend on it any more
       expect(text).toMatch(/^─── ◆ jevcode ─ ▸ jev s1 · 12 decisions/m);
+      expect(text).not.toMatch(/\[d\] \[p\] \[t\] \[s\]/);
       expect(text).not.toContain('content line 39');
       for (const line of dyn) if (/^[╭│├╰]/.test(line)) expect(stringWidth(line)).toBe(80);
     }
@@ -122,7 +144,7 @@ describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
     const { frame } = await renderBusy(24, 80, undefined, { review: false });
     const dyn = dynamicRegion(frame, 80);
     expect(dyn.length).toBeLessThanOrEqual(22);
-    expect(dyn.length).toBe(computeLayout({ ...reviewInput(24, 80), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2 }).total);
+    expect(dyn.length).toBe(computeLayout({ ...reviewInput(24, 80), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, markWant: markFor(24, 80, false), animWant: animFor(24, 80, true) }).total);
     expect(dyn.join('\n')).toContain('streamed line 199');
     expect(dyn.join('\n')).toContain('streamed line 198');
     expect(dyn.join('\n')).toContain('Type to steer the next step…');
@@ -139,8 +161,8 @@ describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
     const { frame } = await renderBusy(6, 80, undefined, { review: false });
     const lines = stripSgr(frame).replace(/\n$/, '').split('\n');
     expect(lines.some((l) => l.includes('terminal 80×6 is below the 40×8 minimum — panes hidden, transcript above'))).toBe(true);
-    // TUI-DESIGN-4 §3.6 / §3.7 G1 (D-V): `started · <badge> · <task>`, and `run:ready` is no longer an item at all
-    expect(lines.some((l) => l.includes('[run] started · jev+llm · budget task'))).toBe(true);
+    // OWNER ADDENDUM (2026-09): `[run] started · …` is no longer printed in the interactive transcript at all
+    expect(lines.some((l) => l.includes('[run] started'))).toBe(false);
     expect(lines.at(-1)).toContain('step 1/40');
   });
 
@@ -184,21 +206,21 @@ describe('height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × c
     [40, 120],
     [50, 40],
     [50, 120],
-    // P-H2's boundary, both sides, at a width where the mark fits (64+): 31 yields, 32 keeps it
-    [31, 120],
-    [32, 120],
+    // the pinned mark's boundary, both sides, at a width where it fits (64+): 20 yields, 21 keeps it
+    [20, 120],
+    [21, 120],
   ])('rows=%i columns=%i (live, no review): the region is ≤ rows − 2, equals computeLayout().total and every row fits the width', async (rows, columns) => {
     const { frame } = await renderBusy(rows, columns, undefined, { review: false });
     const dyn = dynamicRegion(frame, columns);
     expect(dyn.length).toBeLessThanOrEqual(rows - 2);
-    // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H2 / D-T b): at >= WORDMARK_LIVE_MIN_ROWS rows and >= 64 columns the
-    // 5-row mark now stays up **during** a live run, so the expected budget grants it (whole or absent, `paneWhole`).
-    // The condition is RESTATED here, never read back from `wordmarkWanted`: deriving the expectation from the very
-    // predicate under test would move the expected total in the same direction as a bug in it.
-    const live = rows >= WORDMARK_LIVE_MIN_ROWS && columns >= 64 && chromeRows(rows, columns, false) === 3;
-    expect(dyn.length).toBe(computeLayout({ ...reviewInput(rows, columns), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, ...(live ? { paneWant: CAP.splash, paneWhole: true } : {}) }).total);
+    // RE-PINNED (owner directive 2): the mark is PINNED — at >= WORDMARK_MIN_ROWS rows and >= 64 columns the padded
+    // box stays up during a live run too, in its own whole-or-absent `mark` slot. The condition is RESTATED here,
+    // never read back from `wordmarkWanted`: deriving the expectation from the very predicate under test would move
+    // the expected total in the same direction as a bug in it.
+    const markWant = markFor(rows, columns, false);
+    expect(dyn.length).toBe(computeLayout({ ...reviewInput(rows, columns), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, markWant, animWant: animFor(rows, columns, true) }).total);
     // and the frame itself agrees with that condition — the mark is either drawn or it is not
-    expect(dyn.some((l) => l.includes('██')), `${rows}x${columns}`).toBe(live);
+    expect(dyn.some((l) => l.includes('██')), `${rows}x${columns}`).toBe(markWant > 0);
     for (const line of dyn) expect(stringWidth(line)).toBeLessThanOrEqual(columns);
     expect(frame).toContain('step 1/40');
   });

@@ -69,17 +69,22 @@ describe('bubbles and spacers (TUI-DESIGN-2 §4.5, TUI-DESIGN-3 §5.1)', () => {
     for (const r of botRows.slice(1)) expect(r.startsWith(G)).toBe(true);
     expect(normaliseRows(botRows)).toBe(formatTranscriptItem(items[1]!));
   });
-  it('consecutive [jevcode] items have no spacer between them (H-C1); [step N] and [ui] rows have none; [run] start / end have one; a [ui] item with a detail body has one', () => {
+  it('consecutive items with the SAME label have no spacer (H-C1); a label change, `[run]` start / end and a `[ui]` item with a detail body have one (owner directive 3)', () => {
     const items = [you('what can you do?', 1), bot('JevCode is a coding agent.', 2), bot('Mode: jev-only.', 3), bot('Switch with /mode jev-on.', 4), localItem('mode jev-only already', 5)];
     const rows = strip(render(<Transcript items={items} columns={80} />).lastFrame()).split('\n');
-    expect(rows).toEqual(['    [you] what can you do?', '', '[jevcode] JevCode is a coding agent.', '[jevcode] Mode: jev-only.', '[jevcode] Switch with /mode jev-on.', '     [ui] mode jev-only already']);
+    expect(rows).toEqual(['    [you] what can you do?', '', '[jevcode] JevCode is a coding agent.', '[jevcode] Mode: jev-only.', '[jevcode] Switch with /mode jev-on.', '', '     [ui] mode jev-only already']);
     expect(spacerAbove(bot('a', 1), bot('b', 0))).toBe(false);
     expect(spacerAbove(bot('a', 1), you('b', 0))).toBe(true);
     expect(spacerAbove(you('a', 1), bot('b', 0))).toBe(true);
     expect(spacerAbove(you('a', 1), null)).toBe(false);
     const runStart: TranscriptItem = { key: 'run:start:1', seq: 1, step: null, kind: 'run:start', level: 'info', text: 'start r1 mode=jev-only task: t' };
     expect(spacerAbove(runStart, you('a', 0))).toBe(true);
-    expect(spacerAbove({ ...runStart, kind: 'step', step: 3, text: 'edit kth.py' } as TranscriptItem, runStart)).toBe(false);
+    // owner directive 3: a `[step n]` head is a new block under `[run]`, so it gets its blank row…
+    expect(spacerAbove({ ...runStart, kind: 'step', step: 3, text: 'edit kth.py' } as TranscriptItem, runStart)).toBe(true);
+    // …and the step's own further rows (the same label) stay contiguous under it
+    const step3: TranscriptItem = { ...runStart, kind: 'step', step: 3, text: 'edit kth.py' } as TranscriptItem;
+    expect(spacerAbove({ ...step3, key: 'k2', text: 'outcome ok' } as TranscriptItem, step3)).toBe(false);
+    expect(spacerAbove({ ...step3, key: 'k3', step: 4, text: 'run tests' } as TranscriptItem, step3)).toBe(true);
     // TUI-DESIGN-3 §5.1 rule 9: a `[ui]` head with a detail body (the epilogue, /jev, /cost, /help) reads as a block
     expect(spacerAbove(localItem('cost', 6, { detail: 'run $0.310 of $2.000' }), localItem('x', 5))).toBe(true);
     expect(spacerAbove(localItem('cost', 6), localItem('x', 5))).toBe(false);
@@ -139,6 +144,7 @@ describe('the label gutter, the wrap rule and detail rows in a mounted transcrip
       '    [run] start 20260921-212813-uo5luiq4 mode=jev-on task: Fix the failing tests',
       `${G}in tests/test_core.py without changing the tests.`,
       '    [run] git main · 3 modified · 1 untracked',
+      '',
       ' [step 1] run $ python -m pytest -q tests/test_core.py · risk 0.00 ok',
       `${G}· tests 4p/3f/0e · judge 0.49 · 4.9s · $0.006`,
     ]);
@@ -146,8 +152,8 @@ describe('the label gutter, the wrap rule and detail rows in a mounted transcrip
     // §5.3: every item re-joins to its one-line form; the separator survives the join without any separator clause
     expect(normaliseRows(rows.slice(0, 2))).toBe(formatTranscriptItem(items[0]!));
     expect(normaliseRows(rows.slice(3, 5))).toBe(formatTranscriptItem(items[1]!));
-    expect(normaliseRows(rows.slice(6, 8))).toBe(`[step 1] ${STEP}`);
-    expect(normaliseRows(rows.slice(6, 8))).toContain('risk 0.00 ok · tests 4p/3f/0e');
+    expect(normaliseRows(rows.slice(7, 9))).toBe(`[step 1] ${STEP}`);
+    expect(normaliseRows(rows.slice(7, 9))).toContain('risk 0.00 ok · tests 4p/3f/0e');
   });
   it('F-R6 at 80 columns: `[run] end … (gen $0.000, jev $0.025)` / `exit 4` — the orphan rule moves `exit` down; the epilogue\'s detail rows hang under their values', () => {
     const id = '20260921-212813-uo5luiq4';

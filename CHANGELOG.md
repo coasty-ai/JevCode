@@ -32,6 +32,21 @@ every provider key is selectable with search.
   one-time `[setup] mode …` disclosure; all four stay in `--plain` and `--json`, the sandbox facts stay on
   `/status`, `/config` and `jevcode doctor`, and the most recent session becomes the composer placeholder
   (`Say hi · /resume continues "<title>"`).
+- **The wordmark is pinned, the conversation breathes, waiting is 3D.** The wordmark box stays at the top of the
+  viewport for the whole session (a run, a reply, the panel or a review no longer scroll it away; only a terminal too
+  small for both evicts it), with blank rows above and below the glyphs from 26 rows and a wider band from 34; one
+  blank row separates every message, run block and note; the collapsed panel strip lost its hotkey legend (the keys
+  still work; `?` lists them); `[run] started` and `[run] git` no longer print in the interactive transcript (the
+  status row carries the run state; `--plain`, `--json` and transcript.log keep them). While JevCode waits it draws a
+  rotating ASCII torus (thinking / replying), a wireframe cube (a command runs), a lat/long globe (Jev or the provider
+  is being called) or ripples (the judge verifies) — luminance-shaded in the theme's pinks, 24×12 cells at 100 columns
+  and 16×8 at 80, precomputed once per size, static under `--no-animation`, plain under `NO_COLOR`.
+- **Identity that holds.** The chat system prompt opens with who JevCode is, naming the code model and its provider,
+  and says in so many words to answer as JevCode, built by coasty-ai, never as the vendor (glm-5.3-flash had answered
+  `who made you` as its maker). The `do it` offer is never made on a question, however punctuated.
+- **Spend caps.** Defaults rise to $10.00 per run and $50.00 per session ($1.00 / $5.00 under `jev-only`); the meter
+  stays visible and nothing prompts on approach. Every provider's generator is built through the registry with its own
+  adapter (openai, gemini, xai, fireworks and meta had been routed to the Anthropic client).
 - **Every provider validates.** `generator.provider` accepts `anthropic|openrouter|openai|gemini|xai|fireworks|meta`
   (it refused all but the first two); `jevcode login --provider gemini` persists.
 

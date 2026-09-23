@@ -1009,7 +1009,7 @@ F-W1; the annotation is not a frame row):
 this frame appears on the first key after `[run] end`, §3.2)**
 
 ```
-─── ▸ jev s3 · 7 decisions · risk 0.12 ok · plan 1/4 ──────── [d] [p] [t] [s] ──
+─── ▸ jev s3 · 7 decisions · risk 0.12 ok · plan 1/4 ───────────────────────────
                 ██ ███████ ██    ██  ██████  ██████  ██████  ███████
                 ██ ██      ██    ██ ██      ██    ██ ██   ██ ██
                 ██ █████   ██    ██ ██      ██    ██ ██   ██ █████
@@ -1135,7 +1135,7 @@ strip (a run ended) and the mark sits under it (rows ≥ 24, §3.2). The first d
 row and the mark, which `computeLayout` grants here (§3.7):
 
 ```
-─── ▸ jev s3 · 7 decisions · risk 0.12 ok · plan 1/4 ──────── [d] [p] [t] [s] ──
+─── ▸ jev s3 · 7 decisions · risk 0.12 ok · plan 1/4 ───────────────────────────
                 ██ ███████ ██    ██  ██████  ██████  ██████  ███████
                 ██ ██      ██    ██ ██      ██    ██ ██   ██ ██
                 ██ █████   ██    ██ ██      ██    ██ ██   ██ █████

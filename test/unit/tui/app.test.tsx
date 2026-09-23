@@ -18,6 +18,7 @@ import { App, COALESCED_ENTER_TOAST, EXITED_CTRL_C, EXITED_CTRL_D, SR_REVIEW_MEN
 import { REVIEW_KEYS_80 } from '../../../src/tui/review/lines.js';
 import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { IDENTITY_NO_TTY, formatTranscriptItem, itemsFromEvent, plainFirstLine } from '../../../src/tui/plain.js';
+import { isRunHeaderItem } from '../../../src/tui/Transcript.js';
 import { PLACEHOLDERS } from '../../../src/tui/composer/Composer.js';
 // MINIMAL, MARKED (S4): the `?` help-block case pins a whole command head, which only `helpCommandHead` produces
 import { helpCommandHead } from '../../../src/tui/commands/palette.js';
@@ -160,10 +161,13 @@ describe('<App> transcript, live region and pane', { retry: 1 }, () => {
     // the identity predicate: modulo Ink's word-wrap (rows hang under the text column), every row is the item's line
     const cells = (x: string): string => x.replace(/\s+/g, '');
     const flat = cells(f);
+    // OWNER ADDENDUM (2026-09): `[run] started · <badge> · <task>` and `[run] git <branch> · <state>` are not
+    // printed in the INTERACTIVE transcript any more (`isRunHeaderItem`); `--plain` / `--json` keep them.
     let seq = 0;
     for (const e of events) {
       for (const item of itemsFromEvent(e, seq)) {
-        expect(flat).toContain(cells(formatTranscriptItem(item)));
+        if (!isRunHeaderItem(item)) expect(flat).toContain(cells(formatTranscriptItem(item)));
+        else expect(flat).not.toContain(cells(formatTranscriptItem(item)));
         seq += 1;
       }
     }
@@ -175,7 +179,7 @@ describe('<App> transcript, live region and pane', { retry: 1 }, () => {
     expect(m.state()?.run).toBe('none');
   });
 
-  it('`compact` (the default) hides the stage kinds and `run:ready` and keeps `run:start`, `run:end`, `confirm:resolved`, `error` (TUI-DESIGN-2 §4.5 — the declared subsequence of transcript.log)', async () => {
+  it('`compact` (the default) hides the stage kinds, `run:ready` and (owner addendum) the `[run] started` / `[run] git` headers, and keeps `run:end`, `confirm:resolved`, `error` (TUI-DESIGN-2 §4.5 — the declared subsequence of transcript.log)', async () => {
     const m = mountApp({ mode: 'session' });
     const events = loadRunEvents();
     for (const e of events) m.bus.emit(e);
@@ -186,7 +190,7 @@ describe('<App> transcript, live region and pane', { retry: 1 }, () => {
     for (const e of events) {
       for (const item of itemsFromEvent(e, seq)) {
         const line = formatTranscriptItem(item);
-        if (hidden.has(item.kind)) expect(f, line).not.toContain(line.slice(0, 40));
+        if (hidden.has(item.kind) || isRunHeaderItem(item)) expect(f, line).not.toContain(line.slice(0, 40));
         else expect(f.replace(/\s+/g, '')).toContain(line.replace(/\s+/g, ''));
         seq += 1;
       }

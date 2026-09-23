@@ -1,8 +1,9 @@
 /**
- * The persistent wordmark (TUI-DESIGN-3 §3, D-I): the pane slot's idle tenant — the 5-row mark of `splash.ts` held
- * after the reveal, whole or absent (`computeLayout` 1.2 `paneWhole`), shown while idle and thinking, hidden while a
- * run is live or a panel / picker / review owns the slot, back under the strip after `run:end`. This module is the pure
- * half: the visibility selector `wordmarkWanted` (the WANT; the layout decides the SHOW), the idle sweep's band table
+ * The PINNED wordmark (TUI-DESIGN-3 §3, D-I; owner directive 2, 2026-09): the 5-row mark of `splash.ts` held after
+ * the reveal in its own whole-or-absent `mark` slot, up for the WHOLE session — a run, a reply, a stream and every
+ * non-review overlay leave it alone, and only a panel / picker / pending review on a terminal too short to stack
+ * both (rows < `WORDMARK_SHARE_MIN_ROWS`) takes its rows. Directive 3 pads the box with `wordmarkPad(rows)` blank
+ * rows above and below the glyphs. This module is the pure half: the visibility selector `wordmarkWanted` (the WANT; the layout decides the SHOW), the idle sweep's band table
  * `loopBand(k)` and the one constants table the owner can flip (§3.4), the caption / tagline geometry (re-exported from
  * `splash.ts`, which owns the grid — one import direction, no cycle) and `wordmarkFrame`, the rows + `spans(band)` the
  * App renders. No clock, no I/O, no Ink (`motion.ts` drives the loop). Pure.
@@ -10,9 +11,9 @@
 import type { OverlayKind } from './layout.js';
 import type { PanelState, RunPhase } from './useEngine.js';
 import { GLYPHS, type GlyphSet } from './glyphs.js';
-import { CAPTION_GRID_CELL, SWEEP_CELLS, TAGLINE, TAGLINE_MIN_COLUMNS, WORDMARK_CELLS, WORDMARK_MIN_COLUMNS, captionFits, captionText, restingFrame, taglineFits, type GridBand, type RestingFrame, type SplashSpan } from './splash.js';
+import { CAPTION_GRID_CELL, SWEEP_CELLS, TAGLINE, TAGLINE_MIN_COLUMNS, WORDMARK_CELLS, WORDMARK_MIN_COLUMNS, WORDMARK_ROWS, captionFits, captionText, restingFrame, taglineFits, type GridBand, type RestingFrame, type SplashSpan } from './splash.js';
 
-export { CAPTION_GRID_CELL, TAGLINE, TAGLINE_MIN_COLUMNS, WORDMARK_MIN_COLUMNS, captionFits, captionText, taglineFits };
+export { CAPTION_GRID_CELL, TAGLINE, TAGLINE_MIN_COLUMNS, WORDMARK_MIN_COLUMNS, WORDMARK_ROWS, captionFits, captionText, taglineFits };
 export type { GridBand, SplashSpan };
 
 /** TUI-DESIGN-3 §6 item 4 / §3.2 twins: `ui.wordmark` — default `sweep` (`static` under the SSH launch source). */
@@ -36,41 +37,42 @@ export const LOOP_SLEEP_MS = 600_000;
 export const LOOP_QUIET_AFTER_KEY_MS = 3_000;
 /** §3.1: below it the boxed tier keeps the brand row (no palette / draft hand-off around every `/` command) */
 export const WORDMARK_MIN_ROWS = 21;
-/** §3.2: the mark returns right after `run:end` only when the 8-row epilogue still fits above it */
-export const WORDMARK_POST_RUN_MIN_ROWS = 24;
 /**
- * TUI-DESIGN-4 §1.2 P-H2 (D-T b): at this many rows the 5-row mark stays up **during a live run**. The worst-case live
- * region is `rule 1 + live 2 + banner 1 + queue 2 + mark 5 + chrome 3 + composer 1 + status 1 = 16`, so 32 rows still
- * leave 16 rows of visible conversation — the floor. Below it the run needs the rows and the mark yields (the
- * whole-or-absent grant of `computeLayout` 1.2 does it for free). The idle sweep is **not** enabled while live
- * (`App.tsx`'s `useIdleLoop` gate), so a run still writes zero decoration frames.
+ * The PINNED mark (owner directive 2, 2026-09): at and above this many rows an open Jev panel, the session picker
+ * and a pending review are drawn **below** the mark (they get their own `pane` slot, the mark keeps `mark`), so the
+ * branding heads the pinned region for the whole session. Below it the terminal cannot hold both and the slot's old
+ * tenant wins: `mark 7 + panel 6 + rule 1 + chrome 3 + composer 1 + status 1 = 19` leaves 11 rows of conversation at
+ * 30 rows, and one row fewer would put the panel's own tab header under the conversation floor.
  */
-export const WORDMARK_LIVE_MIN_ROWS = 32;
+export const WORDMARK_SHARE_MIN_ROWS = 30;
+/** directive 3 ("a lot of spacing in the branding box"): one blank row above and below the glyph rows from here up */
+export const WORDMARK_PAD_MIN_ROWS = 26;
+/** …and two blank rows above and below from here up */
+export const WORDMARK_PAD2_MIN_ROWS = 34;
 
-/** TUI-DESIGN-3 §3.1: every input already exists in `UiState` / the App. */
+/** Every input already exists in `UiState` / the App. */
 export interface WordmarkInput {
   /** `chromeRows(rows, columns, screenReader) === CAP.chrome` */
   boxed: boolean;
   /** ≥ `WORDMARK_MIN_ROWS` (21) */
   rows: number;
-  /** `ranBefore && !postRunKeySeen`: after `run:end` the mark returns at once only at rows ≥ `WORDMARK_POST_RUN_MIN_ROWS`; below, on the first key */
-  postRun: boolean;
   /** ≥ `WORDMARK_MIN_COLUMNS` (64) */
   columns: number;
   /** never under a screen reader (already flat; kept explicit) */
   screenReader: boolean;
-  /** hidden while `runIsLive(run)`: `live` | `aborting` | `pausing`; `starting` (thinking) keeps it */
-  run: RunPhase;
-  /** only while `collapsed` */
+  /** a panel that cannot fit BELOW the mark takes its rows (rows < `WORDMARK_SHARE_MIN_ROWS`) */
   panel: PanelState;
-  /** the picker owns the slot */
+  /** the picker, same rule */
   pickerOpen: boolean;
-  /** hidden for `review` (the review reclaims rows, TD A42); every other overlay keeps it if 5 whole rows remain */
+  /** a `review` overlay, same rule; every other overlay never touches the mark */
   overlay: OverlayKind;
-  /** review `e`: pane is 0 anyway */
-  expanded: boolean;
   /** `off` → never */
   setting: WordmarkSetting;
+}
+
+/** The overlay / pane tenants that need the mark's rows when the terminal is too short to stack both. */
+function claimsMarkSlot(i: WordmarkInput): boolean {
+  return i.panel !== 'collapsed' || i.pickerOpen || i.overlay === 'review';
 }
 
 /** TUI-DESIGN-2 §3.1 / TUI-DESIGN-3 §3.1: an engine run owns the session — `live`, `aborting`, `pausing` (`starting` is a submission in flight). */
@@ -79,27 +81,29 @@ export function runIsLive(run: RunPhase): boolean {
 }
 
 /**
- * TUI-DESIGN-3 §3.1, amended by TUI-DESIGN-4 §1.2 P-H2 (D-T b): the WANT — true iff `boxed ∧ rows ≥ 21 ∧ columns ≥ 64 ∧
- * ¬screenReader ∧ (¬runIsLive(run) ∨ rows ≥ 32) ∧ panel === 'collapsed' ∧ ¬pickerOpen ∧ overlay ≠ 'review' ∧ ¬expanded ∧
- * setting ≠ 'off' ∧ (rows ≥ 24 ∨ ¬postRun)`. The layout's whole-or-absent grant decides the SHOW.
+ * The PINNED mark's WANT (owner directive 2) — true iff `boxed ∧ rows ≥ 21 ∧ columns ≥ 64 ∧ ¬screenReader ∧
+ * setting ≠ 'off'`, **regardless of the run phase, `postRun`, a stream or any non-review overlay**; the only yield is
+ * a panel / picker / pending review at fewer than `WORDMARK_SHARE_MIN_ROWS` rows, where the two cannot be stacked.
+ * The layout's whole-or-absent grant of the `mark` slot decides the SHOW.
  */
 export function wordmarkWanted(i: WordmarkInput): boolean {
   const rows = Number.isFinite(i.rows) ? Math.floor(i.rows) : 0;
   const columns = Number.isFinite(i.columns) ? Math.floor(i.columns) : 0;
-  return (
-    i.boxed &&
-    rows >= WORDMARK_MIN_ROWS &&
-    columns >= WORDMARK_MIN_COLUMNS &&
-    !i.screenReader &&
-    // TUI-DESIGN-4 §1.2 P-H2: the mark stays up during a live run once the terminal is tall enough for 16 rows of conversation under it
-    (!runIsLive(i.run) || rows >= WORDMARK_LIVE_MIN_ROWS) &&
-    i.panel === 'collapsed' &&
-    !i.pickerOpen &&
-    i.overlay !== 'review' &&
-    !i.expanded &&
-    i.setting !== 'off' &&
-    (rows >= WORDMARK_POST_RUN_MIN_ROWS || !i.postRun)
-  );
+  if (!i.boxed || rows < WORDMARK_MIN_ROWS || columns < WORDMARK_MIN_COLUMNS || i.screenReader || i.setting === 'off') return false;
+  return !claimsMarkSlot(i) || rows >= WORDMARK_SHARE_MIN_ROWS;
+}
+
+/** directive 3: the blank rows drawn above AND below the glyph rows at a terminal height — 0 · 1 · 2. */
+export function wordmarkPad(rows: number): 0 | 1 | 2 {
+  const r = Number.isFinite(rows) ? Math.floor(rows) : 0;
+  if (r >= WORDMARK_PAD2_MIN_ROWS) return 2;
+  if (r >= WORDMARK_PAD_MIN_ROWS) return 1;
+  return 0;
+}
+
+/** directive 3: the whole branding box — `WORDMARK_ROWS + 2 · wordmarkPad(rows)` (5 · 7 · 9), the `mark` slot's want. */
+export function wordmarkBoxRows(rows: number): number {
+  return WORDMARK_ROWS + 2 * wordmarkPad(rows);
 }
 
 /**

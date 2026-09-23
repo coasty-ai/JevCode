@@ -16,8 +16,9 @@
  *   row, which also removes Ink's trailing-space artefacts;
  * - **detail rows** (rule 4, TUI-only): indented under the body column; a `label  value` table row (`/^\S+\s{2,}/`, the epilogue)
  *   hangs its wrap under the value;
- * - **spacers** (rule 9): one blank row above a `[you]` turn, above the first `[jevcode]` of a turn, above `[run] start` / `end`
- *   and above a `[ui]` item that carries a detail body;
+ * - **spacers** (rule 9, owner directive 3): one blank row above a `[you]` turn, above the first `[jevcode]` of a turn, above
+ *   `[run] start` / `end`, above a `[ui]` item that carries a detail body, and above every block head — any item whose label
+ *   differs from its predecessor's (`[step n]`, `[review]`, a `[ui]` note after a bubble);
  * - **colour** (D-O, rule 2): the label is the speaker (`[jevcode]` `assistant`, `[you]` `you`, both bold; every other label `dim`),
  *   the body is the meaning (default for chat, steps, `[ui]` notes and detail rows; `warn` / `error` by level or verdict; `dim` only
  *   for `[run] git …`); fence lines (`/^```\w*$/`) draw as `╶──── <lang>` in the `code` role — the only text substitution beyond `--ascii`.
@@ -108,6 +109,19 @@ export function itemLines(item: TranscriptItem, g: GlyphSet = GLYPHS.unicode): {
 /** §13.4: the one-row fallback for an item that threw while rendering. */
 export function itemFailedRow(errorName: string, log?: string): string {
   return paneFailedLine(STATIC_ITEM_PANE, errorName, log);
+}
+
+/**
+ * OWNER ADDENDUM (2026-09): the two run-header items the INTERACTIVE transcript no longer prints — `[run] started ·
+ * <badge> · <task>` (the status row already carries the run state, and the task is the `[you]` bubble one row above)
+ * and `[run] git <branch> · <state>` (`/status` has git, and the status row's git zone repeats it every second).
+ * They are dropped at the TUI's item filter only: `--plain`, `--json` and `transcript.log` keep every one of them,
+ * exactly like the quiet start's `[sandbox]` rows. `[run] finished · …` stays — it is the one row the run's outcome
+ * lives on. The `workspace` kind also carries `instructions: …` and the HEAD-drift warning, which are kept.
+ */
+export function isRunHeaderItem(item: TranscriptItem): boolean {
+  if (item.kind === 'run:start') return true;
+  return item.kind === 'workspace' && /^git\b/.test(item.text);
 }
 
 /** TUI-DESIGN-2 §4.5: the label of a row — `item.label` (`[ui]`, `[you]`, `[jevcode]`, …) or `stepLabel(step)`. */
@@ -205,9 +219,12 @@ export function fenceRow(text: string, g: GlyphSet = GLYPHS.unicode): { text: st
 }
 
 /**
- * TUI-DESIGN-2 §4.5 / TUI-DESIGN-3 §5.1 rule 9 + **TUI-DESIGN-4 §5.1 P-C1 (D-Y)**: one spacer per **turn**, not per
- * item — above the **first** item of a chat turn, above `[run] start` / `[run] end`, and above a `[ui]` item that
- * carries a detail body (`/jev`, `/cost`, the epilogue, `/help`).
+ * TUI-DESIGN-2 §4.5 / TUI-DESIGN-3 §5.1 rule 9 + **TUI-DESIGN-4 §5.1 P-C1 (D-Y)** + **owner directive 3 (2026-09)**:
+ * one spacer per **block**, never per item — above the **first** item of a chat turn, above `[run] start` / `[run]
+ * end`, above a `[ui]` item that carries a detail body (`/jev`, `/cost`, the epilogue, `/help`), and above every
+ * other item whose label differs from its predecessor's (each `[step n]` head, a `[review]`, a `[ui]` note that
+ * follows a bubble). So a `[you]` message and its `[jevcode]` reply, a reply and the next `[you]`, and every
+ * `[run]` / `[step]` block are separated by exactly one blank row, and nothing is ever separated by two.
  *
  * Round 3 had `if (item.label === '[you]') return true;` **unconditionally** while `[jevcode]` one line later was
  * already conditioned on `prev.label !== item.label`, so a 3-line `[you]` message drew a blank row between every line
@@ -219,8 +236,12 @@ export function fenceRow(text: string, g: GlyphSet = GLYPHS.unicode): { text: st
 export function spacerAbove(item: TranscriptItem, prev: TranscriptItem | null): boolean {
   if (prev === null) return false;
   if (isChatLabel(item.label)) return !isTurnContinuation(item, prev);
+  if (item.kind === 'run:start' || item.kind === 'run:end') return true;
   if (item.label === '[ui]' && item.detail !== undefined && item.detail !== '') return true;
-  return item.kind === 'run:start' || item.kind === 'run:end';
+  // owner directive 3: every BLOCK head gets its blank row — a `[step n]` head, a `[review]`, a `[ui]` note after a
+  // bubble. A run of items sharing one label (a step's own rows, consecutive `[ui]` notes) stays contiguous, so two
+  // blank rows can never land in a row and a multi-row block still reads as one thing.
+  return itemLabel(item) !== itemLabel(prev);
 }
 
 /**

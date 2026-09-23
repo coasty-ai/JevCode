@@ -57,6 +57,12 @@ function assertNoKeyBytes(r: Drive, ...secrets: string[]): void {
     expect(filesContaining(r, s)).toEqual([]);
   }
 }
+/**
+ * Owner directive 3: the branding box is padded with `wordmarkPad(rows)` blank rows above AND below the glyphs, so an
+ * idle boxed frame is `rule 1 + (5 + 2p) + console 5` — 11 below 26 rows, 13 at 26–33, 15 from 34 up.
+ */
+const idleRows = (rows: number): number => 1 + (5 + 2 * (rows >= 34 ? 2 : rows >= 26 ? 1 : 0)) + 5;
+
 /** the index of the first frame whose dynamic rows match `re` */
 const frameWith = (all: readonly SyncFrame[], re: RegExp, from = 0): number => all.findIndex((f, i) => i >= from && f.dynamic.some((l) => re.test(l)));
 
@@ -65,7 +71,7 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
     [24, 80],
     [40, 120],
   ] as const) {
-    it(`wordmark-idle ${rows}x${cols}: settle, 12 s alone → exactly one sweep pass (14–18 frames between the caption frame and the marker key), each ≤ 3 KB, band cells in the sweep SGR, the letters unchanged, 11 rows, 0 clears`, async () => {
+    it(`wordmark-idle ${rows}x${cols}: settle, 12 s alone → exactly one sweep pass (14–18 frames between the caption frame and the marker key), each ≤ 3 KB, band cells in the sweep SGR, the letters unchanged, ${idleRows(rows)} rows, 0 clears`, async () => {
       const r = await drive({ name: `r3-wordmark-idle-${rows}x${cols}`, args: ['chat', '--mock'], rows, cols, steps: [FIRST_FRAME_STEP, 'expect step 0/', CAPTION_STEP, 'mark settled', IDLE_STEP, 'sleep 12', 'mark idled', 'send h', echoStep('h'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE], timeoutS: 40 });
       expect(r.timeouts).toBe(0);
       expect(r.code).toBe(0);
@@ -87,7 +93,7 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
       for (const f of passFrames) {
         expect(letters(f)).toEqual(ref);
         expect(Buffer.byteLength(raw[f.index] ?? '', 'utf8')).toBeLessThanOrEqual(3072);
-        expect(f.dynamic.length).toBe(11);
+        expect(f.dynamic.length).toBe(idleRows(rows));
       }
       // the sweep touches the letters only (colour): no `▓▒░` head, no clear, no width change
       expect(passFrames.some((f) => f.dynamic.some((l) => HEAD_RE.test(l)))).toBe(false);
@@ -115,7 +121,7 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
     console.log(`key during pass: echo ${echoed.t - sent.t} ms after the send, ${after.length} band frames after it`);
   });
 
-  it('wordmark-handoff: no wordmark frame between `[run] start` and `end`; the frame after `end` has the strip AND the mark (24 rows); `/panel` hides it, `/panel off` brings it back', async () => {
+  it('wordmark-handoff: the PINNED mark is up in EVERY frame of the run and after `end` under the strip (24 rows); `/panel` below 30 rows still hides it, `/panel off` brings it back', async () => {
     const r = await drive({
       name: 'r3-wordmark-handoff',
       args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'],
@@ -124,20 +130,20 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text);
-    const start = all.findIndex((f) => f.lines.some((l) => /^ {0,9}\[run\] started [·-] /.test(l)));
+    // owner addendum: the run's first frame is the one whose status row carries a numeric `step <n>/<max>`
+    const start = all.findIndex((f) => f.dynamic.some((l) => /step \d+\/\d+/.test(l)));
     const end = all.findIndex((f) => f.lines.some((l) => /^ {0,9}\[run\] finished [·-] /.test(l)));
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
-    // the mark is hidden for the whole run; the frame that commits `[run] end` commits the state change with it, so the mark may
-    // already be back in that frame (TUI-DESIGN-3 §3.2 row `run:end → idle`: one frame earlier than §3.3's prose)
-    for (const f of all.slice(start, end)) expect(hasMark(f.dynamic)).toBe(false);
+    // owner directive 2: the mark is PINNED — it is up in every frame of the run, not hidden for it
+    for (const f of all.slice(start, end + 1)) expect(hasMark(f.dynamic)).toBe(true);
     const back = all.slice(end).find((f) => hasMark(f.dynamic));
     expect(back).toBeDefined();
-    expect(back!.dynamic[0]).toMatch(/^─── ▸ jev s\d+/);
+    expect(back!.dynamic[0]).toMatch(/^─── (?:◆ jevcode ─ )?▸ jev s\d+/);
     const panel = all.slice(end).find((f) => f.dynamic.some((l) => l.includes('▾ decisions')));
     expect(panel).toBeDefined();
     expect(hasMark(panel!.dynamic)).toBe(false);
-    const off = all.slice(all.indexOf(panel!) + 1).find((f) => f.dynamic[0]?.startsWith('─── ▸ jev') && hasMark(f.dynamic));
+    const off = all.slice(all.indexOf(panel!) + 1).find((f) => /^─── (?:◆ jevcode ─ )?▸ jev/.test(f.dynamic[0] ?? '') && hasMark(f.dynamic));
     expect(off).toBeDefined();
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
@@ -165,7 +171,7 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
     expect(countClears(afterFirstFrame(r20.text))).toBe(0);
   });
 
-  it('wordmark-22 after a mock run: no mark until the first key after `[run] end` (the epilogue stays on screen), then F-W5 on that key', async () => {
+  it('wordmark-22 after a mock run: the PINNED mark never left — it is up before the first key and after it, under the strip (F-W5)', async () => {
     const r = await drive({ name: 'r3-wordmark-22-postrun', args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], rows: 22, cols: 80, steps: [...CHAT_OPEN, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.5', 'mark ended', 'send h', echoStep('h'), 'sleep 0.3', 'send \\x03', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -174,9 +180,8 @@ describe.skipIf(!hasExpect)('pty round 3: the persistent wordmark (TUI-DESIGN-3 
     const echo = all.findIndex((f, i) => i > end && f.dynamic.some((l) => /[›>] h/.test(l)));
     expect(end).toBeGreaterThan(0);
     expect(echo).toBeGreaterThan(end);
-    for (const f of all.slice(end, echo)) expect(hasMark(f.dynamic)).toBe(false);
-    expect(hasMark(all[echo]!.dynamic)).toBe(true);
-    expect(all[echo]!.dynamic[0]).toMatch(/^─── ▸ jev/);
+    for (const f of all.slice(end, echo + 1)) expect(hasMark(f.dynamic)).toBe(true);
+    expect(all[echo]!.dynamic[0]).toMatch(/^─── (?:◆ jevcode ─ )?▸ jev/);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 

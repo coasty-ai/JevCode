@@ -54,7 +54,8 @@ import { computeFullLayout, type FullLayout } from './fullscreen/layout.js';
 import { selectRenderer } from './fullscreen/select.js';
 import { Viewport } from './fullscreen/ViewportBox.js';
 import { applyScrollAt, emptyIndex, positionRungs, rebuildFor, resolveTop, type ScrollKey, type ViewportIndex } from './fullscreen/viewport.js';
-import { wordmarkFrame, wordmarkWanted, type WordmarkSetting } from './wordmark.js';
+import { wordmarkBoxRows, wordmarkFrame, wordmarkWanted, type WordmarkSetting } from './wordmark.js';
+import { INDICATOR_MIN_ROWS, Indicator, animSize, indicatorKindFor, useIndicatorTick, type IndicatorKind } from './anim/index.js';
 import { nextPanel, parsePanelCommand } from './pane/commands.js';
 import { createBuffer, type Snapshot } from './composer/buffer.js';
 import { routeSend, routeSubmit, type SubmitDecision } from './composer/submit.js';
@@ -96,7 +97,7 @@ import { StatusLine, statusView } from './StatusLine.js';
 import { installTerminalHygiene, markAlternateScreen, printToPrimaryScreen, processRestoreTerminal, rearmRestoreTerminal, restoreTerminal, suspendProcess, waitForAnyKey, writeCursorShape, type TerminalHygiene } from './terminal.js';
 import { themeFor, textProps, type ColorRole, type Theme } from './theme.js';
 import { TOAST_ERROR_MS, TOAST_INFO_MS } from './toasts.js';
-import { Transcript } from './Transcript.js';
+import { Transcript, isRunHeaderItem } from './Transcript.js';
 import { useGitHead } from './useGitHead.js';
 import { createEventBus, createTuiConfirmer, useEngine, useVisibleItems, type EventBus, type EventSource, type QueueEntry, type RunPhase, type TuiConfirmer, type UiAction, type UiState } from './useEngine.js';
 import { useWizard, type WizardDetect, type WizardHost, type WizardReopenOptions } from './onboarding/Wizard.js';
@@ -217,7 +218,11 @@ export function fullLayoutAsLayout(f: FullLayout, rows: number): Layout {
     rule: f.rule,
     live: 0,
     banner: 0,
+    // the fullscreen header rides in `pane` and the viewport in `queue`, so `consoleTop` stays the one cursor
+    // arithmetic; the classic-only `mark` / `anim` slots are absent here
+    mark: 0,
     pane: f.header,
+    anim: 0,
     queue: f.viewport,
     overlay: f.overlay,
     preview: f.preview,
@@ -2963,7 +2968,15 @@ export function App(p: AppProps): React.JSX.Element {
     }),
     {},
   );
-  const visible = useVisibleItems(state.items, state.staticEpoch);
+  const visibleAll = useVisibleItems(state.items, state.staticEpoch);
+  /**
+   * OWNER ADDENDUM (2026-09): `[run] started · <badge> · <task>` and `[run] git <branch> · <state>` are not printed
+   * in the interactive transcript any more — the status row carries the run state and `/status` has git. The filter
+   * is HERE, at the one renderer that has a status row: `--plain` (`createPlainRenderer`), `--json` and
+   * `transcript.log` are fed from `state.items` / the event stream and keep every item. `useMemo` on the stable
+   * `useVisibleItems` reference keeps `<Transcript>`'s memo intact (a hidden-only batch still commits nothing).
+   */
+  const visible = useMemo(() => (visibleAll.some(isRunHeaderItem) ? visibleAll.filter((i) => !isRunHeaderItem(i)) : visibleAll), [visibleAll]);
   const overlayKind: OverlayKind = state.overlay;
   // §6.5: under a screen reader the review does not collapse the composer — the answer is a typed line
   const srReview = sr && overlayKind === 'review' && state.overlayArmed;
@@ -2983,7 +2996,13 @@ export function App(p: AppProps): React.JSX.Element {
   // grant (§3.7) the SHOW. `ui.wordmark` defaults to `static` under the SSH launch source (§3.2 twins).
   const wordmarkSetting: WordmarkSetting = ui?.wordmark ?? (lx.ssh === true ? 'static' : 'sweep');
   const splashOn = state.splash === 'running' && motion.time < SPLASH_MS && columns >= WORDMARK_MIN_COLUMNS && boxed && !launch.screenReader;
-  const wanted = wordmarkWanted({ boxed, rows, postRun: ranBefore && !state.postRunKeySeen, columns, screenReader: launch.screenReader, run: state.run, panel: state.panel, pickerOpen, overlay: overlayKind, expanded: state.expanded, setting: wordmarkSetting });
+  const wanted = wordmarkWanted({ boxed, rows, columns, screenReader: launch.screenReader, panel: state.panel, pickerOpen, overlay: overlayKind, setting: wordmarkSetting });
+  // the resting mark depends on the geometry alone, so it is built once per (columns, glyph set) — see below
+  const restingMark = useMemo(
+    () => (wanted || fullscreen ? guard('pane', () => wordmarkFrame({ columns, version: VERSION, glyphs }), null) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [wanted, fullscreen, columns, glyphs],
+  );
   // the rows never depend on the band (§3.8 ordering): rows → layout → the loop → `spans(loop.band)` at render
   const mark: { rows: string[]; spans: (band: GridBand | null) => readonly SplashSpan[] } | null = splashOn
     ? guard(
@@ -2995,14 +3014,32 @@ export function App(p: AppProps): React.JSX.Element {
         null,
       )
     : // §1.3.2: in `fullscreen` the header slot IS the mark in the tall tier — `wordmarkWanted`'s pane rules (panel,
-      // picker, review, the live run) are about the classic pane slot, which the fullscreen tree does not have; the
-      // allocator has already decided whether five rows are affordable (`full.header === CAP.splash`).
-      wanted || fullscreen
-      ? guard('pane', () => wordmarkFrame({ columns, version: VERSION, glyphs }), null)
-      : null;
+      // picker, review) are about the classic pane slot, which the fullscreen tree does not have; the allocator has
+      // already decided whether the box is affordable (`full.header >= CAP.splash`).
+      //
+      // MEMOISED on the geometry (owner directive 2): the mark is now up for the WHOLE session, including every
+      // frame of a run, so a fresh `RestingFrame` per render would re-run `spans()` and hand five new prop objects
+      // to `<SplashRow>` on every engine event — the pinned box must cost a live frame nothing.
+      restingMark;
   const wordmarkOn = mark !== null && mark.rows.length > 0;
-  // TUI-DESIGN-2 §4.6: 0 (collapsed) · 6 (open) · 12 (full / picker) · 5 (the wordmark)
-  const paneWant = pickerOpen ? PICKER_PANE_WANT : wordmarkOn ? CAP.splash : state.panel === 'open' ? CAP.panel : state.panel === 'full' ? CAP.pane : 0;
+  // owner directive 2 + 3: the branding box has its own slot, above the pane — `WORDMARK_ROWS` plus the padding
+  // rows the height affords, granted whole or not at all
+  const markWant = wordmarkOn ? wordmarkBoxRows(rows) : 0;
+  // TUI-DESIGN-2 §4.6: 0 (collapsed) · 6 (open) · 12 (full / picker) — the mark is no longer a tenant here
+  const paneWant = pickerOpen ? PICKER_PANE_WANT : state.panel === 'open' ? CAP.panel : state.panel === 'full' ? CAP.pane : 0;
+  /**
+   * The 3D indicator (owner directive): one whole-or-absent slot directly above the console and below the
+   * conversation. `indicatorKindFor` picks the geometry from the session state (thinking → the donut, `execute` →
+   * the cube, `judge` → the wave, every other stage → the globe); `animSize` decides the box, and the layout only
+   * grants it while four rows of conversation survive. Whenever it is absent the status row's glyph spinner and the
+   * `(thinking…)` placeholder carry the state exactly as they do today — they are the fallback, not a duplicate.
+   */
+  const indicatorKind = guard<IndicatorKind | null>('anim', () => indicatorKindFor({ thinking: state.thinking, run: state.run, stage: state.status?.stage ?? null, streaming: state.live !== '' }), null);
+  const animBox = fullscreen || launch.screenReader ? null : animSize(columns, rows);
+  const animWant = indicatorKind !== null && animBox !== null && overlayKind === 'none' && rows >= INDICATOR_MIN_ROWS ? animBox.h : 0;
+  // over SSH the indicator is a still frame, like the wordmark's `static`: a 12 fps repaint of the dynamic region is ~30 KB/s of pty traffic, fine locally, unkind on a link
+  const animStill = reducedMotion || lx.ssh === true;
+  const animTick = useIndicatorTick(animWant > 0, animStill);
   // TUI-DESIGN-2 §4.2: in the boxed tier the secret gate is a console row, never the `secret` overlay
   const gateUp: 0 | 1 = boxed && overlayKind === 'secret' && gateRef.current !== null ? 1 : 0;
   const layoutInput: LayoutInput = {
@@ -3018,10 +3055,10 @@ export function App(p: AppProps): React.JSX.Element {
     liveWant: liveRows.length,
     bannerWant: banner !== null ? 1 : 0,
     paneWant,
+    markWant,
+    animWant,
     chrome,
     gate: gateUp,
-    // TUI-DESIGN-3 §3.7: the mark is granted whole or not at all (never its top rows)
-    paneWhole: wordmarkOn,
   };
   // TUI-DESIGN-4 §1.3.2: the fullscreen renderer gets a SECOND allocator whose post-condition is `total === rows`
   // exactly (one row of error costs a full-screen clear per keystroke — A1 measured 37 clears for 36 frames). Its
@@ -3034,13 +3071,14 @@ export function App(p: AppProps): React.JSX.Element {
   layoutRef.current = layout;
   // in fullscreen the header slot draws the 5-row mark only in the tall tier; the compact / narrow tiers draw the
   // 1-row brand strip there (§1.3.2's table), so the mark is never cut to its top rows
-  const markShown = full === null ? wordmarkOn && layout.pane > 0 : wordmarkOn && full.header === CAP.splash;
+  const markShown = full === null ? wordmarkOn && layout.mark > 0 : wordmarkOn && full.header >= CAP.splash;
   // TUI-DESIGN-3 §3.6: the idle sweep — active only while the mark has rows, after the settle, with motion allowed and attention awake;
   // the quiet-after-key rule lives inside the hook (never in `isActive`); the App renders `loop.band`, never `loopBand(loop.k)`
   const attention = attentionAt(state.nowMs, state.lastActivityAt);
-  // TUI-DESIGN-4 §1.2 P-H2: the mark stays up during a run at >= WORDMARK_LIVE_MIN_ROWS rows, but the sweep is FROZEN while live —
-  // a run still writes zero decoration frames, so the `dynamic <= maxFps + 1` and `idle-frames` gates are untouched
-  const loop = useIdleLoop({ shown: markShown && !splashOn && !runIsLive(state.run), splashRunning: state.splash === 'running', enabled: wordmarkSetting === 'sweep' && !reducedMotion && depth > 0, attention, nowMs: state.nowMs, lastKeystrokeAt: state.lastKeystrokeAt });
+  // owner directive 2: the mark is up for the whole session, and the sweep is FROZEN whenever anything is in flight
+  // (a run, a submission, a stream) — the pinned box is byte-identical across every frame of a reply, so a run still
+  // writes zero decoration frames and the `dynamic <= maxFps + 1` / `idle-frames` gates are untouched
+  const loop = useIdleLoop({ shown: markShown && !splashOn && !runIsLive(state.run) && state.thinking === null && state.live === '', splashRunning: state.splash === 'running', enabled: wordmarkSetting === 'sweep' && !reducedMotion && depth > 0, attention, nowMs: state.nowMs, lastKeystrokeAt: state.lastKeystrokeAt });
   // Per-row span arrays, memoised on the mark and the band tick: a key frame re-renders the App but the five <SplashRow>s keep
   // their props (React skips them; Ink's Yoga cache keeps their layout), so the persistent mark costs a key frame nothing.
   // TUI-DESIGN-4 §1.2 P-H3 (= §7.3 P-P3 item 2): `mark.spans(...)` ran in the render body outside every boundary, so a
@@ -3054,11 +3092,15 @@ export function App(p: AppProps): React.JSX.Element {
     return { rows: mark.rows, spans: mark.rows.map((_row, i) => all.filter((sp) => sp.row === i)) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mark, loop.phase, loop.k]);
+  // owner directive 3: the branding box is `layout.mark` rows — the glyph rows centred between equal blank rows
+  const markGlyphRows = markView.rows.slice(0, Math.max(0, Math.min(markView.rows.length, layout.mark)));
+  const markPadTop = Math.max(0, Math.floor((layout.mark - markGlyphRows.length) / 2));
+  const markPadBottom = Math.max(0, layout.mark - markGlyphRows.length - markPadTop);
   const top = composerTop(layout);
   // TUI-DESIGN-2 §4.3: the wizard's rows live inside the console (its top edge sits above the overlay allocation)
   const wizardHosted = boxed && overlayKind === 'wizard' && layout.chrome > 0;
   const cTop = consoleTop(layout) - (wizardHosted ? layout.overlay : 0);
-  const overlayTop = layout.rule + layout.live + layout.banner + layout.pane + layout.queue;
+  const overlayTop = layout.rule + layout.live + layout.banner + layout.mark + layout.pane + layout.queue;
   /**
    * The quiet start (2026-09, owner's directive "clean"): a SESSION opens with the wordmark and the composer, so the
    * `[run] jevcode session · <dir> | step 0/– starting` header is not printed at all in the boxed renderer — `--plain`
@@ -3286,9 +3328,9 @@ export function App(p: AppProps): React.JSX.Element {
         </Box>
       ) : null}
       {full === null && !staticOnly && markShown && mark !== null ? (
-        // P-H3 / §1.3.2 edge 5: the boundary's fallback is BLANK rows of the SAME height — the idle tenant
+        // P-H3 / §1.3.2 edge 5: the boundary's fallback is BLANK rows of the SAME height — the pinned box
         // disappearing silently is the correct degradation, and the rendered height must keep equalling the height
-        // `computeLayout` granted (the default one-row red notice would make the frame `layout.pane − 1` rows short
+        // `computeLayout` granted (the default one-row red notice would make the frame `layout.mark − 1` rows short
         // and would duplicate the `[ui]` item the App already appends). `resetKey` lets the next run try again.
         <PaneBoundary
           pane="wordmark"
@@ -3297,8 +3339,8 @@ export function App(p: AppProps): React.JSX.Element {
           log={logName}
           resetKey={state.runId ?? ''}
           fallback={() => (
-            <Box flexDirection="column" height={layout.pane} overflow="hidden">
-              {Array.from({ length: layout.pane }, (_unused, i) => (
+            <Box flexDirection="column" height={layout.mark} overflow="hidden">
+              {Array.from({ length: layout.mark }, (_unused, i) => (
                 <Text key={`sf${i}`} wrap="truncate">
                   {' '}
                 </Text>
@@ -3306,13 +3348,24 @@ export function App(p: AppProps): React.JSX.Element {
             </Box>
           )}
         >
-          <Box flexDirection="column" height={layout.pane} overflow="hidden">
-            {markView.rows.slice(0, layout.pane).map((row, i) => (
+          <Box flexDirection="column" height={layout.mark} overflow="hidden">
+            {Array.from({ length: markPadTop }, (_unused, i) => (
+              <Text key={`sp${i}`} wrap="truncate">
+                {' '}
+              </Text>
+            ))}
+            {markGlyphRows.map((row, i) => (
               <SplashRow key={`s${i}`} row={row} spans={markView.spans[i] ?? NO_MARK_SPANS} theme={theme} color={depth} />
+            ))}
+            {Array.from({ length: markPadBottom }, (_unused, i) => (
+              <Text key={`sq${i}`} wrap="truncate">
+                {' '}
+              </Text>
             ))}
           </Box>
         </PaneBoundary>
-      ) : full === null && !staticOnly && layout.pane > 0 ? (
+      ) : null}
+      {full === null && !staticOnly && layout.pane > 0 ? (
         <PaneBoundary pane="pane" onFail={onPaneFail} fault={fault} log={logName} resetKey={state.runId ?? ''}>
           <Pane state={paneState} rows={layout.pane} columns={columns} overlay={overlayKind} terminalRows={rows} lines={pickerView?.lines ?? null} selected={pickerView?.selected ?? null} glyphs={glyphs} theme={theme} color={depth} {...(pickerOpen ? {} : { size: state.panel === 'open' ? 'open' : 'full' })} />
         </PaneBoundary>
@@ -3329,6 +3382,30 @@ export function App(p: AppProps): React.JSX.Element {
       {!staticOnly && (layout.overlay > 0 || layout.preview > 0) && !wizardHosted ? (
         <PaneBoundary pane="overlay" onFail={onPaneFail} fault={fault} log={logName} resetKey={overlayKind}>
           <Overlay kind={layout.degraded === 'minsize' ? 'none' : overlayKind} rows={layout.overlay} previewRows={layout.preview} columns={columns} terminalRows={rows} top={overlayTop} data={overlayData} degraded={layout.degraded} cursor={setCursorPosition} glyphs={glyphs} theme={theme} color={depth} screenReader={launch.screenReader} chrome={chrome} />
+        </PaneBoundary>
+      ) : null}
+      {full === null && !staticOnly && layout.anim > 0 && indicatorKind !== null ? (
+        // the 3D indicator: directly above the console box, whole or absent; the boundary's fallback is blank rows
+        // of the same height so a throw inside it can never shorten the frame
+        <PaneBoundary
+          pane="anim"
+          onFail={onPaneFail}
+          fault={fault}
+          log={logName}
+          resetKey={indicatorKind}
+          fallback={() => (
+            <Box flexDirection="column" height={layout.anim} overflow="hidden">
+              {Array.from({ length: layout.anim }, (_unused, i) => (
+                <Text key={`af${i}`} wrap="truncate">
+                  {' '}
+                </Text>
+              ))}
+            </Box>
+          )}
+        >
+          <Box flexDirection="column" height={layout.anim} overflow="hidden" alignItems="center">
+            <Indicator kind={indicatorKind} columns={columns} rows={rows} tick={animTick} theme={theme} reducedMotion={animStill} ascii={glyphs.mode === 'ascii'} noColor={depth === 0} color={depth} />
+          </Box>
         </PaneBoundary>
       ) : null}
       {!staticOnly && layout.chrome > 0 && (layout.composer > 0 || wizardHosted) ? (

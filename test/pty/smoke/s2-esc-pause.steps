@@ -5,7 +5,7 @@ sleep 0.3
 send make the tests pass
 sleep 0.2
 send \r
-expect \[run\](?:\x1b\[[0-9;]*m)* start 
+expect step \d+/\d+
 sleep 0.4
 send \x1b
 expect Esc again aborts the run

@@ -1,5 +1,5 @@
-# 22x80 after a mock run (TUI-DESIGN-3 §3.2 WORDMARK_POST_RUN_MIN_ROWS = 24): the mark does not return at `run:end` (the 8-row epilogue
-# would scroll off), it returns on the first key after the end (F-W5 under the strip)
+# 22x80 after a mock run, as amended by owner directive 2: there is no post-run hand-off left — the PINNED mark is up before the first
+# key and after it, under the strip (F-W5)
 expect \x1b\[\?25l
 expect Say hi
 expect sess \$
@@ -7,7 +7,7 @@ sleep 0.3
 send fix the failing test
 sleep 0.2
 send \r
-expect \[run\](?:\x1b\[[0-9;]*m)* start 
+expect step \d+/\d+
 expect finished [·-] (complete|max_steps|generator_done)
 expect Follow-up, question
 sleep 0.5

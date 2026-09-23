@@ -1221,7 +1221,7 @@ and no git zone — both arrive after `resolveConfig` (§5.3).
 $0.0004
 [step 2] edit kth.py "guard k > len" · risk 0.12 ok · 1 file · tests 40p/1f/0e ·
 judge 0.52 · 1.6s · $0.0006
-─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 ──────── [d] [p] [t] [s] ──
+─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 ───────────────────────────
 synth sieve: tested 37/137 candidates (candidates=137, tested=37)
 ╭─ jev-only ──────────────────────────────────────────────────────────── proj ─╮
 │ › Type to steer the next step…  Esc pauses                                   │
@@ -1238,7 +1238,7 @@ synth sieve: tested 37/137 candidates (candidates=137, tested=37)
 [run] start r1 mode=jev-only task: make the failing test pass
 [step 1] read tests/test_kth.py, kth.py · risk 0.02 ok · judge 0.71 · 0.9s · $0.0004
 [step 2] edit kth.py "guard k > len" · risk 0.12 ok · 1 file · tests 40p/1f/0e · judge 0.52 · 1.6s · $0.0006
-─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 · jev 110ms ─────────── [d]ecisions [p]lan [t]imeline [s]ynth ─────
+─── ▸ jev s3 · 9 decisions · risk 0.10 ok · plan 1/3 · jev 110ms ───────────────────────────────────────────────────────
 synth sieve: tested 37/137 candidates (candidates=137, tested=37)
 ╭─ jev-only ──────────────────────────────────────────────────────────────────────────────────────────────────── proj ─╮
 │ › Type to steer the next step…  Esc pauses   Esc Esc aborts                                                          │
@@ -1289,7 +1289,7 @@ s7 complete task_complete    noul        ██████▊···  0.68  c 0.
 
 ```
 [step 6] run $ pytest -q tests/test_a.py · risk 0.03 ok · tests 40p/1f/0e · jud…
-─── ▸ jev s7 · 12 decisions · risk 0.44 [review] ──────────── [d] [p] [t] [s] ──
+─── ▸ jev s7 · 12 decisions · risk 0.44 [review] · plan 2/5 ────────────────────
 ╭─ review · step 7 · risk 0.44 (tail) · edit src/a.py "make parse_date timez… ─╮
 │ [y] approve [n] decline [d] decline+note [e] expand [w]1-5 why [esc] decline │
 │ dimension     lvl 0  ┆   ┆ 1  risk bnd  conf  Jev's dominant level (why)     │
@@ -1314,7 +1314,7 @@ s7 complete task_complete    noul        ██████▊···  0.68  c 0.
 
 ```
 [step 6] run $ pytest -q tests/test_a.py · risk 0.03 ok · tests 40p/1f/0e · judge 0.61 · 2.4s · $0.031
-─── ▸ jev s7 · 12 decisions · risk 0.44 [review] · plan 2/5 · jev 244ms ──── [d]ecisions [p]lan [t]imeline [s]ynth ─────
+─── ▸ jev s7 · 12 decisions · risk 0.44 [review] · plan 2/5 · jev 244ms ────────────────────────────────────────────────
 ╭─ review · step 7 · risk 0.44 (tail on plan_mismatch) · edit src/a.py "make parse_date timezone-aware" · jev 244ms ───╮
 │ [y] approve  [n] decline  [d] decline+note  [e] expand preview  [w]1-5 why  [esc] decline         [ctrl-c] abort run │
 │ dimension      lvl  0  ┆   ┆ 1  risk  bnd   P(l)  E[k]  tail  conf   Jev's dominant level (why); E[k]/4; tail = P(k… │
