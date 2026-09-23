@@ -237,7 +237,8 @@ export function normaliseCall(raw: RawCall, o: NormaliseOptions): Omit<Normalise
     args['todos'] = args['todos'].slice(0, AGENT_TODO_MAX_ITEMS).map((x) => (isObject(x) && typeof x['content'] === 'string' ? { ...x, content: x['content'].slice(0, AGENT_TODO_ITEM_CHARS) } : x));
   }
   const problem = validateArgs(tool, args);
-  if (problem !== null) return { ...fail(tool, invalidArguments(tool, problem, signatureOf(tool))), ignored };
+  // a cut-off call that parsed but is missing what it needs (an adapter sends `{}` when the cut came before any argument)
+  if (problem !== null) return { ...fail(tool, o.cutOff ? truncatedCall(o.maxTokens) : invalidArguments(tool, problem, signatureOf(tool))), ignored };
   for (const key of ['path'] as const) {
     const v = args[key];
     if (typeof v === 'string' && !v.startsWith('jevcode:')) args[key] = relativiseInside(o.root, v);

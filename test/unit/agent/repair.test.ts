@@ -96,6 +96,13 @@ describe('JSON repair', () => {
     expect(normaliseCall({ name, input: null, rawJson }, opts).error).toBeNull();
   });
 
+  it('a cut-off call that parsed but lacks its required arguments is TRUNCATED_CALL, not INVALID ARGUMENTS', () => {
+    // openai-compat adapters send `{}` when the reply was cut before the first argument
+    const n = normaliseCall({ name: 'write_file', input: {}, rawJson: '{}' }, { ...opts, cutOff: true });
+    expect(n.error).toMatch(/^Your reply was cut off at the output limit/);
+    expect(normaliseCall({ name: 'write_file', input: {}, rawJson: '{}' }, opts).error).toMatch(/^INVALID ARGUMENTS for write_file: path is required/);
+  });
+
   it('a cut-off reply whose last call parsed completely runs as usual', () => {
     const n = normaliseCall({ name: 'read_file', input: { path: 'a.py' }, rawJson: '{"path": "a.py"}' }, { ...opts, cutOff: true });
     expect(n.error).toBeNull();
