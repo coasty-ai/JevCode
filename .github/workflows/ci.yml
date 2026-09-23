@@ -4,7 +4,8 @@
 # run here means the release job will not fail on anything but the publish itself. Node 22 is the
 # supported floor (package.json `engines` is >=22.12.0; .nvmrc pins 22.23.2); release.yml runs on
 # Node 24 because npm trusted publishing needs 11.5.1+. Nothing here touches the network after
-# `npm ci`: the package has zero runtime dependencies and the build smoke asserts it.
+# `npm ci` (and the pytest install before it): the package has zero runtime dependencies and the build
+# smoke asserts it.
 name: ci
 
 on:
@@ -29,14 +30,21 @@ jobs:
       CI: 'true'
       JEVCODE_ASSERT_NO_NETWORK: '1' # the build smoke renders the first frame with no HTTP
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # scripts/gen-docs.mjs --check dates the man page from package.json's commit
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: npm
+
+      # ubuntu-latest ships python3 without pytest, and the unit suite runs real python3 over fixtures that
+      # `import pytest` (test/unit/synth/search/perturb.test.ts harvests the ladder's shipping task; the ladder and
+      # QuixBugs files skip without it). Installed system-wide, before `npm ci`, so a test that narrows PATH to
+      # /usr/bin or points HOME at a temp dir still finds it. The version is the one the suite is run with locally.
+      - name: pytest for the runner's python3
+        run: sudo python3 -m pip install --break-system-packages --root-user-action=ignore --no-cache-dir 'pytest==8.4.2'
 
       - run: npm ci
 
@@ -46,8 +54,15 @@ jobs:
       - name: Jev-safety contract (every Jev call site is a router, never an authority)
         run: npm run jev-contract
 
+      # Three files assert real wall-clock windows (a 34 ms render throttle, 4 s waits on a live session) and have
+      # missed them only under the load of a 2-core runner; they pass locally, alone and in the full run. They run
+      # in their own invocation with up to two retries. Every other file runs exactly once, local `npm test` is
+      # unchanged, and a real regression still fails: it fails all three attempts.
       - name: Unit tests
-        run: npm test -- --maxWorkers=3
+        run: npm test -- --maxWorkers=3 --exclude test/unit/tui/app.test.tsx --exclude test/unit/tui/key-immediate-render.test.tsx --exclude test/unit/cli/session.test.ts
+
+      - name: Unit tests (load-sensitive timing files, retried up to twice)
+        run: npm test -- --maxWorkers=3 --retry 2 test/unit/tui/app.test.tsx test/unit/tui/key-immediate-render.test.tsx test/unit/cli/session.test.ts
 
       - name: Build the bundle and the attribution file
         run: npm run build
