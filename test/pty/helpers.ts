@@ -369,16 +369,43 @@ export interface FrameUnit {
   erased: number;
   /** index of the last rule row, or -1 */
   ruleIndex: number;
-  /** rows of the dynamic region (rule row → last row), or null when the unit draws no frame */
+  /**
+   * rows of the dynamic region, or null when the unit draws no frame (no rule row): Ink's own accounting (`eraseRows`)
+   * where a later write tells, else the rule parse (`ruleRows`)
+   */
   rows: number | null;
+  /**
+   * the dynamic region by Ink's own accounting: `log-update` erases exactly the previous write's line count, so the next
+   * unit that erases anything erased this unit's last region + 1 (the trailing newline). Null for the last unit, one
+   * followed by a clear-terminal unit or by a write that erased nothing. It counts live rows above the rule (a streaming
+   * reply's tail) and blank rows at the bottom, which the rule parse cannot see.
+   */
+  eraseRows: number | null;
+  /** the rule parse: last rule row → last row, trailing blank rows kept; null without a rule row */
+  ruleRows: number | null;
   /** visible width of the rule row (the geometry the App rendered for), or null */
   ruleWidth: number | null;
   /**
-   * rows above the rule row: the `<Static>` items this unit committed (wrapped at the terminal width). In a
+   * rows above the dynamic region (`rows`): the `<Static>` items this unit committed (wrapped at the terminal width). In a
    * clear-terminal unit (`clears > 0`) Ink rewrites its whole `fullStaticOutput` first (ink.js: `clearTerminal +
    * fullStaticOutput + output`), so these rows then repeat every earlier item — `staticRows()` dedupes that.
    */
   staticRows: string[];
+}
+
+/**
+ * The dynamic region of `all[i]` by Ink's own accounting: the erase count at the head of the next unit that erased
+ * anything, minus the trailing newline of this unit's last write. Units with no visible rows and no erase (cursor-only
+ * writes) are skipped; a clear-terminal unit or a unit that prints without erasing leaves it unknown (null).
+ */
+function eraseRowsOf(all: readonly Omit<FrameUnit, 'rows' | 'eraseRows' | 'staticRows'>[], i: number, endsWithNewline: boolean): number | null {
+  for (let j = i + 1; j < all.length; j++) {
+    const u = all[j]!;
+    if (u.clears > 0) return null;
+    if (u.erased > 0) return u.erased - (endsWithNewline ? 1 : 0);
+    if (u.lines.some((l) => l !== '')) return null;
+  }
+  return null;
 }
 
 /**
@@ -394,15 +421,27 @@ export function units(text: string, opts: { untilRestore?: boolean } = {}): Fram
     if (cut >= 0) t = t.slice(0, cut);
   }
   const parts = t.split(/(?=\x1b\[\?25l|\x1b\[2J)/);
-  const out: FrameUnit[] = [];
-  parts.forEach((raw, index) => {
-    const stripped = stripAnsi(raw).replace(/\r\n|\r/g, '\n');
-    const lines = stripped.split('\n');
+  const base = parts.map((raw, index) => {
+    const plain = stripAnsi(raw);
+    const lines = plain.replace(/\r\n|\r/g, '\n').split('\n');
     while (lines.length > 0 && lines.at(-1) === '') lines.pop();
+    // the rows as the terminal lays them out, for the region measures: one per line break, a row's trailing `\r`s dropped
+    // (`\r\r\n` is ONE break — `lines` above reads it as two, a phantom blank row under the console's top edge), and
+    // trailing blank rows kept (only the text after the final line break, the cursor suffix, is dropped)
+    const rawLines = plain.split('\n').map((r) => r.replace(/\r+$/, ''));
+    const endsWithNewline = rawLines.length > 1 && rawLines.at(-1) === '';
+    if (endsWithNewline) rawLines.pop();
     let ruleIndex = -1;
     for (let i = lines.length - 1; i >= 0; i--) {
       if (RULE_RE.test(lines[i] ?? '')) {
         ruleIndex = i;
+        break;
+      }
+    }
+    let rawRule = -1;
+    for (let i = rawLines.length - 1; i >= 0; i--) {
+      if (RULE_RE.test(rawLines[i] ?? '')) {
+        rawRule = i;
         break;
       }
     }
@@ -411,19 +450,41 @@ export function units(text: string, opts: { untilRestore?: boolean } = {}): Fram
     // before the unit's first printable character
     const head = /^(?:\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f])*/.exec(raw)?.[0] ?? '';
     const erased = head.split(ERASE_LINE).length - 1;
-    out.push({
-      index,
-      raw,
-      lines,
-      clears: countClears(raw),
-      erased,
-      ruleIndex,
-      rows: ruleIndex >= 0 ? lines.length - ruleIndex : null,
-      ruleWidth: rule === null ? null : [...rule].length,
-      staticRows: ruleIndex >= 0 ? lines.slice(0, ruleIndex) : index === 0 ? lines : [],
-    });
+    return {
+      unit: { index, raw, lines, clears: countClears(raw), erased, ruleIndex, ruleRows: ruleIndex >= 0 && rawRule >= 0 ? rawLines.length - rawRule : null, ruleWidth: rule === null ? null : [...rule].length },
+      rawLines,
+      endsWithNewline,
+    };
   });
-  return out;
+  const bare = base.map((b) => b.unit);
+  return base.map(({ unit, rawLines, endsWithNewline }, index) => {
+    const eraseRows = unit.ruleIndex >= 0 ? eraseRowsOf(bare, index, endsWithNewline) : null;
+    const rows = unit.ruleIndex >= 0 ? (eraseRows ?? unit.ruleRows) : null;
+    return {
+      ...unit,
+      eraseRows,
+      rows,
+      staticRows: rows !== null ? rawLines.slice(0, Math.max(0, rawLines.length - rows)) : index === 0 ? unit.lines : [],
+    };
+  });
+}
+
+/**
+ * The cross-check of the two region measures over a capture's units: every unit that draws a rule row and has both
+ * `eraseRows` and `ruleRows`, and the ones that disagree. While no live row sits above the rule the two agree (the
+ * whole pty suite, 2026-09-23: ~1,390 units, one disagreement — a resize-storm unit where two writes share one
+ * cursor-hide unit and the rule parse spans both, 53 rows against Ink's 27); a streaming tail above the rule is exactly
+ * where they part, and `rows` follows Ink's accounting there.
+ */
+export function regionCrossCheck(all: readonly FrameUnit[]): { compared: number; mismatches: Array<{ index: number; eraseRows: number; ruleRows: number }> } {
+  const mismatches: Array<{ index: number; eraseRows: number; ruleRows: number }> = [];
+  let compared = 0;
+  for (const u of all) {
+    if (u.eraseRows === null || u.ruleRows === null) continue;
+    compared += 1;
+    if (u.eraseRows !== u.ruleRows) mismatches.push({ index: u.index, eraseRows: u.eraseRows, ruleRows: u.ruleRows });
+  }
+  return { compared, mismatches };
 }
 
 /** the units that draw a dynamic frame (a rule row), from the first frame on */

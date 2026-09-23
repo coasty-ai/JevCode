@@ -23,9 +23,11 @@
  * previous key and is skipped.
  *
  * `splitFrames()` cuts a capture at Ink's synchronized-output brackets (`ESC[?2026h` … `ESC[?2026l`,
- * `ink/build/write-synchronized.js`); `paintedRows()` measures a frame's dynamic region directly (last rule row → last
- * row, as `test/pty/helpers.ts` does) instead of inferring it from the erase count, which reads 0 for a clear-terminal
- * frame; `CLEAR_RE` is the §18 clear-detection alternation with its self-test.
+ * `ink/build/write-synchronized.js`). A frame's dynamic region is read from Ink's own accounting — the NEXT write's erase
+ * count (`eraseHeights`, `regionRows`, `splitRegion`), which also sees live rows above the rule and blank rows at the
+ * bottom — and from the frame itself (`paintedRows`: last rule row → last row, as `test/pty/helpers.ts` does) where no
+ * later write tells: a clear-terminal frame erases nothing, and the last frame is erased by nobody. `CLEAR_RE` is the
+ * §18 clear-detection alternation with its self-test.
  */
 import { spawn } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -535,24 +537,30 @@ export function paintedRows(body: string): number | null {
  * driver's two SIGWINCHes land between Ink's measure and its paint, so exactly one settling frame at the old
  * geometry is expected and is not a defect (§2.0 consequence (d)).
  *
+ * The region is Ink's own accounting (`eraseHeights`: the next write's erase count − 1), so rows that are live but sit
+ * above the rule (a streaming reply's tail) count, and so do blank rows at the bottom; where no later write tells, it
+ * falls back to the rule parse (`ruleRegionRows`). Only frames that draw a rule row are measured, as before.
+ *
  * `limit` is `rows` in the classic renderer; the fullscreen renderer's post-condition is equality, which the
  * caller checks with `paintedRows(frame) === rows` per frame.
  */
 export function framesTallerThan(frames: readonly Frame[], rows: number, opts: { from?: number; skip?: readonly number[] } = {}): { index: number; painted: number }[] {
   const skip = new Set(opts.skip ?? []);
+  const heights = eraseHeights(frames);
   const out: { index: number; painted: number }[] = [];
   for (let i = opts.from ?? 0; i < frames.length; i++) {
-    if (skip.has(i)) continue;
-    const painted = paintedRows(frames[i]!.body);
+    if (skip.has(i) || paintedRows(frames[i]!.body) === null) continue;
+    const painted = regionRows(frames, i, heights);
     if (painted !== null && painted > rows) out.push({ index: i, painted });
   }
   return out;
 }
 
-/** The tallest dynamic region painted by `frames[from..]` (0 when none paints a rule row). */
+/** The tallest dynamic region painted by `frames[from..]` (Ink's erase accounting, the rule parse where it is silent; frames without a rule row are not measured; 0 when none is). */
 export function paintedMax(frames: readonly Frame[], from = 0): number {
+  const heights = eraseHeights(frames);
   let max = 0;
-  for (let i = from; i < frames.length; i++) max = Math.max(max, paintedRows(frames[i]!.body) ?? 0);
+  for (let i = from; i < frames.length; i++) if (paintedRows(frames[i]!.body) !== null) max = Math.max(max, regionRows(frames, i, heights) ?? 0);
   return max;
 }
 
@@ -592,6 +600,12 @@ export function frameRowsRaw(body: string): string[] {
   return rows;
 }
 
+/** the frame's text ends with a line break (only the cursor suffix after it): Ink's `output + '\n'`, not a viewport-filling frame */
+function endsWithNewline(body: string): boolean {
+  const rows = stripAnsi(body).split('\n');
+  return rows.length > 1 && rows[rows.length - 1]!.replace(/\r+$/, '') === '';
+}
+
 /** The rule parse with trailing blank rows kept: last rule row → last row of `frameRowsRaw`; null without a rule row. */
 export function ruleRegionRows(body: string): number | null {
   const rows = frameRowsRaw(body);
@@ -602,15 +616,19 @@ export function ruleRegionRows(body: string): number | null {
 /**
  * Every frame's dynamic region, in rows, by Ink's own accounting. `log-update` (standard mode) writes
  * `eraseLines(previousLineCount) + str` and then sets `previousLineCount` to `str`'s line count — the visible rows plus
- * one for the trailing newline — and a `<Static>` frame starts with `log.clear()`, which erases the same count. So the
- * next frame that erases anything erased exactly this frame's region + 1, whatever the region holds: a rule row or not,
- * blank rows at the bottom, rows above the rule that are still live (a streaming reply tail). Cursor-only frames (no
- * rows, no erase) are skipped; a clear-terminal frame, a frame that prints without erasing (after Ink's `log.clear()` /
- * reset) and the last frame leave the height unknown (null) — `regionRows` then falls back to the rule parse.
+ * one for the trailing newline (none when a frame fills the viewport: Ink drops the newline there) — and a `<Static>`
+ * frame starts with `log.clear()`, which erases the same count. So the next frame that erases anything erased exactly
+ * this frame's region (+ 1 for the newline), whatever the region holds: a rule row or not, blank rows at the bottom,
+ * rows above the rule that are still live (a streaming reply tail). Cursor-only frames (no rows, no erase) are skipped;
+ * a clear-terminal frame, a frame that prints without erasing (after Ink's `log.clear()` / reset) and the last frame
+ * leave the height unknown (null) — `regionRows` then falls back to the rule parse.
  *
- * Cross-checked 2026-09-23 against the rule parse (`ruleRegionRows`) on 60 perf captures: 12,254 frames with both
- * measures, 0 disagreements (the rule parse WITHOUT the trailing blank rows, `paintedRows`, disagreed on 23 frames —
- * all of them the failed-composer frames of `states fault-composer`, whose region ends in three blank rows).
+ * Cross-checked 2026-09-23 against the rule parse (`ruleRegionRows`): 76 perf captures, 13,401 frames with both
+ * measures, 0 disagreements; the pty suite's 109 captures read as typist frames, ~1,470 frames, 0 disagreements. The
+ * rule parse WITHOUT the trailing blank rows (`paintedRows`) disagreed only on the failed-composer frames of `states
+ * fault-composer`, whose region ends in three blank rows (16 → 19 rows; the region ≤ rows − 2 and taller-than verdicts
+ * are the same on every capture). `classifyFrames` differs from the rule-only `classifyFrame` only on `--ascii`
+ * captures, where `staticRows` (a `─` rule only) never sees a static frame.
  */
 export function eraseHeights(frames: readonly Frame[]): (number | null)[] {
   const out: (number | null)[] = new Array<number | null>(frames.length).fill(null);
@@ -619,7 +637,7 @@ export function eraseHeights(frames: readonly Frame[]): (number | null)[] {
       const f = frames[j]!;
       if (CLEAR_FRAME_RE.test(f.body)) break;
       if (f.erased > 0) {
-        out[i] = f.erased - 1;
+        out[i] = f.erased - (endsWithNewline(frames[i]!.body) ? 1 : 0);
         break;
       }
       if (frameRowsRaw(f.body).some((r) => r !== '')) break;
@@ -891,7 +909,12 @@ export function lastSendAtOrBefore(sends: readonly number[], t: number): number 
  * else `dynamic`. Static wins over key: an immediate Static render is one by design whatever the typist was doing.
  */
 export function classifyFrame(frame: Frame, frameAtMs: number | null, sends: readonly number[], throttle: number): FrameClass {
-  if (staticRows(frame.body) > 0) return 'static';
+  return classifyWithStatic(staticRows(frame.body) > 0, frameAtMs, sends, throttle);
+}
+
+/** The class once it is known whether the frame committed `<Static>` rows. */
+function classifyWithStatic(hasStatic: boolean, frameAtMs: number | null, sends: readonly number[], throttle: number): FrameClass {
+  if (hasStatic) return 'static';
   if (frameAtMs !== null) {
     const s = lastSendAtOrBefore(sends, frameAtMs);
     if (s !== null && frameAtMs - s <= throttle) return 'key';
@@ -899,9 +922,19 @@ export function classifyFrame(frame: Frame, frameAtMs: number | null, sends: rea
   return 'dynamic';
 }
 
-/** One class per frame, aligned with `frames`. */
+/**
+ * One class per frame, aligned with `frames`. `static` is decided by Ink's erase accounting when the next write tells
+ * (`splitRegion`: rows written above the dynamic region), so a live tail above the rule is never mistaken for committed
+ * scrollback — which would take its frames out of the `dynamic` class the frame-rate gate counts; the rule parse
+ * (`classifyFrame`) decides where the accounting is silent.
+ */
 export function classifyFrames(frames: readonly Frame[], chunks: readonly Chunk[], sends: readonly number[], throttle: number): FrameClass[] {
-  return frames.map((f) => classifyFrame(f, frameTime(f, chunks), sends, throttle));
+  const heights = eraseHeights(frames);
+  return frames.map((f, i) => {
+    if (heights[i] === null || paintedRows(f.body) === null) return classifyFrame(f, frameTime(f, chunks), sends, throttle);
+    const split = splitRegion(frames, i, heights);
+    return classifyWithStatic(split !== null && split.staticRows.length > 0, frameTime(f, chunks), sends, throttle);
+  });
 }
 
 export function classCounts(classes: readonly FrameClass[]): FrameClassCounts {

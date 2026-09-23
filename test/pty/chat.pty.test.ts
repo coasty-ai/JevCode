@@ -40,6 +40,7 @@ import {
   frames,
   fullWidthRowStep,
   labelStep,
+  regionCrossCheck,
   registerScratch,
   hasExpect,
   jevcodeProcesses,
@@ -494,6 +495,11 @@ describe.skipIf(!hasExpect)('pty: perf anchor liveness (src/perf/pty.ts NAMED_AN
       expect(bubble).toBeGreaterThan(0);
       expect(stripAnsi(r.text.slice(0, at.get('run-started')!))).toContain('[you] make the tests pass');
       expect(at.get('run-started')!).toBeLessThan(at.get('run-end')!);
+      // the dynamic region by Ink's own accounting (the next write's erase count) agrees with the rule parse on every
+      // frame of a run: nothing live sits above the rule here, so the region gates read the same numbers either way
+      const region = regionCrossCheck(units(r.text));
+      expect(region.compared).toBeGreaterThan(10);
+      expect(region.mismatches).toEqual([]);
     });
   }
 });
