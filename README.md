@@ -54,23 +54,22 @@ Progress and the remaining steps are in [docs/RELEASE.md](docs/RELEASE.md).
 
 </details>
 
-<details>
-<summary><b>Other package managers</b> — Homebrew, mise, pnpm, bun, yarn</summary>
+**Every channel** gives you the same `jevcode`:
 
-<br>
+| | |
+| --- | --- |
+| npm | `npm i -g jevcode` |
+| run without installing | `npx jevcode` · `bunx jevcode` · `pnpm dlx jevcode` |
+| Homebrew | `brew install coasty-ai/jevcode/jevcode` |
+| Arch Linux (AUR) | `yay -S jevcode` |
+| Nix | `nix run github:coasty-ai/JevCode` |
+| mise | `mise use -g npm:jevcode` |
 
-```sh
-brew install coasty-ai/jevcode/jevcode   # tap; lands with the first release
-mise use -g npm:jevcode                  # any OS, via mise's npm backend
-pnpm add -g jevcode
-bun  install -g jevcode
-yarn global add jevcode
-```
-
-`jevcode upgrade` detects which of these installed it and delegates to that one, so `brew` and
-`npm` never disagree about what is on your PATH.
-
-</details>
+npm, the one-shot runners and mise open with the first release. Homebrew, the AUR and Nix also need a
+one-time setup by the maintainers (the tap, the AUR key, the first `flake.lock`), so they can come
+later; the [install guide](docs/getting-started/install.md#install-channels) says which ones are live.
+`jevcode upgrade` upgrades through whichever channel installed it (for mise, the AUR and Nix it
+prints the command instead).
 
 **Requirements.** Node 22.12 or newer — the launcher checks it and exits with a clear message on
 anything older. macOS and Linux. On Windows use WSL 2: the sandbox and the machinery that runs your
