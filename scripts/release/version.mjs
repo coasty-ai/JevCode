@@ -14,7 +14,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findSection, parseHeading } from './changelog.mjs';
 
-const PKG_NAME = 'jevcode';
+const PKG_NAME = '@coasty-ai/jevcode';
+/** the packument path: the scope's slash encoded, as npm requests it */
+const PKG_PATH = PKG_NAME.replace('/', '%2f');
 export const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
 export const TAG_RE = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
 export const PREID_RE = /^[a-z][a-z0-9]{0,15}$/;
@@ -132,7 +134,7 @@ async function packument() {
   let last = '';
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
-      const res = await fetch(`${base}/${PKG_NAME}?write=true`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
+      const res = await fetch(`${base}/${PKG_PATH}?write=true`, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(20_000) });
       if (res.status === 404) return null;
       if (res.ok) return await res.json();
       last = `HTTP ${res.status}`;
@@ -141,7 +143,7 @@ async function packument() {
     }
     if (attempt < 3) await new Promise((r) => setTimeout(r, 2000 * attempt));
   }
-  return fail(`could not read ${base}/${PKG_NAME}: ${last}`);
+  return fail(`could not read ${base}/${PKG_PATH}: ${last}`);
 }
 
 function parseArgs(argv) {

@@ -43,6 +43,7 @@ import { formatDuration, parseDuration } from '../core/time.js';
 import { clip } from '../core/text.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { ConfigError } from '../errors.js';
+import { isJevcodePackageName } from '../version.js';
 import { MIN_SECRET_LENGTH, createRedactor, patternRedact, SECRET_NAME_RE, type SecretEntry } from '../core/redact.js';
 import { JEV_PROVIDERS, equivalentJevModel, jevModelMatches as providerJevModelMatches, providerForHost, sameJevWeights } from '../jev/providers.js';
 import {
@@ -95,7 +96,10 @@ export type { ResolveOptions, ResolvedConfigWithDiagnostics, ResumeCurrentInputs
 export const MAX_CONFIG_FILE_BYTES = 1024 * 1024;
 
 
-/** Walk up from this module until a package.json named jevcode is found (src/config/ in dev, dist/ when bundled). */
+/**
+ * Walk up from this module until this package's package.json is found (`@coasty-ai/jevcode`, or `jevcode` before the
+ * scope; src/config/ in dev, dist/ when bundled).
+ */
 export function detectPackageRoot(fromDir: string = dirname(fileURLToPath(import.meta.url))): string | null {
   let dir = fromDir;
   for (let i = 0; i < 6; i++) {
@@ -103,7 +107,7 @@ export function detectPackageRoot(fromDir: string = dirname(fileURLToPath(import
     if (existsSync(pkg)) {
       try {
         const parsed = parseJson(readFileSync(pkg, 'utf8'));
-        if (parsed.ok && isJsonObject(parsed.value) && parsed.value['name'] === 'jevcode') return dir;
+        if (parsed.ok && isJsonObject(parsed.value) && isJevcodePackageName(parsed.value['name'])) return dir;
       } catch {
         // unreadable package.json: keep walking
       }

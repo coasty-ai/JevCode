@@ -11,6 +11,7 @@
  * Failing-first: red at d297b29, where the pair `npm run typecheck` / `npm test` names neither `check` nor
  * `jev-contract`.
  */
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -79,5 +80,36 @@ describe('.github/workflows/release.yml runs the Jev contract lint before it bui
     expect(check).toMatch(/\btypecheck\b/);
     expect(check).toMatch(/\btest\b/);
     expect(pkg.scripts['jev-contract']).toBe('node scripts/jev-contract.mjs');
+  });
+});
+
+describe('release.yml refuses a README that names the unscoped npm package', () => {
+  // README.md ships in the tarball and is the @coasty-ai/jevcode package page; npm refused the unscoped name, so
+  // `npx jevcode` there installs nothing. ci.yml cannot carry this check until the README (another session's file)
+  // is scoped, and gates must mirror ci.yml, so it runs in the validate job, before anything is built or published.
+  const yaml = readFileSync(WORKFLOW, 'utf8');
+  const validate = yaml.slice(yaml.indexOf('\n  validate:'), yaml.indexOf('\n  gates:'));
+  const pattern = /- name: README names the scoped npm package\n\s+run: \|\n\s+if grep -nE '([^']+)' README\.md; then/.exec(validate)?.[1] ?? '';
+  const hits = (text: string): number => Number(spawnSync('grep', ['-cE', pattern], { input: `${text}\n`, encoding: 'utf8' }).stdout.trim());
+
+  it('the validate job carries the step', () => {
+    expect(validate.length).toBeGreaterThan(0);
+    expect(pattern, 'the README step and its grep pattern must be in the validate job').not.toBe('');
+  });
+
+  it.each([
+    'npm install -g jevcode', 'npm i -g jevcode@next', 'npx jevcode', 'npx -y jevcode', 'bunx jevcode', 'pnpm dlx jevcode',
+    'pnpm add -g jevcode', 'yarn dlx jevcode', 'bun i -g jevcode', 'mise use -g npm:jevcode', '`npm install jevcode` adds one',
+    'registry.npmjs.org/jevcode is a 404', 'https://www.npmjs.com/package/jevcode', 'npm view jevcode version',
+  ])('refuses %s', (line) => {
+    expect(hits(line)).toBe(1);
+  });
+
+  it.each([
+    'npm i -g @coasty-ai/jevcode', 'npx @coasty-ai/jevcode', 'bunx @coasty-ai/jevcode@next', 'mise use -g npm:@coasty-ai/jevcode',
+    'registry.npmjs.org/@coasty-ai%2fjevcode', 'https://www.npmjs.com/package/@coasty-ai/jevcode', '`npm install @coasty-ai/jevcode` adds one',
+    'brew install coasty-ai/jevcode/jevcode', 'yay -S jevcode', 'nix run github:coasty-ai/JevCode', 'run jevcode upgrade',
+  ])('accepts %s', (line) => {
+    expect(hits(line)).toBe(0);
   });
 });

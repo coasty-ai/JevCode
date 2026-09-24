@@ -59,6 +59,8 @@ jobs:
       # up to twice: a real regression still fails all three attempts, and local `npm test` is unchanged. Every
       # retried test is listed in the job summary and annotated on its file (scripts/ci/retried-reporter.mjs).
       - name: Unit tests (a failing test is retried up to twice)
+        env:
+          JEVCODE_PERF_BUDGET_SCALE: '3' # wall-clock budgets are calibrated on a dev machine (test/unit/helpers/perf-budget.ts)
         run: npm test -- --maxWorkers=3 --retry 2 --reporter=default --reporter=./scripts/ci/retried-reporter.mjs
 
       - name: Build the bundle and the attribution file

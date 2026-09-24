@@ -4,7 +4,7 @@ This page explains how a release works: what ships, which gates guard it, and ho
 version to every install channel. The step-by-step runbook, with every settings page, command and recovery, is
 [`docs/RELEASE.md`](../RELEASE.md).
 
-**Nothing has been published yet.** The registry returns 404 for `jevcode`, no `v*` tag exists, and the
+**Nothing has been published yet.** The registry returns 404 for `@coasty-ai/jevcode`, no `v*` tag exists, and the
 Homebrew tap and the AUR package do not exist until their one-time setup steps are done
 ([`docs/RELEASE.md`](../RELEASE.md), "One-time setup").
 
@@ -12,12 +12,17 @@ Homebrew tap and the AUR package do not exist until their one-time setup steps a
 
 | Channel | Install command | How it is updated |
 | --- | --- | --- |
-| npm | `npm i -g jevcode`, `npx jevcode` | `release.yml` publishes with trusted publishing and provenance |
-| bun, pnpm, yarn | `bunx jevcode`, `pnpm dlx jevcode`, `yarn dlx jevcode` | nothing extra: they read the npm registry |
-| mise | `mise use -g npm:jevcode` | nothing extra: mise's npm backend |
+| npm | `npm i -g @coasty-ai/jevcode`, `npx @coasty-ai/jevcode` | `release.yml` publishes with trusted publishing and provenance |
+| bun, pnpm, yarn | `bunx @coasty-ai/jevcode`, `pnpm dlx @coasty-ai/jevcode`, `yarn dlx @coasty-ai/jevcode` | nothing extra: they read the npm registry |
+| mise | `mise use -g npm:@coasty-ai/jevcode` | nothing extra: mise's npm backend |
 | Homebrew | `brew install coasty-ai/jevcode/jevcode` | `release.yml` pushes the rendered formula to `coasty-ai/homebrew-jevcode` |
 | AUR | `yay -S jevcode` or `paru -S jevcode` | `release.yml` pushes `PKGBUILD` and `.SRCINFO` to the AUR |
 | Nix | `nix run github:coasty-ai/JevCode` | nothing per release: `flake.nix` builds from source at any ref, and `flake-lock.yml` keeps `flake.lock` current |
+
+The npm package is scoped, `@coasty-ai/jevcode`, because npm refused the unscoped `jevcode` (very likely as too
+similar to the existing `jev-code`). The command, the Homebrew formula, the AUR package and the nix package are all
+still `jevcode`, and so is the release asset: `npm pack` writes `coasty-ai-jevcode-<v>.tgz`, and the release
+workflow renames it to `jevcode-<v>.tgz` once, right after packing.
 
 Pre-releases (versions with a hyphen, such as `0.7.0-rc.1`) go to npm under the `next` dist-tag and become a
 GitHub pre-release. They do not update Homebrew or the AUR.

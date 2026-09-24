@@ -65,7 +65,7 @@ function checkoutCwd(prefix = 'jevcode-perf-cwd-'): string {
   const root = tempDir(prefix);
   mkdirSync(join(root, 'bin'), { recursive: true });
   writeFileSync(join(root, 'bin/jevcode.js'), '#!/usr/bin/env node\n');
-  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'jevcode', version: '0.0.0-test' }));
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: '@coasty-ai/jevcode', version: '0.0.0-test' }));
   return root;
 }
 

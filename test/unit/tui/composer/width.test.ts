@@ -3,6 +3,7 @@
  * strings and, when the package resolves from node_modules, over a live fuzz corpus too; `truncateCells`; throughput.
  */
 import { describe, expect, it } from 'vitest';
+import { budgetMs } from '../../helpers/perf-budget.js';
 import { EAW_UNICODE_VERSION, EAW_WIDE_RANGES } from '../../../../src/tui/composer/eaw-table.js';
 import { ELLIPSIS, cellWidth, eastAsianWidth, isWideCodePoint, stringWidth, truncateCells } from '../../../../src/tui/composer/width.js';
 import { INSERT_POOL, bestMs, graphemes, loadStringWidth, loadWidthFixtures, medianMs, mulberry32, pick } from './helpers.js';
@@ -188,7 +189,7 @@ describe('throughput (07 §4: 13,000 mixed chars → 1.66 ms per segmentation pa
     const best = bestMs(() => stringWidth(s));
     const med = medianMs(() => stringWidth(s));
     process.stdout.write(`[measured] stringWidth(${s.length} chars) best ${best.toFixed(3)} ms, median ${med.toFixed(3)} ms\n`);
-    expect(best).toBeLessThan(5);
+    expect(best).toBeLessThan(budgetMs(5));
   });
   it('printable ASCII takes the fast path (12,000 chars well under 0.1 ms)', () => {
     const s = 'x'.repeat(12000);

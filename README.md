@@ -33,8 +33,8 @@
 ## Install
 
 ```sh
-npm install -g jevcode     # once the first release is on npm
-npx jevcode                # same, without installing
+npm install -g @coasty-ai/jevcode     # once the first release is on npm
+npx @coasty-ai/jevcode                # same, without installing
 ```
 
 <details>
@@ -42,7 +42,7 @@ npx jevcode                # same, without installing
 
 <br>
 
-The first release has not shipped, so `registry.npmjs.org/jevcode` is still a 404. Until it lands,
+The first release has not shipped, so `registry.npmjs.org/@coasty-ai%2fjevcode` is still a 404. Until it lands,
 this is the line that runs:
 
 ```sh
@@ -58,16 +58,16 @@ Progress and the remaining steps are in [docs/RELEASE.md](docs/RELEASE.md).
 
 | channel | command |
 | --- | --- |
-| npm | `npm i -g jevcode` |
-| run without installing | `npx jevcode` · `bunx jevcode` · `pnpm dlx jevcode` |
+| npm | `npm i -g @coasty-ai/jevcode` |
+| run without installing | `npx @coasty-ai/jevcode` · `bunx @coasty-ai/jevcode` · `pnpm dlx @coasty-ai/jevcode` |
 | Homebrew | `brew install coasty-ai/jevcode/jevcode` |
 | Arch Linux (AUR) | `yay -S jevcode` |
 | Nix | `nix run github:coasty-ai/JevCode` |
-| mise | `mise use -g npm:jevcode` |
+| mise | `mise use -g npm:@coasty-ai/jevcode` |
 
 npm, the one-shot runners and mise open with the first release. Homebrew and the AUR also need a
-one-time setup by the maintainers (the tap, the AUR key), and Nix needs the first `flake.lock`, so
-they can come later; the [install guide](docs/getting-started/install.md#install-channels) says which ones are live.
+one-time setup by the maintainers (the tap, the AUR key), so they can come later; the
+[install guide](docs/getting-started/install.md#install-channels) says which channels are live.
 `jevcode upgrade` upgrades through whichever channel installed it (for mise, the AUR and Nix it
 prints the command instead).
 

@@ -227,11 +227,16 @@ describe('design-doc claims match main', () => {
     // Job summaries point at one-time steps by number: npm 5, Homebrew 6, AUR 7, Nix 8.
     for (const step of ['### 5. npm', '### 6. Homebrew tap', '### 7. AUR', '### 8. Nix lock']) expect(release).toContain(step);
     for (const cmd of [
-      'npm i -g jevcode', 'npx jevcode', 'bunx jevcode', 'pnpm dlx jevcode', 'yarn dlx jevcode', 'mise use -g npm:jevcode',
-      'brew install coasty-ai/jevcode/jevcode', 'yay -S jevcode', 'nix run github:coasty-ai/JevCode',
+      'npm i -g @coasty-ai/jevcode', 'npx @coasty-ai/jevcode', 'bunx @coasty-ai/jevcode', 'pnpm dlx @coasty-ai/jevcode', 'yarn dlx @coasty-ai/jevcode',
+      'mise use -g npm:@coasty-ai/jevcode', 'brew install coasty-ai/jevcode/jevcode', 'yay -S jevcode', 'nix run github:coasty-ai/JevCode',
     ]) {
       expect(release, `RELEASE.md channel table: ${cmd}`).toContain(cmd);
       expect(install, `install.md channel table: ${cmd}`).toContain(cmd);
+    }
+    // the npm package is scoped: npm refused the unscoped name, so an unscoped npm install command installs nothing
+    const unscoped = /(?:npm i(?:nstall)?(?: -g)?|npx(?: -y)?|bunx|pnpm dlx|pnpm add -g|yarn dlx|bun i -g|npm:|npm view|npm dist-tag add|npm deprecate) jevcode\b|npm:jevcode\b|registry\.npmjs\.org\/jevcode\b|npmjs\.com\/package\/jevcode\b/;
+    for (const [name, text] of [['docs/RELEASE.md', release], ['docs/getting-started/install.md', install], ['docs/contributing/releasing.md', doc('docs/contributing/releasing.md')]] as const) {
+      expect(text, `${name}: an unscoped npm name`).not.toMatch(unscoped);
     }
   });
 

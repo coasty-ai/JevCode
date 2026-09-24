@@ -49,6 +49,22 @@ run() {
   fi
 }
 
+# installed_packages <node_modules> — one line per package; a scope directory (@scope) counts the packages inside it
+installed_packages() {
+  local d s
+  for d in "$1"/*; do
+    [ -e "$d" ] || continue
+    case "${d##*/}" in
+      @*)
+        for s in "$d"/*; do
+          if [ -e "$s" ]; then printf '%s/%s\n' "${d##*/}" "${s##*/}"; fi
+        done
+        ;;
+      *) printf '%s\n' "${d##*/}" ;;
+    esac
+  done
+}
+
 echo "jevcode install verification"
 echo "repository: $ROOT"
 echo "node:       $(node --version 2>/dev/null || echo 'NOT FOUND')"
@@ -103,11 +119,11 @@ JSON
 
 if [ -n "$TGZ" ]; then
   if INSTALL_OUT="$(cd "$PROJ" && npm install --no-audit --no-fund --offline "$TGZ" 2>&1)"; then
-    INSTALLED="$(ls "$PROJ/node_modules" 2>/dev/null | grep -v '^\.' | wc -l | tr -d ' ')"
-    if [ "$INSTALLED" = "1" ]; then
-      pass "npm install <tgz> into a clean project -> exactly 1 package, no network"
+    INSTALLED="$(installed_packages "$PROJ/node_modules")"
+    if [ "$INSTALLED" = "@coasty-ai/jevcode" ]; then
+      pass "npm install <tgz> into a clean project -> exactly 1 package (@coasty-ai/jevcode), no network"
     else
-      fail "npm install should add exactly 1 package, added $INSTALLED" "$(ls "$PROJ/node_modules")"
+      fail "npm install should add exactly 1 package, @coasty-ai/jevcode" "${INSTALLED:-(none)}"
     fi
   else
     fail "npm install <tgz> into a clean project" "$(printf '%s' "$INSTALL_OUT" | tail -20)"

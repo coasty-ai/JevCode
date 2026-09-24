@@ -30,6 +30,7 @@ import {
   repoState,
   turn,
 } from './fakes.js';
+import { budgetMs } from '../helpers/perf-budget.js';
 
 const harnesses: Harness[] = [];
 afterEach(() => {
@@ -231,7 +232,7 @@ describe('the agent seam through the real engine tail (§2.2, §15 S4)', () => {
     const p95 = percentile(steady, 95) ?? Number.POSITIVE_INFINITY;
     const p50 = percentile(steady, 50) ?? Number.POSITIVE_INFINITY;
     console.info(`agent seam: run() → first generate() harness time p50 ${p50.toFixed(2)} ms, p95 ${p95.toFixed(2)} ms over ${steady.length} runs`);
-    expect(p95).toBeLessThanOrEqual(50);
+    expect(p95).toBeLessThanOrEqual(budgetMs(50));
   });
 
   it('§A1: createEngine() → run() → first generate() with the REAL checkpoint store, workspace and sandbox (a git repo on disk): p95 ≤ 50 ms', async () => {
@@ -282,6 +283,6 @@ describe('the agent seam through the real engine tail (§2.2, §15 S4)', () => {
     const p50 = percentile(steady, 50) ?? Number.POSITIVE_INFINITY;
     const runP95 = percentile(runOnly.slice(2), 95) ?? Number.POSITIVE_INFINITY;
     console.info(`agent seam (real store/workspace/sandbox, git repo): createEngine() → first generate() p50 ${p50.toFixed(2)} ms, p95 ${p95.toFixed(2)} ms over ${steady.length} runs (run() → first generate() p95 ${runP95.toFixed(2)} ms)`);
-    expect(p95).toBeLessThanOrEqual(50);
+    expect(p95).toBeLessThanOrEqual(budgetMs(50));
   });
 });

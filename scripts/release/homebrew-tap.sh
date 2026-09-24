@@ -14,7 +14,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TMP="${RUNNER_TEMP:-$(mktemp -d)}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stderr}"
 OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
-URL="https://registry.npmjs.org/jevcode/-/jevcode-$VERSION.tgz"
+URL="https://registry.npmjs.org/@coasty-ai/jevcode/-/jevcode-$VERSION.tgz"
 LOCAL_TAP=local/jevcode-release
 
 err() { echo "::error::$*" >&2; }

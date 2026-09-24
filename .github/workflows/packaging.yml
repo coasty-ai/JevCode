@@ -84,8 +84,10 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./package.json').version")"
           npm pack --ignore-scripts
+          # npm names the scoped package's tarball coasty-ai-jevcode-<version>.tgz; this is the one rename, and every
+          # job below uses jevcode-<version>.tgz, as release.yml does
           tarball="jevcode-$version.tgz"
-          test -f "$tarball"
+          mv "coasty-ai-jevcode-$version.tgz" "$tarball"
           sha256sum "$tarball" > pack.sha256
           sha="$(cut -d' ' -f1 pack.sha256)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -157,7 +159,7 @@ jobs:
           echo "::warning::brew audit --online rejected the file:// render; falling back to --strict plus an online audit of a registry-url render"
           brew audit --strict "$TAP/jevcode"
           # the audit only needs a reachable url: this version if the registry has it, else the registry's latest
-          code="$(curl -sS -o "$RUNNER_TEMP/packument.json" -w '%{http_code}' https://registry.npmjs.org/jevcode)"
+          code="$(curl -sS -o "$RUNNER_TEMP/packument.json" -w '%{http_code}' 'https://registry.npmjs.org/@coasty-ai%2fjevcode')"
           online_version=""
           if [ "$code" = "200" ]; then
             online_version="$(node -e '
@@ -167,7 +169,7 @@ jobs:
             ' "$RUNNER_TEMP/packument.json")"
           fi
           if [ -z "$online_version" ]; then
-            echo "- brew audit: \`--strict\` on the file:// render; \`--online\` skipped: jevcode is not on the registry yet (HTTP $code)" >> "$GITHUB_STEP_SUMMARY"
+            echo "- brew audit: \`--strict\` on the file:// render; \`--online\` skipped: @coasty-ai/jevcode is not on the registry yet (HTTP $code)" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           online_tap=local/jevcode-ci-online
@@ -316,7 +318,7 @@ jobs:
         run: |
           set -euo pipefail
           packed="$(tar -xzOf "$RUNNER_TEMP/tarball/jevcode-$VERSION.tgz" package/dist/jevcode.mjs | shasum -a 256 | cut -d' ' -f1)"
-          built="$(shasum -a 256 < result/lib/node_modules/jevcode/dist/jevcode.mjs | cut -d' ' -f1)"
+          built="$(shasum -a 256 < result/lib/node_modules/@coasty-ai/jevcode/dist/jevcode.mjs | cut -d' ' -f1)"
           if [ "$packed" = "$built" ]; then
             echo "::notice::nix-built dist/jevcode.mjs is byte-identical to the packed tarball's"
           else

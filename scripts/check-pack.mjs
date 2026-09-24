@@ -7,7 +7,7 @@
 //   1. `npm pkg get private` prints `{}` (the package is publishable)
 //   2. LICENSE exists and is non-empty (npm always ships it; the package says MIT)
 //   3. THIRD_PARTY_LICENSES.txt exists and is non-empty (scripts/licenses.mjs)
-//   4. `dependencies` is empty: ink and react are inlined by esbuild, so `npm i -g jevcode` installs 0 packages
+//   4. `dependencies` is empty: ink and react are inlined by esbuild, so `npm i -g @coasty-ai/jevcode` installs 0 packages
 //   5. `npm pack --dry-run --json` lists exactly the allowlist derived from package.json `files`
 //      (directories expanded recursively) plus package.json; extras and missing entries are named
 //   6. no forbidden path: *.map, meta.json, src/, docs/, test files, .env*
@@ -96,7 +96,7 @@ const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 // 4. zero runtime dependencies
 {
   const deps = Object.keys(pkg.dependencies ?? {});
-  if (deps.length === 0) ok('dependencies is empty (ink/react are inlined; `npm i -g jevcode` installs 0 packages)');
+  if (deps.length === 0) ok('dependencies is empty (ink/react are inlined; `npm i -g @coasty-ai/jevcode` installs 0 packages)');
   else bad(`dependencies must be empty (found ${deps.join(', ')}); esbuild inlines them, move them to devDependencies`);
 }
 

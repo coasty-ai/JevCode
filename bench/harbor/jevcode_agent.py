@@ -52,6 +52,8 @@ except ImportError:  # pragma: no cover
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGE_VERSION = json.loads((REPO_ROOT / "package.json").read_text()).get("version", "0.1.0") if (REPO_ROOT / "package.json").exists() else "0.1.0"
+# the npm package is scoped; the command it installs is still `jevcode`
+NPM_PACKAGE = "@coasty-ai/jevcode"
 NODE_MAJOR = 22
 DEFAULT_MODEL = "anthropic/claude-sonnet-5"
 DEFAULT_MAX_WALL = "7h30m"  # below TB 4.0's flat 8 h agent timeout so JevCode stops itself
@@ -131,9 +133,10 @@ class JevCodeAgent(BaseInstalledAgent):
         if self.tarball:
             p = Path(self.tarball).expanduser().resolve()
         else:
-            candidates = sorted(REPO_ROOT.glob("jevcode-*.tgz"))
+            # `npm pack` names the scoped package's tarball coasty-ai-jevcode-<version>.tgz; a release asset is jevcode-<version>.tgz
+            candidates = sorted(REPO_ROOT.glob("coasty-ai-jevcode-*.tgz")) or sorted(REPO_ROOT.glob("jevcode-*.tgz"))
             if not candidates:
-                raise FileNotFoundError("no jevcode-<version>.tgz in the repo root; run `npm run build && npm pack` first (or --ak install_mode=npm)")
+                raise FileNotFoundError("no coasty-ai-jevcode-<version>.tgz in the repo root; run `npm run build && npm pack` first (or --ak install_mode=npm)")
             p = candidates[-1]
         if not p.is_file():
             raise FileNotFoundError(f"tarball not found: {p}")
@@ -142,7 +145,7 @@ class JevCodeAgent(BaseInstalledAgent):
     async def install(self, environment) -> None:  # type: ignore[no-untyped-def]
         await self.exec_as_root(environment, command="apt-get update && apt-get install -y --no-install-recommends curl ca-certificates git || true")
         if self.install_mode == "npm":
-            pkg = f"jevcode@{PACKAGE_VERSION}"
+            pkg = f"{NPM_PACKAGE}@{PACKAGE_VERSION}"
             install = f"npm install -g {shlex.quote(pkg)}"
         else:
             await environment.upload_file(self._local_tarball(), "/tmp/jevcode.tgz")

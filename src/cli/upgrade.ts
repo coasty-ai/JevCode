@@ -1,9 +1,9 @@
 /**
  * `jevcode upgrade [<version>|latest|next] [--check] [--method <m>] [--write-cache]` (TUI-DESIGN §17 items 5–6, D14):
  * delegates to the package manager detected from the install path — npx → nothing to upgrade; Homebrew; bun; pnpm;
- * yarn; else `npm install -g jevcode@<v>` (never `npm update -g`) — after printing the exact command it is about to
- * run (the dry-run line). An install that nix, pacman (AUR) or mise owns is never mutated: the command only prints the
- * owner's upgrade command and exits 0. `--check` asks the registry (2 s timeout) whether a newer version exists and, with
+ * yarn; else `npm install -g @coasty-ai/jevcode@<v>` (never `npm update -g`) — after printing the exact command it is
+ * about to run (the dry-run line). An install that nix, pacman (AUR) or mise owns is never mutated: the command only
+ * prints the owner's upgrade command and exits 0. `--check` asks the registry (2 s timeout) whether a newer version exists and, with
  * `--write-cache`, records the answer in `${XDG_CACHE_HOME:-~/.cache}/jevcode/update-check.json` for the post-run
  * notifier. Exit 0 ok / up to date · 2 usage · 5 registry unreachable · 6 the manager failed. Pure over injected
  * `fetch`, `spawn`, file writes and the pacman database read.
@@ -13,14 +13,18 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ParsedFlags } from './args.js';
 import { EXIT_CODES } from '../errors.js';
-import { VERSION } from '../version.js';
+import { NPM_PACKAGE_NAME, VERSION } from '../version.js';
 
 export type PackageManager = 'npm' | 'brew' | 'bun' | 'pnpm' | 'yarn' | 'npx' | ManualKind;
 /** installs another package manager owns; `jevcode upgrade` prints that manager's command and never runs one */
 export type ManualKind = 'nix' | 'aur' | 'mise';
 export const PACKAGE_MANAGERS: readonly PackageManager[] = ['npm', 'brew', 'bun', 'pnpm', 'yarn'];
+/** the command, the Homebrew formula and the pacman package are all `jevcode` */
 export const PACKAGE_NAME = 'jevcode';
-export const REGISTRY_URL = 'https://registry.npmjs.org/jevcode';
+/** the npm package is scoped: npm refused the unscoped `jevcode` (very likely its name-similarity rule) */
+export const NPM_PACKAGE = NPM_PACKAGE_NAME;
+/** the packument; the scope's slash is encoded, as npm itself requests it */
+export const REGISTRY_URL = 'https://registry.npmjs.org/@coasty-ai%2fjevcode';
 /** the flake: `nix run github:coasty-ai/JevCode` */
 export const FLAKE_REF = 'github:coasty-ai/JevCode';
 /** the `nix profile` element name nix derives from a github flake ref (the repository name) */
@@ -51,24 +55,35 @@ export function pacmanPackage(entries: readonly string[]): string | null {
   return names.includes(PACKAGE_NAME) ? PACKAGE_NAME : (names[0] ?? null);
 }
 
-/** mise's npm backend installs `npm:jevcode` under `${MISE_DATA_DIR:-~/.local/share/mise}/installs/npm-jevcode/<version>/` */
+/**
+ * mise's npm backend installs `npm:@coasty-ai/jevcode` under
+ * `${MISE_DATA_DIR:-~/.local/share/mise}/installs/<dir>/<version>/`. The directory name mise derives from a scoped
+ * name is not pinned down, so every plausible spelling counts:
+ * `npm-coasty-ai-jevcode` (kebab-cased), `npm-@coasty-ai-jevcode`, `npm-@coasty-ai/jevcode` (nested) and the
+ * unscoped `npm-jevcode` of an older install.
+ */
+const MISE_INSTALL_DIR = /^installs\/npm-(?:@?coasty-ai-|@coasty-ai\/)?jevcode\//;
 function isMiseInstall(p: string, env: NodeJS.ProcessEnv): boolean {
-  if (/\/mise\/installs\/npm-jevcode\//.test(p)) return true;
+  const i = p.indexOf('/mise/installs/');
+  if (i >= 0 && MISE_INSTALL_DIR.test(p.slice(i + '/mise/'.length))) return true;
   const data = env['MISE_DATA_DIR']?.trim().replace(/\\/g, '/').replace(/\/+$/, '');
-  return data !== undefined && data !== '' && p.startsWith(`${data}/installs/npm-jevcode/`);
+  return data !== undefined && data !== '' && p.startsWith(`${data}/`) && MISE_INSTALL_DIR.test(p.slice(data.length + 1));
 }
+
+/** pacman (AUR) installs the npm package under `/usr/lib/node_modules/@coasty-ai/jevcode/`; the unscoped path is a pre-scope build */
+const AUR_INSTALL_RE = /^\/usr\/lib\/node_modules\/(?:@coasty-ai\/)?jevcode\//;
 
 /**
  * TUI-DESIGN §17 item 5: the manager from `realpath(process.argv[1])` (and the env for npx and mise). D11: a nix store
- * path, a mise install dir and a pacman-owned `/usr/lib/node_modules/jevcode` are their own kinds; pacman's database is
- * read only for that last path.
+ * path, a mise install dir and a pacman-owned `/usr/lib/node_modules/@coasty-ai/jevcode` are their own kinds; pacman's
+ * database is read only for that last path.
  */
 export function detectPackageManager(realArgv1: string, env: NodeJS.ProcessEnv, pacmanDb: PacmanDb = readPacmanDb): PackageManager {
   const p = realArgv1.replace(/\\/g, '/');
   if (/\/_npx\//.test(p) || env['npm_command'] === 'exec' || env['npm_config_user_agent']?.includes('npx') === true) return 'npx';
   if (p.startsWith('/nix/store/')) return 'nix';
   if (isMiseInstall(p, env)) return 'mise';
-  if (p.startsWith('/usr/lib/node_modules/jevcode/') && pacmanPackage(pacmanDb()) !== null) return 'aur';
+  if (AUR_INSTALL_RE.test(p) && pacmanPackage(pacmanDb()) !== null) return 'aur';
   if (/\/(Cellar|homebrew|linuxbrew)\//.test(p)) return 'brew';
   if (/\/\.bun\//.test(p)) return 'bun';
   if (/\/pnpm\//.test(p) || env['npm_config_user_agent']?.startsWith('pnpm') === true) return 'pnpm';
@@ -78,7 +93,7 @@ export function detectPackageManager(realArgv1: string, env: NodeJS.ProcessEnv, 
 
 /** the argv the manager runs for `<target>` (`latest` by default); null for npx and the print-only kinds */
 export function upgradeArgv(manager: PackageManager, target: string): string[] | null {
-  const spec = `${PACKAGE_NAME}@${target}`;
+  const spec = `${NPM_PACKAGE}@${target}`;
   switch (manager) {
     case 'npm':
       return ['npm', 'install', '-g', spec];
@@ -136,7 +151,7 @@ export function manualUpgrade(kind: ManualKind, target: string, pacmanPkg: strin
     case 'mise':
       return {
         owner: 'mise',
-        rows: [version !== null ? [`mise use -g npm:${PACKAGE_NAME}@${version}`, `pin v${version}`] : [`mise upgrade npm:${PACKAGE_NAME}`, 'within the version your mise config allows']],
+        rows: [version !== null ? [`mise use -g npm:${NPM_PACKAGE}@${version}`, `pin v${version}`] : [`mise upgrade npm:${NPM_PACKAGE}`, 'within the version your mise config allows']],
         notes: distTag ? [passVersion] : [],
       };
   }

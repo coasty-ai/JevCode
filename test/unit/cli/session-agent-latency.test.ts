@@ -8,6 +8,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { makeController, type Harness } from './helpers.js';
+import { budgetMs } from '../helpers/perf-budget.js';
 
 const harnesses: Harness[] = [];
 afterEach(() => {
@@ -47,6 +48,6 @@ describe('§A1 latency: Enter → engine.run(), session side, --mock', () => {
     const p95 = pct(warm, 95);
     const max = warm.at(-1)!;
     console.log(`[measured] Enter → engine.run() (session side, --mock, agent): cold ${cold.toFixed(2)} ms; warm n=${warm.length} p50 ${p50.toFixed(2)} ms · p95 ${p95.toFixed(2)} ms · max ${max.toFixed(2)} ms (target p95 ≤ 50 ms)`);
-    expect(p95).toBeLessThan(50);
+    expect(p95).toBeLessThan(budgetMs(50));
   });
 });

@@ -384,9 +384,14 @@ describe('resolveConfig files, paths and secrets', () => {
 
 describe('detectPackageRoot', () => {
   it('finds the jevcode package.json from a nested directory and returns null elsewhere', async () => {
-    await writeFile(join(pkg, 'package.json'), '{"name":"jevcode"}');
+    await writeFile(join(pkg, 'package.json'), '{"name":"@coasty-ai/jevcode"}');
     await mkdir(join(pkg, 'dist'));
     expect(detectPackageRoot(join(pkg, 'dist'))).toBe(pkg);
+    // a checkout from before the npm scope still counts; another package does not
+    await writeFile(join(pkg, 'package.json'), '{"name":"jevcode"}');
+    expect(detectPackageRoot(join(pkg, 'dist'))).toBe(pkg);
+    await writeFile(join(pkg, 'package.json'), '{"name":"@other/jevcode"}');
+    expect(detectPackageRoot(join(pkg, 'dist'))).not.toBe(pkg);
     expect(detectPackageRoot()).toBe(await realpath(join(import.meta.dirname, '../../..')));
     expect(detectPackageRoot(join(root, 'home'))).toBeNull();
   });
