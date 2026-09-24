@@ -61,10 +61,22 @@ describe('mock agent turns (AGENT-LOOP-DESIGN §6.2)', () => {
     await p.generate(req, genOpts());
     const sent = req.agent!.messages.length;
     // a driver that appends to one transcript array does not rewrite what the first call was sent
-    (req.agent!.messages as unknown[]).push({ role: 'assistant', content: [{ type: 'text', text: 'later' }] });
+    (req.agent!.messages as unknown[]).push({ role: 'assistant', content: [{ type: 'text', text: 'later' }] }, { role: 'user', content: [{ type: 'text', text: 'and then' }] });
     await p.generate(req, genOpts());
     expect(p.requests[0]!.agent!.messages.length).toBe(sent);
-    expect(p.requests[1]!.agent!.messages.length).toBe(sent + 1);
+    expect(p.requests[1]!.agent!.messages.length).toBe(sent + 2);
+  });
+
+  it('an agent request that breaks a wire rule fails as it would on every real adapter (http.ts messagesError), before any turn is used', async () => {
+    const p = createMockProvider({ turns: [TURN] });
+    const req = agentReq();
+    (req.agent!.messages as unknown[]).push(
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: '', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'c1', name: '', content: 'x' }] },
+    );
+    await expect(p.generate(req, genOpts())).rejects.toThrow(/invalid GenerateRequest: agent\.messages\[\d+\]: a tool_use needs a non-empty id and name/);
+    // the scripted turn is still there for a valid request
+    expect((await p.generate(agentReq(), genOpts())).toolCalls).toHaveLength(2);
   });
 
   it('an abort inside the calls reports the streamed tool characters once', async () => {

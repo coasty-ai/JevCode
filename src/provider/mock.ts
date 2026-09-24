@@ -16,6 +16,7 @@
 import { ProviderHttpError } from '../errors.js';
 import type { CancelledGeneration, GenerateOptions, GenerateRequest, GenerateResult, MockProviderOptions, MockTurn, Provider, TokenUsage, ToolCall } from '../core/types.js';
 import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
+import { messagesError } from './http.js';
 
 export const MOCK_DEFAULT_USAGE: TokenUsage = { inputTokens: 1000, outputTokens: 200, costUsd: 0, calls: 1 };
 
@@ -92,6 +93,10 @@ export function createMockProvider(opts: MockProviderOptions, deps: MockProvider
     async generate(req: GenerateRequest, genOpts: GenerateOptions): Promise<GenerateResult> {
       if (record) requests.push(structuredClone(req));
       if (genOpts.signal.aborted) throw genOpts.signal.reason;
+      // an agent request meets the wire rules every real adapter enforces before it sends (http.ts messagesError), so an
+      // end-to-end test on the mock fails exactly where a real provider would
+      const wire = req.agent !== undefined ? messagesError(req) : null;
+      if (wire !== null) throw new ProviderHttpError(`invalid GenerateRequest: ${wire}`, { status: 0, retryable: false });
       const index = calls++;
       const turn = nextTurn(opts, req, index, genOpts);
       const t0 = now();

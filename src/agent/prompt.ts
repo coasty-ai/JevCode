@@ -171,7 +171,7 @@ export function steerNote(text: string): string {
 }
 
 export function unknownTool(name: string, available: readonly string[] = AGENT_TOOL_NAMES): string {
-  return `UNKNOWN TOOL ${name}. Available: ${available.join(', ')}.`;
+  return `UNKNOWN TOOL ${name.trim() === '' ? '(the call had no name)' : name}. Available: ${available.join(', ')}.`;
 }
 
 export function invalidArguments(tool: AgentToolName, problem: string, signature: string): string {

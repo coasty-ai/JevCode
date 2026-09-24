@@ -15,6 +15,21 @@ import type { AgentAssistantBlock, AgentMessage, AgentUserBlock, Json, JsonObjec
 import { writeFileAtomic } from '../core/atomic.js';
 import { ConfigError } from '../errors.js';
 
+/** The name every wire accepts for a tool_use / tool_result (Anthropic and OpenAI both: `^[a-zA-Z0-9_-]{1,64}$`). */
+const WIRE_TOOL_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+/** What a call whose raw name no wire accepts (empty — a stream that never named its call — or with spaces, dots, …) is recorded as. */
+export const INVALID_TOOL_WIRE_NAME = 'invalid_tool';
+
+/**
+ * A recorded call's name as the wire carries it: the name itself when every provider accepts it, else
+ * INVALID_TOOL_WIRE_NAME. A nameless call recorded as `''` made every later request of the run (and, through the carry,
+ * of the session) fail client-side with "a tool_use needs a non-empty id and name"; the raw name stays in the call's
+ * error text (UNKNOWN TOOL …), which is what the model reads.
+ */
+export function wireToolName(name: string): string {
+  return WIRE_TOOL_NAME_RE.test(name) ? name : INVALID_TOOL_WIRE_NAME;
+}
+
 export type NoteTag = 'steer' | 'continue' | 'verify' | 'loop' | 'progress';
 
 /** One call as the assistant record keeps (and replays) it. `error`: the parse-time verdict of an unrepairable call. */
@@ -207,13 +222,13 @@ export class Transcript {
           texts.push({ type: 'text', text: r.text });
           break;
         case 'result':
-          results.push({ type: 'tool_result', toolUseId: r.toolUseId, name: r.name, content: masked.has(r.toolUseId) ? elided(r) : r.content, ...(r.isError ? { isError: true } : {}) });
+          results.push({ type: 'tool_result', toolUseId: r.toolUseId, name: wireToolName(r.name), content: masked.has(r.toolUseId) ? elided(r) : r.content, ...(r.isError ? { isError: true } : {}) });
           break;
         case 'assistant': {
           flush();
           const content: AgentAssistantBlock[] = [];
           if (r.text.length > 0) content.push({ type: 'text', text: r.text });
-          for (const c of r.calls) content.push({ type: 'tool_use', id: c.id, name: c.name, input: c.input });
+          for (const c of r.calls) content.push({ type: 'tool_use', id: c.id, name: wireToolName(c.name), input: c.input });
           // an empty reply is never recorded (it is a stage failure); no harness text is ever put in the assistant's mouth
           if (content.length === 0) break;
           const replay = o.replay && r.providerState !== undefined && r.providerState.provider === o.provider && r.providerState.model === o.model && r.sys === o.systemHash;

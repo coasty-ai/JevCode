@@ -18,7 +18,7 @@ import { clearToolResultsFor, type Budget, type ContextEstimate } from './contex
 import type { AgentStateV1 } from './state.js';
 import { createProseShaper } from './stream.js';
 import { isCutOff } from './stop.js';
-import { messageChars, type AssistantRecord, type RecordedCall, type Transcript } from './transcript.js';
+import { messageChars, wireToolName, type AssistantRecord, type RecordedCall, type Transcript } from './transcript.js';
 
 /** §6.5: the rejection a replayed prefix can earn. */
 export const REJECTED_REPLAY_RE = /reasoning|thinking|signature|tool_call|tool_use/i;
@@ -142,8 +142,9 @@ export async function sampleTurn(s: TurnSetup): Promise<SampledTurn> {
     const n = normaliseCall(r, { root: ctx.workspace.root, cutOff: cut && i === raw.length - 1, maxTokens: req.maxTokens });
     const id = ids[i]!;
     // calls are recorded under the tool's own name (an alias like `Read` → read_file, a call extracted from the prose), so
-    // the next request shows the model the native form and the tool_result carries the same name as its tool_use
-    const name = resolveToolName(r.name) ?? r.name;
+    // the next request shows the model the native form and the tool_result carries the same name as its tool_use; a raw
+    // name no wire accepts (a nameless streamed call) is recorded as `invalid_tool`, never `''`
+    const name = resolveToolName(r.name) ?? wireToolName(r.name);
     recorded.push({ id, name, input: n.replayInput, ...(n.error !== null ? { error: n.error } : {}) });
     if (i < AGENT_MAX_CALLS_PER_TURN) calls.push({ id, ...n });
   });

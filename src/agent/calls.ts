@@ -70,7 +70,7 @@ export type Disposition =
 export function callSummary(c: NormalisedCall): string {
   const a = c.args;
   const s = (k: string): string => (typeof a[k] === 'string' ? oneLine(a[k], 80) : '');
-  if (c.error !== null) return `${oneLine(c.rawName, 40)} (invalid)`;
+  if (c.error !== null) return `${c.rawName.trim() === '' ? 'unnamed call' : oneLine(c.rawName, 40)} (invalid)`;
   switch (c.name) {
     case 'read_file':
       return `read_file ${c.paths !== undefined ? c.paths.join(', ') : s('path')}`;

@@ -58,7 +58,7 @@ const FIX_TURNS: MockTurn[] = [
   { text: 'Fixed `mean` in src/math.js: it divides by the length now, and `npm test` passes.', usage: USAGE, stopReason: 'end_turn' },
 ];
 
-async function run(ws: string, root: string, task: string, turns: MockTurn[]): Promise<{ result: Awaited<ReturnType<Awaited<ReturnType<typeof createEngine>>['run']>>; events: EngineEvent[]; provider: MockProvider }> {
+async function run(ws: string, root: string, task: string, turns: MockTurn[] | ((req: GenerateRequest, i: number) => MockTurn), parentRunId?: string): Promise<{ result: Awaited<ReturnType<Awaited<ReturnType<typeof createEngine>>['run']>>; events: EngineEvent[]; provider: MockProvider }> {
   const provider = createMockProvider({ turns }, { recordRequests: true });
   const engine = await createEngine({
     task,
@@ -77,6 +77,8 @@ async function run(ws: string, root: string, task: string, turns: MockTurn[]): P
     secretPaths: [],
     generation: { temperature: null, maxTokens: 4096 },
     deciderModel: { configured: 'typesafe/jev-1.13-20260917', pinned: true },
+    // a chat follow-up: the session carries its newest run (src/cli/session.ts)
+    ...(parentRunId !== undefined ? { conversation: { chat: [], parent: { runId: parentRunId, runDir: join(root, 'runs', parentRunId), mode: 'agent' as const } } } : {}),
   });
   const events: EngineEvent[] = [];
   engine.events.onAny((e) => events.push(e));
@@ -191,6 +193,30 @@ describe('the agent loop end to end: real engine, real driver, mock provider, a 
     expect([...undone.restored].sort()).toEqual(['notes.txt', 'src/math.js']);
     expect(readFileSync(join(ws, 'src', 'math.js'), 'utf8')).toContain('// my local note');
     expect(readFileSync(join(ws, 'notes.txt'), 'utf8')).toBe('my untracked notes\n');
+  }, 60_000);
+
+  it('a native call with no name is recorded under a wire-safe name: every later request of the run and of a carried follow-up is valid (S6 review)', async () => {
+    const { root, ws } = failingNodeWorkspace();
+    // the mock enforces the adapters' wire rules (http.ts messagesError), so a `''` name would fail request 2 here
+    const r1 = await run(ws, root, 'show src/math.js', [
+      { text: 'Reading.\n', toolCalls: [{ id: 'c1', name: '', input: { path: 'src/math.js' }, rawJson: '{"path":"src/math.js"}' }], usage: USAGE, stopReason: 'tool_use' },
+      { text: 'It computes the mean.', usage: USAGE, stopReason: 'end_turn' },
+    ]);
+    expect(r1.result.stopReason).not.toBe('error');
+    expect(r1.provider.requests).toHaveLength(2);
+    const blocks = r1.provider.requests[1]!.agent!.messages.flatMap((m) => m.content as readonly { type: string; name?: string; content?: string }[]);
+    expect(blocks.find((b) => b.type === 'tool_use')?.name).toBe('invalid_tool');
+    const result = blocks.find((b) => b.type === 'tool_result');
+    expect(result?.name).toBe('invalid_tool');
+    expect(result?.content).toContain('UNKNOWN TOOL (the call had no name)');
+    // the transcript itself records the wire-safe name (a resumed run and a carry read it back)
+    const recs = readFileSync(join(root, 'runs', r1.result.runId, 'agent', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { kind: string; calls?: { name: string }[]; name?: string });
+    expect(recs.find((r) => r.kind === 'assistant')?.calls?.[0]?.name).toBe('invalid_tool');
+    expect(recs.find((r) => r.kind === 'result')?.name).toBe('invalid_tool');
+    // the follow-up carries run 1's records and is valid on the wire too
+    const r2 = await run(ws, root, 'thanks', [{ text: 'You are welcome.', usage: USAGE, stopReason: 'end_turn' }], r1.result.runId);
+    expect(r2.result.stopReason).toBe('answered');
+    expect(JSON.stringify(r2.provider.requests[0]!.agent!.messages)).toContain('invalid_tool');
   }, 60_000);
 
   it('a greeting is one prose-only turn: stop `answered` (exit 0) in one step, no tool call, no sandbox command, no jev:request', async () => {
