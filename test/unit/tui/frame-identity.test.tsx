@@ -14,7 +14,7 @@
  * bytes are part of the pin: `FORCE_COLOR` is set before chalk is first imported (vitest runs each file in its own
  * worker), and the App reads its own depth from the `env` prop.
  *
- * A version bump that changes the wordmark's `◆ x.y.z` suffix re-pins these with `npx vitest run -u` on this file.
+ * The wordmark's `◆ <version>` suffix is masked as `x.y.z` before the pin, so a release's version bump changes no snapshot.
  *
  * The second half is the invariant that makes the clipping change safe everywhere, not only in these frames: a box that
  * clips vertically only (`overflowY="hidden"` without `overflow`/`overflowX`) must wrap nothing but `wrap="truncate"`
@@ -38,6 +38,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BlockingRequest, LaunchSettings } from '../../../src/core/types.js';
 import { detectSecrets } from '../../../src/core/redact.js';
 import { App, createBridge, type Bridge } from '../../../src/tui/App.js';
+import { versionFree } from '../helpers/version-free.js';
 import { Overlay, type OverlayData } from '../../../src/tui/Overlay.js';
 import { Pane } from '../../../src/tui/Pane.js';
 import { CAP, chromeRows, type OverlayKind } from '../../../src/tui/layout.js';
@@ -216,7 +217,8 @@ describe('frame identity: the real App, byte for byte (SGR included)', () => {
       it(`${rows}x${columns} ${state}`, async () => {
         const { frame, root } = await frameFor(rows, columns, state);
         expect(frame.length).toBeGreaterThan(0);
-        expect(frame).toMatchSnapshot();
+        // the wordmark's `◆ <version>` is masked, so a release bump never re-pins the frames (test/unit/helpers/version-free.ts)
+        expect(versionFree(frame)).toMatchSnapshot();
         // the vertical-only boxes of this frame hold the invariant, and flipping them back changes no byte
         const boxes = boxesOf(root, verticalOnly);
         expect(boxes.flatMap(clipViolations)).toEqual([]);

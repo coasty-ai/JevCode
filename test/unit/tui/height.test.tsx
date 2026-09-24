@@ -15,6 +15,7 @@ import { stringWidth } from '../../../src/tui/composer/width.js';
 import type { Action } from '../../../src/core/types.js';
 import { mkConfirmRequest, mkDecision, mkStatus, mkUiConfig, tick } from '../../fixtures/tui/fixtures.js';
 import { StubStdin, StubStdout, dynamicRegion, stripSgr } from './stub-stdout.js';
+import { versionFree } from '../helpers/version-free.js';
 
 const unmounts: Array<() => void> = [];
 afterEach(() => {
@@ -253,6 +254,7 @@ describe('height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × c
       .map((l) => l.replace(/\s+$/, ''))
       .join('\n')
       .replace(/\n$/, '');
-    expect(normalised).toMatchSnapshot();
+    // the wordmark's `◆ <version>` is masked, so a release bump never re-pins the frame (test/unit/helpers/version-free.ts)
+    expect(versionFree(normalised)).toMatchSnapshot();
   });
 });
