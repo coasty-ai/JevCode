@@ -1,0 +1,82 @@
+{
+ "object": "list",
+ "data": [
+  {
+   "id": "gpt-6-astra",
+   "object": "model",
+   "created": 1787853604,
+   "owned_by": "system",
+   "shutdown_date": null
+  },
+  {
+   "id": "gpt-5.6-terra",
+   "object": "model",
+   "created": 1782228459,
+   "owned_by": "system",
+   "shutdown_date": null
+  },
+  {
+   "id": "gpt-5.6-luna",
+   "object": "model",
+   "created": 1782228658,
+   "owned_by": "system",
+   "shutdown_date": null
+  },
+  {
+   "id": "gpt-4.1-mini",
+   "object": "model",
+   "created": 1744318173,
+   "owned_by": "system",
+   "shutdown_date": null
+  },
+  {
+   "id": "o4-mini",
+   "object": "model",
+   "created": 1744225351,
+   "owned_by": "system",
+   "shutdown_date": "2026-10-23"
+  },
+  {
+   "id": "gpt-5.1-codex",
+   "object": "model",
+   "created": 1762988221,
+   "owned_by": "system",
+   "shutdown_date": "2026-07-23"
+  },
+  {
+   "id": "gpt-realtime",
+   "object": "model",
+   "created": 1756271701,
+   "owned_by": "system",
+   "shutdown_date": "2027-01-20"
+  },
+  {
+   "id": "gpt-4o-mini-tts",
+   "object": "model",
+   "created": 1742403959,
+   "owned_by": "system",
+   "shutdown_date": null
+  },
+  {
+   "id": "text-embedding-ada-002",
+   "object": "model",
+   "created": 1671217299,
+   "owned_by": "openai-internal",
+   "shutdown_date": null
+  },
+  {
+   "id": "gpt-image-2",
+   "object": "model",
+   "created": 1776399795,
+   "owned_by": "system",
+   "shutdown_date": null
+  },
+  {
+   "id": "gpt-3.5-turbo-instruct",
+   "object": "model",
+   "created": 1692901427,
+   "owned_by": "system",
+   "shutdown_date": "2026-09-28"
+  }
+ ]
+}

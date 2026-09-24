@@ -1,0 +1,20 @@
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.5
+send the date parsing
+sleep 0.3
+send \r
+expect run this as a task\?
+sleep 0.5
+mark card-up
+send x
+sleep 0.4
+mark stray-key
+send \x1b
+sleep 0.8
+mark esc
+send /exit
+sleep 0.3
+send \r
+eof

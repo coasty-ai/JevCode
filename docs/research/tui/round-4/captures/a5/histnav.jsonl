@@ -1,0 +1,29 @@
+{"t":106,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":106,"step":2,"op":"expect","arg":"Say hi"}
+{"t":197,"step":3,"op":"expect","arg":"sess \\$"}
+{"t":597,"step":4,"op":"sleep","arg":"0.4"}
+{"t":597,"step":5,"op":"send","arg":"hi"}
+{"t":797,"step":6,"op":"sleep","arg":"0.2"}
+{"t":797,"step":7,"op":"send","arg":"\\r"}
+{"t":2797,"step":8,"op":"sleep","arg":"2.0"}
+{"t":2797,"step":9,"op":"send","arg":"thanks"}
+{"t":2997,"step":10,"op":"sleep","arg":"0.2"}
+{"t":2997,"step":11,"op":"send","arg":"\\r"}
+{"t":4997,"step":12,"op":"sleep","arg":"2.0"}
+{"t":4997,"step":13,"op":"mark","arg":"two-turns"}
+{"t":4997,"step":14,"op":"send","arg":"\\x1b[A"}
+{"t":5397,"step":15,"op":"sleep","arg":"0.4"}
+{"t":5397,"step":16,"op":"mark","arg":"up1"}
+{"t":5397,"step":17,"op":"send","arg":"\\x1b[A"}
+{"t":5797,"step":18,"op":"sleep","arg":"0.4"}
+{"t":5797,"step":19,"op":"mark","arg":"up2"}
+{"t":5797,"step":20,"op":"send","arg":"\\x1b[B"}
+{"t":6197,"step":21,"op":"sleep","arg":"0.4"}
+{"t":6197,"step":22,"op":"mark","arg":"down1"}
+{"t":6197,"step":23,"op":"send","arg":"\\x03"}
+{"t":6497,"step":24,"op":"sleep","arg":"0.3"}
+{"t":6497,"step":25,"op":"send","arg":"/exit"}
+{"t":6697,"step":26,"op":"sleep","arg":"0.2"}
+{"t":6697,"step":27,"op":"send","arg":"\\r"}
+{"t":6740,"step":28,"op":"eof","arg":""}
+{"t":6740,"step":0,"op":"exit","arg":"0"}

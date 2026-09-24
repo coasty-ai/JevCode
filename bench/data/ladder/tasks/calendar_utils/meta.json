@@ -1,0 +1,8 @@
+{
+  "name": "calendar_utils",
+  "hunks": 3,
+  "kinds": ["operator", "off_by_one", "call_args"],
+  "files": ["src/calendar_utils.py"],
+  "difficulty": 3,
+  "description": "Three independent bugs in one file: is_leap_year joins its two clauses with `and` instead of `or` (so no year is ever leap), day_of_year subtracts 1 at the end, and parse_iso passes maxsplit=1 to split so a full date never yields three parts. Five tests fail, five pass. Leap-year failures surface both directly and through days_in_month, so localisation must attribute the February failure to is_leap_year."
+}

@@ -1,0 +1,25 @@
+{
+  "name": "masked",
+  "tier": "long",
+  "hunks": 3,
+  "kinds": [
+    "rename",
+    "attribute",
+    "off_by_one"
+  ],
+  "files": [
+    "src/report.py",
+    "src/aggregate.py",
+    "src/parse.py"
+  ],
+  "difficulty": 4,
+  "description": "Masking chain: the six report tests all fail at the same NameError in report.summary (`parse_lines(txt)` for `text`). Fixing it makes the two empty-input tests pass; the other four then fail in a callee: those whose log carries durations fail in parse.parse_line (int(took[:-1]) keeps the 'm' of '12ms', ValueError), and every non-empty log fails in aggregate.total_ms (`e.took` for `e.ms`, AttributeError) once parse is fixed, the duration-free logs immediately. The same tests must be re-clustered twice as their traceback frame moves report -> parse -> aggregate; the direct parse and aggregate tests never exercise the two callee paths (durations, non-empty totals). Six tests fail, sixteen pass.",
+  "expected_failing": [
+    "tests/test_report.py::test_render_empty",
+    "tests/test_report.py::test_render_full",
+    "tests/test_report.py::test_summary_counts_levels",
+    "tests/test_report.py::test_summary_empty",
+    "tests/test_report.py::test_summary_plain_lines_have_no_duration",
+    "tests/test_report.py::test_summary_total_and_slowest"
+  ]
+}

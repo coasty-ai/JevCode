@@ -1,0 +1,99 @@
+# CI: the gates that must be green before a release.
+#
+# The `gates` job of release.yml runs the same commands in the same order (test/unit/scripts/workflow-hygiene.test.ts
+# pins that the two run-step lists are equal), so a green run here predicts a green gates job. Node 22 is the
+# supported floor (package.json `engines` is >=22.12.0; .nvmrc pins 22.23.2); only release.yml's publish-npm job
+# runs Node 24, for npm trusted publishing. Nothing here touches the network after `npm ci` (and the pytest install
+# before it): the package has zero runtime dependencies and the build smoke asserts it. Actions are pinned by SHA;
+# .github/dependabot.yml keeps the pins current.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: typecheck, test, build, pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CI: 'true'
+      JEVCODE_ASSERT_NO_NETWORK: '1' # the build smoke renders the first frame with no HTTP
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scripts/gen-docs.mjs --check dates the man page from package.json's commit
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      # ubuntu-latest ships python3 without pytest, and the unit suite runs real python3 over fixtures that
+      # `import pytest` (test/unit/synth/search/perturb.test.ts harvests the ladder's shipping task; the ladder and
+      # QuixBugs files skip without it). Installed system-wide, before `npm ci`, so a test that narrows PATH to
+      # /usr/bin or points HOME at a temp dir still finds it. The version is the one the suite is run with locally.
+      - name: pytest for the runner's python3
+        run: sudo python3 -m pip install --break-system-packages --root-user-action=ignore --no-cache-dir 'pytest==8.4.2'
+
+      - run: npm ci
+
+      - name: Typecheck (tsc strict, then the no-any rule)
+        run: npm run typecheck
+
+      - name: Jev-safety contract (every Jev call site is a router, never an authority)
+        run: npm run jev-contract
+
+      # About 40 unit files assert wall-clock budgets calibrated on a developer machine; on a shared 2-core runner
+      # an unlucky neighbour can push one over (a best-of-7 at 7 ms against 5 ms). In CI a failing test is retried
+      # up to twice: a real regression still fails all three attempts, and local `npm test` is unchanged. Every
+      # retried test is listed in the job summary and annotated on its file (scripts/ci/retried-reporter.mjs).
+      - name: Unit tests (a failing test is retried up to twice)
+        env:
+          JEVCODE_PERF_BUDGET_SCALE: '3' # wall-clock budgets are calibrated on a dev machine (test/unit/helpers/perf-budget.ts)
+        run: npm test -- --maxWorkers=3 --retry 2 --reporter=default --reporter=./scripts/ci/retried-reporter.mjs
+
+      - name: Build the bundle and the attribution file
+        run: npm run build
+
+      - name: Release tarball gates
+        run: npm run pack:check
+
+      - name: Generated docs are current (man page, completions, KEYS.md, COMMANDS.md)
+        run: node scripts/gen-docs.mjs --check
+
+      - name: The decisions table of contents is current
+        run: node scripts/gen-decisions-toc.mjs --check
+
+      - name: Every relative link in the README and docs/ resolves
+        run: node scripts/check-doc-links.mjs
+
+      # The README is the npm package page and rots silently. Two classes of rot have bitten before:
+      # a version number written into prose (the binary renders its own from package.json) and an
+      # unresolved <owner> / <this repo> placeholder in a command a reader is told to run.
+      #
+      # One version is allowed: a clause of the form "arrives in X.Y.Z" about a release that has not
+      # happened. It names a future, so it cannot be a stale claim about the current build, and it
+      # is more use to a reader than "in a later release". Delete the clause when that release ships.
+      - name: README carries no hard-coded version and no placeholder
+        run: |
+          fail=0
+          if grep -vE 'arrives in [0-9]+\.[0-9]+\.[0-9]+' README.md | grep -nE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error file=README.md::hard-coded version in the README; the binary prints its own from package.json" >&2
+            fail=1
+          fi
+          if grep -nE '<owner>|<this repo>|PLACEHOLDER|<your-' README.md; then
+            echo "::error file=README.md::unresolved placeholder in the README" >&2
+            fail=1
+          fi
+          exit $fail

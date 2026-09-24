@@ -1,0 +1,1 @@
+The integration tests in tests/test_todo.py fail: attention lists, the rendered board and the summary numbers are each wrong in two ways. Fix the todo package under src/ so the whole suite under tests/ passes; the tests are correct and must not be edited.

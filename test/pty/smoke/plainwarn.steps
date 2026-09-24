@@ -1,0 +1,6 @@
+# --plain TTY: a config warning reaches stderr as `jevcode: <warning>` (never a `[ui] warning:` item); /exit leaves 0 (§9.5, F9)
+expect jevcode: configFile:
+expect \[sandbox\]
+sleep 0.3
+send /exit\r
+eof

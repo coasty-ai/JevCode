@@ -1,0 +1,15 @@
+# TUI-DESIGN-4 §2.5 / §10 S6 (`narrow.steps`): the narrow ladder under a fault-free session. At 12×40 the console
+# is flat, the wordmark is gone and every row must still fit the terminal — which is what the §11 rows
+# `no frame taller than the terminal` and V22 (every box row exactly the rule-row width) are checked against
+# here. The draft is long enough to exercise the composer's own truncation at the narrowest tier.
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.6
+send a fairly long draft that cannot fit on one narrow row at all
+sleep 0.5
+send \x03
+sleep 0.3
+send /exit
+sleep 0.2
+send \r
+eof

@@ -1,0 +1,35 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0 -- /Library/Developer/CommandLineTools/usr/bin/python3
+rootdir: /private/tmp/pyt_fx
+collecting ... collected 16 items
+
+test_sample.py::test_pass_one PASSED                                     [  6%]
+test_sample.py::test_fail_eq FAILED                                      [ 12%]
+test_sample.py::test_fail_str FAILED                                     [ 18%]
+test_sample.py::test_param[13-13-13] FAILED                              [ 25%]
+test_sample.py::test_param[20-100-20] FAILED                             [ 31%]
+test_sample.py::test_skipped SKIPPED (not now)                           [ 37%]
+test_sample.py::test_xfail XFAIL (known)                                 [ 43%]
+test_sample.py::test_xpass XPASS (known)                                 [ 50%]
+test_sample.py::test_error_fixture ERROR                                 [ 56%]
+test_sample.py::test_raises FAILED                                       [ 62%]
+test_sample.py::test_in_list FAILED                                      [ 68%]
+test_sample.py::test_dict FAILED                                         [ 75%]
+test_sample.py::test_bench_style_message FAILED                          [ 81%]
+test_sample.py::test_long_values FAILED                                  [ 87%]
+test_sample.py::TestGroup::test_method PASSED                            [ 93%]
+test_sample.py::TestGroup::test_method_fail FAILED                       [100%]
+
+=========================== short test summary info ============================
+FAILED test_sample.py::test_fail_eq - assert (1 + 1) == 3
+FAILED test_sample.py::test_fail_str - AssertionError: assert 'hello world' =...
+FAILED test_sample.py::test_param[13-13-13] - RecursionError: maximum recursi...
+FAILED test_sample.py::test_param[20-100-20] - RecursionError: maximum recurs...
+FAILED test_sample.py::test_raises - ValueError: boom 42
+FAILED test_sample.py::test_in_list - assert 3 in [1, 2]
+FAILED test_sample.py::test_dict - AssertionError: assert {'a': 1, 'b': [1, 2...
+FAILED test_sample.py::test_bench_style_message - AssertionError: gcd(13, 13)...
+FAILED test_sample.py::test_long_values - AssertionError: assert [0, 1, 2, 3,...
+FAILED test_sample.py::TestGroup::test_method_fail - AssertionError: assert [...
+ERROR test_sample.py::test_error_fixture
+==== 10 failed, 2 passed, 1 skipped, 1 xfailed, 1 xpassed, 1 error in 0.01s ====

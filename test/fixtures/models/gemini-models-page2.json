@@ -1,0 +1,18 @@
+{
+  "_comment": "Page 2 of the hand-built Gemini fixture: no nextPageToken, so pagination stops here.",
+  "models": [
+    {
+      "name": "models/gemini-3.1-pro-preview",
+      "baseModelId": "gemini-3.1-pro-preview",
+      "version": "3.1",
+      "displayName": "Gemini 3.1 Pro Preview",
+      "description": "Most capable Gemini 3 model.",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": ["generateContent", "streamGenerateContent", "countTokens"],
+      "thinking": true,
+      "temperature": 1,
+      "topP": 0.95
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "name": "route_match",
+  "tier": "long-2",
+  "hunks": 3,
+  "kinds": [
+    "operator",
+    "two_files",
+    "new_branch"
+  ],
+  "files": [
+    "src/pattern.py",
+    "src/router.py"
+  ],
+  "difficulty": 5,
+  "description": "A URL router whose specificity score and the comparison that reads it are both inverted. (A) pattern.specificity counts the PLACEHOLDER segments where its docstring says it counts the segments the pattern pins down, i.e. the static ones. (B) router.match picks min(...) of that score where it must pick max(...). Every route that matches one path has the same segment count, so static = width - placeholders and min(placeholders) is exactly max(static): the router picks the right route on the buggy tree, and only the four tests/test_pattern.py tests that read specificity, more_specific and rank directly are red. Repairing either half alone makes the router pick the LEAST specific route and breaks three match tests. (C) router.reverse tests `wanted - set(params)`, which only catches a placeholder with no value; the gold tests `wanted != set(params)`, which also catches a value for a placeholder the route does not have. Six tests fail, twenty-six pass. Plausible wrong fixes, all verified: (W1) make specificity count static segments and stop -- the four failing pattern tests point straight at it, and it breaks test_match_prefers_a_static_segment_over_a_placeholder, test_match_falls_back_to_the_placeholder_route and test_match_captures_the_placeholder_values (5 failed / 27 passed); (W2) the coupled pair plus `set(params) - wanted`, the direction the two failing reverse tests show -- all six target tests green, breaks the previously passing tests/test_router.py::test_reverse_refuses_a_missing_parameter (1 failed / 31 passed); (W3) turn router.match's min into a max alone (9 failed / 23 passed).",
+  "expected_failing": [
+    "tests/test_pattern.py::test_more_specific_compares_two_patterns",
+    "tests/test_pattern.py::test_rank_puts_the_most_specific_first",
+    "tests/test_pattern.py::test_specificity_counts_the_segments_that_are_pinned_down",
+    "tests/test_pattern.py::test_specificity_drops_when_a_segment_becomes_a_placeholder",
+    "tests/test_router.py::test_reverse_refuses_a_parameter_on_a_route_that_takes_none",
+    "tests/test_router.py::test_reverse_refuses_an_unknown_parameter"
+  ]
+}

@@ -1,0 +1,8 @@
+# a bare `jevcode` with no key anywhere (no --mock, every key variable unset, an empty HOME/XDG): the round-3 one-key wizard
+# (TUI-DESIGN-3 §1.4, D-J) opens on the masked OpenRouter field under `setup · key` beneath the held mark (F-R8); Ctrl-C at
+# the field prints the jev-on fix block (`export OPENROUTER_API_KEY=…   # one key: Jev + the code model`) and exits 2
+expect \x1b\[\?25l
+expect OpenRouter API key
+sleep 0.4
+send \x03
+eof

@@ -1,0 +1,37 @@
+{
+  "source": "docs/research/06-jev-shapes-and-question-design.md §4, call 2 (2026-09-19), body verbatim",
+  "questions": {
+    "in_scope": {
+      "type": "noul",
+      "instructions": "Does `proposal` stay within the scope of `task`?",
+      "criteria": {
+        "true": { "what": "The proposal only edits files that the task names or that are directly needed to fix the named test.", "examples": ["edits utils/dates.py to fix parse_date"] },
+        "false": { "what": "The proposal edits, deletes or creates files unrelated to the named test, or changes behaviour the task did not ask for.", "examples": ["rewrites the CI config", "deletes tests/test_dates.py"] }
+      }
+    },
+    "next_action": {
+      "type": "choice",
+      "instructions": "Given `task`, `proposal` and `last_test_output`, what should the harness do next?",
+      "criteria": {
+        "apply_patch": { "what": "Apply the proposed edit and rerun the failing test.", "not_for": "Cases where more information about the code is needed first." },
+        "read_more_code": { "what": "Open more source files before editing, because the fix location is unclear.", "not_for": "Cases where the failing line and fix are already identified." },
+        "none_of_the_above": "None of the listed actions fits."
+      }
+    },
+    "destructive_risk": {
+      "type": "score",
+      "instructions": "How destructive is `proposal` if it is wrong? Judge data and file loss, not code quality.",
+      "criteria": [
+        { "what": "Edits one source file that is under version control; trivially revertible.", "signals": ["single file edit", "no deletions"] },
+        { "what": "Deletes or renames files, or rewrites many files; revertible only with effort.", "signals": ["rm", "git mv", "mass rewrite"] },
+        { "what": "Destroys state outside version control: drops databases, force-pushes, deletes untracked data.", "signals": ["git push --force", "DROP TABLE", "rm -rf outside repo"] }
+      ]
+    }
+  },
+  "response": {"model":"typesafe/jev-1.13-20260917","answers":{"in_scope":{"type":"noul","noul":0.98},"next_action":{"type":"choice","choice":"apply_patch","probabilities":{"apply_patch":0.99,"read_more_code":0.01,"none_of_the_above":0},"confidence":0.99},"destructive_risk":{"type":"score","score":0,"legend":{"0":{"what":"Edits one source file that is under version control; trivially revertible.","signals":["single file edit","no deletions"]},"1":{"what":"Deletes or renames files, or rewrites many files; revertible only with effort.","signals":["rm","git mv","mass rewrite"]},"2":{"what":"Destroys state outside version control: drops databases, force-pushes, deletes untracked data.","signals":["git push --force","DROP TABLE","rm -rf outside repo"]}},"probabilities":{"0":1,"1":0,"2":0},"confidence":1}},"usage":{"input_tokens":895,"output_tokens":82,"cost":0.00003759},"id":"gen-dec-1789872245-jPLW8jpgavaA4LAjkuAL","provider":"TypeSafe"},
+  "errors": {
+    "zod400": {"error":{"message":"[\n  {\n    \"code\": \"custom\",\n    \"path\": [\"questions\"],\n    \"message\": \"At least one question is required\"\n  }\n]","code":400}},
+    "typesafe400": {"error":{"message":"HTTP 400: {\"detail\":\"Too many choices. Must have at most 255 choices.\"}","code":400}},
+    "cloudflare524": "error code: 524\n"
+  }
+}

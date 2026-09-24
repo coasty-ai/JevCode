@@ -1,0 +1,87 @@
+# TUI-DESIGN-5 §3 / §10 (slot R5-3): `/context` then `/compact` under `--mock` at 120x40, plus the
+# `nothing to compact` branch and the `compaction is off` branch. Hermetic: `--mock` only, no network, no key.
+#
+# MODE — the SHIPPED DEFAULT, deliberately. The scenario takes no `--mode`: R13 put `llm-jev` inside
+#   `contextEnabled`, so the `ctx` status cell and the `/context` block are what an ORDINARY user sees. Pinning
+#   this to `--mode jev-on` proved the feature in a mode nobody runs by default. The jev-only twin — where there
+#   is no generator context and the cell must be ABSENT rather than `ctx —%` (§7 row 35) — is the second case in
+#   `test/pty/round5.pty.test.ts`.
+#
+# run-smoke.sh rows for this scenario:
+#   env    : r5-context) extra_env="$extra_env JEVCODE_CONTEXT_COMPACTION=code";;
+#   check  : the block, the `ctx NN%` cell, and no `ctx —%` placeholder
+#   select : sel_named r5-context && run r5-context 0 40 120 chat --mock
+#
+# What it proves, beyond "it renders":
+#   - §3.2's three reads join into ONE block whose head is S48 and whose first row is `formatBudget`'s own text;
+#   - §3.7's rungs: the per-file table with its reason column at 120 and 80, the count row alone at 40;
+#   - §3.3: `/compact` after the run answers `availabilityError`'s generated live-only sentence (see step 6);
+#   - §3.4: the engine's own `compaction:` notice is unchanged and the `─ compaction ─` rule sits ABOVE it;
+#   - G-R5-9: `assertNoKeyBytes` over every frame (the block prints paths and byte counts, never a key).
+
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.4
+
+# 1 — `/context` before any run: §7 row 36's own sentence, not an empty block
+send /context
+sleep 0.2
+send \r
+expect no run is live
+sleep 0.3
+mark context-no-run
+
+# 2 — a run, so `status().context` exists; `--mock` steps are deterministic
+send do a thing
+sleep 0.2
+send \r
+sleep 1.2
+mark run-live
+
+# 3 — the full block at 120x40: the head, `budget`, `recent steps`, `files in view` and the per-file table
+send /context
+sleep 0.2
+send \r
+expect context [·-] step
+sleep 0.4
+mark context-120
+
+# 4 — the 40-column rung: the same head, the count row, and NO per-file rows (§3.7)
+resize 40 40
+sleep 0.8
+send /context
+sleep 0.2
+send \r
+sleep 0.4
+mark context-40
+
+# 5 — the 80-column rung: the per-file rows are back and the reason column survives (§3.7, §14.2 finding 1)
+resize 40 80
+sleep 0.8
+send /context
+sleep 0.2
+send \r
+sleep 0.4
+mark context-80
+
+# 6 — `/compact` AFTER the mock run has ended. The step this replaced waited for S57 (`nothing to compact`),
+#     which only a LIVE run can answer; by the time the four `/context` reads above have been typed the
+#     `--mock` run is long finished, so the scenario timed out for 67 s on every invocation and then failed on
+#     the exit code rather than on anything about `/compact`. `availabilityError`'s own live-only sentence is
+#     what this position actually proves — and that it is the GENERATED one, never a hand-written twin.
+#     S57 / S58a (`nothing to compact` vs `compaction is off`) are covered live in
+#     `test/unit/cli/session*.test.ts`; a pty scenario cannot type into a live `--mock` run without the
+#     stdin-starvation hazard of docs/research/tui/20-pty-driver-findings.md §5.
+resize 40 120
+sleep 0.6
+send /compact
+sleep 0.2
+send \r
+expect needs a live run
+sleep 0.3
+mark compact-after-run
+
+send /exit
+sleep 0.2
+send \r
+eof

@@ -1,0 +1,13 @@
+$ cat .env
+OPENROUTER_API_KEY=sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+ANTHROPIC_API_KEY=sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE-fakeAA
+OPENAI_API_KEY=sk-proj-FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE1234
+GOOGLE_API_KEY=AIzaFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAK
+GITHUB_TOKEN=ghp_FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE
+GH_PAT=github_pat_FAKEFAKEFAKEFAKEFAKEFAKE_fake
+UNUSED_DB_PASSWORD=plain-password-with-no-format-1234
+$ curl -H 'Authorization: Bearer sk-live_FAKEFAKEFAKEFAKEFAKEFAKEFAKE' -H 'x-api-key: flagkey-ABCDEF0123456789-XYZ' https://example.invalid
+$ git rev-parse HEAD
+deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+$ npm ls --json | grep integrity
+"integrity": "sha512-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ+/abcdefghijklmnopqrstuvwxyz=="

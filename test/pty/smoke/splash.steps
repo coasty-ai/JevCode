@@ -1,0 +1,19 @@
+# the startup splash (TUI-DESIGN-2 §5; TUI-DESIGN-3 §3 D-I): the first frame is splash frame 0 with the `step 0/–` sentinel; a key at
+# ~100 ms completes the reveal instead of killing it — the resting mark is COMMITTED as the first scrollback block (the owner's directive
+# of 2026-09-23) and no later frame draws it in the dynamic region (no `▓▒░` head after the echo frame); the idle frame is 6 dynamic rows
+# (the rule and the console); zero clears (§8.2 splash.steps, round 3)
+expect \x1b\[\?25l
+expect step 0/
+# raw mode on (Ink's post-commit effect writes ESC[?2004h): a key sent earlier is a cooked-mode byte the kernel echoes
+expect \x1b\[\?2004h
+sleep 0.1
+send h
+expect (?:›|>) (?:\x1b\[[0-9;]*m)*h
+sleep 0.3
+send \x03
+expect Say hi
+expect sess \$
+send /exit
+sleep 0.2
+send \r
+eof

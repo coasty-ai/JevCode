@@ -1,0 +1,27 @@
+...F.F.F..                                                               [100%]
+=================================== FAILURES ===================================
+____________________ test_withdraw_exact_balance_is_allowed ____________________
+tests/test_account.py:26: in test_withdraw_exact_balance_is_allowed
+    acct.withdraw(50)
+src/account.py:37: in withdraw
+    raise InsufficientFunds(f"{self.owner} has only {self.balance:.2f}")
+E   src.account.InsufficientFunds: ann has only 50.00
+__________________________ test_transfer_moves_money ___________________________
+tests/test_account.py:39: in test_transfer_moves_money
+    transfer(a, b, 40)
+src/account.py:53: in transfer
+    dst.withdraw(amount)
+src/account.py:37: in withdraw
+    raise InsufficientFunds(f"{self.owner} has only {self.balance:.2f}")
+E   src.account.InsufficientFunds: bob has only 10.00
+____________________ test_statement_numbering_starts_at_one ____________________
+tests/test_account.py:54: in test_statement_numbering_starts_at_one
+    assert acct.statement() == ["1. +100.00 -> 100.00", "2. -25.00 -> 75.00"]
+E   AssertionError: assert ['0. +100.00 ....00 -> 75.00'] == ['1. +100.00 ....00 -> 75.00']
+E     
+E     At index 0 diff: '0. +100.00 -> 100.00' != '1. +100.00 -> 100.00'
+E     Use -v to get more diff
+=========================== short test summary info ============================
+FAILED tests/test_account.py::test_withdraw_exact_balance_is_allowed - src.ac...
+FAILED tests/test_account.py::test_transfer_moves_money - src.account.Insuffi...
+FAILED tests/test_account.py::test_statement_numbering_starts_at_one - Assert...

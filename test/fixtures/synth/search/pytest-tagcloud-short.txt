@@ -1,0 +1,31 @@
+..FFF..F.                                                                [100%]
+=================================== FAILURES ===================================
+_______________________________ test_tag_counts ________________________________
+tests/test_tagcloud.py:22: in test_tag_counts
+    assert tag_counts(POSTS) == {"python": 3, "tutorial": 2, "type-hints": 1, "asyncio": 1}
+src/tagcloud.py:28: in tag_counts
+    counts: Counter = Counter()
+E   NameError: name 'Counter' is not defined
+____________________________ test_tag_counts_empty _____________________________
+tests/test_tagcloud.py:26: in test_tag_counts_empty
+    assert tag_counts([]) == {}
+src/tagcloud.py:28: in tag_counts
+    counts: Counter = Counter()
+E   NameError: name 'Counter' is not defined
+________________________________ test_top_tags _________________________________
+tests/test_tagcloud.py:30: in test_top_tags
+    assert top_tags(POSTS, 2) == [("python", 3), ("tutorial", 2)]
+src/tagcloud.py:36: in top_tags
+    return Counter(tag_counts(posts)).most_common(n)
+E   NameError: name 'Counter' is not defined
+______________________________ test_co_occurrence ______________________________
+tests/test_tagcloud.py:45: in test_co_occurrence
+    pairs = co_occurrence(POSTS)
+src/tagcloud.py:54: in co_occurrence
+    pairs: Counter = Counter()
+E   NameError: name 'Counter' is not defined
+=========================== short test summary info ============================
+FAILED tests/test_tagcloud.py::test_tag_counts - NameError: name 'Counter' is...
+FAILED tests/test_tagcloud.py::test_tag_counts_empty - NameError: name 'Count...
+FAILED tests/test_tagcloud.py::test_top_tags - NameError: name 'Counter' is n...
+FAILED tests/test_tagcloud.py::test_co_occurrence - NameError: name 'Counter'...

@@ -1,0 +1,13 @@
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.4
+send hi 日本語のテスト と emoji 🎉🚀 and RTL ??? ok
+sleep 0.3
+send \r
+sleep 2.0
+mark replied
+send /exit
+sleep 0.3
+send \r
+eof

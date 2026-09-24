@@ -1,0 +1,12 @@
+{"t":149,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":1650,"step":2,"op":"sleep","arg":"1.5"}
+{"t":1650,"step":3,"op":"send","arg":"/panel full\\r"}
+{"t":2850,"step":4,"op":"sleep","arg":"1.2"}
+{"t":2853,"step":5,"op":"resize","arg":"10 60"}
+{"t":4356,"step":6,"op":"sleep","arg":"1.5"}
+{"t":4356,"step":7,"op":"send","arg":"\\x03"}
+{"t":4759,"step":8,"op":"sleep","arg":"0.4"}
+{"t":4759,"step":9,"op":"send","arg":"\\x03"}
+{"t":4926,"step":10,"op":"sleep","arg":"0.8"}
+{"t":4926,"step":10,"op":"eof-during-sleep","arg":"0.8"}
+{"t":4926,"step":0,"op":"exit","arg":"0"}

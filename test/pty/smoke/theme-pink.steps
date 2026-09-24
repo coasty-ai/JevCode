@@ -1,0 +1,18 @@
+# the TypeSafe pink theme (TUI-DESIGN-3 §2, D-H) under TERM=xterm-256color: the first frame carries the primary pink `38;5;211` (the badge,
+# the idle prompt, the wordmark letters) and none of round 2's cyan `38;5;117`; after `[run] start` the console edges take the secondary
+# pink `38;5;169` and none of round 2's `38;5;74`; run-smoke.sh greps the raw capture
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.3
+send fix the failing test
+sleep 0.2
+send \r
+expect step \d+/\d+
+mark started
+expect finished [·-] (complete|max_steps|generator_done)
+expect Follow-up, question
+send /exit
+sleep 0.2
+send \r
+eof

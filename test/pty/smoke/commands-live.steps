@@ -1,0 +1,24 @@
+# TUI-DESIGN-3 §4.4 F21 live: `/undo` while a run is live is an availability error (`runs when the run is idle`) and clears the draft — the
+# next line is not `/undo/pause`; one Ctrl-C then aborts the live run (the draft is gone); /exit leaves 0
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.3
+send make the tests pass
+sleep 0.2
+send \r
+expect step \d+/\d+
+expect Type to steer
+send /undo
+sleep 0.2
+send \r
+expect idle|live run|not available
+sleep 0.3
+# F21: the availability error cleared the draft, so ONE Ctrl-C aborts the live run (a kept draft would swallow it — that is the
+# assertion); two in a row would be the double-Ctrl-C exit instead of the abort
+send \x03
+expect finished [·-] human_abort
+expect Follow-up, question
+send /exit
+sleep 0.2
+send \r
+eof

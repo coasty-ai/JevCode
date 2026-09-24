@@ -1,0 +1,29 @@
+============================= test process starts ==============================
+executable:         /ws/.venv/bin/python  (3.9.6-final-0) [CPython]
+architecture:       64-bit
+cache:              no
+ground types:       python
+numpy:              None
+random seed:        12345
+hash randomization: on (PYTHONHASHSEED=0)
+
+sympy/utilities/tests/test_lambdify.py[92] .........................f.....F.................
+....................Ew.....................                                 [FAIL]
+
+________________________________________________________________________________
+_______ sympy/utilities/tests/test_lambdify.py:test_issue_12092 ________
+Traceback (most recent call last):
+  File "/ws/sympy/utilities/tests/test_lambdify.py", line 612, in test_issue_12092
+    assert f(f(2)).evalf() == Float(16)
+AssertionError
+
+________________________________________________________________________________
+__________ sympy/utilities/tests/test_lambdify.py:test_tensorflow_basic __________
+Traceback (most recent call last):
+  File "/ws/sympy/utilities/tests/test_lambdify.py", line 700, in test_tensorflow_basic
+    import tensorflow
+ModuleNotFoundError: No module named 'tensorflow'
+
+======= tests finished: 88 passed, 1 failed, 1 skipped, 1 expected to fail, 1 exceptions, 
+in 4.21 seconds =======
+DO *NOT* COMMIT!

@@ -1,0 +1,28 @@
+{
+  "name": "crossfile",
+  "tier": "long",
+  "hunks": 4,
+  "kinds": [
+    "two_files",
+    "rename",
+    "operator"
+  ],
+  "files": [
+    "src/fmt.py",
+    "src/invoice.py",
+    "src/tax.py",
+    "src/discount.py"
+  ],
+  "difficulty": 5,
+  "description": "Two coordinated one-line edits in two files plus two independent bugs. fmt.money reads its symbol under the wrong option key, options.get(CURRENCY_KEY) for options.get(SYMBOL_KEY) (both module constants of fmt.py; the tests pin `symbol=`), and invoice.render's local `cash` helper builds its options dict under CURRENCY_KEY as well. Either identifier swap alone regresses: fixing the definition makes the fmt tests pass but every invoice line falls back to '$' (two invoice tests break); fixing only the call site changes nothing for fmt and breaks the same two. Only the pair (one patch of two files) is green: test_money_ignores_currency_option pins that the `currency` option is never read as a symbol, so a definition that reads both keys is not a fix either. Independently, tax.tax_for exempts the threshold amount itself (<= for <) and discount.apply_discount negates the percentage-code test (`not in`). Eight tests fail, seventeen pass.",
+  "expected_failing": [
+    "tests/test_discount.py::test_best_code",
+    "tests/test_discount.py::test_flat_code",
+    "tests/test_discount.py::test_percentage_codes",
+    "tests/test_fmt.py::test_money_custom_symbol",
+    "tests/test_fmt.py::test_money_ignores_currency_option",
+    "tests/test_fmt.py::test_money_negative_with_symbol",
+    "tests/test_tax.py::test_threshold_is_taxed",
+    "tests/test_tax.py::test_with_tax"
+  ]
+}

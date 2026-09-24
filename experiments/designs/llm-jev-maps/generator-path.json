@@ -1,0 +1,217 @@
+{
+ "subsystem": "Generator path: src/provider/{types,openrouter,anthropic,prompts,actions,sse,mock,null}.ts, core Provider contract (src/core/types.ts:402-466), config generator section (src/config/{defaults,types,resolve,validate}.ts), src/spend/meter.ts, plus the two call sites src/loop/stages/propose.ts and Engine.generate (src/loop/engine.ts:1696-1742)",
+ "summary": "One LLM call site exists: the propose stage (src/loop/stages/propose.ts:27-35) builds a GenerateRequest {system = fixed per-run prompt (engine.ts:610, prompts.ts:96-124), messages = one user message per step (prompts.ts:266-283), maxTokens = cfg (default 4096), temperature = cfg (default null = parameter not sent), tools = [PROPOSE_ACTION_TOOL], toolChoice = {name:'propose_action'}} and calls ctx.generate \u2192 Engine.generate \u2192 Provider.generate. Both HTTP providers stream over raw fetch+SSE (sse.ts:157-226), retry 3 attempts with Anthropic-SDK backoff (sse.ts:232-242, 386-405), 30 s first-byte / 60 s idle timeouts, and accumulate tool-call argument fragments as strings, parsing once at end (openrouter.ts:207-213; anthropic.ts:244-251). actions.ts:190-206 turns GenerateResult into a Proposal: toolCalls[0].input first, else the last fenced json block; exact-key validation (actions.ts:104-175); a GeneratorResponseError gets one retry with reason + 500-char tail (propose.ts:41-51), the second failure ends the step. Cost: OpenRouter takes usage.cost from the accounting frame, else the pricing table when cfg.priced, else NaN \u2192 budget:unpriced \u2192 run stops unless --allow-unpriced (openrouter.ts:309; engine.ts:1550-1562, 1918-1923); Anthropic always prices from the table (anthropic.ts:338). The meter clamps NaN to 0 and sums generator+jev against the cap (meter.ts:19-31, 62-64). IN FLIGHT (uncommitted, not by me): defaults.ts:6-7 now DEFAULT_PROVIDER='openrouter', DEFAULT_MODEL='z-ai/glm-5.3-flash' with GLM pricing rows (defaults.ts:61-74: flash 0.09/0.30, cache read 0.018, cache write derived 0.1125); openrouter.ts:74 now sends parallel_tool_calls:false; types.ts:190-191 typed. That change currently fails 9 tests in test/unit/config/resolve.test.ts and leaves docs/.env.example/login/onboarding defaults stale. (a) GLM default: config side is done; remaining work is tests, docs, DECISIONS entry, CLI/onboarding fallbacks, bench default, `reasoning` handling and possibly provider.require_parameters. (b) N samples: `n` is NOT in the supplied GLM supported-parameter list (defaults.ts:58-59) nor in research 07 \u00a72.2's OpenAPI field list, and Anthropic has no `n`; the OpenRouter parser reads choices index 0 only (openrouter.ts:144) \u2192 N samples must be N parallel requests; needs a sample id through Engine.generate, events, GeneratorCallRecord, retryHooks and timing. (c) Concurrency: provider objects are stateless closures (safe to share; the bench already does at runner.ts:510,636), but the engine has single-slot retry state (engine.ts:1524-1545), single-stream TUI events (types.ts:1114-1118), latency summed not wall-clocked (engine.ts:1731), and the mock provider has an ordered `calls` counter (mock.ts:37,44). Claude-specific assumptions are enumerated in hazards with a [claude-specific] prefix.",
+ "decision_points": [
+  {
+   "where": "src/loop/stages/propose.ts:27-34",
+   "who_decides": "code",
+   "what": "Request shape for every proposal: system prompt, one user message, maxTokens and temperature copied from ctx.generation, tools=[PROPOSE_ACTION_TOOL], toolChoice forced to {name:'propose_action'}",
+   "question_shape": "n/a (fixed)",
+   "cost_latency": "one streamed request per attempt",
+   "weakness": "no per-sample variation (temperature fixed, no seed), no n, no reasoning control; toolChoice forced even on providers that may ignore it"
+  },
+  {
+   "where": "src/loop/stages/propose.ts:26-53 (PROPOSE_MAX_ATTEMPTS=2 at :12)",
+   "who_decides": "code",
+   "what": "Malformed reply \u2192 one retry with reason + 500-char raw tail appended as assistant text + user message; second failure throws GeneratorResponseError and ends the step",
+   "cost_latency": "a second full request (prompt re-sent, plus ~raw tail)",
+   "weakness": "retries with identical maxTokens even when stopReason was 'length'; assistant turn is plain text, not a tool_use block"
+  },
+  {
+   "where": "src/provider/actions.ts:190-206 parseProposal",
+   "who_decides": "code",
+   "what": "toolCalls[0].input wins; else last fenced ```json block in text; tool name must equal propose_action",
+   "weakness": "only toolCalls[0] considered; a non-string `arguments` payload becomes '{}' and fails with 'missing key goal'"
+  },
+  {
+   "where": "src/provider/actions.ts:104-175 validateAction/validatePlanDraft/validateProposalInput",
+   "who_decides": "code",
+   "what": "Exact-key validation of the Action union (read/edit/write/patch/run/done) and plan; old===new rejected; timeoutMs optional positive",
+   "weakness": "none observed; strict and provider-agnostic"
+  },
+  {
+   "where": "src/provider/openrouter.ts:309 (costUsd = out.cost ?? (cfg.priced ? table : NaN))",
+   "who_decides": "code",
+   "what": "Cost source: usage.cost from the accounting frame > pricing table when cfg.priced===true > NaN (unpriced)",
+   "weakness": "cfg.priced is undefined for any GeneratorConfig built outside validateGenerator (tests, bench helpers) \u2192 NaN path"
+  },
+  {
+   "where": "src/config/validate.ts:151-177",
+   "who_decides": "code",
+   "what": "priced = table hit || both per-M overrides; provider==='anthropic' && !priced && !allowUnpriced \u2192 ConfigError (fail closed); openrouter unpriced only warns; unknown model derives cache rates 0.1\u00d7/1.25\u00d7 input",
+   "weakness": "cache-rate derivation uses Anthropic's ratios for every unknown model; token-cap derivation assumes $15/M"
+  },
+  {
+   "where": "src/config/defaults.ts:6-7, 83-84 (in flight)",
+   "who_decides": "human",
+   "what": "DEFAULT_PROVIDER='openrouter', DEFAULT_MODEL='z-ai/glm-5.3-flash' (was anthropic/claude-sonnet-5)",
+   "weakness": "9 resolve.test.ts tests, .env.example, README, DESIGN \u00a73, TUI-DESIGN, man page, login.ts:162, onboarding lines.ts:105, args.ts:722 still assume anthropic/claude-sonnet-5"
+  },
+  {
+   "where": "src/config/resolve.ts:414-421 (PROVIDER_KEY_ENV at :81)",
+   "who_decides": "code",
+   "what": "Provider string decides which env var holds the generator key (ANTHROPIC_API_KEY vs OPENROUTER_API_KEY), prepended before JEVCODE_API_KEY",
+   "weakness": "with openrouter default the same OPENROUTER_API_KEY serves generator and Jev (decider.apiKey falls back to it, defaults.ts:93) \u2014 convenient but one key, one spend pool"
+  },
+  {
+   "where": "src/provider/sse.ts:386-405 withRetry; :266-269 isRetryableStatus; :287-302 httpError",
+   "who_decides": "code",
+   "what": "3 attempts total; retry only ProviderHttpError.retryable (408/409/429/5xx, transport, idle timeouts, x-should-retry:true); Retry-After \u226460 s preferred over backoff min(500\u00b72^n,8000)\u00b7(1\u2212U\u00b70.25)",
+   "weakness": "per-call state; no cross-sample budget; a 402 in-flight-budget 402 is retryable only with Retry-After (openrouter.ts:266)"
+  },
+  {
+   "where": "src/provider/openrouter.ts:199-205",
+   "who_decides": "code",
+   "what": "Stream completeness: requires [DONE] or (finish_reason && usage frame); missing usage frame \u2192 TransportError('stream') \u2192 retried",
+   "weakness": "a provider that omits the usage frame would loop 3 attempts then fail"
+  },
+  {
+   "where": "src/provider/openrouter.ts:144",
+   "who_decides": "code",
+   "what": "Only the choice with index===0 (or missing index) is consumed; tool accumulators keyed by tool_calls[].index only",
+   "weakness": "blocks any `n>1` response: extra choices silently dropped and their tool fragments could collide by tool index"
+  },
+  {
+   "where": "src/provider/anthropic.ts:61-88 buildAnthropicBody",
+   "who_decides": "code",
+   "what": "system as [{type:'text', cache_control ephemeral}]; tools with strict:true + eager_input_streaming:true, cache_control on the last tool; tool_choice mapped with disable_parallel_tool_use:true; temperature omitted when null",
+   "weakness": "cache prefix (~2600-char system + 2712-byte tool \u2248 1,350 tok) sits barely above Sonnet 5's 1,024-token cache minimum (research 07 \u00a71.7)"
+  },
+  {
+   "where": "src/provider/openrouter.ts:60-79 buildOpenRouterBody (in flight)",
+   "who_decides": "code",
+   "what": "messages=[system?, ...]; stream:true; max_tokens; usage:{include:true}; tools as OpenAI functions with strict:true; tool_choice; parallel_tool_calls:false (new); temperature only when non-null",
+   "weakness": "no provider routing prefs (require_parameters), no reasoning param, max_tokens (deprecated) not max_completion_tokens, no cache markers"
+  },
+  {
+   "where": "src/loop/engine.ts:1696-1742 Engine.generate",
+   "who_decides": "code",
+   "what": "jev-only guard; emits generator:start/delta/tool-delta/end; meter.add('generator'); generatorTokens += in+out; noteUsage (unpriced check); pricedUsage clamp; appends GeneratorCallRecord{step, attempt, promptHash, model, temperature, maxTokens, usage, latencyMs, stopReason, malformed}",
+   "weakness": "no sample id; generatorMs is a sum of latencies; stopReason recorded verbatim (Anthropic 'tool_use'/'end_turn' vs OpenRouter 'tool_calls'/'stop'/'length') without normalisation"
+  },
+  {
+   "where": "src/loop/engine.ts:1550-1562 noteUsage; :1918-1923",
+   "who_decides": "code",
+   "what": "Non-finite costUsd \u2192 budget:unpriced once per (side,model); unless allowUnpriced the run stops with error 'unpriced_usage' after the step commits",
+   "weakness": "none; fail-closed by design"
+  },
+  {
+   "where": "src/loop/engine.ts:1524-1545 retryHooks",
+   "who_decides": "code",
+   "what": "Per-call onRetry/wake closure writing to single engine fields this.retryWaker / this.retrying and emitting 'retry' / 'retry:settled'",
+   "weakness": "single slot: concurrent generator calls in one engine overwrite each other's retry status and waker"
+  },
+  {
+   "where": "src/cli/session.ts:458-474 buildProvider; src/bench/cli.ts:48-53",
+   "who_decides": "code",
+   "what": "jev-only \u2192 NullProvider; --mock/--mock-generator \u2192 MockProvider; else config.generator().provider picks openrouter vs anthropic client",
+   "weakness": "bench hardcodes generation default {temperature:null, maxTokens:4096} separately (bench/cli.ts:36)"
+  },
+  {
+   "where": "src/provider/prompts.ts:282 (maxUserMessageChars 160_000) and :11-24 PROMPT_LIMITS",
+   "who_decides": "code",
+   "what": "User message bounded per section (context 61,440 B / 12 files / 16 KiB each; window last 4 with headTail(400,200) output; task 12k chars) and headTail-clipped at 160k chars",
+   "weakness": "never consults the model's context size (GLM 1.31M); bound is in chars not tokens"
+  },
+  {
+   "where": "the forced propose_action tool call (any provider)",
+   "who_decides": "llm",
+   "what": "The generator decides goal, the single action and the full plan draft",
+   "weakness": "one sample per step; no diversity; Jev never sees alternatives in this path"
+  },
+  {
+   "where": "nowhere in this subsystem",
+   "who_decides": "jev",
+   "what": "Jev is not consulted anywhere on the generator path; proposals go to the risk stage afterwards (outside this subsystem). There is no selection-among-samples point today",
+   "weakness": "the gap the N-sample design must fill"
+  }
+ ],
+ "llm_calls": [
+  {
+   "where": "src/loop/stages/propose.ts:35 \u2192 src/loop/engine.ts:1706 \u2192 src/provider/openrouter.ts:299 / anthropic.ts:331 (attempt 1)",
+   "purpose": "Propose exactly one action + goal + full plan via forced tool call propose_action",
+   "prompt_size": "system 2,600 chars jev-on/seatbelt (2,434 jev-off/none) \u2248 650 tok + tool def 2,712 B JSON (schema 2,444 B) \u2248 700 tok; user message 591 chars minimal, bounded to 160,000 chars; context files \u2264 61,440 B; window \u2264 4 entries \u00d7 ~600-char output",
+   "sampling": "temperature null (not sent) by default, max_tokens 4096 default; stream:true; no seed/top_p/reasoning",
+   "tools": "one strict tool propose_action; tool_choice forced ({type:'tool',name} on Anthropic with disable_parallel_tool_use; {type:'function',function:{name}} + parallel_tool_calls:false on OpenRouter)",
+   "weakness": "single sample; 'length' stop not special-cased; reasoning_tokens never read; fenced-json fallback only if no tool call at all"
+  },
+  {
+   "where": "src/loop/stages/propose.ts:45-49 (attempt 2 after GeneratorResponseError)",
+   "purpose": "Repair a malformed proposal: same request plus assistant(raw text or raw tool JSON) + user(reason + 500-char tail)",
+   "prompt_size": "attempt-1 prompt + raw reply (redacted) + \u2264 ~1 KB retry message",
+   "sampling": "identical to attempt 1 (same maxTokens/temperature)",
+   "tools": "same forced tool",
+   "weakness": "re-bills the full prompt; if the failure was max_tokens truncation the retry is likely to truncate again; assistant turn is text, not a tool_use block"
+  },
+  {
+   "where": "src/provider/mock.ts:42-72 / src/provider/null.ts:23-26",
+   "purpose": "Scripted turns for tests/perf/bench (mock); loud failure in jev-only (null)",
+   "prompt_size": "n/a",
+   "sampling": "n/a",
+   "tools": "MockTurn.toolCall replayed; stopReason 'tool_use'/'end_turn' (Anthropic vocabulary)",
+   "weakness": "ordered `calls` counter (mock.ts:37,44) makes concurrent sample requests nondeterministic in scripted order"
+  }
+ ],
+ "reusable_for_llm_jev": [
+  "src/provider/actions.ts:190-206 parseProposal and :168-175 validateProposalInput: per-sample validation that already yields a typed Proposal or a precise GeneratorResponseError reason \u2014 run once per sample, drop invalid samples instead of retrying",
+  "src/provider/actions.ts:214-231 summariseAction and :234-245 patchTouchedPaths: one-line action keys for deduplicating N samples before Jev chooses",
+  "src/provider/actions.ts:29-77 PROPOSE_ACTION_TOOL: provider-agnostic ToolSpec (JSON Schema, oneOf per kind, additionalProperties:false) \u2014 unchanged for GLM",
+  "src/provider/sse.ts:442-448 linkedAbort and GenerateOptions.signal (types.ts:452-460): per-sample AbortControllers linked to the engine signal let the harness cancel losing samples once Jev picks; OpenRouter stops billing on cancel (research 07 \u00a72.3)",
+  "src/provider/sse.ts:386-405 withRetry + :92-101 retryCauseOf + RetryInfo (types.ts:445-451): per-sample retry with UI-ready cause classification",
+  "src/provider/sse.ts:422-434 costFromPricing / toTokenUsage and src/spend/meter.ts:89-101 add(): source-tagged, never-throwing accumulation \u2014 safe to call N times per step; parent forwarding for session/bench meters",
+  "Provider objects are stateless closures (openrouter.ts:217-220; anthropic.ts:253-255): one instance can serve concurrent generate() calls; src/bench/runner.ts:510,636 already shares deps.liveProvider across --concurrency workers",
+  "src/core/types.ts:865-876 GeneratorCallRecord (step, attempt, promptHash, model, temperature, maxTokens, usage, latencyMs, stopReason, malformed): extend with a `sample` index; promptHash already hashes system+messages",
+  "src/loop/engine.ts:257 StageContext.generation and EngineOptions.generation (types.ts): the single knob for per-sample temperature/maxTokens; GLM supports temperature and seed per the supplied parameter list (defaults.ts:58-59)",
+  "src/core/types.ts:413 ToolChoice 'required' \u2192 OpenRouter 'required' / Anthropic {type:'any'}: usable if the design moves to several tools rather than one forced tool",
+  "src/core/types.ts:1445-1458 MockTurn function form turns(req, index): script N distinct samples per step in tests",
+  "src/config/defaults.ts:61-80 PRICING_TABLE + lookupPricing (lowercased ids): GLM 5.3 flash/flashx/base rows already present in the working tree",
+  "src/provider/prompts.ts:11-24 PROMPT_LIMITS and :266-283 buildUserMessage: the same user message can be sent N times unchanged; on Anthropic the cached prefix (system+tools) is shared across parallel samples, on OpenRouter/GLM caching is unverified",
+  "src/provider/openrouter.ts:181-194 usage parsing already reads prompt_tokens_details.cached_tokens / cache_write_tokens \u2014 cache accounting for GLM ($0.018/M read) is wired if the provider reports it"
+ ],
+ "measured_facts": [
+  "System prompt length 2,600 chars (jev-on, seatbelt) / 2,434 chars (jev-off, none) \u2248 650 tokens at 4 chars/token \u2014 measured by calling buildSystemPrompt (src/provider/prompts.ts:96-124) locally",
+  "PROPOSE_ACTION_TOOL JSON 2,712 bytes; inputSchema alone 2,444 bytes \u2014 src/provider/actions.ts:29-77 (measured)",
+  "Minimal user message (empty plan/window/context) 591 chars \u2014 src/provider/prompts.ts:266-283 (measured)",
+  "PROMPT_LIMITS: maxUserMessageChars 160,000; planItemChars 200; planItems 20; windowOutputChars 600; contextFileBytes 16,384; contextTotalBytes 61,440; contextFiles 12; candidates 300; taskChars 12,000; reasonChars 600; noteChars 300 \u2014 src/provider/prompts.ts:11-24; window = last 4 steps, output headTail(400,200) \u2014 prompts.ts:216,223",
+  "Transport constants: FIRST_BYTE_TIMEOUT_MS 30,000; IDLE_TIMEOUT_MS 60,000; MAX_EVENT_BYTES 16 MiB; MAX_ATTEMPTS 3; RETRY_AFTER_CAP_MS 60,000; backoff base 500 ms, cap 8,000 ms, subtract-only jitter \u226425 % \u2014 src/provider/sse.ts:17-19, 232-242",
+  "Error bounds: Error.message \u2264 512 chars, body \u2264 2,048 chars, readBodyCapped 65,536 chars / 30 s, REQUEST_ID_MAX_CHARS 128 \u2014 src/provider/sse.ts:298-308, 328; src/errors.ts:62",
+  "Defaults: DEFAULT_MAX_TOKENS 4096; DEFAULT_SPEND_CAP_USD 2 ($0.25 jev-only); SESSION_CAP_MULTIPLIER 5; UNPRICED_TOKENS_PER_USD 1e6/15 \u2192 133,333 tokens for $2; CACHE_READ_FACTOR 0.1; CACHE_WRITE_FACTOR 1.25 \u2014 src/config/defaults.ts:8-21",
+  "In-flight pricing rows: z-ai/glm-5.3-flash 0.09/0.30 per M, cache read 0.018, cache write derived 0.1125; glm-5.3-flashx 0.37/1.25/0.075; glm-5.3 0.91/2.86 with both cache rates derived; Sonnet 5 2/10/0.2/2.5 \u2014 src/config/defaults.ts:61-74. Comment records context 1,310,720 (top provider 1,048,576), max completion 131,072, supported params tools, tool_choice, parallel_tool_calls, structured_outputs, response_format, temperature, seed, stop, max_tokens, reasoning (no `n`) \u2014 defaults.ts:53-59",
+  "PROPOSE_MAX_ATTEMPTS 2 \u2014 src/loop/stages/propose.ts:12; RAW_TEXT_TAIL_CHARS 500 \u2014 src/provider/actions.ts:13",
+  "MOCK_DEFAULT_USAGE 1,000 in / 200 out / $0 / 1 call \u2014 src/provider/mock.ts:9",
+  "git working tree: 3 modified files \u2014 src/config/defaults.ts (+23/\u22124), src/provider/openrouter.ts (+15/\u22121), src/provider/types.ts (+2); docs untouched",
+  "Unit tests against the in-flight default: 23 files, 334 tests, 9 failed / 325 passed; all 9 failures in test/unit/config/resolve.test.ts at lines 37, 92, 111, 140, 154, 448, 466, 498, 609 (each pins provider 'anthropic' and/or model 'claude-sonnet-5' as the default); all provider/protocol/spend tests pass including openrouter.test.ts with parallel_tool_calls:false",
+  "Literal 'claude-sonnet-5': 26 test files / 68 hits; 1 src file (src/config/defaults.ts); non-research docs README.md, docs/DECISIONS.md, docs/DESIGN.md, docs/RESEARCH.md, docs/TUI-DESIGN.md; docs/DECISIONS.md has no GLM entry (its 2026-09-21 entries at lines 624 and 654 are unrelated) although defaults.ts:5 and openrouter.ts:51 cite 'DECISIONS 2026-09-21'",
+  "SSE fixtures: 6 files, 108 lines total; openrouter-tool.sse carries usage {prompt 1000, completion 100, cost null, is_byok true, cached 600, cache_write 100} \u2014 test/fixtures/provider/",
+  "Research 07 \u00a71.2: Sonnet 5 tool-use system-prompt overhead 354 tokens (auto) / 474 (forced); \u00a71.7: Sonnet 5 cache minimum 1,024 tokens; \u00a72.3 live OpenRouter cost example 444 prompt + 40 completion \u2192 $0.001288 (list price, no markup)",
+  "Research 07 \u00a72.2 OpenAPI body field list has no `n` (messages, model, models[], stream, stream_options, max_tokens, max_completion_tokens, temperature, top_p, tools, tool_choice, parallel_tool_calls, response_format, reasoning, provider, route, transforms, plugins, user, session_id, metadata)",
+  "Runtime: package.json engines node >=22.12.0; local Node v22.23.2; zero runtime dependencies (fetch/SSE hand-rolled)",
+  "Bench: one Provider instance shared by min(--concurrency, units) workers \u2014 src/bench/runner.ts:510, 636"
+ ],
+ "hazards": [
+  "In-flight default flip (src/config/defaults.ts:6-7) breaks 9 tests in test/unit/config/resolve.test.ts (lines 37, 92, 111, 140, 154, 448, 466, 498, 609); test/unit/cli/config-table.test.ts:11 fixture still says provider 'anthropic' (passes only because it is a literal record)",
+  "Docs and examples still state anthropic/claude-sonnet-5 as default: docs/DESIGN.md \u00a73 table (lines 89-93), README.md, docs/TUI-DESIGN.md, man page, .env.example header 'Generator (Claude Sonnet 5)' with ANTHROPIC_API_KEY first; the cited 'DECISIONS 2026-09-21' entry does not exist in docs/DECISIONS.md",
+  "Provider fallbacks outside config still assume anthropic: src/cli/login.ts:162 `?? 'anthropic'`; src/tui/onboarding/lines.ts:105 `provider ?? 'anthropic'`; src/cli/session.ts:1290 shadowingLine hardcodes 'ANTHROPIC_API_KEY'; src/cli/args.ts:722 help banner 'Jev decides, Claude writes.'; src/bench/cli.ts:36 hardcodes generation {temperature:null, maxTokens:4096}",
+  "(b) `n` is unavailable: not in the supplied GLM parameter list (defaults.ts:58-59), not in research 07 \u00a72.2, absent from OpenRouterRequestBody (types.ts:183-194), and the Anthropic Messages API has no `n`. Parser reads only choices index 0 (openrouter.ts:144) and keys tool accumulators by tool index alone, so a multi-choice response would drop or collide. N samples therefore = N parallel requests, each re-billing the full prompt (~1,350 tok prefix + user message) unless the provider caches; OpenRouter implicit caching for GLM is unverified (research 07 UNVERIFIED lists supports_implicit_caching:false for all Sonnet 5 endpoints)",
+  "(c) Engine is single-stream: retryHooks writes one this.retryWaker / this.retrying slot (engine.ts:1524-1545); generator:start/delta/tool-delta/end events carry step but no sample id (types.ts:1114-1118) and useEngine.tsx:808-820 buffers one live stream; draft.timing.generatorMs sums latencies (engine.ts:1731) so parallel samples would over-report; GeneratorCallRecord has attempt but no sample (types.ts:865-876) and promptHash would be identical across samples; noteMalformed(attempt) looks up records by attempt only (engine.ts:1438-1441)",
+  "Mock provider order: `calls++` indexes scripted turns (mock.ts:37,44) \u2014 concurrent sample requests would consume turns in nondeterministic order; tests/perf/bench scripting would need a per-sample scheme",
+  "Truncation not handled: finish_reason 'length' / stop_reason 'max_tokens' is recorded verbatim (engine.ts:1738) but never acted on; truncated tool args \u2192 input null (openrouter.ts:207-213; anthropic.ts:244-251) \u2192 GeneratorResponseError \u2192 retry with the same maxTokens (propose.ts:27-35). Research 07 \u00a75: a 200 with finish_reason 'length' and reasoning_tokens \u2248 completion_tokens means reasoning ate the budget \u2014 do not blind-retry. completion_tokens_details.reasoning_tokens is typed (types.ts:166) but never read; no `reasoning` parameter is sent although GLM supports it \u2014 with max_tokens 4096 a reasoning-by-default model may return empty output",
+  "OpenRouter body sends strict:true inside function (openrouter.ts:72); research 07 \u00a74 says the OpenAI-style path gives no schema guarantee unless the provider honours structured_outputs; the in-flight comment claims a live GLM verification (openrouter.ts:52-53) that is not in the repo's tests or research docs. No provider.require_parameters:true is sent, so OpenRouter may route to an endpoint without tool support \u2192 prose reply \u2192 fenced-json fallback or GeneratorResponseError",
+  "Non-string tool arguments (some OpenAI-compatible providers stream `arguments` as an object) are dropped by getStr (openrouter.ts:170-173) \u2192 args '{}' \u2192 validate fails 'proposal: missing key goal' with no hint of the real cause",
+  "cfg.priced is undefined for any GeneratorConfig not produced by validateGenerator (test/unit/provider/helpers.ts:124,128; bench/live paths) \u2192 a null usage.cost yields NaN \u2192 budget:unpriced (openrouter.ts:309; types.ts:1341-1347)",
+  "UNPRICED token cap assumes ~$15/M blended (defaults.ts:18): for GLM at $0.09/$0.30 it is 50-160\u00d7 too tight if the model were ever unpriced (e.g. a typo in the id such as 'z-ai/glm-5.3-flash ' is trimmed and lowercased but 'zai/glm-5.3-flash' is not)",
+  "Unknown-model cache-rate derivation uses Anthropic's 0.1\u00d7 / 1.25\u00d7 ratios for every provider (validate.ts:159-163; defaults.ts:20-21); glm-5.3 has no listed cache-read rate so its derived 0.091 may be wrong; none of the GLM rows has a real cache-write rate",
+  "OpenRouter path sends no cache_control markers and max_tokens (deprecated, 'some providers enforce a minimum of 16') rather than max_completion_tokens; usage:{include:true} is a documented no-op (research 07 \u00a72.2)",
+  "Retry transcript (propose.ts:47-48) replays the model's raw tool JSON as a plain assistant text message rather than a tool_use block + tool_result; accepted by both APIs today but not the documented tool protocol (research 07 \u00a74); ChatMessage.content is string-only (types.ts:415-418) so no tool_result/role:'tool' turns are possible",
+  "Resume identity pins provider/model per run (resolve.ts:661-665, 608-622): existing claude-sonnet-5 runs keep working after the default flip, but `--model` on resume is refused",
+  "No GLM live test: test/live/generator.live.test.ts:50-82 targets anthropic/claude-sonnet-5 and asserts res.model contains 'claude-sonnet-5'",
+  "[claude-specific] GenerateRequest.temperature null default justified by 'Claude Sonnet 5 rejects non-default values' (types.ts:423; DESIGN.md \u00a73 temperature row; anthropic.ts:84-86; openrouter.ts:76-77) \u2014 GLM supports temperature and seed, and N-sample diversity would need a non-null value",
+  "[claude-specific] ToolSpec doc 'strict on Anthropic' (types.ts:405); anthropic.ts:71-80 strict + eager_input_streaming + cache_control on last tool; :69 system array with ephemeral cache_control; :90-95 disable_parallel_tool_use; :200 thinking_delta/signature_delta ignored; :33 ANTHROPIC_VERSION 2023-06-01; :36-48 ERROR_TYPE_STATUS map incl. 529 overloaded; :297 enforced_spend_limit_reached 429 override",
+  "[claude-specific] sse.ts:237 backoff is the 'Anthropic-SDK schedule'; sse.ts:84 requestIdOf prefers Anthropic's `request-id` header; sse.ts:288 honours x-should-retry (Anthropic SDK semantics)",
+  "[claude-specific] validate.ts:102-106, 122, 169: unpriced fail-closed applies only when provider==='anthropic'; openrouter unpriced merely warns (validate.ts:175) because usage.cost is expected at run time",
+  "[claude-specific] stopReason vocabulary: mock.ts:69 emits 'tool_use'/'end_turn' (Anthropic), OpenRouter emits 'tool_calls'/'stop'/'length'; engine.ts:1738 and generator:end record whichever arrives \u2014 consumers comparing on stopReason would be provider-dependent",
+  "[claude-specific] DESIGN.md \u00a77 justifies the exact search/replace edit format as 'most reliable for Claude models' (lines 1211-1216); src/workspace/edit.ts:3 cites the 'production Claude harness'; src/config/instructions.ts:26 CLAUDE.md fallback; src/core/redact.ts:225 sk-ant family; src/cli/login.ts:255-261 verifies Anthropic keys via api.anthropic.com/v1/models",
+  "[claude-specific] test fixtures use Anthropic tool ids (toolu_\u2026) and anthropic/claude-sonnet-5 model strings (test/fixtures/provider/*.sse; test/unit/provider/helpers.ts:124,128; test/unit/loop/fakes.ts:243) \u2014 GLM fixtures with its native finish_reason and any reasoning fields do not exist",
+  "Prompt bound is char-based (160k chars \u2248 40k tokens) with no per-model context knowledge (prompts.ts:282); GLM's 1.31M context is unused and unconfigurable; the tokenizer differs from Claude's so the chars\u2192tokens ratio in DESIGN's flat-tokens reasoning does not transfer"
+ ]
+}

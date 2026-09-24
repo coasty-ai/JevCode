@@ -1,0 +1,17 @@
+sleep 0.20
+resize 12 60
+sleep 0.15
+resize 40 120
+sleep 0.15
+resize 20 70
+sleep 1.6
+mark settled
+send Z
+sleep 0.4
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.7
+eof

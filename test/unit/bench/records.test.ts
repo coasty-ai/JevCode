@@ -1,0 +1,155 @@
+/**
+ * The per-run facts the runner reads from the run directory after the engine stopped (docs/LLM-JEV-DESIGN.md §10.4):
+ * generator.jsonl → calls, the §1.2 "valid" definition, dropped samples and their estimated $, latency quantiles and the
+ * a + b × output_tokens fit; steps.jsonl → synthMs, the verify counts, generic steps. Both tolerate torn lines and rows
+ * written by older engines.
+ */
+import { describe, expect, it } from 'vitest';
+import { isValidCall, latencyFit, mergeGeneratorSummaries, parseGeneratorRecords, summariseGeneratorRecords } from '../../../src/bench/generator-records.js';
+import { emptyStepsSummary, mergeStepsSummaries, summariseStepRows } from '../../../src/bench/step-records.js';
+
+const row = (over: Record<string, unknown>): string =>
+  JSON.stringify({ step: 1, attempt: 1, promptHash: 'p', model: 'glm', temperature: null, maxTokens: 3000, usage: { inputTokens: 1000, outputTokens: 100, costUsd: 0.0002, calls: 1 }, latencyMs: 2000, stopReason: 'tool_calls', malformed: false, ...over });
+
+describe('generator.jsonl summary', () => {
+  it('counts calls, samples, valid / malformed / length / dropped, tokens, $ and estimated $, with exact quantiles', () => {
+    const text = [
+      row({ latencyMs: 1000, usage: { inputTokens: 1000, outputTokens: 100, costUsd: 0.0002, calls: 1 } }),
+      row({ sample: 0, latencyMs: 2000, usage: { inputTokens: 1000, outputTokens: 200, costUsd: 0.0003, calls: 1, reasoningTokens: 50 } }),
+      row({ sample: 1, latencyMs: 3000, malformed: true }),
+      row({ sample: 2, latencyMs: 4000, stopReason: 'length' }),
+      row({ sample: 3, latencyMs: 5000, stopReason: 'timeout', cancelled: true, usage: { inputTokens: 1000, outputTokens: 50, costUsd: 0.0001, calls: 1, estimated: true } }),
+      '{"torn": ',
+    ].join('\n');
+    const rows = parseGeneratorRecords(text);
+    expect(rows).toHaveLength(5);
+    expect(rows.map(isValidCall)).toEqual([true, true, false, false, false]);
+    const s = summariseGeneratorRecords(rows);
+    expect(s).toMatchObject({ calls: 5, samples: 4, valid: 2, malformed: 1, lengthStops: 1, cancelled: 1, timeouts: 1, inputTokens: 5000, outputTokens: 550, reasoningTokens: 50 });
+    expect(s.costUsd).toBeCloseTo(0.001, 9);
+    expect(s.estimatedUsd).toBeCloseTo(0.0001, 9);
+    expect(s.latencyMs).toEqual({ n: 5, p50: 3000, p90: 5000, max: 5000 });
+    expect(s.validLatencyMs).toEqual({ n: 2, p50: 1000, p90: 2000, max: 2000 });
+    const merged = mergeGeneratorSummaries([s, s]);
+    expect(merged.calls).toBe(10);
+    expect(merged.latencyMs.p50).toBe(3000);
+    expect(merged.validLatencyRawMs).toEqual([1000, 2000, 1000, 2000]);
+    // a dropped call is booked once, as dropped: a `malformed` mark on a timeout row (written before the propose stage stopped retrying drops) is not a malformed reply
+    const dropped = parseGeneratorRecords([row({ stopReason: 'timeout', malformed: true, usage: { inputTokens: 1000, outputTokens: 50, costUsd: 0.0001, calls: 1, estimated: true } }), row({ malformed: true })].join('\n'));
+    expect(summariseGeneratorRecords(dropped)).toMatchObject({ calls: 2, valid: 0, malformed: 1, cancelled: 1, timeouts: 1 });
+  });
+
+  it('fits latency = a + b × output tokens over valid calls (reasoning tokens included in the length)', () => {
+    const rows = parseGeneratorRecords([row({ latencyMs: 1000, usage: { inputTokens: 1, outputTokens: 100, costUsd: 0, calls: 1 } }), row({ latencyMs: 2000, usage: { inputTokens: 1, outputTokens: 200, costUsd: 0, calls: 1 } }), row({ latencyMs: 3000, usage: { inputTokens: 1, outputTokens: 200, costUsd: 0, calls: 1, reasoningTokens: 100 } }), row({ latencyMs: 99_999, malformed: true })].join('\n'));
+    const fit = latencyFit(rows)!;
+    expect(fit.n).toBe(3);
+    expect(fit.a).toBeCloseTo(0, 6);
+    expect(fit.b).toBeCloseTo(10, 6);
+    expect(latencyFit(rows.slice(0, 1))).toBeNull();
+  });
+});
+
+describe('steps.jsonl summary', () => {
+  it('sums synthMs, the verify counts and the generic steps; older rows contribute a step and nothing else', () => {
+    const text = [
+      JSON.stringify({ step: 1, timing: { generatorMs: 1, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 1 } }),
+      JSON.stringify({ step: 2, proposer: 'synth', timing: { generatorMs: 1, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 1, synthMs: 4000 }, verify: { samples: 4, distinct: 3, malformed: 1, timeouts: 0, cancelled: 2, misanchored: 1, candidatesTested: 9, passers: 1, partials: 0, graceMs: 500, localisationMissed: true } }),
+      JSON.stringify({ step: 3, proposer: 'generic', timing: { generatorMs: 1, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 1 } }),
+      'not json',
+    ].join('\n');
+    const s = summariseStepRows(text);
+    // contract 1.9 (Fastlane) §5.5: a pre-wave row carries no fastPath / router / risk / S2 members, so those blocks
+    // read exactly `emptyStepsSummary()`'s — zeros, never an error (test/unit/bench/next-arms.test.ts owns the folding)
+    expect(s).toEqual({ ...emptyStepsSummary(), steps: 3, synthSteps: 1, synthMs: 4000, genericSteps: 1, verify: { samples: 4, distinct: 3, malformed: 1, timeouts: 0, cancelled: 2, misanchored: 1, candidatesTested: 9, passers: 1, partials: 0, graceMs: 500, localisationMissed: 1 } });
+    expect(mergeStepsSummaries([s, s]).verify.candidatesTested).toBe(18);
+    expect(mergeStepsSummaries([]).steps).toBe(0);
+  });
+
+  it("a row without `verify` (an engine before 2026-09-21) contributes its proposal evidence's candidatesTested; a `verify` block wins over the evidence", () => {
+    const text = [
+      // the head-to-head runs: evidence on the committed patch, no verify block (why every record's synth.verify read zero)
+      JSON.stringify({ step: 1, proposer: 'synth', timing: { synthMs: 100 }, proposal: { action: { kind: 'patch', diff: '' }, evidence: { kind: 'shadow_test_run', candidatesTested: 1445, selection: 'sieve', arbitrated: true } } }),
+      // a `run` fallback step: no evidence, nothing to add
+      JSON.stringify({ step: 2, proposer: 'synth', timing: { synthMs: 100 }, proposal: { action: { kind: 'run', command: 'pytest -q' } } }),
+      // a current row: the verify block is the count, the evidence is not added twice
+      JSON.stringify({ step: 3, proposer: 'synth', timing: { synthMs: 100 }, proposal: { action: { kind: 'patch', diff: '' }, evidence: { candidatesTested: 999 } }, verify: { samples: 4, distinct: 2, malformed: 0, timeouts: 1, cancelled: 0, misanchored: 0, candidatesTested: 640, passers: 1, partials: 0, graceMs: 0, localisationMissed: false } }),
+    ].join('\n');
+    const s = summariseStepRows(text);
+    expect(s.steps).toBe(3);
+    expect(s.verify.candidatesTested).toBe(1445 + 640);
+    expect(s.verify.samples).toBe(4);
+    expect(s.verify.timeouts).toBe(1);
+  });
+
+  /**
+   * OOS iteration 3, item 3: the bench record must SAY which deadline-growth arm produced it, and
+   * say it as a field of the run's own timeline rather than as a log line — otherwise the next
+   * measurement's A/B has no way to tell the two arms of its own table apart. `StepRecord.verify`
+   * carries it (the same value on every step of a run) and `StepsSummary` unions it.
+   */
+  it('records the JEVCODE_DEADLINE_GROWTH arm from the steps, unions it over a merge, and is absent when no step recorded one', () => {
+    const rows = (growth: string | null): string =>
+      JSON.stringify({ step: 1, proposer: 'synth', timing: { synthMs: 10 }, verify: { samples: 1, distinct: 0, malformed: 1, timeouts: 0, cancelled: 0, misanchored: 0, candidatesTested: 5, passers: 0, partials: 0, graceMs: 0, localisationMissed: false, ...(growth === null ? {} : { deadlineGrowth: growth }) } });
+    expect(summariseStepRows([rows('served'), rows('served')].join('\n')).deadlineGrowth).toBe('served');
+    expect(summariseStepRows([rows('always'), rows('always')].join('\n')).deadlineGrowth).toBe('always');
+    // a jev-only run, or an engine before the flag: nothing claimed, nothing recorded
+    expect(summariseStepRows(rows(null)).deadlineGrowth).toBeUndefined();
+    // a value the flag does not define is not recorded as if it were an arm
+    expect(summariseStepRows(rows('sometimes')).deadlineGrowth).toBeUndefined();
+    // one arm per run, but a merge across arms says so rather than picking one
+    const served = summariseStepRows(rows('served'));
+    const always = summariseStepRows(rows('always'));
+    expect(mergeStepsSummaries([served, served]).deadlineGrowth).toBe('served');
+    expect(mergeStepsSummaries([served, always]).deadlineGrowth).toBe('mixed');
+    expect(mergeStepsSummaries([summariseStepRows(rows(null)), always]).deadlineGrowth).toBe('always');
+  });
+
+  /**
+   * OOS iteration 2, defect 2 / defect 4 (experiments/results/llm-jev-iter2.md §10): the warm
+   * verification plane's counters existed only as free text in the sieve's `synth · verify` event,
+   * and `--archive-runs` does not copy `transcript.log` — so the warm A/B that measurement was
+   * asked for could not be audited from the committed artefacts at all, and every warm number in
+   * that report was harvested by hand from the live run directory. `StepRecord.verify.warm` now
+   * carries them per step and `StepsSummary` sums them, with `mode` unioned like `deadlineGrowth`.
+   */
+  it('sums the per-step warm counters, unions the mode, and is absent on a warm-off run', () => {
+    const row = (warm: Record<string, unknown> | null): string =>
+      JSON.stringify({ step: 1, proposer: 'synth', timing: { synthMs: 10 }, verify: { samples: 1, distinct: 0, malformed: 0, timeouts: 0, cancelled: 0, misanchored: 0, candidatesTested: 5, passers: 0, partials: 0, graceMs: 0, localisationMissed: false, ...(warm === null ? {} : { warm }) } });
+    const on = (over: Record<string, unknown> = {}): Record<string, unknown> => ({ mode: 'on', offered: 100, screened: 98, confirmed: 2, mismatches: 0, fallbacks: 2, restarts: 0, invalidations: 0, scopeUnusable: 0, deadlineRechecks: 3, screenMs: 4000, confirmMs: 900, ...over });
+
+    const s = summariseStepRows([row(on()), row(on())].join('\n'));
+    expect(s.warm?.mode).toBe('on');
+    expect(s.warm?.offered).toBe(200);
+    expect(s.warm?.screened).toBe(196);
+    expect(s.warm?.deadlineRechecks).toBe(6);
+    expect(s.warm?.screenMs).toBe(8000);
+    // the S1 acceptance criterion the next A/B reads straight off the record
+    expect(s.warm?.mismatches).toBe(0);
+    expect(s.warm?.disabled).toBe(0);
+    expect(s.warm?.disabledReason).toBeUndefined();
+
+    // the plane turning itself off is counted and its first reason kept
+    const off = summariseStepRows([row(on()), row(on({ disabledReason: 'lane 3 stopped answering' })), row(on({ disabledReason: 'a later one' }))].join('\n'));
+    expect(off.warm?.disabled).toBe(2);
+    expect(off.warm?.disabledReason).toBe('lane 3 stopped answering');
+
+    // defect 4: the flag was on and the runner had no warm shape. A report counts these to know
+    // how many tasks of an "18-task warm A/B" the plane was actually engaged on.
+    const swe = summariseStepRows(row({ ...on(), mode: 'unsupported-runner', offered: 0, screened: 0, deadlineRechecks: 0, screenMs: 0, confirmMs: 0, confirmed: 0, fallbacks: 0 }));
+    expect(swe.warm?.mode).toBe('unsupported-runner');
+    expect(swe.warm?.screened).toBe(0);
+
+    // a warm-off run (the default) records nothing at all, so its summary is HEAD's
+    expect(summariseStepRows(row(null)).warm).toBeUndefined();
+    // and a mode the field does not define is not recorded as if it were an arm
+    expect(summariseStepRows(row({ ...on(), mode: 'sometimes' })).warm).toBeUndefined();
+
+    // a merge across arms says so rather than picking one
+    expect(mergeStepsSummaries([s, s]).warm?.offered).toBe(400);
+    expect(mergeStepsSummaries([s, swe]).warm?.mode).toBe('mixed');
+    expect(mergeStepsSummaries([summariseStepRows(row(null)), s]).warm?.mode).toBe('on');
+    expect(mergeStepsSummaries([summariseStepRows(row(null)), summariseStepRows(row(null))]).warm).toBeUndefined();
+    expect(mergeStepsSummaries([off, off]).warm?.disabled).toBe(4);
+    expect(mergeStepsSummaries([off, off]).warm?.disabledReason).toBe('lane 3 stopped answering');
+  });
+});

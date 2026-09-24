@@ -1,0 +1,19 @@
+# /mode jev-on with a Jev key but no generator key (a fake TYPESAFE_API_KEY, JEVCODE_ASSERT_NO_NETWORK=1; started with `--mode jev-only`,
+# TUI-DESIGN-3 §1.10): the wizard's provider step opens in place (`jev+llm needs a generator. Pick the provider:`); Ctrl-C closes it —
+# never exits — and the mode stays jev-only (TUI-DESIGN-2 §1.3, §1.4, §8.2 mode-switch)
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.2
+send /mode jev-on
+sleep 0.2
+send \r
+expect Pick the provider
+sleep 0.3
+send \x03
+expect mode stays jev-only
+expect jev-only
+send /exit
+sleep 0.2
+send \r
+eof

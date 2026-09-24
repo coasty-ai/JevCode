@@ -1,0 +1,18 @@
+expect \x1b\[\?25l
+sleep 1.2
+send hello world draft
+sleep 0.5
+mark draft
+resize 12 60
+sleep 0.8
+mark flat
+resize 24 80
+sleep 0.8
+mark boxed
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.6
+eof

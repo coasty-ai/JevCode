@@ -1,0 +1,26 @@
+# Round-5 finishing wave: `jevcode doctor` in a real pty, in a HERMETIC home with NO key of any kind.
+#
+# What this scenario is for, beyond "it runs": `doctor` is the one command whose whole job is to talk about
+# keys, so it is the one command most likely to print one. The smoke board's own `assertNoKeyBytes` scan over
+# the capture is therefore the point of the row, and the scenario deliberately runs with no key so that the
+# absent-key path — seven `warn` rows, each naming the variable to export — is what gets captured.
+#
+# EXIT CODE 0, deliberately. The spec sketch for this row read "no keys -> exit 1", which contradicts the rule
+# the command actually keeps: a `warn` never fails. A missing provider key is the ordinary state of a provider
+# you do not use, so with no key the board expects 0 and asserts the ROWS instead — the seven `export <VAR>=...`
+# fixes and the summary line. A `fail` (Node below 22, an 0644 config file, an unwritable runs dir) is what
+# makes the command exit 1, and none of those is true of a hermetic scratch home on a healthy checkout.
+#
+# `doctor` is not an interactive surface: it prints and exits, so there is no composer to open and no /exit to
+# send. The step file waits for the last row and then for EOF.
+
+expect node
+sleep 0.3
+expect key.openrouter
+sleep 0.2
+expect key.anthropic
+sleep 0.2
+expect terminal
+sleep 0.3
+mark doctor-rows
+eof

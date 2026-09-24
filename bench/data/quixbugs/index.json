@@ -1,0 +1,402 @@
+[
+  {
+    "name": "bitcount",
+    "bugLine": 5,
+    "buggyLine": "n ^= n - 1",
+    "fixedLine": "n &= n - 1",
+    "kind": "operator",
+    "hasJsonTests": true,
+    "testCount": 9,
+    "license": "MIT"
+  },
+  {
+    "name": "breadth_first_search",
+    "bugLine": 11,
+    "buggyLine": "while True:",
+    "fixedLine": "while queue:",
+    "kind": "control_flow",
+    "hasJsonTests": false,
+    "testCount": 5,
+    "license": "MIT"
+  },
+  {
+    "name": "bucketsort",
+    "bugLine": 7,
+    "buggyLine": "for i, count in enumerate(arr):",
+    "fixedLine": "for i, count in enumerate(counts):",
+    "kind": "wrong_variable",
+    "hasJsonTests": true,
+    "testCount": 7,
+    "license": "MIT"
+  },
+  {
+    "name": "depth_first_search",
+    "bugLine": 10,
+    "buggyLine": null,
+    "fixedLine": "nodesvisited.add(node)",
+    "kind": "other",
+    "hasJsonTests": false,
+    "testCount": 5,
+    "license": "MIT"
+  },
+  {
+    "name": "detect_cycle",
+    "bugLine": 5,
+    "buggyLine": "if hare.successor is None:",
+    "fixedLine": "if hare is None or hare.successor is None:",
+    "kind": "missing_condition",
+    "hasJsonTests": false,
+    "testCount": 6,
+    "license": "MIT"
+  },
+  {
+    "name": "find_first_in_sorted",
+    "bugLine": 5,
+    "buggyLine": "while lo <= hi:",
+    "fixedLine": "while lo < hi:",
+    "kind": "off_by_one",
+    "hasJsonTests": true,
+    "testCount": 7,
+    "license": "MIT"
+  },
+  {
+    "name": "find_in_sorted",
+    "bugLine": 9,
+    "buggyLine": "return binsearch(mid, end)",
+    "fixedLine": "return binsearch(mid + 1, end)",
+    "kind": "off_by_one",
+    "hasJsonTests": true,
+    "testCount": 7,
+    "license": "MIT"
+  },
+  {
+    "name": "flatten",
+    "bugLine": 7,
+    "buggyLine": "yield flatten(x)",
+    "fixedLine": "yield x",
+    "kind": "wrong_call",
+    "hasJsonTests": true,
+    "testCount": 7,
+    "license": "MIT"
+  },
+  {
+    "name": "gcd",
+    "bugLine": 5,
+    "buggyLine": "return gcd(a % b, b)",
+    "fixedLine": "return gcd(b, a % b)",
+    "kind": "argument_swap",
+    "hasJsonTests": true,
+    "testCount": 6,
+    "license": "MIT"
+  },
+  {
+    "name": "get_factors",
+    "bugLine": 10,
+    "buggyLine": "return []",
+    "fixedLine": "return [n]",
+    "kind": "other",
+    "hasJsonTests": true,
+    "testCount": 11,
+    "license": "MIT"
+  },
+  {
+    "name": "hanoi",
+    "bugLine": 6,
+    "buggyLine": "steps.append((start, helper))",
+    "fixedLine": "steps.append((start, end))",
+    "kind": "wrong_variable",
+    "hasJsonTests": true,
+    "testCount": 8,
+    "license": "MIT"
+  },
+  {
+    "name": "is_valid_parenthesization",
+    "bugLine": 12,
+    "buggyLine": "return True",
+    "fixedLine": "return depth == 0",
+    "kind": "missing_condition",
+    "hasJsonTests": true,
+    "testCount": 3,
+    "license": "MIT"
+  },
+  {
+    "name": "kheapsort",
+    "bugLine": 7,
+    "buggyLine": "for x in arr:",
+    "fixedLine": "for x in arr[k:]:",
+    "kind": "wrong_variable",
+    "hasJsonTests": true,
+    "testCount": 4,
+    "license": "MIT"
+  },
+  {
+    "name": "knapsack",
+    "bugLine": 12,
+    "buggyLine": "if weight < j:",
+    "fixedLine": "if weight <= j:",
+    "kind": "off_by_one",
+    "hasJsonTests": true,
+    "testCount": 10,
+    "license": "MIT"
+  },
+  {
+    "name": "kth",
+    "bugLine": 12,
+    "buggyLine": "return kth(above, k)",
+    "fixedLine": "return kth(above, k - num_lessoreq)",
+    "kind": "other",
+    "hasJsonTests": true,
+    "testCount": 7,
+    "license": "MIT"
+  },
+  {
+    "name": "lcs_length",
+    "bugLine": 9,
+    "buggyLine": "dp[i, j] = dp[i - 1, j] + 1",
+    "fixedLine": "dp[i, j] = dp[i - 1, j - 1] + 1",
+    "kind": "off_by_one",
+    "hasJsonTests": true,
+    "testCount": 9,
+    "license": "MIT"
+  },
+  {
+    "name": "levenshtein",
+    "bugLine": 6,
+    "buggyLine": "return 1 + levenshtein(source[1:], target[1:])",
+    "fixedLine": "return levenshtein(source[1:], target[1:])",
+    "kind": "off_by_one",
+    "hasJsonTests": true,
+    "testCount": 7,
+    "license": "MIT"
+  },
+  {
+    "name": "lis",
+    "bugLine": 14,
+    "buggyLine": "longest = length + 1",
+    "fixedLine": "longest = max(longest, length + 1)",
+    "kind": "missing_condition",
+    "hasJsonTests": true,
+    "testCount": 12,
+    "license": "MIT"
+  },
+  {
+    "name": "longest_common_subsequence",
+    "bugLine": 6,
+    "buggyLine": "return a[0] + longest_common_subsequence(a[1:], b)",
+    "fixedLine": "return a[0] + longest_common_subsequence(a[1:], b[1:])",
+    "kind": "wrong_variable",
+    "hasJsonTests": true,
+    "testCount": 10,
+    "license": "MIT"
+  },
+  {
+    "name": "max_sublist_sum",
+    "bugLine": 7,
+    "buggyLine": "max_ending_here = max_ending_here + x",
+    "fixedLine": "max_ending_here = max(0, max_ending_here + x)",
+    "kind": "missing_condition",
+    "hasJsonTests": true,
+    "testCount": 6,
+    "license": "MIT"
+  },
+  {
+    "name": "mergesort",
+    "bugLine": 17,
+    "buggyLine": "if len(arr) == 0:",
+    "fixedLine": "if len(arr) <= 1:",
+    "kind": "off_by_one",
+    "hasJsonTests": true,
+    "testCount": 14,
+    "license": "MIT"
+  },
+  {
+    "name": "minimum_spanning_tree",
+    "bugLine": 12,
+    "buggyLine": "group_by_node[node].update(group_by_node[u])",
+    "fixedLine": "group_by_node[node] = group_by_node[u]",
+    "kind": "wrong_call",
+    "hasJsonTests": false,
+    "testCount": 3,
+    "license": "MIT"
+  },
+  {
+    "name": "next_palindrome",
+    "bugLine": 15,
+    "buggyLine": "return [1] + (len(digit_list)) * [0] + [1]",
+    "fixedLine": "return [1] + (len(digit_list) - 1) * [0] + [1]",
+    "kind": "off_by_one",
+    "hasJsonTests": true,
+    "testCount": 5,
+    "license": "MIT"
+  },
+  {
+    "name": "next_permutation",
+    "bugLine": 6,
+    "buggyLine": "if perm[j] < perm[i]:",
+    "fixedLine": "if perm[i] < perm[j]:",
+    "kind": "argument_swap",
+    "hasJsonTests": true,
+    "testCount": 8,
+    "license": "MIT"
+  },
+  {
+    "name": "pascal",
+    "bugLine": 6,
+    "buggyLine": "for c in range(0, r):",
+    "fixedLine": "for c in range(0, r + 1):",
+    "kind": "off_by_one",
+    "hasJsonTests": true,
+    "testCount": 5,
+    "license": "MIT"
+  },
+  {
+    "name": "possible_change",
+    "bugLine": 5,
+    "buggyLine": "if total < 0:",
+    "fixedLine": "if total < 0 or not coins:",
+    "kind": "missing_condition",
+    "hasJsonTests": true,
+    "testCount": 10,
+    "license": "MIT"
+  },
+  {
+    "name": "powerset",
+    "bugLine": 6,
+    "buggyLine": "return [[first] + subset for subset in rest_subsets]",
+    "fixedLine": "return rest_subsets + [[first] + subset for subset in rest_subsets]",
+    "kind": "other",
+    "hasJsonTests": true,
+    "testCount": 5,
+    "license": "MIT"
+  },
+  {
+    "name": "quicksort",
+    "bugLine": 7,
+    "buggyLine": "greater = quicksort([x for x in arr[1:] if x > pivot])",
+    "fixedLine": "greater = quicksort([x for x in arr[1:] if x >= pivot])",
+    "kind": "operator",
+    "hasJsonTests": true,
+    "testCount": 13,
+    "license": "MIT"
+  },
+  {
+    "name": "reverse_linked_list",
+    "bugLine": 6,
+    "buggyLine": null,
+    "fixedLine": "prevnode = node",
+    "kind": "other",
+    "hasJsonTests": false,
+    "testCount": 3,
+    "license": "MIT"
+  },
+  {
+    "name": "rpn_eval",
+    "bugLine": 20,
+    "buggyLine": "op(token, a, b)",
+    "fixedLine": "op(token, b, a)",
+    "kind": "argument_swap",
+    "hasJsonTests": true,
+    "testCount": 6,
+    "license": "MIT"
+  },
+  {
+    "name": "shortest_path_length",
+    "bugLine": 22,
+    "buggyLine": "get(unvisited_nodes, nextnode) + length_by_edge[node, nextnode]",
+    "fixedLine": "distance + length_by_edge[node, nextnode]",
+    "kind": "wrong_variable",
+    "hasJsonTests": false,
+    "testCount": 4,
+    "license": "MIT"
+  },
+  {
+    "name": "shortest_path_lengths",
+    "bugLine": 13,
+    "buggyLine": "length_by_path[i, k] + length_by_path[j, k]",
+    "fixedLine": "length_by_path[i, k] + length_by_path[k, j]",
+    "kind": "argument_swap",
+    "hasJsonTests": false,
+    "testCount": 4,
+    "license": "MIT"
+  },
+  {
+    "name": "shortest_paths",
+    "bugLine": 10,
+    "buggyLine": "weight_by_edge[u, v] = min(",
+    "fixedLine": "weight_by_node[v] = min(",
+    "kind": "wrong_variable",
+    "hasJsonTests": false,
+    "testCount": 3,
+    "license": "MIT"
+  },
+  {
+    "name": "shunting_yard",
+    "bugLine": 19,
+    "buggyLine": null,
+    "fixedLine": "opstack.append(token)",
+    "kind": "other",
+    "hasJsonTests": true,
+    "testCount": 6,
+    "license": "MIT"
+  },
+  {
+    "name": "sieve",
+    "bugLine": 4,
+    "buggyLine": "if any(n % p > 0 for p in primes):",
+    "fixedLine": "if all(n % p > 0 for p in primes):",
+    "kind": "wrong_call",
+    "hasJsonTests": true,
+    "testCount": 6,
+    "license": "MIT"
+  },
+  {
+    "name": "sqrt",
+    "bugLine": 4,
+    "buggyLine": "while abs(x - approx) > epsilon:",
+    "fixedLine": "while abs(x - approx ** 2) > epsilon:",
+    "kind": "other",
+    "hasJsonTests": true,
+    "testCount": 7,
+    "license": "MIT"
+  },
+  {
+    "name": "subsequences",
+    "bugLine": 3,
+    "buggyLine": "return []",
+    "fixedLine": "return [[]]",
+    "kind": "other",
+    "hasJsonTests": true,
+    "testCount": 12,
+    "license": "MIT"
+  },
+  {
+    "name": "to_base",
+    "bugLine": 9,
+    "buggyLine": "result = result + alphabet[i]",
+    "fixedLine": "result = alphabet[i] + result",
+    "kind": "argument_swap",
+    "hasJsonTests": true,
+    "testCount": 10,
+    "license": "MIT"
+  },
+  {
+    "name": "topological_ordering",
+    "bugLine": 6,
+    "buggyLine": "if set(ordered_nodes).issuperset(nextnode.outgoing_nodes) and nextnode not in ordered_nodes:",
+    "fixedLine": "if set(ordered_nodes).issuperset(nextnode.incoming_nodes) and nextnode not in ordered_nodes:",
+    "kind": "wrong_variable",
+    "hasJsonTests": false,
+    "testCount": 3,
+    "license": "MIT"
+  },
+  {
+    "name": "wrap",
+    "bugLine": 10,
+    "buggyLine": null,
+    "fixedLine": "lines.append(text)",
+    "kind": "other",
+    "hasJsonTests": true,
+    "testCount": 5,
+    "license": "MIT"
+  }
+]

@@ -1,0 +1,20 @@
+sleep 1.2
+send a
+sleep 0.3
+send b
+sleep 0.3
+resize 12 60
+sleep 1.0
+send c
+sleep 0.3
+resize 40 120
+sleep 1.0
+send d
+sleep 0.3
+resize 24 80
+sleep 1.0
+send e
+sleep 0.5
+send \x03
+sleep 0.8
+eof

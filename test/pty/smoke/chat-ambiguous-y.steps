@@ -1,0 +1,22 @@
+# chat: JEVCODE_MOCK_INTAKE=ambiguous — the offer accepted. `the date parsing` gets the reply plus `do it and I'll make
+# that a task.`; typing `do it` starts the run on the reading already in hand (--mode jev-on --mock so the scripted
+# trajectory runs), the run ends and /exit leaves 0 (§8.2 chat-ambiguous second scenario)
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.2
+send the date parsing
+sleep 0.2
+send \r
+expect make that a task
+sleep 0.2
+send do it
+sleep 0.2
+send \r
+expect step \d+/\d+
+expect finished [·-] (complete|max_steps|generator_done)
+expect Follow-up, question
+send /exit
+sleep 0.2
+send \r
+eof

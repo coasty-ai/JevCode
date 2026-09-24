@@ -1,0 +1,28 @@
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.4
+send hi
+sleep 0.2
+send \r
+sleep 2.0
+send thanks
+sleep 0.2
+send \r
+sleep 2.0
+mark two-turns
+send \x1b[A
+sleep 0.4
+mark up1
+send \x1b[A
+sleep 0.4
+mark up2
+send \x1b[B
+sleep 0.4
+mark down1
+send \x03
+sleep 0.3
+send /exit
+sleep 0.2
+send \r
+eof

@@ -1,0 +1,8 @@
+{
+  "name": "inventory",
+  "hunks": 2,
+  "kinds": ["operator", "off_by_one"],
+  "files": ["src/inventory.py"],
+  "difficulty": 2,
+  "description": "Two independent one-line bugs in one file: total_value adds qty and price instead of multiplying (operator), and page() treats the 1-based page number as 0-based (off by one). Four tests fail (two per bug), six pass; each bug is exercised by its own tests so the outer loop can fix one failing test at a time."
+}

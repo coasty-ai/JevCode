@@ -1,0 +1,135 @@
+{
+  "choice_only": {
+    "state": {
+      "task": "The Python function `gcd` has a one-line bug. `buggy_line` (line `buggy_line_number` of `program`) is the faulty line. `tests` shows inputs, the expected output, and what the buggy program actually does.",
+      "file": "gcd.py",
+      "program": {
+        "L1": "def gcd(a, b):",
+        "L2": "    if b == 0:",
+        "L3": "        return a",
+        "L4": "    else:",
+        "L5": "        return gcd(a % b, b)"
+      },
+      "buggy_line_number": "L5",
+      "buggy_line": "        return gcd(a % b, b)",
+      "tests": [
+        {
+          "test_id": "gcd[1]",
+          "call": "gcd(13, 13)",
+          "expected": "13",
+          "actual_with_bug": "RecursionError: maximum recursion depth exceeded"
+        },
+        {
+          "test_id": "gcd[2]",
+          "call": "gcd(37, 600)",
+          "expected": "1",
+          "actual_with_bug": "RecursionError: maximum recursion depth exceeded"
+        },
+        {
+          "test_id": "gcd[3]",
+          "call": "gcd(20, 100)",
+          "expected": "20",
+          "actual_with_bug": "RecursionError: maximum recursion depth exceeded"
+        }
+      ],
+      "user_task": "Fix the bug in gcd."
+    },
+    "questions": {
+      "fix": {
+        "type": "choice",
+        "instructions": "Which option is the corrected line that, put in place of `buggy_line`, makes every test in `tests` pass, including the tests that currently fail? Read each option literally: most options are wrong mutations of the faulty line or copies of other lines. Choose `none_of_these` if no option is a correct fix. Answer carefully and literally.",
+        "criteria": {
+          "candidate_aa": "        return gcd(a % b, a)",
+          "candidate_ab": "        return gcd(b, a % b)",
+          "candidate_ac": "        return gcd(a // b, b)",
+          "candidate_ad": "        return gcd(a, b)",
+          "none_of_these": "No option is a correct fix; every option leaves the tests failing or breaks the function."
+        }
+      }
+    }
+  },
+  "choice_and_compact_nouls": {
+    "state": {
+      "task": "The Python function `gcd` has a one-line bug. `buggy_line` (line `buggy_line_number` of `program`) is the faulty line. `tests` shows inputs, the expected output, and what the buggy program actually does.",
+      "file": "gcd.py",
+      "program": {
+        "L1": "def gcd(a, b):",
+        "L2": "    if b == 0:",
+        "L3": "        return a",
+        "L4": "    else:",
+        "L5": "        return gcd(a % b, b)"
+      },
+      "buggy_line_number": "L5",
+      "buggy_line": "        return gcd(a % b, b)",
+      "tests": [
+        {
+          "test_id": "gcd[1]",
+          "call": "gcd(13, 13)",
+          "expected": "13",
+          "actual_with_bug": "RecursionError: maximum recursion depth exceeded"
+        },
+        {
+          "test_id": "gcd[2]",
+          "call": "gcd(37, 600)",
+          "expected": "1",
+          "actual_with_bug": "RecursionError: maximum recursion depth exceeded"
+        },
+        {
+          "test_id": "gcd[3]",
+          "call": "gcd(20, 100)",
+          "expected": "20",
+          "actual_with_bug": "RecursionError: maximum recursion depth exceeded"
+        }
+      ],
+      "user_task": "Fix the bug in gcd.",
+      "candidates": {
+        "candidate_aa": "        return gcd(a % b, a)",
+        "candidate_ab": "        return gcd(b, a % b)",
+        "candidate_ac": "        return gcd(a // b, b)",
+        "candidate_ad": "        return gcd(a, b)"
+      },
+      "correct_fix_criteria": {
+        "correct_fix": "The candidate repairs the exact mistake so the function returns `expected` for every test input, including the tests that currently fail, and stays correct on the tests that already pass.",
+        "correct_fix_examples": [
+          "the operator, index or argument the bug got wrong is corrected and nothing else changes",
+          "a line equivalent to the reference implementation of this algorithm"
+        ],
+        "not_a_fix": "The candidate leaves the bug in place, introduces a different bug, or changes something unrelated to the failure.",
+        "not_a_fix_examples": [
+          "the faulty line unchanged",
+          "a mutation that changes the wrong operator or the wrong variable",
+          "a copy or mutation of another line of the program"
+        ]
+      }
+    },
+    "questions": {
+      "candidate_aa": {
+        "type": "noul",
+        "instructions": "Is `candidates.candidate_aa` a correct fix per `correct_fix_criteria`: put in place of `buggy_line`, does it make every test in `tests` pass?"
+      },
+      "candidate_ab": {
+        "type": "noul",
+        "instructions": "Is `candidates.candidate_ab` a correct fix per `correct_fix_criteria`: put in place of `buggy_line`, does it make every test in `tests` pass?"
+      },
+      "candidate_ac": {
+        "type": "noul",
+        "instructions": "Is `candidates.candidate_ac` a correct fix per `correct_fix_criteria`: put in place of `buggy_line`, does it make every test in `tests` pass?"
+      },
+      "candidate_ad": {
+        "type": "noul",
+        "instructions": "Is `candidates.candidate_ad` a correct fix per `correct_fix_criteria`: put in place of `buggy_line`, does it make every test in `tests` pass?"
+      },
+      "fix": {
+        "type": "choice",
+        "instructions": "Which option is the corrected line that, put in place of `buggy_line`, makes every test in `tests` pass, including the tests that currently fail? Read each option literally: most options are wrong mutations of the faulty line or copies of other lines. Choose `none_of_these` if no option is a correct fix. Answer carefully and literally.",
+        "criteria": {
+          "candidate_aa": "        return gcd(a % b, a)",
+          "candidate_ab": "        return gcd(b, a % b)",
+          "candidate_ac": "        return gcd(a // b, b)",
+          "candidate_ad": "        return gcd(a, b)",
+          "none_of_these": "No option is a correct fix; every option leaves the tests failing or breaks the function."
+        }
+      }
+    }
+  }
+}

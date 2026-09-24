@@ -1,0 +1,18 @@
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.5
+send what does @calc/core.py do and @nope/missing.py and @.env too?
+sleep 0.4
+send \r
+sleep 3.0
+mark replied
+send /copy last
+sleep 0.3
+send \r
+sleep 0.8
+mark copied
+send /exit
+sleep 0.3
+send \r
+eof

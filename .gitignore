@@ -1,0 +1,47 @@
+# --- dependencies and build output ---
+node_modules/
+dist/
+coverage/
+*.tgz
+SHA256SUMS
+# nix build links
+/result
+/result-*
+
+# --- secrets ---
+.env
+.env.*
+!.env.example
+
+# --- logs and local scratch ---
+*.log
+/tmp/
+.smoke/
+.vitest/
+.scratch/
+
+# --- editor / OS ---
+.DS_Store
+*.swp
+.idea/
+.vscode/
+*.iml
+
+# --- agent configuration written into the checkout ---
+.claude/
+
+# --- measured artefacts ---
+# Benchmark runs, recorded sessions and probe output are reproducible from the
+# drivers in bench/ and experiments/. They are megabytes of machine-written
+# JSON, and they are kept out of the tree so a clone stays small.
+bench/results/
+bench/work/
+docs/live/
+experiments/reach/out/
+experiments/probe-swebench-understand/
+experiments/results/*.tar.gz
+experiments/progress/candidates.json
+
+# perf/results keeps exactly one committed snapshot, the latest.
+perf/results/*
+!perf/results/latest.json

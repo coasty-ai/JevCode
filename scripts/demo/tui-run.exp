@@ -1,0 +1,52 @@
+#!/usr/bin/expect -f
+# Drives `jevcode run` inside a real pseudo-TTY so the Ink TUI renders and keystrokes are
+# genuine terminal input. Usage:
+#   tui-run.exp <logfile> <answer: y|n|none> <ctrl-c-after-pattern|none> <timeout-s> -- <jevcode args...>
+# The env (keys) comes from the caller (e.g. `node --env-file=.env` is not used; export the
+# variables or rely on ./.env, which JevCode reads itself). Everything the TUI prints is
+# appended to <logfile>; the exit code of jevcode is propagated.
+set logfile [lindex $argv 0]
+set answer [lindex $argv 1]
+set ctrlc_after [lindex $argv 2]
+set timeout_s [lindex $argv 3]
+set args [lrange $argv 5 end]
+
+log_file -a $logfile
+set timeout $timeout_s
+set stty_init "rows 40 cols 120"
+spawn -noecho node bin/jevcode.js run {*}$args
+set pid [exp_pid]
+
+set sent_ctrlc 0
+while {1} {
+  expect {
+    -re {\[y\] approve} {
+      if {$answer eq "y" || $answer eq "n"} {
+        sleep 1
+        send -- $answer
+        send_user "\n<<demo: answered $answer>>\n"
+      }
+      exp_continue
+    }
+    -re "$ctrlc_after" {
+      if {$ctrlc_after ne "none" && !$sent_ctrlc} {
+        set sent_ctrlc 1
+        sleep 2
+        send -- "\003"
+        send_user "\n<<demo: sent Ctrl-C>>\n"
+      }
+      exp_continue
+    }
+    eof { break }
+    timeout {
+      send_user "\n<<demo: timeout after $timeout_s s, sending Ctrl-C>>\n"
+      send -- "\003"
+      expect eof
+      break
+    }
+  }
+}
+catch wait result
+set code [lindex $result 3]
+send_user "\n<<demo: exit $code>>\n"
+exit $code

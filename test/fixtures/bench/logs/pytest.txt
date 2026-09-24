@@ -1,0 +1,21 @@
++ pytest -rA testing/test_setuponly.py
+============================= test session starts ==============================
+collected 6 items
+
+testing/test_setuponly.py ....F.                                         [100%]
+
+=================================== FAILURES ===================================
+: '>>>>> Start Test Output'
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED testing/test_setuponly.py::test_show_only_active_fixtures[--setup-only]
+PASSED testing/test_setuponly.py::test_show_different_scopes[--setup-only]
+PASSED testing/test_setuponly.py::test_param[a-b-very-long-parameter-id]
+XFAIL testing/test_setuponly.py::test_expected_failure
+SKIPPED [1] testing/test_setuponly.py:42: not on this platform
+SKIPPED testing/test_setuponly.py::test_skipped_explicitly
+FAILED testing/test_setuponly.py::test_show_nested_fixtures[--setup-only] - AssertionError: assert 0
+ERROR testing/test_setuponly.py::test_broken_fixture - RuntimeError: nope
+==================== 3 passed, 1 failed, 1 error, 2 skipped ====================
+: '>>>>> End Test Output'
+>>>>> Test Exit Code: 1

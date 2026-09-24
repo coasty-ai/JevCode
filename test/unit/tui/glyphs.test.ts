@@ -1,0 +1,276 @@
+import { describe, expect, it } from 'vitest';
+import { GLYPHS, asciiTwins, cellWidth, fitCells, glyphSet, glyphTwin, oneLineCells, padEndCells, padStartCells, ruleRow, stepLabelCells, truncateCells, type GlyphSet } from '../../../src/tui/glyphs.js';
+
+const ASCII_RE = /^[\x20-\x7e]*$/;
+
+function every(g: GlyphSet): string[] {
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(g)) {
+    if (k === 'mode') continue;
+    if (Array.isArray(v)) out.push(...v);
+    else if (typeof v === 'string') out.push(v);
+  }
+  return out;
+}
+
+describe('GLYPHS (TUI-DESIGN §14.1)', () => {
+  it('the ascii twin is pure ASCII for every glyph and the unicode set is not empty anywhere', () => {
+    for (const s of every(GLYPHS.ascii)) expect(s).toMatch(ASCII_RE);
+    for (const s of every(GLYPHS.unicode)) expect(typeof s).toBe('string');
+    expect(GLYPHS.unicode.eighths).toEqual(['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']);
+    expect(GLYPHS.ascii.eighths).toEqual(['', '1', '2', '3', '4', '5', '6', '7']);
+  });
+  it('follows the §14.1 substitution table', () => {
+    const a = GLYPHS.ascii;
+    const u = GLYPHS.unicode;
+    expect([u.rule, a.rule]).toEqual(['─', '-']);
+    expect([u.chevron, a.chevron]).toEqual(['›', '>']);
+    expect([u.check, a.check, u.cross, a.cross]).toEqual(['✓', '+', '✗', 'x']);
+    expect([u.up, a.up, u.down, a.down]).toEqual(['↑', '^', '↓', 'v']);
+    expect([u.branch, a.branch]).toEqual(['⎇', 'br']);
+    expect([u.dagger, a.dagger, u.bullet, a.bullet, u.dot, a.dot, u.band, a.band]).toEqual(['†', '+', '•', '*', '·', '-', '┆', ':']);
+    // TUI-DESIGN-3 §5.2 A3 (D-P): the shade pulse and the static `◆` (the same cells as shade1..3 / full / brand — the twin table stays one-to-one)
+    expect([u.full, a.full, u.spinnerStatic, a.spinnerStatic]).toEqual(['█', '#', '◆', '*']);
+    expect(u.spinner).toEqual(['░', '▒', '▓', '█', '▓', '▒']);
+    expect(a.spinner).toEqual(['.', '+', '#', '#', '+', '.']);
+    expect([u.arrow, a.arrow, u.ge, a.ge, u.le, a.le, u.approx, a.approx]).toEqual(['→', '->', '≥', '>=', '≤', '<=', '≈', '~=']);
+    expect([u.range, a.range, u.minus, a.minus, u.dash, a.dash, u.sigma, a.sigma]).toEqual(['–', '-', '−', '-', '—', '-', 'Σ', 'sum']);
+    // TUI-DESIGN-5 §12's ascii column writes `--` for the em dash; the landed value is `-` and the CODE is the
+    // decision (the docs PR amends §12). Pinned here so the conflict cannot be resolved silently in either
+    // direction: a one-cell glyph's twin must not be two cells wide on a row that was measured in cells.
+    expect(a.dash).toBe('-');
+    expect(cellWidth(a.dash)).toBe(cellWidth(u.dash));
+    expect(u.range.codePointAt(0)).toBe(0x2013);
+    expect(u.minus.codePointAt(0)).toBe(0x2212);
+  });
+  it('glyphTwin substitutes every table glyph under --ascii and is the identity otherwise', () => {
+    expect(glyphTwin('choice resolution → intent edit', GLYPHS.ascii)).toBe('choice resolution -> intent edit');
+    expect(glyphTwin('paired ≥ 0.5 · |2p−1| ≈ 0 – ─┆', GLYPHS.ascii)).toBe('paired >= 0.5 - |2p-1| ~= 0 - -:');
+    expect(glyphTwin('▂▃█▏', GLYPHS.ascii)).toBe('23#1');
+    expect(glyphTwin('plain ascii', GLYPHS.ascii)).toBe('plain ascii');
+    expect(glyphTwin('choice resolution → intent edit', GLYPHS.unicode)).toBe('choice resolution → intent edit');
+    expect(glyphTwin('choice resolution → intent edit', GLYPHS.sr)).toBe('choice resolution → intent edit');
+    expect(glyphTwin('', GLYPHS.ascii)).toBe('');
+    for (const s of every(GLYPHS.unicode)) expect(glyphTwin(s, GLYPHS.ascii)).toMatch(/^[\x20-\x7e]*$/);
+  });
+  it('stepLabelCells is 2 up to s9, 3 from s10, one more per digit, and reads every step given', () => {
+    expect(stepLabelCells([])).toBe(2);
+    expect(stepLabelCells([0])).toBe(2);
+    expect(stepLabelCells([7])).toBe(2);
+    expect(stepLabelCells([9, 10])).toBe(3);
+    expect(stepLabelCells([99])).toBe(3);
+    expect(stepLabelCells([100])).toBe(4);
+    expect(stepLabelCells([Number.NaN, 3.7])).toBe(2);
+    expect(stepLabelCells([-12])).toBe(4);
+  });
+  it('the screen-reader set reuses the unicode glyphs under mode sr', () => {
+    expect(GLYPHS.sr.mode).toBe('sr');
+    expect({ ...GLYPHS.sr, mode: 'unicode' }).toEqual(GLYPHS.unicode);
+  });
+  it('glyphSet: ascii wins over screenReader; default unicode', () => {
+    expect(glyphSet().mode).toBe('unicode');
+    expect(glyphSet({ screenReader: true }).mode).toBe('sr');
+    expect(glyphSet({ ascii: true, screenReader: true }).mode).toBe('ascii');
+  });
+});
+
+/**
+ * TUI-DESIGN-5 §8.1 item 10 / §7 row 81 / §14.2 #43: the nine glyphs round 5 adds, and the one-to-one property
+ * that would have caught the collision. `asciiTwins()` is keyed by the **unicode** glyph and the first entry for a
+ * glyph wins, so two members sharing a cell silently give one of them the other's twin — which is exactly how S3
+ * came to write `◌` → `o` while S60 wrote `◌` → `.`. `○` takes `o`, `◌` takes `.`, S3 is corrected, S60 stands.
+ */
+describe('the nine round-5 glyphs (TUI-DESIGN-5 §8.1 item 10)', () => {
+  /** the nine, in §8.1 item 10's order: `● ○ ◌ ⇄ ✉ ⏸ ⟳ ↻ ↪` → `* o . <> mail = ~ @ >>` */
+  const NINE: readonly [keyof GlyphSet, string, string][] = [
+    ['live', '●', '*'],
+    ['gone', '○', 'o'],
+    ['stale', '◌', '.'],
+    ['peers', '⇄', '<>'],
+    ['mail', '✉', 'mail'],
+    ['paused', '⏸', '='],
+    ['landing', '⟳', '~'],
+    ['kicked', '↻', '@'],
+    ['adopted', '↪', '>>'],
+  ];
+
+  it('every member carries its §8.1 unicode cell and its ascii twin, and the SR set reuses the unicode cell', () => {
+    for (const [key, u, a] of NINE) {
+      expect([key, GLYPHS.unicode[key]]).toEqual([key, u]);
+      expect([key, GLYPHS.ascii[key]]).toEqual([key, a]);
+      expect([key, GLYPHS.sr[key]]).toEqual([key, u]);
+      expect(a).toMatch(ASCII_RE);
+    }
+  });
+
+  it('asciiTwins() is injective over the nine — no shared unicode cell, no shared twin, nothing shadowed', () => {
+    const m = asciiTwins();
+    const uniq = new Set(NINE.map(([, u]) => u));
+    expect(uniq.size).toBe(NINE.length);
+    const twins = new Set(NINE.map(([, a]) => a));
+    expect(twins.size).toBe(NINE.length);
+    // the map answers each of the nine with ITS OWN twin — an earlier table entry sharing the cell would show here
+    for (const [key, u, a] of NINE) expect([key, m.get(u)]).toEqual([key, a]);
+    // the collision the test exists for, stated as itself
+    expect(m.get('◌')).toBe('.');
+    expect(m.get('○')).toBe('o');
+    expect(m.get('◌')).not.toBe(m.get('○'));
+  });
+
+  it('glyphTwin folds the nine in free text, and the §12 S6 / S60 rows are pure ASCII afterwards', () => {
+    expect(glyphTwin('⇄ 2 live · 1 heads-up · ✉ 1', GLYPHS.ascii)).toBe('<> 2 live - 1 heads-up - mail 1');
+    expect(glyphTwin('● live ○ gone ◌ stale ⏸ paused ⟳ landing ↻ kicked ↪ adopted', GLYPHS.ascii)).toBe('* live o gone . stale = paused ~ landing @ kicked >> adopted');
+    expect(glyphTwin('⇄ 2 live · ✉ 1', GLYPHS.unicode)).toBe('⇄ 2 live · ✉ 1');
+    for (const [, u] of NINE) expect(glyphTwin(u, GLYPHS.ascii)).toMatch(ASCII_RE);
+  });
+});
+
+describe('cellWidth', () => {
+  it.each([
+    ['', 0],
+    ['abc', 3],
+    ['é', 1],
+    ['é', 1],
+    ['日本', 4],
+    ['한', 2],
+    ['😀', 2],
+    ['👨‍👩‍👧', 2],
+    ['1️⃣', 1],
+    ['​', 0],
+    ['a\u0000b', 2],
+    ['\x1b[31m', 4],
+    ['─', 1],
+    ['█▏▎▍▌▋▊▉·', 9],
+    ['⠹', 1],
+    ['⎇', 1],
+  ])('%j → %d cells', (s, w) => {
+    expect(cellWidth(s)).toBe(w);
+  });
+  it('is additive over ASCII and CJK mixes', () => {
+    expect(cellWidth('ab日c')).toBe(5);
+    expect(cellWidth('x'.repeat(10_000))).toBe(10_000);
+  });
+});
+
+describe('truncateCells', () => {
+  it('leaves a fitting string alone and cuts with the glyph set ellipsis otherwise', () => {
+    expect(truncateCells('hello', 5)).toBe('hello');
+    expect(truncateCells('hello world', 8)).toBe('hello w…');
+    expect(cellWidth(truncateCells('hello world', 8))).toBe(8);
+    expect(truncateCells('hello world', 8, GLYPHS.ascii)).toBe('hello...');
+  });
+  it('never splits a wide character and never exceeds max', () => {
+    for (let max = 0; max <= 12; max++) {
+      const t = truncateCells('日本語テキスト', max);
+      expect(cellWidth(t)).toBeLessThanOrEqual(max);
+    }
+    expect(truncateCells('日本語', 5)).toBe('日本…');
+    expect(truncateCells('日本語', 4)).toBe('日…');
+  });
+  it('keeps grapheme clusters whole', () => {
+    expect(truncateCells('a👨‍👩‍👧bc', 4)).toBe('a👨‍👩‍👧…');
+    expect(truncateCells('a👨‍👩‍👧b', 3)).toBe('a…');
+    expect(truncateCells('👨‍👩‍👧bc', 2)).toBe('…');
+    expect(truncateCells('e\u0301x', 2)).toBe('e\u0301x');
+    expect(truncateCells('e\u0301xy', 2)).toBe('e\u0301…');
+  });
+  it('handles max ≤ 0, NaN, Infinity and max below the ellipsis width', () => {
+    expect(truncateCells('abc', 0)).toBe('');
+    expect(truncateCells('abc', -3)).toBe('');
+    expect(truncateCells('abc', Number.NaN)).toBe('');
+    expect(truncateCells('abc', Number.POSITIVE_INFINITY)).toBe('abc');
+    expect(truncateCells('abcdef', 1)).toBe('a');
+    expect(truncateCells('abcdef', 2, GLYPHS.ascii)).toBe('ab');
+    expect(truncateCells('abcdef', 4, GLYPHS.ascii)).toBe('a...');
+  });
+  it('is fast on a huge input', () => {
+    const big = 'x'.repeat(200_000) + '日'.repeat(50_000);
+    const t0 = performance.now();
+    expect(cellWidth(truncateCells(big, 80))).toBe(80);
+    expect(performance.now() - t0).toBeLessThan(500);
+  });
+});
+
+describe('pad / fit / oneLine', () => {
+  it('pads by cells, not by code units', () => {
+    expect(padEndCells('日', 4)).toBe('日  ');
+    expect(padStartCells('日', 4)).toBe('  日');
+    expect(padEndCells('toolong', 3)).toBe('toolong');
+    expect(fitCells('日本語', 4)).toBe('日… ');
+    expect(cellWidth(fitCells('abc', 10))).toBe(10);
+    expect(fitCells('abc', 0)).toBe('');
+  });
+  it('oneLineCells drops controls and collapses breaks', () => {
+    expect(oneLineCells('a\r\nb\tc\u001b[2Jd\u0085e')).toBe('a b c[2Jd\u0085e'.replace('\u0085', ''));
+    expect(oneLineCells('plain')).toBe('plain');
+    expect(oneLineCells('a\u007fb\u0000c')).toBe('abc');
+  });
+  it('oneLineCells strips bidi controls (Trojan-Source) and turns U+2028/2029 into spaces (§14.1)', () => {
+    expect(oneLineCells('run \u202etests\u202c now')).toBe('run tests now');
+    expect(oneLineCells('a\u2066b\u2067c\u2068d\u2069e')).toBe('abcde');
+    expect(oneLineCells('\u200eL\u200fR\u061cA')).toBe('LRA');
+    expect(oneLineCells('\u202a\u202b\u202c\u202d\u202ex')).toBe('x');
+    expect(oneLineCells('a\u2028b\u2029c')).toBe('a b c');
+    // joiners and marks that shape legitimate text survive
+    expect(oneLineCells('👨\u200d👩\u200d👧')).toBe('👨\u200d👩\u200d👧');
+    expect(oneLineCells('e\u0301 \u200bx')).toBe('e\u0301 \u200bx');
+    expect(oneLineCells('x'.repeat(100_000)).length).toBe(100_000);
+  });
+});
+
+describe('ruleRow', () => {
+  it('is exactly `columns` cells from 20 to 200 and capped at 400', () => {
+    for (let c = 20; c <= 200; c += 7) expect(cellWidth(ruleRow('decisions s7', ' [d]ecisions [p]lan [t]ime [s]ynth ──', c))).toBe(c);
+    expect(cellWidth(ruleRow('x', ' y ', 1000))).toBe(400);
+  });
+  it('drops the right part when it does not fit, then truncates the head; 0 columns → empty', () => {
+    const r = ruleRow('decisions s7', ' [d]ecisions [p]lan [t]ime [s]ynth ──', 20);
+    expect(r).toBe('─── decisions s7 ───');
+    expect(cellWidth(ruleRow('a very long left label here', ' right ', 10))).toBe(10);
+    expect(ruleRow('a', 'b', 0)).toBe('');
+    expect(ruleRow('a', 'b', Number.NaN)).toBe('');
+  });
+  it('has an ASCII twin', () => {
+    expect(ruleRow('plan s7', ' [d]ecisions ', 40, GLYPHS.ascii)).toMatch(ASCII_RE);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §2.8 (P-R9) — the ascii tees, and the glyph-twin gate for every new glyph.
+// ---------------------------------------------------------------------------------------
+describe('P-R9: the ascii console tees are `|`, not `+` (TUI-DESIGN-4 §2.8)', () => {
+  it('the tees differ from the corners, so a divider can never be byte-identical to an edge', () => {
+    const u = GLYPHS.unicode;
+    const a = GLYPHS.ascii;
+    expect([u.teeLeft, u.teeRight]).toEqual(['├', '┤']);
+    expect([a.teeLeft, a.teeRight]).toEqual(['|', '|']);
+    expect([a.roundTopLeft, a.roundTopRight, a.roundBottomLeft, a.roundBottomRight]).toEqual(['+', '+', '+', '+']);
+    expect(a.teeLeft).not.toBe(a.roundBottomLeft);
+    expect(a.teeRight).not.toBe(a.roundBottomRight);
+    // `│` (vbar / boxVertical) already maps to `|`, so a row of `├──┤` and a row of `│  │` read as the same box
+    expect([a.vbar, a.boxVertical]).toEqual(['|', '|']);
+  });
+
+  it('glyphTwin maps both tees, and a whole divider row becomes `|---…---|`', () => {
+    expect(glyphTwin('├────┤', GLYPHS.ascii)).toBe('|----|');
+    expect(glyphTwin('╰────╯', GLYPHS.ascii)).toBe('+----+');
+    expect(glyphTwin('╭─ jev-only ── proj ─╮', GLYPHS.ascii)).toBe('+- jev-only -- proj -+');
+    expect(glyphTwin('├────┤', GLYPHS.unicode)).toBe('├────┤');
+    expect(glyphTwin('├────┤', GLYPHS.sr)).toBe('├────┤');
+  });
+
+  it('§14.1: every glyph of the table still has a one-to-one, pure-ASCII twin (the P-R9 change keeps the invariant)', () => {
+    for (const [k, v] of Object.entries(GLYPHS.unicode)) {
+      if (k === 'mode') continue;
+      const twin = (GLYPHS.ascii as unknown as Record<string, string | readonly string[]>)[k];
+      if (typeof v === 'string') {
+        expect(typeof twin, k).toBe('string');
+        expect(twin as string, k).toMatch(ASCII_RE);
+        expect(glyphTwin(v, GLYPHS.ascii), k).toBe(twin);
+      } else {
+        expect(Array.isArray(twin), k).toBe(true);
+        expect((twin as readonly string[]).length, k).toBe(v.length);
+      }
+    }
+  });
+});

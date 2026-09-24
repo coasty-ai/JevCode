@@ -1,0 +1,146 @@
+{
+ "subsystem": "speed (jev-on step loop wall-clock: Jev client, generator transport, sandbox, lanes, perf probes)",
+ "summary": "A jev-on step is a strictly serial chain intent \u2192 context \u2192 propose \u2192 risk \u2192 [execute] \u2192 judge (src/loop/engine.ts:1749-1900); only the previous step's checkpoint write and the candidate refresh overlap anything. Over the 30-task live SWE-bench bench (726 steps, Sonnet 5 generator) a step averages 7,669 ms: generator 6,314 ms (82.3%), Jev 1,119 ms (14.6%), sandbox exec 159 ms (2.1%), harness 72 ms (0.9%). Jev time splits context 45% / risk 21% / intent 19% / judge 14% / replan 1%; the context request (300 Nouls, 37k input tokens, 486 ms p50) is the single largest Jev cost and fits a latency model of 174 ms + 9.2 ms per 1k input tokens, so the design's \"~170 ms per round trip\" understates the real 300 ms average by 1.75x. Generator latency fits 1.44 s + 8.8 ms per output token (113 tok/s) and 71% of the emitted tool JSON is the full plan re-emitted every step. Two accounting gaps hide speed cost: failed Jev attempts plus backoff sleeps (49/2,719 requests retried, each adding ~480 ms) land in harnessMs not jevMs, and in jev-only mode the lane test runs execute inside the propose stage so they land in harnessMs (242 s of a 319 s task). The default generator has just been switched to OpenRouter z-ai/glm-5.3-flash (src/config/defaults.ts:7); a faster/cheaper generator raises Jev's share of the step, so the Jev-side levers (parallel or merged intent+context, smaller candidate set, context reuse, faster retry, hedging) and the plan-delta output lever become first-order. Concrete levers with anchors are listed under decision_points and reusable_for_llm_jev.",
+ "decision_points": [
+  {
+   "where": "src/loop/engine.ts:1800-1806 (runStep: intent then context awaited in sequence)",
+   "who_decides": "code",
+   "what": "Stage order is hard-coded serial: `draft.intent = await this.stage('intent', ...)` then `await this.stage('context', ...)`. The context questions embed the intent word (src/loop/stages/context.ts:53), so today they cannot be issued before intent resolves.",
+   "question_shape": "n/a (control flow)",
+   "cost_latency": "intent 196 ms p50 + context 486 ms p50 serial = 682 ms/step (bench, 726 steps)",
+   "weakness": "Intent is unchanged from the previous step 76.6% of the time (163/696 changes) and the selected context files are identical 76.9% of the time (535/696). Lever A: fire context speculatively with the previous step's intent in parallel with the intent request and re-ask only on a change (expected saving \u2248 0.77 \u00d7 196 \u2248 150 ms/step, +23% context tokens). Lever B: drop the intent word from the context Noul so the two batches are independent and run in Promise.all (saves the full ~196 ms). Lever C: merge intent's 7 questions into the context batch (307 \u2264 1000 cap, shared common state so \u224838k tokens not 43k) saving one round trip \u2248 200 ms. B and C need the DESIGN \u00a75.5 agreement gate re-run."
+  },
+  {
+   "where": "src/loop/stages/context.ts:12 (CONTEXT_MAX_CANDIDATES = 300), context.ts:84-100 (one Noul per candidate every step), src/loop/state.ts:294-297 (buildContextState)",
+   "who_decides": "jev",
+   "what": "Every step asks Jev 300 Nouls ('Should the engineer be shown file X for an <intent> step?') over the pre-filtered candidate set; selection p \u2265 0.5, cap 12 files / 60 KB.",
+   "question_shape": "300 instruction-only Nouls + path-keyed candidate object + shared criteria.context; 37,022 input tokens p50 (41,301 p95)",
+   "cost_latency": "486 ms p50 / 648 ms p95 / 3,825 ms max; 366 s of the 812 s total Jev time (45%); $0.0016/request",
+   "weakness": "Selection yields p50 1 file (max 5) and is identical to the previous step 77% of the time, so ~340 ms of token-proportional latency buys little new information most steps. Levers: (1) cut the cap to 100-150 (saves ~170-230 ms/step and ~60% of Jev spend); (2) two-tier: full 300 on step 1 and after intent changes or run outcomes that add files, otherwise only top-K by last probability + mentions + touched; (3) reuse the last selection when (intent, candidate set, changedFiles, plan.remaining[0]) are unchanged and refresh in the background so the answers serve the next step. 44 of the 49 retried Jev requests were context requests, so shrinking it also removes most retry cost."
+  },
+  {
+   "where": "src/jev/types.ts:26-34 (JEV_RETRY: attempts 3, backoffBaseMs 500, attemptTimeoutMs 10_000) and src/jev/client.ts:401-443 (ask loop), client.ts:358+420 (latencyMs = final attempt only)",
+   "who_decides": "code",
+   "what": "Retry policy for the decisions endpoint: first retry sleeps 500 ms \u00d7 (1 \u2212 U[0,0.25)) = 375-500 ms; per-attempt timeout 10 s; the returned latencyMs covers only the successful attempt.",
+   "question_shape": "n/a",
+   "cost_latency": "49/2,719 requests (1.8%) took \u22652 attempts; steps containing a retry show harnessMs p50 502 ms vs 21 ms otherwise (n=48 vs 648), \u2248 23 s over the bench \u2248 32 ms/step average, invisible in jevMs",
+   "weakness": "A 375-500 ms first backoff is 1.5-2.5 request-times for an endpoint that answers in 200-500 ms; a hung attempt costs 10 s before the first retry although p99 is 1,056 ms. Levers: lower backoffBaseMs to ~100-150 for Jev (keep Retry-After honouring); hedge the context request at \u22482\u00d7 p95 (~1.3 s) by racing a second attempt instead of waiting for failure (caps the 1-3.8 s tail at +~1% volume); record RetryCause in JevRequestRecord (engine.ts:1483) and include failed-attempt + sleep time in jevMs so the cost is attributed."
+  },
+  {
+   "where": "src/loop/engine.ts:1817-1821 (runProposeStage awaited), src/loop/stages/propose.ts:27-40, src/provider/actions.ts:29-77 (PROPOSE_ACTION_TOOL: full plan required every turn), src/provider/prompts.ts:116",
+   "who_decides": "llm",
+   "what": "The generator must emit { goal, action, plan } with the FULL plan (done/remaining/openProblems, up to 20 items \u00d7 200 chars each) on every step; the engine diffs it in code (src/loop/plan.ts).",
+   "question_shape": "forced tool call, strict JSON schema; output p50 492 tokens (p95 930)",
+   "cost_latency": "5,853 ms p50 / 10,068 ms p95 / 20,044 ms max per call (Sonnet 5); fit 1,438 ms + 8.8 ms/output token; plan = 733 of 1,034 raw JSON chars per step (71%) in run 20260920-060314-724fuhdq",
+   "weakness": "~350 tokens/step of plan re-emission \u2248 3 s/step on a 113 tok/s model. Lever: a plan delta ({ add, done, drop } or literal 'unchanged') accepted by actions.ts:63-72 and merged in plan.ts, plus a tighter remaining cap; 17/740 calls (2.3%) were malformed and 14 cost a full second call (3.7 s each in the sample run), so the schema change must keep the fenced-JSON fallback."
+  },
+  {
+   "where": "src/provider/openrouter.ts:60-79 (buildOpenRouterBody), src/provider/prompts.ts:266-283 (buildUserMessage section order)",
+   "who_decides": "code",
+   "what": "OpenRouter body: stream, forced tool_choice, strict tools, parallel_tool_calls:false (added 2026-09-21), no cache_control marks, no `reasoning` control; user message order task \u2192 plan \u2192 intent \u2192 hints \u2192 workspace \u2192 context files \u2192 window.",
+   "question_shape": "n/a",
+   "cost_latency": "generator input 13,243 tokens p50 / 26,043 p95; TTFT+network intercept \u2248 1.44 s",
+   "weakness": "The volatile `intent`/`hints` sections sit before the large, 77%-stable context section, so the cacheable prefix ends at the plan. Reordering to task \u2192 plan \u2192 context \u2192 workspace \u2192 intent \u2192 hints \u2192 window lengthens the automatic-prefix-cache hit (GLM lists an input_cache_read rate, defaults.ts:50-52; Anthropic via OpenRouter needs explicit cache_control on content parts, which only src/provider/anthropic.ts:69,80 sets today). For z-ai/glm-5.3-flash the body neither disables nor records reasoning tokens (`completion_tokens_details.reasoning_tokens` is typed at src/provider/types.ts:166 but never read in consumeStream), so hidden thinking can silently inflate output latency; add `reasoning: { enabled: false }` or an effort knob and log reasoning_tokens in generator.jsonl."
+  },
+  {
+   "where": "src/loop/engine.ts:1835-1841 (computeTargets for jev-off) and src/loop/stages/risk.ts:466-470 (computeTargets: one sandboxed `git ls-files --error-unmatch` per target), src/provider/openrouter.ts:157-160 (onToolDelta fragments)",
+   "who_decides": "code",
+   "what": "Risk stage starts only after the whole tool JSON is parsed; per-target git tracked-ness costs one sandboxed spawn (~9 ms git + ~4 ms seatbelt + canonicalPath) per edited path.",
+   "question_shape": "n/a",
+   "cost_latency": "edit/declined and edit/blocked steps show harnessMs p50 55 ms vs 19-25 ms for run/read (bench)",
+   "weakness": "Streaming tool-call speculation: `action.path` appears in the accumulating arguments long before `plan` finishes, so computeTargets (and pre-image copies, engine.ts:1866-1868) could start from the partial JSON; saving \u2248 20-50 ms on edit steps only. The risk questions themselves need `planClaim`, so the Jev risk request cannot start before the stream ends. Low value relative to the levers above."
+  },
+  {
+   "where": "src/loop/engine.ts:2630-2656 (createEngine: probeGitState \u2192 createSandbox \u2192 createWorkspace \u2192 workspace.info()) and src/workspace/candidates.ts:159-175 (lazy first build: git ls-files + lstat/realpath/lstat/8 KB sniff per file, STAT_CONCURRENCY 32)",
+   "who_decides": "code",
+   "what": "The candidate cache is built lazily on the first listCandidates() call inside the context stage of step 1.",
+   "question_shape": "n/a",
+   "cost_latency": "step-1 harnessMs p50 205 ms, p95 557 ms, max 1,155 ms (django) vs 21 ms p50 for later steps; run.json createdAt \u2192 step-1 startedAt p50 130 ms; outside-step overhead 142 ms/run",
+   "weakness": "One-off per run, but the build could be kicked off in createEngine so it overlaps the ~200 ms intent request and config resolution (the `ensure()` promise already dedupes concurrent callers)."
+  },
+  {
+   "where": "src/synth/sieve/lanes.ts:207-223 (createLanes: sequential `rm -rf && git worktree prune` then `git worktree add --detach` per lane), lanes.ts:252-259 (resetLane: `git checkout -- . && git clean -fdq` + replayDirty), src/synth/search/budget.ts:33 (LANES_PYTEST = 4), budget.ts:500-502 (refineLanes widens only when t_run < 1 s), src/synth/sieve/runner.ts:583+718-719 (workers = min(pool.lanes, oracle.lanes))",
+   "who_decides": "code",
+   "what": "jev-only lane pool: 4 worktree lanes for repo-class suites, sequential creation, full-tree reset per candidate; candidates verified in parallel up to the lane count.",
+   "question_shape": "n/a",
+   "cost_latency": "measured in the sympy workspace: `git worktree add` 253 ms p50 each (4 lanes \u2248 1 s, 8 \u2248 2 s once per run); reset 28 ms p50 (+~7 ms sandbox spawn) per candidate; per-candidate reproduction run median 2.7-3.8 s on 4 lanes (run 20260921-022509-ebhus7rl transcript), regression run 40.7 s, baseline 38.4 s; task wall 319 s of which harnessMs 242 s is synth+lane time",
+   "weakness": "Per-candidate cost is dominated by interpreter + `python bin/test` import startup (~3 s), not by lane bookkeeping (~40 ms). Levers: parallel worktree creation (Promise.all; verify git lock contention first); widen LANES_PYTEST to 8 on \u226512-core hosts when t_run \u2248 3 s (load-aware cap already exists at runner.ts observeLoad); structural: batch several candidates per warm interpreter (fork after import) \u2014 large but invasive."
+  },
+  {
+   "where": "src/sandbox/run.ts:238-368 (run: canonicalPath cwd, buildEnv, spawn sandbox-exec -f profile /bin/sh -c), run.ts:27 (PIPE_DRAIN_GRACE_MS 1_000), run.ts:353-357",
+   "who_decides": "code",
+   "what": "Every `run` action and every harness git command is a fresh `/bin/sh -c` under seatbelt.",
+   "question_shape": "n/a",
+   "cost_latency": "local micro-measure: /bin/sh -c true 2.1 ms vs sandbox-exec 6.0 ms p50 (+4 ms); trivial sed/grep/cat runs measure 22 ms p50 / 10 ms min end-to-end in the bench (n=234); exec is 2.1% of step wall",
+   "weakness": "Nothing material to gain; the only trap is the 1 s drain grace when a command leaves a background pipe holder (a `run` that starts a server costs +1 s). Not a lever."
+  },
+  {
+   "where": "src/loop/engine.ts:2394-2412 (pendingCheckpoint overlapped, awaited at engine.ts:1846 before execute) and engine.ts:1893-1897 (candidateRefresh awaited before commit)",
+   "who_decides": "code",
+   "what": "The one intentional overlap: step N's steps.jsonl append + state.json write runs while step N+1's intent/context/propose/risk proceed; the git-status candidate refresh started by a `run` overlaps the judge request.",
+   "question_shape": "n/a",
+   "cost_latency": "steps.jsonl record 163,659 bytes/step (316 decision rows with full question text), checkpoint emitted ms not gated; no-retry harnessMs p50 21 ms / p95 57 ms / p99 67 ms",
+   "weakness": "Works as designed; the residual harness budget is already met. The judge request (209 ms p50 on 68% of steps) is the only other Jev call that could overlap the next step, but the next intent state depends on its answers (plan update, recent[].judge), so overlapping it would change decisions \u2014 not recommended."
+  }
+ ],
+ "llm_calls": [
+  {
+   "where": "src/provider/openrouter.ts:139-160 generate() \u2192 withRetry \u2192 attempt \u2192 consumeStream (called from src/loop/stages/propose.ts:33 via engine.ts:1706)",
+   "purpose": "Propose one action + full plan per step (the only LLM call in jev-on; jev-only never calls it, engine.ts:1691)",
+   "prompt_size": "system prompt (fixed per run, ~32 KB cap for project instructions) + one user message: task, plan, intent line, hints, workspace, \u226412 context files/60 KB, 4-step window; measured 13,243 input tokens p50, 26,043 p95 (740 calls); output 492 tokens p50, 930 p95",
+   "sampling": "temperature not sent (null), max_tokens 4096, stream:true, usage.include, tool_choice forced to propose_action, strict:true, parallel_tool_calls:false; no reasoning parameter; no cache_control on the OpenRouter path",
+   "tools": "single tool propose_action with { goal, action(oneOf read|edit|write|patch|run|done), plan{done,remaining,openProblems} } (src/provider/actions.ts:29-77); fenced ```json fallback parsed by actions.ts",
+   "weakness": "5,853 ms p50 / 10,068 ms p95 per call on Sonnet 5 = 82% of step wall; latency \u2248 1,438 ms + 8.8 ms \u00d7 output tokens, and 71% of output chars are the re-emitted plan. 2.3% malformed (17/740) \u2192 14 full second calls. Reasoning tokens for GLM neither disabled nor recorded. Retry policy 3 attempts, 500\u00b72^n ms capped 8 s (src/provider/sse.ts:232-242), first-byte 30 s / idle 60 s (sse.ts:17-18) \u2014 a stalled stream costs up to 30 s before retry."
+  },
+  {
+   "where": "src/loop/stages/propose.ts:41-49 (retry message after GeneratorResponseError)",
+   "purpose": "Second generator call carrying the parse reason and last 500 chars of raw text after a malformed reply",
+   "prompt_size": "previous prompt + assistant raw text + short retry user message",
+   "sampling": "same as above",
+   "tools": "same",
+   "weakness": "Doubles the step's generator time (3,692 ms in the sample run step 1); with a schema change to plan deltas the fallback parser must stay lenient or this rate rises."
+  }
+ ],
+ "reusable_for_llm_jev": [
+  "Latency cost models to size any redesign: Jev decisions endpoint \u2248 174 ms + 9.2 ms per 1k input tokens (2,719 requests, all stages); generator \u2248 1,438 ms + 8.8 ms per output token (113 tok/s, Sonnet 5 via OpenRouter, 740 calls) \u2014 computed from ~/.jevcode/runs/<runId>/jev.jsonl and generator.jsonl of the live-swebench-30 jev-on runIds.",
+  "Per-stage Jev request shapes and sizes (bench p50): intent 7 q / 5,448 tok / 196 ms; context 300 q / 37,022 tok / 486 ms; risk 5 q / 5,276 tok / 226 ms; judge 5-12 q / 5,936 tok / 209 ms (497 of 726 steps); replan 7 q / 6,529 tok / 203 ms (47 requests). 3.75 requests/step, 81 questions/request.",
+  "Stability statistics that justify speculation/caching: effective intent unchanged step-to-step 76.6%; selected context files identical 76.9%; p50 1 file selected of 300 asked.",
+  "Existing overlap machinery to extend: `pendingCheckpoint` (engine.ts:2394-2412, awaited at 1846), `candidateRefresh` via `startCandidateRefresh` (engine.ts:1447-1451, awaited at 1893), `statusInflight` single-spawn sharing (src/workspace/files.ts:203-214), candidate cache `ensure()` dedupe (src/workspace/candidates.ts:165-175).",
+  "Client primitives already safe for parallel Jev batches: `createJevDecider.ask` is stateless per call with a per-attempt AbortController (client.ts:314-357) and a 1,000-question batch cap (src/jev/questions.ts:102-107); `askRecorded` (engine.ts:1455-1520) meters and records each call independently, so Promise.all over two stage requests needs no client change, only draft.timing.jevMs semantics (sum vs max) to be decided.",
+  "Retry/wake hooks (engine.ts:1524-1545, sse.ts:386-405, client.ts:166-173) already surface RetryInfo events \u2014 the same hook can persist RetryCause into JevRequestRecord for attribution.",
+  "Perf probes to extend: src/perf/jev-latency.ts:15-45 measures only intent/risk shapes (6k tokens, 20 requests) and is not run by default (perf/results/latest.json jevLatency: null); add the 300-Noul context shape and record tokens so the 9.2 ms/1k slope is tracked. src/perf/step-overhead.ts gates harnessMs p95 < 50 ms on a zero-latency mock (measured 45.96 ms, imagesMs p95 19.39 ms vs 15 ms target).",
+  "Pricing/default plumbing for the new default generator: src/config/defaults.ts:5-7 (DEFAULT_PROVIDER openrouter, DEFAULT_MODEL z-ai/glm-5.3-flash), PRICING_TABLE glm-5.3-flash $0.09/$0.30 per M with cache read $0.018/M, flashx documented at 200 tok/s (defaults.ts:44-70); validate.ts:150-176 accepts unknown OpenRouter ids with a warning because usage.cost is billed from the stream.",
+  "Lane pool API (src/synth/sieve/lanes.ts:69-83 LanePool: withLane/applyToLane/resetLane/disposeLanes, FIFO waiters at 272-300) is already a bounded-concurrency pool; widening is a count change (budget.ts:33) plus load awareness (runner.ts observeLoad), not new code."
+ ],
+ "measured_facts": [
+  "jev-on step wall (30 tasks, 726 steps, Sonnet 5): mean 7,669 ms = generator 6,314 (82.3%) + Jev 1,119 (14.6%) + exec 159 (2.1%) + harness 72 (0.9%) + 0.1% unaccounted \u2014 bench/results/live-swebench-30/tasks.jsonl timing fields",
+  "jev-off comparison: 5,940 ms/step, generator 5,767 (97.1%), exec 155, harness 18; tokens/step p50 12,651 vs jev-on 72,727 (Jev input tokens dominate) \u2014 bench/results/live-swebench-30/tasks.jsonl, comparison.md",
+  "Sample run 20260920-060314-724fuhdq (sympy-12096, pass): 24 inter-step gaps sum 173,603 ms = gen 137,385 (79.1%) + jev 28,104 (16.2%) + exec 6,658 (3.8%) + residual 1,456 (0.8%); Jev input tokens 1,319,388 vs generator 306,891 over 25 steps \u2014 ~/.jevcode/runs/20260920-060314-724fuhdq/{steps,jev,generator}.jsonl",
+  "Jev by stage (all 30 runs): intent n=726 p50 196 / p95 308 / max 1,313 ms, 5,448 tok; context n=726 p50 486 / p95 648 / p99 1,056 / max 3,825 ms, 37,022 tok, 300 q; risk n=723 p50 226 / p95 347 ms; judge n=497 p50 209 / p95 307 / max 1,869 ms; replan n=47 p50 203 ms \u2014 jev.jsonl of the 30 runIds",
+  "Jev time share by stage: context 366.0 s (45%), risk 172.4 s (21%), intent 152.6 s (19%), judge 111.1 s (14%), replan 10.3 s (1%) of 812.4 s \u2014 same source",
+  "Jev latency regression: 174 ms intercept + 9.2 ms per 1k input tokens (n=2,719) \u2014 same source",
+  "Jev retries: 49/2,719 requests attempts>1 (44 context, 5 intent, 1 risk, 1 judge; 2 with 3 attempts); steps with a retry harnessMs p50 502 ms (min 433, max 1,642, n=48) vs 21 ms p50 / 57 ms p95 without (n=648) \u2014 steps.jsonl + jev.jsonl; cause: client.ts:358/420 report only the final attempt's latency",
+  "Generator: 740 calls / 726 steps, 14 retries, 17 malformed; latency p50 5,853 / p95 10,068 / max 20,044 ms; input tokens p50 13,243 / p95 26,043; output p50 492 / p95 930; fit 1,438 ms + 8.8 ms/output token (113 tok/s) \u2014 generator.jsonl of the 30 runs",
+  "Plan share of tool JSON: plan 733 chars, action 190, goal 111 per step (71% plan) \u2014 run 724fuhdq steps.jsonl proposal fields",
+  "Intent unchanged between consecutive steps 533/696 (76.6%); contextFiles identical 535/696 (76.9%); files selected p50 1, max 5 \u2014 steps.jsonl of the 30 runs",
+  "Exec: run actions durationMs p50 24 / p95 741 / max 6,736 ms (n=382); trivial sed/grep/cat/ls/head/git runs p50 22 ms, min 10 ms (n=234) \u2014 steps.jsonl outcome.exec",
+  "Local micro-measure (the reference machine, 15 iterations): /bin/sh -c true 2.1 ms p50; sandbox-exec (allow default) /bin/sh -c true 6.0 ms; sympy workspace (1,422 tracked files): git status --porcelain=v2 -z 14.4 ms, git ls-files 12.6 ms, git ls-files --error-unmatch 8.9 ms, git worktree add --detach 252.7 ms, git checkout -- . && git clean -fdq 27.7 ms",
+  "Startup: run.json createdAt \u2192 step-1 startedAt p50 130 ms (max 296); bench wallMs \u2212 \u03a3 step totalMs = 142 ms/run; step-1 harnessMs p50 205 / p95 557 / max 1,155 ms (initial candidate listing) \u2014 run.json + steps.jsonl",
+  "perf/results/latest.json (2026-09-21T10:57Z): stepOverhead p50 24.6 / p95 45.96 ms (gate 50, pass), run-step p95 45.96, other p95 33.4; imagesMs p50 1.20 / p95 19.39 ms (target 15, imagesWithinTarget false); jevLatency null (live probe not run); pass true",
+  "jev-only SWE-bench (bench/results/jev-only-swebench-4-final/tasks.jsonl): sympy-15345 wall 319 s = jev 15.2 + exec 61.9 + harness 242.3 s (lane runs inside propose land in harness); run 20260921-022509-ebhus7rl transcript: 4 lanes, reproduction run median 2.7-3.8 s, regression 40,657 ms, baseline 38,379 ms, 74 candidates tested",
+  "steps.jsonl record 163,659 bytes/step with 316 decision rows; decisions.jsonl 3.95 MB and steps.jsonl 4.09 MB for 25 steps \u2014 run 724fuhdq",
+  "DESIGN.md \u00a76 line 887-888 states 'Three to four Jev round trips per step (~170 ms each)'; measured 3.75 round trips at ~300 ms average (1,119 ms/step), context alone 486 ms"
+ ],
+ "hazards": [
+  "jevMs/StepTiming undercounts Jev cost: src/jev/client.ts:358 and :420 return only the successful attempt's latency, so failed attempts and backoff sleeps (client.ts:439-442) land in harnessMs; the 500 ms harness spikes in the bench are retry backoff, not harness work. Any speed dashboard built on jevMs will miss ~32 ms/step today and more under hedging.",
+  "In jev-only mode lane test runs execute inside runSynthStage (engine.ts:1811-1816) so their wall lands in harnessMs (engine.ts:2304 residual), e.g. 242 s 'harness' on a 319 s task; bench harness numbers for jev-only are not comparable with jev-on.",
+  "perf/results/latest.json jevLatency is null and src/perf/jev-latency.ts only exercises 6k-token intent/risk shapes, never the 37k-token context shape that is 45% of Jev time; the perf gate cannot see a Jev regression.",
+  "DESIGN.md \u00a76 (lines 887-888) and \u00a75.5 budget text assume ~170 ms per Jev round trip; measured average is ~300 ms and the context request 486 ms p50 \u2014 plans derived from the doc will understate Jev cost by ~1.75x.",
+  "GLM-5.3-flash default (src/config/defaults.ts:7, switched 2026-09-21 while this analysis ran; src/provider/openrouter.ts:47-79 changed on disk mid-read to add parallel_tool_calls:false) has no live latency or reasoning-token measurement in the tree (grep for glm latency in docs/experiments returns nothing); the request body neither disables `reasoning` nor records completion_tokens_details.reasoning_tokens (types.ts:166 typed, never read), so hidden thinking could inflate output time and cost without showing in generator.jsonl. The 8.8 ms/token and 1.44 s intercept are Sonnet 5 numbers and must be re-fitted.",
+  "Speculative/parallel intent+context changes Jev inputs (the context Noul text names the intent, context.ts:53) and therefore decisions; DESIGN \u00a75.5 requires the 20-file agreement gate before changing the question form.",
+  "Any plan-delta schema for the generator must keep actions.ts's fenced-JSON fallback and plan.ts's merge semantics intact; malformed rate is already 2.3% and each malformed reply costs a full extra generator call.",
+  "Parallel `git worktree add` in lanes.ts:207-223 may contend on .git locks; measure before enabling. Widening LANES_PYTEST beyond 4 interacts with the load-aware per-case timeout (runner.ts observeLoad, budget.ts:74-75) which already scaled caps 4-9x under load in earlier runs.",
+  "Harness gate margin is thin: p95 45.96 ms vs 50 ms gate and a reviewer run measured 50.1 ms under load (docs/STATUS.md:392); imagesMs p95 19.39 ms exceeds its 15 ms report target (latest.json imagesWithinTarget false). Adding work inside runStep (e.g. speculative computeTargets or pre-images) must stay under it.",
+  "The 10 s JEV_RETRY.attemptTimeoutMs (types.ts:32) with 3 attempts means a wedged decisions endpoint costs up to ~31 s per stage before the step fails; the observed max was 3.8 s so the timeout has not been exercised live in the bench."
+ ]
+}

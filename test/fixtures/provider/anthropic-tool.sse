@@ -1,0 +1,39 @@
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_01Tool","type":"message","role":"assistant","content":[],"model":"claude-sonnet-5","stop_reason":null,"stop_sequence":null,"stop_details":null,"container":null,"usage":{"input_tokens":120,"cache_creation_input_tokens":1500,"cache_read_input_tokens":2400,"cache_creation":{"ephemeral_5m_input_tokens":1500,"ephemeral_1h_input_tokens":0},"output_tokens":3,"service_tier":"standard","inference_geo":"global"}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I will edit the file."}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01A09q90qw90lq917835lq9","name":"propose_action","input":{},"caller":{"type":"direct"}}}
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"goal\": \"fix the off-by-one\", \"action\": {\"kind\": \"edit\", "}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"path\": \"src/a.py\", \"old\": \"i < n\", \"new\": \"i <= n\"}, "}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"plan\": {\"done\": [], \"remaining\": [\"run tests\"], \"openProblems\": []}}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null},"usage":{"input_tokens":120,"cache_creation_input_tokens":1500,"cache_read_input_tokens":2400,"output_tokens":51,"output_tokens_details":{"thinking_tokens":0}}}
+
+event: message_stop
+data: {"type":"message_stop"}
+

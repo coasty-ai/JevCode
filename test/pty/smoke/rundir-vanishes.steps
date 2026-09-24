@@ -1,0 +1,18 @@
+# TUI-DESIGN-4 §7.2 (P-D2) / §7.11 scenario 4: the run directory is removed mid-run (JEVCODE_FAULT=rundir:rm:after=3).
+# Measured before the fix: `[run] end complete steps=40 … exit 0`, NO `checkpoint degraded` item, and stderr printing
+# `files`, `resume` and `report` rows for a directory that did not exist. After: one `checkpoint degraded: ENOENT on
+# state.json — …` item, `state.json missing — not resumable`, the `files` row replaced by the `gone` sentence, exit 3.
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.3
+send fix the failing test
+sleep 0.2
+send \r
+expect step \d+/\d+
+expect checkpoint degraded
+expect not resumable
+sleep 0.4
+send /exit
+sleep 0.2
+send \r
+eof

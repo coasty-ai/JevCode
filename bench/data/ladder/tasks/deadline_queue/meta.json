@@ -1,0 +1,25 @@
+{
+  "name": "deadline_queue",
+  "tier": "long-2",
+  "hunks": 3,
+  "kinds": [
+    "call_args",
+    "operator",
+    "guard",
+    "two_files"
+  ],
+  "files": [
+    "src/slack.py",
+    "src/schedule.py"
+  ],
+  "difficulty": 5,
+  "description": "A deadline scheduler whose sign error is cancelled by a swapped call. (A) slack.lateness returns `due_at - finish_at`, the negation of the lateness its docstring describes, which also drags is_late and headroom the wrong way. (B) schedule.lateness_of calls lateness(slot.job.due_at, slot.finish) with the two arguments the wrong way round, which negates A back: every schedule-side lateness number, late_jobs, total_lateness and the whole of report.py are right on the buggy tree, and only the five tests/test_slack.py tests that call the helper directly are red. Repairing either half alone flips the sign of the whole schedule and report side. (C) schedule.lay_out gives a slot to a job of no length; the gold inserts `if job.minutes <= 0: continue`, and the tempting place to drop that job instead is ranking.order, which the suite forbids. Six tests fail, thirty-one pass. Plausible wrong fixes, all verified: (W1) flip slack.lateness and stop -- all five slack tests green, and five schedule tests (test_lateness_of_a_slot_that_lands_late, test_lateness_of_a_slot_that_lands_early, test_late_jobs_are_named_in_schedule_order, test_nothing_is_late_when_there_is_room, test_total_lateness_counts_only_the_late_jobs) plus five tests/test_report.py tests break (11 failed / 26 passed, up from 6); (W2) the coupled pair plus filtering the no-length job out in ranking.order -- all six target tests green, breaks the previously passing tests/test_ranking.py::test_order_keeps_every_job_including_one_of_no_length, which pins that ranking drops nothing (1 failed / 36 passed); (W3) un-swap schedule.lateness_of alone (16 failed / 21 passed).",
+  "expected_failing": [
+    "tests/test_schedule.py::test_a_job_of_no_length_gets_no_slot",
+    "tests/test_slack.py::test_headroom_is_the_time_to_spare",
+    "tests/test_slack.py::test_headroom_of_a_late_job_is_zero",
+    "tests/test_slack.py::test_is_late_reads_the_sign_of_the_lateness",
+    "tests/test_slack.py::test_lateness_when_a_job_lands_after_its_deadline",
+    "tests/test_slack.py::test_lateness_when_a_job_lands_early"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "toolCall": {
+    "text": "I will fix the function.",
+    "toolCalls": [
+      {
+        "name": "propose_action",
+        "input": { "goal": "fix f", "action": { "kind": "edit", "path": "src/a.py", "old": "return 1", "new": "return 2" }, "plan": { "done": [], "remaining": ["run tests"], "openProblems": [] } },
+        "rawJson": "{\"goal\":\"fix f\",\"action\":{\"kind\":\"edit\",\"path\":\"src/a.py\",\"old\":\"return 1\",\"new\":\"return 2\"},\"plan\":{\"done\":[],\"remaining\":[\"run tests\"],\"openProblems\":[]}}"
+      }
+    ]
+  },
+  "fencedJson": {
+    "text": "Here is a first block that should be ignored:\n```json\n{\"goal\":\"old\"}\n```\nAnd the real one:\n```json\n{ \"goal\": \"run the tests\", \"action\": { \"kind\": \"run\", \"command\": \"pytest -q\" }, \"plan\": { \"done\": [\"fix f\"], \"remaining\": [], \"openProblems\": [\"flaky?\"] } }\n```\n",
+    "toolCalls": []
+  },
+  "fencedNoLanguage": {
+    "text": "```\n{ \"goal\": \"look\", \"action\": { \"kind\": \"read\", \"paths\": [\"src/a.py\"] }, \"plan\": { \"done\": [], \"remaining\": [], \"openProblems\": [] } }\n```",
+    "toolCalls": []
+  },
+  "badKind": { "goal": "x", "action": { "kind": "delete", "path": "a" }, "plan": { "done": [], "remaining": [], "openProblems": [] } },
+  "missingKeys": { "goal": "x", "action": { "kind": "edit", "path": "a", "old": "b" }, "plan": { "done": [], "remaining": [], "openProblems": [] } },
+  "extraKeys": { "goal": "x", "action": { "kind": "run", "command": "ls", "cwd": "/" }, "plan": { "done": [], "remaining": [], "openProblems": [] } },
+  "nonStringOldNew": { "goal": "x", "action": { "kind": "edit", "path": "a", "old": 1, "new": ["x"] }, "plan": { "done": [], "remaining": [], "openProblems": [] } },
+  "missingPlan": { "goal": "x", "action": { "kind": "done", "summary": "s" } },
+  "extraTopKey": { "goal": "x", "action": { "kind": "done", "summary": "s" }, "plan": { "done": [], "remaining": [], "openProblems": [] }, "confidence": 0.9 },
+  "planNotStrings": { "goal": "x", "action": { "kind": "done", "summary": "s" }, "plan": { "done": [1], "remaining": [], "openProblems": [] } }
+}

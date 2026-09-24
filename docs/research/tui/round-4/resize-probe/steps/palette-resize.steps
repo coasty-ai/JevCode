@@ -1,0 +1,23 @@
+expect \x1b\[\?25l
+sleep 1.2
+send /
+sleep 0.6
+mark palette
+resize 12 60
+sleep 0.8
+mark shrunk
+resize 8 40
+sleep 0.8
+mark tiny
+resize 40 120
+sleep 0.8
+mark grown
+send \x1b
+sleep 0.4
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.7
+eof

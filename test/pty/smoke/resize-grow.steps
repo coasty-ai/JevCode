@@ -1,0 +1,17 @@
+# idle with a draft at 12x60: grow to 24x80 — a grow-only segment must have zero clears (§14.1, research 20 item 1)
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.4
+send a draft that survives a resize
+expect a draft that survives
+sleep 0.3
+resize 24 80
+sleep 0.8
+send Z
+expect resizeZ
+send \x03
+expect Say hi
+send /exit
+sleep 0.2
+send \r
+eof

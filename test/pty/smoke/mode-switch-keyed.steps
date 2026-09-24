@@ -1,0 +1,16 @@
+# /mode jev-on with a generator key configured (a fake OPENROUTER_API_KEY serves Jev and the generator): started with `--mode jev-only`
+# (TUI-DESIGN-3 §1.10 — jev+llm is the default now, so the switch is from jev-only), the mode item `mode jev+llm from the next run — …` and
+# the badge `jev+llm · next run` in the console's top edge (TUI-DESIGN-2 §1.3, §1.5, H-G1, §8.2 mode-switch)
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.2
+send /mode jev-on
+sleep 0.2
+send \r
+expect jev\+llm from the next run
+expect ╭─ (?:\x1b\[[0-9;]*m)*jev\+llm(?:\x1b\[[0-9;]*m)* · next run
+send /exit
+sleep 0.2
+send \r
+eof

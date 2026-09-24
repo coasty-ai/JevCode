@@ -1,0 +1,341 @@
+{
+ "bitcount": {
+  "tests_total": 9,
+  "tests_used": 9,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "        n &= n - 1"
+  ]
+ },
+ "bucketsort": {
+  "tests_total": 7,
+  "tests_used": 7,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "    for i, count in enumerate(counts):"
+  ]
+ },
+ "find_first_in_sorted": {
+  "tests_total": 7,
+  "tests_used": 7,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "    while lo < hi:"
+  ]
+ },
+ "find_in_sorted": {
+  "tests_total": 7,
+  "tests_used": 7,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "            return binsearch(mid + 1, end)"
+  ]
+ },
+ "flatten": {
+  "tests_total": 7,
+  "tests_used": 7,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "            yield x"
+  ]
+ },
+ "gcd": {
+  "tests_total": 6,
+  "tests_used": 6,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "        return gcd(b, a % b)"
+  ]
+ },
+ "get_factors": {
+  "tests_total": 11,
+  "tests_used": 11,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "    return [n]"
+  ]
+ },
+ "hanoi": {
+  "tests_total": 8,
+  "tests_used": 8,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "        steps.append((start, end))"
+  ]
+ },
+ "is_valid_parenthesization": {
+  "tests_total": 3,
+  "tests_used": 3,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "    return depth == 0"
+  ]
+ },
+ "kheapsort": {
+  "tests_total": 4,
+  "tests_used": 4,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "    for x in arr[k:]:"
+  ]
+ },
+ "knapsack": {
+  "tests_total": 10,
+  "tests_used": 9,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "TIMEOUT"
+  ],
+  "passing": [
+   "            if weight <= j:"
+  ]
+ },
+ "kth": {
+  "tests_total": 7,
+  "tests_used": 7,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "        return kth(above, k - num_lessoreq)"
+  ]
+ },
+ "lcs_length": {
+  "tests_total": 9,
+  "tests_used": 9,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "                dp[i, j] = dp[i - 1, j - 1] + 1"
+  ]
+ },
+ "levenshtein": {
+  "tests_total": 7,
+  "tests_used": 6,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "TIMEOUT",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "        return 0 + levenshtein(source[1:], target[1:])",
+   "        return levenshtein(source[1:], target[1:])"
+  ]
+ },
+ "lis": {
+  "tests_total": 12,
+  "tests_used": 12,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "            longest = max(longest, length + 1)"
+  ]
+ },
+ "longest_common_subsequence": {
+  "tests_total": 10,
+  "tests_used": 10,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "        return a[0] + longest_common_subsequence(a[1:], b[1:])"
+  ]
+ },
+ "max_sublist_sum": {
+  "tests_total": 6,
+  "tests_used": 6,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "        max_ending_here = max(0, max_ending_here + x)"
+  ]
+ },
+ "mergesort": {
+  "tests_total": 14,
+  "tests_used": 14,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "    if len(arr) <= 1:"
+  ]
+ },
+ "next_palindrome": {
+  "tests_total": 5,
+  "tests_used": 5,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "    return [1] + (len(digit_list) - 1) * [0] + [1]"
+  ]
+ },
+ "next_permutation": {
+  "tests_total": 8,
+  "tests_used": 8,
+  "gold_results": [
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS",
+   "PASS"
+  ],
+  "passing": [
+   "                if perm[i] < perm[j]:",
+   "                if perm[j] > perm[i]:"
+  ]
+ }
+}

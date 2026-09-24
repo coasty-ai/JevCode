@@ -1,0 +1,330 @@
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { CONTEXT_COMPACTIONS, CONTEXT_VIEWS, DEFAULT_CONTEXT_COMPACTION, DEFAULT_CONTEXT_COMPACT_EVERY, DEFAULT_CONTEXT_VIEW, expectedText, isClampProblem, settingProblem,
+  CACHE_READ_FACTOR,
+  CACHE_WRITE_FACTOR,
+  DEFAULT_FPS,
+  DEFAULT_SPEND_CAP_USD,
+  JEV_ONLY_DEFAULT_SPEND_CAP_USD,
+  LAUNCH_SETTINGS,
+  MAX_FPS,
+  MIN_FPS,
+  SESSION_CAP_MULTIPLIER,
+  SETTINGS,
+  SSH_FPS,
+  TRACE_ENV,
+  UNPRICED_TOKENS_PER_USD,
+  configDirsFor,
+  defaultKeybindingsPath,
+  legacyConfigDir,
+  settingSpec,
+  xdgConfigDir,
+} from '../../../src/config/defaults.js';
+import type { SettingName } from '../../../src/config/types.js';
+import { AUTONOMY_DESCRIPTION, AUTONOMY_SETTING_VALUES, DEFAULT_AUTONOMY, DEFAULT_MODE, JEV_PROVIDER_SETTING_VALUES, KNOWN_KEY_ENV, MODE_BADGE_MAX_CELLS, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
+import type { EngineMode } from '../../../src/core/types.js';
+import { cellWidth } from '../../../src/tui/glyphs.js';
+
+const HOME = '/home/me';
+
+describe('the §16 SETTINGS table', () => {
+  it('has one row per §16 setting name, unique names, unique env / file keys', () => {
+    const names = SETTINGS.map((s) => s.name);
+    expect(new Set(names).size).toBe(names.length);
+    const expected: SettingName[] = [
+      'ui.theme',
+      'ui.fps',
+      'ui.renderMode',
+      'ui.ascii',
+      'ui.title',
+      'ui.screenReader',
+      'ui.reducedMotion',
+      'ui.wordmark', // TUI-DESIGN-3 §6 item 5
+      'ui.renderer', // TUI-DESIGN-4 §8 item 5 (contract 1.6)
+      'ui.fullscreenDump', // TUI-DESIGN-4 §8 item 5 (contract 1.6)
+      'ui.notify',
+      'ui.osc52',
+      'ui.history',
+      'ui.noInput',
+      'ui.trustWorkspace',
+      'ui.budgetWarnings',
+      'ui.allowSecretMention',
+      'ui.exitCode',
+      'ui.keybindings',
+      'ui.noColor',
+      'log.file',
+      'log.level',
+      'session.spendCapUsd',
+      'limits.spendCapUsd',
+      'limits.allowUnpriced',
+      'limits.maxGeneratorTokens',
+      'generator.priceCacheReadPerM',
+      'generator.priceCacheWritePerM',
+      'update.notify',
+      'configFile',
+      'decider.provider', // TUI-DESIGN-2 §2.3
+      'mode', // TUI-DESIGN-2 §1.2
+      'autonomy', // complete autonomy by default
+      'seen.defaultMode', // TUI-DESIGN-3 §0.1 (D-Q)
+      'context.mode', // TUI-DESIGN-4 §8 (the round-4 config rows) over COORDINATION-DESIGN §8
+      'context.compaction',
+      'context.compactEvery',
+      'context.historySteps',
+      'context.fileCacheBytes',
+      'context.budgetChars',
+    ];
+    for (const n of expected) expect(names).toContain(n);
+    const envNames = SETTINGS.flatMap((s) => [...s.env, ...(s.negateEnv ?? [])]);
+    expect(new Set(envNames).size).toBe(envNames.length);
+    const fileKeys = SETTINGS.flatMap((s) => [s.fileKey, s.ignoredFileKey].filter((k): k is string => typeof k === 'string'));
+    expect(new Set(fileKeys).size).toBe(fileKeys.length);
+    expect(fileKeys.some((k) => envNames.includes(k))).toBe(false);
+  });
+
+  it('the five launch rows: flag > env > default, no file key, an ignored file key for those a file might carry', () => {
+    expect(LAUNCH_SETTINGS.map((s) => s.name).sort()).toEqual(['ui.ascii', 'ui.fps', 'ui.noColor', 'ui.renderMode', 'ui.screenReader']);
+    for (const s of LAUNCH_SETTINGS) {
+      expect(s.launch).toBe(true);
+      expect(s.fileKey).toBeUndefined();
+    }
+    expect(settingSpec('ui.fps')).toMatchObject({ flag: 'fps', env: ['JEVCODE_FPS'], ignoredFileKey: 'fps', defaultValue: '30' });
+    expect(settingSpec('ui.renderMode')).toMatchObject({ flag: 'renderMode', env: ['JEVCODE_RENDER_MODE'], ignoredFileKey: 'renderMode', defaultValue: 'standard' });
+    expect(settingSpec('ui.screenReader')).toMatchObject({ boolFlag: { key: 'screenReader', negate: false }, env: ['JEVCODE_SCREEN_READER', 'INK_SCREEN_READER'], ignoredFileKey: 'screenReader' });
+    expect(settingSpec('ui.ascii')).toMatchObject({ boolFlag: { key: 'ascii', negate: false }, env: ['JEVCODE_ASCII'], ignoredFileKey: 'ascii' });
+    expect(settingSpec('ui.noColor')).toMatchObject({ boolFlag: { key: 'noColor', negate: false }, env: ['NO_COLOR'] });
+  });
+
+  it('session rows carry the §16 flags, env names, file keys and defaults', () => {
+    expect(settingSpec('ui.theme')).toMatchObject({ flag: 'theme', env: ['JEVCODE_THEME'], fileKey: 'theme', defaultValue: 'dark' });
+    // inverted-polarity variables live in negateEnv (TUI-DESIGN §16: JEVCODE_NO_HISTORY=1 disables, NO_UPDATE_NOTIFIER=1 disables)
+    expect(settingSpec('ui.history')).toMatchObject({ boolFlag: { key: 'noHistory', negate: true }, env: [], negateEnv: ['JEVCODE_NO_HISTORY'], fileKey: 'history', defaultValue: 'true' });
+    expect(settingSpec('ui.budgetWarnings')).toMatchObject({ boolFlag: { key: 'noBudgetWarnings', negate: true }, env: ['JEVCODE_BUDGET_WARNINGS'], fileKey: 'budgetWarnings', defaultValue: 'true' });
+    expect(settingSpec('ui.reducedMotion')).toMatchObject({ boolFlag: { key: 'noAnimation', negate: false }, env: ['JEVCODE_REDUCED_MOTION'], fileKey: 'reducedMotion', defaultValue: null });
+    // TUI-DESIGN-3 §6 item 5: ui.wordmark — a file / env row with no default of its own (config/ui.ts derives static under SSH, sweep otherwise); not a launch row, no flag
+    expect(settingSpec('ui.wordmark')).toMatchObject({ env: ['JEVCODE_WORDMARK'], fileKey: 'wordmark', defaultValue: null, secret: false });
+    expect(settingSpec('ui.wordmark').launch).toBeUndefined();
+    expect(settingSpec('ui.wordmark').flag).toBeUndefined();
+    expect(settingSpec('ui.wordmark').boolFlag).toBeUndefined();
+    expect(settingSpec('ui.exitCode')).toMatchObject({ flag: 'exitCode', env: ['JEVCODE_EXIT_CODE'], fileKey: 'exitCode', defaultValue: 'zero' });
+    expect(settingSpec('ui.keybindings')).toMatchObject({ flag: 'keybindings', env: ['JEVCODE_KEYBINDINGS'], fileKey: 'keybindings', defaultValue: null });
+    expect(settingSpec('log.file')).toMatchObject({ flag: 'log', env: ['JEVCODE_LOG', 'JEVCODE_TRACE'], fileKey: 'log', defaultValue: null });
+    expect(TRACE_ENV).toBe('JEVCODE_TRACE');
+    expect(settingSpec('log.level')).toMatchObject({ flag: 'logLevel', env: ['JEVCODE_LOG_LEVEL'], fileKey: 'logLevel', defaultValue: 'info' });
+    expect(settingSpec('session.spendCapUsd')).toMatchObject({ flag: 'sessionSpendCap', env: ['JEVCODE_SESSION_SPEND_CAP_USD'], fileKey: 'sessionSpendCapUsd', defaultValue: null });
+    expect(settingSpec('limits.allowUnpriced')).toMatchObject({ boolFlag: { key: 'allowUnpriced', negate: false }, env: ['JEVCODE_ALLOW_UNPRICED'], fileKey: 'allowUnpriced', defaultValue: 'false' });
+    expect(settingSpec('limits.maxGeneratorTokens')).toMatchObject({ flag: 'maxGeneratorTokens', env: ['JEVCODE_MAX_GENERATOR_TOKENS'], fileKey: 'maxGeneratorTokens', defaultValue: null });
+    expect(settingSpec('generator.priceCacheReadPerM')).toMatchObject({ env: ['JEVCODE_PRICE_CACHE_READ_PER_M'], fileKey: 'priceCacheReadPerM' });
+    expect(settingSpec('generator.priceCacheWritePerM')).toMatchObject({ env: ['JEVCODE_PRICE_CACHE_WRITE_PER_M'], fileKey: 'priceCacheWritePerM' });
+    expect(settingSpec('update.notify')).toMatchObject({ boolFlag: { key: 'updateNotify', negate: false }, env: ['JEVCODE_UPDATE_NOTIFY'], negateEnv: ['NO_UPDATE_NOTIFIER'], fileKey: 'updateNotify', defaultValue: 'false' });
+    // every inverted name is a boolean setting with a positive default or a boolFlag (there is nothing else to invert)
+    for (const s of SETTINGS.filter((x) => (x.negateEnv ?? []).length > 0)) expect(s.boolFlag).toBeDefined();
+    // the two eager booleans now go through the generic boolean-flag binding
+    expect(settingSpec('noNetwork')).toMatchObject({ boolFlag: { key: 'noNetwork', negate: false } });
+    expect(settingSpec('plain')).toMatchObject({ boolFlag: { key: 'plain', negate: false } });
+    expect(() => settingSpec('nope' as SettingName)).toThrow(/unknown setting/);
+  });
+
+  it('constants: run cap $10 / $1.00 (jev-only), session ×5, token cap 1e6/15 per USD, cache 0.1× / 1.25×, fps 30 / 15 / 5..30', () => {
+    expect(DEFAULT_SPEND_CAP_USD).toBe(10);
+    expect(JEV_ONLY_DEFAULT_SPEND_CAP_USD).toBe(1);
+    expect(SESSION_CAP_MULTIPLIER).toBe(5);
+    expect(Math.floor(10 * UNPRICED_TOKENS_PER_USD)).toBe(666_666);
+    expect(CACHE_READ_FACTOR).toBe(0.1);
+    expect(CACHE_WRITE_FACTOR).toBe(1.25);
+    expect([DEFAULT_FPS, SSH_FPS, MIN_FPS, MAX_FPS]).toEqual([30, 15, 5, 30]);
+  });
+});
+
+describe('XDG paths (TUI-DESIGN §16, §12.7)', () => {
+  it('xdgConfigDir honours an absolute XDG_CONFIG_HOME only; legacy is ~/.config/jevcode', () => {
+    expect(xdgConfigDir(HOME, {})).toBe(join(HOME, '.config', 'jevcode'));
+    expect(xdgConfigDir(HOME, { XDG_CONFIG_HOME: '/tmp/x' })).toBe('/tmp/x/jevcode');
+    expect(xdgConfigDir(HOME, { XDG_CONFIG_HOME: 'rel/path' })).toBe(join(HOME, '.config', 'jevcode'));
+    expect(xdgConfigDir(HOME, { XDG_CONFIG_HOME: '   ' })).toBe(join(HOME, '.config', 'jevcode'));
+    expect(legacyConfigDir(HOME)).toBe(join(HOME, '.config', 'jevcode'));
+  });
+  it('configDirsFor: XDG first, legacy second, deduplicated when equal', () => {
+    expect(configDirsFor(HOME, {})).toEqual([join(HOME, '.config', 'jevcode')]);
+    expect(configDirsFor(HOME, { XDG_CONFIG_HOME: '/tmp/x' })).toEqual(['/tmp/x/jevcode', join(HOME, '.config', 'jevcode')]);
+  });
+  it('defaultKeybindingsPath', () => {
+    expect(defaultKeybindingsPath(HOME, {})).toBe(join(HOME, '.config', 'jevcode', 'keybindings.json'));
+    expect(defaultKeybindingsPath(HOME, { XDG_CONFIG_HOME: '/tmp/x' })).toBe('/tmp/x/jevcode/keybindings.json');
+  });
+});
+
+describe('TUI-DESIGN-2 §2.3: the decider.provider row and the known key variables', () => {
+  it('sits directly before decider.baseUrl: --jev-provider / JEV_PROVIDER / jevProvider, default auto, not secret, the §2.3 description verbatim', () => {
+    const names = SETTINGS.map((s) => s.name);
+    expect(names.indexOf('decider.provider')).toBe(names.indexOf('decider.baseUrl') - 1);
+    expect(settingSpec('decider.provider')).toMatchObject({ flag: 'jevProvider', env: ['JEV_PROVIDER'], fileKey: 'jevProvider', defaultValue: 'auto', secret: false });
+    expect(settingSpec('decider.provider').description).toBe('Jev provider (auto | typesafe | openrouter); auto = typesafe when TYPESAFE_API_KEY is set, else openrouter');
+    expect(settingSpec('decider.provider').launch).toBeUndefined();
+    expect(JEV_PROVIDER_SETTING_VALUES).toEqual(['auto', 'typesafe', 'openrouter']);
+    // the key row is unchanged: TYPESAFE_API_KEY arrives through resolve.ts's extraEnv (§2.3 step 3)
+    expect(settingSpec('decider.apiKey').env).toEqual(['JEV_API_KEY', 'OPENROUTER_API_KEY']);
+    expect(KNOWN_KEY_ENV).toEqual(['JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY']);
+  });
+});
+
+describe('complete autonomy by default: the `autonomy` row', () => {
+  it('sits directly after `mode`: --autonomy / JEVCODE_AUTONOMY / `autonomy`, default full, not secret, not a launch row, an enum of full|review', () => {
+    const names = SETTINGS.map((s) => s.name);
+    expect(names.indexOf('autonomy')).toBe(names.indexOf('mode') + 1);
+    expect(settingSpec('autonomy')).toMatchObject({ flag: 'autonomy', env: ['JEVCODE_AUTONOMY'], fileKey: 'autonomy', defaultValue: 'full', secret: false });
+    expect(settingSpec('autonomy').description).toBe('who approves review-flagged actions: full auto-approves and logs them (default); review stops for y/n');
+    expect(settingSpec('autonomy').description).toBe(AUTONOMY_DESCRIPTION);
+    expect(settingSpec('autonomy').launch).toBeUndefined();
+    expect(settingSpec('autonomy').boolFlag).toBeUndefined();
+    expect(settingSpec('autonomy').hidden).toBeUndefined();
+    expect(settingSpec('autonomy').shape).toEqual({ kind: 'enum', values: AUTONOMY_SETTING_VALUES });
+    expect(AUTONOMY_SETTING_VALUES).toEqual(['full', 'review']);
+    expect(DEFAULT_AUTONOMY).toBe('full');
+    expect(settingSpec('autonomy').defaultValue).toBe(DEFAULT_AUTONOMY);
+  });
+
+  it('`jevcode config` reports a value that is not full|review (§7.5)', () => {
+    expect(settingProblem(settingSpec('autonomy'), 'review')).toBeNull();
+    expect(settingProblem(settingSpec('autonomy'), 'FULL')).toBeNull();
+    expect(settingProblem(settingSpec('autonomy'), 'yolo')).toEqual({ kind: 'wrong-type', expected: 'one of full|review' });
+  });
+});
+
+describe('TUI-DESIGN-2 §1.2: the `mode` row', () => {
+  it('sits directly after decider.model: --mode / JEVCODE_MODE / `mode`, default DEFAULT_MODE, not secret, not a launch row, the §1.2 description verbatim', () => {
+    const names = SETTINGS.map((s) => s.name);
+    expect(names.indexOf('mode')).toBe(names.indexOf('decider.model') + 1);
+    expect(settingSpec('mode')).toMatchObject({ flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: DEFAULT_MODE, secret: false });
+    expect(settingSpec('mode').description).toBe('engine mode (jev-only | jev-on | jev-off | llm-jev | agent); jev-only needs no generator key');
+    expect(settingSpec('mode').launch).toBeUndefined();
+    expect(settingSpec('mode').boolFlag).toBeUndefined();
+    expect(MODE_SETTING_VALUES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev', 'agent']);
+    expect(settingSpec('mode').defaultValue).toBe(DEFAULT_MODE);
+  });
+});
+
+describe('TUI-DESIGN-3 §1.1 (D-G, D-N): DEFAULT_MODE, MODE_BADGE_WORD, MODE_BADGE_MAX_CELLS', () => {
+  it('the default engine mode is agent (badge agent; flipped 2026-09-23 to the model-driven tool loop, AGENT-LOOP-DESIGN §14.1) — the one intentional pin of the value; every other expectation reads DEFAULT_MODE', () => {
+    expect(DEFAULT_MODE).toBe('agent'); // the one intentional value pin
+    expect(MODE_SETTING_VALUES).toContain(DEFAULT_MODE);
+    expect(MODE_BADGE_WORD[DEFAULT_MODE]).toBe('agent');
+  });
+
+  it('MODE_BADGE_WORD has a row for every MODE_SETTING_VALUES member, every word ≤ MODE_BADGE_MAX_CELLS cells, llm-jev reads llm+jev · verified', () => {
+    for (const m of MODE_SETTING_VALUES) {
+      const word = MODE_BADGE_WORD[m];
+      expect(typeof word, m).toBe('string');
+      expect(word.length, m).toBeGreaterThan(0);
+      expect(cellWidth(word), `${m}: ${word}`).toBeLessThanOrEqual(MODE_BADGE_MAX_CELLS);
+    }
+    expect(Object.keys(MODE_BADGE_WORD).sort()).toEqual([...MODE_SETTING_VALUES].sort());
+    expect(MODE_BADGE_WORD['llm-jev']).toBe('llm+jev · verified');
+    expect(MODE_BADGE_WORD['jev-only']).toBe('jev-only');
+    expect(MODE_BADGE_WORD['jev-on']).toBe('jev+llm');
+    expect(MODE_BADGE_WORD['jev-off']).toBe('llm-only');
+    expect(MODE_BADGE_MAX_CELLS).toBe(20);
+    // the words are distinct: a badge names its mode unambiguously
+    const words = MODE_SETTING_VALUES.map((m: EngineMode) => MODE_BADGE_WORD[m]);
+    expect(new Set(words).size).toBe(words.length);
+  });
+});
+
+describe('TUI-DESIGN-4 §8 item 5 (contract 1.6): the ui.renderer and ui.fullscreenDump rows', () => {
+  it('both are ordinary session rows (not launch rows): the mount-time value comes from resolveLaunchSettings, the file value persists for the relaunch', () => {
+    expect(settingSpec('ui.renderer')).toMatchObject({ flag: 'renderer', env: ['JEVCODE_RENDERER'], fileKey: 'renderer', defaultValue: 'classic', secret: false });
+    expect(settingSpec('ui.renderer').launch).toBeUndefined();
+    expect(settingSpec('ui.renderer').ignoredFileKey).toBeUndefined();
+    expect(settingSpec('ui.renderer').boolFlag).toBeUndefined();
+    expect(settingSpec('ui.renderer').description).toContain('classic|fullscreen');
+    expect(settingSpec('ui.fullscreenDump')).toMatchObject({ env: ['JEVCODE_FULLSCREEN_DUMP'], fileKey: 'fullscreenDump', defaultValue: 'true', secret: false });
+    expect(settingSpec('ui.fullscreenDump').flag).toBeUndefined();
+    expect(settingSpec('ui.fullscreenDump').boolFlag).toBeUndefined();
+    expect(settingSpec('ui.fullscreenDump').launch).toBeUndefined();
+    // the five launch rows are unchanged by contract 1.6 (the row above pins the list)
+    expect(LAUNCH_SETTINGS.map((x) => x.name)).not.toContain('ui.renderer');
+  });
+});
+
+describe('TUI-DESIGN-3 §0.1 (D-Q): the seen.defaultMode bookkeeping row', () => {
+  it('is a file-only, non-secret, hidden row with no flag and no variable; the description names it bookkeeping', () => {
+    const spec = settingSpec('seen.defaultMode');
+    expect(spec).toMatchObject({ name: 'seen.defaultMode', env: [], fileKey: 'seenDefaultMode', defaultValue: null, secret: false, hidden: true });
+    expect(spec.flag).toBeUndefined();
+    expect(spec.boolFlag).toBeUndefined();
+    expect(spec.launch).toBeUndefined();
+    expect(spec.description).toContain('bookkeeping');
+    // TUI-DESIGN-5 §5.1: `seen.import` joins it — the SAME contract (file-only, non-secret, hidden unless `--all`),
+    // for the one-time import step of the wizard. Both are asserted, so a third hidden row cannot slip in unnamed.
+    expect(SETTINGS.filter((s) => s.hidden === true).map((s) => s.name)).toEqual(['seen.defaultMode', 'seen.import']);
+    const imp = settingSpec('seen.import');
+    expect(imp).toMatchObject({ env: [], fileKey: 'seenImport', defaultValue: null, secret: false, hidden: true });
+    expect(imp.flag).toBeUndefined();
+    expect(imp.boolFlag).toBeUndefined();
+    expect(imp.description).toContain('bookkeeping');
+  });
+});
+
+describe('TUI-DESIGN-4 §8 (the round-4 config rows): the relaxed-context policy, resolve only', () => {
+  it('six rows, env + file keys only (no flag, no launch), with the three defaults §8 fixes', () => {
+    expect(settingSpec('context.mode')).toMatchObject({ env: ['JEVCODE_CONTEXT_MODE'], fileKey: 'contextMode', defaultValue: DEFAULT_CONTEXT_VIEW, secret: false });
+    expect(settingSpec('context.compaction')).toMatchObject({ env: ['JEVCODE_CONTEXT_COMPACTION'], fileKey: 'contextCompaction', defaultValue: DEFAULT_CONTEXT_COMPACTION });
+    expect(settingSpec('context.compactEvery').defaultValue).toBe(String(DEFAULT_CONTEXT_COMPACT_EVERY));
+    expect([DEFAULT_CONTEXT_VIEW, DEFAULT_CONTEXT_COMPACTION, DEFAULT_CONTEXT_COMPACT_EVERY]).toEqual(['relaxed', 'code', 8]);
+    for (const n of ['context.historySteps', 'context.fileCacheBytes', 'context.budgetChars'] as const) expect(settingSpec(n).defaultValue).toBeNull();
+    for (const n of ['context.mode', 'context.compaction', 'context.compactEvery', 'context.historySteps', 'context.fileCacheBytes', 'context.budgetChars'] as const) {
+      expect(settingSpec(n).flag).toBeUndefined();
+      expect(settingSpec(n).boolFlag).toBeUndefined();
+      expect(settingSpec(n).launch).toBeUndefined();
+      expect(settingSpec(n).ignoredFileKey).toBeUndefined();
+      expect(settingSpec(n).shape).toBeDefined();
+    }
+    expect(CONTEXT_VIEWS).toEqual(['relaxed', 'legacy']);
+    expect(CONTEXT_COMPACTIONS).toEqual(['code', 'llm', 'off']);
+  });
+});
+
+describe('TUI-DESIGN-4 §7.5 (P-D5): `jevcode config` validates', () => {
+  it('`expectedText` is the sentence the ✗ row suffixes', () => {
+    expect(expectedText({ kind: 'int', min: 1 })).toBe('an integer ≥ 1');
+    expect(expectedText({ kind: 'number', min: 0, max: 1 })).toBe('a number between 0 and 1');
+    expect(expectedText({ kind: 'boolean' })).toBe('true or false');
+    expect(expectedText({ kind: 'enum', values: ['code', 'llm', 'off'] })).toBe('one of code|llm|off');
+    expect(expectedText({ kind: 'usd', none: true })).toBe('a dollar amount or none');
+    expect(expectedText({ kind: 'duration' })).toBe('a duration like 30m, 90s or 1h30m');
+  });
+
+  it('the measured broken config: `limits.maxSteps: "lots"` is wrong-type, `ui.theme: "nope"` is wrong-type, `ui.fps: -5` clamps', () => {
+    expect(settingProblem(settingSpec('limits.maxSteps'), 'lots')).toEqual({ kind: 'wrong-type', expected: 'an integer ≥ 1' });
+    expect(settingProblem(settingSpec('limits.maxSteps'), '40')).toBeNull();
+    expect(settingProblem(settingSpec('limits.maxSteps'), '0')).toEqual({ kind: 'out-of-range', expected: 'an integer ≥ 1' });
+    expect(settingProblem(settingSpec('ui.theme'), 'nope')).toEqual({ kind: 'wrong-type', expected: 'one of dark|light|daltonized|ansi' });
+    expect(settingProblem(settingSpec('ui.theme'), 'DARK')).toBeNull();
+    expect(settingProblem(settingSpec('generator.temperature'), 'hot')).toEqual({ kind: 'wrong-type', expected: 'a number between 0 and 2' });
+    // a value that is valid but dangerous is CLAMPED with a ⚠, not refused with a ✗
+    const clamped = settingProblem(settingSpec('ui.fps'), '240');
+    expect(clamped).toEqual({ kind: 'out-of-range', expected: 'clamped to 30' });
+    expect(isClampProblem(clamped!)).toBe(true);
+    expect(settingProblem(settingSpec('ui.fps'), '-5')).toEqual({ kind: 'out-of-range', expected: 'clamped to 5' });
+    expect(isClampProblem({ kind: 'out-of-range', expected: 'an integer ≥ 1' })).toBe(false);
+  });
+
+  it('booleans, durations, money and the `none` cap; an empty value and a shapeless setting are never a problem', () => {
+    expect(settingProblem(settingSpec('ui.notify'), 'yes')).toBeNull();
+    expect(settingProblem(settingSpec('ui.notify'), 'maybe')).toEqual({ kind: 'wrong-type', expected: 'true or false' });
+    expect(settingProblem(settingSpec('limits.maxWall'), '30m')).toBeNull();
+    expect(settingProblem(settingSpec('limits.maxWall'), '1h30m')).toBeNull();
+    expect(settingProblem(settingSpec('limits.maxWall'), 'soon')).toEqual({ kind: 'wrong-type', expected: 'a duration like 30m, 90s or 1h30m' });
+    expect(settingProblem(settingSpec('session.spendCapUsd'), 'none')).toBeNull();
+    expect(settingProblem(settingSpec('limits.spendCapUsd'), 'none')).toEqual({ kind: 'wrong-type', expected: 'a dollar amount' });
+    expect(settingProblem(settingSpec('limits.spendCapUsd'), '-1')).toEqual({ kind: 'out-of-range', expected: 'a dollar amount' });
+    expect(settingProblem(settingSpec('limits.maxSteps'), '  ')).toBeNull();
+    expect(settingProblem(settingSpec('generator.model'), 'anything/at-all')).toBeNull();
+  });
+
+  it('every row that has a shape accepts its own default', () => {
+    for (const spec of SETTINGS) {
+      if (spec.defaultValue === null || spec.shape === undefined) continue;
+      expect(settingProblem(spec, spec.defaultValue), spec.name).toBeNull();
+    }
+  });
+});

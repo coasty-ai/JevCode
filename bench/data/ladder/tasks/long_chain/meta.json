@@ -1,0 +1,38 @@
+{
+  "name": "long_chain",
+  "tier": "long",
+  "hunks": 6,
+  "kinds": [
+    "rename",
+    "attribute",
+    "constant"
+  ],
+  "files": [
+    "src/load.py",
+    "src/clean.py",
+    "src/enrich.py",
+    "src/totals.py",
+    "src/layout.py",
+    "src/report.py"
+  ],
+  "difficulty": 5,
+  "description": "A six-stage pipeline with one exception-raising one-line bug per stage; every test of stage N feeds the shared RAW text through stages 1..N, so at the start all sixteen pipeline tests fail with the same ValueError in load.parse_row and form one goal. Fixing stage k lets stage k's tests pass and moves the remaining failures to stage k+1's frame: load.parse_row passes the kind where the price belongs, float(kind) for float(price) (ValueError on the first row), clean_row reads row.label for row.name (AttributeError), to_record indexes LABELS by row.name for row.kind (KeyError), ranked sorts by kv[2] for kv[1] (IndexError), layout.rows calls lines.add for lines.append (AttributeError) and report joins with the undefined SEPARATOR for SEP (NameError). Progress can only come one stage at a time: 16 -> 13 -> 10 -> 6 -> 4 -> 2 -> 0 failing (by_label and grand_total do not go through ranked, so they pass with stage 3). Sixteen tests fail, ten pass (empty-input and helper tests).",
+  "expected_failing": [
+    "tests/test_clean.py::test_clean_keeps_numbers",
+    "tests/test_clean.py::test_clean_kinds_lower",
+    "tests/test_clean.py::test_clean_names_title_cased",
+    "tests/test_enrich.py::test_enrich_labels",
+    "tests/test_enrich.py::test_enrich_totals",
+    "tests/test_layout.py::test_rows",
+    "tests/test_layout.py::test_rows_widths",
+    "tests/test_load.py::test_parse_row_fields",
+    "tests/test_load.py::test_parse_rows_count",
+    "tests/test_load.py::test_parse_rows_skips_blank_lines",
+    "tests/test_report.py::test_report_lines",
+    "tests/test_report.py::test_report_text",
+    "tests/test_totals.py::test_by_label",
+    "tests/test_totals.py::test_grand_total",
+    "tests/test_totals.py::test_ranked_order",
+    "tests/test_totals.py::test_ranked_values"
+  ]
+}

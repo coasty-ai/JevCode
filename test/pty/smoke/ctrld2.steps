@@ -1,0 +1,8 @@
+# S0 idle·empty: Ctrl-D ×2 exits 0 with `[ui] exited on Ctrl-D ×2` in the scrollback (§3.3, F6)
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.4
+send \x04
+expect press Ctrl-D again to exit
+send \x04
+eof

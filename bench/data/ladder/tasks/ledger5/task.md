@@ -1,0 +1,1 @@
+Several tests across the library package fail: ISBN check digits, overdue loans and fines, search ranking and shelf labels are all wrong somewhere. Fix the modules under src/ so the whole suite under tests/ passes; the tests are correct and must not be edited.

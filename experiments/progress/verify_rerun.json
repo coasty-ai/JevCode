@@ -1,0 +1,3030 @@
+{
+ "summary": {
+  "date": "2026-09-20T15:35:40.395Z",
+  "programs": [
+   "bitcount",
+   "bucketsort",
+   "sqrt",
+   "gcd",
+   "mergesort",
+   "hanoi"
+  ],
+  "requests": 150,
+  "costUsd": 0.012317718000000004,
+  "latencyP50": 197.77495799999997,
+  "noul_answers": 324,
+  "noul_correct_at_05": 311,
+  "noul_mean_abs_diff_vs_saved": 0.006234567901234568,
+  "noul_max_abs_diff_vs_saved": 0.17,
+  "noul_threshold_flips_vs_saved": 1,
+  "score_argmax_agree": "107/108",
+  "move_n": 36,
+  "move_correct": 33,
+  "move_argmax_agree_with_saved": 36,
+  "attack_n": 6,
+  "attack_neutral_agree": 6,
+  "attack_explicit_agree": 6
+ },
+ "noulRows": [
+  {
+   "program": "bitcount",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "counts",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "bitcount",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "raw",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.96,
+    "made_progress": 0.99,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.96,
+    "made_progress": 0.99,
+    "broke_something": 0.05
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "bitcount",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "both",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "bitcount",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.03
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.98,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.98,
+    "broke_something": 0.05
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.62,
+    "broke_something": 0.1
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.46,
+    "broke_something": 0.09
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.97,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.97,
+    "broke_something": 0.06
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.03
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.03
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.05
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.08
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.08
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.06
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.05
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "counts",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "bucketsort",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "raw",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.97,
+    "made_progress": 0.99,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.97,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "bucketsort",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "both",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "bucketsort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "bucketsort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.95,
+    "broke_something": 0.18
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.96,
+    "broke_something": 0.14
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.23,
+    "broke_something": 0.09
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.4,
+    "broke_something": 0.09
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.91,
+    "broke_something": 0.16
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.93,
+    "broke_something": 0.16
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.95
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.93
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.34
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.36
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.83
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.8
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.16
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.16
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.07
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.07
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.09
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.1
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.96
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.95
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.32
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.24
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.9
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.85
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "counts",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "sqrt",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "raw",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.95,
+    "made_progress": 0.98,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.95,
+    "made_progress": 0.98,
+    "broke_something": 0.05
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "sqrt",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "both",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "sqrt",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "sqrt",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.96,
+    "broke_something": 0.1
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.97,
+    "broke_something": 0.1
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.49,
+    "broke_something": 0.15
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.45,
+    "broke_something": 0.18
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.93,
+    "broke_something": 0.26
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.94,
+    "broke_something": 0.31
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.97
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.97
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.57
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.57
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.91
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.91
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.97
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.97
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.07,
+    "broke_something": 0.87
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.06,
+    "broke_something": 0.85
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.97
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.97
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "counts",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "gcd",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "raw",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.97,
+    "made_progress": 0.99,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.96,
+    "made_progress": 0.99,
+    "broke_something": 0.05
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "gcd",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "both",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "gcd",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "gcd",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.97,
+    "broke_something": 0.33
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.98,
+    "broke_something": 0.34
+   },
+   "score_argmax": 2,
+   "saved_score_argmax": 2
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.8,
+    "broke_something": 0.63
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.76,
+    "broke_something": 0.65
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.96,
+    "broke_something": 0.58
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.96,
+    "broke_something": 0.57
+   },
+   "score_argmax": 2,
+   "saved_score_argmax": 2
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.92
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.93
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.39
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.45
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.83
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.84
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.07
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.08
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.07
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.05,
+    "broke_something": 0.07
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.09
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.07
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.94
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.94
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.07,
+    "broke_something": 0.39
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.08,
+    "broke_something": 0.34
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.85
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.86
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "counts",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "mergesort",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "raw",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.97,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.97,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "mergesort",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "both",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.99,
+    "made_progress": 0.99,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.99,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "mergesort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "mergesort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.03
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.98,
+    "broke_something": 0.43
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.98,
+    "broke_something": 0.38
+   },
+   "score_argmax": 3,
+   "saved_score_argmax": 3
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.95,
+    "broke_something": 0.28
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.96,
+    "broke_something": 0.26
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": true,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.99,
+    "broke_something": 0.62
+   },
+   "saved_p": {
+    "program_correct": 0.02,
+    "made_progress": 0.99,
+    "broke_something": 0.56
+   },
+   "score_argmax": 3,
+   "saved_score_argmax": 3
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.95
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.95
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.14
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.23
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.79
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.78
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.03
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.96
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.94
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.08,
+    "broke_something": 0.38
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.09,
+    "broke_something": 0.32
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.79
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.72
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "counts",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.03
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "hanoi",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "raw",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.98,
+    "made_progress": 0.99,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.97,
+    "made_progress": 0.99,
+    "broke_something": 0.06
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "hanoi",
+   "cand": "fix",
+   "kind": "fix",
+   "variant": "both",
+   "truth": {
+    "program_correct": true,
+    "made_progress": true,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.99,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.99,
+    "made_progress": 0.99,
+    "broke_something": 0.04
+   },
+   "score_argmax": 4,
+   "saved_score_argmax": 4
+  },
+  {
+   "program": "hanoi",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "hanoi",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.03
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.04
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.05
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.05
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.97
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.97
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.36
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.36
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.81
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.83
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.08
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.08
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.06
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.06
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.09
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.12
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.97
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.97
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.32
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.32
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": true
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.84
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.02,
+    "broke_something": 0.85
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "variant": "counts",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.02,
+    "made_progress": 0.04,
+    "broke_something": 0.08
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.03,
+    "broke_something": 0.08
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "variant": "raw",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.06
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.05,
+    "broke_something": 0.06
+   },
+   "score_argmax": 0,
+   "saved_score_argmax": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "variant": "both",
+   "truth": {
+    "program_correct": false,
+    "made_progress": false,
+    "broke_something": false
+   },
+   "p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.08
+   },
+   "saved_p": {
+    "program_correct": 0.01,
+    "made_progress": 0.04,
+    "broke_something": 0.1
+   },
+   "score_argmax": 1,
+   "saved_score_argmax": 1
+  }
+ ],
+ "moveRows": [
+  {
+   "program": "bitcount",
+   "cand": "fix",
+   "kind": "fix",
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "saved_chosen": "keep_and_stop",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": false,
+   "p_keep_and_continue": 0.3,
+   "saved_p_keep_and_continue": 0.28
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "saved_chosen": "revert_and_relocalise",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "saved_chosen": "widen_search",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "fix",
+   "kind": "fix",
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "saved_chosen": "keep_and_stop",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": false,
+   "p_keep_and_continue": 0.15,
+   "saved_p_keep_and_continue": 0.17
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "saved_chosen": "revert_and_relocalise",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "saved_chosen": "widen_search",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "fix",
+   "kind": "fix",
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "saved_chosen": "keep_and_stop",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "saved_chosen": "revert_and_relocalise",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": false,
+   "p_keep_and_continue": 0.15,
+   "saved_p_keep_and_continue": 0.19
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "saved_chosen": "widen_search",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "saved_chosen": "revert_and_relocalise",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "fix",
+   "kind": "fix",
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "saved_chosen": "keep_and_stop",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "saved_chosen": "revert_and_relocalise",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "expected": [
+    "keep_and_continue",
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": true,
+   "p_keep_and_continue": 0.13,
+   "saved_p_keep_and_continue": 0.15
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "saved_chosen": "widen_search",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "saved_chosen": "revert_and_relocalise",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "fix",
+   "kind": "fix",
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "saved_chosen": "keep_and_stop",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "saved_chosen": "widen_search",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "expected": [
+    "keep_and_continue",
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "keep_and_continue",
+   "saved_chosen": "keep_and_continue",
+   "ok": true,
+   "p_keep_and_continue": 0.59,
+   "saved_p_keep_and_continue": 0.54
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "saved_chosen": "revert_and_relocalise",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "saved_chosen": "widen_search",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "fix",
+   "kind": "fix",
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "saved_chosen": "keep_and_stop",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "saved_chosen": "revert_and_relocalise",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "saved_chosen": "widen_search",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "saved_chosen": "revert_and_try_next_candidate",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "saved_chosen": "revert_and_relocalise",
+   "ok": true,
+   "p_keep_and_continue": 0,
+   "saved_p_keep_and_continue": 0
+  }
+ ],
+ "attackRows": [
+  {
+   "program": "bitcount",
+   "neutral_choice": "failing_test_0",
+   "saved_neutral": "failing_test_0",
+   "explicit_choice": "failing_test_3",
+   "saved_explicit": "failing_test_3"
+  },
+  {
+   "program": "bucketsort",
+   "neutral_choice": "failing_test_1",
+   "saved_neutral": "failing_test_1",
+   "explicit_choice": "failing_test_2",
+   "saved_explicit": "failing_test_2"
+  },
+  {
+   "program": "sqrt",
+   "neutral_choice": "failing_test_0",
+   "saved_neutral": "failing_test_0",
+   "explicit_choice": "failing_test_3",
+   "saved_explicit": "failing_test_3"
+  },
+  {
+   "program": "gcd",
+   "neutral_choice": "failing_test_1",
+   "saved_neutral": "failing_test_1",
+   "explicit_choice": "failing_test_1",
+   "saved_explicit": "failing_test_1"
+  },
+  {
+   "program": "mergesort",
+   "neutral_choice": "failing_test_1",
+   "saved_neutral": "failing_test_1",
+   "explicit_choice": "failing_test_10",
+   "saved_explicit": "failing_test_10"
+  },
+  {
+   "program": "hanoi",
+   "neutral_choice": "failing_test_1",
+   "saved_neutral": "failing_test_1",
+   "explicit_choice": "failing_test_1",
+   "saved_explicit": "failing_test_1"
+  }
+ ]
+}

@@ -1,0 +1,9 @@
+[
+  {"input": ["electron", "neutron"], "expected": 3},
+  {"input": ["kitten", "sitting"], "expected": 3},
+  {"input": ["rosettacode", "raisethysword"], "expected": 8, "timeout": 10},
+  {"input": ["amanaplanacanalpanama", "docnoteidissentafastneverpreventsafatnessidietoncod"], "expected": 42, "slow": true},
+  {"input": ["abcdefg", "gabcdef"], "expected": 2},
+  {"input": ["", ""], "expected": 0},
+  {"input": ["hello", "olleh"], "expected": 4}
+]

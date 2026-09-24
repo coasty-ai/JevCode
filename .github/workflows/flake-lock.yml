@@ -1,0 +1,121 @@
+# Keeps flake.lock current. `update` locks or updates the flake and proves the result builds and runs with
+# a read-only token; `pr` commits exactly that lock to bot/flake-lock and opens or updates the PR. The two
+# jobs are split so the write-scoped token never reaches the Nix installer or the build.
+#
+# PRs opened with GITHUB_TOKEN do not trigger ci.yml or packaging.yml, so the PR body links the run that
+# validated the lock. Needs "Allow GitHub Actions to create and approve pull requests" in the repo settings.
+name: flake-lock
+
+on:
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: flake-lock
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: update and validate flake.lock
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    outputs:
+      changed: ${{ steps.diff.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+      - name: nix flake lock (when absent) or nix flake update
+        run: |
+          set -euo pipefail
+          if [ -f flake.lock ]; then
+            nix flake update
+          else
+            nix flake lock
+          fi
+
+      - run: nix build -L .#default
+
+      - name: The built command and nix run
+        run: |
+          set -euo pipefail
+          version="$(jq -r .version package.json)"
+          ./result/bin/jevcode --version | grep -Fx "jevcode $version"
+          nix run . -- --version | grep -Fx "jevcode $version"
+
+      - name: Did flake.lock change
+        id: diff
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain -- flake.lock)" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "flake.lock current" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff -- flake.lock || true
+          fi
+
+      - if: steps.diff.outputs.changed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flake-lock
+          path: flake.lock
+          if-no-files-found: error
+          retention-days: 7
+
+  pr:
+    name: push bot/flake-lock and open or update the PR
+    needs: update
+    if: needs.update.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # keeps the GITHUB_TOKEN credential: this job pushes with it
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: flake-lock
+
+      - name: Commit the validated lock to bot/flake-lock and open or update the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          jq -e .nodes flake.lock > /dev/null
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C bot/flake-lock
+          git add flake.lock
+          git commit -m "chore(nix): update flake.lock"
+          git push --force origin HEAD:refs/heads/bot/flake-lock
+          cat > "$RUNNER_TEMP/pr-body.md" <<EOF
+          Automated flake.lock update.
+
+          Validated by $run_url: \`nix build .#default\`, \`./result/bin/jevcode --version\` and
+          \`nix run . -- --version\` passed on ubuntu-latest with this exact lock.
+
+          PRs opened with GITHUB_TOKEN do not start ci.yml or packaging.yml. To run packaging.yml on this
+          branch as well: Actions -> packaging -> Run workflow -> bot/flake-lock.
+          EOF
+          number="$(gh pr list --head bot/flake-lock --base main --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh pr edit "$number" --body-file "$RUNNER_TEMP/pr-body.md"
+            url="$(gh pr view "$number" --json url --jq .url)"
+          else
+            url="$(gh pr create --base main --head bot/flake-lock --title "chore(nix): update flake.lock" --body-file "$RUNNER_TEMP/pr-body.md")"
+          fi
+          echo "flake.lock changed: $url" >> "$GITHUB_STEP_SUMMARY"

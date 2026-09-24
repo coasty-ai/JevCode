@@ -1,0 +1,17 @@
+running 3 tests
+test a ... ok
+test b ... ok
+test c ... ignored
+
+test result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/integration.rs
+
+running 2 tests
+test x ... ok
+test y ... FAILED
+
+failures:
+    y
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s

@@ -1,0 +1,20 @@
+{
+  "name": "six_hunks",
+  "tier": "long",
+  "hunks": 6,
+  "kinds": ["operator", "off_by_one", "constant"],
+  "files": ["src/model.py", "src/filters.py", "src/sorting.py", "src/render.py", "src/stats.py"],
+  "difficulty": 5,
+  "description": "Six data-dependent one-line bugs in five modules, caught only by three parametrised integration tests in one shared file; the per-module tests cover the unaffected inputs and pass. Each integration test has three cases that depend on a pair of bugs: `a_only` fails for the first bug alone, `b_only` for the second alone, `both` for either, so every goal (one per test function) holds two complementary partials and closes only when both fixes are in. test_attention: Task.is_overdue counts a task due today (<= for <) and filters.due_within drops the last day of the window (< for <=). test_board: sorting.by_due puts undated tasks first (`is not None` for `is None`) and render.line keeps one character too many before the '...' (width - 2 for width - 3). test_summary: stats.completion_rate floors (// for /) and average_priority rounds to 0 decimals instead of 1. Nine tests fail, twenty pass.",
+  "expected_failing": [
+    "tests/test_todo.py::test_attention[a_only]",
+    "tests/test_todo.py::test_attention[b_only]",
+    "tests/test_todo.py::test_attention[both]",
+    "tests/test_todo.py::test_board[both]",
+    "tests/test_todo.py::test_board[c_only]",
+    "tests/test_todo.py::test_board[d_only]",
+    "tests/test_todo.py::test_summary[both]",
+    "tests/test_todo.py::test_summary[e_only]",
+    "tests/test_todo.py::test_summary[f_only]"
+  ]
+}

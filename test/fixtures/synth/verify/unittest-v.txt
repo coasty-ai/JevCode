@@ -1,0 +1,41 @@
+test_other_pass (tests.test_sample.OtherTests) ... ok
+test_docstring (tests.test_sample.SampleTests)
+The docstring shows up on its own line. ... FAIL
+test_error (tests.test_sample.SampleTests) ... ERROR
+test_fail_eq (tests.test_sample.SampleTests) ... FAIL
+test_pass (tests.test_sample.SampleTests) ... ok
+test_skip (tests.test_sample.SampleTests) ... skipped 'not now'
+test_xfail (tests.test_sample.SampleTests) ... expected failure
+
+======================================================================
+ERROR: test_error (tests.test_sample.SampleTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/ws/tests/test_sample.py", line 14, in test_error
+    raise ValueError('boom 42')
+ValueError: boom 42
+
+======================================================================
+FAIL: test_docstring (tests.test_sample.SampleTests)
+The docstring shows up on its own line.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/ws/tests/test_sample.py", line 26, in test_docstring
+    self.assertTrue(False)
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_fail_eq (tests.test_sample.SampleTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/ws/tests/test_sample.py", line 11, in test_fail_eq
+    self.assertEqual('hello world', 'hello there')
+AssertionError: 'hello world' != 'hello there'
+- hello world
++ hello there
+
+
+----------------------------------------------------------------------
+Ran 7 tests in 0.000s
+
+FAILED (failures=2, errors=1, skipped=1, expected failures=1)

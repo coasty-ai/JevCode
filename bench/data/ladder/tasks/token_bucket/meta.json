@@ -1,0 +1,27 @@
+{
+  "name": "token_bucket",
+  "tier": "long-2",
+  "hunks": 3,
+  "kinds": [
+    "guard",
+    "two_files",
+    "operator",
+    "rename"
+  ],
+  "files": [
+    "src/bucket.py",
+    "src/limiter.py",
+    "src/policy.py"
+  ],
+  "difficulty": 5,
+  "description": "A token-bucket rate limiter with a coupled pair plus a unit bug. (A) bucket.wait_for is missing the `if cost > self.capacity: return None` guard, so a request larger than the bucket gets a finite wait instead of the never-ending one the docstring promises. (B) limiter.allow tests the wait for truthiness, `if not wait:` where it must be `if wait == 0.0:`, so a None wait reads as 'allowed'. A and B are coupled and neither is a fix alone: B is latent while A is present (the buggy wait_for returns a truthy float for over-burst requests, so test_a_request_above_the_burst_is_denied passes by accident), and fixing A alone turns that passing test red. B alone is visible through the no-refill `batch` quota, whose exhausted bucket already returns None. (C) policy.bucket_for passes policy.per_minute where the TokenBucket wants tokens per second; the donor is the Policy.refill_rate property right above it, which already calls clock.per_second. Seven tests fail, twenty-six pass. Plausible wrong fixes, all verified: (W1) insert the capacity guard in wait_for and stop -- fixes both over-burst tests and breaks tests/test_limiter.py::test_a_request_above_the_burst_is_denied (6 failed / 27 passed); (W2) the whole fix but with `if cost >= self.capacity` -- all seven target tests green, breaks tests/test_bucket.py::test_wait_for_a_whole_capacity_request_is_finite, which pins that a bucket of ten can serve a request for ten (1 failed / 32 passed); (W3) fix the rate by rewriting POLICIES (60.0 -> 1.0, 600.0 -> 10.0) instead of converting in bucket_for -- all seven target tests green, breaks test_the_policy_table_is_written_in_requests_per_minute and test_refill_rate_is_the_per_minute_rate_spread_over_a_minute (2 failed / 31 passed).",
+  "expected_failing": [
+    "tests/test_bucket.py::test_wait_for_above_the_capacity_never_ends",
+    "tests/test_limiter.py::test_a_batch_quota_is_denied_once_it_is_spent",
+    "tests/test_limiter.py::test_a_later_start_delays_the_first_refill",
+    "tests/test_limiter.py::test_retry_after_above_the_burst_never_ends",
+    "tests/test_limiter.py::test_retry_after_is_the_shortfall_in_seconds",
+    "tests/test_limiter.py::test_the_bucket_refills_over_a_minute",
+    "tests/test_policy.py::test_bucket_for_refills_at_the_policy_rate"
+  ]
+}

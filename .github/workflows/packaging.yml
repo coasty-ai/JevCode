@@ -1,0 +1,326 @@
+# Packaging dry run: every channel's recipe is built and installed from a locally packed tarball, before
+# any release needs it. Nothing is published and no credential is used.
+#
+#   pack      npm ci, build, npm pack --ignore-scripts -> artifact packaging-tarball
+#   homebrew  Formula/jevcode.rb rendered with a file:// url, installed from a scratch tap, tested, audited
+#   aur       packaging/aur/PKGBUILD rendered against the tarball, makepkg + namcap + pacman -U
+#   nix       flake check / build / run from the tree (the flake builds from source, not from the tarball)
+#
+# Bot PRs (flake-lock, prepare-release's fallback) do not trigger this workflow; flake-lock.yml validates
+# its own lock before opening its PR.
+name: packaging
+
+on:
+  pull_request:
+    paths:
+      - 'Formula/**'
+      - 'packaging/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'bin/**'
+      - 'man/**'
+      - 'completions/**'
+      - 'src/**'
+      - 'scripts/build.mjs'
+      - 'scripts/licenses.mjs'
+      - 'scripts/release/**'
+      - '.github/workflows/packaging.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Formula/**'
+      - 'packaging/**'
+      - 'flake.nix'
+      - 'flake.lock'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'bin/**'
+      - 'man/**'
+      - 'completions/**'
+      - 'src/**'
+      - 'scripts/build.mjs'
+      - 'scripts/licenses.mjs'
+      - 'scripts/release/**'
+      - '.github/workflows/packaging.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: packaging-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pack:
+    name: pack the tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CI: 'true'
+      JEVCODE_ASSERT_NO_NETWORK: '1'
+    outputs:
+      version: ${{ steps.pack.outputs.version }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: npm pack --ignore-scripts (the build above is the prepack)
+        id: pack
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          npm pack --ignore-scripts
+          # npm names the scoped package's tarball coasty-jevcode-<version>.tgz; this is the one rename, and every
+          # job below uses jevcode-<version>.tgz, as release.yml does
+          tarball="jevcode-$version.tgz"
+          mv "coasty-jevcode-$version.tgz" "$tarball"
+          sha256sum "$tarball" > pack.sha256
+          sha="$(cut -d' ' -f1 pack.sha256)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "Packed \`$tarball\` sha256 \`$sha\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packaging-tarball
+          path: |
+            jevcode-${{ steps.pack.outputs.version }}.tgz
+            pack.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  homebrew:
+    name: homebrew (install, test, audit, style)
+    needs: pack
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: '1'
+      HOMEBREW_NO_ANALYTICS: '1'
+      HOMEBREW_NO_INSTALL_CLEANUP: '1'
+      HOMEBREW_NO_ENV_HINTS: '1'
+      VERSION: ${{ needs.pack.outputs.version }}
+      SHA256: ${{ needs.pack.outputs.sha256 }}
+      TAP: local/jevcode-ci
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packaging-tarball
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Render the formula against the local tarball and put it in a scratch tap
+        run: |
+          set -euo pipefail
+          shasum -a 256 -c pack.sha256
+          node scripts/release/render-packaging.mjs formula --version "$VERSION" --sha256 "$SHA256" \
+            --url "file://$GITHUB_WORKSPACE/jevcode-$VERSION.tgz" > "$RUNNER_TEMP/jevcode.rb"
+          cat "$RUNNER_TEMP/jevcode.rb"
+          brew tap-new --no-git "$TAP"
+          cp "$RUNNER_TEMP/jevcode.rb" "$(brew --repository "$TAP")/Formula/jevcode.rb"
+
+      - name: brew install --build-from-source
+        run: brew install --build-from-source "$TAP/jevcode"
+
+      - name: brew test
+        run: brew test "$TAP/jevcode"
+
+      # brew skips the online reachability check for file:// source URLs, so --online is expected to pass here.
+      # If it does not, the local render gets the offline strict audit and a second render with the registry url
+      # shape gets --online (audited only, never installed).
+      - name: brew audit --strict --online
+        run: |
+          set -euo pipefail
+          if brew audit --strict --online "$TAP/jevcode"; then
+            echo "- brew audit: \`--strict --online\` on the file:// render" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "::warning::brew audit --online rejected the file:// render; falling back to --strict plus an online audit of a registry-url render"
+          brew audit --strict "$TAP/jevcode"
+          # the audit only needs a reachable url: this version if the registry has it, else the registry's latest
+          code="$(curl -sS -o "$RUNNER_TEMP/packument.json" -w '%{http_code}' 'https://registry.npmjs.org/@coasty%2fjevcode')"
+          online_version=""
+          if [ "$code" = "200" ]; then
+            online_version="$(node -e '
+              const p = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+              const v = process.env.VERSION;
+              process.stdout.write(p.versions && p.versions[v] ? v : (p["dist-tags"] && p["dist-tags"].latest) || "");
+            ' "$RUNNER_TEMP/packument.json")"
+          fi
+          if [ -z "$online_version" ]; then
+            echo "- brew audit: \`--strict\` on the file:// render; \`--online\` skipped: @coasty/jevcode is not on the registry yet (HTTP $code)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          online_tap=local/jevcode-ci-online
+          brew tap-new --no-git "$online_tap"
+          node scripts/release/render-packaging.mjs formula --version "$online_version" --sha256 "$SHA256" \
+            > "$(brew --repository "$online_tap")/Formula/jevcode.rb"
+          brew audit --strict --online "$online_tap/jevcode"
+          echo "- brew audit: \`--strict\` on the file:// render, \`--strict --online\` on a registry-url render of $online_version" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: brew style
+        run: brew style "$TAP/jevcode"
+
+      - name: The installed command, man page and completions
+        run: |
+          set -euo pipefail
+          prefix="$(brew --prefix)"
+          "$prefix/bin/jevcode" --version | grep -Fx "jevcode $VERSION"
+          test -f "$prefix/share/man/man1/jevcode.1"
+          man -w jevcode
+          test -f "$prefix/etc/bash_completion.d/jevcode"
+          test -f "$prefix/share/zsh/site-functions/_jevcode"
+          test -f "$prefix/share/fish/vendor_completions.d/jevcode.fish"
+
+  aur:
+    name: aur (makepkg, namcap, pacman -U)
+    needs: pack
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: archlinux:base-devel
+    env:
+      VERSION: ${{ needs.pack.outputs.version }}
+      SHA256: ${{ needs.pack.outputs.sha256 }}
+      WORK: /tmp/aur-build
+    steps:
+      # checkout needs git inside the container; namcap and npm are the check's own tools
+      - name: pacman dependencies
+        run: pacman -Syu --noconfirm --needed git nodejs npm namcap
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packaging-tarball
+
+      - name: Render the PKGBUILD and place the tarball under its source name
+        env:
+          AUR_MAINTAINER: ${{ vars.AUR_MAINTAINER }}
+        run: |
+          set -euo pipefail
+          sha256sum -c pack.sha256
+          mkdir -p "$WORK"
+          node scripts/release/render-packaging.mjs pkgbuild --version "$VERSION" --sha256 "$SHA256" > "$WORK/PKGBUILD"
+          cat "$WORK/PKGBUILD"
+          # makepkg finds source=("jevcode-<npmver>.tgz::...") next to the PKGBUILD and never fetches it
+          cp "jevcode-$VERSION.tgz" "$WORK/jevcode-$VERSION.tgz"
+          useradd -m builder
+          chown -R builder "$WORK"
+
+      - name: makepkg --printsrcinfo
+        run: su builder -c "cd '$WORK' && makepkg --printsrcinfo > .SRCINFO" && cat "$WORK/.SRCINFO"
+
+      - name: makepkg
+        run: su builder -c "cd '$WORK' && makepkg --cleanbuild --noconfirm --nodeps"
+
+      - name: namcap on the PKGBUILD and the package (any error fails)
+        run: |
+          set -euo pipefail
+          cd "$WORK"
+          pkg="$(su builder -c "cd '$WORK' && makepkg --packagelist" | grep -v -- '-debug-' | head -n1)"
+          test -f "$pkg"
+          echo "pkg=$pkg" >> "$GITHUB_ENV"
+          out="$(namcap PKGBUILD; namcap "$pkg")"
+          printf '%s\n' "$out"
+          if printf '%s\n' "$out" | grep -F ' E: '; then
+            echo "::error::namcap reported errors"
+            exit 1
+          fi
+
+      - name: pacman -U, then the installed command, man page and completions
+        run: |
+          set -euo pipefail
+          pacman -U --noconfirm "$pkg"
+          jevcode --version | grep -Fx "jevcode $VERSION"
+          # the archlinux image sets NoExtract for usr/share/man/*, so check the page in the package, not on disk
+          pacman -Qlpq "$pkg" | grep -E '^/usr/share/man/man1/jevcode\.1(\.gz)?$'
+          test -f /usr/share/bash-completion/completions/jevcode
+          test -f /usr/share/zsh/site-functions/_jevcode
+          test -f /usr/share/fish/vendor_completions.d/jevcode.fish
+          mkdir -p "$GITHUB_WORKSPACE/aur-out"
+          cp "$WORK/PKGBUILD" "$WORK/.SRCINFO" "$GITHUB_WORKSPACE/aur-out/"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aur-srcinfo
+          path: aur-out/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+
+  nix:
+    name: nix (${{ matrix.os }})
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.pack.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # enables nix-command and flakes by default; configures access-tokens from the job's read-only token
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+
+      - name: Lock the flake when flake.lock is not committed
+        run: |
+          set -euo pipefail
+          if [ ! -f flake.lock ]; then
+            nix flake lock
+            echo "::warning::flake.lock is not committed — run the flake-lock workflow"
+          fi
+
+      - run: nix flake check -L
+
+      - run: nix build -L .#default
+
+      - name: The built command, nix run, and the man page
+        run: |
+          set -euo pipefail
+          ./result/bin/jevcode --version | grep -Fx "jevcode $VERSION"
+          nix run . -- --version | grep -Fx "jevcode $VERSION"
+          ls result/share/man/man1/jevcode.1*
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: packaging-tarball
+          path: ${{ runner.temp }}/tarball
+
+      - name: Bundle parity with the packed tarball (informational)
+        run: |
+          set -euo pipefail
+          packed="$(tar -xzOf "$RUNNER_TEMP/tarball/jevcode-$VERSION.tgz" package/dist/jevcode.mjs | shasum -a 256 | cut -d' ' -f1)"
+          built="$(shasum -a 256 < result/lib/node_modules/@coasty/jevcode/dist/jevcode.mjs | cut -d' ' -f1)"
+          if [ "$packed" = "$built" ]; then
+            echo "::notice::nix-built dist/jevcode.mjs is byte-identical to the packed tarball's"
+          else
+            echo "::notice::nix-built dist/jevcode.mjs differs from the packed tarball's (packed $packed, nix $built)"
+          fi

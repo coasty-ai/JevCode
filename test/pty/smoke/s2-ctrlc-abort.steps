@@ -1,0 +1,16 @@
+# S2 live·empty (session): Ctrl-C aborts and stays; the composer reopens; /exit (§3.3)
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.3
+send make the tests pass
+sleep 0.2
+send \r
+expect step \d+/\d+
+sleep 0.5
+send \x03
+expect finished [·-] human_abort
+expect Follow-up, question
+send /exit
+sleep 0.2
+send \r
+eof

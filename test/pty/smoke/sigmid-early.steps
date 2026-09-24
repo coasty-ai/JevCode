@@ -1,0 +1,4 @@
+# SIGINT right after the first frame (startup still probing): exit 130 with the epilogue (§14.2, F3)
+expect \x1b\[\?25l
+signal INT
+eof

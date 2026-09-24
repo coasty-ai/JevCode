@@ -1,0 +1,19 @@
+{"t":168,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":770,"step":2,"op":"sleep","arg":"0.6"}
+{"t":770,"step":3,"op":"send","arg":"what is the meaning of this repository and how do I use it well"}
+{"t":1072,"step":4,"op":"sleep","arg":"0.3"}
+{"t":1072,"step":5,"op":"send","arg":"\\r"}
+{"t":3574,"step":6,"op":"sleep","arg":"2.5"}
+{"t":3574,"step":7,"op":"mark","arg":"replied"}
+{"t":3582,"step":8,"op":"resize","arg":"20 34"}
+{"t":4782,"step":9,"op":"sleep","arg":"1.2"}
+{"t":4782,"step":10,"op":"mark","arg":"resized"}
+{"t":4782,"step":11,"op":"send","arg":"hi"}
+{"t":4982,"step":12,"op":"sleep","arg":"0.2"}
+{"t":4982,"step":13,"op":"send","arg":"\\r"}
+{"t":6982,"step":14,"op":"sleep","arg":"2.0"}
+{"t":6982,"step":15,"op":"send","arg":"/exit"}
+{"t":7184,"step":16,"op":"sleep","arg":"0.2"}
+{"t":7184,"step":17,"op":"send","arg":"\\r"}
+{"t":7233,"step":18,"op":"eof","arg":""}
+{"t":7233,"step":0,"op":"exit","arg":"0"}

@@ -1,0 +1,67 @@
+# TUI-DESIGN-5 §6.4 / §6.7 / §10 (slot R5-6): the `/model` picker under a real pty — open at 120×40, type `glm`,
+# resize to 40×24, Enter, and the same run again under `--ascii`. Hermetic: `chat --mock` starts no engine on the
+# argv path and the picker's first paint is `allStaticModels()` (§6.2), so nothing here touches the network. The
+# `JEVCODE_ASSERT_NO_NETWORK=1` row below makes that a failure rather than a hope.
+#
+# What it proves, beyond "it renders":
+#   - §6.2 / gate G-R5-1: the picker paints its first frame from the bundled snapshot with zero awaits — the rows
+#     are on screen in the same frame the composer text is;
+#   - §7 row 85 + §6.8: the resize re-selects the rung ladder (the 120-column rule row `models · N of 7 providers
+#     · by relevance` collapses to `models · N`, and the rows collapse to `id · $in/$out`), never truncating;
+#   - D-AQ: Enter PENDS the row under the marker for the next run — it never starts one and never saves a default;
+#   - §7 row 81: under `--ascii` every glyph substitutes, the marker included, and no `·`, `→`, `▌`, `↑↓` or `─`
+#     survives in the capture;
+#   - gate G-R5-9 / §7 rows 64–66: `assertNoKeyBytes` over every frame. The picker names providers and prices and
+#     must never echo a key; this scenario exports one (`OPENROUTER_API_KEY=$FAKE_KEY`) precisely so the assertion
+#     has something to look for.
+#
+# NOT LIVE YET, by design: the `'models'` arm of `src/tui/Picker.tsx` is R5-4's W3 shared-shell PR (§9.2). Until it
+# lands this scenario runs BY NAME only (`sel_named`), exactly as `r5-who` and the eight `fault-*` scenarios do, so
+# the default smoke board is not red for the other five slots.
+#
+# run-smoke.sh needs four rows for these two scenarios; they are in R5-6's report as a request to R5-2 (W5 owns
+# `test/pty/**` and `src/perf/**`):
+#   steps  : r5-model-picker-ascii) steps_name=r5-model-picker;;
+#   env    : r5-model-picker|r5-model-picker-ascii) extra_env="$extra_env OPENROUTER_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1";;
+#   check  : r5-model-picker) grep -qE 'models [·-] [0-9]+ of [0-9]+ providers' "$txt" && checks="$checks r5-model-picker:rule" || { ok=0; checks="$checks MISSING:r5-model-picker-rule"; };;
+#            r5-model-picker-ascii) grep -qE '[·→▌↑↓─]' "$txt" && { ok=0; checks="$checks ASCII-GLYPH-LEAK"; } || checks="$checks r5-model-picker:ascii";;
+#   select : sel_named r5-model-picker && run r5-model-picker 0 40 120 chat --mock
+#            sel_named r5-model-picker-ascii && run r5-model-picker-ascii 0 40 120 chat --mock --ascii
+# and `test/pty/round5.pty.test.ts` (R5-2's file) calls `assertNoKeyBytes(r, FAKE_KEY)` on both captures.
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.4
+
+# 1 — `/model` with no argument opens the picker in the PANE slot (D-AQ), filtered by the live composer text.
+#     The first paint is the bundled snapshot, so the rows are already there when the rule row is.
+send /model
+sleep 0.2
+send \r
+expect models [·-]
+sleep 0.4
+mark picker-open-120
+
+# 2 — typing narrows: the composer IS the filter (the `/resume` shape, `src/session/picker-lines.ts:1`)
+send glm
+sleep 0.5
+mark picker-glm-120
+
+# 3 — the 40-column rung: `models · N ─ ↑↓ Enter Esc` and `id · $in/$out` rows (F-59), re-measured, never cut
+resize 24 40
+sleep 0.8
+mark picker-glm-40
+
+# 4 — Enter picks the row under the marker and PENDS it for the next run; the picker closes, no run starts
+send \r
+sleep 0.5
+mark picker-picked
+
+# 5 — back to 120: the pend is a one-line record in the transcript, not a status-only toast
+resize 40 120
+sleep 0.6
+mark picker-after
+
+send /exit
+sleep 0.2
+send \r
+eof

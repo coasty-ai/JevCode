@@ -1,0 +1,3 @@
+# chat mode: the argv-only first frame; --perf-exit-after-first-frame prints FIRST_FRAME_MS and exits 0
+expect FIRST_FRAME_MS=
+eof

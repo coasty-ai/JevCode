@@ -1,0 +1,571 @@
+[
+  {
+    "name": "account",
+    "hunks": 3,
+    "kinds": [
+      "operator",
+      "off_by_one",
+      "rename"
+    ],
+    "files": [
+      "src/account.py"
+    ],
+    "difficulty": 3,
+    "description": "Three independent bugs in one file: withdraw rejects an amount equal to the balance (>= should be >), statement numbers entries from 0 (enumerate needs start=1), and transfer calls dst.withdraw instead of dst.deposit (wrong call target). Three tests fail, one per bug; seven pass. The transfer test fails with an exception rather than a wrong value.",
+    "path": "tasks/account"
+  },
+  {
+    "name": "calendar_utils",
+    "hunks": 3,
+    "kinds": [
+      "operator",
+      "off_by_one",
+      "call_args"
+    ],
+    "files": [
+      "src/calendar_utils.py"
+    ],
+    "difficulty": 3,
+    "description": "Three independent bugs in one file: is_leap_year joins its two clauses with `and` instead of `or` (so no year is ever leap), day_of_year subtracts 1 at the end, and parse_iso passes maxsplit=1 to split so a full date never yields three parts. Five tests fail, five pass. Leap-year failures surface both directly and through days_in_month, so localisation must attribute the February failure to is_leap_year.",
+    "path": "tasks/calendar_utils"
+  },
+  {
+    "name": "events",
+    "hunks": 1,
+    "kinds": [
+      "attribute"
+    ],
+    "files": [
+      "src/events.py"
+    ],
+    "difficulty": 1,
+    "description": "agenda_line reads event.end_at, but the Event dataclass field is ends_at (AttributeError). The fix renames one attribute access; the receiver's fields are visible in the same file, so a Choice over Event's attributes finds it. Three tests fail (agenda_line twice, agenda once), six pass.",
+    "path": "tasks/events"
+  },
+  {
+    "name": "grades",
+    "hunks": 2,
+    "kinds": [
+      "operator",
+      "rename"
+    ],
+    "files": [
+      "src/grades.py"
+    ],
+    "difficulty": 2,
+    "description": "Two independent one-line bugs in one file: letter_grade uses > where the docstring and tests say boundaries are inclusive (>=), and weighted_average divides by len(weights) instead of sum(weights) (wrong identifier). Three tests fail, seven pass.",
+    "path": "tasks/grades"
+  },
+  {
+    "name": "inventory",
+    "hunks": 2,
+    "kinds": [
+      "operator",
+      "off_by_one"
+    ],
+    "files": [
+      "src/inventory.py"
+    ],
+    "difficulty": 2,
+    "description": "Two independent one-line bugs in one file: total_value adds qty and price instead of multiplying (operator), and page() treats the 1-based page number as 0-based (off by one). Four tests fail (two per bug), six pass; each bug is exercised by its own tests so the outer loop can fix one failing test at a time.",
+    "path": "tasks/inventory"
+  },
+  {
+    "name": "profiles",
+    "hunks": 1,
+    "kinds": [
+      "guard"
+    ],
+    "files": [
+      "src/profiles.py"
+    ],
+    "difficulty": 2,
+    "description": "display_name calls .strip() on user.nickname, which is None for users without a nickname (AttributeError). The fix inserts a guard, `if user.nickname is None: return user.full_name`, before the call. Two tests fail (one direct, one through card()), eight pass. short_bio and mask_email in the same file show the None-guard pattern.",
+    "path": "tasks/profiles"
+  },
+  {
+    "name": "shipping",
+    "hunks": 1,
+    "kinds": [
+      "constant"
+    ],
+    "files": [
+      "src/shipping.py"
+    ],
+    "difficulty": 2,
+    "description": "The free-shipping threshold in the module-level CONFIG dict is 500.0 instead of 50.0, so no test order ever ships free. The fix changes one literal inside the dict; the correct value appears both in the task text and as a literal in the failing tests. Four tests fail, six pass.",
+    "path": "tasks/shipping"
+  },
+  {
+    "name": "stats",
+    "hunks": 1,
+    "kinds": [
+      "guard"
+    ],
+    "files": [
+      "src/stats.py"
+    ],
+    "difficulty": 2,
+    "description": "median lacks the empty-sequence guard every sibling has, so median([]) raises IndexError instead of ValueError. The fix inserts `if not values: raise ValueError(...)`. Two tests fail (one direct, one via summary(), which evaluates median first), eight pass. mean/mode/variance directly above show the exact guard to copy.",
+    "path": "tasks/stats"
+  },
+  {
+    "name": "table",
+    "hunks": 3,
+    "kinds": [
+      "two_files",
+      "call_args"
+    ],
+    "files": [
+      "src/fmt.py",
+      "src/table.py"
+    ],
+    "difficulty": 4,
+    "description": "Two files must change consistently: the helper fmt.pad must gain a `fill` parameter (signature line plus the line that uses it, two hunks in fmt.py) and the caller table.render must pass its own `fill` through to pad (one hunk in table.py). tests/test_fmt.py pins the new helper signature and tests/test_table.py pins the rendered output, so neither file alone suffices; applying only the body hunk in fmt.py breaks every fmt test with a NameError. pad_left in the same file shows the target signature. Four tests fail (two per test file), six pass.",
+    "path": "tasks/table"
+  },
+  {
+    "name": "tagcloud",
+    "hunks": 1,
+    "kinds": [
+      "import"
+    ],
+    "files": [
+      "src/tagcloud.py"
+    ],
+    "difficulty": 1,
+    "description": "The module uses collections.Counter in three functions but never imports it; because the annotations are postponed the module imports fine and the NameError only appears when tag_counts/top_tags/co_occurrence run. The fix adds one import line. Four tests fail, five pass.",
+    "path": "tasks/tagcloud"
+  },
+  {
+    "name": "textstats",
+    "hunks": 2,
+    "kinds": [
+      "call_args",
+      "off_by_one"
+    ],
+    "files": [
+      "src/textstats.py"
+    ],
+    "difficulty": 3,
+    "description": "Two independent one-line bugs in one file: most_common sorts ascending because the sorted() call lacks reverse=True (a keyword argument must be added, not swapped), and ngrams drops the last n-gram because its range is short by one. Four tests fail (two per bug), six pass.",
+    "path": "tasks/textstats"
+  },
+  {
+    "name": "units",
+    "hunks": 1,
+    "kinds": [
+      "new_branch",
+      "rename"
+    ],
+    "files": [
+      "src/units.py"
+    ],
+    "difficulty": 4,
+    "description": "Donor-code case: the three-line body of parse_duration is wrong (it slices off the last character as the unit and calls int()), so it cannot handle 'ms', fractions, bare numbers or upper-case units. The sibling parse_size directly above has the correct five-line shape; the fix is to copy it with SIZE_UNITS->DURATION_UNITS and upper()->lower(). One contiguous hunk. Four tests fail, six pass.",
+    "path": "tasks/units"
+  },
+  {
+    "name": "crossfile",
+    "tier": "long",
+    "hunks": 4,
+    "kinds": [
+      "two_files",
+      "rename",
+      "operator"
+    ],
+    "files": [
+      "src/fmt.py",
+      "src/invoice.py",
+      "src/tax.py",
+      "src/discount.py"
+    ],
+    "difficulty": 5,
+    "description": "Two coordinated one-line edits in two files plus two independent bugs. fmt.money reads its symbol under the wrong option key, options.get(CURRENCY_KEY) for options.get(SYMBOL_KEY) (both module constants of fmt.py; the tests pin `symbol=`), and invoice.render's local `cash` helper builds its options dict under CURRENCY_KEY as well. Either identifier swap alone regresses: fixing the definition makes the fmt tests pass but every invoice line falls back to '$' (two invoice tests break); fixing only the call site changes nothing for fmt and breaks the same two. Only the pair (one patch of two files) is green: test_money_ignores_currency_option pins that the `currency` option is never read as a symbol, so a definition that reads both keys is not a fix either. Independently, tax.tax_for exempts the threshold amount itself (<= for <) and discount.apply_discount negates the percentage-code test (`not in`). Eight tests fail, seventeen pass.",
+    "expected_failing": [
+      "tests/test_discount.py::test_best_code",
+      "tests/test_discount.py::test_flat_code",
+      "tests/test_discount.py::test_percentage_codes",
+      "tests/test_fmt.py::test_money_custom_symbol",
+      "tests/test_fmt.py::test_money_ignores_currency_option",
+      "tests/test_fmt.py::test_money_negative_with_symbol",
+      "tests/test_tax.py::test_threshold_is_taxed",
+      "tests/test_tax.py::test_with_tax"
+    ],
+    "path": "tasks/crossfile"
+  },
+  {
+    "name": "import_and_guard",
+    "tier": "long",
+    "hunks": 4,
+    "kinds": [
+      "import",
+      "guard",
+      "off_by_one",
+      "operator"
+    ],
+    "files": [
+      "src/paths.py",
+      "src/settings.py",
+      "src/retry.py",
+      "src/duration.py"
+    ],
+    "difficulty": 4,
+    "description": "Two inserts and two replaces, independent, in four modules. paths.py uses `re` in three functions but never imports it (the annotations are postponed, so the module imports and the NameError appears at call time; one `import re` line at module level, the sibling duration.py has the same line). Settings.get lacks the `if value is None: return default` guard that get_int and get_bool directly below it have, so an unknown key raises AttributeError on None.strip(). retry.schedule iterates range(1, attempts + 1) and yields one delay too many. duration.parse_duration adds the unit size instead of multiplying by it. Twelve tests fail (4 + 2 + 3 + 3), eleven pass.",
+    "expected_failing": [
+      "tests/test_duration.py::test_parse_is_case_insensitive",
+      "tests/test_duration.py::test_parse_units",
+      "tests/test_duration.py::test_round_trip",
+      "tests/test_paths.py::test_extension",
+      "tests/test_paths.py::test_slugify",
+      "tests/test_paths.py::test_split_path",
+      "tests/test_paths.py::test_with_extension",
+      "tests/test_retry.py::test_schedule_has_one_delay_between_attempts",
+      "tests/test_retry.py::test_schedule_single_attempt_has_no_delay",
+      "tests/test_retry.py::test_total_wait",
+      "tests/test_settings.py::test_get_missing_default_is_returned_as_given",
+      "tests/test_settings.py::test_get_missing_returns_default"
+    ],
+    "path": "tasks/import_and_guard"
+  },
+  {
+    "name": "ledger5",
+    "tier": "long",
+    "hunks": 5,
+    "kinds": [
+      "off_by_one",
+      "operator",
+      "constant"
+    ],
+    "files": [
+      "src/isbn.py",
+      "src/loans.py",
+      "src/search.py",
+      "src/shelves.py"
+    ],
+    "difficulty": 4,
+    "description": "Pure chain length: five independent one-line bugs in four modules, each with its own failing tests and no shared code paths. isbn10_check_digit weights the digits 9..1 instead of 10..2 (off by one in a constant; breaks the check digit, validation and the ISBN-13 conversion), is_overdue uses >= so a loan is overdue on its due date (operator; also breaks can_renew), fine caps with max() instead of min() (wrong builtin), rank sorts ascending because reverse=False (constant), and label numbers positions from 0 instead of 1 (`number = position` drops the `+ 1`; off by one). Twelve tests fail (3 + 2 + 3 + 2 + 2), eighteen pass. The ledger must form and close five goals in sequence without regressing any of them.",
+    "expected_failing": [
+      "tests/test_isbn.py::test_isbn10_check_digit",
+      "tests/test_isbn.py::test_to_isbn13",
+      "tests/test_isbn.py::test_valid_isbn10",
+      "tests/test_loans.py::test_can_renew_on_due_date",
+      "tests/test_loans.py::test_fine_capped",
+      "tests/test_loans.py::test_fine_per_day",
+      "tests/test_loans.py::test_fine_zero_when_on_time",
+      "tests/test_loans.py::test_not_overdue_on_due_date",
+      "tests/test_search.py::test_rank_best_first",
+      "tests/test_search.py::test_rank_two_levels",
+      "tests/test_shelves.py::test_label",
+      "tests/test_shelves.py::test_labels_sequence"
+    ],
+    "path": "tasks/ledger5"
+  },
+  {
+    "name": "long_chain",
+    "tier": "long",
+    "hunks": 6,
+    "kinds": [
+      "rename",
+      "attribute",
+      "constant"
+    ],
+    "files": [
+      "src/load.py",
+      "src/clean.py",
+      "src/enrich.py",
+      "src/totals.py",
+      "src/layout.py",
+      "src/report.py"
+    ],
+    "difficulty": 5,
+    "description": "A six-stage pipeline with one exception-raising one-line bug per stage; every test of stage N feeds the shared RAW text through stages 1..N, so at the start all sixteen pipeline tests fail with the same ValueError in load.parse_row and form one goal. Fixing stage k lets stage k's tests pass and moves the remaining failures to stage k+1's frame: load.parse_row passes the kind where the price belongs, float(kind) for float(price) (ValueError on the first row), clean_row reads row.label for row.name (AttributeError), to_record indexes LABELS by row.name for row.kind (KeyError), ranked sorts by kv[2] for kv[1] (IndexError), layout.rows calls lines.add for lines.append (AttributeError) and report joins with the undefined SEPARATOR for SEP (NameError). Progress can only come one stage at a time: 16 -> 13 -> 10 -> 6 -> 4 -> 2 -> 0 failing (by_label and grand_total do not go through ranked, so they pass with stage 3). Sixteen tests fail, ten pass (empty-input and helper tests).",
+    "expected_failing": [
+      "tests/test_clean.py::test_clean_keeps_numbers",
+      "tests/test_clean.py::test_clean_kinds_lower",
+      "tests/test_clean.py::test_clean_names_title_cased",
+      "tests/test_enrich.py::test_enrich_labels",
+      "tests/test_enrich.py::test_enrich_totals",
+      "tests/test_layout.py::test_rows",
+      "tests/test_layout.py::test_rows_widths",
+      "tests/test_load.py::test_parse_row_fields",
+      "tests/test_load.py::test_parse_rows_count",
+      "tests/test_load.py::test_parse_rows_skips_blank_lines",
+      "tests/test_report.py::test_report_lines",
+      "tests/test_report.py::test_report_text",
+      "tests/test_totals.py::test_by_label",
+      "tests/test_totals.py::test_grand_total",
+      "tests/test_totals.py::test_ranked_order",
+      "tests/test_totals.py::test_ranked_values"
+    ],
+    "path": "tasks/long_chain"
+  },
+  {
+    "name": "masked",
+    "tier": "long",
+    "hunks": 3,
+    "kinds": [
+      "rename",
+      "attribute",
+      "off_by_one"
+    ],
+    "files": [
+      "src/report.py",
+      "src/aggregate.py",
+      "src/parse.py"
+    ],
+    "difficulty": 4,
+    "description": "Masking chain: the six report tests all fail at the same NameError in report.summary (`parse_lines(txt)` for `text`). Fixing it makes the two empty-input tests pass; the other four then fail in a callee: those whose log carries durations fail in parse.parse_line (int(took[:-1]) keeps the 'm' of '12ms', ValueError), and every non-empty log fails in aggregate.total_ms (`e.took` for `e.ms`, AttributeError) once parse is fixed, the duration-free logs immediately. The same tests must be re-clustered twice as their traceback frame moves report -> parse -> aggregate; the direct parse and aggregate tests never exercise the two callee paths (durations, non-empty totals). Six tests fail, sixteen pass.",
+    "expected_failing": [
+      "tests/test_report.py::test_render_empty",
+      "tests/test_report.py::test_render_full",
+      "tests/test_report.py::test_summary_counts_levels",
+      "tests/test_report.py::test_summary_empty",
+      "tests/test_report.py::test_summary_plain_lines_have_no_duration",
+      "tests/test_report.py::test_summary_total_and_slowest"
+    ],
+    "path": "tasks/masked"
+  },
+  {
+    "name": "regress_trap",
+    "tier": "long",
+    "hunks": 4,
+    "kinds": [
+      "off_by_one",
+      "constant",
+      "operator"
+    ],
+    "files": [
+      "src/agenda.py",
+      "src/roster.py",
+      "src/intervals.py",
+      "src/names.py"
+    ],
+    "difficulty": 4,
+    "description": "Regressions must never be kept. Bug 1: agenda.Item.span returns (first_day, last_day) instead of (first_day, last_day + 1), so items vanish on their last day and never clash; the obvious mutations, `<` -> `<=` in intervals.contains or in intervals.overlaps, make the agenda tests pass but break the pinned half-open semantics in tests/test_intervals.py and tests/test_slots.py (end minute free, touching slots bookable). The fix is the off-by-one at the span line. Bug 2 has the same shape: roster.badge slices one initial instead of two, and shortening names.initials would pass the badge tests while breaking test_names. Bugs 3 and 4 are plain: intervals.merge does not merge touching intervals (< for <=) and names.surname returns the first word (parts[0] for parts[-1]). Seven tests fail, twenty-one pass.",
+    "expected_failing": [
+      "tests/test_agenda.py::test_clashing_when_sharing_a_day",
+      "tests/test_agenda.py::test_on_day_includes_last_day",
+      "tests/test_agenda.py::test_single_day_item_is_on_its_day",
+      "tests/test_intervals.py::test_merge_touching",
+      "tests/test_names.py::test_surname",
+      "tests/test_roster.py::test_badge_two_initials",
+      "tests/test_roster.py::test_badges"
+    ],
+    "path": "tasks/regress_trap"
+  },
+  {
+    "name": "shared_frame",
+    "tier": "long",
+    "hunks": 2,
+    "kinds": [
+      "constant",
+      "call_args"
+    ],
+    "files": [
+      "src/booking.py",
+      "src/pricing.py"
+    ],
+    "difficulty": 4,
+    "description": "The `account` partial trap by construction: two bugs in two different modules whose failing tests all raise InvalidValue at the same line of the shared helper checks.ensure_at_least, so frame clustering merges them into one goal. booking.reserve demands at least 1 remaining seat instead of 0 (constant; two tests), and pricing.total swaps the arguments of ensure_at_least(seats, 1, ...) so any order of two or more seats is rejected (argument swap; four tests). Each correct fix alone makes only its own tests pass and is therefore a partial of the merged goal; the two partials have disjoint newly-passing sets and must be paired or committed as partials. checks.py's own tests pin `<` in the helper, so mutating the shared line regresses them. Six tests fail, nineteen pass.",
+    "expected_failing": [
+      "tests/test_booking.py::test_reserve_last_seats",
+      "tests/test_booking.py::test_sold_out_after_full_reservation",
+      "tests/test_pricing.py::test_per_person",
+      "tests/test_pricing.py::test_total_below_group_minimum_has_no_discount",
+      "tests/test_pricing.py::test_total_group_discount",
+      "tests/test_pricing.py::test_total_two_seats"
+    ],
+    "path": "tasks/shared_frame"
+  },
+  {
+    "name": "six_hunks",
+    "tier": "long",
+    "hunks": 6,
+    "kinds": [
+      "operator",
+      "off_by_one",
+      "constant"
+    ],
+    "files": [
+      "src/model.py",
+      "src/filters.py",
+      "src/sorting.py",
+      "src/render.py",
+      "src/stats.py"
+    ],
+    "difficulty": 5,
+    "description": "Six data-dependent one-line bugs in five modules, caught only by three parametrised integration tests in one shared file; the per-module tests cover the unaffected inputs and pass. Each integration test has three cases that depend on a pair of bugs: `a_only` fails for the first bug alone, `b_only` for the second alone, `both` for either, so every goal (one per test function) holds two complementary partials and closes only when both fixes are in. test_attention: Task.is_overdue counts a task due today (<= for <) and filters.due_within drops the last day of the window (< for <=). test_board: sorting.by_due puts undated tasks first (`is not None` for `is None`) and render.line keeps one character too many before the '...' (width - 2 for width - 3). test_summary: stats.completion_rate floors (// for /) and average_priority rounds to 0 decimals instead of 1. Nine tests fail, twenty pass.",
+    "expected_failing": [
+      "tests/test_todo.py::test_attention[a_only]",
+      "tests/test_todo.py::test_attention[b_only]",
+      "tests/test_todo.py::test_attention[both]",
+      "tests/test_todo.py::test_board[both]",
+      "tests/test_todo.py::test_board[c_only]",
+      "tests/test_todo.py::test_board[d_only]",
+      "tests/test_todo.py::test_summary[both]",
+      "tests/test_todo.py::test_summary[e_only]",
+      "tests/test_todo.py::test_summary[f_only]"
+    ],
+    "path": "tasks/six_hunks"
+  },
+  {
+    "name": "csv_schema",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "operator",
+      "new_branch",
+      "two_files"
+    ],
+    "files": [
+      "src/cells.py",
+      "src/infer.py",
+      "src/schema.py"
+    ],
+    "difficulty": 5,
+    "description": "A CSV schema inferrer whose type lattice is broken in two places that only work together. (A) cells.widen returns the NARROWER of two kinds on the int < float < str chain, `RANK[left] < RANK[right]` for `>`. (B) infer.column_type seeds the fold with WIDEST and folds over every kind, where it must start at kinds[0] (and answer WIDEST only for an empty column). The two cancel: with A's min the WIDEST seed is harmless and homogeneous columns come out right, which is why test_an_int_column, test_a_float_column and test_blanks_are_ignored_when_typing pass on the buggy tree. Fixing A alone makes the seed dominate and every column becomes str -- three passing tests break. Fixing B alone recovers the bool and date columns only; mixed int/float and int/str columns stay wrong. (C) schema.validate reports only a row that is too SHORT, `len(row) < len(schema.columns)` for `!=`, so a spare cell slips through and zip() silently truncates. Eight tests fail, thirty-one pass. Plausible wrong fixes, all verified: (W1) repair cells.widen and stop -- the failing test names it directly, and it takes the tree from 8 to 9 failures by breaking test_an_int_column, test_a_float_column and test_blanks_are_ignored_when_typing (9 failed / 30 passed); (W2) the coupled pair plus `len(row) > len(schema.columns)`, the case the failing test shows -- all eight target tests green, breaks the pinned tests/test_schema.py::test_validate_reports_a_short_row (1 failed / 38 passed); (W3) leave cells.widen alone and hand-roll the precedence inside column_type (all-equal shortcut, `set(kinds) <= {int,float}` -> float, else str) -- every column test green and only tests/test_cells.py::test_widen_keeps_the_kind_that_holds_the_other left red, i.e. the per-module test that pins the pairwise rule is the only thing standing between the suite and an overfit (1 failed / 38 passed).",
+    "expected_failing": [
+      "tests/test_cells.py::test_widen_keeps_the_kind_that_holds_the_other",
+      "tests/test_infer.py::test_a_bool_column",
+      "tests/test_infer.py::test_a_date_column",
+      "tests/test_infer.py::test_ints_beside_decimals_make_the_column_float",
+      "tests/test_infer.py::test_one_word_makes_the_whole_column_text",
+      "tests/test_schema.py::test_a_cell_count_problem_hides_the_rest",
+      "tests/test_schema.py::test_infer_schema_types_each_column",
+      "tests/test_schema.py::test_validate_reports_a_row_with_a_spare_cell"
+    ],
+    "path": "tasks/csv_schema"
+  },
+  {
+    "name": "deadline_queue",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "call_args",
+      "operator",
+      "guard",
+      "two_files"
+    ],
+    "files": [
+      "src/slack.py",
+      "src/schedule.py"
+    ],
+    "difficulty": 5,
+    "description": "A deadline scheduler whose sign error is cancelled by a swapped call. (A) slack.lateness returns `due_at - finish_at`, the negation of the lateness its docstring describes, which also drags is_late and headroom the wrong way. (B) schedule.lateness_of calls lateness(slot.job.due_at, slot.finish) with the two arguments the wrong way round, which negates A back: every schedule-side lateness number, late_jobs, total_lateness and the whole of report.py are right on the buggy tree, and only the five tests/test_slack.py tests that call the helper directly are red. Repairing either half alone flips the sign of the whole schedule and report side. (C) schedule.lay_out gives a slot to a job of no length; the gold inserts `if job.minutes <= 0: continue`, and the tempting place to drop that job instead is ranking.order, which the suite forbids. Six tests fail, thirty-one pass. Plausible wrong fixes, all verified: (W1) flip slack.lateness and stop -- all five slack tests green, and five schedule tests (test_lateness_of_a_slot_that_lands_late, test_lateness_of_a_slot_that_lands_early, test_late_jobs_are_named_in_schedule_order, test_nothing_is_late_when_there_is_room, test_total_lateness_counts_only_the_late_jobs) plus five tests/test_report.py tests break (11 failed / 26 passed, up from 6); (W2) the coupled pair plus filtering the no-length job out in ranking.order -- all six target tests green, breaks the previously passing tests/test_ranking.py::test_order_keeps_every_job_including_one_of_no_length, which pins that ranking drops nothing (1 failed / 36 passed); (W3) un-swap schedule.lateness_of alone (16 failed / 21 passed).",
+    "expected_failing": [
+      "tests/test_schedule.py::test_a_job_of_no_length_gets_no_slot",
+      "tests/test_slack.py::test_headroom_is_the_time_to_spare",
+      "tests/test_slack.py::test_headroom_of_a_late_job_is_zero",
+      "tests/test_slack.py::test_is_late_reads_the_sign_of_the_lateness",
+      "tests/test_slack.py::test_lateness_when_a_job_lands_after_its_deadline",
+      "tests/test_slack.py::test_lateness_when_a_job_lands_early"
+    ],
+    "path": "tasks/deadline_queue"
+  },
+  {
+    "name": "dep_order",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "off_by_one",
+      "constant",
+      "two_files"
+    ],
+    "files": [
+      "src/layers.py",
+      "src/order.py",
+      "src/plan.py"
+    ],
+    "difficulty": 5,
+    "description": "An install-order resolver whose two off-by-ones cancel. (A) layers.depth folds with `max(..., default=0)` where the empty fold must be -1, so a package that requires nothing comes out at depth 1 and every depth in the graph is one too high. (B) order.round_number returns depth(graph, name) without the `+ FIRST_ROUND` that turns a 0-based depth into a 1-based round. A's shift is exactly B's missing offset, so every round_number, schedule and max_rounds test passes on the buggy tree, and layers() is unaffected because a constant shift does not change the grouping: the only visible failures are the four tests/test_layers.py depth tests. Fixing either one alone turns the four order tests red. (C) plan.check walks `wanted` only, so an unknown name in `installed` is never reported; the gold walks `list(wanted) + list(installed)`, which is also what pins the order of the two. Six tests fail, twenty-six pass. Plausible wrong fixes, all verified: (W1) repair layers.depth and stop -- the four depth tests are the only ones that name it, and it breaks test_the_shallowest_packages_go_in_round_one, test_a_round_per_step_down_the_chain, test_the_schedule_numbers_every_package and test_max_rounds_counts_the_rounds (still 6 failed / 26 passed, a different six); (W2) the coupled pair plus check() switched from `wanted` to `installed`, the name the failing test complains about -- five of the six target tests green and the previously passing tests/test_plan.py::test_check_reports_an_unknown_wanted_package red (2 failed / 30 passed); (W3) repair order.round_number alone -- fixes nothing and breaks the four order tests as well (10 failed / 22 passed).",
+    "expected_failing": [
+      "tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero",
+      "tests/test_layers.py::test_an_isolated_package_is_at_depth_zero_too",
+      "tests/test_layers.py::test_depth_follows_the_longest_chain_not_the_shortest",
+      "tests/test_layers.py::test_depth_is_one_more_than_the_deepest_requirement",
+      "tests/test_plan.py::test_check_reports_an_unknown_installed_package",
+      "tests/test_plan.py::test_check_reports_the_wanted_ones_before_the_installed_ones"
+    ],
+    "path": "tasks/dep_order"
+  },
+  {
+    "name": "hunk_merge",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "off_by_one",
+      "two_files",
+      "call_args"
+    ],
+    "files": [
+      "src/hunks.py",
+      "src/apply.py",
+      "src/merge.py"
+    ],
+    "difficulty": 5,
+    "description": "A diff-hunk merger with a 1-based/0-based confusion that has been compensated for at the call site. (A) hunks.Hunk.index returns self.start, the 1-based diff line number, where it must return self.start - 1. (B) apply.apply subtracts that 1 back out again, `start = hunk.index() - 1` where it must be `start = hunk.index()`. Every apply test, and preview.preview on top of it, passes on the buggy tree because the two cancel exactly; only the four tests that read index(), last_index() and replaced_lines() directly are red, and none of them mentions apply.py. Removing either half alone shifts every hunk by one line. (C) merge.merge asks conflicts(left, right), which only pairs one side against the other, so a side that overlaps itself merges happily; the gold asks clashes(list(left) + list(right)), the sibling function directly above it that pairs a whole set against itself. Six tests fail, thirty-six pass. Plausible wrong fixes, all verified: (W1) make Hunk.index() 0-based and stop -- the four failing hunks tests point straight at it, and it breaks ten apply tests, test_a_merged_set_applies_cleanly and test_preview_is_the_patched_file_as_text (14 failed / 28 passed); (W2) the coupled pair plus `clashes(left) or clashes(right)`, exactly the two cases the failing tests show -- all six target tests green, breaks the previously passing tests/test_merge.py::test_merge_refuses_two_sides_that_lay_claim_to_the_same_lines (1 failed / 41 passed); (W3) drop the compensating `- 1` in apply.py alone (17 failed / 25 passed).",
+    "expected_failing": [
+      "tests/test_hunks.py::test_index_is_the_zero_based_offset",
+      "tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line",
+      "tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index",
+      "tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers",
+      "tests/test_merge.py::test_merge_refuses_a_left_side_that_overlaps_itself",
+      "tests/test_merge.py::test_merge_refuses_a_right_side_that_overlaps_itself"
+    ],
+    "path": "tasks/hunk_merge"
+  },
+  {
+    "name": "route_match",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "operator",
+      "two_files",
+      "new_branch"
+    ],
+    "files": [
+      "src/pattern.py",
+      "src/router.py"
+    ],
+    "difficulty": 5,
+    "description": "A URL router whose specificity score and the comparison that reads it are both inverted. (A) pattern.specificity counts the PLACEHOLDER segments where its docstring says it counts the segments the pattern pins down, i.e. the static ones. (B) router.match picks min(...) of that score where it must pick max(...). Every route that matches one path has the same segment count, so static = width - placeholders and min(placeholders) is exactly max(static): the router picks the right route on the buggy tree, and only the four tests/test_pattern.py tests that read specificity, more_specific and rank directly are red. Repairing either half alone makes the router pick the LEAST specific route and breaks three match tests. (C) router.reverse tests `wanted - set(params)`, which only catches a placeholder with no value; the gold tests `wanted != set(params)`, which also catches a value for a placeholder the route does not have. Six tests fail, twenty-six pass. Plausible wrong fixes, all verified: (W1) make specificity count static segments and stop -- the four failing pattern tests point straight at it, and it breaks test_match_prefers_a_static_segment_over_a_placeholder, test_match_falls_back_to_the_placeholder_route and test_match_captures_the_placeholder_values (5 failed / 27 passed); (W2) the coupled pair plus `set(params) - wanted`, the direction the two failing reverse tests show -- all six target tests green, breaks the previously passing tests/test_router.py::test_reverse_refuses_a_missing_parameter (1 failed / 31 passed); (W3) turn router.match's min into a max alone (9 failed / 23 passed).",
+    "expected_failing": [
+      "tests/test_pattern.py::test_more_specific_compares_two_patterns",
+      "tests/test_pattern.py::test_rank_puts_the_most_specific_first",
+      "tests/test_pattern.py::test_specificity_counts_the_segments_that_are_pinned_down",
+      "tests/test_pattern.py::test_specificity_drops_when_a_segment_becomes_a_placeholder",
+      "tests/test_router.py::test_reverse_refuses_a_parameter_on_a_route_that_takes_none",
+      "tests/test_router.py::test_reverse_refuses_an_unknown_parameter"
+    ],
+    "path": "tasks/route_match"
+  },
+  {
+    "name": "token_bucket",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "guard",
+      "two_files",
+      "operator",
+      "rename"
+    ],
+    "files": [
+      "src/bucket.py",
+      "src/limiter.py",
+      "src/policy.py"
+    ],
+    "difficulty": 5,
+    "description": "A token-bucket rate limiter with a coupled pair plus a unit bug. (A) bucket.wait_for is missing the `if cost > self.capacity: return None` guard, so a request larger than the bucket gets a finite wait instead of the never-ending one the docstring promises. (B) limiter.allow tests the wait for truthiness, `if not wait:` where it must be `if wait == 0.0:`, so a None wait reads as 'allowed'. A and B are coupled and neither is a fix alone: B is latent while A is present (the buggy wait_for returns a truthy float for over-burst requests, so test_a_request_above_the_burst_is_denied passes by accident), and fixing A alone turns that passing test red. B alone is visible through the no-refill `batch` quota, whose exhausted bucket already returns None. (C) policy.bucket_for passes policy.per_minute where the TokenBucket wants tokens per second; the donor is the Policy.refill_rate property right above it, which already calls clock.per_second. Seven tests fail, twenty-six pass. Plausible wrong fixes, all verified: (W1) insert the capacity guard in wait_for and stop -- fixes both over-burst tests and breaks tests/test_limiter.py::test_a_request_above_the_burst_is_denied (6 failed / 27 passed); (W2) the whole fix but with `if cost >= self.capacity` -- all seven target tests green, breaks tests/test_bucket.py::test_wait_for_a_whole_capacity_request_is_finite, which pins that a bucket of ten can serve a request for ten (1 failed / 32 passed); (W3) fix the rate by rewriting POLICIES (60.0 -> 1.0, 600.0 -> 10.0) instead of converting in bucket_for -- all seven target tests green, breaks test_the_policy_table_is_written_in_requests_per_minute and test_refill_rate_is_the_per_minute_rate_spread_over_a_minute (2 failed / 31 passed).",
+    "expected_failing": [
+      "tests/test_bucket.py::test_wait_for_above_the_capacity_never_ends",
+      "tests/test_limiter.py::test_a_batch_quota_is_denied_once_it_is_spent",
+      "tests/test_limiter.py::test_a_later_start_delays_the_first_refill",
+      "tests/test_limiter.py::test_retry_after_above_the_burst_never_ends",
+      "tests/test_limiter.py::test_retry_after_is_the_shortfall_in_seconds",
+      "tests/test_limiter.py::test_the_bucket_refills_over_a_minute",
+      "tests/test_policy.py::test_bucket_for_refills_at_the_policy_rate"
+    ],
+    "path": "tasks/token_bucket"
+  }
+]

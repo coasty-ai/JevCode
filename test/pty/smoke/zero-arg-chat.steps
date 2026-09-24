@@ -1,0 +1,10 @@
+# a bare `jevcode` (a leading flag = chat; TUI-DESIGN-2 §1.1; TUI-DESIGN-3 §1.1 / §1.10): the session opens in the default mode
+# (agent, AGENT-LOOP-DESIGN §14.1) — the badge in the console's top edge, the round-2 placeholder, no wizard (`--mock` needs no key); /exit leaves 0
+expect \x1b\[\?25l
+expect ╭─ (?:\x1b\[[0-9;]*m)*agent
+expect Say hi
+expect sess \$
+send /exit
+sleep 0.2
+send \r
+eof

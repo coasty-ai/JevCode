@@ -1,0 +1,20 @@
+# TUI-DESIGN-3 §4.4 F17: `/trust` reopens the trust card; Esc closes it — `trust unchanged (<decision>)` — and the session goes on; /exit
+# leaves 0 (Ctrl-C there no longer exits 2)
+expect \x1b\[\?25l
+expect Do you trust the files in
+sleep 0.3
+send 2
+expect Say hi
+expect sess \$
+sleep 0.3
+send /trust
+sleep 0.2
+send \r
+expect Do you trust the files in
+sleep 0.3
+send \x1b
+expect trust unchanged
+send /exit
+sleep 0.2
+send \r
+eof

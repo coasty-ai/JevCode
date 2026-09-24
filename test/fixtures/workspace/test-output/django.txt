@@ -1,0 +1,35 @@
+Testing against Django installed in /ws/django
+Importing application decorators
+Found 3 test(s).
+Skipping setup of unused database(s): other.
+Operations to perform:
+  Synchronize unmigrated apps: auth, contenttypes, decorators, messages, sessions, staticfiles
+  Apply all migrations: admin, sites
+Running migrations:
+  Applying admin.0001_initial... OK
+System check identified no issues (0 silenced).
+F.E
+======================================================================
+ERROR: test_class_decoration (decorators.tests.MethodDecoratorTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/ws/tests/decorators/tests.py", line 214, in test_class_decoration
+    Test().method()
+TypeError: 'NoneType' object is not callable
+
+======================================================================
+FAIL: test_attributes (decorators.tests.DecoratorsTest)
+@method_decorator preserves wrapper assignments.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/ws/tests/decorators/tests.py", line 125, in test_attributes
+    self.assertEqual(func_name, 'method')
+AssertionError: 'inner' != 'method'
+- inner
++ method
+
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.004s
+
+FAILED (failures=1, errors=1)

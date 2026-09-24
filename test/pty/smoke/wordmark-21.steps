@@ -1,0 +1,19 @@
+# 21x80 — the old smallest height with the pinned mark: the height tiers are gone (the owner's directive of 2026-09-23 commits the settled
+# mark to the scrollback), so the mark is committed once and the palette (8 rows) opens under the rule without ever drawing it; Esc closes it
+expect \x1b\[\?25l
+expect step 0/
+expect ◆(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*\d+\.\d+\.\d+
+expect sess \$
+sleep 0.3
+send /
+expect Tab
+sleep 0.4
+mark palette
+send \x1b
+sleep 0.3
+send \x03
+expect Say hi
+send /exit
+sleep 0.2
+send \r
+eof

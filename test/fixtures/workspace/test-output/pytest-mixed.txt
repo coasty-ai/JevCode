@@ -1,0 +1,16 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.1, pytest-8.3.2
+collected 7 items
+
+tests/test_a.py ..F.                                                     [ 57%]
+tests/test_b.py E.s                                                      [100%]
+
+=================================== FAILURES ===================================
+____________________________________ test_c ____________________________________
+    def test_c():
+>       assert 1 == 2
+E       assert 1 == 2
+=========================== short test summary info ============================
+FAILED tests/test_a.py::test_c - assert 1 == 2
+ERROR tests/test_b.py::test_e
+==================== 4 passed, 1 failed, 1 error, 1 skipped in 0.12s ====================

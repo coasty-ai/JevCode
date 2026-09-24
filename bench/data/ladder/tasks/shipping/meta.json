@@ -1,0 +1,8 @@
+{
+  "name": "shipping",
+  "hunks": 1,
+  "kinds": ["constant"],
+  "files": ["src/shipping.py"],
+  "difficulty": 2,
+  "description": "The free-shipping threshold in the module-level CONFIG dict is 500.0 instead of 50.0, so no test order ever ships free. The fix changes one literal inside the dict; the correct value appears both in the task text and as a literal in the failing tests. Four tests fail, six pass."
+}

@@ -1,0 +1,25 @@
+# the Jev panel (TUI-DESIGN-2 §4.6): collapsed strip by default after a run (`▸ jev s<N> · <n> decisions`); /panel opens it
+# (`▾ decisions` header, ≤ 6 rows, the `… <n> more rows · /panel full expands` row); /panel off collapses it again (§8.2 panel.steps)
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.3
+send make the tests pass
+sleep 0.2
+send \r
+expect step \d+/\d+
+expect finished [·-] (complete|max_steps|generator_done)
+expect ▸(?:\x1b\[[0-9;]*m)* jev s\d+ · \d+ decisions
+expect Follow-up, question
+send /panel
+sleep 0.2
+send \r
+expect ▾(?:\x1b\[[0-9;]*m)* decisions
+expect more rows
+send /panel off
+sleep 0.2
+send \r
+expect ▸(?:\x1b\[[0-9;]*m)* jev
+send /exit
+sleep 0.2
+send \r
+eof

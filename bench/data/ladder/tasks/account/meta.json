@@ -1,0 +1,8 @@
+{
+  "name": "account",
+  "hunks": 3,
+  "kinds": ["operator", "off_by_one", "rename"],
+  "files": ["src/account.py"],
+  "difficulty": 3,
+  "description": "Three independent bugs in one file: withdraw rejects an amount equal to the balance (>= should be >), statement numbers entries from 0 (enumerate needs start=1), and transfer calls dst.withdraw instead of dst.deposit (wrong call target). Three tests fail, one per bug; seven pass. The transfer test fails with an exception rather than a wrong value."
+}

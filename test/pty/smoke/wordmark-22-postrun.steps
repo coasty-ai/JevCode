@@ -1,0 +1,24 @@
+# 22x80 after a mock run, as amended by the owner's directive of 2026-09-23: there is no post-run hand-off left — the mark was committed to
+# the scrollback before the task, and no frame after `end` or on the first key draws it in the dynamic region (the strip keeps the rule, F-W5)
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.3
+send fix the failing test
+sleep 0.2
+send \r
+expect step \d+/\d+
+expect finished [·-] (complete|max_steps|generator_done)
+expect Follow-up, question
+sleep 0.5
+mark ended
+send h
+expect (?:›|>) (?:\x1b\[[0-9;]*m)*h
+sleep 0.3
+mark keyed
+send \x03
+expect Follow-up, question
+send /exit
+sleep 0.2
+send \r
+eof

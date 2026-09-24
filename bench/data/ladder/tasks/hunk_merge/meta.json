@@ -1,0 +1,25 @@
+{
+  "name": "hunk_merge",
+  "tier": "long-2",
+  "hunks": 3,
+  "kinds": [
+    "off_by_one",
+    "two_files",
+    "call_args"
+  ],
+  "files": [
+    "src/hunks.py",
+    "src/apply.py",
+    "src/merge.py"
+  ],
+  "difficulty": 5,
+  "description": "A diff-hunk merger with a 1-based/0-based confusion that has been compensated for at the call site. (A) hunks.Hunk.index returns self.start, the 1-based diff line number, where it must return self.start - 1. (B) apply.apply subtracts that 1 back out again, `start = hunk.index() - 1` where it must be `start = hunk.index()`. Every apply test, and preview.preview on top of it, passes on the buggy tree because the two cancel exactly; only the four tests that read index(), last_index() and replaced_lines() directly are red, and none of them mentions apply.py. Removing either half alone shifts every hunk by one line. (C) merge.merge asks conflicts(left, right), which only pairs one side against the other, so a side that overlaps itself merges happily; the gold asks clashes(list(left) + list(right)), the sibling function directly above it that pairs a whole set against itself. Six tests fail, thirty-six pass. Plausible wrong fixes, all verified: (W1) make Hunk.index() 0-based and stop -- the four failing hunks tests point straight at it, and it breaks ten apply tests, test_a_merged_set_applies_cleanly and test_preview_is_the_patched_file_as_text (14 failed / 28 passed); (W2) the coupled pair plus `clashes(left) or clashes(right)`, exactly the two cases the failing tests show -- all six target tests green, breaks the previously passing tests/test_merge.py::test_merge_refuses_two_sides_that_lay_claim_to_the_same_lines (1 failed / 41 passed); (W3) drop the compensating `- 1` in apply.py alone (17 failed / 25 passed).",
+  "expected_failing": [
+    "tests/test_hunks.py::test_index_is_the_zero_based_offset",
+    "tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line",
+    "tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index",
+    "tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers",
+    "tests/test_merge.py::test_merge_refuses_a_left_side_that_overlaps_itself",
+    "tests/test_merge.py::test_merge_refuses_a_right_side_that_overlaps_itself"
+  ]
+}

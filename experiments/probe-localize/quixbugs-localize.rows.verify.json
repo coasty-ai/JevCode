@@ -1,0 +1,524 @@
+[
+ {
+  "program": "next_palindrome",
+  "nLines": 15,
+  "truth": [
+   15
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 2,
+  "top1": "line_8",
+  "pTop": 0.17,
+  "pTruth": 0.14,
+  "costUsd": 0.000048216,
+  "latencyMs": 225.44066700000002,
+  "inputTokens": 1148,
+  "requests": 1
+ },
+ {
+  "program": "possible_change",
+  "nLines": 7,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 4,
+  "top1": "line_9",
+  "pTop": 0.82,
+  "pTruth": 0.02,
+  "costUsd": 0.000031122,
+  "latencyMs": 249.663291,
+  "inputTokens": 741,
+  "requests": 1
+ },
+ {
+  "program": "detect_cycle",
+  "nLines": 9,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 2,
+  "top1": "line_9",
+  "pTop": 0.6,
+  "pTruth": 0.24,
+  "costUsd": 0.000041622,
+  "latencyMs": 276.15937499999995,
+  "inputTokens": 991,
+  "requests": 1
+ },
+ {
+  "program": "longest_common_subsequence",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 2,
+  "top1": "none_of_these",
+  "pTop": 0.36,
+  "pTruth": 0.34,
+  "costUsd": 0.00003822,
+  "latencyMs": 290.515375,
+  "inputTokens": 910,
+  "requests": 1
+ },
+ {
+  "program": "gcd",
+  "nLines": 5,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.84,
+  "pTruth": 0.84,
+  "costUsd": 0.000026124,
+  "latencyMs": 310.816792,
+  "inputTokens": 622,
+  "requests": 1
+ },
+ {
+  "program": "next_palindrome",
+  "nLines": 15,
+  "truth": [
+   15
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_15",
+  "pTop": 0.22,
+  "pTruth": 0.22,
+  "costUsd": 0.000041958,
+  "latencyMs": 131.09170799999998,
+  "inputTokens": 999,
+  "requests": 1
+ },
+ {
+  "program": "bitcount",
+  "nLines": 6,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 2,
+  "top1": "none_of_these",
+  "pTop": 0.84,
+  "pTruth": 0.09,
+  "costUsd": 0.000026922,
+  "latencyMs": 404.82983399999995,
+  "inputTokens": 641,
+  "requests": 1
+ },
+ {
+  "program": "gcd",
+  "nLines": 5,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.55,
+  "pTruth": 0.55,
+  "costUsd": 0.000021966,
+  "latencyMs": 181.13608299999993,
+  "inputTokens": 523,
+  "requests": 1
+ },
+ {
+  "program": "longest_common_subsequence",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 3,
+  "top1": "none_of_these",
+  "pTop": 0.34,
+  "pTruth": 0.22,
+  "costUsd": 0.000032718,
+  "latencyMs": 200.67483300000004,
+  "inputTokens": 779,
+  "requests": 1
+ },
+ {
+  "program": "next_palindrome",
+  "nLines": 15,
+  "truth": [
+   15
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_15",
+  "pTop": 0.63,
+  "pTruth": 0.63,
+  "costUsd": 0.000051576,
+  "latencyMs": 142.79625,
+  "inputTokens": 1228,
+  "requests": 1
+ },
+ {
+  "program": "detect_cycle",
+  "nLines": 9,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 2,
+  "top1": "line_9",
+  "pTop": 0.59,
+  "pTruth": 0.22,
+  "costUsd": 0.000028434,
+  "latencyMs": 274.3655,
+  "inputTokens": 677,
+  "requests": 1
+ },
+ {
+  "program": "bitcount",
+  "nLines": 6,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 2,
+  "top1": "none_of_these",
+  "pTop": 0.8,
+  "pTruth": 0.09,
+  "costUsd": 0.000023058,
+  "latencyMs": 195.875,
+  "inputTokens": 549,
+  "requests": 1
+ },
+ {
+  "program": "possible_change",
+  "nLines": 7,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 5,
+  "top1": "line_9",
+  "pTop": 0.76,
+  "pTruth": 0.01,
+  "costUsd": 0.000025998,
+  "latencyMs": 361.98162499999995,
+  "inputTokens": 619,
+  "requests": 1
+ },
+ {
+  "program": "longest_common_subsequence",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 3,
+  "top1": "none_of_these",
+  "pTop": 0.42,
+  "pTruth": 0.13,
+  "costUsd": 0.000041328,
+  "latencyMs": 183.96804200000008,
+  "inputTokens": 984,
+  "requests": 1
+ },
+ {
+  "program": "next_palindrome",
+  "nLines": 15,
+  "truth": [
+   15
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 2,
+  "top1": "line_8",
+  "pTop": 0.44,
+  "pTruth": 0.37,
+  "costUsd": 0.000192738,
+  "latencyMs": 224.02641599999993,
+  "inputTokens": 4589,
+  "requests": 1,
+  "note": "lines_p>=0.5=0"
+ },
+ {
+  "program": "next_palindrome",
+  "nLines": 15,
+  "truth": [
+   15
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 2,
+  "top1": "line_8",
+  "pTop": 0.17,
+  "pTruth": 0.14,
+  "costUsd": 0,
+  "latencyMs": 225.44066700000002,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "gcd",
+  "nLines": 5,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.84,
+  "pTruth": 0.84,
+  "costUsd": 0.000028854,
+  "latencyMs": 272.580875,
+  "inputTokens": 687,
+  "requests": 1
+ },
+ {
+  "program": "possible_change",
+  "nLines": 7,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 5,
+  "top1": "line_8",
+  "pTop": 0.78,
+  "pTruth": 0.01,
+  "costUsd": 0.00003465,
+  "latencyMs": 155.46845800000006,
+  "inputTokens": 825,
+  "requests": 1
+ },
+ {
+  "program": "detect_cycle",
+  "nLines": 9,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 2,
+  "top1": "line_9",
+  "pTop": 0.84,
+  "pTruth": 0.13,
+  "costUsd": 0.000048384,
+  "latencyMs": 249.222125,
+  "inputTokens": 1152,
+  "requests": 1
+ },
+ {
+  "program": "longest_common_subsequence",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.23,
+  "pTruth": 0.23,
+  "costUsd": 0.000145488,
+  "latencyMs": 152.43895800000007,
+  "inputTokens": 3464,
+  "requests": 1,
+  "note": "lines_p>=0.5=0"
+ },
+ {
+  "program": "longest_common_subsequence",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 2,
+  "top1": "none_of_these",
+  "pTop": 0.36,
+  "pTruth": 0.34,
+  "costUsd": 0,
+  "latencyMs": 290.515375,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "gcd",
+  "nLines": 5,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.81,
+  "pTruth": 0.81,
+  "costUsd": 0.000073038,
+  "latencyMs": 204.13358399999993,
+  "inputTokens": 1739,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "gcd",
+  "nLines": 5,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.84,
+  "pTruth": 0.84,
+  "costUsd": 0,
+  "latencyMs": 310.816792,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "bitcount",
+  "nLines": 6,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.59,
+  "pTruth": 0.59,
+  "costUsd": 0.00002982,
+  "latencyMs": 377.2812499999999,
+  "inputTokens": 710,
+  "requests": 1
+ },
+ {
+  "program": "detect_cycle",
+  "nLines": 9,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 3,
+  "top1": "line_9",
+  "pTop": 0.6,
+  "pTruth": 0.15,
+  "costUsd": 0.000127806,
+  "latencyMs": 192.53104199999996,
+  "inputTokens": 3043,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "detect_cycle",
+  "nLines": 9,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 2,
+  "top1": "line_9",
+  "pTop": 0.6,
+  "pTruth": 0.24,
+  "costUsd": 0,
+  "latencyMs": 276.15937499999995,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "possible_change",
+  "nLines": 7,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 3,
+  "top1": "line_9",
+  "pTop": 0.75,
+  "pTruth": 0.11,
+  "costUsd": 0.00009723,
+  "latencyMs": 239.51979200000005,
+  "inputTokens": 2315,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "possible_change",
+  "nLines": 7,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 4,
+  "top1": "line_9",
+  "pTop": 0.82,
+  "pTruth": 0.02,
+  "costUsd": 0,
+  "latencyMs": 249.663291,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "bitcount",
+  "nLines": 6,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.32,
+  "pTruth": 0.32,
+  "costUsd": 0.000084168,
+  "latencyMs": 251.18370900000014,
+  "inputTokens": 2004,
+  "requests": 1,
+  "note": "lines_p>=0.5=0"
+ },
+ {
+  "program": "bitcount",
+  "nLines": 6,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 2,
+  "top1": "none_of_these",
+  "pTop": 0.84,
+  "pTruth": 0.09,
+  "costUsd": 0,
+  "latencyMs": 404.82983399999995,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ }
+]

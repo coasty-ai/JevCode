@@ -1,0 +1,5886 @@
+{
+ "meta": {
+  "date": "2026-09-20T15:28:19.789Z",
+  "requests": 279,
+  "costUsd": 0.02072296800000001,
+  "latencyP50": 225.0236249999998
+ },
+ "moveB": [
+  {
+   "program": "bitcount",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "bitcount",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "keep_and_continue",
+   "p_expected": 0.97,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.97,
+    "revert_and_try_next_candidate": 0.03,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "breadth_first_search",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "breadth_first_search",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "breadth_first_search",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "breadth_first_search",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "breadth_first_search",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "breadth_first_search",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "bucketsort",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "bucketsort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.98,
+    "revert_and_relocalise": 0.02,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "keep_and_continue",
+   "p_expected": 0.93,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.93,
+    "revert_and_try_next_candidate": 0.07,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.98,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "depth_first_search",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "depth_first_search",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "depth_first_search",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "depth_first_search",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "depth_first_search",
+   "cand": "mutant_3_lateral",
+   "kind": "lateral",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "depth_first_search",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "detect_cycle",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "detect_cycle",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "detect_cycle",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "detect_cycle",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.99,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "detect_cycle",
+   "cand": "mutant_3_lateral",
+   "kind": "lateral",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "detect_cycle",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_first_in_sorted",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_first_in_sorted",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_first_in_sorted",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_first_in_sorted",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_first_in_sorted",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_first_in_sorted",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_in_sorted",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_in_sorted",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_in_sorted",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue",
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.96,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.03,
+    "revert_and_try_next_candidate": 0.96,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_in_sorted",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_in_sorted",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.97,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.02,
+    "revert_and_try_next_candidate": 0.97,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "find_in_sorted",
+   "cand": "mutant_4_lateral",
+   "kind": "lateral",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "flatten",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "flatten",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.98,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "flatten",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "flatten",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "flatten",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "flatten",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "gcd",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "gcd",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue",
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.97,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.02,
+    "revert_and_try_next_candidate": 0.97,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "get_factors",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "get_factors",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "get_factors",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "keep_and_continue",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.99,
+    "revert_and_try_next_candidate": 0.01,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "get_factors",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "get_factors",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "get_factors",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.98,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "hanoi",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "hanoi",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "hanoi",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "is_valid_parenthesization",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "is_valid_parenthesization",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "is_valid_parenthesization",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "is_valid_parenthesization",
+   "cand": "mutant_2_lateral",
+   "kind": "lateral",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "is_valid_parenthesization",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "is_valid_parenthesization",
+   "cand": "mutant_4_lateral",
+   "kind": "lateral",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kheapsort",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kheapsort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kheapsort",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kheapsort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kheapsort",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kheapsort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "knapsack",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "knapsack",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "knapsack",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "knapsack",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "knapsack",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "knapsack",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kth",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kth",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.98,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "kth",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "keep_and_continue",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.99,
+    "revert_and_try_next_candidate": 0.01,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kth",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kth",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "kth",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.98,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "lcs_length",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lcs_length",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.98,
+    "revert_and_relocalise": 0.02,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lcs_length",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "keep_and_continue",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.98,
+    "revert_and_try_next_candidate": 0.02,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lcs_length",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lcs_length",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lcs_length",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "levenshtein",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "levenshtein",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "levenshtein",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "keep_and_continue",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.99,
+    "revert_and_try_next_candidate": 0.01,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "levenshtein",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.99,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "levenshtein",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "levenshtein",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lis",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lis",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lis",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lis",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lis",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "lis",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "longest_common_subsequence",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "longest_common_subsequence",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "longest_common_subsequence",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "longest_common_subsequence",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "longest_common_subsequence",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "longest_common_subsequence",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "max_sublist_sum",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "max_sublist_sum",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "max_sublist_sum",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "max_sublist_sum",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "max_sublist_sum",
+   "cand": "mutant_3_lateral",
+   "kind": "lateral",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "max_sublist_sum",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "mergesort",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "mergesort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0.99,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_1_partial_mixed",
+   "kind": "partial_mixed",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue",
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.92,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.07,
+    "revert_and_try_next_candidate": 0.92,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "keep_and_continue",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.98,
+    "revert_and_try_next_candidate": 0.02,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.98,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_palindrome",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_palindrome",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_palindrome",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.99,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_palindrome",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_palindrome",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_palindrome",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.99,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_permutation",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_permutation",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_permutation",
+   "cand": "mutant_1_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_permutation",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0.99,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "next_permutation",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "next_permutation",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "pascal",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "pascal",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "pascal",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "keep_and_continue",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.99,
+    "revert_and_try_next_candidate": 0.01,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "pascal",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "pascal",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "pascal",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.99,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "possible_change",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "possible_change",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.98,
+    "revert_and_relocalise": 0.02,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "possible_change",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "possible_change",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "possible_change",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "possible_change",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "powerset",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "powerset",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0.99,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "powerset",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "powerset",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "powerset",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "powerset",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "quicksort",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "quicksort",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "quicksort",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "quicksort",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "quicksort",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "quicksort",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "reverse_linked_list",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "reverse_linked_list",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "reverse_linked_list",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "reverse_linked_list",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "reverse_linked_list",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "reverse_linked_list",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "rpn_eval",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "rpn_eval",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "rpn_eval",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "rpn_eval",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "rpn_eval",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "rpn_eval",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_length",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_length",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_length",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_length",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_length",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_length",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_lengths",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_lengths",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_lengths",
+   "cand": "mutant_1_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_lengths",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.98,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_lengths",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_path_lengths",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_paths",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_paths",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_paths",
+   "cand": "mutant_1_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_paths",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_paths",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.98,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0.98,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "shortest_paths",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shunting_yard",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shunting_yard",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shunting_yard",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shunting_yard",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shunting_yard",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "shunting_yard",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sieve",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sieve",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sieve",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "keep_and_continue",
+   "p_expected": 0.96,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.96,
+    "revert_and_try_next_candidate": 0.04,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sieve",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sieve",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sieve",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sqrt",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sqrt",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_1_partial",
+   "kind": "partial",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_continue"
+   ],
+   "chosen": "keep_and_continue",
+   "p_expected": 0.93,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0.93,
+    "revert_and_try_next_candidate": 0.07,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "subsequences",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "subsequences",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0.99,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "subsequences",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "subsequences",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "subsequences",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "subsequences",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "to_base",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "to_base",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "to_base",
+   "cand": "mutant_1_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "to_base",
+   "cand": "mutant_2_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "to_base",
+   "cand": "mutant_3_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "to_base",
+   "cand": "mutant_4_regression",
+   "kind": "regression",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "topological_ordering",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "topological_ordering",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "topological_ordering",
+   "cand": "mutant_1_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "topological_ordering",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "topological_ordering",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "topological_ordering",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "wrap",
+   "cand": "fix",
+   "kind": "fix",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "keep_and_stop"
+   ],
+   "chosen": "keep_and_stop",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 1,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "wrap",
+   "cand": "buggy_noop",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 0.99,
+    "none_of_these": 0.01
+   },
+   "ok": true
+  },
+  {
+   "program": "wrap",
+   "cand": "mutant_1_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 1,
+    "revert_and_relocalise": 0,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "wrap",
+   "cand": "mutant_2_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_relocalise"
+   ],
+   "chosen": "revert_and_relocalise",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 1,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "wrap",
+   "cand": "mutant_3_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 0,
+    "untried_suspicious_lines": 0
+   },
+   "expected": [
+    "widen_search"
+   ],
+   "chosen": "widen_search",
+   "p_expected": 1,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0,
+    "revert_and_relocalise": 0,
+    "widen_search": 1,
+    "none_of_these": 0
+   },
+   "ok": true
+  },
+  {
+   "program": "wrap",
+   "cand": "mutant_4_no_change",
+   "kind": "no_change",
+   "search": {
+    "candidates_remaining_for_this_line": 3,
+    "untried_suspicious_lines": 2
+   },
+   "expected": [
+    "revert_and_try_next_candidate"
+   ],
+   "chosen": "revert_and_try_next_candidate",
+   "p_expected": 0.99,
+   "probs": {
+    "keep_and_stop": 0,
+    "keep_and_continue": 0,
+    "revert_and_try_next_candidate": 0.99,
+    "revert_and_relocalise": 0.01,
+    "widen_search": 0,
+    "none_of_these": 0
+   },
+   "ok": true
+  }
+ ],
+ "repeats": [
+  {
+   "program": "bitcount",
+   "cand": "mutant_1_partial",
+   "rep": 0,
+   "made_progress": 0.96,
+   "broke_something": 0.1,
+   "p_keep_and_continue": 0.23,
+   "p_try_next": 0.75
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_1_partial",
+   "rep": 1,
+   "made_progress": 0.96,
+   "broke_something": 0.1,
+   "p_keep_and_continue": 0.3,
+   "p_try_next": 0.68
+  },
+  {
+   "program": "bitcount",
+   "cand": "mutant_1_partial",
+   "rep": 2,
+   "made_progress": 0.96,
+   "broke_something": 0.1,
+   "p_keep_and_continue": 0.29,
+   "p_try_next": 0.69
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_1_partial",
+   "rep": 0,
+   "made_progress": 0.88,
+   "broke_something": 0.19,
+   "p_keep_and_continue": 0.1,
+   "p_try_next": 0.89
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_1_partial",
+   "rep": 1,
+   "made_progress": 0.91,
+   "broke_something": 0.17,
+   "p_keep_and_continue": 0.12,
+   "p_try_next": 0.85
+  },
+  {
+   "program": "bucketsort",
+   "cand": "mutant_1_partial",
+   "rep": 2,
+   "made_progress": 0.92,
+   "broke_something": 0.17,
+   "p_keep_and_continue": 0.13,
+   "p_try_next": 0.86
+  },
+  {
+   "program": "find_in_sorted",
+   "cand": "mutant_1_partial_mixed",
+   "rep": 0,
+   "made_progress": 0.97,
+   "broke_something": 0.89,
+   "p_keep_and_continue": 0.26,
+   "p_try_next": 0.72
+  },
+  {
+   "program": "find_in_sorted",
+   "cand": "mutant_1_partial_mixed",
+   "rep": 1,
+   "made_progress": 0.97,
+   "broke_something": 0.95,
+   "p_keep_and_continue": 0.28,
+   "p_try_next": 0.7
+  },
+  {
+   "program": "find_in_sorted",
+   "cand": "mutant_1_partial_mixed",
+   "rep": 2,
+   "made_progress": 0.97,
+   "broke_something": 0.9,
+   "p_keep_and_continue": 0.26,
+   "p_try_next": 0.72
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_1_partial_mixed",
+   "rep": 0,
+   "made_progress": 0.96,
+   "broke_something": 0.82,
+   "p_keep_and_continue": 0.11,
+   "p_try_next": 0.88
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_1_partial_mixed",
+   "rep": 1,
+   "made_progress": 0.96,
+   "broke_something": 0.8,
+   "p_keep_and_continue": 0.1,
+   "p_try_next": 0.89
+  },
+  {
+   "program": "gcd",
+   "cand": "mutant_1_partial_mixed",
+   "rep": 2,
+   "made_progress": 0.96,
+   "broke_something": 0.88,
+   "p_keep_and_continue": 0.15,
+   "p_try_next": 0.83
+  },
+  {
+   "program": "get_factors",
+   "cand": "mutant_1_partial",
+   "rep": 0,
+   "made_progress": 0.97,
+   "broke_something": 0.12,
+   "p_keep_and_continue": 0.68,
+   "p_try_next": 0.3
+  },
+  {
+   "program": "get_factors",
+   "cand": "mutant_1_partial",
+   "rep": 1,
+   "made_progress": 0.97,
+   "broke_something": 0.09,
+   "p_keep_and_continue": 0.7,
+   "p_try_next": 0.29
+  },
+  {
+   "program": "get_factors",
+   "cand": "mutant_1_partial",
+   "rep": 2,
+   "made_progress": 0.97,
+   "broke_something": 0.1,
+   "p_keep_and_continue": 0.74,
+   "p_try_next": 0.25
+  },
+  {
+   "program": "kth",
+   "cand": "mutant_1_partial",
+   "rep": 0,
+   "made_progress": 0.97,
+   "broke_something": 0.2,
+   "p_keep_and_continue": 0.5599999999999999,
+   "p_try_next": 0.42
+  },
+  {
+   "program": "kth",
+   "cand": "mutant_1_partial",
+   "rep": 1,
+   "made_progress": 0.98,
+   "broke_something": 0.15,
+   "p_keep_and_continue": 0.53,
+   "p_try_next": 0.45
+  },
+  {
+   "program": "kth",
+   "cand": "mutant_1_partial",
+   "rep": 2,
+   "made_progress": 0.98,
+   "broke_something": 0.27,
+   "p_keep_and_continue": 0.49,
+   "p_try_next": 0.49
+  },
+  {
+   "program": "lcs_length",
+   "cand": "mutant_1_partial",
+   "rep": 0,
+   "made_progress": 0.94,
+   "broke_something": 0.18,
+   "p_keep_and_continue": 0.18,
+   "p_try_next": 0.79
+  },
+  {
+   "program": "lcs_length",
+   "cand": "mutant_1_partial",
+   "rep": 1,
+   "made_progress": 0.92,
+   "broke_something": 0.15,
+   "p_keep_and_continue": 0.16,
+   "p_try_next": 0.81
+  },
+  {
+   "program": "lcs_length",
+   "cand": "mutant_1_partial",
+   "rep": 2,
+   "made_progress": 0.94,
+   "broke_something": 0.29,
+   "p_keep_and_continue": 0.15,
+   "p_try_next": 0.83
+  },
+  {
+   "program": "levenshtein",
+   "cand": "mutant_1_partial",
+   "rep": 0,
+   "made_progress": 0.98,
+   "broke_something": 0.06,
+   "p_keep_and_continue": 0.9,
+   "p_try_next": 0.1
+  },
+  {
+   "program": "levenshtein",
+   "cand": "mutant_1_partial",
+   "rep": 1,
+   "made_progress": 0.98,
+   "broke_something": 0.06,
+   "p_keep_and_continue": 0.8,
+   "p_try_next": 0.19
+  },
+  {
+   "program": "levenshtein",
+   "cand": "mutant_1_partial",
+   "rep": 2,
+   "made_progress": 0.98,
+   "broke_something": 0.06,
+   "p_keep_and_continue": 0.9,
+   "p_try_next": 0.1
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_1_partial_mixed",
+   "rep": 0,
+   "made_progress": 0.98,
+   "broke_something": 0.58,
+   "p_keep_and_continue": 0.56,
+   "p_try_next": 0.42
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_1_partial_mixed",
+   "rep": 1,
+   "made_progress": 0.99,
+   "broke_something": 0.71,
+   "p_keep_and_continue": 0.5700000000000001,
+   "p_try_next": 0.41
+  },
+  {
+   "program": "mergesort",
+   "cand": "mutant_1_partial_mixed",
+   "rep": 2,
+   "made_progress": 0.99,
+   "broke_something": 0.61,
+   "p_keep_and_continue": 0.63,
+   "p_try_next": 0.35
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "cand": "mutant_1_partial",
+   "rep": 0,
+   "made_progress": 0.96,
+   "broke_something": 0.06,
+   "p_keep_and_continue": 0.32,
+   "p_try_next": 0.66
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "cand": "mutant_1_partial",
+   "rep": 1,
+   "made_progress": 0.96,
+   "broke_something": 0.07,
+   "p_keep_and_continue": 0.37,
+   "p_try_next": 0.62
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "cand": "mutant_1_partial",
+   "rep": 2,
+   "made_progress": 0.96,
+   "broke_something": 0.08,
+   "p_keep_and_continue": 0.25,
+   "p_try_next": 0.73
+  },
+  {
+   "program": "pascal",
+   "cand": "mutant_1_partial",
+   "rep": 0,
+   "made_progress": 0.96,
+   "broke_something": 0.11,
+   "p_keep_and_continue": 0.7,
+   "p_try_next": 0.3
+  },
+  {
+   "program": "pascal",
+   "cand": "mutant_1_partial",
+   "rep": 1,
+   "made_progress": 0.96,
+   "broke_something": 0.1,
+   "p_keep_and_continue": 0.75,
+   "p_try_next": 0.25
+  },
+  {
+   "program": "pascal",
+   "cand": "mutant_1_partial",
+   "rep": 2,
+   "made_progress": 0.96,
+   "broke_something": 0.11,
+   "p_keep_and_continue": 0.74,
+   "p_try_next": 0.26
+  },
+  {
+   "program": "sieve",
+   "cand": "mutant_1_partial",
+   "rep": 0,
+   "made_progress": 0.94,
+   "broke_something": 0.12,
+   "p_keep_and_continue": 0.23,
+   "p_try_next": 0.75
+  },
+  {
+   "program": "sieve",
+   "cand": "mutant_1_partial",
+   "rep": 1,
+   "made_progress": 0.93,
+   "broke_something": 0.11,
+   "p_keep_and_continue": 0.22,
+   "p_try_next": 0.77
+  },
+  {
+   "program": "sieve",
+   "cand": "mutant_1_partial",
+   "rep": 2,
+   "made_progress": 0.94,
+   "broke_something": 0.11,
+   "p_keep_and_continue": 0.35,
+   "p_try_next": 0.63
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_1_partial",
+   "rep": 0,
+   "made_progress": 0.93,
+   "broke_something": 0.16,
+   "p_keep_and_continue": 0.14,
+   "p_try_next": 0.85
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_1_partial",
+   "rep": 1,
+   "made_progress": 0.93,
+   "broke_something": 0.16,
+   "p_keep_and_continue": 0.13,
+   "p_try_next": 0.85
+  },
+  {
+   "program": "sqrt",
+   "cand": "mutant_1_partial",
+   "rep": 2,
+   "made_progress": 0.94,
+   "broke_something": 0.2,
+   "p_keep_and_continue": 0.16,
+   "p_try_next": 0.82
+  }
+ ]
+}

@@ -1,0 +1,1 @@
+Several config-package tests fail: src/paths.py raises NameError, Settings.get crashes on unknown keys instead of returning its default, retry schedules have one delay too many and durations with units parse wrong. Fix the modules under src/ so the whole suite under tests/ passes; the tests are correct and must not be edited.

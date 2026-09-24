@@ -1,0 +1,17 @@
+# chat: JEVCODE_MOCK_INTAKE=ambiguous — `the date parsing` is answered like any other message and Jev's unsure reading
+# only adds the `do it` offer to the reply. No card is drawn, the composer is never blocked ("waiting for y/n" must
+# never appear) and no run starts: the next message decides that (chat-ambiguous-y sends `do it`).
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.2
+send the date parsing
+sleep 0.2
+send \r
+expect \[jevcode\](?:\x1b\[[0-9;]*m)* 
+expect make that a task
+sleep 0.3
+send /exit
+sleep 0.2
+send \r
+eof

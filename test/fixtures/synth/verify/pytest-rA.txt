@@ -1,0 +1,146 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0
+rootdir: /private/tmp/pyt_fx
+collected 16 items
+
+test_sample.py .FFFFsxXEFFFFF.F                                          [100%]
+
+==================================== ERRORS ====================================
+_____________________ ERROR at setup of test_error_fixture _____________________
+file /private/tmp/pyt_fx/test_sample.py, line 34
+  def test_error_fixture(missing_fixture):
+E       fixture 'missing_fixture' not found
+>       available fixtures: capfd, capfdbinary, caplog, capsys, capsysbinary, capteesys, doctest_namespace, monkeypatch, pytestconfig, record_property, record_testsuite_property, record_xml_attribute, recwarn, tmp_path, tmp_path_factory, tmpdir, tmpdir_factory
+>       use 'pytest --fixtures [testpath]' for help on them.
+
+/private/tmp/pyt_fx/test_sample.py:34
+=================================== FAILURES ===================================
+_________________________________ test_fail_eq _________________________________
+
+    def test_fail_eq():
+>       assert 1 + 1 == 3
+E       assert (1 + 1) == 3
+
+test_sample.py:12: AssertionError
+________________________________ test_fail_str _________________________________
+
+    def test_fail_str():
+        got = "hello world"
+>       assert got == "hello there"
+E       AssertionError: assert 'hello world' == 'hello there'
+E         
+E         - hello there
+E         + hello world
+
+test_sample.py:16: AssertionError
+_____________________________ test_param[13-13-13] _____________________________
+
+a = 13, b = 13, exp = 13
+
+    @pytest.mark.parametrize("a,b,exp", [(13, 13, 13), (20, 100, 20)])
+    def test_param(a, b, exp):
+>       assert gcd(a, b) == exp
+
+test_sample.py:20: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+test_sample.py:6: in gcd
+    return gcd(a % b, b)
+test_sample.py:6: in gcd
+    return gcd(a % b, b)
+test_sample.py:6: in gcd
+    return gcd(a % b, b)
+E   RecursionError: maximum recursion depth exceeded in comparison
+!!! Recursion detected (same locals & position)
+____________________________ test_param[20-100-20] _____________________________
+
+a = 20, b = 100, exp = 20
+
+    @pytest.mark.parametrize("a,b,exp", [(13, 13, 13), (20, 100, 20)])
+    def test_param(a, b, exp):
+>       assert gcd(a, b) == exp
+
+test_sample.py:20: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+test_sample.py:6: in gcd
+    return gcd(a % b, b)
+test_sample.py:6: in gcd
+    return gcd(a % b, b)
+E   RecursionError: maximum recursion depth exceeded in comparison
+!!! Recursion detected (same locals & position)
+_________________________________ test_raises __________________________________
+
+    def test_raises():
+>       raise ValueError("boom 42")
+E       ValueError: boom 42
+
+test_sample.py:38: ValueError
+_________________________________ test_in_list _________________________________
+
+    def test_in_list():
+>       assert 3 in [1, 2]
+E       assert 3 in [1, 2]
+
+test_sample.py:41: AssertionError
+__________________________________ test_dict ___________________________________
+
+    def test_dict():
+>       assert {"a": 1, "b": [1, 2]} == {"a": 1, "b": [1, 3]}
+E       AssertionError: assert {'a': 1, 'b': [1, 2]} == {'a': 1, 'b': [1, 3]}
+E         
+E         Omitting 1 identical items, use -vv to show
+E         Differing items:
+E         {'b': [1, 2]} != {'b': [1, 3]}
+E         Use -v to get more diff
+
+test_sample.py:44: AssertionError
+___________________________ test_bench_style_message ___________________________
+
+    def test_bench_style_message():
+        actual = None
+>       assert actual == 13, "gcd(13, 13) -> None, expected 13"
+E       AssertionError: gcd(13, 13) -> None, expected 13
+E       assert None == 13
+
+test_sample.py:48: AssertionError
+_______________________________ test_long_values _______________________________
+
+    def test_long_values():
+>       assert list(range(30)) == list(range(29)) + [99]
+E       assert [0, 1, 2, 3, 4, 5, ...] == [0, 1, 2, 3, 4, 5, ...]
+E         
+E         At index 29 diff: 29 != 99
+E         Use -v to get more diff
+
+test_sample.py:51: AssertionError
+__________________________ TestGroup.test_method_fail __________________________
+
+self = <test_sample.TestGroup object at 0x1029060d0>
+
+    def test_method_fail(self):
+>       assert [1, 2] == [1, 3]
+E       assert [1, 2] == [1, 3]
+E         
+E         At index 1 diff: 2 != 3
+E         Use -v to get more diff
+
+test_sample.py:57: AssertionError
+==================================== PASSES ====================================
+=================================== XPASSES ====================================
+=========================== short test summary info ============================
+PASSED test_sample.py::test_pass_one
+PASSED test_sample.py::TestGroup::test_method
+SKIPPED [1] test_sample.py:22: not now
+XFAIL test_sample.py::test_xfail - known
+XPASS test_sample.py::test_xpass - known
+ERROR test_sample.py::test_error_fixture
+FAILED test_sample.py::test_fail_eq - assert (1 + 1) == 3
+FAILED test_sample.py::test_fail_str - AssertionError: assert 'hello world' =...
+FAILED test_sample.py::test_param[13-13-13] - RecursionError: maximum recursi...
+FAILED test_sample.py::test_param[20-100-20] - RecursionError: maximum recurs...
+FAILED test_sample.py::test_raises - ValueError: boom 42
+FAILED test_sample.py::test_in_list - assert 3 in [1, 2]
+FAILED test_sample.py::test_dict - AssertionError: assert {'a': 1, 'b': [1, 2...
+FAILED test_sample.py::test_bench_style_message - AssertionError: gcd(13, 13)...
+FAILED test_sample.py::test_long_values - assert [0, 1, 2, 3, 4, 5, ...] == [...
+FAILED test_sample.py::TestGroup::test_method_fail - assert [1, 2] == [1, 3]
+==== 10 failed, 2 passed, 1 skipped, 1 xfailed, 1 xpassed, 1 error in 0.03s ====

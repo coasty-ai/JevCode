@@ -1,0 +1,408 @@
+/**
+ * TUI-DESIGN §19.0: `KEY_ACTIONS` ↔ `docs/KEYS.md`; reserved keys refused; chords 3 s; `"none"` unbinds;
+ * unknown ids warn; the loader is synchronous, ≤ 64 KiB and never throws (ENOENT → defaults, EACCES → warning);
+ * the §6.2 invariant under arbitrary override maps (`y` ↔ `review:approve`, nothing else); key collisions
+ * (same key twice in a domain, a chord whose prefix is a bound single key) warn and keep `keysOf` truthful.
+ */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import {
+  COMMAND_KEY_ACTIONS,
+  DEFAULT_BINDINGS,
+  KEY_ACTIONS,
+  KEY_CONTEXTS,
+  RESERVED_KEYS,
+  buildBindings,
+  displayKey,
+  isChordPrefix,
+  isReservedKey,
+  keyActionById,
+  lookupBinding,
+  normalizeKeyString,
+  normalizeKeyToken,
+} from '../../../../src/tui/keys/bindings.js';
+import { KEYBINDINGS_MAX_BYTES, keybindingsPath, loadKeybindings, parseKeybindings, type KeybindingsFs } from '../../../../src/tui/keys/keybindings-file.js';
+
+const KEYS_MD = fileURLToPath(new URL('../../../../docs/KEYS.md', import.meta.url));
+
+describe('KEY_ACTIONS registry (TUI-DESIGN §3.2, §3.4)', () => {
+  it('ids are unique `namespace:action`, contexts valid, every default key canonical', () => {
+    const ids = KEY_ACTIONS.map((a) => a.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const a of KEY_ACTIONS) {
+      expect(a.id).toMatch(/^[a-z]+:[a-zA-Z]+$/);
+      expect(KEY_CONTEXTS).toContain(a.context);
+      expect(a.title.length).toBeGreaterThan(0);
+      expect(a.short.length).toBeGreaterThan(0);
+      for (const k of a.keys) expect(normalizeKeyString(k), `${a.id} ${k}`).toBe(k);
+      if (!a.reserved) for (const k of a.keys) expect(isReservedKey(k), `${a.id} binds reserved ${k}`).toBe(false);
+    }
+  });
+  it('the §3.2 table is present: readline set, newline keys, `/` `@` `?` `[` `]`, Ctrl+O/G/L/Z, review y n d e w, picker and palette rows', () => {
+    const key = (id: string): readonly string[] => keyActionById(id)?.keys ?? [];
+    expect(key('composer:newline')).toEqual(['ctrl+j', 'meta+return', 'shift+return']);
+    expect(key('composer:lineStart')).toEqual(['ctrl+a', 'home']);
+    expect(key('composer:wordLeft')).toEqual(['meta+b', 'ctrl+left']);
+    expect(key('composer:killWordBack')).toEqual(['ctrl+w', 'meta+backspace']);
+    expect(key('composer:killWordForward')).toEqual(['meta+delete', 'ctrl+delete']); // TUI-DESIGN-2 §4.6: Alt+D is the decisions tab
+    expect(key('global:panelToggle')).toEqual(['meta+j']);
+    expect(key('global:panelFull')).toEqual(['meta+shift+j']);
+    expect(key('global:panelDecisions')).toEqual(['meta+d']);
+    expect(key('global:panelPlan')).toEqual(['meta+p']);
+    expect(key('global:panelTimeline')).toEqual(['meta+t']);
+    expect(key('global:panelSynth')).toEqual(['meta+s']);
+    expect(key('composer:undo')).toEqual(['ctrl+_']);
+    expect(key('composer:redo')).toEqual(['ctrl+^']);
+    expect(key('composer:palette')).toEqual(['/']);
+    expect(key('composer:mention')).toEqual(['@']);
+    expect(key('global:help')).toEqual(['?', 'f1']);
+    expect(key('global:paneNext')).toEqual([']']);
+    expect(key('global:panePrev')).toEqual(['[']);
+    expect(key('global:detail')).toEqual(['ctrl+o']);
+    expect(key('composer:externalEditor')).toEqual(['ctrl+g']);
+    expect(key('global:repaint')).toEqual(['ctrl+l']);
+    expect(key('global:suspend')).toEqual(['ctrl+z']);
+    expect(key('review:approve')).toEqual(['y']);
+    expect(key('review:why')).toEqual(['w']);
+    expect(key('picker:rename')).toEqual(['ctrl+r']);
+    expect(key('picker:delete')).toEqual(['x']);
+    expect(key('palette:run')).toEqual(['return']);
+    expect(key('session:export')).toEqual([]);
+    // d p t s are never keys in the composer or global context
+    for (const ch of ['d', 'p', 't', 's']) {
+      expect(lookupBinding(DEFAULT_BINDINGS, 'composer', ch)).toBeNull();
+      expect(lookupBinding(DEFAULT_BINDINGS, 'global', ch)).toBeNull();
+    }
+  });
+  it('TUI-DESIGN-3 §4.5: six actions that equal commands are registered, global and unbound by default (every free printable is text, every free Ctrl a terminal risk); each maps to its `/line`; docs/KEYS.md lists them as _unbound_', () => {
+    const six = ['session:cost', 'session:status', 'session:mode', 'files:diff', 'files:undo', 'ui:copy'];
+    for (const id of six) {
+      const a = keyActionById(id);
+      expect(a, id).not.toBeNull();
+      expect(a?.context, id).toBe('global');
+      expect(a?.keys, id).toEqual([]);
+      expect(a?.reserved, id).toBeUndefined();
+      expect(COMMAND_KEY_ACTIONS[id], id).toBe(`/${(id.split(':')[1] as string)}`);
+    }
+    expect(COMMAND_KEY_ACTIONS['session:export']).toBe('/export');
+    expect(Object.keys(COMMAND_KEY_ACTIONS).sort()).toEqual([...six, 'session:export'].sort());
+    // nothing bound by default touches them: DEFAULT_BINDINGS knows no key for any of the six
+    for (const id of six) expect(DEFAULT_BINDINGS.keysOf.get(id)).toEqual([]);
+    // a user binds one: `"session:cost": "ctrl+x c"`
+    const b = buildBindings(new Map([['session:cost', ['ctrl+x c']]]));
+    expect(b.keysOf.get('session:cost')).toEqual(['ctrl+x c']);
+    expect(lookupBinding(b, 'global', 'ctrl+x c')).toBe('session:cost');
+    expect(b.warnings).toEqual([]);
+    const doc = readFileSync(KEYS_MD, 'utf8');
+    for (const id of six) expect(doc).toMatch(new RegExp(`^\\| \`${id.replace(':', ':')}\` \\| _unbound_ \\|`, 'm'));
+  });
+  it('KEY_ACTIONS ↔ docs/KEYS.md: every id is documented and every documented id exists (generated by scripts/gen-docs.mjs)', () => {
+    const doc = readFileSync(KEYS_MD, 'utf8');
+    expect(doc).toContain('generated by scripts/gen-docs.mjs');
+    for (const a of KEY_ACTIONS) {
+      expect(doc, a.id).toContain(`| \`${a.id}\` |`);
+      for (const k of a.keys) expect(doc, `${a.id} ${k}`).toContain(`\`${displayKey(k)}\``);
+    }
+    const documented = [...doc.matchAll(/^\| `([a-z]+:[A-Za-z]+)` \|/gm)].map((m) => m[1]);
+    expect(documented.length).toBe(KEY_ACTIONS.length);
+    for (const id of documented) expect(keyActionById(id as string), id).not.toBeNull();
+    for (const heading of ['## Global', '## Composer', '## Review box', '## Session picker', '## Palette']) expect(doc).toContain(heading);
+  });
+  it('displayKey renders human forms', () => {
+    expect(displayKey('ctrl+k')).toBe('Ctrl+K');
+    expect(displayKey('meta+b')).toBe('Alt+B');
+    expect(displayKey('shift+tab')).toBe('Shift+Tab');
+    expect(displayKey('up')).toBe('↑');
+    expect(displayKey('up', true)).toBe('Up');
+    expect(displayKey('ctrl+x ctrl+s')).toBe('Ctrl+X Ctrl+S');
+    expect(displayKey('?')).toBe('?');
+    expect(displayKey('f1')).toBe('F1');
+  });
+
+  it("a `+` base is the key `+`, not the modifier `Shift+` (TUI-DESIGN-5 §4.3: `agents:budget` is bound to it)", () => {
+    // `'+'.split('+')` is `['', '']`: the base is popped as `''` and the remaining `''` maps to the modifier
+    // `Shift`, so `docs/KEYS.md` and `/help` published `Shift+` as the way to raise an agent's cap — with
+    // `gen-docs --check` green, because the generator calls this very function
+    expect(displayKey('+')).toBe('+');
+    expect(displayKey('ctrl++')).toBe('Ctrl++');
+    expect(displayKey('meta++')).toBe('Alt++');
+    expect(DEFAULT_BINDINGS.keysOf.get('agents:budget')?.map((k) => displayKey(k))).toEqual(['+']);
+    // and the generated table says so
+    expect(readFileSync(KEYS_MD, 'utf8')).toContain('| `agents:budget` | `+` |');
+  });
+});
+
+describe('key strings (TUI-DESIGN §3.4)', () => {
+  it('normalises modifiers, aliases and case; rejects malformed tokens', () => {
+    expect(normalizeKeyToken('Ctrl+K')).toBe('ctrl+k');
+    expect(normalizeKeyToken('alt+b')).toBe('meta+b');
+    expect(normalizeKeyToken('Option+F')).toBe('meta+f');
+    expect(normalizeKeyToken('Enter')).toBe('return');
+    expect(normalizeKeyToken('esc')).toBe('escape');
+    expect(normalizeKeyToken('ctrl+-')).toBe('ctrl+_');
+    expect(normalizeKeyToken('ctrl+m')).toBe('return');
+    expect(normalizeKeyToken('ctrl+[')).toBe('escape');
+    expect(normalizeKeyToken('ctrl+i')).toBe('tab');
+    expect(normalizeKeyToken('shift+tab')).toBe('shift+tab');
+    expect(normalizeKeyToken('Shift+?')).toBe('?');
+    expect(normalizeKeyToken('ctrl++')).toBe('ctrl++');
+    expect(normalizeKeyToken('F1')).toBe('f1');
+    expect(normalizeKeyToken('pgup')).toBe('pageup');
+    expect(normalizeKeyToken('space')).toBe('space');
+    expect(normalizeKeyToken('')).toBeNull();
+    expect(normalizeKeyToken('ctrl+')).toBeNull();
+    expect(normalizeKeyToken('hyper+k')).toBeNull();
+    expect(normalizeKeyToken('foo')).toBeNull();
+    expect(normalizeKeyToken('ab')).toBeNull();
+    expect(normalizeKeyToken('日')).toBe('日');
+  });
+  it('chords are two space-separated keys; three are refused', () => {
+    expect(normalizeKeyString('ctrl+x ctrl+s')).toBe('ctrl+x ctrl+s');
+    expect(normalizeKeyString('  Ctrl+X   Ctrl+S ')).toBe('ctrl+x ctrl+s');
+    expect(normalizeKeyString('ctrl+x ctrl+s ctrl+t')).toBeNull();
+    expect(normalizeKeyString('')).toBeNull();
+    expect(normalizeKeyString('ctrl+x nope')).toBeNull();
+  });
+  it('reserved keys: Ctrl+C, Ctrl+D, Ctrl+M/Enter, Ctrl+[/Esc, Ctrl+I/Tab — in either chord position', () => {
+    for (const k of RESERVED_KEYS) expect(isReservedKey(k)).toBe(true);
+    expect(isReservedKey('ctrl+x return')).toBe(true);
+    expect(isReservedKey('tab ctrl+x')).toBe(true);
+    expect(isReservedKey('ctrl+k')).toBe(false);
+    expect(isReservedKey('shift+tab')).toBe(false);
+  });
+});
+
+describe('buildBindings and lookups', () => {
+  it('defaults map every default key to its action; chord prefixes are registered per context', () => {
+    expect(lookupBinding(DEFAULT_BINDINGS, 'composer', 'ctrl+k')).toBe('composer:killLine');
+    expect(lookupBinding(DEFAULT_BINDINGS, 'global', '?')).toBe('global:help');
+    expect(lookupBinding(DEFAULT_BINDINGS, 'review', 'y')).toBe('review:approve');
+    expect(lookupBinding(DEFAULT_BINDINGS, 'picker', 'space')).toBe('picker:preview');
+    expect(lookupBinding(DEFAULT_BINDINGS, 'palette', 'tab')).toBe('palette:accept');
+    expect(lookupBinding(DEFAULT_BINDINGS, 'composer', 'ctrl+x')).toBeNull();
+    expect(isChordPrefix(DEFAULT_BINDINGS, 'global', 'ctrl+x')).toBe(false);
+    const b = buildBindings(new Map([['session:export', ['ctrl+x ctrl+s']]]));
+    expect(isChordPrefix(b, 'global', 'ctrl+x')).toBe(true);
+    expect(lookupBinding(b, 'global', 'ctrl+x ctrl+s')).toBe('session:export');
+    expect(b.keysOf.get('session:export')).toEqual(['ctrl+x ctrl+s']);
+  });
+  it('overrides replace defaults, an empty list unbinds, reserved actions keep their keys', () => {
+    const b = buildBindings(new Map<string, readonly string[]>([
+      ['composer:killLine', []],
+      ['global:help', ['f1']],
+      ['composer:submit', ['ctrl+q']],
+      ['review:approve', ['a']],
+    ]));
+    expect(lookupBinding(b, 'composer', 'ctrl+k')).toBeNull();
+    expect(lookupBinding(b, 'global', '?')).toBeNull();
+    expect(lookupBinding(b, 'global', 'f1')).toBe('global:help');
+    expect(lookupBinding(b, 'composer', 'return')).toBe('composer:submit');
+    expect(lookupBinding(b, 'composer', 'ctrl+q')).toBeNull();
+    expect(lookupBinding(b, 'review', 'y')).toBe('review:approve');
+    expect(lookupBinding(b, 'review', 'a')).toBeNull();
+    expect(b.warnings).toEqual([]);
+  });
+  it('the default table has no collision inside any lookup domain (composer+global, review, picker, palette)', () => {
+    expect(DEFAULT_BINDINGS.warnings).toEqual([]);
+    for (const a of KEY_ACTIONS) expect(DEFAULT_BINDINGS.keysOf.get(a.id), a.id).toEqual(a.keys);
+    const seen = new Map<string, string>();
+    for (const a of KEY_ACTIONS) {
+      const domain = a.context === 'global' ? 'composer' : a.context;
+      for (const k of a.keys) {
+        const key = `${domain} ${k}`;
+        expect(seen.get(key), `${key} bound to both ${seen.get(key)} and ${a.id}`).toBeUndefined();
+        seen.set(key, a.id);
+      }
+    }
+  });
+  it('a key bound to two actions in one domain: an override displaces a default (warning, keysOf truthful); two overrides → the second is refused', () => {
+    const stolen = buildBindings(new Map([['composer:yank', ['ctrl+k']]]));
+    expect(lookupBinding(stolen, 'composer', 'ctrl+k')).toBe('composer:yank');
+    expect(stolen.keysOf.get('composer:killLine')).toEqual([]);
+    expect(stolen.keysOf.get('composer:yank')).toEqual(['ctrl+k']);
+    expect(stolen.warnings).toEqual(['keybindings: composer:yank: "ctrl+k" displaces the default binding of composer:killLine ("ctrl+k")']);
+    // the override comes earlier in registry order than the default it shadows: same outcome
+    const early = buildBindings(new Map([['composer:lineStart', ['ctrl+k']]]));
+    expect(lookupBinding(early, 'composer', 'ctrl+k')).toBe('composer:lineStart');
+    expect(early.keysOf.get('composer:killLine')).toEqual([]);
+    expect(early.warnings).toEqual(['keybindings: composer:lineStart: "ctrl+k" displaces the default binding of composer:killLine ("ctrl+k")']);
+    // global and composer share one domain: a global override takes a composer default
+    const cross = buildBindings(new Map([['session:export', ['ctrl+k']]]));
+    expect(lookupBinding(cross, 'global', 'ctrl+k')).toBe('session:export');
+    expect(lookupBinding(cross, 'composer', 'ctrl+k')).toBeNull();
+    expect(cross.keysOf.get('composer:killLine')).toEqual([]);
+    // two overrides on the same key: registry order wins, the later one is refused
+    const two = buildBindings(new Map([['composer:yank', ['ctrl+q']], ['composer:transpose', ['ctrl+q']]]));
+    expect(lookupBinding(two, 'composer', 'ctrl+q')).toBe('composer:yank');
+    expect(two.keysOf.get('composer:transpose')).toEqual([]);
+    expect(two.warnings).toEqual(['keybindings: composer:transpose: "ctrl+q" is already bound to composer:yank in the composer context; binding refused']);
+    // picker and palette reuse composer keys by design: no warning
+    expect(buildBindings(new Map([['picker:rename', ['ctrl+r']]])).warnings).toEqual([]);
+  });
+  it('a chord whose first key is a bound single key: the override chord displaces the default single key; a single key over a chord prefix is refused', () => {
+    const b = buildBindings(new Map([['session:export', ['ctrl+k ctrl+s']]]));
+    expect(lookupBinding(b, 'global', 'ctrl+k ctrl+s')).toBe('session:export');
+    expect(isChordPrefix(b, 'global', 'ctrl+k')).toBe(true);
+    expect(lookupBinding(b, 'composer', 'ctrl+k')).toBeNull();
+    expect(b.keysOf.get('composer:killLine')).toEqual([]);
+    expect(b.warnings).toEqual(['keybindings: session:export: the chord "ctrl+k ctrl+s" (its first key "ctrl+k") displaces the default binding of composer:killLine ("ctrl+k")']);
+    const rev = buildBindings(new Map([['session:export', ['ctrl+x ctrl+s']], ['composer:yank', ['ctrl+x']]]));
+    expect(lookupBinding(rev, 'composer', 'ctrl+x')).toBeNull();
+    expect(rev.keysOf.get('composer:yank')).toEqual([]);
+    expect(rev.warnings[0]).toMatch(/composer:yank: "ctrl\+x" \(the first key of the chord "ctrl\+x ctrl\+s"\) is already bound to session:export/);
+    // a chord in the review / picker / palette contexts registers its prefix there only
+    const picker = buildBindings(new Map([['picker:rename', ['ctrl+x r']]]));
+    expect(isChordPrefix(picker, 'picker', 'ctrl+x')).toBe(true);
+    expect(isChordPrefix(picker, 'composer', 'ctrl+x')).toBe(false);
+    expect(picker.warnings).toEqual([]);
+  });
+});
+
+describe('§6.2 invariant: y is the only key that ever approves, under any keybindings file', () => {
+  function mulberry32(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const POOL = ['y', 'Y', 'a', 'n', 'd', 'e', 'w', 'x', 'ctrl+y', 'meta+y', 'y e', 'ctrl+x y', 'y y', 'none', 'f1', 'space', 'ctrl+c', 'return', 'up', '?'];
+  it('review:approve is reserved: the loader refuses to rebind it and no other action may take y in the review box', () => {
+    const r = parseKeybindings('{"review:approve":["y","a"],"review:decline":"p"}');
+    expect(r.warnings).toEqual(['keybindings: review:approve is reserved and cannot be rebound (y is the only key that ever approves, §6.2)']);
+    expect([...r.overrides.keys()]).toEqual(['review:decline']);
+    const b = buildBindings(r.overrides);
+    expect(lookupBinding(b, 'review', 'a')).toBeNull();
+    expect(lookupBinding(b, 'review', 'y')).toBe('review:approve');
+    expect(lookupBinding(b, 'review', 'p')).toBe('review:decline');
+    const steal = buildBindings(parseKeybindings('{"review:decline":"y"}').overrides);
+    expect(lookupBinding(steal, 'review', 'y')).toBe('review:approve');
+    expect(steal.keysOf.get('review:decline')).toEqual([]);
+    expect(steal.warnings).toEqual(['keybindings: review:decline: "y" is owned by the reserved action review:approve in the review context; binding refused']);
+    const chord = buildBindings(parseKeybindings('{"review:expand":"y e"}').overrides);
+    expect(isChordPrefix(chord, 'review', 'y')).toBe(false);
+    expect(chord.keysOf.get('review:expand')).toEqual([]); // the override replaced the default `e` and was then refused
+    expect(lookupBinding(chord, 'review', 'e')).toBeNull();
+    expect(chord.warnings[0]).toMatch(/review:expand: the chord "y e" \(its first key "y"\) is owned by the reserved action review:approve/);
+    // a composer / global y is unrelated to the review domain
+    const composerY = buildBindings(parseKeybindings('{"composer:yank":"y"}').overrides);
+    expect(lookupBinding(composerY, 'composer', 'y')).toBe('composer:yank');
+    expect(lookupBinding(composerY, 'review', 'y')).toBe('review:approve');
+  });
+  it('500 seeded random override maps: y → review:approve, keysOf(review:approve) = [y], no other review key maps to approve', () => {
+    const rnd = mulberry32(0x62e5);
+    const ids = KEY_ACTIONS.map((a) => a.id);
+    for (let n = 0; n < 500; n++) {
+      const file: Record<string, unknown> = {};
+      const count = 1 + Math.floor(rnd() * 8);
+      for (let i = 0; i < count; i++) {
+        const id = ids[Math.floor(rnd() * ids.length)] as string;
+        const keys = Array.from({ length: 1 + Math.floor(rnd() * 3) }, () => POOL[Math.floor(rnd() * POOL.length)] as string);
+        file[id] = keys.length === 1 ? keys[0] : keys;
+      }
+      const parsed = parseKeybindings(JSON.stringify(file));
+      const b = buildBindings(parsed.overrides);
+      const review = b.table.get('review') as ReadonlyMap<string, string>;
+      expect(review.get('y'), JSON.stringify(file)).toBe('review:approve');
+      expect(b.keysOf.get('review:approve'), JSON.stringify(file)).toEqual(['y']);
+      for (const [k, id] of review) if (id === 'review:approve') expect(k, JSON.stringify(file)).toBe('y');
+      expect(isChordPrefix(b, 'review', 'y')).toBe(false);
+      for (const w of [...parsed.warnings, ...b.warnings]) expect(w.startsWith('keybindings: ')).toBe(true);
+    }
+  });
+});
+
+describe('keybindings file (TUI-DESIGN §3.4)', () => {
+  it('parses key strings, arrays, chords, "none" and null; unknown ids and reserved keys warn and are skipped', () => {
+    const r = parseKeybindings(JSON.stringify({
+      $schema: 'x',
+      'composer:externalEditor': 'ctrl+g',
+      'composer:killLine': 'none',
+      'composer:killLineBack': null,
+      'global:help': ['?', 'f1'],
+      'session:export': 'ctrl+x ctrl+s',
+      'composer:yank': 'ctrl+c',
+      'composer:transpose': 'ctrl+x return',
+      'composer:submit': 'ctrl+q',
+      'nope:missing': 'ctrl+q',
+      'composer:redo': 42,
+      'composer:undo': 'not a key',
+      'composer:wordLeft': ['meta+b', 'none'],
+    }));
+    expect([...r.overrides.entries()]).toEqual([
+      ['composer:externalEditor', ['ctrl+g']],
+      ['composer:killLine', []],
+      ['composer:killLineBack', []],
+      ['global:help', ['?', 'f1']],
+      ['session:export', ['ctrl+x ctrl+s']],
+      ['composer:wordLeft', ['meta+b']],
+    ]);
+    expect(r.warnings).toHaveLength(6);
+    expect(r.warnings.find((w) => w.includes('composer:yank'))).toMatch(/reserved/);
+    expect(r.warnings.find((w) => w.includes('composer:transpose'))).toMatch(/reserved/);
+    expect(r.warnings.find((w) => w.includes('composer:submit'))).toMatch(/reserved and cannot be rebound/);
+    expect(r.warnings.find((w) => w.includes('nope:missing'))).toMatch(/unknown action id/);
+    expect(r.warnings.find((w) => w.includes('composer:redo'))).toMatch(/expected a key string/);
+    expect(r.warnings.find((w) => w.includes('composer:undo'))).toMatch(/is not a key/);
+    // no warning ever carries the reserved key's meaning as a value — but the offending text is quoted
+    for (const w of r.warnings) expect(w.startsWith('keybindings: ')).toBe(true);
+  });
+  it('malformed JSON, arrays and non-objects warn and keep the defaults', () => {
+    expect(parseKeybindings('{ nope').warnings[0]).toMatch(/not valid JSON/);
+    expect(parseKeybindings('[1,2]').warnings[0]).toMatch(/expected a JSON object/);
+    expect(parseKeybindings('null').warnings[0]).toMatch(/expected a JSON object/);
+    expect(parseKeybindings('').warnings[0]).toMatch(/not valid JSON/);
+    expect(parseKeybindings('﻿{}').warnings).toEqual([]);
+    expect(parseKeybindings('{}').overrides.size).toBe(0);
+  });
+  it('loadKeybindings: ENOENT → defaults silently; EACCES → warning; oversize → warning; content → table', () => {
+    const fs = (files: Record<string, string | Error>): KeybindingsFs => ({
+      statSync: (p) => {
+        const f = files[p];
+        if (f === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        if (f instanceof Error) throw f;
+        return { size: Buffer.byteLength(f) };
+      },
+      readFileSync: (p) => {
+        const f = files[p];
+        if (f === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        if (f instanceof Error) throw f;
+        return f;
+      },
+    });
+    const missing = loadKeybindings('/x/keybindings.json', fs({}));
+    expect(missing.found).toBe(false);
+    expect(missing.warnings).toEqual([]);
+    expect(lookupBinding(missing.bindings, 'composer', 'ctrl+k')).toBe('composer:killLine');
+    const denied = loadKeybindings('/x/k.json', fs({ '/x/k.json': Object.assign(new Error('EACCES'), { code: 'EACCES' }) }));
+    expect(denied.found).toBe(true);
+    expect(denied.warnings[0]).toMatch(/could not read \/x\/k.json: EACCES/);
+    const big = loadKeybindings('/x/big.json', fs({ '/x/big.json': 'x'.repeat(KEYBINDINGS_MAX_BYTES + 1) }));
+    expect(big.warnings[0]).toMatch(/limit 65536/);
+    expect(lookupBinding(big.bindings, 'composer', 'ctrl+k')).toBe('composer:killLine');
+    const ok = loadKeybindings('/x/ok.json', fs({ '/x/ok.json': '{ "composer:killLine": "none", "session:export": "ctrl+x ctrl+s" }' }));
+    expect(ok.found).toBe(true);
+    expect(ok.warnings).toEqual([]);
+    expect(lookupBinding(ok.bindings, 'composer', 'ctrl+k')).toBeNull();
+    expect(lookupBinding(ok.bindings, 'global', 'ctrl+x ctrl+s')).toBe('session:export');
+    // collision warnings from buildBindings ride in the loader's warnings (they reach jevcode.log)
+    const clash = loadKeybindings('/x/c.json', fs({ '/x/c.json': '{ "composer:yank": "ctrl+k", "review:decline": "y", "nope:x": "a" }' }));
+    expect(clash.warnings).toHaveLength(3);
+    expect(clash.warnings[0]).toMatch(/unknown action id "nope:x"/);
+    expect(clash.warnings[1]).toMatch(/composer:yank: "ctrl\+k" displaces/);
+    expect(clash.warnings[2]).toMatch(/review:decline: "y" is owned by the reserved action review:approve/);
+    const dir = loadKeybindings('/x', fs({ '/x': Object.assign(new Error('EISDIR'), { code: 'EISDIR' }) }));
+    expect(dir.warnings[0]).toMatch(/EISDIR/);
+  });
+  it('keybindingsPath: flag > JEVCODE_KEYBINDINGS > XDG_CONFIG_HOME > ~/.config', () => {
+    expect(keybindingsPath({}, '/f.json', '/home/u')).toBe('/f.json');
+    expect(keybindingsPath({ JEVCODE_KEYBINDINGS: '/e.json' }, null, '/home/u')).toBe('/e.json');
+    expect(keybindingsPath({ XDG_CONFIG_HOME: '/tmp/x' }, undefined, '/home/u')).toBe('/tmp/x/jevcode/keybindings.json');
+    expect(keybindingsPath({ XDG_CONFIG_HOME: '  ' }, undefined, '/home/u')).toBe('/home/u/.config/jevcode/keybindings.json');
+    expect(keybindingsPath({}, '', '/home/u')).toBe('/home/u/.config/jevcode/keybindings.json');
+  });
+});

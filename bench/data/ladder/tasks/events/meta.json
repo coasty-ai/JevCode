@@ -1,0 +1,8 @@
+{
+  "name": "events",
+  "hunks": 1,
+  "kinds": ["attribute"],
+  "files": ["src/events.py"],
+  "difficulty": 1,
+  "description": "agenda_line reads event.end_at, but the Event dataclass field is ends_at (AttributeError). The fix renames one attribute access; the receiver's fields are visible in the same file, so a Choice over Event's attributes finds it. Three tests fail (agenda_line twice, agenda once), six pass."
+}

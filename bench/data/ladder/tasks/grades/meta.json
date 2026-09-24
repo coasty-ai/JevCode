@@ -1,0 +1,8 @@
+{
+  "name": "grades",
+  "hunks": 2,
+  "kinds": ["operator", "rename"],
+  "files": ["src/grades.py"],
+  "difficulty": 2,
+  "description": "Two independent one-line bugs in one file: letter_grade uses > where the docstring and tests say boundaries are inclusive (>=), and weighted_average divides by len(weights) instead of sum(weights) (wrong identifier). Three tests fail, seven pass."
+}

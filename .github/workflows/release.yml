@@ -1,0 +1,460 @@
+# Release: publish one tagged version to npm and the downstream channels.
+#
+# Entry points:
+#   - a `v<x.y.z>[-pre]` tag push (a person pushing a tag), or
+#   - workflow_dispatch on a tag ref: prepare-release.yml starts it that way, and it is the recovery entry point
+#     (Actions → release → Run workflow → "Use workflow from" Tags: vX). `packaging_ref` (e.g. main) re-runs the
+#     Homebrew/AUR jobs with a fixed Formula/PKGBUILD; npm and the GitHub Release skip idempotently.
+#
+# Graph: validate → gates → pack → publish-npm (environment `release`, required reviewers: the one human approval)
+#        → github-release, homebrew and aur (environment `release-channels`, stable latest only) → verify → verify-nix.
+# npm uses OIDC trusted publishing with provenance (trusted publisher: coasty-ai/JevCode, release.yml, environment
+# release). The very first publish needs NPM_BOOTSTRAP_TOKEN (docs/RELEASE.md). A channel whose secret is missing
+# is skipped with a summary line. The gates job mirrors ci.yml's check job step for step; pack builds the published
+# tarball on a separate runner.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      packaging_ref:
+        type: string
+        default: ''
+        description: 'ref for Formula/PKGBUILD/scripts when re-running channel jobs (e.g. main); empty = the tag'
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: validate ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      dist_tag: ${{ steps.v.outputs.dist_tag }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      is_latest: ${{ steps.v.outputs.is_latest }}
+      packaging_ref: ${{ steps.v.outputs.packaging_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # origin/main for the ancestry check
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Tag, package.json, CHANGELOG, main ancestry, packaging_ref, dist-tag
+        id: v
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          PACKAGING_REF: ${{ inputs.packaging_ref }}
+        run: node scripts/release/version.mjs check >> "$GITHUB_OUTPUT"
+
+      # README.md ships in the tarball and is the npm package page. The package is @coasty/jevcode (npm refused
+      # the unscoped name), so an unscoped npm command there installs nothing or someone else's package. Release-only:
+      # the gates job mirrors ci.yml's check job exactly.
+      - name: README names the scoped npm package
+        run: |
+          if grep -nE '(npm i(nstall)?( -g)?|npx( -y)?|bunx|pnpm dlx|pnpm add -g|yarn dlx|bun i -g|npm view|npm dist-tag add|npm deprecate) jevcode([^-_./[:alnum:]]|$)|npm:jevcode([^-_./[:alnum:]]|$)|registry\.npmjs\.org/jevcode([^-_[:alnum:]]|$)|npmjs\.com/package/jevcode([^-_[:alnum:]]|$)' README.md; then
+            echo "::error file=README.md::unscoped npm name in the README; the package is @coasty/jevcode (npm i -g @coasty/jevcode, npx @coasty/jevcode, mise use -g npm:@coasty/jevcode)" >&2
+            exit 1
+          fi
+
+  gates:
+    name: gates (ci.yml check)
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      CI: 'true'
+      JEVCODE_ASSERT_NO_NETWORK: '1' # the build smoke renders the first frame with no HTTP
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scripts/gen-docs.mjs --check dates the man page from package.json's commit
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      # The same steps as ci.yml's check job (see the comments there).
+      - name: pytest for the runner's python3
+        run: sudo python3 -m pip install --break-system-packages --root-user-action=ignore --no-cache-dir 'pytest==8.4.2'
+
+      - run: npm ci
+
+      - name: Typecheck (tsc strict, then the no-any rule)
+        run: npm run typecheck
+
+      - name: Jev-safety contract (every Jev call site is a router, never an authority)
+        run: npm run jev-contract
+
+      - name: Unit tests (a failing test is retried up to twice)
+        env:
+          JEVCODE_PERF_BUDGET_SCALE: '3' # wall-clock budgets are calibrated on a dev machine (test/unit/helpers/perf-budget.ts)
+        run: npm test -- --maxWorkers=3 --retry 2 --reporter=default --reporter=./scripts/ci/retried-reporter.mjs
+
+      - name: Build the bundle and the attribution file
+        run: npm run build
+
+      - name: Release tarball gates
+        run: npm run pack:check
+
+      - name: Generated docs are current (man page, completions, KEYS.md, COMMANDS.md)
+        run: node scripts/gen-docs.mjs --check
+
+      - name: The decisions table of contents is current
+        run: node scripts/gen-decisions-toc.mjs --check
+
+      - name: Every relative link in the README and docs/ resolves
+        run: node scripts/check-doc-links.mjs
+
+      - name: README carries no hard-coded version and no placeholder
+        run: |
+          fail=0
+          if grep -vE 'arrives in [0-9]+\.[0-9]+\.[0-9]+' README.md | grep -nE '[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error file=README.md::hard-coded version in the README; the binary prints its own from package.json" >&2
+            fail=1
+          fi
+          if grep -nE '<owner>|<this repo>|PLACEHOLDER|<your-' README.md; then
+            echo "::error file=README.md::unresolved placeholder in the README" >&2
+            fail=1
+          fi
+          exit $fail
+
+  # The published bytes come from a fresh runner that runs only lockfile-pinned npm code: gates installs pytest
+  # from PyPI as root, so nothing gates builds is published.
+  pack:
+    name: pack the release tarball
+    needs: [validate, gates]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      CI: 'true'
+      JEVCODE_ASSERT_NO_NETWORK: '1' # the build smoke renders the first frame with no HTTP
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false # this job builds the published bytes: no restored cache
+
+      - run: npm ci
+
+      - name: Build the bundle and the attribution file
+        run: npm run build
+
+      - name: Release tarball gates
+        run: npm run pack:check
+
+      # The build above is the artefact: --ignore-scripts skips the prepack rebuild.
+      - name: Pack the release tarball
+        run: npm pack --ignore-scripts
+
+      # npm names the scoped package's tarball coasty-jevcode-<version>.tgz. This is the one rename: SHA256SUMS,
+      # the release artifact, npm-publish.sh, the GitHub Release asset and the tap and AUR jobs use jevcode-<version>.tgz.
+      - name: Name the tarball jevcode-<version>.tgz
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: mv "coasty-jevcode-$VERSION.tgz" "jevcode-$VERSION.tgz"
+
+      - name: SHA256SUMS
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: sha256sum "jevcode-$VERSION.tgz" | tee SHA256SUMS
+
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: node scripts/release/changelog.mjs notes "$VERSION" > release-notes.md
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ needs.validate.outputs.version }}
+          path: |
+            jevcode-${{ needs.validate.outputs.version }}.tgz
+            SHA256SUMS
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 90
+
+  publish-npm:
+    name: publish to npm (approval)
+    needs: [validate, pack]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: release
+      url: https://www.npmjs.com/package/@coasty/jevcode/v/${{ needs.validate.outputs.version }}
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ needs.validate.outputs.version }}
+
+      # no registry-url: it writes an .npmrc with a NODE_AUTH_TOKEN reference that trusted publishing must not see
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Assert toolchain (Node >= 24.5.0, npm >= 11.5.1 for trusted publishing)
+        run: |
+          node -e '
+            const v = process.versions.node;
+            const [maj, min] = v.split(".").map(Number);
+            if (maj < 24 || (maj === 24 && min < 5)) { console.error("Node " + v + " < 24.5.0"); process.exit(1); }
+            console.log("node " + v);
+          '
+          NPM_V="$(npm --version)"
+          node -e '
+            const v = process.argv[1];
+            const [a, b, c] = v.split(".").map(Number);
+            const ok = a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1)));
+            if (!ok) { console.error("npm " + v + " < 11.5.1 (trusted publishing needs 11.5.1+)"); process.exit(1); }
+            console.log("npm " + v);
+          ' "$NPM_V"
+
+      - name: The artifact is the tarball pack built
+        run: sha256sum -c SHA256SUMS
+
+      - name: npm publish (skips identical bytes; bootstrap token only while the package is absent)
+        env:
+          CI: 'true'
+          VERSION: ${{ needs.validate.outputs.version }}
+          DIST_TAG: ${{ needs.validate.outputs.dist_tag }}
+          TARBALL: jevcode-${{ needs.validate.outputs.version }}.tgz
+          NPM_BOOTSTRAP_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: bash scripts/release/npm-publish.sh
+
+  github-release:
+    name: GitHub Release
+    needs: [validate, publish-npm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ needs.validate.outputs.version }}
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          IS_LATEST: ${{ needs.validate.outputs.is_latest }}
+        run: bash scripts/release/github-release.sh
+
+  homebrew:
+    name: Homebrew tap
+    needs: [validate, publish-npm]
+    if: needs.validate.outputs.prerelease == 'false' && needs.validate.outputs.is_latest == 'true'
+    runs-on: macos-15
+    timeout-minutes: 30
+    environment: release-channels
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.tap.outputs.status || 'skipped-no-secret' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.packaging_ref }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ needs.validate.outputs.version }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: Is the tap credential configured?
+        id: cfg
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "$TAP_TOKEN" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "Homebrew: skipped — secret HOMEBREW_TAP_TOKEN is not set in environment release-channels (docs/RELEASE.md, one-time step 6)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Render, brew install/test/audit/style, push to the tap
+        id: tap
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'coasty-ai/homebrew-jevcode' }}
+          PACKAGING_REF: ${{ needs.validate.outputs.packaging_ref }}
+        run: bash scripts/release/homebrew-tap.sh
+
+  aur:
+    name: AUR
+    needs: [validate, publish-npm]
+    if: needs.validate.outputs.prerelease == 'false' && needs.validate.outputs.is_latest == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    container: archlinux:base-devel
+    environment: release-channels
+    concurrency:
+      group: aur-jevcode
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    outputs:
+      status: ${{ steps.push.outputs.status || 'skipped-no-secret' }}
+    steps:
+      - name: Packages (checkout needs git)
+        run: pacman -Syu --noconfirm --needed git openssh nodejs npm namcap jq
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.packaging_ref }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-${{ needs.validate.outputs.version }}
+
+      - name: Is the AUR key configured?
+        id: cfg
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -n "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+            echo "AUR: skipped — secret AUR_SSH_PRIVATE_KEY is not set in environment release-channels (docs/RELEASE.md, one-time step 7)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Render, makepkg, namcap, push to the AUR
+        id: push
+        if: steps.cfg.outputs.configured == 'true'
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_COMMIT_NAME: ${{ vars.AUR_COMMIT_NAME }}
+          AUR_COMMIT_EMAIL: ${{ vars.AUR_COMMIT_EMAIL }}
+          AUR_MAINTAINER: ${{ vars.AUR_MAINTAINER || 'coasty-ai <https://github.com/coasty-ai/JevCode>' }}
+          PACKAGING_REF: ${{ needs.validate.outputs.packaging_ref }}
+        run: bash scripts/release/aur-publish.sh
+
+  verify:
+    name: verify and channel table
+    needs: [validate, publish-npm, github-release, homebrew, aur]
+    if: always() && needs.publish-npm.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      - name: npx @coasty/jevcode@<version> --version, provenance, channel table
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          DIST_TAG: ${{ needs.validate.outputs.dist_tag }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          IS_LATEST: ${{ needs.validate.outputs.is_latest }}
+          RESULT_NPM: ${{ needs.publish-npm.result }}
+          RESULT_GITHUB_RELEASE: ${{ needs.github-release.result }}
+          RESULT_HOMEBREW: ${{ needs.homebrew.result }}
+          RESULT_AUR: ${{ needs.aur.result }}
+          STATUS_HOMEBREW: ${{ needs.homebrew.outputs.status }}
+          STATUS_AUR: ${{ needs.aur.outputs.status }}
+        run: bash scripts/release/verify.sh
+
+  verify-nix:
+    name: nix run at the tag (non-blocking)
+    needs: [validate, verify]
+    if: always() && needs.verify.result == 'success' && needs.validate.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Is flake.lock committed at the tag?
+        id: lock
+        run: |
+          if [ -f flake.lock ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "Nix: flake.lock not committed yet — run the flake-lock workflow" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        if: steps.lock.outputs.present == 'true'
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: nix run github:coasty-ai/JevCode/v<version> -- --version
+        if: steps.lock.outputs.present == 'true'
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          NIX_CONFIG: access-tokens = github.com=${{ github.token }}
+        run: |
+          out="$(nix run "github:coasty-ai/JevCode/v$VERSION" -- --version)"
+          echo "$out"
+          if [ "$out" != "jevcode $VERSION" ]; then
+            echo "::error::nix run printed '$out', expected 'jevcode $VERSION'" >&2
+            echo "Nix: failed — nix run printed '$out'" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "Nix: done — nix run github:coasty-ai/JevCode/v$VERSION prints jevcode $VERSION" >> "$GITHUB_STEP_SUMMARY"

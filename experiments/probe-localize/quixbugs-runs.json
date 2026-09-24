@@ -1,0 +1,7953 @@
+{
+ "bitcount": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     127
+    ],
+    "expected": 7,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     128
+    ],
+    "expected": 1,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     3005
+    ],
+    "expected": 9,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     13
+    ],
+    "expected": 3,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     14
+    ],
+    "expected": 3,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     27
+    ],
+    "expected": 4,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     834
+    ],
+    "expected": 4,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     254
+    ],
+    "expected": 7,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     256
+    ],
+    "expected": 1,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "breadth_first_search": {
+  "kind": "graph",
+  "tests": [
+   {
+    "name": "test1",
+    "doc": "Case 1: Strongly connected graph\nOutput: Path found!",
+    "source": "def test1():\n    \"\"\"Case 1: Strongly connected graph\n    Output: Path found!\n    \"\"\"\n\n    station1 = Node(\"Westminster\")\n    station2 = Node(\"Waterloo\", None, [station1])\n    station3 = Node(\"Trafalgar Square\", None, [station1, station2])\n    station4 = Node(\"Canary Wharf\", None, [station2, station3])\n    station5 = Node(\"London Bridge\", None, [station4, station3])\n    station6 = Node(\"Tottenham Court Road\", None, [station5, station4])\n\n    path_found = breadth_first_search(station6, station1)\n\n    assert path_found\n",
+    "passed": true
+   },
+   {
+    "name": "test2",
+    "doc": "Case 2: Branching graph\nOutput: Path found!",
+    "source": "def test2():\n    \"\"\"Case 2: Branching graph\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n    noded = Node(\"D\")\n    nodec = Node(\"C\", None, [nodef])\n    nodeb = Node(\"B\", None, [nodee])\n    nodea = Node(\"A\", None, [nodeb, nodec, noded])\n\n    path_found = breadth_first_search(nodea, nodee)\n\n    assert path_found\n",
+    "passed": true
+   },
+   {
+    "name": "test3",
+    "doc": "Case 3: Two unconnected nodes in graph\nOutput: Path not found",
+    "source": "def test3():\n    \"\"\"Case 3: Two unconnected nodes in graph\n    Output: Path not found\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n\n    path_found = breadth_first_search(nodef, nodee)\n\n    assert not path_found\n",
+    "passed": false,
+    "error": "IndexError: pop from an empty deque"
+   },
+   {
+    "name": "test4",
+    "doc": "Case 4: One node graph\nOutput: Path found!",
+    "source": "def test4():\n    \"\"\"Case 4: One node graph\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n\n    path_found = breadth_first_search(nodef, nodef)\n\n    assert path_found\n",
+    "passed": true
+   },
+   {
+    "name": "test5",
+    "doc": "Case 5: Graph with cycles\nOutput: Path found!",
+    "source": "def test5():\n    \"\"\"Case 5: Graph with cycles\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n    noded = Node(\"D\")\n    nodec = Node(\"C\", None, [nodef])\n    nodeb = Node(\"B\", None, [nodee])\n    nodea = Node(\"A\", None, [nodeb, nodec, noded])\n\n    nodee.successors = [nodea]\n\n    path_found = breadth_first_search(nodea, nodef)\n\n    assert path_found\n",
+    "passed": true
+   }
+  ],
+  "first_failing": 2
+ },
+ "bucketsort": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [],
+     14
+    ],
+    "expected": [],
+    "actual": [],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      3,
+      11,
+      2,
+      9,
+      1,
+      5
+     ],
+     12
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     5,
+     9,
+     11
+    ],
+    "actual": [
+     0,
+     0,
+     0,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     2,
+     2,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     4,
+     5,
+     5,
+     5,
+     5,
+     5
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      2,
+      4,
+      2,
+      3,
+      5
+     ],
+     6
+    ],
+    "expected": [
+     2,
+     2,
+     3,
+     3,
+     4,
+     5
+    ],
+    "actual": [
+     0,
+     0,
+     0,
+     1,
+     1,
+     2,
+     2,
+     2,
+     2,
+     3,
+     3,
+     4,
+     4,
+     4,
+     5,
+     5,
+     5,
+     5,
+     5
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      3,
+      4,
+      6,
+      4,
+      2,
+      9,
+      1,
+      2,
+      9
+     ],
+     10
+    ],
+    "expected": [
+     1,
+     1,
+     2,
+     2,
+     3,
+     4,
+     4,
+     6,
+     9,
+     9
+    ],
+    "actual": [
+     0,
+     1,
+     1,
+     1,
+     2,
+     2,
+     2,
+     2,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     4,
+     4,
+     4,
+     4,
+     5,
+     5,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     7,
+     8,
+     8,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      20,
+      19,
+      18,
+      17,
+      16,
+      15,
+      14,
+      13,
+      12,
+      11
+     ],
+     21
+    ],
+    "expected": [
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19,
+     20
+    ],
+    "actual": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29
+     ],
+     30
+    ],
+    "expected": [
+     20,
+     21,
+     22,
+     23,
+     24,
+     25,
+     26,
+     27,
+     28,
+     29
+    ],
+    "actual": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     1,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     2,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     3,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     6,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     8,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9,
+     9
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      8,
+      5,
+      3,
+      1,
+      9,
+      6,
+      0,
+      7,
+      4,
+      2,
+      5
+     ],
+     10
+    ],
+    "expected": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     5,
+     6,
+     7,
+     8,
+     9
+    ],
+    "actual": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     1,
+     1,
+     1,
+     1,
+     1,
+     2,
+     2,
+     2,
+     3,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     4,
+     5,
+     5,
+     5,
+     5,
+     5,
+     5,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     7,
+     8,
+     8,
+     8,
+     8,
+     9,
+     9,
+     10,
+     10,
+     10,
+     10,
+     10
+    ],
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "depth_first_search": {
+  "kind": "graph",
+  "tests": [
+   {
+    "name": "test1",
+    "doc": "Case 1: Strongly connected graph\nOutput: Path found!",
+    "source": "def test1():\n    \"\"\"Case 1: Strongly connected graph\n    Output: Path found!\n    \"\"\"\n\n    station1 = Node(\"Westminster\")\n    station2 = Node(\"Waterloo\", None, [station1])\n    station3 = Node(\"Trafalgar Square\", None, [station1, station2])\n    station4 = Node(\"Canary Wharf\", None, [station2, station3])\n    station5 = Node(\"London Bridge\", None, [station4, station3])\n    station6 = Node(\"Tottenham Court Road\", None, [station5, station4])\n\n    path_found = depth_first_search(station6, station1)\n\n    assert path_found\n",
+    "passed": true
+   },
+   {
+    "name": "test2",
+    "doc": "Case 2: Branching graph\nOutput: Path found!",
+    "source": "def test2():\n    \"\"\"Case 2: Branching graph\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n    noded = Node(\"D\")\n    nodec = Node(\"C\", None, [nodef])\n    nodeb = Node(\"B\", None, [nodee])\n    nodea = Node(\"A\", None, [nodeb, nodec, noded])\n\n    path_found = depth_first_search(nodea, nodee)\n\n    assert path_found\n",
+    "passed": true
+   },
+   {
+    "name": "test3",
+    "doc": "Case 3: Two unconnected nodes in graph\nOutput: Path not found",
+    "source": "def test3():\n    \"\"\"Case 3: Two unconnected nodes in graph\n    Output: Path not found\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n\n    path_found = depth_first_search(nodef, nodee)\n\n    assert not path_found\n",
+    "passed": true
+   },
+   {
+    "name": "test4",
+    "doc": "Case 4: One node graph\nOutput: Path found!",
+    "source": "def test4():\n    \"\"\"Case 4: One node graph\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n\n    path_found = depth_first_search(nodef, nodef)\n\n    assert path_found\n",
+    "passed": true
+   },
+   {
+    "name": "test5",
+    "doc": "Case 5: Graph with cycles\nOutput: Path found!",
+    "source": "def test5():\n    \"\"\"Case 5: Graph with cycles\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n    noded = Node(\"D\")\n    nodec = Node(\"C\", None, [nodef])\n    nodeb = Node(\"B\", None, [nodee])\n    nodea = Node(\"A\", None, [nodeb, nodec, noded])\n\n    nodee.successors = [nodea]\n\n    path_found = depth_first_search(nodea, nodef)\n\n    assert path_found\n",
+    "passed": false,
+    "error": "RecursionError: maximum recursion depth exceeded"
+   }
+  ],
+  "first_failing": 4
+ },
+ "detect_cycle": {
+  "kind": "graph",
+  "tests": [
+   {
+    "name": "test1",
+    "doc": "Case 1: 5-node list input with no cycle\nExpected Output: Cycle not detected!",
+    "source": "def test1():\n    \"\"\"Case 1: 5-node list input with no cycle\n    Expected Output: Cycle not detected!\n    \"\"\"\n\n    detected = detect_cycle(node5)\n\n    assert not detected\n",
+    "passed": true
+   },
+   {
+    "name": "test2",
+    "doc": "Case 2: 5-node list input with cycle\nExpected Output: Cycle detected!",
+    "source": "def test2():\n    \"\"\"Case 2: 5-node list input with cycle\n    Expected Output: Cycle detected!\n    \"\"\"\n\n    node1.successor = node5\n\n    detected = detect_cycle(node5)\n\n    assert detected\n",
+    "passed": true
+   },
+   {
+    "name": "test3",
+    "doc": "Case 3: 2-node list with cycle\nExpected Output: Cycle detected!",
+    "source": "def test3():\n    \"\"\"Case 3: 2-node list with cycle\n    Expected Output: Cycle detected!\n    \"\"\"\n\n    node1.successor = node2\n\n    detected = detect_cycle(node2)\n\n    assert detected\n",
+    "passed": true
+   },
+   {
+    "name": "test4",
+    "doc": "Case 4: 2-node list with no cycle\nExpected Output: Cycle not detected!",
+    "source": "def test4():\n    \"\"\"Case 4: 2-node list with no cycle\n    Expected Output: Cycle not detected!\n    \"\"\"\n\n    node6 = Node(6)\n    node7 = Node(7, node6)\n\n    detected = detect_cycle(node7)\n\n    assert not detected\n",
+    "passed": false,
+    "error": "AttributeError: 'NoneType' object has no attribute 'successor'"
+   },
+   {
+    "name": "test5",
+    "doc": "Case 5: 1-node list\nExpected Output: Cycle not detected",
+    "source": "def test5():\n    \"\"\"Case 5: 1-node list\n    Expected Output: Cycle not detected\n    \"\"\"\n\n    node = Node(0)\n    detected = detect_cycle(node)\n\n    assert not detected\n",
+    "passed": true
+   },
+   {
+    "name": "test6",
+    "doc": "Case 6: 5 nodes in total. the last 2 nodes form a cycle. input the first node\nExpected Output: Cycle detected!",
+    "source": "def test6():\n    \"\"\"Case 6: 5 nodes in total. the last 2 nodes form a cycle. input the first node\n    Expected Output: Cycle detected!\n    \"\"\"\n\n    node1.successor = node2\n\n    detected = detect_cycle(node5)\n\n    assert detected\n",
+    "passed": true
+   }
+  ],
+  "first_failing": 3
+ },
+ "find_first_in_sorted": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      3,
+      4,
+      5,
+      5,
+      5,
+      5,
+      6
+     ],
+     5
+    ],
+    "expected": 2,
+    "actual": 2,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      3,
+      4,
+      5,
+      5,
+      5,
+      5,
+      6
+     ],
+     7
+    ],
+    "expected": -1,
+    "error": "IndexError: list index out of range",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      4,
+      5,
+      5,
+      5,
+      5,
+      6
+     ],
+     2
+    ],
+    "expected": -1,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      6,
+      7,
+      9,
+      9,
+      10,
+      14,
+      27
+     ],
+     14
+    ],
+    "expected": 6,
+    "actual": 6,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      0,
+      1,
+      6,
+      8,
+      13,
+      14,
+      67,
+      128
+     ],
+     80
+    ],
+    "expected": -1,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      0,
+      1,
+      6,
+      8,
+      13,
+      14,
+      67,
+      128
+     ],
+     67
+    ],
+    "expected": 6,
+    "actual": 6,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      0,
+      1,
+      6,
+      8,
+      13,
+      14,
+      67,
+      128
+     ],
+     128
+    ],
+    "expected": 7,
+    "actual": 7,
+    "passed": true
+   }
+  ],
+  "first_failing": 1
+ },
+ "find_in_sorted": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      3,
+      4,
+      5,
+      5,
+      5,
+      5,
+      6
+     ],
+     5
+    ],
+    "expected": 3,
+    "actual": 3,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      1,
+      2,
+      3,
+      4,
+      6,
+      7,
+      8
+     ],
+     5
+    ],
+    "expected": -1,
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      2,
+      3,
+      4,
+      6,
+      7,
+      8
+     ],
+     4
+    ],
+    "expected": 3,
+    "actual": 3,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      2,
+      4,
+      6,
+      8,
+      10,
+      12,
+      14,
+      16,
+      18,
+      20
+     ],
+     18
+    ],
+    "expected": 8,
+    "actual": 8,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      3,
+      5,
+      6,
+      7,
+      8,
+      9,
+      12,
+      13,
+      14,
+      24,
+      26,
+      27
+     ],
+     0
+    ],
+    "expected": -1,
+    "actual": -1,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      3,
+      5,
+      6,
+      7,
+      8,
+      9,
+      12,
+      12,
+      14,
+      24,
+      26,
+      27
+     ],
+     12
+    ],
+    "expected": 6,
+    "actual": 6,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      24,
+      26,
+      28,
+      50,
+      59
+     ],
+     101
+    ],
+    "expected": -1,
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "flatten": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      [
+       1,
+       [],
+       [
+        2,
+        3
+       ]
+      ],
+      [
+       [
+        4
+       ]
+      ],
+      5
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "error": "TypeError: 'int' object is not iterable",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      [],
+      [],
+      [],
+      [],
+      []
+     ]
+    ],
+    "expected": [],
+    "actual": [],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      [],
+      [],
+      1,
+      [],
+      1,
+      [],
+      []
+     ]
+    ],
+    "expected": [
+     1,
+     1
+    ],
+    "error": "TypeError: 'int' object is not iterable",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      2,
+      3,
+      [
+       [
+        4
+       ]
+      ]
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4
+    ],
+    "error": "TypeError: 'int' object is not iterable",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      4,
+      6
+     ]
+    ],
+    "expected": [
+     1,
+     4,
+     6
+    ],
+    "error": "TypeError: 'int' object is not iterable",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      "moe",
+      "curly",
+      "larry"
+     ]
+    ],
+    "expected": [
+     "moe",
+     "curly",
+     "larry"
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      "a",
+      "b",
+      [
+       "c"
+      ],
+      [
+       "d"
+      ],
+      [
+       [
+        "e"
+       ]
+      ]
+     ]
+    ],
+    "expected": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e"
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "gcd": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     17,
+     0
+    ],
+    "expected": 17,
+    "actual": 17,
+    "passed": true
+   },
+   {
+    "input": [
+     13,
+     13
+    ],
+    "expected": 13,
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     37,
+     600
+    ],
+    "expected": 1,
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     20,
+     100
+    ],
+    "expected": 20,
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     624129,
+     2061517
+    ],
+    "expected": 18913,
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     3,
+     12
+    ],
+    "expected": 3,
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "get_factors": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     1
+    ],
+    "expected": [],
+    "actual": [],
+    "passed": true
+   },
+   {
+    "input": [
+     100
+    ],
+    "expected": [
+     2,
+     2,
+     5,
+     5
+    ],
+    "actual": [
+     2,
+     2,
+     5
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     101
+    ],
+    "expected": [
+     101
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     104
+    ],
+    "expected": [
+     2,
+     2,
+     2,
+     13
+    ],
+    "actual": [
+     2,
+     2,
+     2
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     2
+    ],
+    "expected": [
+     2
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     3
+    ],
+    "expected": [
+     3
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     17
+    ],
+    "expected": [
+     17
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     63
+    ],
+    "expected": [
+     3,
+     3,
+     7
+    ],
+    "actual": [
+     3,
+     3
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     74
+    ],
+    "expected": [
+     2,
+     37
+    ],
+    "actual": [
+     2
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     73
+    ],
+    "expected": [
+     73
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     9837
+    ],
+    "expected": [
+     3,
+     3,
+     1093
+    ],
+    "actual": [
+     3,
+     3
+    ],
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "hanoi": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     0,
+     1,
+     3
+    ],
+    "expected": [],
+    "actual": [],
+    "passed": true
+   },
+   {
+    "input": [
+     1,
+     1,
+     3
+    ],
+    "expected": [
+     [
+      1,
+      3
+     ]
+    ],
+    "actual": [
+     [
+      1,
+      2
+     ]
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     2,
+     1,
+     3
+    ],
+    "expected": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      2,
+      3
+     ]
+    ],
+    "actual": [
+     [
+      1,
+      3
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      2,
+      1
+     ]
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     3,
+     1,
+     3
+    ],
+    "expected": [
+     [
+      1,
+      3
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      3,
+      2
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      2,
+      1
+     ],
+     [
+      2,
+      3
+     ],
+     [
+      1,
+      3
+     ]
+    ],
+    "actual": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      3,
+      1
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      2,
+      3
+     ],
+     [
+      2,
+      1
+     ],
+     [
+      1,
+      2
+     ]
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     4,
+     1,
+     3
+    ],
+    "expected": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      2,
+      3
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      3,
+      1
+     ],
+     [
+      3,
+      2
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      2,
+      3
+     ],
+     [
+      2,
+      1
+     ],
+     [
+      3,
+      1
+     ],
+     [
+      2,
+      3
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      2,
+      3
+     ]
+    ],
+    "actual": [
+     [
+      1,
+      3
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      2,
+      1
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      3,
+      2
+     ],
+     [
+      3,
+      1
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      2,
+      1
+     ],
+     [
+      2,
+      3
+     ],
+     [
+      3,
+      2
+     ],
+     [
+      2,
+      1
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      2,
+      1
+     ]
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     2,
+     1,
+     2
+    ],
+    "expected": [
+     [
+      1,
+      3
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      3,
+      2
+     ]
+    ],
+    "actual": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      3,
+      1
+     ]
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     2,
+     1,
+     1
+    ],
+    "expected": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      1
+     ],
+     [
+      2,
+      1
+     ]
+    ],
+    "actual": [
+     [
+      1,
+      3
+     ],
+     [
+      1,
+      2
+     ],
+     [
+      2,
+      3
+     ]
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     2,
+     3,
+     1
+    ],
+    "expected": [
+     [
+      3,
+      2
+     ],
+     [
+      3,
+      1
+     ],
+     [
+      2,
+      1
+     ]
+    ],
+    "actual": [
+     [
+      3,
+      1
+     ],
+     [
+      3,
+      2
+     ],
+     [
+      2,
+      3
+     ]
+    ],
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "is_valid_parenthesization": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     "((()()))()"
+    ],
+    "expected": true,
+    "actual": true,
+    "passed": true
+   },
+   {
+    "input": [
+     ")()("
+    ],
+    "expected": false,
+    "actual": false,
+    "passed": true
+   },
+   {
+    "input": [
+     "(("
+    ],
+    "expected": false,
+    "actual": true,
+    "passed": false
+   }
+  ],
+  "first_failing": 2
+ },
+ "kheapsort": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      1,
+      2,
+      3,
+      4,
+      5
+     ],
+     0
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      3,
+      2,
+      1,
+      5,
+      4
+     ],
+     2
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "actual": [
+     2,
+     2,
+     1,
+     3,
+     3,
+     4,
+     5
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      5,
+      4,
+      3,
+      2,
+      1
+     ],
+     4
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "actual": [
+     2,
+     3,
+     3,
+     2,
+     1,
+     4,
+     4,
+     5,
+     5
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      12,
+      5,
+      1,
+      6
+     ],
+     3
+    ],
+    "expected": [
+     1,
+     3,
+     5,
+     6,
+     12
+    ],
+    "actual": [
+     3,
+     3,
+     5,
+     1,
+     5,
+     6,
+     12,
+     12
+    ],
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "knapsack": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     100,
+     [
+      [
+       60,
+       10
+      ],
+      [
+       50,
+       8
+      ],
+      [
+       20,
+       4
+      ],
+      [
+       20,
+       4
+      ],
+      [
+       8,
+       3
+      ],
+      [
+       3,
+       2
+      ]
+     ]
+    ],
+    "expected": 19,
+    "actual": 19,
+    "passed": true
+   },
+   {
+    "input": [
+     40,
+     [
+      [
+       30,
+       10
+      ],
+      [
+       50,
+       5
+      ],
+      [
+       10,
+       20
+      ],
+      [
+       40,
+       25
+      ]
+     ]
+    ],
+    "expected": 30,
+    "actual": 20,
+    "passed": false
+   },
+   {
+    "input": [
+     750,
+     [
+      [
+       70,
+       135
+      ],
+      [
+       73,
+       139
+      ],
+      [
+       77,
+       149
+      ],
+      [
+       80,
+       150
+      ],
+      [
+       82,
+       156
+      ],
+      [
+       87,
+       163
+      ],
+      [
+       90,
+       173
+      ],
+      [
+       94,
+       184
+      ],
+      [
+       98,
+       192
+      ],
+      [
+       106,
+       201
+      ],
+      [
+       110,
+       210
+      ],
+      [
+       113,
+       214
+      ],
+      [
+       115,
+       221
+      ],
+      [
+       118,
+       229
+      ],
+      [
+       120,
+       240
+      ]
+     ]
+    ],
+    "expected": 1458,
+    "actual": 1458,
+    "passed": true
+   },
+   {
+    "input": [
+     26,
+     [
+      [
+       12,
+       24
+      ],
+      [
+       7,
+       13
+      ],
+      [
+       11,
+       23
+      ],
+      [
+       8,
+       15
+      ],
+      [
+       9,
+       16
+      ]
+     ]
+    ],
+    "expected": 51,
+    "actual": 47,
+    "passed": false
+   },
+   {
+    "input": [
+     50,
+     [
+      [
+       31,
+       70
+      ],
+      [
+       10,
+       20
+      ],
+      [
+       20,
+       39
+      ],
+      [
+       19,
+       37
+      ],
+      [
+       4,
+       7
+      ],
+      [
+       3,
+       5
+      ],
+      [
+       6,
+       10
+      ]
+     ]
+    ],
+    "expected": 107,
+    "actual": 102,
+    "passed": false
+   },
+   {
+    "input": [
+     190,
+     [
+      [
+       56,
+       50
+      ],
+      [
+       59,
+       50
+      ],
+      [
+       80,
+       64
+      ],
+      [
+       64,
+       46
+      ],
+      [
+       75,
+       50
+      ],
+      [
+       17,
+       5
+      ]
+     ]
+    ],
+    "expected": 150,
+    "actual": 146,
+    "passed": false
+   },
+   {
+    "input": [
+     104,
+     [
+      [
+       25,
+       350
+      ],
+      [
+       35,
+       400
+      ],
+      [
+       45,
+       450
+      ],
+      [
+       5,
+       20
+      ],
+      [
+       25,
+       70
+      ],
+      [
+       3,
+       8
+      ],
+      [
+       2,
+       5
+      ],
+      [
+       2,
+       5
+      ]
+     ]
+    ],
+    "expected": 900,
+    "actual": 898,
+    "passed": false
+   },
+   {
+    "input": [
+     165,
+     [
+      [
+       23,
+       92
+      ],
+      [
+       31,
+       57
+      ],
+      [
+       29,
+       49
+      ],
+      [
+       44,
+       68
+      ],
+      [
+       53,
+       60
+      ],
+      [
+       38,
+       43
+      ],
+      [
+       63,
+       67
+      ],
+      [
+       85,
+       84
+      ],
+      [
+       89,
+       87
+      ],
+      [
+       82,
+       72
+      ]
+     ]
+    ],
+    "expected": 309,
+    "actual": 284,
+    "passed": false
+   },
+   {
+    "input": [
+     170,
+     [
+      [
+       41,
+       442
+      ],
+      [
+       50,
+       525
+      ],
+      [
+       49,
+       511
+      ],
+      [
+       59,
+       593
+      ],
+      [
+       55,
+       546
+      ],
+      [
+       57,
+       564
+      ],
+      [
+       60,
+       617
+      ]
+     ]
+    ],
+    "expected": 1735,
+    "actual": 1735,
+    "passed": true
+   },
+   {
+    "input": [
+     6404180,
+     [
+      [
+       382745,
+       825594
+      ],
+      [
+       799601,
+       1677009
+      ],
+      [
+       909247,
+       1676628
+      ],
+      [
+       729069,
+       1523970
+      ],
+      [
+       467902,
+       943972
+      ],
+      [
+       44328,
+       97426
+      ],
+      [
+       34610,
+       69666
+      ],
+      [
+       698150,
+       1296457
+      ],
+      [
+       823460,
+       1679693
+      ],
+      [
+       903959,
+       1902996
+      ],
+      [
+       853665,
+       1844992
+      ],
+      [
+       551830,
+       1049289
+      ],
+      [
+       610856,
+       1252836
+      ],
+      [
+       670702,
+       1319836
+      ],
+      [
+       488960,
+       953277
+      ],
+      [
+       951111,
+       2067538
+      ],
+      [
+       323046,
+       675367
+      ],
+      [
+       446298,
+       853655
+      ],
+      [
+       931161,
+       1826027
+      ],
+      [
+       31385,
+       65731
+      ],
+      [
+       496951,
+       901489
+      ],
+      [
+       264724,
+       577243
+      ],
+      [
+       224916,
+       466257
+      ],
+      [
+       169684,
+       369261
+      ]
+     ]
+    ],
+    "expected": 13549094,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "kth": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     4
+    ],
+    "expected": 5,
+    "error": "IndexError: list index out of range",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      6,
+      7,
+      1,
+      6,
+      3,
+      8,
+      9
+     ],
+     5
+    ],
+    "expected": 7,
+    "error": "IndexError: list index out of range",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      6,
+      7,
+      1,
+      6,
+      3,
+      8,
+      9
+     ],
+     2
+    ],
+    "expected": 3,
+    "actual": 3,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      2,
+      6,
+      8,
+      3,
+      5,
+      7
+     ],
+     0
+    ],
+    "expected": 2,
+    "actual": 2,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      34,
+      25,
+      7,
+      1,
+      9
+     ],
+     4
+    ],
+    "expected": 34,
+    "actual": 34,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      45,
+      2,
+      6,
+      8,
+      42,
+      90,
+      322
+     ],
+     1
+    ],
+    "expected": 6,
+    "error": "IndexError: list index out of range",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      45,
+      2,
+      6,
+      8,
+      42,
+      90,
+      322
+     ],
+     6
+    ],
+    "expected": 322,
+    "error": "IndexError: list index out of range",
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "lcs_length": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     "witch",
+     "sandwich"
+    ],
+    "expected": 2,
+    "actual": 1,
+    "passed": false
+   },
+   {
+    "input": [
+     "meow",
+     "homeowner"
+    ],
+    "expected": 4,
+    "actual": 1,
+    "passed": false
+   },
+   {
+    "input": [
+     "fun",
+     ""
+    ],
+    "expected": 0,
+    "actual": 0,
+    "passed": true
+   },
+   {
+    "input": [
+     "fun",
+     "function"
+    ],
+    "expected": 3,
+    "actual": 1,
+    "passed": false
+   },
+   {
+    "input": [
+     "cyborg",
+     "cyber"
+    ],
+    "expected": 3,
+    "actual": 1,
+    "passed": false
+   },
+   {
+    "input": [
+     "physics",
+     "physics"
+    ],
+    "expected": 7,
+    "actual": 1,
+    "passed": false
+   },
+   {
+    "input": [
+     "space age",
+     "pace a"
+    ],
+    "expected": 6,
+    "actual": 1,
+    "passed": false
+   },
+   {
+    "input": [
+     "flippy",
+     "floppy"
+    ],
+    "expected": 3,
+    "actual": 2,
+    "passed": false
+   },
+   {
+    "input": [
+     "acbdegcedbg",
+     "begcfeubk"
+    ],
+    "expected": 3,
+    "actual": 1,
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "levenshtein": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     "electron",
+     "neutron"
+    ],
+    "expected": 3,
+    "actual": 8,
+    "passed": false
+   },
+   {
+    "input": [
+     "kitten",
+     "sitting"
+    ],
+    "expected": 3,
+    "actual": 7,
+    "passed": false
+   },
+   {
+    "input": [
+     "rosettacode",
+     "raisethysword"
+    ],
+    "expected": 8,
+    "actual": 13,
+    "passed": false
+   },
+   {
+    "input": [
+     "amanaplanacanalpanama",
+     "docnoteidissentafastneverpreventsafatnessidietoncod"
+    ],
+    "expected": 42,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     "abcdefg",
+     "gabcdef"
+    ],
+    "expected": 2,
+    "actual": 7,
+    "passed": false
+   },
+   {
+    "input": [
+     "",
+     ""
+    ],
+    "expected": 0,
+    "actual": 0,
+    "passed": true
+   },
+   {
+    "input": [
+     "hello",
+     "olleh"
+    ],
+    "expected": 4,
+    "actual": 5,
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "lis": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     []
+    ],
+    "expected": 0,
+    "actual": 0,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      3
+     ]
+    ],
+    "expected": 1,
+    "actual": 1,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      10,
+      20,
+      11,
+      32,
+      22,
+      48,
+      43
+     ]
+    ],
+    "expected": 4,
+    "actual": 4,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      4,
+      2,
+      1
+     ]
+    ],
+    "expected": 1,
+    "actual": 1,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      5,
+      1,
+      3,
+      4,
+      7
+     ]
+    ],
+    "expected": 4,
+    "actual": 4,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      4,
+      1
+     ]
+    ],
+    "expected": 1,
+    "actual": 1,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      -1,
+      0,
+      2
+     ]
+    ],
+    "expected": 3,
+    "actual": 3,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      0,
+      2
+     ]
+    ],
+    "expected": 2,
+    "actual": 2,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      4,
+      1,
+      5,
+      3,
+      7,
+      6,
+      2
+     ]
+    ],
+    "expected": 3,
+    "actual": 2,
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      10,
+      22,
+      9,
+      33,
+      21,
+      50,
+      41,
+      60,
+      80
+     ]
+    ],
+    "expected": 6,
+    "actual": 5,
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      7,
+      10,
+      9,
+      2,
+      3,
+      8,
+      1
+     ]
+    ],
+    "expected": 3,
+    "actual": 1,
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      9,
+      11,
+      2,
+      13,
+      7,
+      15
+     ]
+    ],
+    "expected": 4,
+    "actual": 3,
+    "passed": false
+   }
+  ],
+  "first_failing": 8
+ },
+ "longest_common_subsequence": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     "headache",
+     "pentadactyl"
+    ],
+    "expected": "eadac",
+    "actual": "eadac",
+    "passed": true
+   },
+   {
+    "input": [
+     "daenarys",
+     "targaryen"
+    ],
+    "expected": "aary",
+    "actual": "aary",
+    "passed": true
+   },
+   {
+    "input": [
+     "XMJYAUZ",
+     "MZJAWXU"
+    ],
+    "expected": "MJAU",
+    "actual": "MJAU",
+    "passed": true
+   },
+   {
+    "input": [
+     "thisisatest",
+     "testing123testing"
+    ],
+    "expected": "tsitest",
+    "actual": "tiitest",
+    "passed": false
+   },
+   {
+    "input": [
+     "1234",
+     "1224533324"
+    ],
+    "expected": "1234",
+    "actual": "1234",
+    "passed": true
+   },
+   {
+    "input": [
+     "abcbdab",
+     "bdcaba"
+    ],
+    "expected": "bcba",
+    "actual": "bbdab",
+    "passed": false
+   },
+   {
+    "input": [
+     "TATAGC",
+     "TAGCAG"
+    ],
+    "expected": "TAAG",
+    "actual": "TAAGC",
+    "passed": false
+   },
+   {
+    "input": [
+     "ABCBDAB",
+     "BDCABA"
+    ],
+    "expected": "BCBA",
+    "actual": "BBDAB",
+    "passed": false
+   },
+   {
+    "input": [
+     "ABCD",
+     "XBCYDQ"
+    ],
+    "expected": "BCD",
+    "actual": "BCD",
+    "passed": true
+   },
+   {
+    "input": [
+     "acbdegcedbg",
+     "begcfeubk"
+    ],
+    "expected": "begceb",
+    "actual": "begceb",
+    "passed": true
+   }
+  ],
+  "first_failing": 3
+ },
+ "max_sublist_sum": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      4,
+      -5,
+      2,
+      1,
+      -1,
+      3
+     ]
+    ],
+    "expected": 5,
+    "actual": 4,
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      0,
+      -1,
+      2,
+      -1,
+      3,
+      -1,
+      0
+     ]
+    ],
+    "expected": 4,
+    "actual": 3,
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      4,
+      5
+     ]
+    ],
+    "expected": 12,
+    "actual": 12,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      4,
+      -2,
+      -8,
+      5,
+      -2,
+      7,
+      7,
+      2,
+      -6,
+      5
+     ]
+    ],
+    "expected": 19,
+    "actual": 13,
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      -4,
+      -4,
+      -5
+     ]
+    ],
+    "expected": 0,
+    "actual": 0,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      -2,
+      1,
+      -3,
+      4,
+      -1,
+      2,
+      1,
+      -5,
+      4
+     ]
+    ],
+    "expected": 6,
+    "actual": 2,
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "mergesort": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     []
+    ],
+    "expected": [],
+    "actual": [],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      1,
+      2,
+      6,
+      72,
+      7,
+      33,
+      4
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     4,
+     6,
+     7,
+     33,
+     72
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      1,
+      4,
+      1,
+      5,
+      9,
+      2,
+      6,
+      5,
+      3,
+      5,
+      8,
+      9,
+      7,
+      9,
+      3
+     ]
+    ],
+    "expected": [
+     1,
+     1,
+     2,
+     3,
+     3,
+     3,
+     4,
+     5,
+     5,
+     5,
+     6,
+     7,
+     8,
+     9,
+     9,
+     9
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      5,
+      4,
+      3,
+      2,
+      1
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      5,
+      4,
+      3,
+      1,
+      2
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      8,
+      1,
+      14,
+      9,
+      15,
+      5,
+      4,
+      3,
+      7,
+      17,
+      11,
+      18,
+      2,
+      12,
+      16,
+      13,
+      6,
+      10
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      9,
+      4,
+      5,
+      2,
+      17,
+      14,
+      10,
+      6,
+      15,
+      8,
+      12,
+      13,
+      16,
+      3,
+      1,
+      7,
+      11
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      13,
+      14,
+      7,
+      16,
+      9,
+      5,
+      24,
+      21,
+      19,
+      17,
+      12,
+      10,
+      1,
+      15,
+      23,
+      25,
+      11,
+      3,
+      2,
+      6,
+      22,
+      8,
+      20,
+      4,
+      18
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19,
+     20,
+     21,
+     22,
+     23,
+     24,
+     25
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      8,
+      5,
+      15,
+      7,
+      9,
+      14,
+      11,
+      12,
+      10,
+      6,
+      2,
+      4,
+      13,
+      1,
+      3
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      4,
+      3,
+      7,
+      6,
+      5,
+      2,
+      1
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      4,
+      3,
+      1,
+      5,
+      2
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      5,
+      4,
+      2,
+      3,
+      6,
+      7,
+      1
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      10,
+      16,
+      6,
+      1,
+      14,
+      19,
+      15,
+      2,
+      9,
+      4,
+      18,
+      17,
+      12,
+      3,
+      11,
+      8,
+      13,
+      5,
+      7
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      10,
+      16,
+      6,
+      1,
+      14,
+      19,
+      15,
+      2,
+      9,
+      4,
+      18
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     4,
+     6,
+     9,
+     10,
+     14,
+     15,
+     16,
+     18,
+     19
+    ],
+    "error": "RecursionError: maximum recursion depth exceeded",
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "minimum_spanning_tree": {
+  "kind": "graph",
+  "tests": [
+   {
+    "name": "test1",
+    "doc": "Case 1: Simple tree input.\nOutput: (1, 2) (3, 4) (1, 4)",
+    "source": "def test1():\n    \"\"\"Case 1: Simple tree input.\n    Output: (1, 2) (3, 4) (1, 4)\n    \"\"\"\n\n    result = minimum_spanning_tree(\n        {\n            (1, 2): 10,\n            (2, 3): 15,\n            (3, 4): 10,\n            (1, 4): 10,\n        }\n    )\n\n    assert result == {(1, 2), (3, 4), (1, 4)}\n",
+    "passed": false,
+    "error": "RuntimeError: Set changed size during iteration"
+   },
+   {
+    "name": "test2",
+    "doc": "Case 2: Strongly connected tree input.\nOutput: (2, 5) (1, 3) (2, 3) (4, 6) (3, 6)",
+    "source": "def test2():\n    \"\"\"Case 2: Strongly connected tree input.\n    Output: (2, 5) (1, 3) (2, 3) (4, 6) (3, 6)\n    \"\"\"\n\n    result = minimum_spanning_tree(\n        {\n            (1, 2): 6,\n            (1, 3): 1,\n            (1, 4): 5,\n            (2, 3): 5,\n            (2, 5): 3,\n            (3, 4): 5,\n            (3, 5): 6,\n            (3, 6): 4,\n            (4, 6): 2,\n            (5, 6): 6,\n        }\n    )\n\n    assert result == {(2, 5), (1, 3), (2, 3), (4, 6), (3, 6)}\n",
+    "passed": false,
+    "error": "RuntimeError: Set changed size during iteration"
+   },
+   {
+    "name": "test3",
+    "doc": "Case 3: Minimum spanning tree input.\nOutput: (1, 2) (1, 3) (2, 4)",
+    "source": "def test3():\n    \"\"\"Case 3: Minimum spanning tree input.\n    Output: (1, 2) (1, 3) (2, 4)\n    \"\"\"\n\n    result = minimum_spanning_tree(\n        {\n            (1, 2): 6,\n            (1, 3): 1,\n            (2, 4): 2,\n        }\n    )\n\n    assert result == {(1, 2), (1, 3), (2, 4)}\n",
+    "passed": false,
+    "error": "RuntimeError: Set changed size during iteration"
+   }
+  ],
+  "first_failing": 0
+ },
+ "next_palindrome": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      1,
+      4,
+      9,
+      4,
+      1
+     ]
+    ],
+    "expected": [
+     1,
+     5,
+     0,
+     5,
+     1
+    ],
+    "actual": [
+     1,
+     5,
+     0,
+     5,
+     1
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      1,
+      3,
+      1
+     ]
+    ],
+    "expected": [
+     1,
+     4,
+     1
+    ],
+    "actual": [
+     1,
+     4,
+     1
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      4,
+      7,
+      2,
+      5,
+      5,
+      2,
+      7,
+      4
+     ]
+    ],
+    "expected": [
+     4,
+     7,
+     2,
+     6,
+     6,
+     2,
+     7,
+     4
+    ],
+    "actual": [
+     4,
+     7,
+     2,
+     6,
+     6,
+     2,
+     7,
+     4
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      4,
+      7,
+      2,
+      5,
+      2,
+      7,
+      4
+     ]
+    ],
+    "expected": [
+     4,
+     7,
+     2,
+     6,
+     2,
+     7,
+     4
+    ],
+    "actual": [
+     4,
+     7,
+     2,
+     6,
+     2,
+     7,
+     4
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      9,
+      9,
+      9
+     ]
+    ],
+    "expected": [
+     1,
+     0,
+     0,
+     1
+    ],
+    "actual": [
+     1,
+     0,
+     0,
+     0,
+     1
+    ],
+    "passed": false
+   }
+  ],
+  "first_failing": 4
+ },
+ "next_permutation": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      3,
+      2,
+      4,
+      1
+     ]
+    ],
+    "expected": [
+     3,
+     4,
+     1,
+     2
+    ],
+    "actual": [
+     3,
+     1,
+     2,
+     4
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      5,
+      6,
+      2,
+      1
+     ]
+    ],
+    "expected": [
+     3,
+     6,
+     1,
+     2,
+     5
+    ],
+    "actual": [
+     3,
+     1,
+     5,
+     2,
+     6
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      5,
+      6,
+      2
+     ]
+    ],
+    "expected": [
+     3,
+     6,
+     2,
+     5
+    ],
+    "actual": [
+     3,
+     2,
+     5,
+     6
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      4,
+      5,
+      1,
+      7,
+      9
+     ]
+    ],
+    "expected": [
+     4,
+     5,
+     1,
+     9,
+     7
+    ],
+    "actual": [
+     1,
+     9,
+     7,
+     4,
+     5
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      4,
+      5,
+      8,
+      7,
+      1
+     ]
+    ],
+    "expected": [
+     4,
+     7,
+     1,
+     5,
+     8
+    ],
+    "actual": [
+     4,
+     1,
+     5,
+     7,
+     8
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      9,
+      5,
+      2,
+      6,
+      1
+     ]
+    ],
+    "expected": [
+     9,
+     5,
+     6,
+     1,
+     2
+    ],
+    "actual": [
+     9,
+     5,
+     1,
+     2,
+     6
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      44,
+      5,
+      1,
+      7,
+      9
+     ]
+    ],
+    "expected": [
+     44,
+     5,
+     1,
+     9,
+     7
+    ],
+    "actual": null,
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      4,
+      5
+     ]
+    ],
+    "expected": [
+     3,
+     5,
+     4
+    ],
+    "actual": null,
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "pascal": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     1
+    ],
+    "expected": [
+     [
+      1
+     ]
+    ],
+    "actual": [
+     [
+      1
+     ]
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     2
+    ],
+    "expected": [
+     [
+      1
+     ],
+     [
+      1,
+      1
+     ]
+    ],
+    "actual": [
+     [
+      1
+     ],
+     [
+      1
+     ]
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     3
+    ],
+    "expected": [
+     [
+      1
+     ],
+     [
+      1,
+      1
+     ],
+     [
+      1,
+      2,
+      1
+     ]
+    ],
+    "error": "IndexError: list index out of range",
+    "passed": false
+   },
+   {
+    "input": [
+     4
+    ],
+    "expected": [
+     [
+      1
+     ],
+     [
+      1,
+      1
+     ],
+     [
+      1,
+      2,
+      1
+     ],
+     [
+      1,
+      3,
+      3,
+      1
+     ]
+    ],
+    "error": "IndexError: list index out of range",
+    "passed": false
+   },
+   {
+    "input": [
+     5
+    ],
+    "expected": [
+     [
+      1
+     ],
+     [
+      1,
+      1
+     ],
+     [
+      1,
+      2,
+      1
+     ],
+     [
+      1,
+      3,
+      3,
+      1
+     ],
+     [
+      1,
+      4,
+      6,
+      4,
+      1
+     ]
+    ],
+    "error": "IndexError: list index out of range",
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "possible_change": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      1,
+      4,
+      2
+     ],
+     -7
+    ],
+    "expected": 0,
+    "actual": 0,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      1,
+      5,
+      10,
+      25
+     ],
+     11
+    ],
+    "expected": 4,
+    "error": "ValueError: not enough values to unpack (expected at least 1, got 0)",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      5,
+      10,
+      25
+     ],
+     75
+    ],
+    "expected": 121,
+    "error": "ValueError: not enough values to unpack (expected at least 1, got 0)",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      5,
+      10,
+      25
+     ],
+     34
+    ],
+    "expected": 18,
+    "error": "ValueError: not enough values to unpack (expected at least 1, got 0)",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      5,
+      10
+     ],
+     34
+    ],
+    "expected": 16,
+    "error": "ValueError: not enough values to unpack (expected at least 1, got 0)",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      5,
+      10,
+      25
+     ],
+     140
+    ],
+    "expected": 568,
+    "error": "ValueError: not enough values to unpack (expected at least 1, got 0)",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      5,
+      10,
+      25,
+      50
+     ],
+     140
+    ],
+    "expected": 786,
+    "error": "ValueError: not enough values to unpack (expected at least 1, got 0)",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      5,
+      10,
+      25,
+      50,
+      100
+     ],
+     140
+    ],
+    "expected": 817,
+    "error": "ValueError: not enough values to unpack (expected at least 1, got 0)",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1,
+      3,
+      7,
+      42,
+      78
+     ],
+     140
+    ],
+    "expected": 981,
+    "error": "ValueError: not enough values to unpack (expected at least 1, got 0)",
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      3,
+      7,
+      42,
+      78
+     ],
+     140
+    ],
+    "expected": 20,
+    "error": "ValueError: not enough values to unpack (expected at least 1, got 0)",
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "powerset": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      "a",
+      "b",
+      "c"
+     ]
+    ],
+    "expected": [
+     [],
+     [
+      "c"
+     ],
+     [
+      "b"
+     ],
+     [
+      "b",
+      "c"
+     ],
+     [
+      "a"
+     ],
+     [
+      "a",
+      "c"
+     ],
+     [
+      "a",
+      "b"
+     ],
+     [
+      "a",
+      "b",
+      "c"
+     ]
+    ],
+    "actual": [
+     [
+      "a",
+      "b",
+      "c"
+     ]
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      "a",
+      "b"
+     ]
+    ],
+    "expected": [
+     [],
+     [
+      "b"
+     ],
+     [
+      "a"
+     ],
+     [
+      "a",
+      "b"
+     ]
+    ],
+    "actual": [
+     [
+      "a",
+      "b"
+     ]
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      "a"
+     ]
+    ],
+    "expected": [
+     [],
+     [
+      "a"
+     ]
+    ],
+    "actual": [
+     [
+      "a"
+     ]
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     []
+    ],
+    "expected": [
+     []
+    ],
+    "actual": [
+     []
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      "x",
+      "df",
+      "z",
+      "m"
+     ]
+    ],
+    "expected": [
+     [],
+     [
+      "m"
+     ],
+     [
+      "z"
+     ],
+     [
+      "z",
+      "m"
+     ],
+     [
+      "df"
+     ],
+     [
+      "df",
+      "m"
+     ],
+     [
+      "df",
+      "z"
+     ],
+     [
+      "df",
+      "z",
+      "m"
+     ],
+     [
+      "x"
+     ],
+     [
+      "x",
+      "m"
+     ],
+     [
+      "x",
+      "z"
+     ],
+     [
+      "x",
+      "z",
+      "m"
+     ],
+     [
+      "x",
+      "df"
+     ],
+     [
+      "x",
+      "df",
+      "m"
+     ],
+     [
+      "x",
+      "df",
+      "z"
+     ],
+     [
+      "x",
+      "df",
+      "z",
+      "m"
+     ]
+    ],
+    "actual": [
+     [
+      "x",
+      "df",
+      "z",
+      "m"
+     ]
+    ],
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "quicksort": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      1,
+      2,
+      6,
+      72,
+      7,
+      33,
+      4
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     4,
+     6,
+     7,
+     33,
+     72
+    ],
+    "actual": [
+     1,
+     2,
+     4,
+     6,
+     7,
+     33,
+     72
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      3,
+      1,
+      4,
+      1,
+      5,
+      9,
+      2,
+      6,
+      5,
+      3,
+      5,
+      8,
+      9,
+      7,
+      9,
+      3
+     ]
+    ],
+    "expected": [
+     1,
+     1,
+     2,
+     3,
+     3,
+     3,
+     4,
+     5,
+     5,
+     5,
+     6,
+     7,
+     8,
+     9,
+     9,
+     9
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      5,
+      4,
+      3,
+      2,
+      1
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      5,
+      4,
+      3,
+      1,
+      2
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      8,
+      1,
+      14,
+      9,
+      15,
+      5,
+      4,
+      3,
+      7,
+      17,
+      11,
+      18,
+      2,
+      12,
+      16,
+      13,
+      6,
+      10
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      9,
+      4,
+      5,
+      2,
+      17,
+      14,
+      10,
+      6,
+      15,
+      8,
+      12,
+      13,
+      16,
+      3,
+      1,
+      7,
+      11
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      13,
+      14,
+      7,
+      16,
+      9,
+      5,
+      24,
+      21,
+      19,
+      17,
+      12,
+      10,
+      1,
+      15,
+      23,
+      25,
+      11,
+      3,
+      2,
+      6,
+      22,
+      8,
+      20,
+      4,
+      18
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19,
+     20,
+     21,
+     22,
+     23,
+     24,
+     25
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19,
+     20,
+     21,
+     22,
+     23,
+     24,
+     25
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      8,
+      5,
+      15,
+      7,
+      9,
+      14,
+      11,
+      12,
+      10,
+      6,
+      2,
+      4,
+      13,
+      1,
+      3
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      4,
+      3,
+      7,
+      6,
+      5,
+      2,
+      1
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      4,
+      3,
+      1,
+      5,
+      2
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      5,
+      4,
+      2,
+      3,
+      6,
+      7,
+      1
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      10,
+      16,
+      6,
+      1,
+      14,
+      19,
+      15,
+      2,
+      9,
+      4,
+      18,
+      17,
+      12,
+      3,
+      11,
+      8,
+      13,
+      5,
+      7
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19
+    ],
+    "actual": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      10,
+      16,
+      6,
+      1,
+      14,
+      19,
+      15,
+      2,
+      9,
+      4,
+      18
+     ]
+    ],
+    "expected": [
+     1,
+     2,
+     4,
+     6,
+     9,
+     10,
+     14,
+     15,
+     16,
+     18,
+     19
+    ],
+    "actual": [
+     1,
+     2,
+     4,
+     6,
+     9,
+     10,
+     14,
+     15,
+     16,
+     18,
+     19
+    ],
+    "passed": true
+   }
+  ],
+  "first_failing": 1
+ },
+ "reverse_linked_list": {
+  "kind": "graph",
+  "tests": [
+   {
+    "name": "test1",
+    "doc": "Case 1: 5-node list input\nExpected Output: 1 2 3 4 5",
+    "source": "def test1():\n    \"\"\"Case 1: 5-node list input\n    Expected Output: 1 2 3 4 5\n    \"\"\"\n\n    node1 = Node(1)\n    node2 = Node(2, node1)\n    node3 = Node(3, node2)\n    node4 = Node(4, node3)\n    node5 = Node(5, node4)\n\n    result = reverse_linked_list(node5)\n    assert result == node1\n\n    output = []\n    while result:\n        output.append(result.value)\n        result = result.successor\n    assert output == [1, 2, 3, 4, 5]\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test2",
+    "doc": "Case 2: 1-node list input\nExpected Output: 0",
+    "source": "def test2():\n    \"\"\"Case 2: 1-node list input\n    Expected Output: 0\n    \"\"\"\n\n    node = Node(0)\n\n    result = reverse_linked_list(node)\n    assert result == node\n\n    output = []\n    while result:\n        output.append(result.value)\n        result = result.successor\n    assert output == [0]\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test3",
+    "doc": "Case 3: None input\nExpected Output: None",
+    "source": "def test3():\n    \"\"\"Case 3: None input\n    Expected Output: None\n    \"\"\"\n\n    result = reverse_linked_list(None)\n    assert not result\n\n    output = []\n    while result:\n        output.append(result.value)\n        result = result.successor\n    assert not output\n",
+    "passed": true
+   }
+  ],
+  "first_failing": 0
+ },
+ "rpn_eval": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     [
+      3.0,
+      5.0,
+      "+",
+      2.0,
+      "/"
+     ]
+    ],
+    "expected": 4.0,
+    "actual": 0.25,
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      2.0,
+      2.0,
+      "+"
+     ]
+    ],
+    "expected": 4.0,
+    "actual": 4.0,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      7.0,
+      4.0,
+      "+",
+      3.0,
+      "-"
+     ]
+    ],
+    "expected": 8.0,
+    "actual": -8.0,
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      1.0,
+      2.0,
+      "*",
+      3.0,
+      4.0,
+      "*",
+      "+"
+     ]
+    ],
+    "expected": 14.0,
+    "actual": 14.0,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      5.0,
+      9.0,
+      2.0,
+      "*",
+      "+"
+     ]
+    ],
+    "expected": 23.0,
+    "actual": 23.0,
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      5.0,
+      1.0,
+      2.0,
+      "+",
+      4.0,
+      "*",
+      "+",
+      3.0,
+      "-"
+     ]
+    ],
+    "expected": 14.0,
+    "actual": -14.0,
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "shortest_path_length": {
+  "kind": "graph",
+  "tests": [
+   {
+    "name": "test1",
+    "doc": "Case 1: One path\nOutput: 4",
+    "source": "def test1():\n    \"\"\"Case 1: One path\n    Output: 4\n    \"\"\"\n\n    result = shortest_path_length(length_by_edge, node0, node1)\n    assert result == 4\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test2",
+    "doc": "Case 2: Multiple path\nOutput: 7",
+    "source": "def test2():\n    \"\"\"Case 2: Multiple path\n    Output: 7\n    \"\"\"\n\n    result = shortest_path_length(length_by_edge, node0, node5)\n    assert result == 7\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test3",
+    "doc": "Case 3: Start point is same as end point\nOutput: 0",
+    "source": "def test3():\n    \"\"\"Case 3: Start point is same as end point\n    Output: 0\n    \"\"\"\n\n    result = shortest_path_length(length_by_edge, node2, node2)\n    assert result == 0\n",
+    "passed": true
+   },
+   {
+    "name": "test4",
+    "doc": "Case 4: Unreachable path\nOutput: INT_MAX",
+    "source": "def test4():\n    \"\"\"Case 4: Unreachable path\n    Output: INT_MAX\n    \"\"\"\n\n    result = shortest_path_length(length_by_edge, node1, node5)\n    assert result == float(\"inf\")\n",
+    "passed": true
+   }
+  ],
+  "first_failing": 0
+ },
+ "shortest_path_lengths": {
+  "kind": "graph",
+  "tests": [
+   {
+    "name": "test1",
+    "doc": "Case 1: Basic graph input.",
+    "source": "def test1():\n    \"\"\"Case 1: Basic graph input.\"\"\"\n\n    graph = {\n        (0, 2): 3,\n        (0, 5): 5,\n        (2, 1): -2,\n        (2, 3): 7,\n        (2, 4): 4,\n        (3, 4): -5,\n        (4, 5): -1,\n    }\n    result = shortest_path_lengths(6, graph)\n\n    expected = {\n        (0, 0): 0,\n        (1, 1): 0,\n        (2, 2): 0,\n        (3, 3): 0,\n        (4, 4): 0,\n        (5, 5): 0,\n        (0, 2): 3,\n        (0, 5): 4,\n        (2, 1): -2,\n        (2, 3): 7,\n        (2, 4): 2,\n        (3, 4): -5,\n        (4, 5): -1,\n        (0, 1): 1,\n        (0, 3): 10,\n        (0, 4): 5,\n        (1, 0): float(\"inf\"),\n        (1, 2): float(\"inf\"),\n        (1, 3): float(\"inf\"),\n        (1, 4): float(\"inf\"),\n        (1, 5): float(\"inf\"),\n        (2, 0): float(\"inf\"),\n        (2, 5): 1,\n        (3, 0): float(\"inf\"),\n        (3, 1): float(\"inf\"),\n        (3, 2): float(\"inf\"),\n        (3, 5): -6,\n        (4, 0): float(\"inf\"),\n        (4, 1): float(\"inf\"),\n        (4, 2): float(\"inf\"),\n        (4, 3): float(\"inf\"),\n        (5, 0): float(\"inf\"),\n        (5, 1): float(\"inf\"),\n        (5, 2): float(\"inf\"),\n        (5, 3): float(\"inf\"),\n        (5, 4): float(\"inf\"),\n    }\n\n    assert result == expected\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test2",
+    "doc": "Case 2: Linear graph input.",
+    "source": "def test2():\n    \"\"\"Case 2: Linear graph input.\"\"\"\n\n    graph = {\n        (0, 1): 3,\n        (1, 2): 5,\n        (2, 3): -2,\n        (3, 4): 7,\n    }\n    result = shortest_path_lengths(5, graph)\n\n    expected = {\n        (0, 0): 0,\n        (1, 1): 0,\n        (2, 2): 0,\n        (3, 3): 0,\n        (4, 4): 0,\n        (0, 1): 3,\n        (1, 2): 5,\n        (2, 3): -2,\n        (3, 4): 7,\n        (0, 2): 8,\n        (0, 3): 6,\n        (0, 4): 13,\n        (1, 0): float(\"inf\"),\n        (1, 3): 3,\n        (1, 4): 10,\n        (2, 0): float(\"inf\"),\n        (2, 1): float(\"inf\"),\n        (2, 4): 5,\n        (3, 0): float(\"inf\"),\n        (3, 1): float(\"inf\"),\n        (3, 2): float(\"inf\"),\n        (4, 0): float(\"inf\"),\n        (4, 1): float(\"inf\"),\n        (4, 2): float(\"inf\"),\n        (4, 3): float(\"inf\"),\n    }\n\n    assert result == expected\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test3",
+    "doc": "Case 3: Disconnected graphs input.",
+    "source": "def test3():\n    \"\"\"Case 3: Disconnected graphs input.\"\"\"\n\n    graph = {\n        (0, 1): 3,\n        (2, 3): 5,\n    }\n    result = shortest_path_lengths(4, graph)\n\n    expected = {\n        (0, 0): 0,\n        (1, 1): 0,\n        (2, 2): 0,\n        (3, 3): 0,\n        (0, 1): 3,\n        (2, 3): 5,\n        (0, 2): float(\"inf\"),\n        (0, 3): float(\"inf\"),\n        (1, 0): float(\"inf\"),\n        (1, 2): float(\"inf\"),\n        (1, 3): float(\"inf\"),\n        (2, 0): float(\"inf\"),\n        (2, 1): float(\"inf\"),\n        (3, 0): float(\"inf\"),\n        (3, 1): float(\"inf\"),\n        (3, 2): float(\"inf\"),\n    }\n\n    assert result == expected\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test4",
+    "doc": "Case 4: Strongly connected graph input.",
+    "source": "def test4():\n    \"\"\"Case 4: Strongly connected graph input.\"\"\"\n\n    graph = {\n        (0, 1): 3,\n        (1, 2): 5,\n        (2, 0): -1,\n    }\n    result = shortest_path_lengths(3, graph)\n\n    expected = {\n        (0, 0): 0,\n        (1, 1): 0,\n        (2, 2): 0,\n        (0, 1): 3,\n        (1, 2): 5,\n        (2, 0): -1,\n        (0, 2): 8,\n        (1, 0): 4,\n        (2, 1): 2,\n    }\n\n    assert result == expected\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   }
+  ],
+  "first_failing": 0
+ },
+ "shortest_paths": {
+  "kind": "graph",
+  "tests": [
+   {
+    "name": "test1",
+    "doc": "Case 1: Graph with multiple paths\nOutput: {'A': 0, 'C': 3, 'B': 1, 'E': 5, 'D': 10, 'F': 4}",
+    "source": "def test1():\n    \"\"\"Case 1: Graph with multiple paths\n    Output: {'A': 0, 'C': 3, 'B': 1, 'E': 5, 'D': 10, 'F': 4}\n    \"\"\"\n\n    graph = {\n        (\"A\", \"B\"): 3,\n        (\"A\", \"C\"): 3,\n        (\"A\", \"F\"): 5,\n        (\"C\", \"B\"): -2,\n        (\"C\", \"D\"): 7,\n        (\"C\", \"E\"): 4,\n        (\"D\", \"E\"): -5,\n        (\"E\", \"F\"): -1,\n    }\n    result = shortest_paths(\"A\", graph)\n\n    expected = {\"A\": 0, \"C\": 3, \"B\": 1, \"E\": 5, \"D\": 10, \"F\": 4}\n    assert result == expected\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test2",
+    "doc": "Case 2: Graph with one path\nOutput: {'A': 0, 'C': 3, 'B': 1, 'E': 5, 'D': 6, 'F': 9}",
+    "source": "def test2():\n    \"\"\"Case 2: Graph with one path\n    Output: {'A': 0, 'C': 3, 'B': 1, 'E': 5, 'D': 6, 'F': 9}\n    \"\"\"\n\n    graph2 = {\n        (\"A\", \"B\"): 1,\n        (\"B\", \"C\"): 2,\n        (\"C\", \"D\"): 3,\n        (\"D\", \"E\"): -1,\n        (\"E\", \"F\"): 4,\n    }\n    result = shortest_paths(\"A\", graph2)\n\n    expected = {\"A\": 0, \"C\": 3, \"B\": 1, \"E\": 5, \"D\": 6, \"F\": 9}\n    assert result == expected\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test3",
+    "doc": "Case 3: Graph with cycle\nOutput: {'A': 0, 'C': 3, 'B': 1, 'E': 5, 'D': 6, 'F': 9}",
+    "source": "def test3():\n    \"\"\"Case 3: Graph with cycle\n    Output: {'A': 0, 'C': 3, 'B': 1, 'E': 5, 'D': 6, 'F': 9}\n    \"\"\"\n\n    graph3 = {\n        (\"A\", \"B\"): 1,\n        (\"B\", \"C\"): 2,\n        (\"C\", \"D\"): 3,\n        (\"D\", \"E\"): -1,\n        (\"E\", \"D\"): 1,\n        (\"E\", \"F\"): 4,\n    }\n    result = shortest_paths(\"A\", graph3)\n\n    expected = {\"A\": 0, \"C\": 3, \"B\": 1, \"E\": 5, \"D\": 6, \"F\": 9}\n    assert result == expected\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   }
+  ],
+  "first_failing": 0
+ },
+ "shunting_yard": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     []
+    ],
+    "expected": [],
+    "actual": [],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      30
+     ]
+    ],
+    "expected": [
+     30
+    ],
+    "actual": [
+     30
+    ],
+    "passed": true
+   },
+   {
+    "input": [
+     [
+      10,
+      "-",
+      5,
+      "-",
+      2
+     ]
+    ],
+    "expected": [
+     10,
+     5,
+     "-",
+     2,
+     "-"
+    ],
+    "actual": [
+     10,
+     5,
+     2
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      34,
+      "-",
+      12,
+      "/",
+      5
+     ]
+    ],
+    "expected": [
+     34,
+     12,
+     5,
+     "/",
+     "-"
+    ],
+    "actual": [
+     34,
+     12,
+     5
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      4,
+      "+",
+      9,
+      "*",
+      9,
+      "-",
+      10,
+      "+",
+      13
+     ]
+    ],
+    "expected": [
+     4,
+     9,
+     9,
+     "*",
+     "+",
+     10,
+     "-",
+     13,
+     "+"
+    ],
+    "actual": [
+     4,
+     9,
+     9,
+     10,
+     13
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     [
+      7,
+      "*",
+      43,
+      "-",
+      7,
+      "+",
+      13,
+      "/",
+      7
+     ]
+    ],
+    "expected": [
+     7,
+     43,
+     "*",
+     7,
+     "-",
+     13,
+     7,
+     "/",
+     "+"
+    ],
+    "actual": [
+     7,
+     43,
+     7,
+     13,
+     7
+    ],
+    "passed": false
+   }
+  ],
+  "first_failing": 2
+ },
+ "sieve": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     1
+    ],
+    "expected": [],
+    "actual": [],
+    "passed": true
+   },
+   {
+    "input": [
+     2
+    ],
+    "expected": [
+     2
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     4
+    ],
+    "expected": [
+     2,
+     3
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     7
+    ],
+    "expected": [
+     2,
+     3,
+     5,
+     7
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     20
+    ],
+    "expected": [
+     2,
+     3,
+     5,
+     7,
+     11,
+     13,
+     17,
+     19
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     50
+    ],
+    "expected": [
+     2,
+     3,
+     5,
+     7,
+     11,
+     13,
+     17,
+     19,
+     23,
+     29,
+     31,
+     37,
+     41,
+     43,
+     47
+    ],
+    "actual": [],
+    "passed": false
+   }
+  ],
+  "first_failing": 1
+ },
+ "sqrt": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     2,
+     0.01
+    ],
+    "expected": 1.4166666666666665,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     2,
+     0.5
+    ],
+    "expected": 1.5,
+    "actual": 1.5,
+    "passed": true
+   },
+   {
+    "input": [
+     2,
+     0.3
+    ],
+    "expected": 1.5,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     4,
+     0.2
+    ],
+    "expected": 2,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     27,
+     0.01
+    ],
+    "expected": 5.196164639727311,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     33,
+     0.05
+    ],
+    "expected": 5.744627526262464,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   },
+   {
+    "input": [
+     170,
+     0.03
+    ],
+    "expected": 13.038404876679632,
+    "timeout": true,
+    "error": "Timeout: the program did not finish within 2 seconds (probable infinite loop)",
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "subsequences": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     1,
+     5,
+     3
+    ],
+    "expected": [
+     [
+      1,
+      2,
+      3
+     ],
+     [
+      1,
+      2,
+      4
+     ],
+     [
+      1,
+      3,
+      4
+     ],
+     [
+      2,
+      3,
+      4
+     ]
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     30,
+     -2,
+     3
+    ],
+    "expected": [],
+    "actual": [],
+    "passed": true
+   },
+   {
+    "input": [
+     30,
+     2,
+     3
+    ],
+    "expected": [],
+    "actual": [],
+    "passed": true
+   },
+   {
+    "input": [
+     4,
+     10,
+     4
+    ],
+    "expected": [
+     [
+      4,
+      5,
+      6,
+      7
+     ],
+     [
+      4,
+      5,
+      6,
+      8
+     ],
+     [
+      4,
+      5,
+      6,
+      9
+     ],
+     [
+      4,
+      5,
+      7,
+      8
+     ],
+     [
+      4,
+      5,
+      7,
+      9
+     ],
+     [
+      4,
+      5,
+      8,
+      9
+     ],
+     [
+      4,
+      6,
+      7,
+      8
+     ],
+     [
+      4,
+      6,
+      7,
+      9
+     ],
+     [
+      4,
+      6,
+      8,
+      9
+     ],
+     [
+      4,
+      7,
+      8,
+      9
+     ],
+     [
+      5,
+      6,
+      7,
+      8
+     ],
+     [
+      5,
+      6,
+      7,
+      9
+     ],
+     [
+      5,
+      6,
+      8,
+      9
+     ],
+     [
+      5,
+      7,
+      8,
+      9
+     ],
+     [
+      6,
+      7,
+      8,
+      9
+     ]
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     4,
+     10,
+     6
+    ],
+    "expected": [
+     [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+     ]
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     1,
+     10,
+     2
+    ],
+    "expected": [
+     [
+      1,
+      2
+     ],
+     [
+      1,
+      3
+     ],
+     [
+      1,
+      4
+     ],
+     [
+      1,
+      5
+     ],
+     [
+      1,
+      6
+     ],
+     [
+      1,
+      7
+     ],
+     [
+      1,
+      8
+     ],
+     [
+      1,
+      9
+     ],
+     [
+      2,
+      3
+     ],
+     [
+      2,
+      4
+     ],
+     [
+      2,
+      5
+     ],
+     [
+      2,
+      6
+     ],
+     [
+      2,
+      7
+     ],
+     [
+      2,
+      8
+     ],
+     [
+      2,
+      9
+     ],
+     [
+      3,
+      4
+     ],
+     [
+      3,
+      5
+     ],
+     [
+      3,
+      6
+     ],
+     [
+      3,
+      7
+     ],
+     [
+      3,
+      8
+     ],
+     [
+      3,
+      9
+     ],
+     [
+      4,
+      5
+     ],
+     [
+      4,
+      6
+     ],
+     [
+      4,
+      7
+     ],
+     [
+      4,
+      8
+     ],
+     [
+      4,
+      9
+     ],
+     [
+      5,
+      6
+     ],
+     [
+      5,
+      7
+     ],
+     [
+      5,
+      8
+     ],
+     [
+      5,
+      9
+     ],
+     [
+      6,
+      7
+     ],
+     [
+      6,
+      8
+     ],
+     [
+      6,
+      9
+     ],
+     [
+      7,
+      8
+     ],
+     [
+      7,
+      9
+     ],
+     [
+      8,
+      9
+     ]
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     1,
+     10,
+     6
+    ],
+    "expected": [
+     [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+     ],
+     [
+      1,
+      2,
+      3,
+      4,
+      5,
+      7
+     ],
+     [
+      1,
+      2,
+      3,
+      4,
+      5,
+      8
+     ],
+     [
+      1,
+      2,
+      3,
+      4,
+      5,
+      9
+     ],
+     [
+      1,
+      2,
+      3,
+      4,
+      6,
+      7
+     ],
+     [
+      1,
+      2,
+      3,
+      4,
+      6,
+      8
+     ],
+     [
+      1,
+      2,
+      3,
+      4,
+      6,
+      9
+     ],
+     [
+      1,
+      2,
+      3,
+      4,
+      7,
+      8
+     ],
+     [
+      1,
+      2,
+      3,
+      4,
+      7,
+      9
+     ],
+     [
+      1,
+      2,
+      3,
+      4,
+      8,
+      9
+     ],
+     [
+      1,
+      2,
+      3,
+      5,
+      6,
+      7
+     ],
+     [
+      1,
+      2,
+      3,
+      5,
+      6,
+      8
+     ],
+     [
+      1,
+      2,
+      3,
+      5,
+      6,
+      9
+     ],
+     [
+      1,
+      2,
+      3,
+      5,
+      7,
+      8
+     ],
+     [
+      1,
+      2,
+      3,
+      5,
+      7,
+      9
+     ],
+     [
+      1,
+      2,
+      3,
+      5,
+      8,
+      9
+     ],
+     [
+      1,
+      2,
+      3,
+      6,
+      7,
+      8
+     ],
+     [
+      1,
+      2,
+      3,
+      6,
+      7,
+      9
+     ],
+     [
+      1,
+      2,
+      3,
+      6,
+      8,
+      9
+     ],
+     [
+      1,
+      2,
+      3,
+      7,
+      8,
+      9
+     ],
+     [
+      1,
+      2,
+      4,
+      5,
+      6,
+      7
+     ],
+     [
+      1,
+      2,
+      4,
+      5,
+      6,
+      8
+     ],
+     [
+      1,
+      2,
+      4,
+      5,
+      6,
+      9
+     ],
+     [
+      1,
+      2,
+      4,
+      5,
+      7,
+      8
+     ],
+     [
+      1,
+      2,
+      4,
+      5,
+      7,
+      9
+     ],
+     [
+      1,
+      2,
+      4,
+      5,
+      8,
+      9
+     ],
+     [
+      1,
+      2,
+      4,
+      6,
+      7,
+      8
+     ],
+     [
+      1,
+      2,
+      4,
+      6,
+      7,
+      9
+     ],
+     [
+      1,
+      2,
+      4,
+      6,
+      8,
+      9
+     ],
+     [
+      1,
+      2,
+      4,
+      7,
+      8,
+      9
+     ],
+     [
+      1,
+      2,
+      5,
+      6,
+      7,
+      8
+     ],
+     [
+      1,
+      2,
+      5,
+      6,
+      7,
+      9
+     ],
+     [
+      1,
+      2,
+      5,
+      6,
+      8,
+      9
+     ],
+     [
+      1,
+      2,
+      5,
+      7,
+      8,
+      9
+     ],
+     [
+      1,
+      2,
+      6,
+      7,
+      8,
+      9
+     ],
+     [
+      1,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     [
+      1,
+      3,
+      4,
+      5,
+      6,
+      8
+     ],
+     [
+      1,
+      3,
+      4,
+      5,
+      6,
+      9
+     ],
+     [
+      1,
+      3,
+      4,
+      5,
+      7,
+      8
+     ],
+     [
+      1,
+      3,
+      4,
+      5,
+      7,
+      9
+     ],
+     [
+      1,
+      3,
+      4,
+      5,
+      8,
+      9
+     ],
+     [
+      1,
+      3,
+      4,
+      6,
+      7,
+      8
+     ],
+     [
+      1,
+      3,
+      4,
+      6,
+      7,
+      9
+     ],
+     [
+      1,
+      3,
+      4,
+      6,
+      8,
+      9
+     ],
+     [
+      1,
+      3,
+      4,
+      7,
+      8,
+      9
+     ],
+     [
+      1,
+      3,
+      5,
+      6,
+      7,
+      8
+     ],
+     [
+      1,
+      3,
+      5,
+      6,
+      7,
+      9
+     ],
+     [
+      1,
+      3,
+      5,
+      6,
+      8,
+      9
+     ],
+     [
+      1,
+      3,
+      5,
+      7,
+      8,
+      9
+     ],
+     [
+      1,
+      3,
+      6,
+      7,
+      8,
+      9
+     ],
+     [
+      1,
+      4,
+      5,
+      6,
+      7,
+      8
+     ],
+     [
+      1,
+      4,
+      5,
+      6,
+      7,
+      9
+     ],
+     [
+      1,
+      4,
+      5,
+      6,
+      8,
+      9
+     ],
+     [
+      1,
+      4,
+      5,
+      7,
+      8,
+      9
+     ],
+     [
+      1,
+      4,
+      6,
+      7,
+      8,
+      9
+     ],
+     [
+      1,
+      5,
+      6,
+      7,
+      8,
+      9
+     ],
+     [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     [
+      2,
+      3,
+      4,
+      5,
+      6,
+      8
+     ],
+     [
+      2,
+      3,
+      4,
+      5,
+      6,
+      9
+     ],
+     [
+      2,
+      3,
+      4,
+      5,
+      7,
+      8
+     ],
+     [
+      2,
+      3,
+      4,
+      5,
+      7,
+      9
+     ],
+     [
+      2,
+      3,
+      4,
+      5,
+      8,
+      9
+     ],
+     [
+      2,
+      3,
+      4,
+      6,
+      7,
+      8
+     ],
+     [
+      2,
+      3,
+      4,
+      6,
+      7,
+      9
+     ],
+     [
+      2,
+      3,
+      4,
+      6,
+      8,
+      9
+     ],
+     [
+      2,
+      3,
+      4,
+      7,
+      8,
+      9
+     ],
+     [
+      2,
+      3,
+      5,
+      6,
+      7,
+      8
+     ],
+     [
+      2,
+      3,
+      5,
+      6,
+      7,
+      9
+     ],
+     [
+      2,
+      3,
+      5,
+      6,
+      8,
+      9
+     ],
+     [
+      2,
+      3,
+      5,
+      7,
+      8,
+      9
+     ],
+     [
+      2,
+      3,
+      6,
+      7,
+      8,
+      9
+     ],
+     [
+      2,
+      4,
+      5,
+      6,
+      7,
+      8
+     ],
+     [
+      2,
+      4,
+      5,
+      6,
+      7,
+      9
+     ],
+     [
+      2,
+      4,
+      5,
+      6,
+      8,
+      9
+     ],
+     [
+      2,
+      4,
+      5,
+      7,
+      8,
+      9
+     ],
+     [
+      2,
+      4,
+      6,
+      7,
+      8,
+      9
+     ],
+     [
+      2,
+      5,
+      6,
+      7,
+      8,
+      9
+     ],
+     [
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+     ],
+     [
+      3,
+      4,
+      5,
+      6,
+      7,
+      9
+     ],
+     [
+      3,
+      4,
+      5,
+      6,
+      8,
+      9
+     ],
+     [
+      3,
+      4,
+      5,
+      7,
+      8,
+      9
+     ],
+     [
+      3,
+      4,
+      6,
+      7,
+      8,
+      9
+     ],
+     [
+      3,
+      5,
+      6,
+      7,
+      8,
+      9
+     ],
+     [
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+     ]
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     1,
+     10,
+     4
+    ],
+    "expected": [
+     [
+      1,
+      2,
+      3,
+      4
+     ],
+     [
+      1,
+      2,
+      3,
+      5
+     ],
+     [
+      1,
+      2,
+      3,
+      6
+     ],
+     [
+      1,
+      2,
+      3,
+      7
+     ],
+     [
+      1,
+      2,
+      3,
+      8
+     ],
+     [
+      1,
+      2,
+      3,
+      9
+     ],
+     [
+      1,
+      2,
+      4,
+      5
+     ],
+     [
+      1,
+      2,
+      4,
+      6
+     ],
+     [
+      1,
+      2,
+      4,
+      7
+     ],
+     [
+      1,
+      2,
+      4,
+      8
+     ],
+     [
+      1,
+      2,
+      4,
+      9
+     ],
+     [
+      1,
+      2,
+      5,
+      6
+     ],
+     [
+      1,
+      2,
+      5,
+      7
+     ],
+     [
+      1,
+      2,
+      5,
+      8
+     ],
+     [
+      1,
+      2,
+      5,
+      9
+     ],
+     [
+      1,
+      2,
+      6,
+      7
+     ],
+     [
+      1,
+      2,
+      6,
+      8
+     ],
+     [
+      1,
+      2,
+      6,
+      9
+     ],
+     [
+      1,
+      2,
+      7,
+      8
+     ],
+     [
+      1,
+      2,
+      7,
+      9
+     ],
+     [
+      1,
+      2,
+      8,
+      9
+     ],
+     [
+      1,
+      3,
+      4,
+      5
+     ],
+     [
+      1,
+      3,
+      4,
+      6
+     ],
+     [
+      1,
+      3,
+      4,
+      7
+     ],
+     [
+      1,
+      3,
+      4,
+      8
+     ],
+     [
+      1,
+      3,
+      4,
+      9
+     ],
+     [
+      1,
+      3,
+      5,
+      6
+     ],
+     [
+      1,
+      3,
+      5,
+      7
+     ],
+     [
+      1,
+      3,
+      5,
+      8
+     ],
+     [
+      1,
+      3,
+      5,
+      9
+     ],
+     [
+      1,
+      3,
+      6,
+      7
+     ],
+     [
+      1,
+      3,
+      6,
+      8
+     ],
+     [
+      1,
+      3,
+      6,
+      9
+     ],
+     [
+      1,
+      3,
+      7,
+      8
+     ],
+     [
+      1,
+      3,
+      7,
+      9
+     ],
+     [
+      1,
+      3,
+      8,
+      9
+     ],
+     [
+      1,
+      4,
+      5,
+      6
+     ],
+     [
+      1,
+      4,
+      5,
+      7
+     ],
+     [
+      1,
+      4,
+      5,
+      8
+     ],
+     [
+      1,
+      4,
+      5,
+      9
+     ],
+     [
+      1,
+      4,
+      6,
+      7
+     ],
+     [
+      1,
+      4,
+      6,
+      8
+     ],
+     [
+      1,
+      4,
+      6,
+      9
+     ],
+     [
+      1,
+      4,
+      7,
+      8
+     ],
+     [
+      1,
+      4,
+      7,
+      9
+     ],
+     [
+      1,
+      4,
+      8,
+      9
+     ],
+     [
+      1,
+      5,
+      6,
+      7
+     ],
+     [
+      1,
+      5,
+      6,
+      8
+     ],
+     [
+      1,
+      5,
+      6,
+      9
+     ],
+     [
+      1,
+      5,
+      7,
+      8
+     ],
+     [
+      1,
+      5,
+      7,
+      9
+     ],
+     [
+      1,
+      5,
+      8,
+      9
+     ],
+     [
+      1,
+      6,
+      7,
+      8
+     ],
+     [
+      1,
+      6,
+      7,
+      9
+     ],
+     [
+      1,
+      6,
+      8,
+      9
+     ],
+     [
+      1,
+      7,
+      8,
+      9
+     ],
+     [
+      2,
+      3,
+      4,
+      5
+     ],
+     [
+      2,
+      3,
+      4,
+      6
+     ],
+     [
+      2,
+      3,
+      4,
+      7
+     ],
+     [
+      2,
+      3,
+      4,
+      8
+     ],
+     [
+      2,
+      3,
+      4,
+      9
+     ],
+     [
+      2,
+      3,
+      5,
+      6
+     ],
+     [
+      2,
+      3,
+      5,
+      7
+     ],
+     [
+      2,
+      3,
+      5,
+      8
+     ],
+     [
+      2,
+      3,
+      5,
+      9
+     ],
+     [
+      2,
+      3,
+      6,
+      7
+     ],
+     [
+      2,
+      3,
+      6,
+      8
+     ],
+     [
+      2,
+      3,
+      6,
+      9
+     ],
+     [
+      2,
+      3,
+      7,
+      8
+     ],
+     [
+      2,
+      3,
+      7,
+      9
+     ],
+     [
+      2,
+      3,
+      8,
+      9
+     ],
+     [
+      2,
+      4,
+      5,
+      6
+     ],
+     [
+      2,
+      4,
+      5,
+      7
+     ],
+     [
+      2,
+      4,
+      5,
+      8
+     ],
+     [
+      2,
+      4,
+      5,
+      9
+     ],
+     [
+      2,
+      4,
+      6,
+      7
+     ],
+     [
+      2,
+      4,
+      6,
+      8
+     ],
+     [
+      2,
+      4,
+      6,
+      9
+     ],
+     [
+      2,
+      4,
+      7,
+      8
+     ],
+     [
+      2,
+      4,
+      7,
+      9
+     ],
+     [
+      2,
+      4,
+      8,
+      9
+     ],
+     [
+      2,
+      5,
+      6,
+      7
+     ],
+     [
+      2,
+      5,
+      6,
+      8
+     ],
+     [
+      2,
+      5,
+      6,
+      9
+     ],
+     [
+      2,
+      5,
+      7,
+      8
+     ],
+     [
+      2,
+      5,
+      7,
+      9
+     ],
+     [
+      2,
+      5,
+      8,
+      9
+     ],
+     [
+      2,
+      6,
+      7,
+      8
+     ],
+     [
+      2,
+      6,
+      7,
+      9
+     ],
+     [
+      2,
+      6,
+      8,
+      9
+     ],
+     [
+      2,
+      7,
+      8,
+      9
+     ],
+     [
+      3,
+      4,
+      5,
+      6
+     ],
+     [
+      3,
+      4,
+      5,
+      7
+     ],
+     [
+      3,
+      4,
+      5,
+      8
+     ],
+     [
+      3,
+      4,
+      5,
+      9
+     ],
+     [
+      3,
+      4,
+      6,
+      7
+     ],
+     [
+      3,
+      4,
+      6,
+      8
+     ],
+     [
+      3,
+      4,
+      6,
+      9
+     ],
+     [
+      3,
+      4,
+      7,
+      8
+     ],
+     [
+      3,
+      4,
+      7,
+      9
+     ],
+     [
+      3,
+      4,
+      8,
+      9
+     ],
+     [
+      3,
+      5,
+      6,
+      7
+     ],
+     [
+      3,
+      5,
+      6,
+      8
+     ],
+     [
+      3,
+      5,
+      6,
+      9
+     ],
+     [
+      3,
+      5,
+      7,
+      8
+     ],
+     [
+      3,
+      5,
+      7,
+      9
+     ],
+     [
+      3,
+      5,
+      8,
+      9
+     ],
+     [
+      3,
+      6,
+      7,
+      8
+     ],
+     [
+      3,
+      6,
+      7,
+      9
+     ],
+     [
+      3,
+      6,
+      8,
+      9
+     ],
+     [
+      3,
+      7,
+      8,
+      9
+     ],
+     [
+      4,
+      5,
+      6,
+      7
+     ],
+     [
+      4,
+      5,
+      6,
+      8
+     ],
+     [
+      4,
+      5,
+      6,
+      9
+     ],
+     [
+      4,
+      5,
+      7,
+      8
+     ],
+     [
+      4,
+      5,
+      7,
+      9
+     ],
+     [
+      4,
+      5,
+      8,
+      9
+     ],
+     [
+      4,
+      6,
+      7,
+      8
+     ],
+     [
+      4,
+      6,
+      7,
+      9
+     ],
+     [
+      4,
+      6,
+      8,
+      9
+     ],
+     [
+      4,
+      7,
+      8,
+      9
+     ],
+     [
+      5,
+      6,
+      7,
+      8
+     ],
+     [
+      5,
+      6,
+      7,
+      9
+     ],
+     [
+      5,
+      6,
+      8,
+      9
+     ],
+     [
+      5,
+      7,
+      8,
+      9
+     ],
+     [
+      6,
+      7,
+      8,
+      9
+     ]
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     1,
+     10,
+     1
+    ],
+    "expected": [
+     [
+      1
+     ],
+     [
+      2
+     ],
+     [
+      3
+     ],
+     [
+      4
+     ],
+     [
+      5
+     ],
+     [
+      6
+     ],
+     [
+      7
+     ],
+     [
+      8
+     ],
+     [
+      9
+     ]
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     5,
+     13,
+     7
+    ],
+    "expected": [
+     [
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     [
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      12
+     ],
+     [
+      5,
+      6,
+      7,
+      8,
+      9,
+      11,
+      12
+     ],
+     [
+      5,
+      6,
+      7,
+      8,
+      10,
+      11,
+      12
+     ],
+     [
+      5,
+      6,
+      7,
+      9,
+      10,
+      11,
+      12
+     ],
+     [
+      5,
+      6,
+      8,
+      9,
+      10,
+      11,
+      12
+     ],
+     [
+      5,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+     ],
+     [
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+     ]
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     5,
+     13,
+     0
+    ],
+    "expected": [
+     []
+    ],
+    "actual": [],
+    "passed": false
+   },
+   {
+    "input": [
+     1,
+     5,
+     0
+    ],
+    "expected": [
+     []
+    ],
+    "actual": [],
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ },
+ "to_base": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     8227,
+     18
+    ],
+    "expected": "1771",
+    "actual": "1771",
+    "passed": true
+   },
+   {
+    "input": [
+     73,
+     8
+    ],
+    "expected": "111",
+    "actual": "111",
+    "passed": true
+   },
+   {
+    "input": [
+     16,
+     19
+    ],
+    "expected": "G",
+    "actual": "G",
+    "passed": true
+   },
+   {
+    "input": [
+     31,
+     16
+    ],
+    "expected": "1F",
+    "actual": "F1",
+    "passed": false
+   },
+   {
+    "input": [
+     41,
+     2
+    ],
+    "expected": "101001",
+    "actual": "100101",
+    "passed": false
+   },
+   {
+    "input": [
+     44,
+     5
+    ],
+    "expected": "134",
+    "actual": "431",
+    "passed": false
+   },
+   {
+    "input": [
+     27,
+     23
+    ],
+    "expected": "14",
+    "actual": "41",
+    "passed": false
+   },
+   {
+    "input": [
+     56,
+     23
+    ],
+    "expected": "2A",
+    "actual": "A2",
+    "passed": false
+   },
+   {
+    "input": [
+     8237,
+     24
+    ],
+    "expected": "E75",
+    "actual": "57E",
+    "passed": false
+   },
+   {
+    "input": [
+     8237,
+     34
+    ],
+    "expected": "749",
+    "actual": "947",
+    "passed": false
+   }
+  ],
+  "first_failing": 3
+ },
+ "topological_ordering": {
+  "kind": "graph",
+  "tests": [
+   {
+    "name": "test1",
+    "doc": "Case 1: Wikipedia graph\nOutput: 5 7 3 11 8 10 2 9",
+    "source": "def test1():\n    \"\"\"Case 1: Wikipedia graph\n    Output: 5 7 3 11 8 10 2 9\n    \"\"\"\n\n    five = Node(5)\n    seven = Node(7)\n    three = Node(3)\n    eleven = Node(11)\n    eight = Node(8)\n    two = Node(2)\n    nine = Node(9)\n    ten = Node(10)\n\n    five.outgoing_nodes = [eleven]\n    seven.outgoing_nodes = [eleven, eight]\n    three.outgoing_nodes = [eight, ten]\n    eleven.incoming_nodes = [five, seven]\n    eleven.outgoing_nodes = [two, nine, ten]\n    eight.incoming_nodes = [seven, three]\n    eight.outgoing_nodes = [nine]\n    two.incoming_nodes = [eleven]\n    nine.incoming_nodes = [eleven, eight]\n    ten.incoming_nodes = [eleven, three]\n\n    result = [\n        x.value\n        for x in topological_ordering(\n            [five, seven, three, eleven, eight, two, nine, ten]\n        )\n    ]\n\n    assert result == [5, 7, 3, 11, 8, 10, 2, 9]\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test2",
+    "doc": "Case 2: GeekforGeeks example\nOutput: 4 5 0 2 3 1",
+    "source": "def test2():\n    \"\"\"Case 2: GeekforGeeks example\n    Output: 4 5 0 2 3 1\n    \"\"\"\n\n    five = Node(5)\n    zero = Node(0)\n    four = Node(4)\n    one = Node(1)\n    two = Node(2)\n    three = Node(3)\n\n    five.outgoing_nodes = [two, zero]\n    four.outgoing_nodes = [zero, one]\n    two.incoming_nodes = [five]\n    two.outgoing_nodes = [three]\n    zero.incoming_nodes = [five, four]\n    one.incoming_nodes = [four, three]\n    three.incoming_nodes = [two]\n    three.outgoing_nodes = [one]\n\n    result = [\n        x.value for x in topological_ordering([zero, one, two, three, four, five])\n    ]\n\n    assert result == [4, 5, 0, 2, 3, 1]\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   },
+   {
+    "name": "test3",
+    "doc": "Case 3: Cooking with InteractivePython",
+    "source": "def test3():\n    \"\"\"Case 3: Cooking with InteractivePython\"\"\"\n\n    milk = Node(\"3/4 cup milk\")\n    egg = Node(\"1 egg\")\n    oil = Node(\"1 Tbl oil\")\n    mix = Node(\"1 cup mix\")\n    syrup = Node(\"heat syrup\")\n    griddle = Node(\"heat griddle\")\n    pour = Node(\"pour 1/4 cup\")\n    turn = Node(\"turn when bubbly\")\n    eat = Node(\"eat\")\n\n    milk.outgoing_nodes = [mix]\n    egg.outgoing_nodes = [mix]\n    oil.outgoing_nodes = [mix]\n    mix.incoming_nodes = [milk, egg, oil]\n    mix.outgoing_nodes = [syrup, pour]\n    griddle.outgoing_nodes = [pour]\n    pour.incoming_nodes = [mix, griddle]\n    pour.outgoing_nodes = [turn]\n    turn.incoming_nodes = [pour]\n    turn.outgoing_nodes = [eat]\n    syrup.incoming_nodes = [mix]\n    syrup.outgoing_nodes = [eat]\n    eat.incoming_nodes = [syrup, turn]\n\n    result = [\n        x.value\n        for x in topological_ordering(\n            [milk, egg, oil, mix, syrup, griddle, pour, turn, eat]\n        )\n    ]\n\n    expected = [\n        \"3/4 cup milk\",\n        \"1 egg\",\n        \"1 Tbl oil\",\n        \"heat griddle\",\n        \"1 cup mix\",\n        \"pour 1/4 cup\",\n        \"heat syrup\",\n        \"turn when bubbly\",\n        \"eat\",\n    ]\n    assert result == expected\n",
+    "passed": false,
+    "error": "AssertionError: the assertion in the test failed"
+   }
+  ],
+  "first_failing": 0
+ },
+ "wrap": {
+  "kind": "json",
+  "tests": [
+   {
+    "input": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one reflects: everything except what we think or do ourselves when we forget our human dignity and the higher aims of our existence.",
+     50
+    ],
+    "expected": [
+     "The leaves did not stir on the trees, grasshoppers",
+     " chirruped, and the monotonous hollow sound of the",
+     " sea rising up from below, spoke of the peace, of",
+     " the eternal sleep awaiting us. So it must have",
+     " sounded when there was no Yalta, no Oreanda here;",
+     " so it sounds now, and it will sound as",
+     " indifferently and monotonously when we are all no",
+     " more. And in this constancy, in this complete",
+     " indifference to the life and death of each of us,",
+     " there lies hid, perhaps, a pledge of our eternal",
+     " salvation, of the unceasing movement of life upon",
+     " earth, of unceasing progress towards perfection.",
+     " Sitting beside a young woman who in the dawn",
+     " seemed so lovely, soothed and spellbound in these",
+     " magical surroundings - the sea, mountains,",
+     " clouds, the open sky - Gurov thought how in",
+     " reality everything is beautiful in this world",
+     " when one reflects: everything except what we",
+     " think or do ourselves when we forget our human",
+     " dignity and the higher aims of our existence."
+    ],
+    "actual": [
+     "The leaves did not stir on the trees, grasshoppers",
+     " chirruped, and the monotonous hollow sound of the",
+     " sea rising up from below, spoke of the peace, of",
+     " the eternal sleep awaiting us. So it must have",
+     " sounded when there was no Yalta, no Oreanda here;",
+     " so it sounds now, and it will sound as",
+     " indifferently and monotonously when we are all no",
+     " more. And in this constancy, in this complete",
+     " indifference to the life and death of each of us,",
+     " there lies hid, perhaps, a pledge of our eternal",
+     " salvation, of the unceasing movement of life upon",
+     " earth, of unceasing progress towards perfection.",
+     " Sitting beside a young woman who in the dawn",
+     " seemed so lovely, soothed and spellbound in these",
+     " magical surroundings - the sea, mountains,",
+     " clouds, the open sky - Gurov thought how in",
+     " reality everything is beautiful in this world",
+     " when one reflects: everything except what we",
+     " think or do ourselves when we forget our human"
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one reflects: everything except what we think or do ourselves when we forget our human dignity and the higher aims of our existence.",
+     20
+    ],
+    "expected": [
+     "The leaves did not",
+     " stir on the trees,",
+     " grasshoppers",
+     " chirruped, and the",
+     " monotonous hollow",
+     " sound of the sea",
+     " rising up from",
+     " below, spoke of the",
+     " peace, of the",
+     " eternal sleep",
+     " awaiting us. So it",
+     " must have sounded",
+     " when there was no",
+     " Yalta, no Oreanda",
+     " here; so it sounds",
+     " now, and it will",
+     " sound as",
+     " indifferently and",
+     " monotonously when",
+     " we are all no more.",
+     " And in this",
+     " constancy, in this",
+     " complete",
+     " indifference to the",
+     " life and death of",
+     " each of us, there",
+     " lies hid, perhaps,",
+     " a pledge of our",
+     " eternal salvation,",
+     " of the unceasing",
+     " movement of life",
+     " upon earth, of",
+     " unceasing progress",
+     " towards perfection.",
+     " Sitting beside a",
+     " young woman who in",
+     " the dawn seemed so",
+     " lovely, soothed and",
+     " spellbound in these",
+     " magical",
+     " surroundings - the",
+     " sea, mountains,",
+     " clouds, the open",
+     " sky - Gurov thought",
+     " how in reality",
+     " everything is",
+     " beautiful in this",
+     " world when one",
+     " reflects:",
+     " everything except",
+     " what we think or do",
+     " ourselves when we",
+     " forget our human",
+     " dignity and the",
+     " higher aims of our",
+     " existence."
+    ],
+    "actual": [
+     "The leaves did not",
+     " stir on the trees,",
+     " grasshoppers",
+     " chirruped, and the",
+     " monotonous hollow",
+     " sound of the sea",
+     " rising up from",
+     " below, spoke of the",
+     " peace, of the",
+     " eternal sleep",
+     " awaiting us. So it",
+     " must have sounded",
+     " when there was no",
+     " Yalta, no Oreanda",
+     " here; so it sounds",
+     " now, and it will",
+     " sound as",
+     " indifferently and",
+     " monotonously when",
+     " we are all no more.",
+     " And in this",
+     " constancy, in this",
+     " complete",
+     " indifference to the",
+     " life and death of",
+     " each of us, there",
+     " lies hid, perhaps,",
+     " a pledge of our",
+     " eternal salvation,",
+     " of the unceasing",
+     " movement of life",
+     " upon earth, of",
+     " unceasing progress",
+     " towards perfection.",
+     " Sitting beside a",
+     " young woman who in",
+     " the dawn seemed so",
+     " lovely, soothed and",
+     " spellbound in these",
+     " magical",
+     " surroundings - the",
+     " sea, mountains,",
+     " clouds, the open",
+     " sky - Gurov thought",
+     " how in reality",
+     " everything is",
+     " beautiful in this",
+     " world when one",
+     " reflects:",
+     " everything except",
+     " what we think or do",
+     " ourselves when we",
+     " forget our human",
+     " dignity and the",
+     " higher aims of our"
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one reflects: everything except what we think or do ourselves when we forget our human dignity and the higher aims of our existence.",
+     80
+    ],
+    "expected": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous",
+     " hollow sound of the sea rising up from below, spoke of the peace, of the",
+     " eternal sleep awaiting us. So it must have sounded when there was no Yalta, no",
+     " Oreanda here; so it sounds now, and it will sound as indifferently and",
+     " monotonously when we are all no more. And in this constancy, in this complete",
+     " indifference to the life and death of each of us, there lies hid, perhaps, a",
+     " pledge of our eternal salvation, of the unceasing movement of life upon earth,",
+     " of unceasing progress towards perfection. Sitting beside a young woman who in",
+     " the dawn seemed so lovely, soothed and spellbound in these magical surroundings",
+     " - the sea, mountains, clouds, the open sky - Gurov thought how in reality",
+     " everything is beautiful in this world when one reflects: everything except what",
+     " we think or do ourselves when we forget our human dignity and the higher aims",
+     " of our existence."
+    ],
+    "actual": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous",
+     " hollow sound of the sea rising up from below, spoke of the peace, of the",
+     " eternal sleep awaiting us. So it must have sounded when there was no Yalta, no",
+     " Oreanda here; so it sounds now, and it will sound as indifferently and",
+     " monotonously when we are all no more. And in this constancy, in this complete",
+     " indifference to the life and death of each of us, there lies hid, perhaps, a",
+     " pledge of our eternal salvation, of the unceasing movement of life upon earth,",
+     " of unceasing progress towards perfection. Sitting beside a young woman who in",
+     " the dawn seemed so lovely, soothed and spellbound in these magical surroundings",
+     " - the sea, mountains, clouds, the open sky - Gurov thought how in reality",
+     " everything is beautiful in this world when one reflects: everything except what",
+     " we think or do ourselves when we forget our human dignity and the higher aims"
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one reflects: everything except what we think or do ourselves when we forget our human dignity and the higher aims of our existence.",
+     77
+    ],
+    "expected": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the",
+     " monotonous hollow sound of the sea rising up from below, spoke of the peace,",
+     " of the eternal sleep awaiting us. So it must have sounded when there was no",
+     " Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently",
+     " and monotonously when we are all no more. And in this constancy, in this",
+     " complete indifference to the life and death of each of us, there lies hid,",
+     " perhaps, a pledge of our eternal salvation, of the unceasing movement of",
+     " life upon earth, of unceasing progress towards perfection. Sitting beside a",
+     " young woman who in the dawn seemed so lovely, soothed and spellbound in",
+     " these magical surroundings - the sea, mountains, clouds, the open sky -",
+     " Gurov thought how in reality everything is beautiful in this world when one",
+     " reflects: everything except what we think or do ourselves when we forget our",
+     " human dignity and the higher aims of our existence."
+    ],
+    "actual": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the",
+     " monotonous hollow sound of the sea rising up from below, spoke of the peace,",
+     " of the eternal sleep awaiting us. So it must have sounded when there was no",
+     " Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently",
+     " and monotonously when we are all no more. And in this constancy, in this",
+     " complete indifference to the life and death of each of us, there lies hid,",
+     " perhaps, a pledge of our eternal salvation, of the unceasing movement of",
+     " life upon earth, of unceasing progress towards perfection. Sitting beside a",
+     " young woman who in the dawn seemed so lovely, soothed and spellbound in",
+     " these magical surroundings - the sea, mountains, clouds, the open sky -",
+     " Gurov thought how in reality everything is beautiful in this world when one",
+     " reflects: everything except what we think or do ourselves when we forget our"
+    ],
+    "passed": false
+   },
+   {
+    "input": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one reflects: everything except what we think or do ourselves when we forget our human dignity and the higher aims of our existence.",
+     140
+    ],
+    "expected": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the",
+     " peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will",
+     " sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death",
+     " of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing",
+     " progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical",
+     " surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one",
+     " reflects: everything except what we think or do ourselves when we forget our human dignity and the higher aims of our existence."
+    ],
+    "actual": [
+     "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the",
+     " peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will",
+     " sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death",
+     " of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing",
+     " progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical",
+     " surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one"
+    ],
+    "passed": false
+   }
+  ],
+  "first_failing": 0
+ }
+}

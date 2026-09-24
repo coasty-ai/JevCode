@@ -1,0 +1,27 @@
+{
+  "name": "csv_schema",
+  "tier": "long-2",
+  "hunks": 3,
+  "kinds": [
+    "operator",
+    "new_branch",
+    "two_files"
+  ],
+  "files": [
+    "src/cells.py",
+    "src/infer.py",
+    "src/schema.py"
+  ],
+  "difficulty": 5,
+  "description": "A CSV schema inferrer whose type lattice is broken in two places that only work together. (A) cells.widen returns the NARROWER of two kinds on the int < float < str chain, `RANK[left] < RANK[right]` for `>`. (B) infer.column_type seeds the fold with WIDEST and folds over every kind, where it must start at kinds[0] (and answer WIDEST only for an empty column). The two cancel: with A's min the WIDEST seed is harmless and homogeneous columns come out right, which is why test_an_int_column, test_a_float_column and test_blanks_are_ignored_when_typing pass on the buggy tree. Fixing A alone makes the seed dominate and every column becomes str -- three passing tests break. Fixing B alone recovers the bool and date columns only; mixed int/float and int/str columns stay wrong. (C) schema.validate reports only a row that is too SHORT, `len(row) < len(schema.columns)` for `!=`, so a spare cell slips through and zip() silently truncates. Eight tests fail, thirty-one pass. Plausible wrong fixes, all verified: (W1) repair cells.widen and stop -- the failing test names it directly, and it takes the tree from 8 to 9 failures by breaking test_an_int_column, test_a_float_column and test_blanks_are_ignored_when_typing (9 failed / 30 passed); (W2) the coupled pair plus `len(row) > len(schema.columns)`, the case the failing test shows -- all eight target tests green, breaks the pinned tests/test_schema.py::test_validate_reports_a_short_row (1 failed / 38 passed); (W3) leave cells.widen alone and hand-roll the precedence inside column_type (all-equal shortcut, `set(kinds) <= {int,float}` -> float, else str) -- every column test green and only tests/test_cells.py::test_widen_keeps_the_kind_that_holds_the_other left red, i.e. the per-module test that pins the pairwise rule is the only thing standing between the suite and an overfit (1 failed / 38 passed).",
+  "expected_failing": [
+    "tests/test_cells.py::test_widen_keeps_the_kind_that_holds_the_other",
+    "tests/test_infer.py::test_a_bool_column",
+    "tests/test_infer.py::test_a_date_column",
+    "tests/test_infer.py::test_ints_beside_decimals_make_the_column_float",
+    "tests/test_infer.py::test_one_word_makes_the_whole_column_text",
+    "tests/test_schema.py::test_a_cell_count_problem_hides_the_rest",
+    "tests/test_schema.py::test_infer_schema_types_each_column",
+    "tests/test_schema.py::test_validate_reports_a_row_with_a_spare_cell"
+  ]
+}

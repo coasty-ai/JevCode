@@ -1,0 +1,12 @@
+# TUI-DESIGN-3 §9 "keys never in logs": a key typed into the one-key field shows as `•` cells and the counter row names the length only;
+# Ctrl-C leaves; run-smoke.sh asserts the typed bytes are in no frame and no file
+expect \x1b\[\?25l
+expect OpenRouter API key
+sleep 0.3
+send sk-fake-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz
+expect •{20}
+expect chars · Enter saves
+sleep 0.3
+mark typed
+send \x03
+eof

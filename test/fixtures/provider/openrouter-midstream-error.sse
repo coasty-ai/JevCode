@@ -1,0 +1,4 @@
+data: {"id":"gen-1789872500-err","object":"chat.completion.chunk","created":1789872500,"model":"anthropic/claude-sonnet-5","provider":"Anthropic","choices":[{"index":0,"delta":{"content":"Star","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1789872500-err","object":"chat.completion.chunk","created":1789872500,"model":"anthropic/claude-sonnet-5","provider":"Anthropic","choices":[{"index":0,"delta":{"content":""},"finish_reason":"error","native_finish_reason":"error"}],"error":{"code":429,"message":"Provider returned error","metadata":{"error_type":"rate_limit_exceeded","provider_name":"Anthropic"}}}
+
