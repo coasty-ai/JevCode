@@ -81,7 +81,7 @@ async function readOne(ctx: AgentContext, a: ReadArgs, hashes: ReadHashes): Prom
       truncated = view.truncatedBytes > 0;
       workspaceFile = true;
     } catch (e) {
-      const text = accessError(a.path, e);
+      const text = accessError(a.path, e, ctx.workspace.root);
       if (text === null) throw e;
       return errorResult(text, `read_file ${a.path} (error)`);
     }

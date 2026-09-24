@@ -26,7 +26,7 @@ import { syntaxCheck, syntaxCheckBlock } from './tools/check.js';
 import { editResultLine, matchEdit, placeholderLine } from './tools/edit-match.js';
 import { oneLine, renderBash } from './tools/format.js';
 import { runReadFile, type ReadArgs, type ReadHashes } from './tools/read.js';
-import { accessError, errorResult, hasRedactionMarker, isBinary, type ToolResult } from './tools/result.js';
+import { accessError, errorResult, hasRedactionMarker, isBinary, rootNameHint, type ToolResult } from './tools/result.js';
 import { runGlob, runGrep, type GlobArgs, type GrepArgs } from './tools/search.js';
 import { bashHashBasis, runReadonlyBash } from './tools/shell.js';
 import { todoWrite, type Todo } from './tools/todo.js';
@@ -216,7 +216,7 @@ async function editDisposition(env: CallEnv, c: NormalisedCall): Promise<Disposi
   if (inGit(path)) return rejected(c, GIT_INTERNALS(path));
   const target = await readTarget(env.ctx, path);
   if ('error' in target) return rejected(c, target.error);
-  if (target.content === null) return rejected(c, `ERROR: ${path}: no such file (use write_file to create it)`);
+  if (target.content === null) return rejected(c, `ERROR: ${path}: no such file${rootNameHint(env.ctx.workspace.root, path) || ' (use write_file to create it)'}`);
   if (isBinary(target.content)) return rejected(c, `ERROR: ${path} is binary; edit_file edits text files`);
   if (target.truncated) return rejected(c, `ERROR: ${path} is larger than 1 MiB; edit_file cannot edit it safely (use a narrower tool through bash)`);
   const m = matchEdit(target.content, { path, oldString: String(c.args['old_string']), newString: String(c.args['new_string']), replaceAll: c.args['replace_all'] === true });

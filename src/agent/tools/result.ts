@@ -1,4 +1,6 @@
 /** The shape every tool executor returns (docs/AGENT-LOOP-DESIGN.md §4.3, §3.6). */
+import { existsSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { FileNotFoundError, JevCodeError, PathEscapeError } from '../../errors.js';
 
 export interface ToolResult {
@@ -16,9 +18,22 @@ export interface ToolResult {
   pointer?: string;
 }
 
-/** The `ERROR: …` line for a failed workspace access (§4.3 read_file failures). */
-export function accessError(path: string, e: unknown): string | null {
-  if (e instanceof FileNotFoundError) return `ERROR: ${path}: no such file`;
+/**
+ * A missing path that starts with the workspace folder's own name (`js-fix/src/math.js` in `…/js-fix`): the hint names
+ * the relative form, so the next call lands (the S6 live runs of 2026-09-23 spent a turn on a `glob` to find it). '' otherwise,
+ * and '' when the workspace has a top-level entry of that name, where the path may mean exactly what it says.
+ */
+export function rootNameHint(root: string, path: string): string {
+  const name = basename(root);
+  const p = path.replace(/^\.\//, '');
+  // a workspace that really has a top-level entry of that name (a Python package named like its repo) gets no hint
+  if (name === '' || !p.startsWith(`${name}/`) || p.length <= name.length + 1 || existsSync(join(root, name))) return '';
+  return ` (paths are relative to the workspace root ${name}: did you mean ${p.slice(name.length + 1)}?)`;
+}
+
+/** The `ERROR: …` line for a failed workspace access (§4.3 read_file failures); `root` adds the root-name hint to a missing file. */
+export function accessError(path: string, e: unknown, root?: string): string | null {
+  if (e instanceof FileNotFoundError) return `ERROR: ${path}: no such file${root === undefined ? '' : rootNameHint(root, path)}`;
   if (e instanceof PathEscapeError) {
     if (e.kind === 'secret') return `ERROR: ${path} is a secret path and cannot be read`;
     if (e.kind === 'git') return `ERROR: ${path} is inside .git, which the harness does not read or write`;

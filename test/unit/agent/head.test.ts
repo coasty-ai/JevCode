@@ -51,13 +51,20 @@ describe('the first user message (no agent parent)', () => {
         'ok fix it',
         '',
         '# Workspace',
-        '- root: ws; git: main, 1 modified, 1 untracked',
+        '- root: ws (your working directory: tool paths are relative to it, so `src/a.ts`, never `ws/src/a.ts`); git: main, 1 modified, 1 untracked',
         '- your uncommitted changes: src/math.js, notes.txt',
         '- detected: package.json (node, type module)',
         '- test command: `npm test`',
         '- top level: src/ test/ README.md package.json',
       ].join('\n'),
     );
+  });
+
+  it('drops the "never <root>/…" example when the workspace has a top-level entry named like its root (a package named like its repo)', async () => {
+    const ctx = createAgentContext({ files: { 'ws/__init__.py': '', 'setup.py': '' }, testCommand: null, gitState: null });
+    const text = await firstUserMessage(ctx);
+    expect(text).toContain('- root: ws (your working directory: tool paths are relative to it); git repository');
+    expect(text).not.toContain('never `ws/');
   });
 
   it('omits the conversation and the uncommitted line when there is no signal, and says so outside git', async () => {

@@ -110,11 +110,22 @@ function topLevel(candidates: readonly Candidate[]): { line: string; files: Set<
   return { line: `${shown.join(' ')}${all.length > shown.length ? ` … (+${all.length - shown.length} more)` : ''}`, files };
 }
 
+/**
+ * The root line names the workspace folder and says that tool paths start below it: with the bare name alone
+ * (`- root: js-fix`) glm-5.3-flash and glm-5p3-flash both prefixed it (`read_file js-fix/src/math.js`, a nested
+ * `hello-fireworks/hello.txt` written by write_file) in the S6 live runs of 2026-09-23.
+ */
+export function rootLine(name: string, candidates: readonly Candidate[]): string {
+  // a top-level entry of the same name (a Python package named like its repo) makes `<name>/…` a real path: no "never"
+  if (candidates.some((c) => c.path === name || c.path.startsWith(`${name}/`))) return `${name} (your working directory: tool paths are relative to it)`;
+  return `${name} (your working directory: tool paths are relative to it, so \`src/a.ts\`, never \`${name}/src/a.ts\`)`;
+}
+
 async function workspaceBlock(ctx: AgentContext): Promise<string> {
   const g = ctx.workspace.gitState?.() ?? ctx.workspaceInfo.gitState ?? null;
   const candidates = await ctx.workspace.listCandidates();
   const top = topLevel(candidates);
-  const lines = [`- root: ${basename(ctx.workspace.root)}; ${gitLine(g, ctx.workspaceInfo.git)}`];
+  const lines = [`- root: ${rootLine(basename(ctx.workspace.root), candidates)}; ${gitLine(g, ctx.workspaceInfo.git)}`];
   if (g !== null && g.repo && g.dirty.entries.length > 0) {
     const paths = g.dirty.entries.map((e) => e.path);
     const shown = paths.slice(0, AGENT_DIRTY_PATHS_SHOWN);

@@ -8,6 +8,7 @@ import { bashStatusLine, renderBash } from '../../../src/agent/tools/format.js';
 import { parseAgentOutputRef, runReadFile, type ReadHashes } from '../../../src/agent/tools/read.js';
 import { createRgProbe, globMatches, globToRegExp, runGlob, runGrep } from '../../../src/agent/tools/search.js';
 import { runReadonlyBash } from '../../../src/agent/tools/shell.js';
+import { rootNameHint } from '../../../src/agent/tools/result.js';
 import { planOf, todoWrite } from '../../../src/agent/tools/todo.js';
 import { createAgentContext, execResult } from './helpers.js';
 
@@ -36,6 +37,25 @@ describe('read_file', () => {
     const big = await runReadFile(ctx, { path: 'big.txt' }, undefined, hashes());
     expect(big.text.length).toBeLessThanOrEqual(40_200);
     expect(big.text).toMatch(/\[showing lines 1-\d+ of 1500; call read_file with offset=\d+ to continue\]$/);
+  });
+
+  it('a missing path that repeats the workspace folder name names the relative form (S6 live, 2026-09-23)', async () => {
+    const ctx = createAgentContext({ files: { 'src/math.js': 'export const x = 1;\n' } });
+    // the fake workspace's root is /ws: `ws/src/math.js` is the live run's `js-fix/src/math.js`
+    const r = await runReadFile(ctx, { path: 'ws/src/math.js' }, undefined, hashes());
+    expect(r.ok).toBe(false);
+    expect(r.text).toBe('ERROR: ws/src/math.js: no such file (paths are relative to the workspace root ws: did you mean src/math.js?)');
+    // any other missing path keeps the plain line
+    expect((await runReadFile(ctx, { path: 'other/src/math.js' }, undefined, hashes())).text).toBe('ERROR: other/src/math.js: no such file');
+  });
+
+  it('gives no root-name hint where the workspace really has a top-level entry of that name', () => {
+    const root = mkdtempSync(join(tmpdir(), 'jevcode-roothint-'));
+    const name = root.split('/').pop()!;
+    expect(rootNameHint(root, `${name}/a.py`)).toBe(` (paths are relative to the workspace root ${name}: did you mean a.py?)`);
+    mkdirSync(join(root, name));
+    expect(rootNameHint(root, `${name}/a.py`)).toBe('');
+    expect(rootNameHint(root, 'a.py')).toBe('');
   });
 
   it('reports missing, secret, outside and binary files as ERROR lines, and an offset past the end', async () => {
