@@ -112,23 +112,39 @@ const DISCARD_ON_FILES = /\bgit\b[^;&|\n]*\b(?:reset\s+[^;&|\n]*--hard|checkout|
 const DISCARD_BEYOND_FILES = /\bgit\b[^;&|\n]*\b(?:stash|branch|worktree)\b|\bgit\b[^;&|\n]*\bclean\b[^;&|\n]*\s-[a-zA-Z]*[xX]/;
 
 /**
- * §A5 truthful notes. The sandbox and the pre-images contain only LOCAL workspace effects, so:
- * - a rule that leaves the machine → `left-machine`, whatever was captured;
- * - `git_discard` of workspace files, with every dirty file captured, both images whole and HEAD where it was → `restores`;
+ * §A5 truthful notes, over EVERY rule the command matched (a compound command is judged whole — `git reset --hard && git
+ * push --force` is not restorable because its first part is). The sandbox and the pre-images contain only LOCAL workspace
+ * effects, so:
+ * - any rule that leaves the machine → `left-machine`, whatever was captured;
+ * - only `git_discard` of workspace files, with every dirty file captured, both images whole and HEAD where it was → `restores`;
  * - everything else (no OS sandbox on Linux, a capped or failed pre-image, a moved HEAD, a stash / branch / worktree, ignored
- *   files) → `may-not`. Anything not provably covered says so.
+ *   files, any other rule beside the discard) → `may-not`. Anything not provably covered says so.
  */
-export function destructiveCoverage(i: { rule: string; command: string; imagesComplete: boolean; headMoved: boolean }): DestructiveCoverage {
-  if (LEFT_MACHINE_RULES.has(i.rule)) return 'left-machine';
-  if (i.rule === 'git_discard' && i.imagesComplete && !i.headMoved && DISCARD_ON_FILES.test(i.command) && !DISCARD_BEYOND_FILES.test(i.command)) return 'restores';
+export function destructiveCoverage(i: { rule: string; rules?: readonly string[]; command: string; imagesComplete: boolean; headMoved: boolean }): DestructiveCoverage {
+  const rules = i.rules !== undefined && i.rules.length > 0 ? i.rules : [i.rule];
+  if (rules.some((r) => LEFT_MACHINE_RULES.has(r))) return 'left-machine';
+  if (rules.every((r) => r === 'git_discard') && i.imagesComplete && !i.headMoved && DISCARD_ON_FILES.test(i.command) && !DISCARD_BEYOND_FILES.test(i.command)) return 'restores';
   return 'may-not';
 }
 
-/** §A2 / §A5: the one transcript line a destructive command that ran leaves (the rule id also rides `StepRecord.risk.rule`). */
-export function destructiveNote(command: string, rule: string, coverage: DestructiveCoverage): string {
+/**
+ * §A2 / §A5: the one transcript line a destructive command that ran leaves (the rule id also rides `StepRecord.risk.rule`). A
+ * command whose rule leaves the machine but that exited non-zero may have stopped before that part ran (`git commit --amend
+ * && git push --force` failing at the commit), so it says so instead of claiming the push happened.
+ */
+export function destructiveNote(command: string, rule: string | readonly string[], coverage: DestructiveCoverage, exitCode: number | null = null): string {
+  const rules = typeof rule === 'string' ? [rule] : rule;
   const cmd = clip(command.replace(/\s+/g, ' ').trim(), 120);
-  const tail = coverage === 'left-machine' ? 'this left the machine; /undo cannot reverse it' : coverage === 'restores' ? '/undo restores the workspace' : '/undo may not restore this';
-  return `destructive · ran ${cmd} (rule ${rule}) — ${tail}`;
+  const failed = exitCode !== null && exitCode !== 0;
+  const tail =
+    coverage === 'left-machine'
+      ? failed
+        ? `exit ${exitCode} — it may not have left the machine; /undo cannot reverse any part that did`
+        : 'this left the machine; /undo cannot reverse it'
+      : coverage === 'restores'
+        ? '/undo restores the workspace'
+        : '/undo may not restore this';
+  return `destructive · ran ${cmd} (${rules.length > 1 ? 'rules' : 'rule'} ${rules.join(', ')}) — ${tail}`;
 }
 
 // ---------------------------------------------------------------------------------------

@@ -46,10 +46,16 @@ export const REMOTE_RULES: ReadonlySet<DestructiveRule> = new Set(['force_push',
 
 export interface CommandVerdict {
   class: CommandClass;
+  /** the least restorable rule matched (`rules[0]`); null when none did */
   rule: DestructiveRule | null;
   reason: string;
   /** `git_discard` only: which form matched — only `tracked` discards can be covered by the dirty-set pre-images */
   discard?: 'tracked' | 'clean' | 'refs';
+  /**
+   * Every destructive rule a compound command matched, least restorable first (`git reset --hard && git push --force` is
+   * `[force_push, git_discard]`), so the note and the review card say what the WHOLE command does. Absent = `[rule]`.
+   */
+  rules?: readonly DestructiveRule[];
 }
 
 export interface ClassifyContext {
@@ -75,7 +81,30 @@ export function destructive(rule: DestructiveRule, discard?: CommandVerdict['dis
   return { class: 'destructive', rule, reason: RULE_SENTENCES[rule], ...(discard !== undefined ? { discard } : {}) };
 }
 
+/**
+ * The order rules are reported in, least restorable first: what left the machine, then what no pre-image holds, then the
+ * one local rule the pre-images can cover (`git_discard`).
+ */
+const RULE_ORDER: readonly DestructiveRule[] = ['force_push', 'publish', 'exfiltrate', 'remote_exec', 'fork_bomb', 'system_power', 'disk', 'privilege', 'rm_outside', 'history_rewrite', 'outside_write', 'git_internals', 'git_discard'];
+const DISCARD_ORDER = ['tracked', 'clean', 'refs'] as const;
+
+/** Every destructive rule of a verdict, least restorable first ([] when none). */
+export function rulesOf(v: CommandVerdict): readonly DestructiveRule[] {
+  return v.rules ?? (v.rule !== null ? [v.rule] : []);
+}
+
+/**
+ * The stricter of two verdicts; two destructive ones MERGE: every rule is kept (least restorable first, so `rule` is the
+ * one the note must lead with), the reason names each, and a `git_discard` form is the less coverable of the two.
+ */
 export function stricter(a: CommandVerdict, b: CommandVerdict): CommandVerdict {
+  if (a.class === 'destructive' && b.class === 'destructive') {
+    const rules = [...new Set([...rulesOf(a), ...rulesOf(b)])].sort((x, y) => RULE_ORDER.indexOf(x) - RULE_ORDER.indexOf(y));
+    if (rules.length === rulesOf(a).length && a.discard === (b.discard ?? a.discard)) return a;
+    const forms = [a.discard, b.discard].filter((d): d is NonNullable<CommandVerdict['discard']> => d !== undefined);
+    const discard = forms.length === 0 ? undefined : forms.reduce((x, y) => (DISCARD_ORDER.indexOf(y) > DISCARD_ORDER.indexOf(x) ? y : x));
+    return { class: 'destructive', rule: rules[0] ?? null, reason: rules.map((r) => RULE_SENTENCES[r]).join('; '), ...(discard !== undefined ? { discard } : {}), ...(rules.length > 1 ? { rules } : {}) };
+  }
   return RANK[b.class] > RANK[a.class] ? b : a;
 }
 

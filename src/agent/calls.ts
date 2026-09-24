@@ -22,7 +22,7 @@ import { PRE_IMAGE_MAX_FILES, PRE_IMAGE_MAX_TOTAL_BYTES } from '../checkpoint/im
 import { AGENT_FILE_MAX_BYTES, DEFAULT_COMMAND_TIMEOUT_MS } from './limits.js';
 import { blockedResult, declinedResult, unknownTool } from './prompt.js';
 import { ignoredLine, type NormalisedCall } from './repair.js';
-import { classifyCommand, commandGate, destructiveNote, type CommandVerdict, type DestructiveRule } from './safety.js';
+import { classifyCommand, commandGate, destructiveNote, rulesOf, type CommandVerdict, type DestructiveRule } from './safety.js';
 import { syntaxCheck, syntaxCheckBlock } from './tools/check.js';
 import { editResultLine, matchEdit, placeholderLine } from './tools/edit-match.js';
 import { oneLine, renderBash } from './tools/format.js';
@@ -142,7 +142,8 @@ function classifyContext(ctx: AgentContext, workdir: string | null): Parameters<
  * included — not only the run-start one. Everything else is not provably covered.
  */
 async function preImagesCover(ctx: AgentContext, v: CommandVerdict): Promise<boolean> {
-  if (v.rule !== 'git_discard' || v.discard !== 'tracked') return false;
+  // a compound command is covered only when EVERY part is a tracked discard (`git reset --hard && git push --force` is not)
+  if (rulesOf(v).some((r) => r !== 'git_discard') || v.discard !== 'tracked') return false;
   const dirty = ctx.workspace.dirtySet?.() ?? ctx.dirtyAtStart;
   if (dirty.size > PRE_IMAGE_MAX_FILES) return false;
   const sizes = new Map((await ctx.workspace.listCandidates()).map((c) => [c.path, c.bytes]));
@@ -187,7 +188,7 @@ async function bashDisposition(env: CallEnv, c: NormalisedCall): Promise<Disposi
   if (v.class === 'readonly') {
     return resolved(c, (part) => runReadonlyBash(ctx, { command, ...(workdir !== null ? { workdir } : {}), ...(timeoutMs !== undefined ? { timeout_ms: timeoutMs } : {}) }, part));
   }
-  const note = v.class === 'destructive' && v.rule !== null && ctx.autonomy === 'full' ? destructiveNote(command, v.rule, await preImagesCover(ctx, v)) : null;
+  const note = v.class === 'destructive' && v.rule !== null && ctx.autonomy === 'full' ? destructiveNote(command, rulesOf(v), await preImagesCover(ctx, v)) : null;
   return {
     kind: 'act',
     act: {

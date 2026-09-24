@@ -3958,7 +3958,7 @@ class EngineImpl implements Engine {
     const gate = draft.agentGate;
     // §A5: the note says `ran`, so it is written only for a command whose process ran (a cwd that does not exist fails before spawn)
     const ran = draft.outcome?.status === 'executed' || draft.outcome?.status === 'interrupted';
-    if (draft.executeStarted && ran && gate !== null && gate.rule !== null && action.kind === 'run') this.noteDestructive(draft, action.command, gate.rule, images, post, changed);
+    if (draft.executeStarted && ran && gate !== null && gate.rule !== null && action.kind === 'run') this.noteDestructive(draft, action.command, gate.rules ?? [gate.rule], images, post, changed);
     // §3.4 / §A5: a command's outcome lists the workspace's changed files, which misses what it put BACK — a file `git reset --hard`
     // returned to HEAD, an untracked file `git clean` removed. The per-step change set (pre- and post-images) has them, and the
     // step record carries them, so `/undo` finds the step: the S6 live `/undo` after a discard answered "the last run changed no files"
@@ -3998,13 +3998,14 @@ class EngineImpl implements Engine {
   }
 
   /** §A2 / §A5: one truthful line for a destructive command that ran — what left the machine, and what `/undo` can restore. */
-  private noteDestructive(draft: StepDraft, command: string, rule: string, images: AgentImages | null, post: PostImage | null, changed: readonly string[]): void {
+  private noteDestructive(draft: StepDraft, command: string, rules: readonly string[], images: AgentImages | null, post: PostImage | null, changed: readonly string[]): void {
     const nothingDirty = images !== null && images.pre === null && images.dirty === 0;
     const preWhole = nothingDirty || (images !== null && images.pre !== null && images.pre.skipped.length === 0);
     const postWhole = post === null ? nothingDirty && changed.length === 0 : !post.hashSkipped && post.skipped.length === 0;
     const headAfter = post?.headOid ?? headOidOf(this.workspace.gitState?.() ?? this.gitState);
-    const coverage = destructiveCoverage({ rule, command, imagesComplete: preWhole && postWhole, headMoved: images === null || images.headBefore !== headAfter });
-    const text = destructiveNote(command, rule, coverage);
+    const coverage = destructiveCoverage({ rule: rules[0] ?? '', rules, command, imagesComplete: preWhole && postWhole, headMoved: images === null || images.headBefore !== headAfter });
+    const exec = draft.outcome?.status === 'executed' || draft.outcome?.status === 'interrupted' ? draft.outcome.exec : undefined;
+    const text = destructiveNote(command, rules, coverage, exec?.exitCode ?? null);
     draft.notes.push(text);
     // the note is written from what actually ran, so it is the one reason the record keeps (a driver's pre-execution reason may disagree)
     if (draft.risk !== null) draft.risk = { ...draft.risk, reason: text };

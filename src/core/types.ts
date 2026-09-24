@@ -4045,8 +4045,10 @@ export interface StepAgentSummary {
 export interface AgentGate {
   verdict: 'ok' | 'review' | 'block';
   reason: string;
-  /** the rule id (`rm_outside`, `git_discard`, …); null when no rule matched */
+  /** the rule id (`rm_outside`, `git_discard`, …); null when no rule matched. A compound command's least restorable rule */
   rule: string | null;
+  /** every rule a compound command matched, least restorable first (absent: just `rule`) — the note judges the whole command */
+  rules?: readonly string[];
 }
 
 /**

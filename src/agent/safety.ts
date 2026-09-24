@@ -19,9 +19,9 @@ import { RISK_DIMENSIONS, type AgentGate, type RiskAssessment, type RiskDimensio
 import { isTestCommand } from '../loop/stages/execute.js';
 import { allCommands, parseShell, type ParsedShell, type Redirect, type SimpleCommand, type Word } from './shlex.js';
 import { gitVerdict } from './safety-git.js';
-import { READONLY, REMOTE_RULES, SAFE, UNKNOWN, destructive, isWithin, resolveWordPath, spellings, stricter, type ClassifyContext, type CommandVerdict, type DestructiveRule, type PathContext } from './safety-rules.js';
+import { READONLY, REMOTE_RULES, SAFE, UNKNOWN, destructive, isWithin, resolveWordPath, rulesOf, spellings, stricter, type ClassifyContext, type CommandVerdict, type DestructiveRule, type PathContext } from './safety-rules.js';
 
-export { RULE_SENTENCES, REMOTE_RULES, isWithin, type ClassifyContext, type CommandClass, type CommandVerdict, type DestructiveRule } from './safety-rules.js';
+export { RULE_SENTENCES, REMOTE_RULES, isWithin, rulesOf, type ClassifyContext, type CommandClass, type CommandVerdict, type DestructiveRule } from './safety-rules.js';
 
 const DEVICE_EXEMPT = /^\/dev\/(null|stdout|stderr|tty|fd\/\d+)$/;
 const RAW_DISK = /^\/dev\/(sd|disk|rdisk|nvme|hd|mmcblk)/;
@@ -308,18 +308,22 @@ export function classifyCommand(command: string, c: ClassifyContext): CommandVer
   if (FORK_BOMB.test(command)) return destructive('fork_bomb');
   if (isVerificationRun(command.trim(), c.testCommand)) return SAFE;
   const parsed = parseShell(command);
-  if (remoteExec(parsed)) return destructive('remote_exec');
-  const v = classifyParsed(parsed, c);
+  const v = remoteExec(parsed) ? stricter(destructive('remote_exec'), classifyParsed(parsed, c)) : classifyParsed(parsed, c);
   // an open quote or substitution at the end: the reading above is a guess, and a guess is never read-only
   return parsed.incomplete ? stricter(v, UNKNOWN) : v;
 }
 
-/** §A5: the one-line note of a destructive command that ran under full autonomy, truthful about what /undo can do. */
-export function destructiveNote(command: string, rule: DestructiveRule, restorable: boolean): string {
+/**
+ * §A5: the one-line note of a destructive command that ran under full autonomy, truthful about what /undo can do for the
+ * WHOLE command: any rule that leaves the machine says so; `restorable` (the pre-images cover it) counts only when every
+ * rule is `git_discard`; anything else may not be restored. `rule` is one rule or a compound command's list.
+ */
+export function destructiveNote(command: string, rule: DestructiveRule | readonly DestructiveRule[], restorable: boolean): string {
+  const rules: readonly DestructiveRule[] = typeof rule === 'string' ? [rule] : rule;
   const cmd = command.replace(/\s+/g, ' ').trim();
   const shown = cmd.length > 80 ? `${cmd.slice(0, 79)}…` : cmd;
-  const truth = REMOTE_RULES.has(rule) ? 'this left the machine; /undo cannot reverse it' : restorable ? '/undo restores the workspace' : '/undo may not restore this';
-  return `ran ${shown} (rule ${rule}) — ${truth}`;
+  const truth = rules.some((r) => REMOTE_RULES.has(r)) ? 'this left the machine; /undo cannot reverse it' : restorable && rules.every((r) => r === 'git_discard') ? '/undo restores the workspace' : '/undo may not restore this';
+  return `ran ${shown} (${rules.length > 1 ? 'rules' : 'rule'} ${rules.join(', ')}) — ${truth}`;
 }
 
 /**
@@ -327,12 +331,14 @@ export function destructiveNote(command: string, rule: DestructiveRule, restorab
  * with its rule and the note. Review asks for destructive and unknown commands; readonly and safe ones never ask.
  */
 export function commandGate(v: CommandVerdict, autonomy: 'full' | 'review', note: string | null): AgentGate {
+  const rules = rulesOf(v);
+  const all = rules.length > 1 ? { rules } : {};
   if (autonomy === 'review') {
-    if (v.class === 'destructive') return { verdict: 'review', reason: v.reason, rule: v.rule };
+    if (v.class === 'destructive') return { verdict: 'review', reason: v.reason, rule: v.rule, ...all };
     if (v.class === 'unknown') return { verdict: 'review', reason: v.reason, rule: null };
     return { verdict: 'ok', reason: '', rule: null };
   }
-  if (v.class === 'destructive' && v.rule !== null) return { verdict: 'ok', reason: note ?? destructiveNote('', v.rule, false), rule: v.rule };
+  if (v.class === 'destructive' && v.rule !== null) return { verdict: 'ok', reason: note ?? destructiveNote('', rules, false), rule: v.rule, ...all };
   return { verdict: 'ok', reason: '', rule: null };
 }
 
