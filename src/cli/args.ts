@@ -325,7 +325,7 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'mode', name: 'mode', type: 'string', commands: SESSION, arg: MODE_FLAG_ARG, help: MODE_FLAG_HELP },
   { key: 'condition', name: 'condition', type: 'string', commands: SESSION, arg: 'jev-only|jev-on|jev-off|llm-jev', help: 'alias of --mode (Harbor adapter)', hidden: true },
   // complete autonomy by default (`config` prints the row, so it takes the flag too); the default is named through DEFAULT_AUTONOMY, never a literal
-  { key: 'autonomy', name: 'autonomy', type: 'string', commands: UI, arg: AUTONOMY_SETTING_VALUES.join('|'), help: `who approves review-flagged actions (default ${DEFAULT_AUTONOMY}): full auto-approves and logs them, review stops for y/n; a blocked action always stops` },
+  { key: 'autonomy', name: 'autonomy', type: 'string', commands: UI, arg: AUTONOMY_SETTING_VALUES.join('|'), help: `who approves risky commands (default ${DEFAULT_AUTONOMY}): full never asks (a destructive command runs in the sandbox and leaves a note), review asks y/n before destructive and unrecognised ones` },
   { key: 'source', name: 'source', type: 'string', commands: SESSION, arg: CLI_SOURCES.join('|'), help: 'RunMeta.source for the perf drivers (perf never writes the session index or history)', hidden: true },
   // Hidden run flags used by the wiring code and perf/*: mocked provider+decider, no network.
   { key: 'mock', name: 'mock', type: 'boolean', commands: SESSION, help: 'mocked generator and decider (perf, smoke)', hidden: true },

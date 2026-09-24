@@ -132,8 +132,10 @@ describe('complete autonomy by default: `--autonomy full|review`', () => {
 
   it('the help text names the enum and the default, and says what each side does', () => {
     expect(usageText('run')).toContain('--autonomy full|review');
-    expect(usageText('run')).toContain(`who approves review-flagged actions (default ${DEFAULT_AUTONOMY})`);
-    expect(usageText('run')).toContain('full auto-approves and logs them, review stops for y/n');
+    expect(usageText('run')).toContain(`who approves risky commands (default ${DEFAULT_AUTONOMY})`);
+    // AGENT-LOOP-DESIGN §A2: full never asks and never refuses (the legacy "a blocked action always stops" is gone from the help)
+    expect(usageText('run')).toContain('full never asks (a destructive command runs in the sandbox and leaves a note), review asks y/n before destructive and unrecognised ones');
+    expect(usageText('run')).not.toContain('a blocked action always stops');
     expect(usageText('config')).toContain('--autonomy full|review');
     expect(AUTONOMY_SETTING_VALUES.join('|')).toBe('full|review');
   });

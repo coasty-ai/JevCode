@@ -79,7 +79,7 @@ complete -c jevcode -n '__fish_seen_subcommand_from chat run' -l force -d 'with 
 complete -c jevcode -n '__fish_seen_subcommand_from chat run' -l list-sessions -d 'print the sessions of this workspace and exit'
 complete -c jevcode -n '__fish_seen_subcommand_from run' -l task-file -r -F -d 'read the task text from a file'
 complete -c jevcode -n '__fish_seen_subcommand_from chat run' -l mode -x -a 'agent jev-only' -d 'engine mode (default agent): agent (the code model works through tools, tests verify), jev-only (Jev alone, no generating LLM); legacy, accepted for saved configs, resume and the bench: llm-jev, jev-on, jev-off'
-complete -c jevcode -n '__fish_seen_subcommand_from chat run config' -l autonomy -x -a 'full review' -d 'who approves review-flagged actions (default full): full auto-approves and logs them, review stops for y/n; a blocked action always stops'
+complete -c jevcode -n '__fish_seen_subcommand_from chat run config' -l autonomy -x -a 'full review' -d 'who approves risky commands (default full): full never asks (a destructive command runs in the sandbox and leaves a note), review asks y/n before destructive and unrecognised ones'
 complete -c jevcode -n '__fish_seen_subcommand_from chat run config sessions models import agents doctor why calibration' -l json -d 'chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output'
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l suite -x -a 'swebench terminal-bench quixbugs ladder all' -d 'benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)'
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l tasks -x -d 'number of tasks'

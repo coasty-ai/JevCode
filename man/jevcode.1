@@ -311,8 +311,9 @@ verify), jev\-only (Jev alone, no generating LLM); legacy, accepted for saved
 configs, resume and the bench: llm\-jev, jev\-on, jev\-off
 .TP
 .BI \-\-autonomy " full|review"
-who approves review\-flagged actions (default full): full auto\-approves and
-logs them, review stops for y/n; a blocked action always stops
+who approves risky commands (default full): full never asks (a destructive
+command runs in the sandbox and leaves a note), review asks y/n before
+destructive and unrecognised ones
 .TP
 .BI \-\-force\-takeback
 with \-\-resume: re\-take a run a peer claimed (bumps the claim epoch); an
@@ -438,8 +439,9 @@ verify), jev\-only (Jev alone, no generating LLM); legacy, accepted for saved
 configs, resume and the bench: llm\-jev, jev\-on, jev\-off
 .TP
 .BI \-\-autonomy " full|review"
-who approves review\-flagged actions (default full): full auto\-approves and
-logs them, review stops for y/n; a blocked action always stops
+who approves risky commands (default full): full never asks (a destructive
+command runs in the sandbox and leaves a note), review asks y/n before
+destructive and unrecognised ones
 .TP
 .BI \-\-force\-takeback
 with \-\-resume: re\-take a run a peer claimed (bumps the claim epoch); an
@@ -547,8 +549,9 @@ generator token cap under \-\-allow\-unpriced (default spend cap / 15 ×
 post\-run update check through a detached jevcode upgrade \-\-check
 .TP
 .BI \-\-autonomy " full|review"
-who approves review\-flagged actions (default full): full auto\-approves and
-logs them, review stops for y/n; a blocked action always stops
+who approves risky commands (default full): full never asks (a destructive
+command runs in the sandbox and leaves a note), review asks y/n before
+destructive and unrecognised ones
 .TP
 .BI \-\-all
 config: include the hidden bookkeeping rows (seen.*); sessions who: include
