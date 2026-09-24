@@ -2633,6 +2633,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         ...(carry !== null ? { conversation: carry } : {}),
         ...(instructions ? { instructions } : {}),
         ...(so.secretsAcked > 0 ? { secretsAcked: so.secretsAcked } : {}),
+        // AGENT-LOOP-DESIGN §A1 latency: the probe the session already holds — no git spawn before the first request (the
+        // engine re-probes beside the first model turn and adopts the fresh state before any tool call)
+        ...(mode === 'agent' && gitAtStart !== null && cfg.workspace === workspaceRoot ? { gitState: gitAtStart } : {}),
         ...(flags.allowUnpriced ? { allowUnpriced: true } : {}),
         ...(o.interactive || prompter?.blocking ? { blocker } : {}),
       };

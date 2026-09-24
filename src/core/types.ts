@@ -1335,6 +1335,11 @@ export interface Workspace {
   gitState?(): GitState | null;
   /** TUI-DESIGN §15 item 8: snapshotDirty ∪ statusEntries ∪ touched, in memory */
   dirtySet?(): ReadonlySet<string>;
+  /**
+   * AGENT-LOOP-DESIGN §A1: replace the run-start probe with a fresher one (a cached probe started the run; the background
+   * re-probe landed). Only before the run changed anything: the new probe's status becomes the run-start snapshot.
+   */
+  adoptGitState?(g: GitState): void;
 }
 
 export type SandboxLevel = 'seatbelt' | 'none';
@@ -1930,6 +1935,14 @@ export interface EngineOptions {
    * pin: every prompt is byte-identical to what it was before 1.6 landed.
    */
   memory?: EngineMemoryOptions;
+  /**
+   * AGENT-LOOP-DESIGN §A1 latency ("no git spawn that is not already cached"): an agent run's caller may hand in the git probe it
+   * already holds (the session's, taken at startup and after every run that could have moved it). createEngine then starts from it
+   * with no spawn on the path to the first model request, re-probes in the background, and adopts the fresh probe after the
+   * run's first model turn — before any tool call is resolved, so the dirty set that decides `git_discard` and the `run`
+   * pre-images is never stale. Ignored on a resume and in the legacy modes (they probe as before).
+   */
+  gitState?: GitState;
   /** TUI-DESIGN §15 item 11: count for the run:start secret-ack item (never values) */
   secretsAcked?: number;
   /** TUI-DESIGN §15 item 11 */

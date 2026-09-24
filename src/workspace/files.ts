@@ -182,8 +182,8 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
 
   // Snapshot for changedFiles(): what was already dirty before the run touched anything.
   const snapshotDirty = new Set<string>();
-  if (git) {
-    const entries: readonly { path: string; from?: string }[] = probe !== null ? probe.dirty.entries : (await statusPorcelain(deps.sandbox, realRoot)).entries;
+  const snapshotFrom = (entries: readonly { path: string; from?: string }[]): void => {
+    snapshotDirty.clear();
     for (const e of entries) {
       for (const raw of [e.path, e.from]) {
         const p = raw === undefined ? null : fromRepoPath(raw);
@@ -191,7 +191,8 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
         if (p !== null && p.length > 0 && !inGitDir(p)) snapshotDirty.add(p);
       }
     }
-  }
+  };
+  if (git) snapshotFrom(probe !== null ? probe.dirty.entries : (await statusPorcelain(deps.sandbox, realRoot)).entries);
   // One `git status` spawn per command run, not per call (DESIGN.md §12 harness budget): the
   // result is cached until invalidateCandidates() (a `run` outcome) marks it dirty; file
   // actions report their own paths through `touched`, so they never need a spawn.
@@ -415,6 +416,16 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
     // TUI-DESIGN §15 item 8 / §12.1: the run-start probe (null without one), dirty counts refreshed per command
     gitState(): GitState | null {
       return gitStateCurrent;
+    },
+
+    // AGENT-LOOP-DESIGN §A1: the fresher probe of the same repository becomes the run-start snapshot (nothing ran through us yet)
+    adoptGitState(g: GitState): void {
+      if (!git || !g.repo || g.prefix !== repoPrefix || touched.size > 0) return;
+      gitStateCurrent = g;
+      snapshotFrom(g.dirty.entries);
+      statusEntries = [];
+      statusCache = [];
+      statusDirty = false;
     },
 
     // TUI-DESIGN §15 item 8 / §12.3: snapshotDirty ∪ statusEntries ∪ touched, in memory — the `run` pre-image set

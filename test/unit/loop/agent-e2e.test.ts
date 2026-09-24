@@ -15,11 +15,12 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AgentMessage, EngineEvent, GenerateRequest, MockTurn } from '../../../src/core/types.js';
+import type { AgentMessage, EngineEvent, GenerateRequest, GitState, MockTurn } from '../../../src/core/types.js';
 import { createAbsentDecider } from '../../../src/jev/absent.js';
 import { createEngine } from '../../../src/loop/engine.js';
 import { createMockProvider, type MockProvider } from '../../../src/provider/mock.js';
 import { applyUndo, prepareUndo } from '../../../src/undo/apply.js';
+import { probeGitState } from '../../../src/workspace/gitstate.js';
 import { DEFAULT_LIMITS, alwaysDecline, createFakeMeter, everyToolUsePaired } from './fakes.js';
 
 const roots: string[] = [];
@@ -58,8 +59,9 @@ const FIX_TURNS: MockTurn[] = [
   { text: 'Fixed `mean` in src/math.js: it divides by the length now, and `npm test` passes.', usage: USAGE, stopReason: 'end_turn' },
 ];
 
-async function run(ws: string, root: string, task: string, turns: MockTurn[] | ((req: GenerateRequest, i: number) => MockTurn), parentRunId?: string): Promise<{ result: Awaited<ReturnType<Awaited<ReturnType<typeof createEngine>>['run']>>; events: EngineEvent[]; provider: MockProvider }> {
+async function run(ws: string, root: string, task: string, turns: MockTurn[] | ((req: GenerateRequest, i: number) => MockTurn), parentRunId?: string, extra: { gitState?: GitState; probes?: { n: number; done: boolean } } = {}): Promise<{ result: Awaited<ReturnType<Awaited<ReturnType<typeof createEngine>>['run']>>; events: EngineEvent[]; provider: MockProvider }> {
   const provider = createMockProvider({ turns }, { recordRequests: true });
+  const probes = extra.probes;
   const engine = await createEngine({
     task,
     mode: 'agent',
@@ -79,7 +81,15 @@ async function run(ws: string, root: string, task: string, turns: MockTurn[] | (
     deciderModel: { configured: 'typesafe/jev-1.13-20260917', pinned: true },
     // a chat follow-up: the session carries its newest run (src/cli/session.ts)
     ...(parentRunId !== undefined ? { conversation: { chat: [], parent: { runId: parentRunId, runDir: join(root, 'runs', parentRunId), mode: 'agent' as const } } } : {}),
-  });
+    ...(extra.gitState !== undefined ? { gitState: extra.gitState } : {}),
+  }, probes !== undefined ? { probeGitState: async (r: string) => {
+    probes.n += 1;
+    // a slow probe (a big repository): the first request must not wait for it
+    const g = await probeGitState(r);
+    await new Promise((res) => setTimeout(res, 150));
+    probes.done = true;
+    return g;
+  } } : {});
   const events: EngineEvent[] = [];
   engine.events.onAny((e) => events.push(e));
   const result = await engine.run();
@@ -278,6 +288,45 @@ describe('the agent loop end to end: real engine, real driver, mock provider, a 
     const { result, provider } = await run(ws, root, 'what does src/math.js do?', turns);
     expect(result.stopReason).toBe('generator_done');
     expect(provider.requests).toHaveLength(3);
+  }, 60_000);
+
+  it('§A1 latency: a run started from the session\'s cached git probe spawns no probe before the first request, and adopts the fresh one before any call — a discard of edits made after the cached probe is still judged, pre-imaged and undoable', async () => {
+    const { root, ws } = failingNodeWorkspace();
+    const git = (...args: string[]): string => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd: ws, encoding: 'utf8' });
+    writeFileSync(join(ws, 'src', 'math.js'), BUGGY.replace('(xs.length - 1)', 'xs.length'));
+    git('commit', '-q', '-am', 'fix');
+    // the session's probe, taken while the tree was clean …
+    const stale = await probeGitState(ws);
+    expect(stale.dirty.entries).toEqual([]);
+    // … then the human edits in their editor between two messages
+    writeFileSync(join(ws, 'src', 'math.js'), `${BUGGY.replace('(xs.length - 1)', 'xs.length')}// my local note\n`);
+    writeFileSync(join(ws, 'notes.txt'), 'my untracked notes\n');
+    const probes = { n: 0, done: false };
+    let probesAtFirstRequest = -1;
+    let probeDoneAtFirstRequest = true;
+    const turns = (_req: GenerateRequest, i: number): MockTurn => {
+      if (i === 0) {
+        probesAtFirstRequest = probes.n;
+        probeDoneAtFirstRequest = probes.done;
+      }
+      if (i === 0) return { text: 'Discarding.\n', toolCalls: [call('call_discard', 'bash', { command: 'git reset --hard && git clean -fd', description: 'discard' })], usage: USAGE, stopReason: 'tool_use' };
+      return { text: 'Discarded the local changes.', usage: USAGE, stopReason: 'end_turn' };
+    };
+    const { result, events } = await run(ws, root, 'discard all local changes', turns, undefined, { gitState: stale, probes });
+    // the only probe is the background one, started beside the first request (not awaited before it)
+    expect(probes.n).toBe(1);
+    expect(probesAtFirstRequest).toBe(1);
+    expect(probeDoneAtFirstRequest).toBe(false);
+    // the fresh probe decided: the discard is `git_discard` and its note is true
+    expect(of(events, 'transcript').map((e) => e.text).filter((t) => t.startsWith('destructive'))).toEqual(['destructive · ran git reset --hard && git clean -fd (rule git_discard) — /undo restores the workspace']);
+    const discard = of(events, 'step:end').map((e) => e.record).find((r) => r.proposal?.action.kind === 'run')!;
+    const runDir = join(root, 'runs', result.runId);
+    const prepared = await prepareUndo(runDir, discard.step, { root: ws, headOid: git('rev-parse', 'HEAD').trim(), git: true });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    await applyUndo(prepared.plan, { runDir, runId: result.runId, root: ws });
+    expect(readFileSync(join(ws, 'src', 'math.js'), 'utf8')).toContain('// my local note');
+    expect(readFileSync(join(ws, 'notes.txt'), 'utf8')).toBe('my untracked notes\n');
   }, 60_000);
 
   it('a greeting is one prose-only turn: stop `answered` (exit 0) in one step, no tool call, no sandbox command, no jev:request', async () => {

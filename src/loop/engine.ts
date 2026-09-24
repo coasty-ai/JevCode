@@ -1214,10 +1214,15 @@ class EngineImpl implements Engine {
   /** finish() is in flight (the final snapshot is built): steer/unsteer/pause/annotate read as finished so nothing is confirmed and then dropped (§8.6) */
   private finishing = false;
   /** the run-start probe (§12.1); null when the probe was unavailable */
-  private readonly gitState: GitState | null;
+  private gitState: GitState | null;
   private readonly gitMeta: RunGitMeta;
-  /** paths dirty at run start (top-level relative, prefix stripped): a changed file outside it was clean at start (§12.3 cleanAtStart) */
-  private readonly dirtyAtStart: ReadonlySet<string>;
+  /** §A1: the background re-probe still to adopt (a run started from a cached probe); null once adopted or when there is none */
+  private gitRefresh: Promise<GitState | null> | null = null;
+  /**
+   * paths dirty at run start (top-level relative, prefix stripped): a changed file outside it was clean at start (§12.3 cleanAtStart);
+   * refilled in place when a run that started from a cached probe adopts the fresh one (AGENT-LOOP-DESIGN §A1)
+   */
+  private readonly dirtyAtStart: Set<string>;
   private readonly runDir: string;
   private lockHeld: boolean;
   /** notices decided before run(): the stale-lock replacement, the HEAD-drift warning; emitted after run:ready so every writer sees them */
@@ -1326,6 +1331,8 @@ class EngineImpl implements Engine {
     wsInfo: WorkspaceInfo;
     resume: ResumeLoad | null;
     gitState: GitState | null;
+    /** §A1: the background re-probe of a run that started from the caller's cached probe (null: the probe above is fresh) */
+    gitRefresh?: Promise<GitState | null> | null;
     runDir: string;
     lock: { held: boolean; warning: string | null };
     headDrift: string | null;
@@ -1385,9 +1392,9 @@ class EngineImpl implements Engine {
     this.claimEpochHigh = init.resume?.meta.claimEpochHigh ?? 0;
     this.resumeStop = null;
     this.gitState = init.gitState;
+    this.gitRefresh = init.gitRefresh ?? null;
     this.gitMeta = runGitMetaOf(init.gitState ?? notRepoState('git-missing', { probedAt: nowIso(), probeMs: 0 }));
-    const prefix = init.gitState?.prefix ?? '';
-    this.dirtyAtStart = new Set((init.gitState?.dirty.entries ?? []).map((e) => (prefix.length > 0 && e.path.startsWith(prefix) ? e.path.slice(prefix.length) : e.path)));
+    this.dirtyAtStart = new Set(dirtyPathsOf(init.gitState));
     this.runDir = init.runDir;
     this.lockHeld = init.lock.held;
     if (init.lock.warning !== null) this.startupNotices.push({ kind: 'lock', level: 'warn', text: init.lock.warning });
@@ -3815,7 +3822,12 @@ class EngineImpl implements Engine {
       setState: (state) => self.setAgentState(state, draft.step),
       emit: (e) => self.emit(e),
       // the step a turn belongs to is the step it is issued in (the engine's current draft), like the synthesizer's samples
-      generate: (req, hooks) => self.generate(self.draft ?? draft, req, hooks.turn, undefined, undefined, hooks),
+      // §A1: the fresh git probe is adopted before the turn's calls are resolved (it ran beside the model's latency)
+      generate: async (req, hooks) => {
+        const result = await self.generate(self.draft ?? draft, req, hooks.turn, undefined, undefined, hooks);
+        await self.adoptGitRefresh();
+        return result;
+      },
       ask: async (state, questions, signal) => (await self.askRecorded(self.draft ?? draft, 'loop', state, questions, undefined, signal, true)).outcome,
       routeToken: () => stepTokenFor(self.runId, draft.step),
       writeOutput: (text, part) => self.writeAgentOutput(draft.step, text, part),
@@ -3834,6 +3846,27 @@ class EngineImpl implements Engine {
       now: () => (self.opts.now ?? Date.now)(),
       wallRemainingMs: () => self.wallRemainingMs(),
     };
+  }
+
+  /**
+   * AGENT-LOOP-DESIGN §A1 latency: a run that started from the caller's cached git probe adopts the background re-probe once,
+   * after its first model turn and before any tool call is resolved (nothing has run yet): the dirty set that decides
+   * `git_discard`, `cleanAtStart` and the `run` pre-images is the workspace as it is now, never as it was at the last probe.
+   */
+  private async adoptGitRefresh(): Promise<void> {
+    const pending = this.gitRefresh;
+    if (pending === null) return;
+    this.gitRefresh = null;
+    const fresh = await pending;
+    // a repository that appeared or went away since the cached probe is left as the run started (the next run probes it)
+    if (fresh === null || !fresh.repo || this.gitState === null || !this.gitState.repo) return;
+    this.gitState = fresh;
+    this.dirtyAtStart.clear();
+    for (const p of dirtyPathsOf(fresh)) this.dirtyAtStart.add(p);
+    this.workspace.adoptGitState?.(fresh);
+    // run.json's start facts follow when the tree moved since the cached probe (HEAD or the dirty counts)
+    const meta = runGitMetaOf(fresh);
+    if (JSON.stringify([meta.head, meta.dirtyAtStart]) !== JSON.stringify([this.gitMeta.head, this.gitMeta.dirtyAtStart])) this.persist(this.store.updateMeta({ git: meta }), CHECKPOINT_FILES.meta);
   }
 
   /** §2.2: the driver's factory, by a dynamic import — so `src/agent/` is loaded only by an agent run without an injected driver. */
@@ -6975,10 +7008,19 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
   // TUI-DESIGN §12.1 (D7): the two unsandboxed spawns before the sandbox exists; a probe that rejects reads as `git-missing`
   // and is not handed to createWorkspace, which then probes for itself
   let git: GitState | null;
-  try {
-    git = await d.probeGitState(root);
-  } catch {
-    git = null;
+  // AGENT-LOOP-DESIGN §A1 latency: an agent run starts from the caller's cached probe (no spawn before the first request) and
+  // re-probes beside the first model turn; the engine adopts the fresh probe before any tool call is resolved
+  let gitRefresh: Promise<GitState | null> | null = null;
+  const cached = opts.mode === 'agent' && !opts.resume && opts.gitState !== undefined ? opts.gitState : null;
+  if (cached !== null) {
+    git = cached;
+    gitRefresh = d.probeGitState(root).catch(() => null);
+  } else {
+    try {
+      git = await d.probeGitState(root);
+    } catch {
+      git = null;
+    }
   }
   const gitForMeta = git ?? notRepoState('git-missing', { probedAt: nowIso(), probeMs: 0 });
   const sandbox = d.createSandbox({
@@ -7037,7 +7079,13 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     // TUI-DESIGN §8.5: run.lock after store.create
     lock = takeRunLock(runDir, runId);
   }
-  return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume, gitState: git, runDir, lock: lock ?? { held: false, warning: null }, headDrift, reopened, preflightProbe: d.preflightProbe });
+  return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume, gitState: git, gitRefresh, runDir, lock: lock ?? { held: false, warning: null }, headDrift, reopened, preflightProbe: d.preflightProbe });
+}
+
+/** The run-start dirty paths of a probe, workspace-relative (a workspace below its repository's top level drops the prefix). */
+function dirtyPathsOf(g: GitState | null): string[] {
+  const prefix = g?.prefix ?? '';
+  return (g?.dirty.entries ?? []).map((e) => (prefix.length > 0 && e.path.startsWith(prefix) ? e.path.slice(prefix.length) : e.path));
 }
 
 /**
