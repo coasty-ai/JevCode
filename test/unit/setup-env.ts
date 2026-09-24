@@ -57,6 +57,9 @@ export const UNIT_ENV_KEPT: readonly string[] = [
   'JEVCODE_UPDATE_GOLDEN', // the golden-refresh opt-in
   'JEVCODE_PTY_BIN', // the pty project's binary and build opt-outs (no setupFiles today; kept so adding them is safe)
   'JEVCODE_PTY_NO_BUILD',
+  // widens wall-clock budgets on slow CI runners (test/unit/helpers/perf-budget.ts); ci.yml and release.yml's gates set
+  // it to 3. It only loosens timing assertions, never a product behaviour, and a local run without it is unchanged.
+  'JEVCODE_PERF_BUDGET_SCALE',
 ];
 
 /** The keep rule, exported so the hygiene test can state it over any name rather than over today's environment. */
