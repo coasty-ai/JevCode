@@ -97,7 +97,7 @@ export const MAX_CONFIG_FILE_BYTES = 1024 * 1024;
 
 
 /**
- * Walk up from this module until this package's package.json is found (`@coasty-ai/jevcode`, or `jevcode` before the
+ * Walk up from this module until this package's package.json is found (`@coasty/jevcode`, or `jevcode` before the
  * scope; src/config/ in dev, dist/ when bundled).
  */
 export function detectPackageRoot(fromDir: string = dirname(fileURLToPath(import.meta.url))): string | null {

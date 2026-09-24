@@ -33,8 +33,8 @@
 ## Install
 
 ```sh
-npm install -g @coasty-ai/jevcode     # once the first release is on npm
-npx @coasty-ai/jevcode                # same, without installing
+npm install -g @coasty/jevcode     # once the first release is on npm
+npx @coasty/jevcode                # same, without installing
 ```
 
 <details>
@@ -42,7 +42,7 @@ npx @coasty-ai/jevcode                # same, without installing
 
 <br>
 
-The first release has not shipped, so `registry.npmjs.org/@coasty-ai%2fjevcode` is still a 404. Until it lands,
+The first release has not shipped, so `registry.npmjs.org/@coasty%2fjevcode` is still a 404. Until it lands,
 this is the line that runs:
 
 ```sh
@@ -58,12 +58,12 @@ Progress and the remaining steps are in [docs/RELEASE.md](docs/RELEASE.md).
 
 | channel | command |
 | --- | --- |
-| npm | `npm i -g @coasty-ai/jevcode` |
-| run without installing | `npx @coasty-ai/jevcode` · `bunx @coasty-ai/jevcode` · `pnpm dlx @coasty-ai/jevcode` |
+| npm | `npm i -g @coasty/jevcode` |
+| run without installing | `npx @coasty/jevcode` · `bunx @coasty/jevcode` · `pnpm dlx @coasty/jevcode` |
 | Homebrew | `brew install coasty-ai/jevcode/jevcode` |
 | Arch Linux (AUR) | `yay -S jevcode` |
 | Nix | `nix run github:coasty-ai/JevCode` |
-| mise | `mise use -g npm:@coasty-ai/jevcode` |
+| mise | `mise use -g npm:@coasty/jevcode` |
 
 npm, the one-shot runners and mise open with the first release. Homebrew and the AUR also need a
 one-time setup by the maintainers (the tap, the AUR key), so they can come later; the

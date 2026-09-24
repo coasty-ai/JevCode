@@ -6,9 +6,9 @@
 set -euo pipefail
 
 : "${VERSION:?}" "${DIST_TAG:?}" "${TARBALL:?}"
-PKG=@coasty-ai/jevcode
+PKG=@coasty/jevcode
 # the packument path: the scope's slash encoded, as npm requests it
-PKG_PATH=@coasty-ai%2fjevcode
+PKG_PATH=@coasty%2fjevcode
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 REGISTRY=https://registry.npmjs.org
 TMP="${RUNNER_TEMP:-$(mktemp -d)}"
@@ -88,7 +88,7 @@ fi
 
 trusted_publisher_help() {
   cat >&2 <<'EOF'
-::error::npm rejected the trusted publish. Check the trusted publisher on https://www.npmjs.com/package/@coasty-ai/jevcode/access :
+::error::npm rejected the trusted publish. Check the trusted publisher on https://www.npmjs.com/package/@coasty/jevcode/access :
   - Organization or user: coasty-ai, Repository: JevCode (case-sensitive)
   - Workflow filename: release.yml
   - Environment name: release
@@ -102,11 +102,11 @@ if [ "$STATE" = absent ]; then
   # 5. First publish: only with the one-time bootstrap token. npm expands ${NPM_BOOTSTRAP_TOKEN} itself.
   if [ -z "$BOOTSTRAP" ]; then
     cat >&2 <<'EOF'
-::error::@coasty-ai/jevcode is not on the npm registry yet and trusted publishing cannot create a package. Nothing was published. Either:
+::error::@coasty/jevcode is not on the npm registry yet and trusted publishing cannot create a package. Nothing was published. Either:
   A) add a 7-day granular token as secret NPM_BOOTSTRAP_TOKEN in environment "release" and re-run the failed jobs. The token's
-     owner must be able to publish in the npm organization coasty-ai, and the token needs Read and write on
-     "All packages" or on the scope @coasty-ai selected explicitly, or
-  B) download the release artifact, check it with `shasum -a 256 -c SHA256SUMS`, run `npm login` as a coasty-ai member
+     owner must be able to publish in the npm organization coasty, and the token needs Read and write on
+     "All packages" or on the scope @coasty selected explicitly, or
+  B) download the release artifact, check it with `shasum -a 256 -c SHA256SUMS`, run `npm login` as a member of the coasty npm org
      who can publish and `CI=true npm publish ./jevcode-<version>.tgz --access public --provenance=false`, then re-run
      the failed jobs.
 See docs/RELEASE.md, one-time setup, step 5.
@@ -124,7 +124,7 @@ EOF
   rm -f "$NPMRC"
   if [ "$rc" -ne 0 ]; then
     if grep -Eq 'E404|E403|ENEEDAUTH' "$LOG"; then
-      err "npm refused $PKG: the token's owner must be able to publish in the npm organization coasty-ai (https://www.npmjs.com/org/coasty-ai), and the token needs Read and write on All packages or on the scope @coasty-ai selected explicitly"
+      err "npm refused $PKG: the token's owner must be able to publish in the npm organization coasty (https://www.npmjs.com/org/coasty), and the token needs Read and write on All packages or on the scope @coasty selected explicitly"
     fi
     err "bootstrap publish failed (exit $rc); if npm asked for a one-time password (EOTP), the token needs 2FA bypass, or use path B"
     exit 1
@@ -132,7 +132,7 @@ EOF
   {
     echo "### Bootstrap publish done — do these 4 things now"
     echo
-    echo "1. Configure the trusted publisher: https://www.npmjs.com/package/@coasty-ai/jevcode/access → Trusted Publisher → GitHub Actions: coasty-ai / JevCode / release.yml / environment release."
+    echo "1. Configure the trusted publisher: https://www.npmjs.com/package/@coasty/jevcode/access → Trusted Publisher → GitHub Actions: coasty-ai / JevCode / release.yml / environment release."
     echo "2. Revoke the bootstrap token: https://www.npmjs.com/settings/<you>/tokens"
     echo "3. Delete the NPM_BOOTSTRAP_TOKEN secret from environment release."
     echo "4. On the package access page: Require two-factor authentication and disallow tokens."

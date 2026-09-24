@@ -101,7 +101,7 @@ describe('changelog.mjs notes', () => {
     expect(r.code).toBe(0);
     expect(r.out.startsWith('Round 5.\n\n### Changed\n\n- one\n- two\n\n---\n')).toBe(true);
     expect(r.out).not.toContain('older');
-    expect(r.out).toContain('npm i -g @coasty-ai/jevcode@0.6.0');
+    expect(r.out).toContain('npm i -g @coasty/jevcode@0.6.0');
     expect(r.out).toContain('brew install coasty-ai/jevcode/jevcode');
     expect(r.out).toContain('yay -S jevcode');
   });
@@ -109,7 +109,7 @@ describe('changelog.mjs notes', () => {
   it('a prerelease footer names npm only', () => {
     const r = cli('notes', '0.7.0-rc.1', '--file', file('## [0.7.0-rc.1] — 2026-10-02\n\n- rc\n'));
     expect(r.code).toBe(0);
-    expect(r.out).toContain('npm i -g @coasty-ai/jevcode@0.7.0-rc.1');
+    expect(r.out).toContain('npm i -g @coasty/jevcode@0.7.0-rc.1');
     expect(r.out).not.toContain('brew');
     expect(r.out).not.toContain('yay');
   });

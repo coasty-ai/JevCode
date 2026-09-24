@@ -13,7 +13,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 const SCRIPT = join(import.meta.dirname, '..', '..', '..', 'scripts', 'release', 'version.mjs');
 
-/** what the fake registry answers for GET /@coasty-ai%2fjevcode (the scoped packument, slash encoded); null = 404 */
+/** what the fake registry answers for GET /@coasty%2fjevcode (the scoped packument, slash encoded); null = 404 */
 let packument: unknown = null;
 /** the query string and the raw path of the last registry request */
 let lastQuery = '';
@@ -25,8 +25,8 @@ beforeAll(async () => {
   server = createServer((req, res) => {
     lastQuery = new URL(req.url ?? '/', 'http://x').search;
     lastPath = (req.url ?? '/').split('?')[0] ?? '';
-    // exactly the path npm itself requests; `/@coasty-ai/jevcode` or the unscoped `/jevcode` would 404 here
-    if (lastPath === '/@coasty-ai%2fjevcode' && packument !== null) {
+    // exactly the path npm itself requests; `/@coasty/jevcode` or the unscoped `/jevcode` would 404 here
+    if (lastPath === '/@coasty%2fjevcode' && packument !== null) {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(packument));
       return;
@@ -53,7 +53,7 @@ const git = (cwd: string, ...args: string[]): string =>
 function repo(version: string, changelog: string): string {
   const root = mkdtempSync(join(tmpdir(), 'release-version-'));
   roots.push(root);
-  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: '@coasty-ai/jevcode', version }, null, 2)}\n`);
+  writeFileSync(join(root, 'package.json'), `${JSON.stringify({ name: '@coasty/jevcode', version }, null, 2)}\n`);
   writeFileSync(join(root, 'CHANGELOG.md'), changelog);
   git(root, 'init', '-q');
   git(root, 'add', '.');
@@ -153,7 +153,7 @@ describe('version.mjs next: rejects bad input with one ::error:: line', () => {
     packument = { 'dist-tags': { latest: '0.6.1' }, versions: { '0.6.1': {} } };
     const r = await run(['next', '--bump', 'patch', '--version', '', '--preid', 'rc'], { RELEASE_ROOT: root });
     expect(r.code).toBe(1);
-    expect(r.err).toMatch(/@coasty-ai\/jevcode@0\.6\.1 is already on the npm registry/);
+    expect(r.err).toMatch(/@coasty\/jevcode@0\.6\.1 is already on the npm registry/);
   });
 });
 
@@ -193,7 +193,7 @@ describe('version.mjs check: the release.yml validate job', () => {
     // the uncached read: the CDN caches the plain packument URL, 404s included
     expect(lastQuery).toBe('?write=true');
     // the scoped package's packument, its slash encoded
-    expect(lastPath).toBe('/@coasty-ai%2fjevcode');
+    expect(lastPath).toBe('/@coasty%2fjevcode');
   });
 
   it('warns in the job summary when packaging_ref is not the tag', async () => {

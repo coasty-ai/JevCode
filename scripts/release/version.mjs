@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findSection, parseHeading } from './changelog.mjs';
 
-const PKG_NAME = '@coasty-ai/jevcode';
+const PKG_NAME = '@coasty/jevcode';
 /** the packument path: the scope's slash encoded, as npm requests it */
 const PKG_PATH = PKG_NAME.replace('/', '%2f');
 export const SEMVER_RE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
