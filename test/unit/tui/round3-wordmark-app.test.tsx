@@ -2,10 +2,12 @@
  * TUI-DESIGN-3 §3 / §5.2 A1–A6 / P7 / §8 S2 (`round3-wordmark-app.test.tsx`, S2's own App-level tests over the real Ink renderer on
  * a stub TTY, `debug: true` so every commit is a frame — the whole scrollback plus the dynamic region). RE-PINNED for the owner's
  * directive of 2026-09-23 ("keep jevcode branding on top only … chats appear after that"): the splash animates in the dynamic
- * region (rule → box → console) and the settled mark is then COMMITTED as the first `<Static>` block — above the rule, above every
+ * region (box → rule → console: the box on top, in the committed block's own rows) and the settled mark is then COMMITTED as the
+ * first `<Static>` block in those same rows — above the rule, above every
  * message — so the settled dynamic region is the rule and the console (6 rows). The hero at 24×80 (the mark + caption in the
  * scrollback, the prompt below); the height tiers are gone (21 and 20 rows both commit the mark; the palette and a draft never touch
- * it); the mark never returns to the dynamic region (a run, a panel, run:end); reduced motion commits the resting mark in frame 0;
+ * it); the mark never returns to the dynamic region (a run, a panel, run:end); reduced motion holds the resting mark from frame 0
+ * and commits it once the config has arrived;
  * the flat tier and a screen reader draw no mark; `ui.wordmark: off` keeps today's brand row and `static` / the SSH default commit
  * the mark; A5's run-start sweep is ≤ 6 extra frames with the row count unchanged (none under reduced motion); A6's run-end fade is
  * ≤ 3 frames; A4's streaming caret blinks at 1 Hz and is steady under reduced motion; P7: after Enter no frame reads `starting` or the
@@ -145,17 +147,22 @@ describe('the hero (TUI-DESIGN-3 §3.2 F-W1, §3.9 first frame)', () => {
     expect(small.frame()).not.toContain('◆ ');
     expect(small.frame()).not.toContain('Decisions, not strings');
   });
-  it('the commit moves the rule row ONCE and nothing else: the held splash frame (rule → box → console) and the first settled frame (mark → rule → console) hold the same rows, the rule moved from above the box to below it', async () => {
+  it('the commit moves NOTHING: the held splash frame (box → rule → console) and the first settled frame (committed mark → rule → console) are the same rows — no glyph row, no rule row, no console row moves', async () => {
     const m = mount(24, 80);
-    await waitFor(() => m.frames().some((d) => d.some((l) => l.endsWith(`◆ ${VERSION}`))), 1500);
-    const held = m.frames().findLast((d) => d.some((l) => l.endsWith(`◆ ${VERSION}`))) ?? [];
-    // the held frame is all dynamic: the rule, the box (the committed block's own height), the console
-    expect(held).toHaveLength(1 + scrollbackMarkRows(24) + 5);
+    // before the commit there is no scrollback, so a frame's whole rows are its dynamic region
+    const whole = (): string[][] => m.stdout.frames.map((f) => stripSgr(f).replace(/\n$/, '').split('\n').map((l) => l.trimEnd()));
+    await waitFor(() => whole().some((d) => d.some((l) => l.endsWith(`◆ ${VERSION}`))), 1500);
+    const held = whole().findLast((d) => d.some((l) => l.endsWith(`◆ ${VERSION}`))) ?? [];
+    const box = scrollbackMarkRows(24);
+    // the held frame: the box on top (the committed block's own height), the plain rule, the console
+    expect(held).toHaveLength(box + 1 + 5);
+    expect(held.slice(0, box)).toEqual(markBlock(80, 24));
+    expect(held[box]).toBe(PLAIN(80));
     await waitFor(() => (m.bridge.stateReader?.()?.splash ?? 'running') === 'done', 2000);
     await tick(80);
-    const box = scrollbackMarkRows(24);
-    const settled = [...above(m), ...m.dyn()];
-    expect(settled).toEqual([...held.slice(1, 1 + box), held[0]!, ...held.slice(1 + box)]);
+    // the first settled frame: the SAME rows — the box became the same rows of scrollback, the rule stayed on its row
+    expect(above(m)).toEqual(held.slice(0, box));
+    expect([...above(m), ...m.dyn().map((l) => l.trimEnd())]).toEqual(held);
     expect(m.dyn()).toHaveLength(6);
   });
 });
@@ -211,7 +218,8 @@ describe('the tiers (TUI-DESIGN-3 §3.1–3.2)', () => {
     expect(m.stdout.frames.length).toBeLessThanOrEqual(n + 1);
     expect(m.stdout.frames.filter((f) => stripSgr(f).includes('▓▒░'))).toEqual([]);
     expect(new Set(m.stdout.frames.filter((f) => stripSgr(f).includes('██'))).size).toBe(1);
-    // committed in frame 0: the scrollback's first block, the dynamic region the rule and the console
+    // frame 0 holds it in the splash box ON TOP of the region (the commit waits for the config, `wordmark-top-app`), so the
+    // rows from the rule down are the rule and the console, with no mark row among them
     expect(dynamicRegion(f0, 80)).toHaveLength(6);
     expect(hasMark(dynamicRegion(f0, 80), 80)).toBe(false);
     const narrow = mount(24, 60, { launch: STILL });

@@ -134,12 +134,13 @@ $5.00; jevcode config set mode <m> keeps a choice` once (it writes `seen.default
 shows it once more).
 
 The first frame is drawn from the command line alone — before any configuration file, `.env`, the runs
-directory or git is touched — and it is frame 0 of the startup splash: the header item, the rule, the `J` column of
-the wordmark with its sweep head (`██ ▓▒░`, five rows, at ≥ 16 rows and ≥ 64 columns), and the complete console —
+directory or git is touched — and it is frame 0 of the startup splash: the `J` column of the wordmark with its sweep
+head (`██ ▓▒░`, five rows, at ≥ 16 rows and ≥ 64 columns) in the splash box, the rule, and the complete console —
 the top edge with the mode badge and the workspace name, the composer row with its placeholder, the divider and the
-status compartment with the `step 0/–` sentinel: `jevcode session · <dir> | step 0/– starting`, `jevcode task: <task> |
-step 0/– starting`, `jevcode task: task from <file> | …` for `--task-file` (the file is read after the frame) or
-`jevcode task: resuming <id> | …`. The session meter (`sess $0.00/1.25 ok`) and the git zone arrive with the
+status compartment with the `step 0/–` sentinel. A session writes no header. `jevcode run`'s task header
+(`jevcode task: <task> | step 0/– starting`, `jevcode task: task from <file> | …` for `--task-file` — the file is read
+after the frame — or `jevcode task: resuming <id> | …`) is written directly below the wordmark once the mark is written
+to the scrollback, so the run's reveal plays like a session's. The session meter (`sess $0.00/1.25 ok`) and the git zone arrive with the
 configuration a few frames later (the design's `[config] decider: <provider> · <model> (pinned) · key <ENV> (<source>)`
 startup item is not emitted by the tree checked on 2026-09-21). The
 round-1 frame measured 82–87 ms on the child clock in the pty smoke and cold p95 110.4 ms in `jevcode perf` (gate
@@ -147,20 +148,26 @@ round-1 frame measured 82–87 ms on the child clock in the pty smoke and cold p
 
 **The wordmark.** The mark (`JEVCODE` in seven 5-row block letters, `JEV` in TypeSafe pink, `CODE` dim) is revealed
 left to right over 400 ms, shimmers once and is held from 550 ms on — with the caption `◆ 0.4.0` two cells after the
-last `E` (at ≥ 73 columns) and the tagline `Decisions, not strings` on its first row at ≥ 104 columns. It **stays**: the
-mark is the pane slot's idle tenant at ≥ 21 rows and ≥ 64 columns, shown while the session is idle and while Jev reads
-a message, hidden while a run is live or a panel, picker or review owns the slot, back under the strip after `run:end`
-(at once at ≥ 24 rows; at 21–23 rows on your first key after the end, so the epilogue stays on screen); `/panel off`,
-Esc on an empty draft and Alt+J bring it back. Its sweep — the splash's own 6-cell band — loops left to right at 4 fps
-(16 written frames per 4 s pass, 6 s of rest: one pass per 10 s while you are attentive, per 30 s after a minute without
-a key, asleep after ten minutes; never within 3 s of a key, and a reply calms it rather than waking it). Colour only:
-letter cells inside the band take the pale `sweep` tint; the caption and tagline never do. `ui.wordmark` (`jevcode config
-set ui.wordmark sweep|static|off`, `JEVCODE_WORDMARK`) is the escape hatch — `static` keeps the mark without the sweep
-(the default over SSH), `off` restores the round-2 brand row `─── ◆ jevcode 0.4.0 ───`. The reveal ticks through Ink's
-own animation timer at 50 ms (≤ 15 frames, never above the frame-rate gate), never clears the screen or writes to the
-scrollback, and a key **completes** it — the next frame shows the character and the whole resting mark — or
-on a run start or any overlay. `--no-animation` / `JEVCODE_REDUCED_MOTION`, `--screen-reader` and `--plain` have no
-splash (the brand row from the first frame); below 64 columns only the one-line brand row pulses.
+last `E` (at ≥ 73 columns) and the tagline `Decisions, not strings` on its first row at ≥ 104 columns. The reveal plays
+in a box at the top of the live region, above the rule. When the splash settles (after about 0.7 s, on your first key or
+overlay, or when your first message or a run's first row arrives) the settled mark is **written once as the first block
+of the scrollback**, in the same rows, so nothing on screen moves. It has one blank row above and below it, or two from
+34 rows up. Everything else — your messages, the replies, a run's rows — lands below it and the console stays at the
+bottom; a long session scrolls the mark off the top like any other scrollback. It is never redrawn, so an idle session
+writes no frames. A mark is drawn in the boxed tier (≥ 16 rows and ≥ 40 columns) at ≥ 64 columns and never under a
+screen reader. That is decided once, when the mark is written: a terminal that widens later does not get one in the
+middle of the conversation, and a written mark keeps the width it was drawn at (after the terminal gets narrower, the
+terminal re-wraps it like any scrollback row). `ui.wordmark` (`jevcode config set ui.wordmark sweep|static|off`,
+`JEVCODE_WORDMARK`) is the escape hatch: `off` writes no mark and keeps the round-2 brand row `─── ◆ jevcode 0.4.0 ───`;
+`sweep` (the default) and `static` (the default over SSH) look the same here and differ only in the fullscreen header's
+idle sweep (below). The reveal ticks
+through Ink's own animation timer at 50 ms (≤ 15 frames, never above the frame-rate gate), never clears the screen, and
+a key **completes** it — the next frame shows the character and the whole mark, written to the scrollback.
+`--no-animation` / `JEVCODE_REDUCED_MOTION` shows the resting mark from the first frame and writes it to the scrollback
+once the configuration has been read (so a configured `ui.wordmark: off` still wins); `--screen-reader` and `--plain`
+have no mark (the brand row from the first frame); below 64 columns only the one-line brand row pulses. The opt-in
+fullscreen renderer (`JEVCODE_RENDERER=fullscreen`) keeps the mark in its pinned header instead, where `sweep` loops a
+pale band across the letters while the session is idle and `static` holds it still.
 
 **Startup order inside a session:** keybindings file and prompt history (read synchronously in the tick after
 the first frame, before any key can be dispatched) → configuration → configuration warnings (`warning: …` items;
@@ -900,8 +907,8 @@ tests. The manual checklist at the end of the matrix is how a row gets verified.
 replaces bars and the spinner with text, numbers every prompt (`Enter selection (1-N):`), turns notifications and
 reduced motion on, and implies `--plain` on a pipe (the design's opening item `[screen reader mode: on via …]` is not
 emitted by this tree — `docs/STATUS.md`, "Interactive TUI" deviations).
-`--no-animation` / `--reduced-motion` (`JEVCODE_REDUCED_MOTION`) uses a static `◆` spinner with a 1 Hz clock, mounts the
-resting wordmark from frame 0 and runs no idle sweep.
+`--no-animation` / `--reduced-motion` (`JEVCODE_REDUCED_MOTION`) uses a static `◆` spinner with a 1 Hz clock and shows
+the resting wordmark from frame 0, without the reveal.
 `--ascii` swaps every glyph (`─` → `-`, `✓ ✗` → `+ x`, `⎇` → `br`, bars → `#`). `--theme
 dark|light|daltonized|ansi` (`daltonized` swaps red and blue for review/block; `ansi` never dims); `/theme`
 changes it for new items. `--fps 5..30` and `--render-mode standard|incremental` are fixed at launch (flag > env >

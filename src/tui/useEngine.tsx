@@ -421,6 +421,8 @@ export type UiAction =
   | { type: 'run:aborting' }
   | { type: 'run:pausing' }
   | { type: 'toast'; text: string; level: Toast['level']; ms: number }
+  /** a toast whose reason is over leaves before its time (the held Enter's `starting…` once the host attached and the Enter was sent) */
+  | { type: 'toast:dismiss'; text: string }
   | { type: 'ack-errors' }
   | { type: 'tab'; tab: PaneTab }
   /** TUI-DESIGN-5 §4.3: focus the pane so the agents tab's keys resolve (`Alt+A`); Esc and a vanished tab drop it. */
@@ -671,6 +673,11 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       return state.run === 'live' || state.run === 'starting' ? { ...state, run: 'pausing' } : state;
     case 'toast': {
       const toasts = toastReducer(state.toasts, { type: 'toast', text: action.text, level: action.level, ms: action.ms }, state.nowMs);
+      return toasts === state.toasts ? state : { ...state, toasts };
+    }
+    case 'toast:dismiss': {
+      let toasts = state.toasts;
+      for (const t of state.toasts) if (t.text === action.text) toasts = toastReducer(toasts, { type: 'dismiss', id: t.id }, state.nowMs);
       return toasts === state.toasts ? state : { ...state, toasts };
     }
     case 'ack-errors':

@@ -45,6 +45,8 @@ interface M {
   dyn: () => string[];
   frame: () => string;
   frames: () => string[][];
+  /** every frame's WHOLE rows (debug mode: the scrollback plus the dynamic region), trailing blanks trimmed */
+  fullFrames: () => string[][];
 }
 
 function mount(rows: number, columns: number, o: { fault?: string; tickMs?: number } = {}): M {
@@ -65,6 +67,7 @@ function mount(rows: number, columns: number, o: { fault?: string; tickMs?: numb
     dyn: () => dynamicRegion(stripSgr(stdout.lastFrame()), columns),
     frame: () => stripSgr(stdout.lastFrame()),
     frames: () => stdout.frames.map((f) => dynamicRegion(stripSgr(f), columns)),
+    fullFrames: () => stdout.frames.map((f) => stripSgr(f).replace(/\n$/, '').split('\n').map((l) => l.trimEnd())),
   };
 }
 
@@ -231,15 +234,16 @@ describe('P-H3: the wordmark renders inside a boundary and its spans are guarded
     // The injected builder fault is ONE-SHOT (`RENDER_FAULTS_FIRED`) and `mark` is a fresh object every render, so
     // the guard fires on the FIRST render in which the mark exists — the splash's own frame — and the mark is back
     // on the next one. The degradation is therefore asserted on the captured frame, not on `lastFrame()`.
-    const first = m.frames()[0] ?? [];
+    // frame 0 has no scrollback yet, so its whole rows are the dynamic region: the splash box on top, the rule, the console
+    const first = m.fullFrames()[0] ?? [];
     const edge = first.findIndex((l) => l.startsWith('╭─'));
     expect(edge, first.join('|')).toBeGreaterThan(0);
     // the splash box's rows `computeLayout` granted (the committed block's own height) are all there and all BLANK: the
     // rendered height still equals the allocated height (§1.3.2 edge 5 / P-H3), and not one `█` of the mark was drawn
-    const between = first.slice(1, edge);
-    expect(between, first.join('|')).toHaveLength(scrollbackMarkRows(24));
-    expect(between.every((l) => l.trim() === ''), JSON.stringify(between)).toBe(true);
-    expect(first[0]).toBe('─'.repeat(80));
+    const box = first.slice(0, edge - 1);
+    expect(box, first.join('|')).toHaveLength(scrollbackMarkRows(24));
+    expect(box.every((l) => l.trim() === ''), JSON.stringify(box)).toBe(true);
+    expect(first[edge - 1]).toBe('─'.repeat(80));
     expect(hasMark(first, 80)).toBe(false);
     // the guard reports AFTER commit: exactly one `[ui]` item, and the console and composer survive
     await waitFor(() => m.frame().includes('ui: wordmark'));
@@ -255,11 +259,12 @@ describe('P-H3: the wordmark renders inside a boundary and its spans are guarded
     const m = mount(24, 80, { fault: 'render:wordmark' });
     await settle(m);
     await waitFor(() => m.frame().includes('ui: wordmark pane failed to render'));
-    // the box disappears silently — BLANK rows of the same height, not a crashed frame
+    // the box disappears silently — BLANK rows of the same height on top of the region, not a crashed frame
     const box = scrollbackMarkRows(24);
-    const blank = m.frames().find((d) => d.length === 1 + box + 5 && !hasMark(d, 80));
+    const blank = m.fullFrames().find((d) => d.length === box + 1 + 5 && !hasMark(d, 80));
     expect(blank).toBeDefined();
-    expect(blank!.slice(1, 1 + box)).toEqual(Array.from({ length: box }, () => ''));
+    expect(blank!.slice(0, box)).toEqual(Array.from({ length: box }, () => ''));
+    expect(blank![box]).toBe('─'.repeat(80));
     // the rule row, the console and the composer are all still there, and the fault is one-shot
     startRun(m);
     readyRun(m);
@@ -356,6 +361,7 @@ describe('§1.3: the fullscreen renderer', () => {
       dyn: () => stripSgr(stdout.lastFrame()).replace(/\n$/, '').split('\n'),
       frame: () => stripSgr(stdout.lastFrame()),
       frames: () => stdout.frames.map((f) => dynamicRegion(stripSgr(f), columns)),
+      fullFrames: () => stdout.frames.map((f) => stripSgr(f).replace(/\n$/, '').split('\n').map((l) => l.trimEnd())),
     };
   };
 

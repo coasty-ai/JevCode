@@ -248,47 +248,75 @@ none=sum(1 for f in frames if b'\xe2\x96\x88\xe2\x96\x88' not in strip(f) and re
 print(head, mark, none, len(frames))
 PY
 }
-# the dynamic-region row count of the frame that first matches <re> (rule row → last row), or -1; `last` as a third
-# argument measures the LAST frame that matches instead (the idle frame after the splash)
+# The dynamic region of synchronized frame <i> by Ink's own accounting: log-update opens the NEXT write with one erase per
+# row of this one's region (+1 for its trailing newline), so the region is this frame's last (erase − 1) rows — during the
+# splash that includes the splash box ABOVE the rule row (the owner's directive of 2026-09-23: the box sits on top of the
+# region and turns into the committed block in place), which a rule-row parse cannot see. The rule parse (last rule row →
+# last row) is the fallback when no later frame tells (the last frame; a clear-terminal frame next). Shared by
+# `wm_rows_at` and `wm_committed` below as the python source in $REGION_PY.
+REGION_PY='
+def _strip(f): return re.sub(rb"\x1b\[[0-9;?]*[ -/]*[@-~]", b"", f)
+def _laid(f):
+    rows=[r.rstrip(b"\r") for r in _strip(f).split(b"\r\n")]
+    nl=len(rows)>1 and rows[-1].strip()==b""
+    if nl: rows.pop()
+    return rows, nl
+def split_region(raw, i):
+    """(above, region) of frame i: the rows it committed to the scrollback and its dynamic rows; None without a rule row"""
+    rows, nl = _laid(raw[i])
+    rule=max((k for k,l in enumerate(rows) if re.match(rb"^(?:\xe2\x94\x80){3}|^-{3}", l)), default=None)
+    if rule is None: return None
+    n=None
+    for j in range(i+1, len(raw)):
+        if b"\x1b[2J" in raw[j]: break
+        head=re.match(rb"(?:\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f])*", raw[j]).group(0)
+        e=head.count(b"\x1b[2K")
+        if e>0: n=e-(1 if nl else 0); break
+        if _strip(raw[j]).strip()!=b"": break
+    cut=rule if n is None else max(0, len(rows)-n)
+    return rows[:cut], rows[cut:]
+'
+# the dynamic-region row count (`split_region`: the splash box included while it is up) of the frame that first matches <re>,
+# or -1; `last` as a third argument measures the LAST frame that matches instead (the idle frame after the commit)
 # the owner's directive of 2026-09-23: the settled mark is committed to the scrollback, so the idle dynamic region is the rule
-# and the console — `rule 1 + console 5` = 6 rows at every height (the splash frames before the commit are taller)
+# and the console — `rule 1 + console 5` = 6 rows at every height (the splash frames before the commit are taller: the box)
 idle_rows_for() { echo 6; }
 wm_rows_at() {
-  python3 - "$1" "$2" "${3:-first}" <<'PY'
+  python3 - "$1" "$2" "${3:-first}" "$REGION_PY" <<'PY'
 import re,sys
+exec(sys.argv[4])
 b=open(sys.argv[1],'rb').read()
-frames=b.split(b'\x1b[?2026h')[1:]
-strip=lambda f: re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f)
+raw=b.split(b'\x1b[?2026h')[1:]
 pat=re.compile(sys.argv[2].encode())
-if sys.argv[3]=='last': frames=frames[::-1]
-for f in frames:
-    t=strip(f)
-    if pat.search(t):
-        rows=t.split(b'\r\n')
-        while rows and rows[-1].strip()==b'': rows.pop()
-        idx=next((i for i,l in enumerate(rows) if re.match(rb'^(?:\xe2\x94\x80){3}|^-{3}', l)), None)
-        print(-1 if idx is None else len(rows)-idx); sys.exit()
+order=range(len(raw)-1,-1,-1) if sys.argv[3]=='last' else range(len(raw))
+for i in order:
+    if pat.search(_strip(raw[i])):
+        s=split_region(raw, i)
+        if s is None: continue
+        region=list(s[1])
+        while region and region[-1].strip()==b'': region.pop()
+        print(len(region)); sys.exit()
 print(-1)
 PY
 }
 # THE OWNER'S DIRECTIVE (2026-09-23): the classic renderer COMMITS the settled wordmark as the first `<Static>` block. Over the
 # synchronized-output frames (a clear-terminal frame repeats Ink's whole static output, so it is skipped for the count):
-# "<blocks> <redrawn> <commit_frame> <between>" — the runs of `██` rows written above a rule row (1: committed exactly once),
-# the frames after the commit that draw a `██` row in their dynamic region (0: never redrawn), the frame that committed it
-# (-1: none), and the frames strictly between the commit and the first later frame matching <echo_re> (-1 without one)
+# "<blocks> <redrawn> <commit_frame> <between>" — the runs of `██` rows a frame wrote ABOVE its dynamic region (`split_region`,
+# so the splash box, which is the top of the region, never counts; 1: committed exactly once), the frames after the commit
+# that draw a `██` row in their dynamic region (0: never redrawn), the frame that committed it (-1: none), and the frames
+# strictly between the commit and the first later frame matching <echo_re> (-1 without one)
 wm_committed() {
-  python3 - "$1" "${2:-}" <<'PY'
+  python3 - "$1" "${2:-}" "$REGION_PY" <<'PY'
 import re,sys
+exec(sys.argv[3])
 b=open(sys.argv[1],'rb').read()
 raw=b.split(b'\x1b[?2026h')[1:]
-strip=lambda f: re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f)
 wm=lambda l: re.match(rb'^ {4,}\xe2\x96\x88\xe2\x96\x88', l) is not None  # a wordmark glyph row (a pane's probability bar never starts a row with 4+ blanks)
 blocks=0; redrawn=0; commit=-1
 for i,f in enumerate(raw):
-    rows=strip(f).split(b'\r\n')
-    rule=max((k for k,l in enumerate(rows) if re.match(rb'^(?:\xe2\x94\x80){3}|^-{3}', l)), default=None)
-    if rule is None: continue
-    above, dyn = rows[:rule], rows[rule:]
+    s=split_region(raw, i)
+    if s is None: continue
+    above, dyn = s
     if b'\x1b[2J' not in f:
         runs=sum(1 for k,l in enumerate(above) if wm(l) and not (k>0 and wm(above[k-1])))
         if runs>0 and commit<0: commit=i
@@ -297,7 +325,7 @@ for i,f in enumerate(raw):
 between=-1
 if sys.argv[2] and commit>=0:
     pat=re.compile(sys.argv[2].encode())
-    e=next((i for i in range(commit+1,len(raw)) if pat.search(strip(raw[i]))), None)
+    e=next((i for i in range(commit+1,len(raw)) if pat.search(_strip(raw[i]))), None)
     between=-1 if e is None else e-commit-1
 print(blocks, redrawn, commit, between)
 PY
@@ -607,10 +635,12 @@ run() {
       h=$(wm_handoff "$cap" head-after-echo); [ "$h" = "ok" ] && checks="$checks no-head-after-echo" || { ok=0; checks="$checks $h"; }
       idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'Say hi' last); [ "$rows" = "$idlewant" ] && checks="$checks idle-rows=$rows" || { ok=0; checks="$checks IDLE-ROWS=$rows(want $idlewant)"; }
       ff=$(expect_t "$tim" 'step 0/'); checks="$checks first_frame_t=${ff}ms";;
-    # TUI-DESIGN-3 §3.2 twins: the static resting mark committed in frame 0, never the head, 6 rows
+    # TUI-DESIGN-3 §3.2 twins: the static resting mark in the splash box from frame 0 (the box on top of the region: 7 rows + the rule and the
+    # console), committed once the config has arrived — the first frame after `setUi`, never frame 0 — never the head, 6 rows at rest
     wordmark-reduced) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1"; [ "$1" = "0" ] || ok=0
-      set -- $(wm_committed "$cap"); checks="$checks committed_blocks=$1 redrawn=$2 commit_frame=$3"; [ "$1" = "1" ] && [ "$2" = "0" ] && [ "$3" = "0" ] || ok=0
-      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'step 0/'); [ "$rows" = "$idlewant" ] && checks="$checks rows=$rows" || { ok=0; checks="$checks ROWS=$rows(want $idlewant)"; };;
+      set -- $(wm_committed "$cap"); checks="$checks committed_blocks=$1 redrawn=$2 commit_frame=$3"; [ "$1" = "1" ] && [ "$2" = "0" ] && [ "$3" -ge 1 ] || ok=0
+      first=$(wm_rows_at "$cap" 'step 0/'); [ "$first" = "13" ] && checks="$checks first-rows=13" || { ok=0; checks="$checks FIRST-ROWS=$first(want 13)"; }
+      idlewant=$(idle_rows_for "$rows"); rows=$(wm_rows_at "$cap" 'Say hi' last); [ "$rows" = "$idlewant" ] && checks="$checks rows=$rows" || { ok=0; checks="$checks ROWS=$rows(want $idlewant)"; };;
     # TUI-DESIGN-3 §3.4 / §3.5: no key — ≤ 15 reveal frames, the caption, the commit, then 0 frames in the 5 s before the marker key
     splash-settle) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1"; [ "$1" -ge 1 ] && [ "$1" -le 15 ] || ok=0
       set -- $(wm_committed "$cap" '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h'); checks="$checks committed_blocks=$1 redrawn=$2 frames_after_commit_before_key=$4"; [ "$1" = "1" ] && [ "$2" = "0" ] && [ "$4" = "0" ] || ok=0

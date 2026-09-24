@@ -4,10 +4,12 @@
  * ascii design". The classic renderer commits the settled wordmark as the FIRST `<Static>` block of the session, so on
  * the captured screen the mark's rows are ABOVE the `[you]` bubble, the reply is below that, and the console is at the
  * bottom — at 30×100 and 24×80. The mark is committed exactly once; no frame after the commit draws it in the dynamic
- * region; zero clears.
+ * region; zero clears. And NOTHING moves at the commit: the splash box is the top of the dynamic region, in exactly the
+ * rows the committed block takes, so on the emulated screen the glyph rows and the rule row keep their rows from the
+ * held splash frame through the commit (24×80, 30×100, 40×120).
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { CHAT_OPEN, EXIT_IDLE, afterFirstFrame, cleanupScratch, committedMark, countClears, drive, echoStep, finalScreen, frames, hasExpect, isWordmarkRow, labelStep } from './helpers.js';
+import { CHAT_OPEN, EXIT_IDLE, FIRST_FRAME_STEP, IDLE_STEP, RAW_MODE_STEP, afterFirstFrame, cleanupScratch, committedMark, countClears, drive, echoStep, finalScreen, frames, hasExpect, isWordmarkRow, labelStep, PLACEHOLDER_TASK, syncScreens } from './helpers.js';
 
 afterEach(cleanupScratch);
 
@@ -45,9 +47,43 @@ describe.skipIf(!hasExpect)('pty: the wordmark heads the scrollback, the chat is
       const fs = frames(r.text);
       const committedAt = fs.findIndex((u) => u.staticRows.some((l) => isWordmarkRow(l)));
       expect(committedAt).toBeGreaterThanOrEqual(0);
-      for (const u of fs.slice(committedAt)) expect(u.lines.slice(u.ruleIndex).some((l) => isWordmarkRow(l))).toBe(false);
+      // (`region`: Ink's own accounting, so a splash box left above the rule would count)
+      for (const u of fs.slice(committedAt)) expect((u.region ?? []).some((l) => isWordmarkRow(l))).toBe(false);
       expect(countClears(afterFirstFrame(r.text))).toBe(0);
       console.log(`wordmark-top ${rows}x${cols}: screen rows mark ${sMark} · [you] ${sYou} · [jevcode] ${sReply} · console ${sEdge}\n${screen.join('\n')}`);
+    });
+  }
+
+  for (const [rows, cols] of [
+    [24, 80],
+    [30, 100],
+    [40, 120],
+  ] as const) {
+    it(`${rows}x${cols}: NOTHING moves at the commit — on the emulated screen the glyph rows and the rule row keep their rows from frame 0 through the commit to the first key, zero clears`, async () => {
+      const r = await drive({ name: `wordmark-still-${rows}x${cols}`, args: ['chat', '--mock'], rows, cols, steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'expect ◆(?:\\x1b\\[[0-9;]*m)* (?:\\x1b\\[[0-9;]*m)*\\d+\\.\\d+\\.\\d+', IDLE_STEP, 'sleep 0.3', 'send h', echoStep('h'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE] });
+      expect(r.timeouts).toBe(0);
+      expect(r.code).toBe(0);
+      const screens = syncScreens(r.text, rows, cols);
+      const echo = screens.findIndex((s) => s.some((l) => /[›>] h/.test(l)));
+      expect(echo).toBeGreaterThan(1);
+      const ruleAt = (s: readonly string[]): number => s.findIndex((l) => /^─{10}/.test(l));
+      const glyphsAt = (s: readonly string[]): number[] => s.flatMap((l, i) => (isWordmarkRow(l) ? [i] : []));
+      // the rule row never moves, from frame 0 to the key: not at the settle, not at the commit
+      const rule0 = ruleAt(screens[0]!);
+      expect(rule0).toBeGreaterThan(0);
+      for (const [i, s] of screens.slice(0, echo + 1).entries()) expect(ruleAt(s), `frame ${i}:\n${s.join('\n')}`).toBe(rule0);
+      // the five glyph rows sit above it on the same rows in every frame that shows the whole mark (the held splash frame,
+      // the commit, the settled frames), and the console's top edge directly below the rule
+      const whole = screens.slice(0, echo + 1).filter((s) => glyphsAt(s).length === 5);
+      expect(whole.length).toBeGreaterThan(1);
+      for (const s of whole) expect(glyphsAt(s)).toEqual(glyphsAt(whole[0]!));
+      expect(glyphsAt(whole[0]!).at(-1)!).toBeLessThan(rule0);
+      for (const s of screens.slice(0, echo + 1)) expect(s[rule0 + 1]!.startsWith('╭─')).toBe(true);
+      // the commit happened in this window (the mark is scrollback by the key) and wrote no clear
+      const mark = committedMark(r.text);
+      expect(mark.blocks).toBe(1);
+      expect(countClears(afterFirstFrame(r.text))).toBe(0);
+      console.log(`wordmark-still ${rows}x${cols}: rule row ${rule0}, glyph rows ${glyphsAt(whole[0]!).join(',')} in ${whole.length} whole-mark frame(s) of ${echo + 1}`);
     });
   }
 });

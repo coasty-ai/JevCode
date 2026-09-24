@@ -13,7 +13,7 @@ import type { LaunchSettings } from '../../../src/core/types.js';
 import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
 import type { Action } from '../../../src/core/types.js';
-import { mkConfirmRequest, mkDecision, mkStatus, tick } from '../../fixtures/tui/fixtures.js';
+import { mkConfirmRequest, mkDecision, mkStatus, mkUiConfig, tick } from '../../fixtures/tui/fixtures.js';
 import { StubStdin, StubStdout, dynamicRegion, stripSgr } from './stub-stdout.js';
 
 const unmounts: Array<() => void> = [];
@@ -36,6 +36,8 @@ async function renderBusy(rows: number, columns: number, action?: Action, opts: 
   const bus = createEventBus();
   const confirmer = createTuiConfirmer();
   const bridge: Bridge = createBridge(null, null);
+  // a session past startup: the config has arrived (`setUi`) before any run, so the mark is decided in frame 0
+  bridge.ui = mkUiConfig(STILL);
   const instance = render(<App task="budget task" resumeId={null} source={bus} confirmer={confirmer} onAbort={() => undefined} mode="one-shot" tickMs={0} bridge={bridge} launch={STILL} />, {
     stdout: stdout as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream,
@@ -67,29 +69,23 @@ async function renderBusy(rows: number, columns: number, action?: Action, opts: 
 
 const bigWrite: Action = { kind: 'write', path: 'big.txt', content: Array.from({ length: 40 }, (_, i) => `content line ${i}`).join('\n') };
 
-/**
- * The owner's directive of 2026-09-23, RESTATED here and never read back from the App: the classic renderer COMMITS the
- * settled mark as the first scrollback block, so once the splash is over the dynamic region holds NO mark rows at any
- * geometry, whatever the run, a panel, the picker or a pending review is doing — the mark's want is 0 (the arguments
- * are kept so every call site still names the geometry it measures).
- */
-const markFor = (rows: number, columns: number, claimed: boolean): number => {
-  void rows;
-  void columns;
-  void claimed;
-  return 0;
-};
-
 /*
  * AGENT-LOOP-DESIGN §A3 (slice S5a): the 3D indicator's 12-row slot is GONE — the waiting state is the mini braille
  * indicator in the status row's glyph cell — so a live frame is wave 2's shape again: rule · live · mark · console,
  * with no rows that come and go while something is in flight.
  */
 
+/**
+ * The owner's directive of 2026-09-23, RESTATED here and never read back from the App: the classic renderer COMMITS the
+ * settled mark as the first scrollback block, so once the mark is decided the dynamic region holds NO mark rows at any
+ * geometry, whatever the run, a panel, the picker or a pending review is doing.
+ */
+const MARK_WANT = 0;
+
 /** TUI-DESIGN-2 §4.2: the pending-review input — the boxed tier wants the 9-row card, the flat tier the 8-row header; the panel is collapsed unless opened. */
 const reviewInput = (rows: number, columns: number, panel: 'collapsed' | 'open' | 'full' = 'collapsed'): LayoutInput => {
   const chrome = chromeRows(rows, columns, false);
-  return { rows, columns, overlay: 'review', overlayWant: chrome === 3 ? CAP.reviewCard : CAP.reviewHeader, previewWant: 40, expanded: false, composerWant: 1, queueWant: 0, liveWant: 0, bannerWant: 0, paneWant: panel === 'open' ? CAP.panel : panel === 'full' ? CAP.pane : 0, markWant: markFor(rows, columns, true), chrome, gate: 0 };
+  return { rows, columns, overlay: 'review', overlayWant: chrome === 3 ? CAP.reviewCard : CAP.reviewHeader, previewWant: 40, expanded: false, composerWant: 1, queueWant: 0, liveWant: 0, bannerWant: 0, paneWant: panel === 'open' ? CAP.panel : panel === 'full' ? CAP.pane : 0, markWant: MARK_WANT, chrome, gate: 0 };
 };
 
 describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
@@ -143,7 +139,7 @@ describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
     const { frame } = await renderBusy(24, 80, undefined, { review: false });
     const dyn = dynamicRegion(frame, 80);
     expect(dyn.length).toBeLessThanOrEqual(22);
-    expect(dyn.length).toBe(computeLayout({ ...reviewInput(24, 80), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, markWant: markFor(24, 80, false) }).total);
+    expect(dyn.length).toBe(computeLayout({ ...reviewInput(24, 80), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, markWant: MARK_WANT }).total);
     expect(dyn.join('\n')).toContain('streamed line 199');
     expect(dyn.join('\n')).toContain('streamed line 198');
     expect(dyn.join('\n')).toContain('Type to steer the next step…');
@@ -215,10 +211,9 @@ describe('height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × c
     // RE-PINNED (the owner's directive of 2026-09-23): the mark is COMMITTED to the scrollback, so a live frame's dynamic
     // region carries none of its rows at any height. The condition is RESTATED here, never read back from the App:
     // deriving the expectation from the code under test would move the expected total in the same direction as a bug in it.
-    const markWant = markFor(rows, columns, false);
-    expect(dyn.length).toBe(computeLayout({ ...reviewInput(rows, columns), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, markWant }).total);
-    // and the frame itself agrees with that condition — the mark is either drawn or it is not
-    expect(dyn.some((l) => l.includes('██')), `${rows}x${columns}`).toBe(markWant > 0);
+    expect(dyn.length).toBe(computeLayout({ ...reviewInput(rows, columns), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, markWant: MARK_WANT }).total);
+    // and the frame itself agrees with that condition — no mark row below the rule
+    expect(dyn.some((l) => /^ {4,}██/.test(l)), `${rows}x${columns}`).toBe(false);
     for (const line of dyn) expect(stringWidth(line)).toBeLessThanOrEqual(columns);
     expect(frame).toContain('step 1/40');
   });

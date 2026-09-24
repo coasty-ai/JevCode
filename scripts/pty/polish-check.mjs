@@ -155,7 +155,34 @@ export function splitFrames(capture) {
   const sep = capture.includes(BSU) ? BSU : CURSOR_HIDE;
   const parts = capture.split(sep);
   const prologue = parts.shift() ?? '';
-  return { prologue, frames: parts.map((raw, index) => frameOf(raw, index)) };
+  const frames = parts.map((raw, index) => frameOf(raw, index));
+  // THE OWNER'S DIRECTIVE (2026-09-23): the classic splash box is the TOP of the dynamic region, ABOVE the rule row (it
+  // turns into the committed block in place), so a splash frame's rows above the rule are not all scrollback. Ink's own
+  // accounting tells: log-update opens the next write with one erase per row of this frame's region (+1 for the trailing
+  // newline). `regionAbove` is the region's rows above the rule — the splash box, or a streaming reply's tail — and
+  // `scrollback` excludes them.
+  frames.forEach((f, i) => {
+    if (!f.hasFrame) return;
+    for (let j = i + 1; j < frames.length; j++) {
+      const next = frames[j];
+      if (next.clears > 0) break;
+      const erased = eraseCount(next.raw);
+      if (erased > 0) {
+        const region = erased - (stripAnsi(f.raw).replace(/\r/g, '').endsWith('\n') ? 1 : 0);
+        f.regionAbove = Math.max(0, Math.min(f.ruleIndex, region - f.dynamic.length));
+        f.scrollback = f.rows.slice(0, f.ruleIndex - f.regionAbove);
+        break;
+      }
+      if (next.rows.length > 0) break;
+    }
+  });
+  return { prologue, frames };
+}
+
+/** the erase run at a write's head: `ESC[2K` count before its first printable character (the previous region's rows + 1) */
+function eraseCount(raw) {
+  const head = /^(?:\x1b\[[0-9;?]*[ -/]*[@-~]|[\x00-\x1f\x7f])*/.exec(raw)?.[0] ?? '';
+  return head.split('\x1b[2K').length - 1;
 }
 
 function isRule(row, ascii) {
@@ -184,6 +211,8 @@ export function frameOf(raw, index) {
     ruleIndex,
     scrollback: ruleIndex >= 0 ? rows.slice(0, ruleIndex) : [],
     dynamic: ruleIndex >= 0 ? rows.slice(ruleIndex) : [],
+    /** the dynamic region's rows above the rule by Ink's erase count (the splash box, a reply's tail; set by `splitFrames`) */
+    regionAbove: 0,
     clears: (raw.match(/\x1b\[[0-9;]*[23]J|\x1bc|\x1b\[\?1049[hl]/g) ?? []).length,
     hasFrame: ruleIndex >= 0,
   };
@@ -374,7 +403,7 @@ export function checkPolish(capture, opts = {}) {
   if (settledIdx >= 0) {
     const firstRow = scrollback.findIndex((r) => r.trim() !== '');
     const blocks = scrollback.filter((r, i) => isWordmarkRow(r, ascii) && !(i > 0 && isWordmarkRow(scrollback[i - 1], ascii))).length;
-    const redrawn = frames.slice(settledIdx).filter((f) => markRowsOf(f.dynamic).length > 0);
+    const redrawn = frames.slice(settledIdx).filter((f) => markRowsOf(f.dynamic).length > 0 || markRowsOf(f.rows.slice(f.ruleIndex - f.regionAbove, f.ruleIndex)).length > 0);
     const problems = [];
     if (firstRow < 0 || !isWordmarkRow(scrollback[firstRow], ascii)) problems.push(`the scrollback opens with ${JSON.stringify((scrollback[firstRow] ?? '').slice(0, 40))}, not the mark`);
     if (blocks !== 1) problems.push(`${blocks} wordmark blocks in the scrollback (want 1)`);

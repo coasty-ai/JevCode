@@ -13,7 +13,8 @@ import { createTuiRenderer } from '../../../src/tui/index.js';
 import { formatTranscriptItem, itemsFromEvent, plainFirstLine } from '../../../src/tui/plain.js';
 import { bubbleLines, bubbleText, clipMarkerText } from '../../../src/chat/bubbles.js';
 import { conversationText } from '../../../src/chat/store.js';
-import { loadRunEvents } from '../../fixtures/tui/fixtures.js';
+import { loadRunEvents, mkUiConfig } from '../../fixtures/tui/fixtures.js';
+import { resolveLaunchSettings } from '../../../src/config/launch.js';
 import { CTRL_C, fakeHost, mountApp, stripSgr } from './app-harness.js';
 import { fenceRow, itemRenderRows } from '../../../src/tui/Transcript.js';
 import { COLOR_ROLES } from '../../../src/tui/theme.js';
@@ -42,10 +43,15 @@ describe('§3.7 W0 carve-out: `run:ready` is no longer an item in any sink', () 
   });
 
   it('a piped (non-TTY) renderer writes the run frame and no `[run] ready r1 step 0/40` (was app.test.tsx:602)', async () => {
-    const out = { frames: [] as string[], write: (s: string): boolean => (out.frames.push(s), true), columns: 100, rows: 24, isTTY: false } as unknown as NodeJS.WriteStream & { frames: string[] };
+    // `on` / `off`: Ink's `useWindowSize` subscribes to `resize` after the first commit, and the task header now lands after
+    // frame 0 (at the wordmark's commit), so the App has to outlive its first effects
+    const out = { frames: [] as string[], write: (s: string): boolean => (out.frames.push(s), true), on: () => out, off: () => out, columns: 100, rows: 24, isTTY: false } as unknown as NodeJS.WriteStream & { frames: string[] };
     const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
     const r = createTuiRenderer({ task: 'piped task', resumeId: null, onAbort: () => undefined, stdout: out, stdin, confirmTimeoutMs: 5 });
     await r.firstFrame();
+    // the session's startup: the config, then the splash settles — the mark's commit, and the header below it
+    r.setUi(mkUiConfig(resolveLaunchSettings({}, {})));
+    r.dispatch({ type: 'splash:done' });
     r.dispatch({ type: 'transcript', view: 'full' });
     await tick(20);
     await r.unmount();

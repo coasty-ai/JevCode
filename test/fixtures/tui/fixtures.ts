@@ -17,9 +17,20 @@ import type {
   SpendSnapshot,
   StageName,
   TokenUsage,
+  UiConfig,
+  LaunchSettings,
 } from '../../../src/core/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * The resolved `ui` a real session hands the App through `setUi` right after the first frame (session.ts `applyConfig`):
+ * the launch settings plus the file-level defaults. A test that models a session PAST startup sets it on the bridge — the
+ * classic renderer's reduced-motion mount decides its wordmark commit only once the config has arrived.
+ */
+export function mkUiConfig(launch: LaunchSettings, over: Partial<UiConfig> = {}): UiConfig {
+  return { ...launch, theme: 'dark', title: false, reducedMotion: launch.reducedMotion, notify: false, osc52: false, history: true, noInput: false, trustWorkspace: false, budgetWarnings: true, allowSecretMention: false, exitCode: 'zero', logLevel: 'info', logFile: null, keybindingsFile: null, ...over };
+}
 
 export function mkUsage(input = 0, output = 0, cost = 0, calls = 0): TokenUsage {
   return { inputTokens: input, outputTokens: output, costUsd: cost, calls };

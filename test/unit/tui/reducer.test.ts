@@ -338,6 +338,19 @@ describe('uiReducer: the §15 item 20 transition table', () => {
     expect(s.toasts).toHaveLength(0);
   });
 
+  it('toast:dismiss drops the toasts with that text before their time and leaves the rest; an absent text is a no-op (same state)', () => {
+    let s = initialUiState('t', null, { nowMs: T0 });
+    s = uiReducer(s, { type: 'toast', text: 'starting…', level: 'info', ms: 2000 });
+    s = uiReducer(s, { type: 'toast', text: 'copied', level: 'ok', ms: 2000 });
+    expect(s.toasts.map((t) => t.text)).toEqual(['starting…', 'copied']);
+    const same = uiReducer(s, { type: 'toast:dismiss', text: 'not queued' });
+    expect(same).toBe(s);
+    s = uiReducer(s, { type: 'toast:dismiss', text: 'starting…' });
+    expect(s.toasts.map((t) => t.text)).toEqual(['copied']);
+    // the survivor moved up to the front: it is visible now, with its full duration
+    expect(s.toasts[0]!.untilMs).toBe(T0 + 2000);
+  });
+
   it('run:starting / run:aborting / run:pausing set the local phases (guarded)', () => {
     const idle = initialUiState('t', null);
     expect(uiReducer(idle, { type: 'run:starting' }).run).toBe('starting');

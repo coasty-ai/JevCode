@@ -7,27 +7,37 @@
  * message lands BELOW it, with the console at the bottom. Pinned here:
  *
  *  - the order after the settle and two messages: wordmark → `[you]` → `[jevcode]` → rule → composer;
- *  - the rule row moves ONCE, at the commit: before it the dynamic region is rule → splash box → console, after it the
- *    rule sits between the mark and the console — and the console's own rows do not move (the box and the committed
- *    block are the same height);
+ *  - NOTHING moves at the commit: the splash box is the top of the dynamic region (box → rule → console) in exactly the
+ *    rows the committed block takes, so the settled frame (mark → rule → console) is the same rows — no glyph row, no
+ *    rule row and no console row moves;
  *  - a submit during the splash commits the mark FIRST, and nothing lands between it and the `[you]` bubble;
- *  - a replay (or any item) before the settle goes BELOW the mark, and the one-shot header does too;
+ *  - a replay (or any item) before the settle goes BELOW the mark; `jevcode run`'s task header waits for the commit
+ *    (its reveal plays in the dynamic region like a session's) and lands directly below the mark;
+ *  - the config decides: a mount that settles in frame 0 (reduced motion) or a one-shot mount commits only after
+ *    `setUi`, so `ui.wordmark: off` and `ui.noColor` that arrive after the first frame are honoured;
  *  - the mark is committed exactly once: `/clear` (not a command in this build — nothing clears the classic transcript),
  *    `/new`, Ctrl+L and more messages never write a second one;
  *  - the width is read at the commit only: a session that starts at 50 columns and widens never drops a mark mid-chat;
  *  - the WHETHER rules: a screen reader, the flat tier and `ui.wordmark: off` commit none; `--ascii` commits the `#`
- *    twin; a 16-row terminal commits one (only the width tier and the boxed floor apply in the scrollback);
+ *    twin; a 16-row terminal commits one (the TUI owner's rule for a committed mark: only the width tier and the boxed
+ *    floor apply — the 21-row floor existed because the pinned mark held dynamic rows);
  *  - zero repaint at rest: after the commit no frame is written while the session idles (the idle sweep is off).
  */
+// colour is forced before chalk is first imported (vitest runs each file in its own worker), so the `ui.noColor` case
+// below can see the SGR it removes; every other assertion here reads SGR-stripped rows
+vi.hoisted(() => {
+  process.env['FORCE_COLOR'] = '3';
+});
+
 import { render } from 'ink';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EngineEvent, LaunchSettings, UiConfig } from '../../../src/core/types.js';
 import { App, createBridge, type Bridge } from '../../../src/tui/App.js';
 import { WORDMARK } from '../../../src/tui/splash.js';
 import { scrollbackMarkPad, scrollbackMarkRows } from '../../../src/tui/wordmark.js';
 import { createEventBus, createTuiConfirmer, type UiState } from '../../../src/tui/useEngine.js';
 import { VERSION } from '../../../src/version.js';
-import { tick } from '../../fixtures/tui/fixtures.js';
+import { mkUiConfig, tick } from '../../fixtures/tui/fixtures.js';
 import { agentOpening, agentRunResult, shapedTurn } from './agent-fixtures.js';
 import { StubStdin, StubStdout, isRuleRow, stripSgr } from './stub-stdout.js';
 
@@ -56,7 +66,7 @@ function mount(rows: number, columns: number, o: { launch?: LaunchSettings & { r
   const bus = createEventBus();
   const bridge = createBridge(null, null);
   const launch = o.launch ?? MOTION;
-  if (o.ui) bridge.ui = { ...launch, theme: 'dark', title: false, reducedMotion: launch.reducedMotion ?? false, notify: false, osc52: false, history: true, noInput: false, trustWorkspace: false, budgetWarnings: true, allowSecretMention: false, exitCode: 'zero', logLevel: 'info', logFile: null, keybindingsFile: null, ...o.ui };
+  if (o.ui) bridge.ui = mkUiConfig({ ...launch, reducedMotion: launch.reducedMotion ?? false }, o.ui);
   const instance = render(<App task={o.task ?? ''} resumeId={null} source={bus} confirmer={createTuiConfirmer()} onAbort={() => undefined} mode={o.mode ?? 'session'} cwd="/tmp/proj" tickMs={0} bridge={bridge} launch={launch} env={ENV} />, {
     stdout: stdout as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream,
@@ -73,6 +83,12 @@ function mount(rows: number, columns: number, o: { launch?: LaunchSettings & { r
     rows: () => rowsOf(stdout.lastFrame()),
     state: () => bridge.stateReader?.() ?? null,
   };
+}
+
+/** `setUi` as the session calls it after the first frame (session.ts `applyConfig`) */
+function setUi(m: M, launch: LaunchSettings & { reducedMotion?: boolean }, ui: Partial<UiConfig>): void {
+  m.bridge.ui = mkUiConfig({ ...launch, reducedMotion: launch.reducedMotion ?? false }, ui);
+  m.bridge.notify();
 }
 
 function rowsOf(frame: string): string[] {
@@ -169,30 +185,37 @@ describe('the committed wordmark heads the scrollback', () => {
     expect(m.stdout.frames.join('')).not.toContain('\x1b[2J');
   });
 
-  it('30×100: the rule row moves ONCE, at the commit — rule → box → console before, mark → rule → console after — and the console does not move', async () => {
-    const m = mount(30, 100);
-    await tick(250);
-    const f0 = m.rows();
-    // mid-splash: the rule, the box (the committed block's own height), the console
-    const r0 = ruleAt(f0, 100);
-    expect(r0, f0.join('\n')).toBe(0);
-    expect(edgeAt(f0)).toBe(r0 + 1 + scrollbackMarkRows(30));
-    expect(f0.slice(1, 1 + scrollbackMarkRows(30)).some((l) => l.includes('██'))).toBe(true);
+  it.each([
+    [30, 100],
+    [24, 80],
+    [40, 120],
+  ])('%ix%i: NOTHING moves at the commit — box → rule → console before, mark → rule → console after, the same rows', async (rows, columns) => {
+    const m = mount(rows, columns);
+    const box = scrollbackMarkRows(rows);
+    await waitFor(() => m.rows().some((l) => l.endsWith(`◆ ${VERSION}`)), 1500);
+    // the held splash frame (no scrollback yet, so its rows are the dynamic region): the box on top, the rule, the console
+    const held = m.rows();
+    expect(markAt(held, columns), held.join('\n')).toHaveLength(1);
+    expect(ruleAt(held, columns)).toBe(box);
+    expect(edgeAt(held)).toBe(box + 1);
+    expect(m.state()?.splash).toBe('running');
     await settle(m);
     const f1 = m.rows();
-    const r1 = ruleAt(f1, 100);
-    expect(r1).toBe(scrollbackMarkRows(30));
-    expect(markAt(f1, 100)[0]!).toBeLessThan(r1);
-    // the console's top edge is on the same row: the box became the same rows of scrollback
-    expect(edgeAt(f1)).toBe(edgeAt(f0));
+    // the settled frame is the same rows: the glyph rows, the rule and the console's top edge kept their rows
+    expect(f1).toEqual(held);
+    expect(markAt(f1, columns)).toEqual(markAt(held, columns));
+    expect(ruleAt(f1, columns)).toBe(box);
+    expect(edgeAt(f1)).toBe(box + 1);
+    expect(m.state()?.splash).toBe('done');
     // and every later frame keeps the rule directly above the console, with no mark below it
     you(m, 'hi');
     await reply(m, 'hi', 'Hello!\n');
     const f2 = m.rows();
-    const r2 = ruleAt(f2, 100);
+    const r2 = ruleAt(f2, columns);
     expect(edgeAt(f2)).toBe(r2 + 1);
-    expect(markAt(f2, 100)).toHaveLength(1);
-    expect(markAt(f2, 100)[0]!).toBeLessThan(r2);
+    expect(markAt(f2, columns)).toHaveLength(1);
+    expect(markAt(f2, columns)[0]!).toBeLessThan(r2);
+    expect(m.stdout.frames.join('')).not.toContain('\x1b[2J');
   });
 
   it('a submit during the splash commits the mark FIRST: the [you] bubble is the next block, nothing lands in between', async () => {
@@ -228,16 +251,98 @@ describe('the committed wordmark heads the scrollback', () => {
     expect(mark[0]!).toBeLessThan(f.findIndex((l) => l.includes('[you] earlier question')));
   });
 
-  it('one-shot (`jevcode run "<task>"`): the mark is the first block of frame 0, the task header below it', async () => {
+  it('one-shot (`jevcode run "<task>"`): frame 0 is splash frame 0 with no header; the reveal plays; the header lands directly below the committed mark', async () => {
     const m = mount(30, 100, { mode: 'one-shot', task: 'fix the failing test' });
     const f0 = rowsOf(m.stdout.frames[0] ?? '');
-    const mark = markAt(f0, 100);
+    // frame 0: the `J` column and the sweep head in the box, the status sentinel — and nothing committed yet
+    expect(f0.join('\n')).toContain(`${WORDMARK[3]!.slice(0, 7)}▓▒░`);
+    expect(f0.join('\n')).toContain('step 0/–');
+    expect(f0.some((l) => l.includes('fix the failing test'))).toBe(false);
+    // the reveal plays in the dynamic region (more than one splash frame before the commit)
+    await waitFor(() => m.rows().some((l) => l.endsWith(`◆ ${VERSION}`)), 1500);
+    expect(m.stdout.frames.filter((fr) => stripSgr(fr).includes('▓▒░')).length).toBeGreaterThan(1);
+    expect(m.rows().some((l) => l.includes('fix the failing test'))).toBe(false);
+    await settle(m);
+    const f = m.rows();
+    const mark = markAt(f, 100);
     expect(mark).toHaveLength(1);
-    const header = f0.findIndex((l) => l.includes('fix the failing test'));
-    expect(header, f0.join('\n')).toBeGreaterThan(mark[0]!);
-    expect(header).toBeLessThan(ruleAt(f0, 100));
-    await tick(900);
+    const header = f.findIndex((l) => l.includes('fix the failing test'));
+    // the committed block (its bottom padding included), then the header: one item below the mark
+    expect(header, f.join('\n')).toBe(mark[0]! + 4 + scrollbackMarkPad(30));
+    expect(header).toBeLessThan(ruleAt(f, 100));
+    await tick(200);
     expect(markAt(m.rows(), 100)).toHaveLength(1);
+  });
+
+  it('one-shot: the first run item before the settle commits the mark, then the header, then the item', async () => {
+    const m = mount(30, 100, { mode: 'one-shot', task: 'fix the failing test' });
+    await tick(60);
+    expect(m.state()?.splash).toBe('running');
+    you(m, 'an early item');
+    await waitFor(() => m.rows().some((l) => l.includes('an early item')));
+    const f = m.rows();
+    const mark = markAt(f, 100)[0]!;
+    const header = f.findIndex((l) => l.includes('fix the failing test'));
+    const item = f.findIndex((l) => l.includes('an early item'));
+    expect(mark).toBeGreaterThanOrEqual(0);
+    expect(mark).toBeLessThan(header);
+    expect(header).toBeLessThan(item);
+  });
+});
+
+describe('the config arrives after the first frame: the commit waits for it', () => {
+  const STILL = { ...MOTION, reducedMotion: true };
+  it('reduced motion: frame 0 holds the resting mark in the splash box; the config commits it to the SAME rows', async () => {
+    const m = mount(30, 100, { launch: STILL });
+    const f0 = rowsOf(m.stdout.frames[0] ?? '');
+    expect(markAt(f0, 100)).toHaveLength(1);
+    expect(ruleAt(f0, 100)).toBe(scrollbackMarkRows(30));
+    await tick(60);
+    // still undecided: nothing is committed while the config is missing
+    expect(m.rows()).toEqual(f0);
+    setUi(m, STILL, {});
+    await tick(40);
+    const f1 = m.rows();
+    expect(f1).toEqual(f0);
+    you(m, 'hi');
+    await waitFor(() => m.rows().some((l) => l.includes('[you] hi')));
+    const f2 = m.rows();
+    expect(markAt(f2, 100)).toHaveLength(1);
+    expect(markAt(f2, 100)[0]!).toBeLessThan(f2.findIndex((l) => l.includes('[you] hi')));
+  });
+
+  const CASES: [string, { launch?: LaunchSettings & { reducedMotion?: boolean }; mode?: 'session' | 'one-shot'; task?: string }][] = [
+    ['a reduced-motion session', { launch: { ...MOTION, reducedMotion: true } }],
+    ['a one-shot run', { mode: 'one-shot', task: 'fix the failing test' }],
+  ];
+  it.each(CASES)('%s with `ui.wordmark: off` delivered by setUi after frame 0 commits NO mark', async (_name, o) => {
+    const m = mount(30, 100, o);
+    await tick(20);
+    setUi(m, o.launch ?? MOTION, { wordmark: 'off' });
+    await tick(40);
+    await settle(m);
+    you(m, 'hi');
+    await waitFor(() => m.rows().some((l) => l.includes('[you] hi')));
+    await tick(60);
+    // at rest: not one mark cell in the scrollback or the dynamic region (debug mode: the frame is both)
+    expect(m.rows().some((l) => l.includes('█'))).toBe(false);
+    if (o.task !== undefined) expect(m.rows().some((l) => l.includes('fix the failing test'))).toBe(true);
+  });
+
+  it('`ui.noColor` delivered by setUi after frame 0 is honoured by the committed block (reduced motion)', async () => {
+    const STILL_COLOR = { ...MOTION, reducedMotion: true };
+    const m = mount(30, 100, { launch: STILL_COLOR });
+    const markLines = (frame: string): string[] => frame.split('\n').filter((l) => stripSgr(l).includes('██'));
+    // frame 0 (launch settings): the box's cells are coloured
+    expect(markLines(m.stdout.frames[0] ?? '')).toHaveLength(5);
+    expect(markLines(m.stdout.frames[0] ?? '').every((l) => l.includes('\x1b['))).toBe(true);
+    setUi(m, STILL_COLOR, { noColor: true });
+    await tick(60);
+    you(m, 'hi');
+    await waitFor(() => m.rows().some((l) => l.includes('[you] hi')));
+    // the block committed after the config carries no SGR at all
+    expect(markLines(m.stdout.lastFrame())).toHaveLength(5);
+    for (const l of markLines(m.stdout.lastFrame())) expect(l).not.toContain('\x1b[');
   });
 });
 
@@ -287,7 +392,7 @@ describe('committed exactly once', () => {
   });
 });
 
-describe('WHETHER a mark is drawn (unchanged rules; only WHERE changed)', () => {
+describe('WHETHER a mark is drawn (the width tier; the height tiers were about dynamic rows only)', () => {
   it('a screen reader, the flat tier (15 rows) and `ui.wordmark: off` commit none; 16 rows (the boxed floor) commits one', async () => {
     const sr = mount(30, 100, { launch: { ...MOTION, screenReader: true } });
     await tick(60);

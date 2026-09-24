@@ -98,14 +98,20 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     expect(first!.t).toBeLessThan(300);
     const [frame] = frames(r.text);
     expect(frame).toBeDefined();
-    const body = frame!.lines.slice(frame!.ruleIndex).join('\n');
+    // the dynamic region by Ink's own accounting: the splash box is its TOP, above the rule row
+    const region = frame!.region ?? [];
+    const body = region.join('\n');
     expect(body).toContain('Say hi, ask a question, or describe a task…');
     expect(body).toMatch(/step 0\/–/);
-    // TUI-DESIGN-2 §5.2 row 0 / H-A1: the first frame is splash frame 0 — rule · the splash box (the committed block's own
-    // height, the owner's directive of 2026-09-23: one blank row, 5 wordmark rows — the `J` column and the sweep head — one
-    // blank row) · the 5-row console (top edge with the default badge, `›` row, divider, status, bottom edge) = 13 dynamic
-    // rows at 24×80; the first frame carries no session meter and no git zone (they arrive after resolveConfig)
+    // TUI-DESIGN-2 §5.2 row 0 / H-A1: the first frame is splash frame 0 — the splash box (the committed block's own height,
+    // the owner's directive of 2026-09-23: one blank row, 5 wordmark rows — the `J` column and the sweep head — one blank
+    // row; it sits on TOP of the region so the commit turns it into scrollback in place) · the rule · the 5-row console (top
+    // edge with the default badge, `›` row, divider, status, bottom edge) = 13 dynamic rows at 24×80; the first frame
+    // carries no session meter and no git zone (they arrive after resolveConfig)
     expect(frame!.rows).toBe(13);
+    expect(region).toHaveLength(13);
+    expect(region[7]).toMatch(/^─{80}$/);
+    expect(region.slice(0, 7).filter((l) => /██/.test(l))).toHaveLength(5);
     expect(body).toMatch(new RegExp(`^╭─ ${BADGE_DEFAULT} `, 'm')); // BADGE_DEFAULT is the regex-escaped badge word (helpers.ts)
     expect(body).toMatch(/██/);
     expect(body).not.toMatch(/sess \$/);
@@ -498,6 +504,7 @@ describe.skipIf(!hasExpect)('pty: perf anchor liveness (src/perf/pty.ts NAMED_AN
       expect(at.get('run-started')!).toBeLessThan(at.get('run-end')!);
       // the dynamic region by Ink's own accounting (the next write's erase count) agrees with the rule parse on every
       // frame of a run: nothing live sits above the rule here, so the region gates read the same numbers either way
+      // — except the splash frames, whose box is the top of the region above the rule (counted apart, never a mismatch)
       const region = regionCrossCheck(units(r.text));
       expect(region.compared).toBeGreaterThan(10);
       expect(region.mismatches).toEqual([]);

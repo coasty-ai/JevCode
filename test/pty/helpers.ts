@@ -388,6 +388,13 @@ export interface FrameUnit {
   /** visible width of the rule row (the geometry the App rendered for), or null */
   ruleWidth: number | null;
   /**
+   * the dynamic region's rows themselves, top to bottom (the last `rows` layout rows of the unit's last write), or null
+   * without a frame. The classic splash box is the TOP of the region, ABOVE the rule row (the owner's directive of
+   * 2026-09-23: the box turns into the committed block's rows in place), so during the splash this starts above
+   * `lines[ruleIndex]` — Ink's accounting sees it, the rule parse cannot. After the commit it is the rule → last row.
+   */
+  region: string[] | null;
+  /**
    * rows above the dynamic region (`rows`; per write, in a unit that holds two): the `<Static>` items this unit committed (wrapped at the terminal width). In a
    * clear-terminal unit (`clears > 0`) Ink rewrites its whole `fullStaticOutput` first (ink.js: `clearTerminal +
    * fullStaticOutput + output`), so these rows then repeat every earlier item — `staticRows()` dedupes that.
@@ -400,7 +407,7 @@ export interface FrameUnit {
  * anything, minus the trailing newline of this unit's last write. Units with no visible rows and no erase (cursor-only
  * writes) are skipped; a clear-terminal unit or a unit that prints without erasing leaves it unknown (null).
  */
-function eraseRowsOf(all: readonly Omit<FrameUnit, 'rows' | 'eraseRows' | 'staticRows'>[], i: number, endsWithNewline: boolean): number | null {
+function eraseRowsOf(all: readonly Omit<FrameUnit, 'rows' | 'eraseRows' | 'staticRows' | 'region'>[], i: number, endsWithNewline: boolean): number | null {
   for (let j = i + 1; j < all.length; j++) {
     const u = all[j]!;
     if (u.clears > 0) return null;
@@ -507,9 +514,36 @@ export function units(text: string, opts: { untilRestore?: boolean } = {}): Fram
       ...unit,
       eraseRows,
       rows,
+      region: rows !== null ? lastWriteRegion(unit.raw, rows) : null,
       staticRows: rows !== null ? committedRows(unit.raw, rows) : index === 0 ? unit.lines : [],
     };
   });
+}
+
+/** the last `rows` layout rows of a unit's last write (its dynamic region), trailing blanks of each row trimmed */
+function lastWriteRegion(raw: string, rows: number): string[] {
+  const laid = layoutRows(stripAnsi(writesOf(raw).at(-1) ?? '')).rows.map((r) => r.replace(/\s+$/, ''));
+  return laid.slice(Math.max(0, laid.length - rows));
+}
+
+/**
+ * The classic splash box's rows directly above a frame's rule row: the contiguous blank and wordmark glyph rows there
+ * (at most `CAP.mark`, 9), or 0 when no glyph row is among them. It tells a splash frame's region apart from the rule
+ * parse's (`regionCrossCheck`); on its own it cannot tell the box from the committed block, which a commit frame writes
+ * in the same place — only Ink's erase count can.
+ */
+export function markRowsAboveRule(lines: readonly string[], ruleIndex: number, ascii = false): number {
+  let n = 0;
+  let glyphs = 0;
+  for (let i = ruleIndex - 1; i >= 0 && n < 9; i--) {
+    const l = (lines[i] ?? '').replace(/\s+$/, '');
+    if (l === '') n += 1;
+    else if (isWordmarkRow(l, ascii)) {
+      n += 1;
+      glyphs += 1;
+    } else break;
+  }
+  return glyphs > 0 ? n : 0;
 }
 
 /**
@@ -519,15 +553,23 @@ export function units(text: string, opts: { untilRestore?: boolean } = {}): Fram
  * cursor-hide unit and the rule parse spans both, 53 rows against Ink's 27); a streaming tail above the rule is exactly
  * where they part, and `rows` follows Ink's accounting there.
  */
-export function regionCrossCheck(all: readonly FrameUnit[]): { compared: number; mismatches: Array<{ index: number; eraseRows: number; ruleRows: number }> } {
+export function regionCrossCheck(all: readonly FrameUnit[]): { compared: number; splash: number; mismatches: Array<{ index: number; eraseRows: number; ruleRows: number }> } {
   const mismatches: Array<{ index: number; eraseRows: number; ruleRows: number }> = [];
   let compared = 0;
+  let splash = 0;
   for (const u of all) {
     if (u.eraseRows === null || u.ruleRows === null) continue;
     compared += 1;
-    if (u.eraseRows !== u.ruleRows) mismatches.push({ index: u.index, eraseRows: u.eraseRows, ruleRows: u.ruleRows });
+    if (u.eraseRows === u.ruleRows) continue;
+    // a splash frame: the box is the top of the region, above the rule — Ink erases it, the rule parse starts below it
+    const box = markRowsAboveRule(u.lines, u.ruleIndex) || markRowsAboveRule(u.lines, u.ruleIndex, true);
+    if (box > 0 && u.eraseRows === u.ruleRows + box) {
+      splash += 1;
+      continue;
+    }
+    mismatches.push({ index: u.index, eraseRows: u.eraseRows, ruleRows: u.ruleRows });
   }
-  return { compared, mismatches };
+  return { compared, splash, mismatches };
 }
 
 /** the units that draw a dynamic frame (a rule row), from the first frame on */
@@ -547,6 +589,11 @@ export interface SyncFrame {
   ruleIndex: number;
   /** the dynamic region (rule row → last row); empty without a rule row */
   dynamic: string[];
+  /**
+   * the dynamic region by Ink's own accounting (the next frame's erase count, like `FrameUnit.region`): during the
+   * splash it starts at the splash box ABOVE the rule; `dynamic` when no later frame tells (the last one)
+   */
+  region: string[];
 }
 
 /**
@@ -562,6 +609,8 @@ export function syncFrames(text: string): SyncFrame[] {
   const cut = first < 0 ? -1 : t.indexOf(CURSOR_SHAPE_RESET, first);
   if (cut >= 0) t = t.slice(0, cut);
   const parts = t.split(BSU).slice(1);
+  // every frame's erase run (the previous region + 1) opens right after its bracket
+  const erasedOf = (raw: string): number => (WRITE_HEAD_RE.exec(raw)?.[0] ?? '').split(ERASE_LINE).length - 1;
   return parts.map((raw, index) => {
     const lines = stripAnsi(raw).replace(/\r\n|\r/g, '\n').split('\n');
     while (lines.length > 0 && lines.at(-1) === '') lines.pop();
@@ -572,8 +621,123 @@ export function syncFrames(text: string): SyncFrame[] {
         break;
       }
     }
-    return { index, lines, ruleIndex, dynamic: ruleIndex >= 0 ? lines.slice(ruleIndex) : [] };
+    const dynamic = ruleIndex >= 0 ? lines.slice(ruleIndex) : [];
+    let region = dynamic;
+    if (ruleIndex >= 0) {
+      const laid = layoutRows(stripAnsi(raw));
+      for (let j = index + 1; j < parts.length; j++) {
+        const next = parts[j]!;
+        if (countClears(next) > 0) break;
+        const erased = erasedOf(next);
+        if (erased > 0) {
+          const n = erased - (laid.endsWithNewline ? 1 : 0);
+          const rowsLaid = laid.rows.map((r) => r.replace(/\s+$/, ''));
+          region = rowsLaid.slice(Math.max(0, rowsLaid.length - n));
+          break;
+        }
+        if (stripAnsi(next).trim() !== '') break;
+      }
+    }
+    return { index, lines, ruleIndex, dynamic, region };
   });
+}
+
+/**
+ * A minimal VT emulator over a capture: the visible screen (rows × cols, trailing blanks trimmed) at the END of every
+ * synchronized frame (`BSU` … the next `BSU`), in order. It handles what Ink, log-update and the App write — printable
+ * cells (each one cell wide: the TUI's glyphs are), CR, LF (scrolling at the bottom row), BS, CSI A B C D G H f J K, and
+ * ignores SGR, private modes and OSC. It is what "nothing moves" is measured with: the rows a glyph row or the rule row
+ * sits on, frame by frame, as the terminal shows them.
+ */
+export function syncScreens(text: string, rows: number, cols: number): string[][] {
+  const blank = (): string[] => Array.from({ length: cols }, () => ' ');
+  let screen = Array.from({ length: rows }, blank);
+  let r = 0;
+  let c = 0;
+  const out: string[][] = [];
+  const snap = (): void => {
+    out.push(screen.map((row) => row.join('').replace(/\s+$/, '')));
+  };
+  const lf = (): void => {
+    if (r === rows - 1) screen = [...screen.slice(1), blank()];
+    else r += 1;
+  };
+  const cells = [...text];
+  const CSI = /^\x1b\[([?>=]?)([0-9;]*)([ -/]*)([@-~])/;
+  const OSC = /^\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/;
+  let seen = false;
+  for (let i = 0; i < cells.length; ) {
+    const ch = cells[i]!;
+    if (ch === '\x1b') {
+      const rest = cells.slice(i, i + 64).join('');
+      if (rest.startsWith(BSU)) {
+        if (seen) snap();
+        seen = true;
+      }
+      const m = CSI.exec(rest);
+      if (m) {
+        i += [...m[0]].length;
+        if (m[1] !== '') continue;
+        const ps = m[2] === '' ? [] : m[2]!.split(';').map((x) => (x === '' ? 0 : Number(x)));
+        const p1 = ps[0] ?? 0;
+        switch (m[4]) {
+          case 'A':
+            r = Math.max(0, r - (p1 || 1));
+            break;
+          case 'B':
+            r = Math.min(rows - 1, r + (p1 || 1));
+            break;
+          case 'C':
+            c = Math.min(cols - 1, c + (p1 || 1));
+            break;
+          case 'D':
+            c = Math.max(0, c - (p1 || 1));
+            break;
+          case 'G':
+            c = Math.max(0, Math.min(cols - 1, (p1 || 1) - 1));
+            break;
+          case 'H':
+          case 'f':
+            r = Math.max(0, Math.min(rows - 1, (ps[0] || 1) - 1));
+            c = Math.max(0, Math.min(cols - 1, (ps[1] || 1) - 1));
+            break;
+          case 'J':
+            if (p1 === 2 || p1 === 3) screen = Array.from({ length: rows }, blank);
+            else if (p1 === 0) {
+              for (let k = c; k < cols; k++) screen[r]![k] = ' ';
+              for (let k = r + 1; k < rows; k++) screen[k] = blank();
+            }
+            break;
+          case 'K':
+            if (p1 === 2) screen[r] = blank();
+            else if (p1 === 0) for (let k = c; k < cols; k++) screen[r]![k] = ' ';
+            else if (p1 === 1) for (let k = 0; k <= c && k < cols; k++) screen[r]![k] = ' ';
+            break;
+          default:
+            break;
+        }
+        continue;
+      }
+      const o = OSC.exec(rest);
+      i += o ? [...o[0]].length : 2;
+      continue;
+    }
+    i += 1;
+    if (ch === '\r') c = 0;
+    else if (ch === '\n') lf();
+    else if (ch === '\b') c = Math.max(0, c - 1);
+    else if (ch < ' ' || ch === '\x7f') continue;
+    else {
+      if (c >= cols) {
+        c = 0;
+        lf();
+      }
+      screen[r]![c] = ch;
+      c += 1;
+    }
+  }
+  if (seen) snap();
+  return out;
 }
 
 /** indices of the sync frames whose lines contain `needle` */

@@ -73,8 +73,8 @@ function expectCommittedOnce(r: Drive): void {
   expect(mark.scroll.slice(0, mark.at).every((l) => l === '')).toBe(true);
 }
 
-/** the index of the first frame whose dynamic rows match `re` */
-const frameWith = (all: readonly SyncFrame[], re: RegExp, from = 0): number => all.findIndex((f, i) => i >= from && f.dynamic.some((l) => re.test(l)));
+/** the index of the first frame whose dynamic rows match `re` (`region`: Ink's own accounting — the splash box, on top of the region above the rule, included) */
+const frameWith = (all: readonly SyncFrame[], re: RegExp, from = 0): number => all.findIndex((f, i) => i >= from && f.region.some((l) => re.test(l)));
 
 describe.skipIf(!hasExpect)('pty round 3: the wordmark (TUI-DESIGN-3 §3; committed to the scrollback, the owner\'s directive of 2026-09-23)', () => {
   for (const [rows, cols] of [
@@ -96,7 +96,7 @@ describe.skipIf(!hasExpect)('pty round 3: the wordmark (TUI-DESIGN-3 §3; commit
       expect(between.length).toBeLessThanOrEqual(2);
       // 12 s alone: no sweep band anywhere, no wordmark row in any dynamic region after the commit
       expect(between.some((f) => BAND_SGR.test(raw[f.index] ?? ''))).toBe(false);
-      expect(all.slice(caption + 1).some((f) => hasMark(f.dynamic))).toBe(false);
+      expect(all.slice(caption + 1).some((f) => hasMark(f.region))).toBe(false);
       expect(all.at(-1)!.dynamic.length).toBe(IDLE_ROWS);
       expectCommittedOnce(r);
       expect(countClears(afterFirstFrame(r.text))).toBe(0);
@@ -194,7 +194,7 @@ describe.skipIf(!hasExpect)('pty round 3: the wordmark (TUI-DESIGN-3 §3; commit
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = dynFrames(r);
-    expect(all[0]!.dynamic.some((l) => HEAD_RE.test(l))).toBe(true);
+    expect(all[0]!.region.some((l) => HEAD_RE.test(l))).toBe(true);
     const caption = frameWith(all, CAPTION_RE);
     const echo = frameWith(all, /[›>] h/, caption + 1);
     // the commit frame and the host's settle frame at most; no sweep frame in 12 s

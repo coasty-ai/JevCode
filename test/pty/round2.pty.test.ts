@@ -415,8 +415,8 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
 
 /**
  * The owner's directive of 2026-09-23: the splash box is the committed block's own height (one blank row each side, two
- * from 34 rows up), so a splash frame is `rule 1 + (5 + 2p) + console 5`; after the commit the idle frame is the rule and
- * the console (6 rows) and the mark is the first scrollback block.
+ * from 34 rows up) and the TOP of the region, so a splash frame is `(5 + 2p) + rule 1 + console 5`; after the commit the
+ * idle frame is the rule and the console (6 rows) and the mark is the first scrollback block, in the box's rows.
  */
 const splashRows = (rows: number): number => 1 + (5 + 2 * (rows >= 34 ? 2 : 1)) + 5;
 const IDLE_ROWS = 6;
@@ -441,9 +441,11 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
       expect(first!.t).toBeLessThan(300);
       const fs = frames(r.text);
       const [frame] = fs;
-      const body = frame!.lines.slice(frame!.ruleIndex);
+      // the dynamic region by Ink's own accounting: the splash box is its TOP, above the rule row
+      const body = frame!.region ?? [];
       // §5.2 row 0 / H-A1: the `J` column and the sweep head, the console complete with the badge and `step 0/–`, in the splash box
       expect(body.filter((l) => WORDMARK_RE.test(l)).length).toBe(5);
+      expect(body[splashRows(rows) - 6]).toMatch(/^─{10}/);
       expect(body.some((l) => /▓▒░/.test(l))).toBe(true);
       expect(body.some((l) => l.startsWith(`╭─ ${BADGE_DEFAULT_TEXT} `))).toBe(true);
       expect(body.at(-2)).toMatch(/step 0\/–/);
@@ -454,7 +456,7 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
       const echo = fs.findIndex((u) => u.lines.some((l) => /[›>] h/.test(l)));
       expect(echo).toBeGreaterThan(0);
       for (const u of fs.slice(echo)) {
-        expect(u.lines.slice(u.ruleIndex).some((l) => WORDMARK_RE.test(l))).toBe(false);
+        expect((u.region ?? []).some((l) => WORDMARK_RE.test(l))).toBe(false);
         expect(u.lines.some((l) => /▓▒░/.test(l))).toBe(false);
       }
       // the idle frame: the plain rule + the 5-row console; the committed block carries the caption `◆ <version>` (≥ 73 columns)
@@ -468,20 +470,30 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     });
   }
 
-  it('wordmark-reduced: --no-animation commits the static resting mark in frame 0 — the complete mark and no sweep head, never in a dynamic region, 6 rows (TUI-DESIGN-3 §3.2 twins)', async () => {
+  it('wordmark-reduced: --no-animation holds the static resting mark on top of the region from frame 0 (the complete mark, no sweep head) and commits it once the config has arrived — never in a dynamic region after, 6 rows at rest (TUI-DESIGN-3 §3.2 twins)', async () => {
     const r = await drive({ name: 'r3-wordmark-reduced', args: ['chat', '--mock', '--no-animation'], steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'sleep 0.1', 'send h', echoStep('h'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, IDLE_STEP, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     expect(stripAnsi(r.text)).not.toMatch(/▓▒░/);
     const fs = frames(r.text);
-    for (const u of fs) expect(hasMark(u.lines.slice(u.ruleIndex))).toBe(false);
-    // frame 0 commits it: Ink writes a frame's `<Static>` rows before its log-update hides the cursor, so the whole block
-    // precedes the first cursor hide
-    expect(stripAnsi(r.text.slice(0, r.text.indexOf('\x1b[?25l'))).split(/\r?\n/).filter((l) => WORDMARK_RE.test(l))).toHaveLength(5);
-    expect(fs[0]!.lines[fs[0]!.ruleIndex]).toMatch(/^─{10}/);
-    expect(fs[0]!.rows).toBe(IDLE_ROWS);
+    // frame 0: the resting mark (caption included) in the splash box on top of the region — the config is read after the
+    // first frame, and a mount settled in frame 0 commits only once it has arrived (`ui.wordmark: off` must be able to win)
+    const f0 = fs[0]!.region ?? [];
+    expect(f0.filter((l) => WORDMARK_RE.test(l))).toHaveLength(5);
+    expect(f0.some((l) => /◆ \d+\.\d+\.\d+$/.test(l))).toBe(true);
+    expect(fs[0]!.rows).toBe(splashRows(24));
+    expect(f0[splashRows(24) - 6]).toMatch(/^─{10}/);
+    // nothing is written above the first frame (Ink's `<Static>` rows would precede its cursor hide)
+    expect(stripAnsi(r.text.slice(0, r.text.indexOf('\x1b[?25l'))).split(/\r?\n/).filter((l) => WORDMARK_RE.test(l))).toHaveLength(0);
+    // the commit: the first frame that writes the mark above its region — after frame 0 (the config's arrival)
+    const commit = fs.findIndex((u) => u.staticRows.filter((l) => WORDMARK_RE.test(l)).length === 5);
+    expect(commit).toBeGreaterThan(0);
+    for (const u of fs.slice(commit)) expect(hasMark(u.region ?? [])).toBe(false);
+    expect(fs.at(-1)!.rows).toBe(IDLE_ROWS);
+    expect(fs.at(-1)!.lines[fs.at(-1)!.ruleIndex]).toMatch(/^─{10}/);
     expectCommittedOnce(r);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
+    console.log(`wordmark-reduced: the resting box from frame 0, committed at frame ${commit}`);
   });
 
   it('splash settles by itself: no key — ≤ 15 reveal frames before the caption frame `◆ <version>`, then the commit (the mark above the rule, never in a dynamic region again), no frame in the 5 s after it, zero clears (TUI-DESIGN-3 §3.4, §3.5)', async () => {
@@ -489,17 +501,19 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text).filter((f) => f.ruleIndex >= 0);
-    const head = all.filter((f) => f.dynamic.some((l) => /▓▒░/.test(l))).map((f) => f.index);
+    // `region`: the dynamic region by Ink's own accounting — the splash box is its TOP, above the rule row
+    const head = all.filter((f) => f.region.some((l) => /▓▒░/.test(l))).map((f) => f.index);
     // the reveal: frame 0 carries the wordmark head; ≤ 15 frames at the 50 ms tick; the caption frame is the held box (t ≥ 550)
     expect(head[0]).toBe(all[0]!.index);
     expect(head.length).toBeGreaterThanOrEqual(1);
     expect(head.length).toBeLessThanOrEqual(SPLASH_MAX_FRAMES);
-    const caption = all.findIndex((f) => f.dynamic.some((l) => /◆ \d+\.\d+\.\d+$/.test(l)) && !f.dynamic.some((l) => /▓▒░/.test(l)));
+    const caption = all.findIndex((f) => f.region.some((l) => /◆ \d+\.\d+\.\d+$/.test(l)) && !f.region.some((l) => /▓▒░/.test(l)));
     expect(caption).toBeGreaterThan(0);
-    // the commit: the first frame whose rows above the rule carry the mark; from it on no dynamic region draws a wordmark row
-    const commit = all.findIndex((f, i) => i >= caption && f.lines.slice(0, f.ruleIndex).filter((l) => WORDMARK_RE.test(l)).length === 5);
+    // the commit: the first frame after it that writes the mark ABOVE its region (the region itself holds no wordmark row);
+    // from it on no dynamic region draws a wordmark row
+    const commit = all.findIndex((f, i) => i > caption && !f.region.some((l) => WORDMARK_RE.test(l)) && f.lines.filter((l) => WORDMARK_RE.test(l)).length === 5);
     expect(commit).toBeGreaterThan(caption);
-    for (const f of all.slice(commit)) expect(f.dynamic.some((l) => WORDMARK_RE.test(l))).toBe(false);
+    for (const f of all.slice(commit)) expect(f.region.some((l) => WORDMARK_RE.test(l))).toBe(false);
     // nothing repaints at rest: the frames strictly between the commit and the marker key's echo are the host's settle (the session meter) at most
     const echo = all.findIndex((f, i) => i > commit && f.dynamic.some((l) => /[›>] h/.test(l)));
     expect(echo).toBeGreaterThan(commit);
@@ -514,17 +528,25 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     console.log(`splash settle: ${head.length} reveal frames, caption at frame ${caption}, commit at frame ${commit}, ${settled} ms after the first frame, ${all.slice(commit + 1, echo).length} frame(s) in the 5 s after it`);
   });
 
-  it('a one-shot `run`: the mark is committed in frame 0 ABOVE the task header (the header is the frame\'s first item), and no frame of the run draws it in the dynamic region', async () => {
+  it('a one-shot `run`: frame 0 is splash frame 0 (the reveal plays on top of the region, no task header yet); the mark is committed ABOVE the task header, and no frame after the commit draws it in the dynamic region', async () => {
     const r = await drive({ name: 'r2-splash-run-cancel', args: ['run', 'fix the failing test', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], steps: [...RUN_OPEN, 'mark started', 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text);
+    // review round 1: `jevcode run`'s reveal plays like a session's — the header waits for the mark's commit (the settle or
+    // the run's first item), so frame 0 is splash frame 0 with nothing written above it
+    expect(all[0]!.region.some((l) => /▓▒░/.test(l))).toBe(true);
+    expect(all[0]!.lines.some((l) => /\[run\] jevcode task: /.test(l))).toBe(false);
     // owner addendum: the run's first frame is the one whose status row carries a numeric `step <n>/<max>`
     const started = all.findIndex((f) => f.dynamic.some((l) => /step \d+\/\d+/.test(l)));
     expect(started).toBeGreaterThanOrEqual(0);
     const ended = all.findIndex((f) => f.lines.some((l) => /^ *\[run\] finished [·-] /.test(l)));
     expect(ended).toBeGreaterThan(started);
+    // below the rule never; and from the commit on, not even on top of the region
     for (const f of all) expect(f.dynamic.some((l) => WORDMARK_RE.test(l))).toBe(false);
+    const commit = all.findIndex((f) => f.ruleIndex >= 0 && !f.region.some((l) => WORDMARK_RE.test(l)) && f.lines.filter((l) => WORDMARK_RE.test(l)).length === 5);
+    expect(commit).toBeGreaterThan(0);
+    for (const f of all.slice(commit)) expect(f.region.some((l) => WORDMARK_RE.test(l))).toBe(false);
     // the scrollback: the mark first, then the task header
     const mark = expectCommittedOnce(r);
     const header = mark.scroll.findIndex((l) => /\[run\] jevcode task: /.test(l));
@@ -547,7 +569,8 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     const [first] = frames(r.text);
-    const body = first!.lines.slice(first!.ruleIndex);
+    // the dynamic region by Ink's own accounting (the splash box is its top, above the rule)
+    const body = first!.region ?? [];
     expect(body.filter((l) => /##/.test(l)).length).toBe(5);
     expect(body.some((l) => /#\+\./.test(l))).toBe(true);
     // TD §14.1: the frame is the ASCII twin, so the badge is too — `llm+jev · verified` draws as `llm+jev - verified`

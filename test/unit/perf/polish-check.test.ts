@@ -6,7 +6,7 @@
  * notation, a loop banner after `[run] end`, a spinner glyph outside the accent — each named by its V number.
  */
 import { describe, expect, it } from 'vitest';
-import { RUN_END_RE, RUN_STARTED_RE, checkPolish, paintRow, runEndSelfTest, stripAnsi, v13Rows, type PolishResult as Result } from '../../../scripts/pty/polish-check.mjs';
+import { RUN_END_RE, RUN_STARTED_RE, checkPolish, paintRow, runEndSelfTest, splitFrames, stripAnsi, v13Rows, type PolishResult as Result } from '../../../scripts/pty/polish-check.mjs';
 
 const BSU = '\x1b[?2026h';
 const ESU = '\x1b[?2026l';
@@ -299,5 +299,25 @@ describe('V13 / V17 after D-V (TUI-DESIGN-4 §11, §3.7)', () => {
     expect(v13Rows(['    [run] jevcode session · proj | step 0/– starting'], false)).toEqual([]);
     // a row that merely looks like it is not allowlisted
     expect(v13Rows(['    [run] jevcode sessions · proj | step 0/- starting'], true)).toHaveLength(1);
+  });
+
+  /**
+   * The owner's directive of 2026-09-23: the classic splash box is the TOP of the dynamic region, above the rule, and turns
+   * into the committed block in place. A splash frame's rows above the rule are therefore NOT scrollback — Ink's own erase
+   * count says so — and only the commit frame writes them to the scrollback, once.
+   */
+  it('splitFrames: a splash frame\'s box above the rule is dynamic (Ink\'s erase count), the commit frame\'s is scrollback', () => {
+    const BSU = '\x1b[?2026h';
+    const RULE = '─'.repeat(20);
+    const G = '            ██ ███';
+    const box = ['', G, G, G, G, G, ''];
+    const write = (rows: readonly string[], prev: number): string => `${BSU}\x1b[?25l${prev === 0 ? '' : Array.from({ length: prev + 1 }, () => '\x1b[2K').join('\x1b[1A')}${rows.join('\r\n')}\r\n\x1b[?25h`;
+    const cap = write([...box, RULE, '› ', 'idle'], 0) + write([...box, RULE, '› ', 'idle'], 10) + write([RULE, '› ', 'idle'], 3) + write([RULE, '› h', 'idle'], 3);
+    const { frames } = splitFrames(cap);
+    // frame 0: the splash — Ink erased its 10 rows; frame 1: the commit — its box rows are the scrollback, its region 3 rows
+    expect(frames.map((f) => f.regionAbove)).toEqual([7, 0, 0, 0]);
+    expect(frames[0]!.scrollback).toEqual([]);
+    expect(frames[1]!.scrollback).toEqual(box.map((r) => r.replace(/\s+$/, '')));
+    expect(frames[2]!.scrollback).toEqual([]);
   });
 });

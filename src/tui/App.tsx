@@ -62,7 +62,7 @@ import { pendingItems, pendingRows } from './reply-state.js';
 import { STREAM_REDUCED_MS, createStreamScheduler, streamIntervalMs } from './stream-scheduler.js';
 import { nextPanel, parsePanelCommand } from './pane/commands.js';
 import { createBuffer, type Snapshot } from './composer/buffer.js';
-import { routeSend, routeSubmit, type SubmitDecision } from './composer/submit.js';
+import { STARTING_TOAST, routeSend, routeSubmit, type SubmitDecision } from './composer/submit.js';
 import { stringWidth } from './composer/width.js';
 import { colorDepth, colorEnabled, type ColorDepth } from './color-shim.js';
 import { GLYPHS, glyphSet, type GlyphSet } from './glyphs.js';
@@ -1655,10 +1655,12 @@ export function App(p: AppProps): React.JSX.Element {
     }
   };
 
-  // a held Enter flushes when the host attaches (§4.9)
+  // a held Enter flushes when the host attaches (§4.9); its `starting…` toast has done its job then — left for its full 2 s it
+  // would sit over the status row's own word (`⠹ thinking`, then `idle`) after a fast reply had already landed
   useEffect(() => {
     if (host !== null && heldRef.current) {
       heldRef.current = false;
+      dispatch({ type: 'toast:dismiss', text: STARTING_TOAST });
       onEnter();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3119,17 +3121,30 @@ export function App(p: AppProps): React.JSX.Element {
    * the session — every message (the `[you]` bubble, the `[jevcode]` prose, tool rows, `[ui]` rows) lands below it and
    * the console stays at the bottom; a long session scrolls it off the top like any scrollback and it is never redrawn.
    *
-   * The commit is decided exactly ONCE, at the earliest of: the settle (`splash:done`; a reduced-motion / screen-reader /
-   * flat mount is settled in frame 0), and the first item bound for `<Static>` (a submit's `[you]` bubble before the
-   * settle, a `--resume` replay, the one-shot header of frame 0) — so nothing can ever land above it (`<Static>` writes
-   * by index: a block prepended after the first flush would reprint the tail). `wordmarkWanted` is read at that moment
-   * only: a session that starts narrow and widens later never drops a mark into the middle of the transcript. Nothing in
-   * the classic renderer clears the transcript (Ctrl+L repaints in place, `/new` keeps the scrollback, there is no
-   * `/clear`), so the latch lives for the mount; the soft-cap remount (epoch > 0) does not reprint it, like the header.
+   * The commit is decided exactly ONCE, at the earliest of:
+   *  - the settle of an animated splash (the timer, a key, an overlay — any `splash:done` after a `running` frame 0);
+   *  - the first item bound for `<Static>` (a submit's `[you]` bubble before the settle, a `--resume` replay, the first
+   *    item of `jevcode run`) — so nothing can ever land above it (`<Static>` writes by index: a block prepended after
+   *    the first flush would reprint the tail);
+   *  - a mount that can never draw a mark (the flat tier, a screen reader) — frame 0, whatever the config says;
+   *  - otherwise, a mount settled in frame 0 (reduced motion) decides only once `setUi` has delivered the config, which
+   *    arrives AFTER the first frame by contract (session.ts `applyConfig`): deciding in frame 0 would bake the launch
+   *    defaults into the scrollback for good — `ui.wordmark: off`, `ui.noColor` and `ui.theme` ignored. Until then the
+   *    resting mark sits in the splash box (dynamic), so frame 0 still carries it. The settle and a real item decide
+   *    without the config, so a config that never arrives cannot stall the latch.
+   * `jevcode run`'s task header waits for the same decision (it is handed to `<Transcript>` only once the latch is set),
+   * so its reveal plays in the dynamic region like a session's and the header is still written one item below the mark.
+   * `wordmarkWanted` is read at that moment only: a session that starts narrow and widens later never drops a mark into
+   * the middle of the transcript. Nothing in the classic renderer clears the transcript (Ctrl+L repaints in place, `/new`
+   * keeps the scrollback, there is no `/clear`), so the latch lives for the mount; the soft-cap remount (epoch > 0) does
+   * not reprint it, like the header.
    * `undefined` = not decided yet · `null` = decided, no mark (narrow, flat, a screen reader, `ui.wordmark: off`).
    */
   const markLatch = useRef<CommittedMark | null | undefined>(undefined);
-  if (!fullscreen && markLatch.current === undefined && (state.splash !== 'running' || motion.settled || reducedMotion || header !== null || visible.length > 0)) {
+  // the splash animated from frame 0 (captured once): its end, however it came, is the settle
+  const splashAnimated = useRef(state.splash === 'running').current;
+  const markPossible = boxed && !launch.screenReader;
+  if (!fullscreen && markLatch.current === undefined && (visible.length > 0 || motion.settled || (splashAnimated && state.splash !== 'running') || !markPossible || (ui !== null && (state.splash !== 'running' || reducedMotion)))) {
     const pad = scrollbackMarkPad(rows);
     markLatch.current = wordmarkWanted({ boxed, columns, screenReader: launch.screenReader, setting: wordmarkSetting })
       ? // P-H3: a builder that throws commits BLANK rows of the same height (the `[ui]` item carries the detail)
@@ -3138,20 +3153,23 @@ export function App(p: AppProps): React.JSX.Element {
   }
   const markDecided = !fullscreen && markLatch.current !== undefined;
   const markCommitted = fullscreen ? null : (markLatch.current ?? null);
-  // a commit before the settle (a submit, a replay, the one-shot header) ends the splash: its timer stops with the box
+  // a commit before the settle (a submit, a replay, the first run item) ends the splash: its timer stops with the box
   useEffect(() => {
     if (markDecided && splashRunning) dispatch({ type: 'splash:done' });
   }, [markDecided, splashRunning, dispatch]);
   // the classic splash animates in the dynamic region until the commit; the fullscreen header keeps its round-3 splash
   const splashOn = state.splash === 'running' && motion.time < SPLASH_MS && columns >= WORDMARK_MIN_COLUMNS && boxed && !launch.screenReader && !markDecided;
+  // a classic mount settled in frame 0 (reduced motion) that is still waiting for the config holds the RESTING mark in the
+  // splash box — the rows the committed block will take — so frame 0 carries the mark and the commit moves nothing
+  const restingBox = !fullscreen && !markDecided && !splashOn && wordmarkWanted({ boxed, columns, screenReader: launch.screenReader, setting: wordmarkSetting });
   // §1.3.2: in `fullscreen` the header slot IS the mark in the tall tier (the allocator has already decided whether the
   // box is affordable, `full.header >= CAP.splash`). MEMOISED on the geometry: the header is up for the whole session,
   // so a fresh `RestingFrame` per render would re-run `spans()` and hand five new prop objects to `<SplashRow>` on every
-  // engine event. The classic renderer never holds a resting mark in the dynamic region (it is committed instead).
+  // engine event. The classic renderer holds a resting mark in the dynamic region only while `restingBox` waits.
   const restingMark = useMemo(
-    () => (fullscreen ? guard('pane', () => wordmarkFrame({ columns, version: VERSION, glyphs }), null) : null),
+    () => (fullscreen || restingBox ? guard('pane', () => wordmarkFrame({ columns, version: VERSION, glyphs }), null) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [fullscreen, columns, glyphs],
+    [fullscreen, restingBox, columns, glyphs],
   );
   // the rows never depend on the band (§3.8 ordering): rows → layout → the loop → `spans(loop.band)` at render
   const mark: { rows: string[]; spans: (band: GridBand | null) => readonly SplashSpan[] } | null = splashOn
@@ -3458,7 +3476,48 @@ export function App(p: AppProps): React.JSX.Element {
       {full === null ? (
         /* §13.4: each <Static> item has its own boundary inside <Transcript>; this outer one is the last resort and retries with the next item */
         <PaneBoundary pane="transcript" onFail={onPaneFail} resetKey={visible.length}>
-          <Transcript items={visible} mark={markCommitted} {...(header !== null ? { header } : {})} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} paintSeq={state.paintSeq} />
+          <Transcript items={visible} mark={markCommitted} {...(header !== null && markDecided ? { header } : {})} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} paintSeq={state.paintSeq} />
+        </PaneBoundary>
+      ) : null}
+      {full === null && !staticOnly && markShown && mark !== null ? (
+        // The classic splash box is the TOP of the dynamic region — directly under the scrollback, above the reply block
+        // and the rule row — in exactly the rows the committed block takes (`scrollbackMarkRows`): the commit turns the box
+        // into the same rows of scrollback, so no glyph row, no rule row and no console row moves.
+        // P-H3 / §1.3.2 edge 5: the boundary's fallback is BLANK rows of the SAME height — the splash box
+        // disappearing silently is the correct degradation, and the rendered height must keep equalling the height
+        // `computeLayout` granted (the default one-row red notice would make the frame `layout.mark − 1` rows short
+        // and would duplicate the `[ui]` item the App already appends). `resetKey` lets the next run try again.
+        <PaneBoundary
+          pane="wordmark"
+          onFail={onPaneFail}
+          fault={fault}
+          log={logName}
+          resetKey={state.runId ?? ''}
+          fallback={() => (
+            <Box flexDirection="column" height={layout.mark} overflow="hidden">
+              {Array.from({ length: layout.mark }, (_unused, i) => (
+                <Text key={`sf${i}`} wrap="truncate">
+                  {' '}
+                </Text>
+              ))}
+            </Box>
+          )}
+        >
+          <Box flexDirection="column" height={layout.mark} overflow="hidden">
+            {Array.from({ length: markPadTop }, (_unused, i) => (
+              <Text key={`sp${i}`} wrap="truncate">
+                {' '}
+              </Text>
+            ))}
+            {markGlyphRows.map((row, i) => (
+              <SplashRow key={`s${i}`} row={row} spans={markView.spans[i] ?? NO_MARK_SPANS} theme={theme} color={depth} />
+            ))}
+            {Array.from({ length: markPadBottom }, (_unused, i) => (
+              <Text key={`sq${i}`} wrap="truncate">
+                {' '}
+              </Text>
+            ))}
+          </Box>
         </PaneBoundary>
       ) : null}
       {full === null && !staticOnly && layout.reply > 0 ? (
@@ -3523,44 +3582,6 @@ export function App(p: AppProps): React.JSX.Element {
             {banner}
           </Text>
         </Box>
-      ) : null}
-      {full === null && !staticOnly && markShown && mark !== null ? (
-        // P-H3 / §1.3.2 edge 5: the boundary's fallback is BLANK rows of the SAME height — the splash box
-        // disappearing silently is the correct degradation, and the rendered height must keep equalling the height
-        // `computeLayout` granted (the default one-row red notice would make the frame `layout.mark − 1` rows short
-        // and would duplicate the `[ui]` item the App already appends). `resetKey` lets the next run try again.
-        <PaneBoundary
-          pane="wordmark"
-          onFail={onPaneFail}
-          fault={fault}
-          log={logName}
-          resetKey={state.runId ?? ''}
-          fallback={() => (
-            <Box flexDirection="column" height={layout.mark} overflow="hidden">
-              {Array.from({ length: layout.mark }, (_unused, i) => (
-                <Text key={`sf${i}`} wrap="truncate">
-                  {' '}
-                </Text>
-              ))}
-            </Box>
-          )}
-        >
-          <Box flexDirection="column" height={layout.mark} overflow="hidden">
-            {Array.from({ length: markPadTop }, (_unused, i) => (
-              <Text key={`sp${i}`} wrap="truncate">
-                {' '}
-              </Text>
-            ))}
-            {markGlyphRows.map((row, i) => (
-              <SplashRow key={`s${i}`} row={row} spans={markView.spans[i] ?? NO_MARK_SPANS} theme={theme} color={depth} />
-            ))}
-            {Array.from({ length: markPadBottom }, (_unused, i) => (
-              <Text key={`sq${i}`} wrap="truncate">
-                {' '}
-              </Text>
-            ))}
-          </Box>
-        </PaneBoundary>
       ) : null}
       {full === null && !staticOnly && layout.pane > 0 ? (
         <PaneBoundary pane="pane" onFail={onPaneFail} fault={fault} log={logName} resetKey={state.runId ?? ''}>
