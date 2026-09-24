@@ -112,6 +112,8 @@ describe('live agent tool round trip (AGENT-LOOP-DESIGN §15 S2)', () => {
       let calls = 0;
       let parsed = true;
       let stateTurns = 0;
+      // state returned by a turn that another request followed: the follow-up's own state is never sent again (S6 live, fireworks)
+      let replayableState = false;
       let replayedTurns = 0;
       let cost = 0;
       let answer: string | null = null;
@@ -164,6 +166,7 @@ describe('live agent tool round trip (AGENT-LOOP-DESIGN §15 S2)', () => {
             followUp = res.text;
             break;
           }
+          if (res.providerState !== undefined) replayableState = true;
           // the answer turn is appended with its state and one more question asked, so whatever reasoning state any
           // turn returned (the answer's included) is replayed at least once
           answer = res.text;
@@ -171,6 +174,7 @@ describe('live agent tool round trip (AGENT-LOOP-DESIGN §15 S2)', () => {
           messages.push({ role: 'user', content: [{ type: 'text', text: FOLLOW_UP }] });
           continue;
         }
+        if (res.providerState !== undefined) replayableState = true;
         const content: AgentAssistantBlock[] = res.text.length > 0 ? [{ type: 'text', text: res.text }] : [];
         for (const call of res.toolCalls) {
           calls++;
@@ -181,7 +185,7 @@ describe('live agent tool round trip (AGENT-LOOP-DESIGN §15 S2)', () => {
         messages.push({ role: 'assistant', content, ...state });
         messages.push({ role: 'user', content: res.toolCalls.map((call) => ({ type: 'tool_result' as const, toolUseId: call.id!, name: call.name, content: fileFor(call.input) })) });
       }
-      const replay = stateTurns === 0 ? 'no state returned' : replayedTurns > 0 ? `accepted on ${replayedTurns} turn(s)` : 'state returned, never replayed';
+      const replay = stateTurns === 0 ? 'no state returned' : replayedTurns > 0 ? `accepted on ${replayedTurns} turn(s)` : replayableState ? 'state returned, never replayed' : 'state only on the last turn';
       process.stdout.write(
         redact(
           `${c.id}: model=${cfg.model} served=${served} turns=${perTurnCalls.length} calls/turn=[${perTurnCalls.join(',')}] parsed=${parsed} ` +
@@ -197,8 +201,9 @@ describe('live agent tool round trip (AGENT-LOOP-DESIGN §15 S2)', () => {
       expect(answer!).toContain('48230');
       expect(followUp).not.toBeNull();
       expect(followUp!).toContain('kestrel-7');
-      // every turn after the first that returned state replayed it; a replay the provider rejected would have thrown
-      if (stateTurns > 0) expect(replayedTurns).toBeGreaterThan(0);
+      // state that a later request could carry was replayed; a replay the provider rejected would have thrown. State on the
+      // follow-up (the last turn) has no request after it — fireworks/glm-5p3-flash returned reasoning only there on 2026-09-23
+      if (replayableState) expect(replayedTurns).toBeGreaterThan(0);
       if (c.id === 'anthropic') expect(warnings).toEqual([]);
       expect(cost).toBeLessThan(0.1);
     });
