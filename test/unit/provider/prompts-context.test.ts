@@ -13,6 +13,7 @@ import { contextBudgetChars } from '../../../src/loop/context/limits.js';
 import type { HistoryEntry } from '../../../src/core/types.js';
 import { buildWindowEntry } from '../../../src/loop/window.js';
 import { PROMPT_LIMITS, buildPrompt, buildUserMessage, type PromptContextView, type PromptFileInView, type PromptInput } from '../../../src/provider/prompts.js';
+import { budgetMs } from '../helpers/perf-budget.js';
 
 const plan: Plan = { done: [], remaining: ['fix f'], unverified: [], openProblems: [], harnessProblems: [] };
 
@@ -244,6 +245,7 @@ describe('§8.8 the relaxed user message', () => {
       return ms[Math.min(ms.length - 1, Math.ceil(0.95 * ms.length) - 1)]!;
     };
     const p95 = Math.min(batch(), batch(), batch(), batch(), batch());
-    expect(p95).toBeLessThan(5);
+    // CI scales the budget (test/unit/helpers/perf-budget.ts); locally it stays 5 ms
+    expect(p95).toBeLessThan(budgetMs(5));
   });
 });
