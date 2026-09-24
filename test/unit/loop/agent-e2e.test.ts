@@ -254,6 +254,32 @@ describe('the agent loop end to end: real engine, real driver, mock provider, a 
     expect(JSON.stringify(r2.provider.requests[0]!.agent!.messages)).toContain('invalid_tool');
   }, 60_000);
 
+  it('§A1: a provider error the same request would hit again (a 404: a wrong model id) ends the run at the first failed turn — one request, one step, no three-failure streak (S6 review)', async () => {
+    const { root, ws } = failingNodeWorkspace();
+    const { result, events, provider } = await run(ws, root, 'hi', () => ({ error: { status: 404, retryable: false } }));
+    expect(result.stopReason).toBe('error');
+    expect(provider.requests).toHaveLength(1);
+    expect(of(events, 'step:end')).toHaveLength(1);
+    expect(of(events, 'error')).toHaveLength(1);
+    expect(result.error?.code).toBe('provider_http');
+    // a transient one before the first committed step stops too (the chat's one retry is the session's)
+    const t = await run(ws, root, 'hi', () => ({ error: { status: 503, retryable: true } }));
+    expect(t.result.stopReason).toBe('error');
+    expect(t.provider.requests).toHaveLength(1);
+  }, 60_000);
+
+  it('§A1: a transient provider error after the run has made progress keeps the stage-failure streak — a long task survives a blip', async () => {
+    const { root, ws } = failingNodeWorkspace();
+    const turns: MockTurn[] = [
+      { text: 'Reading.\n', toolCalls: [call('c1', 'read_file', { path: 'src/math.js' })], usage: USAGE, stopReason: 'tool_use' },
+      { error: { status: 503, retryable: true } },
+      { text: 'It computes the mean of a list.', usage: USAGE, stopReason: 'end_turn' },
+    ];
+    const { result, provider } = await run(ws, root, 'what does src/math.js do?', turns);
+    expect(result.stopReason).toBe('generator_done');
+    expect(provider.requests).toHaveLength(3);
+  }, 60_000);
+
   it('a greeting is one prose-only turn: stop `answered` (exit 0) in one step, no tool call, no sandbox command, no jev:request', async () => {
     const { root, ws } = failingNodeWorkspace();
     const { result, events, provider } = await run(ws, root, 'hi', [{ text: "Hi! I'm JevCode. Tell me what to change in this workspace.", usage: USAGE, stopReason: 'end_turn' }]);

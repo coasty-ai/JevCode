@@ -71,6 +71,22 @@ describe('the prose shaper', () => {
     expect(firstAttempt).toEqual(['Line one.']);
   });
 
+  it('a retry before any prose arrived (an HTTP 503, a refused connection) emits no reset: nothing was shown to take back', () => {
+    const { events, s } = shaper();
+    s.reset(2);
+    s.reset(3);
+    s.push('Hello.\n');
+    s.finish();
+    expect(events.map((e) => e.type)).toEqual(['assistant:text']);
+    expect(events[0]).toMatchObject({ attempt: 3, text: 'Hello.' });
+    // after a reset that took prose back, a second restart with nothing new in between says nothing more
+    const b = shaper();
+    b.s.push('half');
+    b.s.reset(2);
+    b.s.reset(3);
+    expect(b.events.map((e) => e.type)).toEqual(['assistant:reset']);
+  });
+
   it('redacts what it commits', () => {
     const { events, s } = shaper();
     s.push('key sk-secret here\n');

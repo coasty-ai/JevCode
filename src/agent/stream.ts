@@ -30,6 +30,8 @@ export function createProseShaper(o: { step: number; turn: number; emit: (e: Eng
   let attempt = 1;
   let pending = '';
   let fenceOpen = false;
+  /** prose arrived since the turn (or its last restart) began: only then is there anything to take back */
+  let streamed = false;
 
   const commit = (text: string, final: boolean): void => {
     o.emit({ type: 'assistant:text', step: o.step, turn: o.turn, attempt, text: o.redact(text), final });
@@ -64,6 +66,7 @@ export function createProseShaper(o: { step: number; turn: number; emit: (e: Eng
   return {
     push(chunk) {
       if (chunk.length === 0) return;
+      streamed = true;
       pending += chunk;
       flush();
     },
@@ -73,9 +76,13 @@ export function createProseShaper(o: { step: number; turn: number; emit: (e: Eng
       fenceOpen = false;
     },
     reset(next) {
+      attempt = next;
+      // a retry before any prose arrived (an HTTP 503, a refused connection) restarted nothing the human saw: no
+      // `reply restarted after a dropped stream` row for a stream that never started
+      if (!streamed) return;
+      streamed = false;
       pending = '';
       fenceOpen = false;
-      attempt = next;
       o.emit({ type: 'assistant:reset', step: o.step, turn: o.turn, attempt: next });
     },
   };

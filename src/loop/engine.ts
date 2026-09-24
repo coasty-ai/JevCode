@@ -1095,6 +1095,12 @@ class EngineImpl implements Engine {
   private stateError: { stage: StageName; code: string } | undefined;
   private interrupted: CheckpointState['interrupted'] = null;
   private consecutiveStageFailures = 0;
+  /**
+   * AGENT-LOOP-DESIGN §A1 "works perfectly": the agent's model turn failed with a provider error that the same request would
+   * hit again (a 4xx: a wrong model id, a rejected key or request), or with a transient one before the run's first committed
+   * step — the run stops at this step with `error`, not after a three-failure streak (the chat's one retry is the session's)
+   */
+  private agentProviderStop = false;
   /** opaque jev-only synthesizer state, persisted with every checkpoint (§JEV-ONLY-DESIGN 5.2) */
   private synthState: Json | null = null;
   /** Σ decisions.length over committed steps (RunResult.jevQuestions); persisted so it survives --resume */
@@ -5235,7 +5241,7 @@ class EngineImpl implements Engine {
     if (this.mode === 'agent' && draft.outcome?.status === 'noop') return { stop: isReplyOnlyRun(this.agentSteps) ? 'answered' : 'generator_done' };
     // docs/LLM-JEV-DESIGN.md §9.4: the generic fallback's `done` (draft.proposer 'generic', stage 4) stops as the generator's, like jev-off
     if ((this.mode === 'jev-off' || draft.proposer === 'generic') && draft.outcome?.status === 'noop') return { stop: 'generator_done' };
-    if (this.consecutiveStageFailures >= CONSECUTIVE_STAGE_FAILURE_LIMIT) {
+    if (this.consecutiveStageFailures >= CONSECUTIVE_STAGE_FAILURE_LIMIT || (this.agentProviderStop && draft.error !== null)) {
       const err = draft.error ?? { stage, code: 'internal' };
       this.stateError = { stage: err.stage, code: err.code };
       return { stop: 'error' };
@@ -6340,6 +6346,8 @@ class EngineImpl implements Engine {
     draft.error = { stage, code: err.code, message: this.redact(err.message) };
     draft.observed = stage === 'judge' && draft.executeFinished;
     this.consecutiveStageFailures += 1;
+    // §A1: a later transient failure keeps the streak, so a long task survives a blip the adapter's own retries did not
+    if (this.mode === 'agent' && stage === 'propose' && e instanceof ProviderHttpError && (!e.retryable || this.step === 0)) this.agentProviderStop = true;
     if (stage === 'propose' || stage === 'risk' || (stage === 'execute' && !draft.executeFinished)) {
       draft.outcome = { status: 'failed', error: `${stage}: ${err.code}` };
       draft.errorClass = err.name;
