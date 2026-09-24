@@ -1,6 +1,6 @@
 {
   "name": "@coasty/jevcode",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "A fast, streaming terminal coding agent: native tool calling, parallel reads, sandboxed commands, checkpoints and undo, on seven model providers.",
   "type": "module",
   "license": "MIT",
