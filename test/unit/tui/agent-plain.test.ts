@@ -60,6 +60,19 @@ describe('--plain in agent mode', () => {
     expect(lines).toEqual(['[you] hi there', '[jevcode] Hello.', '[jevcode] How can I help?']);
   });
 
+  it('two turns of prose never run together on one line (S6 review: `…exit 0).The "failure" is…`)', async () => {
+    const lines = await plainRun([
+      ...agentOpening('hi there'),
+      { type: 'generator:start', step: 1, attempt: 1 },
+      { type: 'generator:delta', step: 1, text: 'The tests passed.' },
+      { type: 'generator:start', step: 2, attempt: 2 },
+      { type: 'generator:delta', step: 2, text: 'The failure is expected.' },
+      ...finish(2),
+      { type: 'run:end', result: agentRunResult('answered'), exitCode: 0 },
+    ]);
+    expect(lines).toEqual(['[you] hi there', '[jevcode] The tests passed.', '[jevcode] The failure is expected.']);
+  });
+
   it('a provider retry after bytes streamed: the partial line ends, the dim notice, then the restarted reply', async () => {
     const lines = await plainRun([
       ...agentOpening('hi there'),
@@ -108,9 +121,10 @@ describe('--plain in agent mode', () => {
     expect(lines[1]).toBe("[jevcode] I'll look.");
     expect(lines[2]).toBe('[run] started · agent · fix it');
     expect(lines[3]).toBe('[run] instructions: AGENTS.md (120 B)');
-    expect(lines[4]).toBe('[step 1] tool · read_file calc/core.py (lines 1-80) · 3 ms');
-    expect(lines[5]).toMatch(/^\[step 1\] Read calc\/core\.py · 1\.2s · \$0\.001$/);
-    expect(lines[6]).toMatch(/^\[step 2\] Edit calc\/core\.py/);
+    // one row per step: the summary, not its tool / proposal / done / plan rows (transcript.log keeps those)
+    expect(lines[4]).toMatch(/^\[step 1\] Read calc\/core\.py · 1\.2s · \$0\.001$/);
+    expect(lines[5]).toMatch(/^\[step 2\] Edit calc\/core\.py/);
+    expect(lines.join('\n')).not.toMatch(/\] (tool|proposal|plan) · /);
     expect(lines).toContain('[jevcode] Done.');
     expect(lines.at(-1)).toMatch(/^\[run\] finished · generator_done · 3 steps/);
     // §14.3: an agent run that used no Jev names none (`jev $0.000` goes), the generator split stays

@@ -847,6 +847,9 @@ function callRest(name: string, summary: string): string {
 }
 
 /** AGENT-LOOP-DESIGN §9.4: one call as a row segment — `Read src/a.ts (lines 1-120)`, `Grep "x" in src (3 matches)`, `(failed)` when it failed. */
+/** The per-call and per-stage rows `--plain` leaves out of an agent run: its `[step N]` summary row says the same in one line. */
+const PLAIN_AGENT_STEP_DETAIL: ReadonlySet<TranscriptKind> = new Set<TranscriptKind>(['tool', 'proposal', 'outcome', 'plan']);
+
 /** A summary that already says how the call ended (`read_file a.js (error)`): no second marker after it. */
 const ENDED_MARKER_RE = /\((?:error|failed|invalid|not executed|blocked|declined)\)$/;
 
@@ -1705,7 +1708,11 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
   function handleAgent(e: EngineEvent): void {
     switch (e.type) {
       case 'generator:start':
-        if ((e.sample ?? 0) === 0) turnStreamed = false;
+        if ((e.sample ?? 0) === 0) {
+          turnStreamed = false;
+          // a new turn starts a new line: two turns' prose never run together (`…exit 0).The "failure" is…`, S6 review)
+          endStream();
+        }
         return;
       case 'generator:delta':
         if (e.sample !== undefined && e.sample >= 1) return;
@@ -1721,7 +1728,10 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
       default:
         break;
     }
-    const items = itemsFromEvent(e, seq);
+    // AGENT-LOOP-DESIGN §9.4 (the S6 review's --plain polish): one row per step — the `[step N] Read … · Edit … · Bash … · exit 0`
+    // summary — not its `tool ·`, `proposal ·`, `done ·` and `plan ·` rows as well (transcript.log keeps every row); a warning
+    // or a failure still prints
+    const items = itemsFromEvent(e, seq).filter((i) => !PLAIN_AGENT_STEP_DETAIL.has(i.kind) || i.level === 'warn' || i.level === 'error');
     seq += items.length;
     if (!agentTools && isAgentToolActivity(e)) {
       agentTools = true;
