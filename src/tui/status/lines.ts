@@ -134,6 +134,12 @@ export interface StatusLineState {
    * drift while the two PRs are in flight. The swap is one line in `rightZoneSegments`.
    */
   readonly ctx?: string | null;
+  /**
+   * The `ctx` cell's short rung (`ctx 41%`, or the amber/red form, which has no longer one) when `ctx` is the long form:
+   * the drop order steps the cell down to it before dropping the cell (a 100-column agent row keeps `ctx 1%` instead of
+   * losing the cell and moving every right-zone segment 28 cells). Absent or '' = no shorter form.
+   */
+  readonly ctxShort?: string | null;
   /** TUI-DESIGN-5 §4.4 (R5-4): the collapsed agents strip, same fixture-first rule as `ctx` — R5-4 replaces the read with `agentStripText(...)`. */
   readonly agents?: string | null;
   /**
@@ -769,14 +775,34 @@ function clampColumns(columns: number): number {
   return Math.max(0, Math.min(MAX_COLUMNS, Math.floor(columns)));
 }
 
+/** AGENT-LOOP-DESIGN §A5: the words an agent run's left zone cycles through, turn by turn and tool by tool. */
+const AGENT_STATUS_WORDS = ['thinking', 'replying', 'reading', 'editing', 'running', 'testing'] as const;
+const AGENT_WORD_CELLS = Math.max(...AGENT_STATUS_WORDS.map((w) => w.length));
+
+/**
+ * The width the drop order measures the left zone at. An agent run (live, or still replying) changes its word several times a
+ * second — `thinking` is one cell wider than `editing` / `running` / `reading` — and at 80 columns that one cell decided whether
+ * `ctx` fit, so the whole right zone jumped sideways at every switch between a model turn and a tool. Measured at the widest
+ * word, the set of segments that fit (and where each sits) stays the same for the whole run; the row draws the real word.
+ */
+function measuredLeftWidth(s: StatusLineState, o: StatusLineOptions, prefix: string, left: string, narrow: boolean): number {
+  const actual = stringWidth(left);
+  const agentLive = s.agentWord !== undefined && s.agentWord !== null && s.agentWord !== '';
+  const replying = s.thinking !== undefined && s.thinking !== null && (s.run === 'none' || s.run === 'starting');
+  if ((!agentLive && !replying) || activeToast(s.toasts, s.nowMs) !== null) return actual;
+  const widest = [`${stateGlyph(o, narrow)} ${'x'.repeat(AGENT_WORD_CELLS)}`, ...badges(s)].join(' ');
+  return Math.max(actual, stringWidth(`${prefix}${widest}`));
+}
+
 /** TUI-DESIGN §7.4: zone computation shared by `statusLineText` and its tests/twins. */
 export function statusZones(s: StatusLineState, columns: number, o: StatusLineOptions = {}): StatusZones {
   const cols = clampColumns(columns);
   const ascii = o.ascii === true;
   let word = leftZoneText(s, o);
-  const prefix = flatBadgePrefix(s, o);
+  let prefix = flatBadgePrefix(s, o);
+  let narrow = false;
   let left = `${prefix}${word}`;
-  let leftWidth = stringWidth(left);
+  let leftWidth = measuredLeftWidth(s, o, prefix, left, narrow);
   const { segments, wall } = rightZoneSegments(s, cols, o);
   const dropped: StatusZones['dropped'] = [];
   const stepSeg = segments.find((x) => x.id === 'step')!;
@@ -793,14 +819,16 @@ export function statusZones(s: StatusLineState, columns: number, o: StatusLineOp
   };
   // AGENT-LOOP-DESIGN §A5: the wide mini indicator gives its two extra cells back before anything else is dropped
   if (canNarrow(o) && !fits()) {
+    narrow = true;
     word = leftZoneText(s, o, true);
     left = `${prefix}${word}`;
-    leftWidth = stringWidth(left);
+    leftWidth = measuredLeftWidth(s, o, prefix, left, narrow);
   }
   // TUI-DESIGN-2 §1.5: the flat-tier badge yields before `help`
   if (prefix !== '' && !fits()) {
+    prefix = '';
     left = word;
-    leftWidth = stringWidth(left);
+    leftWidth = measuredLeftWidth(s, o, prefix, left, narrow);
     dropped.push('badge');
   }
   for (const d of DROP_ORDER) {
@@ -812,7 +840,28 @@ export function statusZones(s: StatusLineState, columns: number, o: StatusLineOp
       }
       continue;
     }
+    // the long `ctx 41% · 6 files · 12 steps` steps down to `ctx 41%` before the cell goes
+    if (d === 'ctx') {
+      const i = segments.findIndex((x) => x.id === 'ctx');
+      const short = s.ctxShort ?? '';
+      if (i !== -1 && short !== '' && stringWidth(short) < segments[i]!.width) {
+        segments[i] = seg('ctx', short);
+        if (fits()) break;
+      }
+    }
     if (dropSeg(d)) dropped.push(d);
+  }
+  // the drops the row needed even with the narrow indicator may have made room for the wide one: the donut comes back when it
+  // fits WITHOUT any further drop (at 100 columns a run's row had 27 free cells and still drew the one-cell spinner)
+  if (narrow && fits()) {
+    const wideWord = leftZoneText(s, o, false);
+    const wideLeft = `${prefix}${wideWord}`;
+    const wideWidth = measuredLeftWidth(s, o, prefix, wideLeft, false);
+    if (wideWidth + ZONE_GAP + rightWidth() <= cols) {
+      word = wideWord;
+      left = wideLeft;
+      leftWidth = wideWidth;
+    }
   }
   if (!fits()) {
     // the left zone yields last: keep the sentinel, the run meter and the secret badge whole when at all possible

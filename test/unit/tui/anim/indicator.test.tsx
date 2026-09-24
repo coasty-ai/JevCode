@@ -65,6 +65,49 @@ describe('the status row: the mini indicator replaces the spinner glyph', () => 
     expect(statusLineText(busy, inner, { indicatorWide: wide, indicatorNarrow: narrow }).length).toBeLessThanOrEqual(inner);
   });
 
+  it('the row does not jump as the agent word changes: at 80 and 100 columns every word keeps the same segments, each at the same column (S6 review)', () => {
+    const git = { head: { kind: 'branch' as const, name: 'main', oid: null }, ahead: 0, behind: 0, dirty: { staged: 0, modified: 2, untracked: 1 }, linkedWorktree: false, frozen: false };
+    // the live 24×80 row of the review: `step 0/250 0m00s  run $0.00/10.00 ok  sess $0.00/50.00 ok  ctx 2%` is exactly 76 cells
+    // beside a 7-letter word, so `thinking` (8) decided whether `ctx` fit
+    const status = { ...mkStatus(0, 'propose', 250), wallMs: 0 };
+    const spend = { ...status.spend, totalUsd: 0, capUsd: 10 };
+    const row = (agentWord: string, columns: number): StatusLineState => ({
+      ...statusView({ ...initialUiState('', null, { mode: 'session' }), run: 'live', mode: 'agent', status: { ...status, spend }, statusAt: 0, stageStartedAt: 0, nowMs: 0 }),
+      agentWord,
+      spend: { run: spend, session: { totalUsd: 0, capUsd: 50 } },
+      ctx: columns >= 100 ? 'ctx 2% · 0 files · 1 step' : 'ctx 2%',
+      ctxShort: columns >= 100 ? 'ctx 2%' : null,
+      git,
+    });
+    for (const columns of [80, 100, 120]) {
+      const inner = columns - 4;
+      const opts = { spinnerFrame: 0, indicatorWide: wide, indicatorNarrow: narrow, terminalColumns: columns };
+      const zones = ['thinking', 'reading', 'editing', 'running', 'testing', 'thinking'].map((w) => statusZones(row(w, columns), inner, opts));
+      for (const z of zones) {
+        expect(z.right, `${columns} columns`).toEqual(zones[0]!.right);
+        expect(z.dropped, `${columns} columns`).toEqual(zones[0]!.dropped);
+      }
+      // every right-zone segment starts at the same column whatever the word
+      const texts = ['thinking', 'editing'].map((w) => statusLineText(row(w, columns), inner, opts));
+      expect(texts[0]!.indexOf('step '), `${columns} columns`).toBe(texts[1]!.indexOf('step '));
+    }
+    // at 100 columns the long ctx cell steps down to its short form rather than going away
+    const at100 = statusZones(row('thinking', 100), 96, { spinnerFrame: 0, indicatorWide: wide, indicatorNarrow: narrow, terminalColumns: 100 });
+    expect(at100.right.some((t) => t.startsWith('ctx '))).toBe(true);
+  });
+
+  it('the donut comes back once the drops made room: a row that had to drop a long segment draws the wide frame when it now fits', () => {
+    const state: StatusLineState = {
+      ...statusView({ ...initialUiState('', null, { mode: 'session' }), run: 'live', mode: 'agent', status: mkStatus(1, 'propose'), statusAt: 0, stageStartedAt: 0, nowMs: 1000 }),
+      agentWord: 'thinking',
+      spend: { run: mkStatus(1, 'propose').spend, session: { totalUsd: 0, capUsd: 50 } },
+      ctx: `ctx 2% · ${'x'.repeat(60)}`,
+    };
+    const z = statusZones(state, 96, { spinnerFrame: 0, indicatorWide: wide, indicatorNarrow: narrow, terminalColumns: 100 });
+    expect(z.dropped).toContain('ctx');
+    expect(z.left.startsWith(`${wide} thinking`)).toBe(true);
+  });
+
   it('without an indicator (a screen reader, the twins) the row keeps the spinner glyph and draws no braille', () => {
     const row = statusLineText(thinkingState(), 76, { spinnerFrame: 1 });
     expect(row).toMatch(/^▒ thinking/);

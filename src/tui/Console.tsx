@@ -181,6 +181,7 @@ const STATUS_KEY: { readonly [K in keyof StatusLineState]-?: (v: StatusLineState
   fold: one,
   selfId: one,
   ctx: one,
+  ctxShort: one,
   agents: one,
   // AGENT-LOOP-DESIGN §A5: the agent run's activity word (a primitive the App derives)
   agentWord: one,

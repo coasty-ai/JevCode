@@ -175,6 +175,7 @@ describe('statusMemoDeps: every value the status row reads, flattened', () => {
     fold: null,
     selfId: null,
     ctx: null,
+    ctxShort: null,
     agents: null,
     agentWord: null,
   };

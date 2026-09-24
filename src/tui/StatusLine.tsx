@@ -12,7 +12,7 @@
 import { Box, Text } from 'ink';
 import { AGENTS_MIN_COLUMNS, SYNTH_MARKER, statusSpans, stepText, type StatusLineOptions, type StatusLineState, type StatusSpan } from './status/lines.js';
 import { agentStripText } from './agents/lines.js';
-import { ctxText } from './context/lines.js';
+import { CONTEXT_FULL_COLUMNS, CONTEXT_MIN_COLUMNS, ctxText } from './context/lines.js';
 import { GLYPHS, type GlyphSet } from './glyphs.js';
 import type { UiState } from './useEngine.js';
 import { textProps, themeFor, type ColorOn, type Theme } from './theme.js';
@@ -73,6 +73,8 @@ export function statusView(s: UiState, o: { picker?: boolean; columns?: number; 
      * `status.context` is absent whenever the run builds no relaxed context, which is the same omission.
      */
     ctx: s.status?.context === undefined ? null : ctxText(s.status.context, o.columns ?? 0, o.glyphs ?? GLYPHS.unicode),
+    // the short rung the drop order steps a long `ctx` cell down to before dropping it (only where the long form is drawn)
+    ctxShort: s.status?.context === undefined || (o.columns ?? 0) < CONTEXT_FULL_COLUMNS ? null : ctxText(s.status.context, CONTEXT_MIN_COLUMNS, o.glyphs ?? GLYPHS.unicode),
     /**
      * TUI-DESIGN-5 §2.2 (R5-H4): the `peers` zone's ONLY source. `statusZones` (`src/tui/status/lines.ts`) already
      * reads both, and the reducer's `peers:fold` arm is the supply — this pass-through is what connects them, so a
