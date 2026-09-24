@@ -1,5 +1,6 @@
-# --no-animation (reduced motion, TUI-DESIGN-3 §3.2 twins; replaces splash-reduced): the session mounts on the static resting mark — frame 0
-# carries the complete mark (5 `██` rows) and no `▓▒░` head; no frame ever carries the head; the idle region is 11 rows; a key still echoes
+# --no-animation (reduced motion, TUI-DESIGN-3 §3.2 twins; replaces splash-reduced): the session mounts settled — frame 0 COMMITS the
+# complete resting mark (5 `██` rows) as the first scrollback block and no frame ever carries the `▓▒░` head; the idle region is 6 rows (the
+# rule and the console); a key still echoes
 expect \x1b\[\?25l
 expect step 0/
 # raw mode on (Ink's post-commit effect writes ESC[?2004h): a key sent earlier is a cooked-mode byte the kernel echoes

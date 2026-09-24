@@ -54,9 +54,9 @@ export const CAP = {
   banner: 1,
   /** TUI-DESIGN-2 §4.3: the console's top edge, divider and bottom edge */
   chrome: 3,
-  /** TUI-DESIGN-2 §5.1 / TUI-DESIGN-3 §3: the wordmark's glyph rows (the splash, then the pinned mark) */
+  /** TUI-DESIGN-2 §5.1 / TUI-DESIGN-3 §3: the wordmark's glyph rows (the splash box; the fullscreen header) */
   splash: 5,
-  /** the pinned wordmark's own slot: the 5 glyph rows plus up to two blank padding rows above and below */
+  /** the wordmark's own slot (the classic splash box): the 5 glyph rows plus up to two blank padding rows above and below */
   mark: 9,
 } as const;
 
@@ -106,9 +106,9 @@ export interface LayoutInput {
   /** 0 (collapsed) · 6 (open) · 12 (full / picker); rows the active tab can fill */
   paneWant: number;
   /**
-   * The pinned wordmark's own slot (owner directive 2): `wordmarkBoxRows(rows)` when the mark is wanted, else 0. It
-   * is allocated ABOVE the pane, so an open panel / the picker / a pending review are drawn under the mark instead
-   * of evicting it; it is granted whole or not at all (the mark is never cut to its top rows).
+   * The wordmark's own slot: the classic splash box, `scrollbackMarkRows(rows)` while the startup splash animates and 0
+   * once the settled mark is committed to the scrollback (the owner's directive of 2026-09-23). It is allocated ABOVE
+   * the pane and granted whole or not at all (the mark is never cut to its top rows).
    */
   markWant?: number;
   /** AGENT-LOOP-DESIGN §9.4: the reply block's rows (the agent's uncommitted prose) or 0 — the last slot granted, the first to yield */
@@ -129,7 +129,7 @@ export interface Layout {
   rule: number;
   live: number;
   banner: number;
-  /** the pinned wordmark, whole or absent */
+  /** the wordmark slot (the classic splash box), whole or absent */
   mark: number;
   pane: number;
   /** AGENT-LOOP-DESIGN §9.4: the reply block, directly above the rule */
@@ -214,12 +214,12 @@ export function computeLayout(i: LayoutInput): Layout {
   const cap = COLLAPSING.has(i.overlay) ? 1 : rows >= 40 ? CAP.composerTall : CAP.composer;
   if (i.overlay !== 'wizard') z.composer += take(Math.min(i.composerWant, cap) - 1); // 5 composer growth
   z.queue = take(Math.min(i.queueWant, CAP.queue)); // 6 queue ≤ 2
-  // the pinned mark's rows are reserved from an EXPANDED preview too, so `e` no longer evicts the branding
+  // the mark slot's rows are reserved from an EXPANDED preview too, so `e` no longer evicts the branding
   const markWant = Math.min(size(i.markWant ?? 0), CAP.mark);
   z.preview = i.overlay === 'review' ? take(Math.min(i.previewWant, i.expanded ? Math.max(0, rem - markWant) : CAP.preview)) : 0; // 7
   z.live = i.overlay === 'review' ? 0 : take(Math.min(i.liveWant, CAP.live)); // 8 live rows are reclaimed by a pending review (A42)
   z.banner = take(Math.min(i.bannerWant, CAP.banner)); // 9 the loop banner is one row (A45)
-  // 9b the pinned wordmark (owner directive 2): its own slot above the pane, whole or absent
+  // 9b the wordmark slot (the classic splash box): its own slot above the pane, whole or absent
   z.mark = markWant > 0 && rem >= markWant ? take(markWant) : 0;
   // 10 pane yields first; TUI-DESIGN-3 §3.7 (`computeLayout` 1.2): under `paneWhole` the want is granted whole or not at all
   const want = Math.min(i.paneWant, CAP.pane);

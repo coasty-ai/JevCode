@@ -20,7 +20,7 @@
 import { appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
-import { memo, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Box, Text, render, useApp, useCursor, useInput, usePaste, useStdin, useStdout, useWindowSize } from 'ink';
 import type { Instance, Key } from 'ink';
 import type { BlockingAnswer, BlockingRequest, Engine, EngineMode, ImportPlan, LaunchSettings, Renderer, RendererOptions, SecretHit, SessionHost, SessionRow, UiConfig, UiLabel } from '../core/types.js';
@@ -54,7 +54,8 @@ import { computeFullLayout, type FullLayout } from './fullscreen/layout.js';
 import { selectRenderer } from './fullscreen/select.js';
 import { Viewport } from './fullscreen/ViewportBox.js';
 import { applyScrollAt, emptyIndex, positionRungs, rebuildFor, resolveTop, type ScrollKey, type ViewportIndex } from './fullscreen/viewport.js';
-import { wordmarkBoxRows, wordmarkFrame, wordmarkWanted, type WordmarkSetting } from './wordmark.js';
+import { scrollbackMarkPad, scrollbackMarkRows, wordmarkFrame, wordmarkWanted, type WordmarkSetting } from './wordmark.js';
+import { NO_MARK_SPANS, SplashRow, committedMark, type CommittedMark, type MarkSpan } from './WordmarkBlock.js';
 import { MINI_NARROW_CELLS, MINI_WIDE_CELLS, agentIndicatorKind, indicatorKindFor, miniFrame, type IndicatorKind } from './anim/index.js';
 import { ReplyTail } from './ReplyTail.js';
 import { pendingItems, pendingRows } from './reply-state.js';
@@ -3102,17 +3103,55 @@ export function App(p: AppProps): React.JSX.Element {
   // the eye — while an agent run is still a reply, or after one ended as a reply, only an earlier run that was not decides
   const replyLike = agentReplyPhase(state) || agentLastRunWasReply(state);
   const ranBefore = replyLike ? state.runsEnded > state.repliesEnded : state.ready !== null || state.done !== null || state.runsEnded > 0;
-  // TUI-DESIGN-3 §3 (D-I): the wordmark is the pane slot's idle tenant. The reveal runs in every boxed frame ≥ 64 columns while the
-  // splash is `running` (16–20 rows included); afterwards `wordmarkWanted` (§3.1) decides the WANT and the layout's whole-or-absent
-  // grant (§3.7) the SHOW. `ui.wordmark` defaults to `static` under the SSH launch source (§3.2 twins).
+  // TUI-DESIGN-3 §3 (D-I): the reveal runs in every boxed frame ≥ 64 columns while the splash is `running` (16–20 rows
+  // included). `ui.wordmark` defaults to `static` under the SSH launch source (§3.2 twins).
   const wordmarkSetting: WordmarkSetting = ui?.wordmark ?? (lx.ssh === true ? 'static' : 'sweep');
-  const splashOn = state.splash === 'running' && motion.time < SPLASH_MS && columns >= WORDMARK_MIN_COLUMNS && boxed && !launch.screenReader;
-  const wanted = wordmarkWanted({ boxed, rows, columns, screenReader: launch.screenReader, panel: state.panel, pickerOpen, overlay: overlayKind, setting: wordmarkSetting });
-  // the resting mark depends on the geometry alone, so it is built once per (columns, glyph set) — see below
+  /**
+   * The quiet start (2026-09, owner's directive "clean"): a SESSION opens with the wordmark and the composer, so the
+   * `[run] jevcode session · <dir> | step 0/– starting` header is not printed at all in the boxed renderer — `--plain`
+   * keeps it (`createPlainRenderer`), and `jevcode run`'s task header is untouched. It cannot be deferred to the first
+   * run instead: `<Static>` writes by index, so prepending a row after the first flush would reprint the tail.
+   */
+  const header = useMemo(() => (mode === 'session' ? null : headerItem(p.task, p.resumeId)), [mode, p.task, p.resumeId]);
+  /**
+   * THE OWNER'S DIRECTIVE (2026-09-23): "keep jevcode branding on top only and even after chat starts keep it there only
+   * and chats appear after that". In the classic renderer the settled mark is COMMITTED as the FIRST `<Static>` block of
+   * the session — every message (the `[you]` bubble, the `[jevcode]` prose, tool rows, `[ui]` rows) lands below it and
+   * the console stays at the bottom; a long session scrolls it off the top like any scrollback and it is never redrawn.
+   *
+   * The commit is decided exactly ONCE, at the earliest of: the settle (`splash:done`; a reduced-motion / screen-reader /
+   * flat mount is settled in frame 0), and the first item bound for `<Static>` (a submit's `[you]` bubble before the
+   * settle, a `--resume` replay, the one-shot header of frame 0) — so nothing can ever land above it (`<Static>` writes
+   * by index: a block prepended after the first flush would reprint the tail). `wordmarkWanted` is read at that moment
+   * only: a session that starts narrow and widens later never drops a mark into the middle of the transcript. Nothing in
+   * the classic renderer clears the transcript (Ctrl+L repaints in place, `/new` keeps the scrollback, there is no
+   * `/clear`), so the latch lives for the mount; the soft-cap remount (epoch > 0) does not reprint it, like the header.
+   * `undefined` = not decided yet · `null` = decided, no mark (narrow, flat, a screen reader, `ui.wordmark: off`).
+   */
+  const markLatch = useRef<CommittedMark | null | undefined>(undefined);
+  if (!fullscreen && markLatch.current === undefined && (state.splash !== 'running' || motion.settled || reducedMotion || header !== null || visible.length > 0)) {
+    const pad = scrollbackMarkPad(rows);
+    markLatch.current = wordmarkWanted({ boxed, columns, screenReader: launch.screenReader, setting: wordmarkSetting })
+      ? // P-H3: a builder that throws commits BLANK rows of the same height (the `[ui]` item carries the detail)
+        guard('wordmark', () => committedMark(wordmarkFrame({ columns, version: VERSION, glyphs }), pad, columns), committedMark({ rows: ['', '', '', '', ''], spans: () => [] }, pad, columns))
+      : null;
+  }
+  const markDecided = !fullscreen && markLatch.current !== undefined;
+  const markCommitted = fullscreen ? null : (markLatch.current ?? null);
+  // a commit before the settle (a submit, a replay, the one-shot header) ends the splash: its timer stops with the box
+  useEffect(() => {
+    if (markDecided && splashRunning) dispatch({ type: 'splash:done' });
+  }, [markDecided, splashRunning, dispatch]);
+  // the classic splash animates in the dynamic region until the commit; the fullscreen header keeps its round-3 splash
+  const splashOn = state.splash === 'running' && motion.time < SPLASH_MS && columns >= WORDMARK_MIN_COLUMNS && boxed && !launch.screenReader && !markDecided;
+  // §1.3.2: in `fullscreen` the header slot IS the mark in the tall tier (the allocator has already decided whether the
+  // box is affordable, `full.header >= CAP.splash`). MEMOISED on the geometry: the header is up for the whole session,
+  // so a fresh `RestingFrame` per render would re-run `spans()` and hand five new prop objects to `<SplashRow>` on every
+  // engine event. The classic renderer never holds a resting mark in the dynamic region (it is committed instead).
   const restingMark = useMemo(
-    () => (wanted || fullscreen ? guard('pane', () => wordmarkFrame({ columns, version: VERSION, glyphs }), null) : null),
+    () => (fullscreen ? guard('pane', () => wordmarkFrame({ columns, version: VERSION, glyphs }), null) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [wanted, fullscreen, columns, glyphs],
+    [fullscreen, columns, glyphs],
   );
   // the rows never depend on the band (§3.8 ordering): rows → layout → the loop → `spans(loop.band)` at render
   const mark: { rows: string[]; spans: (band: GridBand | null) => readonly SplashSpan[] } | null = splashOn
@@ -3124,18 +3163,11 @@ export function App(p: AppProps): React.JSX.Element {
         },
         null,
       )
-    : // §1.3.2: in `fullscreen` the header slot IS the mark in the tall tier — `wordmarkWanted`'s pane rules (panel,
-      // picker, review) are about the classic pane slot, which the fullscreen tree does not have; the allocator has
-      // already decided whether the box is affordable (`full.header >= CAP.splash`).
-      //
-      // MEMOISED on the geometry (owner directive 2): the mark is now up for the WHOLE session, including every
-      // frame of a run, so a fresh `RestingFrame` per render would re-run `spans()` and hand five new prop objects
-      // to `<SplashRow>` on every engine event — the pinned box must cost a live frame nothing.
-      restingMark;
+    : restingMark;
   const wordmarkOn = mark !== null && mark.rows.length > 0;
-  // owner directive 2 + 3: the branding box has its own slot, above the pane — `WORDMARK_ROWS` plus the padding
-  // rows the height affords, granted whole or not at all
-  const markWant = wordmarkOn ? wordmarkBoxRows(rows) : 0;
+  // the classic splash box: the committed block's own height (`scrollbackMarkRows`), granted whole or not at all, so the
+  // commit swaps the box for the same rows of scrollback and no console row moves
+  const markWant = wordmarkOn && !fullscreen ? scrollbackMarkRows(rows) : 0;
   // TUI-DESIGN-2 §4.6: 0 (collapsed) · 6 (open) · 12 (full / picker) — the mark is no longer a tenant here
   const paneWant = pickerOpen ? PICKER_PANE_WANT : state.panel === 'open' ? CAP.panel : state.panel === 'full' ? CAP.pane : 0;
   /**
@@ -3201,15 +3233,16 @@ export function App(p: AppProps): React.JSX.Element {
   // TUI-DESIGN-3 §3.6: the idle sweep — active only while the mark has rows, after the settle, with motion allowed and attention awake;
   // the quiet-after-key rule lives inside the hook (never in `isActive`); the App renders `loop.band`, never `loopBand(loop.k)`
   const attention = attentionAt(state.nowMs, state.lastActivityAt);
-  // owner directive 2: the mark is up for the whole session, and the sweep is FROZEN whenever anything is in flight
-  // (a run, a submission, a stream) — the pinned box is byte-identical across every frame of a reply, so a run still
-  // writes zero decoration frames and the `dynamic <= maxFps + 1` / `idle-frames` gates are untouched
+  // The sweep is FROZEN whenever anything is in flight (a run, a submission, a stream), so a run writes zero decoration
+  // frames. In the classic renderer `markShown` is the splash box only (never after the settle), so the loop never
+  // activates there: a committed mark is scrollback and is never repainted — zero frames at rest (`idle-frames`), and
+  // `ui.wordmark: sweep` covers the splash alone. The fullscreen header keeps its round-3 idle sweep.
   const loop = useIdleLoop({ shown: markShown && !splashOn && !runIsLive(state.run) && state.thinking === null && state.live === '', splashRunning: state.splash === 'running', enabled: wordmarkSetting === 'sweep' && !reducedMotion && depth > 0, attention, nowMs: state.nowMs, lastKeystrokeAt: state.lastKeystrokeAt });
   // Per-row span arrays, memoised on the mark and the band tick: a key frame re-renders the App but the five <SplashRow>s keep
-  // their props (React skips them; Ink's Yoga cache keeps their layout), so the persistent mark costs a key frame nothing.
+  // their props (React skips them; Ink's Yoga cache keeps their layout), so the splash box (and the fullscreen header) cost a key frame nothing.
   // TUI-DESIGN-4 §1.2 P-H3 (= §7.3 P-P3 item 2): `mark.spans(...)` ran in the render body outside every boundary, so a
   // throw there reached Ink's InternalErrorBoundary and took the whole frame. It is guarded now, and the fallback is
-  // BLANK rows of the same height — the idle tenant disappearing silently is the correct degradation; the `[ui]` item
+  // BLANK rows of the same height — the mark disappearing silently is the correct degradation; the `[ui]` item
   // the guard reports after commit carries the detail. The rows themselves render inside `<PaneBoundary pane="wordmark">`.
   const markView = useMemo((): { rows: readonly string[]; spans: readonly (readonly MarkSpan[])[] } => {
     if (mark === null) return { rows: [], spans: [] };
@@ -3227,13 +3260,6 @@ export function App(p: AppProps): React.JSX.Element {
   const wizardHosted = boxed && overlayKind === 'wizard' && layout.chrome > 0;
   const cTop = consoleTop(layout) - (wizardHosted ? layout.overlay : 0);
   const overlayTop = layout.reply + layout.rule + layout.live + layout.banner + layout.mark + layout.pane + layout.queue;
-  /**
-   * The quiet start (2026-09, owner's directive "clean"): a SESSION opens with the wordmark and the composer, so the
-   * `[run] jevcode session · <dir> | step 0/– starting` header is not printed at all in the boxed renderer — `--plain`
-   * keeps it (`createPlainRenderer`), and `jevcode run`'s task header is untouched. It cannot be deferred to the first
-   * run instead: `<Static>` writes by index, so prepending a row after the first flush would reprint the tail.
-   */
-  const header = useMemo(() => (mode === 'session' ? null : headerItem(p.task, p.resumeId)), [mode, p.task, p.resumeId]);
   // TUI-DESIGN-2 §3.1 (finding 1): an engine run — never a submission in flight — colours the border `borderFocus` and the prompt `steer`
   const runLive = runIsLive(state.run);
   // AGENT-LOOP-DESIGN §A5: an agent run with no tool call yet is a reply and keeps the chat's chrome
@@ -3355,8 +3381,10 @@ export function App(p: AppProps): React.JSX.Element {
         // §1.3.2: the fullscreen rule row is the branded strip from frame 0 — it is the only place the position
         // segment can go, and the header above it is the mark, so there is no pre-run `brandRow` state to keep
         ranBefore: full === null ? ranBefore : true,
-        // TUI-DESIGN-3 §3.3: the plain rule while the mark has rows (before the first run:ready); the strip keeps the row afterwards
-        wordmark: full === null && markShown,
+        // TUI-DESIGN-3 §3.3: the plain rule while the mark is on screen (the splash box, then the committed block above
+        // the rule — before the first run:ready); the strip keeps the row afterwards. A panel with rows takes the rule
+        // row for its tab header as it always has (finding 4: never a headerless pane)
+        wordmark: full === null && (markShown || (markCommitted !== null && layout.pane === 0)),
         version: VERSION,
         glyphs,
         pickerHeader: pickerOpen ? pickerRule(picker, columns, glyphs) : null,
@@ -3430,7 +3458,7 @@ export function App(p: AppProps): React.JSX.Element {
       {full === null ? (
         /* §13.4: each <Static> item has its own boundary inside <Transcript>; this outer one is the last resort and retries with the next item */
         <PaneBoundary pane="transcript" onFail={onPaneFail} resetKey={visible.length}>
-          <Transcript items={visible} {...(header !== null ? { header } : {})} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} paintSeq={state.paintSeq} />
+          <Transcript items={visible} mark={markCommitted} {...(header !== null ? { header } : {})} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} paintSeq={state.paintSeq} />
         </PaneBoundary>
       ) : null}
       {full === null && !staticOnly && layout.reply > 0 ? (
@@ -3497,7 +3525,7 @@ export function App(p: AppProps): React.JSX.Element {
         </Box>
       ) : null}
       {full === null && !staticOnly && markShown && mark !== null ? (
-        // P-H3 / §1.3.2 edge 5: the boundary's fallback is BLANK rows of the SAME height — the pinned box
+        // P-H3 / §1.3.2 edge 5: the boundary's fallback is BLANK rows of the SAME height — the splash box
         // disappearing silently is the correct degradation, and the rendered height must keep equalling the height
         // `computeLayout` granted (the default one-row red notice would make the frame `layout.mark − 1` rows short
         // and would duplicate the `[ui]` item the App already appends). `resetKey` lets the next run try again.
@@ -3666,45 +3694,6 @@ export function RuleRow({ text, theme, color, glyphs, band = null }: { text: str
   }
   return <Text wrap="truncate">{parts}</Text>;
 }
-
-/** TUI-DESIGN-2 §5.1: one wordmark row — the text unchanged, its cells coloured by the frame's spans (`accent` JEV, `dim` CODE, `sweep` head / band). */
-type MarkSpan = { readonly row: number; readonly from: number; readonly to: number; readonly role: import('./theme.js').ColorRole };
-const NO_MARK_SPANS: readonly MarkSpan[] = [];
-
-function SplashRowImpl({ row, spans, theme, color }: { row: string; spans: readonly { from: number; to: number; role: import('./theme.js').ColorRole }[]; theme: Theme; color: ColorDepth }): React.JSX.Element {
-  const cells = [...row];
-  const parts: React.JSX.Element[] = [];
-  let at = 0;
-  const sorted = [...spans].filter((s) => s.from < cells.length).sort((a, b) => a.from - b.from);
-  // the sweep band paints over the letter roles: later spans win inside their range
-  const roleAt = (i: number): import('./theme.js').ColorRole | null => {
-    let role: import('./theme.js').ColorRole | null = null;
-    for (const s of sorted) if (i >= s.from && i < s.to) role = s.role;
-    return role;
-  };
-  // a run of blanks carries no visible colour: it joins the preceding coloured part instead of opening a part of its own
-  const isBlank = (i: number): boolean => cells[i] === ' ';
-  while (at < cells.length) {
-    const role = roleAt(at);
-    let end = at + 1;
-    while (end < cells.length && (roleAt(end) === role || (isBlank(end) && role !== null))) end++;
-    const text = cells.slice(at, end).join('');
-    parts.push(
-      <Text key={`p${at}`} {...(role === null ? {} : textProps(theme, role, color))}>
-        {text}
-      </Text>,
-    );
-    at = end;
-  }
-  return (
-    <Box height={1} overflowY="hidden">
-      <Text wrap="truncate">{parts}</Text>
-    </Box>
-  );
-}
-
-/** TUI-DESIGN-3 §3 (integration): memoised by value so a key frame (which re-renders the App) leaves the five mark rows untouched. */
-const SplashRow = memo(SplashRowImpl, (a, b) => a.row === b.row && a.theme === b.theme && a.color === b.color && a.spans.length === b.spans.length && a.spans.every((s, i) => s.from === b.spans[i]!.from && s.to === b.spans[i]!.to && s.role === b.spans[i]!.role));
 
 // ---------------------------------------------------------------------------------------
 // Renderer (§15 item 16)

@@ -1,5 +1,6 @@
-# chrome tiers (TUI-DESIGN-2 §4.1; TUI-DESIGN-3 §3.2): boxed at 24x80 (the console's top edge carries the badge; the resting mark under
-# the rule), flat at 12x60 (no box rows, no wordmark, the status row at column 0), boxed again at 24x80 with the mark back; the shrink segment may cost one clear, the grow none.
+# chrome tiers (TUI-DESIGN-2 §4.1; TUI-DESIGN-3 §3.2): boxed at 24x80 (the console's top edge carries the badge; the resting mark committed
+# above the rule), flat at 12x60 (no box rows, no wordmark, the status row at column 0), boxed again at 24x80 — the mark committed once and
+# never redrawn (it is scrollback); the shrink segment may cost one clear, the grow none.
 # The flat tier is NOT anchored on the badge prefix any more: TUI-DESIGN-2 §1.5 drops that prefix FIRST when the row
 # runs short (round 3's `llm-jev` default carried an 18-cell badge that could not fit a 60-column status row; the agent
 # default's `agent` fits). The anchor is the flat shape itself — the prompt and status rows with no `|` box edge.
@@ -8,7 +9,8 @@
 expect \x1b\[\?25l
 expect ╭─ (?:\x1b\[[0-9;]*m)*agent
 expect sess \$
-sleep 0.3
+# past the splash's 700 ms settle: the mark is committed at 24x80 before the shrink
+sleep 0.8
 resize 12 60
 expect \n(?:\x1b\[[0-9;]*m)*(?:›|>) (?:\x1b\[[0-9;]*m)*Say hi
 sleep 0.5

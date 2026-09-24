@@ -10,10 +10,11 @@ document, not part of this repository — are also listed in `docs/DESIGN.md` un
 
 ## Contents
 
-101 entries, newest first.
+102 entries, newest first.
 
 **2026-09-23**
 
+- [The wordmark is committed once, as the first scrollback block; the chat is below it](#2026-09-23-the-wordmark-is-committed-once-as-the-first-scrollback-block-the-chat-is-below-it)
 - [The Jev-driven modules live under `src/jev-modes/`; dated entries keep the paths they were written with](#2026-09-23-the-jev-driven-modules-live-under-srcjev-modes-dated-entries-keep-the-paths-they-were-written-with)
 - [The default mode is `agent`: the code model drives with native tool calls, and Jev keeps three quick hints](#2026-09-23-the-default-mode-is-agent-the-code-model-drives-with-native-tool-calls-and-jev-keeps-three-quick-hints)
 - [A best guess with no reproduction oracle is verified by its scoped suite; an un-ignored virtualenv is never a candidate](#2026-09-23-a-best-guess-with-no-reproduction-oracle-is-verified-by-its-scoped-suite-an-un-ignored-virtualenv-is-never-a-candidate)
@@ -1961,3 +1962,35 @@ in `docs/STATUS.md`, `docs/research/**`, `docs/measurements/**`, `experiments/de
 
 **Affects.** The layout only. `src/loop/engine.ts` keeps the Jev-mode branches and imports the moved modules from
 `src/jev-modes/`; splitting it stays deferred (design open risk 17).
+
+## 2026-09-23 The wordmark is committed once, as the first scrollback block; the chat is below it
+
+**Decision.** The owner asked twice: "Keep jevcode branding on top only and even after chat starts keep it there only and
+chats appear after that" and "make sure the jevcode ascii design stays at top and chat is below the ascii design". In the
+classic (inline) renderer the resting mark lived in the dynamic region directly above the console, so every committed message
+landed above it. Now the startup splash still animates in the dynamic region (rule, splash box, console), and the settled
+mark (padding, the five glyph rows, the tagline where it fits, the `◆ <version>` caption, padding) is then committed as the
+first `<Static>` block. Every message lands below it and the console stays at the bottom. A long session scrolls it off the top,
+like any scrollback. It is never redrawn. The opt-in fullscreen renderer is unchanged: its header slot keeps the mark.
+
+**When.** The commit happens once, at the earliest of three moments: the settle (`splash:done`, which is frame 0 under reduced
+motion), a submit before the settle, or the first item bound for `<Static>` (a `--resume` replay, or `jevcode run`'s task header in
+frame 0). `<Static>` writes by index, so a block prepended after the first flush would reprint the tail, and nothing can ever
+land above the mark. WHETHER a mark is drawn is decided at that moment only (`wordmarkWanted`: the boxed tier, at least 64
+columns, no screen reader, `ui.wordmark` not `off`). A session that starts narrow and widens later never drops a mark into the
+middle of the transcript. The classic renderer has no `/clear`, Ctrl+L repaints in place, `/new` keeps the scrollback, and the
+20,000-item soft-cap remount does not reprint the mark, like the header. So it is committed exactly once per process.
+
+**What changed with it.** The pinned mark's height rules (21 rows; a panel, picker or review taking its rows below 30 rows)
+existed only because the mark held dynamic rows, so they are gone. A 16-row terminal commits the mark too. The committed block
+has at least one blank row on each side (`scrollbackMarkPad`: one, or two from 34 rows up), and the splash box takes the same
+rows, so the commit moves the rule row once, from above the box to below the mark, and no console row moves. The idle sweep
+never runs on a committed mark, so `ui.wordmark: sweep` covers only the splash, and an idle session writes zero frames. The
+rule row stays the plain rule while the mark is on screen and a panel has no rows. The first-frame probe counts wordmark cells
+from the first frame's synchronized-output bracket, because a frame's `<Static>` rows are written before Ink hides the cursor,
+and `jevcode run`'s mark is committed in frame 0.
+
+**Affects.** `src/tui/App.tsx` (the latch), `src/tui/Transcript.tsx` (the mark at index 0), `src/tui/WordmarkBlock.tsx`
+(new: `SplashRow`, the committed block), `src/tui/wordmark.ts` (`wordmarkWanted` without the height tiers, `scrollbackMarkPad`,
+`scrollbackMarkRows`), `src/perf/first-frame.ts`, `scripts/pty/polish-check.mjs` (V1 and V2 read the committed block), and
+the app, pty and smoke pins of the mark's position.

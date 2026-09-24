@@ -94,14 +94,20 @@ export function wordmarkExpectedAt(rows: number, columns: number): boolean {
 }
 
 /**
- * Wordmark cells (`█`) in the first dynamic frame of a pty transcript: the bytes from the first cursor hide (`ESC[?25l`,
+ * Wordmark cells (`█`) in the first frame of a pty transcript: the bytes from the first cursor hide (`ESC[?25l`,
  * research 20 §3) to the first cursor show after it (Ink's frame suffix), or to the end when the frame never showed the
- * cursor. 0 when no dynamic frame is present.
+ * cursor — widened back to the synchronized-output bracket (`ESC[?2026h`) that opens the same frame, when one precedes
+ * the hide. The widening is the owner's directive of 2026-09-23: a frame that commits `<Static>` rows writes them after
+ * the bracket and BEFORE Ink's log-update hides the cursor, and the classic renderer commits the settled wordmark as the
+ * first `<Static>` block — at frame 0 when the frame already has an item (`jevcode run`'s task header), so the mark of
+ * that frame sits in exactly those bytes. 0 when no frame is present.
  */
 export function wordmarkFirstFrame(transcript: string): number {
-  const start = transcript.indexOf('\x1b[?25l');
-  if (start < 0) return 0;
-  const show = transcript.indexOf('\x1b[?25h', start);
+  const hide = transcript.indexOf('\x1b[?25l');
+  if (hide < 0) return 0;
+  const bracket = transcript.lastIndexOf('\x1b[?2026h', hide);
+  const start = bracket >= 0 ? bracket : hide;
+  const show = transcript.indexOf('\x1b[?25h', hide);
   const frame = transcript.slice(start, show < 0 ? undefined : show);
   return (frame.match(/█/g) ?? []).length;
 }

@@ -1,6 +1,5 @@
-# a key while a sweep pass runs (TUI-DESIGN-3 §3.6): the pass begins ≈ 6.45 s after the first frame (splash:done + 5.75 s of rest) and lasts
-# 4 s; a key at ≈ 7.5 s echoes within the 50 ms max bound (its frame waits out at most one ≈ 11 ms sweep render), the pass finishes — band
-# frames continue after the echo — and no new pass starts within 3 s of the key (the quiet rule is evaluated where a pass would start)
+# a key where the old sweep pass ran (TUI-DESIGN-3 §3.6; the owner's directive of 2026-09-23): the committed mark has no idle pass, so a key
+# at ≈ 7.5 s after the first frame echoes within the 50 ms max bound and no band frame is ever written (before or after the echo)
 expect \x1b\[\?25l
 expect step 0/
 expect ◆(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*\d+\.\d+\.\d+

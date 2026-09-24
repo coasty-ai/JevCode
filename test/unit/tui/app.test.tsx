@@ -48,7 +48,7 @@ describe('<App> first frame (§1)', { retry: 1 }, () => {
     expect(m.lastFrame()).toContain('─'.repeat(10));
   });
 
-  it('session: NO header row (the quiet start), splash frame 0 (the `J` column), the console with the placeholder and the idle status row — from argv only (H-A1); `splash:done` keeps the resting mark under the plain rule with its `◆ <version>` caption (TUI-DESIGN-3 §3.2 H-A3 → F-W1: 11 dynamic rows)', async () => {
+  it('session: NO header row (the quiet start), splash frame 0 (the `J` column), the console with the placeholder and the idle status row — from argv only (H-A1); `splash:done` commits the resting mark with its `◆ <version>` caption as the first scrollback block, above the plain rule (the owner\'s directive of 2026-09-23: 6 dynamic rows)', async () => {
     const m = mountApp({ mode: 'session' });
     const f = m.lastFrame();
     // the quiet start (2026-09, owner's directive "clean"): a session opens with the mark and the composer — the
@@ -61,17 +61,22 @@ describe('<App> first frame (§1)', { retry: 1 }, () => {
     expect(m.state()?.splash).toBe('running');
     m.dispatch({ type: 'splash:done' });
     await tick(20);
+    const all = m.lastFrame().split('\n');
     const dyn = dynamicLines(m.lastFrame());
-    expect(dyn).toHaveLength(11); // plain rule + the 5-row mark + console (top, composer, divider, status, bottom)
+    expect(dyn).toHaveLength(6); // plain rule + console (top, composer, divider, status, bottom)
     expect(dyn[0]).toMatch(/^─+$/);
     expect(dyn[0]).toHaveLength(100);
-    for (let r = 0; r < 4; r++) expect(dyn[1 + r]).toBe(`${' '.repeat(22)}${WORDMARK[r]}`.replace(/\s+$/, ''));
-    expect(dyn[5]).toBe(`${' '.repeat(22)}${WORDMARK[4]}  ◆ ${VERSION}`);
-    expect(dyn[6]).toMatch(new RegExp(`^╭─ ${MODE_BADGE_WORD[DEFAULT_MODE].replace(/[+·]/g, (c) => `\\${c}`)} ─+ proj ─╮$`));
-    expect(dyn[7]).toBe(`│ › ${PLACEHOLDERS.task}${' '.repeat(96 - 2 - PLACEHOLDERS.task.length)} │`);
-    expect(dyn[8]).toMatch(/^├─+┤$/);
-    expect(dyn[9]).toMatch(/^│ idle\s+step 0\/–\s+\? help │$/);
-    expect(dyn[10]).toMatch(/^╰─+╯$/);
+    // the scrollback above it opens with the committed block: one blank row, the five glyph rows, one blank row
+    const scroll = all.slice(0, all.length - dyn.length).map((l) => l.trimEnd());
+    expect(scroll).toHaveLength(7);
+    expect([scroll[0], scroll[6]]).toEqual(['', '']);
+    for (let r = 0; r < 4; r++) expect(scroll[1 + r]).toBe(`${' '.repeat(22)}${WORDMARK[r]}`.replace(/\s+$/, ''));
+    expect(scroll[5]).toBe(`${' '.repeat(22)}${WORDMARK[4]}  ◆ ${VERSION}`);
+    expect(dyn[1]).toMatch(new RegExp(`^╭─ ${MODE_BADGE_WORD[DEFAULT_MODE].replace(/[+·]/g, (c) => `\\${c}`)} ─+ proj ─╮$`));
+    expect(dyn[2]).toBe(`│ › ${PLACEHOLDERS.task}${' '.repeat(96 - 2 - PLACEHOLDERS.task.length)} │`);
+    expect(dyn[3]).toMatch(/^├─+┤$/);
+    expect(dyn[4]).toMatch(/^│ idle\s+step 0\/–\s+\? help │$/);
+    expect(dyn[5]).toMatch(/^╰─+╯$/);
     expect(m.lastFrame()).not.toContain('▓▒░');
     expect(m.lastFrame()).not.toMatch(/◆ jevcode/);
     expect(m.state()?.splash).toBe('done');

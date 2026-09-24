@@ -28,8 +28,12 @@ const console_ = (prompt: string, status: string, badge = 'jev+llm'): string[] =
 const frame = (scroll: readonly string[], dyn: readonly string[]): string => `${BSU}\x1b[?25l${[...scroll, ...dyn].join('\r\n')}\r\n\x1b[?25h${ESU}`;
 const IDLE_STATUS = 'idle                                   step 0/–  sess $0.00/10.00 ok  ? help';
 const PLACEHOLDER = `${DIM}Say hi, ask a question, or describe a task…${RESET}`;
-const idleDyn = (): string[] => [RULE, ...MARK, ...console_(PLACEHOLDER, IDLE_STATUS)];
-const splashDyn = (): string[] => [RULE, '                ██ ▓▒░', '                ██', '                ██', '            ██  ██', '             ████', ...console_(PLACEHOLDER, IDLE_STATUS)];
+/** the owner's directive of 2026-09-23: after the settle the dynamic region is the rule and the console — the mark is scrollback */
+const idleDyn = (): string[] => [RULE, ...console_(PLACEHOLDER, IDLE_STATUS)];
+/** the splash box (the committed block's own height at 24 rows: one blank row, the five glyph rows, one blank row) under the rule */
+const splashDyn = (): string[] => [RULE, '', '                ██ ▓▒░', '                ██', '                ██', '            ██  ██', '             ████', '', ...console_(PLACEHOLDER, IDLE_STATUS)];
+/** the commit frame's scrollback: the settled mark, padded */
+const COMMITTED = ['', ...MARK, ''];
 const STEP = ` ${DIM}[step 1]${RESET} run $ python -m pytest -q tests/test_core.py · risk 0.00 ok\r\n          · tests 4p/3f/0e · judge 0.49 · 4.9s · $0.006`;
 const YOU = `${DIM}    ${RESET}${PINK2}\x1b[1m[you]${RESET}${OFF} Fix the failing tests in tests/test_core.py without changing the\r\n          tests.`;
 const BOT = `${PINK}\x1b[1m[jevcode]${RESET}${OFF} Hi. I'm JevCode (mock reply).`;
@@ -44,9 +48,9 @@ const STRIP = `${DIM}─── ${RESET}${PINK}▸ jev${OFF}${DIM} s1 · 75 decis
 const LIVE_STATUS = `${PINK}▓${OFF} context    step 1/40 0m05s  run $0.01/2.00 ok  sess $0.01/10.00 ok  ? help`;
 const liveDyn = (): string[] => [STRIP, ...console_('\x1b[33mType to steer the next step…  Esc pauses\x1b[39m', LIVE_STATUS)];
 
-/** a good session: prologue header, two splash frames, the settled frame, a turn, a run, the epilogue */
+/** a good session: prologue header, two splash frames, the settle frame (the mark committed), a turn, a run, the epilogue */
 function goodCapture(): string {
-  return HEAD + frame([], splashDyn()) + frame([], splashDyn()) + frame([], idleDyn()) + frame(['', YOU, '', BOT], idleDyn()) + frame(['', RUN_START, STEP], liveDyn()) + frame(['', RUN_END, '', UI_BLOCK], [STRIP, ...MARK, ...console_(PLACEHOLDER, '\x1b[33m\x1b[1midle exit 4\x1b[22m\x1b[39m  step 9/40 0m14s  run $0.03/2.00 ok  sess $0.03/10.00 ok  ? help')]);
+  return HEAD + frame([], splashDyn()) + frame([], splashDyn()) + frame(COMMITTED, idleDyn()) + frame([YOU, '', BOT], idleDyn()) + frame(['', RUN_START, STEP], liveDyn()) + frame(['', RUN_END, '', UI_BLOCK], [STRIP, ...console_(PLACEHOLDER, '\x1b[33m\x1b[1midle exit 4\x1b[22m\x1b[39m  step 9/40 0m14s  run $0.03/2.00 ok  sess $0.03/10.00 ok  ? help')]);
 }
 
 const by = (results: Result[], id: string): Result => results.find((r) => r.id === id)!;
@@ -60,15 +64,19 @@ describe('checkPolish over a capture that honours TUI-DESIGN-3 §9', () => {
     // TUI-DESIGN-4 §11: V13 is un-deferred by D-V and now gated; V19–V21 still need a timing file
     expect(by(results, 'V13').pass).toBe(true);
     for (const id of ['V19', 'V20', 'V21']) expect(by(results, id).pass).toBeNull();
-    expect(by(results, 'V1').detail).toContain('11 dynamic rows');
+    expect(by(results, 'V1').detail).toContain('5 committed wordmark rows, 1 padding row(s) each side');
+    expect(by(results, 'V1').detail).toContain('6 dynamic rows');
+    expect(by(results, 'V2').detail).toContain('the mark heads the scrollback, committed once');
     expect(by(results, 'V3').detail).toMatch(/^\d distinct SGR foregrounds/);
   });
   it('the frame grammar: scrollback above the rule row, the dynamic region from it, wordmark rows recognised, the prologue header counted as scrollback', () => {
     const { frames, scrollback } = checkPolish(goodCapture(), { rows: 24, cols: 80 });
     expect(frames).toHaveLength(6);
     expect(frames[0]!.scrollback).toEqual([]);
-    expect(frames[0]!.dynamic).toHaveLength(11);
-    expect(frames[3]!.scrollback[1]).toMatch(/^ {4}\[you\] Fix the failing tests/);
+    expect(frames[0]!.dynamic).toHaveLength(13);
+    expect(frames[2]!.scrollback.filter((r) => r.includes('██'))).toHaveLength(5);
+    expect(frames[2]!.dynamic).toHaveLength(6);
+    expect(frames[3]!.scrollback[0]).toMatch(/^ {4}\[you\] Fix the failing tests/);
     expect(scrollback[0]).toBe('    [run] jevcode session · proj | step 0/– starting');
     expect(scrollback.filter((r) => /^ {10}/.test(r)).length).toBeGreaterThan(3);
   });
@@ -97,9 +105,9 @@ describe('one defect per predicate (each named by its V number)', () => {
    */
   it('V22: a frame whose box rows are not the width of its own rule row, and a box row ending in the ellipsis', () => {
     const narrowBox = console_(PLACEHOLDER, IDLE_STATUS).map((r) => r.replace(/─{20}/, '─'.repeat(12)));
-    expect(run(HEAD + frame([], idleDyn()) + frame([], [RULE, ...MARK, ...narrowBox]))).toEqual(expect.arrayContaining(['V22']));
+    expect(run(HEAD + frame([], idleDyn()) + frame([], [RULE, ...narrowBox]))).toEqual(expect.arrayContaining(['V22']));
     const truncated = console_(PLACEHOLDER, IDLE_STATUS).map((r, i) => (i === 1 ? `${r.slice(0, -1)}…` : r));
-    expect(run(HEAD + frame([], idleDyn()) + frame([], [RULE, ...MARK, ...truncated]))).toEqual(expect.arrayContaining(['V22']));
+    expect(run(HEAD + frame([], idleDyn()) + frame([], [RULE, ...truncated]))).toEqual(expect.arrayContaining(['V22']));
     // …and the good capture, whose every box row is its rule row's width, passes
     expect(run(goodCapture())).not.toEqual(expect.arrayContaining(['V22']));
   });
@@ -117,9 +125,11 @@ describe('one defect per predicate (each named by its V number)', () => {
     expect(run(HEAD + frame([], idleDyn()) + frame(['', ok], idleDyn()))).not.toEqual(expect.arrayContaining(['V23']));
   });
 
-  it('V2: an idle frame without the mark before the first run', () => {
-    const cap = HEAD + frame([], splashDyn()) + frame([], idleDyn()) + frame([], [`${DIM}─── ◆ jevcode 0.3.0 ${'─'.repeat(60)}${RESET}`, ...console_(PLACEHOLDER, IDLE_STATUS)]);
-    expect(run(cap)).toContain('V2');
+  it('V2: the mark drawn again in the dynamic region after the settle; an item committed above the mark', () => {
+    const redrawn = HEAD + frame([], splashDyn()) + frame(COMMITTED, idleDyn()) + frame([], [RULE, ...MARK, ...console_(PLACEHOLDER, IDLE_STATUS)]);
+    expect(run(redrawn)).toContain('V2');
+    const below = HEAD + frame([], splashDyn()) + frame([YOU], idleDyn()) + frame(COMMITTED, idleDyn());
+    expect(run(below)).toContain('V2');
   });
   it('V3 / V4: an eighth foreground colour, four colours on one row', () => {
     const many = ['\x1b[31m', '\x1b[32m', '\x1b[33m', '\x1b[34m', '\x1b[36m', '\x1b[37m', '\x1b[38;5;211m', '\x1b[38;5;169m'].map((c, i) => `${c}x${i}\x1b[39m`).join('');
@@ -160,15 +170,15 @@ describe('one defect per predicate (each named by its V number)', () => {
     expect(run(goodCapture() + frame([`${DIM} [step 3]${RESET} run $ pytest -q · risk 0.44 [review] · declined · judge 0.50 · 1m2s · jev 1.4k`], idleDyn()))).toContain('V11');
   });
   it('V12: a run id in the status row', () => {
-    const cap = goodCapture() + frame([], [RULE, ...MARK, ...console_(PLACEHOLDER, 'idle        20260921-212813-uo5luiq4        step 0/–  sess $0.00/10.00 ok  ? help')]);
+    const cap = goodCapture() + frame([], [RULE, ...console_(PLACEHOLDER, 'idle        20260921-212813-uo5luiq4        step 0/–  sess $0.00/10.00 ok  ? help')]);
     expect(run(cap)).toContain('V12');
   });
   it('V14 / V15: a whole-row coloured status, a spinner glyph outside the accent', () => {
     const whole = `\x1b[33m${IDLE_STATUS}\x1b[39m`;
-    expect(run(goodCapture() + frame([], [RULE, ...MARK, ...console_(PLACEHOLDER, whole)]))).toContain('V14');
+    expect(run(goodCapture() + frame([], [RULE, ...console_(PLACEHOLDER, whole)]))).toContain('V14');
     const wrong = `\x1b[36m▓\x1b[39m thinking                             step 0/–  sess $0.00/10.00 ok  ? help`;
-    expect(run(goodCapture() + frame([], [RULE, ...MARK, ...console_('\x1b[2m(thinking…)\x1b[22m', wrong)]))).toContain('V15');
-    expect(run(goodCapture() + frame([], [RULE, ...MARK, ...console_('\x1b[2m(thinking…)\x1b[22m', `${PINK}▓${OFF} thinking                             step 0/–  sess $0.00/10.00 ok  ? help`)]))).not.toContain('V15');
+    expect(run(goodCapture() + frame([], [RULE, ...console_('\x1b[2m(thinking…)\x1b[22m', wrong)]))).toContain('V15');
+    expect(run(goodCapture() + frame([], [RULE, ...console_('\x1b[2m(thinking…)\x1b[22m', `${PINK}▓${OFF} thinking                             step 0/–  sess $0.00/10.00 ok  ? help`)]))).not.toContain('V15');
   });
   it('V16: `starting` beside `Type to steer` in one frame', () => {
     const cap = goodCapture() + frame([], [STRIP, ...console_('\x1b[33mType to steer the next step…  Esc pauses\x1b[39m', 'starting                                step 0/–  sess $0.00/10.00 ok  ? help')]);

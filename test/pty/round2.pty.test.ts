@@ -47,6 +47,7 @@ import {
   afterFirstFrame,
   answeredReplyProblems,
   cleanupScratch,
+  committedMark,
   countClears,
   drive,
   echoStep,
@@ -412,17 +413,26 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
 });
 
 /**
- * Owner directive 3: the padded branding box makes an idle boxed frame `rule 1 + (5 + 2p) + console 5` rows —
- * 11 below 26 rows, 13 at 26–33, 15 from 34 up.
+ * The owner's directive of 2026-09-23: the splash box is the committed block's own height (one blank row each side, two
+ * from 34 rows up), so a splash frame is `rule 1 + (5 + 2p) + console 5`; after the commit the idle frame is the rule and
+ * the console (6 rows) and the mark is the first scrollback block.
  */
-const idleRows = (rows: number): number => 1 + (5 + 2 * (rows >= 34 ? 2 : rows >= 26 ? 1 : 0)) + 5;
+const splashRows = (rows: number): number => 1 + (5 + 2 * (rows >= 34 ? 2 : 1)) + 5;
+const IDLE_ROWS = 6;
+/** the committed mark: one block of five glyph rows at the head of the scrollback (only blank rows above it) */
+function expectCommittedOnce(r: Drive): ReturnType<typeof committedMark> {
+  const mark = committedMark(r.text);
+  expect(mark.blocks, mark.scroll.slice(0, 12).join('\n')).toBe(1);
+  expect(mark.rows).toHaveLength(5);
+  return mark;
+}
 
 describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
   for (const [rows, cols] of [
     [24, 80],
     [40, 120],
   ] as const) {
-    it(`splash ${rows}x${cols}: frame 0 is the first frame (< 300 ms warm), a key at ~100 ms completes the reveal — the echo frame and every later idle frame carry the resting mark, no sweep head after the echo, ${idleRows(rows)} dynamic rows, zero clears (TUI-DESIGN-3 §3.3)`, async () => {
+    it(`splash ${rows}x${cols}: frame 0 is the first frame (< 300 ms warm), a key at ~100 ms completes the reveal — the resting mark is committed above the rule and no later frame draws it in the dynamic region, no sweep head after the echo, ${IDLE_ROWS} dynamic rows, zero clears (TUI-DESIGN-3 §3.3)`, async () => {
       const r = await drive({ name: `r2-splash-${rows}x${cols}`, args: ['chat', '--mock'], rows, cols, steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'sleep 0.1', 'send h', echoStep('h'), 'sleep 0.3', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, IDLE_STEP, ...EXIT_IDLE] });
       expect(r.timeouts).toBe(0);
       expect(r.code).toBe(0);
@@ -431,89 +441,98 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
       const fs = frames(r.text);
       const [frame] = fs;
       const body = frame!.lines.slice(frame!.ruleIndex);
-      // §5.2 row 0 / H-A1: the `J` column and the sweep head, the console complete with the badge and `step 0/–`, 11 dynamic rows
+      // §5.2 row 0 / H-A1: the `J` column and the sweep head, the console complete with the badge and `step 0/–`, in the splash box
       expect(body.filter((l) => WORDMARK_RE.test(l)).length).toBe(5);
       expect(body.some((l) => /▓▒░/.test(l))).toBe(true);
       expect(body.some((l) => l.startsWith(`╭─ ${BADGE_DEFAULT_TEXT} `))).toBe(true);
       expect(body.at(-2)).toMatch(/step 0\/–/);
-      expect(frame!.rows).toBe(idleRows(rows));
+      expect(frame!.rows).toBe(splashRows(rows));
       for (const l of body.filter(isBoxEdge)) expect([...l].length).toBe(cols);
-      // TUI-DESIGN-3 §3.3: a key completes the reveal — the echo frame shows the character AND the complete resting mark; no frame from the echo on carries the sweep head
+      // TUI-DESIGN-3 §3.3: a key completes the reveal — the resting mark is committed (the scrollback's first block) and from the
+      // echo on no frame draws a wordmark row or the sweep head in its dynamic region
       const echo = fs.findIndex((u) => u.lines.some((l) => /[›>] h/.test(l)));
       expect(echo).toBeGreaterThan(0);
       for (const u of fs.slice(echo)) {
-        expect(hasMark(u.lines.slice(u.ruleIndex))).toBe(true);
+        expect(u.lines.slice(u.ruleIndex).some((l) => WORDMARK_RE.test(l))).toBe(false);
         expect(u.lines.some((l) => /▓▒░/.test(l))).toBe(false);
       }
-      // the idle frame: plain rule + the padded box + 5-row console (F-W1); the caption `◆ <version>` closes the mark's last row at ≥ 73 columns
-      expect(fs.at(-1)!.rows).toBe(idleRows(rows));
+      // the idle frame: the plain rule + the 5-row console; the committed block carries the caption `◆ <version>` (≥ 73 columns)
+      expect(fs.at(-1)!.rows).toBe(IDLE_ROWS);
       expect(fs.at(-1)!.lines[fs.at(-1)!.ruleIndex]).toMatch(/^─{10}/);
-      expect(fs.at(-1)!.lines.slice(fs.at(-1)!.ruleIndex).some((l) => /█ {2}◆ \d+\.\d+\.\d+$/.test(l))).toBe(true);
-      if (cols >= 104) expect(fs.at(-1)!.lines.slice(fs.at(-1)!.ruleIndex).some((l) => l.includes('Decisions, not strings'))).toBe(true);
+      const mark = expectCommittedOnce(r);
+      expect(mark.rows.some((l) => /█ {2}◆ \d+\.\d+\.\d+$/.test(l))).toBe(true);
+      if (cols >= 104) expect(mark.rows.some((l) => l.includes('Decisions, not strings'))).toBe(true);
       expect(countClears(afterFirstFrame(r.text))).toBe(0);
       console.log(`splash ${rows}x${cols}: first frame ${first!.t} ms, ${fs.slice(0, echo).filter((u) => u.lines.some((l) => WORDMARK_RE.test(l))).length} wordmark frames before the key at frame ${echo}`);
     });
   }
 
-  it('wordmark-reduced: --no-animation mounts on the static resting mark — frame 0 carries the complete mark and no sweep head, every frame keeps it, 11 rows (TUI-DESIGN-3 §3.2 twins)', async () => {
+  it('wordmark-reduced: --no-animation commits the static resting mark in frame 0 — the complete mark and no sweep head, never in a dynamic region, 6 rows (TUI-DESIGN-3 §3.2 twins)', async () => {
     const r = await drive({ name: 'r3-wordmark-reduced', args: ['chat', '--mock', '--no-animation'], steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'sleep 0.1', 'send h', echoStep('h'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, IDLE_STEP, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     expect(stripAnsi(r.text)).not.toMatch(/▓▒░/);
     const fs = frames(r.text);
-    for (const u of fs) expect(hasMark(u.lines.slice(u.ruleIndex))).toBe(true);
+    for (const u of fs) expect(hasMark(u.lines.slice(u.ruleIndex))).toBe(false);
+    // frame 0 commits it: Ink writes a frame's `<Static>` rows before its log-update hides the cursor, so the whole block
+    // precedes the first cursor hide
+    expect(stripAnsi(r.text.slice(0, r.text.indexOf('\x1b[?25l'))).split(/\r?\n/).filter((l) => WORDMARK_RE.test(l))).toHaveLength(5);
     expect(fs[0]!.lines[fs[0]!.ruleIndex]).toMatch(/^─{10}/);
-    expect(fs[0]!.rows).toBe(11);
+    expect(fs[0]!.rows).toBe(IDLE_ROWS);
+    expectCommittedOnce(r);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 
-  it('splash settles by itself: no key — ≤ 15 reveal frames before the caption frame `◆ <version>`, every frame after it carries the mark, 0 frames in the 5 s after the settle, zero clears (TUI-DESIGN-3 §3.4, §3.5)', async () => {
+  it('splash settles by itself: no key — ≤ 15 reveal frames before the caption frame `◆ <version>`, then the commit (the mark above the rule, never in a dynamic region again), no frame in the 5 s after it, zero clears (TUI-DESIGN-3 §3.4, §3.5)', async () => {
     const r = await drive({ name: 'r3-splash-settle', args: ['chat', '--mock'], steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, CAPTION_STEP, 'mark settled', IDLE_STEP, 'sleep 5', 'mark quiet', 'send h', echoStep('h'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text).filter((f) => f.ruleIndex >= 0);
     const head = all.filter((f) => f.dynamic.some((l) => /▓▒░/.test(l))).map((f) => f.index);
-    // the reveal: frame 0 carries the wordmark head; ≤ 15 frames at the 50 ms tick; the settle frame is the first with the caption and no head
+    // the reveal: frame 0 carries the wordmark head; ≤ 15 frames at the 50 ms tick; the caption frame is the held box (t ≥ 550)
     expect(head[0]).toBe(all[0]!.index);
     expect(head.length).toBeGreaterThanOrEqual(1);
     expect(head.length).toBeLessThanOrEqual(SPLASH_MAX_FRAMES);
     const caption = all.findIndex((f) => f.dynamic.some((l) => /◆ \d+\.\d+\.\d+$/.test(l)) && !f.dynamic.some((l) => /▓▒░/.test(l)));
     expect(caption).toBeGreaterThan(0);
-    for (const f of all.slice(caption)) expect(hasMark(f.dynamic)).toBe(true);
-    // the loop rests for 5.75 s after `splash:done`: the frames strictly between the caption frame and the marker key's echo are the host's settle (the session meter) at most
-    const echo = all.findIndex((f, i) => i > caption && f.dynamic.some((l) => /[›>] h/.test(l)));
-    expect(echo).toBeGreaterThan(caption);
-    const between = all.slice(caption + 1, echo).filter((f) => !f.dynamic.some((l) => /sess \$/.test(l)) || f.index !== all[caption + 1]?.index);
-    expect(between.length).toBeLessThanOrEqual(1);
-    expect(all.at(-1)!.dynamic.length).toBe(11);
+    // the commit: the first frame whose rows above the rule carry the mark; from it on no dynamic region draws a wordmark row
+    const commit = all.findIndex((f, i) => i >= caption && f.lines.slice(0, f.ruleIndex).filter((l) => WORDMARK_RE.test(l)).length === 5);
+    expect(commit).toBeGreaterThan(caption);
+    for (const f of all.slice(commit)) expect(f.dynamic.some((l) => WORDMARK_RE.test(l))).toBe(false);
+    // nothing repaints at rest: the frames strictly between the commit and the marker key's echo are the host's settle (the session meter) at most
+    const echo = all.findIndex((f, i) => i > commit && f.dynamic.some((l) => /[›>] h/.test(l)));
+    expect(echo).toBeGreaterThan(commit);
+    expect(all.slice(commit + 1, echo).length).toBeLessThanOrEqual(1);
+    expect(all.at(-1)!.dynamic.length).toBe(IDLE_ROWS);
+    expectCommittedOnce(r);
     const t0 = timingOf(r.timing, 'expect', 'step 0/')!.t;
     const settled = timingOf(r.timing, 'expect', '\\d+\\.\\d+')!.t - t0;
     expect(settled).toBeGreaterThanOrEqual(400);
     expect(settled).toBeLessThan(2500);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
-    console.log(`splash settle: ${head.length} reveal frames, caption at frame ${caption}, ${settled} ms after the first frame, ${between.length} frame(s) in the 5 s after it`);
+    console.log(`splash settle: ${head.length} reveal frames, caption at frame ${caption}, commit at frame ${commit}, ${settled} ms after the first frame, ${all.slice(commit + 1, echo).length} frame(s) in the 5 s after it`);
   });
 
-  it('run:start no longer cancels the mark: a one-shot `run` starting before 700 ms keeps the PINNED mark for the whole run (owner directive 2)', async () => {
+  it('a one-shot `run`: the mark is committed in frame 0 ABOVE the task header (the header is the frame\'s first item), and no frame of the run draws it in the dynamic region', async () => {
     const r = await drive({ name: 'r2-splash-run-cancel', args: ['run', 'fix the failing test', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], steps: [...RUN_OPEN, 'mark started', 'expect finished [·-] (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text);
     // owner addendum: the run's first frame is the one whose status row carries a numeric `step <n>/<max>`
-    const started = [all.findIndex((f) => f.dynamic.some((l) => /step \d+\/\d+/.test(l)))].filter((i) => i >= 0);
-    expect(started.length).toBe(1);
-    // owner directive 2: `run:start` is no longer a cancel row — the mark is up in every frame from the start on
+    const started = all.findIndex((f) => f.dynamic.some((l) => /step \d+\/\d+/.test(l)));
+    expect(started).toBeGreaterThanOrEqual(0);
     const ended = all.findIndex((f) => f.lines.some((l) => /^ *\[run\] finished [·-] /.test(l)));
-    expect(ended).toBeGreaterThan(started[0]!);
-    const before = all.slice(0, started[0]!).filter((f) => f.dynamic.some((l) => WORDMARK_RE.test(l))).length;
-    for (const f of all.slice(started[0]!, ended)) expect(f.dynamic.filter((l) => WORDMARK_RE.test(l)).length).toBe(5);
-    expect(before).toBeLessThanOrEqual(SPLASH_MAX_FRAMES);
-    expect(all.slice(ended).some((f) => f.dynamic.filter((l) => WORDMARK_RE.test(l)).length >= 5)).toBe(true);
+    expect(ended).toBeGreaterThan(started);
+    for (const f of all) expect(f.dynamic.some((l) => WORDMARK_RE.test(l))).toBe(false);
+    // the scrollback: the mark first, then the task header
+    const mark = expectCommittedOnce(r);
+    const header = mark.scroll.findIndex((l) => /\[run\] jevcode task: /.test(l));
+    expect(header, mark.scroll.slice(0, 12).join('\n')).toBeGreaterThan(mark.at + 4);
     const t0 = timingOf(r.timing, 'expect', '25l')!.t;
     const startAt = timingOf(r.timing, 'expect', 'step ')!.t - t0;
     expect(startAt).toBeLessThan(700);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
-    console.log(`splash cancelled by run:start ${startAt} ms after the first frame; ${before} wordmark frames before it`);
+    console.log(`one-shot run: started ${startAt} ms after the first frame; the mark committed at scrollback row ${mark.at}, the header at ${header}`);
   });
 
   it('--ascii twins (TD §14.1): `#` letters and the `#+.` sweep head, `+-|` console edges, `* jevcode` brand row; no Unicode box or block cell anywhere', async () => {
@@ -805,11 +824,13 @@ describe.skipIf(!hasExpect)('pty round 2: zero-argument starts and the keyless w
     expect(plain).toContain('Paste, then Enter · Esc: other ways to start · Ctrl-C quits (shows setup)');
     expect(plain).not.toContain('Where do you reach Jev');
     expect(plain).not.toContain('Pick the generator provider');
-    // F-R8: the wizard is hosted under the mark — 13 dynamic rows (status 1 + rule 1 + chrome 3 + wizard 3 + pane 5)
+    // F-R8: the wizard is hosted under the mark — the mark is committed above the rule (the owner's directive of
+    // 2026-09-23), the dynamic region is 8 rows (rule 1 + chrome 3 + wizard 3 + status 1)
     const setup = syncFrames(r.text).filter((f) => f.dynamic.some((l) => l.startsWith('╭─ setup · key')));
     expect(setup.length).toBeGreaterThan(0);
-    expect(hasMark(setup[0]!.dynamic)).toBe(true);
-    expect(setup[0]!.dynamic.length).toBe(13);
+    expect(hasMark(setup[0]!.dynamic)).toBe(false);
+    expect(setup[0]!.dynamic.length).toBe(8);
+    expectCommittedOnce(r);
     expect(r.runDirs()).toEqual([]);
   });
 

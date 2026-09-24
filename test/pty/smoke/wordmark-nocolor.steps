@@ -1,5 +1,5 @@
 # --no-color (TUI-DESIGN-3 §3.2 twins): colour depth 0 turns the sweep off — the reveal still runs (its head `▓▒░` is a cell change), the
-# mark rests, and the 12 s alone write zero frames (run-smoke.sh counts the frames between the settle and the marker key's echo: 0)
+# mark is committed, and the 12 s alone write zero frames (run-smoke.sh counts the frames between the commit and the marker key's echo: 0)
 expect \x1b\[\?25l
 expect step 0/
 expect ◆(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*\d+\.\d+\.\d+

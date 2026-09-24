@@ -628,6 +628,42 @@ export function staticRows(text: string): string[] {
   return rows;
 }
 
+/** a wordmark glyph row: `██` cells (`##` under `--ascii`) after the centring blanks — a pane's probability bar never opens a row with four */
+export function isWordmarkRow(row: string, ascii = false): boolean {
+  return ascii ? /^ {4,}##/.test(row) : /^ {4,}██/.test(row);
+}
+
+/**
+ * THE OWNER'S DIRECTIVE (2026-09-23): the classic renderer COMMITS the settled wordmark as the first `<Static>` block of
+ * the session, so every message lands below it. This reads it back from a capture's scrollback (`staticRows`): `at` is
+ * the index of its first glyph row (-1 when none was committed), `rows` its glyph rows, `blocks` the number of separate
+ * runs of glyph rows in the whole scrollback (1: committed exactly once), `scroll` the scrollback itself.
+ */
+export function committedMark(text: string, ascii = false): { at: number; rows: string[]; blocks: number; scroll: string[] } {
+  const scroll = staticRows(text).map((r) => r.replace(/\s+$/, ''));
+  const at = scroll.findIndex((r) => isWordmarkRow(r, ascii));
+  let blocks = 0;
+  scroll.forEach((r, i) => {
+    if (isWordmarkRow(r, ascii) && !(i > 0 && isWordmarkRow(scroll[i - 1] ?? '', ascii))) blocks += 1;
+  });
+  const rows: string[] = [];
+  for (let i = at; at >= 0 && i < scroll.length && isWordmarkRow(scroll[i] ?? '', ascii); i++) rows.push(scroll[i] ?? '');
+  return { at, rows, blocks, scroll };
+}
+
+/**
+ * The screen at the end of a capture, top to bottom: the last frame's dynamic region under as many scrollback rows as
+ * the terminal has left (`rows − dynamic`). Leading blank rows of a short session are kept (the screen's top).
+ */
+export function finalScreen(text: string, rows: number): string[] {
+  const fs = frames(text);
+  const last = fs.at(-1);
+  const dyn = last === undefined ? [] : last.lines.slice(last.ruleIndex).map((l) => l.replace(/\s+$/, ''));
+  const scroll = staticRows(text).map((r) => r.replace(/\s+$/, ''));
+  const room = Math.max(0, rows - dyn.length);
+  return [...scroll.slice(Math.max(0, scroll.length - room)), ...dyn];
+}
+
 /** rows that are transcript items (§15.1 labels), i.e. neither wrapped continuations nor TUI-only detail rows — returned without the gutter padding, so they compare with transcript.log lines */
 export function itemRows(rows: readonly string[]): string[] {
   return rows.filter((r) => ITEM_RE.test(r)).map(ungutter);

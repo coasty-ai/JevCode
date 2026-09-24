@@ -101,10 +101,11 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     const body = frame!.lines.slice(frame!.ruleIndex).join('\n');
     expect(body).toContain('Say hi, ask a question, or describe a task…');
     expect(body).toMatch(/step 0\/–/);
-    // TUI-DESIGN-2 §5.2 row 0 / H-A1: the first frame is splash frame 0 — rule · 5 wordmark rows (the `J` column and the
-    // sweep head) · the 5-row console (top edge with the default badge, `›` row, divider, status, bottom edge) = 11
-    // dynamic rows at 24×80; the first frame carries no session meter and no git zone (they arrive after resolveConfig)
-    expect(frame!.rows).toBe(11);
+    // TUI-DESIGN-2 §5.2 row 0 / H-A1: the first frame is splash frame 0 — rule · the splash box (the committed block's own
+    // height, the owner's directive of 2026-09-23: one blank row, 5 wordmark rows — the `J` column and the sweep head — one
+    // blank row) · the 5-row console (top edge with the default badge, `›` row, divider, status, bottom edge) = 13 dynamic
+    // rows at 24×80; the first frame carries no session meter and no git zone (they arrive after resolveConfig)
+    expect(frame!.rows).toBe(13);
     expect(body).toMatch(new RegExp(`^╭─ ${BADGE_DEFAULT} `, 'm')); // BADGE_DEFAULT is the regex-escaped badge word (helpers.ts)
     expect(body).toMatch(/██/);
     expect(body).not.toMatch(/sess \$/);
