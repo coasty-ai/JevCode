@@ -96,6 +96,13 @@ describe('judgeIntake', () => {
     expect(INTAKE_BUBBLE_GATE_MS).toBe(16);
     expect(INTAKE_REPLY_GATE_MS).toBe(40);
   });
+  it('in the agent default no reply waits on Jev: the raw reply is gated, never the figure net of the mock delay (S6 review: a raw p95 of 49 ms passed as 0.0 ms net)', () => {
+    const slow = judgeIntake('mock150', 150, [cold(4, 58), pair(6, 49, 0, 1), pair(5, 47, 0, 2)], clean, 3, false);
+    expect(slow.replyNet.p95).toBe(49);
+    expect(slow).toMatchObject({ replyOk: false, pass: false });
+    expect(judgeIntake('mock150', 150, [cold(4, 58), pair(6, 35, 0, 1), pair(5, 33, 0, 2)], clean, 3, false)).toMatchObject({ replyOk: true, pass: true });
+  });
+
   it('the cold first message is reported apart, never gated: a 35 ms first bubble does not fail warm messages inside the gate; first-frame bubbles are counted', () => {
     const s = judgeIntake('mock0', 0, [cold(34.9, 34.9), pair(12, 12, 0, 1), { ...pair(11, 11, 0, 2), bubbleInFirstFrame: true }], clean);
     expect(s).toMatchObject({ bubbleOk: true, replyOk: true, pass: true, bubbleInFirstFrame: 1 });

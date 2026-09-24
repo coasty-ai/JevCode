@@ -25,6 +25,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DEFAULT_MODE } from '../config/defaults.js';
 import { percentile } from '../core/time.js';
 import { RUN_STARTED_PATTERN, clearsAfter, firstDynamicFrameOffset, frameAt, frameTime, paintedMax, searchPattern, splitFrames, stripAnsi, summarise, typist, type Chunk, type Frame, type LatencySummary, type TimingStep, type TypistStep } from './pty.js';
 
@@ -65,8 +66,10 @@ export interface IntakeSeries {
   bubble: LatencySummary;
   /** Enter → `[jevcode]` reply frame, raw, over the warm messages */
   reply: LatencySummary;
-  /** the reply figure minus the mock's delay (equals `reply` at 0 ms), over the warm messages — the harness's own share, the gated figure */
+  /** the reply figure minus the mock's delay (equals `reply` at 0 ms, and in agent mode), over the warm messages — the harness's own share, the gated figure */
   replyNet: LatencySummary;
+  /** whether the mock decider's delay is on the reply's path (the legacy modes' intake); false in the agent default, which gates the raw reply */
+  jevOnPath?: boolean;
   /** the session's first message, reported apart (null when its Enter was not located) */
   cold: { bubbleMs: number | null; replyMs: number | null; firstFrameMs: number | null; bubbleInFirstFrame: boolean } | null;
   /** messages (cold included) whose first frame after Enter carries the bubble — reported */
@@ -182,12 +185,14 @@ function summary(values: readonly (number | null)[]): LatencySummary {
  * series is then incomplete (`dropped > 0`) rather than a shorter passing series. The cold first message (`index` 0) is
  * reported apart and every gate applies to the warm ones; a series needs at least one warm message to be judged.
  */
-export function judgeIntake(name: IntakeSeriesName, jevMs: number, pairs: readonly IntakePair[], hygiene: { runsStarted: number; clears: number; regionMax: number; rows: number; exitCode: number | null; timedOut: boolean }, expected: number = pairs.length): Omit<IntakeSeries, 'rows' | 'columns'> {
+export function judgeIntake(name: IntakeSeriesName, jevMs: number, pairs: readonly IntakePair[], hygiene: { runsStarted: number; clears: number; regionMax: number; rows: number; exitCode: number | null; timedOut: boolean }, expected: number = pairs.length, jevOnPath = true): Omit<IntakeSeries, 'rows' | 'columns'> {
   const coldPair = pairs.find((p) => p.index === 0);
   const warm = pairs.filter((p) => p.index !== 0);
   const bubble = summary(warm.map((p) => p.bubbleMs));
   const reply = summary(warm.map((p) => p.replyMs));
-  const replyNet = summary(warm.map((p) => (p.replyMs === null ? null : Math.max(0, p.replyMs - jevMs))));
+  // AGENT-LOOP-DESIGN §A1: in the agent default no reply waits on Jev, so subtracting the mock decider's delay would gate 0 ms
+  // however slow the reply was (the S6 review saw a raw p95 of 49 ms pass as `0.0 ms net`): the raw figure is gated there
+  const replyNet = jevOnPath ? summary(warm.map((p) => (p.replyMs === null ? null : Math.max(0, p.replyMs - jevMs)))) : reply;
   const dropped = Math.max(0, expected - pairs.length);
   const located = pairs.every((p) => p.bubbleMs !== null && p.replyMs !== null);
   const complete = dropped === 0 && pairs.length === expected && located && warm.length > 0 && bubble.samples === warm.length && reply.samples === warm.length;
@@ -197,6 +202,7 @@ export function judgeIntake(name: IntakeSeriesName, jevMs: number, pairs: readon
   return {
     name,
     jevMs,
+    jevOnPath,
     messages: expected,
     dropped,
     bubble,
@@ -251,7 +257,8 @@ async function runSeries(root: string, bin: string, name: IntakeSeriesName, jevM
     const firstIdx = Math.max(0, frameAt(frames, firstDyn));
     const pairs = pairIntake(r.timing, frames, r.chunks, measured, texts);
     const runsStarted = searchPattern(r.capture, RUN_STARTED_PATTERN, { latin1: true }) >= 0 ? 1 : 0;
-    const judged = judgeIntake(name, jevMs, pairs, { runsStarted, clears: clearsAfter(r.capture, firstDyn), regionMax: paintedMax(frames, firstIdx + 1), rows: ROWS, exitCode: r.code, timedOut: r.timedOut }, texts.length);
+    // the probe runs the default mode: in agent mode the mock decider's delay is not on the reply's path
+    const judged = judgeIntake(name, jevMs, pairs, { runsStarted, clears: clearsAfter(r.capture, firstDyn), regionMax: paintedMax(frames, firstIdx + 1), rows: ROWS, exitCode: r.code, timedOut: r.timedOut }, texts.length, DEFAULT_MODE !== 'agent');
     return { ...judged, rows: ROWS, columns: COLUMNS };
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -270,7 +277,7 @@ export async function measureIntakeLatency(opts: { root: string; bin: string; me
   const series: IntakeSeries[] = [];
   const report = (s: IntakeSeries): void => {
     series.push(s);
-    opts.onProgress?.(`intake ${s.name} (mock ${s.jevMs} ms): cold message bubble ${s.cold?.bubbleMs?.toFixed(1) ?? '–'} ms / reply ${s.cold?.replyMs?.toFixed(1) ?? '–'} ms (first frame after Enter ${s.cold?.firstFrameMs?.toFixed(1) ?? '–'} ms); bubble in the first frame after Enter ${s.bubbleInFirstFrame}/${s.messages}; warm: ${s.bubble.samples}/${s.messages - 1} bubbles, p50 ${s.bubble.p50?.toFixed(1)} p95 ${s.bubble.p95?.toFixed(1)} max ${s.bubble.max?.toFixed(1)} ms (gate < ${INTAKE_BUBBLE_GATE_MS}${s.bubbleOk ? '' : ' EXCEEDED'}); ${s.reply.samples}/${s.messages - 1} replies, p50 ${s.reply.p50?.toFixed(1)} p95 ${s.reply.p95?.toFixed(1)} max ${s.reply.max?.toFixed(1)} ms raw, p95 ${s.replyNet.p95?.toFixed(1)} ms net of the delay (gate ≤ ${INTAKE_REPLY_GATE_MS}${s.replyOk ? '' : ' EXCEEDED'}); thinking seen in ${s.thinkingSeen}/${s.messages}; ${s.dropped} Enter${s.dropped === 1 ? '' : 's'} not located; runs started ${s.runsStarted}, clears ${s.clears}, region max ${s.regionMax}, exit ${s.exitCode}${s.timedOut ? ' TIMEOUT' : ''} → ${s.pass ? 'pass' : 'FAIL'}`);
+    opts.onProgress?.(`intake ${s.name} (mock ${s.jevMs} ms): cold message bubble ${s.cold?.bubbleMs?.toFixed(1) ?? '–'} ms / reply ${s.cold?.replyMs?.toFixed(1) ?? '–'} ms (first frame after Enter ${s.cold?.firstFrameMs?.toFixed(1) ?? '–'} ms); bubble in the first frame after Enter ${s.bubbleInFirstFrame}/${s.messages}; warm: ${s.bubble.samples}/${s.messages - 1} bubbles, p50 ${s.bubble.p50?.toFixed(1)} p95 ${s.bubble.p95?.toFixed(1)} max ${s.bubble.max?.toFixed(1)} ms (gate < ${INTAKE_BUBBLE_GATE_MS}${s.bubbleOk ? '' : ' EXCEEDED'}); ${s.reply.samples}/${s.messages - 1} replies, p50 ${s.reply.p50?.toFixed(1)} p95 ${s.reply.p95?.toFixed(1)} max ${s.reply.max?.toFixed(1)} ms raw, p95 ${s.replyNet.p95?.toFixed(1)} ms ${s.jevOnPath !== false ? 'net of the delay' : 'gated raw (no Jev on the agent reply path)'} (gate ≤ ${INTAKE_REPLY_GATE_MS}${s.replyOk ? '' : ' EXCEEDED'}); thinking seen in ${s.thinkingSeen}/${s.messages}; ${s.dropped} Enter${s.dropped === 1 ? '' : 's'} not located; runs started ${s.runsStarted}, clears ${s.clears}, region max ${s.regionMax}, exit ${s.exitCode}${s.timedOut ? ' TIMEOUT' : ''} → ${s.pass ? 'pass' : 'FAIL'}`);
   };
   report(await runSeries(opts.root, opts.bin, 'mock0', 0, n));
   report(await runSeries(opts.root, opts.bin, 'mock150', INTAKE_DELAY_MS, n));
