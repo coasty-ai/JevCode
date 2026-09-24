@@ -40,7 +40,7 @@ jobs:
           cache: npm
 
       # ubuntu-latest ships python3 without pytest, and the unit suite runs real python3 over fixtures that
-      # `import pytest` (test/unit/synth/search/perturb.test.ts harvests the ladder's shipping task; the ladder and
+      # `import pytest` (test/unit/jev-modes/synth/search/perturb.test.ts harvests the ladder's shipping task; the ladder and
       # QuixBugs files skip without it). Installed system-wide, before `npm ci`, so a test that narrows PATH to
       # /usr/bin or points HOME at a temp dir still finds it. The version is the one the suite is run with locally.
       - name: pytest for the runner's python3
