@@ -5,14 +5,15 @@
  * (§4.5); the ambiguity card (§3.7: Enter inert — the card stays open until `n`, which replies; `y` runs; the flat-tier
  * row at 12×60); `/mode jev-on` without and with a generator key, `/llm on` and the no-argument `/mode` item, the badge
  * promotion at `run:start` (§1.3, §1.5, H-G1); the splash at 24×80 and 40×120, under reduced motion, settling by itself
- * and cancelled by `run:start` (§5); the Jev panel strip / open / full through `/panel` and the Alt keys (§4.6), its
+ * and under a one-shot `run` (§5); the Jev panel strip / open / full through `/panel` and the Alt keys (§4.6), its
  * `s0` intake rows (§3.11); the chrome tiers across a shrink and a grow (§4.1); the two zero-argument starts and the
  * keyless wizard (§1.1, §1.4); keys never in logs (§9: the masked fields of both wizard paths); `[you]` redaction at
  * emission (§3.10) in the TUI and `--plain`; `--ascii` twins (TD §14.1); `--plain`'s intake readline (§3.7); `/jev` and
  * `/cost` after a greeting (§2.6, §3.9); `/transcript full` and identity predicate (a) (§4.5, §9). Mocked runs say
  * `--mode jev-on` (`MOCK_RUN_MODE`); the conversational scenarios run under the default mode (`BADGE_DEFAULT`, `jev+llm` since
  * TUI-DESIGN-3 §1.10 — every default pin below reads it from the table). Round 3 (TUI-DESIGN-3): the splash scenarios pin the
- * persistent mark (a key completes the reveal, the caption `◆ <version>` is the settle sentinel, F-W1), the wizard scenarios the
+ * mark (a key completes the reveal, the caption `◆ <version>` is the settle sentinel, F-W1; since the owner's directive of
+ * 2026-09-23 the settled mark is committed once as the first scrollback block and never redrawn), the wizard scenarios the
  * one-key field (§1.4), the `/mode` scenarios start in `jev-only` explicitly; the round-3 scenarios proper are `round3.pty.test.ts`.
  *
  * Tests marked `it.fails` record defects of the tree against the design (docs/STATUS.md "Round 2", requests to S2 / S3

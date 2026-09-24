@@ -384,21 +384,6 @@ PY
 first_frame() {
   python3 -c 'import sys; b=open(sys.argv[1],"rb").read(); i=b.find(b"\x1b[?25l"); j=b.find(b"\x1b[?25h", i); sys.stdout.buffer.write(b[i:j] if i>=0 else b"")' "$1"
 }
-# the splash settling by itself (splash-settle): "<wordmark_frames> <wordmark_after_brand> <frames_before_brand>" — frames are
-# the synchronized-output brackets (BSU `ESC[?2026h` opens every frame; the cursor hide does not — a frame drawn while the
-# cursor is already hidden, e.g. under a card, writes none); the brand row `◆ jevcode` marks the settled frame (§5.2 t ≥ 700 → §5.4)
-splash_settle() {
-  python3 - "$1" <<'PY'
-import sys
-b=open(sys.argv[1],'rb').read()
-frames=b.split(b'\x1b[?2026h')[1:]
-wm=[i for i,f in enumerate(frames) if b'\xe2\x96\x88\xe2\x96\x88' in f]
-brand=[i for i,f in enumerate(frames) if '◆ jevcode'.encode() in f]
-first_brand=brand[0] if brand else len(frames)
-after=sum(1 for i in wm if i>=first_brand)
-print(len(wm), after, first_brand)
-PY
-}
 # an SGR-stripped, CR-free copy of a capture for the text checks (every transcript label is its own dim span, so a
 # `grep` on the raw bytes would miss `[step 1] …` and `╭─ jev-only`)
 strip_cap() {
