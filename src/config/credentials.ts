@@ -16,7 +16,7 @@ import { fingerprint } from '../core/hash.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { MIN_SECRET_LENGTH } from '../core/redact.js';
 import type { Json, JsonObject, Resolved } from '../core/types.js';
-import type { ProviderId } from '../provider/ids.js';
+import { keyEnvNames, type ProviderId } from '../provider/ids.js';
 import { ConfigError } from '../errors.js';
 
 /** TUI-DESIGN §11.2: the file name under the jevcode config dir. */
@@ -346,6 +346,17 @@ export async function writeConfigValue(fileKey: string, value: string | number |
   const values: JsonObject = { ...existing.values, [fileKey]: value };
   await writeJsonSecure(target, values, opts);
   return { path: target.path, displayPath: displayPath(target.path, opts.home) };
+}
+
+/**
+ * The variable a generator key resolved from the environment came from: `JEVCODE_API_KEY` when set (the setting's own
+ * env row), else the first of the provider's key variables that is set (`FIREWORKS_API_KEY`, `GEMINI_API_KEY` or
+ * `GOOGLE_API_KEY`, …), else the provider's canonical name. The shadowing line used to say `OPENROUTER_API_KEY` for
+ * every provider but anthropic (S6 live run of 2026-09-23, `--provider fireworks`).
+ */
+export function generatorKeyEnvVar(provider: ProviderId, env: Readonly<Record<string, string | undefined>>): string {
+  const names = ['JEVCODE_API_KEY', ...keyEnvNames(provider)];
+  return names.find((n) => (env[n] ?? '').trim() !== '') ?? keyEnvNames(provider)[0] ?? 'JEVCODE_API_KEY';
 }
 
 /**

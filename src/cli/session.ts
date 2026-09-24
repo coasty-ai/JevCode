@@ -102,7 +102,7 @@ import { exitCodeFor, isFinishedStop } from '../loop/stop.js';
 import { createSpendMeter } from '../spend/meter.js';
 import { resolveConfig as realResolveConfig, isEngineMode, modeFromParsedFlags, reconcileResumeConfig, resumeIdentityFromRunMeta, resumeInputsFrom } from '../config/resolve.js';
 import type { ResolvedConfigWithDiagnostics } from '../config/types.js';
-import { credentialsPath, readCredentialsFile, shadowingLine, writeConfigValue as realWriteConfigValue, writeCredentials as realWriteCredentials, type CredentialsPatch } from '../config/credentials.js';
+import { credentialsPath, generatorKeyEnvVar, readCredentialsFile, shadowingLine, writeConfigValue as realWriteConfigValue, writeCredentials as realWriteCredentials, type CredentialsPatch } from '../config/credentials.js';
 import { DEFAULT_MODE, JEV_ONLY_DEFAULT_SPEND_CAP_USD, MODE_BADGE_WORD, SETTINGS } from '../config/defaults.js';
 import { PRODUCT_CONTEXT_ASK } from '../loop/stages/context.js';
 import { parseModeHint } from '../config/launch.js';
@@ -2252,7 +2252,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const target = credentialsPath({ env, home, cwd, configFlag: flags.config ?? null });
       const file = await readCredentialsFile(target.path);
       if (!file.exists) return;
-      const g = shadowingLine('generator.apiKey', config.entries.get('generator.apiKey'), providerOfConfig(config) === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY', target.path, file.apiKey, home);
+      const g = shadowingLine('generator.apiKey', config.entries.get('generator.apiKey'), generatorKeyEnvVar(providerIdOfConfig(config) ?? 'openrouter', env), target.path, file.apiKey, home);
       // TUI-DESIGN-3 §1.8 edge 34: an env TypeSafe key wins over a saved Jev key — the line names the variable that actually won
       const jevR = config.entries.get('decider.apiKey');
       const j = jevR && jevR.source === 'env' && resolvedJevProviderOf(config) === 'typesafe' && file.jevApiKey !== null && file.jevApiKey.trim() !== jevR.value.trim() ? typesafeWinsText() : shadowingLine('decider.apiKey', jevR, 'JEV_API_KEY', target.path, file.jevApiKey, home);

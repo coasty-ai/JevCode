@@ -8,6 +8,7 @@ import {
   configDirs,
   credentialsPath,
   displayPath,
+  generatorKeyEnvVar,
   isJevcodeConfigDir,
   jevcodeJsonWarning,
   keyEnteredText,
@@ -291,6 +292,18 @@ describe('readCredentialsFile / removeCredentials / writeConfigValue', () => {
     expect(await mode(r.path)).toBe(0o600);
     await writeFile(r.path, '{broken');
     await expect(writeConfigValue('theme', 'dark', { env, home, cwd })).rejects.toBeInstanceOf(ConfigError);
+  });
+});
+
+describe('generatorKeyEnvVar: the variable the shadowing line names', () => {
+  it('names the provider\'s own key variable that is set, JEVCODE_API_KEY first — never OPENROUTER_API_KEY for another provider (S6 live)', () => {
+    expect(generatorKeyEnvVar('fireworks', { FIREWORKS_API_KEY: 'x'.repeat(24), OPENROUTER_API_KEY: 'y'.repeat(24) })).toBe('FIREWORKS_API_KEY');
+    expect(generatorKeyEnvVar('openai', { OPENAI_API_KEY: 'x'.repeat(24) })).toBe('OPENAI_API_KEY');
+    expect(generatorKeyEnvVar('anthropic', { ANTHROPIC_API_KEY: 'x'.repeat(24) })).toBe('ANTHROPIC_API_KEY');
+    expect(generatorKeyEnvVar('gemini', { GOOGLE_API_KEY: 'x'.repeat(24) })).toBe('GOOGLE_API_KEY');
+    expect(generatorKeyEnvVar('meta', { JEVCODE_API_KEY: 'x'.repeat(24), META_API_KEY: 'y'.repeat(24) })).toBe('JEVCODE_API_KEY');
+    // nothing set (a dotenv layer supplied it): the provider's canonical name
+    expect(generatorKeyEnvVar('xai', { XAI_API_KEY: '  ' })).toBe('XAI_API_KEY');
   });
 });
 
