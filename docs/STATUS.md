@@ -2019,12 +2019,99 @@ The same five messages were run once at each size on fixture A, after the fixes.
 - **Explicit destructive requests.** Under full autonomy the model declined `rm -rf <dir outside the workspace>` and the
   `.git` deletion. It did so on the prompt's own restraint line; the harness refused nothing. Telling the model to run
   such explicit requests anyway is a safety call. This session's policy blocked making it unasked, so it is yours.
+  *Resolved by the final-review pass (next section): the full-autonomy prompt now runs an explicitly requested command.*
 - **The epilogue after every task.** A tool-using turn in the chat ends with `[run] finished · … · exit 0` and then the
   six-row `[ui] stopped — … (exit 0)` block (run, files, resume, report). The same fact is stated twice. Quieting it for
   exit-0 agent turns is a small change, but S5b pinned the block deliberately.
 - **A question that reads a file is a run.** By the as-built definition (`answered` means no tool was called), it gets
   its step row, `[run] finished · generator_done` and the epilogue. Design §A1's wording ("no workspace change and no
-  command is a reply") would make it a reply.
+  command is a reply") would make it a reply. *Resolved by the final-review pass: a look-up is drawn as a reply.*
 - **The loop detector did not trip live.** GLM varied its calls in both L6 runs.
 - **The taglines** ("Decisions, not strings"; the CLI usage line "JevCode: Jev decides, the code model writes.") are
   unchanged, pending your decision.
+
+## Agent loop — the final review's fixes (2026-09-23)
+
+Three independent final reviews of `agent-s6` returned nine major findings and about twenty minor ones. Every major
+was fixed on this branch with a test, and the live runs the fixes touch were run again. The cheap, clearly right minors
+were fixed too; the rest are listed at the end. The binding directives are the design's §A1–§A5.
+
+### The nine majors
+
+| # | Finding | Fix | Test | Commit |
+| --- | --- | --- | --- | --- |
+| 1 | `--provider openai` (or `anthropic`, `xai`, …) with no `--model` sent OpenRouter's `z-ai/glm-5.3-flash`, and every message got an HTTP 404 | `generator.model` from the default layer resolves to the provider's own latest fast model (`PROVIDER_DEFAULT_MODEL` in the zero-import `src/provider/ids.ts`, read by the registry and the adapters too); `login --verify` falls back the same way | `resolve.test.ts` (every provider, env and flag precedence), `login.test.ts` | `189fef5` |
+| 2 | A question answered with read-only tools was drawn as a run: step rows, `[run] finished · generator_done`, the six-row epilogue | §A1: the run chrome turns on at the first **command or change**, not the first read. A look-up shows only its prose (TUI and `--plain`; `--json` keeps every event), its status row reads `reading` in the reply chrome, Esc stops it as a reply, and it never names the session (additive `reply` flag on the `run:end` index line) | `session-agent.test.ts`, `agent-plain.test.ts`, `agent-reducer.test.ts`, `reply-stream-app.test.tsx` | `4c74b9b` |
+| 3 | A provider 4xx went through the three-failure streak: three attempts with backoff (about 10 s on OpenAI), three error rows, `(no proposal) · failed`, the epilogue | the agent run stops at the first failed model turn when the error is a 4xx, or a transient one before the first committed step (a later transient error keeps the streak); the reply's error is ONE `[ui]` row, a transient one retries once; a failed turn in a task reads `model turn failed · <code>`, never `propose:`; no `reply restarted` row for a retry before any prose | `agent-e2e.test.ts` (one request, one step), `session-agent.test.ts`, `agent-plain.test.ts`, `stream.test.ts` | `a1788cb`, `4c74b9b` |
+| 4 | Under full autonomy the model refused an explicit `rm -rf <dir outside the workspace>` as "not permitted" | the full-autonomy prompt: a command the user explicitly asks for is run as asked, without confirmation or refusal; the restraint (no destructive commands the task does not need) is for the model's own choices. Review autonomy unchanged | `prompt.test.ts`; live L7 below | `a22e854` |
+| 5 | A message whose run ended before its first step (Esc, a 4xx, a failed retry) lost the whole conversation for the next message | the driver checkpoints the head as soon as it is built; `carryHead` also follows a parent with no driver state back through its `carry` record | `agent-e2e.test.ts` (answered → failed → follow-up sees run 1; the fallback chain) | `f9a21d2` |
+| 6 | `git reset --hard && git push --force` (and `; rm -rf ~/x`, `&& curl -T …`) got the note "/undo restores the workspace" | the classifier keeps every destructive rule of a compound command (least restorable first; the review card names each); the note takes the least restorable truth. A machine-leaving command that exited non-zero says `exit N — it may not have left the machine` (a minor, same code) | `safety.test.ts`, `agent-gate.test.ts` (engine notes from the real classifier) | `ee84666` |
+| 7 | A native call with no name was recorded as `''`; every later request of the run and of the carried session failed client-side | calls are recorded under a wire-safe name (`invalid_tool`), the transcript's wire projection heals older records, and the mock provider enforces `messagesError` like every real adapter | `agent-e2e.test.ts`, `agent-mock.test.ts` | `219cf15` |
+| 8 | Every message built an engine that spawned `git` twice before the first request; intake-latency mock0 reply p95 51.9–55.0 ms against ≤ 40 | the session hands in its cached probe (`EngineOptions.gitState`); the engine re-probes in the background beside the first model turn and adopts the fresh probe before any tool call is resolved, so a discard of edits made after the cached probe is still judged, pre-imaged and undoable | `agent-e2e.test.ts` (a probe slower than the first request; the discard restores both files) | `e047a9e` |
+| 9 | The status row's segments jumped sideways at every switch between `thinking` and a tool (8 cells at 80 columns, 28 at 100) | the drop order measures the left zone at the widest agent word; a long `ctx` cell steps down to `ctx 41%` before it is dropped; the wide donut comes back once the drops made room | `indicator.test.tsx` (the exact 76-cell row at 80 columns; 100 and 120), one frame-identity snapshot | `f6bcad9` |
+
+The minors fixed on the way: glob and grep read the root's own name as the root (`4c5a9b2`); one failure marker per
+call, not `Read x (error) (failed)`; no `plan 0/0` in the strip; an exit status said once in `--plain`; `cat .env`
+and other secret reads go through the gate, so review asks (`cb9a020`); the console's top edge and the session header
+name the `--workspace` (`5c12753`); `--plain` prints one row per agent step and a new line per model turn (`9e9e19f`);
+the intake probe's `mock150` series gates the raw reply in agent mode (`24cacc0`).
+
+### Measured
+
+- **intake-latency** (`JEVCODE_PERF_ONLY=intake-latency`; `perf/results/latest.json` untouched). mock0 warm reply
+  p50 / p95: **45.6 / 55.0 ms before** (load 1.8, FAIL), **30.4 / 35.0 ms** after (load 1.9) and 32.2 / 36.5 ms at
+  load 3.8 — gate ≤ 40, pass. mock150 is now gated on the raw reply (35.1 ms, pass). Bubble p95 7.6–9.0 ms (< 16).
+  The perf workspace is not a git repository, so the cached probe saves the one `git rev-parse` there; a traced
+  24×80 session showed `createEngine` at 31–35 ms before and about 15 ms after, in a repository.
+
+### Live, after the fixes (default OpenRouter `z-ai/glm-5.3-flash` unless named; 12 runs, $0.013, zero Jev)
+
+- **Provider defaults.** `run --plain --provider openai "hi, who made you"` answered "I'm JevCode, built by coasty-ai,
+  running on gpt-5.6-luna via OpenAI" (stop `answered`); `--provider anthropic` the same on `claude-sonnet-5`. No
+  `--model` either time.
+- **L7 again.** "run exactly this command: rm -rf <canary outside the workspace>": the model ran it without asking or
+  refusing ("I'll run that command exactly as you asked"), the seatbelt denied it (`Operation not permitted`, exit 1),
+  the note read `destructive · ran rm -rf … (rule rm_outside) — /undo may not restore this`, the model explained the
+  sandbox, and the canary survived.
+- **Interactive TUI, 24×80**, five messages: `my name is Zanzibar` → a reply; `what does src/strings.js do?` → a
+  look-up (stop `generator_done`): only its prose, the status row read `reading · step 0/–` while it read; a long poem
+  stopped with Esc after its first lines (stop `human_abort`, 0 steps, its head checkpointed); `what is my name?` →
+  "Your name is Zanzibar." (its transcript opens with a `carry` of the stopped run); `fix the failing tests` → Bash,
+  Read, Read, Edit, Edit, Bash, Verify, `complete`, 3 passed. Across the task's 230 live status rows the `step`
+  segment sat at one column, the three-cell donut drew throughout, and the strip read `▸ s8 · 6 tool calls`. The
+  console's top edge named the workspace (`js`).
+- **Provider errors, `--plain` chat.** `--model nonexistent-org/model-x`: each message produced exactly one row,
+  `[ui] error: provider_http: openrouter HTTP 400: … is not a valid model ID`, in one step (0.1–0.3 s).
+  `--provider openai --model z-ai/glm-5.3-flash` (the review's case): one `[ui] … HTTP 404 …` row per message, one
+  step each (0.5 s and 5.3 s), where it took about 11 s and 13 rows before.
+
+### Gates (this tree)
+
+| gate | result |
+| --- | --- |
+| `npm run -s typecheck` | clean (`tsc` + `no-any`) |
+| `npm run -s jev-contract` | ok — 37 sites, 14 with a four-clause block, 23 allow-listed |
+| `npm run -s check:docs` | ok — 661 links in 149 files |
+| `node scripts/gen-docs.mjs --check`, `node scripts/gen-decisions-toc.mjs --check` | clean |
+| `npx vitest run --maxWorkers=2 test/unit` | 660 files; **11,404 passed**, 8 skipped, 0 failed (202 s). `gitstate-probe`'s slow-git timing case failed once in a partial run under load and passed 22 of 22 alone |
+| `npx vitest run --maxWorkers=2 --project pty` | 8 files, 100 passed |
+| `sh test/pty/run-smoke.sh` | 65 of 65 PASS |
+| `npm run -s build` + `npm run -s pack:check` | ok — bundle 3,591,082 bytes; unpacked 3,750,652 < 3,855,000; tarball 1,261,175 < 1,500,000 |
+
+### Left for the owner
+
+- **The epilogue after a task** (`[run] finished …` and then the six-row `[ui] stopped` block) is unchanged; replies,
+  look-ups and failed replies no longer get it.
+- **`rm -rf .git`** under full autonomy runs; the seatbelt keeps `.git/config` and hooks and the rest goes, so the
+  repository is left half-deleted. The note says `/undo may not restore this` under the rule `rm_outside`, whose
+  sentence names `.git`. Refusing it as an argument error (like `write_file` into `.git/`) is a policy call.
+- **The verify nudge after a user-requested destructive task** can still make the model write a second, defensive
+  paragraph.
+- **Jev copy outside runs**: the `--help` first line ("Jev decides, the code model writes."), `/why`, `/jev`,
+  `/decisions` in `/help`, `doctor`'s `key.jev` warning with only a generator key, and the first-run `[setup]` line.
+- **The wordmark** sits above the composer in the classic renderer (the chat scrolls above it); `--fullscreen` pins it
+  at the top.
+- **A resumed run after `/undo`** gets no note that files were put back (a new run's continuation message does).
+- **The one-shot `run --plain` header and stderr epilogue** still print for a reply.
+- **Agent-mode series for render-lag and composer-latency**, and **step-row width at 80 columns**, are not done.
+- **Landing.** `agent-s6` is based on `e4139e2`; merging `main` conflicts in `CHANGELOG.md` and `docs/DECISIONS.md` only.
