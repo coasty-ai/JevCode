@@ -292,6 +292,9 @@ function startLagProbe(): { stop: () => { p50: number | null; p95: number | null
 async function startSession(flags: ParsedFlags, command: 'chat' | 'run'): Promise<number> {
   const env = process.env;
   const cwd = process.cwd();
+  // the directory the console's top edge and the session header name: the `--workspace` a session works in (known from argv
+  // before the first frame), not the directory it was launched from (the S6 review: `live` shown for a js-fix session)
+  const shownDir = flags.workspace !== undefined && flags.workspace !== '' ? resolvePath(cwd, flags.workspace) : cwd;
   const facts: LaunchFacts = { stdinIsTTY: Boolean(process.stdin.isTTY), stdoutIsTTY: Boolean(process.stdout.isTTY), env };
   if (command === 'chat' && flags.noInput) throw new UsageError(NO_INPUT_NEEDS_TASK);
   const sel = selectRenderer(flags, command, facts);
@@ -341,13 +344,13 @@ async function startSession(flags: ParsedFlags, command: 'chat' | 'run'): Promis
     // the Ink renderer's modal prompts (wizard, trust, follow-up, undo, exit confirm, blocking pane, picker) as the controller's Prompter
     tuiBundle = createTuiPrompter();
     const dir = jevcodeDir(env, homedir(), cwd);
-    const tui: TuiRenderer = (await import('../tui/App.js')).createTuiRenderer({ ...rendererOpts, cwd, env, home: homedir(), runsDir: flags.runsDir !== undefined ? resolvePath(cwd, flags.runsDir) : resolvePath(dir, 'runs'), wizardHost: tuiBundle.wizardHost });
+    const tui: TuiRenderer = (await import('../tui/App.js')).createTuiRenderer({ ...rendererOpts, cwd: shownDir, env, home: homedir(), runsDir: flags.runsDir !== undefined ? resolvePath(cwd, flags.runsDir) : resolvePath(dir, 'runs'), wizardHost: tuiBundle.wizardHost });
     tuiBundle.attach(tui);
     renderer = tui;
     prompter = (tui as PromptingRenderer).prompts ?? tuiBundle.prompter;
   } else {
     const { createPlainRenderer } = await import('../tui/plain.js');
-    renderer = createPlainRenderer({ ...rendererOpts, cwd, interactive: sel.readline });
+    renderer = createPlainRenderer({ ...rendererOpts, cwd: shownDir, interactive: sel.readline });
   }
   fatalRefs.unmount = () => renderer.unmount();
   trace(`renderer ${sel.kind} mounted (mode ${sel.mode})`);
