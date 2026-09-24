@@ -195,6 +195,41 @@ describe('the agent loop end to end: real engine, real driver, mock provider, a 
     expect(readFileSync(join(ws, 'notes.txt'), 'utf8')).toBe('my untracked notes\n');
   }, 60_000);
 
+  it('a run that fails on its first turn still carries the conversation: the next message sees run 1 and its own failed message (S6 review carry hole)', async () => {
+    const { root, ws } = failingNodeWorkspace();
+    const r1 = await run(ws, root, 'my name is Zanzibar', [{ text: 'Nice to meet you, Zanzibar.', usage: USAGE, stopReason: 'end_turn' }]);
+    expect(r1.result.stopReason).toBe('answered');
+    // run 2: the provider refuses its first request (a 4xx) — the run ends before any step
+    const r2 = await run(ws, root, 'what is 2 + 2?', () => ({ error: { status: 400, retryable: false } }), r1.result.runId);
+    expect(r2.result.stopReason).toBe('error');
+    // its head was checkpointed at once
+    const state2 = JSON.parse(readFileSync(join(root, 'runs', r2.result.runId, 'state.json'), 'utf8')) as { state?: { agentState?: { transcriptSeq?: number } } };
+    expect(state2.state?.agentState?.transcriptSeq).toBeGreaterThan(0);
+    // run 3 carries run 2, whose head carries run 1: the request sees both earlier messages and the reply
+    const r3 = await run(ws, root, 'try again', [{ text: "Hi Zanzibar — 2 + 2 is 4.", usage: USAGE, stopReason: 'end_turn' }], r2.result.runId);
+    expect(r3.result.stopReason).toBe('answered');
+    const sent = JSON.stringify(r3.provider.requests[0]!.agent!.messages);
+    expect(sent).toContain('my name is Zanzibar');
+    expect(sent).toContain('Nice to meet you, Zanzibar.');
+    expect(sent).toContain('what is 2 + 2?');
+    expect(sent).toContain('try again');
+  }, 60_000);
+
+  it('the carry follows a parent that never checkpointed a driver state back through its `carry` record', async () => {
+    const { root, ws } = failingNodeWorkspace();
+    const r1 = await run(ws, root, 'my name is Zanzibar', [{ text: 'Nice to meet you, Zanzibar.', usage: USAGE, stopReason: 'end_turn' }]);
+    const r2 = await run(ws, root, 'what is 2 + 2?', () => ({ error: { status: 400, retryable: false } }), r1.result.runId);
+    // a run that died before its checkpoint landed (a crash, or a build from before the head was checkpointed at once)
+    const file = join(root, 'runs', r2.result.runId, 'state.json');
+    const envelope = JSON.parse(readFileSync(file, 'utf8')) as { state: Record<string, unknown> };
+    delete envelope.state['agentState'];
+    writeFileSync(file, JSON.stringify(envelope));
+    const r3 = await run(ws, root, 'try again', [{ text: 'Hi Zanzibar.', usage: USAGE, stopReason: 'end_turn' }], r2.result.runId);
+    const sent = JSON.stringify(r3.provider.requests[0]!.agent!.messages);
+    expect(sent).toContain('my name is Zanzibar');
+    expect(sent).toContain('try again');
+  }, 60_000);
+
   it('a native call with no name is recorded under a wire-safe name: every later request of the run and of a carried follow-up is valid (S6 review)', async () => {
     const { root, ws } = failingNodeWorkspace();
     // the mock enforces the adapters' wire rules (http.ts messagesError), so a `''` name would fail request 2 here

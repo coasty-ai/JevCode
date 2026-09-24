@@ -13,7 +13,7 @@
  * command — so building it spawns nothing (§A1: nothing slow before the first request).
  */
 import { readFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import type { AgentContext, Candidate, GitState, Json, JsonObject, UndoLogEntry } from '../core/types.js';
 import { clip } from '../core/text.js';
 import {
@@ -26,7 +26,7 @@ import {
   AGENT_TOP_LEVEL_ENTRIES,
 } from './limits.js';
 import { notExecutedRunEnded } from './prompt.js';
-import { parseState } from './state.js';
+import { parseState, type AgentStateV1 } from './state.js';
 import { readTranscript, transcriptPath, withoutProviderState, type TranscriptRecord } from './transcript.js';
 
 // ---------------------------------------------------------------------------------------
@@ -244,13 +244,11 @@ function at(now: number): string {
  * checkpoint or transcript) — the caller then builds the first user message.
  */
 export async function carryHead(ctx: AgentContext, systemHash: string): Promise<Head | null> {
-  const parent = ctx.conversation?.parent ?? null;
-  if (parent === null || parent.mode !== 'agent') return null;
-  const facts = await parentFacts(parent.runDir);
-  const parentState = parseState(facts.agentState);
-  if (parentState === null) return null;
-  const parentRecords = await readTranscript(transcriptPath(parent.runDir)).catch(() => null);
-  if (parentRecords === null || parentRecords.length === 0) return null;
+  const named = ctx.conversation?.parent ?? null;
+  if (named === null || named.mode !== 'agent') return null;
+  const found = await carriedParent(named);
+  if (found === null) return null;
+  const { parent, facts, parentState, parentRecords } = found;
   let kept = parentRecords.filter((r) => r.seq <= parentState.transcriptSeq);
   if (kept.length === 0) return null;
   // what a request replays starts at the latest compaction; the first user record stays as the head a later compaction
@@ -279,6 +277,28 @@ export async function carryHead(ctx: AgentContext, systemHash: string): Promise<
   }
   out.push({ v: 1, seq: out.length + 1, at: at(now), kind: 'user', text: ctx.redact(await continuationMessage(ctx, facts.stopReason, facts.undoLog)) });
   return { records: out, carriedFrom: parent.runId };
+}
+
+/** How many runs back carryHead follows `carry` records past parents that never checkpointed a driver state. */
+const CARRY_FALLBACK_DEPTH = 8;
+
+/**
+ * The run whose transcript a follow-up carries: the named parent when it checkpointed a driver state; else (a run that
+ * died before its checkpoint landed — a crash, or one written before the head was checkpointed at once) the run its own
+ * transcript's `carry` record names, and so on back, so one failed message never drops the whole conversation.
+ */
+async function carriedParent(named: { runId: string; runDir: string }): Promise<{ parent: { runId: string; runDir: string }; facts: ParentFacts; parentState: AgentStateV1; parentRecords: TranscriptRecord[] } | null> {
+  let parent = named;
+  for (let depth = 0; depth <= CARRY_FALLBACK_DEPTH; depth += 1) {
+    const facts = await parentFacts(parent.runDir);
+    const parentState = parseState(facts.agentState);
+    const parentRecords = await readTranscript(transcriptPath(parent.runDir)).catch(() => null);
+    if (parentState !== null) return parentRecords === null || parentRecords.length === 0 ? null : { parent, facts, parentState, parentRecords };
+    const carry = parentRecords?.[0];
+    if (carry === undefined || carry.kind !== 'carry' || !/^[\w.-]+$/.test(carry.parentRunId)) return null;
+    parent = { runId: carry.parentRunId, runDir: join(dirname(parent.runDir), carry.parentRunId) };
+  }
+  return null;
 }
 
 /** §3.1 step 1: the head of a fresh run — the carried parent transcript, else the first user message. */

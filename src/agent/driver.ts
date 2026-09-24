@@ -109,12 +109,17 @@ class Driver implements AgentDriver {
       // §10: records past the checkpoint belong to a step that never committed; their calls count as unresolved
       await t.reset(records.filter((r) => r.seq <= saved.transcriptSeq));
       this.state = { ...saved, systemHash: this.systemHash };
+      this.transcript = t;
     } else {
       const head = await buildHead(ctx, this.systemHash);
       await t.reset(head.records);
       this.state = { ...initialState(this.systemHash), carriedFrom: head.carriedFrom };
+      this.transcript = t;
+      // §7.6: the head is checkpointed at once, so a run that ends before its first step (a provider 4xx, a failed retry,
+      // Esc or Ctrl-C during the first reply) still leaves `agentState` — the next message then carries the conversation
+      // with this run's own user message, instead of starting over from a fresh first message (the S6 review's carry hole)
+      this.snapshot(ctx);
     }
-    this.transcript = t;
     return t;
   }
 
