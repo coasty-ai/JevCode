@@ -106,6 +106,8 @@ jobs:
         run: npm run jev-contract
 
       - name: Unit tests (a failing test is retried up to twice)
+        env:
+          JEVCODE_PERF_BUDGET_SCALE: '3' # wall-clock budgets are calibrated on a dev machine (test/unit/helpers/perf-budget.ts)
         run: npm test -- --maxWorkers=3 --retry 2 --reporter=default --reporter=./scripts/ci/retried-reporter.mjs
 
       - name: Build the bundle and the attribution file

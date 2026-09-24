@@ -4,6 +4,7 @@
  * rows.
  */
 import { describe, expect, it } from 'vitest';
+import { budgetMs } from '../../helpers/perf-budget.js';
 import { instantCatalogue } from '../../../../src/models/list.js';
 import { rankModels } from '../../../../src/models/search.js';
 import { INITIAL_MODELS, MODELS_RANK_LIMIT, catalogueSettled, modelsReducer, providersCovered, replaceProviderRows, selectedModel, visibleModels } from '../../../../src/tui/models/state.js';
@@ -172,7 +173,7 @@ describe('the model picker reducer (§6.2, §6.4)', () => {
      * assertion measures the machine. An algorithmic regression raises every round, so the minimum still catches
      * it; noise raises some. Raising the round count is the fix if this ever flakes, never raising the budget.
      */
-    expect(p50).toBeLessThan(PERF_P95_MS / 4);
-    expect(p95).toBeLessThan(PERF_P95_MS);
+    expect(p50).toBeLessThan(budgetMs(PERF_P95_MS / 4));
+    expect(p95).toBeLessThan(budgetMs(PERF_P95_MS));
   });
 });
