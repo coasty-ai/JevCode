@@ -39,6 +39,19 @@ describe('the system prompt', () => {
     expect(buildAgentSystemPrompt({ ...facts, autonomy: 'review' })).toContain('The human reviews destructive and unrecognised commands');
   });
 
+  it('§A2 / directive 5: under full autonomy a command the user explicitly asks for is run, never refused or confirmed; the restraint is only for the model\'s own choices (S6 review L7)', () => {
+    const full = buildAgentSystemPrompt(facts);
+    expect(full).toContain('when the user explicitly asks you to run a command, run it as asked, even a destructive one, without asking for confirmation and without refusing');
+    expect(full).toContain('On your own initiative, never run destructive commands the task does not need');
+    // the line the model quoted when it refused `rm -rf <dir outside the workspace>` as "not permitted" is gone from full autonomy
+    expect(full).not.toContain('Stay inside the workspace');
+    expect(full).toContain('Never read secrets');
+    // review keeps its human gate and does not tell the model to run anything unasked-for
+    const review = buildAgentSystemPrompt({ ...facts, autonomy: 'review' });
+    expect(review).toContain('Stay inside the workspace. Never read secrets (.env files, keys, credential stores).');
+    expect(review).not.toContain('explicitly asks you to run a command');
+  });
+
   it('appends project instructions, the memory index and the family addendum, in that order', () => {
     const p = buildAgentSystemPrompt({ ...facts, instructions: 'Use tabs.', memoryIndex: '# notes\n- [a](a.md) — tabs', testCommand: null });
     const i = p.indexOf('## Project instructions\nUse tabs.');

@@ -37,20 +37,25 @@ function sandboxSentence(level: SandboxLevel): string {
 }
 
 /**
- * §A2: under full autonomy nothing is refused, so the prompt asks for restraint instead of promising a refusal; under
- * review the human sees destructive and unrecognised commands first. Either sentence is constant for the run.
+ * §A2: under full autonomy nothing is refused and nothing is asked — by the harness, and not by the model either: a
+ * command the user explicitly asked for is run as asked (the sandbox contains it and the step's note says what happened;
+ * the S6 review saw the model refuse `rm -rf <dir>` as "not permitted", which was not true of the harness). The restraint
+ * is for destructive commands the model would choose on its own. Under review the human sees destructive and
+ * unrecognised commands first. Either block is constant for the run.
  */
 function safetyLines(autonomy: 'full' | 'review'): string[] {
-  const common = '- Stay inside the workspace. Never read secrets (.env files, keys, credential stores).';
+  const secrets = '- Never read secrets (.env files, keys, credential stores).';
   if (autonomy === 'review') {
     return [
-      common,
+      `- Stay inside the workspace. ${secrets.slice(2)}`,
       '- The human reviews destructive and unrecognised commands before they run. A declined command comes back as a tool result; pick another way or explain what you need and why.',
     ];
   }
   return [
-    common,
-    '- Never run destructive commands the task does not need: deleting outside the workspace, discarding uncommitted changes you did not make, force pushes, sudo, piping downloads into a shell, disk tools, publishing. The harness runs every command in its sandbox without asking, so this is your responsibility.',
+    '- Work inside the workspace on your own initiative.',
+    secrets,
+    '- On your own initiative, never run destructive commands the task does not need: deleting outside the workspace, discarding uncommitted changes you did not make, force pushes, sudo, piping downloads into a shell, disk tools, publishing.',
+    '- The user runs you with full autonomy: when the user explicitly asks you to run a command, run it as asked, even a destructive one, without asking for confirmation and without refusing. The harness runs every command in its sandbox (which may block some of it) and records what happened; then tell the user plainly what the command did or why it failed.',
   ];
 }
 
