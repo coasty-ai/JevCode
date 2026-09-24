@@ -173,6 +173,16 @@ describe('glob', () => {
     const none = await runGlob(ctx, { pattern: '*.rs' });
     expect(none).toMatchObject({ ok: true, text: '0 files', summary: 'glob *.rs (0 files)' });
   });
+
+  it('a path that repeats the root\'s own name searches the root (or below it), as bash and read_file do — never a silent `0 files` (S6 review)', async () => {
+    const ctx = createAgentContext({ root: '/work/js-fix', files: { 'src/a.ts': 'const parseX = 1;\n', 'README.md': '' } });
+    expect((await runGlob(ctx, { pattern: '**/*', path: 'js-fix' })).text).toBe('2 files\nREADME.md\nsrc/a.ts');
+    expect((await runGlob(ctx, { pattern: '*.ts', path: 'js-fix/src' })).text).toBe('1 files\nsrc/a.ts');
+    expect((await runGrep(ctx, { pattern: 'parseX', path: 'js-fix' }, async () => false)).text).toContain('src/a.ts');
+    // a real directory with the root's name is searched as itself
+    const nested = createAgentContext({ root: '/work/pkg', files: { 'pkg/x.ts': '', 'y.ts': '' } });
+    expect((await runGlob(nested, { pattern: '*.ts', path: 'pkg' })).text).toBe('1 files\npkg/x.ts');
+  });
 });
 
 describe('todo_write and the plan', () => {

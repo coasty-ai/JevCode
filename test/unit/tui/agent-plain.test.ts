@@ -208,9 +208,19 @@ describe('agent items and step rows (all three sinks)', () => {
     for (const r of [observe, edit, write, bash, verify, done]) expect(stepSummaryText(r)).not.toMatch(/risk|judge/);
   });
 
+  it('an executed command whose summary is its exit status says it once (S6 review: `done · exit 1 · exit 1 · 285ms`)', () => {
+    const st = createItemStreamState();
+    const exec = { exitCode: 1, ok: false, stdout: '', stderr: '', durationMs: 285, truncated: false, killedBy: null, signal: null, orphans: [] };
+    const items = itemsFromEvent({ type: 'outcome', step: 1, outcome: { status: 'executed', summary: 'exit 1', changedFiles: [], exec } } as unknown as EngineEvent, 0, st);
+    expect(items.map((i) => i.text)).toEqual(['done · exit 1 · 285ms']);
+  });
+
   it('the pieces: call text, batch folding past three names, test counts', () => {
     expect(agentCallText({ name: 'bash', summary: 'bash git diff (exit 0)', ok: true })).toBe('Bash git diff (exit 0)');
     expect(agentCallText({ name: 'glob', summary: 'glob src/**/*.test.ts (40 files)', ok: true })).toBe('Glob src/**/*.test.ts (40 files)');
+    // one failure marker: a summary that already says how it ended gets no second one (S6 review: `Read src/all.js (error) (failed)`)
+    expect(agentCallText({ name: 'read_file', summary: 'read_file src/all.js (error)', ok: false })).toBe('Read src/all.js (error)');
+    expect(agentCallText({ name: 'bash', summary: 'bash npm test', ok: false })).toBe('Bash npm test (failed)');
     expect(agentBatchText(['a', 'b', 'c', 'd', 'e'].map((f) => ({ name: 'read_file', summary: `read_file ${f}.ts`, ok: true })))).toBe('Read a.ts, b.ts, c.ts (+2)');
     expect(testCountsText({ passed: 3, failed: 0, errors: 1 })).toBe('3 passed, 1 error');
     expect(agentStepText(agentStep(1, { kind: 'observe', calls: [] , action: { kind: 'read', paths: ['a.ts'] } }))).toMatch(/^a\.ts · /);
@@ -223,6 +233,11 @@ describe('the agent strip and the decisions tab (§14.3, peer G)', () => {
   it('▸ s<N> · plan d/t · <k> tool calls — no jev, no decisions, no risk', () => {
     expect(agentStripSegments({ ...base, toolCalls: 9 })).toEqual(['▸ s4', '9 tool calls']);
     expect(agentStripSegments({ ...base, toolCalls: 1 })).toEqual(['▸ s4', '1 tool call']);
+    // a plan with no items is no plan: never `plan 0/0` (the S6 review's strip over an idle reply)
+    const emptyPlan = { step: 1, plan: { done: [], remaining: [], unverified: [], openProblems: [], harnessProblems: [] }, rejectedDone: [], unverifiedDone: [] };
+    expect(agentStripSegments({ ...base, plan: emptyPlan, toolCalls: 2 } as unknown as Parameters<typeof agentStripSegments>[0])).toEqual(['▸ s4', '2 tool calls']);
+    const onePlan = { ...emptyPlan, plan: { ...emptyPlan.plan, done: [{ text: 'a', step: 1 }], remaining: ['b'] } };
+    expect(agentStripSegments({ ...base, plan: onePlan, toolCalls: 2 } as unknown as Parameters<typeof agentStripSegments>[0])).toEqual(['▸ s4', 'plan 1/2', '2 tool calls']);
     const strip = panelStrip({ ...base, toolCalls: 9, latencies: [120, 130] }, 100);
     expect(strip).toMatch(/^─── ▸ s4 · 9 tool calls ─+$/);
     expect(strip).not.toMatch(/jev|decision|risk/);

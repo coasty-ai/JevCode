@@ -560,7 +560,8 @@ export const AGENT_NO_DECISIONS = 'a normal agent run makes no Jev decisions';
 export function agentStripSegments(state: PaneState, g: GlyphSet = GLYPHS.unicode): string[] {
   const segs = [`${g.chevronRight} s${state.step}`];
   const plan = planProgress(state);
-  if (plan !== null) segs.push(`plan ${plan.done}/${plan.total}`);
+  // a run whose model wrote no todo list has no plan to count: never `plan 0/0`
+  if (plan !== null && plan.total > 0) segs.push(`plan ${plan.done}/${plan.total}`);
   const k = state.toolCalls ?? 0;
   if (k > 0) segs.push(`${k} tool call${k === 1 ? '' : 's'}`);
   return segs;

@@ -437,7 +437,9 @@ function outcomeText(o: ActionOutcome, risk?: RiskDims): { text: string; level: 
       // §3.6: `done · <summary> · exit 0 · 10ms · 1 file (a.py)` — the duplicated `exit 0 (exit 0, 10ms)` collapses
       const parts = [`done`, pluraliseCounts(o.summary)];
       if (o.exec) {
-        parts.push(`exit ${o.exec.exitCode ?? 'null'}`);
+        // an agent command's summary is often its exit status already (`exit 1`): say it once (`done · exit 1 · exit 1` in --plain)
+        const exit = `exit ${o.exec.exitCode ?? 'null'}`;
+        if (!parts[1]!.split(SEP).includes(exit)) parts.push(exit);
         if (o.exec.killedBy) parts.push(`killed by ${o.exec.killedBy}`);
         if (o.exec.truncated) parts.push('output truncated');
         if (o.exec.orphans.length > 0) parts.push(`${o.exec.orphans.length} orphan pids`);
@@ -845,16 +847,20 @@ function callRest(name: string, summary: string): string {
 }
 
 /** AGENT-LOOP-DESIGN §9.4: one call as a row segment — `Read src/a.ts (lines 1-120)`, `Grep "x" in src (3 matches)`, `(failed)` when it failed. */
+/** A summary that already says how the call ended (`read_file a.js (error)`): no second marker after it. */
+const ENDED_MARKER_RE = /\((?:error|failed|invalid|not executed|blocked|declined)\)$/;
+
 export function agentCallText(c: { name: string; summary: string; ok: boolean }): string {
   const verb = AGENT_TOOL_VERB[c.name] ?? c.name;
   const rest = callRest(c.name, c.summary);
-  return `${verb}${rest === '' ? '' : ` ${rest}`}${c.ok ? '' : ' (failed)'}`;
+  return `${verb}${rest === '' ? '' : ` ${rest}`}${c.ok || ENDED_MARKER_RE.test(rest) ? '' : ' (failed)'}`;
 }
 
 /** AGENT-LOOP-DESIGN §9.4: the full-view row of a read-only tool result — `tool · read_file src/a.ts (lines 1-120) · 3 ms`. */
 export function agentToolResultText(e: { name: string; summary: string; ok: boolean; ms: number }): string {
   const ms = Number.isFinite(e.ms) ? `${Math.max(0, Math.round(e.ms))} ms` : '? ms';
-  return `tool${SEP}${oneLine(e.summary).trim() || e.name}${e.ok ? '' : `${SEP}failed`}${SEP}${ms}`;
+  const summary = oneLine(e.summary).trim() || e.name;
+  return `tool${SEP}${summary}${e.ok || ENDED_MARKER_RE.test(summary) ? '' : `${SEP}failed`}${SEP}${ms}`;
 }
 
 /** Most file names a compact read batch lists before `(+N)`. */

@@ -6,6 +6,7 @@
  * candidates with a JS `RegExp`. `glob` converts the pattern to a RegExp over the candidate paths; a pattern without a
  * slash matches file names at any depth, as `--glob` does in ripgrep.
  */
+import { basename } from 'node:path';
 import type { AgentContext, Candidate } from '../../core/types.js';
 import { shellQuote } from '../../workspace/tests.js';
 import {
@@ -88,10 +89,22 @@ function under(candidates: readonly Candidate[], dir: string | null): { path: st
   return candidates.flatMap((c) => (c.path === dir ? [{ path: c.path, rel: c.path.slice(c.path.lastIndexOf('/') + 1) }] : c.path.startsWith(`${dir}/`) ? [{ path: c.path, rel: c.path.slice(dir.length + 1) }] : []));
 }
 
-function searchDir(ctx: AgentContext, path: string | undefined): { ok: true; dir: string | null } | { ok: false; error: string } {
+/**
+ * The workspace-relative directory a `path` argument names. glm-5.3-flash passes the root's own name (`path: "js-fix"` in
+ * `…/js-fix`), which matched nothing and answered `0 files` (the S6 review): when no such directory exists, the root's name
+ * means the root and `<root>/sub` means `sub` — the rule bash's workdir and read_file already follow.
+ */
+function searchDir(ctx: AgentContext, path: string | undefined, candidates: readonly Candidate[]): { ok: true; dir: string | null } | { ok: false; error: string } {
   if (path === undefined) return { ok: true, dir: null };
   const wd = normaliseWorkdir(ctx.workspace.root, path);
-  return wd.ok ? { ok: true, dir: wd.value } : { ok: false, error: `ERROR: ${path} is outside the workspace` };
+  if (!wd.ok) return { ok: false, error: `ERROR: ${path} is outside the workspace` };
+  const dir = wd.value;
+  if (dir === null) return { ok: true, dir };
+  const exists = (d: string): boolean => candidates.some((c) => c.path === d || c.path.startsWith(`${d}/`));
+  const name = basename(ctx.workspace.root);
+  if (dir === name && !exists(dir)) return { ok: true, dir: null };
+  if (dir.startsWith(`${name}/`) && !exists(dir)) return { ok: true, dir: dir.slice(name.length + 1) };
+  return { ok: true, dir };
 }
 
 export interface GlobArgs {
@@ -100,10 +113,11 @@ export interface GlobArgs {
 }
 
 export async function runGlob(ctx: AgentContext, a: GlobArgs): Promise<ToolResult> {
-  const where = searchDir(ctx, a.path);
+  const candidates = await ctx.workspace.listCandidates();
+  const where = searchDir(ctx, a.path, candidates);
   if (!where.ok) return errorResult(where.error, `glob ${a.pattern} (error)`);
   const re = globToRegExp(a.pattern);
-  const matched = under(await ctx.workspace.listCandidates(), where.dir)
+  const matched = under(candidates, where.dir)
     .filter((c) => globMatches(re, a.pattern, c.rel))
     .map((c) => c.path)
     .sort();
@@ -252,9 +266,9 @@ async function grepWithJs(ctx: AgentContext, a: GrepArgs, files: readonly { path
 }
 
 export async function runGrep(ctx: AgentContext, a: GrepArgs, rgAvailable: (ctx: AgentContext) => Promise<boolean>): Promise<ToolResult> {
-  const where = searchDir(ctx, a.path);
-  if (!where.ok) return errorResult(where.error, `grep ${JSON.stringify(oneLine(a.pattern, 50))} (error)`);
   const candidates = await ctx.workspace.listCandidates();
+  const where = searchDir(ctx, a.path, candidates);
+  if (!where.ok) return errorResult(where.error, `grep ${JSON.stringify(oneLine(a.pattern, 50))} (error)`);
   const allowed = new Set(candidates.map((c) => c.path));
   if (await rgAvailable(ctx)) return grepWithRg(ctx, a, where.dir, allowed);
   const glob = a.glob;
