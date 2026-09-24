@@ -258,7 +258,7 @@ describe('§A2 full autonomy never refuses and never asks; §A5 the note tells t
   });
 
   it('destructiveCoverage / destructiveNote / ruleRiskAssessment are the pure pieces of the same rule', () => {
-    // every rule of a compound command counts: any remote rule leaves the machine; a discard beside any other rule may not be restored
+    // every rule of a compound command counts: a remote rule leaves the machine; a discard beside another rule may not be restored
     expect(destructiveCoverage({ rule: 'force_push', rules: ['force_push', 'git_discard'], command: 'git reset --hard && git push -f', imagesComplete: true, headMoved: false })).toBe('left-machine');
     expect(destructiveCoverage({ rule: 'rm_outside', rules: ['rm_outside', 'git_discard'], command: 'git reset --hard; rm -rf ~/x', imagesComplete: true, headMoved: false })).toBe('may-not');
     expect(destructiveCoverage({ rule: 'git_discard', rules: ['git_discard'], command: 'git reset --hard && git clean -fd', imagesComplete: true, headMoved: false })).toBe('restores');

@@ -38,9 +38,25 @@ else.
 | `FIREWORKS_API_KEY` | the code model | |
 | `META_API_KEY` | the code model | `MODEL_API_KEY` is accepted as a second spelling |
 
-The provider list and the variable names for each live in one file with no imports at all,
-`src/provider/ids.ts`, because the configuration layer has to read them before the first frame
-is painted. Where a provider has two spellings, JevCode's own name wins.
+**With `--provider` and no `--model`, the run uses that provider's own latest fast model** —
+never OpenRouter's id, which the other providers answer with a 404:
+
+| Provider | Default model |
+| --- | --- |
+| `openrouter` | `z-ai/glm-5.3-flash` |
+| `anthropic` | `claude-sonnet-5` |
+| `openai` | `gpt-5.6-luna` |
+| `gemini` | `gemini-3.8-flash` |
+| `xai` | `grok-4.7` |
+| `fireworks` | `accounts/fireworks/models/glm-5p3-flash` |
+| `meta` | `muse-spark-1.3` |
+
+`--model`, `JEVCODE_MODEL` or the config file's `model` still win, and `jevcode config` shows the
+row with source `default`.
+
+The provider list, the variable names and these default models live in one file with no
+imports at all, `src/provider/ids.ts`, because the configuration layer has to read them before
+the first frame is painted. Where a provider has two spellings, JevCode's own name wins.
 
 `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, `JEV_API_KEY` and `ANTHROPIC_API_KEY` are also the
 four variables whose values join the redaction set for the whole session, whichever provider

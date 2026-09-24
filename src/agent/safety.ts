@@ -329,7 +329,7 @@ export function classifyCommand(command: string, c: ClassifyContext): CommandVer
 
 /**
  * §A5: the one-line note of a destructive command that ran under full autonomy, truthful about what /undo can do for the
- * WHOLE command: any rule that leaves the machine says so; `restorable` (the pre-images cover it) counts only when every
+ * WHOLE command: a rule that leaves the machine says so; `restorable` (the pre-images cover it) counts only when every
  * rule is `git_discard`; anything else may not be restored. `rule` is one rule or a compound command's list.
  */
 export function destructiveNote(command: string, rule: DestructiveRule | readonly DestructiveRule[], restorable: boolean): string {

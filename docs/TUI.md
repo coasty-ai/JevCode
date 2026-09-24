@@ -26,9 +26,14 @@ one agent run that carries the whole session: earlier replies, earlier runs and 
 intake reading, no `On it — starting the run.` line, no ``Say `do it` `` offer and no catalogue reply — every
 answer is the code model's own, streamed. A greeting or a question is answered in prose with no tool call: that
 run stops `answered` and looks exactly like a chat reply (no `[run]` rows, no step rows, no stop line, no
-`exit 0`), and it never becomes the session's title. A request for a change gets tool calls, and from the first
-one the reply becomes a run. A provider error is a `[ui]` error row, never text in the assistant's voice. A follow-up
-prints no `[run] seeded from run …` line: the carry is the conversation, recorded in the run's own transcript.
+`exit 0`), and it never becomes the session's title. A question the model answers after reading files (`read_file`,
+`grep`, `glob`; no command, no change) is a reply too: only its prose shows, and the status row reads `reading` while
+it reads. A request for a change gets tool calls, and from the first command or change the reply becomes a run (the
+rows it held back, the reads included, land then in order). A provider error before that is ONE `[ui]` error row,
+never text in the assistant's voice and never the stop epilogue; a transient one (a 5xx, a timeout) is retried once
+automatically, and a 4xx such as a wrong model id ends the run at its first failed turn. A follow-up
+prints no `[run] seeded from run …` line: the carry is the conversation, recorded in the run's own transcript — also
+after a message that failed or was stopped before the model answered.
 
 **Reply rendering.** The prose streams in place above the console's rule under `[jevcode]`, from the first token:
 a line with no newline yet is drawn as text (wrapped, with a `▍` caret), never as a `streaming… N chars` counter.
@@ -55,20 +60,26 @@ animation of what is running: a ring with a dark arc travelling round it (the do
 with a sweeping meridian (the globe) while it reads, a box turning (the cube) while it edits, writes or runs a
 command, a travelling sine (the wave) while your tests run. It is three cells wide when the row has room and the
 old one-cell slot otherwise — the extra two cells are the first thing the row gives up, so nothing else is dropped
-for it at 80 columns. It steps on the spinner's own 125 ms tick (no timer of its own), animates only while
+for it at 80 columns, and they come back once the row's drops have made room. Which segments fit is decided at the
+widest status word, so the row does not jump sideways as a run switches between `thinking` and a tool, and a long
+`ctx 41% · 6 files · 12 steps` steps down to `ctx 41%` before the cell is dropped. It steps on the spinner's own 125 ms tick (no timer of its own), animates only while
 something runs, is a still frame over SSH and under `--no-animation`, a one-cell ASCII twin under `--ascii` or
 `NO_COLOR`, and absent under `--screen-reader`, which keeps the status word.
 
 **Status words.** `thinking` (a model turn), `reading` (a read-only batch), `editing` or `running` (the mutating
 call), `testing` (the harness's test run), named from the start of each step. The rule strip reads
-`▸ s<N> · plan d/t · <k> tool calls`; there is no Jev sparkline and no `jev …` token segment; the decisions tab of
+`▸ s<N> · plan d/t · <k> tool calls` (`plan d/t` only when the model wrote a todo list); there is no Jev sparkline and no `jev …` token segment; the decisions tab of
 a run that asked Jev nothing reads `a normal agent run makes no Jev decisions`; `/jev` and `/panel` still work but
 left the Popular group. `[run] finished` of a run that used no Jev has no `jev $0.000` part.
 
-**Autonomy.** Under the default `--autonomy full` nothing asks and nothing is refused: there is no review card,
+**Autonomy.** Under the default `--autonomy full` nothing asks and nothing is refused — by the harness, and a command
+you explicitly ask for is not refused by the model either: there is no review card,
 and a command that matches a destructive rule runs like any other and leaves a warning row
 `destructive · ran <command> (rule <id>) — <what /undo can do>`, ending in `this left the machine; /undo cannot
-reverse it`, `/undo restores the workspace` or `/undo may not restore this`. Under `--autonomy review` the review
+reverse it`, `/undo restores the workspace` or `/undo may not restore this`. A compound command is judged whole
+(`git reset --hard && git push --force` names both rules and says it left the machine), and a machine-leaving command
+that exited non-zero says `exit N — it may not have left the machine`. A read-only program pointed at a secret
+(`cat .env`) is not read-only: it goes through the gate like any other command. Under `--autonomy review` the review
 card appears before every destructive or unrecognised command; the card of a destructive command is titled with
 its rule's sentence and has no dimension rows; `y` runs it once, `n` declines and the model reads the decline.
 
@@ -77,8 +88,10 @@ its rule's sentence and has no dimension rows; `y` runs it once, `n` declines an
 is `/mode jev-only`. `/undo`, `/rewind`, `/diff N`, `/steer`, pause (Esc) and abort (Esc Esc) work per step as
 in every mode; a steer reaches the model as a note before its next turn.
 
-**`--plain`** prints each prose line under `[jevcode] ` as it arrives (every line exactly once), holds the run rows
-until the first tool call and drops them for a reply, so a greeting prints only `[you] …` and `[jevcode] …`.
+**`--plain`** prints each prose line under `[jevcode] ` as it arrives (every line exactly once, a new line per model
+turn), holds the run rows until the first command or change and drops them for a reply (a look-up included), so a
+greeting prints only `[you] …` and `[jevcode] …`. Each step is one `[step N]` row (its `tool ·`, `proposal ·`, `done ·`
+and `plan ·` rows stay in transcript.log).
 `--json` writes every event, including `assistant:text`, `assistant:reset`, `generator:reasoning`, `tool:call`
 and `tool:result`.
 
