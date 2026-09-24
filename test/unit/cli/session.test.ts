@@ -18,6 +18,7 @@ import { modeBadgeWord } from '../../../src/tui/status/lines.js';
 import { MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
 import { missingGeneratorOnly, MOCK_VERIFY_NOTE, PANEL_HANDLED_BY_TUI, TRANSCRIPT_ALWAYS_FULL, capsItem, defaultModeItem, fixBlockLines, modeSavedItem } from '../../../src/tui/onboarding/lines.js';
 import { whyErrorText } from '../../../src/tui/why.js';
+import type { ParsedFlags } from '../../../src/cli/args.js';
 import { mkdirSync as mkdirp } from 'node:fs';
 import { sessionCapChangedLine } from '../../../src/tui/budget/lines.js';
 import { sandboxText } from '../../../src/tui/onboarding/lines.js';
@@ -556,6 +557,18 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
     expect(opts.session?.clamp).toBeUndefined();
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(8 + 1.5 + 0.115, 6);
     expect(h.controller.view.sessionId).toBe('S9');
+  });
+
+  it('/resume (and `run --resume <id>`) without --workspace resumes in the run\'s own workspace, never "(does not exist) is not the run\'s workspace" (S6 live L8)', async () => {
+    const stopped = scriptedRunId(930);
+    // the command line has no --workspace (the harness sets one by default)
+    const h = await build({ flags: { spendCap: '2', workspace: undefined } as unknown as Partial<ParsedFlags>, deps: { loadForResume: async (_dir, runId) => ({ meta: loadedRun({ runId, workspace: realpathSync(h.workspace), task: 'fix it' }).meta, state: loadedRun({ runId, workspace: realpathSync(h.workspace), step: 3, stop: 'human_pause' }).state!, previousStopReason: 'human_pause', warnings: [] }) } });
+    void h.controller.run();
+    await h.ready();
+    await h.command(`/resume ${stopped}`);
+    const notes = h.renderer.notes.map((n) => n.text).join(' | ');
+    expect(notes).not.toContain('is not the run');
+    expect(h.factory.calls.map((c) => c.resume?.runId), notes).toEqual([stopped]);
   });
 
   it('/resume of a complete run without --force adopts its session for a follow-up instead of resuming', async () => {

@@ -3168,7 +3168,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     try {
       const loaded = await loadForResumeFn(cfg.runsDir, runId, { redact: cfg.redact });
       const identity = resumeIdentityFromRunMeta(loaded.meta);
-      const wsReal = flags.workspace ? await import('node:fs/promises').then((m) => m.realpath(resolvePath(flags.workspace as string))).catch(() => null) : null;
+      // the workspace a resume checks: the --workspace flag, else the run's own (the augmented flags below always name one, so a
+      // null realpath here read as "(does not exist)" and `jevcode run --resume <id>` without --workspace always failed — S6 live L8)
+      const wsReal = await import('node:fs/promises').then((m) => m.realpath(resolvePath(flags.workspace ?? identity.workspace))).catch(() => null);
       // §9.4: pending /budget values ride as augmented flags so reconcileResumeConfig records them as overrides
       const augmented: ParsedFlags = {
         ...flags,
