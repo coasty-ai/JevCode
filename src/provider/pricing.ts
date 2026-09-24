@@ -226,7 +226,10 @@ export function isKnownPrice(row: ModelPrice): row is KnownPriceRow {
 
 /** The row for a model id: an exact match first, then the longest matching prefix; null when the table says nothing. */
 export function priceRowFor(provider: ProviderId, model: string): ModelPrice | null {
-  const id = model.trim().toLowerCase();
+  const bare = model.trim().toLowerCase();
+  // Fireworks serves a bare model name (`glm-5p3-flash`) as `accounts/fireworks/models/<name>`: the S6 live run of
+  // 2026-09-23 with `--model glm-5p3-flash` ran its first step, then stopped as unpriced (exit 2) on the price lookup
+  const id = provider === 'fireworks' && bare !== '' && !bare.includes('/') ? `accounts/fireworks/models/${bare}` : bare;
   let best: ModelPrice | null = null;
   for (const row of MODEL_PRICES) {
     if (row.provider !== provider) continue;

@@ -68,6 +68,14 @@ describe('priceRowFor', () => {
     expect(pricingFor('fireworks', 'accounts/fireworks/models/inkling')).toBeNull();
     expect(priceRowFor('fireworks', 'accounts/fireworks/models/inkling')!.notes).toContain('parameter-count bucket');
   });
+
+  it('prices a bare Fireworks model name as the accounts/fireworks/models/ id the API serves it as (S6 live, `--model glm-5p3-flash`)', () => {
+    expect(pricingFor('fireworks', 'glm-5p3-flash')).toEqual(pricingFor('fireworks', 'accounts/fireworks/models/glm-5p3-flash'));
+    expect(pricingFor('fireworks', ' GLM-5p3-flash ')).toEqual(pricingFor('fireworks', 'accounts/fireworks/models/glm-5p3-flash'));
+    // an unlisted bare name is still unknown (the parameter-count bucket), and no other provider borrows the prefix
+    expect(pricingFor('fireworks', 'inkling')).toBeNull();
+    expect(pricingFor('openrouter', 'glm-5p3-flash')).toBeNull();
+  });
 });
 
 describe('effectivePricing', () => {
