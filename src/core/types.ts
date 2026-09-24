@@ -2003,7 +2003,7 @@ export interface EngineOptions {
    */
   routers?: 'on' | 'off';
   /**
-   * How much of the candidate set the context stage asks Jev about (stages/context.ts `ContextAskPolicy`). Absent = the
+   * How much of the candidate set the context stage asks Jev about (src/jev-modes/stages/context.ts `ContextAskPolicy`). Absent = the
    * legacy always-ask (one Noul per candidate, up to 300), which the bench arms were measured with. The product passes
    * `PRODUCT_CONTEXT_ASK`: no ask below 16 candidates or when the task names a file, at most 24 candidates asked otherwise.
    */

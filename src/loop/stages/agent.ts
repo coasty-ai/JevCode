@@ -1,5 +1,5 @@
 /**
- * The agent-mode propose stage (docs/AGENT-LOOP-DESIGN.md §2.1, §2.2): the engine-side twin of `stages/synth.ts`, plus every
+ * The agent-mode propose stage (docs/AGENT-LOOP-DESIGN.md §2.1, §2.2): the engine-side twin of `src/jev-modes/stages/synth.ts`, plus every
  * helper of the engine seam that needs no private engine state — the per-step change set (§3.4), the rule `RiskAssessment` of a
  * gate (§12), the truthful note of a destructive command that ran (§A2, §A5), the completion predicate's unscoped-run test
  * (§3.3), and the stream tap that turns the provider's tool-call and reasoning callbacks into events (§9.3).

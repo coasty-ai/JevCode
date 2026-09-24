@@ -278,7 +278,7 @@ export function loopTripText(sig: string): string {
 }
 
 /**
- * The move a stored replan directive names (stages/replan.ts directiveText writes "Jev directs
+ * The move a stored replan directive names (src/jev-modes/stages/replan.ts directiveText writes "Jev directs
  * `<move>`"); null for the fallback wording. The checkpointed directive history keeps text only.
  */
 export function directiveMove(text: string): string | null {

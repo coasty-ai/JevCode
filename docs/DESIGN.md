@@ -48,7 +48,9 @@ JevCode/
     sandbox/{run,kill,paths,seatbelt}.ts
     workspace/{files,candidates,edit,patch,tests,git}.ts   git.ts: the only module that spawns git
     loop/engine.ts               the step loop (§6)
-    loop/stages/{intent,context,propose,risk,execute,judge,complete,replan,choose}.ts
+    loop/stages/execute.ts       the execute stage every mode runs
+    jev-modes/stages/{intent,context,propose,risk,judge,complete,replan,choose}.ts
+                                 the Jev-driven stages (under loop/stages/ until 2026-09-23)
     loop/{plan,window,loopdetect,budget,stop}.ts
     loop/generator-only.ts       Jev-off condition used by the bench; implements Engine
     checkpoint/{store,resume,run-id}.ts
@@ -2771,15 +2773,15 @@ is ledger-aware in this mode (`src/jev-modes/stages/intent.ts`: an `edit` intent
 while a change is unverified; a `finish` fallback is rescued when the engine's last run is green
 and current).
 
-- **Verified completion** (`src/jev-modes/stages/risk.ts completionVerifiedByRun`, `engine.ts
-  verifiedCompletion`): a `done` whose `plan.remaining` is empty while `workspace.testsCurrent`
-  and `lastTestRun.allPassed` hold is not refused by the risk stage; Jev's answers stay in the
-  record and the completion Noul still decides the stop.
-- **Verification run** (`risk.ts isVerificationRun`): one plain invocation of the detected test
-  command (or a scoped form) with `destructive` and `irreversible` at expected level ≤ 1 never
-  lands in the review band on spread alignment mass; the alignment dimensions are recorded, not
-  gating. In bench runs a review is a decline, and 9 of round 4's 16 refused runs were this
-  standing run with verified evidence.
+- **Verified completion** (`src/jev-modes/stages/risk.ts completionVerifiedByRun`,
+  `src/loop/engine.ts verifiedCompletion`): a `done` whose `plan.remaining` is empty while
+  `workspace.testsCurrent` and `lastTestRun.allPassed` hold is not refused by the risk stage;
+  Jev's answers stay in the record and the completion Noul still decides the stop.
+- **Verification run** (`src/workspace/tests.ts isVerificationRun`, read by the risk stage): one
+  plain invocation of the detected test command (or a scoped form) with `destructive` and
+  `irreversible` at expected level ≤ 1 never lands in the review band on spread alignment mass;
+  the alignment dimensions are recorded, not gating. In bench runs a review is a decline, and 9
+  of round 4's 16 refused runs were this standing run with verified evidence.
 - **Novel verified patch** (`risk.ts novelVerifiedPatch`, `PatchHistory`,
   `proposal.priorPatches` in the risk state): a change proposal whose evidence is verified with
   no newly-failing tests and whose content differs from every *applied* earlier patch of the run
@@ -3297,10 +3299,10 @@ the ones the probes held or routing margins.
   `investigate` for `read`, `edit` otherwise; probability, confidence, paired Noul and
   `planStillValid` all 1; the `intent` event is emitted after `proposal` with `verdict: 'code'`
   (`ChoiceVerdict` and `DecisionVerdict` gained the member in `core/types.ts`).
-- **Code judge** (`stages/judge.ts runCodeJudgeStage`, `codeJudge`). On a `run`: `succeeded` = the
-  suite passed — **as built 2026-09-21, "passed" means nothing failed beyond the baseline's known
-  failures** (`unexpectedFailures(parsed, run.knownFailures) = 0` with `passed > 0`; with none
-  declared that is the original `failed = errors = 0` and the runner's own `allPassed` is required
+- **Code judge** (`src/jev-modes/stages/judge.ts runCodeJudgeStage`, `src/loop/judge-code.ts
+  codeJudge`). On a `run`: `succeeded` = the suite passed — **as built 2026-09-21, "passed" means
+  nothing failed beyond the baseline's known failures**
+  (`unexpectedFailures(parsed, run.knownFailures) = 0` with `passed > 0`; with none declared that is the original `failed = errors = 0` and the runner's own `allPassed` is required
   too, since with known failures the runner exits non-zero by construction); a non-test command's
   exit code; the recorded `tests_pass_unparsed ≥ 0.85` when the parser read nothing.
   `errorPresent` = the parser counted

@@ -186,7 +186,7 @@ function planDraftJson(draft: PlanDraft): JsonObject {
 
 /**
  * `verified` (code-computed, never by Jev): the shadow run shows strict progress and no
- * regression. The risk criteria reference it by name (stages/risk.ts) so a Score judges a
+ * regression. The risk criteria reference it by name (src/jev-modes/stages/risk.ts) so a Score judges a
  * verified change rather than an unverified claim; Jev is not asked to compare the counts.
  */
 export function evidenceVerified(e: Pick<ProposalEvidence, 'before' | 'after' | 'newlyFailing'>): boolean {
@@ -269,7 +269,7 @@ export function commonChangeUnverified(common: JsonObject): boolean {
 /**
  * Code-computed from the common state (§5.5): the engine's own last parsed test run passed
  * everything and no file changed since (`workspace.lastTestRun.allPassed && workspace.testsCurrent`).
- * The fact behind the jev-only `finish` rescue (stages/intent.ts) — with every test passing no
+ * The fact behind the jev-only `finish` rescue (src/jev-modes/stages/intent.ts) — with every test passing no
  * `fix … in …` item is open whatever the plan text still lists.
  */
 export function commonRunGreen(common: JsonObject): boolean {

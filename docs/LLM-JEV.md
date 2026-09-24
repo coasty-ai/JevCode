@@ -133,9 +133,9 @@ all-seed split of equal support before any special-case count (`seedOnlySplit` /
 45 s cheap / 90 s repository)` and a provider whose served p90 is past the class default makes the run cap every further sample's
 `reasoning: {maxTokens}` at 512, one-way (`LLM_DEADLINE_ADAPT`, `sampleDeadlineMs`, `providerSlow`, `src/jev-modes/synth/llm/source.ts`); and the
 base commit's known failures travel on the claiming run's evidence, so the completion fact and the code judge compare against them
-instead of against zero (`KnownFailuresEvidence`, `unexpectedFailures`, `src/jev-modes/stages/complete.ts`, `judge.ts`; the count is measured
-at the base commit and may only be lowered by a later re-baseline, `search/index.ts`). Design text: DESIGN §22.3 / §22.5 / §22.6,
-LLM-JEV-DESIGN §4.8 rev 3, §6.2 rev 3, §6.6 rev 3.
+instead of against zero (`KnownFailuresEvidence` in `src/jev-modes/stages/complete.ts`; `unexpectedFailures` and `codeJudge` in
+`src/loop/judge-code.ts`; the count is measured at the base commit and may only be lowered by a later re-baseline,
+`search/index.ts`). Design text: DESIGN §22.3 / §22.5 / §22.6, LLM-JEV-DESIGN §4.8 rev 3, §6.2 rev 3, §6.6 rev 3.
 
 Two live single-task runs, one per overfit v2 left behind, same generator (`z-ai/glm-5.3-flash`), Jev `jev-1.13.0`, limits and
 evaluator as v2; $0.0017 spent across the two, each under its own $0.05 cap. Both pass and both end `complete` at step 2.

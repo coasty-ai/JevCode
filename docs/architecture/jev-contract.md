@@ -77,7 +77,7 @@ which matters:
 | function | file | kind | what it decides |
 |---|---|---|---|
 | `dangerousCommand(command)` | `src/jev/danger.ts:53` | **deny-list** | returns the matched rule's reason, which becomes **`review`** — an ask, which Jev's Scores may escalate further to `block`. Returns `null` when nothing matched, and `null` is *not* a safety claim |
-| `codeRiskReason(proposal, …)` | `src/jev-modes/stages/risk.ts:372` | **allow-list** | returns a reason when the proposal is safe as a matter of fact, which becomes **`ok`** |
+| `codeRiskReason(proposal, …)` | `src/jev-modes/stages/risk.ts:360` | **allow-list** | returns a reason when the proposal is safe as a matter of fact, which becomes **`ok`** |
 
 The deny-list has six rules, and it is literal and case-sensitive by design:
 
@@ -96,7 +96,7 @@ The module says its own misses out loud: `RM -RF /`, `rm   -rf /`, `$(echo rm) -
 Makefile target wrapping any of them all return `null`. They are not thereby allowed. When no
 code rule clears a proposal and Jev did not answer, `codeRiskVerdict` returns **`review`** —
 "no opinion" means "ask a human", never "allow".
-<!-- src/jev-modes/stages/risk.ts:416 codeRiskVerdict -->
+<!-- src/jev-modes/stages/risk.ts:404 codeRiskVerdict -->
 
 When Jev *did* answer, only the narrower `codeRiskFloor` applies: a deny-listed command cannot
 be released by a Score at level 0, and everything else keeps exactly the verdict the Scores

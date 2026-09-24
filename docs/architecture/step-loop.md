@@ -7,9 +7,11 @@
 > the default mode.
 
 A run is a sequence of steps. A step proposes one action, checks it, runs it, judges the
-result, and writes it down. `src/loop/engine.ts` holds the whole of it; the stages themselves
-live in `src/loop/stages/`, one file each. The agent mode's branch is one more stage file,
-`src/loop/stages/agent.ts`.
+result, and writes it down. `src/loop/engine.ts` holds the whole of it. The stages themselves are
+one file each. The ones only the Jev-driven modes run live in `src/jev-modes/stages/` (intent,
+context, propose, synth, fastpath, risk, judge, complete, replan, choose); the execute stage every
+mode shares, `src/loop/stages/execute.ts`, stays in `src/loop/stages/` beside the decompose stage
+and the agent mode's branch, `src/loop/stages/agent.ts`.
 
 This page walks one step from budget check to checkpoint, names every function, and says which
 stages run in which of the four Jev-driven modes.
@@ -141,7 +143,7 @@ flowchart TD
 `runHarmOnlyRiskStage` and `runCodeJudgeStage` are not called by the engine directly. They are
 private branches taken inside `runRiskStage` and `runJudgeStage` when `ctx.mode === 'llm-jev'`,
 which is why the engine's call sites are identical in every mode.
-<!-- src/jev-modes/stages/risk.ts:747, src/jev-modes/stages/judge.ts:218 -->
+<!-- src/jev-modes/stages/risk.ts:735, src/jev-modes/stages/judge.ts:138 -->
 
 ## The stages
 
@@ -203,7 +205,7 @@ Before anything is asked, a code refusal runs: `ownershipRefusal` blocks a child
 writing outside the paths it owns. It is decided before the targets are even stat'ed, and it
 is a property of the child rather than of the mode — `jev-off` runs no risk stage, so its
 branch of the step calls the same function directly.
-<!-- src/jev-modes/stages/risk.ts:675 and :737; src/loop/engine.ts:4281 -->
+<!-- src/jev-modes/stages/risk.ts:663 and :725; src/loop/engine.ts:4281 -->
 
 `ownershipRefusal` returns `null` for a parent run and for any run without a delegation, which
 is why nothing here changes an ordinary run.
@@ -256,7 +258,7 @@ outcome:
 | `read` | the same batch minus `error_present`, which is not built at all for a read: file contents are not a command failure |
 | interrupted, or a pause landed during the command | the judge is skipped; the command still ran to its own end and the step still commits |
 
-<!-- src/jev-modes/stages/judge.ts:219-223 (`reduced`, `read`), :69 (error_present is skipped for a read),
+<!-- src/jev-modes/stages/judge.ts:139-143 (`reduced`, `read`), :70 (error_present is skipped for a read),
      docs/DESIGN.md §6 per-outcome table -->
 
 When the test output parsed, the parsed counts win. Jev's judgement of the same run is recorded

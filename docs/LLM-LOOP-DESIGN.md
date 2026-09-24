@@ -749,7 +749,7 @@ All must hold.
 |---|---|---|
 | T1 | `mode === 'jev-on'` and `fastPath === 'auto'`, and the warm plane is OFF (`warmPlaneEnabled()`, I8 — §4.5) | option, `src/jev-modes/synth/warm/plane.ts` |
 | T2 | `synthesizerHandles(wsInfo, files)` true (cached once per run) | `src/jev-modes/synth/index.ts:305` |
-| T3 | the last executed action was a test `run` (`isTestCommand`, `stages/execute.ts:33`) whose parse is **`scopeUsable`** with `failed + errors >= 1` | `src/workspace/tests.ts:540` |
+| T3 | the last executed action was a test `run` (`isTestCommand`, `src/workspace/tests.ts:243`) whose parse is **`scopeUsable`** with `failed + errors >= 1` | `src/workspace/tests.ts:540` |
 | T4 | no workspace write since that run (`lastChangeStep` / `changedFiles`) | engine state |
 | T5 | `lastTestRun.durationMs <= FASTPATH_MAX_T_RUN_MS = 800` | **new contract-1.9 member** (§5) |
 | T6 | the code-derived suspect set — `framesOfTraceback` ∩ workspace files, plus `mentionedInTask` — is **exactly one** non-test source file | `search/index.ts:1621`, `:360` |
@@ -1251,7 +1251,7 @@ over a recorded run directory showing the new columns non-empty; the `--concurre
 - `src/jev/danger.ts` *(new)* — `dangerousCommand()`, the promoted deny-list (§2.4).
 - `src/jev/mock.ts` — re-export only, so the mock decider is byte-identical.
 - `src/jev/off.ts` — router-aware escapes; the `:21` comment updated to point at `danger.ts`.
-- `src/loop/stages/{intent,context,judge,complete,replan,risk}.ts` — the six conversions and their four-clause
+- `src/jev-modes/stages/{intent,context,judge,complete,replan,risk}.ts` — the six conversions and their four-clause
   blocks (§2.3).
 - `src/jev-modes/synth/oracle/scope.ts` *(new)* — RS1.
 - `src/jev-modes/synth/search/subgoal.ts` — RS2 (`:156`), RS3 (`:763`), RS4 (`:864` and `:1617`).

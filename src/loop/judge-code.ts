@@ -2,7 +2,7 @@
  * The code judge (docs/LLM-JEV-DESIGN.md §3 row 7): a step's JudgeResult from harness data alone — the parsed
  * test counts against the baseline's known failures, the exit code of a non-test command, and plan claims
  * accepted by arithmetic. It asks Jev nothing, so it sits beside the engine rather than inside the Jev-driven
- * judge stage (stages/judge.ts, which calls it on every jev-on and llm-jev step); the agent path judges each
+ * judge stage (src/jev-modes/stages/judge.ts, which calls it on every jev-on and llm-jev step); the agent path judges each
  * test run it observes with the same function (engine.ts).
  */
 import type { DoneClaimResult, JudgeResult, ProposalEvidence, TestCounts } from '../core/types.js';

@@ -406,7 +406,7 @@ function peerLabel(raw: string): string {
 type BlockSpec = Omit<BlockingRequest, 'id' | 'retryInMs'> & { autoRetry?: boolean };
 
 // ---------------------------------------------------------------------------------------
-// Stage context (what stages/*.ts see)
+// Stage context (what src/loop/stages/*.ts and src/jev-modes/stages/*.ts see)
 // ---------------------------------------------------------------------------------------
 
 export interface AskOutcome {

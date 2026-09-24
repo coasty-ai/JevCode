@@ -52,10 +52,13 @@ flowchart LR
   end
   subgraph sg_loop["engine and step loop — src/loop"]
     ENGINE["engine.ts"]
-    STAGES["stages/ — agent; and for the legacy modes replan, intent, context, propose, risk, execute, judge, complete"]
+    STAGES["stages/ — agent, execute, decompose"]
     ROUTERS["routers.ts — routersOn"]
     BUDGET["budget.ts and src/spend/meter.ts"]
     STOPM["stop.ts — exitCodeFor"]
+  end
+  subgraph sg_jevmodes["the Jev-driven modes' stages — src/jev-modes"]
+    JSTAGES["stages/ — intent, context, propose, synth, fastpath, risk, judge, complete, replan, choose"]
   end
   subgraph sg_jev["decider — src/jev"]
     QUESTIONS["questions.ts — choice, noul, score, ESCAPE_KEY"]
@@ -96,6 +99,7 @@ flowchart LR
   MAIN --> IMPORTM
   BENCH --> ENGINE
   ENGINE --> STAGES
+  ENGINE --> JSTAGES
   STAGES --> DRIVER
   DRIVER --> ATOOLS
   DRIVER --> ASAFE
@@ -104,7 +108,7 @@ flowchart LR
   ENGINE --> ROUTERS
   ENGINE --> BUDGET
   ENGINE --> STOPM
-  STAGES --> QUESTIONS
+  JSTAGES --> QUESTIONS
   ROUTERS --> ROUTER
   ROUTER --> ENGINE
   QUESTIONS --> ENGINE
@@ -112,10 +116,10 @@ flowchart LR
   JCACHE --> CLIENT
   CLIENT --> VALIDATE
   CLIENT --> JEVAPI
-  STAGES --> PROVIDER
+  JSTAGES --> PROVIDER
   PROVIDER --> MODELS
   PROVIDER --> GENAPI
-  STAGES --> SYNTH
+  JSTAGES --> SYNTH
   SYNTH --> SANDBOX
   STAGES --> SANDBOX
   SANDBOX --> SEATBELT
@@ -127,10 +131,10 @@ flowchart LR
 ```
 
 In the default mode the engine hands each step to the agent driver, which samples the code
-model and resolves its tool calls; the Jev stages run only in the legacy modes. Two edges are
-worth reading twice. Every Jev question goes through the engine, not around it:
-a stage (or one of the agent's three quick placements) builds a batch of questions and hands
-it to the engine's one recorded, metered ask.
+model and resolves its tool calls; the Jev stages, in `src/jev-modes/stages/`, run only in the
+legacy modes. Two edges are worth reading twice. Every Jev question goes through the engine, not
+around it: a stage (or one of the agent's three quick placements) builds a batch of questions and
+hands it to the engine's one recorded, metered ask.
 And `routeSpeculative` never talks to the decider on its own — it is handed the calling
 stage's own ask as a function argument. The same picture with the module table and the import
 rules is on [System overview](architecture/overview.md).
