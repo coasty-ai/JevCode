@@ -10,7 +10,7 @@
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import type { EngineEvent } from '../../../src/core/types.js';
-import { AGENT_REPLY_RESTARTED, agentBatchText, agentCallText, agentStepText, createPlainRenderer, formatTranscriptItem, itemsFromEvent, proseLinesOf, stepSummaryText, testCountsText } from '../../../src/tui/plain.js';
+import { AGENT_REPLY_RESTARTED, agentBatchText, agentCallText, agentStepText, createItemStreamState, createPlainRenderer, formatTranscriptItem, itemsFromEvent, proseLinesOf, stepSummaryText, testCountsText } from '../../../src/tui/plain.js';
 import { agentStripSegments, AGENT_NO_DECISIONS, panelStrip, tabLines } from '../../../src/tui/pane/model.js';
 import { fakeEngine } from '../../fixtures/tui/fixtures.js';
 import { agentOpening, agentRunResult, agentStep, shapedTurn } from './agent-fixtures.js';
@@ -107,6 +107,27 @@ describe('--plain in agent mode', () => {
 });
 
 describe('agent items and step rows (all three sinks)', () => {
+  it('an agent finish makes no proposal or noop-outcome item — they repeated the streamed answer (S6 live --plain printed it three times); a legacy done keeps both', () => {
+    const agent = createItemStreamState();
+    const texts = (events: readonly EngineEvent[], st: ReturnType<typeof createItemStreamState>): string[] => events.flatMap((e) => itemsFromEvent(e, 0, st)).map((i) => formatTranscriptItem(i));
+    const answer = 'Fixed: `fib` had an off-by-one. All 3 tests pass.';
+    const done: EngineEvent[] = [
+      { type: 'proposal', step: 4, proposal: { goal: 'finish', action: { kind: 'done', summary: answer }, plan: { done: [], remaining: [], openProblems: [] }, rawText: answer } },
+      { type: 'outcome', step: 4, outcome: { status: 'noop', summary: answer } },
+    ];
+    expect(texts([agentOpening('fix it', 'r-agent')[0]!, ...done], agent)).toEqual(['[run] started · agent · fix it']);
+    // the step row still closes the step in every sink
+    expect(stepSummaryText(agentStep(4, { kind: 'finish', action: { kind: 'done', summary: answer }, outcome: { status: 'noop', summary: answer } }), { generator: 0.0004, jev: 0 })).toBe('done · 1.2s · $0.0004');
+    const legacy = createItemStreamState();
+    const lines = texts([{ type: 'run:start', runId: 'r-legacy', task: 'fix it', mode: 'llm-jev', resumedFromStep: null }, ...done], legacy);
+    expect(lines.slice(1)).toEqual([`[step 4] proposal · done ${answer} · "finish"`, `[step 4] done · ${answer}`]);
+  });
+
+  it('a read-only observe of commands names no empty target: `proposal · read · "bash cat a.txt"` (S6 live)', () => {
+    const items = itemsFromEvent({ type: 'proposal', step: 2, proposal: { goal: 'bash cat hello.txt', action: { kind: 'read', paths: [] }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' } }, 0, createItemStreamState());
+    expect(items.map((i) => formatTranscriptItem(i))).toEqual(['[step 2] proposal · read · "bash cat hello.txt"']);
+  });
+
   it('assistant:text → one [jevcode] chat row per line, blank lines kept, no 600-char clip; one trailing newline is not an extra line', () => {
     const long = 'x'.repeat(900);
     const items = itemsFromEvent({ type: 'assistant:text', step: 2, turn: 1, attempt: 1, text: `a\n\n${long}\n`, final: false }, 10);

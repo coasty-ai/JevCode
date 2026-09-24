@@ -574,10 +574,22 @@ export interface ItemStreamState {
   readonly planKeys: Map<string, string>;
   /** the run id of the most recent `run:start` seen **on this stream** — what a `plan` event (which carries none) belongs to */
   runId: string;
+  /**
+   * AGENT-LOOP-DESIGN §9.4: the agent runs seen on this stream. Their finish step's `proposal` (`done <summary>`) and `noop`
+   * outcome repeat the prose the `[jevcode]` rows already carry — S6 live `--plain` printed the final answer three times — so
+   * those two items are not made; the step row (`done · verified`, wall time, cost) stays. Never pruned at `run:end`: the
+   * sinks that share a stream read one event after another, and a session holds few runs.
+   */
+  readonly agentRuns?: Set<string>;
 }
 
 export function createItemStreamState(): ItemStreamState {
-  return { planKeys: new Map<string, string>(), runId: '' };
+  return { planKeys: new Map<string, string>(), runId: '', agentRuns: new Set<string>() };
+}
+
+/** the current run of this stream is an agent run (§9.4) */
+function inAgentRun(state: ItemStreamState): boolean {
+  return state.agentRuns?.has(state.runId) === true;
 }
 
 const defaultStreamState = createItemStreamState();
@@ -620,6 +632,7 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
       // §3.6 (G1): `started · jev+llm · <task>`; the run id moves to the epilogue and `/status`
       state.runId = e.runId;
       state.planKeys.delete(e.runId);
+      if (e.mode === 'agent') state.agentRuns?.add(e.runId);
       // §14.2 review item 18: ` · ` is the ONE inline separator of an engine item, and `MODE_BADGE_WORD['llm-jev']`
       // is `llm+jev · verified`, so the badge would smuggle a second one into a row whose grammar forbids it — a
       // reader (and a grep) would see four segments. The badge is flattened for this row only; the console's own
@@ -642,10 +655,13 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
       // jev-only synthesizer progress: one line per event, so it lands in transcript.log like every other item
       return make(e.step, 'synth', synthText(e));
     case 'proposal': {
+      // AGENT-LOOP-DESIGN §9.4: an agent finish proposal is the streamed prose again (see `ItemStreamState.agentRuns`)
+      if (e.proposal.action.kind === 'done' && inAgentRun(state)) return [];
       // §3.6 (G2, G7): `proposal · edit a.py +12 −3 · "<goal>"`; the plan counts move to the `plan` item, which already carries them
       const d = describeAction(e.proposal.action);
       const goal = oneLine(e.proposal.goal).trim();
-      const text = `proposal${SEP}${d.kind} ${d.target}${goal === '' ? '' : `${SEP}"${goal}"`}`;
+      // an agent observe step of read-only commands has no file to name: `proposal · read · "bash cat a.txt"`, not `read  ·`
+      const text = `proposal${SEP}${d.kind}${d.target === '' ? '' : ` ${d.target}`}${goal === '' ? '' : `${SEP}"${goal}"`}`;
       const kind = actionDetailKind(e.proposal.action);
       return make(e.step, 'proposal', text, 'info', { ...(d.preview ? { detail: clipDetail(d.preview) } : {}), ...(kind !== undefined ? { detailKind: kind } : {}) });
     }
@@ -656,6 +672,8 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
       // §3.6 (G5): `review declined · "<note>"` — the confirm id is machine-only (it is in decisions.jsonl)
       return make(e.step, 'confirm:resolved', `review ${e.aborted ? 'aborted' : e.approved ? 'approved' : 'declined'}${e.note ? `${SEP}"${e.note}"` : ''}`, e.aborted ? 'warn' : 'info');
     case 'outcome': {
+      // AGENT-LOOP-DESIGN §9.4: an agent finish's `noop` outcome is the streamed prose again
+      if (e.outcome.status === 'noop' && inAgentRun(state)) return [];
       const o = outcomeText(e.outcome);
       return make(e.step, 'outcome', o.text, o.level, o.detail !== undefined ? { detail: clipDetail(o.detail) } : {});
     }
