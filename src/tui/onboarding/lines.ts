@@ -743,10 +743,11 @@ const SANDBOX_NONE_TAIL_SHORT = 'cwd confinement only';
  * sandbox card) and in `/config`'s sandbox footer. A renderer-local item, never in `transcript.log`.
  *
  * `profile` is what the user ASKED for and `level` is what was detected, so the `none` row states which of the three
- * true things happened: chosen, unavailable, or requested-and-unavailable.
+ * true things happened: chosen, unavailable, or requested-and-unavailable. `noNetwork` (`--no-network`) makes the seatbelt
+ * row say `network off` — the S6 live run of 2026-09-23 printed `network on` while its sandbox denied every DNS lookup.
  */
-export function sandboxText(level: SandboxLevel, profile: SandboxProfile = 'auto', platform: string = process.platform): string {
-  return level === 'seatbelt' ? 'seatbelt · workspace writes only · secrets unreadable · network on' : `none · ${sandboxNoneReason(profile, platform)} · ${SANDBOX_NONE_TAIL_SHORT}`;
+export function sandboxText(level: SandboxLevel, profile: SandboxProfile = 'auto', platform: string = process.platform, noNetwork = false): string {
+  return level === 'seatbelt' ? `seatbelt · workspace writes only · secrets unreadable · network ${noNetwork ? 'off' : 'on'}` : `none · ${sandboxNoneReason(profile, platform)} · ${SANDBOX_NONE_TAIL_SHORT}`;
 }
 /** TUI-DESIGN-3 §5.1 rule 13: the `[sandbox]` item's TUI-only detail body — the same three reasons, in the detail's `—`/`:` shape */
 export function sandboxDetail(level: SandboxLevel, profile: SandboxProfile = 'auto', platform: string = process.platform): string {

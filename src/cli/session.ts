@@ -5337,7 +5337,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
      * `--json` still carry it (one dim line, no detail). Interactively the same facts are one keystroke away: `/status`
      * (the `sandbox` row), `/config` (the sandbox footer, the full sentence) and `jevcode doctor`.
      */
-    if (o.rendererKind !== 'tui') note(sandboxText(detectSandboxLevel(config.sandbox), config.sandbox), { label: '[sandbox]', level: 'dim' });
+    if (o.rendererKind !== 'tui') note(sandboxText(detectSandboxLevel(config.sandbox), config.sandbox, process.platform, config.noNetwork), { label: '[sandbox]', level: 'dim' });
     const cfg = config;
     candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
     // network map P5: ONE anonymous GET warms the generator's origin while the human reads the first frame — fire-and-forget,
@@ -5455,7 +5455,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     },
     persistCredentials,
     trustInputs: () => lastTrustInputs,
-    sandboxLine: () => (config ? sandboxText(detectSandboxLevel(config.sandbox), config.sandbox) : null),
+    sandboxLine: () => (config ? sandboxText(detectSandboxLevel(config.sandbox), config.sandbox, process.platform, config.noNetwork) : null),
     sandboxDetail: () => (config ? sandboxDetail(detectSandboxLevel(config.sandbox), config.sandbox) : null),
     mode: () => pending.mode ?? baseMode,
     runsDir: () => config?.runsDir ?? null,

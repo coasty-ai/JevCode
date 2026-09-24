@@ -144,6 +144,9 @@ describe('§24 wizard strings are verbatim', () => {
     // TUI-DESIGN-3 §5.1 rule 13 + the quiet start: one thought per row with ` · ` separators, ONE row at 80 columns;
     // the full sentences are the detail (`sandboxDetail`, the wizard's card) and `/config`'s sandbox footer
     expect(sandboxText('seatbelt')).toBe('seatbelt · workspace writes only · secrets unreadable · network on');
+    // --no-network: the seatbelt denies the network, and the row says so (it read `network on` in the S6 live run)
+    expect(sandboxText('seatbelt', 'auto', 'darwin', true)).toBe('seatbelt · workspace writes only · secrets unreadable · network off');
+    expect(sandboxText('none', 'auto', 'linux', true)).toBe(sandboxText('none', 'auto', 'linux'));
     expect(sandboxText('none', 'auto', 'linux')).toBe('none · sandbox-exec is not available on linux · cwd confinement only');
     expect(sandboxDetail('seatbelt')).toBe('seatbelt — writes confined to the workspace and run dirs; harness secret files, ~/.ssh, ~/.aws unreadable; reads elsewhere and network allowed unless --no-network');
     expect(sandboxDetail('none', 'auto', 'linux')).toBe('none — sandbox-exec is not available on linux: cwd confinement, env scrubbing, timeout, output cap and tree kill only');
