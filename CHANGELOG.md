@@ -53,6 +53,34 @@ decision is in `docs/DECISIONS.md` (2026-09-23).
   saved configs, resume and the bench, unchanged; `/mode legacy` lists them. `/llm on` is now `/mode agent`. The default
   step cap is 250 in agent mode.
 
+### Changed — the wordmark heads the session (2026-09-24)
+
+- In the default inline renderer the JevCode wordmark is written once at the top of the session, after its opening
+  animation settles, and every message, tool row and `[ui]` line lands below it, with the console at the bottom. The
+  commit moves nothing on screen, waits for the config (so `ui.wordmark: off`, `ui.noColor` and the theme apply), and a
+  resumed session replays its history below the mark. The mark needs only enough width now, so 16–20-row terminals get it
+  too; a long session scrolls it off the top like any scrollback. `--fullscreen` keeps it pinned, unchanged.
+
+### Fixed — found by the three final reviews of the agent loop (2026-09-23)
+
+- `--provider <p>` without `--model` uses that provider's own default model instead of sending OpenRouter's model id.
+- A question answered with read-only tools only (`read_file`, `grep`, `glob`) is shown as a reply, not as a run.
+- A provider 4xx, or a transient error before the first step, ends the turn at once with one `[ui]` row (a transient error
+  retries once) instead of three attempts with backoff.
+- Under full autonomy the model runs a command the user explicitly asks for instead of refusing it.
+- A message stopped with Esc or Ctrl-C, or failed before its first step, no longer drops the earlier conversation.
+- A compound command keeps every destructive rule it matches, so a note never promises a restore it cannot give.
+- A tool call with no name is recorded as an invalid call instead of breaking every later request of the run.
+- No git command runs before the first model request: the session's cached git state is used and re-checked in the
+  background. The status row keeps its segments steady while the status word changes.
+- A reply sent during the opening animation no longer leaves `! starting…` in the status row.
+
+### Internal
+
+- The Jev-driven modes' stage modules, the synthesizer and the chat lookup moved to `src/jev-modes/` (history kept);
+  `codeJudge` lives in `src/loop/judge-code.ts` and `isVerificationRun` in `src/workspace/tests.ts`. No behaviour change.
+- Wall-clock budgets in unit tests scale on CI through `JEVCODE_PERF_BUDGET_SCALE` (`test/unit/helpers/perf-budget.ts`).
+
 ### Fixed — found by the live verification of the agent loop (2026-09-23; `docs/STATUS.md`, "Agent loop — live verification")
 
 - The workspace block tells the model that tool paths start below the root. A missing path that repeats the root's name
