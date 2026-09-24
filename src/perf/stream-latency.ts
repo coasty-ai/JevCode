@@ -155,8 +155,12 @@ export function streamIn(streams: readonly Emission[][], from: number, to: numbe
 // Reply rows and the commit comparison (pure row sets, no layout guesses)
 // ---------------------------------------------------------------------------------------
 
-/** a transcript label and its gutter (`    [jevcode] `, TUI-DESIGN-3 §5.1: right-aligned in 10 cells) */
-const LABEL_RE = /^ {0,9}\[[a-z]+\] /;
+/**
+ * a transcript label and its gutter (`    [jevcode] `, TUI-DESIGN-3 §5.1: right-aligned in 10 cells). A kept blank line of an
+ * agent reply is the label alone (`[jevcode]`, TUI-DESIGN §7.8: every prose row carries it) — the S6 live run of the probe
+ * counted those three rows as dropped blank lines until the label could end the row.
+ */
+const LABEL_RE = /^ {0,9}\[[a-z]+\](?: |$)/;
 /** a trailing caret or truncation glyph a live view may append, and trailing blanks */
 const TRAILING_GLYPHS_RE = /[\s▍▌█…_]+$/u;
 

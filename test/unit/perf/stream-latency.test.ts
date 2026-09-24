@@ -73,6 +73,11 @@ describe('reply rows and the commit comparison', () => {
     const labelled = lines.filter((l) => l.trim() !== '').map((l) => `[jevcode] ${l}`);
     const j = commitJumpOf([RULE, 'const c01 = 1;', 'const c02 = 2;', STATUS], labelled, mixed.text);
     expect(j).toEqual({ liveRows: 2, committedRows: 12, rowDelta: 10, colShift: 10, commitJump: 2, blankLinesDropped: 3 });
+    // the agent reply (TUI-DESIGN §7.8): every row labelled, a kept blank line is the label alone — nothing dropped (S6 live)
+    const agent = lines.map((l) => (l.trim() === '' ? '[jevcode]' : `[jevcode] ${l}`));
+    expect(replyContent('[jevcode]')).toBe('');
+    expect(replyContent('    [jevcode]')).toBe('');
+    expect(commitJumpOf(['[jevcode] const c01 = 1;', '[jevcode] const c02 = 2;'], agent, mixed.text)).toMatchObject({ commitJump: 0, colShift: 0, blankLinesDropped: 0 });
     // the prototype's 2 → 15 (the paragraph wrapped over 3 more rows, hung at column 10): rowDelta 13
     const wrapped = [...labelled.slice(0, 4), '          p08 word p09', '          p16 word p17', '          p23 word p24', ...labelled.slice(4)];
     expect(commitJumpOf(['const c01 = 1;', 'const c02 = 2;'], wrapped, mixed.text).rowDelta).toBe(13);
