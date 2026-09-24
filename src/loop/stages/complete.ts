@@ -10,6 +10,7 @@
  */
 import { noul, ref } from '../../jev/questions.js';
 import { COMPLETING_ORACLE_OUTCOMES, type ActionKind, type CompletionEvidence, type OutcomeStatus, type Question, type TestCounts } from '../../core/types.js';
+import { TESTS_PASS_UNPARSED_THRESHOLD, knownFailureCount, unexpectedFailures } from '../judge-code.js';
 
 export const TASK_COMPLETE_ID = 'task_complete';
 
@@ -88,9 +89,6 @@ export interface CompleteQuestionInput {
 export function completeQuestionDue(i: CompleteQuestionInput): boolean {
   return i.goalJustClosed || i.planRemaining === 0;
 }
-
-/** docs/LLM-JEV-DESIGN.md §6.6: `tests_pass_unparsed` stands in for the parsed counts only when the runner's output could not be parsed. */
-export const TESTS_PASS_UNPARSED_THRESHOLD = 0.85;
 
 /**
  * The known-failure count the synthesizer declares beside the completion evidence
@@ -191,24 +189,9 @@ export function secondWitnessHolds(c: ClaimingCompletionEvidence): boolean {
   return independentWitnessSelections(c).length >= INDEPENDENT_WITNESSES_REQUIRED;
 }
 
-/** A declared known-failure count, sanitised: a finite count above 0, else 0 (a missing declaration means "none"). */
-export function knownFailureCount(n: number | undefined): number {
-  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
-}
-
 /** The failures a claiming run may show without contradicting the fact: the ones its evidence declares. */
 export function knownFailuresOf(completion: ClaimingCompletionEvidence | undefined): number {
   return knownFailureCount(completion?.knownFailures);
-}
-
-/**
- * Failures a run shows **beyond** the baseline's known ones: `failed + errors − knownFailures`, floored
- * at 0. Pre-existing failures are not the engineer's to fix and not evidence against a verified patch;
- * anything above them is. With `knownFailures = 0` (every QuixBugs / ladder run and every repository
- * workspace whose scoped suite is green at the base) this is the old `failed = errors = 0` test.
- */
-export function unexpectedFailures(counts: Pick<TestCounts, 'failed' | 'errors'>, knownFailures: number): number {
-  return Math.max(0, counts.failed + counts.errors - Math.max(0, knownFailures));
 }
 
 /**

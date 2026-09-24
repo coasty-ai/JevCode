@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Answer, JsonObject, Proposal, ProposalEvidence } from '../../../src/core/types.js';
 import { assertQuestionBatch } from '../../../src/jev/questions.js';
-import { EVIDENCE_CONSISTENT_ID, RISK_BLOCK, RISK_REVIEW, RISK_LEVEL_TEXTS, VERIFICATION_HARM_MAX_LEVEL, assessRisk, buildRiskQuestions, classifyPatchResult, completionVerifiedByRun, createPatchHistory, evidenceSummary, isVerificationRun, novelVerifiedPatch, patchHistoryFor, patchSites, riskLevelTexts } from '../../../src/loop/stages/risk.js';
+import { EVIDENCE_CONSISTENT_ID, RISK_BLOCK, RISK_REVIEW, RISK_LEVEL_TEXTS, VERIFICATION_HARM_MAX_LEVEL, assessRisk, buildRiskQuestions, classifyPatchResult, completionVerifiedByRun, createPatchHistory, evidenceSummary, novelVerifiedPatch, patchHistoryFor, patchSites, riskLevelTexts } from '../../../src/loop/stages/risk.js';
+import { isVerificationRun } from '../../../src/workspace/tests.js';
 import { buildCommonState, buildRiskState, type PriorPatch } from '../../../src/loop/state.js';
 import { emptyPlan } from '../../../src/loop/plan.js';
 import { noulA, scoreA } from './fakes.js';

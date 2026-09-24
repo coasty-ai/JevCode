@@ -44,7 +44,7 @@ import { ownsPath, parseOwnGlob, type OwnGlob } from '../../orchestrate/split/gl
 import type { StageContext } from '../engine.js';
 import { patchContentHash } from '../loopdetect.js';
 import { buildRiskState, commonLastRun, evidenceVerified, isChangeAction, type PriorPatch, type PriorPatchResult, type PriorPatchRun } from '../state.js';
-import { isTestCommand } from './execute.js';
+import { isVerificationRun } from '../../workspace/tests.js';
 
 export { RISK_BLOCK, RISK_REVIEW };
 export const MATCHES_INTENT_THRESHOLD = 0.3;
@@ -220,18 +220,6 @@ export const VERIFICATION_HARM_MAX_LEVEL = 1;
 /** docs/LLM-JEV-DESIGN.md §5 Q20: the dimensions that gate an unverified action in llm-jev */
 export const HARM_DIMENSIONS: readonly RiskDimension[] = ['destructive', 'irreversible'];
 const ALIGNMENT_DIMENSIONS: readonly RiskDimension[] = ['out_of_scope', 'plan_mismatch'];
-/** shell composition would make "the test command" run something else as well; one plain invocation only */
-const SHELL_COMPOSITION = /[;&|<>`$(){}\\\n]/;
-
-/**
- * True when `command` is one plain invocation of the detected workspace test command or a scoped
- * form of it (`pytest -q tests/test_x.py::test_y`, `python3 -m pytest -q` for `pytest -q`): the same
- * predicate the execute stage uses to record `workspace.lastTestRun`, minus any shell composition.
- */
-export function isVerificationRun(command: string, test: TestCommand | null): boolean {
-  if (test === null || SHELL_COMPOSITION.test(command)) return false;
-  return isTestCommand(command, test);
-}
 
 /**
  * docs/research/llm-jev/oos-analysis-2026-09-22.md change 6, the half left for this file: are Q20's two harm Scores

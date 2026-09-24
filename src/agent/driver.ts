@@ -36,7 +36,7 @@ import { planOf } from './tools/todo.js';
 import type { ToolResult } from './tools/result.js';
 import { sampleTurn, buildRequest, requestChars, type TurnSetup } from './turn.js';
 import { AgentTranscriptMissingError, Transcript, readTranscript, transcriptPath, wireToolName, type AssistantRecord, type NoteRecord, type NoteTag, type RecordedCall } from './transcript.js';
-import { isTestCommand } from '../loop/stages/execute.js';
+import { isTestCommand } from '../workspace/tests.js';
 
 type Pending =
   | { kind: 'act'; call: NormalisedCall; act: PreparedAct; startedAt: number }

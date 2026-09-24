@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isTestCommand } from '../../../src/loop/stages/execute.js';
+import { isTestCommand } from '../../../src/workspace/tests.js';
 
 const pytest = { command: 'pytest -q', runner: 'pytest' as const };
 const npm = { command: 'npm test', runner: 'npm' as const };

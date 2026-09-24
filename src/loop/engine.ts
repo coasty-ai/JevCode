@@ -186,7 +186,8 @@ import { prefilterCandidates, runContextStage } from './stages/context.js';
 import type { ContextAskPolicy } from './stages/context.js';
 // contract 1.5 (ORCHESTRATION-DESIGN §3, §8.2 D1 item 15): the decompose stage
 import { checkpointOrchestration, decomposeShutByOptions, measureRepoFacts, parseSplitDraft, runDecomposeStage, splitPrefixTree, type DecomposeFacts, type DecomposeStageContext } from './stages/decompose.js';
-import { isTestCommand, runExecuteStage } from './stages/execute.js';
+import { runExecuteStage } from './stages/execute.js';
+import { isTestCommand } from '../workspace/tests.js';
 // contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9): the bounded sieve fast path — a pure engine-side
 // predicate and budget here, the round itself behind the synth facade.
 import { declinedRecord, fastPathBudget, fastPathRunWallCapMs, fastPathStage1Free, fastPathStage1Workspace, firedRecord } from './stages/fastpath.js';
@@ -202,7 +203,8 @@ import { hedgedCall, providerOrderFor, s2Mode } from '../synth/llm/hedge.js';
 import { warmPlaneEnabled } from '../synth/warm/index.js';
 import { scopeUsable } from '../workspace/tests.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
-import { codeJudge, ledgerGoalsOf, runJudgeStage } from './stages/judge.js';
+import { codeJudge, ledgerGoalsOf } from './judge-code.js';
+import { runJudgeStage } from './stages/judge.js';
 // docs/AGENT-LOOP-DESIGN.md §2.1, §2.2 (slice S4): the agent-mode propose stage and the engine seam's pure helpers
 import {
   AGENT_MAX_BLOCKS,
@@ -5748,7 +5750,7 @@ class EngineImpl implements Engine {
       // folded this step into lastChangeStep, which a `run` never sets)
       testsCurrent: this.lastChangeStep === null || this.lastChangeStep < draft.step,
       completion: proposal?.evidence?.completion,
-      // the recorded `tests_pass_unparsed` stands in only when the parser read nothing (judge.ts codeJudge)
+      // the recorded `tests_pass_unparsed` stands in only when the parser read nothing (judge-code.ts codeJudge)
       testsPassUnparsed: judged && judged.source === 'judged' ? judged.allPassed : null,
       verifiedDone: proposal !== null && this.verifiedCompletion(proposal) !== null,
     };

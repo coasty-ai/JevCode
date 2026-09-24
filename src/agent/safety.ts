@@ -15,8 +15,8 @@
  * it, or that /undo may not. Only `--autonomy review` asks, for destructive and unknown commands alike.
  */
 import { resolve } from 'node:path';
-import { RISK_DIMENSIONS, type AgentGate, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TestCommand } from '../core/types.js';
-import { isTestCommand } from '../loop/stages/execute.js';
+import { RISK_DIMENSIONS, type AgentGate, type RiskAssessment, type RiskDimension, type RiskDimensionResult } from '../core/types.js';
+import { isVerificationRun } from '../workspace/tests.js';
 import { isSecretBasename } from '../sandbox/paths.js';
 import { allCommands, parseShell, type ParsedShell, type Redirect, type SimpleCommand, type Word } from './shlex.js';
 import { gitVerdict } from './safety-git.js';
@@ -190,13 +190,6 @@ const SAFE_PATTERNS: readonly RegExp[] = [
   /^python3? -m (pytest|unittest)(\s|$)/,
   /^make (test|check|build)(\s|$)/,
 ];
-
-const SHELL_COMPOSITION = /[;&|<>`$(){}\\\n]/;
-
-/** One plain invocation of the detected test command or a scoped form of it (`isVerificationRun`, src/loop/stages/risk.ts). */
-export function isVerificationRun(command: string, test: TestCommand | null): boolean {
-  return test !== null && !SHELL_COMPOSITION.test(command) && isTestCommand(command, test);
-}
 
 /** curl / wget flags that send a local file: `-d @f`, `--data-binary @f`, `-F x=@f`, `-T f`, `--upload-file`, `--post-file` */
 function uploads(a: readonly string[]): boolean {

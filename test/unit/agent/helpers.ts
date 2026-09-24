@@ -32,7 +32,7 @@ import type {
   TokenUsage,
 } from '../../../src/core/types.js';
 import { createStepToken, type StepToken } from '../../../src/jev/router.js';
-import { isTestCommand } from '../../../src/loop/stages/execute.js';
+import { isTestCommand } from '../../../src/workspace/tests.js';
 import { DEFAULT_LIMITS, createFakeSandbox, createFakeWorkspace, execResult, type ExecScript, type FakeSandbox, type FakeWorkspace } from '../loop/fakes.js';
 
 export interface ScriptedTurn {

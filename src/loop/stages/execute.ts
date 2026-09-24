@@ -4,7 +4,7 @@
  * the Sandbox with the clamped timeout; done -> noop. Never throws for action-level errors
  * that are outcomes (the engine maps EditError/PatchError/PathEscapeError to `failed`).
  */
-import type { ActionOutcome, ExecResult, KilledBy, Proposal, TestCommand, TestCounts } from '../../core/types.js';
+import type { ActionOutcome, ExecResult, KilledBy, Proposal, TestCounts } from '../../core/types.js';
 import { isBudgetError } from '../../errors.js';
 import { clampCommandTimeout } from '../budget.js';
 import { headTail } from '../../core/text.js';
@@ -14,6 +14,7 @@ import { parseOutputRef } from '../context/history.js';
 // docs/COORDINATION-DESIGN.md §8.5: the read caps rise with the relaxed context (16 files / 32 KiB / 128 KiB, `core/limits.ts`)
 import { OUTPUT_READ_PREFIX, READ_MAX_FILES, READ_MAX_FILE_CHARS, READ_MAX_TOTAL_CHARS } from '../../core/limits.js';
 import { testsAllPassed } from '../state.js';
+import { isTestCommand } from '../../workspace/tests.js';
 
 export interface ExecuteStageResult {
   outcome: ActionOutcome;
@@ -25,29 +26,6 @@ export interface ExecuteStageResult {
   /** paths first created by this action (write/patch), for createdThisRun */
   created: string[];
   execMs: number;
-}
-
-const SUBCOMMAND_LAUNCHERS: ReadonlySet<string> = new Set(['npm', 'yarn', 'pnpm', 'bun', 'cargo', 'go', 'make']);
-
-/** True when `command` runs the detected test command (same program, e.g. `pytest tests/x.py` for `pytest -q`). */
-export function isTestCommand(command: string, test: TestCommand | null): boolean {
-  if (!test) return false;
-  const norm = (s: string): string => s.replace(/\s+/g, ' ').trim();
-  const c = norm(command);
-  const t = norm(test.command);
-  if (c === t || c.startsWith(`${t} `)) return true;
-  const program = (s: string): string => {
-    const toks = s.split(' ');
-    // `python -m pytest ...` and `npx vitest ...` name the runner after a launcher.
-    if ((toks[0] === 'python' || toks[0] === 'python3') && toks[1] === '-m' && toks[2]) return toks[2];
-    if (toks[0] === 'npx' && toks[1]) return toks[1];
-    // Package managers and toolchains take a subcommand: `npm run build` is not `npm test`,
-    // `cargo build` is not `cargo test`; compare the first two tokens for these.
-    if (toks[0] && SUBCOMMAND_LAUNCHERS.has(toks[0]) && toks[1]) return `${toks[0]} ${toks[1]}`;
-    return toks[0] ?? '';
-  };
-  const pc = program(c);
-  return pc.length > 0 && pc === program(t);
 }
 
 function summariseExec(exec: ExecResult): string {

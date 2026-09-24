@@ -234,6 +234,46 @@ export async function detectTestCommand(r: ManifestReader): Promise<TestCommand 
 }
 
 // ---------------------------------------------------------------------------------------
+// Recognising a run of the detected command
+// ---------------------------------------------------------------------------------------
+
+const SUBCOMMAND_LAUNCHERS: ReadonlySet<string> = new Set(['npm', 'yarn', 'pnpm', 'bun', 'cargo', 'go', 'make']);
+
+/** True when `command` runs the detected test command (same program, e.g. `pytest tests/x.py` for `pytest -q`). */
+export function isTestCommand(command: string, test: TestCommand | null): boolean {
+  if (!test) return false;
+  const norm = (s: string): string => s.replace(/\s+/g, ' ').trim();
+  const c = norm(command);
+  const t = norm(test.command);
+  if (c === t || c.startsWith(`${t} `)) return true;
+  const program = (s: string): string => {
+    const toks = s.split(' ');
+    // `python -m pytest ...` and `npx vitest ...` name the runner after a launcher.
+    if ((toks[0] === 'python' || toks[0] === 'python3') && toks[1] === '-m' && toks[2]) return toks[2];
+    if (toks[0] === 'npx' && toks[1]) return toks[1];
+    // Package managers and toolchains take a subcommand: `npm run build` is not `npm test`,
+    // `cargo build` is not `cargo test`; compare the first two tokens for these.
+    if (toks[0] && SUBCOMMAND_LAUNCHERS.has(toks[0]) && toks[1]) return `${toks[0]} ${toks[1]}`;
+    return toks[0] ?? '';
+  };
+  const pc = program(c);
+  return pc.length > 0 && pc === program(t);
+}
+
+/** shell composition would make "the test command" run something else as well; one plain invocation only */
+const SHELL_COMPOSITION = /[;&|<>`$(){}\\\n]/;
+
+/**
+ * True when `command` is one plain invocation of the detected workspace test command or a scoped
+ * form of it (`pytest -q tests/test_x.py::test_y`, `python3 -m pytest -q` for `pytest -q`): the same
+ * predicate the execute stage uses to record `workspace.lastTestRun`, minus any shell composition.
+ */
+export function isVerificationRun(command: string, test: TestCommand | null): boolean {
+  if (test === null || SHELL_COMPOSITION.test(command)) return false;
+  return isTestCommand(command, test);
+}
+
+// ---------------------------------------------------------------------------------------
 // Scoping a command to a subset (test files, node ids, runner labels)
 // ---------------------------------------------------------------------------------------
 
