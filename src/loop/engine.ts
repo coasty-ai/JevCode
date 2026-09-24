@@ -2627,8 +2627,10 @@ class EngineImpl implements Engine {
       }
       this.emit({ type: 'budget:override', setting: o.setting, from: o.from, to: o.to, appliesTo: 'resume', source: o.source ?? 'flag' });
     }
-    // TUI-DESIGN §8.3: the seeded line names the parent and what was carried
-    if (this.seeded && this.opts.seed) this.emit({ type: 'notice', step: null, kind: 'seeded', level: 'info', text: seedNoticeText(this.opts.seed, this.opts.seed.carriedDirectives ?? 0) });
+    // TUI-DESIGN §8.3: the seeded line names the parent and what was carried. AGENT-LOOP-DESIGN §7.6: an agent run carries the
+    // conversation (its transcript's `carry` record names the parent), and its seed's plan and window are empty — the line
+    // read `plan done=0 remaining=0 unverified=0 · window 2 entries` between a `[you]` row and the reply, so it is not emitted
+    if (this.seeded && this.opts.seed && this.mode !== 'agent') this.emit({ type: 'notice', step: null, kind: 'seeded', level: 'info', text: seedNoticeText(this.opts.seed, this.opts.seed.carriedDirectives ?? 0) });
     // §8.2 / review D8: the generator's window is smaller than the context floor — the run says so once, here
     if (this.pendingWindowNotice !== null) {
       this.emit({ type: 'notice', step: null, kind: 'ui', level: 'warn', label: '[ui]', text: this.pendingWindowNotice });
@@ -3820,7 +3822,10 @@ class EngineImpl implements Engine {
       reportContext: (usage) => {
         self.agentContextUsage = usage;
       },
-      now: () => self.clock(),
+      // wall-clock ms: the driver stamps transcript records (`at`) and `lastCompactionAt` with it — the engine's own clock is
+      // monotonic (`performance.now()`), which printed 1970-01-01T00:00:07Z timestamps in the S6 live transcripts. An
+      // injected clock (tests) is used as is.
+      now: () => (self.opts.now ?? Date.now)(),
       wallRemainingMs: () => self.wallRemainingMs(),
     };
   }

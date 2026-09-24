@@ -95,6 +95,7 @@ describe('the agent loop end to end: real engine, real driver, mock provider, a 
     // the precondition: the workspace's own test command fails before the run
     expect(spawnSync('npm', ['test'], { cwd: ws, encoding: 'utf8' }).status).not.toBe(0);
 
+    const t0 = Date.now();
     const { result, events, provider } = await run(ws, root, 'the mean function in src/math.js is wrong; fix it so the tests pass', FIX_TURNS);
 
     // the stop: `complete` after a current green run of the UNSCOPED detected command (§3.3), exit 0
@@ -143,6 +144,14 @@ describe('the agent loop end to end: real engine, real driver, mock provider, a 
     expect(of(events, 'assistant:text').some((e) => e.text.includes('Fixed `mean` in src/math.js'))).toBe(true);
     expect(of(events, 'jev:request')).toHaveLength(0);
     for (const type of ['intent', 'context', 'judge', 'replan', 'risk', 'decision'] as const) expect(of(events, type), type).toHaveLength(0);
+
+    // the transcript's `at` stamps are wall-clock times of this run (the engine's clock is monotonic: the S6 live transcripts read 1970-01-01T00:00:07Z)
+    const records = readFileSync(join(root, 'runs', result.runId, 'agent', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as { at: string });
+    expect(records.length).toBeGreaterThan(4);
+    for (const r of records) {
+      expect(Date.parse(r.at), r.at).toBeGreaterThanOrEqual(t0 - 1_000);
+      expect(Date.parse(r.at), r.at).toBeLessThanOrEqual(Date.now() + 1_000);
+    }
   }, 60_000);
 
   it('a greeting is one prose-only turn: stop `answered` (exit 0) in one step, no tool call, no sandbox command, no jev:request', async () => {

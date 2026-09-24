@@ -170,6 +170,25 @@ describe('the agent seam through the real engine tail (§2.2, §15 S4)', () => {
     expect(h.of('generator:delta').map((e) => e.text).join('')).toBe('Hi! I am JevCode.\nAsk me to change something in this workspace.');
   });
 
+  it('an agent follow-up carries a seed without the legacy `seeded from run …: plan done=… · window …` notice; a legacy run still prints it', async () => {
+    const seed = {
+      parentRunId: '20260923-235400-c2x5negk',
+      plan: { done: [], remaining: [], unverified: [], openProblems: [], harnessProblems: [] },
+      window: [],
+      createdThisRun: [],
+      lastTestRun: null,
+      undoLog: [],
+      pinnedFiles: [],
+    };
+    const h = await agent([{ text: 'Sure.' }], { engine: { seed } });
+    await h.engine.run();
+    expect(h.of('notice').filter((n) => n.kind === 'seeded')).toEqual([]);
+    const legacy = await makeEngine({ turns: [turn({ kind: 'read', paths: ['src/a.py'] })], limits: { maxSteps: 1 }, engine: { seed } });
+    harnesses.push(legacy);
+    await legacy.engine.run();
+    expect(legacy.of('notice').filter((n) => n.kind === 'seeded').map((n) => n.text)).toEqual(['seeded from run 20260923-235400-c2x5negk: plan done=0 remaining=0 unverified=0 · window 0 entries · 0 created files']);
+  });
+
   it('a run that used a tool and then answered stops generator_done, never `answered`', async () => {
     const h = await agent([{ toolCalls: [{ name: 'read_file', input: { path: 'src/a.py' } }] }, { text: 'f() returns 1.' }]);
     const r = await h.engine.run();
