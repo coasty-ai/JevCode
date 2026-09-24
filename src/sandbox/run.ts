@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 
@@ -262,6 +263,10 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
     if (!isWithin(workspaceRoot, canon) && !isWithin(runDir, canon) && !extraRoots.some((r) => isWithin(r, canon))) {
       throw new SandboxError(`cwd "${cwd}" is outside the workspace, the run dir and the extra writable roots`);
     }
+    // a missing cwd makes spawn() fail as `spawn /usr/bin/sandbox-exec ENOENT`, which reads as a missing sandbox binary (the S6 live
+    // run of 2026-09-23: the model then told the user the sandbox was not installed); say what is actually missing
+    const st = await stat(canon).catch(() => null);
+    if (st === null || !st.isDirectory()) throw new SandboxError(`cwd "${cwd}" is not a directory (it does not exist)`);
     return canon;
   }
 

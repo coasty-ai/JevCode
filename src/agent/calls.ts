@@ -14,7 +14,8 @@
  * Under review, destructive and unknown commands get the human's card.
  */
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { stat } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import type { Action, AgentContext, AgentGate, AgentObservation, AgentToolName } from '../core/types.js';
 import { sha12 } from '../core/hash.js';
 import { PRE_IMAGE_MAX_FILES, PRE_IMAGE_MAX_TOTAL_BYTES } from '../checkpoint/images.js';
@@ -154,10 +155,27 @@ async function preImagesCover(ctx: AgentContext, v: CommandVerdict): Promise<boo
   return bytes <= PRE_IMAGE_MAX_TOTAL_BYTES;
 }
 
+/**
+ * A `workdir` that names no directory of the workspace: the model-facing error, else null. glm-5.3-flash passed the root's own
+ * name (`workdir: "demo"` in `…/demo`) in the S6 live run of 2026-09-23 and every command failed as `spawn … ENOENT`. A directory
+ * the candidate list does not show (ignored, empty) still counts when it is on disk.
+ */
+async function missingWorkdir(ctx: AgentContext, workdir: string): Promise<string | null> {
+  const onDisk = await stat(join(ctx.workspace.root, workdir)).then((st) => st.isDirectory(), () => false);
+  if (onDisk) return null;
+  const listed = (await ctx.workspace.listCandidates()).some((f) => f.path.startsWith(`${workdir}/`));
+  if (listed) return null;
+  const name = basename(ctx.workspace.root);
+  const hint = workdir === name || workdir.startsWith(`${name}/`) ? ` (the workspace root is ${name} itself: leave workdir out to run there${workdir === name ? '' : `, or use ${workdir.slice(name.length + 1)}`})` : '';
+  return `ERROR: workdir "${workdir}" is not a directory in the workspace${hint}`;
+}
+
 async function bashDisposition(env: CallEnv, c: NormalisedCall): Promise<Disposition> {
   const { ctx } = env;
   const command = String(c.args['command']);
   const workdir = typeof c.args['workdir'] === 'string' ? c.args['workdir'] : null;
+  const missing = workdir === null ? null : await missingWorkdir(ctx, workdir);
+  if (missing !== null) return rejected(c, missing);
   const timeoutMs = typeof c.args['timeout_ms'] === 'number' ? c.args['timeout_ms'] : undefined;
   const v = classifyCommand(command, classifyContext(ctx, workdir));
   if (v.class === 'readonly') {

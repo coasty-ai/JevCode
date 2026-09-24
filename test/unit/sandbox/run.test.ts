@@ -76,6 +76,11 @@ describe('sandbox.run basics', () => {
     expect(inRun.stdout.trim()).toBe(`${t.runDir}/tmp`);
   });
 
+  it('names a cwd that does not exist, where spawn() would report the shell binary as missing (S6 live)', async () => {
+    const t = sb();
+    await expect(t.sandbox.run('pwd', { timeoutMs: 5_000, maxOutputBytes: CAP, signal: never(), cwd: 'no-such-dir' })).rejects.toThrow('cwd "no-such-dir" is not a directory (it does not exist)');
+  });
+
   it('puts <ws>/.venv/bin first on PATH and sets VIRTUAL_ENV once the workspace has a venv', async () => {
     const t = sb();
     const opts = { timeoutMs: 5_000, maxOutputBytes: CAP, signal: never() };

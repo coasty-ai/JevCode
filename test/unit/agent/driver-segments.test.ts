@@ -210,6 +210,25 @@ describe('act mappings', () => {
     expect(text).toMatch(/exit 0 · \d+(\.\d)?s · in pkg/);
   });
 
+  it('a bash workdir that names no directory is rejected before anything runs — the root\'s own name gets the hint (S6 live: `workdir: "demo"`)', async () => {
+    const ctx = createAgentContext({
+      files: { 'pkg/m.py': 'x = 1\n' },
+      turns: [{ toolCalls: [call('bash', { command: 'echo test', workdir: 'ws' }), call('bash', { command: 'make', workdir: 'nowhere' }), call('bash', { command: 'ls', workdir: 'ws/pkg' })] }, { text: 'ok' }],
+      testCommand: null,
+    });
+    const d = createAgentDriver();
+    const s = await step(d, ctx);
+    // nothing reached the sandbox: every call was answered in the observe step
+    expect(s.next.kind).toBe('observe');
+    await step(d, ctx);
+    const results = messagesOf(ctx, 1).at(-1)!.content.map((b) => (b.type === 'tool_result' ? b.content : ''));
+    expect(results).toEqual([
+      'ERROR: workdir "ws" is not a directory in the workspace (the workspace root is ws itself: leave workdir out to run there)',
+      'ERROR: workdir "nowhere" is not a directory in the workspace',
+      'ERROR: workdir "ws/pkg" is not a directory in the workspace (the workspace root is ws itself: leave workdir out to run there, or use pkg)',
+    ]);
+  });
+
   it('write_file into .git, a placeholder, and an edit of a missing file are rejected before anything runs', async () => {
     const ctx = createAgentContext({ turns: [{ toolCalls: [call('write_file', { path: '.git/config', content: 'x' }), call('write_file', { path: 'a.ts', content: 'x\n// ... rest of the file unchanged\n' }), call('edit_file', { path: 'gone.py', old_string: 'a', new_string: 'b' })] }, { text: 'ok' }], testCommand: null });
     const d = createAgentDriver();
