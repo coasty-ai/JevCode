@@ -60,9 +60,9 @@ table names it. The owner's steps are in
 
 | Channel | Command | Needs first |
 | --- | --- | --- |
-| npm / npx | `npm i -g jevcode`, `npx jevcode` | the first release |
-| bun / pnpm / yarn | `bunx jevcode`, `pnpm dlx jevcode`, `yarn dlx jevcode` | the first release |
-| mise | `mise use -g npm:jevcode` | the first release |
+| npm / npx | `npm i -g @coasty-ai/jevcode`, `npx @coasty-ai/jevcode` | the first release |
+| bun / pnpm / yarn | `bunx @coasty-ai/jevcode`, `pnpm dlx @coasty-ai/jevcode`, `yarn dlx @coasty-ai/jevcode` | the first release |
+| mise | `mise use -g npm:@coasty-ai/jevcode` | the first release |
 | Homebrew | `brew install coasty-ai/jevcode/jevcode` | the first release, and the owner's tap setup (step 6) |
 | AUR | `yay -S jevcode` or `paru -S jevcode` | the first release, and the owner's AUR setup (step 7) |
 | Nix | `nix run github:coasty-ai/JevCode` | the owner's `flake.lock` commit (step 8); it builds from source, not from npm |
@@ -70,16 +70,19 @@ table names it. The owner's steps are in
 Every channel still runs the launcher under Node, so Node 22.12 or newer must be on `PATH` (Homebrew, AUR and Nix
 install it for you).
 
-Pre-releases: `npm i -g jevcode@next`. Homebrew and AUR carry stable releases only.
+The npm package is scoped, `@coasty-ai/jevcode`; the command it installs is `jevcode`. Homebrew, the AUR and Nix call
+the package `jevcode`.
+
+Pre-releases: `npm i -g @coasty-ai/jevcode@next`. Homebrew and AUR carry stable releases only.
 
 ### npm and npx
 
 ```sh
-npm i -g jevcode
-npx jevcode           # run once without installing
+npm i -g @coasty-ai/jevcode
+npx @coasty-ai/jevcode           # run once without installing
 ```
 
-Proof: `jevcode --version` prints `jevcode <version>`. Update with `jevcode upgrade` or `npm i -g jevcode@latest`.
+Proof: `jevcode --version` prints `jevcode <version>`. Update with `jevcode upgrade` or `npm i -g @coasty-ai/jevcode@latest`.
 
 **Status:** available from the first published release; see [`../RELEASE.md`](../RELEASE.md).
 
@@ -88,12 +91,12 @@ Proof: `jevcode --version` prints `jevcode <version>`. Update with `jevcode upgr
 They read the same npm package.
 
 ```sh
-bunx jevcode          # or: bun i -g jevcode
-pnpm dlx jevcode      # or: pnpm add -g jevcode
-yarn dlx jevcode      # Yarn 2 or newer
+bunx @coasty-ai/jevcode          # or: bun i -g @coasty-ai/jevcode
+pnpm dlx @coasty-ai/jevcode      # or: pnpm add -g @coasty-ai/jevcode
+yarn dlx @coasty-ai/jevcode      # Yarn 2 or newer
 ```
 
-Proof: `bunx jevcode --version` prints `jevcode <version>`.
+Proof: `bunx @coasty-ai/jevcode --version` prints `jevcode <version>`.
 
 **Status:** available from the first published release; see [`../RELEASE.md`](../RELEASE.md).
 
@@ -102,11 +105,11 @@ Proof: `bunx jevcode --version` prints `jevcode <version>`.
 Use mise's `npm:` backend. mise needs `npm` on `PATH` for it.
 
 ```sh
-mise use -g npm:jevcode
-mise use -g npm:jevcode@<version>     # a pinned version
+mise use -g npm:@coasty-ai/jevcode
+mise use -g npm:@coasty-ai/jevcode@<version>     # a pinned version
 ```
 
-Proof: `mise exec -- jevcode --version`. Update with `mise upgrade npm:jevcode`.
+Proof: `mise exec -- jevcode --version`. Update with `mise upgrade npm:@coasty-ai/jevcode`.
 
 The bare shorthand `mise use -g jevcode` does not work: the name is not in mise's registry.
 
@@ -181,7 +184,7 @@ flowchart TD
   S4 --> V["jevcode --version"]
   V --> READY(["ready — see Your first run"])
 
-  X1["npx jevcode, npm i -g, bunx, pnpm dlx, yarn dlx, mise npm:jevcode"] -.->|"not published yet"| BLOCKED["blocked on the first release"]
+  X1["npx @coasty-ai/jevcode, npm i -g, bunx, pnpm dlx, yarn dlx, mise npm:@coasty-ai/jevcode"] -.->|"not published yet"| BLOCKED["blocked on the first release"]
   X2["brew install coasty-ai/jevcode/jevcode"] -.->|"first stable release + tap setup"| BLOCKED
   X3["yay -S jevcode"] -.->|"first stable release + AUR key"| BLOCKED
   X4["nix run github:coasty-ai/JevCode"] -.->|"flake.lock not committed yet"| LOCK["blocked on the owner's flake.lock commit"]

@@ -33,6 +33,15 @@ function tmpFile(text: string): string {
   return path;
 }
 
+/** sources a rendered PKGBUILD ($1) and prints pkgname, source[0], noextract[0] and package()'s `lib` with pkgdir=/P */
+const PKGBUILD_PROBE = [
+  'source "$1"',
+  "printf '%s\\n' \"$pkgname\" \"${source[0]}\" \"${noextract[0]}\"",
+  'pkgdir=/P',
+  "eval \"$(declare -f package | sed -n 's/^ *local lib=/lib=/p')\"",
+  "printf '%s\\n' \"$lib\"",
+].join('; ');
+
 const count = (text: string, re: RegExp): number => text.split('\n').filter((l) => re.test(l)).length;
 
 describe('the shared anchor lines in the canonical packaging files', () => {
@@ -57,7 +66,7 @@ describe('render-packaging.mjs formula', () => {
     const r = render(['formula', '--version', '0.6.0', '--sha256', SHA]);
     expect(r.err).toBe('');
     expect(r.code).toBe(0);
-    expect(count(r.out, /^ {2}url "https:\/\/registry\.npmjs\.org\/jevcode\/-\/jevcode-0\.6\.0\.tgz"$/)).toBe(1);
+    expect(count(r.out, /^ {2}url "https:\/\/registry\.npmjs\.org\/@coasty-ai\/jevcode\/-\/jevcode-0\.6\.0\.tgz"$/)).toBe(1);
     expect(count(r.out, new RegExp(`^ {2}sha256 "${SHA}"$`))).toBe(1);
     expect(r.out).not.toMatch(/REPO-ONLY|PLACEHOLDER|0\.0\.0/);
     // everything else is the template minus the block
@@ -66,6 +75,15 @@ describe('render-packaging.mjs formula', () => {
     const out = r.out.split('\n');
     expect(out).toHaveLength(kept.length);
     expect(out.filter((l, i) => l !== kept[i])).toHaveLength(2);
+    expect(r.out).toContain('class Jevcode < Formula');
+  });
+
+  it('the npm package is scoped: the registry url and the libexec path name @coasty-ai/jevcode, the formula stays jevcode', () => {
+    const r = render(['formula', '--version', '0.6.0', '--sha256', SHA]);
+    expect(r.out).toContain('  url "https://registry.npmjs.org/@coasty-ai/jevcode/-/jevcode-0.6.0.tgz"\n');
+    // std_npm_args installs the tarball under libexec/lib/node_modules/<package.json name>
+    expect(r.out).toContain('    pkg = libexec/"lib/node_modules/@coasty-ai/jevcode"\n');
+    expect(r.out).not.toMatch(/registry\.npmjs\.org\/jevcode\/|node_modules\/jevcode"/);
     expect(r.out).toContain('class Jevcode < Formula');
   });
 
@@ -117,6 +135,26 @@ describe('render-packaging.mjs pkgbuild', () => {
     const fromFlag = render(['pkgbuild', '--version', '0.6.0', '--sha256', SHA, '--maintainer', 'Flag <f>'], { AUR_MAINTAINER: 'Env <e>' });
     expect(fromFlag.out).toMatch(/^# Maintainer: Flag <f>$/m);
     expect(render(['pkgbuild', '--version', '0.6.0', '--sha256', SHA, '--maintainer', 'a\nb']).code).toBe(1);
+  });
+
+  it('the npm package is scoped: bash expands the source url and the install path to @coasty-ai/jevcode', () => {
+    const r = render(['pkgbuild', '--version', '0.6.0', '--sha256', SHA]);
+    expect(r.code).toBe(0);
+    // what makepkg sees: source the rendered PKGBUILD and print the expanded source entry; package()'s `lib` path
+    // is read the same way with the build dirs stubbed
+    const probe = spawnSync(
+      'bash',
+      ['-c', PKGBUILD_PROBE, 'probe', tmpFile(r.out)],
+      { encoding: 'utf8' },
+    );
+    expect(probe.stderr).toBe('');
+    expect(probe.stdout.split('\n')).toEqual([
+      'jevcode',
+      'jevcode-0.6.0.tgz::https://registry.npmjs.org/@coasty-ai/jevcode/-/jevcode-0.6.0.tgz',
+      'jevcode-0.6.0.tgz',
+      '/P/usr/lib/node_modules/@coasty-ai/jevcode',
+      '',
+    ]);
   });
 
   it('exits 1 naming a missing anchor and rejects a bad pkgrel', () => {

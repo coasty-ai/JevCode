@@ -2,10 +2,12 @@
 # Canonical PKGBUILD for the AUR package jevcode. scripts/release/render-packaging.mjs sets _npmver, pkgver,
 # pkgrel and sha256sums and removes this block; the release workflow pushes the rendered file with .SRCINFO.
 # PLACEHOLDER: version 0.0.0 and the all-zero digest never match a real tarball.
+# The npm package is @coasty-ai/jevcode ($_npmscope/$pkgname); the AUR package and the command are jevcode.
 # The Maintainer line is replaced from the repository variable AUR_MAINTAINER when it is set.
 # END-REPO-ONLY
 # Maintainer: coasty-ai <https://github.com/coasty-ai/JevCode>
 pkgname=jevcode
+_npmscope=@coasty-ai
 _npmver=0.0.0
 pkgver=0.0.0
 pkgrel=1
@@ -15,14 +17,14 @@ url="https://github.com/coasty-ai/JevCode"
 license=('MIT')
 depends=('nodejs>=22.12.0')
 makedepends=('npm')
-source=("$pkgname-$_npmver.tgz::https://registry.npmjs.org/$pkgname/-/$pkgname-$_npmver.tgz")
+source=("$pkgname-$_npmver.tgz::https://registry.npmjs.org/$_npmscope/$pkgname/-/$pkgname-$_npmver.tgz")
 noextract=("$pkgname-$_npmver.tgz")
 sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
 
 package() {
   npm install -g --prefix "$pkgdir/usr" --cache "$srcdir/npm-cache" --no-audit --no-fund --no-update-notifier \
     "$srcdir/$pkgname-$_npmver.tgz"
-  local lib="$pkgdir/usr/lib/node_modules/$pkgname"
+  local lib="$pkgdir/usr/lib/node_modules/$_npmscope/$pkgname"
 
   # npm links the man page; install a real file in its place
   rm -f "$pkgdir/usr/share/man/man1/jevcode.1"

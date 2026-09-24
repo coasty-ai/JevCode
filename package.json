@@ -1,5 +1,5 @@
 {
-  "name": "jevcode",
+  "name": "@coasty-ai/jevcode",
   "version": "0.6.0",
   "description": "Coding-agent harness where Jev (typesafe/jev-1.13) makes every decision and the code model writes the code. One Ink TUI, sandboxed subprocesses, checkpoints, bench.",
   "type": "module",

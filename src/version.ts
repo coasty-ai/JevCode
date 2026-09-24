@@ -10,6 +10,14 @@ import { fileURLToPath } from 'node:url';
 
 declare const __JEVCODE_VERSION__: string | undefined;
 
+/** the npm package name: scoped, because npm refused the unscoped `jevcode`. The command it installs stays `jevcode`. */
+export const NPM_PACKAGE_NAME = '@coasty-ai/jevcode';
+
+/** a package.json `name` that is this package: the scoped name, or `jevcode` from a checkout that predates the scope */
+export function isJevcodePackageName(name: unknown): boolean {
+  return name === NPM_PACKAGE_NAME || name === 'jevcode';
+}
+
 function readPackageVersion(): string {
   // src/version.ts -> <root>/package.json; dist/jevcode.mjs -> <root>/package.json: one level up in both layouts.
   const here = dirname(fileURLToPath(import.meta.url));

@@ -17,7 +17,10 @@ Checked on 2026-09-23:
 
 - `coasty-ai/JevCode` is public and `main` is pushed.
 - `package.json` reads 0.6.0. The top CHANGELOG heading is `## [0.6.0] — 2026-09-22 (not yet published)`.
-- Nothing is published. `https://registry.npmjs.org/jevcode` returns 404, so the name is unclaimed.
+- Nothing is published. npm refused the unscoped name `jevcode` twice (very likely its name-similarity rule: the
+  package `jev-code` exists), so the package is the scoped **`@coasty-ai/jevcode`** in the npm organization
+  `coasty-ai`. `https://registry.npmjs.org/@coasty-ai%2fjevcode` returns 404. The command stays `jevcode` (`bin`),
+  and the Homebrew formula, the AUR package and the nix package keep the name `jevcode`.
 - The Homebrew tap `coasty-ai/homebrew-jevcode` does not exist. The AUR package `jevcode` does not exist.
 - The owner strings in the source already name `coasty-ai/JevCode`: `OPENROUTER_REFERER` in
   `src/provider/openrouter.ts`, `DEFAULT_REFERER` in `src/jev/types.ts` and `ISSUES_URL` in `src/cli/report.ts`.
@@ -55,14 +58,14 @@ matching the script.
 
 | Channel | User command | Updated by | Pre-releases |
 | --- | --- | --- | --- |
-| npm | `npm i -g jevcode`, `npx jevcode` | `publish-npm` job (OIDC trusted publishing, provenance) | published under dist-tag `next` |
-| bun / pnpm / yarn | `bunx jevcode`, `pnpm dlx jevcode`, `yarn dlx jevcode` (and `bun i -g`, `pnpm add -g`) | nothing extra: they read the npm registry | `jevcode@next` explicitly |
-| mise | `mise use -g npm:jevcode` | nothing (mise's generic npm backend) | `mise use -g npm:jevcode@<v>` |
+| npm | `npm i -g @coasty-ai/jevcode`, `npx @coasty-ai/jevcode` | `publish-npm` job (OIDC trusted publishing, provenance) | published under dist-tag `next` |
+| bun / pnpm / yarn | `bunx @coasty-ai/jevcode`, `pnpm dlx @coasty-ai/jevcode`, `yarn dlx @coasty-ai/jevcode` (and `bun i -g`, `pnpm add -g`) | nothing extra: they read the npm registry | `@coasty-ai/jevcode@next` explicitly |
+| mise | `mise use -g npm:@coasty-ai/jevcode` | nothing (mise's generic npm backend) | `mise use -g npm:@coasty-ai/jevcode@<v>` |
 | mise shorthand | `mise use -g jevcode` | not registered; needs a PR to `jdx/mise` (deferred) | n/a |
 | Homebrew | `brew install coasty-ai/jevcode/jevcode` | `homebrew` job pushes `Formula/jevcode.rb` to `coasty-ai/homebrew-jevcode` | skipped |
 | AUR | `yay -S jevcode`, `paru -S jevcode` | `aur` job pushes `PKGBUILD` and `.SRCINFO` to `ssh://aur@aur.archlinux.org/jevcode.git` | skipped |
 | Nix | `nix run github:coasty-ai/JevCode`, `nix profile install github:coasty-ai/JevCode` (or `.../v<x.y.z>`) | nothing per release: the flake builds from source at any ref; `flake-lock.yml` keeps `flake.lock` current | works at any ref |
-| GitHub Release | tarball, `SHA256SUMS`, CHANGELOG notes | `github-release` job | marked pre-release, not latest |
+| GitHub Release | tarball `jevcode-<v>.tgz` (npm packs `coasty-ai-jevcode-<v>.tgz`; the `pack` job renames it once), `SHA256SUMS`, CHANGELOG notes | `github-release` job | marked pre-release, not latest |
 
 ### What each channel needs
 
@@ -139,7 +142,7 @@ flowchart TD
   P --> R["github-release"]
   P --> H["homebrew: release-channels, stable and latest only"]
   P --> A["aur: release-channels, stable and latest only"]
-  R --> VF["verify: npx jevcode@X --version, channel table"]
+  R --> VF["verify: npx @coasty-ai/jevcode@X --version, channel table"]
   H --> VF
   A --> VF
   VF --> N["verify-nix: stable only, does not block"]
@@ -222,19 +225,26 @@ Pages: `https://github.com/coasty-ai/JevCode/settings/rules` and `https://github
 
 ### 5. npm: claim the name with the first publish
 
+The package is scoped: `@coasty-ai/jevcode`. Whoever publishes it first (the owner of the bootstrap token in path A,
+the `npm login` user in path B) must be able to publish in the npm organization `coasty-ai`: an owner or admin of the
+org, or a member of a team with read-write access (`https://www.npmjs.com/settings/coasty-ai/members`). The first
+publish of a scoped package must be public; `package.json` `publishConfig.access` and the workflow's
+`--access public` both say so.
+
 **Path A (default): a short-lived bootstrap token, publish from CI with provenance.**
 
 1. `https://www.npmjs.com/settings/<your-npm-user>/tfa`: enable 2FA for **Authorization and writes**.
 2. `https://www.npmjs.com/settings/<your-npm-user>/tokens/granular-access-tokens/new`:
    - Name: `jevcode-bootstrap`
    - Expiration: **7 days**
-   - Packages and scopes: **Read and write**, **All packages** (the package does not exist yet)
+   - Packages and scopes: **Read and write**, and either **All packages** or **Only select packages and scopes** with
+     the scope `@coasty-ai` selected (the package does not exist yet, so it cannot be selected by name)
    - If the form offers a 2FA bypass for publishing, tick it. The token lives only minutes.
 3. Add it as secret `NPM_BOOTSTRAP_TOKEN` in environment `release` (step 3's page → `release` → **Add environment
    secret**).
 4. Run the first release (see [Per release](#per-release)) with `bump=current`, so 0.6.0 is published. Approve it.
    The `publish-npm` summary then says **"Bootstrap publish done — do these 4 things now"**. They are steps 5–8 below.
-5. Configure the trusted publisher. Open `https://www.npmjs.com/package/jevcode/access` (the package's **Settings**
+5. Configure the trusted publisher. Open `https://www.npmjs.com/package/@coasty-ai/jevcode/access` (the package's **Settings**
    tab) → **Trusted publishing** → **GitHub Actions**:
    - Organization or user: `coasty-ai`
    - Repository: `JevCode` (case-sensitive)
@@ -244,7 +254,7 @@ Pages: `https://github.com/coasty-ai/JevCode/settings/rules` and `https://github
    Save the connection. CLI alternative (npm ≥ 11.15.0; check the flags with `npm trust github --help` first):
 
    ```sh
-   npm trust github jevcode --repo coasty-ai/JevCode --file release.yml --env release --allow-publish
+   npm trust github @coasty-ai/jevcode --repo coasty-ai/JevCode --file release.yml --env release --allow-publish
    ```
 
 6. Delete the token at `https://www.npmjs.com/settings/<your-npm-user>/tokens`.
@@ -264,7 +274,7 @@ Pages: `https://github.com/coasty-ai/JevCode/settings/rules` and `https://github
 3. Publish that exact tarball from your machine (asks for your 2FA code):
 
    ```sh
-   npm login
+   npm login                        # as a coasty-ai member who can publish
    CI=true npm publish ./jevcode-0.6.0.tgz --access public --provenance=false
    ```
 
@@ -328,7 +338,7 @@ From then on `nix run github:coasty-ai/JevCode` works at `main` and at every tag
 
 ### 9. Nothing to do
 
-- mise (`mise use -g npm:jevcode`) and bunx / pnpm dlx / yarn dlx read the npm registry. They work once npm does.
+- mise (`mise use -g npm:@coasty-ai/jevcode`) and bunx / pnpm dlx / yarn dlx read the npm registry. They work once npm does.
 - The bare `mise use -g jevcode` shorthand needs a PR to `jdx/mise` adding `registry/jevcode.toml`. mise accepts
   npm-backed shorthands only for widely used tools, so this is deferred.
 
@@ -359,8 +369,8 @@ From then on `nix run github:coasty-ai/JevCode` works at `main` and at every tag
 9. Check from your machine:
 
    ```sh
-   npm view jevcode@X version dist-tags dist.attestations
-   npx -y jevcode@X --version        # jevcode X
+   npm view @coasty-ai/jevcode@X version dist-tags dist.attestations
+   npx -y @coasty-ai/jevcode@X --version        # jevcode X
    ```
 
 ### By hand (no button)
@@ -386,12 +396,12 @@ push starts `release.yml`. Continue at step 5 above.
 ## Pre-releases and promotion
 
 - A version with a `-` (`0.7.0-rc.1`) goes to npm under dist-tag `next`, and the GitHub Release is marked
-  pre-release. Users install it with `npm i -g jevcode@next`.
+  pre-release. Users install it with `npm i -g @coasty-ai/jevcode@next`.
 - Homebrew and AUR carry stable releases only. They skip pre-releases.
 - Promote a tested rc on npm (owner only, asks for 2FA):
 
   ```sh
-  npm dist-tag add jevcode@X-rc.N latest
+  npm dist-tag add @coasty-ai/jevcode@X-rc.N latest
   ```
 
 - Homebrew and AUR update on the next **stable** tag. To ship the rc's code to them, add a `## [X]` section to
@@ -410,8 +420,8 @@ push starts `release.yml`. Continue at step 5 above.
 - **Local renders**, to see what the tap and AUR would get (any 64-hex digest works for a look):
 
   ```sh
-  npm run build && npm pack --ignore-scripts
-  H=$(shasum -a 256 jevcode-0.6.0.tgz | cut -d' ' -f1)
+  npm run build && npm pack --ignore-scripts     # writes coasty-ai-jevcode-0.6.0.tgz
+  H=$(shasum -a 256 coasty-ai-jevcode-0.6.0.tgz | cut -d' ' -f1)
   node scripts/release/render-packaging.mjs formula --version 0.6.0 --sha256 "$H"
   node scripts/release/render-packaging.mjs pkgbuild --version 0.6.0 --sha256 "$H"
   node scripts/release/changelog.mjs notes 0.6.0
@@ -444,8 +454,9 @@ Run pages: Actions → **release** → the run. **Re-run failed jobs** is at the
 | `aur` failed at SSH or host key | AUR untouched | renew the key (step 7) or update `scripts/release/aur-host-fingerprints`, then **Re-run failed jobs** |
 | Catch a channel up: secret added after a release | channel was skipped | dispatch `release.yml` on the latest stable tag. Everything already done is a no-op; a channel that already has the version is left alone unless you set `packaging_ref=main` |
 | `publish-npm`: "npm dist-tag latest is Y now, newer than X" | nothing published | a re-run reused a stale dist-tag choice. Dispatch `release.yml` on **Tags: vX**, so `validate` picks `backport` |
-| `verify` failed: `npx jevcode@X` is broken | broken version live | `npm dist-tag add jevcode@<previous> latest`, then `npm deprecate jevcode@X "broken, use <next>"` (2FA). Release the next patch |
+| `verify` failed: `npx @coasty-ai/jevcode@X` is broken | broken version live | `npm dist-tag add @coasty-ai/jevcode@<previous> latest`, then `npm deprecate @coasty-ai/jevcode@X "broken, use <next>"` (2FA). Release the next patch |
 | Homebrew or AUR got a bad version | users of that channel affected | release a fixed version. The tooling never moves a channel backwards |
+| `publish-npm` bootstrap: E404, E403 or ENEEDAUTH on `PUT .../@coasty-ai%2fjevcode` | nothing published | the token's owner cannot publish in the npm org `coasty-ai`, or the token does not cover the scope `@coasty-ai`. Fix either (step 5), then **Re-run failed jobs** |
 | `NPM_BOOTSTRAP_TOKEN` still set | inert once the package exists | delete it. Every run warns until you do |
 
 ## Security model

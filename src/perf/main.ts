@@ -43,6 +43,7 @@ import { tmpdir } from 'node:os';
 import type { ParsedFlags } from '../cli/args.js';
 import { ConfigError } from '../errors.js';
 import { isJsonObject } from '../core/json.js';
+import { isJevcodePackageName } from '../version.js';
 import { measureFirstFrame, type FirstFrameResult } from './first-frame.js';
 import { measureStepOverhead, type StepOverheadResult } from './step-overhead.js';
 import { REALISTIC_STEP_MS, measureRenderLag, type RenderLagResult } from './render-lag.js';
@@ -85,7 +86,7 @@ export function isJevCodeCheckout(root: string): boolean {
   if (!hasPerfInstruments(root)) return false;
   try {
     const pkg: unknown = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
-    return isJsonObject(pkg) && pkg['name'] === 'jevcode';
+    return isJsonObject(pkg) && isJevcodePackageName(pkg['name']);
   } catch {
     return false;
   }

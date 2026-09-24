@@ -8,28 +8,29 @@ set -euo pipefail
 : "${VERSION:?}" "${DIST_TAG:?}" "${PRERELEASE:?}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stderr}"
 SCRATCH="$(mktemp -d)"
+PKG=@coasty-ai/jevcode
 
 # npx from an empty directory, so the registry and not this checkout answers.
 NPM_OK=false
 OUT=""
 for i in $(seq 1 10); do
-  OUT="$(cd "$SCRATCH" && npx -y "jevcode@$VERSION" --version 2>&1 || true)"
+  OUT="$(cd "$SCRATCH" && npx -y "$PKG@$VERSION" --version 2>&1 || true)"
   if [ "$OUT" = "jevcode $VERSION" ]; then
     NPM_OK=true
     break
   fi
-  echo "npx jevcode@$VERSION --version: '$OUT' (attempt $i/10)"
+  echo "npx $PKG@$VERSION --version: '$OUT' (attempt $i/10)"
   [ "$i" = 10 ] || sleep 15
 done
 
-ATTEST="$(cd "$SCRATCH" && npm view "jevcode@$VERSION" dist.attestations --json 2> /dev/null || true)"
+ATTEST="$(cd "$SCRATCH" && npm view "$PKG@$VERSION" dist.attestations --json 2> /dev/null || true)"
 if [ -z "$ATTEST" ] || [ "$ATTEST" = "{}" ] || [ "$ATTEST" = "null" ]; then
-  echo "::warning::jevcode@$VERSION has no provenance attestation on the registry"
+  echo "::warning::$PKG@$VERSION has no provenance attestation on the registry"
   PROVENANCE="no attestation"
 else
   PROVENANCE="provenance attested"
 fi
-DIST_TAGS="$(cd "$SCRATCH" && npm view jevcode dist-tags --json 2> /dev/null | tr -d '\n ' || true)"
+DIST_TAGS="$(cd "$SCRATCH" && npm view "$PKG" dist-tags --json 2> /dev/null | tr -d '\n ' || true)"
 
 # job result + status output -> one table cell
 channel() {
@@ -58,10 +59,10 @@ BREW_CELL="$(channel "${RESULT_HOMEBREW:-skipped}" "${STATUS_HOMEBREW:-}" HOMEBR
 AUR_CELL="$(channel "${RESULT_AUR:-skipped}" "${STATUS_AUR:-}" AUR_SSH_PRIVATE_KEY)"
 if [ "$PRERELEASE" = true ]; then
   NIX_CELL="works at any ref; pre-releases are not checked"
-  NPM_CMD="npm i -g jevcode@next"
+  NPM_CMD="npm i -g $PKG@next"
 else
   NIX_CELL="builds from source at the tag; the verify-nix job checks it"
-  NPM_CMD="npm i -g jevcode"
+  NPM_CMD="npm i -g $PKG"
 fi
 if [ "$NPM_OK" = true ]; then REG_CELL="done (reads the npm registry)"; else REG_CELL="blocked on npm"; fi
 
@@ -75,13 +76,13 @@ if [ "$NPM_OK" = true ]; then REG_CELL="done (reads the npm registry)"; else REG
   echo "| Homebrew | $BREW_CELL | \`brew install coasty-ai/jevcode/jevcode\` |"
   echo "| AUR | $AUR_CELL | \`yay -S jevcode\` |"
   echo "| Nix | $NIX_CELL | \`nix run github:coasty-ai/JevCode/v$VERSION\` |"
-  echo "| mise | $REG_CELL | \`mise use -g npm:jevcode@$VERSION\` |"
-  echo "| bun / pnpm / yarn | $REG_CELL | \`bunx jevcode@$VERSION\` · \`pnpm dlx jevcode@$VERSION\` · \`yarn dlx jevcode@$VERSION\` |"
+  echo "| mise | $REG_CELL | \`mise use -g npm:$PKG@$VERSION\` |"
+  echo "| bun / pnpm / yarn | $REG_CELL | \`bunx $PKG@$VERSION\` · \`pnpm dlx $PKG@$VERSION\` · \`yarn dlx $PKG@$VERSION\` |"
   echo
   echo "npm dist-tags: \`${DIST_TAGS:-unknown}\`"
 } >> "$SUMMARY"
 
 if [ "$NPM_OK" != true ]; then
-  echo "::error::npx jevcode@$VERSION --version printed '$OUT', expected 'jevcode $VERSION'" >&2
+  echo "::error::npx $PKG@$VERSION --version printed '$OUT', expected 'jevcode $VERSION'" >&2
   exit 1
 fi
