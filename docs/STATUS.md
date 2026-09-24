@@ -1831,7 +1831,8 @@ Built in slices on one integration tree (main `e4139e2` plus every slice), each 
 | S5b | the session and chat: every chat message is an agent run carrying the session, reply bookkeeping, abort = reply stopped, Jev optional at both engine sites, the copy |
 | S6 | the default flip with its tests and the bundle gate (S6a), this documentation (S6b), and the integration and live verification (S6c, recorded in its own section) |
 
-S7 (moving the Jev-driven stages, the synthesizer and the chat lookup under `src/jev-modes/`) follows S6.
+S7 (moving the Jev-driven stages, the synthesizer and the chat lookup under `src/jev-modes/`) followed S6; see
+[The jev-modes layout, slice S7](#the-jev-modes-layout-slice-s7-2026-09-23).
 
 ### Where Jev sits now
 
@@ -1845,7 +1846,8 @@ S7 (moving the Jev-driven stages, the synthesizer and the chat lookup under `src
 - **src/jev importers outside src/jev and src/jev-modes: 47** — measured with
   `grep -rlE "from '(\.\./)+jev/|from '\./jev/" src | grep -v -e ^src/jev/ -e ^src/jev-modes/ | wc -l` on this tree. It was
   45 at main `e4139e2`; the agent loop added `src/agent/jev.ts` (the three placements) and `src/core/types.ts` (a type-only
-  import of `StepToken` for `AgentContext.routeToken`). S7's target is about 21, and later work should only lower it.
+  import of `StepToken` for `AgentContext.routeToken`). S7's target was about 21; S7 brought it to **22** (its section
+  below), and later work should only lower it.
 
 ### Live checks on the integrated tree
 
@@ -2122,3 +2124,51 @@ Not run here: a Linux CI run of the merged tree (`main`'s CI now runs the unit s
 - **Agent-mode series for render-lag and composer-latency**, and **step-row width at 80 columns**, are not done.
 - **Landing.** `main` is merged into `agent-s6` (`baccd3a`), so landing is a fast-forward of these commits; a Linux CI
   run on the pushed branch is the one check left.
+
+## The jev-modes layout, slice S7 (2026-09-23)
+
+S7 is a mechanical move with no behaviour change (`docs/AGENT-LOOP-DESIGN.md` §14.6). The old-to-new path map is in the
+`docs/DECISIONS.md` entry of the same date.
+
+- The modules only the Jev-driven modes use moved with `git mv`: the ten stage modules
+  `src/loop/stages/{choose,complete,context,fastpath,intent,judge,propose,replan,risk,synth}.ts` to `src/jev-modes/stages/`,
+  `src/synth/**` to `src/jev-modes/synth/**` and `src/chat/lookup.ts` to `src/jev-modes/chat/lookup.ts`. Their tests moved to
+  `test/unit/jev-modes/{stages,synth,chat}/`. `git log --follow` shows each file's full history.
+- The helpers the agent path uses were moved out first, unchanged: `codeJudge`, `CodeJudgeRun` and `ledgerGoalsOf` to
+  `src/loop/judge-code.ts`, and `isTestCommand` and `isVerificationRun` to `src/workspace/tests.ts`. `src/agent/safety.ts`
+  dropped its identical copy of `isVerificationRun`.
+- **src/jev importers outside src/jev and src/jev-modes: 22** (47 before S7). The count comes from
+  `grep -rlE "from '(\.\./)+jev/|from '\./jev/" src | grep -v -e ^src/jev/ -e ^src/jev-modes/ | wc -l`. The 22 importers:
+  - loop: `src/loop/{engine,routers}.ts`, `src/loop/context/compaction.ts`
+  - agent: `src/agent/jev.ts`
+  - core: `src/core/types.ts` (type-only)
+  - chat: `facts`, `intake`, `replies`
+  - CLI: `login`, `session`
+  - TUI: `blocking/lines`, `pane/model`, `review/lines`, `why`
+  - config: `resolve`, `validate`
+  - bench: `conditions`, `runner`, `stub-decider`
+  - `src/perf/jev-latency.ts`, `src/orchestrate/split/questions.ts`, `src/import/questions.ts`
+
+  Later work should only lower this count.
+- `src/loop` imports `src/jev` only from `engine.ts`, `routers.ts` and `context/compaction.ts`. `src/agent` imports it only
+  from `jev.ts`. `src/loop/engine.ts` is the only `src/loop` module that imports `src/jev-modes`: it keeps the Jev-mode
+  branches, and splitting it is still deferred.
+
+| Gate | Result on `agent-s7` |
+| --- | --- |
+| `npm run -s typecheck` | clean (`tsc` + `no-any`) |
+| `npm run -s jev-contract` | ok: 37 sites, 14 with a four-clause block, 23 allow-listed. `agent-s6` gives the same counts. |
+| `npm run -s check:docs` | ok: 673 links in 149 files |
+| `node scripts/gen-docs.mjs --check`, `node scripts/gen-decisions-toc.mjs --check` | clean (101 entries) |
+| `npx vitest run --maxWorkers=2 test/unit` | 666 files: **11,489 passed**, 8 skipped, 0 failed (217 s). These are the same 666 files and 11,497 tests as `agent-s6`, matched test by test. Three titles differ: two `describe` titles quote a moved path, and the build-output title quotes the bundle size. |
+| `npx vitest run --maxWorkers=2 --project pty` | 8 files, 100 passed |
+| `sh test/pty/run-smoke.sh` | 65 of 65 PASS |
+| `npm run -s build` + `npm run -s pack:check` | ok. The bundle is 3,593,498 bytes, 60 bytes smaller than `agent-s6`'s 3,593,558. Unpacked 3,753,066 < 3,855,000; tarball 1,262,062 < 1,500,000. |
+| The bundle's literals against `agent-s6`'s | Every string, template and regex literal is identical except two: the dropped duplicate `isVerificationRun`, and the introspection script's comment, which names its own new path. |
+| `git log --follow` | `src/jev-modes/stages/risk.ts` shows 17 commits and `test/unit/jev-modes/stages/risk.test.ts` shows 7, both reaching back past the move |
+
+Left as they were:
+- **Dated records keep their original paths**: the round reports above, `docs/research/**`, `docs/measurements/**`,
+  `experiments/designs/**` and `experiments/results/**`. The DECISIONS entry says how to read them.
+- **One comment in a file the release session owns**: `.github/workflows/ci.yml:43` still names
+  `test/unit/synth/search/perturb.test.ts`, which is now `test/unit/jev-modes/synth/search/perturb.test.ts`.

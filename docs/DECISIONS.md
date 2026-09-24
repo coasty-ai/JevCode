@@ -10,10 +10,11 @@ document, not part of this repository — are also listed in `docs/DESIGN.md` un
 
 ## Contents
 
-100 entries, newest first.
+101 entries, newest first.
 
 **2026-09-23**
 
+- [The Jev-driven modules live under `src/jev-modes/`; dated entries keep the paths they were written with](#2026-09-23-the-jev-driven-modules-live-under-srcjev-modes-dated-entries-keep-the-paths-they-were-written-with)
 - [The default mode is `agent`: the code model drives with native tool calls, and Jev keeps three quick hints](#2026-09-23-the-default-mode-is-agent-the-code-model-drives-with-native-tool-calls-and-jev-keeps-three-quick-hints)
 - [A best guess with no reproduction oracle is verified by its scoped suite; an un-ignored virtualenv is never a candidate](#2026-09-23-a-best-guess-with-no-reproduction-oracle-is-verified-by-its-scoped-suite-an-un-ignored-virtualenv-is-never-a-candidate)
 - [A fix that passes every test is never refused on a score alone](#2026-09-23-a-fix-that-passes-every-test-is-never-refused-on-a-score-alone)
@@ -1925,3 +1926,38 @@ tagline "Decisions, not strings" and the CLI usage line are unchanged until the 
 **Affects.** `src/agent/**` (new), the engine seam in `src/loop/stages/agent.ts`, every provider adapter (the additive
 `GenerateRequest.agent`), the session and chat (no intake in agent mode), the TUI (the streaming reply block, tool rows, status
 words, the braille mini indicator in the status row replacing the 12-row animation slot), `DEFAULT_MODE`, and the documentation.
+
+## 2026-09-23 The Jev-driven modules live under `src/jev-modes/`; dated entries keep the paths they were written with
+
+**Decision.** The modules only the Jev-driven modes use move, with `git mv` so `git log --follow` keeps their history
+(`docs/AGENT-LOOP-DESIGN.md` §14.6, slice S7):
+
+| before | after |
+|---|---|
+| `src/loop/stages/{choose,complete,context,fastpath,intent,judge,propose,replan,risk,synth}.ts` | `src/jev-modes/stages/` |
+| `src/synth/**` | `src/jev-modes/synth/**` |
+| `src/chat/lookup.ts` | `src/jev-modes/chat/lookup.ts` |
+| `test/unit/synth/**` | `test/unit/jev-modes/synth/**` |
+| `test/unit/loop/{choose,complete-oos,fastpath,intent,replan-oos,replan-oos2,risk,risk-claiming-run,risk-llm-jev}.test.ts` | `test/unit/jev-modes/stages/` |
+| `test/unit/chat/lookup.test.ts` | `test/unit/jev-modes/chat/lookup.test.ts` |
+
+Before the move, the helpers the agent path uses left those modules, byte-identical: `codeJudge`, `CodeJudgeRun` and
+`ledgerGoalsOf` (with the three pure helpers they read: `TESTS_PASS_UNPARSED_THRESHOLD`, `knownFailureCount`,
+`unexpectedFailures`) are in `src/loop/judge-code.ts`; `isTestCommand` and `isVerificationRun` are in
+`src/workspace/tests.ts`, and `src/agent/safety.ts` imports that `isVerificationRun` in place of its identical copy.
+`src/loop` now imports `src/jev` only from `engine.ts`, `routers.ts` and `context/compaction.ts`, and `src/agent` only from
+`jev.ts`; `src/jev` has 22 importers outside `src/jev` and `src/jev-modes`, down from 47 (`docs/STATUS.md`).
+
+**No behaviour change.** Same unit test count, `jev-contract` unchanged (37 sites, 14 contracted, 23 allow-listed), and every
+string, template and regex literal in the bundle unchanged except two. The duplicate `isVerificationRun` is gone. The
+introspection script's comment now names `src/jev-modes/synth/introspect/script.ts`. That comment is inside the Python it
+writes, not in any provider request. The bundle is 60 bytes smaller.
+
+**Paths in older text.** Code comments, tests, `scripts/jev-contract.mjs`, the design documents and the pages under
+`docs/architecture`, `docs/concepts`, `docs/contributing` and `docs/operations` name the new paths. Dated records keep the
+paths they were written with, because several of them quote other documents verbatim: the entries above, the round reports
+in `docs/STATUS.md`, `docs/research/**`, `docs/measurements/**`, `experiments/designs/**` and `experiments/results/**`. Read
+`src/synth/...` there as `src/jev-modes/synth/...`, and `src/loop/stages/<one of the ten>.ts` as `src/jev-modes/stages/<same>.ts`.
+
+**Affects.** The layout only. `src/loop/engine.ts` keeps the Jev-mode branches and imports the moved modules from
+`src/jev-modes/`; splitting it stays deferred (design open risk 17).
