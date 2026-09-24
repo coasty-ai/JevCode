@@ -1120,8 +1120,17 @@ export function App(p: AppProps): React.JSX.Element {
   // guarantees an idle second)
   const overlay = state.overlay;
   const overlayArmed = state.overlayArmed;
+  // When the current overlay was first committed. The arming window is a deadline from then: a re-run of the effect below
+  // never restarts it, and a key that arrives after the deadline counts as armed even when the timer has not fired yet
+  // (`armedByClock`). On a busy live run the timer fired ~100 ms late, together with the `y` that the pty interrupts tests
+  // "/exit while live" and "Ctrl-D ×2 while live" send 250 ms after the row appears: the key was read before the armed
+  // state landed and was dropped (both failed alone on this machine, 2026-09-23).
+  const overlayOpenedRef = useRef<{ overlay: string; at: number } | null>(null);
   useEffect(() => {
+    if (overlay === 'none') overlayOpenedRef.current = null;
     if (overlay === 'none' || overlayArmed) return undefined;
+    if (overlayOpenedRef.current?.overlay !== overlay) overlayOpenedRef.current = { overlay, at: now() };
+    const armIn = (ms: number): number => Math.max(0, ms - (now() - (overlayOpenedRef.current?.at ?? now())));
     // This effect runs after the commit that drew the overlay; Ink writes that frame inside its throttle window
     // (≤ 34 ms), so a timer measured from the commit is the arming floor. `waitUntilRenderFlush()` only accelerates
     // the review (it resolves after stdout's write callback) and is never waited on alone: in the first live session
@@ -1138,7 +1147,7 @@ export function App(p: AppProps): React.JSX.Element {
         traceLine(`tui.arm dispatch overlay:armed via ${why}`);
         dispatch({ type: 'overlay:armed' });
       };
-      const t = setTimeout(() => arm('timer'), REVIEW_ARM_MS);
+      const t = setTimeout(() => arm('timer'), armIn(REVIEW_ARM_MS));
       void waitUntilRenderFlush().then(() => arm('flush'), () => undefined);
       return () => {
         alive = false;
@@ -1151,7 +1160,7 @@ export function App(p: AppProps): React.JSX.Element {
       let alive = true;
       const t = setTimeout(() => {
         if (alive) dispatch({ type: 'overlay:armed' });
-      }, GATE_ARM_MS);
+      }, armIn(GATE_ARM_MS));
       return () => {
         alive = false;
         clearTimeout(t);
@@ -2737,15 +2746,24 @@ export function App(p: AppProps): React.JSX.Element {
     return sess !== null && o.hasCard(sess) ? 'closed' : 'off';
   };
 
+  /** §6.3: a y-gated overlay whose arming window has elapsed since its first commit is armed, whether or not the timer ran yet */
+  const armedByClock = (overlayNow: string): boolean => {
+    const o = overlayOpenedRef.current;
+    if (o === null || o.overlay !== overlayNow) return false;
+    const window = overlayNow === 'review' ? REVIEW_ARM_MS : overlayNow === 'secret' || overlayNow === 'followup' || overlayNow === 'undo' || overlayNow === 'exitConfirm' ? GATE_ARM_MS : 0;
+    return now() - o.at >= window;
+  };
+
   const keyState = (): KeyState => {
     const s = stateRef.current;
+    const overlayArmedNow = s.overlayArmed || (s.overlay !== 'none' && armedByClock(s.overlay));
     const b = composer.buffer;
     const m = composer.mirror(columns);
     const n = noteRef.current;
-    traceLine(`tui.keystate overlay=${s.overlay} overlayArmed=${s.overlayArmed} pending=${s.pendingReview !== null}`);
+    traceLine(`tui.keystate overlay=${s.overlay} overlayArmed=${overlayArmedNow} pending=${s.pendingReview !== null}`);
     return {
       overlay: s.overlay,
-      reviewArmed: s.overlay === 'review' && s.overlayArmed,
+      reviewArmed: s.overlay === 'review' && overlayArmedNow,
       // `starting` is a submit in flight with no engine yet (`run:start` flips it to live synchronously): the S0 rules
       // apply to Ctrl-C / Esc / Ctrl-D — an abort would land on nothing and wedge the session (finding 1)
       run: s.run === 'starting' ? 'none' : s.run,
@@ -2771,7 +2789,7 @@ export function App(p: AppProps): React.JSX.Element {
       // §6.4: the models picker's composer is a free-text query — `space`, `x`, `ctrl+a` and `ctrl+r` are filter
       // characters there, never a preview, a delete arm, a widening or a rename (D-AQ; `s` was never bound).
       pickerFilter: picker.kind === 'models',
-      overlayArmed: s.overlayArmed,
+      overlayArmed: overlayArmedNow,
       minsize: layoutRef.current?.degraded === 'minsize',
       retrying: s.retrying !== null,
       /**

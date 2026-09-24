@@ -410,6 +410,27 @@ describe('<App> Ctrl-C / Esc / Ctrl-D matrix (§3.3)', { retry: 1 }, () => {
     expect(s.exits).toEqual([]);
   });
 
+  it('§6.3: the arming window is a deadline from the first commit — a y after it counts even when the arming timer has not fired yet (a busy live run delays timers)', async () => {
+    let clock = 1_000_000;
+    const host = fakeHost();
+    const m = mountApp({ mode: 'session', host, now: () => clock });
+    goLive(m);
+    await tick(10);
+    m.stdin.write(CTRL_D);
+    m.stdin.write(CTRL_D);
+    await tick(20);
+    expect(m.lastFrame()).toContain('a run is live: [y] abort and exit   [n] stay');
+    // inside the window by the clock: inert
+    m.stdin.write('y');
+    await tick(5);
+    expect(host.aborts).toEqual([]);
+    // past the window by the clock while the real 150 ms timer is still pending (under 50 ms of wall time since the row opened)
+    clock += 200;
+    m.stdin.write('y');
+    await tick(10);
+    expect(host.aborts).toEqual(['human_abort']);
+  });
+
   it('S2 Ctrl-D twice opens the exit confirm; n stays; y aborts and exits 0 after run:end', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
