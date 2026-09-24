@@ -17,6 +17,7 @@
 import { resolve } from 'node:path';
 import { RISK_DIMENSIONS, type AgentGate, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TestCommand } from '../core/types.js';
 import { isTestCommand } from '../loop/stages/execute.js';
+import { isSecretBasename } from '../sandbox/paths.js';
 import { allCommands, parseShell, type ParsedShell, type Redirect, type SimpleCommand, type Word } from './shlex.js';
 import { gitVerdict } from './safety-git.js';
 import { READONLY, REMOTE_RULES, SAFE, UNKNOWN, destructive, isWithin, resolveWordPath, rulesOf, spellings, stricter, type ClassifyContext, type CommandVerdict, type DestructiveRule, type PathContext } from './safety-rules.js';
@@ -209,6 +210,16 @@ function uploads(a: readonly string[]): boolean {
   });
 }
 
+/** Whether an argument names a secret file by its basename (`.env`, `.env.local`, `id_rsa`, `*.pem`; `.env.example` is not one). */
+function namesSecret(ws: readonly Word[]): boolean {
+  return ws.slice(1).some((w) => {
+    const t = w.text.includes('=') && w.text.startsWith('-') ? w.text.slice(w.text.indexOf('=') + 1) : w.text;
+    if (t.startsWith('-') || t === '') return false;
+    const base = t.slice(t.lastIndexOf('/') + 1);
+    return isSecretBasename(base) || (w.glob && base.startsWith('.env') && base !== '.env.example');
+  });
+}
+
 const INTERPRETERS = /^(sh|bash|zsh|dash|ksh|fish|python\d*(\.\d+)?|node|perl|ruby|php)$/;
 const DOWNLOADERS = new Set(['curl', 'wget']);
 
@@ -256,6 +267,9 @@ function simpleVerdict(cmd: SimpleCommand, p: PathContext, c: ClassifyContext, c
     return UNKNOWN;
   }
   if (program === 'cd') return cdPrefix && !redirects.writes ? READONLY : UNKNOWN;
+  // a read-only program pointed at a secret (`cat .env`, `head id_rsa`, `jq --rawfile k .env`) is not read-only: it would run in
+  // the ungated observe batch around read_file's secret-path refusal, even under --autonomy review (the S6 review)
+  if (namesSecret(ws)) return UNKNOWN;
   if (!redirects.writes && readonlyProgram(program, a)) return READONLY;
   if (SAFE_PATTERNS.some((re) => re.test(line))) return redirects.workspace ? UNKNOWN : SAFE;
   if (isVerificationRun(line, c.testCommand)) return SAFE;

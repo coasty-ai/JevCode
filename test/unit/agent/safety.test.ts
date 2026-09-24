@@ -287,6 +287,12 @@ describe('destructive rules', () => {
     expect(classOf('git reset --hard', d).rules).toBeUndefined();
   });
 
+  it('a read-only program pointed at a secret is not read-only: `cat .env` runs through the gate, so review asks (S6 review)', () => {
+    for (const c of ['cat .env', 'head -5 .env.local', 'tail config/id_rsa', 'grep KEY .env', 'jq --rawfile k .env .', 'cat .env*', 'sed -n 1p certs/server.pem']) expect(kindOf(c), c).toBe('unknown');
+    for (const c of ['cat .env.example', 'cat src/env.ts', 'grep -rn env src', 'ls -la']) expect(kindOf(c), c).toBe('readonly');
+    expect(commandGate(classOf('cat .env'), 'review', null).verdict).toBe('review');
+  });
+
   it('the strictest simple command decides', () => {
     expect(classOf('ls && rm -rf /')).toMatchObject({ class: 'destructive', rule: 'rm_outside' });
     expect(kindOf('ls && npm install')).toBe('unknown');
