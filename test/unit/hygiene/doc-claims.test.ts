@@ -9,7 +9,8 @@
  *    it lands this test goes red and the bullet has to move.
  *
  * Plus one drift pin: `docs/RELEASE.md` may not restate the pack-size constants, it must cite `scripts/check-pack.mjs`, and the
- * figures it does print are read back out of that script.
+ * figures it does print are read back out of that script. And one channel pin: RELEASE.md and the install page name the same
+ * install commands, and neither carries the pre-pipeline claims.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -213,6 +214,25 @@ describe('design-doc claims match main', () => {
     }
     expect(wrong).toEqual([]);
     expect(doc('docs/RELEASE.md'), 'the stale "< 2 MB" figure predates the raise to 3,500,000').not.toMatch(/unpacked < 2 MB/);
+  });
+
+  it('the release runbook and the install page agree on the channels and drop the pre-pipeline claims', () => {
+    const release = doc('docs/RELEASE.md');
+    const install = doc('docs/getting-started/install.md');
+    // npm trusted publishing cannot create a package, and the owner strings were fixed before this pass.
+    expect(release).not.toContain('first publish can be done from CI directly');
+    expect(release).not.toContain('still name an older owner');
+    expect(install).not.toContain('## Not available yet');
+    expect(install, 'the proof line must not pin a stale version').not.toMatch(/# jevcode \d+\.\d+\.\d+/);
+    // Job summaries point at one-time steps by number: npm 5, Homebrew 6, AUR 7, Nix 8.
+    for (const step of ['### 5. npm', '### 6. Homebrew tap', '### 7. AUR', '### 8. Nix lock']) expect(release).toContain(step);
+    for (const cmd of [
+      'npm i -g jevcode', 'npx jevcode', 'bunx jevcode', 'pnpm dlx jevcode', 'yarn dlx jevcode', 'mise use -g npm:jevcode',
+      'brew install coasty-ai/jevcode/jevcode', 'yay -S jevcode', 'nix run github:coasty-ai/JevCode',
+    ]) {
+      expect(release, `RELEASE.md channel table: ${cmd}`).toContain(cmd);
+      expect(install, `install.md channel table: ${cmd}`).toContain(cmd);
+    }
   });
 
   it('the two behaviour deferrals of this pass are filed with an owner', () => {

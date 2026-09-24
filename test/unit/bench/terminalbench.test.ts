@@ -55,6 +55,13 @@ describe('path rewrite', () => {
     expect(mapContainerPath('/apple', map)).toBeNull();
     expect(mapContainerPath('/logs/verifier/ctrf.json', map)).toBe('/L/ctrf.json');
   });
+  it('a replacement is never rewritten again, even when the stand-in lives under a mapped root (Linux tmpdir is /tmp)', () => {
+    // the verifier map carries `/tmp`, and on Linux every stand-in is under `/tmp/...`: a key-by-key loop turned
+    // `/app/prog.py` into `/tmp/x/app/prog.py` and then into `/tmp/x/tmp/x/app/prog.py`
+    const underTmp = { '/app': '/tmp/x/app', '/output': '/tmp/x/output', '/tmp': '/tmp/x/tmp' };
+    expect(rewritePaths('python3 /app/prog.py --output /output/result.json; ls /tmp/y', underTmp)).toBe('python3 /tmp/x/app/prog.py --output /tmp/x/output/result.json; ls /tmp/x/tmp/y');
+    expect(rewritePaths('/app', {})).toBe('/app');
+  });
 });
 
 describe('dockerfile and toml parsing', () => {

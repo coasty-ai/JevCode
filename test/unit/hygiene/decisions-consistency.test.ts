@@ -75,6 +75,16 @@ function branchesNamedInDecisions(): string[] {
   return [...named].sort();
 }
 
+/**
+ * The branch-dependent checks need the branches. A single-branch checkout — GitHub Actions' `actions/checkout`, or
+ * `git clone --single-branch` — has exactly one local branch, and the working branches DECISIONS names were never
+ * pushed, so discovery finds nothing there and "no block owes a merged branch" would pass vacuously. Both checks are
+ * SKIPPED, visibly, in such a checkout rather than asserted over an empty set; any checkout that carries more than
+ * one local branch (every developer worktree) runs them unchanged.
+ */
+const LOCAL_BRANCH_COUNT = git(['for-each-ref', '--format=%(refname:short)', 'refs/heads']).split('\n').filter((s) => s.trim().length > 0).length;
+const SINGLE_BRANCH_CHECKOUT = LOCAL_BRANCH_COUNT <= 1;
+
 /** Every `~~struck~~` span elided: the document's own signal that the claim inside is retired but kept for history. */
 function elideStrikes(md: string): string {
   expect((md.match(/~~/g) ?? []).length % 2, 'docs/DECISIONS.md: unbalanced ~~ strike markers').toBe(0);
@@ -135,7 +145,7 @@ describe('docs/DECISIONS.md consistency', () => {
     expect(got).toEqual(['Some paragraph. The earlier defect is resolved.', '- Still owed: a thing.', '| a | table row |']);
   });
 
-  it('branch discovery does not require the word "branch", and finds the merged ones by ref', () => {
+  it.skipIf(SINGLE_BRANCH_CHECKOUT)('branch discovery does not require the word "branch", and finds the merged ones by ref', () => {
     // Regression pin for review F17-2 probe (a): the old /branch `X`/ regex found three names and missed the rest.
     const found = branchesNamedInDecisions();
     expect(found.length, 'DECISIONS names local branches in backticks; discovery must find them').toBeGreaterThan(3);
@@ -158,7 +168,7 @@ describe('docs/DECISIONS.md consistency', () => {
     expect(staleOwings(struck, ['probe-branch-x']), 'a ~~struck~~ owing clause is retired, not stale').toEqual([]);
   });
 
-  it('no block owes a branch that is already an ancestor of HEAD', () => {
+  it.skipIf(SINGLE_BRANCH_CHECKOUT)('no block owes a branch that is already an ancestor of HEAD', () => {
     // DECISIONS is hard-wrapped, so the owing verb and the branch name routinely sit on different LINES of one
     // block; blocks() unwraps. A retired owing clause must be INSIDE a ~~strike~~, not merely near the word "amended".
     const merged = branchesNamedInDecisions().filter(isMergedOrGone);

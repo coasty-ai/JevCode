@@ -78,7 +78,7 @@ decision is in `docs/DECISIONS.md` (2026-09-23).
   concept pages describe Jev's reduced role, and the step loop, the synthesizer and the relaxed context are marked as the
   Jev-driven modes' engine. The tagline "Decisions, not strings" is unchanged.
 
-## [0.6.0] — 2026-09-22 (not yet published)
+## [0.6.0] — 2026-09-24
 
 Round 5 of the interactive TUI (`docs/TUI-DESIGN-5.md`, six concurrent slots and one integration pass; the record
 of what landed, with every gate number and every honest gap, is `docs/STATUS.md`, "Round 5"). Five user

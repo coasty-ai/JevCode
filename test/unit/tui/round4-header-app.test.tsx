@@ -286,6 +286,7 @@ describe('§1.4: the real renderer never writes ESC[3J', () => {
         env: ENV,
         launch: MOTION,
         onAbort: () => undefined,
+        interactive: true, // a stub TTY: never Ink's `is-in-ci` default, which CI=true on a runner turns off
       });
       await r.firstFrame();
       stop = () => r.unmount();
@@ -294,7 +295,7 @@ describe('§1.4: the real renderer never writes ESC[3J', () => {
       const bridge = createBridge(null, null);
       const inst = render(
         <App task="" resumeId={null} source={bus} confirmer={createTuiConfirmer()} onAbort={() => undefined} mode="session" cwd="/tmp/proj" bridge={bridge} launch={MOTION} env={ENV} />,
-        { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, exitOnCtrlC: false, patchConsole: false },
+        { stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, exitOnCtrlC: false, patchConsole: false, interactive: true },
       );
       stop = () => inst.unmount();
     }
@@ -447,6 +448,7 @@ describe('§1.3: the fullscreen renderer', () => {
       env: { ...ENV, TERM: 'xterm-256color' },
       launch: { ...MOTION, renderer: 'fullscreen' },
       onAbort: () => undefined,
+      interactive: true, // a stub TTY: Ink enters the alternate screen only when interactive, and CI=true says it is not
     });
     await r.firstFrame();
     await tick(60);
@@ -533,6 +535,7 @@ describe('§2.2 P-R1: the synchronous commit on a shrinking dimension and on eve
       env: ENV,
       launch: MOTION,
       onAbort: () => undefined,
+      interactive: true, // a stub TTY: never Ink's `is-in-ci` default, which CI=true on a runner turns off
     });
     await r.firstFrame();
     await tick(80);

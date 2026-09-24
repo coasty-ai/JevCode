@@ -4,6 +4,9 @@ dist/
 coverage/
 *.tgz
 SHA256SUMS
+# nix build links
+/result
+/result-*
 
 # --- secrets ---
 .env

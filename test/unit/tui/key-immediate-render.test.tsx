@@ -40,6 +40,8 @@ function mount(): { stdout: StubStdout; painted: () => string; rerender: (keySeq
     maxFps: 30,
     patchConsole: false,
     exitOnCtrlC: false,
+    // the stub is a TTY; without this Ink's `is-in-ci` (CI=true on every runner) makes it non-interactive and it writes only at unmount
+    interactive: true,
   });
   return {
     stdout,

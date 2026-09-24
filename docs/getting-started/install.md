@@ -43,7 +43,7 @@ request before the first frame throw, and asserts both that the first frame rend
 Proof that it worked:
 
 ```sh
-jevcode --version     # jevcode 0.5.0
+jevcode --version     # jevcode <version>, as in package.json
 jevcode --help        # the command list
 jevcode config        # the resolved configuration, with the source of every value
 ```
@@ -51,18 +51,119 @@ jevcode config        # the resolved configuration, with the source of every val
 `jevcode config` is the most useful of the three: it prints every setting, the value it resolved
 to, and where that value came from. Secrets appear as fingerprints, never as keys.
 
-## Not available yet
+## Install channels
 
-The package has not been published. These three paths are written down so that you know they
-are planned, not so that you can use them:
+Each channel below works once the first release is published. Nothing is published yet, so today only
+"From source" above works. Homebrew, AUR and Nix also need a one-time step by the repository owner first; the
+table names it. The owner's steps are in
+[`../RELEASE.md`](../RELEASE.md#one-time-setup).
 
-| Path | State |
-| --- | --- |
-| `npx jevcode` | unavailable — nothing is on the npm registry |
-| `npm install -g jevcode` | unavailable — same reason |
-| `brew install <owner>/jevcode/jevcode` | unavailable — `Formula/jevcode.rb` still carries a placeholder `url` and a deliberately invalid `sha256`, so an unreleased copy cannot install by accident |
+| Channel | Command | Needs first |
+| --- | --- | --- |
+| npm / npx | `npm i -g jevcode`, `npx jevcode` | the first release |
+| bun / pnpm / yarn | `bunx jevcode`, `pnpm dlx jevcode`, `yarn dlx jevcode` | the first release |
+| mise | `mise use -g npm:jevcode` | the first release |
+| Homebrew | `brew install coasty-ai/jevcode/jevcode` | the first release, and the owner's tap setup (step 6) |
+| AUR | `yay -S jevcode` or `paru -S jevcode` | the first release, and the owner's AUR setup (step 7) |
+| Nix | `nix run github:coasty-ai/JevCode` | the owner's `flake.lock` commit (step 8); it builds from source, not from npm |
 
-The release procedure that turns these on is [`../RELEASE.md`](../RELEASE.md).
+Every channel still runs the launcher under Node, so Node 22.12 or newer must be on `PATH` (Homebrew, AUR and Nix
+install it for you).
+
+Pre-releases: `npm i -g jevcode@next`. Homebrew and AUR carry stable releases only.
+
+### npm and npx
+
+```sh
+npm i -g jevcode
+npx jevcode           # run once without installing
+```
+
+Proof: `jevcode --version` prints `jevcode <version>`. Update with `jevcode upgrade` or `npm i -g jevcode@latest`.
+
+**Status:** available from the first published release; see [`../RELEASE.md`](../RELEASE.md).
+
+### bun, pnpm and yarn
+
+They read the same npm package.
+
+```sh
+bunx jevcode          # or: bun i -g jevcode
+pnpm dlx jevcode      # or: pnpm add -g jevcode
+yarn dlx jevcode      # Yarn 2 or newer
+```
+
+Proof: `bunx jevcode --version` prints `jevcode <version>`.
+
+**Status:** available from the first published release; see [`../RELEASE.md`](../RELEASE.md).
+
+### mise
+
+Use mise's `npm:` backend. mise needs `npm` on `PATH` for it.
+
+```sh
+mise use -g npm:jevcode
+mise use -g npm:jevcode@<version>     # a pinned version
+```
+
+Proof: `mise exec -- jevcode --version`. Update with `mise upgrade npm:jevcode`.
+
+The bare shorthand `mise use -g jevcode` does not work: the name is not in mise's registry.
+
+**Status:** available from the first published release; see [`../RELEASE.md`](../RELEASE.md).
+
+### Homebrew
+
+```sh
+brew install coasty-ai/jevcode/jevcode
+```
+
+Proof: `jevcode --version` and `brew test jevcode`. Update with `brew upgrade jevcode`. The formula also installs
+the man page and the bash, zsh and fish completions.
+
+**Status:** available from the first stable release after the owner creates the tap (one-time step 6 in
+[`../RELEASE.md`](../RELEASE.md#6-homebrew-tap)). Until then the tap does not exist.
+
+### AUR (Arch Linux)
+
+```sh
+yay -S jevcode        # or: paru -S jevcode
+```
+
+Without an AUR helper:
+
+```sh
+git clone https://aur.archlinux.org/jevcode.git
+cd jevcode
+makepkg -si
+```
+
+Proof: `jevcode --version` and `pacman -Qi jevcode`. Update through your AUR helper.
+
+**Status:** available from the first stable release after the owner sets up the AUR key (one-time step 7 in
+[`../RELEASE.md`](../RELEASE.md#7-aur)). Until then the package does not exist.
+
+### Nix
+
+The flake builds JevCode from source, so it does not depend on npm.
+
+```sh
+nix run github:coasty-ai/JevCode -- --version
+nix profile install github:coasty-ai/JevCode
+nix run github:coasty-ai/JevCode/v<x.y.z>       # a pinned release tag
+```
+
+If flakes are not enabled, add `--extra-experimental-features 'nix-command flakes'`. There is no binary cache, so
+the first run builds for a few minutes.
+
+Proof: `nix run github:coasty-ai/JevCode -- --version` prints `jevcode <version>`. Update with
+`nix profile upgrade JevCode` (the element name nix gives a `github:coasty-ai/JevCode` install), or
+`nix profile upgrade --all`.
+
+**Status:** available once the owner commits `flake.lock` (one-time step 8 in
+[`../RELEASE.md`](../RELEASE.md#8-nix-lock)). A pinned tag works when that tag contains `flake.lock`.
+
+For mise, AUR and Nix installs, update with the tool you installed with.
 
 ## The whole path, as a picture
 
@@ -80,9 +181,10 @@ flowchart TD
   S4 --> V["jevcode --version"]
   V --> READY(["ready — see Your first run"])
 
-  X1["npx jevcode"] -.->|"not published yet"| BLOCKED["blocked on a release"]
-  X2["npm install -g jevcode"] -.->|"not published yet"| BLOCKED
-  X3["brew install from the tap"] -.->|"placeholder url and sha256"| BLOCKED
+  X1["npx jevcode, npm i -g, bunx, pnpm dlx, yarn dlx, mise npm:jevcode"] -.->|"not published yet"| BLOCKED["blocked on the first release"]
+  X2["brew install coasty-ai/jevcode/jevcode"] -.->|"first stable release + tap setup"| BLOCKED
+  X3["yay -S jevcode"] -.->|"first stable release + AUR key"| BLOCKED
+  X4["nix run github:coasty-ai/JevCode"] -.->|"flake.lock not committed yet"| LOCK["blocked on the owner's flake.lock commit"]
 ```
 
 ## Measured build facts

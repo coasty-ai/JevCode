@@ -80,6 +80,8 @@ function mount(input: IdleLoopInput): Mount {
     maxFps: 60,
     patchConsole: false,
     exitOnCtrlC: false,
+    // the stub is a TTY; without this Ink's `is-in-ci` (CI=true on every runner) makes it non-interactive and it writes only at unmount
+    interactive: true,
   });
   let lastKeySeq = 0;
   let lastText = 't0';

@@ -24,15 +24,22 @@ function escapeRe(s: string): string {
  * and shell lists rewrite completely; none of them can start a longer path.
  */
 export function boundaryPattern(containerPath: string): RegExp {
-  return new RegExp(`(?<![\\w./-])${escapeRe(containerPath)}(?=[/"'\\s:)\`,;\\]}]|$)`, 'gm');
+  return boundaryAlternation([containerPath]);
 }
 
-/** Rewrite every mapped prefix, longest first so `/logs/verifier` wins over `/logs`. */
+function boundaryAlternation(containerPaths: readonly string[]): RegExp {
+  return new RegExp(`(?<![\\w./-])(?:${containerPaths.map(escapeRe).join('|')})(?=[/"'\\s:)\`,;\\]}]|$)`, 'gm');
+}
+
+/**
+ * Rewrite every mapped prefix in ONE pass, longest first so `/logs/verifier` wins over `/logs`. One pass, because
+ * a replacement is a local path and must never be scanned again: on Linux `os.tmpdir()` is `/tmp`, so a stand-in
+ * such as `/tmp/jevbench-x/app` starts with the `/tmp` key and a key-by-key loop rewrote it a second time.
+ */
 export function rewritePaths(text: string, map: PathMap): string {
   const keys = Object.keys(map).sort((a, b) => b.length - a.length || a.localeCompare(b));
-  let out = text;
-  for (const key of keys) out = out.replace(boundaryPattern(key), () => map[key]!);
-  return out;
+  if (keys.length === 0) return text;
+  return text.replace(boundaryAlternation(keys), (hit) => map[hit]!);
 }
 
 /** Map one absolute container path to its local stand-in (null when no prefix matches). */

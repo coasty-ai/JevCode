@@ -1,0 +1,6 @@
+# makepkg output; .SRCINFO is generated at publish time and never committed here
+src/
+pkg/
+*.tgz
+*.pkg.tar.*
+.SRCINFO

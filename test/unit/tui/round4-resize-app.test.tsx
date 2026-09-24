@@ -416,7 +416,7 @@ describe('the forbidden sequences and the clear budget (§2.1, §11)', () => {
     // `shouldClearTerminalForFrame` branch (`ink.js:89–112`, the cliff A1 measured at 37 clears / 36 frames)
     const probe = new StubStdout(6, 40, true);
     const tall = (n: number): React.JSX.Element => <Box flexDirection="column">{Array.from({ length: n }, (_, i) => <Text key={i}>{`row ${i}`}</Text>)}</Box>;
-    const inst = render(tall(20), { stdout: probe as unknown as NodeJS.WriteStream, stdin: new StubStdin() as unknown as NodeJS.ReadStream, patchConsole: false });
+    const inst = render(tall(20), { stdout: probe as unknown as NodeJS.WriteStream, stdin: new StubStdin() as unknown as NodeJS.ReadStream, patchConsole: false, interactive: true });
     await tick(20);
     inst.rerender(tall(21));
     await tick(40);

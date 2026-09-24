@@ -18,8 +18,8 @@
  *
  * That leaves the shipped artefact itself gated where a build always precedes the check rather than here:
  * `scripts/check-pack.mjs` gate 9 reads the same directive out of `dist/jevcode.mjs` and runs immediately after
- * `npm run build` in `npm run release:check` and in .github/workflows/release.yml (where `npm run check`, hence
- * this suite, runs BEFORE the build and this case therefore skips by design).
+ * `npm run build` in `npm run release:check` and in .github/workflows/release.yml (where the unit suite runs BEFORE
+ * the build and this case therefore skips by design).
  *
  * Failing-first, twice: (1) red against the bundle built at d297b29 (`tail -c 80 dist/jevcode.mjs` ends in the
  * directive) — that is the fact the file pins; (2) the staleness guard itself, verified 2026-09-22 by copying the
@@ -81,11 +81,13 @@ describe('the built bundle and the gates that keep it shippable', () => {
     expect(check).toMatch(/sourceMappingURL/);
     expect(check).toMatch(/\\\.map\$/); // the forbidden-path rule that makes the reference dangle
     // and it runs after a build, never before one: that ordering is what this file cannot have, because
-    // `npm run check` (this suite) runs BEFORE `npm run build` in the same job
+    // the unit suite (`npm test`, this file) runs BEFORE `npm run build` in the same job
     const wf = readFileSync(join(ROOT, '.github/workflows/release.yml'), 'utf8');
     const at = (step: string): number => wf.indexOf(`run: npm run ${step}`);
     expect(at('build'), 'the release job must build').toBeGreaterThan(0);
     expect(at('pack:check'), 'the release job must run the pack gates').toBeGreaterThan(at('build'));
-    expect(at('check'), 'this suite runs before the build, which is why the case above is skipped there').toBeLessThan(at('build'));
+    const suite = wf.indexOf('run: npm test');
+    expect(suite, 'the release job must run the unit suite').toBeGreaterThan(0);
+    expect(suite, 'this suite runs before the build, which is why the case above is skipped there').toBeLessThan(at('build'));
   });
 });
