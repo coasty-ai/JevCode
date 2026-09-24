@@ -26,7 +26,7 @@
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { join } from 'node:path';
-import { DEFAULT_MODE, DEFAULT_MODEL, DEFAULT_PROVIDER, MODE_SETTING_VALUES, SETTINGS } from '../config/defaults.js';
+import { DEFAULT_MODE, DEFAULT_PROVIDER, MODE_SETTING_VALUES, SETTINGS } from '../config/defaults.js';
 import { credentialsPath, displayPath, readCredentialsFile, removeCredentials, writeConfigValue, writeCredentials, type CredentialKey, type CredentialsFile, type CredentialsPatch } from '../config/credentials.js';
 import { readDotenv } from '../config/env.js';
 import { fingerprint } from '../core/hash.js';
@@ -58,7 +58,7 @@ import { HINT_TOO_SHORT, hintPrefix, looksLikeKey, sanitizeKeyInput, type Wizard
 // TUI-DESIGN-5 §6.2 / §6.3 / §8.2 R14: `provider/ids.ts` is the ONE zero-import provider module the argv path may
 // read (this file is on it — `src/cli/session.ts:194` imports it statically). The catalogue itself
 // (`src/models/**`) arrives only through the `await import()` in `verifyProviderKey`.
-import { PROVIDER_DISPLAY_NAME, PROVIDER_IDS, isProviderId, keyEnvNames } from '../provider/ids.js';
+import { PROVIDER_DEFAULT_MODEL, PROVIDER_DISPLAY_NAME, PROVIDER_IDS, isProviderId, keyEnvNames } from '../provider/ids.js';
 import { keyRateLimitedText, keyRejectedText, keyVerifiedText } from '../tui/models/lines.js';
 import type { ProviderId } from '../provider/ids.js';
 
@@ -303,10 +303,13 @@ export function loginMode(lookup: EnvLookup, file: Pick<CredentialsFile, 'values
   const fileMode = file.values['mode'];
   return parseMode(lookup.get('JEVCODE_MODE')) ?? parseMode(typeof fileMode === 'string' ? fileMode : undefined) ?? DEFAULT_MODE;
 }
-/** TUI-DESIGN-3 §1.5: the generator model `--verify` sends its 1-token completion to — `JEVCODE_MODEL` (env, `./.env`) > the file's `model` key > the default */
-export function loginGeneratorModel(lookup: EnvLookup, file: Pick<CredentialsFile, 'values'>): string {
+/**
+ * TUI-DESIGN-3 §1.5: the generator model `--verify` sends its 1-token completion to — `JEVCODE_MODEL` (env, `./.env`) > the
+ * file's `model` key > `provider`'s own default (provider/ids.ts `PROVIDER_DEFAULT_MODEL`, the table config resolution uses).
+ */
+export function loginGeneratorModel(lookup: EnvLookup, file: Pick<CredentialsFile, 'values'>, provider: ProviderId = DEFAULT_PROVIDER): string {
   const fileModel = file.values['model'];
-  return lookup.get('JEVCODE_MODEL') ?? (typeof fileModel === 'string' && fileModel.trim() !== '' ? fileModel.trim() : DEFAULT_MODEL);
+  return lookup.get('JEVCODE_MODEL') ?? (typeof fileModel === 'string' && fileModel.trim() !== '' ? fileModel.trim() : PROVIDER_DEFAULT_MODEL[provider]);
 }
 /** the `mode` row's source for `--status` (`env`, `dotenv`, `file`, `default`) */
 export function loginModeSource(lookup: EnvLookup, file: Pick<CredentialsFile, 'values'>, env: NodeJS.ProcessEnv): 'env' | 'dotenv' | 'file' | 'default' {
@@ -524,7 +527,7 @@ export async function verifyKeys(input: VerifyInput, f: typeof fetch = fetch, ti
   const short = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 120);
   const signal = (): AbortSignal => (input.signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), input.signal]) : AbortSignal.timeout(timeoutMs));
   const mode = input.mode ?? DEFAULT_MODE;
-  const generatorModel = input.generatorModel ?? DEFAULT_MODEL;
+  const generatorModel = input.generatorModel ?? PROVIDER_DEFAULT_MODEL[input.provider];
   const jevProvider: JevProvider = input.jevProvider ?? 'openrouter';
   const jevSpec = JEV_PROVIDERS[jevProvider];
   const jevBaseUrl = input.jevBaseUrl ?? jevSpec.baseUrl;
@@ -1003,7 +1006,7 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
     const verify = io.verify ?? ((input: VerifyInput) => verifyKeys(input, io.fetch ?? fetch));
     // the generator half was just checked for free; `verifyKeys` still runs, for the DECIDER key written in the
     // same invocation — returning early here silently verified strictly less than `--verify` used to (§6.5)
-    const results = await verify({ provider: wizardChosen ?? 'openrouter', jevProvider: jp, generatorKey: wizardChosen === null ? null : (patch.apiKey ?? null), jevKey: patch.jevApiKey ?? null, mode: verifyMode, generatorModel: loginGeneratorModel(lookup, file), jevBaseUrl: JEV_PROVIDERS[jp ?? 'openrouter'].baseUrl, jevModel: JEV_PROVIDERS[jp ?? 'openrouter'].defaultModel });
+    const results = await verify({ provider: wizardChosen ?? 'openrouter', jevProvider: jp, generatorKey: wizardChosen === null ? null : (patch.apiKey ?? null), jevKey: patch.jevApiKey ?? null, mode: verifyMode, generatorModel: loginGeneratorModel(lookup, file, wizardChosen ?? 'openrouter'), jevBaseUrl: JEV_PROVIDERS[jp ?? 'openrouter'].baseUrl, jevModel: JEV_PROVIDERS[jp ?? 'openrouter'].defaultModel });
     const all = [...free, ...results];
     for (const r of all) io.stdout.write(`[setup] ${r.text}\n`);
     return verifyExitCode(all);

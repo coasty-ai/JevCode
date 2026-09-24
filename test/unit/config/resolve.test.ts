@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCliArgs, type ParsedFlags } from '../../../src/cli/args.js';
 import { detectPackageRoot, isEngineMode, modeFromParsedFlags, negateBooleanText, reconcileResumeConfig, resolveConfig, resumeIdentityFromRunMeta, type ResolveOptions } from '../../../src/config/resolve.js';
-import { AGENT_DEFAULT_MAX_STEPS, BASE_URLS, DEFAULT_MODE } from '../../../src/config/defaults.js';
+import { AGENT_DEFAULT_MAX_STEPS, BASE_URLS, DEFAULT_MODE, DEFAULT_MODEL } from '../../../src/config/defaults.js';
+import { PROVIDER_DEFAULT_MODEL, PROVIDER_IDS } from '../../../src/provider/ids.js';
+import { PROVIDERS } from '../../../src/provider/registry.js';
 import { defaultRunSpendCapUsd } from '../../../src/config/ui.js';
 import type { RunMeta } from '../../../src/core/types.js';
 import { fingerprint } from '../../../src/config/mask.js';
@@ -98,6 +100,23 @@ describe('resolveConfig precedence', () => {
     await rm(join(cwd, 'jevcode.json'));
     const c5 = await resolve(run());
     expect(c5.entries.get('generator.model')).toEqual({ value: 'z-ai/glm-5.3-flash', source: 'default' });
+  });
+
+  it('an unset generator.model is the resolved provider\'s own default — `--provider openai` alone never sends the OpenRouter id', async () => {
+    // the S6 final review: `--provider openai|anthropic|xai` with no --model sent `z-ai/glm-5.3-flash` and every message 404ed
+    const openai = await resolve(run('--provider', 'openai'));
+    expect(openai.entries.get('generator.model')).toEqual({ value: 'gpt-5.6-luna', source: 'default' });
+    for (const id of PROVIDER_IDS) {
+      const c = await resolve(run('--provider', id));
+      expect(c.entries.get('generator.model')).toEqual({ value: PROVIDER_DEFAULT_MODEL[id], source: 'default' });
+      expect(c.entries.get('generator.model')?.value).toBe(PROVIDERS.find((p) => p.id === id)?.defaultModel);
+    }
+    // the provider from the environment keys the default the same way; an explicit model always wins
+    expect((await resolve(run(), { JEVCODE_PROVIDER: 'anthropic' })).entries.get('generator.model')).toEqual({ value: 'claude-sonnet-5', source: 'default' });
+    expect((await resolve(run('--provider', 'xai', '--model', 'grok-4.7-mini'))).entries.get('generator.model')).toEqual({ value: 'grok-4.7-mini', source: 'flag' });
+    expect((await resolve(run('--provider', 'openai'), { JEVCODE_MODEL: 'gpt-6-astra' })).entries.get('generator.model')).toEqual({ value: 'gpt-6-astra', source: 'env' });
+    // the OpenRouter row IS config/defaults.ts DEFAULT_MODEL
+    expect(PROVIDER_DEFAULT_MODEL.openrouter).toBe(DEFAULT_MODEL);
   });
 
   it('record() keeps every source and masks secrets as { source, fingerprint }, flag keys included', async () => {

@@ -60,6 +60,22 @@ export const PROVIDER_BASE_URL: Readonly<Record<ProviderId, string>> = {
 };
 
 /**
+ * The generator model each provider runs when the user names none: its latest fast model. `generator.model`'s default
+ * layer resolves through this table keyed on the resolved provider (src/config/resolve.ts), so `--provider openai` alone
+ * sends `gpt-5.6-luna`, never the OpenRouter id. `src/provider/registry.ts` rows and the adapters' `*_DEFAULT_MODEL`
+ * constants read it; `openrouter` is config/defaults.ts `DEFAULT_MODEL` (a unit test pins the two equal).
+ */
+export const PROVIDER_DEFAULT_MODEL: Readonly<Record<ProviderId, string>> = {
+  anthropic: 'claude-sonnet-5',
+  openrouter: 'z-ai/glm-5.3-flash',
+  openai: 'gpt-5.6-luna',
+  gemini: 'gemini-3.8-flash',
+  xai: 'grok-4.7',
+  fireworks: 'accounts/fireworks/models/glm-5p3-flash',
+  meta: 'muse-spark-1.3',
+};
+
+/**
  * What a picker column, a key-setup title, a registry row and an error label call each provider (R14). One spelling
  * per provider: the registry used to say `'xAI (Grok)'` while the catalogue said `'xAI'`; the catalogue's strings are
  * the ones the TUI pins (TUI-DESIGN-5 §12), so they are the table.

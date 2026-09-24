@@ -25,6 +25,7 @@ import {
   generatorProviderText,
   inferJevProvider,
   jevKeyPrompt,
+  loginGeneratorModel,
   loginMode,
   loginTargetDisplay,
   parseJevProvider,
@@ -219,6 +220,14 @@ describe('the pure helpers (TUI-DESIGN-2 §1.2, §1.4, §2.3)', () => {
     expect(loginMode(lookupOf({ JEVCODE_MODE: 'nope' }), { values: { mode: 3 } })).toBe(DEFAULT_MODE);
     expect(loginMode(lookupOf({ JEVCODE_MODE: 'llm-jev' }), { values: {} })).toBe('llm-jev'); // docs/LLM-JEV-DESIGN.md
     expect(loginMode(lookupOf({}), { values: { mode: 'llm-jev' } })).toBe('llm-jev');
+  });
+
+  it('loginGeneratorModel: JEVCODE_MODEL > the file model key > the named provider\'s own default (never the OpenRouter id for anthropic)', () => {
+    expect(loginGeneratorModel(lookupOf({}), { values: {} })).toBe('z-ai/glm-5.3-flash');
+    expect(loginGeneratorModel(lookupOf({}), { values: {} }, 'anthropic')).toBe('claude-sonnet-5');
+    expect(loginGeneratorModel(lookupOf({}), { values: {} }, 'openai')).toBe('gpt-5.6-luna');
+    expect(loginGeneratorModel(lookupOf({}), { values: { model: 'from-file' } }, 'openai')).toBe('from-file');
+    expect(loginGeneratorModel(lookupOf({ JEVCODE_MODEL: 'from-env' }), { values: { model: 'from-file' } }, 'openai')).toBe('from-env');
   });
 
   it('inferJevProvider: flag > the session\'s resolved provider > JEV_PROVIDER > file jevProvider (beside a saved key only) > 2a base-URL host > 2b JEV_API_KEY → openrouter > 2c TYPESAFE_API_KEY → typesafe > 2d OPENROUTER_API_KEY → openrouter > null; the generator provider is no rule', () => {

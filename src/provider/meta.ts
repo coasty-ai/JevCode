@@ -30,11 +30,11 @@ import { effortOf, pickEffort } from './openai-compat.js';
 import { getArr, getNum, getStr } from './sse.js';
 import type { GenerationProvider, ModelInfo, ProviderConfig, ProviderDeps } from './types.js';
 
-import { PROVIDER_BASE_URL } from './ids.js';
+import { PROVIDER_BASE_URL, PROVIDER_DEFAULT_MODEL } from './ids.js';
 export const META_BASE_URL = PROVIDER_BASE_URL.meta;
 /** The retired Llama API preview (sunset 2026-07-06); kept so a stale config can be recognised, never used by default. */
 export const META_LEGACY_BASE_URL = 'https://api.llama.com/v1';
-export const META_DEFAULT_MODEL = 'muse-spark-1.3';
+export const META_DEFAULT_MODEL = PROVIDER_DEFAULT_MODEL.meta;
 
 export const META_EFFORTS: readonly EffortWord[] = ['low', 'medium', 'high'];
 

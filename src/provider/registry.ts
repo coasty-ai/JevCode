@@ -19,7 +19,7 @@
  * `createProvider()` return exactly a core `Provider` with no other change here.
  */
 import { ConfigError } from '../errors.js';
-import { PROVIDER_BASE_URL, PROVIDER_DISPLAY_NAME, PROVIDER_KEY_ENV } from './ids.js';
+import { PROVIDER_BASE_URL, PROVIDER_DEFAULT_MODEL, PROVIDER_DISPLAY_NAME, PROVIDER_KEY_ENV } from './ids.js';
 import { pricingFor } from './pricing.js';
 import { ANTHROPIC_VERSION, createAnthropicProvider } from './anthropic.js';
 import { createOpenRouterProvider, OPENROUTER_REFERER, OPENROUTER_TITLE } from './openrouter.js';
@@ -178,7 +178,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     displayName: PROVIDER_DISPLAY_NAME.anthropic,
     keyEnv: PROVIDER_KEY_ENV.anthropic[0],
     baseUrl: PROVIDER_BASE_URL.anthropic,
-    defaultModel: 'claude-sonnet-5',
+    defaultModel: PROVIDER_DEFAULT_MODEL.anthropic,
     docsUrl: 'https://docs.claude.com/en/api/messages',
     supports: { tools: true, structuredOutput: true, reasoning: true, vision: true },
     // the Messages client takes the core GeneratorConfig; ProviderConfig carries every field it reads
@@ -190,7 +190,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
     displayName: PROVIDER_DISPLAY_NAME.openrouter,
     keyEnv: PROVIDER_KEY_ENV.openrouter[0],
     baseUrl: PROVIDER_BASE_URL.openrouter,
-    defaultModel: 'z-ai/glm-5.3-flash',
+    defaultModel: PROVIDER_DEFAULT_MODEL.openrouter,
     docsUrl: 'https://openrouter.ai/docs/api-reference/chat-completion',
     supports: { tools: true, structuredOutput: true, reasoning: true, vision: true },
     create: (cfg, deps) => createOpenRouterProvider(asGeneratorConfig(cfg, 'openrouter'), deps),

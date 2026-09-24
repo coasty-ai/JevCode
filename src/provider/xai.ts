@@ -28,10 +28,10 @@ import { effortOf, pickEffort } from './openai-compat.js';
 import { getArr, getNum, getStr } from './sse.js';
 import type { GenerationProvider, ModelInfo, Pricing, ProviderConfig, ProviderDeps } from './types.js';
 
-import { PROVIDER_BASE_URL } from './ids.js';
+import { PROVIDER_BASE_URL, PROVIDER_DEFAULT_MODEL } from './ids.js';
 export const XAI_BASE_URL = PROVIDER_BASE_URL.xai;
 /** 500k context, tools, $2.00/$6.00 per 1M (live catalogue read 2026-09-21). */
-export const XAI_DEFAULT_MODEL = 'grok-4.7';
+export const XAI_DEFAULT_MODEL = PROVIDER_DEFAULT_MODEL.xai;
 
 /** xAI reports money and prices as integers: 1e10 units = $1 (equivalently a price of N = $N/10,000 per 1M tokens). */
 export const XAI_TICKS_PER_USD = 1e10;

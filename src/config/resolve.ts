@@ -87,7 +87,7 @@ import {
 import type { LoadedConfigFile, LoadedDotenv, ResolveOptions, ResolvedConfigWithDiagnostics, ResumeCurrentInputs, ResumeIdentity, ResumeReconciliation, SettingName, SettingSpec } from './types.js';
 // TUI-DESIGN-5 §6.3 row 1: zero-import pure data (the module states the rule and a test enforces it), so this
 // import never puts `provider/registry.js` or `models/**` on the argv path.
-import { isProviderId, keyEnvNames } from '../provider/ids.js';
+import { isProviderId, keyEnvNames, PROVIDER_DEFAULT_MODEL } from '../provider/ids.js';
 
 export type { ResolveOptions, ResolvedConfigWithDiagnostics, ResumeCurrentInputs, ResumeIdentity, ResumeLimitSources, ResumeReconciliation, ResumeStateSummary, ResumeOverride } from './types.js';
 
@@ -600,6 +600,12 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     const spec = JEV_PROVIDERS[jev.provider];
     if (entries.get('decider.baseUrl')?.source === 'default') entries.set('decider.baseUrl', { value: spec.baseUrl, source: 'default' });
     if (entries.get('decider.model')?.source === 'default') entries.set('decider.model', { value: spec.defaultModel, source: 'default' });
+  }
+  // The generator's twin of the row above: an unset `generator.model` is the RESOLVED provider's own latest fast model, so
+  // `--provider openai` alone sends `gpt-5.6-luna` and never the OpenRouter id `DEFAULT_MODEL` (which 404s everywhere else).
+  {
+    const gp = entries.get('generator.provider')?.value.trim().toLowerCase() ?? '';
+    if (entries.get('generator.model')?.source === 'default' && isProviderId(gp)) entries.set('generator.model', { value: PROVIDER_DEFAULT_MODEL[gp], source: 'default' });
   }
   // `--verbose` is `--log-level debug` (TUI-DESIGN §16); an explicit --log-level wins.
   if (flagValue(flags, 'verbose') === true && entries.get('log.level')?.source !== 'flag') entries.set('log.level', { value: 'debug', source: 'flag' });

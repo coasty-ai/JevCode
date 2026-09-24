@@ -34,10 +34,10 @@ import { effortOf, pickEffort } from './openai-compat.js';
 import { TransportError, clipMessage, countOf, getArr, getNum, getObj, getStr, isRateLimit, notify, parseJsonObject, parseSse, resolveDeps, sanitiseRequestId } from './sse.js';
 import type { GenerationProvider, ModelInfo, ProviderConfig, ProviderDeps, ProviderOutcome, StreamPartial, TokenBreakdown } from './types.js';
 
-import { PROVIDER_BASE_URL } from './ids.js';
+import { PROVIDER_BASE_URL, PROVIDER_DEFAULT_MODEL } from './ids.js';
 export const GEMINI_BASE_URL = PROVIDER_BASE_URL.gemini;
 /** ai.google.dev/gemini-api/docs/models: GA since Sep 2026, 1,048,576 in / 65,536 out, $0.75/$3.75 per 1M. */
-export const GEMINI_DEFAULT_MODEL = 'gemini-3.8-flash';
+export const GEMINI_DEFAULT_MODEL = PROVIDER_DEFAULT_MODEL.gemini;
 
 // ---------------------------------------------------------------------------------------
 // Wire types (request side)
