@@ -155,27 +155,33 @@ async function preImagesCover(ctx: AgentContext, v: CommandVerdict): Promise<boo
   return bytes <= PRE_IMAGE_MAX_TOTAL_BYTES;
 }
 
+/** A workspace-relative directory that exists: on disk, or (a directory the disk does not show yet) in the candidate list. */
+async function isWorkspaceDir(ctx: AgentContext, rel: string): Promise<boolean> {
+  if (await stat(join(ctx.workspace.root, rel)).then((st) => st.isDirectory(), () => false)) return true;
+  return (await ctx.workspace.listCandidates()).some((f) => f.path.startsWith(`${rel}/`));
+}
+
 /**
- * A `workdir` that names no directory of the workspace: the model-facing error, else null. glm-5.3-flash passed the root's own
- * name (`workdir: "demo"` in `…/demo`) in the S6 live run of 2026-09-23 and every command failed as `spawn … ENOENT`. A directory
- * the candidate list does not show (ignored, empty) still counts when it is on disk.
+ * The directory a bash call runs in (null: the root), or the model-facing error. glm-5.3-flash passes the root's own name as
+ * the workdir (`workdir: "demo"` in `…/demo`, three S6 live runs of 2026-09-23), and every command failed as
+ * `spawn … ENOENT`: when no such directory exists, the root's name means the root and `<root>/sub` means `sub` (§4.4 repair,
+ * like an absolute path inside the workspace). Anything else that is not a directory is an error that names it.
  */
-async function missingWorkdir(ctx: AgentContext, workdir: string): Promise<string | null> {
-  const onDisk = await stat(join(ctx.workspace.root, workdir)).then((st) => st.isDirectory(), () => false);
-  if (onDisk) return null;
-  const listed = (await ctx.workspace.listCandidates()).some((f) => f.path.startsWith(`${workdir}/`));
-  if (listed) return null;
+async function resolveWorkdir(ctx: AgentContext, workdir: string): Promise<{ workdir: string | null } | { error: string }> {
+  if (await isWorkspaceDir(ctx, workdir)) return { workdir };
   const name = basename(ctx.workspace.root);
-  const hint = workdir === name || workdir.startsWith(`${name}/`) ? ` (the workspace root is ${name} itself: leave workdir out to run there${workdir === name ? '' : `, or use ${workdir.slice(name.length + 1)}`})` : '';
-  return `ERROR: workdir "${workdir}" is not a directory in the workspace${hint}`;
+  if (workdir === name) return { workdir: null };
+  if (workdir.startsWith(`${name}/`) && (await isWorkspaceDir(ctx, workdir.slice(name.length + 1)))) return { workdir: workdir.slice(name.length + 1) };
+  return { error: `ERROR: workdir "${workdir}" is not a directory in the workspace` };
 }
 
 async function bashDisposition(env: CallEnv, c: NormalisedCall): Promise<Disposition> {
   const { ctx } = env;
   const command = String(c.args['command']);
-  const workdir = typeof c.args['workdir'] === 'string' ? c.args['workdir'] : null;
-  const missing = workdir === null ? null : await missingWorkdir(ctx, workdir);
-  if (missing !== null) return rejected(c, missing);
+  const asked = typeof c.args['workdir'] === 'string' ? c.args['workdir'] : null;
+  const wd = asked === null ? { workdir: null } : await resolveWorkdir(ctx, asked);
+  if ('error' in wd) return rejected(c, wd.error);
+  const workdir = wd.workdir;
   const timeoutMs = typeof c.args['timeout_ms'] === 'number' ? c.args['timeout_ms'] : undefined;
   const v = classifyCommand(command, classifyContext(ctx, workdir));
   if (v.class === 'readonly') {
